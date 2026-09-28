@@ -79,16 +79,17 @@
 
 > **Docker 前置**:平台本体不依赖 Docker,但**「隔离构建 / 容器部署」需要 Docker**(没有则降级到桩 runner、不做真实构建)。控制台 / SSH 部署 / 通知不需要。一键脚本会**检测 Docker** 并在缺失时提示;Linux 下可 `INSTALL_DOCKER=1` 自动安装(经官方 get.docker.com),macOS 请装 Docker Desktop。
 
-### ① 一键脚本(Linux / macOS)
+### ① 本地编译安装(Linux / macOS)
 
-从 GitHub Release 下载对应平台的静态二进制装到 `/usr/local/bin`(含校验和核验 + Docker 检测):
+`install.sh` 安装**本地 `make build` 产出的二进制**到 `/usr/local/bin`(不联网下载,含 Docker 检测),需先装 Go 与 Node:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/huangchengsir/pipewright/master/install.sh | sh
+git clone https://github.com/huangchengsir/pipewright && cd pipewright
+make build
+sh install.sh
 
-# 钉版本 / 自定义目录 / Linux 顺带自动装 Docker:
-VERSION=v1.0.0 INSTALL_DIR=$HOME/.local/bin INSTALL_DOCKER=1 \
-  sh -c "$(curl -fsSL https://raw.githubusercontent.com/huangchengsir/pipewright/master/install.sh)"
+# 二进制在别处 / 自定义安装目录 / Linux 顺带自动装 Docker:
+BIN_PATH=/path/to/pipewright INSTALL_DIR=$HOME/.local/bin INSTALL_DOCKER=1 sh install.sh
 
 # 运行(首次启动引导管理员;master key 用于凭据保险库)
 PIPEWRIGHT_MASTER_KEY=$(openssl rand -base64 32) \
@@ -99,17 +100,17 @@ PIPEWRIGHT_ADMIN_PASSWORD=change-me \
 **推荐:装为 systemd 服务**(开机自启 + 崩溃重启 + 一键自更新可用;Linux,需 root)。脚本会自动持久化 master key 到 `/etc/pipewright/master.key`、数据落 `/var/lib/pipewright`、配置写 `/etc/pipewright/pipewright.env`:
 
 ```bash
-SETUP_SERVICE=1 sh -c "$(curl -fsSL https://raw.githubusercontent.com/huangchengsir/pipewright/master/install.sh)"
+SETUP_SERVICE=1 sh install.sh
 # 状态 / 日志:systemctl status pipewright  ·  journalctl -u pipewright -f
 # 改端口等:编辑 /etc/pipewright/pipewright.env 后 systemctl restart pipewright
 
 # 用 MySQL 而非默认 SQLite(DSN 为 go-sql-driver 格式,parseTime=true 必带):
 SETUP_SERVICE=1 PIPEWRIGHT_DB_DRIVER=mysql \
   PIPEWRIGHT_DB_DSN='user:pw@tcp(host:3306)/pipewright?parseTime=true&charset=utf8mb4' \
-  sh -c "$(curl -fsSL https://raw.githubusercontent.com/huangchengsir/pipewright/master/install.sh)"
+  sh install.sh
 ```
 
-> Windows 用户:到 [Releases](https://github.com/huangchengsir/pipewright/releases) 下载 `.zip`。
+> Windows 用户:在 Git Bash 里 `make build` 后直接运行 `./pipewright.exe`(无 systemd,install.sh 不适用)。
 
 ### ② docker compose(推荐自托管)
 
@@ -134,6 +135,7 @@ docker run -d -p 8080:8080 -v pipewright-data:/data \
 ```bash
 make build          # 前端构建 → go:embed → 单个静态二进制 ./pipewright(纯 Go,无 CGO)
 ./pipewright --version
+sh install.sh       # 亦可把构建产物装到 /usr/local/bin(见「本地编译安装」)
 ```
 
 ### 更新
