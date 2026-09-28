@@ -79,16 +79,17 @@ Pick any of three form factors. The platform itself is a single static binary wi
 
 > **Docker prerequisite**: the platform itself doesn't depend on Docker, but **"isolated builds / container deployment" do require Docker** (without it, it degrades to a stub runner and performs no real builds). The console / SSH deployment / notifications don't need Docker. The one-click script **detects Docker** and prompts if it's missing; on Linux you can set `INSTALL_DOCKER=1` to auto-install it (via the official get.docker.com); on macOS, install Docker Desktop.
 
-### ① One-click script (Linux / macOS)
+### ① Install from a local build (Linux / macOS)
 
-Downloads the static binary for your platform from GitHub Releases and installs it to `/usr/local/bin` (with checksum verification + Docker detection):
+`install.sh` installs the binary produced by a **local `make build`** to `/usr/local/bin` (no network download; includes Docker detection). Go and Node are required first:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/huangchengsir/pipewright/master/install.sh | sh
+git clone https://github.com/huangchengsir/pipewright && cd pipewright
+make build
+sh install.sh
 
-# Pin a version / custom dir / auto-install Docker on Linux too:
-VERSION=v1.0.0 INSTALL_DIR=$HOME/.local/bin INSTALL_DOCKER=1 \
-  sh -c "$(curl -fsSL https://raw.githubusercontent.com/huangchengsir/pipewright/master/install.sh)"
+# Binary elsewhere / custom install dir / auto-install Docker on Linux too:
+BIN_PATH=/path/to/pipewright INSTALL_DIR=$HOME/.local/bin INSTALL_DOCKER=1 sh install.sh
 
 # Run (first launch bootstraps the admin; master key is for the credential vault)
 PIPEWRIGHT_MASTER_KEY=$(openssl rand -base64 32) \
@@ -99,17 +100,17 @@ PIPEWRIGHT_ADMIN_PASSWORD=change-me \
 **Recommended: install as a systemd service** (auto-start on boot + restart on crash + one-click self-update available; Linux, requires root). The script persists the master key to `/etc/pipewright/master.key`, stores data in `/var/lib/pipewright`, and writes config to `/etc/pipewright/pipewright.env`:
 
 ```bash
-SETUP_SERVICE=1 sh -c "$(curl -fsSL https://raw.githubusercontent.com/huangchengsir/pipewright/master/install.sh)"
+SETUP_SERVICE=1 sh install.sh
 # Status / logs: systemctl status pipewright  ·  journalctl -u pipewright -f
 # Change port etc.: edit /etc/pipewright/pipewright.env then systemctl restart pipewright
 
 # Use MySQL instead of the default SQLite (DSN is go-sql-driver format; parseTime=true is required):
 SETUP_SERVICE=1 PIPEWRIGHT_DB_DRIVER=mysql \
   PIPEWRIGHT_DB_DSN='user:pw@tcp(host:3306)/pipewright?parseTime=true&charset=utf8mb4' \
-  sh -c "$(curl -fsSL https://raw.githubusercontent.com/huangchengsir/pipewright/master/install.sh)"
+  sh install.sh
 ```
 
-> Windows users: download the `.zip` from [Releases](https://github.com/huangchengsir/pipewright/releases).
+> Windows users: run `make build` in Git Bash and execute `./pipewright.exe` directly (no systemd, so install.sh doesn't apply).
 
 ### ② docker compose (recommended for self-hosting)
 
@@ -134,6 +135,7 @@ docker run -d -p 8080:8080 -v pipewright-data:/data \
 ```bash
 make build          # frontend build → go:embed → single static binary ./pipewright (pure Go, no CGO)
 ./pipewright --version
+sh install.sh       # optionally install the built binary to /usr/local/bin (see "Install from a local build")
 ```
 
 ### Updating

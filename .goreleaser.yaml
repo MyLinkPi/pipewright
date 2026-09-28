@@ -130,9 +130,11 @@ release:
     ---
     ## 安装
 
-    一键安装(Linux / macOS):
+    本地编译安装(Linux / macOS,不联网下载二进制):
     ```sh
-    curl -fsSL https://raw.githubusercontent.com/huangchengsir/pipewright/master/install.sh | sh
+    git clone https://github.com/huangchengsir/pipewright && cd pipewright
+    make build
+    sh install.sh
     ```
 
     Docker:
