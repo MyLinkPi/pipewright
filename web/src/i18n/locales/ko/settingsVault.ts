@@ -36,6 +36,11 @@ export default {
   typeSshKey: 'SSH 키',
   typeSshPassword: 'SSH 비밀번호',
   typeRegistry: '레지스트리',
+  descGitToken: 'HTTPS로 비공개 Git 저장소를 클론/가져올 때 사용(GitHub/GitLab/Gitee 개인 액세스 토큰).',
+  descGitHttp: '사용자 이름 + 비밀번호로 HTTPS Git 저장소에 접근(예: 자체 호스팅 Gitea).',
+  descSshKey: "배포 서버에 SSH 로그인할 때 사용(PEM/OpenSSH 개인 키). '설정 → 서버' 참고.",
+  descSshPassword: "비밀번호로 배포 서버에 SSH 로그인할 때 사용. '설정 → 서버' 참고.",
+  descRegistry: "빌드된 이미지를 레지스트리에 푸시할 때 'docker login'에 사용하는 사용자 이름/비밀번호.",
 
   maskTitle: '마스킹 값(편집에서 평문 보기 가능)',
   maskAria: '마스킹: {value}',

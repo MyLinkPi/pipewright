@@ -87,6 +87,8 @@ export default {
   hcCommandRequired: 'プローブコマンドを入力してください。',
 
   releaseStrategy: 'リリース戦略',
+  strategyInstanceRollingLabel: 'インスタンスローリング(既定)',
+  strategyInstanceRollingDesc: 'インスタンス単位のゼロダウンタイム置換',
   strategyRollingLabel: 'ローリング',
   strategyRollingDesc: '全台を並行、各自で成否',
   strategyCanaryLabel: 'カナリア',

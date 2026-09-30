@@ -19,6 +19,7 @@ import (
 	"github.com/huangchengsir/pipewright/internal/ai"
 	"github.com/huangchengsir/pipewright/internal/anomaly"
 	"github.com/huangchengsir/pipewright/internal/approval"
+	"github.com/huangchengsir/pipewright/internal/appstore"
 	"github.com/huangchengsir/pipewright/internal/artifactstore"
 	"github.com/huangchengsir/pipewright/internal/audit"
 	"github.com/huangchengsir/pipewright/internal/auth"
@@ -39,6 +40,7 @@ import (
 	"github.com/huangchengsir/pipewright/internal/retention"
 	"github.com/huangchengsir/pipewright/internal/run"
 	"github.com/huangchengsir/pipewright/internal/runner"
+	"github.com/huangchengsir/pipewright/internal/servicereg"
 	"github.com/huangchengsir/pipewright/internal/target"
 	"github.com/huangchengsir/pipewright/internal/trigger"
 	"github.com/huangchengsir/pipewright/internal/vault"
@@ -104,6 +106,8 @@ type options struct {
 	proxy            proxy.Service
 	dnsProviders     dnsprovider.Service
 	previewEnvs      PreviewService
+	serviceReg       servicereg.Service
+	appStore         appstore.Service
 }
 
 // WithArtifactStore 注入制品库(Story 8-16):挂载产物下载端点
@@ -354,6 +358,21 @@ func WithPreviewEnvs(s PreviewService) Option {
 	return func(o *options) { o.previewEnvs = s }
 }
 
+// WithServiceReg 注入「服务注册网关」(nginx)服务,挂载 /api/servicereg/* 路由
+// (GET auth;写方法 auth + CSRF + 审计)。证书上传端点 POST /api/servicereg/cert 注册在
+// 受保护 /api 组之外,支持 Bearer token(脚本)或管理员会话双认证。
+// 不传则相关端点返回 503(服务未初始化)。
+func WithServiceReg(s servicereg.Service) Option {
+	return func(o *options) { o.serviceReg = s }
+}
+
+// WithAppStore 注入应用商店模板服务,挂载 /api/ops/apps* 与 POST /api/servers/{id}/apps/deploy
+// 路由(GET auth;写方法 auth + CSRF + 审计;部署复用 Stacks 受管链路)。
+// 不传则相关端点返回 503(服务未初始化)。
+func WithAppStore(s appstore.Service) Option {
+	return func(o *options) { o.appStore = s }
+}
+
 // WithAnomaly 注入可配置异常检测服务(Story 6.5;FR-23),挂载 /api/anomaly/* 路由
 // (GET rules/alerts auth;POST rules/check + DELETE rules/{id} auth + CSRF)。检测复用 6-1
 // 指标采集(metricsCollector 适配 collectServerMetrics);不可达/指标 null 的服务器跳过(不误报)。
@@ -430,6 +449,11 @@ func New(webFS fs.FS, authn auth.Authenticator, opts ...Option) http.Handler {
 	// Webhook 接收(公开入口,Story 3.2):豁免 requireAuth + CSRF,靠签名校验。
 	// 必须在受保护 /api 组之外注册;限请求体大小在 handler 内(MaxBytesReader)。
 	r.Post("/api/webhooks/{token}", makeWebhookHandler(o.receiver))
+
+	// 服务注册证书上传(脚本入口):豁免统一 requireAuth + CSRF——认证二选一:证书上传
+	// Bearer token(常量时间校验,非 cookie 无 CSRF 面)或管理员会话 + CSRF(页面表单)。
+	// 同样必须注册在受保护 /api 组之外(与 /api/servicereg/* 组内路由路径不重叠)。
+	r.Post("/api/servicereg/cert", makeServiceRegCertUploadHandler(o.serviceReg, svc, o.audit))
 
 	// 从通知直接审批(公开入口,SECURITY-SENSITIVE):豁免 requireAuth + CSRF——token(HMAC+过期+
 	// 常量时间比较)即认证。GET 仅渲染确认页(无副作用,防 IM 预取自动放行);POST 才解析门。
@@ -725,6 +749,9 @@ func New(webFS fs.FS, authn auth.Authenticator, opts ...Option) http.Handler {
 		ar.Post("/servers/{id}/stacks/deploy", makeStackDeployHandler(sv, aud))
 		ar.Post("/servers/{id}/stacks/action", makeStackActionHandler(sv, aud))
 		ar.Post("/servers/{id}/stacks/save", makeStackSaveHandler(sv, aud))
+		// 应用商店一键部署(DPanel 式):模板参数渲染 → 复用 Stacks 链路 up -d。
+		// 生成的 secret 仅部署响应一次性返回;审计只记模板名,不记参数值。
+		ar.Post("/servers/{id}/apps/deploy", makeDeployAppHandler(o.appStore, sv, aud))
 		// 容器 AI 诊断 / 看日志(AI moat):取容器日志 → ai.Diagnose 出根因+修复。复用 sv +
 		// o.aiSettings。出网前脱敏;AI 未配/失败 → 200 unavailable,绝不 500。比 {id} 多两段不被吞。
 		ar.Post("/servers/{id}/containers/{containerId}/diagnose", makeContainerDiagnoseHandler(sv, o.aiSettings))
@@ -813,6 +840,42 @@ func New(webFS fs.FS, authn auth.Authenticator, opts ...Option) http.Handler {
 		ar.Post("/preview-envs/{id}/reclaim", makeReclaimPreviewEnvHandler(pv, aud))
 		ar.Get("/projects/{id}/preview-config", makeGetPreviewConfigHandler(pv))
 		ar.Put("/projects/{id}/preview-config", makeSetPreviewConfigHandler(pv, aud))
+
+		// 服务注册网关(独立部署的 nginx 容器):基域/泛域名证书/子域名服务注册/网关编排。
+		// sr 为 nil → handler 返回 503。GET 过 auth;写方法过 auth + CSRF + 审计。
+		// 证书上传端点(/api/servicereg/cert)支持 Bearer token,注册在上方受保护组之外。
+		sr := o.serviceReg
+		ar.Get("/servicereg/settings", makeGetServiceRegSettingsHandler(sr))
+		ar.Put("/servicereg/settings", makeUpdateServiceRegSettingsHandler(sr, aud))
+		ar.Post("/servicereg/settings/upload-token", makeGenerateSRUploadTokenHandler(sr, aud))
+		ar.Delete("/servicereg/settings/upload-token", makeRevokeSRUploadTokenHandler(sr, aud))
+		ar.Get("/servicereg/gateway", makeGetServiceRegGatewayHandler(sr))
+		ar.Post("/servicereg/gateway/deploy", makeDeployServiceRegGatewayHandler(sr, aud))
+		ar.Delete("/servicereg/gateway", makeRemoveServiceRegGatewayHandler(sr, aud))
+		ar.Get("/servicereg/domains", makeListServiceRegDomainsHandler(sr))
+		ar.Post("/servicereg/domains", makeCreateServiceRegDomainHandler(sr, aud))
+		ar.Delete("/servicereg/domains/{id}", makeDeleteServiceRegDomainHandler(sr, aud))
+		ar.Get("/servicereg/services", makeListServiceRegServicesHandler(sr))
+		ar.Post("/servicereg/services", makeCreateServiceRegServiceHandler(sr, aud))
+		ar.Put("/servicereg/services/{id}", makeUpdateServiceRegServiceHandler(sr, aud))
+		ar.Post("/servicereg/services/{id}/enabled", makeSetServiceRegServiceEnabledHandler(sr, aud))
+		ar.Delete("/servicereg/services/{id}", makeDeleteServiceRegServiceHandler(sr, aud))
+		// 服务实例(多实例 upstream 成员):列表/添加/删除/摘挂。/services/{id}/instances 比
+		// /services/{id} 多一段、/instances/{id}/* 首段不同,均不会被吞。
+		ar.Get("/servicereg/services/{id}/instances", makeListServiceRegInstancesHandler(sr))
+		ar.Post("/servicereg/services/{id}/instances", makeAddServiceRegInstanceHandler(sr, aud))
+		ar.Delete("/servicereg/instances/{id}", makeDeleteServiceRegInstanceHandler(sr, aud))
+		ar.Post("/servicereg/instances/{id}/attached", makeSetServiceRegInstanceAttachedHandler(sr, aud))
+		ar.Post("/servicereg/apply", makeApplyServiceRegHandler(sr, aud))
+
+		// 应用商店模板(DPanel 式):内置 seed + 自定义 CRUD。GET 过 auth;写方法过 auth + CSRF + 审计。
+		// apps 为 nil → handler 返回 503。/ops/apps/{id} 比 /ops/apps 多一段,不会被吞。
+		apps := o.appStore
+		ar.Get("/ops/apps", makeListAppTemplatesHandler(apps))
+		ar.Post("/ops/apps", makeCreateAppTemplateHandler(apps, aud))
+		ar.Get("/ops/apps/{id}", makeGetAppTemplateHandler(apps))
+		ar.Put("/ops/apps/{id}", makeUpdateAppTemplateHandler(apps, aud))
+		ar.Delete("/ops/apps/{id}", makeDeleteAppTemplateHandler(apps, aud))
 
 		ar.Get("/notifications/channels", makeListChannelsHandler(nf))
 		ar.Post("/notifications/channels", makeCreateChannelHandler(nf))

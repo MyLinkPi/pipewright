@@ -98,6 +98,8 @@ export default {
 
   // 发布策略
   releaseStrategy: '发布策略',
+  strategyInstanceRollingLabel: '实例轮转(默认)',
+  strategyInstanceRollingDesc: '逐实例零停机替换',
   strategyRollingLabel: '滚动',
   strategyRollingDesc: '全机并行,各自成败',
   strategyCanaryLabel: '金丝雀',

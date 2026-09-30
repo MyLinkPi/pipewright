@@ -770,9 +770,6 @@ func makeStackDeployHandler(svc target.Service, aud audit.Recorder) http.Handler
 			return
 		}
 
-		// 受管目录:基址 + 项目名(name 正则已排除 `/` 与前导 `.`,无路径穿越)。
-		dir := stacksBaseDir + "/" + req.Name
-		composePath := dir + "/" + composeFileName
 		out := stackDTOResult{ServerID: id, Name: req.Name, Action: "deploy"}
 		auditOp := func(ok bool) {
 			recordAudit(r.Context(), aud, audit.Entry{
@@ -784,52 +781,12 @@ func makeStackDeployHandler(svc target.Service, aud audit.Recorder) http.Handler
 		cctx, cancel := context.WithTimeout(r.Context(), stacksUpTimeout)
 		defer cancel()
 
-		// 1) 建目录。
-		if res, err := svc.Exec(cctx, id, []string{"mkdir", "-p", dir}); err != nil {
-			out.Error = humanServiceError(err)
-			auditOp(false)
-			writeJSON(w, http.StatusOK, out)
-			return
-		} else if res.ExitCode != 0 {
-			out.Error = "创建受管目录失败:" + truncateLog(strings.TrimSpace(res.Stderr), 256)
-			auditOp(false)
-			writeJSON(w, http.StatusOK, out)
-			return
-		}
-		// 2) 写 compose 文件(字节流,非 shell)。
-		if err := svc.Upload(cctx, id, strings.NewReader(compose), composePath); err != nil {
-			out.Error = "写入 compose 文件失败:" + humanServiceError(err)
-			auditOp(false)
-			writeJSON(w, http.StatusOK, out)
-			return
-		}
-		// 3) up -d(用探测到的 compose CLI:v2 docker compose / v1 docker-compose)。
-		bin := detectComposeBin(cctx, svc, id)
-		if bin == nil {
-			out.Error = "该主机未检测到 docker compose / docker-compose,无法部署"
-			auditOp(false)
-			writeJSON(w, http.StatusOK, out)
-			return
-		}
-		upCmd := append(append([]string{}, bin...), "-p", req.Name, "-f", composePath, "up", "-d")
-		res, err := svc.Exec(cctx, id, upCmd)
-		if err != nil {
-			out.Error = humanServiceError(err)
-			auditOp(false)
-			writeJSON(w, http.StatusOK, out)
-			return
-		}
-		if res.ExitCode != 0 {
-			msg := strings.TrimSpace(res.Stderr)
-			if msg == "" {
-				msg = "docker compose up 以非零状态退出"
-			}
-			out.OK = false
-			out.Error = truncateLog(msg, 1024)
-		} else {
-			out.OK = true
-			out.Output = truncateLog(strings.TrimSpace(res.Stdout)+"\n"+strings.TrimSpace(res.Stderr), 2048)
-		}
+		// 受管目录基址 + 项目名(name 正则已排除 `/` 与前导 `.`,无路径穿越);
+		// 建目录 → Upload compose → 探测 compose CLI → up -d(与应用商店部署同一条链路)。
+		ok, output, errMsg := deployComposeToServer(cctx, svc, id, req.Name, compose)
+		out.OK = ok
+		out.Output = output
+		out.Error = errMsg
 		auditOp(out.OK)
 		writeJSON(w, http.StatusOK, out)
 	}

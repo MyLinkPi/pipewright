@@ -14,15 +14,18 @@ import (
 
 func TestNormalizeStrategy(t *testing.T) {
 	cases := map[string]string{
-		"":            StrategyRolling,
-		"rolling":     StrategyRolling,
-		"unknown":     StrategyRolling,
-		"canary":      StrategyCanary,
-		"CANARY":      StrategyCanary,
-		"blue_green":  StrategyBlueGreen,
-		"blue-green":  StrategyBlueGreen,
-		"BlueGreen":   StrategyBlueGreen,
-		" blue green": StrategyBlueGreen,
+		"":                 StrategyInstanceRolling, // 新默认:空 → 实例轮转(反查不到服务时自动回退 rolling)
+		"unknown":          StrategyInstanceRolling,
+		"instance_rolling": StrategyInstanceRolling,
+		"instance-rolling": StrategyInstanceRolling,
+		"InstanceRolling":  StrategyInstanceRolling,
+		"rolling":          StrategyRolling, // 显式 rolling = 旧的整容器硬切滚动
+		"canary":           StrategyCanary,
+		"CANARY":           StrategyCanary,
+		"blue_green":       StrategyBlueGreen,
+		"blue-green":       StrategyBlueGreen,
+		"BlueGreen":        StrategyBlueGreen,
+		" blue green":      StrategyBlueGreen,
 	}
 	for in, want := range cases {
 		if got := NormalizeStrategy(in); got != want {

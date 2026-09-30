@@ -1,0 +1,46 @@
+export default {
+  eyebrow: '应用商店',
+  title: '应用商店',
+  subtitle: '常用应用模板参数化一键部署(compose);口令自动生成,部署即用。',
+  loading: '加载中…',
+  errTitle: '加载失败',
+  errLoad: '无法加载应用模板',
+  errOp: '操作失败,请重试',
+
+  builtinSection: '内置模板',
+  customSection: '自定义模板',
+  customEmpty: '还没有自定义模板;用「新建模板」把你的 compose 沉淀为可复用部署单元。',
+  newTemplate: '新建模板',
+  deployBtn: '部署',
+
+  deployed: '{name} 已部署',
+  deployFail: '部署失败',
+
+  form: {
+    name: '模板名(小写字母/数字/-)',
+    displayName: '显示名',
+    icon: '图标(emoji)',
+    description: '描述',
+    compose: 'compose YAML(用 {\'{{param}}\'} 占位)',
+    params: '参数(每行一条)',
+    paramsHint: '行式语法:name:type:default;前缀 * 表示必填;type ∈ string|int|secret(secret 空缺自动生成)。',
+  },
+  templateCreated: '模板已创建',
+  templateCreateFail: '创建模板失败',
+  templateDeleted: '模板已删除',
+  delTemplateTitle: '删除自定义模板?',
+
+  deploy: {
+    target: '目标主机',
+    pickTarget: '选择要部署到的主机',
+    autogen: '留空自动生成',
+    autoValue: '(自动生成)',
+    hint: '部署经 SSH 写入受管目录并 docker compose up -d;重复部署同一模板 = 升级(up)。',
+    submit: '部署',
+    ok: '部署成功',
+    fail: '部署失败',
+    generated: '生效参数(仅此一次展示,请妥善保存)',
+    onceHint: '生成的口令同时存在于目标机的 compose 文件中,可在该机的 Stacks 里查看。',
+    close: '关闭',
+  },
+}

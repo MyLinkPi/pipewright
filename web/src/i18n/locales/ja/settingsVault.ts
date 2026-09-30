@@ -36,6 +36,11 @@ export default {
   typeSshKey: 'SSH キー',
   typeSshPassword: 'SSH パスワード',
   typeRegistry: 'レジストリ',
+  descGitToken: 'HTTPS で非公開 Git リポジトリをクローン/取得する際に使用（GitHub/GitLab/Gitee の個人アクセストークン）。',
+  descGitHttp: 'ユーザー名 + パスワードで HTTPS 経由の Git リポジトリにアクセス（例：自己ホストの Gitea）。',
+  descSshKey: 'デプロイ先サーバーへの SSH ログインに使用（PEM/OpenSSH 秘密鍵）。「設定 → サーバー」参照。',
+  descSshPassword: 'パスワードでデプロイ先サーバーに SSH ログインする際に使用。「設定 → サーバー」参照。',
+  descRegistry: "ビルドしたイメージをレジストリに push する際の 'docker login' 用のユーザー名/パスワード。",
 
   maskTitle: 'マスク値（編集画面で平文を表示できます）',
   maskAria: 'マスク: {value}',

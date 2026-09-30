@@ -87,6 +87,8 @@ export default {
   hcCommandRequired: '프로브 명령을 입력하세요.',
 
   releaseStrategy: '배포 전략',
+  strategyInstanceRollingLabel: '인스턴스 롤링(기본)',
+  strategyInstanceRollingDesc: '인스턴스별 무중단 교체',
   strategyRollingLabel: '롤링',
   strategyRollingDesc: '전체 병렬, 각자 성공·실패',
   strategyCanaryLabel: '카나리',
