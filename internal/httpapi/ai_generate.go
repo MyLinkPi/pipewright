@@ -183,17 +183,17 @@ func makeAIGenerateHandler(d aiGenerateDeps) http.HandlerFunc {
 			return
 		}
 
-		// 取仓库克隆 token(进程内取用即弃);取不到不致命 → 以空 token 尝试(多走降级)。
-		username, token := "", ""
+		// 取仓库克隆凭据(进程内取用即弃);取不到不致命 → 以空凭据尝试(多走降级)。
+		cred := vault.GitAuth{}
 		if d.vault != nil && strings.TrimSpace(proj.CredentialID) != "" {
 			if auth, terr := d.vault.GetGitAuth(proj.CredentialID); terr == nil {
-				username, token = auth.Username, auth.Token
+				cred = auth
 			}
 		}
 
-		analysis := d.analyzer.Analyze(ctx, proj.RepoURL, username, token)
-		token = "" // 明文用完即弃
-		_ = token
+		analysis := d.analyzer.Analyze(ctx, proj.RepoURL, cred)
+		cred = vault.GitAuth{} // 明文用完即弃
+		_ = cred
 
 		dto := aiGenerateDTO{
 			Available: true,

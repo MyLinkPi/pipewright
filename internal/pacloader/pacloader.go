@@ -25,6 +25,7 @@ import (
 	"strings"
 
 	"github.com/huangchengsir/pipewright/internal/pipeline"
+	"github.com/huangchengsir/pipewright/internal/vault"
 	"github.com/huangchengsir/pipewright/internal/pipelineyaml"
 )
 
@@ -70,16 +71,16 @@ type ProjectLookup interface {
 	Lookup(ctx context.Context, projectID string) (ProjectInfo, error)
 }
 
-// TokenRevealer 解密并返回凭据明文(由 vault.Vault.Reveal 适配)。
-// 取不到时返回错误,装饰器据此回退(空 token 也可继续尝试公开仓库)。
+// GitAuthRevealer 解密并返回 Git 凭据(由 vault.Vault.GetGitAuth 适配)。
+// 取不到时返回错误,装饰器据此回退(空凭据也可继续尝试公开仓库)。
 type GitAuthRevealer interface {
-	GetGitAuth(credentialID string) (username, token string, err error)
+	GetGitAuth(credentialID string) (vault.GitAuth, error)
 }
 
 // BlobFetcher 按 ref 读仓库单文件内容(由 httpapi.SourceReader 适配)。
 // degraded=true 表示克隆失败的降级响应(非「真实空文件」),装饰器据此回退。
 type BlobFetcher interface {
-	FetchBlob(ctx context.Context, repoURL, username, token, ref, file string) (content string, degraded bool, err error)
+	FetchBlob(ctx context.Context, repoURL string, cred vault.GitAuth, ref, file string) (content string, degraded bool, err error)
 }
 
 // Loader 是 PAC 运行时覆盖装饰器:实现 dagrun.SpecLoader。
@@ -131,11 +132,11 @@ func (l *Loader) tryOverride(ctx context.Context, projectID, branch string) (cfg
 		return nil, fallbackLookup, false
 	}
 
-	// 取仓库凭据明文(进程内取用即弃;取不到不致命 → 空 token 尝试公开仓库)。
-	username, token := "", ""
+	// 取仓库凭据(进程内取用即弃;取不到不致命 → 空凭据尝试公开仓库)。
+	cred := vault.GitAuth{}
 	if l.tokens != nil && strings.TrimSpace(info.CredentialID) != "" {
-		if u, t, terr := l.tokens.GetGitAuth(info.CredentialID); terr == nil {
-			username, token = u, t
+		if a, terr := l.tokens.GetGitAuth(info.CredentialID); terr == nil {
+			cred = a
 		}
 	}
 
@@ -145,7 +146,7 @@ func (l *Loader) tryOverride(ctx context.Context, projectID, branch string) (cfg
 		ref = info.DefaultBranch
 	}
 
-	content, degraded, ferr := l.blobs.FetchBlob(ctx, info.RepoURL, username, token, ref, DefaultFile)
+	content, degraded, ferr := l.blobs.FetchBlob(ctx, info.RepoURL, cred, ref, DefaultFile)
 	if ferr != nil {
 		// 文件不存在 / 克隆失败 → 回退(正常路径:多数项目没有 .pipewright.yml)。
 		debugf("项目 %s 未读到 %s(回退库内配置)", projectID, DefaultFile)

@@ -99,8 +99,22 @@ const credentials = ref<Credential[]>([])
 const credentialsLoading = ref(false)
 
 const gitCredentials = computed(() =>
-  credentials.value.filter((c) => c.type === 'git_token' || c.type === 'git_http'),
+  credentials.value.filter((c) => c.type === 'git_token' || c.type === 'git_http' || c.type === 'ssh_key'),
 )
+
+// 下拉选项里的类型小标签(区分 Git 令牌 / HTTPS / SSH 私钥;ssh_password 仅用于部署服务器,不入列)
+const credentialTypeLabels = computed<Record<string, string>>(() => ({
+  git_token: t('settingsVault.typeGitToken'),
+  git_http: t('settingsVault.typeGitHttp'),
+  ssh_key: t('settingsVault.typeSshKey'),
+}))
+
+// 内联创建:类型说明(随选中类型切换,复用保险库页词条)
+const inlineCredentialTypeDescriptions = computed<Record<string, string>>(() => ({
+  git_token: t('settingsVault.descGitToken'),
+  git_http: t('settingsVault.descGitHttp'),
+  ssh_key: t('settingsVault.descSshKey'),
+}))
 
 async function loadCredentials(): Promise<void> {
   credentialsLoading.value = true
@@ -253,6 +267,7 @@ function validateCreateForm(): boolean {
     ok = false
   } else if (
     !createForm.value.repoUrl.trim().startsWith('http') &&
+    !createForm.value.repoUrl.trim().startsWith('ssh://') &&
     !createForm.value.repoUrl.trim().startsWith('git@')
   ) {
     createErrors.value.repoUrl = t('projects.errRepoFormat')
@@ -782,7 +797,7 @@ const STATUS_CONFIG: Record<RunStatus, StatusConfig> = {
                 target="_blank"
                 rel="noopener noreferrer"
                 :title="project.repoUrl"
-              >{{ project.repoUrl.replace(/^https?:\/\//, '') }}</a>
+              >{{ project.repoUrl.replace(/^(https?|ssh):\/\//, '') }}</a>
             </div>
             <div class="branch-row">
               <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
@@ -1170,6 +1185,7 @@ const STATUS_CONFIG: Record<RunStatus, StatusConfig> = {
               :placeholder="t('projects.credSelect')"
               :loading-label="t('projects.credLoading')"
               :empty-label="t('projects.credSelect')"
+              :type-labels="credentialTypeLabels"
               @change="createErrors.credentialId = ''; testState = 'idle'"
             />
             <button
@@ -1198,15 +1214,16 @@ const STATUS_CONFIG: Record<RunStatus, StatusConfig> = {
               <span class="field-label">{{ t('settingsVault.fieldType') }}</span>
               <div class="inline-credential-types" role="group" :aria-label="t('settingsVault.credentialTypeAria')">
                 <button
-                  v-for="type in (['git_token', 'git_http'] as CredentialType[])"
+                  v-for="type in (['git_token', 'git_http', 'ssh_key'] as CredentialType[])"
                   :key="type"
                   type="button"
                   class="inline-credential-type"
                   :class="{ 'inline-credential-type--active': inlineCredentialForm.type === type }"
                   :disabled="inlineCredentialSubmitting"
                   @click="inlineCredentialForm.type = type"
-                >{{ type === 'git_token' ? t('settingsVault.typeGitToken') : t('settingsVault.typeGitHttp') }}</button>
+                >{{ credentialTypeLabels[type] }}</button>
               </div>
+              <span class="field-hint">{{ inlineCredentialTypeDescriptions[inlineCredentialForm.type] }}</span>
             </div>
             <div class="field">
               <label class="field-label" for="inline-cred-name">{{ t('projects.inlineCredName') }}</label>
@@ -1242,7 +1259,22 @@ const STATUS_CONFIG: Record<RunStatus, StatusConfig> = {
             </div>
             <div class="field">
               <label class="field-label" for="inline-cred-secret">{{ t('projects.inlineCredSecret') }}</label>
+              <!-- SSH 私钥是多行 PEM/OpenSSH 文本:必须用 textarea,单行 <input> 会按 HTML 规范清除换行
+                   → 私钥结构破坏、解析失败。令牌/密码仍用 password input(掩码输入)。 -->
+              <textarea
+                v-if="inlineCredentialForm.type === 'ssh_key'"
+                id="inline-cred-secret"
+                v-model="inlineCredentialForm.secret"
+                class="field-input field-input--mono"
+                :class="{ 'field-input--error': inlineCredentialErrors.secret }"
+                rows="6"
+                :placeholder="t('settingsVault.secretPlaceholderSshKey')"
+                :disabled="inlineCredentialSubmitting"
+                :aria-invalid="inlineCredentialErrors.secret ? 'true' : undefined"
+                @input="inlineCredentialErrors.secret = ''"
+              />
               <input
+                v-else
                 id="inline-cred-secret"
                 v-model="inlineCredentialForm.secret"
                 class="field-input"

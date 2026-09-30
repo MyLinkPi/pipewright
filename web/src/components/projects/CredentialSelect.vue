@@ -12,6 +12,8 @@ interface Props {
   placeholder: string
   loadingLabel: string
   emptyLabel: string
+  /** 类型 → 短标签;提供时选项/选中态显示类型小标签(区分令牌/HTTPS/SSH 私钥)。 */
+  typeLabels?: Record<string, string>
 }
 
 const props = defineProps<Props>()
@@ -98,6 +100,7 @@ onBeforeUnmount(() => document.removeEventListener('pointerdown', handleDocument
       <span v-if="loading" class="credential-select__placeholder">{{ loadingLabel }}</span>
       <template v-else-if="selected">
         <span class="credential-select__main">{{ selected.name }}</span>
+        <span v-if="typeLabels?.[selected.type]" class="credential-select__type">{{ typeLabels[selected.type] }}</span>
         <span class="credential-select__masked">{{ selected.maskedValue }}</span>
       </template>
       <span v-else class="credential-select__placeholder">{{ placeholder }}</span>
@@ -122,6 +125,10 @@ onBeforeUnmount(() => document.removeEventListener('pointerdown', handleDocument
           <span class="credential-select__main">{{ credential.name }}</span>
           <span v-if="credential.username" class="credential-select__username">{{ credential.username }}</span>
         </span>
+        <span
+          v-if="typeLabels?.[credential.type]"
+          class="credential-select__type"
+        >{{ typeLabels[credential.type] }}</span>
         <span class="credential-select__masked">{{ credential.maskedValue }}</span>
         <svg v-if="credential.id === modelValue" class="credential-select__check" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true">
           <path d="m5 12 4 4L19 6" />
@@ -197,6 +204,17 @@ onBeforeUnmount(() => document.removeEventListener('pointerdown', handleDocument
   color: var(--color-faint);
   font-family: var(--font-mono);
   font-size: 0.74rem;
+  white-space: nowrap;
+}
+
+.credential-select__type {
+  flex: 0 0 auto;
+  padding: 1px 7px;
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  color: var(--color-faint);
+  font-size: 0.68rem;
+  line-height: 1.5;
   white-space: nowrap;
 }
 

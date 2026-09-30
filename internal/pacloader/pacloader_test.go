@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/huangchengsir/pipewright/internal/pipeline"
+	"github.com/huangchengsir/pipewright/internal/vault"
 )
 
 // ─── 测试替身 ──────────────────────────────────────────────────────────────────
@@ -38,9 +39,9 @@ type fakeTokens struct {
 	gotID    string
 }
 
-func (f *fakeTokens) GetGitAuth(id string) (string, string, error) {
+func (f *fakeTokens) GetGitAuth(id string) (vault.GitAuth, error) {
 	f.gotID = id
-	return f.username, f.token, f.err
+	return vault.GitAuth{Username: f.username, Secret: f.token}, f.err
 }
 
 type fakeBlobs struct {
@@ -53,9 +54,9 @@ type fakeBlobs struct {
 	gotToken    string
 }
 
-func (f *fakeBlobs) FetchBlob(_ context.Context, _, username, token, ref, file string) (string, bool, error) {
-	f.gotUsername = username
-	f.gotToken = token
+func (f *fakeBlobs) FetchBlob(_ context.Context, _ string, cred vault.GitAuth, ref, file string) (string, bool, error) {
+	f.gotUsername = cred.Username
+	f.gotToken = cred.Secret
 	f.gotRef = ref
 	f.gotFile = file
 	return f.content, f.degraded, f.err

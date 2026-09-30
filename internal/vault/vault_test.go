@@ -154,7 +154,7 @@ func TestGitHTTPCredentialStoresUsernameAndSecretEncrypted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetGitAuth: %v", err)
 	}
-	if got.Username != "alice" || got.Token != "account-password" {
+	if got.Username != "alice" || got.Secret != "account-password" {
 		t.Fatalf("GitAuth = %+v", got)
 	}
 	var ciphertext string
@@ -234,7 +234,7 @@ func TestGetGitAuthKeepsUsernameAndToken(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetGitAuth: %v", err)
 	}
-	if auth.Username != "actual-account" || auth.Token != "token-value" {
+	if auth.Username != "actual-account" || auth.Secret != "token-value" {
 		t.Fatalf("GetGitAuth = %+v", auth)
 	}
 	listed, err := v.List()

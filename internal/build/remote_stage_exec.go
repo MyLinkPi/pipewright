@@ -85,7 +85,7 @@ func (b *Builder) runStageRemote(ctx context.Context, r *run.Run, stage pipeline
 	defer func() { _ = os.RemoveAll(workspace) }()
 
 	auth := b.revealGitAuth(proj.CredentialID)
-	resolved, cerr := b.cloner.Clone(ctx, proj.RepoURL, auth.Username, auth.Token, r.Trigger.Branch, r.Trigger.Commit, workspace)
+	resolved, cerr := b.cloner.Clone(ctx, proj.RepoURL, auth, r.Trigger.Branch, r.Trigger.Commit, workspace)
 	auth = vault.GitAuth{}
 	if cerr != nil {
 		if errors.Is(ctx.Err(), context.Canceled) {

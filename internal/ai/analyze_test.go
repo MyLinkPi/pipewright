@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/huangchengsir/pipewright/internal/vault"
 )
 
 // makeBareRepo 在临时目录建一个含给定文件的裸仓库(file:// 可克隆),返回其 file:// URL。
@@ -66,7 +68,7 @@ func TestAnalyzeNodeRepo(t *testing.T) {
 		"package.json": `{"name":"app","engines":{"node":">=22.0.0"}}`,
 	})
 	a := newInsecureRepoAnalyzer()
-	res := a.Analyze(context.Background(), url, "", "")
+	res := a.Analyze(context.Background(), url, vault.GitAuth{})
 	if !res.Cloned {
 		t.Fatalf("expected Cloned=true, degrade reason=%q", res.DegradeReason)
 	}
@@ -86,7 +88,7 @@ func TestAnalyzeNodeRepoWithDockerfile(t *testing.T) {
 		"package.json": `{"engines":{"node":"20"}}`,
 		"Dockerfile":   "FROM node:20\n",
 	})
-	res := newInsecureRepoAnalyzer().Analyze(context.Background(), url, "", "")
+	res := newInsecureRepoAnalyzer().Analyze(context.Background(), url, vault.GitAuth{})
 	if !res.Cloned {
 		t.Fatalf("expected Cloned=true")
 	}
@@ -105,7 +107,7 @@ func TestAnalyzeGoRepo(t *testing.T) {
 	url := makeBareRepo(t, map[string]string{
 		"go.mod": "module example.com/app\n\ngo 1.24\n",
 	})
-	res := newInsecureRepoAnalyzer().Analyze(context.Background(), url, "", "")
+	res := newInsecureRepoAnalyzer().Analyze(context.Background(), url, vault.GitAuth{})
 	if !res.Cloned {
 		t.Fatalf("expected Cloned=true")
 	}
@@ -129,7 +131,7 @@ func TestAnalyzeMonorepoSubdirs(t *testing.T) {
 		"frontend/package.json": `{"name":"web","engines":{"node":"20"}}`,
 		"backend/Dockerfile":    "FROM eclipse-temurin:21\n",
 	})
-	res := newInsecureRepoAnalyzer().Analyze(context.Background(), url, "", "")
+	res := newInsecureRepoAnalyzer().Analyze(context.Background(), url, vault.GitAuth{})
 	if !res.Cloned {
 		t.Fatalf("expected Cloned=true, degrade=%q", res.DegradeReason)
 	}
@@ -150,7 +152,7 @@ func TestAnalyzeNvmrc(t *testing.T) {
 		"package.json": `{"name":"app"}`,
 		".nvmrc":       "v18.16.0\n",
 	})
-	res := newInsecureRepoAnalyzer().Analyze(context.Background(), url, "", "")
+	res := newInsecureRepoAnalyzer().Analyze(context.Background(), url, vault.GitAuth{})
 	if res.LanguageVersion != "18" {
 		t.Fatalf("LanguageVersion = %q, want 18 (from .nvmrc)", res.LanguageVersion)
 	}
@@ -158,7 +160,7 @@ func TestAnalyzeNvmrc(t *testing.T) {
 
 // TestAnalyzeCloneFailDegrade 验证克隆失败(不可达 URL)优雅降级:Cloned=false,不报致命错。
 func TestAnalyzeCloneFailDegrade(t *testing.T) {
-	res := newInsecureRepoAnalyzer().Analyze(context.Background(), "file:///nonexistent/path/repo.git", "", "")
+	res := newInsecureRepoAnalyzer().Analyze(context.Background(), "file:///nonexistent/path/repo.git", vault.GitAuth{})
 	if res.Cloned {
 		t.Fatalf("expected Cloned=false on clone failure")
 	}
@@ -172,7 +174,7 @@ func TestAnalyzeCloneFailDegrade(t *testing.T) {
 
 // TestAnalyzeSSRFRejectsFileScheme 验证生产路径(严格)拒绝 file:// → 降级(不克隆本地路径)。
 func TestAnalyzeSSRFRejectsFileScheme(t *testing.T) {
-	res := NewRepoAnalyzer().Analyze(context.Background(), "file:///etc/passwd", "", "")
+	res := NewRepoAnalyzer().Analyze(context.Background(), "file:///etc/passwd", vault.GitAuth{})
 	if res.Cloned {
 		t.Fatalf("生产路径应拒绝 file:// 并降级,got Cloned=true")
 	}
@@ -192,7 +194,7 @@ func TestAnalyzeSSRFRejectsLoopback(t *testing.T) {
 }
 
 func TestAnalyzeEmptyURL(t *testing.T) {
-	res := NewRepoAnalyzer().Analyze(context.Background(), "   ", "", "tok")
+	res := NewRepoAnalyzer().Analyze(context.Background(), "   ", vault.GitAuth{Secret: "tok"})
 	if res.Cloned {
 		t.Fatalf("空 URL 应降级")
 	}
