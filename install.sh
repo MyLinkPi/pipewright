@@ -4,6 +4,8 @@
 #   make build && sh install.sh
 #
 # 流程:定位本地二进制 → 装到 /usr/local/bin → 可选装为 systemd 服务 + Docker 检测。
+# 升级:检测到已有二进制或已装 systemd 服务时自动进入升级模式 —— 仅替换二进制并重启
+# 已有服务,零交互(不询问 Docker 安装与服务安装);SETUP_SERVICE=1 可在升级时重建服务配置。
 # 可配环境变量:
 #   BIN_PATH        本地二进制路径;缺省取脚本所在目录的 ./pipewright(即 make build 的产物)。
 #   INSTALL_DIR     安装目录;缺省 /usr/local/bin(不可写时自动 sudo)。
@@ -224,12 +226,43 @@ check_docker() {
 		fi
 	fi
 }
-check_docker
-maybe_setup_service
+# ── 升级检测 ─────────────────────────────────────────────────────────
+# 已有二进制或已装 systemd 服务 → 升级模式:仅替换二进制并重启已有服务,零交互
+# (Docker 检测/自动安装与「装为服务」询问都是首装关切,升级时不再打扰)。
+UPGRADE=0
+HAS_UNIT=0
+[ -x "${INSTALL_DIR}/${BIN}" ] && UPGRADE=1
+if [ -f /etc/systemd/system/pipewright.service ]; then
+	UPGRADE=1
+	HAS_UNIT=1
+fi
 
-if [ "$SERVICE_INSTALLED" = "1" ]; then
-	info "完成 ✓  Pipewright 已作为 systemd 服务运行(开机自启 + 自更新可用)。"
+if [ "$UPGRADE" = "1" ]; then
+	info "检测到已有安装 → 升级模式:仅替换二进制并重启服务(跳过 Docker 检测与安装询问)。"
+	if [ "${SETUP_SERVICE:-}" = "1" ]; then
+		# 显式要求:幂等重建服务配置(master key / env 文件复用)并重启。
+		maybe_setup_service
+		info "完成 ✓  升级完成,服务已重启,新版本已生效。"
+	elif [ "$HAS_UNIT" = "1" ] && command -v systemctl >/dev/null 2>&1; then
+		if [ "$(id -u)" -eq 0 ]; then
+			systemctl restart pipewright
+		elif command -v sudo >/dev/null 2>&1; then
+			sudo systemctl restart pipewright
+		else
+			warn "无 sudo,无法自动重启服务,请手动执行:systemctl restart pipewright"
+		fi
+		info "完成 ✓  升级完成,服务已重启,新版本已生效。"
+	else
+		info "完成 ✓  升级完成。未能自动重启:若进程在跑,请手动重启以加载新版本。"
+	fi
 else
-	printf '启动:%s\n' "${INSTALL_DIR}/${BIN}   # 默认监听 :8080,数据落当前目录 pipewright.db"
-	printf '提示:%s\n' "如需开机自启 + 自更新,可重跑并加 SETUP_SERVICE=1 装为 systemd 服务。"
+	check_docker
+	maybe_setup_service
+
+	if [ "$SERVICE_INSTALLED" = "1" ]; then
+		info "完成 ✓  Pipewright 已作为 systemd 服务运行(开机自启 + 自更新可用)。"
+	else
+		printf '启动:%s\n' "${INSTALL_DIR}/${BIN}   # 默认监听 :8080,数据落当前目录 pipewright.db"
+		printf '提示:%s\n' "如需开机自启 + 自更新,可重跑并加 SETUP_SERVICE=1 装为 systemd 服务。"
+	fi
 fi
