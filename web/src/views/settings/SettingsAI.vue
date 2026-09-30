@@ -140,7 +140,7 @@ const isDirty = computed(() => {
     baseUrl.value !== s.baseUrl ||
     model.value !== s.model ||
     apiKey.value !== '' ||
-    String(s.budget.monthlyTokenLimit ?? '') !== monthlyTokenLimit.value ||
+    String(s.budget.monthlyTokenLimit ?? '') !== String(monthlyTokenLimit.value ?? '') ||
     enabled.value !== s.enabled
   )
 })
@@ -239,7 +239,8 @@ async function handleSave(): Promise<void> {
   clearErrors()
   saving.value = true
   try {
-    const limit = monthlyTokenLimit.value.trim()
+    // v-model on type="number" casts to number at runtime — coerce before trim
+    const limit = String(monthlyTokenLimit.value ?? '').trim()
     const parsed = limit === '' ? null : Number(limit)
     if (limit !== '' && (Number.isNaN(parsed) || (parsed !== null && parsed < 0))) {
       saving.value = false
