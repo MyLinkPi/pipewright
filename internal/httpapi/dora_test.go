@@ -20,7 +20,7 @@ func setupDoraServer(t *testing.T) (*httptest.Server, *http.Client, string, *sql
 	t.Helper()
 	st := testStoreAuth(t)
 	svc := auth.NewService(st.DB, nil)
-	if err := svc.Bootstrap("admin", "testpass"); err != nil {
+	if err := svc.Bootstrap("admin", "testpass", ""); err != nil {
 		t.Fatalf("bootstrap: %v", err)
 	}
 	v := vault.New(st.DB, testMasterKey())
@@ -38,7 +38,7 @@ func setupDoraServer(t *testing.T) (*httptest.Server, *http.Client, string, *sql
 func TestDoraMetrics_RequiresAuth(t *testing.T) {
 	st := testStoreAuth(t)
 	svc := auth.NewService(st.DB, nil)
-	if err := svc.Bootstrap("admin", "testpass"); err != nil {
+	if err := svc.Bootstrap("admin", "testpass", ""); err != nil {
 		t.Fatalf("bootstrap: %v", err)
 	}
 	ms := run.NewMetricsService(run.New(st.DB))
@@ -59,7 +59,7 @@ func TestDoraMetrics_RequiresAuth(t *testing.T) {
 func TestDoraMetrics_Unconfigured503(t *testing.T) {
 	st := testStoreAuth(t)
 	svc := auth.NewService(st.DB, nil)
-	if err := svc.Bootstrap("admin", "testpass"); err != nil {
+	if err := svc.Bootstrap("admin", "testpass", ""); err != nil {
 		t.Fatalf("bootstrap: %v", err)
 	}
 	// 不注入 WithDoraMetrics → 503。

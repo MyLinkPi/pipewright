@@ -28,7 +28,7 @@ func setupVaultServer(t *testing.T) (*httptest.Server, *http.Client, string) {
 	t.Helper()
 	st := testStoreAuth(t)
 	svc := auth.NewService(st.DB, nil)
-	if err := svc.Bootstrap("admin", "testpass"); err != nil {
+	if err := svc.Bootstrap("admin", "testpass", ""); err != nil {
 		t.Fatalf("bootstrap: %v", err)
 	}
 	v := vault.New(st.DB, testMasterKey())
@@ -257,7 +257,7 @@ func TestRevealCredential(t *testing.T) {
 func TestVaultUnconfiguredEndpoint(t *testing.T) {
 	st := testStoreAuth(t)
 	svc := auth.NewService(st.DB, nil)
-	if err := svc.Bootstrap("admin", "testpass"); err != nil {
+	if err := svc.Bootstrap("admin", "testpass", ""); err != nil {
 		t.Fatalf("bootstrap: %v", err)
 	}
 	v := vault.New(st.DB, nil) // 未配置

@@ -34,7 +34,7 @@ func setupFeedbackServer(t *testing.T, stubAI ai.Service) feedbackEnv {
 	t.Helper()
 	st := testStoreAuth(t)
 	asvc := auth.NewService(st.DB, nil)
-	if err := asvc.Bootstrap("admin", "testpass"); err != nil {
+	if err := asvc.Bootstrap("admin", "testpass", ""); err != nil {
 		t.Fatalf("bootstrap: %v", err)
 	}
 	v := vault.New(st.DB, testMasterKey())

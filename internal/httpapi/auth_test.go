@@ -42,7 +42,7 @@ func setupAuthServerWithClock(t *testing.T, clock auth.Clock) (*httptest.Server,
 	t.Helper()
 	st := testStoreAuth(t)
 	svc := auth.NewService(st.DB, clock)
-	if err := svc.Bootstrap("admin", "testpass"); err != nil {
+	if err := svc.Bootstrap("admin", "testpass", ""); err != nil {
 		t.Fatalf("bootstrap: %v", err)
 	}
 	srv := httptest.NewServer(New(testWebFSAuth(), svc))

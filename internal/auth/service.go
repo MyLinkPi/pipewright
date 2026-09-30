@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"os"
+	"path/filepath"
 	"time"
 )
 
@@ -69,9 +71,13 @@ func NewService(db *sql.DB, clock Clock) *Service {
 	}
 }
 
-// Bootstrap 首次启动引导:若 admin_user 为空且提供了口令则 argon2id 哈希入库。
-// 已存在则忽略 env;无口令且无 admin 时明确日志提示(不 panic,不阻断 /healthz)。
-func (s *Service) Bootstrap(username, password string) error {
+// Bootstrap 管理员引导:admin_user 为空时创建管理员。每次启动都会执行,以库为准(幂等):
+//   - 已有管理员:直接返回,不触碰任何 env/文件(重启绝不重置口令)。
+//   - 未设口令:生成随机强口令,明文写入 passwordFile(0600,先写文件后入库:中途崩溃下
+//     一次启动会以库为准重新生成覆盖,不会产生"库里有 admin 却拿不到口令"的锁死态),
+//     日志只提示文件路径,不打口令本身。
+//   - 设了口令(env):用 env 口令建管理员,不写文件(口令已在用户手里,不额外落盘)。
+func (s *Service) Bootstrap(username, password, passwordFile string) error {
 	var count int
 	if err := s.db.QueryRow(`SELECT COUNT(1) FROM admin_user`).Scan(&count); err != nil {
 		return fmt.Errorf("auth: bootstrap check: %w", err)
@@ -81,9 +87,13 @@ func (s *Service) Bootstrap(username, password string) error {
 		return nil
 	}
 	if password == "" {
-		// 无口令且无 admin:提示如何设置,但不阻断服务。
-		log.Printf("[auth] 警告:未设置管理员账号。请通过 PIPEWRIGHT_ADMIN_PASSWORD 环境变量设置口令后重启。")
-		return nil
+		var err error
+		if password, err = GeneratePassword(); err != nil {
+			return fmt.Errorf("auth: bootstrap generate password: %w", err)
+		}
+		if err := writePasswordFile(passwordFile, password); err != nil {
+			return err
+		}
 	}
 	if username == "" {
 		username = "admin"
@@ -101,8 +111,35 @@ func (s *Service) Bootstrap(username, password string) error {
 	if err != nil {
 		return fmt.Errorf("auth: bootstrap insert: %w", err)
 	}
-	log.Printf("[auth] 管理员账号已初始化:username=%s", username)
+	if fileExists(passwordFile) {
+		log.Printf("[auth] 管理员账号已初始化:username=%s(初始口令见 %s,登录后请修改口令并删除该文件)", username, passwordFile)
+	} else {
+		log.Printf("[auth] 管理员账号已初始化:username=%s", username)
+	}
 	return nil
+}
+
+// writePasswordFile 把随机生成的初始口令明文写入 path(0600,仅属主可读),目录不存在则建。
+// path 为空视为不支持落盘,直接报错(随机口令不落盘即无处获取,宁可启动失败也不锁死用户)。
+func writePasswordFile(path, password string) error {
+	if path == "" {
+		return fmt.Errorf("auth: bootstrap: 随机初始口令需要落盘路径(PIPEWRIGHT_ADMIN_PASSWORD_FILE)")
+	}
+	if dir := filepath.Dir(path); dir != "" && dir != "." {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return fmt.Errorf("auth: bootstrap password file mkdir: %w", err)
+		}
+	}
+	// 覆盖写:库为唯一事实源,残留旧文件(手删过库/上次崩溃)一律以本次为准。
+	if err := os.WriteFile(path, []byte(password+"\n"), 0o600); err != nil {
+		return fmt.Errorf("auth: bootstrap password file write: %w", err)
+	}
+	return nil
+}
+
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
 }
 
 // Login 认证用户名/口令;通过则创建新会话,失败则记录失败计数。

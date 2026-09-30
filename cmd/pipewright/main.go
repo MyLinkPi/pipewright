@@ -90,9 +90,19 @@ func main() {
 		log.Printf("data db: %s", abs)
 	}
 
-	// 装配认证服务(nil clock → RealClock)并执行首次启动管理员引导。
+	// 装配认证服务(nil clock → RealClock)并执行管理员引导。
+	// 随机初始口令的落盘路径:显式 env 优先;缺省落数据目录(sqlite 为库同级,mysql 为
+	// 工作目录 —— systemd/compose 的 WorkingDirectory 均已设为数据目录)。
+	authPwdFile := cfg.AdminPasswordFile
+	if authPwdFile == "" {
+		if dbDriver == "mysql" {
+			authPwdFile = "admin_password.txt"
+		} else {
+			authPwdFile = filepath.Join(filepath.Dir(dbDSN), "admin_password.txt")
+		}
+	}
 	authSvc := auth.NewService(st.DB, nil)
-	if err := authSvc.Bootstrap(cfg.AdminUsername, cfg.AdminPassword); err != nil {
+	if err := authSvc.Bootstrap(cfg.AdminUsername, cfg.AdminPassword, authPwdFile); err != nil {
 		log.Fatalf("auth bootstrap: %v", err)
 	}
 	// 启动时清理 DB 中遗留的过期会话(惰性删除可能遗漏)。

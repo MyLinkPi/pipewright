@@ -20,7 +20,7 @@ func setupOAuthServer(t *testing.T, client *http.Client) (*httptest.Server, *htt
 	t.Helper()
 	st := testStoreAuth(t)
 	svc := auth.NewService(st.DB, nil)
-	if err := svc.Bootstrap("admin", "testpass"); err != nil {
+	if err := svc.Bootstrap("admin", "testpass", ""); err != nil {
 		t.Fatalf("bootstrap: %v", err)
 	}
 	v := vault.New(st.DB, testMasterKey())

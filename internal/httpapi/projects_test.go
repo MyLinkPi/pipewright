@@ -29,7 +29,7 @@ func setupProjectServer(t *testing.T, pr project.RemoteProber) (*httptest.Server
 	t.Helper()
 	st := testStoreAuth(t)
 	svc := auth.NewService(st.DB, nil)
-	if err := svc.Bootstrap("admin", "testpass"); err != nil {
+	if err := svc.Bootstrap("admin", "testpass", ""); err != nil {
 		t.Fatalf("bootstrap: %v", err)
 	}
 	v := vault.New(st.DB, testMasterKey())
@@ -172,7 +172,7 @@ func TestProjectVaultUnconfigured422(t *testing.T) {
 	// 项目服务持有未配置的 vault → 创建/test-clone 应 422 vault_unconfigured。
 	st := testStoreAuth(t)
 	svc := auth.NewService(st.DB, nil)
-	if err := svc.Bootstrap("admin", "testpass"); err != nil {
+	if err := svc.Bootstrap("admin", "testpass", ""); err != nil {
 		t.Fatalf("bootstrap: %v", err)
 	}
 	v := vault.New(st.DB, nil) // 未配置

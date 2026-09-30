@@ -2,7 +2,10 @@
 #
 #   1. cp .env.example .env  并按注释填好(至少生成 PIPEWRIGHT_MASTER_KEY)
 #   2. docker compose up -d
-#   3. 打开 http://localhost:8080,用 admin / 你设的口令登录
+#   3. 打开 http://localhost:8080 登录:
+#      - 设了 PIPEWRIGHT_ADMIN_PASSWORD:用 admin / 该口令;
+#      - 未设:首启自动生成随机强口令,写入卷内 /data/admin_password.txt(0600),
+#        docker compose exec pipewright cat /data/admin_password.txt 查看,登录后改掉并删文件。
 #
 # 数据(sqlite 库 / 构建产物 / 仓库缓存)持久化在具名卷 pipewright-data(挂到容器 /data,
 # 镜像已将 /data 设为 nonroot 属主与工作目录)。master key 务必持久保存:换 key 旧凭据无法解密。
@@ -14,8 +17,9 @@ services:
     ports:
       - "${PIPEWRIGHT_PORT:-8080}:8080"
     environment:
-      # 初始管理员口令(首启建账;之后改这里不改库)。务必改掉。
-      PIPEWRIGHT_ADMIN_PASSWORD: ${PIPEWRIGHT_ADMIN_PASSWORD:?请在 .env 设置 PIPEWRIGHT_ADMIN_PASSWORD}
+      # 初始管理员口令(可选,首启建账;之后改这里不改库)。
+      # 不设则首启生成随机口令落 /data/admin_password.txt(见文件头说明)。设了则务必改掉。
+      PIPEWRIGHT_ADMIN_PASSWORD: ${PIPEWRIGHT_ADMIN_PASSWORD:-}
       # 凭据保险库主密钥(base64 的 32 字节)。空则保险库进未配置态、加密凭据功能不可用。
       PIPEWRIGHT_MASTER_KEY: ${PIPEWRIGHT_MASTER_KEY:-}
       # 反代后部署时填外部访问 URL(用于 webhook 回调 / OAuth 回跳)。
