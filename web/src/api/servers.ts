@@ -27,6 +27,12 @@ export interface Server {
   credentialId: string
   /** Redundant display name joined from credentials, for the list UI. */
   credentialName: string
+  /** Build-pool labels, comma-separated tags / k=v terms. Empty = not a build machine (FR-8-19). */
+  labels: string
+  /** Concurrent build slots on this machine. 0 = use the global default (default 1). */
+  maxBuilds: number
+  /** Scheduling priority, 0-100 — higher wins (FR-8-19). */
+  priority: number
   createdAt: string
   updatedAt: string
 }
@@ -37,6 +43,9 @@ export interface CreateServerInput {
   port: number
   user: string
   credentialId: string
+  labels?: string
+  maxBuilds?: number
+  priority?: number
 }
 
 export interface UpdateServerInput {
@@ -45,6 +54,9 @@ export interface UpdateServerInput {
   port?: number
   user?: string
   credentialId?: string
+  labels?: string
+  maxBuilds?: number
+  priority?: number
 }
 
 export interface ServerTestResult {

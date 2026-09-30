@@ -289,7 +289,7 @@ export default {
   // ─── RunnerPanel ────────────────────────────────────────────────────────────
   runner: {
     title: '构建 runner',
-    sub: '把构建下沉到远程构建机执行(代码经 SSH 传输,token 只在中控机)',
+    sub: '构建下沉到打了标签的远程构建机池(标签 → 优先级 → 亲和 → 负载;token 只在中控机)',
     loading: '加载中…',
     errLoad: '加载 runner 配置失败',
     setRemote: '已设为远程构建',
@@ -302,7 +302,17 @@ export default {
     hint: '远程构建需该机装有容器运行时(docker/nerdctl/podman)。仅 script 类型 job 在远程执行;测试报告/质量门禁在远程模式暂不回采(后续增量)。',
     saving: '保存中…',
     save: '保存 runner 配置',
-  },
+      optionLabel: '按标签选择构建机池',
+    optionServer: '指定一台服务器(钉死)',
+    selectorLabel: '标签选择器',
+    selectorPlaceholder: '如 linux,arch=arm64',
+    selectorHint: '逗号分隔标签项,全部命中才匹配(AND);调度按「优先级 → 本流水线亲和 → 负载」选机,全忙自动排队。未打标签的服务器不会入选。',
+    matchCount: '命中 {n} 台',
+    noMatch: '没有命中任何服务器:请检查标签拼写,或先在「设置 → 服务器」给机器打标签',
+    serverLabel: '服务器',
+    serverPick: '选择服务器…',
+    setSelector: '已保存选择器:{selector}',
+},
 
   // ─── TypedRunParams ─────────────────────────────────────────────────────────
   typedParams: {

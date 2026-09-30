@@ -107,4 +107,9 @@ export default {
   customBadge: 'Personnalisé',
   savedCustomNode: 'Nœud personnalisé enregistré',
   currentBadge: 'Actuel',
+  runnerSectionLabel: 'Machine de build (RUNNER)',
+  runnerLabel: 'Override du selecteur de labels',
+  runnerPlaceholder: 'ex. gpu ou linux,arch=arm64',
+  runnerAria: 'Selecteur de machine de build au niveau stage',
+  runnerHint: 'Si defini, remplace le selecteur par defaut du projet pour cette stage (labels ou server:<id>) ; vide = defaut du projet.',
 }

@@ -273,7 +273,7 @@ export default {
 
   runner: {
     title: 'Build-Runner',
-    sub: 'Verlagert den Build auf eine entfernte Build-Maschine (Code wird über SSH übertragen, der Token bleibt auf der Steuermaschine)',
+    sub: 'Builds an einen gelabelten Remote-Maschinen-Pool auslagern (Label → Prioritaet → Affinitaet → Last; Tokens bleiben auf der Steuerung)',
     loading: 'Wird geladen…',
     errLoad: 'Laden der Runner-Einstellungen fehlgeschlagen',
     setRemote: 'Auf entfernten Build gesetzt',
@@ -286,7 +286,17 @@ export default {
     hint: 'Der entfernte Build erfordert auf dieser Maschine eine Container-Laufzeitumgebung (docker/nerdctl/podman). Nur Jobs vom Typ script laufen entfernt; Testberichte / Qualitäts-Gates werden im entfernten Modus noch nicht erfasst (inkrementelle Nachbesserung).',
     saving: 'Wird gespeichert…',
     save: 'Runner-Einstellungen speichern',
-  },
+      optionLabel: 'Nach Label (Build-Maschinen-Pool)',
+    optionServer: 'Auf einen Server festlegen',
+    selectorLabel: 'Label-Selektor',
+    selectorPlaceholder: 'z.B. linux,arch=arm64',
+    selectorHint: 'Kommagetrennte Label-Begriffe, alle muessen passen (UND). Die Planung waehlt nach Prioritaet, dann Pipeline-Affinitaet, dann Last; bei voller Auslastung Warteschlange. Server ohne Label werden nie gewaehlt.',
+    matchCount: '{n} Server passen',
+    noMatch: 'Kein Server passt: Label-Schreibweise pruefen oder zuerst unter Einstellungen > Server Label vergeben',
+    serverLabel: 'Server',
+    serverPick: 'Server waehlen...',
+    setSelector: 'Selektor gespeichert: {selector}',
+},
 
   typedParams: {
     requiredAria: 'Pflichtfeld',

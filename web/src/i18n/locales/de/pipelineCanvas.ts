@@ -107,4 +107,9 @@ export default {
   customBadge: 'Benutzerdefiniert',
   savedCustomNode: 'Gespeicherter benutzerdefinierter Knoten',
   currentBadge: 'Aktuell',
+  runnerSectionLabel: 'Build-Maschine (RUNNER)',
+  runnerLabel: 'Label-Selektor-Override',
+  runnerPlaceholder: 'z.B. gpu oder linux,arch=arm64',
+  runnerAria: 'Selektor der Build-Maschine pro Stage',
+  runnerHint: 'Ueberschreibt fuer diese Stage den Projekt-Standard-Selektor (Labels oder server:<id>); leer = Projekt-Standard.',
 }

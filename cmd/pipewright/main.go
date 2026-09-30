@@ -264,10 +264,21 @@ func main() {
 	// (无依赖阶段并行、失败阻断下游),真按 UI 可视化流水线 stages/script job/deploy_ssh/notify
 	// 执行,阶段编排经既有 StepSink 持久化。**默认启用**(下方据 PIPEWRIGHT_RUNNER 选择):
 	// 仅 PIPEWRIGHT_RUNNER=legacy 才回退 PIPEWRIGHT_BUILDER 选出的旧版固定流程 Builder / 桩 runner。
-	// 目标服务器(SSH 执行层)+ 远程构建 runner 配置(FR-8-14 续):项目可指定一台 server 作远程构建机,
-	// 配置后该项目构建下沉到远程执行(控制机本地克隆 → 经 SSH 传工作区 → 远程容器跑;token 只在控制机)。
+	// 目标服务器(SSH 执行层)+ 构建机池(FR-8-14 续 / FR-8-19 池化):项目/stage 配标签选择器,
+	// 从打了标签的服务器池按「优先级 → 流水线亲和 → 负载」选机远程构建(控制机本地克隆 → 经 SSH
+	// 传工作区 → 远程容器跑;token 只在控制机)。每机并发槽位默认 1,PIPEWRIGHT_RUNNER_SLOTS
+	// 调全局默认,单机可用 servers.max_builds 覆盖(设置界面)。
 	targetSvc := target.New(st.DB, credVault, nil)
 	runnerSvc := runner.New(st.DB, targetExister{targetSvc})
+	runnerSlots := 1
+	if v := strings.TrimSpace(os.Getenv("PIPEWRIGHT_RUNNER_SLOTS")); v != "" {
+		if n, perr := strconv.Atoi(v); perr == nil && n > 0 {
+			runnerSlots = n
+		} else {
+			log.Printf("[runner] 警告:PIPEWRIGHT_RUNNER_SLOTS=%q 非法(须为正整数),用默认 1", v)
+		}
+	}
+	runnerSched := runner.NewScheduler(st.DB, targetProber{targetSvc}, runnerSlots)
 
 	// 制品库(Story 8-16 / FR-8-16):构建后把 jar/dist 真字节归档,部署时取真字节上传目标机
 	// (否则只有占位 reference,jar/dist 无法真正部署)。默认落 DB 同级 artifacts/,可经
@@ -363,13 +374,25 @@ func main() {
 		// 「需要审批」通知 + 签名审批链接(signer/PUBLIC_URL 未配则跳过通知,门行为不变)。
 		approvalNotifier := httpapi.NewApprovalNotifier(notifySvc, approvalSigner, strings.TrimSpace(os.Getenv("PIPEWRIGHT_PUBLIC_URL")), runSvc)
 		dagOpts = append(dagOpts, dagrun.WithGate(httpapi.NewApprovalGate(runSvc, approvalCoord, approvalStore, approvalNotifier)))
-		if b, berr := build.NewBuilder(projectSvc, pipelineSettingsSvc, credVault, build.WithArtifactStore(artStore), build.WithArtifactLister(runSvc.ListArtifacts), build.WithImageGC(os.Getenv("PIPEWRIGHT_NO_IMAGE_GC") != "1"), build.WithCommitRecorder(func(ctx context.Context, runID, commit string) { _ = runSvc.SetCommit(ctx, runID, commit) }), build.WithStageDeployer(deploySvc), build.WithStageNotifier(notifySvc), clonerOpt, buildCacheOpt); berr == nil {
+		builderOpts := []build.BuilderOption{build.WithArtifactStore(artStore), build.WithArtifactLister(runSvc.ListArtifacts), build.WithImageGC(os.Getenv("PIPEWRIGHT_NO_IMAGE_GC") != "1"), build.WithCommitRecorder(func(ctx context.Context, runID, commit string) { _ = runSvc.SetCommit(ctx, runID, commit) }), build.WithStageDeployer(deploySvc), build.WithStageNotifier(notifySvc), clonerOpt, buildCacheOpt}
+		b, berr := build.NewBuilder(projectSvc, pipelineSettingsSvc, credVault, builderOpts...)
+		if berr != nil && errors.Is(berr, build.ErrNoContainerCLI) {
+			// 瘦控制机(FR-8-19):本机无容器 CLI 不再整体回退 stub——改用 errDriver 构造 Builder,
+			// 远程构建机池照常接线(克隆/打包/上传都在控制机,不依赖本机 CLI);未配选择器而回落
+			// 本地执行的阶段将诚实报「无容器 CLI」,不假装成功。
+			b, berr = build.NewBuilder(projectSvc, pipelineSettingsSvc, credVault, append(builderOpts, build.WithRemoteOnlyDriver())...)
+		}
+		if berr == nil {
 			// runSvc 作测试报告持久层注入(Story 8-6 / FR-8-6):script 步骤产报告 → 解析 →
 			// 落库 → 质量门禁裁决(不过则阶段失败,阻断下游部署)。
-			dagOpts = append(dagOpts, dagrun.WithStageExecutor(build.NewStageExecutorWithRunner(b, runSvc, runnerSvc, targetSvc)))
-			log.Printf("[run] DAG 调度执行器已启用(默认;阶段按 needs 编排,真按 UI 可视化流水线 stages 执行;script 类型 job 在隔离容器真实执行,CLI=%s;PIPEWRIGHT_RUNNER=legacy 可回退旧版固定流程)", b.DriverBinary())
+			dagOpts = append(dagOpts, dagrun.WithStageExecutor(build.NewStageExecutorWithRunner(b, runSvc, runnerPool{cfg: runnerSvc, sched: runnerSched}, targetSvc)))
+			if b.DriverBinary() == "none" {
+				log.Printf("[run] DAG 调度执行器已启用(默认;阶段按 needs 编排,真按 UI 可视化流水线 stages 执行;⚠ 本机未探测到容器 CLI:瘦控制机模式,仅配了构建机选择器的项目/stage 可远程执行,本地执行将报「无容器 CLI」;PIPEWRIGHT_RUNNER=legacy 可回退旧版固定流程)")
+			} else {
+				log.Printf("[run] DAG 调度执行器已启用(默认;阶段按 needs 编排,真按 UI 可视化流水线 stages 执行;script 类型 job 在隔离容器真实执行,CLI=%s;PIPEWRIGHT_RUNNER=legacy 可回退旧版固定流程)", b.DriverBinary())
+			}
 		} else {
-			log.Printf("[run] DAG 调度执行器已启用(默认;阶段按 needs 编排,真按 UI 可视化流水线 stages 执行;⚠ 未探测到容器 CLI,阶段执行体回退 stub:%v;PIPEWRIGHT_RUNNER=legacy 可回退旧版固定流程)", berr)
+			log.Printf("[run] DAG 调度执行器已启用(默认;阶段按 needs 编排,真按 UI 可视化流水线 stages 执行;⚠ 构建器初始化失败,阶段执行体回退 stub:%v;PIPEWRIGHT_RUNNER=legacy 可回退旧版固定流程)", berr)
 		}
 		// 「流水线即代码」运行时覆盖(FR-8-12):装饰器包住库内 loader——运行时若项目**开启了
 		// 流水线即代码**(每项目开关 projects.pac_enabled)且仓库根含合法 `.pipewright.yml`,即用它
@@ -790,6 +813,29 @@ type targetExister struct{ svc target.Service }
 func (t targetExister) Exists(ctx context.Context, id string) bool {
 	_, err := t.svc.Get(ctx, id)
 	return err == nil
+}
+
+// targetProber 把 target.Service.Test 适配为 runner.HealthProber(SSH 实连探测),供调度器健康过滤。
+type targetProber struct{ svc target.Service }
+
+func (t targetProber) Probe(ctx context.Context, serverID string) bool {
+	res, err := t.svc.Test(ctx, serverID)
+	return err == nil && res != nil && res.OK
+}
+
+// runnerPool 把「runner 配置(Service)」与「池调度器(Scheduler)」组合适配为 build.RunnerResolver:
+// SelectorFor 走配置,Acquire 走调度(选机 + 占槽 + FIFO 等待)。装配层桥接,build 不直依赖 runner。
+type runnerPool struct {
+	cfg   runner.Service
+	sched *runner.Scheduler
+}
+
+func (p runnerPool) SelectorFor(ctx context.Context, projectID string) (string, bool) {
+	return p.cfg.SelectorFor(ctx, projectID)
+}
+
+func (p runnerPool) Acquire(ctx context.Context, pipelineID, selector string, log func(string)) (string, func(), error) {
+	return p.sched.Acquire(ctx, pipelineID, selector, log)
 }
 
 // proxyRouteCreator 适配 dnsprovider.RouteCreator:把「创建 DNS-01 反代路由」下沉到 proxy.Service.Create

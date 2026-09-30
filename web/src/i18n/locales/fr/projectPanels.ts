@@ -273,7 +273,7 @@ export default {
 
   runner: {
     title: 'Runner de Build',
-    sub: 'Déporte le build sur une machine de build distante (le code est transféré par SSH, le token reste sur la machine de contrôle)',
+    sub: 'Deportez les builds vers un pool de machines distantes labellise (label → priorite → affinite → charge ; les jetons restent sur le noeud de controle)',
     loading: 'Chargement…',
     errLoad: 'Échec du chargement de la configuration du runner',
     setRemote: 'Défini sur build distant',
@@ -286,7 +286,17 @@ export default {
     hint: 'Le build distant nécessite un runtime de conteneurs (docker/nerdctl/podman) sur cette machine. Seuls les jobs de type script s’exécutent à distance ; les rapports de tests / portes de qualité ne sont pas encore collectés en mode distant (amélioration incrémentale à venir).',
     saving: 'Enregistrement…',
     save: 'Enregistrer la configuration du runner',
-  },
+      optionLabel: 'Par label (pool de machines de build)',
+    optionServer: 'Epingler un serveur',
+    selectorLabel: 'Selecteur de labels',
+    selectorPlaceholder: 'ex. linux,arch=arm64',
+    selectorHint: 'Termes de labels separes par des virgules, tous doivent correspondre (ET). Lordonnanceur choisit par priorite, puis affinite de pipeline, puis charge ; file dattente si tout est occupe. Les serveurs sans label ne sont jamais selectionnes.',
+    matchCount: '{n} serveur(s) correspondant(s)',
+    noMatch: 'Aucun serveur correspondant : verifiez lorthographe des labels ou etiquetez dabord les machines dans Parametres > Serveurs',
+    serverLabel: 'Serveur',
+    serverPick: 'Choisir un serveur...',
+    setSelector: 'Selecteur enregistre : {selector}',
+},
 
   typedParams: {
     requiredAria: 'Obligatoire',

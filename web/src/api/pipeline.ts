@@ -70,6 +70,11 @@ export interface PipelineStage {
    * docker network as the script container, reachable by service name.
    */
   services?: PipelineServiceSpec[]
+  /**
+   * Stage-level build-machine selector override (FR-8-19): label terms (e.g. `gpu`)
+   * or `server:<id>` to pin one machine. Empty = project default (or local if unset).
+   */
+  runner?: string
   jobs: PipelineJob[]
 }
 
@@ -112,6 +117,7 @@ export interface SavePipelineInput {
     matrix?: Record<string, string[]>
     post?: PipelinePostStep[]
     services?: PipelineServiceSpec[]
+    runner?: string
     jobs: Array<{
       id?: string
       name: string

@@ -41,6 +41,7 @@ const emit = defineEmits<{
   (e: 'update-matrix', matrix: Record<string, string[]> | undefined): void
   (e: 'update-post', post: PipelinePostStep[] | undefined): void
   (e: 'update-services', services: PipelineServiceSpec[] | undefined): void
+  (e: 'update-runner', runner: string | undefined): void
 }>()
 
 const { t } = useI18n()
@@ -61,6 +62,10 @@ function toggleEvent(ev: WhenEvent): void {
 }
 function commitMatrix(text: string): void {
   emit('update-matrix', parseMatrix(text))
+}
+function commitRunner(text: string): void {
+  const v = text.trim()
+  emit('update-runner', v === '' ? undefined : v)
 }
 </script>
 
@@ -109,6 +114,23 @@ function commitMatrix(text: string): void {
         </div>
       </div>
       <p class="drawer-hint">{{ t('pipelineCanvas.whenHint') }}</p>
+    </div>
+
+    <!-- 构建机选择器覆盖(RUNNER · FR-8-19) -->
+    <div class="drawer-section">
+      <div class="drawer-section-label">{{ t('pipelineCanvas.runnerSectionLabel') }}</div>
+      <div class="drawer-field">
+        <div class="drawer-field-label">{{ t('pipelineCanvas.runnerLabel') }}</div>
+        <input
+          class="drawer-input"
+          type="text"
+          :value="stage.runner ?? ''"
+          :placeholder="t('pipelineCanvas.runnerPlaceholder')"
+          :aria-label="t('pipelineCanvas.runnerAria')"
+          @change="commitRunner(($event.target as HTMLInputElement).value)"
+        />
+      </div>
+      <p class="drawer-hint">{{ t('pipelineCanvas.runnerHint') }}</p>
     </div>
 
     <!-- 审批门(GATE) -->

@@ -50,4 +50,13 @@ export default {
   errDeleteRetry: '削除に失敗しました。しばらくしてから再試行してください。',
   errTestRetry: '接続テストに失敗しました。しばらくしてから再試行してください。',
   errTestStatus: '接続テストに失敗しました({status})',
+  fieldLabels: 'ビルドマシンのラベル',
+  labelsHint: 'カンマ区切り(例: linux,arch=arm64)。空 = ビルドマシンとして使用しない。ラベル付きマシンのみセレクターの対象になります。',
+  fieldMaxBuilds: '同時ビルドスロット',
+  maxBuildsHint: '0 = グローバル既定(既定 1、マシンごとに直列)',
+  fieldPriority: 'スケジュール優先度',
+  priorityHint: '0-100、高いほど優先。同優先度ではこのパイプラインが最後に使ったマシンを優先(親和)',
+  poolBadgeHint: 'ビルドマシン:スロット {slots}、優先度 {priority}',
+  errMaxBuildsRange: '同時ビルドスロットは 0..64 の範囲で指定してください',
+  errPriorityRange: 'スケジュール優先度は 0..100 の範囲で指定してください',
 }

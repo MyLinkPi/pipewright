@@ -103,7 +103,12 @@ type Stage struct {
 	// DB/redis 等容器,与脚本容器同 docker 网络、按服务名互访(testdb:5432)。空 = 行为不变。
 	// 校验/执行见 stage_services.go 与 dag_stage_exec.go runStageServices。
 	Services []ServiceSpec `json:"services,omitempty"`
-	Jobs     []Job         `json:"jobs"`
+	// Runner 是阶段级「构建机选择器」覆盖(FR-8-19 多节点构建机池):非空时本阶段的构建
+	// 下沉到按该选择器选出的远程机(标签如 `gpu`/`linux,arch=arm64`,或 `server:<id>` 钉死单机),
+	// 覆盖项目默认选择器;空 = 用项目默认(项目也未配 → 本地构建)。语法校验同 runner 包
+	// (此处只做字符集轻校验,完整解析在调度侧);YAML 往返见 pipelineyaml。
+	Runner string `json:"runner,omitempty"`
+	Jobs   []Job  `json:"jobs"`
 }
 
 // Spec 是流水线编排声明式配置(阶段集合)。
@@ -456,7 +461,13 @@ func normalizeSpec(in Spec) (Spec, error) {
 			return Spec{}, serr
 		}
 
-		out.Stages = append(out.Stages, Stage{ID: stageID, Name: name, Kind: kind, Needs: needs, AllowFailure: st.AllowFailure, When: normalizeWhen(st.When), Gate: st.Gate, Matrix: matrix, Post: post, Services: services, Jobs: jobs})
+		// Runner 阶段级选择器规范化 + 轻校验(空 = 用项目默认;完整解析/匹配在 runner 调度侧)。
+		runnerSel, rerr := normalizeStageRunner(st.Runner)
+		if rerr != nil {
+			return Spec{}, rerr
+		}
+
+		out.Stages = append(out.Stages, Stage{ID: stageID, Name: name, Kind: kind, Needs: needs, AllowFailure: st.AllowFailure, When: normalizeWhen(st.When), Gate: st.Gate, Matrix: matrix, Post: post, Services: services, Runner: runnerSel, Jobs: jobs})
 	}
 
 	// 源阶段不变式:流水线必须恰有一个 source 阶段(引用项目仓库)。前端不渲染删源阶段的入口,
@@ -478,6 +489,61 @@ func normalizeSpec(in Spec) (Spec, error) {
 	}
 
 	return out, nil
+}
+
+// normalizeStageRunner 规范化阶段级构建机选择器(FR-8-19):trim 即可,空 = 用项目默认。
+// 轻校验(字符集/长度/项数)在本层挡明显笔误,完整语义解析(标签匹配/钉死单机存在性)在
+// runner 调度侧 —— 本包不依赖 runner,两处规则须保持一致(runner.selector.go 为准)。
+func normalizeStageRunner(in string) (string, error) {
+	s := strings.TrimSpace(in)
+	if s == "" {
+		return "", nil
+	}
+	if id, ok := strings.CutPrefix(s, "server:"); ok {
+		if !selectorTermOK(id) {
+			return "", fmt.Errorf("%w: invalid stage runner selector", ErrInvalidStage)
+		}
+		return s, nil
+	}
+	if len(s) > 255 {
+		return "", fmt.Errorf("%w: stage runner selector too long", ErrInvalidStage)
+	}
+	terms := strings.Split(s, ",")
+	if len(terms) > 16 {
+		return "", fmt.Errorf("%w: stage runner selector too many terms", ErrInvalidStage)
+	}
+	for _, t := range terms {
+		t = strings.TrimSpace(t)
+		if k, v, isKV := strings.Cut(t, "="); isKV {
+			if !selectorTermOK(k) || !selectorTermOK(v) {
+				return "", fmt.Errorf("%w: invalid stage runner selector term", ErrInvalidStage)
+			}
+			continue
+		}
+		if !selectorTermOK(t) {
+			return "", fmt.Errorf("%w: invalid stage runner selector term", ErrInvalidStage)
+		}
+	}
+	return s, nil
+}
+
+// selectorTermOK 判断选择器单项(tag / k / v)合法:字母数字开头,可含 . _ -(与 runner.termOK 同规)。
+func selectorTermOK(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		case r == '.' || r == '_' || r == '-':
+			if i == 0 {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // normalizeNeeds 规范化阶段依赖列表:trim、剔空、去重(保留首次出现序)。
@@ -593,9 +659,10 @@ type yamlSpec struct {
 }
 
 type yamlStage struct {
-	Name string    `yaml:"name"`
-	Kind string    `yaml:"kind"`
-	Jobs []yamlJob `yaml:"jobs"`
+	Name   string    `yaml:"name"`
+	Kind   string    `yaml:"kind"`
+	Runner string    `yaml:"runner,omitempty"`
+	Jobs   []yamlJob `yaml:"jobs"`
 }
 
 type yamlJob struct {
@@ -622,7 +689,7 @@ func renderYAML(spec Spec) (string, error) {
 				Config:  cfg,
 			})
 		}
-		ys.Stages = append(ys.Stages, yamlStage{Name: st.Name, Kind: st.Kind, Jobs: jobs})
+		ys.Stages = append(ys.Stages, yamlStage{Name: st.Name, Kind: st.Kind, Runner: st.Runner, Jobs: jobs})
 	}
 	out, err := yaml.Marshal(ys)
 	if err != nil {

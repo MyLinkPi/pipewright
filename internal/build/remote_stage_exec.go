@@ -1,18 +1,18 @@
 package build
 
-// remote_stage_exec.go 把「按项目 runner 配置派发到远程构建机执行」接到 DAG 阶段执行器(FR-8-14 续):
-// 项目配了远程 runner → 本阶段的 script job 下沉到该远程机执行;否则本地执行(NewStageExecutor 原状)。
+// remote_stage_exec.go 把「按选择器从构建机池派发到远程机器执行」接到 DAG 阶段执行器
+// (FR-8-14 续 / FR-8-19 池化):stage 可用 runner 字段声明选择器覆盖项目默认;两者都空 → 本地执行。
 //
 // 远程执行模型(**token 全程只在控制机,绝不上远程**——比"远程克隆"更安全,且远程无需装 git):
-//  1. 控制机本地克隆源码(复用 b.cloner;若装了 repocache 则走本地镜像增量,快)。
-//  2. 把本地工作区打成 tar.gz,经 SSH(target.Upload = stdin 流,无 argv 长度限)传到远程临时目录并解包。
-//  3. 在远程机用容器跑 script job(NewRemoteDriver:shellDriver 经 SSH Commander → 远程 `docker run`),
-//     日志经 reporterSink 回流。
-//  4. 收尾删远程工作区(尽力)。
+//  1. 调度器选机并占槽(标签匹配 → 优先级 → 流水线亲和 → 负载;全忙 FIFO 排队;见 runner.Scheduler)。
+//  2. 控制机本地克隆源码(复用 b.cloner;若装了 repocache 则走本地镜像增量,快)。
+//  3. 把本地工作区打成 tar.gz,经 SSH(target.Upload = stdin 流,无 argv 长度限)传到远程临时目录并解包。
+//  4. 在远程机用容器跑 script job(NewRemoteDriver:shellDriver 经 SSH Commander → 远程容器 CLI 运行,
+//     nerdctl/docker/podman 按机探测),日志经 reporterSink 回流;阶段结束归还槽位。
+//  5. 收尾删远程工作区(尽力)。
 //
 // 安全/语义沿用:命令 array 化(不拼 shell);secret 经 -e 注入容器(与本地同,不更差);失败映射 ErrBuildFailed。
-// 边界(后续增量):远程测试报告/质量门禁采集(报告文件在远程,本期不回采,优雅跳过);多 runner 负载均衡 /
-// 按 stage 选 runner。
+// 边界(后续增量):远程测试报告/质量门禁采集(报告文件在远程,本期不回采,优雅跳过)。
 
 import (
 	"bytes"
@@ -29,9 +29,12 @@ import (
 	"github.com/huangchengsir/pipewright/internal/vault"
 )
 
-// RunnerLookup 解析某项目的远程 runner 服务器 id(空/false = 本地构建)。runner.Service 即满足。
-type RunnerLookup interface {
-	RunnerFor(ctx context.Context, projectID string) (serverID string, ok bool)
+// RunnerResolver 把「选择器」变成「占住一台构建机」(FR-8-19):
+// SelectorFor 取项目默认选择器(空/false = 未配);Acquire 按选择器选机并占槽,release 归还。
+// main.go 用 runner.Service + runner.Scheduler 的组合适配(本包不直依赖 runner,结构化满足)。
+type RunnerResolver interface {
+	SelectorFor(ctx context.Context, projectID string) (selector string, ok bool)
+	Acquire(ctx context.Context, pipelineID, selector string, log func(string)) (serverID string, release func(), err error)
 }
 
 // remoteExec 抽象远程执行所需的 target 能力(Exec + Upload;target.Service 即满足;便于 fake 单测)。
@@ -40,18 +43,38 @@ type remoteExec interface {
 	Upload(ctx context.Context, serverID string, content io.Reader, remotePath string) error
 }
 
-// NewStageExecutorWithRunner 返回「按项目 runner 配置派发本地/远程」的阶段执行器。
-// lookup 或 tgt 为 nil → 退化为纯本地(NewStageExecutor)。
-func NewStageExecutorWithRunner(b *Builder, reportSink TestReportSink, lookup RunnerLookup, tgt remoteExec) dagrun.StageExecutor {
+// NewStageExecutorWithRunner 返回「按 stage/项目选择器派发本地/远程池」的阶段执行器。
+// resolve 或 tgt 为 nil → 退化为纯本地(NewStageExecutor)。
+// 选择器优先级:stage.Runner(阶段覆盖)> 项目默认;都空 = 本地。
+func NewStageExecutorWithRunner(b *Builder, reportSink TestReportSink, resolve RunnerResolver, tgt remoteExec) dagrun.StageExecutor {
 	local := NewStageExecutor(b, reportSink)
-	if lookup == nil || tgt == nil {
+	if resolve == nil || tgt == nil {
 		return local
 	}
 	return func(ctx context.Context, r *run.Run, stage pipeline.Stage, rep dagrun.StageReporter) error {
-		if serverID, ok := lookup.RunnerFor(ctx, r.ProjectID); ok && strings.TrimSpace(serverID) != "" {
-			return b.runStageRemote(ctx, r, stage, rep, serverID, tgt)
+		sel := strings.TrimSpace(stage.Runner)
+		if sel == "" {
+			if s, ok := resolve.SelectorFor(ctx, r.ProjectID); ok {
+				sel = strings.TrimSpace(s)
+			}
 		}
-		return local(ctx, r, stage, rep)
+		if sel == "" {
+			return local(ctx, r, stage, rep)
+		}
+		log := func(msg string) { _ = rep.Log(ctx, streamStdout, msg) }
+		serverID, release, err := resolve.Acquire(ctx, r.ProjectID, sel, log)
+		if err != nil {
+			// 取消/排队等槽超时(上游 ctx deadline)都是「运行被中止」语义,统一归 ErrCanceled,
+			// 不落成「构建失败」误报。流水线与本产品项目 1:1,Acquire 的 pipelineID 传 ProjectID 即流水线亲和。
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.Canceled) {
+				return run.ErrCanceled
+			}
+			_ = rep.Log(ctx, streamStderr, "构建机池调度失败("+sel+"):"+err.Error())
+			return ErrBuildFailed
+		}
+		defer release()
+		log(fmt.Sprintf("→ 构建机:%s(选择器 %s)", serverID, sel))
+		return b.runStageRemote(ctx, r, stage, rep, serverID, tgt)
 	}
 }
 
@@ -113,8 +136,10 @@ func (b *Builder) runStageRemote(ctx context.Context, r *run.Run, stage pipeline
 	}
 	defer func() { _, _ = tgt.Exec(context.WithoutCancel(ctx), serverID, []string{"rm", "-rf", remoteWS}) }()
 
-	// 3) 在远程机用容器跑 script job(远程 driver:docker run 经 SSH)。
-	driver := NewRemoteDriver(tgt, serverID, "docker")
+	// 3) 在远程机用容器跑 script job(远程 driver:按机探测 CLI —— nerdctl/docker/podman)。
+	bin := DetectRemoteCLI(ctx, tgt, serverID)
+	_ = rep.Log(ctx, streamStdout, "远程容器 CLI:"+bin)
+	driver := NewRemoteDriver(tgt, serverID, bin)
 	onLine := func(stream, line string) { _ = rep.Log(ctx, stream, line) }
 	for _, jb := range scriptJobs {
 		if canceled(ctx) {

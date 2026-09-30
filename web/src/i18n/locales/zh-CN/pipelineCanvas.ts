@@ -107,4 +107,9 @@ export default {
   customBadge: '自定义',
   savedCustomNode: '已保存的自定义节点',
   currentBadge: '当前',
+  runnerSectionLabel: '构建机(RUNNER)',
+  runnerLabel: '标签选择器覆盖',
+  runnerPlaceholder: '如 gpu 或 linux,arch=arm64',
+  runnerAria: '阶段级构建机选择器',
+  runnerHint: '非空时本阶段覆盖项目默认选择器(支持标签或 server:<id> 钉死);空 = 用项目默认。',
 }

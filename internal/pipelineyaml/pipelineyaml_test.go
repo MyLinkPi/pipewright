@@ -404,3 +404,54 @@ func TestParseMatrixCellCap(t *testing.T) {
 		t.Fatalf("cell 爆炸应回 ErrParse∧ErrInvalidStage, got %v", err)
 	}
 }
+
+func TestStageRunnerRoundTrip(t *testing.T) {
+	doc := `stages:
+  - name: src
+    kind: source
+    jobs: [{name: a, type: git_source}]
+  - name: gpu-train
+    kind: build
+    runner: gpu,arch=arm64
+    jobs:
+      - name: run
+        type: script
+        script: {image: pytorch/pytorch, commands: [python train.py]}
+`
+	cfg, err := Parse([]byte(doc))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if got := cfg.Spec.Stages[1].Runner; got != "gpu,arch=arm64" {
+		t.Fatalf("stage runner = %q, want gpu,arch=arm64", got)
+	}
+	out, err := Marshal(cfg.Spec)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	cfg2, err := Parse(out)
+	if err != nil {
+		t.Fatalf("re-Parse: %v", err)
+	}
+	if got := cfg2.Spec.Stages[1].Runner; got != "gpu,arch=arm64" {
+		t.Fatalf("往返后 stage runner = %q", got)
+	}
+	if !strings.Contains(string(out), "runner: gpu,arch=arm64") {
+		t.Fatalf("Marshal 应渲染 runner 字段:\n%s", out)
+	}
+}
+
+func TestStageRunnerInvalidRejected(t *testing.T) {
+	doc := `stages:
+  - name: src
+    kind: source
+    jobs: [{name: a, type: git_source}]
+  - name: bad
+    kind: build
+    runner: "arch="
+    jobs: [{name: run, type: script, script: {image: alpine, commands: [true]}}]
+`
+	if _, err := Parse([]byte(doc)); err == nil {
+		t.Fatal("非法 runner 选择器应经 NormalizeSpec 拒绝")
+	}
+}

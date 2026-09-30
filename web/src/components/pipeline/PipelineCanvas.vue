@@ -423,6 +423,7 @@ function handleDrawerUpdate(patch: Partial<PipelineJob>): void {
       @update-matrix="(matrix) => updateStage(selectedSettingsStage!.id, { matrix })"
       @update-post="(post) => updateStage(selectedSettingsStage!.id, { post })"
       @update-services="(services) => updateStage(selectedSettingsStage!.id, { services })"
+      @update-runner="(runner) => updateStage(selectedSettingsStage!.id, { runner })"
     />
 
     <!-- Type picker modal (add new job / change type) -->

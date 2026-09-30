@@ -273,7 +273,7 @@ export default {
 
   runner: {
     title: 'Runner de Compilación',
-    sub: 'Descarga la compilación a una máquina de compilación remota (el código se transfiere por SSH, el token permanece en la máquina de control)',
+    sub: 'Descarga los builds en un pool de maquinas remotas etiquetado (etiqueta → prioridad → afinidad → carga; los tokens quedan en el nodo de control)',
     loading: 'Cargando…',
     errLoad: 'Error al cargar la configuración del runner',
     setRemote: 'Establecido en compilación remota',
@@ -286,7 +286,17 @@ export default {
     hint: 'La compilación remota requiere un runtime de contenedores (docker/nerdctl/podman) en esa máquina. Solo los jobs de tipo script se ejecutan en remoto; los informes de pruebas / puertas de calidad aún no se recopilan en modo remoto (mejora incremental posterior).',
     saving: 'Guardando…',
     save: 'Guardar configuración del runner',
-  },
+      optionLabel: 'Por etiqueta (pool de maquinas de build)',
+    optionServer: 'Fijar un servidor',
+    selectorLabel: 'Selector de etiquetas',
+    selectorPlaceholder: 'p. ej. linux,arch=arm64',
+    selectorHint: 'Terminos de etiqueta separados por comas, todos deben coincidir (Y). La planificacion elige por prioridad, luego afinidad de pipeline, luego carga; pone en cola si todo esta ocupado. Los servidores sin etiquetas nunca se seleccionan.',
+    matchCount: '{n} servidor(es) coincidentes',
+    noMatch: 'Ningun servidor coincide: revisa la ortografia de las etiquetas o etiqueta maquinas en Ajustes > Servidores',
+    serverLabel: 'Servidor',
+    serverPick: 'Elegir servidor...',
+    setSelector: 'Selector guardado: {selector}',
+},
 
   typedParams: {
     requiredAria: 'Obligatorio',

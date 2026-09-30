@@ -50,4 +50,13 @@ export default {
   errDeleteRetry: 'Delete failed. Please try again later.',
   errTestRetry: 'Connection test failed. Please try again later.',
   errTestStatus: 'Connection test failed ({status})',
+  fieldLabels: 'Build machine labels',
+  labelsHint: 'Comma-separated, e.g. linux,arch=arm64. Empty = not a build machine; only labeled machines are picked by label selectors.',
+  fieldMaxBuilds: 'Concurrent build slots',
+  maxBuildsHint: '0 = global default (default 1, serialized per machine)',
+  fieldPriority: 'Scheduling priority',
+  priorityHint: '0-100, higher wins; ties prefer the machine this pipeline used last (affinity)',
+  poolBadgeHint: 'Build machine: {slots} slots, priority {priority}',
+  errMaxBuildsRange: 'Concurrent build slots must be within 0..64',
+  errPriorityRange: 'Scheduling priority must be within 0..100',
 }

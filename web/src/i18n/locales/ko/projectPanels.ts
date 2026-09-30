@@ -273,7 +273,7 @@ export default {
 
   runner: {
     title: '빌드 러너',
-    sub: '빌드를 원격 빌드 머신으로 내려 실행(코드는 SSH로 전송, token은 중앙 제어 머신에만)',
+    sub: '빌드를 라벨이 지정된 원격 머신 풀로 위임(라벨 → 우선순위 → 친화성 → 부하; 토큰은 제어 노드에만)',
     loading: '로딩 중…',
     errLoad: '러너 설정 로딩에 실패했습니다',
     setRemote: '원격 빌드로 설정되었습니다',
@@ -286,7 +286,17 @@ export default {
     hint: '원격 빌드에는 해당 머신에 컨테이너 런타임(docker/nerdctl/podman)이 설치되어 있어야 합니다. script 유형 job만 원격에서 실행되며, 테스트 보고서 / 품질 게이트는 원격 모드에서 아직 수집되지 않습니다(추후 증분 대응).',
     saving: '저장 중…',
     save: '러너 설정 저장',
-  },
+      optionLabel: '라벨로 선택(빌드 머신 풀)',
+    optionServer: '서버 한 대 고정',
+    selectorLabel: '라벨 셀렉터',
+    selectorPlaceholder: '예: linux,arch=arm64',
+    selectorHint: '쉼표로 구분한 라벨 항목이 모두 일치(AND)해야 매칭됩니다. 스케줄러는 우선순위 → 파이프라인 친화성 → 부하 순으로 선택하며, 모두 사용 중이면 대기합니다. 라벨 없는 서버는 선택되지 않습니다.',
+    matchCount: '{n}대 일치',
+    noMatch: '일치하는 서버 없음: 라벨 철자를 확인하거나 설정 → 서버에서 먼저 라벨을 지정하세요',
+    serverLabel: '서버',
+    serverPick: '서버 선택…',
+    setSelector: '셀렉터 저장됨: {selector}',
+},
 
   typedParams: {
     requiredAria: '필수',

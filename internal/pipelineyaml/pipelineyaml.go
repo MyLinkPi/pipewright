@@ -62,6 +62,8 @@ type stageNode struct {
 	Kind         string              `yaml:"kind"`
 	Needs        []string            `yaml:"needs,omitempty"`
 	AllowFailure bool                `yaml:"allowFailure,omitempty"`
+	// Runner 是阶段级构建机选择器(FR-8-19):标签(如 `gpu`)或 `server:<id>`,空 = 项目默认。
+	Runner string `yaml:"runner,omitempty"`
 	Gate         bool                `yaml:"gate,omitempty"`
 	When         *whenNode           `yaml:"when,omitempty"`
 	Matrix       map[string][]string `yaml:"matrix,omitempty"`
@@ -165,6 +167,7 @@ func Parse(data []byte) (pipeline.Config, error) {
 			Matrix:       sn.Matrix,
 			Post:         postsFromNodes(sn.Post),
 			Services:     servicesFromNodes(sn.Services),
+			Runner:       sn.Runner,
 			Jobs:         jobs,
 		})
 	}
@@ -194,6 +197,7 @@ func Marshal(spec pipeline.Spec) ([]byte, error) {
 			Kind:         st.Kind,
 			Needs:        nonEmpty(st.Needs),
 			AllowFailure: st.AllowFailure,
+			Runner:       st.Runner,
 			Gate:         st.Gate,
 			Matrix:       st.Matrix,
 			Post:         postsToNodes(st.Post),

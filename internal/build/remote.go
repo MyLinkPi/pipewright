@@ -25,6 +25,8 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/huangchengsir/pipewright/internal/target"
 )
@@ -57,6 +59,54 @@ func NewRemoteDriver(execer RemoteExecer, serverID, bin string) Driver {
 		bin = "docker"
 	}
 	return &shellDriver{bin: bin, cmdr: NewRemoteCommander(execer, serverID)}
+}
+
+// remoteCLICache 缓存每台远程机探测到的容器 CLI(nerdctl > docker > podman,与本地
+// candidateBinaries 同序)。进程内 TTL 缓存:命中结果信任 remoteCLITTL(机器换装 CLI 后至多
+// 一个 TTL 周期自动感知,无需重启控制机);探测失败不缓存、回落 "docker"(与池化前写死 docker
+// 的行为一致,由后续 docker 命令自身报错暴露真相)。
+const remoteCLITTL = 5 * time.Minute
+
+var (
+	remoteCLIMu    sync.Mutex
+	remoteCLICache = map[string]remoteCLIAt{}
+)
+
+// remoteCLIAt 是一条远程容器 CLI 探测缓存。
+type remoteCLIAt struct {
+	bin string
+	at  time.Time
+}
+
+// DetectRemoteCLI 探测某远程机构建可用的容器 CLI(经一条 SSH 命令逐个 command -v)。
+// 成功结果进程内 TTL 缓存(remoteCLITTL);任何失败(SSH 不通/输出异常)不缓存、回落 "docker"。
+func DetectRemoteCLI(ctx context.Context, execer RemoteExecer, serverID string) string {
+	return detectRemoteCLI(ctx, execer, serverID, time.Now)
+}
+
+// detectRemoteCLI 与 DetectRemoteCLI 同,注入时钟便于单测 TTL 过期路径。
+func detectRemoteCLI(ctx context.Context, execer RemoteExecer, serverID string, now func() time.Time) string {
+	remoteCLIMu.Lock()
+	if h, ok := remoteCLICache[serverID]; ok && now().Sub(h.at) < remoteCLITTL {
+		remoteCLIMu.Unlock()
+		return h.bin
+	}
+	remoteCLIMu.Unlock()
+
+	probe := []string{"sh", "-c", `for b in nerdctl docker podman; do command -v "$b" >/dev/null 2>&1 && { echo "$b"; exit 0; }; done; echo none`}
+	if res, err := execer.Exec(ctx, serverID, probe); err == nil && res != nil {
+		for _, line := range strings.Split(res.Stdout, "\n") {
+			switch strings.TrimSpace(line) {
+			case "nerdctl", "docker", "podman":
+				bin := strings.TrimSpace(line)
+				remoteCLIMu.Lock()
+				remoteCLICache[serverID] = remoteCLIAt{bin: bin, at: now()}
+				remoteCLIMu.Unlock()
+				return bin
+			}
+		}
+	}
+	return "docker"
 }
 
 // Run 实现 Commander.Run:把 name+args 投到远程机同步执行,取回 stdout/stderr/退出码。

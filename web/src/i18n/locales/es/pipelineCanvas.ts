@@ -107,4 +107,9 @@ export default {
   customBadge: 'Personalizado',
   savedCustomNode: 'Nodo personalizado guardado',
   currentBadge: 'Actual',
+  runnerSectionLabel: 'Maquina de build (RUNNER)',
+  runnerLabel: 'Anulacion del selector de etiquetas',
+  runnerPlaceholder: 'p. ej. gpu o linux,arch=arm64',
+  runnerAria: 'Selector de maquina de build por stage',
+  runnerHint: 'Si se define, anula el selector por defecto del proyecto en esta stage (etiquetas o server:<id>); vacio = por defecto.',
 }

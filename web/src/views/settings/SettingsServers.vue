@@ -47,6 +47,9 @@ const form = ref({
   port: 22,
   user: '',
   credentialId: '',
+  labels: '',
+  maxBuilds: 0,
+  priority: 0,
 })
 
 const formErrors = ref({
@@ -55,6 +58,9 @@ const formErrors = ref({
   port: '',
   user: '',
   credentialId: '',
+  labels: '',
+  maxBuilds: '',
+  priority: '',
 })
 
 const formBanner = ref('')
@@ -159,6 +165,9 @@ function openAddModal(): void {
     port: 22,
     user: '',
     credentialId: sshCredentials.value[0]?.id ?? '',
+    labels: '',
+    maxBuilds: 0,
+    priority: 0,
   }
   clearFormErrors()
   formBanner.value = ''
@@ -174,6 +183,9 @@ function openEditModal(s: Server): void {
     port: s.port,
     user: s.user,
     credentialId: s.credentialId,
+    labels: s.labels ?? '',
+    maxBuilds: s.maxBuilds ?? 0,
+    priority: s.priority ?? 0,
   }
   clearFormErrors()
   formBanner.value = ''
@@ -188,7 +200,7 @@ function closeModal(): void {
 // ─── form validation ─────────────────────────────────────────────────────────
 
 function clearFormErrors(): void {
-  formErrors.value = { name: '', host: '', port: '', user: '', credentialId: '' }
+  formErrors.value = { name: '', host: '', port: '', user: '', credentialId: '', labels: '', maxBuilds: '', priority: '' }
 }
 
 function validateForm(): boolean {
@@ -214,6 +226,16 @@ function validateForm(): boolean {
     formErrors.value.credentialId = t('settingsServers.errCredentialRequired')
     ok = false
   }
+  const mb = Number(form.value.maxBuilds)
+  if (!Number.isInteger(mb) || mb < 0 || mb > 64) {
+    formErrors.value.maxBuilds = t('settingsServers.errMaxBuildsRange')
+    ok = false
+  }
+  const pr = Number(form.value.priority)
+  if (!Number.isInteger(pr) || pr < 0 || pr > 100) {
+    formErrors.value.priority = t('settingsServers.errPriorityRange')
+    ok = false
+  }
   return ok
 }
 
@@ -231,6 +253,9 @@ async function handleFormSubmit(): Promise<void> {
         port: form.value.port,
         user: form.value.user.trim(),
         credentialId: form.value.credentialId,
+        labels: form.value.labels.trim(),
+        maxBuilds: Number(form.value.maxBuilds) || 0,
+        priority: Number(form.value.priority) || 0,
       }
       const created = await createServer(payload)
       servers.value = [created, ...servers.value]
@@ -241,6 +266,9 @@ async function handleFormSubmit(): Promise<void> {
         port: form.value.port,
         user: form.value.user.trim(),
         credentialId: form.value.credentialId,
+        labels: form.value.labels.trim(),
+        maxBuilds: Number(form.value.maxBuilds) || 0,
+        priority: Number(form.value.priority) || 0,
       }
       const updated = await updateServer(editingId.value, payload)
       servers.value = servers.value.map((s) => (s.id === updated.id ? updated : s))
@@ -385,6 +413,7 @@ async function handleTest(s: Server): Promise<void> {
             <div class="server-addr">
               <span class="mono">{{ s.user }}@{{ s.host }}:{{ s.port }}</span>
               <span class="cred-tag">🔑 {{ credentialLabel(s.credentialId) }}</span>
+              <span v-if="s.labels" class="cred-tag cred-tag--pool" :title="t('settingsServers.poolBadgeHint', { slots: s.maxBuilds || 1, priority: s.priority })">🏗 {{ s.labels }}</span>
             </div>
             <!-- test result -->
             <div
@@ -459,6 +488,28 @@ async function handleTest(s: Server): Promise<void> {
             </select>
             <span v-if="formErrors.credentialId" class="field-error">{{ formErrors.credentialId }}</span>
           </label>
+
+          <!-- build-pool fields (FR-8-19): labels make the machine schedulable; unlabeled machines never pick -->
+          <label class="field">
+            <span class="field-label">{{ t('settingsServers.fieldLabels') }}</span>
+            <input v-model="form.labels" class="field-input" type="text" placeholder="linux,arch=arm64" autocomplete="off" />
+            <span class="field-hint">{{ t('settingsServers.labelsHint') }}</span>
+            <span v-if="formErrors.labels" class="field-error">{{ formErrors.labels }}</span>
+          </label>
+          <div class="field-row">
+            <label class="field field-maxbuilds">
+              <span class="field-label">{{ t('settingsServers.fieldMaxBuilds') }}</span>
+              <input v-model.number="form.maxBuilds" class="field-input" type="number" min="0" max="64" />
+              <span class="field-hint">{{ t('settingsServers.maxBuildsHint') }}</span>
+              <span v-if="formErrors.maxBuilds" class="field-error">{{ formErrors.maxBuilds }}</span>
+            </label>
+            <label class="field field-priority">
+              <span class="field-label">{{ t('settingsServers.fieldPriority') }}</span>
+              <input v-model.number="form.priority" class="field-input" type="number" min="0" max="100" />
+              <span class="field-hint">{{ t('settingsServers.priorityHint') }}</span>
+              <span v-if="formErrors.priority" class="field-error">{{ formErrors.priority }}</span>
+            </label>
+          </div>
 
           <div class="modal-actions">
             <button type="button" class="btn-ghost" :disabled="formSubmitting" @click="closeModal">{{ t('settingsServers.cancel') }}</button>
@@ -823,6 +874,21 @@ async function handleTest(s: Server): Promise<void> {
 }
 .field-port {
   width: 96px;
+}
+.field-maxbuilds {
+  width: 130px;
+}
+.field-priority {
+  flex: 1;
+}
+.field-hint {
+  font-size: var(--text-caption, 0.7rem);
+  color: var(--color-faint);
+  line-height: 1.4;
+}
+.cred-tag--pool {
+  color: var(--color-primary);
+  background: var(--color-primary-soft);
 }
 .field-label {
   font-size: var(--text-label);

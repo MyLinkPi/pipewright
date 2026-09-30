@@ -50,4 +50,13 @@ export default {
   errDeleteRetry: 'Error al eliminar. Inténtalo de nuevo más tarde.',
   errTestRetry: 'Error en la prueba de conexión. Inténtalo de nuevo más tarde.',
   errTestStatus: 'Error en la prueba de conexión ({status})',
+  fieldLabels: 'Etiquetas de maquina de build',
+  labelsHint: 'Separadas por comas, p. ej. linux,arch=arm64. Vacio = no es maquina de build; solo las maquinas etiquetadas son seleccionadas por los selectores.',
+  fieldMaxBuilds: 'Slots de build simultaneos',
+  maxBuildsHint: '0 = global por defecto (por defecto 1, en serie por maquina)',
+  fieldPriority: 'Prioridad de planificacion',
+  priorityHint: '0-100, gana la mas alta; en empate se prefiere la maquina usada ultimo por este pipeline (afinidad)',
+  poolBadgeHint: 'Maquina de build: {slots} slots, prioridad {priority}',
+  errMaxBuildsRange: 'Los slots deben estar entre 0 y 64',
+  errPriorityRange: 'La prioridad debe estar entre 0 y 100',
 }

@@ -273,7 +273,7 @@ export default {
 
   runner: {
     title: 'ビルドランナー',
-    sub: 'ビルドをリモートビルドマシンに移して実行（コードは SSH 経由で転送、token は中央制御機のみ）',
+    sub: 'ビルドをラベル付きリモートマシンプールへ委譲(ラベル → 優先度 → 親和 → 負荷;トークンは制御ノードのみ)',
     loading: '読み込み中…',
     errLoad: 'ランナー設定の読み込みに失敗しました',
     setRemote: 'リモートビルドに設定しました',
@@ -286,7 +286,17 @@ export default {
     hint: 'リモートビルドには、そのマシンにコンテナランタイム（docker/nerdctl/podman）が必要です。リモートで実行されるのは script 型 job のみで、テストレポート / 品質ゲートはリモートモードでは未回収です（今後の増分対応）。',
     saving: '保存中…',
     save: 'ランナー設定を保存',
-  },
+      optionLabel: 'ラベルで選択(ビルドマシンプール)',
+    optionServer: 'サーバーを1台固定',
+    selectorLabel: 'ラベルセレクター',
+    selectorPlaceholder: '例: linux,arch=arm64',
+    selectorHint: 'カンマ区切りのラベル項目がすべて一致(AND)でマッチ。スケジューラーは「優先度 → パイプライン親和 → 負荷」で選定し、満杯時は待機します。ラベルなしのサーバーは選択されません。',
+    matchCount: '{n} 台が一致',
+    noMatch: '一致するサーバーがありません:ラベルの綴りを確認するか、設定 → サーバーでラベルを付けてください',
+    serverLabel: 'サーバー',
+    serverPick: 'サーバーを選択…',
+    setSelector: 'セレクターを保存しました:{selector}',
+},
 
   typedParams: {
     requiredAria: '必須',

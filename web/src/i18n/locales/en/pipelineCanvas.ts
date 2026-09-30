@@ -107,4 +107,9 @@ export default {
   customBadge: 'Custom',
   savedCustomNode: 'Saved custom node',
   currentBadge: 'Current',
+  runnerSectionLabel: 'Build machine (RUNNER)',
+  runnerLabel: 'Label selector override',
+  runnerPlaceholder: 'e.g. gpu or linux,arch=arm64',
+  runnerAria: 'Stage-level build machine selector',
+  runnerHint: 'When set, overrides the project default selector for this stage (labels or server:<id>); empty = project default.',
 }

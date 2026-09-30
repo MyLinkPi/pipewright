@@ -2,6 +2,7 @@ package build
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -270,6 +271,27 @@ func TestDetectDriverNoCLI(t *testing.T) {
 	_, err := DetectDriver(newFakeCommander())
 	if err != ErrNoContainerCLI {
 		t.Fatalf("expected ErrNoContainerCLI, got %v", err)
+	}
+}
+
+// TestWithRemoteOnlyDriver 验证瘦控制机占位 Driver(FR-8-19):本机无容器 CLI 时 Builder 仍可
+// 构造(远程机池照常可用),Binary 报 "none",任何本地容器操作诚实返回 ErrNoContainerCLI。
+func TestWithRemoteOnlyDriver(t *testing.T) {
+	b, err := NewBuilder(nil, nil, nil, WithRemoteOnlyDriver())
+	if err != nil {
+		t.Fatalf("远程独占模式应可构造 Builder: %v", err)
+	}
+	if got := b.DriverBinary(); got != "none" {
+		t.Fatalf("Binary = %q, want none", got)
+	}
+	if _, err := b.driver.Build(context.Background(), ".", "Dockerfile", "t", nil, nil, nil); !errors.Is(err, ErrNoContainerCLI) {
+		t.Fatalf("本地构建应诚实报 ErrNoContainerCLI: %v", err)
+	}
+	if _, err := b.driver.RunToolchain(context.Background(), "img", "/ws", "/src", nil, nil, pipeline.Resource{}, nil); !errors.Is(err, ErrNoContainerCLI) {
+		t.Fatalf("本地工具链应诚实报 ErrNoContainerCLI: %v", err)
+	}
+	if _, _, err := b.driver.InspectImage(context.Background(), "img:latest"); !errors.Is(err, ErrNoContainerCLI) {
+		t.Fatalf("InspectImage 应诚实报 ErrNoContainerCLI: %v", err)
 	}
 }
 

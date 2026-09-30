@@ -50,4 +50,13 @@ export default {
   errDeleteRetry: '刪除失敗,請稍後重試',
   errTestRetry: '測試連線失敗,請稍後重試',
   errTestStatus: '測試連線失敗({status})',
+  fieldLabels: '建置機標籤',
+  labelsHint: '逗號分隔,如 linux,arch=arm64。空 = 不作為建置機;打了標籤的機器才會被標籤選擇器調度。',
+  fieldMaxBuilds: '並發建置槽位',
+  maxBuildsHint: '0 = 用全域預設(預設 1,單機序列)',
+  fieldPriority: '調度優先級',
+  priorityHint: '0-100,數值越大越優先;同優先級優先復用本流水線最近用過的機器(親和)',
+  poolBadgeHint: '建置機:槽位 {slots},優先級 {priority}',
+  errMaxBuildsRange: '並發建置槽位必須在 0..64 之間',
+  errPriorityRange: '調度優先級必須在 0..100 之間',
 }
