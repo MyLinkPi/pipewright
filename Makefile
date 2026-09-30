@@ -11,7 +11,7 @@ DATE    ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 VPKG    := github.com/huangchengsir/pipewright/internal/version
 LDFLAGS := -s -w -X $(VPKG).Version=$(VERSION) -X $(VPKG).Commit=$(COMMIT) -X $(VPKG).Date=$(DATE)
 
-.PHONY: all build embed-frontend go-build test vet fmt fmt-check mem-check dev run version clean
+.PHONY: all build embed-frontend dist-stub go-build test vet fmt fmt-check mem-check dev run version clean
 
 all: build
 
@@ -19,16 +19,21 @@ all: build
 embed-frontend:
 	cd web && npm ci && npm run build
 
-go-build:
+## dist-stub: 保证 web/dist 有最小占位 index.html(go:embed 的编译目标;dist 已全部
+## 不入库,纯后端流程 fresh clone 后跑 make test/vet/dev/run 前由本目标兜底创建)。
+dist-stub:
+	@[ -f web/dist/index.html ] || { mkdir -p web/dist; echo '<!doctype html><div id="app"></div>' > web/dist/index.html; }
+
+go-build: dist-stub
 	CGO_ENABLED=0 go build -ldflags "$(LDFLAGS)" -o $(BIN) ./cmd/pipewright
 
 ## build: 前端构建 → go:embed → 静态单二进制(双运行模式之原生形态)
 build: embed-frontend go-build
 
-test:
+test: dist-stub
 	go test $(GO_PKGS)
 
-vet:
+vet: dist-stub
 	go vet $(GO_PKGS)
 
 ## fmt: 用内置 gofmt 格式化(无需配置文件)
@@ -44,7 +49,7 @@ mem-check:
 	bash scripts/mem-check.sh
 
 ## dev: 本地开发(两个终端:Go API + Vite 热更代理)
-dev:
+dev: dist-stub
 	@echo "终端1: go run ./cmd/pipewright"
 	@echo "终端2: cd web && npm run dev   # 代理 /api /healthz 到 :8080"
 
