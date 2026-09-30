@@ -36,6 +36,11 @@ export default {
   typeSshKey: 'SSH 私鑰',
   typeSshPassword: 'SSH 密碼',
   typeRegistry: '映像倉庫',
+  descGitToken: '用於 HTTPS 拉取私有 Git 儲存庫（GitHub/GitLab/Gitee 的個人存取權杖）。',
+  descGitHttp: '透過 HTTPS 使用者名稱 + 密碼存取 Git 儲存庫（如自建 Gitea）。',
+  descSshKey: '用於部署伺服器的 SSH 登入（PEM/OpenSSH 私鑰），見「設定 → 伺服器」。',
+  descSshPassword: '用密碼方式 SSH 登入部署伺服器，見「設定 → 伺服器」。',
+  descRegistry: "推送建置映像時 'docker login' 映像倉庫用的使用者名稱/密碼。",
 
   maskTitle: '遮罩值（編輯中可檢視明文）',
   maskAria: '遮罩: {value}',

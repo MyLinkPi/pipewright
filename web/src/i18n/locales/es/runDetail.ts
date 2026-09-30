@@ -87,6 +87,8 @@ export default {
   hcCommandRequired: 'Introduce un comando de sonda.',
 
   releaseStrategy: 'Estrategia de publicación',
+  strategyInstanceRollingLabel: 'Rolling de instancias (por defecto)',
+  strategyInstanceRollingDesc: 'cambio sin paradas por instancia',
   strategyRollingLabel: 'Progresiva',
   strategyRollingDesc: 'Todos los hosts en paralelo, cada uno con su propio resultado',
   strategyCanaryLabel: 'Canary',

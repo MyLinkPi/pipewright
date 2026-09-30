@@ -24,6 +24,8 @@ export default {
     dora: 'DORA 指标',
     serverStatus: '服务器',
     containers: '容器',
+    serviceReg: '服务注册',
+    appStore: '应用商店',
     proxyOverview: '证书总览',
     previews: '预览环境',
     anomaly: '异常检测',

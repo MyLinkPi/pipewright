@@ -173,6 +173,14 @@ const typeLabels = computed<Record<CredentialType, string>>(() => ({
   registry: t('settingsVault.typeRegistry'),
 }))
 
+const typeDescriptions = computed<Record<CredentialType, string>>(() => ({
+  git_token: t('settingsVault.descGitToken'),
+  git_http: t('settingsVault.descGitHttp'),
+  ssh_key: t('settingsVault.descSshKey'),
+  ssh_password: t('settingsVault.descSshPassword'),
+  registry: t('settingsVault.descRegistry'),
+}))
+
 const idleCount = computed(
   () => credentials.value.filter(idleWarning).length,
 )
@@ -677,6 +685,7 @@ async function toggleEditReveal(): Promise<void> {
                 @click="form.type = opt; formErrors.type = ''"
               >{{ typeLabels[opt] }}</button>
             </div>
+            <span class="field-hint">{{ typeDescriptions[form.type] }}</span>
             <span v-if="formErrors.type" class="field-error" role="alert">{{ formErrors.type }}</span>
           </div>
 

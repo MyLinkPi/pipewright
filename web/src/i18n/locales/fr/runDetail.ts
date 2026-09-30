@@ -87,6 +87,8 @@ export default {
   hcCommandRequired: 'Veuillez saisir une commande de sonde.',
 
   releaseStrategy: 'Stratégie de publication',
+  strategyInstanceRollingLabel: 'Rolling d’instances (défaut)',
+  strategyInstanceRollingDesc: 'bascule sans interruption par instance',
   strategyRollingLabel: 'Progressive',
   strategyRollingDesc: 'Tous les hôtes en parallèle, chacun réussit ou échoue indépendamment',
   strategyCanaryLabel: 'Canary',

@@ -17,6 +17,8 @@ import {
   Stack2,
   Rocket,
   Browser,
+  World,
+  Apps,
   ChevronRight,
   Logout,
 } from '@vicons/tabler'
@@ -85,6 +87,10 @@ const navItems: NavItem[] = [
   { name: 'containers',    to: '/containers',    icon: Box,        labelKey: 'nav.containers',    ariaKey: 'nav.containers' },
   // R2 / E2.4: 证书总览大盘(跨主机跨域名一张表 + 到期高亮)。
   { name: 'proxy-overview', to: '/proxy',        icon: Certificate, labelKey: 'nav.proxyOverview', ariaKey: 'nav.proxyOverview' },
+  // 服务注册网关(nginx):服务名 + 基域 → 子域名反代(abc.efg.com),泛域名证书手动/脚本上传。
+  { name: 'service-reg',   to: '/service-reg',   icon: World,      labelKey: 'nav.serviceReg',    ariaKey: 'nav.serviceReg' },
+  // 应用商店:MySQL/Redis 等模板参数一键部署(DPanel 式)。
+  { name: 'app-store',     to: '/app-store',     icon: Apps,       labelKey: 'nav.appStore',      ariaKey: 'nav.appStore' },
   // R4 / E4.1: PR 预览环境大盘(临时环境列表 + 手动回收)。
   { name: 'previews',      to: '/previews',      icon: Browser,    labelKey: 'nav.previews',      ariaKey: 'nav.previews' },
   // Story 6-5: configurable anomaly detection & alerts (FR-23)

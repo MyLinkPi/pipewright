@@ -22,6 +22,7 @@ import (
 	"github.com/huangchengsir/pipewright/internal/anomaly"
 	"github.com/huangchengsir/pipewright/internal/approval"
 	"github.com/huangchengsir/pipewright/internal/artifactstore"
+	"github.com/huangchengsir/pipewright/internal/appstore"
 	"github.com/huangchengsir/pipewright/internal/audit"
 	"github.com/huangchengsir/pipewright/internal/auth"
 	"github.com/huangchengsir/pipewright/internal/build"
@@ -49,6 +50,7 @@ import (
 	"github.com/huangchengsir/pipewright/internal/repocache"
 	"github.com/huangchengsir/pipewright/internal/retention"
 	"github.com/huangchengsir/pipewright/internal/run"
+	"github.com/huangchengsir/pipewright/internal/servicereg"
 	"github.com/huangchengsir/pipewright/internal/runner"
 	"github.com/huangchengsir/pipewright/internal/store"
 	"github.com/huangchengsir/pipewright/internal/target"
@@ -334,8 +336,15 @@ func main() {
 		buildCacheOpt = build.WithBuildCache(cacheStore)
 	}
 
+	// 服务注册网关(nginx 版;提前到 deploy 构造前:instance_rolling 默认策略经适配器晚绑)。
+	// 复用 targetSvc(SSH + docker)与 credVault(证书 SealSecret 密文);vault 未配 master key
+	// 时证书上传不可用,其余功能照常(优雅降级)。
+	serviceRegSvc := servicereg.New(st.DB, targetSvc, credVault)
+
 	// 部署服务(提前到 dag 装配前构造,供 deploy_ssh 流水线节点注入)。Story 4.6 诊断钩子复用 7-2。
-	deploySvc := deploy.New(targetSvc, runSvc, deploy.WithDiagnoseHook(httpapi.NewDiagnoseHook(runSvc, aiSvc, secretSrc)), deploy.WithArtifactStore(artStore))
+	// instance_rolling(默认策略)的网关摘/挂经 instanceRollGateway 适配器晚绑(deploy 不 import
+	// servicereg,包间保持单向依赖);未装配时该策略自动回退既有滚动。
+	deploySvc := deploy.New(targetSvc, runSvc, deploy.WithDiagnoseHook(httpapi.NewDiagnoseHook(runSvc, aiSvc, secretSrc)), deploy.WithArtifactStore(artStore), deploy.WithInstanceGateway(&instanceRollGateway{sr: serviceRegSvc}))
 
 	// 运行执行器选择(Epic 8):**默认走 DAG 调度执行器**——它是唯一真正按 UI 配置的
 	// stages/script job/deploy_ssh/notify 编排执行的运行器。只有显式 PIPEWRIGHT_RUNNER=legacy
@@ -408,6 +417,12 @@ func main() {
 	previewSvc.SetRouteDeleter(&previewRouteDeleter{proxy: proxySvc})
 	previewSvc.SetRecordDeleter(&previewRecordDeleter{dns: dnsSvc})
 	previewSvc.SetBaseDomainValidator(dnsprovider.ValidBaseDomain)
+
+	// 应用商店(DPanel 式一键部署):模板 CRUD + 内置 seed(幂等;失败仅记日志,不阻断启动)。
+	appStoreSvc := appstore.New(st.DB)
+	if err := appStoreSvc.EnsureBuiltins(context.Background()); err != nil {
+		log.Printf("[appstore] 警告:内置模板 seed 失败(不影响启动,可重启重试): %v", err)
+	}
 
 	// 终态钩子:通知(Story 5.2)+「PR 状态回写」(Story 8-9 / FR-8-9):run 终态 → 据项目仓库
 	// 识别 GitHub/Gitee → 经项目凭据回写该 commit 的提交状态(PR 检查)。
@@ -576,7 +591,7 @@ func main() {
 
 	srv := &http.Server{
 		Addr:              cfg.Addr,
-		Handler:           httpapi.New(webFS, authSvc, httpapi.WithVault(credVault), httpapi.WithProjects(projectSvc), httpapi.WithTriggers(triggerSvc), httpapi.WithPipelines(pipelineSvc), httpapi.WithPipelineSettings(pipelineSettingsSvc), httpapi.WithRuns(runSvc, pool), httpapi.WithWebhooks(webhookReceiver), httpapi.WithAudit(auditRec), httpapi.WithAccount(authSvc), httpapi.WithAISettings(aiSvc), httpapi.WithAIGenerate(repoAnalyzer), httpapi.WithRunDiff(runDiffer), httpapi.WithSource(sourceReader), httpapi.WithRefs(refsLister), httpapi.WithArtifactStore(artStore), httpapi.WithServers(targetSvc), httpapi.WithRunnerConfig(runnerSvc), httpapi.WithDeploy(deploySvc), httpapi.WithNotifications(notifySvc), httpapi.WithRetention(retentionSvc), httpapi.WithProxy(proxySvc), httpapi.WithDNSProviders(dnsSvc), httpapi.WithPreviewEnvs(previewSvc), httpapi.WithDiagnosisFeedback(feedbackSvc), httpapi.WithAnomaly(anomalySvc), httpapi.WithAnomalyConfig(int(anomalyInterval.Seconds()), int(anomalyCooldown.Seconds())), httpapi.WithMetricsHistory(metricsHist), httpapi.WithSecretSource(secretSrc), httpapi.WithOAuth(oauthSvc), httpapi.WithCron(cronSvc), httpapi.WithChain(chainSvc), httpapi.WithApprovals(approvalCoord, approvalStore), httpapi.WithApprovalLinks(approvalSigner), httpapi.WithConcurrency(concurrencySvc), httpapi.WithParameters(parameterSvc), httpapi.WithPromotion(promotionStore), httpapi.WithEnvironments(environmentsSvc), httpapi.WithDoraMetrics(doraMetricsSvc), httpapi.WithTemplates(templateSvc), httpapi.WithVariableGroups(varGroupSvc), httpapi.WithCustomNodes(customNodeSvc)),
+		Handler:           httpapi.New(webFS, authSvc, httpapi.WithVault(credVault), httpapi.WithProjects(projectSvc), httpapi.WithTriggers(triggerSvc), httpapi.WithPipelines(pipelineSvc), httpapi.WithPipelineSettings(pipelineSettingsSvc), httpapi.WithRuns(runSvc, pool), httpapi.WithWebhooks(webhookReceiver), httpapi.WithAudit(auditRec), httpapi.WithAccount(authSvc), httpapi.WithAISettings(aiSvc), httpapi.WithAIGenerate(repoAnalyzer), httpapi.WithRunDiff(runDiffer), httpapi.WithSource(sourceReader), httpapi.WithRefs(refsLister), httpapi.WithArtifactStore(artStore), httpapi.WithServers(targetSvc), httpapi.WithRunnerConfig(runnerSvc), httpapi.WithDeploy(deploySvc), httpapi.WithNotifications(notifySvc), httpapi.WithRetention(retentionSvc), httpapi.WithProxy(proxySvc), httpapi.WithDNSProviders(dnsSvc), httpapi.WithPreviewEnvs(previewSvc), httpapi.WithServiceReg(serviceRegSvc), httpapi.WithAppStore(appStoreSvc), httpapi.WithDiagnosisFeedback(feedbackSvc), httpapi.WithAnomaly(anomalySvc), httpapi.WithAnomalyConfig(int(anomalyInterval.Seconds()), int(anomalyCooldown.Seconds())), httpapi.WithMetricsHistory(metricsHist), httpapi.WithSecretSource(secretSrc), httpapi.WithOAuth(oauthSvc), httpapi.WithCron(cronSvc), httpapi.WithChain(chainSvc), httpapi.WithApprovals(approvalCoord, approvalStore), httpapi.WithApprovalLinks(approvalSigner), httpapi.WithConcurrency(concurrencySvc), httpapi.WithParameters(parameterSvc), httpapi.WithPromotion(promotionStore), httpapi.WithEnvironments(environmentsSvc), httpapi.WithDoraMetrics(doraMetricsSvc), httpapi.WithTemplates(templateSvc), httpapi.WithVariableGroups(varGroupSvc), httpapi.WithCustomNodes(customNodeSvc)),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		// WriteTimeout 置 0:SSE 长连接(/api/runs/{id}/events)不可被写超时切断;
@@ -813,6 +828,29 @@ func (a *dnsResolverAdapter) ProviderType(ctx context.Context, providerID string
 
 // previewAllocator 适配 previewenv.Allocator:把「为指定 FQDN 分配 DNS-01 反代路由」下沉到
 // dnsprovider.AllocateFQDN(R4 E4.1 预览域名 pr-<n>-<proj>.base)。避免 previewenv import dnsprovider 形成环。
+// instanceRollGateway 把 servicereg 适配为 deploy.InstanceGateway(instance_rolling 默认策略
+// 消费;晚绑防 import 环:deploy 不 import servicereg,servicereg 也不 import deploy)。
+type instanceRollGateway struct{ sr servicereg.Service }
+
+func (g *instanceRollGateway) ResolveInstances(ctx context.Context, serverID, container string) ([]deploy.InstanceRef, error) {
+	refs, err := g.sr.ResolveDeployInstances(ctx, serverID, container)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]deploy.InstanceRef, 0, len(refs))
+	for _, r := range refs {
+		out = append(out, deploy.InstanceRef{
+			ServiceID: r.ServiceID, ServiceName: r.ServiceName,
+			InstanceID: r.InstanceID, Container: r.Container, Port: r.Port,
+		})
+	}
+	return out, nil
+}
+
+func (g *instanceRollGateway) SwapInstance(ctx context.Context, serviceID, oldContainer, newContainer string) error {
+	return g.sr.SwapInstance(ctx, serviceID, oldContainer, newContainer)
+}
+
 type previewAllocator struct{ dns dnsprovider.Service }
 
 func (a *previewAllocator) Allocate(ctx context.Context, in previewenv.AllocateInput) (string, error) {

@@ -87,6 +87,8 @@ export default {
   hcCommandRequired: '請填寫探測命令。',
 
   releaseStrategy: '發布策略',
+  strategyInstanceRollingLabel: '實例輪轉(預設)',
+  strategyInstanceRollingDesc: '逐實例零停機替換',
   strategyRollingLabel: '滾動',
   strategyRollingDesc: '全機並行,各自成敗',
   strategyCanaryLabel: '金絲雀',

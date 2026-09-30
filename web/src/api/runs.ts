@@ -440,7 +440,7 @@ export interface HealthCheckInput {
 // fails, roll back the whole fleet (release-mode artifacts: dist/jar).
 // 'interactive' = 交互式分批(对标云效 firstBatchPause):先发首批(同金丝雀子集)→ 暂停等人确认,
 // 其余登记 pending,经 continueDeploy 续发或 abortDeploy 中止。首批量经 deployConfig.canaryCount。
-export type DeployStrategy = 'rolling' | 'canary' | 'blue_green' | 'interactive'
+export type DeployStrategy = 'instance_rolling' | 'rolling' | 'canary' | 'blue_green' | 'interactive'
 
 export interface DeployRunInput {
   artifactId: string

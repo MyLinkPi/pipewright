@@ -87,6 +87,8 @@ export default {
   hcCommandRequired: 'Please enter a probe command.',
 
   releaseStrategy: 'Release strategy',
+  strategyInstanceRollingLabel: 'Instance rolling (default)',
+  strategyInstanceRollingDesc: 'per-instance zero-downtime swap',
   strategyRollingLabel: 'Rolling',
   strategyRollingDesc: 'All hosts in parallel, each succeeds or fails on its own',
   strategyCanaryLabel: 'Canary',

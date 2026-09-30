@@ -23,6 +23,11 @@ const Containers = () => import('../views/Containers.vue')
 const ProxyOverview = () => import('../views/ProxyOverview.vue')
 // R4 / E4.1: PR 预览环境大盘(临时环境列表 + 手动回收;对标 Vercel preview deployments)
 const Previews = () => import('../views/Previews.vue')
+
+// 服务注册网关(nginx):基域/泛域名证书/子域名服务(DPanel 式容器面板的配套入口)。
+const ServiceRegistry = () => import('../views/ServiceRegistry.vue')
+// 应用商店:模板参数一键部署(复用 Stacks 链路)。
+const AppStore = () => import('../views/AppStore.vue')
 // Story 6-5: configurable anomaly detection & alerts (FR-23)
 const AnomalyDetection = () => import('../views/AnomalyDetection.vue')
 const Settings    = () => import('../views/Settings.vue')
@@ -125,6 +130,10 @@ const router = createRouter({
         { path: 'server-status', name: 'server-status', component: ServerStatus, meta: { title: '服务器状态' } },
 
         { path: 'containers', name: 'containers', component: Containers, meta: { title: '容器' } },
+        // 服务注册网关(nginx):abc.efg.com 子域名反代 + TCP 透传 + 泛域名证书上传。
+        { path: 'service-reg', name: 'service-registry', component: ServiceRegistry, meta: { title: '服务注册' } },
+        // 应用商店:MySQL/Redis 等模板参数一键部署。
+        { path: 'app-store', name: 'app-store', component: AppStore, meta: { title: '应用商店' } },
         // R2 / E2.4: 证书总览大盘(跨主机跨域名 + 到期高亮)
         { path: 'proxy', name: 'proxy-overview', component: ProxyOverview, meta: { title: '证书总览' } },
         // R4 / E4.1: PR 预览环境大盘(临时环境列表 + 手动回收)

@@ -25,6 +25,8 @@ const zhTW: typeof zhCN = {
     dora: 'DORA 指標',
     serverStatus: '伺服器',
     containers: '容器',
+    serviceReg: '服務註冊',
+    appStore: '應用商店',
     proxyOverview: '憑證總覽',
     previews: '預覽環境',
     anomaly: '異常偵測',

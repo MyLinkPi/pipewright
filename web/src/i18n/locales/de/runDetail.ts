@@ -87,6 +87,8 @@ export default {
   hcCommandRequired: 'Bitte einen Probe-Befehl eingeben.',
 
   releaseStrategy: 'Release-Strategie',
+  strategyInstanceRollingLabel: 'Instance-Rolling (Standard)',
+  strategyInstanceRollingDesc: 'instanzweiser Wechsel ohne Ausfallzeit',
   strategyRollingLabel: 'Rollend',
   strategyRollingDesc: 'Alle Hosts parallel, jeder mit eigenem Ergebnis',
   strategyCanaryLabel: 'Canary',

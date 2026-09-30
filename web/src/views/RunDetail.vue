@@ -161,10 +161,11 @@ const keepReleases = ref(1)
 // rolling(默认)= 全机并行各自成败;canary = 先发金丝雀批次、健康通过才铺其余;
 // blue_green = 全机先就绪、统一切换、失败机群回滚(release 类产物 dist/jar)。
 // 金丝雀批量经 deployConfig.canaryCount 透传。
-const deployStrategy = ref<DeployStrategy>('rolling')
+const deployStrategy = ref<DeployStrategy>('instance_rolling')
 const canaryCount = ref(1)
 
 const deployStrategyOptions = computed<ReadonlyArray<{ value: DeployStrategy; label: string; desc: string }>>(() => [
+  { value: 'instance_rolling', label: t('runDetail.strategyInstanceRollingLabel'), desc: t('runDetail.strategyInstanceRollingDesc') },
   { value: 'rolling', label: t('runDetail.strategyRollingLabel'), desc: t('runDetail.strategyRollingDesc') },
   { value: 'canary', label: t('runDetail.strategyCanaryLabel'), desc: t('runDetail.strategyCanaryDesc') },
   { value: 'blue_green', label: t('runDetail.strategyBlueGreenLabel'), desc: t('runDetail.strategyBlueGreenDesc') },

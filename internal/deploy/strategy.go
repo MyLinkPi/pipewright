@@ -26,9 +26,13 @@ import (
 	"github.com/huangchengsir/pipewright/internal/target"
 )
 
-// 部署策略枚举(DeployInput.Strategy / Config["strategy"];空 / 未知 → rolling)。
+// 部署策略枚举(DeployInput.Strategy / Config["strategy"];空 / 未知 → instance_rolling)。
 const (
-	// StrategyRolling 滚动发布(默认):全机有界并行,各机独立成败。
+	// StrategyInstanceRolling 实例级轮转(**默认**):配合服务注册网关(nginx)多实例 upstream,
+	// 逐实例「起新→预热健康→原子切换→排空→停旧」零停机替换(见 instance_rolling.go)。
+	// 回退:非 image 产物 / 未装配网关 / 反查不到匹配服务 → 与 rolling 完全一致的单机部署。
+	StrategyInstanceRolling = "instance_rolling"
+	// StrategyRolling 滚动发布:全机有界并行,各机独立成败(整容器硬切,窗口内该机短暂不可用)。
 	StrategyRolling = "rolling"
 	// StrategyCanary 金丝雀:先发小批,健康门控通过才铺其余,否则中止。
 	StrategyCanary = "canary"
@@ -40,9 +44,12 @@ const (
 	StrategyInteractive = "interactive"
 )
 
-// NormalizeStrategy 归一策略串(大小写 / 连字符容错;空 / 未知 → rolling)。
+// NormalizeStrategy 归一策略串(大小写 / 连字符容错;空 / 未知 → instance_rolling 新默认;
+// 显式 rolling 可回到旧的整容器硬切滚动)。
 func NormalizeStrategy(s string) string {
 	switch strings.TrimSpace(strings.ToLower(s)) {
+	case StrategyRolling:
+		return StrategyRolling
 	case StrategyCanary:
 		return StrategyCanary
 	case StrategyBlueGreen, "blue-green", "bluegreen", "blue green":
@@ -50,13 +57,21 @@ func NormalizeStrategy(s string) string {
 	case StrategyInteractive, "interactive-batch", "batch":
 		return StrategyInteractive
 	default:
-		return StrategyRolling
+		// 含空串与 "instance_rolling" 及其变体 / 未知名 → 实例轮转(默认;反查不到服务时自动回退 rolling)。
+		return StrategyInstanceRolling
 	}
 }
 
 // deployWithStrategy 按策略调度多机部署。结果按 servers 输入顺序对齐(稳定可断言)。
 func (s *service) deployWithStrategy(ctx context.Context, servers []*target.Server, a run.Artifact, cfg map[string]string, hc *HealthCheck, strategy string) []TargetResult {
 	switch strategy {
+	case StrategyInstanceRolling:
+		// 实例级轮转(默认):仅 image 产物可逐实例替换;其余类型直接旧路径(deployOne 内部
+		// 按产物分流,release/命令零变化)。单机内部自带「无匹配服务 → 旧滚动」回退。
+		if a.Type == run.ArtifactImage {
+			return s.deployInstanceRolling(ctx, servers, a, cfg, hc)
+		}
+		return s.deployFanout(ctx, servers, a, cfg, hc)
 	case StrategyCanary:
 		return s.deployCanary(ctx, servers, a, cfg, hc)
 	case StrategyBlueGreen:

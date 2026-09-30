@@ -147,6 +147,10 @@ type service struct {
 	// artStore 是制品库(Story 8-16):非 nil 时部署 release 类「已归档」产物会取真字节经 SSH 上传到
 	// 目标机;nil 或产物非归档 → 旧占位路径(向后兼容)。由 main 注入(WithArtifactStore)。
 	artStore *artifactstore.Store
+	// instanceGateway 是服务注册网关(nginx)的实例级能力(instance_rolling 默认策略消费):
+	// 反查部署容器名对应的网关实例 + 原子摘挂。main 经适配器晚绑(deploy 不 import servicereg);
+	// nil → instance_rolling 自动回退既有滚动,行为不变。
+	instanceGateway InstanceGateway
 }
 
 // Option 配置 deploy.Service(如注入诊断钩子)。
