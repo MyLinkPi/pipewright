@@ -31,6 +31,9 @@ type Config struct {
 	// AdminPassword 是管理员初始口令(首次启动引导用);已存在管理员时忽略。
 	// 注:此字段仅用于首次引导,不持久化,不入日志。
 	AdminPassword string
+	// AdminPasswordFile 是随机初始口令的落盘路径(输出,非输入):未提供 AdminPassword 时,
+	// 引导生成的随机口令明文写入此文件(0600)。默认由 main 按数据目录推导。
+	AdminPasswordFile string
 }
 
 // Load 从环境变量读取配置,缺失项回退到合理默认值。
@@ -42,6 +45,7 @@ func Load() Config {
 		DBPath:        getenv("PIPEWRIGHT_DB", "pipewright.db"),
 		AdminUsername: getenv("PIPEWRIGHT_ADMIN_USERNAME", "admin"),
 		AdminPassword: os.Getenv("PIPEWRIGHT_ADMIN_PASSWORD"), // 无默认值,空串表示未设置
+		AdminPasswordFile: os.Getenv("PIPEWRIGHT_ADMIN_PASSWORD_FILE"),
 	}
 }
 

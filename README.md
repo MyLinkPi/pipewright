@@ -91,10 +91,10 @@ sh install.sh
 # Binary elsewhere / custom install dir / auto-install Docker on Linux too:
 BIN_PATH=/path/to/pipewright INSTALL_DIR=$HOME/.local/bin INSTALL_DOCKER=1 sh install.sh
 
-# Run (first launch bootstraps the admin; master key is for the credential vault)
+# Run (without PIPEWRIGHT_ADMIN_PASSWORD, the first launch generates a random
+# password into <data dir>/admin_password.txt)
 PIPEWRIGHT_MASTER_KEY=$(openssl rand -base64 32) \
-PIPEWRIGHT_ADMIN_PASSWORD=change-me \
-  pipewright          # open http://localhost:8080, log in with admin / change-me
+  pipewright          # open http://localhost:8080; password in admin_password.txt, change it after login
 ```
 
 **Recommended: install as a systemd service** (auto-start on boot + restart on crash + one-click self-update available; Linux, requires root). The script persists the master key to `/etc/pipewright/master.key`, stores data in `/var/lib/pipewright`, and writes config to `/etc/pipewright/pipewright.env`:
@@ -117,7 +117,7 @@ SETUP_SERVICE=1 PIPEWRIGHT_DB_DRIVER=mysql \
 ```bash
 curl -fsSLO https://raw.githubusercontent.com/huangchengsir/pipewright/master/docker-compose.yml
 curl -fsSLO https://raw.githubusercontent.com/huangchengsir/pipewright/master/.env.example
-cp .env.example .env       # at minimum set PIPEWRIGHT_ADMIN_PASSWORD, and openssl rand -base64 32 for MASTER_KEY
+cp .env.example .env       # generate MASTER_KEY with: openssl rand -base64 32; admin password is optional (random on first launch)
 docker compose up -d       # data persists in the named volume pipewright-data; see .env comments to switch to MySQL
 ```
 
@@ -125,9 +125,9 @@ docker compose up -d       # data persists in the named volume pipewright-data; 
 
 ```bash
 docker run -d -p 8080:8080 -v pipewright-data:/data \
-  -e PIPEWRIGHT_ADMIN_PASSWORD=change-me \
   -e PIPEWRIGHT_MASTER_KEY=$(openssl rand -base64 32) \
   ghcr.io/huangchengsir/pipewright:latest
+# initial admin password (random, 0600): docker exec <container> cat /data/admin_password.txt
 ```
 
 ### Build from source
@@ -153,7 +153,8 @@ A normal install only needs the first two (plus `PIPEWRIGHT_PUBLIC_URL` if you r
 
 | Variable | Description | Default |
 |---|---|---|
-| `PIPEWRIGHT_ADMIN_PASSWORD` | Admin password on first launch | none (must be set) |
+| `PIPEWRIGHT_ADMIN_PASSWORD` | Initial admin password (optional, used only when bootstrapping). If unset, a strong random password is generated and written in plaintext to `admin_password.txt` (0600) in the data dir; logs only mention the path | empty (random) |
+| `PIPEWRIGHT_ADMIN_PASSWORD_FILE` | Output path for the random initial password. Default: `admin_password.txt` next to the SQLite DB, or in the working directory for MySQL | derived from the data dir |
 | `PIPEWRIGHT_MASTER_KEY` | Credential vault master key (base64-encoded 32 bytes); or use `PIPEWRIGHT_MASTER_KEY_FILE` to point to a file | vault disabled if unset |
 | `PIPEWRIGHT_ADDR` | HTTP listen address | `:8080` |
 | `PIPEWRIGHT_PUBLIC_URL` | Externally reachable base URL (e.g. `https://ci.example.com`). Required for webhook callbacks, OAuth redirects, signed approval links in notifications, and PR status links | none |

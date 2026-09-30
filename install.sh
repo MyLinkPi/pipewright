@@ -150,7 +150,8 @@ setup_service() {
 	info "服务已启动并设为开机自启。"
 	printf '  状态:%s\n' "systemctl status pipewright"
 	printf '  日志:%s\n' "journalctl -u pipewright -f"
-	printf '  访问:http://<本机IP>%s  (首次登录后在引导页设置管理员账号)\n' "$ADDR"
+	printf '  初始口令:%s\n' "未设 PIPEWRIGHT_ADMIN_PASSWORD 时自动生成随机口令,root 见 ${DATA_DIR}/admin_password.txt(登录后改掉并删除)"
+	printf '  访问:http://<本机IP>%s\n' "$ADDR"
 }
 
 # 决定是否装服务:SETUP_SERVICE=1 装 / =0 跳过 / 交互式询问 / 非交互且未设则给提示。

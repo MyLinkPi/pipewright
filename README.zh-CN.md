@@ -91,10 +91,9 @@ sh install.sh
 # 二进制在别处 / 自定义安装目录 / Linux 顺带自动装 Docker:
 BIN_PATH=/path/to/pipewright INSTALL_DIR=$HOME/.local/bin INSTALL_DOCKER=1 sh install.sh
 
-# 运行(首次启动引导管理员;master key 用于凭据保险库)
+# 运行(未设 PIPEWRIGHT_ADMIN_PASSWORD 时,首启自动生成随机口令,落 <数据目录>/admin_password.txt)
 PIPEWRIGHT_MASTER_KEY=$(openssl rand -base64 32) \
-PIPEWRIGHT_ADMIN_PASSWORD=change-me \
-  pipewright          # 打开 http://localhost:8080,用 admin / change-me 登录
+  pipewright          # 打开 http://localhost:8080;口令见 admin_password.txt,登录后改掉并删文件
 ```
 
 **推荐:装为 systemd 服务**(开机自启 + 崩溃重启 + 一键自更新可用;Linux,需 root)。脚本会自动持久化 master key 到 `/etc/pipewright/master.key`、数据落 `/var/lib/pipewright`、配置写 `/etc/pipewright/pipewright.env`:
@@ -117,7 +116,7 @@ SETUP_SERVICE=1 PIPEWRIGHT_DB_DRIVER=mysql \
 ```bash
 curl -fsSLO https://raw.githubusercontent.com/huangchengsir/pipewright/master/docker-compose.yml
 curl -fsSLO https://raw.githubusercontent.com/huangchengsir/pipewright/master/.env.example
-cp .env.example .env       # 至少设 PIPEWRIGHT_ADMIN_PASSWORD,并 openssl rand -base64 32 填 MASTER_KEY
+cp .env.example .env       # 生成 MASTER_KEY:openssl rand -base64 32;管理员口令可不设(首启随机生成)
 docker compose up -d       # 数据持久化在具名卷 pipewright-data;切 MySQL 见 .env 注释
 ```
 
@@ -125,9 +124,9 @@ docker compose up -d       # 数据持久化在具名卷 pipewright-data;切 MyS
 
 ```bash
 docker run -d -p 8080:8080 -v pipewright-data:/data \
-  -e PIPEWRIGHT_ADMIN_PASSWORD=change-me \
   -e PIPEWRIGHT_MASTER_KEY=$(openssl rand -base64 32) \
   ghcr.io/huangchengsir/pipewright:latest
+# 管理员初始口令(随机生成,0600):docker exec <容器> cat /data/admin_password.txt
 ```
 
 ### 从源码构建
@@ -153,7 +152,8 @@ sh install.sh       # 亦可把构建产物装到 /usr/local/bin(见「本地编
 
 | 变量 | 说明 | 默认 |
 |---|---|---|
-| `PIPEWRIGHT_ADMIN_PASSWORD` | 首次启动管理员口令 | 无(须设置) |
+| `PIPEWRIGHT_ADMIN_PASSWORD` | 管理员初始口令(可选,仅首启建账时生效)。不设则自动生成随机强口令,明文写入数据目录 `admin_password.txt`(0600),日志只提示路径 | 空(自动随机) |
+| `PIPEWRIGHT_ADMIN_PASSWORD_FILE` | 随机初始口令落盘路径(输出)。默认:sqlite 为库同级 `admin_password.txt`,mysql 为工作目录下同名文件 | 按数据目录推导 |
 | `PIPEWRIGHT_MASTER_KEY` | 凭据保险库主密钥(base64 的 32 字节);或用 `PIPEWRIGHT_MASTER_KEY_FILE` 指文件 | 未配则保险库禁用 |
 | `PIPEWRIGHT_ADDR` | HTTP 监听地址 | `:8080` |
 | `PIPEWRIGHT_PUBLIC_URL` | 外部可访问的基址(如 `https://ci.example.com`)。webhook 回调、OAuth 回跳、通知里的签名审批链接、PR 状态跳转链接都需要它 | 无 |

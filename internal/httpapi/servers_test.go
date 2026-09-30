@@ -48,7 +48,7 @@ func setupServerAPI(t *testing.T, dialer target.SSHDialer) (*httptest.Server, *h
 	t.Helper()
 	st := testStoreAuth(t)
 	svc := auth.NewService(st.DB, nil)
-	if err := svc.Bootstrap("admin", "testpass"); err != nil {
+	if err := svc.Bootstrap("admin", "testpass", ""); err != nil {
 		t.Fatalf("bootstrap: %v", err)
 	}
 	v := vault.New(st.DB, testMasterKey())
@@ -218,7 +218,7 @@ func TestServerInvalidInput(t *testing.T) {
 func TestServerListServiceUnavailable(t *testing.T) {
 	st := testStoreAuth(t)
 	svc := auth.NewService(st.DB, nil)
-	if err := svc.Bootstrap("admin", "testpass"); err != nil {
+	if err := svc.Bootstrap("admin", "testpass", ""); err != nil {
 		t.Fatalf("bootstrap: %v", err)
 	}
 	// 不传 WithServers。

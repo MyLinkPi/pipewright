@@ -105,3 +105,32 @@ func decodeHash(encoded string) (params argonParams, salt, hash []byte, err erro
 	params.keyLen = uint32(len(hash))
 	return params, salt, hash, nil
 }
+
+// passwordAlphabet 随机初始口令字符集:大小写字母 + 数字,剔除易混淆的 0/O/1/l/I。
+const passwordAlphabet = "23456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+
+// passwordLen 随机初始口令长度:24 位无混淆字符 ≈ 138 bit 熵,远超人工口令强度。
+const passwordLen = 24
+
+// GeneratePassword 生成随机初始口令(Bootstrap 用):crypto/rand 拒绝采样,保证字符分布均匀无模偏。
+func GeneratePassword() (string, error) {
+	// 可接受采样上界(含):N*floor(256/N)-1,超出则丢弃该字节重取。
+	max := byte(len(passwordAlphabet) * (256 / len(passwordAlphabet)))
+	out := make([]byte, 0, passwordLen)
+	buf := make([]byte, passwordLen*2)
+	for len(out) < passwordLen {
+		if _, err := rand.Read(buf); err != nil {
+			return "", fmt.Errorf("auth: generate password: %w", err)
+		}
+		for _, b := range buf {
+			if b >= max {
+				continue
+			}
+			out = append(out, passwordAlphabet[int(b)%len(passwordAlphabet)])
+			if len(out) == passwordLen {
+				break
+			}
+		}
+	}
+	return string(out), nil
+}

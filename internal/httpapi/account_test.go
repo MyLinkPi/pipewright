@@ -30,7 +30,7 @@ func setupAccountServer(t *testing.T) (*httptest.Server, *http.Client, string, *
 	t.Helper()
 	st := testStoreAuth(t)
 	svc := auth.NewService(st.DB, nil)
-	if err := svc.Bootstrap("admin", "testpass"); err != nil {
+	if err := svc.Bootstrap("admin", "testpass", ""); err != nil {
 		t.Fatalf("bootstrap: %v", err)
 	}
 	rec := audit.New(st.DB, mask.NewMasker(), nil)

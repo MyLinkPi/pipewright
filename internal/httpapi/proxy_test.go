@@ -81,7 +81,7 @@ func setupProxyServer(t *testing.T, px proxy.Service) (*httptest.Server, *http.C
 	t.Helper()
 	st := testStoreAuth(t)
 	svc := auth.NewService(st.DB, nil)
-	if err := svc.Bootstrap("admin", "testpass"); err != nil {
+	if err := svc.Bootstrap("admin", "testpass", ""); err != nil {
 		t.Fatalf("bootstrap: %v", err)
 	}
 	srv := httptest.NewServer(New(testWebFSAuth(), svc, WithProxy(px)))
@@ -214,7 +214,7 @@ func TestProxyOverview(t *testing.T) {
 func TestProxyUpdate_Unconfigured503(t *testing.T) {
 	st := testStoreAuth(t)
 	svc := auth.NewService(st.DB, nil)
-	if err := svc.Bootstrap("admin", "testpass"); err != nil {
+	if err := svc.Bootstrap("admin", "testpass", ""); err != nil {
 		t.Fatalf("bootstrap: %v", err)
 	}
 	srv := httptest.NewServer(New(testWebFSAuth(), svc)) // 不注入 WithProxy
@@ -413,7 +413,7 @@ func TestProxyRouteDTO_DefaultUpstreamKindContainer(t *testing.T) {
 func TestProxyCaddy_Unconfigured503(t *testing.T) {
 	st := testStoreAuth(t)
 	svc := auth.NewService(st.DB, nil)
-	if err := svc.Bootstrap("admin", "testpass"); err != nil {
+	if err := svc.Bootstrap("admin", "testpass", ""); err != nil {
 		t.Fatalf("bootstrap: %v", err)
 	}
 	srv := httptest.NewServer(New(testWebFSAuth(), svc)) // 不注入 WithProxy
