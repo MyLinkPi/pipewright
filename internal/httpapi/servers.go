@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/huangchengsir/pipewright/internal/runner"
 	"github.com/huangchengsir/pipewright/internal/target"
 )
 
@@ -19,8 +20,12 @@ type serverDTO struct {
 	User           string `json:"user"`
 	CredentialID   string `json:"credentialId"`
 	CredentialName string `json:"credentialName"`
-	CreatedAt      string `json:"createdAt"`
-	UpdatedAt      string `json:"updatedAt"`
+	// 构建机池字段(FR-8-19,追加契约):labels 空 = 不参与构建机池;maxBuilds 0 = 全局默认;priority 大者优先。
+	Labels    string `json:"labels"`
+	MaxBuilds int    `json:"maxBuilds"`
+	Priority  int    `json:"priority"`
+	CreatedAt string `json:"createdAt"`
+	UpdatedAt string `json:"updatedAt"`
 }
 
 // toServerDTO 把领域 Server 转为契约 DTO。
@@ -33,6 +38,9 @@ func toServerDTO(s *target.Server) serverDTO {
 		User:           s.User,
 		CredentialID:   s.CredentialID,
 		CredentialName: s.CredentialName,
+		Labels:         s.Labels,
+		MaxBuilds:      s.MaxBuilds,
+		Priority:       s.Priority,
 		CreatedAt:      s.CreatedAt.UTC().Format(time.RFC3339),
 		UpdatedAt:      s.UpdatedAt.UTC().Format(time.RFC3339),
 	}
@@ -69,6 +77,21 @@ func writeServerError(w http.ResponseWriter, err error) {
 		// 内部错误:不泄漏细节。
 		writeError(w, http.StatusInternalServerError, "internal", "服务器内部错误")
 	}
+}
+
+// validateRunnerPoolFields 校验构建机池写入字段(FR-8-19):标签字符集/规模(runner 域规则)、
+// 槽位 0..64、优先级 0..100。返回的错误文案直接面向用户(写入 400)。
+func validateRunnerPoolFields(labels string, maxBuilds, priority int) error {
+	if err := runner.ValidateLabels(labels); err != nil {
+		return errors.New("标签非法:应为逗号分隔的 tag 或 k=v 项(如 linux,arch=arm64),每项字母数字开头、可含 . _ -")
+	}
+	if maxBuilds < 0 || maxBuilds > 64 {
+		return errors.New("并发构建槽位必须在 0..64 之间(0 = 用全局默认)")
+	}
+	if priority < 0 || priority > 100 {
+		return errors.New("调度优先级必须在 0..100 之间(数值越大越优先)")
+	}
+	return nil
 }
 
 // makeListServersHandler 返回 GET /api/servers handler → { items: [...] }。
@@ -121,9 +144,16 @@ func makeCreateServerHandler(svc target.Service) http.HandlerFunc {
 			Port         int    `json:"port"`
 			User         string `json:"user"`
 			CredentialID string `json:"credentialId"`
+			Labels       string `json:"labels"`
+			MaxBuilds    int    `json:"maxBuilds"`
+			Priority     int    `json:"priority"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, "bad_request", "请求体格式错误")
+			return
+		}
+		if err := validateRunnerPoolFields(req.Labels, req.MaxBuilds, req.Priority); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_server", err.Error())
 			return
 		}
 		s, err := svc.Create(r.Context(), target.CreateInput{
@@ -132,6 +162,9 @@ func makeCreateServerHandler(svc target.Service) http.HandlerFunc {
 			Port:         req.Port,
 			User:         req.User,
 			CredentialID: req.CredentialID,
+			Labels:       req.Labels,
+			MaxBuilds:    req.MaxBuilds,
+			Priority:     req.Priority,
 		})
 		if err != nil {
 			writeServerError(w, err)
@@ -156,10 +189,31 @@ func makeUpdateServerHandler(svc target.Service) http.HandlerFunc {
 			Port         *int    `json:"port"`
 			User         *string `json:"user"`
 			CredentialID *string `json:"credentialId"`
+			Labels       *string `json:"labels"`
+			MaxBuilds    *int    `json:"maxBuilds"`
+			Priority     *int    `json:"priority"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, "bad_request", "请求体格式错误")
 			return
+		}
+		// 只校验显式传入的构建机池字段(部分更新语义)。
+		if req.Labels != nil || req.MaxBuilds != nil || req.Priority != nil {
+			labels := ""
+			if req.Labels != nil {
+				labels = *req.Labels
+			}
+			maxBuilds, priority := 0, 0
+			if req.MaxBuilds != nil {
+				maxBuilds = *req.MaxBuilds
+			}
+			if req.Priority != nil {
+				priority = *req.Priority
+			}
+			if err := validateRunnerPoolFields(labels, maxBuilds, priority); err != nil {
+				writeError(w, http.StatusBadRequest, "invalid_server", err.Error())
+				return
+			}
 		}
 		s, err := svc.Update(r.Context(), id, target.UpdateInput{
 			Name:         req.Name,
@@ -167,6 +221,9 @@ func makeUpdateServerHandler(svc target.Service) http.HandlerFunc {
 			Port:         req.Port,
 			User:         req.User,
 			CredentialID: req.CredentialID,
+			Labels:       req.Labels,
+			MaxBuilds:    req.MaxBuilds,
+			Priority:     req.Priority,
 		})
 		if err != nil {
 			writeServerError(w, err)

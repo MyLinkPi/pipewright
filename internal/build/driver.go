@@ -160,6 +160,44 @@ func DetectDriver(cmdr Commander) (Driver, error) {
 	return &shellDriver{bin: bin, cmdr: cmdr}, nil
 }
 
+// errDriver 是「本机无容器 CLI」的占位 Driver(FR-8-19 瘦控制机):任何本地容器操作都诚实
+// 返回 ErrNoContainerCLI。用于「控制机无 docker + 构建全走远程机池」场景——Builder 仍可构造
+// (克隆/打包/上传不依赖本机 CLI),真走到本地容器操作的路径显式失败,不假装成功。
+type errDriver struct{}
+
+func (errDriver) Binary() string { return "none" }
+
+func (errDriver) Build(context.Context, string, string, string, []string, []string, func(string, string)) (int, error) {
+	return -1, ErrNoContainerCLI
+}
+
+func (errDriver) RunToolchain(context.Context, string, string, string, []string, []string, pipeline.Resource, func(string, string)) (int, error) {
+	return -1, ErrNoContainerCLI
+}
+
+func (errDriver) Tag(context.Context, string, string, func(string, string)) (int, error) {
+	return -1, ErrNoContainerCLI
+}
+
+func (errDriver) Login(context.Context, string, string, string, func(string, string)) (int, error) {
+	return -1, ErrNoContainerCLI
+}
+
+func (errDriver) Push(context.Context, string, func(string, string)) (int, error) {
+	return -1, ErrNoContainerCLI
+}
+
+func (errDriver) InspectImage(context.Context, string) (string, int64, error) {
+	return "", 0, ErrNoContainerCLI
+}
+
+// WithRemoteOnlyDriver 注入 errDriver:本机探测不到容器 CLI 时仍允许构造 Builder,
+// 让远程构建机池(NewStageExecutorWithRunner 的选择器分支)在瘦控制机上可用;
+// 未配选择器而回落本地执行的阶段将诚实报 ErrNoContainerCLI。
+func WithRemoteOnlyDriver() BuilderOption {
+	return WithDriver(errDriver{})
+}
+
 // lookPath 是默认 PATH 探测(可注入便于测试)。
 var lookPath = exec.LookPath
 

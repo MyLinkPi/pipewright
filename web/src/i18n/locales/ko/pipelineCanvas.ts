@@ -107,4 +107,9 @@ export default {
   customBadge: '사용자 정의',
   savedCustomNode: '저장된 사용자 정의 노드',
   currentBadge: '현재',
+  runnerSectionLabel: '빌드 머신(RUNNER)',
+  runnerLabel: '라벨 셀렉터 재정의',
+  runnerPlaceholder: '예: gpu 또는 linux,arch=arm64',
+  runnerAria: '스테이지 단위 빌드 머신 셀렉터',
+  runnerHint: '설정하면 이 스테이지에서 프로젝트 기본 셀렉터를 재정의합니다(라벨 또는 server:<id> 고정). 비어 있으면 프로젝트 기본값.',
 }

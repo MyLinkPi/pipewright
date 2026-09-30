@@ -66,6 +66,13 @@ type Server struct {
 	Port         int
 	User         string
 	CredentialID string
+	// Labels 是构建机池标签(FR-8-19,逗号分隔 tag/k=v 项):对 target 层为不透明字符串,
+	// 语义(匹配/校验)归 runner 域。空 = 该机不参与构建机池调度。
+	Labels string
+	// MaxBuilds 是该机并发构建槽位(0 = 用调度器全局默认)。
+	MaxBuilds int
+	// Priority 是调度优先级(数值越大越优先;0-100)。
+	Priority int
 	// CredentialName 是冗余只读展示名(join credentials),便于列表展示;非持久列。
 	CredentialName string
 	CreatedAt      time.Time
@@ -79,6 +86,9 @@ type CreateInput struct {
 	Port         int // <=0 时归一为 DefaultPort
 	User         string
 	CredentialID string
+	Labels       string
+	MaxBuilds    int
+	Priority     int
 }
 
 // UpdateInput 是更新服务器的入参;指针字段为 nil 表示不修改。
@@ -88,6 +98,9 @@ type UpdateInput struct {
 	Port         *int
 	User         *string
 	CredentialID *string
+	Labels       *string
+	MaxBuilds    *int
+	Priority     *int
 }
 
 // ExecResult 是通用 Exec 的结果(冻结契约;Epic 4/6 消费)。
@@ -238,9 +251,9 @@ func (s *service) Create(ctx context.Context, in CreateInput) (*Server, error) {
 	nowStr := now.Format(time.RFC3339)
 
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO servers (id, name, host, port, user, credential_id, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		id, in.Name, in.Host, port, in.User, in.CredentialID, nowStr, nowStr,
+		`INSERT INTO servers (id, name, host, port, user, credential_id, labels, max_builds, priority, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		id, in.Name, in.Host, port, in.User, in.CredentialID, in.Labels, in.MaxBuilds, in.Priority, nowStr, nowStr,
 	)
 	if err != nil {
 		if isForeignKeyErr(err) {
@@ -254,6 +267,7 @@ func (s *service) Create(ctx context.Context, in CreateInput) (*Server, error) {
 func (s *service) List(ctx context.Context) ([]*Server, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT s.id, s.name, s.host, s.port, s.user, s.credential_id,
+		        COALESCE(s.labels, ''), COALESCE(s.max_builds, 0), COALESCE(s.priority, 0),
 		        COALESCE(c.name, ''), s.created_at, s.updated_at
 		 FROM servers s
 		 LEFT JOIN credentials c ON c.id = s.credential_id
@@ -281,6 +295,7 @@ func (s *service) List(ctx context.Context) ([]*Server, error) {
 func (s *service) Get(ctx context.Context, id string) (*Server, error) {
 	row := s.db.QueryRowContext(ctx,
 		`SELECT s.id, s.name, s.host, s.port, s.user, s.credential_id,
+		        COALESCE(s.labels, ''), COALESCE(s.max_builds, 0), COALESCE(s.priority, 0),
 		        COALESCE(c.name, ''), s.created_at, s.updated_at
 		 FROM servers s
 		 LEFT JOIN credentials c ON c.id = s.credential_id
@@ -298,11 +313,11 @@ func (s *service) Get(ctx context.Context, id string) (*Server, error) {
 
 func (s *service) Update(ctx context.Context, id string, in UpdateInput) (*Server, error) {
 	// 先取当前行。
-	var name, host, user, credentialID string
-	var port int
+	var name, host, user, credentialID, labels string
+	var port, maxBuilds, priority int
 	err := s.db.QueryRowContext(ctx,
-		`SELECT name, host, port, user, credential_id FROM servers WHERE id = ?`, id,
-	).Scan(&name, &host, &port, &user, &credentialID)
+		`SELECT name, host, port, user, credential_id, COALESCE(labels,''), COALESCE(max_builds,0), COALESCE(priority,0) FROM servers WHERE id = ?`, id,
+	).Scan(&name, &host, &port, &user, &credentialID, &labels, &maxBuilds, &priority)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
@@ -341,11 +356,20 @@ func (s *service) Update(ctx context.Context, id string, in UpdateInput) (*Serve
 		}
 		credentialID = *in.CredentialID
 	}
+	if in.Labels != nil {
+		labels = *in.Labels
+	}
+	if in.MaxBuilds != nil {
+		maxBuilds = *in.MaxBuilds
+	}
+	if in.Priority != nil {
+		priority = *in.Priority
+	}
 
 	nowStr := time.Now().UTC().Format(time.RFC3339)
 	_, err = s.db.ExecContext(ctx,
-		`UPDATE servers SET name = ?, host = ?, port = ?, user = ?, credential_id = ?, updated_at = ? WHERE id = ?`,
-		name, host, port, user, credentialID, nowStr, id,
+		`UPDATE servers SET name = ?, host = ?, port = ?, user = ?, credential_id = ?, labels = ?, max_builds = ?, priority = ?, updated_at = ? WHERE id = ?`,
+		name, host, port, user, credentialID, labels, maxBuilds, priority, nowStr, id,
 	)
 	if err != nil {
 		if isForeignKeyErr(err) {
@@ -642,6 +666,7 @@ func scanServer(sc scanner) (*Server, error) {
 	var createdStr, updatedStr string
 	if err := sc.Scan(
 		&srv.ID, &srv.Name, &srv.Host, &srv.Port, &srv.User, &srv.CredentialID,
+		&srv.Labels, &srv.MaxBuilds, &srv.Priority,
 		&srv.CredentialName, &createdStr, &updatedStr,
 	); err != nil {
 		return nil, err

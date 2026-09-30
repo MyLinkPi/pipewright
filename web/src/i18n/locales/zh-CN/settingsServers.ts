@@ -50,4 +50,13 @@ export default {
   errDeleteRetry: '删除失败,请稍后重试',
   errTestRetry: '测试连接失败,请稍后重试',
   errTestStatus: '测试连接失败({status})',
+  fieldLabels: '构建机标签',
+  labelsHint: '逗号分隔,如 linux,arch=arm64。空 = 不作为构建机;打了标签的机器才会被标签选择器调度。',
+  fieldMaxBuilds: '并发构建槽位',
+  maxBuildsHint: '0 = 用全局默认(默认 1,单机串行)',
+  fieldPriority: '调度优先级',
+  priorityHint: '0-100,数值越大越优先;同优先级优先复用本流水线最近用过的机器(亲和)',
+  poolBadgeHint: '构建机:槽位 {slots},优先级 {priority}',
+  errMaxBuildsRange: '并发构建槽位必须在 0..64 之间',
+  errPriorityRange: '调度优先级必须在 0..100 之间',
 }

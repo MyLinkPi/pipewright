@@ -50,4 +50,13 @@ export default {
   errDeleteRetry: 'Löschen fehlgeschlagen. Bitte später erneut versuchen.',
   errTestRetry: 'Verbindungstest fehlgeschlagen. Bitte später erneut versuchen.',
   errTestStatus: 'Verbindungstest fehlgeschlagen ({status})',
+  fieldLabels: 'Build-Maschinen-Labels',
+  labelsHint: 'Kommagetrennt, z.B. linux,arch=arm64. Leer = keine Build-Maschine; nur gelabelte Maschinen werden per Label-Selektor gewaehlt.',
+  fieldMaxBuilds: 'Gleichzeitige Build-Slots',
+  maxBuildsHint: '0 = globaler Standard (Standard 1, pro Maschine seriell)',
+  fieldPriority: 'Planungsprioritaet',
+  priorityHint: '0-100, hoeher gewinnt; bei Gleichstand wird die zuletzt von dieser Pipeline genutzte Maschine bevorzugt (Affinitaet)',
+  poolBadgeHint: 'Build-Maschine: {slots} Slots, Prioritaet {priority}',
+  errMaxBuildsRange: 'Gleichzeitige Build-Slots muessen zwischen 0 und 64 liegen',
+  errPriorityRange: 'Planungsprioritaet muss zwischen 0 und 100 liegen',
 }

@@ -54,3 +54,7 @@
 /_bmad-output/
 /.claude/
 /CLAUDE.md
+
+# Python 脚本字节码缓存(i18n 等一次性脚本的 __pycache__)
+__pycache__/
+*.pyc

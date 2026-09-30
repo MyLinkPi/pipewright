@@ -50,4 +50,13 @@ export default {
   errDeleteRetry: '삭제에 실패했습니다. 잠시 후 다시 시도하세요.',
   errTestRetry: '연결 테스트에 실패했습니다. 잠시 후 다시 시도하세요.',
   errTestStatus: '연결 테스트에 실패했습니다({status})',
+  fieldLabels: '빌드 머신 라벨',
+  labelsHint: '쉼표로 구분(예: linux,arch=arm64). 비어 있으면 빌드 머신이 아님. 라벨이 있는 머신만 셀렉터 대상이 됩니다.',
+  fieldMaxBuilds: '동시 빌드 슬롯',
+  maxBuildsHint: '0 = 전역 기본값(기본 1, 머신당 직렬)',
+  fieldPriority: '스케줄 우선순위',
+  priorityHint: '0-100, 클수록 우선. 동순위면 이 파이프라인이 마지막에 쓴 머신 우선(친화성)',
+  poolBadgeHint: '빌드 머신: 슬롯 {slots}, 우선순위 {priority}',
+  errMaxBuildsRange: '동시 빌드 슬롯은 0..64 범위여야 합니다',
+  errPriorityRange: '스케줄 우선순위는 0..100 범위여야 합니다',
 }

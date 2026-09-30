@@ -233,3 +233,53 @@ func TestServerListServiceUnavailable(t *testing.T) {
 		t.Fatalf("status = %d, want 503", resp.StatusCode)
 	}
 }
+
+// TestServerRunnerPoolFields 验证构建机池字段(FR-8-19):合法 labels/maxBuilds/priority 可写可读,
+// 非法 labels → 400,槽位/优先级越界 → 400。
+func TestServerRunnerPoolFields(t *testing.T) {
+	srv, client, csrf := setupServerAPI(t, stubDialer{})
+	credID := newSSHCredAPI(t, client, srv.URL, csrf, "priv_key_marker")
+
+	// 合法创建。
+	resp := doJSON(t, client, http.MethodPost, srv.URL+"/api/servers", csrf,
+		`{"name":"build-1","host":"h","user":"u","credentialId":"`+credID+`","labels":"linux,arch=arm64","maxBuilds":4,"priority":10}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create status = %d, want 201", resp.StatusCode)
+	}
+	var created map[string]any
+	_ = json.NewDecoder(resp.Body).Decode(&created)
+	if created["labels"] != "linux,arch=arm64" || created["maxBuilds"] != float64(4) || created["priority"] != float64(10) {
+		t.Fatalf("创建响应应带构建机池字段: %v", created)
+	}
+
+	// 非法 labels。
+	resp2 := doJSON(t, client, http.MethodPost, srv.URL+"/api/servers", csrf,
+		`{"name":"bad","host":"h","user":"u","credentialId":"c","labels":"os=linux!"}`)
+	defer resp2.Body.Close()
+	if resp2.StatusCode != http.StatusBadRequest {
+		t.Fatalf("非法 labels status = %d, want 400", resp2.StatusCode)
+	}
+
+	// 槽位越界。
+	resp3 := doJSON(t, client, http.MethodPost, srv.URL+"/api/servers", csrf,
+		`{"name":"bad2","host":"h","user":"u","credentialId":"c","labels":"linux","maxBuilds":99}`)
+	defer resp3.Body.Close()
+	if resp3.StatusCode != http.StatusBadRequest {
+		t.Fatalf("槽位越界 status = %d, want 400", resp3.StatusCode)
+	}
+
+	// 部分更新:清标签(回非构建机)+ 改优先级。
+	if id, _ := created["id"].(string); id != "" {
+		resp4 := doJSON(t, client, http.MethodPut, srv.URL+"/api/servers/"+id, csrf, `{"labels":"","priority":50}`)
+		defer resp4.Body.Close()
+		if resp4.StatusCode != http.StatusOK {
+			t.Fatalf("update status = %d, want 200", resp4.StatusCode)
+		}
+		var updated map[string]any
+		_ = json.NewDecoder(resp4.Body).Decode(&updated)
+		if updated["labels"] != "" || updated["priority"] != float64(50) {
+			t.Fatalf("更新后字段: %v", updated)
+		}
+	}
+}

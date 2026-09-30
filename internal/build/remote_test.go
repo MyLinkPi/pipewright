@@ -3,7 +3,9 @@ package build
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/huangchengsir/pipewright/internal/pipeline"
 	"github.com/huangchengsir/pipewright/internal/target"
@@ -151,4 +153,94 @@ func cmdContainsPair(args []string, flag, value string) bool {
 		}
 	}
 	return false
+}
+
+// —— DetectRemoteCLI:远程容器 CLI 探测 + TTL 缓存(FR-8-19)——
+
+// remoteExecFunc 把函数适配成 RemoteExecer(探测缓存测试需按调用次变化返回)。
+type remoteExecFunc func(ctx context.Context, serverID string, cmd []string) (*target.ExecResult, error)
+
+func (f remoteExecFunc) Exec(ctx context.Context, serverID string, cmd []string) (*target.ExecResult, error) {
+	return f(ctx, serverID, cmd)
+}
+
+// resetRemoteCLICache 清空进程级探测缓存,保证用例间互不染指(缓存是包级变量)。
+func resetRemoteCLICache(t *testing.T) {
+	t.Helper()
+	clear := func() {
+		remoteCLIMu.Lock()
+		remoteCLICache = map[string]remoteCLIAt{}
+		remoteCLIMu.Unlock()
+	}
+	clear()
+	t.Cleanup(clear)
+}
+
+// 探测按 nerdctl > docker > podman 顺序取首个命中;TTL 内第二次调用走缓存不再 SSH。
+func TestDetectRemoteCLIPicksAndCaches(t *testing.T) {
+	resetRemoteCLICache(t)
+	var calls int32
+	ex := remoteExecFunc(func(_ context.Context, _ string, _ []string) (*target.ExecResult, error) {
+		atomic.AddInt32(&calls, 1)
+		return &target.ExecResult{Stdout: "nerdctl\n", ExitCode: 0}, nil
+	})
+	if bin := DetectRemoteCLI(context.Background(), ex, "srv-1"); bin != "nerdctl" {
+		t.Fatalf("bin = %q, want nerdctl", bin)
+	}
+	if bin := DetectRemoteCLI(context.Background(), ex, "srv-1"); bin != "nerdctl" {
+		t.Fatalf("缓存命中应仍得 nerdctl, got %q", bin)
+	}
+	if n := atomic.LoadInt32(&calls); n != 1 {
+		t.Fatalf("TTL 内应只探测 1 次,实际 %d", n)
+	}
+}
+
+// 超过 TTL 后缓存失效,应重新探测(机器换装 CLI 无需重启控制机即可感知)。
+func TestDetectRemoteCLITTLExpiry(t *testing.T) {
+	resetRemoteCLICache(t)
+	now := time.Now()
+	clock := func() time.Time { return now }
+	var calls int32
+	ex := remoteExecFunc(func(_ context.Context, _ string, _ []string) (*target.ExecResult, error) {
+		atomic.AddInt32(&calls, 1)
+		return &target.ExecResult{Stdout: "docker\n", ExitCode: 0}, nil
+	})
+	if bin := detectRemoteCLI(context.Background(), ex, "srv-1", clock); bin != "docker" {
+		t.Fatalf("bin = %q, want docker", bin)
+	}
+	now = now.Add(remoteCLITTL + time.Minute) // 越过 TTL
+	if bin := detectRemoteCLI(context.Background(), ex, "srv-1", clock); bin != "docker" {
+		t.Fatalf("过期重探仍应得 docker, got %q", bin)
+	}
+	if n := atomic.LoadInt32(&calls); n != 2 {
+		t.Fatalf("过 TTL 应重新探测,实际调用 %d 次", n)
+	}
+}
+
+// 探测失败(SSH 不通 / 输出无命中)回落 "docker",且失败结果不缓存(下次重新探测)。
+func TestDetectRemoteCLIFallbackNotCached(t *testing.T) {
+	resetRemoteCLICache(t)
+	var calls int32
+	ex := remoteExecFunc(func(_ context.Context, _ string, _ []string) (*target.ExecResult, error) {
+		n := atomic.AddInt32(&calls, 1)
+		if n == 1 {
+			return nil, errors.New("ssh: connection refused")
+		}
+		if n == 2 {
+			return &target.ExecResult{Stdout: "none\n", ExitCode: 0}, nil // 远程无任何容器 CLI
+		}
+		return &target.ExecResult{Stdout: "podman\n", ExitCode: 0}, nil
+	})
+	if bin := DetectRemoteCLI(context.Background(), ex, "srv-1"); bin != "docker" {
+		t.Fatalf("SSH 失败应回落 docker, got %q", bin)
+	}
+	if bin := DetectRemoteCLI(context.Background(), ex, "srv-1"); bin != "docker" {
+		t.Fatalf("无命中输出应回落 docker, got %q", bin)
+	}
+	if bin := DetectRemoteCLI(context.Background(), ex, "srv-1"); bin != "podman" {
+		t.Fatalf("失败不缓存,第三次应真探测得 podman, got %q", bin)
+	}
+	if n := atomic.LoadInt32(&calls); n != 3 {
+		t.Fatalf("失败结果不得缓存,每次都应真探测,实际调用 %d 次", n)
+	}
 }

@@ -273,7 +273,7 @@ export default {
 
   runner: {
     title: 'Build Runner',
-    sub: 'Offload the build to a remote build machine (code transferred over SSH, the token stays on the control machine)',
+    sub: 'Offload builds to a labeled remote machine pool (label, then priority, then affinity, then load; tokens stay on the control node)',
     loading: 'Loading…',
     errLoad: 'Failed to load runner settings',
     setRemote: 'Set to remote build',
@@ -286,7 +286,17 @@ export default {
     hint: 'Remote build requires a container runtime (docker/nerdctl/podman) on that machine. Only script-type jobs run remotely; test reports / quality gates are not yet collected in remote mode (incremental follow-up).',
     saving: 'Saving…',
     save: 'Save runner settings',
-  },
+      optionLabel: 'By label (build machine pool)',
+    optionServer: 'Pin to one server',
+    selectorLabel: 'Label selector',
+    selectorPlaceholder: 'e.g. linux,arch=arm64',
+    selectorHint: 'Comma-separated label terms, all must match (AND). Scheduling picks by priority, then pipeline affinity, then load; queues when all busy. Servers without labels are never selected.',
+    matchCount: '{n} server(s) matched',
+    noMatch: 'No server matches: check the label spelling, or label machines under Settings > Servers first',
+    serverLabel: 'Server',
+    serverPick: 'Pick a server...',
+    setSelector: 'Selector saved: {selector}',
+},
 
   typedParams: {
     requiredAria: 'Required',

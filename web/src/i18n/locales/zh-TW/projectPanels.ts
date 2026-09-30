@@ -273,7 +273,7 @@ export default {
 
   runner: {
     title: '建置 runner',
-    sub: '把建置下沉到遠端建置機執行(程式碼經 SSH 傳輸,token 只在中控機)',
+    sub: '建置下沉到打了標籤的遠端建置機池(標籤 → 優先級 → 親和 → 負載;token 只在中控機)',
     loading: '載入中…',
     errLoad: '載入 runner 設定失敗',
     setRemote: '已設為遠端建置',
@@ -286,7 +286,17 @@ export default {
     hint: '遠端建置需該機裝有容器執行環境(docker/nerdctl/podman)。僅 script 類型 job 在遠端執行;測試報告/品質門禁在遠端模式暫不回採(後續增量)。',
     saving: '儲存中…',
     save: '儲存 runner 設定',
-  },
+      optionLabel: '按標籤選擇建置機池',
+    optionServer: '指定一台伺服器(釘選)',
+    selectorLabel: '標籤選擇器',
+    selectorPlaceholder: '如 linux,arch=arm64',
+    selectorHint: '逗號分隔標籤項,全部命中才匹配(AND);調度按「優先級 → 本流水線親和 → 負載」選機,全忙自動排隊。未打標籤的伺服器不會入選。',
+    matchCount: '命中 {n} 台',
+    noMatch: '沒有命中任何伺服器:請檢查標籤拼寫,或先在「設定 → 伺服器」給機器打標籤',
+    serverLabel: '伺服器',
+    serverPick: '選擇伺服器…',
+    setSelector: '已儲存選擇器:{selector}',
+},
 
   typedParams: {
     requiredAria: '必填',

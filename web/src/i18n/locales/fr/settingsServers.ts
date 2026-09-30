@@ -50,4 +50,13 @@ export default {
   errDeleteRetry: 'Échec de la suppression. Réessayez plus tard.',
   errTestRetry: 'Échec du test de connexion. Réessayez plus tard.',
   errTestStatus: 'Échec du test de connexion ({status})',
+  fieldLabels: 'Labels de machine de build',
+  labelsHint: 'Separes par des virgules, ex. linux,arch=arm64. Vide = pas une machine de build ; seules les machines labellisees sont selectionnees par les selecteurs.',
+  fieldMaxBuilds: 'Slots de build simultanes',
+  maxBuildsHint: '0 = defaut global (defaut 1, serie par machine)',
+  fieldPriority: 'Priorite dordonnancement',
+  priorityHint: '0-100, la plus haute gagne ; a egalite, la machine dernierement utilisee par ce pipeline est preferee (affinite)',
+  poolBadgeHint: 'Machine de build : {slots} slots, priorite {priority}',
+  errMaxBuildsRange: 'Les slots de build simultanes doivent etre entre 0 et 64',
+  errPriorityRange: 'La priorite doit etre entre 0 et 100',
 }

@@ -107,4 +107,9 @@ export default {
   customBadge: '自訂',
   savedCustomNode: '已儲存的自訂節點',
   currentBadge: '目前',
+  runnerSectionLabel: '建置機(RUNNER)',
+  runnerLabel: '標籤選擇器覆蓋',
+  runnerPlaceholder: '如 gpu 或 linux,arch=arm64',
+  runnerAria: '階段級建置機選擇器',
+  runnerHint: '非空時本階段覆蓋專案預設選擇器(支援標籤或 server:<id> 釘選);空 = 用專案預設。',
 }

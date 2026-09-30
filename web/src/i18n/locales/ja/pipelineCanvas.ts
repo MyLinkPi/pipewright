@@ -107,4 +107,9 @@ export default {
   customBadge: 'カスタム',
   savedCustomNode: '保存済みのカスタムノード',
   currentBadge: '現在',
+  runnerSectionLabel: 'ビルドマシン(RUNNER)',
+  runnerLabel: 'ラベルセレクターの上書き',
+  runnerPlaceholder: '例: gpu または linux,arch=arm64',
+  runnerAria: 'ステージ単位のビルドマシンセレクター',
+  runnerHint: '設定するとこのステージはプロジェクト既定のセレクターを上書きします(ラベルまたは server:<id> 固定)。空 = プロジェクト既定。',
 }
