@@ -5,9 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
-	"net"
 	"net/http"
-	"net/url"
 	"path"
 	"sort"
 	"strings"
@@ -69,9 +67,9 @@ type sourceBlobDTO struct {
 // SourceReader 抽象「按 ref 读仓库树/blob」能力(go-git 浅克隆只读;注入便于测试)。
 type SourceReader interface {
 	// Tree 列 ref 下 dir 的直接子项(name 升序;dir 在前)。克隆失败返回 degraded=true(不报错)。
-	Tree(ctx context.Context, repoURL, username, token, ref, dir string) (sourceTreeDTO, error)
+	Tree(ctx context.Context, repoURL string, cred vault.GitAuth, ref, dir string) (sourceTreeDTO, error)
 	// Blob 读 ref 下 file 的内容(binary 检测 + 512KB 截断)。克隆失败/文件不存在返回对应错误。
-	Blob(ctx context.Context, repoURL, username, token, ref, file string) (sourceBlobDTO, error)
+	Blob(ctx context.Context, repoURL string, cred vault.GitAuth, ref, file string) (sourceBlobDTO, error)
 }
 
 // 源码读取领域错误(供 handler 映射状态码)。
@@ -95,7 +93,7 @@ func newInsecureSourceReader() SourceReader { return goGitSourceReader{allowInse
 
 // cloneWorktree 浅克隆 repoURL@ref 到内存 worktree(只读;Depth:1 + SingleBranch)。
 // ref 为空时克隆默认分支。克隆失败返回 errSourceCloneFailed(不泄漏底层错误,可能含 URL 密钥)。
-func (g goGitSourceReader) cloneWorktree(ctx context.Context, repoURL, username, token, ref string) (billy.Filesystem, error) {
+func (g goGitSourceReader) cloneWorktree(ctx context.Context, repoURL string, cred vault.GitAuth, ref string) (billy.Filesystem, error) {
 	repoURL = strings.TrimSpace(repoURL)
 	if repoURL == "" {
 		return nil, errSourceCloneFailed
@@ -106,7 +104,11 @@ func (g goGitSourceReader) cloneWorktree(ctx context.Context, repoURL, username,
 
 	fs := memfs.New()
 	storer := memory.NewStorage()
-	auth := gitauth.BasicAuth(repoURL, username, token)
+	auth, aerr := gitauth.TransportAuth(repoURL, cred)
+	if aerr != nil {
+		// 类型错配/私钥不可解析:与克隆失败同语义(不泄漏凭据细节)。
+		return nil, errSourceCloneFailed
+	}
 
 	cctx, cancel := context.WithTimeout(ctx, sourceCloneTimeout)
 	defer cancel()
@@ -131,10 +133,10 @@ func (g goGitSourceReader) cloneWorktree(ctx context.Context, repoURL, username,
 
 // Tree 列 ref 下 dir 的直接子项。dir 经 cleanRelPath 规范化(穿越拒在 handler 层)。
 // 克隆失败 → degraded(空 entries,不报错,绝不 500);dir 不存在 → errSourcePathNotFound。
-func (g goGitSourceReader) Tree(ctx context.Context, repoURL, username, token, ref, dir string) (sourceTreeDTO, error) {
+func (g goGitSourceReader) Tree(ctx context.Context, repoURL string, cred vault.GitAuth, ref, dir string) (sourceTreeDTO, error) {
 	out := sourceTreeDTO{Ref: ref, Path: dir, Entries: []sourceEntryDTO{}}
 
-	fs, err := g.cloneWorktree(ctx, repoURL, username, token, ref)
+	fs, err := g.cloneWorktree(ctx, repoURL, cred, ref)
 	if err != nil {
 		// 克隆失败优雅降级:tree 空 entries + degraded 说明(不 500;GFW/不可达友好)。
 		out.Degraded = true
@@ -181,10 +183,10 @@ func (g goGitSourceReader) Tree(ctx context.Context, repoURL, username, token, r
 
 // Blob 读 ref 下 file 内容:binary 检测(含 NUL 字节 → binary=true 不返字节)+ 512KB 截断。
 // 克隆失败 → errSourceCloneFailed(handler 映射 degraded blob);文件不存在/为目录 → errSourcePathNotFound。
-func (g goGitSourceReader) Blob(ctx context.Context, repoURL, username, token, ref, file string) (sourceBlobDTO, error) {
+func (g goGitSourceReader) Blob(ctx context.Context, repoURL string, cred vault.GitAuth, ref, file string) (sourceBlobDTO, error) {
 	out := sourceBlobDTO{Ref: ref, Path: file, Content: ""}
 
-	fs, err := g.cloneWorktree(ctx, repoURL, username, token, ref)
+	fs, err := g.cloneWorktree(ctx, repoURL, cred, ref)
 	if err != nil {
 		return out, errSourceCloneFailed
 	}
@@ -221,43 +223,11 @@ func (g goGitSourceReader) Blob(ctx context.Context, repoURL, username, token, r
 	return out, nil
 }
 
-// validSourceURL 对仓库地址做 SSRF 收口(生产路径),复用 2-5 同款策略:
-// 仅 http/https;拒云元数据/链路本地/回环;私网放行(自托管内网 Git 友好)。
+// validSourceURL 对仓库地址做 SSRF 收口(生产路径),委托全平台共享的
+// gitauth.ValidateRepoURL(允许 http/https/ssh + SCP 风格;拒云元数据/链路本地/
+// 回环;私网放行)。
 func validSourceURL(repoURL string) bool {
-	u, err := url.Parse(strings.TrimSpace(repoURL))
-	if err != nil {
-		return false
-	}
-	switch strings.ToLower(u.Scheme) {
-	case "http", "https":
-	default:
-		return false
-	}
-	host := u.Hostname()
-	if host == "" {
-		return false
-	}
-	if ip := net.ParseIP(host); ip != nil {
-		return !blockedSourceIP(ip)
-	}
-	addrs, err := net.LookupIP(host)
-	if err != nil || len(addrs) == 0 {
-		return true // 留给 clone 路径(会降级);不在此误拒临时 DNS 抖动。
-	}
-	for _, ip := range addrs {
-		if blockedSourceIP(ip) {
-			return false
-		}
-	}
-	return true
-}
-
-// blockedSourceIP 判定 IP 是否落在禁止区:回环、链路本地(含云元数据)、未指定。
-func blockedSourceIP(ip net.IP) bool {
-	return ip.IsLoopback() ||
-		ip.IsLinkLocalUnicast() ||
-		ip.IsLinkLocalMulticast() ||
-		ip.IsUnspecified()
+	return gitauth.ValidateRepoURL(repoURL) == nil
 }
 
 // cleanRelPath 把请求 path 规范化为相对仓库根的安全路径;穿越(..、绝对、越根)返回 ok=false。
@@ -292,18 +262,18 @@ type sourceDeps struct {
 	reader   SourceReader
 }
 
-// resolveSourceContext 取项目(repoUrl + 默认分支 + 凭据 token)与规范化 ref/path。
+// resolveSourceContext 取项目(repoUrl + 默认分支 + 凭据)与规范化 ref/path。
 // 项目不存在 → 404 project_not_found;path 穿越 → 400 invalid_path。已写错误响应时返回 ok=false。
-func (d sourceDeps) resolveSourceContext(w http.ResponseWriter, r *http.Request) (repoURL, username, token, ref, cleanPath string, ok bool) {
+func (d sourceDeps) resolveSourceContext(w http.ResponseWriter, r *http.Request) (repoURL string, cred vault.GitAuth, ref, cleanPath string, ok bool) {
 	id := chi.URLParam(r, "id")
 	proj, err := d.projects.Get(r.Context(), id)
 	if err != nil {
 		if errors.Is(err, project.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "project_not_found", "项目不存在")
-			return "", "", "", "", "", false
+			return "", vault.GitAuth{}, "", "", false
 		}
 		writeError(w, http.StatusInternalServerError, "internal", "服务器内部错误")
-		return "", "", "", "", "", false
+		return "", vault.GitAuth{}, "", "", false
 	}
 
 	ref = strings.TrimSpace(r.URL.Query().Get("ref"))
@@ -314,17 +284,16 @@ func (d sourceDeps) resolveSourceContext(w http.ResponseWriter, r *http.Request)
 	cleanPath, valid := cleanRelPath(r.URL.Query().Get("path"))
 	if !valid {
 		writeError(w, http.StatusBadRequest, "invalid_path", "路径非法或越出仓库根")
-		return "", "", "", "", "", false
+		return "", vault.GitAuth{}, "", "", false
 	}
 
-	// 取仓库凭据(进程内取用即弃);取不到不致命 → 空 token 尝试(私有仓库会走克隆失败降级)。
-	username, token = "", ""
+	// 取仓库凭据(进程内取用即弃);取不到不致命 → 空凭据尝试(私有仓库会走克隆失败降级)。
 	if d.vault != nil && strings.TrimSpace(proj.CredentialID) != "" {
 		if auth, terr := d.vault.GetGitAuth(proj.CredentialID); terr == nil {
-			username, token = auth.Username, auth.Token
+			cred = auth
 		}
 	}
-	return proj.RepoURL, username, token, ref, cleanPath, true
+	return proj.RepoURL, cred, ref, cleanPath, true
 }
 
 // makeSourceTreeHandler 返回 GET /api/projects/{id}/source/tree?ref=&path= handler(认证;只读)。
@@ -335,12 +304,12 @@ func makeSourceTreeHandler(d sourceDeps) http.HandlerFunc {
 			writeError(w, http.StatusServiceUnavailable, "internal", "源码读取所需服务未初始化")
 			return
 		}
-		repoURL, username, token, ref, cleanPath, ok := d.resolveSourceContext(w, r)
+		repoURL, cred, ref, cleanPath, ok := d.resolveSourceContext(w, r)
 		if !ok {
 			return
 		}
 
-		tree, err := d.reader.Tree(r.Context(), repoURL, username, token, ref, cleanPath)
+		tree, err := d.reader.Tree(r.Context(), repoURL, cred, ref, cleanPath)
 		if err != nil {
 			if errors.Is(err, errSourcePathNotFound) {
 				writeError(w, http.StatusNotFound, "path_not_found", "路径不存在")
@@ -364,7 +333,7 @@ func makeSourceBlobHandler(d sourceDeps) http.HandlerFunc {
 			writeError(w, http.StatusServiceUnavailable, "internal", "源码读取所需服务未初始化")
 			return
 		}
-		repoURL, username, token, ref, cleanPath, ok := d.resolveSourceContext(w, r)
+		repoURL, cred, ref, cleanPath, ok := d.resolveSourceContext(w, r)
 		if !ok {
 			return
 		}
@@ -373,7 +342,7 @@ func makeSourceBlobHandler(d sourceDeps) http.HandlerFunc {
 			return
 		}
 
-		blob, err := d.reader.Blob(r.Context(), repoURL, username, token, ref, cleanPath)
+		blob, err := d.reader.Blob(r.Context(), repoURL, cred, ref, cleanPath)
 		if err != nil {
 			switch {
 			case errors.Is(err, errSourcePathNotFound):

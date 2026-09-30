@@ -8,6 +8,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/huangchengsir/pipewright/internal/pipelineyaml"
 	"github.com/huangchengsir/pipewright/internal/project"
+	"github.com/huangchengsir/pipewright/internal/vault"
 )
 
 // pacPreviewFile 是「流水线即代码」预览/校验的固定目标文件名(与 pacloader.DefaultFile 同语义;
@@ -77,15 +78,15 @@ func makePacPreviewHandler(d sourceDeps) http.HandlerFunc {
 			return
 		}
 
-		// 取仓库凭据(进程内取用即弃;取不到不致命 → 空 token 试公开仓库,与 pacloader 一致)。
-		username, token := "", ""
+		// 取仓库凭据(进程内取用即弃;取不到不致命 → 空凭据试公开仓库,与 pacloader 一致)。
+		cred := vault.GitAuth{}
 		if d.vault != nil && strings.TrimSpace(proj.CredentialID) != "" {
 			if auth, terr := d.vault.GetGitAuth(proj.CredentialID); terr == nil {
-				username, token = auth.Username, auth.Token
+				cred = auth
 			}
 		}
 
-		blob, berr := d.reader.Blob(r.Context(), proj.RepoURL, username, token, ref, pacPreviewFile)
+		blob, berr := d.reader.Blob(r.Context(), proj.RepoURL, cred, ref, pacPreviewFile)
 		if berr != nil {
 			// 文件不存在 / 克隆失败 → found=false(运行时此路径会回退库内配置)。
 			// 绝不外泄底层错误(可能含 URL 凭据);valid=false、error 留空(非 YAML 问题)。

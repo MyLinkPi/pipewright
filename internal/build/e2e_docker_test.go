@@ -24,6 +24,7 @@ import (
 	"github.com/huangchengsir/pipewright/internal/pipeline"
 	"github.com/huangchengsir/pipewright/internal/project"
 	"github.com/huangchengsir/pipewright/internal/run"
+	"github.com/huangchengsir/pipewright/internal/vault"
 )
 
 // e2eRegistryPort 是本测试起的本地匿名 registry:2 端口(127.0.0.1 only;避开 5000=AirPlay)。
@@ -36,7 +37,7 @@ type copyDockerfileCloner struct {
 	commitShort string
 }
 
-func (c *copyDockerfileCloner) Clone(_ context.Context, _, _, _, _, _, destDir string) (*CloneResolved, error) {
+func (c *copyDockerfileCloner) Clone(_ context.Context, _ string, _ vault.GitAuth, _, _, destDir string) (*CloneResolved, error) {
 	if err := os.WriteFile(filepath.Join(destDir, "Dockerfile"), []byte(c.dockerfile), 0o644); err != nil {
 		return nil, err
 	}

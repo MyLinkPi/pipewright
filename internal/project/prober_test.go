@@ -8,13 +8,15 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/huangchengsir/pipewright/internal/vault"
 )
 
 // TestProberUnreachable 验证真实 go-git prober 对不可达地址返回 ErrRepoUnreachable
 // (且错误不含 token)。用 RFC2606 保留的不可解析主机,确保不真正触网外部服务。
 func TestProberUnreachable(t *testing.T) {
 	pr := goGitProber{}
-	_, err := pr.Probe(context.Background(), "https://nonexistent.invalid/foo/bar.git", "", "supersecrettoken")
+	_, err := pr.Probe(context.Background(), "https://nonexistent.invalid/foo/bar.git", vault.GitAuth{Username: "", Secret: "supersecrettoken"})
 	if !errors.Is(err, ErrRepoUnreachable) {
 		t.Fatalf("err = %v, want ErrRepoUnreachable", err)
 	}
@@ -26,7 +28,7 @@ func TestProberUnreachable(t *testing.T) {
 // TestProberEmptyURL 验证空 URL 立即判不可达,不触网。
 func TestProberEmptyURL(t *testing.T) {
 	pr := goGitProber{}
-	if _, err := pr.Probe(context.Background(), "   ", "", "tok"); !errors.Is(err, ErrRepoUnreachable) {
+	if _, err := pr.Probe(context.Background(), "   ", vault.GitAuth{Username: "", Secret: "tok"}); !errors.Is(err, ErrRepoUnreachable) {
 		t.Fatalf("err = %v, want ErrRepoUnreachable", err)
 	}
 }
@@ -34,18 +36,67 @@ func TestProberEmptyURL(t *testing.T) {
 // TestProberSSRFRejectsFileScheme 验证生产路径(默认严格)拒绝 file:// scheme。
 func TestProberSSRFRejectsFileScheme(t *testing.T) {
 	pr := goGitProber{} // 生产默认:allowInsecureSchemes=false
-	if _, err := pr.Probe(context.Background(), "file:///etc/passwd", "", ""); !errors.Is(err, ErrRepoUnreachable) {
+	if _, err := pr.Probe(context.Background(), "file:///etc/passwd", vault.GitAuth{Username: "", Secret: ""}); !errors.Is(err, ErrRepoUnreachable) {
 		t.Fatalf("file:// 应被拒为 ErrRepoUnreachable, got %v", err)
 	}
 }
 
-// TestProberSSRFRejectsNonHTTPScheme 验证拒绝 ssh:// / git:// 等非 http(s) scheme。
+// TestProberSSRFRejectsNonHTTPScheme 验证拒绝 git:// / ftp:// 等非 http(s)/ssh scheme。
+// (ssh:// 已放行:支持 git@/ssh:// 私钥克隆;凭据类型错配走 ErrCredentialError,见
+// TestProberSchemeMismatch。)
 func TestProberSSRFRejectsNonHTTPScheme(t *testing.T) {
 	pr := goGitProber{}
-	for _, u := range []string{"ssh://git@host/repo.git", "git://host/repo.git", "ftp://host/x"} {
-		if _, err := pr.Probe(context.Background(), u, "", "tok"); !errors.Is(err, ErrRepoUnreachable) {
+	for _, u := range []string{"git://host/repo.git", "ftp://host/x"} {
+		if _, err := pr.Probe(context.Background(), u, vault.GitAuth{Username: "", Secret: "tok"}); !errors.Is(err, ErrRepoUnreachable) {
 			t.Fatalf("%s 应被拒为 ErrRepoUnreachable, got %v", u, err)
 		}
+	}
+}
+
+// TestProberSSRFAllowsSSHScheme 验证 ssh:// 与 SCP 风格(git@host:path)地址通过 scheme
+// 收口(真实连接对不存在的主机走 ErrRepoUnreachable,而非被 scheme 校验拒)。
+func TestProberSSRFAllowsSSHScheme(t *testing.T) {
+	for _, u := range []string{
+		"ssh://git@nonexistent.invalid/foo/bar.git",
+		"git@nonexistent.invalid:foo/bar.git",
+	} {
+		if err := validateRepoURL(u); err != nil {
+			t.Fatalf("ssh 地址 %s 应放行 scheme 校验, got %v", u, err)
+		}
+	}
+}
+
+// TestProberSchemeMismatch 验证凭据类型与协议错配映射为 ErrCredentialError:
+// https 仓库绑了 ssh_key / ssh 仓库只绑了 https token,都应给出「凭据错误」
+// (而非难懂的连接失败),且错误文本不泄漏凭据明文。
+func TestProberSchemeMismatch(t *testing.T) {
+	pr := goGitProber{}
+	cases := []struct {
+		url  string
+		cred vault.GitAuth
+	}{
+		{"https://nonexistent.invalid/foo/bar.git", vault.GitAuth{Type: vault.TypeSSHKey, Secret: "-----BEGIN OPENSSH PRIVATE KEY-----\nxyz"}},
+		{"ssh://git@nonexistent.invalid/foo/bar.git", vault.GitAuth{Type: vault.TypeGitToken, Secret: "ghp_secrettoken"}},
+		{"git@nonexistent.invalid:foo/bar.git", vault.GitAuth{Type: vault.TypeGitToken, Secret: "ghp_secrettoken"}},
+	}
+	for _, c := range cases {
+		_, err := pr.Probe(context.Background(), c.url, c.cred)
+		if !errors.Is(err, ErrCredentialError) {
+			t.Fatalf("%s + %s 应映射 ErrCredentialError, got %v", c.url, c.cred.Type, err)
+		}
+		if strings.Contains(err.Error(), "ghp_secrettoken") || strings.Contains(err.Error(), "BEGIN OPENSSH") {
+			t.Fatalf("错误信息泄漏了凭据明文: %v", err)
+		}
+	}
+}
+
+// TestProberInvalidSSHKey 验证 ssh_key 凭据的明文不是可解析私钥时映射 ErrCredentialError。
+func TestProberInvalidSSHKey(t *testing.T) {
+	pr := goGitProber{}
+	_, err := pr.Probe(context.Background(), "ssh://git@nonexistent.invalid/foo/bar.git",
+		vault.GitAuth{Type: vault.TypeSSHKey, Secret: "not-a-pem-key"})
+	if !errors.Is(err, ErrCredentialError) {
+		t.Fatalf("坏私钥应映射 ErrCredentialError, got %v", err)
 	}
 }
 
@@ -57,7 +108,7 @@ func TestProberSSRFRejectsMetadataAndLoopback(t *testing.T) {
 		"https://127.0.0.1/repo.git",
 		"http://[::1]/repo.git",
 	} {
-		if _, err := pr.Probe(context.Background(), u, "", "tok"); !errors.Is(err, ErrRepoUnreachable) {
+		if _, err := pr.Probe(context.Background(), u, vault.GitAuth{Username: "", Secret: "tok"}); !errors.Is(err, ErrRepoUnreachable) {
 			t.Fatalf("%s 应被拒为 ErrRepoUnreachable, got %v", u, err)
 		}
 	}
@@ -104,7 +155,7 @@ func TestProberLocalBareRepo(t *testing.T) {
 
 	// file:// 本地夹具走 test-only 注入例外(生产路径默认严格拒 file://)。
 	pr := goGitProber{allowInsecureSchemes: true}
-	branch, err := pr.Probe(context.Background(), localFileURL(dir), "", "")
+	branch, err := pr.Probe(context.Background(), localFileURL(dir), vault.GitAuth{Username: "", Secret: ""})
 	if err != nil {
 		t.Fatalf("Probe local repo: %v", err)
 	}

@@ -38,7 +38,7 @@ export default {
   typeRegistry: '镜像仓库',
   descGitToken: '用于 HTTPS 拉取私有 Git 仓库（GitHub/GitLab/Gitee 的个人访问令牌）。',
   descGitHttp: '通过 HTTPS 用户名 + 密码访问 Git 仓库（如自建 Gitea）。',
-  descSshKey: '用于部署服务器的 SSH 登录（PEM/OpenSSH 私钥），见「设置 → 服务器」。',
+  descSshKey: '以 SSH 协议拉取私有 Git 仓库（git{\'@\'} 或 ssh:// 地址），也用于部署服务器登录。',
   descSshPassword: '用密码方式 SSH 登录部署服务器，见「设置 → 服务器」。',
   descRegistry: "推送构建镜像时 'docker login' 镜像仓库用的用户名/密码。",
 

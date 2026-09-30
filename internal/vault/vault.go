@@ -75,9 +75,12 @@ type UpdateInput struct {
 	Secret   *string
 }
 
+// GitAuth 是 Git 克隆链路取出的凭据:Type 决定认证方式(https token/密码 vs ssh 私钥/密码),
+// Secret 是明文(token/密码/整串 PEM 皆可,按 Type 解释)。绝不持久化为明文。
 type GitAuth struct {
+	Type     string
 	Username string
-	Token    string
+	Secret   string
 }
 
 // Vault 定义保险库领域对外接口。(-er 约定的同类:领域聚合用 Vault)
@@ -233,9 +236,10 @@ func (s *service) GetGitAuth(id string) (GitAuth, error) {
 	if !s.configured() {
 		return GitAuth{}, ErrVaultUnconfigured
 	}
+	var credType string
 	var username string
 	var sealed []byte
-	err := s.db.QueryRow(`SELECT username, ciphertext FROM credentials WHERE id = ?`, id).Scan(&username, &sealed)
+	err := s.db.QueryRow(`SELECT type, username, ciphertext FROM credentials WHERE id = ?`, id).Scan(&credType, &username, &sealed)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return GitAuth{}, ErrNotFound
@@ -248,7 +252,7 @@ func (s *service) GetGitAuth(id string) (GitAuth, error) {
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
 	_, _ = s.db.Exec(`UPDATE credentials SET last_used_at = ? WHERE id = ?`, now, id)
-	return GitAuth{Username: username, Token: string(plaintext)}, nil
+	return GitAuth{Type: credType, Username: username, Secret: string(plaintext)}, nil
 }
 
 func (s *service) Reveal(id string) (string, error) {

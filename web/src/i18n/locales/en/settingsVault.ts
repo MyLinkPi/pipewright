@@ -38,7 +38,7 @@ export default {
   typeRegistry: 'Registry',
   descGitToken: 'Used to clone/pull private Git repositories over HTTPS (GitHub/GitLab/Gitee personal access token).',
   descGitHttp: 'Git repository access over HTTPS with an explicit username + password (e.g. self-hosted Gitea).',
-  descSshKey: 'PEM/OpenSSH private key for SSH login to a deployment server (see Settings → Servers).',
+  descSshKey: 'Pulls private Git repos over SSH (git{\'@\'} or ssh:// URLs); also used for deployment server login.',
   descSshPassword: 'Password-based SSH login to a deployment server (see Settings → Servers).',
   descRegistry: "Username/password for 'docker login' when pushing built images to a registry.",
 

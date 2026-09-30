@@ -105,10 +105,10 @@ type ListResult struct {
 // RemoteProber 抽象「用凭据明文对仓库做 ls-remote 校验」的能力。
 // 注入便于测试(可用 stub 替换真实网络探测)。返回干净领域错误。
 type RemoteProber interface {
-	// Probe 用 token 对 repoURL 做 ListRemote(HTTPS + token auth),
-	// 成功返回远端默认分支(可能为空字符串);失败返回 ErrCredentialError /
-	// ErrRepoUnreachable(绝不含明文/凭据)。
-	Probe(ctx context.Context, repoURL, username, token string) (defaultBranch string, err error)
+	// Probe 用凭据对 repoURL 做 ListRemote(认证经 gitauth 按协议装配:https token 或
+	// ssh 私钥/密码),成功返回远端默认分支(可能为空字符串);失败返回
+	// ErrCredentialError / ErrRepoUnreachable(绝不含明文/凭据)。
+	Probe(ctx context.Context, repoURL string, cred vault.GitAuth) (defaultBranch string, err error)
 }
 
 // Service 定义项目领域对外接口。
@@ -165,7 +165,7 @@ func validateCreate(in CreateInput) error {
 	return nil
 }
 
-// probe 取凭据明文并对仓库做 ls-remote 校验;token 仅进程内存在,用完即弃。
+// probe 取凭据明文并对仓库做 ls-remote 校验;明文仅进程内存在,用完即弃。
 // 凭据不存在 → ErrCredentialNotFound;保险库未配置 → ErrVaultUnconfigured。
 func (s *service) probe(ctx context.Context, repoURL, credentialID string) (string, error) {
 	if s.vault == nil {
@@ -183,10 +183,8 @@ func (s *service) probe(ctx context.Context, repoURL, credentialID string) (stri
 			return "", ErrCredentialError
 		}
 	}
-	token := auth.Token
-	branch, perr := s.prober.Probe(ctx, repoURL, auth.Username, token)
-	token = "" // 显式清引用,尽早不可达(明文不留)
-	_ = token
+	branch, perr := s.prober.Probe(ctx, repoURL, auth)
+	auth = vault.GitAuth{} // 显式清引用,尽早不可达(明文不留)
 	return branch, perr
 }
 

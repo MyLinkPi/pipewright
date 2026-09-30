@@ -38,7 +38,7 @@ export default {
   typeRegistry: 'Registre',
   descGitToken: "Pour cloner/récupérer des dépôts Git privés en HTTPS (jeton d'accès personnel GitHub/GitLab/Gitee).",
   descGitHttp: "Accès au dépôt Git en HTTPS avec nom d'utilisateur + mot de passe (ex. Gitea auto-hébergé).",
-  descSshKey: 'Clé privée PEM/OpenSSH pour la connexion SSH à un serveur de déploiement (voir Paramètres → Serveurs).',
+  descSshKey: 'Clone des dépôts Git privés en SSH (adresses git{\'@\'} ou ssh://) ; sert aussi à la connexion aux serveurs de déploiement.',
   descSshPassword: 'Connexion SSH par mot de passe à un serveur de déploiement (voir Paramètres → Serveurs).',
   descRegistry: "Nom d'utilisateur/mot de passe pour 'docker login' afin de pousser les images construites vers un registre.",
 

@@ -13,6 +13,7 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/object"
 
 	"github.com/huangchengsir/pipewright/internal/build"
+	"github.com/huangchengsir/pipewright/internal/vault"
 )
 
 // newTestCache 构造放行本地夹具仓库的缓存(allowInsecure=true,跳过 SSRF 校验)。
@@ -70,7 +71,7 @@ func TestMirrorCloneCheckoutAndIncremental(t *testing.T) {
 
 	// 首次 Clone:建镜像 + 从镜像出工作区。
 	ws1 := filepath.Join(t.TempDir(), "ws1")
-	res, err := c.Clone(ctx, src, "", "", "master", "", ws1)
+	res, err := c.Clone(ctx, src, vault.GitAuth{}, "master", "", ws1)
 	if err != nil {
 		t.Fatalf("Clone1: %v", err)
 	}
@@ -90,7 +91,7 @@ func TestMirrorCloneCheckoutAndIncremental(t *testing.T) {
 
 	// 第二次 Clone:走**增量 fetch**(镜像已存在),应能拿到新 commit 的内容。
 	ws2 := filepath.Join(t.TempDir(), "ws2")
-	if _, err := c.Clone(ctx, src, "", "", "master", "", ws2); err != nil {
+	if _, err := c.Clone(ctx, src, vault.GitAuth{}, "master", "", ws2); err != nil {
 		t.Fatalf("Clone2: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(ws2, "v2.txt")); err != nil {
@@ -102,7 +103,7 @@ func TestCheckoutFeatureBranch(t *testing.T) {
 	src, _ := makeSourceRepo(t)
 	c := newTestCache(t)
 	ws := filepath.Join(t.TempDir(), "ws")
-	if _, err := c.Clone(context.Background(), src, "", "", "feature", "", ws); err != nil {
+	if _, err := c.Clone(context.Background(), src, vault.GitAuth{Username: "", Secret: ""}, "feature", "", ws); err != nil {
 		t.Fatalf("Clone feature: %v", err)
 	}
 	// feature 分支独有文件应在。
@@ -114,7 +115,7 @@ func TestCheckoutFeatureBranch(t *testing.T) {
 func TestListRefs(t *testing.T) {
 	src, _ := makeSourceRepo(t)
 	c := newTestCache(t)
-	refs, err := c.ListRefs(context.Background(), src, "", "")
+	refs, err := c.ListRefs(context.Background(), src, vault.GitAuth{Username: "", Secret: ""})
 	if err != nil {
 		t.Fatalf("ListRefs: %v", err)
 	}
@@ -136,7 +137,7 @@ func TestListCommits(t *testing.T) {
 	addCommit(t, src, "b.txt", "b")
 	c := newTestCache(t)
 
-	commits, err := c.ListCommits(context.Background(), src, "", "", "master", 10)
+	commits, err := c.ListCommits(context.Background(), src, vault.GitAuth{Username: "", Secret: ""}, "master", 10)
 	if err != nil {
 		t.Fatalf("ListCommits: %v", err)
 	}
@@ -149,7 +150,7 @@ func TestListCommits(t *testing.T) {
 	if commits[0].Short == "" || len(commits[0].SHA) != 40 {
 		t.Fatalf("commit sha 异常: short=%q sha=%q", commits[0].Short, commits[0].SHA)
 	}
-	one, _ := c.ListCommits(context.Background(), src, "", "", "master", 1)
+	one, _ := c.ListCommits(context.Background(), src, vault.GitAuth{Username: "", Secret: ""}, "master", 1)
 	if len(one) != 1 {
 		t.Fatalf("limit=1 应只返回 1 条,实际 %d", len(one))
 	}
@@ -158,7 +159,7 @@ func TestListCommits(t *testing.T) {
 // fakeFallback 记录是否被调用。
 type fakeFallback struct{ called bool }
 
-func (f *fakeFallback) Clone(_ context.Context, _, _, _, _, _, destDir string) (*build.CloneResolved, error) {
+func (f *fakeFallback) Clone(_ context.Context, _ string, _ vault.GitAuth, _, _, destDir string) (*build.CloneResolved, error) {
 	f.called = true
 	_ = os.MkdirAll(destDir, 0o755)
 	return &build.CloneResolved{CommitShort: "fallbck"}, nil
@@ -169,7 +170,7 @@ func TestFallbackWhenMirrorFails(t *testing.T) {
 	fb := &fakeFallback{}
 	c.fallback = fb
 	// 不存在的仓库地址 → 镜像 clone 失败 → 回退。
-	res, err := c.Clone(context.Background(), "/nonexistent/repo/path.git", "", "", "main", "", filepath.Join(t.TempDir(), "ws"))
+	res, err := c.Clone(context.Background(), "/nonexistent/repo/path.git", vault.GitAuth{Username: "", Secret: ""}, "main", "", filepath.Join(t.TempDir(), "ws"))
 	if err != nil {
 		t.Fatalf("应回退而非报错: %v", err)
 	}

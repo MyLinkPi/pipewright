@@ -18,8 +18,6 @@ import (
 	"context"
 	"encoding/json"
 	"io"
-	"net"
-	"net/url"
 	"strings"
 	"time"
 
@@ -29,6 +27,7 @@ import (
 
 	"github.com/go-git/go-git/v5/storage/memory"
 	"github.com/huangchengsir/pipewright/internal/gitauth"
+	"github.com/huangchengsir/pipewright/internal/vault"
 )
 
 // cloneTimeout 是单次浅克隆的硬超时(防黑洞 IP / 慢 DNS 把 goroutine 挂死)。
@@ -68,9 +67,10 @@ type RepoAnalysis struct {
 
 // RepoAnalyzer 抽象「浅克隆 + manifest 检测」能力(注入便于测试 / 替换)。
 type RepoAnalyzer interface {
-	// Analyze 用 token 浅克隆 repoURL 读 manifest;克隆失败返回 Cloned=false 的降级分析
-	// (不返回错误,健壮降级)。token 进程内取用、用完即弃,绝不进结果/日志/错误。
-	Analyze(ctx context.Context, repoURL, username, token string) RepoAnalysis
+	// Analyze 用凭据浅克隆 repoURL 读 manifest(认证经 gitauth 按协议装配);克隆失败返回
+	// Cloned=false 的降级分析(不返回错误,健壮降级)。凭据明文进程内取用、用完即弃,
+	// 绝不进结果/日志/错误。
+	Analyze(ctx context.Context, repoURL string, cred vault.GitAuth) RepoAnalysis
 }
 
 // goGitAnalyzer 是基于 go-git CloneContext 的 RepoAnalyzer 实现。
@@ -91,7 +91,7 @@ func newInsecureRepoAnalyzer() RepoAnalyzer {
 }
 
 // Analyze 浅克隆仓库并检测技术栈;失败优雅降级为 Cloned=false。
-func (a goGitAnalyzer) Analyze(ctx context.Context, repoURL, username, token string) RepoAnalysis {
+func (a goGitAnalyzer) Analyze(ctx context.Context, repoURL string, cred vault.GitAuth) RepoAnalysis {
 	repoURL = strings.TrimSpace(repoURL)
 	if repoURL == "" {
 		return RepoAnalysis{Cloned: false, Signals: []string{}, DegradeReason: "仓库地址为空,无法克隆分析"}
@@ -107,7 +107,11 @@ func (a goGitAnalyzer) Analyze(ctx context.Context, repoURL, username, token str
 	fs := memfs.New()
 	storer := memory.NewStorage()
 
-	auth := gitauth.BasicAuth(repoURL, username, token)
+	auth, aerr := gitauth.TransportAuth(repoURL, cred)
+	if aerr != nil {
+		// 认证装配失败(类型错配/私钥不可解析):同样优雅降级,不泄漏凭据细节。
+		return RepoAnalysis{Cloned: false, Signals: []string{}, DegradeReason: "凭据与仓库协议不匹配或不可解析"}
+	}
 
 	cctx, cancel := context.WithTimeout(ctx, cloneTimeout)
 	defer cancel()
@@ -342,43 +346,9 @@ func readManifest(fs billy.Filesystem, name string) []byte {
 	return data
 }
 
-// validRepoURL 对仓库地址做 SSRF 收口(生产路径),复用 project 包同款策略:
-// 仅 http/https;拒云元数据/链路本地/回环;私网放行(自托管内网 Git 友好)。
-// 返回 true=允许。解析失败/被拒返回 false(调用方走降级,绝不泄漏细节)。
+// validRepoURL 对仓库地址做 SSRF 收口(生产路径),委托全平台共享的
+// gitauth.ValidateRepoURL(允许 http/https/ssh + SCP 风格;拒云元数据/链路本地/
+// 回环;私网放行)。返回 true=允许;被拒返回 false(调用方走降级,绝不泄漏细节)。
 func validRepoURL(repoURL string) bool {
-	u, err := url.Parse(strings.TrimSpace(repoURL))
-	if err != nil {
-		return false
-	}
-	switch strings.ToLower(u.Scheme) {
-	case "http", "https":
-	default:
-		return false
-	}
-	host := u.Hostname()
-	if host == "" {
-		return false
-	}
-	if ip := net.ParseIP(host); ip != nil {
-		return !blockedIP(ip)
-	}
-	addrs, err := net.LookupIP(host)
-	if err != nil || len(addrs) == 0 {
-		// 解析失败:留给 clone 路径(会降级);不在此误拒临时 DNS 抖动。
-		return true
-	}
-	for _, ip := range addrs {
-		if blockedIP(ip) {
-			return false
-		}
-	}
-	return true
-}
-
-// blockedIP 判定 IP 是否落在禁止区:回环、链路本地(含云元数据 169.254.169.254)、未指定。
-func blockedIP(ip net.IP) bool {
-	return ip.IsLoopback() ||
-		ip.IsLinkLocalUnicast() ||
-		ip.IsLinkLocalMulticast() ||
-		ip.IsUnspecified()
+	return gitauth.ValidateRepoURL(repoURL) == nil
 }

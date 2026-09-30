@@ -23,8 +23,8 @@ import (
 
 // RefsLister 抽象「列仓库分支/tag + 某 ref 的最近 commit」能力(*repocache.Cache 即满足)。
 type RefsLister interface {
-	ListRefs(ctx context.Context, repoURL, username, token string) (*repocache.Refs, error)
-	ListCommits(ctx context.Context, repoURL, username, token, ref string, limit int) ([]repocache.Commit, error)
+	ListRefs(ctx context.Context, repoURL string, cred vault.GitAuth) (*repocache.Refs, error)
+	ListCommits(ctx context.Context, repoURL string, cred vault.GitAuth, ref string, limit int) ([]repocache.Commit, error)
 }
 
 type refDTO struct {
@@ -57,17 +57,15 @@ func makeListRefsHandler(projects project.Service, v vault.Vault, lister RefsLis
 			return
 		}
 
-		// 取仓库凭据(进程内即用即弃);取不到不致命 → 空 token(公开仓库可成,私有走拉取失败)。
-		username, token := "", ""
+		// 取仓库凭据(进程内即用即弃);取不到不致命 → 空凭据(公开仓库可成,私有走拉取失败)。
+		cred := vault.GitAuth{}
 		if v != nil && strings.TrimSpace(proj.CredentialID) != "" {
 			if auth, terr := v.GetGitAuth(proj.CredentialID); terr == nil {
-				username, token = auth.Username, auth.Token
+				cred = auth
 			}
 		}
 
-		refs, lerr := lister.ListRefs(r.Context(), proj.RepoURL, username, token)
-		token = "" //nolint:ineffassign // 尽早清明文引用
-		_ = token
+		refs, lerr := lister.ListRefs(r.Context(), proj.RepoURL, cred)
 		if lerr != nil {
 			// 错误体不含凭据明文(repocache 错误为干净领域错误)。
 			writeError(w, http.StatusBadGateway, "refs_unavailable", "无法读取仓库分支(仓库不可达或凭据无效)")
@@ -122,15 +120,13 @@ func makeListCommitsHandler(projects project.Service, v vault.Vault, lister Refs
 			}
 		}
 
-		username, token := "", ""
+		cred := vault.GitAuth{}
 		if v != nil && strings.TrimSpace(proj.CredentialID) != "" {
 			if auth, terr := v.GetGitAuth(proj.CredentialID); terr == nil {
-				username, token = auth.Username, auth.Token
+				cred = auth
 			}
 		}
-		commits, lerr := lister.ListCommits(r.Context(), proj.RepoURL, username, token, ref, limit)
-		token = ""
-		_ = token
+		commits, lerr := lister.ListCommits(r.Context(), proj.RepoURL, cred, ref, limit)
 		if lerr != nil {
 			writeError(w, http.StatusBadGateway, "commits_unavailable", "无法读取仓库提交(仓库不可达或凭据无效)")
 			return

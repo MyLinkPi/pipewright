@@ -3,8 +3,6 @@ package build
 import (
 	"context"
 	"errors"
-	"net"
-	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -13,6 +11,7 @@ import (
 	"github.com/go-git/go-git/v5/plumbing"
 
 	"github.com/huangchengsir/pipewright/internal/gitauth"
+	"github.com/huangchengsir/pipewright/internal/vault"
 )
 
 // cloneTimeout 是单次克隆的硬超时(防黑洞 IP / 慢 DNS 把构建 goroutine 挂死)。
@@ -46,12 +45,13 @@ type CloneResolved struct {
 }
 
 // Clone 把 repoURL 在 ref(commit sha 优先,否则分支名;皆空则默认分支)上克隆到 destDir。
-// token 经 BasicAuth.Password 传入(绝不进 URL/日志/错误)。失败统一映射干净错误。
+// 凭据经 gitauth.TransportAuth 按协议装配(https token/密码 → BasicAuth;ssh_key/
+// ssh_password → SSH 私钥/密码),明文绝不进 URL/日志/错误。失败统一映射干净错误。
 //
 // 策略:先克隆默认/指定分支(Depth:1 浅克隆省带宽),若指定了 commit 则再 checkout 到该 commit
 //
 //	(commit 不在浅克隆历史里时回退为不限深克隆重试一次,best-effort)。
-func (c *Cloner) Clone(ctx context.Context, repoURL, username, token, branch, commit, destDir string) (*CloneResolved, error) {
+func (c *Cloner) Clone(ctx context.Context, repoURL string, cred vault.GitAuth, branch, commit, destDir string) (*CloneResolved, error) {
 	repoURL = strings.TrimSpace(repoURL)
 	if repoURL == "" {
 		return nil, ErrCloneFailed
@@ -63,7 +63,11 @@ func (c *Cloner) Clone(ctx context.Context, repoURL, username, token, branch, co
 	cctx, cancel := context.WithTimeout(ctx, cloneTimeout)
 	defer cancel()
 
-	auth := gitauth.BasicAuth(repoURL, username, token)
+	auth, aerr := gitauth.TransportAuth(repoURL, cred)
+	if aerr != nil {
+		// 类型错配/私钥不可解析:按克隆失败对待(不泄漏凭据细节)。
+		return nil, ErrCloneFailed
+	}
 	commit = strings.TrimSpace(commit)
 	branch = strings.TrimSpace(branch)
 
@@ -107,44 +111,10 @@ func (c *Cloner) Clone(ctx context.Context, repoURL, username, token, branch, co
 // IsRepoURLAllowed 是 validRepoURL 的导出包装(供 repocache 等复用同款 SSRF 收口,不重复实现)。
 func IsRepoURLAllowed(repoURL string) bool { return validRepoURL(repoURL) }
 
-// validRepoURL 对仓库地址做 SSRF 收口(生产路径),复用全平台同款策略:
-// 仅 http/https;拒云元数据/链路本地/回环;私网放行(自托管内网 Git 友好)。
+// validRepoURL 对仓库地址做 SSRF 收口(生产路径),委托全平台共享的 gitauth.ValidateRepoURL
+// (http/https/ssh + SCP 风格;拒云元数据/链路本地/回环;私网放行)。
 func validRepoURL(repoURL string) bool {
-	u, err := url.Parse(strings.TrimSpace(repoURL))
-	if err != nil {
-		return false
-	}
-	switch strings.ToLower(u.Scheme) {
-	case "http", "https":
-	default:
-		return false
-	}
-	host := u.Hostname()
-	if host == "" {
-		return false
-	}
-	if ip := net.ParseIP(host); ip != nil {
-		return !blockedIP(ip)
-	}
-	addrs, err := net.LookupIP(host)
-	if err != nil || len(addrs) == 0 {
-		return true // 留给 clone 路径(会失败映射);不在此误拒临时 DNS 抖动。
-	}
-	for _, ip := range addrs {
-		if blockedIP(ip) {
-			return false
-		}
-	}
-	return true
-}
-
-// blockedIP 判定 IP 是否落在禁止区:回环、链路本地(含云元数据 169.254.169.254)、未指定。
-// 私网(RFC1918 / fc00::/7)不在此列(放行)。
-func blockedIP(ip net.IP) bool {
-	return ip.IsLoopback() ||
-		ip.IsLinkLocalUnicast() ||
-		ip.IsLinkLocalMulticast() ||
-		ip.IsUnspecified()
+	return gitauth.ValidateRepoURL(repoURL) == nil
 }
 
 // shortSHA 取 commit 的前 7 位(短 sha);不足 7 位原样返回。

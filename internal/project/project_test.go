@@ -33,10 +33,10 @@ type stubProber struct {
 	lastTo       string // 最近一次的 token(用于断言不为空 / 进程内取用)
 }
 
-func (s *stubProber) Probe(_ context.Context, _ /*repoURL*/ string, username, token string) (string, error) {
+func (s *stubProber) Probe(_ context.Context, _ /*repoURL*/ string, cred vault.GitAuth) (string, error) {
 	s.calls++
-	s.lastUsername = username
-	s.lastTo = token
+	s.lastUsername = cred.Username
+	s.lastTo = cred.Secret
 	return s.branch, s.err
 }
 

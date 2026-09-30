@@ -81,7 +81,7 @@ type buildCacheStore interface {
 // repoCloner 抽象「把仓库在 ref 上克隆到磁盘工作区」的能力(便于 fake 单测注入,
 // 避免单测真触网)。默认实现是 *Cloner(go-git PlainClone + SSRF 收口)。
 type repoCloner interface {
-	Clone(ctx context.Context, repoURL, username, token, branch, commit, destDir string) (*CloneResolved, error)
+	Clone(ctx context.Context, repoURL string, cred vault.GitAuth, branch, commit, destDir string) (*CloneResolved, error)
 }
 
 // BuilderOption 配置 Builder(测试注入 fake driver/cloner)。
@@ -234,7 +234,7 @@ func (b *Builder) Run(ctx context.Context, r *run.Run, sink run.StepSink) error 
 	defer func() { _ = os.RemoveAll(workspace) }() // 宿主零污染
 
 	auth := b.revealGitAuth(proj.CredentialID)
-	resolved, cerr := b.cloner.Clone(ctx, proj.RepoURL, auth.Username, auth.Token, r.Trigger.Branch, r.Trigger.Commit, workspace)
+	resolved, cerr := b.cloner.Clone(ctx, proj.RepoURL, auth, r.Trigger.Branch, r.Trigger.Commit, workspace)
 	auth = vault.GitAuth{}
 	if cerr != nil {
 		if errors.Is(ctx.Err(), context.Canceled) {

@@ -720,19 +720,15 @@ func (p pacProjectLookup) Lookup(ctx context.Context, projectID string) (pacload
 
 type pacGitAuthResolver struct{ vault vault.Vault }
 
-func (r pacGitAuthResolver) GetGitAuth(credentialID string) (string, string, error) {
-	auth, err := r.vault.GetGitAuth(credentialID)
-	if err != nil {
-		return "", "", err
-	}
-	return auth.Username, auth.Token, nil
+func (r pacGitAuthResolver) GetGitAuth(credentialID string) (vault.GitAuth, error) {
+	return r.vault.GetGitAuth(credentialID)
 }
 
 // pacBlobFetcher adapts SourceReader for pacloader without exposing credentials.
 type pacBlobFetcher struct{ reader httpapi.SourceReader }
 
-func (b pacBlobFetcher) FetchBlob(ctx context.Context, repoURL, username, token, ref, file string) (string, bool, error) {
-	blob, err := b.reader.Blob(ctx, repoURL, username, token, ref, file)
+func (b pacBlobFetcher) FetchBlob(ctx context.Context, repoURL string, cred vault.GitAuth, ref, file string) (string, bool, error) {
+	blob, err := b.reader.Blob(ctx, repoURL, cred, ref, file)
 	if err != nil {
 		return "", false, err
 	}

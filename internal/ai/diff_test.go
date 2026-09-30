@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/huangchengsir/pipewright/internal/vault"
 )
 
 // commitSpec 是一个提交快照:写入/覆盖的文件集(content 为空串表示删除该文件)。
@@ -91,7 +93,7 @@ func TestRunDiffModifiedAddedDeleted(t *testing.T) {
 		},
 	)
 	d := newInsecureRunDiffer()
-	res := d.Diff(context.Background(), url, "", "", shas[0], shas[1])
+	res := d.Diff(context.Background(), url, vault.GitAuth{Username: "", Secret: ""}, shas[0], shas[1])
 	if !res.Available {
 		t.Fatalf("expected Available=true, reason=%q", res.Reason)
 	}
@@ -138,7 +140,7 @@ func TestDiffCommitSelf(t *testing.T) {
 		commitSpec{"app.txt": "a\nCHANGED\nc\n", "new.txt": "hi\n"},
 	)
 	d := newInsecureRunDiffer()
-	res, parent := d.DiffCommit(context.Background(), url, "", "", shas[1])
+	res, parent := d.DiffCommit(context.Background(), url, vault.GitAuth{Username: "", Secret: ""}, shas[1])
 	if !res.Available {
 		t.Fatalf("expected Available=true, reason=%q", res.Reason)
 	}
@@ -162,7 +164,7 @@ func TestDiffCommitShortSHA(t *testing.T) {
 	)
 	d := newInsecureRunDiffer()
 	short := shas[1][:7]
-	res, parent := d.DiffCommit(context.Background(), url, "", "", short)
+	res, parent := d.DiffCommit(context.Background(), url, vault.GitAuth{Username: "", Secret: ""}, short)
 	if !res.Available {
 		t.Fatalf("short SHA %q should resolve, got degraded: %s", short, res.Reason)
 	}
@@ -180,7 +182,7 @@ func TestDiffCommitRoot(t *testing.T) {
 		commitSpec{"a.txt": "x\n", "b.txt": "y\n"},
 	)
 	d := newInsecureRunDiffer()
-	res, parent := d.DiffCommit(context.Background(), url, "", "", shas[0])
+	res, parent := d.DiffCommit(context.Background(), url, vault.GitAuth{Username: "", Secret: ""}, shas[0])
 	if !res.Available {
 		t.Fatalf("expected Available=true, reason=%q", res.Reason)
 	}
@@ -200,7 +202,7 @@ func TestDiffCommitRoot(t *testing.T) {
 // TestDiffCommitEmpty 验证空 commit → 降级 Available=false(不 panic、不返回父 SHA)。
 func TestDiffCommitEmpty(t *testing.T) {
 	d := newInsecureRunDiffer()
-	res, parent := d.DiffCommit(context.Background(), "file:///whatever", "", "", "")
+	res, parent := d.DiffCommit(context.Background(), "file:///whatever", vault.GitAuth{Username: "", Secret: ""}, "")
 	if res.Available || res.Reason == "" || parent != "" {
 		t.Fatalf("empty commit: want degraded, got available=%v parent=%q reason=%q", res.Available, parent, res.Reason)
 	}
@@ -213,7 +215,7 @@ func TestRunDiffPatchAndRedaction(t *testing.T) {
 		commitSpec{"config.yaml": "name: app\npassword: SuperSecret123\napi_key=abcdef123456\n"},
 	)
 	d := newInsecureRunDiffer()
-	res := d.Diff(context.Background(), url, "", "", shas[0], shas[1])
+	res := d.Diff(context.Background(), url, vault.GitAuth{Username: "", Secret: ""}, shas[0], shas[1])
 	if !res.Available {
 		t.Fatalf("available false: %s", res.Reason)
 	}
@@ -244,7 +246,7 @@ func TestRunDiffDependencyManifestHint(t *testing.T) {
 		commitSpec{"package.json": `{"deps":{"a":"2"}}` + "\n"},
 	)
 	d := newInsecureRunDiffer()
-	res := d.Diff(context.Background(), url, "", "", shas[0], shas[1])
+	res := d.Diff(context.Background(), url, vault.GitAuth{Username: "", Secret: ""}, shas[0], shas[1])
 	if !res.Available {
 		t.Fatalf("expected Available=true, reason=%q", res.Reason)
 	}
@@ -261,7 +263,7 @@ func TestRunDiffPlainFileNoCallout(t *testing.T) {
 		commitSpec{"README.md": "hello\nworld\n"},
 	)
 	d := newInsecureRunDiffer()
-	res := d.Diff(context.Background(), url, "", "", shas[0], shas[1])
+	res := d.Diff(context.Background(), url, vault.GitAuth{Username: "", Secret: ""}, shas[0], shas[1])
 	if !res.Available {
 		t.Fatalf("expected Available=true, reason=%q", res.Reason)
 	}
@@ -276,7 +278,7 @@ func TestRunDiffPlainFileNoCallout(t *testing.T) {
 // TestRunDiffCloneFailedDegraded 验证不可达仓库 → Available=false 降级(不 panic)。
 func TestRunDiffCloneFailedDegraded(t *testing.T) {
 	d := newInsecureRunDiffer()
-	res := d.Diff(context.Background(), "file:///nonexistent/path/repo.git", "", "", "abc123", "def456")
+	res := d.Diff(context.Background(), "file:///nonexistent/path/repo.git", vault.GitAuth{Username: "", Secret: ""}, "abc123", "def456")
 	if res.Available {
 		t.Fatalf("expected Available=false for unreachable repo")
 	}
@@ -296,7 +298,7 @@ func TestRunDiffUnreachableCommit(t *testing.T) {
 	)
 	d := newInsecureRunDiffer()
 	// baseline 用真实 sha,current 用一个不可达 sha。
-	res := d.Diff(context.Background(), url, "", "", shas[0], "0000000000000000000000000000000000000000")
+	res := d.Diff(context.Background(), url, vault.GitAuth{Username: "", Secret: ""}, shas[0], "0000000000000000000000000000000000000000")
 	if res.Available {
 		t.Fatalf("expected Available=false for unreachable commit")
 	}
@@ -305,7 +307,7 @@ func TestRunDiffUnreachableCommit(t *testing.T) {
 // TestRunDiffEmptyCommit 验证空 commit 入参 → 降级(不克隆)。
 func TestRunDiffEmptyCommit(t *testing.T) {
 	d := newInsecureRunDiffer()
-	res := d.Diff(context.Background(), "file:///whatever", "", "", "", "def456")
+	res := d.Diff(context.Background(), "file:///whatever", vault.GitAuth{Username: "", Secret: ""}, "", "def456")
 	if res.Available {
 		t.Fatalf("expected Available=false for empty baseline commit")
 	}
@@ -314,7 +316,7 @@ func TestRunDiffEmptyCommit(t *testing.T) {
 // TestRunDiffSSRFBlocked 验证生产 differ 拒回环地址(SSRF 收口)→ 降级。
 func TestRunDiffSSRFBlocked(t *testing.T) {
 	d := NewRunDiffer()
-	res := d.Diff(context.Background(), "http://127.0.0.1/repo.git", "", "", "abc", "def")
+	res := d.Diff(context.Background(), "http://127.0.0.1/repo.git", vault.GitAuth{Username: "", Secret: ""}, "abc", "def")
 	if res.Available {
 		t.Fatalf("expected Available=false for blocked loopback URL")
 	}

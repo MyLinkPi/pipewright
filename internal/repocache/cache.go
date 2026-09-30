@@ -9,7 +9,8 @@
 // (走本地文件系统,不触网)。镜像同时给「列分支/tag」提供数据(ListRefs),供前端下拉。
 //
 // 设计:纯 go-git(不依赖宿主 git,延续 cloner 风格);每仓库一把锁(并发构建同仓库串行 fetch/checkout);
-// **任何缓存问题都回退直连网络克隆**(永不让构建因缓存挂)。token 经 BasicAuth.Password,绝不进 URL/日志。
+// **任何缓存问题都回退直连网络克隆**(永不让构建因缓存挂)。凭据经 gitauth 按协议装配
+// (https token/密码或 ssh 私钥/密码),明文绝不进 URL/日志。
 package repocache
 
 import (
@@ -30,6 +31,7 @@ import (
 
 	"github.com/huangchengsir/pipewright/internal/build"
 	"github.com/huangchengsir/pipewright/internal/gitauth"
+	"github.com/huangchengsir/pipewright/internal/vault"
 )
 
 // fetchTimeout 是单次镜像 clone/fetch 的硬超时(防大仓库黑洞拖死构建)。
@@ -37,7 +39,7 @@ const fetchTimeout = 10 * time.Minute
 
 // networkCloner 抽象「直连网络克隆」回退(*build.Cloner 即满足)。
 type networkCloner interface {
-	Clone(ctx context.Context, repoURL, username, token, branch, commit, destDir string) (*build.CloneResolved, error)
+	Clone(ctx context.Context, repoURL string, cred vault.GitAuth, branch, commit, destDir string) (*build.CloneResolved, error)
 }
 
 // Cache 是持久本地仓库镜像缓存。每仓库一把锁;失败回退 fallback。
@@ -89,14 +91,18 @@ func (c *Cache) repoLock(repoURL string) *sync.Mutex {
 
 // ensureMirror 确保本地 bare 镜像存在并增量更新到最新(首次 mirror 克隆,后续 fetch)。
 // 返回镜像目录;失败返回 error(调用方回退直连克隆)。已是最新(ErrAlreadyUpToDate)视为成功。
-func (c *Cache) ensureMirror(ctx context.Context, repoURL, username, token string) (string, error) {
-	// SSRF 收口:生产仅镜像 http/https 且非元数据/回环/链路本地的仓库(复用 build 同款校验)。
-	// 不通过 → 返回错误,由 Clone 回退直连(build.Cloner 同样会拒,净效果=拦截)。
+func (c *Cache) ensureMirror(ctx context.Context, repoURL string, cred vault.GitAuth) (string, error) {
+	// SSRF 收口:生产仅镜像通过共享校验的仓库(http/https/ssh,拒元数据/回环/链路本地;
+	// 复用 build 同款收口)。不通过 → 返回错误,由 Clone 回退直连(build.Cloner 同样会拒,
+	// 净效果=拦截)。
 	if !c.allowInsecure && !build.IsRepoURLAllowed(repoURL) {
 		return "", errors.New("repocache: repo url not allowed")
 	}
 	mirror := c.mirrorPath(repoURL)
-	auth := gitauth.BasicAuth(repoURL, username, token)
+	auth, aerr := gitauth.TransportAuth(repoURL, cred)
+	if aerr != nil {
+		return "", aerr
+	}
 	cctx, cancel := context.WithTimeout(ctx, fetchTimeout)
 	defer cancel()
 
@@ -128,16 +134,16 @@ func (c *Cache) ensureMirror(ctx context.Context, repoURL, username, token strin
 
 // Clone 实现 build 的克隆契约:经本地镜像出工作区(命中走本地、镜像不可用回退直连)。
 // branch/commit 语义同 build.Cloner.Clone:commit 优先,否则 branch,皆空则默认分支。
-func (c *Cache) Clone(ctx context.Context, repoURL, username, token, branch, commit, destDir string) (*build.CloneResolved, error) {
+func (c *Cache) Clone(ctx context.Context, repoURL string, cred vault.GitAuth, branch, commit, destDir string) (*build.CloneResolved, error) {
 	lock := c.repoLock(repoURL)
 	lock.Lock()
 	defer lock.Unlock()
 
-	mirror, err := c.ensureMirror(ctx, repoURL, username, token)
+	mirror, err := c.ensureMirror(ctx, repoURL, cred)
 	if err != nil {
 		// 镜像不可用(首次拉取失败 / 损坏)→ 回退直连网络克隆,绝不让构建挂。
 		if c.fallback != nil {
-			return c.fallback.Clone(ctx, repoURL, username, token, branch, commit, destDir)
+			return c.fallback.Clone(ctx, repoURL, cred, branch, commit, destDir)
 		}
 		return nil, err
 	}
@@ -148,7 +154,7 @@ func (c *Cache) Clone(ctx context.Context, repoURL, username, token, branch, com
 		// 本地 checkout 失败(罕见:ref 不在镜像 / 镜像损坏)→ 同样回退直连。
 		if c.fallback != nil {
 			_ = os.RemoveAll(destDir)
-			return c.fallback.Clone(ctx, repoURL, username, token, branch, commit, destDir)
+			return c.fallback.Clone(ctx, repoURL, cred, branch, commit, destDir)
 		}
 		return nil, cerr
 	}
@@ -193,12 +199,12 @@ func (c *Cache) checkoutFromMirror(ctx context.Context, mirror, branch, commit, 
 }
 
 // ListRefs 列出某仓库的分支与 tag(确保镜像最新后从本地镜像读;供前端下拉,不每次触网克隆)。
-func (c *Cache) ListRefs(ctx context.Context, repoURL, username, token string) (*Refs, error) {
+func (c *Cache) ListRefs(ctx context.Context, repoURL string, cred vault.GitAuth) (*Refs, error) {
 	lock := c.repoLock(repoURL)
 	lock.Lock()
 	defer lock.Unlock()
 
-	mirror, err := c.ensureMirror(ctx, repoURL, username, token)
+	mirror, err := c.ensureMirror(ctx, repoURL, cred)
 	if err != nil {
 		return nil, err
 	}
@@ -235,7 +241,7 @@ type Commit struct {
 
 // ListCommits 列出某 ref(分支名/tag/commit sha)上最近 limit 条提交(镜像增量更新后从本地 git log 读)。
 // ref 空 → 用镜像 HEAD;limit<=0 或过大 → 夹到 [1,200]。供前端选 commit 提供数据。
-func (c *Cache) ListCommits(ctx context.Context, repoURL, username, token, ref string, limit int) ([]Commit, error) {
+func (c *Cache) ListCommits(ctx context.Context, repoURL string, cred vault.GitAuth, ref string, limit int) ([]Commit, error) {
 	if limit <= 0 {
 		limit = 30
 	}
@@ -246,7 +252,7 @@ func (c *Cache) ListCommits(ctx context.Context, repoURL, username, token, ref s
 	lock.Lock()
 	defer lock.Unlock()
 
-	mirror, err := c.ensureMirror(ctx, repoURL, username, token)
+	mirror, err := c.ensureMirror(ctx, repoURL, cred)
 	if err != nil {
 		return nil, err
 	}
