@@ -287,8 +287,9 @@ function validate(): boolean {
       fieldErrors.smtpHost = t('settingsNotifications.valSmtpHostRequired')
       ok = false
     }
+    // v-model on type="number" casts to number at runtime — coerce before trim
     const port = Number(form.smtpPort)
-    if (!form.smtpPort.trim() || Number.isNaN(port) || port <= 0) {
+    if (!String(form.smtpPort ?? '').trim() || Number.isNaN(port) || port <= 0) {
       fieldErrors.smtpPort = t('settingsNotifications.valPortInvalid')
       ok = false
     }
