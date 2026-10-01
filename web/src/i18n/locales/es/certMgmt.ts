@@ -1,7 +1,7 @@
 export default {
   eyebrow: 'Panel de operaciones',
   title: 'Certificados',
-  subtitle: 'Gestión unificada del ciclo de vida de los certificados: emisión y renovación automáticas con acme.sh integrado (DNS-01, con soporte de comodines), además de importación manual. El motor de firma se ejecuta en el host de la pasarela del registro de servicios y los certificados se despliegan automáticamente.',
+  subtitle: 'Gestión unificada del ciclo de vida de los certificados: emisión y renovación automáticas con el acme.sh integrado (DNS-01, comodines), más importación manual. El motor de firma se ejecuta localmente en el nodo de control; los certificados se despliegan en la pasarela en cuanto esté configurada.',
   loadingAria: 'Cargando certificados',
   refreshingAll: 'Actualizando…',
 
@@ -15,17 +15,14 @@ export default {
   dayUnit: 'días',
 
   engine: {
-    title: 'Motor de firma (acme.sh)',
+    title: 'Motor de firma (acme.sh · local)',
+    notInstalled: 'Sin instalar',
     ready: 'Listo',
     missingDeps: 'Faltan dependencias',
-    notInstalled: 'Sin desplegar',
-    unconfigured: 'Pasarela sin configurar',
-    host: 'Host de la pasarela',
-    deploy: 'Desplegar motor',
-    deployed: 'Motor de firma desplegado',
-    deployFail: 'Error al desplegar el motor de firma',
-    hint: 'El motor de firma emite y renueva certificados en el host de la pasarela; se despliega automáticamente al crear un certificado y también puede desplegarse o comprobarse aquí.',
-    gotoGateway: 'Ir al registro de servicios',
+    deploy: 'Instalar / comprobar motor',
+    deployed: 'Motor de firma listo',
+    deployFail: 'Error al instalar el motor de firma',
+    hint: 'acme.sh se ejecuta localmente en el nodo de control como scripts incrustados (requiere sh, curl y openssl; nodo de control Linux/POSIX). La emisión no depende de la pasarela; los certificados emitidos se despliegan en los dominios base de la pasarela una vez configurada.',
   },
 
   btn: {

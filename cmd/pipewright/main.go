@@ -439,16 +439,17 @@ func main() {
 	// 与证书管理互引经适配器在装配后晚绑,无 init 副作用、无新顶层依赖。
 	dnsSvc := dnsprovider.New(st.DB, credVault)
 
-	// 证书管理(acme.sh 自动签发/续期,DNS-01):凭据/根区复用 dnsSvc;签发引擎以宿主机脚本
-	// 跑在服务注册网关主机上;签发结果读回入库后经 CertSink 同步基域(内部 apply + reload)。
+	// 证书管理(acme.sh 自动签发/续期,DNS-01):凭据/根区复用 dnsSvc;签发引擎以内嵌脚本
+	// 跑在控制机本地(DB 同级 acme/,不依赖网关配置);签发结果读回入库后经 CertSink 同步
+	// 基域(内部 apply + reload),并联动平台 HTTPS。
 	certSvc := certmgmt.New(st.DB, targetSvc, credVault)
 	if cfg, ok := certSvc.(interface {
 		SetCredentialsResolver(certmgmt.CredentialsResolver)
 	}); ok {
 		cfg.SetCredentialsResolver(&dnsResolverAdapter{dns: dnsSvc})
 	}
-	if cfg, ok := certSvc.(interface{ SetGateway(certmgmt.GatewayInfo) }); ok {
-		cfg.SetGateway(&certGatewayAdapter{sr: serviceRegSvc})
+	if h, ok := certSvc.(interface{ SetHomeDir(string) }); ok {
+		h.SetHomeDir(filepath.Join(filepath.Dir(cfg.DBPath), "acme"))
 	}
 	if cfg, ok := certSvc.(interface{ SetCertSink(certmgmt.CertSink) }); ok {
 		cfg.SetCertSink(&certSinkAdapter{sr: serviceRegSvc})
@@ -963,17 +964,6 @@ func (a *previewAllocator) Allocate(ctx context.Context, in previewenv.AllocateI
 		Subdomain:  in.Subdomain,
 	})
 	return err
-}
-
-// certGatewayAdapter 适配 certmgmt.GatewayInfo:acme.sh 以宿主机脚本方式跑在服务注册网关主机上。
-type certGatewayAdapter struct{ sr servicereg.Service }
-
-func (g *certGatewayAdapter) Gateway(ctx context.Context) (string, bool, error) {
-	st, err := g.sr.GetSettings(ctx)
-	if err != nil {
-		return "", false, err
-	}
-	return st.ServerID, st.ServerID != "", nil
 }
 
 // platformCertSource 适配 platformhttps.CertSource:证书元数据/PEM 解密下沉 certmgmt

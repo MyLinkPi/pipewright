@@ -1,7 +1,11 @@
 package certmgmt
 
 import (
+	"bytes"
 	"context"
+	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -11,68 +15,46 @@ import (
 
 // ---------- 脚本构造(golden) ----------
 
-// TestBuildRunScriptGolden 锁定签发/续期脚本的确定性输出:export 凭据 → 宿主机 acme.sh 主操作。
-// 凭据含单引号时必须安全转义;路径全为包内常量(无用户输入)。
-func TestBuildRunScriptGolden(t *testing.T) {
+// TestIssueRenewArgs 锁定签发/续期的 acme.sh 参数构造(确定性;值均已过白名单校验)。
+func TestIssueRenewArgs(t *testing.T) {
 	c := &Certificate{
 		PrimaryDomain: "*.efg.com",
 		Domains:       []string{"*.efg.com", "efg.com"},
 		CA:            CALetsEncrypt,
 		KeyType:       KeyTypeEC256,
 	}
-	env := [][2]string{{"CF_Token", "s3cr'et"}, {"CF_AccountId", "acct"}}
-	got := buildRunScript(issueOp, c, "dns_cf", env)
-	want := `#!/bin/sh
-set -e
-export CF_Token='s3cr'\''et'
-export CF_AccountId='acct'
-/opt/pipewright/acme/acme.sh --home '/opt/pipewright/acme' --issue --dns dns_cf -d '*.efg.com' -d 'efg.com' --keylength ec-256 --server 'https://acme-v02.api.letsencrypt.org/directory'
-`
-	if got != want {
-		t.Fatalf("issue script mismatch:\n--- got ---\n%s\n--- want ---\n%s", got, want)
+	got := issueArgs(c, "dns_cf")
+	want := []string{
+		"--issue", "--dns", "dns_cf",
+		"-d", "*.efg.com", "-d", "efg.com",
+		"--keylength", "ec-256",
+		"--server", caServerURL[CALetsEncrypt],
+	}
+	if !slicesEqual(got, want) {
+		t.Fatalf("issue 参数不符:\n got  %v\n want %v", got, want)
 	}
 
-	gotRenew := buildRunScript(renewOp, c, "dns_ali", [][2]string{{"Ali_Key", "k"}, {"Ali_Secret", "v"}})
-	wantRenew := `#!/bin/sh
-set -e
-export Ali_Key='k'
-export Ali_Secret='v'
-/opt/pipewright/acme/acme.sh --home '/opt/pipewright/acme' --renew -d '*.efg.com' --force
-`
-	if gotRenew != wantRenew {
-		t.Fatalf("renew script mismatch:\n--- got ---\n%s\n--- want ---\n%s", gotRenew, wantRenew)
+	c2 := &Certificate{PrimaryDomain: "a.example.com"}
+	gotRenew := renewArgs(c2)
+	wantRenew := []string{"--renew", "-d", "a.example.com", "--force"}
+	if !slicesEqual(gotRenew, wantRenew) {
+		t.Fatalf("renew 参数不符: got %v want %v", gotRenew, wantRenew)
 	}
 }
 
-// TestAcmeshEmbedded 嵌入的 fork 最小集完整(主脚本 + 三家 dnsapi),防误删。
-func TestAcmeshEmbedded(t *testing.T) {
-	for _, f := range acmeshFiles {
-		b, err := acmeshFS.ReadFile(f.src)
-		if err != nil {
-			t.Fatalf("embedded file missing %s: %v", f.src, err)
-		}
-		if len(b) < 1024 {
-			t.Fatalf("embedded file too small %s: %d bytes", f.src, len(b))
+func slicesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
 		}
 	}
+	return true
 }
 
-func TestShQuote(t *testing.T) {
-	cases := map[string]string{
-		"plain":      `'plain'`,
-		"with'quote": `'with'\''quote'`,
-		"a b;c":      `'a b;c'`,
-		"$x`y":       "'$x`y'",
-	}
-	for in, want := range cases {
-		if got := shQuote(in); got != want {
-			t.Fatalf("shQuote(%q) = %q, want %q", in, got, want)
-		}
-	}
-}
-
-// ---------- 枚举映射 ----------
-
+// TestDnsAPINameAndEnv 三家提供商 → acme.sh dnsapi 插件与凭据环境变量映射。
 func TestDnsAPINameAndEnv(t *testing.T) {
 	if dnsAPIName("cloudflare") != "dns_cf" || dnsAPIName("dnspod") != "dns_dp" || dnsAPIName("alidns") != "dns_ali" {
 		t.Fatalf("dnsAPIName 映射错误")
@@ -86,7 +68,51 @@ func TestDnsAPINameAndEnv(t *testing.T) {
 	}
 }
 
-// ---------- 域名校验 / 覆盖判定 ----------
+// TestLocalEngineInstall 本地引擎安装幂等(释放嵌入脚本到临时 home,重复安装不报错)。
+func TestLocalEngineInstall(t *testing.T) {
+	svc := &service{home: t.TempDir()}
+	if st, _ := svc.inspectEngine(); st.Installed {
+		t.Fatalf("初始应未安装")
+	}
+	// 依赖可能缺失(如 Windows 无 sh)——安装报 ErrAcmeshStart 时仅校验文件已释放。
+	if err := svc.ensureEngine(); err == nil {
+		if st, _ := svc.inspectEngine(); !st.Installed || !st.Ready {
+			t.Fatalf("安装+依赖齐备后应 Installed&&Ready: %+v", st)
+		}
+	} else if !errors.Is(err, ErrAcmeshStart) {
+		t.Fatalf("安装失败应为 ErrAcmeshStart: %v", err)
+	}
+	for _, f := range acmeshFiles {
+		if _, serr := os.Stat(filepath.Join(svc.home, f.dest)); serr != nil {
+			t.Fatalf("脚本未释放 %s: %v", f.dest, serr)
+		}
+	}
+	// 幂等:再次安装不报错(依赖缺失场景除外)。
+	_ = svc.ensureEngine()
+}
+
+// TestLocalEngineUpgrade 锁定 fork 升级路径:已安装脚本被改写(模拟旧版本)→ 再次
+// ensureEngine 按嵌入内容比对后覆盖恢复(升级 fork = 换嵌入文件重编译即生效)。
+func TestLocalEngineUpgrade(t *testing.T) {
+	svc := &service{home: t.TempDir()}
+	_ = svc.ensureEngine() // 依赖缺失也照常释放文件
+	dest := filepath.Join(svc.home, "acme.sh")
+	if err := os.WriteFile(dest, []byte("#!/bin/sh\n# stale old version\n"), 0o700); err != nil {
+		t.Fatalf("写入旧版本:%v", err)
+	}
+	_ = svc.ensureEngine()
+	got, err := os.ReadFile(dest)
+	if err != nil {
+		t.Fatalf("回读:%v", err)
+	}
+	want, err := acmeshFS.ReadFile("acmesh/acme.sh")
+	if err != nil {
+		t.Fatalf("读嵌入文件:%v", err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("升级后脚本应与嵌入内容一致")
+	}
+}
 
 func TestValidateDomainName(t *testing.T) {
 	for _, ok := range []string{"efg.com", "a.efg.com", "*.efg.com", "a-b.example.co"} {

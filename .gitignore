@@ -58,3 +58,7 @@
 # Python 脚本字节码缓存(i18n 等一次性脚本的 __pycache__)
 __pycache__/
 *.pyc
+
+# acme.sh 本地运行 home(ACME 账户私钥/证书私钥/签发产物)—— 任何位置都不入库;
+# 正常应落在 DB 同级或 PIPEWRIGHT_ACMESH_HOME,进入源码树即装配遗漏(如测试未注入 home)
+acme/

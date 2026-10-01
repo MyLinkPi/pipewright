@@ -1,7 +1,7 @@
 export default {
   eyebrow: 'Ops Dashboard',
   title: 'Certificates',
-  subtitle: 'Unified certificate lifecycle — automatic issuance and renewal via the integrated acme.sh (DNS-01, wildcards supported), plus manual import. The signing engine runs on the service-registry gateway host and certificates are deployed to the gateway automatically.',
+  subtitle: 'Unified certificate lifecycle — automatic issuance and renewal via the embedded acme.sh (DNS-01, wildcards supported), plus manual import. The signing engine runs locally on the control node; certificates deploy to the gateway automatically once configured.',
   loadingAria: 'Loading certificates',
   refreshingAll: 'Refreshing…',
 
@@ -15,17 +15,14 @@ export default {
   dayUnit: 'days',
 
   engine: {
-    title: 'Signing engine (acme.sh)',
+    title: 'Signing engine (acme.sh · local)',
+    notInstalled: 'Not installed',
     ready: 'Ready',
     missingDeps: 'Missing deps',
-    notInstalled: 'Not deployed',
-    unconfigured: 'Gateway not configured',
-    host: 'Gateway host',
-    deploy: 'Deploy engine',
-    deployed: 'Signing engine deployed',
-    deployFail: 'Failed to deploy signing engine',
-    hint: 'The signing engine issues and renews certificates on the gateway host; it is deployed automatically when you create a certificate, and you can also deploy or check it here.',
-    gotoGateway: 'Open Service Registry',
+    deploy: 'Install / check engine',
+    deployed: 'Signing engine ready',
+    deployFail: 'Failed to install signing engine',
+    hint: 'acme.sh runs locally on the control node as embedded scripts (needs sh, curl and openssl — a Linux/POSIX control node). Issuance does not depend on the gateway; issued certificates deploy to matching gateway base domains once configured.',
   },
 
   btn: {

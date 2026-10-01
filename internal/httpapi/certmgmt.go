@@ -67,19 +67,15 @@ func toCertDTO(c certmgmt.Certificate) certDTO {
 	}
 }
 
-// certEngineDTO 是签发引擎(网关主机上的 acme.sh 脚本集)状态对外响应体。
+// certEngineDTO 是签发引擎(控制机本地的 acme.sh 脚本集)状态对外响应体。
 type certEngineDTO struct {
-	Configured bool   `json:"configured"`
-	ServerID   string `json:"serverId"`
-	ServerName string `json:"serverName"`
-	Installed  bool   `json:"installed"`
-	Ready      bool   `json:"ready"`
-	Version    string `json:"version"`
+	Installed bool   `json:"installed"`
+	Ready     bool   `json:"ready"`
+	Version   string `json:"version"`
 }
 
 func toCertEngineDTO(e *certmgmt.EngineStatus) certEngineDTO {
 	return certEngineDTO{
-		Configured: e.Configured, ServerID: e.ServerID, ServerName: e.ServerName,
 		Installed: e.Installed, Ready: e.Ready, Version: e.Version,
 	}
 }
@@ -111,10 +107,8 @@ func writeCertMgmtError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusConflict, "cert_busy", "该证书已有签发/续期操作进行中,请稍候")
 	case errors.Is(err, certmgmt.ErrCertInUse):
 		writeError(w, http.StatusConflict, "cert_in_use", "证书正被平台 HTTPS 使用,请先在「设置 → HTTPS 访问」中更换或关闭")
-	case errors.Is(err, certmgmt.ErrNoGateway):
-		writeError(w, http.StatusBadRequest, "gateway_not_configured", "签发引擎运行在网关主机上,请先在「服务注册」里配置网关主机")
 	case errors.Is(err, certmgmt.ErrAcmeshStart):
-		writeError(w, http.StatusBadGateway, "cert_engine_start_failed", "安装 acme.sh 签发引擎失败,请确认 SSH 用户对 /opt/pipewright 有写权限且网关主机已安装 curl + openssl")
+		writeError(w, http.StatusBadGateway, "cert_engine_start_failed", "安装 acme.sh 签发引擎失败,请确认控制机已安装 sh / curl / openssl(引擎在控制机本地运行,须为 Linux/POSIX 环境)")
 	case errors.Is(err, certmgmt.ErrIssue):
 		writeError(w, http.StatusBadGateway, "acme_failed", "acme.sh 签发/续期失败(详情见错误信息;也可在证书列表查看)")
 	case errors.Is(err, certmgmt.ErrReadBack):
@@ -353,7 +347,7 @@ func makeDeployCertEngineHandler(svc certmgmt.Service, aud audit.Recorder) http.
 		}
 		recordAudit(r.Context(), aud, audit.Entry{
 			Actor: auditActor, Action: auditActionCertEngineDep, TargetType: auditTargetCertEngine,
-			TargetID: e.ServerID, Detail: map[string]any{"ok": true}, IP: clientIP(r),
+			TargetID: "local", Detail: map[string]any{"ok": true, "version": e.Version}, IP: clientIP(r),
 		})
 		writeJSON(w, http.StatusOK, toCertEngineDTO(e))
 	}

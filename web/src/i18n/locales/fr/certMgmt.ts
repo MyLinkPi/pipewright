@@ -1,7 +1,7 @@
 export default {
   eyebrow: 'Tableau des opérations',
   title: 'Certificats',
-  subtitle: 'Gestion unifiée du cycle de vie des certificats — émission et renouvellement automatiques via acme.sh intégré (DNS-01, wildcards prises en charge), plus import manuel. Le moteur de signature s\'exécute sur l\'hôte passerelle du registre de services et les certificats sont déployés automatiquement.',
+  subtitle: "Gestion unifiée du cycle de vie des certificats — émission et renouvellement automatiques via l'acme.sh intégré (DNS-01, wildcards), plus import manuel. Le moteur de signature s'exécute localement sur le nœud de contrôle ; les certificats sont déployés vers la passerelle dès qu'elle est configurée.",
   loadingAria: 'Chargement des certificats',
   refreshingAll: 'Actualisation…',
 
@@ -15,17 +15,14 @@ export default {
   dayUnit: 'jours',
 
   engine: {
-    title: 'Moteur de signature (acme.sh)',
+    title: 'Moteur de signature (acme.sh · local)',
+    notInstalled: 'Non installé',
     ready: 'Prêt',
     missingDeps: 'Dépendances manquantes',
-    notInstalled: 'Non déployé',
-    unconfigured: 'Passerelle non configurée',
-    host: 'Hôte passerelle',
-    deploy: 'Déployer le moteur',
-    deployed: 'Moteur de signature déployé',
-    deployFail: 'Échec du déploiement du moteur de signature',
-    hint: 'Le moteur de signature émet et renouvelle les certificats sur l\'hôte passerelle ; il est déployé automatiquement à la création d\'un certificat et peut aussi être déployé ou vérifié ici.',
-    gotoGateway: 'Ouvrir le registre de services',
+    deploy: 'Installer / vérifier le moteur',
+    deployed: 'Moteur de signature prêt',
+    deployFail: "Échec de l'installation du moteur de signature",
+    hint: "acme.sh s'exécute localement sur le nœud de contrôle sous forme de scripts intégrés (sh, curl et openssl requis ; nœud de contrôle Linux/POSIX). L'émission ne dépend pas de la passerelle ; les certificats émis sont déployés vers les domaines de base de la passerelle une fois configurée.",
   },
 
   btn: {

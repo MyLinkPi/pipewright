@@ -1,7 +1,7 @@
 export default {
   eyebrow: '營運大盤',
   title: '憑證管理',
-  subtitle: '平台憑證統一管理 —— acme.sh 自動簽發與續期(DNS-01,支援泛網域),也可匯入現成憑證;簽發引擎運行在服務註冊閘道主機上,憑證自動下發閘道。',
+  subtitle: '平台憑證統一管理 —— acme.sh 自動簽發與續期(DNS-01,支援泛網域),也可匯入現成憑證;簽發引擎在平台控制機本地運行,憑證自動下發閘道(如已設定)。',
   loadingAria: '正在載入憑證列表',
   refreshingAll: '重新整理中…',
 
@@ -15,17 +15,14 @@ export default {
   dayUnit: '天',
 
   engine: {
-    title: '簽發引擎(acme.sh)',
+    title: '簽發引擎(acme.sh · 本地)',
+    notInstalled: '未安裝',
     ready: '已就緒',
     missingDeps: '缺少相依套件',
-    notInstalled: '未部署',
-    unconfigured: '閘道未設定',
-    host: '閘道主機',
-    deploy: '部署引擎',
-    deployed: '簽發引擎已部署',
-    deployFail: '部署簽發引擎失敗',
-    hint: '簽發引擎與憑證簽發/續期運行在閘道主機上;建立憑證時會自動部署,這裡也可顯式部署或檢查狀態。',
-    gotoGateway: '前往服務註冊',
+    deploy: '安裝/檢查引擎',
+    deployed: '簽發引擎已就緒',
+    deployFail: '安裝簽發引擎失敗',
+    hint: 'acme.sh 以內嵌腳本方式在控制機本地運行(需 sh/curl/openssl,Linux 控制機);簽發不依賴閘道,憑證簽好後自動下發到已設定閘道的匹配基域。',
   },
 
   btn: {

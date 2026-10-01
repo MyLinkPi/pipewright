@@ -1,7 +1,7 @@
 export default {
   eyebrow: '운영 대시보드',
   title: '인증서 관리',
-  subtitle: '플랫폼 인증서 통합 관리 —— 통합 acme.sh로 자동 발급·갱신(DNS-01, 와일드카드 지원)하고 기존 인증서를 가져올 수도 있습니다. 발급 엔진은 서비스 레지스트리 게이트웨이 호스트에서 실행되며 인증서는 게이트웨이에 자동 배포됩니다.',
+  subtitle: '플랫폼 인증서 통합 관리 —— 내장 acme.sh로 자동 발급·갱신(DNS-01, 와일드카드 지원)하고 기존 인증서를 가져올 수도 있습니다. 발급 엔진은 제어 노드에서 로컬로 실행되며, 인증서는 게이트웨이 구성 시 자동 배포됩니다.',
   loadingAria: '인증서 목록 로드 중',
   refreshingAll: '새로고침 중…',
 
@@ -15,17 +15,14 @@ export default {
   dayUnit: '일',
 
   engine: {
-    title: '발급 엔진(acme.sh)',
+    title: '발급 엔진(acme.sh · 로컬)',
+    notInstalled: '미설치',
     ready: '준비됨',
     missingDeps: '의존성 부족',
-    notInstalled: '미배치',
-    unconfigured: '게이트웨이 미설정',
-    host: '게이트웨이 호스트',
-    deploy: '엔진 배치',
-    deployed: '발급 엔진이 배치되었습니다',
-    deployFail: '발급 엔진 배치 실패',
-    hint: '발급 엔진은 게이트웨이 호스트에서 인증서를 발급·갱신합니다. 인증서 생성 시 자동으로 배치되며, 여기서 명시적으로 배치하거나 상태를 확인할 수도 있습니다.',
-    gotoGateway: '서비스 레지스트리로 이동',
+    deploy: '엔진 설치/확인',
+    deployed: '발급 엔진이 준비되었습니다',
+    deployFail: '발급 엔진 설치 실패',
+    hint: "acme.sh는 내장 스크립트로 제어 노드에서 로컬로 실행됩니다(sh/curl/openssl 필요, Linux 제어 노드). 발급은 게이트웨이에 의존하지 않으며, 발급된 인증서는 구성된 게이트웨이의 해당 베이스 도메인에 자동 배포됩니다.",
   },
 
   btn: {

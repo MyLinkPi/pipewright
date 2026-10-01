@@ -1,7 +1,7 @@
 export default {
   eyebrow: '运维大盘',
   title: '证书管理',
-  subtitle: '平台证书统一管理 —— acme.sh 自动签发与续期(DNS-01,支持泛域名),也可导入现成证书;签发引擎运行在服务注册网关主机上,证书自动下发网关。',
+  subtitle: '平台证书统一管理 —— acme.sh 自动签发与续期(DNS-01,支持泛域名),也可导入现成证书;签发引擎在平台控制机本地运行,证书自动下发网关(如已配置)。',
   loadingAria: '正在加载证书列表',
   refreshingAll: '刷新中…',
 
@@ -17,17 +17,14 @@ export default {
 
   // 引擎卡
   engine: {
-    title: '签发引擎(acme.sh)',
+    title: '签发引擎(acme.sh · 本地)',
+    notInstalled: '未安装',
     ready: '已就绪',
     missingDeps: '缺少依赖',
-    notInstalled: '未部署',
-    unconfigured: '网关未配置',
-    host: '网关主机',
-    deploy: '部署引擎',
-    deployed: '签发引擎已部署',
-    deployFail: '部署签发引擎失败',
-    hint: '签发引擎与证书签发/续期运行在网关主机上;创建证书时会自动部署,这里也可显式部署或检查状态。',
-    gotoGateway: '前往服务注册',
+    deploy: '安装/检查引擎',
+    deployed: '签发引擎已就绪',
+    deployFail: '安装签发引擎失败',
+    hint: 'acme.sh 以内嵌脚本方式在控制机本地运行(需 sh/curl/openssl,Linux 控制机);签发不依赖网关,证书签好后自动下发到已配置网关的匹配基域。',
   },
 
   btn: {

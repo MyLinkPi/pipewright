@@ -16,8 +16,10 @@ import (
 // fakeCertResolver 是注入 certmgmt 的假 DNS 凭据解析器(不触 vault/网络)。
 type fakeCertResolver struct{}
 
+// Resolve 故意返回 ok=false:Create 的同步校验只用 ProviderType/ProviderZones,而异步
+// 签发走到 Resolve 即失败 —— 阻止测试在本地真实执行 acme.sh、触达外部 ACME CA。
 func (fakeCertResolver) Resolve(context.Context, string) (string, string, string, bool, error) {
-	return "cloudflare", "", "cf-secret", true, nil
+	return "cloudflare", "", "", false, nil
 }
 func (fakeCertResolver) ProviderType(_ context.Context, id string) (string, bool, error) {
 	if id == "prov-1" {
@@ -30,13 +32,6 @@ func (fakeCertResolver) ProviderZones(_ context.Context, id string) ([]string, b
 		return []string{"example.com"}, true, nil
 	}
 	return nil, false, nil
-}
-
-// fakeCertGateway 是注入 certmgmt 的假网关信息(主机 srv-1)。
-type fakeCertGateway struct{}
-
-func (fakeCertGateway) Gateway(context.Context) (string, bool, error) {
-	return "srv-1", true, nil
 }
 
 // fakeCertSink 记录证书同步调用(不触网关);基域清单固定含 efg.com。
@@ -61,11 +56,15 @@ func (f *fakeCertSink) ClearCert(_ context.Context, domainID string) error {
 }
 
 // setupCertMgmtServer 构造挂了证书管理的测试 server(admin/testpass;fake target/vault/resolver/sink)。
-// 返回 certmgmt.Service 供单测晚绑 GatewayInfo,以及 fake sink 供断言下发。
+// 返回 certmgmt.Service 供单测晚绑(SetHomeDir 等),以及 fake sink 供断言下发。
 func setupCertMgmtServer(t *testing.T) (*httptest.Server, certmgmt.Service, *fakeCertSink) {
 	t.Helper()
 	st := testStoreAuth(t)
 	cm := certmgmt.New(st.DB, &fakeSRTarget{}, fakeSRSealer{})
+	// acme home 指到测试临时目录:任何触到引擎安装的路径都不污染 cwd/用户目录。
+	if cfg, ok := cm.(interface{ SetHomeDir(string) }); ok {
+		cfg.SetHomeDir(t.TempDir())
+	}
 	if cfg, ok := cm.(interface{ SetCredentialsResolver(certmgmt.CredentialsResolver) }); ok {
 		cfg.SetCredentialsResolver(fakeCertResolver{})
 	}
@@ -178,9 +177,7 @@ func TestCertMgmtCreateValidation(t *testing.T) {
 
 // TestCertMgmtImportFlow:导入自签证书 → 列表可见 → 重新下发 → 删除;全程响应不含 PEM。
 func TestCertMgmtImportFlow(t *testing.T) {
-	srv, cm, sink := setupCertMgmtServer(t)
-	// 晚绑网关信息:manual 重新下发(renew)需要网关已接入且已配主机。
-	cm.(interface{ SetGateway(certmgmt.GatewayInfo) }).SetGateway(fakeCertGateway{})
+	srv, _, sink := setupCertMgmtServer(t)
 	client, csrf := loginSR(t, srv.URL)
 
 	certPEM, keyPEM := srSelfSignedCert(t, "*.efg.com")
@@ -269,28 +266,32 @@ func TestCertMgmtImportFlow(t *testing.T) {
 	}
 }
 
-// TestCertMgmtEngine:引擎探测/显式部署(未配网关主机 → configured:false / 400)。
+// TestCertMgmtEngine:本地引擎探测/显式安装(脚本释放到临时 home;Windows 缺 sh → 502)。
 func TestCertMgmtEngine(t *testing.T) {
-	srv, _, _ := setupCertMgmtServer(t)
+	srv, cm, _ := setupCertMgmtServer(t)
+	// 引擎安装目录指到测试临时目录,不污染工作目录。
+	cm.(interface{ SetHomeDir(string) }).SetHomeDir(t.TempDir())
 	client, csrf := loginSR(t, srv.URL)
 
-	// 未注入 GatewayInfo → configured:false,非错误。
+	// 探测 → 200,三态字段可解码(初始未安装)。
 	resp := doJSON(t, client, http.MethodGet, srv.URL+"/api/certmgmt/engine", "", "")
 	var eng struct {
-		Configured bool `json:"configured"`
+		Installed bool `json:"installed"`
+		Ready     bool `json:"ready"`
+		Version   string `json:"version"`
 	}
 	_ = json.NewDecoder(resp.Body).Decode(&eng)
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusOK || eng.Configured {
-		t.Fatalf("引擎探测应 200/configured=false:%d %+v", resp.StatusCode, eng)
+	if resp.StatusCode != http.StatusOK || eng.Installed {
+		t.Fatalf("引擎探测应 200/installed=false:%d %+v", resp.StatusCode, eng)
 	}
 
-	// 显式部署:网关未配置 → 400 gateway_not_configured。
+	// 显式安装:依赖齐备(本机有 sh/curl/openssl,如 Git Bash)→ 200;缺依赖 → 502。
+	// 不绑定 OS:开发机 PATH 里常有 Git Bash 的 POSIX 工具,二者都是合法结果。
 	resp = doJSON(t, client, http.MethodPost, srv.URL+"/api/certmgmt/engine/deploy", csrf, "")
-	depCode := certErrCode(t, resp)
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusBadRequest || depCode != "gateway_not_configured" {
-		t.Fatalf("未配网关部署应 400/gateway_not_configured:%d/%s", resp.StatusCode, depCode)
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("本地安装应 200(依赖齐)或 502(缺依赖):%d", resp.StatusCode)
 	}
 }
 
