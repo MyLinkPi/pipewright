@@ -68,7 +68,7 @@ function portLabel(p: ContainerInspect['ports'][number]): string {
 </script>
 
 <template>
-  <div class="ci-backdrop" @click.self="emit('close')">
+  <div class="ci-backdrop">
     <div class="ci-modal" role="dialog" aria-modal="true" aria-labelledby="ci-title">
       <header class="ci-head">
         <div class="ci-head-text">

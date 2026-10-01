@@ -33,6 +33,10 @@ var (
 	ErrEmptyCredentialID = errors.New("project: credential id must not be empty")
 	// ErrCredentialError 表示凭据无效/缺失/无权限(克隆鉴权失败)。
 	ErrCredentialError = errors.New("project: credential error")
+	// ErrInvalidCredential 表示凭据**内容**无法使用:如 ssh_key 不是可解析的
+	// 私钥(粘贴不完整/带 passphrase)。与「服务端拒绝认证」(ErrCredentialError)
+	// 区分:前者修粘贴内容,后者修平台上的公钥登记。
+	ErrInvalidCredential = errors.New("project: credential content is not usable")
 	// ErrRepoUnreachable 表示仓库地址不可达/不存在/网络错误。
 	ErrRepoUnreachable = errors.New("project: repo unreachable")
 	// ErrVaultUnconfigured 表示保险库未配置 master key,无法取凭据做校验。

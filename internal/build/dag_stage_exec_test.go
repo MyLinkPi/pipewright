@@ -505,11 +505,11 @@ func TestScriptStepFromTemplatedJob(t *testing.T) {
 	}
 }
 
-// stubStageDeployer 捕获 DeployForStage 的入参(只为断言 cfg 透传)。
+// stubStageDeployer 捕获 DeployForStage 的入参(只为断言 cfg / selector 透传)。
 type stubStageDeployer struct {
 	gotCfg      map[string]string
 	gotStrategy string
-	gotServers  []string
+	gotSelector string
 }
 
 func (d *stubStageDeployer) Deploy(context.Context, deploy.DeployInput) ([]deploy.TargetResult, error) {
@@ -524,10 +524,10 @@ func (d *stubStageDeployer) ContinueDeploy(context.Context, deploy.ContinueInput
 func (d *stubStageDeployer) AbortDeploy(context.Context, deploy.AbortInput) ([]deploy.TargetResult, error) {
 	panic("AbortDeploy not expected")
 }
-func (d *stubStageDeployer) DeployForStage(_ context.Context, _ string, serverIDs []string, cfg map[string]string, strategy string) ([]deploy.TargetResult, error) {
+func (d *stubStageDeployer) DeployForStage(_ context.Context, _ string, selector string, cfg map[string]string, strategy string) ([]deploy.TargetResult, error) {
 	d.gotCfg = cfg
 	d.gotStrategy = strategy
-	d.gotServers = serverIDs
+	d.gotSelector = selector
 	return []deploy.TargetResult{{ServerName: "srv", Status: run.TargetSuccess, Message: "ok"}}, nil
 }
 
@@ -564,10 +564,62 @@ func TestRunDeployJobPassesImageParams(t *testing.T) {
 	if dep.gotStrategy != "blue_green" {
 		t.Errorf("strategy = %q, want blue_green", dep.gotStrategy)
 	}
+	// 旧 serverId 写法映射为钉单机规范形式 server:<id>(既有流水线零改动兼容)。
+	if dep.gotSelector != "server:srv-1" {
+		t.Errorf("selector = %q, want server:srv-1", dep.gotSelector)
+	}
 	// 空键不应混入(保持默认行为)。
 	if _, ok := dep.gotCfg["restartCommand"]; ok {
 		t.Errorf("空 restartCommand 不应入 cfg:%+v", dep.gotCfg)
 	}
+}
+
+// TestRunDeployJobSelectorKey 证:节点 `selector` 键优先于旧 `serverId` 键原样透传
+//(标签圈选多机部署的入口);两者皆空 → 不调部署服务、节点按跳过成功(不再失败)。
+func TestRunDeployJobSelectorKey(t *testing.T) {
+	dep := &stubStageDeployer{}
+	b := &Builder{deployer: dep}
+	rep := &fakeReporter{}
+
+	// selector 优先:serverId 同时存在时被忽略。
+	jb := pipeline.Job{ID: "d", Name: "部署", Type: "deploy_ssh", Config: map[string]any{
+		"selector": "role=web",
+		"serverId": "srv-1",
+	}}
+	if err := b.runDeployJob(context.Background(), rep, jb, "run-1", nil); err != nil {
+		t.Fatalf("runDeployJob err: %v", err)
+	}
+	if dep.gotSelector != "role=web" {
+		t.Fatalf("selector = %q, want role=web(selector 键应优先于 serverId)", dep.gotSelector)
+	}
+
+	// 两者皆空:跳过即成功(不阻断流水线),也不应调部署服务。
+	dep2 := &stubStageDeployer{}
+	b2 := &Builder{deployer: dep2}
+	jb2 := pipeline.Job{ID: "d2", Name: "部署", Type: "deploy_ssh", Config: map[string]any{}}
+	if err := b2.runDeployJob(context.Background(), rep, jb2, "run-1", nil); err != nil {
+		t.Fatalf("空目标应跳过成功,got err: %v", err)
+	}
+	if dep2.gotSelector != "" || dep2.gotCfg != nil {
+		t.Fatalf("空目标不应调部署服务,got selector=%q cfg=%v", dep2.gotSelector, dep2.gotCfg)
+	}
+}
+
+// TestRunDeployJobZeroMatchSkips 证:部署服务返回空结果(选择器零命中)→ 节点按跳过成功。
+func TestRunDeployJobZeroMatchSkips(t *testing.T) {
+	b := &Builder{deployer: &zeroMatchDeployer{}}
+	rep := &fakeReporter{}
+	jb := pipeline.Job{ID: "d", Name: "部署", Type: "deploy_ssh", Config: map[string]any{"selector": "nope"}}
+	if err := b.runDeployJob(context.Background(), rep, jb, "run-1", nil); err != nil {
+		t.Fatalf("零命中应跳过成功,got err: %v", err)
+	}
+}
+
+// zeroMatchDeployer 模拟「选择器未命中任何机器」:DeployForStage 返回空结果(nil error)。
+type zeroMatchDeployer struct{ stubStageDeployer }
+
+func (d *zeroMatchDeployer) DeployForStage(_ context.Context, _ string, _ string, _ map[string]string, _ string) ([]deploy.TargetResult, error) {
+	return []deploy.TargetResult{}, nil
 }
 
 // ─── 阶段内 job 级 DAG 并发执行(横串竖并)─────────────────────────────────────────

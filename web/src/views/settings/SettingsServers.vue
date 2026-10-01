@@ -18,11 +18,14 @@ import type { Credential } from '../../api/credentials'
 import { HttpError } from '../../api/http'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
+import { useDirtyGuard } from '../../composables/useDirtyGuard'
 import ServiceLogViewer from '../../components/ops/ServiceLogViewer.vue'
 import ServiceOpsPanel from '../../components/ops/ServiceOpsPanel.vue'
 
 const router = useRouter()
 const { t } = useI18n()
+const { confirmDiscard } = useDirtyGuard()
+const formSnapshot = ref('')
 
 // ─── state ──────────────────────────────────────────────────────────────────
 
@@ -172,6 +175,7 @@ function openAddModal(): void {
   clearFormErrors()
   formBanner.value = ''
   modalOpen.value = true
+  formSnapshot.value = JSON.stringify(form.value)
 }
 
 function openEditModal(s: Server): void {
@@ -190,11 +194,18 @@ function openEditModal(s: Server): void {
   clearFormErrors()
   formBanner.value = ''
   modalOpen.value = true
+  formSnapshot.value = JSON.stringify(form.value)
 }
 
 function closeModal(): void {
   if (formSubmitting.value) return
   modalOpen.value = false
+}
+
+/** Shared close path for ✕ / 取消: confirm before discarding a dirty form. */
+async function requestClose(): Promise<void> {
+  if (JSON.stringify(form.value) !== formSnapshot.value && !(await confirmDiscard())) return
+  closeModal()
 }
 
 // ─── form validation ─────────────────────────────────────────────────────────
@@ -446,7 +457,7 @@ async function handleTest(s: Server): Promise<void> {
     </div>
 
     <!-- ─── add / edit modal ──────────────────────────────────────────────────── -->
-    <div v-if="modalOpen" class="modal-backdrop" @click.self="closeModal">
+    <div v-if="modalOpen" class="modal-backdrop">
       <div class="modal" role="dialog" aria-modal="true" aria-labelledby="server-modal-title">
         <h3 id="server-modal-title" class="modal-title">
           {{ modalMode === 'add' ? t('settingsServers.addServer') : t('settingsServers.editServer') }}
@@ -512,7 +523,7 @@ async function handleTest(s: Server): Promise<void> {
           </div>
 
           <div class="modal-actions">
-            <button type="button" class="btn-ghost" :disabled="formSubmitting" @click="closeModal">{{ t('settingsServers.cancel') }}</button>
+            <button type="button" class="btn-ghost" :disabled="formSubmitting" @click="requestClose">{{ t('settingsServers.cancel') }}</button>
             <button type="submit" class="btn-primary" :disabled="formSubmitting">
               {{ formSubmitting ? t('settingsServers.saving') : t('settingsServers.save') }}
             </button>
@@ -522,7 +533,7 @@ async function handleTest(s: Server): Promise<void> {
     </div>
 
     <!-- ─── delete confirm modal ──────────────────────────────────────────────── -->
-    <div v-if="deleteModalOpen" class="modal-backdrop" @click.self="closeDeleteModal">
+    <div v-if="deleteModalOpen" class="modal-backdrop">
       <div class="modal" role="dialog" aria-modal="true" aria-labelledby="server-del-title">
         <h3 id="server-del-title" class="modal-title">{{ t('settingsServers.deleteServer') }}</h3>
         <div v-if="deleteBanner" class="banner banner--error" role="alert">{{ deleteBanner }}</div>
@@ -541,7 +552,7 @@ async function handleTest(s: Server): Promise<void> {
     </div>
 
     <!-- ─── service logs modal (Story 6-2, FR-16) ─────────────────────────────── -->
-    <div v-if="logsModalOpen" class="modal-backdrop" @click.self="closeLogsModal">
+    <div v-if="logsModalOpen" class="modal-backdrop">
       <div class="modal modal--wide" role="dialog" aria-modal="true" aria-labelledby="server-logs-title">
         <div class="logs-modal-head">
           <h3 id="server-logs-title" class="modal-title">
@@ -561,7 +572,7 @@ async function handleTest(s: Server): Promise<void> {
     </div>
 
     <!-- ─── service operations modal (Story 6-3, FR-17) ───────────────────────── -->
-    <div v-if="opsModalOpen" class="modal-backdrop" @click.self="closeOpsModal">
+    <div v-if="opsModalOpen" class="modal-backdrop">
       <div class="modal" role="dialog" aria-modal="true" aria-labelledby="server-ops-title">
         <div class="logs-modal-head">
           <h3 id="server-ops-title" class="modal-title">

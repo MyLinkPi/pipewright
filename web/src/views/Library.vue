@@ -10,6 +10,8 @@
  */
 import { ref, computed, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { useConfirm } from '../composables/useConfirm'
+import { useDirtyGuard } from '../composables/useDirtyGuard'
 import { useRoute, useRouter } from 'vue-router'
 import { useMessage } from 'naive-ui'
 import { HttpError } from '../api/http'
@@ -40,6 +42,8 @@ type Tab = 'templates' | 'variableGroups' | 'customNodes'
 type LoadState = 'idle' | 'loading' | 'error'
 
 const { t } = useI18n()
+const confirm = useConfirm()
+const { confirmDiscard } = useDirtyGuard()
 const message = useMessage()
 const route = useRoute()
 const router = useRouter()
@@ -65,7 +69,7 @@ async function loadTemplates(): Promise<void> {
 }
 
 async function removeTemplate(ts: TemplateSummary): Promise<void> {
-  if (!window.confirm(t('library.confirmDeleteTemplate', { name: ts.name }))) return
+  if (!(await confirm.open({ title: t('library.delete'), body: t('library.confirmDeleteTemplate', { name: ts.name }), confirmLabel: t('library.delete') }))) return
   try {
     await deleteTemplate(ts.id)
     message.success(t('library.deletedTemplate', { name: ts.name }))
@@ -122,6 +126,16 @@ const editingId = ref<string | null>(null)
 const editorName = ref('')
 const editorDescription = ref('')
 const editorVars = ref<EditorVar[]>([])
+
+const editorSnapshot = ref('')
+function editorJson(): string {
+  return JSON.stringify({ name: editorName.value, description: editorDescription.value, vars: editorVars.value })
+}
+const editorDirty = computed(() => editorJson() !== editorSnapshot.value)
+async function requestEditorClose(): Promise<void> {
+  if (editorDirty.value && !(await confirmDiscard())) return
+  editorOpen.value = false
+}
 const editorBanner = ref('')
 const editorSaving = ref(false)
 
@@ -133,6 +147,7 @@ function openCreateGroup(): void {
   editorVars.value = [{ key: '', secret: false, value: '', credentialId: '', maskedValue: '' }]
   editorBanner.value = ''
   editorOpen.value = true
+  editorSnapshot.value = editorJson()
 }
 
 function openEditGroup(g: VariableGroup): void {
@@ -153,6 +168,7 @@ function openEditGroup(g: VariableGroup): void {
   }
   editorBanner.value = ''
   editorOpen.value = true
+  editorSnapshot.value = editorJson()
 }
 
 function addEditorVar(): void {
@@ -213,7 +229,7 @@ async function saveGroup(): Promise<void> {
 }
 
 async function removeGroup(g: VariableGroup): Promise<void> {
-  if (!window.confirm(t('library.confirmDeleteGroup', { name: g.name }))) return
+  if (!(await confirm.open({ title: t('library.delete'), body: t('library.confirmDeleteGroup', { name: g.name }), confirmLabel: t('library.delete') }))) return
   try {
     await deleteVariableGroup(g.id)
     message.success(t('library.deletedGroup', { name: g.name }))
@@ -243,7 +259,7 @@ async function loadCustomNodes(): Promise<void> {
 }
 
 async function removeCustomNode(n: CustomNode): Promise<void> {
-  if (!window.confirm(t('library.confirmDeleteNode', { name: n.name }))) return
+  if (!(await confirm.open({ title: t('library.delete'), body: t('library.confirmDeleteNode', { name: n.name }), confirmLabel: t('library.delete') }))) return
   try {
     await deleteCustomNode(n.id)
     message.success(t('library.deletedNode', { name: n.name }))
@@ -276,6 +292,22 @@ const cnEditorDescription = ref('')
 const cnEditorSummary = ref('')
 const cnEditorNodeType = ref('')
 const cnEditorRows = ref<CnEditorRow[]>([])
+
+const cnEditorSnapshot = ref('')
+function cnEditorJson(): string {
+  return JSON.stringify({
+    name: cnEditorName.value,
+    description: cnEditorDescription.value,
+    summary: cnEditorSummary.value,
+    nodeType: cnEditorNodeType.value,
+    rows: cnEditorRows.value,
+  })
+}
+const cnEditorDirty = computed(() => cnEditorJson() !== cnEditorSnapshot.value)
+async function requestCnClose(): Promise<void> {
+  if (cnEditorDirty.value && !(await confirmDiscard())) return
+  cnEditorOpen.value = false
+}
 const cnEditorBanner = ref('')
 const cnEditorSaving = ref(false)
 
@@ -303,6 +335,7 @@ function openEditCustomNode(n: CustomNode): void {
   }))
   cnEditorBanner.value = ''
   cnEditorOpen.value = true
+  cnEditorSnapshot.value = cnEditorJson()
 }
 
 function addCnRow(): void {
@@ -577,11 +610,11 @@ onMounted(() => {
     </div>
 
     <!-- ─── Variable-group editor modal ─── -->
-    <div v-if="editorOpen" class="modal-scrim" @click.self="editorOpen = false">
+    <div v-if="editorOpen" class="modal-scrim">
       <div class="modal" role="dialog" aria-modal="true" :aria-label="editorTitle">
         <header class="modal-head">
           <h2 class="modal-title">{{ editorTitle }}</h2>
-          <button class="modal-close" :aria-label="t('library.close')" @click="editorOpen = false">✕</button>
+          <button class="modal-close" :aria-label="t('library.close')" @click="requestEditorClose">✕</button>
         </header>
 
         <div v-if="editorBanner" class="banner banner--error">{{ editorBanner }}</div>
@@ -650,7 +683,7 @@ onMounted(() => {
         </div>
 
         <footer class="modal-foot">
-          <button class="btn-secondary" :disabled="editorSaving" @click="editorOpen = false">
+          <button class="btn-secondary" :disabled="editorSaving" @click="requestEditorClose">
             {{ t('library.cancel') }}
           </button>
           <button class="btn-primary" :disabled="editorSaving" @click="saveGroup">
@@ -661,11 +694,11 @@ onMounted(() => {
     </div>
 
     <!-- ─── Custom-node editor modal ─── -->
-    <div v-if="cnEditorOpen" class="modal-scrim" @click.self="cnEditorOpen = false">
+    <div v-if="cnEditorOpen" class="modal-scrim">
       <div class="modal" role="dialog" aria-modal="true" :aria-label="t('library.editNode')">
         <header class="modal-head">
           <h2 class="modal-title">{{ t('library.editNode') }}</h2>
-          <button class="modal-close" :aria-label="t('library.close')" @click="cnEditorOpen = false">✕</button>
+          <button class="modal-close" :aria-label="t('library.close')" @click="requestCnClose">✕</button>
         </header>
 
         <div v-if="cnEditorBanner" class="banner banner--error">{{ cnEditorBanner }}</div>
@@ -736,7 +769,7 @@ onMounted(() => {
         </div>
 
         <footer class="modal-foot">
-          <button class="btn-secondary" :disabled="cnEditorSaving" @click="cnEditorOpen = false">
+          <button class="btn-secondary" :disabled="cnEditorSaving" @click="requestCnClose">
             {{ t('library.cancel') }}
           </button>
           <button class="btn-primary" :disabled="cnEditorSaving" @click="saveCustomNode">

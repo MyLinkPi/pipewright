@@ -11,6 +11,7 @@
  */
 import { ref, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { useConfirm } from '../../composables/useConfirm'
 import {
   listTemplates,
   applyTemplate,
@@ -27,6 +28,7 @@ const props = defineProps<{
 }>()
 
 const { t } = useI18n()
+const confirm = useConfirm()
 
 const emit = defineEmits<{
   (e: 'close'): void
@@ -62,11 +64,12 @@ async function doApply(): Promise<void> {
     errorMsg.value = t('pipelinePanels.tplSelectFirst')
     return
   }
-  if (
-    !window.confirm(t('pipelinePanels.tplConfirmApply'))
-  ) {
-    return
-  }
+  if (!(await confirm.open({
+    title: t('pipelinePanels.tplApplyTab'),
+    body: t('pipelinePanels.tplConfirmApply'),
+    confirmLabel: t('misc.confirm.confirm'),
+    variant: 'primary',
+  }))) return
   applying.value = true
   errorMsg.value = ''
   try {
@@ -135,7 +138,7 @@ onMounted(loadTemplates)
 </script>
 
 <template>
-  <div class="scrim" @click.self="emit('close')">
+  <div class="scrim">
     <div class="modal" role="dialog" aria-modal="true" :aria-label="t('pipelinePanels.tplAria')">
       <header class="head">
         <h2 class="title">{{ t('pipelinePanels.tplTitle') }}</h2>

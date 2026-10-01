@@ -13,7 +13,7 @@
  *   applied      → parent should reload pipeline / settings / triggers
  */
 
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
   aiGenerate,
@@ -24,6 +24,7 @@ import {
   type AIProposalBranchMapping,
 } from '../../api/aiGenerate'
 import { HttpError } from '../../api/http'
+import { useDirtyGuard } from '../../composables/useDirtyGuard'
 import AppButton from '../ui/AppButton.vue'
 import AppBanner from '../ui/AppBanner.vue'
 import SkeletonBlock from '../ui/SkeletonBlock.vue'
@@ -40,12 +41,26 @@ const emit = defineEmits<{
 }>()
 
 const { t } = useI18n()
+const { confirmDiscard } = useDirtyGuard()
 
 // ─── State machine ────────────────────────────────────────────────────────────
 
 type WizardPhase = 'idle' | 'generating' | 'result' | 'applying'
 
 const phase         = ref<WizardPhase>('idle')
+
+const busyPhase = computed(() => phase.value === 'generating' || phase.value === 'applying')
+const backdropRef = ref<HTMLElement | null>(null)
+
+/** ✕ / ESC: 生成或应用进行中时先确认,否则一次 AI 生成会被静默丢弃。 */
+async function requestClose(): Promise<void> {
+  if (busyPhase.value && !(await confirmDiscard())) return
+  emit('close')
+}
+
+onMounted(() => {
+  backdropRef.value?.focus()
+})
 const nlSupplement  = ref('')
 const generateError = ref('')
 const applyError    = ref('')
@@ -214,11 +229,13 @@ watch(() => props.projectId, () => {
 <template>
   <!-- ─── Backdrop ──────────────────────────────────────────────────────────── -->
   <div
+    ref="backdropRef"
     class="wiz-backdrop"
+    tabindex="-1"
     aria-modal="true"
     role="dialog"
     :aria-label="t('pipelinePanels.wizDialogAria')"
-    @click.self="emit('close')"
+    @keydown.esc="requestClose"
   >
     <!-- ─── Panel ──────────────────────────────────────────────────────────── -->
     <div class="wiz-panel">
@@ -237,7 +254,7 @@ watch(() => props.projectId, () => {
         <button
           class="wiz-close"
           :aria-label="t('pipelinePanels.wizCloseAria')"
-          @click="emit('close')"
+          @click="requestClose"
         >
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
             <path d="M18 6 6 18M6 6l12 12"/>
@@ -296,14 +313,14 @@ watch(() => props.projectId, () => {
               <router-link
                 to="/settings/ai"
                 class="unavail-link"
-                @click="emit('close')"
+                @click="requestClose"
               >
                 {{ t('pipelinePanels.wizGotoSettings') }}
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true">
                   <path d="M7 17 17 7M7 7h10v10"/>
                 </svg>
               </router-link>
-              <AppButton variant="ghost" @click="emit('close')">
+              <AppButton variant="ghost" @click="requestClose">
                 {{ t('pipelinePanels.wizManualConfig') }}
               </AppButton>
             </div>
@@ -563,7 +580,7 @@ watch(() => props.projectId, () => {
 
         <!-- Idle footer -->
         <template v-if="phase === 'idle'">
-          <AppButton variant="ghost" @click="emit('close')">{{ t('pipelinePanels.wizCancel') }}</AppButton>
+          <AppButton variant="ghost" @click="requestClose">{{ t('pipelinePanels.wizCancel') }}</AppButton>
           <AppButton
             variant="ai"
             :loading="false"
@@ -586,7 +603,7 @@ watch(() => props.projectId, () => {
         <template v-else-if="phase === 'result' || phase === 'applying'">
           <!-- Unavailable: only close button -->
           <template v-if="showUnavailable">
-            <AppButton variant="ghost" @click="emit('close')">{{ t('pipelinePanels.wizClose') }}</AppButton>
+            <AppButton variant="ghost" @click="requestClose">{{ t('pipelinePanels.wizClose') }}</AppButton>
           </template>
 
           <!-- Available result footer -->
@@ -617,7 +634,7 @@ watch(() => props.projectId, () => {
                 {{ t('pipelinePanels.wizAcceptAll') }}
               </AppButton>
             </div>
-            <AppButton v-else variant="ghost" @click="emit('close')">{{ t('pipelinePanels.wizClose') }}</AppButton>
+            <AppButton v-else variant="ghost" @click="requestClose">{{ t('pipelinePanels.wizClose') }}</AppButton>
           </template>
         </template>
 

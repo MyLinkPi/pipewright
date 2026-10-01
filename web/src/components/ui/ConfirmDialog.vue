@@ -100,7 +100,6 @@ function doConfirm() {
         v-if="isOpen"
         class="cfm-overlay"
         aria-hidden="true"
-        @click.self="cancel"
       />
     </Transition>
 

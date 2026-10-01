@@ -214,6 +214,14 @@ const SCRIPT_FIELDS: JobField[] = [
 // SSH 部署节点的字段(deploy_ssh 与 deploy_frontend 模板共用)。
 const DEPLOY_SSH_FIELDS: JobField[] = [
   {
+    key: 'selector',
+    get label() { return t('pipelineJob.fieldDeploySelectorLabel') },
+    kind: 'text',
+    monospace: true,
+    placeholder: 'web,env=prod',
+    get hint() { return t('pipelineJob.fieldDeploySelectorHint') },
+  },
+  {
     key: 'serverId',
     get label() { return t('pipelineJob.fieldServerIdLabel') },
     kind: 'server',

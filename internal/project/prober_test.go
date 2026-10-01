@@ -90,13 +90,14 @@ func TestProberSchemeMismatch(t *testing.T) {
 	}
 }
 
-// TestProberInvalidSSHKey 验证 ssh_key 凭据的明文不是可解析私钥时映射 ErrCredentialError。
+// TestProberInvalidSSHKey 验证 ssh_key 凭据的明文不是可解析私钥时映射
+// ErrInvalidCredential(与「服务端拒绝认证」区分:前者修粘贴,后者修登记)。
 func TestProberInvalidSSHKey(t *testing.T) {
 	pr := goGitProber{}
 	_, err := pr.Probe(context.Background(), "ssh://git@nonexistent.invalid/foo/bar.git",
 		vault.GitAuth{Type: vault.TypeSSHKey, Secret: "not-a-pem-key"})
-	if !errors.Is(err, ErrCredentialError) {
-		t.Fatalf("坏私钥应映射 ErrCredentialError, got %v", err)
+	if !errors.Is(err, ErrInvalidCredential) {
+		t.Fatalf("坏私钥应映射 ErrInvalidCredential, got %v", err)
 	}
 }
 

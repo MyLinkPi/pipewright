@@ -4,7 +4,7 @@
  * Tabs: 流水线编排 / 变量与缓存 / 触发设置 / 环境与凭据
  * URL state: ?tab=canvas|vars|triggers|envs  (shareable)
  */
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import { getPipeline, savePipeline, type PipelineDTO, type PipelineStage } from '../api/pipeline'
@@ -22,6 +22,7 @@ import { listServers, type Server } from '../api/servers'
 import { listChannels, type NotificationChannel } from '../api/notifications'
 import { getValidation, type ValidationDTO, type IssueScope } from '../api/pipelineValidation'
 import { HttpError } from '../api/http'
+import { anyDirty, useDirtyGuard } from '../composables/useDirtyGuard'
 import PipelineCanvas from '../components/pipeline/PipelineCanvas.vue'
 import VarsCacheTab from '../components/pipeline/VarsCacheTab.vue'
 import EnvCredsTab from '../components/pipeline/EnvCredsTab.vue'
@@ -81,6 +82,7 @@ const editStages = ref<PipelineStage[]>([])
 function applyPipeline(dto: PipelineDTO): void {
   pipeline.value = dto
   editStages.value = JSON.parse(JSON.stringify(dto.stages)) as PipelineStage[]
+  stagesSnapshot.value = JSON.stringify(editStages.value)
 }
 
 async function loadPipeline(): Promise<void> {
@@ -119,6 +121,8 @@ function applySettings(dto: SettingsDTO): void {
   settings.value = dto
   editBuild.value = JSON.parse(JSON.stringify(dto.build)) as BuildConfig
   editEnvs.value  = JSON.parse(JSON.stringify(dto.environments)) as Environment[]
+  buildSnapshot.value = JSON.stringify(editBuild.value)
+  envsSnapshot.value  = JSON.stringify(editEnvs.value)
 }
 
 async function loadSettings(): Promise<void> {
@@ -149,6 +153,42 @@ function handleEnvsUpdate(envs: Environment[]): void {
 
 watch(projectId, () => { void loadProject(); void loadPipeline(); void loadSettings() })
 onMounted(() => { void loadProject(); void loadPipeline(); void loadSettings() })
+
+// ─── Unsaved-change protection (route-leave + beforeunload) ─────────────────
+
+const stagesSnapshot = ref('')
+const buildSnapshot  = ref('')
+const envsSnapshot   = ref('')
+
+const pipelineDirty = computed(() => JSON.stringify(editStages.value) !== stagesSnapshot.value)
+const settingsDirty = computed(() =>
+  JSON.stringify(editBuild.value) !== buildSnapshot.value ||
+  JSON.stringify(editEnvs.value) !== envsSnapshot.value,
+)
+/** Header indicator: pipeline spec or build/env settings differ from the server state. */
+const pageDirty = computed(() => pipelineDirty.value || settingsDirty.value)
+
+const triggersPanelRef = ref<{ isDirty: () => boolean } | null>(null)
+const { confirmDiscard, registerDirtySource } = useDirtyGuard()
+registerDirtySource(() => pageDirty.value || (triggersPanelRef.value?.isDirty() ?? false))
+
+function onBeforeUnload(e: BeforeUnloadEvent): void {
+  if (!anyDirty()) return
+  e.preventDefault()
+  e.returnValue = '' // legacy Chrome/Edge requirement
+}
+
+const removeRouterGuard = router.beforeEach(async (to, from) => {
+  // Same-path navigations (query-only, e.g. tab switch) never count as leaving.
+  if (to.path === from.path || !anyDirty()) return true
+  return confirmDiscard()
+})
+
+onBeforeUnmount(() => {
+  removeRouterGuard()
+  window.removeEventListener('beforeunload', onBeforeUnload)
+})
+window.addEventListener('beforeunload', onBeforeUnload)
 
 // ─── Canvas update ────────────────────────────────────────────────────────────
 
@@ -501,6 +541,8 @@ async function togglePrStatus(next: boolean): Promise<void> {
           <span v-if="saveSubmitting" class="spinner" aria-hidden="true"/>
           {{ saveSubmitting ? t('projectPipeline.saving') : t('projectPipeline.saveDraft') }}
         </button>
+
+        <span v-if="pageDirty" class="unsaved-chip" role="status">{{ t('misc.unsaved.title') }}</span>
       </div>
     </header>
 
@@ -701,7 +743,7 @@ async function togglePrStatus(next: boolean): Promise<void> {
           aria-labelledby="tab-triggers"
         >
           <div class="triggers-stack">
-            <TriggersPanel :project-id="projectId" />
+            <TriggersPanel ref="triggersPanelRef" :project-id="projectId" />
             <!-- R4 / E4.1: 每项目 PR 预览环境配置 -->
             <ProjectPreviewConfig :project-id="projectId" />
           </div>
@@ -1311,5 +1353,14 @@ async function togglePrStatus(next: boolean): Promise<void> {
 
 @media (prefers-reduced-motion: reduce) {
   .spinner { animation: none; border-top-color: currentColor; }
+}
+
+/* ─── Unsaved-changes indicator ─────────────────────────────────────────────── */
+.unsaved-chip {
+  margin-left: 10px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--color-warning, #c98a2b);
+  white-space: nowrap;
 }
 </style>

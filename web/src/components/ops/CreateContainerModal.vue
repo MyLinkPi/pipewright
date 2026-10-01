@@ -6,6 +6,7 @@
 */
 import { ref, computed } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { useDirtyGuard } from '../../composables/useDirtyGuard'
 import { createContainer, type CreateContainerInput, type RestartPolicy } from '../../api/containers'
 import { suggestCommand } from '../../api/aiOps'
 import { parseDockerRun } from '../../lib/dockerRun'
@@ -21,6 +22,7 @@ const emit = defineEmits<{ (e: 'close'): void; (e: 'created', serverId: string):
 
 const { t } = useI18n()
 const toast = useToast()
+const { confirmDiscard } = useDirtyGuard()
 
 const serverId = ref(props.servers[0]?.id ?? '')
 const image = ref('')
@@ -30,6 +32,28 @@ const envText = ref('')
 const volumesText = ref('')
 const restart = ref<RestartPolicy>('unless-stopped')
 const command = ref('')
+
+// ─── Unsaved-change guard (✕ / 取消 with dirty check) ────────────────────────
+
+function formJson(): string {
+  return JSON.stringify({
+    serverId: serverId.value,
+    image: image.value,
+    name: name.value,
+    portsText: portsText.value,
+    envText: envText.value,
+    volumesText: volumesText.value,
+    restart: restart.value,
+    command: command.value,
+  })
+}
+const initialJson = formJson()
+
+/** Shared close path for ✕ / 取消: confirm before discarding a dirty form. */
+async function requestClose(): Promise<void> {
+  if (formJson() !== initialJson && !(await confirmDiscard())) return
+  emit('close')
+}
 
 const submitting = ref(false)
 const banner = ref('')
@@ -126,11 +150,11 @@ async function submit(): Promise<void> {
 </script>
 
 <template>
-  <div class="modal-scrim" @click.self="emit('close')">
+  <div class="modal-scrim">
     <div class="modal" role="dialog" :aria-label="t('opsContainer.create.title')">
       <header class="modal__head">
         <h3 class="modal__title">{{ t('opsContainer.create.title') }}</h3>
-        <button class="modal__close" :aria-label="t('opsContainer.close')" @click="emit('close')">✕</button>
+        <button class="modal__close" :aria-label="t('opsContainer.close')" @click="requestClose">✕</button>
       </header>
 
       <div class="modal__body">
@@ -201,7 +225,7 @@ async function submit(): Promise<void> {
       <footer class="modal__foot">
         <span class="foot-hint">{{ t('opsContainer.create.footHint') }}</span>
         <span class="grow" />
-        <button class="btn btn--ghost" :disabled="submitting" @click="emit('close')">{{ t('opsContainer.cancel') }}</button>
+        <button class="btn btn--ghost" :disabled="submitting" @click="requestClose">{{ t('opsContainer.cancel') }}</button>
         <button class="btn btn--primary" :disabled="!canSubmit" @click="submit">
           {{ submitting ? t('opsContainer.create.creating') : t('opsContainer.create.createRun') }}
         </button>

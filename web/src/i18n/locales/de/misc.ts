@@ -65,6 +65,13 @@ export default {
   },
 
   // ─── ConfirmDialog ───────────────────────────────────────────────────────
+  // ─── Unsaved-changes guard (shared) ──────────────────────────────────────
+  unsaved: {
+    title: 'Ungespeicherte Änderungen',
+    body: 'Wenn Sie diese Seite verlassen, gehen ungespeicherte Änderungen verloren. Trotzdem verlassen?',
+    discard: 'Verlassen ohne Speichern',
+  },
+
   confirm: {
     cancel: 'Abbrechen',
     confirm: 'Bestätigen',

@@ -11,6 +11,7 @@
 */
 import { ref, computed, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { useDirtyGuard } from '../../composables/useDirtyGuard'
 import { RouterLink } from 'vue-router'
 import { NIcon } from 'naive-ui'
 import { Wand, World, ExternalLink, X, Confetti, ArrowRight } from '@vicons/tabler'
@@ -32,6 +33,7 @@ const emit = defineEmits<{
 }>()
 
 const { t } = useI18n()
+const { confirmDiscard } = useDirtyGuard()
 const toast = useToast()
 
 const open = ref(false)
@@ -101,11 +103,23 @@ function openModal(): void {
   upstreamPort.value = ''
   result.value = null
   open.value = true
+  formSnapshot.value = formJson()
 }
 function closeModal(): void {
   if (allocating.value) return
   open.value = false
   result.value = null
+}
+
+const formSnapshot = ref('')
+function formJson(): string {
+  return JSON.stringify({ providerId: providerId.value, upstreamContainer: upstreamContainer.value, upstreamPort: upstreamPort.value })
+}
+
+/** Shared close path for ✕ / ESC: confirm before discarding a half-filled form. */
+async function requestClose(): Promise<void> {
+  if (formJson() !== formSnapshot.value && !(await confirmDiscard())) return
+  closeModal()
 }
 
 async function allocate(): Promise<void> {
@@ -119,6 +133,7 @@ async function allocate(): Promise<void> {
       upstreamPort: portNum.value,
     })
     result.value = route
+    formSnapshot.value = formJson()
     emit('allocated', route)
     toast.success(t('reverseProxy.sub.allocated'), { detail: route.domain })
   } catch (err) {
@@ -150,11 +165,10 @@ async function allocate(): Promise<void> {
       role="dialog"
       :aria-label="t('reverseProxy.sub.title')"
       aria-modal="true"
-      @keydown.esc="closeModal"
-      @click.self="closeModal"
+      @keydown.esc="requestClose"
     >
       <div class="modal" :class="{ 'modal--success': result }">
-        <button class="modal-close" :aria-label="t('reverseProxy.sub.cancel')" :disabled="allocating" @click="closeModal">
+        <button class="modal-close" :aria-label="t('reverseProxy.sub.cancel')" :disabled="allocating" @click="requestClose">
           <NIcon :size="15"><X /></NIcon>
         </button>
 

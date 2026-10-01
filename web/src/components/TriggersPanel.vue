@@ -268,7 +268,31 @@ function applyConfig(config: TriggerConfig): void {
     targetServerIds: m.targetServerIds,
     patternError: '',
   }))
+  triggersSnapshot.value = triggersEditJson()
 }
+
+// ─── Unsaved-change guard (queried by the page-leave protection) ────────────
+
+function triggersEditJson(): string {
+  return JSON.stringify({
+    events: [eventPush.value, eventTag.value, eventPullRequest.value, eventRelease.value],
+    unmatchedPolicy: unmatchedPolicy.value,
+    pathFiltersText: pathFiltersText.value,
+    mappings: mappings.value.map((r) => ({
+      id: r.id,
+      branchPattern: r.branchPattern,
+      environment: r.environment,
+      targetServerIds: r.targetServerIds,
+    })),
+  })
+}
+
+const triggersSnapshot = ref('')
+
+/** True when the panel holds edits not yet persisted via the save button. */
+const isDirty = computed(() => triggersEditJson() !== triggersSnapshot.value)
+
+defineExpose({ isDirty: () => isDirty.value })
 
 async function loadTrigger(): Promise<void> {
   loadState.value = 'loading'
@@ -600,7 +624,7 @@ const displayWebhookUrl = computed(() => {
 
   <!-- ═══ Reset secret modal ══════════════════════════════════════════════════ -->
   <Teleport to="body">
-    <div v-if="resetModalOpen" class="modal-scrim" role="dialog" :aria-label="t('projectPanels.triggers.resetModalAria')" aria-modal="true" @keydown.esc="closeResetModal" @click.self="closeResetModal">
+    <div v-if="resetModalOpen" class="modal-scrim" role="dialog" :aria-label="t('projectPanels.triggers.resetModalAria')" aria-modal="true" @keydown.esc="closeResetModal">
       <div class="modal">
         <div class="modal-head">
           <div class="modal-icon modal-icon--warn" aria-hidden="true">

@@ -127,7 +127,7 @@ onBeforeUnmount(stopStream)
 </script>
 
 <template>
-  <div class="drawer-scrim" @click.self="emit('close')">
+  <div class="drawer-scrim">
     <aside class="drawer" role="dialog" :aria-label="t('opsContainer.logs.dialogAria')">
       <header class="drawer__head">
         <div class="drawer__title">

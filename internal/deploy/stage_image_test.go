@@ -64,7 +64,7 @@ func TestStageDeploysImageArtifact(t *testing.T) {
 	runID, _ := seedSuccessRunWithArtifact(t, db, rsvc, run.ArtifactImage, "registry/shop:1.0")
 
 	svc := New(tgt, rsvc)
-	res, err := svc.DeployForStage(context.Background(), runID, []string{srv.ID}, nil, "")
+	res, err := svc.DeployForStage(context.Background(), runID, "server:"+srv.ID, nil, "")
 	if err != nil {
 		t.Fatalf("DeployForStage: %v", err)
 	}
@@ -93,7 +93,7 @@ func TestStagePrefersFileArtifactByDefault(t *testing.T) {
 	addArtifact(t, rsvc, runID, run.ArtifactDist, "web", "dist/shop.tar.gz")
 
 	svc := New(tgt, rsvc)
-	res, err := svc.DeployForStage(context.Background(), runID, []string{srv.ID}, nil, "")
+	res, err := svc.DeployForStage(context.Background(), runID, "server:"+srv.ID, nil, "")
 	if err != nil {
 		t.Fatalf("DeployForStage: %v", err)
 	}
@@ -119,7 +119,7 @@ func TestStageSelectsImageWhenConfigured(t *testing.T) {
 	addArtifact(t, rsvc, runID, run.ArtifactImage, "shop", "registry/shop:2.0")
 
 	svc := New(tgt, rsvc)
-	res, err := svc.DeployForStage(context.Background(), runID, []string{srv.ID},
+	res, err := svc.DeployForStage(context.Background(), runID, "server:"+srv.ID,
 		map[string]string{"artifactType": "image"}, "")
 	if err != nil {
 		t.Fatalf("DeployForStage: %v", err)
@@ -149,7 +149,7 @@ func TestStageImageHonorsContainerNamePortsRunArgs(t *testing.T) {
 		"ports":         "8080:80, 9000:9000",
 		"runArgs":       "-e KEY=value --restart always",
 	}
-	res, err := svc.DeployForStage(context.Background(), runID, []string{srv.ID}, cfg, "")
+	res, err := svc.DeployForStage(context.Background(), runID, "server:"+srv.ID, cfg, "")
 	if err != nil {
 		t.Fatalf("DeployForStage: %v", err)
 	}
@@ -187,13 +187,13 @@ func TestStageImageBlueGreen(t *testing.T) {
 	rsvc := run.New(db)
 	rec := &touchRecorder{}
 	tgt := &stubTarget{execFn: rec.exec}
-	s1 := seedServer(t, tgt, "web-1")
-	s2 := seedServer(t, tgt, "web-2")
+	seedLabeledServer(t, tgt, "web-1", "web")
+	seedLabeledServer(t, tgt, "web-2", "web")
 	runID, _ := seedSuccessRunWithArtifact(t, db, rsvc, run.ArtifactImage, "registry/shop:2.0")
 
 	svc := New(tgt, rsvc)
 	cfg := map[string]string{"containerName": "shop", "ports": "80:80"}
-	res, err := svc.DeployForStage(context.Background(), runID, []string{s1.ID, s2.ID}, cfg, "blue_green")
+	res, err := svc.DeployForStage(context.Background(), runID, "web", cfg, "blue_green")
 	if err != nil {
 		t.Fatalf("DeployForStage: %v", err)
 	}

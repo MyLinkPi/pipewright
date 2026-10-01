@@ -190,7 +190,7 @@ async function runAction(a: ServiceAction): Promise<void> {
     </div>
 
     <!-- ─── 危险动作二次确认 ─────────────────────────────────────────────────── -->
-    <div v-if="pendingAction" class="ops-confirm-backdrop" @click.self="cancelConfirm">
+    <div v-if="pendingAction" class="ops-confirm-backdrop">
       <div
         class="ops-confirm"
         role="dialog"

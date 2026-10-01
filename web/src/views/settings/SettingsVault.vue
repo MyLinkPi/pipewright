@@ -12,6 +12,7 @@ import { HttpError } from '../../api/http'
 import AuditTimeline from '../../components/AuditTimeline.vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
+import { useDirtyGuard } from '../../composables/useDirtyGuard'
 import { useToast } from '../../composables/useToast'
 import {
   getOAuthApps,
@@ -68,6 +69,8 @@ const editRevealing = ref(false)
 // ─── OAuth connect (enabled providers only) ──────────────────────────────────
 
 const { t } = useI18n()
+const { confirmDiscard } = useDirtyGuard()
+const formSnapshot = ref('')
 const toast = useToast()
 const route = useRoute()
 const router = useRouter()
@@ -224,6 +227,7 @@ function openAddModal(): void {
   clearFormErrors()
   formBanner.value = ''
   modalOpen.value = true
+  formSnapshot.value = JSON.stringify(form.value)
 }
 
 function openEditModal(c: Credential): void {
@@ -235,6 +239,7 @@ function openEditModal(c: Credential): void {
   clearFormErrors()
   formBanner.value = ''
   modalOpen.value = true
+  formSnapshot.value = JSON.stringify(form.value)
 }
 
 function closeModal(): void {
@@ -243,6 +248,12 @@ function closeModal(): void {
   // Clear secret + any revealed plaintext immediately when modal closes
   form.value.secret = ''
   editRevealed.value = null
+}
+
+/** Shared close path for ✕ / 取消 / ESC: confirm before discarding a dirty form. */
+async function requestClose(): Promise<void> {
+  if (JSON.stringify(form.value) !== formSnapshot.value && !(await confirmDiscard())) return
+  closeModal()
 }
 
 // ─── form validation ─────────────────────────────────────────────────────────
@@ -602,8 +613,7 @@ async function toggleEditReveal(): Promise<void> {
       role="dialog"
       :aria-label="modalMode === 'add' ? t('settingsVault.addCredential') : t('settingsVault.editCredential')"
       aria-modal="true"
-      @keydown.esc="closeModal"
-      @click.self="closeModal"
+      @keydown.esc="requestClose"
     >
       <div class="modal">
         <!-- Modal header -->
@@ -626,7 +636,7 @@ async function toggleEditReveal(): Promise<void> {
             class="modal-close"
             :aria-label="t('settingsVault.closeDialog')"
             :disabled="formSubmitting"
-            @click="closeModal"
+            @click="requestClose"
           >
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <path d="M18 6 6 18M6 6l12 12"/>
@@ -797,7 +807,7 @@ async function toggleEditReveal(): Promise<void> {
               type="button"
               class="btn-secondary"
               :disabled="formSubmitting"
-              @click="closeModal"
+              @click="requestClose"
             >{{ t('settingsVault.cancel') }}</button>
             <button
               type="submit"
@@ -825,7 +835,6 @@ async function toggleEditReveal(): Promise<void> {
       :aria-label="t('settingsVault.deleteConfirmAria')"
       aria-modal="true"
       @keydown.esc="closeDeleteModal"
-      @click.self="closeDeleteModal"
     >
       <div class="modal modal--sm">
         <div class="modal-head">

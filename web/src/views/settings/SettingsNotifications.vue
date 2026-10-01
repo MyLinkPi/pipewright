@@ -18,6 +18,7 @@
  */
 import { ref, computed, onMounted, reactive } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { useConfirm } from '../../composables/useConfirm'
 import FormField from '../../components/ui/FormField.vue'
 import AppButton from '../../components/ui/AppButton.vue'
 import { useToast } from '../../composables/useToast'
@@ -63,6 +64,7 @@ interface TypeMeta {
 }
 
 const { t } = useI18n()
+const confirm = useConfirm()
 const toast = useToast()
 
 // 通知语言:外发通知(飞书/邮件)默认文案的语言,与界面语言解耦。
@@ -397,7 +399,7 @@ function mapValidationError(code: string, message: string): void {
 const deletingId = ref<string | null>(null)
 
 async function handleDelete(ch: NotificationChannel): Promise<void> {
-  if (!window.confirm(t('settingsNotifications.confirmDeleteChannel', { name: ch.name }))) return
+  if (!(await confirm.open({ title: t('settingsNotifications.delete'), body: t('settingsNotifications.confirmDeleteChannel', { name: ch.name }), confirmLabel: t('settingsNotifications.delete') }))) return
   deletingId.value = ch.id
   try {
     await deleteChannel(ch.id)

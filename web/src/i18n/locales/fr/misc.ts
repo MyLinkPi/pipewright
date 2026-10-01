@@ -65,6 +65,13 @@ export default {
   },
 
   // ─── ConfirmDialog ───────────────────────────────────────────────────────
+  // ─── Unsaved-changes guard (shared) ──────────────────────────────────────
+  unsaved: {
+    title: 'Modifications non enregistrées',
+    body: 'Vos modifications seront perdues si vous quittez cette page. Quitter sans enregistrer ?',
+    discard: 'Quitter sans enregistrer',
+  },
+
   confirm: {
     cancel: 'Annuler',
     confirm: 'Confirmer',

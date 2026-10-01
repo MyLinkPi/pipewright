@@ -37,7 +37,14 @@ func (s *stubTarget) Get(_ context.Context, id string) (*target.Server, error) {
 	}
 	return srv, nil
 }
-func (s *stubTarget) List(context.Context) ([]*target.Server, error) { return nil, nil }
+// List 返回全部已登记机器(标签圈选 resolveTargets 经它做全表匹配)。
+func (s *stubTarget) List(context.Context) ([]*target.Server, error) {
+	out := make([]*target.Server, 0, len(s.servers))
+	for _, srv := range s.servers {
+		out = append(out, srv)
+	}
+	return out, nil
+}
 func (s *stubTarget) Create(context.Context, target.CreateInput) (*target.Server, error) {
 	return nil, nil
 }
@@ -128,6 +135,14 @@ func seedServer(t *testing.T, st *stubTarget, name string) *target.Server {
 	return srv
 }
 
+// seedLabeledServer 登记一台带标签的机器(标签圈选用;labels 语法同 servers.labels)。
+func seedLabeledServer(t *testing.T, st *stubTarget, name, labels string) *target.Server {
+	t.Helper()
+	srv := seedServer(t, st, name)
+	srv.Labels = labels
+	return srv
+}
+
 // ---- 用例 -------------------------------------------------------------------
 
 // TestDeployForStageCommandOnly 验证「命令型」部署(artifactType=command):不取构建产物,
@@ -144,7 +159,7 @@ func TestDeployForStageCommandOnly(t *testing.T) {
 	// 复用 seed:有产物在库,但命令型分支应**完全不碰产物**(在 ListArtifacts 之前提前返回)。
 	runID, _ := seedSuccessRunWithArtifact(t, db, rsvc, run.ArtifactDist, "dist/unused")
 
-	res, err := svcCmdOnly(tgt, rsvc).DeployForStage(context.Background(), runID, []string{srv.ID},
+	res, err := svcCmdOnly(tgt, rsvc).DeployForStage(context.Background(), runID, "server:"+srv.ID,
 		map[string]string{"artifactType": "command", "restartCommand": "echo configuring frp tunnel"}, "")
 	if err != nil {
 		t.Fatalf("command-only DeployForStage: %v", err)
@@ -167,7 +182,7 @@ func TestDeployForStageCommandOnlyNonZero(t *testing.T) {
 	}}
 	srv := seedServer(t, tgt, "frpc-client")
 	runID, _ := seedSuccessRunWithArtifact(t, db, rsvc, run.ArtifactDist, "dist/unused")
-	res, err := svcCmdOnly(tgt, rsvc).DeployForStage(context.Background(), runID, []string{srv.ID},
+	res, err := svcCmdOnly(tgt, rsvc).DeployForStage(context.Background(), runID, "server:"+srv.ID,
 		map[string]string{"artifactType": "command", "restartCommand": "false"}, "")
 	if err != nil {
 		t.Fatalf("DeployForStage: %v", err)
@@ -184,7 +199,7 @@ func TestDeployForStageCommandOnlyMissingCmd(t *testing.T) {
 	tgt := &stubTarget{}
 	srv := seedServer(t, tgt, "frpc-client")
 	runID, _ := seedSuccessRunWithArtifact(t, db, rsvc, run.ArtifactDist, "dist/unused")
-	_, err := svcCmdOnly(tgt, rsvc).DeployForStage(context.Background(), runID, []string{srv.ID},
+	_, err := svcCmdOnly(tgt, rsvc).DeployForStage(context.Background(), runID, "server:"+srv.ID,
 		map[string]string{"artifactType": "command"}, "")
 	if err == nil {
 		t.Fatalf("want error for missing restartCommand")
@@ -627,9 +642,14 @@ func TestDeployValidationErrors(t *testing.T) {
 	runID, artID := seedSuccessRunWithArtifact(t, db, rsvc, run.ArtifactDist, "dist/shop")
 	svc := New(tgt, rsvc)
 
-	// 无服务器 → ErrNoServers。
-	if _, err := svc.Deploy(context.Background(), DeployInput{RunID: runID, ArtifactID: artID}); err != ErrNoServers {
-		t.Fatalf("want ErrNoServers, got %v", err)
+	// 无目标(选择器空)→ 跳过即成功:空结果、nil 错误(不再 ErrNoServers)。
+	res, err := svc.Deploy(context.Background(), DeployInput{RunID: runID, ArtifactID: artID})
+	if err != nil || len(res) != 0 {
+		t.Fatalf("want empty success for no targets, got res=%v err=%v", res, err)
+	}
+	// 选择器语法非法 → ErrInvalidSelector。
+	if _, err := svc.Deploy(context.Background(), DeployInput{RunID: runID, ArtifactID: artID, Selector: "a b!!"}); err != ErrInvalidSelector {
+		t.Fatalf("want ErrInvalidSelector, got %v", err)
 	}
 	// run 不存在 → ErrRunNotFound。
 	if _, err := svc.Deploy(context.Background(), DeployInput{RunID: "nope", ArtifactID: artID, ServerIDs: []string{srv.ID}}); err != ErrRunNotFound {
