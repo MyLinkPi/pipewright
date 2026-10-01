@@ -7,6 +7,7 @@ export default {
   navNotifications: '通知',
   navVault: '憑證保險庫',
   navDnsProviders: 'DNS 供應商',
+  navHttps: 'HTTPS 存取',
   navAccount: '帳戶',
   navServers: '伺服器',
   navDiagnosisStats: '診斷回饋',

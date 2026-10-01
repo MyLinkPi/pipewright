@@ -90,17 +90,21 @@ const approvalLinkTTL = 24 * time.Hour
 //
 // run 进入 waiting_approval 后,本钩子 best-effort 地:签发签名审批链接(signer + publicURL)→
 // 构 TemplateVars(含 ActionURL)→ notifySvc.RouteEventForProject(EventApprovalRequired)。
-//   - signer 禁用(无 master key)/ publicURL 为空 / notifySvc 为 nil → 跳过(不发链接、不发通知),
-//     绝不阻塞门。
+//   - signer 禁用(无 master key)/ notifySvc 为 nil → 返回 nil,门据此跳过通知(功能优雅关闭)。
+//   - publicURL 为按需解析器(系统配置里的平台对外访问地址):每次触发时读取,空 = 未配置,
+//     跳过(不发链接、不发通知)——运行时修改即时生效,无需重启。
 //   - 自带超时(防慢渠道挂死 goroutine);RouteEventForProject 内部已 best-effort(未配路由不发)。
 //   - 链接、token 绝不写日志。
-func NewApprovalNotifier(notifySvc notify.Service, signer *approval.Signer, publicURL string, runs run.Service) ApprovalNotifier {
-	base := strings.TrimRight(strings.TrimSpace(publicURL), "/")
-	if notifySvc == nil || signer == nil || !signer.Enabled() || base == "" {
+func NewApprovalNotifier(notifySvc notify.Service, signer *approval.Signer, publicURL func(context.Context) string, runs run.Service) ApprovalNotifier {
+	if notifySvc == nil || signer == nil || !signer.Enabled() || publicURL == nil {
 		// 依赖不全:返回 nil,门据此跳过通知(功能优雅关闭)。
 		return nil
 	}
 	return func(ctx context.Context, projectID, projectName, runID, stageID string) {
+		base := strings.TrimRight(strings.TrimSpace(publicURL(ctx)), "/")
+		if base == "" {
+			return // 未配置对外地址:不发链接(与历史上 env 未设时语义一致)
+		}
 		token := signer.Sign(runID, stageID, time.Now().Add(approvalLinkTTL))
 		if token == "" {
 			return // 签名器禁用(防御);不发链接。

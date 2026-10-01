@@ -22,9 +22,6 @@ services:
       PIPEWRIGHT_ADMIN_PASSWORD: ${PIPEWRIGHT_ADMIN_PASSWORD:-}
       # 凭据保险库主密钥(base64 的 32 字节)。空则保险库进未配置态、加密凭据功能不可用。
       PIPEWRIGHT_MASTER_KEY: ${PIPEWRIGHT_MASTER_KEY:-}
-      # 反代后部署时填外部访问 URL(用于 webhook 回调 / OAuth 回跳)。
-      PIPEWRIGHT_PUBLIC_URL: ${PIPEWRIGHT_PUBLIC_URL:-}
-      # 默认 sqlite,库落 /data/pipewright.db(WORKDIR=/data)。切 MySQL 见下方 env + 注释。
       PIPEWRIGHT_DB_DRIVER: ${PIPEWRIGHT_DB_DRIVER:-sqlite}
       PIPEWRIGHT_DB_DSN: ${PIPEWRIGHT_DB_DSN:-}
       # 运行执行器:默认 DAG(真按 UI 可视化流水线 stages 执行)。仅需回退旧版固定流程时

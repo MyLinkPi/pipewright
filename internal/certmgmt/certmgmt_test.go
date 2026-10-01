@@ -243,8 +243,8 @@ func TestSweepOnceWindowDB(t *testing.T) {
 			t.Fatalf("insert %s: %v", id, err)
 		}
 	}
-	mk("c-due", "due.com", nil)                                    // 应触发
-	mk("c-far", "far.com", func(c *Certificate) {                   // 窗口外:不触发
+	mk("c-due", "due.com", nil)                   // 应触发
+	mk("c-far", "far.com", func(c *Certificate) { // 窗口外:不触发
 		c.NotAfter = time.Now().Add(40 * 24 * time.Hour)
 	})
 	mk("c-manual", "manual.com", func(c *Certificate) { // manual:不触发
@@ -278,5 +278,93 @@ func TestSweepOnceWindowDB(t *testing.T) {
 			break
 		}
 		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+// ---------- 平台 HTTPS 联动 ----------
+
+// passSealer 是明文透传的假保险库(仅测流转)。
+type passSealer struct{}
+
+func (passSealer) SealSecret(p []byte) ([]byte, error) { return append([]byte("sealed:"), p...), nil }
+func (passSealer) OpenSecret(s []byte) ([]byte, error) {
+	return []byte(strings.TrimPrefix(string(s), "sealed:")), nil
+}
+
+// fakePlatformHTTPS 记录平台 HTTPS 联动调用(占用/重下发)。
+type fakePlatformHTTPS struct {
+	used      map[string]bool
+	redeploys []string
+}
+
+func (f *fakePlatformHTTPS) UsesCert(_ context.Context, id string) (bool, error) {
+	return f.used[id], nil
+}
+func (f *fakePlatformHTTPS) RedeployCert(_ context.Context, id string) error {
+	f.redeploys = append(f.redeploys, id)
+	return nil
+}
+
+// TestDeleteBlockedByPlatformHTTPS:被平台 HTTPS 占用的证书删除被拦截(ErrCertInUse);
+// 未占用照常删除。phttps 未注入(nil)时不拦截。
+func TestDeleteBlockedByPlatformHTTPS(t *testing.T) {
+	db := storetest.OpenDB(t)
+	ctx := context.Background()
+	svc := New(db, nil, passSealer{}).(*service)
+	mk := func(id, primary string) {
+		c := &Certificate{
+			ID: id, PrimaryDomain: primary, Domains: []string{primary},
+			Source: SourceACME, CA: CALetsEncrypt, Validation: ValidationDNS,
+			DNSProviderID: "p", KeyType: KeyTypeEC256, AutoRenew: true,
+			Status: StatusIssued, NotAfter: time.Now().Add(20 * 24 * time.Hour),
+			CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+		}
+		if err := svc.store.insert(ctx, c); err != nil {
+			t.Fatalf("insert %s: %v", id, err)
+		}
+	}
+	mk("c-used", "used.com")
+	mk("c-free", "free.com")
+
+	ph := &fakePlatformHTTPS{used: map[string]bool{"c-used": true}}
+	svc.SetPlatformHTTPS(ph)
+
+	if err := svc.Delete(ctx, "c-used"); err == nil || !strings.Contains(err.Error(), "平台 HTTPS") {
+		t.Fatalf("占用证书删除应被拦截,得 %v", err)
+	}
+	if err := svc.Delete(ctx, "c-free"); err != nil {
+		t.Fatalf("未占用证书应可删除:%v", err)
+	}
+
+	// 未注入联动器 → 不拦截。
+	svc2 := New(db, nil, passSealer{}).(*service)
+	mk("c-2", "second.com")
+	if err := svc2.Delete(ctx, "c-2"); err != nil {
+		t.Fatalf("未注入联动器时不应拦截:%v", err)
+	}
+}
+
+// TestOpenCertPEM:进程内解密返回证书/私钥明文;缺失 PEM / 不存在 → 报错。
+func TestOpenCertPEM(t *testing.T) {
+	db := storetest.OpenDB(t)
+	ctx := context.Background()
+	svc := New(db, nil, passSealer{}).(*service)
+
+	c := &Certificate{
+		ID: "c-pem", PrimaryDomain: "pem.com", Domains: []string{"pem.com"},
+		Source: SourceManual, Validation: ValidationManual, Status: StatusIssued,
+		CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	}
+	sealedCert, _ := svc.vault.SealSecret([]byte("CERT-PEM"))
+	sealedKey, _ := svc.vault.SealSecret([]byte("KEY-PEM"))
+	if err := svc.store.insertWithPEM(ctx, c, sealedCert, sealedKey); err != nil {
+		t.Fatalf("insertWithPEM: %v", err)
+	}
+	gotCert, gotKey, err := svc.OpenCertPEM(ctx, "c-pem")
+	if err != nil || gotCert != "CERT-PEM" || gotKey != "KEY-PEM" {
+		t.Fatalf("OpenCertPEM 应返回明文对,得 %q/%q/%v", gotCert, gotKey, err)
+	}
+	if _, _, err := svc.OpenCertPEM(ctx, "nope"); err == nil || err != ErrNotFound {
+		t.Fatalf("不存在证书应 ErrNotFound,得 %v", err)
 	}
 }

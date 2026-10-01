@@ -109,6 +109,8 @@ func writeCertMgmtError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadRequest, "invalid_cert", "证书/私钥 PEM 非法或两者不配对")
 	case errors.Is(err, certmgmt.ErrBusy):
 		writeError(w, http.StatusConflict, "cert_busy", "该证书已有签发/续期操作进行中,请稍候")
+	case errors.Is(err, certmgmt.ErrCertInUse):
+		writeError(w, http.StatusConflict, "cert_in_use", "证书正被平台 HTTPS 使用,请先在「设置 → HTTPS 访问」中更换或关闭")
 	case errors.Is(err, certmgmt.ErrNoGateway):
 		writeError(w, http.StatusBadRequest, "gateway_not_configured", "签发引擎运行在网关主机上,请先在「服务注册」里配置网关主机")
 	case errors.Is(err, certmgmt.ErrAcmeshStart):
