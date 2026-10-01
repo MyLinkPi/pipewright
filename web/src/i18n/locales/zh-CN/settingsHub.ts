@@ -7,6 +7,7 @@ export default {
   navNotifications: '通知',
   navVault: '凭据保险库',
   navDnsProviders: 'DNS 提供商',
+  navHttps: 'HTTPS 访问',
   navAccount: '账户',
   navServers: '服务器',
   navDiagnosisStats: '诊断反馈',

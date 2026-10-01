@@ -76,7 +76,7 @@ func TestPRStatusHookGatedByProjectFlag(t *testing.T) {
 	hits, runID, _, projSvc, reporter, runSvc, v := prStatusHookFixture(t)
 
 	// 1) flag 关 + globalOverride=false → 不应命中平台 API。
-	hook := NewPRStatusHook(runSvc, projSvc, v, reporter, "https://pw.example.com", false)
+	hook := NewPRStatusHook(runSvc, projSvc, v, reporter, func(context.Context) string { return "https://pw.example.com" }, false)
 	hook(context.Background(), runID, run.StatusSuccess)
 	if got := atomic.LoadInt32(hits); got != 0 {
 		t.Fatalf("flag 关 + 无全局强开应跳过回写, 但平台 API 被命中 %d 次", got)
@@ -98,7 +98,7 @@ func TestPRStatusHookGlobalOverride(t *testing.T) {
 	hits, runID, _, projSvc, reporter, runSvc, v := prStatusHookFixture(t)
 
 	// flag 默认关,但全局强开 → 应命中平台 API。
-	hook := NewPRStatusHook(runSvc, projSvc, v, reporter, "https://pw.example.com", true)
+	hook := NewPRStatusHook(runSvc, projSvc, v, reporter, func(context.Context) string { return "https://pw.example.com" }, true)
 	hook(context.Background(), runID, run.StatusSuccess)
 	if got := atomic.LoadInt32(hits); got != 1 {
 		t.Fatalf("全局强开应无视每项目开关回写一次, 平台 API 命中 = %d, want 1", got)

@@ -7,6 +7,7 @@ export default {
   navNotifications: 'Notifications',
   navVault: 'Coffre de justificatifs',
   navDnsProviders: 'Fournisseurs DNS',
+  navHttps: 'Accès HTTPS',
   navAccount: 'Compte',
   navServers: 'Serveurs',
   navDiagnosisStats: 'Retours de diagnostic',

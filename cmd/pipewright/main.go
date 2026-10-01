@@ -21,12 +21,13 @@ import (
 	"github.com/huangchengsir/pipewright/internal/ai"
 	"github.com/huangchengsir/pipewright/internal/anomaly"
 	"github.com/huangchengsir/pipewright/internal/approval"
-	"github.com/huangchengsir/pipewright/internal/artifactstore"
 	"github.com/huangchengsir/pipewright/internal/appstore"
+	"github.com/huangchengsir/pipewright/internal/artifactstore"
 	"github.com/huangchengsir/pipewright/internal/audit"
 	"github.com/huangchengsir/pipewright/internal/auth"
 	"github.com/huangchengsir/pipewright/internal/build"
 	"github.com/huangchengsir/pipewright/internal/buildcache"
+	"github.com/huangchengsir/pipewright/internal/certmgmt"
 	"github.com/huangchengsir/pipewright/internal/chain"
 	"github.com/huangchengsir/pipewright/internal/config"
 	"github.com/huangchengsir/pipewright/internal/cron"
@@ -42,18 +43,19 @@ import (
 	"github.com/huangchengsir/pipewright/internal/oauth"
 	"github.com/huangchengsir/pipewright/internal/pacloader"
 	"github.com/huangchengsir/pipewright/internal/pipeline"
+	"github.com/huangchengsir/pipewright/internal/platformhttps"
 	"github.com/huangchengsir/pipewright/internal/previewenv"
 	"github.com/huangchengsir/pipewright/internal/project"
 	"github.com/huangchengsir/pipewright/internal/promotion"
-	"github.com/huangchengsir/pipewright/internal/certmgmt"
 	"github.com/huangchengsir/pipewright/internal/prstatus"
 	"github.com/huangchengsir/pipewright/internal/repocache"
 	"github.com/huangchengsir/pipewright/internal/retention"
 	"github.com/huangchengsir/pipewright/internal/run"
+	"github.com/huangchengsir/pipewright/internal/runner"
 	"github.com/huangchengsir/pipewright/internal/servercmd"
 	"github.com/huangchengsir/pipewright/internal/servicereg"
-	"github.com/huangchengsir/pipewright/internal/runner"
 	"github.com/huangchengsir/pipewright/internal/store"
+	"github.com/huangchengsir/pipewright/internal/systemcfg"
 	"github.com/huangchengsir/pipewright/internal/target"
 	"github.com/huangchengsir/pipewright/internal/trigger"
 	"github.com/huangchengsir/pipewright/internal/vault"
@@ -356,6 +358,11 @@ func main() {
 	// 时证书上传不可用,其余功能照常(优雅降级)。
 	serviceRegSvc := servicereg.New(st.DB, targetSvc, credVault)
 
+	// 系统级运行时配置(public_url = 平台对外访问地址):取代环境变量 PIPEWRIGHT_PUBLIC_URL,
+	// 设置页在线修改、即时生效(通知审批链接 / PR 回写 target_url 每次触发时按需读取)。
+	sysCfgSvc := systemcfg.New(st.DB)
+	publicURLResolver := func(ctx context.Context) string { return systemcfg.Resolve(ctx, sysCfgSvc) }
+
 	// 部署服务(提前到 dag 装配前构造,供 deploy_ssh 流水线节点注入)。Story 4.6 诊断钩子复用 7-2。
 	// instance_rolling(默认策略)的网关摘/挂经 instanceRollGateway 适配器晚绑(deploy 不 import
 	// servicereg,包间保持单向依赖);未装配时该策略自动回退既有滚动。
@@ -375,8 +382,9 @@ func main() {
 		// 容器内真实跑命令,复用 Builder 的 cloner+driver);否则回退 stub(优雅降级,NFR-10)。
 		var dagOpts []dagrun.Option
 		// 审批门 hook(Story 8-4):Gate 阶段阻塞等待人工批准/拒绝。进入等待态后 best-effort 发
-		// 「需要审批」通知 + 签名审批链接(signer/PUBLIC_URL 未配则跳过通知,门行为不变)。
-		approvalNotifier := httpapi.NewApprovalNotifier(notifySvc, approvalSigner, strings.TrimSpace(os.Getenv("PIPEWRIGHT_PUBLIC_URL")), runSvc)
+		// 「需要审批」通知 + 签名审批链接(链接前缀 = 系统配置里的对外访问地址,未配则跳过通知,
+		// 门行为不变;运行时可改)。
+		approvalNotifier := httpapi.NewApprovalNotifier(notifySvc, approvalSigner, publicURLResolver, runSvc)
 		dagOpts = append(dagOpts, dagrun.WithGate(httpapi.NewApprovalGate(runSvc, approvalCoord, approvalStore, approvalNotifier)))
 		builderOpts := []build.BuilderOption{build.WithArtifactStore(artStore), build.WithArtifactLister(runSvc.ListArtifacts), build.WithImageGC(os.Getenv("PIPEWRIGHT_NO_IMAGE_GC") != "1"), build.WithCommitRecorder(func(ctx context.Context, runID, commit string) { _ = runSvc.SetCommit(ctx, runID, commit) }), build.WithStageDeployer(deploySvc), build.WithStageNotifier(notifySvc), clonerOpt, buildCacheOpt}
 		b, berr := build.NewBuilder(projectSvc, pipelineSettingsSvc, credVault, builderOpts...)
@@ -428,7 +436,9 @@ func main() {
 	// 证书管理(acme.sh 自动签发/续期,DNS-01):凭据/根区复用 dnsSvc;签发引擎容器跑在
 	// 服务注册网关主机上(共享 nginx 卷);签发结果经 CertSink 同步基域(内部 apply + reload)。
 	certSvc := certmgmt.New(st.DB, targetSvc, credVault)
-	if cfg, ok := certSvc.(interface{ SetCredentialsResolver(certmgmt.CredentialsResolver) }); ok {
+	if cfg, ok := certSvc.(interface {
+		SetCredentialsResolver(certmgmt.CredentialsResolver)
+	}); ok {
 		cfg.SetCredentialsResolver(&dnsResolverAdapter{dns: dnsSvc})
 	}
 	if cfg, ok := certSvc.(interface{ SetGateway(certmgmt.GatewayInfo) }); ok {
@@ -442,6 +452,15 @@ func main() {
 		log.Printf("[certmgmt] 存量证书回填失败(不影响启动):%v", berr)
 	} else if n > 0 {
 		log.Printf("[certmgmt] 已回填 %d 张服务注册页历史证书", n)
+	}
+
+	// 平台 HTTPS 访问(宿主 nginx):当 nginx 所在机器(通常即平台自身所在主机)装有宿主 nginx 时,
+	// 自动把平台 Web 页面发布为 HTTPS —— 下发证书管理模块的证书 + 写 conf.d vhost
+	// (443 ssl 反代平台 Web 端口 + 80→443 跳转)+ nginx -t + reload。证书经 CertSource 软引用
+	// (PEM 仅进程内解密传递);续期/重下发后经 PlatformHTTPS 联动重新落盘,删除占用证书被拦截。
+	platformHTTPSSvc := platformhttps.New(st.DB, targetSvc, &platformCertSource{cm: certSvc}, defaultPortFromAddr(cfg.Addr))
+	if cfg2, ok := certSvc.(interface{ SetPlatformHTTPS(certmgmt.PlatformHTTPS) }); ok {
+		cfg2.SetPlatformHTTPS(&platformHTTPSAdapter{ph: platformHTTPSSvc})
 	}
 
 	// Per-PR 预览环境(R4 E4.1 · 差异化王牌):某 PR 运行成功部署 → 在项目预览配置的根域下分配
@@ -475,7 +494,7 @@ func main() {
 		strings.TrimSpace(os.Getenv("PIPEWRIGHT_PR_STATUS_GITHUB_BASE")),
 		strings.TrimSpace(os.Getenv("PIPEWRIGHT_PR_STATUS_GITEE_BASE")))
 	prHook := httpapi.NewPRStatusHook(runSvc, projectSvc, credVault, reporter,
-		strings.TrimSpace(os.Getenv("PIPEWRIGHT_PUBLIC_URL")), prStatusGlobalOverride)
+		publicURLResolver, prStatusGlobalOverride)
 	notify := terminalHook
 	terminalHook = func(ctx context.Context, runID, finalStatus string) {
 		notify(ctx, runID, finalStatus)
@@ -648,7 +667,7 @@ func main() {
 
 	srv := &http.Server{
 		Addr:              cfg.Addr,
-		Handler:           httpapi.New(webFS, authSvc, httpapi.WithVault(credVault), httpapi.WithProjects(projectSvc), httpapi.WithTriggers(triggerSvc), httpapi.WithPipelines(pipelineSvc), httpapi.WithPipelineSettings(pipelineSettingsSvc), httpapi.WithRuns(runSvc, pool), httpapi.WithWebhooks(webhookReceiver), httpapi.WithAudit(auditRec), httpapi.WithAccount(authSvc), httpapi.WithAISettings(aiSvc), httpapi.WithAIGenerate(repoAnalyzer), httpapi.WithRunDiff(runDiffer), httpapi.WithSource(sourceReader), httpapi.WithRefs(refsLister), httpapi.WithArtifactStore(artStore), httpapi.WithServers(targetSvc), httpapi.WithServerCommands(serverCmdSvc), httpapi.WithRunnerConfig(runnerSvc), httpapi.WithDeploy(deploySvc), httpapi.WithNotifications(notifySvc), httpapi.WithRetention(retentionSvc), httpapi.WithDNSProviders(dnsSvc), httpapi.WithCertMgmt(certSvc), httpapi.WithPreviewEnvs(previewSvc), httpapi.WithServiceReg(serviceRegSvc), httpapi.WithAppStore(appStoreSvc), httpapi.WithDiagnosisFeedback(feedbackSvc), httpapi.WithAnomaly(anomalySvc), httpapi.WithAnomalyConfig(int(anomalyInterval.Seconds()), int(anomalyCooldown.Seconds())), httpapi.WithMetricsHistory(metricsHist), httpapi.WithSecretSource(secretSrc), httpapi.WithOAuth(oauthSvc), httpapi.WithCron(cronSvc), httpapi.WithChain(chainSvc), httpapi.WithApprovals(approvalCoord, approvalStore), httpapi.WithApprovalLinks(approvalSigner), httpapi.WithConcurrency(concurrencySvc), httpapi.WithParameters(parameterSvc), httpapi.WithPromotion(promotionStore), httpapi.WithEnvironments(environmentsSvc), httpapi.WithDoraMetrics(doraMetricsSvc), httpapi.WithTemplates(templateSvc), httpapi.WithVariableGroups(varGroupSvc), httpapi.WithCustomNodes(customNodeSvc)),
+		Handler:           httpapi.New(webFS, authSvc, httpapi.WithVault(credVault), httpapi.WithProjects(projectSvc), httpapi.WithTriggers(triggerSvc), httpapi.WithPipelines(pipelineSvc), httpapi.WithPipelineSettings(pipelineSettingsSvc), httpapi.WithRuns(runSvc, pool), httpapi.WithWebhooks(webhookReceiver), httpapi.WithAudit(auditRec), httpapi.WithAccount(authSvc), httpapi.WithAISettings(aiSvc), httpapi.WithAIGenerate(repoAnalyzer), httpapi.WithRunDiff(runDiffer), httpapi.WithSource(sourceReader), httpapi.WithRefs(refsLister), httpapi.WithArtifactStore(artStore), httpapi.WithServers(targetSvc), httpapi.WithServerCommands(serverCmdSvc), httpapi.WithRunnerConfig(runnerSvc), httpapi.WithDeploy(deploySvc), httpapi.WithNotifications(notifySvc), httpapi.WithRetention(retentionSvc), httpapi.WithDNSProviders(dnsSvc), httpapi.WithCertMgmt(certSvc), httpapi.WithPlatformHTTPS(platformHTTPSSvc), httpapi.WithSystemConfig(sysCfgSvc), httpapi.WithPreviewEnvs(previewSvc), httpapi.WithServiceReg(serviceRegSvc), httpapi.WithAppStore(appStoreSvc), httpapi.WithDiagnosisFeedback(feedbackSvc), httpapi.WithAnomaly(anomalySvc), httpapi.WithAnomalyConfig(int(anomalyInterval.Seconds()), int(anomalyCooldown.Seconds())), httpapi.WithMetricsHistory(metricsHist), httpapi.WithSecretSource(secretSrc), httpapi.WithOAuth(oauthSvc), httpapi.WithCron(cronSvc), httpapi.WithChain(chainSvc), httpapi.WithApprovals(approvalCoord, approvalStore), httpapi.WithApprovalLinks(approvalSigner), httpapi.WithConcurrency(concurrencySvc), httpapi.WithParameters(parameterSvc), httpapi.WithPromotion(promotionStore), httpapi.WithEnvironments(environmentsSvc), httpapi.WithDoraMetrics(doraMetricsSvc), httpapi.WithTemplates(templateSvc), httpapi.WithVariableGroups(varGroupSvc), httpapi.WithCustomNodes(customNodeSvc)),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		// WriteTimeout 置 0:SSE 长连接(/api/runs/{id}/events)不可被写超时切断;
@@ -943,6 +962,48 @@ func (g *certGatewayAdapter) Gateway(ctx context.Context) (string, string, bool,
 		return "", "", false, err
 	}
 	return st.ServerID, st.VolumeName, st.ServerID != "", nil
+}
+
+// platformCertSource 适配 platformhttps.CertSource:证书元数据/PEM 解密下沉 certmgmt
+// (PEM 仅进程内传递,绝不过 HTTP;晚绑防 platformhttps 直接依赖 certmgmt)。
+type platformCertSource struct{ cm certmgmt.Service }
+
+func (a *platformCertSource) GetCert(ctx context.Context, id string) (*platformhttps.CertInfo, error) {
+	c, err := a.cm.Get(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	return &platformhttps.CertInfo{
+		ID: c.ID, PrimaryDomain: c.PrimaryDomain, Domains: c.Domains,
+		Status: c.Status, NotAfter: c.NotAfter,
+	}, nil
+}
+
+func (a *platformCertSource) OpenCertPEM(ctx context.Context, id string) (string, string, error) {
+	return a.cm.OpenCertPEM(ctx, id)
+}
+
+// platformHTTPSAdapter 适配 certmgmt.PlatformHTTPS:证书续期/重下发后联动平台宿主 nginx
+// 重新落盘证书并 reload;删除证书前检查占用。
+type platformHTTPSAdapter struct{ ph platformhttps.Service }
+
+func (a *platformHTTPSAdapter) UsesCert(ctx context.Context, certID string) (bool, error) {
+	return a.ph.UsesCert(ctx, certID)
+}
+
+func (a *platformHTTPSAdapter) RedeployCert(ctx context.Context, certID string) error {
+	return a.ph.RedeployCert(ctx, certID)
+}
+
+// defaultPortFromAddr 从监听地址(如 ":8080"/"0.0.0.0:8080")提取端口作为平台 HTTPS 的
+// 默认反代上游端口;解析失败回退 8080。
+func defaultPortFromAddr(addr string) int {
+	if i := strings.LastIndex(addr, ":"); i >= 0 {
+		if p, err := strconv.Atoi(addr[i+1:]); err == nil && p > 0 && p < 65536 {
+			return p
+		}
+	}
+	return 8080
 }
 
 // certSinkAdapter 适配 certmgmt.CertSink:把证书同步进 servicereg 基域(UploadCert 内部落库 +

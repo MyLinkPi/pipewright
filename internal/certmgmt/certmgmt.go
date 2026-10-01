@@ -108,6 +108,8 @@ var (
 	ErrInvalidCert = errors.New("certmgmt: invalid certificate or key")
 	// ErrBusy 表示该证书已有签发/续期在进行中。
 	ErrBusy = errors.New("certmgmt: operation already in progress")
+	// ErrCertInUse 表示证书正被平台 HTTPS 使用(删除前须先在设置中更换或关闭)。
+	ErrCertInUse = errors.New("certmgmt: certificate is in use")
 	// ErrNoGateway 表示尚未配置网关主机(签发引擎无落脚点)。
 	ErrNoGateway = errors.New("certmgmt: gateway server not configured")
 	// ErrAcmeshStart 表示 acme.sh 容器启动失败。
@@ -221,6 +223,15 @@ type SecretSealer interface {
 	OpenSecret(sealed []byte) ([]byte, error)
 }
 
+// PlatformHTTPS 抽象「平台 HTTPS(宿主 nginx)的证书联动」能力(由 main.go 适配
+// platformhttps.Service 注入):续期/重下发后联动重新落盘证书 + reload;删除证书前拦截占用。
+type PlatformHTTPS interface {
+	// UsesCert 报告平台 HTTPS 是否正在使用该证书。
+	UsesCert(ctx context.Context, certID string) (bool, error)
+	// RedeployCert 证书更新后联动重下发(未引用该证书时 no-op)。
+	RedeployCert(ctx context.Context, certID string) error
+}
+
 // Service 定义证书管理领域对外接口(冻结契约;httpapi 消费)。
 type Service interface {
 	// List 返回全部证书(创建时间倒序)。
@@ -241,6 +252,9 @@ type Service interface {
 	EngineStatus(ctx context.Context) (*EngineStatus, error)
 	// DeployEngine 显式部署签发引擎容器(无需先建证书)。
 	DeployEngine(ctx context.Context) (*EngineStatus, error)
+	// OpenCertPEM 进程内解密返回证书/私钥 PEM 明文(供平台 HTTPS 下发到宿主 nginx;
+	// PEM 仅进程内传递,绝不过 HTTP)。证书不存在 → ErrNotFound;密文缺失/解密失败 → 人读错误。
+	OpenCertPEM(ctx context.Context, id string) (certPEM, keyPEM string, err error)
 	// SweepOnce 到期自动续期一轮(Sweeper 调度入口;返回本轮触发的续期数)。
 	SweepOnce(ctx context.Context) (int, error)
 	// BackfillFromServiceReg 启动期一次性迁移:把 service_reg_domains 既有手动证书幂等回填进
@@ -248,7 +262,7 @@ type Service interface {
 	BackfillFromServiceReg(ctx context.Context) (int, error)
 }
 
-// service 是 store + target + vault (+ resolver/gateway/sink 注入) 支撑的 Service 实现。
+// service 是 store + target + vault (+ resolver/gateway/sink/phttps 注入) 支撑的 Service 实现。
 type service struct {
 	store  *Store
 	tg     target.Service
@@ -256,6 +270,7 @@ type service struct {
 	dns    CredentialsResolver
 	gw     GatewayInfo
 	sink   CertSink
+	phttps PlatformHTTPS
 
 	mu       sync.Mutex
 	inflight map[string]struct{} // 正在签发/续期的证书 id(防重入)
@@ -280,6 +295,9 @@ func (s *service) SetGateway(g GatewayInfo) { s.gw = g }
 
 // SetCertSink 注入网关证书同步器。
 func (s *service) SetCertSink(cs CertSink) { s.sink = cs }
+
+// SetPlatformHTTPS 注入平台 HTTPS(宿主 nginx)联动器(nil = 联动能力降级,证书本体不受影响)。
+func (s *service) SetPlatformHTTPS(p PlatformHTTPS) { s.phttps = p }
 
 func (s *service) logf(format string, args ...any) {
 	log.Printf(format, args...)
@@ -351,19 +369,19 @@ func (s *service) Import(ctx context.Context, in ImportInput) (*Certificate, err
 	}
 	now := time.Now().UTC()
 	c := &Certificate{
-		ID:           newID(),
+		ID:            newID(),
 		PrimaryDomain: primary,
-		Domains:      domains,
-		Source:       SourceManual,
-		Validation:   ValidationManual,
-		Status:       StatusIssued,
-		Subject:      meta.subject,
-		Issuer:       meta.issuer,
-		NotBefore:    meta.notBefore,
-		NotAfter:     meta.notAfter,
-		LastIssuedAt: now,
-		CreatedAt:    now,
-		UpdatedAt:    now,
+		Domains:       domains,
+		Source:        SourceManual,
+		Validation:    ValidationManual,
+		Status:        StatusIssued,
+		Subject:       meta.subject,
+		Issuer:        meta.issuer,
+		NotBefore:     meta.notBefore,
+		NotAfter:      meta.notAfter,
+		LastIssuedAt:  now,
+		CreatedAt:     now,
+		UpdatedAt:     now,
 	}
 	sealedCert, err := s.vault.SealSecret([]byte(certPEM))
 	if err != nil {
@@ -380,6 +398,10 @@ func (s *service) Import(ctx context.Context, in ImportInput) (*Certificate, err
 	if hint := s.syncGateway(ctx, c.ID); hint != "" {
 		_ = s.store.setStatusDetail(ctx, c.ID, hint)
 	}
+	// 平台 HTTPS(宿主 nginx)联动下发,同样 best-effort。
+	if hint := s.syncPlatformHTTPS(ctx, c.ID); hint != "" {
+		_ = s.store.appendStatusDetail(ctx, c.ID, hint)
+	}
 	return s.store.get(ctx, c.ID)
 }
 
@@ -394,6 +416,10 @@ func (s *service) Renew(ctx context.Context, id string) (*Certificate, error) {
 	if c.Source != SourceACME {
 		if hint := s.syncGateway(ctx, id); hint != "" {
 			_ = s.store.setStatusDetail(ctx, id, hint)
+			return nil, fmt.Errorf("%w:%s", ErrIssue, hint)
+		}
+		if hint := s.syncPlatformHTTPS(ctx, id); hint != "" {
+			_ = s.store.appendStatusDetail(ctx, id, hint)
 			return nil, fmt.Errorf("%w:%s", ErrIssue, hint)
 		}
 		_ = s.store.setStatusDetail(ctx, id, "已重新下发网关")
@@ -420,6 +446,12 @@ func (s *service) Delete(ctx context.Context, id string) error {
 	}
 	if s.inflightHas(id) {
 		return ErrBusy
+	}
+	// 平台 HTTPS 正在使用该证书 → 拦截删除(避免平台自身 HTTPS 访问直接中断)。
+	if s.phttps != nil {
+		if used, uerr := s.phttps.UsesCert(ctx, id); uerr == nil && used {
+			return fmt.Errorf("%w:平台 HTTPS 正在使用该证书,请先在「设置 → HTTPS 访问」中更换或关闭", ErrCertInUse)
+		}
 	}
 	// acme 证书:best-effort 从 acme.sh 续期清单移除(不向 CA revoke,避免误删不可逆)。
 	if c.Source == SourceACME && c.Status == StatusIssued {
@@ -451,6 +483,29 @@ func (s *service) DeployEngine(ctx context.Context) (*EngineStatus, error) {
 		return nil, err
 	}
 	return s.inspectEngine(ctx)
+}
+
+// OpenCertPEM 进程内解密返回证书/私钥 PEM(平台 HTTPS 下发到宿主 nginx 用;绝不过 HTTP)。
+func (s *service) OpenCertPEM(ctx context.Context, id string) (string, string, error) {
+	if s.vault == nil {
+		return "", "", target.ErrVaultUnconfigured
+	}
+	sealedCert, sealedKey, ok, err := s.store.getSealed(ctx, id)
+	if err != nil {
+		return "", "", err
+	}
+	if !ok {
+		return "", "", ErrNotFound
+	}
+	certPEM, err := s.vault.OpenSecret(sealedCert)
+	if err != nil {
+		return "", "", fmt.Errorf("%w:证书解密失败", ErrReadBack)
+	}
+	keyPEM, err := s.vault.OpenSecret(sealedKey)
+	if err != nil {
+		return "", "", fmt.Errorf("%w:私钥解密失败", ErrReadBack)
+	}
+	return string(certPEM), string(keyPEM), nil
 }
 
 // ---------- 异步执行骨架 ----------
@@ -550,6 +605,10 @@ func (s *service) issueCert(ctx context.Context, id string) error {
 	if hint := s.syncGateway(ctx, id); hint != "" {
 		_ = s.store.appendStatusDetail(ctx, id, hint)
 	}
+	// 平台 HTTPS(宿主 nginx)联动下发,同样 best-effort。
+	if hint := s.syncPlatformHTTPS(ctx, id); hint != "" {
+		_ = s.store.appendStatusDetail(ctx, id, hint)
+	}
 	return nil
 }
 
@@ -593,6 +652,18 @@ func (s *service) syncGateway(ctx context.Context, id string) string {
 	}
 	if len(failed) > 0 {
 		return "下发提示:部分基域下发失败 → " + strings.Join(failed, "、")
+	}
+	return ""
+}
+
+// syncPlatformHTTPS 把证书联动下发给平台 HTTPS(宿主 nginx):未接入/未引用该证书时 no-op。
+// 返回非空串 = 人话提示(重下发失败)。
+func (s *service) syncPlatformHTTPS(ctx context.Context, id string) string {
+	if s.phttps == nil {
+		return ""
+	}
+	if err := s.phttps.RedeployCert(ctx, id); err != nil {
+		return "下发提示:平台 HTTPS 证书同步失败 → " + truncate(err.Error(), 300)
 	}
 	return ""
 }

@@ -23,10 +23,10 @@ import (
 	"github.com/huangchengsir/pipewright/internal/artifactstore"
 	"github.com/huangchengsir/pipewright/internal/audit"
 	"github.com/huangchengsir/pipewright/internal/auth"
+	"github.com/huangchengsir/pipewright/internal/certmgmt"
 	"github.com/huangchengsir/pipewright/internal/chain"
 	"github.com/huangchengsir/pipewright/internal/cron"
 	"github.com/huangchengsir/pipewright/internal/deploy"
-	"github.com/huangchengsir/pipewright/internal/certmgmt"
 	"github.com/huangchengsir/pipewright/internal/dnsprovider"
 	"github.com/huangchengsir/pipewright/internal/environments"
 	"github.com/huangchengsir/pipewright/internal/i18n"
@@ -35,6 +35,7 @@ import (
 	"github.com/huangchengsir/pipewright/internal/notify"
 	"github.com/huangchengsir/pipewright/internal/oauth"
 	"github.com/huangchengsir/pipewright/internal/pipeline"
+	"github.com/huangchengsir/pipewright/internal/platformhttps"
 	"github.com/huangchengsir/pipewright/internal/project"
 	"github.com/huangchengsir/pipewright/internal/promotion"
 	"github.com/huangchengsir/pipewright/internal/retention"
@@ -42,6 +43,7 @@ import (
 	"github.com/huangchengsir/pipewright/internal/runner"
 	"github.com/huangchengsir/pipewright/internal/servercmd"
 	"github.com/huangchengsir/pipewright/internal/servicereg"
+	"github.com/huangchengsir/pipewright/internal/systemcfg"
 	"github.com/huangchengsir/pipewright/internal/target"
 	"github.com/huangchengsir/pipewright/internal/trigger"
 	"github.com/huangchengsir/pipewright/internal/vault"
@@ -108,6 +110,8 @@ type options struct {
 	dnsProviders     dnsprovider.Service
 	previewEnvs      PreviewService
 	serviceReg       servicereg.Service
+	platformHTTPS    platformhttps.Service
+	systemConfig     systemcfg.Service
 	appStore         appstore.Service
 	serverCmds       *servercmd.Service
 }
@@ -374,6 +378,21 @@ func WithPreviewEnvs(s PreviewService) Option {
 // 不传则相关端点返回 503(服务未初始化)。
 func WithServiceReg(s servicereg.Service) Option {
 	return func(o *options) { o.serviceReg = s }
+}
+
+// WithPlatformHTTPS 注入「平台 HTTPS 访问」(宿主 nginx 自动配置)服务,挂载
+// /api/platform-https/* 路由(GET auth;写方法 auth + CSRF + 审计)。
+// 平台自身 Web 页面经宿主 nginx 发布为 HTTPS:下发证书 + conf.d vhost(443 ssl +
+// 80→443 跳转)+ nginx -t + reload;证书复用证书管理模块。不传则相关端点返回 503。
+func WithPlatformHTTPS(s platformhttps.Service) Option {
+	return func(o *options) { o.platformHTTPS = s }
+}
+
+// WithSystemConfig 注入「系统级运行时配置」服务,挂载 /api/system/config 路由
+// (GET auth;PUT auth + CSRF + 审计)。public_url 供通知审批链接 / PR 回写 target_url
+// 使用,运行时修改即时生效(取代环境变量 PIPEWRIGHT_PUBLIC_URL)。不传则端点返回 503。
+func WithSystemConfig(s systemcfg.Service) Option {
+	return func(o *options) { o.systemConfig = s }
 }
 
 // WithAppStore 注入应用商店模板服务,挂载 /api/ops/apps* 与 POST /api/servers/{id}/apps/deploy
@@ -871,6 +890,20 @@ func New(webFS fs.FS, authn auth.Authenticator, opts ...Option) http.Handler {
 		// 签发引擎(acme.sh 容器):GET 探测状态(auth);POST 显式部署(auth + CSRF + 审计)。
 		ar.Get("/certmgmt/engine", makeGetCertEngineHandler(cm))
 		ar.Post("/certmgmt/engine/deploy", makeDeployCertEngineHandler(cm, aud))
+
+		// 平台 HTTPS 访问(宿主 nginx):平台自身 Web 页面发布为 HTTPS(证书复用证书管理)。
+		// ph 为 nil → handler 返回 503。GET 过 auth;写方法过 auth + CSRF + 审计。
+		ph := o.platformHTTPS
+		ar.Get("/platform-https/settings", makeGetPlatformHTTPSSettingsHandler(ph))
+		ar.Put("/platform-https/settings", makeUpdatePlatformHTTPSSettingsHandler(ph, aud))
+		ar.Get("/platform-https/detect", makeDetectPlatformHTTPSHandler(ph))
+		ar.Post("/platform-https/apply", makeApplyPlatformHTTPSHandler(ph, aud))
+		ar.Post("/platform-https/disable", makeDisablePlatformHTTPSHandler(ph, aud))
+
+		// 系统级运行时配置(public_url = 平台对外访问地址;通知审批链接 / PR 回写用)。
+		sc := o.systemConfig
+		ar.Get("/system/config", makeGetSystemConfigHandler(sc))
+		ar.Put("/system/config", makeSetSystemConfigHandler(sc, aud))
 
 		// 应用商店模板(DPanel 式):内置 seed + 自定义 CRUD。GET 过 auth;写方法过 auth + CSRF + 审计。
 		// apps 为 nil → handler 返回 503。/ops/apps/{id} 比 /ops/apps 多一段,不会被吞。

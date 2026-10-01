@@ -17,8 +17,9 @@ import (
 // 项目仓库/凭据 → 识别平台(GitHub/Gitee)→ 经项目凭据回写提交状态(success/failure)+ 详情链接。
 // best-effort:无 commit / 不支持平台 / 无凭据 / 回写失败 一律静默跳过或仅记日志,绝不影响运行终态。
 
-// NewPRStatusHook 构造 PR 状态回写终态钩子。publicBaseURL 为平台对外访问地址(用于 target_url;
-// 空则不带链接)。token 经 vault 即取即用,绝不进 URL/日志。
+// NewPRStatusHook 构造 PR 状态回写终态钩子。publicBaseURL 在每次回写时解析(系统配置里的
+// 平台对外访问地址,用于 target_url;空则不带链接)——运行时修改即时生效,无需重启。
+// token 经 vault 即取即用,绝不进 URL/日志。
 //
 // 钩子始终挂载,但仅在该 run 的项目**开启了 PR 状态检查**(projects.pr_status_enabled)时才回写;
 // globalOverride=true(历史全局 env PIPEWRIGHT_PR_STATUS=1)则无视每项目开关,对所有项目回写。
@@ -28,10 +29,9 @@ func NewPRStatusHook(
 	projects project.Service,
 	v vault.Vault,
 	reporter *prstatus.Reporter,
-	publicBaseURL string,
+	publicBaseURL func(context.Context) string,
 	globalOverride bool,
 ) func(ctx context.Context, runID, finalStatus string) {
-	publicBaseURL = strings.TrimRight(strings.TrimSpace(publicBaseURL), "/")
 	return func(ctx context.Context, runID, finalStatus string) {
 		r, err := runs.Get(ctx, runID)
 		if err != nil {
@@ -61,8 +61,10 @@ func NewPRStatusHook(
 		state := prstatus.StateForRunStatus(finalStatus)
 		desc := prDescription(finalStatus)
 		targetURL := ""
-		if publicBaseURL != "" {
-			targetURL = publicBaseURL + "/runs/" + runID
+		if publicBaseURL != nil {
+			if base := strings.TrimRight(strings.TrimSpace(publicBaseURL(ctx)), "/"); base != "" {
+				targetURL = base + "/runs/" + runID
+			}
 		}
 		if err := reporter.Report(ctx, target, commit, state, desc, targetURL, token); err != nil {
 			log.Printf("[prstatus] 回写 %s/%s 失败(run %s):%v", target.Owner, target.Repo, runID, err)
