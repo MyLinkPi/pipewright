@@ -1,215 +1,111 @@
+// acme.sh 以**宿主机脚本**方式运行在网关主机上(无容器、无镜像链):
+//   - 自维护 fork(szxufan/acme.sh)的最小集 vendored 在本包 acmesh/ 下(acme.sh 主脚本 +
+//     dns_cf/dns_dp/dns_ali 三个 dnsapi),经 go:embed 嵌进平台二进制 —— 升级 fork =
+//     换文件重编译,不依赖任何镜像构建/发布链路;
+//   - 首次使用(或显式「部署引擎」)时经 SSH 复制到网关主机 /opt/pipewright/acme/,
+//     之后直接以 sh 运行。acme.sh 是纯 shell 脚本,运行期依赖仅系统 curl + openssl;
+//   - 证书产物落在本目录(<home>/<主域>/fullchain.cer + .key),由平台读回、密文入库,
+//     再经 CertSink(servicereg)下发 nginx 并 reload —— acme.sh 不直接写 nginx 卷。
+//
+// 注入面纪律不变:一切命令经 target.Exec 以 array 形式执行(AC-SEC-02 不拼 shell);
+// 唯一例外仍是一次性签发脚本(Upload 到 /tmp → sh 执行 → 删除),内容 = 白名单校验过的
+// 域名/CA/密钥类型 + POSIX 单引号转义过的 DNS 凭据,凭据绝不进命令行/日志。
 package certmgmt
 
 import (
 	"context"
+	"embed"
 	"fmt"
-	"os"
-	"regexp"
-	"sort"
 	"strings"
 )
 
-// 签发引擎容器编排常量(与 servicereg/nginx.go 同构,资源名独立)。
+// 网关主机上的 acme.sh 安装布局(常量,无 env 覆盖 —— 路径即契约)。
 const (
-	// acmeContainer 是网关主机上的 acme.sh 常驻工具箱容器名。
-	acmeContainer = "pipewright-acme"
-	// acmeStateVolume 是 acme.sh 自身状态卷(ACME 账户密钥/域配置,独立于 nginx 卷)。
-	acmeStateVolume = "pipewright_acme"
-	// acmeStateMount 是状态卷在容器内的挂载点(与镜像 ENV LE_CONFIG_HOME=/acme.sh 一致)。
-	acmeStateMount = "/acme.sh"
-	// acmeSharedMount 是网关 nginx 具名卷在容器内的挂载点(与 nginx 容器一致,
-	// --install-cert 直写 /etc/pipewright/certs/<base_domain>/)。
-	acmeSharedMount = "/etc/pipewright"
-	// acmeshImageEnv 允许经环境变量覆盖 acme.sh 镜像。
-	acmeshImageEnv = "PIPEWRIGHT_ACMESH_IMAGE"
-	// acmeHostScriptPrefix 是一次性脚本的宿主临时路径前缀(Upload 后 docker cp)。
+	// acmeHomeDir 是 acme.sh 在网关主机上的安装目录(同时作为 --home 配置目录:
+	// ACME 账户密钥、域配置、证书产物全部落在此,重复部署幂等)。
+	acmeHomeDir = "/opt/pipewright/acme"
+	// acmeScript 是主脚本的绝对路径(安装后存在)。
+	acmeScript = acmeHomeDir + "/acme.sh"
+	// acmeHostScriptPrefix 是一次性签发脚本的宿主临时路径前缀(Upload 后直接 sh 执行)。
 	acmeHostScriptPrefix = "/tmp/pw-cert-"
-	// acmeScriptPath 是脚本在容器内的固定落点(执行完即删)。
-	acmeScriptPath = "/tmp/pw-cert-run.sh"
-	// defaultAcmeshImage 是自构建 acme.sh 镜像(deploy/acmesh vendored fork,workflow 推 GHCR)。
-	defaultAcmeshImage = "ghcr.io/huangchengsir/pipewright-acmesh:latest"
 )
 
-// acmeImageRefRe 防注入:镜像引用字符集(首字符字母数字,防经 env 注入 docker flag)。
-var acmeImageRefRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/:@-]*$`)
-
-// acmeshImageRef 返回 acme.sh 镜像:PIPEWRIGHT_ACMESH_IMAGE 优先(字符集白名单校验),默认 GHCR。
-func acmeshImageRef() string {
-	if v := strings.TrimSpace(os.Getenv(acmeshImageEnv)); v != "" && acmeImageRefRe.MatchString(v) {
-		return v
-	}
-	return defaultAcmeshImage
-}
-
-// ---------- 一次性脚本构造(纯函数,golden 可测) ----------
-
-// runOp 是脚本要执行的 acme.sh 主操作。
-type runOp string
-
-const (
-	issueOp runOp = "issue"
-	renewOp runOp = "renew"
-)
-
-// buildRunScript 生成一次性执行脚本:mkdir 下发目录 → export DNS 凭据(单引号转义)→
-// acme.sh --issue/--renew → 逐基域 --install-cert 直写 nginx 证书路径。
+// acmeshFS 嵌入自维护 fork 的最小运行集(主脚本 + 三家 DNS 提供商的 dnsapi)。
 //
-// 注入面分析(与 servicereg 固定自举脚本同一例外纪律):
-//   - 域名/CA/密钥类型:领域层白名单校验过(FQDN/通配符正则 + 枚举),再经 shQuote 单引号包裹;
-//   - DNS 凭据:任意字节,仅经 shQuote POSIX 单引号转义(' → '\''),不进命令行、不落日志;
-//   - install 目标:基域名经 servicereg 同款校验。
-func buildRunScript(op runOp, c *Certificate, dnsAPI string, dnsEnv [][2]string, installBases []string) string {
-	sort.Strings(installBases) // 渲染确定(幂等输出,便于诊断/测试)
-	var b strings.Builder
-	b.WriteString("#!/bin/sh\nset -e\n")
-	for _, base := range installBases {
-		b.WriteString("mkdir -p " + shQuote(acmeSharedMount+"/certs/"+base) + "\n")
-	}
-	for _, kv := range dnsEnv {
-		b.WriteString("export " + kv[0] + "=" + shQuote(kv[1]) + "\n")
-	}
-	b.WriteString("acme.sh --" + string(op))
-	if op == issueOp {
-		b.WriteString(" --dns " + dnsAPI)
-		for _, d := range c.Domains {
-			b.WriteString(" -d " + shQuote(d))
-		}
-		b.WriteString(" --keylength " + c.KeyType)
-		b.WriteString(" --server " + shQuote(caServerURL[c.CA]))
-	} else {
-		// 续期:域配置(含 --dns/--keylength/--server)已持久化在 acme.sh 状态卷,
-		// 仅需凭据 + --force(是否重签由平台续期窗口决定,不让 acme.sh 自己判断)。
-		b.WriteString(" -d " + shQuote(c.PrimaryDomain) + " --force")
-	}
-	b.WriteString("\n")
-	for _, base := range installBases {
-		dir := acmeSharedMount + "/certs/" + base
-		b.WriteString("acme.sh --install-cert -d " + shQuote(c.PrimaryDomain) +
-			" --fullchain-file " + shQuote(dir+"/fullchain.pem") +
-			" --key-file " + shQuote(dir+"/privkey.pem") + "\n")
-	}
-	return b.String()
+//go:embed acmesh/acme.sh
+//go:embed acmesh/dnsapi/dns_cf.sh
+//go:embed acmesh/dnsapi/dns_dp.sh
+//go:embed acmesh/dnsapi/dns_ali.sh
+var acmeshFS embed.FS
+
+// acmeshFiles 是「嵌入源路径 → 网关主机目标路径」的安装清单(确定性顺序)。
+var acmeshFiles = []struct {
+	src  string
+	dest string
+}{
+	{"acmesh/acme.sh", acmeScript},
+	{"acmesh/dnsapi/dns_cf.sh", acmeHomeDir + "/dnsapi/dns_cf.sh"},
+	{"acmesh/dnsapi/dns_dp.sh", acmeHomeDir + "/dnsapi/dns_dp.sh"},
+	{"acmesh/dnsapi/dns_ali.sh", acmeHomeDir + "/dnsapi/dns_ali.sh"},
 }
 
-// shQuote 返回 POSIX 单引号包裹的字面量(' → '\''),任意字节安全。
-func shQuote(s string) string {
-	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
-}
+// depsProbe 是运行期依赖探测的固定常量脚本(无任何用户输入,非注入面;
+// 与 servicereg 自举脚本同一例外纪律):acme.sh 只需系统 sh + curl + openssl。
+const depsProbe = `command -v curl >/dev/null 2>&1 && command -v openssl >/dev/null 2>&1`
 
-// nginxInstallDirs 返回 install 目标基域列表(升序,渲染确定)。
-func nginxInstallDirs(bases []BaseDomain) []string {
-	out := make([]string, 0, len(bases))
-	for _, b := range bases {
-		out = append(out, b.BaseDomain)
-	}
-	sort.Strings(out)
-	return out
-}
+// ---------- 引擎安装 / 探测 ----------
 
-// ---------- 容器生命周期(照抄 ensureNginx 手法) ----------
-
-// engineEnv 是一次编排所需的网关环境(主机 + nginx 卷)。
-type engineEnv struct {
-	serverID    string
-	nginxVolume string
-}
-
-// resolveEngineEnv 读取网关信息;未配置主机 → ErrNoGateway。
-func (s *service) resolveEngineEnv(ctx context.Context) (*engineEnv, error) {
-	if s.gw == nil {
-		return nil, ErrNoGateway
-	}
-	serverID, vol, ok, err := s.gw.Gateway(ctx)
-	if err != nil {
-		return nil, err
-	}
-	if !ok || serverID == "" {
-		return nil, ErrNoGateway
-	}
-	return &engineEnv{serverID: serverID, nginxVolume: vol}, nil
-}
-
-// ensureEngine 幂等地保证 acme.sh 容器就绪(网关未配置 → ErrNoGateway)。
-func (s *service) ensureEngine(ctx context.Context) error {
-	env, err := s.resolveEngineEnv(ctx)
-	if err != nil {
-		return err
-	}
-	return s.ensureEngineAt(ctx, env.serverID, env.nginxVolume)
-}
-
-// ensureEngineAt 在指定网关主机上保证容器就绪:不存在 → 起;已停 → start;
-// 卷挂载不符(如 nginx 卷改名)→ 删除重建(acme 状态卷独立,重建不丢账户/域配置)。
-func (s *service) ensureEngineAt(ctx context.Context, serverID, nginxVolume string) error {
+// ensureEngineAt 幂等地在网关主机上安装/更新 acme.sh 脚本集并校验运行期依赖:
+// 建目录 → 覆盖复制嵌入文件(逐个 Upload)→ chmod → 探测 curl/openssl(缺 → ErrAcmeshStart)。
+func (s *service) ensureEngineAt(ctx context.Context, serverID string) error {
 	if s.tg == nil {
 		return ErrAcmeshStart
 	}
-	insp, err := s.tg.Exec(ctx, serverID, []string{
-		"docker", "inspect", acmeContainer, "--format", "{{.State.Running}}|{{range .Mounts}}{{.Name}}:{{.Destination}} {{end}}",
-	})
-	if err != nil {
+	if res, err := s.tg.Exec(ctx, serverID, []string{"mkdir", "-p", acmeHomeDir + "/dnsapi"}); err != nil {
 		return err
+	} else if res.ExitCode != 0 {
+		return fmt.Errorf("%w:无法创建 %s(请确认 SSH 用户有权限;通常需要 root 或先 sudo mkdir 并授权)%s",
+			ErrAcmeshStart, acmeHomeDir, strings.TrimSpace(firstNonEmpty(res.Stderr, res.Stdout)))
 	}
-	if insp.ExitCode == 0 {
-		line := strings.TrimSpace(insp.Stdout)
-		running := strings.HasPrefix(line, "true|")
-		mounts := ""
-		if i := strings.IndexByte(line, '|'); i >= 0 {
-			mounts = line[i+1:]
+	// 逐文件安装:无条件覆盖上传(内容确定性、幂等;fork 升级 = 换嵌入文件重编译后,
+	// 任何一次签发/显式部署都会把新脚本同步到网关,无版本漂移)。
+	for _, f := range acmeshFiles {
+		content, rerr := acmeshFS.ReadFile(f.src)
+		if rerr != nil {
+			return fmt.Errorf("%w:嵌入文件缺失 %s", ErrAcmeshStart, f.src)
 		}
-		wantShared := nginxVolume + ":" + acmeSharedMount
-		wantState := acmeStateVolume + ":" + acmeStateMount
-		if running && strings.Contains(" "+mounts, " "+wantShared+" ") && strings.Contains(" "+mounts, " "+wantState+" ") {
-			return nil
-		}
-		if !running {
-			if st, serr := s.tg.Exec(ctx, serverID, []string{"docker", "start", acmeContainer}); serr == nil && st.ExitCode == 0 {
-				return nil
-			}
-			// start 失败(如卷缺失的僵尸容器)→ 落到删除重建。
-		}
-		if rm, rerr := s.tg.Exec(ctx, serverID, []string{"docker", "rm", "-f", acmeContainer}); rerr != nil {
-			return rerr
-		} else if rm.ExitCode != 0 {
-			return fmt.Errorf("%w:%s", ErrAcmeshStart, strings.TrimSpace(firstNonEmpty(rm.Stderr, rm.Stdout)))
+		if err := s.tg.Upload(ctx, serverID, strings.NewReader(string(content)), f.dest); err != nil {
+			return fmt.Errorf("%w:复制 %s 到网关主机失败:%v", ErrAcmeshStart, f.src, err)
 		}
 	}
-	return s.runAcmeshContainer(ctx, serverID, nginxVolume)
+	if res, err := s.tg.Exec(ctx, serverID, []string{"chmod", "700", acmeScript}); err != nil {
+		return err
+	} else if res.ExitCode != 0 {
+		return fmt.Errorf("%w:%s", ErrAcmeshStart, strings.TrimSpace(firstNonEmpty(res.Stderr, res.Stdout)))
+	}
+	return s.ensureDeps(ctx, serverID)
 }
 
-// runAcmeshContainer 起签发引擎容器(array 不拼 shell)。命令 sleep infinity:
-// 不带 cron —— 平台是唯一续期驱动(单一控制面,续期记录 UI 可见)。
-func (s *service) runAcmeshContainer(ctx context.Context, serverID, nginxVolume string) error {
-	image := acmeshImageRef()
-	// best-effort pull(离线/已缓存场景交由 docker run 决断)。
-	if _, perr := s.tg.Exec(ctx, serverID, []string{"docker", "pull", image}); perr != nil {
-		return perr
-	}
-	res, err := s.tg.Exec(ctx, serverID, []string{
-		"docker", "run", "-d",
-		"--name", acmeContainer,
-		"--restart", "unless-stopped",
-		"-v", nginxVolume + ":" + acmeSharedMount,
-		"-v", acmeStateVolume + ":" + acmeStateMount,
-		image,
-		"sleep", "infinity",
-	})
+// ensureDeps 探测系统 curl + openssl(acme.sh 唯一的运行期依赖),缺失给人话错误。
+func (s *service) ensureDeps(ctx context.Context, serverID string) error {
+	res, err := s.tg.Exec(ctx, serverID, []string{"sh", "-c", depsProbe})
 	if err != nil {
 		return err
 	}
 	if res.ExitCode != 0 {
-		return fmt.Errorf("%w:%s", ErrAcmeshStart, strings.TrimSpace(firstNonEmpty(res.Stderr, res.Stdout)))
+		return fmt.Errorf("%w:网关主机缺少 curl 或 openssl(DNS-01 签发需要,请先安装)", ErrAcmeshStart)
 	}
 	return nil
 }
 
-// inspectEngine 探测引擎状态(网关未配置 → Configured:false,非错误;容器缺失非错误)。
+// inspectEngine 探测引擎状态(单次 SSH,固定常量脚本):脚本就位?依赖就绪?版本号?
+// 网关未配置主机 → Configured:false(非错误);探测传输错误才返回 error。
 func (s *service) inspectEngine(ctx context.Context) (*EngineStatus, error) {
 	out := &EngineStatus{}
 	if s.gw == nil {
 		return out, nil
 	}
-	serverID, _, ok, err := s.gw.Gateway(ctx)
+	serverID, ok, err := s.gw.Gateway(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -230,43 +126,85 @@ func (s *service) inspectEngine(ctx context.Context) (*EngineStatus, error) {
 	if s.tg == nil {
 		return out, nil
 	}
-	insp, err := s.tg.Exec(ctx, serverID, []string{
-		"docker", "inspect", acmeContainer, "--format", "{{.State.Running}}|{{.Config.Image}}",
-	})
+	probe := `if [ -f ` + acmeScript + ` ]; then echo PW_INSTALLED=1; else echo PW_INSTALLED=0; fi; ` +
+		`if ` + depsProbe + `; then echo PW_READY=1; else echo PW_READY=0; fi; ` +
+		`sh ` + acmeScript + ` --version 2>/dev/null | tail -1 || true`
+	res, err := s.tg.Exec(ctx, serverID, []string{"sh", "-c", probe})
 	if err != nil {
 		return nil, err
 	}
-	if insp.ExitCode != 0 {
-		return out, nil // 容器不存在:Installed=false
+	if res.ExitCode != 0 {
+		return out, nil // 探测失败按未部署处理,不阻断页面
 	}
-	out.Installed = true
-	line := strings.TrimSpace(insp.Stdout)
-	if i := strings.IndexByte(line, '|'); i >= 0 {
-		out.Running = strings.EqualFold(strings.TrimSpace(line[:i]), "true")
-		out.Image = strings.TrimSpace(line[i+1:])
+	for _, line := range strings.Split(res.Stdout, "\n") {
+		line = strings.TrimSpace(line)
+		switch {
+		case line == "PW_INSTALLED=1":
+			out.Installed = true
+		case line == "PW_READY=1":
+			out.Ready = true
+		case line != "" && !strings.HasPrefix(line, "PW_") && out.Version == "":
+			out.Version = truncate(line, 64) // acme.sh --version 的末行(如 v3.1.1)
+		}
 	}
 	return out, nil
 }
 
+// ---------- 一次性脚本构造(纯函数,golden 可测) ----------
+
+// runOp 是脚本要执行的 acme.sh 主操作。
+type runOp string
+
+const (
+	issueOp runOp = "issue"
+	renewOp runOp = "renew"
+)
+
+// buildRunScript 生成一次性执行脚本:export DNS 凭据(单引号转义)→ acme.sh --issue/--renew。
+//
+// 注入面分析(与 servicereg 固定自举脚本同一例外纪律):
+//   - 域名/CA/密钥类型:领域层白名单校验过(FQDN/通配符正则 + 枚举),再经 shQuote 单引号包裹;
+//   - DNS 凭据:任意字节,仅经 shQuote POSIX 单引号转义(' → '\''),不进命令行、不落日志;
+//   - 其余内容全为包内常量路径。
+func buildRunScript(op runOp, c *Certificate, dnsAPI string, dnsEnv [][2]string) string {
+	var b strings.Builder
+	b.WriteString("#!/bin/sh\nset -e\n")
+	for _, kv := range dnsEnv {
+		b.WriteString("export " + kv[0] + "=" + shQuote(kv[1]) + "\n")
+	}
+	b.WriteString(acmeScript + " --home " + shQuote(acmeHomeDir) + " --" + string(op))
+	if op == issueOp {
+		b.WriteString(" --dns " + dnsAPI)
+		for _, d := range c.Domains {
+			b.WriteString(" -d " + shQuote(d))
+		}
+		b.WriteString(" --keylength " + c.KeyType)
+		b.WriteString(" --server " + shQuote(caServerURL[c.CA]))
+	} else {
+		// 续期:域配置(含 --dns/--keylength/--server)已持久化在 home 下,
+		// 仅需凭据 + --force(是否重签由平台续期窗口决定,不让 acme.sh 自己判断)。
+		b.WriteString(" -d " + shQuote(c.PrimaryDomain) + " --force")
+	}
+	b.WriteString("\n")
+	return b.String()
+}
+
+// shQuote 返回 POSIX 单引号包裹的字面量(' → '\''),任意字节安全。
+func shQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
 // ---------- 脚本执行 / 回读 / 移除 ----------
 
-// execScriptAt 上传一次性脚本到宿主 → docker cp 进容器 → sh 执行 → 双端删除。
-// 凭据只经 Upload 通道与脚本文件存在,绝不进命令行/日志。
+// execScriptAt 上传一次性脚本到网关主机 /tmp → sh 执行 → 删除。
+// 凭据只经 Upload 通道与脚本文件短暂存在,绝不进命令行/日志。
 func (s *service) execScriptAt(ctx context.Context, serverID, id, script string) error {
 	hostTmp := acmeHostScriptPrefix + id + ".sh"
 	if err := s.tg.Upload(ctx, serverID, strings.NewReader(script), hostTmp); err != nil {
 		return err
 	}
 	defer func() { _, _ = s.tg.Exec(context.Background(), serverID, []string{"rm", "-f", hostTmp}) }()
-	if res, err := s.tg.Exec(ctx, serverID, []string{"docker", "cp", hostTmp, acmeContainer + ":" + acmeScriptPath}); err != nil {
-		return err
-	} else if res.ExitCode != 0 {
-		return fmt.Errorf("%w:%s", ErrIssue, strings.TrimSpace(firstNonEmpty(res.Stderr, res.Stdout)))
-	}
-	defer func() {
-		_, _ = s.tg.Exec(context.Background(), serverID, []string{"docker", "exec", acmeContainer, "rm", "-f", acmeScriptPath})
-	}()
-	res, err := s.tg.Exec(ctx, serverID, []string{"docker", "exec", acmeContainer, "sh", acmeScriptPath})
+	res, err := s.tg.Exec(ctx, serverID, []string{"sh", hostTmp})
 	if err != nil {
 		return err
 	}
@@ -276,18 +214,18 @@ func (s *service) execScriptAt(ctx context.Context, serverID, id, script string)
 	return nil
 }
 
-// readBackCert 从 acme.sh 状态卷读回签发产物(fullchain.cer + <primary>.key)。
+// readBackCert 从 acme.sh home 读回签发产物(fullchain.cer + <primary>.key)。
 // 路径参数经 target.Exec 单引号转义,含 '*' 的通配符主域是字面量,无 glob 展开。
 func (s *service) readBackCert(ctx context.Context, serverID, primary string) (string, string, error) {
-	dir := acmeStateMount + "/" + primary
-	certRes, err := s.tg.Exec(ctx, serverID, []string{"docker", "exec", acmeContainer, "cat", dir + "/fullchain.cer"})
+	dir := acmeHomeDir + "/" + primary
+	certRes, err := s.tg.Exec(ctx, serverID, []string{"cat", dir + "/fullchain.cer"})
 	if err != nil {
 		return "", "", err
 	}
 	if certRes.ExitCode != 0 {
 		return "", "", fmt.Errorf("%w:%s", ErrReadBack, strings.TrimSpace(firstNonEmpty(certRes.Stderr, certRes.Stdout)))
 	}
-	keyRes, err := s.tg.Exec(ctx, serverID, []string{"docker", "exec", acmeContainer, "cat", dir + "/" + primary + ".key"})
+	keyRes, err := s.tg.Exec(ctx, serverID, []string{"cat", dir + "/" + primary + ".key"})
 	if err != nil {
 		return "", "", err
 	}
@@ -301,17 +239,17 @@ func (s *service) readBackCert(ctx context.Context, serverID, primary string) (s
 	return certPEM, keyPEM, nil
 }
 
-// removeFromAcmesh best-effort 从 acme.sh 续期清单移除域名(不向 CA revoke;容器不在也静默)。
+// removeFromAcmesh best-effort 从 acme.sh 续期清单移除域名(不向 CA revoke;脚本未安装也静默)。
 func (s *service) removeFromAcmesh(ctx context.Context, c *Certificate) {
 	if s.gw == nil {
 		return
 	}
-	serverID, _, ok, err := s.gw.Gateway(ctx)
+	serverID, ok, err := s.gw.Gateway(ctx)
 	if err != nil || !ok || serverID == "" || s.tg == nil {
 		return
 	}
 	_, _ = s.tg.Exec(ctx, serverID, []string{
-		"docker", "exec", acmeContainer, "acme.sh", "--remove", "-d", c.PrimaryDomain,
+		acmeScript, "--home", acmeHomeDir, "--remove", "-d", c.PrimaryDomain,
 	})
 }
 

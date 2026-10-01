@@ -10,6 +10,7 @@ export default {
   navHttps: 'HTTPS 存取',
   navAccount: '帳戶',
   navServers: '伺服器',
+  navRegistry: '鏡像倉庫',
   navDiagnosisStats: '診斷回饋',
   navSystem: '系統',
 }

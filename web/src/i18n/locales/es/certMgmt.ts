@@ -16,8 +16,8 @@ export default {
 
   engine: {
     title: 'Motor de firma (acme.sh)',
-    running: 'En ejecución',
-    stopped: 'Detenido',
+    ready: 'Listo',
+    missingDeps: 'Faltan dependencias',
     notInstalled: 'Sin desplegar',
     unconfigured: 'Pasarela sin configurar',
     host: 'Host de la pasarela',

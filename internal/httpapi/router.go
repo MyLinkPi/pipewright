@@ -114,6 +114,7 @@ type options struct {
 	systemConfig     systemcfg.Service
 	appStore         appstore.Service
 	serverCmds       *servercmd.Service
+	registryHub      registryHubService
 }
 
 // WithArtifactStore 注入制品库(Story 8-16):挂载产物下载端点
@@ -283,6 +284,13 @@ func WithAISettings(s ai.Service) Option {
 	return func(o *options) { o.aiSettings = s }
 }
 
+// WithRegistryHub 注入内置本地 registry 服务(registryhub),挂载 /api/settings/registry*
+// 与 /api/registry/* 路由(读写/部署/状态/清理/daemon.json 手动下发)。不传则相关端点 503。
+// PUT 只写库;触碰机器的 deploy/daemon-apply/prune 均为显式 POST(认证 + CSRF + 审计)。
+func WithRegistryHub(s registryHubService) Option {
+	return func(o *options) { o.registryHub = s }
+}
+
 // WithAIGenerate 注入仓库分析器(go-git 浅克隆),挂载 /api/projects/{id}/pipeline/ai-generate
 // 与 ai-apply 路由(Story 2.5)。generate 复用已注入的 ai.Service + projects + vault;
 // apply 复用 pipelines + pipelineSettings + triggers。analyzer 为 nil 时 generate 返回 503。
@@ -352,7 +360,7 @@ func WithRetention(s *retention.Service) Option {
 
 // WithCertMgmt 注入证书管理服务(acme.sh 自动签发/续期 + 手动导入),挂载 /api/certmgmt/* 路由
 // (GET auth;写方法 auth + CSRF + 审计;create 为异步签发,201 立即返回 pending 行)。
-// 签发引擎(acme.sh 容器)运行在服务注册网关主机上,经已注入的 target.Service 编排。
+// 签发引擎(acme.sh 宿主机脚本)运行在服务注册网关主机上,经已注入的 target.Service 编排。
 // 不传则相关端点返回 503(服务未初始化)。
 func WithCertMgmt(s certmgmt.Service) Option {
 	return func(o *options) { o.certMgmt = s }
@@ -667,6 +675,18 @@ func New(webFS fs.FS, authn auth.Authenticator, opts ...Option) http.Handler {
 		ar.Put("/settings/ai", makeSaveAISettingsHandler(aiSvc))
 		ar.Post("/settings/ai/test", makeTestAISettingsHandler(aiSvc))
 
+		// 内置本地 registry(registryhub)。rh 为 nil 时各端点 503。GET 过 auth;
+		// PUT(只写库,不触碰机器)与 deploy/prune/daemon-apply(显式触碰机器)过 auth + CSRF;
+		// daemon-apply **只处理请求里显式勾选的目标**;机器层失败一律 200 + ok:false,不 500。
+		rh := o.registryHub
+		ar.Get("/settings/registry", makeGetRegistryHubHandler(rh))
+		ar.Put("/settings/registry", makeSaveRegistryHubHandler(rh))
+		ar.Post("/settings/registry/deploy", makeDeployRegistryHandler(rh, aud))
+		ar.Get("/settings/registry/status", makeRegistryStatusHandler(rh))
+		ar.Post("/settings/registry/prune", makeRegistryPruneHandler(rh, aud))
+		ar.Post("/registry/daemon-apply", makeDaemonApplyHandler(rh, aud))
+		ar.Get("/registry/inspect", makeDaemonInspectHandler(rh))
+
 		// 诊断反馈闭环统计(Story 7.5;FR-26):准确率/计数/最近趋势/最近 corrections(知识库种子可视化)。
 		// 只读 + 认证;无反馈 → 全 0 / 空数组 / accuracy:null(不报错)。fb 为 nil → 503。
 		ar.Get("/settings/diagnosis-stats", makeDiagnosisStatsHandler(o.feedback))
@@ -876,8 +896,8 @@ func New(webFS fs.FS, authn auth.Authenticator, opts ...Option) http.Handler {
 		ar.Post("/servicereg/instances/{id}/attached", makeSetServiceRegInstanceAttachedHandler(sr, aud))
 		ar.Post("/servicereg/apply", makeApplyServiceRegHandler(sr, aud))
 
-		// 证书管理(certmgmt):acme.sh 自动签发/续期(DNS-01)+ 手动导入;签发引擎容器运行在
-		// 网关主机上。cm 为 nil → handler 返回 503。GET 过 auth;写方法过 auth + CSRF + 审计。
+		// 证书管理(certmgmt):acme.sh 自动签发/续期(DNS-01)+ 手动导入;签发引擎(宿主机脚本)
+		// 运行在网关主机上。cm 为 nil → handler 返回 503。GET 过 auth;写方法过 auth + CSRF + 审计。
 		// create 201 立即返回 pending 行(异步签发,前端轮询);renew/{id} 多一段,不会被吞。
 		cm := o.certMgmt
 		ar.Get("/certmgmt/certs", makeListCertsHandler(cm))
@@ -887,7 +907,7 @@ func New(webFS fs.FS, authn auth.Authenticator, opts ...Option) http.Handler {
 		ar.Post("/certmgmt/certs/{id}/renew", makeRenewCertHandler(cm, aud))
 		ar.Post("/certmgmt/certs/{id}/auto-renew", makeSetCertAutoRenewHandler(cm, aud))
 		ar.Delete("/certmgmt/certs/{id}", makeDeleteCertHandler(cm, aud))
-		// 签发引擎(acme.sh 容器):GET 探测状态(auth);POST 显式部署(auth + CSRF + 审计)。
+		// 签发引擎(acme.sh 宿主机脚本):GET 探测状态(auth);POST 显式部署/更新(auth + CSRF + 审计)。
 		ar.Get("/certmgmt/engine", makeGetCertEngineHandler(cm))
 		ar.Post("/certmgmt/engine/deploy", makeDeployCertEngineHandler(cm, aud))
 

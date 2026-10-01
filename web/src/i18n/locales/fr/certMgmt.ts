@@ -16,8 +16,8 @@ export default {
 
   engine: {
     title: 'Moteur de signature (acme.sh)',
-    running: 'En cours d\'exécution',
-    stopped: 'Arrêté',
+    ready: 'Prêt',
+    missingDeps: 'Dépendances manquantes',
     notInstalled: 'Non déployé',
     unconfigured: 'Passerelle non configurée',
     host: 'Hôte passerelle',

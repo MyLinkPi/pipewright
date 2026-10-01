@@ -16,8 +16,8 @@ export default {
 
   engine: {
     title: '簽發引擎(acme.sh)',
-    running: '運行中',
-    stopped: '已停止',
+    ready: '已就緒',
+    missingDeps: '缺少相依套件',
     notInstalled: '未部署',
     unconfigured: '閘道未設定',
     host: '閘道主機',

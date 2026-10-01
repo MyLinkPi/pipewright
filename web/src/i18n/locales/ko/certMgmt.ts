@@ -16,8 +16,8 @@ export default {
 
   engine: {
     title: '발급 엔진(acme.sh)',
-    running: '실행 중',
-    stopped: '중지됨',
+    ready: '준비됨',
+    missingDeps: '의존성 부족',
     notInstalled: '미배치',
     unconfigured: '게이트웨이 미설정',
     host: '게이트웨이 호스트',

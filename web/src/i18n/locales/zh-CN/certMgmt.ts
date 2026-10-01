@@ -18,8 +18,8 @@ export default {
   // 引擎卡
   engine: {
     title: '签发引擎(acme.sh)',
-    running: '运行中',
-    stopped: '已停止',
+    ready: '已就绪',
+    missingDeps: '缺少依赖',
     notInstalled: '未部署',
     unconfigured: '网关未配置',
     host: '网关主机',

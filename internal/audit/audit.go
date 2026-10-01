@@ -63,20 +63,25 @@ const (
 	ActionCustomNodeCreate = "custom_node_create"
 	ActionCustomNodeUpdate = "custom_node_update"
 	ActionCustomNodeDelete = "custom_node_delete"
+	// 内置本地 registry(registryhub):栈部署/更新、daemon.json 手动勾选下发、镜像保留清理。
+	ActionRegistryDeploy      = "registry_deploy"
+	ActionRegistryDaemonApply = "registry_daemon_apply"
+	ActionRegistryPrune       = "registry_prune"
 )
 
 // 目标类型枚举(供 TargetType 填值;非强制白名单,便于后续 story 扩展)。
 const (
-	TargetCredential = "credential"
-	TargetProject    = "project"
-	TargetTrigger    = "trigger"
-	TargetRun        = "run"
-	TargetAccount    = "account"
-	TargetSession    = "session"
-	TargetServer     = "server"
-	TargetTemplate   = "template"
-	TargetVarGroup   = "variable_group"
-	TargetCustomNode = "custom_node"
+	TargetCredential  = "credential"
+	TargetProject     = "project"
+	TargetTrigger     = "trigger"
+	TargetRun         = "run"
+	TargetAccount     = "account"
+	TargetSession     = "session"
+	TargetServer      = "server"
+	TargetTemplate    = "template"
+	TargetVarGroup    = "variable_group"
+	TargetCustomNode  = "custom_node"
+	TargetRegistryHub = "registry_hub"
 )
 
 // Entry 是一条审计写入入参(冻结契约)。Detail 写库前过 Masker,绝不含明文 secret。

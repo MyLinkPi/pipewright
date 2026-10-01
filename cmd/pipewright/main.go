@@ -48,6 +48,7 @@ import (
 	"github.com/huangchengsir/pipewright/internal/project"
 	"github.com/huangchengsir/pipewright/internal/promotion"
 	"github.com/huangchengsir/pipewright/internal/prstatus"
+	"github.com/huangchengsir/pipewright/internal/registryhub"
 	"github.com/huangchengsir/pipewright/internal/repocache"
 	"github.com/huangchengsir/pipewright/internal/retention"
 	"github.com/huangchengsir/pipewright/internal/run"
@@ -272,6 +273,11 @@ func main() {
 	// 传工作区 → 远程容器跑;token 只在控制机)。每机并发槽位默认 1,PIPEWRIGHT_RUNNER_SLOTS
 	// 调全局默认,单机可用 servers.max_builds 覆盖(设置界面)。
 	targetSvc := target.New(st.DB, credVault, nil)
+	// 内置本地 registry(registryhub):控制机本机双服务 registry 栈(制品 + pull-through 缓存)、
+	// daemon.json 手动勾选下发、镜像 tag 保留清理。复用 targetSvc(远程机 SSH 通道);未启用时
+	// 构建/部署完全保持旧行为(本地 tag 不推送)。构建接入经 builtinRegistryOpt 注入 Builder。
+	registryHubSvc := registryhub.New(st.DB, targetSvc, registryhub.Options{})
+	builtinRegistryOpt := build.WithBuiltinRegistry(registryHubSvc.ResolveBuiltin)
 	// 批量执行命令(服务器状态页 → 勾选多机 → 同步执行 + 历史回看):复用 targetSvc 的
 	// SSH 执行层逐机并发跑 sh -c,结果落本地库保最近 200 次;每次尝试写审计。
 	serverCmdSvc := servercmd.New(st.DB, targetSvc)
@@ -375,7 +381,7 @@ func main() {
 	// DAG 模式探测不到容器 CLI(docker)时优雅回退 stub(现有逻辑,NFR-10)。
 	var runnerOpts []run.PoolOption
 	if strings.EqualFold(strings.TrimSpace(os.Getenv("PIPEWRIGHT_RUNNER")), "legacy") {
-		runnerOpts = buildRunnerOption(projectSvc, pipelineSettingsSvc, credVault, artStore, repoCache)
+		runnerOpts = buildRunnerOption(projectSvc, pipelineSettingsSvc, credVault, artStore, repoCache, builtinRegistryOpt)
 		log.Printf("[run] PIPEWRIGHT_RUNNER=legacy:旧版固定流程运行器已启用(clone→对仓库根 docker build→deploy,⚠ 不执行 UI 可视化流水线 stages;如需真按流水线跑请去掉该 env)")
 	} else {
 		// 阶段执行体(Story 8-2):探测到容器 CLI → 注入真实阶段执行器(script 类型 job 在隔离
@@ -386,7 +392,7 @@ func main() {
 		// 门行为不变;运行时可改)。
 		approvalNotifier := httpapi.NewApprovalNotifier(notifySvc, approvalSigner, publicURLResolver, runSvc)
 		dagOpts = append(dagOpts, dagrun.WithGate(httpapi.NewApprovalGate(runSvc, approvalCoord, approvalStore, approvalNotifier)))
-		builderOpts := []build.BuilderOption{build.WithArtifactStore(artStore), build.WithArtifactLister(runSvc.ListArtifacts), build.WithImageGC(os.Getenv("PIPEWRIGHT_NO_IMAGE_GC") != "1"), build.WithCommitRecorder(func(ctx context.Context, runID, commit string) { _ = runSvc.SetCommit(ctx, runID, commit) }), build.WithStageDeployer(deploySvc), build.WithStageNotifier(notifySvc), clonerOpt, buildCacheOpt}
+		builderOpts := []build.BuilderOption{build.WithArtifactStore(artStore), build.WithArtifactLister(runSvc.ListArtifacts), build.WithImageGC(os.Getenv("PIPEWRIGHT_NO_IMAGE_GC") != "1"), build.WithCommitRecorder(func(ctx context.Context, runID, commit string) { _ = runSvc.SetCommit(ctx, runID, commit) }), build.WithStageDeployer(deploySvc), build.WithStageNotifier(notifySvc), clonerOpt, buildCacheOpt, builtinRegistryOpt}
 		b, berr := build.NewBuilder(projectSvc, pipelineSettingsSvc, credVault, builderOpts...)
 		if berr != nil && errors.Is(berr, build.ErrNoContainerCLI) {
 			// 瘦控制机(FR-8-19):本机无容器 CLI 不再整体回退 stub——改用 errDriver 构造 Builder,
@@ -433,8 +439,8 @@ func main() {
 	// 与证书管理互引经适配器在装配后晚绑,无 init 副作用、无新顶层依赖。
 	dnsSvc := dnsprovider.New(st.DB, credVault)
 
-	// 证书管理(acme.sh 自动签发/续期,DNS-01):凭据/根区复用 dnsSvc;签发引擎容器跑在
-	// 服务注册网关主机上(共享 nginx 卷);签发结果经 CertSink 同步基域(内部 apply + reload)。
+	// 证书管理(acme.sh 自动签发/续期,DNS-01):凭据/根区复用 dnsSvc;签发引擎以宿主机脚本
+	// 跑在服务注册网关主机上;签发结果读回入库后经 CertSink 同步基域(内部 apply + reload)。
 	certSvc := certmgmt.New(st.DB, targetSvc, credVault)
 	if cfg, ok := certSvc.(interface {
 		SetCredentialsResolver(certmgmt.CredentialsResolver)
@@ -573,6 +579,12 @@ func main() {
 	retentionSweeper.Start(context.Background())
 	log.Printf("[retention] 保留清理器已启动(每小时一扫;策略默认关,需在设置开启)")
 
+	// 内置 registry 镜像保留清理器:按 registry_hub_config 策略(每仓库保留最近 N tag / 超龄删除)
+	// 每日裁剪制品 registry 并触发 gc。默认策略不限(不删);需在「设置 → 镜像仓库」配置后生效。
+	registryHubSweeper := registryhub.NewSweeper(registryHubSvc, 24*time.Hour)
+	registryHubSweeper.Start(context.Background())
+	log.Printf("[registryhub] 镜像保留清理器已启动(每日一扫;策略默认不限,需在设置配置)")
+
 	// 证书自动续期调度器:按固定间隔扫描证书,对「ACME + 自动续期 + 到期 <30 天 + 非进行中 +
 	// 距上次尝试 >24h」的证书触发续期(acme.sh --renew --force,在网关主机上执行;每次续期在
 	// 证书管理页可见)。间隔经 PIPEWRIGHT_CERT_SWEEP_INTERVAL 覆盖(Go duration;默认 1h;0 关闭)。
@@ -667,7 +679,7 @@ func main() {
 
 	srv := &http.Server{
 		Addr:              cfg.Addr,
-		Handler:           httpapi.New(webFS, authSvc, httpapi.WithVault(credVault), httpapi.WithProjects(projectSvc), httpapi.WithTriggers(triggerSvc), httpapi.WithPipelines(pipelineSvc), httpapi.WithPipelineSettings(pipelineSettingsSvc), httpapi.WithRuns(runSvc, pool), httpapi.WithWebhooks(webhookReceiver), httpapi.WithAudit(auditRec), httpapi.WithAccount(authSvc), httpapi.WithAISettings(aiSvc), httpapi.WithAIGenerate(repoAnalyzer), httpapi.WithRunDiff(runDiffer), httpapi.WithSource(sourceReader), httpapi.WithRefs(refsLister), httpapi.WithArtifactStore(artStore), httpapi.WithServers(targetSvc), httpapi.WithServerCommands(serverCmdSvc), httpapi.WithRunnerConfig(runnerSvc), httpapi.WithDeploy(deploySvc), httpapi.WithNotifications(notifySvc), httpapi.WithRetention(retentionSvc), httpapi.WithDNSProviders(dnsSvc), httpapi.WithCertMgmt(certSvc), httpapi.WithPlatformHTTPS(platformHTTPSSvc), httpapi.WithSystemConfig(sysCfgSvc), httpapi.WithPreviewEnvs(previewSvc), httpapi.WithServiceReg(serviceRegSvc), httpapi.WithAppStore(appStoreSvc), httpapi.WithDiagnosisFeedback(feedbackSvc), httpapi.WithAnomaly(anomalySvc), httpapi.WithAnomalyConfig(int(anomalyInterval.Seconds()), int(anomalyCooldown.Seconds())), httpapi.WithMetricsHistory(metricsHist), httpapi.WithSecretSource(secretSrc), httpapi.WithOAuth(oauthSvc), httpapi.WithCron(cronSvc), httpapi.WithChain(chainSvc), httpapi.WithApprovals(approvalCoord, approvalStore), httpapi.WithApprovalLinks(approvalSigner), httpapi.WithConcurrency(concurrencySvc), httpapi.WithParameters(parameterSvc), httpapi.WithPromotion(promotionStore), httpapi.WithEnvironments(environmentsSvc), httpapi.WithDoraMetrics(doraMetricsSvc), httpapi.WithTemplates(templateSvc), httpapi.WithVariableGroups(varGroupSvc), httpapi.WithCustomNodes(customNodeSvc)),
+		Handler:           httpapi.New(webFS, authSvc, httpapi.WithVault(credVault), httpapi.WithProjects(projectSvc), httpapi.WithTriggers(triggerSvc), httpapi.WithPipelines(pipelineSvc), httpapi.WithPipelineSettings(pipelineSettingsSvc), httpapi.WithRuns(runSvc, pool), httpapi.WithWebhooks(webhookReceiver), httpapi.WithAudit(auditRec), httpapi.WithAccount(authSvc), httpapi.WithAISettings(aiSvc), httpapi.WithAIGenerate(repoAnalyzer), httpapi.WithRunDiff(runDiffer), httpapi.WithSource(sourceReader), httpapi.WithRefs(refsLister), httpapi.WithArtifactStore(artStore), httpapi.WithServers(targetSvc), httpapi.WithServerCommands(serverCmdSvc), httpapi.WithRegistryHub(registryHubSvc), httpapi.WithRunnerConfig(runnerSvc), httpapi.WithDeploy(deploySvc), httpapi.WithNotifications(notifySvc), httpapi.WithRetention(retentionSvc), httpapi.WithDNSProviders(dnsSvc), httpapi.WithCertMgmt(certSvc), httpapi.WithPlatformHTTPS(platformHTTPSSvc), httpapi.WithSystemConfig(sysCfgSvc), httpapi.WithPreviewEnvs(previewSvc), httpapi.WithServiceReg(serviceRegSvc), httpapi.WithAppStore(appStoreSvc), httpapi.WithDiagnosisFeedback(feedbackSvc), httpapi.WithAnomaly(anomalySvc), httpapi.WithAnomalyConfig(int(anomalyInterval.Seconds()), int(anomalyCooldown.Seconds())), httpapi.WithMetricsHistory(metricsHist), httpapi.WithSecretSource(secretSrc), httpapi.WithOAuth(oauthSvc), httpapi.WithCron(cronSvc), httpapi.WithChain(chainSvc), httpapi.WithApprovals(approvalCoord, approvalStore), httpapi.WithApprovalLinks(approvalSigner), httpapi.WithConcurrency(concurrencySvc), httpapi.WithParameters(parameterSvc), httpapi.WithPromotion(promotionStore), httpapi.WithEnvironments(environmentsSvc), httpapi.WithDoraMetrics(doraMetricsSvc), httpapi.WithTemplates(templateSvc), httpapi.WithVariableGroups(varGroupSvc), httpapi.WithCustomNodes(customNodeSvc)),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		// WriteTimeout 置 0:SSE 长连接(/api/runs/{id}/events)不可被写超时切断;
@@ -752,6 +764,7 @@ func main() {
 	// HTTP 停机后停 worker pool:取消在途运行执行,等 worker 退出(随 shutdownCtx 超时)。
 	cronScheduler.Stop()
 	retentionSweeper.Stop()
+	registryHubSweeper.Stop()
 	previewSweeper.Stop()
 	pool.Stop(shutdownCtx)
 	log.Printf("[run] worker pool stopped")
@@ -832,7 +845,7 @@ func (l pacSpecLoader) Get(ctx context.Context, projectID, branch string) (*pipe
 //   - 其它/缺省 auto:尝试构造真实 Builder,探测不到容器 CLI 时回退桩(优雅降级,NFR-10)。
 //
 // 返回 []run.PoolOption(可能为空):空 ⇒ 用 pool 默认 StubRunner。
-func buildRunnerOption(projectSvc project.Service, settingsSvc pipeline.SettingsService, v vault.Vault, artStore *artifactstore.Store, repoCache *repocache.Cache) []run.PoolOption {
+func buildRunnerOption(projectSvc project.Service, settingsSvc pipeline.SettingsService, v vault.Vault, artStore *artifactstore.Store, repoCache *repocache.Cache, extraOpts ...build.BuilderOption) []run.PoolOption {
 	clonerOpt := func(*build.Builder) {}
 	if repoCache != nil {
 		clonerOpt = build.WithCloner(repoCache)
@@ -843,14 +856,14 @@ func buildRunnerOption(projectSvc project.Service, settingsSvc pipeline.Settings
 		log.Printf("[build] PIPEWRIGHT_BUILDER=stub:使用桩 runner(合成日志,不碰容器)")
 		return nil
 	case "real":
-		b, err := build.NewBuilder(projectSvc, settingsSvc, v, build.WithArtifactStore(artStore), build.WithImageGC(os.Getenv("PIPEWRIGHT_NO_IMAGE_GC") != "1"), clonerOpt)
+		b, err := build.NewBuilder(projectSvc, settingsSvc, v, append([]build.BuilderOption{build.WithArtifactStore(artStore), build.WithImageGC(os.Getenv("PIPEWRIGHT_NO_IMAGE_GC") != "1"), clonerOpt}, extraOpts...)...)
 		if err != nil {
 			log.Fatalf("[build] PIPEWRIGHT_BUILDER=real 但构建器不可用:%v", err)
 		}
 		log.Printf("[build] 真实隔离构建器已启用(容器 CLI=%s)", b.DriverBinary())
 		return []run.PoolOption{run.WithRunner(b)}
 	default:
-		b, err := build.NewBuilder(projectSvc, settingsSvc, v, build.WithArtifactStore(artStore), build.WithImageGC(os.Getenv("PIPEWRIGHT_NO_IMAGE_GC") != "1"), clonerOpt)
+		b, err := build.NewBuilder(projectSvc, settingsSvc, v, append([]build.BuilderOption{build.WithArtifactStore(artStore), build.WithImageGC(os.Getenv("PIPEWRIGHT_NO_IMAGE_GC") != "1"), clonerOpt}, extraOpts...)...)
 		if err != nil {
 			log.Printf("[build] 未探测到容器 CLI(docker/nerdctl/podman),回退桩 runner(PIPEWRIGHT_BUILDER=real 可强制要求真实):%v", err)
 			return nil
@@ -952,16 +965,15 @@ func (a *previewAllocator) Allocate(ctx context.Context, in previewenv.AllocateI
 	return err
 }
 
-// certGatewayAdapter 适配 certmgmt.GatewayInfo:签发引擎(acme.sh 容器)跑在服务注册网关主机上,
-// 共享其 nginx 具名卷(install-cert 直写 /etc/pipewright/certs/<base>/)。
+// certGatewayAdapter 适配 certmgmt.GatewayInfo:acme.sh 以宿主机脚本方式跑在服务注册网关主机上。
 type certGatewayAdapter struct{ sr servicereg.Service }
 
-func (g *certGatewayAdapter) Gateway(ctx context.Context) (string, string, bool, error) {
+func (g *certGatewayAdapter) Gateway(ctx context.Context) (string, bool, error) {
 	st, err := g.sr.GetSettings(ctx)
 	if err != nil {
-		return "", "", false, err
+		return "", false, err
 	}
-	return st.ServerID, st.VolumeName, st.ServerID != "", nil
+	return st.ServerID, st.ServerID != "", nil
 }
 
 // platformCertSource 适配 platformhttps.CertSource:证书元数据/PEM 解密下沉 certmgmt

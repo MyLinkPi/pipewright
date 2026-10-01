@@ -16,8 +16,8 @@ export default {
 
   engine: {
     title: 'Signing-Engine (acme.sh)',
-    running: 'Läuft',
-    stopped: 'Gestoppt',
+    ready: 'Bereit',
+    missingDeps: 'Abhängigkeiten fehlen',
     notInstalled: 'Nicht bereitgestellt',
     unconfigured: 'Gateway nicht konfiguriert',
     host: 'Gateway-Host',

@@ -10,6 +10,7 @@ export default {
   navHttps: 'HTTPS',
   navAccount: 'Account',
   navServers: 'Servers',
+  navRegistry: 'Registry',
   navDiagnosisStats: 'Diagnosis Feedback',
   navSystem: 'System',
 }

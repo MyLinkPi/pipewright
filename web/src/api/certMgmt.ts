@@ -2,7 +2,7 @@
  * Certificate management (certmgmt) API client.
  *
  * 平台证书的统一生命周期:acme.sh 自动签发/续期(DNS-01,凭据复用 DNS 提供商集成)+
- * 手动导入;签发引擎(acme.sh 容器)跑在服务注册网关主机上,签好的证书自动同步到被
+ * 手动导入;签发引擎(acme.sh 宿主机脚本)跑在服务注册网关主机上,签好的证书自动同步到被
  * SAN 覆盖的基域(nginx 网关随即 nginx -t + reload)。DTO 绝不含 PEM/密文。
  *
  * GET    /api/certmgmt/certs                 → { items: Cert[] }
@@ -45,14 +45,14 @@ export interface Cert {
   updatedAt: string
 }
 
-/** 签发引擎(acme.sh 容器)状态。 */
+/** 签发引擎(网关主机上的 acme.sh 脚本集)状态。 */
 export interface CertEngine {
   configured: boolean
   serverId: string
   serverName: string
   installed: boolean
-  running: boolean
-  image: string
+  ready: boolean
+  version: string
 }
 
 /** 创建 ACME 证书入参(DNS-01:主域 + 附加 SAN + DNS 提供商)。 */

@@ -67,20 +67,20 @@ func toCertDTO(c certmgmt.Certificate) certDTO {
 	}
 }
 
-// certEngineDTO 是签发引擎(acme.sh 容器)状态对外响应体。
+// certEngineDTO 是签发引擎(网关主机上的 acme.sh 脚本集)状态对外响应体。
 type certEngineDTO struct {
 	Configured bool   `json:"configured"`
 	ServerID   string `json:"serverId"`
 	ServerName string `json:"serverName"`
 	Installed  bool   `json:"installed"`
-	Running    bool   `json:"running"`
-	Image      string `json:"image"`
+	Ready      bool   `json:"ready"`
+	Version    string `json:"version"`
 }
 
 func toCertEngineDTO(e *certmgmt.EngineStatus) certEngineDTO {
 	return certEngineDTO{
 		Configured: e.Configured, ServerID: e.ServerID, ServerName: e.ServerName,
-		Installed: e.Installed, Running: e.Running, Image: e.Image,
+		Installed: e.Installed, Ready: e.Ready, Version: e.Version,
 	}
 }
 
@@ -114,7 +114,7 @@ func writeCertMgmtError(w http.ResponseWriter, err error) {
 	case errors.Is(err, certmgmt.ErrNoGateway):
 		writeError(w, http.StatusBadRequest, "gateway_not_configured", "签发引擎运行在网关主机上,请先在「服务注册」里配置网关主机")
 	case errors.Is(err, certmgmt.ErrAcmeshStart):
-		writeError(w, http.StatusBadGateway, "cert_engine_start_failed", "启动 acme.sh 签发引擎容器失败,请确认网关主机已安装 docker 且有权限")
+		writeError(w, http.StatusBadGateway, "cert_engine_start_failed", "安装 acme.sh 签发引擎失败,请确认 SSH 用户对 /opt/pipewright 有写权限且网关主机已安装 curl + openssl")
 	case errors.Is(err, certmgmt.ErrIssue):
 		writeError(w, http.StatusBadGateway, "acme_failed", "acme.sh 签发/续期失败(详情见错误信息;也可在证书列表查看)")
 	case errors.Is(err, certmgmt.ErrReadBack):
@@ -323,7 +323,7 @@ func makeSetCertAutoRenewHandler(svc certmgmt.Service, aud audit.Recorder) http.
 
 // ---------- 签发引擎 ----------
 
-// makeGetCertEngineHandler 返回 GET /api/certmgmt/engine(acme.sh 容器状态)。
+// makeGetCertEngineHandler 返回 GET /api/certmgmt/engine(acme.sh 脚本集状态)。
 func makeGetCertEngineHandler(svc certmgmt.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if svc == nil {
@@ -339,7 +339,7 @@ func makeGetCertEngineHandler(svc certmgmt.Service) http.HandlerFunc {
 	}
 }
 
-// makeDeployCertEngineHandler 返回 POST /api/certmgmt/engine/deploy(显式部署 acme.sh 容器)。
+// makeDeployCertEngineHandler 返回 POST /api/certmgmt/engine/deploy(显式部署/更新 acme.sh 脚本集)。
 func makeDeployCertEngineHandler(svc certmgmt.Service, aud audit.Recorder) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if svc == nil {

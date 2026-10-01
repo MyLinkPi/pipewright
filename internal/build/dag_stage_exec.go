@@ -750,9 +750,10 @@ func (b *Builder) runBuildImageJob(ctx context.Context, sink run.StepSink, rep d
 		return nil
 	}
 
-	// 镜像产物 + 绑定了 registry → 推送并登记远端引用(与非-dag Builder 同语义)。
+	// 镜像产物 + 解析出 registry(环境绑定优先,未绑定回退内置 registry)→ 推送并登记远端引用
+	//(与非-dag Builder 同语义)。
 	if art.Type == run.ArtifactImage && localTag != "" {
-		registry := b.resolveRegistry(settings, envName)
+		registry := b.resolveRegistry(ctx, settings, envName)
 		switch {
 		case registry != nil:
 			remoteTag, digest, perr := b.push(ctx, sink, 0, localTag, registry, proj, commitTag)
@@ -771,7 +772,7 @@ func (b *Builder) runBuildImageJob(ctx context.Context, sink run.StepSink, rep d
 				art.Metadata["digest"] = digest
 			}
 		case hasPushJob:
-			_ = rep.Log(ctx, streamStdout, "配了 push_image 但环境未绑定镜像仓库(registry),镜像留本地;到「触发设置 → 环境」绑定仓库后即自动推送")
+			_ = rep.Log(ctx, streamStdout, "配了 push_image 但环境未绑定镜像仓库(registry)且内置 registry 未启用,镜像留本地;绑定仓库或到「设置 → 镜像仓库」启用内置 registry 后即自动推送")
 		}
 	}
 
