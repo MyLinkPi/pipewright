@@ -11,8 +11,8 @@ import (
 
 // ---------- 脚本构造(golden) ----------
 
-// TestBuildRunScriptGolden 锁定签发/续期脚本的确定性输出:mkdir → export 凭据 → acme.sh 主操作 →
-// install-cert 逐基域。凭据含单引号时必须安全转义。
+// TestBuildRunScriptGolden 锁定签发/续期脚本的确定性输出:export 凭据 → 宿主机 acme.sh 主操作。
+// 凭据含单引号时必须安全转义;路径全为包内常量(无用户输入)。
 func TestBuildRunScriptGolden(t *testing.T) {
 	c := &Certificate{
 		PrimaryDomain: "*.efg.com",
@@ -21,34 +21,42 @@ func TestBuildRunScriptGolden(t *testing.T) {
 		KeyType:       KeyTypeEC256,
 	}
 	env := [][2]string{{"CF_Token", "s3cr'et"}, {"CF_AccountId", "acct"}}
-	got := buildRunScript(issueOp, c, "dns_cf", env, []string{"efg.com", "aaa.com"})
+	got := buildRunScript(issueOp, c, "dns_cf", env)
 	want := `#!/bin/sh
 set -e
-mkdir -p '/etc/pipewright/certs/aaa.com'
-mkdir -p '/etc/pipewright/certs/efg.com'
 export CF_Token='s3cr'\''et'
 export CF_AccountId='acct'
-acme.sh --issue --dns dns_cf -d '*.efg.com' -d 'efg.com' --keylength ec-256 --server 'https://acme-v02.api.letsencrypt.org/directory'
-acme.sh --install-cert -d '*.efg.com' --fullchain-file '/etc/pipewright/certs/aaa.com/fullchain.pem' --key-file '/etc/pipewright/certs/aaa.com/privkey.pem'
-acme.sh --install-cert -d '*.efg.com' --fullchain-file '/etc/pipewright/certs/efg.com/fullchain.pem' --key-file '/etc/pipewright/certs/efg.com/privkey.pem'
+/opt/pipewright/acme/acme.sh --home '/opt/pipewright/acme' --issue --dns dns_cf -d '*.efg.com' -d 'efg.com' --keylength ec-256 --server 'https://acme-v02.api.letsencrypt.org/directory'
 `
 	if got != want {
-		t.Fatalf("issue 脚本不符:\n--- got ---\n%s\n--- want ---\n%s", got, want)
+		t.Fatalf("issue script mismatch:\n--- got ---\n%s\n--- want ---\n%s", got, want)
 	}
 
-	gotRenew := buildRunScript(renewOp, c, "dns_ali", [][2]string{{"Ali_Key", "k"}, {"Ali_Secret", "v"}}, nil)
+	gotRenew := buildRunScript(renewOp, c, "dns_ali", [][2]string{{"Ali_Key", "k"}, {"Ali_Secret", "v"}})
 	wantRenew := `#!/bin/sh
 set -e
 export Ali_Key='k'
 export Ali_Secret='v'
-acme.sh --renew -d '*.efg.com' --force
+/opt/pipewright/acme/acme.sh --home '/opt/pipewright/acme' --renew -d '*.efg.com' --force
 `
 	if gotRenew != wantRenew {
-		t.Fatalf("renew 脚本不符:\n--- got ---\n%s\n--- want ---\n%s", gotRenew, wantRenew)
+		t.Fatalf("renew script mismatch:\n--- got ---\n%s\n--- want ---\n%s", gotRenew, wantRenew)
 	}
 }
 
-// TestShQuote 验证 POSIX 单引号转义对任意字节安全。
+// TestAcmeshEmbedded 嵌入的 fork 最小集完整(主脚本 + 三家 dnsapi),防误删。
+func TestAcmeshEmbedded(t *testing.T) {
+	for _, f := range acmeshFiles {
+		b, err := acmeshFS.ReadFile(f.src)
+		if err != nil {
+			t.Fatalf("embedded file missing %s: %v", f.src, err)
+		}
+		if len(b) < 1024 {
+			t.Fatalf("embedded file too small %s: %d bytes", f.src, len(b))
+		}
+	}
+}
+
 func TestShQuote(t *testing.T) {
 	cases := map[string]string{
 		"plain":      `'plain'`,

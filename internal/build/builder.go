@@ -68,6 +68,10 @@ type Builder struct {
 	// artifactLister 列出本 run 已产出的产物(供跨阶段产物传递:下游阶段把上游归档的 jar/dist
 	// 真字节恢复到自身工作区)。nil 则不做跨阶段恢复(向后兼容)。由 main 注入 runSvc.ListArtifacts。
 	artifactLister func(ctx context.Context, runID string) ([]run.Artifact, error)
+	// builtinRegistry 是「内置本地 registry」解析回调(registryhub · 环境未绑定外部仓库时的
+	// 推送兜底):返回内置制品 registry 地址(host:port)+ 是否可用。nil = 未装配(向后兼容,
+	// 行为与旧版一致:未绑定不推送,产物只有本地 tag)。
+	builtinRegistry func(ctx context.Context) (addr string, ok bool)
 }
 
 // buildCacheStore 抽象「按 key 恢复/保存工作区缓存路径」的能力(便于 fake 单测注入)。
@@ -156,6 +160,17 @@ func WithBuildCache(c buildCacheStore) BuilderOption {
 	}
 }
 
+// WithBuiltinRegistry 注入「内置本地 registry」解析回调(registryhub):环境未绑定外部镜像
+// 仓库时,镜像产物兜底推送到内置制品 registry,产物引用变为可跨机 pull 的远端 tag。
+// fn 返回 ok=false(未启用/读取失败)时保持旧行为(本地 tag、不推送)。
+func WithBuiltinRegistry(fn func(ctx context.Context) (addr string, ok bool)) BuilderOption {
+	return func(b *Builder) {
+		if fn != nil {
+			b.builtinRegistry = fn
+		}
+	}
+}
+
 // NewBuilder 构造真实 Builder。driver 经 DetectDriver 探测(全无容器 CLI → ErrNoContainerCLI,
 // 由 main 据此降级回 StubRunner)。cmdr 为 nil 用默认 execCommander(生产);测试经 Option 覆盖。
 func NewBuilder(projects project.Service, settings pipeline.SettingsService, v vault.Vault, opts ...BuilderOption) (*Builder, error) {
@@ -195,8 +210,8 @@ func (b *Builder) Run(ctx context.Context, r *run.Run, sink run.StepSink) error 
 		return b.failPlan(ctx, sink, stepClone, "无法加载项目构建配置:"+perr.Error())
 	}
 
-	// 是否需要推送:产物为 image 且解析环境的 ImageRegistry 非空。
-	registry := b.resolveRegistry(settings, r.Trigger.ResolvedEnvironment)
+	// 是否需要推送:产物为 image 且解析出镜像仓库(环境绑定优先,未绑定回退内置 registry)。
+	registry := b.resolveRegistry(ctx, settings, r.Trigger.ResolvedEnvironment)
 	artifactType := settings.Build.ArtifactType
 	willPush := artifactType == pipeline.ArtifactImage && registry != nil
 
@@ -352,21 +367,28 @@ func (b *Builder) resolve(ctx context.Context, r *run.Run) (*project.Project, *p
 	return proj, settings, nil
 }
 
-// resolveRegistry 取解析环境名对应的 ImageRegistry(非空且 Type 非空才返回)。
-// 环境名为空(手动触发)或无匹配/未绑定 → nil(不推送)。
-func (b *Builder) resolveRegistry(settings *pipeline.Settings, envName string) *pipeline.ImageRegistry {
+// resolveRegistry 取镜像产物应推送的仓库:环境显式绑定优先(非空且 Type/URL 非空);
+// 未绑定(含环境名为空的手动触发、无匹配环境)时回退内置本地 registry(装配且启用时),
+// 让产物引用成为任意目标机可 pull 的远端 tag(补齐「本地 tag 只在构建机有效」的缺口)。
+// 两者皆无 → nil(不推送,旧行为)。
+func (b *Builder) resolveRegistry(ctx context.Context, settings *pipeline.Settings, envName string) *pipeline.ImageRegistry {
 	envName = strings.TrimSpace(envName)
-	if envName == "" {
-		return nil
-	}
-	for i := range settings.Environments {
-		e := &settings.Environments[i]
-		if e.Name == envName {
-			if strings.TrimSpace(e.ImageRegistry.Type) == "" || strings.TrimSpace(e.ImageRegistry.URL) == "" {
-				return nil
+	if envName != "" {
+		for i := range settings.Environments {
+			e := &settings.Environments[i]
+			if e.Name == envName {
+				if strings.TrimSpace(e.ImageRegistry.Type) != "" && strings.TrimSpace(e.ImageRegistry.URL) != "" {
+					reg := e.ImageRegistry
+					return &reg
+				}
+				break
 			}
-			reg := e.ImageRegistry
-			return &reg
+		}
+	}
+	if b.builtinRegistry != nil {
+		if addr, ok := b.builtinRegistry(ctx); ok && addr != "" {
+			// Type=builtin 仅供展示/追溯;推送链路只用 URL(无凭据 → 跳过 login,匿名推内网 HTTP registry)。
+			return &pipeline.ImageRegistry{Type: "builtin", URL: addr}
 		}
 	}
 	return nil

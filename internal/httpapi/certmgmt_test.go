@@ -32,11 +32,11 @@ func (fakeCertResolver) ProviderZones(_ context.Context, id string) ([]string, b
 	return nil, false, nil
 }
 
-// fakeCertGateway 是注入 certmgmt 的假网关信息(主机 srv-1 + 卷 nginx-data)。
+// fakeCertGateway 是注入 certmgmt 的假网关信息(主机 srv-1)。
 type fakeCertGateway struct{}
 
-func (fakeCertGateway) Gateway(context.Context) (string, string, bool, error) {
-	return "srv-1", "nginx-data", true, nil
+func (fakeCertGateway) Gateway(context.Context) (string, bool, error) {
+	return "srv-1", true, nil
 }
 
 // fakeCertSink 记录证书同步调用(不触网关);基域清单固定含 efg.com。

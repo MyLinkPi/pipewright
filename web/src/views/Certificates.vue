@@ -3,8 +3,8 @@
   Certificates.vue — 证书管理(原「证书总览」的继任者,数据源从旧 Caddy 反代路由切到 certmgmt)。
 
   平台证书的统一管理页:
-  - acme.sh 自动签发(DNS-01,凭据复用 DNS 提供商集成;支持泛域名)—— 签发引擎容器跑在
-    服务注册网关主机上,创建证书时自动部署;平台后台调度自动续期(到期前 30 天)。
+  - acme.sh 自动签发(DNS-01,凭据复用 DNS 提供商集成;支持泛域名)—— acme.sh 以宿主机
+    脚本方式跑在网关主机上(嵌入平台二进制,首次使用自动复制安装);平台后台调度自动续期。
   - 手动导入现成证书(PEM 配对校验,SAN 自动解析)。
   - 签发/续期结果自动同步到被 SAN 覆盖的网关基域(nginx -t + reload)。
 
@@ -407,11 +407,11 @@ async function submitImport(): Promise<void> {
             <div class="engine__title">{{ t('certMgmt.engine.title') }}</div>
             <div class="engine__meta">
               <template v-if="engine?.configured">
-                <span class="engine__pill" :class="engine.running ? 'engine__pill--ok' : 'engine__pill--warn'">
-                  {{ engine.installed ? (engine.running ? t('certMgmt.engine.running') : t('certMgmt.engine.stopped')) : t('certMgmt.engine.notInstalled') }}
+                <span class="engine__pill" :class="engine.ready ? 'engine__pill--ok' : 'engine__pill--warn'">
+                  {{ !engine.installed ? t('certMgmt.engine.notInstalled') : (engine.ready ? t('certMgmt.engine.ready') : t('certMgmt.engine.missingDeps')) }}
                 </span>
                 <span class="engine__kv">{{ t('certMgmt.engine.host') }}:{{ engine.serverName || engine.serverId }}</span>
-                <span v-if="engine.image" class="engine__kv mono">{{ engine.image }}</span>
+                <span v-if="engine.version" class="engine__kv mono">acme.sh {{ engine.version }}</span>
               </template>
               <template v-else>
                 <span class="engine__pill engine__pill--warn">{{ t('certMgmt.engine.unconfigured') }}</span>

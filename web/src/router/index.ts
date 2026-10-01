@@ -48,6 +48,8 @@ const SettingsNotifications = () => import('../views/settings/SettingsNotificati
 const SettingsDiagnosisStats = () => import('../views/settings/SettingsDiagnosisStats.vue')
 // 系统信息 + 一键检查更新
 const SettingsSystem = () => import('../views/settings/SettingsSystem.vue')
+// 内置本地 Docker registry(制品 + pull-through 缓存 + daemon.json 下发)
+const SettingsRegistry = () => import('../views/settings/SettingsRegistry.vue')
 // Story 2-2: new pipeline editor
 const ProjectPipeline = () => import('../views/ProjectPipeline.vue')
 // Story 2-3: triggers (kept for backward compat; now a thin wrapper around TriggersPanel)
@@ -165,6 +167,8 @@ const router = createRouter({
             { path: 'system', name: 'settings-system', component: SettingsSystem, meta: { title: '系统信息' } },
             // Story 4-1: target servers + shared SSH layer (FR-14)
             { path: 'servers', name: 'settings-servers', component: SettingsServers, meta: { title: '服务器' } },
+            // 内置本地 Docker registry:构建产物统一推送 + 上游可切换 + daemon.json 下发
+            { path: 'registry', name: 'settings-registry', component: SettingsRegistry, meta: { title: '镜像仓库' } },
             // Story 7-5: diagnosis feedback-loop stats (FR-26)
             { path: 'diagnosis-stats', name: 'settings-diagnosis-stats', component: SettingsDiagnosisStats, meta: { title: '诊断统计' } },
           ],

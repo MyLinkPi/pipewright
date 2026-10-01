@@ -22,6 +22,7 @@ const { t } = useI18n()
       <router-link to="/settings/https" class="settings-nav-item">{{ t('settingsHub.navHttps') }}</router-link>
       <router-link to="/settings/account" class="settings-nav-item">{{ t('settingsHub.navAccount') }}</router-link>
       <router-link to="/settings/servers" class="settings-nav-item">{{ t('settingsHub.navServers') }}</router-link>
+      <router-link to="/settings/registry" class="settings-nav-item">{{ t('settingsHub.navRegistry') }}</router-link>
       <router-link to="/settings/diagnosis-stats" class="settings-nav-item">{{ t('settingsHub.navDiagnosisStats') }}</router-link>
       <router-link to="/settings/system" class="settings-nav-item">{{ t('settingsHub.navSystem') }}</router-link>
     </nav>

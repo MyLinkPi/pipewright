@@ -10,6 +10,7 @@ export default {
   navHttps: 'HTTPS アクセス',
   navAccount: 'アカウント',
   navServers: 'サーバー',
+  navRegistry: 'レジストリ',
   navDiagnosisStats: '診断フィードバック',
   navSystem: 'システム',
 }

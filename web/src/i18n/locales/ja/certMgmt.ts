@@ -16,8 +16,8 @@ export default {
 
   engine: {
     title: '発行エンジン(acme.sh)',
-    running: '実行中',
-    stopped: '停止中',
+    ready: '準備完了',
+    missingDeps: '依存が不足',
     notInstalled: '未デプロイ',
     unconfigured: 'ゲートウェイ未設定',
     host: 'ゲートウェイホスト',
