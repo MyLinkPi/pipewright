@@ -49,6 +49,9 @@ const (
 	ActionSystemPrune        = "system_prune"
 	ActionContainerTerminal  = "container_terminal"
 	ActionServerTerminal     = "server_terminal"
+	// 批量执行命令(服务器状态页 → 勾选多机 → sh -c 同步执行):任意 shell 是功能本质,
+	// 每次尝试(无论成败)都留痕;detail 仅命令摘要(截 256)+ 机器数 + 成败计数 + runId。
+	ActionServerCommand = "server_command"
 	// 流水线模板 + 变量组(FR-8-13 复用基座)。
 	ActionTemplateCreate = "template_create"
 	ActionTemplateDelete = "template_delete"

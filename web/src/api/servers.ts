@@ -489,3 +489,84 @@ function openTerminalWS(path: string, handlers: TerminalHandlers): TerminalConne
     },
   }
 }
+
+// ─── Batch command execution (server status page) ────────────────────────────
+//
+// POST /api/servers/commands/batch → BatchCommandResult   (needs CSRF; write)
+// GET  /api/servers/commands/runs  → { items: CommandRunSummary[] }  (read-only)
+// GET  /api/servers/commands/runs/:runId → CommandRunDetail        (read-only)
+//
+// Run one shell command on several registered servers at once (synchronous —
+// each host has an independent 5..300s timeout; 0 = 60s default). The arbitrary
+// shell string is the point of the feature: single-admin platform, the existing
+// per-host WS terminal already executes arbitrary commands, so the batch entry
+// adds no new privilege. Guardrails: command ≤ 8KiB, ≤ 100 hosts, concurrency 6,
+// output truncated to 64KiB per stream; every attempt is audited server-side.
+// Fault tolerance: an unknown serverId / SSH failure / non-zero exit marks only
+// that host ok:false (HTTP 200, never 500) — same semantics as serviceAction.
+// Results are persisted server-side (latest 200 runs) and can be re-read via
+// the history endpoints; `runId` links the batch to its history entry.
+
+/** One host's outcome inside a batch run. */
+export interface BatchCommandItem {
+  serverId: string
+  /** Display name from the server registry; empty when the server is unknown. */
+  name: string
+  /** True when the remote command exited 0. */
+  ok: boolean
+  /** Remote exit code; -1 when SSH itself failed before a command ran. */
+  exitCode: number
+  /** Truncated stdout; may be empty. */
+  stdout: string
+  /** Truncated stderr; may be empty. */
+  stderr: string
+  /** Human-readable error when ok is false; empty on success. Never contains secrets. */
+  error: string
+  durationMs: number
+}
+
+export interface BatchCommandInput {
+  command: string
+  serverIds: string[]
+  /** Per-host timeout in seconds; omitted/0 = 60, clamped server-side to 5..300. */
+  timeoutSeconds?: number
+}
+
+export interface BatchCommandResult {
+  /** History id — feed to getServerCommandRun() to re-read this run later. */
+  runId: string
+  items: BatchCommandItem[]
+  summary: { total: number; ok: number; failed: number }
+}
+
+/** History list entry (no per-host output). */
+export interface CommandRunSummary {
+  id: string
+  command: string
+  total: number
+  ok: number
+  failed: number
+  /** RFC3339. */
+  createdAt: string
+}
+
+/** History detail: the run header plus per-host outputs. */
+export interface CommandRunDetail extends CommandRunSummary {
+  items: BatchCommandItem[]
+}
+
+/** Execute a shell command on a set of registered servers (synchronous batch). */
+export async function batchServerCommand(input: BatchCommandInput): Promise<BatchCommandResult> {
+  return http.post<BatchCommandResult>('/api/servers/commands/batch', input)
+}
+
+/** List recent batch runs (newest first; no per-host output). */
+export async function listServerCommandRuns(limit = 50): Promise<CommandRunSummary[]> {
+  const res = await http.get<{ items: CommandRunSummary[] }>(`/api/servers/commands/runs?limit=${limit}`)
+  return res.items
+}
+
+/** Fetch one batch run with per-host outputs. 404 when the id is unknown/pruned. */
+export async function getServerCommandRun(runId: string): Promise<CommandRunDetail> {
+  return http.get<CommandRunDetail>(`/api/servers/commands/runs/${encodeURIComponent(runId)}`)
+}

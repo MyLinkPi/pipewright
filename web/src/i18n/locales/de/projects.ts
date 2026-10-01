@@ -130,6 +130,7 @@ export default {
   errNameEmpty: 'Der Projektname darf nicht leer sein',
 
   testErrCredential: 'Anmeldedaten-Fehler: Prüfe, ob dein Gitee-Zugriffstoken gültig ist, und aktualisiere es im Anmeldedaten-Tresor.',
+  testErrCredInvalid: 'Bitte zuerst eine gültige Repo-Credential wählen (oder im Credential-Tresor prüfen).',
   testErrUnreachable: 'Repository nicht erreichbar: Stelle sicher, dass die URL korrekt ist und das Repository existiert und zugänglich ist.',
   testErrVault: 'Im Tresor ist kein Master Key konfiguriert, daher können die Anmeldedaten nicht gelesen werden.',
   testErrStatus: 'Verbindungstest fehlgeschlagen ({status})',

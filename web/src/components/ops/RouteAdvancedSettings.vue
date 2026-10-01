@@ -110,11 +110,13 @@ async function loadDnsProviders(): Promise<void> {
 }
 onMounted(loadDnsProviders)
 
-// 当前选中的提供商(用于在 UI 里提示其根域)。
+// 当前选中的提供商(用于在 UI 里提示其根区清单;一个提供商可托管多个根区)。
 const selectedProvider = computed(() =>
   dnsProviders.value.find((p) => p.id === dnsProviderId.value),
 )
-// 挂接了 DNS 提供商 → 允许通配符域名/别名。
+const providerZoneList = (p: DnsProvider): string =>
+  p.zones.length ? p.zones.map((z) => z.baseDomain).join(', ') : '—'
+// 挂接了 DNS 提供商 → 允许通配符域名/别名(通配符域还须落在其某个根区下,由后端校验)。
 const wildcardAllowed = computed(() => dnsProviderId.value.length > 0)
 
 // 路由对象(尤其 config)变化时重置缓冲;首次也跑一遍。
@@ -398,11 +400,11 @@ async function save(): Promise<void> {
         <select v-model="dnsProviderId" class="advin">
           <option value="">{{ t('reverseProxy.adv.dnsProviderNone') }}</option>
           <option v-for="p in dnsProviders" :key="p.id" :value="p.id">
-            {{ p.name }} · {{ p.baseDomain }}
+            {{ p.name }} · {{ providerZoneList(p) }}
           </option>
         </select>
         <p v-if="selectedProvider" class="advhint">
-          {{ t('reverseProxy.adv.dnsProviderUnderDomain', { domain: selectedProvider.baseDomain }) }}
+          {{ t('reverseProxy.adv.dnsProviderUnderDomain', { domain: providerZoneList(selectedProvider) }) }}
         </p>
         <p v-if="wildcardAllowed" class="advhint">{{ t('reverseProxy.adv.wildcardHint') }}</p>
       </section>

@@ -27,22 +27,21 @@ const (
 	alidnsFormat           = "JSON"
 )
 
-// 凭据约定(vault 单字串存储模型不变):阿里云用 "accessKeyId,accessKeySecret"。
-// 即在保险库里存 "LTAI...,abcdefSecret" 这样一个逗号分隔字串;按**第一个逗号**切分,两侧 trim。
-// 无逗号 / 任一段空 → ErrInvalidCredential。绝不把 ak/sk 任何片段回显到错误/日志/DTO。
+// 凭据分半段注入:accessKeyID(非机密,来自 dns_providers.api_id)+ accessKeySecret(来自 vault
+// 解密)。任一半段为空 → ErrInvalidCredential。绝不把 ak/sk 任何片段回显到错误/日志/DTO。
 type alidnsClient struct {
-	cred string // 形如 "accessKeyId,accessKeySecret";仅进程内,不入库/日志/响应
-	hc   *http.Client
-	base string
+	accessKeyID     string // 阿里云 AccessKeyId;仅进程内,不入库/日志/响应
+	accessKeySecret string // 阿里云 AccessKeySecret;仅进程内,不入库/日志/响应
+	hc              *http.Client
+	base            string
 
 	// 以下供测试注入,钉死签名(生产为 nil → 用 time.Now / crypto-rand nonce)。
 	nowFn   func() time.Time
 	nonceFn func() string
 }
 
-// newAliDNSClient 构造阿里云 DNS 客户端。cred 为保险库里存的 "accessKeyId,accessKeySecret" 原串。
-// transport 为 nil 用默认(带超时),测试可注入 mock RoundTripper。
-func newAliDNSClient(cred string, transport http.RoundTripper, base string) *alidnsClient {
+// newAliDNSClient 构造阿里云 DNS 客户端。transport 为 nil 用默认(带超时),测试可注入 mock RoundTripper。
+func newAliDNSClient(accessKeyID, accessKeySecret string, transport http.RoundTripper, base string) *alidnsClient {
 	hc := &http.Client{Timeout: 15 * time.Second}
 	if transport != nil {
 		hc.Transport = transport
@@ -50,22 +49,20 @@ func newAliDNSClient(cred string, transport http.RoundTripper, base string) *ali
 	if base == "" {
 		base = alidnsAPIBase
 	}
-	return &alidnsClient{cred: strings.TrimSpace(cred), hc: hc, base: base}
+	return &alidnsClient{
+		accessKeyID:     strings.TrimSpace(accessKeyID),
+		accessKeySecret: strings.TrimSpace(accessKeySecret),
+		hc:              hc,
+		base:            base,
+	}
 }
 
-// parseAliCred 校验 "accessKeyId,accessKeySecret" 形态(按第一个逗号切分,两侧 trim)。
-// 任一为空 → ErrInvalidCredential。返回 (ak, sk)。
-func parseAliCred(raw string) (ak, sk string, err error) {
-	idx := strings.IndexByte(raw, ',')
-	if idx < 0 {
-		return "", "", fmt.Errorf("%w:阿里云凭据须为「AccessKeyId,AccessKeySecret」(逗号分隔)", ErrInvalidCredential)
+// creds 校验两半段非空。任一为空 → ErrInvalidCredential(绝不回显凭据片段)。
+func (c *alidnsClient) creds() (ak, sk string, err error) {
+	if c.accessKeyID == "" || c.accessKeySecret == "" {
+		return "", "", fmt.Errorf("%w:阿里云须同时填写 AccessKeyId 与 AccessKeySecret", ErrInvalidCredential)
 	}
-	ak = strings.TrimSpace(raw[:idx])
-	sk = strings.TrimSpace(raw[idx+1:])
-	if ak == "" || sk == "" {
-		return "", "", fmt.Errorf("%w:阿里云凭据「AccessKeyId,AccessKeySecret」两段均不可为空", ErrInvalidCredential)
-	}
-	return ak, sk, nil
+	return c.accessKeyID, c.accessKeySecret, nil
 }
 
 // aliPercentEncode 按阿里云 RPC v1 规则做 RFC3986 百分号编码:
@@ -152,7 +149,7 @@ func (c *alidnsClient) nonce() string {
 // call 发一个签名后的 GET 请求(action + 业务参数),把成功响应体解到 out。
 // HTTP 非 2xx → 解阿里云错误信封映射人话(绝不含 ak/sk)。baseErr 决定错误家族。
 func (c *alidnsClient) call(ctx context.Context, baseErr error, action string, biz url.Values, out any) error {
-	ak, sk, err := parseAliCred(c.cred)
+	ak, sk, err := c.creds()
 	if err != nil {
 		return err
 	}

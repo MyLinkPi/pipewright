@@ -42,13 +42,22 @@ type RecordDeleter interface {
 	DeleteRecord(ctx context.Context, providerID, fqdn string) error
 }
 
-// service 是 store(+ 可选 allocator / routeDeleter / recordDeleter / baseDomain 校验)支撑的 Service 实现。
+// ZoneCoverer 抽象「校验某 FQDN 是否落在 DNS 提供商托管的某个根区下」的能力(多根区模型:
+// 预览配置的 baseDomain 须落在所选提供商的某个根区下)。由上层用 dnsprovider.Service 适配注入;
+// 未注入则跳过覆盖校验(仅做格式校验,优雅降级)。
+type ZoneCoverer interface {
+	ZoneCovers(ctx context.Context, providerID, fqdn string) (covered, ok bool, err error)
+}
+
+// service 是 store(+ 可选 allocator / routeDeleter / recordDeleter / zoneCoverer / baseDomain 校验)
+// 支撑的 Service 实现。
 type service struct {
-	store         *Store
-	allocator     Allocator
-	routeDeleter  RouteDeleter
+	store        *Store
+	allocator    Allocator
+	routeDeleter RouteDeleter
 	recordDeleter RecordDeleter
-	validBase     validBaseDomainFunc
+	zoneCoverer  ZoneCoverer
+	validBase    validBaseDomainFunc
 }
 
 // New 构造 Service。allocator/routeDeleter 可在装配后晚绑(SetAllocator/SetRouteDeleter),
@@ -65,6 +74,9 @@ func (s *service) SetRouteDeleter(d RouteDeleter) { s.routeDeleter = d }
 
 // SetRecordDeleter 注入 DNS 记录删除器(回收预览环境时清 A 记录;未绑则不清 DNS)。
 func (s *service) SetRecordDeleter(d RecordDeleter) { s.recordDeleter = d }
+
+// SetZoneCoverer 注入根区覆盖校验器(预览配置 baseDomain 须落在所选提供商某个根区下;未绑则跳过)。
+func (s *service) SetZoneCoverer(c ZoneCoverer) { s.zoneCoverer = c }
 
 // SetBaseDomainValidator 注入根域校验器(默认用内置宽松校验;上层可换成 dnsprovider.ValidBaseDomain)。
 func (s *service) SetBaseDomainValidator(f validBaseDomainFunc) {
@@ -104,13 +116,26 @@ func (s *service) SetConfig(ctx context.Context, in Config) (*Config, error) {
 	if in.ProjectID == "" {
 		return nil, ErrInvalidProject
 	}
-	// 开启时必须给齐 DNS 提供商 + 合法根域(否则 provision 无从分配)。
+	// 开启时必须给齐 DNS 提供商 + 合法根域(否则 provision 无从分配);且根域须落在所选
+	// 提供商托管的某个根区下(多根区模型,如 preview.example.com 落在根区 example.com 下)。
 	if in.Enabled {
 		if in.DNSProviderID == "" {
 			return nil, ErrConfigMissingProvider
 		}
 		if !s.validBase(in.BaseDomain) {
 			return nil, ErrConfigInvalidBaseDomain
+		}
+		if s.zoneCoverer != nil {
+			covered, ok, err := s.zoneCoverer.ZoneCovers(ctx, in.DNSProviderID, in.BaseDomain)
+			if err != nil {
+				return nil, err
+			}
+			if !ok {
+				return nil, ErrConfigMissingProvider
+			}
+			if !covered {
+				return nil, ErrConfigInvalidBaseDomain
+			}
 		}
 	}
 	if err := s.store.upsertConfig(ctx, in); err != nil {

@@ -13,18 +13,18 @@ import (
 // dnspodAPIBase 是腾讯云 DNSPod 经典 API(dnsapi.cn)根。测试经 RoundTripper 拦截,不触真网络。
 const dnspodAPIBase = "https://dnsapi.cn"
 
-// 凭据约定(vault 单字串存储模型不变):DNSPod 用经典 login_token = "<ID>,<Token>"。
-// 即在保险库里存 "12345,abcdef0123456789..." 这样一个逗号分隔字串;客户端按**第一个逗号**切分,
-// 两侧 trim 空白。无逗号 → ErrInvalidCredential。绝不把 token 任何片段回显到错误/日志/DTO。
+// 凭据分半段注入:secretID(DNSPod SecretId,非机密,来自 dns_providers.api_id)+
+// secretKey(DNSPod Token,来自 vault 解密)。请求时拼成经典 login_token = "<ID>,<Token>"。
+// 任一半段为空 → ErrInvalidCredential。绝不把任一片段回显到错误/日志/DTO。
 type dnspodClient struct {
-	loginToken string // 形如 "<id>,<token>";仅进程内,不入库/日志/响应
-	hc         *http.Client
-	base       string
+	secretID  string // DNSPod SecretId;仅进程内,不入库/日志/响应
+	secretKey string // DNSPod Token;仅进程内,不入库/日志/响应
+	hc        *http.Client
+	base      string
 }
 
-// newDNSPodClient 构造 DNSPod 客户端。loginToken 为保险库里存的 "id,token" 原串(校验留给请求时,
-// 以便统一映射 ErrInvalidCredential)。transport 为 nil 时用默认(带超时),测试可注入 mock。
-func newDNSPodClient(loginToken string, transport http.RoundTripper, base string) *dnspodClient {
+// newDNSPodClient 构造 DNSPod 客户端。transport 为 nil 时用默认(带超时),测试可注入 mock。
+func newDNSPodClient(secretID, secretKey string, transport http.RoundTripper, base string) *dnspodClient {
 	hc := &http.Client{Timeout: 15 * time.Second}
 	if transport != nil {
 		hc.Transport = transport
@@ -32,22 +32,21 @@ func newDNSPodClient(loginToken string, transport http.RoundTripper, base string
 	if base == "" {
 		base = dnspodAPIBase
 	}
-	return &dnspodClient{loginToken: strings.TrimSpace(loginToken), hc: hc, base: strings.TrimRight(base, "/")}
+	return &dnspodClient{
+		secretID:  strings.TrimSpace(secretID),
+		secretKey: strings.TrimSpace(secretKey),
+		hc:        hc,
+		base:      strings.TrimRight(base, "/"),
+	}
 }
 
-// parseDNSPodToken 校验 "id,token" 形态(按第一个逗号切分,两侧 trim);任一为空 → ErrInvalidCredential。
-// 返回归一化后的 login_token("id,token",已 trim),供表单字段直接使用。
-func parseDNSPodToken(raw string) (loginToken string, err error) {
-	idx := strings.IndexByte(raw, ',')
-	if idx < 0 {
-		return "", fmt.Errorf("%w:DNSPod 凭据须为「ID,Token」(逗号分隔)", ErrInvalidCredential)
+// loginToken 校验两半段非空并拼出经典 login_token("<id>,<token>",已 trim)。
+// 任一为空 → ErrInvalidCredential(绝不回显凭据片段)。
+func (c *dnspodClient) loginToken() (string, error) {
+	if c.secretID == "" || c.secretKey == "" {
+		return "", fmt.Errorf("%w:DNSPod 须同时填写 SecretId 与 Token", ErrInvalidCredential)
 	}
-	id := strings.TrimSpace(raw[:idx])
-	tok := strings.TrimSpace(raw[idx+1:])
-	if id == "" || tok == "" {
-		return "", fmt.Errorf("%w:DNSPod 凭据「ID,Token」两段均不可为空", ErrInvalidCredential)
-	}
-	return id + "," + tok, nil
+	return c.secretID + "," + c.secretKey, nil
 }
 
 // dnspodStatus 是 DNSPod 经典 API 的通用 status 信封。code=="1" 为成功。
@@ -80,7 +79,7 @@ type dpMutateResp struct {
 // post 发一个 form-POST 到 dnsapi.cn,自动带 login_token / format=json。错误绝不含 token。
 // out 为解信封目标(传入指针)。
 func (c *dnspodClient) post(ctx context.Context, path string, fields url.Values, out any) error {
-	loginToken, err := parseDNSPodToken(c.loginToken)
+	loginToken, err := c.loginToken()
 	if err != nil {
 		return err
 	}
@@ -129,7 +128,7 @@ func dpStatusErr(base error, st dnspodStatus) error {
 	return fmt.Errorf("%w:DNSPod API 返回错误(code %s)", base, st.Code)
 }
 
-// VerifyZone 校验当前 login_token 可管理 zone(根域):POST Domain.Info。code=="1" 成功。
+// VerifyZone 校验当前凭据可管理 zone(根域):POST Domain.Info。code=="1" 成功。
 func (c *dnspodClient) VerifyZone(ctx context.Context, zone string) error {
 	var out dpDomainInfoResp
 	if err := c.post(ctx, "/Domain.Info", url.Values{"domain": {zone}}, &out); err != nil {

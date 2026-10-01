@@ -130,6 +130,7 @@ export default {
   errNameEmpty: '项目名称不能为空',
 
   testErrCredential: '凭据错误:请检查 Gitee 访问令牌是否有效,前往凭据保险库更新。',
+  testErrCredInvalid: '请先选择有效的仓库凭据(或前往凭据保险库检查)。',
   testErrUnreachable: '仓库不可达:请确认仓库地址正确,且仓库存在且可访问。',
   testErrVault: '保险库未配置 master key,无法读取凭据。',
   testErrStatus: '连接测试失败({status})',

@@ -103,9 +103,9 @@ export default {
   sub: {
     cta: '一键分配子域名',
     title: '一键分配子域名',
-    lede: '选一个 DNS 提供商和上游容器,自动在其根域下生成 app-xxxx 子域、写好 A 记录并绑定路由 —— 无需手动改 DNS。',
-    providerLabel: 'DNS 提供商',
-    providerPick: '选择一个 DNS 提供商…',
+    lede: '选一个 DNS 根区和上游容器,自动在该根域下生成 app-xxxx 子域、写好 A 记录并绑定路由 —— 无需手动改 DNS。',
+    providerLabel: 'DNS 根区',
+    providerPick: '选择一个根区…',
     providerUnderDomain: '将在 {domain} 下生成子域名',
     noProvider: '尚未配置 DNS 提供商。',
     manageProviders: '去配置 DNS 提供商 →',
@@ -137,10 +137,10 @@ export default {
     removeAlias: '移除别名 {v}',
     // R3:DNS 提供商 + 通配符(DNS-01)
     dnsTitle: 'DNS 提供商(DNS-01 / 通配符)',
-    dnsLede: '挂接一个 DNS 提供商即可走 DNS-01 验证,从而支持通配符域名(*.example.com)。',
+    dnsLede: '挂接一个 DNS 提供商即可走 DNS-01 验证,从而支持通配符域名(*.example.com,须落在其某个根区下)。',
     dnsProviderLabel: 'DNS 提供商',
     dnsProviderNone: '不挂接(仅 HTTP-01,不支持通配符)',
-    dnsProviderUnderDomain: '根域:{domain}',
+    dnsProviderUnderDomain: '根区:{domain}',
     wildcardHint: '已挂接 DNS 提供商,域名/别名可使用通配符,例:*.example.com。',
     wildcardNeedsProvider: '通配符域名需要先挂接一个 DNS 提供商。',
     // R3:路径路由(E3.5)

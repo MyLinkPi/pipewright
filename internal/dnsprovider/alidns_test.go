@@ -10,21 +10,20 @@ import (
 	"time"
 )
 
-// --- 凭据解析 ---------------------------------------------------------------
+// --- 凭据半段校验 -----------------------------------------------------------
 
-func TestParseAliCred(t *testing.T) {
-	if _, _, err := parseAliCred("no-comma"); !errors.Is(err, ErrInvalidCredential) {
-		t.Fatalf("无逗号应 ErrInvalidCredential, got %v", err)
+func TestAliCredsHalves(t *testing.T) {
+	// ID/Secret 分开存储:任一半段为空 → ErrInvalidCredential(不发网络)。
+	for _, in := range [][2]string{{"", ""}, {"", "sk"}, {"LTAI123", ""}, {"  ", "sk"}} {
+		c := newAliDNSClient(in[0], in[1], nil, "")
+		if _, _, err := c.creds(); !errors.Is(err, ErrInvalidCredential) {
+			t.Fatalf("半段 (%q,%q) 应 ErrInvalidCredential, got %v", in[0], in[1], err)
+		}
 	}
-	if _, _, err := parseAliCred(",sk"); !errors.Is(err, ErrInvalidCredential) {
-		t.Fatalf("空 ak 应 ErrInvalidCredential, got %v", err)
-	}
-	if _, _, err := parseAliCred("ak,"); !errors.Is(err, ErrInvalidCredential) {
-		t.Fatalf("空 sk 应 ErrInvalidCredential, got %v", err)
-	}
-	ak, sk, err := parseAliCred("  LTAI123 , secretVal  ")
+	c := newAliDNSClient(" LTAI123 ", " secretVal ", nil, "")
+	ak, sk, err := c.creds()
 	if err != nil || ak != "LTAI123" || sk != "secretVal" {
-		t.Fatalf("应 trim 切分, got %q/%q/%v", ak, sk, err)
+		t.Fatalf("应 trim, got %q/%q/%v", ak, sk, err)
 	}
 }
 
@@ -70,9 +69,9 @@ func TestAliPercentEncode(t *testing.T) {
 	}
 }
 
-// fixedClient 造一个钉死 nonce/timestamp 的阿里云客户端(供请求流断言)。
-func fixedAliClient(cred string, rt http.RoundTripper) *alidnsClient {
-	c := newAliDNSClient(cred, rt, "")
+// fixedAliClient 造一个钉死 nonce/timestamp 的阿里云客户端(供请求流断言)。
+func fixedAliClient(ak, sk string, rt http.RoundTripper) *alidnsClient {
+	c := newAliDNSClient(ak, sk, rt, "")
 	c.nowFn = func() time.Time { return time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC) }
 	c.nonceFn = func() string { return "fixednonce123" }
 	return c
@@ -97,7 +96,7 @@ func TestAliDNSVerifyZoneSuccess(t *testing.T) {
 		}
 		return jsonResp(200, `{"DomainName":"example.com","RequestId":"r1"}`), nil
 	})
-	c := fixedAliClient("testAccessKeyId,testAccessKeySecret", rt)
+	c := fixedAliClient("testAccessKeyId", "testAccessKeySecret", rt)
 	if err := c.VerifyZone(context.Background(), "example.com"); err != nil {
 		t.Fatalf("VerifyZone: %v", err)
 	}
@@ -107,7 +106,7 @@ func TestAliDNSVerifyZoneAuthFail(t *testing.T) {
 	rt := roundTripFunc(func(_ *http.Request) (*http.Response, error) {
 		return jsonResp(403, `{"Code":"InvalidAccessKeyId.NotFound","Message":"Specified access key is not found.","RequestId":"r2"}`), nil
 	})
-	c := fixedAliClient("testAccessKeyId,wrong-secret", rt)
+	c := fixedAliClient("testAccessKeyId", "wrong-secret", rt)
 	err := c.VerifyZone(context.Background(), "example.com")
 	if !errors.Is(err, ErrVerifyFailed) {
 		t.Fatalf("鉴权失败应 ErrVerifyFailed, got %v", err)
@@ -121,7 +120,7 @@ func TestAliDNSVerifyZoneNotFound(t *testing.T) {
 	rt := roundTripFunc(func(_ *http.Request) (*http.Response, error) {
 		return jsonResp(400, `{"Code":"InvalidDomainName.NoExist","Message":"The specified domain name does not exist.","RequestId":"r3"}`), nil
 	})
-	c := fixedAliClient("testAccessKeyId,testAccessKeySecret", rt)
+	c := fixedAliClient("testAccessKeyId", "testAccessKeySecret", rt)
 	if err := c.VerifyZone(context.Background(), "nope.com"); !errors.Is(err, ErrVerifyFailed) {
 		t.Fatalf("域名不存在应 ErrVerifyFailed, got %v", err)
 	}
@@ -133,7 +132,8 @@ func TestAliDNSInvalidCredential(t *testing.T) {
 		called = true
 		return jsonResp(200, `{}`), nil
 	})
-	c := fixedAliClient("no-comma", rt)
+	// Secret 半段为空(ID/Secret 分开存储后防御性兜底)→ 请求前即报错(不发网络)。
+	c := fixedAliClient("testAccessKeyId", "", rt)
 	if err := c.VerifyZone(context.Background(), "example.com"); !errors.Is(err, ErrInvalidCredential) {
 		t.Fatalf("坏凭据应 ErrInvalidCredential, got %v", err)
 	}
@@ -170,7 +170,7 @@ func TestAliDNSEnsureARecordAdd(t *testing.T) {
 		t.Fatalf("未预期 Action %q", q.Get("Action"))
 		return nil, nil
 	})
-	c := fixedAliClient("testAccessKeyId,testAccessKeySecret", rt)
+	c := fixedAliClient("testAccessKeyId", "testAccessKeySecret", rt)
 	if err := c.EnsureARecord(context.Background(), "example.com", "app-abc.example.com", "203.0.113.5"); err != nil {
 		t.Fatalf("EnsureARecord: %v", err)
 	}
@@ -196,7 +196,7 @@ func TestAliDNSEnsureARecordUpdate(t *testing.T) {
 		t.Fatalf("未预期 Action %q", q.Get("Action"))
 		return nil, nil
 	})
-	c := fixedAliClient("testAccessKeyId,testAccessKeySecret", rt)
+	c := fixedAliClient("testAccessKeyId", "testAccessKeySecret", rt)
 	if err := c.EnsureARecord(context.Background(), "example.com", "app-abc.example.com", "203.0.113.9"); err != nil {
 		t.Fatalf("EnsureARecord: %v", err)
 	}
@@ -219,7 +219,7 @@ func TestAliDNSEnsureARecordNoOp(t *testing.T) {
 		t.Fatalf("未预期 Action %q", q.Get("Action"))
 		return nil, nil
 	})
-	c := fixedAliClient("testAccessKeyId,testAccessKeySecret", rt)
+	c := fixedAliClient("testAccessKeyId", "testAccessKeySecret", rt)
 	if err := c.EnsureARecord(context.Background(), "example.com", "app-abc.example.com", "203.0.113.5"); err != nil {
 		t.Fatalf("EnsureARecord: %v", err)
 	}
@@ -243,10 +243,10 @@ func TestAllocateSubdomainDNSPodReal(t *testing.T) {
 		return nil, nil
 	})
 	rc := &stubRouteCreator{nextRouteID: "route-dp"}
-	svc := newTestService(t, stubVault{tokens: map[string]string{"cred-1": "12345,sEcReT"}}, rc, dialDNS(rt))
-	p, _ := svc.Create(ctx, CreateInput{Type: "dnspod", Name: "DP", CredentialID: "cred-1", BaseDomain: "example.com"})
+	svc := newTestService(t, stubVault{tokens: map[string]string{"cred-1": "sEcReT"}}, rc, dialDNS(rt))
+	p, _ := svc.Create(ctx, CreateInput{Type: "dnspod", Name: "DP", APIID: "12345", CredentialID: "cred-1", BaseDomains: []string{"example.com"}})
 	ref, err := svc.AllocateSubdomain(ctx, AllocateInput{
-		ProviderID: p.ID, ServerID: "srv-1", UpstreamContainer: "web", UpstreamPort: 8080, HostIP: "203.0.113.5",
+		ZoneID: p.Zones[0].ID, ServerID: "srv-1", UpstreamContainer: "web", UpstreamPort: 8080, HostIP: "203.0.113.5",
 	})
 	if err != nil {
 		t.Fatalf("AllocateSubdomain(dnspod): %v", err)

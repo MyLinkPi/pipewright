@@ -130,6 +130,7 @@ export default {
   errNameEmpty: '프로젝트 이름은 비워 둘 수 없습니다',
 
   testErrCredential: '자격 증명 오류: Gitee 액세스 토큰이 유효한지 확인하고 자격 증명 볼트에서 업데이트하세요.',
+  testErrCredInvalid: '유효한 저장소 자격증명을 먼저 선택하세요(또는 자격증명 보관소에서 확인하세요).',
   testErrUnreachable: '저장소에 연결할 수 없습니다: URL이 올바르고 저장소가 존재하며 접근 가능한지 확인하세요.',
   testErrVault: '볼트에 master key가 설정되지 않아 자격 증명을 읽을 수 없습니다.',
   testErrStatus: '연결 테스트에 실패했습니다({status})',

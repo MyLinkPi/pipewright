@@ -50,6 +50,7 @@ import (
 	"github.com/huangchengsir/pipewright/internal/repocache"
 	"github.com/huangchengsir/pipewright/internal/retention"
 	"github.com/huangchengsir/pipewright/internal/run"
+	"github.com/huangchengsir/pipewright/internal/servercmd"
 	"github.com/huangchengsir/pipewright/internal/servicereg"
 	"github.com/huangchengsir/pipewright/internal/runner"
 	"github.com/huangchengsir/pipewright/internal/store"
@@ -269,6 +270,9 @@ func main() {
 	// 传工作区 → 远程容器跑;token 只在控制机)。每机并发槽位默认 1,PIPEWRIGHT_RUNNER_SLOTS
 	// 调全局默认,单机可用 servers.max_builds 覆盖(设置界面)。
 	targetSvc := target.New(st.DB, credVault, nil)
+	// 批量执行命令(服务器状态页 → 勾选多机 → 同步执行 + 历史回看):复用 targetSvc 的
+	// SSH 执行层逐机并发跑 sh -c,结果落本地库保最近 200 次;每次尝试写审计。
+	serverCmdSvc := servercmd.New(st.DB, targetSvc)
 	runnerSvc := runner.New(st.DB, targetExister{targetSvc})
 	runnerSlots := 1
 	if v := strings.TrimSpace(os.Getenv("PIPEWRIGHT_RUNNER_SLOTS")); v != "" {
@@ -434,11 +438,13 @@ func main() {
 	// Per-PR 预览环境(R4 E4.1 · 差异化王牌):某 PR 运行成功部署 → 在项目预览配置的根域下分配
 	// pr-<n>-<proj> 预览域名(复用 R3 DNS-01 + 反代路由)。allocator 复用 dnsSvc.AllocateFQDN;
 	// 回收路由复用 proxySvc.Delete。两者经适配器晚绑(避免 previewenv import dnsprovider/proxy 形成环)。
-	// 根域校验复用 dnsprovider.ValidBaseDomain。优雅降级:未配 allocator / 项目未开启 → provision no-op。
+	// 根域校验复用 dnsprovider.ValidBaseDomain;根区覆盖校验复用 dnsSvc.ZoneCovers(多根区模型)。
+	// 优雅降级:未配 allocator / 项目未开启 → provision no-op。
 	previewSvc := previewenv.New(st.DB)
 	previewSvc.SetAllocator(&previewAllocator{dns: dnsSvc})
 	previewSvc.SetRouteDeleter(&previewRouteDeleter{proxy: proxySvc})
 	previewSvc.SetRecordDeleter(&previewRecordDeleter{dns: dnsSvc})
+	previewSvc.SetZoneCoverer(&previewZoneCoverer{dns: dnsSvc})
 	previewSvc.SetBaseDomainValidator(dnsprovider.ValidBaseDomain)
 
 	// 应用商店(DPanel 式一键部署):模板 CRUD + 内置 seed(幂等;失败仅记日志,不阻断启动)。
@@ -614,7 +620,7 @@ func main() {
 
 	srv := &http.Server{
 		Addr:              cfg.Addr,
-		Handler:           httpapi.New(webFS, authSvc, httpapi.WithVault(credVault), httpapi.WithProjects(projectSvc), httpapi.WithTriggers(triggerSvc), httpapi.WithPipelines(pipelineSvc), httpapi.WithPipelineSettings(pipelineSettingsSvc), httpapi.WithRuns(runSvc, pool), httpapi.WithWebhooks(webhookReceiver), httpapi.WithAudit(auditRec), httpapi.WithAccount(authSvc), httpapi.WithAISettings(aiSvc), httpapi.WithAIGenerate(repoAnalyzer), httpapi.WithRunDiff(runDiffer), httpapi.WithSource(sourceReader), httpapi.WithRefs(refsLister), httpapi.WithArtifactStore(artStore), httpapi.WithServers(targetSvc), httpapi.WithRunnerConfig(runnerSvc), httpapi.WithDeploy(deploySvc), httpapi.WithNotifications(notifySvc), httpapi.WithRetention(retentionSvc), httpapi.WithProxy(proxySvc), httpapi.WithDNSProviders(dnsSvc), httpapi.WithPreviewEnvs(previewSvc), httpapi.WithServiceReg(serviceRegSvc), httpapi.WithAppStore(appStoreSvc), httpapi.WithDiagnosisFeedback(feedbackSvc), httpapi.WithAnomaly(anomalySvc), httpapi.WithAnomalyConfig(int(anomalyInterval.Seconds()), int(anomalyCooldown.Seconds())), httpapi.WithMetricsHistory(metricsHist), httpapi.WithSecretSource(secretSrc), httpapi.WithOAuth(oauthSvc), httpapi.WithCron(cronSvc), httpapi.WithChain(chainSvc), httpapi.WithApprovals(approvalCoord, approvalStore), httpapi.WithApprovalLinks(approvalSigner), httpapi.WithConcurrency(concurrencySvc), httpapi.WithParameters(parameterSvc), httpapi.WithPromotion(promotionStore), httpapi.WithEnvironments(environmentsSvc), httpapi.WithDoraMetrics(doraMetricsSvc), httpapi.WithTemplates(templateSvc), httpapi.WithVariableGroups(varGroupSvc), httpapi.WithCustomNodes(customNodeSvc)),
+		Handler:           httpapi.New(webFS, authSvc, httpapi.WithVault(credVault), httpapi.WithProjects(projectSvc), httpapi.WithTriggers(triggerSvc), httpapi.WithPipelines(pipelineSvc), httpapi.WithPipelineSettings(pipelineSettingsSvc), httpapi.WithRuns(runSvc, pool), httpapi.WithWebhooks(webhookReceiver), httpapi.WithAudit(auditRec), httpapi.WithAccount(authSvc), httpapi.WithAISettings(aiSvc), httpapi.WithAIGenerate(repoAnalyzer), httpapi.WithRunDiff(runDiffer), httpapi.WithSource(sourceReader), httpapi.WithRefs(refsLister), httpapi.WithArtifactStore(artStore), httpapi.WithServers(targetSvc), httpapi.WithServerCommands(serverCmdSvc), httpapi.WithRunnerConfig(runnerSvc), httpapi.WithDeploy(deploySvc), httpapi.WithNotifications(notifySvc), httpapi.WithRetention(retentionSvc), httpapi.WithProxy(proxySvc), httpapi.WithDNSProviders(dnsSvc), httpapi.WithPreviewEnvs(previewSvc), httpapi.WithServiceReg(serviceRegSvc), httpapi.WithAppStore(appStoreSvc), httpapi.WithDiagnosisFeedback(feedbackSvc), httpapi.WithAnomaly(anomalySvc), httpapi.WithAnomalyConfig(int(anomalyInterval.Seconds()), int(anomalyCooldown.Seconds())), httpapi.WithMetricsHistory(metricsHist), httpapi.WithSecretSource(secretSrc), httpapi.WithOAuth(oauthSvc), httpapi.WithCron(cronSvc), httpapi.WithChain(chainSvc), httpapi.WithApprovals(approvalCoord, approvalStore), httpapi.WithApprovalLinks(approvalSigner), httpapi.WithConcurrency(concurrencySvc), httpapi.WithParameters(parameterSvc), httpapi.WithPromotion(promotionStore), httpapi.WithEnvironments(environmentsSvc), httpapi.WithDoraMetrics(doraMetricsSvc), httpapi.WithTemplates(templateSvc), httpapi.WithVariableGroups(varGroupSvc), httpapi.WithCustomNodes(customNodeSvc)),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		// WriteTimeout 置 0:SSE 长连接(/api/runs/{id}/events)不可被写超时切断;
@@ -856,16 +862,29 @@ func (c *proxyRouteCreator) CreateDNS01Route(ctx context.Context, in dnsprovider
 	return route.ID, nil
 }
 
-// dnsResolverAdapter 适配 proxy.DNSResolver:把「按提供商 id 取 (类型, token) / 取类型」下沉到
-// dnsprovider.Service。token 仅在 proxy apply 渲染时取一次,即用即弃。
+// dnsResolverAdapter 适配 proxy.DNSResolver:把「按提供商 id 取 (类型, API ID, Secret)/ 取类型 /
+// 取根区清单」下沉到 dnsprovider.Service。Secret 仅在 proxy apply 渲染时取一次,即用即弃;
+// API ID 非机密。
 type dnsResolverAdapter struct{ dns dnsprovider.Service }
 
-func (a *dnsResolverAdapter) Resolve(ctx context.Context, providerID string) (string, string, bool, error) {
-	return a.dns.ResolveToken(ctx, providerID)
+func (a *dnsResolverAdapter) Resolve(ctx context.Context, providerID string) (string, string, string, bool, error) {
+	return a.dns.ResolveCredential(ctx, providerID)
 }
 
 func (a *dnsResolverAdapter) ProviderType(ctx context.Context, providerID string) (string, bool, error) {
 	return a.dns.ProviderType(ctx, providerID)
+}
+
+func (a *dnsResolverAdapter) ProviderZones(ctx context.Context, providerID string) ([]string, bool, error) {
+	zones, ok, err := a.dns.Zones(ctx, providerID)
+	if err != nil || !ok {
+		return nil, ok, err
+	}
+	out := make([]string, 0, len(zones))
+	for _, z := range zones {
+		out = append(out, z.BaseDomain)
+	}
+	return out, true, nil
 }
 
 // previewAllocator 适配 previewenv.Allocator:把「为指定 FQDN 分配 DNS-01 反代路由」下沉到
@@ -923,6 +942,14 @@ type previewRecordDeleter struct{ dns dnsprovider.Service }
 
 func (d *previewRecordDeleter) DeleteRecord(ctx context.Context, providerID, fqdn string) error {
 	return d.dns.DeleteSubdomainRecord(ctx, providerID, fqdn)
+}
+
+// previewZoneCoverer 适配 previewenv.ZoneCoverer:预览配置的 baseDomain 须落在所选提供商
+// 托管的某个根区下(多根区模型)。复用 dnsSvc.ZoneCovers。
+type previewZoneCoverer struct{ dns dnsprovider.Service }
+
+func (c *previewZoneCoverer) ZoneCovers(ctx context.Context, providerID, fqdn string) (bool, bool, error) {
+	return c.dns.ZoneCovers(ctx, providerID, fqdn)
 }
 
 // previewRepoResolver 适配 previewenv.ProjectRepoResolver:把项目 id 解析为「仓库地址 + 平台令牌」,
