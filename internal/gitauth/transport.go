@@ -55,7 +55,7 @@ func TransportAuth(repoURL string, cred vault.GitAuth) (transport.AuthMethod, er
 	if strings.TrimSpace(cred.Secret) == "" {
 		return nil, nil
 	}
-	scheme, _, ok := ParseRepoURL(repoURL)
+	scheme, _, _, ok := ParseRepoURL(repoURL)
 	if !ok {
 		// 地址不合法:让上层按地址被拒处理(各入口在克隆前另有 SSRF 收口,
 		// 此处兜底返回 ErrRepoBlocked 而非裸 BasicAuth)。
@@ -68,7 +68,9 @@ func TransportAuth(repoURL string, cred vault.GitAuth) (transport.AuthMethod, er
 		if !sshType {
 			return nil, ErrSchemeMismatch
 		}
-		user := strings.TrimSpace(cred.Username)
+		// go-git 的 ssh auth 会把空 User 原样发给服务端(整体覆盖 ClientConfig,
+		// 不回退 URL user 段)→ 认证必被拒。必须在此解析出非空用户名。
+		user := sshUser(repoURL, cred.Username)
 		if cred.Type == vault.TypeSSHKey {
 			pk, err := gogitssh.NewPublicKeys(user, []byte(cred.Secret), "")
 			if err != nil {
@@ -79,7 +81,9 @@ func TransportAuth(repoURL string, cred vault.GitAuth) (transport.AuthMethod, er
 			pk.HostKeyCallback = ssh.InsecureIgnoreHostKey() //nolint:gosec // 同 target 包 DEFERRED 决策
 			return pk, nil
 		}
-		return &gogitssh.Password{User: user}, nil
+		pw := &gogitssh.Password{User: user}
+		pw.HostKeyCallback = ssh.InsecureIgnoreHostKey() //nolint:gosec // 同上,避免 connect 时读不到 known_hosts 直接失败
+		return pw, nil
 	}
 
 	// http(s):SSH 系凭据没法当 BasicAuth 用,显式报错。
@@ -89,44 +93,68 @@ func TransportAuth(repoURL string, cred vault.GitAuth) (transport.AuthMethod, er
 	return BasicAuth(repoURL, cred.Username, cred.Secret), nil
 }
 
+// sshUser 解析 SSH 认证用户名:凭据显式 username → URL user 段(git@host:...)→
+// 缺省 "git"(GitHub/GitLab/Gitee/Codeup 等 git over SSH 的通用约定用户)。
+func sshUser(repoURL, credUsername string) string {
+	if u := strings.TrimSpace(credUsername); u != "" {
+		return u
+	}
+	s := strings.TrimSpace(repoURL)
+	if i := strings.Index(s, "://"); i >= 0 {
+		if ru, err := neturl.Parse(s); err == nil && ru.User != nil {
+			if u := ru.User.Username(); u != "" {
+				return u
+			}
+		}
+		return "git"
+	}
+	if m := scpLikeRe.FindStringSubmatch(s); m != nil && m[1] != "" {
+		return m[1]
+	}
+	return "git"
+}
+
 // scpLikeRe 匹配 SCP 风格仓库地址(无 scheme):[user@]host:path。
 // 冒号必须在首个斜杠之前(host:path 的 path 可含 /),与 git transport.NewEndpoint 同语义。
 var scpLikeRe = regexp.MustCompile(`^(?:([^@/]+)@)?([^/:]+):(.+)$`)
 
-// ParseRepoURL 把仓库地址归一化为 (scheme, host)。规则:
+// ParseRepoURL 把仓库地址归一化为 (scheme, host, user)。规则:
 //   - 显式 "://" URL:仅 http/https/ssh 被接受,其余(file://、git:// 等)拒绝;
 //   - 无 "://" 的 [user@]host:path:按 SCP 风格归一化为 ssh(host:path 里 host
 //     会被 url.Parse 误吃成 scheme,如 "localhost:8080/x",故必须先看 "://");
 //   - 两者都不满足 → ok=false。
 //
-// host 为空串(如 "ssh://")同样视为不合法。
-func ParseRepoURL(repoURL string) (scheme, host string, ok bool) {
+// host 为空串(如 "ssh://")视为不合法;user 是 URL user 段 / SCP user,可空。
+func ParseRepoURL(repoURL string) (scheme, host, user string, ok bool) {
 	s := strings.TrimSpace(repoURL)
 	if i := strings.Index(s, "://"); i >= 0 {
 		sch := strings.ToLower(s[:i])
 		switch sch {
 		case "http", "https", "ssh":
 		default:
-			return "", "", false
+			return "", "", "", false
 		}
-		host := ""
+		host, user := "", ""
 		if u, err := neturl.Parse(s); err == nil {
 			host = u.Hostname()
+			if u.User != nil {
+				user = u.User.Username()
+			}
 		}
 		if host == "" {
-			return "", "", false
+			return "", "", "", false
 		}
-		return sch, host, true
+		return sch, host, user, true
 	}
 	if m := scpLikeRe.FindStringSubmatch(s); m != nil && m[2] != "" {
-		return "ssh", m[2], true
+		return "ssh", m[2], m[1], true
 	}
-	return "", "", false
+	return "", "", "", false
 }
 
 // IsSSHURL 判断 repoURL 是否 SSH 协议:ssh:// scheme 或 SCP 风格(git@host:path)。
 func IsSSHURL(repoURL string) bool {
-	scheme, _, ok := ParseRepoURL(repoURL)
+	scheme, _, _, ok := ParseRepoURL(repoURL)
 	return ok && scheme == "ssh"
 }
 
@@ -138,7 +166,7 @@ func IsSSHURL(repoURL string) bool {
 //
 // 通过返回 nil。该实现此前在 build/project/ai/httpapi 各有一份拷贝,现收敛于此。
 func ValidateRepoURL(repoURL string) error {
-	_, host, ok := ParseRepoURL(repoURL)
+	_, host, _, ok := ParseRepoURL(repoURL)
 	if !ok || host == "" {
 		return ErrRepoBlocked
 	}

@@ -98,19 +98,24 @@ func classifyAuthErr(err error) error {
 
 // classifyProbeErr 把 go-git/transport 错误映射为干净领域错误(不携带底层文本)。
 //
-// 仅依赖 go-git/transport 的哨兵错误判定凭据问题,绝不做 "401"/"403" 文本子串嗅探
-// (会把 "403ms"、含数字的主机名等无关文本误判为鉴权失败)。无法明确归为凭据错误的
-// 一律归不可达(DNS/连接/仓库不存在/协议错误等)。SSH 鉴权失败同样落在 transport
-// 哨兵错误上(ErrAuthorizationFailed 等),无需文本嗅探。
+// HTTP 鉴权失败落在 go-git/transport 哨兵错误上,直接 errors.Is 判定;绝不做
+// "401"/"403" 数字子串嗅探(会把 "403ms"、含数字的主机名等误判为鉴权失败)。
+// SSH 鉴权失败**不走哨兵错误**,而是 x/crypto/ssh 的错误文本(实测:
+// "ssh: handshake failed: ssh: unable to authenticate, ..."),故只对这条
+// x/crypto 特有且无歧义的特征串做文本匹配 → ErrCredentialError;其余握手/
+// 网络失败仍归不可达。
 func classifyProbeErr(err error) error {
 	switch {
 	case errors.Is(err, transport.ErrAuthenticationRequired),
 		errors.Is(err, transport.ErrAuthorizationFailed),
 		errors.Is(err, transport.ErrInvalidAuthMethod):
 		return ErrCredentialError
-	default:
-		return ErrRepoUnreachable
 	}
+	if strings.Contains(err.Error(), "unable to authenticate") {
+		// x/crypto/ssh 认证被拒(公钥未在平台登记 / 密钥不匹配 / 用户名错误)。
+		return ErrCredentialError
+	}
+	return ErrRepoUnreachable
 }
 
 // defaultBranchFromRefs 从 ls-remote 引用列表解析远端默认分支(HEAD 指向的分支短名)。
