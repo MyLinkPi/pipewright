@@ -548,7 +548,7 @@ func (s *service) issueCert(ctx context.Context, id string) error {
 	if err := s.runIssue(ctx, c, dnsAPIName(pt), dnsEnvFor(pt, apiID, secret)); err != nil {
 		return err
 	}
-	certPEM, keyPEM, err := s.readBackCert(c.PrimaryDomain)
+	certPEM, keyPEM, err := s.readBackCert(c.PrimaryDomain, c.KeyType)
 	if err != nil {
 		return err
 	}

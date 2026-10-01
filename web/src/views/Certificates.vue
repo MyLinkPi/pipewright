@@ -926,10 +926,10 @@ async function submitImport(): Promise<void> {
   margin-top: 4px;
   font-size: var(--text-micro);
   color: var(--color-faint);
-  max-width: 320px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  max-width: 420px;
+  /* 错误详情须完整可读(排障信息),换行展示而非省略号截断 */
+  white-space: pre-wrap;
+  word-break: break-all;
 }
 .cell-src {
   white-space: nowrap;

@@ -114,6 +114,26 @@ func TestLocalEngineUpgrade(t *testing.T) {
 	}
 }
 
+// TestAcmeDomainDir 锁定产物目录规则(与 acme.sh _initpath 的 DOMAIN_PATH 一致):
+// ec-* → <domain>_ecc;rsa-* → <domain>;规则目录缺失而另一种存在时回退(acme.sh 同款)。
+func TestAcmeDomainDir(t *testing.T) {
+	home := t.TempDir()
+	svc := &service{home: home}
+	if got := svc.acmeDomainDir("efg.com", KeyTypeEC256); got != "efg.com_ecc" {
+		t.Fatalf("EC 规则目录应为 _ecc 后缀:%s", got)
+	}
+	if got := svc.acmeDomainDir("efg.com", KeyTypeRSA2048); got != "efg.com" {
+		t.Fatalf("RSA 规则目录应无后缀:%s", got)
+	}
+	// 回退:RSA 证书但只剩 _ecc 目录(acme.sh「seems to already have an ECC cert」分支)。
+	if err := os.MkdirAll(filepath.Join(home, "efg.com_ecc"), 0o700); err != nil {
+		t.Fatalf("建目录:%v", err)
+	}
+	if got := svc.acmeDomainDir("efg.com", KeyTypeRSA2048); got != "efg.com_ecc" {
+		t.Fatalf("仅剩 _ecc 目录时应回退:%s", got)
+	}
+}
+
 func TestValidateDomainName(t *testing.T) {
 	for _, ok := range []string{"efg.com", "a.efg.com", "*.efg.com", "a-b.example.co"} {
 		if err := validateDomainName(ok); err != nil {
