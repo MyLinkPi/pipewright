@@ -1,7 +1,7 @@
 export default {
   eyebrow: 'Ops-Dashboard',
   title: 'Zertifikate',
-  subtitle: 'Einheitliches Zertifikatsmanagement — automatische Ausstellung und Erneuerung über das integrierte acme.sh (DNS-01, Wildcards werden unterstützt) sowie manueller Import. Die Signing-Engine läuft auf dem Gateway-Host der Dienstregistrierung, Zertifikate werden automatisch bereitgestellt.',
+  subtitle: 'Einheitliches Zertifikatsmanagement — automatische Ausstellung und Erneuerung über das integrierte acme.sh (DNS-01, Wildcards) sowie manueller Import. Die Signing-Engine läuft lokal auf dem Steuerknoten; Zertifikate werden automatisch zum Gateway bereitgestellt, sobald es konfiguriert ist.',
   loadingAria: 'Zertifikate werden geladen',
   refreshingAll: 'Aktualisierung…',
 
@@ -15,17 +15,14 @@ export default {
   dayUnit: 'Tage',
 
   engine: {
-    title: 'Signing-Engine (acme.sh)',
+    title: 'Signing-Engine (acme.sh · lokal)',
+    notInstalled: 'Nicht installiert',
     ready: 'Bereit',
     missingDeps: 'Abhängigkeiten fehlen',
-    notInstalled: 'Nicht bereitgestellt',
-    unconfigured: 'Gateway nicht konfiguriert',
-    host: 'Gateway-Host',
-    deploy: 'Engine bereitstellen',
-    deployed: 'Signing-Engine bereitgestellt',
-    deployFail: 'Bereitstellung der Signing-Engine fehlgeschlagen',
-    hint: 'Die Signing-Engine stellt Zertifikate auf dem Gateway-Host aus und erneuert sie; sie wird beim Anlegen eines Zertifikats automatisch bereitgestellt und kann hier auch explizit bereitgestellt oder geprüft werden.',
-    gotoGateway: 'Dienstregistrierung öffnen',
+    deploy: 'Engine installieren/prüfen',
+    deployed: 'Signing-Engine bereit',
+    deployFail: 'Installation der Signing-Engine fehlgeschlagen',
+    hint: 'acme.sh läuft lokal auf dem Steuerknoten als eingebettete Skripte (benötigt sh, curl und openssl; Linux/POSIX-Steuerknoten). Die Ausstellung hängt nicht vom Gateway ab; ausgestellte Zertifikate werden nach Konfiguration automatisch zu passenden Gateway-Basisdomains bereitgestellt.',
   },
 
   btn: {

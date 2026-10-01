@@ -7,15 +7,14 @@
 //   - 补齐 internal/servicereg 的证书短板:网关本身不做 ACME,基域证书改由本包签发后经
 //     CertSink(servicereg.UploadCert)同步,nginx.conf 渲染与 reload 复用既有收敛管道。
 //
-// acme.sh 运行形态:网关主机上的宿主机脚本(无容器/无镜像链)—— fork 最小集 go:embed 进
-// 平台二进制,首次使用时经 SSH 复制到网关主机 /opt/pipewright/acme 直接以 sh 运行;
-// 平台是唯一续期驱动(单一控制面,无 cron)。证书由平台读回、密文入库,再经 CertSink 下发网关。
-// 详见 acmesh.go 头注释。
+// acme.sh 运行形态:控制机本地脚本(无容器/无镜像链/不依赖网关配置)—— fork 最小集
+// go:embed 进平台二进制,首次使用时释放到本地 acme home(DB 同级 acme/)直接运行;
+// 平台是唯一续期驱动(单一控制面,无 cron)。证书由平台读回、密文入库,再经 CertSink
+// 下发网关(网关未配置不影响签发)。详见 acmesh.go 头注释。
 //
 // 设计纪律(与 proxy/servicereg 一致):
-//   - 一切远程命令经 target.Exec 以 array 形式执行(AC-SEC-02 不拼 shell)。唯一例外:
-//     签发/续期是一次性平台生成脚本(Upload 到网关主机 /tmp 后 sh 执行,用完即删),
-//     脚本内容 = 白名单校验过的域名/CA/密钥类型 + POSIX 单引号转义过的 DNS 凭据 ——
+//   - acme.sh 经 os/exec 以参数数组在控制机本地调用(AC-SEC-02 不拼 shell);域名/CA/
+//     密钥类型均已领域层白名单校验,DNS 凭据经进程环境变量传递 ——
 //     凭据绝不进命令行/日志/回库/回 API。
 //   - 证书 PEM 经 vault SealSecret 加密存 BLOB(与 servicereg 同手法),DB 为权威副本,
 //     网关卷丢失也能重新下发。
@@ -110,9 +109,7 @@ var (
 	ErrBusy = errors.New("certmgmt: operation already in progress")
 	// ErrCertInUse 表示证书正被平台 HTTPS 使用(删除前须先在设置中更换或关闭)。
 	ErrCertInUse = errors.New("certmgmt: certificate is in use")
-	// ErrNoGateway 表示尚未配置网关主机(签发引擎无落脚点)。
-	ErrNoGateway = errors.New("certmgmt: gateway server not configured")
-	// ErrAcmeshStart 表示 acme.sh 脚本集在网关主机上的安装/依赖校验失败。
+	// ErrAcmeshStart 表示 acme.sh 脚本集在控制机本地的安装/依赖校验失败。
 	ErrAcmeshStart = errors.New("certmgmt: 安装 acme.sh 签发引擎失败")
 	// ErrIssue 表示 acme.sh 签发/续期执行失败(附 stderr 人话摘要)。
 	ErrIssue = errors.New("certmgmt: acme.sh 执行失败")
@@ -153,14 +150,11 @@ type Certificate struct {
 	UpdatedAt     time.Time
 }
 
-// EngineStatus 是签发引擎(网关主机上的 acme.sh 脚本集)的探测快照。
+// EngineStatus 是签发引擎(控制机本地的 acme.sh 脚本集)的探测快照。
 type EngineStatus struct {
-	Configured bool   // 网关是否已配置主机(server_id 非空)
-	ServerID   string // 网关主机 id
-	ServerName string // 网关主机展示名(best-effort,取不到回退 id)
-	Installed  bool   // acme.sh 脚本集是否已复制到网关主机
-	Ready      bool   // 运行期依赖(curl + openssl)是否就绪
-	Version    string // acme.sh 版本串(best-effort,如 v3.1.1)
+	Installed bool   // acme.sh 脚本集是否已释放到本地 home
+	Ready     bool   // 运行期依赖(sh + curl + openssl)是否就绪
+	Version   string // acme.sh 版本串(best-effort,如 v3.1.1)
 }
 
 // CreateInput 是创建 ACME 证书的入参。
@@ -190,12 +184,6 @@ type CredentialsResolver interface {
 	ProviderType(ctx context.Context, providerID string) (providerType string, ok bool, err error)
 	// ProviderZones 返回该提供商托管的全部根域(域名覆盖校验用)。
 	ProviderZones(ctx context.Context, providerID string) (baseDomains []string, ok bool, err error)
-}
-
-// GatewayInfo 抽象「网关在哪」(由 main.go 适配 servicereg settings 注入)。
-type GatewayInfo interface {
-	// Gateway 返回网关主机 id;ok=false 表示网关未配置主机。
-	Gateway(ctx context.Context) (serverID string, ok bool, err error)
 }
 
 // BaseDomain 是 CertSink 暴露的网关基域引用。
@@ -248,9 +236,9 @@ type Service interface {
 	Delete(ctx context.Context, id string) error
 	// SetAutoRenew 开/关自动续期。
 	SetAutoRenew(ctx context.Context, id string, on bool) (*Certificate, error)
-	// EngineStatus 探测 acme.sh 脚本集(网关未配置 → Configured:false,非错误)。
+	// EngineStatus 探测本地 acme.sh 引擎(脚本就位/依赖就绪/版本;纯本地探测)。
 	EngineStatus(ctx context.Context) (*EngineStatus, error)
-	// DeployEngine 显式部署/更新签发引擎脚本集(无需先建证书)。
+	// DeployEngine 显式安装本地签发引擎脚本集(无需先建证书)。
 	DeployEngine(ctx context.Context) (*EngineStatus, error)
 	// OpenCertPEM 进程内解密返回证书/私钥 PEM 明文(供平台 HTTPS 下发到宿主 nginx;
 	// PEM 仅进程内传递,绝不过 HTTP)。证书不存在 → ErrNotFound;密文缺失/解密失败 → 人读错误。
@@ -268,8 +256,8 @@ type service struct {
 	tg     target.Service
 	vault  SecretSealer
 	dns    CredentialsResolver
-	gw     GatewayInfo
 	sink   CertSink
+	home   string // 本地 acme home(空 → homeDir() 兜底:env / "acme")
 	phttps PlatformHTTPS
 
 	mu       sync.Mutex
@@ -290,8 +278,12 @@ func New(db *sql.DB, tg target.Service, vault SecretSealer) Service {
 // SetCredentialsResolver 注入 DNS 提供商凭据解析器。
 func (s *service) SetCredentialsResolver(r CredentialsResolver) { s.dns = r }
 
-// SetGateway 注入网关信息(主机/卷)。
-func (s *service) SetGateway(g GatewayInfo) { s.gw = g }
+// SetHomeDir 注入本地 acme home 目录(生产装配传 DB 同级 acme/;不传则按 env/默认兜底)。
+func (s *service) SetHomeDir(dir string) {
+	if v := strings.TrimSpace(dir); v != "" {
+		s.home = v
+	}
+}
 
 // SetCertSink 注入网关证书同步器。
 func (s *service) SetCertSink(cs CertSink) { s.sink = cs }
@@ -455,7 +447,7 @@ func (s *service) Delete(ctx context.Context, id string) error {
 	}
 	// acme 证书:best-effort 从 acme.sh 续期清单移除(不向 CA revoke,避免误删不可逆)。
 	if c.Source == SourceACME && c.Status == StatusIssued {
-		s.removeFromAcmesh(ctx, c)
+		s.removeFromAcmesh(c)
 	}
 	// 正被某基域使用(基域当前证书内容 == 本证书)→ 清空该基域并回退 HTTP-only。
 	s.clearOwningDomains(ctx, c)
@@ -475,24 +467,14 @@ func (s *service) SetAutoRenew(ctx context.Context, id string, on bool) (*Certif
 // ---------- 引擎 ----------
 
 func (s *service) EngineStatus(ctx context.Context) (*EngineStatus, error) {
-	return s.inspectEngine(ctx)
+	return s.inspectEngine()
 }
 
 func (s *service) DeployEngine(ctx context.Context) (*EngineStatus, error) {
-	if s.gw == nil {
-		return nil, ErrNoGateway
-	}
-	serverID, ok, err := s.gw.Gateway(ctx)
-	if err != nil {
+	if err := s.ensureEngine(); err != nil {
 		return nil, err
 	}
-	if !ok || serverID == "" {
-		return nil, fmt.Errorf("%w:请先在「服务注册」里配置网关主机", ErrNoGateway)
-	}
-	if err := s.ensureEngineAt(ctx, serverID); err != nil {
-		return nil, err
-	}
-	return s.inspectEngine(ctx)
+	return s.inspectEngine()
 }
 
 // OpenCertPEM 进程内解密返回证书/私钥 PEM(平台 HTTPS 下发到宿主 nginx 用;绝不过 HTTP)。
@@ -549,16 +531,6 @@ func (s *service) issueCert(ctx context.Context, id string) error {
 	if s.vault == nil {
 		return target.ErrVaultUnconfigured
 	}
-	if s.gw == nil {
-		return ErrNoGateway
-	}
-	serverID, ok, err := s.gw.Gateway(ctx)
-	if err != nil {
-		return err
-	}
-	if !ok || serverID == "" {
-		return fmt.Errorf("%w:请先在「服务注册」里配置网关主机", ErrNoGateway)
-	}
 	pt, apiID, secret, ok, err := s.dns.Resolve(ctx, c.DNSProviderID)
 	if err != nil {
 		return err
@@ -567,21 +539,16 @@ func (s *service) issueCert(ctx context.Context, id string) error {
 		return fmt.Errorf("%w:DNS 提供商不可用或凭据缺失", ErrInvalidDNSProvider)
 	}
 
-	// 安装/校验引擎(嵌入脚本缺失则复制,依赖缺失报人话错误)。
-	if err := s.ensureEngineAt(ctx, serverID); err != nil {
+	// 安装/校验本地引擎(嵌入脚本缺失则释放,依赖缺失报人话错误)。
+	if err := s.ensureEngine(); err != nil {
 		return err
 	}
 
-	op := issueOp
-	if !c.LastIssuedAt.IsZero() {
-		op = renewOp // 已成功签发过 → 本次是续期(--renew --force)
-	}
-	script := buildRunScript(op, c, dnsAPIName(pt), dnsEnvFor(pt, apiID, secret))
-	if err := s.execScriptAt(ctx, serverID, id, script); err != nil {
+	// 签发/续期同路径:凭据经进程环境变量传递,绝不进命令行/日志。
+	if err := s.runIssue(ctx, c, dnsAPIName(pt), dnsEnvFor(pt, apiID, secret)); err != nil {
 		return err
 	}
-
-	certPEM, keyPEM, err := s.readBackCert(ctx, serverID, c.PrimaryDomain)
+	certPEM, keyPEM, err := s.readBackCert(c.PrimaryDomain)
 	if err != nil {
 		return err
 	}
@@ -599,7 +566,7 @@ func (s *service) issueCert(ctx context.Context, id string) error {
 		return err
 	}
 	detail := "签发成功"
-	if op == renewOp {
+	if !c.LastIssuedAt.IsZero() {
 		detail = "续期成功"
 	}
 	if err := s.store.markIssued(ctx, id, sealedCert, sealedKey, meta, detail); err != nil {
@@ -626,11 +593,8 @@ func (s *service) syncGateway(ctx context.Context, id string) string {
 	if err != nil || !c.HasPEM {
 		return ""
 	}
-	if s.sink == nil || s.gw == nil {
+	if s.sink == nil {
 		return "下发提示:网关未接入,证书已入库但未下发"
-	}
-	if _, ok, err := s.gw.Gateway(ctx); err != nil || !ok {
-		return "下发提示:网关未配置主机,证书已入库但未下发"
 	}
 	sealedCert, sealedKey, ok, err := s.store.getSealed(ctx, id)
 	if err != nil || !ok {

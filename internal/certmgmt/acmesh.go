@@ -1,34 +1,36 @@
-// acme.sh 以**宿主机脚本**方式运行在网关主机上(无容器、无镜像链):
+// acme.sh 以**控制机本地脚本**方式运行 —— 签发/续期不依赖任何远程主机(不需要配置网关):
 //   - 自维护 fork(szxufan/acme.sh)的最小集 vendored 在本包 acmesh/ 下(acme.sh 主脚本 +
 //     dns_cf/dns_dp/dns_ali 三个 dnsapi),经 go:embed 嵌进平台二进制 —— 升级 fork =
 //     换文件重编译,不依赖任何镜像构建/发布链路;
-//   - 首次使用(或显式「部署引擎」)时经 SSH 复制到网关主机 /opt/pipewright/acme/,
-//     之后直接以 sh 运行。acme.sh 是纯 shell 脚本,运行期依赖仅系统 curl + openssl;
+//   - 首次签发(或显式「安装引擎」)时释放到本地 acme home 目录(默认 DB 同级 acme/,
+//     main.go 注入;env PIPEWRIGHT_ACMESH_HOME 可覆盖),经 os/exec 直接运行。acme.sh 是
+//     纯 shell 脚本,运行期依赖仅 sh + curl + openssl(控制机须为 Linux/POSIX 环境);
 //   - 证书产物落在本目录(<home>/<主域>/fullchain.cer + .key),由平台读回、密文入库,
-//     再经 CertSink(servicereg)下发 nginx 并 reload —— acme.sh 不直接写 nginx 卷。
+//     再经 CertSink(servicereg)下发网关并 reload —— 网关未配置也不影响签发,配好后随
+//     全量收敛自动带上。
 //
-// 注入面纪律不变:一切命令经 target.Exec 以 array 形式执行(AC-SEC-02 不拼 shell);
-// 唯一例外仍是一次性签发脚本(Upload 到 /tmp → sh 执行 → 删除),内容 = 白名单校验过的
-// 域名/CA/密钥类型 + POSIX 单引号转义过的 DNS 凭据,凭据绝不进命令行/日志。
+// 注入面纪律:acme.sh 经 os/exec 以**参数数组**调用(绝不拼 shell);DNS 凭据经进程环境
+// 变量传递(不进命令行/日志/库),随进程结束即散。
 package certmgmt
 
 import (
+	"bytes"
 	"context"
 	"embed"
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
+	"time"
 )
 
-// 网关主机上的 acme.sh 安装布局(常量,无 env 覆盖 —— 路径即契约)。
-const (
-	// acmeHomeDir 是 acme.sh 在网关主机上的安装目录(同时作为 --home 配置目录:
-	// ACME 账户密钥、域配置、证书产物全部落在此,重复部署幂等)。
-	acmeHomeDir = "/opt/pipewright/acme"
-	// acmeScript 是主脚本的绝对路径(安装后存在)。
-	acmeScript = acmeHomeDir + "/acme.sh"
-	// acmeHostScriptPrefix 是一次性签发脚本的宿主临时路径前缀(Upload 后直接 sh 执行)。
-	acmeHostScriptPrefix = "/tmp/pw-cert-"
-)
+// acmeHomeEnv 允许经环境变量覆盖本地 acme home 目录(默认 main.go 注入的 DB 同级 acme/)。
+const acmeHomeEnv = "PIPEWRIGHT_ACMESH_HOME"
+
+// defaultAcmeHome 是未注入且连用户缓存目录都取不到时的极端兜底(相对工作目录);
+// 生产装配由 main.go 注入绝对路径,正常走不到这里。
+const defaultAcmeHome = "acme"
 
 // acmeshFS 嵌入自维护 fork 的最小运行集(主脚本 + 三家 DNS 提供商的 dnsapi)。
 //
@@ -38,227 +40,201 @@ const (
 //go:embed acmesh/dnsapi/dns_ali.sh
 var acmeshFS embed.FS
 
-// acmeshFiles 是「嵌入源路径 → 网关主机目标路径」的安装清单(确定性顺序)。
+// acmeshFiles 是「嵌入源路径 → 本地目标路径(相对 home)」的安装清单(确定性顺序)。
 var acmeshFiles = []struct {
 	src  string
 	dest string
 }{
-	{"acmesh/acme.sh", acmeScript},
-	{"acmesh/dnsapi/dns_cf.sh", acmeHomeDir + "/dnsapi/dns_cf.sh"},
-	{"acmesh/dnsapi/dns_dp.sh", acmeHomeDir + "/dnsapi/dns_dp.sh"},
-	{"acmesh/dnsapi/dns_ali.sh", acmeHomeDir + "/dnsapi/dns_ali.sh"},
+	{"acmesh/acme.sh", "acme.sh"},
+	{"acmesh/dnsapi/dns_cf.sh", "dnsapi/dns_cf.sh"},
+	{"acmesh/dnsapi/dns_dp.sh", "dnsapi/dns_dp.sh"},
+	{"acmesh/dnsapi/dns_ali.sh", "dnsapi/dns_ali.sh"},
 }
 
-// depsProbe 是运行期依赖探测的固定常量脚本(无任何用户输入,非注入面;
-// 与 servicereg 自举脚本同一例外纪律):acme.sh 只需系统 sh + curl + openssl。
-const depsProbe = `command -v curl >/dev/null 2>&1 && command -v openssl >/dev/null 2>&1`
+// acmeDeps 是 acme.sh 的运行期依赖(控制机本地查找;缺任一 → 引擎未就绪)。
+var acmeDeps = []string{"sh", "curl", "openssl"}
+
+// ---------- 路径解析 ----------
+
+// homeDir 返回本地 acme home(SetHomeDir 注入优先,env 次之,最后兜底用户缓存目录下
+// 的固定位置 —— 绝不用相对 cwd:进程工作目录不可控,含私钥的 home 会随处漂移)。
+func (s *service) homeDir() string {
+	if s.home != "" {
+		return s.home
+	}
+	if v := strings.TrimSpace(os.Getenv(acmeHomeEnv)); v != "" {
+		return filepath.Clean(v)
+	}
+	if cache, err := os.UserCacheDir(); err == nil {
+		return filepath.Join(cache, "pipewright", "acme")
+	}
+	return defaultAcmeHome
+}
+
+// scriptPath 返回 acme.sh 主脚本路径。
+func (s *service) scriptPath() string {
+	return filepath.Join(s.homeDir(), "acme.sh")
+}
 
 // ---------- 引擎安装 / 探测 ----------
 
-// ensureEngineAt 幂等地在网关主机上安装/更新 acme.sh 脚本集并校验运行期依赖:
-// 建目录 → 覆盖复制嵌入文件(逐个 Upload)→ chmod → 探测 curl/openssl(缺 → ErrAcmeshStart)。
-func (s *service) ensureEngineAt(ctx context.Context, serverID string) error {
-	if s.tg == nil {
-		return ErrAcmeshStart
+// ensureEngine 幂等地在本地安装/更新 acme.sh 脚本集并校验运行期依赖:
+// 建目录 → 逐文件与嵌入内容比对、不一致即覆盖(升级 fork = 换嵌入文件重编译即生效;
+// 只覆盖这 4 个脚本,ACME 账户/证书产物不动)→ 校验 sh/curl/openssl(缺 → ErrAcmeshStart 人话)。
+func (s *service) ensureEngine() error {
+	home := s.homeDir()
+	if err := os.MkdirAll(filepath.Join(home, "dnsapi"), 0o700); err != nil {
+		return fmt.Errorf("%w:无法创建 %s(%v)", ErrAcmeshStart, home, err)
 	}
-	if res, err := s.tg.Exec(ctx, serverID, []string{"mkdir", "-p", acmeHomeDir + "/dnsapi"}); err != nil {
-		return err
-	} else if res.ExitCode != 0 {
-		return fmt.Errorf("%w:无法创建 %s(请确认 SSH 用户有权限;通常需要 root 或先 sudo mkdir 并授权)%s",
-			ErrAcmeshStart, acmeHomeDir, strings.TrimSpace(firstNonEmpty(res.Stderr, res.Stdout)))
-	}
-	// 逐文件安装:无条件覆盖上传(内容确定性、幂等;fork 升级 = 换嵌入文件重编译后,
-	// 任何一次签发/显式部署都会把新脚本同步到网关,无版本漂移)。
 	for _, f := range acmeshFiles {
+		dest := filepath.Join(home, f.dest)
 		content, rerr := acmeshFS.ReadFile(f.src)
 		if rerr != nil {
 			return fmt.Errorf("%w:嵌入文件缺失 %s", ErrAcmeshStart, f.src)
 		}
-		if err := s.tg.Upload(ctx, serverID, strings.NewReader(string(content)), f.dest); err != nil {
-			return fmt.Errorf("%w:复制 %s 到网关主机失败:%v", ErrAcmeshStart, f.src, err)
+		if existing, rerr := os.ReadFile(dest); rerr == nil && bytes.Equal(existing, content) {
+			continue // 已安装且与嵌入版本一致
+		}
+		mode := os.FileMode(0o600)
+		if f.dest == "acme.sh" {
+			mode = 0o700
+		}
+		if werr := os.WriteFile(dest, content, mode); werr != nil {
+			return fmt.Errorf("%w:写入 %s 失败(%v)", ErrAcmeshStart, dest, werr)
 		}
 	}
-	if res, err := s.tg.Exec(ctx, serverID, []string{"chmod", "700", acmeScript}); err != nil {
-		return err
-	} else if res.ExitCode != 0 {
-		return fmt.Errorf("%w:%s", ErrAcmeshStart, strings.TrimSpace(firstNonEmpty(res.Stderr, res.Stdout)))
-	}
-	return s.ensureDeps(ctx, serverID)
-}
-
-// ensureDeps 探测系统 curl + openssl(acme.sh 唯一的运行期依赖),缺失给人话错误。
-func (s *service) ensureDeps(ctx context.Context, serverID string) error {
-	res, err := s.tg.Exec(ctx, serverID, []string{"sh", "-c", depsProbe})
-	if err != nil {
-		return err
-	}
-	if res.ExitCode != 0 {
-		return fmt.Errorf("%w:网关主机缺少 curl 或 openssl(DNS-01 签发需要,请先安装)", ErrAcmeshStart)
+	if missing := missingDeps(); len(missing) > 0 {
+		return fmt.Errorf("%w:控制机缺少 %s(acme.sh 运行需要;控制机须为 Linux/POSIX 环境)",
+			ErrAcmeshStart, strings.Join(missing, "、"))
 	}
 	return nil
 }
 
-// inspectEngine 探测引擎状态(单次 SSH,固定常量脚本):脚本就位?依赖就绪?版本号?
-// 网关未配置主机 → Configured:false(非错误);探测传输错误才返回 error。
-func (s *service) inspectEngine(ctx context.Context) (*EngineStatus, error) {
+// missingDeps 返回本地缺失的运行期依赖(经 exec.LookPath 查找)。
+func missingDeps() []string {
+	var missing []string
+	for _, dep := range acmeDeps {
+		if _, err := exec.LookPath(dep); err != nil {
+			missing = append(missing, dep)
+		}
+	}
+	return missing
+}
+
+// inspectEngine 探测本地引擎状态:脚本就位?依赖就绪?版本号?纯本地探测,不触网不触网关。
+func (s *service) inspectEngine() (*EngineStatus, error) {
 	out := &EngineStatus{}
-	if s.gw == nil {
-		return out, nil
+	if _, err := os.Stat(s.scriptPath()); err == nil {
+		out.Installed = true
 	}
-	serverID, ok, err := s.gw.Gateway(ctx)
-	if err != nil {
-		return nil, err
-	}
-	if !ok || serverID == "" {
-		return out, nil
-	}
-	out.Configured = true
-	out.ServerID = serverID
-	// 主机展示名 best-effort(取不到回退 id)。
-	if s.tg != nil {
-		if srv, gerr := s.tg.Get(ctx, serverID); gerr == nil && srv != nil && srv.Name != "" {
-			out.ServerName = srv.Name
-		}
-	}
-	if out.ServerName == "" {
-		out.ServerName = serverID
-	}
-	if s.tg == nil {
-		return out, nil
-	}
-	probe := `if [ -f ` + acmeScript + ` ]; then echo PW_INSTALLED=1; else echo PW_INSTALLED=0; fi; ` +
-		`if ` + depsProbe + `; then echo PW_READY=1; else echo PW_READY=0; fi; ` +
-		`sh ` + acmeScript + ` --version 2>/dev/null | tail -1 || true`
-	res, err := s.tg.Exec(ctx, serverID, []string{"sh", "-c", probe})
-	if err != nil {
-		return nil, err
-	}
-	if res.ExitCode != 0 {
-		return out, nil // 探测失败按未部署处理,不阻断页面
-	}
-	for _, line := range strings.Split(res.Stdout, "\n") {
-		line = strings.TrimSpace(line)
-		switch {
-		case line == "PW_INSTALLED=1":
-			out.Installed = true
-		case line == "PW_READY=1":
-			out.Ready = true
-		case line != "" && !strings.HasPrefix(line, "PW_") && out.Version == "":
-			out.Version = truncate(line, 64) // acme.sh --version 的末行(如 v3.1.1)
-		}
+	out.Ready = len(missingDeps()) == 0
+	if out.Installed && out.Ready {
+		out.Version = s.acmeVersion()
 	}
 	return out, nil
 }
 
-// ---------- 一次性脚本构造(纯函数,golden 可测) ----------
-
-// runOp 是脚本要执行的 acme.sh 主操作。
-type runOp string
-
-const (
-	issueOp runOp = "issue"
-	renewOp runOp = "renew"
-)
-
-// buildRunScript 生成一次性执行脚本:export DNS 凭据(单引号转义)→ acme.sh --issue/--renew。
-//
-// 注入面分析(与 servicereg 固定自举脚本同一例外纪律):
-//   - 域名/CA/密钥类型:领域层白名单校验过(FQDN/通配符正则 + 枚举),再经 shQuote 单引号包裹;
-//   - DNS 凭据:任意字节,仅经 shQuote POSIX 单引号转义(' → '\''),不进命令行、不落日志;
-//   - 其余内容全为包内常量路径。
-func buildRunScript(op runOp, c *Certificate, dnsAPI string, dnsEnv [][2]string) string {
-	var b strings.Builder
-	b.WriteString("#!/bin/sh\nset -e\n")
-	for _, kv := range dnsEnv {
-		b.WriteString("export " + kv[0] + "=" + shQuote(kv[1]) + "\n")
+// acmeVersion best-effort 读 acme.sh 版本(`acme.sh --version` 末行,如 v3.1.1)。
+func (s *service) acmeVersion() string {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	out, err := s.runAcmesh(ctx, []string{"--version"}, nil)
+	if err != nil {
+		return ""
 	}
-	b.WriteString(acmeScript + " --home " + shQuote(acmeHomeDir) + " --" + string(op))
-	if op == issueOp {
-		b.WriteString(" --dns " + dnsAPI)
-		for _, d := range c.Domains {
-			b.WriteString(" -d " + shQuote(d))
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if len(lines) == 0 {
+		return ""
+	}
+	return truncate(strings.TrimSpace(lines[len(lines)-1]), 64)
+}
+
+// ---------- acme.sh 调用 ----------
+
+// runAcmesh 在本地以参数数组运行 acme.sh(绝不拼 shell);extraEnv 追加到进程环境
+// (DNS 凭据走这里,不进命令行/日志)。返回 stdout;非零退出 → ErrIssue(附人话摘要)。
+func (s *service) runAcmesh(ctx context.Context, args []string, extraEnv [][2]string) (string, error) {
+	sh, err := exec.LookPath("sh")
+	if err != nil {
+		return "", fmt.Errorf("%w:控制机缺少 sh(acme.sh 需要 POSIX shell;控制机须为 Linux)", ErrAcmeshStart)
+	}
+	full := append([]string{"--home", s.homeDir()}, args...)
+	cmd := exec.CommandContext(ctx, sh, append([]string{s.scriptPath()}, full...)...)
+	cmd.Env = os.Environ()
+	for _, kv := range extraEnv {
+		cmd.Env = append(cmd.Env, kv[0]+"="+kv[1])
+	}
+	var stdout, stderr strings.Builder
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if rerr := cmd.Run(); rerr != nil {
+		detail := strings.TrimSpace(stderr.String())
+		if detail == "" {
+			detail = strings.TrimSpace(stdout.String())
 		}
-		b.WriteString(" --keylength " + c.KeyType)
-		b.WriteString(" --server " + shQuote(caServerURL[c.CA]))
-	} else {
-		// 续期:域配置(含 --dns/--keylength/--server)已持久化在 home 下,
-		// 仅需凭据 + --force(是否重签由平台续期窗口决定,不让 acme.sh 自己判断)。
-		b.WriteString(" -d " + shQuote(c.PrimaryDomain) + " --force")
+		if ctx.Err() == context.DeadlineExceeded {
+			detail = "执行超时(ACME/DNS 传播等待过久)"
+		}
+		return "", fmt.Errorf("%w:%s", ErrIssue, truncate(detail, 800))
 	}
-	b.WriteString("\n")
-	return b.String()
+	return stdout.String(), nil
 }
 
-// shQuote 返回 POSIX 单引号包裹的字面量(' → '\''),任意字节安全。
-func shQuote(s string) string {
-	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+// issueArgs 构造签发的 acme.sh 参数(纯函数,golden 可测;值均已过白名单校验)。
+func issueArgs(c *Certificate, dnsAPI string) []string {
+	args := []string{"--issue", "--dns", dnsAPI, "-d", c.PrimaryDomain}
+	for _, d := range c.Domains {
+		if d == c.PrimaryDomain {
+			continue
+		}
+		args = append(args, "-d", d)
+	}
+	return append(args,
+		"--keylength", c.KeyType,
+		"--server", caServerURL[c.CA],
+	)
 }
 
-// ---------- 脚本执行 / 回读 / 移除 ----------
-
-// execScriptAt 上传一次性脚本到网关主机 /tmp → sh 执行 → 删除。
-// 凭据只经 Upload 通道与脚本文件短暂存在,绝不进命令行/日志。
-func (s *service) execScriptAt(ctx context.Context, serverID, id, script string) error {
-	hostTmp := acmeHostScriptPrefix + id + ".sh"
-	if err := s.tg.Upload(ctx, serverID, strings.NewReader(script), hostTmp); err != nil {
-		return err
-	}
-	defer func() { _, _ = s.tg.Exec(context.Background(), serverID, []string{"rm", "-f", hostTmp}) }()
-	res, err := s.tg.Exec(ctx, serverID, []string{"sh", hostTmp})
-	if err != nil {
-		return err
-	}
-	if res.ExitCode != 0 {
-		return fmt.Errorf("%w:%s", ErrIssue, truncate(strings.TrimSpace(firstNonEmpty(res.Stderr, res.Stdout)), 800))
-	}
-	return nil
+// renewArgs 构造续期参数(域配置已持久化在 home 下;--force 由平台续期窗口决定,不让
+// acme.sh 自己判断是否到期)。
+func renewArgs(c *Certificate) []string {
+	return []string{"--renew", "-d", c.PrimaryDomain, "--force"}
 }
 
-// readBackCert 从 acme.sh home 读回签发产物(fullchain.cer + <primary>.key)。
-// 路径参数经 target.Exec 单引号转义,含 '*' 的通配符主域是字面量,无 glob 展开。
-func (s *service) readBackCert(ctx context.Context, serverID, primary string) (string, string, error) {
-	dir := acmeHomeDir + "/" + primary
-	certRes, err := s.tg.Exec(ctx, serverID, []string{"cat", dir + "/fullchain.cer"})
+// runIssue 执行一次签发/续期:已成功签发过 → 续期,否则签发(同一条路径,状态机驱动)。
+func (s *service) runIssue(ctx context.Context, c *Certificate, dnsAPI string, dnsEnv [][2]string) error {
+	args := renewArgs(c)
+	if c.LastIssuedAt.IsZero() {
+		args = issueArgs(c, dnsAPI)
+	}
+	_, err := s.runAcmesh(ctx, args, dnsEnv)
+	return err
+}
+
+// readBackCert 读回本地签发产物(fullchain.cer + <primary>.key)。
+func (s *service) readBackCert(primary string) (string, string, error) {
+	dir := filepath.Join(s.homeDir(), primary)
+	certPEM, err := os.ReadFile(filepath.Join(dir, "fullchain.cer"))
 	if err != nil {
-		return "", "", err
+		return "", "", fmt.Errorf("%w:fullchain.cer 读取失败(%v)", ErrReadBack, err)
 	}
-	if certRes.ExitCode != 0 {
-		return "", "", fmt.Errorf("%w:%s", ErrReadBack, strings.TrimSpace(firstNonEmpty(certRes.Stderr, certRes.Stdout)))
-	}
-	keyRes, err := s.tg.Exec(ctx, serverID, []string{"cat", dir + "/" + primary + ".key"})
+	keyPEM, err := os.ReadFile(filepath.Join(dir, primary+".key"))
 	if err != nil {
-		return "", "", err
+		return "", "", fmt.Errorf("%w:私钥读取失败(%v)", ErrReadBack, err)
 	}
-	if keyRes.ExitCode != 0 {
-		return "", "", fmt.Errorf("%w:%s", ErrReadBack, strings.TrimSpace(firstNonEmpty(keyRes.Stderr, keyRes.Stdout)))
-	}
-	certPEM, keyPEM := strings.TrimSpace(certRes.Stdout), strings.TrimSpace(keyRes.Stdout)
-	if certPEM == "" || keyPEM == "" {
+	cert, key := strings.TrimSpace(string(certPEM)), strings.TrimSpace(string(keyPEM))
+	if cert == "" || key == "" {
 		return "", "", fmt.Errorf("%w:产物为空(签发可能尚未完成)", ErrReadBack)
 	}
-	return certPEM, keyPEM, nil
+	return cert, key, nil
 }
 
-// removeFromAcmesh best-effort 从 acme.sh 续期清单移除域名(不向 CA revoke;脚本未安装也静默)。
-func (s *service) removeFromAcmesh(ctx context.Context, c *Certificate) {
-	if s.gw == nil {
+// removeFromAcmesh best-effort 从 acme.sh 续期清单移除域名(不向 CA revoke;未安装也静默)。
+func (s *service) removeFromAcmesh(c *Certificate) {
+	if _, err := os.Stat(s.scriptPath()); err != nil {
 		return
 	}
-	serverID, ok, err := s.gw.Gateway(ctx)
-	if err != nil || !ok || serverID == "" || s.tg == nil {
-		return
-	}
-	_, _ = s.tg.Exec(ctx, serverID, []string{
-		acmeScript, "--home", acmeHomeDir, "--remove", "-d", c.PrimaryDomain,
-	})
-}
-
-// firstNonEmpty 返回首个非空白字符串(与 servicereg 同名手法)。
-func firstNonEmpty(ss ...string) string {
-	for _, s := range ss {
-		if strings.TrimSpace(s) != "" {
-			return s
-		}
-	}
-	return ""
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	_, _ = s.runAcmesh(ctx, []string{"--remove", "-d", c.PrimaryDomain}, nil)
 }

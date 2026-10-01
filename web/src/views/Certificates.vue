@@ -3,8 +3,8 @@
   Certificates.vue — 证书管理(原「证书总览」的继任者,数据源从旧 Caddy 反代路由切到 certmgmt)。
 
   平台证书的统一管理页:
-  - acme.sh 自动签发(DNS-01,凭据复用 DNS 提供商集成;支持泛域名)—— acme.sh 以宿主机
-    脚本方式跑在网关主机上(嵌入平台二进制,首次使用自动复制安装);平台后台调度自动续期。
+  - acme.sh 自动签发(DNS-01,凭据复用 DNS 提供商集成;支持泛域名)—— acme.sh 以内嵌脚本
+    跑在控制机本地(DB 同级 acme/,签发不依赖网关);平台后台调度自动续期。
   - 手动导入现成证书(PEM 配对校验,SAN 自动解析)。
   - 签发/续期结果自动同步到被 SAN 覆盖的网关基域(nginx -t + reload)。
 
@@ -13,9 +13,8 @@
 */
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { useRouter } from 'vue-router'
 import { NIcon } from 'naive-ui'
-import { Certificate as CertIcon, Lock, LockOpen, AlertTriangle, Refresh, Plus, Download, Trash, Rotate, Rocket, ExternalLink } from '@vicons/tabler'
+import { Certificate as CertIcon, Lock, LockOpen, AlertTriangle, Refresh, Plus, Download, Trash, Rotate, Rocket } from '@vicons/tabler'
 import {
   listCerts,
   createCert,
@@ -41,7 +40,6 @@ import AppButton from '../components/ui/AppButton.vue'
 import AppSelect from '../components/ui/AppSelect.vue'
 
 const { t } = useI18n()
-const router = useRouter()
 const toast = useToast()
 const confirm = useConfirm()
 
@@ -241,10 +239,6 @@ async function doDeployEngine(): Promise<void> {
     engineBusy.value = false
   }
 }
-function gotoGateway(): void {
-  void router.push('/service-reg')
-}
-
 // ─── 签发证书模态 ──────────────────────────────────────────────────────────────
 const showCreate = ref(false)
 const creating = ref(false)
@@ -406,25 +400,16 @@ async function submitImport(): Promise<void> {
           <div>
             <div class="engine__title">{{ t('certMgmt.engine.title') }}</div>
             <div class="engine__meta">
-              <template v-if="engine?.configured">
-                <span class="engine__pill" :class="engine.ready ? 'engine__pill--ok' : 'engine__pill--warn'">
-                  {{ !engine.installed ? t('certMgmt.engine.notInstalled') : (engine.ready ? t('certMgmt.engine.ready') : t('certMgmt.engine.missingDeps')) }}
-                </span>
-                <span class="engine__kv">{{ t('certMgmt.engine.host') }}:{{ engine.serverName || engine.serverId }}</span>
-                <span v-if="engine.version" class="engine__kv mono">acme.sh {{ engine.version }}</span>
-              </template>
-              <template v-else>
-                <span class="engine__pill engine__pill--warn">{{ t('certMgmt.engine.unconfigured') }}</span>
-              </template>
+              <span class="engine__pill" :class="engine?.ready ? 'engine__pill--ok' : 'engine__pill--warn'">
+                {{ !engine?.installed ? t('certMgmt.engine.notInstalled') : (engine.ready ? t('certMgmt.engine.ready') : t('certMgmt.engine.missingDeps')) }}
+              </span>
+              <span v-if="engine?.version" class="engine__kv mono">acme.sh {{ engine.version }}</span>
             </div>
             <p class="engine__hint">{{ t('certMgmt.engine.hint') }}</p>
           </div>
         </div>
         <div class="engine__actions">
-          <AppButton v-if="engine && !engine.configured" variant="default" @click="gotoGateway">
-            <NIcon :size="14"><ExternalLink /></NIcon>&nbsp;{{ t('certMgmt.engine.gotoGateway') }}
-          </AppButton>
-          <AppButton v-else variant="default" :loading="engineBusy" @click="doDeployEngine">
+          <AppButton variant="default" :loading="engineBusy" @click="doDeployEngine">
             {{ t('certMgmt.engine.deploy') }}
           </AppButton>
         </div>
