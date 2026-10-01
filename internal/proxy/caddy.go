@@ -35,11 +35,12 @@ const (
 	caddyfileTmpPath = "/tmp/pipewright-caddyfile"
 )
 
-// dnsCred 是一条 DNS 提供商的渲染材料(类型 + token 明文)。token 仅在 apply 渲染时存在于内存,
-// 注入 0600 临时 Caddyfile,绝不日志/回库/回 API。
+// dnsCred 是一条 DNS 提供商的渲染材料(类型 + API ID + Secret 明文)。Secret 仅在 apply 渲染时
+// 存在于内存,注入 0600 临时 Caddyfile,绝不日志/回库/回 API;API ID 非机密。
 type dnsCred struct {
-	Type  string // cloudflare | dnspod | alidns
-	Token string // 凭据明文(进程内,用完即弃)
+	Type   string // cloudflare | dnspod | alidns
+	APIID  string // DNSPod SecretId / 阿里云 AccessKeyId(cloudflare 为空)
+	Secret string // Secret 半段明文(进程内,用完即弃)
 }
 
 // renderCaddyfile 据一组 enabled 路由生成 Caddyfile 文本(纯函数,可直接单测)。
@@ -127,30 +128,28 @@ func renderSite(b *strings.Builder, r Route, dnsCreds map[string]dnsCred) {
 	b.WriteString(header)
 	b.WriteString(" {\n")
 
-	// DNS-01(R3:通配符必需):该路由绑了 DNS 提供商且 apply 取到了 token → 渲染 tls { dns ... }。
-	// token 注入此处(Caddy 据此经 DNS API 完成 ACME DNS-01 挑战);整份配置写 0600 临时文件,绝不日志。
+	// DNS-01(R3:通配符必需):该路由绑了 DNS 提供商且 apply 取到了凭据 → 渲染 tls { dns ... }。
+	// 凭据注入此处(Caddy 据此经 DNS API 完成 ACME DNS-01 挑战);整份配置写 0600 临时文件,绝不日志。
 	if cfg.DNSProviderID != "" {
-		if cred, ok := dnsCreds[cfg.DNSProviderID]; ok && cred.Type != "" && cred.Token != "" {
+		if cred, ok := dnsCreds[cfg.DNSProviderID]; ok && cred.Type != "" && cred.Secret != "" {
 			b.WriteString("    tls {\n")
 			switch cred.Type {
 			case "alidns":
-				// 阿里云:凭据 = "AccessKeyId,AccessKeySecret";caddy-dns/alidns 要两字段块,
-				// 不是单 token(单 token 会被 caddy 当成非法语法、DNS-01 签失败)。
-				id, secret := splitDNSCred(cred.Token)
+				// 阿里云:AccessKeyId(非机密列)+ AccessKeySecret(vault);caddy-dns/alidns 要
+				// 两字段块,不是单 token(单 token 会被 caddy 当成非法语法、DNS-01 签失败)。
 				b.WriteString("        dns alidns {\n")
-				b.WriteString("            access_key_id " + id + "\n")
-				b.WriteString("            access_key_secret " + secret + "\n")
+				b.WriteString("            access_key_id " + cred.APIID + "\n")
+				b.WriteString("            access_key_secret " + cred.Secret + "\n")
 				b.WriteString("        }\n")
 			case "dnspod", "tencentcloud":
-				// 腾讯云/DNSPod:凭据 = "SecretId,SecretKey";caddy-dns/tencentcloud 要两字段块。
-				id, secret := splitDNSCred(cred.Token)
+				// 腾讯云/DNSPod:SecretId(非机密列)+ SecretKey(vault);caddy-dns/tencentcloud 要两字段块。
 				b.WriteString("        dns tencentcloud {\n")
-				b.WriteString("            secret_id " + id + "\n")
-				b.WriteString("            secret_key " + secret + "\n")
+				b.WriteString("            secret_id " + cred.APIID + "\n")
+				b.WriteString("            secret_key " + cred.Secret + "\n")
 				b.WriteString("        }\n")
 			default:
 				// cloudflare 等单 token 厂商:dns <type> <token> 即正确。
-				b.WriteString("        dns " + cred.Type + " " + cred.Token + "\n")
+				b.WriteString("        dns " + cred.Type + " " + cred.Secret + "\n")
 			}
 			b.WriteString("    }\n")
 		}
@@ -605,16 +604,8 @@ func firstNonEmpty(ss ...string) string {
 	return ""
 }
 
-// splitDNSCred 把「id,secret」形态的 DNS 凭据按首个逗号切成两段(两侧去空白)。
-// 用于 alidns(AccessKeyId,AccessKeySecret)、tencentcloud(SecretId,SecretKey)等需两字段的厂商。
-func splitDNSCred(token string) (id, secret string) {
-	parts := strings.SplitN(token, ",", 2)
-	id = strings.TrimSpace(parts[0])
-	if len(parts) == 2 {
-		secret = strings.TrimSpace(parts[1])
-	}
-	return id, secret
-}
+// splitDNSCred 已随「凭据 ID/Secret 分离存储」一并移除:dnspod/alidns 的两半段凭据
+// 现分别来自 dns_providers.api_id(明文列)与 vault 凭据(只存 Secret),渲染时直接取 dnsCred 字段。
 
 // mapExecErr 把 target.Exec/Upload 的传输层错误透传(领域错误已是人话;由上层 humanize)。
 func mapExecErr(err error) error {

@@ -2,6 +2,8 @@ package storetest_test
 
 import (
 	"context"
+	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -11,16 +13,36 @@ import (
 
 func now() string { return time.Now().UTC().Format(time.RFC3339) }
 
+// migrationFileCount 数 sqlite 迁移源文件数(两方言一一对应),作应用数的期望值,
+// 免得每加一条迁移就手改一次硬编码计数。
+func migrationFileCount(t *testing.T) int {
+	t.Helper()
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatalf("无法定位测试源文件")
+	}
+	pattern := filepath.Join(filepath.Dir(thisFile), "..", "store", "migrations", "sqlite", "*.sql")
+	matches, err := filepath.Glob(pattern)
+	if err != nil {
+		t.Fatalf("glob migrations: %v", err)
+	}
+	if len(matches) == 0 {
+		t.Fatalf("未找到迁移文件(pattern=%s),工作目录异常", pattern)
+	}
+	return len(matches)
+}
+
 // TestMigrationsApplied 验证两方言都把全部迁移跑完、计数与文件数一致、且重开幂等。
 func TestMigrationsApplied(t *testing.T) {
+	want := migrationFileCount(t)
 	storetest.ForEachDialect(t, func(t *testing.T, st *store.Store) {
 		ctx := context.Background()
 		var n int
 		if err := st.DB.QueryRowContext(ctx, `SELECT COUNT(1) FROM schema_migrations`).Scan(&n); err != nil {
 			t.Fatalf("count migrations: %v", err)
 		}
-		if n != 51 {
-			t.Fatalf("应用迁移数 = %d, 期望 51", n)
+		if n != want {
+			t.Fatalf("应用迁移数 = %d, 期望 %d(与迁移文件数一致)", n, want)
 		}
 		// 核心领域表存在(随手验一张)。
 		if _, err := st.DB.ExecContext(ctx, `SELECT 1 FROM audit_log WHERE 1=0`); err != nil {

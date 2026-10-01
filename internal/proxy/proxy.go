@@ -95,6 +95,9 @@ var (
 	ErrWildcardNeedsDNS = errors.New("proxy: 通配符域名(*.example.com)必须绑定 DNS 提供商以走 DNS-01 签发")
 	// ErrInvalidDNSProvider 表示引用的 DNS 提供商不存在或类型非法。
 	ErrInvalidDNSProvider = errors.New("proxy: invalid dns provider reference")
+	// ErrWildcardZoneUncovered 表示通配符域名不在所绑 DNS 提供商托管的任何根区下
+	// (一个提供商可托管多个根区;通配符域必须落在其一之内,DNS-01 挑战才能由该账户完成)。
+	ErrWildcardZoneUncovered = errors.New("proxy: wildcard domain not covered by any zone of the bound dns provider")
 	// ErrInvalidPathRule 表示路径路由规则非法(路径未以 / 起 / 含危险字符 / 上游容器/端口非法)。
 	ErrInvalidPathRule = errors.New("proxy: invalid path rule")
 
@@ -274,15 +277,19 @@ type certProber interface {
 	Probe(ctx context.Context, domain string) ProbeResult
 }
 
-// DNSResolver 抽象「按 DNS 提供商 id 取 (类型, token 明文)」的能力(R3:DNS-01 渲染需要)。
-// 由上层用 dnsprovider + vault 适配注入,避免 proxy import dnsprovider 形成环。
-// token 仅在 apply 渲染时取一次,注入 0600 临时 Caddyfile,绝不日志/回库/回 API。
+// DNSResolver 抽象「按 DNS 提供商 id 取 (类型, API ID, Secret 明文) + 根区清单」的能力
+// (R3:DNS-01 渲染 / 通配符覆盖校验需要)。由上层用 dnsprovider + vault 适配注入,
+// 避免 proxy import dnsprovider 形成环。Secret 仅在 apply 渲染时取一次,注入 0600 临时
+// Caddyfile,绝不日志/回库/回 API;API ID 非机密。
 type DNSResolver interface {
-	// Resolve 返回 providerType(cloudflare|dnspod|alidns)与该提供商凭据明文 token。
+	// Resolve 返回 providerType(cloudflare|dnspod|alidns)与该提供商凭据 (API ID, Secret 明文)。
 	// 提供商不存在 → ok=false;vault 未配置/凭据缺失 → err。
-	Resolve(ctx context.Context, providerID string) (providerType, token string, ok bool, err error)
-	// ProviderType 仅返回类型(供校验 DNS 提供商引用存在/合法,不取 token)。
+	Resolve(ctx context.Context, providerID string) (providerType, apiID, secret string, ok bool, err error)
+	// ProviderType 仅返回类型(供校验 DNS 提供商引用存在/合法,不取凭据)。
 	ProviderType(ctx context.Context, providerID string) (providerType string, ok bool, err error)
+	// ProviderZones 返回该提供商托管的全部根域(供通配符路由的覆盖校验,不取凭据)。
+	// 提供商不存在 → ok=false。
+	ProviderZones(ctx context.Context, providerID string) (baseDomains []string, ok bool, err error)
 }
 
 // ProbeResult 是一次证书探测结果。
@@ -298,7 +305,7 @@ type service struct {
 	store  *Store
 	tg     target.Service
 	prober certProber
-	dns    DNSResolver // R3:解析 DNS 提供商 → (类型, token);nil 时不支持 DNS-01/通配符
+	dns    DNSResolver // R3:解析 DNS 提供商 → (类型, API ID, Secret)+ 根区;nil 时不支持 DNS-01/通配符
 }
 
 // New 构造 Service。tg 复用已装配的 target.Service(SSH + docker);prober 默认走真实 TLS 握手。
@@ -329,9 +336,13 @@ func (s *service) Create(ctx context.Context, in CreateInput) (*Route, error) {
 	if err := validateCreate(in); err != nil {
 		return nil, err
 	}
-	// 若引用了 DNS 提供商,校验其存在 + 类型合法(经注入的 resolver,不取 token)。
+	// 若引用了 DNS 提供商,校验其存在 + 类型合法(经注入的 resolver,不取凭据);
+	// 通配符主域须进一步落在该提供商托管的某个根区下(多根区模型)。
 	if in.DNSProviderID != "" {
 		if err := s.validateDNSProviderRef(ctx, in.DNSProviderID); err != nil {
+			return nil, err
+		}
+		if err := s.validateDNSZoneCoverage(ctx, in.DNSProviderID, in.Domain); err != nil {
 			return nil, err
 		}
 	}
@@ -516,10 +527,16 @@ func (s *service) Update(ctx context.Context, id string, in UpdateInput) (*Route
 	if isWildcardDomain(r.Domain) && cfg.DNSProviderID == "" {
 		return nil, ErrWildcardNeedsDNS
 	}
-	// R3:若引用了 DNS 提供商,校验其存在 + 类型合法(经注入的 resolver,不取 token)。
+	// R3:若引用了 DNS 提供商,校验其存在 + 类型合法(经注入的 resolver,不取凭据);
+	// 通配符主域 / 通配符别名须进一步落在该提供商托管的某个根区下(多根区模型)。
 	if cfg.DNSProviderID != "" {
 		if err := s.validateDNSProviderRef(ctx, cfg.DNSProviderID); err != nil {
 			return nil, err
+		}
+		for _, d := range append([]string{r.Domain}, cfg.Aliases...) {
+			if err := s.validateDNSZoneCoverage(ctx, cfg.DNSProviderID, d); err != nil {
+				return nil, err
+			}
 		}
 	}
 
@@ -677,9 +694,9 @@ func (s *service) apply(ctx context.Context, serverID string) error {
 	return applyCaddyfile(ctx, s.tg, serverID, renderCaddyfile(routes, creds))
 }
 
-// resolveDNSCreds 为这批路由里引用的每个 DNS 提供商取一次 (类型, token)。
+// resolveDNSCreds 为这批路由里引用的每个 DNS 提供商取一次 (类型, API ID, Secret)。
 // resolver 未注入 / 取不到(提供商被删 / vault 未配)时跳过该提供商 —— 对应路由退回 HTTP-01 渲染
-// (不阻断其它路由 apply;通配符路由会因无 token 而签不出证书,由用户在状态里看到 pending)。
+// (不阻断其它路由 apply;通配符路由会因无凭据而签不出证书,由用户在状态里看到 pending)。
 func (s *service) resolveDNSCreds(ctx context.Context, routes []Route) map[string]dnsCred {
 	if s.dns == nil {
 		return nil
@@ -693,11 +710,11 @@ func (s *service) resolveDNSCreds(ctx context.Context, routes []Route) map[strin
 		if _, seen := out[pid]; seen {
 			continue
 		}
-		pt, token, ok, err := s.dns.Resolve(ctx, pid)
-		if err != nil || !ok || pt == "" || token == "" {
+		pt, apiID, secret, ok, err := s.dns.Resolve(ctx, pid)
+		if err != nil || !ok || pt == "" || secret == "" {
 			continue
 		}
-		out[pid] = dnsCred{Type: pt, Token: token}
+		out[pid] = dnsCred{Type: pt, APIID: apiID, Secret: secret}
 	}
 	if len(out) == 0 {
 		return nil
@@ -995,7 +1012,7 @@ func validateConfig(cfg RouteConfig) error {
 	return nil
 }
 
-// validateDNSProviderRef 校验 DNS 提供商引用存在且类型合法(经注入的 resolver,不取 token)。
+// validateDNSProviderRef 校验 DNS 提供商引用存在且类型合法(经注入的 resolver,不取凭据)。
 // 未注入 resolver → 视为「DNS 功能不可用」,引用即非法。
 func (s *service) validateDNSProviderRef(ctx context.Context, providerID string) error {
 	if s.dns == nil {
@@ -1014,6 +1031,30 @@ func (s *service) validateDNSProviderRef(ctx context.Context, providerID string)
 	default:
 		return ErrInvalidDNSProvider
 	}
+}
+
+// validateDNSZoneCoverage 校验通配符域(*.x / 通配符别名)落在所绑 DNS 提供商托管的某个根区下
+// (根区 == x 或为其后缀即可;提供商可托管多个根区)。非通配符域不校验(普通域绑提供商仅为
+// 备用 DNS-01,域与根区的关系由证书签发时的 ACME 挑战决定)。域为通配符但未绑提供商的情形由
+// ErrWildcardNeedsDNS 在更早处拦截,此处不重复。
+func (s *service) validateDNSZoneCoverage(ctx context.Context, providerID, domain string) error {
+	if s.dns == nil || providerID == "" || !isWildcardDomain(domain) {
+		return nil
+	}
+	zones, ok, err := s.dns.ProviderZones(ctx, providerID)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return ErrInvalidDNSProvider
+	}
+	base := domain[2:] // 剥 "*." 前缀,得到通配符所覆盖的基域
+	for _, z := range zones {
+		if base == z || strings.HasSuffix(base, "."+z) {
+			return nil
+		}
+	}
+	return ErrWildcardZoneUncovered
 }
 
 // validCIDROrIP 判定 s 是合法 CIDR(net.ParseCIDR)或单个 IP(按 /32、/128 处理)。

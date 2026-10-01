@@ -130,6 +130,7 @@ export default {
   errNameEmpty: '專案名稱不能為空',
 
   testErrCredential: '憑證錯誤:請檢查 Gitee 存取權杖是否有效,前往憑證保險庫更新。',
+  testErrCredInvalid: '請先選擇有效的倉庫憑證(或前往憑證保險庫檢查)。',
   testErrUnreachable: '倉庫不可達:請確認倉庫位址正確,且倉庫存在且可存取。',
   testErrVault: '保險庫未設定 master key,無法讀取憑證。',
   testErrStatus: '連線測試失敗({status})',

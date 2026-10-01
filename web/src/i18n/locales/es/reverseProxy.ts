@@ -96,9 +96,9 @@ export default {
   sub: {
     cta: 'Asignar un subdominio',
     title: 'Asignar un subdominio',
-    lede: 'Elige un proveedor DNS y un contenedor de upstream: generamos automáticamente un subdominio app-xxxx bajo su dominio base, escribimos el registro A y vinculamos la ruta, sin DNS manual.',
-    providerLabel: 'Proveedor DNS',
-    providerPick: 'Elige un proveedor DNS…',
+    lede: 'Elige una zona DNS y un contenedor de upstream: generamos automáticamente un subdominio app-xxxx debajo, escribimos el registro A y vinculamos la ruta, sin DNS manual.',
+    providerLabel: 'Zona DNS',
+    providerPick: 'Elige una zona…',
     providerUnderDomain: 'El subdominio se generará bajo {domain}',
     noProvider: 'Aún no hay proveedores DNS configurados.',
     manageProviders: 'Configurar proveedores DNS →',
@@ -132,7 +132,7 @@ export default {
     dnsLede: 'Adjunta un proveedor DNS para usar validación DNS-01, lo que habilita dominios comodín (*.example.com).',
     dnsProviderLabel: 'Proveedor DNS',
     dnsProviderNone: 'Ninguno (solo HTTP-01, sin comodines)',
-    dnsProviderUnderDomain: 'Dominio base: {domain}',
+    dnsProviderUnderDomain: 'Zonas: {domain}',
     wildcardHint: 'Hay un proveedor DNS adjunto: el dominio/los alias pueden usar comodín, p. ej. *.example.com.',
     wildcardNeedsProvider: 'Los dominios comodín requieren adjuntar antes un proveedor DNS.',
     // R3: enrutamiento por ruta (E3.5)

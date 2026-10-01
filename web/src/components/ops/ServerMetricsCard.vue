@@ -24,6 +24,14 @@ const props = defineProps<{
   name: string
   /** 该台指标(reachable:false 时各指标为 null)。 */
   metrics: ServerMetrics
+  /** 批量命令选择态:为 true 时卡头显示复选框(服务器状态页批量执行命令用)。 */
+  selectable?: boolean
+  /** 父持有的选中态(按 serverId)。 */
+  selected?: boolean
+}>()
+
+const emit = defineEmits<{
+  (e: 'toggle'): void
 }>()
 
 // ─── derived display ───────────────────────────────────────────────────────────
@@ -112,10 +120,18 @@ const loadText = computed(() => {
 <template>
   <article
     class="metrics-card"
-    :class="{ 'metrics-card--unreachable': !metrics.reachable }"
+    :class="{ 'metrics-card--unreachable': !metrics.reachable, 'metrics-card--selected': selected }"
     :aria-label="t('opsServer.metrics.cardAria', { name })"
   >
     <header class="metrics-card__head">
+      <label v-if="selectable" class="metrics-card__check">
+        <input
+          type="checkbox"
+          :checked="selected"
+          :aria-label="t('batchCommand.selectServerAria', { name })"
+          @change="emit('toggle')"
+        />
+      </label>
       <h3 class="metrics-card__name" :title="name">{{ name }}</h3>
       <span
         class="reach-badge"
@@ -235,6 +251,21 @@ const loadText = computed(() => {
 }
 .metrics-card:hover {
   border-color: var(--color-line-strong, var(--color-line));
+}
+.metrics-card--selected {
+  border-color: var(--color-primary, var(--color-line-strong));
+}
+.metrics-card__check {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  cursor: pointer;
+}
+.metrics-card__check input {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--color-primary);
+  cursor: pointer;
 }
 .metrics-card--unreachable {
   opacity: 0.62;

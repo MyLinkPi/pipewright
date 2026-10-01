@@ -40,6 +40,7 @@ import (
 	"github.com/huangchengsir/pipewright/internal/retention"
 	"github.com/huangchengsir/pipewright/internal/run"
 	"github.com/huangchengsir/pipewright/internal/runner"
+	"github.com/huangchengsir/pipewright/internal/servercmd"
 	"github.com/huangchengsir/pipewright/internal/servicereg"
 	"github.com/huangchengsir/pipewright/internal/target"
 	"github.com/huangchengsir/pipewright/internal/trigger"
@@ -108,6 +109,7 @@ type options struct {
 	previewEnvs      PreviewService
 	serviceReg       servicereg.Service
 	appStore         appstore.Service
+	serverCmds       *servercmd.Service
 }
 
 // WithArtifactStore 注入制品库(Story 8-16):挂载产物下载端点
@@ -313,6 +315,14 @@ func WithRunnerConfig(svc runner.Service) Option {
 // 密文,响应/错误绝无明文。不传则相关端点返回 503(服务未初始化)。
 func WithServers(s target.Service) Option {
 	return func(o *options) { o.servers = s }
+}
+
+// WithServerCommands 注入批量命令服务(internal/servercmd),挂载 POST /api/servers/commands/batch
+// (写:auth + CSRF + 审计)与 GET /api/servers/commands/runs[/{runId}](历史回看,只读)。
+// 复用 WithServers 注入的 target.Service 做 SSH 执行 + 本地库存历史(保最近 200 次)。
+// 不传则相关端点返回 503(服务未初始化)。
+func WithServerCommands(s *servercmd.Service) Option {
+	return func(o *options) { o.serverCmds = s }
 }
 
 // WithDeploy 注入部署执行服务(Story 4.2;internal/deploy,FR-10),挂载
@@ -784,6 +794,15 @@ func New(webFS fs.FS, authn auth.Authenticator, opts ...Option) http.Handler {
 		// 自己 docker exec 自由探索(不绑死容器;很多服务器没 docker)。WS 升级,同源校验 + shell
 		// 白名单;审计 server_terminal。比 /servers/{id} 多一段,不会被吞。
 		ar.Get("/servers/{id}/terminal", makeServerTerminalHandler(sv, aud))
+		// 批量执行命令(服务器状态页 → 勾选多机 → 同步执行 + 历史回看)。任意 shell 命令是功能
+		// 本质:单管理员平台、既有 WS 终端单机本就任意命令,批量入口不提升权限面。护栏:命令 ≤8KiB、
+		// 机器数 ≤100、单机超时 5-300s、并发 6、输出截 64KiB;逐机独立容错(200 + ok:false,不 500);
+		// 每次尝试写审计(命令摘要 + 计数)。执行经 sh -c(target.Upload 同一先例)。字面段 commands
+		// 优先于 {id},/servers/commands 不会被 /servers/{id} 吞;runs/{runId} 深一层同理。
+		scmd := o.serverCmds
+		ar.Post("/servers/commands/batch", makeBatchCommandHandler(scmd, aud))
+		ar.Get("/servers/commands/runs", makeListCommandRunsHandler(scmd))
+		ar.Get("/servers/commands/runs/{runId}", makeGetCommandRunHandler(scmd))
 		// 通知渠道(Story 5.1;FR-19)。nf 为 nil 时 handler 返回 503。
 		// GET(列表/详情)过 auth;POST/PUT/DELETE/test 为写方法,过 auth + CSRF。
 		// 敏感字段(SMTP 密码)加密入库、响应仅 hasPassword。test 须在 {id} 路由内单独注册。
@@ -820,13 +839,17 @@ func New(webFS fs.FS, authn auth.Authenticator, opts ...Option) http.Handler {
 		ar.Delete("/proxy/caddy", makeRemoveProxyCaddyHandler(px, aud))
 
 		// DNS 提供商集成层(R3 E3.1–E3.4):Cloudflare / DNSPod / 阿里云 DNS 接入(凭据走 vault)。
-		// dp 为 nil → handler 返回 503。GET(列表)过 auth;POST/DELETE/verify 为写方法,过 auth + CSRF + 审计。
-		// DNS token 经 vault 密文、apply 时即用即弃,响应/审计/日志绝无明文 token。
+		// dp 为 nil → handler 返回 503。GET(列表)过 auth;POST/PUT/DELETE 为写方法,过 auth + CSRF + 审计。
+		// 一个提供商可托管多个根区(zone 增删端点);Secret 经 vault 密文、apply 时即用即弃,
+		// 响应/审计/日志绝无明文;API ID 非机密,可回显。
 		// 字面段 /proxy/subdomains 与 /proxy/routes 不同尾段,不会被吞。
 		dp := o.dnsProviders
 		ar.Get("/dns/providers", makeListDNSProvidersHandler(dp))
 		ar.Post("/dns/providers", makeCreateDNSProviderHandler(dp, o.vault, aud))
+		ar.Put("/dns/providers/{id}", makeUpdateDNSProviderHandler(dp, o.vault, aud))
 		ar.Post("/dns/providers/{id}/verify", makeVerifyDNSProviderHandler(dp, aud))
+		ar.Post("/dns/providers/{id}/zones", makeAddDNSZoneHandler(dp, aud))
+		ar.Delete("/dns/providers/{id}/zones/{zoneId}", makeRemoveDNSZoneHandler(dp, aud))
 		ar.Delete("/dns/providers/{id}", makeDeleteDNSProviderHandler(dp, aud))
 		// 瞬时子域名分配(R3 E3.3 + E3.4):建 A 记录 + 建 DNS-01 反代路由 → 普通 Route DTO。
 		ar.Post("/proxy/subdomains", makeAllocateSubdomainHandler(subdomainDeps{dns: dp, servers: sv, proxy: px}, aud))

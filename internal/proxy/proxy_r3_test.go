@@ -10,18 +10,19 @@ import (
 	"github.com/huangchengsir/pipewright/internal/target"
 )
 
-// stubDNSResolver 是注入用的假 DNS 解析器:按 id 返回 (类型, token)。
+// stubDNSResolver 是注入用的假 DNS 解析器:按 id 返回 (类型, API ID, Secret) 与根区清单。
 type stubDNSResolver struct {
-	creds map[string]dnsCred // providerID → (type, token)
-	types map[string]string  // providerID → type(供 ProviderType)
+	creds map[string]dnsCred  // providerID → (type, apiID, secret)
+	types map[string]string   // providerID → type(供 ProviderType)
+	zones map[string][]string // providerID → 托管根域(供 ProviderZones)
 }
 
-func (s stubDNSResolver) Resolve(_ context.Context, id string) (string, string, bool, error) {
+func (s stubDNSResolver) Resolve(_ context.Context, id string) (string, string, string, bool, error) {
 	c, ok := s.creds[id]
 	if !ok {
-		return "", "", false, nil
+		return "", "", "", false, nil
 	}
-	return c.Type, c.Token, true, nil
+	return c.Type, c.APIID, c.Secret, true, nil
 }
 
 func (s stubDNSResolver) ProviderType(_ context.Context, id string) (string, bool, error) {
@@ -32,10 +33,18 @@ func (s stubDNSResolver) ProviderType(_ context.Context, id string) (string, boo
 	return t, true, nil
 }
 
+func (s stubDNSResolver) ProviderZones(_ context.Context, id string) ([]string, bool, error) {
+	z, ok := s.zones[id]
+	if !ok {
+		return nil, false, nil
+	}
+	return z, true, nil
+}
+
 // --- 渲染:DNS-01 / 通配符 / 路径路由 golden -------------------------------
 
 func TestRenderDNS01Block(t *testing.T) {
-	creds := map[string]dnsCred{"prov-1": {Type: "cloudflare", Token: "cf-secret-token"}}
+	creds := map[string]dnsCred{"prov-1": {Type: "cloudflare", Secret: "cf-secret-token"}}
 	out := renderCaddyfile([]Route{{
 		Domain: "app.example.com", UpstreamContainer: "web", UpstreamPort: 8080,
 		Config: RouteConfig{DNSProviderID: "prov-1"},
@@ -61,9 +70,9 @@ func TestRenderDNS01OmittedWhenNoToken(t *testing.T) {
 }
 
 func TestRenderWildcardWithDNS01(t *testing.T) {
-	// 阿里云凭据为「AccessKeyId,AccessKeySecret」单字串,renderSite 拆成两字段块
+	// 阿里云凭据为分开的 (AccessKeyId, AccessKeySecret) 两半段,渲染成两字段块
 	// (caddy-dns/alidns 要两字段,单 token 会被当非法语法、DNS-01 签失败)。
-	creds := map[string]dnsCred{"prov-1": {Type: "alidns", Token: "ali-id,ali-secret"}}
+	creds := map[string]dnsCred{"prov-1": {Type: "alidns", APIID: "ali-id", Secret: "ali-secret"}}
 	out := renderCaddyfile([]Route{{
 		Domain: "*.example.com", UpstreamContainer: "web", UpstreamPort: 80,
 		Config: RouteConfig{DNSProviderID: "prov-1"},
@@ -102,7 +111,7 @@ func TestRenderPathRules(t *testing.T) {
 
 // TestRenderWildcardDNS01PathRulesCombined 是「通配符 + DNS-01 + 路径路由 + R2 安全头」的完整 golden。
 func TestRenderWildcardDNS01PathRulesCombined(t *testing.T) {
-	creds := map[string]dnsCred{"prov-1": {Type: "cloudflare", Token: "TKN"}}
+	creds := map[string]dnsCred{"prov-1": {Type: "cloudflare", Secret: "TKN"}}
 	out := renderCaddyfile([]Route{{
 		Domain: "*.apps.example.com", UpstreamContainer: "web", UpstreamPort: 8080,
 		Config: RouteConfig{
@@ -169,8 +178,9 @@ func TestWildcardAllowedWithDNSProvider(t *testing.T) {
 		},
 	}
 	dns := stubDNSResolver{
-		creds: map[string]dnsCred{"prov-1": {Type: "cloudflare", Token: "TKN"}},
+		creds: map[string]dnsCred{"prov-1": {Type: "cloudflare", Secret: "TKN"}},
 		types: map[string]string{"prov-1": "cloudflare"},
+		zones: map[string][]string{"prov-1": {"example.com"}},
 	}
 	svc := &service{store: NewStore(st), tg: ft, prober: fakeProber{}, dns: dns}
 
@@ -216,6 +226,39 @@ func TestCreateBadDNSProviderRejected(t *testing.T) {
 	}
 	if len(ft.execCalls) != 0 {
 		t.Fatalf("非法早拒不应触网")
+	}
+}
+
+func TestWildcardRejectedWhenZoneUncovered(t *testing.T) {
+	ctx := context.Background()
+	st := storetest.OpenDB(t)
+	ft := &fakeTarget{}
+	// 提供商存在但只托管 other.com,不覆盖 *.example.com → ErrWildcardZoneUncovered(多根区模型)。
+	dns := stubDNSResolver{
+		types: map[string]string{"prov-1": "cloudflare"},
+		zones: map[string][]string{"prov-1": {"other.com"}},
+	}
+	svc := &service{store: NewStore(st), tg: ft, prober: fakeProber{}, dns: dns}
+
+	_, err := svc.Create(ctx, CreateInput{
+		ServerID: "srv-1", Domain: "*.example.com", UpstreamContainer: "web", UpstreamPort: 80,
+		DNSProviderID: "prov-1",
+	})
+	if err == nil || err != ErrWildcardZoneUncovered {
+		t.Fatalf("通配符不在所绑提供商任何根区下应报 ErrWildcardZoneUncovered, got %v", err)
+	}
+	if len(ft.execCalls) != 0 {
+		t.Fatalf("非法早拒不应触网")
+	}
+
+	// 提供商存在但未托管任何根区(全删光)→ 同样 ErrWildcardZoneUncovered。
+	dns.zones = map[string][]string{"prov-1": {}}
+	svc = &service{store: NewStore(st), tg: ft, prober: fakeProber{}, dns: dns}
+	if _, err := svc.Create(ctx, CreateInput{
+		ServerID: "srv-1", Domain: "*.example.com", UpstreamContainer: "web", UpstreamPort: 80,
+		DNSProviderID: "prov-1",
+	}); err == nil || err != ErrWildcardZoneUncovered {
+		t.Fatalf("无任何根区应报 ErrWildcardZoneUncovered, got %v", err)
 	}
 }
 

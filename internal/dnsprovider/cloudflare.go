@@ -208,18 +208,19 @@ func (n notImplementedClient) VerifyZone(context.Context, string) error {
 	return fmt.Errorf("%w(%s 暂未实现 zone 校验)", ErrProviderNotImplemented, n.providerType)
 }
 
-// newDNSClient 据提供商类型 + token 构造对应 DNSClient。transport/base 供测试注入(生产为 nil/空)。
-// Cloudflare / DNSPod / 阿里云 DNS 均为经 net/http 直连的真实实现(无 SDK)。
-func newDNSClient(providerType, token string, transport http.RoundTripper, base string) DNSClient {
+// newDNSClient 据提供商类型 + (API ID, Secret) 构造对应 DNSClient。transport/base 供测试注入
+// (生产为 nil/空)。Cloudflare / DNSPod / 阿里云 DNS 均为经 net/http 直连的真实实现(无 SDK)。
+//   - cloudflare:单 API Token(apiID 恒空,忽略);
+//   - dnspod:apiID = SecretId,secret = Token;
+//   - alidns:apiID = AccessKeyId,secret = AccessKeySecret。
+func newDNSClient(providerType, apiID, secret string, transport http.RoundTripper, base string) DNSClient {
 	switch providerType {
 	case TypeCloudflare:
-		return newCloudflareClient(token, transport, base)
+		return newCloudflareClient(secret, transport, base)
 	case TypeDNSPod:
-		// token 为保险库里存的 "id,token" 原串(经典 DNSPod login_token);客户端请求时解析。
-		return newDNSPodClient(token, transport, base)
+		return newDNSPodClient(apiID, secret, transport, base)
 	case TypeAliDNS:
-		// token 为保险库里存的 "accessKeyId,accessKeySecret" 原串;客户端请求时解析。
-		return newAliDNSClient(token, transport, base)
+		return newAliDNSClient(apiID, secret, transport, base)
 	default:
 		return notImplementedClient{providerType: providerType}
 	}

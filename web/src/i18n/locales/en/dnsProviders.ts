@@ -1,6 +1,6 @@
 export default {
   title: 'DNS Providers',
-  desc: 'Attach Cloudflare / DNSPod / Alibaba Cloud DNS to issue wildcard certs via DNS-01 and allocate subdomains in one click. The API token is write-only — stored in the vault, never shown again.',
+  desc: 'Attach a Cloudflare / DNSPod / Alibaba Cloud DNS account (one account can manage multiple zones) to issue wildcard certs via DNS-01 and allocate subdomains in one click. The API Secret is write-only — stored in the vault, never shown again; the API ID is non-secret and editable.',
   addProvider: 'Add DNS provider',
   addFirstProvider: 'Add your first DNS provider',
   panelTitle: 'DNS providers',
@@ -12,7 +12,7 @@ export default {
   // Table columns
   colName: 'Name',
   colType: 'Type',
-  colBaseDomain: 'Base domain',
+  colZones: 'Zones',
   colCredential: 'Credential',
   // Credential status
   credConfigured: 'Configured',
@@ -21,37 +21,58 @@ export default {
   emptyLabel: 'No DNS providers yet',
   emptyHint: 'Add a provider to enable DNS-01 wildcard certificates on your domains and one-click subdomain allocation.',
   // Actions
+  editBtn: 'Edit',
   verify: 'Verify',
   verifying: 'Verifying…',
   verifyOk: 'Verified',
   verifyFail: 'Verification failed',
+  verifyPartial: '{failed}/{total} zones failed',
   deleteTitle: 'Delete provider {name}',
   deleteAria: 'Delete DNS provider {name}',
   editTitle: 'Edit {name}',
-  // Add / edit modal
+  // Add modal
   addTitle: 'Add DNS provider',
-  modalSub: 'The API token is write-only: once saved it goes into the vault and is never shown again.',
+  modalSub: 'The API Secret is write-only: once saved it goes into the vault and is never shown again (you can rotate it anytime).',
   closeDialog: 'Close dialog',
   fieldType: 'Provider type',
   fieldName: 'Name',
   namePlaceholder: 'e.g. Production Cloudflare',
-  fieldBaseDomain: 'Base domain (zone)',
+  // API ID (non-secret; not shown for cloudflare)
+  fieldApiId: 'API ID (non-secret)',
+  apiIdPlaceholderDnspod: 'SecretId (e.g. 12345)',
+  apiIdPlaceholderAlidns: 'AccessKeyId (e.g. LTAI5t…)',
+  apiIdHint: 'The ID half is non-secret: stored in plain sight, echoed back and editable.',
+  // Secret (sensitive, write-only)
+  fieldSecret: 'API Secret',
+  secretPlaceholderCloudflare: 'Paste the Cloudflare API token',
+  secretPlaceholderDnspod: 'Paste the DNSPod API token',
+  secretPlaceholderAlidns: 'Paste the AccessKeySecret',
+  secretHintCloudflare: 'Needs read/write access to DNS records of the managed zones. Sent once on creation, never returned.',
+  secretHintDnspod: 'Created under "Key Management" in the DNSPod console, paired with the SecretId. Sent once on creation, never returned; rotate anytime if mistyped.',
+  secretHintAlidns: 'Alibaba Cloud RAM AccessKeySecret paired with the AccessKeyId, needs Alidns read/write access. Sent once on creation, never returned; rotate anytime if mistyped.',
+  // Zones (multi-value)
+  fieldBaseDomains: 'Zones (one or more)',
   baseDomainPlaceholder: 'example.com',
-  // Credential field (label/placeholder/hint switch by provider type; all stored as one vault string, multi-part joined by comma)
-  fieldTokenCloudflare: 'API token',
-  fieldTokenDnspod: 'API token (ID,Token)',
-  fieldTokenAlidns: 'API credential (AccessKeyId,AccessKeySecret)',
-  tokenPlaceholderCloudflare: 'Paste the Cloudflare API token',
-  tokenPlaceholderDnspod: 'ID,Token (e.g. 12345,abcdef0123456789)',
-  tokenPlaceholderAlidns: 'AccessKeyId,AccessKeySecret',
-  tokenHintCloudflare: 'Needs read/write access to DNS records for this zone. Sent once on creation, never returned.',
-  tokenHintDnspod: 'Enter the DNSPod "ID,Token" (comma-separated), created under "KeyManage" in the DNSPod console. Sent once on creation, never returned.',
-  tokenHintAlidns: 'Enter the Alibaba Cloud RAM "AccessKeyId,AccessKeySecret" (comma-separated) with Alidns read/write access. Sent once on creation, never returned.',
+  addZoneField: 'Add another zone',
+  removeZoneAria: 'Remove zone input {domain}',
+  zoneCount: '{n} zones',
+  // Edit modal
+  editSub: 'Change the name / API ID, or rotate the Secret (leave blank to keep); manage zones below.',
+  fieldSecretRotate: 'Rotate Secret (optional)',
+  secretRotatePlaceholder: 'Leave blank to keep the current secret',
+  zonesSection: 'Zone management',
+  addZonePlaceholder: 'New zone, e.g. example.org',
+  addZoneBtn: 'Add',
+  removeZoneTitle: 'Remove zone {domain}',
+  save: 'Save',
+  saving: 'Saving…',
   // Validation
   valNameRequired: 'Please enter a name.',
+  valApiIdRequired: 'Please enter the API ID.',
+  valZonesRequired: 'Please enter at least one zone.',
   valBaseDomainRequired: 'Please enter a base domain.',
   valBaseDomainInvalid: 'Please enter a valid base domain, e.g. example.com.',
-  valTokenRequired: 'Please enter an API token.',
+  valSecretRequired: 'Please enter the API Secret.',
   // Delete confirmation
   deleteConfirmTitle: 'Delete DNS provider',
   deleteIrreversible: 'This action cannot be undone.',
@@ -62,7 +83,6 @@ export default {
   // Buttons
   cancel: 'Cancel',
   create: 'Add provider',
-  saving: 'Saving…',
   retry: 'Retry',
   // Errors
   errLoad: 'Failed to load DNS providers ({status}).',

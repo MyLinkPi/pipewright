@@ -130,6 +130,7 @@ export default {
   errNameEmpty: 'El nombre del proyecto no puede estar vacío',
 
   testErrCredential: 'Error de credencial: comprueba que tu token de acceso de Gitee sea válido y actualízalo en la bóveda de credenciales.',
+  testErrCredInvalid: 'Selecciona primero una credencial de repositorio válida (o compruébala en la bóveda de credenciales).',
   testErrUnreachable: 'Repositorio inaccesible: confirma que la URL sea correcta y que el repositorio exista y sea accesible.',
   testErrVault: 'La bóveda no tiene configurada una master key, por lo que no se pueden leer las credenciales.',
   testErrStatus: 'La prueba de conexión falló ({status})',

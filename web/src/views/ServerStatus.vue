@@ -15,6 +15,8 @@ import { useI18n } from 'vue-i18n'
 import { getAllServerMetrics, listServers, type ServerMetrics, type Server } from '../api/servers'
 import { HttpError } from '../api/http'
 import ServerMetricsCard from '../components/ops/ServerMetricsCard.vue'
+import BatchCommandModal from '../components/ops/BatchCommandModal.vue'
+import CommandHistoryDrawer, { type RerunPayload } from '../components/ops/CommandHistoryDrawer.vue'
 import AppButton from '../components/ui/AppButton.vue'
 import EmptyState from '../components/ui/EmptyState.vue'
 import ErrorState from '../components/ui/ErrorState.vue'
@@ -35,6 +37,51 @@ const refreshing = ref(false)
 
 const reachableCount = computed(() => metrics.value.filter((m) => m.reachable).length)
 const totalCount = computed(() => metrics.value.length)
+
+// ─── 批量执行命令(勾选 → 弹窗执行 → 历史回看) ─────────────────────────────
+
+/** 勾选的目标机 id 集合(卡片复选框)。 */
+const selected = ref<Set<string>>(new Set())
+const selectedCount = computed(() => selected.value.size)
+
+function toggleSelect(serverId: string): void {
+  const next = new Set(selected.value)
+  if (next.has(serverId)) {
+    next.delete(serverId)
+  } else {
+    next.add(serverId)
+  }
+  selected.value = next
+}
+
+function selectAll(): void {
+  selected.value = new Set(metrics.value.map((m) => m.serverId))
+}
+
+function clearSelection(): void {
+  selected.value = new Set()
+}
+
+/** 弹窗目标(进入时的机器名单 + 预填命令;重跑入口回填)。 */
+const commandModal = ref<{ servers: { id: string; name: string }[]; command: string } | null>(null)
+const historyOpen = ref(false)
+
+function openBatchCommand(): void {
+  if (selectedCount.value === 0) return
+  commandModal.value = {
+    servers: [...selected.value].map((id) => ({ id, name: nameById.value.get(id) ?? id })),
+    command: '',
+  }
+}
+
+function openRerun(payload: RerunPayload): void {
+  if (payload.serverIds.length === 0) return
+  historyOpen.value = false
+  commandModal.value = {
+    servers: payload.serverIds.map((id) => ({ id, name: nameById.value.get(id) ?? id })),
+    command: payload.command,
+  }
+}
 
 function displayName(m: ServerMetrics): string {
   return nameById.value.get(m.serverId) ?? m.serverId
@@ -131,10 +178,32 @@ onUnmounted(() => {
           <span class="view-sub__count">· {{ t('serverStatus.autoRefresh', { n: 12 }) }}</span>
         </p>
       </div>
-      <AppButton variant="default" :loading="loadState === 'loading'" @click="load">
-        {{ t('common.refresh') }}
-      </AppButton>
+      <div class="view-header__actions">
+        <AppButton variant="default" :disabled="selectedCount === 0" @click="openBatchCommand">
+          {{ t('batchCommand.openButton', { n: selectedCount }) }}
+        </AppButton>
+        <AppButton variant="ghost" @click="historyOpen = true">
+          {{ t('batchCommand.historyButton') }}
+        </AppButton>
+        <AppButton variant="default" :loading="loadState === 'loading'" @click="load">
+          {{ t('common.refresh') }}
+        </AppButton>
+      </div>
     </header>
+
+    <!-- 批量命令选择条:已选计数 + 全选/清空 -->
+    <div v-if="metrics.length > 0" class="select-bar">
+      <span class="select-bar__count">
+        {{ t('batchCommand.selectedCount', { n: selectedCount, total: totalCount }) }}
+      </span>
+      <button class="select-bar__btn" type="button" @click="selectAll">{{ t('batchCommand.selectAll') }}</button>
+      <button
+        class="select-bar__btn"
+        type="button"
+        :disabled="selectedCount === 0"
+        @click="clearSelection"
+      >{{ t('batchCommand.clearSelection') }}</button>
+    </div>
 
     <!-- Initial loading skeletons -->
     <div
@@ -172,8 +241,25 @@ onUnmounted(() => {
         :key="m.serverId"
         :name="displayName(m)"
         :metrics="m"
+        selectable
+        :selected="selected.has(m.serverId)"
+        @toggle="toggleSelect(m.serverId)"
       />
     </div>
+
+    <!-- 批量执行命令弹窗(勾选机器 → 同步执行 → 逐机结果) -->
+    <BatchCommandModal
+      v-if="commandModal"
+      :servers="commandModal.servers"
+      :initial-command="commandModal.command"
+      @close="commandModal = null"
+    />
+    <!-- 执行历史抽屉(列表 → 逐机详情 → 重跑) -->
+    <CommandHistoryDrawer
+      v-if="historyOpen"
+      @close="historyOpen = false"
+      @rerun="openRerun"
+    />
   </div>
 </template>
 
@@ -210,6 +296,42 @@ onUnmounted(() => {
   color: var(--color-faint);
   font-variant-numeric: tabular-nums;
 }
+
+.view-header__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.select-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+  border: 1px solid var(--color-line);
+  border-radius: var(--rounded-lg);
+  background: var(--color-surface);
+}
+.select-bar__count {
+  font-size: var(--text-label);
+  color: var(--color-dim);
+  font-variant-numeric: tabular-nums;
+}
+.select-bar__btn {
+  border: 0;
+  background: transparent;
+  color: var(--color-dim);
+  font: inherit;
+  font-size: var(--text-label);
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 6px;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.select-bar__btn:hover:not(:disabled) { color: var(--color-text); }
+.select-bar__btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
 .metrics-grid {
   display: grid;

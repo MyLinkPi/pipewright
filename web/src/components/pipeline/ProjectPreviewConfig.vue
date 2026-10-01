@@ -75,10 +75,10 @@ async function load(): Promise<void> {
 onMounted(load)
 watch(() => props.projectId, load)
 
-// 选定提供商时,若根域还空着,顺手填上提供商根域(常见就是它)。
+// 选定提供商时,若根域还空着,顺手填上其首个根区(常见就是它;须落在所选提供商某个根区下)。
 watch(dnsProviderId, () => {
   if (selectedProvider.value && !baseDomain.value.trim()) {
-    baseDomain.value = selectedProvider.value.baseDomain
+    baseDomain.value = selectedProvider.value.zones[0]?.baseDomain ?? ''
   }
 })
 
@@ -156,7 +156,9 @@ const examplePreview = computed(() => {
           <label class="pvc__lbl">{{ t('previewEnvs.config.providerLabel') }}</label>
           <select v-model="dnsProviderId" class="pvc__in">
             <option value="">{{ t('previewEnvs.config.providerNone') }}</option>
-            <option v-for="p in providers" :key="p.id" :value="p.id">{{ p.name }} · {{ p.baseDomain }}</option>
+            <option v-for="p in providers" :key="p.id" :value="p.id">
+              {{ p.name }} · {{ p.zones.map((z) => z.baseDomain).join(', ') || '—' }}
+            </option>
           </select>
           <p v-if="providers.length === 0" class="pvc__hint">{{ t('previewEnvs.config.noProviders') }}</p>
         </div>

@@ -208,6 +208,8 @@ func writeProxyError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadRequest, "invalid_route", "通配符域名(*.example.com)必须先绑定一个 DNS 提供商(走 DNS-01 签发)")
 	case errors.Is(err, proxy.ErrInvalidDNSProvider):
 		writeError(w, http.StatusUnprocessableEntity, "invalid_route", "引用的 DNS 提供商不存在或不可用")
+	case errors.Is(err, proxy.ErrWildcardZoneUncovered):
+		writeError(w, http.StatusBadRequest, "invalid_route", "通配符域名不在所绑 DNS 提供商托管的任何根区下,请先为该提供商添加对应根区")
 	case errors.Is(err, proxy.ErrInvalidPathRule):
 		writeError(w, http.StatusBadRequest, "invalid_route", "路径路由规则非法:路径须以 / 起且仅含安全字符,上游容器/端口须合法")
 	case errors.Is(err, proxy.ErrBcrypt):

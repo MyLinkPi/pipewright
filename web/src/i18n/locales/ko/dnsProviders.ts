@@ -1,73 +1,93 @@
 export default {
   title: 'DNS 공급자',
-  desc: 'Cloudflare / DNSPod / Alibaba Cloud DNS를 연결하면 DNS-01 검증으로 와일드카드 인증서를 발급하고 서브도메인을 원클릭으로 할당할 수 있습니다. API 토큰은 쓰기 전용 — 보관소에 저장되며 다시 표시되지 않습니다.',
+  desc: 'Cloudflare / DNSPod / Alibaba Cloud DNS 계정을 연결하면(하나의 계정으로 여러 존을 관리할 수 있음) DNS-01 검증으로 와일드카드 인증서를 발급하고 서브도메인을 원클릭으로 할당할 수 있습니다. API 시크릿은 쓰기 전용 — 보관소에 저장되며 다시 표시되지 않습니다. API ID는 기밀이 아니며 편집할 수 있습니다.',
   addProvider: 'DNS 공급자 추가',
   addFirstProvider: '첫 DNS 공급자 추가',
   panelTitle: 'DNS 공급자',
   countLabel: '총 {n}개',
-  // 类型
+  // 유형
   typeCloudflare: 'Cloudflare',
   typeDnspod: 'DNSPod',
   typeAlidns: 'Alibaba Cloud DNS',
-  // 列表列
+  // 목록 열
   colName: '이름',
   colType: '유형',
-  colBaseDomain: '기본 도메인',
-  colCredential: '자격 증명',
-  // 凭据状态
-  credConfigured: '설정됨',
-  credMissing: '설정 안 됨',
-  // 空态
-  emptyLabel: '아직 DNS 공급자가 없습니다',
-  emptyHint: '공급자를 추가하면 도메인에 DNS-01 와일드카드 인증서를 활성화하고 서브도메인을 원클릭으로 할당할 수 있습니다.',
-  // 操作
+  colZones: '존',
+  colCredential: '자격증명',
+  // 자격증명 상태
+  credConfigured: '구성됨',
+  credMissing: '미구성',
+  // 빈 상태
+  emptyLabel: 'DNS 공급자가 없습니다',
+  emptyHint: '공급자를 추가하면 도메인에 DNS-01 와일드카드 인증서와 원클릭 서브도메인 할당을 사용할 수 있습니다.',
+  // 작업
+  editBtn: '편집',
   verify: '검증',
   verifying: '검증 중…',
-  verifyOk: '검증 성공',
+  verifyOk: '검증 통과',
   verifyFail: '검증 실패',
+  verifyPartial: '{failed}/{total}개 존 실패',
   deleteTitle: '공급자 {name} 삭제',
   deleteAria: 'DNS 공급자 {name} 삭제',
   editTitle: '{name} 편집',
-  // 添加 / 编辑弹窗
+  // 추가 모달
   addTitle: 'DNS 공급자 추가',
-  modalSub: 'API 토큰은 쓰기 전용입니다. 저장 후 보관소에 들어가며 다시 표시되지 않습니다.',
-  closeDialog: '대화 상자 닫기',
+  modalSub: 'API 시크릿은 쓰기 전용입니다. 저장 후 보관소에 들어가며 다시 표시되지 않습니다(언제든 교체 가능).',
+  closeDialog: '대화상자 닫기',
   fieldType: '공급자 유형',
   fieldName: '이름',
   namePlaceholder: '예: 프로덕션 Cloudflare',
-  fieldBaseDomain: '기본 도메인(존)',
+  // API ID(기밀 아님;cloudflare는 해당 없음)
+  fieldApiId: 'API ID(기밀 아님)',
+  apiIdPlaceholderDnspod: 'SecretId(예: 12345)',
+  apiIdPlaceholderAlidns: 'AccessKeyId(예: LTAI5t…)',
+  apiIdHint: 'ID 부분은 기밀이 아니며 일반 텍스트로 저장되어 표시·편집할 수 있습니다.',
+  // 시크릿(기밀, 쓰기 전용)
+  fieldSecret: 'API 시크릿',
+  secretPlaceholderCloudflare: 'Cloudflare API 토큰 붙여넣기',
+  secretPlaceholderDnspod: 'DNSPod API 토큰 붙여넣기',
+  secretPlaceholderAlidns: 'AccessKeySecret 붙여넣기',
+  secretHintCloudflare: '관리 존의 DNS 레코드 읽기/쓰기 권한이 필요합니다. 생성 시 한 번만 전송되며 반환되지 않습니다.',
+  secretHintDnspod: 'DNSPod 콘솔의 「키 관리」에서 생성하며 SecretId와 짝을 이룹니다. 생성 시 한 번만 전송되며 반환되지 않습니다. 잘못 입력했으면 편집에서 교체할 수 있습니다.',
+  secretHintAlidns: 'Alibaba Cloud RAM AccessKeySecret으로 AccessKeyId와 짝을 이루며, Alidns 읽기/쓰기 권한이 필요합니다. 생성 시 한 번만 전송되며 반환되지 않습니다. 잘못 입력했으면 편집에서 교체할 수 있습니다.',
+  // 존(여러 개)
+  fieldBaseDomains: '존(하나 이상)',
   baseDomainPlaceholder: 'example.com',
-  // 자격 증명 필드(공급자 유형별로 라벨/플레이스홀더/힌트 전환. 모두 볼트에 단일 문자열로 저장, 여러 부분은 쉼표로 연결)
-  fieldTokenCloudflare: 'API 토큰',
-  fieldTokenDnspod: 'API 토큰(ID,Token)',
-  fieldTokenAlidns: 'API 자격 증명(AccessKeyId,AccessKeySecret)',
-  tokenPlaceholderCloudflare: 'Cloudflare API 토큰 붙여넣기',
-  tokenPlaceholderDnspod: 'ID,Token (예: 12345,abcdef0123456789)',
-  tokenPlaceholderAlidns: 'AccessKeyId,AccessKeySecret',
-  tokenHintCloudflare: '이 존의 DNS 레코드에 대한 읽기/쓰기 권한이 필요합니다. 생성 시 한 번만 전송되며 반환되지 않습니다.',
-  tokenHintDnspod: 'DNSPod의 "ID,Token"(쉼표 구분)을 입력하세요. DNSPod 콘솔의 "키 관리"에서 생성합니다. 생성 시 한 번만 전송되며 반환되지 않습니다.',
-  tokenHintAlidns: 'Alibaba Cloud RAM의 "AccessKeyId,AccessKeySecret"(쉼표 구분)을 입력하세요. Alidns 읽기/쓰기 권한이 필요합니다. 생성 시 한 번만 전송되며 반환되지 않습니다.',
-  // 校验
+  addZoneField: '존 추가',
+  removeZoneAria: '존 입력 {domain} 제거',
+  zoneCount: '{n}개 존',
+  // 편집 모달
+  editSub: '이름 / API ID 변경 또는 시크릿 교체(비워 두면 변경 없음). 존은 아래에서 관리합니다.',
+  fieldSecretRotate: '시크릿 교체(선택)',
+  secretRotatePlaceholder: '비워 두면 현재 유지',
+  zonesSection: '존 관리',
+  addZonePlaceholder: '새 존(예: example.org)',
+  addZoneBtn: '추가',
+  removeZoneTitle: '존 {domain} 제거',
+  save: '저장',
+  saving: '저장 중…',
+  // 유효성 검사
   valNameRequired: '이름을 입력하세요.',
-  valBaseDomainRequired: '기본 도메인을 입력하세요.',
-  valBaseDomainInvalid: '유효한 기본 도메인을 입력하세요. 예: example.com.',
-  valTokenRequired: 'API 토큰을 입력하세요.',
-  // 删除确认
+  valApiIdRequired: 'API ID를 입력하세요.',
+  valZonesRequired: '존을 하나 이상 입력하세요.',
+  valBaseDomainRequired: '베이스 도메인을 입력하세요.',
+  valBaseDomainInvalid: '유효한 베이스 도메인을 입력하세요(예: example.com).',
+  valSecretRequired: 'API 시크릿을 입력하세요.',
+  // 삭제 확인
   deleteConfirmTitle: 'DNS 공급자 삭제',
   deleteIrreversible: '이 작업은 되돌릴 수 없습니다.',
-  deleteConfirmPrefix: '삭제',
-  deleteConfirmSuffix: '하시겠습니까? 연결된 라우트는 DNS-01 기능을 잃고 다시 연결해야 합니다.',
+  deleteConfirmPrefix: '삭제합니다:',
+  deleteConfirmSuffix: '? 연결된 라우트는 DNS-01을 잃게 되어 다시 연결해야 합니다.',
   confirmDelete: '삭제',
   deleting: '삭제 중…',
-  // 按钮
+  // 버튼
   cancel: '취소',
   create: '공급자 추가',
-  saving: '저장 중…',
   retry: '재시도',
-  // 错误
-  errLoad: 'DNS 공급자 로드 실패({status}).',
+  // 오류
+  errLoad: 'DNS 공급자를 불러오지 못했습니다({status}).',
   errNetwork: '네트워크 오류입니다. 잠시 후 다시 시도하세요.',
-  errSave: '저장 실패({status}).',
+  errSave: '저장에 실패했습니다({status}).',
   errSaveRetry: '저장에 실패했습니다. 다시 시도하세요.',
-  errDelete: '삭제 실패({status}).',
+  errDelete: '삭제에 실패했습니다({status}).',
 }

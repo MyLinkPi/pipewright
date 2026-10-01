@@ -1,73 +1,93 @@
 export default {
   title: 'DNS プロバイダー',
-  desc: 'Cloudflare / DNSPod / Alibaba Cloud DNS を接続すると DNS-01 でワイルドカード証明書を発行し、ワンクリックでサブドメインを割り当てられます。API トークンは書き込み専用 — ボールトに保存され二度と表示されません。',
+  desc: 'Cloudflare / DNSPod / Alibaba Cloud DNS のアカウントを接続(1 アカウントで複数ゾーンを管理可能)すると、DNS-01 検証によるワイルドカード証明書の発行と、サブドメインのワンクリック割り当てが可能になります。API シークレットは書き込み専用 — vault に保存され、二度と表示されません。API ID は非機密で編集可能です。',
   addProvider: 'DNS プロバイダーを追加',
   addFirstProvider: '最初の DNS プロバイダーを追加',
   panelTitle: 'DNS プロバイダー',
-  countLabel: '{n} 件',
-  // 類型
+  countLabel: '合計 {n} 件',
+  // 種別
   typeCloudflare: 'Cloudflare',
   typeDnspod: 'DNSPod',
   typeAlidns: 'Alibaba Cloud DNS',
-  // 列表列
+  // 一覧列
   colName: '名前',
-  colType: '種類',
-  colBaseDomain: 'ベースドメイン',
-  colCredential: '認証情報',
-  // 凭据状态
+  colType: '種別',
+  colZones: 'ゾーン',
+  colCredential: 'クレデンシャル',
+  // クレデンシャル状態
   credConfigured: '設定済み',
   credMissing: '未設定',
-  // 空态
+  // 空状態
   emptyLabel: 'DNS プロバイダーがまだありません',
-  emptyHint: 'プロバイダーを追加すると、ドメインで DNS-01 ワイルドカード証明書を有効化し、ワンクリックでサブドメインを割り当てられます。',
+  emptyHint: 'プロバイダーを追加すると、ドメインで DNS-01 ワイルドカード証明書とワンクリック サブドメイン割り当てが有効になります。',
   // 操作
+  editBtn: '編集',
   verify: '検証',
   verifying: '検証中…',
   verifyOk: '検証成功',
   verifyFail: '検証失敗',
-  deleteTitle: '{name} を削除',
+  verifyPartial: '{failed}/{total} ゾーンが失敗',
+  deleteTitle: 'プロバイダー {name} を削除',
   deleteAria: 'DNS プロバイダー {name} を削除',
   editTitle: '{name} を編集',
-  // 添加 / 编辑弹窗
+  // 追加モーダル
   addTitle: 'DNS プロバイダーを追加',
-  modalSub: 'API トークンは書き込み専用:保存後はボールトに格納され、再表示されません。',
+  modalSub: 'API シークレットは書き込み専用:保存後は vault に入り、二度と表示されません(ローテーションはいつでも可能)。',
   closeDialog: 'ダイアログを閉じる',
-  fieldType: 'プロバイダーの種類',
+  fieldType: 'プロバイダー種別',
   fieldName: '名前',
   namePlaceholder: '例:本番 Cloudflare',
-  fieldBaseDomain: 'ベースドメイン(ゾーン)',
+  // API ID(非機密;cloudflare には不要)
+  fieldApiId: 'API ID(非機密)',
+  apiIdPlaceholderDnspod: 'SecretId(例:12345)',
+  apiIdPlaceholderAlidns: 'AccessKeyId(例:LTAI5t…)',
+  apiIdHint: 'ID 部分は非機密であり、平文で保存され、表示・編集できます。',
+  // シークレット(機密・書き込み専用)
+  fieldSecret: 'API シークレット',
+  secretPlaceholderCloudflare: 'Cloudflare API トークンを貼り付け',
+  secretPlaceholderDnspod: 'DNSPod API トークンを貼り付け',
+  secretPlaceholderAlidns: 'AccessKeySecret を貼り付け',
+  secretHintCloudflare: '管理ゾーンの DNS レコード読み書き権限が必要です。作成時に一度だけ送信され、返信されません。',
+  secretHintDnspod: 'DNSPod コンソールの「キー管理」で作成し、SecretId とペアで使用します。作成時に一度だけ送信され、返信されません。入力ミス時は編集でローテーション可能です。',
+  secretHintAlidns: 'Alibaba Cloud RAM の AccessKeySecret で、AccessKeyId とペアで、Alidns 読み書き権限が必要です。作成時に一度だけ送信され、返信されません。入力ミス時は編集でローテーション可能です。',
+  // ゾーン(複数可)
+  fieldBaseDomains: 'ゾーン(1 つ以上)',
   baseDomainPlaceholder: 'example.com',
-  // 認証情報フィールド(プロバイダー種別でラベル/プレースホルダー/ヒントを切替。いずれもボールトに単一文字列で保存、複数要素はカンマ連結)
-  fieldTokenCloudflare: 'API トークン',
-  fieldTokenDnspod: 'API トークン(ID,Token)',
-  fieldTokenAlidns: 'API 認証情報(AccessKeyId,AccessKeySecret)',
-  tokenPlaceholderCloudflare: 'Cloudflare API トークンを貼り付け',
-  tokenPlaceholderDnspod: 'ID,Token(例:12345,abcdef0123456789)',
-  tokenPlaceholderAlidns: 'AccessKeyId,AccessKeySecret',
-  tokenHintCloudflare: 'このゾーンの DNS レコードへの読み書き権限が必要です。作成時に一度だけ送信され、返却されません。',
-  tokenHintDnspod: 'DNSPod の「ID,Token」(カンマ区切り)を入力します。DNSPod コンソールの「キー管理」で作成。作成時に一度だけ送信され、返却されません。',
-  tokenHintAlidns: 'Alibaba Cloud RAM の「AccessKeyId,AccessKeySecret」(カンマ区切り)を入力します。Alidns の読み書き権限が必要です。作成時に一度だけ送信され、返却されません。',
-  // 校验
+  addZoneField: 'ゾーンを追加',
+  removeZoneAria: 'ゾーン入力 {domain} を削除',
+  zoneCount: '{n} ゾーン',
+  // 編集モーダル
+  editSub: '名前 / API ID の変更、またはシークレットのローテーション(空欄で変更なし)。ゾーンは下で管理します。',
+  fieldSecretRotate: 'シークレットをローテーション(任意)',
+  secretRotatePlaceholder: '空欄で現在のまま',
+  zonesSection: 'ゾーン管理',
+  addZonePlaceholder: '新規ゾーン(例:example.org)',
+  addZoneBtn: '追加',
+  removeZoneTitle: 'ゾーン {domain} を削除',
+  save: '保存',
+  saving: '保存中…',
+  // バリデーション
   valNameRequired: '名前を入力してください。',
+  valApiIdRequired: 'API ID を入力してください。',
+  valZonesRequired: 'ゾーンを 1 つ以上入力してください。',
   valBaseDomainRequired: 'ベースドメインを入力してください。',
   valBaseDomainInvalid: '有効なベースドメインを入力してください(例:example.com)。',
-  valTokenRequired: 'API トークンを入力してください。',
-  // 删除确认
+  valSecretRequired: 'API シークレットを入力してください。',
+  // 削除確認
   deleteConfirmTitle: 'DNS プロバイダーを削除',
-  deleteIrreversible: 'この操作は取り消せません。',
-  deleteConfirmPrefix: '削除しますか',
-  deleteConfirmSuffix: '？ 接続中のルートは DNS-01 が無効になり、再接続が必要です。',
+  deleteIrreversible: 'この操作は元に戻せません。',
+  deleteConfirmPrefix: '削除します:',
+  deleteConfirmSuffix: '?紐付くルートは DNS-01 を失い、再設定が必要になります。',
   confirmDelete: '削除',
   deleting: '削除中…',
-  // 按钮
+  // ボタン
   cancel: 'キャンセル',
   create: 'プロバイダーを追加',
-  saving: '保存中…',
   retry: '再試行',
-  // 错误
+  // エラー
   errLoad: 'DNS プロバイダーの読み込みに失敗しました({status})。',
-  errNetwork: 'ネットワークエラー。しばらくして再試行してください。',
+  errNetwork: 'ネットワークエラーです。後でもう一度お試しください。',
   errSave: '保存に失敗しました({status})。',
-  errSaveRetry: '保存に失敗しました。再試行してください。',
+  errSaveRetry: '保存に失敗しました。もう一度お試しください。',
   errDelete: '削除に失敗しました({status})。',
 }

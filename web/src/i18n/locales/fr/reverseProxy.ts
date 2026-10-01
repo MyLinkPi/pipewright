@@ -96,9 +96,9 @@ export default {
   sub: {
     cta: 'Attribuer un sous-domaine',
     title: 'Attribuer un sous-domaine',
-    lede: 'Choisissez un fournisseur DNS et un conteneur upstream : nous générons automatiquement un sous-domaine app-xxxx sous son domaine de base, écrivons l’enregistrement A et rattachons la route — sans DNS manuel.',
-    providerLabel: 'Fournisseur DNS',
-    providerPick: 'Choisissez un fournisseur DNS…',
+    lede: 'Choisissez une zone DNS et un conteneur upstream : nous générons automatiquement un sous-domaine app-xxxx dessous, écrivons l’enregistrement A et rattachons la route — sans DNS manuel.',
+    providerLabel: 'Zone DNS',
+    providerPick: 'Choisissez une zone…',
     providerUnderDomain: 'Le sous-domaine sera généré sous {domain}',
     noProvider: 'Aucun fournisseur DNS configuré pour l’instant.',
     manageProviders: 'Configurer les fournisseurs DNS →',
@@ -132,7 +132,7 @@ export default {
     dnsLede: 'Rattachez un fournisseur DNS pour utiliser la validation DNS-01, qui permet les domaines génériques (*.example.com).',
     dnsProviderLabel: 'Fournisseur DNS',
     dnsProviderNone: 'Aucun (HTTP-01 uniquement, pas de générique)',
-    dnsProviderUnderDomain: 'Domaine de base : {domain}',
+    dnsProviderUnderDomain: 'Zones : {domain}',
     wildcardHint: 'Un fournisseur DNS est rattaché — le domaine/les alias peuvent utiliser un caractère générique, ex. *.example.com.',
     wildcardNeedsProvider: 'Les domaines génériques nécessitent d’abord un fournisseur DNS rattaché.',
     // R3 : routage par chemin

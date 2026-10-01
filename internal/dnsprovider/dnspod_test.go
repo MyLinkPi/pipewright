@@ -55,21 +55,20 @@ func TestSubDomain(t *testing.T) {
 	}
 }
 
-// --- 凭据解析 ---------------------------------------------------------------
+// --- 凭据半段校验 -----------------------------------------------------------
 
-func TestParseDNSPodToken(t *testing.T) {
-	if _, err := parseDNSPodToken("no-comma"); !errors.Is(err, ErrInvalidCredential) {
-		t.Fatalf("无逗号应 ErrInvalidCredential, got %v", err)
+func TestDNSPodLoginTokenHalves(t *testing.T) {
+	// ID/Secret 分开存储:任一半段为空 → ErrInvalidCredential(不发网络)。
+	for _, in := range [][2]string{{"", ""}, {"", "tok"}, {"12345", ""}, {"  ", "tok"}} {
+		c := newDNSPodClient(in[0], in[1], nil, "")
+		if _, err := c.loginToken(); !errors.Is(err, ErrInvalidCredential) {
+			t.Fatalf("半段 (%q,%q) 应 ErrInvalidCredential, got %v", in[0], in[1], err)
+		}
 	}
-	if _, err := parseDNSPodToken(",tok"); !errors.Is(err, ErrInvalidCredential) {
-		t.Fatalf("空 id 应 ErrInvalidCredential, got %v", err)
-	}
-	if _, err := parseDNSPodToken("123,"); !errors.Is(err, ErrInvalidCredential) {
-		t.Fatalf("空 token 应 ErrInvalidCredential, got %v", err)
-	}
-	lt, err := parseDNSPodToken("  123 , abcDEF  ")
-	if err != nil || lt != "123,abcDEF" {
-		t.Fatalf("应 trim 后拼回, got %q / %v", lt, err)
+	c := newDNSPodClient(" 12345 ", " abcDEF ", nil, "")
+	lt, err := c.loginToken()
+	if err != nil || lt != "12345,abcDEF" {
+		t.Fatalf("应 trim 后拼出 login_token, got %q / %v", lt, err)
 	}
 }
 
@@ -88,7 +87,7 @@ func TestDNSPodVerifyZoneSuccess(t *testing.T) {
 		}
 		return jsonResp(200, `{"status":{"code":"1","message":"Action completed successful"}}`), nil
 	})
-	c := newDNSPodClient("12345,sEcReT", rt, "")
+	c := newDNSPodClient("12345", "sEcReT", rt, "")
 	if err := c.VerifyZone(context.Background(), "example.com"); err != nil {
 		t.Fatalf("VerifyZone: %v", err)
 	}
@@ -98,7 +97,7 @@ func TestDNSPodVerifyZoneAuthFail(t *testing.T) {
 	rt := roundTripFunc(func(_ *http.Request) (*http.Response, error) {
 		return jsonResp(200, `{"status":{"code":"-1","message":"Login token error"}}`), nil
 	})
-	c := newDNSPodClient("12345,bad-secret", rt, "")
+	c := newDNSPodClient("12345", "bad-secret", rt, "")
 	err := c.VerifyZone(context.Background(), "example.com")
 	if !errors.Is(err, ErrVerifyFailed) {
 		t.Fatalf("鉴权失败应 ErrVerifyFailed, got %v", err)
@@ -112,20 +111,21 @@ func TestDNSPodVerifyZoneDomainNotFound(t *testing.T) {
 	rt := roundTripFunc(func(_ *http.Request) (*http.Response, error) {
 		return jsonResp(200, `{"status":{"code":"6","message":"domain not under your account"}}`), nil
 	})
-	c := newDNSPodClient("12345,sEcReT", rt, "")
+	c := newDNSPodClient("12345", "sEcReT", rt, "")
 	if err := c.VerifyZone(context.Background(), "nope.com"); !errors.Is(err, ErrVerifyFailed) {
 		t.Fatalf("域名不存在应 ErrVerifyFailed, got %v", err)
 	}
 }
 
 func TestDNSPodInvalidCredential(t *testing.T) {
-	// 保险库存了无逗号串 → VerifyZone 在请求前就报 ErrInvalidCredential(不发网络)。
+	// Secret 半段为空(ID/Secret 分开存储后防御性兜底)→ VerifyZone 在请求前就报
+	// ErrInvalidCredential(不发网络)。
 	called := false
 	rt := roundTripFunc(func(_ *http.Request) (*http.Response, error) {
 		called = true
 		return jsonResp(200, `{"status":{"code":"1"}}`), nil
 	})
-	c := newDNSPodClient("no-comma-token", rt, "")
+	c := newDNSPodClient("12345", "", rt, "")
 	if err := c.VerifyZone(context.Background(), "example.com"); !errors.Is(err, ErrInvalidCredential) {
 		t.Fatalf("坏凭据应 ErrInvalidCredential, got %v", err)
 	}
@@ -165,7 +165,7 @@ func TestDNSPodEnsureARecordCreate(t *testing.T) {
 		t.Fatalf("未预期请求 %s", r.URL.Path)
 		return nil, nil
 	})
-	c := newDNSPodClient("12345,sEcReT", rt, "")
+	c := newDNSPodClient("12345", "sEcReT", rt, "")
 	if err := c.EnsureARecord(context.Background(), "example.com", "app-abc.example.com", "203.0.113.5"); err != nil {
 		t.Fatalf("EnsureARecord: %v", err)
 	}
@@ -191,7 +191,7 @@ func TestDNSPodEnsureARecordModify(t *testing.T) {
 		t.Fatalf("未预期请求 %s", r.URL.Path)
 		return nil, nil
 	})
-	c := newDNSPodClient("12345,sEcReT", rt, "")
+	c := newDNSPodClient("12345", "sEcReT", rt, "")
 	if err := c.EnsureARecord(context.Background(), "example.com", "app-abc.example.com", "203.0.113.9"); err != nil {
 		t.Fatalf("EnsureARecord: %v", err)
 	}
@@ -213,7 +213,7 @@ func TestDNSPodEnsureARecordNoOpSameValue(t *testing.T) {
 		t.Fatalf("未预期请求 %s", r.URL.Path)
 		return nil, nil
 	})
-	c := newDNSPodClient("12345,sEcReT", rt, "")
+	c := newDNSPodClient("12345", "sEcReT", rt, "")
 	if err := c.EnsureARecord(context.Background(), "example.com", "app-abc.example.com", "203.0.113.5"); err != nil {
 		t.Fatalf("EnsureARecord: %v", err)
 	}
@@ -230,7 +230,7 @@ func TestDNSPodEnsureARecordErrorNoLeak(t *testing.T) {
 		t.Fatalf("不应到达 %s", r.URL.Path)
 		return nil, nil
 	})
-	c := newDNSPodClient("12345,top-secret", rt, "")
+	c := newDNSPodClient("12345", "top-secret", rt, "")
 	err := c.EnsureARecord(context.Background(), "example.com", "app-abc.example.com", "203.0.113.5")
 	if !errors.Is(err, ErrEnsureRecord) {
 		t.Fatalf("应 ErrEnsureRecord, got %v", err)

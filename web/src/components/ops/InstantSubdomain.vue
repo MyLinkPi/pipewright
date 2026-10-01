@@ -2,9 +2,9 @@
 /*
   InstantSubdomain.vue — 「一键分配子域名」(R3 / E3.3-E3.4 · 零 DNS 的招牌体验)。
 
-  反代面板顶部的醒目入口:点开后选 DNS 提供商(显示其根域)+ 上游容器/端口,
-  点「分配」→ 后端在该根域下铸造 app-xxxx 子域、写 A 记录、绑路由,一步到位。
-  成功后进入庆祝态:大字展示生成的子域 + 实时可点链接(https://…)。
+  反代面板顶部的醒目入口:点开后选 DNS 根区(提供商 · 根域;一个提供商可托管多个根区)
+  + 上游容器/端口,点「分配」→ 后端在该根域下铸造 app-xxxx 子域、写 A 记录、绑路由,
+  一步到位。成功后进入庆祝态:大字展示生成的子域 + 实时可点链接(https://…)。
 
   本组件只负责发起分配与展示结果;serverId 由父(单机面板)提供。分配成功后
   emit('allocated', 新路由) 让父把新路由插进列表。
@@ -16,7 +16,7 @@ import { RouterLink } from 'vue-router'
 import { NIcon } from 'naive-ui'
 import { Wand, World, ExternalLink, X, Confetti, ArrowRight } from '@vicons/tabler'
 import { allocateSubdomain, type ProxyRoute } from '../../api/reverseProxy'
-import { listDnsProviders, type DnsProvider } from '../../api/dnsProviders'
+import { listDnsProviders, type DnsProvider, type DnsZone } from '../../api/dnsProviders'
 import type { ContainerInfo } from '../../api/containers'
 import { HttpError } from '../../api/http'
 import { useToast } from '../../composables/useToast'
@@ -38,7 +38,11 @@ const toast = useToast()
 
 const open = ref(false)
 
-// ─── DNS 提供商 ────────────────────────────────────────────────────────────────
+// ─── DNS 提供商(展开成「提供商 · 根区」选项)─────────────────────────────────
+interface ZoneOption {
+  zone: DnsZone
+  label: string
+}
 const providers = ref<DnsProvider[]>([])
 const providersLoaded = ref(false)
 async function loadProviders(): Promise<void> {
@@ -52,15 +56,18 @@ async function loadProviders(): Promise<void> {
 }
 onMounted(loadProviders)
 
-const hasProviders = computed(() => providers.value.length > 0)
+const zoneOptions = computed<ZoneOption[]>(() =>
+  providers.value.flatMap((p) => p.zones.map((z) => ({ zone: z, label: `${p.name} · ${z.baseDomain}` }))),
+)
+const hasProviders = computed(() => zoneOptions.value.length > 0)
 
 // ─── 表单 ──────────────────────────────────────────────────────────────────────
-const providerId = ref('')
+const zoneId = ref('')
 const upstreamContainer = ref('')
 const upstreamPort = ref('')
 const allocating = ref(false)
 
-const selectedProvider = computed(() => providers.value.find((p) => p.id === providerId.value))
+const selectedZone = computed(() => zoneOptions.value.find((o) => o.zone.id === zoneId.value)?.zone)
 
 const runningContainers = computed(() =>
   props.containers.filter((c) => c.state === 'running').map((c) => c.names),
@@ -89,7 +96,7 @@ const portValid = computed(
 const canAllocate = computed(
   () =>
     !allocating.value &&
-    providerId.value.length > 0 &&
+    zoneId.value.length > 0 &&
     upstreamContainer.value.trim().length > 0 &&
     portValid.value,
 )
@@ -98,7 +105,7 @@ const canAllocate = computed(
 const result = ref<ProxyRoute | null>(null)
 
 function openModal(): void {
-  providerId.value = providers.value.length === 1 ? providers.value[0].id : ''
+  zoneId.value = zoneOptions.value.length === 1 ? zoneOptions.value[0].zone.id : ''
   upstreamContainer.value = ''
   upstreamPort.value = ''
   result.value = null
@@ -113,7 +120,7 @@ function closeModal(): void {
 
 const formSnapshot = ref('')
 function formJson(): string {
-  return JSON.stringify({ providerId: providerId.value, upstreamContainer: upstreamContainer.value, upstreamPort: upstreamPort.value })
+  return JSON.stringify({ zoneId: zoneId.value, upstreamContainer: upstreamContainer.value, upstreamPort: upstreamPort.value })
 }
 
 /** Shared close path for ✕ / ESC: confirm before discarding a half-filled form. */
@@ -127,7 +134,7 @@ async function allocate(): Promise<void> {
   allocating.value = true
   try {
     const route = await allocateSubdomain({
-      providerId: providerId.value,
+      zoneId: zoneId.value,
       serverId: props.serverId,
       upstreamContainer: upstreamContainer.value.trim(),
       upstreamPort: portNum.value,
@@ -227,15 +234,15 @@ async function allocate(): Promise<void> {
           </div>
 
           <form v-else class="modal-form" @submit.prevent="allocate">
-            <!-- provider -->
+            <!-- zone (provider · base domain) -->
             <div class="field">
               <label class="field-label">{{ t('reverseProxy.sub.providerLabel') }}</label>
-              <select v-model="providerId" class="field-input">
+              <select v-model="zoneId" class="field-input">
                 <option value="">{{ t('reverseProxy.sub.providerPick') }}</option>
-                <option v-for="p in providers" :key="p.id" :value="p.id">{{ p.name }} · {{ p.baseDomain }}</option>
+                <option v-for="o in zoneOptions" :key="o.zone.id" :value="o.zone.id">{{ o.label }}</option>
               </select>
-              <span v-if="selectedProvider" class="field-hint">
-                {{ t('reverseProxy.sub.providerUnderDomain', { domain: selectedProvider.baseDomain }) }}
+              <span v-if="selectedZone" class="field-hint">
+                {{ t('reverseProxy.sub.providerUnderDomain', { domain: selectedZone.baseDomain }) }}
               </span>
             </div>
 

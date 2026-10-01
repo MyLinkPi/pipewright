@@ -1,6 +1,6 @@
 export default {
   title: 'DNS 提供商',
-  desc: '挂接 Cloudflare / DNSPod / 阿里云 DNS,即可走 DNS-01 验证签发通配符证书,并一键分配子域名。API Token 只写不读 —— 存入保险库,绝不回显。',
+  desc: '挂接 Cloudflare / DNSPod / 阿里云 DNS 账户(一个账户可托管多个根区),即可走 DNS-01 验证签发通配符证书,并一键分配子域名。API Secret 只写不读 —— 存入保险库,绝不回显;API ID 非机密,可回显可编辑。',
   addProvider: '添加 DNS 提供商',
   addFirstProvider: '添加第一个 DNS 提供商',
   panelTitle: 'DNS 提供商',
@@ -12,7 +12,7 @@ export default {
   // 列表列
   colName: '名称',
   colType: '类型',
-  colBaseDomain: '根域',
+  colZones: '根区',
   colCredential: '凭据',
   // 凭据状态
   credConfigured: '已配置',
@@ -21,37 +21,58 @@ export default {
   emptyLabel: '还没有 DNS 提供商',
   emptyHint: '添加一个提供商后,即可对域名启用 DNS-01 通配符证书,并一键分配子域名。',
   // 操作
+  editBtn: '编辑',
   verify: '验证',
   verifying: '验证中…',
   verifyOk: '验证通过',
   verifyFail: '验证失败',
+  verifyPartial: '{failed}/{total} 个根区未通过',
   deleteTitle: '删除提供商 {name}',
   deleteAria: '删除 DNS 提供商 {name}',
   editTitle: '编辑 {name}',
-  // 添加 / 编辑弹窗
+  // 添加弹窗
   addTitle: '添加 DNS 提供商',
-  modalSub: 'API Token 只写不读:保存后存入保险库,不会再显示。',
+  modalSub: 'API Secret 只写不读:保存后存入保险库,不会再显示(可随时轮换)。',
   closeDialog: '关闭对话框',
   fieldType: '提供商类型',
   fieldName: '名称',
   namePlaceholder: '例:生产区 Cloudflare',
-  fieldBaseDomain: '根域(托管区)',
+  // API ID(非机密;cloudflare 无此字段)
+  fieldApiId: 'API ID(非机密)',
+  apiIdPlaceholderDnspod: 'SecretId(例:12345)',
+  apiIdPlaceholderAlidns: 'AccessKeyId(例:LTAI5t…)',
+  apiIdHint: 'ID 部分非机密,明文保存,可回显可编辑。',
+  // Secret(机密,只写)
+  fieldSecret: 'API Secret',
+  secretPlaceholderCloudflare: '粘贴 Cloudflare API Token',
+  secretPlaceholderDnspod: '粘贴 DNSPod API Token',
+  secretPlaceholderAlidns: '粘贴 AccessKeySecret',
+  secretHintCloudflare: '需有所辖根域的 DNS 记录读写权限。仅创建时发送一次,绝不回显。',
+  secretHintDnspod: '在 DNSPod 控制台「密钥管理」创建,与 SecretId 配对使用。仅创建时发送一次,绝不回显;填错可在编辑中轮换。',
+  secretHintAlidns: '阿里云 RAM AccessKeySecret,与 AccessKeyId 配对,需有云解析 DNS 读写权限。仅创建时发送一次,绝不回显;填错可在编辑中轮换。',
+  // 根区(多值)
+  fieldBaseDomains: '根区(可填多个)',
   baseDomainPlaceholder: 'example.com',
-  // 凭据字段(按提供商类型切换标签/占位/提示;均存为保险库单字串,多段用逗号拼)
-  fieldTokenCloudflare: 'API Token',
-  fieldTokenDnspod: 'API Token(ID,Token)',
-  fieldTokenAlidns: 'API 凭据(AccessKeyId,AccessKeySecret)',
-  tokenPlaceholderCloudflare: '粘贴 Cloudflare API Token',
-  tokenPlaceholderDnspod: 'ID,Token(例:12345,abcdef0123456789)',
-  tokenPlaceholderAlidns: 'AccessKeyId,AccessKeySecret',
-  tokenHintCloudflare: '需有对该根域的 DNS 记录读写权限。仅在创建时发送一次,绝不回显。',
-  tokenHintDnspod: '填 DNSPod 的「ID,Token」(逗号分隔):在 DNSPod 控制台「密钥管理」创建。仅在创建时发送一次,绝不回显。',
-  tokenHintAlidns: '填阿里云 RAM 的「AccessKeyId,AccessKeySecret」(逗号分隔),需有云解析 DNS 读写权限。仅在创建时发送一次,绝不回显。',
+  addZoneField: '再加一个根区',
+  removeZoneAria: '移除根区输入 {domain}',
+  zoneCount: '{n} 个根区',
+  // 编辑弹窗
+  editSub: '修改名称 / API ID,或轮换 Secret(留空不改动);根区在下方管理。',
+  fieldSecretRotate: '轮换 Secret(可选)',
+  secretRotatePlaceholder: '留空保持不变',
+  zonesSection: '根区管理',
+  addZonePlaceholder: '新增根域,例:example.org',
+  addZoneBtn: '添加',
+  removeZoneTitle: '移除根区 {domain}',
+  save: '保存',
+  saving: '保存中…',
   // 校验
   valNameRequired: '请填写名称。',
+  valApiIdRequired: '请填写 API ID。',
+  valZonesRequired: '请至少填写一个根区。',
   valBaseDomainRequired: '请填写根域。',
   valBaseDomainInvalid: '请填写合法的根域,例:example.com。',
-  valTokenRequired: '请填写 API Token。',
+  valSecretRequired: '请填写 API Secret。',
   // 删除确认
   deleteConfirmTitle: '删除 DNS 提供商',
   deleteIrreversible: '此操作不可撤销。',
@@ -62,7 +83,6 @@ export default {
   // 按钮
   cancel: '取消',
   create: '添加提供商',
-  saving: '保存中…',
   retry: '重试',
   // 错误
   errLoad: '加载 DNS 提供商失败({status})。',

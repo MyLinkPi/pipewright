@@ -2,28 +2,36 @@
 /*
   SettingsDnsProviders.vue — DNS 提供商管理(R3 / E3.1 · 零 DNS 体验)。
 
-  挂接 Cloudflare / DNSPod / 阿里云 DNS,解锁两件事:① 路由走 DNS-01 验证 → 通配符证书;
-  ② 一键分配子域名(app-xxxx.<根域> + 自动 A 记录 + 路由)。API Token 只写不读 —— 存入保险库,
-  列表只显示「已配置 / 未配置」,绝不回显。
+  挂接 Cloudflare / DNSPod / 阿里云 DNS 账户(一个账户托管多个根区),解锁两件事:
+  ① 路由走 DNS-01 验证 → 通配符证书;② 一键分配子域名(app-xxxx.<根区> + 自动 A 记录 + 路由)。
+  凭据按机密性拆分:API ID(DNSPod SecretId / 阿里云 AccessKeyId)非机密,明文可回显可编辑;
+  API Secret 只写不读 —— 存入保险库,列表只显示「已配置 / 未配置」,绝不回显(可在编辑中轮换)。
 
-  - 列表:类型徽章、名称、根域、凭据状态;每行「验证」(探测 token 是否能触达该 zone)+ 删除。
-  - 添加弹窗:类型(三选一)+ 名称 + 根域(FQDN 校验)+ API Token(必填,password)。
-  - 删除二次确认。验证结果以 toast 反馈。
-  数据来自 GET /api/dns/providers(只读聚合,从不含 token)。
+  - 列表:类型徽章、名称、根区标签(多个)、凭据状态;每行「编辑」+「验证」(逐根区探测)+ 删除。
+  - 添加弹窗:类型(三选一)+ 名称 + API ID(cloudflare 无)+ API Secret(必填,password)
+    + 根区(动态多值,≥1)。
+  - 编辑弹窗:改名称 / API ID、轮换 Secret(留空不改动);根区就地增删(Secret 只写一次,
+    不必删了重建)。
+  - 删除二次确认。验证结果逐根区以 toast 反馈。
+  数据来自 GET /api/dns/providers(只读聚合,从不含 Secret)。
 */
 import { ref, computed, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useDirtyGuard } from '../../composables/useDirtyGuard'
 import { NIcon } from 'naive-ui'
-import { World, Plus, Trash, CircleCheck, CircleX, ShieldCheck } from '@vicons/tabler'
+import { World, Plus, Trash, CircleCheck, CircleX, ShieldCheck, Pencil } from '@vicons/tabler'
 import {
   listDnsProviders,
   createDnsProvider,
+  updateDnsProvider,
   deleteDnsProvider,
   verifyDnsProvider,
+  addDnsZone,
+  removeDnsZone,
   type DnsProvider,
   type DnsProviderType,
   type CreateDnsProviderInput,
+  type ZoneVerifyResult,
 } from '../../api/dnsProviders'
 import { HttpError } from '../../api/http'
 import { useToast } from '../../composables/useToast'
@@ -46,21 +54,23 @@ const typeLabels = computed<Record<DnsProviderType, string>>(() => ({
   alidns: t('dnsProviders.typeAlidns'),
 }))
 
-// 凭据是单字串字段;按提供商类型给出格式占位 + 提示(后端按逗号切分多段凭据)。
-const tokenPlaceholders = computed<Record<DnsProviderType, string>>(() => ({
-  cloudflare: t('dnsProviders.tokenPlaceholderCloudflare'),
-  dnspod: t('dnsProviders.tokenPlaceholderDnspod'),
-  alidns: t('dnsProviders.tokenPlaceholderAlidns'),
+// 仅 dnspod / alidns 有 API ID 半段(cloudflare 单 Token)。
+const needsApiId = (type: DnsProviderType): boolean => type !== 'cloudflare'
+
+// Secret(机密,只写)与 API ID(非机密)分字段;标签/占位/提示按提供商类型切换。
+const apiIdPlaceholders = computed<Record<'dnspod' | 'alidns', string>>(() => ({
+  dnspod: t('dnsProviders.apiIdPlaceholderDnspod'),
+  alidns: t('dnsProviders.apiIdPlaceholderAlidns'),
 }))
-const tokenHints = computed<Record<DnsProviderType, string>>(() => ({
-  cloudflare: t('dnsProviders.tokenHintCloudflare'),
-  dnspod: t('dnsProviders.tokenHintDnspod'),
-  alidns: t('dnsProviders.tokenHintAlidns'),
+const secretPlaceholders = computed<Record<DnsProviderType, string>>(() => ({
+  cloudflare: t('dnsProviders.secretPlaceholderCloudflare'),
+  dnspod: t('dnsProviders.secretPlaceholderDnspod'),
+  alidns: t('dnsProviders.secretPlaceholderAlidns'),
 }))
-const tokenLabels = computed<Record<DnsProviderType, string>>(() => ({
-  cloudflare: t('dnsProviders.fieldTokenCloudflare'),
-  dnspod: t('dnsProviders.fieldTokenDnspod'),
-  alidns: t('dnsProviders.fieldTokenAlidns'),
+const secretHints = computed<Record<DnsProviderType, string>>(() => ({
+  cloudflare: t('dnsProviders.secretHintCloudflare'),
+  dnspod: t('dnsProviders.secretHintDnspod'),
+  alidns: t('dnsProviders.secretHintAlidns'),
 }))
 
 async function load(): Promise<void> {
@@ -80,28 +90,30 @@ async function load(): Promise<void> {
 
 onMounted(load)
 
+// 根域:与路由域名相同的 FQDN 校验(根域本身不带通配符)。
+const FQDN_RE = /^(?=.{1,253}$)([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/i
+
 // ─── 添加弹窗 ──────────────────────────────────────────────────────────────────
 const modalOpen = ref(false)
 const submitting = ref(false)
 const formBanner = ref('')
-const form = ref<{ type: DnsProviderType; name: string; baseDomain: string; token: string }>({
-  type: 'cloudflare',
+const form = ref<{
+  type: DnsProviderType
+  name: string
+  apiId: string
+  secret: string
+  baseDomains: string[]
+}>({ type: 'cloudflare', name: '', apiId: '', secret: '', baseDomains: [''] })
+const errors = ref<{ name: string; apiId: string; secret: string; zones: string }>({
   name: '',
-  baseDomain: '',
-  token: '',
+  apiId: '',
+  secret: '',
+  zones: '',
 })
-const errors = ref<{ name: string; baseDomain: string; token: string }>({
-  name: '',
-  baseDomain: '',
-  token: '',
-})
-
-// 根域:与路由域名相同的 FQDN 校验(根域本身不带通配符)。
-const FQDN_RE = /^(?=.{1,253}$)([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/i
 
 function openAdd(): void {
-  form.value = { type: 'cloudflare', name: '', baseDomain: '', token: '' }
-  errors.value = { name: '', baseDomain: '', token: '' }
+  form.value = { type: 'cloudflare', name: '', apiId: '', secret: '', baseDomains: [''] }
+  errors.value = { name: '', apiId: '', secret: '', zones: '' }
   formBanner.value = ''
   modalOpen.value = true
   formSnapshot.value = JSON.stringify(form.value)
@@ -110,7 +122,7 @@ function openAdd(): void {
 function closeModal(): void {
   if (submitting.value) return
   modalOpen.value = false
-  form.value.token = ''
+  form.value.secret = ''
 }
 
 /** Shared close path for ✕ / 取消 / ESC: confirm before discarding a dirty form. */
@@ -119,23 +131,43 @@ async function requestClose(): Promise<void> {
   closeModal()
 }
 
+/** 切换提供商类型时清掉不适用的 API ID(cloudflare 无此半段)。 */
+function onTypeChange(type: DnsProviderType): void {
+  form.value.type = type
+  if (!needsApiId(type)) form.value.apiId = ''
+  errors.value.apiId = ''
+}
+
+function addZoneInput(): void {
+  form.value.baseDomains.push('')
+}
+
+function removeZoneInput(i: number): void {
+  form.value.baseDomains.splice(i, 1)
+  if (form.value.baseDomains.length === 0) form.value.baseDomains.push('')
+}
+
 function validate(): boolean {
-  errors.value = { name: '', baseDomain: '', token: '' }
+  errors.value = { name: '', apiId: '', secret: '', zones: '' }
   let ok = true
   if (!form.value.name.trim()) {
     errors.value.name = t('dnsProviders.valNameRequired')
     ok = false
   }
-  const dom = form.value.baseDomain.trim().toLowerCase()
-  if (!dom) {
-    errors.value.baseDomain = t('dnsProviders.valBaseDomainRequired')
-    ok = false
-  } else if (!FQDN_RE.test(dom)) {
-    errors.value.baseDomain = t('dnsProviders.valBaseDomainInvalid')
+  if (needsApiId(form.value.type) && !form.value.apiId.trim()) {
+    errors.value.apiId = t('dnsProviders.valApiIdRequired')
     ok = false
   }
-  if (!form.value.token) {
-    errors.value.token = t('dnsProviders.valTokenRequired')
+  const domains = form.value.baseDomains.map((d) => d.trim().toLowerCase()).filter(Boolean)
+  if (domains.length === 0) {
+    errors.value.zones = t('dnsProviders.valZonesRequired')
+    ok = false
+  } else if (domains.some((d) => !FQDN_RE.test(d))) {
+    errors.value.zones = t('dnsProviders.valBaseDomainInvalid')
+    ok = false
+  }
+  if (!form.value.secret) {
+    errors.value.secret = t('dnsProviders.valSecretRequired')
     ok = false
   }
   return ok
@@ -149,12 +181,13 @@ async function submit(): Promise<void> {
     const payload: CreateDnsProviderInput = {
       type: form.value.type,
       name: form.value.name.trim(),
-      baseDomain: form.value.baseDomain.trim().toLowerCase(),
-      token: form.value.token,
+      apiId: needsApiId(form.value.type) ? form.value.apiId.trim() : '',
+      secret: form.value.secret,
+      baseDomains: form.value.baseDomains.map((d) => d.trim().toLowerCase()).filter(Boolean),
     }
     const created = await createDnsProvider(payload)
     providers.value = [created, ...providers.value]
-    form.value.token = ''
+    form.value.secret = ''
     modalOpen.value = false
   } catch (err) {
     formBanner.value =
@@ -166,17 +199,159 @@ async function submit(): Promise<void> {
   }
 }
 
-// ─── 验证 ──────────────────────────────────────────────────────────────────────
+// ─── 编辑弹窗(名称 / API ID / 轮换 Secret + 根区就地增删)────────────────────
+const editOpen = ref(false)
+const editSubmitting = ref(false)
+const editBanner = ref('')
+const editing = ref<DnsProvider | null>(null)
+const editForm = ref<{ name: string; apiId: string; secret: string }>({ name: '', apiId: '', secret: '' })
+const editErrors = ref<{ name: string; apiId: string }>({ name: '', apiId: '' })
+const editSnapshot = ref('')
+// 根区增删(立即生效,不等「保存」;Secret 只写一次,追加根区不必删了重建)。
+const zoneInput = ref('')
+const zoneInputError = ref('')
+const zoneBusy = ref(false)
+
+function openEdit(p: DnsProvider): void {
+  editing.value = p
+  editForm.value = { name: p.name, apiId: p.apiId, secret: '' }
+  editErrors.value = { name: '', apiId: '' }
+  editSnapshot.value = JSON.stringify(editForm.value)
+  editBanner.value = ''
+  zoneInput.value = ''
+  zoneInputError.value = ''
+  editOpen.value = true
+}
+
+function closeEdit(): void {
+  if (editSubmitting.value) return
+  editOpen.value = false
+  editing.value = null
+  editForm.value.secret = ''
+}
+
+async function requestCloseEdit(): Promise<void> {
+  if (JSON.stringify(editForm.value) !== editSnapshot.value && !(await confirmDiscard())) return
+  closeEdit()
+}
+
+function validateEdit(): boolean {
+  editErrors.value = { name: '', apiId: '' }
+  let ok = true
+  if (!editForm.value.name.trim()) {
+    editErrors.value.name = t('dnsProviders.valNameRequired')
+    ok = false
+  }
+  if (editing.value && needsApiId(editing.value.type) && !editForm.value.apiId.trim()) {
+    editErrors.value.apiId = t('dnsProviders.valApiIdRequired')
+    ok = false
+  }
+  return ok
+}
+
+async function submitEdit(): Promise<void> {
+  if (!editing.value || !validateEdit()) return
+  editSubmitting.value = true
+  editBanner.value = ''
+  const id = editing.value.id
+  try {
+    const payload: Record<string, string> = {
+      name: editForm.value.name.trim(),
+      apiId: needsApiId(editing.value.type) ? editForm.value.apiId.trim() : '',
+    }
+    if (editForm.value.secret) payload.secret = editForm.value.secret
+    const updated = await updateDnsProvider(id, payload)
+    const idx = providers.value.findIndex((p) => p.id === id)
+    if (idx >= 0) providers.value[idx] = updated
+    editForm.value.secret = ''
+    editOpen.value = false
+    editing.value = null
+  } catch (err) {
+    editBanner.value =
+      err instanceof HttpError
+        ? (err.apiError?.message ?? t('dnsProviders.errSave', { status: err.status }))
+        : t('dnsProviders.errSaveRetry')
+  } finally {
+    editSubmitting.value = false
+  }
+}
+
+async function onAddZone(): Promise<void> {
+  if (!editing.value || zoneBusy.value) return
+  const domain = zoneInput.value.trim().toLowerCase()
+  if (!domain) {
+    zoneInputError.value = t('dnsProviders.valBaseDomainRequired')
+    return
+  }
+  if (!FQDN_RE.test(domain)) {
+    zoneInputError.value = t('dnsProviders.valBaseDomainInvalid')
+    return
+  }
+  zoneBusy.value = true
+  zoneInputError.value = ''
+  const providerId = editing.value.id
+  try {
+    const zone = await addDnsZone(providerId, domain)
+    const p = providers.value.find((x) => x.id === providerId)
+    if (p) {
+      p.zones = [...p.zones, zone].sort((a, b) => a.baseDomain.localeCompare(b.baseDomain))
+      editing.value = p
+    }
+    zoneInput.value = ''
+  } catch (err) {
+    zoneInputError.value =
+      err instanceof HttpError
+        ? (err.apiError?.message ?? t('dnsProviders.errSaveRetry'))
+        : t('dnsProviders.errSaveRetry')
+  } finally {
+    zoneBusy.value = false
+  }
+}
+
+async function onRemoveZone(zoneId: string, domain: string): Promise<void> {
+  if (!editing.value || zoneBusy.value) return
+  zoneBusy.value = true
+  zoneInputError.value = ''
+  const providerId = editing.value.id
+  try {
+    await removeDnsZone(providerId, zoneId)
+    const p = providers.value.find((x) => x.id === providerId)
+    if (p) {
+      p.zones = p.zones.filter((z) => z.id !== zoneId)
+      editing.value = p
+    }
+  } catch (err) {
+    zoneInputError.value =
+      err instanceof HttpError
+        ? (err.apiError?.message ?? t('dnsProviders.errDelete', { status: err.status }))
+        : t('dnsProviders.errNetwork')
+  } finally {
+    zoneBusy.value = false
+  }
+}
+
+// ─── 验证(逐根区结果)────────────────────────────────────────────────────────
 const verifyingId = ref<string | null>(null)
+
+function verifyDetail(zones: ZoneVerifyResult[]): string {
+  return zones.map((z) => (z.ok ? z.baseDomain : `${z.baseDomain}: ${z.error ?? ''}`)).join(' · ')
+}
+
 async function verify(p: DnsProvider): Promise<void> {
   if (verifyingId.value) return
   verifyingId.value = p.id
   try {
     const res = await verifyDnsProvider(p.id)
+    const failed = res.zones.filter((z) => !z.ok).length
     if (res.ok) {
-      toast.success(t('dnsProviders.verifyOk'), { detail: res.message ?? p.baseDomain })
+      toast.success(t('dnsProviders.verifyOk'), { detail: verifyDetail(res.zones) })
     } else {
-      toast.error(t('dnsProviders.verifyFail'), { detail: res.message ?? p.name })
+      toast.error(
+        failed === res.zones.length
+          ? t('dnsProviders.verifyFail')
+          : t('dnsProviders.verifyPartial', { failed, total: res.zones.length }),
+        { detail: verifyDetail(res.zones) },
+      )
     }
   } catch (err) {
     toast.error(t('dnsProviders.verifyFail'), {
@@ -274,19 +449,34 @@ async function confirmDelete(): Promise<void> {
         <div class="dns-row dns-row--head" aria-hidden="true">
           <span>{{ t('dnsProviders.colType') }}</span>
           <span>{{ t('dnsProviders.colName') }}</span>
-          <span>{{ t('dnsProviders.colBaseDomain') }}</span>
+          <span>{{ t('dnsProviders.colZones') }}</span>
           <span>{{ t('dnsProviders.colCredential') }}</span>
           <span />
         </div>
         <div v-for="p in providers" :key="p.id" class="dns-row">
           <span class="type-badge" :class="`type-badge--${p.type}`">{{ typeLabels[p.type] }}</span>
-          <strong class="dns-name">{{ p.name }}</strong>
-          <span class="dns-domain mono">{{ p.baseDomain }}</span>
+          <div class="dns-name-cell">
+            <strong class="dns-name">{{ p.name }}</strong>
+            <span v-if="p.apiId" class="dns-apiid mono">{{ p.apiId }}</span>
+          </div>
+          <span v-if="p.zones.length" class="zone-tags">
+            <span v-for="z in p.zones" :key="z.id" class="zone-tag mono">{{ z.baseDomain }}</span>
+          </span>
+          <span v-else class="zone-tags zone-tags--empty">—</span>
           <span class="cred-state" :class="p.credentialConfigured ? 'cred-state--ok' : 'cred-state--missing'">
             <NIcon :size="13"><CircleCheck v-if="p.credentialConfigured" /><CircleX v-else /></NIcon>
             {{ p.credentialConfigured ? t('dnsProviders.credConfigured') : t('dnsProviders.credMissing') }}
           </span>
           <span class="dns-ops">
+            <button
+              class="op-btn"
+              :title="t('dnsProviders.editTitle', { name: p.name })"
+              :aria-label="t('dnsProviders.editTitle', { name: p.name })"
+              @click="openEdit(p)"
+            >
+              <NIcon :size="13"><Pencil /></NIcon>
+              <span class="op-btn-txt">{{ t('dnsProviders.editBtn') }}</span>
+            </button>
             <button
               class="op-btn"
               :disabled="verifyingId === p.id"
@@ -346,7 +536,7 @@ async function confirmDelete(): Promise<void> {
                 class="seg-item"
                 :class="{ 'seg-item--active': form.type === opt }"
                 :disabled="submitting"
-                @click="form.type = opt"
+                @click="onTypeChange(opt)"
               >{{ typeLabels[opt] }}</button>
             </div>
           </div>
@@ -368,40 +558,75 @@ async function confirmDelete(): Promise<void> {
             <span v-if="errors.name" class="field-error" role="alert">{{ errors.name }}</span>
           </div>
 
-          <!-- base domain -->
-          <div class="field">
-            <label class="field-label" for="dns-domain">{{ t('dnsProviders.fieldBaseDomain') }}</label>
+          <!-- API ID (non-secret; dnspod / alidns only) -->
+          <div v-if="needsApiId(form.type)" class="field">
+            <label class="field-label" for="dns-apiid">{{ t('dnsProviders.fieldApiId') }}</label>
             <input
-              id="dns-domain"
-              v-model="form.baseDomain"
+              id="dns-apiid"
+              v-model="form.apiId"
               class="field-input field-input--mono"
-              :class="{ 'field-input--error': errors.baseDomain }"
+              :class="{ 'field-input--error': errors.apiId }"
               type="text"
-              :placeholder="t('dnsProviders.baseDomainPlaceholder')"
+              :placeholder="apiIdPlaceholders[form.type as 'dnspod' | 'alidns']"
               :disabled="submitting"
               autocomplete="off"
               spellcheck="false"
-              @input="errors.baseDomain = ''"
+              @input="errors.apiId = ''"
             />
-            <span v-if="errors.baseDomain" class="field-error" role="alert">{{ errors.baseDomain }}</span>
+            <span v-if="errors.apiId" class="field-error" role="alert">{{ errors.apiId }}</span>
+            <span class="field-hint">{{ t('dnsProviders.apiIdHint') }}</span>
           </div>
 
-          <!-- token (write-only) — 标签/占位/提示按提供商类型切换 -->
+          <!-- secret (write-only) -->
           <div class="field">
-            <label class="field-label" for="dns-token">{{ tokenLabels[form.type] }}</label>
+            <label class="field-label" for="dns-secret">{{ t('dnsProviders.fieldSecret') }}</label>
             <input
-              id="dns-token"
-              v-model="form.token"
+              id="dns-secret"
+              v-model="form.secret"
               class="field-input field-input--mono"
-              :class="{ 'field-input--error': errors.token }"
+              :class="{ 'field-input--error': errors.secret }"
               type="password"
-              :placeholder="tokenPlaceholders[form.type]"
+              :placeholder="secretPlaceholders[form.type]"
               :disabled="submitting"
               autocomplete="new-password"
-              @input="errors.token = ''"
+              @input="errors.secret = ''"
             />
-            <span v-if="errors.token" class="field-error" role="alert">{{ errors.token }}</span>
-            <span class="field-hint">{{ tokenHints[form.type] }}</span>
+            <span v-if="errors.secret" class="field-error" role="alert">{{ errors.secret }}</span>
+            <span class="field-hint">{{ secretHints[form.type] }}</span>
+          </div>
+
+          <!-- base domains (multi) -->
+          <div class="field">
+            <label class="field-label">{{ t('dnsProviders.fieldBaseDomains') }}</label>
+            <div
+              v-for="(_, i) in form.baseDomains"
+              :key="i"
+              class="zone-input-row"
+            >
+              <input
+                v-model="form.baseDomains[i]"
+                class="field-input field-input--mono"
+                type="text"
+                :placeholder="t('dnsProviders.baseDomainPlaceholder')"
+                :disabled="submitting"
+                :aria-label="`${t('dnsProviders.fieldBaseDomains')} ${i + 1}`"
+                autocomplete="off"
+                spellcheck="false"
+                @input="errors.zones = ''"
+              />
+              <button
+                v-if="form.baseDomains.length > 1"
+                type="button"
+                class="zone-rm"
+                :aria-label="t('dnsProviders.removeZoneAria', { domain: form.baseDomains[i] || i + 1 })"
+                :disabled="submitting"
+                @click="removeZoneInput(i)"
+              >✕</button>
+            </div>
+            <span v-if="errors.zones" class="field-error" role="alert">{{ errors.zones }}</span>
+            <button type="button" class="zone-add" :disabled="submitting" @click="addZoneInput">
+              + {{ t('dnsProviders.addZoneField') }}
+            </button>
           </div>
 
           <div class="modal-footer">
@@ -409,6 +634,127 @@ async function confirmDelete(): Promise<void> {
             <button type="submit" class="btn-primary" :disabled="submitting" :aria-busy="submitting">
               <span v-if="submitting" class="spinner" aria-hidden="true" />
               {{ submitting ? t('dnsProviders.saving') : t('dnsProviders.create') }}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </Teleport>
+
+  <!-- edit modal -->
+  <Teleport to="body">
+    <div
+      v-if="editOpen && editing"
+      class="modal-scrim"
+      role="dialog"
+      :aria-label="t('dnsProviders.editTitle', { name: editing.name })"
+      aria-modal="true"
+      @keydown.esc="requestCloseEdit"
+    >
+      <div class="modal">
+        <div class="modal-head">
+          <div class="modal-icon" aria-hidden="true"><NIcon :size="18"><Pencil /></NIcon></div>
+          <div>
+            <h3 class="modal-title">{{ t('dnsProviders.editTitle', { name: editing.name }) }}</h3>
+            <p class="modal-sub">{{ t('dnsProviders.editSub') }}</p>
+          </div>
+          <button class="modal-close" :aria-label="t('dnsProviders.closeDialog')" :disabled="editSubmitting" @click="requestCloseEdit">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18M6 6l12 12"/></svg>
+          </button>
+        </div>
+
+        <div v-if="editBanner" class="banner banner--error modal-banner" role="alert">{{ editBanner }}</div>
+
+        <form class="modal-form" novalidate @submit.prevent="submitEdit">
+          <!-- name -->
+          <div class="field">
+            <label class="field-label" for="edit-dns-name">{{ t('dnsProviders.fieldName') }}</label>
+            <input
+              id="edit-dns-name"
+              v-model="editForm.name"
+              class="field-input"
+              :class="{ 'field-input--error': editErrors.name }"
+              type="text"
+              :disabled="editSubmitting"
+              autocomplete="off"
+              @input="editErrors.name = ''"
+            />
+            <span v-if="editErrors.name" class="field-error" role="alert">{{ editErrors.name }}</span>
+          </div>
+
+          <!-- API ID (non-secret; dnspod / alidns only) -->
+          <div v-if="needsApiId(editing.type)" class="field">
+            <label class="field-label" for="edit-dns-apiid">{{ t('dnsProviders.fieldApiId') }}</label>
+            <input
+              id="edit-dns-apiid"
+              v-model="editForm.apiId"
+              class="field-input field-input--mono"
+              :class="{ 'field-input--error': editErrors.apiId }"
+              type="text"
+              :placeholder="apiIdPlaceholders[editing.type as 'dnspod' | 'alidns']"
+              :disabled="editSubmitting"
+              autocomplete="off"
+              spellcheck="false"
+              @input="editErrors.apiId = ''"
+            />
+            <span v-if="editErrors.apiId" class="field-error" role="alert">{{ editErrors.apiId }}</span>
+            <span class="field-hint">{{ t('dnsProviders.apiIdHint') }}</span>
+          </div>
+
+          <!-- secret rotation (optional) -->
+          <div class="field">
+            <label class="field-label" for="edit-dns-secret">{{ t('dnsProviders.fieldSecretRotate') }}</label>
+            <input
+              id="edit-dns-secret"
+              v-model="editForm.secret"
+              class="field-input field-input--mono"
+              type="password"
+              :placeholder="t('dnsProviders.secretRotatePlaceholder')"
+              :disabled="editSubmitting"
+              autocomplete="new-password"
+            />
+          </div>
+
+          <!-- zone management (immediate effect) -->
+          <div class="field">
+            <label class="field-label">{{ t('dnsProviders.zonesSection') }}</label>
+            <div class="zone-manage">
+              <span v-for="z in editing.zones" :key="z.id" class="zone-tag zone-tag--managed mono">
+                {{ z.baseDomain }}
+                <button
+                  type="button"
+                  class="zone-rm zone-rm--inline"
+                  :aria-label="t('dnsProviders.removeZoneTitle', { domain: z.baseDomain })"
+                  :disabled="zoneBusy"
+                  @click="onRemoveZone(z.id, z.baseDomain)"
+                >✕</button>
+              </span>
+            </div>
+            <div class="zone-input-row">
+              <input
+                v-model="zoneInput"
+                class="field-input field-input--mono"
+                type="text"
+                :placeholder="t('dnsProviders.addZonePlaceholder')"
+                :disabled="zoneBusy"
+                aria-label="new zone"
+                autocomplete="off"
+                spellcheck="false"
+                @keydown.enter.prevent="onAddZone"
+                @input="zoneInputError = ''"
+              />
+              <button type="button" class="zone-add-btn" :disabled="zoneBusy" @click="onAddZone">
+                {{ t('dnsProviders.addZoneBtn') }}
+              </button>
+            </div>
+            <span v-if="zoneInputError" class="field-error" role="alert">{{ zoneInputError }}</span>
+          </div>
+
+          <div class="modal-footer">
+            <button type="button" class="btn-secondary" :disabled="editSubmitting" @click="requestCloseEdit">{{ t('dnsProviders.cancel') }}</button>
+            <button type="submit" class="btn-primary" :disabled="editSubmitting" :aria-busy="editSubmitting">
+              <span v-if="editSubmitting" class="spinner" aria-hidden="true" />
+              {{ editSubmitting ? t('dnsProviders.saving') : t('dnsProviders.save') }}
             </button>
           </div>
         </form>
@@ -559,7 +905,7 @@ async function confirmDelete(): Promise<void> {
 /* table */
 .dns-row {
   display: grid;
-  grid-template-columns: 120px minmax(140px, 1.3fr) minmax(140px, 1.4fr) 130px auto;
+  grid-template-columns: 110px minmax(130px, 1.1fr) minmax(160px, 1.6fr) 120px auto;
   align-items: center;
   gap: 14px;
   padding: 13px 18px;
@@ -614,6 +960,12 @@ async function confirmDelete(): Promise<void> {
   background: var(--color-amber-soft);
 }
 
+.dns-name-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
 .dns-name {
   font-size: 0.85rem;
   font-weight: 500;
@@ -622,12 +974,41 @@ async function confirmDelete(): Promise<void> {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.dns-domain {
-  font-size: 0.78rem;
-  color: var(--color-dim);
+.dns-apiid {
+  font-size: 0.72rem;
+  color: var(--color-faint);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* zone tags */
+.zone-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  min-width: 0;
+}
+.zone-tags--empty {
+  color: var(--color-faint);
+  font-size: 0.78rem;
+}
+.zone-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 0.72rem;
+  padding: 2px 8px;
+  border-radius: var(--rounded-full);
+  border: 1px solid var(--color-border);
+  background: var(--color-inset);
+  color: var(--color-dim);
+  white-space: nowrap;
+}
+.zone-manage {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
 }
 .mono {
   font-family: var(--font-mono);
@@ -902,6 +1283,8 @@ async function confirmDelete(): Promise<void> {
   display: flex;
   flex-direction: column;
   gap: 16px;
+  max-height: min(66vh, 560px);
+  overflow-y: auto;
 }
 .modal-body {
   padding: 20px;
@@ -971,6 +1354,81 @@ async function confirmDelete(): Promise<void> {
   font-size: 0.74rem;
   color: var(--color-faint);
   line-height: 1.4;
+}
+
+/* zone multi-input rows */
+.zone-input-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.zone-rm {
+  flex-shrink: 0;
+  width: 26px;
+  height: 26px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--rounded-md);
+  background: transparent;
+  color: var(--color-faint);
+  cursor: pointer;
+  font-size: 0.74rem;
+  line-height: 1;
+  display: grid;
+  place-items: center;
+  transition: color var(--duration-fast), border-color var(--duration-fast), background-color var(--duration-fast);
+}
+.zone-rm:hover:not(:disabled) {
+  color: var(--color-red);
+  border-color: var(--color-red-line);
+  background: var(--color-red-soft);
+}
+.zone-rm:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.zone-rm--inline {
+  width: 18px;
+  height: 18px;
+  border: none;
+  background: transparent;
+}
+.zone-add {
+  align-self: flex-start;
+  border: none;
+  background: transparent;
+  color: var(--color-primary);
+  font-size: 0.78rem;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 2px 0;
+}
+.zone-add:hover:not(:disabled) {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.zone-add:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.zone-add-btn {
+  flex-shrink: 0;
+  height: 38px;
+  padding: 0 14px;
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--rounded);
+  background: var(--color-card-2);
+  color: var(--color-text);
+  font-size: 0.8rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: border-color var(--duration-fast);
+}
+.zone-add-btn:hover:not(:disabled) {
+  border-color: var(--color-faint);
+}
+.zone-add-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 /* segmented */

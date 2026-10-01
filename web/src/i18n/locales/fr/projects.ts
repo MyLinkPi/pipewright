@@ -130,6 +130,7 @@ export default {
   errNameEmpty: 'Le nom du projet ne peut pas être vide',
 
   testErrCredential: 'Erreur d’identifiant : vérifiez que votre jeton d’accès Gitee est valide et mettez-le à jour dans le coffre d’identifiants.',
+  testErrCredInvalid: "Veuillez d'abord sélectionner un identifiant de dépôt valide (ou vérifiez-le dans le coffre d'identifiants).",
   testErrUnreachable: 'Dépôt inaccessible : vérifiez que l’URL est correcte et que le dépôt existe et est accessible.',
   testErrVault: 'Le coffre n’a pas de master key configurée ; les identifiants ne peuvent pas être lus.',
   testErrStatus: 'Échec du test de connexion ({status})',

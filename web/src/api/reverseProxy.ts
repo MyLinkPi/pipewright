@@ -328,13 +328,13 @@ export async function getProxyOverview(): Promise<ProxyRouteOverview[]> {
 
 /**
  * Body for `allocateSubdomain` (R3 / E3.3-E3.4 — the "wow" flow). The backend
- * mints a fresh `app-xxxx.<baseDomain>` under the chosen provider's zone, creates
+ * mints a fresh `app-xxxx.<zone base domain>` under the chosen zone, creates
  * the A record pointing at the host, and binds a route to the upstream — all in
  * one call.
  */
 export interface AllocateSubdomainInput {
-  /** DNS provider whose zone the subdomain is minted under. */
-  providerId: string
+  /** Zone (base domain) the subdomain is minted under; resolves to its provider account. */
+  zoneId: string
   /** Target host the new route binds on (and the A record points to). */
   serverId: string
   /** Upstream container the route reverse-proxies to. */

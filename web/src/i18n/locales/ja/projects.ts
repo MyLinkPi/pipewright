@@ -130,6 +130,7 @@ export default {
   errNameEmpty: 'プロジェクト名は空にできません',
 
   testErrCredential: '認証情報エラー：Gitee アクセストークンが有効か確認し、認証情報ボールトで更新してください。',
+  testErrCredInvalid: '有効なリポジトリクレデンシャルを選択してください(またはクレデンシャル保管庫で確認してください)。',
   testErrUnreachable: 'リポジトリに到達できません：URL が正しく、リポジトリが存在しアクセス可能か確認してください。',
   testErrVault: 'ボールトに master key が設定されていないため、認証情報を読み取れません。',
   testErrStatus: '接続テストに失敗しました（{status}）',

@@ -130,6 +130,7 @@ export default {
   errNameEmpty: 'Project name cannot be empty',
 
   testErrCredential: 'Credential error: check that your Gitee access token is valid and update it in the credential vault.',
+  testErrCredInvalid: 'Please select a valid repository credential first (or check it in the credential vault).',
   testErrUnreachable: 'Repository unreachable: confirm the URL is correct and the repository exists and is accessible.',
   testErrVault: 'The vault has no master key configured, so credentials cannot be read.',
   testErrStatus: 'Connection test failed ({status})',

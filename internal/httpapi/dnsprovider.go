@@ -17,40 +17,61 @@ import (
 	"github.com/huangchengsir/pipewright/internal/vault"
 )
 
-// 审计 action / target(DNS 提供商 + 子域名分配写操作)。detail 绝无 token / 凭据明文。
+// 审计 action / target(DNS 提供商 + 根区 + 子域名分配写操作)。detail 绝无 Secret / 凭据明文
+// (API ID 非机密,可入 detail)。
 const (
 	auditActionDNSProviderCreate = "dns.provider.create"
+	auditActionDNSProviderUpdate = "dns.provider.update"
 	auditActionDNSProviderDelete = "dns.provider.delete"
 	auditActionDNSProviderVerify = "dns.provider.verify"
+	auditActionDNSZoneAdd        = "dns.provider.zone.add"
+	auditActionDNSZoneRemove     = "dns.provider.zone.remove"
 	auditActionSubdomainAlloc    = "proxy.subdomain.allocate"
 	auditTargetDNSProvider       = "dns_provider"
 	auditTargetProxySubdomain    = "proxy_subdomain"
 )
 
-// dnsProviderDTO 是 DNS 提供商对外响应体(冻结契约;camelCase)。绝不外泄 token:
-// 仅以 credentialConfigured 布尔告知前端「是否已绑凭据」。
+// dnsZoneDTO 是 DNS 提供商根区的对外响应体(camelCase)。
+type dnsZoneDTO struct {
+	ID         string `json:"id"`
+	BaseDomain string `json:"baseDomain"`
+	CreatedAt  string `json:"createdAt"`
+}
+
+// dnsProviderDTO 是 DNS 提供商对外响应体(冻结契约;camelCase)。绝不外泄 Secret:
+// 仅以 credentialConfigured 布尔告知前端「是否已绑凭据」;API ID 非机密,可回显。
 type dnsProviderDTO struct {
-	ID                   string `json:"id"`
-	Type                 string `json:"type"`
-	Name                 string `json:"name"`
-	BaseDomain           string `json:"baseDomain"`
-	CredentialConfigured bool   `json:"credentialConfigured"`
-	CreatedAt            string `json:"createdAt"`
+	ID                   string       `json:"id"`
+	Type                 string       `json:"type"`
+	Name                 string       `json:"name"`
+	APIID                string       `json:"apiId"`
+	Zones                []dnsZoneDTO `json:"zones"`
+	CredentialConfigured bool         `json:"credentialConfigured"`
+	CreatedAt            string       `json:"createdAt"`
 }
 
 // toDNSProviderDTO 把领域 Provider 转为契约 DTO(剥离 credentialId,仅暴露「是否已绑凭据」)。
 func toDNSProviderDTO(p dnsprovider.Provider) dnsProviderDTO {
+	zones := make([]dnsZoneDTO, 0, len(p.Zones))
+	for _, z := range p.Zones {
+		zones = append(zones, dnsZoneDTO{
+			ID:         z.ID,
+			BaseDomain: z.BaseDomain,
+			CreatedAt:  z.CreatedAt.UTC().Format(time.RFC3339),
+		})
+	}
 	return dnsProviderDTO{
 		ID:                   p.ID,
 		Type:                 p.Type,
 		Name:                 p.Name,
-		BaseDomain:           p.BaseDomain,
+		APIID:                p.APIID,
+		Zones:                zones,
 		CredentialConfigured: strings.TrimSpace(p.CredentialID) != "",
 		CreatedAt:            p.CreatedAt.UTC().Format(time.RFC3339),
 	}
 }
 
-// writeDNSProviderError 把 DNS 提供商领域错误映射为契约错误码/状态码;绝不回显明文/token。
+// writeDNSProviderError 把 DNS 提供商领域错误映射为契约错误码/状态码;绝不回显明文/Secret。
 func writeDNSProviderError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, dnsprovider.ErrNotFound):
@@ -61,14 +82,20 @@ func writeDNSProviderError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadRequest, "invalid_dns_provider", "请填写 DNS 提供商展示名")
 	case errors.Is(err, dnsprovider.ErrEmptyCredentialID):
 		writeError(w, http.StatusBadRequest, "invalid_dns_provider", "请选择 API 凭据")
+	case errors.Is(err, dnsprovider.ErrNoBaseDomains):
+		writeError(w, http.StatusBadRequest, "invalid_dns_provider", "请至少填写一个根域(如 example.com)")
 	case errors.Is(err, dnsprovider.ErrInvalidBaseDomain):
-		writeError(w, http.StatusBadRequest, "invalid_dns_provider", "根域格式非法,请填写有效的域名(如 example.com)")
+		writeError(w, http.StatusBadRequest, "invalid_dns_provider", "根域格式非法(或已存在),请填写有效的域名(如 example.com)")
+	case errors.Is(err, dnsprovider.ErrZoneNotFound):
+		writeError(w, http.StatusNotFound, "dns_zone_not_found", "根区不存在或不属于该提供商")
+	case errors.Is(err, dnsprovider.ErrInvalidAPIID):
+		writeError(w, http.StatusBadRequest, "invalid_dns_provider", "API ID 与提供商类型不匹配:DNSPod 填 SecretId、阿里云填 AccessKeyId;Cloudflare 无需填写")
 	case errors.Is(err, dnsprovider.ErrCredentialNotFound):
 		writeError(w, http.StatusUnprocessableEntity, "credential_error", "引用的 API 凭据不存在")
 	case errors.Is(err, dnsprovider.ErrVaultUnconfigured):
 		writeError(w, http.StatusServiceUnavailable, "vault_unconfigured", "保险库未配置 master key,无法取 DNS 凭据")
 	case errors.Is(err, dnsprovider.ErrInvalidCredential):
-		writeError(w, http.StatusBadRequest, "invalid_dns_credential", "DNS 凭据格式非法(DNSPod 填 ID,Token;阿里云填 AccessKeyId,AccessKeySecret)")
+		writeError(w, http.StatusBadRequest, "invalid_dns_credential", "DNS 凭据非法:请确认 API ID 与 Secret 均已正确填写")
 	case errors.Is(err, dnsprovider.ErrProviderNotImplemented):
 		writeError(w, http.StatusNotImplemented, "not_implemented", "该提供商暂未实现自动建 A 记录(DNS-01 证书签发仍可用,请手动添加解析)")
 	case errors.Is(err, dnsprovider.ErrVerifyFailed):
@@ -106,6 +133,7 @@ func makeListDNSProvidersHandler(svc dnsprovider.Service) http.HandlerFunc {
 }
 
 // makeCreateDNSProviderHandler 返回 POST /api/dns/providers(认证 + CSRF)→ Provider(201)。
+// body: { type, name, apiId, secret, baseDomains: [...] }。
 func makeCreateDNSProviderHandler(svc dnsprovider.Service, v vault.Vault, rec audit.Recorder) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if svc == nil {
@@ -113,13 +141,15 @@ func makeCreateDNSProviderHandler(svc dnsprovider.Service, v vault.Vault, rec au
 			return
 		}
 		r.Body = http.MaxBytesReader(w, r.Body, 1<<14)
-		// token 是「只写」字段:前端创建时提交一次明文,经 vault 加密入库换取 credentialId
-		// 后即弃,绝不回库/响应/审计/日志。DB 的 dns_providers 只持 credential_id 引用。
+		// secret 是「只写」字段:前端创建时提交一次明文,经 vault 加密入库换取 credentialId
+		// 后即弃,绝不回库/响应/审计/日志。DB 的 dns_providers 只持 credential_id 引用;
+		// apiId 非机密,明文列存储。
 		var in struct {
-			Type       string `json:"type"`
-			Name       string `json:"name"`
-			Token      string `json:"token"`
-			BaseDomain string `json:"baseDomain"`
+			Type        string   `json:"type"`
+			Name        string   `json:"name"`
+			APIID       string   `json:"apiId"`
+			Secret      string   `json:"secret"`
+			BaseDomains []string `json:"baseDomains"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 			writeError(w, http.StatusBadRequest, "bad_request", "请求体格式错误")
@@ -129,15 +159,15 @@ func makeCreateDNSProviderHandler(svc dnsprovider.Service, v vault.Vault, rec au
 			writeError(w, http.StatusServiceUnavailable, "vault_unconfigured", "保险库未配置 master key,无法存 DNS 凭据")
 			return
 		}
-		if strings.TrimSpace(in.Token) == "" {
-			writeError(w, http.StatusBadRequest, "invalid_dns_provider", "请填写 API 凭据")
+		if strings.TrimSpace(in.Secret) == "" {
+			writeError(w, http.StatusBadRequest, "invalid_dns_provider", "请填写 API Secret")
 			return
 		}
-		// 先把 token 存入 vault(加密),拿到 credentialId;DB 与领域层全程只见 credential_id。
+		// 先把 Secret 存入 vault(加密),拿到 credentialId;DB 与领域层全程只见 credential_id。
 		cred, err := v.Create(vault.CreateInput{
 			Name:   "DNS · " + strings.TrimSpace(in.Name),
 			Type:   vault.TypeDNSToken,
-			Secret: in.Token,
+			Secret: in.Secret,
 		})
 		if err != nil {
 			writeVaultError(w, err)
@@ -146,8 +176,9 @@ func makeCreateDNSProviderHandler(svc dnsprovider.Service, v vault.Vault, rec au
 		p, err := svc.Create(r.Context(), dnsprovider.CreateInput{
 			Type:         in.Type,
 			Name:         in.Name,
+			APIID:        in.APIID,
 			CredentialID: cred.ID,
-			BaseDomain:   in.BaseDomain,
+			BaseDomains:  in.BaseDomains,
 		})
 		if err != nil {
 			// 登记失败 → 回滚刚存的凭据,避免悬挂(provider 没建成,凭据不应留存)。
@@ -160,10 +191,79 @@ func makeCreateDNSProviderHandler(svc dnsprovider.Service, v vault.Vault, rec au
 			Action:     auditActionDNSProviderCreate,
 			TargetType: auditTargetDNSProvider,
 			TargetID:   p.ID,
-			Detail:     map[string]any{"type": p.Type, "name": p.Name, "baseDomain": p.BaseDomain}, // 绝无 token
+			Detail:     map[string]any{"type": p.Type, "name": p.Name, "apiId": p.APIID, "zones": len(p.Zones)}, // 绝无 Secret
 			IP:         clientIP(r),
 		})
 		writeJSON(w, http.StatusCreated, toDNSProviderDTO(*p))
+	}
+}
+
+// makeUpdateDNSProviderHandler 返回 PUT /api/dns/providers/{id}(认证 + CSRF)→ Provider。
+// body: { name?, apiId?, secret? }(指针语义:缺省字段不修改;secret 非空即原地轮换,credentialId 不变)。
+// 顺序:先做不落库的入参校验(vault 可用 / secret 非空),再落库领域字段,最后轮换 Secret——
+// 避免「name/apiId 已改、轮换才失败」的半生效状态;轮换仍失败时补 partial 审计(写操作任何
+// 尝试都留痕,NFR-8)再返回错误。
+func makeUpdateDNSProviderHandler(svc dnsprovider.Service, v vault.Vault, rec audit.Recorder) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if svc == nil {
+			writeError(w, http.StatusServiceUnavailable, "internal", "DNS 提供商服务未初始化")
+			return
+		}
+		id := chi.URLParam(r, "id")
+		r.Body = http.MaxBytesReader(w, r.Body, 1<<14)
+		var in struct {
+			Name   *string `json:"name"`
+			APIID  *string `json:"apiId"`
+			Secret *string `json:"secret"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			writeError(w, http.StatusBadRequest, "bad_request", "请求体格式错误")
+			return
+		}
+		// 含 secret 轮换时先做不落库的校验:vault 须可用、secret 须非空(否则直接拒绝,不动领域字段)。
+		if in.Secret != nil {
+			if v == nil {
+				writeError(w, http.StatusServiceUnavailable, "vault_unconfigured", "保险库未配置 master key,无法存 DNS 凭据")
+				return
+			}
+			if strings.TrimSpace(*in.Secret) == "" {
+				writeError(w, http.StatusBadRequest, "invalid_dns_provider", "Secret 不能为空")
+				return
+			}
+		}
+		// 再编辑领域字段(名称 / API ID;API ID 与类型匹配在领域层校验)。
+		p, err := svc.Update(r.Context(), id, dnsprovider.UpdateInput{Name: in.Name, APIID: in.APIID})
+		if err != nil {
+			writeDNSProviderError(w, err)
+			return
+		}
+		// 可选轮换 Secret:vault 原地重封(credentialId 不变,引用零迁移)。
+		rotated := false
+		if in.Secret != nil {
+			if _, err := v.Update(p.CredentialID, vault.UpdateInput{Secret: in.Secret}); err != nil {
+				// 领域字段已改但轮换失败:补一条 partial 审计(绝不写 Secret 明文)再返回错误。
+				recordAudit(r.Context(), rec, audit.Entry{
+					Actor:      auditActor,
+					Action:     auditActionDNSProviderUpdate,
+					TargetType: auditTargetDNSProvider,
+					TargetID:   p.ID,
+					Detail:     map[string]any{"name": p.Name, "apiId": p.APIID, "secretRotated": false, "partial": true},
+					IP:         clientIP(r),
+				})
+				writeVaultError(w, err)
+				return
+			}
+			rotated = true
+		}
+		recordAudit(r.Context(), rec, audit.Entry{
+			Actor:      auditActor,
+			Action:     auditActionDNSProviderUpdate,
+			TargetType: auditTargetDNSProvider,
+			TargetID:   p.ID,
+			Detail:     map[string]any{"name": p.Name, "apiId": p.APIID, "secretRotated": rotated}, // 绝无 Secret
+			IP:         clientIP(r),
+		})
+		writeJSON(w, http.StatusOK, toDNSProviderDTO(*p))
 	}
 }
 
@@ -190,8 +290,72 @@ func makeDeleteDNSProviderHandler(svc dnsprovider.Service, rec audit.Recorder) h
 	}
 }
 
-// makeVerifyDNSProviderHandler 返回 POST /api/dns/providers/{id}/verify(认证 + CSRF)→ { ok: true }。
-// 取该提供商凭据明文 → 经 DNS API 校验 zone 可管理(token 用完即弃,绝不外泄)。
+// makeAddDNSZoneHandler 返回 POST /api/dns/providers/{id}/zones(认证 + CSRF)→ Zone(201)。
+// body: { baseDomain }(一个提供商可托管多个根区,随时追加)。
+func makeAddDNSZoneHandler(svc dnsprovider.Service, rec audit.Recorder) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if svc == nil {
+			writeError(w, http.StatusServiceUnavailable, "internal", "DNS 提供商服务未初始化")
+			return
+		}
+		providerID := chi.URLParam(r, "id")
+		r.Body = http.MaxBytesReader(w, r.Body, 1<<12)
+		var in struct {
+			BaseDomain string `json:"baseDomain"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			writeError(w, http.StatusBadRequest, "bad_request", "请求体格式错误")
+			return
+		}
+		z, err := svc.AddZone(r.Context(), providerID, in.BaseDomain)
+		if err != nil {
+			writeDNSProviderError(w, err)
+			return
+		}
+		recordAudit(r.Context(), rec, audit.Entry{
+			Actor:      auditActor,
+			Action:     auditActionDNSZoneAdd,
+			TargetType: auditTargetDNSProvider,
+			TargetID:   providerID,
+			Detail:     map[string]any{"zoneId": z.ID, "baseDomain": z.BaseDomain},
+			IP:         clientIP(r),
+		})
+		writeJSON(w, http.StatusCreated, dnsZoneDTO{
+			ID:         z.ID,
+			BaseDomain: z.BaseDomain,
+			CreatedAt:  z.CreatedAt.UTC().Format(time.RFC3339),
+		})
+	}
+}
+
+// makeRemoveDNSZoneHandler 返回 DELETE /api/dns/providers/{id}/zones/{zoneId}(认证 + CSRF)→ { ok: true }。
+func makeRemoveDNSZoneHandler(svc dnsprovider.Service, rec audit.Recorder) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if svc == nil {
+			writeError(w, http.StatusServiceUnavailable, "internal", "DNS 提供商服务未初始化")
+			return
+		}
+		providerID := chi.URLParam(r, "id")
+		zoneID := chi.URLParam(r, "zoneId")
+		if err := svc.RemoveZone(r.Context(), providerID, zoneID); err != nil {
+			writeDNSProviderError(w, err)
+			return
+		}
+		recordAudit(r.Context(), rec, audit.Entry{
+			Actor:      auditActor,
+			Action:     auditActionDNSZoneRemove,
+			TargetType: auditTargetDNSProvider,
+			TargetID:   providerID,
+			Detail:     map[string]any{"zoneId": zoneID},
+			IP:         clientIP(r),
+		})
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	}
+}
+
+// makeVerifyDNSProviderHandler 返回 POST /api/dns/providers/{id}/verify(认证 + CSRF)
+// → { ok: <全部通过>, zones: [{id, baseDomain, ok, error}] }。
+// 取该提供商凭据明文 → 逐根区经 DNS API 校验可管理(Secret 用完即弃,绝不外泄)。
 func makeVerifyDNSProviderHandler(svc dnsprovider.Service, rec audit.Recorder) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if svc == nil {
@@ -199,18 +363,36 @@ func makeVerifyDNSProviderHandler(svc dnsprovider.Service, rec audit.Recorder) h
 			return
 		}
 		id := chi.URLParam(r, "id")
-		if err := svc.Verify(r.Context(), id); err != nil {
+		results, err := svc.Verify(r.Context(), id)
+		if err != nil {
 			writeDNSProviderError(w, err)
 			return
+		}
+		allOK := true
+		type zoneVerifyDTO struct {
+			ID         string `json:"id"`
+			BaseDomain string `json:"baseDomain"`
+			OK         bool   `json:"ok"`
+			Error      string `json:"error,omitempty"`
+		}
+		out := make([]zoneVerifyDTO, 0, len(results))
+		for _, res := range results {
+			item := zoneVerifyDTO{ID: res.ZoneID, BaseDomain: res.BaseDomain, OK: res.Err == nil}
+			if res.Err != nil {
+				allOK = false
+				item.Error = res.Err.Error() // 客户端错误为人话,绝不含凭据
+			}
+			out = append(out, item)
 		}
 		recordAudit(r.Context(), rec, audit.Entry{
 			Actor:      auditActor,
 			Action:     auditActionDNSProviderVerify,
 			TargetType: auditTargetDNSProvider,
 			TargetID:   id,
+			Detail:     map[string]any{"ok": allOK, "zones": len(results)},
 			IP:         clientIP(r),
 		})
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+		writeJSON(w, http.StatusOK, map[string]any{"ok": allOK, "zones": out})
 	}
 }
 
@@ -223,9 +405,9 @@ type subdomainDeps struct {
 }
 
 // makeAllocateSubdomainHandler 返回 POST /api/proxy/subdomains(认证 + CSRF)→ Route DTO(201)。
-// body: { providerId, serverId, upstreamContainer, upstreamPort }。
-// 流程:解析宿主机公网 IP(据 server.Host,非用户自由文本)→ AllocateSubdomain(建 A 记录 + 建 DNS-01
-// 路由)→ 回读新建路由 DTO 返回。token 全程不出现在任何响应/审计。
+// body: { zoneId, serverId, upstreamContainer, upstreamPort }。
+// 流程:解析宿主机公网 IP(据 server.Host,非用户自由文本)→ AllocateSubdomain(在 zoneId 根区下
+// 建 A 记录 + 建 DNS-01 路由)→ 回读新建路由 DTO 返回。Secret 全程不出现在任何响应/审计。
 func makeAllocateSubdomainHandler(deps subdomainDeps, rec audit.Recorder) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if deps.dns == nil || deps.servers == nil || deps.proxy == nil {
@@ -234,7 +416,7 @@ func makeAllocateSubdomainHandler(deps subdomainDeps, rec audit.Recorder) http.H
 		}
 		r.Body = http.MaxBytesReader(w, r.Body, 1<<14)
 		var in struct {
-			ProviderID        string `json:"providerId"`
+			ZoneID            string `json:"zoneId"`
 			ServerID          string `json:"serverId"`
 			UpstreamContainer string `json:"upstreamContainer"`
 			UpstreamPort      int    `json:"upstreamPort"`
@@ -257,7 +439,7 @@ func makeAllocateSubdomainHandler(deps subdomainDeps, rec audit.Recorder) http.H
 		}
 
 		ref, err := deps.dns.AllocateSubdomain(r.Context(), dnsprovider.AllocateInput{
-			ProviderID:        in.ProviderID,
+			ZoneID:            in.ZoneID,
 			ServerID:          in.ServerID,
 			UpstreamContainer: in.UpstreamContainer,
 			UpstreamPort:      in.UpstreamPort,
@@ -279,7 +461,7 @@ func makeAllocateSubdomainHandler(deps subdomainDeps, rec audit.Recorder) http.H
 			Action:     auditActionSubdomainAlloc,
 			TargetType: auditTargetProxySubdomain,
 			TargetID:   ref.RouteID,
-			Detail:     map[string]any{"domain": ref.Domain, "providerId": ref.ProviderID, "serverId": in.ServerID}, // 绝无 token/IP-secret
+			Detail:     map[string]any{"domain": ref.Domain, "providerId": ref.ProviderID, "zoneId": in.ZoneID, "serverId": in.ServerID}, // 绝无 Secret
 			IP:         clientIP(r),
 		})
 		for _, rt := range routes {
