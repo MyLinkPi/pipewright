@@ -140,7 +140,7 @@ onMounted(() => void loadDf())
 </script>
 
 <template>
-  <div class="scrim" @click.self="emit('close')">
+  <div class="scrim">
     <div class="modal" role="dialog" aria-modal="true" :aria-label="t('opsContainer.prune.dialogAria')">
       <header class="head">
         <div>

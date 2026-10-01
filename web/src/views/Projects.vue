@@ -2,6 +2,7 @@
 import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
+import { useDirtyGuard } from '../composables/useDirtyGuard'
 import {
   listProjects,
   createProject,
@@ -25,6 +26,7 @@ import { HttpError } from '../api/http'
 // ─── i18n ─────────────────────────────────────────────────────────────────────
 
 const { t } = useI18n()
+const { confirmDiscard } = useDirtyGuard()
 
 // Map the Chinese-keyed project RunStatus to the shared `runStatus.*` i18n keys.
 const RUN_STATUS_KEY: Record<RunStatus, string> = {
@@ -179,6 +181,15 @@ const inlineCredentialSubmitting = ref(false)
 const createBanner = ref('')
 const createSubmitting = ref(false)
 
+const createSnapshot = ref('')
+function createEditJson(): string {
+  return JSON.stringify({ form: createForm.value, credOpen: inlineCredentialOpen.value, cred: inlineCredentialForm.value })
+}
+async function requestCreateClose(): Promise<void> {
+  if (createEditJson() !== createSnapshot.value && !(await confirmDiscard())) return
+  closeCreateModal()
+}
+
 // test-clone sub-state
 type TestState = 'idle' | 'testing' | 'ok' | 'error'
 const testState = ref<TestState>('idle')
@@ -197,6 +208,7 @@ function openCreateModal(): void {
   inlineCredentialErrors.value = { name: '', username: '', secret: '' }
   inlineCredentialBanner.value = ''
   createModalOpen.value = true
+  createSnapshot.value = createEditJson()
 }
 
 function closeCreateModal(): void {
@@ -314,6 +326,8 @@ async function handleTestClone(): Promise<void> {
       const code = err.apiError?.code
       if (code === 'credential_error') {
         testError.value = t('projects.testErrCredential')
+      } else if (code === 'credential_invalid') {
+        testError.value = t('projects.testErrCredInvalid')
       } else if (code === 'repo_unreachable') {
         testError.value = t('projects.testErrUnreachable')
       } else if (code === 'vault_unconfigured') {
@@ -353,6 +367,9 @@ async function handleCreateSubmit(): Promise<void> {
       if (code === 'credential_error') {
         createErrors.value.credentialId = t('projects.createErrCredField')
         createBanner.value = t('projects.createErrCredBanner')
+      } else if (code === 'credential_invalid') {
+        createErrors.value.credentialId = t('projects.testErrCredInvalid')
+        createBanner.value = t('projects.testErrCredInvalid')
       } else if (code === 'repo_unreachable') {
         createErrors.value.repoUrl = t('projects.createErrRepoField')
         createBanner.value = t('projects.createErrRepoBanner')
@@ -380,12 +397,19 @@ const renameError = ref('')
 const renameBanner = ref('')
 const renameSubmitting = ref(false)
 
+const renameSnapshot = ref('')
+async function requestRenameClose(): Promise<void> {
+  if (renameValue.value !== renameSnapshot.value && !(await confirmDiscard())) return
+  closeRenameModal()
+}
+
 function openRenameModal(p: Project): void {
   renamingProject.value = p
   renameValue.value = p.name
   renameError.value = ''
   renameBanner.value = ''
   renameModalOpen.value = true
+  renameSnapshot.value = renameValue.value
 }
 
 function closeRenameModal(): void {
@@ -481,6 +505,15 @@ const triggerBranchError = ref('')
 const triggerBanner      = ref('')
 const triggerSubmitting  = ref(false)
 
+const triggerSnapshot = ref('')
+function triggerEditJson(): string {
+  return JSON.stringify({ form: triggerForm.value, params: triggerParams.value })
+}
+async function requestTriggerClose(): Promise<void> {
+  if (triggerEditJson() !== triggerSnapshot.value && !(await confirmDiscard())) return
+  closeTriggerModal()
+}
+
 function openTriggerModal(p: Project): void {
   triggerProject.value     = p
   triggerForm.value        = { branch: p.defaultBranch || '', commit: '' }
@@ -490,6 +523,7 @@ function openTriggerModal(p: Project): void {
   triggerBanner.value      = ''
   triggerSubmitting.value  = false
   triggerModalOpen.value   = true
+  triggerSnapshot.value    = triggerEditJson()
   void loadBranchOptions(p.id)
   void loadTriggerDefs(p.id)
 }
@@ -932,8 +966,7 @@ const STATUS_CONFIG: Record<RunStatus, StatusConfig> = {
       role="dialog"
       :aria-label="t('projects.triggerDialogAria', { name: triggerProject.name })"
       aria-modal="true"
-      @keydown.esc="closeTriggerModal"
-      @click.self="closeTriggerModal"
+      @keydown.esc="requestTriggerClose"
     >
       <div class="modal modal--sm">
         <!-- Header -->
@@ -951,7 +984,7 @@ const STATUS_CONFIG: Record<RunStatus, StatusConfig> = {
             class="modal-close"
             :aria-label="t('projects.closeDialog')"
             :disabled="triggerSubmitting"
-            @click="closeTriggerModal"
+            @click="requestTriggerClose"
           >
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <path d="M18 6 6 18M6 6l12 12"/>
@@ -1056,7 +1089,7 @@ const STATUS_CONFIG: Record<RunStatus, StatusConfig> = {
               type="button"
               class="btn-secondary"
               :disabled="triggerSubmitting"
-              @click="closeTriggerModal"
+              @click="requestTriggerClose"
             >{{ t('projects.cancel') }}</button>
             <button
               type="submit"
@@ -1086,8 +1119,7 @@ const STATUS_CONFIG: Record<RunStatus, StatusConfig> = {
       role="dialog"
       :aria-label="t('projects.newProject')"
       aria-modal="true"
-      @keydown.esc="closeCreateModal"
-      @click.self="closeCreateModal"
+      @keydown.esc="requestCreateClose"
     >
       <div class="modal">
         <!-- Header -->
@@ -1106,7 +1138,7 @@ const STATUS_CONFIG: Record<RunStatus, StatusConfig> = {
             class="modal-close"
             :aria-label="t('projects.closeDialog')"
             :disabled="createSubmitting"
-            @click="closeCreateModal"
+            @click="requestCreateClose"
           >
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <path d="M18 6 6 18M6 6l12 12"/>
@@ -1365,7 +1397,7 @@ const STATUS_CONFIG: Record<RunStatus, StatusConfig> = {
               type="button"
               class="btn-secondary"
               :disabled="createSubmitting"
-              @click="closeCreateModal"
+              @click="requestCreateClose"
             >{{ t('projects.cancel') }}</button>
             <button
               type="submit"
@@ -1392,8 +1424,7 @@ const STATUS_CONFIG: Record<RunStatus, StatusConfig> = {
       role="dialog"
       :aria-label="t('projects.renameTitle')"
       aria-modal="true"
-      @keydown.esc="closeRenameModal"
-      @click.self="closeRenameModal"
+      @keydown.esc="requestRenameClose"
     >
       <div class="modal modal--sm">
         <div class="modal-head">
@@ -1411,7 +1442,7 @@ const STATUS_CONFIG: Record<RunStatus, StatusConfig> = {
             class="modal-close"
             :aria-label="t('projects.closeDialog')"
             :disabled="renameSubmitting"
-            @click="closeRenameModal"
+            @click="requestRenameClose"
           >
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <path d="M18 6 6 18M6 6l12 12"/>
@@ -1457,7 +1488,7 @@ const STATUS_CONFIG: Record<RunStatus, StatusConfig> = {
               type="button"
               class="btn-secondary"
               :disabled="renameSubmitting"
-              @click="closeRenameModal"
+              @click="requestRenameClose"
             >{{ t('projects.cancel') }}</button>
             <button
               type="submit"
@@ -1485,7 +1516,6 @@ const STATUS_CONFIG: Record<RunStatus, StatusConfig> = {
       :aria-label="t('projects.deleteDialogAria')"
       aria-modal="true"
       @keydown.esc="closeDeleteModal"
-      @click.self="closeDeleteModal"
     >
       <div class="modal modal--sm">
         <div class="modal-head">

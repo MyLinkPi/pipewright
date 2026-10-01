@@ -65,6 +65,13 @@ export default {
   },
 
   // ─── ConfirmDialog ───────────────────────────────────────────────────────
+  // ─── Unsaved-changes guard (shared) ──────────────────────────────────────
+  unsaved: {
+    title: '有未儲存的變更',
+    body: '離開後未儲存的內容將會遺失。確定要離開嗎？',
+    discard: '直接離開',
+  },
+
   confirm: {
     cancel: '取消',
     confirm: '確認',

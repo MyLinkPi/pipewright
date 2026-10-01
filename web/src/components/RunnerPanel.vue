@@ -10,6 +10,7 @@ import { ref, computed, onMounted, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { getRunner, saveRunnerSelector } from '../api/runner'
 import { listServers, type Server } from '../api/servers'
+import { matchServers } from '../lib/selectorMatch'
 import { HttpError } from '../api/http'
 
 const props = defineProps<{ projectId: string }>()
@@ -30,17 +31,8 @@ const saveSubmitting = ref(false)
 const saveBanner = ref('')
 const saveSuccess = ref(false)
 
-// 客户端标签匹配预览(与服务端 runner 域同一语义:逗号分隔项全部命中才匹配;纯 tag 不匹配 k=v)。
-function matchServers(selector: string): Server[] {
-  const terms = selector.split(',').map((s) => s.trim()).filter(Boolean)
-  if (terms.length === 0) return []
-  return servers.value.filter((s) => {
-    const labels = (s.labels ?? '').split(',').map((x) => x.trim()).filter(Boolean)
-    return terms.every((term) => labels.includes(term))
-  })
-}
-
-const matched = computed(() => (mode.value === 'label' ? matchServers(selectorText.value) : []))
+// 客户端标签匹配预览(lib/selectorMatch,与服务端 runner 域同一语义:AND 项、纯 tag ≠ k=v)。
+const matched = computed(() => (mode.value === 'label' ? matchServers(selectorText.value, servers.value) : []))
 
 async function load(): Promise<void> {
   loadState.value = 'loading'

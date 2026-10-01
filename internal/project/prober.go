@@ -85,11 +85,13 @@ func validateRepoURL(repoURL string) error {
 	return nil
 }
 
-// classifyAuthErr 把认证装配错误(类型错配/私钥不可解析)映射为干净领域错误。
+// classifyAuthErr 把认证装配错误映射为干净领域错误:私钥不可解析 →
+// ErrInvalidCredential(修粘贴内容);类型与协议错配 → ErrCredentialError(换凭据)。
 func classifyAuthErr(err error) error {
 	switch {
-	case errors.Is(err, gitauth.ErrSchemeMismatch),
-		errors.Is(err, gitauth.ErrInvalidSSHKey):
+	case errors.Is(err, gitauth.ErrInvalidSSHKey):
+		return ErrInvalidCredential
+	case errors.Is(err, gitauth.ErrSchemeMismatch):
 		return ErrCredentialError
 	default:
 		return ErrRepoUnreachable

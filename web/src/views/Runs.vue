@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { useDirtyGuard } from '../composables/useDirtyGuard'
 import { useRouter } from 'vue-router'
 import { listRuns, triggerManual, type RunListItem, type RunStatus, type RunDetail, type ListRunsParams, type TriggerManualInput } from '../api/runs'
 import RunParamsEditor from '../components/RunParamsEditor.vue'
@@ -10,6 +11,7 @@ import { listProjects, type Project } from '../api/projects'
 import { HttpError } from '../api/http'
 
 const { t } = useI18n()
+const { confirmDiscard } = useDirtyGuard()
 
 // ─── router ───────────────────────────────────────────────────────────────────
 
@@ -106,6 +108,15 @@ async function loadProjectsForTrigger(): Promise<void> {
   }
 }
 
+const triggerSnapshot = ref('')
+function triggerEditJson(): string {
+  return JSON.stringify({ form: triggerForm.value, params: triggerParams.value })
+}
+async function requestTriggerClose(): Promise<void> {
+  if (triggerEditJson() !== triggerSnapshot.value && !(await confirmDiscard())) return
+  closeTriggerModal()
+}
+
 function openTriggerModal(): void {
   triggerForm.value        = { projectId: '', branch: '', commit: '' }
   triggerParams.value       = {}
@@ -115,6 +126,7 @@ function openTriggerModal(): void {
   triggerBanner.value       = ''
   triggerSubmitting.value   = false
   triggerModalOpen.value    = true
+  triggerSnapshot.value     = triggerEditJson()
   void loadProjectsForTrigger()
 }
 
@@ -141,6 +153,7 @@ function onProjectSelect(): void {
       })
       .catch(() => {})
   }
+  triggerSnapshot.value = triggerEditJson()
 }
 
 async function handleTriggerSubmit(): Promise<void> {
@@ -512,8 +525,7 @@ function isFailedStatus(status: RunStatus): boolean {
       role="dialog"
       :aria-label="t('runs.modalAria')"
       aria-modal="true"
-      @keydown.esc="closeTriggerModal"
-      @click.self="closeTriggerModal"
+      @keydown.esc="requestTriggerClose"
     >
       <div class="modal modal--sm">
         <!-- Header -->
@@ -531,7 +543,7 @@ function isFailedStatus(status: RunStatus): boolean {
             class="modal-close"
             :aria-label="t('runs.closeDialog')"
             :disabled="triggerSubmitting"
-            @click="closeTriggerModal"
+            @click="requestTriggerClose"
           >
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <path d="M18 6 6 18M6 6l12 12"/>
@@ -656,7 +668,7 @@ function isFailedStatus(status: RunStatus): boolean {
               type="button"
               class="btn-secondary"
               :disabled="triggerSubmitting"
-              @click="closeTriggerModal"
+              @click="requestTriggerClose"
             >{{ t('runs.cancel') }}</button>
             <button
               type="submit"

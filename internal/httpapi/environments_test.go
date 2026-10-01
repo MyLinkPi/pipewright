@@ -45,7 +45,7 @@ func (s *stubDeploy) ContinueDeploy(context.Context, deploy.ContinueInput) ([]de
 func (s *stubDeploy) AbortDeploy(context.Context, deploy.AbortInput) ([]deploy.TargetResult, error) {
 	return nil, nil
 }
-func (s *stubDeploy) DeployForStage(context.Context, string, []string, map[string]string, string) ([]deploy.TargetResult, error) {
+func (s *stubDeploy) DeployForStage(context.Context, string, string, map[string]string, string) ([]deploy.TargetResult, error) {
 	return nil, nil
 }
 

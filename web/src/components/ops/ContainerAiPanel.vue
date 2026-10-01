@@ -37,7 +37,7 @@ async function copyCommand(command: string): Promise<void> {
 </script>
 
 <template>
-  <div class="ai-scrim" @click.self="emit('close')">
+  <div class="ai-scrim">
     <aside class="ai-drawer" role="dialog" :aria-label="t('opsContainer.ai.dialogAria')">
       <header class="ai-head">
         <span class="ai-title"><span class="spark">✦</span> {{ t('opsContainer.ai.title') }}</span>

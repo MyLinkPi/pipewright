@@ -310,3 +310,124 @@ func TestDeployRequiresCSRF(t *testing.T) {
 		t.Fatalf("缺 CSRF status = %d, want 403", resp.StatusCode)
 	}
 }
+
+// createLabeledServer 经 API 建一台带构建机池标签的服务器(部署目标圈选共用 servers.labels)。
+func createLabeledServer(t *testing.T, client *http.Client, srvURL, csrf, name, labels string) string {
+	t.Helper()
+	credID := newSSHCredAPI(t, client, srvURL, csrf, "PRIVKEY_LEAKMARKER")
+	body := `{"name":"` + name + `","host":"127.0.0.1","port":22,"user":"deploy","credentialId":"` + credID + `","labels":"` + labels + `"}`
+	resp := doJSON(t, client, http.MethodPost, srvURL+"/api/servers", csrf, body)
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	var s map[string]any
+	_ = json.Unmarshal(raw, &s)
+	id, _ := s["id"].(string)
+	if id == "" {
+		t.Fatalf("create labeled server failed: %s", raw)
+	}
+	return id
+}
+
+// TestDeploySelectorResolvesTargets 验证目标选择器圈选:只部署打了匹配标签的机器(AND 语义),
+// 未打标签 / 标签不匹配的机器不进 targets。
+func TestDeploySelectorResolvesTargets(t *testing.T) {
+	srv, client, csrf, projID, rsvc, _ := setupDeployServer(t,
+		stubDialer{res: &target.ExecResult{ExitCode: 0, Stdout: "ok"}})
+	r, err := rsvc.Create(context.Background(), projID,
+		run.Trigger{Type: run.TriggerManual, Branch: "main", Commit: "abc", Actor: "admin"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	waitRunStatus(t, client, srv, csrf, r.ID, run.StatusSuccess)
+	artID := firstArtifactID(t, client, srv.URL, csrf, r.ID)
+
+	createLabeledServer(t, client, srv.URL, csrf, "web-prod-1", "web,env=prod")
+	createLabeledServer(t, client, srv.URL, csrf, "web-prod-2", "web,env=prod")
+	createLabeledServer(t, client, srv.URL, csrf, "db-prod-1", "db,env=prod")
+
+	body := `{"artifactId":"` + artID + `","selector":"web,env=prod"}`
+	resp := doJSON(t, client, http.MethodPost, srv.URL+"/api/runs/"+r.ID+"/deploy", csrf, body)
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("deploy status = %d, want 200: %s", resp.StatusCode, raw)
+	}
+	var dr struct {
+		Targets []struct {
+			ServerName string `json:"serverName"`
+			Status     string `json:"status"`
+		} `json:"targets"`
+	}
+	_ = json.Unmarshal(raw, &dr)
+	if len(dr.Targets) != 2 {
+		t.Fatalf("selector web,env=prod 应圈选 2 台, got %d: %s", len(dr.Targets), raw)
+	}
+	for _, tg := range dr.Targets {
+		if tg.ServerName == "db-prod-1" || tg.Status != "success" {
+			t.Fatalf("db 机器不应被圈选 / 目标应 success: %+v", dr.Targets)
+		}
+	}
+}
+
+// TestDeployNoTargetsSkipsSuccess 验证空目标(选择器空 / 零命中)→ 200 空 targets(跳过即成功,不再 422)。
+func TestDeployNoTargetsSkipsSuccess(t *testing.T) {
+	srv, client, csrf, projID, rsvc, _ := setupDeployServer(t,
+		stubDialer{res: &target.ExecResult{ExitCode: 0}})
+	r, err := rsvc.Create(context.Background(), projID,
+		run.Trigger{Type: run.TriggerManual, Branch: "main", Commit: "abc", Actor: "admin"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	waitRunStatus(t, client, srv, csrf, r.ID, run.StatusSuccess)
+	artID := firstArtifactID(t, client, srv.URL, csrf, r.ID)
+	createLabeledServer(t, client, srv.URL, csrf, "db-1", "db")
+
+	for name, reqBody := range map[string]string{
+		"空选择器":  `{"artifactId":"` + artID + `"}`,
+		"零命中":   `{"artifactId":"` + artID + `","selector":"gpu"}`,
+		"钉单机已删": `{"artifactId":"` + artID + `","selector":"server:gone"}`,
+	} {
+		resp := doJSON(t, client, http.MethodPost, srv.URL+"/api/runs/"+r.ID+"/deploy", csrf, reqBody)
+		raw, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("%s: status = %d, want 200: %s", name, resp.StatusCode, raw)
+		}
+		var dr struct {
+			Targets []map[string]any `json:"targets"`
+		}
+		_ = json.Unmarshal(raw, &dr)
+		if dr.Targets == nil || len(dr.Targets) != 0 {
+			t.Fatalf("%s: want empty targets array, got %s", name, raw)
+		}
+	}
+	// 跳过的部署不落 deploy_targets:run-detail targets slot 仍为 null。
+	dto := waitRunStatus(t, client, srv, csrf, r.ID, run.StatusSuccess)
+	if v, ok := dto["targets"]; ok && v != nil {
+		t.Fatalf("跳过部署不应写 targets: %v", v)
+	}
+}
+
+// TestDeployInvalidSelector422 验证选择器语法非法 → 422 invalid_deploy_selector。
+func TestDeployInvalidSelector422(t *testing.T) {
+	srv, client, csrf, projID, rsvc, _ := setupDeployServer(t,
+		stubDialer{res: &target.ExecResult{ExitCode: 0}})
+	r, err := rsvc.Create(context.Background(), projID,
+		run.Trigger{Type: run.TriggerManual, Branch: "main", Commit: "abc", Actor: "admin"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	waitRunStatus(t, client, srv, csrf, r.ID, run.StatusSuccess)
+	artID := firstArtifactID(t, client, srv.URL, csrf, r.ID)
+
+	body := `{"artifactId":"` + artID + `","selector":"a b!!"}`
+	resp := doJSON(t, client, http.MethodPost, srv.URL+"/api/runs/"+r.ID+"/deploy", csrf, body)
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422: %s", resp.StatusCode, raw)
+	}
+	if !strings.Contains(string(raw), "invalid_deploy_selector") {
+		t.Fatalf("want invalid_deploy_selector code: %s", raw)
+	}
+}

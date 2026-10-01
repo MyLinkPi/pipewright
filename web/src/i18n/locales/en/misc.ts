@@ -65,6 +65,13 @@ export default {
   },
 
   // ─── ConfirmDialog ───────────────────────────────────────────────────────
+  // ─── Unsaved-changes guard (shared) ──────────────────────────────────────
+  unsaved: {
+    title: 'Unsaved changes',
+    body: 'Your changes will be lost if you leave this page. Leave without saving?',
+    discard: 'Leave without saving',
+  },
+
   confirm: {
     cancel: 'Cancel',
     confirm: 'Confirm',

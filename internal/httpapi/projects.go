@@ -52,9 +52,11 @@ func writeProjectError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, project.ErrVaultUnconfigured):
 		writeError(w, http.StatusUnprocessableEntity, "vault_unconfigured", "保险库未配置 master key,无法校验仓库连通")
+	case errors.Is(err, project.ErrInvalidCredential):
+		writeError(w, http.StatusUnprocessableEntity, "credential_invalid", "凭据内容无法解析:请确认私钥完整、未加密(不支持带 passphrase 的私钥),或令牌粘贴完整")
 	case errors.Is(err, project.ErrCredentialError),
 		errors.Is(err, project.ErrCredentialNotFound):
-		writeError(w, http.StatusUnprocessableEntity, "credential_error", "凭据无效或无权限,无法访问该仓库")
+		writeError(w, http.StatusUnprocessableEntity, "credential_error", "凭据被远端拒绝:请确认令牌/密码有效;SSH 方式需确认对应公钥已登记到代码托管平台")
 	case errors.Is(err, project.ErrRepoUnreachable):
 		writeError(w, http.StatusUnprocessableEntity, "repo_unreachable", "仓库地址不可达,请检查地址")
 	case errors.Is(err, project.ErrNotFound):

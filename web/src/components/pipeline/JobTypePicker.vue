@@ -87,7 +87,6 @@ watch(
       <div
         v-if="open"
         class="jtp-overlay"
-        @click.self="emit('close')"
         @keydown="onKeydown"
       >
         <div

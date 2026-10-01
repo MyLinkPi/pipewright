@@ -126,14 +126,10 @@ async function onImportAndSave(): Promise<void> {
 function loadStarter(): void {
   yamlText.value = STARTER
 }
-
-function onBackdrop(e: MouseEvent): void {
-  if (e.target === e.currentTarget) emit('close')
-}
 </script>
 
 <template>
-  <div class="yi-backdrop" role="dialog" aria-modal="true" aria-labelledby="yi-title" @mousedown="onBackdrop">
+  <div class="yi-backdrop" role="dialog" aria-modal="true" aria-labelledby="yi-title">
     <div class="yi-modal">
       <header class="yi-head">
         <div>

@@ -444,7 +444,14 @@ export type DeployStrategy = 'instance_rolling' | 'rolling' | 'canary' | 'blue_g
 
 export interface DeployRunInput {
   artifactId: string
-  serverIds: string[]
+  // Explicit target server IDs (rollback replay / API callers). Takes precedence
+  // over `selector` when non-empty; existence strictly validated server-side.
+  serverIds?: string[]
+  // Target selector (same grammar as the build-machine pool): `server:<id>` pins
+  // one machine; comma-separated label terms (`web,env=prod`) select all matching
+  // servers. Empty / zero match ⇒ nothing to deploy — the backend skips and
+  // returns an empty targets array (success, run state untouched).
+  selector?: string
   deployConfig?: Record<string, string>
   // Optional health gate (Story 4-3). Omit ⇒ identical to 4-2 behavior.
   healthCheck?: HealthCheckInput

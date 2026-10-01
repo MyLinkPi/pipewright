@@ -50,10 +50,6 @@ async function runPreview(): Promise<void> {
   }
 }
 
-function onBackdrop(e: MouseEvent): void {
-  if (e.target === e.currentTarget) emit('close')
-}
-
 // Auto-run on open against the default branch so the user sees a result immediately.
 onMounted(() => {
   void runPreview()
@@ -61,7 +57,7 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="pp-backdrop" role="dialog" aria-modal="true" aria-labelledby="pp-title" @mousedown="onBackdrop">
+  <div class="pp-backdrop" role="dialog" aria-modal="true" aria-labelledby="pp-title">
     <div class="pp-modal">
       <header class="pp-head">
         <div>

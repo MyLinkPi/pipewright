@@ -13,6 +13,7 @@
 */
 import { ref, computed, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { useDirtyGuard } from '../../composables/useDirtyGuard'
 import { NIcon } from 'naive-ui'
 import { World, Plus, Trash, CircleCheck, CircleX, ShieldCheck } from '@vicons/tabler'
 import {
@@ -28,6 +29,8 @@ import { HttpError } from '../../api/http'
 import { useToast } from '../../composables/useToast'
 
 const { t } = useI18n()
+const { confirmDiscard } = useDirtyGuard()
+const formSnapshot = ref('')
 const toast = useToast()
 
 // ─── 列表加载 ──────────────────────────────────────────────────────────────────
@@ -101,12 +104,19 @@ function openAdd(): void {
   errors.value = { name: '', baseDomain: '', token: '' }
   formBanner.value = ''
   modalOpen.value = true
+  formSnapshot.value = JSON.stringify(form.value)
 }
 
 function closeModal(): void {
   if (submitting.value) return
   modalOpen.value = false
   form.value.token = ''
+}
+
+/** Shared close path for ✕ / 取消 / ESC: confirm before discarding a dirty form. */
+async function requestClose(): Promise<void> {
+  if (JSON.stringify(form.value) !== formSnapshot.value && !(await confirmDiscard())) return
+  closeModal()
 }
 
 function validate(): boolean {
@@ -308,8 +318,7 @@ async function confirmDelete(): Promise<void> {
       role="dialog"
       :aria-label="t('dnsProviders.addTitle')"
       aria-modal="true"
-      @keydown.esc="closeModal"
-      @click.self="closeModal"
+      @keydown.esc="requestClose"
     >
       <div class="modal">
         <div class="modal-head">
@@ -318,7 +327,7 @@ async function confirmDelete(): Promise<void> {
             <h3 class="modal-title">{{ t('dnsProviders.addTitle') }}</h3>
             <p class="modal-sub">{{ t('dnsProviders.modalSub') }}</p>
           </div>
-          <button class="modal-close" :aria-label="t('dnsProviders.closeDialog')" :disabled="submitting" @click="closeModal">
+          <button class="modal-close" :aria-label="t('dnsProviders.closeDialog')" :disabled="submitting" @click="requestClose">
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18M6 6l12 12"/></svg>
           </button>
         </div>
@@ -396,7 +405,7 @@ async function confirmDelete(): Promise<void> {
           </div>
 
           <div class="modal-footer">
-            <button type="button" class="btn-secondary" :disabled="submitting" @click="closeModal">{{ t('dnsProviders.cancel') }}</button>
+            <button type="button" class="btn-secondary" :disabled="submitting" @click="requestClose">{{ t('dnsProviders.cancel') }}</button>
             <button type="submit" class="btn-primary" :disabled="submitting" :aria-busy="submitting">
               <span v-if="submitting" class="spinner" aria-hidden="true" />
               {{ submitting ? t('dnsProviders.saving') : t('dnsProviders.create') }}
@@ -416,7 +425,6 @@ async function confirmDelete(): Promise<void> {
       :aria-label="t('dnsProviders.deleteConfirmTitle')"
       aria-modal="true"
       @keydown.esc="closeDelete"
-      @click.self="closeDelete"
     >
       <div class="modal modal--sm">
         <div class="modal-head">

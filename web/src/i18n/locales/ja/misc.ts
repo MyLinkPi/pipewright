@@ -65,6 +65,13 @@ export default {
   },
 
   // ─── ConfirmDialog ───────────────────────────────────────────────────────
+  // ─── Unsaved-changes guard (shared) ──────────────────────────────────────
+  unsaved: {
+    title: '未保存の変更があります',
+    body: 'このページを離れると、未保存の変更は失われます。離れますか？',
+    discard: '保存せずに離れる',
+  },
+
   confirm: {
     cancel: 'キャンセル',
     confirm: '確認',

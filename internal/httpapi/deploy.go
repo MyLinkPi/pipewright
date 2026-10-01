@@ -4,11 +4,13 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/huangchengsir/pipewright/internal/deploy"
 	"github.com/huangchengsir/pipewright/internal/run"
+	"github.com/huangchengsir/pipewright/internal/runner"
 )
 
 // ---- 冻结 run-detail targets 子 DTO(Story 4.2;填 3-1 留的 null slot) -------
@@ -68,6 +70,9 @@ type healthCheckDTO struct {
 type deployRequest struct {
 	ArtifactID   string            `json:"artifactId"`
 	ServerIDs    []string          `json:"serverIds"`
+	// Selector 是目标选择器(语法复用构建机池):`server:<id>` 钉单机、`linux,arch=arm64` 标签圈选。
+	// serverIds 非空时优先;selector 空 / 零命中 → 无目标,跳过即成功(200 空数组)。
+	Selector     string            `json:"selector"`
 	DeployConfig map[string]string `json:"deployConfig"`
 	HealthCheck  *healthCheckDTO   `json:"healthCheck"`
 	// Strategy 是部署策略(Story 8-8 / FR-8-8):rolling(默认)| canary | blue_green。
@@ -97,10 +102,11 @@ type deployResponse struct {
 
 // makeDeployRunHandler 返回 POST /api/runs/{id}/deploy handler(认证 + CSRF)。
 //
-// 取 run + 产物 + 服务器 → deploy.Deploy(逐机经 SSH 执行部署命令)→ 据结果更新 run 终态
-// → 返回每机 targets。本期同步执行返回最终 targets(简单可验)。
+// 取 run + 产物 → 目标解析(serverIds 显式 / selector 标签圈选)→ deploy.Deploy(逐机经 SSH 执行
+// 部署命令)→ 据结果更新 run 终态 → 返回每机 targets。本期同步执行返回最终 targets(简单可验)。
 //
-// run 不存在 → 404;run 非成功 / 无该产物 / 服务器不存在 / 未指定服务器 → 422(人读)。
+// run 不存在 → 404;run 非成功 / 无该产物 / 服务器不存在 / 选择器语法非法 → 422(人读)。
+// 无目标(选择器空 / 零命中)→ 200 空 targets(跳过即成功,不动 run 终态)。
 // **部署执行失败不 500**:每机 status=failed 记录,整体 200(由 deploy.Deploy 保证不上抛执行错误)。
 func makeDeployRunHandler(svc deploy.Service, runSvc run.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -116,11 +122,20 @@ func makeDeployRunHandler(svc deploy.Service, runSvc run.Service) http.HandlerFu
 			writeError(w, http.StatusBadRequest, "bad_request", "请求体格式错误")
 			return
 		}
+		// 选择器语法前置校验(领域层 resolveTargets 仍会再拦,此处为尽早给 422 人读信息)。
+		if sel := strings.TrimSpace(req.Selector); sel != "" {
+			if err := runner.ValidateSelector(sel); err != nil {
+				writeError(w, http.StatusUnprocessableEntity, "invalid_deploy_selector",
+					"目标选择器语法非法:应为 `server:<id>` 或逗号分隔的标签项(如 linux,arch=arm64)")
+				return
+			}
+		}
 
 		results, err := svc.Deploy(r.Context(), deploy.DeployInput{
 			RunID:       id,
 			ArtifactID:  req.ArtifactID,
 			ServerIDs:   req.ServerIDs,
+			Selector:    req.Selector,
 			Config:      req.DeployConfig,
 			HealthCheck: toHealthCheck(req.HealthCheck),
 			Strategy:    req.Strategy,
@@ -310,8 +325,9 @@ func writeDeployError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusUnprocessableEntity, "artifact_not_found", "该运行下不存在指定产物")
 	case errors.Is(err, deploy.ErrServerNotFound):
 		writeError(w, http.StatusUnprocessableEntity, "server_not_found", "目标服务器不存在")
-	case errors.Is(err, deploy.ErrNoServers):
-		writeError(w, http.StatusUnprocessableEntity, "no_servers", "请至少选择一台目标服务器")
+	case errors.Is(err, deploy.ErrInvalidSelector):
+		writeError(w, http.StatusUnprocessableEntity, "invalid_deploy_selector",
+			"目标选择器语法非法:应为 `server:<id>` 或逗号分隔的标签项(如 linux,arch=arm64)")
 	case errors.Is(err, deploy.ErrNoFailedTargets):
 		writeError(w, http.StatusUnprocessableEntity, "no_failed_targets", "该运行没有可重试的失败目标")
 	case errors.Is(err, deploy.ErrRunNotDeployed):

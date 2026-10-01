@@ -578,17 +578,25 @@ func (b *Builder) runBuildImageJobIsolated(
 	return b.runBuildImageJob(ctx, sink, rep, jb, stage.Name, proj, settings, r.Trigger.ResolvedEnvironment, ws, commitTag, hasPushJob)
 }
 
-// runDeployJob 执行一个 deploy_ssh 节点:把本 run 已产出的产物经 SSH 部署到节点配置的目标机
+// runDeployJob 执行一个 deploy_ssh 节点:把本 run 已产出的产物经 SSH 部署到节点圈选的目标机
 // (复用 deploy.Service.DeployForStage 中途部署,不动 run 终态)。任一目标失败 → 阶段失败、阻断下游。
+// 目标说明:节点 `selector` 键(标签选择器,`server:<id>` 可钉单机)优先;旧 `serverId` 键映射为
+// `server:<id>` 兼容既有流水线。两者皆空 / 零命中 → 跳过即成功(不阻断下游)。
 func (b *Builder) runDeployJob(ctx context.Context, rep dagrun.StageReporter, jb pipeline.Job, runID string, params map[string]string) error {
 	if b.deployer == nil {
 		_ = rep.Log(ctx, streamStdout, "· 部署节点:部署服务未注入,跳过")
 		return nil
 	}
-	serverID := cfgString(jb.Config, "serverId")
-	if serverID == "" {
-		_ = rep.Log(ctx, streamStderr, fmt.Sprintf("部署节点「%s」未选目标服务器(serverId 空)", jb.Name))
-		return ErrBuildFailed
+	selector := strings.TrimSpace(cfgString(jb.Config, "selector"))
+	if selector == "" {
+		// 旧 serverId 写法 → 钉单机的规范形式(与构建机选择器同一语法)。
+		if sid := strings.TrimSpace(cfgString(jb.Config, "serverId")); sid != "" {
+			selector = "server:" + sid
+		}
+	}
+	if selector == "" {
+		_ = rep.Log(ctx, streamStdout, fmt.Sprintf("· 部署节点「%s」未配置目标选择器,跳过部署", jb.Name))
+		return nil
 	}
 	cfg := map[string]string{}
 	// deployPath / restartCommand 支持 {{param}} 占位:用本次运行参数渲染(命令型部署据此让
@@ -612,13 +620,17 @@ func (b *Builder) runDeployJob(ctx context.Context, rep dagrun.StageReporter, jb
 	if stratLabel == "" {
 		stratLabel = "rolling(默认)"
 	}
-	_ = rep.Log(ctx, streamStdout, fmt.Sprintf("→ SSH 部署本次产物到服务器 %s(策略 %s)…", serverID, stratLabel))
-	// 把目标机真实执行的命令 + stdout/stderr 实时回流到本部署步骤日志(脱敏由 sink 侧 Masker 兜底)。
+	_ = rep.Log(ctx, streamStdout, fmt.Sprintf("→ SSH 部署本次产物到目标机(选择器 %s,策略 %s)…", selector, stratLabel))
+	// 把目标机真实执行的命令 + stdout/stderr 实时回流到本部署步骤日志(脱敏由 sink Masker 兜底)。
 	dctx := deploy.WithCmdLog(ctx, func(stream, text string) { _ = rep.Log(ctx, stream, text) })
-	results, err := b.deployer.DeployForStage(dctx, runID, []string{serverID}, cfg, strategy)
+	results, err := b.deployer.DeployForStage(dctx, runID, selector, cfg, strategy)
 	if err != nil {
 		_ = rep.Log(ctx, streamStderr, "部署失败:"+err.Error())
 		return ErrBuildFailed
+	}
+	if len(results) == 0 {
+		_ = rep.Log(ctx, streamStdout, "· 选择器未命中任何目标服务器,跳过部署")
+		return nil
 	}
 	failed := false
 	for _, dr := range results {

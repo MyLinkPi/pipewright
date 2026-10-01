@@ -34,8 +34,6 @@ var (
 	ErrArtifactNotFound = errors.New("deploy: artifact not found for run")
 	// ErrServerNotFound 表示指定的目标服务器不存在。
 	ErrServerNotFound = errors.New("deploy: target server not found")
-	// ErrNoServers 表示未指定任何目标服务器。
-	ErrNoServers = errors.New("deploy: no target servers specified")
 	// ErrNoFailedTargets 表示该 run 当前无 failed/rolled_back 目标可重试(retry 专用)。
 	ErrNoFailedTargets = errors.New("deploy: run has no failed targets to retry")
 	// ErrRunNotDeployed 表示该 run 尚未部署过(无 deploy_targets),不可重试。
@@ -63,7 +61,11 @@ const maxConcurrentDiagnoses = 2
 type DeployInput struct {
 	RunID      string
 	ArtifactID string
-	ServerIDs  []string
+	// ServerIDs 显式目标机(回滚历史回放 / 显式 API):非空时优先于 Selector,存在性从严。
+	ServerIDs []string
+	// Selector 目标选择器(语法复用构建机池,见 selector_targets.go):`server:<id>` 钉单机、
+	// 逗号 AND 标签项圈选。空 / 零命中 → 无目标,本次部署按「跳过即成功」处理。
+	Selector string
 	// Config 是可选部署参数(如目标路径);本期最小消费(dist 用 Path 决定部署目录)。
 	Config map[string]string
 	// HealthCheck 是可选的部署后健康门控(Story 4.3 / FR-12)。
@@ -100,10 +102,11 @@ type TargetResult struct {
 
 // Service 定义部署执行对外接口(冻结点由 httpapi 层 DTO 承载;本接口可演进)。
 type Service interface {
-	// Deploy 取 run 的指定产物 → 校验成功态 / 产物 / 服务器 → 逐机经 SSH 执行该产物类型的
-	// 部署命令 → 持久化每机结果 → 据结果更新 run 终态 → 返回每机结果。
+	// Deploy 取 run 的指定产物 → 校验成功态 / 产物 → 经 ServerIDs(显式)或 Selector(标签圈选)
+	// 解析目标机 → 逐机经 SSH 执行该产物类型的部署命令 → 持久化每机结果 → 据结果更新 run 终态 →
+	// 返回每机结果。无目标(选择器空 / 零命中)→ 返回空结果、不写 deploy_targets、不动终态(跳过即成功)。
 	//
-	// 定位类错误(run 非成功 / 无产物 / 服务器不存在 / 未指定服务器)上抛,供 HTTP 层 422/404。
+	// 定位类错误(run 非成功 / 无产物 / 服务器不存在 / 选择器语法非法)上抛,供 HTTP 层 422/404。
 	// **执行失败不上抛**:该机 status=failed + 人读 message,整体仍返回结果(整体 200)。
 	Deploy(ctx context.Context, in DeployInput) ([]TargetResult, error)
 
@@ -129,9 +132,10 @@ type Service interface {
 	// DeployForStage 是「流水线 deploy_ssh 节点」用的中途部署:取该 run 已产出的首个可发布产物
 	// (dist/jar/archive)→ 按策略部署到目标机 → 持久化每机结果(填 run-detail targets)。
 	// **不校验 run 状态**(流水线执行中 run 仍 running)、**不置 run 终态**(终态由 dag 调度器控制)。
-	// 无可发布产物 → ErrArtifactNotFound;服务器不存在 → ErrServerNotFound;有目标失败 → 返回 error
-	// 令该阶段失败、阻断下游(复用 dagrun「阶段失败→下游不执行」)。
-	DeployForStage(ctx context.Context, runID string, serverIDs []string, cfg map[string]string, strategy string) ([]TargetResult, error)
+	// 目标经 selector 圈选(`server:<id>` 钉单机 / 标签项;见 selector_targets.go):空 / 零命中 →
+	// 返回空结果 nil(节点按跳过成功处理)。无可发布产物 → ErrArtifactNotFound;选择器语法非法 →
+	// ErrInvalidSelector;有目标失败 → 返回 error 令该阶段失败、阻断下游(复用 dagrun「阶段失败→下游不执行」)。
+	DeployForStage(ctx context.Context, runID string, selector string, cfg map[string]string, strategy string) ([]TargetResult, error)
 }
 
 // service 是 run + target 支撑的 Service 实现。
@@ -223,10 +227,6 @@ func (s *service) seedDiagnosisOnFailure(ctx context.Context, runID, status stri
 }
 
 func (s *service) Deploy(ctx context.Context, in DeployInput) ([]TargetResult, error) {
-	if len(in.ServerIDs) == 0 {
-		return nil, ErrNoServers
-	}
-
 	// 1) 校验 run 存在 + 成功态。
 	rn, err := s.runs.Get(ctx, in.RunID)
 	if err != nil {
@@ -257,17 +257,15 @@ func (s *service) Deploy(ctx context.Context, in DeployInput) ([]TargetResult, e
 		return nil, ErrArtifactNotFound
 	}
 
-	// 3) 预解析所有目标服务器(任一不存在 → 422,整次拒绝,不留半截)。
-	servers := make([]*target.Server, 0, len(in.ServerIDs))
-	for _, sid := range in.ServerIDs {
-		srv, gerr := s.targets.Get(ctx, sid)
-		if gerr != nil {
-			if errors.Is(gerr, target.ErrNotFound) {
-				return nil, ErrServerNotFound
-			}
-			return nil, gerr
-		}
-		servers = append(servers, srv)
+	// 3) 解析目标机:显式 ServerIDs 优先(存在性从严,任一不存在 → 422 整次拒绝);否则按
+	// Selector 标签圈选。无目标(选择器空 / 零命中)→ 跳过即成功:不写 deploy_targets、
+	// 不动 run 终态(交互式策略同样不产生 pending)。
+	servers, err := s.resolveTargets(ctx, in.ServerIDs, in.Selector)
+	if err != nil {
+		return nil, err
+	}
+	if len(servers) == 0 {
+		return []TargetResult{}, nil
 	}
 
 	// 4) 按**部署策略**执行(Story 8-8 / FR-8-8):rolling(默认,= 4-5 并行扇出)| canary | blue_green。
@@ -317,15 +315,20 @@ func (s *service) Deploy(ctx context.Context, in DeployInput) ([]TargetResult, e
 }
 
 // DeployForStage 见接口注释:流水线 deploy_ssh 节点的中途部署(不校验 run 状态、不置终态)。
-func (s *service) DeployForStage(ctx context.Context, runID string, serverIDs []string, cfg map[string]string, strategy string) ([]TargetResult, error) {
-	if len(serverIDs) == 0 {
-		return nil, ErrNoServers
+func (s *service) DeployForStage(ctx context.Context, runID string, selector string, cfg map[string]string, strategy string) ([]TargetResult, error) {
+	// 目标经 selector 圈选(`server:<id>` / 标签项):空 / 零命中 → 跳过(返回空结果,节点成功)。
+	servers, err := s.resolveTargets(ctx, nil, selector)
+	if err != nil {
+		return nil, err
+	}
+	if len(servers) == 0 {
+		return []TargetResult{}, nil
 	}
 	// 「命令型」部署(artifactType=command):不取构建产物,直接在目标机执行 cfg["restartCommand"]。
 	// 供「配置类」流水线用(如 frp 隧道:就地 upsert frpc.ini + reload)。与产物发布完全隔离——
 	// **真实产物部署(artifactType != command)绝不进此分支**,既有部署/策略/健康检查路径零影响。
 	if strings.TrimSpace(cfg["artifactType"]) == "command" {
-		return s.runCommandOnly(ctx, runID, serverIDs, cfg)
+		return s.runCommandOnly(ctx, runID, servers, cfg)
 	}
 	// 取该 run 已产出的可部署产物。dist/jar/archive 走文件发布;image 走容器 pull→停旧起新→
 	// 健康→回滚(复用 image_release.go)。二者都在时按节点 cfg["artifactType"] 选(空 → 默认优先
@@ -337,18 +340,6 @@ func (s *service) DeployForStage(ctx context.Context, runID string, serverIDs []
 	artifact := pickStageArtifact(arts, strings.TrimSpace(cfg["artifactType"]))
 	if artifact == nil {
 		return nil, ErrArtifactNotFound
-	}
-
-	servers := make([]*target.Server, 0, len(serverIDs))
-	for _, sid := range serverIDs {
-		srv, gerr := s.targets.Get(ctx, sid)
-		if gerr != nil {
-			if errors.Is(gerr, target.ErrNotFound) {
-				return nil, ErrServerNotFound
-			}
-			return nil, gerr
-		}
-		servers = append(servers, srv)
 	}
 
 	results := s.deployWithStrategy(ctx, servers, *artifact, cfg, nil, NormalizeStrategy(strategy))
@@ -370,24 +361,17 @@ func (s *service) DeployForStage(ctx context.Context, runID string, serverIDs []
 // runCommandOnly 执行「命令型」部署:在每台目标机直接跑 cfg["restartCommand"](无构建产物)。
 // 命令文本里的 {{param}} 已在 build 层(runDeployJob)用本次运行参数渲染好;此处只逐机执行 +
 // 经 s.exec 把命令/输出实时回流步骤日志(脱敏由 sink Masker 兜底)+ 持久化每机结果。
-func (s *service) runCommandOnly(ctx context.Context, runID string, serverIDs []string, cfg map[string]string) ([]TargetResult, error) {
+func (s *service) runCommandOnly(ctx context.Context, runID string, servers []*target.Server, cfg map[string]string) ([]TargetResult, error) {
 	command := strings.TrimSpace(cfg["restartCommand"])
 	if command == "" {
 		return nil, fmt.Errorf("deploy: 命令型部署缺少 restartCommand")
 	}
-	results := make([]TargetResult, 0, len(serverIDs))
-	for _, sid := range serverIDs {
-		srv, gerr := s.targets.Get(ctx, sid)
-		if gerr != nil {
-			if errors.Is(gerr, target.ErrNotFound) {
-				return nil, ErrServerNotFound
-			}
-			return nil, gerr
-		}
+	results := make([]TargetResult, 0, len(servers))
+	for _, srv := range servers {
 		started := time.Now().UTC()
-		out, err := s.exec(ctx, sid, []string{"sh", "-c", command})
+		out, err := s.exec(ctx, srv.ID, []string{"sh", "-c", command})
 		fin := time.Now().UTC()
-		tr := TargetResult{ServerID: sid, ServerName: srv.Name, StartedAt: started, FinishedAt: &fin}
+		tr := TargetResult{ServerID: srv.ID, ServerName: srv.Name, StartedAt: started, FinishedAt: &fin}
 		switch {
 		case err != nil:
 			tr.Status = run.TargetFailed

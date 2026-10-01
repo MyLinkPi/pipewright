@@ -54,7 +54,7 @@ void run()
 </script>
 
 <template>
-  <div class="modal-scrim" @click.self="emit('close')">
+  <div class="modal-scrim">
     <div class="modal" role="dialog" :aria-label="t('opsContainer.diag.dialogAria')">
       <header class="modal__head">
         <h3 class="modal__title">

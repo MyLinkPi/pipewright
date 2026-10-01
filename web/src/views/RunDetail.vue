@@ -38,6 +38,7 @@ import {
   type ApprovalRecord,
 } from '../api/runs'
 import { listServers, type Server } from '../api/servers'
+import { matchServers } from '../lib/selectorMatch'
 import { HttpError } from '../api/http'
 import DiagnosisPanel from '../components/run/DiagnosisPanel.vue'
 import SuccessFailDiff from '../components/run/SuccessFailDiff.vue'
@@ -129,15 +130,21 @@ async function decideApproval(approve: boolean): Promise<void> {
 }
 
 // ─── deploy state (Story 4-2: SSH 部署执行 / FR-10) ─────────────────────────────
-// 成功态可把某个产物部署到所选目标服务器;同步执行,回填 run.targets slot。
+// 成功态可把某个产物按目标选择器圈选的机器部署;同步执行,回填 run.targets slot。
+// 目标选择器(语法同构建机池):`server:<id>` 钉单机 / `linux,arch=arm64` 标签圈选;
+// 空 / 零命中 → 跳过即成功(不部署任何机器)。上次值按项目记在 localStorage。
 
 const deployServers = ref<Server[]>([])
 const deployServersLoaded = ref(false)
 const selectedArtifactId = ref('')
-const selectedServerIds = ref<string[]>([])
+const deploySelector = ref('')
 const deploying = ref(false)
 const deployError = ref('')
+const deployNotice = ref('')
 const showDeployPanel = ref(false)
+
+// 客户端命中预览(lib/selectorMatch,与服务端同一语义);零命中不拦提交(服务端跳过即成功)。
+const matchedDeployServers = computed(() => matchServers(deploySelector.value, deployServers.value))
 
 // ─── deploy-time health gate (Story 4-3 / FR-12) ─────────────────────────────
 // 部署后健康门控:type none(默认,跳过)/ http(curl 探测)/ command(命令探测)。
@@ -258,44 +265,49 @@ async function ensureDeployServers(): Promise<void> {
 
 async function openDeployPanel(): Promise<void> {
   deployError.value = ''
+  deployNotice.value = ''
   showDeployPanel.value = true
   await ensureDeployServers()
-  // 默认选中首个产物(若存在);服务器需用户显式勾选。
+  // 默认选中首个产物(若存在);目标选择器回填上次值(按项目记)。
   if (!selectedArtifactId.value && run.value?.artifacts.length) {
     selectedArtifactId.value = run.value.artifacts[0].id
   }
-}
-
-function toggleServer(id: string): void {
-  const idx = selectedServerIds.value.indexOf(id)
-  if (idx >= 0) selectedServerIds.value.splice(idx, 1)
-  else selectedServerIds.value.push(id)
+  if (!deploySelector.value && run.value?.projectId) {
+    deploySelector.value = localStorage.getItem(`pipewright_deploy_selector:${run.value.projectId}`) ?? ''
+  }
 }
 
 const canDeploy = computed(
-  () =>
-    !!selectedArtifactId.value &&
-    selectedServerIds.value.length > 0 &&
-    healthCheckValid.value &&
-    !deploying.value,
+  () => !!selectedArtifactId.value && healthCheckValid.value && !deploying.value,
 )
 
 async function handleDeploy(): Promise<void> {
   if (!run.value || !canDeploy.value) return
   deploying.value = true
   deployError.value = ''
+  deployNotice.value = ''
   try {
+    const selector = deploySelector.value.trim()
     const res = await deployRun(run.value.id, {
       artifactId: selectedArtifactId.value,
-      serverIds: [...selectedServerIds.value],
+      selector,
       deployConfig: buildDeployConfig(),
       healthCheck: buildHealthCheck(),
       strategy: deployStrategy.value,
     })
+    if (run.value.projectId) {
+      localStorage.setItem(`pipewright_deploy_selector:${run.value.projectId}`, selector)
+    }
+    if (res.targets.length === 0) {
+      // 无目标(选择器空 / 零命中)→ 后端跳过即成功:不动 run,面板保留明示原因。
+      deployNotice.value = selector
+        ? t('runDetail.deploySkippedNoMatch')
+        : t('runDetail.deploySkippedEmpty')
+      return
+    }
     // 同步执行:用返回的 targets 直接填 slot(与 run-detail 同源形状)。
     run.value = { ...run.value, targets: res.targets, status: deriveStatus(res.targets) }
     showDeployPanel.value = false
-    selectedServerIds.value = []
   } catch (err) {
     if (err instanceof HttpError) {
       deployError.value = err.apiError?.message ?? t('runDetail.deployFailed', { status: err.status })
@@ -940,28 +952,36 @@ function nodeClass(status: StepStatus): string {
                   </select>
                 </div>
 
-                <!-- 选择服务器 -->
+                <!-- 目标选择器:标签圈选(server:<id> 钉单机);留空 / 零命中 → 跳过即成功 -->
                 <div class="deploy-field">
-                  <span class="deploy-label">{{ t('runDetail.targetServers') }}</span>
-                  <p v-if="deployServersLoaded && deployServers.length === 0" class="deploy-empty">
+                  <label class="deploy-label" for="deploy-selector">{{ t('runDetail.targetSelector') }}</label>
+                  <input
+                    id="deploy-selector"
+                    v-model="deploySelector"
+                    class="deploy-select mono"
+                    type="text"
+                    :placeholder="t('runDetail.selectorPlaceholder')"
+                    :aria-label="t('runDetail.targetSelector')"
+                  />
+                  <p class="adv-hint">{{ t('runDetail.selectorHint') }}</p>
+                  <p
+                    v-if="deploySelector.trim()"
+                    class="deploy-match"
+                    :class="{ 'deploy-match--none': matchedDeployServers.length === 0 }"
+                    role="status"
+                  >
+                    {{
+                      matchedDeployServers.length === 0
+                        ? t('runDetail.selectorNoMatch')
+                        : t('runDetail.selectorMatchCount', { n: matchedDeployServers.length })
+                    }}
+                    <span v-if="matchedDeployServers.length">
+                      — {{ matchedDeployServers.map((s) => s.name).join(', ') }}
+                    </span>
+                  </p>
+                  <p v-else-if="deployServersLoaded && deployServers.length === 0" class="deploy-empty">
                     {{ t('runDetail.noServers') }}
                   </p>
-                  <div v-else class="deploy-servers">
-                    <label
-                      v-for="s in deployServers"
-                      :key="s.id"
-                      class="deploy-server-opt"
-                      :class="{ 'deploy-server-opt--on': selectedServerIds.includes(s.id) }"
-                    >
-                      <input
-                        type="checkbox"
-                        :checked="selectedServerIds.includes(s.id)"
-                        @change="toggleServer(s.id)"
-                      />
-                      <span class="deploy-server-name">{{ s.name }}</span>
-                      <span class="deploy-server-host mono">{{ s.user }}@{{ s.host }}:{{ s.port }}</span>
-                    </label>
-                  </div>
                 </div>
 
                 <!-- 健康检查(Story 4-3 / FR-12):部署后门控,通过才算该机成功 -->
@@ -1082,6 +1102,11 @@ function nodeClass(status: StepStatus): string {
                   </div>
                 </div>
 
+                <!-- 跳过提示(无目标:选择器空 / 零命中 → 后端跳过即成功,不动 run) -->
+                <div v-if="deployNotice" class="banner banner--info" role="status">
+                  {{ deployNotice }}
+                </div>
+
                 <!-- 部署错误 -->
                 <div v-if="deployError" class="banner banner--error" role="alert">
                   <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
@@ -1096,8 +1121,8 @@ function nodeClass(status: StepStatus): string {
                     <span v-if="deploying" class="spinner" aria-hidden="true" />
                     {{ deploying ? t('runDetail.deploying') : t('runDetail.startDeploy') }}
                   </button>
-                  <span v-if="selectedServerIds.length > 0" class="deploy-hint">
-                    {{ t('runDetail.selectedCount', { n: selectedServerIds.length }) }}
+                  <span v-if="matchedDeployServers.length > 0" class="deploy-hint">
+                    {{ t('runDetail.selectorMatchCount', { n: matchedDeployServers.length }) }}
                   </span>
                 </div>
               </div>
@@ -2030,6 +2055,12 @@ function nodeClass(status: StepStatus): string {
   color: var(--color-red);
 }
 
+.banner--info {
+  background: var(--color-primary-soft);
+  border: 1px solid var(--color-border);
+  color: var(--color-text);
+}
+
 .inline-banner {
   margin: 0 24px;
 }
@@ -2296,41 +2327,15 @@ function nodeClass(status: StepStatus): string {
   line-height: 1.5;
 }
 
-.deploy-servers {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.deploy-server-opt {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 9px 12px;
-  background: var(--color-card);
-  border: 1px solid var(--color-border);
-  border-radius: var(--rounded-md);
-  cursor: pointer;
-  transition: border-color var(--duration-fast), background-color var(--duration-fast);
-}
-
-.deploy-server-opt:hover { border-color: var(--color-faint); }
-
-.deploy-server-opt--on {
-  border-color: var(--color-primary);
-  background: var(--color-primary-soft);
-}
-
-.deploy-server-name {
-  font-size: 0.84rem;
-  font-weight: 500;
-  color: var(--color-text);
-}
-
-.deploy-server-host {
+.deploy-match {
+  margin: 0;
   font-size: 0.74rem;
-  color: var(--color-faint);
-  margin-left: auto;
+  color: var(--color-success, #16a34a);
+  font-weight: 500;
+}
+
+.deploy-match--none {
+  color: var(--color-red);
 }
 
 .deploy-actions {
