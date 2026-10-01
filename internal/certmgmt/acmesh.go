@@ -211,9 +211,27 @@ func (s *service) runIssue(ctx context.Context, c *Certificate, dnsAPI string, d
 	return err
 }
 
-// readBackCert 读回本地签发产物(fullchain.cer + <primary>.key)。
-func (s *service) readBackCert(primary string) (string, string, error) {
-	dir := filepath.Join(s.homeDir(), primary)
+// acmeDomainDir 返回签发产物目录名,与 acme.sh _initpath 的 DOMAIN_PATH 规则严格对齐:
+// ECC 密钥 → <domain>_ecc(ECC_SUFFIX),RSA → <domain>;并镜像 acme.sh 的同款回退——
+// 规则目录不存在而另一种存在时用另一种(_initpath 中 "seems to already have an ECC cert")。
+func (s *service) acmeDomainDir(primary, keyType string) string {
+	want, alt := primary, primary+"_ecc"
+	if strings.HasPrefix(keyType, "ec-") {
+		want, alt = alt, want
+	}
+	if _, err := os.Stat(filepath.Join(s.homeDir(), want)); err == nil {
+		return want
+	}
+	if _, err := os.Stat(filepath.Join(s.homeDir(), alt)); err == nil {
+		return alt
+	}
+	return want // 都不存在 → 返回规则目录,让错误信息指向预期位置
+}
+
+// readBackCert 读回本地签发产物(<domainDir>/fullchain.cer + <primary>.key,
+// 路径即 acme.sh 的 CERT_FULLCHAIN_PATH / CERT_KEY_PATH)。
+func (s *service) readBackCert(primary, keyType string) (string, string, error) {
+	dir := filepath.Join(s.homeDir(), s.acmeDomainDir(primary, keyType))
 	certPEM, err := os.ReadFile(filepath.Join(dir, "fullchain.cer"))
 	if err != nil {
 		return "", "", fmt.Errorf("%w:fullchain.cer 读取失败(%v)", ErrReadBack, err)
