@@ -40,19 +40,6 @@ export default {
   removeGatewayTitle: '移除网关容器?',
   removeGatewayBody: '停止并删除网关容器;证书与配置保留在卷中,重新部署即恢复。已注册的服务配置不受影响。',
 
-  token: {
-    title: '证书上传 API Token',
-    active: '已启用',
-    none: '未生成',
-    hint: '供你的证书签发工具脚本调用:携带此 Token 可免登录直接 POST /api/servicereg/cert 换证书。明文只在生成时显示一次。',
-    generate: '生成 Token',
-    copyCurl: '复制 curl 示例',
-  },
-  revokeToken: '撤销 Token',
-  revokeTokenTitle: '撤销证书上传 Token?',
-  revokeTokenBody: '撤销后现有脚本将无法再上传证书,需重新生成并更新脚本。',
-  tokenRevoked: 'Token 已撤销',
-  curlCopied: 'curl 示例已复制',
 
   settingsSaved: '网关设置已保存',
   settingsSaveFail: '保存网关设置失败',
@@ -61,12 +48,11 @@ export default {
     title: '基域',
     add: '注册基域',
     placeholder: 'efg.com',
-    hint: '注册后请把 *.efg.com 泛域名 A 记录解析到网关主机 IP(平台不接管 DNS)。上传该域的泛域名证书后子域名自动启用 HTTPS。',
+    hint: '注册后请把 *.efg.com 泛域名 A 记录解析到网关主机 IP(平台不接管 DNS)。在「证书管理」为该域签发/导入证书后,子域名自动启用 HTTPS。',
     empty: '还没有基域',
     emptyDesc: '先注册一个基域(如 efg.com),再在其下注册服务。',
     httpOnly: '仅 HTTP',
-    uploadCert: '上传证书',
-    replaceCert: '更换证书',
+    manageCert: '证书管理',
     expires: '到期',
     daysLeft: '{n} 天',
   },
@@ -76,14 +62,6 @@ export default {
   delDomainTitle: '删除基域?',
   delDomainBody: '将删除 {domain} 及其下全部注册服务,并从网关摘除对应路由。',
 
-  cert: {
-    title: '上传泛域名证书',
-    certFile: '证书(fullchain.pem)',
-    keyFile: '私钥(privkey.pem)',
-    upload: '上传',
-  },
-  certUploaded: '证书已上传并下发',
-  certUploadFail: '证书上传失败',
 
   services: {
     title: '服务',

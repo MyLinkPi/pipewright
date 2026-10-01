@@ -2,7 +2,6 @@ package dnsprovider
 
 import (
 	"context"
-	"crypto/rand"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -19,22 +18,6 @@ type vaultReader interface {
 	Exists(id string) (bool, error)
 }
 
-// RouteCreator 抽象「创建一条 DNS-01 反代路由」的能力(由上层用 proxy.Service 适配注入,避免本包
-// import proxy 形成环)。实现须落库一条带 DNS 提供商引用的路由并完成 Caddy 编排,返回 routeID。
-type RouteCreator interface {
-	// CreateDNS01Route 创建一条 DNS-01 反代路由(域名 + DNS 提供商引用 + 上游)。返回新路由 id。
-	CreateDNS01Route(ctx context.Context, in CreateDNS01RouteInput) (routeID string, err error)
-}
-
-// CreateDNS01RouteInput 是创建 DNS-01 反代路由的入参(冻结契约,proxy 适配器消费)。
-type CreateDNS01RouteInput struct {
-	ServerID          string
-	Domain            string
-	UpstreamContainer string
-	UpstreamPort      int
-	DNSProviderID     string
-}
-
 // dialFactory 据提供商类型 + (API ID, Secret) 造一个 DNSClient(注入便于单测;生产用 prodDialFactory)。
 type dialFactory func(providerType, apiID, secret string) DNSClient
 
@@ -43,32 +26,27 @@ func prodDialFactory(providerType, apiID, secret string) DNSClient {
 	return newDNSClient(providerType, apiID, secret, nil, "")
 }
 
-// service 是 store + vault + routeCreator + dialFactory 支撑的 Service 实现。
+// service 是 store + vault + dialFactory 支撑的 Service 实现。
 type service struct {
-	store   *Store
-	vault   vaultReader
-	routes  RouteCreator
-	dial    dialFactory
-	randGen func(n int) (string, error) // 随机子域名后缀生成器(注入便于单测;默认 crypto/rand)
+	store *Store
+	vault vaultReader
+	dial  dialFactory
 }
 
 // New 构造 Service。
 //   - db:参数化 SQL 触库。
 //   - v:凭据保险库(取 DNS Secret 明文);nil/未配置时 Verify/Allocate 返回 ErrVaultUnconfigured。
-//   - routes:DNS-01 反代路由创建器(proxy 适配器);nil 时 AllocateSubdomain 返回 ErrAllocate。
 //
 // 不在此做任何重活(无 init 副作用)。
-func New(db *sql.DB, v vault.Vault, routes RouteCreator) Service {
+func New(db *sql.DB, v vault.Vault) Service {
 	var vr vaultReader
 	if v != nil {
 		vr = v
 	}
 	return &service{
-		store:   NewStore(db),
-		vault:   vr,
-		routes:  routes,
-		dial:    prodDialFactory,
-		randGen: randSuffix,
+		store: NewStore(db),
+		vault: vr,
+		dial:  prodDialFactory,
 	}
 }
 
@@ -332,104 +310,15 @@ func (s *service) clientFor(p *Provider) (DNSClient, error) {
 	return client, nil
 }
 
-// AllocateSubdomain 瞬时分配子域名(E3.3 + E3.4):
-//  1. 取目标根区 + 其提供商,校验入参(上游容器/端口、宿主机 IP)。
-//  2. crypto/rand 挑可读后缀,组成 app-<6char>.<根域>;若与已建路由域名冲突则重试(有限次)。
-//  3. 经 DNSClient 建 A 记录指向 hostIP(Cloudflare 真实;其余桩返回未实现)。
-//  4. 经 RouteCreator 创建一条 DNS-01 反代路由(证书即刻可签;绑定提供商级 DNS-01 引用)。
-func (s *service) AllocateSubdomain(ctx context.Context, in AllocateInput) (*RouteRef, error) {
-	if s.routes == nil {
-		return nil, fmt.Errorf("%w:路由创建器未装配", ErrAllocate)
-	}
-	zone, err := s.store.getZone(ctx, in.ZoneID)
-	if err != nil {
-		return nil, err
-	}
-	p, err := s.store.get(ctx, zone.ProviderID)
-	if err != nil {
-		return nil, err
-	}
-	if strings.TrimSpace(in.ServerID) == "" {
-		return nil, ErrAllocate
-	}
-	if strings.TrimSpace(in.UpstreamContainer) == "" {
-		return nil, ErrAllocate
-	}
-	if in.UpstreamPort < 1 || in.UpstreamPort > 65535 {
-		return nil, ErrAllocate
-	}
-	if !validIPv4(in.HostIP) {
-		// 宿主机 IP 必须是合法 IPv4(由上层据 server.Host 解析得出,非用户自由文本)。
-		return nil, fmt.Errorf("%w:宿主机 IP 非法", ErrAllocate)
-	}
-
-	client, err := s.clientFor(p)
-	if err != nil {
-		return nil, err
-	}
-
-	// 有限次随机挑子域名,避开与已建路由域名冲突(由 RouteCreator 的 domain 唯一约束兜底)。
-	const maxAttempts = 5
-	var lastErr error
-	for attempt := 0; attempt < maxAttempts; attempt++ {
-		suffix, gerr := s.randGen(6)
-		if gerr != nil {
-			return nil, fmt.Errorf("%w:随机子域名生成失败", ErrAllocate)
-		}
-		domain := "app-" + suffix + "." + zone.BaseDomain
-
-		// 建 A 记录指向宿主机 IP(幂等)。确定性错误(未实现 / 凭据缺失)直接上抛,不重试;
-		// 其余(瞬时网络 / API)记为 lastErr 后换下一个后缀重试。
-		if err := client.EnsureARecord(ctx, zone.BaseDomain, domain, in.HostIP); err != nil {
-			if errors.Is(err, ErrProviderNotImplemented) || errors.Is(err, ErrInvalidCredential) {
-				return nil, err
-			}
-			lastErr = err
-			continue
-		}
-
-		// 创建 DNS-01 反代路由。domain 唯一冲突(极小概率随机撞车)→ 重试下一个后缀。
-		routeID, rerr := s.routes.CreateDNS01Route(ctx, CreateDNS01RouteInput{
-			ServerID:          in.ServerID,
-			Domain:            domain,
-			UpstreamContainer: in.UpstreamContainer,
-			UpstreamPort:      in.UpstreamPort,
-			DNSProviderID:     p.ID,
-		})
-		if rerr != nil {
-			if isDomainCollision(rerr) {
-				lastErr = rerr
-				continue
-			}
-			return nil, rerr
-		}
-		return &RouteRef{RouteID: routeID, Domain: domain, ProviderID: p.ID}, nil
-	}
-	if lastErr != nil {
-		return nil, fmt.Errorf("%w:多次尝试仍失败", ErrAllocate)
-	}
-	return nil, ErrAllocate
-}
-
-// AllocateFQDN 为一个**指定的** FQDN 建 A 记录指向 hostIP → 创建一条 DNS-01 反代路由(R4 E4.1)。
-// 与 AllocateSubdomain 共享校验/建记录/建路由逻辑,但子域名由调用方给定(不随机挑),用于
-// 幂等可预测的预览域名 pr-<n>-<proj>.base。
+// AllocateFQDN 为一个**指定的** FQDN 建 A 记录指向 hostIP(R4 E4.1 预览环境用)。
+// 子域名由调用方给定(不随机挑),用于幂等可预测的预览域名 pr-<n>-<proj>.base。
+// Caddy 反代下线后本方法只管 DNS 记录,不再创建反代路由;预览流量路由由网关体系另行承接。
 //   - in.Subdomain 必须非空且**严格落在**该提供商某个根区下(后缀 .base 校验,最长后缀优先;
-//     杜绝越权为任意域签证书 / 建记录);否则 ErrAllocate。
-//   - 域名已占用(同 PR 重复分配且未先回收旧路由)→ 透传 proxy 的 domain-taken 错误,供上层处置。
+//     杜绝越权为任意域建记录);否则 ErrAllocate。
 func (s *service) AllocateFQDN(ctx context.Context, in AllocateInput) (*RouteRef, error) {
-	if s.routes == nil {
-		return nil, fmt.Errorf("%w:路由创建器未装配", ErrAllocate)
-	}
 	p, err := s.store.get(ctx, in.ProviderID)
 	if err != nil {
 		return nil, err
-	}
-	if strings.TrimSpace(in.ServerID) == "" || strings.TrimSpace(in.UpstreamContainer) == "" {
-		return nil, ErrAllocate
-	}
-	if in.UpstreamPort < 1 || in.UpstreamPort > 65535 {
-		return nil, ErrAllocate
 	}
 	if !validIPv4(in.HostIP) {
 		return nil, fmt.Errorf("%w:宿主机 IP 非法", ErrAllocate)
@@ -461,17 +350,7 @@ func (s *service) AllocateFQDN(ctx context.Context, in AllocateInput) (*RouteRef
 	if err := client.EnsureARecord(ctx, zone.BaseDomain, domain, in.HostIP); err != nil {
 		return nil, err
 	}
-	routeID, rerr := s.routes.CreateDNS01Route(ctx, CreateDNS01RouteInput{
-		ServerID:          in.ServerID,
-		Domain:            domain,
-		UpstreamContainer: in.UpstreamContainer,
-		UpstreamPort:      in.UpstreamPort,
-		DNSProviderID:     p.ID,
-	})
-	if rerr != nil {
-		return nil, rerr
-	}
-	return &RouteRef{RouteID: routeID, Domain: domain, ProviderID: p.ID}, nil
+	return &RouteRef{Domain: domain, ProviderID: p.ID}, nil
 }
 
 // zoneCovering 返回覆盖 fqdn 的根区(fqdn == base 或以 "."+base 结尾;最长后缀优先);无 → nil。
@@ -489,30 +368,6 @@ func zoneCovering(zones []Zone, fqdn string) *Zone {
 	return best
 }
 
-// isDomainCollision 判定路由创建错误是否为「域名已占用」(供子域名重试)。
-// 用文本匹配(避免 import proxy 形成环;proxy.ErrDomainTaken 的文本含 "domain already in use")。
-func isDomainCollision(err error) bool {
-	if err == nil {
-		return false
-	}
-	return strings.Contains(strings.ToLower(err.Error()), "domain already in use")
-}
-
-// randAlphabet 是可读子域名后缀字符集(去掉易混淆的 0/o/1/l/i,纯小写+数字)。
-const randAlphabet = "abcdefghjkmnpqrstuvwxyz23456789"
-
-// randSuffix 经 crypto/rand 生成长度为 n 的可读后缀(无 math/rand、无 time 依赖,测试稳定)。
-func randSuffix(n int) (string, error) {
-	b := make([]byte, n)
-	if _, err := rand.Read(b); err != nil {
-		return "", err
-	}
-	out := make([]byte, n)
-	for i, x := range b {
-		out[i] = randAlphabet[int(x)%len(randAlphabet)]
-	}
-	return string(out), nil
-}
 
 // validIPv4 报告 s 是否为合法 IPv4 地址(子域名 A 记录指向宿主机 IPv4)。
 func validIPv4(s string) bool {

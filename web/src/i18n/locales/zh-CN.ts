@@ -75,7 +75,7 @@ export default {
     containers: '容器',
     serviceReg: '服务注册',
     appStore: '应用商店',
-    proxyOverview: '证书总览',
+    certificates: '证书管理',
     previews: '预览环境',
     anomaly: '异常检测',
     notifications: '通知',

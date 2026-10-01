@@ -44,9 +44,6 @@ const projectId = computed<string>(() => {
 function selectProject(id: string): void {
   void router.replace({ query: id ? { ...route.query, projectId: id } : {} })
 }
-function onProjectChange(e: Event): void {
-  selectProject((e.target as HTMLSelectElement).value)
-}
 
 const projects = ref<Project[]>([])
 const selectedProject = computed(() => projects.value.find((p) => p.id === projectId.value))

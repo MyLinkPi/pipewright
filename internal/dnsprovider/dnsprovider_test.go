@@ -39,25 +39,6 @@ func (s stubVault) Exists(id string) (bool, error) {
 	return ok, nil
 }
 
-// stubRouteCreator 记录建路由调用,返回固定 routeID;可配置返回域名冲突错误模拟撞车重试。
-type stubRouteCreator struct {
-	calls       []CreateDNS01RouteInput
-	failFirstN  int // 前 N 次返回「域名冲突」错误(模拟随机撞车),之后成功
-	nextRouteID string
-}
-
-func (s *stubRouteCreator) CreateDNS01Route(_ context.Context, in CreateDNS01RouteInput) (string, error) {
-	s.calls = append(s.calls, in)
-	if len(s.calls) <= s.failFirstN {
-		return "", errors.New("proxy: domain already in use")
-	}
-	id := s.nextRouteID
-	if id == "" {
-		id = "route-" + in.Domain
-	}
-	return id, nil
-}
-
 // stubClient 是注入用的假 DNSClient:记录 Verify/Ensure/Delete 调用,可配置逐 zone 校验错误。
 type stubClient struct {
 	verifyCalls  []string          // 每次 VerifyZone 的 zone 参数
@@ -98,36 +79,22 @@ func jsonResp(status int, body string) *http.Response {
 }
 
 // newTestService 造一个注入了 stub 的 service(不触真网络)。
-func newTestService(t *testing.T, vault vaultReader, routes RouteCreator, dial dialFactory) *service {
+func newTestService(t *testing.T, vault vaultReader, dial dialFactory) *service {
 	t.Helper()
 	st := storetest.OpenDB(t)
 	svc := &service{
-		store:   NewStore(st),
-		vault:   vault,
-		routes:  routes,
-		dial:    dial,
-		randGen: seqSuffix(),
+		store: NewStore(st),
+		vault: vault,
+		dial:  dial,
 	}
 	return svc
-}
-
-// seqSuffix 产确定后缀(便于断言);每次调用递增,模拟「不同随机值」。
-func seqSuffix() func(n int) (string, error) {
-	i := 0
-	return func(n int) (string, error) {
-		i++
-		base := []rune("aaaaaa")
-		// 把计数编进最后一位,保证多次调用不同。
-		base[5] = rune('a' + (i % 26))
-		return string(base), nil
-	}
 }
 
 // --- store CRUD + zone CRUD -------------------------------------------------
 
 func TestStoreCRUD(t *testing.T) {
 	ctx := context.Background()
-	svc := newTestService(t, stubVault{tokens: map[string]string{"cred-1": "tok"}}, nil, prodDialFactory)
+	svc := newTestService(t, stubVault{tokens: map[string]string{"cred-1": "tok"}}, prodDialFactory)
 
 	p, err := svc.Create(ctx, CreateInput{
 		Type: "cloudflare", Name: "CF", CredentialID: "cred-1",
@@ -170,7 +137,7 @@ func TestStoreCRUD(t *testing.T) {
 
 func TestZoneAddRemove(t *testing.T) {
 	ctx := context.Background()
-	svc := newTestService(t, stubVault{tokens: map[string]string{"cred-1": "tok"}}, nil, prodDialFactory)
+	svc := newTestService(t, stubVault{tokens: map[string]string{"cred-1": "tok"}}, prodDialFactory)
 	p, _ := svc.Create(ctx, CreateInput{Type: "cloudflare", Name: "CF", CredentialID: "cred-1", BaseDomains: []string{"example.com"}})
 
 	z, err := svc.AddZone(ctx, p.ID, " Example.NET ")
@@ -201,7 +168,7 @@ func TestZoneAddRemove(t *testing.T) {
 
 func TestCreateValidation(t *testing.T) {
 	ctx := context.Background()
-	svc := newTestService(t, stubVault{tokens: map[string]string{"cred-1": "tok"}}, nil, prodDialFactory)
+	svc := newTestService(t, stubVault{tokens: map[string]string{"cred-1": "tok"}}, prodDialFactory)
 
 	cases := []struct {
 		in   CreateInput
@@ -230,7 +197,7 @@ func TestCreateValidation(t *testing.T) {
 
 func TestUpdate(t *testing.T) {
 	ctx := context.Background()
-	svc := newTestService(t, stubVault{tokens: map[string]string{"cred-1": "tok"}}, nil, prodDialFactory)
+	svc := newTestService(t, stubVault{tokens: map[string]string{"cred-1": "tok"}}, prodDialFactory)
 	p, _ := svc.Create(ctx, CreateInput{Type: "dnspod", Name: "DP", APIID: "12345", CredentialID: "cred-1", BaseDomains: []string{"example.com"}})
 
 	// 改名 + 改 API ID。
@@ -268,7 +235,7 @@ func TestVerifyMultipleZones(t *testing.T) {
 	ctx := context.Background()
 	fc := &stubClient{}
 	dial := func(providerType, apiID, secret string) DNSClient { return fc }
-	svc := newTestService(t, stubVault{tokens: map[string]string{"cred-1": "tok"}}, nil, dial)
+	svc := newTestService(t, stubVault{tokens: map[string]string{"cred-1": "tok"}}, dial)
 	p, _ := svc.Create(ctx, CreateInput{Type: "cloudflare", Name: "CF", CredentialID: "cred-1", BaseDomains: []string{"a.com", "b.com"}})
 
 	results, err := svc.Verify(ctx, p.ID)
@@ -316,7 +283,7 @@ func TestZoneCoveringAndDeleteRecord(t *testing.T) {
 	ctx := context.Background()
 	fc := &stubClient{}
 	dial := func(providerType, apiID, secret string) DNSClient { return fc }
-	svc := newTestService(t, stubVault{tokens: map[string]string{"cred-1": "tok"}}, nil, dial)
+	svc := newTestService(t, stubVault{tokens: map[string]string{"cred-1": "tok"}}, dial)
 	p, _ := svc.Create(ctx, CreateInput{Type: "cloudflare", Name: "CF", CredentialID: "cred-1", BaseDomains: []string{"example.com", "preview.example.com"}})
 
 	// ZoneCovers:等值 / 后缀 / 最长后缀 / 不覆盖。
@@ -479,133 +446,29 @@ func createCF(t *testing.T, svc *service, domains ...string) *Provider {
 	return p
 }
 
-func TestAllocateSubdomainHappyPath(t *testing.T) {
-	ctx := context.Background()
-	rt := roundTripFunc(func(r *http.Request) (*http.Response, error) {
-		switch {
-		case strings.Contains(r.URL.Path, "/zones") && !strings.Contains(r.URL.Path, "dns_records") && r.Method == http.MethodGet:
-			return jsonResp(200, `{"success":true,"result":[{"id":"z1","name":"a.com"},{"id":"z2","name":"b.com"}]}`), nil
-		case strings.Contains(r.URL.Path, "dns_records") && r.Method == http.MethodGet:
-			return jsonResp(200, `{"success":true,"result":[]}`), nil
-		case strings.Contains(r.URL.Path, "dns_records") && r.Method == http.MethodPost:
-			return jsonResp(200, `{"success":true,"result":{"id":"rec1"}}`), nil
-		}
-		return jsonResp(200, `{"success":true,"result":[]}`), nil
-	})
-	rc := &stubRouteCreator{nextRouteID: "route-xyz"}
-	svc := newTestService(t, stubVault{tokens: map[string]string{"cred-1": "cf-token"}}, rc, dialDNS(rt))
-
-	p := createCF(t, svc, "a.com", "b.com")
-	// 在第二个根区下分配 → 子域名落在该根区(而非默认/首个)。
-	var zoneID string
-	for _, z := range p.Zones {
-		if z.BaseDomain == "b.com" {
-			zoneID = z.ID
-		}
-	}
-	if zoneID == "" {
-		t.Fatalf("未找到 b.com 根区: %+v", p.Zones)
-	}
-	ref, err := svc.AllocateSubdomain(ctx, AllocateInput{
-		ZoneID: zoneID, ServerID: "srv-1", UpstreamContainer: "web", UpstreamPort: 8080, HostIP: "203.0.113.5",
-	})
-	if err != nil {
-		t.Fatalf("AllocateSubdomain: %v", err)
-	}
-	if ref.RouteID != "route-xyz" {
-		t.Fatalf("应返回新建路由 id, got %q", ref.RouteID)
-	}
-	if !strings.HasPrefix(ref.Domain, "app-") || !strings.HasSuffix(ref.Domain, ".b.com") {
-		t.Fatalf("子域名应落在所选根区: %q", ref.Domain)
-	}
-	if len(rc.calls) != 1 || rc.calls[0].DNSProviderID != p.ID {
-		t.Fatalf("应建一条带提供商引用的 DNS-01 路由, got %+v", rc.calls)
-	}
-	// 不存在的根区 → ErrZoneNotFound。
-	if _, err := svc.AllocateSubdomain(ctx, AllocateInput{
-		ZoneID: "no-such", ServerID: "srv-1", UpstreamContainer: "web", UpstreamPort: 80, HostIP: "203.0.113.5",
-	}); !errors.Is(err, ErrZoneNotFound) {
-		t.Fatalf("根区不存在应 ErrZoneNotFound, got %v", err)
-	}
-}
-
-func TestAllocateSubdomainCollisionRetries(t *testing.T) {
-	ctx := context.Background()
-	rt := roundTripFunc(func(r *http.Request) (*http.Response, error) {
-		switch {
-		case strings.Contains(r.URL.Path, "/zones") && !strings.Contains(r.URL.Path, "dns_records"):
-			return jsonResp(200, `{"success":true,"result":[{"id":"z1","name":"example.com"}]}`), nil
-		case r.Method == http.MethodGet:
-			return jsonResp(200, `{"success":true,"result":[]}`), nil
-		default:
-			return jsonResp(200, `{"success":true,"result":{"id":"rec1"}}`), nil
-		}
-	})
-	// 前两次建路由「域名冲突」→ 应重试第三个后缀成功。
-	rc := &stubRouteCreator{failFirstN: 2, nextRouteID: "route-final"}
-	svc := newTestService(t, stubVault{tokens: map[string]string{"cred-1": "cf-token"}}, rc, dialDNS(rt))
-
-	p := createCF(t, svc, "example.com")
-	ref, err := svc.AllocateSubdomain(ctx, AllocateInput{
-		ZoneID: p.Zones[0].ID, ServerID: "srv-1", UpstreamContainer: "web", UpstreamPort: 80, HostIP: "203.0.113.5",
-	})
-	if err != nil {
-		t.Fatalf("应在重试后成功: %v", err)
-	}
-	if ref.RouteID != "route-final" {
-		t.Fatalf("应返回最终路由 id, got %q", ref.RouteID)
-	}
-	if len(rc.calls) != 3 {
-		t.Fatalf("应尝试 3 次(2 撞车 + 1 成功), got %d", len(rc.calls))
-	}
-}
-
-func TestAllocateSubdomainRejectsBadHostIP(t *testing.T) {
-	ctx := context.Background()
-	rc := &stubRouteCreator{}
-	svc := newTestService(t, stubVault{tokens: map[string]string{"cred-1": "cf-token"}}, rc, dialDNS(roundTripFunc(func(_ *http.Request) (*http.Response, error) {
-		return jsonResp(200, `{"success":true,"result":[]}`), nil
-	})))
-	p := createCF(t, svc, "example.com")
-	for _, badIP := range []string{"", "not-an-ip", "2001:db8::1", "example.com"} {
-		_, err := svc.AllocateSubdomain(ctx, AllocateInput{
-			ZoneID: p.Zones[0].ID, ServerID: "srv-1", UpstreamContainer: "web", UpstreamPort: 80, HostIP: badIP,
-		})
-		if !errors.Is(err, ErrAllocate) {
-			t.Fatalf("非法 hostIP %q 应 ErrAllocate, got %v", badIP, err)
-		}
-	}
-	if len(rc.calls) != 0 {
-		t.Fatalf("非法 IP 不应建任何路由")
-	}
-}
-
-// DNSPod 缺 API ID 在创建时即被拒(ErrInvalidAPIID);不应走到建 A 记录/建路由阶段。
-func TestAllocateSubdomainDNSPodMissingAPIID(t *testing.T) {
-	ctx := context.Background()
-	rc := &stubRouteCreator{}
-	svc := newTestService(t, stubVault{tokens: map[string]string{"cred-1": "dp-token"}}, rc, prodDialFactory)
-	if _, err := svc.Create(ctx, CreateInput{Type: "dnspod", Name: "DP", CredentialID: "cred-1", BaseDomains: []string{"example.com"}}); !errors.Is(err, ErrInvalidAPIID) {
-		t.Fatalf("dnspod 缺 API ID 应 ErrInvalidAPIID, got %v", err)
-	}
-	if len(rc.calls) != 0 {
-		t.Fatalf("未建成提供商就不应建路由")
-	}
-}
-
 // --- AllocateFQDN(最长后缀选根区,预览环境)----------------------------------
 
 func TestAllocateFQDNStrictZoneMatch(t *testing.T) {
 	ctx := context.Background()
 	fc := &stubClient{}
 	dial := func(providerType, apiID, secret string) DNSClient { return fc }
-	rc := &stubRouteCreator{nextRouteID: "route-pv"}
-	svc := newTestService(t, stubVault{tokens: map[string]string{"cred-1": "tok"}}, rc, dial)
+	svc := newTestService(t, stubVault{tokens: map[string]string{"cred-1": "tok"}}, dial)
 	p := createCF(t, svc, "example.com", "preview.example.com")
 
 	in := AllocateInput{
-		ProviderID: p.ID, ServerID: "srv-1", UpstreamContainer: "web", UpstreamPort: 80,
-		HostIP: "203.0.113.5", Subdomain: "pr-12-x.PREVIEW.example.com",
+		ProviderID: p.ID,
+		HostIP:     "203.0.113.5", Subdomain: "pr-12-x.PREVIEW.example.com",
+	}
+	// 非法 hostIP → ErrAllocate(且不建任何记录)。
+	for _, badIP := range []string{"", "not-an-ip", "2001:db8::1", "example.com"} {
+		inBad := in
+		inBad.HostIP = badIP
+		if _, err := svc.AllocateFQDN(ctx, inBad); !errors.Is(err, ErrAllocate) {
+			t.Fatalf("非法 hostIP %q 应 ErrAllocate, got %v", badIP, err)
+		}
+	}
+	if len(fc.ensureZones) != 0 {
+		t.Fatalf("非法 IP 不应建任何记录")
 	}
 	ref, err := svc.AllocateFQDN(ctx, in)
 	if err != nil {
@@ -641,7 +504,7 @@ func TestAllocateFQDNStrictZoneMatch(t *testing.T) {
 func TestProviderViewHasNoSecret(t *testing.T) {
 	ctx := context.Background()
 	const secret = "super-secret-cf-token"
-	svc := newTestService(t, stubVault{tokens: map[string]string{"cred-1": secret}}, nil, prodDialFactory)
+	svc := newTestService(t, stubVault{tokens: map[string]string{"cred-1": secret}}, prodDialFactory)
 	p := createCF(t, svc, "example.com")
 	// 领域视图只持 CredentialID 引用,绝无 Secret 明文。
 	if p.CredentialID != "cred-1" {

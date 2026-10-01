@@ -18,7 +18,7 @@ export default {
     displayName: "顯示名稱",
     icon: "圖示(emoji)",
     description: "描述",
-    compose: "compose YAML(用 {\'{{param}}\'} 佔位)",
+    compose: "compose YAML(用 {'{{param}}'} 佔位)",
     params: "參數(每行一條)",
     paramsHint: "行式語法:name:type:default;前綴 * 表示必填;type ∈ string|int|secret(secret 留空自動產生)。",
   },

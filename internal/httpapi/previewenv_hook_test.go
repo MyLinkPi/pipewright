@@ -2,12 +2,10 @@ package httpapi
 
 import (
 	"context"
-	"io"
 	"testing"
 	"time"
 
 	"github.com/huangchengsir/pipewright/internal/previewenv"
-	"github.com/huangchengsir/pipewright/internal/proxy"
 	"github.com/huangchengsir/pipewright/internal/run"
 	"github.com/huangchengsir/pipewright/internal/store"
 	"github.com/huangchengsir/pipewright/internal/target"
@@ -42,7 +40,7 @@ func TestParsePRNumber(t *testing.T) {
 	}
 }
 
-// --- 钩子全链路(real run + 真路由/服务器 + stub provisioner)----------------
+// --- 钩子全链路(real run + 真服务器 + stub provisioner)----------------
 
 // stubProvisioner 记录 Provision 调用,GetConfig 据 enabled 返回配置。
 type stubProvisioner struct {
@@ -63,8 +61,8 @@ func (s *stubProvisioner) Provision(_ context.Context, in previewenv.ProvisionIn
 	return &previewenv.PreviewEnv{ID: "env-1", Subdomain: "pr-1-x.preview.example.com"}, nil
 }
 
-// hookTestEnv 搭建:DB + 种子项目/服务器/反代路由 + real run + real proxy(fake target)+ real target。
-func hookTestEnv(t *testing.T) (run.Service, proxy.Service, target.Service, string) {
+// hookTestEnv 搭建:DB + 种子项目/服务器 + real run + real target。
+func hookTestEnv(t *testing.T) (run.Service, target.Service, string) {
 	t.Helper()
 	st, err := store.Open(t.TempDir() + "/preview_hook.db")
 	if err != nil {
@@ -97,17 +95,8 @@ func hookTestEnv(t *testing.T) (run.Service, proxy.Service, target.Service, stri
 	); err != nil {
 		t.Fatalf("seed server: %v", err)
 	}
-	// 种子一条 enabled 反代路由(预览反代复用其上游容器/端口)。
-	if _, err := st.DB.Exec(
-		`INSERT INTO proxy_routes (id, server_id, domain, upstream_container, upstream_port, tls_mode, enabled, cert_status, cert_detail, config, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, 'auto', 1, 'issued', '', '', ?, ?)`,
-		"route-app", srvID, "app.example.com", "appweb", 8080, now, now,
-	); err != nil {
-		t.Fatalf("seed proxy route: %v", err)
-	}
 
 	runSvc := run.New(st.DB)
-	proxySvc := proxy.New(st.DB, fakeHookTarget{})
 	targetSvc := target.New(st.DB, nil, nil)
 
 	r, err := runSvc.Create(context.Background(), projID, run.Trigger{
@@ -117,13 +106,13 @@ func hookTestEnv(t *testing.T) (run.Service, proxy.Service, target.Service, stri
 	if err != nil {
 		t.Fatalf("run.Create: %v", err)
 	}
-	return runSvc, proxySvc, targetSvc, r.ID
+	return runSvc, targetSvc, r.ID
 }
 
 func TestPreviewHookProvisionsOnPRSuccess(t *testing.T) {
-	runSvc, proxySvc, targetSvc, runID := hookTestEnv(t)
+	runSvc, targetSvc, runID := hookTestEnv(t)
 	prov := &stubProvisioner{enabled: true}
-	hook := NewPreviewProvisionHook(runSvc, prov, proxySvc, targetSvc)
+	hook := NewPreviewProvisionHook(runSvc, prov, targetSvc)
 
 	hook(context.Background(), runID, run.StatusSuccess)
 
@@ -131,7 +120,7 @@ func TestPreviewHookProvisionsOnPRSuccess(t *testing.T) {
 		t.Fatalf("PR 成功部署应触发一次 provision, got %d", len(prov.calls))
 	}
 	c := prov.calls[0]
-	if c.PRNumber != 1 || c.ServerID != "srv-1" || c.UpstreamContainer != "appweb" || c.UpstreamPort != 8080 {
+	if c.PRNumber != 1 || c.ServerID != "srv-1" {
 		t.Fatalf("provision 入参不符: %+v", c)
 	}
 	if c.HostIP != "10.0.0.5" {
@@ -140,9 +129,9 @@ func TestPreviewHookProvisionsOnPRSuccess(t *testing.T) {
 }
 
 func TestPreviewHookDisabledNoProvision(t *testing.T) {
-	runSvc, proxySvc, targetSvc, runID := hookTestEnv(t)
+	runSvc, targetSvc, runID := hookTestEnv(t)
 	prov := &stubProvisioner{enabled: false} // 项目未开启预览
-	hook := NewPreviewProvisionHook(runSvc, prov, proxySvc, targetSvc)
+	hook := NewPreviewProvisionHook(runSvc, prov, targetSvc)
 
 	// 不应 panic、不应 provision、不应报错(钩子无返回值,单纯验证不触发分配)。
 	hook(context.Background(), runID, run.StatusSuccess)
@@ -152,9 +141,9 @@ func TestPreviewHookDisabledNoProvision(t *testing.T) {
 }
 
 func TestPreviewHookNonSuccessNoProvision(t *testing.T) {
-	runSvc, proxySvc, targetSvc, runID := hookTestEnv(t)
+	runSvc, targetSvc, runID := hookTestEnv(t)
 	prov := &stubProvisioner{enabled: true}
-	hook := NewPreviewProvisionHook(runSvc, prov, proxySvc, targetSvc)
+	hook := NewPreviewProvisionHook(runSvc, prov, targetSvc)
 	hook(context.Background(), runID, run.StatusFailed) // 失败终态不分配预览
 	if len(prov.calls) != 0 {
 		t.Fatalf("非成功终态不应 provision, got %d", len(prov.calls))
@@ -162,41 +151,15 @@ func TestPreviewHookNonSuccessNoProvision(t *testing.T) {
 }
 
 func TestPreviewHookProvisionErrorSwallowed(t *testing.T) {
-	runSvc, proxySvc, targetSvc, runID := hookTestEnv(t)
+	runSvc, targetSvc, runID := hookTestEnv(t)
 	prov := &stubProvisioner{enabled: true, forceError: true}
-	hook := NewPreviewProvisionHook(runSvc, prov, proxySvc, targetSvc)
+	hook := NewPreviewProvisionHook(runSvc, prov, targetSvc)
 	// 分配失败必须被钩子吞掉(绝不冒泡影响 run 终态)——不 panic 即通过。
 	hook(context.Background(), runID, run.StatusSuccess)
 }
 
 func TestPreviewHookNilDepsNoOp(t *testing.T) {
 	// 任一依赖 nil → 静默 no-op 钩子(不 panic)。
-	hook := NewPreviewProvisionHook(nil, nil, nil, nil)
+	hook := NewPreviewProvisionHook(nil, nil, nil)
 	hook(context.Background(), "any", run.StatusSuccess)
 }
-
-// fakeHookTarget 是 proxy.New 需要的 target.Service 占位(本钩子测试只调 proxySvc.List,不触网)。
-type fakeHookTarget struct{}
-
-func (fakeHookTarget) Get(context.Context, string) (*target.Server, error) { return nil, nil }
-func (fakeHookTarget) List(context.Context) ([]*target.Server, error)      { return nil, nil }
-func (fakeHookTarget) Create(context.Context, target.CreateInput) (*target.Server, error) {
-	return nil, nil
-}
-func (fakeHookTarget) Update(context.Context, string, target.UpdateInput) (*target.Server, error) {
-	return nil, nil
-}
-func (fakeHookTarget) Delete(context.Context, string) error { return nil }
-func (fakeHookTarget) Test(context.Context, string) (*target.TestResult, error) {
-	return nil, nil
-}
-func (fakeHookTarget) Exec(context.Context, string, []string) (*target.ExecResult, error) {
-	return &target.ExecResult{}, nil
-}
-func (fakeHookTarget) ExecStream(context.Context, string, []string) (io.ReadCloser, error) {
-	return nil, nil
-}
-func (fakeHookTarget) ExecInteractive(context.Context, string, []string) (target.Session, error) {
-	return nil, nil
-}
-func (fakeHookTarget) Upload(context.Context, string, io.Reader, string) error { return nil }

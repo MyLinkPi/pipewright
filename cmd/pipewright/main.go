@@ -45,7 +45,7 @@ import (
 	"github.com/huangchengsir/pipewright/internal/previewenv"
 	"github.com/huangchengsir/pipewright/internal/project"
 	"github.com/huangchengsir/pipewright/internal/promotion"
-	"github.com/huangchengsir/pipewright/internal/proxy"
+	"github.com/huangchengsir/pipewright/internal/certmgmt"
 	"github.com/huangchengsir/pipewright/internal/prstatus"
 	"github.com/huangchengsir/pipewright/internal/repocache"
 	"github.com/huangchengsir/pipewright/internal/retention"
@@ -420,29 +420,37 @@ func main() {
 		runnerOpts = []run.PoolOption{run.WithRunner(dagrun.New(specLoader, dagOpts...))}
 	}
 
-	// 自动 HTTPS + 域名反向代理(R1):路由 CRUD + 在目标主机上经 targetSvc(SSH + docker)编排
-	// Caddy(渲染 Caddyfile + reload),Caddy 自动经 Let's Encrypt(HTTP-01)签发/续期证书。
-	// 复用已装配的 targetSvc(SSH 执行/上传)+ st.DB(参数化 SQL),无新顶层依赖、无 init 副作用。
-	// (提前到终态钩子装配前构造:R4 预览环境终态钩子需 proxySvc + dnsSvc + previewSvc 三者就绪。)
-	proxySvc := proxy.New(st.DB, targetSvc)
-
 	// DNS 提供商集成层(R3 E3.1–E3.4):Cloudflare / DNSPod / 阿里云 DNS 接入(凭据走 vault)。
-	// dnsSvc 的「创建 DNS-01 反代路由」复用 proxySvc.Create(经 proxyRouteCreator 适配,避免 import 环);
-	// proxySvc 的「apply 时解析 DNS token / 校验提供商引用」复用 dnsSvc(经 dnsResolverAdapter)。
-	// 两者互引经适配器在装配后晚绑,无 init 副作用、无新顶层依赖。
-	dnsSvc := dnsprovider.New(st.DB, credVault, &proxyRouteCreator{proxy: proxySvc})
-	if cfg, ok := proxySvc.(proxy.DNSConfigurable); ok {
-		cfg.SetDNSResolver(&dnsResolverAdapter{dns: dnsSvc})
+	// 复用已装配的 targetSvc(SSH 执行/上传)+ st.DB(参数化 SQL),无新顶层依赖、无 init 副作用。
+	// 与证书管理互引经适配器在装配后晚绑,无 init 副作用、无新顶层依赖。
+	dnsSvc := dnsprovider.New(st.DB, credVault)
+
+	// 证书管理(acme.sh 自动签发/续期,DNS-01):凭据/根区复用 dnsSvc;签发引擎容器跑在
+	// 服务注册网关主机上(共享 nginx 卷);签发结果经 CertSink 同步基域(内部 apply + reload)。
+	certSvc := certmgmt.New(st.DB, targetSvc, credVault)
+	if cfg, ok := certSvc.(interface{ SetCredentialsResolver(certmgmt.CredentialsResolver) }); ok {
+		cfg.SetCredentialsResolver(&dnsResolverAdapter{dns: dnsSvc})
+	}
+	if cfg, ok := certSvc.(interface{ SetGateway(certmgmt.GatewayInfo) }); ok {
+		cfg.SetGateway(&certGatewayAdapter{sr: serviceRegSvc})
+	}
+	if cfg, ok := certSvc.(interface{ SetCertSink(certmgmt.CertSink) }); ok {
+		cfg.SetCertSink(&certSinkAdapter{sr: serviceRegSvc})
+	}
+	// servicereg 既有手动证书一次性回填进证书管理页(幂等;失败仅记日志)。
+	if n, berr := certSvc.BackfillFromServiceReg(context.Background()); berr != nil {
+		log.Printf("[certmgmt] 存量证书回填失败(不影响启动):%v", berr)
+	} else if n > 0 {
+		log.Printf("[certmgmt] 已回填 %d 张服务注册页历史证书", n)
 	}
 
 	// Per-PR 预览环境(R4 E4.1 · 差异化王牌):某 PR 运行成功部署 → 在项目预览配置的根域下分配
-	// pr-<n>-<proj> 预览域名(复用 R3 DNS-01 + 反代路由)。allocator 复用 dnsSvc.AllocateFQDN;
-	// 回收路由复用 proxySvc.Delete。两者经适配器晚绑(避免 previewenv import dnsprovider/proxy 形成环)。
+	// pr-<n>-<proj> 预览域名(Caddy 反代下线后只建 DNS A 记录)。allocator 复用 dnsSvc.AllocateFQDN;
+	// (allocator/recordDeleter 经适配器晚绑,避免 previewenv import dnsprovider 形成环。)
 	// 根域校验复用 dnsprovider.ValidBaseDomain;根区覆盖校验复用 dnsSvc.ZoneCovers(多根区模型)。
 	// 优雅降级:未配 allocator / 项目未开启 → provision no-op。
 	previewSvc := previewenv.New(st.DB)
 	previewSvc.SetAllocator(&previewAllocator{dns: dnsSvc})
-	previewSvc.SetRouteDeleter(&previewRouteDeleter{proxy: proxySvc})
 	previewSvc.SetRecordDeleter(&previewRecordDeleter{dns: dnsSvc})
 	previewSvc.SetZoneCoverer(&previewZoneCoverer{dns: dnsSvc})
 	previewSvc.SetBaseDomainValidator(dnsprovider.ValidBaseDomain)
@@ -498,7 +506,7 @@ func main() {
 
 	// Per-PR 预览环境分配钩子(R4 E4.1):run 落 success 且属于某 PR、其项目开启预览 → 分配预览域名。
 	// best-effort + recover-safe:任何前置不满足 / 分配失败一律静默或仅记日志,绝不阻断 run 终态。
-	previewHook := httpapi.NewPreviewProvisionHook(runSvc, previewSvc, proxySvc, targetSvc)
+	previewHook := httpapi.NewPreviewProvisionHook(runSvc, previewSvc, targetSvc)
 	beforePreview := terminalHook
 	terminalHook = func(ctx context.Context, runID, finalStatus string) {
 		beforePreview(ctx, runID, finalStatus)
@@ -545,6 +553,26 @@ func main() {
 	retentionSweeper := retention.NewSweeper(retentionSvc, time.Hour)
 	retentionSweeper.Start(context.Background())
 	log.Printf("[retention] 保留清理器已启动(每小时一扫;策略默认关,需在设置开启)")
+
+	// 证书自动续期调度器:按固定间隔扫描证书,对「ACME + 自动续期 + 到期 <30 天 + 非进行中 +
+	// 距上次尝试 >24h」的证书触发续期(acme.sh --renew --force,在网关主机上执行;每次续期在
+	// 证书管理页可见)。间隔经 PIPEWRIGHT_CERT_SWEEP_INTERVAL 覆盖(Go duration;默认 1h;0 关闭)。
+	certSweepInterval := time.Hour
+	if v := strings.TrimSpace(os.Getenv("PIPEWRIGHT_CERT_SWEEP_INTERVAL")); v != "" {
+		if d, perr := time.ParseDuration(v); perr == nil && d > 0 {
+			certSweepInterval = d
+		} else if perr == nil && d == 0 {
+			log.Printf("[certmgmt] 证书自动续期调度已关闭(PIPEWRIGHT_CERT_SWEEP_INTERVAL=0)")
+			certSweepInterval = 0
+		} else {
+			log.Printf("[certmgmt] 警告:PIPEWRIGHT_CERT_SWEEP_INTERVAL=%q 非法(须为 Go duration),用默认 %s", v, certSweepInterval)
+		}
+	}
+	if certSweepInterval > 0 {
+		certSweeper := certmgmt.NewSweeper(certSvc, certSweepInterval)
+		certSweeper.Start(context.Background())
+		log.Printf("[certmgmt] 证书自动续期调度器已启动(每 %s 一扫)", certSweepInterval)
+	}
 
 	// Per-PR 预览环境自动回收器(R4 E4.1 收尾):按固定间隔遍历 active 预览环境,查其 PR 是否
 	// 已 closed/merged,**确证已终结**才回收(删路由 + 标记 reclaimed)。安全铁律:一切不确定不回收
@@ -620,7 +648,7 @@ func main() {
 
 	srv := &http.Server{
 		Addr:              cfg.Addr,
-		Handler:           httpapi.New(webFS, authSvc, httpapi.WithVault(credVault), httpapi.WithProjects(projectSvc), httpapi.WithTriggers(triggerSvc), httpapi.WithPipelines(pipelineSvc), httpapi.WithPipelineSettings(pipelineSettingsSvc), httpapi.WithRuns(runSvc, pool), httpapi.WithWebhooks(webhookReceiver), httpapi.WithAudit(auditRec), httpapi.WithAccount(authSvc), httpapi.WithAISettings(aiSvc), httpapi.WithAIGenerate(repoAnalyzer), httpapi.WithRunDiff(runDiffer), httpapi.WithSource(sourceReader), httpapi.WithRefs(refsLister), httpapi.WithArtifactStore(artStore), httpapi.WithServers(targetSvc), httpapi.WithServerCommands(serverCmdSvc), httpapi.WithRunnerConfig(runnerSvc), httpapi.WithDeploy(deploySvc), httpapi.WithNotifications(notifySvc), httpapi.WithRetention(retentionSvc), httpapi.WithProxy(proxySvc), httpapi.WithDNSProviders(dnsSvc), httpapi.WithPreviewEnvs(previewSvc), httpapi.WithServiceReg(serviceRegSvc), httpapi.WithAppStore(appStoreSvc), httpapi.WithDiagnosisFeedback(feedbackSvc), httpapi.WithAnomaly(anomalySvc), httpapi.WithAnomalyConfig(int(anomalyInterval.Seconds()), int(anomalyCooldown.Seconds())), httpapi.WithMetricsHistory(metricsHist), httpapi.WithSecretSource(secretSrc), httpapi.WithOAuth(oauthSvc), httpapi.WithCron(cronSvc), httpapi.WithChain(chainSvc), httpapi.WithApprovals(approvalCoord, approvalStore), httpapi.WithApprovalLinks(approvalSigner), httpapi.WithConcurrency(concurrencySvc), httpapi.WithParameters(parameterSvc), httpapi.WithPromotion(promotionStore), httpapi.WithEnvironments(environmentsSvc), httpapi.WithDoraMetrics(doraMetricsSvc), httpapi.WithTemplates(templateSvc), httpapi.WithVariableGroups(varGroupSvc), httpapi.WithCustomNodes(customNodeSvc)),
+		Handler:           httpapi.New(webFS, authSvc, httpapi.WithVault(credVault), httpapi.WithProjects(projectSvc), httpapi.WithTriggers(triggerSvc), httpapi.WithPipelines(pipelineSvc), httpapi.WithPipelineSettings(pipelineSettingsSvc), httpapi.WithRuns(runSvc, pool), httpapi.WithWebhooks(webhookReceiver), httpapi.WithAudit(auditRec), httpapi.WithAccount(authSvc), httpapi.WithAISettings(aiSvc), httpapi.WithAIGenerate(repoAnalyzer), httpapi.WithRunDiff(runDiffer), httpapi.WithSource(sourceReader), httpapi.WithRefs(refsLister), httpapi.WithArtifactStore(artStore), httpapi.WithServers(targetSvc), httpapi.WithServerCommands(serverCmdSvc), httpapi.WithRunnerConfig(runnerSvc), httpapi.WithDeploy(deploySvc), httpapi.WithNotifications(notifySvc), httpapi.WithRetention(retentionSvc), httpapi.WithDNSProviders(dnsSvc), httpapi.WithCertMgmt(certSvc), httpapi.WithPreviewEnvs(previewSvc), httpapi.WithServiceReg(serviceRegSvc), httpapi.WithAppStore(appStoreSvc), httpapi.WithDiagnosisFeedback(feedbackSvc), httpapi.WithAnomaly(anomalySvc), httpapi.WithAnomalyConfig(int(anomalyInterval.Seconds()), int(anomalyCooldown.Seconds())), httpapi.WithMetricsHistory(metricsHist), httpapi.WithSecretSource(secretSrc), httpapi.WithOAuth(oauthSvc), httpapi.WithCron(cronSvc), httpapi.WithChain(chainSvc), httpapi.WithApprovals(approvalCoord, approvalStore), httpapi.WithApprovalLinks(approvalSigner), httpapi.WithConcurrency(concurrencySvc), httpapi.WithParameters(parameterSvc), httpapi.WithPromotion(promotionStore), httpapi.WithEnvironments(environmentsSvc), httpapi.WithDoraMetrics(doraMetricsSvc), httpapi.WithTemplates(templateSvc), httpapi.WithVariableGroups(varGroupSvc), httpapi.WithCustomNodes(customNodeSvc)),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		// WriteTimeout 置 0:SSE 长连接(/api/runs/{id}/events)不可被写超时切断;
@@ -844,27 +872,9 @@ func (p runnerPool) Acquire(ctx context.Context, pipelineID, selector string, lo
 	return p.sched.Acquire(ctx, pipelineID, selector, log)
 }
 
-// proxyRouteCreator 适配 dnsprovider.RouteCreator:把「创建 DNS-01 反代路由」下沉到 proxy.Service.Create
-// (带 DNS 提供商引用)。避免 dnsprovider import proxy 形成环 —— 适配器在 main 装配层桥接。
-type proxyRouteCreator struct{ proxy proxy.Service }
-
-func (c *proxyRouteCreator) CreateDNS01Route(ctx context.Context, in dnsprovider.CreateDNS01RouteInput) (string, error) {
-	route, err := c.proxy.Create(ctx, proxy.CreateInput{
-		ServerID:          in.ServerID,
-		Domain:            in.Domain,
-		UpstreamContainer: in.UpstreamContainer,
-		UpstreamPort:      in.UpstreamPort,
-		DNSProviderID:     in.DNSProviderID,
-	})
-	if err != nil {
-		return "", err
-	}
-	return route.ID, nil
-}
-
-// dnsResolverAdapter 适配 proxy.DNSResolver:把「按提供商 id 取 (类型, API ID, Secret)/ 取类型 /
-// 取根区清单」下沉到 dnsprovider.Service。Secret 仅在 proxy apply 渲染时取一次,即用即弃;
-// API ID 非机密。
+// dnsResolverAdapter 适配 certmgmt.CredentialsResolver:把「按提供商 id 取 (类型, API ID, Secret)/
+// 取类型 / 取根区清单」下沉到 dnsprovider.Service。Secret 仅在生成一次性 acme.sh 签发脚本时
+// 进程内使用,即用即弃;API ID 非机密。
 type dnsResolverAdapter struct{ dns dnsprovider.Service }
 
 func (a *dnsResolverAdapter) Resolve(ctx context.Context, providerID string) (string, string, string, bool, error) {
@@ -887,8 +897,6 @@ func (a *dnsResolverAdapter) ProviderZones(ctx context.Context, providerID strin
 	return out, true, nil
 }
 
-// previewAllocator 适配 previewenv.Allocator:把「为指定 FQDN 分配 DNS-01 反代路由」下沉到
-// dnsprovider.AllocateFQDN(R4 E4.1 预览域名 pr-<n>-<proj>.base)。避免 previewenv import dnsprovider 形成环。
 // instanceRollGateway 把 servicereg 适配为 deploy.InstanceGateway(instance_rolling 默认策略
 // 消费;晚绑防 import 环:deploy 不 import servicereg,servicereg 也不 import deploy)。
 type instanceRollGateway struct{ sr servicereg.Service }
@@ -912,29 +920,58 @@ func (g *instanceRollGateway) SwapInstance(ctx context.Context, serviceID, oldCo
 	return g.sr.SwapInstance(ctx, serviceID, oldContainer, newContainer)
 }
 
+// previewAllocator 适配 previewenv.Allocator:把「为指定 FQDN 建 A 记录」下沉到
+// dnsprovider.AllocateFQDN(R4 E4.1 预览域名 pr-<n>-<proj>.base)。避免 previewenv import dnsprovider 形成环。
 type previewAllocator struct{ dns dnsprovider.Service }
 
-func (a *previewAllocator) Allocate(ctx context.Context, in previewenv.AllocateInput) (string, error) {
-	ref, err := a.dns.AllocateFQDN(ctx, dnsprovider.AllocateInput{
-		ProviderID:        in.ProviderID,
-		ServerID:          in.ServerID,
-		UpstreamContainer: in.UpstreamContainer,
-		UpstreamPort:      in.UpstreamPort,
-		HostIP:            in.HostIP,
-		Subdomain:         in.Subdomain,
+func (a *previewAllocator) Allocate(ctx context.Context, in previewenv.AllocateInput) error {
+	_, err := a.dns.AllocateFQDN(ctx, dnsprovider.AllocateInput{
+		ProviderID: in.ProviderID,
+		HostIP:     in.HostIP,
+		Subdomain:  in.Subdomain,
 	})
-	if err != nil {
-		return "", err
-	}
-	return ref.RouteID, nil
+	return err
 }
 
-// previewRouteDeleter 适配 previewenv.RouteDeleter:回收预览环境时把「删反代路由」下沉到
-// proxy.Service.Delete(摘除 Caddyfile 路由 + reload)。避免 previewenv import proxy 形成环。
-type previewRouteDeleter struct{ proxy proxy.Service }
+// certGatewayAdapter 适配 certmgmt.GatewayInfo:签发引擎(acme.sh 容器)跑在服务注册网关主机上,
+// 共享其 nginx 具名卷(install-cert 直写 /etc/pipewright/certs/<base>/)。
+type certGatewayAdapter struct{ sr servicereg.Service }
 
-func (d *previewRouteDeleter) DeleteRoute(ctx context.Context, routeID string) error {
-	return d.proxy.Delete(ctx, routeID)
+func (g *certGatewayAdapter) Gateway(ctx context.Context) (string, string, bool, error) {
+	st, err := g.sr.GetSettings(ctx)
+	if err != nil {
+		return "", "", false, err
+	}
+	return st.ServerID, st.VolumeName, st.ServerID != "", nil
+}
+
+// certSinkAdapter 适配 certmgmt.CertSink:把证书同步进 servicereg 基域(UploadCert 内部落库 +
+// 全量收敛 nginx);CurrentCertPEM 供删除证书时比对归属;ClearCert 清空基域回退 HTTP-only。
+type certSinkAdapter struct{ sr servicereg.Service }
+
+func (a *certSinkAdapter) ListBaseDomains(ctx context.Context) ([]certmgmt.BaseDomain, error) {
+	domains, err := a.sr.ListDomains(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]certmgmt.BaseDomain, 0, len(domains))
+	for _, d := range domains {
+		out = append(out, certmgmt.BaseDomain{ID: d.ID, BaseDomain: d.BaseDomain})
+	}
+	return out, nil
+}
+
+func (a *certSinkAdapter) UploadCert(ctx context.Context, domainID, certPEM, keyPEM string) error {
+	_, err := a.sr.UploadCert(ctx, domainID, certPEM, keyPEM)
+	return err
+}
+
+func (a *certSinkAdapter) CurrentCertPEM(ctx context.Context, domainID string) (string, bool, error) {
+	return a.sr.ExportCert(ctx, domainID)
+}
+
+func (a *certSinkAdapter) ClearCert(ctx context.Context, domainID string) error {
+	return a.sr.ClearCert(ctx, domainID)
 }
 
 // previewRecordDeleter 适配 previewenv.RecordDeleter:回收预览环境时删该子域名的 DNS A 记录。

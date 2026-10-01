@@ -15,7 +15,6 @@ import {
   saveTrigger,
   resetSecret,
   type TriggerConfig,
-  type BranchMapping,
   type UnmatchedPolicy,
 } from '../api/triggers'
 import { HttpError } from '../api/http'

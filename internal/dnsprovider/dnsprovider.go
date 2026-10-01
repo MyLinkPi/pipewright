@@ -13,9 +13,9 @@
 //     Cloudflare / DNSPod / 阿里云 DNS 三家均经 net/http 直连各自 API 真实实现(无 SDK):
 //     Cloudflare 用 v4 REST(Bearer token);DNSPod 用经典 dnsapi.cn form-POST(login_token=id,token);
 //     阿里云用 RPC v1(HMAC-SHA1 签名,凭据 accessKeyId,accessKeySecret)。
-//     三家的 DNS-01 通配符证书签发也都能用(走 Caddy 镜像内的 DNS 插件,与自动建 A 记录正交)。
-//   - AllocateSubdomain:瞬时挑一个可读子域名 app-<6char>.<zone 根域> → 自动建 A 记录指向宿主机
-//     公网 IP → 创建一条 DNS-01 的反代路由(证书即刻可签)。
+//     三家的 DNS-01 通配符证书签发也都能用(走证书管理的 acme.sh,与自动建 A 记录正交)。
+//   - AllocateFQDN:为指定的 FQDN(如预览域名 pr-<n>-<proj>.<zone 根域>)自动建 A 记录指向
+//     宿主机公网 IP(Caddy 反代下线后只建 DNS 记录,不再建路由)。
 //
 // AC-SEC:写入解析的 IP 是宿主机的(由调用方传入,非用户自由文本);zone/name 服务端严格校验;
 // 命令 / API 入参严格归一,杜绝注入。
@@ -61,7 +61,7 @@ var (
 	ErrVaultUnconfigured = errors.New("dnsprovider: vault unconfigured")
 
 	// ErrProviderNotImplemented 表示该提供商的某能力(如自动建 A 记录)尚未实现。
-	// 注意:DNS-01 通配符证书签发对三种提供商都可用(走 Caddy 镜像内 DNS 插件),不受此影响。
+	// 注意:DNS-01 通配符证书签发对三种提供商都可用(走证书管理的 acme.sh),不受此影响。
 	ErrProviderNotImplemented = errors.New("dnsprovider: provider capability not implemented")
 	// ErrInvalidAPIID 表示 API ID 与提供商类型不匹配(dnspod/alidns 必填、cloudflare 须为空)。
 	// API ID 非机密,但格式约束仍需服务端把关。
@@ -158,52 +158,42 @@ type Service interface {
 	// DeleteSubdomainRecord 删除该提供商**某个根区**下 fqdn 的 A 记录(回收预览/子域名时清 DNS;
 	// 按最长后缀匹配选根区;幂等)。找不到覆盖根区 → ErrZoneNotFound。
 	DeleteSubdomainRecord(ctx context.Context, providerID, fqdn string) error
-	// AllocateSubdomain 瞬时分配子域名(E3.3 + E3.4):在 in.ZoneID 根区下挑 app-<6char>.<根域> →
-	// 建 A 记录指向 hostIP → 创建一条 DNS-01 反代路由(证书即刻可签)。返回新建的反代路由。
-	AllocateSubdomain(ctx context.Context, in AllocateInput) (*RouteRef, error)
 
 	// AllocateFQDN 为一个**指定的** FQDN(in.Subdomain,须落在该提供商某个根区下)建 A 记录指向
-	// hostIP → 创建一条 DNS-01 反代路由(R4 E4.1 预览环境用:子域名确定而非随机)。返回新建路由引用。
-	// in.Subdomain 缺省/不在任何根区下 → ErrAllocate。
+	// hostIP(R4 E4.1 预览环境用)。Caddy 反代下线后本方法只管 DNS 记录,不再创建反代路由;
+	// 流量路由(预览域名 → 上游)由网关体系另行承接。in.Subdomain 缺省/不在任何根区下 → ErrAllocate。
 	AllocateFQDN(ctx context.Context, in AllocateInput) (*RouteRef, error)
 
-	// ProviderType 返回某提供商的类型(供 proxy 校验 DNS-01 引用,不取 Secret)。
-	// 不存在 → ok=false。供 proxy.DNSResolver 适配。
+	// ProviderType 返回某提供商的类型(供 certmgmt 校验 DNS-01 引用,不取 Secret)。
+	// 不存在 → ok=false。供凭据解析适配。
 	ProviderType(ctx context.Context, providerID string) (providerType string, ok bool, err error)
-	// Zones 返回某提供商的全部根区(供 proxy 通配符覆盖校验 / previewenv 配置校验,不取 Secret)。
-	// 不存在 → ok=false。供 proxy.DNSResolver 适配。
+	// Zones 返回某提供商的全部根区(供 certmgmt 域名覆盖校验 / previewenv 配置校验,不取 Secret)。
+	// 不存在 → ok=false。
 	Zones(ctx context.Context, providerID string) (zones []Zone, ok bool, err error)
 	// ZoneCovers 报告 fqdn 是否落在某提供商托管的某个根区下(fqdn == 根区或为其后缀,最长后缀
 	// 优先;不取 Secret)。提供商不存在 → ok=false。供 previewenv 配置校验等消费。
 	ZoneCovers(ctx context.Context, providerID, fqdn string) (covered, ok bool, err error)
 
-	// ResolveCredential 取某提供商的 (类型, API ID, Secret 明文)(供 proxy 在 apply 时渲染 DNS-01)。
-	// Secret 仅供调用方即时注入 0600 临时 Caddyfile,绝不日志/回库/回 API。
-	// 不存在 → ok=false;vault 未配/凭据缺失 → err。供 proxy.DNSResolver 适配。
+	// ResolveCredential 取某提供商的 (类型, API ID, Secret 明文)(供 certmgmt 生成 acme.sh
+	// DNS-01 凭据)。Secret 仅供调用方即时使用,绝不日志/回库/回 API。
+	// 不存在 → ok=false;vault 未配/凭据缺失 → err。
 	ResolveCredential(ctx context.Context, providerID string) (providerType, apiID, secret string, ok bool, err error)
 }
 
-// AllocateInput 是瞬时子域名分配的入参。AllocateSubdomain 用 ZoneID(在该根区下随机挑);
-// AllocateFQDN 用 ProviderID + Subdomain(指定 FQDN 按最长后缀匹配根区)。
+// AllocateInput 是为指定 FQDN 建 A 记录的入参(AllocateFQDN 用 ProviderID + Subdomain
+// 按最长后缀匹配根区)。
 type AllocateInput struct {
-	// ZoneID 是 AllocateSubdomain 的目标根区(随机子域名建在它下面)。
-	ZoneID string
 	// ProviderID 是 AllocateFQDN 的目标提供商(Subdomain 须落在其某个根区下)。
 	ProviderID string
-	ServerID          string
-	UpstreamContainer string
-	UpstreamPort      int
 	// HostIP 是宿主机公网 IP(由调用方/上层据 server 解析得出,非用户自由文本)。写入 A 记录指向它。
 	HostIP string
 	// Subdomain 是 AllocateFQDN 用的**指定** FQDN(如 pr-12-abcd.preview.example.com);
-	// AllocateSubdomain 不用此字段(它随机挑后缀)。须落在提供商某个根区下(后缀匹配校验)。
+	// 须落在提供商某个根区下(后缀匹配校验)。
 	Subdomain string
 }
 
-// RouteRef 是 AllocateSubdomain 创建出的反代路由引用(避免本包 import proxy 形成环;
-// 由上层用其 RouteID 取完整 proxy.Route DTO)。
+// RouteRef 是 AllocateFQDN 建 A 记录的结果引用(Caddy 反代下线后已无路由概念,仅域信息)。
 type RouteRef struct {
-	RouteID    string
 	Domain     string
 	ProviderID string
 }

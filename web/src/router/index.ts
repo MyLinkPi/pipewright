@@ -20,7 +20,7 @@ const ServerStatus = () => import('../views/ServerStatus.vue')
 // 容器管理:跨所有已登记服务器聚合容器(docker ps over SSH)+ 行内生命周期操作
 const Containers = () => import('../views/Containers.vue')
 // R2 / E2.4: 证书总览大盘(跨主机跨域名一张表 + 到期高亮;只读聚合)
-const ProxyOverview = () => import('../views/ProxyOverview.vue')
+const Certificates = () => import('../views/Certificates.vue')
 // R4 / E4.1: PR 预览环境大盘(临时环境列表 + 手动回收;对标 Vercel preview deployments)
 const Previews = () => import('../views/Previews.vue')
 
@@ -135,7 +135,9 @@ const router = createRouter({
         // 应用商店:MySQL/Redis 等模板参数一键部署。
         { path: 'app-store', name: 'app-store', component: AppStore, meta: { title: '应用商店' } },
         // R2 / E2.4: 证书总览大盘(跨主机跨域名 + 到期高亮)
-        { path: 'proxy', name: 'proxy-overview', component: ProxyOverview, meta: { title: '证书总览' } },
+        { path: 'certificates', name: 'cert-mgmt', component: Certificates, meta: { title: '证书管理' } },
+        // 旧「证书总览」(/proxy)书签兼容:重定向到证书管理。
+        { path: 'proxy', redirect: { name: 'cert-mgmt' } },
         // R4 / E4.1: PR 预览环境大盘(临时环境列表 + 手动回收)
         { path: 'previews', name: 'previews', component: Previews, meta: { title: '预览环境' } },
         // Story 6-5: configurable anomaly detection & alerts (FR-23)

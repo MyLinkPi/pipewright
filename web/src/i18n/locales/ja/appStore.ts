@@ -18,7 +18,7 @@ export default {
     displayName: "表示名",
     icon: "アイコン(emoji)",
     description: "説明",
-    compose: "compose YAML({\'{{param}}\'} プレースホルダ使用)",
+    compose: "compose YAML({'{{param}}'} プレースホルダ使用)",
     params: "パラメータ(1 行 1 件)",
     paramsHint: "行構文: name:type:default。先頭 * は必須。type ∈ string|int|secret(secret は空なら自動生成)。",
   },

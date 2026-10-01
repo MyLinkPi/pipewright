@@ -12,12 +12,11 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/huangchengsir/pipewright/internal/audit"
 	"github.com/huangchengsir/pipewright/internal/dnsprovider"
-	"github.com/huangchengsir/pipewright/internal/proxy"
 	"github.com/huangchengsir/pipewright/internal/target"
 	"github.com/huangchengsir/pipewright/internal/vault"
 )
 
-// 审计 action / target(DNS 提供商 + 根区 + 子域名分配写操作)。detail 绝无 Secret / 凭据明文
+// 审计 action / target(DNS 提供商 + 根区写操作)。detail 绝无 Secret / 凭据明文
 // (API ID 非机密,可入 detail)。
 const (
 	auditActionDNSProviderCreate = "dns.provider.create"
@@ -26,9 +25,7 @@ const (
 	auditActionDNSProviderVerify = "dns.provider.verify"
 	auditActionDNSZoneAdd        = "dns.provider.zone.add"
 	auditActionDNSZoneRemove     = "dns.provider.zone.remove"
-	auditActionSubdomainAlloc    = "proxy.subdomain.allocate"
 	auditTargetDNSProvider       = "dns_provider"
-	auditTargetProxySubdomain    = "proxy_subdomain"
 )
 
 // dnsZoneDTO 是 DNS 提供商根区的对外响应体(camelCase)。
@@ -106,9 +103,17 @@ func writeDNSProviderError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadGateway, "subdomain_alloc_failed", "子域名分配失败,请稍后重试")
 	case errors.Is(err, context.DeadlineExceeded):
 		writeError(w, http.StatusBadGateway, "dns_unreachable", "连接 DNS API 超时")
+	// target(SSH)层错误:复用语义映射。
+	case errors.Is(err, target.ErrVaultUnconfigured):
+		writeError(w, http.StatusServiceUnavailable, "vault_unconfigured", "保险库未配置 master key,无法取 DNS 凭据")
+	case errors.Is(err, target.ErrNotFound):
+		writeError(w, http.StatusUnprocessableEntity, "server_not_found", "目标主机不存在")
+	case errors.Is(err, target.ErrCredentialNotFound):
+		writeError(w, http.StatusUnprocessableEntity, "credential_error", "引用的 SSH 凭据不存在")
+	case errors.Is(err, target.ErrAuth):
+		writeError(w, http.StatusBadGateway, "ssh_auth_failed", "SSH 认证失败:密钥或口令无效,或无登录权限")
 	default:
-		// 底层(proxy 编排 / target SSH)错误复用既有 proxy 错误映射。
-		writeProxyError(w, err)
+		writeError(w, http.StatusInternalServerError, "internal", "服务器内部错误")
 	}
 }
 
@@ -393,85 +398,6 @@ func makeVerifyDNSProviderHandler(svc dnsprovider.Service, rec audit.Recorder) h
 			IP:         clientIP(r),
 		})
 		writeJSON(w, http.StatusOK, map[string]any{"ok": allOK, "zones": out})
-	}
-}
-
-// subdomainDeps 是瞬时子域名分配端点的依赖:DNS 服务(分配)+ 目标服务器(解析宿主机 IP)+
-// 反代服务(回读新建路由 DTO)。
-type subdomainDeps struct {
-	dns     dnsprovider.Service
-	servers target.Service
-	proxy   proxy.Service
-}
-
-// makeAllocateSubdomainHandler 返回 POST /api/proxy/subdomains(认证 + CSRF)→ Route DTO(201)。
-// body: { zoneId, serverId, upstreamContainer, upstreamPort }。
-// 流程:解析宿主机公网 IP(据 server.Host,非用户自由文本)→ AllocateSubdomain(在 zoneId 根区下
-// 建 A 记录 + 建 DNS-01 路由)→ 回读新建路由 DTO 返回。Secret 全程不出现在任何响应/审计。
-func makeAllocateSubdomainHandler(deps subdomainDeps, rec audit.Recorder) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if deps.dns == nil || deps.servers == nil || deps.proxy == nil {
-			writeError(w, http.StatusServiceUnavailable, "internal", "子域名分配服务未初始化")
-			return
-		}
-		r.Body = http.MaxBytesReader(w, r.Body, 1<<14)
-		var in struct {
-			ZoneID            string `json:"zoneId"`
-			ServerID          string `json:"serverId"`
-			UpstreamContainer string `json:"upstreamContainer"`
-			UpstreamPort      int    `json:"upstreamPort"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
-			writeError(w, http.StatusBadRequest, "bad_request", "请求体格式错误")
-			return
-		}
-
-		// 据 server.Host 解析宿主机公网 IPv4(A 记录指向它;非用户自由文本,杜绝任意解析注入)。
-		srv, err := deps.servers.Get(r.Context(), strings.TrimSpace(in.ServerID))
-		if err != nil {
-			writeProxyError(w, err)
-			return
-		}
-		hostIP, ipErr := resolveHostIPv4(r.Context(), srv.Host)
-		if ipErr != nil {
-			writeError(w, http.StatusUnprocessableEntity, "host_ip_unresolved", "无法解析目标主机的公网 IPv4,请确认主机地址正确")
-			return
-		}
-
-		ref, err := deps.dns.AllocateSubdomain(r.Context(), dnsprovider.AllocateInput{
-			ZoneID:            in.ZoneID,
-			ServerID:          in.ServerID,
-			UpstreamContainer: in.UpstreamContainer,
-			UpstreamPort:      in.UpstreamPort,
-			HostIP:            hostIP,
-		})
-		if err != nil {
-			writeDNSProviderError(w, err)
-			return
-		}
-
-		// 回读新建路由 DTO(子域名分配响应 = 一个普通 Route DTO)。
-		routes, lerr := deps.proxy.List(r.Context(), in.ServerID)
-		if lerr != nil {
-			writeProxyError(w, lerr)
-			return
-		}
-		recordAudit(r.Context(), rec, audit.Entry{
-			Actor:      auditActor,
-			Action:     auditActionSubdomainAlloc,
-			TargetType: auditTargetProxySubdomain,
-			TargetID:   ref.RouteID,
-			Detail:     map[string]any{"domain": ref.Domain, "providerId": ref.ProviderID, "zoneId": in.ZoneID, "serverId": in.ServerID}, // 绝无 Secret
-			IP:         clientIP(r),
-		})
-		for _, rt := range routes {
-			if rt.ID == ref.RouteID {
-				writeJSON(w, http.StatusCreated, toProxyRouteDTO(rt))
-				return
-			}
-		}
-		// 理论上分配成功后必能查到;查不到给最小引用回退(仍 201)。
-		writeJSON(w, http.StatusCreated, map[string]any{"id": ref.RouteID, "domain": ref.Domain})
 	}
 }
 

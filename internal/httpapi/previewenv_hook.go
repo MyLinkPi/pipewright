@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	"github.com/huangchengsir/pipewright/internal/previewenv"
-	"github.com/huangchengsir/pipewright/internal/proxy"
 	"github.com/huangchengsir/pipewright/internal/run"
 	"github.com/huangchengsir/pipewright/internal/target"
 )
@@ -16,16 +15,15 @@ import (
 // previewenv_hook.go 装配「PR 部署成功 → 分配预览环境」的终态钩子(R4 E4.1)。
 //
 // 复用通知/PR 状态钩子的终态时机:run 落 **success** 且属于某 PR、且其项目**开启了预览** →
-// 据本次部署的上游容器分配 pr-<n>-<proj>.base 预览域名(DNS-01 + 反代路由),落 PreviewEnv。
+// 据本次部署的目标主机分配 pr-<n>-<proj>.base 预览域名(A 记录),落 PreviewEnv。
+// Caddy 反代下线后预览只保留 DNS 分配;流量路由(预览域名 → 上游)由网关体系另行承接。
 //
 // **优雅降级铁律**:本钩子全程 best-effort + recover-safe —— 项目未开启 / 无 DNS / 解析不到 PR 号
-// 或上游容器 / 分配失败,一律静默或仅记日志,**绝不影响(更别说阻断)部署**。
+// 或分配失败,一律静默或仅记日志,**绝不影响(更别说阻断)部署**。
 //
-// 诚实说明「PR 号 / 上游容器」从哪来(数据模型现状):
+// 诚实说明「PR 号」从哪来(数据模型现状):
 //   - run 模型目前**不直接**携带 PR 号。本钩子从 run.Trigger.Branch 尽力解析(pr-<n> / pull/<n> /
 //     纯数字分支),解析不到就静默不分配 —— 这覆盖「PR 分支约定带号」的常见场景,且永不误伤普通部署。
-//   - 上游容器/端口取自该项目在目标主机上**已有的反代路由**(刚部署的应用通常已有一条对外路由),
-//     取不到则静默。这样无需改 run/部署链路即可复用既有信息,诚实而非臆造。
 
 // PreviewProvisioner 抽象本钩子消费的「分配/刷新预览环境」能力(由 previewenv.service 实现)。
 type PreviewProvisioner interface {
@@ -64,10 +62,9 @@ func parsePRNumber(branch string) int {
 func NewPreviewProvisionHook(
 	runs run.Service,
 	preview PreviewProvisioner,
-	proxySvc proxy.Service,
 	servers target.Service,
 ) func(ctx context.Context, runID, finalStatus string) {
-	if runs == nil || preview == nil || proxySvc == nil || servers == nil {
+	if runs == nil || preview == nil || servers == nil {
 		return func(context.Context, string, string) {}
 	}
 	return func(ctx context.Context, runID, finalStatus string) {
@@ -105,13 +102,6 @@ func NewPreviewProvisionHook(
 			return
 		}
 
-		// 上游容器/端口:取该主机上该项目**已有的一条反代路由**(刚部署应用通常已有对外路由)。
-		// 取不到 → 静默(无从知道预览该指向哪个容器,诚实降级,绝不臆造)。
-		container, port, ok := firstUpstreamForServer(ctx, proxySvc, serverID)
-		if !ok {
-			return
-		}
-
 		// 宿主机公网 IPv4(A 记录指向它):据 server.Host 解析(非用户自由文本)。
 		srv, serr := servers.Get(ctx, serverID)
 		if serr != nil || srv == nil {
@@ -123,13 +113,11 @@ func NewPreviewProvisionHook(
 		}
 
 		env, perr := preview.Provision(ctx, previewenv.ProvisionInput{
-			ProjectID:         r.ProjectID,
-			PRNumber:          prNumber,
-			Branch:            r.Trigger.Branch,
-			ServerID:          serverID,
-			UpstreamContainer: container,
-			UpstreamPort:      port,
-			HostIP:            hostIP,
+			ProjectID:  r.ProjectID,
+			PRNumber:   prNumber,
+			Branch:     r.Trigger.Branch,
+			ServerID:   serverID,
+			HostIP:     hostIP,
 		})
 		if perr != nil {
 			log.Printf("[preview] run %s: PR #%d 预览环境分配失败(不影响部署):%v", runID, prNumber, perr)
@@ -139,19 +127,4 @@ func NewPreviewProvisionHook(
 			log.Printf("[preview] run %s: PR #%d 预览环境就绪 → %s", runID, prNumber, env.Subdomain)
 		}
 	}
-}
-
-// firstUpstreamForServer 取某主机上首条 enabled 反代路由的上游容器/端口(供预览反代复用部署目标)。
-// 无路由 → ok=false。best-effort:列表失败也 ok=false(静默降级)。
-func firstUpstreamForServer(ctx context.Context, proxySvc proxy.Service, serverID string) (string, int, bool) {
-	routes, err := proxySvc.List(ctx, serverID)
-	if err != nil {
-		return "", 0, false
-	}
-	for _, rt := range routes {
-		if rt.Enabled && strings.TrimSpace(rt.UpstreamContainer) != "" && rt.UpstreamPort > 0 {
-			return rt.UpstreamContainer, rt.UpstreamPort, true
-		}
-	}
-	return "", 0, false
 }

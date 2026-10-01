@@ -18,7 +18,7 @@ export default {
     displayName: "Display name",
     icon: "Icon (emoji)",
     description: "Description",
-    compose: "Compose YAML (use {\'{{param}}\'} placeholders)",
+    compose: "Compose YAML (use {'{{param}}'} placeholders)",
     params: "Params (one per line)",
     paramsHint: "Line syntax: name:type:default; a leading * marks required; type ∈ string|int|secret (empty secrets are generated).",
   },

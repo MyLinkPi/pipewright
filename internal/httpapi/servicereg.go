@@ -5,12 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/huangchengsir/pipewright/internal/audit"
-	"github.com/huangchengsir/pipewright/internal/auth"
 	"github.com/huangchengsir/pipewright/internal/servicereg"
 	"github.com/huangchengsir/pipewright/internal/target"
 )
@@ -18,13 +16,10 @@ import (
 // 服务注册网关(nginx)写操作审计 action / target。detail 绝无 PEM 内容/token 明文。
 const (
 	auditActionSRSettingsUpdate = "servicereg.settings.update"
-	auditActionSRTokenGenerate  = "servicereg.token.generate"
-	auditActionSRTokenRevoke    = "servicereg.token.revoke"
 	auditActionSRGatewayDeploy  = "servicereg.gateway.deploy"
 	auditActionSRGatewayRemove  = "servicereg.gateway.remove"
 	auditActionSRDomainCreate   = "servicereg.domain.create"
 	auditActionSRDomainDelete   = "servicereg.domain.delete"
-	auditActionSRCertUpload     = "servicereg.cert.upload"
 	auditActionSRServiceCreate  = "servicereg.service.create"
 	auditActionSRServiceUpdate  = "servicereg.service.update"
 	auditActionSRServiceDelete  = "servicereg.service.delete"
@@ -34,8 +29,6 @@ const (
 	auditActionSRInstanceAttach = "servicereg.instance.attach"
 	auditActionSRApply          = "servicereg.apply"
 	auditTargetServiceReg       = "service_reg"
-	// auditActorCertToken 是经证书上传 token(脚本)认证的审计 actor。
-	auditActorCertToken = "cert-upload-token"
 )
 
 // serviceRegSettingsDTO 是网关设置对外响应体(冻结契约)。
@@ -47,7 +40,6 @@ type serviceRegSettingsDTO struct {
 	Network        string `json:"network"`
 	ContainerName  string `json:"containerName"`
 	VolumeName     string `json:"volumeName"`
-	HasUploadToken bool   `json:"hasUploadToken"`
 	LastApplyAt    string `json:"lastApplyAt"`
 	LastApplyError string `json:"lastApplyError"`
 }
@@ -60,7 +52,7 @@ func toServiceRegSettingsDTO(st *servicereg.Settings) serviceRegSettingsDTO {
 	return serviceRegSettingsDTO{
 		ServerID: st.ServerID, HTTPPort: st.HTTPPort, HTTPSPort: st.HTTPSPort,
 		Image: st.Image, Network: st.Network, ContainerName: st.ContainerName,
-		VolumeName: st.VolumeName, HasUploadToken: st.HasUploadToken,
+			VolumeName: st.VolumeName,
 		LastApplyAt: last, LastApplyError: st.LastApplyError,
 	}
 }
@@ -257,46 +249,6 @@ func makeUpdateServiceRegSettingsHandler(svc servicereg.Service, aud audit.Recor
 	}
 }
 
-// makeGenerateSRUploadTokenHandler 返回 POST /api/servicereg/settings/upload-token。
-// 明文 token 仅本次响应返回一次,库中只留 sha256。
-func makeGenerateSRUploadTokenHandler(svc servicereg.Service, aud audit.Recorder) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if svc == nil {
-			writeError(w, http.StatusServiceUnavailable, "internal", "服务注册未初始化")
-			return
-		}
-		token, _, err := svc.GenerateUploadToken(r.Context())
-		if err != nil {
-			writeServiceRegError(w, err)
-			return
-		}
-		recordAudit(r.Context(), aud, audit.Entry{
-			Actor: auditActor, Action: auditActionSRTokenGenerate, TargetType: auditTargetServiceReg,
-			TargetID: "settings", Detail: map[string]any{"ok": true}, IP: clientIP(r),
-		})
-		writeJSON(w, http.StatusOK, map[string]string{"token": token})
-	}
-}
-
-// makeRevokeSRUploadTokenHandler 返回 DELETE /api/servicereg/settings/upload-token。
-func makeRevokeSRUploadTokenHandler(svc servicereg.Service, aud audit.Recorder) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if svc == nil {
-			writeError(w, http.StatusServiceUnavailable, "internal", "服务注册未初始化")
-			return
-		}
-		if err := svc.RevokeUploadToken(r.Context()); err != nil {
-			writeServiceRegError(w, err)
-			return
-		}
-		recordAudit(r.Context(), aud, audit.Entry{
-			Actor: auditActor, Action: auditActionSRTokenRevoke, TargetType: auditTargetServiceReg,
-			TargetID: "settings", Detail: map[string]any{"ok": true}, IP: clientIP(r),
-		})
-		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
-	}
-}
-
 // ---------- 网关 ----------
 
 // makeGetServiceRegGatewayHandler 返回 GET /api/servicereg/gateway。
@@ -422,83 +374,6 @@ func makeDeleteServiceRegDomainHandler(svc servicereg.Service, aud audit.Recorde
 			TargetID: id, Detail: map[string]any{"ok": true}, IP: clientIP(r),
 		})
 		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
-	}
-}
-
-// ---------- 证书上传(双认证:Bearer token 或 管理员会话 + CSRF) ----------
-
-// bearerToken 抽取 Authorization: Bearer <token>(无则空串)。
-func bearerToken(r *http.Request) string {
-	h := strings.TrimSpace(r.Header.Get("Authorization"))
-	const prefix = "Bearer "
-	if len(h) > len(prefix) && strings.EqualFold(h[:len(prefix)], prefix) {
-		return strings.TrimSpace(h[len(prefix):])
-	}
-	return ""
-}
-
-// serviceRegCertUploadRequest 是 POST /api/servicereg/cert 请求体。
-type serviceRegCertUploadRequest struct {
-	BaseDomain string `json:"baseDomain"`
-	CertPEM    string `json:"certPem"`
-	KeyPEM     string `json:"keyPem"`
-}
-
-// makeServiceRegCertUploadHandler 返回 POST /api/servicereg/cert(注册在受保护 /api 组之外):
-// 支持两种认证 —— Authorization: Bearer <证书上传 token>(供自签发工具脚本调用,token 即认证,
-// 非 cookie 无 CSRF 面)或管理员会话 + CSRF(页面表单)。按 baseDomain 定位基域,幂等可重试。
-func makeServiceRegCertUploadHandler(svc servicereg.Service, authn auth.Authenticator, aud audit.Recorder) http.HandlerFunc {
-	handle := func(w http.ResponseWriter, r *http.Request, actor string) {
-		if svc == nil {
-			writeError(w, http.StatusServiceUnavailable, "internal", "服务注册未初始化")
-			return
-		}
-		r.Body = http.MaxBytesReader(w, r.Body, 256<<10)
-		var req serviceRegCertUploadRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeError(w, http.StatusBadRequest, "bad_request", "请求体格式错误")
-			return
-		}
-		domains, err := svc.ListDomains(r.Context())
-		if err != nil {
-			writeServiceRegError(w, err)
-			return
-		}
-		var domainID string
-		for _, d := range domains {
-			if strings.EqualFold(d.BaseDomain, strings.TrimSpace(req.BaseDomain)) {
-				domainID = d.ID
-				break
-			}
-		}
-		if domainID == "" {
-			writeError(w, http.StatusNotFound, "base_domain_not_found", "基域不存在,请先注册 " + req.BaseDomain)
-			return
-		}
-		d, err := svc.UploadCert(r.Context(), domainID, req.CertPEM, req.KeyPEM)
-		if err != nil {
-			recordAudit(r.Context(), aud, audit.Entry{
-				Actor: actor, Action: auditActionSRCertUpload, TargetType: auditTargetServiceReg,
-				TargetID: domainID, Detail: map[string]any{"ok": false, "baseDomain": req.BaseDomain}, IP: clientIP(r),
-			})
-			writeServiceRegError(w, err)
-			return
-		}
-		recordAudit(r.Context(), aud, audit.Entry{
-			Actor: actor, Action: auditActionSRCertUpload, TargetType: auditTargetServiceReg,
-			TargetID: domainID, Detail: map[string]any{"ok": true, "baseDomain": d.BaseDomain, "subject": d.CertSubject}, IP: clientIP(r),
-		})
-		writeJSON(w, http.StatusOK, toServiceRegDomainDTO(*d))
-	}
-	return func(w http.ResponseWriter, r *http.Request) {
-		// Bearer token 即认证(常量时间校验在领域层);无 token 时回退会话 + CSRF。
-		if tok := bearerToken(r); tok != "" && svc.VerifyUploadToken(tok) {
-			handle(w, r, auditActorCertToken)
-			return
-		}
-		requireAuth(authn, requireCSRF(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			handle(w, r, auditActor)
-		}))).ServeHTTP(w, r)
 	}
 }
 

@@ -26,6 +26,7 @@ import (
 	"github.com/huangchengsir/pipewright/internal/chain"
 	"github.com/huangchengsir/pipewright/internal/cron"
 	"github.com/huangchengsir/pipewright/internal/deploy"
+	"github.com/huangchengsir/pipewright/internal/certmgmt"
 	"github.com/huangchengsir/pipewright/internal/dnsprovider"
 	"github.com/huangchengsir/pipewright/internal/environments"
 	"github.com/huangchengsir/pipewright/internal/i18n"
@@ -36,7 +37,6 @@ import (
 	"github.com/huangchengsir/pipewright/internal/pipeline"
 	"github.com/huangchengsir/pipewright/internal/project"
 	"github.com/huangchengsir/pipewright/internal/promotion"
-	"github.com/huangchengsir/pipewright/internal/proxy"
 	"github.com/huangchengsir/pipewright/internal/retention"
 	"github.com/huangchengsir/pipewright/internal/run"
 	"github.com/huangchengsir/pipewright/internal/runner"
@@ -104,7 +104,7 @@ type options struct {
 	customNodes      library.CustomNodeService
 	artifactStore    *artifactstore.Store
 	retention        *retention.Service
-	proxy            proxy.Service
+	certMgmt         certmgmt.Service
 	dnsProviders     dnsprovider.Service
 	previewEnvs      PreviewService
 	serviceReg       servicereg.Service
@@ -346,15 +346,16 @@ func WithRetention(s *retention.Service) Option {
 	return func(o *options) { o.retention = s }
 }
 
-// WithProxy 注入自动 HTTPS + 域名反向代理服务(R1),挂载 /api/proxy/routes* 路由
-// (GET auth;POST/DELETE auth + CSRF + 审计)。经已注入的 target.Service 在目标主机上编排 Caddy。
+// WithCertMgmt 注入证书管理服务(acme.sh 自动签发/续期 + 手动导入),挂载 /api/certmgmt/* 路由
+// (GET auth;写方法 auth + CSRF + 审计;create 为异步签发,201 立即返回 pending 行)。
+// 签发引擎(acme.sh 容器)运行在服务注册网关主机上,经已注入的 target.Service 编排。
 // 不传则相关端点返回 503(服务未初始化)。
-func WithProxy(s proxy.Service) Option {
-	return func(o *options) { o.proxy = s }
+func WithCertMgmt(s certmgmt.Service) Option {
+	return func(o *options) { o.certMgmt = s }
 }
 
-// WithDNSProviders 注入 DNS 提供商集成层服务(R3 E3.1–E3.4),挂载 /api/dns/providers* 与
-// POST /api/proxy/subdomains 路由(GET auth;POST/DELETE/verify auth + CSRF + 审计)。
+// WithDNSProviders 注入 DNS 提供商集成层服务(R3 E3.1–E3.4),挂载 /api/dns/providers* 路由
+// (GET auth;POST/DELETE/verify auth + CSRF + 审计)。
 // DNS token 经已注入的 vault 加密入库、apply 时即用即弃,响应/审计/日志绝无明文 token。
 // 不传则相关端点返回 503(服务未初始化)。
 func WithDNSProviders(s dnsprovider.Service) Option {
@@ -369,8 +370,7 @@ func WithPreviewEnvs(s PreviewService) Option {
 }
 
 // WithServiceReg 注入「服务注册网关」(nginx)服务,挂载 /api/servicereg/* 路由
-// (GET auth;写方法 auth + CSRF + 审计)。证书上传端点 POST /api/servicereg/cert 注册在
-// 受保护 /api 组之外,支持 Bearer token(脚本)或管理员会话双认证。
+// (GET auth;写方法 auth + CSRF + 审计)。
 // 不传则相关端点返回 503(服务未初始化)。
 func WithServiceReg(s servicereg.Service) Option {
 	return func(o *options) { o.serviceReg = s }
@@ -459,11 +459,6 @@ func New(webFS fs.FS, authn auth.Authenticator, opts ...Option) http.Handler {
 	// Webhook 接收(公开入口,Story 3.2):豁免 requireAuth + CSRF,靠签名校验。
 	// 必须在受保护 /api 组之外注册;限请求体大小在 handler 内(MaxBytesReader)。
 	r.Post("/api/webhooks/{token}", makeWebhookHandler(o.receiver))
-
-	// 服务注册证书上传(脚本入口):豁免统一 requireAuth + CSRF——认证二选一:证书上传
-	// Bearer token(常量时间校验,非 cookie 无 CSRF 面)或管理员会话 + CSRF(页面表单)。
-	// 同样必须注册在受保护 /api 组之外(与 /api/servicereg/* 组内路由路径不重叠)。
-	r.Post("/api/servicereg/cert", makeServiceRegCertUploadHandler(o.serviceReg, svc, o.audit))
 
 	// 从通知直接审批(公开入口,SECURITY-SENSITIVE):豁免 requireAuth + CSRF——token(HMAC+过期+
 	// 常量时间比较)即认证。GET 仅渲染确认页(无副作用,防 IM 预取自动放行);POST 才解析门。
@@ -815,34 +810,10 @@ func New(webFS fs.FS, authn auth.Authenticator, opts ...Option) http.Handler {
 		ar.Get("/retention/config", makeGetRetentionConfigHandler(o.retention))
 		ar.Put("/retention/config", makeSetRetentionConfigHandler(o.retention))
 
-		// 自动 HTTPS + 域名反向代理(R1):路由 CRUD;经已装配的 target.Service 在目标主机上编排
-		// Caddy(渲染 Caddyfile + reload),Caddy 自动经 Let's Encrypt(HTTP-01)签发/续期证书。
-		// px 为 nil → handler 返回 503。GET(列表)过 auth;POST/DELETE/enabled/refresh 为写方法,
-		// 过 auth + CSRF;写操作记审计(detail 仅域名/容器/端口,无敏感信息)。enabled/refresh 比
-		// /proxy/routes/{id} 多一段,不会被吞。
-		px := o.proxy
-		ar.Get("/proxy/routes", makeListProxyRoutesHandler(px))
-		ar.Post("/proxy/routes", makeCreateProxyRouteHandler(px, aud))
-		// 跨主机证书总览大盘(R2 E2.4):聚合全部路由 + 主机展示名 + 证书状态(只读,无审计)。
-		// 字面段 /proxy/overview 与 /proxy/routes 不同首段,不会被吞。
-		ar.Get("/proxy/overview", makeProxyOverviewHandler(px))
-		// 更新高级配置(R2:多域名 / 访问控制 / 安全头 / 压缩 / 重定向)。写方法,过 auth + CSRF + 审计。
-		ar.Put("/proxy/routes/{id}", makeUpdateProxyRouteHandler(px, aud))
-		ar.Post("/proxy/routes/{id}/enabled", makeSetProxyRouteEnabledHandler(px, aud))
-		ar.Post("/proxy/routes/{id}/refresh", makeRefreshProxyRouteHandler(px))
-		ar.Delete("/proxy/routes/{id}", makeDeleteProxyRouteHandler(px, aud))
-		// 反代环境(pipewright-caddy 容器)知情同意 + 移除:GET 探测状态(auth);DELETE 移除容器
-		// (auth + CSRF + 审计;保留证书卷)。字面段 /proxy/caddy 与 /proxy/routes 不同尾段,不会被吞。
-		ar.Get("/proxy/caddy", makeProxyCaddyStatusHandler(px))
-		// POST 显式部署反代环境(ensureCaddy,无需先绑域名;写方法,过 auth + CSRF + 审计)。
-		ar.Post("/proxy/caddy", makeProxyCaddyPrepareHandler(px, aud))
-		ar.Delete("/proxy/caddy", makeRemoveProxyCaddyHandler(px, aud))
-
 		// DNS 提供商集成层(R3 E3.1–E3.4):Cloudflare / DNSPod / 阿里云 DNS 接入(凭据走 vault)。
 		// dp 为 nil → handler 返回 503。GET(列表)过 auth;POST/PUT/DELETE 为写方法,过 auth + CSRF + 审计。
 		// 一个提供商可托管多个根区(zone 增删端点);Secret 经 vault 密文、apply 时即用即弃,
 		// 响应/审计/日志绝无明文;API ID 非机密,可回显。
-		// 字面段 /proxy/subdomains 与 /proxy/routes 不同尾段,不会被吞。
 		dp := o.dnsProviders
 		ar.Get("/dns/providers", makeListDNSProvidersHandler(dp))
 		ar.Post("/dns/providers", makeCreateDNSProviderHandler(dp, o.vault, aud))
@@ -851,8 +822,6 @@ func New(webFS fs.FS, authn auth.Authenticator, opts ...Option) http.Handler {
 		ar.Post("/dns/providers/{id}/zones", makeAddDNSZoneHandler(dp, aud))
 		ar.Delete("/dns/providers/{id}/zones/{zoneId}", makeRemoveDNSZoneHandler(dp, aud))
 		ar.Delete("/dns/providers/{id}", makeDeleteDNSProviderHandler(dp, aud))
-		// 瞬时子域名分配(R3 E3.3 + E3.4):建 A 记录 + 建 DNS-01 反代路由 → 普通 Route DTO。
-		ar.Post("/proxy/subdomains", makeAllocateSubdomainHandler(subdomainDeps{dns: dp, servers: sv, proxy: px}, aud))
 
 		// Per-PR 预览环境(R4 E4.1 · 差异化王牌):列预览环境 / 手动回收 / 项目级预览配置。
 		// pv 为 nil → handler 返回 503。GET 过 auth;reclaim + config-PUT 为写方法,过 auth + CSRF + 审计。
@@ -866,12 +835,9 @@ func New(webFS fs.FS, authn auth.Authenticator, opts ...Option) http.Handler {
 
 		// 服务注册网关(独立部署的 nginx 容器):基域/泛域名证书/子域名服务注册/网关编排。
 		// sr 为 nil → handler 返回 503。GET 过 auth;写方法过 auth + CSRF + 审计。
-		// 证书上传端点(/api/servicereg/cert)支持 Bearer token,注册在上方受保护组之外。
 		sr := o.serviceReg
 		ar.Get("/servicereg/settings", makeGetServiceRegSettingsHandler(sr))
 		ar.Put("/servicereg/settings", makeUpdateServiceRegSettingsHandler(sr, aud))
-		ar.Post("/servicereg/settings/upload-token", makeGenerateSRUploadTokenHandler(sr, aud))
-		ar.Delete("/servicereg/settings/upload-token", makeRevokeSRUploadTokenHandler(sr, aud))
 		ar.Get("/servicereg/gateway", makeGetServiceRegGatewayHandler(sr))
 		ar.Post("/servicereg/gateway/deploy", makeDeployServiceRegGatewayHandler(sr, aud))
 		ar.Delete("/servicereg/gateway", makeRemoveServiceRegGatewayHandler(sr, aud))
@@ -890,6 +856,21 @@ func New(webFS fs.FS, authn auth.Authenticator, opts ...Option) http.Handler {
 		ar.Delete("/servicereg/instances/{id}", makeDeleteServiceRegInstanceHandler(sr, aud))
 		ar.Post("/servicereg/instances/{id}/attached", makeSetServiceRegInstanceAttachedHandler(sr, aud))
 		ar.Post("/servicereg/apply", makeApplyServiceRegHandler(sr, aud))
+
+		// 证书管理(certmgmt):acme.sh 自动签发/续期(DNS-01)+ 手动导入;签发引擎容器运行在
+		// 网关主机上。cm 为 nil → handler 返回 503。GET 过 auth;写方法过 auth + CSRF + 审计。
+		// create 201 立即返回 pending 行(异步签发,前端轮询);renew/{id} 多一段,不会被吞。
+		cm := o.certMgmt
+		ar.Get("/certmgmt/certs", makeListCertsHandler(cm))
+		ar.Post("/certmgmt/certs", makeCreateCertHandler(cm, aud))
+		ar.Post("/certmgmt/certs/import", makeImportCertHandler(cm, aud))
+		ar.Get("/certmgmt/certs/{id}", makeGetCertHandler(cm))
+		ar.Post("/certmgmt/certs/{id}/renew", makeRenewCertHandler(cm, aud))
+		ar.Post("/certmgmt/certs/{id}/auto-renew", makeSetCertAutoRenewHandler(cm, aud))
+		ar.Delete("/certmgmt/certs/{id}", makeDeleteCertHandler(cm, aud))
+		// 签发引擎(acme.sh 容器):GET 探测状态(auth);POST 显式部署(auth + CSRF + 审计)。
+		ar.Get("/certmgmt/engine", makeGetCertEngineHandler(cm))
+		ar.Post("/certmgmt/engine/deploy", makeDeployCertEngineHandler(cm, aud))
 
 		// 应用商店模板(DPanel 式):内置 seed + 自定义 CRUD。GET 过 auth;写方法过 auth + CSRF + 审计。
 		// apps 为 nil → handler 返回 503。/ops/apps/{id} 比 /ops/apps 多一段,不会被吞。

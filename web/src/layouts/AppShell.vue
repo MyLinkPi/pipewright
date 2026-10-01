@@ -85,9 +85,9 @@ const navItems: NavItem[] = [
   { name: 'server-status', to: '/server-status', icon: Server,     labelKey: 'nav.serverStatus',  ariaKey: 'nav.serverStatus' },
   // 容器管理:跨服务器聚合容器总览 + 行内生命周期操作(docker over SSH)。
   { name: 'containers',    to: '/containers',    icon: Box,        labelKey: 'nav.containers',    ariaKey: 'nav.containers' },
-  // R2 / E2.4: 证书总览大盘(跨主机跨域名一张表 + 到期高亮)。
-  { name: 'proxy-overview', to: '/proxy',        icon: Certificate, labelKey: 'nav.proxyOverview', ariaKey: 'nav.proxyOverview' },
-  // 服务注册网关(nginx):服务名 + 基域 → 子域名反代(abc.efg.com),泛域名证书手动/脚本上传。
+  // 证书管理:acme.sh 自动签发/续期(DNS-01)+ 手动导入,签发引擎跑在网关主机上。
+  { name: 'cert-mgmt', to: '/certificates', icon: Certificate, labelKey: 'nav.certificates', ariaKey: 'nav.certificates' },
+  // 服务注册网关(nginx):服务名 + 基域 → 子域名反代(abc.efg.com),证书由「证书管理」签发/同步。
   { name: 'service-reg',   to: '/service-reg',   icon: World,      labelKey: 'nav.serviceReg',    ariaKey: 'nav.serviceReg' },
   // 应用商店:MySQL/Redis 等模板参数一键部署(DPanel 式)。
   { name: 'app-store',     to: '/app-store',     icon: Apps,       labelKey: 'nav.appStore',      ariaKey: 'nav.appStore' },
