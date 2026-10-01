@@ -72,6 +72,11 @@ func (s *stubTarget) ExecInteractive(context.Context, string, []string) (target.
 	return nil, errors.New("execinteractive not supported in stub")
 }
 
+// ExecWithStdin 满足 target.Service 接口(sudo -S 追加);部署不用 stdin,桩转发到 Exec 语义。
+func (s *stubTarget) ExecWithStdin(ctx context.Context, serverID string, cmd []string, _ io.Reader) (*target.ExecResult, error) {
+	return s.Exec(ctx, serverID, cmd)
+}
+
 // Upload 满足 target.Service(Story 8-16 制品库部署);桩捕获上传字节供断言「部署的是真字节」。
 func (s *stubTarget) Upload(_ context.Context, _ string, content io.Reader, remotePath string) error {
 	b, _ := io.ReadAll(content)

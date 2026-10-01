@@ -458,7 +458,7 @@ func main() {
 	// 自动把平台 Web 页面发布为 HTTPS —— 下发证书管理模块的证书 + 写 conf.d vhost
 	// (443 ssl 反代平台 Web 端口 + 80→443 跳转)+ nginx -t + reload。证书经 CertSource 软引用
 	// (PEM 仅进程内解密传递);续期/重下发后经 PlatformHTTPS 联动重新落盘,删除占用证书被拦截。
-	platformHTTPSSvc := platformhttps.New(st.DB, targetSvc, &platformCertSource{cm: certSvc}, defaultPortFromAddr(cfg.Addr))
+	platformHTTPSSvc := platformhttps.New(st.DB, targetSvc, &platformCertSource{cm: certSvc}, credVault, defaultPortFromAddr(cfg.Addr))
 	if cfg2, ok := certSvc.(interface{ SetPlatformHTTPS(certmgmt.PlatformHTTPS) }); ok {
 		cfg2.SetPlatformHTTPS(&platformHTTPSAdapter{ph: platformHTTPSSvc})
 	}

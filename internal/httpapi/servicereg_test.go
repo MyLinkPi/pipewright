@@ -65,6 +65,12 @@ func (f *fakeSRTarget) Exec(ctx context.Context, _ string, cmd []string) (*targe
 	// compose CLI 探测:v2 版本命令返回 0,其余默认 0。
 	return &target.ExecResult{ExitCode: 0}, nil
 }
+
+// ExecWithStdin 满足 target.Service 接口(sudo -S 追加);servicereg 不用 stdin,转发 Exec 语义。
+func (f *fakeSRTarget) ExecWithStdin(ctx context.Context, _ string, cmd []string, stdin io.Reader) (*target.ExecResult, error) {
+	_, _ = io.Copy(io.Discard, stdin)
+	return f.Exec(ctx, "", cmd)
+}
 func (f *fakeSRTarget) Upload(ctx context.Context, _ string, content io.Reader, remotePath string) error {
 	f.uploads = append(f.uploads, remotePath)
 	_, _ = io.Copy(io.Discard, content)

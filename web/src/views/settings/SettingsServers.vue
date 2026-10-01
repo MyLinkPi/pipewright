@@ -38,6 +38,9 @@ const servers = ref<Server[]>([])
 // SSH credentials available to bind (ssh_key private key, or ssh_password login password).
 const sshCredentials = ref<Credential[]>([])
 
+// Optional sudo_password credentials (privilege escalation for non-root logins).
+const sudoCredentials = ref<Credential[]>([])
+
 // ─── add / edit modal ───────────────────────────────────────────────────────
 
 const modalOpen = ref(false)
@@ -50,6 +53,7 @@ const form = ref({
   port: 22,
   user: '',
   credentialId: '',
+  sudoCredentialId: '',
   labels: '',
   maxBuilds: 0,
   priority: 0,
@@ -138,6 +142,7 @@ async function loadServers(): Promise<void> {
     const [srv, creds] = await Promise.all([listServers(), listCredentials()])
     servers.value = srv
     sshCredentials.value = creds.filter((c) => c.type === 'ssh_key' || c.type === 'ssh_password')
+    sudoCredentials.value = creds.filter((c) => c.type === 'sudo_password')
     loadState.value = 'idle'
   } catch (err) {
     if (err instanceof HttpError) {
@@ -168,6 +173,7 @@ function openAddModal(): void {
     port: 22,
     user: '',
     credentialId: sshCredentials.value[0]?.id ?? '',
+    sudoCredentialId: '',
     labels: '',
     maxBuilds: 0,
     priority: 0,
@@ -187,6 +193,7 @@ function openEditModal(s: Server): void {
     port: s.port,
     user: s.user,
     credentialId: s.credentialId,
+    sudoCredentialId: s.sudoCredentialId ?? '',
     labels: s.labels ?? '',
     maxBuilds: s.maxBuilds ?? 0,
     priority: s.priority ?? 0,
@@ -264,6 +271,7 @@ async function handleFormSubmit(): Promise<void> {
         port: form.value.port,
         user: form.value.user.trim(),
         credentialId: form.value.credentialId,
+        sudoCredentialId: form.value.sudoCredentialId,
         labels: form.value.labels.trim(),
         maxBuilds: Number(form.value.maxBuilds) || 0,
         priority: Number(form.value.priority) || 0,
@@ -277,6 +285,7 @@ async function handleFormSubmit(): Promise<void> {
         port: form.value.port,
         user: form.value.user.trim(),
         credentialId: form.value.credentialId,
+        sudoCredentialId: form.value.sudoCredentialId,
         labels: form.value.labels.trim(),
         maxBuilds: Number(form.value.maxBuilds) || 0,
         priority: Number(form.value.priority) || 0,
@@ -498,6 +507,17 @@ async function handleTest(s: Server): Promise<void> {
               <option v-for="c in sshCredentials" :key="c.id" :value="c.id">{{ c.name }}</option>
             </select>
             <span v-if="formErrors.credentialId" class="field-error">{{ formErrors.credentialId }}</span>
+          </label>
+
+          <!-- Optional sudo escalation credential: used via sudo -S when the login user
+               is neither root nor passwordless-sudo capable (e.g. platform HTTPS). -->
+          <label class="field">
+            <span class="field-label">{{ t('settingsServers.fieldSudoCredential') }}</span>
+            <select v-model="form.sudoCredentialId" class="field-input">
+              <option value="">{{ t('settingsServers.sudoCredentialNone') }}</option>
+              <option v-for="c in sudoCredentials" :key="c.id" :value="c.id">{{ c.name }}</option>
+            </select>
+            <span class="field-hint">{{ t('settingsServers.sudoCredentialHint') }}</span>
           </label>
 
           <!-- build-pool fields (FR-8-19): labels make the machine schedulable; unlabeled machines never pick -->

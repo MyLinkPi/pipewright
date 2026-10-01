@@ -138,6 +138,49 @@ func TestValidateType(t *testing.T) {
 	}
 }
 
+// TestSudoPasswordTypeAndInUse 验证 sudo_password 类型可创建/掩码全打点,且被服务器
+// sudo_credential_id 引用时删除被占(无外键,靠 Delete 的显式检查)。
+func TestSudoPasswordTypeAndInUse(t *testing.T) {
+	db := testDB(t)
+	v := New(db, testKey())
+
+	cred, err := v.Create(CreateInput{Name: "sudo pwd", Type: TypeSudoPassword, Secret: "s3cret-pwd"})
+	if err != nil {
+		t.Fatalf("Create sudo_password: %v", err)
+	}
+	if cred.MaskedValue != "••••" {
+		t.Fatalf("sudo 密码掩码应全打点: %q", cred.MaskedValue)
+	}
+	got, err := v.Get(cred.ID)
+	if err != nil || got != "s3cret-pwd" {
+		t.Fatalf("Get 往返: %v / %q", err, got)
+	}
+
+	// 被服务器引用 → 删除被拦。
+	sshCred, err := v.Create(CreateInput{Name: "ssh", Type: TypeSSHKey, Secret: pemKey})
+	if err != nil {
+		t.Fatalf("Create ssh key: %v", err)
+	}
+	_, err = db.Exec(
+		`INSERT INTO servers (id, name, host, port, user, credential_id, sudo_credential_id, created_at, updated_at)
+		 VALUES ('srv-1', 'n', 'h', 22, 'u', ?, ?, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`,
+		sshCred.ID, cred.ID,
+	)
+	if err != nil {
+		t.Fatalf("插入引用服务器: %v", err)
+	}
+	if err := v.Delete(cred.ID); err != ErrCredentialInUse {
+		t.Fatalf("被 sudo_credential_id 引用应 ErrCredentialInUse,得 %v", err)
+	}
+	// 清除引用后可删。
+	if _, err := db.Exec(`UPDATE servers SET sudo_credential_id = '' WHERE id = 'srv-1'`); err != nil {
+		t.Fatalf("清除引用: %v", err)
+	}
+	if err := v.Delete(cred.ID); err != nil {
+		t.Fatalf("解除引用后应可删: %v", err)
+	}
+}
+
 func TestGitHTTPCredentialStoresUsernameAndSecretEncrypted(t *testing.T) {
 	db := testDB(t)
 	v := New(db, testKey())

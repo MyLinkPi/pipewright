@@ -11,8 +11,10 @@
 //     certmgmt 经 RedeployCert 联动重新下发并 reload;删除证书被 UsesCert 拦截。
 //
 // 设计纪律(与 servicereg/certmgmt 一致):
-//   - 一切远端命令经 target.Exec 以 array 形式执行(AC-SEC-02 不拼 shell);提权仅以
-//     固定前缀 sudo -n 实现,探测不到免密 sudo 时报人话错误,绝不交互输密。
+//   - 一切远端命令经 target.Exec / target.ExecWithStdin 以 array 形式执行(AC-SEC-02 不拼
+//     shell);提权优先级:root 直接执行 > 固定前缀 sudo -n(免密)> sudo -S + 密码(服务器
+//     可选绑定的 sudo_password 凭据,密码经 SSH stdin 逐条喂入,绝不进 argv/日志/错误体,
+//     绝不挂起等 TTY 输入;错密码 → sudo 读一行后 EOF 重试失败,非零退出干净报错)。
 //   - 证书 PEM 仅在进程内解密传递(vault/certmgmt → Upload),绝不日志/回库/回 API。
 //   - 先测后换:nginx -t 失败不动活配置(自动回滚我们写入的 conf.d 文件);reload 失败
 //     给人话指引,不自动 start nginx。
@@ -31,6 +33,7 @@ import (
 	"time"
 
 	"github.com/huangchengsir/pipewright/internal/target"
+	"github.com/huangchengsir/pipewright/internal/vault"
 )
 
 // 状态枚举(DB 存小写字串;” = 从未应用)。
@@ -57,8 +60,11 @@ var (
 	ErrCertNotCover = errors.New("platformhttps: 证书不覆盖该域名")
 	// ErrNoNginx 表示目标服务器未安装 nginx(或不在 PATH)。
 	ErrNoNginx = errors.New("platformhttps: 目标服务器未安装 nginx")
-	// ErrNoPrivilege 表示 SSH 用户非 root 且 sudo -n 不可用(无法写 /etc/nginx)。
+	// ErrNoPrivilege 表示 SSH 用户非 root、无免密 sudo 且未绑定可用的 sudo 密码凭据
+	// (无法写 /etc/nginx)。
 	ErrNoPrivilege = errors.New("platformhttps: 无 root 权限且免密 sudo 不可用")
+	// ErrSudoPassword 表示绑定的 sudo 密码验证失败(密码错误或该机 sudo 不可用)。
+	ErrSudoPassword = errors.New("platformhttps: sudo 密码验证失败")
 	// ErrApply 表示下发/校验/热加载失败(附人话摘要)。
 	ErrApply = errors.New("platformhttps: 应用 HTTPS 配置失败")
 	// ErrAppliedChange 表示配置已应用(status 非空)时试图变更服务器/域名:直接改会让旧机
@@ -114,6 +120,13 @@ type CertSource interface {
 	OpenCertPEM(ctx context.Context, id string) (certPEM, keyPEM string, err error)
 }
 
+// SudoSource 抽象「按凭据 ID 取 sudo 密码明文」(由 vault.Vault 适配注入,避免包环;测试可
+// 用 stub)。密码仅进程内使用,绝不入库/日志/错误体。nil = 密码 sudo 路径禁用(仅 root /
+// 免密 sudo)。
+type SudoSource interface {
+	Get(id string) (string, error)
+}
+
 // NginxDetect 是目标服务器宿主 nginx 的探测快照(配置前知情)。
 type NginxDetect struct {
 	ServerID      string
@@ -121,8 +134,12 @@ type NginxDetect struct {
 	Version       string // 如 "1.24.0"
 	IsRoot        bool   // SSH 登录用户是否 root
 	SudoOk        bool   // root 恒 true;非 root 为 sudo -n 是否可用
-	ConfDIncluded bool   // nginx -T 是否 include conf.d(best-effort,防静默失效)
-	ManagedConf   bool   // /etc/nginx/conf.d/pipewright-platform.conf 是否已在(平台曾应用过)
+	// SudoPwdConfigured 表示该服务器绑定了 sudo 密码凭据(root / 免密已可用时不探测密码)。
+	SudoPwdConfigured bool
+	// SudoPwdOk 表示 sudo -S 密码验证通过(仅非 root 且无免密 sudo 时探测)。
+	SudoPwdOk    bool
+	ConfDIncluded bool // nginx -T 是否 include conf.d(best-effort,防静默失效)
+	ManagedConf   bool // /etc/nginx/conf.d/pipewright-platform.conf 是否已在(平台曾应用过)
 }
 
 // Service 定义平台 HTTPS 访问领域对外接口(httpapi 消费;UsesCert/RedeployCert 供 certmgmt 联动)。
@@ -149,11 +166,12 @@ type Service interface {
 	RedeployCert(ctx context.Context, certID string) error
 }
 
-// service 是 store + target (+ CertSource) 支撑的 Service 实现。
+// service 是 store + target (+ CertSource + SudoSource) 支撑的 Service 实现。
 type service struct {
 	store       *Store
 	tg          target.Service
 	certs       CertSource
+	sudoSrc     SudoSource
 	defaultPort int // UpstreamPort 为 0 时的默认值(平台自身 Web 端口)
 
 	// mu 互斥 Apply/Disable:HTTP 手动应用与 certmgmt 续期联动(RedeployCert,异步
@@ -161,13 +179,14 @@ type service struct {
 	mu sync.Mutex
 }
 
-// New 构造 Service。certs 为 nil 时证书校验/下发不可用(其余照常);defaultPort 为平台自身
-// Web 监听端口(main.go 由 cfg.Addr 推导),作为反代上游端口的默认值。
-func New(db *sql.DB, tg target.Service, certs CertSource, defaultPort int) Service {
+// New 构造 Service。certs 为 nil 时证书校验/下发不可用(其余照常);sudoSrc 为 nil 时密码
+// sudo 路径禁用(仅 root / 免密 sudo);defaultPort 为平台自身 Web 监听端口(main.go 由
+// cfg.Addr 推导),作为反代上游端口的默认值。
+func New(db *sql.DB, tg target.Service, certs CertSource, sudoSrc SudoSource, defaultPort int) Service {
 	if defaultPort < 1 || defaultPort > 65535 {
 		defaultPort = 8080
 	}
-	return &service{store: NewStore(db), tg: tg, certs: certs, defaultPort: defaultPort}
+	return &service{store: NewStore(db), tg: tg, certs: certs, sudoSrc: sudoSrc, defaultPort: defaultPort}
 }
 
 // ---------- 设置 ----------
@@ -321,7 +340,11 @@ func (s *service) Detect(ctx context.Context, serverID string) (*NginxDetect, er
 	if _, err := s.tg.Get(ctx, serverID); err != nil {
 		return nil, err
 	}
-	return detectNginx(ctx, s.tg, serverID)
+	sudoPwd, err := s.sudoPassword(ctx, serverID)
+	if err != nil {
+		return nil, err
+	}
+	return detectNginx(ctx, s.tg, serverID, sudoPwd)
 }
 
 // ---------- 应用 / 禁用 ----------
@@ -346,8 +369,12 @@ func (s *service) Apply(ctx context.Context) (*Settings, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%w:证书密文不可用", ErrCertNotReady)
 	}
+	sudoPwd, err := s.sudoPassword(ctx, st.ServerID)
+	if err != nil {
+		return nil, err
+	}
 	host, port := s.effectiveUpstream(*st)
-	if err := applyPlatformConf(ctx, s.tg, st.ServerID, st.Domain, host, port, st.HTTPRedirect, certPEM, keyPEM); err != nil {
+	if err := applyPlatformConf(ctx, s.tg, st.ServerID, st.Domain, host, port, st.HTTPRedirect, certPEM, keyPEM, sudoPwd); err != nil {
 		_ = s.store.setResult(ctx, StatusFailed, truncate(err.Error(), 2000))
 		s2, gerr := s.store.getOrCreate(ctx)
 		if gerr == nil {
@@ -368,7 +395,11 @@ func (s *service) Disable(ctx context.Context) (*Settings, error) {
 	}
 	// 远端从未应用过(无服务器配置/状态为空)→ 仅复位本地行。
 	if st.ServerID != "" && st.Status != "" {
-		if err := removePlatformConf(ctx, s.tg, st.ServerID, st.Domain); err != nil {
+		sudoPwd, err := s.sudoPassword(ctx, st.ServerID)
+		if err != nil {
+			return nil, err
+		}
+		if err := removePlatformConf(ctx, s.tg, st.ServerID, st.Domain, sudoPwd); err != nil {
 			return nil, err
 		}
 	}
@@ -376,6 +407,33 @@ func (s *service) Disable(ctx context.Context) (*Settings, error) {
 		return nil, err
 	}
 	return s.store.getOrCreate(ctx)
+}
+
+// ---------- 内部:sudo 密码取用 ----------
+
+// sudoPassword 取服务器绑定的 sudo 密码明文(进程内用完即弃;未绑定或未注入 SudoSource
+// 时返回空串 = 密码路径不启用)。定位类错误(保险库未配置/凭据不存在)原样上抛供 HTTP 层
+// 映射;其余按无提权处理并给人话。错误体绝不含密码明文。
+func (s *service) sudoPassword(ctx context.Context, serverID string) (string, error) {
+	srv, err := s.tg.Get(ctx, serverID)
+	if err != nil {
+		return "", err
+	}
+	if srv.SudoCredentialID == "" || s.sudoSrc == nil {
+		return "", nil
+	}
+	pwd, err := s.sudoSrc.Get(srv.SudoCredentialID)
+	if err != nil {
+		switch {
+		case errors.Is(err, vault.ErrVaultUnconfigured):
+			return "", target.ErrVaultUnconfigured
+		case errors.Is(err, vault.ErrNotFound):
+			return "", target.ErrCredentialNotFound
+		default:
+			return "", fmt.Errorf("%w:读取 sudo 密码凭据失败", ErrNoPrivilege)
+		}
+	}
+	return pwd, nil
 }
 
 // ---------- certmgmt 联动 ----------

@@ -42,6 +42,8 @@ export default {
   detectRoot: 'root 権限',
   detectSudo: 'パスワード不要 sudo',
   detectNoPriv: '権限なし',
+  detectSudoPwd: "sudo パスワード利用可能",
+  detectSudoPwdFailed: "sudo パスワード検証失敗",
   detectConfD: 'conf.d 読込済み',
   detectConfDMissing: 'conf.d 未読込',
   detectManaged: 'プラットフォーム設定あり',

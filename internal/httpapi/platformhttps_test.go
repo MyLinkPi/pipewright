@@ -32,7 +32,7 @@ func setupPlatformHTTPSServer(t *testing.T) (*httptest.Server, *fakeSRTarget) {
 	t.Helper()
 	st := testStoreAuth(t)
 	ft := &fakeSRTarget{}
-	phSvc := platformhttps.New(st.DB, ft, fakePlatformCertSource{}, 8080)
+	phSvc := platformhttps.New(st.DB, ft, fakePlatformCertSource{}, nil, 8080)
 	authSvc := auth.NewService(st.DB, nil)
 	if err := authSvc.Bootstrap("admin", "testpass", ""); err != nil {
 		t.Fatalf("bootstrap: %v", err)

@@ -61,6 +61,8 @@ type platformHTTPSDetectdto struct {
 	Version       string `json:"version"`
 	IsRoot        bool   `json:"isRoot"`
 	SudoOk        bool   `json:"sudoOk"`
+	SudoPwdConfigured bool `json:"sudoPwdConfigured"`
+	SudoPwdOk     bool   `json:"sudoPwdOk"`
 	ConfDIncluded bool   `json:"confDIncluded"`
 	ManagedConf   bool   `json:"managedConf"`
 }
@@ -83,7 +85,9 @@ func writePlatformHTTPSError(w http.ResponseWriter, err error) {
 	case errors.Is(err, platformhttps.ErrNoNginx):
 		writeError(w, http.StatusBadRequest, "nginx_not_installed", "目标服务器未安装 nginx(或不在 PATH),请先安装宿主 nginx")
 	case errors.Is(err, platformhttps.ErrNoPrivilege):
-		writeError(w, http.StatusBadRequest, "no_privilege", "SSH 用户非 root 且免密 sudo 不可用:请用 root 登录或为该用户配置免密 sudo")
+		writeError(w, http.StatusBadRequest, "no_privilege", "SSH 用户非 root 且无免密 sudo,也未绑定 sudo 密码凭据:请用 root 登录、配置免密 sudo,或在服务器设置中选择 sudo 密码凭据")
+	case errors.Is(err, platformhttps.ErrSudoPassword):
+		writeError(w, http.StatusBadRequest, "sudo_password_failed", "sudo 密码验证失败:请检查服务器设置中所选的 sudo 密码凭据")
 	case errors.Is(err, platformhttps.ErrApply):
 		writeError(w, http.StatusBadGateway, "https_apply_failed", "应用 HTTPS 配置失败(详情见错误信息/设置页状态)")
 	case errors.Is(err, platformhttps.ErrAppliedChange):
@@ -195,7 +199,8 @@ func makeDetectPlatformHTTPSHandler(svc platformhttps.Service) http.HandlerFunc 
 		}
 		writeJSON(w, http.StatusOK, platformHTTPSDetectdto{
 			ServerID: d.ServerID, Installed: d.Installed, Version: d.Version,
-			IsRoot: d.IsRoot, SudoOk: d.SudoOk, ConfDIncluded: d.ConfDIncluded, ManagedConf: d.ManagedConf,
+			IsRoot: d.IsRoot, SudoOk: d.SudoOk, SudoPwdConfigured: d.SudoPwdConfigured, SudoPwdOk: d.SudoPwdOk,
+			ConfDIncluded: d.ConfDIncluded, ManagedConf: d.ManagedConf,
 		})
 	}
 }

@@ -276,6 +276,12 @@ func (f *fakeTarget) Exec(_ context.Context, _ string, cmd []string) (*target.Ex
 	return &target.ExecResult{ExitCode: 0}, nil
 }
 
+// ExecWithStdin 满足 target.Service 接口(sudo -S 追加);servicereg 不用 stdin,转发 Exec 语义。
+func (f *fakeTarget) ExecWithStdin(ctx context.Context, id string, cmd []string, stdin io.Reader) (*target.ExecResult, error) {
+	_, _ = io.Copy(io.Discard, stdin)
+	return f.Exec(ctx, id, cmd)
+}
+
 func (f *fakeTarget) Upload(_ context.Context, _ string, content io.Reader, remotePath string) error {
 	f.uploads = append(f.uploads, remotePath)
 	b, _ := io.ReadAll(content)
