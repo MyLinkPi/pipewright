@@ -300,7 +300,7 @@ export const JOB_TYPE_SPECS: Record<string, JobTypeSpec> = {
         get label() { return t('pipelineJob.fieldBranchLabel') },
         kind: 'text',
         monospace: true,
-        placeholder: 'main',
+        placeholder: 'master',
         get hint() { return t('pipelineJob.fieldBranchHint') },
       },
       {

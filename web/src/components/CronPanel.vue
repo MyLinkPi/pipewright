@@ -179,7 +179,7 @@ watch(() => props.projectId, load)
             v-model="branch"
             class="cron-input cron-input--mono"
             type="text"
-            placeholder="main"
+            placeholder="master"
             autocomplete="off"
             :disabled="!enabled"
           />

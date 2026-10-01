@@ -988,7 +988,7 @@ const STATUS_CONFIG: Record<RunStatus, StatusConfig> = {
               class="field-input field-input--mono"
               :class="{ 'field-input--error': triggerBranchError }"
               type="text"
-              placeholder="main"
+              placeholder="master"
               autocomplete="off"
               list="trigger-branch-options"
               :disabled="triggerSubmitting"
@@ -1307,7 +1307,7 @@ const STATUS_CONFIG: Record<RunStatus, StatusConfig> = {
               v-model="createForm.defaultBranch"
               class="field-input field-input--mono"
               type="text"
-              placeholder="main"
+              placeholder="master"
               autocomplete="off"
               :disabled="createSubmitting"
             />

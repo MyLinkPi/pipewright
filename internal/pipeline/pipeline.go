@@ -209,7 +209,7 @@ func (s *service) fillSourceDefaults(ctx context.Context, projectID string, spec
 			if strings.TrimSpace(job.Summary) == "" {
 				b := branch
 				if b == "" {
-					b = "main"
+					b = "master"
 				}
 				if repoURL != "" {
 					job.Summary = repoURL + " · " + b
@@ -347,7 +347,7 @@ func (s *service) sourceSummary(ctx context.Context, projectID string) (string, 
 	}
 	branch := strings.TrimSpace(defaultBranch)
 	if branch == "" {
-		branch = "main"
+		branch = "master"
 	}
 	repo := strings.TrimSpace(repoURL)
 	if repo == "" {
