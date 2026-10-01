@@ -69,9 +69,23 @@ func TestTransportAuthSSHKey(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: %v", u, err)
 		}
-		if _, isPK := a.(*gogitssh.PublicKeys); !isPK {
+		pk, isPK := a.(*gogitssh.PublicKeys)
+		if !isPK {
 			t.Fatalf("%s: 应得 *ssh.PublicKeys, got %#v", u, a)
 		}
+		// 回归:go-git 不会用 URL user 段补空用户名(整体覆盖 ClientConfig),
+		// 空用户名会导致服务端直接拒绝认证(Codeup 实测)。必须回退 "git"。
+		if pk.User != "git" {
+			t.Fatalf("%s: 空凭据用户名应回退为 git, got %q", u, pk.User)
+		}
+		if pk.HostKeyCallback == nil {
+			t.Fatalf("%s: HostKeyCallback 不应为 nil(nil 会在 connect 时读 known_hosts 失败)", u)
+		}
+	}
+	// 显式凭据用户名优先于 URL user 段。
+	a, _ := TransportAuth("git@gitee.com:a/b.git", vault.GitAuth{Type: vault.TypeSSHKey, Username: "deployer", Secret: newTestSSHKey(t)})
+	if pk := a.(*gogitssh.PublicKeys); pk.User != "deployer" {
+		t.Fatalf("显式 username 应优先, got %q", pk.User)
 	}
 }
 
@@ -176,22 +190,22 @@ func TestValidateRepoURL(t *testing.T) {
 
 func TestParseRepoURL(t *testing.T) {
 	cases := []struct {
-		in           string
-		scheme, host string
-		ok           bool
+		in                 string
+		scheme, host, user string
+		ok                 bool
 	}{
-		{"https://gitee.com/a/b.git", "https", "gitee.com", true},
-		{"ssh://git@host.example:2222/a.git", "ssh", "host.example", true},
-		{"git@host.example:a/b.git", "ssh", "host.example", true},
-		{"host.example:a/b.git", "ssh", "host.example", true},
-		{"file:///tmp/x", "", "", false},
-		{"plain/path", "", "", false},
+		{"https://gitee.com/a/b.git", "https", "gitee.com", "", true},
+		{"ssh://git@host.example:2222/a.git", "ssh", "host.example", "git", true},
+		{"git@host.example:a/b.git", "ssh", "host.example", "git", true},
+		{"host.example:a/b.git", "ssh", "host.example", "", true},
+		{"file:///tmp/x", "", "", "", false},
+		{"plain/path", "", "", "", false},
 	}
 	for _, c := range cases {
-		scheme, host, ok := ParseRepoURL(c.in)
-		if ok != c.ok || scheme != c.scheme || host != c.host {
-			t.Errorf("ParseRepoURL(%q) = (%q,%q,%v), want (%q,%q,%v)",
-				c.in, scheme, host, ok, c.scheme, c.host, c.ok)
+		scheme, host, user, ok := ParseRepoURL(c.in)
+		if ok != c.ok || scheme != c.scheme || host != c.host || user != c.user {
+			t.Errorf("ParseRepoURL(%q) = (%q,%q,%q,%v), want (%q,%q,%q,%v)",
+				c.in, scheme, host, user, ok, c.scheme, c.host, c.user, c.ok)
 		}
 	}
 }
