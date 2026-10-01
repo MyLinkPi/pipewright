@@ -95,6 +95,9 @@ export const i18n = createI18n({
   locale: detectLocale(),
   fallbackLocale: DEFAULT_LOCALE,
   messages,
+  // 词条含 `server:<id>` / `<base>` 这类占位符记号(非 HTML),且项目不把 i18n 文本喂给
+  // v-html → 关掉「检测到 HTML」误报,保持浏览器控制台干净。
+  warnHtmlMessage: false,
 })
 
 function applyDocumentLang(code: LocaleCode): void {

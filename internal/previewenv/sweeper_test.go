@@ -29,12 +29,11 @@ func (c *fakeChecker) State(_ context.Context, _ string, prNumber int) (PRState,
 	return PRStateUnknown, nil
 }
 
-// provisionActive 经真实 Provision 流程为某 PR 建一个 active 预览环境,返回其 routeID。
+// provisionActive 经真实 Provision 流程为某 PR 建一个 active 预览环境,返回其子域名。
 func provisionActive(t *testing.T, svc *service, projectID string, pr int) string {
 	t.Helper()
 	env, err := svc.Provision(context.Background(), ProvisionInput{
-		ProjectID: projectID, PRNumber: pr, ServerID: "srv-1",
-		UpstreamContainer: "web", UpstreamPort: 8080, HostIP: "1.2.3.4",
+		ProjectID: projectID, PRNumber: pr, ServerID: "srv-1", HostIP: "1.2.3.4",
 	})
 	if err != nil || env == nil {
 		t.Fatalf("Provision pr=%d: env=%v err=%v", pr, env, err)
@@ -42,7 +41,7 @@ func provisionActive(t *testing.T, svc *service, projectID string, pr int) strin
 	if env.Status != StatusActive {
 		t.Fatalf("Provision pr=%d: status=%q, want active", pr, env.Status)
 	}
-	return env.RouteID
+	return env.Subdomain
 }
 
 func statusOf(t *testing.T, svc *service, projectID string, pr int) string {
@@ -55,13 +54,13 @@ func statusOf(t *testing.T, svc *service, projectID string, pr int) string {
 }
 
 func TestSweepReclaim_ClosedAndMergedReclaimedOthersUntouched(t *testing.T) {
-	svc, _, del := newTestSvc(t)
+	svc, _ := newTestSvc(t)
 	ctx := context.Background()
 	enablePreview(t, svc, "p1")
 
 	// PR 1 closed, PR 2 merged → 应回收;PR 3 open, PR 4 unknown, PR 5 checker-error → 不动。
-	r1 := provisionActive(t, svc, "p1", 1)
-	r2 := provisionActive(t, svc, "p1", 2)
+	provisionActive(t, svc, "p1", 1)
+	provisionActive(t, svc, "p1", 2)
 	provisionActive(t, svc, "p1", 3)
 	provisionActive(t, svc, "p1", 4)
 	provisionActive(t, svc, "p1", 5)
@@ -96,21 +95,10 @@ func TestSweepReclaim_ClosedAndMergedReclaimedOthersUntouched(t *testing.T) {
 		}
 	}
 
-	// 回收的两个环境路由都被删,且仅这两个。
-	deleted := map[string]bool{}
-	for _, id := range del.deleted {
-		deleted[id] = true
-	}
-	if !deleted[r1] || !deleted[r2] {
-		t.Fatalf("expected routes %q,%q deleted, got %v", r1, r2, del.deleted)
-	}
-	if len(del.deleted) != 2 {
-		t.Fatalf("expected exactly 2 route deletes, got %v", del.deleted)
-	}
 }
 
 func TestSweepReclaim_DisabledProjectSkipped(t *testing.T) {
-	svc, _, del := newTestSvc(t)
+	svc, _ := newTestSvc(t)
 	ctx := context.Background()
 	enablePreview(t, svc, "p1")
 	provisionActive(t, svc, "p1", 1)
@@ -134,13 +122,10 @@ func TestSweepReclaim_DisabledProjectSkipped(t *testing.T) {
 	if checker.calls != 0 {
 		t.Fatalf("disabled project should be skipped before checker call, calls=%d", checker.calls)
 	}
-	if len(del.deleted) != 0 {
-		t.Fatalf("no route deletes expected, got %v", del.deleted)
-	}
 }
 
 func TestSweepReclaim_AlreadyReclaimedIdempotent(t *testing.T) {
-	svc, _, del := newTestSvc(t)
+	svc, _ := newTestSvc(t)
 	ctx := context.Background()
 	enablePreview(t, svc, "p1")
 	provisionActive(t, svc, "p1", 1)
@@ -149,8 +134,6 @@ func TestSweepReclaim_AlreadyReclaimedIdempotent(t *testing.T) {
 	if err := svc.Reclaim(ctx, "p1", 1); err != nil {
 		t.Fatalf("manual Reclaim: %v", err)
 	}
-	deletesAfterManual := len(del.deleted)
-
 	// 已 reclaimed 的环境不在 active 列表内 → sweep 不重复回收(即便 checker 报 closed)。
 	checker := &fakeChecker{states: map[int]PRState{1: PRStateClosed}}
 	n, err := svc.SweepReclaim(ctx, checker)
@@ -163,13 +146,10 @@ func TestSweepReclaim_AlreadyReclaimedIdempotent(t *testing.T) {
 	if checker.calls != 0 {
 		t.Fatalf("already-reclaimed env should not be in active list, checker.calls=%d", checker.calls)
 	}
-	if len(del.deleted) != deletesAfterManual {
-		t.Fatalf("no extra route deletes expected, got %v", del.deleted)
-	}
 }
 
 func TestSweepReclaim_NilCheckerNoOp(t *testing.T) {
-	svc, _, _ := newTestSvc(t)
+	svc, _ := newTestSvc(t)
 	ctx := context.Background()
 	enablePreview(t, svc, "p1")
 	provisionActive(t, svc, "p1", 1)

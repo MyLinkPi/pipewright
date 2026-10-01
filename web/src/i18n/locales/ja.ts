@@ -76,7 +76,7 @@ const ja: typeof zhCN = {
     containers: 'コンテナ',
     serviceReg: 'サービス登録',
     appStore: 'アプリストア',
-    proxyOverview: '証明書一覧',
+    certificates: '証明書管理',
     previews: 'プレビュー環境',
     anomaly: '異常検知',
     notifications: '通知',

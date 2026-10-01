@@ -5,7 +5,7 @@
  * circle = true renders as circle (avatar placeholder).
  * shimmer animation is 1.4s ease-in-out; respects prefers-reduced-motion via global.css.
  */
-const props = withDefaults(defineProps<{
+withDefaults(defineProps<{
   width?: string | number
   height?: string | number
   circle?: boolean

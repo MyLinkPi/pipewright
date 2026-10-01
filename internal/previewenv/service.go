@@ -12,28 +12,22 @@ import (
 // import dnsprovider 形成环;不注入则退回内置宽松校验)。
 type validBaseDomainFunc func(s string) bool
 
-// Allocator 抽象「在某根域下为预览分配子域名(建 A 记录 + DNS-01 反代路由)」的能力。
-// 由上层用 dnsprovider.Service 适配注入(避免本包 import dnsprovider/proxy 形成环)。
+// Allocator 抽象「在某根域下为预览分配子域名(建 A 记录)」的能力。
+// 由上层用 dnsprovider.Service 适配注入(避免本包 import dnsprovider 形成环)。
+// Caddy 反代下线后预览只保留 DNS 分配;流量路由(预览域名 → 上游)由网关体系另行承接。
 type Allocator interface {
-	// Allocate 为 providerID 下分配一个 fqdn → upstream 的 DNS-01 反代路由,返回新建路由 id。
+	// Allocate 为 providerID 下为 in.Subdomain 建指向 hostIP 的 A 记录。
 	// hostIP 由上层据 server 解析得出(非用户自由文本)。失败返回错误(由调用方记日志,不阻断部署)。
-	Allocate(ctx context.Context, in AllocateInput) (routeID string, err error)
+	Allocate(ctx context.Context, in AllocateInput) error
 }
 
-// AllocateInput 是预览子域名分配入参(冻结契约;allocator 适配 dnsprovider 消费)。
+// AllocateInput 是预览子域名分配入参(allocator 适配 dnsprovider 消费)。
 type AllocateInput struct {
-	ProviderID        string
-	ServerID          string
-	UpstreamContainer string
-	UpstreamPort      int
-	HostIP            string
-	// Subdomain 是要分配的完整 FQDN(pr-<n>-<proj>.base);allocator 直接用它建路由(不再随机挑后缀)。
+	ProviderID string
+	// Subdomain 是要分配的完整 FQDN(pr-<n>-<proj>.base)。
 	Subdomain string
-}
-
-// RouteDeleter 抽象「删一条反代路由」的能力(回收预览环境时删路由)。由上层用 proxy.Service 适配注入。
-type RouteDeleter interface {
-	DeleteRoute(ctx context.Context, routeID string) error
+	// HostIP 是 A 记录指向的宿主机公网 IP。
+	HostIP string
 }
 
 // RecordDeleter 抽象「删某 DNS 提供商根域下一个 FQDN 的 A 记录」的能力(回收预览环境时清 DNS 解析)。
@@ -49,28 +43,24 @@ type ZoneCoverer interface {
 	ZoneCovers(ctx context.Context, providerID, fqdn string) (covered, ok bool, err error)
 }
 
-// service 是 store(+ 可选 allocator / routeDeleter / recordDeleter / zoneCoverer / baseDomain 校验)
+// service 是 store(+ 可选 allocator / recordDeleter / zoneCoverer / baseDomain 校验)
 // 支撑的 Service 实现。
 type service struct {
-	store        *Store
-	allocator    Allocator
-	routeDeleter RouteDeleter
+	store         *Store
+	allocator     Allocator
 	recordDeleter RecordDeleter
-	zoneCoverer  ZoneCoverer
-	validBase    validBaseDomainFunc
+	zoneCoverer   ZoneCoverer
+	validBase     validBaseDomainFunc
 }
 
-// New 构造 Service。allocator/routeDeleter 可在装配后晚绑(SetAllocator/SetRouteDeleter),
+// New 构造 Service。allocator 等依赖可在装配后晚绑(SetAllocator 等),
 // 以保持 New 签名稳定且避免 import 环;未绑时 provision/reclaim 优雅降级(no-op / 仅标记)。
 func New(db *sql.DB) *service {
 	return &service{store: NewStore(db), validBase: defaultValidBase}
 }
 
-// SetAllocator 注入预览子域名分配器(R4 E4.1:复用 R3 dnsprovider.AllocateSubdomain)。
+// SetAllocator 注入预览子域名分配器(R4 E4.1:复用 dnsprovider.AllocateFQDN 建 A 记录)。
 func (s *service) SetAllocator(a Allocator) { s.allocator = a }
-
-// SetRouteDeleter 注入反代路由删除器(回收预览环境时删路由)。
-func (s *service) SetRouteDeleter(d RouteDeleter) { s.routeDeleter = d }
 
 // SetRecordDeleter 注入 DNS 记录删除器(回收预览环境时清 A 记录;未绑则不清 DNS)。
 func (s *service) SetRecordDeleter(d RecordDeleter) { s.recordDeleter = d }
@@ -144,8 +134,9 @@ func (s *service) SetConfig(ctx context.Context, in Config) (*Config, error) {
 	return s.store.getConfig(ctx, in.ProjectID)
 }
 
-// Reclaim 回收某项目某 PR 的预览环境:删反代路由(best-effort)+ 标记 reclaimed。
+// Reclaim 回收某项目某 PR 的预览环境:清 DNS A 记录(best-effort)+ 标记 reclaimed。
 // 无 active 环境 → ErrNotFound(调用方据情况静默,如 sweep 跳过)。
+// (Caddy 反代下线后不再有路由可删;历史行的 route_id 仅作存档展示。)
 func (s *service) Reclaim(ctx context.Context, projectID string, prNumber int) error {
 	projectID = strings.TrimSpace(projectID)
 	if projectID == "" {
@@ -157,11 +148,6 @@ func (s *service) Reclaim(ctx context.Context, projectID string, prNumber int) e
 	env, err := s.store.getActiveByPR(ctx, projectID, prNumber)
 	if err != nil {
 		return err
-	}
-	// 删反代路由(best-effort:删失败不阻断标记 reclaimed —— 库里标记后,下次部署会重建;
-	// 残留路由由用户/总览可见并手动清,绝不因删路由失败把环境永久卡在 active)。
-	if s.routeDeleter != nil && strings.TrimSpace(env.RouteID) != "" {
-		_ = s.routeDeleter.DeleteRoute(ctx, env.RouteID)
 	}
 	// 清 DNS A 记录(best-effort:provision 时建了 pr-<n>-<proj>.base 的 A 记录,回收须一并删除,
 	// 否则解析记录悬挂累积。取项目预览配置里的 DNS 提供商 + 本环境子域名;任何失败仅记日志不阻断标记)。

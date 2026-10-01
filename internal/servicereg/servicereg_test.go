@@ -493,38 +493,6 @@ func TestApplyNginxTestFailureKeepsConfig(t *testing.T) {
 	})
 }
 
-func TestUploadTokenLifecycle(t *testing.T) {
-	storetest.ForEachDialect(t, func(t *testing.T, st *store.Store) {
-		svc, _ := newTestService(t, st.DB)
-		ctx := context.Background()
-		if svc.VerifyUploadToken("anything") {
-			t.Fatal("未生成 token 前不应验证通过")
-		}
-		token, cfg, err := svc.GenerateUploadToken(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !cfg.HasUploadToken || token == "" {
-			t.Fatalf("token 状态不符:%+v %q", cfg, token)
-		}
-		if !svc.VerifyUploadToken(token) {
-			t.Fatal("正确 token 应验证通过")
-		}
-		if svc.VerifyUploadToken(token + "x") {
-			t.Fatal("错误 token 不应通过")
-		}
-		if svc.VerifyUploadToken(strings.ToUpper(token)) {
-			t.Fatal("token 大小写敏感")
-		}
-		if err := svc.RevokeUploadToken(ctx); err != nil {
-			t.Fatal(err)
-		}
-		if svc.VerifyUploadToken(token) {
-			t.Fatal("撤销后不应通过")
-		}
-	})
-}
-
 func TestSettingsDefaultsAndUpdate(t *testing.T) {
 	storetest.ForEachDialect(t, func(t *testing.T, st *store.Store) {
 		svc, _ := newTestService(t, st.DB)

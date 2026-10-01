@@ -60,10 +60,6 @@ function setProject(id: string): void {
   void router.replace({ query: next })
 }
 
-function onProjectChange(e: Event): void {
-  setProject((e.target as HTMLSelectElement).value)
-}
-
 // ─── derived display ──────────────────────────────────────────────────────────
 
 function formatWhen(iso: string): string {

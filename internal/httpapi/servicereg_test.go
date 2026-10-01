@@ -148,116 +148,10 @@ func TestServiceRegDomainAndServiceFlow(t *testing.T) {
 	resp.Body.Close()
 }
 
-// TestServiceRegCertUploadDualAuth 覆盖双认证:Bearer token(脚本)与会话 + CSRF(表单)。
-func TestServiceRegCertUploadDualAuth(t *testing.T) {
-	srv, _, _ := setupServiceRegServer(t)
-	client, csrf := loginSR(t, srv.URL)
-
-	resp := doJSON(t, client, http.MethodPost, srv.URL+"/api/servicereg/domains", csrf, `{"baseDomain":"efg.com"}`)
-	if resp.StatusCode != http.StatusCreated {
-		t.Fatalf("注册基域:%d", resp.StatusCode)
-	}
-	resp.Body.Close()
-
-	// 生成 token。
-	resp = doJSON(t, client, http.MethodPost, srv.URL+"/api/servicereg/settings/upload-token", csrf, "")
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("生成 token:%d", resp.StatusCode)
-	}
-	var tokOut struct {
-		Token string `json:"token"`
-	}
-	_ = json.NewDecoder(resp.Body).Decode(&tokOut)
-	resp.Body.Close()
-	if tokOut.Token == "" {
-		t.Fatal("token 不应为空")
-	}
-
-	certPEM, keyPEM := srSelfSignedCert(t, "*.efg.com")
-	payload, _ := json.Marshal(map[string]string{
-		"baseDomain": "efg.com", "certPem": certPEM, "keyPem": keyPEM,
-	})
-
-	// 1) 无认证(无 Bearer、无会话)→ 401。
-	anon := &http.Client{}
-	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/servicereg/cert", bytes.NewReader(payload))
-	req.Header.Set("Content-Type", "application/json")
-	r2, err := anon.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	r2.Body.Close()
-	if r2.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("匿名上传应 401:%d", r2.StatusCode)
-	}
-
-	// 2) 错误 Bearer → 401。
-	req, _ = http.NewRequest(http.MethodPost, srv.URL+"/api/servicereg/cert", bytes.NewReader(payload))
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer wrong-token")
-	r2, err = anon.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	r2.Body.Close()
-	if r2.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("错误 token 应 401:%d", r2.StatusCode)
-	}
-
-	// 3) 正确 Bearer(无会话、无 CSRF)→ 200。
-	req, _ = http.NewRequest(http.MethodPost, srv.URL+"/api/servicereg/cert", bytes.NewReader(payload))
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+tokOut.Token)
-	r2, err = anon.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var domOut struct {
-		HasCert     bool   `json:"hasCert"`
-		CertSubject string `json:"certSubject"`
-	}
-	_ = json.NewDecoder(r2.Body).Decode(&domOut)
-	r2.Body.Close()
-	if r2.StatusCode != http.StatusOK || !domOut.HasCert || !strings.Contains(domOut.CertSubject, "efg.com") {
-		t.Fatalf("Bearer 上传应 200 且带证书元数据:%d %+v", r2.StatusCode, domOut)
-	}
-
-	// 4) 会话 + CSRF(无 Bearer)→ 200。
-	resp = doJSON(t, client, http.MethodPost, srv.URL+"/api/servicereg/cert", csrf, string(payload))
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("会话上传应 200:%d", resp.StatusCode)
-	}
-	resp.Body.Close()
-
-	// 5) 会话但缺 CSRF → 403。
-	resp = doJSON(t, client, http.MethodPost, srv.URL+"/api/servicereg/cert", "", string(payload))
-	if resp.StatusCode != http.StatusForbidden {
-		t.Fatalf("缺 CSRF 应 403:%d", resp.StatusCode)
-	}
-	resp.Body.Close()
-
-	// 6) 撤销 token 后 Bearer 失效。
-	resp = doJSON(t, client, http.MethodDelete, srv.URL+"/api/servicereg/settings/upload-token", csrf, "")
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("撤销 token:%d", resp.StatusCode)
-	}
-	resp.Body.Close()
-	req, _ = http.NewRequest(http.MethodPost, srv.URL+"/api/servicereg/cert", bytes.NewReader(payload))
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+tokOut.Token)
-	r2, err = anon.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	r2.Body.Close()
-	if r2.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("撤销后 Bearer 应 401:%d", r2.StatusCode)
-	}
-}
-
-// TestServiceRegCertPEMNeverLeaked:列表/GET 响应绝不含 PEM 内容。
+// TestServiceRegCertPEMNeverLeaked:基域列表响应绝不含 PEM 内容(证书经进程内 UploadCert 种入,
+// 模拟证书管理页同步后的形态)。
 func TestServiceRegCertPEMNeverLeaked(t *testing.T) {
-	srv, _, _ := setupServiceRegServer(t)
+	srv, st, _ := setupServiceRegServer(t)
 	client, csrf := loginSR(t, srv.URL)
 
 	resp := doJSON(t, client, http.MethodPost, srv.URL+"/api/servicereg/domains", csrf, `{"baseDomain":"efg.com"}`)
@@ -267,22 +161,22 @@ func TestServiceRegCertPEMNeverLeaked(t *testing.T) {
 	_ = json.NewDecoder(resp.Body).Decode(&dom)
 	resp.Body.Close()
 
+	// 进程内种入证书(证书管理 CertSink 同链路;HTTP 上传端点已随脚本上传体系下线)。
+	srSvc := servicereg.New(st.DB, &fakeSRTarget{}, fakeSRSealer{})
 	certPEM, keyPEM := srSelfSignedCert(t, "*.efg.com")
-	payload, _ := json.Marshal(map[string]string{
-		"baseDomain": "efg.com", "certPem": certPEM, "keyPem": keyPEM,
-	})
-	resp = doJSON(t, client, http.MethodPost, srv.URL+"/api/servicereg/cert", csrf, string(payload))
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("上传:%d", resp.StatusCode)
+	if _, err := srSvc.UploadCert(t.Context(), dom.ID, certPEM, keyPEM); err != nil {
+		t.Fatalf("UploadCert: %v", err)
 	}
-	resp.Body.Close()
 
 	resp = doJSON(t, client, http.MethodGet, srv.URL+"/api/servicereg/domains", "", "")
 	var buf bytes.Buffer
 	_, _ = buf.ReadFrom(resp.Body)
 	resp.Body.Close()
 	if strings.Contains(buf.String(), "BEGIN") {
-		t.Fatalf("基域列表泄漏 PEM:\n%s", buf.String())
+		t.Fatalf("基域列表泄漏 PEM: %s", buf.String())
+	}
+	if !strings.Contains(buf.String(), `"hasCert":true`) {
+		t.Fatalf("列表应反映证书就绪: %s", buf.String())
 	}
 }
 

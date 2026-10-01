@@ -1,8 +1,9 @@
 // Package previewenv 是「Per-PR 预览环境」(R4 E4.1 · 差异化王牌)的领域层。
 //
 // 核心理念:某 PR 的运行**成功部署**时,自动为它分配一个一次性预览域名
-// pr-<n>-<proj>.<base>(复用 R3 的 dnsprovider.AllocateSubdomain:DNS-01 证书 + 反代路由),
-// 让评审者点开链接就能看到这条 PR 的真实部署效果;PR 关闭/合并后回收(删路由 + 标记 reclaimed)。
+// pr-<n>-<proj>.<base>(复用 dnsprovider.AllocateFQDN 建 A 记录;Caddy 反代下线后
+// 预览只保留 DNS 分配,流量路由由网关体系另行承接),
+// 让评审者点开链接就能看到这条 PR 的真实部署效果;PR 关闭/合并后回收(清 A 记录 + 标记 reclaimed)。
 //
 // 设计纪律:
 //   - **优雅降级铁律**:项目未开启预览 / 未配 DNS 提供商 / 分配失败 → 整个 provision 静默 no-op,

@@ -9,50 +9,27 @@ import (
 	"github.com/huangchengsir/pipewright/internal/storetest"
 )
 
-// fakeAllocator 是注入用的假分配器:记录分配调用,按需返回 routeID / 错误。
+// fakeAllocator 是注入用的假分配器:记录分配调用,按需返回错误。
 type fakeAllocator struct {
-	mu     sync.Mutex
-	calls  []AllocateInput
-	nextID string
-	err    error
+	mu    sync.Mutex
+	calls []AllocateInput
+	err   error
 }
 
-func (f *fakeAllocator) Allocate(_ context.Context, in AllocateInput) (string, error) {
+func (f *fakeAllocator) Allocate(_ context.Context, in AllocateInput) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls = append(f.calls, in)
-	if f.err != nil {
-		return "", f.err
-	}
-	id := f.nextID
-	if id == "" {
-		id = "route-" + in.Subdomain
-	}
-	return id, nil
+	return f.err
 }
 
-// fakeRouteDeleter 记录删路由调用。
-type fakeRouteDeleter struct {
-	mu      sync.Mutex
-	deleted []string
-}
-
-func (f *fakeRouteDeleter) DeleteRoute(_ context.Context, routeID string) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.deleted = append(f.deleted, routeID)
-	return nil
-}
-
-func newTestSvc(t *testing.T) (*service, *fakeAllocator, *fakeRouteDeleter) {
+func newTestSvc(t *testing.T) (*service, *fakeAllocator) {
 	t.Helper()
 	db := storetest.OpenDB(t)
 	svc := New(db)
 	alloc := &fakeAllocator{}
-	del := &fakeRouteDeleter{}
 	svc.SetAllocator(alloc)
-	svc.SetRouteDeleter(del)
-	return svc, alloc, del
+	return svc, alloc
 }
 
 func enablePreview(t *testing.T, svc *service, projectID string) {
@@ -67,7 +44,7 @@ func enablePreview(t *testing.T, svc *service, projectID string) {
 // --- 配置 CRUD + 校验 -----------------------------------------------------
 
 func TestSetConfigValidation(t *testing.T) {
-	svc, _, _ := newTestSvc(t)
+	svc, _ := newTestSvc(t)
 	ctx := context.Background()
 
 	if _, err := svc.SetConfig(ctx, Config{ProjectID: "p1", Enabled: true, BaseDomain: "preview.example.com"}); err != ErrConfigMissingProvider {
@@ -88,7 +65,7 @@ func TestSetConfigValidation(t *testing.T) {
 }
 
 func TestSetConfigUpsert(t *testing.T) {
-	svc, _, _ := newTestSvc(t)
+	svc, _ := newTestSvc(t)
 	ctx := context.Background()
 	enablePreview(t, svc, "p1")
 	// 再次设置 → 更新同一行(不重复)。
@@ -104,12 +81,11 @@ func TestSetConfigUpsert(t *testing.T) {
 // --- Provision 流程 -------------------------------------------------------
 
 func TestProvisionDisabledNoOp(t *testing.T) {
-	svc, alloc, _ := newTestSvc(t)
+	svc, alloc := newTestSvc(t)
 	ctx := context.Background()
 	// 项目未开启预览 → no-op,不分配、不报错。
 	env, err := svc.Provision(ctx, ProvisionInput{
-		ProjectID: "p1", PRNumber: 7, ServerID: "srv-1",
-		UpstreamContainer: "web", UpstreamPort: 8080, HostIP: "1.2.3.4",
+		ProjectID: "p1", PRNumber: 7, ServerID: "srv-1", HostIP: "1.2.3.4",
 	})
 	if err != nil {
 		t.Fatalf("未开启预览的 Provision 不应报错, got %v", err)
@@ -128,13 +104,13 @@ func TestProvisionDisabledNoOp(t *testing.T) {
 }
 
 func TestProvisionCreatesEnv(t *testing.T) {
-	svc, alloc, _ := newTestSvc(t)
+	svc, alloc := newTestSvc(t)
 	ctx := context.Background()
 	enablePreview(t, svc, "p1")
 
 	env, err := svc.Provision(ctx, ProvisionInput{
-		ProjectID: "p1", PipelineID: "pl-1", PRNumber: 12, Branch: "pr-12",
-		ServerID: "srv-1", UpstreamContainer: "web", UpstreamPort: 8080, HostIP: "1.2.3.4",
+		ProjectID: "p1", PRNumber: 12, Branch: "pr-12",
+		ServerID: "srv-1", HostIP: "1.2.3.4",
 	})
 	if err != nil {
 		t.Fatalf("Provision: %v", err)
@@ -145,8 +121,8 @@ func TestProvisionCreatesEnv(t *testing.T) {
 	if env.Subdomain != "pr-12-p1.preview.example.com" {
 		t.Fatalf("子域名不符: %q", env.Subdomain)
 	}
-	if env.Status != StatusActive || env.RouteID == "" {
-		t.Fatalf("环境应 active 且带 routeID: %+v", env)
+	if env.Status != StatusActive {
+		t.Fatalf("环境应 active: %+v", env)
 	}
 	if len(alloc.calls) != 1 || alloc.calls[0].Subdomain != "pr-12-p1.preview.example.com" {
 		t.Fatalf("分配器应被调用一次且带预览子域名: %+v", alloc.calls)
@@ -154,23 +130,25 @@ func TestProvisionCreatesEnv(t *testing.T) {
 	if alloc.calls[0].ProviderID != "prov-1" {
 		t.Fatalf("应用配置里的 DNS 提供商: %+v", alloc.calls[0])
 	}
+	if alloc.calls[0].HostIP != "1.2.3.4" {
+		t.Fatalf("分配器应收到宿主机 IP: %+v", alloc.calls[0])
+	}
 }
 
 func TestProvisionIdempotentOnRedeploy(t *testing.T) {
-	svc, alloc, del := newTestSvc(t)
+	svc, alloc := newTestSvc(t)
 	ctx := context.Background()
 	enablePreview(t, svc, "p1")
 
 	in := ProvisionInput{
 		ProjectID: "p1", PRNumber: 5, Branch: "pr-5",
-		ServerID: "srv-1", UpstreamContainer: "web", UpstreamPort: 8080, HostIP: "1.2.3.4",
+		ServerID: "srv-1", HostIP: "1.2.3.4",
 	}
 	first, err := svc.Provision(ctx, in)
 	if err != nil || first == nil {
 		t.Fatalf("first provision: %v", err)
 	}
-	// 同 PR 重新部署 → 更新同一行(routeID 新分配器值不同),不新增。
-	alloc.nextID = "route-redeploy"
+	// 同 PR 重新部署 → 更新同一行(A 记录幂等重放),不新增。
 	second, err := svc.Provision(ctx, in)
 	if err != nil || second == nil {
 		t.Fatalf("second provision: %v", err)
@@ -178,29 +156,24 @@ func TestProvisionIdempotentOnRedeploy(t *testing.T) {
 	if second.ID != first.ID {
 		t.Fatalf("重新部署应复用同一环境行, first=%s second=%s", first.ID, second.ID)
 	}
-	if second.RouteID != "route-redeploy" {
-		t.Fatalf("重新部署应刷新 routeID, got %q", second.RouteID)
-	}
 	// 应只剩一条环境(幂等)。
 	envs, _ := svc.List(ctx, "p1")
 	if len(envs) != 1 {
 		t.Fatalf("同 PR 重复部署应只 1 条环境, got %d", len(envs))
 	}
-	// 旧路由应被 best-effort 删除(避免孤儿)。
-	if len(del.deleted) != 1 || del.deleted[0] != first.RouteID {
-		t.Fatalf("重新部署应删旧路由, got %+v", del.deleted)
+	if len(alloc.calls) != 2 {
+		t.Fatalf("每次部署都应重放一次 A 记录(幂等), got %d", len(alloc.calls))
 	}
 }
 
 func TestProvisionAllocatorFailureReturnsErrNoEnv(t *testing.T) {
-	svc, alloc, _ := newTestSvc(t)
+	svc, alloc := newTestSvc(t)
 	ctx := context.Background()
 	enablePreview(t, svc, "p1")
 	alloc.err = errors.New("dns boom")
 
 	env, err := svc.Provision(ctx, ProvisionInput{
-		ProjectID: "p1", PRNumber: 3, ServerID: "srv-1",
-		UpstreamContainer: "web", UpstreamPort: 8080, HostIP: "1.2.3.4",
+		ProjectID: "p1", PRNumber: 3, ServerID: "srv-1", HostIP: "1.2.3.4",
 	})
 	if err == nil {
 		t.Fatalf("分配失败应返回错误供钩子记日志")
@@ -215,11 +188,11 @@ func TestProvisionAllocatorFailureReturnsErrNoEnv(t *testing.T) {
 }
 
 func TestProvisionNonPRNoOp(t *testing.T) {
-	svc, alloc, _ := newTestSvc(t)
+	svc, alloc := newTestSvc(t)
 	ctx := context.Background()
 	enablePreview(t, svc, "p1")
 	// PRNumber=0(非 PR)→ 静默 no-op。
-	env, err := svc.Provision(ctx, ProvisionInput{ProjectID: "p1", PRNumber: 0, UpstreamContainer: "web", UpstreamPort: 80, HostIP: "1.2.3.4", ServerID: "s"})
+	env, err := svc.Provision(ctx, ProvisionInput{ProjectID: "p1", PRNumber: 0, HostIP: "1.2.3.4", ServerID: "s"})
 	if err != nil || env != nil || len(alloc.calls) != 0 {
 		t.Fatalf("非 PR 应 no-op, env=%+v err=%v calls=%d", env, err, len(alloc.calls))
 	}
@@ -231,7 +204,7 @@ func TestProvisionNoAllocatorNoOp(t *testing.T) {
 	ctx := context.Background()
 	enablePreview(t, svc, "p1")
 	env, err := svc.Provision(ctx, ProvisionInput{
-		ProjectID: "p1", PRNumber: 1, ServerID: "s", UpstreamContainer: "web", UpstreamPort: 80, HostIP: "1.2.3.4",
+		ProjectID: "p1", PRNumber: 1, ServerID: "s", HostIP: "1.2.3.4",
 	})
 	if err != nil || env != nil {
 		t.Fatalf("无分配器应优雅 no-op, env=%+v err=%v", env, err)
@@ -241,25 +214,19 @@ func TestProvisionNoAllocatorNoOp(t *testing.T) {
 // --- Reclaim --------------------------------------------------------------
 
 func TestReclaim(t *testing.T) {
-	svc, _, del := newTestSvc(t)
+	svc, _ := newTestSvc(t)
 	ctx := context.Background()
 	enablePreview(t, svc, "p1")
 
 	env, err := svc.Provision(ctx, ProvisionInput{
-		ProjectID: "p1", PRNumber: 9, ServerID: "srv-1",
-		UpstreamContainer: "web", UpstreamPort: 8080, HostIP: "1.2.3.4",
+		ProjectID: "p1", PRNumber: 9, ServerID: "srv-1", HostIP: "1.2.3.4",
 	})
 	if err != nil || env == nil {
 		t.Fatalf("provision: %v", err)
 	}
-	routeID := env.RouteID
 
 	if err := svc.Reclaim(ctx, "p1", 9); err != nil {
 		t.Fatalf("Reclaim: %v", err)
-	}
-	// 删了路由。
-	if len(del.deleted) != 1 || del.deleted[0] != routeID {
-		t.Fatalf("回收应删路由, got %+v", del.deleted)
 	}
 	// 环境标记 reclaimed + 记录回收时刻。
 	got, err := svc.Get(ctx, env.ID)
@@ -276,7 +243,7 @@ func TestReclaim(t *testing.T) {
 }
 
 func TestReclaimInvalidArgs(t *testing.T) {
-	svc, _, _ := newTestSvc(t)
+	svc, _ := newTestSvc(t)
 	ctx := context.Background()
 	if err := svc.Reclaim(ctx, "", 1); err != ErrInvalidProject {
 		t.Fatalf("空项目应 ErrInvalidProject, got %v", err)
@@ -288,15 +255,14 @@ func TestReclaimInvalidArgs(t *testing.T) {
 
 // TestReclaimThenRedeployReactivates 验证回收后同 PR 重新部署会重新 active(状态复用同行)。
 func TestReclaimThenRedeployReactivates(t *testing.T) {
-	svc, alloc, _ := newTestSvc(t)
+	svc, _ := newTestSvc(t)
 	ctx := context.Background()
 	enablePreview(t, svc, "p1")
-	in := ProvisionInput{ProjectID: "p1", PRNumber: 4, ServerID: "s", UpstreamContainer: "web", UpstreamPort: 80, HostIP: "1.2.3.4"}
+	in := ProvisionInput{ProjectID: "p1", PRNumber: 4, ServerID: "s", HostIP: "1.2.3.4"}
 	env1, _ := svc.Provision(ctx, in)
 	if err := svc.Reclaim(ctx, "p1", 4); err != nil {
 		t.Fatalf("reclaim: %v", err)
 	}
-	alloc.nextID = "route-new"
 	env2, err := svc.Provision(ctx, in)
 	if err != nil || env2 == nil {
 		t.Fatalf("redeploy after reclaim: %v", err)
@@ -305,6 +271,6 @@ func TestReclaimThenRedeployReactivates(t *testing.T) {
 		t.Fatalf("回收后重部署应复用同行并回 active, got %+v", env2)
 	}
 	if env2.ReclaimedAt != nil {
-		t.Fatalf("回 active 应清空 reclaimedAt, got %+v", env2.ReclaimedAt)
+		t.Fatalf("回 active 应清空 reclaimedAt, got %+v", env2)
 	}
 }

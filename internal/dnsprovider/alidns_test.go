@@ -228,9 +228,9 @@ func TestAliDNSEnsureARecordNoOp(t *testing.T) {
 	}
 }
 
-// --- 经 AllocateSubdomain 端到端(DNSPod / 阿里云走真实客户端 + mock transport)----------
+// --- 经 AllocateFQDN 端到端(DNSPod / 阿里云走真实客户端 + mock transport)----------
 
-func TestAllocateSubdomainDNSPodReal(t *testing.T) {
+func TestAllocateFQDNDNSPodReal(t *testing.T) {
 	ctx := context.Background()
 	rt := roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		switch {
@@ -242,16 +242,15 @@ func TestAllocateSubdomainDNSPodReal(t *testing.T) {
 		t.Fatalf("未预期 %s", r.URL.Path)
 		return nil, nil
 	})
-	rc := &stubRouteCreator{nextRouteID: "route-dp"}
-	svc := newTestService(t, stubVault{tokens: map[string]string{"cred-1": "sEcReT"}}, rc, dialDNS(rt))
+	svc := newTestService(t, stubVault{tokens: map[string]string{"cred-1": "sEcReT"}}, dialDNS(rt))
 	p, _ := svc.Create(ctx, CreateInput{Type: "dnspod", Name: "DP", APIID: "12345", CredentialID: "cred-1", BaseDomains: []string{"example.com"}})
-	ref, err := svc.AllocateSubdomain(ctx, AllocateInput{
-		ZoneID: p.Zones[0].ID, ServerID: "srv-1", UpstreamContainer: "web", UpstreamPort: 8080, HostIP: "203.0.113.5",
+	ref, err := svc.AllocateFQDN(ctx, AllocateInput{
+		ProviderID: p.ID, HostIP: "203.0.113.5", Subdomain: "pr-3-x.example.com",
 	})
 	if err != nil {
-		t.Fatalf("AllocateSubdomain(dnspod): %v", err)
+		t.Fatalf("AllocateFQDN(dnspod): %v", err)
 	}
-	if ref.RouteID != "route-dp" {
-		t.Fatalf("应建路由, got %q", ref.RouteID)
+	if ref.Domain != "pr-3-x.example.com" {
+		t.Fatalf("应返回归一化域名, got %q", ref.Domain)
 	}
 }

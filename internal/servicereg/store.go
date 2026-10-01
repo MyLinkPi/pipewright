@@ -21,10 +21,9 @@ const (
 	defaultVolumeName    = "pipewright_nginx"
 )
 
-// storedSettings 是 settings 的内部存储表示:含不出领域 API 的 token 哈希原值。
+// storedSettings 是 settings 的内部存储表示(目前与 Settings 同形,保留包装以便将来扩展)。
 type storedSettings struct {
 	Settings
-	uploadTokenHash string
 }
 
 // Store 持久化服务注册网关(参数化 SQL,sqlite/mysql 两方言一致)。
@@ -50,8 +49,8 @@ func (s *Store) getOrCreateSettings(ctx context.Context) (*Settings, error) {
 	_, ierr := s.db.ExecContext(ctx,
 		`INSERT INTO service_reg_settings
 		   (id, server_id, http_port, https_port, image, network, container_name, volume_name,
-		    upload_token_hash, last_apply_at, last_apply_error, created_at, updated_at)
-		 VALUES (?, '', 80, 443, ?, ?, ?, ?, '', '', '', ?, ?)`,
+		    last_apply_at, last_apply_error, created_at, updated_at)
+		 VALUES (?, '', 80, 443, ?, ?, ?, ?, '', '', ?, ?)`,
 		settingsID, defaultNginxImage, defaultNetwork, defaultContainerName, defaultVolumeName, now, now,
 	)
 	if ierr != nil {
@@ -71,23 +70,9 @@ func (s *Store) getOrCreateSettings(ctx context.Context) (*Settings, error) {
 func (s *Store) getSettings(ctx context.Context) (*storedSettings, error) {
 	row := s.db.QueryRowContext(ctx,
 		`SELECT server_id, http_port, https_port, image, network, container_name, volume_name,
-		        upload_token_hash, last_apply_at, last_apply_error, created_at, updated_at
+		        last_apply_at, last_apply_error, created_at, updated_at
 		 FROM service_reg_settings WHERE id = ?`, settingsID)
 	return scanSettings(row)
-}
-
-// uploadTokenHash 返回 token 哈希原值(仅 VerifyUploadToken 用,不出包)。
-func (s *Store) uploadTokenHash(ctx context.Context) (string, error) {
-	var hash string
-	err := s.db.QueryRowContext(ctx,
-		`SELECT upload_token_hash FROM service_reg_settings WHERE id = ?`, settingsID).Scan(&hash)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return "", nil
-		}
-		return "", fmt.Errorf("servicereg: read token hash: %w", err)
-	}
-	return hash, nil
 }
 
 // updateSettings 落库设置(全部列;调用方已校验)。
@@ -105,22 +90,6 @@ func (s *Store) updateSettings(ctx context.Context, st *Settings) error {
 		return fmt.Errorf("servicereg: update settings: %w", err)
 	}
 	return nil
-}
-
-// setUploadTokenHash 覆盖 token 哈希(空串 = 撤销),返回更新后的设置。
-func (s *Store) setUploadTokenHash(ctx context.Context, hash string) (*Settings, error) {
-	// 先保证单例行存在(否则 UPDATE 空转)。
-	if _, err := s.getOrCreateSettings(ctx); err != nil {
-		return nil, err
-	}
-	now := time.Now().UTC().Format(time.RFC3339)
-	_, err := s.db.ExecContext(ctx,
-		`UPDATE service_reg_settings SET upload_token_hash = ?, updated_at = ? WHERE id = ?`,
-		hash, now, settingsID)
-	if err != nil {
-		return nil, fmt.Errorf("servicereg: set token hash: %w", err)
-	}
-	return s.getOrCreateSettings(ctx)
 }
 
 // setApplyResult 回写最近一次编排结果(成功 errText 为空)。
@@ -144,14 +113,13 @@ func scanSettings(sc scanner) (*storedSettings, error) {
 	)
 	if err := sc.Scan(
 		&st.ServerID, &st.HTTPPort, &st.HTTPSPort, &st.Image, &st.Network, &st.ContainerName,
-		&st.VolumeName, &st.uploadTokenHash, &lastApply, &lastErr, &createdStr, &updatedStr,
+		&st.VolumeName, &lastApply, &lastErr, &createdStr, &updatedStr,
 	); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
 		}
 		return nil, err
 	}
-	st.HasUploadToken = st.uploadTokenHash != ""
 	if lastApply.String != "" {
 		if t, err := time.Parse(time.RFC3339, lastApply.String); err == nil {
 			st.LastApplyAt = t
@@ -233,6 +201,22 @@ func (s *Store) updateCert(ctx context.Context, domainID string, sealedCert, sea
 		return nil, ErrNotFound
 	}
 	return s.getDomain(ctx, domainID)
+}
+
+// clearCert 清空某基域证书(密文/元数据置空);行不存在 → ErrNotFound。
+func (s *Store) clearCert(ctx context.Context, domainID string) error {
+	now := time.Now().UTC().Format(time.RFC3339)
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE service_reg_domains
+		 SET cert_pem_sealed = NULL, key_pem_sealed = NULL, cert_subject = '', cert_expires_at = '', updated_at = ?
+		 WHERE id = ?`, now, domainID)
+	if err != nil {
+		return fmt.Errorf("servicereg: clear cert: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 // getCertSealed 返回某基域的证书密文对(apply 下发时进程内解密;无证书 → ok=false)。

@@ -41,7 +41,8 @@ describe('i18n message compilation (production-faithful)', () => {
       const failures: string[] = []
       for (const [key, src] of collectKeys(messages)) {
         try {
-          compile(src, { key, locale: code })
+          // warnHtmlMessage:false — 词条含 `server:<id>` 占位记号(非 HTML),关掉误报。
+          compile(src, { key, locale: code, warnHtmlMessage: false })
         } catch (e) {
           const code9 = (e as { code?: number }).code
           failures.push(`${key} (code=${code9}): ${JSON.stringify(src).slice(0, 60)}`)

@@ -76,7 +76,7 @@ const es: typeof zhCN = {
     containers: 'Contenedores',
     serviceReg: 'Registro de servicios',
     appStore: 'Tienda de apps',
-    proxyOverview: 'Certificados',
+    certificates: 'Certificados',
     previews: 'Vistas previas',
     anomaly: 'Detección de anomalías',
     notifications: 'Notificaciones',

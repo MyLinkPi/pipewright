@@ -20,7 +20,6 @@ import {
   getRun,
   cancelRun,
   subscribeRunEvents,
-  diagnoseRun,
   deployRun,
   retryFailedDeploy,
   continueDeploy,
@@ -30,7 +29,6 @@ import {
   rejectStage,
   type RunDetail,
   type RunStatus,
-  type StepStatus,
   type DiagnosisDTO,
   type HealthCheckType,
   type HealthCheckInput,
@@ -549,20 +547,6 @@ function statusLabel(status: RunStatus): string {
   return t(`runStatus.${status}`)
 }
 
-// ─── Step config ─────────────────────────────────────────────────────────────
-
-interface StepConfig { icon: 'check' | 'spinner' | 'dot' | 'x' | 'skip'; color: string }
-
-function stepConfig(status: StepStatus): StepConfig {
-  switch (status) {
-    case 'success': return { icon: 'check',   color: 'var(--color-green)' }
-    case 'running': return { icon: 'spinner', color: 'var(--color-amber)' }
-    case 'failed':  return { icon: 'x',       color: 'var(--color-red)'   }
-    case 'skipped': return { icon: 'skip',    color: 'var(--color-faint)' }
-    default:        return { icon: 'dot',     color: 'var(--color-faint)' }
-  }
-}
-
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
 function shortId(id: string): string { return id.slice(0, 8) }
@@ -600,17 +584,6 @@ function formatDateTime(iso: string | null): string {
 
 function goBack(): void {
   void router.push({ name: 'runs' })
-}
-
-// ─── Computed step status for skewer node style ───────────────────────────────
-function nodeClass(status: StepStatus): string {
-  switch (status) {
-    case 'success': return 'node--ok'
-    case 'running': return 'node--running'
-    case 'failed':  return 'node--bad'
-    case 'skipped': return 'node--skip'
-    default:        return 'node--pending'
-  }
 }
 </script>
 

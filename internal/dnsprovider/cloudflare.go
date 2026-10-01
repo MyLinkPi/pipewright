@@ -194,7 +194,7 @@ func (c *cloudflareClient) DeleteARecord(ctx context.Context, zone, name string)
 }
 
 // notImplementedClient 是未知提供商类型的「自动 A 记录」占位实现(诚实地返回未实现)。
-// DNS-01 通配符证书签发仍可用(走 Caddy 镜像内 DNS 插件),与本桩无关。
+// DNS-01 通配符证书签发仍可用(走证书管理的 acme.sh),与本桩无关。
 type notImplementedClient struct{ providerType string }
 
 func (n notImplementedClient) EnsureARecord(context.Context, string, string, string) error {

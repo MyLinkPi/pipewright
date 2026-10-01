@@ -52,13 +52,10 @@ function resolves(tree: Record<string, unknown>, dotted: string): boolean {
 }
 
 /**
- * 动态 key 白名单:这些前缀对应运行期拼接的 t() 调用(模板字符串),无法被字面量正则捕获,
- * 因此也不会被本测试扫到 —— 列在此处仅作文档,声明「我们知道它们存在且故意不静态校验」。
- * 经核实其所有可能的具体 key(各枚举后缀)在 zh-CN 中均已就位:
- *   - reverseProxy.adv.lbPolicy_<policy>  (RouteAdvancedSettings.vue:`lbPolicy_${p}`,
- *     p ∈ round_robin|least_conn|random|first,四个具体 key 均存在)
+ * 动态 key 白名单:当前没有运行期拼接的 t() 调用(反代高级设置面板随 Caddy 下线后,
+ * 原先的 lbPolicy_ 动态前缀已删);保留机制与空数组,后续新增动态 key 时在此登记。
  */
-const DYNAMIC_KEY_PREFIXES: readonly string[] = ['reverseProxy.adv.lbPolicy_']
+const DYNAMIC_KEY_PREFIXES: readonly string[] = []
 
 // 只匹配字面量字符串 key:t('a.b') / t("a.b.c");跳过模板字符串(反引号)与变量。
 const T_CALL = /\bt\(\s*['"]([a-zA-Z][\w-]*(?:\.[a-zA-Z0-9_-]+)+)['"]/g

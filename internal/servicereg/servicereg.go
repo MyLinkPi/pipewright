@@ -1,9 +1,10 @@
 // Package servicereg 是「服务注册网关」的领域层:在一台用户选定的网关主机上,经 SSH 编排一个
 // 独立部署的 nginx 容器,把「服务名 + 基域」映射为子域名反向代理(abc + efg.com → abc.efg.com)。
 //
-// 与 internal/proxy(Caddy 自动 HTTPS)的关系:本包是其 nginx 版继任者,面向「泛域名手动解析 +
-// 证书手动/脚本上传」的场景 —— *.efg.com 由用户自行解析到网关主机 IP,平台不接管 DNS,也不做
-// ACME 签发;证书经 vault SealSecret 加密入库,上传支持页面表单与 Bearer token 脚本两种方式。
+// 定位(Caddy 反代下线后的唯一网关):面向「泛域名解析到网关主机 + 证书托管」的场景 ——
+// *.efg.com 由用户解析到网关主机 IP,平台不接管网关域 DNS。证书的签发/续期/导入统一由
+// internal/certmgmt(acme.sh)负责,经 CertSink(UploadCert)同步到基域;本包只管证书密文的
+// 存取与 nginx 渲染下发。证书 PEM 经 vault SealSecret 加密入库,绝不明文回 API。
 //
 // 设计纪律(与 proxy 包一致):
 //   - 一切 docker/nginx 命令经 target.Exec 以 array 形式执行(AC-SEC-02 不拼 shell);唯一例外是
@@ -19,15 +20,10 @@ package servicereg
 
 import (
 	"context"
-	"crypto/rand"
-	"crypto/sha256"
-	"crypto/subtle"
 	"crypto/tls"
 	"crypto/x509"
 	"database/sql"
-	"encoding/base64"
 	"errors"
-	"fmt"
 	"net"
 	"regexp"
 	"strings"
@@ -117,7 +113,6 @@ type Settings struct {
 	Network        string
 	ContainerName  string
 	VolumeName     string
-	HasUploadToken bool // 是否已生成证书上传 token(哈希非空)
 	LastApplyAt    time.Time
 	LastApplyError string
 	CreatedAt      time.Time
@@ -202,12 +197,6 @@ type Service interface {
 	GetSettings(ctx context.Context) (*Settings, error)
 	// UpdateSettings 校验并更新网关设置;不触网(纯落库)。改端口/容器名后需 DeployGateway 重建生效。
 	UpdateSettings(ctx context.Context, in SettingsUpdate) (*Settings, error)
-	// GenerateUploadToken 生成证书上传 API token:明文仅此一次返回,库中只留 sha256。
-	GenerateUploadToken(ctx context.Context) (token string, s *Settings, err error)
-	// RevokeUploadToken 撤销证书上传 token。
-	RevokeUploadToken(ctx context.Context) error
-	// VerifyUploadToken 常量时间校验证书上传 token(供 httpapi Bearer 认证)。
-	VerifyUploadToken(token string) bool
 
 	// ListDomains 返回全部基域(创建时间倒序)。
 	ListDomains(ctx context.Context) ([]Domain, error)
@@ -215,8 +204,12 @@ type Service interface {
 	CreateDomain(ctx context.Context, baseDomain string) (*Domain, error)
 	// DeleteDomain 删除基域及其下全部服务 → apply 收敛(配置摘除)。
 	DeleteDomain(ctx context.Context, id string) error
-	// UploadCert 校验证书/私钥配对 → 密文落库 → apply 下发。脚本可重试(幂等)。
+	// UploadCert 校验证书/私钥配对 → 密文落库 → apply 下发(证书管理页经 CertSink 调用)。
 	UploadCert(ctx context.Context, domainID, certPEM, keyPEM string) (*Domain, error)
+	// ClearCert 清空某基域证书(回退 HTTP-only 并 apply)。删除证书时由证书管理联动调用。
+	ClearCert(ctx context.Context, domainID string) error
+	// ExportCert 返回某基域当前证书 PEM 明文(进程内供证书管理比对归属;绝不过 HTTP)。无证书 ok=false。
+	ExportCert(ctx context.Context, domainID string) (certPEM string, ok bool, err error)
 
 	// ListServices 返回全部注册服务(创建时间倒序,含基域名供展示)。
 	ListServices(ctx context.Context) ([]ServiceWithDomain, error)
@@ -326,43 +319,6 @@ func (s *service) UpdateSettings(ctx context.Context, in SettingsUpdate) (*Setti
 	return &next, nil
 }
 
-func (s *service) GenerateUploadToken(ctx context.Context) (string, *Settings, error) {
-	raw := make([]byte, 32)
-	if _, err := rand.Read(raw); err != nil {
-		return "", nil, fmt.Errorf("servicereg: generate token: %w", err)
-	}
-	token := base64.RawURLEncoding.EncodeToString(raw)
-	hash := hashToken(token)
-	st, err := s.store.setUploadTokenHash(ctx, hash)
-	if err != nil {
-		return "", nil, err
-	}
-	return token, st, nil
-}
-
-func (s *service) RevokeUploadToken(ctx context.Context) error {
-	_, err := s.store.setUploadTokenHash(ctx, "")
-	return err
-}
-
-func (s *service) VerifyUploadToken(token string) bool {
-	token = strings.TrimSpace(token)
-	if token == "" {
-		return false
-	}
-	hash, err := s.store.uploadTokenHash(context.Background())
-	if err != nil || hash == "" {
-		return false
-	}
-	return subtle.ConstantTimeCompare([]byte(hashToken(token)), []byte(hash)) == 1
-}
-
-// hashToken 返回 token 的 sha256 hex(库存值)。
-func hashToken(token string) string {
-	sum := sha256.Sum256([]byte(token))
-	return fmt.Sprintf("%x", sum)
-}
-
 // ---------- 基域 ----------
 
 func (s *service) ListDomains(ctx context.Context) ([]Domain, error) {
@@ -435,6 +391,30 @@ func (s *service) UploadCert(ctx context.Context, domainID, certPEM, keyPEM stri
 		return dom, err
 	}
 	return dom, nil
+}
+
+// ClearCert 清空某基域证书(密文/元数据置空)并 apply(基域回退 HTTP-only)。
+func (s *service) ClearCert(ctx context.Context, domainID string) error {
+	if err := s.store.clearCert(ctx, domainID); err != nil {
+		return err
+	}
+	return s.applyBestEffort(ctx)
+}
+
+// ExportCert 返回某基域当前证书 PEM 明文(进程内解密;仅证书管理删除比对用,绝不过 HTTP)。
+func (s *service) ExportCert(ctx context.Context, domainID string) (string, bool, error) {
+	if s.vault == nil {
+		return "", false, target.ErrVaultUnconfigured
+	}
+	sealed, _, ok, err := s.store.getCertSealed(ctx, domainID)
+	if err != nil || !ok {
+		return "", false, err
+	}
+	plain, uerr := s.vault.OpenSecret(sealed)
+	if uerr != nil {
+		return "", false, uerr
+	}
+	return string(plain), true, nil
 }
 
 // ---------- 服务 ----------

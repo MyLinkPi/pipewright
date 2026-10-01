@@ -62,8 +62,8 @@ It has since grown past that trio: publishing a deployed service on an HTTPS dom
 - **📝 Pipeline as code** — commit the pipeline structure to `.pipewright.yml` and let it evolve per branch, with the canvas as the always-available fallback ([details below](#pipeline-as-code-gitops)).
 - **🏗 Isolated builds & artifacts** — version-pinned isolated builds inside containers (docker/nerdctl/podman) · a local bare-mirror repo cache (incremental fetch, then a workspace in seconds) · build dependency caching keyed by branch + lockfile hash · a content-addressed artifact store that keeps the **real bytes** of jar/dist for deployment (not just a placeholder reference) · image build + push to private registries with image GC · a multi-node build machine pool: label a server to make it a build machine, then schedule by label selector at project or stage level (priority, pipeline affinity, then load; queues when all busy, default 1 concurrent build per machine; builds are offloaded over SSH and tokens stay on the control node — a control node without any container CLI still works, running builds purely on the remote pool) · JUnit + Cobertura test reports feeding quality gates that fail the stage and block downstream deploys · live terminal logs (SSE) + history replay · read-only code browsing (Monaco).
 - **🚀 Multi-server deployment** — agentless deploy over SSH · health gating · zero-downtime cutover + failure rollback · parallel fan-out across hosts + visible partial failures · command-style deploys (restart a service with no artifact) · **environments as first-class objects**: per-environment deployment timeline, current active version, and one-click rollback to the last fully successful deploy · environment promotion chains (dev→staging→prod) with per-environment variables/secrets and approval gates.
-- **🌐 Auto HTTPS + domain reverse proxy** — one managed Caddy container per target host, orchestrated over the same SSH + docker path as container ops (render Caddyfile → `docker cp` → graceful reload). Certificates are issued and renewed automatically by Let's Encrypt over HTTP-01, or over **DNS-01 with Cloudflare / DNSPod / Alibaba Cloud DNS** for wildcards. Plus: multi-domain aliases, path routing (`/api`→A, `/`→B), redirects, access control (basic auth, IP allow/deny CIDR), HSTS / security headers / compression, load balancing across upstreams with active health-check failover, WebSocket / gRPC (h2c) / TCP passthrough (caddy-l4), a certificate dashboard that probes the real 443 handshake, and one-click subdomain allocation.
-- **🔎 Per-PR preview environments** — when a PR's run deploys successfully, it automatically gets a throwaway `pr-<n>-<proj>.<base>` domain with its own certificate and route, so reviewers open one link and see that PR actually running. Idempotent per PR, and reclaimed automatically — but **only** once the PR is provably closed or merged.
+- **🌐 Gateway reverse proxy + managed certificates** — one nginx gateway container on a host you pick, orchestrated over the same SSH + docker path as container ops (render nginx.conf → `nginx -t` → graceful reload): register a base domain, then `service + base domain` becomes an HTTPS subdomain (`abc.efg.com`) with HTTP/TCP proxying, container or address upstreams, multi-instance pools with zero-downtime instance rotation. Certificates are a first-class object: a self-hosted **acme.sh** engine (running on the gateway host) issues and auto-renews them over **DNS-01 with Cloudflare / DNSPod / Alibaba Cloud DNS** (wildcards included, Let's Encrypt / ZeroSSL / BuyPass, renewed 30 days before expiry by the platform scheduler), existing certs can be imported, PEM lives sealed in the vault, and issued certs deploy to matching base domains automatically — all visible on the certificate management page.
+- **🔎 Per-PR preview environments** — when a PR's run deploys successfully, it automatically gets a throwaway `pr-<n>-<proj>.<base>` DNS record pointing at the deploy host (traffic routing is being re-anchored on the gateway). Idempotent per PR, and reclaimed automatically — but **only** once the PR is provably closed or merged.
 - **📣 Notifications** — WeCom / DingTalk / Lark (Feishu) / Slack / email / custom webhook · fine-grained event→channel routing · templates + custom variables · rich Lark cards with approve/detail action buttons and a release summary · in-pipeline notification nodes.
 - **🖥 Server & container ops** — multi-host status overview (CPU/memory/disk) plus time-series trend charts · container/image/Stacks/volume/network management · container create/inspect/prune · live + historical service logs · live stats · interactive container terminal · web ops terminal (host shell, full copy-paste/signal support) · configurable anomaly detection that runs on a timer, dedupes by cooldown, and routes alerts to your notification channels.
 - **🤖 AI assist (optional, fully degradable)** — bring your own Claude / OpenAI / Ollama endpoint (API key encrypted in the vault). Automatic root-cause diagnosis when a build or deploy fails, with a 👍/👎 feedback loop and accuracy stats · repo analysis → generated pipeline draft · success-vs-failure commit diff · script risk annotation · natural-language→shell assistant and container diagnosis in the ops terminal. The core CI/CD path never depends on any of it (NFR-10).
@@ -196,7 +196,9 @@ A normal install only needs the first two (plus `PIPEWRIGHT_PUBLIC_URL` if you r
 | `PIPEWRIGHT_PR_STATUS` | `1` forces PR status reporting on for **all** projects, ignoring the per-project toggle | off |
 | `PIPEWRIGHT_PR_STATUS_GITHUB_BASE` | GitHub API base URL (for GitHub Enterprise) | public GitHub |
 | `PIPEWRIGHT_PR_STATUS_GITEE_BASE` | Gitee API base URL (for self-hosted Gitee) | public Gitee |
-| `PIPEWRIGHT_CADDY_IMAGE` | Reverse-proxy image. The default is a self-built Caddy bundling the DNS-01, ratelimit, and layer4 plugins; stock `caddy:2` works but loses DNS-01/wildcard/TCP support | `ghcr.io/huangchengsir/pipewright-caddy:latest` |
+| `PIPEWRIGHT_NGINX_IMAGE` | Gateway nginx image (service registry). The official `nginx:stable-alpine` ships the stream module + Docker embedded DNS, so the default just works | `nginx:stable-alpine` |
+| `PIPEWRIGHT_ACMESH_IMAGE` | acme.sh signing-engine image (certificate management). Built from the in-repo fork under `deploy/acmesh` and pushed by the `acme-image` workflow | `ghcr.io/huangchengsir/pipewright-acmesh:latest` |
+| `PIPEWRIGHT_CERT_SWEEP_INTERVAL` | How often the certificate scheduler scans for certs due for auto-renewal (Go duration, e.g. `30m`; `0` disables) | `1h` |
 | `PIPEWRIGHT_PREVIEW_SWEEP_INTERVAL` | How often to check whether preview environments can be reclaimed (Go duration, e.g. `10m`) | `5m` |
 
 **Ops monitoring**
@@ -261,10 +263,10 @@ stages:
 
 ## Tech Stack
 
-- **Backend**: Go · Chi (routing) · modernc/sqlite (pure Go, no CGO) + go-sql-driver/mysql · go-git (no host git dependency) · NaCl secretbox (vault) · argon2id + bcrypt · golang.org/x/crypto/ssh (agentless deployment) · coder/websocket (terminals) · Caddy (orchestrated on target hosts for auto HTTPS)
+- **Backend**: Go · Chi (routing) · modernc/sqlite (pure Go, no CGO) + go-sql-driver/mysql · go-git (no host git dependency) · NaCl secretbox (vault) · argon2id + bcrypt · golang.org/x/crypto/ssh (agentless deployment) · coder/websocket (terminals) · nginx (orchestrated on the gateway host) · acme.sh (self-hosted fork for ACME issuance)
 - **Frontend**: Vue 3 `<script setup>` · Vite · naive-ui · OKLCH dual theme · Monaco (read-only code browsing) · Vitest + Playwright · embedded into the binary via `go:embed`
 
-Deliberately dependency-lean: the cron parser, DAG engine, DNS provider clients, artifact/build caches, and Caddyfile renderer are all in-tree rather than pulled in as libraries.
+Deliberately dependency-lean: the cron parser, DAG engine, DNS provider clients, artifact/build caches, and nginx.conf renderer are all in-tree rather than pulled in as libraries.
 
 ## Architecture
 
@@ -314,8 +316,8 @@ single static binary (cmd/pipewright)
 │  ├── internal/environments  environments as first-class objects + rollback targets
 │  ├── internal/promotion     environment promotion chains + per-env vars
 │  ├── internal/prstatus      PR / commit status reporting (GitHub / Gitee)
-│  ├── internal/proxy         auto HTTPS + domain reverse proxy (Caddy orchestration)
-│  ├── internal/dnsprovider   Cloudflare / DNSPod / Alibaba DNS (DNS-01 + subdomains)
+│  ├── internal/certmgmt      certificate management (acme.sh issuance/renewal + import)
+│  ├── internal/dnsprovider   Cloudflare / DNSPod / Alibaba DNS (DNS-01 creds + records)
 │  └── internal/previewenv    per-PR preview environments + auto reclamation
 │
 ├─ observability

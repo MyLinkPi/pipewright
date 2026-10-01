@@ -3,7 +3,7 @@
   ServiceRegistry.vue — 服务注册网关(nginx)。
 
   三个区块:
-  1. 网关设置:选网关主机/端口/镜像/资源名,部署/移除容器,证书上传 token 管理,最近 apply 状态。
+  1. 网关设置:选网关主机/端口/镜像/资源名,部署/移除容器,最近 apply 状态。
   2. 基域:注册 efg.com,上传泛域名证书(到期时间展示),删除。
   3. 服务:注册 abc → abc.efg.com(HTTP/TCP 反代),启停/删除,手动全量收敛。
 
@@ -11,20 +11,18 @@
 */
 import { ref, computed, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { useRouter } from 'vue-router'
 import { NIcon } from 'naive-ui'
-import { World, Plus, Trash, Refresh, ShieldLock, Key, Server as ServerIcon, ExternalLink } from '@vicons/tabler'
+import { World, Plus, Trash, Refresh, ShieldLock, Server as ServerIcon, ExternalLink } from '@vicons/tabler'
 import {
   getServiceRegSettings,
   updateServiceRegSettings,
-  generateUploadToken,
-  revokeUploadToken,
   getGateway,
   deployGateway,
   removeGateway,
   listDomains,
   createDomain,
   deleteDomain,
-  uploadCert,
   listServices,
   createService,
   deleteService,
@@ -52,7 +50,13 @@ import AppButton from '../components/ui/AppButton.vue'
 import AppSelect from '../components/ui/AppSelect.vue'
 
 const { t } = useI18n()
+const router = useRouter()
 const toast = useToast()
+
+// 基域证书统一在「证书管理」页签发/导入(本页只展示同步结果)。
+function goCerts(): void {
+  void router.push('/certificates')
+}
 const confirm = useConfirm()
 
 function errMsg(err: unknown, fallback: string): string {
@@ -179,47 +183,6 @@ async function doApply(): Promise<void> {
   }
 }
 
-// token 管理:明文只显示一次。
-const newToken = ref('')
-const tokenBusy = ref(false)
-async function doGenerateToken(): Promise<void> {
-  tokenBusy.value = true
-  try {
-    const res = await generateUploadToken()
-    newToken.value = res.token
-    settings.value = await getServiceRegSettings()
-  } catch (err) {
-    toast.error(errMsg(err, t('serviceReg.errOp')))
-  } finally {
-    tokenBusy.value = false
-  }
-}
-async function doRevokeToken(): Promise<void> {
-  const ok = await confirm.open({
-    title: t('serviceReg.revokeTokenTitle'),
-    body: t('serviceReg.revokeTokenBody'),
-    confirmLabel: t('serviceReg.revokeToken'),
-    variant: 'danger',
-  })
-  if (!ok) return
-  tokenBusy.value = true
-  try {
-    await revokeUploadToken()
-    newToken.value = ''
-    settings.value = await getServiceRegSettings()
-    toast.success(t('serviceReg.tokenRevoked'))
-  } catch (err) {
-    toast.error(errMsg(err, t('serviceReg.errOp')))
-  } finally {
-    tokenBusy.value = false
-  }
-}
-function copyCurl(): void {
-  const base = window.location.origin
-  const cmd = `curl -X POST ${base}/api/servicereg/cert -H "Authorization: Bearer ${newToken.value}" -H "Content-Type: application/json" -d '{"baseDomain":"efg.com","certPem":"<fullchain pem>","keyPem":"<privkey pem>"}'`
-  void navigator.clipboard?.writeText(cmd).then(() => toast.success(t('serviceReg.curlCopied')))
-}
-
 // ─── 基域 ────────────────────────────────────────────────────────────────────
 const newDomain = ref('')
 const addingDomain = ref(false)
@@ -258,36 +221,6 @@ async function removeDomain(d: Domain): Promise<void> {
   }
 }
 
-// 证书上传:两个文件输入(cert/key PEM)。
-const certFiles = ref<{ domain: Domain; cert: string; key: string } | null>(null)
-function pickCert(d: Domain): void {
-  certFiles.value = { domain: d, cert: '', key: '' }
-}
-function onCertPicked(e: Event, which: 'cert' | 'key'): void {
-  const f = (e.target as HTMLInputElement).files?.[0]
-  if (!f || !certFiles.value) return
-  const reader = new FileReader()
-  reader.onload = () => {
-    if (certFiles.value) certFiles.value[which] = String(reader.result ?? '')
-  }
-  reader.readAsText(f)
-}
-const certUploading = ref(false)
-async function submitCert(): Promise<void> {
-  if (!certFiles.value || !certFiles.value.cert || !certFiles.value.key) return
-  certUploading.value = true
-  try {
-    await uploadCert(certFiles.value.domain.baseDomain, certFiles.value.cert, certFiles.value.key)
-    certFiles.value = null
-    const dm = await listDomains()
-    domains.value = dm.items
-    toast.success(t('serviceReg.certUploaded'))
-  } catch (err) {
-    toast.error(errMsg(err, t('serviceReg.certUploadFail')))
-  } finally {
-    certUploading.value = false
-  }
-}
 function certDaysLeft(d: Domain): number | null {
   if (!d.certExpiresAt) return null
   const ms = new Date(d.certExpiresAt).getTime() - Date.now()
@@ -571,25 +504,6 @@ function effectivePort(inst: ServiceInstance, s: RegisteredService): number {
           </template>
         </div>
 
-        <!-- 证书上传 token -->
-        <div class="sreg__token">
-          <div class="sreg__token-head">
-            <NIcon :size="14"><Key /></NIcon>
-            <span>{{ t('serviceReg.token.title') }}</span>
-            <span class="sreg__kv-v">{{ settings.hasUploadToken ? t('serviceReg.token.active') : t('serviceReg.token.none') }}</span>
-          </div>
-          <p class="sreg__hint">{{ t('serviceReg.token.hint') }}</p>
-          <div v-if="newToken" class="sreg__token-new">
-            <code>{{ newToken }}</code>
-            <AppButton variant="default" @click="copyCurl">{{ t('serviceReg.token.copyCurl') }}</AppButton>
-          </div>
-          <div class="sreg__token-actions">
-            <AppButton variant="default" :loading="tokenBusy" @click="doGenerateToken">{{ t('serviceReg.token.generate') }}</AppButton>
-            <AppButton v-if="settings.hasUploadToken" variant="danger" :loading="tokenBusy" @click="doRevokeToken">
-              {{ t('serviceReg.revokeToken') }}
-            </AppButton>
-          </div>
-        </div>
       </section>
 
       <!-- 基域 -->
@@ -631,37 +545,13 @@ function effectivePort(inst: ServiceInstance, s: RegisteredService): number {
                   {{ t('serviceReg.domains.expires') }}:
                   {{ certDaysLeft(d) !== null ? t('serviceReg.domains.daysLeft', { n: certDaysLeft(d) ?? 0 }) : '—' }}
                 </span>
-                <AppButton variant="default" @click="pickCert(d)">{{ t('serviceReg.domains.replaceCert') }}</AppButton>
               </template>
-              <AppButton v-else variant="default" @click="pickCert(d)">{{ t('serviceReg.domains.uploadCert') }}</AppButton>
+              <AppButton variant="default" @click="goCerts">{{ t('serviceReg.domains.manageCert') }}</AppButton>
               <AppButton variant="danger" @click="removeDomain(d)"><NIcon :size="13"><Trash /></NIcon></AppButton>
             </div>
           </li>
         </ul>
 
-        <!-- 证书上传对话框(简化为内联卡) -->
-        <div v-if="certFiles" class="sreg__cert-form">
-          <h3>*.{{ certFiles.domain.baseDomain }} — {{ t('serviceReg.cert.title') }}</h3>
-          <label class="field">
-            <span class="field__lbl">{{ t('serviceReg.cert.certFile') }}</span>
-            <input class="field__in" type="file" accept=".pem,.crt,.txt" @change="onCertPicked($event, 'cert')" />
-          </label>
-          <label class="field">
-            <span class="field__lbl">{{ t('serviceReg.cert.keyFile') }}</span>
-            <input class="field__in" type="file" accept=".pem,.key,.txt" @change="onCertPicked($event, 'key')" />
-          </label>
-          <div class="sreg__form-actions">
-            <AppButton
-              variant="primary"
-              :loading="certUploading"
-              :disabled="!certFiles.cert || !certFiles.key"
-              @click="submitCert"
-            >
-              {{ t('serviceReg.cert.upload') }}
-            </AppButton>
-            <AppButton variant="default" @click="certFiles = null">{{ t('serviceReg.btn.cancel') }}</AppButton>
-          </div>
-        </div>
       </section>
 
       <!-- 服务 -->
@@ -958,8 +848,7 @@ function effectivePort(inst: ServiceInstance, s: RegisteredService): number {
   font-size: 16px;
 }
 .sreg__card-actions,
-.sreg__form-actions,
-.sreg__token-actions {
+.sreg__form-actions {
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
@@ -1047,32 +936,6 @@ function effectivePort(inst: ServiceInstance, s: RegisteredService): number {
   font-size: 12px;
   opacity: 0.65;
 }
-.sreg__token {
-  border-top: 1px dashed var(--border, #e2e2e2);
-  padding-top: 12px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-.sreg__token-head {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 13px;
-}
-.sreg__token-new {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-.sreg__token-new code {
-  font-size: 12px;
-  padding: 4px 8px;
-  border-radius: 6px;
-  background: var(--code-bg, #f4f4f4);
-  word-break: break-all;
-}
 .sreg__list {
   list-style: none;
   margin: 0;
@@ -1124,18 +987,6 @@ function effectivePort(inst: ServiceInstance, s: RegisteredService): number {
 .sreg__link {
   display: inline-flex;
   color: inherit;
-}
-.sreg__cert-form {
-  border: 1px dashed var(--border, #d4d4d4);
-  border-radius: 8px;
-  padding: 12px;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-.sreg__cert-form h3 {
-  margin: 0;
-  font-size: 13px;
 }
 .sreg__preview {
   margin: 0;

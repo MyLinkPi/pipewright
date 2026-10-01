@@ -7,7 +7,7 @@
  */
 import { ref } from 'vue'
 
-const props = withDefaults(defineProps<{
+withDefaults(defineProps<{
   content: string
   placement?: 'top' | 'bottom'
 }>(), {

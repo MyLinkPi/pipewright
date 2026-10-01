@@ -26,7 +26,7 @@ func setupDNSProvidersAPI(t *testing.T) (srv *httptest.Server, client *http.Clie
 	}
 	v = vault.New(st.DB, testMasterKey())
 	rec = audit.New(st.DB, mask.NewMasker(), nil)
-	dnsSvc := dnsprovider.New(st.DB, v, nil)
+	dnsSvc := dnsprovider.New(st.DB, v)
 
 	cred, err := v.Create(vault.CreateInput{Name: "DNS · CF", Type: vault.TypeDNSToken, Secret: "cf-secret"})
 	if err != nil {

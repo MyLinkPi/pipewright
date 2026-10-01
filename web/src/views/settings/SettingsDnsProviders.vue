@@ -308,7 +308,7 @@ async function onAddZone(): Promise<void> {
   }
 }
 
-async function onRemoveZone(zoneId: string, domain: string): Promise<void> {
+async function onRemoveZone(zoneId: string): Promise<void> {
   if (!editing.value || zoneBusy.value) return
   zoneBusy.value = true
   zoneInputError.value = ''
@@ -726,7 +726,7 @@ async function confirmDelete(): Promise<void> {
                   class="zone-rm zone-rm--inline"
                   :aria-label="t('dnsProviders.removeZoneTitle', { domain: z.baseDomain })"
                   :disabled="zoneBusy"
-                  @click="onRemoveZone(z.id, z.baseDomain)"
+                  @click="onRemoveZone(z.id)"
                 >✕</button>
               </span>
             </div>

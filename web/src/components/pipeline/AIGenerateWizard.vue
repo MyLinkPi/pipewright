@@ -20,8 +20,6 @@ import {
   aiApply,
   type AIGenerateResponse,
   type AIProposal,
-  type AIProposalStage,
-  type AIProposalBranchMapping,
 } from '../../api/aiGenerate'
 import { HttpError } from '../../api/http'
 import { useDirtyGuard } from '../../composables/useDirtyGuard'
