@@ -42,6 +42,8 @@ export default {
   detectRoot: 'root 权限',
   detectSudo: '免密 sudo 可用',
   detectNoPriv: '无提权权限',
+  detectSudoPwd: "sudo 密码可用",
+  detectSudoPwdFailed: "sudo 密码验证失败",
   detectConfD: 'conf.d 已加载',
   detectConfDMissing: 'conf.d 未加载',
   detectManaged: '已有平台配置',

@@ -37,6 +37,10 @@ export interface PlatformHttpsDetect {
   version: string
   isRoot: boolean
   sudoOk: boolean
+  /** 服务器绑定了 sudo 密码凭据(root / 免密已可用时不探测密码)。 */
+  sudoPwdConfigured: boolean
+  /** sudo -S 密码验证通过(仅非 root 且无免密 sudo 时探测)。 */
+  sudoPwdOk: boolean
   confDIncluded: boolean
   managedConf: boolean
 }

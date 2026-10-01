@@ -4,9 +4,10 @@
 // (AC-SEC-01)。Exec/Test 时,平台经 vault.OpenSecret 取凭据明文(私钥或口令)在进程内
 // 装配 ssh.ClientConfig,用完即弃,绝不入库/日志/响应/错误体。
 //
-// 本包**通用化**:对外只暴露 Exec(serverID, cmd []string) / Test(serverID) /
-// CRUD,不含任何部署语义。Epic 4 部署(4-2)与 Epic 6 运维都在其上构建,只消费这些签名、
-// 不改它们(冻结契约)。
+// 本包**通用化**:对外只暴露 Exec(serverID, cmd []string) / ExecWithStdin(带 stdin 的
+// 执行,供 sudo -S 等从标准输入读数据的场景)/ Test(serverID) / CRUD,不含任何部署语义。
+// Epic 4 部署(4-2)与 Epic 6 运维都在其上构建,只消费这些签名、不改既有签名(冻结契约;
+// 新方法按 ExecStream/Upload 先例追加)。
 //
 // AC-SEC-02:命令以 []string(程序 + 参数)传入,经各参数 shell 转义后再交 SSH session,
 // 绝不让调用方拼接原始 shell 字符串;杜绝命令注入。
@@ -42,6 +43,9 @@ var (
 	ErrInvalidPort = errors.New("target: port must be in 1..65535")
 	// ErrCredentialNotFound 表示引用的凭据不存在(下拉项已被删除等)。
 	ErrCredentialNotFound = errors.New("target: referenced credential not found")
+	// ErrCredentialTypeMismatch 表示引用的凭据类型与用途不符(如 sudo 凭据必须是
+	// sudo_password 类型;防把 git token/SSH 私钥等明文误当 sudo 密码喂给远端主机)。
+	ErrCredentialTypeMismatch = errors.New("target: credential type mismatch")
 	// ErrVaultUnconfigured 表示保险库未配置 master key,无法取 SSH 凭据。
 	ErrVaultUnconfigured = errors.New("target: vault unconfigured")
 	// ErrAuth 表示 SSH 认证失败(密钥/口令无效或无权限)。错误体不含凭据明文。
@@ -66,6 +70,9 @@ type Server struct {
 	Port         int
 	User         string
 	CredentialID string
+	// SudoCredentialID 可选引用一条 sudo_password 凭据:非 root 且无免密 sudo 的提权
+	// 场景(如平台 HTTPS 写 /etc/nginx)用该密码经 `sudo -S` 从 stdin 喂入。空 = 不使用。
+	SudoCredentialID string
 	// Labels 是构建机池标签(FR-8-19,逗号分隔 tag/k=v 项):对 target 层为不透明字符串,
 	// 语义(匹配/校验)归 runner 域。空 = 该机不参与构建机池调度。
 	Labels string
@@ -75,32 +82,36 @@ type Server struct {
 	Priority int
 	// CredentialName 是冗余只读展示名(join credentials),便于列表展示;非持久列。
 	CredentialName string
+	// SudoCredentialName 是 sudo 凭据的冗余只读展示名(第二个 join credentials);非持久列。
+	SudoCredentialName string
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
 }
 
 // CreateInput 是登记服务器的入参。
 type CreateInput struct {
-	Name         string
-	Host         string
-	Port         int // <=0 时归一为 DefaultPort
-	User         string
-	CredentialID string
-	Labels       string
-	MaxBuilds    int
-	Priority     int
+	Name             string
+	Host             string
+	Port             int // <=0 时归一为 DefaultPort
+	User             string
+	CredentialID     string
+	SudoCredentialID string // 可选;空 = 不使用密码 sudo
+	Labels           string
+	MaxBuilds        int
+	Priority         int
 }
 
 // UpdateInput 是更新服务器的入参;指针字段为 nil 表示不修改。
 type UpdateInput struct {
-	Name         *string
-	Host         *string
-	Port         *int
-	User         *string
-	CredentialID *string
-	Labels       *string
-	MaxBuilds    *int
-	Priority     *int
+	Name             *string
+	Host             *string
+	Port             *int
+	User             *string
+	CredentialID     *string
+	SudoCredentialID *string // 空串 = 清除绑定
+	Labels           *string
+	MaxBuilds        *int
+	Priority         *int
 }
 
 // ExecResult 是通用 Exec 的结果(冻结契约;Epic 4/6 消费)。
@@ -151,6 +162,10 @@ type Service interface {
 	// 大文件友好;remotePath 作 array 参数 shell 转义(AC-SEC-02),不拼 shell。远端非零退出 / 连接失败
 	// → 人读错误(绝无凭据明文)。供部署把制品库里的 jar/dist 真字节落到目标机。
 	Upload(ctx context.Context, serverID string, content io.Reader, remotePath string) error
+	// ExecWithStdin 同 Exec,但把 stdin 接到远端命令的标准输入(供 `sudo -S` 从 stdin 读密码等
+	// 场景;stdin 读尽即关闭远端 stdin)。cmd 同样 array 化、各参数 shell 转义(AC-SEC-02);
+	// stdin 内容(如密码)绝不进 argv/日志/错误体。凭据经 vault 即用即弃。
+	ExecWithStdin(ctx context.Context, serverID string, cmd []string, stdin io.Reader) (*ExecResult, error)
 }
 
 // Session 是一个双向交互式 SSH/PTY 会话(Story 6.4;FR-18)。
@@ -244,6 +259,9 @@ func (s *service) Create(ctx context.Context, in CreateInput) (*Server, error) {
 	if err := validateCreate(in); err != nil {
 		return nil, err
 	}
+	if err := s.validateSudoCredential(in.SudoCredentialID); err != nil {
+		return nil, err
+	}
 	port := normalizePort(in.Port)
 
 	id := uuid.NewString()
@@ -251,9 +269,9 @@ func (s *service) Create(ctx context.Context, in CreateInput) (*Server, error) {
 	nowStr := now.Format(time.RFC3339)
 
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO servers (id, name, host, port, user, credential_id, labels, max_builds, priority, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		id, in.Name, in.Host, port, in.User, in.CredentialID, in.Labels, in.MaxBuilds, in.Priority, nowStr, nowStr,
+		`INSERT INTO servers (id, name, host, port, user, credential_id, sudo_credential_id, labels, max_builds, priority, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		id, in.Name, in.Host, port, in.User, in.CredentialID, in.SudoCredentialID, in.Labels, in.MaxBuilds, in.Priority, nowStr, nowStr,
 	)
 	if err != nil {
 		if isForeignKeyErr(err) {
@@ -264,13 +282,45 @@ func (s *service) Create(ctx context.Context, in CreateInput) (*Server, error) {
 	return s.Get(ctx, id)
 }
 
+// validateSudoCredential 校验可选的 sudo 凭据引用:sudo_credential_id 无外键
+// (SQLite 无法 ALTER 补约束),保存时经 vault.Exists 显式校验存在性、再直查 credentials
+// 表校验类型必须是 sudo_password,防悬挂引用与类型错配(错配会把其它凭据明文误当 sudo
+// 密码经 stdin 发往远端主机)。
+func (s *service) validateSudoCredential(id string) error {
+	if id == "" {
+		return nil
+	}
+	if s.vault == nil {
+		return ErrVaultUnconfigured
+	}
+	ok, err := s.vault.Exists(id)
+	if err != nil {
+		if errors.Is(err, vault.ErrVaultUnconfigured) {
+			return ErrVaultUnconfigured
+		}
+		return fmt.Errorf("target: check sudo credential: %w", err)
+	}
+	if !ok {
+		return ErrCredentialNotFound
+	}
+	var typ string
+	if err := s.db.QueryRow(`SELECT type FROM credentials WHERE id = ?`, id).Scan(&typ); err != nil {
+		return fmt.Errorf("target: check sudo credential type: %w", err)
+	}
+	if typ != vault.TypeSudoPassword {
+		return ErrCredentialTypeMismatch
+	}
+	return nil
+}
+
 func (s *service) List(ctx context.Context) ([]*Server, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT s.id, s.name, s.host, s.port, s.user, s.credential_id,
+		`SELECT s.id, s.name, s.host, s.port, s.user, s.credential_id, COALESCE(s.sudo_credential_id, ''),
 		        COALESCE(s.labels, ''), COALESCE(s.max_builds, 0), COALESCE(s.priority, 0),
-		        COALESCE(c.name, ''), s.created_at, s.updated_at
+		        COALESCE(c.name, ''), COALESCE(sc.name, ''), s.created_at, s.updated_at
 		 FROM servers s
 		 LEFT JOIN credentials c ON c.id = s.credential_id
+		 LEFT JOIN credentials sc ON sc.id = s.sudo_credential_id
 		 ORDER BY s.created_at DESC, s.id`,
 	)
 	if err != nil {
@@ -294,11 +344,12 @@ func (s *service) List(ctx context.Context) ([]*Server, error) {
 
 func (s *service) Get(ctx context.Context, id string) (*Server, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT s.id, s.name, s.host, s.port, s.user, s.credential_id,
+		`SELECT s.id, s.name, s.host, s.port, s.user, s.credential_id, COALESCE(s.sudo_credential_id, ''),
 		        COALESCE(s.labels, ''), COALESCE(s.max_builds, 0), COALESCE(s.priority, 0),
-		        COALESCE(c.name, ''), s.created_at, s.updated_at
+		        COALESCE(c.name, ''), COALESCE(sc.name, ''), s.created_at, s.updated_at
 		 FROM servers s
 		 LEFT JOIN credentials c ON c.id = s.credential_id
+		 LEFT JOIN credentials sc ON sc.id = s.sudo_credential_id
 		 WHERE s.id = ?`, id,
 	)
 	srv, err := scanServer(row)
@@ -313,11 +364,11 @@ func (s *service) Get(ctx context.Context, id string) (*Server, error) {
 
 func (s *service) Update(ctx context.Context, id string, in UpdateInput) (*Server, error) {
 	// 先取当前行。
-	var name, host, user, credentialID, labels string
+	var name, host, user, credentialID, sudoCredentialID, labels string
 	var port, maxBuilds, priority int
 	err := s.db.QueryRowContext(ctx,
-		`SELECT name, host, port, user, credential_id, COALESCE(labels,''), COALESCE(max_builds,0), COALESCE(priority,0) FROM servers WHERE id = ?`, id,
-	).Scan(&name, &host, &port, &user, &credentialID, &labels, &maxBuilds, &priority)
+		`SELECT name, host, port, user, credential_id, COALESCE(sudo_credential_id,''), COALESCE(labels,''), COALESCE(max_builds,0), COALESCE(priority,0) FROM servers WHERE id = ?`, id,
+	).Scan(&name, &host, &port, &user, &credentialID, &sudoCredentialID, &labels, &maxBuilds, &priority)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
@@ -356,6 +407,14 @@ func (s *service) Update(ctx context.Context, id string, in UpdateInput) (*Serve
 		}
 		credentialID = *in.CredentialID
 	}
+	if in.SudoCredentialID != nil {
+		sudoCredentialID = *in.SudoCredentialID
+		// 仅在变更时校验:未修改(nil)不重查 vault,避免 vault 失配(如 master key 未注入)
+		// 时连 labels/priority 等无关字段更新也被阻塞(与 CredentialID 的校验时机一致)。
+		if err := s.validateSudoCredential(sudoCredentialID); err != nil {
+			return nil, err
+		}
+	}
 	if in.Labels != nil {
 		labels = *in.Labels
 	}
@@ -368,8 +427,8 @@ func (s *service) Update(ctx context.Context, id string, in UpdateInput) (*Serve
 
 	nowStr := time.Now().UTC().Format(time.RFC3339)
 	_, err = s.db.ExecContext(ctx,
-		`UPDATE servers SET name = ?, host = ?, port = ?, user = ?, credential_id = ?, labels = ?, max_builds = ?, priority = ?, updated_at = ? WHERE id = ?`,
-		name, host, port, user, credentialID, labels, maxBuilds, priority, nowStr, id,
+		`UPDATE servers SET name = ?, host = ?, port = ?, user = ?, credential_id = ?, sudo_credential_id = ?, labels = ?, max_builds = ?, priority = ?, updated_at = ? WHERE id = ?`,
+		name, host, port, user, credentialID, sudoCredentialID, labels, maxBuilds, priority, nowStr, id,
 	)
 	if err != nil {
 		if isForeignKeyErr(err) {
@@ -425,6 +484,18 @@ func (s *service) Test(ctx context.Context, id string) (*TestResult, error) {
 
 // Exec 取凭据明文装配 SSH 配置并跑 array 命令;凭据明文仅进程内存在,用完即弃。
 func (s *service) Exec(ctx context.Context, serverID string, cmd []string) (*ExecResult, error) {
+	return s.run(ctx, serverID, cmd, nil)
+}
+
+// ExecWithStdin 同 Exec,但把 stdin 接到远端命令的标准输入(读尽即关闭远端 stdin)。
+// stdin 为 nil 时行为与 Exec 一致。stdin 内容(如 sudo 密码)绝不进 argv/日志/错误体。
+func (s *service) ExecWithStdin(ctx context.Context, serverID string, cmd []string, stdin io.Reader) (*ExecResult, error) {
+	return s.run(ctx, serverID, cmd, stdin)
+}
+
+// run 是 Exec/ExecWithStdin 的公共实现:取凭据明文装配 SSH 配置并跑 array 命令
+// (stdin 非 nil 时走 RunWithStdin 接到远端标准输入);凭据明文仅进程内,用完即弃。
+func (s *service) run(ctx context.Context, serverID string, cmd []string, stdin io.Reader) (*ExecResult, error) {
 	if len(cmd) == 0 {
 		return nil, fmt.Errorf("target: empty command")
 	}
@@ -458,7 +529,13 @@ func (s *service) Exec(ctx context.Context, serverID string, cmd []string) (*Exe
 	}
 
 	addr := fmt.Sprintf("%s:%d", srv.Host, srv.Port)
-	res, runErr := s.dialer.Run(ctx, addr, cfg, cmd)
+	var res *ExecResult
+	var runErr error
+	if stdin == nil {
+		res, runErr = s.dialer.Run(ctx, addr, cfg, cmd)
+	} else {
+		res, runErr = s.dialer.RunWithStdin(ctx, addr, cfg, cmd, stdin)
+	}
 
 	// 显式清明文引用,尽早不可达(明文不留)。
 	secret = ""
@@ -665,9 +742,9 @@ func scanServer(sc scanner) (*Server, error) {
 	var srv Server
 	var createdStr, updatedStr string
 	if err := sc.Scan(
-		&srv.ID, &srv.Name, &srv.Host, &srv.Port, &srv.User, &srv.CredentialID,
+		&srv.ID, &srv.Name, &srv.Host, &srv.Port, &srv.User, &srv.CredentialID, &srv.SudoCredentialID,
 		&srv.Labels, &srv.MaxBuilds, &srv.Priority,
-		&srv.CredentialName, &createdStr, &updatedStr,
+		&srv.CredentialName, &srv.SudoCredentialName, &createdStr, &updatedStr,
 	); err != nil {
 		return nil, err
 	}

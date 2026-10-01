@@ -61,6 +61,11 @@ func (f *fakeTarget) ExecStream(context.Context, string, []string) (io.ReadClose
 func (f *fakeTarget) ExecInteractive(context.Context, string, []string) (target.Session, error) {
 	return nil, nil
 }
+
+// ExecWithStdin 满足 target.Service 接口(sudo -S 追加);批量命令不用 stdin,转发 Exec 语义。
+func (f *fakeTarget) ExecWithStdin(ctx context.Context, id string, cmd []string, _ io.Reader) (*target.ExecResult, error) {
+	return f.Exec(ctx, id, cmd)
+}
 func (f *fakeTarget) Upload(context.Context, string, io.Reader, string) error { return nil }
 
 func newTestService(t *testing.T, ft *fakeTarget) *Service {

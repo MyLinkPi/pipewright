@@ -27,6 +27,7 @@ const (
 	TypeRegistry    = "registry"
 	TypeSSHPassword = "ssh_password" // SSH 登录密码(非 PEM);SSH 层据 looksLikePEM 自动按密码认证
 	TypeDNSToken    = "dns_token"    // DNS 提供商 API 凭据(单字串:Cloudflare token / 「ID,Secret」);掩码走 default 全打点
+	TypeSudoPassword = "sudo_password" // 服务器登录用户的 sudo 密码(非 PEM);供提权场景经 sudo -S 从 stdin 喂入;掩码走 default 全打点
 )
 
 // 领域错误。错误体永不含明文/密文/master key。
@@ -130,7 +131,7 @@ func (s *service) configured() bool { return s.key != nil }
 // validateType 校验类型枚举。
 func validateType(t string) error {
 	switch t {
-	case TypeGitToken, TypeGitHTTP, TypeSSHKey, TypeRegistry, TypeSSHPassword, TypeDNSToken:
+	case TypeGitToken, TypeGitHTTP, TypeSSHKey, TypeRegistry, TypeSSHPassword, TypeDNSToken, TypeSudoPassword:
 		return nil
 	default:
 		return ErrInvalidType
@@ -364,6 +365,12 @@ func (s *service) Delete(id string) error {
 	if err := s.db.QueryRow(
 		`SELECT COUNT(*) FROM pipeline_settings WHERE build_json LIKE ? OR environments_json LIKE ? OR steps_json LIKE ?`,
 		"%"+id+"%", "%"+id+"%", "%"+id+"%",
+	).Scan(&refCount); err == nil && refCount > 0 {
+		return ErrCredentialInUse
+	}
+	// servers.sudo_credential_id 无外键(SQLite 无法 ALTER 补约束),同样显式检查。
+	if err := s.db.QueryRow(
+		`SELECT COUNT(*) FROM servers WHERE sudo_credential_id = ?`, id,
 	).Scan(&refCount); err == nil && refCount > 0 {
 		return ErrCredentialInUse
 	}

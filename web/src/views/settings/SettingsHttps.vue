@@ -378,8 +378,19 @@ const managedFilesHint = computed(() => t('platformHttps.managedFiles'))
               ? t('platformHttps.detectInstalled', { version: detect.version || '?' })
               : t('platformHttps.detectNotInstalled') }}
           </span>
-          <span class="badge" :class="detect.isRoot || detect.sudoOk ? 'badge--ok' : 'badge--bad'">
-            {{ detect.isRoot ? t('platformHttps.detectRoot') : detect.sudoOk ? t('platformHttps.detectSudo') : t('platformHttps.detectNoPriv') }}
+          <span
+            class="badge"
+            :class="detect.isRoot || detect.sudoOk || detect.sudoPwdOk ? 'badge--ok' : 'badge--bad'"
+          >
+            {{ detect.isRoot
+              ? t('platformHttps.detectRoot')
+              : detect.sudoOk
+                ? t('platformHttps.detectSudo')
+                : detect.sudoPwdOk
+                  ? t('platformHttps.detectSudoPwd')
+                  : detect.sudoPwdConfigured
+                    ? t('platformHttps.detectSudoPwdFailed')
+                    : t('platformHttps.detectNoPriv') }}
           </span>
           <span class="badge" :class="detect.confDIncluded ? 'badge--ok' : 'badge--warn'">
             {{ detect.confDIncluded ? t('platformHttps.detectConfD') : t('platformHttps.detectConfDMissing') }}

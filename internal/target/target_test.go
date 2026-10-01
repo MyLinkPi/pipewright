@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -244,6 +245,103 @@ func TestUploadRemoteNonZeroIsError(t *testing.T) {
 	err := svc.Upload(context.Background(), srv.ID, bytes.NewReader([]byte("x")), "/x")
 	if err == nil {
 		t.Fatal("远端非零退出应报错")
+	}
+}
+
+// TestExecWithStdinStreamsStdinToRemote 验证 ExecWithStdin 把 stdin 原样接到远端命令
+// (sudo -S 从 stdin 读密码的通道),命令仍 array 化、凭据按 PEM/口令装配。
+func TestExecWithStdinStreamsStdinToRemote(t *testing.T) {
+	db := testDB(t)
+	v := vault.New(db, testMasterKey())
+	credID := newSSHCred(t, v, "secret-pw")
+	dialer := &capturingDialer{res: &ExecResult{ExitCode: 0}}
+	svc := New(db, v, dialer)
+	srv, err := svc.Create(context.Background(), CreateInput{Name: "n", Host: "h", User: "u", CredentialID: credID})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	cmd := []string{"sudo", "-S", "-p", "", "true"}
+	if _, err := svc.ExecWithStdin(context.Background(), srv.ID, cmd, strings.NewReader("pwd\n")); err != nil {
+		t.Fatalf("ExecWithStdin: %v", err)
+	}
+	if !reflect.DeepEqual(dialer.gotCmd, cmd) {
+		t.Fatalf("命令应原样透传: %v", dialer.gotCmd)
+	}
+	if string(dialer.gotStdin) != "pwd\n" {
+		t.Fatalf("stdin 应原样透传(密码+换行):got %q", dialer.gotStdin)
+	}
+	if dialer.gotCfg.Password != "secret-pw" {
+		t.Fatalf("口令凭据应按密码装配:%+v", dialer.gotCfg)
+	}
+
+	// stdin 为 nil 时行为与 Exec 一致(走 Run,不接 stdin)。
+	dialer.gotStdin = nil
+	if _, err := svc.Exec(context.Background(), srv.ID, []string{"id", "-u"}); err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+	if dialer.gotStdin != nil {
+		t.Fatalf("Exec 不应携带 stdin: %q", dialer.gotStdin)
+	}
+}
+
+// TestSudoCredentialRoundTrip 验证服务器可选绑定的 sudo 凭据:创建/更新往返、不存在的凭据
+// 被拒(ErrCredentialNotFound)、空串清除绑定。
+func TestSudoCredentialRoundTrip(t *testing.T) {
+	db := testDB(t)
+	v := vault.New(db, testMasterKey())
+	credID := newSSHCred(t, v, "secret-pw")
+	sudoCred, err := v.Create(vault.CreateInput{Name: "sudo pwd", Type: vault.TypeSudoPassword, Secret: "s3cret"})
+	if err != nil {
+		t.Fatalf("创建 sudo 凭据: %v", err)
+	}
+	svc := New(db, v, &capturingDialer{})
+
+	srv, err := svc.Create(context.Background(), CreateInput{
+		Name: "n", Host: "h", User: "u", CredentialID: credID, SudoCredentialID: sudoCred.ID,
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	got, _ := svc.Get(context.Background(), srv.ID)
+	if got.SudoCredentialID != sudoCred.ID || got.SudoCredentialName != "sudo pwd" {
+		t.Fatalf("sudo 凭据应往返且 join 出展示名: %q/%q", got.SudoCredentialID, got.SudoCredentialName)
+	}
+
+	// 引用不存在的凭据 → 拒绝(无外键,靠显式校验)。
+	bogus := "no-such-cred"
+	if _, err := svc.Update(context.Background(), srv.ID, UpdateInput{SudoCredentialID: &bogus}); err != ErrCredentialNotFound {
+		t.Fatalf("不存在 sudo 凭据应 ErrCredentialNotFound,得 %v", err)
+	}
+	if _, err := svc.Create(context.Background(), CreateInput{
+		Name: "n2", Host: "h", User: "u", CredentialID: credID, SudoCredentialID: bogus,
+	}); err != ErrCredentialNotFound {
+		t.Fatalf("创建时不存在 sudo 凭据应 ErrCredentialNotFound,得 %v", err)
+	}
+
+	// 类型不符(非 sudo_password,如 ssh_key)→ 拒绝:防把私钥/token 明文误当 sudo 密码发往远端。
+	if _, err := svc.Update(context.Background(), srv.ID, UpdateInput{SudoCredentialID: &credID}); err != ErrCredentialTypeMismatch {
+		t.Fatalf("ssh_key 类型 sudo 凭据应 ErrCredentialTypeMismatch,得 %v", err)
+	}
+	if _, err := svc.Create(context.Background(), CreateInput{
+		Name: "n3", Host: "h", User: "u", CredentialID: credID, SudoCredentialID: credID,
+	}); err != ErrCredentialTypeMismatch {
+		t.Fatalf("创建时类型不符应 ErrCredentialTypeMismatch,得 %v", err)
+	}
+
+	// 未修改 sudoCredentialID(nil)不重校验:vault 失配(未配置 master key)时无关字段仍可更新。
+	svcNoKey := New(db, vault.New(db, nil), &capturingDialer{})
+	labels := "linux"
+	updNoKey, err := svcNoKey.Update(context.Background(), srv.ID, UpdateInput{Labels: &labels})
+	if err != nil || updNoKey.Labels != "linux" {
+		t.Fatalf("未变更 sudo 凭据时 vault 失配不应阻塞无关更新: %v / %q", err, updNoKey.Labels)
+	}
+
+	// 空串清除绑定。
+	empty := ""
+	upd, err := svc.Update(context.Background(), srv.ID, UpdateInput{SudoCredentialID: &empty})
+	if err != nil || upd.SudoCredentialID != "" {
+		t.Fatalf("空串应清除绑定: %v / %q", err, upd.SudoCredentialID)
 	}
 }
 

@@ -4,12 +4,22 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/huangchengsir/pipewright/internal/runner"
 	"github.com/huangchengsir/pipewright/internal/target"
 )
+
+// trimPtr 对非 nil 的字符串指针做 TrimSpace(nil 保持 nil = 不修改;空串 = 清除绑定)。
+func trimPtr(p *string) *string {
+	if p == nil {
+		return nil
+	}
+	s := strings.TrimSpace(*p)
+	return &s
+}
 
 // serverDTO 是服务器对外响应体(冻结契约;camelCase;无明文/无私钥/无口令)。
 type serverDTO struct {
@@ -20,6 +30,9 @@ type serverDTO struct {
 	User           string `json:"user"`
 	CredentialID   string `json:"credentialId"`
 	CredentialName string `json:"credentialName"`
+	// SudoCredentialID 是可选的 sudo_password 凭据引用(空 = 不使用密码 sudo;仅展示引用,无明文)。
+	SudoCredentialID   string `json:"sudoCredentialId"`
+	SudoCredentialName string `json:"sudoCredentialName"`
 	// 构建机池字段(FR-8-19,追加契约):labels 空 = 不参与构建机池;maxBuilds 0 = 全局默认;priority 大者优先。
 	Labels    string `json:"labels"`
 	MaxBuilds int    `json:"maxBuilds"`
@@ -31,18 +44,20 @@ type serverDTO struct {
 // toServerDTO 把领域 Server 转为契约 DTO。
 func toServerDTO(s *target.Server) serverDTO {
 	return serverDTO{
-		ID:             s.ID,
-		Name:           s.Name,
-		Host:           s.Host,
-		Port:           s.Port,
-		User:           s.User,
-		CredentialID:   s.CredentialID,
-		CredentialName: s.CredentialName,
-		Labels:         s.Labels,
-		MaxBuilds:      s.MaxBuilds,
-		Priority:       s.Priority,
-		CreatedAt:      s.CreatedAt.UTC().Format(time.RFC3339),
-		UpdatedAt:      s.UpdatedAt.UTC().Format(time.RFC3339),
+		ID:                 s.ID,
+		Name:               s.Name,
+		Host:               s.Host,
+		Port:               s.Port,
+		User:               s.User,
+		CredentialID:       s.CredentialID,
+		CredentialName:     s.CredentialName,
+		SudoCredentialID:   s.SudoCredentialID,
+		SudoCredentialName: s.SudoCredentialName,
+		Labels:             s.Labels,
+		MaxBuilds:          s.MaxBuilds,
+		Priority:           s.Priority,
+		CreatedAt:          s.CreatedAt.UTC().Format(time.RFC3339),
+		UpdatedAt:          s.UpdatedAt.UTC().Format(time.RFC3339),
 	}
 }
 
@@ -63,6 +78,8 @@ func writeServerError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusNotFound, "server_not_found", "服务器不存在")
 	case errors.Is(err, target.ErrCredentialNotFound):
 		writeError(w, http.StatusUnprocessableEntity, "credential_error", "引用的 SSH 凭据不存在")
+	case errors.Is(err, target.ErrCredentialTypeMismatch):
+		writeError(w, http.StatusUnprocessableEntity, "credential_error", "sudo 提权凭据必须是「sudo 密码」类型凭据")
 	case errors.Is(err, target.ErrEmptyName):
 		writeError(w, http.StatusBadRequest, "invalid_server", "服务器名称不能为空")
 	case errors.Is(err, target.ErrEmptyHost):
@@ -139,14 +156,15 @@ func makeCreateServerHandler(svc target.Service) http.HandlerFunc {
 		}
 		r.Body = http.MaxBytesReader(w, r.Body, 1<<16)
 		var req struct {
-			Name         string `json:"name"`
-			Host         string `json:"host"`
-			Port         int    `json:"port"`
-			User         string `json:"user"`
-			CredentialID string `json:"credentialId"`
-			Labels       string `json:"labels"`
-			MaxBuilds    int    `json:"maxBuilds"`
-			Priority     int    `json:"priority"`
+			Name             string `json:"name"`
+			Host             string `json:"host"`
+			Port             int    `json:"port"`
+			User             string `json:"user"`
+			CredentialID     string `json:"credentialId"`
+			SudoCredentialID string `json:"sudoCredentialId"`
+			Labels           string `json:"labels"`
+			MaxBuilds        int    `json:"maxBuilds"`
+			Priority         int    `json:"priority"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, "bad_request", "请求体格式错误")
@@ -157,14 +175,15 @@ func makeCreateServerHandler(svc target.Service) http.HandlerFunc {
 			return
 		}
 		s, err := svc.Create(r.Context(), target.CreateInput{
-			Name:         req.Name,
-			Host:         req.Host,
-			Port:         req.Port,
-			User:         req.User,
-			CredentialID: req.CredentialID,
-			Labels:       req.Labels,
-			MaxBuilds:    req.MaxBuilds,
-			Priority:     req.Priority,
+			Name:             req.Name,
+			Host:             req.Host,
+			Port:             req.Port,
+			User:             req.User,
+			CredentialID:     req.CredentialID,
+			SudoCredentialID: strings.TrimSpace(req.SudoCredentialID),
+			Labels:           req.Labels,
+			MaxBuilds:        req.MaxBuilds,
+			Priority:         req.Priority,
 		})
 		if err != nil {
 			writeServerError(w, err)
@@ -184,14 +203,15 @@ func makeUpdateServerHandler(svc target.Service) http.HandlerFunc {
 		id := chi.URLParam(r, "id")
 		r.Body = http.MaxBytesReader(w, r.Body, 1<<16)
 		var req struct {
-			Name         *string `json:"name"`
-			Host         *string `json:"host"`
-			Port         *int    `json:"port"`
-			User         *string `json:"user"`
-			CredentialID *string `json:"credentialId"`
-			Labels       *string `json:"labels"`
-			MaxBuilds    *int    `json:"maxBuilds"`
-			Priority     *int    `json:"priority"`
+			Name             *string `json:"name"`
+			Host             *string `json:"host"`
+			Port             *int    `json:"port"`
+			User             *string `json:"user"`
+			CredentialID     *string `json:"credentialId"`
+			SudoCredentialID *string `json:"sudoCredentialId"`
+			Labels           *string `json:"labels"`
+			MaxBuilds        *int    `json:"maxBuilds"`
+			Priority         *int    `json:"priority"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, "bad_request", "请求体格式错误")
@@ -216,14 +236,15 @@ func makeUpdateServerHandler(svc target.Service) http.HandlerFunc {
 			}
 		}
 		s, err := svc.Update(r.Context(), id, target.UpdateInput{
-			Name:         req.Name,
-			Host:         req.Host,
-			Port:         req.Port,
-			User:         req.User,
-			CredentialID: req.CredentialID,
-			Labels:       req.Labels,
-			MaxBuilds:    req.MaxBuilds,
-			Priority:     req.Priority,
+			Name:             req.Name,
+			Host:             req.Host,
+			Port:             req.Port,
+			User:             req.User,
+			CredentialID:     req.CredentialID,
+			SudoCredentialID: trimPtr(req.SudoCredentialID),
+			Labels:           req.Labels,
+			MaxBuilds:        req.MaxBuilds,
+			Priority:         req.Priority,
 		})
 		if err != nil {
 			writeServerError(w, err)

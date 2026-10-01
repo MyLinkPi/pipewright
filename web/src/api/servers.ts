@@ -27,6 +27,15 @@ export interface Server {
   credentialId: string
   /** Redundant display name joined from credentials, for the list UI. */
   credentialName: string
+  /**
+   * Optional reference to a sudo_password credential: when the login user is
+   * neither root nor passwordless-sudo capable, privileged flows (e.g. platform
+   * HTTPS writing /etc/nginx) feed this password to `sudo -S` over stdin.
+   * Empty = password sudo disabled (root / passwordless sudo only).
+   */
+  sudoCredentialId: string
+  /** Redundant display name of the sudo credential, for the list UI. */
+  sudoCredentialName: string
   /** Build-pool labels, comma-separated tags / k=v terms. Empty = not a build machine (FR-8-19). */
   labels: string
   /** Concurrent build slots on this machine. 0 = use the global default (default 1). */
@@ -43,6 +52,8 @@ export interface CreateServerInput {
   port: number
   user: string
   credentialId: string
+  /** Optional sudo_password credential; empty string = not bound. */
+  sudoCredentialId?: string
   labels?: string
   maxBuilds?: number
   priority?: number
@@ -54,6 +65,8 @@ export interface UpdateServerInput {
   port?: number
   user?: string
   credentialId?: string
+  /** Empty string clears the binding; omit = keep. */
+  sudoCredentialId?: string
   labels?: string
   maxBuilds?: number
   priority?: number

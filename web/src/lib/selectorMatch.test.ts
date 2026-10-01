@@ -6,6 +6,7 @@ function srv(id: string, name: string, labels = ''): Server {
   return {
     id, name, host: '127.0.0.1', port: 22, user: 'deploy',
     credentialId: 'cred', credentialName: 'cred',
+    sudoCredentialId: '', sudoCredentialName: '',
     labels, maxBuilds: 1, priority: 0, createdAt: '', updatedAt: '',
   }
 }

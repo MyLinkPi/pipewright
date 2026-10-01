@@ -42,6 +42,8 @@ export default {
   detectRoot: 'root',
   detectSudo: 'sudo sin contraseña',
   detectNoPriv: 'sin privilegios',
+  detectSudoPwd: "contraseña sudo válida",
+  detectSudoPwdFailed: "contraseña sudo incorrecta",
   detectConfD: 'conf.d cargado',
   detectConfDMissing: 'conf.d no cargado',
   detectManaged: 'config de plataforma presente',
