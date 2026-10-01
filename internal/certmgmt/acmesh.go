@@ -17,6 +17,7 @@ import (
 	"bytes"
 	"context"
 	"embed"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -151,8 +152,18 @@ func (s *service) acmeVersion() string {
 
 // ---------- acme.sh 调用 ----------
 
+// acmeExitRenewSkip 是 acme.sh 的 RENEW_SKIP 退出码:域名未变且证书仍在有效期,
+// 本次不重复向 CA 下单("Domains not changed. Skipping." 分支的退出方式)。
+const acmeExitRenewSkip = 2
+
+// errRenewSkip 对应 acme.sh 的 RENEW_SKIP 退出:不是失败 —— 所求证书已在上一次成功
+// 签发的 home 里(典型场景:LE 侧已出证,但平台读回/入库环节失败,DB 无签发记录,
+// 重试时 acme.sh 判定未到期而跳过)。调用方应直接进入读回补记。
+var errRenewSkip = errors.New("certmgmt: acme.sh 跳过签发(证书已存在且在有效期内)")
+
 // runAcmesh 在本地以参数数组运行 acme.sh(绝不拼 shell);extraEnv 追加到进程环境
-// (DNS 凭据走这里,不进命令行/日志)。返回 stdout;非零退出 → ErrIssue(附人话摘要)。
+// (DNS 凭据走这里,不进命令行/日志)。返回 stdout;退出码 2 → errRenewSkip,
+// 其余非零退出 → ErrIssue(附人话摘要)。
 func (s *service) runAcmesh(ctx context.Context, args []string, extraEnv [][2]string) (string, error) {
 	sh, err := exec.LookPath("sh")
 	if err != nil {
@@ -168,6 +179,10 @@ func (s *service) runAcmesh(ctx context.Context, args []string, extraEnv [][2]st
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if rerr := cmd.Run(); rerr != nil {
+		var exitErr *exec.ExitError
+		if errors.As(rerr, &exitErr) && exitErr.ExitCode() == acmeExitRenewSkip {
+			return stdout.String(), errRenewSkip
+		}
 		detail := strings.TrimSpace(stderr.String())
 		if detail == "" {
 			detail = strings.TrimSpace(stdout.String())
@@ -202,13 +217,17 @@ func renewArgs(c *Certificate) []string {
 }
 
 // runIssue 执行一次签发/续期:已成功签发过 → 续期,否则签发(同一条路径,状态机驱动)。
+// errRenewSkip 不视为失败:所求证书已在 home 里(上次 CA 出证成功但平台未记录),
+// 返回 nil 让调用方直接读回补记,不重复向 CA 下单(也不烧重复证书速率限额)。
 func (s *service) runIssue(ctx context.Context, c *Certificate, dnsAPI string, dnsEnv [][2]string) error {
 	args := renewArgs(c)
 	if c.LastIssuedAt.IsZero() {
 		args = issueArgs(c, dnsAPI)
 	}
-	_, err := s.runAcmesh(ctx, args, dnsEnv)
-	return err
+	if _, err := s.runAcmesh(ctx, args, dnsEnv); err != nil && !errors.Is(err, errRenewSkip) {
+		return err
+	}
+	return nil
 }
 
 // acmeDomainDir 返回签发产物目录名,与 acme.sh _initpath 的 DOMAIN_PATH 规则严格对齐:

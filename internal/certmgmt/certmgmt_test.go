@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -131,6 +132,27 @@ func TestAcmeDomainDir(t *testing.T) {
 	}
 	if got := svc.acmeDomainDir("efg.com", KeyTypeRSA2048); got != "efg.com_ecc" {
 		t.Fatalf("仅剩 _ecc 目录时应回退:%s", got)
+	}
+}
+
+// TestRunAcmeshRenewSkip 锁定退出码映射:acme.sh 以 RENEW_SKIP(2)退出 → errRenewSkip
+// (证书已存在且有效,不是失败);其余非零退出仍为 ErrIssue。无 sh 的环境跳过。
+func TestRunAcmeshRenewSkip(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("控制机无 sh,跳过")
+	}
+	svc := &service{home: t.TempDir()}
+	if err := os.WriteFile(svc.scriptPath(), []byte("#!/bin/sh\nexit 2\n"), 0o700); err != nil {
+		t.Fatalf("写假脚本:%v", err)
+	}
+	if _, err := svc.runAcmesh(context.Background(), []string{"--issue"}, nil); !errors.Is(err, errRenewSkip) {
+		t.Fatalf("退出码 2 应映射 errRenewSkip:%v", err)
+	}
+	if err := os.WriteFile(svc.scriptPath(), []byte("#!/bin/sh\necho boom >&2\nexit 1\n"), 0o700); err != nil {
+		t.Fatalf("写假脚本:%v", err)
+	}
+	if _, err := svc.runAcmesh(context.Background(), []string{"--issue"}, nil); !errors.Is(err, ErrIssue) {
+		t.Fatalf("退出码 1 应映射 ErrIssue:%v", err)
 	}
 }
 
