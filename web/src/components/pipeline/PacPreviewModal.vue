@@ -86,7 +86,7 @@ onMounted(() => {
             type="text"
             spellcheck="false"
             autocomplete="off"
-            :placeholder="defaultBranch || 'main'"
+            :placeholder="defaultBranch || 'master'"
             :disabled="busy"
             @keydown.enter.prevent="runPreview"
           />

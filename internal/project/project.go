@@ -94,6 +94,9 @@ type TestCloneResult struct {
 	DefaultBranch string
 }
 
+// DefaultBranchFallback 是探测不出远端 HEAD 且用户未指定时的兜底默认分支。
+const DefaultBranchFallback = "master"
+
 // ListResult 是分页列表结果(契约可携带分页元信息;DTO 兼容)。
 type ListResult struct {
 	Items    []Project
@@ -200,6 +203,9 @@ func (s *service) Create(ctx context.Context, in CreateInput) (*Project, error) 
 	defaultBranch := in.DefaultBranch
 	if defaultBranch == "" {
 		defaultBranch = branch // ls-remote 探测到的远端 HEAD(可能为空)
+	}
+	if defaultBranch == "" {
+		defaultBranch = DefaultBranchFallback
 	}
 
 	id := uuid.NewString()
@@ -397,6 +403,9 @@ func (s *service) TestClone(ctx context.Context, repoURL, credentialID string) (
 	branch, err := s.probe(ctx, repoURL, credentialID)
 	if err != nil {
 		return nil, err
+	}
+	if branch == "" {
+		branch = DefaultBranchFallback
 	}
 	return &TestCloneResult{DefaultBranch: branch}, nil
 }

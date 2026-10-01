@@ -603,7 +603,7 @@ function isFailedStatus(status: RunStatus): boolean {
               class="field-input field-input--mono"
               :class="{ 'field-input--error': triggerBranchError }"
               type="text"
-              placeholder="main"
+              placeholder="master"
               autocomplete="off"
               :disabled="triggerSubmitting"
               :aria-invalid="triggerBranchError ? 'true' : undefined"
