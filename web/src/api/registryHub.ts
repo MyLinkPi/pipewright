@@ -22,6 +22,12 @@ export interface RegistryHubConfig {
   upstreamUrl: string
   artifactPort: number
   cachePort: number
+  /** 制品/缓存存储目录(配置值;空 = 服务端默认)。 */
+  artifactDataDir: string
+  cacheDataDir: string
+  /** 服务端解析后的生效目录(占位展示用)。 */
+  effectiveArtifactDataDir: string
+  effectiveCacheDataDir: string
   keepPerProject: number
   maxAgeDays: number
   /** 只读展示:生成 daemon.json / remoteTag 用的完整地址。 */
@@ -36,6 +42,8 @@ export interface SaveRegistryHubInput {
   upstreamUrl: string
   artifactPort: number
   cachePort: number
+  artifactDataDir: string
+  cacheDataDir: string
   keepPerProject: number
   maxAgeDays: number
 }

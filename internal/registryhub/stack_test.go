@@ -316,6 +316,204 @@ func TestPruneSharedDigestSkipped(t *testing.T) {
 	}
 }
 
+// deployRunner 是 compose 探测/up 均放行、记录全部命令的 LocalRunner。
+func deployRunner() *scriptRunner {
+	return &scriptRunner{steps: []scriptStep{
+		{match: func(name string, args []string) bool {
+			return name == "docker" && len(args) >= 1 && args[0] == "compose" && argHas("version")(args)
+		}, out: "v2"},
+		{match: func(name string, args []string) bool { return argHas("up")(args) && argHas("-d")(args) }, out: "started"},
+	}}
+}
+
+func TestDeployStackCustomDataDirsRendered(t *testing.T) {
+	base := t.TempDir()
+	art, cch := filepath.Join(base, "art"), filepath.Join(base, "cch")
+	runner := deployRunner()
+	h := newTestHub(t, Options{BaseDir: base, Runner: runner})
+	if _, err := h.Save(context.Background(), SaveInput{Enabled: true, ExternalAddr: "ctrl", ArtifactDataDir: art, CacheDataDir: cch}); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	res, err := h.DeployStack(context.Background())
+	if err != nil || !res.OK {
+		t.Fatalf("deploy: %v %+v", err, res)
+	}
+	content, rerr := os.ReadFile(filepath.Join(base, composeFile))
+	if rerr != nil {
+		t.Fatalf("compose 未落盘: %v", rerr)
+	}
+	for _, want := range []string{`- "` + art + `:/var/lib/registry"`, `- "` + cch + `:/var/lib/registry"`} {
+		if !strings.Contains(string(content), want) {
+			t.Fatalf("compose 缺卷行 %q:\n%s", want, content)
+		}
+	}
+	// 自定义目录已建。
+	for _, dir := range []string{art, cch} {
+		if _, serr := os.Stat(dir); serr != nil {
+			t.Fatalf("目录 %s 未创建: %v", dir, serr)
+		}
+	}
+}
+
+func TestDeployStackMigratesArtifactAndClearsCache(t *testing.T) {
+	base := t.TempDir()
+	// 第一次部署:默认目录(data/cache),并在两个目录里留下数据。
+	runner := deployRunner()
+	h := newTestHub(t, Options{BaseDir: base, Runner: runner})
+	if _, err := h.Save(context.Background(), SaveInput{Enabled: true, ExternalAddr: "ctrl"}); err != nil {
+		t.Fatalf("save 1: %v", err)
+	}
+	if _, err := h.DeployStack(context.Background()); err != nil {
+		t.Fatalf("deploy 1: %v", err)
+	}
+	oldData, oldCache := filepath.Join(base, "data"), filepath.Join(base, "cache")
+	newArt, newCache := filepath.Join(base, "art"), filepath.Join(base, "cch")
+	if err := os.MkdirAll(filepath.Join(oldData, "blobs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(oldData, "blobs", "x"), []byte("artifact-data"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(oldCache, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(oldCache, "layer"), []byte("cache"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// 第二次部署:两个目录都改 → 制品迁移、缓存清除。
+	if _, err := h.Save(context.Background(), SaveInput{Enabled: true, ExternalAddr: "ctrl", ArtifactDataDir: newArt, CacheDataDir: newCache}); err != nil {
+		t.Fatalf("save 2: %v", err)
+	}
+	res, err := h.DeployStack(context.Background())
+	if err != nil || !res.OK {
+		t.Fatalf("deploy 2: %v %+v", err, res)
+	}
+	// 制品:旧目录消失,新目录含完整数据。
+	if _, serr := os.Stat(oldData); !os.IsNotExist(serr) {
+		t.Fatalf("制品旧目录应已移走: %v", serr)
+	}
+	moved, rerr := os.ReadFile(filepath.Join(newArt, "blobs", "x"))
+	if rerr != nil || string(moved) != "artifact-data" {
+		t.Fatalf("制品数据应迁移到新目录: %q %v", moved, rerr)
+	}
+	// 缓存:旧目录整体清除。
+	if _, serr := os.Stat(oldCache); !os.IsNotExist(serr) {
+		t.Fatalf("缓存旧目录应已清除: %v", serr)
+	}
+	// 输出应含迁移/清除说明;容器命令应含 rm -f 制品容器。
+	if !strings.Contains(res.Output, "已迁移制品数据") || !strings.Contains(res.Output, "已清除缓存旧目录") {
+		t.Fatalf("输出缺说明: %q", res.Output)
+	}
+	joined := ""
+	for _, c := range runner.commands {
+		joined += strings.Join(c, " ") + "\n"
+	}
+	if !strings.Contains(joined, "docker rm -f pipewright-registry") || !strings.Contains(joined, "docker rm -f pipewright-registry-cache") {
+		t.Fatalf("迁移/清除前应移除对应容器: %s", joined)
+	}
+	// 新 compose 以新目录渲染。
+	content, _ := os.ReadFile(filepath.Join(base, composeFile))
+	if !strings.Contains(string(content), newArt) || strings.Contains(string(content), oldCache) {
+		t.Fatalf("compose 应指向新目录:\n%s", content)
+	}
+}
+
+func TestDeployStackArtifactMigrateRefusesNonEmptyTarget(t *testing.T) {
+	base := t.TempDir()
+	runner := deployRunner()
+	h := newTestHub(t, Options{BaseDir: base, Runner: runner})
+	if _, err := h.Save(context.Background(), SaveInput{Enabled: true, ExternalAddr: "ctrl"}); err != nil {
+		t.Fatalf("save 1: %v", err)
+	}
+	if _, err := h.DeployStack(context.Background()); err != nil {
+		t.Fatalf("deploy 1: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(base, "data", "blob"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// 新目录预置非空内容 → 拒绝迁移,部署失败且不写新 compose / 不 up。
+	newArt := filepath.Join(base, "art")
+	if err := os.MkdirAll(newArt, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(newArt, "stale"), []byte("y"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.Save(context.Background(), SaveInput{Enabled: true, ExternalAddr: "ctrl", ArtifactDataDir: newArt}); err != nil {
+		t.Fatalf("save 2: %v", err)
+	}
+	res, err := h.DeployStack(context.Background())
+	if err != nil {
+		t.Fatalf("deploy 2: %v", err)
+	}
+	if res.OK || !strings.Contains(res.Error, "拒绝迁移") {
+		t.Fatalf("非空目标应拒绝迁移: %+v", res)
+	}
+	// 旧数据原封未动。
+	if _, serr := os.Stat(filepath.Join(base, "data", "blob")); serr != nil {
+		t.Fatalf("旧数据不得被破坏: %v", serr)
+	}
+}
+
+func TestDeployStackCacheOldDirEqualsNewArtifactRefuses(t *testing.T) {
+	// 旧缓存目录与新制品目录重合:清除会吞掉刚迁入的制品数据 → 必须拒绝。
+	base := t.TempDir()
+	runner := deployRunner()
+	h := newTestHub(t, Options{BaseDir: base, Runner: runner})
+	if _, err := h.Save(context.Background(), SaveInput{Enabled: true, ExternalAddr: "ctrl"}); err != nil {
+		t.Fatalf("save 1: %v", err)
+	}
+	if _, err := h.DeployStack(context.Background()); err != nil {
+		t.Fatalf("deploy 1: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(base, "cache"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// 新制品目录 = 旧缓存目录(base/cache);新缓存目录另选。
+	if _, err := h.Save(context.Background(), SaveInput{
+		Enabled: true, ExternalAddr: "ctrl",
+		ArtifactDataDir: filepath.Join(base, "cache"), CacheDataDir: filepath.Join(base, "cch"),
+	}); err != nil {
+		t.Fatalf("save 2: %v", err)
+	}
+	runner.commands = nil // 只检查第二次部署的命令
+	res, err := h.DeployStack(context.Background())
+	if err != nil {
+		t.Fatalf("deploy 2: %v", err)
+	}
+	if res.OK || !strings.Contains(res.Error, "重合") {
+		t.Fatalf("缓存旧目录与新制品目录重合应拒绝: %+v", res)
+	}
+	// compose 未重写(up 未执行),up 命令不应出现在记录里。
+	for _, c := range runner.commands {
+		if argHas("up")(c) {
+			t.Fatalf("失败后不得再 compose up: %v", c)
+		}
+	}
+}
+
+func TestStatusUsesConfiguredDataDirs(t *testing.T) {
+	base := t.TempDir()
+	art := filepath.Join(base, "art")
+	if err := os.MkdirAll(art, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(art, "blob"), []byte(strings.Repeat("x", 2048)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	h := newTestHub(t, Options{BaseDir: base, Runner: &scriptRunner{}, HTTPClient: &http.Client{Timeout: 300 * time.Millisecond}})
+	if _, err := h.Save(context.Background(), SaveInput{Enabled: true, ExternalAddr: "ctrl", ArtifactDataDir: art}); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	st, err := h.Status(context.Background())
+	if err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	if st.DataDirBytes != 2048 {
+		t.Fatalf("存储占用应按配置目录统计: %+v", st)
+	}
+}
+
 func TestResolveBuiltin(t *testing.T) {
 	h := newTestHub(t, Options{})
 	if addr, ok := h.ResolveBuiltin(context.Background()); ok || addr != "" {

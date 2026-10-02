@@ -3,6 +3,7 @@ package registryhub
 import (
 	"context"
 	"io"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -59,6 +60,74 @@ func TestConfigSaveRoundtripAndReload(t *testing.T) {
 	}
 	if !cfg2.Enabled || cfg2.ExternalAddr != "192.168.1.10" || cfg2.KeepPerProject != 10 {
 		t.Fatalf("重载不符: %+v", cfg2)
+	}
+}
+
+func TestConfigDataDirValidation(t *testing.T) {
+	base := t.TempDir() // 绝对路径基底(跨平台)
+	root := string(filepath.Separator)
+	if vol := filepath.VolumeName(base); vol != "" {
+		root = vol + string(filepath.Separator)
+	}
+	cases := []struct {
+		name    string
+		in      SaveInput
+		wantErr bool
+	}{
+		{"留空沿用默认", SaveInput{Enabled: true, ExternalAddr: "h1"}, false},
+		{"合法自定义目录", SaveInput{Enabled: true, ExternalAddr: "h1", ArtifactDataDir: filepath.Join(base, "art"), CacheDataDir: filepath.Join(base, "cch")}, false},
+		{"相对路径拒绝", SaveInput{Enabled: true, ExternalAddr: "h1", ArtifactDataDir: "rel/dir"}, true},
+		{"根目录拒绝", SaveInput{Enabled: true, ExternalAddr: "h1", CacheDataDir: root}, true},
+		{"控制字符拒绝", SaveInput{Enabled: true, ExternalAddr: "h1", ArtifactDataDir: base + "\n"}, true},
+		{"目录相同拒绝", SaveInput{Enabled: true, ExternalAddr: "h1", ArtifactDataDir: filepath.Join(base, "same"), CacheDataDir: filepath.Join(base, "same")}, true},
+		{"缓存嵌套制品拒绝", SaveInput{Enabled: true, ExternalAddr: "h1", ArtifactDataDir: filepath.Join(base, "a"), CacheDataDir: filepath.Join(base, "a", "c")}, true},
+		{"目录罩住栈基目录拒绝", SaveInput{Enabled: true, ExternalAddr: "h1", CacheDataDir: filepath.Join(base, "..")}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newTestHub(t, Options{BaseDir: base})
+			_, err := h.Save(context.Background(), tc.in)
+			if tc.wantErr && (err == nil || err != ErrInvalidDataDir) {
+				t.Fatalf("应 ErrInvalidDataDir, got %v", err)
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("应合法, got %v", err)
+			}
+		})
+	}
+}
+
+func TestConfigDataDirDefaultsPinnedAndRoundtrip(t *testing.T) {
+	base := t.TempDir()
+	db := storetest.OpenDB(t)
+	h := New(db, nil, Options{BaseDir: base})
+	// 留空保存 → 默认目录物化落库(显式可追溯)。
+	cfg, err := h.Save(context.Background(), SaveInput{Enabled: true, ExternalAddr: "h1"})
+	if err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	if cfg.ArtifactDataDir != filepath.Join(base, "data") || cfg.CacheDataDir != filepath.Join(base, "cache") {
+		t.Fatalf("默认目录应物化: %q %q", cfg.ArtifactDataDir, cfg.CacheDataDir)
+	}
+	// 自定义保存 → 同库新实例重载一致。
+	art, cch := filepath.Join(base, "art"), filepath.Join(base, "cch")
+	cfg2, err := h.Save(context.Background(), SaveInput{Enabled: true, ExternalAddr: "h1", ArtifactDataDir: art, CacheDataDir: cch})
+	if err != nil {
+		t.Fatalf("save 2: %v", err)
+	}
+	if cfg2.ArtifactDataDir != art || cfg2.CacheDataDir != cch {
+		t.Fatalf("自定义目录不符: %+v", cfg2)
+	}
+	h2 := New(db, nil, Options{BaseDir: base})
+	got, err := h2.Get(context.Background())
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if got.ArtifactDataDir != art || got.CacheDataDir != cch {
+		t.Fatalf("重载目录不符: %+v", got)
+	}
+	if art2, cch2 := h2.ResolveDirs(got); art2 != art || cch2 != cch {
+		t.Fatalf("ResolveDirs 应取配置值: %q %q", art2, cch2)
 	}
 }
 

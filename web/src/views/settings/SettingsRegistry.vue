@@ -4,6 +4,7 @@
  *
  * 区块:
  *  1. 基础配置:启用开关 / 外部地址(带探测建议值)/ 缓存上游(预置 + 自定义)/ 端口 /
+ *     制品与缓存存储目录(改制品目录→部署时自动迁移旧数据;改缓存目录→清空旧缓存)/
  *     镜像保留策略。保存 = PUT(只写库,**不触碰任何机器**)。
  *  2. 部署与状态:显式「部署/更新」按钮(compose up -d);栈状态卡(容器/探活/存储占用);
  *     「立即清理」按保留策略裁剪制品 tag。
@@ -97,6 +98,8 @@ async function saveConfig(): Promise<void> {
       upstreamUrl: (isCustomUpstream.value ? upstreamCustom.value : cfg.value.upstreamUrl).trim(),
       artifactPort: Math.floor(Number(cfg.value.artifactPort) || 0),
       cachePort: Math.floor(Number(cfg.value.cachePort) || 0),
+      artifactDataDir: cfg.value.artifactDataDir.trim(),
+      cacheDataDir: cfg.value.cacheDataDir.trim(),
       keepPerProject: Math.max(0, Math.floor(Number(cfg.value.keepPerProject) || 0)),
       maxAgeDays: Math.max(0, Math.floor(Number(cfg.value.maxAgeDays) || 0)),
     })
@@ -313,6 +316,17 @@ onMounted(() => {
           <span class="reg-label">{{ t('settingsRegistry.cachePort') }}</span>
           <input class="reg-input mono" type="number" min="1" max="65535" v-model.number="cfg.cachePort" :disabled="loading" />
           <span class="reg-hint">{{ t('settingsRegistry.cachePortHint', { addr: cfg.cacheAddr || '…' }) }}</span>
+        </label>
+
+        <label class="reg-field">
+          <span class="reg-label">{{ t('settingsRegistry.artifactDataDir') }}</span>
+          <input class="reg-input mono" v-model="cfg.artifactDataDir" :disabled="loading" :placeholder="cfg.effectiveArtifactDataDir" spellcheck="false" />
+          <span class="reg-hint">{{ t('settingsRegistry.artifactDataDirHint') }}</span>
+        </label>
+        <label class="reg-field">
+          <span class="reg-label">{{ t('settingsRegistry.cacheDataDir') }}</span>
+          <input class="reg-input mono" v-model="cfg.cacheDataDir" :disabled="loading" :placeholder="cfg.effectiveCacheDataDir" spellcheck="false" />
+          <span class="reg-hint">{{ t('settingsRegistry.cacheDataDirHint') }}</span>
         </label>
 
         <label class="reg-field">

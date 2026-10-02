@@ -80,7 +80,7 @@ func New(db *sql.DB, targetSvc target.Service, opts Options) *Hub {
 		opts.LocalMachine = localMachine{runner: opts.Runner}
 	}
 	return &Hub{
-		cfg:       configService{db: db},
+		cfg:       configService{db: db, baseDir: opts.BaseDir},
 		targetSvc: targetSvc,
 		opts:      opts,
 	}
@@ -90,6 +90,12 @@ func New(db *sql.DB, targetSvc target.Service, opts Options) *Hub {
 func (h *Hub) Get(ctx context.Context) (*Config, error) { return h.cfg.Get(ctx) }
 func (h *Hub) Save(ctx context.Context, in SaveInput) (*Config, error) {
 	return h.cfg.Save(ctx, in)
+}
+
+// ResolveDirs 返回制品/缓存存储的实际生效目录(配置值优先,空回退默认)。
+// 供 httpapi 在 DTO 里回显默认路径(UI 占位/提示用),不触网不碰盘。
+func (h *Hub) ResolveDirs(cfg *Config) (artifact, cache string) {
+	return h.resolveArtifactDir(cfg), h.resolveCacheDir(cfg)
 }
 
 // ResolveBuiltin 返回内置制品 registry 地址(构建接入用:环境未绑定外部仓库时的推送兜底;

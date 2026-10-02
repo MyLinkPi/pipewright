@@ -29,37 +29,49 @@ type registryHubService interface {
 	Prune(ctx context.Context, now time.Time) (*registryhub.PruneResult, error)
 	ApplyDaemon(ctx context.Context, serverIDs []string, includeLocal bool) ([]registryhub.DaemonApplyResult, error)
 	InspectDaemon(ctx context.Context, serverID string) (*registryhub.DaemonInspect, error)
+	// ResolveDirs 返回制品/缓存存储的生效目录(UI 占位展示;配置为空时回显服务端默认)。
+	ResolveDirs(cfg *registryhub.Config) (artifact, cache string)
 }
 
 // registryHubConfigDTO 是 GET/PUT /api/settings/registry 的响应体(冻结契约;无任何凭据)。
 // suggestedAddr 为控制机出网网卡 IP(仅 UI 预填建议,不回写);artifactAddr/cacheAddr 是
-// 生成 daemon.json / remoteTag 用的完整 host:port 展示值。
+// 生成 daemon.json / remoteTag 用的完整 host:port 展示值;artifactDataDir/cacheDataDir 是
+// 配置值(空=默认),*Effective 是服务端解析后的生效目录(供占位展示)。
 type registryHubConfigDTO struct {
-	Enabled        bool    `json:"enabled"`
-	ExternalAddr   string  `json:"externalAddr"`
-	SuggestedAddr  string  `json:"suggestedAddr"`
-	UpstreamURL    string  `json:"upstreamUrl"`
-	ArtifactPort   int     `json:"artifactPort"`
-	CachePort      int     `json:"cachePort"`
-	KeepPerProject int     `json:"keepPerProject"`
-	MaxAgeDays     int     `json:"maxAgeDays"`
-	ArtifactAddr   string  `json:"artifactAddr"`
-	CacheAddr      string  `json:"cacheAddr"`
-	UpdatedAt      *string `json:"updatedAt"`
+	Enabled                    bool    `json:"enabled"`
+	ExternalAddr               string  `json:"externalAddr"`
+	SuggestedAddr              string  `json:"suggestedAddr"`
+	UpstreamURL                string  `json:"upstreamUrl"`
+	ArtifactPort               int     `json:"artifactPort"`
+	CachePort                  int     `json:"cachePort"`
+	ArtifactDataDir            string  `json:"artifactDataDir"`
+	CacheDataDir               string  `json:"cacheDataDir"`
+	EffectiveArtifactDataDir   string  `json:"effectiveArtifactDataDir"`
+	EffectiveCacheDataDir      string  `json:"effectiveCacheDataDir"`
+	KeepPerProject             int     `json:"keepPerProject"`
+	MaxAgeDays                 int     `json:"maxAgeDays"`
+	ArtifactAddr               string  `json:"artifactAddr"`
+	CacheAddr                  string  `json:"cacheAddr"`
+	UpdatedAt                  *string `json:"updatedAt"`
 }
 
-func toRegistryHubConfigDTO(c *registryhub.Config) registryHubConfigDTO {
+func toRegistryHubConfigDTO(c *registryhub.Config, svc registryHubService) registryHubConfigDTO {
+	artifactDir, cacheDir := svc.ResolveDirs(c)
 	dto := registryHubConfigDTO{
-		Enabled:        c.Enabled,
-		ExternalAddr:   c.ExternalAddr,
-		SuggestedAddr:  registryhub.DetectOutboundAddr(),
-		UpstreamURL:    c.UpstreamURL,
-		ArtifactPort:   c.ArtifactPort,
-		CachePort:      c.CachePort,
-		KeepPerProject: c.KeepPerProject,
-		MaxAgeDays:     c.MaxAgeDays,
-		ArtifactAddr:   c.ArtifactAddr(),
-		CacheAddr:      c.CacheAddr(),
+		Enabled:                  c.Enabled,
+		ExternalAddr:             c.ExternalAddr,
+		SuggestedAddr:            registryhub.DetectOutboundAddr(),
+		UpstreamURL:              c.UpstreamURL,
+		ArtifactPort:             c.ArtifactPort,
+		CachePort:                c.CachePort,
+		ArtifactDataDir:          c.ArtifactDataDir,
+		CacheDataDir:             c.CacheDataDir,
+		EffectiveArtifactDataDir: artifactDir,
+		EffectiveCacheDataDir:    cacheDir,
+		KeepPerProject:           c.KeepPerProject,
+		MaxAgeDays:               c.MaxAgeDays,
+		ArtifactAddr:             c.ArtifactAddr(),
+		CacheAddr:                c.CacheAddr(),
 	}
 	if c.UpdatedAt != nil {
 		s := c.UpdatedAt.UTC().Format(time.RFC3339)
@@ -77,6 +89,8 @@ func writeRegistryHubError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusUnprocessableEntity, "invalid_registry_upstream", "上游地址非法:须为 http/https 且含主机名")
 	case errors.Is(err, registryhub.ErrInvalidPort):
 		writeError(w, http.StatusUnprocessableEntity, "invalid_registry_port", "端口非法:须为 1-65535,且制品/缓存端口不得相同")
+	case errors.Is(err, registryhub.ErrInvalidDataDir):
+		writeError(w, http.StatusUnprocessableEntity, "invalid_registry_data_dir", "存储目录非法:须为控制机上的绝对路径,制品/缓存目录不得相同或互为嵌套,也不得罩住栈基目录")
 	case errors.Is(err, registryhub.ErrDisabled):
 		writeError(w, http.StatusUnprocessableEntity, "registry_disabled", "内置 registry 未启用:先在设置中开启并保存")
 	case errors.Is(err, registryhub.ErrNoLocalDocker):
@@ -101,7 +115,7 @@ func makeGetRegistryHubHandler(svc registryHubService) http.HandlerFunc {
 			writeRegistryHubError(w, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, toRegistryHubConfigDTO(cfg))
+		writeJSON(w, http.StatusOK, toRegistryHubConfigDTO(cfg, svc))
 	}
 }
 
@@ -115,32 +129,36 @@ func makeSaveRegistryHubHandler(svc registryHubService) http.HandlerFunc {
 		}
 		r.Body = http.MaxBytesReader(w, r.Body, 1<<16)
 		var req struct {
-			Enabled        bool   `json:"enabled"`
-			ExternalAddr   string `json:"externalAddr"`
-			UpstreamURL    string `json:"upstreamUrl"`
-			ArtifactPort   int    `json:"artifactPort"`
-			CachePort      int    `json:"cachePort"`
-			KeepPerProject int    `json:"keepPerProject"`
-			MaxAgeDays     int    `json:"maxAgeDays"`
+			Enabled         bool   `json:"enabled"`
+			ExternalAddr    string `json:"externalAddr"`
+			UpstreamURL     string `json:"upstreamUrl"`
+			ArtifactPort    int    `json:"artifactPort"`
+			CachePort       int    `json:"cachePort"`
+			ArtifactDataDir string `json:"artifactDataDir"`
+			CacheDataDir    string `json:"cacheDataDir"`
+			KeepPerProject  int    `json:"keepPerProject"`
+			MaxAgeDays      int    `json:"maxAgeDays"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, "bad_request", "请求体格式错误")
 			return
 		}
 		cfg, err := svc.Save(r.Context(), registryhub.SaveInput{
-			Enabled:        req.Enabled,
-			ExternalAddr:   req.ExternalAddr,
-			UpstreamURL:    req.UpstreamURL,
-			ArtifactPort:   req.ArtifactPort,
-			CachePort:      req.CachePort,
-			KeepPerProject: req.KeepPerProject,
-			MaxAgeDays:     req.MaxAgeDays,
+			Enabled:         req.Enabled,
+			ExternalAddr:    req.ExternalAddr,
+			UpstreamURL:     req.UpstreamURL,
+			ArtifactPort:    req.ArtifactPort,
+			CachePort:       req.CachePort,
+			ArtifactDataDir: req.ArtifactDataDir,
+			CacheDataDir:    req.CacheDataDir,
+			KeepPerProject:  req.KeepPerProject,
+			MaxAgeDays:      req.MaxAgeDays,
 		})
 		if err != nil {
 			writeRegistryHubError(w, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, toRegistryHubConfigDTO(cfg))
+		writeJSON(w, http.StatusOK, toRegistryHubConfigDTO(cfg, svc))
 	}
 }
 
