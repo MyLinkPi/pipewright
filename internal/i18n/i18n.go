@@ -44,7 +44,7 @@ func registerPrefix(m map[string]map[string]string) {
 }
 
 // Supported lists every locale the catalog (and the web UI) cover.
-var Supported = []string{"zh-CN", "zh-TW", "en", "ja", "ko", "es", "fr", "de"}
+var Supported = []string{"zh-CN", "zh-HK", "en", "ja", "ko", "es", "fr", "de"}
 
 func isSupported(code string) bool {
 	for _, c := range Supported {
@@ -68,9 +68,10 @@ func Normalize(tag string) string {
 	lower := strings.ToLower(tag)
 	switch {
 	case strings.HasPrefix(lower, "zh"):
+		// "tw" 仍命中:配置/DB 里历史存量的 "zh-TW" 旧值归一到 zh-HK。
 		if strings.Contains(lower, "hant") || strings.Contains(lower, "tw") ||
 			strings.Contains(lower, "hk") || strings.Contains(lower, "mo") {
-			return "zh-TW"
+			return "zh-HK"
 		}
 		return "zh-CN"
 	case strings.HasPrefix(lower, "en"):

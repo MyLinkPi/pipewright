@@ -3,7 +3,7 @@ package i18n
 func init() {
 	register(map[string]map[string]string{
 		"AI 应用所需服务未初始化": {
-			"zh-TW": "AI 應用所需服務未初始化",
+			"zh-HK": "AI 應用所需服務未初始化",
 			"en":    "Service required by AI application not initialized",
 			"ja":    "AI アプリケーションに必要なサービスが初期化されていません",
 			"ko":    "AI 애플리케이션에 필요한 서비스가 초기화되지 않았습니다",
@@ -12,7 +12,7 @@ func init() {
 			"de":    "Vom KI-Anwendung benötigter Dienst nicht initialisiert",
 		},
 		"baseUrl 不能为空": {
-			"zh-TW": "baseUrl 不能為空",
+			"zh-HK": "baseUrl 不能為空",
 			"en":    "baseUrl must not be empty",
 			"ja":    "baseUrl を空にすることはできません",
 			"ko":    "baseUrl은(는) 비워 둘 수 없습니다",
@@ -21,7 +21,7 @@ func init() {
 			"de":    "baseUrl darf nicht leer sein",
 		},
 		"cron 表达式非法(须为 5 字段:分 时 日 月 周)": {
-			"zh-TW": "cron 表達式非法(須為 5 欄位:分 時 日 月 週)",
+			"zh-HK": "cron 表達式非法(須為 5 欄位:分 時 日 月 週)",
 			"en":    "Invalid cron expression (must be 5 fields: minute hour day month weekday)",
 			"ja":    "cron 式が無効です(5 フィールドである必要があります:分 時 日 月 曜日)",
 			"ko":    "cron 표현식이 잘못되었습니다(5개 필드여야 합니다: 분 시 일 월 요일)",
@@ -30,7 +30,7 @@ func init() {
 			"de":    "Ungültiger cron-Ausdruck (muss 5 Felder enthalten: Minute Stunde Tag Monat Wochentag)",
 		},
 		"page 超出上界": {
-			"zh-TW": "page 超出上界",
+			"zh-HK": "page 超出上界",
 			"en":    "page exceeds upper bound",
 			"ja":    "page が上限を超えています",
 			"ko":    "page가 상한을 초과했습니다",
@@ -39,7 +39,7 @@ func init() {
 			"de":    "page überschreitet die Obergrenze",
 		},
 		"sinceSeq 必须为不小于 0 的整数": {
-			"zh-TW": "sinceSeq 必須為不小於 0 的整數",
+			"zh-HK": "sinceSeq 必須為不小於 0 的整數",
 			"en":    "sinceSeq must be an integer not less than 0",
 			"ja":    "sinceSeq は 0 以上の整数である必要があります",
 			"ko":    "sinceSeq는 0 이상의 정수여야 합니다",
@@ -48,7 +48,7 @@ func init() {
 			"de":    "sinceSeq muss eine Ganzzahl nicht kleiner als 0 sein",
 		},
 		"webhook 签名校验失败": {
-			"zh-TW": "webhook 簽章校驗失敗",
+			"zh-HK": "webhook 簽章校驗失敗",
 			"en":    "webhook signature verification failed",
 			"ja":    "webhook 署名の検証に失敗しました",
 			"ko":    "webhook 서명 검증에 실패했습니다",
@@ -57,7 +57,7 @@ func init() {
 			"de":    "Überprüfung der webhook-Signatur fehlgeschlagen",
 		},
 		"下游项目不存在": {
-			"zh-TW": "下游專案不存在",
+			"zh-HK": "下游專案不存在",
 			"en":    "Downstream project not found",
 			"ja":    "ダウンストリームプロジェクトが見つかりません",
 			"ko":    "다운스트림 프로젝트를 찾을 수 없습니다",
@@ -66,7 +66,7 @@ func init() {
 			"de":    "Downstream-Projekt nicht gefunden",
 		},
 		"仅失败的运行可进行诊断": {
-			"zh-TW": "僅失敗的運行可進行診斷",
+			"zh-HK": "僅失敗的運行可進行診斷",
 			"en":    "Only failed runs can be diagnosed",
 			"ja":    "失敗した実行のみ診断できます",
 			"ko":    "실패한 실행만 진단할 수 있습니다",
@@ -75,7 +75,7 @@ func init() {
 			"de":    "Nur fehlgeschlagene Ausführungen können diagnostiziert werden",
 		},
 		"任务名与类型不能为空": {
-			"zh-TW": "任務名與類型不能為空",
+			"zh-HK": "任務名與類型不能為空",
 			"en":    "Job name and type must not be empty",
 			"ja":    "ジョブ名とタイプを空にすることはできません",
 			"ko":    "Job 이름과 유형은 비워 둘 수 없습니다",
@@ -84,7 +84,7 @@ func init() {
 			"de":    "Job-Name und -Typ dürfen nicht leer sein",
 		},
 		"保险库未配置 master key,无法加密或读取 API 密钥": {
-			"zh-TW": "保險庫未配置 master key,無法加密或讀取 API 金鑰",
+			"zh-HK": "保險庫未配置 master key,無法加密或讀取 API 金鑰",
 			"en":    "Vault has no master key configured; cannot encrypt or read API keys",
 			"ja":    "Vault に master key が設定されていないため、API キーの暗号化または読み取りができません",
 			"ko":    "Vault에 master key가 구성되지 않아 API 키를 암호화하거나 읽을 수 없습니다",
@@ -93,7 +93,7 @@ func init() {
 			"de":    "Im Vault ist kein master key konfiguriert; API-Schlüssel können nicht verschlüsselt oder gelesen werden",
 		},
 		"保险库未配置 master key,无法校验仓库连通": {
-			"zh-TW": "保險庫未配置 master key,無法校驗倉庫連通",
+			"zh-HK": "保險庫未配置 master key,無法校驗倉庫連通",
 			"en":    "Vault has no master key configured; cannot verify repository connectivity",
 			"ja":    "Vault に master key が設定されていないため、リポジトリの接続性を検証できません",
 			"ko":    "Vault에 master key가 구성되지 않아 저장소 연결을 검증할 수 없습니다",
@@ -102,7 +102,7 @@ func init() {
 			"de":    "Im Vault ist kein master key konfiguriert; die Repository-Verbindung kann nicht überprüft werden",
 		},
 		"凭据正被项目或流水线配置引用,无法删除;请先解除引用": {
-			"zh-TW": "憑據正被專案或流水線配置引用,無法刪除;請先解除引用",
+			"zh-HK": "憑據正被專案或流水線配置引用,無法刪除;請先解除引用",
 			"en":    "Credential is referenced by a Project or Pipeline configuration and cannot be deleted; remove the references first",
 			"ja":    "認証情報がプロジェクトまたはパイプライン構成から参照されているため削除できません。先に参照を解除してください",
 			"ko":    "자격 증명이 프로젝트 또는 파이프라인 구성에서 참조 중이므로 삭제할 수 없습니다. 먼저 참조를 해제하세요",
@@ -111,7 +111,7 @@ func init() {
 			"de":    "Anmeldedaten werden von einer Projekt- oder Pipeline-Konfiguration referenziert und können nicht gelöscht werden; entfernen Sie zuerst die Referenzen",
 		},
 		"制品库未启用,无法下载": {
-			"zh-TW": "製品庫未啟用,無法下載",
+			"zh-HK": "製品庫未啟用,無法下載",
 			"en":    "Artifact repository is not enabled; cannot download",
 			"ja":    "アーティファクトリポジトリが有効になっていないため、ダウンロードできません",
 			"ko":    "아티팩트 저장소가 활성화되지 않아 다운로드할 수 없습니다",
@@ -120,7 +120,7 @@ func init() {
 			"de":    "Artefakt-Repository ist nicht aktiviert; Download nicht möglich",
 		},
 		"变量 key 不能为空且组内不可重复;secret 变量须指定 credentialId": {
-			"zh-TW": "變數 key 不能為空且組內不可重複;secret 變數須指定 credentialId",
+			"zh-HK": "變數 key 不能為空且組內不可重複;secret 變數須指定 credentialId",
 			"en":    "Variable key must not be empty and must be unique within the group; secret variables must specify credentialId",
 			"ja":    "変数 key を空にすることはできず、グループ内で重複できません。secret 変数には credentialId を指定する必要があります",
 			"ko":    "변수 key는 비워 둘 수 없으며 그룹 내에서 중복될 수 없습니다. secret 변수는 credentialId를 지정해야 합니다",
@@ -129,7 +129,7 @@ func init() {
 			"de":    "Der Variablen-key darf nicht leer sein und muss innerhalb der Gruppe eindeutig sein; secret-Variablen müssen credentialId angeben",
 		},
 		"同一下游项目 + 分支不可重复配置": {
-			"zh-TW": "同一下游專案 + 分支不可重複配置",
+			"zh-HK": "同一下游專案 + 分支不可重複配置",
 			"en":    "The same downstream project + branch cannot be configured more than once",
 			"ja":    "同一のダウンストリームプロジェクト + ブランチを重複して構成することはできません",
 			"ko":    "동일한 다운스트림 프로젝트 + 브랜치는 중복 구성할 수 없습니다",
@@ -138,7 +138,7 @@ func init() {
 			"de":    "Dasselbe Downstream-Projekt + Branch kann nicht mehrfach konfiguriert werden",
 		},
 		"审批门服务未初始化": {
-			"zh-TW": "審批門服務未初始化",
+			"zh-HK": "審批門服務未初始化",
 			"en":    "Approval gate service not initialized",
 			"ja":    "承認ゲートサービスが初期化されていません",
 			"ko":    "승인 게이트 서비스가 초기화되지 않았습니다",
@@ -147,7 +147,7 @@ func init() {
 			"de":    "Genehmigungsgatter-Dienst nicht initialisiert",
 		},
 		"已晋级到链尾环境": {
-			"zh-TW": "已晉級到鏈尾環境",
+			"zh-HK": "已晉級到鏈尾環境",
 			"en":    "Already promoted to the last environment in the chain",
 			"ja":    "チェーン末尾の環境まで昇格済みです",
 			"ko":    "체인의 마지막 환경까지 이미 승급되었습니다",
@@ -156,7 +156,7 @@ func init() {
 			"de":    "Bereits zur letzten Umgebung in der Kette befördert",
 		},
 		"引用的保险库凭据不存在": {
-			"zh-TW": "引用的保險庫憑據不存在",
+			"zh-HK": "引用的保險庫憑據不存在",
 			"en":    "Referenced vault credential not found",
 			"ja":    "参照された Vault の認証情報が見つかりません",
 			"ko":    "참조된 Vault 자격 증명을 찾을 수 없습니다",
@@ -165,7 +165,7 @@ func init() {
 			"de":    "Referenzierte Vault-Anmeldedaten nicht gefunden",
 		},
 		"无法解析 .pipewright.yml": {
-			"zh-TW": "無法解析 .pipewright.yml",
+			"zh-HK": "無法解析 .pipewright.yml",
 			"en":    "Failed to parse .pipewright.yml",
 			"ja":    ".pipewright.yml を解析できません",
 			"ko":    ".pipewright.yml을(를) 파싱할 수 없습니다",
@@ -174,7 +174,7 @@ func init() {
 			"de":    ".pipewright.yml kann nicht geparst werden",
 		},
 		"服务器不存在": {
-			"zh-TW": "伺服器不存在",
+			"zh-HK": "伺服器不存在",
 			"en":    "Server not found",
 			"ja":    "サーバーが見つかりません",
 			"ko":    "서버를 찾을 수 없습니다",
@@ -183,7 +183,7 @@ func init() {
 			"de":    "Server nicht gefunden",
 		},
 		"未匹配策略只能为 record 或 ignore": {
-			"zh-TW": "未匹配策略只能為 record 或 ignore",
+			"zh-HK": "未匹配策略只能為 record 或 ignore",
 			"en":    "Unmatched policy can only be record or ignore",
 			"ja":    "未マッチポリシーは record または ignore のみ指定できます",
 			"ko":    "미일치 정책은 record 또는 ignore만 가능합니다",
@@ -192,7 +192,7 @@ func init() {
 			"de":    "Die Richtlinie für Nichtübereinstimmung darf nur record oder ignore sein",
 		},
 		"校验所需服务未初始化": {
-			"zh-TW": "校驗所需服務未初始化",
+			"zh-HK": "校驗所需服務未初始化",
 			"en":    "Service required for verification not initialized",
 			"ja":    "検証に必要なサービスが初期化されていません",
 			"ko":    "검증에 필요한 서비스가 초기화되지 않았습니다",
@@ -201,7 +201,7 @@ func init() {
 			"de":    "Für die Überprüfung benötigter Dienst nicht initialisiert",
 		},
 		"模板服务未初始化": {
-			"zh-TW": "模板服務未初始化",
+			"zh-HK": "模板服務未初始化",
 			"en":    "Template service not initialized",
 			"ja":    "テンプレートサービスが初期化されていません",
 			"ko":    "Template 서비스가 초기화되지 않았습니다",
@@ -210,7 +210,7 @@ func init() {
 			"de":    "Template-Dienst nicht initialisiert",
 		},
 		"渠道名称不能为空": {
-			"zh-TW": "渠道名稱不能為空",
+			"zh-HK": "渠道名稱不能為空",
 			"en":    "Channel name must not be empty",
 			"ja":    "チャネル名を空にすることはできません",
 			"ko":    "채널 이름은 비워 둘 수 없습니다",
@@ -219,7 +219,7 @@ func init() {
 			"de":    "Kanalname darf nicht leer sein",
 		},
 		"状态筛选值非法": {
-			"zh-TW": "狀態篩選值非法",
+			"zh-HK": "狀態篩選值非法",
 			"en":    "Invalid status filter value",
 			"ja":    "ステータスフィルター値が無効です",
 			"ko":    "상태 필터 값이 잘못되었습니다",
@@ -228,7 +228,7 @@ func init() {
 			"de":    "Ungültiger Statusfilterwert",
 		},
 		"环境链不能为空": {
-			"zh-TW": "環境鏈不能為空",
+			"zh-HK": "環境鏈不能為空",
 			"en":    "Environment chain must not be empty",
 			"ja":    "環境チェーンを空にすることはできません",
 			"ko":    "환경 체인은 비워 둘 수 없습니다",
@@ -237,7 +237,7 @@ func init() {
 			"de":    "Umgebungskette darf nicht leer sein",
 		},
 		"目标环境不在链上": {
-			"zh-TW": "目標環境不在鏈上",
+			"zh-HK": "目標環境不在鏈上",
 			"en":    "Target environment is not in the chain",
 			"ja":    "ターゲット環境がチェーンに含まれていません",
 			"ko":    "대상 환경이 체인에 없습니다",
@@ -246,7 +246,7 @@ func init() {
 			"de":    "Zielumgebung ist nicht in der Kette enthalten",
 		},
 		"脚本步骤名不能为空,type 须为 script,且必须指定 image 与至少一条命令": {
-			"zh-TW": "腳本步驟名不能為空,type 須為 script,且必須指定 image 與至少一條命令",
+			"zh-HK": "腳本步驟名不能為空,type 須為 script,且必須指定 image 與至少一條命令",
 			"en":    "Script step name must not be empty, type must be script, and image plus at least one command must be specified",
 			"ja":    "スクリプトステップ名を空にすることはできず、type は script である必要があり、image と少なくとも 1 つのコマンドを指定する必要があります",
 			"ko":    "스크립트 단계 이름은 비워 둘 수 없고, type은 script여야 하며, image와 최소 하나의 명령을 지정해야 합니다",
@@ -255,7 +255,7 @@ func init() {
 			"de":    "Der Name des Skript-Schritts darf nicht leer sein, type muss script sein, und image sowie mindestens ein Befehl müssen angegeben werden",
 		},
 		"规则不存在": {
-			"zh-TW": "規則不存在",
+			"zh-HK": "規則不存在",
 			"en":    "Rule not found",
 			"ja":    "ルールが見つかりません",
 			"ko":    "규칙을 찾을 수 없습니다",
@@ -264,7 +264,7 @@ func init() {
 			"de":    "Regel nicht gefunden",
 		},
 		"该 provider 的 OAuth 应用未配置或未启用": {
-			"zh-TW": "該 provider 的 OAuth 應用未配置或未啟用",
+			"zh-HK": "該 provider 的 OAuth 應用未配置或未啟用",
 			"en":    "OAuth application for this provider is not configured or not enabled",
 			"ja":    "この provider の OAuth アプリケーションが構成されていないか、有効になっていません",
 			"ko":    "이 provider의 OAuth 애플리케이션이 구성되지 않았거나 활성화되지 않았습니다",
@@ -273,7 +273,7 @@ func init() {
 			"de":    "OAuth-Anwendung für diesen provider ist nicht konfiguriert oder nicht aktiviert",
 		},
 		"该环境没有可回滚的上一次成功部署": {
-			"zh-TW": "該環境沒有可回滾的上一次成功部署",
+			"zh-HK": "該環境沒有可回滾的上一次成功部署",
 			"en":    "This environment has no previous successful deployment to roll back to",
 			"ja":    "この環境にはロールバック可能な前回の成功したデプロイがありません",
 			"ko":    "이 환경에는 롤백할 이전 성공 배포가 없습니다",
@@ -282,7 +282,7 @@ func init() {
 			"de":    "Diese Umgebung hat keine vorherige erfolgreiche Bereitstellung zum Zurückrollen",
 		},
 		"该运行没有可重试的失败目标": {
-			"zh-TW": "該運行沒有可重試的失敗目標",
+			"zh-HK": "該運行沒有可重試的失敗目標",
 			"en":    "This run has no failed targets to retry",
 			"ja":    "この実行には再試行できる失敗したターゲットがありません",
 			"ko":    "이 실행에는 재시도할 실패한 대상이 없습니다",
@@ -291,7 +291,7 @@ func init() {
 			"de":    "Diese Ausführung hat keine fehlgeschlagenen Ziele zum Wiederholen",
 		},
 		"请描述你想做的操作": {
-			"zh-TW": "請描述你想做的操作",
+			"zh-HK": "請描述你想做的操作",
 			"en":    "Please describe the operation you want to perform",
 			"ja":    "実行したい操作を記述してください",
 			"ko":    "수행하려는 작업을 설명하세요",
@@ -300,7 +300,7 @@ func init() {
 			"de":    "Bitte beschreiben Sie den gewünschten Vorgang",
 		},
 		"请至少选择一台目标服务器": {
-			"zh-TW": "請至少選擇一台目標伺服器",
+			"zh-HK": "請至少選擇一台目標伺服器",
 			"en":    "Please select at least one target server",
 			"ja":    "ターゲットサーバーを少なくとも 1 台選択してください",
 			"ko":    "대상 서버를 최소 하나 이상 선택하세요",
@@ -309,7 +309,7 @@ func init() {
 			"de":    "Bitte wählen Sie mindestens einen Zielserver aus",
 		},
 		"路径非法或越出仓库根": {
-			"zh-TW": "路徑非法或越出倉庫根",
+			"zh-HK": "路徑非法或越出倉庫根",
 			"en":    "Path is invalid or escapes the repository root",
 			"ja":    "パスが無効か、リポジトリルートを越えています",
 			"ko":    "경로가 잘못되었거나 저장소 루트를 벗어났습니다",
@@ -318,7 +318,7 @@ func init() {
 			"de":    "Pfad ist ungültig oder verlässt das Repository-Wurzelverzeichnis",
 		},
 		"运行非成功态,无可部署产物": {
-			"zh-TW": "運行非成功態,無可部署產物",
+			"zh-HK": "運行非成功態,無可部署產物",
 			"en":    "Run is not in a successful state; no deployable artifacts",
 			"ja":    "実行が成功状態でないため、デプロイ可能なアーティファクトがありません",
 			"ko":    "실행이 성공 상태가 아니므로 배포 가능한 아티팩트가 없습니다",
@@ -327,7 +327,7 @@ func init() {
 			"de":    "Ausführung ist nicht in einem erfolgreichen Zustand; keine bereitstellbaren Artefakte",
 		},
 		"部署服务未初始化": {
-			"zh-TW": "部署服務未初始化",
+			"zh-HK": "部署服務未初始化",
 			"en":    "Deployment service not initialized",
 			"ja":    "デプロイサービスが初期化されていません",
 			"ko":    "배포 서비스가 초기화되지 않았습니다",
@@ -336,7 +336,7 @@ func init() {
 			"de":    "Bereitstellungsdienst nicht initialisiert",
 		},
 		"项目名称不能为空": {
-			"zh-TW": "專案名稱不能為空",
+			"zh-HK": "專案名稱不能為空",
 			"en":    "Project name must not be empty",
 			"ja":    "プロジェクト名を空にすることはできません",
 			"ko":    "프로젝트 이름은 비워 둘 수 없습니다",

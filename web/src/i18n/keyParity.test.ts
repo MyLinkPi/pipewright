@@ -12,7 +12,7 @@
 import { describe, it, expect } from 'vitest'
 import type { LocaleCode } from './index'
 
-const SUPPORTED: LocaleCode[] = ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'es', 'fr', 'de']
+const SUPPORTED: LocaleCode[] = ['zh-CN', 'zh-HK', 'en', 'ja', 'ko', 'es', 'fr', 'de']
 
 // 基础文件:locales/<lang>.ts(顶层消息,如 nav / login / dashboard…)。
 const baseModules = import.meta.glob<{ default: Record<string, unknown> }>('./locales/*.ts', {
