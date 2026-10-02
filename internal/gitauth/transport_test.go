@@ -82,10 +82,21 @@ func TestTransportAuthSSHKey(t *testing.T) {
 			t.Fatalf("%s: HostKeyCallback 不应为 nil(nil 会在 connect 时读 known_hosts 失败)", u)
 		}
 	}
-	// 显式凭据用户名优先于 URL user 段。
+	// URL user 段优先于凭据用户名:git@ 里的用户名才是 SSH 实际登录账号,
+	// 凭据里误填的平台用户名(Codeup/Gitee 等只认 "git")不得覆盖。
 	a, _ := TransportAuth("git@gitee.com:a/b.git", vault.GitAuth{Type: vault.TypeSSHKey, Username: "deployer", Secret: newTestSSHKey(t)})
+	if pk := a.(*gogitssh.PublicKeys); pk.User != "git" {
+		t.Fatalf("URL user 段应优先于凭据 username, got %q", pk.User)
+	}
+	// URL 无 user 段时回退凭据显式 username。
+	a, _ = TransportAuth("ssh://gitee.com/a/b.git", vault.GitAuth{Type: vault.TypeSSHKey, Username: "deployer", Secret: newTestSSHKey(t)})
 	if pk := a.(*gogitssh.PublicKeys); pk.User != "deployer" {
-		t.Fatalf("显式 username 应优先, got %q", pk.User)
+		t.Fatalf("无 URL user 段应用凭据 username, got %q", pk.User)
+	}
+	// 均未提供时回退 "git"。
+	a, _ = TransportAuth("ssh://gitee.com/a/b.git", vault.GitAuth{Type: vault.TypeSSHKey, Secret: newTestSSHKey(t)})
+	if pk := a.(*gogitssh.PublicKeys); pk.User != "git" {
+		t.Fatalf("均未提供用户名应回退 git, got %q", pk.User)
 	}
 }
 
