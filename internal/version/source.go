@@ -36,24 +36,58 @@ type Source struct {
 // 实现应自带优雅降级(读配置失败回落 env / 官方源),不得 panic。
 type SourceProvider func(ctx context.Context) Source
 
-// ResolveSource 把镜像 base 组装成升级源,优先级:传入的库内配置 > env
-// PIPEWRIGHT_RELEASE_MIRROR > GitHub 官方源。非空镜像 = 三个 base 都指向它
-// (镜像须按 GitHub 路径布局转发,见 Source 注释;允许子路径前缀)。repo 与镜像
-// 无关,恒取 PIPEWRIGHT_RELEASE_REPO(fork 覆盖)后回落 defaultRepo。
-func ResolveSource(mirror string) Source {
+// MirrorOrigin 标识生效升级镜像的来源,优先级 config > env > default。
+type MirrorOrigin string
+
+const (
+	MirrorOriginConfig  MirrorOrigin = "config"  // 设置界面库内配置(release_mirror)
+	MirrorOriginEnv     MirrorOrigin = "env"     // 部署环境变量 PIPEWRIGHT_RELEASE_MIRROR
+	MirrorOriginDefault MirrorOrigin = "default" // 未配置任何镜像 → GitHub Releases 官方
+)
+
+// resolveMirrorBase 解析生效的镜像 base(空 = 未配置,用 GitHub 官方)与来源。
+func resolveMirrorBase(configured string) (string, MirrorOrigin) {
+	if m := strings.TrimSpace(configured); m != "" {
+		return strings.TrimRight(m, "/"), MirrorOriginConfig
+	}
+	if m := envMirror(); m != "" {
+		return strings.TrimRight(m, "/"), MirrorOriginEnv
+	}
+	return "", MirrorOriginDefault
+}
+
+// releaseRepo 取升级检查所查仓库(env PIPEWRIGHT_RELEASE_REPO fork 覆盖)。
+func releaseRepo() string {
 	repo := strings.TrimSpace(os.Getenv("PIPEWRIGHT_RELEASE_REPO"))
 	if repo == "" {
 		repo = defaultRepo
 	}
-	mirror = strings.TrimRight(strings.TrimSpace(mirror), "/")
-	if mirror == "" {
-		mirror = envMirror()
-	}
-	mirror = strings.TrimRight(mirror, "/")
-	if mirror == "" {
+	return repo
+}
+
+// buildSource 以镜像 base 组装升级源;base 为空 = GitHub 官方(检查走 api.github.com,
+// 网页兜底/下载走 github.com),非空 = 三个 base 都指向镜像(须按 GitHub 路径布局转发)。
+func buildSource(repo, base string) Source {
+	if base == "" {
 		return Source{Repo: repo, APIBase: githubAPIBase, WebBase: githubWebBase, DLBase: githubWebBase}
 	}
-	return Source{Repo: repo, APIBase: mirror, WebBase: mirror, DLBase: mirror}
+	return Source{Repo: repo, APIBase: base, WebBase: base, DLBase: base}
+}
+
+// ResolveSource 把镜像 base 组装成升级源,优先级:传入的库内配置 > env
+// PIPEWRIGHT_RELEASE_MIRROR > GitHub 官方源。repo 与镜像无关,恒取
+// PIPEWRIGHT_RELEASE_REPO(fork 覆盖)后回落 defaultRepo。
+func ResolveSource(mirror string) Source {
+	base, _ := resolveMirrorBase(mirror)
+	return buildSource(releaseRepo(), base)
+}
+
+// ResolveMirror 返回实际生效的升级源与其镜像来源(供设置界面展示「当前生效」,
+// 让默认值透明可见:未配置镜像时即 GitHub Releases 官方 —— 检查 api.github.com、
+// 下载 github.com)。
+func ResolveMirror(configured string) (Source, MirrorOrigin) {
+	_, origin := resolveMirrorBase(configured)
+	return ResolveSource(configured), origin
 }
 
 // envMirror 读部署级兜底镜像 PIPEWRIGHT_RELEASE_MIRROR(优先级低于库内配置:设置界面

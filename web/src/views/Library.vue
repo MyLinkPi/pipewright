@@ -28,7 +28,7 @@ import {
   type VariableGroup,
   type VariableGroupVarInput,
 } from '../api/variableGroups'
-import { listCredentials, type Credential } from '../api/credentials'
+import { isSystemManagedType, listCredentials, type Credential } from '../api/credentials'
 import {
   listCustomNodes,
   updateCustomNode,
@@ -84,6 +84,10 @@ const vgState = ref<LoadState>('idle')
 const vgError = ref('')
 const variableGroups = ref<VariableGroup[]>([])
 const credentials = ref<Credential[]>([])
+/** secret 变量可选凭据;系统托管类型(dns_token 等)由专属设置页管理,不在此露出。 */
+const selectableCredentials = computed(() =>
+  credentials.value.filter((c) => !isSystemManagedType(c.type)),
+)
 
 async function loadVariableGroups(): Promise<void> {
   vgState.value = 'loading'
@@ -656,7 +660,7 @@ onMounted(() => {
               <template v-if="v.secret">
                 <select v-model="v.credentialId" class="input input--cred">
                   <option value="">{{ t('library.selectCredential') }}</option>
-                  <option v-for="c in credentials" :key="c.id" :value="c.id">
+                  <option v-for="c in selectableCredentials" :key="c.id" :value="c.id">
                     {{ c.name }} ({{ c.maskedValue }})
                   </option>
                 </select>

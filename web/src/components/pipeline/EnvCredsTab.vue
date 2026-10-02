@@ -9,14 +9,14 @@
  * Secret env vars / registry credentials reference a vault credentialId — plaintext is
  * never entered, stored, or shown; only the server-computed mask appears.
  */
-import { ref, computed, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type {
   Environment,
   BuildVar,
   RegistryType,
 } from '../../api/pipelineSettings'
-import type { Credential } from '../../api/credentials'
+import { isSystemManagedType, type Credential } from '../../api/credentials'
 
 interface Props {
   environments: Environment[]
@@ -26,6 +26,12 @@ interface Props {
 const props = defineProps<Props>()
 
 const { t } = useI18n()
+
+// 系统托管类型(dns_token 等)由专属设置页管理,不作为流水线可引用的凭据选项,
+// 防止 DNS Secret 被误选进环境变量/镜像仓库配置。
+const selectableCredentials = computed<Credential[]>(() =>
+  props.credentials.filter((c) => !isSystemManagedType(c.type)),
+)
 
 const emit = defineEmits<{
   update: [environments: Environment[]]
@@ -256,7 +262,7 @@ function maskFor(row: VarRow): string {
                   :disabled="disabled"
                 >
                   <option value="" disabled>{{ t('pipelinePanels.envSelectVaultCred') }}</option>
-                  <option v-for="c in credentials" :key="c.id" :value="c.id">{{ c.name }} · {{ c.maskedValue }}</option>
+                  <option v-for="c in selectableCredentials" :key="c.id" :value="c.id">{{ c.name }} · {{ c.maskedValue }}</option>
                 </select>
                 <input v-else v-model="row.value" class="ev-v mono" type="text" :placeholder="t('pipelinePanels.envVarValuePlaceholder')" :aria-label="t('pipelinePanels.envVarValueAria')" :disabled="disabled">
                 <button
@@ -307,7 +313,7 @@ function maskFor(row: VarRow): string {
                 :disabled="disabled || env.registryType === ''"
               >
                 <option value="">{{ t('pipelinePanels.envRegistryCredOptional') }}</option>
-                <option v-for="c in credentials" :key="c.id" :value="c.id">{{ c.name }} · {{ c.maskedValue }}</option>
+                <option v-for="c in selectableCredentials" :key="c.id" :value="c.id">{{ c.name }} · {{ c.maskedValue }}</option>
               </select>
             </div>
           </div>

@@ -156,3 +156,40 @@ func TestUpdateDNSProviderRenameAndRotate(t *testing.T) {
 		t.Fatalf("轮换审计应标 secretRotated: %+v", res.Entries)
 	}
 }
+
+// --- DELETE:删除提供商须级联删除其 vault 凭据,不留「DNS · ××」孤儿条目 ---
+
+func TestDeleteDNSProviderCascadesCredential(t *testing.T) {
+	srv, client, csrf, id, v, rec := setupDNSProvidersAPI(t)
+
+	resp := doJSON(t, client, http.MethodDelete, srv.URL+"/api/dns/providers/"+id, csrf, "")
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("删除应 200, got %d body=%s", resp.StatusCode, raw)
+	}
+
+	// 提供商与凭据都应消失(vault 只剩 0 条,无孤儿)。
+	list, err := v.List()
+	if err != nil || len(list) != 0 {
+		t.Fatalf("删除后 vault 应为空(无孤儿凭据): %v / %d", err, len(list))
+	}
+	res, err := rec.List(context.Background(), audit.ListFilter{Action: auditActionDNSProviderDelete})
+	if err != nil || len(res.Entries) != 1 {
+		t.Fatalf("应有 1 条 delete 审计, got %d err=%v", len(res.Entries), err)
+	}
+	if res.Entries[0].Detail["credentialDeleted"] != true {
+		t.Fatalf("delete 审计应标 credentialDeleted: %+v", res.Entries[0].Detail)
+	}
+
+	// 再删同一 id → 404,不产生新审计。
+	resp = doJSON(t, client, http.MethodDelete, srv.URL+"/api/dns/providers/"+id, csrf, "")
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("重复删除应 404, got %d", resp.StatusCode)
+	}
+	res, _ = rec.List(context.Background(), audit.ListFilter{Action: auditActionDNSProviderDelete})
+	if len(res.Entries) != 1 {
+		t.Fatalf("404 路径不应写 delete 审计, got %d", len(res.Entries))
+	}
+}

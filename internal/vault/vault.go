@@ -374,6 +374,13 @@ func (s *service) Delete(id string) error {
 	).Scan(&refCount); err == nil && refCount > 0 {
 		return ErrCredentialInUse
 	}
+	// dns_providers.credential_id 无外键,同样显式检查:DNS 提供商的 Secret 凭据由
+	// 「DNS 提供商」页管理,从保险库删掉会让提供商凭据悬挂(校验/DNS-01 签发时才报错)。
+	if err := s.db.QueryRow(
+		`SELECT COUNT(*) FROM dns_providers WHERE credential_id = ?`, id,
+	).Scan(&refCount); err == nil && refCount > 0 {
+		return ErrCredentialInUse
+	}
 	res, err := s.db.Exec(`DELETE FROM credentials WHERE id = ?`, id)
 	if err != nil {
 		// projects.credential_id 等外键(ON DELETE RESTRICT)引用 → 约束错误,映射为在用。

@@ -98,18 +98,35 @@ func TestSystemConfigFlow(t *testing.T) {
 	}
 }
 
-// releaseMirror:单独保存不影响 publicUrl;非法值 400;缺省字段 = 不动该项。
+// releaseMirror:单独保存不影响 publicUrl;非法值 400;缺省字段 = 不动该项;
+// 响应始终携带实际生效的升级源(默认 GitHub 官方地址,配置后为镜像地址)。
 func TestSystemConfigReleaseMirror(t *testing.T) {
+	t.Setenv("PIPEWRIGHT_RELEASE_MIRROR", "") // 钉死 env,保证默认断言稳定
 	srv := setupSystemConfigServer(t)
 	client, csrf := loginSR(t, srv.URL)
 
 	var cfg struct {
-		PublicURL     string `json:"publicUrl"`
+		PublicURL string `json:"publicUrl"`
 		ReleaseMirror string `json:"releaseMirror"`
+		Effective struct {
+			Origin  string `json:"origin"`
+			APIBase string `json:"apiBase"`
+			DLBase  string `json:"dlBase"`
+		} `json:"effectiveSource"`
+	}
+
+	// 默认:GitHub Releases 官方(default / api.github.com / github.com),如实暴露。
+	resp := doJSON(t, client, http.MethodGet, srv.URL+"/api/system/config", csrf, "")
+	if err := json.NewDecoder(resp.Body).Decode(&cfg); err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if cfg.Effective.Origin != "default" || cfg.Effective.APIBase != "https://api.github.com" || cfg.Effective.DLBase != "https://github.com" {
+		t.Fatalf("默认生效源应为 GitHub 官方地址,得 %+v", cfg.Effective)
 	}
 
 	// 非法镜像 → 400 invalid_release_mirror。
-	resp := doJSON(t, client, http.MethodPut, srv.URL+"/api/system/config", csrf,
+	resp = doJSON(t, client, http.MethodPut, srv.URL+"/api/system/config", csrf,
 		`{"releaseMirror":"mirror.example.com"}`)
 	if resp.StatusCode != http.StatusBadRequest || phErrCode(t, resp) != "invalid_release_mirror" {
 		t.Fatalf("非法镜像应 400 invalid_release_mirror:%d", resp.StatusCode)
@@ -129,6 +146,9 @@ func TestSystemConfigReleaseMirror(t *testing.T) {
 	if cfg.ReleaseMirror != "https://mirror.example.com/gh" {
 		t.Fatalf("应归一化去尾斜杠,得 %q", cfg.ReleaseMirror)
 	}
+	if cfg.Effective.Origin != "config" || cfg.Effective.APIBase != "https://mirror.example.com/gh" || cfg.Effective.DLBase != "https://mirror.example.com/gh" {
+		t.Fatalf("保存后生效源应为镜像(config),得 %+v", cfg.Effective)
+	}
 
 	// 只发 publicUrl:releaseMirror 不动(缺省 = 不更新,向后兼容旧客户端)。
 	resp = doJSON(t, client, http.MethodPut, srv.URL+"/api/system/config", csrf,
@@ -144,7 +164,7 @@ func TestSystemConfigReleaseMirror(t *testing.T) {
 		t.Fatalf("缺省字段不应被清空,得 %+v", cfg)
 	}
 
-	// 清除镜像(空串 = 清除),publicUrl 仍在。
+	// 清除镜像(空串 = 清除),publicUrl 仍在;生效源回退 GitHub 官方。
 	resp = doJSON(t, client, http.MethodPut, srv.URL+"/api/system/config", csrf,
 		`{"releaseMirror":""}`)
 	if resp.StatusCode != http.StatusOK {
@@ -156,5 +176,8 @@ func TestSystemConfigReleaseMirror(t *testing.T) {
 	resp.Body.Close()
 	if cfg.ReleaseMirror != "" || cfg.PublicURL != "https://ci.example.com" {
 		t.Fatalf("应只清除镜像,得 %+v", cfg)
+	}
+	if cfg.Effective.Origin != "default" || cfg.Effective.APIBase != "https://api.github.com" {
+		t.Fatalf("清除后生效源应回退 GitHub 官方,得 %+v", cfg.Effective)
 	}
 }

@@ -13,7 +13,7 @@ import { useI18n } from 'vue-i18n'
 import { getVersion, checkUpdate, applyUpdate, updateJobStatus } from '../../api/version'
 import type { VersionInfo, UpdateInfo, UpdateJobStatus } from '../../api/version'
 import { getRetentionConfig, setRetentionConfig, type RetentionConfig } from '../../api/retention'
-import { getSystemConfig, saveSystemConfig } from '../../api/systemConfig'
+import { getSystemConfig, saveSystemConfig, type SystemConfig } from '../../api/systemConfig'
 import { HttpError } from '../../api/http'
 import AppButton from '../../components/ui/AppButton.vue'
 
@@ -298,16 +298,20 @@ async function saveRetention(): Promise<void> {
 
 // ─── 升级源(自升级镜像) ───────────────────────────────────────────────────────
 // 读失败时保持未加载态并禁用保存:此时后端 publicUrl 未知,补发它可能误清已有配置。
+// effectiveSource 是后端解析后的实际生效源(库内配置 > 环境变量 > 默认 GitHub Releases),
+// 界面如实展示具体 URL 与来源,不用"GitHub 官方源"这类含糊标签。
 const umMirror = ref('')
 const umLoaded = ref(false)
 const umSaving = ref(false)
 const umSaved = ref(false)
 const umError = ref('')
+const umEffective = ref<SystemConfig['effectiveSource'] | null>(null)
 
 async function loadUpdateSource(): Promise<void> {
   try {
     const c = await getSystemConfig()
     umMirror.value = c.releaseMirror
+    umEffective.value = c.effectiveSource ?? null
     umLoaded.value = true
   } catch {
     // 读失败:保持未加载态,保存按钮禁用。
@@ -320,7 +324,8 @@ async function saveUpdateSource(): Promise<void> {
   umError.value = ''
   try {
     // 只发 releaseMirror(publicUrl 传 undefined = 后端不动该项)。
-    await saveSystemConfig(undefined, umMirror.value.trim())
+    const c = await saveSystemConfig(undefined, umMirror.value.trim())
+    umEffective.value = c.effectiveSource ?? null
     umSaved.value = true
     setTimeout(() => { umSaved.value = false }, 2000)
   } catch (err) {
@@ -330,6 +335,22 @@ async function saveUpdateSource(): Promise<void> {
     umSaving.value = false
   }
 }
+
+const umEffectiveUrl = computed(() => {
+  const e = umEffective.value
+  if (!e) return ''
+  return e.apiBase === e.dlBase
+    ? e.apiBase
+    : `${t('settingsSystem.updateSrcCheck')} ${e.apiBase} · ${t('settingsSystem.updateSrcDownload')} ${e.dlBase}`
+})
+
+const umEffectiveOrigin = computed(() => {
+  switch (umEffective.value?.origin) {
+    case 'config': return t('settingsSystem.updateSrcFromConfig')
+    case 'env': return t('settingsSystem.updateSrcFromEnv')
+    default: return t('settingsSystem.updateSrcFromDefault')
+  }
+})
 
 onMounted(() => {
   void loadVersion()
@@ -474,13 +495,22 @@ onMounted(() => {
       </article>
     </transition>
 
-    <!-- 升级源(自升级镜像) -->
-    <article class="sys-panel">
+    <!-- 升级源(自升级镜像;源码部署的升级来自 git 上游,不适用 → 隐藏) -->
+    <article v-if="!isSource" class="sys-panel">
       <span class="sys-accent" aria-hidden="true" />
       <div class="rt-head">
         <div class="rt-head-text">
           <h3 class="rt-title">{{ t('settingsSystem.updateSrcTitle') }}</h3>
           <p class="rt-sub">{{ t('settingsSystem.updateSrcSub') }}</p>
+        </div>
+      </div>
+
+      <!-- 当前实际生效的源(具体 URL + 来源),优先于任何占位提示 -->
+      <div v-if="umEffective" class="um-effective">
+        <span class="rt-label">{{ t('settingsSystem.updateSrcEffective') }}</span>
+        <div class="um-effective-line">
+          <code class="um-effective-url">{{ umEffectiveUrl }}</code>
+          <span class="um-effective-origin">{{ umEffectiveOrigin }}</span>
         </div>
       </div>
 
@@ -1126,6 +1156,34 @@ onMounted(() => {
 .um-input {
   width: 100%;
   font-family: var(--font-mono);
+}
+.um-effective {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  border: 1px solid var(--color-border);
+  border-left: 3px solid var(--color-primary);
+  border-radius: var(--radius-sm);
+  background: var(--color-inset);
+}
+.um-effective-line {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+.um-effective-url {
+  font-family: var(--font-mono);
+  font-size: var(--text-caption);
+  color: var(--color-text);
+  word-break: break-all;
+}
+.um-effective-origin {
+  font-size: 0.74rem;
+  color: var(--color-faint);
+  white-space: nowrap;
 }
 
 .rt-actions {

@@ -16,6 +16,19 @@ import { http } from './http'
 
 export type CredentialType = 'git_token' | 'git_http' | 'ssh_key' | 'ssh_password' | 'registry' | 'sudo_password'
 
+/**
+ * 由专属设置页全权管理的凭据类型,不应在通用凭据列表/选择器里露出。
+ * dns_token 由「DNS 提供商」页创建、轮换、删除(保险库仅存密文 + credential_id 引用):
+ * 在别处列出只会出现类型未知的「DNS · ××」条目,误删会让提供商凭据悬挂,误选会把
+ * DNS Secret 泄进流水线环境变量。
+ */
+export const SYSTEM_MANAGED_CREDENTIAL_TYPES: readonly string[] = ['dns_token']
+
+/** 报告某凭据类型是否由专属设置页管理(通用界面应过滤)。 */
+export function isSystemManagedType(type: CredentialType | string): boolean {
+  return SYSTEM_MANAGED_CREDENTIAL_TYPES.includes(type)
+}
+
 export interface Credential {
   id: string
   name: string

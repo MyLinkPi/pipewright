@@ -273,22 +273,38 @@ func makeUpdateDNSProviderHandler(svc dnsprovider.Service, v vault.Vault, rec au
 }
 
 // makeDeleteDNSProviderHandler 返回 DELETE /api/dns/providers/{id}(认证 + CSRF)→ { ok: true }。
-func makeDeleteDNSProviderHandler(svc dnsprovider.Service, rec audit.Recorder) http.HandlerFunc {
+// 删除提供商后级联删除其保险库凭据:dns_providers 只持 credential_id 引用,提供商没了凭据
+// 即成孤儿(在保险库里显示为来历不明的「DNS · ××」);凭据删除为尽力而为(失败不回滚提供商
+// 删除,仅记审计,可由保险库在用守卫之外单独清理)。
+func makeDeleteDNSProviderHandler(svc dnsprovider.Service, v vault.Vault, rec audit.Recorder) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if svc == nil {
 			writeError(w, http.StatusServiceUnavailable, "internal", "DNS 提供商服务未初始化")
 			return
 		}
 		id := chi.URLParam(r, "id")
+		// 先取凭据引用再删(删完就查不到了);取不到提供商 → 直接走 Delete 返回 ErrNotFound。
+		var credentialID string
+		if p, err := svc.Get(r.Context(), id); err == nil {
+			credentialID = p.CredentialID
+		}
 		if err := svc.Delete(r.Context(), id); err != nil {
 			writeDNSProviderError(w, err)
 			return
+		}
+		credDeleted := false
+		if credentialID != "" && v != nil {
+			// 尽力而为:该凭据无外键、不在任何在用守卫范围,失败仅剩孤儿条目,不影响提供商已删的事实。
+			if err := v.Delete(credentialID); err == nil {
+				credDeleted = true
+			}
 		}
 		recordAudit(r.Context(), rec, audit.Entry{
 			Actor:      auditActor,
 			Action:     auditActionDNSProviderDelete,
 			TargetType: auditTargetDNSProvider,
 			TargetID:   id,
+			Detail:     map[string]any{"credentialDeleted": credDeleted}, // 绝无 Secret / 凭据明文
 			IP:         clientIP(r),
 		})
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})

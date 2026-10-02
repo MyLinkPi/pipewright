@@ -19,7 +19,7 @@ import type {
   BuildModel,
   ArtifactType,
 } from '../../api/pipelineSettings'
-import type { Credential } from '../../api/credentials'
+import { isSystemManagedType, type Credential } from '../../api/credentials'
 
 interface Props {
   build: BuildConfig
@@ -144,8 +144,11 @@ function toggleSecret(row: VarRow): void {
   }
 }
 
-// Credentials suitable for secret values (any vault credential is a valid reference).
-const credOptions = computed(() => props.credentials)
+// Credentials suitable for secret values; system-managed types (dns_token 等,由专属
+// 设置页管理)不作为流水线可引用的凭据选项,防误选与误删悬挂。
+const credOptions = computed(() =>
+  props.credentials.filter((c) => !isSystemManagedType(c.type)),
+)
 
 function maskFor(row: VarRow): string {
   if (row.maskedValue) return row.maskedValue

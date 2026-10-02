@@ -876,7 +876,7 @@ func New(webFS fs.FS, authn auth.Authenticator, opts ...Option) http.Handler {
 		ar.Post("/dns/providers/{id}/verify", makeVerifyDNSProviderHandler(dp, aud))
 		ar.Post("/dns/providers/{id}/zones", makeAddDNSZoneHandler(dp, aud))
 		ar.Delete("/dns/providers/{id}/zones/{zoneId}", makeRemoveDNSZoneHandler(dp, aud))
-		ar.Delete("/dns/providers/{id}", makeDeleteDNSProviderHandler(dp, aud))
+		ar.Delete("/dns/providers/{id}", makeDeleteDNSProviderHandler(dp, o.vault, aud))
 
 		// Per-PR 预览环境(R4 E4.1 · 差异化王牌):列预览环境 / 手动回收 / 项目级预览配置。
 		// pv 为 nil → handler 返回 503。GET 过 auth;reclaim + config-PUT 为写方法,过 auth + CSRF + 审计。
