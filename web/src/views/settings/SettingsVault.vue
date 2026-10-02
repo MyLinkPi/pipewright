@@ -5,7 +5,6 @@ import {
   createCredential,
   updateCredential,
   deleteCredential,
-  revealCredential,
 } from '../../api/credentials'
 import type { Credential, CredentialType, CreateCredentialInput, UpdateCredentialInput } from '../../api/credentials'
 import { HttpError } from '../../api/http'
@@ -59,12 +58,6 @@ const deleteModalOpen = ref(false)
 const deletingCredential = ref<Credential | null>(null)
 const deleteSubmitting = ref(false)
 const deleteBanner = ref('')
-
-// ─── reveal current plaintext inside the edit modal (on-demand, audited) ──────
-
-// Current plaintext while shown in the edit modal; null = hidden. Cleared on close.
-const editRevealed = ref<string | null>(null)
-const editRevealing = ref(false)
 
 // ─── OAuth connect (enabled providers only) ──────────────────────────────────
 
@@ -237,7 +230,6 @@ function openEditModal(c: Credential): void {
   editingId.value = c.id
   // secret is intentionally blank — user must re-enter to rotate
   form.value = { name: c.name, type: c.type, scope: c.scope, username: c.username, secret: '' }
-  editRevealed.value = null
   clearFormErrors()
   formBanner.value = ''
   modalOpen.value = true
@@ -247,9 +239,8 @@ function openEditModal(c: Credential): void {
 function closeModal(): void {
   if (formSubmitting.value) return
   modalOpen.value = false
-  // Clear secret + any revealed plaintext immediately when modal closes
+  // Clear secret immediately when modal closes
   form.value.secret = ''
-  editRevealed.value = null
 }
 
 /** Shared close path for ✕ / 取消 / ESC: confirm before discarding a dirty form. */
@@ -370,25 +361,6 @@ async function confirmDelete(): Promise<void> {
     }
   } finally {
     deleteSubmitting.value = false
-  }
-}
-
-// ─── reveal / hide current plaintext in the edit modal (audited server-side) ──
-
-async function toggleEditReveal(): Promise<void> {
-  // Already shown → hide and drop the plaintext from memory.
-  if (editRevealed.value !== null) {
-    editRevealed.value = null
-    return
-  }
-  if (!editingId.value || editRevealing.value) return
-  editRevealing.value = true
-  try {
-    editRevealed.value = await revealCredential(editingId.value)
-  } catch (err) {
-    toast.error(err instanceof HttpError ? err.message : t('settingsVault.revealFailed'))
-  } finally {
-    editRevealing.value = false
   }
 }
 </script>
@@ -737,35 +709,9 @@ async function toggleEditReveal(): Promise<void> {
           </div>
 
           <div class="field">
-            <div class="field-label-row">
-              <label class="field-label" for="cred-secret">
-                {{ modalMode === 'add' && form.type === 'git_http' ? t('settingsVault.fieldSecretGitHttp') : (modalMode === 'add' ? t('settingsVault.fieldSecret') : t('settingsVault.fieldSecretNew')) }}
-                <span v-if="modalMode === 'edit'" class="field-optional">{{ t('settingsVault.secretOptionalEdit') }}</span>
-              </label>
-              <!-- Reveal current plaintext (edit only; audited server-side) -->
-              <button
-                v-if="modalMode === 'edit'"
-                type="button"
-                class="reveal-current-btn"
-                :class="{ 'reveal-current-btn--active': editRevealed !== null }"
-                :disabled="editRevealing"
-                @click="toggleEditReveal"
-              >
-                <svg v-if="editRevealed !== null" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9">
-                  <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/>
-                  <path d="M1 1l22 22"/>
-                </svg>
-                <svg v-else width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9">
-                  <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
-                  <circle cx="12" cy="12" r="3"/>
-                </svg>
-                {{ editRevealed !== null ? t('settingsVault.hideCurrent') : t('settingsVault.revealCurrent') }}
-              </button>
-            </div>
+            <label class="field-label" for="cred-secret">{{ form.type === 'git_http' ? t('settingsVault.fieldSecretGitHttp') : t('settingsVault.fieldSecret') }}</label>
 
-            <!-- Current plaintext, read-only — shown only while explicitly revealed -->
-            <div v-if="modalMode === 'edit' && editRevealed !== null" class="current-secret mono">{{ editRevealed }}</div>
-<!-- SSH 私钥是多行 PEM/OpenSSH 文本:必须用 textarea,单行 <input> 会按 HTML 规范清除换行
+            <!-- SSH 私钥是多行 PEM/OpenSSH 文本:必须用 textarea,单行 <input> 会按 HTML 规范清除换行
                  → 私钥结构破坏、ssh.ParsePrivateKey 失败「凭据不是可用的 SSH 私钥」。令牌/镜像仓库仍用
                  password input(单行密文 + 掩码输入)。 -->
             <textarea
@@ -775,7 +721,7 @@ async function toggleEditReveal(): Promise<void> {
               class="field-input field-input--mono"
               :class="{ 'field-input--error': formErrors.secret }"
               rows="8"
-              :placeholder="modalMode === 'add' ? t('settingsVault.secretPlaceholderSshKey') : t('settingsVault.secretPlaceholderKeep')"
+              :placeholder="t('settingsVault.secretPlaceholderSshKey')"
               :disabled="formSubmitting"
               :aria-invalid="formErrors.secret ? 'true' : undefined"
               :aria-describedby="formErrors.secret ? 'cred-secret-err' : undefined"
@@ -790,7 +736,7 @@ async function toggleEditReveal(): Promise<void> {
               class="field-input field-input--mono"
               :class="{ 'field-input--error': formErrors.secret }"
               type="password"
-              :placeholder="modalMode === 'add' ? (form.type === 'ssh_password' ? t('settingsVault.secretPlaceholderSshPassword') : (form.type === 'sudo_password' ? t('settingsVault.secretPlaceholderSudoPassword') : (form.type === 'git_http' ? t('settingsVault.secretPlaceholderGitHttp') : t('settingsVault.secretPlaceholderToken')))) : t('settingsVault.secretPlaceholderKeep')"
+              :placeholder="form.type === 'ssh_password' ? t('settingsVault.secretPlaceholderSshPassword') : (form.type === 'sudo_password' ? t('settingsVault.secretPlaceholderSudoPassword') : (form.type === 'git_http' ? t('settingsVault.secretPlaceholderGitHttp') : t('settingsVault.secretPlaceholderToken')))"
               :disabled="formSubmitting"
               :aria-invalid="formErrors.secret ? 'true' : undefined"
               :aria-describedby="formErrors.secret ? 'cred-secret-err' : undefined"
@@ -1643,67 +1589,6 @@ async function toggleEditReveal(): Promise<void> {
 .field-optional {
   font-weight: 400;
   color: var(--color-faint);
-}
-
-/* Secret label row: label on the left, reveal-current toggle pushed right. */
-.field-label-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.reveal-current-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 3px 9px;
-  font-size: 0.72rem;
-  font-weight: 500;
-  color: var(--color-dim);
-  background: var(--color-inset);
-  border: 1px solid var(--color-border);
-  border-radius: var(--rounded);
-  cursor: pointer;
-  transition:
-    color var(--duration-fast),
-    border-color var(--duration-fast),
-    background-color var(--duration-fast);
-}
-
-.reveal-current-btn:hover {
-  color: var(--color-text);
-  border-color: var(--color-faint);
-}
-
-.reveal-current-btn--active {
-  color: var(--color-primary);
-  border-color: var(--color-primary);
-}
-
-.reveal-current-btn:disabled {
-  opacity: 0.55;
-  cursor: progress;
-}
-
-.reveal-current-btn:focus-visible {
-  outline: 2px solid var(--color-primary);
-  outline-offset: 2px;
-}
-
-/* Read-only current plaintext shown while revealed; selectable for manual copy. */
-.current-secret {
-  font-size: 0.74rem;
-  color: var(--color-text);
-  background: var(--color-inset);
-  border: 1px dashed var(--color-border-strong);
-  border-radius: var(--rounded);
-  padding: 8px 12px;
-  word-break: break-all;
-  white-space: pre-wrap;
-  user-select: text;
-  max-height: 160px;
-  overflow: auto;
 }
 
 .field-input {

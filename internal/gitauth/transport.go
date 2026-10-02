@@ -50,7 +50,8 @@ var sshSecretTypes = map[string]bool{
 //	协议与类型错配                → ErrSchemeMismatch
 //	secret 为空                   → nil(匿名,公开仓)
 //
-// SSH 用户名取凭据 username(留空则由 go-git 用 URL user 段,缺省 "git")。
+// SSH 用户名由 sshUser 解析:URL user 段(git@host:path / ssh://user@host)优先 →
+// 凭据显式 username → 缺省 "git"(go-git 不回退 URL user 段,故必须在此解析出非空值)。
 func TransportAuth(repoURL string, cred vault.GitAuth) (transport.AuthMethod, error) {
 	if strings.TrimSpace(cred.Secret) == "" {
 		return nil, nil
@@ -93,23 +94,17 @@ func TransportAuth(repoURL string, cred vault.GitAuth) (transport.AuthMethod, er
 	return BasicAuth(repoURL, cred.Username, cred.Secret), nil
 }
 
-// sshUser 解析 SSH 认证用户名:凭据显式 username → URL user 段(git@host:...)→
-// 缺省 "git"(GitHub/GitLab/Gitee/Codeup 等 git over SSH 的通用约定用户)。
+// sshUser 解析 SSH 认证用户名:URL user 段(git@host:path / ssh://user@host)优先 →
+// 凭据显式 username → 缺省 "git"(GitHub/GitLab/Gitee/Codeup 等通用约定用户)。
+// URL 优先与 git 自身语义一致:仓库地址里的用户名就是 clone 时实际使用的登录账号;
+// 凭据里误填的平台账号名(如把 Codeup 账号填进凭据)不得覆盖它——这类 Git 托管
+// 平台的 SSH 登录用户固定为 "git",填错必被服务端拒绝(实测 Codeup)。
 func sshUser(repoURL, credUsername string) string {
-	if u := strings.TrimSpace(credUsername); u != "" {
+	if _, _, u, ok := ParseRepoURL(repoURL); ok && u != "" {
 		return u
 	}
-	s := strings.TrimSpace(repoURL)
-	if i := strings.Index(s, "://"); i >= 0 {
-		if ru, err := neturl.Parse(s); err == nil && ru.User != nil {
-			if u := ru.User.Username(); u != "" {
-				return u
-			}
-		}
-		return "git"
-	}
-	if m := scpLikeRe.FindStringSubmatch(s); m != nil && m[1] != "" {
-		return m[1]
+	if u := strings.TrimSpace(credUsername); u != "" {
+		return u
 	}
 	return "git"
 }

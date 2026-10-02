@@ -5,10 +5,11 @@
  * POST   /api/credentials            → Credential  (needs CSRF)
  * PATCH  /api/credentials/:id        → Credential  (needs CSRF)
  * DELETE /api/credentials/:id        → 204          (needs CSRF)
- * POST   /api/credentials/:id/reveal → { secret }   (needs CSRF; audited)
+ * POST   /api/credentials/:id/reveal → { secret }   (needs CSRF; audited; no UI caller)
  *
- * List/get never return plaintext — only maskedValue is exposed. Plaintext is
- * returned solely by the explicit, audited reveal endpoint.
+ * List/get never return plaintext — only maskedValue is exposed. The reveal endpoint
+ * remains part of the contract (auth + CSRF + `credential_reveal` audit), but the UI
+ * no longer surfaces plaintext, so no client wrapper is kept here.
  */
 
 import { http } from './http'
@@ -61,13 +62,4 @@ export async function updateCredential(
 
 export async function deleteCredential(id: string): Promise<void> {
   return http.delete<void>(`/api/credentials/${id}`)
-}
-
-/**
- * Reveal the plaintext secret on explicit demand (POST + CSRF; audited server-side
- * as `credential_reveal`). The only endpoint that returns plaintext — use sparingly.
- */
-export async function revealCredential(id: string): Promise<string> {
-  const res = await http.post<{ secret: string }>(`/api/credentials/${id}/reveal`, {})
-  return res.secret
 }

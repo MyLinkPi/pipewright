@@ -22,6 +22,7 @@ import TypedRunParams from '../components/TypedRunParams.vue'
 import CredentialSelect from '../components/projects/CredentialSelect.vue'
 import { getParameters, validateParamValues, type ParamDef } from '../api/parameters'
 import { HttpError } from '../api/http'
+import { repoHost, classifyCredentialReject } from './projects.helpers'
 
 // ─── i18n ─────────────────────────────────────────────────────────────────────
 
@@ -267,6 +268,38 @@ async function handleInlineCredentialSubmit(): Promise<void> {
   }
 }
 
+/** 内联凭据类型切换:切到 ssh_key 时清空用户名(SSH 用户名由仓库地址决定,不收集)。 */
+function onInlineTypeChange(type: CredentialType): void {
+  inlineCredentialForm.value.type = type
+  if (type === 'ssh_key') {
+    inlineCredentialForm.value.username = ''
+    inlineCredentialErrors.value.username = ''
+  }
+}
+
+/**
+ * credential_error 的可行动提示:按「仓库地址协议 × 凭据类型」分类组装(判定逻辑见
+ * projects.helpers.ts,与后端 gitauth.ParseRepoURL 同语义)。协议错配必须单独提示——
+ * 后端把 ErrSchemeMismatch 也映射为 credential_error,此时「轮换令牌」是错方向。
+ * 分类不出(host 解析失败)时回退后端消息/通用文案。
+ */
+function credentialRejectedMessage(err: HttpError): string {
+  const host = repoHost(createForm.value.repoUrl)
+  const cred = credentials.value.find((c) => c.id === createForm.value.credentialId)
+  switch (classifyCredentialReject(createForm.value.repoUrl, cred?.type)) {
+    case 'mismatchSshUrl':
+      return t('projects.credRejectedMismatchSsh', { host })
+    case 'mismatchHttpsUrl':
+      return t('projects.credRejectedMismatchHttps', { host })
+    case 'ssh':
+      return t('projects.credRejectedSsh', { host })
+    case 'token':
+      return t('projects.credRejectedToken', { host })
+    default:
+      return err.apiError?.message ?? t('projects.testErrCredential')
+  }
+}
+
 function validateCreateForm(): boolean {
   clearCreateErrors()
   let ok = true
@@ -325,7 +358,7 @@ async function handleTestClone(): Promise<void> {
     if (err instanceof HttpError) {
       const code = err.apiError?.code
       if (code === 'credential_error') {
-        testError.value = t('projects.testErrCredential')
+        testError.value = credentialRejectedMessage(err)
       } else if (code === 'credential_invalid') {
         testError.value = t('projects.testErrCredInvalid')
       } else if (code === 'repo_unreachable') {
@@ -366,7 +399,7 @@ async function handleCreateSubmit(): Promise<void> {
       const code = err.apiError?.code
       if (code === 'credential_error') {
         createErrors.value.credentialId = t('projects.createErrCredField')
-        createBanner.value = t('projects.createErrCredBanner')
+        createBanner.value = credentialRejectedMessage(err)
       } else if (code === 'credential_invalid') {
         createErrors.value.credentialId = t('projects.testErrCredInvalid')
         createBanner.value = t('projects.testErrCredInvalid')
@@ -1252,7 +1285,7 @@ const STATUS_CONFIG: Record<RunStatus, StatusConfig> = {
                   class="inline-credential-type"
                   :class="{ 'inline-credential-type--active': inlineCredentialForm.type === type }"
                   :disabled="inlineCredentialSubmitting"
-                  @click="inlineCredentialForm.type = type"
+                  @click="onInlineTypeChange(type)"
                 >{{ credentialTypeLabels[type] }}</button>
               </div>
               <span class="field-hint">{{ inlineCredentialTypeDescriptions[inlineCredentialForm.type] }}</span>
@@ -1271,7 +1304,7 @@ const STATUS_CONFIG: Record<RunStatus, StatusConfig> = {
               />
               <span v-if="inlineCredentialErrors.name" class="field-error" role="alert">{{ inlineCredentialErrors.name }}</span>
             </div>
-            <div class="field">
+            <div v-if="inlineCredentialForm.type !== 'ssh_key'" class="field">
               <label class="field-label" for="inline-cred-username">
                 {{ t('projects.inlineCredUsername') }}
                 <span class="field-optional">{{ inlineCredentialForm.type === 'git_http' ? '' : t('settingsVault.optional') }}</span>
@@ -1288,6 +1321,11 @@ const STATUS_CONFIG: Record<RunStatus, StatusConfig> = {
                 @input="inlineCredentialErrors.username = ''"
               />
               <span v-if="inlineCredentialErrors.username" class="field-error" role="alert">{{ inlineCredentialErrors.username }}</span>
+            </div>
+            <!-- SSH 私钥:认证用户名由仓库地址决定(git@host:path 中的 git),不收集用户名,
+                 避免误填平台账号名导致服务端拒绝(Codeup/Gitee 等 SSH 登录用户固定为 git)。 -->
+            <div v-else class="field">
+              <span class="field-hint">{{ t('projects.inlineCredUsernameSshHint') }}</span>
             </div>
             <div class="field">
               <label class="field-label" for="inline-cred-secret">{{ t('projects.inlineCredSecret') }}</label>
