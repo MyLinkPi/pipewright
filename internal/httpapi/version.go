@@ -1,17 +1,24 @@
 package httpapi
 
 import (
+	"errors"
 	"log"
 	"net/http"
 	"time"
 
+	"github.com/huangchengsir/pipewright/internal/srcupdate"
 	"github.com/huangchengsir/pipewright/internal/version"
 )
 
-// makeCheckUpdateHandler 处理 GET /api/version/check:查询 GitHub 最新发布并与当前版本比对。
-// 检查失败(网络/限流)不返 5xx —— 而是 200 + UpdateInfo.CheckError,让前端稳定渲染降级态。
-func makeCheckUpdateHandler(checker *version.Checker) http.HandlerFunc {
+// makeCheckUpdateHandler 处理 GET /api/version/check:查询升级源最新发布并与当前版本比对。
+// 源码部署(src 非 nil)改走 git 检查(fetch + 比对上游 HEAD)。检查失败(网络/限流)
+// 不返 5xx —— 而是 200 + UpdateInfo.CheckError,让前端稳定渲染降级态。
+func makeCheckUpdateHandler(checker *version.Checker, src *srcupdate.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if src != nil {
+			writeJSON(w, http.StatusOK, src.Check(r.Context()))
+			return
+		}
 		info := checker.Check(r.Context())
 		writeJSON(w, http.StatusOK, info)
 	}
@@ -19,8 +26,8 @@ func makeCheckUpdateHandler(checker *version.Checker) http.HandlerFunc {
 
 // updateResult 是 POST /api/version/update 的返回。
 type updateResult struct {
-	Mode    string `json:"mode"`              // binary | docker
-	Status  string `json:"status"`            // restarting | manual | uptodate | error
+	Mode    string `json:"mode"`              // binary | docker | source
+	Status  string `json:"status"`            // restarting | manual | uptodate | building | busy | error
 	From    string `json:"from"`              // 当前版本
 	To      string `json:"to"`                // 目标版本
 	Message string `json:"message"`           // 给用户的说明
@@ -29,13 +36,31 @@ type updateResult struct {
 
 // makeSelfUpdateHandler 处理 POST /api/version/update:执行一键自动更新。
 //
-//   - binary 模式(裸机/install.sh):下载新版二进制 + 校验和核验 + 原子替换当前可执行文件,
+//   - source 模式(源码部署):启动后台管线 git pull --ff-only → make build → install.sh,
+//     立即返回 building;进度经 GET /api/version/update/status 轮询,装完自动重启(服务
+//     重启 / re-exec),前端轮询 /version 等新版本就位。
+//   - binary 模式(release 二进制):下载新版二进制 + 校验和核验 + 原子替换当前可执行文件,
 //     回完响应后用新二进制 re-exec 自重启(同 PID 重新绑定端口,短暂不可用,前端轮询 /version 重连)。
 //   - docker 模式:容器不能替换自身镜像,返回精确升级命令供用户执行。
-//
-// 串行化:同一时刻只允许一个更新在进行。
-func makeSelfUpdateHandler(checker *version.Checker, inflight *updateGate) http.HandlerFunc {
+func makeSelfUpdateHandler(checker *version.Checker, src *srcupdate.Service, inflight *updateGate) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// 源码部署:后台管线自有序列化(同一时刻一个任务),不经 binary 的响应后 re-exec 流程。
+		if src != nil {
+			if err := src.StartUpdate(); err != nil {
+				if errors.Is(err, srcupdate.ErrBusy) {
+					writeJSON(w, http.StatusConflict, updateResult{Mode: "source", Status: "busy", Message: "已有升级任务在进行,请等待其完成"})
+					return
+				}
+				writeJSON(w, http.StatusBadRequest, updateResult{Mode: "source", Status: "error", Message: err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusOK, updateResult{
+				Mode: "source", Status: "building",
+				Message: "已启动升级:拉取代码 → 构建 → 安装,完成后自动重启。进度请留意下方状态。",
+			})
+			return
+		}
+
 		if !inflight.tryAcquire() {
 			writeJSON(w, http.StatusConflict, updateResult{Status: "error", Message: "已有更新正在进行"})
 			return
@@ -128,5 +153,26 @@ func (g *updateGate) release() {
 	select {
 	case g.ch <- struct{}{}:
 	default:
+	}
+}
+
+// makeUpdateStatusHandler 处理 GET /api/version/update/status:源码升级后台任务的进度快照
+// (步骤 / 日志 / 完成 / 失败)。非源码部署返回 supported=false,前端不启用轮询。
+func makeUpdateStatusHandler(src *srcupdate.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if src == nil {
+			writeJSON(w, http.StatusOK, map[string]any{"supported": false})
+			return
+		}
+		st := src.Status()
+		writeJSON(w, http.StatusOK, map[string]any{
+			"supported": true,
+			"running":   st.Running,
+			"step":      st.Step,
+			"message":   st.Message,
+			"done":      st.Done,
+			"error":     st.Error,
+			"log":       st.Log,
+		})
 	}
 }

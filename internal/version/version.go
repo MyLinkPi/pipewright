@@ -30,9 +30,11 @@ type Info struct {
 	Date      string `json:"date"`
 	GoVersion string `json:"goVersion"`
 	Platform  string `json:"platform"`
+	// Runtime 是部署形态(binary/docker/source),前端据此渲染对应的升级 UI。
+	Runtime DeploymentMode `json:"runtime"`
 }
 
-// Get 返回当前构建的版本信息(含运行时 Go 版本与平台)。
+// Get 返回当前构建的版本信息(含运行时 Go 版本、平台与部署形态)。
 func Get() Info {
 	return Info{
 		Version:   Version,
@@ -40,6 +42,7 @@ func Get() Info {
 		Date:      Date,
 		GoVersion: runtime.Version(),
 		Platform:  runtime.GOOS + "/" + runtime.GOARCH,
+		Runtime:   Mode(),
 	}
 }
 

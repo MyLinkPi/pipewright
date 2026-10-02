@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
 
 	"github.com/huangchengsir/pipewright/internal/auth"
@@ -27,19 +28,27 @@ func (fakePlatformCertSource) OpenCertPEM(context.Context, string) (string, stri
 	return "-----CERT-----", "-----KEY-----", nil
 }
 
-// setupPlatformHTTPSServer 构造挂了平台 HTTPS 的测试 server(admin/testpass;fake target/证书源)。
-func setupPlatformHTTPSServer(t *testing.T) (*httptest.Server, *fakeSRTarget) {
+// fakePHHost 是注入 platformhttps 的假本机:一切命令 exit 0 无输出(nginx 已装、sudo -n
+// 可用;nginx -T 无平台标记 → Apply 在 include 验证处失败)。
+type fakePHHost struct{}
+
+func (fakePHHost) Run(context.Context, string, []string) (string, string, int, error) {
+	return "", "", 0, nil
+}
+func (fakePHHost) WriteFile(string, []byte, os.FileMode) error { return nil }
+
+// setupPlatformHTTPSServer 构造挂了平台 HTTPS 的测试 server(admin/testpass;fake 本机/证书源)。
+func setupPlatformHTTPSServer(t *testing.T) *httptest.Server {
 	t.Helper()
 	st := testStoreAuth(t)
-	ft := &fakeSRTarget{}
-	phSvc := platformhttps.New(st.DB, ft, fakePlatformCertSource{}, nil, 8080)
+	phSvc := platformhttps.New(st.DB, fakePHHost{}, fakePlatformCertSource{}, 8080)
 	authSvc := auth.NewService(st.DB, nil)
 	if err := authSvc.Bootstrap("admin", "testpass", ""); err != nil {
 		t.Fatalf("bootstrap: %v", err)
 	}
 	srv := httptest.NewServer(New(testWebFSAuth(), authSvc, WithPlatformHTTPS(phSvc)))
 	t.Cleanup(srv.Close)
-	return srv, ft
+	return srv
 }
 
 // phErrCode 解码契约错误体 {"error":{"code":...}} 并返回错误码。
@@ -57,7 +66,7 @@ func phErrCode(t *testing.T, resp *http.Response) string {
 }
 
 func TestPlatformHTTPSAuthAndCSRF(t *testing.T) {
-	srv, _ := setupPlatformHTTPSServer(t)
+	srv := setupPlatformHTTPSServer(t)
 	client, _ := loginSR(t, srv.URL)
 
 	// 匿名 GET → 401。
@@ -80,7 +89,7 @@ func TestPlatformHTTPSAuthAndCSRF(t *testing.T) {
 }
 
 func TestPlatformHTTPSSettingsFlow(t *testing.T) {
-	srv, ft := setupPlatformHTTPSServer(t)
+	srv := setupPlatformHTTPSServer(t)
 	client, csrf := loginSR(t, srv.URL)
 
 	// 默认设置行:未启用。
@@ -112,16 +121,15 @@ func TestPlatformHTTPSSettingsFlow(t *testing.T) {
 
 	// 证书不覆盖 → https_cert_not_cover。
 	resp = doJSON(t, client, http.MethodPut, srv.URL+"/api/platform-https/settings", csrf,
-		`{"enabled":true,"serverId":"srv-1","domain":"x.other.com","certId":"c1"}`)
+		`{"enabled":true,"domain":"x.other.com","certId":"c1"}`)
 	if resp.StatusCode != http.StatusBadRequest || phErrCode(t, resp) != "https_cert_not_cover" {
 		t.Fatalf("不覆盖应 400 https_cert_not_cover:%d", resp.StatusCode)
 	}
 
-	// 完整配置 + apply=true:fake target 的 nginx -T 无平台标记 → 应用失败,
+	// 完整配置 + apply=true:fake 本机的 nginx -T 无平台标记 → 应用失败,
 	// 但保存成功,返回 200 + settings.status=failed + applyError 人话。
-	ft.execCalls = nil
 	resp = doJSON(t, client, http.MethodPut, srv.URL+"/api/platform-https/settings", csrf,
-		`{"enabled":true,"serverId":"srv-1","domain":"pip.efg.com","certId":"c1","httpRedirect":true,"apply":true}`)
+		`{"enabled":true,"domain":"pip.efg.com","certId":"c1","httpRedirect":true,"apply":true}`)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("保存应 200:%d", resp.StatusCode)
 	}
@@ -143,7 +151,7 @@ func TestPlatformHTTPSSettingsFlow(t *testing.T) {
 		t.Fatalf("应用失败应回填状态与人话:%+v/%q", saved.Settings, saved.ApplyError)
 	}
 
-	// 已启用但 fake 机器 nginx -T 无平台标记 → 显式 apply 返回 502 https_apply_failed。
+	// 已启用但 fake 本机 nginx -T 无平台标记 → 显式 apply 返回 502 https_apply_failed。
 	resp = doJSON(t, client, http.MethodPost, srv.URL+"/api/platform-https/apply", csrf, "")
 	if resp.StatusCode != http.StatusBadGateway || phErrCode(t, resp) != "https_apply_failed" {
 		t.Fatalf("应用失败应 502 https_apply_failed:%d", resp.StatusCode)
@@ -158,7 +166,7 @@ func TestPlatformHTTPSSettingsFlow(t *testing.T) {
 	}
 	resp.Body.Close()
 
-	// 禁用:远端无平台配置(fake:首次应用失败已回滚)→ no-op 成功。
+	// 禁用:本机无平台配置(fake:首次应用失败已回滚)→ no-op 成功。
 	resp = doJSON(t, client, http.MethodPost, srv.URL+"/api/platform-https/disable", csrf, "")
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("禁用应 200:%d", resp.StatusCode)
@@ -176,10 +184,10 @@ func TestPlatformHTTPSSettingsFlow(t *testing.T) {
 }
 
 func TestPlatformHTTPSDetect(t *testing.T) {
-	srv, _ := setupPlatformHTTPSServer(t)
+	srv := setupPlatformHTTPSServer(t)
 	client, csrf := loginSR(t, srv.URL)
 
-	resp := doJSON(t, client, http.MethodGet, srv.URL+"/api/platform-https/detect?serverId=srv-1", csrf, "")
+	resp := doJSON(t, client, http.MethodGet, srv.URL+"/api/platform-https/detect", csrf, "")
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("探测应 200:%d", resp.StatusCode)
 	}
@@ -191,12 +199,6 @@ func TestPlatformHTTPSDetect(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !d.Installed || !d.SudoOk {
-		t.Fatalf("fake 机器应 installed+sudoOk:%+v", d)
-	}
-
-	// 空参 → server_not_found。
-	resp = doJSON(t, client, http.MethodGet, srv.URL+"/api/platform-https/detect", csrf, "")
-	if resp.StatusCode != http.StatusUnprocessableEntity || phErrCode(t, resp) != "server_not_found" {
-		t.Fatalf("空参应 422 server_not_found:%d", resp.StatusCode)
+		t.Fatalf("fake 本机应 installed+sudoOk:%+v", d)
 	}
 }

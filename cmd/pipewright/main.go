@@ -461,11 +461,12 @@ func main() {
 		log.Printf("[certmgmt] 已回填 %d 张服务注册页历史证书", n)
 	}
 
-	// 平台 HTTPS 访问(宿主 nginx):当 nginx 所在机器(通常即平台自身所在主机)装有宿主 nginx 时,
-	// 自动把平台 Web 页面发布为 HTTPS —— 下发证书管理模块的证书 + 写 conf.d vhost
-	// (443 ssl 反代平台 Web 端口 + 80→443 跳转)+ nginx -t + reload。证书经 CertSource 软引用
-	// (PEM 仅进程内解密传递);续期/重下发后经 PlatformHTTPS 联动重新落盘,删除占用证书被拦截。
-	platformHTTPSSvc := platformhttps.New(st.DB, targetSvc, &platformCertSource{cm: certSvc}, credVault, defaultPortFromAddr(cfg.Addr))
+	// 平台 HTTPS 访问(宿主 nginx):当平台自身所在主机装有宿主 nginx 时,自动把平台 Web 页面
+	// 发布为 HTTPS —— 下发证书管理模块的证书 + 写 conf.d vhost(443 ssl 反代平台 Web 端口 +
+	// 80→443 跳转)+ nginx -t + reload,全部在本机执行(nil → os/exec 默认 Host)。
+	// 证书经 CertSource 软引用(PEM 仅进程内解密传递);续期/重下发后经 PlatformHTTPS 联动
+	// 重新落盘,删除占用证书被拦截。
+	platformHTTPSSvc := platformhttps.New(st.DB, nil, &platformCertSource{cm: certSvc}, defaultPortFromAddr(cfg.Addr))
 	if cfg2, ok := certSvc.(interface{ SetPlatformHTTPS(certmgmt.PlatformHTTPS) }); ok {
 		cfg2.SetPlatformHTTPS(&platformHTTPSAdapter{ph: platformHTTPSSvc})
 	}

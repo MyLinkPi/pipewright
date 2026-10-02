@@ -22,17 +22,25 @@ import (
 type DeploymentMode string
 
 const (
-	ModeBinary DeploymentMode = "binary" // 裸机 / install.sh 二进制 —— 可自替换 + 自重启
-	ModeDocker DeploymentMode = "docker" // 容器 —— 不能替换自身镜像,给升级命令
+	ModeBinary  DeploymentMode = "binary" // 裸机 / release 二进制 —— 可自替换 + 自重启
+	ModeDocker  DeploymentMode = "docker" // 容器 —— 不能替换自身镜像,给升级命令
+	ModeSource  DeploymentMode = "source" // 源码部署(git clone + make build + install.sh)—— git pull 重建
 )
 
-// Mode 探测当前部署形态。容器内 Docker 会创建 /.dockerenv;另可经 PIPEWRIGHT_RUNTIME=docker 显式声明。
+// Mode 探测当前部署形态,决定自更新策略。优先级:显式 PIPEWRIGHT_RUNTIME(docker|source)
+// > 容器标记 /.dockerenv(容器挂载仓库时,exe-in-repo 弱探测会让位于容器事实)>
+// 源码仓库探测 > 裸机二进制。
 func Mode() DeploymentMode {
-	if strings.EqualFold(os.Getenv("PIPEWRIGHT_RUNTIME"), "docker") {
-		return ModeDocker
+	if v := strings.ToLower(strings.TrimSpace(os.Getenv("PIPEWRIGHT_RUNTIME"))); v != "" {
+		if v == string(ModeDocker) || v == string(ModeSource) {
+			return DeploymentMode(v)
+		}
 	}
 	if _, err := os.Stat("/.dockerenv"); err == nil {
 		return ModeDocker
+	}
+	if SourceDir() != "" {
+		return ModeSource
 	}
 	return ModeBinary
 }
@@ -60,12 +68,13 @@ func (c *Checker) ApplyBinaryUpdate(ctx context.Context, tag string) error {
 	// 资产名须与 .goreleaser.yaml 命名模板一致:pipewright_<版本无v>_<os>_<arch>.tar.gz
 	verNoV := strings.TrimPrefix(tag, "v")
 	asset := fmt.Sprintf("pipewright_%s_%s_%s.tar.gz", verNoV, runtime.GOOS, runtime.GOARCH)
-	base := "https://github.com"
-	if dlBase != "" {
-		base = dlBase
+	src := c.src(ctx)
+	base := src.DLBase
+	if base == "" {
+		base = githubWebBase
 	}
-	assetURL := fmt.Sprintf("%s/%s/releases/download/%s/%s", base, c.repo, tag, asset)
-	sumURL := fmt.Sprintf("%s/%s/releases/download/%s/checksums.txt", base, c.repo, tag)
+	assetURL := fmt.Sprintf("%s/%s/releases/download/%s/%s", base, src.Repo, tag, asset)
+	sumURL := fmt.Sprintf("%s/%s/releases/download/%s/checksums.txt", base, src.Repo, tag)
 
 	// 下载校验和清单,取本资产的期望 sha256。
 	want, err := c.fetchChecksum(ctx, sumURL, asset)
@@ -202,9 +211,6 @@ func extractBinary(gzPath, dir string) (string, error) {
 		return out.Name(), nil
 	}
 }
-
-// dlBase 允许测试把下载指向本地 stub server;生产为空时用 github.com。
-var dlBase = ""
 
 // Reexec 用新二进制替换当前进程映像(同 PID,重新绑定端口)。
 // 监听 socket 在 exec 时关闭,新进程重新 bind;调用前须确保响应已发出。

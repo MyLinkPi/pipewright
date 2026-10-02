@@ -55,17 +55,17 @@ func TestIsComparable(t *testing.T) {
 func newStubChecker(t *testing.T, current string, h http.HandlerFunc) (*Checker, func()) {
 	t.Helper()
 	srv := httptest.NewServer(h)
-	prevBase, prevHTML, prevVer := apiBase, htmlBase, Version
-	apiBase = srv.URL
-	htmlBase = srv.URL // 同一 stub 兼当网页站,避免重定向兜底打到真实 github.com
+	prevVer := Version
 	Version = current
 	cleanup := func() {
-		apiBase = prevBase
-		htmlBase = prevHTML
 		Version = prevVer
 		srv.Close()
 	}
-	c := &Checker{repo: "owner/repo", client: srv.Client(), now: time.Now}
+	c := &Checker{client: srv.Client(), now: time.Now}
+	c.SetSourceProvider(func(context.Context) Source {
+		// 同一 stub 兼当 API/网页站/下载源,避免兜底或下载打到真实 github.com。
+		return Source{Repo: "owner/repo", APIBase: srv.URL, WebBase: srv.URL, DLBase: srv.URL}
+	})
 	return c, cleanup
 }
 
@@ -199,5 +199,83 @@ func TestCheck_CachesSuccess(t *testing.T) {
 	_ = c.Check(context.Background())
 	if hits != 1 {
 		t.Errorf("expected 1 upstream hit (second served from cache), got %d", hits)
+	}
+}
+
+func TestResolveSource(t *testing.T) {
+	t.Setenv("PIPEWRIGHT_RELEASE_REPO", "")
+	t.Setenv("PIPEWRIGHT_RELEASE_MIRROR", "")
+
+	// 未配镜像:GitHub 官方源。
+	s := ResolveSource("")
+	if s.Repo != defaultRepo || s.APIBase != "https://api.github.com" ||
+		s.WebBase != "https://github.com" || s.DLBase != "https://github.com" {
+		t.Errorf("空镜像应回落 GitHub 官方源,得 %+v", s)
+	}
+
+	// 配了镜像:三个 base 统一指向镜像(去尾斜杠),repo 不受影响。
+	s = ResolveSource(" https://mirror.example.com/gh/ ")
+	if s.APIBase != "https://mirror.example.com/gh" || s.WebBase != s.APIBase || s.DLBase != s.APIBase {
+		t.Errorf("镜像应同时充当 API/网页/下载 base(去空白与尾斜杠),得 %+v", s)
+	}
+	if s.Repo != defaultRepo {
+		t.Errorf("repo 不应受镜像影响,得 %q", s.Repo)
+	}
+
+	// env 覆盖 repo(fork);env 镜像为库内配置为空时的部署级兜底。
+	t.Setenv("PIPEWRIGHT_RELEASE_REPO", "me/fork")
+	if s := ResolveSource(""); s.Repo != "me/fork" {
+		t.Errorf("env repo 应生效,得 %q", s.Repo)
+	}
+	t.Setenv("PIPEWRIGHT_RELEASE_MIRROR", " https://m.example.com ")
+	if s := ResolveSource(""); s.APIBase != "https://m.example.com" {
+		t.Errorf("env 镜像应兜底生效,得 %+v", s)
+	}
+	// 库内配置非空时优先于 env。
+	if s := ResolveSource("https://db.example.com"); s.APIBase != "https://db.example.com" {
+		t.Errorf("库内配置应优先于 env,得 %+v", s)
+	}
+	if envMirror() != "https://m.example.com" {
+		t.Errorf("envMirror 应去空白,得 %q", envMirror())
+	}
+}
+
+// 换源后不得返回旧源缓存:provider 切到另一个 stub,Check 应重新拉取新源。
+func TestCheck_SourceChangeInvalidatesCache(t *testing.T) {
+	var hitsA, hitsB int
+	mk := func(hits *int, tag string) *httptest.Server {
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			*hits++
+			_, _ = w.Write([]byte(`{"tag_name":"` + tag + `"}`))
+		}))
+	}
+	srvA, srvB := mk(&hitsA, "v1.1.0"), mk(&hitsB, "v1.2.0")
+	defer srvA.Close()
+	defer srvB.Close()
+
+	prevVer := Version
+	Version = "v1.0.0"
+	defer func() { Version = prevVer }()
+
+	cur := "A"
+	c := &Checker{client: srvA.Client(), now: time.Now}
+	c.SetSourceProvider(func(context.Context) Source {
+		srv := srvA
+		if cur == "B" {
+			srv = srvB
+		}
+		return Source{Repo: "o/r", APIBase: srv.URL, WebBase: srv.URL, DLBase: srv.URL}
+	})
+
+	if info := c.Check(context.Background()); info.Latest != "v1.1.0" {
+		t.Fatalf("源 A 应返回 v1.1.0,得 %q", info.Latest)
+	}
+	cur = "B"
+	info := c.Check(context.Background())
+	if info.Latest != "v1.2.0" {
+		t.Errorf("换源后应重新拉取(源 B v1.2.0),得 %q(缓存串源)", info.Latest)
+	}
+	if hitsA != 1 || hitsB != 1 {
+		t.Errorf("hitsA=%d hitsB=%d,期望各 1(不回源 A、B 恰好拉一次)", hitsA, hitsB)
 	}
 }

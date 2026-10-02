@@ -7,17 +7,12 @@ import (
 	"fmt"
 	"html"
 	"net/http"
-	"os"
 	"regexp"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 )
-
-// defaultRepo 是检查更新所查询的 GitHub 仓库(owner/name)。可经 PIPEWRIGHT_RELEASE_REPO 覆盖
-// (便于 fork 指向自己的发布渠道)。
-const defaultRepo = "huangchengsir/pipewright"
 
 // checkTTL 是更新检查结果的缓存时长:GitHub 未鉴权 API 限速 60 次/小时/IP,缓存避免反复点击打爆。
 const checkTTL = 15 * time.Minute
@@ -44,46 +39,56 @@ type ghRelease struct {
 	Prerelease  bool   `json:"prerelease"`
 }
 
-// Checker 查询 GitHub 最新发布并与当前构建版本比对,带 TTL 缓存。零值不可用,请用 NewChecker。
+// Checker 查询升级源最新发布并与当前构建版本比对,带 TTL 缓存。零值不可用,请用 NewChecker。
+// 升级源默认 GitHub,可经源 provider 动态切换(SetSourceProvider,如设置界面配置的镜像),
+// 修改即时生效;缓存按源隔离,换源后不返回旧源结果。
 type Checker struct {
-	repo   string
+	srcFn  SourceProvider
 	client *http.Client
 
-	mu       sync.Mutex
-	cached   *UpdateInfo
-	cachedAt time.Time
-	now      func() time.Time // 可注入,便于测试缓存过期
+	mu        sync.Mutex
+	cached    *UpdateInfo
+	cachedAt  time.Time
+	cachedFor string           // 产出缓存时的源标识;与当前源不符即视为过期
+	now       func() time.Time // 可注入,便于测试缓存过期
 }
 
-// NewChecker 返回默认 Checker(查 defaultRepo / 可经 env 覆盖,10s 超时)。
+// NewChecker 返回默认 Checker(升级源经 ResolveSource 由 env 决定,10s 超时)。
 func NewChecker() *Checker {
-	repo := defaultRepo
-	if v := strings.TrimSpace(os.Getenv("PIPEWRIGHT_RELEASE_REPO")); v != "" {
-		repo = v
-	}
 	return &Checker{
-		repo:   repo,
 		client: &http.Client{Timeout: 10 * time.Second},
 		now:    time.Now,
 	}
 }
 
-// apiBase 允许测试把请求打到本地 stub server;生产为空时用 GitHub 公网 API。
-var apiBase = ""
+// SetSourceProvider 注入动态升级源(nil 回落 env 官方源)。供 httpapi 在启动时把
+// 系统配置里的 release_mirror 接进来。
+func (c *Checker) SetSourceProvider(p SourceProvider) { c.srcFn = p }
 
-// htmlBase 允许测试把重定向兜底打到本地 stub server;生产为空时用 github.com 网页站。
-var htmlBase = ""
+// src 解析当前升级源:provider 优先;未注入或 provider 返回残缺源(无 Repo)时回落
+// ResolveSource(env),保证读配置故障不阻断检查。
+func (c *Checker) src(ctx context.Context) Source {
+	if c.srcFn != nil {
+		if s := c.srcFn(ctx); s.Repo != "" {
+			return s
+		}
+	}
+	return ResolveSource(envMirror())
+}
 
-// resolveLatestViaRedirect 不走 API,改读 github.com/<repo>/releases/latest 的 302 重定向
+// cacheKey 标识一个源:API base + repo 足以区分检查结果(其余 base 与同源配置联动)。
+func (s Source) cacheKey() string { return s.APIBase + "\x00" + s.Repo }
+
+// resolveLatestViaRedirect 不走 API,改读 {WebBase}/{repo}/releases/latest 的 302 重定向
 // (会跳到 /releases/tag/<tag>),从 Location 解析出最新 tag。用于 API 被限流(常见 403)或
 // 不可达时兜底 —— 实测部分网络(如 CN)下 api.github.com 403 但 github.com 网页站可达。
 // 局限:只拿得到 tag 与 release 页 URL,拿不到 notes / 发布时间。
-func (c *Checker) resolveLatestViaRedirect(ctx context.Context) (tag, htmlURL string, err error) {
-	base := htmlBase
+func (c *Checker) resolveLatestViaRedirect(ctx context.Context, src Source) (tag, htmlURL string, err error) {
+	base := src.WebBase
 	if base == "" {
-		base = "https://github.com"
+		base = githubWebBase
 	}
-	u := fmt.Sprintf("%s/%s/releases/latest", base, c.repo)
+	u := fmt.Sprintf("%s/%s/releases/latest", base, src.Repo)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
 		return "", "", err
@@ -119,8 +124,8 @@ func (c *Checker) resolveLatestViaRedirect(ctx context.Context) (tag, htmlURL st
 
 // tryRedirectFallback 在 API 受限/不可达时改用重定向解析最新 tag。成功则填好 out(清空
 // CheckError、按需置 UpdateAvailable)并返回 true;失败返回 false,由调用方保留原 CheckError。
-func (c *Checker) tryRedirectFallback(ctx context.Context, out *UpdateInfo, cur string) bool {
-	tag, htmlURL, err := c.resolveLatestViaRedirect(ctx)
+func (c *Checker) tryRedirectFallback(ctx context.Context, src Source, out *UpdateInfo, cur string) bool {
+	tag, htmlURL, err := c.resolveLatestViaRedirect(ctx, src)
 	if err != nil || tag == "" {
 		return false
 	}
@@ -129,21 +134,21 @@ func (c *Checker) tryRedirectFallback(ctx context.Context, out *UpdateInfo, cur 
 	out.CheckError = ""
 	// 走 atom feed(非限流 API)补 release 说明 —— API 限流时仍能给用户看更新内容。
 	// 拿不到不影响主流程(说明留空,前端不显示「查看更新说明」)。
-	out.Notes = c.fetchReleaseNotes(ctx, tag)
+	out.Notes = c.fetchReleaseNotes(ctx, src, tag)
 	if isComparable(cur) && CompareVersions(tag, cur) > 0 {
 		out.UpdateAvailable = true
 	}
 	return true
 }
 
-// fetchReleaseNotes 从 github.com 的 releases.atom(RSS,不走会限流的 api.github.com)取指定
+// fetchReleaseNotes 从 {WebBase} 的 releases.atom(RSS,不走会限流的 API base)取指定
 // tag 的 release 正文,去 HTML 标签转纯文本(前端 <pre> 直接展示)。失败返回空串。
-func (c *Checker) fetchReleaseNotes(ctx context.Context, tag string) string {
-	base := htmlBase
+func (c *Checker) fetchReleaseNotes(ctx context.Context, src Source, tag string) string {
+	base := src.WebBase
 	if base == "" {
-		base = "https://github.com"
+		base = githubWebBase
 	}
-	u := fmt.Sprintf("%s/%s/releases.atom", base, c.repo)
+	u := fmt.Sprintf("%s/%s/releases.atom", base, src.Repo)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
 		return ""
@@ -200,19 +205,22 @@ func htmlToText(h string) string {
 	return strings.Join(out, "\n")
 }
 
-// Check 返回更新信息。命中未过期缓存则直接返回;否则查 GitHub。
+// Check 返回更新信息。命中未过期缓存(且源未变)则直接返回;否则查升级源。
 // 网络/解析失败不返回 error —— 而是在 UpdateInfo.CheckError 里带上原因(始终附当前版本),
 // 让上层端点稳定返回 200、前端优雅降级。
 func (c *Checker) Check(ctx context.Context) UpdateInfo {
+	src := c.src(ctx)
+	key := src.cacheKey()
+
 	c.mu.Lock()
-	if c.cached != nil && c.now().Sub(c.cachedAt) < checkTTL {
+	if c.cached != nil && c.cachedFor == key && c.now().Sub(c.cachedAt) < checkTTL {
 		cached := *c.cached
 		c.mu.Unlock()
 		return cached
 	}
 	c.mu.Unlock()
 
-	info := c.fetch(ctx)
+	info := c.fetch(ctx, src)
 
 	// 仅缓存成功结果:失败不缓存,以便用户重试时立刻再查。
 	if info.CheckError == "" {
@@ -220,20 +228,21 @@ func (c *Checker) Check(ctx context.Context) UpdateInfo {
 		cp := info
 		c.cached = &cp
 		c.cachedAt = c.now()
+		c.cachedFor = key
 		c.mu.Unlock()
 	}
 	return info
 }
 
-func (c *Checker) fetch(ctx context.Context) UpdateInfo {
+func (c *Checker) fetch(ctx context.Context, src Source) UpdateInfo {
 	cur := Version
 	out := UpdateInfo{Current: cur}
 
-	base := apiBase
+	base := src.APIBase
 	if base == "" {
-		base = "https://api.github.com"
+		base = githubAPIBase
 	}
-	url := fmt.Sprintf("%s/repos/%s/releases/latest", base, c.repo)
+	url := fmt.Sprintf("%s/repos/%s/releases/latest", base, src.Repo)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
@@ -247,10 +256,10 @@ func (c *Checker) fetch(ctx context.Context) UpdateInfo {
 	resp, err := c.client.Do(req)
 	if err != nil {
 		// API 不可达:尝试网页站重定向兜底(可能 API 域被挡而网页站可达)。
-		if c.tryRedirectFallback(ctx, &out, cur) {
+		if c.tryRedirectFallback(ctx, src, &out, cur) {
 			return out
 		}
-		out.CheckError = "无法连接 GitHub(网络不可达?)"
+		out.CheckError = "无法连接升级源(网络不可达?)"
 		return out
 	}
 	defer func() { _ = resp.Body.Close() }()
@@ -259,24 +268,24 @@ func (c *Checker) fetch(ctx context.Context) UpdateInfo {
 	case http.StatusOK:
 		// 继续解析
 	case http.StatusNotFound:
-		// 仓库尚无任何 release:不是错误,只是「无可用更新」。
+		// 源上尚无任何 release:不是错误,只是「无可用更新」。
 		out.CheckError = ""
 		return out
 	case http.StatusForbidden, http.StatusTooManyRequests:
 		// API 限流(CN 网络常见):退回网页站重定向解析,绕开 API。
-		if c.tryRedirectFallback(ctx, &out, cur) {
+		if c.tryRedirectFallback(ctx, src, &out, cur) {
 			return out
 		}
-		out.CheckError = "GitHub API 限流,请稍后再试"
+		out.CheckError = "升级源限流,请稍后再试"
 		return out
 	default:
-		out.CheckError = fmt.Sprintf("GitHub 返回 %d", resp.StatusCode)
+		out.CheckError = fmt.Sprintf("升级源返回 %d", resp.StatusCode)
 		return out
 	}
 
 	var rel ghRelease
 	if err := json.NewDecoder(resp.Body).Decode(&rel); err != nil {
-		out.CheckError = "解析 GitHub 响应失败"
+		out.CheckError = "解析升级源响应失败"
 		return out
 	}
 

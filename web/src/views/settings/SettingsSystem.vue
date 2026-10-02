@@ -8,11 +8,12 @@
  * - 开发态(version=dev)永不误报更新,药丸显示「开发构建」。
  */
 
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { getVersion, checkUpdate, applyUpdate } from '../../api/version'
-import type { VersionInfo, UpdateInfo } from '../../api/version'
+import { getVersion, checkUpdate, applyUpdate, updateJobStatus } from '../../api/version'
+import type { VersionInfo, UpdateInfo, UpdateJobStatus } from '../../api/version'
 import { getRetentionConfig, setRetentionConfig, type RetentionConfig } from '../../api/retention'
+import { getSystemConfig, saveSystemConfig } from '../../api/systemConfig'
 import { HttpError } from '../../api/http'
 import AppButton from '../../components/ui/AppButton.vue'
 
@@ -38,6 +39,79 @@ const isDev = computed(() => {
   const v = version.value?.version ?? ''
   return v === '' || v === 'dev' || !/^v?\d/.test(v)
 })
+
+// 源码部署(runtime=source):升级 = git pull → make build → install.sh,后台管线跑,
+// 前端轮询 /api/version/update/status 展示步骤与日志;管线完成触发重启(服务重启 / re-exec),
+// 版本号变化即整页刷新(复用 pollUntilRestarted)。
+const isSource = computed(() => version.value?.runtime === 'source')
+
+type SrcPhase = 'idle' | 'building' | 'restarting' | 'error'
+const srcPhase = ref<SrcPhase>('idle')
+const srcStep = ref('')
+const srcMessage = ref('')
+const srcLog = ref<string[]>([])
+const showSrcLog = ref(false)
+let srcTimer: number | null = null
+
+const srcStepLabel = computed(() => {
+  switch (srcStep.value) {
+    case 'build': return t('settingsSystem.srcStepBuild')
+    case 'install': return t('settingsSystem.srcStepInstall')
+    case 'restart': return t('settingsSystem.srcStepRestart')
+    default: return t('settingsSystem.srcStepPull')
+  }
+})
+
+function stopSrcPoll(): void {
+  if (srcTimer !== null) {
+    window.clearInterval(srcTimer)
+    srcTimer = null
+  }
+}
+
+function srcFail(msg: string): void {
+  stopSrcPoll()
+  srcPhase.value = 'error'
+  srcMessage.value = msg
+}
+
+function pollSourceJob(from: string): void {
+  stopSrcPoll()
+  let statusFails = 0
+  srcTimer = window.setInterval(async () => {
+    // 状态接口先查进度;连不上(服务重启窗口)时改看 /version 是否已切到新版本。
+    try {
+      const st: UpdateJobStatus = await updateJobStatus()
+      statusFails = 0
+      if (!st.supported) return srcFail(t('settingsSystem.srcUnsupported'))
+      srcStep.value = st.step
+      srcMessage.value = st.message ?? ''
+      if (st.log) srcLog.value = st.log
+      if (st.error) return srcFail(st.error)
+      if (st.done || st.step === 'restart') {
+        stopSrcPoll()
+        srcPhase.value = 'restarting'
+        pollUntilRestarted(from)
+      }
+      return
+    } catch {
+      statusFails++
+    }
+    if (statusFails >= 2) {
+      try {
+        const v = await getVersion()
+        if (v.version && v.version !== from) {
+          stopSrcPoll()
+          window.location.reload()
+        }
+      } catch {
+        // 服务仍不可达(重启窗口),继续轮询。
+      }
+    }
+  }, 2000)
+}
+
+onUnmounted(stopSrcPoll)
 
 const hasUpdate = computed(() => checkState.value === 'done' && !!update.value?.updateAvailable)
 
@@ -101,6 +175,8 @@ async function runCheck(): Promise<void> {
 }
 
 // 一键自动更新:
+//  - source 模式:后端启动 git pull → make build → install.sh 后台管线,返回 building/busy →
+//    轮询进度;管线完成自动重启,版本变化即整页 reload 到新版。
 //  - binary 模式:后端下载+替换二进制后自重启 → 前端进入"重启中"并轮询 /version,
 //    版本变化即整页 reload 到新版。
 //  - docker 模式:后端返回升级命令,前端展示 + 复制(容器不能自换镜像)。
@@ -111,6 +187,19 @@ async function runUpdate(): Promise<void> {
   dockerCommand.value = ''
   try {
     const res = await applyUpdate()
+    if (res.mode === 'source') {
+      updatePhase.value = 'idle'
+      if (res.status === 'building' || res.status === 'busy') {
+        srcPhase.value = 'building'
+        srcLog.value = []
+        showSrcLog.value = false
+        pollSourceJob(from)
+      } else {
+        srcPhase.value = 'error'
+        srcMessage.value = res.message || t('settingsSystem.updateFailed')
+      }
+      return
+    }
     if (res.status === 'restarting') {
       updatePhase.value = 'restarting'
       updateMsg.value = res.message || t('settingsSystem.restartingToNew')
@@ -207,9 +296,45 @@ async function saveRetention(): Promise<void> {
   }
 }
 
+// ─── 升级源(自升级镜像) ───────────────────────────────────────────────────────
+// 读失败时保持未加载态并禁用保存:此时后端 publicUrl 未知,补发它可能误清已有配置。
+const umMirror = ref('')
+const umLoaded = ref(false)
+const umSaving = ref(false)
+const umSaved = ref(false)
+const umError = ref('')
+
+async function loadUpdateSource(): Promise<void> {
+  try {
+    const c = await getSystemConfig()
+    umMirror.value = c.releaseMirror
+    umLoaded.value = true
+  } catch {
+    // 读失败:保持未加载态,保存按钮禁用。
+  }
+}
+
+async function saveUpdateSource(): Promise<void> {
+  umSaving.value = true
+  umSaved.value = false
+  umError.value = ''
+  try {
+    // 只发 releaseMirror(publicUrl 传 undefined = 后端不动该项)。
+    await saveSystemConfig(undefined, umMirror.value.trim())
+    umSaved.value = true
+    setTimeout(() => { umSaved.value = false }, 2000)
+  } catch (err) {
+    umError.value =
+      err instanceof HttpError ? (err.apiError?.message ?? t('settingsSystem.updateSrcSaveFailed')) : t('settingsSystem.updateSrcSaveFailed')
+  } finally {
+    umSaving.value = false
+  }
+}
+
 onMounted(() => {
   void loadVersion()
   void loadRetention()
+  void loadUpdateSource()
 })
 </script>
 
@@ -297,9 +422,20 @@ onMounted(() => {
           </div>
         </div>
 
-        <!-- 自动更新进行态 -->
+        <!-- 自动更新进行态(source 模式优先:后台管线进度/日志;binary/docker 走既有状态) -->
         <transition name="sys-rise">
-          <div v-if="updatePhase === 'restarting'" class="sys-update-state sys-update-state--busy" role="status">
+          <div v-if="isSource && srcPhase === 'building'" class="sys-update-state sys-update-state--busy" role="status">
+            <span class="sys-spinner-dark" aria-hidden="true" />
+            <span>{{ t('settingsSystem.srcBuilding') }} {{ srcStepLabel }}<template v-if="srcMessage"> · {{ srcMessage }}</template></span>
+          </div>
+          <div v-else-if="isSource && srcPhase === 'restarting'" class="sys-update-state sys-update-state--busy" role="status">
+            <span class="sys-spinner-dark" aria-hidden="true" />
+            <span>{{ t('settingsSystem.srcRestarting') }}</span>
+          </div>
+          <div v-else-if="isSource && srcPhase === 'error'" class="sys-update-state sys-update-state--err" role="alert">
+            {{ t('settingsSystem.srcFailed') }}{{ srcMessage ? ':' + srcMessage : '' }}
+          </div>
+          <div v-else-if="updatePhase === 'restarting'" class="sys-update-state sys-update-state--busy" role="status">
             <span class="sys-spinner-dark" aria-hidden="true" />
             <span>{{ t('settingsSystem.reconnecting', { msg: updateMsg }) }}</span>
           </div>
@@ -315,6 +451,17 @@ onMounted(() => {
           </div>
         </transition>
 
+        <!-- 源码升级:后台管线日志(可折叠) -->
+        <div v-if="isSource && srcLog.length" class="sys-notes-wrap">
+          <button class="sys-notes-toggle" :aria-expanded="showSrcLog" @click="showSrcLog = !showSrcLog">
+            <svg class="sys-chevron" :class="{ open: showSrcLog }" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 18l6-6-6-6" /></svg>
+            {{ showSrcLog ? t('settingsSystem.srcLogHide') : t('settingsSystem.srcLogShow') }}
+          </button>
+          <transition name="sys-rise">
+            <pre v-if="showSrcLog" class="sys-notes">{{ srcLog.join('\n') }}</pre>
+          </transition>
+        </div>
+
         <div v-if="update?.notes" class="sys-notes-wrap">
           <button class="sys-notes-toggle" :aria-expanded="showNotes" @click="showNotes = !showNotes">
             <svg class="sys-chevron" :class="{ open: showNotes }" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 18l6-6-6-6" /></svg>
@@ -326,6 +473,40 @@ onMounted(() => {
         </div>
       </article>
     </transition>
+
+    <!-- 升级源(自升级镜像) -->
+    <article class="sys-panel">
+      <span class="sys-accent" aria-hidden="true" />
+      <div class="rt-head">
+        <div class="rt-head-text">
+          <h3 class="rt-title">{{ t('settingsSystem.updateSrcTitle') }}</h3>
+          <p class="rt-sub">{{ t('settingsSystem.updateSrcSub') }}</p>
+        </div>
+      </div>
+
+      <div class="rt-fields">
+        <label class="rt-field um-field">
+          <span class="rt-label">{{ t('settingsSystem.updateSrcLabel') }}</span>
+          <input
+            v-model="umMirror"
+            class="rt-input um-input mono"
+            type="url"
+            :placeholder="t('settingsSystem.updateSrcPlaceholder')"
+            :disabled="umSaving"
+            spellcheck="false"
+          />
+          <span class="rt-hint">{{ t('settingsSystem.updateSrcHint') }}</span>
+        </label>
+      </div>
+
+      <div class="rt-actions">
+        <span v-if="umSaved" class="rt-saved" role="status">{{ t('settingsSystem.updateSrcSaved') }}</span>
+        <span v-if="umError" class="rt-err" role="alert">{{ umError }}</span>
+        <AppButton variant="primary" :loading="umSaving" :disabled="!umLoaded" @click="saveUpdateSource">
+          {{ t('settingsSystem.updateSrcSave') }}
+        </AppButton>
+      </div>
+    </article>
 
     <!-- 运行数据保留 / 清理 -->
     <article class="sys-panel">
@@ -938,6 +1119,15 @@ onMounted(() => {
   border-left: 2px solid var(--color-border);
   padding-left: 10px;
 }
+/* ─── 升级源 ─────────────────────────────────────────────────────────────────── */
+.um-field {
+  flex: 1 1 320px;
+}
+.um-input {
+  width: 100%;
+  font-family: var(--font-mono);
+}
+
 .rt-actions {
   display: flex;
   align-items: center;

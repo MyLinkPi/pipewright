@@ -60,6 +60,14 @@ else
 fi
 chmod +x "${INSTALL_DIR}/${BIN}" 2>/dev/null || sudo chmod +x "${INSTALL_DIR}/${BIN}"
 
+# 源码部署标记:记录仓库根目录。平台自升级(设置→系统:git pull + make build + install.sh)
+# 据此识别「源码部署」形态并定位仓库。每次安装/升级都刷新(仓库可能被移动)。
+if [ -w "$INSTALL_DIR" ]; then
+	printf '%s\n' "$SCRIPT_DIR" >"${INSTALL_DIR}/.pipewright-source" 2>/dev/null || true
+elif command -v sudo >/dev/null 2>&1; then
+	printf '%s\n' "$SCRIPT_DIR" | sudo tee "${INSTALL_DIR}/.pipewright-source" >/dev/null 2>&1 || true
+fi
+
 # SELinux(RHEL/CentOS/Rocky/Fedora 系,强制模式):二进制带错误类型时 systemd(init_t)
 # 无权执行 → 装为服务后起不来(AVC denied execute)。重置为该路径的默认上下文
 # (/usr/local/bin → bin_t)。非 SELinux 系统无 restorecon,跳过。
@@ -121,6 +129,12 @@ setup_service() {
 			fi
 		} | $SUDO tee "$ENV_FILE" >/dev/null
 		$SUDO chmod 600 "$ENV_FILE"
+	fi
+
+	# 源码部署:把仓库根路径记入 env(平台据此识别源码部署并定位仓库做自升级)。
+	# env 文件已存在且缺该项时补写(升级既有安装);仓库移动后改此项即可。
+	if ! grep -q '^PIPEWRIGHT_SOURCE_DIR=' "$ENV_FILE" 2>/dev/null; then
+		echo "PIPEWRIGHT_SOURCE_DIR=${SCRIPT_DIR}" | $SUDO tee -a "$ENV_FILE" >/dev/null
 	fi
 
 	# systemd unit。User=root:自更新须写 ${INSTALL_DIR}、隔离构建须用 docker、SSH 部署须读密钥。
@@ -244,14 +258,19 @@ if [ "$UPGRADE" = "1" ]; then
 		maybe_setup_service
 		info "完成 ✓  升级完成,服务已重启,新版本已生效。"
 	elif [ "$HAS_UNIT" = "1" ] && command -v systemctl >/dev/null 2>&1; then
-		if [ "$(id -u)" -eq 0 ]; then
-			systemctl restart pipewright
-		elif command -v sudo >/dev/null 2>&1; then
-			sudo systemctl restart pipewright
+		# 仅在服务正运行时重启(平台自升级会经本脚本重启自身);服务停着就不擅自拉起。
+		if systemctl is-active --quiet pipewright 2>/dev/null; then
+			if [ "$(id -u)" -eq 0 ]; then
+				systemctl restart pipewright
+			elif command -v sudo >/dev/null 2>&1; then
+				sudo systemctl restart pipewright
+			else
+				warn "无 sudo,无法自动重启服务,请手动执行:systemctl restart pipewright"
+			fi
+			info "完成 ✓  升级完成,服务已重启,新版本已生效。"
 		else
-			warn "无 sudo,无法自动重启服务,请手动执行:systemctl restart pipewright"
+			info "完成 ✓  升级完成。服务当前未运行,未自动启动(需要时:systemctl start pipewright)。"
 		fi
-		info "完成 ✓  升级完成,服务已重启,新版本已生效。"
 	else
 		info "完成 ✓  升级完成。未能自动重启:若进程在跑,请手动重启以加载新版本。"
 	fi

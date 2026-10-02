@@ -36,9 +36,9 @@ func (s *Store) getOrCreate(ctx context.Context) (*Settings, error) {
 	now := time.Now().UTC().Format(time.RFC3339)
 	_, ierr := s.db.ExecContext(ctx,
 		`INSERT INTO platform_https_settings
-		   (id, enabled, server_id, domain, cert_id, upstream_host, upstream_port, http_redirect,
+		   (id, enabled, domain, cert_id, upstream_host, upstream_port, http_redirect,
 		    status, status_detail, last_applied_at, created_at, updated_at)
-		 VALUES (?, 0, '', '', '', '127.0.0.1', 0, 1, '', '', '', ?, ?)`,
+		 VALUES (?, 0, '', '', '127.0.0.1', 0, 1, '', '', '', ?, ?)`,
 		settingsID, now, now)
 	if ierr != nil {
 		// 并发初始化撞唯一键 → 回读即可。
@@ -52,7 +52,7 @@ func (s *Store) getOrCreate(ctx context.Context) (*Settings, error) {
 // get 读取设置单例;不存在 → ErrStoreNotFound。
 func (s *Store) get(ctx context.Context) (*Settings, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT enabled, server_id, domain, cert_id, upstream_host, upstream_port, http_redirect,
+		`SELECT enabled, domain, cert_id, upstream_host, upstream_port, http_redirect,
 		        status, status_detail, last_applied_at, created_at, updated_at
 		 FROM platform_https_settings WHERE id = ?`, settingsID)
 	var (
@@ -64,7 +64,7 @@ func (s *Store) get(ctx context.Context) (*Settings, error) {
 		updatedStr string
 	)
 	if err := row.Scan(
-		&enabled, &st.ServerID, &st.Domain, &st.CertID, &st.UpstreamHost, &st.UpstreamPort, &redirect,
+		&enabled, &st.Domain, &st.CertID, &st.UpstreamHost, &st.UpstreamPort, &redirect,
 		&st.Status, &st.StatusDetail, &lastApply, &createdStr, &updatedStr,
 	); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -96,10 +96,10 @@ func (s *Store) save(ctx context.Context, st *Settings) error {
 	}
 	_, err := s.db.ExecContext(ctx,
 		`UPDATE platform_https_settings
-		 SET enabled = ?, server_id = ?, domain = ?, cert_id = ?, upstream_host = ?, upstream_port = ?,
+		 SET enabled = ?, domain = ?, cert_id = ?, upstream_host = ?, upstream_port = ?,
 		     http_redirect = ?, updated_at = ?
 		 WHERE id = ?`,
-		enabled, st.ServerID, st.Domain, st.CertID, st.UpstreamHost, st.UpstreamPort,
+		enabled, st.Domain, st.CertID, st.UpstreamHost, st.UpstreamPort,
 		redirect, now, settingsID)
 	if err != nil {
 		return fmt.Errorf("platformhttps: save settings: %w", err)
@@ -136,7 +136,7 @@ func (s *Store) clearStatus(ctx context.Context) error {
 	return nil
 }
 
-// setDisabled 复位为未启用(保留 server/domain/cert 等配置,清空应用状态,便于再次启用)。
+// setDisabled 复位为未启用(保留 domain/cert 等配置,清空应用状态,便于再次启用)。
 func (s *Store) setDisabled(ctx context.Context) error {
 	now := time.Now().UTC().Format(time.RFC3339)
 	_, err := s.db.ExecContext(ctx,

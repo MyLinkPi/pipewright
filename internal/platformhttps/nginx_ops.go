@@ -1,15 +1,12 @@
 package platformhttps
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"strings"
-
-	"github.com/huangchengsir/pipewright/internal/target"
 )
 
-// 临时落盘路径:三个文件收进登录用户私有的 700 目录(防多用户机上 chmod 前的可读窗口;
+// 临时落盘路径:三个文件收进平台运行用户私有的 700 目录(防多用户机上 chmod 前的可读窗口;
 // 应用完成后整目录清理,备份文件一并删除)。
 const (
 	tmpDir        = "/tmp/pipewright-platform-https.d"
@@ -19,77 +16,62 @@ const (
 	backupConfFmt = tmpDir + "/pipewright-platform.conf.bak"
 )
 
-// privilege 描述目标机的一次提权方式(apply/remove 全程复用同一判定):
+// privilege 描述本机的一次提权方式(apply/remove 全程复用同一判定):
 //
 //	root  → prefix nil,直接执行;
-//	免密  → prefix ["sudo","-n"];
-//	密码  → prefix ["sudo","-S","-p",""] + sudoPwd,密码经 SSH stdin 逐条喂入
-//	        (绝不进 argv/日志;每条命令是新 SSH 会话,sudo 时间戳缓存不复用,须逐条喂)。
+//	免密  → prefix ["sudo","-n"]。
 type privilege struct {
-	prefix  []string
-	sudoPwd string // 仅密码模式非空
+	prefix []string
 }
 
-// execOK 跑一条 array 命令并报告退出码是否为 0(传输错误原样返回)。
-func execOK(ctx context.Context, tg target.Service, serverID string, cmd ...string) (*target.ExecResult, bool, error) {
-	res, err := tg.Exec(ctx, serverID, cmd)
-	if err != nil {
-		return res, false, err
-	}
-	return res, res.ExitCode == 0, nil
+// runResult 是一条命令的运行结果(供 trimOut 取人话摘要)。
+type runResult struct {
+	stdout string
+	stderr string
 }
 
-// execPriv 跑一条提权命令:密码模式经 stdin 把 sudo 密码喂给 sudo -S(每条命令新造
-// reader,读尽即关远端 stdin;密码绝不进 argv);非密码模式等同 execOK 加前缀。
-func execPriv(ctx context.Context, tg target.Service, serverID string, p privilege, cmd ...string) (*target.ExecResult, bool, error) {
-	full := append(p.prefix, cmd...)
-	if p.sudoPwd == "" {
-		return execOK(ctx, tg, serverID, full...)
-	}
-	res, err := tg.ExecWithStdin(ctx, serverID, full, strings.NewReader(p.sudoPwd+"\n"))
+// execOK 在本机跑一条 array 命令并报告退出码是否为 0(启动错误原样返回)。
+func execOK(ctx context.Context, h Host, cmd ...string) (runResult, bool, error) {
+	stdout, stderr, code, err := h.Run(ctx, cmd[0], cmd[1:])
 	if err != nil {
-		return res, false, err
+		return runResult{stdout, stderr}, false, err
 	}
-	return res, res.ExitCode == 0, nil
+	return runResult{stdout, stderr}, code == 0, nil
+}
+
+// execPriv 跑一条提权命令(等同 execOK 加前缀)。
+func execPriv(ctx context.Context, h Host, p privilege, cmd ...string) (runResult, bool, error) {
+	return execOK(ctx, h, append(p.prefix, cmd...)...)
 }
 
 // ---------- 探测 ----------
 
-// detectNginx 探测宿主 nginx / 提权能力 / conf.d include 情况(只读,全部 best-effort 除 SSH 错)。
-// sudoPwd 为服务器绑定的 sudo 密码(未绑定为空串):非 root 且无免密 sudo 时用它探测密码 sudo。
-func detectNginx(ctx context.Context, tg target.Service, serverID, sudoPwd string) (*NginxDetect, error) {
-	d := &NginxDetect{ServerID: serverID, SudoPwdConfigured: sudoPwd != ""}
+// detectNginx 探测本机宿主 nginx / 提权能力 / conf.d include 情况(只读,全部 best-effort
+// 除命令启动错误)。
+func detectNginx(ctx context.Context, h Host) (*NginxDetect, error) {
+	d := &NginxDetect{}
 
-	// 1) nginx 是否在 PATH(nginx -v 输出在 stderr)。
-	res, err := tg.Exec(ctx, serverID, []string{"nginx", "-v"})
-	if err != nil {
-		return nil, err
-	}
-	if res.ExitCode == 0 {
+	// 1) nginx 是否在 PATH(nginx -v 输出在 stderr;启动失败 = 不在 PATH,按未安装处理)。
+	stdout, stderr, code, err := h.Run(ctx, "nginx", []string{"-v"})
+	if err == nil && code == 0 {
 		d.Installed = true
-		d.Version = parseNginxVersion(firstNonEmpty(res.Stderr, res.Stdout))
+		d.Version = parseNginxVersion(firstNonEmpty(stderr, stdout))
 	}
 
-	// 2) 提权能力:root 直接可写;非 root 先探免密 sudo,再探 sudo 密码(绑定了凭据时)。
-	uid, ok, err := execOK(ctx, tg, serverID, "id", "-u")
+	// 2) 提权能力:root 直接可写;非 root 探免密 sudo。
+	uid, ok, err := execOK(ctx, h, "id", "-u")
 	if err != nil {
 		return nil, err
 	}
-	if ok && strings.TrimSpace(uid.Stdout) == "0" {
+	if ok && strings.TrimSpace(uid.stdout) == "0" {
 		d.IsRoot = true
 		d.SudoOk = true
-	} else if _, sudoOk, err := execOK(ctx, tg, serverID, "sudo", "-n", "true"); err == nil && sudoOk {
+	} else if _, sudoOk, err := execOK(ctx, h, "sudo", "-n", "true"); err == nil && sudoOk {
 		d.SudoOk = true
-	} else if sudoPwd != "" {
-		// 密码探测:错密码 → sudo 读一行后 EOF 重试失败,非零退出(best-effort,不炸探测)。
-		if _, pwdOk, err := execPriv(ctx, tg, serverID,
-			privilege{prefix: []string{"sudo", "-S", "-p", ""}, sudoPwd: sudoPwd}, "true"); err == nil && pwdOk {
-			d.SudoPwdOk = true
-		}
 	}
 
 	// 3) 平台管理的 vhost 是否已在(曾应用过)。conf.d 通常全局可读,普通 test 即可。
-	if _, ok, _ := execOK(ctx, tg, serverID, "test", "-f", managedConfPath); ok {
+	if _, ok, _ := execOK(ctx, h, "test", "-f", managedConfPath); ok {
 		d.ManagedConf = true
 	}
 
@@ -99,11 +81,9 @@ func detectNginx(ctx context.Context, tg target.Service, serverID, sudoPwd strin
 	var p privilege
 	if d.SudoOk && !d.IsRoot {
 		p = privilege{prefix: []string{"sudo", "-n"}}
-	} else if d.SudoPwdOk {
-		p = privilege{prefix: []string{"sudo", "-S", "-p", ""}, sudoPwd: sudoPwd}
 	}
-	if dump, ok, _ := execPriv(ctx, tg, serverID, p, "nginx", "-T"); ok {
-		if strings.Contains(dump.Stdout, "/etc/nginx/conf.d") {
+	if dump, ok, _ := execPriv(ctx, h, p, "nginx", "-T"); ok {
+		if strings.Contains(dump.stdout, "/etc/nginx/conf.d") {
 			d.ConfDIncluded = true
 		}
 	}
@@ -121,22 +101,20 @@ func parseNginxVersion(s string) string {
 
 // ---------- 应用 ----------
 
-// applyPlatformConf 在目标机落位平台 HTTPS 配置并热加载:
+// applyPlatformConf 在本机落位平台 HTTPS 配置并热加载:
 //
-//	探测 nginx + 提权方式(root > 免密 sudo > sudo 密码)→ 建 700 临时目录并 Upload 三份文件
-//	(私钥再收紧 600)→ 安装证书与 conf.d vhost(先删陈旧备份再备份既有同名文件)→ nginx -t
-//	校验(失败回滚,活配置不动)→ nginx -T 验证 conf.d 真被 include(失败回滚)→ reload
+//	探测 nginx + 提权方式(root > 免密 sudo)→ 建 700 临时目录并写入三份文件(私钥再收紧
+//	600)→ 安装证书与 conf.d vhost(先删陈旧备份再备份既有同名文件)→ nginx -t 校验
+//	(失败回滚,活配置不动)→ nginx -T 验证 conf.d 真被 include(失败回滚)→ reload
 //	(nginx -s reload,失败回退 systemctl reload nginx)→ 清理临时目录(含备份)。
-func applyPlatformConf(ctx context.Context, tg target.Service, serverID, domain, upstreamHost string,
-	upstreamPort int, httpRedirect bool, certPEM, keyPEM, sudoPwd string) error {
+func applyPlatformConf(ctx context.Context, h Host, domain, upstreamHost string,
+	upstreamPort int, httpRedirect bool, certPEM, keyPEM string) error {
 
-	// 1) nginx 就绪 + 提权方式(root > 免密 > 密码;皆不可用报人话错误,失败快、不动远端)。
-	if res, err := tg.Exec(ctx, serverID, []string{"nginx", "-v"}); err != nil {
-		return err
-	} else if res.ExitCode != 0 {
+	// 1) nginx 就绪(启动失败 = 不在 PATH,按未安装处理)+ 提权方式(失败快、不动本机)。
+	if _, _, code, err := h.Run(ctx, "nginx", []string{"-v"}); err != nil || code != 0 {
 		return ErrNoNginx
 	}
-	p, err := buildPrivilege(ctx, tg, serverID, sudoPwd)
+	p, err := buildPrivilege(ctx, h)
 	if err != nil {
 		return err
 	}
@@ -145,29 +123,32 @@ func applyPlatformConf(ctx context.Context, tg target.Service, serverID, domain,
 	certDir := certDir(domain)
 	backup := backupConfFmt
 
-	// 2) 临时文件落盘:先建登录用户私有的 700 目录再上传(目录 700 兜底,上传与 chmod
+	// 2) 临时文件落盘:先建运行用户私有的 700 目录再写入(目录 700 兜底,写入与 chmod
 	// 之间不存在同机其他用户可读私钥的窗口)。
 	for _, cmd := range [][]string{
 		{"mkdir", "-p", tmpDir},
 		{"chmod", "700", tmpDir},
 	} {
-		if res, ok, err := execOK(ctx, tg, serverID, cmd...); err != nil {
+		if res, ok, err := execOK(ctx, h, cmd...); err != nil {
 			return err
 		} else if !ok {
 			return fmt.Errorf("%w:创建临时目录失败:%s", ErrApply, trimOut(res))
 		}
 	}
-	if err := tg.Upload(ctx, serverID, bytes.NewReader([]byte(conf)), tmpConfPath); err != nil {
-		return err
+	for _, f := range []struct {
+		path string
+		data string
+	}{
+		{tmpConfPath, conf},
+		{tmpCertPath, certPEM},
+		{tmpKeyPath, keyPEM},
+	} {
+		if err := h.WriteFile(f.path, []byte(f.data), 0o600); err != nil {
+			return fmt.Errorf("%w:写临时文件失败:%s", ErrApply, err)
+		}
 	}
-	if err := tg.Upload(ctx, serverID, bytes.NewReader([]byte(certPEM)), tmpCertPath); err != nil {
-		return err
-	}
-	if err := tg.Upload(ctx, serverID, bytes.NewReader([]byte(keyPEM)), tmpKeyPath); err != nil {
-		return err
-	}
-	defer func() { cleanupTmp(ctx, tg, serverID, p) }()
-	if _, ok, err := execOK(ctx, tg, serverID, "chmod", "600", tmpKeyPath); err != nil || !ok {
+	defer func() { cleanupTmp(ctx, h, p) }()
+	if _, ok, err := execOK(ctx, h, "chmod", "600", tmpKeyPath); err != nil || !ok {
 		return fmt.Errorf("%w:收紧私钥临时文件权限失败", ErrApply)
 	}
 
@@ -178,7 +159,7 @@ func applyPlatformConf(ctx context.Context, tg target.Service, serverID, domain,
 		{"cp", tmpKeyPath, certDir + "/privkey.pem"},
 		{"chmod", "600", certDir + "/privkey.pem"},
 	} {
-		if res, ok, err := execPriv(ctx, tg, serverID, p, cmd...); err != nil {
+		if res, ok, err := execPriv(ctx, h, p, cmd...); err != nil {
 			return err
 		} else if !ok {
 			return fmt.Errorf("%w:%s", ErrApply, trimOut(res))
@@ -187,35 +168,35 @@ func applyPlatformConf(ctx context.Context, tg target.Service, serverID, domain,
 
 	// 4) 备份既有平台 vhost(文件可能不存在,非零退出可容忍)→ 覆盖安装新配置。
 	// 先删陈旧备份(上次运行被中断时可能残留),保证 rollbackConf 还原的只会是本次备份。
-	_, _, _ = execPriv(ctx, tg, serverID, p, "rm", "-f", backup)
-	_, _, _ = execPriv(ctx, tg, serverID, p, "cp", managedConfPath, backup)
-	if res, ok, err := execPriv(ctx, tg, serverID, p, "cp", tmpConfPath, managedConfPath); err != nil {
+	_, _, _ = execPriv(ctx, h, p, "rm", "-f", backup)
+	_, _, _ = execPriv(ctx, h, p, "cp", managedConfPath, backup)
+	if res, ok, err := execPriv(ctx, h, p, "cp", tmpConfPath, managedConfPath); err != nil {
 		return err
 	} else if !ok {
 		return fmt.Errorf("%w:%s", ErrApply, trimOut(res))
 	}
 
 	// 5) nginx -t(先测后换已就位:校验失败回滚到备份/摘除我们的文件,活配置语义不变)。
-	if res, ok, err := execPriv(ctx, tg, serverID, p, "nginx", "-t"); err != nil {
+	if res, ok, err := execPriv(ctx, h, p, "nginx", "-t"); err != nil {
 		return err
 	} else if !ok {
-		rollbackConf(ctx, tg, serverID, p, backup)
+		rollbackConf(ctx, h, p, backup)
 		return fmt.Errorf("%w:nginx -t 校验失败:%s", ErrApply, trimOut(res))
 	}
 
 	// 6) nginx -T 验证 conf.d 真被 include(防部分手装 nginx 未 include conf.d,配置静默失效)。
-	if res, ok, err := execPriv(ctx, tg, serverID, p, "nginx", "-T"); err != nil {
+	if res, ok, err := execPriv(ctx, h, p, "nginx", "-T"); err != nil {
 		return err
-	} else if !ok || !strings.Contains(res.Stdout, confMarker) {
-		rollbackConf(ctx, tg, serverID, p, backup)
-		return fmt.Errorf("%w:配置未被 nginx 加载(conf.d 未被 include),请在该机 nginx.conf 的 http{} 内加入 include /etc/nginx/conf.d/*.conf;", ErrApply)
+	} else if !ok || !strings.Contains(res.stdout, confMarker) {
+		rollbackConf(ctx, h, p, backup)
+		return fmt.Errorf("%w:配置未被 nginx 加载(conf.d 未被 include),请在本机 nginx.conf 的 http{} 内加入 include /etc/nginx/conf.d/*.conf;", ErrApply)
 	}
 
 	// 7) 热加载:nginx -s reload → 失败回退 systemctl reload nginx(不自动 start)。
-	if res, ok, err := execPriv(ctx, tg, serverID, p, "nginx", "-s", "reload"); err != nil {
+	if res, ok, err := execPriv(ctx, h, p, "nginx", "-s", "reload"); err != nil {
 		return err
 	} else if !ok {
-		if res2, ok2, err2 := execPriv(ctx, tg, serverID, p, "systemctl", "reload", "nginx"); err2 != nil || !ok2 {
+		if res2, ok2, err2 := execPriv(ctx, h, p, "systemctl", "reload", "nginx"); err2 != nil || !ok2 {
 			return fmt.Errorf("%w:配置已就位但热加载失败(nginx 可能未运行):%s",
 				ErrApply, firstNonEmpty(trimOut(res), trimOut(res2)))
 		}
@@ -223,41 +204,41 @@ func applyPlatformConf(ctx context.Context, tg target.Service, serverID, domain,
 	return nil
 }
 
-// removePlatformConf 移除平台 vhost 与证书目录并热加载;远端无平台配置时为 no-op(幂等)。
-func removePlatformConf(ctx context.Context, tg target.Service, serverID, domain, sudoPwd string) error {
+// removePlatformConf 移除平台 vhost 与证书目录并热加载;本机无平台配置时为 no-op(幂等)。
+func removePlatformConf(ctx context.Context, h Host, domain string) error {
 	// 无平台配置 → 直接成功(不要求提权/不触 nginx)。
-	if _, ok, err := execOK(ctx, tg, serverID, "test", "-f", managedConfPath); err != nil {
+	if _, ok, err := execOK(ctx, h, "test", "-f", managedConfPath); err != nil {
 		return err
 	} else if !ok {
 		return nil
 	}
-	p, err := buildPrivilege(ctx, tg, serverID, sudoPwd)
+	p, err := buildPrivilege(ctx, h)
 	if err != nil {
 		return err
 	}
-	defer func() { cleanupTmp(ctx, tg, serverID, p) }()
+	defer func() { cleanupTmp(ctx, h, p) }()
 
 	for _, cmd := range [][]string{
 		{"rm", "-f", managedConfPath},
 		{"rm", "-rf", certDir(domain)},
 		{"rmdir", certsBaseDir}, // 仅当空目录时成功(非零可容忍)
 	} {
-		if res, ok, err := execPriv(ctx, tg, serverID, p, cmd...); err != nil {
+		if res, ok, err := execPriv(ctx, h, p, cmd...); err != nil {
 			return err
 		} else if !ok && cmd[0] != "rmdir" {
 			return fmt.Errorf("%w:%s", ErrApply, trimOut(res))
 		}
 	}
 	// 剩余配置校验 + 热加载(摘除平台 vhost 后立即生效)。
-	if res, ok, err := execPriv(ctx, tg, serverID, p, "nginx", "-t"); err != nil {
+	if res, ok, err := execPriv(ctx, h, p, "nginx", "-t"); err != nil {
 		return err
 	} else if !ok {
-		return fmt.Errorf("%w:摘除平台配置后 nginx -t 校验失败(该机其余配置自身有误):%s", ErrApply, trimOut(res))
+		return fmt.Errorf("%w:摘除平台配置后 nginx -t 校验失败(本机其余配置自身有误):%s", ErrApply, trimOut(res))
 	}
-	if res, ok, err := execPriv(ctx, tg, serverID, p, "nginx", "-s", "reload"); err != nil {
+	if res, ok, err := execPriv(ctx, h, p, "nginx", "-s", "reload"); err != nil {
 		return err
 	} else if !ok {
-		if _, ok2, err2 := execPriv(ctx, tg, serverID, p, "systemctl", "reload", "nginx"); err2 != nil || !ok2 {
+		if _, ok2, err2 := execPriv(ctx, h, p, "systemctl", "reload", "nginx"); err2 != nil || !ok2 {
 			return fmt.Errorf("%w:配置已摘除但热加载失败(nginx 可能未运行):%s", ErrApply, trimOut(res))
 		}
 	}
@@ -266,55 +247,41 @@ func removePlatformConf(ctx context.Context, tg target.Service, serverID, domain
 
 // ---------- 内部 ----------
 
-// buildPrivilege 判定目标机提权方式:root 直接执行 > 免密 sudo > sudo 密码。
-// 密码模式先跑一次 `sudo -S -p '' true` 验证密码(错密码 → sudo 读一行后 EOF 重试失败,
-// 非零退出)——失败快,后续命令不再动远端。三者皆不可用报 ErrNoPrivilege;
-// 绑定了密码但验证失败报 ErrSudoPassword。绝不交互输密、绝不挂起等 TTY。
-func buildPrivilege(ctx context.Context, tg target.Service, serverID, sudoPwd string) (privilege, error) {
-	res, err := tg.Exec(ctx, serverID, []string{"id", "-u"})
+// buildPrivilege 判定本机提权方式:root 直接执行 > 免密 sudo。皆不可用报 ErrNoPrivilege
+// 并给人话指引。绝不交互输密、绝不挂起等 TTY。
+func buildPrivilege(ctx context.Context, h Host) (privilege, error) {
+	res, ok, err := execOK(ctx, h, "id", "-u")
 	if err != nil {
 		return privilege{}, err
 	}
-	if res.ExitCode == 0 && strings.TrimSpace(res.Stdout) == "0" {
+	if ok && strings.TrimSpace(res.stdout) == "0" {
 		return privilege{}, nil // root:直接执行
 	}
-	if _, ok, err := execOK(ctx, tg, serverID, "sudo", "-n", "true"); err != nil {
+	if _, ok, err := execOK(ctx, h, "sudo", "-n", "true"); err != nil {
 		return privilege{}, err
 	} else if ok {
 		return privilege{prefix: []string{"sudo", "-n"}}, nil
 	}
-	if sudoPwd != "" {
-		p := privilege{prefix: []string{"sudo", "-S", "-p", ""}, sudoPwd: sudoPwd}
-		if res, ok, err := execPriv(ctx, tg, serverID, p, "true"); err != nil {
-			return privilege{}, err
-		} else if !ok {
-			return privilege{}, fmt.Errorf("%w:sudo 密码验证失败(密码错误或该机 sudo 不可用),请检查服务器设置中所选的 sudo 密码凭据:%s", ErrSudoPassword, trimOut(res))
-		}
-		return p, nil
-	}
-	return privilege{}, fmt.Errorf("%w:SSH 用户非 root 且无免密 sudo,也未绑定 sudo 密码凭据;请用 root 登录、为该用户配置免密 sudo,或在服务器设置中选择 sudo 密码凭据", ErrNoPrivilege)
+	return privilege{}, fmt.Errorf("%w:平台运行用户非 root 且无免密 sudo;请以 root 运行平台,或为该用户配置免密 sudo(如 /etc/sudoers.d/pipewright)", ErrNoPrivilege)
 }
 
 // rollbackConf 在校验失败时恢复活配置:有备份 → 还原;无备份(首次应用)→ 摘除我们的文件。
-func rollbackConf(ctx context.Context, tg target.Service, serverID string, p privilege, backup string) {
-	if _, ok, _ := execPriv(ctx, tg, serverID, p, "test", "-f", backup); ok {
-		_, _, _ = execPriv(ctx, tg, serverID, p, "cp", backup, managedConfPath)
+func rollbackConf(ctx context.Context, h Host, p privilege, backup string) {
+	if _, ok, _ := execPriv(ctx, h, p, "test", "-f", backup); ok {
+		_, _, _ = execPriv(ctx, h, p, "cp", backup, managedConfPath)
 		return
 	}
-	_, _, _ = execPriv(ctx, tg, serverID, p, "rm", "-f", managedConfPath)
+	_, _, _ = execPriv(ctx, h, p, "rm", "-f", managedConfPath)
 }
 
-// cleanupTmp 清理临时目录(含三个上传文件与备份;best-effort,成败不影响主流程)。
-func cleanupTmp(ctx context.Context, tg target.Service, serverID string, p privilege) {
-	_, _, _ = execPriv(ctx, tg, serverID, p, "rm", "-rf", tmpDir)
+// cleanupTmp 清理临时目录(含三个写入文件与备份;best-effort,成败不影响主流程)。
+func cleanupTmp(ctx context.Context, h Host, p privilege) {
+	_, _, _ = execPriv(ctx, h, p, "rm", "-rf", tmpDir)
 }
 
 // trimOut 取命令输出的人话摘要(stderr 优先,截断)。
-func trimOut(res *target.ExecResult) string {
-	if res == nil {
-		return ""
-	}
-	out := strings.TrimSpace(firstNonEmpty(res.Stderr, res.Stdout))
+func trimOut(res runResult) string {
+	out := strings.TrimSpace(firstNonEmpty(res.stderr, res.stdout))
 	if len(out) > 400 {
 		out = out[:400] + "…"
 	}

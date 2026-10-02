@@ -43,6 +43,7 @@ import (
 	"github.com/huangchengsir/pipewright/internal/runner"
 	"github.com/huangchengsir/pipewright/internal/servercmd"
 	"github.com/huangchengsir/pipewright/internal/servicereg"
+	"github.com/huangchengsir/pipewright/internal/srcupdate"
 	"github.com/huangchengsir/pipewright/internal/systemcfg"
 	"github.com/huangchengsir/pipewright/internal/target"
 	"github.com/huangchengsir/pipewright/internal/trigger"
@@ -456,10 +457,23 @@ func New(webFS fs.FS, authn auth.Authenticator, opts ...Option) http.Handler {
 		opt(&o)
 	}
 
-	// 更新检查器:进程级单例,内含 TTL 缓存(跨请求复用,避免反复点击打爆 GitHub 限流)。
+	// 更新检查器:进程级单例,内含 TTL 缓存(跨请求复用,避免反复点击打爆升级源限流)。
+	// 升级源:系统配置的 release_mirror(设置→系统 可改,即时生效)优先,空则回落
+	// env PIPEWRIGHT_RELEASE_MIRROR / GitHub 官方源;配置库不可用时优雅回退,不阻断检查。
 	updateChecker := version.NewChecker()
+	if sc := o.systemConfig; sc != nil {
+		updateChecker.SetSourceProvider(func(ctx context.Context) version.Source {
+			return version.ResolveSource(systemcfg.ResolveReleaseMirror(ctx, sc))
+		})
+	}
 	// 自更新串行闸:同一时刻仅允许一个更新进行。
 	updateInflight := newUpdateGate()
+	// 源码部署(git clone + make build + install.sh):升级走 git 检查 + 本地重建管线;
+	// 非源码部署为 nil,check/update 走升级源(GitHub / 镜像)。
+	var srcUpdater *srcupdate.Service
+	if dir := version.SourceDir(); dir != "" {
+		srcUpdater = srcupdate.New(dir)
+	}
 
 	r := chi.NewRouter()
 	r.Use(middleware.Recoverer)
@@ -506,10 +520,12 @@ func New(webFS fs.FS, authn auth.Authenticator, opts ...Option) http.Handler {
 		// 为 nil 时 handler 跳过审计(不阻断业务)。
 		aud := o.audit
 
-		// 检查更新:鉴权只读,查 GitHub 最新发布并与当前版本比对(GET 免 CSRF)。
-		ar.Get("/version/check", makeCheckUpdateHandler(updateChecker))
-		// 一键自动更新:鉴权 + CSRF(写操作);binary 自替换+重启,docker 返回升级命令。
-		ar.Post("/version/update", makeSelfUpdateHandler(updateChecker, updateInflight))
+		// 检查更新:鉴权只读,查升级源最新发布(源码部署改查 git 上游)并与当前版本比对(GET 免 CSRF)。
+		ar.Get("/version/check", makeCheckUpdateHandler(updateChecker, srcUpdater))
+		// 一键自动更新:鉴权 + CSRF(写操作);source 后台重建管线,binary 自替换+重启,docker 返回升级命令。
+		ar.Post("/version/update", makeSelfUpdateHandler(updateChecker, srcUpdater, updateInflight))
+		// 源码升级进度轮询(鉴权只读):后台管线步骤/日志/完成态。
+		ar.Get("/version/update/status", makeUpdateStatusHandler(srcUpdater))
 
 		// 审计查询(Story 1.4):只读 + 认证保护 + 分页 + 过滤。
 		ar.Get("/audit", makeListAuditHandler(aud))
