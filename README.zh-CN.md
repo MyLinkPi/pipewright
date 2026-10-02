@@ -161,7 +161,7 @@ sh install.sh       # 亦可把构建产物装到 /usr/local/bin(见「本地编
 | `PIPEWRIGHT_MASTER_KEY` | 凭据保险库主密钥(base64 的 32 字节);或用 `PIPEWRIGHT_MASTER_KEY_FILE` 指文件 | 未配则保险库禁用 |
 | `PIPEWRIGHT_ADDR` | HTTP 监听地址 | `:8080` |
 | `PIPEWRIGHT_ADMIN_USERNAME` | 首次启动管理员用户名 | `admin` |
-| `PIPEWRIGHT_TRUST_PROXY` | 采信 `X-Forwarded-For` 首段作为审计来源 IP(`1`/`true`/`yes`/`on`)。除非前面确有可信反代,否则别开 —— 否则任意客户端都能伪造审计来源 IP | 关 |
+| `PIPEWRIGHT_TRUST_PROXY` | 采信转发头(`X-Real-IP` 优先,其次 `X-Forwarded-For` 首段)作为审计来源 IP(`1`/`true`/`yes`/`on`)。本机反代(对端为 127.0.0.1/::1,如平台 HTTPS 内置 nginx)无需此变量即自动采信;它只对**非回环**的外部反代生效 —— 除非前面确有可信反代,否则别开,否则任意客户端都能伪造审计来源 IP | 关 |
 | `PIPEWRIGHT_RELEASE_REPO` | 检查更新所查的仓库(fork 可改) | `huangchengsir/pipewright` |
 | `PIPEWRIGHT_RELEASE_MIRROR` | 自升级镜像源 base URL(部署级兜底;运行时改用 **设置 → 系统 → 升级源**,库内配置优先) | 空(GitHub 官方源) |
 | `PIPEWRIGHT_RUNTIME` | 设 `docker`/`source` 显式声明部署形态(影响自更新方式);否则自动探测(`/.dockerenv` / 源码仓库标记) | 自动探测 |

@@ -167,3 +167,78 @@ func TestAuditPaginationCursor(t *testing.T) {
 		t.Fatal("游标翻页出现重叠")
 	}
 }
+
+// TestClientIP 锁定来源 IP 提取规则:
+// 直连(非回环对端)只用 RemoteAddr,转发头一律不采信(防伪造写进 append-only 审计);
+// 回环对端(平台本机 nginx 反代)或显式 PIPEWRIGHT_TRUST_PROXY 时,优先 X-Real-IP,
+// 其次 XFF 首段,兜底 RemoteAddr。
+func TestClientIP(t *testing.T) {
+	mk := func(remote, xrip, xff string) *http.Request {
+		r := httptest.NewRequest(http.MethodPost, "/api/credentials", nil)
+		r.RemoteAddr = remote
+		if xrip != "" {
+			r.Header.Set("X-Real-IP", xrip)
+		}
+		if xff != "" {
+			r.Header.Set("X-Forwarded-For", xff)
+		}
+		return r
+	}
+
+	t.Run("直连无转发头用RemoteAddr", func(t *testing.T) {
+		got := clientIP(mk("203.0.113.7:51000", "", ""))
+		if got != "203.0.113.7" {
+			t.Fatalf("got %q", got)
+		}
+	})
+
+	t.Run("直连伪造转发头不采信", func(t *testing.T) {
+		got := clientIP(mk("203.0.113.7:51000", "6.6.6.6", "1.2.3.4, 203.0.113.7"))
+		if got != "203.0.113.7" {
+			t.Fatalf("非可信场景转发头应被忽略, got %q", got)
+		}
+	})
+
+	t.Run("回环对端取X-Real-IP", func(t *testing.T) {
+		got := clientIP(mk("127.0.0.1:44311", "198.51.100.23", "10.0.0.1"))
+		if got != "198.51.100.23" {
+			t.Fatalf("本机反代应优先 X-Real-IP, got %q", got)
+		}
+	})
+
+	t.Run("回环对端仅XFF取首段", func(t *testing.T) {
+		got := clientIP(mk("127.0.0.1:44311", "", "198.51.100.23, 127.0.0.1"))
+		if got != "198.51.100.23" {
+			t.Fatalf("got %q", got)
+		}
+	})
+
+	t.Run("回环对端无转发头兜底RemoteAddr", func(t *testing.T) {
+		got := clientIP(mk("127.0.0.1:44311", "", ""))
+		if got != "127.0.0.1" {
+			t.Fatalf("got %q", got)
+		}
+	})
+
+	t.Run("IPv6回环对端取X-Real-IP", func(t *testing.T) {
+		got := clientIP(mk("[::1]:44311", "198.51.100.23", ""))
+		if got != "198.51.100.23" {
+			t.Fatalf("got %q", got)
+		}
+	})
+
+	t.Run("显式信任代理时非回环也采信", func(t *testing.T) {
+		t.Setenv("PIPEWRIGHT_TRUST_PROXY", "1")
+		got := clientIP(mk("10.0.0.9:50000", "198.51.100.23", "198.51.100.23"))
+		if got != "198.51.100.23" {
+			t.Fatalf("got %q", got)
+		}
+	})
+
+	t.Run("RemoteAddr无端口兜底原样", func(t *testing.T) {
+		got := clientIP(mk("203.0.113.7", "", ""))
+		if got != "203.0.113.7" {
+			t.Fatalf("got %q", got)
+		}
+	})
+}
