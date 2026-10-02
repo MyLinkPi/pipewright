@@ -8,7 +8,6 @@ import (
 
 	"github.com/huangchengsir/pipewright/internal/audit"
 	"github.com/huangchengsir/pipewright/internal/platformhttps"
-	"github.com/huangchengsir/pipewright/internal/target"
 )
 
 // 平台 HTTPS 写操作审计 action / target。detail 绝无 PEM 内容。
@@ -22,7 +21,6 @@ const (
 // platformHTTPSdto 是平台 HTTPS 设置对外响应体(冻结契约;无 PEM/密文)。
 type platformHTTPSdto struct {
 	Enabled           bool   `json:"enabled"`
-	ServerID          string `json:"serverId"`
 	Domain            string `json:"domain"`
 	CertID            string `json:"certId"`
 	UpstreamHost      string `json:"upstreamHost"`      // 空 = 127.0.0.1(展示层已归一)
@@ -47,22 +45,19 @@ func toPlatformHTTPSdto(s *platformhttps.Settings, effective string) platformHTT
 		host = "127.0.0.1"
 	}
 	return platformHTTPSdto{
-		Enabled: s.Enabled, ServerID: s.ServerID, Domain: s.Domain, CertID: s.CertID,
+		Enabled: s.Enabled, Domain: s.Domain, CertID: s.CertID,
 		UpstreamHost: host, UpstreamPort: port, EffectiveUpstream: effective,
 		HTTPRedirect: s.HTTPRedirect, Status: s.Status, StatusDetail: s.StatusDetail,
 		LastAppliedAt: t(s.LastAppliedAt), UpdatedAt: t(s.UpdatedAt),
 	}
 }
 
-// platformHTTPSDetectdto 是宿主 nginx 探测结果对外响应体。
+// platformHTTPSDetectdto 是本机宿主 nginx 探测结果对外响应体。
 type platformHTTPSDetectdto struct {
-	ServerID      string `json:"serverId"`
 	Installed     bool   `json:"installed"`
 	Version       string `json:"version"`
 	IsRoot        bool   `json:"isRoot"`
 	SudoOk        bool   `json:"sudoOk"`
-	SudoPwdConfigured bool `json:"sudoPwdConfigured"`
-	SudoPwdOk     bool   `json:"sudoPwdOk"`
 	ConfDIncluded bool   `json:"confDIncluded"`
 	ManagedConf   bool   `json:"managedConf"`
 }
@@ -71,7 +66,7 @@ type platformHTTPSDetectdto struct {
 func writePlatformHTTPSError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, platformhttps.ErrNotConfigured):
-		writeError(w, http.StatusBadRequest, "https_settings_incomplete", "设置不完整:启用需要选择服务器、填写域名并选择证书")
+		writeError(w, http.StatusBadRequest, "https_settings_incomplete", "设置不完整:启用需要填写域名并选择证书")
 	case errors.Is(err, platformhttps.ErrInvalidDomain):
 		writeError(w, http.StatusBadRequest, "invalid_https_domain", "访问域名格式非法:应为单一 FQDN(如 pip.efg.com),不支持通配符")
 	case errors.Is(err, platformhttps.ErrInvalidUpstream):
@@ -83,26 +78,13 @@ func writePlatformHTTPSError(w http.ResponseWriter, err error) {
 	case errors.Is(err, platformhttps.ErrCertNotCover):
 		writeError(w, http.StatusBadRequest, "https_cert_not_cover", "所选证书的 SAN 不覆盖访问域名(通配符证书须覆盖该子域)")
 	case errors.Is(err, platformhttps.ErrNoNginx):
-		writeError(w, http.StatusBadRequest, "nginx_not_installed", "目标服务器未安装 nginx(或不在 PATH),请先安装宿主 nginx")
+		writeError(w, http.StatusBadRequest, "nginx_not_installed", "本机未安装 nginx(或不在 PATH),请先安装宿主 nginx")
 	case errors.Is(err, platformhttps.ErrNoPrivilege):
-		writeError(w, http.StatusBadRequest, "no_privilege", "SSH 用户非 root 且无免密 sudo,也未绑定 sudo 密码凭据:请用 root 登录、配置免密 sudo,或在服务器设置中选择 sudo 密码凭据")
-	case errors.Is(err, platformhttps.ErrSudoPassword):
-		writeError(w, http.StatusBadRequest, "sudo_password_failed", "sudo 密码验证失败:请检查服务器设置中所选的 sudo 密码凭据")
+		writeError(w, http.StatusBadRequest, "no_privilege", "平台运行用户非 root 且无免密 sudo:请以 root 运行平台,或为该用户配置免密 sudo")
 	case errors.Is(err, platformhttps.ErrApply):
 		writeError(w, http.StatusBadGateway, "https_apply_failed", "应用 HTTPS 配置失败(详情见错误信息/设置页状态)")
 	case errors.Is(err, platformhttps.ErrAppliedChange):
-		writeError(w, http.StatusConflict, "https_applied_change", "配置已应用:变更服务器/域名前请先「禁用并清理」,避免旧机配置与证书残留")
-	// target(SSH)层错误:复用语义映射。
-	case errors.Is(err, target.ErrVaultUnconfigured):
-		writeError(w, http.StatusServiceUnavailable, "vault_unconfigured", "保险库未配置 master key,无法取 SSH 凭据或证书密文")
-	case errors.Is(err, target.ErrNotFound):
-		writeError(w, http.StatusUnprocessableEntity, "server_not_found", "目标主机不存在")
-	case errors.Is(err, target.ErrCredentialNotFound):
-		writeError(w, http.StatusUnprocessableEntity, "credential_error", "引用的 SSH 凭据不存在")
-	case errors.Is(err, target.ErrAuth):
-		writeError(w, http.StatusBadGateway, "ssh_auth_failed", "SSH 认证失败:密钥或口令无效,或无登录权限")
-	case errors.Is(err, target.ErrUnreachable):
-		writeError(w, http.StatusBadGateway, "server_unreachable", "无法连接目标服务器")
+		writeError(w, http.StatusConflict, "https_applied_change", "配置已应用:变更域名前请先「禁用并清理」,避免旧域名证书残留")
 	default:
 		writeError(w, http.StatusInternalServerError, "internal", "服务器内部错误")
 	}
@@ -132,7 +114,6 @@ func makeUpdatePlatformHTTPSSettingsHandler(svc platformhttps.Service, aud audit
 ) http.HandlerFunc {
 	type request struct {
 		Enabled      *bool   `json:"enabled"`
-		ServerID     *string `json:"serverId"`
 		Domain       *string `json:"domain"`
 		CertID       *string `json:"certId"`
 		UpstreamHost *string `json:"upstreamHost"`
@@ -152,7 +133,7 @@ func makeUpdatePlatformHTTPSSettingsHandler(svc platformhttps.Service, aud audit
 			return
 		}
 		st, err := svc.SaveSettings(r.Context(), platformhttps.SettingsInput{
-			Enabled: req.Enabled, ServerID: req.ServerID, Domain: req.Domain, CertID: req.CertID,
+			Enabled: req.Enabled, Domain: req.Domain, CertID: req.CertID,
 			UpstreamHost: req.UpstreamHost, UpstreamPort: req.UpstreamPort, HTTPRedirect: req.HTTPRedirect,
 		})
 		if err != nil {
@@ -172,7 +153,7 @@ func makeUpdatePlatformHTTPSSettingsHandler(svc platformhttps.Service, aud audit
 		recordAudit(r.Context(), aud, audit.Entry{
 			Actor: auditActor, Action: auditActionPlatformHTTPSSave, TargetType: auditTargetPlatformHTTPS,
 			TargetID: st.Domain, Detail: map[string]any{
-				"ok": true, "enabled": st.Enabled, "serverId": st.ServerID, "applyAttempted": req.Apply && st.Enabled,
+				"ok": true, "enabled": st.Enabled, "applyAttempted": req.Apply && st.Enabled,
 			}, IP: clientIP(r),
 		})
 		resp := map[string]any{"settings": toPlatformHTTPSdto(st, svc.EffectiveUpstream(st))}
@@ -185,21 +166,21 @@ func makeUpdatePlatformHTTPSSettingsHandler(svc platformhttps.Service, aud audit
 
 // ---------- 探测 ----------
 
-// makeDetectPlatformHTTPSHandler 返回 GET /api/platform-https/detect?serverId=。
+// makeDetectPlatformHTTPSHandler 返回 GET /api/platform-https/detect(探测本机宿主 nginx)。
 func makeDetectPlatformHTTPSHandler(svc platformhttps.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if svc == nil {
 			writeError(w, http.StatusServiceUnavailable, "internal", "平台 HTTPS 未初始化")
 			return
 		}
-		d, err := svc.Detect(r.Context(), r.URL.Query().Get("serverId"))
+		d, err := svc.Detect(r.Context())
 		if err != nil {
 			writePlatformHTTPSError(w, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, platformHTTPSDetectdto{
-			ServerID: d.ServerID, Installed: d.Installed, Version: d.Version,
-			IsRoot: d.IsRoot, SudoOk: d.SudoOk, SudoPwdConfigured: d.SudoPwdConfigured, SudoPwdOk: d.SudoPwdOk,
+			Installed: d.Installed, Version: d.Version,
+			IsRoot: d.IsRoot, SudoOk: d.SudoOk,
 			ConfDIncluded: d.ConfDIncluded, ManagedConf: d.ManagedConf,
 		})
 	}
@@ -226,14 +207,14 @@ func makeApplyPlatformHTTPSHandler(svc platformhttps.Service, aud audit.Recorder
 		}
 		recordAudit(r.Context(), aud, audit.Entry{
 			Actor: auditActor, Action: auditActionPlatformHTTPSApply, TargetType: auditTargetPlatformHTTPS,
-			TargetID: st.Domain, Detail: map[string]any{"ok": true, "serverId": st.ServerID}, IP: clientIP(r),
+			TargetID: st.Domain, Detail: map[string]any{"ok": true}, IP: clientIP(r),
 		})
 		writeJSON(w, http.StatusOK, toPlatformHTTPSdto(st, svc.EffectiveUpstream(st)))
 	}
 }
 
 // makeDisablePlatformHTTPSHandler 返回 POST /api/platform-https/disable
-// (移除远端 conf.d 文件与证书目录并 reload;本地设置保留,便于再次启用)。
+// (移除本机 conf.d 文件与证书目录并 reload;本地设置保留,便于再次启用)。
 func makeDisablePlatformHTTPSHandler(svc platformhttps.Service, aud audit.Recorder,
 ) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {

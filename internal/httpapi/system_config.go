@@ -16,10 +16,11 @@ const (
 	auditTargetSystemConfig    = "system_config"
 )
 
-// systemConfigDTO 是系统配置对外响应体(目前仅 publicUrl)。
+// systemConfigDTO 是系统配置对外响应体。
 type systemConfigDTO struct {
-	PublicURL string `json:"publicUrl"`
-	UpdatedAt string `json:"updatedAt"`
+	PublicURL     string `json:"publicUrl"`
+	ReleaseMirror string `json:"releaseMirror"`
+	UpdatedAt     string `json:"updatedAt"`
 }
 
 func toSystemConfigDTO(c systemcfg.Config) systemConfigDTO {
@@ -27,7 +28,7 @@ func toSystemConfigDTO(c systemcfg.Config) systemConfigDTO {
 	if !c.UpdatedAt.IsZero() {
 		updated = c.UpdatedAt.UTC().Format(time.RFC3339)
 	}
-	return systemConfigDTO{PublicURL: c.PublicURL, UpdatedAt: updated}
+	return systemConfigDTO{PublicURL: c.PublicURL, ReleaseMirror: c.ReleaseMirror, UpdatedAt: updated}
 }
 
 // makeGetSystemConfigHandler 返回 GET /api/system/config。
@@ -46,11 +47,15 @@ func makeGetSystemConfigHandler(svc systemcfg.Service) http.HandlerFunc {
 	}
 }
 
-// makeSetSystemConfigHandler 返回 PUT /api/system/config {publicUrl}。
-// publicUrl 须为 http(s) origin(空 = 清除);修改即时生效(通知审批链接/PR 回写 target_url)。
+// makeSetSystemConfigHandler 返回 PUT /api/system/config {publicUrl?, releaseMirror?}。
+// 字段按需更新:缺省(null)= 不动该项;空串 = 清除。修改即时生效:
+//   - publicUrl:通知审批链接 / PR 回写 target_url 的前缀;
+//   - releaseMirror:自升级(检查更新 + 二进制下载)的镜像源,下次检查即走新源
+//     (Checker 缓存按源隔离,换源不返回旧源结果)。
 func makeSetSystemConfigHandler(svc systemcfg.Service, aud audit.Recorder) http.HandlerFunc {
 	type request struct {
-		PublicURL string `json:"publicUrl"`
+		PublicURL     *string `json:"publicUrl"`
+		ReleaseMirror *string `json:"releaseMirror"`
 	}
 	return func(w http.ResponseWriter, r *http.Request) {
 		if svc == nil {
@@ -63,19 +68,36 @@ func makeSetSystemConfigHandler(svc systemcfg.Service, aud audit.Recorder) http.
 			writeError(w, http.StatusBadRequest, "bad_request", "请求体格式错误")
 			return
 		}
-		c, err := svc.SetPublicURL(r.Context(), req.PublicURL)
+		c, err := svc.Get(r.Context())
 		if err != nil {
-			if errors.Is(err, systemcfg.ErrInvalidURL) {
-				writeError(w, http.StatusBadRequest, "invalid_public_url",
-					"外部访问地址非法:须为 http(s)://host[:port] 形式的 origin(不带路径),留空表示清除")
-				return
-			}
 			writeError(w, http.StatusInternalServerError, "internal", "服务器内部错误")
 			return
 		}
+		if req.PublicURL != nil {
+			if c, err = svc.SetPublicURL(r.Context(), *req.PublicURL); err != nil {
+				if errors.Is(err, systemcfg.ErrInvalidURL) {
+					writeError(w, http.StatusBadRequest, "invalid_public_url",
+						"外部访问地址非法:须为 http(s)://host[:port] 形式的 origin(不带路径),留空表示清除")
+					return
+				}
+				writeError(w, http.StatusInternalServerError, "internal", "服务器内部错误")
+				return
+			}
+		}
+		if req.ReleaseMirror != nil {
+			if c, err = svc.SetReleaseMirror(r.Context(), *req.ReleaseMirror); err != nil {
+				if errors.Is(err, systemcfg.ErrInvalidMirror) {
+					writeError(w, http.StatusBadRequest, "invalid_release_mirror",
+						"升级源非法:须为 http(s)://host[:port][/path] 形式的地址(不带查询串),留空表示清除")
+					return
+				}
+				writeError(w, http.StatusInternalServerError, "internal", "服务器内部错误")
+				return
+			}
+		}
 		recordAudit(r.Context(), aud, audit.Entry{
 			Actor: auditActor, Action: auditActionSystemConfigSet, TargetType: auditTargetSystemConfig,
-			TargetID: "default", Detail: map[string]any{"ok": true, "publicUrl": c.PublicURL}, IP: clientIP(r),
+			TargetID: "default", Detail: map[string]any{"ok": true, "publicUrl": c.PublicURL, "releaseMirror": c.ReleaseMirror}, IP: clientIP(r),
 		})
 		writeJSON(w, http.StatusOK, toSystemConfigDTO(c))
 	}

@@ -1,7 +1,7 @@
-// Package platformhttps 是「平台 HTTPS 访问」的领域层:当 nginx 所在机器(通常即平台自身
-// 所在主机,已登记为目标服务器)装有宿主 nginx 时,经 SSH 自动把平台自己的 Web 页面发布为
-// HTTPS —— 下发证书 → 写 /etc/nginx/conf.d/pipewright-platform.conf(443 ssl 反代平台 Web
-// 端口 + 80→443 跳转)→ nginx -t → reload。
+// Package platformhttps 是「平台 HTTPS 访问」的领域层:当平台自身所在主机装有宿主 nginx 时,
+// 自动把平台自己的 Web 页面发布为 HTTPS —— 下发证书 → 写 /etc/nginx/conf.d/pipewright-platform.conf
+// (443 ssl 反代平台 Web 端口 + 80→443 跳转)→ nginx -t → reload。全部命令在本机执行
+// (Host 抽象,生产基于 os/exec;不走 SSH、不选服务器)。
 //
 // 与既有体系的关系:
 //   - 与 internal/servicereg(平台自管的 nginx **容器**网关)互不影响:本功能面向宿主机自装
@@ -11,11 +11,9 @@
 //     certmgmt 经 RedeployCert 联动重新下发并 reload;删除证书被 UsesCert 拦截。
 //
 // 设计纪律(与 servicereg/certmgmt 一致):
-//   - 一切远端命令经 target.Exec / target.ExecWithStdin 以 array 形式执行(AC-SEC-02 不拼
-//     shell);提权优先级:root 直接执行 > 固定前缀 sudo -n(免密)> sudo -S + 密码(服务器
-//     可选绑定的 sudo_password 凭据,密码经 SSH stdin 逐条喂入,绝不进 argv/日志/错误体,
-//     绝不挂起等 TTY 输入;错密码 → sudo 读一行后 EOF 重试失败,非零退出干净报错)。
-//   - 证书 PEM 仅在进程内解密传递(vault/certmgmt → Upload),绝不日志/回库/回 API。
+//   - 一切本机命令经 Host.Run 以 array 形式执行(AC-SEC-02 不拼 shell);提权方式:root
+//     直接执行 > 固定前缀 sudo -n(免密),皆不可用报人话指引(不涉密码,绝不挂起等 TTY)。
+//   - 证书 PEM 仅在进程内解密传递(vault/certmgmt → 本机落盘),绝不日志/回库/回 API。
 //   - 先测后换:nginx -t 失败不动活配置(自动回滚我们写入的 conf.d 文件);reload 失败
 //     给人话指引,不自动 start nginx。
 package platformhttps
@@ -26,14 +24,13 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"os"
+	"os/exec"
 	"regexp"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/huangchengsir/pipewright/internal/target"
-	"github.com/huangchengsir/pipewright/internal/vault"
 )
 
 // 状态枚举(DB 存小写字串;” = 从未应用)。
@@ -46,7 +43,7 @@ const (
 
 // 领域错误(httpapi 层映射状态码;错误体绝无敏感信息)。
 var (
-	// ErrNotConfigured 表示设置不完整(启用需要:服务器 + 域名 + 证书)。
+	// ErrNotConfigured 表示设置不完整(启用需要:域名 + 证书)。
 	ErrNotConfigured = errors.New("platformhttps: 设置不完整")
 	// ErrInvalidDomain 表示访问域名格式非法(单一 FQDN,不支持通配符)。
 	ErrInvalidDomain = errors.New("platformhttps: invalid domain")
@@ -58,17 +55,14 @@ var (
 	ErrCertNotReady = errors.New("platformhttps: 证书不存在或未签发完成")
 	// ErrCertNotCover 表示证书 SAN 不覆盖所配置的访问域名。
 	ErrCertNotCover = errors.New("platformhttps: 证书不覆盖该域名")
-	// ErrNoNginx 表示目标服务器未安装 nginx(或不在 PATH)。
-	ErrNoNginx = errors.New("platformhttps: 目标服务器未安装 nginx")
-	// ErrNoPrivilege 表示 SSH 用户非 root、无免密 sudo 且未绑定可用的 sudo 密码凭据
-	// (无法写 /etc/nginx)。
+	// ErrNoNginx 表示本机未安装 nginx(或不在 PATH)。
+	ErrNoNginx = errors.New("platformhttps: 本机未安装 nginx")
+	// ErrNoPrivilege 表示平台运行用户非 root 且无免密 sudo(无法写 /etc/nginx)。
 	ErrNoPrivilege = errors.New("platformhttps: 无 root 权限且免密 sudo 不可用")
-	// ErrSudoPassword 表示绑定的 sudo 密码验证失败(密码错误或该机 sudo 不可用)。
-	ErrSudoPassword = errors.New("platformhttps: sudo 密码验证失败")
 	// ErrApply 表示下发/校验/热加载失败(附人话摘要)。
 	ErrApply = errors.New("platformhttps: 应用 HTTPS 配置失败")
-	// ErrAppliedChange 表示配置已应用(status 非空)时试图变更服务器/域名:直接改会让旧机
-	// conf.d 与旧域名证书目录(含私钥)成孤儿(Disable 只按当前值清理),须先「禁用并清理」。
+	// ErrAppliedChange 表示配置已应用(status 非空)时试图变更域名:直接改会让旧域名证书
+	// 目录(含私钥)成孤儿(Disable 只按当前值清理),须先「禁用并清理」。
 	ErrAppliedChange = errors.New("platformhttps: 配置已应用")
 )
 
@@ -78,10 +72,9 @@ var domainRe = regexp.MustCompile(`^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]
 // Settings 是平台 HTTPS 的单行设置(证书经 cert_id 软引用,本表无 PEM)。
 type Settings struct {
 	Enabled       bool
-	ServerID      string    // nginx 所在的已登记服务器
 	Domain        string    // 平台访问域名(如 pip.efg.com)
 	CertID        string    // certificates.id 引用
-	UpstreamHost  string    // 反代上游 host(默认 127.0.0.1;nginx 与平台不同机时可改)
+	UpstreamHost  string    // 反代上游 host(默认 127.0.0.1)
 	UpstreamPort  int       // 反代上游端口(0 = 平台自身 Web 端口)
 	HTTPRedirect  bool      // 80 → 443 跳转(默认开)
 	Status        string    // '' | active | failed(最近一次应用结果)
@@ -94,7 +87,6 @@ type Settings struct {
 // SettingsInput 是更新设置的入参(指针字段,nil = 保持不变;空串 = 清空对应引用)。
 type SettingsInput struct {
 	Enabled      *bool
-	ServerID     *string
 	Domain       *string
 	CertID       *string
 	UpstreamHost *string
@@ -120,26 +112,48 @@ type CertSource interface {
 	OpenCertPEM(ctx context.Context, id string) (certPEM, keyPEM string, err error)
 }
 
-// SudoSource 抽象「按凭据 ID 取 sudo 密码明文」(由 vault.Vault 适配注入,避免包环;测试可
-// 用 stub)。密码仅进程内使用,绝不入库/日志/错误体。nil = 密码 sudo 路径禁用(仅 root /
-// 免密 sudo)。
-type SudoSource interface {
-	Get(id string) (string, error)
+// Host 抽象「平台自身所在主机」的命令执行与文件写入(生产实现基于 os/exec + os.WriteFile;
+// 测试注入 fake,不碰真机)。命令以 array 传入,绝不经 shell 解释(AC-SEC-02)。
+type Host interface {
+	// Run 同步执行 name+args,返回 stdout/stderr/退出码;err 非 nil 表示无法启动
+	// (命令不存在等,此时 exitCode<0);跑完但非零退出不算 err(退出码在 exitCode)。
+	Run(ctx context.Context, name string, args []string) (stdout, stderr string, exitCode int, err error)
+	// WriteFile 写本机文件(父目录由调用方确保存在;perm 如 0o600)。
+	WriteFile(path string, data []byte, perm os.FileMode) error
 }
 
-// NginxDetect 是目标服务器宿主 nginx 的探测快照(配置前知情)。
+// localHost 是基于 os/exec + os.WriteFile 的默认 Host 实现(子进程经 CommandContext 绑 ctx,
+// ctx 取消即 kill;命令绝不经 shell 解释)。
+type localHost struct{}
+
+func (localHost) Run(ctx context.Context, name string, args []string) (string, string, int, error) {
+	cmd := exec.CommandContext(ctx, name, args...)
+	var outBuf, errBuf strings.Builder
+	cmd.Stdout = &outBuf
+	cmd.Stderr = &errBuf
+	err := cmd.Run()
+	if err != nil {
+		var ee *exec.ExitError
+		if errors.As(err, &ee) {
+			return outBuf.String(), errBuf.String(), ee.ExitCode(), nil // 跑完非零:退出码说话
+		}
+		return outBuf.String(), errBuf.String(), -1, err // 启动失败(命令不存在等)
+	}
+	return outBuf.String(), errBuf.String(), 0, nil
+}
+
+func (localHost) WriteFile(path string, data []byte, perm os.FileMode) error {
+	return os.WriteFile(path, data, perm)
+}
+
+// NginxDetect 是本机宿主 nginx 的探测快照(配置前知情)。
 type NginxDetect struct {
-	ServerID      string
-	Installed     bool   // command -v nginx && nginx -v
+	Installed     bool   // nginx -v 可执行
 	Version       string // 如 "1.24.0"
-	IsRoot        bool   // SSH 登录用户是否 root
+	IsRoot        bool   // 平台运行用户是否 root
 	SudoOk        bool   // root 恒 true;非 root 为 sudo -n 是否可用
-	// SudoPwdConfigured 表示该服务器绑定了 sudo 密码凭据(root / 免密已可用时不探测密码)。
-	SudoPwdConfigured bool
-	// SudoPwdOk 表示 sudo -S 密码验证通过(仅非 root 且无免密 sudo 时探测)。
-	SudoPwdOk    bool
-	ConfDIncluded bool // nginx -T 是否 include conf.d(best-effort,防静默失效)
-	ManagedConf   bool // /etc/nginx/conf.d/pipewright-platform.conf 是否已在(平台曾应用过)
+	ConfDIncluded bool   // nginx -T 是否 include conf.d(best-effort,防静默失效)
+	ManagedConf   bool   // /etc/nginx/conf.d/pipewright-platform.conf 是否已在(平台曾应用过)
 }
 
 // Service 定义平台 HTTPS 访问领域对外接口(httpapi 消费;UsesCert/RedeployCert 供 certmgmt 联动)。
@@ -150,12 +164,12 @@ type Service interface {
 	EffectiveUpstream(st *Settings) string
 	// SaveSettings 校验并更新设置;纯落库不触网。启用(enabled=true)要求配置完整且证书覆盖域名。
 	SaveSettings(ctx context.Context, in SettingsInput) (*Settings, error)
-	// Detect 探测指定服务器的宿主 nginx / 提权能力 / conf.d include 情况。
-	Detect(ctx context.Context, serverID string) (*NginxDetect, error)
+	// Detect 探测本机宿主 nginx / 提权能力 / conf.d include 情况。
+	Detect(ctx context.Context) (*NginxDetect, error)
 	// Apply 全量收敛:下发证书 + 写 conf.d vhost + nginx -t(失败回滚)+ reload + include 验证;
 	// 结果(含失败人话)记回设置行。未启用/配置不完整 → ErrNotConfigured。
 	Apply(ctx context.Context) (*Settings, error)
-	// Disable 移除远端 conf.d 文件与证书目录并 reload(远端无平台配置时仅复位本地行);
+	// Disable 移除本机 conf.d 文件与证书目录并 reload(本机无平台配置时仅复位本地行);
 	// 本地行保留(enabled=0)便于再次启用。
 	Disable(ctx context.Context) (*Settings, error)
 
@@ -166,27 +180,29 @@ type Service interface {
 	RedeployCert(ctx context.Context, certID string) error
 }
 
-// service 是 store + target (+ CertSource + SudoSource) 支撑的 Service 实现。
+// service 是 store + Host (+ CertSource) 支撑的 Service 实现。
 type service struct {
 	store       *Store
-	tg          target.Service
+	host        Host
 	certs       CertSource
-	sudoSrc     SudoSource
 	defaultPort int // UpstreamPort 为 0 时的默认值(平台自身 Web 端口)
 
 	// mu 互斥 Apply/Disable:HTTP 手动应用与 certmgmt 续期联动(RedeployCert,异步
-	// goroutine)可能并发,共用固定 /tmp 路径与备份的远端命令序列交错会互相破坏。
+	// goroutine)可能并发,共用固定 /tmp 路径与备份的命令序列交错会互相破坏。
 	mu sync.Mutex
 }
 
-// New 构造 Service。certs 为 nil 时证书校验/下发不可用(其余照常);sudoSrc 为 nil 时密码
-// sudo 路径禁用(仅 root / 免密 sudo);defaultPort 为平台自身 Web 监听端口(main.go 由
-// cfg.Addr 推导),作为反代上游端口的默认值。
-func New(db *sql.DB, tg target.Service, certs CertSource, sudoSrc SudoSource, defaultPort int) Service {
+// New 构造 Service。host 为 nil 时用本机默认实现(os/exec + os.WriteFile);certs 为 nil 时
+// 证书校验/下发不可用(其余照常);defaultPort 为平台自身 Web 监听端口(main.go 由 cfg.Addr
+// 推导),作为反代上游端口的默认值。
+func New(db *sql.DB, host Host, certs CertSource, defaultPort int) Service {
+	if host == nil {
+		host = localHost{}
+	}
 	if defaultPort < 1 || defaultPort > 65535 {
 		defaultPort = 8080
 	}
-	return &service{store: NewStore(db), tg: tg, certs: certs, sudoSrc: sudoSrc, defaultPort: defaultPort}
+	return &service{store: NewStore(db), host: host, certs: certs, defaultPort: defaultPort}
 }
 
 // ---------- 设置 ----------
@@ -210,9 +226,6 @@ func (s *service) SaveSettings(ctx context.Context, in SettingsInput) (*Settings
 	if in.Enabled != nil {
 		next.Enabled = *in.Enabled
 	}
-	if in.ServerID != nil {
-		next.ServerID = strings.TrimSpace(*in.ServerID)
-	}
 	if in.Domain != nil {
 		next.Domain = strings.ToLower(strings.TrimSpace(*in.Domain))
 	}
@@ -228,10 +241,10 @@ func (s *service) SaveSettings(ctx context.Context, in SettingsInput) (*Settings
 	if in.HTTPRedirect != nil {
 		next.HTTPRedirect = *in.HTTPRedirect
 	}
-	// 已应用(status 非空 = 远端可能有配置)时变更服务器/域名 → 拒绝:Disable 只按当前值
-	// 清理,直接改会让旧机 conf.d 与旧域名证书目录(含私钥)成孤儿,且无任何清理入口。
-	if cur.Status != "" && (next.ServerID != cur.ServerID || next.Domain != cur.Domain) {
-		return nil, fmt.Errorf("%w:配置已应用,变更服务器/域名前请先「禁用并清理」", ErrAppliedChange)
+	// 已应用(status 非空 = 本机可能有配置)时变更域名 → 拒绝:Disable 只按当前值清理,
+	// 直接改会让旧域名证书目录(含私钥)成孤儿,且无任何清理入口。
+	if cur.Status != "" && next.Domain != cur.Domain {
+		return nil, fmt.Errorf("%w:配置已应用,变更域名前请先「禁用并清理」", ErrAppliedChange)
 	}
 	if err := s.validate(ctx, next); err != nil {
 		return nil, err
@@ -249,8 +262,8 @@ func (s *service) SaveSettings(ctx context.Context, in SettingsInput) (*Settings
 	return s.store.getOrCreate(ctx)
 }
 
-// validate 全量校验落库前状态:未启用只查宽松项(host/port 形态);启用要求服务器存在、
-// 域名合法、证书已签发且 SAN 覆盖域名。
+// validate 全量校验落库前状态:未启用只查宽松项(host/port 形态);启用要求域名合法、
+// 证书已签发且 SAN 覆盖域名。
 func (s *service) validate(ctx context.Context, st Settings) error {
 	if st.Domain != "" && !domainRe.MatchString(st.Domain) {
 		return ErrInvalidDomain
@@ -268,11 +281,8 @@ func (s *service) validate(ctx context.Context, st Settings) error {
 	if !st.Enabled {
 		return nil
 	}
-	if st.ServerID == "" || st.Domain == "" || st.CertID == "" {
+	if st.Domain == "" || st.CertID == "" {
 		return ErrNotConfigured
-	}
-	if _, err := s.tg.Get(ctx, st.ServerID); err != nil {
-		return err
 	}
 	if s.certs == nil {
 		return ErrCertSourceMissing
@@ -332,19 +342,8 @@ func (s *service) effectiveUpstream(st Settings) (string, int) {
 
 // ---------- 探测 ----------
 
-func (s *service) Detect(ctx context.Context, serverID string) (*NginxDetect, error) {
-	serverID = strings.TrimSpace(serverID)
-	if serverID == "" {
-		return nil, target.ErrNotFound
-	}
-	if _, err := s.tg.Get(ctx, serverID); err != nil {
-		return nil, err
-	}
-	sudoPwd, err := s.sudoPassword(ctx, serverID)
-	if err != nil {
-		return nil, err
-	}
-	return detectNginx(ctx, s.tg, serverID, sudoPwd)
+func (s *service) Detect(ctx context.Context) (*NginxDetect, error) {
+	return detectNginx(ctx, s.host)
 }
 
 // ---------- 应用 / 禁用 ----------
@@ -356,7 +355,7 @@ func (s *service) Apply(ctx context.Context) (*Settings, error) {
 	if err != nil {
 		return nil, err
 	}
-	if !st.Enabled || st.ServerID == "" || st.Domain == "" || st.CertID == "" {
+	if !st.Enabled || st.Domain == "" || st.CertID == "" {
 		return nil, ErrNotConfigured
 	}
 	if err := s.validate(ctx, *st); err != nil {
@@ -369,12 +368,8 @@ func (s *service) Apply(ctx context.Context) (*Settings, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%w:证书密文不可用", ErrCertNotReady)
 	}
-	sudoPwd, err := s.sudoPassword(ctx, st.ServerID)
-	if err != nil {
-		return nil, err
-	}
 	host, port := s.effectiveUpstream(*st)
-	if err := applyPlatformConf(ctx, s.tg, st.ServerID, st.Domain, host, port, st.HTTPRedirect, certPEM, keyPEM, sudoPwd); err != nil {
+	if err := applyPlatformConf(ctx, s.host, st.Domain, host, port, st.HTTPRedirect, certPEM, keyPEM); err != nil {
 		_ = s.store.setResult(ctx, StatusFailed, truncate(err.Error(), 2000))
 		s2, gerr := s.store.getOrCreate(ctx)
 		if gerr == nil {
@@ -393,13 +388,9 @@ func (s *service) Disable(ctx context.Context) (*Settings, error) {
 	if err != nil {
 		return nil, err
 	}
-	// 远端从未应用过(无服务器配置/状态为空)→ 仅复位本地行。
-	if st.ServerID != "" && st.Status != "" {
-		sudoPwd, err := s.sudoPassword(ctx, st.ServerID)
-		if err != nil {
-			return nil, err
-		}
-		if err := removePlatformConf(ctx, s.tg, st.ServerID, st.Domain, sudoPwd); err != nil {
+	// 本机从未应用过(状态为空)→ 仅复位本地行。
+	if st.Status != "" {
+		if err := removePlatformConf(ctx, s.host, st.Domain); err != nil {
 			return nil, err
 		}
 	}
@@ -409,33 +400,6 @@ func (s *service) Disable(ctx context.Context) (*Settings, error) {
 	return s.store.getOrCreate(ctx)
 }
 
-// ---------- 内部:sudo 密码取用 ----------
-
-// sudoPassword 取服务器绑定的 sudo 密码明文(进程内用完即弃;未绑定或未注入 SudoSource
-// 时返回空串 = 密码路径不启用)。定位类错误(保险库未配置/凭据不存在)原样上抛供 HTTP 层
-// 映射;其余按无提权处理并给人话。错误体绝不含密码明文。
-func (s *service) sudoPassword(ctx context.Context, serverID string) (string, error) {
-	srv, err := s.tg.Get(ctx, serverID)
-	if err != nil {
-		return "", err
-	}
-	if srv.SudoCredentialID == "" || s.sudoSrc == nil {
-		return "", nil
-	}
-	pwd, err := s.sudoSrc.Get(srv.SudoCredentialID)
-	if err != nil {
-		switch {
-		case errors.Is(err, vault.ErrVaultUnconfigured):
-			return "", target.ErrVaultUnconfigured
-		case errors.Is(err, vault.ErrNotFound):
-			return "", target.ErrCredentialNotFound
-		default:
-			return "", fmt.Errorf("%w:读取 sudo 密码凭据失败", ErrNoPrivilege)
-		}
-	}
-	return pwd, nil
-}
-
 // ---------- certmgmt 联动 ----------
 
 func (s *service) UsesCert(ctx context.Context, certID string) (bool, error) {
@@ -443,8 +407,8 @@ func (s *service) UsesCert(ctx context.Context, certID string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	// 以 status 非空(远端可能有配置)为准,不看 enabled:用户仅关掉启用开关而未「禁用并
-	// 清理」时远端仍在跑该证书,删除拦截必须继续生效。
+	// 以 status 非空(本机可能有配置)为准,不看 enabled:用户仅关掉启用开关而未「禁用并
+	// 清理」时本机仍在跑该证书,删除拦截必须继续生效。
 	return st.CertID == certID && st.Status != "", nil
 }
 
@@ -454,7 +418,7 @@ func (s *service) RedeployCert(ctx context.Context, certID string) error {
 		return err
 	}
 	if st.CertID != certID || st.Status == "" {
-		return nil // 未引用或远端无配置:无事可做
+		return nil // 未引用或本机无配置:无事可做
 	}
 	_, aerr := s.Apply(ctx)
 	return aerr

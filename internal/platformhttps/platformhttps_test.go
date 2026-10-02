@@ -4,114 +4,57 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"io"
+	"os"
 	"strings"
 	"testing"
 
 	"github.com/huangchengsir/pipewright/internal/store"
 	"github.com/huangchengsir/pipewright/internal/storetest"
-	"github.com/huangchengsir/pipewright/internal/target"
 )
 
-// --- 测试桩(照 servicereg 包手法) ---
+// --- 测试桩 ---
 
-// fakeTarget 是捕获 Exec/Upload/ExecWithStdin 的假 target.Service;resultFor 可按命令定制结果。
-type fakeTarget struct {
-	execCalls   [][]string
-	stdinCalls  []stdinCall // ExecWithStdin 捕获(命令 + 喂入的 stdin 内容)
-	uploads     []string
-	uploadBytes map[string]string
-	sudoCredID  string // Get 返回的 sudo 凭据绑定(空 = 未绑定)
-	resultFor   func(cmd []string) *target.ExecResult
+// cmdRes 是 fakeHost 对单条命令的定制结果(nil = 默认 exit 0 无输出)。
+type cmdRes struct {
+	stdout string
+	stderr string
+	code   int
 }
 
-// stdinCall 记录一次带 stdin 的执行(供断言 sudo -S 的密码喂入)。
-type stdinCall struct {
-	cmd   []string
-	stdin string
+// fakeHost 是捕获 Run/WriteFile 的假本机;resultFor 可按命令定制结果。
+type fakeHost struct {
+	calls     [][]string
+	writes    map[string]string
+	resultFor func(cmd []string) *cmdRes
 }
 
-func (f *fakeTarget) Exec(_ context.Context, _ string, cmd []string) (*target.ExecResult, error) {
-	f.execCalls = append(f.execCalls, cmd)
+func (f *fakeHost) Run(_ context.Context, name string, args []string) (string, string, int, error) {
+	cmd := append([]string{name}, args...)
+	f.calls = append(f.calls, cmd)
 	if f.resultFor != nil {
 		if r := f.resultFor(cmd); r != nil {
-			return r, nil
+			return r.stdout, r.stderr, r.code, nil
 		}
 	}
-	return &target.ExecResult{ExitCode: 0}, nil
+	return "", "", 0, nil
 }
 
-func (f *fakeTarget) ExecWithStdin(_ context.Context, _ string, cmd []string, stdin io.Reader) (*target.ExecResult, error) {
-	b, _ := io.ReadAll(stdin)
-	f.stdinCalls = append(f.stdinCalls, stdinCall{cmd: cmd, stdin: string(b)})
-	if f.resultFor != nil {
-		if r := f.resultFor(cmd); r != nil {
-			return r, nil
-		}
+func (f *fakeHost) WriteFile(path string, data []byte, _ os.FileMode) error {
+	if f.writes == nil {
+		f.writes = map[string]string{}
 	}
-	return &target.ExecResult{ExitCode: 0}, nil
-}
-
-func (f *fakeTarget) Upload(_ context.Context, _ string, content io.Reader, remotePath string) error {
-	f.uploads = append(f.uploads, remotePath)
-	b, _ := io.ReadAll(content)
-	if f.uploadBytes == nil {
-		f.uploadBytes = map[string]string{}
-	}
-	f.uploadBytes[remotePath] = string(b)
+	f.writes[path] = string(data)
 	return nil
 }
 
-func (f *fakeTarget) Get(_ context.Context, id string) (*target.Server, error) {
-	return &target.Server{ID: id, SudoCredentialID: f.sudoCredID}, nil
-}
-func (f *fakeTarget) List(context.Context) ([]*target.Server, error)      { return nil, nil }
-func (f *fakeTarget) Create(context.Context, target.CreateInput) (*target.Server, error) {
-	return nil, nil
-}
-func (f *fakeTarget) Update(context.Context, string, target.UpdateInput) (*target.Server, error) {
-	return nil, nil
-}
-func (f *fakeTarget) Delete(context.Context, string) error                     { return nil }
-func (f *fakeTarget) Test(context.Context, string) (*target.TestResult, error) { return nil, nil }
-func (f *fakeTarget) ExecStream(context.Context, string, []string) (io.ReadCloser, error) {
-	return nil, nil
-}
-func (f *fakeTarget) ExecInteractive(context.Context, string, []string) (target.Session, error) {
-	return nil, nil
-}
-
-func hasCmd(f *fakeTarget, prefix ...string) bool {
+func hasCmd(f *fakeHost, prefix ...string) bool {
 	joined := strings.Join(prefix, " ")
-	for _, c := range f.execCalls {
+	for _, c := range f.calls {
 		if strings.HasPrefix(strings.Join(c, " "), joined) {
 			return true
 		}
 	}
 	return false
-}
-
-// hasStdinCmd 报告是否存在带指定前缀且 stdin 内容恰为 want 的 ExecWithStdin 调用。
-func hasStdinCmd(f *fakeTarget, want string, prefix ...string) bool {
-	joined := strings.Join(prefix, " ")
-	for _, c := range f.stdinCalls {
-		if strings.HasPrefix(strings.Join(c.cmd, " "), joined) && c.stdin == want {
-			return true
-		}
-	}
-	return false
-}
-
-// fakeSudoSource 是注入的假 sudo 密码源(credentialID → 密码明文)。
-type fakeSudoSource struct {
-	passwords map[string]string
-}
-
-func (f fakeSudoSource) Get(id string) (string, error) {
-	if p, ok := f.passwords[id]; ok {
-		return p, nil
-	}
-	return "", errors.New("fake: sudo credential not found")
 }
 
 // fakeCertSource 是注入的假证书源(元数据 + PEM)。
@@ -153,26 +96,26 @@ func newFakeCerts() *fakeCertSource {
 	}
 }
 
-func newTestService(t *testing.T, db *sql.DB) (Service, *fakeTarget, *fakeCertSource) {
+func newTestService(t *testing.T, db *sql.DB) (Service, *fakeHost, *fakeCertSource) {
 	t.Helper()
-	ft := &fakeTarget{}
+	fh := &fakeHost{}
 	cs := newFakeCerts()
-	return New(db, ft, cs, nil, 8080), ft, cs
+	return New(db, fh, cs, 8080), fh, cs
 }
 
-// nginxOK 让 fakeTarget 表现为一台装好 nginx 的 root 机器(nginx -T 输出含平台标记;
+// nginxOK 让 fakeHost 表现为一台装好 nginx 的 root 机器(nginx -T 输出含平台标记;
 // 匹配对 sudo -n 前缀免疫)。
-func nginxOK(f *fakeTarget) {
-	f.resultFor = func(cmd []string) *target.ExecResult {
+func nginxOK(f *fakeHost) {
+	f.resultFor = func(cmd []string) *cmdRes {
 		joined := strings.Join(cmd, " ")
 		trimmed := strings.TrimPrefix(joined, "sudo -n ")
 		switch {
 		case joined == "id -u":
-			return &target.ExecResult{ExitCode: 0, Stdout: "0"}
+			return &cmdRes{code: 0, stdout: "0"}
 		case trimmed == "nginx -T":
-			return &target.ExecResult{ExitCode: 0, Stdout: "# " + confMarker + " ..."}
+			return &cmdRes{code: 0, stdout: "# " + confMarker + " ..."}
 		case trimmed == "nginx -v":
-			return &target.ExecResult{ExitCode: 0, Stderr: "nginx version: nginx/1.24.0"}
+			return &cmdRes{code: 0, stderr: "nginx version: nginx/1.24.0"}
 		}
 		return nil // 其余走默认 exit 0
 	}
@@ -185,7 +128,7 @@ func intPtr(i int) *int       { return &i }
 func enableSettings(t *testing.T, svc Service) {
 	t.Helper()
 	if _, err := svc.SaveSettings(context.Background(), SettingsInput{
-		Enabled: boolPtr(true), ServerID: strPtr("srv-1"), Domain: strPtr("pip.efg.com"),
+		Enabled: boolPtr(true), Domain: strPtr("pip.efg.com"),
 		CertID: strPtr("c1"), HTTPRedirect: boolPtr(true),
 	}); err != nil {
 		t.Fatalf("保存设置:%v", err)
@@ -217,41 +160,41 @@ func TestSaveSettingsValidation(t *testing.T) {
 		}
 
 		// 启用但缺项 → ErrNotConfigured。
-		_, err := svc.SaveSettings(ctx, SettingsInput{Enabled: boolPtr(true), ServerID: strPtr("srv-1")})
+		_, err := svc.SaveSettings(ctx, SettingsInput{Enabled: boolPtr(true)})
 		if err == nil || !errors.Is(err, ErrNotConfigured) {
 			t.Fatalf("启用缺域名/证书应 ErrNotConfigured,得 %v", err)
 		}
 		// 证书未签发完成。
 		_, err = svc.SaveSettings(ctx, SettingsInput{
-			Enabled: boolPtr(true), ServerID: strPtr("srv-1"), Domain: strPtr("efg.com"), CertID: strPtr("c3"),
+			Enabled: boolPtr(true), Domain: strPtr("efg.com"), CertID: strPtr("c3"),
 		})
 		if err == nil || !errors.Is(err, ErrCertNotReady) {
 			t.Fatalf("未签发证书应 ErrCertNotReady,得 %v", err)
 		}
 		// 证书不覆盖域名(c2 = other.com)。
 		_, err = svc.SaveSettings(ctx, SettingsInput{
-			Enabled: boolPtr(true), ServerID: strPtr("srv-1"), Domain: strPtr("pip.efg.com"), CertID: strPtr("c2"),
+			Enabled: boolPtr(true), Domain: strPtr("pip.efg.com"), CertID: strPtr("c2"),
 		})
 		if err == nil || !errors.Is(err, ErrCertNotCover) {
 			t.Fatalf("不覆盖证书应 ErrCertNotCover,得 %v", err)
 		}
 		// 证书不存在。
 		_, err = svc.SaveSettings(ctx, SettingsInput{
-			Enabled: boolPtr(true), ServerID: strPtr("srv-1"), Domain: strPtr("pip.efg.com"), CertID: strPtr("c9"),
+			Enabled: boolPtr(true), Domain: strPtr("pip.efg.com"), CertID: strPtr("c9"),
 		})
 		if err == nil || !errors.Is(err, ErrCertNotReady) {
 			t.Fatalf("不存在证书应 ErrCertNotReady,得 %v", err)
 		}
 		// 通配符证书覆盖子域 + 完整配置 → 通过。
 		if _, err := svc.SaveSettings(ctx, SettingsInput{
-			Enabled: boolPtr(true), ServerID: strPtr("srv-1"), Domain: strPtr("pip.efg.com"), CertID: strPtr("c1"),
+			Enabled: boolPtr(true), Domain: strPtr("pip.efg.com"), CertID: strPtr("c1"),
 		}); err != nil {
 			t.Fatalf("完整配置应可保存:%v", err)
 		}
 		// 证书模块未接入时启用 → ErrCertSourceMissing。
-		svc2 := New(st.DB, &fakeTarget{}, nil, nil, 8080)
+		svc2 := New(st.DB, &fakeHost{}, nil, 8080)
 		_, err = svc2.SaveSettings(ctx, SettingsInput{
-			Enabled: boolPtr(true), ServerID: strPtr("srv-1"), Domain: strPtr("pip.efg.com"), CertID: strPtr("c1"),
+			Enabled: boolPtr(true), Domain: strPtr("pip.efg.com"), CertID: strPtr("c1"),
 		})
 		if err == nil || !errors.Is(err, ErrCertSourceMissing) {
 			t.Fatalf("无证书源应 ErrCertSourceMissing,得 %v", err)
@@ -263,8 +206,8 @@ func TestSaveSettingsValidation(t *testing.T) {
 
 func TestApplySuccess(t *testing.T) {
 	storetest.ForEachDialect(t, func(t *testing.T, st *store.Store) {
-		svc, ft, _ := newTestService(t, st.DB)
-		nginxOK(ft)
+		svc, fh, _ := newTestService(t, st.DB)
+		nginxOK(fh)
 		ctx := context.Background()
 		enableSettings(t, svc)
 
@@ -275,14 +218,14 @@ func TestApplySuccess(t *testing.T) {
 		if s.Status != StatusActive || s.StatusDetail != "" {
 			t.Fatalf("应用后应 active,得 %q/%q", s.Status, s.StatusDetail)
 		}
-		// 三份临时文件(配置/证书/私钥)上传。
+		// 三份临时文件(配置/证书/私钥)写入。
 		for _, p := range []string{tmpConfPath, tmpCertPath, tmpKeyPath} {
-			if _, ok := ft.uploadBytes[p]; !ok {
-				t.Fatalf("缺少上传 %s:%v", p, ft.uploads)
+			if _, ok := fh.writes[p]; !ok {
+				t.Fatalf("缺少写入 %s:%v", p, fh.writes)
 			}
 		}
-		// 上传的配置含标记 + 域名 + 默认上游。
-		conf := ft.uploadBytes[tmpConfPath]
+		// 写入的配置含标记 + 域名 + 默认上游。
+		conf := fh.writes[tmpConfPath]
 		for _, want := range []string{confMarker, "pip.efg.com", "http://127.0.0.1:8080", "return 301 https://$host$request_uri;"} {
 			if !strings.Contains(conf, want) {
 				t.Fatalf("下发配置应含 %q:\n%s", want, conf)
@@ -303,8 +246,8 @@ func TestApplySuccess(t *testing.T) {
 			{"nginx", "-s", "reload"},
 			{"rm", "-rf", tmpDir},
 		} {
-			if !hasCmd(ft, prefix...) {
-				t.Fatalf("缺少命令 %v:%v", prefix, ft.execCalls)
+			if !hasCmd(fh, prefix...) {
+				t.Fatalf("缺少命令 %v:%v", prefix, fh.calls)
 			}
 		}
 		// 生效上游展示。
@@ -316,11 +259,11 @@ func TestApplySuccess(t *testing.T) {
 
 func TestApplyCustomUpstream(t *testing.T) {
 	storetest.ForEachDialect(t, func(t *testing.T, st *store.Store) {
-		svc, ft, _ := newTestService(t, st.DB)
-		nginxOK(ft)
+		svc, fh, _ := newTestService(t, st.DB)
+		nginxOK(fh)
 		ctx := context.Background()
 		if _, err := svc.SaveSettings(ctx, SettingsInput{
-			Enabled: boolPtr(true), ServerID: strPtr("srv-1"), Domain: strPtr("pip.efg.com"),
+			Enabled: boolPtr(true), Domain: strPtr("pip.efg.com"),
 			CertID: strPtr("c1"), UpstreamHost: strPtr("10.0.0.8"), UpstreamPort: intPtr(3000),
 		}); err != nil {
 			t.Fatalf("保存:%v", err)
@@ -328,7 +271,7 @@ func TestApplyCustomUpstream(t *testing.T) {
 		if _, err := svc.Apply(ctx); err != nil {
 			t.Fatalf("应用:%v", err)
 		}
-		if conf := ft.uploadBytes[tmpConfPath]; !strings.Contains(conf, "proxy_pass http://10.0.0.8:3000;") {
+		if conf := fh.writes[tmpConfPath]; !strings.Contains(conf, "proxy_pass http://10.0.0.8:3000;") {
 			t.Fatalf("自定义上游应渲染:\n%s", conf)
 		}
 	})
@@ -336,13 +279,13 @@ func TestApplyCustomUpstream(t *testing.T) {
 
 func TestApplyNonRootSudo(t *testing.T) {
 	storetest.ForEachDialect(t, func(t *testing.T, st *store.Store) {
-		svc, ft, _ := newTestService(t, st.DB)
-		nginxOK(ft)
+		svc, fh, _ := newTestService(t, st.DB)
+		nginxOK(fh)
 		// 非 root + 免密 sudo 可用。
-		inner := ft.resultFor
-		ft.resultFor = func(cmd []string) *target.ExecResult {
+		inner := fh.resultFor
+		fh.resultFor = func(cmd []string) *cmdRes {
 			if strings.Join(cmd, " ") == "id -u" {
-				return &target.ExecResult{ExitCode: 0, Stdout: "1000"}
+				return &cmdRes{code: 0, stdout: "1000"}
 			}
 			return inner(cmd)
 		}
@@ -351,18 +294,18 @@ func TestApplyNonRootSudo(t *testing.T) {
 		if _, err := svc.Apply(ctx); err != nil {
 			t.Fatalf("应用:%v", err)
 		}
-		if !hasCmd(ft, "sudo", "-n", "nginx", "-t") || !hasCmd(ft, "sudo", "-n", "cp", tmpConfPath, managedConfPath) {
-			t.Fatalf("非 root 应经 sudo -n 执行:%v", ft.execCalls)
+		if !hasCmd(fh, "sudo", "-n", "nginx", "-t") || !hasCmd(fh, "sudo", "-n", "cp", tmpConfPath, managedConfPath) {
+			t.Fatalf("非 root 应经 sudo -n 执行:%v", fh.calls)
 		}
 	})
 }
 
 func TestApplyNoNginx(t *testing.T) {
 	storetest.ForEachDialect(t, func(t *testing.T, st *store.Store) {
-		svc, ft, _ := newTestService(t, st.DB)
-		ft.resultFor = func(cmd []string) *target.ExecResult {
+		svc, fh, _ := newTestService(t, st.DB)
+		fh.resultFor = func(cmd []string) *cmdRes {
 			if strings.Join(cmd, " ") == "nginx -v" {
-				return &target.ExecResult{ExitCode: 127, Stderr: "command not found"}
+				return &cmdRes{code: 127, stderr: "command not found"}
 			}
 			return nil
 		}
@@ -379,116 +322,17 @@ func TestApplyNoNginx(t *testing.T) {
 	})
 }
 
-// TestApplySudoPassword:非 root + 无免密 sudo + 绑定密码凭据 → sudo -S 密码模式全程可用,
-// 密码逐条经 stdin 喂入(每条命令新 reader,内容恒为「密码 + 换行」)。
-func TestApplySudoPassword(t *testing.T) {
-	storetest.ForEachDialect(t, func(t *testing.T, st *store.Store) {
-		ft := &fakeTarget{sudoCredID: "sudocred-1"}
-		sudoSrc := fakeSudoSource{passwords: map[string]string{"sudocred-1": "s3cret-pwd"}}
-		svc := New(st.DB, ft, newFakeCerts(), sudoSrc, 8080)
-		ft.resultFor = func(cmd []string) *target.ExecResult {
-			joined := strings.Join(cmd, " ")
-			// 密码前缀 ["sudo","-S","-p",""] join 后空参数呈现为双空格。
-			trimmed := strings.TrimPrefix(strings.TrimPrefix(joined, "sudo -n "), "sudo -S -p  ")
-			switch {
-			case joined == "id -u":
-				return &target.ExecResult{ExitCode: 0, Stdout: "1000"}
-			case joined == "sudo -n true":
-				return &target.ExecResult{ExitCode: 1, Stderr: "sudo: a password is required"}
-			case trimmed == "nginx -T":
-				return &target.ExecResult{ExitCode: 0, Stdout: "# " + confMarker + " ..."}
-			case trimmed == "nginx -v":
-				return &target.ExecResult{ExitCode: 0, Stderr: "nginx version: nginx/1.24.0"}
-			}
-			return nil // 其余(含 sudo -S -p '' true 密码探测)默认 exit 0
-		}
-		ctx := context.Background()
-		enableSettings(t, svc)
-
-		s, err := svc.Apply(ctx)
-		if err != nil {
-			t.Fatalf("应用:%v", err)
-		}
-		if s.Status != StatusActive {
-			t.Fatalf("密码模式应用应 active,得 %q/%q", s.Status, s.StatusDetail)
-		}
-		// 每条带 stdin 的命令都是 sudo -S -p '' 前缀 + 密码喂入,且探测/安装/校验/热加载都有。
-		for _, c := range ft.stdinCalls {
-			if strings.Join(c.cmd[:4], " ") != "sudo -S -p " {
-				t.Fatalf("密码模式命令应带 sudo -S -p '' 前缀:%v", c.cmd)
-			}
-			if c.stdin != "s3cret-pwd\n" {
-				t.Fatalf("stdin 应恰为密码+换行,得 %q", c.stdin)
-			}
-		}
-		if len(ft.stdinCalls) == 0 {
-			t.Fatalf("密码模式应有带 stdin 的命令")
-		}
-		for _, prefix := range [][]string{
-			{"sudo", "-S", "-p", "", "true"},
-			{"sudo", "-S", "-p", "", "cp", tmpConfPath, managedConfPath},
-			{"sudo", "-S", "-p", "", "nginx", "-t"},
-			{"sudo", "-S", "-p", "", "nginx", "-s", "reload"},
-		} {
-			if !hasStdinCmd(ft, "s3cret-pwd\n", prefix...) {
-				t.Fatalf("缺少密码模式命令 %v:%v", prefix, ft.stdinCalls)
-			}
-		}
-		// 密码绝不进 argv:普通 Exec 调用里不出现密码字样。
-		for _, c := range ft.execCalls {
-			for _, a := range c {
-				if strings.Contains(a, "s3cret-pwd") {
-					t.Fatalf("密码泄漏进命令参数:%v", c)
-				}
-			}
-		}
-	})
-}
-
-// TestApplySudoPasswordWrong:绑定密码但验证失败 → ErrSudoPassword,失败快、不动远端(无上传/无安装)。
-func TestApplySudoPasswordWrong(t *testing.T) {
-	storetest.ForEachDialect(t, func(t *testing.T, st *store.Store) {
-		ft := &fakeTarget{sudoCredID: "sudocred-1"}
-		sudoSrc := fakeSudoSource{passwords: map[string]string{"sudocred-1": "wrong-pwd"}}
-		svc := New(st.DB, ft, newFakeCerts(), sudoSrc, 8080)
-		ft.resultFor = func(cmd []string) *target.ExecResult {
-			joined := strings.Join(cmd, " ")
-			switch {
-			case joined == "id -u":
-				return &target.ExecResult{ExitCode: 0, Stdout: "1000"}
-			case joined == "sudo -n true":
-				return &target.ExecResult{ExitCode: 1, Stderr: "sudo: a password is required"}
-			case joined == "sudo -S -p  true":
-				return &target.ExecResult{ExitCode: 1, Stderr: "sudo: 1 incorrect password attempt"}
-			}
-			return nil
-		}
-		ctx := context.Background()
-		enableSettings(t, svc)
-
-		_, err := svc.Apply(ctx)
-		if err == nil || !errors.Is(err, ErrSudoPassword) {
-			t.Fatalf("错密码应 ErrSudoPassword,得 %v", err)
-		}
-		if len(ft.uploads) != 0 {
-			t.Fatalf("密码验证失败不应上传任何文件:%v", ft.uploads)
-		}
-		s, _ := svc.GetSettings(ctx)
-		if s.Status != StatusFailed {
-			t.Fatalf("失败应记入状态,得 %q", s.Status)
-		}
-	})
-}
-
 func TestApplyNoPrivilege(t *testing.T) {
 	storetest.ForEachDialect(t, func(t *testing.T, st *store.Store) {
-		svc, ft, _ := newTestService(t, st.DB)
-		ft.resultFor = func(cmd []string) *target.ExecResult {
+		svc, fh, _ := newTestService(t, st.DB)
+		fh.resultFor = func(cmd []string) *cmdRes {
 			switch strings.Join(cmd, " ") {
+			case "nginx -v":
+				return &cmdRes{code: 0, stderr: "nginx version: nginx/1.24.0"}
 			case "id -u":
-				return &target.ExecResult{ExitCode: 0, Stdout: "1000"}
+				return &cmdRes{code: 0, stdout: "1000"}
 			case "sudo -n true":
-				return &target.ExecResult{ExitCode: 1, Stderr: "sudo: a password is required"}
+				return &cmdRes{code: 1, stderr: "sudo: a password is required"}
 			}
 			return nil
 		}
@@ -498,23 +342,26 @@ func TestApplyNoPrivilege(t *testing.T) {
 		if err == nil || !errors.Is(err, ErrNoPrivilege) {
 			t.Fatalf("无提权应 ErrNoPrivilege,得 %v", err)
 		}
+		if len(fh.writes) != 0 {
+			t.Fatalf("提权失败不应写任何文件:%v", fh.writes)
+		}
 	})
 }
 
 func TestApplyNginxTestFailRollback(t *testing.T) {
 	storetest.ForEachDialect(t, func(t *testing.T, st *store.Store) {
-		svc, ft, _ := newTestService(t, st.DB)
-		nginxOK(ft)
-		inner := ft.resultFor
-		ft.resultFor = func(cmd []string) *target.ExecResult {
+		svc, fh, _ := newTestService(t, st.DB)
+		nginxOK(fh)
+		inner := fh.resultFor
+		fh.resultFor = func(cmd []string) *cmdRes {
 			joined := strings.Join(cmd, " ")
 			switch {
 			case joined == "nginx -t":
-				return &target.ExecResult{ExitCode: 1, Stderr: "nginx: [emerg] unexpected ;"}
+				return &cmdRes{code: 1, stderr: "nginx: [emerg] unexpected ;"}
 			case strings.HasPrefix(joined, "cp "+managedConfPath+" "):
-				return &target.ExecResult{ExitCode: 1, Stderr: "No such file"} // 首次应用无备份源
+				return &cmdRes{code: 1, stderr: "No such file"} // 首次应用无备份源
 			case joined == "test -f "+backupConfFmt:
-				return &target.ExecResult{ExitCode: 1} // 备份不存在(与上一条一致)
+				return &cmdRes{code: 1} // 备份不存在(与上一条一致)
 			}
 			return inner(cmd)
 		}
@@ -525,11 +372,11 @@ func TestApplyNginxTestFailRollback(t *testing.T) {
 			t.Fatalf("校验失败应 ErrApply,得 %v", err)
 		}
 		// 无备份 → 回滚摘除我们的 conf.d 文件。
-		if !hasCmd(ft, "rm", "-f", managedConfPath) {
-			t.Fatalf("回滚应摘除 conf.d 文件:%v", ft.execCalls)
+		if !hasCmd(fh, "rm", "-f", managedConfPath) {
+			t.Fatalf("回滚应摘除 conf.d 文件:%v", fh.calls)
 		}
-		if hasCmd(ft, "nginx", "-s", "reload") {
-			t.Fatalf("校验失败不应 reload:%v", ft.execCalls)
+		if hasCmd(fh, "nginx", "-s", "reload") {
+			t.Fatalf("校验失败不应 reload:%v", fh.calls)
 		}
 		s, _ := svc.GetSettings(ctx)
 		if s.Status != StatusFailed || s.StatusDetail == "" {
@@ -542,15 +389,15 @@ func TestApplyNginxTestFailRollback(t *testing.T) {
 
 func TestDisable(t *testing.T) {
 	storetest.ForEachDialect(t, func(t *testing.T, st *store.Store) {
-		svc, ft, _ := newTestService(t, st.DB)
-		nginxOK(ft)
+		svc, fh, _ := newTestService(t, st.DB)
+		nginxOK(fh)
 		ctx := context.Background()
 		enableSettings(t, svc)
 		if _, err := svc.Apply(ctx); err != nil {
 			t.Fatalf("应用:%v", err)
 		}
 
-		ft.execCalls = nil
+		fh.calls = nil
 		s, err := svc.Disable(ctx)
 		if err != nil {
 			t.Fatalf("禁用:%v", err)
@@ -564,18 +411,18 @@ func TestDisable(t *testing.T) {
 			{"nginx", "-t"},
 			{"nginx", "-s", "reload"},
 		} {
-			if !hasCmd(ft, prefix...) {
-				t.Fatalf("缺少清理命令 %v:%v", prefix, ft.execCalls)
+			if !hasCmd(fh, prefix...) {
+				t.Fatalf("缺少清理命令 %v:%v", prefix, fh.calls)
 			}
 		}
 
-		// 再次禁用(远端已无平台配置)→ no-op,不触 nginx。
-		ft.execCalls = nil
+		// 再次禁用(本机已无平台配置)→ no-op,不触 nginx。
+		fh.calls = nil
 		if _, err := svc.Disable(ctx); err != nil {
 			t.Fatalf("重复禁用:%v", err)
 		}
-		if hasCmd(ft, "nginx") {
-			t.Fatalf("远端无平台配置时禁用不应触 nginx:%v", ft.execCalls)
+		if hasCmd(fh, "nginx") {
+			t.Fatalf("本机无平台配置时禁用不应触 nginx:%v", fh.calls)
 		}
 	})
 }
@@ -584,21 +431,21 @@ func TestDisable(t *testing.T) {
 
 func TestUsesCertAndRedeploy(t *testing.T) {
 	storetest.ForEachDialect(t, func(t *testing.T, st *store.Store) {
-		svc, ft, _ := newTestService(t, st.DB)
-		nginxOK(ft)
+		svc, fh, _ := newTestService(t, st.DB)
+		nginxOK(fh)
 		ctx := context.Background()
 		enableSettings(t, svc)
 
-		// 未应用(status 为空):远端无配置,不占用、不联动。
+		// 未应用(status 为空):本机无配置,不占用、不联动。
 		if used, _ := svc.UsesCert(ctx, "c1"); used {
 			t.Fatalf("未应用时 c1 不应被占用")
 		}
-		ft.execCalls = nil
+		fh.calls = nil
 		if err := svc.RedeployCert(ctx, "c1"); err != nil {
 			t.Fatalf("未应用时联动应为 no-op:%v", err)
 		}
-		if len(ft.execCalls) != 0 {
-			t.Fatalf("no-op 不应有命令:%v", ft.execCalls)
+		if len(fh.calls) != 0 {
+			t.Fatalf("no-op 不应有命令:%v", fh.calls)
 		}
 
 		// 应用后:占用按 status 非空判定(与 enabled 无关)。
@@ -611,7 +458,7 @@ func TestUsesCertAndRedeploy(t *testing.T) {
 		if used, _ := svc.UsesCert(ctx, "c2"); used {
 			t.Fatalf("c2 不应被占用")
 		}
-		// 仅关掉启用开关(未禁用清理):远端仍在跑,占用必须保持。
+		// 仅关掉启用开关(未禁用清理):本机仍在跑,占用必须保持。
 		if _, err := svc.SaveSettings(ctx, SettingsInput{Enabled: boolPtr(false)}); err != nil {
 			t.Fatalf("关闭启用:%v", err)
 		}
@@ -622,20 +469,20 @@ func TestUsesCertAndRedeploy(t *testing.T) {
 			t.Fatalf("重新启用:%v", err)
 		}
 
-		// 未引用的证书 → no-op(不触发任何远端命令)。
-		ft.execCalls = nil
+		// 未引用的证书 → no-op(不触发任何本机命令)。
+		fh.calls = nil
 		if err := svc.RedeployCert(ctx, "c2"); err != nil {
 			t.Fatalf("未引用证书的联动应为 no-op:%v", err)
 		}
-		if len(ft.execCalls) != 0 {
-			t.Fatalf("no-op 不应有命令:%v", ft.execCalls)
+		if len(fh.calls) != 0 {
+			t.Fatalf("no-op 不应有命令:%v", fh.calls)
 		}
 		// 引用中的证书 → 重新应用。
 		if err := svc.RedeployCert(ctx, "c1"); err != nil {
 			t.Fatalf("联动重下发:%v", err)
 		}
-		if !hasCmd(ft, "nginx", "-s", "reload") {
-			t.Fatalf("联动应重新应用:%v", ft.execCalls)
+		if !hasCmd(fh, "nginx", "-s", "reload") {
+			t.Fatalf("联动应重新应用:%v", fh.calls)
 		}
 		s, _ := svc.GetSettings(ctx)
 		if s.Status != StatusActive {
@@ -652,25 +499,20 @@ func TestUsesCertAndRedeploy(t *testing.T) {
 	})
 }
 
-// TestSaveSettingsAppliedChange:已应用(status 非空)时变更服务器/域名被拒(防旧机/旧域名
-// 配置与私钥成孤儿);换证书允许但 status 重置为待应用;禁用清理后可自由变更。
+// TestSaveSettingsAppliedChange:已应用(status 非空)时变更域名被拒(防旧域名配置与私钥
+// 成孤儿);换证书允许但 status 重置为待应用;禁用清理后可自由变更。
 func TestSaveSettingsAppliedChange(t *testing.T) {
 	storetest.ForEachDialect(t, func(t *testing.T, st *store.Store) {
-		svc, ft, _ := newTestService(t, st.DB)
-		nginxOK(ft)
+		svc, fh, _ := newTestService(t, st.DB)
+		nginxOK(fh)
 		ctx := context.Background()
 		enableSettings(t, svc)
 		if _, err := svc.Apply(ctx); err != nil {
 			t.Fatalf("应用:%v", err)
 		}
 
-		// 变更服务器 → 拒绝。
-		_, err := svc.SaveSettings(ctx, SettingsInput{ServerID: strPtr("srv-2")})
-		if err == nil || !errors.Is(err, ErrAppliedChange) {
-			t.Fatalf("已应用时换服务器应 ErrAppliedChange,得 %v", err)
-		}
 		// 变更域名 → 拒绝。
-		_, err = svc.SaveSettings(ctx, SettingsInput{Domain: strPtr("www.efg.com")})
+		_, err := svc.SaveSettings(ctx, SettingsInput{Domain: strPtr("www.efg.com")})
 		if err == nil || !errors.Is(err, ErrAppliedChange) {
 			t.Fatalf("已应用时换域名应 ErrAppliedChange,得 %v", err)
 		}
@@ -691,12 +533,12 @@ func TestSaveSettingsAppliedChange(t *testing.T) {
 			t.Fatalf("重新应用后 c4 应被占用")
 		}
 
-		// 禁用清理后 → 可自由变更服务器。
+		// 禁用清理后 → 可自由变更域名。
 		if _, err := svc.Disable(ctx); err != nil {
 			t.Fatalf("禁用:%v", err)
 		}
-		if _, err := svc.SaveSettings(ctx, SettingsInput{ServerID: strPtr("srv-2")}); err != nil {
-			t.Fatalf("清理后换服务器应允许:%v", err)
+		if _, err := svc.SaveSettings(ctx, SettingsInput{Domain: strPtr("www.efg.com")}); err != nil {
+			t.Fatalf("清理后换域名应允许:%v", err)
 		}
 	})
 }
@@ -705,22 +547,22 @@ func TestSaveSettingsAppliedChange(t *testing.T) {
 
 func TestDetect(t *testing.T) {
 	storetest.ForEachDialect(t, func(t *testing.T, st *store.Store) {
-		svc, ft, _ := newTestService(t, st.DB)
-		ft.resultFor = func(cmd []string) *target.ExecResult {
+		svc, fh, _ := newTestService(t, st.DB)
+		fh.resultFor = func(cmd []string) *cmdRes {
 			joined := strings.Join(cmd, " ")
 			switch {
 			case joined == "nginx -v":
-				return &target.ExecResult{ExitCode: 0, Stderr: "nginx version: nginx/1.26.2"}
+				return &cmdRes{code: 0, stderr: "nginx version: nginx/1.26.2"}
 			case joined == "nginx -T":
-				return &target.ExecResult{ExitCode: 0, Stdout: "include /etc/nginx/conf.d/*.conf;\n..."}
+				return &cmdRes{code: 0, stdout: "include /etc/nginx/conf.d/*.conf;\n..."}
 			case joined == "id -u":
-				return &target.ExecResult{ExitCode: 0, Stdout: "0"}
-			case joined == "test -f "+managedConfPath:
-				return &target.ExecResult{ExitCode: 0}
+				return &cmdRes{code: 0, stdout: "0"}
+			case joined == "test -f " + managedConfPath:
+				return &cmdRes{code: 0}
 			}
 			return nil
 		}
-		d, err := svc.Detect(context.Background(), "srv-1")
+		d, err := svc.Detect(context.Background())
 		if err != nil {
 			t.Fatalf("探测:%v", err)
 		}
@@ -729,18 +571,18 @@ func TestDetect(t *testing.T) {
 		}
 
 		// 未安装 nginx:Installed=false 且 sudo 探测照常。
-		ft2 := &fakeTarget{}
-		svc2 := New(st.DB, ft2, newFakeCerts(), nil, 8080)
-		ft2.resultFor = func(cmd []string) *target.ExecResult {
+		fh2 := &fakeHost{}
+		svc2 := New(st.DB, fh2, newFakeCerts(), 8080)
+		fh2.resultFor = func(cmd []string) *cmdRes {
 			if strings.Join(cmd, " ") == "nginx -v" {
-				return &target.ExecResult{ExitCode: 127, Stderr: "command not found"}
+				return &cmdRes{code: 127, stderr: "command not found"}
 			}
 			if strings.Join(cmd, " ") == "id -u" {
-				return &target.ExecResult{ExitCode: 0, Stdout: "0"}
+				return &cmdRes{code: 0, stdout: "0"}
 			}
 			return nil
 		}
-		d2, err := svc2.Detect(context.Background(), "srv-1")
+		d2, err := svc2.Detect(context.Background())
 		if err != nil {
 			t.Fatalf("探测:%v", err)
 		}
@@ -754,24 +596,24 @@ func TestDetect(t *testing.T) {
 // (裸跑读不到 root 600 的证书/私钥,会误报 conf.d 未加载)。
 func TestDetectSudoPrefix(t *testing.T) {
 	storetest.ForEachDialect(t, func(t *testing.T, st *store.Store) {
-		svc, ft, _ := newTestService(t, st.DB)
-		ft.resultFor = func(cmd []string) *target.ExecResult {
+		svc, fh, _ := newTestService(t, st.DB)
+		fh.resultFor = func(cmd []string) *cmdRes {
 			joined := strings.Join(cmd, " ")
 			switch {
 			case joined == "id -u":
-				return &target.ExecResult{ExitCode: 0, Stdout: "1000"}
+				return &cmdRes{code: 0, stdout: "1000"}
 			case joined == "sudo -n true":
-				return &target.ExecResult{ExitCode: 0}
+				return &cmdRes{code: 0}
 			case joined == "nginx -v":
-				return &target.ExecResult{ExitCode: 0, Stderr: "nginx version: nginx/1.26.2"}
+				return &cmdRes{code: 0, stderr: "nginx version: nginx/1.26.2"}
 			case joined == "sudo -n nginx -T":
-				return &target.ExecResult{ExitCode: 0, Stdout: "include /etc/nginx/conf.d/*.conf;"}
+				return &cmdRes{code: 0, stdout: "include /etc/nginx/conf.d/*.conf;"}
 			case joined == "nginx -T":
-				return &target.ExecResult{ExitCode: 1, Stderr: "open() failed (13: Permission denied)"}
+				return &cmdRes{code: 1, stderr: "open() failed (13: Permission denied)"}
 			}
 			return nil
 		}
-		d, err := svc.Detect(context.Background(), "srv-1")
+		d, err := svc.Detect(context.Background())
 		if err != nil {
 			t.Fatalf("探测:%v", err)
 		}
@@ -781,75 +623,8 @@ func TestDetectSudoPrefix(t *testing.T) {
 		if !d.ConfDIncluded {
 			t.Fatalf("带提权的 nginx -T 应识别 conf.d 已加载:%+v", d)
 		}
-		if !hasCmd(ft, "sudo", "-n", "nginx", "-T") {
-			t.Fatalf("nginx -T 应带 sudo -n 前缀:%v", ft.execCalls)
-		}
-	})
-}
-
-// TestDetectSudoPassword:非 root + 无免密 sudo + 密码可用 → SudoPwdConfigured/SudoPwdOk,
-// nginx -T 探测同样带密码前缀(裸跑读不到 root 600 的私钥会误报)。
-func TestDetectSudoPassword(t *testing.T) {
-	storetest.ForEachDialect(t, func(t *testing.T, st *store.Store) {
-		ft := &fakeTarget{sudoCredID: "sudocred-1"}
-		sudoSrc := fakeSudoSource{passwords: map[string]string{"sudocred-1": "s3cret-pwd"}}
-		svc := New(st.DB, ft, newFakeCerts(), sudoSrc, 8080)
-		ft.resultFor = func(cmd []string) *target.ExecResult {
-			joined := strings.Join(cmd, " ")
-			switch {
-			case joined == "id -u":
-				return &target.ExecResult{ExitCode: 0, Stdout: "1000"}
-			case joined == "sudo -n true":
-				return &target.ExecResult{ExitCode: 1, Stderr: "sudo: a password is required"}
-			case joined == "sudo -S -p  nginx -T":
-				return &target.ExecResult{ExitCode: 0, Stdout: "include /etc/nginx/conf.d/*.conf;"}
-			case joined == "nginx -v":
-				return &target.ExecResult{ExitCode: 0, Stderr: "nginx version: nginx/1.26.2"}
-			case joined == "nginx -T":
-				return &target.ExecResult{ExitCode: 1, Stderr: "open() failed (13: Permission denied)"}
-			}
-			return nil // sudo -S -p '' true 等默认 exit 0(密码正确)
-		}
-		d, err := svc.Detect(context.Background(), "srv-1")
-		if err != nil {
-			t.Fatalf("探测:%v", err)
-		}
-		if d.IsRoot || d.SudoOk || !d.SudoPwdConfigured || !d.SudoPwdOk {
-			t.Fatalf("应识别非 root + 密码 sudo 可用:%+v", d)
-		}
-		if !d.ConfDIncluded {
-			t.Fatalf("带密码前缀的 nginx -T 应识别 conf.d 已加载:%+v", d)
-		}
-		if !hasStdinCmd(ft, "s3cret-pwd\n", "sudo", "-S", "-p", "", "nginx", "-T") {
-			t.Fatalf("nginx -T 应带密码前缀并喂入密码:%v", ft.stdinCalls)
-		}
-	})
-}
-
-// TestDetectSudoPasswordWrong:绑定密码但验证失败 → SudoPwdOk=false(探测不炸,SudoPwdConfigured 如实上报)。
-func TestDetectSudoPasswordWrong(t *testing.T) {
-	storetest.ForEachDialect(t, func(t *testing.T, st *store.Store) {
-		ft := &fakeTarget{sudoCredID: "sudocred-1"}
-		sudoSrc := fakeSudoSource{passwords: map[string]string{"sudocred-1": "wrong-pwd"}}
-		svc := New(st.DB, ft, newFakeCerts(), sudoSrc, 8080)
-		ft.resultFor = func(cmd []string) *target.ExecResult {
-			joined := strings.Join(cmd, " ")
-			switch {
-			case joined == "id -u":
-				return &target.ExecResult{ExitCode: 0, Stdout: "1000"}
-			case joined == "sudo -n true":
-				return &target.ExecResult{ExitCode: 1, Stderr: "sudo: a password is required"}
-			case joined == "sudo -S -p  true":
-				return &target.ExecResult{ExitCode: 1, Stderr: "sudo: 1 incorrect password attempt"}
-			}
-			return nil
-		}
-		d, err := svc.Detect(context.Background(), "srv-1")
-		if err != nil {
-			t.Fatalf("探测:%v", err)
-		}
-		if !d.SudoPwdConfigured || d.SudoPwdOk {
-			t.Fatalf("错密码应 SudoPwdConfigured=true / SudoPwdOk=false:%+v", d)
+		if !hasCmd(fh, "sudo", "-n", "nginx", "-T") {
+			t.Fatalf("nginx -T 应带 sudo -n 前缀:%v", fh.calls)
 		}
 	})
 }

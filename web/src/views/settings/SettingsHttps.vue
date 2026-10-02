@@ -2,13 +2,12 @@
 /**
  * SettingsHttps — 平台 HTTPS 访问(宿主 nginx 自动配置)。
  *
- * 当 nginx 所在机器(通常即平台自身所在主机,登记为目标服务器)装有宿主 nginx 时,
- * 把平台 Web 页面发布为 HTTPS:
- *   - 选服务器(可探测:nginx 版本 / root·免密 sudo / conf.d 加载情况)
+ * 当平台自身所在主机装有宿主 nginx 时,把平台 Web 页面发布为 HTTPS(全部在本机执行):
+ *   - 一键探测本机环境(nginx 版本 / root·免密 sudo / conf.d 加载情况)
  *   - 选访问域名 + 复用「证书管理」的已签发证书(SAN 须覆盖域名)
  *   - 可选 80→443 跳转(默认开)、高级项自定义反代上游(默认 127.0.0.1:平台端口)
  *   - 保存并应用 = 下发证书 + 写 /etc/nginx/conf.d vhost + nginx -t(失败回滚)+ reload
- *   - 证书续期后由平台自动重新下发;可禁用并清理远端配置
+ *   - 证书续期后由平台自动重新下发;可禁用并清理本机配置
  *
  * Reuses: AppButton / AppSelect tokens + settings 页模式。No new UI libraries.
  */
@@ -19,7 +18,6 @@ import AppSelect from '../../components/ui/AppSelect.vue'
 import { useToast } from '../../composables/useToast'
 import { useConfirm } from '../../composables/useConfirm'
 import { HttpError } from '../../api/http'
-import { listServers, type Server } from '../../api/servers'
 import { listCerts, type Cert } from '../../api/certMgmt'
 import { getSystemConfig, saveSystemConfig } from '../../api/systemConfig'
 import {
@@ -43,7 +41,6 @@ const confirm = useConfirm()
 
 const loadState = ref<LoadState>('loading')
 const loadError = ref('')
-const servers = ref<Server[]>([])
 const certs = ref<Cert[]>([])
 const saved = ref<PlatformHttpsSettings | null>(null)
 const detect = ref<PlatformHttpsDetect | null>(null)
@@ -55,7 +52,6 @@ const disabling = ref(false)
 
 const form = reactive({
   enabled: false,
-  serverId: '',
   domain: '',
   certId: '',
   upstreamHost: '127.0.0.1',
@@ -72,18 +68,15 @@ const publicUrlSaving = ref(false)
 async function load(): Promise<void> {
   loadState.value = 'loading'
   try {
-    const [st, sv, cs, sys] = await Promise.all([
+    const [st, cs, sys] = await Promise.all([
       getPlatformHttpsSettings(),
-      listServers(),
       listCerts(),
       getSystemConfig(),
     ])
     saved.value = st
-    servers.value = sv
     certs.value = cs.items
     publicUrl.value = sys.publicUrl
     form.enabled = st.enabled
-    form.serverId = st.serverId
     form.domain = st.domain
     form.certId = st.certId
     form.upstreamHost = st.upstreamHost || '127.0.0.1'
@@ -107,10 +100,6 @@ onMounted(load)
 
 // ─── selectors / detect ───────────────────────────────────────────────────────
 
-const serverOptions = computed(() =>
-  servers.value.map((s) => ({ value: s.id, label: `${s.name}(${s.host})` })),
-)
-
 /** 覆盖当前域名的已签发证书(下拉过滤;规则与服务端一致)。 */
 const eligibleCerts = computed(() =>
   certs.value.filter((c) => c.status === 'issued' && certCoversDomain(c, form.domain)),
@@ -128,11 +117,11 @@ function certOf(id: string): Cert | undefined {
 }
 
 async function runDetect(): Promise<void> {
-  if (!form.serverId || detecting.value) return
+  if (detecting.value) return
   detecting.value = true
   detect.value = null
   try {
-    detect.value = await detectPlatformHttps(form.serverId)
+    detect.value = await detectPlatformHttps()
   } catch (err) {
     toast.error(t('platformHttps.detectFailed'), { detail: httpMessage(err, t('platformHttps.errLoad')) })
   } finally {
@@ -140,16 +129,11 @@ async function runDetect(): Promise<void> {
   }
 }
 
-function onServerChange(): void {
-  detect.value = null // 换机后旧探测失效
-}
-
 // ─── actions ──────────────────────────────────────────────────────────────────
 
 function buildPayload(apply: boolean): Record<string, unknown> {
   return {
     enabled: form.enabled,
-    serverId: form.serverId,
     domain: form.domain,
     certId: form.certId,
     upstreamHost: showAdvanced.value ? form.upstreamHost : '',
@@ -354,23 +338,15 @@ const managedFilesHint = computed(() => t('platformHttps.managedFiles'))
     </section>
 
     <form v-else class="panel config-panel" novalidate @submit.prevent="handleSave(true)">
-      <!-- 服务器 + 探测 -->
+      <!-- 本机环境探测 -->
       <div class="field">
-        <label class="field-label" for="https-server">{{ t('platformHttps.serverLabel') }}</label>
+        <span class="field-label">{{ t('platformHttps.hostLabel') }}</span>
         <div class="server-row">
-          <AppSelect
-            input-id="https-server"
-            v-model="form.serverId"
-            :options="serverOptions"
-            :placeholder="t('platformHttps.serverPlaceholder')"
-            min-width="260px"
-            @update:model-value="onServerChange"
-          />
-          <AppButton variant="default" :disabled="!form.serverId" :loading="detecting" @click="runDetect">
+          <AppButton variant="default" :loading="detecting" @click="runDetect">
             {{ detecting ? t('platformHttps.detecting') : t('platformHttps.detectBtn') }}
           </AppButton>
         </div>
-        <span class="field-hint">{{ t('platformHttps.serverHint') }}</span>
+        <span class="field-hint">{{ t('platformHttps.hostHint') }}</span>
 
         <div v-if="detect" class="detect-badges">
           <span class="badge" :class="detect.installed ? 'badge--ok' : 'badge--bad'">
@@ -378,19 +354,12 @@ const managedFilesHint = computed(() => t('platformHttps.managedFiles'))
               ? t('platformHttps.detectInstalled', { version: detect.version || '?' })
               : t('platformHttps.detectNotInstalled') }}
           </span>
-          <span
-            class="badge"
-            :class="detect.isRoot || detect.sudoOk || detect.sudoPwdOk ? 'badge--ok' : 'badge--bad'"
-          >
+          <span class="badge" :class="detect.isRoot || detect.sudoOk ? 'badge--ok' : 'badge--bad'">
             {{ detect.isRoot
               ? t('platformHttps.detectRoot')
               : detect.sudoOk
                 ? t('platformHttps.detectSudo')
-                : detect.sudoPwdOk
-                  ? t('platformHttps.detectSudoPwd')
-                  : detect.sudoPwdConfigured
-                    ? t('platformHttps.detectSudoPwdFailed')
-                    : t('platformHttps.detectNoPriv') }}
+                : t('platformHttps.detectNoPriv') }}
           </span>
           <span class="badge" :class="detect.confDIncluded ? 'badge--ok' : 'badge--warn'">
             {{ detect.confDIncluded ? t('platformHttps.detectConfD') : t('platformHttps.detectConfDMissing') }}

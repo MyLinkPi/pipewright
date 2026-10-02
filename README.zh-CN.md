@@ -63,7 +63,7 @@
 - **🏗 隔离构建与产物** —— 版本钉死的容器内隔离构建(docker/nerdctl/podman)· 代码管理区:本地 bare 镜像 + 增量 fetch,秒级出工作区 · 构建依赖缓存(按分支 + lockfile hash 寻址)· 内容寻址制品库,jar/dist 存**真字节**供部署(而非占位 reference)· 镜像构建 + 推送私有仓库 + 镜像 GC · 多节点构建机池:给服务器打标签即成构建机,项目/阶段用标签选择器调度(优先级 → 流水线亲和 → 负载,全忙自动排队,每机默认并发 1;构建经 SSH 下沉到远程,token 只留控制机;控制机自身无容器 CLI 也可纯靠远程机池构建)· JUnit + Cobertura 测试报告喂质量门禁,不过则阶段失败、阻断下游部署 · 实时终端日志(SSE)+ 历史回放 · 只读代码浏览(Monaco)。
 - **🚀 多服务器部署** —— 经 SSH 免 Agent 部署 · 健康门控 · 零停机切换 + 失败回滚 · 多机并行扇出 + 部分失败可见 · 命令型部署(无产物,直接重启服务)· **环境一等公民**:逐环境部署时间线、当前活跃版本、一键回滚到上一次全成功部署 · 环境晋级流(dev→staging→prod)+ 逐环境变量/密钥 + 审批门。
 - **🌐 自动 HTTPS + 域名反向代理** —— 每台目标主机一个托管 Caddy 容器,复用与容器运维同一套 SSH + docker 手法编排(渲染 Caddyfile → `docker cp` → 优雅 reload)。证书经 Let's Encrypt 自动签发/续期:HTTP-01,或**经 Cloudflare / DNSPod / 阿里云 DNS 走 DNS-01**(通配符必需)。另有:多域名别名、路径路由(`/api`→A、`/`→B)、重定向、访问控制(basic auth、IP 允许/拒绝 CIDR)、HSTS / 安全头 / 压缩、多上游负载均衡 + 主动健康检查故障转移、WebSocket / gRPC(h2c) / TCP 透传(caddy-l4)、按真实 443 握手探测的证书大盘、一键子域名。
-- **🔒 平台 HTTPS(宿主 nginx)** —— 当运行 Pipewright 的机器(或任一已登记服务器)装有 nginx 时,平台可把自己的 Web 页面发布为 **HTTPS**:选访问域名 + 复用「证书管理」的证书,经 SSH 自动下发证书并写入 `/etc/nginx/conf.d` vhost(443 ssl 反代平台端口 + 80→443 跳转),`nginx -t` 校验(失败自动回滚)、`nginx -T` 验证 include 生效后热加载;支持 root / 免密 sudo / sudo 密码凭据(非 root 且无免密 sudo 时,在服务器上绑定「sudo 密码」类型凭据,密码经 stdin 喂给 `sudo -S`,不进命令行),与该机既有 nginx 配置共存。证书续期后自动重新下发;被平台 HTTPS 占用的证书禁止误删。
+- **🔒 平台 HTTPS(宿主 nginx)** —— 当运行 Pipewright 的主机装有 nginx 时,平台可把自己的 Web 页面发布为 **HTTPS**:选访问域名 + 复用「证书管理」的证书,平台在自身所在主机自动下发证书并写入 `/etc/nginx/conf.d` vhost(443 ssl 反代平台端口 + 80→443 跳转),`nginx -t` 校验(失败自动回滚)、`nginx -T` 验证 include 生效后热加载;需要 root 或免密 sudo,与本机既有 nginx 配置共存。证书续期后自动重新下发;被平台 HTTPS 占用的证书禁止误删。
 - **🔎 Per-PR 预览环境** —— 某 PR 的运行成功部署后,自动分配一次性域名 `pr-<n>-<proj>.<base>`(带自己的证书与路由),评审者点开链接就能看到这条 PR 真实跑起来的样子。同一 PR 幂等复用;自动回收,但**仅在**确证 PR 已关闭/合并时才回收。
 - **📣 通知** —— 企业微信 / 钉钉 / 飞书 / Slack / 邮件 / 自定义 webhook · 事件→渠道细粒度路由 · 模板 + 变量自定义 · 飞书富卡片(审批/详情行动按钮 + 发版汇总)· 流水线内通知节点。
 - **🖥 服务器与容器运维** —— 多机状态总览(CPU/内存/磁盘)+ 指标时序趋势图 · 容器/镜像/Stacks/卷/网络管理 · 容器创建/inspect/prune · 实时 + 历史服务日志 · 实时 stats · 容器交互终端 · Web 运维终端(主机 shell,完整复制粘贴/信号支持)· 可配置异常检测:定时自动跑、冷却去重、命中走通知渠道。
@@ -144,6 +144,9 @@ sh install.sh       # 亦可把构建产物装到 /usr/local/bin(见「本地编
 
 - **二进制部署**:点「立即更新」即自动下载新版 + 校验和核验 + 替换 + 重启(需对二进制文件有写权限;装在 `$HOME/.local/bin` 免 sudo,或用 `SETUP_SERVICE=1` 装的 root systemd 服务亦满足)。
 - **Docker 部署**:容器不替换自身镜像,按提示在宿主执行 `docker compose pull && docker compose up -d`(数据卷保留)。
+- **源码部署**(git clone → `make build` → `sh install.sh`):检查更新改为比对 git 上游(`git fetch` 后比 HEAD);点「立即更新」后台自动执行 `git pull --ff-only` → `make build` → `install.sh`,页面实时展示步骤与日志,装完自动重启服务(裸跑则自重启)。仓库根由 install.sh 自动记录(env `PIPEWRIGHT_SOURCE_DIR` / 安装目录 `.pipewright-source` 标记),也可手动指定。
+
+升级源不强制依赖 GitHub:内网或 GitHub 不可达的环境,可在 **设置 → 系统 → 升级源** 里把检查与下载指向自建镜像(须提供 GitHub 兼容路径,如 nginx 反代 `api.github.com` 与 `github.com`),修改即时生效;也可用环境变量 `PIPEWRIGHT_RELEASE_MIRROR` 兜底。
 
 ### 配置(环境变量)
 
@@ -159,8 +162,10 @@ sh install.sh       # 亦可把构建产物装到 /usr/local/bin(见「本地编
 | `PIPEWRIGHT_ADDR` | HTTP 监听地址 | `:8080` |
 | `PIPEWRIGHT_ADMIN_USERNAME` | 首次启动管理员用户名 | `admin` |
 | `PIPEWRIGHT_TRUST_PROXY` | 采信 `X-Forwarded-For` 首段作为审计来源 IP(`1`/`true`/`yes`/`on`)。除非前面确有可信反代,否则别开 —— 否则任意客户端都能伪造审计来源 IP | 关 |
-| `PIPEWRIGHT_RELEASE_REPO` | 检查更新所查的 GitHub 仓库(fork 可改) | `huangchengsir/pipewright` |
-| `PIPEWRIGHT_RUNTIME` | 设 `docker` 显式声明容器部署形态(影响自更新方式);否则经 `/.dockerenv` 自动探测 | 自动探测 |
+| `PIPEWRIGHT_RELEASE_REPO` | 检查更新所查的仓库(fork 可改) | `huangchengsir/pipewright` |
+| `PIPEWRIGHT_RELEASE_MIRROR` | 自升级镜像源 base URL(部署级兜底;运行时改用 **设置 → 系统 → 升级源**,库内配置优先) | 空(GitHub 官方源) |
+| `PIPEWRIGHT_RUNTIME` | 设 `docker`/`source` 显式声明部署形态(影响自更新方式);否则自动探测(`/.dockerenv` / 源码仓库标记) | 自动探测 |
+| `PIPEWRIGHT_SOURCE_DIR` | 源码部署的仓库根目录(install.sh 装服务时自动写入;手动源码部署可自设) | 自动探测 |
 | `PIPEWRIGHT_AUDIT_SINK` | 远端审计 sink:`http(s)://` 端点,或填其它值作为第二份本地 JSON Lines 文件路径。本地库被删后审计仍完整 | 无 |
 
 **数据库**
