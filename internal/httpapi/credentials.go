@@ -168,6 +168,21 @@ func makeUpdateCredentialHandler(v vault.Vault, aud audit.Recorder) http.Handler
 	}
 }
 
+// credentialName 尽力查询凭据名(供审计 detail 的人类可读展示;查不到留空,
+// 审计照记 UUID)。List 是既有接口,避免为取名为冻结的 Vault 契约加方法。
+func credentialName(v vault.Vault, id string) string {
+	creds, err := v.List()
+	if err != nil {
+		return ""
+	}
+	for _, c := range creds {
+		if c.ID == id {
+			return c.Name
+		}
+	}
+	return ""
+}
+
 // makeRevealCredentialHandler 返回 POST /api/credentials/{id}/reveal handler。
 // 解密并回传明文(仅此一处对外暴露明文);每次查看追加 credential_reveal 审计,
 // 谁在何时看过哪条凭据均留痕。POST + 登录态 + CSRF(写方法路由),不做成可预取的 GET。
@@ -188,6 +203,7 @@ func makeRevealCredentialHandler(v vault.Vault, aud audit.Recorder) http.Handler
 			Action:     audit.ActionCredentialReveal,
 			TargetType: audit.TargetCredential,
 			TargetID:   id,
+			Detail:     map[string]any{"name": credentialName(v, id)},
 			IP:         clientIP(r),
 		})
 		// 仅回传明文,绝不进日志/诊断;detail 不含 secret。
@@ -204,6 +220,7 @@ func makeDeleteCredentialHandler(v vault.Vault, aud audit.Recorder) http.Handler
 			return
 		}
 		id := chi.URLParam(r, "id")
+		name := credentialName(v, id) // 删除前取,删后查不到
 		if err := v.Delete(id); err != nil {
 			writeVaultError(w, err)
 			return
@@ -213,6 +230,7 @@ func makeDeleteCredentialHandler(v vault.Vault, aud audit.Recorder) http.Handler
 			Action:     audit.ActionCredentialDelete,
 			TargetType: audit.TargetCredential,
 			TargetID:   id,
+			Detail:     map[string]any{"name": name},
 			IP:         clientIP(r),
 		})
 		w.WriteHeader(http.StatusNoContent)

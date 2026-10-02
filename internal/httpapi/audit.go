@@ -19,26 +19,40 @@ const auditActor = "admin"
 // clientIP 从请求提取来源 IP,用于审计记录(非安全判定)。
 //
 // **默认只用 RemoteAddr**:Pipewright 常作单二进制直连暴露,无反代。若无条件采信
-// X-Forwarded-For,任意客户端可发 `X-Forwarded-For: 1.2.3.4` 把伪造来源写进 append-only
-// 的审计 ip 列,削弱 AC-SEC-03「不可篡改」的取证价值。仅当显式配置可信反代
-// (PIPEWRIGHT_TRUST_PROXY=1/true)时才采信 XFF 首段。
+// 转发头,任意客户端可发 `X-Forwarded-For: 1.2.3.4` 把伪造来源写进 append-only
+// 的审计 ip 列,削弱 AC-SEC-03「不可篡改」的取证价值。两种情形才采信转发头:
+//  1. 直连对端是回环地址 —— 平台 HTTPS 的本机 nginx 反代即此形态(nginx 用
+//     $remote_addr 覆写 X-Real-IP,客户端伪造不进来);
+//  2. 显式配置可信反代(PIPEWRIGHT_TRUST_PROXY=1/true)。
+//
+// 优先 X-Real-IP(反代覆写值,不可被客户端预置污染),其次 XFF 首段,兜底 RemoteAddr。
 func clientIP(r *http.Request) string {
-	if trustForwardedHeader() {
-		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-			if i := strings.IndexByte(xff, ','); i >= 0 {
-				return strings.TrimSpace(xff[:i])
-			}
-			return strings.TrimSpace(xff)
-		}
-	}
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
-		return strings.TrimSpace(r.RemoteAddr)
+		host = strings.TrimSpace(r.RemoteAddr)
+	}
+	if !trustForwardedHeader() && !isLoopbackHost(host) {
+		return host
+	}
+	if xrip := strings.TrimSpace(r.Header.Get("X-Real-IP")); xrip != "" {
+		return xrip
+	}
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		if i := strings.IndexByte(xff, ','); i >= 0 {
+			return strings.TrimSpace(xff[:i])
+		}
+		return strings.TrimSpace(xff)
 	}
 	return host
 }
 
-// trustForwardedHeader 报告是否采信 X-Forwarded-For(仅在显式配置可信反代时)。
+// isLoopbackHost 报告 host 是否回环地址(IPv4 127.0.0.0/8、IPv6 ::1,含 IPv4-mapped 形式)。
+func isLoopbackHost(host string) bool {
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+// trustForwardedHeader 报告是否显式配置了可信反代。
 func trustForwardedHeader() bool {
 	switch strings.ToLower(strings.TrimSpace(os.Getenv("PIPEWRIGHT_TRUST_PROXY"))) {
 	case "1", "true", "yes", "on":

@@ -273,13 +273,18 @@ func makeDeleteCertHandler(svc certmgmt.Service, aud audit.Recorder) http.Handle
 			return
 		}
 		id := chi.URLParam(r, "id")
+		// 删除前取域名,供审计 detail 的人类可读展示(查不到留空,审计照记)。
+		domain := ""
+		if c, err := svc.Get(r.Context(), id); err == nil && c != nil {
+			domain = c.PrimaryDomain
+		}
 		if err := svc.Delete(r.Context(), id); err != nil {
 			writeCertMgmtError(w, err)
 			return
 		}
 		recordAudit(r.Context(), aud, audit.Entry{
 			Actor: auditActor, Action: auditActionCertDelete, TargetType: auditTargetCertMgmt,
-			TargetID: id, Detail: map[string]any{"ok": true}, IP: clientIP(r),
+			TargetID: id, Detail: map[string]any{"ok": true, "primaryDomain": domain}, IP: clientIP(r),
 		})
 		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 	}
@@ -309,7 +314,7 @@ func makeSetCertAutoRenewHandler(svc certmgmt.Service, aud audit.Recorder) http.
 		}
 		recordAudit(r.Context(), aud, audit.Entry{
 			Actor: auditActor, Action: auditActionCertAutoRenew, TargetType: auditTargetCertMgmt,
-			TargetID: id, Detail: map[string]any{"enabled": req.Enabled}, IP: clientIP(r),
+			TargetID: id, Detail: map[string]any{"enabled": req.Enabled, "primaryDomain": c.PrimaryDomain}, IP: clientIP(r),
 		})
 		writeJSON(w, http.StatusOK, toCertDTO(*c))
 	}

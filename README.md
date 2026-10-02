@@ -160,7 +160,7 @@ A normal install only needs the first two; everything else has a sane default. T
 | `PIPEWRIGHT_MASTER_KEY` | Credential vault master key (base64-encoded 32 bytes); or use `PIPEWRIGHT_MASTER_KEY_FILE` to point to a file | vault disabled if unset |
 | `PIPEWRIGHT_ADDR` | HTTP listen address | `:8080` |
 | `PIPEWRIGHT_ADMIN_USERNAME` | Admin username on first launch | `admin` |
-| `PIPEWRIGHT_TRUST_PROXY` | Trust the first `X-Forwarded-For` hop as the audit client IP (`1`/`true`/`yes`/`on`). Leave off unless a trusted reverse proxy sits in front — otherwise anyone can forge audit source IPs | off |
+| `PIPEWRIGHT_TRUST_PROXY` | Trust forwarded headers (`X-Real-IP` first, then the first `X-Forwarded-For` hop) as the audit client IP (`1`/`true`/`yes`/`on`). Local proxies (loopback peer `127.0.0.1`/`::1`, e.g. the built-in platform-HTTPS nginx) are trusted without this flag; it only applies to **non-loopback** external proxies — leave off unless a trusted reverse proxy sits in front, otherwise anyone can forge audit source IPs | off |
 | `PIPEWRIGHT_RELEASE_REPO` | Repo queried for update checks (change it for a fork) | `huangchengsir/pipewright` |
 | `PIPEWRIGHT_RELEASE_MIRROR` | Mirror base URL for self-upgrades (deployment-level fallback; configure at runtime under **Settings → System → Upgrade Source**, DB config wins) | empty (official GitHub) |
 | `PIPEWRIGHT_RUNTIME` | Set `docker`/`source` to declare the deployment form (affects self-update mode); otherwise auto-detected (`/.dockerenv` / source-repo marker) | auto-detect |
