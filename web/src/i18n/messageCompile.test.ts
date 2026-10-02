@@ -14,7 +14,7 @@
 import { describe, it, expect } from 'vitest'
 import { compile, createMessageContext } from '@intlify/core-base'
 import zhCN from './locales/zh-CN'
-import zhTW from './locales/zh-TW'
+import zhHK from './locales/zh-HK'
 import en from './locales/en'
 import ja from './locales/ja'
 import ko from './locales/ko'
@@ -22,7 +22,7 @@ import es from './locales/es'
 import fr from './locales/fr'
 import de from './locales/de'
 
-const LOCALES: Record<string, unknown> = { 'zh-CN': zhCN, 'zh-TW': zhTW, en, ja, ko, es, fr, de }
+const LOCALES: Record<string, unknown> = { 'zh-CN': zhCN, 'zh-HK': zhHK, en, ja, ko, es, fr, de }
 
 /** 递归收集所有 string 叶子的点路径。 */
 function collectKeys(obj: unknown, prefix = ''): [string, string][] {

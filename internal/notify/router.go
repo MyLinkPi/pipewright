@@ -450,19 +450,19 @@ func EventPayload(lang, event, projectName, branch, commit, status string, durat
 
 // 正文标点随语言:中文/日文用全角,其余用半角。
 func bodySeparator(lang string) string {
-	if lang == "zh-CN" || lang == "zh-TW" || lang == "ja" {
+	if lang == "zh-CN" || lang == "zh-HK" || lang == "ja" {
 		return ":"
 	}
 	return ": "
 }
 func bodyComma(lang string) string {
-	if lang == "zh-CN" || lang == "zh-TW" || lang == "ja" {
+	if lang == "zh-CN" || lang == "zh-HK" || lang == "ja" {
 		return ","
 	}
 	return ", "
 }
 func bodyPeriod(lang string) string {
-	if lang == "zh-CN" || lang == "zh-TW" || lang == "ja" {
+	if lang == "zh-CN" || lang == "zh-HK" || lang == "ja" {
 		return "。"
 	}
 	return "."

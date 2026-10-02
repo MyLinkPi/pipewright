@@ -8,7 +8,7 @@
  */
 import { createI18n } from 'vue-i18n'
 import zhCN from './locales/zh-CN'
-import zhTW from './locales/zh-TW'
+import zhHK from './locales/zh-HK'
 import en from './locales/en'
 import ja from './locales/ja'
 import ko from './locales/ko'
@@ -16,12 +16,12 @@ import es from './locales/es'
 import fr from './locales/fr'
 import de from './locales/de'
 
-export type LocaleCode = 'zh-CN' | 'zh-TW' | 'en' | 'ja' | 'ko' | 'es' | 'fr' | 'de'
+export type LocaleCode = 'zh-CN' | 'zh-HK' | 'en' | 'ja' | 'ko' | 'es' | 'fr' | 'de'
 
 /** 选择器里展示的语言列表(label 用各语言的母语名)。 */
 export const SUPPORTED_LOCALES: ReadonlyArray<{ code: LocaleCode; label: string }> = [
   { code: 'zh-CN', label: '简体中文' },
-  { code: 'zh-TW', label: '繁體中文' },
+  { code: 'zh-HK', label: '繁體中文' },
   { code: 'en', label: 'English' },
   { code: 'ja', label: '日本語' },
   { code: 'ko', label: '한국어' },
@@ -41,8 +41,8 @@ function isSupported(code: string): code is LocaleCode {
 function matchLocale(tag: string): LocaleCode | null {
   const lower = tag.toLowerCase()
   if (lower.startsWith('zh')) {
-    // 繁体:zh-Hant / zh-TW / zh-HK / zh-MO;其余 zh* 视作简体。
-    if (/hant|tw|hk|mo/.test(lower)) return 'zh-TW'
+    // 繁体:zh-Hant / zh-TW / zh-HK / zh-MO 一律归到 zh-HK;其余 zh* 视作简体。
+    if (/hant|tw|hk|mo/.test(lower)) return 'zh-HK'
     return 'zh-CN'
   }
   if (lower.startsWith('en')) return 'en'
@@ -61,7 +61,9 @@ function matchLocale(tag: string): LocaleCode | null {
 export function detectLocale(): LocaleCode {
   try {
     const stored = localStorage.getItem(STORAGE_KEY)
-    if (stored && isSupported(stored)) return stored
+    // 旧版存过 'zh-TW',迁移到新代码,避免老用户语言悄悄回退。
+    const normalized = stored === 'zh-TW' ? 'zh-HK' : stored
+    if (normalized && isSupported(normalized)) return normalized
   } catch {
     // ignore — private mode / SecurityError
   }
@@ -74,7 +76,7 @@ export function detectLocale(): LocaleCode {
 }
 
 // 基础词条(阶段一:外壳/登录/概览/公共)。每种语言一个文件;具体类型由此推断。
-const messages = { 'zh-CN': zhCN, 'zh-TW': zhTW, en, ja, ko, es, fr, de }
+const messages = { 'zh-CN': zhCN, 'zh-HK': zhHK, en, ja, ko, es, fr, de }
 
 // 按页面拆分的命名空间:`locales/<lang>/<page>.ts` 自动并入,文件名即顶层命名空间。
 // 阶段二起每个页面在此各放 8 个语言文件,互不触碰基础文件 → 可并行扩展、零冲突。

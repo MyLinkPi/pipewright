@@ -6,7 +6,7 @@ func TestNormalize(t *testing.T) {
 	cases := map[string]string{
 		"en": "en", "en-US": "en", "EN-us": "en",
 		"zh-CN": "zh-CN", "zh": "zh-CN", "zh-Hans": "zh-CN",
-		"zh-TW": "zh-TW", "zh-Hant": "zh-TW", "zh-HK": "zh-TW",
+		"zh-HK": "zh-HK", "zh-Hant": "zh-HK", "zh-TW": "zh-HK", "zh-MO": "zh-HK",
 		"ja": "ja", "ja-JP": "ja", "ko-KR": "ko",
 		"es-ES": "es", "fr": "fr", "de-DE": "de",
 		"ru": "", "": "", "xx": "",

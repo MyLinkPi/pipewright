@@ -18,7 +18,8 @@ import type { LocaleCode } from '../i18n'
 
 const LOCALE_MAP = {
   'zh-CN': { locale: zhCN, date: dateZhCN },
-  'zh-TW': { locale: zhTW, date: dateZhTW },
+  // naive-ui 没有 zh-HK locale,繁体组件文案沿用其 zh-TW 对象。
+  'zh-HK': { locale: zhTW, date: dateZhTW },
   en: { locale: enUS, date: dateEnUS },
   ja: { locale: jaJP, date: dateJaJP },
   ko: { locale: koKR, date: dateKoKR },
