@@ -24,6 +24,37 @@ const (
 	cacheCont     = "pipewright-registry-cache"
 )
 
+// defaultArtifactDataDir / defaultCacheDataDir 返回存储目录默认值;baseDir 未知(空)时
+// 返回空串,调用方须自行兜底。
+func defaultArtifactDataDir(baseDir string) string {
+	if baseDir == "" {
+		return ""
+	}
+	return filepath.Join(baseDir, "data")
+}
+
+func defaultCacheDataDir(baseDir string) string {
+	if baseDir == "" {
+		return ""
+	}
+	return filepath.Join(baseDir, "cache")
+}
+
+// resolveArtifactDir / resolveCacheDir 返回实际生效的存储目录(配置优先,空回退默认)。
+func (h *Hub) resolveArtifactDir(cfg *Config) string {
+	if cfg.ArtifactDataDir != "" {
+		return cfg.ArtifactDataDir
+	}
+	return defaultArtifactDataDir(h.opts.BaseDir)
+}
+
+func (h *Hub) resolveCacheDir(cfg *Config) string {
+	if cfg.CacheDataDir != "" {
+		return cfg.CacheDataDir
+	}
+	return defaultCacheDataDir(h.opts.BaseDir)
+}
+
 // DeployResult 是 DeployStack 的结果(ok=false 时 error 人读)。
 type DeployResult struct {
 	OK     bool   `json:"ok"`
@@ -83,9 +114,10 @@ func (h *Hub) composeBin(ctx context.Context) ([]string, error) {
 // renderCompose 生成栈 compose 文件内容(端口/上游/存储路径全部具值渲染,不依赖 env 替换)。
 //   - 制品服务:开 REGISTRY_STORAGE_DELETE_ENABLED(保留策略 DELETE manifest 需要)
 //   - 缓存服务:REGISTRY_PROXY_REMOTEURL=上游(pull-through 只读代理;切上游改此值重建即可)
+//   - 卷源整行加引号:路径可含空格;解析方(parseComposeDataDirs)按此格式还原
 func (h *Hub) renderCompose(cfg *Config) string {
-	dataDir := filepath.Join(h.opts.BaseDir, "data")
-	cacheDir := filepath.Join(h.opts.BaseDir, "cache")
+	dataDir := h.resolveArtifactDir(cfg)
+	cacheDir := h.resolveCacheDir(cfg)
 	return fmt.Sprintf(`# 由 pipewright 自动生成,手动修改会在下次部署时被覆盖。
 services:
   registry:
@@ -97,7 +129,7 @@ services:
     environment:
       REGISTRY_STORAGE_DELETE_ENABLED: "true"
     volumes:
-      - %s:/var/lib/registry
+      - "%s:/var/lib/registry"
   registry-cache:
     image: %s
     container_name: %s
@@ -107,7 +139,7 @@ services:
     environment:
       REGISTRY_PROXY_REMOTEURL: %q
     volumes:
-      - %s:/var/lib/registry
+      - "%s:/var/lib/registry"
 `,
 		registryImage, artifactCont, cfg.ArtifactPort, dataDir,
 		registryImage, cacheCont, cfg.CachePort, cfg.UpstreamURL, cacheDir)
@@ -115,6 +147,8 @@ services:
 
 // DeployStack 在控制机本机部署/更新 registry 栈:渲染 compose → 落盘 → compose up -d
 // (声明式:端口/上游变更后重跑即收敛,compose 只重建配置变化的服务)。
+// 存储目录变更在此收敛(以已落盘 compose 记录的上一部署为准):制品目录变更 → 停制品容器
+// 后整体迁移旧数据(不可再生);缓存目录变更 → 停缓存容器后清除旧目录(可再生)。
 // 未 enabled → ErrDisabled;本机无 docker/compose → ErrNoLocalDocker(不假装成功)。
 func (h *Hub) DeployStack(ctx context.Context) (*DeployResult, error) {
 	cfg, err := h.Get(ctx)
@@ -128,16 +162,16 @@ func (h *Hub) DeployStack(ctx context.Context) (*DeployResult, error) {
 	if err != nil {
 		return nil, err
 	}
-	for _, sub := range []string{"", "data", "cache"} {
-		dir := h.opts.BaseDir
-		if sub != "" {
-			dir = filepath.Join(h.opts.BaseDir, sub)
-		}
+	composePath := filepath.Join(h.opts.BaseDir, composeFile)
+	notes, err := h.convergeDataDirs(ctx, cfg, composePath)
+	if err != nil {
+		return &DeployResult{OK: false, Output: tail(strings.Join(notes, "\n"), 4096), Error: err.Error()}, nil
+	}
+	for _, dir := range []string{h.opts.BaseDir, h.resolveArtifactDir(cfg), h.resolveCacheDir(cfg)} {
 		if mkErr := os.MkdirAll(dir, 0o755); mkErr != nil {
 			return nil, fmt.Errorf("registryhub: mkdir %s: %w", dir, mkErr)
 		}
 	}
-	composePath := filepath.Join(h.opts.BaseDir, composeFile)
 	if wErr := os.WriteFile(composePath, []byte(h.renderCompose(cfg)), 0o644); wErr != nil {
 		return nil, fmt.Errorf("registryhub: write compose: %w", wErr)
 	}
@@ -158,7 +192,74 @@ func (h *Hub) DeployStack(ctx context.Context) (*DeployResult, error) {
 		}
 		return res, nil
 	}
-	return &DeployResult{OK: true, Output: tail(strings.TrimSpace(stdout), 4096)}, nil
+	out := strings.TrimSpace(stdout)
+	if len(notes) > 0 {
+		out = strings.Join(notes, "\n") + "\n" + out
+	}
+	return &DeployResult{OK: true, Output: tail(out, 4096)}, nil
+}
+
+// convergeDataDirs 在写新 compose 前处理存储目录变更:从已落盘 compose 读出上一部署的
+// data/cache 卷源,与本轮生效目录比较——制品目录变更则迁移旧数据,缓存目录变更则清除旧目录。
+// 无 compose 文件(首次部署)或解析不出 → 无上一部署可依据,直接跳过(诚实不假装迁移)。
+func (h *Hub) convergeDataDirs(ctx context.Context, cfg *Config, composePath string) ([]string, error) {
+	raw, rerr := os.ReadFile(composePath)
+	if rerr != nil {
+		return nil, nil
+	}
+	oldArtifact, oldCache := parseComposeDataDirs(string(raw))
+	newArtifact, newCache := h.resolveArtifactDir(cfg), h.resolveCacheDir(cfg)
+	var notes []string
+	if oldArtifact != "" && oldArtifact != newArtifact {
+		n, err := h.migrateArtifactData(ctx, oldArtifact, newArtifact)
+		notes = append(notes, n...)
+		if err != nil {
+			return notes, err
+		}
+	}
+	if oldCache != "" && oldCache != newCache {
+		n, err := h.resetCacheData(ctx, oldCache, newArtifact)
+		notes = append(notes, n...)
+		if err != nil {
+			return notes, err
+		}
+	}
+	return notes, nil
+}
+
+// migrateArtifactData 把制品旧数据整体搬到新目录(制品数据不可再生,必须迁移):
+// 1) rm -f 制品容器(停写;容器不存在则无操作);2) 新目录已存在且非空 → 拒绝(防覆盖事故);
+// 3) rename 优先,跨设备退化为 copy+delete。失败即中止部署(半迁移状态不假装成功)。
+func (h *Hub) migrateArtifactData(ctx context.Context, oldDir, newDir string) ([]string, error) {
+	if _, serr := os.Stat(oldDir); serr != nil {
+		return []string{"制品旧目录不存在,跳过迁移:" + oldDir}, nil
+	}
+	// 容器可能正往旧目录写数据,迁移前强制移除(compose up 随后按新卷重建);容器不存在
+	// 会以非零退出,忽略——迁移 FS 操作以真实目录状态为准。
+	_, _, _, _ = h.opts.Runner.Run(ctx, "docker", []string{"rm", "-f", artifactCont}, "")
+	if entries, derr := os.ReadDir(newDir); derr == nil && len(entries) > 0 {
+		return nil, fmt.Errorf("制品新目录已存在且非空,为防覆盖拒绝迁移,请先清空或改用其他目录:%s", newDir)
+	}
+	if err := moveDir(oldDir, newDir); err != nil {
+		return nil, fmt.Errorf("迁移制品数据 %s → %s 失败:%w", oldDir, newDir, err)
+	}
+	return []string{"已迁移制品数据:" + oldDir + " → " + newDir}, nil
+}
+
+// resetCacheData 清除缓存旧目录(缓存可再生,不迁移):1) rm -f 缓存容器;2) RemoveAll 旧目录。
+// oldCache 不得等于 newArtifact(历史目录恰好与新一轮制品目录重合时,清除会吞掉刚迁入的数据)。
+func (h *Hub) resetCacheData(ctx context.Context, oldDir, newArtifactDir string) ([]string, error) {
+	if oldDir == newArtifactDir {
+		return nil, fmt.Errorf("缓存旧目录 %s 与新制品目录重合,拒绝清除(会吞掉制品数据),请改用其他目录", oldDir)
+	}
+	if _, serr := os.Stat(oldDir); serr != nil {
+		return []string{"缓存旧目录不存在,跳过清除:" + oldDir}, nil
+	}
+	_, _, _, _ = h.opts.Runner.Run(ctx, "docker", []string{"rm", "-f", cacheCont}, "")
+	if err := os.RemoveAll(oldDir); err != nil {
+		return nil, fmt.Errorf("清除缓存旧目录 %s 失败:%w", oldDir, err)
+	}
+	return []string{"已清除缓存旧目录:" + oldDir + "(缓存将按需重新拉取)"}, nil
 }
 
 // Status 汇总栈当前状态(compose 文件存在性 + 容器 State + 本机 /v2/ 探活 + 存储占用)。
@@ -177,8 +278,8 @@ func (h *Hub) Status(ctx context.Context) (*Status, error) {
 	st.CacheRunning = h.containerRunning(ctx, cacheCont)
 	st.ArtifactReachable = pingV2(ctx, h.opts.HTTPClient, cfg.ArtifactPort)
 	st.CacheReachable = pingV2(ctx, h.opts.HTTPClient, cfg.CachePort)
-	st.DataDirBytes = dirSize(filepath.Join(h.opts.BaseDir, "data"))
-	st.CacheDirBytes = dirSize(filepath.Join(h.opts.BaseDir, "cache"))
+	st.DataDirBytes = dirSize(h.resolveArtifactDir(cfg))
+	st.CacheDirBytes = dirSize(h.resolveCacheDir(cfg))
 	return st, nil
 }
 
