@@ -8,6 +8,7 @@ import (
 
 	"github.com/huangchengsir/pipewright/internal/audit"
 	"github.com/huangchengsir/pipewright/internal/systemcfg"
+	"github.com/huangchengsir/pipewright/internal/version"
 )
 
 // 系统配置写操作审计 action / target。
@@ -18,9 +19,19 @@ const (
 
 // systemConfigDTO 是系统配置对外响应体。
 type systemConfigDTO struct {
-	PublicURL     string `json:"publicUrl"`
-	ReleaseMirror string `json:"releaseMirror"`
-	UpdatedAt     string `json:"updatedAt"`
+	PublicURL     string              `json:"publicUrl"`
+	ReleaseMirror string              `json:"releaseMirror"`
+	UpdatedAt     string              `json:"updatedAt"`
+	Effective     *effectiveSourceDTO `json:"effectiveSource"`
+}
+
+// effectiveSourceDTO 是实际生效的升级源(镜像解析结果),让默认值透明可见:
+// 未配置镜像时即 GitHub Releases 官方(检查 api.github.com / 下载 github.com);
+// 也兜住「库内留空但环境变量配了镜像」的情况 —— 界面如实显示生效值与来源。
+type effectiveSourceDTO struct {
+	Origin  string `json:"origin"` // config(库内配置) | env(环境变量) | default(GitHub 官方)
+	APIBase string `json:"apiBase"`
+	DLBase  string `json:"dlBase"`
 }
 
 func toSystemConfigDTO(c systemcfg.Config) systemConfigDTO {
@@ -28,7 +39,13 @@ func toSystemConfigDTO(c systemcfg.Config) systemConfigDTO {
 	if !c.UpdatedAt.IsZero() {
 		updated = c.UpdatedAt.UTC().Format(time.RFC3339)
 	}
-	return systemConfigDTO{PublicURL: c.PublicURL, ReleaseMirror: c.ReleaseMirror, UpdatedAt: updated}
+	src, origin := version.ResolveMirror(c.ReleaseMirror)
+	return systemConfigDTO{
+		PublicURL:     c.PublicURL,
+		ReleaseMirror: c.ReleaseMirror,
+		UpdatedAt:     updated,
+		Effective:     &effectiveSourceDTO{Origin: string(origin), APIBase: src.APIBase, DLBase: src.DLBase},
+	}
 }
 
 // makeGetSystemConfigHandler 返回 GET /api/system/config。

@@ -144,7 +144,7 @@ sh install.sh       # 亦可把构建产物装到 /usr/local/bin(见「本地编
 
 - **二进制部署**:点「立即更新」即自动下载新版 + 校验和核验 + 替换 + 重启(需对二进制文件有写权限;装在 `$HOME/.local/bin` 免 sudo,或用 `SETUP_SERVICE=1` 装的 root systemd 服务亦满足)。
 - **Docker 部署**:容器不替换自身镜像,按提示在宿主执行 `docker compose pull && docker compose up -d`(数据卷保留)。
-- **源码部署**(git clone → `make build` → `sh install.sh`):检查更新改为比对 git 上游(`git fetch` 后比 HEAD);点「立即更新」后台自动执行 `git pull --ff-only` → `make build` → `install.sh`,页面实时展示步骤与日志,装完自动重启服务(裸跑则自重启)。仓库根由 install.sh 自动记录(env `PIPEWRIGHT_SOURCE_DIR` / 安装目录 `.pipewright-source` 标记),也可手动指定。
+- **源码部署**(git clone → `make build` → `sh install.sh`):检查更新改为比对 git 上游(`git fetch` 后比 HEAD);点「立即更新」后台自动执行 `git pull --ff-only` → `make build` → `install.sh`,页面实时展示步骤与日志,装完自动重启服务(裸跑则自重启)。仓库根由 install.sh 自动记录(env `PIPEWRIGHT_SOURCE_DIR` / 安装目录 `.pipewright-source` 标记),也可手动指定。git 拉取自动以仓库属主身份执行(root 服务 + 普通用户克隆的场景会复用其 `~/.ssh` 密钥与主机指纹),失败时页面给出针对性修复指引。
 
 升级源不强制依赖 GitHub:内网或 GitHub 不可达的环境,可在 **设置 → 系统 → 升级源** 里把检查与下载指向自建镜像(须提供 GitHub 兼容路径,如 nginx 反代 `api.github.com` 与 `github.com`),修改即时生效;也可用环境变量 `PIPEWRIGHT_RELEASE_MIRROR` 兜底。
 

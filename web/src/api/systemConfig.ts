@@ -17,6 +17,13 @@ export interface SystemConfig {
   publicUrl: string
   releaseMirror: string
   updatedAt: string
+  /** 实际生效的升级源(库内配置 > 环境变量 > 默认 GitHub Releases),让默认值透明可见。 */
+  effectiveSource: {
+    /** config(库内配置) | env(环境变量 PIPEWRIGHT_RELEASE_MIRROR) | default(GitHub 官方) */
+    origin: 'config' | 'env' | 'default'
+    apiBase: string
+    dlBase: string
+  }
 }
 
 export const getSystemConfig = (): Promise<SystemConfig> =>

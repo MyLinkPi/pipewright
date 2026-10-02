@@ -5,6 +5,7 @@ import {
   createCredential,
   updateCredential,
   deleteCredential,
+  isSystemManagedType,
 } from '../../api/credentials'
 import type { Credential, CredentialType, CreateCredentialInput, UpdateCredentialInput } from '../../api/credentials'
 import { HttpError } from '../../api/http'
@@ -189,7 +190,8 @@ async function loadCredentials(): Promise<void> {
   loadState.value = 'loading'
   loadError.value = ''
   try {
-    credentials.value = await listCredentials()
+    // 系统托管类型(dns_token 等)由专属设置页管理,不在保险库露出。
+    credentials.value = (await listCredentials()).filter((c) => !isSystemManagedType(c.type))
     loadState.value = 'idle'
   } catch (err) {
     if (err instanceof HttpError) {

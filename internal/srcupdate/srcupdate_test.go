@@ -252,7 +252,8 @@ func TestUpdatePipeline_WithSystemdUnit(t *testing.T) {
 	}
 }
 
-// privEnv:safe.directory 经 GIT_CONFIG_COUNT 追加,且不吞掉既有的 git env 配置。
+// privEnv:safe.directory 经 GIT_CONFIG_COUNT 追加,且不吞掉既有的 git env 配置;
+// GIT_SSH_COMMAND 带非交互与主机指纹自动信任。
 func TestPrivEnv(t *testing.T) {
 	t.Setenv("GIT_CONFIG_COUNT", "2")
 	s := New(t.TempDir())
@@ -267,6 +268,46 @@ func TestPrivEnv(t *testing.T) {
 	}
 	if !strings.Contains(joined, "GIT_TERMINAL_PROMPT=0") {
 		t.Errorf("应禁用终端凭据提示,得:%s", joined)
+	}
+	if !strings.Contains(joined, "StrictHostKeyChecking=accept-new") || !strings.Contains(joined, "BatchMode=yes") {
+		t.Errorf("GIT_SSH_COMMAND 应带 accept-new 与 BatchMode,得:%s", joined)
+	}
+}
+
+// 用户自设 GIT_SSH_COMMAND 时优先,不覆盖。
+func TestSshCommand(t *testing.T) {
+	s := New(t.TempDir())
+	if got := s.sshCommand(); !strings.Contains(got, "accept-new") {
+		t.Errorf("默认应带 accept-new,得 %q", got)
+	}
+	t.Setenv("GIT_SSH_COMMAND", "ssh -oProxyCommand='nc x 22'")
+	if got := s.sshCommand(); got != "ssh -oProxyCommand='nc x 22'" {
+		t.Errorf("用户自设应原样生效,得 %q", got)
+	}
+}
+
+// fetchHint:按错误类型给修复指引;未命中不加戏。
+func TestFetchHint(t *testing.T) {
+	cases := []struct {
+		msg  string
+		want string
+	}{
+		{"git fetch: Host key verification failed.\r\nfatal: Could not read from remote repository.", "主机指纹"},
+		{"git fetch: git@github.com: Permission denied (publickey).", "SSH 凭据"},
+		{"git fetch: fatal: Could not resolve host: git.example.com", "域名"},
+		{"git fetch: fatal: 无法访问:连接超时", ""},
+	}
+	for _, c := range cases {
+		got := fetchHint(c.msg)
+		if c.want == "" {
+			if got != "" {
+				t.Errorf("未命中的错误不应给提示,得 %q", got)
+			}
+			continue
+		}
+		if !strings.Contains(got, c.want) {
+			t.Errorf("fetchHint(%q) 应含 %q,得 %q", c.msg, c.want, got)
+		}
 	}
 }
 

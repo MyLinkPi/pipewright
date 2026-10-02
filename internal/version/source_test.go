@@ -63,3 +63,28 @@ func TestMode_SourceExplicit(t *testing.T) {
 		t.Errorf("PIPEWRIGHT_RUNTIME=source → 期望 ModeSource")
 	}
 }
+
+// ResolveMirror:生效源与来源标签一致(config > env > default),默认即 GitHub Releases 官方。
+func TestResolveMirror(t *testing.T) {
+	t.Setenv("PIPEWRIGHT_RELEASE_MIRROR", "")
+	t.Setenv("PIPEWRIGHT_RELEASE_REPO", "")
+
+	src, origin := ResolveMirror("")
+	if origin != MirrorOriginDefault {
+		t.Errorf("未配置应 default,得 %q", origin)
+	}
+	if src.APIBase != "https://api.github.com" || src.DLBase != "https://github.com" {
+		t.Errorf("默认应为 GitHub Releases 官方地址,得 %+v", src)
+	}
+
+	t.Setenv("PIPEWRIGHT_RELEASE_MIRROR", "https://env.example.com")
+	src, origin = ResolveMirror("")
+	if origin != MirrorOriginEnv || src.APIBase != "https://env.example.com" {
+		t.Errorf("env 兜底应生效,得 %q %+v", origin, src)
+	}
+
+	src, origin = ResolveMirror("https://db.example.com")
+	if origin != MirrorOriginConfig || src.APIBase != "https://db.example.com" {
+		t.Errorf("库内配置应优先,得 %q %+v", origin, src)
+	}
+}

@@ -96,9 +96,9 @@ func (s *Service) Check(ctx context.Context) version.UpdateInfo {
 		return out
 	}
 
-	// fetch 拿上游最新(网络;无凭据/断网在此失败,信息里带 git 原因)。
+	// fetch 拿上游最新(网络;无凭据/断网在此失败,信息里带 git 原因 + 修复指引)。
 	if err := s.gitRun(ctx, gitFetchSubTO, "fetch", "--quiet"); err != nil {
-		out.CheckError = "拉取远端失败: " + err.Error()
+		out.CheckError = "拉取远端失败: " + err.Error() + fetchHint(err.Error())
 		return out
 	}
 
@@ -222,7 +222,12 @@ func (s *Service) run(j *jobT) {
 	}
 	steps := []stepT{
 		{"pull", "git pull --ff-only", func() error {
-			return s.stream(ctx, j, nil, []string{"git", "-C", s.dir, "pull", "--ff-only"})
+			err := s.stream(ctx, j, nil, []string{"git", "-C", s.dir, "pull", "--ff-only"})
+			if err != nil {
+				// 失败详情在任务日志里,拼进错误便于前端一眼看到原因与修复指引。
+				return errors.New(err.Error() + fetchHint(strings.Join(s.Status().Log, "\n")))
+			}
+			return nil
 		}},
 		{"build", "make build(含前端构建,可能需要数分钟)", func() error {
 			return s.stream(ctx, j, nil, s.buildCommand())
@@ -261,6 +266,21 @@ func (s *Service) restartFn() func() error {
 	return version.Reexec
 }
 
+// fetchHint 针对 git fetch/pull 的常见非交互失败,在原始错误后追加可操作的修复指引。
+// text 是完整错误(含 stderr);命不中返回空串,不画蛇添足。
+func fetchHint(text string) string {
+	switch {
+	case strings.Contains(text, "Host key verification failed"):
+		return "\n\n可能原因:执行 git 的用户尚未信任 git 服务端的主机指纹(服务无终端,无法确认)。修复:以服务运行用户(root)手动执行一次 `ssh -T git@<git主机>`(或 `ssh-keyscan -t ed25519 <主机> >> ~/.ssh/known_hosts`);若仓库由普通用户克隆,平台已自动以其身份拉取 —— 请用该用户确认 `git fetch` 可用。"
+	case strings.Contains(text, "Permission denied"):
+		return "\n\n可能原因:执行 git 的用户缺少该仓库的 SSH 凭据。修复:将部署密钥放入仓库属主(平台已自动以其身份拉取)或服务运行用户的 ~/.ssh,并在 git 服务端为其配置访问权限(deploy key / 协作者)。"
+	case strings.Contains(text, "Could not resolve host"):
+		return "\n\n可能原因:git 主机域名无法解析。检查 remote 地址(`git -C <仓库> remote -v`)与服务器 DNS。"
+	default:
+		return ""
+	}
+}
+
 // buildCommand / installCommand 返回构建与安装命令;测试可经 buildCmd/installCmd 字段
 // 覆盖为 stub 脚本,生产为固定值(不经 shell 拼接)。
 func (s *Service) buildCommand() []string {
@@ -278,11 +298,12 @@ func (s *Service) installCommand() []string {
 }
 
 // stream 在仓库目录执行一条命令(argv 完整数组,不经 shell),输出逐行进任务日志;
-// extraEnv 追加到进程环境。
+// extraEnv 追加到进程环境。git 类命令可能以仓库属主身份降权执行(见 applyOwnerCred)。
 func (s *Service) stream(ctx context.Context, j *jobT, extraEnv, argv []string) error {
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	cmd.Dir = s.dir
 	cmd.Env = append(append(os.Environ(), extraEnv...), s.privEnv()...)
+	s.applyOwnerCred(cmd)
 	lw := &lineWriter{fn: j.appendLine}
 	cmd.Stdout, cmd.Stderr = lw, lw
 	if err := cmd.Run(); err != nil {
@@ -329,6 +350,7 @@ func (s *Service) git(ctx context.Context, to time.Duration, args ...string) (st
 	defer cancel()
 	cmd := exec.CommandContext(c, "git", append([]string{"-C", s.dir}, args...)...)
 	cmd.Env = append(os.Environ(), s.privEnv()...)
+	s.applyOwnerCred(cmd)
 	var out, errb bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &errb
 	if err := cmd.Run(); err != nil {
@@ -346,16 +368,30 @@ func (s *Service) gitRun(ctx context.Context, to time.Duration, args ...string) 
 	return err
 }
 
-// privEnv 是给 git / make / install.sh 注入的环境:
-//   - GIT_TERMINAL_PROMPT=0 与 ssh BatchMode:非交互场景凭据缺失时立即失败,而非挂死等输入;
-//   - safe.directory:平台以 root 运行、仓库属主为普通用户时,git 会拒绝操作(dubious
-//     ownership)。该配置只认受保护配置源(system/global/命令行/env),故经
-//     GIT_CONFIG_COUNT 追加(只增不改,不影响用户既有 git 配置)。
-func (s *Service) privEnv() []string {
-	env := []string{"GIT_TERMINAL_PROMPT=0"}
-	if os.Getenv("GIT_SSH_COMMAND") == "" {
-		env = append(env, "GIT_SSH_COMMAND=ssh -oBatchMode=yes")
+// sshCommand 组装非交互 git 用的 GIT_SSH_COMMAND:
+//   - BatchMode:无 tty,凭据缺失立即失败而非挂死等输入;
+//   - StrictHostKeyChecking=accept-new:服务运行用户(常见 root)首次连 git 主机时无法
+//     交互确认指纹,默认行为直接 "Host key verification failed"。accept-new 自动信任
+//     新指纹(写入 known_hosts),已知指纹变更仍拒绝 —— 保留中间人防护。
+//
+// 用户自设的 GIT_SSH_COMMAND 优先(尊享定制,如代理跳板)。
+func (s *Service) sshCommand() string {
+	if v := strings.TrimSpace(os.Getenv("GIT_SSH_COMMAND")); v != "" {
+		return v
 	}
+	return "ssh -oBatchMode=yes -oStrictHostKeyChecking=accept-new"
+}
+
+// privEnv 是给 git / make / install.sh 注入的环境:
+//   - GIT_TERMINAL_PROMPT=0:https 凭据缺失立即失败;
+//   - GIT_SSH_COMMAND(见 sshCommand):主机指纹自动信任 + 非交互;
+//   - safe.directory:平台运行用户与仓库属主不一致时,git 会拒绝操作(dubious ownership)。
+//     该配置只认受保护配置源(system/global/命令行/env),故经 GIT_CONFIG_COUNT 追加
+//     (只增不改,不影响用户既有 git 配置)。
+//
+// 「以仓库属主身份执行」不经 env,见 applyOwnerCred(unix 构建文件)。
+func (s *Service) privEnv() []string {
+	env := []string{"GIT_TERMINAL_PROMPT=0", "GIT_SSH_COMMAND=" + s.sshCommand()}
 	n := 0
 	if v := os.Getenv("GIT_CONFIG_COUNT"); v != "" {
 		if i, err := strconv.Atoi(strings.TrimSpace(v)); err == nil && i >= 0 {

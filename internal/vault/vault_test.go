@@ -181,6 +181,39 @@ func TestSudoPasswordTypeAndInUse(t *testing.T) {
 	}
 }
 
+// TestDNSTokenInUseByProvider 验证 dns_token 被 dns_providers.credential_id 引用时删除被占
+// (无外键,靠 Delete 的显式检查):从保险库误删会让提供商凭据悬挂。
+func TestDNSTokenInUseByProvider(t *testing.T) {
+	db := testDB(t)
+	v := New(db, testKey())
+
+	cred, err := v.Create(CreateInput{Name: "DNS · example", Type: TypeDNSToken, Secret: "cf-token"})
+	if err != nil {
+		t.Fatalf("Create dns_token: %v", err)
+	}
+	if cred.MaskedValue != "••••" {
+		t.Fatalf("dns_token 掩码应全打点: %q", cred.MaskedValue)
+	}
+	_, err = db.Exec(
+		`INSERT INTO dns_providers (id, type, name, credential_id, api_id, created_at, updated_at)
+		 VALUES ('dp-1', 'cloudflare', 'example', ?, '', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`,
+		cred.ID,
+	)
+	if err != nil {
+		t.Fatalf("插入引用提供商: %v", err)
+	}
+	if err := v.Delete(cred.ID); err != ErrCredentialInUse {
+		t.Fatalf("被 dns_providers 引用应 ErrCredentialInUse,得 %v", err)
+	}
+	// 提供商已删(级联路径)→ 凭据可删,不留孤儿。
+	if _, err := db.Exec(`DELETE FROM dns_providers WHERE id = 'dp-1'`); err != nil {
+		t.Fatalf("删除提供商: %v", err)
+	}
+	if err := v.Delete(cred.ID); err != nil {
+		t.Fatalf("提供商删除后凭据应可删: %v", err)
+	}
+}
+
 func TestGitHTTPCredentialStoresUsernameAndSecretEncrypted(t *testing.T) {
 	db := testDB(t)
 	v := New(db, testKey())
