@@ -38,6 +38,9 @@ export default {
   feishuUrl: '飞书机器人 Webhook 地址',
   feishuUrlHint:
     '飞书群「设置 → 群机器人 → 自定义机器人」的 Webhook 地址(open.feishu.cn/open-apis/bot/v2/hook/…)',
+  feishuKeyword: '自定义关键词(可选)',
+  feishuKeywordHint: '机器人「安全设置」启用「自定义关键词」时,填其中一个已注册关键词;发送时消息未含该词会自动补进标题',
+  keywordPlaceholder: '如:流水线',
   signSecret: '签名密钥(可选)',
   signSecretHint: '仅当机器人开启「签名校验」时填写;写入后绝不回显',
   signSecretPlaceholder: '机器人未开启签名校验则留空',
@@ -49,6 +52,8 @@ export default {
   dingtalkUrl: '钉钉机器人 Webhook 地址',
   dingtalkUrlHint:
     '钉钉群「群设置 → 智能群助手 → 添加机器人 → 自定义」的 Webhook 地址(oapi.dingtalk.com/robot/send?access_token=…)',
+  dingtalkKeyword: '自定义关键词(可选)',
+  dingtalkKeywordHint: '机器人「安全设置」选「自定义关键词」时,填其中一个已注册关键词;发送时消息未含该词会自动补进标题',
   dingtalkSignSecret: '加签密钥(可选)',
   dingtalkSignSecretHint: '仅当机器人「安全设置」选「加签」时填写;写入后绝不回显',
   dingtalkSignSecretPlaceholder: '机器人未选「加签」则留空',

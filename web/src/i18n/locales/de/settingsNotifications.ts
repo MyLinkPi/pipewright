@@ -37,6 +37,10 @@ export default {
   feishuUrl: 'Webhook-URL des Lark-Bots',
   feishuUrlHint:
     'Webhook-URL der Lark-Gruppe unter „Einstellungen → Gruppen-Bots → Benutzerdefinierter Bot“ (open.feishu.cn/open-apis/bot/v2/hook/…)',
+  feishuKeyword: 'Benutzerdefiniertes Schlüsselwort (optional)',
+  feishuKeywordHint:
+    'Wenn beim Bot „Benutzerdefinierte Schlüsselwörter“ aktiviert ist, eines der registrierten Schlüsselwörter eintragen; fehlt es in der Nachricht, wird es dem Titel automatisch vorangestellt',
+  keywordPlaceholder: 'z. B. Pipeline',
   signSecret: 'Signaturschlüssel (optional)',
   signSecretHint: 'Nur ausfüllen, wenn beim Bot die „Signaturprüfung“ aktiviert ist; wird nach dem Speichern nie erneut angezeigt',
   signSecretPlaceholder: 'Leer lassen, wenn beim Bot die Signaturprüfung nicht aktiviert ist',
@@ -48,6 +52,9 @@ export default {
   dingtalkUrl: 'Webhook-URL des DingTalk-Bots',
   dingtalkUrlHint:
     'Webhook-URL der DingTalk-Gruppe unter „Gruppeneinstellungen → Gruppenassistent → Bot hinzufügen → Benutzerdefiniert“ (oapi.dingtalk.com/robot/send?access_token=…)',
+  dingtalkKeyword: 'Benutzerdefiniertes Schlüsselwort (optional)',
+  dingtalkKeywordHint:
+    'Wenn in den „Sicherheitseinstellungen“ des Bots „Benutzerdefinierte Schlüsselwörter“ gewählt ist, eines der registrierten Schlüsselwörter eintragen; fehlt es in der Nachricht, wird es dem Titel automatisch vorangestellt',
   dingtalkSignSecret: 'Signaturschlüssel (optional)',
   dingtalkSignSecretHint: 'Nur ausfüllen, wenn in den „Sicherheitseinstellungen“ des Bots „Signiert“ gewählt ist; wird nach dem Speichern nie erneut angezeigt',
   dingtalkSignSecretPlaceholder: 'Leer lassen, wenn der Bot „Signiert“ nicht verwendet',

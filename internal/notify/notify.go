@@ -89,6 +89,29 @@ type Payload struct {
 // ErrInvalidLanguage 表示设置的通知语言不是受支持的 locale 码。
 var ErrInvalidLanguage = errors.New("notify: invalid language")
 
+// ensureKeyword 保证消息可见文案包含渠道配置的「自定义关键词」。
+//
+// 钉钉/飞书机器人「安全设置→自定义关键词」要求消息内容至少含一个已注册关键词(子串匹配),
+// 否则服务端拒收(钉钉 errcode=310000 "keywords not in content")。标题/正文/字段值均已
+// 不含该词时,给标题加「【kw】」前缀 —— 标题在两种消息形态里都必展示且参与匹配,最稳妥。
+// 用户模板已含关键词时不动原文(不重复注入)。
+func ensureKeyword(p Payload, keyword string) Payload {
+	kw := strings.TrimSpace(keyword)
+	if kw == "" {
+		return p
+	}
+	if strings.Contains(p.Title, kw) || strings.Contains(p.Body, kw) {
+		return p
+	}
+	for _, v := range p.Fields {
+		if strings.Contains(v, kw) {
+			return p
+		}
+	}
+	p.Title = "【" + kw + "】" + p.Title
+	return p
+}
+
 // notifyLanguage 读取通知语言配置(notify_config 单行);缺失/出错回退默认。
 func (s *service) notifyLanguage(ctx context.Context) string {
 	var lang string
@@ -130,9 +153,13 @@ type Channel struct {
 // Config 是 per-type 非敏感配置的并集(按 type 取用对应字段;敏感字段绝不在此)。
 //   - webhook:Url。
 //   - email:SMTPHost, SMTPPort, From, To, Username(密码经 vault,不在此)。
+//   - dingtalk/feishu:Url + Keyword(机器人「安全设置→自定义关键词」,非敏感,明文回显)。
 type Config struct {
 	// webhook
 	URL string `json:"url,omitempty"`
+	// dingtalk / feishu:「自定义关键词」安全设置。发送时保证消息含该词(见 ensureKeyword);
+	// 空 = 机器人未启用关键词校验。非敏感(机器人设置里本可见),明文入库并回显。
+	Keyword string `json:"keyword,omitempty"`
 	// email
 	SMTPHost string `json:"smtpHost,omitempty"`
 	SMTPPort int    `json:"smtpPort,omitempty"`
@@ -563,9 +590,15 @@ func normalizeConfig(t string, c Config) Config {
 			To:       strings.TrimSpace(c.To),
 			Username: strings.TrimSpace(c.Username),
 		}
-	case TypeFeishu, TypeWecom, TypeDingtalk:
-		// 飞书 / 企业微信 / 钉钉群机器人:复用 URL 字段存 webhook hook 地址。
-		// 飞书/钉钉的(可选)签名密钥走 vault Secret;企微群机器人无需密钥。
+	case TypeFeishu, TypeDingtalk:
+		// 飞书 / 钉钉群机器人:复用 URL 字段存 webhook hook 地址。
+		// (可选)签名密钥走 vault Secret;(可选)「自定义关键词」为非敏感配置,明文入库。
+		return Config{
+			URL:     strings.TrimSpace(c.URL),
+			Keyword: strings.TrimSpace(c.Keyword),
+		}
+	case TypeWecom:
+		// 企业微信群机器人:仅 url(群机器人无关键词/签名等安全设置,无需密钥)。
 		return Config{URL: strings.TrimSpace(c.URL)}
 	default:
 		return Config{}

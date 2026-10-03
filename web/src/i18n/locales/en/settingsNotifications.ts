@@ -37,6 +37,10 @@ export default {
   feishuUrl: 'Lark Bot Webhook URL',
   feishuUrlHint:
     'Webhook URL from the Lark group “Settings → Group Bots → Custom Bot” (open.feishu.cn/open-apis/bot/v2/hook/…)',
+  feishuKeyword: 'Custom Keyword (optional)',
+  feishuKeywordHint:
+    'If the bot’s security settings enable “custom keywords”, enter one of the registered keywords; it is auto-prepended to the title when the message lacks it',
+  keywordPlaceholder: 'e.g. pipeline',
   signSecret: 'Sign Secret (optional)',
   signSecretHint: 'Fill in only when the bot has “signature verification” enabled; never echoed once saved',
   signSecretPlaceholder: 'Leave blank if signature verification is off',
@@ -48,6 +52,9 @@ export default {
   dingtalkUrl: 'DingTalk Bot Webhook URL',
   dingtalkUrlHint:
     'Webhook URL from the DingTalk group “Group settings → Group assistant → Add bot → Custom” (oapi.dingtalk.com/robot/send?access_token=…)',
+  dingtalkKeyword: 'Custom Keyword (optional)',
+  dingtalkKeywordHint:
+    'If the bot’s “Security settings” use “Custom keyword”, enter one of the registered keywords; it is auto-prepended to the title when the message lacks it',
   dingtalkSignSecret: 'Sign Secret (optional)',
   dingtalkSignSecretHint: 'Fill in only when the bot’s “Security settings” use “Signed”; never echoed once saved',
   dingtalkSignSecretPlaceholder: 'Leave blank if the bot does not use “Signed”',

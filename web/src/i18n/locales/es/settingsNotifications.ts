@@ -37,6 +37,10 @@ export default {
   feishuUrl: 'URL del Webhook del bot de Lark',
   feishuUrlHint:
     'URL del Webhook del grupo de Lark en «Configuración → Bots de grupo → Bot personalizado» (open.feishu.cn/open-apis/bot/v2/hook/…)',
+  feishuKeyword: 'Palabra clave personalizada (opcional)',
+  feishuKeywordHint:
+    'Si el bot tiene activada la seguridad de «palabra clave personalizada», introduce una de las palabras registradas; si el mensaje no la contiene, se añade automáticamente al título',
+  keywordPlaceholder: 'p. ej., pipeline',
   signSecret: 'Clave de firma (opcional)',
   signSecretHint: 'Rellénala solo si el bot tiene activada la «verificación de firma»; nunca se vuelve a mostrar tras guardarla',
   signSecretPlaceholder: 'Déjalo en blanco si el bot no tiene la verificación de firma activada',
@@ -48,6 +52,9 @@ export default {
   dingtalkUrl: 'URL del Webhook del bot de DingTalk',
   dingtalkUrlHint:
     'URL del Webhook del grupo de DingTalk en «Configuración del grupo → Asistente del grupo → Añadir bot → Personalizado» (oapi.dingtalk.com/robot/send?access_token=…)',
+  dingtalkKeyword: 'Palabra clave personalizada (opcional)',
+  dingtalkKeywordHint:
+    'Si en la «configuración de seguridad» del bot se eligió «palabra clave personalizada», introduce una de las palabras registradas; si el mensaje no la contiene, se añade automáticamente al título',
   dingtalkSignSecret: 'Clave de firma (opcional)',
   dingtalkSignSecretHint: 'Rellénala solo si en la «configuración de seguridad» del bot se eligió «Firmado»; nunca se vuelve a mostrar tras guardarla',
   dingtalkSignSecretPlaceholder: 'Déjalo en blanco si el bot no usa «Firmado»',

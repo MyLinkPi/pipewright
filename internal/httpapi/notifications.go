@@ -18,6 +18,8 @@ import (
 type channelConfigDTO struct {
 	// webhook
 	URL string `json:"url,omitempty"`
+	// dingtalk / feishu:「自定义关键词」(非敏感,明文回显)
+	Keyword string `json:"keyword,omitempty"`
 	// email
 	SMTPHost    string `json:"smtpHost,omitempty"`
 	SMTPPort    int    `json:"smtpPort,omitempty"`
@@ -53,15 +55,17 @@ func toChannelDTO(c *notify.Channel) channelDTO {
 	case notify.TypeWebhook:
 		cfg.URL = c.Config.URL
 	case notify.TypeFeishu:
-		// 飞书:回显 webhook 地址 + 是否已配签名密钥(密钥本身绝不回显)。
+		// 飞书:回显 webhook 地址 + 「自定义关键词」+ 是否已配签名密钥(密钥本身绝不回显)。
 		cfg.URL = c.Config.URL
+		cfg.Keyword = c.Config.Keyword
 		cfg.HasPassword = c.HasSecret
 	case notify.TypeWecom:
 		// 企业微信群机器人:仅回显 webhook 地址(无密钥)。
 		cfg.URL = c.Config.URL
 	case notify.TypeDingtalk:
-		// 钉钉群机器人:回显 webhook 地址 + 是否已配加签密钥(密钥本身绝不回显)。
+		// 钉钉群机器人:回显 webhook 地址 + 「自定义关键词」+ 是否已配加签密钥(密钥本身绝不回显)。
 		cfg.URL = c.Config.URL
+		cfg.Keyword = c.Config.Keyword
 		cfg.HasPassword = c.HasSecret
 	case notify.TypeEmail:
 		cfg.SMTPHost = c.Config.SMTPHost
@@ -120,6 +124,7 @@ type channelRequest struct {
 	Enabled *bool   `json:"enabled"`
 	Config  *struct {
 		URL      *string `json:"url"`
+		Keyword  *string `json:"keyword"`
 		SMTPHost *string `json:"smtpHost"`
 		SMTPPort *int    `json:"smtpPort"`
 		From     *string `json:"from"`
@@ -289,6 +294,9 @@ func configFromRequest(req channelRequest) (notify.Config, string) {
 	c := req.Config
 	if c.URL != nil {
 		cfg.URL = *c.URL
+	}
+	if c.Keyword != nil {
+		cfg.Keyword = *c.Keyword
 	}
 	if c.SMTPHost != nil {
 		cfg.SMTPHost = *c.SMTPHost

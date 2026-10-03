@@ -32,6 +32,10 @@ import (
 //
 // 可选签名:机器人若开启「签名校验」,配置时填密钥(走 vault 加密)。投递按飞书规范算
 // timestamp + sign 注入 body 顶层;未配密钥则不带签名(与机器人未开校验一致)。
+//
+// 可选关键词:机器人「安全设置」选「自定义关键词」时,配置里存其中一个已注册关键词。
+// 飞书对消息内容(含卡片标题)做子串匹配,不命中即拒收(返回体 code!=0,提示关键词不匹配);
+// 发送前经 ensureKeyword 保证卡片含该词(缺则标题加「【kw】」前缀)。
 
 // ─── 交互卡片报文结构(飞书 message card v1) ─────────────────────────────────────
 
@@ -108,6 +112,12 @@ func (s *service) sendFeishu(ctx context.Context, ch *Channel, sealed []byte, pa
 	if !validWebhookURL(target) {
 		return fmt.Errorf("飞书 webhook 地址不被允许:仅 http/https,且不可指向云元数据/链路本地地址")
 	}
+
+	// 可选「自定义关键词」:机器人安全设置启用关键词校验时,保证卡片含已注册词(缺则标题前缀)。
+	if strings.TrimSpace(payload.Title) == "" {
+		payload.Title = i18n.T(payload.Lang, "Pipewright 通知")
+	}
+	payload = ensureKeyword(payload, ch.Config.Keyword)
 
 	body := feishuCardBody{
 		MsgType: "interactive",

@@ -37,6 +37,10 @@ export default {
   feishuUrl: 'Lark ボット Webhook URL',
   feishuUrlHint:
     'Lark グループの「設定 → グループボット → カスタムボット」の Webhook URL（open.feishu.cn/open-apis/bot/v2/hook/…）',
+  feishuKeyword: 'カスタムキーワード（任意）',
+  feishuKeywordHint:
+    'ボットの「セキュリティ設定」で「カスタムキーワード」を有効にしている場合、登録済みキーワードの 1 つを入力してください。メッセージに含まれない場合はタイトルへ自動付与されます',
+  keywordPlaceholder: '例:パイプライン',
   signSecret: '署名シークレット（任意）',
   signSecretHint: 'ボットで「署名検証」を有効にした場合のみ入力。保存後は再表示されません',
   signSecretPlaceholder: 'ボットで署名検証が無効なら空のまま',
@@ -48,6 +52,9 @@ export default {
   dingtalkUrl: 'DingTalk ボット Webhook URL',
   dingtalkUrlHint:
     'DingTalk グループの「グループ設定 → グループアシスタント → ボットを追加 → カスタム」の Webhook URL（oapi.dingtalk.com/robot/send?access_token=…）',
+  dingtalkKeyword: 'カスタムキーワード（任意）',
+  dingtalkKeywordHint:
+    'ボットの「セキュリティ設定」で「カスタムキーワード」を選んだ場合、登録済みキーワードの 1 つを入力してください。メッセージに含まれない場合はタイトルへ自動付与されます',
   dingtalkSignSecret: '署名シークレット（任意）',
   dingtalkSignSecretHint: 'ボットの「セキュリティ設定」で「署名」を選んだ場合のみ入力。保存後は再表示されません',
   dingtalkSignSecretPlaceholder: 'ボットで「署名」を選んでいなければ空のまま',

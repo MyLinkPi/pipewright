@@ -191,7 +191,8 @@ function toggleExpanded(): void {
 
     <!-- Main content area -->
     <main class="main-area" id="main-content">
-      <div class="main-inner">
+      <!-- 全幅页面(如流水线编辑器):route.meta.fullBleed 时放开 --content-max,内容吃满主区宽度。 -->
+      <div class="main-inner" :class="{ 'main-inner--full': route.meta.fullBleed === true }">
         <router-view />
       </div>
     </main>
@@ -461,5 +462,11 @@ function toggleExpanded(): void {
      的右侧操作按钮(如概览的「新建项目」)下移到带下方,避免被切换器压住。 */
   padding: calc(var(--main-pad-top) + 38px) var(--main-pad) var(--main-pad-bottom);
   min-height: 100vh;
+}
+
+/* 全幅工作面板(流水线编辑器等,route.meta.fullBleed):取消阅读型页面的宽度上限,
+   让 DAG 画布等横向空间敏感的区域吃满宽屏;保留左右内边距作为与侧栏的呼吸位。 */
+.main-inner--full {
+  max-width: none;
 }
 </style>
