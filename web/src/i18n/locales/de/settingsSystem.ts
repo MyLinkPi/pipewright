@@ -70,4 +70,7 @@ export default {
   updateSrcFromConfig: 'aus der Einstellung unten',
   updateSrcFromEnv: 'aus Umgebungsvariable PIPEWRIGHT_RELEASE_MIRROR',
   updateSrcFromDefault: 'Standard · kein Mirror konfiguriert',
+
+  langTitle: 'Sprache der Oberfläche',
+  langSub: 'Ändert die Sprache der Oberfläche. Wirkt sofort.',
 }

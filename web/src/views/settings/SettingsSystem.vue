@@ -16,8 +16,18 @@ import { getRetentionConfig, setRetentionConfig, type RetentionConfig } from '..
 import { getSystemConfig, saveSystemConfig, type SystemConfig } from '../../api/systemConfig'
 import { HttpError } from '../../api/http'
 import AppButton from '../../components/ui/AppButton.vue'
+import AppSelect from '../../components/ui/AppSelect.vue'
+import { SUPPORTED_LOCALES, setLocale, type LocaleCode } from '../../i18n'
 
-const { t } = useI18n()
+const { t, locale } = useI18n()
+
+// ─── 界面语言 ─────────────────────────────────────────────────────────────────
+// 原先固定在页面右上角的全局语言切换器(低频操作)收进系统设置;选择后立即生效并持久化。
+const langOptions = SUPPORTED_LOCALES.map((l) => ({ value: l.code, label: l.label }))
+
+function onLangChange(code: string): void {
+  setLocale(code as LocaleCode)
+}
 
 const version = ref<VersionInfo | null>(null)
 const versionError = ref('')
@@ -588,6 +598,28 @@ onMounted(() => {
         <AppButton variant="primary" :loading="rtSaving" :disabled="rtLoading" @click="saveRetention">
           {{ t('settingsSystem.retentionSave') }}
         </AppButton>
+      </div>
+    </article>
+
+    <!-- 界面语言(原右上角全局切换器收纳入此) -->
+    <article class="sys-panel">
+      <span class="sys-accent" aria-hidden="true" />
+      <div class="rt-head">
+        <div class="rt-head-text">
+          <h3 class="rt-title">{{ t('settingsSystem.langTitle') }}</h3>
+          <p class="rt-sub">{{ t('settingsSystem.langSub') }}</p>
+        </div>
+      </div>
+      <div class="rt-fields">
+        <div class="lang-field">
+          <AppSelect
+            :model-value="locale"
+            :options="langOptions"
+            :aria-label="t('settingsSystem.langTitle')"
+            min-width="220px"
+            @update:model-value="onLangChange"
+          />
+        </div>
       </div>
     </article>
   </section>
@@ -1202,4 +1234,9 @@ onMounted(() => {
 }
 .rt-saved { font-size: 0.82rem; color: var(--color-ok, #18a058); }
 .rt-err { font-size: 0.82rem; color: var(--color-danger, #e5484d); }
+
+/* ─── 界面语言 ───────────────────────────────────────────────────────────────── */
+.lang-field {
+  width: 220px;
+}
 </style>

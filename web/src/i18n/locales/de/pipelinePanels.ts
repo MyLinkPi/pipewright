@@ -147,7 +147,7 @@ export default {
   vpScopeTriggers: 'Trigger-Einstellungen',
   vpScopeEnvs: 'Umgebungen und Anmeldedaten',
 
-  // ─── RiskAnnotationPanel ───────────────────────────────────────
+  // ─── RiskAnnotationModal ───────────────────────────────────────
   rapAria: 'KI-Skriptrisiko-Annotation',
   rapTitle: 'KI-Skriptrisiko-Annotation',
   rapSubtitle: 'Burggraben · ein Check-up vor dem Commit',
@@ -169,6 +169,7 @@ export default {
   rapAiTitle: 'KI-semantische Analyse',
   rapFailed: 'Risiko-Annotation fehlgeschlagen ({status})',
   rapFailedRetry: 'Risiko-Annotation fehlgeschlagen, bitte versuchen Sie es später erneut',
+  rapCloseAria: 'Schließen',
 
   // ─── TemplatePickerModal ───────────────────────────────────────
   tplAria: 'Pipeline-Vorlagen',
