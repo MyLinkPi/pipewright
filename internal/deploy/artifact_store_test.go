@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -112,6 +113,117 @@ func TestDeployStoredDistUploadsAndUntars(t *testing.T) {
 	}
 	if !sawUntar {
 		t.Fatalf("dist 部署应在远端 tar -xzf 解包;calls=%v", tgt.calls)
+	}
+}
+
+// 制品库支撑的「不打包」dist 部署(format=files):按 metadata.files 清单逐文件上传到
+// <release>/<相对路径>,目录结构原样保留。
+//
+// 关键不变量:清单在构建侧写入时是 json.RawMessage,但**经 DB 往返**(run.decodeMetadata 用
+// json.Unmarshal 到 map[string]any)后必然变成 []any —— 本用例经 AddArtifact/ListArtifacts
+// 真实走一遍往返,钉住部署侧必须兼容该形状(否则该机恒失败「产物缺少 files 清单」)。
+func TestDeployStoredFilesManifestUploadsEachFile(t *testing.T) {
+	db := testDB(t)
+	rsvc := run.New(db)
+	store, err := artifactstore.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	indexBody := []byte("<html>hi</html>")
+	jsBody := []byte("console.log(1)")
+	indexKey, _, err := store.Put(bytes.NewReader(indexBody))
+	if err != nil {
+		t.Fatalf("Put index: %v", err)
+	}
+	jsKey, _, err := store.Put(bytes.NewReader(jsBody))
+	if err != nil {
+		t.Fatalf("Put js: %v", err)
+	}
+	manifest, err := json.Marshal([]map[string]any{
+		{"path": "index.html", "key": indexKey, "size": len(indexBody)},
+		{"path": "assets/app.js", "key": jsKey, "size": len(jsBody)},
+	})
+	if err != nil {
+		t.Fatalf("marshal manifest: %v", err)
+	}
+
+	tgt := &stubTarget{}
+	srv := seedServer(t, tgt, "web-1")
+	runID, artID := seedSuccessRunWithStoredArtifact(t, db, rsvc, run.ArtifactDist, indexKey,
+		map[string]any{"stored": true, "format": "files", "files": json.RawMessage(manifest)})
+
+	// 往返后的形状必须是 []any(用例前提;若哪天 decodeMetadata 改成保留 RawMessage,这里会提醒)。
+	arts, err := rsvc.ListArtifacts(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("ListArtifacts: %v", err)
+	}
+	for i := range arts {
+		if arts[i].ID == artID {
+			if _, isRaw := arts[i].Metadata["files"].(json.RawMessage); isRaw {
+				t.Fatal("DB 往返后 files 不应再是 json.RawMessage(用例前提失效)")
+			}
+		}
+	}
+
+	svc := New(tgt, rsvc, WithArtifactStore(store))
+	base := "/srv/web-" + uuid.NewString()[:6]
+	res, err := svc.Deploy(context.Background(), DeployInput{
+		RunID: runID, ArtifactID: artID, ServerIDs: []string{srv.ID},
+		Config: map[string]string{"releaseBase": base},
+	})
+	if err != nil {
+		t.Fatalf("Deploy: %v", err)
+	}
+	if res[0].Status != run.TargetSuccess {
+		t.Fatalf("status = %s (msg %q), want success", res[0].Status, res[0].Message)
+	}
+	release := base + "/releases/" + runID
+	for _, want := range []struct {
+		path string
+		body []byte
+	}{
+		{release + "/index.html", indexBody},
+		{release + "/assets/app.js", jsBody},
+	} {
+		got, ok := tgt.uploads[want.path]
+		if !ok {
+			t.Fatalf("未按清单上传 %s;uploads=%v", want.path, keysOf(tgt.uploads))
+		}
+		if !bytes.Equal(got, want.body) {
+			t.Fatalf("%s 上传的不是真字节", want.path)
+		}
+	}
+	// 不应再出现「缺少 files 清单」这类因类型断言失败导致的降级文案。
+	if strings.Contains(res[0].Message, "缺少 files 清单") {
+		t.Fatalf("清单应被正确解出:%s", res[0].Message)
+	}
+}
+
+// 清单缺失(非 artifactPackMode=none 产物却标了 format=files)→ 该机 failed + 人读原因,不静默。
+func TestDeployStoredFilesManifestMissingFails(t *testing.T) {
+	db := testDB(t)
+	rsvc := run.New(db)
+	store, _ := artifactstore.New(t.TempDir())
+	key, _, _ := store.Put(bytes.NewReader([]byte("x")))
+
+	tgt := &stubTarget{}
+	srv := seedServer(t, tgt, "web-1")
+	runID, artID := seedSuccessRunWithStoredArtifact(t, db, rsvc, run.ArtifactDist, key,
+		map[string]any{"stored": true, "format": "files"}) // 故意不给 files 清单
+
+	svc := New(tgt, rsvc, WithArtifactStore(store))
+	res, err := svc.Deploy(context.Background(), DeployInput{
+		RunID: runID, ArtifactID: artID, ServerIDs: []string{srv.ID},
+		Config: map[string]string{"releaseBase": "/srv/web-x"},
+	})
+	if err != nil {
+		t.Fatalf("Deploy: %v", err)
+	}
+	if res[0].Status == run.TargetSuccess {
+		t.Fatalf("清单缺失不应 success: %+v", res[0])
+	}
+	if !strings.Contains(res[0].Message, "缺少 files 清单") {
+		t.Fatalf("message 应说明缺少清单:%s", res[0].Message)
 	}
 }
 

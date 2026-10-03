@@ -40,12 +40,19 @@ import (
 //
 // 工作区共享(跨阶段复用同一 clone)是性能优化项,留后续;本期每阶段独立 clone 以求简单与并行安全。
 
-// scriptJobTypes 是会触发真实容器执行的 job 类型。build_frontend/build_backend 是「前端/后端构建」
-// 模板节点,本质是带预填命令的 script;templated 是「用户自定义节点」(参数 + 命令模板),
-// 渲染 {{参数}} 后同样在隔离容器跑。三者都按 script 路径执行(容器跑 + 收 artifactPath 产物)。
+// scriptJobTypes 是会触发真实容器执行的 job 类型。build_nodejs/build_java/build_golang/build_python
+// 是「按语言区分」的构建模板节点(本质是带预填镜像+命令的 script;旧 build_frontend/build_backend
+// 键保留兼容存量流水线);templated 是「用户自定义节点」(参数 + 命令模板),渲染 {{参数}} 后同样
+// 在隔离容器跑。全部按 script 路径执行(容器跑 + 收 artifactPath 产物)。
 func isScriptJob(jobType string) bool {
 	t := strings.TrimSpace(jobType)
-	return t == pipeline.StepTypeScript || t == "custom" || t == "build_frontend" || t == "build_backend" || t == "templated"
+	switch t {
+	case pipeline.StepTypeScript, "custom", "templated",
+		"build_frontend", "build_backend", // 旧模板键(存量兼容,已从目录移除)
+		"build_nodejs", "build_java", "build_golang", "build_python":
+		return true
+	}
+	return false
 }
 
 // tplPlaceholder 匹配 {{key}} 占位(key 为标识符)。自定义节点参数渲染用。
@@ -87,10 +94,11 @@ func renderTemplate(tpl string, ctx map[string]string) string {
 	})
 }
 
-// isDeployJob 判断是否「SSH 部署」类节点(deploy_ssh 通用 / deploy_frontend 前端部署模板)。
+// isDeployJob 判断是否「部署」类节点(deploy_ssh 主机部署 / deploy_container 容器部署;
+// 旧 deploy_frontend 前端部署模板保留兼容存量流水线)。三者共用 runDeployJob → deploy.Service。
 func isDeployJob(jobType string) bool {
 	t := strings.TrimSpace(jobType)
-	return t == "deploy_ssh" || t == "deploy_frontend"
+	return t == "deploy_ssh" || t == "deploy_frontend" || t == "deploy_container"
 }
 
 // isBuildImageJob 判断是否「构建产物(镜像/JAR/dist)」节点(画布 build_image 类型)。
@@ -106,6 +114,7 @@ func NewStageExecutor(b *Builder, reportSink TestReportSink) dagrun.StageExecuto
 		scriptJobs := make([]pipeline.Job, 0, len(stage.Jobs))
 		buildImageJobs := make([]pipeline.Job, 0, len(stage.Jobs))
 		deployJobs := make([]pipeline.Job, 0, len(stage.Jobs))
+		healthJobs := make([]pipeline.Job, 0, len(stage.Jobs))
 		notifyJobs := make([]pipeline.Job, 0, len(stage.Jobs))
 		hasPushJob := false
 		for _, jb := range stage.Jobs {
@@ -118,14 +127,16 @@ func NewStageExecutor(b *Builder, reportSink TestReportSink) dagrun.StageExecuto
 				hasPushJob = true
 			case isDeployJob(jb.Type):
 				deployJobs = append(deployJobs, jb)
+			case strings.TrimSpace(jb.Type) == "health_check":
+				healthJobs = append(healthJobs, jb)
 			case strings.TrimSpace(jb.Type) == "notify":
 				notifyJobs = append(notifyJobs, jb)
 			}
 		}
 
 		needsBuild := len(scriptJobs) > 0 || len(buildImageJobs) > 0
-		// 没有任何可执行节点(script/build_image/deploy_ssh/notify)且无 post → 诚实占位放行。
-		if !needsBuild && len(deployJobs) == 0 && len(notifyJobs) == 0 && len(stage.Post) == 0 {
+		// 没有任何可执行节点(script/build_image/deploy/health_check/notify)且无 post → 诚实占位放行。
+		if !needsBuild && len(deployJobs) == 0 && len(healthJobs) == 0 && len(notifyJobs) == 0 && len(stage.Post) == 0 {
 			for _, jb := range stage.Jobs {
 				_ = rep.JobRunning(ctx, jb.ID)
 				jr := rep.JobReporter(jb.ID)
@@ -287,7 +298,7 @@ func NewStageExecutor(b *Builder, reportSink TestReportSink) dagrun.StageExecuto
 				}
 			}
 
-			// ── 部署节点(deploy_ssh):把本 run 已产出的产物经 SSH 部署到目标机(中途部署,不动 run 终态)──
+			// ── 部署节点(deploy_ssh / deploy_container):把本 run 已产出的产物经 SSH 部署到目标机(中途部署,不动 run 终态)──
 			for _, jb := range deployJobs {
 				if canceled(ctx) {
 					return run.ErrCanceled
@@ -295,6 +306,20 @@ func NewStageExecutor(b *Builder, reportSink TestReportSink) dagrun.StageExecuto
 				_ = rep.JobRunning(ctx, jb.ID)
 				jrep := rep.JobReporter(jb.ID)
 				if err := b.runDeployJob(ctx, jrep, jb, r.ID, r.Trigger.Params); err != nil {
+					_ = rep.JobDone(ctx, jb.ID, run.StepFailed)
+					return err
+				}
+				_ = rep.JobDone(ctx, jb.ID, run.StepSuccess)
+			}
+
+			// ── 健康检查节点(health_check):对目标机做健康探测,失败令阶段失败 ──
+			for _, jb := range healthJobs {
+				if canceled(ctx) {
+					return run.ErrCanceled
+				}
+				_ = rep.JobRunning(ctx, jb.ID)
+				jrep := rep.JobReporter(jb.ID)
+				if err := b.runHealthCheckJob(ctx, jrep, jb, r.Trigger.Params); err != nil {
 					_ = rep.JobDone(ctx, jb.ID, run.StepFailed)
 					return err
 				}
@@ -421,6 +446,8 @@ func (b *Builder) runStageJobsDAG(
 				return b.runBuildImageJobIsolated(ctx, jsink, jrep, r, jb, stage, proj, settings, hasPushJob)
 			case isDeployJob(jb.Type):
 				return b.runDeployJob(ctx, jrep, jb, r.ID, r.Trigger.Params)
+			case strings.TrimSpace(jb.Type) == "health_check":
+				return b.runHealthCheckJob(ctx, jrep, jb, r.Trigger.Params)
 			case strings.TrimSpace(jb.Type) == "push_image":
 				// 推送随构建镜像节点完成(hasPushJob);本节点仅用于在 DAG 中编排顺序/展示。
 				_ = jrep.Log(ctx, streamStdout, fmt.Sprintf("· 推送镜像「%s」:已随构建镜像节点完成推送(本节点用于编排顺序)", jb.Name))
@@ -607,20 +634,37 @@ func (b *Builder) runDeployJob(ctx context.Context, rep dagrun.StageReporter, jb
 	if rc := renderTemplate(cfgString(jb.Config, "restartCommand"), params); rc != "" {
 		cfg["restartCommand"] = rc
 	}
-	// 镜像产物部署参数(#51)透传:deploy.DeployForStage 经这些键挑镜像产物并组装
-	// `docker run`(artifactType=image 选镜像;containerName/ports/runArgs 驱动容器名与端口/运行参数)。
+	// 部署语义键透传(deploy 层消费):产物精确绑定(deployMode/artifactJob/artifactName)、
+	// 镜像容器参数(artifactType/containerName/ports/runArgs)、私有仓库登录(registryUrl/
+	// registryCredentialId)、滚动批次(firstBatchSize/batchSize)、目标匹配方式(selectorMode)、
+	// 网关服务(gatewayService)、健康门控(healthUrl/healthCommand/…)。
 	// 各值原样搬运(deploy 层 array 化、绝不拼 shell,守 AC-SEC-02);空值不入 cfg 保持默认。
-	for _, k := range []string{"artifactType", "containerName", "ports", "runArgs"} {
+	for _, k := range []string{
+		"deployMode", "artifactJob", "artifactName", "artifactType", "containerName", "ports", "runArgs",
+		"registryUrl", "registryCredentialId",
+		"firstBatchSize", "batchSize", "selectorMode", "gatewayService",
+		"healthUrl", "healthCommand", "healthRetries", "healthIntervalSeconds", "healthTimeoutSeconds",
+	} {
 		if v := cfgString(jb.Config, k); v != "" {
 			cfg[k] = v
 		}
+	}
+	// 产物来源/artifactName/健康 URL 支持 {{param}} 渲染(与 deployPath 同语义)。
+	if v, ok := cfg["artifactName"]; ok {
+		cfg["artifactName"] = renderTemplate(v, params)
+	}
+	if v, ok := cfg["healthUrl"]; ok {
+		cfg["healthUrl"] = renderTemplate(v, params)
+	}
+	if v, ok := cfg["healthCommand"]; ok {
+		cfg["healthCommand"] = renderTemplate(v, params)
 	}
 	strategy := cfgString(jb.Config, "strategy")
 	stratLabel := strategy
 	if stratLabel == "" {
 		stratLabel = "rolling(默认)"
 	}
-	_ = rep.Log(ctx, streamStdout, fmt.Sprintf("→ SSH 部署本次产物到目标机(选择器 %s,策略 %s)…", selector, stratLabel))
+	_ = rep.Log(ctx, streamStdout, fmt.Sprintf("→ 部署本次产物到目标机(选择器 %s,滚动策略 %s)…", selector, stratLabel))
 	// 把目标机真实执行的命令 + stdout/stderr 实时回流到本部署步骤日志(脱敏由 sink Masker 兜底)。
 	dctx := deploy.WithCmdLog(ctx, func(stream, text string) { _ = rep.Log(ctx, stream, text) })
 	results, err := b.deployer.DeployForStage(dctx, runID, selector, cfg, strategy)
@@ -646,6 +690,70 @@ func (b *Builder) runDeployJob(ctx context.Context, rep dagrun.StageReporter, jb
 		return ErrBuildFailed
 	}
 	return nil
+}
+
+// runHealthCheckJob 执行一个 health_check 节点:经 selector/serverId 圈选目标机,用部署层同一套
+// 健康探测(http=curl / command=自定义命令,带重试)逐台探测;任一未通过 → 节点失败(阶段失败)。
+// 无目标机且 probeMode=http → 从平台本机探测兜底。此前该节点是「真实执行未接入;放行」的空转占位。
+func (b *Builder) runHealthCheckJob(ctx context.Context, rep dagrun.StageReporter, jb pipeline.Job, params map[string]string) error {
+	if b.deployer == nil {
+		_ = rep.Log(ctx, streamStdout, "· 健康检查节点:部署服务未注入,跳过")
+		return nil
+	}
+	selector := strings.TrimSpace(cfgString(jb.Config, "selector"))
+	if selector == "" {
+		if sid := strings.TrimSpace(cfgString(jb.Config, "serverId")); sid != "" {
+			selector = "server:" + sid
+		}
+	}
+	hc := &deploy.HealthCheck{Retries: cfgNonNegInt(jb.Config, "retries"), IntervalSeconds: cfgNonNegInt(jb.Config, "intervalSeconds")}
+	if strings.TrimSpace(cfgString(jb.Config, "probeMode")) == "command" {
+		cmd := renderTemplate(cfgString(jb.Config, "command"), params)
+		if cmd == "" {
+			_ = rep.Log(ctx, streamStderr, "健康检查节点:probeMode=command 但未配置命令")
+			return ErrBuildFailed
+		}
+		hc.Type = deploy.HealthCheckCommand
+		hc.Command = []string{"sh", "-c", cmd}
+	} else {
+		u := renderTemplate(cfgString(jb.Config, "url"), params)
+		if u == "" {
+			_ = rep.Log(ctx, streamStderr, "健康检查节点:未配置探测 URL")
+			return ErrBuildFailed
+		}
+		hc.Type = deploy.HealthCheckHTTP
+		hc.URL = u
+	}
+	_ = rep.Log(ctx, streamStdout, fmt.Sprintf("→ 健康检查(目标 %s,模式 %s)…", selectorOrLabel(selector), hc.Type))
+	dctx := deploy.WithCmdLog(ctx, func(stream, text string) { _ = rep.Log(ctx, stream, text) })
+	results, err := b.deployer.CheckHealth(dctx, selector, cfgString(jb.Config, "selectorMode"), hc)
+	if err != nil {
+		for _, r := range results {
+			_ = rep.Log(ctx, streamStderr, fmt.Sprintf("· %s:%s — %s", r.ServerName, probeStatus(r.OK), r.Message))
+		}
+		_ = rep.Log(ctx, streamStderr, "健康检查失败:"+err.Error())
+		return ErrBuildFailed
+	}
+	for _, r := range results {
+		_ = rep.Log(ctx, streamStdout, fmt.Sprintf("· %s:%s — %s", r.ServerName, probeStatus(r.OK), r.Message))
+	}
+	return nil
+}
+
+// selectorOrLabel 把空选择器渲染为「平台本机」人读标签(日志用)。
+func selectorOrLabel(selector string) string {
+	if strings.TrimSpace(selector) == "" {
+		return "平台本机(http 兜底)"
+	}
+	return selector
+}
+
+// probeStatus 把布尔通过态渲染为人读状态。
+func probeStatus(ok bool) string {
+	if ok {
+		return "通过"
+	}
+	return "未通过"
 }
 
 // runNotifyJob 执行一个 notify 节点:按节点配的渠道(id 或名称)发一条通知。
@@ -796,6 +904,17 @@ func (b *Builder) runBuildImageJob(ctx context.Context, sink run.StepSink, rep d
 func (b *Builder) collectScriptArtifacts(ctx context.Context, jobs []pipeline.Job, workspace, slug, stageName string, rep dagrun.StageReporter) {
 	onLine := func(stream, line string) { _ = rep.Log(ctx, stream, line) }
 	for _, jb := range jobs {
+		// 打包选项显式化(此前硬编码「目录一律 tar.gz + 固定去顶层目录 + 文件名不可改」):
+		// artifactPackMode(tar|none)、tarLayout(contents|top)、artifactRename(单文件落盘名)。
+		packMode := strings.TrimSpace(cfgString(jb.Config, "artifactPackMode"))
+		layout := strings.TrimSpace(cfgString(jb.Config, "tarLayout"))
+		rename := ""
+		if raw := cfgString(jb.Config, "artifactPath"); !strings.ContainsAny(raw, "*?[") && len(splitCommands(raw)) == 1 {
+			// 防误用:rename 仅在产物路径为单条、无通配时生效(glob 展开多件时同名会互相覆盖)。
+			rename = strings.TrimSpace(cfgString(jb.Config, "artifactRename"))
+		} else if strings.TrimSpace(cfgString(jb.Config, "artifactRename")) != "" {
+			onLine(streamStderr, "artifactRename 在多产物/通配路径下不生效,已忽略:"+cfgString(jb.Config, "artifactRename"))
+		}
 		for _, rel := range splitCommands(renderTemplate(cfgString(jb.Config, "artifactPath"), templateContext(jb.Config))) { // 渲染 {{参数}} + 按行拆分
 			// 通配(如 backend/target/*.jar)→ 展开为实际文件逐个收集;否则按原路径收集。
 			if strings.ContainsAny(rel, "*?[") {
@@ -811,20 +930,22 @@ func (b *Builder) collectScriptArtifacts(ctx context.Context, jobs []pipeline.Jo
 				}
 				for _, m := range matches {
 					if relMatch, rerr := filepath.Rel(workspace, m); rerr == nil {
-						b.collectOneFileArtifact(ctx, workspace, relMatch, slug, jb.Name, stageName, rep, onLine)
+						b.collectOneFileArtifact(ctx, workspace, relMatch, slug, jb.Name, stageName, packMode, layout, rename, rep, onLine)
 					}
 				}
 				continue
 			}
-			b.collectOneFileArtifact(ctx, workspace, rel, slug, jb.Name, stageName, rep, onLine)
+			b.collectOneFileArtifact(ctx, workspace, rel, slug, jb.Name, stageName, packMode, layout, rename, rep, onLine)
 		}
 	}
 }
 
 // collectOneFileArtifact 收集单条文件产物路径:越界(.. / 绝对)拒绝;定位不到打日志跳过(不致命);
 // 类型按路径自动判(目录=dist、*.jar=jar、其它文件=archive)。产物 metadata 记来源节点(阶段 + job 名),
-// 供运行详情标注「哪个节点产的」。制品库未注入时 emit 占位引用,向后兼容。
-func (b *Builder) collectOneFileArtifact(ctx context.Context, workspace, rel, slug, jobName, stageName string, rep dagrun.StageReporter, onLine func(stream, line string)) {
+// 供运行详情标注「哪个节点产的」与部署节点产物精确绑定(sourceJob)。制品库未注入时 emit 占位引用。
+// 打包行为显式可配:packMode(tar|none,目录产物)、layout(contents|top,包内是否带顶层目录)、
+// rename(单文件落盘名);空值 = 旧行为(tar + contents + 原文件名),存量流水线部署结果不变。
+func (b *Builder) collectOneFileArtifact(ctx context.Context, workspace, rel, slug, jobName, stageName, packMode, layout, rename string, rep dagrun.StageReporter, onLine func(stream, line string)) {
 	clean := filepath.Clean(rel)
 	if filepath.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
 		onLine(streamStderr, "产物路径越界,已拒绝:"+rel)
@@ -846,15 +967,15 @@ func (b *Builder) collectOneFileArtifact(ctx context.Context, workspace, rel, sl
 	case fi.IsDir():
 		art.Type = run.ArtifactDist
 		art.SizeBytes = dirSize(full)
-		b.storeDistDir(art, full, onLine)
+		b.storeDistDir(art, full, packMode, layout, onLine)
 	case strings.HasSuffix(strings.ToLower(full), ".jar"):
 		art.Type = run.ArtifactJar
 		art.SizeBytes = fileSize(full)
-		b.storeJarBytes(art, full, onLine)
+		b.storeJarBytes(art, full, rename, onLine)
 	default:
 		art.Type = run.ArtifactArchive
 		art.SizeBytes = fileSize(full)
-		b.storeJarBytes(art, full, onLine) // 单文件原样字节归档(format=file)
+		b.storeJarBytes(art, full, rename, onLine) // 单文件原样字节归档(format=file)
 	}
 	if err := rep.EmitArtifact(ctx, *art); err != nil {
 		onLine(streamStderr, "登记产物失败:"+err.Error())

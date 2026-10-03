@@ -22,6 +22,7 @@ export default {
   countOk: '{n} 성공',
   countRolledBack: '{n} 롤백됨',
   countBad: '{n} 실패',
+  countPending: '{n} 배포 대기',
   targetStatusPending: '배포 대기',
   targetStatusDeploying: '배포 중',
   targetStatusSuccess: '성공',

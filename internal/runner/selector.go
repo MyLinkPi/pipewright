@@ -161,3 +161,19 @@ func MatchSelector(labelsRaw string, terms []string) bool {
 	}
 	return true
 }
+
+// MatchSelectorAny 判断服务器标签集是否命中选择器**任一**项(OR 语义)。
+// 供部署/健康检查节点的「匹配方式 = 满足任一条件」消费;构建机池仍只用 AND 的 MatchSelector。
+// 与 MatchSelector 同约束:空标签集不匹配任何非空选择器。
+func MatchSelectorAny(labelsRaw string, terms []string) bool {
+	if len(terms) == 0 {
+		return false
+	}
+	set := ParseLabels(labelsRaw)
+	for _, t := range terms {
+		if _, ok := set[t]; ok {
+			return true
+		}
+	}
+	return false
+}

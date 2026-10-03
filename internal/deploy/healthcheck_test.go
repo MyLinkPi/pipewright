@@ -86,8 +86,9 @@ func TestHealthCheckCommandFailRetriesExhausted(t *testing.T) {
 	if !strings.Contains(res[0].Message, "健康检查失败") {
 		t.Fatalf("message 应含「健康检查失败」: %q", res[0].Message)
 	}
-	if probeCalls != 3 {
-		t.Fatalf("探测应重试 3 次, got %d", probeCalls)
+	// 统一滚动:同一配置先做滚动前预检(3 次)再做部署后健康门控(3 次)→ 共 6 次。
+	if probeCalls != 6 {
+		t.Fatalf("探测应共 6 次(预检 3 + 门控 3), got %d", probeCalls)
 	}
 	// run 终态据健康结果置 failed。
 	rn, _ := rsvc.Get(context.Background(), runID)

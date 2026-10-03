@@ -305,9 +305,9 @@ func TestStageExecutorNonScriptPlaceholder(t *testing.T) {
 	exec := NewStageExecutor(b, nil)
 	rep := &fakeReporter{}
 
-	// health_check 仍是未真实化的类型 → 走诚实占位放行(script/build_image/deploy_ssh/notify 已支持,其余占位)。
+	// 未知类型 → 走诚实占位放行(script/build_image/deploy/health_check/notify 已支持,其余占位)。
 	stage := pipeline.Stage{ID: "s", Name: "门禁", Kind: pipeline.KindCustom,
-		Jobs: []pipeline.Job{{Name: "health", Type: "health_check", Config: map[string]any{}}}}
+		Jobs: []pipeline.Job{{Name: "mystery", Type: "not_a_real_type", Config: map[string]any{}}}}
 	if err := exec(context.Background(), &run.Run{ProjectID: "p1"}, stage, rep); err != nil {
 		t.Fatalf("exec: %v", err)
 	}
@@ -518,11 +518,8 @@ func (d *stubStageDeployer) Deploy(context.Context, deploy.DeployInput) ([]deplo
 func (d *stubStageDeployer) RetryFailed(context.Context, deploy.RetryInput) ([]deploy.TargetResult, error) {
 	panic("RetryFailed not expected")
 }
-func (d *stubStageDeployer) ContinueDeploy(context.Context, deploy.ContinueInput) ([]deploy.TargetResult, error) {
-	panic("ContinueDeploy not expected")
-}
-func (d *stubStageDeployer) AbortDeploy(context.Context, deploy.AbortInput) ([]deploy.TargetResult, error) {
-	panic("AbortDeploy not expected")
+func (d *stubStageDeployer) CheckHealth(context.Context, string, string, *deploy.HealthCheck) ([]deploy.HealthProbeResult, error) {
+	panic("CheckHealth not expected")
 }
 func (d *stubStageDeployer) DeployForStage(_ context.Context, _ string, selector string, cfg map[string]string, strategy string) ([]deploy.TargetResult, error) {
 	d.gotCfg = cfg

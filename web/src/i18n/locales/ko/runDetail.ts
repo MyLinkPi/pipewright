@@ -136,4 +136,11 @@ export default {
   multiTargetAria: "다중 호스트 대상 상태",
   multiTargetFanout: "다중 호스트 대상 팬아웃",
   noMultiResult: "아직 다중 호스트 배포 결과가 없습니다",
+  rollingBatches: 'Rolling batches',
+  firstBatchSize: 'First batch',
+  batchSizeEach: 'Batch size',
+  rollingBatchesHint: 'First batch verifies small (default 1 host); then N hosts per batch, 0 = all remaining at once; any batch failure stops the rollout.',
+  selectorMatchMode: 'Label matching',
+  selectorModeAll: 'Match all terms (AND)',
+  selectorModeAny: 'Match any term (OR)',
 };

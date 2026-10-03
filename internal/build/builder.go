@@ -578,7 +578,7 @@ func (b *Builder) locateFileArtifact(artifactType, slug, workspace string, onLin
 				Metadata: map[string]any{"builder": b.driver.Binary(), "path": filepath.Base(p)},
 			}
 			// 制品库:把 jar 真字节归档,reference 改存句柄(供部署取真字节);未配则保持占位。
-			b.storeJarBytes(art, p, onLine)
+			b.storeJarBytes(art, p, "", onLine)
 			return art
 		}
 	case pipeline.ArtifactDist:
@@ -592,8 +592,8 @@ func (b *Builder) locateFileArtifact(artifactType, slug, workspace string, onLin
 					Type: run.ArtifactDist, Name: slug + "-dist", Reference: d + "/", SizeBytes: size,
 					Metadata: map[string]any{"builder": b.driver.Binary(), "path": d + "/"},
 				}
-				// 制品库:把 dist 目录打 tar.gz 归档,reference 改存句柄;未配则保持占位。
-				b.storeDistDir(art, full, onLine)
+				// 制品库:把 dist 目录归档(旧路径无显式配置 → 默认 tar + 去顶层,行为不变)。
+				b.storeDistDir(art, full, "", "", onLine)
 				return art
 			}
 		}

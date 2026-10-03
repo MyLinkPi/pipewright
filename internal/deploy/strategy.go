@@ -1,22 +1,24 @@
 package deploy
 
-// strategy.go 实现「部署策略」(Story 8-8 / FR-8-8):在既有多机扇出之上叠加 **金丝雀(canary)**
-// 与 **蓝绿(blue-green)** 两种发布编排,默认 **滚动(rolling)** = 原有 deployFanout 行为不变。
+// strategy.go 实现「统一滚动部署」:预检(故障机优先排序)→ 分批(首批/每批台数可配)→
+// 任一批失败立即停止铺开 → 每机按产物类型 + 网关托管情况执行,失败机**独立**回滚。
 //
-// 策略是**机群级编排**关注点(如何在 N 台之间排序 / 门控 / 统一切换),不改单机执行语义:
-//   - rolling   : 全机有界并行,各机独立成败,失败机自行回滚(deployFanout,原状)。
-//   - canary    : 先发**金丝雀子集**(默认 1 台)→ 全过才铺其余;金丝雀任一失败 → 中止其余
-//                 (其余标 failed 人读「未部署,仍运行旧版本」)。复用 deployOne,任意产物类型。
-//   - blue_green: **stage-all → cutover-all**(release 类产物 dist/jar):全机先就绪发布目录(不切换),
-//                 全部就绪才统一原子切换 + 健康;切换阶段任一失败 → 把**已切换成功**的机一并回滚到上一发布
-//                 (机群级原子性)。非 release 产物(image/archive)无 stage/cutover 之分 → 退化 rolling。
+// 单机执行语义(deployOne)不变:
+//   - image + 网关托管   → maxSurge 换实例(起新→预热健康→upstream 原子换→排空→停旧,见
+//     instance_rolling.go;失败删新容器即可,旧实例未停,天然无需回滚);
+//   - image 非网关托管   → pull → rm 旧 → run 新 → 健康门控 → 失败回滚上一镜像(image_release.go);
+//   - dist/jar/archive   → 发布目录 + current 原子软链 → 重启命令 → 健康门控 → 失败回滚上一发布
+//     (release.go;回滚后会尽力重跑重启命令);
+//   - 命令型             → 直接执行 restartCommand。
+//
+// 网关联动(两种并存):网关托管机的文件/命令部署走「摘(upstream 摘除 + reload)→ 部署 →
+// 健康通过 → 挂回」;部署失败保持摘除(故障机不回流量)。
 //
 // 安全不变量沿用:命令 array 化(不拼 shell)、单机 panic recover、有界并发(maxParallelDeploys)、
 // message 无明文密钥、错误不上抛(映射 status + 人读)。
 
 import (
 	"context"
-	"fmt"
 	"strconv"
 	"strings"
 	"sync"
@@ -26,88 +28,140 @@ import (
 	"github.com/huangchengsir/pipewright/internal/target"
 )
 
-// 部署策略枚举(DeployInput.Strategy / Config["strategy"];空 / 未知 → instance_rolling)。
-const (
-	// StrategyInstanceRolling 实例级轮转(**默认**):配合服务注册网关(nginx)多实例 upstream,
-	// 逐实例「起新→预热健康→原子切换→排空→停旧」零停机替换(见 instance_rolling.go)。
-	// 回退:非 image 产物 / 未装配网关 / 反查不到匹配服务 → 与 rolling 完全一致的单机部署。
-	StrategyInstanceRolling = "instance_rolling"
-	// StrategyRolling 滚动发布:全机有界并行,各机独立成败(整容器硬切,窗口内该机短暂不可用)。
-	StrategyRolling = "rolling"
-	// StrategyCanary 金丝雀:先发小批,健康门控通过才铺其余,否则中止。
-	StrategyCanary = "canary"
-	// StrategyBlueGreen 蓝绿:全机先就绪、统一切换、机群级失败回滚(release 类产物)。
-	StrategyBlueGreen = "blue_green"
-	// StrategyInteractive 交互式分批:先发首批(同金丝雀子集)→ **暂停等人确认**,
-	// 不自动铺其余(对标云效 firstBatchPause)。其余机登记为 pending,经 ContinueDeploy 续发
-	// 或 AbortDeploy 中止。首批失败 → 不暂停,直接中止其余(同金丝雀失败语义)。
-	StrategyInteractive = "interactive"
-)
+// StrategyRolling 滚动发布(唯一保留策略):分批推进,各机独立成败、独立回滚。
+const StrategyRolling = "rolling"
 
-// NormalizeStrategy 归一策略串(大小写 / 连字符容错;空 / 未知 → instance_rolling 新默认;
-// 显式 rolling 可回到旧的整容器硬切滚动)。
-func NormalizeStrategy(s string) string {
-	switch strings.TrimSpace(strings.ToLower(s)) {
-	case StrategyRolling:
-		return StrategyRolling
-	case StrategyCanary:
-		return StrategyCanary
-	case StrategyBlueGreen, "blue-green", "bluegreen", "blue green":
-		return StrategyBlueGreen
-	case StrategyInteractive, "interactive-batch", "batch":
-		return StrategyInteractive
-	default:
-		// 含空串与 "instance_rolling" 及其变体 / 未知名 → 实例轮转(默认;反查不到服务时自动回退 rolling)。
-		return StrategyInstanceRolling
-	}
+// NormalizeStrategy 归一策略串:canary / blue_green / interactive / instance_rolling / recreate 等
+// 历史值**全部**归一为 rolling(存量配置兼容;策略收敛后滚动是唯一编排)。
+func NormalizeStrategy(string) string {
+	return StrategyRolling
 }
 
-// deployWithStrategy 按策略调度多机部署。结果按 servers 输入顺序对齐(稳定可断言)。
-func (s *service) deployWithStrategy(ctx context.Context, servers []*target.Server, a run.Artifact, cfg map[string]string, hc *HealthCheck, strategy string) []TargetResult {
-	switch strategy {
-	case StrategyInstanceRolling:
-		// 实例级轮转(默认):仅 image 产物可逐实例替换;其余类型直接旧路径(deployOne 内部
-		// 按产物分流,release/命令零变化)。单机内部自带「无匹配服务 → 旧滚动」回退。
-		if a.Type == run.ArtifactImage {
-			return s.deployInstanceRolling(ctx, servers, a, cfg, hc)
-		}
-		return s.deployFanout(ctx, servers, a, cfg, hc)
-	case StrategyCanary:
-		return s.deployCanary(ctx, servers, a, cfg, hc)
-	case StrategyBlueGreen:
-		// 蓝绿需 stage/cutover 两阶段:release 类文件产物(dist/jar/archive)走软链切换;image 走
-		// pull→停旧起新→回滚上一镜像;其余类型无两阶段语义 → 退化滚动。
-		switch {
-		case releaseModeArtifact(a):
-			return s.deployBlueGreen(ctx, servers, a, cfg, hc)
-		case a.Type == run.ArtifactImage:
-			return s.deployBlueGreenImage(ctx, servers, a, cfg, hc)
-		default:
-			return s.deployFanout(ctx, servers, a, cfg, hc)
-		}
-	default:
-		return s.deployFanout(ctx, servers, a, cfg, hc)
+// deployRolling 统一滚动编排(结果按 servers 输入顺序对齐,稳定可断言):
+//
+//  1. 预检排序(故障机优先):配置了健康检查 → 先对全部目标机逐台预检(复用 runHealthCheck),
+//     预检不过的排到队首先修,其余保持稳定顺序;预检原因记入该机结果 message。
+//  2. 分批:首批 = 排序后前 firstBatchSize 台(默认 1),之后每批 batchSize 台(默认全部剩余);
+//     任一批有失败 → 立即停止,未轮到的机器记 pending(未部署,仍运行旧版本)。
+//  3. 每机独立执行 + 独立回滚(deployOne;批次内并行 deployFanout)。
+func (s *service) deployRolling(ctx context.Context, servers []*target.Server, a run.Artifact, cfg map[string]string, hc *HealthCheck) []TargetResult {
+	total := len(servers)
+	if total == 0 {
+		return nil
 	}
+
+	// 1) 预检排序(故障机优先)。precheckReasons 记录预检未通过机器的人读原因。
+	order := make([]int, total)
+	for i := range order {
+		order[i] = i
+	}
+	precheckReasons := map[int]string{}
+	if hc.enabled() {
+		failing := s.precheckFailing(ctx, servers, hc)
+		if len(failing) > 0 {
+			ordered := make([]int, 0, total)
+			for _, i := range order {
+				if _, bad := failing[i]; bad {
+					ordered = append(ordered, i)
+				}
+			}
+			for _, i := range order {
+				if _, bad := failing[i]; !bad {
+					ordered = append(ordered, i)
+				}
+			}
+			order = ordered
+			for i, reason := range failing {
+				precheckReasons[i] = reason
+			}
+		}
+	}
+
+	// 2) 分批推进。批次序列:首批 firstN 台,其后每批 batchM 台(batchM<=0 = 全部剩余一批推完)。
+	firstN := firstBatchSize(cfg, total)
+	batchM := rollingBatchSize(cfg)
+	if batchM <= 0 {
+		batchM = total
+	}
+	results := make([]TargetResult, total)
+	stoppedAt := -1 // 首个出现失败的批次下标;-1 = 全部成功。
+	for start := 0; start < total; {
+		end := start + firstN
+		if start > 0 {
+			end = start + batchM
+		}
+		if end > total {
+			end = total
+		}
+		batchIdx := order[start:end]
+		batch := make([]*target.Server, 0, len(batchIdx))
+		for _, i := range batchIdx {
+			batch = append(batch, servers[i])
+		}
+		batchRes := s.deployFanout(ctx, batch, a, cfg, hc)
+		for j, r := range batchRes {
+			i := batchIdx[j]
+			if reason, bad := precheckReasons[i]; bad && r.Status == run.TargetFailed {
+				r.Message = "预检健康未通过(" + reason + "),已优先安排本机滚动;部署结果:" + r.Message
+			} else if reason, bad := precheckReasons[i]; bad {
+				r.Message = "预检健康未通过(" + reason + "),已优先安排本机滚动;" + r.Message
+			}
+			results[i] = r
+		}
+		if !allSuccess(batchRes) {
+			stoppedAt = end
+			break
+		}
+		start = end
+	}
+	if stoppedAt >= 0 {
+		// 任一批失败 → 停止铺开:未轮到的机器记 pending(未部署,仍运行旧版本)。
+		// pending 属「可重试」状态(RetryFailed 会一并推进),修复失败机后即可继续铺开。
+		now := time.Now().UTC()
+		for _, i := range order[stoppedAt:] {
+			results[i] = TargetResult{
+				ServerID:   servers[i].ID,
+				ServerName: servers[i].Name,
+				Status:     run.TargetPending,
+				Message:    "滚动部署在前一批失败后停止,本机未部署(仍运行旧版本);修复失败机后用「重试」继续铺开本机",
+				StartedAt:  now,
+			}
+		}
+	}
+	return results
 }
 
-// canaryCount 解析金丝雀批量(Config["canaryCount"] 优先;否则 Config["canaryPercent"] 向上取整)。
-// 默认 1 台。夹紧:总数 1 → 1(整体即金丝雀);否则 [1, total-1](至少留 1 台在「其余」)。
-func canaryCount(cfg map[string]string, total int) int {
-	if total <= 1 {
-		return total
-	}
+// precheckFailing 滚动前预检:对全部目标机用同一健康检查配置逐台探测(有界并发),
+// 返回「预检未通过」的机器下标 → 人读原因。探测失败(连接不上)同样算预检未通过。
+func (s *service) precheckFailing(ctx context.Context, servers []*target.Server, hc *HealthCheck) map[int]string {
+	reasons := make(map[int]string, len(servers))
+	var mu sync.Mutex
+	s.forEachServer(servers, func(idx int, srv *target.Server) {
+		perr := s.runHealthCheck(ctx, srv.ID, hc)
+		if perr == nil {
+			return
+		}
+		mu.Lock()
+		reasons[idx] = truncate(perr.Error())
+		mu.Unlock()
+	}, func(idx int, srv *target.Server) {
+		mu.Lock()
+		reasons[idx] = "预检执行异常中断"
+		mu.Unlock()
+	})
+	return reasons
+}
+
+// firstBatchSize 解析首批机器数(cfg["firstBatchSize"];默认 1)。夹紧 [1, total]。
+func firstBatchSize(cfg map[string]string, total int) int {
 	n := 1
-	if raw := strings.TrimSpace(cfg["canaryCount"]); raw != "" {
+	if raw := strings.TrimSpace(cfg["firstBatchSize"]); raw != "" {
 		if v, err := strconv.Atoi(raw); err == nil && v > 0 {
 			n = v
 		}
-	} else if raw := strings.TrimSpace(cfg["canaryPercent"]); raw != "" {
-		if v, err := strconv.Atoi(raw); err == nil && v > 0 {
-			n = (total*v + 99) / 100 // 向上取整
-		}
 	}
-	if n >= total {
-		n = total - 1
+	if n > total {
+		n = total
 	}
 	if n < 1 {
 		n = 1
@@ -115,7 +169,20 @@ func canaryCount(cfg map[string]string, total int) int {
 	return n
 }
 
-// allSuccess 报告一批结果是否全为 success(canary 门控 / 蓝绿 cutover 判定)。
+// rollingBatchSize 解析后续每批机器数(cfg["batchSize"];空 / 非法 → 0 = 全部剩余一批推完)。
+func rollingBatchSize(cfg map[string]string) int {
+	raw := strings.TrimSpace(cfg["batchSize"])
+	if raw == "" {
+		return 0
+	}
+	v, err := strconv.Atoi(raw)
+	if err != nil || v < 0 {
+		return 0
+	}
+	return v
+}
+
+// allSuccess 报告一批结果是否全为 success(批次门控判定)。
 func allSuccess(results []TargetResult) bool {
 	for i := range results {
 		if results[i].Status != run.TargetSuccess {
@@ -123,206 +190,6 @@ func allSuccess(results []TargetResult) bool {
 		}
 	}
 	return len(results) > 0
-}
-
-// abortedResult 合成「因门控中止、本机未部署」的结果(canary 中止其余 / 蓝绿预备中止)。
-func abortedResult(srv *target.Server, msg string) TargetResult {
-	now := time.Now().UTC()
-	return TargetResult{
-		ServerID:   srv.ID,
-		ServerName: srv.Name,
-		Status:     run.TargetFailed,
-		Message:    msg,
-		StartedAt:  now,
-		FinishedAt: &now,
-	}
-}
-
-// deployCanary 金丝雀发布:先发金丝雀子集,健康门控通过才铺其余;否则中止其余。
-func (s *service) deployCanary(ctx context.Context, servers []*target.Server, a run.Artifact, cfg map[string]string, hc *HealthCheck) []TargetResult {
-	total := len(servers)
-	if total == 0 {
-		return nil
-	}
-	n := canaryCount(cfg, total)
-	results := make([]TargetResult, total)
-
-	// 1) 金丝雀批次(servers[:n])。
-	canaryRes := s.deployFanout(ctx, servers[:n], a, cfg, hc)
-	copy(results[:n], canaryRes)
-
-	rest := servers[n:]
-	if len(rest) == 0 {
-		return results // 单机或全是金丝雀:无「其余」可铺。
-	}
-
-	// 2) 金丝雀全过 → 铺其余;否则中止其余(标 failed 人读,本机未部署)。
-	if allSuccess(canaryRes) {
-		restRes := s.deployFanout(ctx, rest, a, cfg, hc)
-		copy(results[n:], restRes)
-	} else {
-		for i, srv := range rest {
-			results[n+i] = abortedResult(srv, fmt.Sprintf("金丝雀批次(%d 台)未全部通过,已中止后续 %d 台部署(本机未部署,仍运行旧版本)", n, len(rest)))
-		}
-	}
-	return results
-}
-
-// deployBlueGreen 蓝绿发布(release 类产物):stage-all → cutover-all → 失败机群回滚。
-//
-//  1. **预备(stage-all)**:全机并行就绪发布目录(写产物,不切换 current)。任一就绪失败 →
-//     中止:已就绪的机不切换(仍运行旧版本),标 failed 人读;整体无任何切换(安全)。
-//  2. **切换(cutover-all)**:全机并行原子切换 current + 切后健康门控(activateReleaseOne)。
-//  3. **机群回滚**:cutover 阶段任一非 success(failed / 自身已 rolled_back)→ 把**本阶段切换成功**
-//     且有上一发布的机一并回滚到上一发布(标 rolled_back 人读),实现机群级「要么全切要么全退」。
-func (s *service) deployBlueGreen(ctx context.Context, servers []*target.Server, a run.Artifact, cfg map[string]string, hc *HealthCheck) []TargetResult {
-	n := len(servers)
-	if n == 0 {
-		return nil
-	}
-	results := make([]TargetResult, n)
-	states := make([]releaseState, n)
-	staged := make([]bool, n)
-	started := make([]time.Time, n)
-
-	// ── 阶段 1:全机就绪(不切换)──────────────────────────────────────────────
-	s.forEachServer(servers, func(idx int, srv *target.Server) {
-		started[idx] = time.Now().UTC()
-		st, failMsg, ok := s.stageReleaseOne(ctx, srv, a, cfg)
-		states[idx] = st
-		if !ok {
-			results[idx] = finishFailed(TargetResult{ServerID: srv.ID, ServerName: srv.Name, StartedAt: started[idx]}, failMsg)
-			return
-		}
-		staged[idx] = true
-	}, func(idx int, srv *target.Server) {
-		results[idx] = abortedResult(srv, "蓝绿预备阶段执行异常中断(本机未切换)")
-	})
-
-	// 任一就绪失败 → 中止:已就绪机不切换(仍运行旧版本),标 failed 人读。
-	allStaged := true
-	for i := range staged {
-		if !staged[i] {
-			allStaged = false
-			break
-		}
-	}
-	if !allStaged {
-		for i, srv := range servers {
-			if staged[i] {
-				results[i] = abortedResult(srv, "蓝绿:预备阶段其它机失败,已中止本机切换(仍运行旧版本)")
-			}
-		}
-		return results
-	}
-
-	// ── 阶段 2:全机统一切换 + 健康 ───────────────────────────────────────────
-	s.forEachServer(servers, func(idx int, srv *target.Server) {
-		results[idx] = s.activateReleaseOne(ctx, srv, a, cfg, hc, states[idx], started[idx])
-	}, func(idx int, srv *target.Server) {
-		results[idx] = abortedResult(srv, "蓝绿切换阶段执行异常中断")
-	})
-
-	// ── 阶段 3:切换阶段任一失败 → 已成功切换的机群回滚到上一发布 ──────────────
-	if !allSuccess(results) {
-		s.forEachServer(servers, func(idx int, srv *target.Server) {
-			if results[idx].Status != run.TargetSuccess {
-				return // 失败 / 已自行回滚的机不动。
-			}
-			if states[idx].prev == "" {
-				return // 首次部署无上一发布可回滚:保留(无更好选择;切换阶段它本机是健康的)。
-			}
-			s.fleetRollbackOne(ctx, srv, states[idx], &results[idx])
-		}, func(idx int, srv *target.Server) {
-			// 回滚异常:保留原成功结果,不致命(尽力回滚)。
-		})
-	}
-	return results
-}
-
-// deployBlueGreenImage 镜像蓝绿:stage-all(全机 pull)→ cutover-all(全机停旧起新+健康)→
-// 切换阶段任一失败则把已成功切换的机一并回滚到上一镜像(机群级原子性)。语义同 deployBlueGreen,
-// 只是单机原语换成 stageImageOne/activateImageOne(容器 pull/swap 而非软链切换)。
-func (s *service) deployBlueGreenImage(ctx context.Context, servers []*target.Server, a run.Artifact, cfg map[string]string, hc *HealthCheck) []TargetResult {
-	n := len(servers)
-	if n == 0 {
-		return nil
-	}
-	results := make([]TargetResult, n)
-	states := make([]imageState, n)
-	staged := make([]bool, n)
-	started := make([]time.Time, n)
-
-	// 阶段 1:全机 pull(不停旧容器)。
-	s.forEachServer(servers, func(idx int, srv *target.Server) {
-		started[idx] = time.Now().UTC()
-		st, failMsg, ok := s.stageImageOne(ctx, srv, a, cfg)
-		states[idx] = st
-		if !ok {
-			results[idx] = finishFailed(TargetResult{ServerID: srv.ID, ServerName: srv.Name, StartedAt: started[idx]}, failMsg)
-			return
-		}
-		staged[idx] = true
-	}, func(idx int, srv *target.Server) {
-		results[idx] = abortedResult(srv, "蓝绿预备(pull)阶段执行异常中断(本机未切换)")
-	})
-
-	allStaged := true
-	for i := range staged {
-		if !staged[i] {
-			allStaged = false
-			break
-		}
-	}
-	if !allStaged {
-		for i, srv := range servers {
-			if staged[i] {
-				results[i] = abortedResult(srv, "蓝绿:预备(pull)阶段其它机失败,已中止本机切换(旧容器仍在跑)")
-			}
-		}
-		return results
-	}
-
-	// 阶段 2:全机统一停旧起新 + 健康。
-	s.forEachServer(servers, func(idx int, srv *target.Server) {
-		results[idx] = s.activateImageOne(ctx, srv, a, hc, states[idx], started[idx], "蓝绿")
-	}, func(idx int, srv *target.Server) {
-		results[idx] = abortedResult(srv, "蓝绿切换阶段执行异常中断")
-	})
-
-	// 阶段 3:切换任一失败 → 已成功切换且有上一镜像的机一并回滚。
-	if !allSuccess(results) {
-		s.forEachServer(servers, func(idx int, srv *target.Server) {
-			if results[idx].Status != run.TargetSuccess || states[idx].prevImage == "" {
-				return
-			}
-			s.fleetRollbackImageOne(ctx, srv, states[idx], &results[idx])
-		}, func(idx int, srv *target.Server) {})
-	}
-	return results
-}
-
-// fleetRollbackOne 把一台「本机切换成功、但机群中其它机失败」的目标回滚到上一发布(蓝绿阶段 3)。
-// 原子切回 current → prev;就地改写该机结果为 rolled_back + 人读。回滚命令失败仍记 rolled_back(意图)。
-func (s *service) fleetRollbackOne(ctx context.Context, srv *target.Server, st releaseState, res *TargetResult) {
-	execCtx, cancel := context.WithTimeout(ctx, execTimeout)
-	defer cancel()
-
-	var rbErr error
-	for _, cmd := range atomicSymlinkCmds(st.prev, st.current) {
-		if _, e := s.exec(execCtx, srv.ID, cmd); e != nil {
-			rbErr = e
-			break
-		}
-	}
-	finish := time.Now().UTC()
-	res.Status = run.TargetRolledBack
-	res.FinishedAt = &finish
-	if rbErr != nil {
-		res.Message = "蓝绿:其它机切换失败,本机尝试回滚到上一发布但回滚命令执行失败:" + humanExecError(rbErr)
-		return
-	}
-	res.Message = "蓝绿:其它机切换失败,本机已回滚到上一发布(机群级原子性:要么全切要么全退)"
 }
 
 // forEachServer 以有界并发(maxParallelDeploys)对每台 server 跑 work;每 goroutine recover 兜底,

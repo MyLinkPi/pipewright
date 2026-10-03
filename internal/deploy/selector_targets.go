@@ -23,8 +23,24 @@ import (
 // ErrInvalidSelector 表示部署目标选择器语法非法(供 HTTP 层映射 422)。
 var ErrInvalidSelector = errors.New("deploy: invalid target selector")
 
+// 标签匹配方式(Config["selectorMode"] / DeployInput.SelectorMode):空 / 未知 → all(存量语义)。
+const (
+	// SelectorModeAll 满足全部标签项才命中(且;默认,与既有逗号语义一致)。
+	SelectorModeAll = "all"
+	// SelectorModeAny 满足任一标签项即命中(或)。
+	SelectorModeAny = "any"
+)
+
+// normalizeSelectorMode 归一匹配方式(空 / 未知 → all,保持存量 AND 语义)。
+func normalizeSelectorMode(s string) string {
+	if strings.TrimSpace(strings.ToLower(s)) == SelectorModeAny {
+		return SelectorModeAny
+	}
+	return SelectorModeAll
+}
+
 // resolveTargets 解析部署目标(见文件头语义)。servers 为 nil 且 err 为 nil = 无目标(跳过即成功)。
-func (s *service) resolveTargets(ctx context.Context, serverIDs []string, selector string) ([]*target.Server, error) {
+func (s *service) resolveTargets(ctx context.Context, serverIDs []string, selector, selectorMode string) ([]*target.Server, error) {
 	// 显式机器列表优先:逐台解析,任一不存在 → ErrServerNotFound(整次拒绝,不留半截)。
 	if len(serverIDs) > 0 {
 		servers := make([]*target.Server, 0, len(serverIDs))
@@ -56,7 +72,8 @@ func (s *service) resolveTargets(ctx context.Context, serverIDs []string, select
 		}
 		return []*target.Server{srv}, nil
 	}
-	// 标签选择器:语法复用构建机池纯函数,全表取机后 AND 匹配。
+	// 标签选择器:语法复用构建机池纯函数,全表取机后按 selectorMode 匹配
+	// (all = 全部项命中(且,默认 = 存量语义);any = 任一项命中(或))。
 	terms, err := runner.ParseSelector(selector)
 	if err != nil {
 		return nil, ErrInvalidSelector
@@ -65,9 +82,13 @@ func (s *service) resolveTargets(ctx context.Context, serverIDs []string, select
 	if err != nil {
 		return nil, err
 	}
+	match := runner.MatchSelector
+	if selectorMode == SelectorModeAny {
+		match = runner.MatchSelectorAny
+	}
 	servers := make([]*target.Server, 0, 4)
 	for _, srv := range all {
-		if runner.MatchSelector(srv.Labels, terms) {
+		if match(srv.Labels, terms) {
 			servers = append(servers, srv)
 		}
 	}

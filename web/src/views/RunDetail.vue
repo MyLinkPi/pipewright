@@ -22,8 +22,6 @@ import {
   subscribeRunEvents,
   deployRun,
   retryFailedDeploy,
-  continueDeploy,
-  abortDeploy,
   listApprovals,
   approveStage,
   rejectStage,
@@ -32,7 +30,6 @@ import {
   type DiagnosisDTO,
   type HealthCheckType,
   type HealthCheckInput,
-  type DeployStrategy,
   type ApprovalRecord,
 } from '../api/runs'
 import { listServers, type Server } from '../api/servers'
@@ -162,19 +159,18 @@ const showAdvanced = ref(false)
 const releaseBase = ref('')
 const keepReleases = ref(1)
 
-// ─── 部署策略(Story 8-8 / FR-8-8)──────────────────────────────────────────
-// rolling(默认)= 全机并行各自成败;canary = 先发金丝雀批次、健康通过才铺其余;
-// blue_green = 全机先就绪、统一切换、失败机群回滚(release 类产物 dist/jar)。
-// 金丝雀批量经 deployConfig.canaryCount 透传。
-const deployStrategy = ref<DeployStrategy>('instance_rolling')
-const canaryCount = ref(1)
+// ─── 统一滚动部署批次(策略已收敛为唯一滚动)───────────────────────────────────
+// firstBatchSize:首批机器数(默认 1,先小批验证);batchSize:之后每批同时升级台数
+// (空/0 = 其余一次推完)。任一批失败立即停止铺开,未轮到机器保持 pending。
+const firstBatchSize = ref(1)
+const batchSize = ref(0)
 
-const deployStrategyOptions = computed<ReadonlyArray<{ value: DeployStrategy; label: string; desc: string }>>(() => [
-  { value: 'instance_rolling', label: t('runDetail.strategyInstanceRollingLabel'), desc: t('runDetail.strategyInstanceRollingDesc') },
-  { value: 'rolling', label: t('runDetail.strategyRollingLabel'), desc: t('runDetail.strategyRollingDesc') },
-  { value: 'canary', label: t('runDetail.strategyCanaryLabel'), desc: t('runDetail.strategyCanaryDesc') },
-  { value: 'blue_green', label: t('runDetail.strategyBlueGreenLabel'), desc: t('runDetail.strategyBlueGreenDesc') },
-  { value: 'interactive', label: t('runDetail.strategyInteractiveLabel'), desc: t('runDetail.strategyInteractiveDesc') },
+// 标签匹配方式(多条件时):all = 满足全部条件(且,默认);any = 满足任一条件(或)。
+const selectorMode = ref<'all' | 'any'>('all')
+
+const selectorModeOptions = computed<ReadonlyArray<{ value: 'all' | 'any'; label: string }>>(() => [
+  { value: 'all', label: t('runDetail.selectorModeAll') },
+  { value: 'any', label: t('runDetail.selectorModeAny') },
 ])
 
 // buildDeployConfig 据高级选项收敛 deployConfig;空字段不传(后端取默认)。
@@ -185,11 +181,11 @@ function buildDeployConfig(): Record<string, string> | undefined {
   const keep = clampInt(keepReleases.value, 1, 50, 1)
   // 仅在非默认(1)时下发,避免无谓字段。
   if (keep !== 1) cfg.keepReleases = String(keep)
-  // 首批量:canary / interactive 策略且 >1 时下发(默认 1 台)。
-  if (deployStrategy.value === 'canary' || deployStrategy.value === 'interactive') {
-    const n = clampInt(canaryCount.value, 1, 100, 1)
-    if (n > 1) cfg.canaryCount = String(n)
-  }
+  // 滚动批次:首批 >1 时下发;每批 >0 时下发(0 = 其余一次推完)。
+  const fb = clampInt(firstBatchSize.value, 1, 100, 1)
+  if (fb > 1) cfg.firstBatchSize = String(fb)
+  const bs = clampInt(batchSize.value, 0, 100, 0)
+  if (bs > 0) cfg.batchSize = String(bs)
   return Object.keys(cfg).length > 0 ? cfg : undefined
 }
 
@@ -289,9 +285,9 @@ async function handleDeploy(): Promise<void> {
     const res = await deployRun(run.value.id, {
       artifactId: selectedArtifactId.value,
       selector,
+      selectorMode: selectorMode.value,
       deployConfig: buildDeployConfig(),
       healthCheck: buildHealthCheck(),
-      strategy: deployStrategy.value,
     })
     if (run.value.projectId) {
       localStorage.setItem(`pipewright_deploy_selector:${run.value.projectId}`, selector)
@@ -363,52 +359,8 @@ async function handleRetryFailed(): Promise<void> {
   }
 }
 
-// ─── 交互式分批部署:续发 / 中止(P0)─────────────────────────────────────────
-const batchBusy = ref(false)
-const batchError = ref('')
-
-// 是否有暂停待确认的批次(pending 目标存在)。
-const hasPendingTargets = computed(() =>
-  (run.value?.targets ?? []).some((t) => t.status === 'pending'),
-)
-const pendingCount = computed(() => (run.value?.targets ?? []).filter((t) => t.status === 'pending').length)
-
-async function handleContinueDeploy(): Promise<void> {
-  if (!run.value || batchBusy.value) return
-  const artifactId = selectedArtifactId.value || run.value.artifacts[0]?.id || ''
-  if (!artifactId) {
-    batchError.value = t('runDetail.noArtifactContinue')
-    return
-  }
-  batchBusy.value = true
-  batchError.value = ''
-  try {
-    const res = await continueDeploy(run.value.id, {
-      artifactId,
-      deployConfig: buildDeployConfig(),
-      healthCheck: buildHealthCheck(),
-    })
-    run.value = { ...run.value, targets: res.targets, status: deriveStatus(res.targets) }
-  } catch (err) {
-    batchError.value = err instanceof HttpError ? (err.apiError?.message ?? t('runDetail.continueFailed', { status: err.status })) : t('runDetail.continueRequestFailed')
-  } finally {
-    batchBusy.value = false
-  }
-}
-
-async function handleAbortDeploy(): Promise<void> {
-  if (!run.value || batchBusy.value) return
-  batchBusy.value = true
-  batchError.value = ''
-  try {
-    const res = await abortDeploy(run.value.id)
-    run.value = { ...run.value, targets: res.targets, status: deriveStatus(res.targets) }
-  } catch (err) {
-    batchError.value = err instanceof HttpError ? (err.apiError?.message ?? t('runDetail.abortFailed', { status: err.status })) : t('runDetail.abortRequestFailed')
-  } finally {
-    batchBusy.value = false
-  }
-}
+// (原「交互式分批部署:续发/中止」已随策略收敛移除:统一滚动分批自动推进,
+//  未铺开的机器保持 pending,可修复后用「重试失败目标」继续。)
 
 // ─── data loading ─────────────────────────────────────────────────────────────
 
@@ -876,25 +828,6 @@ function goBack(): void {
               @retry="handleRetryFailed"
             />
 
-            <!-- 交互式分批部署:暂停态(有 pending 目标)→ 继续 / 中止(P0)-->
-            <div v-if="hasPendingTargets" class="batch-pause" role="status">
-              <div class="batch-pause-head">
-                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
-                  <rect x="6" y="5" width="4" height="14" rx="1" /><rect x="14" y="5" width="4" height="14" rx="1" />
-                </svg>
-                <span>{{ t('runDetail.batchPausedPrefix') }}<strong>{{ pendingCount }}</strong>{{ t('runDetail.batchPausedSuffix') }}</span>
-              </div>
-              <p v-if="batchError" class="batch-pause-err" role="alert">{{ batchError }}</p>
-              <div class="batch-pause-actions">
-                <button class="batch-btn batch-btn--go" :disabled="batchBusy" @click="handleContinueDeploy">
-                  {{ batchBusy ? t('runDetail.processing') : t('runDetail.continueRest') }}
-                </button>
-                <button class="batch-btn batch-btn--abort" :disabled="batchBusy" @click="handleAbortDeploy">
-                  {{ t('runDetail.abortKeepOld') }}
-                </button>
-              </div>
-            </div>
-
             <!-- 部署入口:仅在有产物时可用 -->
             <div v-if="run.artifacts.length > 0" class="deploy-entry">
               <button
@@ -1007,32 +940,28 @@ function goBack(): void {
                   </p>
                 </div>
 
-                <!-- 部署策略(Story 8-8 / FR-8-8):rolling | canary | blue_green -->
+                <!-- 统一滚动批次(策略已收敛为滚动):首批台数 + 每批台数 -->
                 <div class="deploy-field">
-                  <span class="deploy-label">{{ t('runDetail.releaseStrategy') }}</span>
-                  <div class="strat-seg" role="radiogroup" :aria-label="t('runDetail.releaseStrategy')">
-                    <button
-                      v-for="opt in deployStrategyOptions"
-                      :key="opt.value"
-                      type="button"
-                      class="strat-opt"
-                      :class="{ 'strat-opt--active': deployStrategy === opt.value }"
-                      role="radio"
-                      :aria-checked="deployStrategy === opt.value"
-                      @click="deployStrategy = opt.value"
-                    >
-                      <span class="strat-opt-name">{{ opt.label }}</span>
-                      <span class="strat-opt-desc">{{ opt.desc }}</span>
-                    </button>
+                  <span class="deploy-label">{{ t('runDetail.rollingBatches') }}</span>
+                  <div class="hc-params">
+                    <label class="hc-param">
+                      <span class="hc-param-key">{{ t('runDetail.firstBatchSize') }}</span>
+                      <input v-model.number="firstBatchSize" class="hc-num" type="number" min="1" max="100" />
+                    </label>
+                    <label class="hc-param">
+                      <span class="hc-param-key">{{ t('runDetail.batchSizeEach') }}</span>
+                      <input v-model.number="batchSize" class="hc-num" type="number" min="0" max="100" />
+                    </label>
                   </div>
-                  <label v-if="deployStrategy === 'canary'" class="adv-row strat-canary">
-                    <span class="adv-key">{{ t('runDetail.canaryCount') }}</span>
-                    <input v-model.number="canaryCount" class="hc-num" type="number" min="1" max="100" :aria-label="t('runDetail.canaryCount')" />
-                    <span class="adv-hint strat-canary-hint">{{ t('runDetail.canaryHint') }}</span>
-                  </label>
-                  <p v-else-if="deployStrategy === 'blue_green'" class="adv-hint">
-                    {{ t('runDetail.blueGreenHint') }}
-                  </p>
+                  <p class="adv-hint">{{ t('runDetail.rollingBatchesHint') }}</p>
+                </div>
+
+                <!-- 标签匹配方式(多条件时):满足全部(且)/ 满足任一(或) -->
+                <div v-if="(deploySelector || '').split(',').filter((x) => x.trim()).length > 1" class="deploy-field">
+                  <span class="deploy-label">{{ t('runDetail.selectorMatchMode') }}</span>
+                  <select v-model="selectorMode" class="hc-select">
+                    <option v-for="opt in selectorModeOptions" :key="opt.value" :value="opt.value">{{ opt.label }}</option>
+                  </select>
                 </div>
 
                 <!-- 零停机切换高级选项(Story 4-4):默认隐藏;dist/jar 走 releases + current 软链 -->

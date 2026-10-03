@@ -130,4 +130,11 @@ export default {
   multiTargetAria: "多機目標狀態",
   multiTargetFanout: "多機目標扇出",
   noMultiResult: "暫無多機部署結果",
+  rollingBatches: '滚动批次',
+  firstBatchSize: '首批机器数',
+  batchSizeEach: '每批机器数',
+  rollingBatchesHint: '首批先小批验证(默认 1 台);之后每批同时升级台数,0 = 其余一次推完;任一批失败立即停止。',
+  selectorMatchMode: '标签匹配方式',
+  selectorModeAll: '满足全部条件(且)',
+  selectorModeAny: '满足任一条件(或)',
 };

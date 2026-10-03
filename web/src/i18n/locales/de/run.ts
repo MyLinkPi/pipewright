@@ -22,6 +22,7 @@ export default {
   countOk: '{n} erfolgreich',
   countRolledBack: '{n} zurückgerollt',
   countBad: '{n} fehlgeschlagen',
+  countPending: '{n} ausstehend',
   targetStatusPending: 'Bereitstellung ausstehend',
   targetStatusDeploying: 'Wird bereitgestellt',
   targetStatusSuccess: 'Erfolgreich',
