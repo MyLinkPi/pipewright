@@ -292,6 +292,126 @@ func TestDingtalkSignAlgorithm(t *testing.T) {
 	}
 }
 
+// 配置「自定义关键词」→ 发送时消息必含该词:标题加「【kw】」前缀(markdown 的 title 与
+// 正文首行 "# 标题" 均命中,钉钉对 title/text 做子串匹配)。
+func TestDingtalkKeywordInjectedIntoTitle(t *testing.T) {
+	var (
+		mu      sync.Mutex
+		gotBody []byte
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		gotBody = body
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"errcode":0,"errmsg":"ok"}`))
+	}))
+	defer srv.Close()
+
+	s, _, _ := newSvc(t, srv.Client())
+	ch, err := s.Create(ctx(), CreateInput{
+		Name: "kw-ding", Type: TypeDingtalk, Enabled: true,
+		Config: Config{URL: srv.URL + "/robot/send?access_token=abc", Keyword: "流水线"},
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	res, err := s.Test(ctx(), ch.ID)
+	if err != nil || !res.OK {
+		t.Fatalf("带关键词 test 应成功: %+v err=%v", res, err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	var sent dingtalkMarkdownBody
+	if err := json.Unmarshal(gotBody, &sent); err != nil {
+		t.Fatalf("POST 体应为合法 JSON: %s", gotBody)
+	}
+	if !strings.Contains(sent.Markdown.Title, "流水线") {
+		t.Fatalf("markdown.title 应含关键词: %q", sent.Markdown.Title)
+	}
+	if !strings.HasPrefix(sent.Markdown.Title, "【流水线】") {
+		t.Fatalf("标题缺关键词时应加「【流水线】」前缀: %q", sent.Markdown.Title)
+	}
+	if !strings.Contains(sent.Markdown.Text, "流水线") {
+		t.Fatalf("markdown.text 应含关键词(经标题行): %q", sent.Markdown.Text)
+	}
+}
+
+// 标题已含关键词(如用户自定义模板)→ 原样发送,不重复注入前缀。
+func TestDingtalkKeywordAlreadyPresentNoDoublePrefix(t *testing.T) {
+	var (
+		mu      sync.Mutex
+		gotBody []byte
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		gotBody = body
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"errcode":0,"errmsg":"ok"}`))
+	}))
+	defer srv.Close()
+
+	s, _, _ := newSvc(t, srv.Client())
+	ch, err := s.Create(ctx(), CreateInput{
+		Name: "kw-ding", Type: TypeDingtalk, Enabled: true,
+		Config: Config{URL: srv.URL + "/robot/send?access_token=abc", Keyword: "流水线"},
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := s.SendVia(ctx(), ch.ID, Payload{Title: "流水线 构建成功", Body: "ok"}); err != nil {
+		t.Fatalf("SendVia: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	var sent dingtalkMarkdownBody
+	if err := json.Unmarshal(gotBody, &sent); err != nil {
+		t.Fatalf("POST 体应为合法 JSON: %s", gotBody)
+	}
+	if sent.Markdown.Title != "流水线 构建成功" {
+		t.Fatalf("标题已含关键词应原样保留(不得重复前缀): %q", sent.Markdown.Title)
+	}
+}
+
+// 关键词归一:钉钉保留并 trim;企微无关键词安全设置,应丢弃。
+func TestDingtalkKeywordNormalized(t *testing.T) {
+	s, _, _ := newSvc(t, http.DefaultClient)
+	ch, err := s.Create(ctx(), CreateInput{
+		Name: "kw", Type: TypeDingtalk, Enabled: true,
+		Config: Config{URL: "https://oapi.dingtalk.com/robot/send?access_token=tok", Keyword: " 流水线 "},
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	got, err := s.Get(ctx(), ch.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Config.Keyword != "流水线" {
+		t.Fatalf("钉钉关键词应 trim 后保留,得 %q", got.Config.Keyword)
+	}
+
+	wc, err := s.Create(ctx(), CreateInput{
+		Name: "wc", Type: TypeWecom, Enabled: true,
+		Config: Config{URL: "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=k", Keyword: "流水线"},
+	})
+	if err != nil {
+		t.Fatalf("Create wecom: %v", err)
+	}
+	gotWc, err := s.Get(ctx(), wc.ID)
+	if err != nil {
+		t.Fatalf("Get wecom: %v", err)
+	}
+	if gotWc.Config.Keyword != "" {
+		t.Fatalf("企微不应保留关键词(无该安全设置),得 %q", gotWc.Config.Keyword)
+	}
+}
+
 // 通用 markdown 渲染:标题一级标题 + 正文 + 字段按业务顺序逐行(中文标签)。
 func TestRenderMarkdownBody(t *testing.T) {
 	md := renderMarkdownBody(Payload{

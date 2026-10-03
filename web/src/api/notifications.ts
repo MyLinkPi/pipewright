@@ -23,6 +23,8 @@ export type ChannelType = 'webhook' | 'email' | 'wecom' | 'dingtalk' | 'feishu'
 export interface ChannelConfig {
   // webhook
   url?: string
+  // dingtalk / feishu: custom-keyword security setting (plaintext; not a secret)
+  keyword?: string
   // email
   smtpHost?: string
   smtpPort?: number
@@ -47,6 +49,8 @@ export interface NotificationChannel {
 /** Per-type config sent on create/update. `password` is write-only. */
 export interface ChannelConfigInput {
   url?: string
+  /** dingtalk / feishu: custom-keyword security setting; empty = robot has none. */
+  keyword?: string
   smtpHost?: string
   smtpPort?: number
   from?: string

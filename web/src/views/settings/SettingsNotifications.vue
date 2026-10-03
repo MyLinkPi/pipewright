@@ -8,9 +8,9 @@
  *   - email SMTP password: WRITE-ONLY — never echoed; masked placeholder when stored
  *   - Test send with ok/latency/error result
  *   - Delete with confirm
- *   - feishu: custom-bot webhook (url + optional sign secret); sends interactive card
+ *   - feishu: custom-bot webhook (url + optional keyword + optional sign secret); sends interactive card
  *   - wecom: group-robot webhook (url only); sends markdown
- *   - dingtalk: group-robot webhook (url + optional sign secret); sends markdown
+ *   - dingtalk: group-robot webhook (url + optional keyword + optional sign secret); sends markdown
  *
  * Reuses: FormField / AppButton tokens from 1-6. No new UI libraries.
  * Animation: transform/opacity + prefers-reduced-motion. Sensitive fields never
@@ -167,6 +167,8 @@ const form = reactive({
   enabled: true,
   // webhook
   url: '',
+  // dingtalk / feishu: 自定义关键词安全设置(非敏感,回显;空 = 机器人未启用)
+  keyword: '',
   // email
   smtpHost: '',
   smtpPort: '' as string, // string for input; coerced on save
@@ -202,6 +204,7 @@ function resetForm(): void {
   form.type = 'webhook'
   form.enabled = true
   form.url = ''
+  form.keyword = ''
   form.smtpHost = ''
   form.smtpPort = ''
   form.from = ''
@@ -234,6 +237,7 @@ function openEdit(ch: NotificationChannel): void {
   form.type = ch.type
   form.enabled = ch.enabled
   form.url = ch.config.url ?? ''
+  form.keyword = ch.config.keyword ?? ''
   form.smtpHost = ch.config.smtpHost ?? ''
   form.smtpPort = ch.config.smtpPort != null ? String(ch.config.smtpPort) : ''
   form.from = ch.config.from ?? ''
@@ -312,8 +316,9 @@ function buildConfig(): ChannelConfigInput {
     return { url: form.url.trim() }
   }
   if (isFeishu.value) {
-    // 飞书:url=机器人 webhook 地址;password=可选签名密钥(机器人开启「签名校验」时填)。
-    const cfg: ChannelConfigInput = { url: form.url.trim() }
+    // 飞书:url=机器人 webhook 地址;keyword=可选「自定义关键词」(安全设置启用关键词校验时填)。
+    // password=可选签名密钥(机器人开启「签名校验」时填)。
+    const cfg: ChannelConfigInput = { url: form.url.trim(), keyword: form.keyword.trim() }
     if (form.password) cfg.password = form.password
     return cfg
   }
@@ -322,8 +327,9 @@ function buildConfig(): ChannelConfigInput {
     return { url: form.url.trim() }
   }
   if (isDingtalk.value) {
-    // 钉钉群机器人:url=机器人 webhook 地址;password=可选加签密钥(安全设置选「加签」时填)。
-    const cfg: ChannelConfigInput = { url: form.url.trim() }
+    // 钉钉群机器人:url=机器人 webhook 地址;keyword=可选「自定义关键词」(安全设置选
+    // 「自定义关键词」时填其一);password=可选加签密钥(安全设置选「加签」时填)。
+    const cfg: ChannelConfigInput = { url: form.url.trim(), keyword: form.keyword.trim() }
     if (form.password) cfg.password = form.password
     return cfg
   }
@@ -994,6 +1000,25 @@ function configSummary(ch: NotificationChannel): string {
                 </div>
                 <div class="config-row">
                   <FormField
+                    :label="t('settingsNotifications.feishuKeyword')"
+                    field-id="nt-fs-keyword"
+                    :hint="t('settingsNotifications.feishuKeywordHint')"
+                  >
+                    <template #default="{ fieldId, ariaDescribedby }">
+                      <input
+                        :id="fieldId"
+                        v-model="form.keyword"
+                        type="text"
+                        class="field-input"
+                        :placeholder="t('settingsNotifications.keywordPlaceholder')"
+                        :aria-describedby="ariaDescribedby"
+                        :disabled="saving"
+                      />
+                    </template>
+                  </FormField>
+                </div>
+                <div class="config-row">
+                  <FormField
                     :label="t('settingsNotifications.signSecret')"
                     field-id="nt-fs-secret"
                     :hint="hasStoredPassword ? t('settingsNotifications.secretStoredHint') : t('settingsNotifications.signSecretHint')"
@@ -1060,6 +1085,25 @@ function configSummary(ch: NotificationChannel): string {
                         :aria-describedby="ariaDescribedby"
                         :disabled="saving"
                         @input="fieldErrors.url = ''"
+                      />
+                    </template>
+                  </FormField>
+                </div>
+                <div class="config-row">
+                  <FormField
+                    :label="t('settingsNotifications.dingtalkKeyword')"
+                    field-id="nt-dt-keyword"
+                    :hint="t('settingsNotifications.dingtalkKeywordHint')"
+                  >
+                    <template #default="{ fieldId, ariaDescribedby }">
+                      <input
+                        :id="fieldId"
+                        v-model="form.keyword"
+                        type="text"
+                        class="field-input"
+                        :placeholder="t('settingsNotifications.keywordPlaceholder')"
+                        :aria-describedby="ariaDescribedby"
+                        :disabled="saving"
                       />
                     </template>
                   </FormField>

@@ -37,6 +37,10 @@ export default {
   feishuUrl: 'Lark 봇 Webhook 주소',
   feishuUrlHint:
     'Lark 그룹의 "설정 → 그룹 봇 → 사용자 지정 봇"의 Webhook 주소(open.feishu.cn/open-apis/bot/v2/hook/…)',
+  feishuKeyword: '사용자 지정 키워드(선택)',
+  feishuKeywordHint:
+    '봇의 "보안 설정"에서 "사용자 지정 키워드"를 사용하는 경우 등록된 키워드 중 하나를 입력하세요. 메시지에 없으면 제목에 자동으로 붙습니다',
+  keywordPlaceholder: '예: 파이프라인',
   signSecret: '서명 키(선택)',
   signSecretHint: '봇에서 "서명 검증"을 켠 경우에만 입력하세요. 저장 후에는 다시 표시되지 않습니다',
   signSecretPlaceholder: '봇에서 서명 검증을 켜지 않았다면 비워 두세요',
@@ -48,6 +52,9 @@ export default {
   dingtalkUrl: 'DingTalk 봇 Webhook 주소',
   dingtalkUrlHint:
     'DingTalk 그룹의 "그룹 설정 → 그룹 도우미 → 봇 추가 → 사용자 지정"의 Webhook 주소(oapi.dingtalk.com/robot/send?access_token=…)',
+  dingtalkKeyword: '사용자 지정 키워드(선택)',
+  dingtalkKeywordHint:
+    '봇의 "보안 설정"에서 "사용자 지정 키워드"를 선택한 경우 등록된 키워드 중 하나를 입력하세요. 메시지에 없으면 제목에 자동으로 붙습니다',
   dingtalkSignSecret: '서명 키(선택)',
   dingtalkSignSecretHint: '봇의 "보안 설정"에서 "서명 추가"를 선택한 경우에만 입력하세요. 저장 후에는 다시 표시되지 않습니다',
   dingtalkSignSecretPlaceholder: '봇에서 "서명 추가"를 선택하지 않았다면 비워 두세요',

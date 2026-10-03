@@ -63,6 +63,47 @@ func TestFeishuSendSuccess(t *testing.T) {
 	}
 }
 
+// 配置「自定义关键词」→ 卡片标题含该词(加「【kw】」前缀),飞书关键词校验按内容子串匹配。
+func TestFeishuKeywordInjectedIntoCardTitle(t *testing.T) {
+	var (
+		mu      sync.Mutex
+		gotBody []byte
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		gotBody = body
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"code":0,"msg":"success"}`))
+	}))
+	defer srv.Close()
+
+	s, _, _ := newSvc(t, srv.Client())
+	ch, err := s.Create(ctx(), CreateInput{
+		Name: "kw-feishu", Type: TypeFeishu, Enabled: true,
+		Config: Config{URL: srv.URL + "/open-apis/bot/v2/hook/abc", Keyword: "流水线"},
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	res, err := s.Test(ctx(), ch.ID)
+	if err != nil || !res.OK {
+		t.Fatalf("带关键词 test 应成功: %+v err=%v", res, err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	var sent feishuCardBody
+	if err := json.Unmarshal(gotBody, &sent); err != nil {
+		t.Fatalf("POST 体应为合法 JSON: %s", gotBody)
+	}
+	if !strings.Contains(sent.Card.Header.Title.Content, "流水线") {
+		t.Fatalf("卡片标题应含关键词: %q", sent.Card.Header.Title.Content)
+	}
+}
+
 // 关键回归守卫:飞书参数错误**也回 HTTP 200**,但 body 内 code!=0。
 // 必须解析 code 判失败(否则误报成功、群里收不到)——这正是通用 webhook 渠道发不进飞书的坑。
 func TestFeishuRejectedHTTP200ButCodeNonZero(t *testing.T) {

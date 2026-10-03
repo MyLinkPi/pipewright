@@ -21,7 +21,8 @@ import (
 // 钉钉自定义群机器人投递。
 //
 // 配置 = 群机器人 webhook 地址(复用 ChannelConfig.URL)+ 可选加签密钥(走 vault 加密,
-// 与 email SMTP 密码同一套 write-only 密文模式)。报文形状为钉钉 markdown:
+// 与 email SMTP 密码同一套 write-only 密文模式)+ 可选「自定义关键词」(非敏感,明文入库)。
+// 报文形状为钉钉 markdown:
 //
 //	{"msgtype":"markdown","markdown":{"title":"<标题>","text":"<markdown 正文>"}}
 //
@@ -30,6 +31,10 @@ import (
 //   - stringToSign = "{timestamp}\n{secret}"
 //   - sign = urlEncode( base64( HMAC-SHA256(key=secret, message=stringToSign) ) )
 //   - 把 &timestamp=...&sign=... 附到 webhook URL query 上。
+//
+// 可选关键词:机器人「安全设置」选「自定义关键词」时,配置里存其中一个已注册关键词。
+// 钉钉对 markdown 的 title 与 text 做子串匹配(至少含一个关键词才放行,errcode=310000);
+// 发送前经 ensureKeyword 保证消息含该词(缺则标题加「【kw】」前缀)。
 //
 // 成功判定:钉钉即便参数/签名错误也常回 HTTP 200,但 body 内 errcode!=0,必须解析判定。
 // SSRF 收口与通用 webhook 一致(投递前再校验一次 URL,CheckRedirect 每跳复校)。
@@ -79,10 +84,13 @@ func (s *service) sendDingtalk(ctx context.Context, ch *Channel, sealed []byte, 
 		}
 	}
 
-	title := strings.TrimSpace(payload.Title)
-	if title == "" {
-		title = i18n.T(payload.Lang, "Pipewright 通知")
+	// 标题缺省先补齐,再保证「自定义关键词」:顺序反了会让空前标题吞掉缺省标题。
+	if strings.TrimSpace(payload.Title) == "" {
+		payload.Title = i18n.T(payload.Lang, "Pipewright 通知")
 	}
+	payload = ensureKeyword(payload, ch.Config.Keyword)
+
+	title := strings.TrimSpace(payload.Title)
 	body := dingtalkMarkdownBody{
 		MsgType: "markdown",
 		Markdown: dingtalkMarkdownObj{

@@ -36,6 +36,9 @@ export default {
   feishuUrl: 'Lark 機器人 Webhook 位址',
   feishuUrlHint:
     'Lark 群組「設定 → 群組機器人 → 自訂機器人」的 Webhook 位址(open.feishu.cn/open-apis/bot/v2/hook/…)',
+  feishuKeyword: '自訂關鍵字(選填)',
+  feishuKeywordHint: '機器人「安全設定」啟用「自訂關鍵字」時,填其中一個已註冊關鍵字;發送時訊息未含該詞會自動補進標題',
+  keywordPlaceholder: '如:流水線',
   signSecret: '簽章密鑰(選填)',
   signSecretHint: '僅當機器人開啟「簽章驗證」時填寫;寫入後絕不回顯',
   signSecretPlaceholder: '機器人未開啟簽章驗證則留空',
@@ -47,6 +50,8 @@ export default {
   dingtalkUrl: 'DingTalk 機器人 Webhook 位址',
   dingtalkUrlHint:
     'DingTalk 群組「群組設定 → 智能群助手 → 新增機器人 → 自訂」的 Webhook 位址(oapi.dingtalk.com/robot/send?access_token=…)',
+  dingtalkKeyword: '自訂關鍵字(選填)',
+  dingtalkKeywordHint: '機器人「安全設定」選「自訂關鍵字」時,填其中一個已註冊關鍵字;發送時訊息未含該詞會自動補進標題',
   dingtalkSignSecret: '加簽密鑰(選填)',
   dingtalkSignSecretHint: '僅當機器人「安全設定」選「加簽」時填寫;寫入後絕不回顯',
   dingtalkSignSecretPlaceholder: '機器人未選「加簽」則留空',

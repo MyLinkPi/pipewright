@@ -114,7 +114,8 @@ const router = createRouter({
         { path: 'onboarding', name: 'onboarding', component: Onboarding, meta: { title: '快速上手' } },
         { path: 'projects', name: 'projects', component: Projects, meta: { title: '项目' } },
         // Story 2-2: 4-tab pipeline editor (primary config entry point)
-        { path: 'projects/:id/pipeline', name: 'project-pipeline', component: ProjectPipeline, meta: { title: '流水线' } },
+        // fullBleed: 编辑器是全幅工作面板(AppShell 据此放开 --content-max 宽度上限,画布吃满宽屏)。
+        { path: 'projects/:id/pipeline', name: 'project-pipeline', component: ProjectPipeline, meta: { title: '流水线', fullBleed: true } },
         // Story 2-3: backward-compat standalone triggers page
         { path: 'projects/:id/triggers', name: 'project-triggers', component: ProjectTriggers, meta: { title: '触发器' } },
         // Story 7-4: read-only code browsing (FR-4)

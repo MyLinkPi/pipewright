@@ -248,6 +248,39 @@ func TestWecomDingtalkRequireURLViaAPI(t *testing.T) {
 	}
 }
 
+// 钉钉「自定义关键词」:创建/更新经 API 应持久化并在响应回显(非敏感配置)。
+func TestDingtalkKeywordRoundTripViaAPI(t *testing.T) {
+	srv, client, csrf := setupNotifyServer(t, nil)
+	base := srv.URL + "/api/notifications/channels"
+
+	resp := doJSON(t, client, http.MethodPost, base, csrf,
+		`{"name":"ding","type":"dingtalk","enabled":true,"config":{"url":"https://oapi.dingtalk.com/robot/send?access_token=tok","keyword":"流水线"}}`)
+	if resp.StatusCode != http.StatusCreated {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("create status = %d (%s)", resp.StatusCode, raw)
+	}
+	m := decodeMap(t, resp)
+	resp.Body.Close()
+	cfg, _ := m["config"].(map[string]any)
+	if cfg["keyword"] != "流水线" {
+		t.Fatalf("create 响应应回显 config.keyword=流水线: %v", cfg)
+	}
+	id, _ := m["id"].(string)
+
+	resp = doJSON(t, client, http.MethodPut, base+"/"+id, csrf,
+		`{"name":"ding","enabled":true,"config":{"url":"https://oapi.dingtalk.com/robot/send?access_token=tok","keyword":"部署"}}`)
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("update status = %d (%s)", resp.StatusCode, raw)
+	}
+	m = decodeMap(t, resp)
+	resp.Body.Close()
+	cfg, _ = m["config"].(map[string]any)
+	if cfg["keyword"] != "部署" {
+		t.Fatalf("update 后应回显新关键词: %v", cfg)
+	}
+}
+
 // 未注入 notify 服务 → 503。
 func TestNotifyServiceUnavailable(t *testing.T) {
 	st := testStoreAuth(t)
