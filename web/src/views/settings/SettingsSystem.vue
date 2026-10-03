@@ -88,7 +88,11 @@ function pollSourceJob(from: string): void {
       srcMessage.value = st.message ?? ''
       if (st.log) srcLog.value = st.log
       if (st.error) return srcFail(st.error)
-      if (st.done || st.step === 'restart') {
+      if (st.done || st.step === 'restart' || !st.running) {
+        // done / step=restart 是显式完成态;而 running=false 且无 error 时,任务快照多半
+        // 已随旧进程丢失(install.sh 的 systemctl restart / 裸跑 re-exec 都会换掉进程,
+        // 内存任务态不跨进程)——在空快照上干等会永远卡住。一律转去轮询 /version,
+        // 版本切到新版即整页刷新加载新前端。
         stopSrcPoll()
         srcPhase.value = 'restarting'
         pollUntilRestarted(from)
@@ -242,9 +246,12 @@ function pollUntilRestarted(from: string): void {
     }
     if (tries > 40) {
       // ~60s 仍未起来:停止轮询,提示手动刷新(更新已就位,可能需手动重启)。
+      // source 模式的展示分支优先于 updatePhase,超时须同步落到 srcPhase 才能露出错误。
       window.clearInterval(timer)
       updatePhase.value = 'error'
       updateMsg.value = t('settingsSystem.restartTimeout')
+      srcPhase.value = 'error'
+      srcMessage.value = t('settingsSystem.restartTimeout')
     }
   }, 1500)
 }
