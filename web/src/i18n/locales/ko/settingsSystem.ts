@@ -70,4 +70,7 @@ export default {
   updateSrcFromConfig: '아래 설정에서',
   updateSrcFromEnv: '환경 변수 PIPEWRIGHT_RELEASE_MIRROR에서',
   updateSrcFromDefault: '기본값 · 미러 미설정',
+
+  langTitle: '인터페이스 언어',
+  langSub: 'UI 표시 언어를 전환합니다. 즉시 적용됩니다.',
 }

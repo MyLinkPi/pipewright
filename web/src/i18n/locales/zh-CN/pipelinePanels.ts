@@ -147,7 +147,7 @@ export default {
   vpScopeTriggers: '触发设置',
   vpScopeEnvs: '环境与凭据',
 
-  // ─── RiskAnnotationPanel ───────────────────────────────────────
+  // ─── RiskAnnotationModal ───────────────────────────────────────
   rapAria: 'AI 脚本风险标注',
   rapTitle: 'AI 脚本风险标注',
   rapSubtitle: '护城河 · 提交前先体检',
@@ -169,6 +169,7 @@ export default {
   rapAiTitle: 'AI 语义分析',
   rapFailed: '风险标注失败({status})',
   rapFailedRetry: '风险标注失败,请稍后重试',
+  rapCloseAria: '关闭',
 
   // ─── TemplatePickerModal ───────────────────────────────────────
   tplAria: '流水线模板',

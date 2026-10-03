@@ -70,4 +70,7 @@ export default {
   updateSrcFromConfig: 'from the setting below',
   updateSrcFromEnv: 'from env PIPEWRIGHT_RELEASE_MIRROR',
   updateSrcFromDefault: 'default · no mirror configured',
+
+  langTitle: 'Interface language',
+  langSub: 'Switch the UI language. Takes effect immediately.',
 }

@@ -70,4 +70,7 @@ export default {
   updateSrcFromConfig: 'du réglage ci-dessous',
   updateSrcFromEnv: 'de la variable d’environnement PIPEWRIGHT_RELEASE_MIRROR',
   updateSrcFromDefault: 'par défaut · aucun miroir configuré',
+
+  langTitle: 'Langue de l’interface',
+  langSub: 'Change la langue de l’interface. Prend effet immédiatement.',
 }

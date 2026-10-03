@@ -147,7 +147,7 @@ export default {
   vpScopeTriggers: 'Paramètres de déclenchement',
   vpScopeEnvs: 'Environnements et identifiants',
 
-  // ─── RiskAnnotationPanel ───────────────────────────────────────
+  // ─── RiskAnnotationModal ───────────────────────────────────────
   rapAria: 'Annotation des risques de script par IA',
   rapTitle: 'Annotation des risques de script par IA',
   rapSubtitle: 'Rempart · un bilan avant de valider',
@@ -169,6 +169,7 @@ export default {
   rapAiTitle: 'Analyse sémantique IA',
   rapFailed: 'Échec de l’annotation des risques ({status})',
   rapFailedRetry: 'Échec de l’annotation des risques, veuillez réessayer plus tard',
+  rapCloseAria: 'Fermer',
 
   // ─── TemplatePickerModal ───────────────────────────────────────
   tplAria: 'Modèles de Pipeline',

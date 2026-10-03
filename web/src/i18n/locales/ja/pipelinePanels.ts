@@ -147,7 +147,7 @@ export default {
   vpScopeTriggers: 'トリガー設定',
   vpScopeEnvs: '環境と認証情報',
 
-  // ─── RiskAnnotationPanel ───────────────────────────────────────
+  // ─── RiskAnnotationModal ───────────────────────────────────────
   rapAria: 'AI スクリプトリスク注釈',
   rapTitle: 'AI スクリプトリスク注釈',
   rapSubtitle: 'モート · コミット前の健康診断',
@@ -169,6 +169,7 @@ export default {
   rapAiTitle: 'AI セマンティック分析',
   rapFailed: 'リスク注釈に失敗しました（{status}）',
   rapFailedRetry: 'リスク注釈に失敗しました。しばらくして再試行してください',
+  rapCloseAria: '閉じる',
 
   // ─── TemplatePickerModal ───────────────────────────────────────
   tplAria: 'パイプラインテンプレート',

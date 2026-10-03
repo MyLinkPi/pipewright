@@ -29,7 +29,7 @@ import EnvCredsTab from '../components/pipeline/EnvCredsTab.vue'
 import TriggersPanel from '../components/TriggersPanel.vue'
 import ValidationPanel from '../components/pipeline/ValidationPanel.vue'
 import AIGenerateWizard from '../components/pipeline/AIGenerateWizard.vue'
-import RiskAnnotationPanel from '../components/pipeline/RiskAnnotationPanel.vue'
+import RiskAnnotationModal from '../components/pipeline/RiskAnnotationModal.vue'
 import YamlImportModal from '../components/pipeline/YamlImportModal.vue'
 import TemplatePickerModal from '../components/pipeline/TemplatePickerModal.vue'
 import PacPreviewModal from '../components/pipeline/PacPreviewModal.vue'
@@ -307,6 +307,14 @@ function handleAI(): void {
   aiWizardOpen.value = true
 }
 
+// ─── AI 脚本风险标注(护城河;原画布下方常驻面板收进弹窗) ────────────────────────
+
+const riskModalOpen = ref(false)
+
+function handleRiskScan(): void {
+  riskModalOpen.value = true
+}
+
 // ─── YAML import (Pipeline-as-code, FR-8-12) ──────────────────────────────────
 
 const yamlImportOpen = ref(false)
@@ -493,6 +501,15 @@ async function togglePrStatus(next: boolean): Promise<void> {
             <path d="M3 12h3.5l2.2-6 3.6 12 2.4-7 1.3 1h4.5"/>
           </svg>
           {{ t('projectPipeline.aiGenerate') }}
+        </button>
+
+        <!-- AI 脚本风险标注(护城河):原画布底部常驻面板收进弹窗,低频体检不占版面 -->
+        <button class="top-btn top-btn--risk" :disabled="saveSubmitting" :aria-label="t('pipelinePanels.rapAria')" @click="handleRiskScan">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+            <path d="M12 8v4M12 16h.01"/>
+          </svg>
+          {{ t('pipelinePanels.rapTitle') }}
         </button>
 
         <button class="top-btn" :disabled="saveSubmitting" @click="handleImport">
@@ -709,12 +726,6 @@ async function togglePrStatus(next: boolean): Promise<void> {
             :channels="channels"
             @update="handleCanvasUpdate"
           />
-
-          <!-- AI 脚本风险标注(护城河):对脚本步骤命令做风险体检,提交前先发现高危/泄漏/不可复现项 -->
-          <RiskAnnotationPanel
-            v-if="loadState === 'idle' && pipeline"
-            :project-id="projectId"
-          />
         </div>
 
         <!-- 变量与缓存 -->
@@ -818,6 +829,13 @@ async function togglePrStatus(next: boolean): Promise<void> {
       @close="pacPreviewOpen = false"
     />
 
+    <!-- ─── AI 脚本风险标注弹窗(护城河) ─────────────────────────────────── -->
+    <RiskAnnotationModal
+      v-if="riskModalOpen"
+      :project-id="projectId"
+      @close="riskModalOpen = false"
+    />
+
   </div>
 </template>
 
@@ -836,13 +854,12 @@ async function togglePrStatus(next: boolean): Promise<void> {
    * 底部只留一小段呼吸位(而非整段 --main-pad-bottom):编辑器是全幅工作面板,把原本
    * ~90px 的底部留白还给画布,缓解「画布高度太窄」。
    *
-   * ⚠ 两处必须对齐父内边距,否则编辑器比视口高、整页滚动、底部风险面板划不到/被截:
-   *  ① 顶部减 .main-inner 的**完整** padding-top = calc(--main-pad-top + 38px)(见 AppShell);
-   *     原来只减了 --main-pad-top,漏掉 38px。
+   * ⚠ 两处必须对齐父内边距,否则编辑器比视口高、整页滚动、底部内容划不到/被截:
+   *  ① 顶部减 .main-inner 的 padding-top = --main-pad-top(见 AppShell)。
    *  ② 用负 margin-bottom 收掉 .main-inner 的 padding-bottom(--main-pad-bottom,默认 90px,
    *     是给普通页准备的),只留 20px 呼吸位 —— 否则那 90px 叠在定高面板下方又把文档顶出视口。
    */
-  height: calc(100vh - var(--main-pad-top) - 38px - 20px);
+  height: calc(100vh - var(--main-pad-top) - 20px);
   margin-bottom: calc(20px - var(--main-pad-bottom));
   min-height: 0;
   gap: 0;
@@ -910,6 +927,9 @@ async function togglePrStatus(next: boolean): Promise<void> {
   align-items: center;
   gap: 8px;
   flex: none;
+  /* 新增风险标注按钮后共 6 个操作:窄屏允许换行,避免溢出标题区 */
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
 .top-btn {
@@ -947,6 +967,15 @@ async function togglePrStatus(next: boolean): Promise<void> {
 .top-btn--ai {
   color: var(--color-cyan);
   border-color: var(--color-cyan-line);
+}
+
+/* 风险标注:与 AI 按钮同族(青色描边),hover 略微加重以示可点 */
+.top-btn--risk {
+  color: var(--color-cyan);
+  border-color: var(--color-cyan-line);
+}
+.top-btn--risk:hover:not(:disabled) {
+  border-color: var(--color-cyan);
 }
 
 .top-btn--save {

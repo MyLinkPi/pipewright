@@ -70,4 +70,7 @@ export default {
   updateSrcFromConfig: '来自下方配置',
   updateSrcFromEnv: '来自环境变量 PIPEWRIGHT_RELEASE_MIRROR',
   updateSrcFromDefault: '默认 · 未配置镜像',
+
+  langTitle: '界面语言',
+  langSub: '切换界面显示语言,立即生效。',
 }

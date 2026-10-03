@@ -147,7 +147,7 @@ export default {
   vpScopeTriggers: '트리거 설정',
   vpScopeEnvs: '환경과 자격 증명',
 
-  // ─── RiskAnnotationPanel ───────────────────────────────────────
+  // ─── RiskAnnotationModal ───────────────────────────────────────
   rapAria: 'AI 스크립트 위험 주석',
   rapTitle: 'AI 스크립트 위험 주석',
   rapSubtitle: '해자 · 커밋 전 건강 검진',
@@ -169,6 +169,7 @@ export default {
   rapAiTitle: 'AI 의미 분석',
   rapFailed: '위험 주석 실패({status})',
   rapFailedRetry: '위험 주석에 실패했습니다. 잠시 후 다시 시도하세요',
+  rapCloseAria: '닫기',
 
   // ─── TemplatePickerModal ───────────────────────────────────────
   tplAria: '파이프라인 템플릿',

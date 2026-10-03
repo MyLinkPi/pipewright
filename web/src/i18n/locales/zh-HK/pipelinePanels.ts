@@ -147,7 +147,7 @@ export default {
   vpScopeTriggers: '觸發設定',
   vpScopeEnvs: '環境與憑證',
 
-  // ─── RiskAnnotationPanel ───────────────────────────────────────
+  // ─── RiskAnnotationModal ───────────────────────────────────────
   rapAria: 'AI 指令稿風險標註',
   rapTitle: 'AI 指令稿風險標註',
   rapSubtitle: '護城河 · 提交前先體檢',
@@ -169,6 +169,7 @@ export default {
   rapAiTitle: 'AI 語意分析',
   rapFailed: '風險標註失敗({status})',
   rapFailedRetry: '風險標註失敗,請稍後重試',
+  rapCloseAria: '關閉',
 
   // ─── TemplatePickerModal ───────────────────────────────────────
   tplAria: 'Pipeline 範本',

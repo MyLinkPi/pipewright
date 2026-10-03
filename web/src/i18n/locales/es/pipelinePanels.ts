@@ -147,7 +147,7 @@ export default {
   vpScopeTriggers: 'Ajustes de disparadores',
   vpScopeEnvs: 'Entornos y credenciales',
 
-  // ─── RiskAnnotationPanel ───────────────────────────────────────
+  // ─── RiskAnnotationModal ───────────────────────────────────────
   rapAria: 'Anotación de riesgos de scripts con IA',
   rapTitle: 'Anotación de riesgos de scripts con IA',
   rapSubtitle: 'Foso · una revisión antes de confirmar',
@@ -169,6 +169,7 @@ export default {
   rapAiTitle: 'Análisis semántico de IA',
   rapFailed: 'Error en la anotación de riesgos ({status})',
   rapFailedRetry: 'Error en la anotación de riesgos, inténtalo de nuevo más tarde',
+  rapCloseAria: 'Cerrar',
 
   // ─── TemplatePickerModal ───────────────────────────────────────
   tplAria: 'Plantillas de Pipeline',

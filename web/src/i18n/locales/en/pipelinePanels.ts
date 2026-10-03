@@ -147,7 +147,7 @@ export default {
   vpScopeTriggers: 'Trigger settings',
   vpScopeEnvs: 'Environments & credentials',
 
-  // ─── RiskAnnotationPanel ───────────────────────────────────────
+  // ─── RiskAnnotationModal ───────────────────────────────────────
   rapAria: 'AI script risk annotation',
   rapTitle: 'AI script risk annotation',
   rapSubtitle: 'Moat · a check-up before you commit',
@@ -169,6 +169,7 @@ export default {
   rapAiTitle: 'AI semantic analysis',
   rapFailed: 'Risk annotation failed ({status})',
   rapFailedRetry: 'Risk annotation failed, please try again later',
+  rapCloseAria: 'Close',
 
   // ─── TemplatePickerModal ───────────────────────────────────────
   tplAria: 'Pipeline templates',
