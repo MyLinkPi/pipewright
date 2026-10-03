@@ -653,28 +653,44 @@ func isValidKind(kind string) bool {
 }
 
 // yamlSpec / yamlStage / yamlJob 是 YAML 渲染用的稳定形状(确定性字段顺序;
-// 仅用于展示/导出,与持久化 JSON 解耦)。
+// 供"查看源码"/导出,与持久化 JSON 解耦)。字段与 pipelineyaml 的 schema 对齐:
+// 导入(Parse)→ 导出(renderYAML)→ 再导入必须无损,否则「查看源码」里看到的
+// 不是真正生效的流水线(此前缺 id/needs/gate/when/matrix,导出即丢配置)。
 type yamlSpec struct {
-	Stages []yamlStage `yaml:"stages"`
+	Version int         `yaml:"version"`
+	Stages  []yamlStage `yaml:"stages"`
 }
 
 type yamlStage struct {
-	Name   string    `yaml:"name"`
-	Kind   string    `yaml:"kind"`
-	Runner string    `yaml:"runner,omitempty"`
-	Jobs   []yamlJob `yaml:"jobs"`
+	ID           string              `yaml:"id,omitempty"`
+	Name         string              `yaml:"name"`
+	Kind         string              `yaml:"kind"`
+	Needs        []string            `yaml:"needs,omitempty"`
+	AllowFailure bool                `yaml:"allowFailure,omitempty"`
+	Runner       string              `yaml:"runner,omitempty"`
+	Gate         bool                `yaml:"gate,omitempty"`
+	When         *yamlWhen           `yaml:"when,omitempty"`
+	Matrix       map[string][]string `yaml:"matrix,omitempty"`
+	Jobs         []yamlJob           `yaml:"jobs"`
+}
+
+type yamlWhen struct {
+	Branches []string `yaml:"branches,omitempty"`
+	Events   []string `yaml:"events,omitempty"`
 }
 
 type yamlJob struct {
+	ID      string         `yaml:"id,omitempty"`
 	Name    string         `yaml:"name"`
 	Type    string         `yaml:"type"`
 	Summary string         `yaml:"summary,omitempty"`
+	Needs   []string       `yaml:"needs,omitempty"`
 	Config  map[string]any `yaml:"config,omitempty"`
 }
 
 // renderYAML 把 spec 渲染为确定性 YAML 文本(供"查看源码"/导出)。
 func renderYAML(spec Spec) (string, error) {
-	ys := yamlSpec{Stages: make([]yamlStage, 0, len(spec.Stages))}
+	ys := yamlSpec{Version: 1, Stages: make([]yamlStage, 0, len(spec.Stages))}
 	for _, st := range spec.Stages {
 		jobs := make([]yamlJob, 0, len(st.Jobs))
 		for _, jb := range st.Jobs {
@@ -683,13 +699,29 @@ func renderYAML(spec Spec) (string, error) {
 				cfg = jb.Config
 			}
 			jobs = append(jobs, yamlJob{
+				ID:      jb.ID,
 				Name:    jb.Name,
 				Type:    jb.Type,
 				Summary: jb.Summary,
+				Needs:   jb.Needs,
 				Config:  cfg,
 			})
 		}
-		ys.Stages = append(ys.Stages, yamlStage{Name: st.Name, Kind: st.Kind, Runner: st.Runner, Jobs: jobs})
+		s := yamlStage{
+			ID:           st.ID,
+			Name:         st.Name,
+			Kind:         st.Kind,
+			Needs:        st.Needs,
+			AllowFailure: st.AllowFailure,
+			Runner:       st.Runner,
+			Gate:         st.Gate,
+			Matrix:       st.Matrix,
+			Jobs:         jobs,
+		}
+		if !st.When.IsEmpty() {
+			s.When = &yamlWhen{Branches: st.When.Branches, Events: st.When.Events}
+		}
+		ys.Stages = append(ys.Stages, s)
 	}
 	out, err := yaml.Marshal(ys)
 	if err != nil {

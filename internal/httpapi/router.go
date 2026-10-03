@@ -1254,6 +1254,10 @@ func handleVersion(w http.ResponseWriter, _ *http.Request) {
 
 // spaHandler 服务嵌入文件系统中的静态资源;无扩展名的路径(前端路由)回退 index.html,
 // 但带扩展名却不存在的请求返回 404,避免把 SPA HTML 当成脚本/资源返回 200。
+// 缓存策略:默认 no-cache 全量重拉(index.html、favicon 等非哈希文件,升级后立即生效);
+// 唯 assets/ 是构建期内容哈希文件,内容变则 URL 变,immutable 一年且永不重验。
+// 注意 embed.FS 文件无 ModTime,FileServer 发不出 Last-Modified,304 协商本就不可用,
+// 故不设 ETag,失效完全依赖 no-cache 重拉与哈希 URL 更替。
 func spaHandler(webFS fs.FS) http.Handler {
 	fileServer := http.FileServer(http.FS(webFS))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1262,6 +1266,7 @@ func spaHandler(webFS fs.FS) http.Handler {
 			name = "index.html"
 		}
 		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("Cache-Control", "no-cache")
 
 		if info, err := fs.Stat(webFS, name); err == nil && !info.IsDir() {
 			if strings.HasPrefix(name, "assets/") {
@@ -1280,6 +1285,7 @@ func spaHandler(webFS fs.FS) http.Handler {
 	})
 }
 
+// serveIndex 输出 SPA 入口页;Cache-Control 由 spaHandler 统一设为 no-cache。
 func serveIndex(w http.ResponseWriter, webFS fs.FS) {
 	index, err := fs.ReadFile(webFS, "index.html")
 	if err != nil {
@@ -1287,7 +1293,6 @@ func serveIndex(w http.ResponseWriter, webFS fs.FS) {
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-cache")
 	_, _ = w.Write(index)
 }
 

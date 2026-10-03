@@ -57,19 +57,19 @@ type doc struct {
 }
 
 type stageNode struct {
-	ID           string              `yaml:"id,omitempty"`
-	Name         string              `yaml:"name"`
-	Kind         string              `yaml:"kind"`
-	Needs        []string            `yaml:"needs,omitempty"`
-	AllowFailure bool                `yaml:"allowFailure,omitempty"`
+	ID           string   `yaml:"id,omitempty"`
+	Name         string   `yaml:"name"`
+	Kind         string   `yaml:"kind"`
+	Needs        []string `yaml:"needs,omitempty"`
+	AllowFailure bool     `yaml:"allowFailure,omitempty"`
 	// Runner 是阶段级构建机选择器(FR-8-19):标签(如 `gpu`)或 `server:<id>`,空 = 项目默认。
-	Runner string `yaml:"runner,omitempty"`
-	Gate         bool                `yaml:"gate,omitempty"`
-	When         *whenNode           `yaml:"when,omitempty"`
-	Matrix       map[string][]string `yaml:"matrix,omitempty"`
-	Post         []postNode          `yaml:"post,omitempty"`
-	Services     []serviceNode       `yaml:"services,omitempty"`
-	Jobs         []jobNode           `yaml:"jobs,omitempty"`
+	Runner   string              `yaml:"runner,omitempty"`
+	Gate     bool                `yaml:"gate,omitempty"`
+	When     *whenNode           `yaml:"when,omitempty"`
+	Matrix   map[string][]string `yaml:"matrix,omitempty"`
+	Post     []postNode          `yaml:"post,omitempty"`
+	Services []serviceNode       `yaml:"services,omitempty"`
+	Jobs     []jobNode           `yaml:"jobs,omitempty"`
 }
 
 // serviceNode 是阶段旁挂服务的 YAML 块(P1 · 对标 GitLab services)。
@@ -94,12 +94,15 @@ type postNode struct {
 }
 
 type jobNode struct {
-	ID      string            `yaml:"id,omitempty"`
-	Name    string            `yaml:"name"`
-	Type    string            `yaml:"type"`
-	Summary string            `yaml:"summary,omitempty"`
-	Script  *scriptNode       `yaml:"script,omitempty"`
-	Config  map[string]string `yaml:"config,omitempty"`
+	ID      string `yaml:"id,omitempty"`
+	Name    string `yaml:"name"`
+	Type    string `yaml:"type"`
+	Summary string `yaml:"summary,omitempty"`
+	// Needs 是任务级依赖:引用**同阶段内**其他 job 的 id,构成阶段内 job 级 DAG
+	// (needs 引用/自指/环在 NormalizeSpec.validateJobDAG 统一校验,与画布保存同一套规则)。
+	Needs  []string          `yaml:"needs,omitempty"`
+	Script *scriptNode       `yaml:"script,omitempty"`
+	Config map[string]string `yaml:"config,omitempty"`
 }
 
 // scriptNode 是脚本步骤的人类友好嵌套块(对标 Jenkins sh / 云效自定义命令)。
@@ -148,6 +151,7 @@ func Parse(data []byte) (pipeline.Config, error) {
 				Name:    jn.Name,
 				Type:    jn.Type,
 				Summary: jn.Summary,
+				Needs:   jn.Needs,
 				Config:  cfg,
 			})
 		}
@@ -212,6 +216,7 @@ func Marshal(spec pipeline.Spec) ([]byte, error) {
 				Name:    jb.Name,
 				Type:    jb.Type,
 				Summary: jb.Summary,
+				Needs:   nonEmpty(jb.Needs),
 			}
 			script, rest := splitConfig(jb.Config)
 			jn.Script = script

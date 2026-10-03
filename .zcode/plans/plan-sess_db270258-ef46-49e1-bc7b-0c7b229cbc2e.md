@@ -1,104 +1,70 @@
-# 流水线任务体系整改计划
+# test-pipe 流水线功能演示仓库计划
 
-## 〇、部署产物精确绑定(最优先,替换「自动」)
+目标:在 `C:\Users\xufan\Trae\test-pipe`(已推到 Codeup 的空仓库)里建一组**自包含、零依赖优先**的演示应用 + 一套 Pipewright 平台配置文档,尽量覆盖流水线全部功能。**不碰任何实例/凭据/真实部署**,实例与机器配置由你在目标环境自行完成。
 
-**现状**:`pickStageArtifact`(`internal/deploy/deploy.go:416`)按「文件优先、没文件才用镜像」从全 run 产物里瞎挑,多构建节点时不可控。
+## 一、仓库布局(演示应用矩阵)
 
-- 配置键(job.config 扁平 KV):`deployMode`(`artifact` 默认 | `command` 仅执行重启命令)、`artifactJob`(产物来源节点 job id,**必填**,严格匹配产物元数据 `sourceJob`)、`artifactName`(可选 glob 消歧;同源 >1 件且未填 → **报错列出候选**,0 件 → 明确报错,绝不静默换产物)。
-- 前端 `JobDrawer.vue` 新增 prop:由 `PipelineCanvas` 传入上游产出节点清单(节点名+类型+声明产物),部署节点用下拉选择写 `artifactJob`,无「自动」;`deploy_container` 只列产镜像节点(build_image),`deploy_ssh` 只列产文件节点(脚本类+artifactPath)。
-- 后端 `pickStageArtifact` 严格过滤;存量配置(无新键)保留旧兜底 + 弃用告警日志。`internal/ai/generate.go` 要求 AI 生成的部署节点必填 `artifactJob`。
+```
+test-pipe/
+├── README.md                  # 总览:演示矩阵 → 功能覆盖对照 + 快速开始
+├── .pipewright.yml            # 流水线即代码演示(覆盖最全的一条:源→构建→审批→镜像→部署→健康→通知)
+├── apps/
+│   ├── hello-node/            # Node.js 构建:零依赖 package.json,build 脚本产出 dist/
+│   │                          #   演示 build_nodejs + artifactPackMode=none(文件清单)+ tarLayout
+│   ├── hello-go/              # Golang 构建:零依赖 go.mod+main.go,产出单文件二进制
+│   │                          #   演示 build_golang + artifactRename(部署落盘名)
+│   ├── hello-java/            # Maven 最小工程(单类 + 单测),产出 target/*.jar
+│   │                          #   演示 build_java + jar 类主机部署(java -jar 探活)
+│   ├── hello-python/          # Python 工程(pyproject+setuptools),产出 dist/*.whl
+│   │                          #   演示 build_python
+│   └── hello-image/           # 静态服务镜像:Dockerfile(nginx:alpine)+ index.html + docker-compose.yml
+│                              #   演示 build_image(dockerfile/toolchain 两模式)+ push_image + deploy_container
+├── tools/
+│   └── ci-scripts/            # script 节点用的小脚本(lint/自检,不依赖构建)
+│                              #   演示 script / custom 节点、templated 自定义节点、矩阵构建
+└── docs/
+    ├── pipelines.md           # 每个演示项目的逐节点配置(可直接照抄的 config 键值)
+    ├── features.md            # 功能覆盖对照表 + 每项验证步骤(含故意失败触发回滚/停止铺开的演示法)
+    ├── triggers.md            # 触发器演示:Codeup webhook(path filter)/ cron / 流水线链 chain
+    └── advanced.md            # runner 构建机、网关联动(servicereg,可选)、复用库、分支差异化 .pipewright.yml
+```
 
-## 一、构建任务按语言区分(替换「前端构建/后端构建」)
+## 二、功能覆盖对照(写入 docs/features.md)
 
-新增 4 个脚本类模板节点(复用 `script` 容器执行路径,后端仅扩 dispatch):
+| 功能 | 覆盖方式 |
+|---|---|
+| git_source | 各项目源阶段(Codeup SSH remote) |
+| build_nodejs / java / golang / python | 四个 hello-* 应用一一对应 |
+| script / custom / templated | tools/ci-scripts + 「存为自定义节点」演示 |
+| build_image(dockerfile / toolchain) | hello-image;toolchain 模式在文档给对照配置 |
+| push_image | hello-image + registry 配置示例(自建/harbor/dockerhub 三选) |
+| deploy_ssh 文件部署 | hello-node(dist)与 hello-go/jar;releases+current 软链机制说明 |
+| deployMode=command | 文档示例:仅执行重启命令的配置类部署 |
+| deploy_container | hello-image:ports/runArgs/registryCredentialId/健康门控/回滚上一镜像 |
+| 产物精确绑定 artifactJob(+artifactName) | 所有部署节点配置示例(强调无「自动」) |
+| artifactPackMode / tarLayout / artifactRename | hello-node(none/清单)、hello-go(rename);tar+top 给对照配置 |
+| health_check 节点(http / command) | 部署后接健康门控节点;平台本机兜底探测说明 |
+| 阶段审批门 gate | .pipewright.yml 里 gate: true + 运行页批准/拒绝演示 |
+| when 条件 / matrix / needs(阶段级+任务级) | .pipewright.yml 示例 + 文档 |
+| 标签选择器 + selectorMode(且/或) | 服务器打标签示例;≥2 台才能演示「任一」,文档注明 |
+| 滚动批次 firstBatchSize/batchSize | 多机部署演示法 + 故意失败停止铺开的验证 |
+| 预检故障机优先 / 失败自动回滚 | docs/features.md 的「故意失败」演示(健康检查指向未启动端口) |
+| 重试(含 pending 继续铺开) | 停止铺开后的重试按钮演示 |
+| runner 构建机 | stage runner 选择器配置(标签圈选构建机) |
+| 流水线即代码 | 根 .pipewright.yml(导入/驱动两种用法)+ 分支差异说明 |
+| 触发器 | docs/triggers.md:webhook(Codeup 配置步骤)/ cron / chain |
+| 复用库自定义节点 | 存为自定义节点 → 跨项目复用 |
+| 网关联动(摘挂/maxSurge,可选) | docs/advanced.md:前置(网关主机+服务注册)与验证步骤 |
 
-| 新类型 | 名称 | 预置配置 |
-|---|---|---|
-| `build_nodejs` | Node.js 构建 | `node:20`,`npm ci && npm run build`,产物 `dist` |
-| `build_java` | Java 构建 | `maven:3.9-eclipse-temurin-21`,`mvn -B package`,产物 `*.jar`(注明 Gradle 改镜像+命令) |
-| `build_golang` | Golang 构建 | `golang:1.22`,`CGO_ENABLED=0 go build -o bin/app ./...`,产物 `bin/app` |
-| `build_python` | Python 构建 | `python:3.12`,`pip install -r requirements.txt && python -m build`,产物 `dist/*` |
+## 三、实现要点
 
-- `jobConfigSchema.ts`:新增 4 spec(category=build),`PICKABLE_TYPES` 移除 `build_frontend`/`build_backend`/`deploy_frontend`(spec 保留供存量渲染);`SCRIPT_CLASS_TYPES` 加新键。
-- `internal/build/dag_stage_exec.go` `isScriptJob` 加新 4 键(旧键兼容);`internal/ai/catalog.go`、`generate.go` 同步;`JobTypeIcon.vue` 补图标;README 更新。
+- 所有应用**零第三方依赖优先**:Node 用纯 `node build.js` 生成 dist(无需 npm ci,文档注明 commands 调整);Go 零依赖秒编译;Java/Python 首次构建需拉包,文档注明时长预期。
+- 根 `.pipewright.yml` 严格对齐平台 `internal/pipelineyaml` 的 schema(执行时先读该包确认字段:version/stages[].id/name/kind/jobs[].type/config/script 块),确保「从 YAML 导入」可直接成功。
+- 每个应用的构建命令与平台预填模板保持一致(node:20 / maven:3.9-eclipse-temurin-21 / golang:1.22 / python:3.12),改动能最小。
+- 文档中所有 config 键值与新表单一一对应(artifactJob/selectorMode/firstBatchSize/batchSize/artifactPackMode/tarLayout/artifactRename/healthUrl/gatewayService/registryCredentialId)。
+- 文档强调:凭据(Codeup ssh_key)、服务器与构建机登记、master key 均由你在目标环境配置;文档给出「应该长什么样」的对照。
 
-## 二、部署重做
+## 四、收尾
 
-### 2.1 统一滚动策略:批次 + 预检故障机优先 + 网关联动(两种并存)
-
-**裁剪**:删除 `interactive.go` 及 `POST /runs/{id}/deploy/continue|abort` 路由/handlers/前端续发中止 UI 与 API;canary/blue_green 策略代码删除;`NormalizeStrategy` 把旧策略值全部归一 rolling(存量兼容)。`servicereg` 包保留(独立功能页)。
-
-**统一滚动执行序** `deployRolling(...)`:
-
-1. **预检排序(故障机优先)**:配置了健康检查时,滚动开始前用该配置对所有目标机逐台预检(复用 `runHealthCheck`),**预检不过的机器排到队首**先修,其余按稳定顺序;预检结果逐机写入人读日志。未配健康检查 → 保持稳定顺序。
-2. **分批**:首批 = 排序后前 `firstBatchSize` 台(默认 1),之后每批 `batchSize` 台(默认全部剩余);**任一批有失败立即停止后续批次**,未轮到机器保持 pending。
-3. **每机执行(网关联动两种并存)**:
-   - image 产物 + 网关托管(`ResolveInstances` 命中)→ **maxSurge 换实例**:pull → 起新容器 → 预热健康 → `SwapInstance`(upstream 原子换,单次 reload)→ 排空 → 停旧(`rollOneInstance` 吸收为内部路径;失败删新容器即可,无需回滚)。
-   - 其余 → **摘→部署→健康→挂回**:网关托管机先 `SetInstanceAttached(false)` 摘除 + reload,再部署,健康通过后 `SetInstanceAttached(true)` 挂回;部署失败**保持摘除**并报 failed;挂回失败仅告警重试。非网关机器照旧直接部署。
-   - `deploy.InstanceGateway` 接口增加 `DetachInstance/AttachInstance`(main.go 适配 `servicereg.SetInstanceAttached`)。
-4. **回滚语义(每机独立,保持现状)**:失败机各自回退到自己的上一版本,已成功机器保留新版,批次失败只停止铺开。**修缺口:文件模式回滚切回软链后,在上一发布目录尽力重跑一次 `restartCommand`(失败仅记告警)**;网关托管机回滚成功(健康通过)后再挂回 upstream。
-5. 批次参数入 `DeployInput` 与节点 config:`firstBatchSize`、`batchSize`。
-
-### 2.2 修复 deploy 节点健康检查不生效
-`DeployForStage` 现硬编码传 nil HealthCheck → 从 config 读 `healthUrl`/`healthRetries`/`healthIntervalSeconds` 构造,失败触发回滚(激活既有回滚链);部署节点表单加健康检查字段组。
-
-### 2.3 新增「容器部署」节点 `deploy_container`
-- 归入 `isDeployJob`,固定 image 产物,复用 image_release 链路(`docker pull → rm -f → run -d -p … [runArgs]`、健康门控、失败回滚上一版镜像)。
-- 表单:目标机、产物来源(仅 build_image 节点)、容器名、端口、runArgs、健康检查、可选 registry 凭据;配了凭据先在目标机 `docker login`(vault reveal,不落日志)再 pull。
-
-### 2.4 SSH 部署改名「主机部署」并修正
-- 表单按「部署目标 → 产物来源 → 滚动批次 → 健康检查 → 重启命令」分组;描述明确 `<deployPath>/releases/<runId>/` + `current` 原子软链机制。
-- `internal/target/target.go`:`Upload` 用独立长超时(默认 15 分钟,`PIPEWRIGHT_SSH_UPLOAD_TIMEOUT` 可调)。
-
-### 2.5 `health_check` 节点真正接线(现为空转占位)
-- 经 selector/serverId 解析目标机,复用 `deploy.HealthCheck` 在目标机探测(重试);无目标机且 http 模式时从平台本机探测;最终失败则 job/阶段失败。serial 与 job-DAG 两条 dispatch 路径都接。
-
-### 2.6 目标选择器:选值控件 + 显式且/或
-
-**选值控件(不再手敲语法)**:`jobConfigSchema.ts` 新增字段 kind `labelSelector`;`JobDrawer.vue` 复用 `GET /api/servers` 汇总标签 key 与各 key 取值集合,按「key 下拉 → value 下拉 → 可加多条件」组合,写回 `config.selector`(保持 `k=v,k=v` 格式);机器无标签时提示先打标签。`deploy_ssh`/`deploy_container`/`health_check` 表单统一替换;`serverId` 保留 server picker;RunDetail 手动部署同步替换。
-
-**且/或显式选择**:当前逗号写死为且(`internal/runner/selector.go` AND 语义,构建机池共用,不动共享语法)。
-- 新增配置键 `selectorMode`:`all`(满足全部条件,且,**默认** = 存量语义)| `any`(满足任一条件,或)。
-- 后端:`internal/runner/selector.go` 增加纯函数 `MatchSelectorAny`(逐项任一命中);`internal/deploy/selector_targets.go` 标签圈选按 `cfg["selectorMode"]` 选 all/any;手动部署 `DeployInput` 同步加 `selectorMode`。
-- 前端:标签条件 ≥2 时显示「匹配方式」单选(满足全部/满足任一,默认满足全部),单条件时隐藏;`server:<id>` 钉单机不受影响。
-- AI 提示词补充 `selectorMode` 可选说明。
-
-### 2.7 产物收集与打包显式化(替换硬编码)
-
-**现状**(`internal/build/dag_stage_exec.go:827` + `artifact_persist.go`):类型按路径自动判(目录=dist、*.jar=jar、其它文件=archive);目录**一律** tar.gz;tar 包内**固定去顶层目录**(内容铺包根,部署解包直接铺 release 根),既不可见也不可选;jar 落盘名固定原文件名。
-
-- 脚本类构建节点新增显式配置(表单 + 后端生效):
-  - `artifactPackMode`:`tar`(目录产物打包 tar.gz,默认)| `none`(不打包:制品库按文件清单存储,metadata 记 `format=files` + 相对路径清单;部署端逐文件上传到 release 对应相对子路径;跨阶段 restore 按清单还原)。
-  - `tarLayout`:`contents`(包内去顶层目录 = 现行为)| `top`(保留顶层目录,解包后文件在 `<release>/<目录名>/` 下)。部署端解包命令不变,语义由打包侧决定。
-  - `artifactRename`(可选):jar/单文件部署落盘名。
-- 构建日志明示实际行为:「已归档 dist → tar.gz(不含/含 dist/ 前缀)」/「已按文件清单归档(N 个文件)」。
-- **存量默认值 = 现行为**(tar + contents),不悄悄改变已有流水线部署结果;产物类型判定维持自动,仅打包行为显式化。
-
-## 三、阶段自由添加与命名(去掉「每类一个」限制)
-
-**现状**:`PipelineCanvas.addStage()` 固定序列 `['build','deploy','notify','custom']` **每个 kind 只允许加一次**,之后全是「自定义N」;`StageDrawer` 无改名入口。后端本就无数量限制。
-
-- `addStage()` 重做:点「添加阶段」→ 小型选择器(构建/部署/通知/通用,均可无限次选)→ 创建默认名「阶段 N」→ 自动打开 StageDrawer 聚焦名称输入。
-- `StageDrawer.vue` 顶部新增「阶段名称」文本框与 kind 下拉,emit `update-name`/`update-kind` → `updateStage` 落库,画布列头即时刷新。
-- `localizeName` 仅对未改名的默认名本地化;后端无需改。
-
-## 四、阶段级审批门强化(不加新节点)
-
-- `StageColumn.vue`:阶段 `gate=true` 时阶段头渲染审批徽标(盾牌+「审批」)。
-- `StageDrawer.vue`:完善提示(运行暂停、运行详情页批准/拒绝、通知签名链接、24h 超时自动拒绝)。
-- 核对 `RunDetail.vue` waiting_approval 审批条完整可用。
-
-## 五、制品孤儿 GC(retention 补口子)
-
-**现状**:retention Sweeper 删过期 run 连带删 `run_artifacts` 元数据行,但对 `artifacts/` 磁盘 blob **零清理**,孤儿文件永久累积。
-
-- Sweeper 增加 GC 步骤:周期列出 `artifacts/` 全部 blob 句柄,与 `SELECT DISTINCT reference FROM run_artifacts` 引用集合做差,无引用 blob 删除。
-- **竞态防护**:构建侧先 `Put` 落盘、后写 `run_artifacts` 行,存在短暂无引用窗口 → GC 只删「无引用且 mtime 超过宽限期(默认 24h)」的 blob,双重判断防误删进行中构建的产物。
-- 删除失败仅记日志;与保留期天然对齐(run 过期 → 元数据删 → blob 下轮 GC 回收)。
-
-## 六、i18n、测试与验证
-
-- 新增/删除 key 同步 8 语言目录(`keyParity`/`componentKeys` 测试把关)。
-- 后端测试:产物精确绑定(命中/多件报错/零件报错/command)、批次语义(首批数、失败中止、故障机排序)、预检排序、网关摘挂与换实例两路径、回滚后重跑重启命令、deploy HealthCheck 接线、health_check 节点、isScriptJob 新键、孤儿 GC、产物打包显式化(tar/none/tarLayout 两档、rename、存量默认不变)、标签选择器 any/all 两模式;删除 canary/blue_green/interactive 测试。
-- 前端:`jobConfigSchema.test.ts` 不变量;排查 e2e 中旧标签/旧策略/添加阶段序列的引用并更新。
-- 验证:`go build ./... && go vet ./... && go test ./...`;`cd web && npm run build` + vitest;起 dev 服务浏览器实测:任务目录、部署表单产物下拉、标签选值与且/或切换、打包选项、无限添加阶段并改名、画布审批徽标。
+- 完成后在 test-pipe **本地提交**(git add + commit,**不 push**,推送由你执行);提交前用 `git -C` 自检目录结构完整。
+- 不启动任何 Pipewright 实例,不写任何凭据,不做任何真实部署。

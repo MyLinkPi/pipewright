@@ -455,3 +455,86 @@ func TestStageRunnerInvalidRejected(t *testing.T) {
 		t.Fatal("非法 runner 选择器应经 NormalizeSpec 拒绝")
 	}
 }
+
+// TestParseJobLevelNeeds 任务级 needs(YAML 新增字段):同阶段引用按 id 解析,
+// 经 NormalizeSpec.validateJobDAG 校验(存在性/自指/环),与画布保存同一套规则。
+func TestParseJobLevelNeeds(t *testing.T) {
+	doc := `stages:
+  - id: src
+    name: src
+    kind: source
+    jobs: [{id: j1, name: 源, type: git_source}]
+  - id: deploy
+    name: deploy
+    kind: deploy
+    needs: [src]
+    jobs:
+      - {id: d1, name: 容器部署, type: deploy_container, config: {artifactJob: 构建}}
+      - {id: d2, name: 健康检查, type: health_check, needs: [d1], config: {probeMode: http, url: "http://localhost:8080/"}}
+`
+	cfg, err := Parse([]byte(doc))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	dep := cfg.Spec.Stages[1]
+	if len(dep.Jobs) != 2 || len(dep.Jobs[1].Needs) != 1 || dep.Jobs[1].Needs[0] != "d1" {
+		t.Fatalf("job 级 needs 应透传: %+v", dep.Jobs[1])
+	}
+
+	// 引用同阶段不存在的 job → 导入即 422(经 validateJobDAG),不再静默吞掉。
+	bad := `stages:
+  - id: src
+    name: src
+    kind: source
+    jobs: [{id: j1, name: 源, type: git_source}]
+  - id: deploy
+    name: deploy
+    kind: deploy
+    needs: [src]
+    jobs:
+      - {id: d1, name: 容器部署, type: deploy_container}
+      - {id: d2, name: 健康检查, type: health_check, needs: [ghost]}
+`
+	if _, err := Parse([]byte(bad)); err == nil {
+		t.Fatal("job needs 引用不存在的 id 应被拒绝")
+	}
+}
+
+// TestRoundTripJobNeeds 任务级 needs 的完整往返:spec →(RenderYAML)→ YAML →(Parse)→ spec,
+// needs 与 gate/when 等编排字段都必须无损(此前 renderYAML 缺字段,导出即丢配置)。
+func TestRoundTripJobNeeds(t *testing.T) {
+	spec := pipeline.Spec{Stages: []pipeline.Stage{
+		{ID: "src", Name: "源", Kind: pipeline.KindSource, Jobs: []pipeline.Job{
+			{ID: "j1", Name: "源", Type: "git_source"},
+		}},
+		{ID: "deploy", Name: "部署", Kind: pipeline.KindDeploy, Needs: []string{"src"}, Gate: true,
+			When: pipeline.When{Branches: []string{"main"}},
+			Jobs: []pipeline.Job{
+				{ID: "d1", Name: "容器部署", Type: "deploy_container", Config: map[string]any{"artifactJob": "构建"}},
+				{ID: "d2", Name: "健康检查", Type: "health_check", Needs: []string{"d1"}, Config: map[string]any{"probeMode": "http"}},
+			}},
+	}}
+	yml, err := pipeline.RenderYAML(spec)
+	if err != nil {
+		t.Fatalf("RenderYAML: %v", err)
+	}
+	for _, want := range []string{"id: deploy", "gate: true", "needs:", "- d1", "when:"} {
+		if !strings.Contains(yml, want) {
+			t.Fatalf("导出 YAML 应含 %q:\n%s", want, yml)
+		}
+	}
+	cfg, err := Parse([]byte(yml))
+	if err != nil {
+		t.Fatalf("re-Parse: %v", err)
+	}
+	st := cfg.Spec.Stages[1]
+	if !st.Gate || len(st.Needs) != 1 || st.Needs[0] != "src" {
+		t.Fatalf("阶段级 needs/gate 往返丢失: %+v", st)
+	}
+	if len(st.Jobs) != 2 || len(st.Jobs[1].Needs) != 1 || st.Jobs[1].Needs[0] != "d1" {
+		t.Fatalf("任务级 needs 往返丢失: %+v", st.Jobs[1])
+	}
+	if st.When.IsEmpty() || len(st.When.Branches) != 1 || st.When.Branches[0] != "main" {
+		t.Fatalf("when 往返丢失: %+v", st.When)
+	}
+}
