@@ -16,43 +16,113 @@ import (
 // Story 6.1(FR-15):多机状态总览 —— 服务器层资源指标(CPU 负载/核数、内存 used/total、
 // 磁盘 used/total),经 SSH 跑**固定白名单只读命令**采集,解析为结构化指标。
 //
-// AC-SEC-02 核心:采集命令是**纯静态命令 array**,绝不接受任何用户输入拼接 —— 无注入面。
+// 采集形态:每台**一次** SSH 连接跑一个合并脚本(metricsCollectArgs),脚本按 ##PW: 标记行
+// 分段输出,解析层逐段取值 —— 把原来 ~5 条命令 × 各自一次完整 TCP+SSH 握手压成 1 次握手。
+//
+// 缓存形态:snapshotServerMetrics 提供 TTL 快照(stale-while-revalidate,后台单飞刷新),
+// 两个 metrics HTTP 端点、异常检测采集器(anomaly.go)、历史采样器(main.go tick)共享 ——
+// 慢主机/不可达主机只拖后台刷新,不阻塞任何调用方。
+//
+// AC-SEC-02 核心:采集脚本是**纯静态文本**,绝不接受任何用户输入拼接 —— 无注入面。
 // 指标无敏感信息。
 //
 // 容错纪律:
 //   - 某台不可达 / 认证失败 → 该台 reachable:false + 人读 error,**不 500**,不连累其它台。
-//   - 单个指标命令缺失 / 输出格式异常 → 该指标 null(指针为 nil),不报错、不影响其它指标
-//     (跨平台 best-effort:Linux 优先,macOS/不支持 → 该指标 null)。
+//   - 单个指标段缺失 / 输出格式异常 → 该指标 null(指针为 nil),不报错、不影响其它指标
+//     (跨平台 best-effort:回退逻辑写在脚本里,Linux 优先,macOS → 对应段空 → 该指标 null)。
 //   - 批量端点逐台并行采集,有界并发(信号量防 N 台同时 SSH 打爆)。
 
 const (
-	// metricsConcurrency 是批量采集的最大并发 SSH 数(有界,防打爆)。
+	// metricsConcurrency 是批量采集 / 后台刷新的最大并发 SSH 数(有界,防打爆)。
 	metricsConcurrency = 6
-	// metricsCmdTimeout 是单台采集的整体超时(三条只读命令串行跑,够宽松)。
-	metricsCmdTimeout = 15 * time.Second
-	// metricsOutMax 是单条命令 stdout 解析前的截断上限(防超大输出撑爆内存;指标输出本就极小)。
+	// metricsCollectTimeout 是单台一次合并采集的整体超时(拨号 + 握手 + 1 条脚本)。
+	// 合并前是 15s(~5 条命令各自串行握手);合并后只剩 1 条命令,10s 足够且让不可达
+	// 主机更快失败(配合快照缓存,失败只发生在后台,不阻塞接口)。
+	metricsCollectTimeout = 10 * time.Second
+	// metricsCacheTTL 是指标快照的保鲜期。对齐前端 12s 轮询(ServerStatus.vue):热路径
+	// 几乎每拍命中,或恰好触发一轮后台刷新;异常检测 / 采样器的 60s tick 读到的至多是
+	// 一个采集周期前的数据,对阈值判定无感。
+	metricsCacheTTL = 10 * time.Second
+	// metricsOutMax 是脚本 stdout 解析前的截断上限(防超大输出撑爆内存;指标输出本就极小)。
 	metricsOutMax = 64 * 1024
 )
 
-// 采集命令(AC-SEC-02:固定静态 array,绝不含任何用户输入)。
-//   - loadavg:`cat /proc/loadavg`(Linux);macOS 无 /proc → 回退 `uptime` 解析。
-//   - cores:`nproc`(Linux);缺失则回退 `getconf _NPROCESSORS_ONLN`(跨平台,含 macOS)。
-//   - memory:`free -b`(Linux);macOS 无 free → 该指标 null(契约允许)。
-//   - disk:`df -B1 /`(Linux);macOS 不识别 -B1 → 回退 `df -k /`(KiB)再换算字节。跨平台可真回显。
-var (
-	cmdLoadavg    = []string{"cat", "/proc/loadavg"}
-	cmdUptime     = []string{"uptime"}
-	cmdNproc      = []string{"nproc"}
-	cmdGetconfCPU = []string{"getconf", "_NPROCESSORS_ONLN"}
-	cmdFreeBytes  = []string{"free", "-b"}
-	cmdDfBytes    = []string{"df", "-B1", "/"}
-	cmdDfKiB      = []string{"df", "-k", "/"}
-	// 物理/分配内存(SMBIOS Type 17 内存设备容量之和)。`free` 的 MemTotal 是内核
-	// **可用**总量(已扣固件/内核保留),通常略小于物理装机量;dmidecode 读 SMBIOS
-	// 得「物理/分配」总量,与 PVE 等宿主面板显示的总量一致。需 root;非 root / 无
-	// dmidecode / 虚拟化未暴露 SMBIOS → 采集失败 → physicalTotalBytes 为 0(不展示)。
-	cmdDmidecodeMem = []string{"dmidecode", "-t", "17"}
+// ─── 合并采集脚本(AC-SEC-02:纯静态文本,绝不含任何用户输入)────────────────────
+//
+// 各段以 ##PW:<名> 标记行分隔;段内是该台命令的 stdout(命令缺失/失败 → 段为空 → 该指标 null)。
+//   - loadavg:`cat /proc/loadavg`(Linux);macOS 无 /proc → `|| uptime` 回退,解析层两种
+//     格式都试。
+//   - cores:`nproc`;缺失回退 `getconf _NPROCESSORS_ONLN`(跨平台,含 macOS)。
+//   - memory:`free -b`;macOS 无 free → 段空 → 该指标 null(契约允许)。
+//   - disk:`df -B1 /`(字节)与 `df -k /`(KiB)**两段总是都跑** —— 不按数字大小猜口径
+//     (KiB 数当字节解析会差 1024 倍),解析层先取字节段、缺失再取 KiB 段换算。
+//   - physmem:`dmidecode -t 17` 物理/分配内存(SMBIOS Type 17 容量之和)。需 root;非 root /
+//     无 dmidecode / 虚拟化未暴露 SMBIOS → 段空 → 0(不展示)。静态量,经 physMem 缓存,
+//     仅缓存未命中时才把该段拼进脚本(成功值长期复用,失败 10min 冷却)。
+//   - end:收尾标记,保证脚本恒以 0 退出(段命令失败不影响整体执行)。
+const metricMarker = "##PW:"
+
+const (
+	secLoadavg = "loadavg"
+	secCores   = "cores"
+	secMemory  = "memory"
+	secDiskB   = "diskb"
+	secDiskK   = "diskk"
+	secPhysMem = "physmem"
+	secEnd     = "end"
 )
+
+// metricsCollectArgs 返回单台一次性采集命令(sh -c 脚本;sh 在 Linux/macOS 恒在,
+// 与 target.Upload / build.DetectRemoteCLI 的 sh -c 组合命令同款做法)。
+func metricsCollectArgs(probePhys bool) []string {
+	parts := []string{
+		`echo "` + metricMarker + secLoadavg + `"`,
+		`cat /proc/loadavg 2>/dev/null || uptime`,
+		`echo "` + metricMarker + secCores + `"`,
+		`nproc 2>/dev/null || getconf _NPROCESSORS_ONLN 2>/dev/null`,
+		`echo "` + metricMarker + secMemory + `"`,
+		`free -b 2>/dev/null`,
+		`echo "` + metricMarker + secDiskB + `"`,
+		`df -B1 / 2>/dev/null`,
+		`echo "` + metricMarker + secDiskK + `"`,
+		`df -k / 2>/dev/null`,
+	}
+	if probePhys {
+		parts = append(parts,
+			`echo "`+metricMarker+secPhysMem+`"`,
+			`dmidecode -t 17 2>/dev/null`)
+	}
+	parts = append(parts, `echo "`+metricMarker+secEnd+`"`)
+	return []string{"sh", "-c", strings.Join(parts, "; ")}
+}
+
+// splitMetricSections 按 ##PW:<名> 标记行切分脚本 stdout(段名 → 段文本;标记后无输出
+// 即空段,段命令失败/缺失的常态)。首个标记之前的内容(正常不该出现)丢弃。
+func splitMetricSections(out string) map[string]string {
+	sections := map[string]string{}
+	cur := ""
+	var buf strings.Builder
+	flush := func() {
+		if cur != "" {
+			sections[cur] = buf.String()
+		}
+	}
+	// 去掉尾部换行:Split 末尾的空元素会在段尾多拼一个空行(解析无碍,但段内容不确定)。
+	for _, line := range strings.Split(strings.TrimRight(out, "\n"), "\n") {
+		if strings.HasPrefix(line, metricMarker) {
+			flush()
+			cur = strings.TrimSpace(strings.TrimPrefix(line, metricMarker))
+			buf.Reset()
+			continue
+		}
+		if cur != "" {
+			buf.WriteString(line)
+			buf.WriteByte('\n')
+		}
+	}
+	flush()
+	return sections
+}
 
 // cpuMetric / memoryMetric / diskMetric 是各维度指标 DTO(冻结契约字段形状)。
 // 任一维度采集/解析失败 → 整段为 null(指针 nil),不影响其它维度。
@@ -93,34 +163,6 @@ type serverMetricsDTO struct {
 	CollectedAt string        `json:"collectedAt"`
 }
 
-// collectServerMetrics 对单台服务器采集指标。永不返回 error:不可达/失败均落到
-// DTO.reachable=false + 人读 error(批量端点据此让单台失败不连累全局)。
-// 第二个返回值是「定位类」错误(服务器/凭据不存在、保险库未配),仅供单台端点映射 422/503;
-// 批量端点忽略它(逐台独立,定位类对某台亦只表现为该台 reachable:false)。
-func collectServerMetrics(ctx context.Context, svc target.Service, id string) (serverMetricsDTO, error) {
-	out := serverMetricsDTO{ServerID: id, CollectedAt: time.Now().UTC().Format(time.RFC3339)}
-
-	cctx, cancel := context.WithTimeout(ctx, metricsCmdTimeout)
-	defer cancel()
-
-	// 先探一条命令确认可达(用 loadavg/uptime 的探测当连通性判断)。任何定位/连接/认证类失败
-	// → reachable:false。后续各指标命令独立,失败仅该指标 null。
-	cpu, reachErr := collectCPU(cctx, svc, id)
-	if reachErr != nil {
-		out.Reachable = false
-		out.Error = humanMetricsError(reachErr)
-		if isLocateError(reachErr) {
-			return out, reachErr
-		}
-		return out, nil
-	}
-	out.Reachable = true
-	out.CPU = cpu
-	out.Memory = collectMemory(cctx, svc, id)
-	out.Disk = collectDisk(cctx, svc, id)
-	return out, nil
-}
-
 // isLocateError 判定是否为「定位类」错误(服务器/凭据不存在、保险库未配)——这类该映射
 // 422/503 而非 reachable:false。
 func isLocateError(err error) bool {
@@ -130,8 +172,7 @@ func isLocateError(err error) bool {
 }
 
 // runMetricCmd 跑一条采集命令并返回截断后的 stdout。第二个返回值是「连接/定位类」错误
-// (供 reachable 判定);命令非零退出 / 命令不存在不算连接错误(返回 stdout + nil err,
-// 由解析层据空/异常输出降级为 null)。
+// (供 reachable 判定);命令非零退出不算连接错误(返回 stdout,由解析层据空/异常输出降级)。
 func runMetricCmd(ctx context.Context, svc target.Service, id string, cmd []string) (string, error) {
 	res, err := svc.Exec(ctx, id, cmd)
 	if err != nil {
@@ -144,69 +185,55 @@ func runMetricCmd(ctx context.Context, svc target.Service, id string, cmd []stri
 	return out, nil
 }
 
-// collectCPU 取 CPU 负载 + 核数。loadavg 兼跑连通性探测:其连接/定位类错误向上传递(决定
-// reachable)。负载/核数任一解析失败 → 该子字段 nil(但 cpu 段仍返回,不影响 reachable)。
-func collectCPU(ctx context.Context, svc target.Service, id string) (*cpuMetric, error) {
+// ─── 段解析(合并 stdout → 各维度 DTO)────────────────────────────────────────
+
+// cpuFromSections 解析 loadavg / cores 段。段空或格式异常 → 对应子字段 nil(cpu 段仍返回)。
+// loadavg 兼容两种源:/proc/loadavg 格式优先,不匹配再按 uptime 输出解析(macOS 回退)。
+func cpuFromSections(sections map[string]string) *cpuMetric {
 	m := &cpuMetric{}
-
-	// loadavg:优先 /proc/loadavg;失败(macOS 无)再尝试 uptime。第一条命令的连接/认证类错误
-	// 决定 reachable,故此处把它的 err 上抛。
-	out, err := runMetricCmd(ctx, svc, id, cmdLoadavg)
-	if err != nil {
-		return nil, err
-	}
-	if v, ok := parseLoadavg(out); ok {
+	if v, ok := parseLoadavg(sections[secLoadavg]); ok {
 		m.Loadavg1 = &v
-	} else {
-		// /proc/loadavg 不存在(命令非零退出,out 多为空)→ 回退 uptime(macOS 等)。
-		if up, upErr := runMetricCmd(ctx, svc, id, cmdUptime); upErr == nil {
-			if v, ok := parseUptimeLoadavg(up); ok {
-				m.Loadavg1 = &v
-			}
-		}
+	} else if v, ok := parseUptimeLoadavg(sections[secLoadavg]); ok {
+		m.Loadavg1 = &v
 	}
-
-	// cores:nproc 优先,失败回退 getconf。
-	if np, npErr := runMetricCmd(ctx, svc, id, cmdNproc); npErr == nil {
-		if c, ok := parseInt(np); ok {
-			m.Cores = &c
-		}
+	if c, ok := parseInt(sections[secCores]); ok {
+		m.Cores = &c
 	}
-	if m.Cores == nil {
-		if gc, gcErr := runMetricCmd(ctx, svc, id, cmdGetconfCPU); gcErr == nil {
-			if c, ok := parseInt(gc); ok {
-				m.Cores = &c
-			}
-		}
-	}
-	return m, nil
+	return m
 }
 
-// collectMemory 取内存 used/total(字节)。解析失败(如 macOS 无 free)→ nil。
-func collectMemory(ctx context.Context, svc target.Service, id string) *memoryMetric {
-	out, err := runMetricCmd(ctx, svc, id, cmdFreeBytes)
-	if err != nil {
-		return nil
-	}
-	used, usedWithCache, total, ok := parseFreeBytes(out)
+// memoryFromSections 解析 memory 段(`free -b`)。段空/解析失败(如 macOS 无 free)→ nil。
+func memoryFromSections(sections map[string]string) *memoryMetric {
+	used, usedWithCache, total, ok := parseFreeBytes(sections[secMemory])
 	if !ok {
 		return nil
 	}
 	m := &memoryMetric{UsedBytes: used, UsedWithCacheBytes: usedWithCache, TotalBytes: total}
 	// Swap 与内存来自同一份 `free -b`:解析 Swap 行(未配置 swap → 0/0)。
-	if su, st, sok := parseSwapBytes(out); sok {
+	if su, st, sok := parseSwapBytes(sections[secMemory]); sok {
 		m.SwapUsedBytes, m.SwapTotalBytes = su, st
 	}
-	// 物理/分配总量:静态硬件量,经 host 级缓存避免每次轮询都跑一次 SSH dmidecode。
-	m.PhysicalTotalBytes = cachedPhysicalTotal(ctx, svc, id, total)
 	return m
+}
+
+// diskFromSections 解析磁盘两段:字节段(`df -B1 /`)优先,KiB 段(`df -k /`)回退换算。
+// 两段皆空/皆解析失败 → nil。
+func diskFromSections(sections map[string]string) *diskMetric {
+	if used, total, ok := parseDf(sections[secDiskB], 1); ok {
+		return &diskMetric{Path: "/", UsedBytes: used, TotalBytes: total}
+	}
+	if used, total, ok := parseDf(sections[secDiskK], 1024); ok {
+		return &diskMetric{Path: "/", UsedBytes: used, TotalBytes: total}
+	}
+	return nil
 }
 
 // ─── 物理内存缓存 ──────────────────────────────────────────────────────────────
 //
 // dmidecode 取的物理/分配内存是静态量(不随负载变),但采集页可能每 10s 轮询一次。
-// 按 serverID 缓存:成功值(>0)长期复用;失败(非 root / 无 dmidecode / SSH 抖动)缓存
-// 一个冷却期,避免对失败主机每轮都重拨 SSH。进程重启即清空,自然容纳极少见的换内存。
+// 按 serverID 缓存「是否已探测」:成功值(>0)长期复用且不再进脚本;失败(非 root /
+// 无 dmidecode / SSH 抖动)记 0 并冷却,冷却期内也不重拨。进程重启即清空,自然容纳
+// 极少见的换内存。
 type physMemEntry struct {
 	bytes    int64 // >0:已知物理总量;0:探测过但取不到
 	probedAt time.Time
@@ -220,50 +247,180 @@ var (
 // physMemRetryCooldown:对「取不到」的主机多久重试一次 dmidecode(成功值不受此限,永久缓存)。
 const physMemRetryCooldown = 10 * time.Minute
 
-// cachedPhysicalTotal 返回该主机物理/分配内存(字节),0 表示取不到。memTotal 用于
-// 合理性校验(物理量应 ≥ 内核可用量)。SSH 调用在不持锁时进行,不串行化各主机。
-func cachedPhysicalTotal(ctx context.Context, svc target.Service, id string, memTotal int64) int64 {
+// physMemLookup 返回 (cachedBytes, needsProbe):已有成功缓存 → 直接用、不再探测;
+// 失败冷却期内 → 用 0、不探测;其余 → 需要在采集脚本里带上 dmidecode 段。
+func physMemLookup(id string) (int64, bool) {
 	now := time.Now()
-
 	physMemMu.Lock()
-	if e, hit := physMemCache[id]; hit {
-		// 成功值永久有效;失败值在冷却期内复用(不重拨)。
-		if e.bytes > 0 || now.Sub(e.probedAt) < physMemRetryCooldown {
-			physMemMu.Unlock()
-			return e.bytes
-		}
+	defer physMemMu.Unlock()
+	if e, hit := physMemCache[id]; hit && (e.bytes > 0 || now.Sub(e.probedAt) < physMemRetryCooldown) {
+		return e.bytes, false
 	}
-	physMemMu.Unlock()
-
-	// 探测(不持锁):dmidecode 需 root,失败一律记 0,绝不连累已成功的 free 口径。
-	var phys int64
-	if dmiOut, dmiErr := runMetricCmd(ctx, svc, id, cmdDmidecodeMem); dmiErr == nil {
-		if p, pok := parseDmidecodeMemBytes(dmiOut); pok && p >= memTotal {
-			phys = p
-		}
-	}
-
-	physMemMu.Lock()
-	physMemCache[id] = physMemEntry{bytes: phys, probedAt: now}
-	physMemMu.Unlock()
-	return phys
+	return 0, true
 }
 
-// collectDisk 取根分区 used/total(字节)。`df -B1 /` 优先;macOS 不识别 -B1 → 回退 `df -k /`
-// 换算字节(KiB×1024)。解析失败 → nil。
-func collectDisk(ctx context.Context, svc target.Service, id string) *diskMetric {
-	if out, err := runMetricCmd(ctx, svc, id, cmdDfBytes); err == nil {
-		if used, total, ok := parseDf(out, 1); ok {
-			return &diskMetric{Path: "/", UsedBytes: used, TotalBytes: total}
+// physMemStore 记录一轮 dmidecode 探测结果(成功值 >0;失败/不合理记 0 进冷却)。
+func physMemStore(id string, phys int64) {
+	physMemMu.Lock()
+	physMemCache[id] = physMemEntry{bytes: phys, probedAt: time.Now()}
+	physMemMu.Unlock()
+}
+
+// collectServerMetrics 对单台服务器**直采**(无缓存;HTTP/异常检测/采样一律走
+// snapshotServerMetrics)。永不返回 error:不可达/失败均落到 DTO.reachable=false + 人读
+// error(批量端点据此让单台失败不连累全局)。
+// 第二个返回值是「定位类」错误(服务器/凭据不存在、保险库未配),仅供单台端点映射 422/503;
+// 批量端点忽略它(逐台独立,定位类对某台亦只表现为该台 reachable:false)。
+//
+// 采集 = 1 次 SSH 连接:跑一个合并脚本,按段解析。唯一一次 Exec 的连接/认证类失败决定
+// reachable;某段缺失/异常仅该指标 null。
+func collectServerMetrics(ctx context.Context, svc target.Service, id string) (serverMetricsDTO, error) {
+	out := serverMetricsDTO{ServerID: id, CollectedAt: time.Now().UTC().Format(time.RFC3339)}
+
+	cctx, cancel := context.WithTimeout(ctx, metricsCollectTimeout)
+	defer cancel()
+
+	cachedPhys, probePhys := physMemLookup(id)
+	outStr, err := runMetricCmd(cctx, svc, id, metricsCollectArgs(probePhys))
+	if err != nil {
+		out.Reachable = false
+		out.Error = humanMetricsError(err)
+		if isLocateError(err) {
+			return out, err
+		}
+		return out, nil
+	}
+	out.Reachable = true
+	sections := splitMetricSections(outStr)
+	out.CPU = cpuFromSections(sections)
+	out.Memory = memoryFromSections(sections)
+	out.Disk = diskFromSections(sections)
+	// 物理/分配内存:本轮带探测段才解析入库(成功值长期复用);无探测段直接用缓存值。
+	// 内存段失败时整块跳过(物理量以内核可用量做合理性校验,没 total 无从校验)。
+	if out.Memory != nil {
+		switch {
+		case probePhys:
+			var phys int64
+			if p, ok := parseDmidecodeMemBytes(sections[secPhysMem]); ok && p >= out.Memory.TotalBytes {
+				phys = p
+			}
+			physMemStore(id, phys)
+			out.Memory.PhysicalTotalBytes = phys
+		case cachedPhys > 0:
+			out.Memory.PhysicalTotalBytes = cachedPhys
 		}
 	}
-	// 回退 df -k(KiB)。
-	if out, err := runMetricCmd(ctx, svc, id, cmdDfKiB); err == nil {
-		if used, total, ok := parseDf(out, 1024); ok {
-			return &diskMetric{Path: "/", UsedBytes: used, TotalBytes: total}
-		}
+	return out, nil
+}
+
+// ─── 指标快照缓存(stale-while-revalidate,单飞)────────────────────────────────
+//
+// 包级全局(进程内);按 serverID 存最后一次采集结果。TTL 内直接命中(0 SSH);过期则
+// **先回旧值**、后台单飞刷新 —— 轮询端点、异常检测、历史采样共享同一份,慢主机/不可达
+// 主机的重试被自然压到每 TTL 最多一次,且只发生在后台。进程重启即冷(首请求同步采集)。
+type metricsSnapshotEntry struct {
+	dto      serverMetricsDTO
+	at       time.Time
+	updating bool // 后台刷新单飞标志
+}
+
+var (
+	metricsSnapMu    sync.Mutex
+	metricsSnapshots = map[string]*metricsSnapshotEntry{}
+	// metricsNow 可注入时钟(单测 TTL 过期路径,仿 build/remote.go remoteCLICache)。
+	metricsNow = time.Now
+	// metricsRefreshSem 限后台刷新并发(与采集并发同界),防一批同时过期把 SSH 打爆。
+	metricsRefreshSem = make(chan struct{}, metricsConcurrency)
+	// metricsRefreshed 测试钩子:每次后台刷新收尾后调用(单测等待异步刷新完成)。
+	metricsRefreshed func()
+)
+
+// resetMetricsSnapshotCache 清空快照缓存(测试隔离用:缓存是包级全局,跨用例会串扰)。
+func resetMetricsSnapshotCache() {
+	metricsSnapMu.Lock()
+	metricsSnapshots = map[string]*metricsSnapshotEntry{}
+	metricsSnapMu.Unlock()
+}
+
+// snapshotServerMetrics 返回该台指标快照。第二个返回值仅在冷启动(缓存无条目)同步采集时
+// 可能是「定位类」错误(服务器/凭据不存在、保险库未配),供单台端点映射 422/503;
+// 缓存命中 / 后台刷新路径恒为 nil(定位类错误不入缓存,见 metricsRefresh)。
+func snapshotServerMetrics(ctx context.Context, svc target.Service, id string) (serverMetricsDTO, error) {
+	if dto, ok := metricsSnapshotLookup(svc, id); ok {
+		return dto, nil
 	}
-	return nil
+	// 冷启动:同步采集一次,保证首屏真数据。用 WithoutCancel 脱钩请求生命周期 ——
+	// 请求方中途断开也不浪费已完成大半的采集,结果照常入缓存供下一请求使用。
+	cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), metricsCollectTimeout)
+	defer cancel()
+	dto, locErr := collectServerMetrics(cctx, svc, id)
+	if locErr != nil {
+		return dto, locErr
+	}
+	metricsSnapshotStore(dto)
+	return dto, nil
+}
+
+// metricsSnapshotLookup 命中:TTL 内原样返回;过期则触发后台单飞刷新并返回旧值
+// (stale-while-revalidate)。未命中 → false(调用方冷启动同步采集)。
+func metricsSnapshotLookup(svc target.Service, id string) (serverMetricsDTO, bool) {
+	now := metricsNow()
+	metricsSnapMu.Lock()
+	e, ok := metricsSnapshots[id]
+	if !ok {
+		metricsSnapMu.Unlock()
+		return serverMetricsDTO{}, false
+	}
+	dto := e.dto
+	fresh := now.Sub(e.at) < metricsCacheTTL
+	inFlight := e.updating
+	if !fresh && !inFlight {
+		e.updating = true
+	}
+	metricsSnapMu.Unlock()
+	if fresh || inFlight {
+		return dto, true
+	}
+	// 过期且无人刷新:后台单飞刷新(不持锁、不用请求 ctx),先回旧值。
+	go func() {
+		metricsRefreshSem <- struct{}{}
+		defer func() { <-metricsRefreshSem }()
+		metricsSnapshotRefresh(svc, id)
+	}()
+	return dto, true
+}
+
+func metricsSnapshotStore(dto serverMetricsDTO) {
+	metricsSnapMu.Lock()
+	metricsSnapshots[dto.ServerID] = &metricsSnapshotEntry{dto: dto, at: metricsNow()}
+	metricsSnapMu.Unlock()
+}
+
+// metricsSnapshotRefresh 后台刷新一台的指标。结果无条件落缓存(可达与否都算数,把重试
+// 频率自然压到每 TTL 最多一次);定位类错误则删条目 —— 下次请求冷启动同步采集,让单台
+// 端点把凭据/保险库问题正确映射为 422/503,而不是吃过期 200。
+func metricsSnapshotRefresh(svc target.Service, id string) {
+	defer func() {
+		metricsSnapMu.Lock()
+		if e, ok := metricsSnapshots[id]; ok {
+			e.updating = false
+		}
+		metricsSnapMu.Unlock()
+		if metricsRefreshed != nil {
+			metricsRefreshed()
+		}
+	}()
+	// 后台刷新不用请求 ctx(响应返回后会被取消),独立超时兜底。
+	ctx, cancel := context.WithTimeout(context.Background(), metricsCollectTimeout)
+	defer cancel()
+	dto, locErr := collectServerMetrics(ctx, svc, id)
+	metricsSnapMu.Lock()
+	defer metricsSnapMu.Unlock()
+	if locErr != nil {
+		delete(metricsSnapshots, id)
+		return
+	}
+	metricsSnapshots[id] = &metricsSnapshotEntry{dto: dto, at: metricsNow()}
 }
 
 // --- 解析器(纯函数,可单测;空/格式异常一律 ok=false,绝不 panic) ---
@@ -512,6 +669,7 @@ func humanMetricsError(err error) string {
 
 // makeServerMetricsHandler 返回 GET /api/servers/{id}/metrics(认证,只读)。
 // 服务器不存在/凭据不存在/保险库未配 → 标准状态码;连接/认证/采集失败 → 200 + reachable:false,不 500。
+// 数据走 TTL 快照缓存(stale-while-revalidate):热路径 0 SSH,慢主机只拖后台刷新。
 func makeServerMetricsHandler(svc target.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if svc == nil {
@@ -524,7 +682,7 @@ func makeServerMetricsHandler(svc target.Service) http.HandlerFunc {
 			writeServerError(w, err)
 			return
 		}
-		out, locErr := collectServerMetrics(r.Context(), svc, id)
+		out, locErr := snapshotServerMetrics(r.Context(), svc, id)
 		// 定位类错误(凭据不存在 / 保险库未配)→ 走标准映射(422/503),而非 reachable:false。
 		if locErr != nil {
 			writeServerError(w, locErr)
@@ -535,7 +693,9 @@ func makeServerMetricsHandler(svc target.Service) http.HandlerFunc {
 }
 
 // makeAllServerMetricsHandler 返回 GET /api/servers/metrics(认证,只读;批量)。
-// 逐台并行采集(有界并发),各自独立:某台失败仅该台 reachable:false,不连累其它台、不 500。
+// 逐台并行(有界并发),各自独立:某台失败仅该台 reachable:false,不连累其它台、不 500。
+// 数据走 TTL 快照缓存:热路径即时返回(可能略陈旧,collectedAt 自描述数据年龄);
+// 仅冷启动(进程刚起/新登记服务器)同步采集,首屏仍给真数据。
 func makeAllServerMetricsHandler(svc target.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if svc == nil {
@@ -558,7 +718,7 @@ func makeAllServerMetricsHandler(svc target.Service) http.HandlerFunc {
 				sem <- struct{}{}
 				defer func() { <-sem }()
 				// 批量逐台独立:定位类错误对某台亦只表现为该台 reachable:false(忽略 locErr)。
-				items[i], _ = collectServerMetrics(r.Context(), svc, id)
+				items[i], _ = snapshotServerMetrics(r.Context(), svc, id)
 			}(i, srv.ID)
 		}
 		wg.Wait()

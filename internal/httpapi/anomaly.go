@@ -116,7 +116,9 @@ func (c metricsCollector) Collect(ctx context.Context, serverIDs []string) ([]an
 			sem <- struct{}{}
 			defer func() { <-sem }()
 			// 逐台独立:定位类错误对某台亦只表现为 reachable:false(忽略 locErr)。
-			dto, _ := collectServerMetrics(ctx, c.servers, ref.id)
+			// 走快照缓存(stale-while-revalidate):与 metrics HTTP 端点/历史采样共享,
+			// 过期仅触发后台刷新,周期检测不再每 tick 逐台重拨 SSH。
+			dto, _ := snapshotServerMetrics(ctx, c.servers, ref.id)
 			out[i] = snapshotFromMetricsDTO(ref.id, ref.name, dto)
 		}(i, ref)
 	}
