@@ -80,8 +80,8 @@ func dockerRunCmd(name string, runArgs []string, ref string) []string {
 	return cmd
 }
 
-// stageImageOne 执行 image 蓝绿**预备阶段**:pull 新镜像(不停旧容器)+ 探测当前容器镜像(回滚目标)。
-// 拉取失败 → (中间态, 人读 message, false)。
+// stageImageOne 执行 image 部署**预备阶段**:docker login(可选,配了 registryCredentialId)+
+// pull 新镜像(不停旧容器)+ 探测当前容器镜像(回滚目标)。拉取失败 → (中间态, 人读 message, false)。
 func (s *service) stageImageOne(ctx context.Context, srv *target.Server, a run.Artifact, cfg map[string]string) (imageState, string, bool) {
 	st := imageState{name: imageContainerName(a, cfg), ref: strings.TrimSpace(a.Reference), runArgs: imageRunArgs(cfg)}
 	if st.ref == "" {
@@ -89,6 +89,14 @@ func (s *service) stageImageOne(ctx context.Context, srv *target.Server, a run.A
 	}
 	execCtx, cancel := context.WithTimeout(ctx, execTimeout)
 	defer cancel()
+
+	// 私有仓库:配了 registryCredentialId → 先在目标机 docker login(明文仅 target 层经 vault
+	// 即取即用,不落日志;失败仅记日志继续,pull 自身可能走匿名缓存)。
+	if cred := strings.TrimSpace(cfg["registryCredentialId"]); cred != "" {
+		if lerr := s.targets.DockerLogin(ctx, srv.ID, cfg["registryUrl"], cred); lerr != nil {
+			cmdLogFrom(ctx)(cmdStreamStderr, "  ⚠ 目标机 docker login 失败(继续尝试 pull):"+humanExecError(lerr))
+		}
+	}
 
 	// 探测当前同名容器所用镜像(供回滚);无容器 / 读失败 → 空(首次部署,无可回滚)。
 	st.prevImage = s.readContainerImage(execCtx, srv.ID, st.name)
@@ -178,30 +186,6 @@ func (s *service) rollbackImage(ctx context.Context, srv *target.Server, res Tar
 	}
 	res.Message = fmt.Sprintf("健康检查失败,已回滚容器 %s → 上一镜像 %s(健康原因:%s)", st.name, st.prevImage, healthMsg)
 	return res
-}
-
-// fleetRollbackImageOne 把一台「本机切换成功、但机群其它机失败」的容器回滚到上一镜像(蓝绿机群级原子性)。
-func (s *service) fleetRollbackImageOne(ctx context.Context, srv *target.Server, st imageState, res *TargetResult) {
-	execCtx, cancel := context.WithTimeout(ctx, execTimeout)
-	defer cancel()
-	var rbErr error
-	for _, cmd := range [][]string{
-		{"docker", "rm", "-f", st.name},
-		dockerRunCmd(st.name, st.runArgs, st.prevImage),
-	} {
-		if _, e := s.exec(execCtx, srv.ID, cmd); e != nil {
-			rbErr = e
-			break
-		}
-	}
-	finish := time.Now().UTC()
-	res.Status = run.TargetRolledBack
-	res.FinishedAt = &finish
-	if rbErr != nil {
-		res.Message = "蓝绿:其它机切换失败,本机尝试回滚到上一镜像但回滚命令失败:" + humanExecError(rbErr)
-		return
-	}
-	res.Message = "蓝绿:其它机切换失败,本机已回滚到上一镜像(机群级原子性:要么全切要么全退)"
 }
 
 // readContainerImage 读同名容器当前所用镜像(docker inspect);无容器 / 读失败 → ""。

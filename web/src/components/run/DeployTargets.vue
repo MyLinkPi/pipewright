@@ -31,9 +31,13 @@ const props = withDefaults(
 // 由父组件(RunDetail,持有上次部署表单)发起 retryFailedDeploy 并刷新 targets。
 const emit = defineEmits<{ retry: [] }>()
 
-// 当前有几台 failed/rolled_back 目标可重试(rolled_back 亦计入:健康失败已回滚,可再试)。
-const failedCount = computed(
-  () => props.targets.filter((tg) => tg.status === 'failed' || tg.status === 'rolled_back').length,
+// 可重试目标数:failed / rolled_back / pending 三者之和。
+// rolled_back 计入:健康失败已回滚,可再试。pending 计入:统一滚动部署在某批失败后停止铺开,
+// 未轮到的机器被写成 pending(未部署,仍跑旧版本);后端重试会一并推进这些目标,
+// 因此「全是 pending、没有 failed」时也必须出按钮,否则用户无法继续铺开。
+const RETRYABLE_STATUSES: readonly TargetStatus[] = ['failed', 'rolled_back', 'pending']
+const retryableCount = computed(
+  () => props.targets.filter((tg) => RETRYABLE_STATUSES.includes(tg.status)).length,
 )
 
 // ─── Status badge config (semantic color per fixed five-word set) ────────────
@@ -84,16 +88,23 @@ function formatTime(iso: string | null): string {
 
 // ─── summary counts (for the header) ──────────────────────────────────────────
 
-function counts(targets: DeployTarget[]): { ok: number; bad: number; rolledBack: number } {
+function counts(targets: DeployTarget[]): {
+  ok: number
+  bad: number
+  rolledBack: number
+  pending: number
+} {
   let ok = 0
   let bad = 0
   let rolledBack = 0
+  let pending = 0
   for (const t of targets) {
     if (t.status === 'success') ok++
     else if (t.status === 'rolled_back') rolledBack++
     else if (t.status === 'failed') bad++
+    else if (t.status === 'pending') pending++
   }
-  return { ok, bad, rolledBack }
+  return { ok, bad, rolledBack, pending }
 }
 </script>
 
@@ -118,6 +129,7 @@ function counts(targets: DeployTarget[]): { ok: number; bad: number; rolledBack:
         <span v-if="counts(targets).ok > 0" class="dt-stat dt-stat--ok">{{ t('run.countOk', { n: counts(targets).ok }) }}</span>
         <span v-if="counts(targets).rolledBack > 0" class="dt-stat dt-stat--rollback">{{ t('run.countRolledBack', { n: counts(targets).rolledBack }) }}</span>
         <span v-if="counts(targets).bad > 0" class="dt-stat dt-stat--bad">{{ t('run.countBad', { n: counts(targets).bad }) }}</span>
+        <span v-if="counts(targets).pending > 0" class="dt-stat dt-stat--pending">{{ t('run.countPending', { n: counts(targets).pending }) }}</span>
       </div>
     </header>
 
@@ -178,11 +190,12 @@ function counts(targets: DeployTarget[]): { ok: number; bad: number; rolledBack:
     </ul>
 
     <!--
-      仅重试失败目标(Story 4-5 / FR-13):有 failed/rolled_back 目标时显「重试失败目标」。
+      仅重试失败目标(Story 4-5 / FR-13):有 failed/rolled_back/pending 目标时显「重试失败目标」。
+      pending 计入:滚动部署中断后未轮到的机器仍跑旧版本,重试会一并推进(否则全 pending 时无按钮)。
       点击 → 父组件 RunDetail(持上次部署产物/配置)发起 retryFailedDeploy → 刷新 targets;
-      成功台不动,只重跑失败台。本组件纯展示,只 emit 事件。
+      成功台不动,只重跑失败台与未铺开的台。本组件纯展示,只 emit 事件。
     -->
-    <footer v-if="failedCount > 0" class="dt-foot">
+    <footer v-if="retryableCount > 0" class="dt-foot">
       <div v-if="retryError" class="dt-retry-error" role="alert">
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
           <circle cx="12" cy="12" r="9" /><path d="M12 8v4M12 16h.01" />
@@ -200,7 +213,7 @@ function counts(targets: DeployTarget[]): { ok: number; bad: number; rolledBack:
           <path d="M3 7v6h6" />
           <path d="M3 13a9 9 0 1 0 3-7.7L3 8" />
         </svg>
-        {{ retrying ? t('run.retrying') : t('run.retryFailedTargets', { n: failedCount }) }}
+        {{ retrying ? t('run.retrying') : t('run.retryFailedTargets', { n: retryableCount }) }}
       </button>
     </footer>
   </section>
@@ -258,6 +271,8 @@ function counts(targets: DeployTarget[]): { ok: number; bad: number; rolledBack:
 .dt-stat--ok       { color: var(--color-green); background: var(--color-green-soft); }
 .dt-stat--bad      { color: var(--color-red);   background: var(--color-red-soft);   }
 .dt-stat--rollback { color: var(--color-amber); background: var(--color-amber-soft); }
+/* pending(未铺开,仍跑旧版本):中性色,与 status 徽标同调,避免被误读成失败。 */
+.dt-stat--pending  { color: var(--color-faint); background: var(--color-card-2);     }
 
 .dt-list {
   list-style: none;

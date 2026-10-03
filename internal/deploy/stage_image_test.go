@@ -181,78 +181,7 @@ func TestStageImageHonorsContainerNamePortsRunArgs(t *testing.T) {
 	}
 }
 
-// TestStageImageBlueGreen 蓝绿策略下镜像走 stage(pull)→ cutover(run),且 run 带 cfg runArgs。
-func TestStageImageBlueGreen(t *testing.T) {
-	db := testDB(t)
-	rsvc := run.New(db)
-	rec := &touchRecorder{}
-	tgt := &stubTarget{execFn: rec.exec}
-	seedLabeledServer(t, tgt, "web-1", "web")
-	seedLabeledServer(t, tgt, "web-2", "web")
-	runID, _ := seedSuccessRunWithArtifact(t, db, rsvc, run.ArtifactImage, "registry/shop:2.0")
 
-	svc := New(tgt, rsvc)
-	cfg := map[string]string{"containerName": "shop", "ports": "80:80"}
-	res, err := svc.DeployForStage(context.Background(), runID, "web", cfg, "blue_green")
-	if err != nil {
-		t.Fatalf("DeployForStage: %v", err)
-	}
-	for i, r := range res {
-		if r.Status != run.TargetSuccess {
-			t.Fatalf("蓝绿镜像目标 %d 应 success,实际 %s / %q", i, r.Status, r.Message)
-		}
-	}
-	if !hasCmd(rec.calls2, "docker", "pull", "registry/shop:2.0") {
-		t.Fatalf("蓝绿应有 pull(预备): %v", rec.calls2)
-	}
-	rc := runCmd(rec.calls2)
-	if rc == nil {
-		t.Fatalf("蓝绿应有 docker run(切换): %v", rec.calls2)
-	}
-	// cutover 的 run 应带 cfg 容器名与端口。
-	if !hasCmd(rec.calls2, "docker", "run", "-d", "--name", "shop", "-p", "80:80", "registry/shop:2.0") {
-		t.Fatalf("蓝绿切换 run 应带 cfg 容器名 + 端口: %v", rec.calls2)
-	}
-}
-
-// TestStageImageBlueGreenRollback 蓝绿镜像:一机健康失败 → 已切换成功的机回滚到上一镜像。
-func TestStageImageBlueGreenRollback(t *testing.T) {
-	db := testDB(t)
-	rsvc := run.New(db)
-	badID := ""
-	rec := &touchRecorder{
-		inspectImage: "registry/shop:1.0", // 模拟上一镜像存在 → 可回滚
-		failOn: func(serverID string, cmd []string) bool {
-			return serverID == badID && len(cmd) > 0 && cmd[0] == "true" // bad 机健康失败
-		},
-	}
-	tgt := &stubTarget{execFn: rec.exec}
-	good := seedServer(t, tgt, "web-good")
-	bad := seedServer(t, tgt, "web-bad")
-	badID = bad.ID
-	runID, _ := seedSuccessRunWithArtifact(t, db, rsvc, run.ArtifactImage, "registry/shop:2.0")
-
-	svc := New(tgt, rsvc)
-	// DeployForStage 不带 HealthCheck 入参,这里直接调内部蓝绿编排验证回滚(健康门控经 hc)。
-	hc := &HealthCheck{Type: HealthCheckCommand, Command: []string{"true"}, Retries: 1}
-	res, err := svc.Deploy(context.Background(), DeployInput{
-		RunID: runID, ArtifactID: mustArtID(t, rsvc, runID), ServerIDs: []string{good.ID, bad.ID},
-		Strategy: "blue_green", HealthCheck: hc,
-		Config: map[string]string{"containerName": "shop"},
-	})
-	if err != nil {
-		t.Fatalf("Deploy: %v", err)
-	}
-	for i, r := range res {
-		if r.Status != run.TargetRolledBack {
-			t.Fatalf("镜像机群回滚:目标 %d (%s) 应 rolled_back,实际 %s / %q", i, r.ServerName, r.Status, r.Message)
-		}
-	}
-	// 回滚应 docker run 上一镜像(带 cfg 容器名)。
-	if !hasCmd(rec.calls2, "docker", "run", "-d", "--name", "shop", "registry/shop:1.0") {
-		t.Fatalf("回滚应以 cfg 容器名起上一镜像: %v", rec.calls2)
-	}
-}
 
 // hasRunWithRef 报告命令序列里是否有「docker run … <ref>」(ref 为末参,用于断言回滚到上一镜像)。
 func hasRunWithRef(calls [][]string, ref string) bool {

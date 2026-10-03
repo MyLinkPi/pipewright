@@ -30,6 +30,8 @@ type Config struct {
 // Service 读写保留配置并执行清理(经参数化 SQL 触库)。
 type Service struct {
 	db *sql.DB
+	// gcStore 是制品库磁盘面(WithBlobStore 注入;nil = 制品孤儿 GC 跳过)。
+	gcStore BlobStore
 }
 
 // NewService 构造保留服务。

@@ -26,6 +26,7 @@ package deploy
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"path"
 	"strconv"
@@ -182,11 +183,22 @@ func (s *service) stageStoredArtifact(ctx context.Context, srv *target.Server, a
 	}
 
 	switch artifactFormat(a) {
+	case "files":
+		// 逐文件清单(构建节点 artifactPackMode=none):按 metadata.files 清单把每个文件上传到
+		// <release>/<相对路径>,目录结构原样保留(打包与否由构建节点显式决定,部署端照单执行)。
+		if failMsg, ok := s.stageFilesManifest(ctx, srv, a, st); !ok {
+			return failMsg, false
+		}
+		return "", true
+
 	case "tar.gz":
 		// dist:上传 tar.gz → 远端解包 → 删包。
 		tarPath := path.Join(st.release, ".pw-artifact.tar.gz")
-		if err := s.targets.Upload(ctx, srv.ID, rc, tarPath); err != nil {
-			return "上传 dist 制品到目标机失败:" + humanExecError(err), false
+		upCtx, upCancel := uploadCtx(ctx)
+		uerr := s.targets.Upload(upCtx, srv.ID, rc, tarPath)
+		upCancel()
+		if uerr != nil {
+			return "上传 dist 制品到目标机失败:" + humanExecError(uerr), false
 		}
 		unpack := [][]string{
 			{"tar", "-xzf", tarPath, "-C", st.release},
@@ -203,8 +215,11 @@ func (s *service) stageStoredArtifact(ctx context.Context, srv *target.Server, a
 		if name := artifactFilename(a); name != "" {
 			dest = path.Join(st.release, name)
 		}
-		if err := s.targets.Upload(ctx, srv.ID, rc, dest); err != nil {
-			return "上传 jar 制品到目标机失败:" + humanExecError(err), false
+		upCtx, upCancel := uploadCtx(ctx)
+		uerr := s.targets.Upload(upCtx, srv.ID, rc, dest)
+		upCancel()
+		if uerr != nil {
+			return "上传 jar 制品到目标机失败:" + humanExecError(uerr), false
 		}
 		if a.Type == run.ArtifactJar {
 			if failMsg, ok := s.runStep(ctx, srv.ID, [][]string{{"java", "-jar", dest, "--version"}}); !ok {
@@ -213,6 +228,66 @@ func (s *service) stageStoredArtifact(ctx context.Context, srv *target.Server, a
 		}
 		return "", true
 	}
+}
+
+// storedFileEntry 是 format=files 产物清单里的一项(metadata.files 数组元素;与 build 侧同形)。
+type storedFileEntry struct {
+	Path string `json:"path"`
+	Key  string `json:"key"`
+	Size int64  `json:"size"`
+}
+
+// decodeFilesManifest 从产物 metadata 解出 format=files 的清单。
+//
+// metadata 有两种形状:构建侧刚写入时 files 是 json.RawMessage,但**经 DB 往返**后
+// (run.decodeMetadata 用 json.Unmarshal 到 map[string]any)会变成 []any —— 部署侧一律
+// 从 ListArtifacts 读,拿到的必然是后者。故统一「再序列化 → 反序列化」兼容两种形状,
+// 绝不用 `.(json.RawMessage)` 断言(断言恒失败 → 清单丢失 → 该机部署失败)。
+func decodeFilesManifest(md map[string]any) ([]storedFileEntry, error) {
+	v, ok := md["files"]
+	if !ok || v == nil {
+		return nil, fmt.Errorf("产物缺少 files 清单(非 artifactPackMode=none 产物?)")
+	}
+	raw, err := json.Marshal(v)
+	if err != nil {
+		return nil, fmt.Errorf("产物 files 清单非法:%w", err)
+	}
+	var files []storedFileEntry
+	if err := json.Unmarshal(raw, &files); err != nil {
+		return nil, fmt.Errorf("产物 files 清单非法:%w", err)
+	}
+	return files, nil
+}
+
+// stageFilesManifest 按 format=files 产物的清单逐文件上传到 <release>/<相对路径>
+// (目录结构原样;构建侧 artifactPackMode=none 的产物)。任一文件失败 → (人读 message, false)。
+func (s *service) stageFilesManifest(ctx context.Context, srv *target.Server, a run.Artifact, st releaseState) (string, bool) {
+	files, err := decodeFilesManifest(a.Metadata)
+	if err != nil {
+		return err.Error(), false
+	}
+	if failMsg, ok := s.runStep(ctx, srv.ID, [][]string{{"mkdir", "-p", st.release}}); !ok {
+		return failMsg, false
+	}
+	for _, fe := range files {
+		rel := path.Clean("/" + strings.ReplaceAll(fe.Path, "\\", "/"))
+		if rel == "/" || rel == "." {
+			continue
+		}
+		dest := path.Join(st.release, rel)
+		rc, err := s.artStore.Open(fe.Key)
+		if err != nil {
+			return "从制品库取文件 " + fe.Path + " 失败:" + err.Error(), false
+		}
+		upCtx, upCancel := uploadCtx(ctx)
+		uerr := s.targets.Upload(upCtx, srv.ID, rc, dest)
+		upCancel()
+		_ = rc.Close()
+		if uerr != nil {
+			return "上传文件 " + fe.Path + " 到目标机失败:" + humanExecError(uerr), false
+		}
+	}
+	return "", true
 }
 
 // isStoredArtifact 报告产物是否由制品库归档(metadata.stored=true → 部署取真字节)。
@@ -254,17 +329,18 @@ func (s *service) activateReleaseOne(ctx context.Context, srv *target.Server, a 
 
 	// 3.5) 切换后执行「重启 / 切换命令」(支持多行;在 current 目录下跑,$0=current 经位置参传入防注入)。
 	// 多行 = set -e 单脚本逐行执行(与自定义脚本节点同语义)。失败 → 回滚(有上一发布时),与健康失败一致。
-	if rc := strings.TrimSpace(cfg["restartCommand"]); rc != "" {
+	restartCmd := strings.TrimSpace(cfg["restartCommand"])
+	if rc := restartCmd; rc != "" {
 		script := "cd \"$0\" && set -e\n" + rc
 		if failMsg, ok := s.runStep(execCtx, srv.ID, [][]string{{"sh", "-c", script, st.current}}); !ok {
-			return s.rollback(execCtx, srv, res, st.current, st.prev, st.release, "重启/切换命令失败:"+failMsg)
+			return s.rollback(execCtx, srv, res, st.current, st.prev, st.release, "重启/切换命令失败:"+failMsg, restartCmd)
 		}
 	}
 
 	// 4) 切换之后跑健康门控(4-3);失败触发回滚。
 	if hc.enabled() {
 		if herr := s.runHealthCheck(execCtx, srv.ID, hc); herr != nil {
-			return s.rollback(execCtx, srv, res, st.current, st.prev, st.release, herr.Error())
+			return s.rollback(execCtx, srv, res, st.current, st.prev, st.release, herr.Error(), restartCmd)
 		}
 	}
 
@@ -283,11 +359,13 @@ func (s *service) activateReleaseOne(ctx context.Context, srv *target.Server, a 
 	return res
 }
 
-// rollback 在健康门控失败后回滚 current 软链到上一发布。
+// rollback 在健康门控/重启命令失败后回滚 current 软链到上一发布。
 //   - 有上一发布:ln -sfn <上一发布> current → status=rolled_back + 人读(说明回滚到哪个 release)。
 //     回滚命令本身失败 → 仍记 rolled_back(尽力回滚)+ 人读说明回滚未确认(不 500)。
+//     回滚切回软链后**尽力重跑一次重启命令**(在上一发布目录内):修复此前「只切软链不重启,
+//     旧服务可能起不来」的缺口;重跑失败仅追加告警,不改变 rolled_back 状态。
 //   - 无上一发布(首次部署):无可回滚 → status=failed + 人读。
-func (s *service) rollback(ctx context.Context, srv *target.Server, res TargetResult, current, prev, release, healthMsg string) TargetResult {
+func (s *service) rollback(ctx context.Context, srv *target.Server, res TargetResult, current, prev, release, healthMsg, restartCommand string) TargetResult {
 	finish := time.Now().UTC()
 	res.FinishedAt = &finish
 
@@ -316,6 +394,20 @@ func (s *service) rollback(ctx context.Context, srv *target.Server, res TargetRe
 	}
 	res.Message = fmt.Sprintf("健康检查失败,已回滚 current → 上一发布 %s(失败发布 %s 保留供排查;健康原因:%s)",
 		prevName, path.Base(release), healthMsg)
+
+	// 尽力重跑重启命令:软链已切回旧版本,把旧服务拉起来(失败仅追加告警)。
+	if rc := strings.TrimSpace(restartCommand); rc != "" {
+		script := "cd \"$0\" && set -e\n" + rc
+		out, eerr := s.exec(ctx, srv.ID, []string{"sh", "-c", script, prev})
+		switch {
+		case eerr != nil:
+			res.Message += "(注意:回滚后重跑重启命令失败:" + humanExecError(eerr) + ")"
+		case out != nil && out.ExitCode != 0:
+			res.Message += fmt.Sprintf("(注意:回滚后重跑重启命令退出码 %d:%s)", out.ExitCode, truncate(strings.TrimSpace(out.Stderr)))
+		default:
+			res.Message += "(已在新 current 重跑重启命令)"
+		}
+	}
 	return res
 }
 

@@ -391,24 +391,25 @@ func buildPrompt(in GenerateInput) string {
 ## 串行 / 并行(关键!用每个 job 的 needs 表达节点依赖)
 同一阶段内:**没有 needs 的 job 并行执行;有 needs 的 job 必须等其依赖的 job 完成后才串行执行**。
 needs 填「本阶段内它所依赖的其它 job 的 name」(数组)。**凡有数据/产物依赖的 job 必须设 needs**,否则会并行跑、拿不到上游产物而失败。常见依赖:
-- build_image 要用上游构建产物(jar/dist)→ needs 填 build_backend(及 build_frontend)的 name。**Dockerfile 里 COPY 了 jar/dist 的,必须依赖对应构建 job,不能并行!**
+- build_image 要用上游构建产物(jar/dist)→ needs 填对应构建节点(build_java/build_nodejs/build_golang/build_python)的 name。**Dockerfile 里 COPY 了 jar/dist 的,必须依赖对应构建 job,不能并行!**
 - push_image → needs 填 build_image 的 name。
-- health_check → needs 填 deploy_ssh / deploy_frontend 的 name。
-- 互不依赖的(如 build_frontend 与 build_backend)不写 needs,让它们并行加速。
+- health_check → needs 填 deploy_ssh / deploy_container 的 name。
+- 互不依赖的构建节点(如 build_nodejs 与 build_java)不写 needs,让它们并行加速。
 
 ## 组合指引
-- monorepo 前后端可并行:同一构建阶段放 build_frontend 与 build_backend(互不依赖 → 并行),build_image 用 needs 串在它们之后。
-- 有 Dockerfile → 用 build_image(产 image),需远端部署再加 push_image(needs build_image);无 Dockerfile → 用 build_frontend/build_backend 产 dist/jar。
+- monorepo 前后端可并行:同一构建阶段放 build_nodejs 与 build_java(互不依赖 → 并行),build_image 用 needs 串在它们之后。
+- 有 Dockerfile → 用 build_image(产 image),需远端部署再加 push_image(needs build_image);无 Dockerfile → 按语言用 build_nodejs/build_java/build_golang/build_python 产 dist/jar/二进制。
 - 部署后接 health_check(needs deploy_ssh);关键阶段(部署成功/失败)可接 notify。
 - 仅在内置节点无法表达的步骤才用 script 或库中的自定义节点(templated)。
 
 ## 每个节点的 config(关键!尽量据仓库分析填满,让流水线直接可用)
 为每个 job 填 "config" 对象,**凡能从仓库分析推断的都填**;只有环境相关项(serverId/channel/credentialId)留空给用户选。各类型 config 字段:
-- build_frontend/build_backend/script:image(运行镜像,据语言/版本选,如 node:20、maven:3.9-eclipse-temurin-21)、commands(多行命令,据构建工具写,如 "cd <子目录>\nmvn -B -DskipTests package")、artifactPath(产物路径,如 "backend/target/*.jar"、"frontend/dist")。命令里的子目录要用分析里检测到的真实路径(如 backend/、frontend/)。
+- build_nodejs/build_java/build_golang/build_python/script:image(运行镜像,据语言/版本选,如 node:20、maven:3.9-eclipse-temurin-21、golang:1.22、python:3.12)、commands(多行命令,据构建工具写)、artifactPath(产物路径,如 "backend/target/*.jar"、"frontend/dist"、"bin/app")。命令里的子目录要用分析里检测到的真实路径(如 backend/、frontend/)。
 - build_image:buildModel("dockerfile" 有 Dockerfile 否则 "toolchain")、dockerfilePath(检测到的 Dockerfile 路径,如 "backend/Dockerfile")、context(Dockerfile 所在目录,如 "backend")、artifactType("image")。
 - push_image:无需 config(随 build_image 推送)。
-- deploy_ssh/deploy_frontend:artifactType("image" 或 "dist")、containerName(据项目名取,如 "<proj>-app")、ports(如 "8080:8080")、strategy("recreate"|"rolling");serverId 留空(用户选目标机)。
-- health_check:probeMode("http")、url(据服务端口/框架填,Spring Boot 用 "http://localhost:<宿主端口>/actuator/health",其它用 "/healthz")、expectStatus("200")、retries("10")、intervalSeconds("3")。
+- deploy_ssh(文件产物 jar/dist):artifactJob(必填 = 产出该产物的构建节点 name)、deployPath、restartCommand、firstBatchSize/batchSize(多机分批,可选);serverId 留空(用户选目标机)。
+- deploy_container(镜像产物):artifactJob(必填 = build_image 节点 name)、containerName(据项目名取,如 "<proj>-app")、ports(如 "8080:8080")、runArgs 可选;serverId 留空。
+- health_check:probeMode("http")、url(据服务端口/框架填,Spring Boot 用 "http://localhost:<宿主端口>/actuator/health",其它用 "/healthz")、retries("10")、intervalSeconds("3");可选 selector 圈选目标机(留空 = 平台本机 http 探测)。
 - notify:titleTemplate/bodyTemplate(可用 {{project}} {{branch}} {{status}});channel 留空(用户选渠道)。
 - git_source:config 留空 {}。
 
@@ -418,12 +419,12 @@ needs 填「本阶段内它所依赖的其它 job 的 name」(数组)。**凡有
   "stages": [
     { "name": "流水线源", "kind": "source", "jobs": [ { "name": "拉取源码", "type": "git_source", "summary": "...", "config": {} } ] },
     { "name": "构建镜像", "kind": "build", "jobs": [
-        { "name": "后端构建", "type": "build_backend", "summary": "...", "config": { "image": "maven:3.9-eclipse-temurin-21", "commands": "cd backend\nmvn -B -DskipTests package", "artifactPath": "backend/target/*.jar" } },
-        { "name": "前端构建", "type": "build_frontend", "summary": "...", "config": { "image": "node:20", "commands": "cd frontend\nnpm install\nnpm run build", "artifactPath": "frontend/dist" } },
+        { "name": "后端构建", "type": "build_java", "summary": "...", "config": { "image": "maven:3.9-eclipse-temurin-21", "commands": "cd backend\nmvn -B -DskipTests package", "artifactPath": "backend/target/*.jar" } },
+        { "name": "前端构建", "type": "build_nodejs", "summary": "...", "config": { "image": "node:20", "commands": "cd frontend\nnpm install\nnpm run build", "artifactPath": "frontend/dist" } },
         { "name": "构建镜像", "type": "build_image", "summary": "...", "needs": ["后端构建", "前端构建"], "config": { "buildModel": "dockerfile", "dockerfilePath": "backend/Dockerfile", "context": "backend", "artifactType": "image" } } ] },
     { "name": "部署", "kind": "deploy", "jobs": [
-        { "name": "SSH 部署", "type": "deploy_ssh", "summary": "...", "config": { "artifactType": "image", "containerName": "app", "ports": "8080:8080", "strategy": "recreate" } },
-        { "name": "健康检查", "type": "health_check", "summary": "...", "needs": ["SSH 部署"], "config": { "probeMode": "http", "url": "http://localhost:8080/actuator/health", "expectStatus": "200", "retries": "10", "intervalSeconds": "3" } } ] }
+        { "name": "容器部署", "type": "deploy_container", "summary": "...", "config": { "artifactJob": "构建镜像", "containerName": "app", "ports": "8080:8080" } },
+        { "name": "健康检查", "type": "health_check", "summary": "...", "needs": ["容器部署"], "config": { "probeMode": "http", "url": "http://localhost:8080/actuator/health", "retries": "10", "intervalSeconds": "3" } } ] }
   ],
   "build": { "model": "toolchain|dockerfile", "toolchain": { "language": "node|go|java|python", "version": "..." }, "artifactType": "image|jar|dist", "dockerfilePath": "" },
   "branchMappings": [ { "branchPattern": "main", "environment": "生产" } ],

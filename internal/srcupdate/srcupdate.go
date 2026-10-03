@@ -235,8 +235,11 @@ func (s *Service) run(j *jobT) {
 		{"install", "install.sh(替换二进制 / 重启服务)", func() error {
 			// INSTALL_DIR 对齐当前可执行文件所在目录:升级即原位替换(装在 ~/.local/bin
 			// 的免 sudo 部署也成立);默认 /usr/local/bin 与脚本缺省一致。
+			// 安装以平台自身身份执行,不随仓库属主降权:install.sh 要写 /usr/local/bin、
+			// systemctl restart,这些依赖平台的 root;降权成属主后目录不可写,脚本回退
+			// sudo,而服务无终端输密码,必然 "A terminal is required to authenticate"。
 			env := []string{"INSTALL_DIR=" + s.installDir}
-			return s.stream(ctx, j, env, s.installCommand())
+			return s.streamSelf(ctx, j, env, s.installCommand())
 		}},
 	}
 	for _, st := range steps {
@@ -298,12 +301,25 @@ func (s *Service) installCommand() []string {
 }
 
 // stream 在仓库目录执行一条命令(argv 完整数组,不经 shell),输出逐行进任务日志;
-// extraEnv 追加到进程环境。git 类命令可能以仓库属主身份降权执行(见 applyOwnerCred)。
+// extraEnv 追加到进程环境。以仓库属主身份降权执行(见 applyOwnerCred),pull/build 用。
 func (s *Service) stream(ctx context.Context, j *jobT, extraEnv, argv []string) error {
+	return s.runCmd(ctx, j, extraEnv, argv, true)
+}
+
+// streamSelf 同 stream,但保持平台自身身份,install 步骤专用:install.sh 要写
+// /usr/local/bin 并重启 systemd 服务,依赖平台的 root;随属主降权后目录不可写,
+// 脚本只能回退 sudo,而服务无终端可输密码,升级必败。
+func (s *Service) streamSelf(ctx context.Context, j *jobT, extraEnv, argv []string) error {
+	return s.runCmd(ctx, j, extraEnv, argv, false)
+}
+
+func (s *Service) runCmd(ctx context.Context, j *jobT, extraEnv, argv []string, asOwner bool) error {
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	cmd.Dir = s.dir
 	cmd.Env = append(append(os.Environ(), extraEnv...), s.privEnv()...)
-	s.applyOwnerCred(cmd)
+	if asOwner {
+		s.applyOwnerCred(cmd)
+	}
 	lw := &lineWriter{fn: j.appendLine}
 	cmd.Stdout, cmd.Stderr = lw, lw
 	if err := cmd.Run(); err != nil {

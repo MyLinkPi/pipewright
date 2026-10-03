@@ -126,6 +126,9 @@ func (s *Store) pathFor(key string) string {
 	return filepath.Join(s.root, key[:2], key)
 }
 
+// Root 返回制品库根目录(retention GC 扫描用;句柄 → 路径布局仍由本包管理)。
+func (s *Store) Root() string { return s.root }
+
 // validKey 校验句柄为 64 位小写 hex(sha256);杜绝 ../ 等路径穿越。
 func validKey(key string) bool {
 	if len(key) != 64 {

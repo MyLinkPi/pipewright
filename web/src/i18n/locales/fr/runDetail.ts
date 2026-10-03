@@ -146,4 +146,11 @@ export default {
   multiTargetAria: "Statut des cibles multi-hôtes",
   multiTargetFanout: "Distribution des cibles multi-hôtes",
   noMultiResult: "Aucun résultat de déploiement multi-hôtes pour le moment",
+  rollingBatches: 'Rolling batches',
+  firstBatchSize: 'First batch',
+  batchSizeEach: 'Batch size',
+  rollingBatchesHint: 'First batch verifies small (default 1 host); then N hosts per batch, 0 = all remaining at once; any batch failure stops the rollout.',
+  selectorMatchMode: 'Label matching',
+  selectorModeAll: 'Match all terms (AND)',
+  selectorModeAny: 'Match any term (OR)',
 };

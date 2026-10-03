@@ -158,4 +158,51 @@ describe('jobConfigSchema', () => {
       expect(keys).not.toContain('cachePaths')
     })
   })
+
+  describe('deploy_container registry fields (docker login · registryUrl)', () => {
+    const fields = JOB_TYPE_SPECS.deploy_container.fields
+
+    it('exposes registryUrl ahead of the registry credential picker', () => {
+      const keys = fields.map((f) => f.key)
+      expect(keys).toContain('registryUrl')
+      expect(keys.indexOf('registryUrl')).toBeLessThan(keys.indexOf('registryCredentialId'))
+    })
+
+    it('registryUrl is a monospace text field with a host[:port] placeholder and copy', () => {
+      const f = fields.find((x) => x.key === 'registryUrl')!
+      expect(f.kind).toBe('text')
+      expect(f.monospace).toBe(true)
+      expect(f.placeholder).toBe('registry.example.com:5000')
+      expect(f.label.trim()).not.toBe('')
+      expect(f.hint!.trim()).not.toBe('')
+    })
+
+    it('owns registryUrl so it stays typed instead of falling into raw extras', () => {
+      expect(schemaKeys('deploy_container').has('registryUrl')).toBe(true)
+      const { extras } = splitConfig('deploy_container', {
+        registryUrl: 'registry.example.com:5000',
+      })
+      expect(extras.length).toBe(0)
+    })
+
+    it('never offers registryUrl on non-container types', () => {
+      expect(schemaKeys('push_image').has('registryUrl')).toBe(false)
+      expect(schemaKeys('deploy_ssh').has('registryUrl')).toBe(false)
+    })
+  })
+
+  describe('deploy_ssh restartCommand visibility (regression: tautological `when` removed)', () => {
+    const field = JOB_TYPE_SPECS.deploy_ssh.fields.find((f) => f.key === 'restartCommand')!
+
+    it('carries no conditional visibility', () => {
+      expect(field.when).toBeUndefined()
+    })
+
+    it('stays visible for artifact and command deploy modes alike', () => {
+      for (const deployMode of ['', 'artifact', 'command']) {
+        const visible = !field.when || field.when({ deployMode })
+        expect(visible, `restartCommand visible when deployMode='${deployMode}'`).toBe(true)
+      }
+    })
+  })
 })

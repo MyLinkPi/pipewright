@@ -8,10 +8,10 @@
  * (services)/ 后置步骤(post)五块。字段编辑逻辑(分支解析、事件开关、矩阵解析)在此,
  * 经 update-* 事件回传 PipelineCanvas → updateStage 落库。
  */
-import { computed } from 'vue'
+import { computed, ref, watch, nextTick } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { localizeName } from '../../lib/pipelineLabels'
-import type { PipelineStage, StageWhen, PipelinePostStep, PipelineServiceSpec } from '../../api/pipeline'
+import type { PipelineStage, StageWhen, PipelinePostStep, PipelineServiceSpec, StageKind } from '../../api/pipeline'
 import StagePostEditor from './StagePostEditor.vue'
 import StageServicesEditor from './StageServicesEditor.vue'
 import {
@@ -32,10 +32,14 @@ import './pipeline.css'
 const props = defineProps<{
   stage: PipelineStage
   stageIndex: number
+  /** 阶段总数(默认名提示用;可选)。 */
+  stageCount?: number
 }>()
 
 const emit = defineEmits<{
   (e: 'close'): void
+  (e: 'update-name', name: string): void
+  (e: 'update-kind', kind: StageKind): void
   (e: 'update-when', when: StageWhen | undefined): void
   (e: 'update-gate', value: boolean): void
   (e: 'update-matrix', matrix: Record<string, string[]> | undefined): void
@@ -45,6 +49,46 @@ const emit = defineEmits<{
 }>()
 
 const { t } = useI18n()
+
+// ─── 阶段名称 / kind(阶段可自由命名、自由加;不再「每类一个」)────────────────
+
+const localName = ref(props.stage.name)
+const localKind = ref<StageKind>((props.stage.kind === 'source' ? 'custom' : props.stage.kind) as StageKind)
+
+watch(
+  () => [props.stage.id, props.stage.name, props.stage.kind],
+  () => {
+    localName.value = props.stage.name
+    localKind.value = (props.stage.kind === 'source' ? 'custom' : props.stage.kind) as StageKind
+  },
+)
+
+/** 打开抽屉时聚焦名称输入(画布「添加阶段 → 自动打开设置」流程依赖)。 */
+const nameInput = ref<HTMLInputElement | null>(null)
+watch(
+  () => props.stage.id,
+  () => {
+    void nextTick(() => nameInput.value?.focus())
+  },
+)
+
+const KIND_OPTIONS: Array<{ value: StageKind; labelKey: string }> = [
+  { value: 'build', labelKey: 'pipelineCanvas.stageKindBuild' },
+  { value: 'deploy', labelKey: 'pipelineCanvas.stageKindDeploy' },
+  { value: 'notify', labelKey: 'pipelineCanvas.stageKindNotify' },
+  { value: 'custom', labelKey: 'pipelineCanvas.stageKindCustom' },
+]
+
+function commitName(): void {
+  const v = localName.value.trim()
+  if (v && v !== props.stage.name) emit('update-name', v)
+  else localName.value = props.stage.name
+}
+
+function commitKind(kind: StageKind): void {
+  localKind.value = kind
+  if (kind !== props.stage.kind) emit('update-kind', kind)
+}
 
 const branchText = computed<string>(() => branchesToText(props.stage.when?.branches))
 const currentEvents = computed<string[]>(() => props.stage.when?.events ?? [])
@@ -88,6 +132,38 @@ function commitRunner(text: string): void {
           <path d="M18 6 6 18M6 6l12 12"/>
         </svg>
       </button>
+    </div>
+
+    <!-- 阶段名称 / 类型 -->
+    <div class="drawer-section">
+      <div class="drawer-section-label">{{ t('pipelineCanvas.stageIdentitySection') }}</div>
+      <div class="drawer-field">
+        <div class="drawer-field-label">{{ t('pipelineCanvas.stageNameLabel') }}</div>
+        <input
+          ref="nameInput"
+          v-model="localName"
+          class="drawer-input"
+          type="text"
+          :placeholder="t('pipelineCanvas.stageNamePlaceholder')"
+          :aria-label="t('pipelineCanvas.stageNameLabel')"
+          @blur="commitName"
+          @keydown.enter.prevent="commitName"
+        />
+      </div>
+      <div class="drawer-field">
+        <div class="drawer-field-label">{{ t('pipelineCanvas.stageKindLabel') }}</div>
+        <select
+          v-model="localKind"
+          class="drawer-select"
+          :aria-label="t('pipelineCanvas.stageKindLabel')"
+          @change="commitKind(($event.target as HTMLSelectElement).value as StageKind)"
+        >
+          <option v-for="opt in KIND_OPTIONS" :key="opt.value" :value="opt.value">
+            {{ t(opt.labelKey) }}
+          </option>
+        </select>
+      </div>
+      <p class="drawer-hint">{{ t('pipelineCanvas.stageIdentityHint') }}</p>
     </div>
 
     <!-- 条件执行(WHEN) -->

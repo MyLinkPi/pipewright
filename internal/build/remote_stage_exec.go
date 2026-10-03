@@ -191,7 +191,7 @@ func (b *Builder) runScriptOnDriver(ctx context.Context, driver Driver, onLine f
 // uploadWorkspace 把本地工作区打成 tar.gz(流式)经 target.Upload 传到远程 remoteTar。
 func uploadWorkspace(ctx context.Context, tgt remoteExec, serverID, workspace, remoteTar string) error {
 	pr, pw := io.Pipe()
-	go func() { pw.CloseWithError(tarGzDir(workspace, pw)) }()
+	go func() { pw.CloseWithError(tarGzDir(workspace, pw, false)) }()
 	err := tgt.Upload(ctx, serverID, pr, remoteTar)
 	_ = pr.Close()
 	return err

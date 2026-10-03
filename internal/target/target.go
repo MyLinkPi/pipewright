@@ -166,6 +166,11 @@ type Service interface {
 	// 场景;stdin 读尽即关闭远端 stdin)。cmd 同样 array 化、各参数 shell 转义(AC-SEC-02);
 	// stdin 内容(如密码)绝不进 argv/日志/错误体。凭据经 vault 即用即弃。
 	ExecWithStdin(ctx context.Context, serverID string, cmd []string, stdin io.Reader) (*ExecResult, error)
+	// DockerLogin 在目标机上执行 `docker login [<registry>]`(口令经 stdin,绝不进 argv/日志)。
+	// credentialID 指向 vault 里的 registry 凭据(约定 "user:password" 存储;无冒号 → 整串作口令、
+	// user 空)。registryURL 空 = 登录默认仓库(Docker Hub)。供部署层在 pull 私有镜像前登录;
+	// 明文仅进程内即用即弃,绝不回传/落日志。
+	DockerLogin(ctx context.Context, serverID, registryURL, credentialID string) error
 }
 
 // Session 是一个双向交互式 SSH/PTY 会话(Story 6.4;FR-18)。
@@ -600,6 +605,81 @@ func (s *service) Upload(ctx context.Context, serverID string, content io.Reader
 	}
 	if res != nil && res.ExitCode != 0 {
 		return fmt.Errorf("target: upload 失败(退出码 %d):%s", res.ExitCode, strings.TrimSpace(res.Stderr))
+	}
+	return nil
+}
+
+// DockerLogin 在目标机上执行 `docker login [<registry>]`(见接口注释):凭据明文经 vault 即取即用,
+// 口令经 stdin 喂给 `docker login --password-stdin`(绝不进 argv / 日志 / 错误体)。
+// registryURL 空 = 登录默认仓库(Docker Hub),与 docker CLI 语义一致。
+func (s *service) DockerLogin(ctx context.Context, serverID, registryURL, credentialID string) error {
+	registryURL = strings.TrimSpace(registryURL)
+	if strings.TrimSpace(credentialID) == "" {
+		return fmt.Errorf("target: docker login 缺少凭据")
+	}
+	if s.vault == nil {
+		return ErrVaultUnconfigured
+	}
+	secret, err := s.vault.Get(credentialID)
+	if err != nil {
+		switch {
+		case errors.Is(err, vault.ErrVaultUnconfigured):
+			return ErrVaultUnconfigured
+		case errors.Is(err, vault.ErrNotFound):
+			return ErrCredentialNotFound
+		default:
+			return ErrAuth
+		}
+	}
+	// 凭据约定 "user:password"(与构建侧 push 同约定);无冒号 → 整串作口令、user 空。
+	user, pass := "", secret
+	if i := strings.Index(secret, ":"); i >= 0 {
+		user, pass = secret[:i], secret[i+1:]
+	}
+	srv, gerr := s.Get(ctx, serverID)
+	if gerr != nil {
+		return gerr
+	}
+	sshSecret, err := s.vault.Get(srv.CredentialID)
+	if err != nil {
+		return ErrAuth
+	}
+	cfg := SSHConfig{User: srv.User}
+	if looksLikePEM(sshSecret) {
+		cfg.PrivateKey = sshSecret
+	} else {
+		cfg.Password = sshSecret
+	}
+
+	// `docker login [<url>] -u <user> --password-stdin`,口令经 stdin(绝不进 argv/日志)。
+	// url 省略 = 默认仓库(Docker Hub)。
+	args := []string{"docker", "login"}
+	if registryURL != "" {
+		args = append(args, registryURL)
+	}
+	if user != "" {
+		args = append(args, "-u", user)
+	}
+	args = append(args, "--password-stdin")
+	addr := fmt.Sprintf("%s:%d", srv.Host, srv.Port)
+	res, runErr := s.dialer.RunWithStdin(ctx, addr, cfg, args, strings.NewReader(pass+"\n"))
+	// 明文用完即清。
+	pass = ""
+	user = ""
+	secret = ""
+	sshSecret = ""
+	cfg.PrivateKey = ""
+	cfg.Password = ""
+	_ = pass
+	_ = user
+	_ = secret
+	_ = sshSecret
+
+	if runErr != nil {
+		return runErr
+	}
+	if res != nil && res.ExitCode != 0 {
+		return fmt.Errorf("target: docker login 失败(退出码 %d):%s", res.ExitCode, strings.TrimSpace(res.Stderr))
 	}
 	return nil
 }

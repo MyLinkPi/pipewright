@@ -1,8 +1,8 @@
 package deploy
 
-// instance_rolling.go 实现「实例级轮转升级」(默认策略):配合服务注册网关(nginx)的
+// instance_rolling.go 实现「网关托管机的 maxSurge 换实例」单机执行序:配合服务注册网关(nginx)的
 // 多实例 upstream,把一次 image 部署从「整机硬切(rm 旧 → run 新,窗口内 502)」升级为
-// 逐实例零停机替换。
+// 逐实例零停机替换(统一滚动策略的 image 托管路径;不再是独立策略)。
 //
 // 单实例执行序(k8s maxSurge 语义):
 //
@@ -16,9 +16,10 @@ package deploy
 //
 // 失败语义:步骤 2/3/4 失败 → 删除新容器、该实例保留旧版本、该机 failed 并**中止其余实例**
 // (未动实例保持旧版本);步骤 6 失败仅记告警(已切换,残留旧容器无害)。
+// 天然无需回滚:旧实例从头到尾未停止服务。
 //
-// 回退:未装配 InstanceGateway / 反查不到匹配服务 / 非 image 产物 → 与既有 rolling 逐字节
-// 一致的单机部署(deployImageOne/deployOne),存量部署行为不变。
+// 回退:未装配 InstanceGateway / 反查不到匹配服务 → 与既有 rolling 逐字节
+// 一致的单机部署(deployImageOne),存量部署行为不变。
 //
 // 网关交互经 InstanceGateway 小接口由 main 晚绑(deploy 不 import servicereg,保持包间单向依赖)。
 
@@ -31,7 +32,6 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/huangchengsir/pipewright/internal/run"
@@ -48,13 +48,17 @@ type InstanceRef struct {
 }
 
 // InstanceGateway 抽象服务注册网关的实例级能力:按部署容器名反查网关服务实例 + 原子摘挂。
-// nil(未装配)→ instance_rolling 全程回退既有滚动。
+// nil(未装配)→ maxSurge 路径回退既有滚动,摘挂路径跳过(直接部署)。
 type InstanceGateway interface {
 	// ResolveInstances 返回(部署容器名所对应的)网关服务的全部 attached 实例;
 	// 无匹配 / 目标机不是网关主机 → 空切片(调用方据此回退)。
 	ResolveInstances(ctx context.Context, serverID, container string) ([]InstanceRef, error)
 	// SwapInstance 原子替换实例(单次 reload):upstream 中 old 出、new 进。
 	SwapInstance(ctx context.Context, serviceID, oldContainer, newContainer string) error
+	// DetachInstance 把实例从 upstream 摘除(attempted=0)+ reload(文件/命令部署的「摘→部署→挂回」用)。
+	DetachInstance(ctx context.Context, instanceID string) error
+	// AttachInstance 把实例挂回 upstream(attempted=1)+ reload(部署健康通过后恢复流量)。
+	AttachInstance(ctx context.Context, instanceID string) error
 }
 
 // 排空窗口(秒):默认 / 上限。
@@ -70,36 +74,6 @@ const (
 // WithInstanceGateway 注入实例轮转网关(main 经适配器晚绑 servicereg;nil → 回退旧滚动)。
 func WithInstanceGateway(g InstanceGateway) Option {
 	return func(s *service) { s.instanceGateway = g }
-}
-
-// deployInstanceRolling 机群扇出(与 deployFanout 同构:有界并发 + 单机 recover);
-// 每机独立决策:能反查到网关实例 → 实例轮转;否则回退该机既有部署(deployImageOne/deployOne)。
-func (s *service) deployInstanceRolling(ctx context.Context, servers []*target.Server, a run.Artifact, cfg map[string]string, hc *HealthCheck) []TargetResult {
-	results := make([]TargetResult, len(servers))
-	var wg sync.WaitGroup
-	sem := make(chan struct{}, maxParallelDeploys)
-	for i, srv := range servers {
-		wg.Add(1)
-		go func(idx int, srv *target.Server) {
-			defer wg.Done()
-			defer func() {
-				if r := recover(); r != nil {
-					finish := time.Now().UTC()
-					results[idx] = TargetResult{
-						ServerID: srv.ID, ServerName: srv.Name,
-						Status: run.TargetFailed,
-						Message: fmt.Sprintf("实例轮转 panic(已恢复,不影响其它机):%v", r),
-						StartedAt: finish, FinishedAt: &finish,
-					}
-				}
-			}()
-			sem <- struct{}{}
-			defer func() { <-sem }()
-			results[idx] = s.deployInstanceRollingOne(ctx, srv, a, cfg, hc)
-		}(i, srv)
-	}
-	wg.Wait()
-	return results
 }
 
 // deployInstanceRollingOne 单机入口:装配了网关且能反查到实例 → 逐实例轮转;否则回退旧路径。

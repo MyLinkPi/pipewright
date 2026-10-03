@@ -11,6 +11,7 @@ import StageDrawer from './StageDrawer.vue'
 import JobTypePicker from './JobTypePicker.vue'
 import type { CustomNode } from '../../api/customNodes'
 import { jobTypeLabel, getJobTypeSpec } from './jobConfigSchema'
+import { localizeName } from '../../lib/pipelineLabels'
 import { hasAnyNeeds } from './stageDeps'
 import './pipeline.css'
 
@@ -245,26 +246,46 @@ function deleteStage(stageId: string): void {
   emit('update', next)
 }
 
+// ─── Add stage(kind 自由选择,数量不限;阶段可自行命名)──────────────────────────
+
+/** 「添加阶段」小型选择器状态:选一个 kind → 创建默认名阶段 → 自动打开设置抽屉。 */
+const stageKindPickerOpen = ref(false)
+
+const STAGE_KIND_CHOICES: Array<{ kind: StageKind; labelKey: string }> = [
+  { kind: 'build', labelKey: 'pipelineCanvas.stageKindBuild' },
+  { kind: 'deploy', labelKey: 'pipelineCanvas.stageKindDeploy' },
+  { kind: 'notify', labelKey: 'pipelineCanvas.stageKindNotify' },
+  { kind: 'custom', labelKey: 'pipelineCanvas.stageKindCustom' },
+]
+
 function addStage(): void {
-  const KIND_SEQ: StageKind[] = ['build', 'deploy', 'notify', 'custom']
-  const existing = props.stages.map((s) => s.kind)
-  const nextKind: StageKind = KIND_SEQ.find((k) => !existing.includes(k)) ?? 'custom'
+  stageKindPickerOpen.value = true
+}
+
+function onStageKindPick(kind: StageKind): void {
+  stageKindPickerOpen.value = false
   const nextNum = props.stages.filter((s) => s.kind !== 'source').length + 1
-  const KIND_LABELS: Partial<Record<StageKind, string>> = {
-    build: t('pipelineCanvas.stageBuild'),
-    deploy: t('pipelineCanvas.stageDeploy'),
-    notify: t('pipelineCanvas.stageNotify'),
-  }
   const newStage: PipelineStage = {
-    id:   `stg_${uid()}`,
-    name: nextKind === 'custom'
-      ? t('pipelineCanvas.stageCustomN', { n: nextNum })
-      : (KIND_LABELS[nextKind] ?? t('pipelineCanvas.stageDefaultN', { n: nextNum })),
-    kind: nextKind,
+    id: `stg_${uid()}`,
+    name: t('pipelineCanvas.stageDefaultN', { n: nextNum }),
+    kind,
     jobs: [],
   }
   emit('update', [...props.stages, newStage])
+  // 自动打开阶段设置抽屉并聚焦名称输入(StageDrawer mount 后 autofocus)。
+  requestAnimationFrame(() => openStageSettings(newStage.id))
 }
+
+/** 产物来源候选(部署节点「产物来源」下拉):全流水线 job 按声明顺序,带所在阶段名。 */
+const producerOptions = computed(() => {
+  const out: Array<{ name: string; type: string; stageName: string }> = []
+  for (const s of props.stages) {
+    for (const j of s.jobs) {
+      out.push({ name: j.name, type: j.type, stageName: localizeName(s.name) })
+    }
+  }
+  return out
+})
 
 // ─── DAG edge overlay (Story 8-7) ─────────────────────────────────────────────
 // Draw connectors from each stage's declared needs (upstream → downstream). When no
@@ -380,6 +401,22 @@ function handleDrawerUpdate(patch: Partial<PipelineJob>): void {
         >{{ t('pipelineCanvas.addStage') }}</button>
       </div>
 
+    <!-- 添加阶段:kind 小选择器(build/deploy/notify/custom 均可无限次选) -->
+    <div v-if="stageKindPickerOpen" class="stage-kind-overlay" @click.self="stageKindPickerOpen = false">
+      <div class="stage-kind-dialog" role="dialog" :aria-label="t('pipelineCanvas.addStage')">
+        <div class="stage-kind-title">{{ t('pipelineCanvas.stageKindTitle') }}</div>
+        <button
+          v-for="c in STAGE_KIND_CHOICES"
+          :key="c.kind"
+          class="stage-kind-option"
+          @click="onStageKindPick(c.kind)"
+        >{{ t(c.labelKey) }}</button>
+        <button class="stage-kind-cancel" @click="stageKindPickerOpen = false">
+          {{ t('pipelineCanvas.stageKindCancel') }}
+        </button>
+      </div>
+    </div>
+
       <!-- YAML preview (collapsible, read-only) -->
       <template v-if="yaml">
         <button
@@ -408,6 +445,7 @@ function handleDrawerUpdate(patch: Partial<PipelineJob>): void {
       :credentials="props.credentials"
       :servers="props.servers"
       :channels="props.channels"
+      :producer-options="producerOptions"
       @close="closeDrawer"
       @update="handleDrawerUpdate"
       @change-type="requestChangeType"
@@ -417,7 +455,10 @@ function handleDrawerUpdate(patch: Partial<PipelineJob>): void {
       v-else-if="selectedSettingsStage"
       :stage="selectedSettingsStage"
       :stage-index="selectedSettingsIndex"
+      :stage-count="props.stages.length"
       @close="closeStageSettings"
+      @update-name="(name) => updateStage(selectedSettingsStage!.id, { name })"
+      @update-kind="(kind) => updateStage(selectedSettingsStage!.id, { kind })"
       @update-when="(when) => updateStage(selectedSettingsStage!.id, { when })"
       @update-gate="(v) => updateStage(selectedSettingsStage!.id, { gate: v })"
       @update-matrix="(matrix) => updateStage(selectedSettingsStage!.id, { matrix })"
@@ -489,4 +530,65 @@ function handleDrawerUpdate(patch: Partial<PipelineJob>): void {
 }
 /* The overlay (z-index 0, first child) paints below the stage columns (later siblings),
    so edges show only in the gaps between columns. */
+
+/* ——— 添加阶段 kind 小选择器 ——— */
+.stage-kind-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: grid;
+  place-items: center;
+  background: rgba(0, 0, 0, 0.32);
+}
+
+.stage-kind-dialog {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 220px;
+  padding: 14px;
+  background: var(--color-surface, #fff);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--rounded);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.18);
+}
+
+.stage-kind-title {
+  font-size: 0.86rem;
+  font-weight: 650;
+  color: var(--color-text);
+  margin-bottom: 4px;
+}
+
+.stage-kind-option {
+  padding: 8px 12px;
+  background: var(--color-inset);
+  border: 1px solid var(--color-border);
+  border-radius: var(--rounded);
+  color: var(--color-text);
+  font: inherit;
+  font-size: 0.82rem;
+  text-align: left;
+  cursor: pointer;
+}
+
+.stage-kind-option:hover {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+}
+
+.stage-kind-cancel {
+  margin-top: 4px;
+  padding: 6px 12px;
+  background: none;
+  border: none;
+  color: var(--color-faint);
+  font: inherit;
+  font-size: 0.78rem;
+  cursor: pointer;
+}
+
+.stage-kind-cancel:hover {
+  color: var(--color-text);
+}
 </style>

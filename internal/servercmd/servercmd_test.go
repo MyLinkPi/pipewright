@@ -19,6 +19,9 @@ type fakeTarget struct {
 	exec    func(ctx context.Context, serverID string, cmd []string) (*target.ExecResult, error)
 }
 
+
+// DockerLogin 满足 target.Service 接口(部署私有仓库登录追加);测试桩不触网,直接成功。
+func (f *fakeTarget) DockerLogin(context.Context, string, string, string) error { return nil }
 func (f *fakeTarget) Get(_ context.Context, id string) (*target.Server, error) {
 	if s, ok := f.servers[id]; ok {
 		return s, nil

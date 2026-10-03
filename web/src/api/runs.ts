@@ -433,14 +433,9 @@ export interface HealthCheckInput {
   timeoutSeconds?: number   // default 5, cap 60
 }
 
-// Deploy strategy (Story 8-8 / FR-8-8). 'rolling' (default) = fan out to all
-// targets in parallel, each self-heals. 'canary' = deploy a small batch first,
-// gate on its health, then the rest (abort the rest if the canary fails).
-// 'blue_green' = stage every target, then cut over all at once; if any cutover
-// fails, roll back the whole fleet (release-mode artifacts: dist/jar).
-// 'interactive' = 交互式分批(对标云效 firstBatchPause):先发首批(同金丝雀子集)→ 暂停等人确认,
-// 其余登记 pending,经 continueDeploy 续发或 abortDeploy 中止。首批量经 deployConfig.canaryCount。
-export type DeployStrategy = 'instance_rolling' | 'rolling' | 'canary' | 'blue_green' | 'interactive'
+// 部署策略已收敛为唯一「统一滚动」:预检故障机优先 → 分批(首批/每批台数可配)→
+// 任一批失败停止铺开 → 每机独立回滚。旧 canary/blue_green/interactive/instance_rolling
+// 值后端一律归一为 rolling(存量调用兼容;不再需要前端传 strategy)。
 
 export interface DeployRunInput {
   artifactId: string
@@ -452,12 +447,11 @@ export interface DeployRunInput {
   // servers. Empty / zero match ⇒ nothing to deploy — the backend skips and
   // returns an empty targets array (success, run state untouched).
   selector?: string
+  // Label match mode for multi-term selectors: 'all' (AND, default) | 'any' (OR).
+  selectorMode?: 'all' | 'any'
   deployConfig?: Record<string, string>
   // Optional health gate (Story 4-3). Omit ⇒ identical to 4-2 behavior.
   healthCheck?: HealthCheckInput
-  // Optional rollout strategy (Story 8-8). Omit/'rolling' ⇒ identical to prior
-  // behavior. Canary batch size flows via deployConfig.canaryCount/canaryPercent.
-  strategy?: DeployStrategy
 }
 
 export interface DeployRunResponse {
@@ -493,29 +487,6 @@ export function retryFailedDeploy(
   input: RetryFailedDeployInput,
 ): Promise<DeployRunResponse> {
   return http.post<DeployRunResponse>(`/api/runs/${id}/deploy/retry`, input)
-}
-
-// ─── Interactive batch deploy: continue / abort (P0) ──────────────────────────
-//
-// POST /api/runs/{id}/deploy/continue  body { artifactId, deployConfig?, healthCheck?, strategy? }
-//   续发交互式分批部署中暂停(pending)的其余目标。复用上次产物 + 配置(前端带回)。
-// POST /api/runs/{id}/deploy/abort     (no body)
-//   中止:pending 目标标记为「已中止,保留旧版本」,不触碰已部署批次。
-// 二者均返回该 run 全量最新 targets;404 run_not_found;422 无 pending 目标。
-
-export interface ContinueDeployInput {
-  artifactId: string
-  deployConfig?: Record<string, string>
-  healthCheck?: HealthCheckInput
-  strategy?: DeployStrategy
-}
-
-export function continueDeploy(id: string, input: ContinueDeployInput): Promise<DeployRunResponse> {
-  return http.post<DeployRunResponse>(`/api/runs/${id}/deploy/continue`, input)
-}
-
-export function abortDeploy(id: string): Promise<DeployRunResponse> {
-  return http.post<DeployRunResponse>(`/api/runs/${id}/deploy/abort`, {})
 }
 
 // ─── SSE subscription ────────────────────────────────────────────────────────

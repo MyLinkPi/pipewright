@@ -577,7 +577,12 @@ func main() {
 	// 运行数据保留清理器:按 retention_config 策略定期裁剪过期终态运行(连带其日志/步骤/产物),
 	// 防止无限增长撑爆磁盘。默认策略 enabled=0(不删);用户在设置里开启并配条数/天数后生效。
 	retentionSvc := retention.NewService(st.DB)
-	retentionSweeper := retention.NewSweeper(retentionSvc, time.Hour)
+	// 制品孤儿 GC:run 过期删除后,artifacts/ 磁盘 blob 会残留成孤儿(内容寻址去重防不了累积);
+	// 挂到保留清理器上同周期回收(无引用且超过 24h 宽限期的 blob 才删,防误删进行中构建)。
+	if artStore != nil {
+		retentionSvc.WithBlobStore(retention.NewBlobStore(artStore.Root()))
+	}
+	retentionSweeper := retention.NewSweeper(retentionSvc, time.Hour).WithGC(retentionSvc)
 	retentionSweeper.Start(context.Background())
 	log.Printf("[retention] 保留清理器已启动(每小时一扫;策略默认关,需在设置开启)")
 
@@ -931,8 +936,8 @@ func (a *dnsResolverAdapter) ProviderZones(ctx context.Context, providerID strin
 	return out, true, nil
 }
 
-// instanceRollGateway 把 servicereg 适配为 deploy.InstanceGateway(instance_rolling 默认策略
-// 消费;晚绑防 import 环:deploy 不 import servicereg,servicereg 也不 import deploy)。
+// instanceRollGateway 把 servicereg 适配为 deploy.InstanceGateway(统一滚动的网关联动消费;
+// 晚绑防 import 环:deploy 不 import servicereg,servicereg 也不 import deploy)。
 type instanceRollGateway struct{ sr servicereg.Service }
 
 func (g *instanceRollGateway) ResolveInstances(ctx context.Context, serverID, container string) ([]deploy.InstanceRef, error) {
@@ -952,6 +957,14 @@ func (g *instanceRollGateway) ResolveInstances(ctx context.Context, serverID, co
 
 func (g *instanceRollGateway) SwapInstance(ctx context.Context, serviceID, oldContainer, newContainer string) error {
 	return g.sr.SwapInstance(ctx, serviceID, oldContainer, newContainer)
+}
+
+func (g *instanceRollGateway) DetachInstance(ctx context.Context, instanceID string) error {
+	return g.sr.SetInstanceAttached(ctx, instanceID, false)
+}
+
+func (g *instanceRollGateway) AttachInstance(ctx context.Context, instanceID string) error {
+	return g.sr.SetInstanceAttached(ctx, instanceID, true)
 }
 
 // previewAllocator 适配 previewenv.Allocator:把「为指定 FQDN 建 A 记录」下沉到

@@ -16,6 +16,8 @@ import (
 // "Host key verification failed" / "Permission denied (publickey)"。降权到属主后,
 // ssh/git 自然使用属主的家目录(密钥、known_hosts、config、全局 gitconfig),与当初
 // 克隆完全一致。属主即 root 或非 root 运行时不降权(维持原身份)。
+// 注意 install 步骤不走这里(见 streamSelf):安装写 /usr/local/bin、重启 systemd,
+// 必须保持平台的 root 身份。
 func (s *Service) applyOwnerCred(cmd *exec.Cmd) {
 	if os.Geteuid() != 0 {
 		return

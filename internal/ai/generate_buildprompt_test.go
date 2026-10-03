@@ -16,7 +16,7 @@ func TestBuildPromptIncludesCatalog(t *testing.T) {
 		}),
 	}
 	p := buildPrompt(in)
-	for _, want := range []string{"build_frontend", "build_backend", "push_image", "health_check", "notify", "可用节点类型"} {
+	for _, want := range []string{"build_nodejs", "build_java", "build_golang", "build_python", "deploy_container", "push_image", "health_check", "notify", "可用节点类型"} {
 		if !strings.Contains(p, want) {
 			t.Fatalf("prompt 缺内置节点 %q", want)
 		}

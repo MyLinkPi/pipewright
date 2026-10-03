@@ -22,6 +22,7 @@ export default {
   countOk: '{n} 成功',
   countRolledBack: '{n} ロールバック済み',
   countBad: '{n} 失敗',
+  countPending: '{n} デプロイ待ち',
   targetStatusPending: 'デプロイ待ち',
   targetStatusDeploying: 'デプロイ中',
   targetStatusSuccess: '成功',

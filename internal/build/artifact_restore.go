@@ -17,6 +17,7 @@ import (
 	"archive/tar"
 	"compress/gzip"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -61,10 +62,22 @@ func (b *Builder) restorePriorArtifacts(ctx context.Context, r *run.Run, workspa
 		}
 		format, _ := a.Metadata["format"].(string)
 		var rerr error
-		if format == "tar.gz" {
-			rerr = extractTarGzTo(rc, dest) // dist:解包到目录
-		} else {
+		switch format {
+		case "tar.gz":
+			rerr = extractTarGzTo(rc, dest) // dist:解包到目录(包内布局由打包侧 layout 决定,原样恢复)
+		case "files":
+			_ = rc.Close()
+			rerr = b.restoreFilesManifest(a, dest, onLine) // 逐文件清单:按清单恢复目录结构
+		default:
 			rerr = writeFileTo(rc, dest) // jar / 单文件:写文件
+		}
+		if format == "files" {
+			if rerr != nil {
+				onLine(streamStderr, "跨阶段恢复:写盘失败 "+a.Name+":"+rerr.Error())
+			} else {
+				onLine(streamStdout, "已恢复上游产物:"+a.Name+" → "+clean)
+			}
+			continue
 		}
 		_ = rc.Close()
 		if rerr != nil {
@@ -73,6 +86,61 @@ func (b *Builder) restorePriorArtifacts(ctx context.Context, r *run.Run, workspa
 		}
 		onLine(streamStdout, "已恢复上游产物:"+a.Name+" → "+clean)
 	}
+}
+
+// storedFileEntry 是 format=files 产物清单里的一项(metadata.files 数组元素)。
+type storedFileEntry struct {
+	Path string `json:"path"`
+	Key  string `json:"key"`
+	Size int64  `json:"size"`
+}
+
+// decodeFilesManifest 从产物 metadata 解出 format=files 的清单。
+//
+// metadata 有两种形状:构建侧刚写入时 files 是 json.RawMessage,但**经 DB 往返**后
+// (run.decodeMetadata 用 json.Unmarshal 到 map[string]any)会变成 []any —— 本函数的调用方
+// 经 artifactLister(= run.Service.ListArtifacts)读,拿到的必然是后者。故统一「再序列化 →
+// 反序列化」兼容两种形状,绝不用 `.(json.RawMessage)` 断言(断言恒失败 → 清单丢失 → 恢复失败)。
+func decodeFilesManifest(md map[string]any) ([]storedFileEntry, error) {
+	v, ok := md["files"]
+	if !ok || v == nil {
+		return nil, fmt.Errorf("产物缺少 files 清单")
+	}
+	raw, err := json.Marshal(v)
+	if err != nil {
+		return nil, fmt.Errorf("产物 files 清单非法:%v", err)
+	}
+	var files []storedFileEntry
+	if err := json.Unmarshal(raw, &files); err != nil {
+		return nil, fmt.Errorf("产物 files 清单非法:%v", err)
+	}
+	return files, nil
+}
+
+// restoreFilesManifest 按 format=files 产物的清单逐文件恢复到 destDir(保持相对路径目录结构)。
+// 单文件失败 → 返回该错误(尽力语义由调用方记日志);zip-slip 防护同上。
+func (b *Builder) restoreFilesManifest(a run.Artifact, destDir string, onLine func(stream, line string)) error {
+	files, err := decodeFilesManifest(a.Metadata)
+	if err != nil {
+		return fmt.Errorf("产物 %s %v", a.Name, err)
+	}
+	for _, fe := range files {
+		rel := filepath.Clean("/" + strings.ReplaceAll(fe.Path, "\\", "/"))
+		if rel == "/" || rel == "." {
+			continue
+		}
+		dest := filepath.Join(destDir, filepath.FromSlash(rel))
+		rc, err := b.artStore.Open(fe.Key)
+		if err != nil {
+			return fmt.Errorf("取文件 %s 失败:%v", fe.Path, err)
+		}
+		werr := writeFileTo(rc, dest)
+		_ = rc.Close()
+		if werr != nil {
+			return fmt.Errorf("写文件 %s 失败:%v", fe.Path, werr)
+		}
+	}
+	return nil
 }
 
 // writeFileTo 把 r 的内容写到 dest(覆盖),自动建父目录。

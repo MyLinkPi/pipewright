@@ -28,6 +28,8 @@ export type FieldKind =
   | 'credential'
   | 'server'
   | 'channel'
+  | 'labelSelector'
+  | 'producer'
 
 export interface SelectOption {
   value: string
@@ -51,6 +53,8 @@ export interface JobField {
   monospace?: boolean
   /** Conditional visibility based on the current config values */
   when?: (config: Record<string, string>) => boolean
+  /** labelSelector / producer 控件的候选来源约束(如只列产镜像节点的类型集合) */
+  producerKinds?: string[]
 }
 
 /** Accent palette keys — map to --color-{accent} / --color-{accent}-soft tokens. */
@@ -95,25 +99,33 @@ const TOOLCHAIN_OPTIONS: SelectOption[] = [
   { value: 'custom', get label() { return t('pipelineJob.toolchainCustom') } },
 ]
 
-const DEPLOY_STRATEGY_OPTIONS: SelectOption[] = [
-  { value: 'rolling', get label() { return t('pipelineJob.deployStrategyRolling') } },
-  { value: 'recreate', get label() { return t('pipelineJob.deployStrategyRecreate') } },
-  { value: 'blue-green', get label() { return t('pipelineJob.deployStrategyBlueGreen') } },
+// 部署节点产物来源模式(deployMode):部署产物(默认)/ 仅执行重启命令(配置类流水线)。
+const DEPLOY_MODE_OPTIONS: SelectOption[] = [
+  { value: 'artifact', get label() { return t('pipelineJob.deployModeArtifact') } },
+  { value: 'command', get label() { return t('pipelineJob.deployModeCommand') } },
+]
+
+// 标签匹配方式(selectorMode):满足全部条件(且,默认)/ 满足任一条件(或)。
+const SELECTOR_MODE_OPTIONS: SelectOption[] = [
+  { value: 'all', get label() { return t('pipelineJob.selectorModeAll') } },
+  { value: 'any', get label() { return t('pipelineJob.selectorModeAny') } },
+]
+
+// 产物打包方式(artifactPackMode):目录打包 tar.gz(默认)| 不打包按文件清单。
+const ARTIFACT_PACK_OPTIONS: SelectOption[] = [
+  { value: 'tar', get label() { return t('pipelineJob.artifactPackTar') } },
+  { value: 'none', get label() { return t('pipelineJob.artifactPackNone') } },
+]
+
+// tar 包内布局(tarLayout):内容铺包根(默认 = 旧行为)| 保留顶层目录。
+const TAR_LAYOUT_OPTIONS: SelectOption[] = [
+  { value: 'contents', get label() { return t('pipelineJob.tarLayoutContents') } },
+  { value: 'top', get label() { return t('pipelineJob.tarLayoutTop') } },
 ]
 
 const PROBE_MODE_OPTIONS: SelectOption[] = [
   { value: 'http', get label() { return t('pipelineJob.probeModeHttp') } },
   { value: 'command', get label() { return t('pipelineJob.probeModeCommand') } },
-]
-
-// 部署节点的产物类型偏好(本 run 同时产出镜像与文件产物时,挑哪件部署)。
-// 留空 = 自动:优先文件产物(dist/jar/archive),没有文件产物才用镜像。
-const DEPLOY_ARTIFACT_OPTIONS: SelectOption[] = [
-  { value: '', get label() { return t('pipelineJob.deployArtifactAuto') } },
-  { value: 'image', get label() { return t('pipelineJob.artifactImage') } },
-  { value: 'dist', get label() { return t('pipelineJob.artifactDist') } },
-  { value: 'jar', get label() { return t('pipelineJob.artifactJar') } },
-  { value: 'archive', get label() { return t('pipelineJob.deployArtifactArchive') } },
 ]
 
 // `when` helpers
@@ -192,6 +204,29 @@ const SCRIPT_FIELDS: JobField[] = [
     placeholder: 'frontend/dist\nbackend/target/app.jar',
     get hint() { return t('pipelineJob.fieldArtifactPathHint') },
   },
+  {
+    key: 'artifactPackMode',
+    get label() { return t('pipelineJob.fieldArtifactPackModeLabel') },
+    kind: 'select',
+    options: ARTIFACT_PACK_OPTIONS,
+    get hint() { return t('pipelineJob.fieldArtifactPackModeHint') },
+  },
+  {
+    key: 'tarLayout',
+    get label() { return t('pipelineJob.fieldTarLayoutLabel') },
+    kind: 'select',
+    options: TAR_LAYOUT_OPTIONS,
+    get hint() { return t('pipelineJob.fieldTarLayoutHint') },
+    when: (c) => (c.artifactPackMode || 'tar') === 'tar',
+  },
+  {
+    key: 'artifactRename',
+    get label() { return t('pipelineJob.fieldArtifactRenameLabel') },
+    kind: 'text',
+    monospace: true,
+    placeholder: 'app.jar',
+    get hint() { return t('pipelineJob.fieldArtifactRenameHint') },
+  },
   ...EXEC_OPTION_FIELDS,
   {
     key: 'cachePaths',
@@ -211,15 +246,22 @@ const SCRIPT_FIELDS: JobField[] = [
   },
 ]
 
-// SSH 部署节点的字段(deploy_ssh 与 deploy_frontend 模板共用)。
+// 部署节点共用字段(deploy_ssh 主机部署 / deploy_container 容器部署;旧 deploy_frontend 模板沿用)。
+// 语义:部署目标 → 产物来源(精确绑定,无「自动」)→ 滚动批次 → 健康检查 → 重启/容器参数。
 const DEPLOY_SSH_FIELDS: JobField[] = [
   {
     key: 'selector',
     get label() { return t('pipelineJob.fieldDeploySelectorLabel') },
-    kind: 'text',
-    monospace: true,
-    placeholder: 'web,env=prod',
+    kind: 'labelSelector',
     get hint() { return t('pipelineJob.fieldDeploySelectorHint') },
+  },
+  {
+    key: 'selectorMode',
+    get label() { return t('pipelineJob.fieldSelectorModeLabel') },
+    kind: 'select',
+    options: SELECTOR_MODE_OPTIONS,
+    get hint() { return t('pipelineJob.fieldSelectorModeHint') },
+    when: (c) => (c.selector || '').split(',').filter((s) => s.trim()).length > 1,
   },
   {
     key: 'serverId',
@@ -228,11 +270,74 @@ const DEPLOY_SSH_FIELDS: JobField[] = [
     get hint() { return t('pipelineJob.fieldServerIdHint') },
   },
   {
-    key: 'artifactType',
-    get label() { return t('pipelineJob.fieldArtifactTypeLabel') },
+    key: 'deployMode',
+    get label() { return t('pipelineJob.fieldDeployModeLabel') },
     kind: 'select',
-    options: DEPLOY_ARTIFACT_OPTIONS,
-    get hint() { return t('pipelineJob.fieldArtifactTypeHint') },
+    options: DEPLOY_MODE_OPTIONS,
+    get hint() { return t('pipelineJob.fieldDeployModeHint') },
+  },
+  {
+    key: 'artifactJob',
+    get label() { return t('pipelineJob.fieldArtifactJobLabel') },
+    kind: 'producer',
+    get hint() { return t('pipelineJob.fieldArtifactJobHint') },
+    when: (c) => (c.deployMode || 'artifact') !== 'command',
+  },
+  {
+    key: 'artifactName',
+    get label() { return t('pipelineJob.fieldArtifactNameLabel') },
+    kind: 'text',
+    monospace: true,
+    placeholder: 'app-*.jar',
+    get hint() { return t('pipelineJob.fieldArtifactNameHint') },
+    when: (c) => (c.deployMode || 'artifact') !== 'command' && !!(c.artifactJob || '').trim(),
+  },
+  {
+    key: 'firstBatchSize',
+    get label() { return t('pipelineJob.fieldFirstBatchSizeLabel') },
+    kind: 'number',
+    placeholder: '1',
+    get hint() { return t('pipelineJob.fieldFirstBatchSizeHint') },
+  },
+  {
+    key: 'batchSize',
+    get label() { return t('pipelineJob.fieldBatchSizeLabel') },
+    kind: 'number',
+    placeholder: '0',
+    get hint() { return t('pipelineJob.fieldBatchSizeHint') },
+  },
+  {
+    key: 'healthUrl',
+    get label() { return t('pipelineJob.fieldHealthUrlLabel') },
+    kind: 'text',
+    monospace: true,
+    placeholder: 'http://localhost:8080/healthz',
+    get hint() { return t('pipelineJob.fieldHealthUrlHint') },
+  },
+  {
+    key: 'healthCommand',
+    get label() { return t('pipelineJob.fieldHealthCommandLabel') },
+    kind: 'text',
+    monospace: true,
+    placeholder: 'curl -fsS localhost:8080/healthz',
+    get hint() { return t('pipelineJob.fieldHealthCommandHint') },
+    when: (c) => !(c.healthUrl || '').trim(),
+  },
+  {
+    key: 'healthRetries',
+    get label() { return t('pipelineJob.fieldHealthRetriesLabel') },
+    kind: 'number',
+    placeholder: '3',
+    get hint() { return t('pipelineJob.fieldHealthRetriesHint') },
+    when: (c) => !!(c.healthUrl || '').trim() || !!(c.healthCommand || '').trim(),
+  },
+  {
+    key: 'healthIntervalSeconds',
+    get label() { return t('pipelineJob.fieldHealthIntervalLabel') },
+    kind: 'number',
+    placeholder: '3',
+    get hint() { return t('pipelineJob.fieldHealthIntervalHint') },
+    when: (c) => !!(c.healthUrl || '').trim() || !!(c.healthCommand || '').trim(),
   },
   {
     key: 'deployPath',
@@ -241,40 +346,6 @@ const DEPLOY_SSH_FIELDS: JobField[] = [
     monospace: true,
     placeholder: '/opt/app',
     get hint() { return t('pipelineJob.fieldDeployPathHint') },
-    when: (c) => c.artifactType !== 'image',
-  },
-  {
-    key: 'containerName',
-    get label() { return t('pipelineJob.fieldContainerNameLabel') },
-    kind: 'text',
-    monospace: true,
-    placeholder: 'app',
-    get hint() { return t('pipelineJob.fieldContainerNameHint') },
-    when: (c) => c.artifactType === 'image',
-  },
-  {
-    key: 'ports',
-    get label() { return t('pipelineJob.fieldPortsLabel') },
-    kind: 'text',
-    monospace: true,
-    placeholder: '8080:80, 9000:9000',
-    get hint() { return t('pipelineJob.fieldPortsHint') },
-    when: (c) => c.artifactType === 'image',
-  },
-  {
-    key: 'runArgs',
-    get label() { return t('pipelineJob.fieldRunArgsLabel') },
-    kind: 'text',
-    monospace: true,
-    placeholder: '-e KEY=value --restart always',
-    get hint() { return t('pipelineJob.fieldRunArgsHint') },
-    when: (c) => c.artifactType === 'image',
-  },
-  {
-    key: 'strategy',
-    get label() { return t('pipelineJob.fieldStrategyLabel') },
-    kind: 'select',
-    options: DEPLOY_STRATEGY_OPTIONS,
   },
   {
     key: 'restartCommand',
@@ -283,7 +354,121 @@ const DEPLOY_SSH_FIELDS: JobField[] = [
     monospace: true,
     placeholder: 'systemctl restart app\nnginx -s reload',
     get hint() { return t('pipelineJob.fieldRestartCommandHint') },
-    when: (c) => c.artifactType !== 'image',
+  },
+]
+
+// 容器部署节点字段(deploy_container):固定部署 image 产物。
+const DEPLOY_CONTAINER_FIELDS: JobField[] = [
+  {
+    key: 'selector',
+    get label() { return t('pipelineJob.fieldDeploySelectorLabel') },
+    kind: 'labelSelector',
+    get hint() { return t('pipelineJob.fieldDeploySelectorHint') },
+  },
+  {
+    key: 'selectorMode',
+    get label() { return t('pipelineJob.fieldSelectorModeLabel') },
+    kind: 'select',
+    options: SELECTOR_MODE_OPTIONS,
+    get hint() { return t('pipelineJob.fieldSelectorModeHint') },
+    when: (c) => (c.selector || '').split(',').filter((s) => s.trim()).length > 1,
+  },
+  {
+    key: 'serverId',
+    get label() { return t('pipelineJob.fieldServerIdLabel') },
+    kind: 'server',
+    get hint() { return t('pipelineJob.fieldServerIdHint') },
+  },
+  {
+    key: 'artifactJob',
+    get label() { return t('pipelineJob.fieldArtifactJobLabel') },
+    kind: 'producer',
+    producerKinds: ['build_image'],
+    get hint() { return t('pipelineJob.fieldArtifactJobImageHint') },
+  },
+  {
+    key: 'firstBatchSize',
+    get label() { return t('pipelineJob.fieldFirstBatchSizeLabel') },
+    kind: 'number',
+    placeholder: '1',
+    get hint() { return t('pipelineJob.fieldFirstBatchSizeHint') },
+  },
+  {
+    key: 'batchSize',
+    get label() { return t('pipelineJob.fieldBatchSizeLabel') },
+    kind: 'number',
+    placeholder: '0',
+    get hint() { return t('pipelineJob.fieldBatchSizeHint') },
+  },
+  {
+    key: 'healthUrl',
+    get label() { return t('pipelineJob.fieldHealthUrlLabel') },
+    kind: 'text',
+    monospace: true,
+    placeholder: 'http://localhost:8080/healthz',
+    get hint() { return t('pipelineJob.fieldHealthUrlHint') },
+  },
+  {
+    key: 'healthCommand',
+    get label() { return t('pipelineJob.fieldHealthCommandLabel') },
+    kind: 'text',
+    monospace: true,
+    placeholder: 'curl -fsS localhost:8080/healthz',
+    get hint() { return t('pipelineJob.fieldHealthCommandHint') },
+    when: (c) => !(c.healthUrl || '').trim(),
+  },
+  {
+    key: 'healthRetries',
+    get label() { return t('pipelineJob.fieldHealthRetriesLabel') },
+    kind: 'number',
+    placeholder: '3',
+    when: (c) => !!(c.healthUrl || '').trim() || !!(c.healthCommand || '').trim(),
+  },
+  {
+    key: 'healthIntervalSeconds',
+    get label() { return t('pipelineJob.fieldHealthIntervalLabel') },
+    kind: 'number',
+    placeholder: '3',
+    when: (c) => !!(c.healthUrl || '').trim() || !!(c.healthCommand || '').trim(),
+  },
+  {
+    key: 'containerName',
+    get label() { return t('pipelineJob.fieldContainerNameLabel') },
+    kind: 'text',
+    monospace: true,
+    placeholder: 'app',
+    get hint() { return t('pipelineJob.fieldContainerNameHint') },
+  },
+  {
+    key: 'ports',
+    get label() { return t('pipelineJob.fieldPortsLabel') },
+    kind: 'text',
+    monospace: true,
+    placeholder: '8080:80, 9000:9000',
+    get hint() { return t('pipelineJob.fieldPortsHint') },
+  },
+  {
+    key: 'runArgs',
+    get label() { return t('pipelineJob.fieldRunArgsLabel') },
+    kind: 'text',
+    monospace: true,
+    placeholder: '-e KEY=value --restart always',
+    get hint() { return t('pipelineJob.fieldRunArgsHint') },
+  },
+  {
+    key: 'registryUrl',
+    get label() { return t('pipelineJob.fieldRegistryUrlLabel') },
+    kind: 'text',
+    monospace: true,
+    placeholder: 'registry.example.com:5000',
+    get hint() { return t('pipelineJob.fieldRegistryUrlHint') },
+  },
+  {
+    key: 'registryCredentialId',
+    get label() { return t('pipelineJob.fieldRegistryCredentialLabel') },
+    kind: 'credential',
+    credentialType: 'registry',
+    get hint() { return t('pipelineJob.fieldRegistryCredentialHint') },
   },
 ]
 
@@ -435,6 +620,15 @@ export const JOB_TYPE_SPECS: Record<string, JobTypeSpec> = {
     fields: DEPLOY_SSH_FIELDS,
   },
 
+  deploy_container: {
+    type: 'deploy_container',
+    get label() { return t('pipelineJob.typeDeployContainerLabel') },
+    get description() { return t('pipelineJob.typeDeployContainerDesc') },
+    accent: 'primary',
+    category: 'deploy',
+    fields: DEPLOY_CONTAINER_FIELDS,
+  },
+
   health_check: {
     type: 'health_check',
     get label() { return t('pipelineJob.typeHealthCheckLabel') },
@@ -442,6 +636,26 @@ export const JOB_TYPE_SPECS: Record<string, JobTypeSpec> = {
     accent: 'green',
     category: 'quality',
     fields: [
+      {
+        key: 'selector',
+        get label() { return t('pipelineJob.fieldDeploySelectorLabel') },
+        kind: 'labelSelector',
+        get hint() { return t('pipelineJob.fieldHealthSelectorHint') },
+      },
+      {
+        key: 'selectorMode',
+        get label() { return t('pipelineJob.fieldSelectorModeLabel') },
+        kind: 'select',
+        options: SELECTOR_MODE_OPTIONS,
+        get hint() { return t('pipelineJob.fieldSelectorModeHint') },
+        when: (c) => (c.selector || '').split(',').filter((s) => s.trim()).length > 1,
+      },
+      {
+        key: 'serverId',
+        get label() { return t('pipelineJob.fieldServerIdLabel') },
+        kind: 'server',
+        get hint() { return t('pipelineJob.fieldServerIdHint') },
+      },
       { key: 'probeMode', get label() { return t('pipelineJob.fieldProbeModeLabel') }, kind: 'select', options: PROBE_MODE_OPTIONS },
       {
         key: 'url',
@@ -449,13 +663,6 @@ export const JOB_TYPE_SPECS: Record<string, JobTypeSpec> = {
         kind: 'text',
         monospace: true,
         placeholder: 'http://localhost:8080/healthz',
-        when: probeIs('http'),
-      },
-      {
-        key: 'expectStatus',
-        get label() { return t('pipelineJob.fieldExpectStatusLabel') },
-        kind: 'number',
-        placeholder: '200',
         when: probeIs('http'),
       },
       {
@@ -501,7 +708,63 @@ export const JOB_TYPE_SPECS: Record<string, JobTypeSpec> = {
     ],
   },
 
-  // ── 模板节点:预填好常见步骤参数,改改就能用,不必都写自定义脚本 ──
+  // ── 模板节点:按语言区分的构建模板(预填好镜像+命令,改改就能用)+ 旧模板键(存量兼容,不在目录)──
+  build_nodejs: {
+    type: 'build_nodejs',
+    get label() { return t('pipelineJob.typeBuildNodejsLabel') },
+    get description() { return t('pipelineJob.typeBuildNodejsDesc') },
+    accent: 'green',
+    category: 'build',
+    fields: SCRIPT_FIELDS,
+    defaultConfig: {
+      image: 'node:20',
+      commands: 'npm ci --no-audit --no-fund\nnpm run build',
+      artifactPath: 'dist',
+    },
+  },
+
+  build_java: {
+    type: 'build_java',
+    get label() { return t('pipelineJob.typeBuildJavaLabel') },
+    get description() { return t('pipelineJob.typeBuildJavaDesc') },
+    accent: 'amber',
+    category: 'build',
+    fields: SCRIPT_FIELDS,
+    defaultConfig: {
+      image: 'maven:3.9-eclipse-temurin-21',
+      commands: 'mvn -B -DskipTests package',
+      artifactPath: 'target/*.jar',
+    },
+  },
+
+  build_golang: {
+    type: 'build_golang',
+    get label() { return t('pipelineJob.typeBuildGolangLabel') },
+    get description() { return t('pipelineJob.typeBuildGolangDesc') },
+    accent: 'cyan',
+    category: 'build',
+    fields: SCRIPT_FIELDS,
+    defaultConfig: {
+      image: 'golang:1.22',
+      commands: 'CGO_ENABLED=0 go build -o bin/app ./...',
+      artifactPath: 'bin/app',
+    },
+  },
+
+  build_python: {
+    type: 'build_python',
+    get label() { return t('pipelineJob.typeBuildPythonLabel') },
+    get description() { return t('pipelineJob.typeBuildPythonDesc') },
+    accent: 'primary',
+    category: 'build',
+    fields: SCRIPT_FIELDS,
+    defaultConfig: {
+      image: 'python:3.12',
+      commands: 'pip install -r requirements.txt\npython -m build',
+      artifactPath: 'dist/*',
+    },
+  },
+
   build_frontend: {
     type: 'build_frontend',
     get label() { return t('pipelineJob.typeBuildFrontendLabel') },
@@ -633,14 +896,16 @@ export const JOB_TYPE_SPECS: Record<string, JobTypeSpec> = {
 
 // ─── Lookups ──────────────────────────────────────────────────────────────────
 
-/** Canonical, ordered list of pickable types (excludes the `custom` alias of `script`). */
+/** Canonical, ordered list of pickable types (旧键 build_frontend/build_backend/deploy_frontend 保留 spec 供存量渲染,但不再进目录)。 */
 export const PICKABLE_TYPES: readonly string[] = [
   'git_source',
-  'build_frontend',
-  'build_backend',
+  'build_nodejs',
+  'build_java',
+  'build_golang',
+  'build_python',
   'build_image',
   'push_image',
-  'deploy_frontend',
+  'deploy_container',
   'deploy_ssh',
   'health_check',
   'notify',
@@ -717,6 +982,10 @@ export function splitConfig(
 const SCRIPT_CLASS_TYPES = new Set<string>([
   'script',
   'custom',
+  'build_nodejs',
+  'build_java',
+  'build_golang',
+  'build_python',
   'build_frontend',
   'build_backend',
   'templated',

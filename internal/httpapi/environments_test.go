@@ -39,10 +39,7 @@ func (s *stubDeploy) Deploy(_ context.Context, in deploy.DeployInput) ([]deploy.
 func (s *stubDeploy) RetryFailed(context.Context, deploy.RetryInput) ([]deploy.TargetResult, error) {
 	return nil, nil
 }
-func (s *stubDeploy) ContinueDeploy(context.Context, deploy.ContinueInput) ([]deploy.TargetResult, error) {
-	return nil, nil
-}
-func (s *stubDeploy) AbortDeploy(context.Context, deploy.AbortInput) ([]deploy.TargetResult, error) {
+func (s *stubDeploy) CheckHealth(context.Context, string, string, *deploy.HealthCheck) ([]deploy.HealthProbeResult, error) {
 	return nil, nil
 }
 func (s *stubDeploy) DeployForStage(context.Context, string, string, map[string]string, string) ([]deploy.TargetResult, error) {
