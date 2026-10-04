@@ -6,6 +6,7 @@ export default {
 
   // ─── 탭 ─────────────────────────────────────────────────────────
   tabCanvas: '파이프라인 캔버스',
+  tabBuild: '빌드',
   tabVars: '변수 및 캐시',
   tabTriggers: '트리거 설정',
   tabEnvs: '환경 및 자격 증명',

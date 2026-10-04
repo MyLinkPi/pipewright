@@ -15,6 +15,7 @@ import type {
 } from '../../api/servers'
 import { listCredentials } from '../../api/credentials'
 import type { Credential } from '../../api/credentials'
+import { useLabels } from '../../api/labels'
 import { HttpError } from '../../api/http'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
@@ -40,6 +41,36 @@ const sshCredentials = ref<Credential[]>([])
 
 // Optional sudo_password credentials (privilege escalation for non-root logins).
 const sudoCredentials = ref<Credential[]>([])
+
+// ─── 机器标签登记处(标签字典,可先建后挂)─────────────────────────────────────
+// 登记处建/删标签;servers.labels 仍是机器实际标签的事实来源。下拉候选 = 登记处 ∪ 机器实际标签。
+
+const {
+  items: registryLabels,
+  load: loadRegistryLabels,
+  ensure: ensureLabel,
+  remove: removeLabelReg,
+} = useLabels()
+
+const attachedLabelTerms = computed<string[]>(() => {
+  const set = new Set<string>()
+  for (const s of servers.value) {
+    for (const p of (s.labels || '').split(',')) {
+      const term = p.trim()
+      if (term) set.add(term)
+    }
+  }
+  return [...set].sort()
+})
+
+const registryLabelNames = computed<string[]>(() => registryLabels.value.map((l) => l.name))
+
+/** 标签当前被几台机器引用(展示用;权威裁决在服务端)。 */
+function labelUsage(name: string): number {
+  return servers.value.filter((s) =>
+    (s.labels || '').split(',').map((x) => x.trim()).includes(name),
+  ).length
+}
 
 // ─── add / edit modal ───────────────────────────────────────────────────────
 
@@ -160,7 +191,98 @@ async function loadServers(): Promise<void> {
   }
 }
 
-onMounted(loadServers)
+onMounted(() => {
+  void loadServers()
+  void loadRegistryLabels()
+})
+
+// ─── 登记处管理(建/删标签)──────────────────────────────────────────────────
+
+const newLabelName = ref('')
+const labelSubmitting = ref(false)
+const labelError = ref('')
+
+function labelErrMsg(e: unknown, fallback: string): string {
+  if (e instanceof HttpError) {
+    if (e.status === 409) return t('settingsServers.labelExists')
+    if (e.status === 400) return t('settingsServers.labelInvalid')
+  }
+  return fallback
+}
+
+async function handleCreateLabel(): Promise<void> {
+  const name = newLabelName.value.trim()
+  if (!name || labelSubmitting.value) return
+  labelSubmitting.value = true
+  labelError.value = ''
+  try {
+    await ensureLabel(name)
+    newLabelName.value = ''
+  } catch (e) {
+    labelError.value = labelErrMsg(e, t('settingsServers.labelCreateFailed'))
+  } finally {
+    labelSubmitting.value = false
+  }
+}
+
+async function handleDeleteLabel(name: string): Promise<void> {
+  if (labelSubmitting.value) return
+  labelError.value = ''
+  try {
+    await removeLabelReg(name)
+  } catch (e) {
+    if (e instanceof HttpError && e.status === 409) labelError.value = t('settingsServers.labelInUse')
+    else labelError.value = t('settingsServers.labelDeleteFailed')
+  }
+}
+
+// ─── 服务器表单的标签 chips(候选 = 登记处 ∪ 机器实际标签;支持inline新建并登记)────
+
+const formLabelTerms = computed<string[]>(() =>
+  form.value.labels.split(',').map((x) => x.trim()).filter(Boolean),
+)
+
+const formLabelCandidates = computed<string[]>(() => {
+  const taken = new Set(formLabelTerms.value)
+  return [...new Set([...registryLabelNames.value, ...attachedLabelTerms.value])]
+    .filter((n) => !taken.has(n))
+    .sort()
+})
+
+const formAddPick = ref('')
+const inlineLabelName = ref('')
+
+function addFormLabel(term: string): void {
+  formAddPick.value = ''
+  if (!term || formLabelTerms.value.includes(term)) return
+  form.value.labels = formLabelTerms.value.concat(term).join(',')
+}
+
+function removeFormLabel(term: string): void {
+  form.value.labels = formLabelTerms.value.filter((x) => x !== term).join(',')
+}
+
+/** 表单里 inline 新建:登记进字典并挂到本机;同名已登记 → 直接挂。 */
+async function createAndAttachLabel(): Promise<void> {
+  const name = inlineLabelName.value.trim()
+  if (!name || labelSubmitting.value) return
+  labelSubmitting.value = true
+  labelError.value = ''
+  try {
+    await ensureLabel(name)
+    addFormLabel(name)
+    inlineLabelName.value = ''
+  } catch (e) {
+    if (e instanceof HttpError && e.status === 409) {
+      addFormLabel(name)
+      inlineLabelName.value = ''
+    } else {
+      labelError.value = labelErrMsg(e, t('settingsServers.labelCreateFailed'))
+    }
+  } finally {
+    labelSubmitting.value = false
+  }
+}
 
 // ─── modal open / close ─────────────────────────────────────────────────────
 
@@ -465,6 +587,49 @@ async function handleTest(s: Server): Promise<void> {
       </ul>
     </div>
 
+    <!-- ─── 机器标签登记处(标签字典:可先建后挂的悬置标签)────────────────────── -->
+    <div class="panel">
+      <div class="panel-head">
+        <span>{{ t('settingsServers.labelRegistryTitle') }}</span>
+        <span class="panel-meta">{{ t('settingsServers.labelRegistrySub') }}</span>
+      </div>
+      <div v-if="labelError" class="banner banner--error" role="alert">{{ labelError }}</div>
+      <div class="labelreg-body">
+        <div class="labelreg-create">
+          <input
+            v-model="newLabelName"
+            class="field-input labelchips-new"
+            type="text"
+            :placeholder="t('settingsServers.newLabelPlaceholder')"
+            :aria-label="t('settingsServers.newLabelAria')"
+            autocomplete="off"
+            @keydown.enter.prevent="handleCreateLabel"
+          />
+          <button class="btn-ghost" :disabled="labelSubmitting || !newLabelName.trim()" @click="handleCreateLabel">
+            {{ t('settingsServers.createLabel') }}
+          </button>
+        </div>
+        <div v-if="registryLabels.length === 0" class="empty-row" role="status">
+          {{ t('settingsServers.labelRegistryEmpty') }}
+        </div>
+        <ul v-else class="labelreg-list">
+          <li v-for="l in registryLabels" :key="l.name" class="labelreg-row">
+            <span class="labelchip labelchip--static">
+              {{ l.name }}
+              <span class="labelreg-usage">
+                {{ labelUsage(l.name) > 0
+                  ? t('settingsServers.labelUsage', { n: labelUsage(l.name) })
+                  : t('settingsServers.labelDangling') }}
+              </span>
+            </span>
+            <button class="btn-ghost btn-danger" @click="handleDeleteLabel(l.name)">
+              {{ t('settingsServers.delete') }}
+            </button>
+          </li>
+        </ul>
+      </div>
+    </div>
+
     <!-- ─── add / edit modal ──────────────────────────────────────────────────── -->
     <div v-if="modalOpen" class="modal-backdrop">
       <div class="modal" role="dialog" aria-modal="true" aria-labelledby="server-modal-title">
@@ -520,13 +685,50 @@ async function handleTest(s: Server): Promise<void> {
             <span class="field-hint">{{ t('settingsServers.sudoCredentialHint') }}</span>
           </label>
 
-          <!-- build-pool fields (FR-8-19): labels make the machine schedulable; unlabeled machines never pick -->
-          <label class="field">
+          <!-- build-pool fields (FR-8-19): labels make the machine schedulable; unlabeled machines never pick.
+               标签从登记处 ∪ 机器实际标签里选(chips),也可 inline 新建(自动登记);不再手敲逗号串。 -->
+          <div class="field">
             <span class="field-label">{{ t('settingsServers.fieldLabels') }}</span>
-            <input v-model="form.labels" class="field-input" type="text" placeholder="linux,arch=arm64" autocomplete="off" />
+            <div class="labelchips" :aria-label="t('settingsServers.labelsEditorAria')">
+              <span v-for="term in formLabelTerms" :key="term" class="labelchip">
+                {{ term }}
+                <button
+                  type="button"
+                  class="labelchip-del"
+                  :aria-label="t('settingsServers.labelDelAria', { term })"
+                  @click="removeFormLabel(term)"
+                >
+                  <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>
+                </button>
+              </span>
+              <span v-if="!formLabelTerms.length" class="labelchips-empty">{{ t('settingsServers.labelsEmpty') }}</span>
+            </div>
+            <div class="labelchips-addrow">
+              <select
+                v-model="formAddPick"
+                class="field-input labelchips-select"
+                :aria-label="t('settingsServers.addLabelAria')"
+                @change="addFormLabel(formAddPick)"
+              >
+                <option value="" disabled>{{ t('settingsServers.addLabelPick') }}</option>
+                <option v-for="c in formLabelCandidates" :key="c" :value="c">{{ c }}</option>
+              </select>
+              <input
+                v-model="inlineLabelName"
+                class="field-input labelchips-new"
+                type="text"
+                :placeholder="t('settingsServers.newLabelPlaceholder')"
+                :aria-label="t('settingsServers.newLabelAria')"
+                autocomplete="off"
+                @keydown.enter.prevent="createAndAttachLabel"
+              />
+              <button type="button" class="btn-ghost" :disabled="labelSubmitting || !inlineLabelName.trim()" @click="createAndAttachLabel">
+                {{ t('settingsServers.newLabelCreate') }}
+              </button>
+            </div>
             <span class="field-hint">{{ t('settingsServers.labelsHint') }}</span>
             <span v-if="formErrors.labels" class="field-error">{{ formErrors.labels }}</span>
-          </label>
+          </div>
           <div class="field-row">
             <label class="field field-maxbuilds">
               <span class="field-label">{{ t('settingsServers.fieldMaxBuilds') }}</span>
@@ -942,5 +1144,109 @@ async function handleTest(s: Server): Promise<void> {
 .field-error {
   font-size: var(--text-label);
   color: var(--color-danger, #d4503e);
+}
+
+/* ─── 标签 chips(表单标签选择器 + 登记处列表共用)────────────────────────── */
+.labelchips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-height: 34px;
+  padding: 5px 8px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-inset);
+}
+.labelchips-empty {
+  font-size: 0.76rem;
+  color: var(--color-faint);
+  font-style: italic;
+  align-self: center;
+}
+.labelchip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 24px;
+  padding: 0 5px 0 9px;
+  border-radius: 100px;
+  border: 1px solid var(--color-border-strong);
+  background: var(--color-card);
+  font-family: var(--font-mono);
+  font-size: 0.74rem;
+  color: var(--color-text);
+  white-space: nowrap;
+}
+.labelchip--static {
+  padding-right: 9px;
+  cursor: default;
+}
+.labelchip-del {
+  width: 16px;
+  height: 16px;
+  display: grid;
+  place-items: center;
+  border: none;
+  border-radius: 100px;
+  background: transparent;
+  color: var(--color-faint);
+  cursor: pointer;
+  padding: 0;
+}
+.labelchip-del:hover {
+  color: var(--color-danger, #d4503e);
+  background: var(--color-inset);
+}
+.labelchips-addrow {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+.labelchips-select {
+  width: auto;
+  min-width: 200px;
+  flex: 0 1 auto;
+}
+.labelchips-new {
+  flex: 1 1 180px;
+  min-width: 160px;
+  font-family: var(--font-mono);
+}
+
+/* ─── 机器标签登记处面板 ─────────────────────────────────────────────────── */
+.labelreg-body {
+  padding: 12px 16px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.labelreg-create {
+  display: flex;
+  gap: 8px;
+  max-width: 420px;
+}
+.labelreg-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+.labelreg-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--color-border);
+}
+.labelreg-row:last-child {
+  border-bottom: none;
+}
+.labelreg-usage {
+  font-family: var(--font-sans);
+  font-size: 0.7rem;
+  color: var(--color-faint);
 }
 </style>

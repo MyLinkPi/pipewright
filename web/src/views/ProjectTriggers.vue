@@ -8,6 +8,7 @@ import { computed } from 'vue'
 import { useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import TriggersPanel from '../components/TriggersPanel.vue'
+import RunnerPanel from '../components/RunnerPanel.vue'
 
 const route = useRoute()
 const { t } = useI18n()
@@ -30,6 +31,9 @@ const projectId = computed(() => route.params.id as string)
     </header>
 
     <TriggersPanel :project-id="projectId" />
+
+    <!-- 构建 runner(构建机池项目默认;从 TriggersPanel 迁出,构建配置归构建配置) -->
+    <RunnerPanel :project-id="projectId" />
   </div>
 </template>
 

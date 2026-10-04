@@ -25,6 +25,7 @@ import { createCustomNode } from '../../api/customNodes'
 import JobTypeIcon from './JobTypeIcon.vue'
 import StepBuilder from './StepBuilder.vue'
 import StudioInstanceParams from './StudioInstanceParams.vue'
+import LabelSelectorEditor from './LabelSelectorEditor.vue'
 
 const props = defineProps<{
   job: PipelineJob
@@ -84,7 +85,6 @@ function hydrate(job: PipelineJob): void {
   const repickView = modeKey !== lastModeKey
   lastModeKey = modeKey
   splitOnType(job.type, job.config ?? {}, repickView)
-  selectorTerms.value = parseSelectorTerms(typedConfig.value.selector ?? '')
 }
 
 /** Recompute typed config + raw extras for a given type, preserving all values. */
@@ -202,8 +202,6 @@ function onShortlistUpdate(values: Record<string, string>): void {
   flush()
 }
 
-// Initial hydrate 延迟到 labelSelector 控件状态(selectorTerms)声明之后,见文件下方 hydrateDeferred()。
-
 function credentialOptions(field: JobField): Credential[] {
   const all = props.credentials ?? []
   if (!field.credentialType) return all
@@ -222,99 +220,6 @@ function channelTypeLabel(type: string): string {
   return CHANNEL_TYPE_LABELS[type] ?? type
 }
 
-// ─── labelSelector 控件(标签选值,不再手敲语法)────────────────────────────────
-// 从 servers.labels 汇总标签 key(含纯标记)与各 key 取值集合;条件行 = key 下拉 → value 下拉
-// (纯标记无 value)。写回 config.selector 时保持 `k=v,tag` 原格式(后端零改动)。
-
-interface SelectorTerm {
-  _key: number
-  /** key 或纯标记文本 */
-  k: string
-  /** k=v 的 v;纯标记为 '' */
-  v: string
-}
-
-let _selSeq = 0
-const selectorTerms = ref<SelectorTerm[]>([])
-
-function parseSelectorTerms(raw: string): SelectorTerm[] {
-  return (raw || '')
-    .split(',')
-    .map((s) => s.trim())
-    .filter(Boolean)
-    .map((t) => {
-      const i = t.indexOf('=')
-      if (i > 0) return { _key: ++_selSeq, k: t.slice(0, i), v: t.slice(i + 1) }
-      return { _key: ++_selSeq, k: t, v: '' }
-    })
-}
-
-// 选中 job 变化时 hydrate() 会重解 selector(见文件上方 hydrate)。
-
-/** 全部标签 key(去重):k=v 的 key + 纯标记。 */
-const labelKeys = computed<string[]>(() => {
-  const keys = new Set<string>()
-  for (const srv of props.servers ?? []) {
-    for (const part of (srv.labels || '').split(',')) {
-      const term = part.trim()
-      if (!term) continue
-      const i = term.indexOf('=')
-      keys.add(i > 0 ? term.slice(0, i) : term)
-    }
-  }
-  return [...keys].sort()
-})
-
-/** 某 key 的取值集合(k=v 项;纯标记 key 返回空 → 无 value 下拉)。 */
-function labelValues(key: string): string[] {
-  const vals = new Set<string>()
-  for (const srv of props.servers ?? []) {
-    for (const part of (srv.labels || '').split(',')) {
-      const term = part.trim()
-      if (!term) continue
-      const i = term.indexOf('=')
-      if (i > 0 && term.slice(0, i) === key) vals.add(term.slice(i + 1))
-    }
-  }
-  return [...vals].sort()
-}
-
-function isBareTag(key: string): boolean {
-  return labelValues(key).length === 0
-}
-
-function addSelectorTerm(): void {
-  const first = labelKeys.value[0] ?? ''
-  selectorTerms.value.push({ _key: ++_selSeq, k: first, v: labelValues(first)[0] ?? '' })
-  flushSelector()
-}
-
-function removeSelectorTerm(id: number): void {
-  selectorTerms.value = selectorTerms.value.filter((r) => r._key !== id)
-  flushSelector()
-}
-
-/** 条件写回 selector 并落库(mode 为 all/any,持久在 selectorMode 键)。 */
-function flushSelector(): void {
-  const sel = selectorTerms.value
-    .filter((r) => r.k.trim())
-    .map((r) => (r.v.trim() ? `${r.k.trim()}=${r.v.trim()}` : r.k.trim()))
-    .join(',')
-  typedConfig.value = { ...typedConfig.value, selector: sel }
-  flush()
-}
-
-function onTermKeyChange(row: SelectorTerm, key: string): void {
-  row.k = key
-  row.v = labelValues(key)[0] ?? ''
-  flushSelector()
-}
-
-function onTermValueChange(row: SelectorTerm, value: string): void {
-  row.v = value
-  flushSelector()
-}
-
 /** producer 下拉选项(按 producerKinds 过滤类型;排除自身)。 */
 function producerCandidates(field: JobField): ProducerOption[] {
   const all = props.producerOptions ?? []
@@ -326,7 +231,7 @@ function producerLabel(o: ProducerOption): string {
   return `${o.name}(${jobTypeLabel(o.type)})`
 }
 
-// Initial hydrate:此时 selectorTerms 等控件状态均已声明完毕(上方所有声明已求值)。
+// Initial hydrate:此时上方所有声明均已求值(避免 step-builder 相关 computed 的暂时性死区)。
 hydrate(props.job)
 
 // ─── Value get/set ────────────────────────────────────────────────────────────
@@ -653,52 +558,12 @@ async function confirmSave(): Promise<void> {
         </select>
 
         <!-- 标签选择器(选值控件:从机器实际标签里选 key/value,多条件且/或显式选) -->
-        <div v-else-if="field.kind === 'labelSelector'" class="selector-editor">
-          <div v-if="(servers ?? []).length === 0" class="selector-empty">
-            {{ t('pipelineJob.selectorNoServers') }}
-          </div>
-          <div v-else-if="labelKeys.length === 0" class="selector-empty">
-            {{ t('pipelineJob.selectorNoLabels') }}
-          </div>
-          <template v-else>
-            <div v-for="row in selectorTerms" :key="row._key" class="selector-row">
-              <select
-                class="drawer-select selector-key"
-                :value="row.k"
-                :aria-label="t('pipelineJob.selectorKeyAria')"
-                @change="onTermKeyChange(row, ($event.target as HTMLSelectElement).value)"
-              >
-                <option v-for="k in labelKeys" :key="k" :value="k">{{ k }}</option>
-              </select>
-              <template v-if="!isBareTag(row.k)">
-                <span class="selector-eq">=</span>
-                <select
-                  class="drawer-select selector-value"
-                  :value="row.v"
-                  :aria-label="t('pipelineJob.selectorValueAria')"
-                  @change="onTermValueChange(row, ($event.target as HTMLSelectElement).value)"
-                >
-                  <option v-for="v in labelValues(row.k)" :key="v" :value="v">{{ v }}</option>
-                </select>
-              </template>
-              <button
-                class="selector-del"
-                :aria-label="t('pipelineJob.selectorDelAria', { k: row.k })"
-                @click="removeSelectorTerm(row._key)"
-              >
-                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
-                  <path d="M18 6 6 18M6 6l12 12"/>
-                </svg>
-              </button>
-            </div>
-            <button class="selector-add" @click="addSelectorTerm">
-              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-hidden="true">
-                <path d="M12 5v14M5 12h14"/>
-              </svg>
-              {{ t('pipelineJob.selectorAddTerm') }}
-            </button>
-          </template>
-        </div>
+        <LabelSelectorEditor
+          v-else-if="field.kind === 'labelSelector'"
+          :model-value="typedConfig.selector ?? ''"
+          :servers="props.servers"
+          @update:model-value="(v: string) => setField('selector', v)"
+        />
 
         <!-- 产物来源(精确绑定:选哪个节点产出的产物;无「自动」) -->
         <select
@@ -989,78 +854,6 @@ async function confirmSave(): Promise<void> {
   font-size: 0.72rem;
   color: var(--color-faint);
   line-height: 1.4;
-}
-
-/* ——— labelSelector 选值控件 ——— */
-.selector-editor {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.selector-empty {
-  font-size: 0.76rem;
-  color: var(--color-faint);
-  font-style: italic;
-}
-
-.selector-row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.selector-key {
-  flex: 1;
-  min-width: 0;
-}
-
-.selector-eq {
-  color: var(--color-faint);
-  font-family: var(--font-mono);
-}
-
-.selector-value {
-  flex: 1;
-  min-width: 0;
-}
-
-.selector-del {
-  display: inline-grid;
-  place-items: center;
-  width: 26px;
-  height: 26px;
-  flex-shrink: 0;
-  background: none;
-  border: 1px solid var(--color-border);
-  border-radius: var(--rounded);
-  color: var(--color-faint);
-  cursor: pointer;
-}
-
-.selector-del:hover {
-  color: var(--color-red, #d33);
-  border-color: var(--color-red, #d33);
-}
-
-.selector-add {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  align-self: flex-start;
-  padding: 5px 10px;
-  background: var(--color-inset);
-  border: 1px dashed var(--color-border-strong);
-  border-radius: var(--rounded);
-  color: var(--color-dim);
-  font: inherit;
-  font-size: 0.74rem;
-  cursor: pointer;
-}
-
-.selector-add:hover {
-  color: var(--color-primary);
-  border-color: var(--color-primary);
 }
 
 .drawer-textarea {

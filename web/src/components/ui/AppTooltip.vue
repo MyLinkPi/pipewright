@@ -10,8 +10,11 @@ import { ref } from 'vue'
 withDefaults(defineProps<{
   content: string
   placement?: 'top' | 'bottom'
+  /** > 0 时气泡限宽换行(长句提示);默认 0 = 单行 nowrap。 */
+  maxWidth?: number
 }>(), {
   placement: 'top',
+  maxWidth: 0,
 })
 
 const visible = ref(false)
@@ -38,6 +41,8 @@ function onKeydown(e: KeyboardEvent) {
     <span
       v-show="visible"
       class="tooltip-bubble"
+      :class="{ 'tooltip-bubble--wrap': maxWidth > 0 }"
+      :style="maxWidth > 0 ? { maxWidth: `${maxWidth}px` } : undefined"
       role="tooltip"
     >{{ content }}</span>
 
@@ -82,6 +87,14 @@ function onKeydown(e: KeyboardEvent) {
   background: var(--color-term);
   border-right: 1px solid var(--color-border-strong);
   border-bottom: 1px solid var(--color-border-strong);
+}
+
+/* 限宽换行变体:长句提示(白空间从 nowrap 放开) */
+.tooltip-bubble--wrap {
+  white-space: normal;
+  width: max-content;
+  text-align: left;
+  line-height: 1.55;
 }
 
 /* top placement */

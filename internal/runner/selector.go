@@ -105,6 +105,25 @@ func ValidateSelector(selector string) error {
 	return err
 }
 
+// ValidateTerm 校验**单个**标签项(标签登记处建标签用):与选择器项同一字符集与长度约束。
+// 纯 tag(`linux`)与 k=v(`arch=arm64`)均合法;空白/非法字符/超长 → ErrInvalidSelector。
+func ValidateTerm(term string) error {
+	term = strings.TrimSpace(term)
+	if term == "" || len(term) > labelLenMax {
+		return ErrInvalidSelector
+	}
+	if k, v, isKV := strings.Cut(term, "="); isKV {
+		if !termOK(k) || !termOK(v) {
+			return ErrInvalidSelector
+		}
+		return nil
+	}
+	if !termOK(term) {
+		return ErrInvalidSelector
+	}
+	return nil
+}
+
 // ValidateLabels 校验 servers.labels 原始串(写入侧用):逐项与选择器同一字符集规则,
 // 规模上限 32 项 / 512 字符(与 mysql 列宽对齐)。空串合法(= 不参与构建机池)。坏项 → ErrInvalidSelector。
 func ValidateLabels(raw string) error {

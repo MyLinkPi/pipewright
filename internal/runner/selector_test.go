@@ -122,3 +122,16 @@ func TestMatchSelector(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateTerm(t *testing.T) {
+	for _, good := range []string{"linux", "arch=arm64", "a.b_c-d=1.2", " linux "} {
+		if err := ValidateTerm(good); err != nil {
+			t.Fatalf("ValidateTerm(%q) 应合法,got %v", good, err)
+		}
+	}
+	for _, bad := range []string{"", "  ", "a b", "=v", "k=", "-lead", "标签"} {
+		if err := ValidateTerm(bad); err == nil {
+			t.Fatalf("ValidateTerm(%q) 应报非法", bad)
+		}
+	}
+}

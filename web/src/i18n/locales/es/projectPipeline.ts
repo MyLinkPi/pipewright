@@ -6,6 +6,7 @@ export default {
 
   // ─── pestañas ───────────────────────────────────────────────────
   tabCanvas: 'Lienzo del pipeline',
+  tabBuild: 'Build',
   tabVars: 'Variables y caché',
   tabTriggers: 'Ajustes de activación',
   tabEnvs: 'Entornos y credenciales',
