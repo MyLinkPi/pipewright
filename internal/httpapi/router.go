@@ -30,6 +30,7 @@ import (
 	"github.com/huangchengsir/pipewright/internal/dnsprovider"
 	"github.com/huangchengsir/pipewright/internal/environments"
 	"github.com/huangchengsir/pipewright/internal/i18n"
+	"github.com/huangchengsir/pipewright/internal/labels"
 	"github.com/huangchengsir/pipewright/internal/library"
 	"github.com/huangchengsir/pipewright/internal/metrics"
 	"github.com/huangchengsir/pipewright/internal/notify"
@@ -89,6 +90,7 @@ type options struct {
 	refsLister       RefsLister
 	runnerConfig     runner.Service
 	servers          target.Service
+	labels           labels.Service
 	notifications    notify.Service
 	deployer         deploy.Service
 	anomaly          anomaly.Service
@@ -328,6 +330,13 @@ func WithRunnerConfig(svc runner.Service) Option {
 // 密文,响应/错误绝无明文。不传则相关端点返回 503(服务未初始化)。
 func WithServers(s target.Service) Option {
 	return func(o *options) { o.servers = s }
+}
+
+// WithLabels 注入机器标签登记处(internal/labels),挂载 /api/labels* 路由
+// (GET 过 auth;POST/DELETE 写方法过 auth + CSRF)。标签可先建后挂(悬置标签),
+// 各选择器下拉的候选集 = 登记处 ∪ 机器实际标签。不传则相关端点返回 503。
+func WithLabels(s labels.Service) Option {
+	return func(o *options) { o.labels = s }
 }
 
 // WithServerCommands 注入批量命令服务(internal/servercmd),挂载 POST /api/servers/commands/batch
@@ -765,6 +774,12 @@ func New(webFS fs.FS, authn auth.Authenticator, opts ...Option) http.Handler {
 		ar.Put("/servers/{id}", makeUpdateServerHandler(sv))
 		ar.Delete("/servers/{id}", makeDeleteServerHandler(sv))
 		ar.Post("/servers/{id}/test", makeTestServerHandler(sv))
+
+		// 机器标签登记处(标签字典,可先建后挂):GET 过 auth;POST/DELETE 过 auth + CSRF。
+		// 字面段 /labels 与 /servers/{id} 互不干扰。
+		ar.Get("/labels", makeListLabelsHandler(o.labels))
+		ar.Post("/labels", makeCreateLabelHandler(o.labels))
+		ar.Delete("/labels/{name}", makeDeleteLabelHandler(o.labels))
 		// 服务日志查看(Story 6.2;FR-16,经 SSH 取目标服务器日志)。复用 sv(4-1 装配,无新服务)。
 		// 均为 GET 只读 → 过 auth、豁免 CSRF。source/target 严格白名单校验(AC-SEC-02);
 		// SSH/命令失败人读不 500;实时 /logs/stream 为 SSE,客户端断开即关 SSH session。

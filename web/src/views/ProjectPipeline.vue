@@ -1,8 +1,10 @@
 <script setup lang="ts">
 /**
- * ProjectPipeline — 4-tab pipeline configuration editor.
- * Tabs: 流水线编排 / 变量与缓存 / 触发设置 / 环境与凭据
- * URL state: ?tab=canvas|vars|triggers|envs  (shareable)
+ * ProjectPipeline — 5-tab pipeline configuration editor.
+ * Tabs: 流水线编排 / 构建配置 / 变量与缓存 / 触发设置 / 环境与凭据
+ * URL state: ?tab=canvas|build|vars|triggers|envs  (shareable)
+ * 两个低频项目级开关(流水线即代码 / PR 状态检查)以紧凑开关常驻 tab 栏右侧,
+ * 说明文字走悬浮 tooltip,不再以横条形式占用画布/检视抽屉的纵向空间。
  */
 import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
@@ -27,6 +29,7 @@ import PipelineCanvas from '../components/pipeline/PipelineCanvas.vue'
 import VarsCacheTab from '../components/pipeline/VarsCacheTab.vue'
 import EnvCredsTab from '../components/pipeline/EnvCredsTab.vue'
 import TriggersPanel from '../components/TriggersPanel.vue'
+import RunnerPanel from '../components/RunnerPanel.vue'
 import ValidationPanel from '../components/pipeline/ValidationPanel.vue'
 import AIGenerateWizard from '../components/pipeline/AIGenerateWizard.vue'
 import RiskAnnotationModal from '../components/pipeline/RiskAnnotationModal.vue'
@@ -34,6 +37,7 @@ import YamlImportModal from '../components/pipeline/YamlImportModal.vue'
 import TemplatePickerModal from '../components/pipeline/TemplatePickerModal.vue'
 import PacPreviewModal from '../components/pipeline/PacPreviewModal.vue'
 import ProjectPreviewConfig from '../components/pipeline/ProjectPreviewConfig.vue'
+import AppTooltip from '../components/ui/AppTooltip.vue'
 
 // ─── Route ────────────────────────────────────────────────────────────────────
 
@@ -46,10 +50,11 @@ const projectId = computed(() => route.params.id as string)
 
 // ─── Tabs ─────────────────────────────────────────────────────────────────────
 
-type TabKey = 'canvas' | 'vars' | 'triggers' | 'envs'
+type TabKey = 'canvas' | 'build' | 'vars' | 'triggers' | 'envs'
 
 const TABS = computed<Array<{ key: TabKey; label: string }>>(() => [
   { key: 'canvas',   label: t('projectPipeline.tabCanvas') },
+  { key: 'build',    label: t('projectPipeline.tabBuild') },
   { key: 'vars',     label: t('projectPipeline.tabVars') },
   { key: 'triggers', label: t('projectPipeline.tabTriggers') },
   { key: 'envs',     label: t('projectPipeline.tabEnvs') },
@@ -57,7 +62,7 @@ const TABS = computed<Array<{ key: TabKey; label: string }>>(() => [
 
 const activeTab = computed<TabKey>(() => {
   const q = route.query.tab
-  if (q === 'canvas' || q === 'vars' || q === 'triggers' || q === 'envs') return q
+  if (q === 'canvas' || q === 'build' || q === 'vars' || q === 'triggers' || q === 'envs') return q
   return 'canvas'
 })
 
@@ -587,94 +592,102 @@ async function togglePrStatus(next: boolean): Promise<void> {
     </div>
 
     <!-- ─── Tab strip ──────────────────────────────────────────────────────── -->
-    <nav class="tab-strip" :aria-label="t('projectPipeline.tabStripAria')" role="tablist">
-      <button
-        v-for="tab in TABS"
-        :key="tab.key"
-        class="tab-btn"
-        :class="{ 'tab-btn--active': activeTab === tab.key }"
-        role="tab"
-        :aria-selected="activeTab === tab.key"
-        :aria-controls="`tabpanel-${tab.key}`"
-        @click="setTab(tab.key)"
-      >{{ tab.label }}</button>
-    </nav>
-
     <!--
-      Source-of-truth bars (PaC + PR status) are pipeline-definition concerns,
-      so they belong to the 编排/canvas tab only — not above every tab body.
+      左侧是配置 tab;右侧常驻两个低频项目级开关(流水线即代码 / PR 状态检查)。
+      开关做成 tab 栏上的紧凑控件而非画布上方横条:几乎不动,不该常驻吃掉
+      画布/检视抽屉的纵向空间;解释文字收进悬浮 tooltip(悬停/聚焦可见)。
     -->
-    <template v-if="activeTab === 'canvas'">
-    <!-- ─── Pipeline-as-code (GitOps) toggle (FR-8-12) ─────────────────────── -->
-    <div class="pac-bar" :class="{ 'pac-bar--on': pacEnabled }">
-      <div class="pac-bar-text">
-        <span class="pac-bar-title">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M6 3v12"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/>
-          </svg>
-          {{ t('projectPipeline.pacTitle') }}
-          <code class="pac-bar-file">.pipewright.yml</code>
-        </span>
-        <span class="pac-bar-desc">
-          {{ pacEnabled ? t('projectPipeline.pacOnHint') : t('projectPipeline.pacOffHint') }}
-        </span>
-        <span v-if="pacError" class="pac-bar-err" role="alert">{{ pacError }}</span>
-      </div>
-      <div class="pac-bar-actions">
+    <div class="tab-strip">
+      <nav class="tab-strip-tabs" :aria-label="t('projectPipeline.tabStripAria')" role="tablist">
         <button
-          v-if="pacHasRepo"
-          type="button"
-          class="pac-preview-btn"
-          @click="pacPreviewOpen = true"
-        >
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/>
-          </svg>
-          {{ t('projectPipeline.pacPreviewBtn') }}
-        </button>
-        <button
-          type="button"
-          class="pac-switch"
-        :class="{ 'pac-switch--on': pacEnabled }"
-        role="switch"
-        :aria-checked="pacEnabled"
-        :aria-label="t('projectPipeline.pacTitle')"
-        :disabled="pacToggling || !project"
-          @click="togglePac(!pacEnabled)"
-        >
-          <span class="pac-switch-knob" aria-hidden="true"/>
-        </button>
-      </div>
-    </div>
+          v-for="tab in TABS"
+          :id="`tab-${tab.key}`"
+          :key="tab.key"
+          class="tab-btn"
+          :class="{ 'tab-btn--active': activeTab === tab.key }"
+          role="tab"
+          :aria-selected="activeTab === tab.key"
+          :aria-controls="`tabpanel-${tab.key}`"
+          @click="setTab(tab.key)"
+        >{{ tab.label }}</button>
+      </nav>
 
-    <!-- ─── PR status checks (commit status writeback · Story 8-9 / FR-8-9) ── -->
-    <div class="pac-bar" :class="{ 'pac-bar--on': prStatusEnabled }">
-      <div class="pac-bar-text">
-        <span class="pac-bar-title">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="9"/>
-          </svg>
-          {{ t('projectPipeline.prStatusTitle') }}
-        </span>
-        <span class="pac-bar-desc">
-          {{ prStatusEnabled ? t('projectPipeline.prStatusOnHint') : t('projectPipeline.prStatusOffHint') }}
-        </span>
-        <span v-if="prStatusError" class="pac-bar-err" role="alert">{{ prStatusError }}</span>
+      <div class="tab-strip-tools">
+        <!-- ─── 流水线即代码(GitOps · FR-8-12)────────────────────────────── -->
+        <div class="strip-tool" :class="{ 'strip-tool--on': pacEnabled }">
+          <AppTooltip
+            :content="pacEnabled ? t('projectPipeline.pacOnHint') : t('projectPipeline.pacOffHint')"
+            placement="bottom"
+            :max-width="360"
+          >
+            <span class="strip-tool-body">
+              <span class="strip-tool-label">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M6 3v12"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/>
+                </svg>
+                {{ t('projectPipeline.pacTitle') }}
+                <code class="strip-tool-file">.pipewright.yml</code>
+              </span>
+              <button
+                v-if="pacHasRepo"
+                type="button"
+                class="pac-preview-btn"
+                @click="pacPreviewOpen = true"
+              >
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/>
+                </svg>
+                {{ t('projectPipeline.pacPreviewBtn') }}
+              </button>
+              <button
+                type="button"
+                class="pac-switch"
+                :class="{ 'pac-switch--on': pacEnabled }"
+                role="switch"
+                :aria-checked="pacEnabled"
+                :aria-label="t('projectPipeline.pacTitle')"
+                :disabled="pacToggling || !project"
+                @click="togglePac(!pacEnabled)"
+              >
+                <span class="pac-switch-knob" aria-hidden="true"/>
+              </button>
+            </span>
+          </AppTooltip>
+          <span v-if="pacError" class="strip-tool-err" role="alert">{{ pacError }}</span>
+        </div>
+
+        <!-- ─── PR 状态检查(提交状态回写 · Story 8-9 / FR-8-9)────────────── -->
+        <div class="strip-tool" :class="{ 'strip-tool--on': prStatusEnabled }">
+          <AppTooltip
+            :content="prStatusEnabled ? t('projectPipeline.prStatusOnHint') : t('projectPipeline.prStatusOffHint')"
+            placement="bottom"
+            :max-width="360"
+          >
+            <span class="strip-tool-body">
+              <span class="strip-tool-label">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="9"/>
+                </svg>
+                {{ t('projectPipeline.prStatusTitle') }}
+              </span>
+              <button
+                type="button"
+                class="pac-switch"
+                :class="{ 'pac-switch--on': prStatusEnabled }"
+                role="switch"
+                :aria-checked="prStatusEnabled"
+                :aria-label="t('projectPipeline.prStatusTitle')"
+                :disabled="prStatusToggling || !project"
+                @click="togglePrStatus(!prStatusEnabled)"
+              >
+                <span class="pac-switch-knob" aria-hidden="true"/>
+              </button>
+            </span>
+          </AppTooltip>
+          <span v-if="prStatusError" class="strip-tool-err" role="alert">{{ prStatusError }}</span>
+        </div>
       </div>
-      <button
-        type="button"
-        class="pac-switch"
-        :class="{ 'pac-switch--on': prStatusEnabled }"
-        role="switch"
-        :aria-checked="prStatusEnabled"
-        :aria-label="t('projectPipeline.prStatusTitle')"
-        :disabled="prStatusToggling || !project"
-        @click="togglePrStatus(!prStatusEnabled)"
-      >
-        <span class="pac-switch-knob" aria-hidden="true"/>
-      </button>
     </div>
-    </template>
 
     <!-- ─── Tab body: panels + optional validation side-drawer ─────────────── -->
     <!--
@@ -728,6 +741,17 @@ async function togglePrStatus(next: boolean): Promise<void> {
           />
         </div>
 
+        <!-- 构建配置(构建在哪执行:项目默认构建机 FR-8-14/8-19) -->
+        <div
+          v-show="activeTab === 'build'"
+          id="tabpanel-build"
+          class="tab-panel"
+          role="tabpanel"
+          aria-labelledby="tab-build"
+        >
+          <RunnerPanel :project-id="projectId" />
+        </div>
+
         <!-- 变量与缓存 -->
         <div
           v-show="activeTab === 'vars'"
@@ -771,6 +795,7 @@ async function togglePrStatus(next: boolean): Promise<void> {
           <EnvCredsTab
             :environments="editEnvs"
             :credentials="credentials"
+            :servers="servers"
             :disabled="saveSubmitting"
             @update="handleEnvsUpdate"
           />
@@ -1057,12 +1082,80 @@ async function togglePrStatus(next: boolean): Promise<void> {
 }
 
 /* ─── Tab strip ──────────────────────────────────────────────────────────── */
+/*
+ * 左侧 tab 导航(role=tablist)+ 右侧低频项目级开关(流水线即代码 / PR 状态检查)。
+ * 开关几乎不动,做成紧凑控件而非画布上方横条,把纵向空间还给画布/检视抽屉;
+ * 说明文字在悬浮 tooltip 里(strip-tool 上方的 AppTooltip)。
+ */
 .tab-strip {
   display: flex;
-  gap: 4px;
+  align-items: center;
+  flex-wrap: wrap; /* 窄屏时工具组换行,不挤压 tab */
+  gap: 0 18px;
   padding: 0 28px;
   border-bottom: 1px solid var(--color-border);
   flex: none;
+}
+
+.tab-strip-tabs {
+  display: flex;
+  gap: 4px;
+}
+
+.tab-strip-tools {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  margin-left: auto;
+  padding: 7px 0;
+}
+
+.strip-tool {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.strip-tool-body {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.strip-tool-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.8rem;
+  color: var(--color-dim);
+  white-space: nowrap;
+  cursor: default;
+}
+
+.strip-tool-label svg {
+  color: var(--color-faint);
+  flex: none;
+  transition: color var(--duration-fast);
+}
+
+/* 开启态:标题/图标点亮,与开关的 primary 呼应(替代原横条的整条染色) */
+.strip-tool--on .strip-tool-label { color: var(--color-text); }
+.strip-tool--on .strip-tool-label svg { color: var(--color-primary); }
+
+.strip-tool-file {
+  font-family: var(--font-mono, monospace);
+  font-size: 0.72rem;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--color-bg-soft, rgba(127,127,127,0.12));
+  color: var(--color-dim);
+}
+
+.strip-tool-err {
+  font-size: 0.76rem;
+  color: var(--color-danger, #e5484d);
+  white-space: nowrap;
 }
 
 .tab-btn {
@@ -1087,53 +1180,14 @@ async function togglePrStatus(next: boolean): Promise<void> {
   border-bottom-color: var(--color-primary);
 }
 
-/* ─── Pipeline-as-code (GitOps) toggle bar ───────────────────────────────── */
-.pac-bar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 10px 28px;
-  border-bottom: 1px solid var(--color-border);
-  background: var(--color-surface-2, var(--color-surface));
-  flex: none;
-}
-.pac-bar--on { background: color-mix(in oklab, var(--color-primary) 8%, transparent); }
-.pac-bar-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-.pac-bar-title {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  font-size: 0.86rem;
-  font-weight: 500;
-  color: var(--color-text);
-}
-.pac-bar-title svg { color: var(--color-primary); flex: none; }
-.pac-bar-file {
-  font-family: var(--font-mono, monospace);
-  font-size: 0.76rem;
-  padding: 1px 6px;
-  border-radius: 4px;
-  background: var(--color-bg-soft, rgba(127,127,127,0.12));
-  color: var(--color-dim);
-}
-.pac-bar-desc { font-size: 0.78rem; color: var(--color-faint); }
-.pac-bar-err { font-size: 0.78rem; color: var(--color-danger, #e5484d); }
-
-.pac-bar-actions {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  flex: none;
-}
-
+/* ─── 流水线即代码「预览仓库配置」小按钮(tab 栏内紧凑尺寸) ───────────────── */
 .pac-preview-btn {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  height: 30px;
-  padding: 0 12px;
-  font-size: 0.8rem;
+  gap: 5px;
+  height: 26px;
+  padding: 0 9px;
+  font-size: 0.74rem;
   font-weight: 500;
   font-family: var(--font-sans);
   color: var(--color-text);
@@ -1142,6 +1196,7 @@ async function togglePrStatus(next: boolean): Promise<void> {
   border-radius: var(--rounded);
   cursor: pointer;
   transition: border-color var(--duration-fast), background-color var(--duration-fast);
+  white-space: nowrap;
 }
 
 .pac-preview-btn:hover { border-color: var(--color-faint); }

@@ -6,6 +6,7 @@ export default {
 
   // ─── 标签页 ─────────────────────────────────────────────────────
   tabCanvas: '流水线编排',
+  tabBuild: '构建配置',
   tabVars: '变量与缓存',
   tabTriggers: '触发设置',
   tabEnvs: '环境与凭据',

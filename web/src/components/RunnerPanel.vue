@@ -12,6 +12,7 @@ import { getRunner, saveRunnerSelector } from '../api/runner'
 import { listServers, type Server } from '../api/servers'
 import { matchServers } from '../lib/selectorMatch'
 import { HttpError } from '../api/http'
+import LabelSelectorEditor from './pipeline/LabelSelectorEditor.vue'
 
 const props = defineProps<{ projectId: string }>()
 
@@ -118,15 +119,13 @@ watch(() => props.projectId, load)
         </select>
 
         <template v-if="mode === 'label'">
-          <label class="runner-field-label" for="runner-selector">{{ t('projectPanels.runner.selectorLabel') }}</label>
-          <input
-            id="runner-selector"
-            v-model="selectorText"
-            class="runner-input"
-            type="text"
-            :placeholder="t('projectPanels.runner.selectorPlaceholder')"
-            @input="saveSuccess = false"
-          >
+          <span class="runner-field-label">{{ t('projectPanels.runner.selectorLabel') }}</span>
+          <!-- 标签选值控件(与部署目标/阶段构建机同一组件):候选 = 机器实际标签 ∪ 登记处悬置标签 -->
+          <LabelSelectorEditor
+            :model-value="selectorText"
+            :servers="servers"
+            @update:model-value="(v: string) => { selectorText = v; saveSuccess = false }"
+          />
           <p class="runner-hint">
             {{ t('projectPanels.runner.selectorHint') }}
           </p>

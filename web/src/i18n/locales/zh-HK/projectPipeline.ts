@@ -6,6 +6,7 @@ export default {
 
   // ─── 標籤頁 ─────────────────────────────────────────────────────
   tabCanvas: '流水線編排',
+  tabBuild: '構建配置',
   tabVars: '變數與快取',
   tabTriggers: '觸發設定',
   tabEnvs: '環境與憑證',

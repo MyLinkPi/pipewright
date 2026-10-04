@@ -6,6 +6,7 @@ export default {
 
   // ─── tabs ───────────────────────────────────────────────────────
   tabCanvas: 'Pipeline Canvas',
+  tabBuild: 'Build',
   tabVars: 'Variables & Cache',
   tabTriggers: 'Trigger Settings',
   tabEnvs: 'Environments & Credentials',

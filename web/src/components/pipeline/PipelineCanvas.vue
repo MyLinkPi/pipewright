@@ -456,6 +456,7 @@ function handleDrawerUpdate(patch: Partial<PipelineJob>): void {
       :stage="selectedSettingsStage"
       :stage-index="selectedSettingsIndex"
       :stage-count="props.stages.length"
+      :servers="props.servers"
       @close="closeStageSettings"
       @update-name="(name) => updateStage(selectedSettingsStage!.id, { name })"
       @update-kind="(kind) => updateStage(selectedSettingsStage!.id, { kind })"

@@ -1,31 +1,44 @@
 <script setup lang="ts">
 /**
  * EnvCredsTab — 环境与凭据 tab (Story 2.4).
- * Environment list (name + target-server placeholder + env vars) + image-registry
+ * Environment list (name + target servers + env vars) + image-registry
  * binding (type + url + vault credential). Edits a local Environment[] copy and emits
  * `update`; the parent (ProjectPipeline) owns save.
  *
- * Target servers are placeholders until Story 4-1 (existence not validated yet).
+ * 目标服务器 = chips + 双下拉(机器 / 标签),不再手敲文本。存储格式与全系统选择器
+ * 语义对齐(internal/runner/selector.go):机器 = `server:<id>` 钉死形式,标签 = 裸标签项
+ * (`linux` / `arch=arm64`)。旧自由文本按 机器 id → 机器名 顺序自动迁移;识别不了的
+ * (机器已删/手滑)原样保留为警示 chip,可删。存在性服务端校验仍留 Story 4-1。
  * Secret env vars / registry credentials reference a vault credentialId — plaintext is
  * never entered, stored, or shown; only the server-computed mask appears.
  */
-import { computed, ref, watch } from 'vue'
+import { computed, ref, watch, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type {
   Environment,
   BuildVar,
   RegistryType,
 } from '../../api/pipelineSettings'
+import type { Server } from '../../api/servers'
+import { useLabels } from '../../api/labels'
 import { isSystemManagedType, type Credential } from '../../api/credentials'
 
 interface Props {
   environments: Environment[]
   credentials: Credential[]
+  /** 服务器池(目标机器与标签的候选来源)。 */
+  servers?: Server[]
   disabled?: boolean
 }
 const props = defineProps<Props>()
 
 const { t } = useI18n()
+
+// 标签登记处(悬置标签字典):「+ 标签」下拉候选 = 机器实际标签 ∪ 登记处。
+const { items: registryLabels, load: loadRegistryLabels } = useLabels()
+onMounted(() => {
+  void loadRegistryLabels()
+})
 
 // 系统托管类型(dns_token 等)由专属设置页管理,不作为流水线可引用的凭据选项,
 // 防止 DNS Secret 被误选进环境变量/镜像仓库配置。
@@ -47,19 +60,51 @@ interface EnvRow {
   _key: number
   id: string
   name: string
-  targetServersText: string
+  /** 目标项:机器 = `server:<id>`,标签 = 裸标签项;历史自由文本原样保留。 */
+  targetServers: string[]
   envVars: VarRow[]
   registryType: RegistryType | ''
   registryUrl: string
   registryCredentialId: string
 }
 
+/** 服务器 id → name 查找(迁移旧手填文本用)。 */
+const serverById = computed<Map<string, Server>>(() => {
+  const m = new Map<string, Server>()
+  for (const s of props.servers ?? []) m.set(s.id, s)
+  return m
+})
+
+/** 把一个存量条目规范化:裸机器 id / 机器名 → `server:<id>`;其余(标签项/未知)原样。 */
+function normalizeEntry(raw: string): string {
+  const v = raw.trim()
+  if (v === '' || v.startsWith('server:')) return v
+  if (serverById.value.has(v)) return `server:${v}`
+  for (const s of props.servers ?? []) {
+    if (s.name === v) return `server:${s.id}`
+  }
+  return v
+}
+
+/** 全部标签项(去重排序):机器实际标签 ∪ 登记处标签(悬置可先建后选)。 */
+const labelTerms = computed<string[]>(() => {
+  const set = new Set<string>()
+  for (const srv of props.servers ?? []) {
+    for (const part of (srv.labels || '').split(',')) {
+      const term = part.trim()
+      if (term) set.add(term)
+    }
+  }
+  for (const l of registryLabels.value) set.add(l.name)
+  return [...set].sort()
+})
+
 function toEnvRow(e: Environment): EnvRow {
   return {
     _key: keySeq++,
     id: e.id,
     name: e.name,
-    targetServersText: e.targetServerIds.join(', '),
+    targetServers: [...new Set((e.targetServerIds ?? []).map(normalizeEntry).filter(Boolean))],
     envVars: e.envVars.map((v) => ({ ...v, _key: keySeq++ })),
     registryType: e.imageRegistry.type,
     registryUrl: e.imageRegistry.url,
@@ -89,8 +134,7 @@ function compose(): Environment[] {
   return envs.value.map((e) => ({
     id: e.id,
     name: e.name,
-    targetServerIds: e.targetServersText
-      .split(',')
+    targetServerIds: e.targetServers
       .map((s) => s.trim())
       .filter(Boolean),
     envVars: e.envVars.map(({ _key, ...v }) => {
@@ -144,12 +188,59 @@ function addEnv(): void {
     _key: keySeq++,
     id: '',
     name: '',
-    targetServersText: '',
+    targetServers: [],
     envVars: [],
     registryType: '',
     registryUrl: '',
     registryCredentialId: '',
   })
+}
+
+// ─── 目标服务器 chips + 下拉添加 ────────────────────────────────────────────────
+
+const addServerPick = ref('')
+const addLabelPick = ref('')
+
+/** chip 展示:机器 → 名(host);标签 → 术语;其余 → 原文(警示:旧格式/机器已删)。 */
+function chipFor(entry: string): { kind: 'machine' | 'label' | 'unknown'; text: string; title: string } {
+  const id = entry.startsWith('server:') ? entry.slice('server:'.length) : ''
+  const srv = id !== '' ? serverById.value.get(id) : undefined
+  if (srv) return { kind: 'machine', text: `${srv.name}(${srv.host})`, title: srv.host }
+  if (id !== '') {
+    return { kind: 'unknown', text: entry, title: t('pipelinePanels.envUnknownEntry') }
+  }
+  if (labelTerms.value.includes(entry)) {
+    return { kind: 'label', text: entry, title: t('pipelinePanels.envLabelTermTitle') }
+  }
+  return { kind: 'unknown', text: entry, title: t('pipelinePanels.envUnknownEntry') }
+}
+
+/** 尚未添加的机器(下拉候选)。 */
+function addableServers(env: EnvRow): Server[] {
+  const taken = new Set(env.targetServers)
+  return (props.servers ?? []).filter((s) => !taken.has(`server:${s.id}`))
+}
+
+/** 尚未添加的标签项(下拉候选)。 */
+function addableLabelTerms(env: EnvRow): string[] {
+  const taken = new Set(env.targetServers)
+  return labelTerms.value.filter((term) => !taken.has(term))
+}
+
+function addServer(env: EnvRow, id: string): void {
+  addServerPick.value = ''
+  if (id === '' || env.targetServers.includes(`server:${id}`)) return
+  env.targetServers.push(`server:${id}`)
+}
+
+function addLabelTerm(env: EnvRow, term: string): void {
+  addLabelPick.value = ''
+  if (term === '' || env.targetServers.includes(term)) return
+  env.targetServers.push(term)
+}
+
+function removeTarget(env: EnvRow, idx: number): void {
+  env.targetServers.splice(idx, 1)
 }
 
 function removeEnv(envKey: number): void {
@@ -232,20 +323,60 @@ function maskFor(row: VarRow): string {
         </header>
 
         <div class="env-body">
-          <!-- target servers -->
+          <!-- target servers:chips + 机器/标签双下拉(不手敲文本) -->
           <div class="eg">
             <div class="eg-l">
               {{ t('pipelinePanels.envTargetServers') }}
               <span class="badge-soon">{{ t('pipelinePanels.envValidateBadge') }}</span>
             </div>
-            <input
-              v-model="env.targetServersText"
-              class="eg-input mono"
-              type="text"
-              :placeholder="t('pipelinePanels.envTargetServersPlaceholder')"
-              :aria-label="t('pipelinePanels.envTargetServersAria')"
-              :disabled="disabled"
-            >
+            <div class="tserver-editor" :aria-label="t('pipelinePanels.envTargetServersAria')">
+              <div v-if="env.targetServers.length" class="tserver-chips">
+                <span
+                  v-for="(entry, ti) in env.targetServers"
+                  :key="ti"
+                  class="tserver-chip"
+                  :class="`tserver-chip--${chipFor(entry).kind}`"
+                  :title="chipFor(entry).title"
+                >
+                  <svg v-if="chipFor(entry).kind === 'machine'" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="3" y="4" width="18" height="6" rx="1.6"/><rect x="3" y="14" width="18" height="6" rx="1.6"/><path d="M7 7h.01M7 17h.01"/></svg>
+                  <svg v-else-if="chipFor(entry).kind === 'label'" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M20.6 13.4 13.4 20.6a2 2 0 0 1-2.8 0L3 13V3h10l7.6 7.6a2 2 0 0 1 0 2.8z"/><circle cx="7.5" cy="7.5" r="1"/></svg>
+                  <span class="tserver-chip-text">{{ chipFor(entry).text }}</span>
+                  <button
+                    type="button"
+                    class="tserver-chip-del"
+                    :aria-label="t('pipelinePanels.envDelTargetAria', { entry: chipFor(entry).text })"
+                    :disabled="disabled"
+                    @click="removeTarget(env, ti)"
+                  >
+                    <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>
+                  </button>
+                </span>
+              </div>
+              <div class="tserver-addrow">
+                <select
+                  v-model="addServerPick"
+                  class="ev-sel tserver-add-sel"
+                  :aria-label="t('pipelinePanels.envAddMachineAria')"
+                  :disabled="disabled || (props.servers ?? []).length === 0"
+                  @change="addServer(env, addServerPick)"
+                >
+                  <option value="" disabled>{{ t('pipelinePanels.envAddMachine') }}</option>
+                  <option v-for="s in addableServers(env)" :key="s.id" :value="s.id">{{ s.name }}({{ s.host }})</option>
+                </select>
+                <select
+                  v-model="addLabelPick"
+                  class="ev-sel tserver-add-sel"
+                  :aria-label="t('pipelinePanels.envAddLabelAria')"
+                  :disabled="disabled || labelTerms.length === 0"
+                  @change="addLabelTerm(env, addLabelPick)"
+                >
+                  <option value="" disabled>{{ t('pipelinePanels.envAddLabel') }}</option>
+                  <option v-for="term in addableLabelTerms(env)" :key="term" :value="term">{{ term }}</option>
+                </select>
+              </div>
+              <p v-if="(props.servers ?? []).length === 0 && registryLabels.length === 0" class="tserver-hint">{{ t('pipelinePanels.envNoServersHint') }}</p>
+              <p v-else-if="labelTerms.length === 0" class="tserver-hint">{{ t('pipelinePanels.envNoLabelsHint') }}</p>
+            </div>
           </div>
 
           <!-- env vars -->
@@ -435,7 +566,7 @@ function maskFor(row: VarRow): string {
   padding: 2px 8px;
 }
 
-.eg-input, .ev-k, .ev-v, .ev-sel {
+.ev-k, .ev-v, .ev-sel {
   height: 32px;
   border: 1px solid var(--color-border-strong);
   background: var(--color-inset);
@@ -445,9 +576,77 @@ function maskFor(row: VarRow): string {
   font-size: 0.79rem;
   width: 100%;
 }
-.eg-input:focus, .ev-k:focus, .ev-v:focus, .ev-sel:focus { outline: none; border-color: var(--color-primary); box-shadow: 0 0 0 3px var(--color-primary-soft); }
+.ev-k:focus, .ev-v:focus, .ev-sel:focus { outline: none; border-color: var(--color-primary); box-shadow: 0 0 0 3px var(--color-primary-soft); }
 .ev-sel { font-family: var(--font-sans); cursor: pointer; }
 .mono { font-family: var(--font-mono); }
+
+/* ─── 目标服务器 chips + 添加下拉 ─────────────────────────────────────────── */
+.tserver-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.tserver-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.tserver-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 100%;
+  height: 26px;
+  padding: 0 4px 0 9px;
+  border-radius: 100px;
+  font-size: 0.74rem;
+  border: 1px solid var(--color-border);
+  background: var(--color-inset);
+  color: var(--color-text);
+}
+.tserver-chip svg { flex: none; color: var(--color-faint); }
+.tserver-chip--machine { border-color: var(--color-primary-line, var(--color-border)); background: var(--color-primary-soft); }
+.tserver-chip--machine svg { color: var(--color-primary); }
+.tserver-chip--label { border-style: dashed; }
+.tserver-chip--label svg { color: var(--color-cyan); }
+.tserver-chip--unknown { border-color: var(--color-amber-line); background: var(--color-amber-soft); color: var(--color-amber); }
+.tserver-chip-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+}
+.tserver-chip-del {
+  width: 18px;
+  height: 18px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  border: none;
+  background: transparent;
+  border-radius: 100px;
+  color: var(--color-faint);
+  cursor: pointer;
+}
+.tserver-chip-del:hover:not(:disabled) { color: var(--color-red); background: var(--color-card); }
+.tserver-addrow {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.tserver-add-sel {
+  width: auto;
+  min-width: 200px;
+  flex: 0 1 auto;
+  color: var(--color-dim);
+}
+.tserver-hint {
+  margin: 0;
+  font-size: 0.72rem;
+  color: var(--color-faint);
+  line-height: 1.45;
+}
 
 .evar-list { display: flex; flex-direction: column; gap: 8px; }
 .evar-row { display: grid; grid-template-columns: 160px 1fr 124px 30px; gap: 8px; align-items: center; }

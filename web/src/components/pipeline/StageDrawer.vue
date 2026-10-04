@@ -12,8 +12,11 @@ import { computed, ref, watch, nextTick } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { localizeName } from '../../lib/pipelineLabels'
 import type { PipelineStage, StageWhen, PipelinePostStep, PipelineServiceSpec, StageKind } from '../../api/pipeline'
+import type { Server } from '../../api/servers'
+import { matchServers } from '../../lib/selectorMatch'
 import StagePostEditor from './StagePostEditor.vue'
 import StageServicesEditor from './StageServicesEditor.vue'
+import LabelSelectorEditor from './LabelSelectorEditor.vue'
 import {
   WHEN_EVENTS,
   WHEN_EVENT_LABELS,
@@ -34,6 +37,8 @@ const props = defineProps<{
   stageIndex: number
   /** 阶段总数(默认名提示用;可选)。 */
   stageCount?: number
+  /** 服务器池(构建机选择的候选与标签来源;构建机预览用)。 */
+  servers?: Server[]
 }>()
 
 const emit = defineEmits<{
@@ -107,9 +112,58 @@ function toggleEvent(ev: WhenEvent): void {
 function commitMatrix(text: string): void {
   emit('update-matrix', parseMatrix(text))
 }
-function commitRunner(text: string): void {
-  const v = text.trim()
+
+// ─── 构建机选择(RUNNER · FR-8-19)────────────────────────────────────────────
+// 节点级配置:本阶段的构建跑在哪台机器上。stage.runner 非空时覆盖项目默认选择器,
+// 空 = 跟随项目默认(流水线页「构建配置」tab)。标签模式 = AND 匹配构建机池,
+// 钉死模式 = server:<id> 单机;调度侧按「优先级 → 本流水线亲和 → 负载」选机。
+
+type RunnerMode = 'inherit' | 'label' | 'pinned'
+
+const runnerMode = ref<RunnerMode>('inherit')
+const runnerSelectorText = ref('')
+const runnerServerId = ref('')
+
+// 切换阶段(抽屉复用)或 stage.runner 外部回写时,从 props 重解本地三态。
+watch(
+  () => [props.stage.id, props.stage.runner] as const,
+  () => {
+    const v = (props.stage.runner ?? '').trim()
+    if (v === '') {
+      runnerMode.value = 'inherit'
+      runnerSelectorText.value = ''
+      runnerServerId.value = ''
+    } else if (v.startsWith('server:')) {
+      runnerMode.value = 'pinned'
+      runnerServerId.value = v.slice('server:'.length)
+      runnerSelectorText.value = ''
+    } else {
+      runnerMode.value = 'label'
+      runnerServerId.value = ''
+      runnerSelectorText.value = v
+    }
+  },
+  { immediate: true },
+)
+
+/** 标签模式选择器的实时命中预览(与服务端 runner 域同一语义;权威裁决在服务端)。 */
+const runnerMatched = computed(() => matchServers(runnerSelectorText.value, props.servers ?? []))
+
+function commitRunnerMode(mode: RunnerMode): void {
+  if (mode === 'inherit') emit('update-runner', undefined)
+  else if (mode === 'label') emit('update-runner', runnerSelectorText.value.trim() || undefined)
+  else emit('update-runner', runnerServerId.value !== '' ? `server:${runnerServerId.value}` : undefined)
+}
+
+function commitRunnerSelector(value: string): void {
+  runnerSelectorText.value = value
+  const v = value.trim()
   emit('update-runner', v === '' ? undefined : v)
+}
+
+function commitRunnerServer(id: string): void {
+  runnerServerId.value = id
+  if (id !== '') emit('update-runner', `server:${id}`)
 }
 </script>
 
@@ -192,19 +246,58 @@ function commitRunner(text: string): void {
       <p class="drawer-hint">{{ t('pipelineCanvas.whenHint') }}</p>
     </div>
 
-    <!-- 构建机选择器覆盖(RUNNER · FR-8-19) -->
+    <!-- 构建机选择(RUNNER · FR-8-19):本节点的构建跑在哪台机器上 -->
     <div class="drawer-section">
       <div class="drawer-section-label">{{ t('pipelineCanvas.runnerSectionLabel') }}</div>
       <div class="drawer-field">
+        <div class="drawer-field-label">{{ t('pipelineCanvas.runnerModeLabel') }}</div>
+        <select
+          v-model="runnerMode"
+          class="drawer-select"
+          :aria-label="t('pipelineCanvas.runnerModeLabel')"
+          @change="commitRunnerMode(runnerMode)"
+        >
+          <option value="inherit">{{ t('pipelineCanvas.runnerModeInherit') }}</option>
+          <option value="label">{{ t('pipelineCanvas.runnerModePool') }}</option>
+          <option value="pinned">{{ t('pipelineCanvas.runnerModePinned') }}</option>
+        </select>
+      </div>
+      <div v-if="runnerMode === 'label'" class="drawer-field">
         <div class="drawer-field-label">{{ t('pipelineCanvas.runnerLabel') }}</div>
-        <input
-          class="drawer-input"
-          type="text"
-          :value="stage.runner ?? ''"
-          :placeholder="t('pipelineCanvas.runnerPlaceholder')"
-          :aria-label="t('pipelineCanvas.runnerAria')"
-          @change="commitRunner(($event.target as HTMLInputElement).value)"
+        <LabelSelectorEditor
+          :model-value="runnerSelectorText"
+          :servers="props.servers"
+          @update:model-value="commitRunnerSelector"
         />
+        <p
+          v-if="runnerSelectorText.trim()"
+          class="drawer-hint"
+          :class="{ 'runner-match--none': runnerMatched.length === 0 }"
+          role="status"
+        >
+          {{ runnerMatched.length === 0
+            ? t('pipelineCanvas.runnerNoMatch')
+            : t('pipelineCanvas.runnerMatchCount', { n: runnerMatched.length }) }}
+          <span v-if="runnerMatched.length"> — {{ runnerMatched.map((s) => s.name).join(', ') }}</span>
+        </p>
+      </div>
+      <div v-else-if="runnerMode === 'pinned'" class="drawer-field">
+        <div class="drawer-field-label">{{ t('pipelineCanvas.runnerServerLabel') }}</div>
+        <select
+          class="drawer-select"
+          :value="runnerServerId"
+          :aria-label="t('pipelineCanvas.runnerServerLabel')"
+          @change="commitRunnerServer(($event.target as HTMLSelectElement).value)"
+        >
+          <option value="" disabled>{{ t('pipelineCanvas.runnerServerPick') }}</option>
+          <option v-for="s in props.servers ?? []" :key="s.id" :value="s.id">
+            {{ s.name }}({{ s.host }})
+          </option>
+          <option
+            v-if="runnerServerId !== '' && !(props.servers ?? []).some((s) => s.id === runnerServerId)"
+            :value="runnerServerId"
+          >{{ runnerServerId }}</option>
+        </select>
       </div>
       <p class="drawer-hint">{{ t('pipelineCanvas.runnerHint') }}</p>
     </div>
@@ -320,6 +413,7 @@ function commitRunner(text: string): void {
 .drawer-event input { width: 15px; height: 15px; accent-color: var(--color-primary); cursor: pointer; }
 
 .drawer-warn { margin: 7px 0 0; font-size: 0.72rem; color: var(--color-danger, #dc2626); line-height: 1.45; }
+.runner-match--none { color: var(--color-danger, #dc2626); }
 
 .drawer-hint { margin: 9px 0 0; font-size: 0.72rem; color: var(--color-faint); line-height: 1.5; }
 .drawer-hint code,
