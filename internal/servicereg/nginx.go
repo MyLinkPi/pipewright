@@ -28,17 +28,31 @@ const (
 	nginxImageEnv = "PIPEWRIGHT_NGINX_IMAGE"
 	// streamModulePath 是官方 nginx 镜像的 stream 动态模块路径(TCP 反代需要)。
 	streamModulePath = "/usr/lib/nginx/modules/ngx_stream_module.so"
+	// nginxBootstrapLabel/Ver 是容器自举脚本版本标签:入口脚本在 docker run 时烧进容器,
+	// 平台升级改了脚本不会作用于既有容器,故打版本标签,ensureNginx 见版本不符即重建容器
+	// (配置/证书在具名卷,重建不丢;重建后同轮 apply 会覆盖真实配置)。
+	nginxBootstrapLabel = "pipewright.bootstrap"
+	nginxBootstrapVer   = "2"
 )
 
 // nginxImageRefRe 防注入:镜像引用字符集(首字符字母数字,防经 env 注入 docker flag)。
 var nginxImageRefRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/:@-]*$`)
 
+// nginxBootstrapMinConf 是最小合法自举配置(80 兜底 404):return 必须落在 server 上下文。
+const nginxBootstrapMinConf = "events { worker_connections 64; }\nhttp { server { return 404; } }\n"
+
+// nginxBootstrapPoisonConf 是旧版曾写入卷里的坏自举配置(return 不允许出现在 http 上下文,
+// nginx 拒绝启动 → 容器崩溃循环),字节精确保留,仅用于自举时识别并修复存量脏卷。
+const nginxBootstrapPoisonConf = "events { worker_connections 64; }\nhttp { return 404; }\n"
+
 // nginxBootstrapScript 是容器启动命令(sh -c 的**固定常量**脚本,无任何用户输入,非注入面):
-// 首次启动卷里还没有配置时,自举一份最小合法配置(80 返回 404),避免容器因缺配置崩溃循环;
-// 随后 exec 成真正主进程 nginx(-c 指定托管配置,daemon off 前台运行;docker stop 信号直达)。
-const nginxBootstrapScript = `[ -f /etc/pipewright/nginx.conf ] || { mkdir -p /etc/pipewright/certs; ` +
-	`printf "events { worker_connections 64; }\nhttp { return 404; }\n" > /etc/pipewright/nginx.conf; }; ` +
-	`exec nginx -c /etc/pipewright/nginx.conf -g "daemon off;"`
+// 卷内配置缺失,或恰好是旧版坏自举配置时,重写最小合法配置;其余情况一律不动托管配置
+// (宿主重启时上游容器可能晚起,nginx -t 瞬时解析失败也不能清掉真实配置);随后 exec 成
+// 真正主进程 nginx(-c 指定托管配置,daemon off 前台运行;docker stop 信号直达)。
+const nginxBootstrapScript = `conf=/etc/pipewright/nginx.conf; mkdir -p /etc/pipewright/certs; ` +
+	`if [ ! -f "$conf" ] || printf '` + nginxBootstrapPoisonConf + `' | cmp -s - "$conf"; then ` +
+	`printf '` + nginxBootstrapMinConf + `' > "$conf"; fi; ` +
+	`exec nginx -c "$conf" -g "daemon off;"`
 
 // nginxConfRenderInput 是 renderNginxConf 的已就绪输入(领域对象直接进,纯函数无 I/O)。
 
@@ -286,8 +300,9 @@ func nginxVarName(name string) string {
 
 // ensureNginx 幂等地在网关主机上保证 nginx 容器就绪:建共享网络 + 起容器(若缺)。
 // tcpPorts 是全部 enabled tcp 服务声明的监听端口:必须由容器对宿主发布(-p)才可达;Docker 端口
-// 创建时固定,故既有容器缺端口(或 80/443 宿主端口设置变更)时,带「既有映射 ∪ 期望映射」重建
-// (配置/证书在具名卷,重建不丢;重建后 applyCaddyfile→applyNginxConf 同轮覆盖为真实配置)。
+// 创建时固定,故既有容器缺端口(或 80/443 宿主端口设置变更)时,带「既有映射 ∪ 期望映射」重建。
+// 另:容器自举脚本烧死在 docker run 参数里,版本标签与当前不符(旧版创建)时也重建,让新
+// 自举脚本生效(配置/证书在具名卷,重建不丢;重建后 applyCaddyfile→applyNginxConf 同轮覆盖)。
 func ensureNginx(ctx context.Context, tg target.Service, st *Settings, tcpPorts []int) error {
 	// 1) 共享网络(存在即跳过)。
 	netInsp, err := tg.Exec(ctx, st.ServerID, []string{"docker", "network", "inspect", st.Network})
@@ -316,7 +331,11 @@ func ensureNginx(ctx context.Context, tg target.Service, st *Settings, tcpPorts 
 		if perr != nil {
 			return perr
 		}
-		if portsMatch(cur, want) {
+		ver, verr := inspectBootstrapVer(ctx, tg, st)
+		if verr != nil {
+			return verr
+		}
+		if portsMatch(cur, want) && ver == nginxBootstrapVer {
 			return nil
 		}
 		if rmRes, rmErr := tg.Exec(ctx, st.ServerID, []string{"docker", "rm", "-f", st.ContainerName}); rmErr != nil {
@@ -357,6 +376,7 @@ func runNginxContainer(ctx context.Context, tg target.Service, st *Settings, por
 		"--restart", "unless-stopped",
 		"--network", st.Network,
 		"--add-host", "host.docker.internal:host-gateway",
+		"--label", nginxBootstrapLabel + "=" + nginxBootstrapVer,
 	}
 	// 端口按容器端口升序发布(渲染确定,便于诊断)。
 	cports := make([]int, 0, len(ports))
@@ -408,6 +428,21 @@ func inspectPortMap(ctx context.Context, tg target.Service, st *Settings) (map[i
 		}
 	}
 	return m, nil
+}
+
+// inspectBootstrapVer 读网关容器的自举脚本版本标签(旧版创建的容器无标签 → "")。
+func inspectBootstrapVer(ctx context.Context, tg target.Service, st *Settings) (string, error) {
+	res, err := tg.Exec(ctx, st.ServerID, []string{
+		"docker", "inspect", st.ContainerName,
+		"--format", `{{index .Config.Labels "` + nginxBootstrapLabel + `"}}`,
+	})
+	if err != nil {
+		return "", err
+	}
+	if res.ExitCode != 0 {
+		return "", fmt.Errorf("%w:%s", ErrNginxStart, strings.TrimSpace(firstNonEmpty(res.Stderr, res.Stdout)))
+	}
+	return strings.TrimSpace(res.Stdout), nil
 }
 
 // portsMatch 报告既有映射是否与期望完全一致(容器端口集合 + 各自宿主端口)。
