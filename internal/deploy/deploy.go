@@ -370,9 +370,10 @@ func (s *service) DeployForStage(ctx context.Context, runID string, selector str
 		}
 	}
 
-	// 健康门控:从节点 config 构造(healthUrl / healthCommand 二选一,重试/间隔可选)。
+	// 健康门控:从节点 config 构造(容器内命令 / 端口+路径 / 存量完整 URL / 主机命令,重试/间隔可选)。
 	// 此前流水线节点硬编码传 nil → 健康检查与失败回滚从未生效。
-	hc := healthCheckFromCfg(cfg)
+	// 容器名与部署本体同一解析(config 显式名 → 产物名 → app),docker exec 探测才打得中。
+	hc := healthCheckFromCfg(cfg, imageContainerName(*artifact, cfg))
 
 	results := s.deployRolling(ctx, servers, *artifact, cfg, hc)
 
@@ -537,13 +538,21 @@ func pickStageArtifact(arts []run.Artifact, prefer string) *run.Artifact {
 }
 
 // healthCheckFromCfg 从部署节点 config 构造健康门控(未配 → nil,行为与旧 nil 一致):
-//   - healthCommand 非空 → command 型(经 sh -c 执行,多行/参数由用户把握);
-//   - 否则 healthUrl 非空 → http 型;
+//   - healthCommand 非空 → command 型,在部署目标服务器 shell 执行(存量/进阶写法);
+//   - 否则 healthExec 非空 → command 型,**在部署的容器内执行**:`docker exec <容器名> sh -c <命令>`
+//     (不发布端口的后台容器 —— 队列/迁移/内部服务 —— 用它在容器里探活,如 pg_isready);
+//     containerName 与部署本体同一解析(显式名 → 产物名 → app),保证 exec 打得中;
+//   - 否则 healthPort 非空 → http 型,URL = http://127.0.0.1:<port><path>(探测经 SSH 在
+//     部署目标服务器本机执行,127.0.0.1 即该服务器自己 —— 用户只需给端口和路径,不写完整 URL);
+//   - 否则 healthUrl 非空(存量完整 URL 写法)→ http 型原样使用;
 //   - healthRetries / healthIntervalSeconds / healthTimeoutSeconds 可选(缺省走 HealthCheck 默认)。
-func healthCheckFromCfg(cfg map[string]string) *HealthCheck {
+func healthCheckFromCfg(cfg map[string]string, containerName string) *HealthCheck {
 	cmdStr := strings.TrimSpace(cfg["healthCommand"])
+	execStr := strings.TrimSpace(cfg["healthExec"])
 	url := strings.TrimSpace(cfg["healthUrl"])
-	if cmdStr == "" && url == "" {
+	port := strings.TrimSpace(cfg["healthPort"])
+	path := strings.TrimSpace(cfg["healthPath"])
+	if cmdStr == "" && execStr == "" && url == "" && port == "" {
 		return nil
 	}
 	hc := &HealthCheck{
@@ -555,6 +564,17 @@ func healthCheckFromCfg(cfg map[string]string) *HealthCheck {
 		hc.Type = HealthCheckCommand
 		hc.Command = []string{"sh", "-c", cmdStr}
 		return hc
+	}
+	if execStr != "" {
+		hc.Type = HealthCheckCommand
+		hc.Command = []string{"docker", "exec", containerName, "sh", "-c", execStr}
+		return hc
+	}
+	if url == "" && port != "" {
+		if path != "" && !strings.HasPrefix(path, "/") {
+			path = "/" + path
+		}
+		url = "http://127.0.0.1:" + port + path
 	}
 	hc.Type = HealthCheckHTTP
 	hc.URL = url

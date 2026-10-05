@@ -83,16 +83,43 @@ func TestDeployForStageRejectsOldAutoWhenSourceMissing(t *testing.T) {
 // ---- 健康门控构造 --------------------------------------------------------------
 
 func TestHealthCheckFromCfg(t *testing.T) {
-	if hc := healthCheckFromCfg(map[string]string{}); hc != nil {
+	if hc := healthCheckFromCfg(map[string]string{}, "app"); hc != nil {
 		t.Fatalf("未配置应返回 nil, got %+v", hc)
 	}
-	hc := healthCheckFromCfg(map[string]string{"healthUrl": "http://x/healthz", "healthRetries": "5"})
+	hc := healthCheckFromCfg(map[string]string{"healthUrl": "http://x/healthz", "healthRetries": "5"}, "app")
 	if hc == nil || hc.Type != HealthCheckHTTP || hc.URL != "http://x/healthz" || hc.Retries != 5 {
 		t.Fatalf("http 型构造错误: %+v", hc)
 	}
-	hc = healthCheckFromCfg(map[string]string{"healthCommand": "curl -fsS localhost:8080/healthz"})
+	hc = healthCheckFromCfg(map[string]string{"healthCommand": "curl -fsS localhost:8080/healthz"}, "app")
 	if hc == nil || hc.Type != HealthCheckCommand || len(hc.Command) != 3 {
 		t.Fatalf("command 型构造错误: %+v", hc)
+	}
+}
+
+func TestHealthCheckFromCfgExec(t *testing.T) {
+	// 容器内命令探测(docker exec):不发布端口的后台容器用它在容器里探活。
+	hc := healthCheckFromCfg(map[string]string{"healthExec": "pg_isready -U postgres"}, "my-app")
+	if hc == nil || hc.Type != HealthCheckCommand {
+		t.Fatalf("exec 型构造错误: %+v", hc)
+	}
+	want := []string{"docker", "exec", "my-app", "sh", "-c", "pg_isready -U postgres"}
+	if len(hc.Command) != len(want) {
+		t.Fatalf("exec 命令应 array 化逐元素,得 %v", hc.Command)
+	}
+	for i := range want {
+		if hc.Command[i] != want[i] {
+			t.Fatalf("exec 命令[%d] = %q, want %q(完整: %v)", i, hc.Command[i], want[i], hc.Command)
+		}
+	}
+	// 主机命令优先级高于容器内命令(存量语义不让位)。
+	hc = healthCheckFromCfg(map[string]string{"healthCommand": "echo host", "healthExec": "echo in"}, "app")
+	if hc.Type != HealthCheckCommand || hc.Command[0] != "sh" {
+		t.Fatalf("healthCommand 应优先于 healthExec,得 %+v", hc.Command)
+	}
+	// 容器内命令优先于端口探测。
+	hc = healthCheckFromCfg(map[string]string{"healthExec": "true", "healthPort": "8080"}, "app")
+	if hc.Type != HealthCheckCommand || hc.Command[0] != "docker" {
+		t.Fatalf("healthExec 应优先于 healthPort,得 %+v", hc.Command)
 	}
 }
 
@@ -389,5 +416,32 @@ func TestNormalizeStrategyLegacyValues(t *testing.T) {
 		if got := NormalizeStrategy(in); got != StrategyRolling {
 			t.Fatalf("NormalizeStrategy(%q) = %q, want rolling(统一滚动)", in, got)
 		}
+	}
+}
+
+func TestHealthCheckFromCfgPortPath(t *testing.T) {
+	// 端口 + 路径 → 127.0.0.1 完整 URL(探测在部署目标服务器本机执行)。
+	hc := healthCheckFromCfg(map[string]string{"healthPort": "8080", "healthPath": "healthz"}, "app")
+	if hc == nil || hc.Type != HealthCheckHTTP || hc.URL != "http://127.0.0.1:8080/healthz" {
+		t.Fatalf("port+path 应拼成 127.0.0.1 URL,得 %+v", hc)
+	}
+	// 只给端口 → 根路径。
+	hc = healthCheckFromCfg(map[string]string{"healthPort": "8080"}, "app")
+	if hc == nil || hc.URL != "http://127.0.0.1:8080" {
+		t.Fatalf("只给端口应得根 URL,得 %+v", hc)
+	}
+	// 路径已带斜杠 → 不重复加。
+	hc = healthCheckFromCfg(map[string]string{"healthPort": "8080", "healthPath": "/a/b"}, "app")
+	if hc.URL != "http://127.0.0.1:8080/a/b" {
+		t.Fatalf("路径斜杠应保留,得 %s", hc.URL)
+	}
+	// 存量完整 URL 优先于端口写法。
+	hc = healthCheckFromCfg(map[string]string{"healthUrl": "http://localhost:9000/x", "healthPort": "8080"}, "app")
+	if hc.URL != "http://localhost:9000/x" {
+		t.Fatalf("存量 healthUrl 应优先,得 %s", hc.URL)
+	}
+	// 全空 → 不做门控。
+	if hc := healthCheckFromCfg(map[string]string{"healthPath": "/x"}, "app"); hc != nil {
+		t.Fatalf("只给路径不算配置门控,得 %+v", hc)
 	}
 }
