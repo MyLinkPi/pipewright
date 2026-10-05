@@ -133,7 +133,8 @@ func (s *service) SwapInstance(ctx context.Context, serviceID, oldContainer, new
 
 // ResolveDeployInstances 供 deploy 实例轮转反查:按「实例容器名精确匹配」或「服务名匹配」
 // (服务 abc 的实例惯例命名 abc-1/abc-2…)找到所属服务,返回其全部 attached 实例(生效端口)。
-// 约束:serverID 必须是网关主机;仅 http+container 服务参与(其余形态返回空,deploy 回退旧滚动)。
+// 约束:serverID 必须是任一台网关主机(多网关机器均可联动);仅 http+container 服务参与
+// (其余形态返回空,deploy 回退旧滚动)。
 func (s *service) ResolveDeployInstances(ctx context.Context, serverID, container string) ([]DeployInstance, error) {
 	container = strings.TrimSpace(container)
 	if container == "" {
@@ -143,7 +144,7 @@ func (s *service) ResolveDeployInstances(ctx context.Context, serverID, containe
 	if err != nil {
 		return nil, err
 	}
-	if st.ServerID == "" || st.ServerID != serverID {
+	if !st.HasServer(serverID) {
 		return []DeployInstance{}, nil
 	}
 	services, err := s.store.listServices(ctx)

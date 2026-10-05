@@ -22,6 +22,7 @@ export default {
     stopped: "停止",
     unconfigured: "未設定",
     host: "ゲートウェイホスト",
+    hostHint: "複数選択可:各ホストに同一構成のゲートウェイをデプロイします。振り分けは DNS 解析で決まります",
     noHost: "未指定(設定のみ・デプロイなし)",
     port: "ポート",
     image: "イメージ",

@@ -624,6 +624,30 @@ func (s *service) syncGateway(ctx context.Context, id string) string {
 	return ""
 }
 
+// SyncAllToSink 把证书库中全部已有证书重推给网关(覆盖判定与单张同步一致:SAN 精确等于
+// 基域,或其泛域名 SAN 覆盖基域)。证书推送本只发生在证书事件(签发/导入/续期/刷新)时,
+// 后建的网关基域拿不到既有证书 —— 由 servicereg 新建基域后经钩子调用本方法反向拉一次,
+// 免手动刷新。未覆盖任何基域的证书为 no-op;凭据保险库/网关未接入时直接返回(无可下发)。
+func (s *service) SyncAllToSink(ctx context.Context) error {
+	if s.vault == nil || s.sink == nil {
+		return nil
+	}
+	certs, err := s.store.list(ctx)
+	if err != nil {
+		return err
+	}
+	var failed []string
+	for i := range certs {
+		if hint := s.syncGateway(ctx, certs[i].ID); hint != "" {
+			failed = append(failed, hint)
+		}
+	}
+	if len(failed) > 0 {
+		return errors.New(strings.Join(failed, "; "))
+	}
+	return nil
+}
+
 // syncPlatformHTTPS 把证书联动下发给平台 HTTPS(宿主 nginx):未接入/未引用该证书时 no-op。
 // 返回非空串 = 人话提示(重下发失败)。
 func (s *service) syncPlatformHTTPS(ctx context.Context, id string) string {

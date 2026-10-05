@@ -72,6 +72,12 @@ const domains = ref<Domain[]>([])
 const services = ref<RegisteredService[]>([])
 const servers = ref<Server[]>([])
 
+// 全部网关主机容器都在运行(含至少一台)才亮绿;逐台明细在主机行展示。
+const gwAllRunning = computed(() => {
+  const list = gateway.value?.servers ?? []
+  return list.length > 0 && list.every((s) => s.running)
+})
+
 async function load(): Promise<void> {
   loading.value = domains.value.length === 0
   loadError.value = ''
@@ -99,12 +105,34 @@ onMounted(load)
 // ─── 网关设置 ─────────────────────────────────────────────────────────────────
 const busy = ref(false)
 const editing = ref(false)
-const form = ref({ serverId: '', httpPort: 80, httpsPort: 443, image: '', network: '', containerName: '', volumeName: '' })
+// 多机网关:每台部署完全一致的网关;serverIds 为选中的全部网关主机。
+const form = ref({ serverIds: [] as string[], httpPort: 80, httpsPort: 443, image: '', network: '', containerName: '', volumeName: '' })
+
+function toggleHost(id: string): void {
+  form.value.serverIds = form.value.serverIds.includes(id)
+    ? form.value.serverIds.filter((v) => v !== id)
+    : [...form.value.serverIds, id]
+}
+
+// serverNameById 把错误文案里的主机引用 id 替换为可读名(逐台错误展示用)。
+const serverNameById = computed<Record<string, string>>(() => {
+  const m: Record<string, string> = {}
+  for (const sv of servers.value) m[sv.id] = sv.name
+  for (const s of gateway.value?.servers ?? []) if (s.serverName) m[s.serverId] = s.serverName
+  return m
+})
+function fmtApplyErr(e: string): string {
+  let out = e
+  for (const [id, name] of Object.entries(serverNameById.value)) {
+    if (out.includes(id)) out = out.split(id).join(name)
+  }
+  return out
+}
 
 function startEdit(): void {
   if (!settings.value) return
   form.value = {
-    serverId: settings.value.serverId,
+    serverIds: [...(settings.value.serverIds ?? [])],
     httpPort: settings.value.httpPort,
     httpsPort: settings.value.httpsPort,
     image: settings.value.image,
@@ -119,7 +147,7 @@ async function saveSettings(): Promise<void> {
   busy.value = true
   try {
     settings.value = await updateServiceRegSettings({
-      serverId: form.value.serverId,
+      serverIds: form.value.serverIds,
       httpPort: Number(form.value.httpPort),
       httpsPort: Number(form.value.httpsPort),
       image: form.value.image,
@@ -419,11 +447,11 @@ function effectivePort(inst: ServiceInstance, s: RegisteredService): number {
             v-if="gateway"
             class="sreg__pill"
             :class="{
-              'sreg__pill--ok': gateway.running,
-              'sreg__pill--warn': gateway.configured && !gateway.running,
+              'sreg__pill--ok': gwAllRunning,
+              'sreg__pill--warn': gateway.configured && !gwAllRunning,
             }"
           >
-            {{ gateway.running ? t('serviceReg.gateway.running') : gateway.configured ? t('serviceReg.gateway.stopped') : t('serviceReg.gateway.unconfigured') }}
+            {{ gwAllRunning ? t('serviceReg.gateway.running') : gateway.configured ? t('serviceReg.gateway.stopped') : t('serviceReg.gateway.unconfigured') }}
           </span>
         </div>
 
@@ -431,8 +459,13 @@ function effectivePort(inst: ServiceInstance, s: RegisteredService): number {
           <div class="sreg__kv-row">
             <span class="sreg__kv-k"><NIcon :size="13"><ServerIcon /></NIcon>&nbsp;{{ t('serviceReg.gateway.host') }}</span>
             <span class="sreg__kv-v">
-              {{ gateway?.serverName || '—' }}
-              <template v-if="gateway?.ports"> · {{ gateway.ports }}</template>
+              <template v-if="gateway?.servers?.length">
+                <span v-for="s in gateway.servers" :key="s.serverId" class="sreg__host">
+                  <span class="sreg__dot" :class="s.running ? 'sreg__dot--ok' : 'sreg__dot--bad'" />
+                  {{ s.serverName || s.serverId }}<template v-if="s.ports">&nbsp;· {{ s.ports }}</template>
+                </span>
+              </template>
+              <template v-else>—</template>
             </span>
           </div>
           <div class="sreg__kv-row">
@@ -442,7 +475,7 @@ function effectivePort(inst: ServiceInstance, s: RegisteredService): number {
           <div class="sreg__kv-row">
             <span class="sreg__kv-k">{{ t('serviceReg.gateway.lastApply') }}</span>
             <span class="sreg__kv-v" :class="{ 'sreg__err': !!settings.lastApplyError }">
-              <template v-if="settings.lastApplyError">{{ settings.lastApplyError }}</template>
+              <template v-if="settings.lastApplyError">{{ fmtApplyErr(settings.lastApplyError) }}</template>
               <template v-else-if="settings.lastApplyAt">{{ new Date(settings.lastApplyAt).toLocaleString() }}</template>
               <template v-else>—</template>
             </span>
@@ -452,11 +485,21 @@ function effectivePort(inst: ServiceInstance, s: RegisteredService): number {
         <form v-else class="sreg__form" @submit.prevent="saveSettings">
           <label class="field">
             <span class="field__lbl">{{ t('serviceReg.gateway.host') }}</span>
-            <AppSelect
-              :model-value="form.serverId"
-              :options="[{ value: '', label: t('serviceReg.gateway.noHost') }, ...servers.map((sv) => ({ value: sv.id, label: sv.name }))]"
-              @update:model-value="(v: string) => (form.serverId = v)"
-            />
+            <span class="sreg__hint">{{ t('serviceReg.gateway.hostHint') }}</span>
+            <ul v-if="servers.length" class="sreg__hosts">
+              <li v-for="sv in servers" :key="sv.id">
+                <label class="sreg__host-item">
+                  <input
+                    type="checkbox"
+                    :checked="form.serverIds.includes(sv.id)"
+                    @change="toggleHost(sv.id)"
+                  />
+                  <span class="sreg__host-name">{{ sv.name }}</span>
+                  <span class="sreg__host-meta">{{ sv.host }}:{{ sv.port }}</span>
+                </label>
+              </li>
+            </ul>
+            <span v-else class="sreg__host-meta">{{ t('serviceReg.gateway.noHost') }}</span>
           </label>
           <div class="sreg__grid2">
             <label class="field">
@@ -495,10 +538,10 @@ function effectivePort(inst: ServiceInstance, s: RegisteredService): number {
         <div class="sreg__card-actions">
           <template v-if="!editing">
             <AppButton variant="default" @click="startEdit">{{ t('serviceReg.btn.edit') }}</AppButton>
-            <AppButton variant="primary" :loading="busy" :disabled="!settings.serverId" @click="doDeployGateway">
+            <AppButton variant="primary" :loading="busy" :disabled="!settings.serverIds?.length" @click="doDeployGateway">
               {{ t('serviceReg.gateway.deploy') }}
             </AppButton>
-            <AppButton v-if="gateway?.installed" variant="danger" :loading="busy" @click="doRemoveGateway">
+            <AppButton v-if="gateway?.servers?.some((s) => s.installed)" variant="danger" :loading="busy" @click="doRemoveGateway">
               {{ t('serviceReg.removeGateway') }}
             </AppButton>
           </template>
@@ -872,6 +915,53 @@ function effectivePort(inst: ServiceInstance, s: RegisteredService): number {
 }
 .sreg__kv-v {
   font-size: 13px;
+}
+/* 多机网关:逐台状态行(状态点 + 机器名 + 发布端口)。 */
+.sreg__host {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-right: 12px;
+  white-space: nowrap;
+}
+.sreg__dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex: none;
+}
+.sreg__dot--ok {
+  background: #22a06b;
+}
+.sreg__dot--bad {
+  background: #b3261e;
+}
+/* 编辑态:网关主机复选列表(可多选)。 */
+.sreg__hosts {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.sreg__host-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.sreg__host-name {
+  font-weight: 500;
+}
+.sreg__host-meta {
+  font-size: 12px;
+  opacity: 0.6;
+}
+.sreg__hint {
+  font-size: 12px;
+  opacity: 0.6;
 }
 .sreg__form {
   display: flex;

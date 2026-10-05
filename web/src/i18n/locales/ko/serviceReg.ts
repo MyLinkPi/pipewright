@@ -22,6 +22,7 @@ export default {
     stopped: "Stopped",
     unconfigured: "Not configured",
     host: "Gateway host",
+    hostHint: "여러 대 선택 가능:각 호스트에 동일한 게이트웨이가 배포되며, 트래픽 분배는 DNS에서 결정됩니다",
     noHost: "Not set (config-only, no deploy)",
     port: "port",
     image: "Image",

@@ -303,14 +303,14 @@ func nginxVarName(name string) string {
 // 创建时固定,故既有容器缺端口(或 80/443 宿主端口设置变更)时,带「既有映射 ∪ 期望映射」重建。
 // 另:容器自举脚本烧死在 docker run 参数里,版本标签与当前不符(旧版创建)时也重建,让新
 // 自举脚本生效(配置/证书在具名卷,重建不丢;重建后 applyCaddyfile→applyNginxConf 同轮覆盖)。
-func ensureNginx(ctx context.Context, tg target.Service, st *Settings, tcpPorts []int) error {
+func ensureNginx(ctx context.Context, tg target.Service, st *Settings, serverID string, tcpPorts []int) error {
 	// 1) 共享网络(存在即跳过)。
-	netInsp, err := tg.Exec(ctx, st.ServerID, []string{"docker", "network", "inspect", st.Network})
+	netInsp, err := tg.Exec(ctx, serverID, []string{"docker", "network", "inspect", st.Network})
 	if err != nil {
 		return err
 	}
 	if netInsp.ExitCode != 0 {
-		res, cerr := tg.Exec(ctx, st.ServerID, []string{"docker", "network", "create", st.Network})
+		res, cerr := tg.Exec(ctx, serverID, []string{"docker", "network", "create", st.Network})
 		if cerr != nil {
 			return cerr
 		}
@@ -322,35 +322,35 @@ func ensureNginx(ctx context.Context, tg target.Service, st *Settings, tcpPorts 
 	want := desiredPortMap(st, tcpPorts)
 
 	// 2) 容器存在:校验端口映射是否与期望一致(容器端口 + 宿主端口都要对);不一致 → 重建。
-	insp, err := tg.Exec(ctx, st.ServerID, []string{"docker", "inspect", st.ContainerName})
+	insp, err := tg.Exec(ctx, serverID, []string{"docker", "inspect", st.ContainerName})
 	if err != nil {
 		return err
 	}
 	if insp.ExitCode == 0 {
-		cur, perr := inspectPortMap(ctx, tg, st)
+		cur, perr := inspectPortMap(ctx, tg, st, serverID)
 		if perr != nil {
 			return perr
 		}
-		ver, verr := inspectBootstrapVer(ctx, tg, st)
+		ver, verr := inspectBootstrapVer(ctx, tg, st, serverID)
 		if verr != nil {
 			return verr
 		}
 		if portsMatch(cur, want) && ver == nginxBootstrapVer {
 			return nil
 		}
-		if rmRes, rmErr := tg.Exec(ctx, st.ServerID, []string{"docker", "rm", "-f", st.ContainerName}); rmErr != nil {
+		if rmRes, rmErr := tg.Exec(ctx, serverID, []string{"docker", "rm", "-f", st.ContainerName}); rmErr != nil {
 			return rmErr
 		} else if rmRes.ExitCode != 0 {
 			return fmt.Errorf("%w:%s", ErrNginxStart, strings.TrimSpace(firstNonEmpty(rmRes.Stderr, rmRes.Stdout)))
 		}
-		return runNginxContainer(ctx, tg, st, mergePortMap(cur, want))
+		return runNginxContainer(ctx, tg, st, serverID, mergePortMap(cur, want))
 	}
 
 	// 3) 全新部署:先探测宿主端口占用(避免与既有进程抢端口),冲突不强起。
-	if busy, detail := hostPortsBusy(ctx, tg, st); busy {
+	if busy, detail := hostPortsBusy(ctx, tg, st, serverID); busy {
 		return fmt.Errorf("%w%s", ErrPortConflict, detail)
 	}
-	return runNginxContainer(ctx, tg, st, want)
+	return runNginxContainer(ctx, tg, st, serverID, want)
 }
 
 // desiredPortMap 返回期望的「容器端口 → 宿主端口」映射:80→HTTPPort、443→HTTPSPort + TCP p→p。
@@ -364,10 +364,10 @@ func desiredPortMap(st *Settings, tcpPorts []int) map[int]int {
 
 // runNginxContainer 用给定「容器端口 → 宿主端口」映射起网关容器(array 不拼 shell)。
 // --add-host host.docker.internal:host-gateway 让 address 类上游能反代到宿主机服务。
-func runNginxContainer(ctx context.Context, tg target.Service, st *Settings, ports map[int]int) error {
+func runNginxContainer(ctx context.Context, tg target.Service, st *Settings, serverID string, ports map[int]int) error {
 	image := nginxImageRef(st)
 	// best-effort pull(离线/已缓存场景交由 docker run 决断)。
-	if _, perr := tg.Exec(ctx, st.ServerID, []string{"docker", "pull", image}); perr != nil {
+	if _, perr := tg.Exec(ctx, serverID, []string{"docker", "pull", image}); perr != nil {
 		return perr
 	}
 	runCmd := []string{
@@ -392,7 +392,7 @@ func runNginxContainer(ctx context.Context, tg target.Service, st *Settings, por
 		image,
 		"sh", "-c", nginxBootstrapScript,
 	)
-	res, err := tg.Exec(ctx, st.ServerID, runCmd)
+	res, err := tg.Exec(ctx, serverID, runCmd)
 	if err != nil {
 		return err
 	}
@@ -403,8 +403,8 @@ func runNginxContainer(ctx context.Context, tg target.Service, st *Settings, por
 }
 
 // inspectPortMap 读网关容器已发布的「容器端口 → 宿主端口」(仅 tcp)。无容器/解析失败 → 空 map。
-func inspectPortMap(ctx context.Context, tg target.Service, st *Settings) (map[int]int, error) {
-	res, err := tg.Exec(ctx, st.ServerID, []string{
+func inspectPortMap(ctx context.Context, tg target.Service, st *Settings, serverID string) (map[int]int, error) {
+	res, err := tg.Exec(ctx, serverID, []string{
 		"docker", "inspect", st.ContainerName,
 		"--format", "{{range $p, $c := .HostConfig.PortBindings}}{{$p}}={{(index $c 0).HostPort}} {{end}}",
 	})
@@ -431,8 +431,8 @@ func inspectPortMap(ctx context.Context, tg target.Service, st *Settings) (map[i
 }
 
 // inspectBootstrapVer 读网关容器的自举脚本版本标签(旧版创建的容器无标签 → "")。
-func inspectBootstrapVer(ctx context.Context, tg target.Service, st *Settings) (string, error) {
-	res, err := tg.Exec(ctx, st.ServerID, []string{
+func inspectBootstrapVer(ctx context.Context, tg target.Service, st *Settings, serverID string) (string, error) {
+	res, err := tg.Exec(ctx, serverID, []string{
 		"docker", "inspect", st.ContainerName,
 		"--format", `{{index .Config.Labels "` + nginxBootstrapLabel + `"}}`,
 	})
@@ -480,9 +480,9 @@ type nginxContainerStatus struct {
 
 // inspectNginx 经 docker inspect 探测网关容器:不存在 → Installed:false(非错误);
 // 仅 target 层传输错误才返回 error。端口摘要 best-effort(失败给 "")。
-func inspectNginx(ctx context.Context, tg target.Service, st *Settings) (*nginxContainerStatus, error) {
+func inspectNginx(ctx context.Context, tg target.Service, st *Settings, serverID string) (*nginxContainerStatus, error) {
 	out := &nginxContainerStatus{}
-	insp, err := tg.Exec(ctx, st.ServerID, []string{
+	insp, err := tg.Exec(ctx, serverID, []string{
 		"docker", "inspect", st.ContainerName,
 		"--format", "{{.State.Running}}|{{.Config.Image}}",
 	})
@@ -498,13 +498,13 @@ func inspectNginx(ctx context.Context, tg target.Service, st *Settings) (*nginxC
 		out.Running = strings.EqualFold(strings.TrimSpace(line[:i]), "true")
 		out.Image = strings.TrimSpace(line[i+1:])
 	}
-	out.Ports = inspectNginxPorts(ctx, tg, st)
+	out.Ports = inspectNginxPorts(ctx, tg, st, serverID)
 	return out, nil
 }
 
 // inspectNginxPorts best-effort 读网关容器发布端口摘要(如 "80,443,3306")。
-func inspectNginxPorts(ctx context.Context, tg target.Service, st *Settings) string {
-	res, err := tg.Exec(ctx, st.ServerID, []string{
+func inspectNginxPorts(ctx context.Context, tg target.Service, st *Settings, serverID string) string {
+	res, err := tg.Exec(ctx, serverID, []string{
 		"docker", "inspect", st.ContainerName,
 		"--format", "{{json .NetworkSettings.Ports}}",
 	})
@@ -544,19 +544,19 @@ func inspectNginxPorts(ctx context.Context, tg target.Service, st *Settings) str
 }
 
 // removeNginx 停止并删除网关容器(保留具名卷:证书/配置持久)。幂等:容器已不存在视为成功。
-func removeNginx(ctx context.Context, tg target.Service, st *Settings) error {
-	if _, err := tg.Exec(ctx, st.ServerID, []string{"docker", "stop", st.ContainerName}); err != nil {
+func removeNginx(ctx context.Context, tg target.Service, st *Settings, serverID string) error {
+	if _, err := tg.Exec(ctx, serverID, []string{"docker", "stop", st.ContainerName}); err != nil {
 		return err
 	}
-	if _, err := tg.Exec(ctx, st.ServerID, []string{"docker", "rm", st.ContainerName}); err != nil {
+	if _, err := tg.Exec(ctx, serverID, []string{"docker", "rm", st.ContainerName}); err != nil {
 		return err
 	}
 	return nil
 }
 
 // hostPortsBusy 探测网关主机 HTTP/HTTPS 宿主端口是否被占用。best-effort:探测失败不阻断。
-func hostPortsBusy(ctx context.Context, tg target.Service, st *Settings) (bool, string) {
-	res, err := tg.Exec(ctx, st.ServerID, []string{"ss", "-ltn"})
+func hostPortsBusy(ctx context.Context, tg target.Service, st *Settings, serverID string) (bool, string) {
+	res, err := tg.Exec(ctx, serverID, []string{"ss", "-ltn"})
 	if err != nil || res == nil || res.ExitCode != 0 {
 		return false, ""
 	}
@@ -573,8 +573,8 @@ func hostPortsBusy(ctx context.Context, tg target.Service, st *Settings) (bool, 
 }
 
 // connectUpstream 把上游容器接入共享网络,使 nginx 能按容器名解析它(幂等容忍 already)。
-func connectUpstream(ctx context.Context, tg target.Service, st *Settings, container string) error {
-	res, err := tg.Exec(ctx, st.ServerID, []string{"docker", "network", "connect", st.Network, container})
+func connectUpstream(ctx context.Context, tg target.Service, st *Settings, serverID, container string) error {
+	res, err := tg.Exec(ctx, serverID, []string{"docker", "network", "connect", st.Network, container})
 	if err != nil {
 		return err
 	}
@@ -592,7 +592,7 @@ func connectUpstream(ctx context.Context, tg target.Service, st *Settings, conta
 
 // deployCerts 把全部基域证书解密并落进网关容器卷(每轮 apply 全量重放,幂等;文件小代价可忽略)。
 // 私钥落 0600。解密仅在进程内进行,绝不日志/回库。
-func (s *service) deployCerts(ctx context.Context, st *Settings, domains []Domain) error {
+func (s *service) deployCerts(ctx context.Context, st *Settings, serverID string, domains []Domain) error {
 	for _, d := range domains {
 		if !d.HasCert {
 			continue
@@ -610,28 +610,28 @@ func (s *service) deployCerts(ctx context.Context, st *Settings, domains []Domai
 			return uerr
 		}
 		dir := nginxCertsDir + "/" + d.BaseDomain
-		if _, err := s.tg.Exec(ctx, st.ServerID, []string{"docker", "exec", st.ContainerName, "mkdir", "-p", dir}); err != nil {
+		if _, err := s.tg.Exec(ctx, serverID, []string{"docker", "exec", st.ContainerName, "mkdir", "-p", dir}); err != nil {
 			return err
 		}
-		if err := s.cpToContainer(ctx, st, certPEM, d.BaseDomain+"-fullchain.pem", dir+"/fullchain.pem"); err != nil {
+		if err := s.cpToContainer(ctx, st, serverID, certPEM, d.BaseDomain+"-fullchain.pem", dir+"/fullchain.pem"); err != nil {
 			return err
 		}
-		if err := s.cpToContainer(ctx, st, keyPEM, d.BaseDomain+"-privkey.pem", dir+"/privkey.pem"); err != nil {
+		if err := s.cpToContainer(ctx, st, serverID, keyPEM, d.BaseDomain+"-privkey.pem", dir+"/privkey.pem"); err != nil {
 			return err
 		}
 		// 私钥收紧权限(best-effort)。
-		_, _ = s.tg.Exec(ctx, st.ServerID, []string{"docker", "exec", st.ContainerName, "chmod", "600", dir+"/privkey.pem"})
+		_, _ = s.tg.Exec(ctx, serverID, []string{"docker", "exec", st.ContainerName, "chmod", "600", dir+"/privkey.pem"})
 	}
 	return nil
 }
 
 // cpToContainer:Upload 到宿主临时路径 → docker cp 进容器目标路径(与 applyCaddyfile 同手法)。
-func (s *service) cpToContainer(ctx context.Context, st *Settings, content []byte, tmpName, containerPath string) error {
+func (s *service) cpToContainer(ctx context.Context, st *Settings, serverID string, content []byte, tmpName, containerPath string) error {
 	tmp := certTmpPrefix + tmpName
-	if err := s.tg.Upload(ctx, st.ServerID, bytes.NewReader(content), tmp); err != nil {
+	if err := s.tg.Upload(ctx, serverID, bytes.NewReader(content), tmp); err != nil {
 		return err
 	}
-	res, err := s.tg.Exec(ctx, st.ServerID, []string{"docker", "cp", tmp, st.ContainerName + ":" + containerPath})
+	res, err := s.tg.Exec(ctx, serverID, []string{"docker", "cp", tmp, st.ContainerName + ":" + containerPath})
 	if err != nil {
 		return err
 	}
@@ -648,12 +648,12 @@ func (s *service) cpToContainer(ctx context.Context, st *Settings, content []byt
 //	Upload 到宿主 /tmp → docker cp 进容器 /tmp(容器看不到宿主文件系统,必须先拷入)
 //	→ docker exec nginx -t -c /tmp/...(先测后换,校验失败不动活配置)
 //	→ docker cp 到卷内正式路径 → docker exec nginx -s reload(master 优雅热加载)。
-func applyNginxConf(ctx context.Context, tg target.Service, st *Settings, conf string) error {
-	if err := tg.Upload(ctx, st.ServerID, bytes.NewReader([]byte(conf)), nginxConfTmpPath); err != nil {
+func applyNginxConf(ctx context.Context, tg target.Service, st *Settings, serverID, conf string) error {
+	if err := tg.Upload(ctx, serverID, bytes.NewReader([]byte(conf)), nginxConfTmpPath); err != nil {
 		return err
 	}
 	// 1) 拷进容器临时路径(校验只能对容器内文件做)。
-	cpIn, err := tg.Exec(ctx, st.ServerID, []string{"docker", "cp", nginxConfTmpPath, st.ContainerName + ":" + nginxConfTmpPath})
+	cpIn, err := tg.Exec(ctx, serverID, []string{"docker", "cp", nginxConfTmpPath, st.ContainerName + ":" + nginxConfTmpPath})
 	if err != nil {
 		return err
 	}
@@ -661,7 +661,7 @@ func applyNginxConf(ctx context.Context, tg target.Service, st *Settings, conf s
 		return fmt.Errorf("%w:%s", ErrApply, strings.TrimSpace(firstNonEmpty(cpIn.Stderr, cpIn.Stdout)))
 	}
 	// 2) 校验临时文件(失败即回,活配置未动)。
-	val, err := tg.Exec(ctx, st.ServerID, []string{"docker", "exec", st.ContainerName, "nginx", "-t", "-c", nginxConfTmpPath})
+	val, err := tg.Exec(ctx, serverID, []string{"docker", "exec", st.ContainerName, "nginx", "-t", "-c", nginxConfTmpPath})
 	if err != nil {
 		return err
 	}
@@ -669,14 +669,14 @@ func applyNginxConf(ctx context.Context, tg target.Service, st *Settings, conf s
 		return fmt.Errorf("%w: nginx -t 校验失败:%s", ErrApply, strings.TrimSpace(firstNonEmpty(val.Stderr, val.Stdout)))
 	}
 	// 2) 覆盖正式配置并热加载。
-	res, err := tg.Exec(ctx, st.ServerID, []string{"docker", "cp", nginxConfTmpPath, st.ContainerName + ":" + nginxConfPath})
+	res, err := tg.Exec(ctx, serverID, []string{"docker", "cp", nginxConfTmpPath, st.ContainerName + ":" + nginxConfPath})
 	if err != nil {
 		return err
 	}
 	if res.ExitCode != 0 {
 		return fmt.Errorf("%w:%s", ErrApply, strings.TrimSpace(firstNonEmpty(res.Stderr, res.Stdout)))
 	}
-	rl, err := tg.Exec(ctx, st.ServerID, []string{"docker", "exec", st.ContainerName, "nginx", "-s", "reload"})
+	rl, err := tg.Exec(ctx, serverID, []string{"docker", "exec", st.ContainerName, "nginx", "-s", "reload"})
 	if err != nil {
 		return err
 	}

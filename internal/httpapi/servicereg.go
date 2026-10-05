@@ -32,16 +32,19 @@ const (
 )
 
 // serviceRegSettingsDTO 是网关设置对外响应体(冻结契约)。
+// 多机:serverIds 为全部网关主机;serverId = 第一台(兼容保留)。
 type serviceRegSettingsDTO struct {
-	ServerID       string `json:"serverId"`
-	HTTPPort       int    `json:"httpPort"`
-	HTTPSPort      int    `json:"httpsPort"`
-	Image          string `json:"image"`
-	Network        string `json:"network"`
-	ContainerName  string `json:"containerName"`
-	VolumeName     string `json:"volumeName"`
-	LastApplyAt    string `json:"lastApplyAt"`
-	LastApplyError string `json:"lastApplyError"`
+	ServerID        string            `json:"serverId"`
+	ServerIDs       []string          `json:"serverIds"`
+	HTTPPort        int               `json:"httpPort"`
+	HTTPSPort       int               `json:"httpsPort"`
+	Image           string            `json:"image"`
+	Network         string            `json:"network"`
+	ContainerName   string            `json:"containerName"`
+	VolumeName      string            `json:"volumeName"`
+	LastApplyAt     string            `json:"lastApplyAt"`
+	LastApplyError  string            `json:"lastApplyError"`
+	LastApplyErrors map[string]string `json:"lastApplyErrors"`
 }
 
 func toServiceRegSettingsDTO(st *servicereg.Settings) serviceRegSettingsDTO {
@@ -49,11 +52,16 @@ func toServiceRegSettingsDTO(st *servicereg.Settings) serviceRegSettingsDTO {
 	if !st.LastApplyAt.IsZero() {
 		last = st.LastApplyAt.UTC().Format(time.RFC3339)
 	}
+	ids := st.ServerIDs
+	if ids == nil {
+		ids = []string{}
+	}
 	return serviceRegSettingsDTO{
-		ServerID: st.ServerID, HTTPPort: st.HTTPPort, HTTPSPort: st.HTTPSPort,
+		ServerID: st.PrimaryServerID(), ServerIDs: ids,
+		HTTPPort: st.HTTPPort, HTTPSPort: st.HTTPSPort,
 		Image: st.Image, Network: st.Network, ContainerName: st.ContainerName,
-			VolumeName: st.VolumeName,
-		LastApplyAt: last, LastApplyError: st.LastApplyError,
+		VolumeName:      st.VolumeName,
+		LastApplyAt:     last, LastApplyError: st.LastApplyError, LastApplyErrors: st.LastApplyErrors,
 	}
 }
 
@@ -110,16 +118,29 @@ func toServiceRegServiceDTO(s servicereg.ServiceWithDomain) serviceRegServiceDTO
 }
 
 // serviceRegGatewayDTO 是网关容器状态对外响应体。
+// 多机:servers 为逐台状态;旧平铺字段填第一台(兼容保留)。
 type serviceRegGatewayDTO struct {
-	Configured     bool   `json:"configured"`
-	ServerID       string `json:"serverId"`
-	ServerName     string `json:"serverName"`
-	Installed      bool   `json:"installed"`
-	Running        bool   `json:"running"`
-	Image          string `json:"image"`
-	Ports          string `json:"ports"`
-	LastApplyAt    string `json:"lastApplyAt"`
-	LastApplyError string `json:"lastApplyError"`
+	Configured      bool                           `json:"configured"`
+	ServerID        string                         `json:"serverId"`
+	ServerName      string                         `json:"serverName"`
+	Installed       bool                           `json:"installed"`
+	Running         bool                           `json:"running"`
+	Image           string                         `json:"image"`
+	Ports           string                         `json:"ports"`
+	Servers         []serviceRegGatewayServerDTO   `json:"servers"`
+	LastApplyAt     string                         `json:"lastApplyAt"`
+	LastApplyError  string                         `json:"lastApplyError"`
+	LastApplyErrors map[string]string              `json:"lastApplyErrors"`
+}
+
+// serviceRegGatewayServerDTO 是单台网关主机的容器状态。
+type serviceRegGatewayServerDTO struct {
+	ServerID   string `json:"serverId"`
+	ServerName string `json:"serverName"`
+	Installed  bool   `json:"installed"`
+	Running    bool   `json:"running"`
+	Image      string `json:"image"`
+	Ports      string `json:"ports"`
 }
 
 func toServiceRegGatewayDTO(g *servicereg.GatewayStatus) serviceRegGatewayDTO {
@@ -127,10 +148,18 @@ func toServiceRegGatewayDTO(g *servicereg.GatewayStatus) serviceRegGatewayDTO {
 	if !g.LastApplyAt.IsZero() {
 		last = g.LastApplyAt.UTC().Format(time.RFC3339)
 	}
+	servers := make([]serviceRegGatewayServerDTO, 0, len(g.Servers))
+	for _, s := range g.Servers {
+		servers = append(servers, serviceRegGatewayServerDTO{
+			ServerID: s.ServerID, ServerName: s.ServerName,
+			Installed: s.Installed, Running: s.Running, Image: s.Image, Ports: s.Ports,
+		})
+	}
 	return serviceRegGatewayDTO{
 		Configured: g.Configured, ServerID: g.ServerID, ServerName: g.ServerName,
 		Installed: g.Installed, Running: g.Running, Image: g.Image, Ports: g.Ports,
-		LastApplyAt: last, LastApplyError: g.LastApplyError,
+		Servers:        servers,
+		LastApplyAt:    last, LastApplyError: g.LastApplyError, LastApplyErrors: g.LastApplyErrors,
 	}
 }
 
@@ -214,13 +243,14 @@ func makeGetServiceRegSettingsHandler(svc servicereg.Service) http.HandlerFunc {
 // makeUpdateServiceRegSettingsHandler 返回 PUT /api/servicereg/settings。
 func makeUpdateServiceRegSettingsHandler(svc servicereg.Service, aud audit.Recorder) http.HandlerFunc {
 	type request struct {
-		ServerID      *string `json:"serverId"`
-		HTTPPort      *int    `json:"httpPort"`
-		HTTPSPort     *int    `json:"httpsPort"`
-		Image         *string `json:"image"`
-		Network       *string `json:"network"`
-		ContainerName *string `json:"containerName"`
-		VolumeName    *string `json:"volumeName"`
+		ServerIDs     *[]string `json:"serverIds"`
+		ServerID      *string   `json:"serverId"` // 旧版单机入口,兼容保留
+		HTTPPort      *int      `json:"httpPort"`
+		HTTPSPort     *int      `json:"httpsPort"`
+		Image         *string   `json:"image"`
+		Network       *string   `json:"network"`
+		ContainerName *string   `json:"containerName"`
+		VolumeName    *string   `json:"volumeName"`
 	}
 	return func(w http.ResponseWriter, r *http.Request) {
 		if svc == nil {
@@ -234,7 +264,7 @@ func makeUpdateServiceRegSettingsHandler(svc servicereg.Service, aud audit.Recor
 			return
 		}
 		st, err := svc.UpdateSettings(r.Context(), servicereg.SettingsUpdate{
-			ServerID: req.ServerID, HTTPPort: req.HTTPPort, HTTPSPort: req.HTTPSPort,
+			ServerIDs: req.ServerIDs, ServerID: req.ServerID, HTTPPort: req.HTTPPort, HTTPSPort: req.HTTPSPort,
 			Image: req.Image, Network: req.Network, ContainerName: req.ContainerName, VolumeName: req.VolumeName,
 		})
 		if err != nil {
@@ -243,7 +273,7 @@ func makeUpdateServiceRegSettingsHandler(svc servicereg.Service, aud audit.Recor
 		}
 		recordAudit(r.Context(), aud, audit.Entry{
 			Actor: auditActor, Action: auditActionSRSettingsUpdate, TargetType: auditTargetServiceReg,
-			TargetID: "settings", Detail: map[string]any{"ok": true, "serverId": st.ServerID}, IP: clientIP(r),
+			TargetID: "settings", Detail: map[string]any{"ok": true, "serverIds": st.ServerIDs}, IP: clientIP(r),
 		})
 		writeJSON(w, http.StatusOK, toServiceRegSettingsDTO(st))
 	}

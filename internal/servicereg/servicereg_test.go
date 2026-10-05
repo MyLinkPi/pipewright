@@ -9,6 +9,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"errors"
 	"io"
 	"math/big"
 	"strings"
@@ -352,17 +353,26 @@ func (fakeSealer) OpenSecret(s []byte) ([]byte, error) {
 
 // fakeTarget 是捕获 Exec/Upload 的假 target.Service(照抄 proxy 包测试桩)。
 type fakeTarget struct {
-	execCalls   [][]string
-	uploads     []string
-	uploadBytes map[string]string
-	resultFor   func(cmd []string) *target.ExecResult
+	execCalls       [][]string
+	execServers     []string // 与 execCalls 一一对应:该次命令发往的 serverID
+	uploads         []string
+	uploadServers   []string // 与 uploads 一一对应:该次上传发往的 serverID
+	uploadBytes     map[string]string
+	resultFor       func(cmd []string) *target.ExecResult
+	resultForServer func(serverID string, cmd []string) *target.ExecResult // 优先于 resultFor
 }
 
 
 // DockerLogin 满足 target.Service 接口(部署私有仓库登录追加);测试桩不触网,直接成功。
 func (f *fakeTarget) DockerLogin(context.Context, string, string, string) error { return nil }
-func (f *fakeTarget) Exec(_ context.Context, _ string, cmd []string) (*target.ExecResult, error) {
+func (f *fakeTarget) Exec(_ context.Context, serverID string, cmd []string) (*target.ExecResult, error) {
 	f.execCalls = append(f.execCalls, cmd)
+	f.execServers = append(f.execServers, serverID)
+	if f.resultForServer != nil {
+		if r := f.resultForServer(serverID, cmd); r != nil {
+			return r, nil
+		}
+	}
 	if f.resultFor != nil {
 		if r := f.resultFor(cmd); r != nil {
 			return r, nil
@@ -377,8 +387,9 @@ func (f *fakeTarget) ExecWithStdin(ctx context.Context, id string, cmd []string,
 	return f.Exec(ctx, id, cmd)
 }
 
-func (f *fakeTarget) Upload(_ context.Context, _ string, content io.Reader, remotePath string) error {
+func (f *fakeTarget) Upload(_ context.Context, serverID string, content io.Reader, remotePath string) error {
 	f.uploads = append(f.uploads, remotePath)
+	f.uploadServers = append(f.uploadServers, serverID)
 	b, _ := io.ReadAll(content)
 	if f.uploadBytes == nil {
 		f.uploadBytes = map[string]string{}
@@ -412,6 +423,37 @@ func hasCmd(f *fakeTarget, prefix ...string) bool {
 		}
 	}
 	return false
+}
+
+// hasCmdOn 报告是否向指定主机发过匹配前缀的命令(多机 apply 断言用)。
+func hasCmdOn(f *fakeTarget, serverID string, prefix ...string) bool {
+	joined := strings.Join(prefix, " ")
+	for i, c := range f.execCalls {
+		if f.execServers[i] == serverID && strings.HasPrefix(strings.Join(c, " "), joined) {
+			return true
+		}
+	}
+	return false
+}
+
+// uploadToOn 报告是否向指定主机上传过某路径(多机 apply 断言用)。
+func uploadToOn(f *fakeTarget, serverID, path string) bool {
+	for i, u := range f.uploads {
+		if u == path && f.uploadServers[i] == serverID {
+			return true
+		}
+	}
+	return false
+}
+
+// newTestServiceMulti 同 newTestService,但网关配置为多台主机。
+func newTestServiceMulti(t *testing.T, db *sql.DB, serverIDs ...string) (Service, *fakeTarget) {
+	t.Helper()
+	svc, ft := newTestService(t, db)
+	if _, err := svc.UpdateSettings(context.Background(), SettingsUpdate{ServerIDs: &serverIDs}); err != nil {
+		t.Fatalf("配置多网关:%v", err)
+	}
+	return svc, ft
 }
 
 func newTestService(t *testing.T, db *sql.DB) (Service, *fakeTarget) {
@@ -614,6 +656,225 @@ func TestSettingsDefaultsAndUpdate(t *testing.T) {
 		bad := "nginx;rm -rf /"
 		if _, err := svc.UpdateSettings(ctx, SettingsUpdate{Image: &bad}); err != ErrInvalidSetting {
 			t.Fatalf("注入镜像应拒绝,得 %v", err)
+		}
+	})
+}
+
+// --- 多机网关(设置兼容 / 逐台收敛 / 部署联动) --------------------------------
+
+// TestSettingsServerIDsCompat 验证多机设置的读写与存量单机数据兼容:
+// 旧行(server_ids 空)读出回退到 server_id 单值;写侧 server_id 恒同步第一台(降级安全)。
+func TestSettingsServerIDsCompat(t *testing.T) {
+	storetest.ForEachDialect(t, func(t *testing.T, st *store.Store) {
+		svc, _ := newTestService(t, st.DB)
+		ctx := context.Background()
+
+		// 默认:未配置(空列表)。
+		cfg, err := svc.GetSettings(ctx)
+		if err != nil || len(cfg.ServerIDs) != 0 {
+			t.Fatalf("默认应未配置:%v %v", cfg, err)
+		}
+
+		// 存量兼容:模拟旧版行(server_ids 空,server_id 有值)→ 读出回退单元素。
+		if _, err := st.DB.Exec(`UPDATE service_reg_settings SET server_ids = '', server_id = 'legacy-srv'`); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err = svc.GetSettings(ctx)
+		if err != nil || len(cfg.ServerIDs) != 1 || cfg.ServerIDs[0] != "legacy-srv" {
+			t.Fatalf("旧行应回退 server_id:%+v %v", cfg, err)
+		}
+
+		// 新入口:多台 + 归一化(去空白/去重)。
+		ids := []string{" srv1 ", "srv2", "srv1", ""}
+		if _, err := svc.UpdateSettings(ctx, SettingsUpdate{ServerIDs: &ids}); err != nil {
+			t.Fatalf("多机设置:%v", err)
+		}
+		cfg, _ = svc.GetSettings(ctx)
+		if len(cfg.ServerIDs) != 2 || cfg.ServerIDs[0] != "srv1" || cfg.ServerIDs[1] != "srv2" {
+			t.Fatalf("应归一化为 [srv1 srv2]:%+v", cfg.ServerIDs)
+		}
+
+		// 写侧同步:server_id 恒为第一台,server_ids 为规范 JSON(旧二进制可降级读)。
+		var legacyID, idsJSON string
+		if err := st.DB.QueryRow(`SELECT server_id, server_ids FROM service_reg_settings WHERE id = 'default'`).Scan(&legacyID, &idsJSON); err != nil {
+			t.Fatal(err)
+		}
+		if legacyID != "srv1" || idsJSON != `["srv1","srv2"]` {
+			t.Fatalf("server_id 应同步第一台:%q %q", legacyID, idsJSON)
+		}
+
+		// 空列表 = 清空(转配置态);重复旧入口设置单台等价单元素列表。
+		empty := []string{}
+		if _, err := svc.UpdateSettings(ctx, SettingsUpdate{ServerIDs: &empty}); err != nil {
+			t.Fatalf("清空:%v", err)
+		}
+		if _, err := svc.UpdateSettings(ctx, SettingsUpdate{ServerID: strPtr("only")}); err != nil {
+			t.Fatalf("旧入口单机:%v", err)
+		}
+		if cfg, _ = svc.GetSettings(ctx); len(cfg.ServerIDs) != 1 || cfg.ServerIDs[0] != "only" {
+			t.Fatalf("旧入口应等价单元素列表:%+v", cfg.ServerIDs)
+		}
+	})
+}
+
+// TestApplyMultiServerContinueOnError 双机 apply:srv2 起容器失败时 srv1 仍完整收敛,
+// 且逐台错误记入 settings(单台失败不阻断其余台)。
+func TestApplyMultiServerContinueOnError(t *testing.T) {
+	storetest.ForEachDialect(t, func(t *testing.T, st *store.Store) {
+		svc, ft := newTestServiceMulti(t, st.DB, "srv1", "srv2")
+		ctx := context.Background()
+		dom, err := svc.CreateDomain(ctx, "efg.com")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := svc.CreateService(ctx, CreateServiceInput{DomainID: dom.ID, Name: "abc", Upstream: "web", UpstreamPort: 80}); err != nil {
+			t.Fatal(err)
+		}
+
+		// 清掉创建时首轮成功 apply 的记录,只断言注入故障后这一轮。
+		ft.execCalls, ft.execServers = nil, nil
+		ft.uploads, ft.uploadServers = nil, nil
+
+		// srv2 的 docker 网络检查/创建失败(容器起不来);srv1 一切正常。
+		ft.resultForServer = func(serverID string, cmd []string) *target.ExecResult {
+			if serverID == "srv2" && len(cmd) >= 2 && cmd[0] == "docker" && cmd[1] == "network" {
+				return &target.ExecResult{ExitCode: 1, Stderr: "cannot connect to docker"}
+			}
+			return nil
+		}
+		err = svc.Apply(ctx)
+		if err == nil || !strings.Contains(err.Error(), "srv2") {
+			t.Fatalf("apply 应聚合并报出 srv2 失败:%v", err)
+		}
+
+		// srv1 不受影响:完整走完配置下发链并 reload。
+		for _, prefix := range [][]string{
+			{"docker", "run", "-d"},
+			{"docker", "exec", "pipewright-nginx", "nginx", "-t", "-c"},
+			{"docker", "exec", "pipewright-nginx", "nginx", "-s", "reload"},
+		} {
+			if !hasCmdOn(ft, "srv1", prefix...) {
+				t.Fatalf("srv1 应完成收敛,缺 %v:\n%s", prefix, joinAllCmds(ft))
+			}
+		}
+		if !uploadToOn(ft, "srv1", "/tmp/pipewright-nginx.conf") {
+			t.Fatalf("srv1 应下发配置:%v", ft.uploads)
+		}
+		// srv2 卡在 ensure:不应起容器/下发配置。
+		if hasCmdOn(ft, "srv2", "docker", "run") || uploadToOn(ft, "srv2", "/tmp/pipewright-nginx.conf") {
+			t.Fatalf("srv2 失败后不应继续编排:\n%s", joinAllCmds(ft))
+		}
+
+		// 逐台错误落库:仅 srv2;聚合文案含 srv2。
+		cfg, gerr := svc.GetSettings(ctx)
+		if gerr != nil {
+			t.Fatal(gerr)
+		}
+		if cfg.LastApplyErrors["srv2"] == "" {
+			t.Fatalf("应记录 srv2 逐台错误:%+v", cfg.LastApplyErrors)
+		}
+		if _, hit := cfg.LastApplyErrors["srv1"]; hit {
+			t.Fatalf("srv1 成功不应有错误记录:%+v", cfg.LastApplyErrors)
+		}
+		if !strings.Contains(cfg.LastApplyError, "srv2") {
+			t.Fatalf("聚合文案应含 srv2:%q", cfg.LastApplyError)
+		}
+
+		// 恢复后重新收敛:错误应清空。
+		ft.resultForServer = nil
+		ft.execCalls, ft.execServers = nil, nil
+		if err := svc.Apply(ctx); err != nil {
+			t.Fatalf("恢复后 apply:%v", err)
+		}
+		if cfg, _ = svc.GetSettings(ctx); len(cfg.LastApplyErrors) != 0 || cfg.LastApplyError != "" {
+			t.Fatalf("成功后应清错:%+v %q", cfg.LastApplyErrors, cfg.LastApplyError)
+		}
+	})
+}
+
+// TestResolveDeployInstancesMultiGateway 部署联动对任意一台网关主机生效。
+func TestResolveDeployInstancesMultiGateway(t *testing.T) {
+	storetest.ForEachDialect(t, func(t *testing.T, st *store.Store) {
+		svc, _ := newTestServiceMulti(t, st.DB, "gw1", "gw2")
+		ctx := context.Background()
+		dom, _ := svc.CreateDomain(ctx, "efg.com")
+		created, err := svc.CreateService(ctx, CreateServiceInput{DomainID: dom.ID, Name: "abc", Upstream: "abc-1", UpstreamPort: 8080})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := svc.AddInstance(ctx, created.ID, "abc-2", 0); err != nil {
+			t.Fatal(err)
+		}
+
+		// 第二台网关主机同样命中;非网关主机为空。
+		for _, gw := range []string{"gw1", "gw2"} {
+			refs, err := svc.ResolveDeployInstances(ctx, gw, "abc-1")
+			if err != nil || len(refs) != 2 {
+				t.Fatalf("%s 应返回 2 实例:%v %v", gw, refs, err)
+			}
+		}
+		if refs, _ := svc.ResolveDeployInstances(ctx, "other", "abc-1"); len(refs) != 0 {
+			t.Fatalf("非网关主机应为空:%v", refs)
+		}
+	})
+}
+
+// TestGatewayStatusMultiServer 状态快照逐台探测。
+func TestGatewayStatusMultiServer(t *testing.T) {
+	storetest.ForEachDialect(t, func(t *testing.T, st *store.Store) {
+		svc, ft := newTestServiceMulti(t, st.DB, "gw1", "gw2")
+		ctx := context.Background()
+		g, err := svc.GatewayStatus(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !g.Configured || len(g.Servers) != 2 {
+			t.Fatalf("应逐台探测:%+v", g)
+		}
+		if g.Servers[0].ServerID != "gw1" || g.Servers[1].ServerID != "gw2" {
+			t.Fatalf("逐台顺序应与配置一致:%+v", g.Servers)
+		}
+		// 旧平铺字段填第一台(兼容)。
+		if g.ServerID != "gw1" {
+			t.Fatalf("旧字段应填第一台:%+v", g)
+		}
+		for _, gw := range []string{"gw1", "gw2"} {
+			if !hasCmdOn(ft, gw, "docker", "inspect", "pipewright-nginx", "--format") {
+				t.Fatalf("%s 应被探测:%s", gw, joinAllCmds(ft))
+			}
+		}
+	})
+}
+
+// TestCreateDomainCertSyncHook:新建基域后 best-effort 拉取既有覆盖证书(免手动刷新);
+// 钩子失败不影响建域结果。未注入钩子时建域照常。
+func TestCreateDomainCertSyncHook(t *testing.T) {
+	storetest.ForEachDialect(t, func(t *testing.T, st *store.Store) {
+		svc, _ := newTestService(t, st.DB)
+		ctx := context.Background()
+		setHook := func(h func(context.Context) error) {
+			svc.(interface{ SetCertSyncHook(func(context.Context) error) }).SetCertSyncHook(h)
+		}
+
+		// 未注入钩子:建域照常。
+		if _, err := svc.CreateDomain(ctx, "efg.com"); err != nil {
+			t.Fatalf("未注入钩子建域:%v", err)
+		}
+
+		calls := 0
+		setHook(func(context.Context) error { calls++; return nil })
+		if _, err := svc.CreateDomain(ctx, "other.com"); err != nil {
+			t.Fatalf("创建基域:%v", err)
+		}
+		if calls != 1 {
+			t.Fatalf("建域应触发一次证书拉取,得 %d", calls)
+		}
+
+		// 钩子失败:best-effort,不回滚不报错。
+		setHook(func(context.Context) error { return errors.New("vault unavailable") })
+		dom, err := svc.CreateDomain(ctx, "third.com")
+		if err != nil || dom.BaseDomain != "third.com" {
+			t.Fatalf("钩子失败不应影响建域:%v %+v", err, dom)
 		}
 	})
 }

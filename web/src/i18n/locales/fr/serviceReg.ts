@@ -22,6 +22,7 @@ export default {
     stopped: "Stopped",
     unconfigured: "Not configured",
     host: "Gateway host",
+    hostHint: "Sélectionnez un ou plusieurs hôtes — une passerelle identique est déployée sur chacun ; la répartition est gérée par votre DNS.",
     noHost: "Not set (config-only, no deploy)",
     port: "port",
     image: "Image",

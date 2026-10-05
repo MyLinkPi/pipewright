@@ -22,6 +22,7 @@ export default {
     stopped: "Stopped",
     unconfigured: "Not configured",
     host: "Gateway host",
+    hostHint: "Selecciona uno o varios hosts: se despliega una pasarela idéntica en cada uno; el reparto lo decide tu DNS.",
     noHost: "Not set (config-only, no deploy)",
     port: "port",
     image: "Image",
