@@ -637,27 +637,26 @@ func (b *Builder) runDeployJob(ctx context.Context, rep dagrun.StageReporter, jb
 	// 部署语义键透传(deploy 层消费):产物精确绑定(deployMode/artifactJob/artifactName)、
 	// 镜像容器参数(artifactType/containerName/ports/runArgs)、私有仓库登录(registryUrl/
 	// registryCredentialId)、滚动批次(firstBatchSize/batchSize)、目标匹配方式(selectorMode)、
-	// 网关服务(gatewayService)、健康门控(healthUrl/healthCommand/…)。
+	// 网关服务(gatewayService)、健康门控(healthExec/healthPort/healthPath/healthUrl/healthCommand/…)。
 	// 各值原样搬运(deploy 层 array 化、绝不拼 shell,守 AC-SEC-02);空值不入 cfg 保持默认。
 	for _, k := range []string{
 		"deployMode", "artifactJob", "artifactName", "artifactType", "containerName", "ports", "runArgs",
 		"registryUrl", "registryCredentialId",
 		"firstBatchSize", "batchSize", "selectorMode", "gatewayService",
-		"healthUrl", "healthCommand", "healthRetries", "healthIntervalSeconds", "healthTimeoutSeconds",
+		"healthUrl", "healthPort", "healthPath", "healthExec", "healthCommand", "healthRetries", "healthIntervalSeconds", "healthTimeoutSeconds",
 	} {
 		if v := cfgString(jb.Config, k); v != "" {
 			cfg[k] = v
 		}
 	}
-	// 产物来源/artifactName/健康 URL 支持 {{param}} 渲染(与 deployPath 同语义)。
+	// 产物来源/artifactName/健康探测配置支持 {{param}} 渲染(与 deployPath 同语义)。
 	if v, ok := cfg["artifactName"]; ok {
 		cfg["artifactName"] = renderTemplate(v, params)
 	}
-	if v, ok := cfg["healthUrl"]; ok {
-		cfg["healthUrl"] = renderTemplate(v, params)
-	}
-	if v, ok := cfg["healthCommand"]; ok {
-		cfg["healthCommand"] = renderTemplate(v, params)
+	for _, k := range []string{"healthUrl", "healthPort", "healthPath", "healthExec", "healthCommand"} {
+		if v, ok := cfg[k]; ok {
+			cfg[k] = renderTemplate(v, params)
+		}
 	}
 	strategy := cfgString(jb.Config, "strategy")
 	stratLabel := strategy
