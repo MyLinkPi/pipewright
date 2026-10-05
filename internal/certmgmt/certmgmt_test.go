@@ -444,3 +444,51 @@ func TestOpenCertPEM(t *testing.T) {
 		t.Fatalf("不存在证书应 ErrNotFound,得 %v", err)
 	}
 }
+
+// TestSyncAllToSink:后建基域的证书补拉 —— 已有 PEM 且覆盖基域的证书全部推给 sink,
+// 未覆盖/无 PEM 的跳过;vault 未注入时 no-op。
+func TestSyncAllToSink(t *testing.T) {
+	db := storetest.OpenDB(t)
+	ctx := context.Background()
+	svc := New(db, nil, passSealer{}).(*service)
+	mk := func(id, primary string, withPEM bool) {
+		c := &Certificate{
+			ID: id, PrimaryDomain: primary, Domains: []string{primary},
+			Source: SourceManual, Validation: ValidationManual, Status: StatusIssued,
+			CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+		}
+		var err error
+		if withPEM {
+			sealedCert, _ := svc.vault.SealSecret([]byte("CERT-" + id))
+			sealedKey, _ := svc.vault.SealSecret([]byte("KEY-" + id))
+			err = svc.store.insertWithPEM(ctx, c, sealedCert, sealedKey)
+		} else {
+			err = svc.store.insert(ctx, c)
+		}
+		if err != nil {
+			t.Fatalf("insert %s: %v", id, err)
+		}
+	}
+	mk("c-wild", "*.efg.com", true)     // 泛域名覆盖 efg.com → 应下发
+	mk("c-none", "none.io", true)       // 不覆盖任何基域 → 跳过
+	mk("c-nopem", "pending.com", false) // 无 PEM → 跳过
+
+	sink := &fakeSink{bases: []BaseDomain{
+		{ID: "d1", BaseDomain: "efg.com"},
+		{ID: "d2", BaseDomain: "zzz.com"},
+	}}
+	svc.SetCertSink(sink)
+	if err := svc.SyncAllToSink(ctx); err != nil {
+		t.Fatalf("SyncAllToSink: %v", err)
+	}
+	if len(sink.uploaded) != 1 || sink.uploaded[0] != "d1" {
+		t.Fatalf("应只把覆盖基域的证书推给 d1:%v", sink.uploaded)
+	}
+
+	// vault 未注入 → no-op(证书功能不可用,无可下发)。
+	svcNoVault := New(db, nil, nil).(*service)
+	svcNoVault.SetCertSink(sink)
+	if err := svcNoVault.SyncAllToSink(ctx); err != nil {
+		t.Fatalf("vault 未注入应 no-op:%v", err)
+	}
+}

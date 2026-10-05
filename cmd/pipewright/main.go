@@ -457,6 +457,17 @@ func main() {
 	if cfg, ok := certSvc.(interface{ SetCertSink(certmgmt.CertSink) }); ok {
 		cfg.SetCertSink(&certSinkAdapter{sr: serviceRegSvc})
 	}
+	// 新建基域 → 自动拉取既有覆盖证书:证书推送只发生在证书事件时,后建的基域拿不到
+	// 已有证书(否则要手动刷新一次)。钩子在 CreateDomain 后 best-effort 反向拉取。
+	if sr, ok := serviceRegSvc.(interface {
+		SetCertSyncHook(func(context.Context) error)
+	}); ok {
+		if cs, ok2 := certSvc.(interface {
+			SyncAllToSink(context.Context) error
+		}); ok2 {
+			sr.SetCertSyncHook(cs.SyncAllToSink)
+		}
+	}
 	// servicereg 既有手动证书一次性回填进证书管理页(幂等;失败仅记日志)。
 	if n, berr := certSvc.BackfillFromServiceReg(context.Background()); berr != nil {
 		log.Printf("[certmgmt] 存量证书回填失败(不影响启动):%v", berr)

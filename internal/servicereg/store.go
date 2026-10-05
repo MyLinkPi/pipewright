@@ -3,8 +3,10 @@ package servicereg
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/huangchengsir/pipewright/internal/store"
@@ -69,22 +71,23 @@ func (s *Store) getOrCreateSettings(ctx context.Context) (*Settings, error) {
 // getSettings 读取设置单例;不存在 → ErrNotFound。
 func (s *Store) getSettings(ctx context.Context) (*storedSettings, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT server_id, http_port, https_port, image, network, container_name, volume_name,
-		        last_apply_at, last_apply_error, created_at, updated_at
+		`SELECT server_id, server_ids, http_port, https_port, image, network, container_name, volume_name,
+		        last_apply_at, last_apply_error, last_apply_errors, created_at, updated_at
 		 FROM service_reg_settings WHERE id = ?`, settingsID)
 	return scanSettings(row)
 }
 
-// updateSettings 落库设置(全部列;调用方已校验)。
+// updateSettings 落库设置(全部列;调用方已校验)。server_id 恒与 server_ids[0] 同步:
+// 旧二进制读新库仍取到第一台网关(降级安全)。
 func (s *Store) updateSettings(ctx context.Context, st *Settings) error {
 	now := time.Now().UTC().Format(time.RFC3339)
 	_, err := s.db.ExecContext(ctx,
 		`UPDATE service_reg_settings
-		 SET server_id = ?, http_port = ?, https_port = ?, image = ?, network = ?, container_name = ?,
-		     volume_name = ?, updated_at = ?
+		 SET server_id = ?, server_ids = ?, http_port = ?, https_port = ?, image = ?, network = ?,
+		     container_name = ?, volume_name = ?, updated_at = ?
 		 WHERE id = ?`,
-		st.ServerID, st.HTTPPort, st.HTTPSPort, st.Image, st.Network, st.ContainerName,
-		st.VolumeName, now, settingsID,
+		primaryServerID(st.ServerIDs), marshalStrings(st.ServerIDs), st.HTTPPort, st.HTTPSPort,
+		st.Image, st.Network, st.ContainerName, st.VolumeName, now, settingsID,
 	)
 	if err != nil {
 		return fmt.Errorf("servicereg: update settings: %w", err)
@@ -92,11 +95,12 @@ func (s *Store) updateSettings(ctx context.Context, st *Settings) error {
 	return nil
 }
 
-// setApplyResult 回写最近一次编排结果(成功 errText 为空)。
-func (s *Store) setApplyResult(ctx context.Context, at time.Time, errText string) error {
+// setApplyResult 回写最近一轮编排结果(成功 errText/serverErrs 均空;逐台明细进 serverErrs)。
+func (s *Store) setApplyResult(ctx context.Context, at time.Time, errText string, serverErrs map[string]string) error {
 	_, err := s.db.ExecContext(ctx,
-		`UPDATE service_reg_settings SET last_apply_at = ?, last_apply_error = ?, updated_at = ? WHERE id = ?`,
-		at.UTC().Format(time.RFC3339), truncate(errText, 2000), at.UTC().Format(time.RFC3339), settingsID)
+		`UPDATE service_reg_settings SET last_apply_at = ?, last_apply_error = ?, last_apply_errors = ?, updated_at = ? WHERE id = ?`,
+		at.UTC().Format(time.RFC3339), truncate(errText, 2000), truncate(marshalErrMap(serverErrs), 2000),
+		at.UTC().Format(time.RFC3339), settingsID)
 	if err != nil {
 		return fmt.Errorf("servicereg: set apply result: %w", err)
 	}
@@ -108,12 +112,14 @@ func scanSettings(sc scanner) (*storedSettings, error) {
 		st          storedSettings
 		lastApply   sql.NullString
 		lastErr     sql.NullString
+		srvIDs      sql.NullString
+		lastSrvErrs sql.NullString
 		createdStr  string
 		updatedStr  string
 	)
 	if err := sc.Scan(
-		&st.ServerID, &st.HTTPPort, &st.HTTPSPort, &st.Image, &st.Network, &st.ContainerName,
-		&st.VolumeName, &lastApply, &lastErr, &createdStr, &updatedStr,
+		&st.ServerID, &srvIDs, &st.HTTPPort, &st.HTTPSPort, &st.Image, &st.Network, &st.ContainerName,
+		&st.VolumeName, &lastApply, &lastErr, &lastSrvErrs, &createdStr, &updatedStr,
 	); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
@@ -126,9 +132,77 @@ func scanSettings(sc scanner) (*storedSettings, error) {
 		}
 	}
 	st.LastApplyError = lastErr.String
+	// 兼容回退:server_ids 空(旧行)→ 用 server_id 单值;server_id 同步兜底(坏行自愈)。
+	st.ServerIDs = unmarshalStrings(srvIDs.String)
+	if len(st.ServerIDs) == 0 && st.ServerID != "" {
+		st.ServerIDs = []string{st.ServerID}
+	} else if len(st.ServerIDs) > 0 && st.ServerID == "" {
+		st.ServerID = st.ServerIDs[0]
+	}
+	st.LastApplyErrors = unmarshalErrMap(lastSrvErrs.String)
 	st.CreatedAt = parseTime(createdStr)
 	st.UpdatedAt = parseTime(updatedStr)
 	return &st, nil
+}
+
+// ---------- JSON 列编解码(server_ids / last_apply_errors)----------
+
+// primaryServerID 返回列表第一台(兼容旧 server_id 列);空列表 → ""。
+func primaryServerID(ids []string) string {
+	if len(ids) == 0 {
+		return ""
+	}
+	return ids[0]
+}
+
+// marshalStrings 规范化写出字符串数组 JSON(空 → "[]")。
+func marshalStrings(v []string) string {
+	if len(v) == 0 {
+		return "[]"
+	}
+	b, err := json.Marshal(v)
+	if err != nil {
+		return "[]"
+	}
+	return string(b)
+}
+
+// unmarshalStrings 解析字符串数组 JSON;空串/坏值 → nil。
+func unmarshalStrings(s string) []string {
+	s = strings.TrimSpace(s)
+	if s == "" || s == "[]" {
+		return nil
+	}
+	var out []string
+	if json.Unmarshal([]byte(s), &out) != nil {
+		return nil
+	}
+	return out
+}
+
+// marshalErrMap 规范化写出逐台错误 JSON(空 → "{}")。
+func marshalErrMap(m map[string]string) string {
+	if len(m) == 0 {
+		return "{}"
+	}
+	b, err := json.Marshal(m)
+	if err != nil {
+		return "{}"
+	}
+	return string(b)
+}
+
+// unmarshalErrMap 解析逐台错误 JSON;空串/坏值 → nil。
+func unmarshalErrMap(s string) map[string]string {
+	s = strings.TrimSpace(s)
+	if s == "" || s == "{}" {
+		return nil
+	}
+	var out map[string]string
+	if json.Unmarshal([]byte(s), &out) != nil {
+		return nil
+	}
+	return out
 }
 
 // ---------- domains ----------

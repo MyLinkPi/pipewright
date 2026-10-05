@@ -24,6 +24,7 @@ export default {
     stopped: '已停止',
     unconfigured: '未配置',
     host: '网关主机',
+    hostHint: '可多选:每台都会部署完全一致的网关,流量分配由你的 DNS 解析决定',
     noHost: '未指定(配置态,不部署)',
     port: '端口',
     image: '镜像',

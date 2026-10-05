@@ -22,6 +22,7 @@ export default {
     stopped: "Stopped",
     unconfigured: "Not configured",
     host: "Gateway host",
+    hostHint: "Wählen Sie einen oder mehrere Hosts — auf jedem wird eine identische Gateway bereitgestellt; die Verteilung übernimmt Ihr DNS.",
     noHost: "Not set (config-only, no deploy)",
     port: "port",
     image: "Image",

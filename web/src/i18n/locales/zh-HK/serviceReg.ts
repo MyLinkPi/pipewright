@@ -22,6 +22,7 @@ export default {
     stopped: "已停止",
     unconfigured: "未設定",
     host: "閘道主機",
+    hostHint: "可多選:每台都會部署完全一致的閘道,流量分配由你的 DNS 解析決定",
     noHost: "未指定(僅設定,不部署)",
     port: "連接埠",
     image: "映像",

@@ -1,5 +1,6 @@
-// Package servicereg 是「服务注册网关」的领域层:在一台用户选定的网关主机上,经 SSH 编排一个
-// 独立部署的 nginx 容器,把「服务名 + 基域」映射为子域名反向代理(abc + efg.com → abc.efg.com)。
+// Package servicereg 是「服务注册网关」的领域层:在用户选定的(一台或多台)网关主机上,经 SSH
+// 各编排一个**配置完全一致**的独立 nginx 容器,把「服务名 + 基域」映射为子域名反向代理
+// (abc + efg.com → abc.efg.com)。多台网关的流量分配由用户在 DNS 层自行解析,平台不做负载均衡。
 //
 // 定位(Caddy 反代下线后的唯一网关):面向「泛域名解析到网关主机 + 证书托管」的场景 ——
 // *.efg.com 由用户解析到网关主机 IP,平台不接管网关域 DNS。证书的签发/续期/导入统一由
@@ -15,7 +16,8 @@
 //   - 上游动态解析:nginx 的 proxy_pass 带变量时按 resolver(127.0.0.11,Docker 内嵌 DNS)运行期
 //     解析,容器重建换 IP 自动跟随 —— 与 Caddy 的按容器名路由等价。
 //   - 证书 PEM 绝不明文入库/回 API/写日志:SealSecret 密文存 BLOB,仅在 apply 时于进程内解密下发。
-//   - 网关未指定主机(server_id 为空)时一切 CRUD 照常(配置态),编排静默跳过,DeployGateway 时收敛。
+//   - 网关未配置主机(主机列表为空)时一切 CRUD 照常(配置态),编排静默跳过,DeployGateway 时收敛;
+//     多机 apply 逐台执行,单台失败不阻断其余台,聚合报错。
 package servicereg
 
 import (
@@ -24,6 +26,7 @@ import (
 	"crypto/x509"
 	"database/sql"
 	"errors"
+	"fmt"
 	"net"
 	"regexp"
 	"strings"
@@ -105,7 +108,11 @@ var (
 )
 
 // Settings 是网关设置(单例行;已剥离敏感字段——只有 token 哈希存库,哈希也不出本包)。
+// 多机模型:全部网关主机列于 ServerIDs,每台部署完全一致的网关(DNS 轮询由用户自行解析)。
 type Settings struct {
+	// ServerIDs 是全部网关主机引用 id(升序无关,按用户选择顺序)。空 = 未配置(配置态)。
+	ServerIDs []string
+	// ServerID 是 ServerIDs[0] 的派生镜像(读侧兜底同步;仅兼容展示,勿用于编排判断)。
 	ServerID       string
 	HTTPPort       int // 宿主 HTTP 端口(容器内恒 80)
 	HTTPSPort      int // 宿主 HTTPS 端口(容器内恒 443)
@@ -114,9 +121,29 @@ type Settings struct {
 	ContainerName  string
 	VolumeName     string
 	LastApplyAt    time.Time
-	LastApplyError string
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
+	LastApplyError string // 最近一轮聚合错误文案(逐台明细见 LastApplyErrors)
+	// LastApplyErrors 是最近一轮逐台错误(serverID → 文案,仅失败项;nil = 全部成功)。
+	LastApplyErrors map[string]string
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
+}
+
+// PrimaryServerID 返回第一台网关主机(兼容单机视图);未配置 → ""。
+func (st Settings) PrimaryServerID() string {
+	if len(st.ServerIDs) == 0 {
+		return ""
+	}
+	return st.ServerIDs[0]
+}
+
+// HasServer 报告某主机是否网关主机。
+func (st Settings) HasServer(id string) bool {
+	for _, v := range st.ServerIDs {
+		if v == id {
+			return true
+		}
+	}
+	return false
 }
 
 // Domain 是一个已注册基域。证书密文留在 store 层,领域对象只带展示元数据。
@@ -146,22 +173,38 @@ type RegisteredService struct {
 	UpdatedAt     time.Time
 }
 
-// GatewayStatus 是网关容器探测快照(前端展示 + 部署前知情)。
+// GatewayStatus 是网关容器探测快照(前端展示 + 部署前知情)。多机:每台一项 Servers;
+// 旧平铺字段(ServerID/ServerName/Installed/Running/Image/Ports)填第一台,兼容旧前端。
 type GatewayStatus struct {
-	Configured     bool   // 是否已指定网关主机
+	Configured     bool // 是否已配置网关主机
 	ServerID       string
 	ServerName     string
 	Installed      bool   // 容器是否存在
-	Running        bool
-	Image          string
+	Running        bool   //
+	Image          string //
 	Ports          string // 发布端口摘要,如 "80,443,3306"
+	Servers        []GatewayServerStatus
 	LastApplyAt    time.Time
 	LastApplyError string
+	LastApplyErrors map[string]string // 逐台收敛错误(serverID → 文案,仅失败项)
+}
+
+// GatewayServerStatus 是单台网关主机的容器探测快照。
+type GatewayServerStatus struct {
+	ServerID   string
+	ServerName string
+	Installed  bool
+	Running    bool
+	Image      string
+	Ports      string
 }
 
 // SettingsUpdate 是更新网关设置的入参(指针字段,nil = 保持不变)。
 type SettingsUpdate struct {
-	ServerID      *string // 空串 = 清空(转配置态)
+	// ServerIDs 设置全部网关主机(空列表 = 清空转配置态);优先于 ServerID。
+	ServerIDs *[]string
+	// ServerID 是旧版单机入口(等价于单元素 ServerIDs;空串 = 清空)。仅兼容保留。
+	ServerID      *string
 	HTTPPort      *int
 	HTTPSPort     *int
 	Image         *string
@@ -257,6 +300,10 @@ type service struct {
 	store *Store
 	tg    target.Service
 	vault SecretSealer
+	// certSyncHook 由 main.go 注入(拉取证书管理侧既有证书并同步到本网关,best-effort):
+	// 新建基域时证书下发链路(certmgmt → 本包)只会推给当时已存在的基域,后建的基域拿不到
+	// 已有证书,靠此钩子在创建后反向拉一次,免手动刷新。
+	certSyncHook func(ctx context.Context) error
 }
 
 // New 构造 Service。tg 复用已装配的 target.Service(SSH + docker);vault 用于证书密文存储
@@ -277,8 +324,11 @@ func (s *service) UpdateSettings(ctx context.Context, in SettingsUpdate) (*Setti
 		return nil, err
 	}
 	next := *cur
-	if in.ServerID != nil {
-		next.ServerID = strings.TrimSpace(*in.ServerID)
+	if in.ServerIDs != nil {
+		next.ServerIDs = normalizeServerIDs(*in.ServerIDs)
+	} else if in.ServerID != nil {
+		// 旧版单机入口:等价于单元素列表(空串 = 清空)。
+		next.ServerIDs = normalizeServerIDs([]string{*in.ServerID})
 	}
 	if in.HTTPPort != nil {
 		next.HTTPPort = *in.HTTPPort
@@ -319,6 +369,17 @@ func (s *service) UpdateSettings(ctx context.Context, in SettingsUpdate) (*Setti
 	return &next, nil
 }
 
+// SetCertSyncHook 注入「拉取证书管理侧既有证书」的钩子(main.go 晚绑接线,避免包间依赖)。
+func (s *service) SetCertSyncHook(hook func(ctx context.Context) error) { s.certSyncHook = hook }
+
+// pullExistingCerts best-effort 触发一次证书拉取(未注入/失败均不影响调用方主流程)。
+func (s *service) pullExistingCerts(ctx context.Context) {
+	if s.certSyncHook == nil {
+		return
+	}
+	_ = s.certSyncHook(ctx)
+}
+
 // ---------- 基域 ----------
 
 func (s *service) ListDomains(ctx context.Context) ([]Domain, error) {
@@ -339,6 +400,9 @@ func (s *service) CreateDomain(ctx context.Context, baseDomain string) (*Domain,
 	if err := s.store.insertDomain(ctx, dom); err != nil {
 		return nil, err
 	}
+	// 已有覆盖该基域的证书(如 *.efg.com)→ 立即拉取下发,免去手动刷新证书;
+	// 无覆盖证书时钩子为 no-op,失败亦不回滚建域。
+	s.pullExistingCerts(ctx)
 	return dom, nil
 }
 
@@ -623,25 +687,34 @@ func (s *service) GatewayStatus(ctx context.Context) (*GatewayStatus, error) {
 		return nil, err
 	}
 	g := &GatewayStatus{
-		Configured:     st.ServerID != "",
-		ServerID:       st.ServerID,
-		LastApplyAt:    st.LastApplyAt,
-		LastApplyError: st.LastApplyError,
+		Configured:      len(st.ServerIDs) > 0,
+		LastApplyAt:     st.LastApplyAt,
+		LastApplyError:  st.LastApplyError,
+		LastApplyErrors: st.LastApplyErrors,
 	}
-	if st.ServerID == "" {
-		return g, nil
+	for _, sid := range st.ServerIDs {
+		gs := GatewayServerStatus{ServerID: sid}
+		if srv, err := s.tg.Get(ctx, sid); err == nil && srv != nil {
+			gs.ServerName = srv.Name
+		}
+		// 探测传输失败不拖垮整体状态:该台按未知处理(installed=false),交由 apply 报错。
+		if inst, ierr := inspectNginx(ctx, s.tg, st, sid); ierr == nil {
+			gs.Installed = inst.Installed
+			gs.Running = inst.Running
+			gs.Image = inst.Image
+			gs.Ports = inst.Ports
+		}
+		g.Servers = append(g.Servers, gs)
 	}
-	if srv, err := s.tg.Get(ctx, st.ServerID); err == nil {
-		g.ServerName = srv.Name
+	// 旧平铺字段填第一台(兼容旧前端/旧消费方)。
+	if len(g.Servers) > 0 {
+		g.ServerID = g.Servers[0].ServerID
+		g.ServerName = g.Servers[0].ServerName
+		g.Installed = g.Servers[0].Installed
+		g.Running = g.Servers[0].Running
+		g.Image = g.Servers[0].Image
+		g.Ports = g.Servers[0].Ports
 	}
-	inst, err := inspectNginx(ctx, s.tg, st)
-	if err != nil {
-		return nil, err
-	}
-	g.Installed = inst.Installed
-	g.Running = inst.Running
-	g.Image = inst.Image
-	g.Ports = inst.Ports
 	return g, nil
 }
 
@@ -657,31 +730,43 @@ func (s *service) RemoveGateway(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if st.ServerID == "" {
+	if len(st.ServerIDs) == 0 {
 		return ErrNoGateway
 	}
-	return removeNginx(ctx, s.tg, st)
+	// 逐台移除:单台失败不阻断其余台,聚合报错。
+	var errs []string
+	for _, sid := range st.ServerIDs {
+		if err := removeNginx(ctx, s.tg, st, sid); err != nil {
+			errs = append(errs, sid+": "+err.Error())
+		}
+	}
+	if len(errs) > 0 {
+		return fmt.Errorf("%w:%s", ErrApply, strings.Join(errs, "; "))
+	}
+	return nil
 }
 
 func (s *service) Apply(ctx context.Context) error {
 	return s.applyFull(ctx)
 }
 
-// applyBestEffort:网关未配置(server_id 空)时静默跳过(配置态);否则全量收敛并把结果
+// applyBestEffort:网关未配置(主机列表空)时静默跳过(配置态);否则逐台全量收敛并把结果
 // 记回 settings.last_apply_*(成功清错,失败记因)。返回 error 供调用方决定回滚策略。
 func (s *service) applyBestEffort(ctx context.Context) error {
 	st, err := s.store.getOrCreateSettings(ctx)
 	if err != nil {
 		return err
 	}
-	if st.ServerID == "" {
+	if len(st.ServerIDs) == 0 {
 		return nil
 	}
-	if err := s.applyWith(ctx, st); err != nil {
-		_ = s.store.setApplyResult(ctx, time.Now().UTC(), err.Error())
-		return err
+	serverErrs := s.applyWith(ctx, st)
+	if len(serverErrs) > 0 {
+		msg := aggregateApplyErrors(st.ServerIDs, serverErrs)
+		_ = s.store.setApplyResult(ctx, time.Now().UTC(), msg, serverErrs)
+		return fmt.Errorf("%w:%s", ErrApply, msg)
 	}
-	_ = s.store.setApplyResult(ctx, time.Now().UTC(), "")
+	_ = s.store.setApplyResult(ctx, time.Now().UTC(), "", nil)
 	return nil
 }
 
@@ -691,32 +776,44 @@ func (s *service) applyFull(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if st.ServerID == "" {
+	if len(st.ServerIDs) == 0 {
 		return ErrNoGateway
 	}
-	if err := s.applyWith(ctx, st); err != nil {
-		_ = s.store.setApplyResult(ctx, time.Now().UTC(), err.Error())
-		return err
+	serverErrs := s.applyWith(ctx, st)
+	if len(serverErrs) > 0 {
+		msg := aggregateApplyErrors(st.ServerIDs, serverErrs)
+		_ = s.store.setApplyResult(ctx, time.Now().UTC(), msg, serverErrs)
+		return fmt.Errorf("%w:%s", ErrApply, msg)
 	}
-	_ = s.store.setApplyResult(ctx, time.Now().UTC(), "")
+	_ = s.store.setApplyResult(ctx, time.Now().UTC(), "", nil)
 	return nil
 }
 
-// applyWith 执行一轮完整收敛:ensure 容器(TCP 端口并集重建)→ 接入上游(container 上游按
-// **attached 实例**逐个接入;死实例探活剔除)→ 下发证书 → 渲染 → nginx -t 校验 → docker cp
-// → 热加载。任何一步失败即返回人话错误。
-func (s *service) applyWith(ctx context.Context, st *Settings) error {
+// applySnapshot 是一轮收敛的静态输入(全局配置读一次,逐台复用)。
+type applySnapshot struct {
+	domains      []Domain
+	enabled      []RegisteredService
+	tcpPorts     []int
+	allInstances []Instance
+	svcByID      map[string]*RegisteredService
+}
+
+// applyWith 逐台执行完整收敛(每台配置一致,实例探活按本机实况裁剪):ensure 容器(TCP 端口
+// 并集重建)→ 接入上游(container 上游按 **attached 实例**逐个接入;死实例探活剔除)→ 下发
+// 证书 → 渲染 → nginx -t 校验 → docker cp → 热加载。单台失败记录并继续,返回逐台错误
+// (serverID → 文案;nil = 全部成功)。
+func (s *service) applyWith(ctx context.Context, st *Settings) map[string]string {
 	domains, err := s.store.listDomains(ctx)
 	if err != nil {
-		return err
+		return mapErrAll(st.ServerIDs, err)
 	}
 	services, err := s.store.listServices(ctx)
 	if err != nil {
-		return err
+		return mapErrAll(st.ServerIDs, err)
 	}
 	allInstances, err := s.store.listAllInstances(ctx)
 	if err != nil {
-		return err
+		return mapErrAll(st.ServerIDs, err)
 	}
 	svcByID := make(map[string]*RegisteredService, len(services))
 	var enabled []RegisteredService
@@ -732,51 +829,122 @@ func (s *service) applyWith(ctx context.Context, st *Settings) error {
 			tcpPorts = append(tcpPorts, svc.TCPListenPort)
 		}
 	}
+	snap := &applySnapshot{domains: domains, enabled: enabled, tcpPorts: tcpPorts, allInstances: allInstances, svcByID: svcByID}
 
-	if err := ensureNginx(ctx, s.tg, st, tcpPorts); err != nil {
+	serverErrs := make(map[string]string)
+	for _, sid := range st.ServerIDs {
+		if err := s.applyWithServer(ctx, st, sid, snap); err != nil {
+			serverErrs[sid] = err.Error()
+		}
+	}
+	if len(serverErrs) == 0 {
+		return nil
+	}
+	return serverErrs
+}
+
+// applyWithServer 是单台网关主机的收敛流程(applyWith 逐台调用;返回人话错误)。
+func (s *service) applyWithServer(ctx context.Context, st *Settings, serverID string, snap *applySnapshot) error {
+	if err := ensureNginx(ctx, s.tg, st, serverID, snap.tcpPorts); err != nil {
 		return err
 	}
 
-	// 实例探活 + 接入共享网络:attached 实例中容器已消失/已停止的**静默剔除**本次渲染
+	// 实例探活 + 接入共享网络:attached 实例中本机容器已消失/已停止的**静默剔除**本次渲染
 	// (否则 nginx -t 会因 "host not found in upstream" 整体失败,一个死实例卡死全部配置变更);
 	// 存活的实例接入网络(幂等),接入后渲染进 upstream。
-	aliveInstances := make([]Instance, 0, len(allInstances))
-	for _, inst := range allInstances {
+	aliveInstances := make([]Instance, 0, len(snap.allInstances))
+	for _, inst := range snap.allInstances {
 		if !inst.Attached {
 			continue
 		}
-		svc, ok := svcByID[inst.ServiceID]
+		svc, ok := snap.svcByID[inst.ServiceID]
 		if !ok || !svc.Enabled || svc.Protocol != ProtocolHTTP || svc.UpstreamKind != UpstreamKindContainer {
 			continue
 		}
-		alive, _ := s.containerAlive(ctx, st, inst.Container)
+		alive, _ := s.containerAlive(ctx, st, serverID, inst.Container)
 		if !alive {
 			continue
 		}
-		if err := connectUpstream(ctx, s.tg, st, inst.Container); err != nil {
+		if err := connectUpstream(ctx, s.tg, st, serverID, inst.Container); err != nil {
 			return err
 		}
 		aliveInstances = append(aliveInstances, inst)
 	}
 	// tcp 服务的容器上游仍是单一 Upstream(实例化仅覆盖 http)。
-	for _, svc := range enabled {
+	for _, svc := range snap.enabled {
 		if svc.Protocol == ProtocolTCP && svc.UpstreamKind == UpstreamKindContainer {
-			if err := connectUpstream(ctx, s.tg, st, svc.Upstream); err != nil {
+			if err := connectUpstream(ctx, s.tg, st, serverID, svc.Upstream); err != nil {
 				return err
 			}
 		}
 	}
-	if err := s.deployCerts(ctx, st, domains); err != nil {
+	if err := s.deployCerts(ctx, st, serverID, snap.domains); err != nil {
 		return err
 	}
-	conf := renderNginxConf(domains, enabled, aliveInstances)
-	return applyNginxConf(ctx, s.tg, st, conf)
+	conf := renderNginxConf(snap.domains, snap.enabled, aliveInstances)
+	return applyNginxConf(ctx, s.tg, st, serverID, conf)
+}
+
+// aggregateApplyErrors 按 ServerIDs 顺序聚合成 "serverID: err" 分号串(不改变可读性)。
+func aggregateApplyErrors(ids []string, errs map[string]string) string {
+	var parts []string
+	for _, sid := range ids {
+		if e, ok := errs[sid]; ok {
+			parts = append(parts, sid+": "+e)
+		}
+	}
+	// 防御:错误里出现列表外 id(理论不可达)也带出。
+	extra := make([]string, 0)
+	for sid := range errs {
+		found := false
+		for _, id := range ids {
+			if id == sid {
+				found = true
+				break
+			}
+		}
+		if !found {
+			extra = append(extra, sid+": "+errs[sid])
+		}
+	}
+	parts = append(parts, extra...)
+	return strings.Join(parts, "; ")
+}
+
+// mapErrAll 把单点错误展开为逐台错误(全局配置读取失败时所有台同因)。
+func mapErrAll(ids []string, err error) map[string]string {
+	out := make(map[string]string, len(ids))
+	for _, sid := range ids {
+		out[sid] = err.Error()
+	}
+	return out
+}
+
+// normalizeServerIDs 归一化主机列表:去空白、去空项、去重(保序)。
+func normalizeServerIDs(in []string) []string {
+	out := make([]string, 0, len(in))
+	seen := make(map[string]struct{}, len(in))
+	for _, v := range in {
+		v = strings.TrimSpace(v)
+		if v == "" {
+			continue
+		}
+		if _, dup := seen[v]; dup {
+			continue
+		}
+		seen[v] = struct{}{}
+		out = append(out, v)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // containerAlive 探测网关主机上某容器是否存在且运行中(docker inspect State.Running)。
 // 探测不确定(输出异常)时保守视为存活,交由 nginx -t 兜底报错;确证不存在/已停止 → false。
-func (s *service) containerAlive(ctx context.Context, st *Settings, container string) (bool, error) {
-	res, err := s.tg.Exec(ctx, st.ServerID, []string{
+func (s *service) containerAlive(ctx context.Context, st *Settings, serverID, container string) (bool, error) {
+	res, err := s.tg.Exec(ctx, serverID, []string{
 		"docker", "inspect", "--format", "{{.State.Running}}", container,
 	})
 	if err != nil {
@@ -801,6 +969,17 @@ func validateBaseDomain(d string) error {
 }
 
 func validateSettings(st Settings) error {
+	// 主机列表:非空项 ≤64 字符(server_id 列宽),且不重复。
+	seen := make(map[string]struct{}, len(st.ServerIDs))
+	for _, sid := range st.ServerIDs {
+		if sid == "" || len(sid) > 64 {
+			return ErrInvalidSetting
+		}
+		if _, dup := seen[sid]; dup {
+			return ErrInvalidSetting
+		}
+		seen[sid] = struct{}{}
+	}
 	if st.HTTPPort < 1 || st.HTTPPort > 65535 || st.HTTPSPort < 1 || st.HTTPSPort > 65535 {
 		return ErrInvalidSetting
 	}

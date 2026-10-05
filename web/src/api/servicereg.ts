@@ -26,6 +26,9 @@ export type ServiceProtocol = 'http' | 'tcp'
 export type UpstreamKind = 'container' | 'address'
 
 export interface Settings {
+  /** 全部网关主机(多台部署完全一致的网关);空数组 = 未配置。 */
+  serverIds: string[]
+  /** 第一台网关主机(兼容保留)。 */
   serverId: string
   httpPort: number
   httpsPort: number
@@ -35,6 +38,8 @@ export interface Settings {
   volumeName: string
   lastApplyAt: string
   lastApplyError: string
+  /** 逐台收敛错误(serverId → 文案,仅失败项)。 */
+  lastApplyErrors: Record<string, string> | null
 }
 
 export interface Domain {
@@ -63,16 +68,28 @@ export interface RegisteredService {
   updatedAt: string
 }
 
-export interface Gateway {
-  configured: boolean
+export interface GatewayServer {
   serverId: string
   serverName: string
   installed: boolean
   running: boolean
   image: string
   ports: string
+}
+
+export interface Gateway {
+  configured: boolean
+  /** 第一台网关(兼容保留);逐台状态见 servers。 */
+  serverId: string
+  serverName: string
+  installed: boolean
+  running: boolean
+  image: string
+  ports: string
+  servers: GatewayServer[]
   lastApplyAt: string
   lastApplyError: string
+  lastApplyErrors: Record<string, string> | null
 }
 
 /** 服务实例:多实例 upstream 成员(实例级轮转的单元)。 */
@@ -89,6 +106,9 @@ export interface ServiceInstance {
 }
 
 export interface SettingsUpdate {
+  /** 全部网关主机(优先于 serverId;空数组 = 清空转配置态)。 */
+  serverIds?: string[]
+  /** 旧版单机入口,兼容保留。 */
   serverId?: string
   httpPort?: number
   httpsPort?: number
