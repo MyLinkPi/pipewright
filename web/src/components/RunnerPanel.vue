@@ -219,4 +219,13 @@ watch(() => props.projectId, load)
 .runner-banner--ok { color: var(--color-success, #16a34a); }
 .runner-banner--err { color: var(--color-danger, #dc2626); }
 .runner-save { display: flex; justify-content: flex-end; }
+
+/* 保存按钮 + 提交中 spinner:与其它面板(TriggersPanel 等)同款 scoped 副本 ——
+   .btn-primary/.spinner 不是全局类,各面板自带一份,缺了就是浏览器默认裸按钮。 */
+.btn-primary { display: inline-flex; align-items: center; gap: 7px; height: 34px; padding: 0 16px; border: none; background: var(--color-primary); color: #fff; font-family: var(--font-sans); font-size: 0.83rem; font-weight: 600; border-radius: var(--rounded); cursor: pointer; box-shadow: 0 5px 16px var(--color-primary-soft); transition: background-color var(--duration-fast), transform var(--duration-fast); white-space: nowrap; }
+.btn-primary:hover:not(:disabled) { background: var(--color-primary-press); transform: translateY(-1px); }
+.btn-primary:disabled { opacity: 0.45; cursor: not-allowed; transform: none; box-shadow: none; }
+.spinner { display: inline-block; width: 13px; height: 13px; border: 2px solid rgba(255, 255, 255, 0.35); border-top-color: #fff; border-radius: var(--rounded-full); animation: rp-spin 0.7s linear infinite; flex-shrink: 0; }
+@keyframes rp-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .spinner { animation: none; border-top-color: currentColor; } }
 </style>

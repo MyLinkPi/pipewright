@@ -245,22 +245,31 @@ type RunnerMode = 'inherit' | 'label' | 'pinned'
 const runnerMode = ref<RunnerMode>('inherit')
 const runnerSelectorText = ref('')
 const runnerServerId = ref('')
+/** 最近一次写入 config 的值 + 所属 job:回显时区分「自己提交的回显」与「外部修改/无关字段编辑」。 */
+const lastRunnerCommit = ref<string | undefined>(undefined)
+const lastRunnerKey = ref('')
 
-/** 从当前 config 重解三态(job 切换 / 类型切换 / 外部回写时调)。 */
-function resyncRunnerState(): void {
-  const v = (typedConfig.value['runner'] ?? '').trim()
-  if (v === '') {
+/** 从当前 config 重解三态。自己的回显/同 job 上其它字段的编辑不重置 —— 否则
+ * 「切到标签/钉死但还没选具体值」或「顺手改了命令」都会把模式弹回「跟随项目默认」。
+ * job 切换/类型切换(force)或 runner 被外部修改时才全量重解。 */
+function resyncRunnerState(force = false): void {
+  const key = `${props.job.id}|${props.job.type}`
+  const committed = (typedConfig.value['runner'] ?? '').trim()
+  if (!force && key === lastRunnerKey.value && committed === (lastRunnerCommit.value ?? '')) return
+  lastRunnerKey.value = key
+  lastRunnerCommit.value = committed === '' ? undefined : committed
+  if (committed === '') {
     runnerMode.value = 'inherit'
     runnerSelectorText.value = ''
     runnerServerId.value = ''
-  } else if (v.startsWith('server:')) {
+  } else if (committed.startsWith('server:')) {
     runnerMode.value = 'pinned'
-    runnerServerId.value = v.slice('server:'.length)
+    runnerServerId.value = committed.slice('server:'.length)
     runnerSelectorText.value = ''
   } else {
     runnerMode.value = 'label'
     runnerServerId.value = ''
-    runnerSelectorText.value = v
+    runnerSelectorText.value = committed
   }
 }
 
@@ -270,6 +279,7 @@ const runnerMatched = computed(() => matchServers(runnerSelectorText.value, prop
 /** 写回 runner:空 = 删除键(跟随默认),非空 = 选择器表达式。 */
 function commitRunnerValue(value: string): void {
   const v = value.trim()
+  lastRunnerCommit.value = v === '' ? undefined : v
   if (v === '') {
     const next = { ...typedConfig.value }
     delete next['runner']
@@ -280,10 +290,16 @@ function commitRunnerValue(value: string): void {
   }
 }
 
+/** 模式切换:先落本地态;选了具体值(标签文本/钉死机器)才提交,未选时保持本地编辑不落库。 */
 function commitRunnerMode(mode: RunnerMode): void {
-  if (mode === 'inherit') commitRunnerValue('')
-  else if (mode === 'label') commitRunnerValue(runnerSelectorText.value)
-  else commitRunnerValue(runnerServerId.value !== '' ? `server:${runnerServerId.value}` : '')
+  runnerMode.value = mode
+  if (mode === 'inherit') {
+    commitRunnerValue('')
+    return
+  }
+  const v = mode === 'label' ? runnerSelectorText.value.trim() : runnerServerId.value !== '' ? `server:${runnerServerId.value}` : ''
+  if (v === '') return // 等用户选完标签/机器再落库
+  commitRunnerValue(v)
 }
 
 function commitRunnerSelector(value: string): void {
@@ -293,7 +309,8 @@ function commitRunnerSelector(value: string): void {
 
 function commitRunnerServer(id: string): void {
   runnerServerId.value = id
-  if (id !== '') commitRunnerValue(`server:${id}`)
+  if (id === '') return
+  commitRunnerValue(`server:${id}`)
 }
 
 /** 钉死模式下机器是否仍在服务器池(已删机器显示原始 id 兜底项)。 */
@@ -696,7 +713,7 @@ async function confirmSave(): Promise<void> {
           v-model="runnerMode"
           class="drawer-select"
           :aria-label="t('pipelineCanvas.runnerModeLabel')"
-          @change="commitRunnerMode(runnerMode)"
+          @change="commitRunnerMode(($event.target as HTMLSelectElement).value as RunnerMode)"
         >
           <option value="inherit">{{ t('pipelineCanvas.runnerModeInherit') }}</option>
           <option value="label">{{ t('pipelineCanvas.runnerModePool') }}</option>
