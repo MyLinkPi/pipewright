@@ -544,6 +544,7 @@ func TestUploadCertRoundtripAndApply(t *testing.T) {
 			{"docker", "network", "inspect"},
 			{"docker", "inspect", "pipewright-nginx"},
 			{"docker", "exec", "pipewright-nginx", "mkdir", "-p", "/etc/pipewright/certs/efg.com"},
+			{"docker", "cp", "/tmp/pipewright-nginx.conf", "pipewright-nginx:/tmp/pipewright-nginx.conf"},
 			{"docker", "exec", "pipewright-nginx", "nginx", "-t", "-c"},
 			{"docker", "cp", "/tmp/pipewright-nginx.conf", "pipewright-nginx:/etc/pipewright/nginx.conf"},
 			{"docker", "exec", "pipewright-nginx", "nginx", "-s", "reload"},
@@ -583,7 +584,7 @@ func TestApplyNginxTestFailureKeepsConfig(t *testing.T) {
 		if _, err := svc.CreateService(ctx, CreateServiceInput{DomainID: dom.ID, Name: "abc", Upstream: "web", UpstreamPort: 80}); err == nil {
 			t.Fatal("apply 失败应回滚(创建报错)")
 		}
-		if hasCmd(ft, "docker", "cp", "/tmp/pipewright-nginx.conf") {
+		if hasCmd(ft, "docker", "cp", "/tmp/pipewright-nginx.conf", "pipewright-nginx:/etc/pipewright/nginx.conf") {
 			t.Fatalf("校验失败不应覆盖正式配置:\n%s", joinAllCmds(ft))
 		}
 		// 服务应已回滚删除。
