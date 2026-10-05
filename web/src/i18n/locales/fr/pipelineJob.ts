@@ -32,7 +32,7 @@ export default {
   fieldImageLabel: "Image d’exécution",
   fieldImageHint:
     "Exécute les commandes dans ce conteneur isolé (équivalent à un Jenkins agent / image de build Yunxiao)",
-  jobRunnerHint: 'Vide = suit le defaut du stage/projet (stage dans les reglages du noeud, projet dans l onglet Build). Les noeuds avec le meme selecteur partagent une machine et un espace de travail ; des selecteurs differents vont sur des machines differentes.',
+  jobRunnerHint: 'Vide = suit le defaut du stage/projet (stage dans les reglages du noeud, projet dans l onglet Build). Chaque noeud occupe son propre slot : les noeuds avec le meme selecteur tirent du meme pool — en parallele si la capacite le permet, en file sinon ; espaces de travail independants.',
   fieldCommandsLabel: "Commandes d’exécution",
   fieldCommandsHint: "Une commande par ligne, exécutées dans l’ordre",
   fieldWorkDirLabel: "Répertoire de travail",

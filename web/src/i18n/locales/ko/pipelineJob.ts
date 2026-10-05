@@ -31,7 +31,7 @@ export default {
   fieldImageLabel: "실행 이미지",
   fieldImageHint:
     "이 격리 컨테이너 안에서 명령 실행(Jenkins agent / 윈샤오 빌드 이미지에 해당)",
-  jobRunnerHint: '비어 있으면 스테이지/프로젝트 기본값을 따릅니다(스테이지는 노드 설정, 프로젝트는 빌드 탭). 같은 셀렉터의 노드는 머신과 작업 공간을 공유하고, 다른 셀렉터의 노드는 각각 다른 머신에 배치됩니다.',
+  jobRunnerHint: '비어 있으면 스테이지/프로젝트 기본값을 따릅니다(스테이지는 노드 설정, 프로젝트는 빌드 탭). 노드마다 독립적으로 슬롯을 확보합니다: 같은 셀렉터의 노드는 같은 풀에서 각각 한 대를 확보하고, 여유가 있으면 병렬, 꽉 차면 대기합니다. 작업 공간은 서로 독립적입니다.',
   fieldCommandsLabel: "실행 명령",
   fieldCommandsHint: "한 줄에 한 명령, 순서대로 실행",
   fieldWorkDirLabel: "작업 디렉터리",

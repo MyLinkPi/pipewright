@@ -33,7 +33,7 @@ export default {
   fieldImageLabel: "Imagen de ejecución",
   fieldImageHint:
     "Ejecuta comandos dentro de este contenedor aislado (equivalente a un Jenkins agent / imagen de build de Yunxiao)",
-  jobRunnerHint: 'Vacio = sigue el valor por defecto de stage/proyecto (stage en ajustes del nodo, proyecto en la pestana Build). Los nodos con el mismo selector comparten maquina y espacio de trabajo; selectores distintos se reparten en maquinas diferentes.',
+  jobRunnerHint: 'Vacio = sigue el valor por defecto de stage/proyecto (stage en ajustes del nodo, proyecto en la pestana Build). Cada nodo ocupa su propio slot: los nodos con el mismo selector toman una maquina del mismo grupo — en paralelo si hay capacidad, en cola si no; espacios de trabajo independientes.',
   fieldCommandsLabel: "Comandos de ejecución",
   fieldCommandsHint: "Un comando por línea, ejecutados en orden",
   fieldWorkDirLabel: "Directorio de trabajo",
