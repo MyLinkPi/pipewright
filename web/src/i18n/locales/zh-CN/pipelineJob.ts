@@ -29,6 +29,7 @@ export default {
   // ─── jobConfigSchema · script fields ───────────────────────────────────
   fieldImageLabel: "运行镜像",
   fieldImageHint: "在该隔离容器内执行命令(对标 Jenkins agent / 云效构建镜像)",
+  jobRunnerHint: '留空 = 跟随阶段/项目默认(阶段在节点设置、项目在「构建配置」里设置)。选择器相同的节点共享一台构建机与工作区;不同选择器的节点各自派发到不同机器。',
   fieldCommandsLabel: "执行命令",
   fieldCommandsHint: "每行一条命令,按顺序执行",
   fieldWorkDirLabel: "工作目录",

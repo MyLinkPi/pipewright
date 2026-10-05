@@ -53,3 +53,43 @@ func TestNormalizeSpecRejectsBadStageRunner(t *testing.T) {
 		}
 	}
 }
+
+func TestNormalizeSpecJobRunner(t *testing.T) {
+	base := func(jobs []Job) Spec {
+		return Spec{Stages: []Stage{
+			{Name: "源", Kind: KindSource, Jobs: []Job{{Name: "s", Type: "git_source"}}},
+			{Name: "构建", Kind: KindBuild, Jobs: jobs},
+		}}
+	}
+
+	// 合法:合法选择器逐字保留;空串/缺失 = 未覆盖。
+	ok, err := NormalizeSpec(base([]Job{
+		{Name: "a", Type: "script", Config: map[string]any{"runner": " linux,arch=arm64 "}},
+		{Name: "b", Type: "script", Config: map[string]any{"runner": "server:srv-1"}},
+		{Name: "c", Type: "script", Config: map[string]any{"runner": ""}},
+		{Name: "d", Type: "script", Config: map[string]any{}},
+	}))
+	if err != nil {
+		t.Fatalf("legal job runner: %v", err)
+	}
+	if got := ok.Stages[1].Jobs[0].Config["runner"]; got != "linux,arch=arm64" {
+		t.Fatalf("runner 应 trim 保留,得 %v", got)
+	}
+	if got := ok.Stages[1].Jobs[1].Config["runner"]; got != "server:srv-1" {
+		t.Fatalf("钉死形式应保留,得 %v", got)
+	}
+
+	// 非法:语法错 → ErrInvalidJob;非字符串 → ErrInvalidJob。
+	for name, bad := range map[string]any{
+		"非法字符": "gpu;rm -rf",
+		"空值键":  "arch=",
+		"钉死空id": "server:",
+		"超长":   strings.Repeat("a", 256),
+		"非字符串": 42,
+	} {
+		_, err := NormalizeSpec(base([]Job{{Name: "a", Type: "script", Config: map[string]any{"runner": bad}}}))
+		if !errors.Is(err, ErrInvalidJob) {
+			t.Errorf("%s(%v) 应报 ErrInvalidJob, 得 %v", name, bad, err)
+		}
+	}
+}

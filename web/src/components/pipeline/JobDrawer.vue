@@ -22,6 +22,7 @@ import {
   type PromotedParam,
 } from './studioCompile'
 import { createCustomNode } from '../../api/customNodes'
+import { matchServers } from '../../lib/selectorMatch'
 import JobTypeIcon from './JobTypeIcon.vue'
 import StepBuilder from './StepBuilder.vue'
 import StudioInstanceParams from './StudioInstanceParams.vue'
@@ -85,6 +86,7 @@ function hydrate(job: PipelineJob): void {
   const repickView = modeKey !== lastModeKey
   lastModeKey = modeKey
   splitOnType(job.type, job.config ?? {}, repickView)
+  resyncRunnerState()
 }
 
 /** Recompute typed config + raw extras for a given type, preserving all values. */
@@ -148,6 +150,8 @@ const visibleFields = computed<JobField[]>(() => {
   return spec.value.fields.filter((f) => {
     if (f.when && !f.when(typedConfig.value)) return false
     if (viewMode.value === 'steps' && STEP_OWNED_KEYS.has(f.key)) return false
+    // runner(构建机)由下方独立「构建机」区块渲染,不进常规字段循环。
+    if (f.key === 'runner') return false
     return true
   })
 })
@@ -230,6 +234,72 @@ function producerCandidates(field: JobField): ProducerOption[] {
 function producerLabel(o: ProducerOption): string {
   return `${o.name}(${jobTypeLabel(o.type)})`
 }
+
+// ─── 构建机选择(节点级 runner · FR-8-19)────────────────────────────────────
+// 脚本类节点各自声明「本节点跑在哪台构建机上」:config.runner 覆盖 > 阶段覆盖 > 项目默认;
+// 空 = 跟随。选择器语法与全系统一致:标签项(`linux,arch=arm64`)/ `server:<id>` 钉死。
+// 同一阶段内选择器相同的节点共享一台机器与工作区;不同选择器各自派发(后端按组调度)。
+
+type RunnerMode = 'inherit' | 'label' | 'pinned'
+
+const runnerMode = ref<RunnerMode>('inherit')
+const runnerSelectorText = ref('')
+const runnerServerId = ref('')
+
+/** 从当前 config 重解三态(job 切换 / 类型切换 / 外部回写时调)。 */
+function resyncRunnerState(): void {
+  const v = (typedConfig.value['runner'] ?? '').trim()
+  if (v === '') {
+    runnerMode.value = 'inherit'
+    runnerSelectorText.value = ''
+    runnerServerId.value = ''
+  } else if (v.startsWith('server:')) {
+    runnerMode.value = 'pinned'
+    runnerServerId.value = v.slice('server:'.length)
+    runnerSelectorText.value = ''
+  } else {
+    runnerMode.value = 'label'
+    runnerServerId.value = ''
+    runnerSelectorText.value = v
+  }
+}
+
+/** 标签模式选择器的实时命中预览(与服务端 runner 域同一语义;权威裁决在服务端)。 */
+const runnerMatched = computed(() => matchServers(runnerSelectorText.value, props.servers ?? []))
+
+/** 写回 runner:空 = 删除键(跟随默认),非空 = 选择器表达式。 */
+function commitRunnerValue(value: string): void {
+  const v = value.trim()
+  if (v === '') {
+    const next = { ...typedConfig.value }
+    delete next['runner']
+    typedConfig.value = next
+    flush()
+  } else {
+    setField('runner', v)
+  }
+}
+
+function commitRunnerMode(mode: RunnerMode): void {
+  if (mode === 'inherit') commitRunnerValue('')
+  else if (mode === 'label') commitRunnerValue(runnerSelectorText.value)
+  else commitRunnerValue(runnerServerId.value !== '' ? `server:${runnerServerId.value}` : '')
+}
+
+function commitRunnerSelector(value: string): void {
+  runnerSelectorText.value = value
+  commitRunnerValue(value)
+}
+
+function commitRunnerServer(id: string): void {
+  runnerServerId.value = id
+  if (id !== '') commitRunnerValue(`server:${id}`)
+}
+
+/** 钉死模式下机器是否仍在服务器池(已删机器显示原始 id 兜底项)。 */
+const runnerServerMissing = computed(
+  () => runnerServerId.value !== '' && !(props.servers ?? []).some((s) => s.id === runnerServerId.value),
+)
 
 // Initial hydrate:此时上方所有声明均已求值(避免 step-builder 相关 computed 的暂时性死区)。
 hydrate(props.job)
@@ -617,6 +687,59 @@ async function confirmSave(): Promise<void> {
     </div>
 
     <!-- Advanced raw KV (extras not covered by the schema) -->
+    <!-- 构建机选择(RUNNER · FR-8-19):脚本类节点各自声明跑在哪台构建机上 -->
+    <div v-if="isScriptClassType(localType)" class="drawer-section">
+      <div class="drawer-section-label">{{ t('pipelineCanvas.runnerSectionLabel') }}</div>
+      <div class="drawer-field">
+        <div class="drawer-field-label">{{ t('pipelineCanvas.runnerModeLabel') }}</div>
+        <select
+          v-model="runnerMode"
+          class="drawer-select"
+          :aria-label="t('pipelineCanvas.runnerModeLabel')"
+          @change="commitRunnerMode(runnerMode)"
+        >
+          <option value="inherit">{{ t('pipelineCanvas.runnerModeInherit') }}</option>
+          <option value="label">{{ t('pipelineCanvas.runnerModePool') }}</option>
+          <option value="pinned">{{ t('pipelineCanvas.runnerModePinned') }}</option>
+        </select>
+      </div>
+      <div v-if="runnerMode === 'label'" class="drawer-field">
+        <div class="drawer-field-label">{{ t('pipelineCanvas.runnerLabel') }}</div>
+        <LabelSelectorEditor
+          :model-value="runnerSelectorText"
+          :servers="props.servers"
+          @update:model-value="commitRunnerSelector"
+        />
+        <p
+          v-if="runnerSelectorText.trim()"
+          class="field-hint"
+          :class="{ 'runner-match--none': runnerMatched.length === 0 }"
+          role="status"
+        >
+          {{ runnerMatched.length === 0
+            ? t('pipelineCanvas.runnerNoMatch')
+            : t('pipelineCanvas.runnerMatchCount', { n: runnerMatched.length }) }}
+          <span v-if="runnerMatched.length"> — {{ runnerMatched.map((s) => s.name).join(', ') }}</span>
+        </p>
+      </div>
+      <div v-else-if="runnerMode === 'pinned'" class="drawer-field">
+        <div class="drawer-field-label">{{ t('pipelineCanvas.runnerServerLabel') }}</div>
+        <select
+          class="drawer-select"
+          :value="runnerServerId"
+          :aria-label="t('pipelineCanvas.runnerServerLabel')"
+          @change="commitRunnerServer(($event.target as HTMLSelectElement).value)"
+        >
+          <option value="" disabled>{{ t('pipelineCanvas.runnerServerPick') }}</option>
+          <option v-for="s in props.servers ?? []" :key="s.id" :value="s.id">
+            {{ s.name }}({{ s.host }})
+          </option>
+          <option v-if="runnerServerMissing" :value="runnerServerId">{{ runnerServerId }}</option>
+        </select>
+      </div>
+      <p class="field-hint">{{ t('pipelineJob.jobRunnerHint') }}</p>
+    </div>
+
     <div class="drawer-section">
       <button
         class="advanced-toggle"
@@ -854,6 +977,10 @@ async function confirmSave(): Promise<void> {
   font-size: 0.72rem;
   color: var(--color-faint);
   line-height: 1.4;
+}
+
+.runner-match--none {
+  color: var(--color-danger, #dc2626);
 }
 
 .drawer-textarea {

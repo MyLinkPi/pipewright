@@ -492,3 +492,64 @@ func TestSyncAllToSink(t *testing.T) {
 		t.Fatalf("vault 未注入应 no-op:%v", err)
 	}
 }
+
+// TestBackfillCleansCoveredCopies:启动迁移清理历史版本回填出的冻结副本 —— 带回填标记且
+// 已被库内证书覆盖的行删除;未被覆盖的孤儿副本保留;平台 HTTPS 占用中的副本跳过;
+// 清理后 service_reg 侧的副本基域不会再被搬回(回填覆盖跳过)。
+func TestBackfillCleansCoveredCopies(t *testing.T) {
+	db := storetest.OpenDB(t)
+	ctx := context.Background()
+	svc := New(db, nil, passSealer{}).(*service)
+	svc.SetPlatformHTTPS(&fakePlatformHTTPS{used: map[string]bool{"cert-copy-protected": true}})
+
+	mk := func(id, primary string, sans []string, detail string) {
+		c := &Certificate{
+			ID: id, PrimaryDomain: primary, Domains: sans,
+			Source: SourceManual, Validation: ValidationManual, Status: StatusIssued,
+			StatusDetail: detail, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+		}
+		if err := svc.store.insert(ctx, c); err != nil {
+			t.Fatalf("insert %s: %v", id, err)
+		}
+	}
+	mk("cert-wild", "*.mylinkpi.cn", []string{"*.mylinkpi.cn", "mylinkpi.cn"}, "") // 真身
+	mk("cert-wild2", "*.zz-copy.cn", []string{"*.zz-copy.cn"}, "")                // 真身
+	mk("cert-copy-protected", "mylinkpi.cn", []string{"mylinkpi.cn"}, backfillDetailOld) // 被覆盖+平台 HTTPS 占用 → 保留
+	mk("cert-copy-stale", "zz-copy.cn", []string{"zz-copy.cn"}, backfillDetailOld)       // 被覆盖+旧标记 → 清理
+	mk("cert-orphan", "orphan.io", []string{"orphan.io"}, backfillDetail)                // 未覆盖 → 保留
+
+	// service_reg 侧:mylinkpi.cn 基域行是真身的同步副本(历史回填副本的数据源)。
+	now := time.Now().UTC().Format(time.RFC3339)
+	if _, err := db.ExecContext(ctx,
+		`INSERT INTO service_reg_domains (id, base_domain, cert_pem_sealed, key_pem_sealed,
+		 cert_subject, cert_expires_at, created_at, updated_at) VALUES ('sr-apex', 'mylinkpi.cn', ?, ?, 'CN=*.mylinkpi.cn', ?, ?, ?)`,
+		[]byte("sealed-copy"), []byte("sealed-copy-key"),
+		time.Now().Add(30*24*time.Hour).UTC().Format(time.RFC3339), now, now); err != nil {
+		t.Fatalf("seed service_reg: %v", err)
+	}
+
+	if _, err := svc.BackfillFromServiceReg(ctx); err != nil {
+		t.Fatalf("backfill: %v", err)
+	}
+	list, err := svc.store.list(ctx)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	got := map[string]bool{}
+	for _, c := range list {
+		got[c.ID] = true
+	}
+	for _, id := range []string{"cert-wild", "cert-wild2", "cert-orphan", "cert-copy-protected"} {
+		if !got[id] {
+			t.Fatalf("证书 %s 应保留", id)
+		}
+	}
+	if got["cert-copy-stale"] {
+		t.Fatal("被覆盖的历史回填副本应被清理")
+	}
+	for _, c := range list {
+		if c.PrimaryDomain == "mylinkpi.cn" && c.ID != "cert-copy-protected" {
+			t.Fatalf("副本基域不应被回填搬回: %+v", c)
+		}
+	}
+}

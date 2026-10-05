@@ -106,14 +106,25 @@ func TestCertStoreRoundtrip(t *testing.T) {
 	})
 }
 
-// TestBackfillFromServiceReg 验证 servicereg 既有手动证书幂等回填(source=manual,密文搬移,
-// 按 primary_domain 去重)。
+// TestBackfillFromServiceReg 验证 servicereg 存量证书回填:孤儿证书搬移(source=manual,
+// 按 primary_domain 去重);已被库内证书(如泛域名)覆盖的基域跳过 —— 那只是 CertSink
+// 同步的副本,回填只会得到永不续期的冻结行。
 func TestBackfillFromServiceReg(t *testing.T) {
 	storetest.ForEachDialect(t, func(t *testing.T, st *store.Store) {
 		ctx := context.Background()
 		now := time.Now().UTC().Format(time.RFC3339)
-		// 两行带证书的基域 + 一行无证书的基域。
-		for _, base := range []string{"efg.com", "other.io"} {
+		// 库内已有 *.mylinkpi.cn(含裸域 SAN)——服务注册侧 mylinkpi.cn 行是它的同步副本。
+		s := NewStore(st.DB)
+		if err := s.insert(ctx, &Certificate{
+			ID: "cert-wild", PrimaryDomain: "*.mylinkpi.cn", Domains: []string{"*.mylinkpi.cn", "mylinkpi.cn"},
+			Source: SourceACME, CA: CALetsEncrypt, Validation: ValidationDNS, DNSProviderID: "p1",
+			KeyType: KeyTypeEC256, AutoRenew: true, Status: StatusIssued,
+			CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+		}); err != nil {
+			t.Fatalf("seed wildcard: %v", err)
+		}
+		// 两行孤儿基域证书 + 一行副本基域(mylinkpi.cn,应跳过)+ 一行无证书的基域。
+		for _, base := range []string{"efg.com", "other.io", "mylinkpi.cn"} {
 			if _, err := st.DB.ExecContext(ctx,
 				`INSERT INTO service_reg_domains (id, base_domain, cert_pem_sealed, key_pem_sealed,
 				 cert_subject, cert_expires_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -129,23 +140,29 @@ func TestBackfillFromServiceReg(t *testing.T) {
 			t.Fatalf("seed bare: %v", err)
 		}
 
-		s := NewStore(st.DB)
 		n, err := s.BackfillFromServiceReg(ctx)
 		if err != nil {
 			t.Fatalf("backfill: %v", err)
 		}
 		if n != 2 {
-			t.Fatalf("应回填 2 张, got %d", n)
+			t.Fatalf("应回填 2 张(副本行跳过), got %d", n)
 		}
 		list, err := s.list(ctx)
 		if err != nil {
 			t.Fatalf("list: %v", err)
 		}
-		if len(list) != 2 {
-			t.Fatalf("回填后应有 2 行, got %d", len(list))
+		if len(list) != 3 {
+			t.Fatalf("回填后应 3 行(通配符 + 2 孤儿), got %d", len(list))
 		}
 		for _, c := range list {
-			if c.Source != SourceManual || c.Validation != ValidationManual || c.AutoRenew || c.Status != StatusIssued {
+			if c.PrimaryDomain == "mylinkpi.cn" {
+				t.Fatalf("被覆盖的副本基域不应回填: %+v", c)
+			}
+			if c.PrimaryDomain == "*.mylinkpi.cn" {
+				continue // 库内原有行
+			}
+			if c.Source != SourceManual || c.Validation != ValidationManual || c.AutoRenew || c.Status != StatusIssued ||
+				c.StatusDetail != backfillDetail {
 				t.Fatalf("回填行字段不符: %+v", c)
 			}
 			sc, _, ok, _ := s.getSealed(ctx, c.ID)
@@ -158,8 +175,8 @@ func TestBackfillFromServiceReg(t *testing.T) {
 		if n, _ := s.BackfillFromServiceReg(ctx); n != 0 {
 			t.Fatalf("二次回填应为 0, got %d", n)
 		}
-		if list, _ := s.list(ctx); len(list) != 2 {
-			t.Fatalf("二次回填后仍应 2 行, got %d", len(list))
+		if list, _ = s.list(ctx); len(list) != 3 {
+			t.Fatalf("二次回填后仍应 3 行, got %d", len(list))
 		}
 	})
 }

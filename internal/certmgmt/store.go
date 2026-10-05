@@ -244,9 +244,21 @@ type scanner interface {
 	Scan(dest ...any) error
 }
 
-// BackfillFromServiceReg 把 service_reg_domains 里既有手动上传的证书一次性回填进 certificates
-// (source=manual,密文原样搬移 —— 密文不可解析 SAN,domains 只记基域;幂等:按 primary_domain 跳过已存在)。
-// 返回回填条数。best-effort:单行失败跳过并计数,不让回填阻断启动。
+// 回填行 status_detail 标记(copies 识别用):old 为历史版本遗留文案,new 为当前版本。
+const (
+	backfillDetail    = "迁移自服务注册基域的历史证书"
+	backfillDetailOld = "由服务注册页历史导入"
+)
+
+// BackfillFromServiceReg 把 service_reg_domains 里的存量证书一次性回填进 certificates
+// (source=manual,密文原样搬移,domains 只记基域;幂等:按 primary_domain 跳过已存在)。
+// 返回回填条数。
+//
+// 覆盖跳过是关键:重构后该表的证书列只由 CertSink(证书管理侧签发/导入后同步)写入,
+// 凡基域已被证书库任一证书覆盖(SAN 精确等于基域,或 *.基域 泛域名覆盖,与下发判定
+// domainCoversAny 同语义),该行必是库内证书的同步副本 —— 回填只会得到一张永不续期的
+// 冻结副本。只有库内无任何覆盖的孤儿证书(证书管理上线前的历史手动遗留)才回填兜底可见。
+// best-effort:单行失败跳过,不让回填阻断启动。
 func (s *Store) BackfillFromServiceReg(ctx context.Context) (int, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT base_domain, cert_pem_sealed, key_pem_sealed, cert_subject, cert_expires_at, created_at
@@ -272,27 +284,35 @@ func (s *Store) BackfillFromServiceReg(ctx context.Context) (int, error) {
 	if err := rows.Err(); err != nil {
 		return 0, err
 	}
+	lib, err := s.list(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("certmgmt: backfill lib list: %w", err)
+	}
+	coveredByLib := func(base string) bool {
+		for i := range lib {
+			if domainCoversAny(append(lib[i].Domains, lib[i].PrimaryDomain), base) {
+				return true
+			}
+		}
+		return false
+	}
 	n := 0
 	for _, v := range srcs {
 		base := strings.ToLower(strings.TrimSpace(v.base))
-		if base == "" {
+		if base == "" || coveredByLib(base) {
 			continue
 		}
 		now := time.Now().UTC().Format(time.RFC3339)
-		_, ierr := s.db.ExecContext(ctx,
+		if _, ierr := s.db.ExecContext(ctx,
 			`INSERT INTO certificates
 			   (id, primary_domain, domains, source, validation, auto_renew, status, status_detail,
 			    cert_pem_sealed, key_pem_sealed, subject, not_after, last_issued_at, created_at, updated_at)
-			 VALUES (?, ?, ?, 'manual', 'manual', 0, 'issued', '由服务注册页历史导入',
+			 VALUES (?, ?, ?, 'manual', 'manual', 0, 'issued', ?,
 			         ?, ?, ?, ?, ?, ?, ?)`,
-			newID(), base, base, v.certSealed, v.keySealed, truncate(v.subject, 1000), v.expires, v.created,
-			coalesceTime(v.created), now,
-		)
-		if ierr != nil {
-			if store.IsUniqueErr(ierr) {
-				continue // 已回填过(幂等)
-			}
-			continue // 单行失败跳过,不阻断
+			newID(), base, base, backfillDetail, v.certSealed, v.keySealed, truncate(v.subject, 1000), v.expires,
+			v.created, coalesceTime(v.created), now,
+		); ierr != nil {
+			continue // 唯一冲突(已回填过)或单行失败:跳过,不阻断
 		}
 		n++
 	}

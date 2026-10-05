@@ -32,6 +32,7 @@ export default {
   fieldImageLabel: "Laufzeit-Image",
   fieldImageHint:
     "Befehle in diesem isolierten Container ausführen (entspricht einem Jenkins-Agent / Yunxiao-Build-Image)",
+  jobRunnerHint: 'Leer = Projekt-/Stage-Standard folgen (Stage in den Knoten-Einstellungen, Projekt im Build-Tab). Knoten mit gleichem Selektor teilen sich Maschine und Arbeitsbereich; unterschiedliche Selektoren werden auf verschiedene Maschinen verteilt.',
   fieldCommandsLabel: "Ausführungsbefehle",
   fieldCommandsHint: "Ein Befehl pro Zeile, der Reihe nach ausgeführt",
   fieldWorkDirLabel: "Arbeitsverzeichnis",

@@ -30,6 +30,7 @@ export type FieldKind =
   | 'channel'
   | 'labelSelector'
   | 'producer'
+  | 'runnerPicker'
 
 export interface SelectOption {
   value: string
@@ -245,6 +246,17 @@ const SCRIPT_FIELDS: JobField[] = [
     get hint() { return t('pipelineJob.fieldCacheKeyHint') },
   },
 ]
+
+// 节点级构建机选择器(FR-8-19):存 config.runner,语法与阶段级一致(空 = 跟随阶段/项目默认;
+// `server:<id>` 钉死;标签项)。不进常规字段循环 —— JobDrawer 为脚本类节点单独渲染「构建机」区块。
+export const RUNNER_FIELD_KEY = 'runner'
+const RUNNER_FIELD: JobField = {
+  key: RUNNER_FIELD_KEY,
+  get label() { return t('pipelineCanvas.runnerSectionLabel') },
+  kind: 'runnerPicker',
+  get hint() { return t('pipelineJob.jobRunnerHint') },
+}
+SCRIPT_FIELDS.push(RUNNER_FIELD)
 
 // 部署节点共用字段(deploy_ssh 主机部署 / deploy_container 容器部署;旧 deploy_frontend 模板沿用)。
 // 语义:部署目标 → 产物来源(精确绑定,无「自动」)→ 滚动批次 → 健康检查 → 重启/容器参数。

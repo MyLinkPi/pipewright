@@ -32,6 +32,7 @@ export default {
   fieldImageLabel: "Runtime image",
   fieldImageHint:
     "Run commands inside this isolated container (akin to a Jenkins agent / Yunxiao build image)",
+  jobRunnerHint: 'Empty = follow the stage/project default (stage in node settings, project in the Build tab). Nodes sharing the same selector share one build machine and workspace; nodes with different selectors are dispatched to different machines.',
   fieldCommandsLabel: "Commands",
   fieldCommandsHint: "One command per line, run in order",
   fieldWorkDirLabel: "Working directory",
