@@ -245,7 +245,8 @@ type Service interface {
 	OpenCertPEM(ctx context.Context, id string) (certPEM, keyPEM string, err error)
 	// SweepOnce 到期自动续期一轮(Sweeper 调度入口;返回本轮触发的续期数)。
 	SweepOnce(ctx context.Context) (int, error)
-	// BackfillFromServiceReg 启动期一次性迁移:把 service_reg_domains 既有手动证书幂等回填进
+	// BackfillFromServiceReg 启动期一次性迁移:先清掉历史版本误搬出的冻结副本(已被库内
+	// 证书覆盖的回填行),再把库内无覆盖的存量孤儿证书从 service_reg_domains 幂等回填进
 	// certificates(老数据在证书管理页可见)。返回回填条数。
 	BackfillFromServiceReg(ctx context.Context) (int, error)
 }
@@ -760,9 +761,52 @@ func (s *service) SweepOnce(ctx context.Context) (int, error) {
 	return n, nil
 }
 
-// BackfillFromServiceReg 幂等回填 servicereg 既有手动证书(source=manual;失败仅记日志不阻断启动)。
+// BackfillFromServiceReg 幂等回填 servicereg 存量孤儿证书(source=manual;失败仅记日志不阻断
+// 启动)。先清理历史版本回填出的冻结副本,再回填 —— 顺序保证清掉的副本不会被再次搬回来。
 func (s *service) BackfillFromServiceReg(ctx context.Context) (int, error) {
+	s.cleanupBackfillCopies(ctx)
 	return s.store.BackfillFromServiceReg(ctx)
+}
+
+// cleanupBackfillCopies 删除历史版本回填产生的冻结副本行(status_detail 带回填标记,且
+// primary_domain 已被证书库其它证书覆盖 —— 真身是库内可续期证书,副本只会在列表里误导并过期)。
+// 刻意走 store 级删除而非 service.Delete:副本 SAN 与基域精确相等,Delete 的 clearOwningDomains
+// 会按「内容相同 + SAN 覆盖」误判基域由副本持有,把网关仍在用的同步证书清回 HTTP-only。
+// 平台 HTTPS 正在引用的行跳过,留给用户先在设置里解绑。
+func (s *service) cleanupBackfillCopies(ctx context.Context) {
+	certs, err := s.store.list(ctx)
+	if err != nil {
+		s.logf("[certmgmt] 回填副本清理跳过(列证书失败):%v", err)
+		return
+	}
+	for i := range certs {
+		cp := &certs[i]
+		if cp.StatusDetail != backfillDetail && cp.StatusDetail != backfillDetailOld {
+			continue
+		}
+		covered := false
+		for j := range certs {
+			if certs[j].ID == cp.ID {
+				continue
+			}
+			if domainCoversAny(append(certs[j].Domains, certs[j].PrimaryDomain), cp.PrimaryDomain) {
+				covered = true
+				break
+			}
+		}
+		if !covered {
+			continue
+		}
+		if s.phttps != nil {
+			if used, uerr := s.phttps.UsesCert(ctx, cp.ID); uerr == nil && used {
+				continue
+			}
+		}
+		if err := s.store.delete(ctx, cp.ID); err != nil {
+			continue
+		}
+		s.logf("[certmgmt] 已清理历史回填副本 %s(库内已有覆盖证书)", cp.PrimaryDomain)
+	}
 }
 
 // ---------- in-flight 锁 ----------

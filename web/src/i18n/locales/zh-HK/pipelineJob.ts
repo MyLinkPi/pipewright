@@ -29,6 +29,7 @@ export default {
   // ─── jobConfigSchema · script fields ───────────────────────────────────
   fieldImageLabel: "執行映像",
   fieldImageHint: "在該隔離容器內執行命令(對標 Jenkins agent / 雲效構建映像)",
+  jobRunnerHint: '留空 = 跟隨階段/專案預設(階段在節點設定、專案在「構建配置」裏設定)。選擇器相同的節點共享一台構建機與工作區;不同選擇器的節點各自派發到不同機器。',
   fieldCommandsLabel: "執行命令",
   fieldCommandsHint: "每行一條命令,按順序執行",
   fieldWorkDirLabel: "工作目錄",

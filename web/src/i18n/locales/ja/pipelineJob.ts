@@ -31,6 +31,7 @@ export default {
   fieldImageLabel: "実行イメージ",
   fieldImageHint:
     "この隔離コンテナ内でコマンドを実行(Jenkins agent / 雲効ビルドイメージ相当)",
+  jobRunnerHint: '空 = ステージ/プロジェクト既定に従う(ステージはノード設定、プロジェクトは「ビルド」タブ)。同じセレクターのノードはマシンとワークスペースを共有し、異なるセレクターのノードは別々のマシンに配備されます。',
   fieldCommandsLabel: "実行コマンド",
   fieldCommandsHint: "1 行 1 コマンド、順番に実行",
   fieldWorkDirLabel: "作業ディレクトリ",

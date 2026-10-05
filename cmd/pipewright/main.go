@@ -468,11 +468,12 @@ func main() {
 			sr.SetCertSyncHook(cs.SyncAllToSink)
 		}
 	}
-	// servicereg 既有手动证书一次性回填进证书管理页(幂等;失败仅记日志)。
+	// servicereg 存量孤儿证书一次性回填进证书管理页(已被库内证书覆盖的基域跳过;
+	// 历史版本误搬的冻结副本顺带清理。幂等;失败仅记日志)。
 	if n, berr := certSvc.BackfillFromServiceReg(context.Background()); berr != nil {
 		log.Printf("[certmgmt] 存量证书回填失败(不影响启动):%v", berr)
 	} else if n > 0 {
-		log.Printf("[certmgmt] 已回填 %d 张服务注册页历史证书", n)
+		log.Printf("[certmgmt] 已回填 %d 张服务注册基域存量证书", n)
 	}
 
 	// 平台 HTTPS 访问(宿主 nginx):当平台自身所在主机装有宿主 nginx 时,自动把平台 Web 页面

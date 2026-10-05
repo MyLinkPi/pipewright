@@ -424,6 +424,10 @@ func normalizeSpec(in Spec) (Spec, error) {
 			if cfg == nil {
 				cfg = map[string]any{}
 			}
+			// 节点级构建机选择器(FR-8-19):config["runner"] 非空时按阶段级同一规则轻校验。
+			if err := normalizeJobRunner(cfg); err != nil {
+				return Spec{}, err
+			}
 			jobs = append(jobs, Job{
 				ID:      jobID,
 				Name:    jobName,
@@ -491,6 +495,69 @@ func normalizeSpec(in Spec) (Spec, error) {
 	return out, nil
 }
 
+// normalizeJobRunner 校验节点级构建机选择器(FR-8-19:job.Config["runner"]):
+// 缺失/nil/空串 = 未覆盖(跟随阶段覆盖与项目默认);非字符串 = ErrInvalidJob;
+// 非空字符串与阶段级选择器同一语法轻校验(server:<id> 钉死 / 逗号分隔标签项,
+// 字符集/长度/项数上限一致),完整语义解析在 runner 调度侧(runner.selector.go 为准)。
+func normalizeJobRunner(cfg map[string]any) error {
+	raw, ok := cfg["runner"]
+	if !ok || raw == nil {
+		return nil
+	}
+	s, ok := raw.(string)
+	if !ok {
+		return fmt.Errorf("%w: job runner selector must be a string", ErrInvalidJob)
+	}
+	if strings.TrimSpace(s) == "" {
+		return nil
+	}
+	if err := validateSelectorSyntax(strings.TrimSpace(s)); err != nil {
+		return fmt.Errorf("%w: %v", ErrInvalidJob, err)
+	}
+	cfg["runner"] = strings.TrimSpace(s)
+	return nil
+}
+
+// validateSelectorSyntax 的失败哨兵(errors.Is 可判;调用方包装成 ErrInvalidStage/ErrInvalidJob)。
+var (
+	errSelectorSyntax = errors.New("invalid runner selector")
+	errSelectorLen    = errors.New("runner selector too long")
+	errSelectorTerms  = errors.New("runner selector too many terms")
+	errSelectorTerm   = errors.New("invalid runner selector term")
+)
+
+// validateSelectorSyntax 选择器表达式语法轻校验(阶段级/节点级共用):server:<id> 钉死形式
+// 或标签项列表(字符集/总长 255/项数 16)。规则与 runner.selector.go 保持一致。
+// 失败返回 errSelector* 哨兵,由调用方包装成各自的 ErrInvalidStage / ErrInvalidJob。
+func validateSelectorSyntax(s string) error {
+	if id, ok := strings.CutPrefix(s, "server:"); ok {
+		if !selectorTermOK(id) {
+			return errSelectorSyntax
+		}
+		return nil
+	}
+	if len(s) > 255 {
+		return errSelectorLen
+	}
+	terms := strings.Split(s, ",")
+	if len(terms) > 16 {
+		return errSelectorTerms
+	}
+	for _, t := range terms {
+		t = strings.TrimSpace(t)
+		if k, v, isKV := strings.Cut(t, "="); isKV {
+			if !selectorTermOK(k) || !selectorTermOK(v) {
+				return errSelectorTerm
+			}
+			continue
+		}
+		if !selectorTermOK(t) {
+			return errSelectorTerm
+		}
+	}
+	return nil
+}
+
 // normalizeStageRunner 规范化阶段级构建机选择器(FR-8-19):trim 即可,空 = 用项目默认。
 // 轻校验(字符集/长度/项数)在本层挡明显笔误,完整语义解析(标签匹配/钉死单机存在性)在
 // runner 调度侧 —— 本包不依赖 runner,两处规则须保持一致(runner.selector.go 为准)。
@@ -499,30 +566,8 @@ func normalizeStageRunner(in string) (string, error) {
 	if s == "" {
 		return "", nil
 	}
-	if id, ok := strings.CutPrefix(s, "server:"); ok {
-		if !selectorTermOK(id) {
-			return "", fmt.Errorf("%w: invalid stage runner selector", ErrInvalidStage)
-		}
-		return s, nil
-	}
-	if len(s) > 255 {
-		return "", fmt.Errorf("%w: stage runner selector too long", ErrInvalidStage)
-	}
-	terms := strings.Split(s, ",")
-	if len(terms) > 16 {
-		return "", fmt.Errorf("%w: stage runner selector too many terms", ErrInvalidStage)
-	}
-	for _, t := range terms {
-		t = strings.TrimSpace(t)
-		if k, v, isKV := strings.Cut(t, "="); isKV {
-			if !selectorTermOK(k) || !selectorTermOK(v) {
-				return "", fmt.Errorf("%w: invalid stage runner selector term", ErrInvalidStage)
-			}
-			continue
-		}
-		if !selectorTermOK(t) {
-			return "", fmt.Errorf("%w: invalid stage runner selector term", ErrInvalidStage)
-		}
+	if err := validateSelectorSyntax(s); err != nil {
+		return "", fmt.Errorf("%w: %v", ErrInvalidStage, err)
 	}
 	return s, nil
 }

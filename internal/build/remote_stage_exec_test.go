@@ -50,8 +50,9 @@ func (c *errCloner) Clone(_ context.Context, _ string, _ vault.GitAuth, _, _, _ 
 
 // fakeRunnerResolver 记录派发决策(选择器解析/选机/release),供断言 stage 覆盖与槽位归还。
 type fakeRunnerResolver struct {
-	selector   string // SelectorFor 返回的项目默认选择器
-	pick       string // Acquire 返回的机器
+	selector   string            // SelectorFor 返回的项目默认选择器
+	pick       string            // Acquire 返回的机器
+	pickBy     map[string]string // 按选择器返回不同机器(节点级分组派发测试;非 nil 时优先于 pick)
 	acquireErr error
 	acquired   []string // 收到的选择器(先项目级,后 stage 覆盖)
 	releases   int
@@ -66,7 +67,11 @@ func (f *fakeRunnerResolver) Acquire(_ context.Context, _, selector string, _ fu
 	if f.acquireErr != nil {
 		return "", nil, f.acquireErr
 	}
-	return f.pick, func() { f.releases++ }, nil
+	pick := f.pick
+	if f.pickBy != nil {
+		pick = f.pickBy[selector]
+	}
+	return pick, func() { f.releases++ }, nil
 }
 
 // 带 git token 的测试 Builder(校验 token 绝不上远程)。
@@ -243,5 +248,128 @@ func TestAcquireErrorFailsStage(t *testing.T) {
 	}
 	if len(fr.acquired) != 1 {
 		t.Fatal("应恰好尝试一次调度")
+	}
+}
+
+// pickBy 支持「按选择器返回不同机器」(节点级分组派发测试用;非空时优先于 pick)。
+func (f *fakeRunnerResolver) pickFor(selector string) string {
+	if f.pickBy != nil {
+		return f.pickBy[selector]
+	}
+	return f.pick
+}
+
+func TestStageExecutorJobLevelRunnerDispatch(t *testing.T) {
+	local := &recordingDriver{}
+	b := newRemoteTestBuilder(local)
+	tgt := &fakeRemoteTarget{}
+	fr := &fakeRunnerResolver{pickBy: map[string]string{"server:srv-a": "srv-a", "server:srv-b": "srv-b"}}
+	exec := NewStageExecutorWithRunner(b, nil, fr, tgt)
+
+	rep := &fakeReporter{}
+	r := &run.Run{ID: "run-1", ProjectID: "p1", Trigger: run.Trigger{Branch: "main"}}
+	// 节点 A 自带 runner(钉 srv-a);节点 B 无覆盖 → 跟随项目默认(server:srv-b)。
+	ja := scriptJobWithConfig("a", "node:20", "echo a", map[string]any{"runner": "server:srv-a"})
+	jb := scriptJob("b", "node:20", "echo b")
+	stage := scriptStage(ja, jb)
+	stage.Runner = ""
+	fr.selector = "server:srv-b"
+	if err := exec(context.Background(), r, stage, rep); err != nil {
+		t.Fatalf("exec: %v", err)
+	}
+
+	// 两次取机,各按其选择器;两台机器都收到工作区与容器执行。
+	if len(fr.acquired) != 2 || fr.acquired[0] != "server:srv-a" || fr.acquired[1] != "server:srv-b" {
+		t.Fatalf("acquired = %v, want [server:srv-a server:srv-b]", fr.acquired)
+	}
+	if !tgt.serverIDs["srv-a"] || !tgt.serverIDs["srv-b"] {
+		t.Fatalf("两台机器都应被派发;serverIDs=%v", tgt.serverIDs)
+	}
+	if local.callCount != 0 {
+		t.Fatalf("全部节点有选择器时不应走本地执行,实际本地 driver 调用 %d 次", local.callCount)
+	}
+	if fr.releases != 2 {
+		t.Fatalf("槽位应全部归还,实际 %d", fr.releases)
+	}
+}
+
+func TestStageExecutorSameSelectorSharesMachine(t *testing.T) {
+	local := &recordingDriver{}
+	b := newRemoteTestBuilder(local)
+	tgt := &fakeRemoteTarget{}
+	fr := &fakeRunnerResolver{selector: "linux", pick: "srv-1"}
+	exec := NewStageExecutorWithRunner(b, nil, fr, tgt)
+
+	rep := &fakeReporter{}
+	r := &run.Run{ID: "run-1", ProjectID: "p1", Trigger: run.Trigger{Branch: "main"}}
+	// 两个节点同选 linux(标签项)→ 同一台机器、一次工作区传输、两个容器步骤。
+	stage := scriptStage(
+		scriptJobWithConfig("a", "node:20", "echo a", map[string]any{"runner": "linux"}),
+		scriptJobWithConfig("b", "node:20", "echo b", map[string]any{"runner": " linux "}),
+	)
+	if err := exec(context.Background(), r, stage, rep); err != nil {
+		t.Fatalf("exec: %v", err)
+	}
+	if len(fr.acquired) != 1 {
+		t.Fatalf("同选择器应只取一次机器,实际 %v", fr.acquired)
+	}
+	untars := 0
+	for _, c := range tgt.cmds {
+		if strings.Contains(strings.Join(c, " "), "tar -xzf") {
+			untars++
+		}
+	}
+	if untars != 1 {
+		t.Fatalf("同选择器组应共享一次工作区解包,实际 %d;cmds=%v", untars, tgt.cmds)
+	}
+}
+
+func TestStageExecutorMixedLocalRemote(t *testing.T) {
+	local := &recordingDriver{}
+	b := newRemoteTestBuilder(local)
+	tgt := &fakeRemoteTarget{}
+	fr := &fakeRunnerResolver{pickBy: map[string]string{"server:srv-a": "srv-a"}}
+	exec := NewStageExecutorWithRunner(b, nil, fr, tgt)
+
+	rep := &fakeReporter{}
+	r := &run.Run{ID: "run-1", ProjectID: "p1", Trigger: run.Trigger{Branch: "main"}}
+	// 混合:A 钉远程;B 无任何选择器(本地);C 部署节点(本地执行器路径)。
+	ja := scriptJobWithConfig("a", "node:20", "echo a", map[string]any{"runner": "server:srv-a"})
+	jb := scriptJob("b", "node:20", "echo b")
+	jc := pipeline.Job{Name: "c", Type: "deploy_ssh", Config: map[string]any{}}
+	stage := scriptStage(ja, jb, jc)
+	if err := exec(context.Background(), r, stage, rep); err != nil {
+		t.Fatalf("exec: %v", err)
+	}
+	if len(fr.acquired) != 1 || fr.acquired[0] != "server:srv-a" {
+		t.Fatalf("只有 A 应取机,实际 %v", fr.acquired)
+	}
+	if local.callCount != 1 {
+		t.Fatalf("无选择器的 script 节点应走本地执行,实际本地 driver %d 次", local.callCount)
+	}
+	joined := strings.Join(rep.logs, "\n")
+	if !strings.Contains(joined, "部署服务未注入") {
+		t.Fatalf("部署节点应并入本地组执行(跳过日志);logs=%v", rep.logs)
+	}
+}
+
+func TestStageExecutorAllEmptyStaysLocal(t *testing.T) {
+	local := &recordingDriver{}
+	b := newRemoteTestBuilder(local)
+	tgt := &fakeRemoteTarget{}
+	fr := &fakeRunnerResolver{}
+	exec := NewStageExecutorWithRunner(b, nil, fr, tgt)
+
+	rep := &fakeReporter{}
+	r := &run.Run{ID: "run-1", ProjectID: "p1", Trigger: run.Trigger{Branch: "main"}}
+	stage := scriptStage(scriptJob("a", "node:20", "echo a"))
+	if err := exec(context.Background(), r, stage, rep); err != nil {
+		t.Fatalf("exec: %v", err)
+	}
+	if len(fr.acquired) != 0 {
+		t.Fatalf("无选择器不应取机,实际 %v", fr.acquired)
+	}
+	if local.callCount != 1 {
+		t.Fatalf("应整体本地执行,实际本地 driver %d 次", local.callCount)
 	}
 }
