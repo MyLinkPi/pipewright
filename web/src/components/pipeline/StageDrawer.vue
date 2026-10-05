@@ -123,12 +123,18 @@ type RunnerMode = 'inherit' | 'label' | 'pinned'
 const runnerMode = ref<RunnerMode>('inherit')
 const runnerSelectorText = ref('')
 const runnerServerId = ref('')
+/** 最近一次提交给父组件的值:回显 watch 用它区分「自己提交的回显」与「外部修改」。 */
+const lastRunnerCommit = ref<string | undefined>(undefined)
 
-// 切换阶段(抽屉复用)或 stage.runner 外部回写时,从 props 重解本地三态。
+// 从 props 重解本地三态:阶段切换 / 外部修改时执行;自己提交的回显跳过,
+// 否则「切到标签/钉死但还没选具体值」会被空值回显弹回「跟随项目默认」(模式下拉拨不动的根因)。
 watch(
   () => [props.stage.id, props.stage.runner] as const,
-  () => {
-    const v = (props.stage.runner ?? '').trim()
+  ([, runner], old) => {
+    const stageChanged = !old || old[0] !== props.stage.id
+    if (!stageChanged && runner === lastRunnerCommit.value) return
+    lastRunnerCommit.value = runner
+    const v = (runner ?? '').trim()
     if (v === '') {
       runnerMode.value = 'inherit'
       runnerSelectorText.value = ''
@@ -149,21 +155,32 @@ watch(
 /** 标签模式选择器的实时命中预览(与服务端 runner 域同一语义;权威裁决在服务端)。 */
 const runnerMatched = computed(() => matchServers(runnerSelectorText.value, props.servers ?? []))
 
+/** 模式切换:先落本地态;选了具体值(标签文本/钉死机器)才提交,未选时保持本地编辑不落库。 */
 function commitRunnerMode(mode: RunnerMode): void {
-  if (mode === 'inherit') emit('update-runner', undefined)
-  else if (mode === 'label') emit('update-runner', runnerSelectorText.value.trim() || undefined)
-  else emit('update-runner', runnerServerId.value !== '' ? `server:${runnerServerId.value}` : undefined)
+  runnerMode.value = mode
+  if (mode === 'inherit') {
+    lastRunnerCommit.value = undefined
+    emit('update-runner', undefined)
+    return
+  }
+  const v = mode === 'label' ? runnerSelectorText.value.trim() : runnerServerId.value !== '' ? `server:${runnerServerId.value}` : ''
+  if (v === '') return // 等用户选完标签/机器再落库
+  lastRunnerCommit.value = v
+  emit('update-runner', v)
 }
 
 function commitRunnerSelector(value: string): void {
   runnerSelectorText.value = value
   const v = value.trim()
-  emit('update-runner', v === '' ? undefined : v)
+  lastRunnerCommit.value = v === '' ? undefined : v
+  emit('update-runner', lastRunnerCommit.value)
 }
 
 function commitRunnerServer(id: string): void {
   runnerServerId.value = id
-  if (id !== '') emit('update-runner', `server:${id}`)
+  if (id === '') return
+  lastRunnerCommit.value = `server:${id}`
+  emit('update-runner', lastRunnerCommit.value)
 }
 </script>
 
@@ -255,7 +272,7 @@ function commitRunnerServer(id: string): void {
           v-model="runnerMode"
           class="drawer-select"
           :aria-label="t('pipelineCanvas.runnerModeLabel')"
-          @change="commitRunnerMode(runnerMode)"
+          @change="commitRunnerMode(($event.target as HTMLSelectElement).value as RunnerMode)"
         >
           <option value="inherit">{{ t('pipelineCanvas.runnerModeInherit') }}</option>
           <option value="label">{{ t('pipelineCanvas.runnerModePool') }}</option>
