@@ -645,13 +645,22 @@ func (s *service) cpToContainer(ctx context.Context, st *Settings, content []byt
 
 // applyNginxConf 把渲染好的 nginx.conf 下发并热加载:
 //
-//	Upload 到 /tmp → docker exec nginx -t -c /tmp/...(先测后换,校验失败不动活配置)
-//	→ docker cp 到卷内正式路径 → docker exec nginx -s reload(master 重读其启动配置,优雅热加载)。
+//	Upload 到宿主 /tmp → docker cp 进容器 /tmp(容器看不到宿主文件系统,必须先拷入)
+//	→ docker exec nginx -t -c /tmp/...(先测后换,校验失败不动活配置)
+//	→ docker cp 到卷内正式路径 → docker exec nginx -s reload(master 优雅热加载)。
 func applyNginxConf(ctx context.Context, tg target.Service, st *Settings, conf string) error {
 	if err := tg.Upload(ctx, st.ServerID, bytes.NewReader([]byte(conf)), nginxConfTmpPath); err != nil {
 		return err
 	}
-	// 1) 校验临时文件(失败即回,活配置未动)。
+	// 1) 拷进容器临时路径(校验只能对容器内文件做)。
+	cpIn, err := tg.Exec(ctx, st.ServerID, []string{"docker", "cp", nginxConfTmpPath, st.ContainerName + ":" + nginxConfTmpPath})
+	if err != nil {
+		return err
+	}
+	if cpIn.ExitCode != 0 {
+		return fmt.Errorf("%w:%s", ErrApply, strings.TrimSpace(firstNonEmpty(cpIn.Stderr, cpIn.Stdout)))
+	}
+	// 2) 校验临时文件(失败即回,活配置未动)。
 	val, err := tg.Exec(ctx, st.ServerID, []string{"docker", "exec", st.ContainerName, "nginx", "-t", "-c", nginxConfTmpPath})
 	if err != nil {
 		return err
