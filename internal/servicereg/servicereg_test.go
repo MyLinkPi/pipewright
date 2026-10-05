@@ -190,6 +190,98 @@ func TestRenderNginxConfDisabledSkipped(t *testing.T) {
 	}
 }
 
+// --- 网关容器自举(回归:旧版自举配置把 return 放进 http 上下文,非法,容器崩溃循环) ---
+
+func TestNginxBootstrapMinConfValid(t *testing.T) {
+	// return 只允许 server/location/if 上下文;坏形态特征是 "http { return"。
+	if strings.Contains(nginxBootstrapMinConf, "http { return") {
+		t.Fatalf("自举配置不得在 http 上下文直接 return:\n%s", nginxBootstrapMinConf)
+	}
+	if !strings.Contains(nginxBootstrapMinConf, "http { server { return 404; } }") {
+		t.Fatalf("自举配置应是最小合法形态(http>server>return 404):\n%s", nginxBootstrapMinConf)
+	}
+	// 自举脚本须字节精确识别旧版坏配置并重写,且保持前台主进程形态。
+	for _, want := range []string{
+		"| cmp -s - \"$conf\"",
+		"printf '" + nginxBootstrapPoisonConf + "'",
+		"printf '" + nginxBootstrapMinConf + "'",
+		"exec nginx -c \"$conf\" -g \"daemon off;\"",
+	} {
+		if !strings.Contains(nginxBootstrapScript, want) {
+			t.Fatalf("自举脚本缺片段 %q:\n%s", want, nginxBootstrapScript)
+		}
+	}
+}
+
+// gwContainerUp 是「容器在且端口映射吻合」的 fake 探测结果,label 为自举版本标签输出。
+func gwContainerUp(label string) func([]string) *target.ExecResult {
+	return func(cmd []string) *target.ExecResult {
+		joined := strings.Join(cmd, " ")
+		switch {
+		case strings.Contains(joined, "PortBindings"):
+			return &target.ExecResult{ExitCode: 0, Stdout: "80/tcp=80 443/tcp=443 "}
+		case strings.Contains(joined, "Config.Labels"):
+			return &target.ExecResult{ExitCode: 0, Stdout: label}
+		}
+		return nil
+	}
+}
+
+func TestEnsureNginxRecreatesOnBootstrapVerMismatch(t *testing.T) {
+	storetest.ForEachDialect(t, func(t *testing.T, st *store.Store) {
+		svc, ft := newTestService(t, st.DB)
+		ctx := context.Background()
+		if _, err := svc.UpdateSettings(ctx, SettingsUpdate{ServerID: strPtr("srv1")}); err != nil {
+			t.Fatal(err)
+		}
+		// 容器在、端口吻合,但自举版本标签缺失(旧版容器,入口脚本烧死为坏配置自举)→ 重建。
+		ft.resultFor = gwContainerUp("")
+		if err := svc.Apply(ctx); err != nil {
+			t.Fatalf("apply:%v", err)
+		}
+		if !hasCmd(ft, "docker", "rm", "-f", "pipewright-nginx") {
+			t.Fatalf("标签不符应重建容器:\n%s", joinAllCmds(ft))
+		}
+		hasLabeledRun := false
+		for _, c := range ft.execCalls {
+			if strings.HasPrefix(strings.Join(c, " "), "docker run") &&
+				strings.Contains(strings.Join(c, " "), "--label pipewright.bootstrap=2") {
+				hasLabeledRun = true
+			}
+		}
+		if !hasLabeledRun {
+			t.Fatalf("重建容器应带自举版本标签:\n%s", joinAllCmds(ft))
+		}
+	})
+}
+
+func TestEnsureNginxKeepsContainerWhenPortAndLabelMatch(t *testing.T) {
+	storetest.ForEachDialect(t, func(t *testing.T, st *store.Store) {
+		svc, ft := newTestService(t, st.DB)
+		ctx := context.Background()
+		if _, err := svc.UpdateSettings(ctx, SettingsUpdate{ServerID: strPtr("srv1")}); err != nil {
+			t.Fatal(err)
+		}
+		ft.resultFor = gwContainerUp(nginxBootstrapVer)
+		if err := svc.Apply(ctx); err != nil {
+			t.Fatalf("apply:%v", err)
+		}
+		if hasCmd(ft, "docker", "rm", "-f") || hasCmd(ft, "docker", "run") {
+			t.Fatalf("端口与自举标签均吻合不应重建:\n%s", joinAllCmds(ft))
+		}
+		// 不重建时配置下发链仍应完整(nginx -t → cp → reload)。
+		for _, prefix := range [][]string{
+			{"docker", "exec", "pipewright-nginx", "nginx", "-t", "-c"},
+			{"docker", "cp", "/tmp/pipewright-nginx.conf"},
+			{"docker", "exec", "pipewright-nginx", "nginx", "-s", "reload"},
+		} {
+			if !hasCmd(ft, prefix...) {
+				t.Fatalf("缺命令 %v:\n%s", prefix, joinAllCmds(ft))
+			}
+		}
+	})
+}
+
 // --- 校验单测 --------------------------------------------------------------
 
 func TestValidateBaseDomain(t *testing.T) {
