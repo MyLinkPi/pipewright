@@ -46,10 +46,14 @@ type remoteExec interface {
 // NewStageExecutorWithRunner 返回「按 job/阶段/项目选择器派发本地/远程池」的阶段执行器。
 // resolve 或 tgt 为 nil → 退化为纯本地(NewStageExecutor)。
 // 选择器优先级:**job.Config["runner"](节点级覆盖)> stage.Runner(阶段覆盖)> 项目默认**;
-// 都空 = 本地。节点级选择器不同的 script job 各自派发到不同构建机(各自独立克隆与远程工作区),
-// 选择器相同的 job 共享一台机器与同一工作区(与本地执行器「同阶段共享工作区」语义对齐);
-// 未单独配置的 job 跟随阶段/项目。混合场景下无选择器的 job 与非 script job(deploy/notify/
-// build_image 等,只能由本地执行器跑)归入本地组完整执行,不丢节点。
+// 都空 = 本地。
+//
+// 产品语义:**节点(job)是工作单元,选择器是取机亲和约束,不是"共享某台机器"的指令**。
+// 每个有选择器的节点独立占一个调度槽:同一选择器的多个节点从同一池子里各取一台
+// (池内有空位即并行,满则按调度器 FIFO 排队,负载计数如实),各自独立克隆与远程
+// 工作区 —— 与本地执行器「并行 job 各自独立工作区」语义一致,互不踩文件。
+// 无选择器的节点与非 script job(deploy/notify/build_image 等,只能由本地执行器跑)
+// 归入本地侧完整执行,不丢节点。
 func NewStageExecutorWithRunner(b *Builder, reportSink TestReportSink, resolve RunnerResolver, tgt remoteExec) dagrun.StageExecutor {
 	local := NewStageExecutor(b, reportSink)
 	if resolve == nil || tgt == nil {
@@ -61,11 +65,12 @@ func NewStageExecutorWithRunner(b *Builder, reportSink TestReportSink, resolve R
 		if s, ok := resolve.SelectorFor(ctx, r.ProjectID); ok {
 			projSel = strings.TrimSpace(s)
 		}
+		stageSel := strings.TrimSpace(stage.Runner)
 
-		groups := groupScriptJobsBySelector(stage, projSel)
-		if len(groups) == 0 {
+		scriptJobs := scriptJobsOf(stage)
+		if len(scriptJobs) == 0 {
 			// 无 script job:与旧行为一致——阶段/项目选择器非空时走远程放行,否则整体本地。
-			sel := strings.TrimSpace(stage.Runner)
+			sel := stageSel
 			if sel == "" {
 				sel = projSel
 			}
@@ -80,30 +85,53 @@ func NewStageExecutorWithRunner(b *Builder, reportSink TestReportSink, resolve R
 			_ = rep.Log(ctx, streamStdout, fmt.Sprintf("→ 构建机:%s(选择器 %s)", serverID, sel))
 			return b.runStageRemote(ctx, r, stage, rep, serverID, tgt, "")
 		}
-		// 所有 script job 均无任何选择器 → 整体本地(行为不变,零额外开销)。
-		if len(groups) == 1 && groups[0].selector == "" {
+
+		// 逐节点判定有效选择器;全部为空 → 整体本地(行为不变,零额外开销)。
+		effs := make([]string, len(scriptJobs))
+		hasRemote := false
+		for i, jb := range scriptJobs {
+			effs[i] = effRunnerSelector(jb, stageSel, projSel)
+			if effs[i] != "" {
+				hasRemote = true
+			}
+		}
+		if !hasRemote {
 			return local(ctx, r, stage, rep)
 		}
 
-		for i, g := range groups {
+		// 本地侧先跑:无选择器的 script 节点 + 全部非 script 节点(部署/通知等只能由本地执行器执行)。
+		var localJobs []pipeline.Job
+		for _, jb := range stage.Jobs {
+			if isScriptJob(jb.Type) {
+				if effs[indexOfScriptJob(scriptJobs, jb)] != "" {
+					continue
+				}
+			}
+			localJobs = append(localJobs, jb)
+		}
+		if len(localJobs) > 0 && len(localJobs) < len(stage.Jobs) {
+			if err := local(ctx, r, localSubsetStage(stage, localJobs), rep); err != nil {
+				return err
+			}
+		}
+
+		// 远程节点:逐节点独立取机(同选择器=同池各占一槽,可并行/排队),各自独立工作区。
+		for i, jb := range scriptJobs {
 			if canceled(ctx) {
 				return run.ErrCanceled
 			}
-			if g.selector == "" {
-				// 本地组:并入非 script job(部署/通知等只能由本地执行器跑),保证混合阶段不丢节点。
-				if err := local(ctx, r, mergeNonScriptJobs(stage, g.jobs), rep); err != nil {
-					return err
-				}
+			sel := effs[i]
+			if sel == "" {
 				continue
 			}
-			sub := stage
-			sub.Jobs = g.jobs
-			serverID, release, err := resolve.Acquire(ctx, r.ProjectID, g.selector, log)
+			serverID, release, err := resolve.Acquire(ctx, r.ProjectID, sel, log)
 			if err != nil {
-				return acquireFail(ctx, rep, g.selector, err)
+				return acquireFail(ctx, rep, sel, err)
 			}
-			_ = rep.Log(ctx, streamStdout, fmt.Sprintf("→ 构建机:%s(选择器 %s;%d 个节点)", serverID, g.selector, len(g.jobs)))
-			if err := b.runStageRemote(ctx, r, sub, rep, serverID, tgt, fmt.Sprintf("-%d", i+1)); err != nil {
+			_ = rep.Log(ctx, streamStdout, fmt.Sprintf("→ 节点「%s」→ 构建机:%s(选择器 %s)", jb.Name, serverID, sel))
+			sub := stage
+			sub.Jobs = []pipeline.Job{jb}
+			if err := b.runStageRemote(ctx, r, sub, rep, serverID, tgt, "-"+sanitizeRemoteSeg(jobRemoteKey(jb, i))); err != nil {
 				release()
 				return err
 			}
@@ -111,6 +139,35 @@ func NewStageExecutorWithRunner(b *Builder, reportSink TestReportSink, resolve R
 		}
 		return nil
 	}
+}
+
+// scriptJobsOf 返回阶段内的 script job(保序)。
+func scriptJobsOf(stage pipeline.Stage) []pipeline.Job {
+	out := make([]pipeline.Job, 0, len(stage.Jobs))
+	for _, jb := range stage.Jobs {
+		if isScriptJob(jb.Type) {
+			out = append(out, jb)
+		}
+	}
+	return out
+}
+
+// indexOfScriptJob 返回 jb 在 scriptJobs 中的下标(-1 = 不在;stage.Jobs 与 scriptJobs 同序,故 O(n))。
+func indexOfScriptJob(scriptJobs []pipeline.Job, jb pipeline.Job) int {
+	for i := range scriptJobs {
+		if scriptJobs[i].ID == jb.ID && scriptJobs[i].Name == jb.Name {
+			return i
+		}
+	}
+	return -1
+}
+
+// jobRemoteKey 远程工作区后缀键:优先 job ID(规范化后唯一),无 ID 用序号兜底。
+func jobRemoteKey(jb pipeline.Job, i int) string {
+	if id := strings.TrimSpace(jb.ID); id != "" {
+		return id
+	}
+	return fmt.Sprintf("job%d", i+1)
 }
 
 // acquireFail 统一处理取机失败:取消/排队等槽超时(上游 ctx deadline)都是「运行被中止」语义,
@@ -124,40 +181,16 @@ func acquireFail(ctx context.Context, rep dagrun.StageReporter, sel string, err 
 	return ErrBuildFailed
 }
 
-// selectorGroup 是「同一有效选择器」的一组 script job(首次出现顺序)。
-type selectorGroup struct {
-	selector string
-	jobs     []pipeline.Job
-}
-
-// groupScriptJobsBySelector 把阶段的 script job 按「有效选择器」分组:
-// job.Config["runner"] > stage.Runner > projSel;三者皆空 = ""(本地)。
-func groupScriptJobsBySelector(stage pipeline.Stage, projSel string) []selectorGroup {
-	stageSel := strings.TrimSpace(stage.Runner)
-	eff := func(jb pipeline.Job) string {
-		if v, ok := jobRunnerSelector(jb); ok {
-			return v
-		}
-		if stageSel != "" {
-			return stageSel
-		}
-		return projSel
+// effRunnerSelector 计算节点的有效构建机选择器:job.Config["runner"] > stage.Runner > projSel;
+// 三者皆空 = ""(本地)。
+func effRunnerSelector(jb pipeline.Job, stageSel, projSel string) string {
+	if v, ok := jobRunnerSelector(jb); ok {
+		return v
 	}
-	var out []selectorGroup
-	idx := map[string]int{}
-	for _, jb := range stage.Jobs {
-		if !isScriptJob(jb.Type) {
-			continue
-		}
-		key := eff(jb)
-		if at, ok := idx[key]; ok {
-			out[at].jobs = append(out[at].jobs, jb)
-			continue
-		}
-		idx[key] = len(out)
-		out = append(out, selectorGroup{selector: key, jobs: []pipeline.Job{jb}})
+	if stageSel != "" {
+		return stageSel
 	}
-	return out
+	return projSel
 }
 
 // jobRunnerSelector 取节点级构建机选择器(FR-8-19:job.Config["runner"],语法与阶段级一致)。
@@ -178,23 +211,36 @@ func jobRunnerSelector(jb pipeline.Job) (string, bool) {
 	return s, true
 }
 
-// mergeNonScriptJobs 返回 stage 副本:jobs = 本地 script 组 + 全部非 script job
-// (deploy/notify/health/build_image 只能由本地执行器执行;混合阶段归入本地组跑一次)。
-func mergeNonScriptJobs(stage pipeline.Stage, localScriptJobs []pipeline.Job) pipeline.Stage {
-	out := stage
-	jobs := make([]pipeline.Job, 0, len(stage.Jobs))
-	jobs = append(jobs, localScriptJobs...)
-	for _, jb := range stage.Jobs {
-		if !isScriptJob(jb.Type) {
-			jobs = append(jobs, jb)
+// localSubsetStage 返回 stage 副本:jobs = 本地侧节点(无选择器 script + 全部非 script),
+// 并把指向「不在本副本内节点」的 needs 剔除(上游被派去远程时,本地侧 DAG 不悬空;
+// 上游失败会先于本地侧/以远程组错误终止阶段,此处只保建图安全)。
+func localSubsetStage(stage pipeline.Stage, localJobs []pipeline.Job) pipeline.Stage {
+	inCopy := make(map[string]bool, len(localJobs))
+	for _, jb := range localJobs {
+		if id := strings.TrimSpace(jb.ID); id != "" {
+			inCopy[id] = true
 		}
 	}
+	jobs := make([]pipeline.Job, len(localJobs))
+	for i, jb := range localJobs {
+		if len(jb.Needs) > 0 {
+			needs := make([]string, 0, len(jb.Needs))
+			for _, n := range jb.Needs {
+				if inCopy[n] {
+					needs = append(needs, n)
+				}
+			}
+			jb.Needs = needs
+		}
+		jobs[i] = jb
+	}
+	out := stage
 	out.Jobs = jobs
 	return out
 }
 
 // runStageRemote 在远程 runner 上执行本阶段的 script job(见文件头模型)。
-// wsSuffix 是远程工作区路径后缀(节点级分组派发时用 "-N" 区分同阶段不同组的路径,防同机碰撞)。
+// wsSuffix 是远程工作区路径后缀(节点级独立取机时用 job id 区分同阶段各节点的路径,防同机碰撞)。
 func (b *Builder) runStageRemote(ctx context.Context, r *run.Run, stage pipeline.Stage, rep dagrun.StageReporter, serverID string, tgt remoteExec, wsSuffix string) error {
 	scriptJobs := make([]pipeline.Job, 0, len(stage.Jobs))
 	for _, jb := range stage.Jobs {

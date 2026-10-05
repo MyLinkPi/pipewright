@@ -293,7 +293,7 @@ func TestStageExecutorJobLevelRunnerDispatch(t *testing.T) {
 	}
 }
 
-func TestStageExecutorSameSelectorSharesMachine(t *testing.T) {
+func TestStageExecutorSameSelectorIndependentSlots(t *testing.T) {
 	local := &recordingDriver{}
 	b := newRemoteTestBuilder(local)
 	tgt := &fakeRemoteTarget{}
@@ -302,7 +302,8 @@ func TestStageExecutorSameSelectorSharesMachine(t *testing.T) {
 
 	rep := &fakeReporter{}
 	r := &run.Run{ID: "run-1", ProjectID: "p1", Trigger: run.Trigger{Branch: "main"}}
-	// 两个节点同选 linux(标签项)→ 同一台机器、一次工作区传输、两个容器步骤。
+	// 两个节点同选 linux(标签项)→ 各自独立占槽(同池各取一台;池内同机也不共享工作区):
+	// 两次取机、两次工作区传输,且远程工作区路径互不相同(防同机互踩)。
 	stage := scriptStage(
 		scriptJobWithConfig("a", "node:20", "echo a", map[string]any{"runner": "linux"}),
 		scriptJobWithConfig("b", "node:20", "echo b", map[string]any{"runner": " linux "}),
@@ -310,17 +311,21 @@ func TestStageExecutorSameSelectorSharesMachine(t *testing.T) {
 	if err := exec(context.Background(), r, stage, rep); err != nil {
 		t.Fatalf("exec: %v", err)
 	}
-	if len(fr.acquired) != 1 {
-		t.Fatalf("同选择器应只取一次机器,实际 %v", fr.acquired)
+	if len(fr.acquired) != 2 || fr.acquired[0] != "linux" || fr.acquired[1] != "linux" {
+		t.Fatalf("同选择器的每个节点应独立取机,实际 %v", fr.acquired)
 	}
-	untars := 0
+	if fr.releases != 2 {
+		t.Fatalf("槽位应全部归还,实际 %d", fr.releases)
+	}
+	untarPaths := make([]string, 0, 2)
 	for _, c := range tgt.cmds {
-		if strings.Contains(strings.Join(c, " "), "tar -xzf") {
-			untars++
+		joined := strings.Join(c, " ")
+		if strings.Contains(joined, "tar -xzf") {
+			untarPaths = append(untarPaths, joined)
 		}
 	}
-	if untars != 1 {
-		t.Fatalf("同选择器组应共享一次工作区解包,实际 %d;cmds=%v", untars, tgt.cmds)
+	if len(untarPaths) != 2 || untarPaths[0] == untarPaths[1] {
+		t.Fatalf("每个节点应有独立远程工作区,实际 %v", untarPaths)
 	}
 }
 
