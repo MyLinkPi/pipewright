@@ -49,11 +49,11 @@ export default {
   badgeReady: 'Bereit',
   badgeErrors: '{n} Fehler',
   saving: 'Wird gespeichert…',
-  saveDraft: 'Entwurf speichern',
+  saveDraft: 'Speichern',
 
   // ─── Banner / Status ────────────────────────────────────────────
   dismiss: 'Schließen',
-  draftSaved: 'Pipeline-Entwurf gespeichert',
+  draftSaved: 'Pipeline gespeichert',
   retry: 'Erneut versuchen',
   loading: 'Wird geladen',
 

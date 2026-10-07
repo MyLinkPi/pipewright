@@ -49,11 +49,11 @@ export default {
   badgeReady: '준비됨',
   badgeErrors: '오류 {n}개',
   saving: '저장 중…',
-  saveDraft: '초안 저장',
+  saveDraft: '저장',
 
   // ─── 배너 / 상태 ────────────────────────────────────────────────
   dismiss: '닫기',
-  draftSaved: '파이프라인 초안이 저장되었습니다',
+  draftSaved: '파이프라인이 저장되었습니다',
   retry: '다시 시도',
   loading: '로딩 중',
 

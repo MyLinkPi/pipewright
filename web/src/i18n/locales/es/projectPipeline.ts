@@ -49,11 +49,11 @@ export default {
   badgeReady: 'Listo',
   badgeErrors: '{n} errores',
   saving: 'Guardando…',
-  saveDraft: 'Guardar borrador',
+  saveDraft: 'Guardar',
 
   // ─── banners / estado ───────────────────────────────────────────
   dismiss: 'Descartar',
-  draftSaved: 'Borrador del pipeline guardado',
+  draftSaved: 'Pipeline guardado',
   retry: 'Reintentar',
   loading: 'Cargando',
 

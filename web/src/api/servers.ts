@@ -17,6 +17,15 @@
 import { http } from './http'
 import { t, currentLocale } from '../i18n'
 
+/** One hop in the server's SSH jump chain — manual entry, independent credential per hop. */
+export interface ServerJump {
+  host: string
+  port: number
+  user: string
+  /** Reference to an ssh_key / ssh_password credential — never the secret itself. */
+  credentialId: string
+}
+
 export interface Server {
   id: string
   name: string
@@ -36,6 +45,12 @@ export interface Server {
   sudoCredentialId: string
   /** Redundant display name of the sudo credential, for the list UI. */
   sudoCredentialName: string
+  /**
+   * SSH jump chain in connection order (first hop connects first; the target is
+   * reached through the last hop). Empty = direct connection. Every operation
+   * over this server (deploy / upload / terminal / logs / build) walks the chain.
+   */
+  jumps: ServerJump[]
   /** Build-pool labels, comma-separated tags / k=v terms. Empty = not a build machine (FR-8-19). */
   labels: string
   /** Concurrent build slots on this machine. 0 = use the global default (default 1). */
@@ -54,6 +69,8 @@ export interface CreateServerInput {
   credentialId: string
   /** Optional sudo_password credential; empty string = not bound. */
   sudoCredentialId?: string
+  /** Optional jump chain (≤ 5 hops). Omit = direct. */
+  jumps?: ServerJump[]
   labels?: string
   maxBuilds?: number
   priority?: number
@@ -67,6 +84,8 @@ export interface UpdateServerInput {
   credentialId?: string
   /** Empty string clears the binding; omit = keep. */
   sudoCredentialId?: string
+  /** Present = replace the whole chain (empty array = direct); omit = keep. */
+  jumps?: ServerJump[]
   labels?: string
   maxBuilds?: number
   priority?: number

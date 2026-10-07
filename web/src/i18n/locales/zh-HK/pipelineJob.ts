@@ -77,7 +77,7 @@ export default {
   fieldBranchLabel: "分支 / Ref",
   fieldBranchHint: "留空則使用觸發時的分支或專案預設分支",
   fieldCredentialIdLabel: "存取憑證",
-  fieldCredentialIdHint: "私有倉庫需引用 Git 權杖憑證",
+  fieldCredentialIdHint: "私有倉庫需引用 Git 權杖或 SSH 憑證",
   fieldDepthLabel: "複製深度",
   fieldDepthHint: "淺複製深度;留空為完整歷史",
 

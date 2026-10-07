@@ -85,7 +85,7 @@ export default {
     "Empty = use the trigger branch or the project default branch",
   fieldCredentialIdLabel: "Access credential",
   fieldCredentialIdHint:
-    "Private repos require a referenced Git token credential",
+    "Private repos require a referenced Git token or SSH credential",
   fieldDepthLabel: "Clone depth",
   fieldDepthHint: "Shallow clone depth; empty = full history",
 

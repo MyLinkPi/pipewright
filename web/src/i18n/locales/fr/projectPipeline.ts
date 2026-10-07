@@ -49,11 +49,11 @@ export default {
   badgeReady: 'Prêt',
   badgeErrors: '{n} erreurs',
   saving: 'Enregistrement…',
-  saveDraft: 'Enregistrer le brouillon',
+  saveDraft: 'Enregistrer',
 
   // ─── bannières / état ───────────────────────────────────────────
   dismiss: 'Ignorer',
-  draftSaved: 'Brouillon du pipeline enregistré',
+  draftSaved: 'Pipeline enregistré',
   retry: 'Réessayer',
   loading: 'Chargement',
 

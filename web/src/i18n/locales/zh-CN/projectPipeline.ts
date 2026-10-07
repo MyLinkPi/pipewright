@@ -49,11 +49,11 @@ export default {
   badgeReady: '就绪',
   badgeErrors: '{n} 错误',
   saving: '保存中…',
-  saveDraft: '保存草稿',
+  saveDraft: '保存',
 
   // ─── 横幅 / 状态 ────────────────────────────────────────────────
   dismiss: '关闭提示',
-  draftSaved: '流水线草稿已保存',
+  draftSaved: '流水线已保存',
   retry: '重试',
   loading: '加载中',
 

@@ -88,7 +88,7 @@ export default {
     "Vacío = usar la rama del disparador o la rama predeterminada del proyecto",
   fieldCredentialIdLabel: "Credencial de acceso",
   fieldCredentialIdHint:
-    "Los repositorios privados requieren una credencial de token Git referenciada",
+    "Los repositorios privados requieren una credencial de token Git o SSH referenciada",
   fieldDepthLabel: "Profundidad de clonado",
   fieldDepthHint:
     "Profundidad de clonado superficial; vacío = historial completo",

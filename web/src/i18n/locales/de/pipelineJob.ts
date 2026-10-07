@@ -86,7 +86,7 @@ export default {
     "Leer = den Trigger-Branch oder den Standard-Branch des Projekts verwenden",
   fieldCredentialIdLabel: "Zugriffsanmeldedaten",
   fieldCredentialIdHint:
-    "Private Repositories benötigen eine referenzierte Git-Token-Anmeldung",
+    "Private Repositories benötigen eine referenzierte Git-Token- oder SSH-Anmeldung",
   fieldDepthLabel: "Klontiefe",
   fieldDepthHint: "Tiefe des flachen Klons; leer = vollständige Historie",
 

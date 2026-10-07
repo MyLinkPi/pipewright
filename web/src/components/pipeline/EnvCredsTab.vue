@@ -117,6 +117,10 @@ const envs = ref<EnvRow[]>(props.environments.map(toEnvRow))
 watch(
   () => props.environments,
   (list) => {
+    // 父回写大多是本地 emit 的回声(每敲一键 → emit → 父写回 :environments)。若照单全收
+    // 重建 envs,keySeq++ 换掉全部 _key,整块 DOM 随之重挂载 → 每键失焦。仅当回写内容与
+    // 本地当前组合确有差异(保存后服务端回填 id 等)才重建。
+    if (envsKey(list) === envsKey(compose())) return
     envs.value = list.map(toEnvRow)
   },
 )
