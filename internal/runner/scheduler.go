@@ -73,9 +73,23 @@ type healthAt struct {
 type candidate struct {
 	id        string
 	name      string
+	host      string
 	labels    string
 	maxBuilds int
 	priority  int
+}
+
+// displayName 返回机器的人读显示名:优先「name(host)」,host 空 → name,name 也空 → id 兜底
+// (历史数据/异常行不至于退回不可读 uuid,除非真的只有 uuid 可给)。
+func (c candidate) displayName() string {
+	switch {
+	case c.name != "" && c.host != "":
+		return c.name + "(" + c.host + ")"
+	case c.name != "":
+		return c.name
+	default:
+		return c.id
+	}
 }
 
 // NewScheduler 构造调度器。defaultSlots 为 max_builds=0 机器的默认槽位(<=0 视为 1,
@@ -94,42 +108,43 @@ func NewScheduler(db *sql.DB, prober HealthProber, defaultSlots int) *Scheduler 
 	}
 }
 
-// Acquire 按选择器选中一台构建机并占用其一个槽位,返回 (机器 id, release)。
+// Acquire 按选择器选中一台构建机并占用其一个槽位,返回 (机器 id, 人读显示名 name(host), release)。
+// serverName 供派发日志/步骤快照展示(机器改名后不回溯历史日志,故取当时的快照即可);
 // release 必须被调用(派发侧 defer)以归还槽位并唤醒等待者;幂等安全。
 // log 可为 nil;用于把"等待槽位/选中哪台"写进阶段日志(可见性)。
-func (s *Scheduler) Acquire(ctx context.Context, pipelineID, selector string, log func(string)) (string, func(), error) {
+func (s *Scheduler) Acquire(ctx context.Context, pipelineID, selector string, log func(string)) (string, string, func(), error) {
 	selector = strings.TrimSpace(selector)
 	if selector == "" {
-		return "", nil, ErrInvalidSelector // 空=本地,派发侧负责短路,不该走到这
+		return "", "", nil, ErrInvalidSelector // 空=本地,派发侧负责短路,不该走到这
 	}
 	pinned, isPinned := PinnedServer(selector)
 	terms := []string(nil)
 	if !isPinned { // 钉死形式含 ':',不走标签项解析
 		var err error
 		if terms, err = ParseSelector(selector); err != nil {
-			return "", nil, fmt.Errorf("%w: %s", ErrInvalidSelector, selector)
+			return "", "", nil, fmt.Errorf("%w: %s", ErrInvalidSelector, selector)
 		}
 	}
 
 	for attempt := 0; ; attempt++ {
 		cands, err := s.candidates(ctx, pinned, isPinned, terms)
 		if err != nil {
-			return "", nil, err
+			return "", "", nil, err
 		}
 		if len(cands) == 0 {
-			return "", nil, ErrNoRunnerMatch
+			return "", "", nil, ErrNoRunnerMatch
 		}
 
 		healthy := s.filterHealthy(ctx, cands)
 		if len(healthy) == 0 {
-			return "", nil, ErrNoRunnerAvailable
+			return "", "", nil, ErrNoRunnerAvailable
 		}
 
 		// 抢槽与入队在同一临界区完成(pickOrEnqueue):若分成两步,两步之间的 release
 		// 会打向空队列丢信号,等待者将在已有空槽的情况下挂到 ctx 超时(missed wakeup)。
 		w := make(chan struct{}, 1)
-		if id, release, ok := s.pickOrEnqueue(pipelineID, healthy, w); ok {
-			return id, release, nil
+		if c, release, ok := s.pickOrEnqueue(pipelineID, healthy, w); ok {
+			return c.id, c.displayName(), release, nil
 		}
 		// 走到这 = 候选机确实全忙且本等待者已入队;仅首次尝试打日志(被唤醒重试不刷屏),
 		// 且必须在 pickOrEnqueue 之后 —— 否则有空槽时也会误报"全忙排队"。
@@ -145,7 +160,7 @@ func (s *Scheduler) Acquire(ctx context.Context, pipelineID, selector string, lo
 			continue
 		case <-ctx.Done():
 			s.removeWaiter(w)
-			return "", nil, ctx.Err()
+			return "", "", nil, ctx.Err()
 		}
 	}
 }
@@ -153,7 +168,7 @@ func (s *Scheduler) Acquire(ctx context.Context, pipelineID, selector string, lo
 // candidates 查库取候选集:钉死形式按 id 取一台(不存在 → ErrNoRunnerMatch 语义由空集表达);
 // 标签形式全表扫描后 AND 匹配。
 func (s *Scheduler) candidates(ctx context.Context, pinned string, isPinned bool, terms []string) ([]candidate, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, COALESCE(name,''), COALESCE(labels,''), COALESCE(max_builds,0), COALESCE(priority,0) FROM servers`)
+	rows, err := s.db.QueryContext(ctx, `SELECT id, COALESCE(name,''), COALESCE(host,''), COALESCE(labels,''), COALESCE(max_builds,0), COALESCE(priority,0) FROM servers`)
 	if err != nil {
 		return nil, err
 	}
@@ -161,7 +176,7 @@ func (s *Scheduler) candidates(ctx context.Context, pinned string, isPinned bool
 	var out []candidate
 	for rows.Next() {
 		var c candidate
-		if err := rows.Scan(&c.id, &c.name, &c.labels, &c.maxBuilds, &c.priority); err != nil {
+		if err := rows.Scan(&c.id, &c.name, &c.host, &c.labels, &c.maxBuilds, &c.priority); err != nil {
 			return nil, err
 		}
 		if isPinned {
@@ -214,8 +229,8 @@ func (s *Scheduler) filterHealthy(ctx context.Context, cands []candidate) []cand
 }
 
 // pickOrEnqueue 按序(优先级降序 → 亲和 → 负载 → 名称)非阻塞抢槽;抢到则占用槽位并更新
-// 亲和记录,返回 release;全忙则把 w 原子追加进等待队列(与抢槽同一临界区,防丢唤醒)。
-func (s *Scheduler) pickOrEnqueue(pipelineID string, cands []candidate, w chan struct{}) (string, func(), bool) {
+// 亲和记录,返回选中的候选与 release;全忙则把 w 原子追加进等待队列(与抢槽同一临界区,防丢唤醒)。
+func (s *Scheduler) pickOrEnqueue(pipelineID string, cands []candidate, w chan struct{}) (candidate, func(), bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	last := s.lastUsed[pipelineID]
@@ -248,10 +263,10 @@ func (s *Scheduler) pickOrEnqueue(pipelineID string, cands []candidate, w chan s
 		}
 		s.inflight[c.id]++
 		s.lastUsed[pipelineID] = c.id
-		return c.id, s.makeRelease(c.id), true
+		return c, s.makeRelease(c.id), true
 	}
 	s.waiters = append(s.waiters, w)
-	return "", nil, false
+	return candidate{}, nil, false
 }
 
 // makeRelease 返回幂等的槽位归还函数:减计数并唤醒队首等待者。
