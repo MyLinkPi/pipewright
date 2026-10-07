@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/huangchengsir/pipewright/internal/dagrun"
 	"github.com/huangchengsir/pipewright/internal/pipeline"
 	"github.com/huangchengsir/pipewright/internal/project"
 	"github.com/huangchengsir/pipewright/internal/run"
@@ -62,16 +63,37 @@ func (f *fakeRunnerResolver) SelectorFor(_ context.Context, _ string) (string, b
 	return f.selector, f.selector != ""
 }
 
-func (f *fakeRunnerResolver) Acquire(_ context.Context, _, selector string, _ func(string)) (string, func(), error) {
+func (f *fakeRunnerResolver) Acquire(_ context.Context, _, selector string, _ func(string)) (string, string, func(), error) {
 	f.acquired = append(f.acquired, selector)
 	if f.acquireErr != nil {
-		return "", nil, f.acquireErr
+		return "", "", nil, f.acquireErr
 	}
 	pick := f.pick
 	if f.pickBy != nil {
 		pick = f.pickBy[selector]
 	}
-	return pick, func() { f.releases++ }, nil
+	return pick, pick + "-name", func() { f.releases++ }, nil
+}
+
+// routingReporter 在 fakeReporter 之上给每个 job 独立的子 reporter,记录「哪条日志归到哪个节点」,
+// 供断言派发日志路由到节点自身的 step(生产实现在 dagrun.stageReporter.JobReporter)。
+type routingReporter struct {
+	*fakeReporter
+	jobLogs map[string][]string
+}
+
+func (r *routingReporter) JobReporter(jobID string) dagrun.StageReporter {
+	return &jobLineRecorder{routingReporter: r, jobID: jobID}
+}
+
+type jobLineRecorder struct {
+	*routingReporter
+	jobID string
+}
+
+func (j *jobLineRecorder) Log(_ context.Context, _ string, line string) error {
+	j.jobLogs[j.jobID] = append(j.jobLogs[j.jobID], line)
+	return nil
 }
 
 // 带 git token 的测试 Builder(校验 token 绝不上远程)。
@@ -376,5 +398,45 @@ func TestStageExecutorAllEmptyStaysLocal(t *testing.T) {
 	}
 	if local.callCount != 1 {
 		t.Fatalf("应整体本地执行,实际本地 driver %d 次", local.callCount)
+	}
+	// 本地执行也要在日志里明示机器:执行机器 = 本机(控制机)。
+	if joined := strings.Join(rep.logs, "\n"); !strings.Contains(joined, "→ 执行机器:本机(控制机)") {
+		t.Fatalf("本地执行应打「执行机器:本机」行;logs=%v", rep.logs)
+	}
+}
+
+// 运行日志应明确显示每个节点被调度到哪台机器:派发行用人读机器名(而非 uuid),
+// 且经节点级 reporter 归到该节点自己的日志流(单节点过滤日志时可见)。
+func TestStageExecutorDispatchLogShowsMachineName(t *testing.T) {
+	local := &recordingDriver{}
+	b := newRemoteTestBuilder(local)
+	tgt := &fakeRemoteTarget{}
+	fr := &fakeRunnerResolver{pickBy: map[string]string{"server:srv-a": "srv-a", "server:srv-b": "srv-b"}}
+	exec := NewStageExecutorWithRunner(b, nil, fr, tgt)
+
+	rep := &routingReporter{fakeReporter: &fakeReporter{}, jobLogs: map[string][]string{}}
+	r := &run.Run{ID: "run-1", ProjectID: "p1", Trigger: run.Trigger{Branch: "main"}}
+	ja := scriptJobWithConfig("a", "node:20", "echo a", map[string]any{"runner": "server:srv-a"})
+	ja.ID = "ja"
+	jb := scriptJobWithConfig("b", "node:20", "echo b", map[string]any{"runner": "server:srv-b"})
+	jb.ID = "jb"
+	if err := exec(context.Background(), r, scriptStage(ja, jb), rep); err != nil {
+		t.Fatalf("exec: %v", err)
+	}
+	wantA := "→ 节点「a」→ 构建机:srv-a-name(选择器 server:srv-a)"
+	if got := strings.Join(rep.jobLogs["ja"], "\n"); !strings.Contains(got, wantA) {
+		t.Fatalf("节点 a 的派发日志应含机器显示名并归到节点自身:got %q", rep.jobLogs["ja"])
+	}
+	wantB := "→ 节点「b」→ 构建机:srv-b-name(选择器 server:srv-b)"
+	if got := strings.Join(rep.jobLogs["jb"], "\n"); !strings.Contains(got, wantB) {
+		t.Fatalf("节点 b 的派发日志应含机器显示名并归到节点自身:got %q", rep.jobLogs["jb"])
+	}
+	// 该节点的完成行也归到节点自身,且打机器显示名而非 uuid。
+	if got := strings.Join(rep.jobLogs["ja"], "\n"); !strings.Contains(got, "✓ 远程 runner(srv-a-name)执行完成") {
+		t.Fatalf("完成日志应含机器显示名并归到节点自身:got %q", rep.jobLogs["ja"])
+	}
+	// 派发日志不得再出现裸机器 id(旧行为)。
+	if joined := strings.Join(rep.jobLogs["ja"], "\n"); strings.Contains(joined, "构建机:srv-a(") {
+		t.Fatalf("派发日志不应打裸机器 id:got %q", joined)
 	}
 }

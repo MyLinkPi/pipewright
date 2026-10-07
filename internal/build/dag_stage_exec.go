@@ -111,6 +111,11 @@ func isBuildImageJob(jobType string) bool {
 // reportSink 可选(nil = 不持久化测试报告,但质量门禁阻断仍生效;Story 8-6 / FR-8-6)。
 func NewStageExecutor(b *Builder, reportSink TestReportSink) dagrun.StageExecutor {
 	return func(ctx context.Context, r *run.Run, stage pipeline.Stage, rep dagrun.StageReporter) error {
+		// 执行机器可见性:本地执行器的所有 job 都发生在控制机本机。阶段开头显式打一行,
+		// 与远程路径的「→ 构建机:<名字>」对齐——运行日志里每段执行都能看出调度在哪台机器。
+		if len(stage.Jobs) > 0 {
+			_ = rep.Log(ctx, streamStdout, "→ 执行机器:本机(控制机)")
+		}
 		scriptJobs := make([]pipeline.Job, 0, len(stage.Jobs))
 		buildImageJobs := make([]pipeline.Job, 0, len(stage.Jobs))
 		deployJobs := make([]pipeline.Job, 0, len(stage.Jobs))

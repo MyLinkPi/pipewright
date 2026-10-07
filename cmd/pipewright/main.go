@@ -922,7 +922,7 @@ func (p runnerPool) SelectorFor(ctx context.Context, projectID string) (string, 
 	return p.cfg.SelectorFor(ctx, projectID)
 }
 
-func (p runnerPool) Acquire(ctx context.Context, pipelineID, selector string, log func(string)) (string, func(), error) {
+func (p runnerPool) Acquire(ctx context.Context, pipelineID, selector string, log func(string)) (string, string, func(), error) {
 	return p.sched.Acquire(ctx, pipelineID, selector, log)
 }
 

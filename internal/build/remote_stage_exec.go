@@ -30,11 +30,12 @@ import (
 )
 
 // RunnerResolver 把「选择器」变成「占住一台构建机」(FR-8-19):
-// SelectorFor 取项目默认选择器(空/false = 未配);Acquire 按选择器选机并占槽,release 归还。
+// SelectorFor 取项目默认选择器(空/false = 未配);Acquire 按选择器选机并占槽,release 归还,
+// 并返回机器的人读显示名(供派发日志明确「调度到哪台机」,而不是甩一个不可读 uuid)。
 // main.go 用 runner.Service + runner.Scheduler 的组合适配(本包不直依赖 runner,结构化满足)。
 type RunnerResolver interface {
 	SelectorFor(ctx context.Context, projectID string) (selector string, ok bool)
-	Acquire(ctx context.Context, pipelineID, selector string, log func(string)) (serverID string, release func(), err error)
+	Acquire(ctx context.Context, pipelineID, selector string, log func(string)) (serverID, serverName string, release func(), err error)
 }
 
 // remoteExec 抽象远程执行所需的 target 能力(Exec + Upload;target.Service 即满足;便于 fake 单测)。
@@ -77,13 +78,13 @@ func NewStageExecutorWithRunner(b *Builder, reportSink TestReportSink, resolve R
 			if sel == "" {
 				return local(ctx, r, stage, rep)
 			}
-			serverID, release, err := resolve.Acquire(ctx, r.ProjectID, sel, log)
+			serverID, serverName, release, err := resolve.Acquire(ctx, r.ProjectID, sel, log)
 			if err != nil {
 				return acquireFail(ctx, rep, sel, err)
 			}
 			defer release()
-			_ = rep.Log(ctx, streamStdout, fmt.Sprintf("→ 构建机:%s(选择器 %s)", serverID, sel))
-			return b.runStageRemote(ctx, r, stage, rep, serverID, tgt, "")
+			_ = rep.Log(ctx, streamStdout, fmt.Sprintf("→ 构建机:%s(选择器 %s)", serverName, sel))
+			return b.runStageRemote(ctx, r, stage, rep, serverID, serverName, tgt, "")
 		}
 
 		// 逐节点判定有效选择器;全部为空 → 整体本地(行为不变,零额外开销)。
@@ -124,14 +125,17 @@ func NewStageExecutorWithRunner(b *Builder, reportSink TestReportSink, resolve R
 			if sel == "" {
 				continue
 			}
-			serverID, release, err := resolve.Acquire(ctx, r.ProjectID, sel, log)
+			serverID, serverName, release, err := resolve.Acquire(ctx, r.ProjectID, sel, log)
 			if err != nil {
 				return acquireFail(ctx, rep, sel, err)
 			}
-			_ = rep.Log(ctx, streamStdout, fmt.Sprintf("→ 节点「%s」→ 构建机:%s(选择器 %s)", jb.Name, serverID, sel))
+			// 派发与执行日志都归到该节点自己的 step(而非阶段首节点):点开单节点过滤日志时,
+			// 能直接看到它被调度到哪台机、传输/容器执行/完成的全过程。
+			jrep := rep.JobReporter(jb.ID)
+			_ = jrep.Log(ctx, streamStdout, fmt.Sprintf("→ 节点「%s」→ 构建机:%s(选择器 %s)", jb.Name, serverName, sel))
 			sub := stage
 			sub.Jobs = []pipeline.Job{jb}
-			if err := b.runStageRemote(ctx, r, sub, rep, serverID, tgt, "-"+sanitizeRemoteSeg(jobRemoteKey(jb, i))); err != nil {
+			if err := b.runStageRemote(ctx, r, sub, jrep, serverID, serverName, tgt, "-"+sanitizeRemoteSeg(jobRemoteKey(jb, i))); err != nil {
 				release()
 				return err
 			}
@@ -240,8 +244,9 @@ func localSubsetStage(stage pipeline.Stage, localJobs []pipeline.Job) pipeline.S
 }
 
 // runStageRemote 在远程 runner 上执行本阶段的 script job(见文件头模型)。
-// wsSuffix 是远程工作区路径后缀(节点级独立取机时用 job id 区分同阶段各节点的路径,防同机碰撞)。
-func (b *Builder) runStageRemote(ctx context.Context, r *run.Run, stage pipeline.Stage, rep dagrun.StageReporter, serverID string, tgt remoteExec, wsSuffix string) error {
+// serverName 是机器人读显示名(完成日志用);wsSuffix 是远程工作区路径后缀(节点级独立取机时
+// 用 job id 区分同阶段各节点的路径,防同机碰撞)。
+func (b *Builder) runStageRemote(ctx context.Context, r *run.Run, stage pipeline.Stage, rep dagrun.StageReporter, serverID, serverName string, tgt remoteExec, wsSuffix string) error {
 	scriptJobs := make([]pipeline.Job, 0, len(stage.Jobs))
 	for _, jb := range stage.Jobs {
 		if isScriptJob(jb.Type) {
@@ -318,7 +323,7 @@ func (b *Builder) runStageRemote(ctx context.Context, r *run.Run, stage pipeline
 		}
 	}
 
-	_ = rep.Log(ctx, streamStdout, fmt.Sprintf("✓ 远程 runner(%s)执行完成;测试报告/质量门禁在远程模式暂不回采(后续增量)", serverID))
+	_ = rep.Log(ctx, streamStdout, fmt.Sprintf("✓ 远程 runner(%s)执行完成;测试报告/质量门禁在远程模式暂不回采(后续增量)", serverName))
 	return nil
 }
 

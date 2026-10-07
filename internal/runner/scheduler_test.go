@@ -55,7 +55,7 @@ func TestAcquirePicksHighestPriority(t *testing.T) {
 	seedServer(t, st, "s-low", "low", "linux", 4, 1)
 	seedServer(t, st, "s-high", "high", "linux", 4, 10)
 	s := NewScheduler(st.DB, nil, 1)
-	id, rel, err := s.Acquire(context.Background(), "p1", "linux", nil)
+	id, _, rel, err := s.Acquire(context.Background(), "p1", "linux", nil)
 	if err != nil || id != "s-high" {
 		t.Fatalf("Acquire = %q/%v, want s-high", id, err)
 	}
@@ -67,10 +67,10 @@ func TestAcquirePriorityBeatsAffinity(t *testing.T) {
 	seedServer(t, st, "s-a", "alpha", "linux", 4, 1)
 	seedServer(t, st, "s-b", "beta", "linux", 4, 10)
 	s := NewScheduler(st.DB, nil, 1)
-	id, rel, _ := s.Acquire(context.Background(), "p1", "linux", nil)
+	id, _, rel, _ := s.Acquire(context.Background(), "p1", "linux", nil)
 	_ = id
 	rel() // p1 最近用过 s-b(高优先级)
-	id2, rel2, _ := s.Acquire(context.Background(), "p1", "linux", nil)
+	id2, _, rel2, _ := s.Acquire(context.Background(), "p1", "linux", nil)
 	if id2 != "s-b" {
 		t.Fatalf("高优先级应胜过亲和:got %s", id2)
 	}
@@ -82,17 +82,17 @@ func TestAcquireAffinityWithinSamePriority(t *testing.T) {
 	seedServer(t, st, "s-a", "alpha", "linux", 4, 5)
 	seedServer(t, st, "s-b", "beta", "linux", 4, 5)
 	s := NewScheduler(st.DB, nil, 1)
-	id, rel, _ := s.Acquire(context.Background(), "p1", "linux", nil)
+	id, _, rel, _ := s.Acquire(context.Background(), "p1", "linux", nil)
 	rel()
 	// 首选按名字兜底是 alpha;释放后同流水线再来,应亲和复用 alpha(而非因名字序回到 alpha ——
 	// 换个反例:把 alpha 改名排后,仍应选它)。
-	id2, rel2, _ := s.Acquire(context.Background(), "p1", "linux", nil)
+	id2, _, rel2, _ := s.Acquire(context.Background(), "p1", "linux", nil)
 	if id2 != id {
 		t.Fatalf("同优先级应亲和最近使用机:首次 %s,二次 %s", id, id2)
 	}
 	rel2()
 	// 其他流水线不共享亲和,走名字序 → 应选 alpha(排序兜底)而非被 p1 带偏。
-	id3, rel3, _ := s.Acquire(context.Background(), "p2", "linux", nil)
+	id3, _, rel3, _ := s.Acquire(context.Background(), "p2", "linux", nil)
 	if id3 != "s-a" {
 		t.Fatalf("无亲和历史应走名字序:got %s", id3)
 	}
@@ -104,12 +104,12 @@ func TestAcquireAffinityBusyFallsBack(t *testing.T) {
 	seedServer(t, st, "s-a", "alpha", "linux", 1, 5) // 单槽
 	seedServer(t, st, "s-b", "beta", "linux", 1, 5)
 	s := NewScheduler(st.DB, nil, 1)
-	id, hold, _ := s.Acquire(context.Background(), "p1", "linux", nil)
+	id, _, hold, _ := s.Acquire(context.Background(), "p1", "linux", nil)
 	if id != "s-a" {
 		t.Fatalf("首个应选 alpha,got %s", id)
 	}
 	// alpha(亲和机)忙 → 不空等,退让给同优先级的 beta。
-	id2, rel2, _ := s.Acquire(context.Background(), "p1", "linux", nil)
+	id2, _, rel2, _ := s.Acquire(context.Background(), "p1", "linux", nil)
 	if id2 != "s-b" {
 		t.Fatalf("亲和机忙应退让其他空闲机:got %s", id2)
 	}
@@ -121,13 +121,13 @@ func TestAcquireDefaultOneSlotSerializes(t *testing.T) {
 	st := openMigrated(t)
 	seedServer(t, st, "s-a", "alpha", "linux", 0, 0) // max_builds=0 → 默认槽位
 	s := NewScheduler(st.DB, nil, 1)                 // 默认 1
-	_, hold, err := s.Acquire(context.Background(), "p1", "linux", nil)
+	_, _, hold, err := s.Acquire(context.Background(), "p1", "linux", nil)
 	if err != nil {
 		t.Fatalf("首次 Acquire: %v", err)
 	}
 	done := make(chan struct{})
 	go func() {
-		id2, rel2, err2 := s.Acquire(context.Background(), "p1", "linux", nil)
+		id2, _, rel2, err2 := s.Acquire(context.Background(), "p1", "linux", nil)
 		if err2 != nil || id2 != "s-a" {
 			t.Errorf("排队后应等到同机:got %s/%v", id2, err2)
 		}
@@ -153,7 +153,7 @@ func TestAcquireParallelStagesFanOutThenQueue(t *testing.T) {
 	s := NewScheduler(st.DB, nil, 1)
 	var rels []func()
 	for i := 0; i < 2; i++ {
-		_, r, err := s.Acquire(context.Background(), "p1", "linux", nil)
+		_, _, r, err := s.Acquire(context.Background(), "p1", "linux", nil)
 		if err != nil {
 			t.Fatalf("第 %d 个槽应立即可得: %v", i+1, err)
 		}
@@ -161,14 +161,14 @@ func TestAcquireParallelStagesFanOutThenQueue(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Millisecond)
 	defer cancel()
-	if _, _, err := s.Acquire(ctx, "p1", "linux", nil); !errors.Is(err, context.DeadlineExceeded) {
+	if _, _, _, err := s.Acquire(ctx, "p1", "linux", nil); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("满槽应阻塞至 ctx 超时: %v", err)
 	}
 	for _, r := range rels {
 		r()
 	}
 	// release 后(等待者已放弃)再取应立即可得。
-	if _, r, err := s.Acquire(context.Background(), "p1", "linux", nil); err != nil {
+	if _, _, r, err := s.Acquire(context.Background(), "p1", "linux", nil); err != nil {
 		t.Fatalf("全部释放后应可再取: %v", err)
 	} else {
 		r()
@@ -179,14 +179,14 @@ func TestAcquireNoMatchAndUnreachable(t *testing.T) {
 	st := openMigrated(t)
 	seedServer(t, st, "s-a", "alpha", "", 1, 0) // 无标签 → 永不入选
 	s := NewScheduler(st.DB, nil, 1)
-	if _, _, err := s.Acquire(context.Background(), "p1", "linux", nil); !errors.Is(err, ErrNoRunnerMatch) {
+	if _, _, _, err := s.Acquire(context.Background(), "p1", "linux", nil); !errors.Is(err, ErrNoRunnerMatch) {
 		t.Fatalf("无命中应 ErrNoRunnerMatch, got %v", err)
 	}
 
 	seedServer(t, st, "s-b", "beta", "linux", 1, 0)
 	p := &fakeProber{down: map[string]bool{"s-b": true}}
 	s2 := NewScheduler(st.DB, p, 1)
-	if _, _, err := s2.Acquire(context.Background(), "p1", "linux", nil); !errors.Is(err, ErrNoRunnerAvailable) {
+	if _, _, _, err := s2.Acquire(context.Background(), "p1", "linux", nil); !errors.Is(err, ErrNoRunnerAvailable) {
 		t.Fatalf("全不可达应 ErrNoRunnerAvailable, got %v", err)
 	}
 }
@@ -195,12 +195,12 @@ func TestAcquirePinnedServer(t *testing.T) {
 	st := openMigrated(t)
 	seedServer(t, st, "s-a", "alpha", "windows", 1, 0) // 标签不匹配也无所谓:钉死形式只看 id
 	s := NewScheduler(st.DB, nil, 1)
-	id, rel, err := s.Acquire(context.Background(), "p1", "server:s-a", nil)
+	id, _, rel, err := s.Acquire(context.Background(), "p1", "server:s-a", nil)
 	if err != nil || id != "s-a" {
 		t.Fatalf("钉死形式应直取该机:got %s/%v", id, err)
 	}
 	rel()
-	if _, _, err := s.Acquire(context.Background(), "p1", "server:ghost", nil); !errors.Is(err, ErrNoRunnerMatch) {
+	if _, _, _, err := s.Acquire(context.Background(), "p1", "server:ghost", nil); !errors.Is(err, ErrNoRunnerMatch) {
 		t.Fatalf("钉死不存在的机应 ErrNoRunnerMatch, got %v", err)
 	}
 }
@@ -208,10 +208,10 @@ func TestAcquirePinnedServer(t *testing.T) {
 func TestAcquireInvalidSelector(t *testing.T) {
 	st := openMigrated(t)
 	s := NewScheduler(st.DB, nil, 1)
-	if _, _, err := s.Acquire(context.Background(), "p1", "", nil); !errors.Is(err, ErrInvalidSelector) {
+	if _, _, _, err := s.Acquire(context.Background(), "p1", "", nil); !errors.Is(err, ErrInvalidSelector) {
 		t.Fatalf("空选择器应报非法: %v", err)
 	}
-	if _, _, err := s.Acquire(context.Background(), "p1", "arch=", nil); !errors.Is(err, ErrInvalidSelector) {
+	if _, _, _, err := s.Acquire(context.Background(), "p1", "arch=", nil); !errors.Is(err, ErrInvalidSelector) {
 		t.Fatalf("坏语法应报非法: %v", err)
 	}
 }
@@ -222,7 +222,7 @@ func TestHealthProbeCached(t *testing.T) {
 	p := &fakeProber{}
 	s := NewScheduler(st.DB, p, 1)
 	for i := 0; i < 3; i++ {
-		if _, rel, err := s.Acquire(context.Background(), "p1", "linux", nil); err != nil {
+		if _, _, rel, err := s.Acquire(context.Background(), "p1", "linux", nil); err != nil {
 			t.Fatalf("Acquire #%d: %v", i+1, err)
 		} else {
 			rel()
@@ -237,10 +237,10 @@ func TestReleaseIdempotent(t *testing.T) {
 	st := openMigrated(t)
 	seedServer(t, st, "s-a", "alpha", "linux", 1, 0)
 	s := NewScheduler(st.DB, nil, 1)
-	_, rel, _ := s.Acquire(context.Background(), "p1", "linux", nil)
+	_, _, rel, _ := s.Acquire(context.Background(), "p1", "linux", nil)
 	rel()
 	rel() // 重复 release 不得把计数打成负、不得二次唤醒
-	if _, r, err := s.Acquire(context.Background(), "p1", "linux", nil); err != nil {
+	if _, _, r, err := s.Acquire(context.Background(), "p1", "linux", nil); err != nil {
 		t.Fatalf("幂等 release 后槽位应只归还一次并可再取: %v", err)
 	} else {
 		r()
@@ -259,13 +259,13 @@ func TestAcquireLeastLoadedFallback(t *testing.T) {
 	seedServer(t, st, "s-b", "beta", "linux", 2, 5)
 	s := NewScheduler(st.DB, nil, 1)
 	// p1 占住 alpha 一个槽(名字序首选),不释放。
-	id1, hold, err := s.Acquire(context.Background(), "p1", "linux", nil)
+	id1, _, hold, err := s.Acquire(context.Background(), "p1", "linux", nil)
 	if err != nil || id1 != "s-a" {
 		t.Fatalf("首选应为 alpha: %s/%v", id1, err)
 	}
 	defer hold()
 	// p2 无亲和历史:alpha 载 1、beta 载 0,应选更空闲的 beta(若走名字序会错选 alpha)。
-	id2, rel2, err := s.Acquire(context.Background(), "p2", "linux", nil)
+	id2, _, rel2, err := s.Acquire(context.Background(), "p2", "linux", nil)
 	if err != nil || id2 != "s-b" {
 		t.Fatalf("最少负载兜底应选 beta: %s/%v", id2, err)
 	}
@@ -279,7 +279,7 @@ func TestHealthProbeUnreachableCached(t *testing.T) {
 	p := &fakeProber{down: map[string]bool{"s-a": true}}
 	s := NewScheduler(st.DB, p, 1)
 	for i := 0; i < 2; i++ {
-		if _, _, err := s.Acquire(context.Background(), "p1", "linux", nil); !errors.Is(err, ErrNoRunnerAvailable) {
+		if _, _, _, err := s.Acquire(context.Background(), "p1", "linux", nil); !errors.Is(err, ErrNoRunnerAvailable) {
 			t.Fatalf("第 %d 次应 ErrNoRunnerAvailable: %v", i+1, err)
 		}
 	}
@@ -293,7 +293,7 @@ func TestAcquireExplicitCancel(t *testing.T) {
 	st := openMigrated(t)
 	seedServer(t, st, "s-a", "alpha", "linux", 1, 0)
 	s := NewScheduler(st.DB, nil, 1)
-	_, hold, err := s.Acquire(context.Background(), "p1", "linux", nil)
+	_, _, hold, err := s.Acquire(context.Background(), "p1", "linux", nil)
 	if err != nil {
 		t.Fatalf("首次 Acquire: %v", err)
 	}
@@ -301,7 +301,7 @@ func TestAcquireExplicitCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
-		_, _, err := s.Acquire(ctx, "p1", "linux", nil)
+		_, _, _, err := s.Acquire(ctx, "p1", "linux", nil)
 		done <- err
 	}()
 	time.Sleep(30 * time.Millisecond) // 让等待者先入队
@@ -323,13 +323,13 @@ func TestAcquireReleaseRacingNoMissedWakeup(t *testing.T) {
 	seedServer(t, st, "s-a", "alpha", "linux", 1, 0)
 	s := NewScheduler(st.DB, nil, 1)
 	for i := 0; i < 100; i++ {
-		_, hold, err := s.Acquire(context.Background(), "p1", "linux", nil)
+		_, _, hold, err := s.Acquire(context.Background(), "p1", "linux", nil)
 		if err != nil {
 			t.Fatalf("iter %d 首次 Acquire: %v", i, err)
 		}
 		done := make(chan error, 1)
 		go func() {
-			_, rel, err := s.Acquire(context.Background(), "p2", "linux", nil)
+			_, _, rel, err := s.Acquire(context.Background(), "p2", "linux", nil)
 			if err == nil {
 				rel()
 			}
@@ -357,12 +357,12 @@ func TestProbeAbortOnCancelNotCached(t *testing.T) {
 		cancel() // 模拟探测进行中运行被取消
 		return false
 	}), 1)
-	if _, _, err := s.Acquire(ctx, "p1", "linux", nil); err == nil {
+	if _, _, _, err := s.Acquire(ctx, "p1", "linux", nil); err == nil {
 		t.Fatal("取消下不应拿到机器")
 	}
 	// 若取消造成的失败被负缓存,这次会误判 ErrNoRunnerAvailable;修复后应重新探测成功。
 	s.prober = probeFunc(func(context.Context, string) bool { return true })
-	if _, rel, err := s.Acquire(context.Background(), "p1", "linux", nil); err != nil {
+	if _, _, rel, err := s.Acquire(context.Background(), "p1", "linux", nil); err != nil {
 		t.Fatalf("取消造成的探测失败不应写入负缓存: %v", err)
 	} else {
 		rel()
@@ -394,7 +394,7 @@ func TestAcquireNoBusyLogWhenSlotFree(t *testing.T) {
 
 	// 两个空槽,两次 Acquire 都应立即可得,零排队日志。
 	for i := 0; i < 2; i++ {
-		_, rel, err := s.Acquire(context.Background(), "p1", "linux", logf)
+		_, _, rel, err := s.Acquire(context.Background(), "p1", "linux", logf)
 		if err != nil {
 			t.Fatalf("Acquire #%d: %v", i+1, err)
 		}
@@ -407,7 +407,7 @@ func TestAcquireNoBusyLogWhenSlotFree(t *testing.T) {
 	// 反向兜底:占满**全部**槽位后,排队路径的全忙日志确实会打(修位置没把日志修没)。
 	var holds []func()
 	for i := 0; i < 2; i++ {
-		_, rel, err := s.Acquire(context.Background(), "p2", "linux", logf)
+		_, _, rel, err := s.Acquire(context.Background(), "p2", "linux", logf)
 		if err != nil {
 			t.Fatalf("占满 Acquire #%d: %v", i+1, err)
 		}
@@ -419,7 +419,7 @@ func TestAcquireNoBusyLogWhenSlotFree(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		_, rel, err := s.Acquire(context.Background(), "p3", "linux", logf)
+		_, _, rel, err := s.Acquire(context.Background(), "p3", "linux", logf)
 		if err == nil {
 			rel()
 		}
@@ -446,7 +446,7 @@ func TestAcquireConcurrentNoOversubscribe(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if _, rel, err := s.Acquire(context.Background(), "p", "linux", nil); err != nil {
+			if _, _, rel, err := s.Acquire(context.Background(), "p", "linux", nil); err != nil {
 				atomic.AddInt32(&errs, 1)
 				return
 			} else {
@@ -463,6 +463,39 @@ func TestAcquireConcurrentNoOversubscribe(t *testing.T) {
 	wg.Wait()
 	if errs > 0 {
 		t.Fatalf("%d 个 Acquire 出错", errs)
+	}
+}
+
+// Acquire 应返回机器的人读显示名 name(host):派发日志靠它明确「调度到哪台机」,而非甩 uuid。
+func TestAcquireReturnsDisplayName(t *testing.T) {
+	st := openMigrated(t)
+	seedServer(t, st, "s-a", "alpha", "linux", 1, 0) // host = alpha.example
+	s := NewScheduler(st.DB, nil, 1)
+	id, name, rel, err := s.Acquire(context.Background(), "p1", "linux", nil)
+	if err != nil {
+		t.Fatalf("Acquire: %v", err)
+	}
+	defer rel()
+	if id != "s-a" || name != "alpha(alpha.example)" {
+		t.Fatalf("显示名应为 name(host):got id=%s name=%q", id, name)
+	}
+}
+
+// name/host 缺失(历史/异常行)时显示名应回退 id,不得返回空串。
+func TestAcquireDisplayNameFallsBackToID(t *testing.T) {
+	st := openMigrated(t)
+	seedServer(t, st, "s-a", "alpha", "linux", 1, 0)
+	if _, err := st.DB.Exec(`UPDATE servers SET name='', host='' WHERE id='s-a'`); err != nil {
+		t.Fatalf("清空 name/host: %v", err)
+	}
+	s := NewScheduler(st.DB, nil, 1)
+	id, name, rel, err := s.Acquire(context.Background(), "p1", "server:s-a", nil)
+	if err != nil {
+		t.Fatalf("Acquire: %v", err)
+	}
+	defer rel()
+	if id != "s-a" || name != "s-a" {
+		t.Fatalf("name/host 缺失应回退 id:got id=%s name=%q", id, name)
 	}
 }
 
