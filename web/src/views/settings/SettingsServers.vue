@@ -23,11 +23,13 @@ import { useI18n } from 'vue-i18n'
 import { useDirtyGuard } from '../../composables/useDirtyGuard'
 import ServiceLogViewer from '../../components/ops/ServiceLogViewer.vue'
 import ServiceOpsPanel from '../../components/ops/ServiceOpsPanel.vue'
+import ContainerAiPanel from '../../components/ops/ContainerAiPanel.vue'
 
 const router = useRouter()
 const { t } = useI18n()
 const { confirmDiscard } = useDirtyGuard()
 const formSnapshot = ref('')
+const aiTargets = ref<string[] | null>(null)
 
 // ─── state ──────────────────────────────────────────────────────────────────
 
@@ -568,6 +570,7 @@ async function handleTest(s: Server): Promise<void> {
 
 <template>
   <div class="servers-root">
+    <ContainerAiPanel v-if="aiTargets !== null" :initial-server-ids="aiTargets" @close="aiTargets = null" />
     <!-- ─── section header ──────────────────────────────────────────────────── -->
     <div class="section-head">
       <div class="section-head-text">
@@ -647,6 +650,7 @@ async function handleTest(s: Server): Promise<void> {
             </div>
           </div>
           <div class="server-actions">
+            <button class="btn-ghost" @click="aiTargets = [s.id]">{{ t('opsChat.title') }}</button>
             <button class="btn-ghost" :disabled="testingId === s.id" @click="handleTest(s)">
               {{ testingId === s.id ? t('settingsServers.testing') : t('settingsServers.testConnection') }}
             </button>

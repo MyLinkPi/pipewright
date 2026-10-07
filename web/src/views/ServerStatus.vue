@@ -17,6 +17,7 @@ import { HttpError } from '../api/http'
 import ServerMetricsCard from '../components/ops/ServerMetricsCard.vue'
 import BatchCommandModal from '../components/ops/BatchCommandModal.vue'
 import CommandHistoryDrawer, { type RerunPayload } from '../components/ops/CommandHistoryDrawer.vue'
+import ContainerAiPanel from '../components/ops/ContainerAiPanel.vue'
 import AppButton from '../components/ui/AppButton.vue'
 import EmptyState from '../components/ui/EmptyState.vue'
 import ErrorState from '../components/ui/ErrorState.vue'
@@ -25,6 +26,7 @@ import SkeletonBlock from '../components/ui/SkeletonBlock.vue'
 type LoadState = 'idle' | 'loading' | 'error'
 
 const { t } = useI18n()
+const aiTargets = ref<string[] | null>(null)
 
 /** 卡片标签区需要的登记信息(纯展示,不含凭据引用)。 */
 interface ServerPoolInfo {
@@ -193,6 +195,7 @@ onUnmounted(() => {
         <AppButton variant="ghost" @click="historyOpen = true">
           {{ t('batchCommand.historyButton') }}
         </AppButton>
+        <AppButton variant="ai" @click="aiTargets = []">{{ t('opsChat.title') }}</AppButton>
         <AppButton variant="default" :loading="loadState === 'loading'" @click="load">
           {{ t('common.refresh') }}
         </AppButton>
@@ -244,9 +247,8 @@ onUnmounted(() => {
 
     <!-- Metrics grid (per-host cards) -->
     <div v-else class="metrics-grid" :aria-busy="refreshing || undefined">
+      <section v-for="m in metrics" :key="m.serverId">
       <ServerMetricsCard
-        v-for="m in metrics"
-        :key="m.serverId"
         :name="displayName(m)"
         :metrics="m"
         :pool="poolById.get(m.serverId)"
@@ -254,8 +256,9 @@ onUnmounted(() => {
         :selected="selected.has(m.serverId)"
         @toggle="toggleSelect(m.serverId)"
       />
+      <AppButton size="sm" variant="ai" @click="aiTargets = [m.serverId]">{{ t('opsChat.title') }}</AppButton>
+      </section>
     </div>
-
     <!-- 批量执行命令弹窗(勾选机器 → 同步执行 → 逐机结果) -->
     <BatchCommandModal
       v-if="commandModal"
@@ -269,6 +272,7 @@ onUnmounted(() => {
       @close="historyOpen = false"
       @rerun="openRerun"
     />
+    <ContainerAiPanel v-if="aiTargets !== null" :initial-server-ids="aiTargets" @close="aiTargets = null" />
   </div>
 </template>
 
