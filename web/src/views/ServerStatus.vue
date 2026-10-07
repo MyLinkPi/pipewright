@@ -12,7 +12,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { getAllServerMetrics, listServers, type ServerMetrics, type Server } from '../api/servers'
+import { getAllServerMetrics, listServers, type ServerMetrics } from '../api/servers'
 import { HttpError } from '../api/http'
 import ServerMetricsCard from '../components/ops/ServerMetricsCard.vue'
 import BatchCommandModal from '../components/ops/BatchCommandModal.vue'
@@ -26,11 +26,23 @@ type LoadState = 'idle' | 'loading' | 'error'
 
 const { t } = useI18n()
 
+/** 卡片标签区需要的登记信息(纯展示,不含凭据引用)。 */
+interface ServerPoolInfo {
+  /** 逗号分隔的构建池标签;空串 = 非构建机。 */
+  labels: string
+  /** 并发构建槽位(0 = 全局默认);tooltip 用。 */
+  maxBuilds: number
+  /** 调度优先级 0-100;tooltip 用。 */
+  priority: number
+}
+
 const loadState = ref<LoadState>('idle')
 const loadError = ref('')
 const metrics = ref<ServerMetrics[]>([])
 /** serverId → 展示名(来自登记列表,用于卡片标题)。 */
 const nameById = ref<Map<string, string>>(new Map())
+/** serverId → 构建池信息(卡片标签 chips 展示用)。 */
+const poolById = ref<Map<string, ServerPoolInfo>>(new Map())
 
 /** 首次加载尚无数据时显示骨架;刷新时保留旧数据(stale-while-revalidate)。 */
 const refreshing = ref(false)
@@ -93,12 +105,15 @@ async function load(): Promise<void> {
   loadError.value = ''
   if (!firstLoad) refreshing.value = true
   try {
-    // 并行:登记列表(取展示名)+ 批量指标。互不阻塞。
+    // 并行:登记列表(取展示名 + 构建池标签)+ 批量指标。互不阻塞。
     const [servers, items] = await Promise.all([
-      loadServerNames(),
+      listServers(),
       getAllServerMetrics(),
     ])
-    nameById.value = servers
+    nameById.value = new Map(servers.map((s) => [s.id, s.name]))
+    poolById.value = new Map(
+      servers.map((s) => [s.id, { labels: s.labels, maxBuilds: s.maxBuilds, priority: s.priority }]),
+    )
     metrics.value = items
     loadState.value = 'idle'
   } catch (err) {
@@ -114,13 +129,6 @@ async function load(): Promise<void> {
   } finally {
     refreshing.value = false
   }
-}
-
-async function loadServerNames(): Promise<Map<string, string>> {
-  const servers: Server[] = await listServers()
-  const m = new Map<string, string>()
-  for (const s of servers) m.set(s.id, s.name)
-  return m
 }
 
 // ─── 自动刷新 ────────────────────────────────────────────────────────────────
@@ -241,6 +249,7 @@ onUnmounted(() => {
         :key="m.serverId"
         :name="displayName(m)"
         :metrics="m"
+        :pool="poolById.get(m.serverId)"
         selectable
         :selected="selected.has(m.serverId)"
         @toggle="toggleSelect(m.serverId)"

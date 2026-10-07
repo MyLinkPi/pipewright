@@ -3,6 +3,7 @@
 
   单台已登记服务器的指标卡:
     · 名称 + reachable 徽标(可达 / 不可达)
+    · 构建池标签 chips(登记数据,不可达也显示;tooltip 含槽位/优先级)
     · CPU:1 分钟负载 + 核数(负载相对核数着色:>1×核数 偏红、>0.7× 偏黄)
     · 内存 used/total 进度条 + 人读字节
     · 磁盘 used/total 进度条 + 人读字节
@@ -24,6 +25,8 @@ const props = defineProps<{
   name: string
   /** 该台指标(reachable:false 时各指标为 null)。 */
   metrics: ServerMetrics
+  /** 构建池登记信息(labels 逗号分隔 + 槽位/优先级);缺省或无标签 → 不渲染标签区。 */
+  pool?: { labels: string; maxBuilds: number; priority: number }
   /** 批量命令选择态:为 true 时卡头显示复选框(服务器状态页批量执行命令用)。 */
   selectable?: boolean
   /** 父持有的选中态(按 serverId)。 */
@@ -35,6 +38,23 @@ const emit = defineEmits<{
 }>()
 
 // ─── derived display ───────────────────────────────────────────────────────────
+
+/** 逗号分隔的标签串 → 去空去重后的标签词(每词一枚 chip);无 pool 或空串 → 空数组。 */
+const labelTerms = computed(() => {
+  const terms = (props.pool?.labels ?? '')
+    .split(',')
+    .map((x) => x.trim())
+    .filter(Boolean)
+  return [...new Set(terms)]
+})
+
+/** 标签区 tooltip:与管理页徽标同文案(槽位 0 = 全局默认 1)。 */
+const poolHint = computed(() =>
+  t('settingsServers.poolBadgeHint', {
+    slots: props.pool?.maxBuilds || 1,
+    priority: props.pool?.priority ?? 0,
+  }),
+)
 
 /** 用量百分比(0–100);分母为 0 或缺失 → null(不渲染进度)。 */
 function pct(used: number, total: number): number | null {
@@ -142,6 +162,11 @@ const loadText = computed(() => {
         {{ metrics.reachable ? t('opsServer.metrics.reachable') : t('opsServer.metrics.unreachable') }}
       </span>
     </header>
+
+    <!-- Build-pool labels: static registry data — shown even when unreachable -->
+    <div v-if="labelTerms.length > 0" class="metrics-card__labels" :title="poolHint">
+      <span v-for="term in labelTerms" :key="term" class="pool-chip">{{ term }}</span>
+    </div>
 
     <!-- Unreachable: human error, no metrics rows -->
     <p v-if="!metrics.reachable" class="metrics-card__error" role="alert">
@@ -320,6 +345,26 @@ const loadText = computed(() => {
 }
 .reach-badge--down .reach-badge__dot {
   background: var(--color-red);
+}
+
+/* ——— build-pool label chips (registry data; tooltip reuses settingsServers.poolBadgeHint) ——— */
+.metrics-card__labels {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+.pool-chip {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 2px 8px;
+  border-radius: var(--rounded-sm, 4px);
+  font-size: var(--text-label);
+  font-weight: 600;
+  line-height: 1.4;
+  color: var(--color-primary);
+  background: var(--color-primary-soft);
 }
 
 .metrics-card__error {
