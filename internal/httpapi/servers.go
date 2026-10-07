@@ -21,6 +21,14 @@ func trimPtr(p *string) *string {
 	return &s
 }
 
+// serverJumpDTO 是跳板链中一跳的响应体(仅 ID 引用,无明文)。
+type serverJumpDTO struct {
+	Host         string `json:"host"`
+	Port         int    `json:"port"`
+	User         string `json:"user"`
+	CredentialID string `json:"credentialId"`
+}
+
 // serverDTO 是服务器对外响应体(冻结契约;camelCase;无明文/无私钥/无口令)。
 type serverDTO struct {
 	ID             string `json:"id"`
@@ -33,16 +41,26 @@ type serverDTO struct {
 	// SudoCredentialID 是可选的 sudo_password 凭据引用(空 = 不使用密码 sudo;仅展示引用,无明文)。
 	SudoCredentialID   string `json:"sudoCredentialId"`
 	SudoCredentialName string `json:"sudoCredentialName"`
-	// 构建机池字段(FR-8-19,追加契约):labels 空 = 不参与构建机池;maxBuilds 0 = 全局默认;priority 大者优先。
-	Labels    string `json:"labels"`
-	MaxBuilds int    `json:"maxBuilds"`
-	Priority  int    `json:"priority"`
-	CreatedAt string `json:"createdAt"`
-	UpdatedAt string `json:"updatedAt"`
+	// Jumps 是可选 SSH 跳板链(按连接顺序;空数组 = 直连)。
+	Jumps     []serverJumpDTO `json:"jumps"`
+	Labels    string          `json:"labels"`
+	MaxBuilds int             `json:"maxBuilds"`
+	Priority  int             `json:"priority"`
+	CreatedAt string          `json:"createdAt"`
+	UpdatedAt string          `json:"updatedAt"`
 }
 
 // toServerDTO 把领域 Server 转为契约 DTO。
 func toServerDTO(s *target.Server) serverDTO {
+	jumps := make([]serverJumpDTO, 0, len(s.Jumps))
+	for _, j := range s.Jumps {
+		jumps = append(jumps, serverJumpDTO{
+			Host:         j.Host,
+			Port:         j.Port,
+			User:         j.User,
+			CredentialID: j.CredentialID,
+		})
+	}
 	return serverDTO{
 		ID:                 s.ID,
 		Name:               s.Name,
@@ -53,6 +71,7 @@ func toServerDTO(s *target.Server) serverDTO {
 		CredentialName:     s.CredentialName,
 		SudoCredentialID:   s.SudoCredentialID,
 		SudoCredentialName: s.SudoCredentialName,
+		Jumps:              jumps,
 		Labels:             s.Labels,
 		MaxBuilds:          s.MaxBuilds,
 		Priority:           s.Priority,
@@ -69,6 +88,28 @@ type serverTestDTO struct {
 	Error     *string `json:"error"`
 }
 
+// serverJumpInput 是创建/更新请求体中一跳的入参形态(仅 ID 引用,无明文)。
+type serverJumpInput struct {
+	Host         string `json:"host"`
+	Port         int    `json:"port"`
+	User         string `json:"user"`
+	CredentialID string `json:"credentialId"`
+}
+
+// toDomainJumps 把请求体的跳板链转为领域入参。
+func toDomainJumps(in []serverJumpInput) []target.ServerJump {
+	out := make([]target.ServerJump, len(in))
+	for i, j := range in {
+		out[i] = target.ServerJump{
+			Host:         j.Host,
+			Port:         j.Port,
+			User:         j.User,
+			CredentialID: j.CredentialID,
+		}
+	}
+	return out
+}
+
 // writeServerError 把领域错误映射为契约错误码/状态码;绝不回显明文/私钥/口令/栈。
 func writeServerError(w http.ResponseWriter, err error) {
 	switch {
@@ -79,7 +120,7 @@ func writeServerError(w http.ResponseWriter, err error) {
 	case errors.Is(err, target.ErrCredentialNotFound):
 		writeError(w, http.StatusUnprocessableEntity, "credential_error", "引用的 SSH 凭据不存在")
 	case errors.Is(err, target.ErrCredentialTypeMismatch):
-		writeError(w, http.StatusUnprocessableEntity, "credential_error", "sudo 提权凭据必须是「sudo 密码」类型凭据")
+		writeError(w, http.StatusUnprocessableEntity, "credential_error", "凭据类型与用途不符(sudo 凭据须为「sudo 密码」类型;跳板凭据须为「SSH 密钥」或「SSH 密码」类型)")
 	case errors.Is(err, target.ErrEmptyName):
 		writeError(w, http.StatusBadRequest, "invalid_server", "服务器名称不能为空")
 	case errors.Is(err, target.ErrEmptyHost):
@@ -90,6 +131,8 @@ func writeServerError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadRequest, "invalid_server", "请选择 SSH 凭据")
 	case errors.Is(err, target.ErrInvalidPort):
 		writeError(w, http.StatusBadRequest, "invalid_server", "端口必须在 1..65535 之间")
+	case errors.Is(err, target.ErrInvalidJump):
+		writeError(w, http.StatusBadRequest, "invalid_server", "跳板配置无效:每跳需主机、用户与 SSH 凭据,端口 1..65535,最多 5 跳")
 	default:
 		// 内部错误:不泄漏细节。
 		writeError(w, http.StatusInternalServerError, "internal", "服务器内部错误")
@@ -156,15 +199,16 @@ func makeCreateServerHandler(svc target.Service) http.HandlerFunc {
 		}
 		r.Body = http.MaxBytesReader(w, r.Body, 1<<16)
 		var req struct {
-			Name             string `json:"name"`
-			Host             string `json:"host"`
-			Port             int    `json:"port"`
-			User             string `json:"user"`
-			CredentialID     string `json:"credentialId"`
-			SudoCredentialID string `json:"sudoCredentialId"`
-			Labels           string `json:"labels"`
-			MaxBuilds        int    `json:"maxBuilds"`
-			Priority         int    `json:"priority"`
+			Name             string            `json:"name"`
+			Host             string            `json:"host"`
+			Port             int               `json:"port"`
+			User             string            `json:"user"`
+			CredentialID     string            `json:"credentialId"`
+			SudoCredentialID string            `json:"sudoCredentialId"`
+			Jumps            []serverJumpInput `json:"jumps"`
+			Labels           string            `json:"labels"`
+			MaxBuilds        int               `json:"maxBuilds"`
+			Priority         int               `json:"priority"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, "bad_request", "请求体格式错误")
@@ -181,6 +225,7 @@ func makeCreateServerHandler(svc target.Service) http.HandlerFunc {
 			User:             req.User,
 			CredentialID:     req.CredentialID,
 			SudoCredentialID: strings.TrimSpace(req.SudoCredentialID),
+			Jumps:            toDomainJumps(req.Jumps),
 			Labels:           req.Labels,
 			MaxBuilds:        req.MaxBuilds,
 			Priority:         req.Priority,
@@ -203,15 +248,16 @@ func makeUpdateServerHandler(svc target.Service) http.HandlerFunc {
 		id := chi.URLParam(r, "id")
 		r.Body = http.MaxBytesReader(w, r.Body, 1<<16)
 		var req struct {
-			Name             *string `json:"name"`
-			Host             *string `json:"host"`
-			Port             *int    `json:"port"`
-			User             *string `json:"user"`
-			CredentialID     *string `json:"credentialId"`
-			SudoCredentialID *string `json:"sudoCredentialId"`
-			Labels           *string `json:"labels"`
-			MaxBuilds        *int    `json:"maxBuilds"`
-			Priority         *int    `json:"priority"`
+			Name             *string            `json:"name"`
+			Host             *string            `json:"host"`
+			Port             *int               `json:"port"`
+			User             *string            `json:"user"`
+			CredentialID     *string            `json:"credentialId"`
+			SudoCredentialID *string            `json:"sudoCredentialId"`
+			Jumps            *[]serverJumpInput `json:"jumps"`
+			Labels           *string            `json:"labels"`
+			MaxBuilds        *int               `json:"maxBuilds"`
+			Priority         *int               `json:"priority"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, "bad_request", "请求体格式错误")
@@ -235,6 +281,12 @@ func makeUpdateServerHandler(svc target.Service) http.HandlerFunc {
 				return
 			}
 		}
+		// Jumps:请求体未带 = 不修改;带了(含空数组)= 整体替换。
+		var jumps *[]target.ServerJump
+		if req.Jumps != nil {
+			dj := toDomainJumps(*req.Jumps)
+			jumps = &dj
+		}
 		s, err := svc.Update(r.Context(), id, target.UpdateInput{
 			Name:             req.Name,
 			Host:             req.Host,
@@ -242,6 +294,7 @@ func makeUpdateServerHandler(svc target.Service) http.HandlerFunc {
 			User:             req.User,
 			CredentialID:     req.CredentialID,
 			SudoCredentialID: trimPtr(req.SudoCredentialID),
+			Jumps:            jumps,
 			Labels:           req.Labels,
 			MaxBuilds:        req.MaxBuilds,
 			Priority:         req.Priority,

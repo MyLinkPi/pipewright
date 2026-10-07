@@ -9,6 +9,7 @@ import {
 } from '../../api/servers'
 import type {
   Server,
+  ServerJump,
   CreateServerInput,
   UpdateServerInput,
   ServerTestResult,
@@ -78,6 +79,31 @@ const modalOpen = ref(false)
 const modalMode = ref<'add' | 'edit'>('add')
 const editingId = ref<string | null>(null)
 
+// 跳板链表单行:rid 供 v-for 稳定 key;errors 存每行自己的校验文案。
+interface JumpRow {
+  rid: number
+  host: string
+  port: number
+  user: string
+  credentialId: string
+  errors: { host: string; port: string; user: string; credentialId: string }
+}
+
+const MAX_JUMPS = 5
+let jumpRidSeed = 0
+
+function newJumpRow(init?: Partial<Omit<JumpRow, 'rid' | 'errors'>>): JumpRow {
+  jumpRidSeed += 1
+  return {
+    rid: jumpRidSeed,
+    host: init?.host ?? '',
+    port: init?.port ?? 22,
+    user: init?.user ?? '',
+    credentialId: init?.credentialId ?? '',
+    errors: { host: '', port: '', user: '', credentialId: '' },
+  }
+}
+
 const form = ref({
   name: '',
   host: '',
@@ -85,6 +111,7 @@ const form = ref({
   user: '',
   credentialId: '',
   sudoCredentialId: '',
+  jumps: [] as JumpRow[],
   labels: '',
   maxBuilds: 0,
   priority: 0,
@@ -296,6 +323,7 @@ function openAddModal(): void {
     user: '',
     credentialId: sshCredentials.value[0]?.id ?? '',
     sudoCredentialId: '',
+    jumps: [],
     labels: '',
     maxBuilds: 0,
     priority: 0,
@@ -316,6 +344,7 @@ function openEditModal(s: Server): void {
     user: s.user,
     credentialId: s.credentialId,
     sudoCredentialId: s.sudoCredentialId ?? '',
+    jumps: (s.jumps ?? []).map((j) => newJumpRow(j)),
     labels: s.labels ?? '',
     maxBuilds: s.maxBuilds ?? 0,
     priority: s.priority ?? 0,
@@ -324,6 +353,17 @@ function openEditModal(s: Server): void {
   formBanner.value = ''
   modalOpen.value = true
   formSnapshot.value = JSON.stringify(form.value)
+}
+
+// ─── 跳板链行操作(连接顺序:第 1 跳最先连,目标经最后一跳到达)────────────────
+
+function addJump(): void {
+  if (form.value.jumps.length >= MAX_JUMPS) return
+  form.value.jumps.push(newJumpRow())
+}
+
+function removeJump(idx: number): void {
+  form.value.jumps.splice(idx, 1)
 }
 
 function closeModal(): void {
@@ -366,6 +406,26 @@ function validateForm(): boolean {
     formErrors.value.credentialId = t('settingsServers.errCredentialRequired')
     ok = false
   }
+  // 逐跳校验跳板链(错误挂在各自行上)。
+  for (const row of form.value.jumps) {
+    row.errors = { host: '', port: '', user: '', credentialId: '' }
+    if (!row.host.trim()) {
+      row.errors.host = t('settingsServers.errJumpHostRequired')
+      ok = false
+    }
+    if (!Number.isInteger(row.port) || row.port < 1 || row.port > 65535) {
+      row.errors.port = t('settingsServers.errPortRange')
+      ok = false
+    }
+    if (!row.user.trim()) {
+      row.errors.user = t('settingsServers.errJumpUserRequired')
+      ok = false
+    }
+    if (!row.credentialId) {
+      row.errors.credentialId = t('settingsServers.errJumpCredentialRequired')
+      ok = false
+    }
+  }
   const mb = Number(form.value.maxBuilds)
   if (!Number.isInteger(mb) || mb < 0 || mb > 64) {
     formErrors.value.maxBuilds = t('settingsServers.errMaxBuildsRange')
@@ -381,6 +441,16 @@ function validateForm(): boolean {
 
 // ─── form submit ─────────────────────────────────────────────────────────────
 
+/** 表单行 → 契约跳板链(create/update 都是整体提交,替换语义)。 */
+function jumpsToPayload(): ServerJump[] {
+  return form.value.jumps.map((row) => ({
+    host: row.host.trim(),
+    port: row.port,
+    user: row.user.trim(),
+    credentialId: row.credentialId,
+  }))
+}
+
 async function handleFormSubmit(): Promise<void> {
   if (!validateForm()) return
   formSubmitting.value = true
@@ -394,6 +464,7 @@ async function handleFormSubmit(): Promise<void> {
         user: form.value.user.trim(),
         credentialId: form.value.credentialId,
         sudoCredentialId: form.value.sudoCredentialId,
+        jumps: jumpsToPayload(),
         labels: form.value.labels.trim(),
         maxBuilds: Number(form.value.maxBuilds) || 0,
         priority: Number(form.value.priority) || 0,
@@ -408,6 +479,7 @@ async function handleFormSubmit(): Promise<void> {
         user: form.value.user.trim(),
         credentialId: form.value.credentialId,
         sudoCredentialId: form.value.sudoCredentialId,
+        jumps: jumpsToPayload(),
         labels: form.value.labels.trim(),
         maxBuilds: Number(form.value.maxBuilds) || 0,
         priority: Number(form.value.priority) || 0,
@@ -554,6 +626,7 @@ async function handleTest(s: Server): Promise<void> {
             <div class="server-name">{{ s.name }}</div>
             <div class="server-addr">
               <span class="mono">{{ s.user }}@{{ s.host }}:{{ s.port }}</span>
+              <span v-if="s.jumps?.length" class="cred-tag cred-tag--jump" :title="t('settingsServers.jumpBadgeHint', { n: s.jumps.length })">⛓ {{ t('settingsServers.jumpBadge', { n: s.jumps.length }) }}</span>
               <span class="cred-tag">🔑 {{ credentialLabel(s.credentialId) }}</span>
               <span v-if="s.labels" class="cred-tag cred-tag--pool" :title="t('settingsServers.poolBadgeHint', { slots: s.maxBuilds || 1, priority: s.priority })">🏗 {{ s.labels }}</span>
             </div>
@@ -684,6 +757,76 @@ async function handleTest(s: Server): Promise<void> {
             </select>
             <span class="field-hint">{{ t('settingsServers.sudoCredentialHint') }}</span>
           </label>
+
+          <!-- SSH jump chain (multi-hop): rows are in connection order — the platform
+               connects to hop 1 first and reaches the server through the last hop.
+               Every hop carries its own independent SSH credential reference. -->
+          <div class="field">
+            <span class="field-label">{{ t('settingsServers.jumpTitle') }}</span>
+            <div v-for="(row, idx) in form.jumps" :key="row.rid" class="jump-row">
+              <span class="jump-order" aria-hidden="true">{{ idx + 1 }}</span>
+              <div class="jump-fields">
+                <div class="jump-line">
+                  <input
+                    v-model="row.host"
+                    class="field-input jump-host"
+                    type="text"
+                    :placeholder="t('settingsServers.jumpHostPlaceholder')"
+                    :aria-label="t('settingsServers.jumpHost')"
+                    autocomplete="off"
+                  />
+                  <input
+                    v-model.number="row.port"
+                    class="field-input jump-port"
+                    type="number"
+                    min="1"
+                    max="65535"
+                    :aria-label="t('settingsServers.fieldPort')"
+                  />
+                  <input
+                    v-model="row.user"
+                    class="field-input jump-user"
+                    type="text"
+                    :placeholder="t('settingsServers.fieldUser')"
+                    :aria-label="t('settingsServers.fieldUser')"
+                    autocomplete="off"
+                  />
+                  <select
+                    v-model="row.credentialId"
+                    class="field-input jump-cred"
+                    :aria-label="t('settingsServers.fieldCredential')"
+                  >
+                    <option value="" disabled>{{ t('settingsServers.selectCredential') }}</option>
+                    <option v-for="c in sshCredentials" :key="c.id" :value="c.id">{{ c.name }}</option>
+                  </select>
+                  <button
+                    type="button"
+                    class="jump-del"
+                    :aria-label="t('settingsServers.jumpRemove')"
+                    @click="removeJump(idx)"
+                  >
+                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>
+                  </button>
+                </div>
+                <div v-if="row.errors.host || row.errors.port || row.errors.user || row.errors.credentialId" class="jump-errors">
+                  <span v-if="row.errors.host" class="field-error">{{ row.errors.host }}</span>
+                  <span v-if="row.errors.port" class="field-error">{{ row.errors.port }}</span>
+                  <span v-if="row.errors.user" class="field-error">{{ row.errors.user }}</span>
+                  <span v-if="row.errors.credentialId" class="field-error">{{ row.errors.credentialId }}</span>
+                </div>
+              </div>
+            </div>
+            <button
+              type="button"
+              class="btn-ghost jump-add"
+              :disabled="form.jumps.length >= MAX_JUMPS"
+              :title="form.jumps.length >= MAX_JUMPS ? t('settingsServers.jumpMaxReached') : undefined"
+              @click="addJump"
+            >
+              ＋ {{ t('settingsServers.jumpAdd') }}
+            </button>
+            <span class="field-hint">{{ t('settingsServers.jumpHint') }}</span>
+          </div>
 
           <!-- build-pool fields (FR-8-19): labels make the machine schedulable; unlabeled machines never pick.
                标签从登记处 ∪ 机器实际标签里选(chips),也可 inline 新建(自动登记);不再手敲逗号串。 -->
@@ -1122,6 +1265,86 @@ async function handleTest(s: Server): Promise<void> {
 .cred-tag--pool {
   color: var(--color-primary);
   background: var(--color-primary-soft);
+}
+.cred-tag--jump {
+  color: var(--color-warn, #b45309);
+  background: var(--color-warn-soft, rgba(180, 83, 9, 0.12));
+}
+/* 跳板链编辑:每行 = 序号 + 主机/端口/用户/凭据 + 删除;行间留白表达连接顺序。 */
+.jump-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px;
+  border: 1px dashed var(--color-border);
+  border-radius: var(--radius-sm);
+  margin-bottom: 8px;
+}
+.jump-order {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-top: 4px;
+  font-size: var(--text-caption, 0.7rem);
+  font-weight: 600;
+  color: var(--color-dim);
+  background: var(--color-border);
+  border-radius: 50%;
+}
+.jump-fields {
+  flex: 1;
+  min-width: 0;
+}
+.jump-line {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.jump-host {
+  flex: 2 1 140px;
+  min-width: 120px;
+}
+.jump-port {
+  flex: 0 0 84px;
+}
+.jump-user {
+  flex: 1 1 90px;
+  min-width: 80px;
+}
+.jump-cred {
+  flex: 2 1 140px;
+  min-width: 130px;
+}
+.jump-del {
+  flex: none;
+  width: 26px;
+  height: 26px;
+  margin-top: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-faint);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: color var(--duration-fast), border-color var(--duration-fast);
+}
+.jump-del:hover {
+  color: var(--color-danger, #b91c1c);
+  border-color: var(--color-border);
+}
+.jump-errors {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  margin-top: 4px;
+}
+.jump-add {
+  align-self: flex-start;
 }
 .field-label {
   font-size: var(--text-label);

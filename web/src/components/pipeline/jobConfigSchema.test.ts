@@ -77,7 +77,11 @@ describe('jobConfigSchema', () => {
           )
         }
         if (f.kind === 'credential') {
-          expect(typeof f.credentialType === 'string' || f.credentialType === undefined).toBe(true)
+          expect(
+            typeof f.credentialType === 'string' ||
+              Array.isArray(f.credentialType) ||
+              f.credentialType === undefined,
+          ).toBe(true)
         }
       }
     }

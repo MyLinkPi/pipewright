@@ -49,11 +49,11 @@ export default {
   badgeReady: '就緒',
   badgeErrors: '{n} 個錯誤',
   saving: '儲存中…',
-  saveDraft: '儲存草稿',
+  saveDraft: '儲存',
 
   // ─── 橫幅 / 狀態 ────────────────────────────────────────────────
   dismiss: '關閉提示',
-  draftSaved: '流水線草稿已儲存',
+  draftSaved: '流水線已儲存',
   retry: '重試',
   loading: '載入中',
 

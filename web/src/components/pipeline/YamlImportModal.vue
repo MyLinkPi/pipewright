@@ -6,7 +6,7 @@
  *   1. Paste/edit YAML → 「预览」 calls importPipeline(save=false): server parses + validates,
  *      returns the parsed PipelineDTO. We emit `preview` so the canvas reflects it without saving.
  *   2. 「导入到画布」 commits the previewed stages into the editor's local state (still unsaved —
- *      user reviews on the canvas, then clicks 保存草稿 as usual).
+ *      user reviews on the canvas, then clicks 保存 as usual).
  *   3. 「导入并保存」 calls importPipeline(save=true): parses, persists, reloads.
  *
  * Validation errors (422) are shown inline with the server's human-readable, secret-free message.
@@ -99,7 +99,7 @@ async function onPreview(): Promise<void> {
   if (dto) emit('preview', dto)
 }
 
-/** 导入到画布:与预览同一动作语义,关闭弹窗,让用户在画布上确认后再保存草稿。 */
+/** 导入到画布:与预览同一动作语义,关闭弹窗,让用户在画布上确认后再保存。 */
 async function onApplyToCanvas(): Promise<void> {
   const dto = await runPreview()
   if (dto) {

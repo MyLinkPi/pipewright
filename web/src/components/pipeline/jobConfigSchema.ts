@@ -48,8 +48,8 @@ export interface JobField {
   hint?: string
   /** Options for `select` */
   options?: SelectOption[]
-  /** Restrict the credential picker to one credential type */
-  credentialType?: CredentialType
+  /** Restrict the credential picker to one credential type (or a set of them) */
+  credentialType?: CredentialType | CredentialType[]
   /** Render with monospace font (paths, commands, image refs) */
   monospace?: boolean
   /** Conditional visibility based on the current config values */
@@ -558,7 +558,7 @@ export const JOB_TYPE_SPECS: Record<string, JobTypeSpec> = {
         key: 'credentialId',
         get label() { return t('pipelineJob.fieldCredentialIdLabel') },
         kind: 'credential',
-        credentialType: 'git_token',
+        credentialType: ['git_token', 'git_http', 'ssh_key', 'ssh_password'],
         get hint() { return t('pipelineJob.fieldCredentialIdHint') },
       },
       {

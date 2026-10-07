@@ -51,9 +51,13 @@ const cacheEnabled = ref(props.build.cache.enabled)
 const cachePaths = ref<string>(props.build.cache.paths.join('\n'))
 
 // Re-sync when the upstream build changes (e.g. after a save round-trip).
+// 父回写大多是本地 emit 的回声(每敲一键 → emit → 父写回 :build)。若照单全收重置本地态,
+// keySeq++ 换掉全部 _key,输入框 DOM 被整体替换 → 每键失焦。仅当回写内容与本地当前组合
+// 确有差异(保存后服务端回填 id 等)才重建。
 watch(
   () => props.build,
   (b) => {
+    if (buildKey(b) === buildKey(composed.value)) return
     model.value = b.model
     dockerfilePath.value = b.dockerfilePath || 'Dockerfile'
     language.value = b.toolchain.language

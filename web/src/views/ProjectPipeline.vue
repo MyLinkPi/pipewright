@@ -346,7 +346,7 @@ async function handleTemplateApplied(): Promise<void> {
 
 /**
  * Preview (save=false): the modal parsed + validated the YAML and returned a DTO.
- * Reflect it on the canvas WITHOUT persisting — the user reviews, then clicks 保存草稿.
+ * Reflect it on the canvas WITHOUT persisting — the user reviews, then clicks 保存.
  * We jump to the canvas tab so the change is visible.
  */
 function handleImportPreview(dto: PipelineDTO): void {

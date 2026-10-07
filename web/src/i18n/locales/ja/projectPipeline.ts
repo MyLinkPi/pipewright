@@ -49,11 +49,11 @@ export default {
   badgeReady: '準備完了',
   badgeErrors: '{n} 件のエラー',
   saving: '保存中…',
-  saveDraft: '下書きを保存',
+  saveDraft: '保存',
 
   // ─── バナー / ステータス ────────────────────────────────────────
   dismiss: '閉じる',
-  draftSaved: 'パイプラインの下書きを保存しました',
+  draftSaved: 'パイプラインを保存しました',
   retry: '再試行',
   loading: '読み込み中',
 

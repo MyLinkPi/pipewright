@@ -102,9 +102,39 @@ function splitOnType(type: string, config: Record<string, string>, repickView = 
   if (repickView) pickViewMode(config)
 }
 
+/** 规范化内容键:区分「自己 flush 后父回写的回声」与「真正的外部变更」。 */
+function jobContentKey(
+  name: string,
+  type: string,
+  summary: string | undefined,
+  config: Record<string, string> | undefined,
+): string {
+  const cfg = config ?? {}
+  const sorted = Object.keys(cfg).sort().map((k) => [k, cfg[k] ?? ''] as const)
+  return JSON.stringify({ name, type, summary: summary ?? '', config: sorted })
+}
+
 // Resync when the selected job changes (initial hydrate runs after the
 // step-builder computeds below are declared, to avoid a temporal dead zone).
-watch(() => props.job, (next) => hydrate(next))
+//
+// flush → 画布 updateJob 以新对象回写 props.job。若照单全收 hydrate,splitOnType 会给
+// 全部 extraRows 换新 _key,高级区 KV 输入框被整体重建 —— blur 提交的瞬间点向下一个
+// 输入框/删除按钮会落空(焦点被吞、click 丢失)。内容与本地当前组合一致(即回声)时
+// 跳过;仅真正外部变更(切换 job / 换类型 / 保存回填)才全量重建。
+watch(() => props.job, (next, prev) => {
+  const incoming = jobContentKey(next.name, next.type, next.summary, next.config)
+  // 空值回退用 prev(回调时 props.job 已是新值):若回退新值,本地名称/类型恰被清空时
+  // 外部仅改名/改类型会被误判为回声而跳过 hydrate;回退 prev 则回声(next===prev 的相关
+  // 分量)仍可识别,真外部变更也能触发重建。flush 侧回退仍用当时的 props.job(语义:空 = 沿用当前值)。
+  const current = jobContentKey(
+    localName.value.trim() || prev.name,
+    localType.value.trim() || prev.type,
+    localSummary.value,
+    currentConfig(),
+  )
+  if (incoming === current) return
+  hydrate(next)
+})
 
 // ─── Field schema for the current type ────────────────────────────────────────
 
@@ -209,7 +239,8 @@ function onShortlistUpdate(values: Record<string, string>): void {
 function credentialOptions(field: JobField): Credential[] {
   const all = props.credentials ?? []
   if (!field.credentialType) return all
-  return all.filter((c) => c.type === field.credentialType)
+  const types = Array.isArray(field.credentialType) ? field.credentialType : [field.credentialType]
+  return all.filter((c) => types.includes(c.type))
 }
 
 const CHANNEL_TYPE_LABELS: Record<string, string> = {

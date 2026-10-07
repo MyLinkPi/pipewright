@@ -16,6 +16,7 @@ package target
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -54,13 +55,27 @@ var (
 	ErrUnreachable = errors.New("target: server unreachable")
 	// ErrInvalidCredential 表示凭据明文不是可用的 SSH 私钥/口令(解析失败)。
 	ErrInvalidCredential = errors.New("target: credential is not a usable ssh key or password")
+	// ErrInvalidJump 表示跳板链配置无效(缺主机/用户/凭据、端口越界或超过 MaxJumps)。
+	ErrInvalidJump = errors.New("target: invalid jump configuration")
 )
+
+// MaxJumps 是跳板链的最大跳数(本机 → 跳1 → … → 跳N → 目标)。防呆上限,非性能约束。
+const MaxJumps = 5
 
 // DefaultPort 是未显式给定端口时的 SSH 默认端口。
 const DefaultPort = 22
 
 // probeCommand 是 Test 连通性所跑的只读探测命令(AC-SEC-02:array 形式)。
 var probeCommand = []string{"uname", "-a"}
+
+// ServerJump 是跳板链中的一跳(手动逐跳填写;每跳独立引用一条 SSH 凭据)。
+// 绝不含凭据明文,只持 credentialId。
+type ServerJump struct {
+	Host         string
+	Port         int
+	User         string
+	CredentialID string
+}
 
 // Server 是服务器领域模型。绝不含凭据明文,只持 credentialId 引用。
 type Server struct {
@@ -70,6 +85,9 @@ type Server struct {
 	Port         int
 	User         string
 	CredentialID string
+	// Jumps 是可选的 SSH 跳板链(按连接顺序:第一跳最先连,目标经最后一跳转发可达)。
+	// 空 = 直连。持久化为 servers.jumps JSON 列(仅 ID 引用,无明文)。
+	Jumps []ServerJump
 	// SudoCredentialID 可选引用一条 sudo_password 凭据:非 root 且无免密 sudo 的提权
 	// 场景(如平台 HTTPS 写 /etc/nginx)用该密码经 `sudo -S` 从 stdin 喂入。空 = 不使用。
 	SudoCredentialID string
@@ -96,9 +114,11 @@ type CreateInput struct {
 	User             string
 	CredentialID     string
 	SudoCredentialID string // 可选;空 = 不使用密码 sudo
-	Labels           string
-	MaxBuilds        int
-	Priority         int
+	// Jumps 是可选跳板链(≤ MaxJumps;Port <=0 时归一为 DefaultPort)。空 = 直连。
+	Jumps      []ServerJump
+	Labels     string
+	MaxBuilds  int
+	Priority   int
 }
 
 // UpdateInput 是更新服务器的入参;指针字段为 nil 表示不修改。
@@ -109,9 +129,11 @@ type UpdateInput struct {
 	User             *string
 	CredentialID     *string
 	SudoCredentialID *string // 空串 = 清除绑定
-	Labels           *string
-	MaxBuilds        *int
-	Priority         *int
+	// Jumps 非 nil = 整体替换跳板链(空切片 = 清空为直连);nil = 不修改。
+	Jumps     *[]ServerJump
+	Labels    *string
+	MaxBuilds *int
+	Priority  *int
 }
 
 // ExecResult 是通用 Exec 的结果(冻结契约;Epic 4/6 消费)。
@@ -206,10 +228,21 @@ type SSHDialer interface {
 
 // SSHConfig 是拨号所需的最小认证材料(进程内,用完即弃)。
 // 二选一:PrivateKey(PEM 私钥明文)或 Password;两者皆空则无可用认证法。
+// Jumps 非空时先逐跳建链再连目标(等价 ssh -J);仅真 sshDialer 消费,fake 可忽略。
 type SSHConfig struct {
 	User       string
 	PrivateKey string // PEM 私钥明文(经 vault 取出,用完即弃)
 	Password   string // 口令明文(经 vault 取出,用完即弃)
+	// Jumps 是跳板链认证材料(按连接顺序;与目标各自的凭据独立)。
+	Jumps []JumpConfig
+}
+
+// JumpConfig 是跳板链中一跳的拨号材料(Addr 为 host:port;明文用完即弃)。
+type JumpConfig struct {
+	Addr       string
+	User       string
+	PrivateKey string
+	Password   string
 }
 
 // service 是 store + vault + dialer 支撑的 Service 实现。
@@ -260,11 +293,122 @@ func validateCreate(in CreateInput) error {
 	return nil
 }
 
+// normalizeJumps 归一跳板链入参:TrimSpace 主机/用户、端口 <=0 归一为 DefaultPort。
+func normalizeJumps(in []ServerJump) []ServerJump {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]ServerJump, len(in))
+	for i, j := range in {
+		out[i] = ServerJump{
+			Host:         strings.TrimSpace(j.Host),
+			Port:         normalizePort(j.Port),
+			User:         strings.TrimSpace(j.User),
+			CredentialID: j.CredentialID,
+		}
+	}
+	return out
+}
+
+// validateJumps 校验跳板链:每跳主机/用户/凭据必填、端口 1..65535、不超过 MaxJumps。
+func validateJumps(jumps []ServerJump) error {
+	if len(jumps) > MaxJumps {
+		return ErrInvalidJump
+	}
+	for _, j := range jumps {
+		if j.Host == "" || j.User == "" || j.CredentialID == "" {
+			return ErrInvalidJump
+		}
+		if j.Port < 1 || j.Port > 65535 {
+			return ErrInvalidJump
+		}
+	}
+	return nil
+}
+
+// validateJumpCredentials 校验跳板链引用的凭据:必须存在且类型为 ssh_key / ssh_password
+// (防把 git token / sudo 密码等明文误当跳板 SSH 认证材料发往跳板机)。jumps 无外键
+// (JSON 列),保存时经 vault.Exists 显式校验存在性、再直查 credentials 表校验类型
+// (与 validateSudoCredential 同一守卫模式)。
+func (s *service) validateJumpCredentials(jumps []ServerJump) error {
+	for _, j := range jumps {
+		if s.vault == nil {
+			return ErrVaultUnconfigured
+		}
+		ok, err := s.vault.Exists(j.CredentialID)
+		if err != nil {
+			if errors.Is(err, vault.ErrVaultUnconfigured) {
+				return ErrVaultUnconfigured
+			}
+			return fmt.Errorf("target: check jump credential: %w", err)
+		}
+		if !ok {
+			return ErrCredentialNotFound
+		}
+		var typ string
+		if err := s.db.QueryRow(`SELECT type FROM credentials WHERE id = ?`, j.CredentialID).Scan(&typ); err != nil {
+			return fmt.Errorf("target: check jump credential type: %w", err)
+		}
+		if typ != vault.TypeSSHKey && typ != vault.TypeSSHPassword {
+			return ErrCredentialTypeMismatch
+		}
+	}
+	return nil
+}
+
+// jumpJSON 是 jumps 列的持久化形态(显式 json tag,冻结列格式)。
+type jumpJSON struct {
+	Host         string `json:"host"`
+	Port         int    `json:"port"`
+	User         string `json:"user"`
+	CredentialID string `json:"credentialId"`
+}
+
+// marshalJumps 把跳板链序列化为 jumps 列文本(空链 → "[]")。
+func marshalJumps(jumps []ServerJump) string {
+	out := make([]jumpJSON, len(jumps))
+	for i, j := range jumps {
+		out[i] = jumpJSON{Host: j.Host, Port: j.Port, User: j.User, CredentialID: j.CredentialID}
+	}
+	b, err := json.Marshal(out)
+	if err != nil {
+		return "[]" // 该形态不可能失败;兜底直连
+	}
+	return string(b)
+}
+
+// parseJumps 把 jumps 列文本解析回跳板链;空/损坏一律视为直连(列只由本包写入)。
+func parseJumps(s string) []ServerJump {
+	s = strings.TrimSpace(s)
+	if s == "" || s == "null" {
+		return nil
+	}
+	var raw []jumpJSON
+	if err := json.Unmarshal([]byte(s), &raw); err != nil {
+		return nil
+	}
+	if len(raw) == 0 {
+		return nil
+	}
+	out := make([]ServerJump, len(raw))
+	for i, r := range raw {
+		out[i] = ServerJump{Host: r.Host, Port: r.Port, User: r.User, CredentialID: r.CredentialID}
+	}
+	return out
+}
+
 func (s *service) Create(ctx context.Context, in CreateInput) (*Server, error) {
 	if err := validateCreate(in); err != nil {
 		return nil, err
 	}
 	if err := s.validateSudoCredential(in.SudoCredentialID); err != nil {
+		return nil, err
+	}
+	jumps := normalizeJumps(in.Jumps)
+	if err := validateJumps(jumps); err != nil {
+		return nil, err
+	}
+	if err := s.validateJumpCredentials(jumps); err != nil {
 		return nil, err
 	}
 	port := normalizePort(in.Port)
@@ -274,9 +418,9 @@ func (s *service) Create(ctx context.Context, in CreateInput) (*Server, error) {
 	nowStr := now.Format(time.RFC3339)
 
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO servers (id, name, host, port, user, credential_id, sudo_credential_id, labels, max_builds, priority, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		id, in.Name, in.Host, port, in.User, in.CredentialID, in.SudoCredentialID, in.Labels, in.MaxBuilds, in.Priority, nowStr, nowStr,
+		`INSERT INTO servers (id, name, host, port, user, credential_id, sudo_credential_id, jumps, labels, max_builds, priority, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		id, in.Name, in.Host, port, in.User, in.CredentialID, in.SudoCredentialID, marshalJumps(jumps), in.Labels, in.MaxBuilds, in.Priority, nowStr, nowStr,
 	)
 	if err != nil {
 		if isForeignKeyErr(err) {
@@ -321,7 +465,7 @@ func (s *service) validateSudoCredential(id string) error {
 func (s *service) List(ctx context.Context) ([]*Server, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT s.id, s.name, s.host, s.port, s.user, s.credential_id, COALESCE(s.sudo_credential_id, ''),
-		        COALESCE(s.labels, ''), COALESCE(s.max_builds, 0), COALESCE(s.priority, 0),
+		        COALESCE(s.jumps, '[]'), COALESCE(s.labels, ''), COALESCE(s.max_builds, 0), COALESCE(s.priority, 0),
 		        COALESCE(c.name, ''), COALESCE(sc.name, ''), s.created_at, s.updated_at
 		 FROM servers s
 		 LEFT JOIN credentials c ON c.id = s.credential_id
@@ -350,7 +494,7 @@ func (s *service) List(ctx context.Context) ([]*Server, error) {
 func (s *service) Get(ctx context.Context, id string) (*Server, error) {
 	row := s.db.QueryRowContext(ctx,
 		`SELECT s.id, s.name, s.host, s.port, s.user, s.credential_id, COALESCE(s.sudo_credential_id, ''),
-		        COALESCE(s.labels, ''), COALESCE(s.max_builds, 0), COALESCE(s.priority, 0),
+		        COALESCE(s.jumps, '[]'), COALESCE(s.labels, ''), COALESCE(s.max_builds, 0), COALESCE(s.priority, 0),
 		        COALESCE(c.name, ''), COALESCE(sc.name, ''), s.created_at, s.updated_at
 		 FROM servers s
 		 LEFT JOIN credentials c ON c.id = s.credential_id
@@ -369,11 +513,11 @@ func (s *service) Get(ctx context.Context, id string) (*Server, error) {
 
 func (s *service) Update(ctx context.Context, id string, in UpdateInput) (*Server, error) {
 	// 先取当前行。
-	var name, host, user, credentialID, sudoCredentialID, labels string
+	var name, host, user, credentialID, sudoCredentialID, labels, jumpsStr string
 	var port, maxBuilds, priority int
 	err := s.db.QueryRowContext(ctx,
-		`SELECT name, host, port, user, credential_id, COALESCE(sudo_credential_id,''), COALESCE(labels,''), COALESCE(max_builds,0), COALESCE(priority,0) FROM servers WHERE id = ?`, id,
-	).Scan(&name, &host, &port, &user, &credentialID, &sudoCredentialID, &labels, &maxBuilds, &priority)
+		`SELECT name, host, port, user, credential_id, COALESCE(sudo_credential_id,''), COALESCE(jumps,'[]'), COALESCE(labels,''), COALESCE(max_builds,0), COALESCE(priority,0) FROM servers WHERE id = ?`, id,
+	).Scan(&name, &host, &port, &user, &credentialID, &sudoCredentialID, &jumpsStr, &labels, &maxBuilds, &priority)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
@@ -420,6 +564,18 @@ func (s *service) Update(ctx context.Context, id string, in UpdateInput) (*Serve
 			return nil, err
 		}
 	}
+	jumps := parseJumps(jumpsStr)
+	if in.Jumps != nil {
+		// 非 nil 即整体替换(含空切片 = 清空为直连);同样仅变更时校验。
+		candidate := normalizeJumps(*in.Jumps)
+		if err := validateJumps(candidate); err != nil {
+			return nil, err
+		}
+		if err := s.validateJumpCredentials(candidate); err != nil {
+			return nil, err
+		}
+		jumps = candidate
+	}
 	if in.Labels != nil {
 		labels = *in.Labels
 	}
@@ -432,8 +588,8 @@ func (s *service) Update(ctx context.Context, id string, in UpdateInput) (*Serve
 
 	nowStr := time.Now().UTC().Format(time.RFC3339)
 	_, err = s.db.ExecContext(ctx,
-		`UPDATE servers SET name = ?, host = ?, port = ?, user = ?, credential_id = ?, sudo_credential_id = ?, labels = ?, max_builds = ?, priority = ?, updated_at = ? WHERE id = ?`,
-		name, host, port, user, credentialID, sudoCredentialID, labels, maxBuilds, priority, nowStr, id,
+		`UPDATE servers SET name = ?, host = ?, port = ?, user = ?, credential_id = ?, sudo_credential_id = ?, jumps = ?, labels = ?, max_builds = ?, priority = ?, updated_at = ? WHERE id = ?`,
+		name, host, port, user, credentialID, sudoCredentialID, marshalJumps(jumps), labels, maxBuilds, priority, nowStr, id,
 	)
 	if err != nil {
 		if isForeignKeyErr(err) {
@@ -512,25 +668,10 @@ func (s *service) run(ctx context.Context, serverID string, cmd []string, stdin 
 		return nil, ErrVaultUnconfigured
 	}
 
-	// 取凭据明文(私钥或口令)。明文仅进程内,Exec 返回前清引用。
-	secret, err := s.vault.Get(srv.CredentialID)
+	// 取主凭据与各跳凭据明文,装配含跳板链的 SSH 配置。明文仅进程内,返回前清引用。
+	cfg, err := s.resolveSSHConfig(srv)
 	if err != nil {
-		switch {
-		case errors.Is(err, vault.ErrVaultUnconfigured):
-			return nil, ErrVaultUnconfigured
-		case errors.Is(err, vault.ErrNotFound):
-			return nil, ErrCredentialNotFound
-		default:
-			// 解密等内部错误:不泄漏细节,统一按认证错误对待。
-			return nil, ErrAuth
-		}
-	}
-
-	cfg := SSHConfig{User: srv.User}
-	if looksLikePEM(secret) {
-		cfg.PrivateKey = secret
-	} else {
-		cfg.Password = secret
+		return nil, err
 	}
 
 	addr := fmt.Sprintf("%s:%d", srv.Host, srv.Port)
@@ -543,10 +684,7 @@ func (s *service) run(ctx context.Context, serverID string, cmd []string, stdin 
 	}
 
 	// 显式清明文引用,尽早不可达(明文不留)。
-	secret = ""
-	cfg.PrivateKey = ""
-	cfg.Password = ""
-	_ = secret
+	wipeSSHConfig(&cfg)
 
 	if runErr != nil {
 		return nil, runErr
@@ -572,22 +710,9 @@ func (s *service) Upload(ctx context.Context, serverID string, content io.Reader
 	if s.vault == nil {
 		return ErrVaultUnconfigured
 	}
-	secret, err := s.vault.Get(srv.CredentialID)
+	cfg, err := s.resolveSSHConfig(srv)
 	if err != nil {
-		switch {
-		case errors.Is(err, vault.ErrVaultUnconfigured):
-			return ErrVaultUnconfigured
-		case errors.Is(err, vault.ErrNotFound):
-			return ErrCredentialNotFound
-		default:
-			return ErrAuth
-		}
-	}
-	cfg := SSHConfig{User: srv.User}
-	if looksLikePEM(secret) {
-		cfg.PrivateKey = secret
-	} else {
-		cfg.Password = secret
+		return err
 	}
 
 	// remotePath 作 $0(位置参数),绝不拼进脚本体;dir 先建好再写,写整文件经 stdin 流入。
@@ -595,10 +720,7 @@ func (s *service) Upload(ctx context.Context, serverID string, content io.Reader
 	addr := fmt.Sprintf("%s:%d", srv.Host, srv.Port)
 	res, runErr := s.dialer.RunWithStdin(ctx, addr, cfg, cmd, content)
 
-	secret = ""
-	cfg.PrivateKey = ""
-	cfg.Password = ""
-	_ = secret
+	wipeSSHConfig(&cfg)
 
 	if runErr != nil {
 		return runErr
@@ -640,15 +762,9 @@ func (s *service) DockerLogin(ctx context.Context, serverID, registryURL, creden
 	if gerr != nil {
 		return gerr
 	}
-	sshSecret, err := s.vault.Get(srv.CredentialID)
+	cfg, err := s.resolveSSHConfig(srv)
 	if err != nil {
-		return ErrAuth
-	}
-	cfg := SSHConfig{User: srv.User}
-	if looksLikePEM(sshSecret) {
-		cfg.PrivateKey = sshSecret
-	} else {
-		cfg.Password = sshSecret
+		return err
 	}
 
 	// `docker login [<url>] -u <user> --password-stdin`,口令经 stdin(绝不进 argv/日志)。
@@ -667,13 +783,10 @@ func (s *service) DockerLogin(ctx context.Context, serverID, registryURL, creden
 	pass = ""
 	user = ""
 	secret = ""
-	sshSecret = ""
-	cfg.PrivateKey = ""
-	cfg.Password = ""
+	wipeSSHConfig(&cfg)
 	_ = pass
 	_ = user
 	_ = secret
-	_ = sshSecret
 
 	if runErr != nil {
 		return runErr
@@ -686,8 +799,8 @@ func (s *service) DockerLogin(ctx context.Context, serverID, registryURL, creden
 
 // ExecStream 取凭据明文装配 SSH 配置并流式跑 array 命令(供实时 tail)。
 // 与 Exec 同样的凭据取用/清引用纪律:明文仅进程内,装配完 cfg 后立即清零本地引用。
-// 注意 cfg.PrivateKey/Password 的副本随 RunStream 进入 dialer 持有的 session 生命周期,
-// 用于建连;连接建立后由 dialer 持有的 client/session 负责;调用方读完/关闭流即释放。
+// 注意 cfg 中明文的副本随 RunStream 进入 dialer 持有的 session 生命周期,用于建连;
+// 连接建立后由 dialer 持有的 client/session 负责;调用方读完/关闭流即释放。
 func (s *service) ExecStream(ctx context.Context, serverID string, cmd []string) (io.ReadCloser, error) {
 	if len(cmd) == 0 {
 		return nil, fmt.Errorf("target: empty command")
@@ -700,33 +813,16 @@ func (s *service) ExecStream(ctx context.Context, serverID string, cmd []string)
 		return nil, ErrVaultUnconfigured
 	}
 
-	secret, err := s.vault.Get(srv.CredentialID)
+	cfg, err := s.resolveSSHConfig(srv)
 	if err != nil {
-		switch {
-		case errors.Is(err, vault.ErrVaultUnconfigured):
-			return nil, ErrVaultUnconfigured
-		case errors.Is(err, vault.ErrNotFound):
-			return nil, ErrCredentialNotFound
-		default:
-			return nil, ErrAuth
-		}
-	}
-
-	cfg := SSHConfig{User: srv.User}
-	if looksLikePEM(secret) {
-		cfg.PrivateKey = secret
-	} else {
-		cfg.Password = secret
+		return nil, err
 	}
 
 	addr := fmt.Sprintf("%s:%d", srv.Host, srv.Port)
 	rc, runErr := s.dialer.RunStream(ctx, addr, cfg, cmd)
 
 	// 清本地明文引用(dialer 已用 cfg 完成建连/装配;此处本地引用不再需要)。
-	secret = ""
-	cfg.PrivateKey = ""
-	cfg.Password = ""
-	_ = secret
+	wipeSSHConfig(&cfg)
 
 	if runErr != nil {
 		return nil, runErr
@@ -749,33 +845,16 @@ func (s *service) ExecInteractive(ctx context.Context, serverID string, cmd []st
 		return nil, ErrVaultUnconfigured
 	}
 
-	secret, err := s.vault.Get(srv.CredentialID)
+	cfg, err := s.resolveSSHConfig(srv)
 	if err != nil {
-		switch {
-		case errors.Is(err, vault.ErrVaultUnconfigured):
-			return nil, ErrVaultUnconfigured
-		case errors.Is(err, vault.ErrNotFound):
-			return nil, ErrCredentialNotFound
-		default:
-			return nil, ErrAuth
-		}
-	}
-
-	cfg := SSHConfig{User: srv.User}
-	if looksLikePEM(secret) {
-		cfg.PrivateKey = secret
-	} else {
-		cfg.Password = secret
+		return nil, err
 	}
 
 	addr := fmt.Sprintf("%s:%d", srv.Host, srv.Port)
 	sess, runErr := s.dialer.RunInteractive(ctx, addr, cfg, cmd)
 
 	// 清本地明文引用(dialer 已用 cfg 完成建连/装配)。
-	secret = ""
-	cfg.PrivateKey = ""
-	cfg.Password = ""
-	_ = secret
+	wipeSSHConfig(&cfg)
 
 	if runErr != nil {
 		return nil, runErr
@@ -788,19 +867,76 @@ func looksLikePEM(secret string) bool {
 	return strings.Contains(secret, "-----BEGIN") && strings.Contains(secret, "PRIVATE KEY")
 }
 
+// vaultErr 把 vault 取凭据错误映射为干净领域错误(不透内部细节)。
+func vaultErr(err error) error {
+	switch {
+	case errors.Is(err, vault.ErrVaultUnconfigured):
+		return ErrVaultUnconfigured
+	case errors.Is(err, vault.ErrNotFound):
+		return ErrCredentialNotFound
+	default:
+		// 解密等内部错误:不泄漏细节,统一按认证错误对待。
+		return ErrAuth
+	}
+}
+
+// resolveSSHConfig 解析服务器主凭据与跳板链各跳凭据为拨号配置。明文仅进程内存在,
+// 调用方用完须 wipeSSHConfig 清引用。主凭据与每跳凭据各自独立(PEM 私钥或口令自动分流)。
+func (s *service) resolveSSHConfig(srv *Server) (SSHConfig, error) {
+	secret, err := s.vault.Get(srv.CredentialID)
+	if err != nil {
+		return SSHConfig{}, vaultErr(err)
+	}
+	cfg := SSHConfig{User: srv.User}
+	if looksLikePEM(secret) {
+		cfg.PrivateKey = secret
+	} else {
+		cfg.Password = secret
+	}
+	for _, j := range srv.Jumps {
+		jumpSecret, err := s.vault.Get(j.CredentialID)
+		if err != nil {
+			return SSHConfig{}, vaultErr(err)
+		}
+		jc := JumpConfig{Addr: fmt.Sprintf("%s:%d", j.Host, j.Port), User: j.User}
+		if looksLikePEM(jumpSecret) {
+			jc.PrivateKey = jumpSecret
+		} else {
+			jc.Password = jumpSecret
+		}
+		cfg.Jumps = append(cfg.Jumps, jc)
+	}
+	return cfg, nil
+}
+
+// wipeSSHConfig 显式清空配置内全部明文引用(主凭据 + 各跳),尽早不可达。
+// Jumps 置 nil 而非原地清零:切片与 dialer 侧副本共享底层数组,原地清零会越权改写
+// dialer 尚在使用的材料;置 nil 仅丢弃本侧引用,语义与主字段按值拷贝一致。
+func wipeSSHConfig(cfg *SSHConfig) {
+	cfg.PrivateKey = ""
+	cfg.Password = ""
+	cfg.Jumps = nil
+}
+
 // humanError 把领域错误映射为人读文案(绝不含凭据明文/内部栈)。
+// 错误经跳板链包装(hopError)时,文案带上跳位前缀(仅序号+主机:端口),便于定位哪一跳失败。
 func humanError(err error) string {
+	prefix := ""
+	var he *hopError
+	if errors.As(err, &he) {
+		prefix = he.label + ": "
+	}
 	switch {
 	case errors.Is(err, ErrAuth):
-		return "SSH 认证失败:密钥或口令无效,或无登录权限"
+		return prefix + "SSH 认证失败:密钥或口令无效,或无登录权限"
 	case errors.Is(err, ErrUnreachable):
-		return "无法连接服务器:端口未开放、主机不可达或超时"
+		return prefix + "无法连接服务器:端口未开放、主机不可达或超时"
 	case errors.Is(err, ErrInvalidCredential):
-		return "凭据不是可用的 SSH 私钥或口令"
+		return prefix + "凭据不是可用的 SSH 私钥或口令"
 	case errors.Is(err, context.DeadlineExceeded):
-		return "连接超时"
+		return prefix + "连接超时"
 	default:
-		return "连接失败"
+		return prefix + "连接失败"
 	}
 }
 
@@ -820,14 +956,15 @@ type scanner interface {
 // scanServer 把一行扫描为 Server(永不读任何密文/明文列)。
 func scanServer(sc scanner) (*Server, error) {
 	var srv Server
-	var createdStr, updatedStr string
+	var jumpsStr, createdStr, updatedStr string
 	if err := sc.Scan(
 		&srv.ID, &srv.Name, &srv.Host, &srv.Port, &srv.User, &srv.CredentialID, &srv.SudoCredentialID,
-		&srv.Labels, &srv.MaxBuilds, &srv.Priority,
+		&jumpsStr, &srv.Labels, &srv.MaxBuilds, &srv.Priority,
 		&srv.CredentialName, &srv.SudoCredentialName, &createdStr, &updatedStr,
 	); err != nil {
 		return nil, err
 	}
+	srv.Jumps = parseJumps(jumpsStr)
 	created, err := time.Parse(time.RFC3339, createdStr)
 	if err != nil {
 		return nil, fmt.Errorf("target: parse created_at: %w", err)

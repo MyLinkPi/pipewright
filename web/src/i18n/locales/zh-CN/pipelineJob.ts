@@ -77,7 +77,7 @@ export default {
   fieldBranchLabel: "分支 / Ref",
   fieldBranchHint: "留空则使用触发时的分支或项目默认分支",
   fieldCredentialIdLabel: "访问凭据",
-  fieldCredentialIdHint: "私有仓库需引用 Git 令牌凭据",
+  fieldCredentialIdHint: "私有仓库需引用 Git 令牌或 SSH 凭据",
   fieldDepthLabel: "克隆深度",
   fieldDepthHint: "浅克隆深度;留空为完整历史",
 

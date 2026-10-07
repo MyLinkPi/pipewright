@@ -374,6 +374,13 @@ func (s *service) Delete(id string) error {
 	).Scan(&refCount); err == nil && refCount > 0 {
 		return ErrCredentialInUse
 	}
+	// servers.jumps(JSON 跳板链)中任意一跳引用该凭据同样不可删:JSON 列无外键,
+	// 显式 LIKE 检查;credentialId 为 UUID,无子串歧义(与 pipeline_settings 同一前提)。
+	if err := s.db.QueryRow(
+		`SELECT COUNT(*) FROM servers WHERE jumps LIKE ?`, "%"+id+"%",
+	).Scan(&refCount); err == nil && refCount > 0 {
+		return ErrCredentialInUse
+	}
 	// dns_providers.credential_id 无外键,同样显式检查:DNS 提供商的 Secret 凭据由
 	// 「DNS 提供商」页管理,从保险库删掉会让提供商凭据悬挂(校验/DNS-01 签发时才报错)。
 	if err := s.db.QueryRow(
