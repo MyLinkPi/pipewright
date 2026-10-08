@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -8,10 +9,17 @@ import (
 	"strings"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/huangchengsir/pipewright/internal/approval"
 	"github.com/huangchengsir/pipewright/internal/audit"
 	"github.com/huangchengsir/pipewright/internal/dagrun"
 	"github.com/huangchengsir/pipewright/internal/run"
 )
+
+// RunApprovalLister 列出某运行的审批记录(供恢复守卫判定「存在被拒门 → 不可按节点恢复」)。
+// *approval.Store 满足此接口;nil 表示审批门未装配(守卫跳过)。
+type RunApprovalLister interface {
+	ListForRun(ctx context.Context, runID string) ([]approval.Record, error)
+}
 
 // resume.go 实现「失败运行按节点恢复(派生重跑)」的端点:
 //
@@ -31,8 +39,9 @@ import (
 
 // makeResumeRunHandler 返回 POST /api/runs/{id}/resume。
 // runs / specLoader 为 nil → 503(legacy runner 模式不装配 loader,恢复端点不可用,与其
-// 不支持按节点恢复一致)。
-func makeResumeRunHandler(runs run.Service, specLoader dagrun.SpecLoader, rec audit.Recorder) http.HandlerFunc {
+// 不支持按节点恢复一致)。approvals 为审批记录列表器(即 *approval.Store):存在被拒审批门
+// (人工拒绝/超时/门控处取消)的运行不可按节点恢复——即使终态是 failed(混合情况)——409。
+func makeResumeRunHandler(runs run.Service, specLoader dagrun.SpecLoader, approvals RunApprovalLister, rec audit.Recorder) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if runs == nil || specLoader == nil {
 			writeError(w, http.StatusServiceUnavailable, "internal", "运行恢复服务未初始化")
@@ -71,6 +80,20 @@ func makeResumeRunHandler(runs run.Service, specLoader dagrun.SpecLoader, rec au
 		if parent.Status != run.StatusFailed && parent.Status != run.StatusPartialFailed {
 			writeResumeError(w, run.ErrNotResumable)
 			return
+		}
+		// 审批门被人工关闭过(拒绝/超时/门控处取消)的运行不可按节点恢复——即使是「真失败 +
+		// 拒绝」的混合情况(终态 failed):重走审批必须重新触发新流水线,而非绕过门的节点恢复。
+		if approvals != nil {
+			recs, lerr := approvals.ListForRun(r.Context(), parentID)
+			if lerr == nil {
+				for _, rec := range recs {
+					if rec.Status == approval.StatusRejected {
+						writeError(w, http.StatusConflict, "run_not_resumable",
+							"运行包含被拒绝的审批门,不可按节点恢复,请重新触发新流水线")
+						return
+					}
+				}
+			}
 		}
 		cfg, _, err := specLoader.Get(r.Context(), parent.ProjectID, parent.Trigger.Branch)
 		if err != nil {

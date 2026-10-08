@@ -157,6 +157,16 @@ export default {
   resumeQueueFull: "Planungswarteschlange voll, bitte später erneut versuchen",
   resumeRequestFailed: "Fortsetzen fehlgeschlagen ({status})",
   resumedFrom: "Fortgesetzt von #{id}",
+  // 审批记录(谁/何时/批准还是拒绝)
+  approvalRecords: "Genehmigungsverlauf",
+  approvalRecordsAria: "Genehmigungsverlauf",
+  approvalRecordApproved: "Genehmigt",
+  approvalRecordRejected: "Abgelehnt",
+  approvalRecordPending: "Ausstehend",
+  approvalActor: "Von",
+  approvalByTimeout: "Genehmigung abgelaufen",
+  approvalByCanceled: "Abgebrochen",
+  rejectedInfo: "Dieser Lauf wurde an einer Genehmigungsschleuse gestoppt (abgelehnt oder abgelaufen) — wer und wann siehe Genehmigungsverlauf. Zum Fortfahren einen neuen Lauf auslösen.",
 
   partialInfo:
     "Einige Ziele sind fehlgeschlagen und die fehlgeschlagenen Hosts wurden unabhängig zurückgerollt; die übrigen laufen unbeeinträchtigt weiter.",

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/huangchengsir/pipewright/internal/approval"
 	"github.com/huangchengsir/pipewright/internal/auth"
 	"github.com/huangchengsir/pipewright/internal/dagrun"
 	"github.com/huangchengsir/pipewright/internal/pipeline"
@@ -49,6 +50,7 @@ func setupResumeServer(t *testing.T) (*httptest.Server, *http.Client, string, ru
 
 	srv := httptest.NewServer(New(testWebFSAuth(), svc,
 		WithVault(v), WithProjects(psvc), WithRuns(rsvc, nil),
+		WithApprovals(approval.New(), approval.NewStore(st.DB)),
 		WithSpecLoader(dagrun.SpecLoaderFunc(func(context.Context, string) (*pipeline.Config, error) { return resumeSpec(), nil }))))
 	t.Cleanup(srv.Close)
 
@@ -159,6 +161,30 @@ func TestResumeRunEndpoint(t *testing.T) {
 	}
 	if got.Trigger.Type != run.TriggerManual || got.Trigger.Commit != "abc1234" || got.Trigger.Actor != "admin" {
 		t.Fatalf("触发上下文应复制自父运行(type=manual/commit/actor=admin):%+v", got.Trigger)
+	}
+}
+
+// TestResumeRunBlockedByRejectedGate 恢复守卫:审批记录含 rejected 的 failed 父运行
+// (混合情况:终态仍 failed)→ 409 run_not_resumable,须重新触发新流水线。
+func TestResumeRunBlockedByRejectedGate(t *testing.T) {
+	srv, client, csrf, _, db := setupResumeServer(t)
+	projID := seedResumeProject(t, db)
+	parentID := seedResumeParentRun(t, db, projID, run.StatusFailed)
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	if _, err := db.Exec(
+		`INSERT INTO run_approvals (id, run_id, stage_id, stage_name, status, decided_by, decided_at, created_at)
+		 VALUES (?, ?, 'deploy', '部署', 'rejected', 'admin', ?, ?)`,
+		uuid.NewString(), parentID, now, now); err != nil {
+		t.Fatalf("seed rejected approval: %v", err)
+	}
+
+	resp := doJSON(t, client, http.MethodPost, srv.URL+"/api/runs/"+parentID+"/resume", csrf,
+		`{"actions":{"1":"retry","2":"skip"}}`)
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusConflict || !strings.Contains(string(raw), "run_not_resumable") {
+		t.Fatalf("含被拒门的 failed 运行应 409 run_not_resumable,得到 %d %s", resp.StatusCode, raw)
 	}
 }
 

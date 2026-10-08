@@ -140,6 +140,16 @@ export default {
   resumeQueueFull: "調度隊列已滿,請稍後重試",
   resumeRequestFailed: "恢復失敗({status})",
   resumedFrom: "恢復自 #{id}",
+  // 审批记录(谁/何时/批准还是拒绝)
+  approvalRecords: "審批記錄",
+  approvalRecordsAria: "審批記錄",
+  approvalRecordApproved: "已批准",
+  approvalRecordRejected: "已拒絕",
+  approvalRecordPending: "待審批",
+  approvalActor: "操作人",
+  approvalByTimeout: "審批超時",
+  approvalByCanceled: "已取消",
+  rejectedInfo: "運行因審批門未放行而終止(人工拒絕或審批超時),決定人與時刻見「審批記錄」。如需繼續,請重新觸發新流水線。",
 
   partialInfo: "部分目標失敗,失敗台已獨立回滾;其餘台繼續執行,互不連累。",
   multiTargetAria: "多機目標狀態",

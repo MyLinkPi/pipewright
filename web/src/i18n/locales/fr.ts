@@ -185,6 +185,7 @@ const fr: typeof zhCN = {
     waiting_approval: 'En attente d’approbation',
     success: 'Réussi',
     failed: 'Échoué',
+    rejected: 'Rejetée',
     partial_failed: 'Échec partiel',
     rolled_back: 'Annulé',
   },

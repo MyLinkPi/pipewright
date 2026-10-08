@@ -153,6 +153,16 @@ export default {
   resumeQueueFull: "スケジュール待ち行列がいっぱいです。しばらくしてから再試行してください",
   resumeRequestFailed: "リジューム失敗（{status}）",
   resumedFrom: "#{id} からリジューム",
+  // 审批记录(谁/何时/批准还是拒绝)
+  approvalRecords: "承認履歴",
+  approvalRecordsAria: "承認履歴",
+  approvalRecordApproved: "承認済み",
+  approvalRecordRejected: "却下",
+  approvalRecordPending: "承認待ち",
+  approvalActor: "実行者",
+  approvalByTimeout: "承認タイムアウト",
+  approvalByCanceled: "キャンセル",
+  rejectedInfo: "このランは承認ゲートで中止されました(却下またはタイムアウト)。実行者と時刻は「承認履歴」を参照してください。続行には新しいランを実行してください。",
 
   partialInfo:
     "一部の対象が失敗し、失敗した台は個別にロールバックされました。残りの台は影響を受けず実行を続けます。",

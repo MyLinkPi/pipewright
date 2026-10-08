@@ -452,6 +452,11 @@ func (p *WorkerPool) execute(runID string) {
 	final := StatusSuccess
 	if runErr != nil {
 		final = StatusFailed
+		// 审批门未放行(人工拒绝/审批超时)是人的决定而非系统故障:落 rejected 与失败区分
+		// (不触发 AI 诊断)。取消场景(runCtx 已 Done)仍按 failed,取消语义优先。
+		if runCtx.Err() == nil && errors.Is(runErr, ErrGateRejected) {
+			final = StatusRejected
+		}
 	}
 	// **先**校正所有非终态步骤,**再**落 run 终态:保证「run 一旦观测到终态,其步骤必已一致」
 	// (StepDone 失败/runner 漏置不致留下"run=终态但 step 永远 running")。顺序反了会有竞态窗口

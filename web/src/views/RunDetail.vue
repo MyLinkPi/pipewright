@@ -89,18 +89,42 @@ async function handleCancel(): Promise<void> {
 
 // ─── approval gate (Story 8-4) ──────────────────────────────────────────────────
 // 运行阻塞在审批门(status=waiting_approval)时,展示待批阶段 + 批准/拒绝按钮。
+// 审批记录(谁/何时/批准还是拒绝)全量保存,供「审批记录」卡片 + DAG 阶段「已拒绝」徽标。
 
 const pendingApproval = ref<ApprovalRecord | null>(null)
+const approvalRecords = ref<ApprovalRecord[]>([])
 const approving = ref(false)
 const approvalError = ref('')
+
+// 任一审批门被拒(人工拒绝/超时/门控处取消)→ 不可按节点恢复:隐藏恢复面板(后端 409 兜底)。
+const hasRejectedApproval = computed(() => approvalRecords.value.some((a) => a.status === 'rejected'))
 
 async function loadApprovals(): Promise<void> {
   try {
     const { items } = await listApprovals(runId.value)
+    approvalRecords.value = items
     pendingApproval.value = items.find((a) => a.status === 'pending') ?? null
   } catch {
     pendingApproval.value = null
   }
+}
+
+// 审批记录:状态徽标文案。
+function approvalStateLabel(status: ApprovalRecord['status']): string {
+  switch (status) {
+    case 'approved': return t('runDetail.approvalRecordApproved')
+    case 'rejected': return t('runDetail.approvalRecordRejected')
+    default: return t('runDetail.approvalRecordPending')
+  }
+}
+
+// 审批记录:操作人文案。timeout/canceled 是系统标注(审批超时/门控等待中取消),映射为本地化标签;
+// 其余(用户名)原样展示——当前单账号体系为 admin,多用户落地后自动显示真实操作人。
+function approvalActorLabel(rec: ApprovalRecord): string {
+  if (rec.decidedBy === 'timeout') return t('runDetail.approvalByTimeout')
+  if (rec.decidedBy === 'canceled') return t('runDetail.approvalByCanceled')
+  if (!rec.decidedBy) return ''
+  return `${t('runDetail.approvalActor')}: ${rec.decidedBy}`
 }
 
 async function decideApproval(approve: boolean): Promise<void> {
@@ -371,7 +395,7 @@ async function loadRun(): Promise<void> {
   try {
     run.value = await getRun(runId.value)
     loadState.value = 'idle'
-    if (run.value.status === 'waiting_approval') void loadApprovals()
+    void loadApprovals() // 审批记录:任何状态都拉(卡片 + 被拒门隐藏恢复面板)
   } catch (err) {
     if (err instanceof HttpError) {
       loadError.value = err.status === 404
@@ -394,7 +418,7 @@ async function silentRefresh(): Promise<void> {
   try {
     const fresh = await getRun(runId.value)
     run.value = fresh
-    if (fresh.status === 'waiting_approval') void loadApprovals()
+    void loadApprovals() // 审批记录:任何状态都拉
   } catch {
     // Transient fetch failure — next tick retries; never surfaced to the UI.
   }
@@ -415,9 +439,9 @@ function startSse(): void {
     onStatus({ status }) {
       if (!run.value) return
       run.value = { ...run.value, status }
-      // Approval gate (8-4): load pending stage when blocked; clear once resumed.
-      if (status === 'waiting_approval') void loadApprovals()
-      else pendingApproval.value = null
+      // 审批记录:任何状态都拉(待批横幅 / 审批记录卡片 / 被拒门隐藏恢复面板);
+      // loadApprovals 内部会按最新列表重算 pendingApproval(终态后自然清空)。
+      void loadApprovals()
       // Stop SSE on terminal state + 重拉完整 run:终态由后端补齐的 commit / 构建产物 / 时长
       // 经 SSE 只推了 status,需重新 GET 才能拿到 → 否则要手动刷新才出来。
       if (isTerminal(status)) {
@@ -491,6 +515,7 @@ const STATUS_CONFIG: Record<RunStatus, StatusConfig> = {
   waiting_approval:{ dot: 'var(--color-amber)', bg: 'var(--color-amber-soft)', border: 'var(--color-amber-line)',   text: 'var(--color-amber)', pulse: true  },
   success:       { dot: 'var(--color-green)',  bg: 'var(--color-green-soft)', border: 'transparent',               text: 'var(--color-green)', pulse: false },
   failed:        { dot: 'var(--color-red)',    bg: 'var(--color-red-soft)',   border: 'var(--color-red-line)',     text: 'var(--color-red)',   pulse: false },
+  rejected:      { dot: 'var(--color-red)',    bg: 'var(--color-red-soft)',   border: 'var(--color-red-line)',     text: 'var(--color-red)',   pulse: false },
   partial_failed:{ dot: 'var(--color-red)',    bg: 'var(--color-red-soft)',   border: 'var(--color-red-line)',     text: 'var(--color-red)',   pulse: false },
   rolled_back:   { dot: 'var(--color-amber)',  bg: 'var(--color-amber-soft)', border: 'var(--color-amber-line)',   text: 'var(--color-amber)', pulse: false },
 }
@@ -678,6 +703,22 @@ function goBack(): void {
           </div>
         </div>
 
+        <!-- ── 审批记录:每个审批门阶段的决定(谁/何时/批准还是拒绝);任何有记录的状态都显示 ── -->
+        <div v-if="approvalRecords.length > 0" class="approval-records" role="region" :aria-label="t('runDetail.approvalRecordsAria')">
+          <div class="approval-records-title">{{ t('runDetail.approvalRecords') }}</div>
+          <ul class="approval-records-list">
+            <li v-for="rec in approvalRecords" :key="rec.stageId" class="approval-record">
+              <span class="approval-record-dot" :class="`approval-record-dot--${rec.status}`" aria-hidden="true" />
+              <span class="approval-record-stage">{{ rec.stageName }}</span>
+              <span class="approval-record-state" :class="`approval-record-state--${rec.status}`">
+                {{ approvalStateLabel(rec.status) }}
+              </span>
+              <span class="approval-record-by">{{ approvalActorLabel(rec) }}</span>
+              <span class="approval-record-time">{{ formatDateTime(rec.decidedAt || rec.createdAt) }}</span>
+            </li>
+          </ul>
+        </div>
+
         <!-- ── Meta strip: trigger / branch / commit / duration ──────── -->
         <div class="meta-strip">
           <div class="meta-item">
@@ -738,6 +779,7 @@ function goBack(): void {
                 :project-id="run.projectId"
                 :steps="run.steps"
                 :run-status="run.status"
+                :approvals="approvalRecords"
               />
             </div>
 
@@ -762,6 +804,7 @@ function goBack(): void {
                 :project-id="run.projectId"
                 :steps="run.steps"
                 :run-status="run.status"
+                :approvals="approvalRecords"
               />
             </div>
 
@@ -1063,6 +1106,7 @@ function goBack(): void {
                 :project-id="run.projectId"
                 :steps="run.steps"
                 :run-status="run.status"
+                :approvals="approvalRecords"
               />
             </div>
 
@@ -1082,8 +1126,9 @@ function goBack(): void {
               </div>
             </div>
 
-            <!-- 按节点恢复(FR:失败重试/跳过):逐失败节点选择重试/跳过,创建派生运行 -->
-            <RunResumePanel :run-id="run.id" :steps="run.steps" />
+            <!-- 按节点恢复(FR:失败重试/跳过):逐失败节点选择重试/跳过,创建派生运行。
+                 含被拒审批门的运行不可恢复(后端 409 兜底),隐藏面板引导重新触发。 -->
+            <RunResumePanel v-if="!hasRejectedApproval" :run-id="run.id" :steps="run.steps" />
 
             <!-- 失败日志证据(只读历史回放,Story 3-6)。在 AI 诊断面板之上;
                  不属于 7-2 的 DiagnosisPanel slot,二者共存。 -->
@@ -1115,6 +1160,37 @@ function goBack(): void {
           </div>
         </template>
 
+        <!-- ── STATE: rejected(审批门被拒绝/超时;人工决定,非系统失败)── -->
+        <template v-else-if="run.status === 'rejected'">
+          <div class="state-section">
+
+            <!-- DAG topology:被拒阶段红色「已拒绝」徽标(审批记录经 props 传入) -->
+            <div class="dag-section">
+              <h2 class="section-title">{{ t('runStatus.rejected') }}</h2>
+              <RunDagView
+                :project-id="run.projectId"
+                :steps="run.steps"
+                :run-status="run.status"
+                :approvals="approvalRecords"
+              />
+            </div>
+
+            <!-- 被拒说明:决定人与时刻见上方「审批记录」卡片;不可按节点恢复,需重新触发 -->
+            <div class="partial-info" role="status">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                <circle cx="12" cy="12" r="9"/><path d="m15 9-6 6M9 9l6 6"/>
+              </svg>
+              {{ t('runDetail.rejectedInfo') }}
+            </div>
+
+            <!-- 历史日志回放(只读,Story 3-6) -->
+            <div class="log-history" role="region" :aria-label="t('runDetail.historyLogAria')">
+              <RunTerminal :run-id="run.id" :live="false" />
+            </div>
+
+          </div>
+        </template>
+
         <!-- ── STATE: partial_failed ────────────────────────────────── -->
         <template v-else-if="run.status === 'partial_failed'">
           <div class="state-section">
@@ -1126,6 +1202,7 @@ function goBack(): void {
                 :project-id="run.projectId"
                 :steps="run.steps"
                 :run-status="run.status"
+                :approvals="approvalRecords"
               />
             </div>
 
@@ -1223,6 +1300,7 @@ function goBack(): void {
                 :project-id="run.projectId"
                 :steps="run.steps"
                 :run-status="run.status"
+                :approvals="approvalRecords"
               />
             </div>
 
@@ -1271,6 +1349,60 @@ function goBack(): void {
 .approval-gate-sub { margin-top: 2px; font-size: 0.8rem; color: var(--color-dim); }
 .approval-gate-error { margin-top: 6px; font-size: 0.78rem; color: var(--color-red); }
 .approval-gate-actions { display: flex; gap: 8px; align-items: center; flex-shrink: 0; }
+
+/* ─── 审批记录卡片(每个审批门阶段:谁/何时/批准还是拒绝)────────────────────── */
+.approval-records {
+  margin: 14px 0;
+  padding: 12px 16px;
+  background: var(--color-card-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--rounded);
+}
+.approval-records-title {
+  font-size: 0.82rem;
+  font-weight: 650;
+  color: var(--color-text);
+  margin-bottom: 8px;
+}
+.approval-records-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.approval-record {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.8rem;
+  min-width: 0;
+}
+.approval-record-dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--color-faint);
+}
+.approval-record-dot--approved { background: var(--color-green); }
+.approval-record-dot--rejected { background: var(--color-red); }
+.approval-record-dot--pending { background: var(--color-amber); }
+.approval-record-stage {
+  font-family: var(--font-mono);
+  color: var(--color-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.approval-record-state { flex: none; font-weight: 650; }
+.approval-record-state--approved { color: var(--color-green); }
+.approval-record-state--rejected { color: var(--color-red); }
+.approval-record-state--pending { color: var(--color-amber); }
+.approval-record-by { flex: none; color: var(--color-dim); }
+.approval-record-time { flex: none; margin-left: auto; color: var(--color-dim); font-family: var(--font-mono); font-size: 0.75rem; }
+
 .approval-btn {
   height: 34px;
   padding: 0 16px;

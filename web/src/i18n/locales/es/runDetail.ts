@@ -158,6 +158,16 @@ export default {
   resumeQueueFull: "La cola de programación está llena, inténtalo de nuevo más tarde",
   resumeRequestFailed: "Error al reanudar ({status})",
   resumedFrom: "Reanudada desde #{id}",
+  // 审批记录(谁/何时/批准还是拒绝)
+  approvalRecords: "Registro de aprobaciones",
+  approvalRecordsAria: "Registro de aprobaciones",
+  approvalRecordApproved: "Aprobado",
+  approvalRecordRejected: "Rechazado",
+  approvalRecordPending: "Pendiente",
+  approvalActor: "Por",
+  approvalByTimeout: "Aprobación expirada",
+  approvalByCanceled: "Cancelado",
+  rejectedInfo: "Esta ejecución se detuvo en una puerta de aprobación (rechazada o expirada); consulta el registro de aprobaciones para saber quién y cuándo. Para continuar, lanza una nueva ejecución.",
 
   partialInfo:
     "Algunos destinos fallaron y los hosts fallidos han retrocedido de forma independiente; el resto siguen ejecutándose sin verse afectados.",

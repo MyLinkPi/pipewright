@@ -17,13 +17,15 @@ const props = defineProps<{
 const router = useRouter()
 const { t } = useI18n()
 
-// RunStatus → 语义色调(成功/失败/进行/等待/回滚);文案走 i18n `runStatus.*`。
+// RunStatus → 语义色调(成功/失败/拒绝/进行/等待/回滚);文案走 i18n `runStatus.*`。
+// rejected 与 failed 同用 err 红色调,文案「已拒绝」区分。
 const STATUS_TONE: Record<RunStatus, string> = {
   queued: 'idle',
   running: 'run',
   waiting_approval: 'wait',
   success: 'ok',
   failed: 'err',
+  rejected: 'err',
   partial_failed: 'warn',
   rolled_back: 'roll',
 }

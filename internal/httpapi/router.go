@@ -646,7 +646,7 @@ func New(webFS fs.FS, authn auth.Authenticator, opts ...Option) http.Handler {
 		// 失败运行按节点恢复(FR:失败重试/跳过):校验配置一致性 → 创建派生运行(继承成功
 		// 节点、重试/跳过失败节点、部署节点只重试失败机器)。写方法,过 auth + CSRF;
 		// specLoader 为 nil(legacy runner 模式)→ 503。返回 201 + 子运行详情。
-		ar.Post("/runs/{id}/resume", makeResumeRunHandler(rs, o.specLoader, aud))
+		ar.Post("/runs/{id}/resume", makeResumeRunHandler(rs, o.specLoader, o.approvalStore, aud))
 		// 人工审批门(Story 8-4):批准/拒绝某运行的审批门阶段 + 列审批记录。
 		// approve/reject 为写方法,过 auth + CSRF;coord/store 为 nil → 503。
 		ar.Post("/runs/{id}/approve", makeApprovalDecisionHandler(o.approvalCoord, o.approvalStore, aud, true))

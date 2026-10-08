@@ -22,9 +22,10 @@ import (
 
 // 运行状态枚举(DB 存小写串;JSON 同值)。状态机:
 //
-//	queued → running → success | failed | partial_failed | rolled_back
+//	queued → running → success | failed | rejected | partial_failed | rolled_back
 //
 // 取消复用 StatusFailed(进行中取消 → failed;经事件/步骤可观察)。
+// 审批门被拒绝/超时 → StatusRejected(人工决定,与系统失败区分)。
 const (
 	// StatusQueued 表示已入队、等待 worker 调度。
 	StatusQueued = "queued"
@@ -37,6 +38,9 @@ const (
 	StatusSuccess = "success"
 	// StatusFailed 表示执行失败或被取消(终态)。
 	StatusFailed = "failed"
+	// StatusRejected 表示审批门被人工拒绝或审批超时(终态):是人的决定而非系统故障,
+	// 与失败显式区分(不触发 AI 诊断;列表/徽标按「已拒绝」展示)。门控阶段步骤记 skipped。
+	StatusRejected = "rejected"
 	// StatusPartialFailed 表示多机部分失败(终态;Epic 4 填充语义,本期仅为合法终态)。
 	StatusPartialFailed = "partial_failed"
 	// StatusRolledBack 表示已回滚(终态;Epic 4 填充语义,本期仅为合法终态)。
@@ -123,6 +127,10 @@ var (
 	ErrNotResumable = errors.New("run: not resumable")
 	// ErrInvalidResumePlan 表示恢复计划非法(空 / 长度与布局不符 / 含未指定处置的失败节点)。
 	ErrInvalidResumePlan = errors.New("run: invalid resume plan")
+	// ErrGateRejected 表示审批门未放行(人工拒绝或审批超时;worker 据此把 run 落为
+	// StatusRejected 而非 failed)。定义在 run 包供 pool 判定(dagrun 的同名错误包装它,
+	// 避免 pool→dagrun 反向依赖)。
+	ErrGateRejected = errors.New("run: approval gate not approved")
 )
 
 // Trigger 是运行触发上下文(冻结 DTO 的 trigger 块来源)。
@@ -280,6 +288,7 @@ type ListResult struct {
 var terminalStatuses = map[string]bool{
 	StatusSuccess:       true,
 	StatusFailed:        true,
+	StatusRejected:      true,
 	StatusPartialFailed: true,
 	StatusRolledBack:    true,
 }
@@ -293,6 +302,7 @@ var allowedTransitions = map[string]map[string]bool{
 	StatusRunning: {
 		StatusSuccess:         true,
 		StatusFailed:          true,
+		StatusRejected:        true, // 审批门被拒绝/超时(人工决定,非系统失败)
 		StatusPartialFailed:   true,
 		StatusRolledBack:      true,
 		StatusWaitingApproval: true, // 进入审批门:running → waiting_approval(Story 8-4)
@@ -319,7 +329,7 @@ func IsStepTerminal(status string) bool {
 // isValidStatus 报告状态是否为已知运行状态枚举。
 func isValidStatus(status string) bool {
 	switch status {
-	case StatusQueued, StatusRunning, StatusWaitingApproval, StatusSuccess, StatusFailed, StatusPartialFailed, StatusRolledBack:
+	case StatusQueued, StatusRunning, StatusWaitingApproval, StatusSuccess, StatusFailed, StatusRejected, StatusPartialFailed, StatusRolledBack:
 		return true
 	default:
 		return false

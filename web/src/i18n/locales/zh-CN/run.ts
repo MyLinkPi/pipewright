@@ -127,6 +127,7 @@ export default {
   stageStatusSuccess: '成功',
   stageStatusRunning: '进行中',
   stageStatusFailed: '失败',
+  stageStatusRejected: '已拒绝',
   stageStatusSkipped: '跳过',
   stageStatusPending: '等待',
   stageStatusBlocked: '未执行',

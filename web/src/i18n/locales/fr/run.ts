@@ -127,6 +127,7 @@ export default {
   stageStatusSuccess: 'Réussie',
   stageStatusRunning: 'En cours',
   stageStatusFailed: 'Échouée',
+  stageStatusRejected: 'Rejeté',
   stageStatusSkipped: 'Ignorée',
   stageStatusPending: 'En attente',
   stageStatusBlocked: 'Non exécutée',
