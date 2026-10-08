@@ -51,6 +51,8 @@ export interface RunStep {
   startedAt: string | null
   finishedAt: string | null
   durationMs: number | null
+  /** 全局序号(additive):恢复计划以它标识节点;老响应缺省时前端回退数组下标。 */
+  ordinal?: number
 }
 
 // ─── Trigger ─────────────────────────────────────────────────────────────────
@@ -162,6 +164,8 @@ export interface RunDetail {
   artifacts: ArtifactDTO[]          // Story 3-4 fills (FR-6) — empty [] when no artifacts
   targets: DeployTarget[] | null    // Story 4-2 fills (FR-10) — deployed ⇒ array, else null
   diagnosis: DiagnosisDTO | null    // Epic 7 fills — slot owner: Story 7.x (Story 7-2 defines shape)
+  /** 按节点恢复溯源(additive):由哪个失败运行派生;非恢复运行 / 老数据缺省。 */
+  resumedFrom?: string | null
 }
 
 // ─── Run list item (compact; no steps/targets/diagnosis) ────────────────────
@@ -211,6 +215,23 @@ export function getRun(id: string): Promise<RunDetail> {
 
 export function cancelRun(id: string): Promise<RunDetail> {
   return http.post<RunDetail>(`/api/runs/${id}/cancel`)
+}
+
+// ─── Resume failed run by node(失败运行按节点恢复)──────────────────────────────
+//
+// POST /api/runs/{id}/resume — body {actions: {"<ordinal>": "retry"|"skip"}}。
+// 创建派生运行:继承父运行成功节点,按处置重试/跳过失败节点(部署节点只重试失败机器)。
+// 201 → 返回子运行详情;409 spec_changed(流水线配置已变化)/ run_not_resumable;
+// 422 invalid_resume_plan(某失败节点缺处置)/ no_failed_nodes。
+
+export type ResumeAction = 'retry' | 'skip'
+
+export function resumeRun(parentId: string, actions: Record<number, ResumeAction>): Promise<RunDetail> {
+  const payload: Record<string, ResumeAction> = {}
+  for (const [ord, action] of Object.entries(actions)) {
+    payload[String(ord)] = action
+  }
+  return http.post<RunDetail>(`/api/runs/${parentId}/resume`, { actions: payload })
 }
 
 // ─── Approval gate (Epic 8 · 8-4) ──────────────────────────────────────────────

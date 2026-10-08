@@ -139,6 +139,22 @@ export default {
   retryRequestFailed:
     "再試行リクエストに失敗しました。しばらくしてから再試行してください",
 
+  // ノード単位のリジューム(失敗ランからの派生再実行)
+  resumeRegionAria: "ノード単位でランをリジューム",
+  resumeTitle: "ノード単位でランをリジューム",
+  resumeDesc: "派生ランを作成:成功済みノードはそのまま引き継ぎ、失敗/未実行の部分のみ再実行します。デプロイノードは失敗したマシンのみ再試行します。",
+  resumeRetry: "再試行",
+  resumeSkip: "スキップ",
+  resumeSkipHint: "このノードをスキップし、下流は通常どおり実行します",
+  resumeLaunch: "リジュームを実行",
+  resumeLaunching: "作成中…",
+  resumeSpecChanged: "パイプライン設定が変更されたため、ノード単位でリジュームできません",
+  resumeNotResumable: "このランはノード単位でリジュームできません",
+  resumeRunNotFound: "ランが見つかりません",
+  resumeQueueFull: "スケジュール待ち行列がいっぱいです。しばらくしてから再試行してください",
+  resumeRequestFailed: "リジューム失敗（{status}）",
+  resumedFrom: "#{id} からリジューム",
+
   partialInfo:
     "一部の対象が失敗し、失敗した台は個別にロールバックされました。残りの台は影響を受けず実行を続けます。",
   multiTargetAria: "マルチホスト対象ステータス",

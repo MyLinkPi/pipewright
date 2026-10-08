@@ -438,6 +438,15 @@ func (p *WorkerPool) execute(runID string) {
 		return
 	}
 
+	// 恢复运行只由 DAG runner 执行:不支持恢复的 runner(legacy/桩)不认识恢复计划,会全量
+	// 重跑(继承节点被重复执行,违背「按节点恢复」语义)——诚实置失败并记日志,而非静默全量。
+	if r.Resume != nil && !SupportsResume(p.runner) {
+		log.Printf("[run] run %s: 当前 runner 不支持按节点恢复,置失败", runID)
+		sink.reconcile(StatusFailed)
+		_ = p.svc.transition(context.Background(), runID, StatusRunning, StatusFailed, false)
+		return
+	}
+
 	runErr := p.runner.Run(runCtx, r, sink)
 
 	final := StatusSuccess
@@ -544,15 +553,31 @@ func (d *dbStepSink) Plan(ctx context.Context, steps []StepDecl) error {
 		d.stages[i] = st.Stage
 		id := uuid.NewString()
 		d.stepIDs[i] = id
-		_, err := d.svc.db.ExecContext(ctx,
-			`INSERT INTO run_steps (id, run_id, name, stage, status, ordinal, started_at, finished_at)
-			 VALUES (?, ?, ?, ?, ?, ?, NULL, NULL)`,
-			id, d.runID, st.Name, st.Stage, StepPending, i,
-		)
-		if err != nil {
+		// 初始状态:默认 pending;按节点恢复的继承/人工跳过节点在 Plan 时直接落终态
+		// (started/finished 同刻,避免终态步骤悬挂无时刻;执行器不会再碰这些节点)。
+		status := StepPending
+		q := `INSERT INTO run_steps (id, run_id, name, stage, status, ordinal, started_at, finished_at)
+		      VALUES (?, ?, ?, ?, ?, ?, NULL, NULL)`
+		args := []any{id, d.runID, st.Name, st.Stage, status, i}
+		var finishedAt *time.Time
+		switch st.Initial {
+		case "", StepPending:
+			// 常规待执行(上方默认)。
+		case StepSuccess, StepSkipped:
+			status = st.Initial
+			now := time.Now().UTC()
+			nowStr := now.Format(time.RFC3339)
+			q = `INSERT INTO run_steps (id, run_id, name, stage, status, ordinal, started_at, finished_at)
+			     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+			args = []any{id, d.runID, st.Name, st.Stage, status, i, nowStr, nowStr}
+			finishedAt = &now
+		default:
+			return fmt.Errorf("run: invalid step initial status: %s", st.Initial)
+		}
+		if _, err := d.svc.db.ExecContext(ctx, q, args...); err != nil {
 			return fmt.Errorf("run: insert step: %w", err)
 		}
-		d.publish(i, StepPending, nil, nil)
+		d.publish(i, status, nil, finishedAt)
 	}
 	return nil
 }

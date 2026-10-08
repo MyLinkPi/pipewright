@@ -3,6 +3,7 @@ package registryhub
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"io"
 	"net/http"
 	"time"
@@ -34,6 +35,24 @@ type RegistryAPI interface {
 	DeleteManifest(ctx context.Context, repo, digest string) error
 }
 
+// CertInfo 是证书管理侧的证书摘要(域名覆盖校验用;无 PEM)。
+type CertInfo struct {
+	ID            string
+	PrimaryDomain string
+	Domains       []string
+	Status        string
+	NotAfter      time.Time
+}
+
+// CertSource 抽象「证书元数据 + 进程内解密 PEM」的能力(生产由 main.go 适配 certmgmt.Service
+// 注入,避免包环;与 platformhttps.CertSource 同构)。PEM 仅进程内传递,绝不过 HTTP/不落日志。
+type CertSource interface {
+	// GetCert 返回证书摘要;不存在 → not found 语义。
+	GetCert(ctx context.Context, id string) (*CertInfo, error)
+	// OpenCertPEM 解密返回证书/私钥 PEM 明文(部署时落盘挂载用,仅进程内)。
+	OpenCertPEM(ctx context.Context, id string) (certPEM, keyPEM string, err error)
+}
+
 // Options 是 Hub 的可注入依赖(零值可用生产默认;测试逐项覆盖)。
 type Options struct {
 	// BaseDir 是 registry 栈在控制机的落盘目录(compose 文件 + data/cache 卷)。
@@ -48,6 +67,8 @@ type Options struct {
 	// LocalMachine 覆盖「控制机本机」目标的 MachineRunner(生产 nil → LocalRunner + 文件系统
 	// 实现;测试注入 fake,避免碰真实 /etc/docker)。
 	LocalMachine MachineRunner
+	// Certs 是 TLS 证书来源(certmgmt);nil 时选了证书的保存会被拒绝。
+	Certs CertSource
 	// ApplyConcurrency 是 daemon.json 批量下发的并发上限;0 → 4。
 	ApplyConcurrency int
 }
@@ -80,7 +101,7 @@ func New(db *sql.DB, targetSvc target.Service, opts Options) *Hub {
 		opts.LocalMachine = localMachine{runner: opts.Runner}
 	}
 	return &Hub{
-		cfg:       configService{db: db, baseDir: opts.BaseDir},
+		cfg:       configService{db: db, baseDir: opts.BaseDir, certs: opts.Certs},
 		targetSvc: targetSvc,
 		opts:      opts,
 	}
@@ -107,4 +128,33 @@ func (h *Hub) ResolveBuiltin(ctx context.Context) (addr string, ok bool) {
 		return "", false
 	}
 	return cfg.ArtifactAddr(), true
+}
+
+// UsesCert 报告内置 registry 是否正引用指定证书(certmgmt 删除前的占用检查)。
+func (h *Hub) UsesCert(ctx context.Context, certID string) (bool, error) {
+	cfg, err := h.Get(ctx)
+	if err != nil {
+		return false, err
+	}
+	return cfg.TLSCertID != "" && cfg.TLSCertID == certID, nil
+}
+
+// RedeployCert 证书续期/重下发后的联动:重新部署栈(部署流程会重新解密落盘 PEM 并按
+// 配置漂移重建容器)。未引用该证书时静默跳过;部署层失败如实返回(人读,无凭据)。
+func (h *Hub) RedeployCert(ctx context.Context, certID string) error {
+	cfg, err := h.Get(ctx)
+	if err != nil {
+		return err
+	}
+	if cfg.TLSCertID == "" || cfg.TLSCertID != certID {
+		return nil
+	}
+	res, err := h.DeployStack(ctx)
+	if err != nil {
+		return err
+	}
+	if !res.OK {
+		return fmt.Errorf("registry TLS 证书重新部署失败:%s", res.Error)
+	}
+	return nil
 }

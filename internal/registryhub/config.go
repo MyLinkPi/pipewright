@@ -11,6 +11,10 @@
 // 由设置页手动勾选机器显式下发(唯一触发方式;保存配置不触碰任何机器),覆盖前备份原文件、
 // 自动重启 docker 并验证生效。
 //
+// TLS 可选:配置引用「证书管理」的公共可信证书(certID 软引用,PEM 仅进程内解密落盘挂载),
+// 双服务以 HTTPS 服务;此时 daemon.json 只写 https mirrors、不再写 insecure-registries
+// (客户端零配置;要求各机信任该证书)。
+//
 // 设计原则:
 //   - 命令一律 array []string,绝不拼 shell(AC-SEC-02);远端经 target.Service(SSH),
 //     本机经注入的 LocalRunner(os/exec)——两者共用同一 Apply 流程。
@@ -58,6 +62,8 @@ var (
 	// ErrInvalidDataDir 表示存储目录非法:非绝对路径/根目录/含控制字符,或制品与缓存
 	// 目录相同、互为父子、占用栈基目录(会互相吞数据或把 compose 文件卷进容器)。
 	ErrInvalidDataDir = errors.New("registryhub: invalid data dir")
+	// ErrInvalidTLSCert 表示 tls_cert_id 非法,或所指证书不存在/域名未覆盖外部地址。
+	ErrInvalidTLSCert = errors.New("registryhub: invalid tls cert")
 )
 
 // reHostAddr 校验 external_addr:纯 host/IPv4(hostname 字符集),不含 scheme/路径/端口
@@ -73,6 +79,7 @@ type Config struct {
 	CachePort       int
 	ArtifactDataDir string // 制品 registry 存储目录(空 = <BaseDir>/data 默认)
 	CacheDataDir    string // 缓存 registry 存储目录(空 = <BaseDir>/cache 默认)
+	TLSCertID       string // 「证书管理」证书 ID(空 = 明文 HTTP;非空 = 双服务挂载该证书走 HTTPS)
 	KeepPerProject  int    // 每仓库保留最近 N tag(0=不限)
 	MaxAgeDays      int    // 删除早于 N 天的 tag(0=不限)
 	UpdatedAt       *time.Time
@@ -83,6 +90,10 @@ func (c *Config) ArtifactAddr() string { return addrWithPort(c.ExternalAddr, c.A
 
 // CacheAddr 返回缓存 registry 的 host:port。
 func (c *Config) CacheAddr() string { addr := c.ExternalAddr; return addrWithPort(addr, c.CachePort) }
+
+// TLSEnabled 报告栈是否以 TLS 服务:选了证书即开启,制品与缓存双服务同开关
+// (同域名不同端口共用一张证书)。
+func (c *Config) TLSEnabled() bool { return strings.TrimSpace(c.TLSCertID) != "" }
 
 func addrWithPort(host string, port int) string {
 	if port <= 0 {
@@ -111,6 +122,7 @@ type SaveInput struct {
 	CachePort       int
 	ArtifactDataDir string
 	CacheDataDir    string
+	TLSCertID       string
 	KeepPerProject  int
 	MaxAgeDays      int
 }
@@ -118,20 +130,22 @@ type SaveInput struct {
 // service 是 store 支撑的 Service 配置实现(栈/清理/下发能力在 Hub 组合,见 hub.go)。
 type configService struct {
 	db      *sql.DB
-	baseDir string // 栈基目录(目录冲突校验需要;空跳过该项校验)
+	baseDir string     // 栈基目录(目录冲突校验需要;空跳过该项校验)
+	certs   CertSource // TLS 证书来源(nil 时选了证书的保存会被拒绝,诚实不假装校验过)
 }
 
 // Get 读取单例配置行;无行返回惰性默认(不写库,与 ai.Config 惰性语义一致)。
 func (s *configService) Get(ctx context.Context) (*Config, error) {
 	var (
-		enabled, artifactPort, cachePort, keep, age    int
-		externalAddr, upstream, artifactDir, cacheDir  string
-		createdStr, updatedStr                         string
+		enabled, artifactPort, cachePort, keep, age   int
+		externalAddr, upstream, artifactDir, cacheDir string
+		tlsCertID                                     string
+		createdStr, updatedStr                        string
 	)
 	err := s.db.QueryRowContext(ctx,
-		`SELECT enabled, external_addr, upstream_url, artifact_port, cache_port, artifact_data_dir, cache_data_dir, keep_per_project, max_age_days, created_at, updated_at
+		`SELECT enabled, external_addr, upstream_url, artifact_port, cache_port, artifact_data_dir, cache_data_dir, tls_cert_id, keep_per_project, max_age_days, created_at, updated_at
 		 FROM registry_hub_config WHERE id = 1`,
-	).Scan(&enabled, &externalAddr, &upstream, &artifactPort, &cachePort, &artifactDir, &cacheDir, &keep, &age, &createdStr, &updatedStr)
+	).Scan(&enabled, &externalAddr, &upstream, &artifactPort, &cachePort, &artifactDir, &cacheDir, &tlsCertID, &keep, &age, &createdStr, &updatedStr)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return &Config{
@@ -151,6 +165,7 @@ func (s *configService) Get(ctx context.Context) (*Config, error) {
 		CachePort:       cachePort,
 		ArtifactDataDir: strings.TrimSpace(artifactDir),
 		CacheDataDir:    strings.TrimSpace(cacheDir),
+		TLSCertID:       strings.TrimSpace(tlsCertID),
 		KeepPerProject:  keep,
 		MaxAgeDays:      age,
 	}
@@ -172,10 +187,16 @@ func (s *configService) Get(ctx context.Context) (*Config, error) {
 }
 
 // Save 校验并 upsert 单例配置。**只写库**:不部署栈、不下发 daemon.json、不触碰任何机器。
+// 选了 TLS 证书时即时校验证书存在且域名覆盖外部地址(失败拒绝落库,不在部署时才炸)。
 func (s *configService) Save(ctx context.Context, in SaveInput) (*Config, error) {
 	cfg, err := NormalizeConfig(in, s.baseDir)
 	if err != nil {
 		return nil, err
+	}
+	if cfg.TLSCertID != "" {
+		if verr := s.validateTLSCert(ctx, cfg); verr != nil {
+			return nil, verr
+		}
 	}
 	nowStr := time.Now().UTC().Format(time.RFC3339)
 	enabled := 0
@@ -185,16 +206,32 @@ func (s *configService) Save(ctx context.Context, in SaveInput) (*Config, error)
 	// 单例 upsert:首存 INSERT(id=1),已存 ON CONFLICT 更新(created_at 保留)。
 	_, err = s.db.ExecContext(ctx,
 		`INSERT INTO registry_hub_config
-		   (id, enabled, external_addr, upstream_url, artifact_port, cache_port, artifact_data_dir, cache_data_dir, keep_per_project, max_age_days, created_at, updated_at)
-		 VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) `+
+		   (id, enabled, external_addr, upstream_url, artifact_port, cache_port, artifact_data_dir, cache_data_dir, tls_cert_id, keep_per_project, max_age_days, created_at, updated_at)
+		 VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) `+
 			store.UpsertSuffix(store.DialectOf(s.db), []string{"id"},
-				[]string{"enabled", "external_addr", "upstream_url", "artifact_port", "cache_port", "artifact_data_dir", "cache_data_dir", "keep_per_project", "max_age_days", "updated_at"}),
-		enabled, cfg.ExternalAddr, cfg.UpstreamURL, cfg.ArtifactPort, cfg.CachePort, cfg.ArtifactDataDir, cfg.CacheDataDir, cfg.KeepPerProject, cfg.MaxAgeDays, nowStr, nowStr,
+				[]string{"enabled", "external_addr", "upstream_url", "artifact_port", "cache_port", "artifact_data_dir", "cache_data_dir", "tls_cert_id", "keep_per_project", "max_age_days", "updated_at"}),
+		enabled, cfg.ExternalAddr, cfg.UpstreamURL, cfg.ArtifactPort, cfg.CachePort, cfg.ArtifactDataDir, cfg.CacheDataDir, cfg.TLSCertID, cfg.KeepPerProject, cfg.MaxAgeDays, nowStr, nowStr,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("registryhub: upsert config: %w", err)
 	}
 	return s.Get(ctx)
+}
+
+// validateTLSCert 校验 TLS 证书引用:证书须存在且 SAN 覆盖外部地址(公共可信由证书管理
+// 侧保证;本包只把「引用合法」把在保存关口)。失败一律包 ErrInvalidTLSCert(httpapi → 422)。
+func (s *configService) validateTLSCert(ctx context.Context, cfg *Config) error {
+	if s.certs == nil {
+		return fmt.Errorf("%w: 证书能力未装配", ErrInvalidTLSCert)
+	}
+	c, err := s.certs.GetCert(ctx, cfg.TLSCertID)
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrInvalidTLSCert, err)
+	}
+	if c == nil || !domainCovers(c.Domains, cfg.ExternalAddr) {
+		return fmt.Errorf("%w: 证书不存在或域名未覆盖外部地址 %s", ErrInvalidTLSCert, cfg.ExternalAddr)
+	}
+	return nil
 }
 
 // NormalizeConfig 校验并归一 SaveInput:去空白、端口 0 值兜底默认、上游空兜底默认。
@@ -210,6 +247,7 @@ func NormalizeConfig(in SaveInput, baseDir string) (*Config, error) {
 		CachePort:       in.CachePort,
 		ArtifactDataDir: strings.TrimSpace(in.ArtifactDataDir),
 		CacheDataDir:    strings.TrimSpace(in.CacheDataDir),
+		TLSCertID:       strings.TrimSpace(in.TLSCertID),
 		KeepPerProject:  in.KeepPerProject,
 		MaxAgeDays:      in.MaxAgeDays,
 	}
@@ -227,6 +265,14 @@ func NormalizeConfig(in SaveInput, baseDir string) (*Config, error) {
 	}
 	if cfg.MaxAgeDays < 0 {
 		cfg.MaxAgeDays = 0
+	}
+	if len(cfg.TLSCertID) > 128 {
+		return nil, ErrInvalidTLSCert
+	}
+	for _, r := range cfg.TLSCertID {
+		if r <= ' ' || r == 0x7f { // 证书 ID 是无空白标识形态;空白/控制字符一律拒绝(防注入面)
+			return nil, ErrInvalidTLSCert
+		}
 	}
 	if cfg.ExternalAddr != "" {
 		// host/IP 形态:禁 scheme/路径/端口(端口独立配置);长度上限防滥用。
@@ -313,6 +359,28 @@ func dirContains(parent, child string) bool {
 		return false
 	}
 	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+// domainCovers 报告证书 SAN 列表是否覆盖 host:精确相等,或通配符 "*.suffix" 覆盖 host
+// 的最左一个标签(遵循 TLS 通配符语义:*​.a.com 不覆盖 x.y.a.com,也不覆盖裸 a.com)。
+func domainCovers(domains []string, host string) bool {
+	host = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(host), "."))
+	if host == "" {
+		return false
+	}
+	for _, d := range domains {
+		d = strings.ToLower(strings.TrimSpace(d))
+		if d == host {
+			return true
+		}
+		if strings.HasPrefix(d, "*.") {
+			suffix := d[1:] // ".a.com"(带点)
+			if strings.HasSuffix(host, suffix) && !strings.Contains(strings.TrimSuffix(host, suffix), ".") {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // DetectOutboundAddr 返回控制机的出网网卡 IP(供 UI 预填 external_addr 的建议值;

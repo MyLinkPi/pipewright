@@ -91,7 +91,7 @@ export default {
 
   instances: {
     toggle: '实例',
-    hint: '实例 = 网关同机上的一个容器;默认部署策略「实例轮转」逐实例零停机替换(起新 → 预热健康 → 原子切换 → 排空 → 停旧)。摘除的实例保留配置但不接流量。',
+    hint: '实例 = 集群 upstream 成员(服务器 + 宿主端口):网关对全部网关主机渲染同一份配置、反代集群所有实例(本机没有部署同样代理)。容器实例由部署自动注册并走「扩容→切换→缩容」零停机轮转;非容器实例部署注册或手动添加,升级走「摘除→升级→健康→挂回」。',
     count: '{n} 实例',
     detached: '已摘除',
     detach: '摘除',
@@ -101,5 +101,10 @@ export default {
     addFail: '添加实例失败',
     delTitle: '删除实例?',
     portPlaceholder: '端口(默认同服务)',
+    legacy: '待迁移',
+    hostKind: '非容器',
+    containerPlaceholder: '容器名(非容器留空)',
+    serverPlaceholder: '选择服务器',
+    hostPortPlaceholder: '宿主端口(0=继承)',
   },
 }

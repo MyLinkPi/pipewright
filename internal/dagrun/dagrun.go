@@ -150,6 +150,10 @@ func New(loader SpecLoader, opts ...Option) *Runner {
 	return r
 }
 
+// SupportsResume 实现 run.ResumeCapable:DAG Runner 认识恢复计划(run.Resume),是唯一
+// 支持「按节点恢复」的执行器(worker 据此拒绝把恢复运行交给 legacy/桩 runner)。
+func (r *Runner) SupportsResume() bool { return true }
+
 // Run 实现 run.Runner:加载 spec → 构 DAG → 按拓扑/并行调度阶段 → 经 StepSink 上报。
 //
 // StepSink 非并发安全约定:本 Runner 用单一 mutex 串行化所有 sink 调用,即便阶段并行执行,
@@ -172,38 +176,34 @@ func (r *Runner) Run(ctx context.Context, rn *run.Run, sink run.StepSink) error 
 		return nil
 	}
 
-	graph, err := BuildGraph(stages)
+	// 建图 + 按拓扑序摊平节点(与恢复校验器共用同一布局函数,保证节点 ordinal 跨运行可对齐)。
+	lo, err := buildLayout(stages)
 	if err != nil {
 		return fmt.Errorf("dagrun: build graph: %w", err)
 	}
+	decls, jobOrdinals, stageFirstOrd, stageByID := lo.decls, lo.jobOrdinals, lo.stageFirstOrd, lo.stageByID
 
-	// 节点级:拓扑序决定阶段展示序;每个阶段内的 job 按声明序各占一个 step(ordinal 全局连续)。
-	// jobOrdinals[stageID] = 该阶段各 job 的全局 ordinal(jobID→ordinal);stageFirstOrd 供阶段级日志归位。
-	order := graph.TopoOrder()
-	stageByID := make(map[string]pipeline.Stage, len(stages))
-	for _, st := range stages {
-		stageByID[st.ID] = st
-	}
-	decls := make([]run.StepDecl, 0, len(order))
-	jobOrdinals := make(map[string]map[string]int, len(order))
-	stageFirstOrd := make(map[string]int, len(order))
-	ord := 0
-	for _, id := range order {
-		st := stageByID[id]
-		stageFirstOrd[id] = ord
-		m := make(map[string]int, len(st.Jobs))
-		if len(st.Jobs) == 0 {
-			// 无 job 的阶段:留一个以阶段名命名的占位 step(键用 stageID,供 finishRemaining 收尾)。
-			decls = append(decls, run.StepDecl{Name: st.Name, Stage: st.Name})
-			m[id] = ord
-			ord++
+	// 恢复计划(失败运行按节点恢复):继承/人工跳过节点在 Plan 时直接落终态;执行侧由
+	// applyResumeToStage 过滤阶段。计划长度与当前布局不符 → 明确失败(配置在恢复后已变化),
+	// 绝不静默全量重跑。
+	var plan []string
+	if rn.Resume != nil {
+		plan = rn.Resume.Actions
+		if len(plan) != len(decls) {
+			return fmt.Errorf("dagrun: 恢复计划节点数 %d 与当前流水线布局 %d 不一致(配置已变化,无法按节点恢复)", len(plan), len(decls))
 		}
-		for _, jb := range st.Jobs {
-			m[jb.ID] = ord
-			decls = append(decls, run.StepDecl{Name: jb.Name, Stage: st.Name})
-			ord++
+		for i := range decls {
+			switch plan[i] {
+			case run.NodeInherit:
+				decls[i].Initial = run.StepSuccess
+			case run.NodeSkip:
+				decls[i].Initial = run.StepSkipped
+			case run.NodeRun, run.NodeRetry:
+				// 正常执行(初始 pending)。
+			default:
+				return fmt.Errorf("dagrun: 恢复计划含未知动作 %q(ordinal %d)", plan[i], i)
+			}
 		}
-		jobOrdinals[id] = m
 	}
 
 	var mu sync.Mutex // 串行化对 sink 的全部调用(阶段/节点可能并行)
@@ -224,23 +224,34 @@ func (r *Runner) Run(ctx context.Context, rn *run.Run, sink run.StepSink) error 
 
 	maxc := r.concurrency
 	if maxc <= 0 {
-		maxc = len(order)
+		maxc = len(stageByID)
 	}
 
-	result := graph.Schedule(ctx, func(ctx context.Context, stageID string) error {
+	result := lo.graph.Schedule(ctx, func(ctx context.Context, stageID string) error {
 		stage := stageByID[stageID]
 		rep := &stageReporter{sink: tap, mu: &mu, jobOrd: jobOrdinals[stageID], firstOrd: stageFirstOrd[stageID]}
+		// 恢复运行:先按计划整理本阶段(继承/跳过节点预收尾 + 过滤出要执行的 job 副本)。
+		// 放在条件执行/审批门**之前**:纯继承/跳过的阶段不产生执行体,不应触发条件跳过语义
+		// 或再阻塞在审批门上。
+		execStage := stage
+		if plan != nil {
+			fs := applyResumeToStage(ctx, plan, stageID, stage, jobOrdinals[stageID], rep)
+			if fs == nil {
+				return nil // 本阶段无待执行节点:放行下游
+			}
+			execStage = *fs
+		}
 		// 条件执行(Story 8-5):when 不满足 → 整阶段所有节点 skipped(非失败),其下游照「未成功」跳过。
-		if !stage.When.Matches(rn.Trigger.Branch, rn.Trigger.Type) {
+		if !execStage.When.Matches(rn.Trigger.Branch, rn.Trigger.Type) {
 			_ = rep.Log(ctx, "stdout", fmt.Sprintf(
-				"阶段「%s」条件不满足(分支=%q 触发=%q),跳过", stage.Name, rn.Trigger.Branch, rn.Trigger.Type))
+				"阶段「%s」条件不满足(分支=%q 触发=%q),跳过", execStage.Name, rn.Trigger.Branch, rn.Trigger.Type))
 			rep.finishRemaining(ctx, run.StepSkipped)
 			return dag.ErrSkip
 		}
 		// 人工审批门(Story 8-4):进入该阶段前阻塞等待批准。run 状态由 gate 置 waiting_approval。
-		if stage.Gate && r.gate != nil {
-			_ = rep.Log(ctx, "stdout", fmt.Sprintf("⏸ 阶段「%s」等待人工审批…", stage.Name))
-			approved, gerr := r.gate(ctx, rn, stage)
+		if execStage.Gate && r.gate != nil {
+			_ = rep.Log(ctx, "stdout", fmt.Sprintf("⏸ 阶段「%s」等待人工审批…", execStage.Name))
+			approved, gerr := r.gate(ctx, rn, execStage)
 			if gerr != nil {
 				_ = rep.Log(ctx, "stderr", fmt.Sprintf("审批门中断:%v", gerr))
 				rep.finishRemaining(ctx, run.StepFailed)
@@ -256,7 +267,7 @@ func (r *Runner) Run(ctx context.Context, rn *run.Run, sink run.StepSink) error 
 		// 阶段执行体按节点(job)各自上报 running/done(见 build.NewStageExecutor)。执行器未显式
 		// 标记的节点由 finishRemaining 兜底:阶段成功→success(如 stub/占位节点);阶段失败→failed
 		// (执行器应已把真失败节点标 failed、上游跳过节点标 skipped;剩余未报的归并到失败结果)。
-		execErr := r.exec(ctx, rn, stage, rep)
+		execErr := r.exec(ctx, rn, execStage, rep)
 		sweep := run.StepSuccess
 		if execErr != nil {
 			sweep = run.StepFailed

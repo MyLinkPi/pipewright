@@ -17,27 +17,35 @@ import (
 	"github.com/huangchengsir/pipewright/internal/target"
 )
 
-// fakeGateway 是注入的假 InstanceGateway:捕获 Swap / Detach / Attach 调用,可注入各自错误。
+// fakeGateway 是注入的假 InstanceGateway:捕获 Swap / Detach / Attach / Ensure / Prune 调用,
+// 可注入各自错误。
 type fakeGateway struct {
 	mu        sync.Mutex
 	refs      []InstanceRef
-	resolveBy string // 非空时只在 container == resolveBy 时返回 refs(模拟「服务名匹配」)
+	resolveBy string // 非空时只在 container == resolveBy 或 serviceRef == resolveBy 时返回 refs
 	swapErr   error
 	detachErr error
 	attachErr error
 	swaps     [][2]string // (old, new)
 	detached  []string
 	attached  []string
+	ensures   []string // EnsureInstance(serviceID/server/container)
+	ensurePorts []int   // EnsureInstance 的 (port, hostPort) 对,按调用序两两排列
+	pruned    []string // PruneInstances(serviceID)
+
+	ensureDetachedErr error    // EnsureInstanceDetached 注入错误
+	ensureDetachedID  string   // 非空时 EnsureInstanceDetached 返回该 InstanceID(模拟命中存量行)
+	ensuredRefs       []string // EnsureInstanceDetached(serviceID/server/container)
 }
 
-func (g *fakeGateway) ResolveInstances(_ context.Context, _, container string) ([]InstanceRef, error) {
-	if g.resolveBy != "" && container != g.resolveBy {
+func (g *fakeGateway) ResolveInstances(_ context.Context, _, serviceRef, container string) ([]InstanceRef, error) {
+	if g.resolveBy != "" && container != g.resolveBy && serviceRef != g.resolveBy {
 		return nil, nil
 	}
 	return g.refs, nil
 }
 
-func (g *fakeGateway) SwapInstance(_ context.Context, _ string, oldC, newC string) error {
+func (g *fakeGateway) SwapInstance(_ context.Context, _, _, oldC, newC string, _ int) error {
 	g.mu.Lock()
 	g.swaps = append(g.swaps, [2]string{oldC, newC})
 	g.mu.Unlock()
@@ -56,6 +64,37 @@ func (g *fakeGateway) AttachInstance(_ context.Context, instanceID string) error
 	g.attached = append(g.attached, instanceID)
 	g.mu.Unlock()
 	return g.attachErr
+}
+
+func (g *fakeGateway) EnsureInstance(_ context.Context, serviceID, serverID, container string, port, hostPort int) error {
+	g.mu.Lock()
+	g.ensures = append(g.ensures, serviceID+"/"+serverID+"/"+container)
+	g.ensurePorts = append(g.ensurePorts, port, hostPort)
+	g.mu.Unlock()
+	return nil
+}
+
+// ensureDetachedErr 可注入 EnsureInstanceDetached 失败;ensuredRefs 记录调用(与 ensures 分列,
+// 便于区分两条注册路径)。
+func (g *fakeGateway) EnsureInstanceDetached(_ context.Context, serviceID, serverID, container string, port, hostPort int) (InstanceRef, error) {
+	g.mu.Lock()
+	g.ensuredRefs = append(g.ensuredRefs, serviceID+"/"+serverID+"/"+container)
+	g.mu.Unlock()
+	if g.ensureDetachedErr != nil {
+		return InstanceRef{}, g.ensureDetachedErr
+	}
+	id := g.ensureDetachedID
+	if id == "" {
+		id = "ensured-" + serverID
+	}
+	return InstanceRef{ServiceID: serviceID, InstanceID: id, ServerID: serverID, Container: container, Port: port, HostPort: hostPort}, nil
+}
+
+func (g *fakeGateway) PruneInstances(_ context.Context, serviceID string, _ []string) error {
+	g.mu.Lock()
+	g.pruned = append(g.pruned, serviceID)
+	g.mu.Unlock()
+	return nil
 }
 
 func (g *fakeGateway) swapCount() int {
@@ -366,5 +405,149 @@ func TestGatewayDetachSkippedWithoutService(t *testing.T) {
 	}
 	if gw.detachCount() != 0 || gw.attachCount() != 0 {
 		t.Fatalf("未配 gatewayService 不应触碰网关,得 detach=%d attach=%d", gw.detachCount(), gw.attachCount())
+	}
+}
+
+// ---- 预注册(detached)+ 命令型摘挂 -------------------------------------------
+
+// fileDetachExecOK 是文件部署用例的通用桩:无上一发布(readlink 失败),其余命令全成功。
+func fileDetachExecOK(_ string, cmd []string) (*target.ExecResult, error) {
+	if len(cmd) > 0 && cmd[0] == "readlink" {
+		return &target.ExecResult{ExitCode: 1}, nil
+	}
+	return &target.ExecResult{ExitCode: 0}, nil
+}
+
+// TestGatewayDetachPreRegistersDetached:首台部署(反查无实例)+ 配了 regPort →
+// 先 EnsureInstanceDetached 预注册(detached,不进 upstream),部署成功后挂回预注册实例;
+// 全程无摘除(没有已 attached 的实例)。
+func TestGatewayDetachPreRegistersDetached(t *testing.T) {
+	gw := &fakeGateway{refs: nil}
+	svc, runID, artID, srvID := gatewayDetachSvc(t, gw, fileDetachExecOK)
+
+	res, err := svc.Deploy(context.Background(), DeployInput{
+		RunID: runID, ArtifactID: artID, ServerIDs: []string{srvID},
+		Config: map[string]string{"regServiceId": "svc-1", "regPort": "8080"},
+	})
+	if err != nil {
+		t.Fatalf("Deploy: %v", err)
+	}
+	if res[0].Status != run.TargetSuccess {
+		t.Fatalf("want success, got %+v", res)
+	}
+	if len(gw.ensuredRefs) != 1 || gw.ensuredRefs[0] != "svc-1/"+srvID+"/" {
+		t.Fatalf("应预注册本机非容器实例:%v", gw.ensuredRefs)
+	}
+	if gw.detachCount() != 0 {
+		t.Fatalf("无 attached 实例不应摘除,得 %d", gw.detachCount())
+	}
+	if gw.attachCount() != 1 || gw.attached[0] != "ensured-"+srvID {
+		t.Fatalf("成功后应挂回预注册实例:%v", gw.attached)
+	}
+}
+
+// TestGatewayDetachEnsureDedupWithExisting:存量 attached 实例同时出现在摘除与预注册名单
+// (EnsureInstanceDetached 命中同一行)→ 挂回按 InstanceID 去重,不得重复挂。
+func TestGatewayDetachEnsureDedupWithExisting(t *testing.T) {
+	gw := &fakeGateway{refs: twoInstanceRefs(), resolveBy: "svc-1", ensureDetachedID: "i1"}
+	svc, runID, artID, srvID := gatewayDetachSvc(t, gw, fileDetachExecOK)
+
+	res, err := svc.Deploy(context.Background(), DeployInput{
+		RunID: runID, ArtifactID: artID, ServerIDs: []string{srvID},
+		Config: map[string]string{"regServiceId": "svc-1", "regPort": "8080"},
+	})
+	if err != nil {
+		t.Fatalf("Deploy: %v", err)
+	}
+	if res[0].Status != run.TargetSuccess {
+		t.Fatalf("want success, got %+v", res)
+	}
+	// 摘除 2 个;挂回恰好 2 个(i1 不因预注册再挂一次)。
+	if gw.detachCount() != 2 || gw.attachCount() != 2 {
+		t.Fatalf("挂回应按 ID 去重:detach=%d attach=%d %v", gw.detachCount(), gw.attachCount(), gw.attached)
+	}
+}
+
+// TestGatewayDetachEnsureFailureStillDeploys:预注册失败(网关暂不可达)仅告警,部署照常,
+// 且无实例可摘挂时直通。
+func TestGatewayDetachEnsureFailureStillDeploys(t *testing.T) {
+	gw := &fakeGateway{refs: nil, ensureDetachedErr: target.ErrUnreachable}
+	svc, runID, artID, srvID := gatewayDetachSvc(t, gw, fileDetachExecOK)
+
+	res, err := svc.Deploy(context.Background(), DeployInput{
+		RunID: runID, ArtifactID: artID, ServerIDs: []string{srvID},
+		Config: map[string]string{"regServiceId": "svc-1", "regPort": "8080"},
+	})
+	if err != nil {
+		t.Fatalf("Deploy: %v", err)
+	}
+	if res[0].Status != run.TargetSuccess {
+		t.Fatalf("预注册失败不应拦死部署, got %+v", res)
+	}
+	if gw.detachCount() != 0 || gw.attachCount() != 0 {
+		t.Fatalf("无实例可摘挂:detach=%d attach=%d", gw.detachCount(), gw.attachCount())
+	}
+}
+
+// TestRunCommandOnlyGatewayDetachAndPrune:命令型部署同样接入注册联动 ——
+// 逐机「预注册(detached)→ 摘 → 执行 → 挂回」,全部成功后按全量目标 prune。
+func TestRunCommandOnlyGatewayDetachAndPrune(t *testing.T) {
+	db := testDB(t)
+	rsvc := run.New(db)
+	tgt := &stubTarget{execFn: func(_ string, _ []string) (*target.ExecResult, error) {
+		return &target.ExecResult{ExitCode: 0}, nil
+	}}
+	srv := seedServer(t, tgt, "frpc-client")
+	runID, _ := seedSuccessRunWithArtifact(t, db, rsvc, run.ArtifactDist, "dist/unused")
+
+	gw := &fakeGateway{refs: nil}
+	svc := New(tgt, rsvc, WithInstanceGateway(gw))
+	res, err := svc.DeployForStage(context.Background(), runID, "server:"+srv.ID,
+		map[string]string{"deployMode": "command", "restartCommand": "systemctl restart app",
+			"regServiceId": "svc-1", "regPort": "8080"}, "")
+	if err != nil {
+		t.Fatalf("DeployForStage: %v", err)
+	}
+	if len(res) != 1 || res[0].Status != run.TargetSuccess {
+		t.Fatalf("want success, got %+v", res)
+	}
+	if len(gw.ensuredRefs) != 1 {
+		t.Fatalf("命令型部署应预注册实例:%v", gw.ensuredRefs)
+	}
+	if gw.attachCount() != 1 {
+		t.Fatalf("成功后应挂回预注册实例:%v", gw.attached)
+	}
+	if len(gw.pruned) != 1 || gw.pruned[0] != "svc-1" {
+		t.Fatalf("全部成功后应 prune 注册表:%v", gw.pruned)
+	}
+}
+
+// TestRunCommandOnlyNoPruneOnFailure:命令型部署部分失败 → 不 prune(拓扑未定型);
+// 已摘除实例保持摘除。
+func TestRunCommandOnlyNoPruneOnFailure(t *testing.T) {
+	db := testDB(t)
+	rsvc := run.New(db)
+	tgt := &stubTarget{execFn: func(_ string, _ []string) (*target.ExecResult, error) {
+		return &target.ExecResult{ExitCode: 2, Stderr: "boom"}, nil
+	}}
+	srv := seedServer(t, tgt, "frpc-client")
+	runID, _ := seedSuccessRunWithArtifact(t, db, rsvc, run.ArtifactDist, "dist/unused")
+
+	gw := &fakeGateway{refs: twoInstanceRefs(), resolveBy: "svc-1"}
+	svc := New(tgt, rsvc, WithInstanceGateway(gw))
+	res, err := svc.DeployForStage(context.Background(), runID, "server:"+srv.ID,
+		map[string]string{"deployMode": "command", "restartCommand": "false",
+			"regServiceId": "svc-1", "regPort": "8080"}, "")
+	if err != nil {
+		t.Fatalf("DeployForStage: %v", err)
+	}
+	if res[0].Status != run.TargetFailed {
+		t.Fatalf("want failed, got %+v", res[0])
+	}
+	if len(gw.pruned) != 0 {
+		t.Fatalf("失败不应 prune:%v", gw.pruned)
+	}
+	if gw.attachCount() != 0 {
+		t.Fatalf("失败应保持摘除:%v", gw.attached)
 	}
 }

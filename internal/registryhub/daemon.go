@@ -15,8 +15,9 @@ import (
 	"github.com/huangchengsir/pipewright/internal/target"
 )
 
-// daemon.json 下发常量。整文件由服务端生成覆盖(覆盖前备份);生成内容仅两类键:
-// registry-mirrors(指向本平台缓存 registry)+ insecure-registries(明文 HTTP 所需)。
+// daemon.json 下发常量。整文件由服务端生成覆盖(覆盖前备份);明文栈生成两类键:
+// registry-mirrors(指向本平台缓存 registry)+ insecure-registries(明文 HTTP 所需);
+// TLS 栈只写 https mirrors、不写 insecure-registries(证书公共可信,客户端零配置)。
 const (
 	daemonJSONPath = "/etc/docker/daemon.json"
 	applyTimeout   = 120 * time.Second // 单目标全流程(含重启 + 轮询验证)
@@ -26,15 +27,26 @@ const (
 	LocalTargetID = "local"
 )
 
-// mirrorURL 返回写入 daemon.json 的 registry-mirrors 值(明文 HTTP,指向缓存 registry)。
-func mirrorURL(cfg *Config) string { return "http://" + cfg.CacheAddr() }
+// mirrorURL 返回写入 daemon.json 的 registry-mirrors 值(指向缓存 registry;TLS 栈为
+// https,明文栈为 http)。
+func mirrorURL(cfg *Config) string {
+	scheme := "http"
+	if cfg.TLSEnabled() {
+		scheme = "https"
+	}
+	return scheme + "://" + cfg.CacheAddr()
+}
 
 // daemonJSONContent 生成目标机 /etc/docker/daemon.json 的完整内容(整文件覆盖)。
-// 生产/部署/构建机对内置 registry 的全部依赖(基础镜像加速 + 制品明文拉推)一次配齐。
+// 明文栈:registry-mirrors(明文 HTTP 指向缓存 registry)+ insecure-registries(制品/缓存
+// 地址)。TLS 栈(证书公共可信):只写 https mirrors,**不写 insecure-registries** ——
+// 客户端零配置直连;要求各机构建/部署机信任该证书(ACME 签发即满足)。
 func daemonJSONContent(cfg *Config) []byte {
 	doc := map[string]any{
-		"registry-mirrors":    []string{mirrorURL(cfg)},
-		"insecure-registries": []string{cfg.ArtifactAddr(), cfg.CacheAddr()},
+		"registry-mirrors": []string{mirrorURL(cfg)},
+	}
+	if !cfg.TLSEnabled() {
+		doc["insecure-registries"] = []string{cfg.ArtifactAddr(), cfg.CacheAddr()}
 	}
 	b, err := json.MarshalIndent(doc, "", "  ")
 	if err != nil {

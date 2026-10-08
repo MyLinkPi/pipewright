@@ -516,21 +516,21 @@ type scanner interface {
 	Scan(dest ...any) error
 }
 
-// ---------- instances(0051) ----------
+// ---------- instances(0051 单机模型 → 0068 集群模型) ----------
 
-const instanceCols = `SELECT id, service_id, container, port, attached, created_at, updated_at
+const instanceCols = `SELECT id, service_id, server_id, container, port, host_port, attached, created_at, updated_at
 FROM service_reg_instances`
 
-// insertInstance 落库实例;(service_id, container) 唯一冲突 → ErrInstanceTaken。
+// insertInstance 落库实例;(service_id, server_id, container) 唯一冲突 → ErrInstanceTaken。
 func (s *Store) insertInstance(ctx context.Context, i *Instance) error {
 	attached := 0
 	if i.Attached {
 		attached = 1
 	}
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO service_reg_instances (id, service_id, container, port, attached, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		i.ID, i.ServiceID, i.Container, i.Port, attached,
+		`INSERT INTO service_reg_instances (id, service_id, server_id, container, port, host_port, attached, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		i.ID, i.ServiceID, i.ServerID, i.Container, i.Port, i.HostPort, attached,
 		i.CreatedAt.UTC().Format(time.RFC3339), i.UpdatedAt.UTC().Format(time.RFC3339),
 	)
 	if err != nil {
@@ -538,6 +538,91 @@ func (s *Store) insertInstance(ctx context.Context, i *Instance) error {
 			return ErrInstanceTaken
 		}
 		return fmt.Errorf("servicereg: insert instance: %w", err)
+	}
+	return nil
+}
+
+// findInstanceForUpsert 定位 upsert 目标行:先精确 (service, server, container);
+// 未命中且 container 非空 → 认领同 (service, container) 的遗留行(server_id='',0068 前单机
+// 模型)。都没有 → nil(调用方插入新行)。
+func (s *Store) findInstanceForUpsert(ctx context.Context, serviceID, serverID, container string) *Instance {
+	if container == "" {
+		row := s.db.QueryRowContext(ctx, instanceCols+
+			` WHERE service_id = ? AND server_id = ? AND container = ''`, serviceID, serverID)
+		if i, err := scanInstance(row); err == nil {
+			return i
+		}
+		return nil
+	}
+	row := s.db.QueryRowContext(ctx, instanceCols+
+		` WHERE service_id = ? AND server_id = ? AND container = ?`, serviceID, serverID, container)
+	if i, err := scanInstance(row); err == nil {
+		return i
+	}
+	row = s.db.QueryRowContext(ctx, instanceCols+
+		` WHERE service_id = ? AND server_id = '' AND container = ?`, serviceID, container)
+	if i, err := scanInstance(row); err == nil {
+		return i
+	}
+	return nil
+}
+
+// updateInstanceEndpoint 更新实例端点(EnsureInstance 用):归属/attached 恒更新;
+// port / hostPort <=0 表示「保持原值」(容器轮转前 ensure 不覆盖既有宿主端口,Swap 负责)。
+func (s *Store) updateInstanceEndpoint(ctx context.Context, id, serverID string, port, hostPort int, attached bool) error {
+	v := 0
+	if attached {
+		v = 1
+	}
+	sets := []string{"server_id = ?", "attached = ?", "updated_at = ?"}
+	args := []any{serverID, v, time.Now().UTC().Format(time.RFC3339)}
+	if port > 0 {
+		sets = append(sets, "port = ?")
+		args = append(args, port)
+	}
+	if hostPort > 0 {
+		sets = append(sets, "host_port = ?")
+		args = append(args, hostPort)
+	}
+	args = append(args, id)
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE service_reg_instances SET `+strings.Join(sets, ", ")+` WHERE id = ?`, args...)
+	if err != nil {
+		if store.IsUniqueErr(err) {
+			return ErrInstanceTaken
+		}
+		return fmt.Errorf("servicereg: update instance endpoint: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// deleteInstancesNotIn 删除该服务下 server_id 不在列表内的实例(含遗留 '' 行)。
+func (s *Store) deleteInstancesNotIn(ctx context.Context, serviceID string, serverIDs []string) (int64, error) {
+	// 动态 NOT IN 占位;列表空 → 删全量(该服务已无覆盖服务器)。
+	sqlText := `DELETE FROM service_reg_instances WHERE service_id = ?`
+	args := []any{serviceID}
+	if len(serverIDs) > 0 {
+		ph := strings.Repeat("?,", len(serverIDs))
+		sqlText += ` AND server_id NOT IN (` + strings.TrimSuffix(ph, ",") + `)`
+		for _, sid := range serverIDs {
+			args = append(args, sid)
+		}
+	}
+	res, err := s.db.ExecContext(ctx, sqlText, args...)
+	if err != nil {
+		return 0, fmt.Errorf("servicereg: prune instances: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
+}
+
+// deleteInstancesByService 级联删除服务的全部实例(删服务时调用)。
+func (s *Store) deleteInstancesByService(ctx context.Context, serviceID string) error {
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM service_reg_instances WHERE service_id = ?`, serviceID); err != nil {
+		return fmt.Errorf("servicereg: cascade instances: %w", err)
 	}
 	return nil
 }
@@ -555,9 +640,10 @@ func (s *Store) getInstance(ctx context.Context, id string) (*Instance, error) {
 	return i, nil
 }
 
-// getInstanceByContainer 按(服务, 容器名)取实例;不存在 → ErrNotFound。
-func (s *Store) getInstanceByContainer(ctx context.Context, serviceID, container string) (*Instance, error) {
-	row := s.db.QueryRowContext(ctx, instanceCols+` WHERE service_id = ? AND container = ?`, serviceID, container)
+// getInstanceBySlot 按(服务, 服务器, 容器)取实例;不存在 → ErrNotFound。
+func (s *Store) getInstanceBySlot(ctx context.Context, serviceID, serverID, container string) (*Instance, error) {
+	row := s.db.QueryRowContext(ctx, instanceCols+
+		` WHERE service_id = ? AND server_id = ? AND container = ?`, serviceID, serverID, container)
 	i, err := scanInstance(row)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -622,11 +708,18 @@ func (s *Store) setInstanceAttached(ctx context.Context, id string, attached boo
 	return nil
 }
 
-// updateInstanceContainer 实例行改名(SwapInstance 用);目标名撞唯一键 → ErrInstanceTaken。
-func (s *Store) updateInstanceContainer(ctx context.Context, id, container string) error {
+// updateInstanceSwap 实例行改名 + 宿主端口同步(SwapInstance 用;hostPort<=0 = 保持原值);
+// 目标名撞唯一键 → ErrInstanceTaken。
+func (s *Store) updateInstanceSwap(ctx context.Context, id, container string, hostPort int) error {
+	sets := "container = ?, updated_at = ?"
+	args := []any{container, time.Now().UTC().Format(time.RFC3339)}
+	if hostPort > 0 {
+		sets = "container = ?, host_port = ?, updated_at = ?"
+		args = []any{container, hostPort, time.Now().UTC().Format(time.RFC3339)}
+	}
+	args = append(args, id)
 	res, err := s.db.ExecContext(ctx,
-		`UPDATE service_reg_instances SET container = ?, updated_at = ? WHERE id = ?`,
-		container, time.Now().UTC().Format(time.RFC3339), id)
+		`UPDATE service_reg_instances SET `+sets+` WHERE id = ?`, args...)
 	if err != nil {
 		if store.IsUniqueErr(err) {
 			return ErrInstanceTaken
@@ -658,7 +751,7 @@ func scanInstance(sc scanner) (*Instance, error) {
 		createdS  string
 		updatedS  string
 	)
-	if err := sc.Scan(&i.ID, &i.ServiceID, &i.Container, &i.Port, &attached, &createdS, &updatedS); err != nil {
+	if err := sc.Scan(&i.ID, &i.ServiceID, &i.ServerID, &i.Container, &i.Port, &i.HostPort, &attached, &createdS, &updatedS); err != nil {
 		return nil, err
 	}
 	i.Attached = attached != 0

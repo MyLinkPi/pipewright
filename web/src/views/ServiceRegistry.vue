@@ -331,19 +331,20 @@ async function removeService(s: RegisteredService): Promise<void> {
   }
 }
 
-// ─── 实例(多实例 upstream;instance_rolling 轮转的单元) ─────────────────────
-// 仅 http+container 服务有实例;展开服务行按需加载实例清单。
+// ─── 实例(集群 upstream 成员 = 服务器 + 宿主端口) ─────────────────────────────
+// http 服务均可有实例(容器实例由部署自动注册;非容器实例部署注册或人工添加)。展开服务行按需加载。
 const expandedSvc = ref('')
 const instancesBySvc = ref<Record<string, ServiceInstance[]>>({})
-const instForm = ref<{ serviceId: string; container: string; port: number | '' } | null>(null)
+const instForm = ref<{ serviceId: string; serverId: string; container: string; port: number | ''; hostPort: number | '' } | null>(null)
 const instBusy = ref(false)
 
-function isContainerSvc(s: RegisteredService): boolean {
-  return s.protocol === 'http' && s.upstreamKind === 'container'
+/** http 服务展示实例面板(集群模型:容器/非容器实例一视同仁)。 */
+function hasInstancePool(s: RegisteredService): boolean {
+  return s.protocol === 'http'
 }
 
 async function toggleExpand(s: RegisteredService): Promise<void> {
-  if (!isContainerSvc(s)) return
+  if (!hasInstancePool(s)) return
   if (expandedSvc.value === s.id) {
     expandedSvc.value = ''
     return
@@ -365,7 +366,13 @@ async function submitInstance(): Promise<void> {
   if (!instForm.value) return
   instBusy.value = true
   try {
-    await addInstance(instForm.value.serviceId, instForm.value.container.trim(), Number(instForm.value.port) || 0)
+    await addInstance(
+      instForm.value.serviceId,
+      instForm.value.serverId,
+      instForm.value.container.trim(),
+      Number(instForm.value.port) || 0,
+      Number(instForm.value.hostPort) || 0,
+    )
     instForm.value = null
     await reloadInstances(expandedSvc.value)
     settings.value = await getServiceRegSettings()
@@ -404,8 +411,17 @@ async function removeInst(inst: ServiceInstance): Promise<void> {
   }
 }
 
-function effectivePort(inst: ServiceInstance, s: RegisteredService): number {
-  return inst.port > 0 ? inst.port : s.upstreamPort
+/** 网关反代端口:实例 hostPort > 实例 port > 服务默认端口。 */
+function effectiveHostPort(inst: ServiceInstance, s: RegisteredService): number {
+  if (inst.hostPort > 0) return inst.hostPort
+  if (inst.port > 0) return inst.port
+  return s.upstreamPort
+}
+
+/** 实例归属服务器可读名(遗留行 server_id='' 显示待迁移)。 */
+function instServerName(inst: ServiceInstance): string {
+  if (!inst.serverId) return t('serviceReg.instances.legacy')
+  return serverNameById.value[inst.serverId] ?? inst.serverId
 }
 </script>
 
@@ -687,7 +703,7 @@ function effectivePort(inst: ServiceInstance, s: RegisteredService): number {
             <div class="sreg__row">
               <div class="sreg__row-main">
                 <button
-                  v-if="isContainerSvc(s)"
+                  v-if="hasInstancePool(s)"
                   class="sreg__expander"
                   :aria-expanded="expandedSvc === s.id"
                   :aria-label="t('serviceReg.instances.toggle')"
@@ -702,7 +718,7 @@ function effectivePort(inst: ServiceInstance, s: RegisteredService): number {
                 <span class="sreg__kv-v">
                   → {{ s.upstream }}:{{ s.upstreamPort }}
                   <span class="sreg__tag">{{ s.protocol.toUpperCase() }}</span>
-                  <span v-if="isContainerSvc(s)" class="sreg__tag">
+                  <span v-if="hasInstancePool(s)" class="sreg__tag">
                     {{ t('serviceReg.instances.count', { n: (instancesBySvc[s.id] ?? []).length }) }}
                   </span>
                   <span v-if="!s.enabled" class="sreg__tag sreg__tag--off">{{ t('serviceReg.services.disabled') }}</span>
@@ -725,13 +741,15 @@ function effectivePort(inst: ServiceInstance, s: RegisteredService): number {
               </div>
             </div>
 
-            <!-- 实例面板(http+container 服务):多实例 upstream 成员管理 -->
-            <div v-if="expandedSvc === s.id && isContainerSvc(s)" class="sreg__inst">
+            <!-- 实例面板(http 服务):集群 upstream 成员 = 服务器 + 宿主端口 -->
+            <div v-if="expandedSvc === s.id && hasInstancePool(s)" class="sreg__inst">
               <p class="sreg__hint">{{ t('serviceReg.instances.hint') }}</p>
               <ul class="sreg__inst-list">
                 <li v-for="inst in instancesBySvc[s.id] ?? []" :key="inst.id" class="sreg__inst-row">
-                  <code class="sreg__inst-name">{{ inst.container }}</code>
-                  <span class="sreg__kv-v">:{{ effectivePort(inst, s) }}</span>
+                  <span class="sreg__tag">{{ instServerName(inst) }}</span>
+                  <code v-if="inst.container" class="sreg__inst-name">{{ inst.container }}</code>
+                  <span v-else class="sreg__tag">{{ t('serviceReg.instances.hostKind') }}</span>
+                  <span class="sreg__kv-v">:{{ effectiveHostPort(inst, s) }}</span>
                   <span v-if="!inst.attached" class="sreg__tag sreg__tag--off">{{ t('serviceReg.instances.detached') }}</span>
                   <span class="sreg__inst-spacer" />
                   <AppButton variant="default" @click="toggleInstance(inst)">
@@ -745,12 +763,15 @@ function effectivePort(inst: ServiceInstance, s: RegisteredService): number {
                 class="sreg__inst-form"
                 @submit.prevent="submitInstance"
               >
+                <select v-model="instForm.serverId" class="field__in" required>
+                  <option value="" disabled>{{ t('serviceReg.instances.serverPlaceholder') }}</option>
+                  <option v-for="sv in servers" :key="sv.id" :value="sv.id">{{ sv.name }} · {{ sv.host }}</option>
+                </select>
                 <input
                   v-model="instForm.container"
                   class="field__in"
                   type="text"
-                  :placeholder="t('serviceReg.services.name') + '-2'"
-                  required
+                  :placeholder="t('serviceReg.instances.containerPlaceholder')"
                 />
                 <input
                   v-model.number="instForm.port"
@@ -760,7 +781,15 @@ function effectivePort(inst: ServiceInstance, s: RegisteredService): number {
                   max="65535"
                   :placeholder="t('serviceReg.instances.portPlaceholder')"
                 />
-                <AppButton variant="primary" type="submit" :loading="instBusy" :disabled="!instForm.container.trim()">
+                <input
+                  v-model.number="instForm.hostPort"
+                  class="field__in sreg__inst-port"
+                  type="number"
+                  min="0"
+                  max="65535"
+                  :placeholder="t('serviceReg.instances.hostPortPlaceholder')"
+                />
+                <AppButton variant="primary" type="submit" :loading="instBusy" :disabled="!instForm.serverId">
                   {{ t('serviceReg.instances.add') }}
                 </AppButton>
                 <AppButton variant="default" @click="instForm = null">{{ t('serviceReg.btn.cancel') }}</AppButton>
@@ -768,7 +797,7 @@ function effectivePort(inst: ServiceInstance, s: RegisteredService): number {
               <AppButton
                 v-else
                 variant="default"
-                @click="instForm = { serviceId: s.id, container: '', port: '' }"
+                @click="instForm = { serviceId: s.id, serverId: '', container: '', port: '', hostPort: '' }"
               >
                 {{ t('serviceReg.instances.add') }}
               </AppButton>

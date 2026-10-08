@@ -2,6 +2,12 @@
 // 各编排一个**配置完全一致**的独立 nginx 容器,把「服务名 + 基域」映射为子域名反向代理
 // (abc + efg.com → abc.efg.com)。多台网关的流量分配由用户在 DNS 层自行解析,平台不做负载均衡。
 //
+// 集群模型(0068):实例 = (服务器, 宿主端口),不再限网关本机容器 —— upsteram 成员是
+// 「服务器地址:端口」,各网关主机渲染同一份全量配置,本机没有部署的服务同样代理远端。
+// 容器实例由部署自动注册(宿主端口范围探测自动分配);非容器实例由部署注册或人工添加。
+// 升级语义:容器走「扩容起新 → 预热 → 原子切换 → 排空 → 缩容停旧」零停机轮转;非容器走
+// 「摘除 → 原地升级 → 健康 → 挂回」,集群可用性由其余机器实例保证。
+//
 // 定位(Caddy 反代下线后的唯一网关):面向「泛域名解析到网关主机 + 证书托管」的场景 ——
 // *.efg.com 由用户解析到网关主机 IP,平台不接管网关域 DNS。证书的签发/续期/导入统一由
 // internal/certmgmt(acme.sh)负责,经 CertSink(UploadCert)同步到基域;本包只管证书密文的
@@ -10,11 +16,12 @@
 // 设计纪律(与 proxy 包一致):
 //   - 一切 docker/nginx 命令经 target.Exec 以 array 形式执行(AC-SEC-02 不拼 shell);唯一例外是
 //     容器启动命令内一段**固定常量**的 sh -c 自举脚本(无任何用户输入,不是注入面)。
-//   - 声明式全量收敛:任何变更后对该主机全量重渲染 nginx.conf → 先 nginx -t 校验再热加载,
+//   - 声明式全量收敛:任何变更后全量重渲染 nginx.conf → 先 nginx -t 校验再热加载,
 //     校验失败不动活配置;新增 TCP 监听端口时容器带「既有映射 ∪ 新端口」重建(Docker 端口
 //     创建时固定)。
-//   - 上游动态解析:nginx 的 proxy_pass 带变量时按 resolver(127.0.0.11,Docker 内嵌 DNS)运行期
-//     解析,容器重建换 IP 自动跟随 —— 与 Caddy 的按容器名路由等价。
+//   - 实例地址静态可解析:渲染前由控制端把 serverID 解析为 IP 写入 upstream(reload 时重解析),
+//     解析失败的实例跳过渲染(注释标注),故障实例交给 max_fails 熔断;人工 address 单上游
+//     仍走 resolver(127.0.0.11,Docker 内嵌 DNS)运行期动态解析。
 //   - 证书 PEM 绝不明文入库/回 API/写日志:SealSecret 密文存 BLOB,仅在 apply 时于进程内解密下发。
 //   - 网关未配置主机(主机列表为空)时一切 CRUD 照常(配置态),编排静默跳过,DeployGateway 时收敛;
 //     多机 apply 逐台执行,单台失败不阻断其余台,聚合报错。
@@ -268,16 +275,29 @@ type Service interface {
 
 	// ListInstances 返回某服务的全部实例(创建时间正序)。
 	ListInstances(ctx context.Context, serviceID string) ([]Instance, error)
-	// AddInstance 给 http+container 服务加实例(默认 attached);触发 apply,失败回滚删除。
-	AddInstance(ctx context.Context, serviceID, container string, port int) (*Instance, error)
+	// AddInstance 给 http 服务人工加实例(默认 attached):server 必填;container 空 = 非容器
+	// 实例(hostPort 即进程端口)。触发 apply,失败回滚删除。
+	AddInstance(ctx context.Context, serviceID, serverID, container string, port, hostPort int) (*Instance, error)
+	// EnsureService 幂等注册/刷新服务(部署节点「一键生成」):按(基域, 服务名)定位,存在即
+	// 刷新上游默认,不存在即创建;不自动建实例(实例由部署按目标机自动注册)。
+	EnsureService(ctx context.Context, in CreateServiceInput) (*RegisteredService, error)
+	// EnsureInstance 部署期幂等 upsert 实例(认领遗留行/更新端点/插入),行保留、apply 尽力。
+	EnsureInstance(ctx context.Context, serviceID, serverID, container string, port, hostPort int) (*Instance, error)
+	// EnsureInstanceDetached 部署期「预注册」(摘挂流程第一步):新行以 detached 落库(不进
+	// upstream),存量行只更新端口/归属、attached 保持;不触发 apply。
+	EnsureInstanceDetached(ctx context.Context, serviceID, serverID, container string, port, hostPort int) (*Instance, error)
+	// PruneInstancesNotIn 同步清理:删除服务下 server 不在列表内的实例(部署全部成功后调用)。
+	PruneInstancesNotIn(ctx context.Context, serviceID string, serverIDs []string) (int, error)
 	// RemoveInstance 删除实例(最后一个被删后该服务渲染为 503 维护态)。
 	RemoveInstance(ctx context.Context, instanceID string) error
 	// SetInstanceAttached 摘除/挂回实例(摘除 = 从 upstream 剔除,其余实例继续服务)。
 	SetInstanceAttached(ctx context.Context, instanceID string, attached bool) error
-	// SwapInstance 原子替换实例容器(行改名 + 单次 reload):deploy 实例轮转的切流量原语。
-	SwapInstance(ctx context.Context, serviceID, oldContainer, newContainer string) error
-	// ResolveDeployInstances 供 deploy 实例轮转反查(实例容器名或服务名 → attached 实例清单)。
-	ResolveDeployInstances(ctx context.Context, serverID, container string) ([]DeployInstance, error)
+	// SwapInstance 原子替换实例容器(行改名 + host_port 同步 + 单次 reload):容器「扩缩容
+	// 轮转」的切流量原语。
+	SwapInstance(ctx context.Context, serviceID, serverID, oldContainer, newContainer string, hostPort int) error
+	// ResolveDeployInstances 供 deploy 反查(serviceRef=服务 ID 或 container=容器名/服务名 →
+	// **该 serverID 上**的 attached 实例清单;滚动升级只动本机)。
+	ResolveDeployInstances(ctx context.Context, serverID, serviceRef, container string) ([]DeployInstance, error)
 
 	// GatewayStatus 探测网关容器状态(容器不存在不算错误)。
 	GatewayStatus(ctx context.Context) (*GatewayStatus, error)
@@ -304,12 +324,21 @@ type service struct {
 	// 新建基域时证书下发链路(certmgmt → 本包)只会推给当时已存在的基域,后建的基域拿不到
 	// 已有证书,靠此钩子在创建后反向拉一次,免手动刷新。
 	certSyncHook func(ctx context.Context) error
+	// serverAddr 把 serverID 解析为网关可达地址(IP;主机名经控制端 DNS 解析后写入 upstream,
+	// 避免 nginx reload 时静态解析失败)。main.go 注入;nil(单测)→ 实例全部跳过渲染。
+	serverAddr func(ctx context.Context, serverID string) (string, error)
 }
 
 // New 构造 Service。tg 复用已装配的 target.Service(SSH + docker);vault 用于证书密文存储
 // (nil = 证书功能不可用,其余照常)。不做任何重活(无 init 副作用)。
-func New(db *sql.DB, tg target.Service, vault SecretSealer) Service {
+func New(db *sql.DB, tg target.Service, vault SecretSealer) *service {
 	return &service{store: NewStore(db), tg: tg, vault: vault}
+}
+
+// SetServerAddrResolver 注入 serverID → 可达地址 解析器(main.go 晚绑:target 查 Host,
+// 主机名再经 net.LookupHost 解析为 IP)。集群反代的地基:upstream 成员必须可静态解析。
+func (s *service) SetServerAddrResolver(f func(ctx context.Context, serverID string) (string, error)) {
+	s.serverAddr = f
 }
 
 // ---------- 设置 ----------
@@ -495,24 +524,45 @@ func (s *service) CreateService(ctx context.Context, in CreateServiceInput) (*Re
 	if err := s.store.insertService(ctx, svc); err != nil {
 		return nil, err
 	}
-	// http+container 服务自动创建实例 #1(单一上游 = 单实例;多实例由 AddInstance 扩)。
-	// 失败即回滚整个服务(无实例的 container 服务会渲染 503,不能带病落库)。
-	if svc.Protocol == ProtocolHTTP && svc.UpstreamKind == UpstreamKindContainer {
-		now := time.Now().UTC()
-		if ierr := s.store.insertInstance(ctx, &Instance{
-			ID: uuid.NewString(), ServiceID: svc.ID, Container: svc.Upstream,
-			Port: svc.UpstreamPort, Attached: true, CreatedAt: now, UpdatedAt: now,
-		}); ierr != nil {
-			_ = s.store.deleteService(ctx, svc.ID)
-			return nil, ierr
-		}
-	}
-	// 编排失败回滚删除(声明状态与部署状态一致);网关未配置时静默跳过。
+	// 集群模型:不再自动创建实例 #1 —— 实例 = (服务器, 宿主端口) 由部署自动注册或人工添加;
+	// http+container 服务在首个实例就位前渲染 503 维护态(声明了实例池但无成员)。
 	if err := s.applyBestEffort(ctx); err != nil {
 		_ = s.store.deleteService(ctx, svc.ID)
 		return nil, err
 	}
 	return svc, nil
+}
+
+// EnsureService 幂等注册/刷新服务(部署节点「一键生成」):按(基域, 服务名)定位 ——
+// 存在 → 校验一致性后刷新上游默认(kind/Upstream/UpstreamPort);不存在 → 创建。
+// 不自动建实例(部署按目标机 EnsureInstance)。重复点击/多流水线共用同一服务均安全。
+func (s *service) EnsureService(ctx context.Context, in CreateServiceInput) (*RegisteredService, error) {
+	in.Name = strings.ToLower(strings.TrimSpace(in.Name))
+	if in.Protocol == "" {
+		in.Protocol = ProtocolHTTP
+	}
+	if in.UpstreamKind == "" {
+		in.UpstreamKind = UpstreamKindContainer
+	}
+	all, err := s.store.listServices(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, o := range all {
+		if o.DomainID != in.DomainID || o.Name != in.Name {
+			continue
+		}
+		if o.Protocol != in.Protocol {
+			return nil, ErrServiceTaken // 同名服务协议不同:人工决断,不静默改写
+		}
+		upd := UpdateServiceInput{
+			UpstreamKind: &in.UpstreamKind,
+			Upstream:     &in.Upstream,
+			UpstreamPort: &in.UpstreamPort,
+		}
+		return s.UpdateService(ctx, o.ID, upd)
+	}
+	return s.CreateService(ctx, in)
 }
 
 func (s *service) UpdateService(ctx context.Context, id string, in UpdateServiceInput) (*RegisteredService, error) {
@@ -564,6 +614,10 @@ func (s *service) DeleteService(ctx context.Context, id string) error {
 	if err := s.store.deleteService(ctx, id); err != nil {
 		return err
 	}
+	// 级联清理实例行(否则孤儿实例在 svcByID 反查不中,虽不渲染但会积攒脏数据)。
+	if err := s.store.deleteInstancesByService(ctx, id); err != nil {
+		return err
+	}
 	return s.applyBestEffort(ctx)
 }
 
@@ -601,10 +655,14 @@ func (s *service) prepareService(ctx context.Context, selfID string, in CreateSe
 	if in.UpstreamKind != UpstreamKindContainer && in.UpstreamKind != UpstreamKindAddress {
 		return nil, ErrInvalidUpstream
 	}
+	// 上游校验按形态分叉:仅 tcp 强制显式上游;http 的 Upstream 均可空(部署托管:
+	// container 由实例行携带容器名,address 由实例行携带主机地址,空时渲染维护态)。
+	// 非空时按形态校验:container=容器名,address=主机地址。
 	if in.Upstream == "" {
-		return nil, ErrInvalidUpstream
-	}
-	if in.UpstreamKind == UpstreamKindContainer {
+		if in.Protocol == ProtocolTCP {
+			return nil, ErrInvalidUpstream
+		}
+	} else if in.UpstreamKind == UpstreamKindContainer {
 		if len(in.Upstream) > 128 || !dockerNameRe.MatchString(in.Upstream) {
 			return nil, ErrInvalidUpstream
 		}
@@ -789,19 +847,9 @@ func (s *service) applyFull(ctx context.Context) error {
 	return nil
 }
 
-// applySnapshot 是一轮收敛的静态输入(全局配置读一次,逐台复用)。
-type applySnapshot struct {
-	domains      []Domain
-	enabled      []RegisteredService
-	tcpPorts     []int
-	allInstances []Instance
-	svcByID      map[string]*RegisteredService
-}
-
-// applyWith 逐台执行完整收敛(每台配置一致,实例探活按本机实况裁剪):ensure 容器(TCP 端口
-// 并集重建)→ 接入上游(container 上游按 **attached 实例**逐个接入;死实例探活剔除)→ 下发
-// 证书 → 渲染 → nginx -t 校验 → docker cp → 热加载。单台失败记录并继续,返回逐台错误
-// (serverID → 文案;nil = 全部成功)。
+// applyWith 集群级收敛:静态配置读一次 → 解析全部实例归属服务器地址 → 渲染**一份**全量
+// 配置(全部网关主机一致,本机无实例同样代理远端)→ 逐台(ensure 容器 + TCP 上游接网 +
+// 下发证书 + 校验下发热加载)。单台失败记录并继续,返回逐台错误(serverID → 文案;nil = 全部成功)。
 func (s *service) applyWith(ctx context.Context, st *Settings) map[string]string {
 	domains, err := s.store.listDomains(ctx)
 	if err != nil {
@@ -815,12 +863,10 @@ func (s *service) applyWith(ctx context.Context, st *Settings) map[string]string
 	if err != nil {
 		return mapErrAll(st.ServerIDs, err)
 	}
-	svcByID := make(map[string]*RegisteredService, len(services))
 	var enabled []RegisteredService
 	var tcpPorts []int
 	for i := range services {
 		svc := &services[i]
-		svcByID[svc.ID] = svc
 		if !svc.Enabled {
 			continue
 		}
@@ -829,11 +875,15 @@ func (s *service) applyWith(ctx context.Context, st *Settings) map[string]string
 			tcpPorts = append(tcpPorts, svc.TCPListenPort)
 		}
 	}
-	snap := &applySnapshot{domains: domains, enabled: enabled, tcpPorts: tcpPorts, allInstances: allInstances, svcByID: svcByID}
+
+	// 实例归属服务器的可达地址(逐台网关反代集群实例的地基)。解析失败/遗留行(server_id='')
+	// 的实例跳过渲染(渲染注释标注),故障实例交给 upstream max_fails 熔断,不阻断 apply。
+	serverAddr, skipped := s.resolveInstanceAddrs(ctx, allInstances)
+	conf := renderNginxConf(domains, enabled, allInstances, serverAddr, skipped)
 
 	serverErrs := make(map[string]string)
 	for _, sid := range st.ServerIDs {
-		if err := s.applyWithServer(ctx, st, sid, snap); err != nil {
+		if err := s.applyWithServer(ctx, st, sid, tcpPorts, enabled, domains, conf); err != nil {
 			serverErrs[sid] = err.Error()
 		}
 	}
@@ -844,45 +894,59 @@ func (s *service) applyWith(ctx context.Context, st *Settings) map[string]string
 }
 
 // applyWithServer 是单台网关主机的收敛流程(applyWith 逐台调用;返回人话错误)。
-func (s *service) applyWithServer(ctx context.Context, st *Settings, serverID string, snap *applySnapshot) error {
-	if err := ensureNginx(ctx, s.tg, st, serverID, snap.tcpPorts); err != nil {
+func (s *service) applyWithServer(ctx context.Context, st *Settings, serverID string, tcpPorts []int, enabled []RegisteredService, domains []Domain, conf string) error {
+	if err := ensureNginx(ctx, s.tg, st, serverID, tcpPorts); err != nil {
 		return err
 	}
-
-	// 实例探活 + 接入共享网络:attached 实例中本机容器已消失/已停止的**静默剔除**本次渲染
-	// (否则 nginx -t 会因 "host not found in upstream" 整体失败,一个死实例卡死全部配置变更);
-	// 存活的实例接入网络(幂等),接入后渲染进 upstream。
-	aliveInstances := make([]Instance, 0, len(snap.allInstances))
-	for _, inst := range snap.allInstances {
-		if !inst.Attached {
-			continue
-		}
-		svc, ok := snap.svcByID[inst.ServiceID]
-		if !ok || !svc.Enabled || svc.Protocol != ProtocolHTTP || svc.UpstreamKind != UpstreamKindContainer {
-			continue
-		}
-		alive, _ := s.containerAlive(ctx, st, serverID, inst.Container)
-		if !alive {
-			continue
-		}
-		if err := connectUpstream(ctx, s.tg, st, serverID, inst.Container); err != nil {
-			return err
-		}
-		aliveInstances = append(aliveInstances, inst)
-	}
-	// tcp 服务的容器上游仍是单一 Upstream(实例化仅覆盖 http)。
-	for _, svc := range snap.enabled {
-		if svc.Protocol == ProtocolTCP && svc.UpstreamKind == UpstreamKindContainer {
+	// tcp 服务的容器上游仍是单一 Upstream(经共享网络按容器名解析,实例化仅覆盖 http)。
+	for _, svc := range enabled {
+		if svc.Protocol == ProtocolTCP && svc.UpstreamKind == UpstreamKindContainer && svc.Upstream != "" {
 			if err := connectUpstream(ctx, s.tg, st, serverID, svc.Upstream); err != nil {
 				return err
 			}
 		}
 	}
-	if err := s.deployCerts(ctx, st, serverID, snap.domains); err != nil {
+	if err := s.deployCerts(ctx, st, serverID, domains); err != nil {
 		return err
 	}
-	conf := renderNginxConf(snap.domains, snap.enabled, aliveInstances)
 	return applyNginxConf(ctx, s.tg, st, serverID, conf)
+}
+
+// resolveInstanceAddrs 解析实例引用到的全部服务器地址(serverID → 可达 IP)。
+// 返回可解析映射 + 被跳过的 attached 实例数(遗留行 server_id='' / 地址解析失败 /
+// 容器实例未发布宿主端口;detached 实例本就不参与渲染,不计入)。
+func (s *service) resolveInstanceAddrs(ctx context.Context, instances []Instance) (map[string]string, int) {
+	ids := make(map[string]struct{})
+	for _, inst := range instances {
+		if !inst.Attached {
+			continue
+		}
+		if inst.ServerID != "" {
+			ids[inst.ServerID] = struct{}{}
+		}
+	}
+	resolved := make(map[string]string, len(ids))
+	if s.serverAddr != nil {
+		for id := range ids {
+			if addr, err := s.serverAddr(ctx, id); err == nil && addr != "" {
+				resolved[id] = addr
+			}
+		}
+	}
+	skipped := 0
+	for _, inst := range instances {
+		if !inst.Attached {
+			continue
+		}
+		if _, ok := resolved[inst.ServerID]; !ok {
+			skipped++
+			continue
+		}
+		if inst.Container != "" && inst.HostPort <= 0 {
+			skipped++ // 容器实例未发布宿主端口:渲染侧同步跳过
+		}
+	}
+	return resolved, skipped
 }
 
 // aggregateApplyErrors 按 ServerIDs 顺序聚合成 "serverID: err" 分号串(不改变可读性)。
@@ -939,24 +1003,6 @@ func normalizeServerIDs(in []string) []string {
 		return nil
 	}
 	return out
-}
-
-// containerAlive 探测网关主机上某容器是否存在且运行中(docker inspect State.Running)。
-// 探测不确定(输出异常)时保守视为存活,交由 nginx -t 兜底报错;确证不存在/已停止 → false。
-func (s *service) containerAlive(ctx context.Context, st *Settings, serverID, container string) (bool, error) {
-	res, err := s.tg.Exec(ctx, serverID, []string{
-		"docker", "inspect", "--format", "{{.State.Running}}", container,
-	})
-	if err != nil {
-		return true, err
-	}
-	if res.ExitCode != 0 {
-		return false, nil // No such object → 实例容器已消失
-	}
-	if strings.EqualFold(strings.TrimSpace(res.Stdout), "false") {
-		return false, nil // 容器存在但已停止(docker DNS 不再解析其名)
-	}
-	return true, nil
 }
 
 // ---------- 校验 ----------

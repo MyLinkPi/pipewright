@@ -143,6 +143,22 @@ export default {
   retryRequestFailed:
     "Wiederholungsanfrage fehlgeschlagen, bitte später erneut versuchen",
 
+  // Lauf nach Knoten fortsetzen(Resume ab fehlgeschlagenem Lauf)
+  resumeRegionAria: "Lauf knotenweise fortsetzen",
+  resumeTitle: "Lauf knotenweise fortsetzen",
+  resumeDesc: "Erzeugt einen abgeleiteten Lauf: erfolgreiche Knoten werden übernommen, nur fehlgeschlagene/ausstehende Teile laufen erneut; Bereitstellungsknoten wiederholen nur die fehlgeschlagenen Maschinen.",
+  resumeRetry: "Wiederholen",
+  resumeSkip: "Überspringen",
+  resumeSkipHint: "Diesen Knoten überspringen, nachgelagerte laufen wie üblich",
+  resumeLaunch: "Fortgesetzten Lauf starten",
+  resumeLaunching: "Wird erstellt…",
+  resumeSpecChanged: "Pipeline-Konfiguration hat sich geändert — Fortsetzen knotenweise nicht möglich",
+  resumeNotResumable: "Dieser Lauf kann nicht knotenweise fortgesetzt werden",
+  resumeRunNotFound: "Lauf nicht gefunden",
+  resumeQueueFull: "Planungswarteschlange voll, bitte später erneut versuchen",
+  resumeRequestFailed: "Fortsetzen fehlgeschlagen ({status})",
+  resumedFrom: "Fortgesetzt von #{id}",
+
   partialInfo:
     "Einige Ziele sind fehlgeschlagen und die fehlgeschlagenen Hosts wurden unabhängig zurückgerollt; die übrigen laufen unbeeinträchtigt weiter.",
   multiTargetAria: "Status der Multi-Host-Ziele",

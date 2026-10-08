@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
 	"regexp"
 	"sort"
@@ -74,23 +75,40 @@ const nginxBootstrapScript = `conf=/etc/pipewright/nginx.conf; mkdir -p /etc/pip
 //
 // 所有进入文本的值已在领域层严格校验过(域名/服务名/上游/端口白名单),渲染处不再二次防注入。
 // 无 enabled 服务时渲染最小合法配置(80 返回 404),保证网关容器始终可运行。
-func renderNginxConf(domains []Domain, services []RegisteredService, instances []Instance) string {
+// renderNginxConf 渲染完整 nginx.conf(纯函数,确定性输出)。集群模型:upstream 成员 =
+// 全部 attached 且地址可解析的实例(服务器地址:宿主端口)—— 各网关主机渲染**同一份**配置,
+// 本机没有实例的服务同样代理远端。skipped 是被跳过的实例数(遗留行/地址解析失败),写进
+// 头部注释便于诊断;故障实例交给 max_fails 熔断,不阻断渲染。
+func renderNginxConf(domains []Domain, services []RegisteredService, instances []Instance, serverAddr map[string]string, skipped int) string {
 	// 基域索引(domain_id → Domain)。
 	byID := make(map[string]Domain, len(domains))
 	for _, d := range domains {
 		byID[d.ID] = d
 	}
-	// 实例索引(service_id → attached 实例,按容器名升序保证渲染确定)。
+	// 实例索引(service_id → 可渲染 attached 实例,按(服务器, 容器)升序保证渲染确定)。
 	instByService := make(map[string][]Instance)
+	declaredByService := make(map[string]int)
 	for _, inst := range instances {
+		declaredByService[inst.ServiceID]++
 		if !inst.Attached {
 			continue
+		}
+		if _, ok := serverAddr[inst.ServerID]; !ok {
+			continue // 遗留行(server_id='')或地址解析失败:跳过渲染
+		}
+		if inst.Container != "" && inst.HostPort <= 0 {
+			continue // 容器实例未发布宿主端口:渲染出来是死成员(宿主无监听),跳过
 		}
 		instByService[inst.ServiceID] = append(instByService[inst.ServiceID], inst)
 	}
 	for sid := range instByService {
 		list := instByService[sid]
-		sort.Slice(list, func(i, j int) bool { return list[i].Container < list[j].Container })
+		sort.Slice(list, func(i, j int) bool {
+			if list[i].ServerID != list[j].ServerID {
+				return list[i].ServerID < list[j].ServerID
+			}
+			return list[i].Container < list[j].Container
+		})
 		instByService[sid] = list
 	}
 
@@ -124,15 +142,26 @@ func renderNginxConf(domains []Domain, services []RegisteredService, instances [
 	sort.Strings(redirects)
 	sort.Slice(tcps, func(i, j int) bool { return tcps[i].TCPListenPort < tcps[j].TCPListenPort })
 
-	// container 上游的 http 服务统一走 upstream 块(即使单实例,机制一致);
-	// 无 attached 实例 → 503 维护态(不渲染 upstream 块,避免空 upstream 非法)。
+	// 有可渲染成员的 http 服务统一走 upstream 块(容器与非容器实例一视同仁);
+	// 声明了实例但无可渲染成员(全摘除/地址不可解析)→ 503 维护态;
+	// 无实例声明的 address 服务 → 保留单上游变量 + resolver 动态解析(人工 address 模式)。
 	needsUpstream := func(s httpSite) bool {
-		return s.svc.UpstreamKind == UpstreamKindContainer && len(instByService[s.svc.ID]) > 0
+		return len(instByService[s.svc.ID]) > 0
+	}
+	maintenance := func(s httpSite) bool {
+		// 容器服务恒为部署托管(无实例即维护态);address 服务声明了实例或上游为空
+		// (部署托管待首批实例上线)时同样进入维护态;仅「无实例且配了静态上游」的
+		// 人工 address 模式走变量 + resolver 动态解析。
+		return !needsUpstream(s) && (s.svc.UpstreamKind == UpstreamKindContainer ||
+			declaredByService[s.svc.ID] > 0 || s.svc.Upstream == "")
 	}
 	upstreamName := func(s httpSite) string { return "pw_" + nginxUpstreamID(s.svc.Name) }
 
 	var b strings.Builder
 	b.WriteString("# 由 Pipewright 自动生成,请勿手改。\n")
+	if skipped > 0 {
+		b.WriteString("# 注意:有 " + strconv.Itoa(skipped) + " 个实例因遗留数据(待部署认领)或服务器地址解析失败未渲染。\n")
+	}
 	if len(tcps) > 0 {
 		b.WriteString("load_module " + streamModulePath + ";\n")
 	}
@@ -145,14 +174,14 @@ func renderNginxConf(domains []Domain, services []RegisteredService, instances [
 	b.WriteString("    sendfile on;\n")
 	b.WriteString("    keepalive_timeout 65;\n\n")
 	b.WriteString("    # Docker 内嵌 DNS:address 上游 / TCP 透传的运行期动态解析。\n")
-	b.WriteString("    # (container 上游走 upstream 块,成员名在 reload 时解析。)\n")
+	b.WriteString("    # (实例池成员为静态 IP:宿主端口,成员经 reload 原子增减。)\n")
 	b.WriteString("    resolver 127.0.0.11 valid=10s ipv6=off;\n\n")
 	b.WriteString("    map $http_upgrade $connection_upgrade {\n")
 	b.WriteString("        default upgrade;\n")
 	b.WriteString("        ''      close;\n")
 	b.WriteString("    }\n\n")
 
-	// upstream 块(全部 http+container 服务,含 plain/https 两类;按名升序输出)。
+	// upstream 块(全部有实例成员的 http 服务,plain/https 两类;按名升序输出)。
 	var ups []httpSite
 	ups = append(ups, plain...)
 	ups = append(ups, https...)
@@ -161,11 +190,11 @@ func renderNginxConf(domains []Domain, services []RegisteredService, instances [
 		if !needsUpstream(s) {
 			continue
 		}
-		b.WriteString("    # 服务 " + s.fqdn + " 的实例池(实例级轮转:成员经 reload 原子增减)。\n")
+		b.WriteString("    # 服务 " + s.fqdn + " 的集群实例池(成员 = 服务器地址:宿主端口,经 reload 原子增减)。\n")
 		b.WriteString("    upstream " + upstreamName(s) + " {\n")
 		for _, inst := range instByService[s.svc.ID] {
-			port := inst.EffectivePort(&s.svc)
-			b.WriteString("        server " + inst.Container + ":" + strconv.Itoa(port) +
+			// net.JoinHostPort:IPv6 地址自动加方括号(裸 IPv6 冒号拼接会让 nginx -t 失败)。
+			b.WriteString("        server " + net.JoinHostPort(serverAddr[inst.ServerID], strconv.Itoa(inst.EffectiveHostPort(&s.svc))) +
 				" max_fails=2 fail_timeout=10s;\n")
 		}
 		b.WriteString("    }\n\n")
@@ -180,7 +209,7 @@ func renderNginxConf(domains []Domain, services []RegisteredService, instances [
 		b.WriteString("    }\n\n")
 	}
 	for _, site := range plain {
-		renderHTTPServer(&b, "    ", site, needsUpstream(site), upstreamName(site), "http")
+		renderHTTPServer(&b, "    ", site, needsUpstream(site), maintenance(site), upstreamName(site), "http")
 	}
 	b.WriteString("    server {\n")
 	b.WriteString("        listen 80 default_server;\n")
@@ -189,7 +218,7 @@ func renderNginxConf(domains []Domain, services []RegisteredService, instances [
 	b.WriteString("    }\n\n")
 
 	for _, site := range https {
-		renderHTTPServer(&b, "    ", site, needsUpstream(site), upstreamName(site), "https")
+		renderHTTPServer(&b, "    ", site, needsUpstream(site), maintenance(site), upstreamName(site), "https")
 	}
 	// 未知 SNI 的 443 兜底(需任一证书);无任何证书时不监听 443。
 	if len(https) > 0 {
@@ -228,10 +257,10 @@ type httpSite struct {
 	certd bool
 }
 
-// renderHTTPServer 输出一个 http 服务的 server 块。useUpstream 表示 container 上游走
-// upstream 块(proxy_pass 指向实例池);否则 address 上游走变量 + resolver 动态解析;
-// container 上游且无 attached 实例 → location 返回 503(维护态)。
-func renderHTTPServer(b *strings.Builder, indent string, site httpSite, useUpstream bool, upsName, proto string) {
+// renderHTTPServer 输出一个 http 服务的 server 块。useUpstream 表示走实例池 upstream 块
+// (proxy_pass 指向集群成员);maintenance 表示声明了实例池但无可渲染成员(全摘除/地址不可
+// 解析)→ 503 维护态;其余(无实例声明的 address 服务)走变量 + resolver 单上游动态解析。
+func renderHTTPServer(b *strings.Builder, indent string, site httpSite, useUpstream, maintenance bool, upsName, proto string) {
 	svc := site.svc
 	if site.certd {
 		certDir := nginxCertsDir + "/" + site.dom.BaseDomain
@@ -248,17 +277,17 @@ func renderHTTPServer(b *strings.Builder, indent string, site httpSite, useUpstr
 		b.WriteString(indent + "    listen 80;\n")
 		b.WriteString(indent + "    server_name " + site.fqdn + ";\n")
 	}
-	writeProxyLocation(b, indent+"    ", svc, useUpstream, upsName, proto)
+	writeProxyLocation(b, indent+"    ", svc, useUpstream, maintenance, upsName, proto)
 	b.WriteString(indent + "}\n\n")
 }
 
 // writeProxyLocation 输出反代 location 块:
-//   - useUpstream(container 上游):proxy_pass http://pw_<name>(成员 = attached 实例);
-//   - 其余(address 上游):set 变量 + proxy_pass http://$var(resolver 运行期解析);
-//   - container 上游且实例全摘除:return 503(维护态)。
-func writeProxyLocation(b *strings.Builder, indent string, svc RegisteredService, useUpstream bool, upsName, proto string) {
-	if svc.UpstreamKind == UpstreamKindContainer && !useUpstream {
-		// 实例全部摘除/缺失:维护态,不做反代。
+//   - useUpstream(有集群实例成员):proxy_pass http://pw_<name>(成员 = attached 实例);
+//   - maintenance(声明实例池但无成员):return 503 维护态;
+//   - 其余(address 单上游):set 变量 + proxy_pass http://$var(resolver 运行期解析)。
+func writeProxyLocation(b *strings.Builder, indent string, svc RegisteredService, useUpstream, maintenance bool, upsName, proto string) {
+	if maintenance && !useUpstream {
+		// 实例全部摘除/地址不可解析:维护态,不做反代。
 		b.WriteString(indent + "location / {\n")
 		b.WriteString(indent + "    return 503;\n")
 		b.WriteString(indent + "}\n")
@@ -287,8 +316,9 @@ func nginxUpstreamID(name string) string {
 }
 
 // upstreamTarget 返回「上游:端口」渲染串(container=容器名,由 resolver 动态解析;address=HOST)。
+// net.JoinHostPort:IPv6 上游地址自动加方括号。
 func upstreamTarget(svc RegisteredService) string {
-	return svc.Upstream + ":" + strconv.Itoa(svc.UpstreamPort)
+	return net.JoinHostPort(svc.Upstream, strconv.Itoa(svc.UpstreamPort))
 }
 
 // nginxVarName 返回该服务的 nginx 变量名($up_<name>,`-` 归一为 `_`;服务名字符集无 `_`,映射无碰撞)。

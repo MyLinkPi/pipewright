@@ -2,7 +2,6 @@ package registryhub
 
 import (
 	"context"
-	"fmt"
 	"log"
 	"sort"
 	"strings"
@@ -19,12 +18,13 @@ type PruneResult struct {
 	Error       string   `json:"error"`
 }
 
-// registryClient 按当前配置取制品 registry 客户端(测试经 opts 注入 fake;生产按端口自建)。
+// registryClient 按当前配置取制品 registry 客户端(测试经 opts 注入 fake;生产按端口自建,
+// TLS 栈走 https + 本机探活客户端,见 localRegistryURL/probeHTTPClient)。
 func (h *Hub) registryClient(ctx context.Context, cfg *Config) RegistryAPI {
 	if h.opts.RegistryClient != nil {
 		return h.opts.RegistryClient
 	}
-	return NewClient(fmt.Sprintf("http://127.0.0.1:%d", cfg.ArtifactPort), h.opts.HTTPClient)
+	return NewClient(h.localRegistryURL(cfg, cfg.ArtifactPort), h.probeHTTPClient(cfg))
 }
 
 // Prune 按保留策略裁剪制品 registry 的镜像 tag:

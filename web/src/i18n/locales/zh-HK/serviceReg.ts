@@ -84,7 +84,7 @@ export default {
 
   instances: {
     toggle: '實例',
-    hint: '實例 = 閘道同機上的一個容器;預設部署策略「實例輪轉」逐實例零停機替換(起新 → 預熱健康 → 原子切換 → 排空 → 停舊)。摘除的實例保留設定但不接流量。',
+    hint: '實例 = 叢集 upstream 成員(伺服器 + 宿主埠):閘道對全部閘道主機渲染同一份配置、反代叢集所有實例(本機沒有部署同樣代理)。容器實例由部署自動註冊並走「擴容→切換→縮容」零停機輪轉;非容器實例部署註冊或手動添加,升級走「摘除→升級→健康→掛回」。',
     count: '{n} 實例',
     detached: '已摘除',
     detach: '摘除',
@@ -94,5 +94,10 @@ export default {
     addFail: '新增實例失敗',
     delTitle: '刪除實例?',
     portPlaceholder: '連接埠(預設同服務)',
+    legacy: '待遷移',
+    hostKind: '非容器',
+    containerPlaceholder: '容器名(非容器留空)',
+    serverPlaceholder: '選擇伺服器',
+    hostPortPlaceholder: '宿主埠(0=繼承)',
   },
 }

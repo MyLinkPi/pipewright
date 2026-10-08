@@ -24,7 +24,7 @@ import (
 // --- 渲染单测(纯函数) ----------------------------------------------------
 
 func TestRenderNginxConfEmpty(t *testing.T) {
-	out := renderNginxConf(nil, nil, nil)
+	out := renderNginxConf(nil, nil, nil, nil, 0)
 	if strings.Contains(out, "ssl_certificate") || strings.Contains(out, "stream {") {
 		t.Fatalf("空输入不应渲染证书/流块:\n%s", out)
 	}
@@ -40,8 +40,8 @@ func TestRenderNginxConfHTTPS(t *testing.T) {
 	dom := Domain{ID: "d1", BaseDomain: "efg.com", HasCert: true}
 	svc := RegisteredService{ID: "s1", Name: "abc", DomainID: "d1", Protocol: ProtocolHTTP,
 		UpstreamKind: UpstreamKindContainer, Upstream: "web", UpstreamPort: 8080, Enabled: true}
-	inst := Instance{ID: "i1", ServiceID: "s1", Container: "web", Port: 8080, Attached: true}
-	out := renderNginxConf([]Domain{dom}, []RegisteredService{svc}, []Instance{inst})
+	inst := Instance{ID: "i1", ServiceID: "s1", ServerID: "sv1", Container: "web", Port: 8080, HostPort: 20001, Attached: true}
+	out := renderNginxConf([]Domain{dom}, []RegisteredService{svc}, []Instance{inst}, map[string]string{"sv1": "10.0.0.5"}, 0)
 
 	mustContain := []string{
 		"server_name abc.efg.com;",
@@ -49,7 +49,7 @@ func TestRenderNginxConfHTTPS(t *testing.T) {
 		"ssl_certificate /etc/pipewright/certs/efg.com/fullchain.pem;",
 		"ssl_certificate_key /etc/pipewright/certs/efg.com/privkey.pem;",
 		"upstream pw_abc {",
-		"server web:8080 max_fails=2 fail_timeout=10s;",
+		"server 10.0.0.5:20001 max_fails=2 fail_timeout=10s;",
 		"proxy_pass http://pw_abc;",
 		"proxy_set_header X-Forwarded-Proto https;",
 		// 80 → 443 跳转名单应含该 FQDN。
@@ -71,32 +71,46 @@ func TestRenderNginxConfMultiInstance(t *testing.T) {
 	dom := Domain{ID: "d1", BaseDomain: "efg.com", HasCert: true}
 	svc := RegisteredService{ID: "s1", Name: "abc", DomainID: "d1", Protocol: ProtocolHTTP,
 		UpstreamKind: UpstreamKindContainer, Upstream: "abc-1", UpstreamPort: 8080, Enabled: true}
-	// 故意乱序输入:实例按容器名升序渲染,且 detached 实例不进池。
+	// 故意乱序输入:实例按(服务器, 容器)升序渲染,detached / 地址未知 / 未发布宿主端口的
+	// 容器实例不进池。
 	insts := []Instance{
-		{ID: "i2", ServiceID: "s1", Container: "abc-2", Attached: true},
-		{ID: "i1", ServiceID: "s1", Container: "abc-1", Port: 9090, Attached: true},
-		{ID: "i3", ServiceID: "s1", Container: "abc-3", Attached: false},
+		{ID: "i2", ServiceID: "s1", ServerID: "sv2", Container: "abc-2", HostPort: 20002, Attached: true},
+		{ID: "i1", ServiceID: "s1", ServerID: "sv1", Container: "abc-1", Port: 9090, HostPort: 20001, Attached: true},
+		{ID: "i3", ServiceID: "s1", ServerID: "sv1", Container: "abc-3", Attached: false},
+		{ID: "i4", ServiceID: "s1", ServerID: "sv9", Container: "abc-4", Attached: true}, // 地址未解析 → 跳过
+		{ID: "i5", ServiceID: "s1", ServerID: "", Container: "abc-5", Attached: true},    // 遗留行 → 跳过
+		{ID: "i6", ServiceID: "s1", ServerID: "sv2", Container: "abc-6", Port: 8080, Attached: true}, // 容器实例无宿主端口 → 跳过(死成员)
 	}
-	out := renderNginxConf([]Domain{dom}, []RegisteredService{svc}, insts)
+	addrs := map[string]string{"sv1": "10.0.0.1", "sv2": "10.0.0.2"}
+	out := renderNginxConf([]Domain{dom}, []RegisteredService{svc}, insts, addrs, 3)
 	if !strings.Contains(out, "upstream pw_abc {") {
 		t.Fatalf("应渲染 upstream 块:\n%s", out)
 	}
-	// abc-1 覆盖端口 9090;abc-2 继承服务端口 8080;abc-3 已摘除不出现。
+	// abc-1(svc sv1,host 20001);abc-2(host 20002);abc-3 摘除/abc-4 无地址/abc-5 遗留/abc-6 无宿主端口不出现。
 	for _, want := range []string{
-		"server abc-1:9090 max_fails=2 fail_timeout=10s;",
-		"server abc-2:8080 max_fails=2 fail_timeout=10s;",
+		"server 10.0.0.1:20001 max_fails=2 fail_timeout=10s;",
+		"server 10.0.0.2:20002 max_fails=2 fail_timeout=10s;",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("实例成员不符(缺 %q):\n%s", want, out)
 		}
 	}
-	if strings.Contains(out, "abc-3") {
-		t.Fatalf("摘除实例不应渲染:\n%s", out)
+	// abc-6 的端口回落(10.0.0.2:8080 = 宿主无监听的死成员)不得渲染。
+	if strings.Contains(out, "10.0.0.2:8080") {
+		t.Fatalf("未发布宿主端口的容器实例不应渲染:\n%s", out)
 	}
-	i1 := strings.Index(out, "server abc-1:")
-	i2 := strings.Index(out, "server abc-2:")
+	for _, bad := range []string{"abc-3", "abc-4", "abc-5"} {
+		if strings.Contains(out, bad) {
+			t.Fatalf("%s 不应渲染:\n%s", bad, out)
+		}
+	}
+	if !strings.Contains(out, "有 3 个实例因遗留数据") {
+		t.Fatalf("跳过实例数应写入头注释:\n%s", out)
+	}
+	i1 := strings.Index(out, "server 10.0.0.1:")
+	i2 := strings.Index(out, "server 10.0.0.2:")
 	if i1 < 0 || i2 < 0 || i1 > i2 {
-		t.Fatalf("实例应按容器名升序:\n%s", out)
+		t.Fatalf("实例应按服务器升序:\n%s", out)
 	}
 }
 
@@ -104,7 +118,7 @@ func TestRenderNginxConfAllInstancesDetached503(t *testing.T) {
 	dom := Domain{ID: "d1", BaseDomain: "efg.com", HasCert: false}
 	svc := RegisteredService{ID: "s1", Name: "abc", DomainID: "d1", Protocol: ProtocolHTTP,
 		UpstreamKind: UpstreamKindContainer, Upstream: "abc-1", UpstreamPort: 8080, Enabled: true}
-	out := renderNginxConf([]Domain{dom}, []RegisteredService{svc}, nil)
+	out := renderNginxConf([]Domain{dom}, []RegisteredService{svc}, nil, nil, 0)
 	if !strings.Contains(out, "server_name abc.efg.com;") {
 		t.Fatalf("server 块应保留:\n%s", out)
 	}
@@ -116,11 +130,69 @@ func TestRenderNginxConfAllInstancesDetached503(t *testing.T) {
 	}
 }
 
+func TestRenderNginxConfAddressServiceWithInstances(t *testing.T) {
+	dom := Domain{ID: "d1", BaseDomain: "efg.com", HasCert: false}
+	// address 服务(非容器实例):有实例 → 走集群实例池;无实例 → 保留单上游变量动态解析。
+	svc := RegisteredService{ID: "s1", Name: "abc", DomainID: "d1", Protocol: ProtocolHTTP,
+		UpstreamKind: UpstreamKindAddress, Upstream: "10.0.0.5", UpstreamPort: 3000, Enabled: true}
+	plain := RegisteredService{ID: "s2", Name: "plain", DomainID: "d1", Protocol: ProtocolHTTP,
+		UpstreamKind: UpstreamKindAddress, Upstream: "10.0.0.9", UpstreamPort: 3001, Enabled: true}
+	insts := []Instance{{ID: "i1", ServiceID: "s1", ServerID: "app1", Container: "", Port: 8080, HostPort: 8080, Attached: true}}
+	out := renderNginxConf([]Domain{dom}, []RegisteredService{svc, plain}, insts, map[string]string{"app1": "10.0.0.7"}, 0)
+	if !strings.Contains(out, "upstream pw_abc {") || !strings.Contains(out, "server 10.0.0.7:8080 max_fails=2 fail_timeout=10s;") {
+		t.Fatalf("非容器实例应进集群实例池:\n%s", out)
+	}
+	if !strings.Contains(out, "set $up_plain 10.0.0.9:3001;") {
+		t.Fatalf("无实例的 address 服务应保留单上游动态解析:\n%s", out)
+	}
+}
+
+// TestRenderNginxConfAddressEmptyUpstreamMaintenance 非容器「一键生成」形态:http+address
+// 空上游(部署托管)+ 无实例 → 503 维护态;绝不能渲染出 "set $up_abc :8080" 的坏配置。
+func TestRenderNginxConfAddressEmptyUpstreamMaintenance(t *testing.T) {
+	dom := Domain{ID: "d1", BaseDomain: "efg.com", HasCert: false}
+	svc := RegisteredService{ID: "s1", Name: "abc", DomainID: "d1", Protocol: ProtocolHTTP,
+		UpstreamKind: UpstreamKindAddress, Upstream: "", UpstreamPort: 8080, Enabled: true}
+	out := renderNginxConf([]Domain{dom}, []RegisteredService{svc}, nil, nil, 0)
+	if !strings.Contains(out, "return 503;") {
+		t.Fatalf("空上游 address 服务应维护态:\n%s", out)
+	}
+	if strings.Contains(out, "set $up_abc") {
+		t.Fatalf("空上游不应渲染变量反代:\n%s", out)
+	}
+	// 有 attached 实例后恢复正常反代(非容器实例 HostPort=0 继承 Port)。
+	inst := Instance{ID: "i1", ServiceID: "s1", ServerID: "app1", Port: 8080, Attached: true}
+	out = renderNginxConf([]Domain{dom}, []RegisteredService{svc}, []Instance{inst}, map[string]string{"app1": "10.0.0.7"}, 0)
+	if !strings.Contains(out, "server 10.0.0.7:8080 max_fails=2 fail_timeout=10s;") {
+		t.Fatalf("实例上线后应进实例池:\n%s", out)
+	}
+}
+
+// TestRenderNginxConfIPv6Bracketed IPv6 服务器地址 / 上游必须带方括号(裸拼冒号 nginx -t 失败,
+// 会卡死整台网关的 apply)。
+func TestRenderNginxConfIPv6Bracketed(t *testing.T) {
+	dom := Domain{ID: "d1", BaseDomain: "efg.com", HasCert: false}
+	svc := RegisteredService{ID: "s1", Name: "abc", DomainID: "d1", Protocol: ProtocolHTTP,
+		UpstreamKind: UpstreamKindContainer, Upstream: "web", UpstreamPort: 8080, Enabled: true}
+	inst := Instance{ID: "i1", ServiceID: "s1", ServerID: "sv6", Container: "web", HostPort: 20001, Attached: true}
+	out := renderNginxConf([]Domain{dom}, []RegisteredService{svc}, []Instance{inst}, map[string]string{"sv6": "fd00::1"}, 0)
+	if !strings.Contains(out, "server [fd00::1]:20001 max_fails=2 fail_timeout=10s;") {
+		t.Fatalf("IPv6 实例成员应加方括号:\n%s", out)
+	}
+	// address 形态的 IPv6 上游同样加方括号。
+	v6 := RegisteredService{ID: "s2", Name: "v6", DomainID: "d1", Protocol: ProtocolHTTP,
+		UpstreamKind: UpstreamKindAddress, Upstream: "fd00::9", UpstreamPort: 3000, Enabled: true}
+	out = renderNginxConf([]Domain{dom}, []RegisteredService{v6}, nil, nil, 0)
+	if !strings.Contains(out, "set $up_v6 [fd00::9]:3000;") {
+		t.Fatalf("IPv6 上游应加方括号:\n%s", out)
+	}
+}
+
 func TestRenderNginxConfHTTPOnlyNoCert(t *testing.T) {
 	dom := Domain{ID: "d1", BaseDomain: "efg.com", HasCert: false}
 	svc := RegisteredService{Name: "abc", DomainID: "d1", Protocol: ProtocolHTTP,
 		UpstreamKind: UpstreamKindAddress, Upstream: "10.0.0.5", UpstreamPort: 3000, Enabled: true}
-	out := renderNginxConf([]Domain{dom}, []RegisteredService{svc}, nil)
+	out := renderNginxConf([]Domain{dom}, []RegisteredService{svc}, nil, nil, 0)
 	if strings.Contains(out, "listen 443") {
 		t.Fatalf("无证书基域不应渲染 443:\n%s", out)
 	}
@@ -140,7 +212,7 @@ func TestRenderNginxConfTCP(t *testing.T) {
 	svc := RegisteredService{Name: "my-db", DomainID: "d1", Protocol: ProtocolTCP,
 		UpstreamKind: UpstreamKindContainer, Upstream: "mysql", UpstreamPort: 3306,
 		TCPListenPort: 13306, Enabled: true}
-	out := renderNginxConf([]Domain{dom}, []RegisteredService{svc}, nil)
+	out := renderNginxConf([]Domain{dom}, []RegisteredService{svc}, nil, nil, 0)
 	for _, want := range []string{
 		"load_module /usr/lib/nginx/modules/ngx_stream_module.so;",
 		"stream {",
@@ -162,15 +234,16 @@ func TestRenderNginxConfSortedDeterministic(t *testing.T) {
 			UpstreamKind: UpstreamKindContainer, Upstream: name + "c", UpstreamPort: 80, Enabled: true}
 	}
 	insts := []Instance{
-		{ID: "i1", ServiceID: "s-alpha", Container: "alphac", Attached: true},
-		{ID: "i2", ServiceID: "s-zeta", Container: "zetac", Attached: true},
+		{ID: "i1", ServiceID: "s-alpha", ServerID: "sv1", Container: "alphac", Attached: true},
+		{ID: "i2", ServiceID: "s-zeta", ServerID: "sv2", Container: "zetac", Attached: true},
 	}
+	addrs := map[string]string{"sv1": "10.0.0.1", "sv2": "10.0.0.2"}
 	services := []RegisteredService{mk("zeta", "d2"), mk("alpha", "d1")}
-	a := renderNginxConf([]Domain{dom1, dom2}, services, insts)
+	a := renderNginxConf([]Domain{dom1, dom2}, services, insts, addrs, 0)
 	// 输入顺序无关:打乱后重渲染结果应逐字节一致。
 	services2 := []RegisteredService{mk("alpha", "d1"), mk("zeta", "d2")}
 	insts2 := []Instance{insts[1], insts[0]}
-	b := renderNginxConf([]Domain{dom2, dom1}, services2, insts2)
+	b := renderNginxConf([]Domain{dom2, dom1}, services2, insts2, addrs, 0)
 	if a != b {
 		t.Fatalf("渲染应确定性(输入顺序无关):\n--- a ---\n%s\n--- b ---\n%s", a, b)
 	}
@@ -185,7 +258,7 @@ func TestRenderNginxConfDisabledSkipped(t *testing.T) {
 	dom := Domain{ID: "d1", BaseDomain: "efg.com", HasCert: true}
 	svc := RegisteredService{Name: "abc", DomainID: "d1", Protocol: ProtocolHTTP,
 		UpstreamKind: UpstreamKindContainer, Upstream: "web", UpstreamPort: 8080, Enabled: false}
-	out := renderNginxConf([]Domain{dom}, []RegisteredService{svc}, nil)
+	out := renderNginxConf([]Domain{dom}, []RegisteredService{svc}, nil, nil, 0)
 	if strings.Contains(out, "abc.efg.com") {
 		t.Fatalf("禁用服务不应渲染:\n%s", out)
 	}
@@ -459,7 +532,10 @@ func newTestServiceMulti(t *testing.T, db *sql.DB, serverIDs ...string) (Service
 func newTestService(t *testing.T, db *sql.DB) (Service, *fakeTarget) {
 	t.Helper()
 	ft := &fakeTarget{}
-	return New(db, ft, fakeSealer{}), ft
+	svc := New(db, ft, fakeSealer{})
+	// 集群渲染测试桩:任意 serverID → 固定可达 IP(apply 级测试渲染实例成员需要)。
+	svc.SetServerAddrResolver(func(context.Context, string) (string, error) { return "10.9.9.9", nil })
+	return svc, ft
 }
 
 func TestDomainCRUDAndServiceCreate(t *testing.T) {
@@ -792,8 +868,9 @@ func TestApplyMultiServerContinueOnError(t *testing.T) {
 	})
 }
 
-// TestResolveDeployInstancesMultiGateway 部署联动对任意一台网关主机生效。
-func TestResolveDeployInstancesMultiGateway(t *testing.T) {
+// TestResolveDeployInstancesServerScoped 集群模型:反查按实例归属服务器过滤 —— 滚动升级
+// 只动本机,绝不返回其它机器的实例;serviceRef(服务 ID)精确绑定优先于容器名反查。
+func TestResolveDeployInstancesServerScoped(t *testing.T) {
 	storetest.ForEachDialect(t, func(t *testing.T, st *store.Store) {
 		svc, _ := newTestServiceMulti(t, st.DB, "gw1", "gw2")
 		ctx := context.Background()
@@ -802,19 +879,46 @@ func TestResolveDeployInstancesMultiGateway(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := svc.AddInstance(ctx, created.ID, "abc-2", 0); err != nil {
+		if _, err := svc.AddInstance(ctx, created.ID, "app1", "abc-1", 0, 0); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := svc.AddInstance(ctx, created.ID, "app2", "abc-2", 9090, 20002); err != nil {
 			t.Fatal(err)
 		}
 
-		// 第二台网关主机同样命中;非网关主机为空。
-		for _, gw := range []string{"gw1", "gw2"} {
-			refs, err := svc.ResolveDeployInstances(ctx, gw, "abc-1")
-			if err != nil || len(refs) != 2 {
-				t.Fatalf("%s 应返回 2 实例:%v %v", gw, refs, err)
-			}
+		// 容器名反查:定位服务后只返回**该服务器**上的 attached 实例。
+		refs, err := svc.ResolveDeployInstances(ctx, "app1", "", "abc-1")
+		if err != nil || len(refs) != 1 || refs[0].Container != "abc-1" {
+			t.Fatalf("app1 应只返回本机实例 abc-1:%v %v", refs, err)
 		}
-		if refs, _ := svc.ResolveDeployInstances(ctx, "other", "abc-1"); len(refs) != 0 {
-			t.Fatalf("非网关主机应为空:%v", refs)
+		// 其它机器反查同名容器:定位到同一服务后返回**该机器**的实例(滚动只动本机)。
+		refs, _ = svc.ResolveDeployInstances(ctx, "app2", "", "abc-1")
+		if len(refs) != 1 || refs[0].Container != "abc-2" {
+			t.Fatalf("app2 应返回本机实例 abc-2:%v", refs)
+		}
+		// 没有任何实例的机器 → 空。
+		if refs, _ := svc.ResolveDeployInstances(ctx, "app9", "", "abc-1"); len(refs) != 0 {
+			t.Fatalf("无实例机器应空:%v", refs)
+		}
+		// serviceRef(服务 ID)精确绑定 + server 过滤。
+		refs, err = svc.ResolveDeployInstances(ctx, "app2", created.ID, "")
+		if err != nil || len(refs) != 1 || refs[0].Container != "abc-2" || refs[0].HostPort != 20002 {
+			t.Fatalf("serviceRef 绑定应返回 app2 实例(含宿主端口):%v %v", refs, err)
+		}
+		if refs[0].ServiceName != "abc.efg.com" {
+			t.Fatalf("ServiceName 应为 FQDN:%q", refs[0].ServiceName)
+		}
+		// 非容器实例(container='')同样按服务 ID 反查。
+		if _, err := svc.AddInstance(ctx, created.ID, "app3", "", 8080, 8080); err != nil {
+			t.Fatal(err)
+		}
+		refs, _ = svc.ResolveDeployInstances(ctx, "app3", created.ID, "")
+		if len(refs) != 1 || refs[0].Container != "" || refs[0].HostPort != 8080 {
+			t.Fatalf("非容器实例应可反查(摘挂升级):%v", refs)
+		}
+		// 无匹配 → 空。
+		if refs, _ := svc.ResolveDeployInstances(ctx, "app1", "", "nope"); len(refs) != 0 {
+			t.Fatalf("无匹配应空:%v", refs)
 		}
 	})
 }
@@ -881,7 +985,9 @@ func TestCreateDomainCertSyncHook(t *testing.T) {
 
 // --- 实例域 ------------------------------------------------------------------
 
-func TestCreateServiceAutoInstance(t *testing.T) {
+// TestCreateServiceNoAutoInstance 集群模型:创建服务不再自动建实例 #1 —— 实例 =
+// (服务器, 宿主端口) 由部署自动注册或人工添加(首个实例就位前渲染 503 维护态)。
+func TestCreateServiceNoAutoInstance(t *testing.T) {
 	storetest.ForEachDialect(t, func(t *testing.T, st *store.Store) {
 		svc, ft := newTestService(t, st.DB)
 		ctx := context.Background()
@@ -897,24 +1003,199 @@ func TestCreateServiceAutoInstance(t *testing.T) {
 			t.Fatal(err)
 		}
 		insts, err := svc.ListInstances(ctx, created.ID)
-		if err != nil || len(insts) != 1 {
-			t.Fatalf("http+container 服务应自动建实例 #1:%v %v", insts, err)
+		if err != nil || len(insts) != 0 {
+			t.Fatalf("集群模型创建服务不应自动建实例:%v %v", insts, err)
 		}
-		if insts[0].Container != "web" || !insts[0].Attached {
-			t.Fatalf("实例 #1 应继承服务上游:%+v", insts[0])
+		// 部署托管的 http+container 服务 Upstream 可空(实例行携带容器名)。
+		if _, err := svc.CreateService(ctx, CreateServiceInput{
+			DomainID: dom.ID, Name: "auto", UpstreamPort: 8080,
+		}); err != nil {
+			t.Fatalf("http+container 空 Upstream 应合法(部署托管):%v", err)
 		}
-		// tcp / address 服务不建实例。
-		tcp, err := svc.CreateService(ctx, CreateServiceInput{
+		// tcp / address 服务仍要求显式上游。
+		if _, err := svc.CreateService(ctx, CreateServiceInput{
 			DomainID: dom.ID, Name: "db", Protocol: ProtocolTCP,
 			UpstreamKind: UpstreamKindContainer, Upstream: "mysql", UpstreamPort: 3306, TCPListenPort: 13306,
-		})
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := svc.CreateService(ctx, CreateServiceInput{
+			DomainID: dom.ID, Name: "badtcp", Protocol: ProtocolTCP, UpstreamPort: 3306, TCPListenPort: 13307,
+		}); err != ErrInvalidUpstream {
+			t.Fatalf("tcp 无上游应 ErrInvalidUpstream,得 %v", err)
+		}
+		_ = ft
+	})
+}
+
+// TestEnsureService 幂等注册(部署节点「一键生成」):不存在 → 创建;存在 → 刷新上游默认;
+// 同名不同协议 → 拒绝(人工决断)。
+func TestEnsureService(t *testing.T) {
+	storetest.ForEachDialect(t, func(t *testing.T, st *store.Store) {
+		svc, _ := newTestService(t, st.DB)
+		ctx := context.Background()
+		dom, _ := svc.CreateDomain(ctx, "efg.com")
+
+		a, err := svc.EnsureService(ctx, CreateServiceInput{DomainID: dom.ID, Name: "ABC", UpstreamKind: UpstreamKindContainer, UpstreamPort: 8080})
+		if err != nil || a.Name != "abc" {
+			t.Fatalf("首保创建:%v %+v", err, a)
+		}
+		// 再次 ensure(端口变化)→ 复用同一服务行并刷新端口。
+		b, err := svc.EnsureService(ctx, CreateServiceInput{DomainID: dom.ID, Name: "abc", UpstreamKind: UpstreamKindContainer, UpstreamPort: 9090})
+		if err != nil || b.ID != a.ID || b.UpstreamPort != 9090 {
+			t.Fatalf("重复 ensure 应复用并刷新:%v %+v", err, b)
+		}
+		list, _ := svc.ListServices(ctx)
+		if len(list) != 1 {
+			t.Fatalf("应只有 1 个服务:%v", list)
+		}
+		// 同名不同协议 → 拒绝。
+		if _, err := svc.EnsureService(ctx, CreateServiceInput{DomainID: dom.ID, Name: "abc", Protocol: ProtocolTCP, Upstream: "x", UpstreamPort: 80, TCPListenPort: 13306}); err != ErrServiceTaken {
+			t.Fatalf("协议冲突应拒绝,得 %v", err)
+		}
+	})
+}
+
+// TestEnsureServiceAddressKind 非容器「一键生成」形态:http+address 的 Upstream 可空
+// (部署托管,空时渲染维护态);非空须为合法主机地址。tcp 仍强制显式上游。
+func TestEnsureServiceAddressKind(t *testing.T) {
+	storetest.ForEachDialect(t, func(t *testing.T, st *store.Store) {
+		svc, _ := newTestService(t, st.DB)
+		ctx := context.Background()
+		dom, _ := svc.CreateDomain(ctx, "efg.com")
+
+		a, err := svc.EnsureService(ctx, CreateServiceInput{DomainID: dom.ID, Name: "app", UpstreamKind: UpstreamKindAddress, UpstreamPort: 8080})
+		if err != nil {
+			t.Fatalf("address+空上游应放行(部署托管):%v", err)
+		}
+		if b, err := svc.EnsureService(ctx, CreateServiceInput{DomainID: dom.ID, Name: "app", UpstreamKind: UpstreamKindAddress, UpstreamPort: 9090}); err != nil || b.ID != a.ID || b.UpstreamPort != 9090 {
+			t.Fatalf("重复 ensure 应复用并刷新:%v %+v", err, b)
+		}
+		// 非空上游须过主机地址校验。
+		if _, err := svc.EnsureService(ctx, CreateServiceInput{DomainID: dom.ID, Name: "bad", UpstreamKind: UpstreamKindAddress, Upstream: "bad host!", UpstreamPort: 80}); err != ErrInvalidUpstream {
+			t.Fatalf("非法上游应 ErrInvalidUpstream,得 %v", err)
+		}
+		// tcp 仍强制显式上游。
+		if _, err := svc.EnsureService(ctx, CreateServiceInput{DomainID: dom.ID, Name: "db", Protocol: ProtocolTCP, UpstreamKind: UpstreamKindAddress, UpstreamPort: 3306, TCPListenPort: 13306}); err != ErrInvalidUpstream {
+			t.Fatalf("tcp 空上游应 ErrInvalidUpstream,得 %v", err)
+		}
+	})
+}
+
+// TestEnsureInstanceDetached 部署期预注册:新行 detached(不进 upstream,不触发 apply);
+// 存量行只更新端口/归属,attached 原状保持。
+func TestEnsureInstanceDetached(t *testing.T) {
+	storetest.ForEachDialect(t, func(t *testing.T, st *store.Store) {
+		svc, ft := newTestService(t, st.DB)
+		ctx := context.Background()
+		dom, _ := svc.CreateDomain(ctx, "efg.com")
+		created, err := svc.CreateService(ctx, CreateServiceInput{DomainID: dom.ID, Name: "abc", UpstreamPort: 8080})
 		if err != nil {
 			t.Fatal(err)
 		}
-		if insts, _ := svc.ListInstances(ctx, tcp.ID); len(insts) != 0 {
-			t.Fatalf("tcp 服务不应有实例:%v", insts)
+		execBefore := len(ft.execCalls)
+
+		// 新行:detached 落库,不触发 apply(无编排命令)。
+		i1, err := svc.EnsureInstanceDetached(ctx, created.ID, "app1", "", 8080, 8080)
+		if err != nil || i1.Attached {
+			t.Fatalf("预注册新行应 detached:%v %+v", err, i1)
 		}
-		_ = ft
+		if len(ft.execCalls) != execBefore {
+			t.Fatalf("预注册不应触发 apply:%v", ft.execCalls[execBefore:])
+		}
+		// 挂回后再预注册:attached 原状保持(摘挂流程负责摘),端口更新。
+		if err := svc.SetInstanceAttached(ctx, i1.ID, true); err != nil {
+			t.Fatal(err)
+		}
+		i1b, err := svc.EnsureInstanceDetached(ctx, created.ID, "app1", "", 9090, 9090)
+		if err != nil || !i1b.Attached || i1b.ID != i1.ID || i1b.Port != 9090 {
+			t.Fatalf("存量 attached 行应保持 attached 并刷新端口:%v %+v", err, i1b)
+		}
+	})
+}
+
+// TestResolveInstanceAddrsSkippedCountsAttachedOnly skipped 只统计 attached 实例:
+// detached 本就不参与渲染;attached 但遗留行/地址解析失败/容器实例未发布宿主端口才计入。
+func TestResolveInstanceAddrsSkippedCountsAttachedOnly(t *testing.T) {
+	s := &service{serverAddr: func(_ context.Context, id string) (string, error) {
+		if id == "bad" {
+			return "", errors.New("unreachable")
+		}
+		return "10.0.0.1", nil
+	}}
+	instances := []Instance{
+		{ID: "i1", ServerID: "ok", Attached: false},     // detached:不计
+		{ID: "i2", ServerID: "", Attached: false},       // detached 遗留:不计
+		{ID: "i3", ServerID: "", Attached: true},        // 遗留行:计
+		{ID: "i4", ServerID: "bad", Attached: true},     // 地址解析失败:计
+		{ID: "i5", ServerID: "ok", Container: "app-1", Attached: true},                // 容器无宿主端口:计
+		{ID: "i6", ServerID: "ok", Container: "app-2", HostPort: 20001, Attached: true}, // 正常容器实例:不计
+		{ID: "i7", ServerID: "ok", Attached: true},      // 非容器实例(HostPort=0=继承 Port):不计
+	}
+	addrs, skipped := s.resolveInstanceAddrs(context.Background(), instances)
+	if skipped != 3 {
+		t.Fatalf("skipped 应 3(i3/i4/i5),得 %d", skipped)
+	}
+	if addrs["ok"] != "10.0.0.1" {
+		t.Fatalf("ok 应解析:%v", addrs)
+	}
+}
+
+// TestEnsureInstanceAndPrune 部署期 upsert + 认领遗留行 + 同步清理。
+func TestEnsureInstanceAndPrune(t *testing.T) {
+	storetest.ForEachDialect(t, func(t *testing.T, st *store.Store) {
+		svc, _ := newTestService(t, st.DB)
+		ctx := context.Background()
+		dom, _ := svc.CreateDomain(ctx, "efg.com")
+		created, err := svc.CreateService(ctx, CreateServiceInput{DomainID: dom.ID, Name: "abc", UpstreamPort: 8080})
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		// 首保插入(attached,host_port 待轮转 Swap 补)。
+		i1, err := svc.EnsureInstance(ctx, created.ID, "app1", "abc-c", 8080, 0)
+		if err != nil || !i1.Attached {
+			t.Fatalf("ensure 插入:%v %+v", err, i1)
+		}
+		// 重复 ensure:行复用,hostPort<=0 时不覆盖既有 host_port(轮转 Swap 负责更新)。
+		i1b, err := svc.EnsureInstance(ctx, created.ID, "app1", "abc-c", 8080, 0)
+		if err != nil || i1b.ID != i1.ID {
+			t.Fatalf("重复 ensure 应复用行:%v %+v", err, i1b)
+		}
+		// hostPort>0 时更新(硬切回退路径落实际端口)。
+		if _, err := svc.EnsureInstance(ctx, created.ID, "app1", "abc-c", 8080, 20005); err != nil {
+			t.Fatalf("ensure 更新端口:%v", err)
+		}
+		all, _ := svc.ListInstances(ctx, created.ID)
+		if len(all) != 1 || all[0].HostPort != 20005 {
+			t.Fatalf("应仍 1 行且端口已更新:%+v", all)
+		}
+
+		// 认领遗留行(server_id='' 的 0068 前数据):按(服务, 容器名)命中并补齐归属。
+		if _, err := st.DB.ExecContext(ctx,
+			`INSERT INTO service_reg_instances (id, service_id, server_id, container, port, host_port, attached, created_at, updated_at)
+			 VALUES ('legacy-1', ?, '', 'abc-old', 8080, 0, 1, ?, ?)`,
+			created.ID, time.Now().UTC().Format(time.RFC3339), time.Now().UTC().Format(time.RFC3339)); err != nil {
+			t.Fatal(err)
+		}
+		claimed, err := svc.EnsureInstance(ctx, created.ID, "app2", "abc-old", 8080, 0)
+		if err != nil || claimed.ID != "legacy-1" || claimed.ServerID != "app2" {
+			t.Fatalf("应认领遗留行:%v %+v", err, claimed)
+		}
+
+		// 同步清理:保留 app1,清掉 app2 的实例(含遗留认领行)。
+		n, err := svc.PruneInstancesNotIn(ctx, created.ID, []string{"app1"})
+		if err != nil || n != 1 {
+			t.Fatalf("清理数应 1:%d %v", n, err)
+		}
+		all, _ = svc.ListInstances(ctx, created.ID)
+		if len(all) != 1 || all[0].ServerID != "app1" {
+			t.Fatalf("清理后应只剩 app1:%+v", all)
+		}
+		// 清空(服务器全部移出)→ 全删。
+		if n, err := svc.PruneInstancesNotIn(ctx, created.ID, nil); err != nil || n != 1 {
+			t.Fatalf("清空应删 1:%d %v", n, err)
+		}
 	})
 }
 
@@ -932,16 +1213,22 @@ func TestInstanceLifecycleAndSwap(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		if _, err := svc.AddInstance(ctx, created.ID, "srv1", "abc-1", 0, 0); err != nil {
+			t.Fatal(err)
+		}
 
-		// 加第二个实例。
-		inst2, err := svc.AddInstance(ctx, created.ID, "abc-2", 0)
+		// 加第二个实例(另一台机器;同容器名不同服务器不冲突)。
+		inst2, err := svc.AddInstance(ctx, created.ID, "srv2", "abc-2", 0, 0)
 		if err != nil || !inst2.Attached {
 			t.Fatalf("加实例:%v %+v", err, inst2)
 		}
-		if _, err := svc.AddInstance(ctx, created.ID, "abc-2", 0); err != ErrInstanceTaken {
-			t.Fatalf("重名实例应 ErrInstanceTaken,得 %v", err)
+		if _, err := svc.AddInstance(ctx, created.ID, "srv2", "abc-2", 0, 0); err != ErrInstanceTaken {
+			t.Fatalf("同服务器重名实例应 ErrInstanceTaken,得 %v", err)
 		}
-		if _, err := svc.AddInstance(ctx, created.ID, "-bad", 0); err != ErrInvalidInstance {
+		if _, err := svc.AddInstance(ctx, created.ID, "", "abc-3", 0, 0); err != ErrInvalidInstance {
+			t.Fatalf("缺服务器应 ErrInvalidInstance,得 %v", err)
+		}
+		if _, err := svc.AddInstance(ctx, created.ID, "srv1", "-bad", 0, 0); err != ErrInvalidInstance {
 			t.Fatalf("非法容器名应 ErrInvalidInstance,得 %v", err)
 		}
 		all, _ := svc.ListInstances(ctx, created.ID)
@@ -949,9 +1236,9 @@ func TestInstanceLifecycleAndSwap(t *testing.T) {
 			t.Fatalf("应 2 实例:%v", all)
 		}
 
-		// Swap:一次 reload 完成成员替换(数 reload 次数)。
+		// Swap:一次 reload 完成成员替换 + host_port 同步(数 reload 次数)。
 		ft.execCalls = nil
-		if err := svc.SwapInstance(ctx, created.ID, "abc-1", "abc-1-r1a2b3"); err != nil {
+		if err := svc.SwapInstance(ctx, created.ID, "srv1", "abc-1", "abc-1-r1a2b3", 20001); err != nil {
 			t.Fatalf("swap:%v", err)
 		}
 		reloadCount := 0
@@ -968,6 +1255,9 @@ func TestInstanceLifecycleAndSwap(t *testing.T) {
 		for _, i := range after {
 			if i.Container == "abc-1-r1a2b3" {
 				found = true
+				if i.HostPort != 20001 || i.ServerID != "srv1" {
+					t.Fatalf("swap 后应同步宿主端口与归属:%+v", i)
+				}
 			}
 		}
 		if !found {
@@ -992,6 +1282,13 @@ func TestInstanceLifecycleAndSwap(t *testing.T) {
 		if len(after) != 1 {
 			t.Fatalf("删后应剩 1 实例:%v", after)
 		}
+		// 删服务级联清实例。
+		if err := svc.DeleteService(ctx, created.ID); err != nil {
+			t.Fatal(err)
+		}
+		if after, _ = svc.ListInstances(ctx, created.ID); len(after) != 0 {
+			t.Fatalf("删服务应级联清实例:%v", after)
+		}
 	})
 }
 
@@ -1006,26 +1303,15 @@ func TestResolveDeployInstances(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		inst2, _ := svc.AddInstance(ctx, created.ID, "abc-2", 9090)
-
-		// 网关未配置 → 空。
-		refs, err := svc.ResolveDeployInstances(ctx, "srv1", "abc-1")
-		if err != nil || len(refs) != 0 {
-			t.Fatalf("未配网关应空:%v %v", refs, err)
-		}
-		// 配置网关(其它 serverID)→ 空。
-		if _, err := svc.UpdateSettings(ctx, SettingsUpdate{ServerID: strPtr("gw")}); err != nil {
+		if _, err := svc.AddInstance(ctx, created.ID, "gw", "abc-1", 0, 0); err != nil {
 			t.Fatal(err)
 		}
-		refs, _ = svc.ResolveDeployInstances(ctx, "other", "abc-1")
-		if len(refs) != 0 {
-			t.Fatalf("非网关主机应空:%v", refs)
-		}
+		inst2, _ := svc.AddInstance(ctx, created.ID, "gw", "abc-2", 9090, 0)
 
-		// 实例容器名精确匹配:返回该服务全部 attached 实例(生效端口)。
-		refs, err = svc.ResolveDeployInstances(ctx, "gw", "abc-1")
+		// 实例容器名精确匹配:返回该服务器上全部 attached 实例(生效端口)。
+		refs, err := svc.ResolveDeployInstances(ctx, "gw", "", "abc-1")
 		if err != nil || len(refs) != 2 {
-			t.Fatalf("应返回 2 实例:%v %v", refs, err)
+			t.Fatalf("应返回 gw 上 2 实例:%v %v", refs, err)
 		}
 		port2 := 0
 		for _, r := range refs {
@@ -1039,9 +1325,13 @@ func TestResolveDeployInstances(t *testing.T) {
 		if refs[0].ServiceName != "abc.efg.com" {
 			t.Fatalf("ServiceName 应为 FQDN:%q", refs[0].ServiceName)
 		}
+		// 其它服务器 → 空(绝不返回别机实例)。
+		if refs, _ := svc.ResolveDeployInstances(ctx, "other", "", "abc-1"); len(refs) != 0 {
+			t.Fatalf("其它服务器应空:%v", refs)
+		}
 
 		// 服务名匹配(惯例 abc → abc-1/abc-2)。
-		refs, _ = svc.ResolveDeployInstances(ctx, "gw", "abc")
+		refs, _ = svc.ResolveDeployInstances(ctx, "gw", "", "abc")
 		if len(refs) != 2 {
 			t.Fatalf("服务名匹配应返回全部实例:%v", refs)
 		}
@@ -1050,46 +1340,50 @@ func TestResolveDeployInstances(t *testing.T) {
 		if err := svc.SetInstanceAttached(ctx, inst2.ID, false); err != nil {
 			t.Fatal(err)
 		}
-		refs, _ = svc.ResolveDeployInstances(ctx, "gw", "abc")
+		refs, _ = svc.ResolveDeployInstances(ctx, "gw", "", "abc")
 		if len(refs) != 1 || refs[0].Container != "abc-1" {
 			t.Fatalf("摘除实例不应参与轮转:%v", refs)
 		}
 
 		// 无匹配 → 空。
-		refs, _ = svc.ResolveDeployInstances(ctx, "gw", "nope")
+		refs, _ = svc.ResolveDeployInstances(ctx, "gw", "", "nope")
 		if len(refs) != 0 {
 			t.Fatalf("无匹配应空:%v", refs)
 		}
 	})
 }
 
-func TestApplyPrunesDeadInstances(t *testing.T) {
+// TestApplyClusterRender 集群渲染:apply 不再探活/剔除本机容器,各网关推同一份全量配置,
+// upstream 成员 = 服务器地址:宿主端口;遗留行(server_id='')跳过并写入提示注释。
+func TestApplyClusterRender(t *testing.T) {
 	storetest.ForEachDialect(t, func(t *testing.T, st *store.Store) {
-		svc, ft := newTestService(t, st.DB)
+		svc, ft := newTestServiceMulti(t, st.DB, "gw1", "gw2")
 		ctx := context.Background()
 		dom, _ := svc.CreateDomain(ctx, "efg.com")
-		if _, err := svc.UpdateSettings(ctx, SettingsUpdate{ServerID: strPtr("srv1")}); err != nil {
-			t.Fatal(err)
-		}
 		created, err := svc.CreateService(ctx, CreateServiceInput{
 			DomainID: dom.ID, Name: "abc", Upstream: "abc-1", UpstreamPort: 8080,
 		})
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := svc.AddInstance(ctx, created.ID, "abc-2", 0); err != nil {
+		if _, err := svc.AddInstance(ctx, created.ID, "app1", "abc-1", 0, 20001); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := svc.AddInstance(ctx, created.ID, "app2", "abc-2", 0, 20002); err != nil {
+			t.Fatal(err)
+		}
+		// 遗留行(server_id=''):渲染跳过。
+		if _, err := st.DB.ExecContext(ctx,
+			`INSERT INTO service_reg_instances (id, service_id, server_id, container, port, host_port, attached, created_at, updated_at)
+			 VALUES ('legacy', ?, '', 'abc-old', 8080, 0, 1, ?, ?)`,
+			created.ID, time.Now().UTC().Format(time.RFC3339), time.Now().UTC().Format(time.RFC3339)); err != nil {
 			t.Fatal(err)
 		}
 
-		// abc-2 容器已消失(inspect 非零)→ 渲染剔除,其余命令正常走完。
-		ft.resultFor = func(cmd []string) *target.ExecResult {
-			if len(cmd) >= 4 && cmd[0] == "docker" && cmd[1] == "inspect" && cmd[2] == "--format" && cmd[4] == "abc-2" {
-				return &target.ExecResult{ExitCode: 1, Stderr: "Error: No such object"}
-			}
-			return nil
-		}
+		// 重置计数后单看本轮 apply(此前每次变更都已 best-effort 收敛过)。
+		ft.execCalls, ft.uploads, ft.uploadServers, ft.uploadBytes = nil, nil, nil, nil
 		if err := svc.Apply(ctx); err != nil {
-			t.Fatalf("死实例应被剔除而非卡死 apply:%v", err)
+			t.Fatalf("apply:%v", err)
 		}
 		var conf string
 		for path, content := range ft.uploadBytes {
@@ -1097,11 +1391,40 @@ func TestApplyPrunesDeadInstances(t *testing.T) {
 				conf = content
 			}
 		}
-		if !strings.Contains(conf, "server abc-1:8080") {
-			t.Fatalf("存活实例应渲染:\n%s", conf)
+		// 集群成员:两台网关收到同一份配置,远端实例同样渲染。
+		for _, want := range []string{
+			"server 10.9.9.9:20001 max_fails=2 fail_timeout=10s;",
+			"server 10.9.9.9:20002 max_fails=2 fail_timeout=10s;",
+		} {
+			if !strings.Contains(conf, want) {
+				t.Fatalf("集群成员缺失(%q):\n%s", want, conf)
+			}
 		}
-		if strings.Contains(conf, "abc-2") {
-			t.Fatalf("死实例应剔除:\n%s", conf)
+		if strings.Contains(conf, "abc-old") {
+			t.Fatalf("遗留行不应渲染:\n%s", conf)
+		}
+		if !strings.Contains(conf, "有 1 个实例因遗留数据") {
+			t.Fatalf("遗留行应计数提示:\n%s", conf)
+		}
+		// 不再对实例容器做本机探活/接网(docker inspect <实例容器> / network connect 均不应出现)。
+		for _, c := range ft.execCalls {
+			joined := strings.Join(c, " ")
+			if strings.Contains(joined, "docker network connect") {
+				t.Fatalf("http 实例不再接共享网络:\n%s", joinAllCmds(ft))
+			}
+			if strings.HasPrefix(joined, "docker inspect") && strings.Contains(joined, "abc-") {
+				t.Fatalf("不再逐实例探活:\n%s", joinAllCmds(ft))
+			}
+		}
+		// 两台网关各收到一次配置下发。
+		pushes := 0
+		for i, u := range ft.uploads {
+			if u == "/tmp/pipewright-nginx.conf" && ft.uploadServers[i] != "" {
+				pushes++
+			}
+		}
+		if pushes != 2 {
+			t.Fatalf("两台网关应各推一份配置,得 %d:\n%s", pushes, joinAllCmds(ft))
 		}
 	})
 }

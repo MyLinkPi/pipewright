@@ -141,6 +141,22 @@ export default {
   retryRequestFailed:
     "La demande de nouvelle tentative a échoué, réessayez plus tard",
 
+  // Reprise par nœud(exécution dérivée d'un échec)
+  resumeRegionAria: "Reprendre l'exécution par nœud",
+  resumeTitle: "Reprendre l'exécution par nœud",
+  resumeDesc: "Crée une exécution dérivée : les nœuds réussis sont hérités tels quels, seules les parties échouées/en attente réexécutées ; les nœuds de déploiement ne réessaient que les machines en échec.",
+  resumeRetry: "Réessayer",
+  resumeSkip: "Ignorer",
+  resumeSkipHint: "Ignore ce nœud ; l'aval s'exécute normalement",
+  resumeLaunch: "Lancer l'exécution reprise",
+  resumeLaunching: "Création…",
+  resumeSpecChanged: "La configuration du pipeline a changé — reprise par nœud impossible",
+  resumeNotResumable: "Cette exécution ne peut pas être reprise par nœud",
+  resumeRunNotFound: "Exécution introuvable",
+  resumeQueueFull: "File d'attente de planification pleine, réessayez plus tard",
+  resumeRequestFailed: "Échec de la reprise ({status})",
+  resumedFrom: "Reprise depuis #{id}",
+
   partialInfo:
     "Certaines cibles ont échoué et les hôtes en échec ont effectué un retour arrière indépendant ; les autres continuent de s'exécuter sans être affectés.",
   multiTargetAria: "Statut des cibles multi-hôtes",

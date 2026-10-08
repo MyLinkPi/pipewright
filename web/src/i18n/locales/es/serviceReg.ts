@@ -84,7 +84,7 @@ export default {
 
   instances: {
     toggle: 'Instancias',
-    hint: 'Una instancia es un contenedor en el host de la puerta de enlace. La estrategia de despliegue por defecto (rolling de instancias) reemplaza las instancias una a una sin tiempo de inactividad (arrancar nueva → salud de calentamiento → cambio atómico → drenaje → parar la antigua). Las instancias desacopladas conservan su configuración pero no reciben tráfico.',
+    hint: 'Una instancia es un miembro upstream del clúster (servidor + puerto host): cada host de pasarela renderiza la misma configuración y hace proxy de todas las instancias del clúster, incluso de servicios no desplegados localmente. Las instancias de contenedor se registran automáticamente al desplegar y ruedan con surgimiento→intercambio→reducción (sin parada); las de host se registran al desplegar o se añaden manualmente y ruedan con desasociar→actualizar→health→reasociar.',
     count: '{n} instancias',
     detached: 'desacoplada',
     detach: 'Desacoplar',
@@ -94,5 +94,10 @@ export default {
     addFail: 'Error al añadir la instancia',
     delTitle: '¿Eliminar la instancia?',
     portPlaceholder: 'puerto (por defecto igual al servicio)',
+    legacy: 'migración pendiente',
+    hostKind: 'proceso host',
+    containerPlaceholder: 'nombre de contenedor (vacío para host)',
+    serverPlaceholder: 'Selecciona un servidor',
+    hostPortPlaceholder: 'puerto host (0=heredar)',
   },
 }

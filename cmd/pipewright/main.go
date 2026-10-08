@@ -8,12 +8,14 @@ import (
 	"fmt"
 	"io/fs"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -277,7 +279,9 @@ func main() {
 	// 内置本地 registry(registryhub):控制机本机双服务 registry 栈(制品 + pull-through 缓存)、
 	// daemon.json 手动勾选下发、镜像 tag 保留清理。复用 targetSvc(远程机 SSH 通道);未启用时
 	// 构建/部署完全保持旧行为(本地 tag 不推送)。构建接入经 builtinRegistryOpt 注入 Builder。
-	registryHubSvc := registryhub.New(st.DB, targetSvc, registryhub.Options{})
+	// TLS 证书经 CertSource 软引用 certmgmt(晚绑:certSvc 在其后构造,见下方 set 接线)。
+	registryCertSrc := &registryCertSource{}
+	registryHubSvc := registryhub.New(st.DB, targetSvc, registryhub.Options{Certs: registryCertSrc})
 	builtinRegistryOpt := build.WithBuiltinRegistry(registryHubSvc.ResolveBuiltin)
 	// 批量执行命令(服务器状态页 → 勾选多机 → 同步执行 + 历史回看):复用 targetSvc 的
 	// SSH 执行层逐机并发跑 sh -c,结果落本地库保最近 200 次;每次尝试写审计。
@@ -364,8 +368,10 @@ func main() {
 
 	// 服务注册网关(nginx 版;提前到 deploy 构造前:instance_rolling 默认策略经适配器晚绑)。
 	// 复用 targetSvc(SSH + docker)与 credVault(证书 SealSecret 密文);vault 未配 master key
-	// 时证书上传不可用,其余功能照常(优雅降级)。
+	// 时证书上传不可用,其余功能照常(优雅降级)。集群反代渲染需要 serverID → 可达地址,
+	// 一并注入解析器(target 查 SSH Host,主机名经控制端 DNS 解析为 IP)。
 	serviceRegSvc := servicereg.New(st.DB, targetSvc, credVault)
+	serviceRegSvc.SetServerAddrResolver(serverAddrResolver{tg: targetSvc}.resolve)
 
 	// 系统级运行时配置(public_url = 平台对外访问地址):取代环境变量 PIPEWRIGHT_PUBLIC_URL,
 	// 设置页在线修改、即时生效(通知审批链接 / PR 回写 target_url 每次触发时按需读取)。
@@ -383,6 +389,9 @@ func main() {
 	// PIPEWRIGHT_RUNNER=dag 仍受支持(向后兼容);未设或任意非 legacy 值一律 = dag。
 	// DAG 模式探测不到容器 CLI(docker)时优雅回退 stub(现有逻辑,NFR-10)。
 	var runnerOpts []run.PoolOption
+	// resumeSpecLoader 供 httpapi「失败运行按节点恢复」端点做配置一致性校验(与执行器同一 spec
+	// 来源)。legacy 模式保持 nil → 恢复端点 503,与其不支持按节点恢复的语义一致。
+	var resumeSpecLoader dagrun.SpecLoader
 	if strings.EqualFold(strings.TrimSpace(os.Getenv("PIPEWRIGHT_RUNNER")), "legacy") {
 		runnerOpts = buildRunnerOption(projectSvc, pipelineSettingsSvc, credVault, artStore, repoCache, builtinRegistryOpt)
 		log.Printf("[run] PIPEWRIGHT_RUNNER=legacy:旧版固定流程运行器已启用(clone→对仓库根 docker build→deploy,⚠ 不执行 UI 可视化流水线 stages;如需真按流水线跑请去掉该 env)")
@@ -434,6 +443,7 @@ func main() {
 		if pacGlobalOverride {
 			log.Printf("[pac] 全局强开:.pipewright.yml 覆盖对所有项目生效(PIPEWRIGHT_PAC_RUNTIME=1;无视每项目开关)")
 		}
+		resumeSpecLoader = specLoader
 		runnerOpts = []run.PoolOption{run.WithRunner(dagrun.New(specLoader, dagOpts...))}
 	}
 
@@ -459,9 +469,8 @@ func main() {
 	}
 	// 新建基域 → 自动拉取既有覆盖证书:证书推送只发生在证书事件时,后建的基域拿不到
 	// 已有证书(否则要手动刷新一次)。钩子在 CreateDomain 后 best-effort 反向拉取。
-	if sr, ok := serviceRegSvc.(interface {
-		SetCertSyncHook(func(context.Context) error)
-	}); ok {
+	{
+		sr := serviceRegSvc
 		if cs, ok2 := certSvc.(interface {
 			SyncAllToSink(context.Context) error
 		}); ok2 {
@@ -482,8 +491,12 @@ func main() {
 	// 证书经 CertSource 软引用(PEM 仅进程内解密传递);续期/重下发后经 PlatformHTTPS 联动
 	// 重新落盘,删除占用证书被拦截。
 	platformHTTPSSvc := platformhttps.New(st.DB, nil, &platformCertSource{cm: certSvc}, defaultPortFromAddr(cfg.Addr))
+	registryCertSrc.set(certSvc) // 内置 registry 的 TLS 证书来源此时才可用(晚绑接上)
 	if cfg2, ok := certSvc.(interface{ SetPlatformHTTPS(certmgmt.PlatformHTTPS) }); ok {
-		cfg2.SetPlatformHTTPS(&platformHTTPSAdapter{ph: platformHTTPSSvc})
+		cfg2.SetPlatformHTTPS(&multiPlatformHTTPS{parts: []certmgmt.PlatformHTTPS{
+			&platformHTTPSAdapter{ph: platformHTTPSSvc},
+			&registryHubAdapter{h: registryHubSvc}, // registry 栈引用的证书续期后重部署栈
+		}})
 	}
 
 	// Per-PR 预览环境(R4 E4.1 · 差异化王牌):某 PR 运行成功部署 → 在项目预览配置的根域下分配
@@ -701,7 +714,7 @@ func main() {
 
 	srv := &http.Server{
 		Addr:              cfg.Addr,
-		Handler:           httpapi.New(webFS, authSvc, httpapi.WithVault(credVault), httpapi.WithProjects(projectSvc), httpapi.WithTriggers(triggerSvc), httpapi.WithPipelines(pipelineSvc), httpapi.WithPipelineSettings(pipelineSettingsSvc), httpapi.WithRuns(runSvc, pool), httpapi.WithWebhooks(webhookReceiver), httpapi.WithAudit(auditRec), httpapi.WithAccount(authSvc), httpapi.WithAISettings(aiSvc), httpapi.WithAIGenerate(repoAnalyzer), httpapi.WithRunDiff(runDiffer), httpapi.WithSource(sourceReader), httpapi.WithRefs(refsLister), httpapi.WithArtifactStore(artStore), httpapi.WithServers(targetSvc), httpapi.WithLabels(labelsSvc), httpapi.WithServerCommands(serverCmdSvc), httpapi.WithRegistryHub(registryHubSvc), httpapi.WithRunnerConfig(runnerSvc), httpapi.WithDeploy(deploySvc), httpapi.WithNotifications(notifySvc), httpapi.WithRetention(retentionSvc), httpapi.WithDNSProviders(dnsSvc), httpapi.WithCertMgmt(certSvc), httpapi.WithPlatformHTTPS(platformHTTPSSvc), httpapi.WithSystemConfig(sysCfgSvc), httpapi.WithPreviewEnvs(previewSvc), httpapi.WithServiceReg(serviceRegSvc), httpapi.WithAppStore(appStoreSvc), httpapi.WithDiagnosisFeedback(feedbackSvc), httpapi.WithAnomaly(anomalySvc), httpapi.WithAnomalyConfig(int(anomalyInterval.Seconds()), int(anomalyCooldown.Seconds())), httpapi.WithMetricsHistory(metricsHist), httpapi.WithSecretSource(secretSrc), httpapi.WithOAuth(oauthSvc), httpapi.WithCron(cronSvc), httpapi.WithChain(chainSvc), httpapi.WithApprovals(approvalCoord, approvalStore), httpapi.WithApprovalLinks(approvalSigner), httpapi.WithConcurrency(concurrencySvc), httpapi.WithParameters(parameterSvc), httpapi.WithPromotion(promotionStore), httpapi.WithEnvironments(environmentsSvc), httpapi.WithDoraMetrics(doraMetricsSvc), httpapi.WithTemplates(templateSvc), httpapi.WithVariableGroups(varGroupSvc), httpapi.WithCustomNodes(customNodeSvc)),
+		Handler:           httpapi.New(webFS, authSvc, httpapi.WithVault(credVault), httpapi.WithProjects(projectSvc), httpapi.WithTriggers(triggerSvc), httpapi.WithPipelines(pipelineSvc), httpapi.WithPipelineSettings(pipelineSettingsSvc), httpapi.WithRuns(runSvc, pool), httpapi.WithWebhooks(webhookReceiver), httpapi.WithAudit(auditRec), httpapi.WithAccount(authSvc), httpapi.WithAISettings(aiSvc), httpapi.WithAIGenerate(repoAnalyzer), httpapi.WithRunDiff(runDiffer), httpapi.WithSource(sourceReader), httpapi.WithRefs(refsLister), httpapi.WithArtifactStore(artStore), httpapi.WithServers(targetSvc), httpapi.WithLabels(labelsSvc), httpapi.WithServerCommands(serverCmdSvc), httpapi.WithRegistryHub(registryHubSvc), httpapi.WithRunnerConfig(runnerSvc), httpapi.WithDeploy(deploySvc), httpapi.WithSpecLoader(resumeSpecLoader), httpapi.WithNotifications(notifySvc), httpapi.WithRetention(retentionSvc), httpapi.WithDNSProviders(dnsSvc), httpapi.WithCertMgmt(certSvc), httpapi.WithPlatformHTTPS(platformHTTPSSvc), httpapi.WithSystemConfig(sysCfgSvc), httpapi.WithPreviewEnvs(previewSvc), httpapi.WithServiceReg(serviceRegSvc), httpapi.WithAppStore(appStoreSvc), httpapi.WithDiagnosisFeedback(feedbackSvc), httpapi.WithAnomaly(anomalySvc), httpapi.WithAnomalyConfig(int(anomalyInterval.Seconds()), int(anomalyCooldown.Seconds())), httpapi.WithMetricsHistory(metricsHist), httpapi.WithSecretSource(secretSrc), httpapi.WithOAuth(oauthSvc), httpapi.WithCron(cronSvc), httpapi.WithChain(chainSvc), httpapi.WithApprovals(approvalCoord, approvalStore), httpapi.WithApprovalLinks(approvalSigner), httpapi.WithConcurrency(concurrencySvc), httpapi.WithParameters(parameterSvc), httpapi.WithPromotion(promotionStore), httpapi.WithEnvironments(environmentsSvc), httpapi.WithDoraMetrics(doraMetricsSvc), httpapi.WithTemplates(templateSvc), httpapi.WithVariableGroups(varGroupSvc), httpapi.WithCustomNodes(customNodeSvc)),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		// WriteTimeout 置 0:SSE 长连接(/api/runs/{id}/events)不可被写超时切断;
@@ -955,8 +968,8 @@ func (a *dnsResolverAdapter) ProviderZones(ctx context.Context, providerID strin
 // 晚绑防 import 环:deploy 不 import servicereg,servicereg 也不 import deploy)。
 type instanceRollGateway struct{ sr servicereg.Service }
 
-func (g *instanceRollGateway) ResolveInstances(ctx context.Context, serverID, container string) ([]deploy.InstanceRef, error) {
-	refs, err := g.sr.ResolveDeployInstances(ctx, serverID, container)
+func (g *instanceRollGateway) ResolveInstances(ctx context.Context, serverID, serviceRef, container string) ([]deploy.InstanceRef, error) {
+	refs, err := g.sr.ResolveDeployInstances(ctx, serverID, serviceRef, container)
 	if err != nil {
 		return nil, err
 	}
@@ -964,14 +977,15 @@ func (g *instanceRollGateway) ResolveInstances(ctx context.Context, serverID, co
 	for _, r := range refs {
 		out = append(out, deploy.InstanceRef{
 			ServiceID: r.ServiceID, ServiceName: r.ServiceName,
-			InstanceID: r.InstanceID, Container: r.Container, Port: r.Port,
+			InstanceID: r.InstanceID, ServerID: r.ServerID, Container: r.Container,
+			Port: r.Port, HostPort: r.HostPort,
 		})
 	}
 	return out, nil
 }
 
-func (g *instanceRollGateway) SwapInstance(ctx context.Context, serviceID, oldContainer, newContainer string) error {
-	return g.sr.SwapInstance(ctx, serviceID, oldContainer, newContainer)
+func (g *instanceRollGateway) SwapInstance(ctx context.Context, serviceID, serverID, oldContainer, newContainer string, hostPort int) error {
+	return g.sr.SwapInstance(ctx, serviceID, serverID, oldContainer, newContainer, hostPort)
 }
 
 func (g *instanceRollGateway) DetachInstance(ctx context.Context, instanceID string) error {
@@ -980,6 +994,51 @@ func (g *instanceRollGateway) DetachInstance(ctx context.Context, instanceID str
 
 func (g *instanceRollGateway) AttachInstance(ctx context.Context, instanceID string) error {
 	return g.sr.SetInstanceAttached(ctx, instanceID, true)
+}
+
+func (g *instanceRollGateway) EnsureInstance(ctx context.Context, serviceID, serverID, container string, port, hostPort int) error {
+	_, err := g.sr.EnsureInstance(ctx, serviceID, serverID, container, port, hostPort)
+	return err
+}
+
+func (g *instanceRollGateway) EnsureInstanceDetached(ctx context.Context, serviceID, serverID, container string, port, hostPort int) (deploy.InstanceRef, error) {
+	inst, err := g.sr.EnsureInstanceDetached(ctx, serviceID, serverID, container, port, hostPort)
+	if err != nil {
+		return deploy.InstanceRef{}, err
+	}
+	return deploy.InstanceRef{
+		ServiceID: inst.ServiceID, InstanceID: inst.ID, ServerID: inst.ServerID,
+		Container: inst.Container, Port: inst.Port, HostPort: inst.HostPort,
+	}, nil
+}
+
+func (g *instanceRollGateway) PruneInstances(ctx context.Context, serviceID string, serverIDs []string) error {
+	_, err := g.sr.PruneInstancesNotIn(ctx, serviceID, serverIDs)
+	return err
+}
+
+// serverAddrResolver 把 serverID 解析为网关可达地址(target 查 SSH Host;主机名经控制端
+// DNS 解析为 IP —— nginx upstream 静态成员必须可解析,否则 reload 卡死)。注入 servicereg
+// 供集群反代渲染。
+type serverAddrResolver struct{ tg target.Service }
+
+func (r serverAddrResolver) resolve(ctx context.Context, serverID string) (string, error) {
+	srv, err := r.tg.Get(ctx, serverID)
+	if err != nil {
+		return "", err
+	}
+	host := strings.TrimSpace(srv.Host)
+	if host == "" || net.ParseIP(host) != nil {
+		return host, nil
+	}
+	addrs, lerr := net.DefaultResolver.LookupHost(ctx, host)
+	if lerr != nil || len(addrs) == 0 {
+		if host != "" {
+			return host, nil // 解析失败时回落主机名(渲染后由 nginx -t 报错暴露),不静默丢实例
+		}
+		return "", fmt.Errorf("服务器 %s 无可达地址", serverID)
+	}
+	return addrs[0], nil
 }
 
 // previewAllocator 适配 previewenv.Allocator:把「为指定 FQDN 建 A 记录」下沉到
@@ -1024,6 +1083,87 @@ func (a *platformHTTPSAdapter) UsesCert(ctx context.Context, certID string) (boo
 
 func (a *platformHTTPSAdapter) RedeployCert(ctx context.Context, certID string) error {
 	return a.ph.RedeployCert(ctx, certID)
+}
+
+// registryCertSource 适配 registryhub.CertSource:证书元数据/PEM 解密下沉 certmgmt(PEM 仅
+// 进程内传递,绝不过 HTTP;晚绑防 registryhub 直接依赖 certmgmt)。certSvc 在 registry 栈
+// 之后构造,经 set 接上;HTTP 服务启动前必然已装配(set 前调用只会得到诚实报错)。
+type registryCertSource struct {
+	mu sync.Mutex
+	cm certmgmt.Service
+}
+
+func (a *registryCertSource) set(cm certmgmt.Service) {
+	a.mu.Lock()
+	a.cm = cm
+	a.mu.Unlock()
+}
+
+func (a *registryCertSource) svc() certmgmt.Service {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.cm
+}
+
+func (a *registryCertSource) GetCert(ctx context.Context, id string) (*registryhub.CertInfo, error) {
+	cm := a.svc()
+	if cm == nil {
+		return nil, errors.New("证书能力未装配")
+	}
+	c, err := cm.Get(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	return &registryhub.CertInfo{
+		ID: c.ID, PrimaryDomain: c.PrimaryDomain, Domains: c.Domains,
+		Status: c.Status, NotAfter: c.NotAfter,
+	}, nil
+}
+
+func (a *registryCertSource) OpenCertPEM(ctx context.Context, id string) (string, string, error) {
+	cm := a.svc()
+	if cm == nil {
+		return "", "", errors.New("证书能力未装配")
+	}
+	return cm.OpenCertPEM(ctx, id)
+}
+
+// registryHubAdapter 适配 certmgmt.PlatformHTTPS:内置 registry 栈正引用的证书续期/重下发后
+// 重新部署栈(部署时重新解密落盘 PEM 并按配置漂移重建容器);删除证书前占用拦截。
+type registryHubAdapter struct{ h *registryhub.Hub }
+
+func (a *registryHubAdapter) UsesCert(ctx context.Context, certID string) (bool, error) {
+	return a.h.UsesCert(ctx, certID)
+}
+
+func (a *registryHubAdapter) RedeployCert(ctx context.Context, certID string) error {
+	return a.h.RedeployCert(ctx, certID)
+}
+
+// multiPlatformHTTPS 把多个证书联动消费方组合为一个 PlatformHTTPS(UsesCert 任一 true;
+// RedeployCert 依次执行,单方失败立即返回,由 certmgmt 落到证书 detail)。
+type multiPlatformHTTPS struct{ parts []certmgmt.PlatformHTTPS }
+
+func (m *multiPlatformHTTPS) UsesCert(ctx context.Context, certID string) (bool, error) {
+	for _, p := range m.parts {
+		ok, err := p.UsesCert(ctx, certID)
+		if err != nil {
+			return false, err
+		}
+		if ok {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (m *multiPlatformHTTPS) RedeployCert(ctx context.Context, certID string) error {
+	for _, p := range m.parts {
+		if err := p.RedeployCert(ctx, certID); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // defaultPortFromAddr 从监听地址(如 ":8080"/"0.0.0.0:8080")提取端口作为平台 HTTPS 的

@@ -28,6 +28,7 @@ import (
 	"github.com/huangchengsir/pipewright/internal/cron"
 	"github.com/huangchengsir/pipewright/internal/deploy"
 	"github.com/huangchengsir/pipewright/internal/dnsprovider"
+	"github.com/huangchengsir/pipewright/internal/dagrun"
 	"github.com/huangchengsir/pipewright/internal/environments"
 	"github.com/huangchengsir/pipewright/internal/i18n"
 	"github.com/huangchengsir/pipewright/internal/labels"
@@ -78,6 +79,7 @@ type options struct {
 	pipelineSettings pipeline.SettingsService
 	runs             run.Service
 	runSub           runSubscriber
+	specLoader       dagrun.SpecLoader
 	feedback         run.FeedbackService
 	secretSource     *RunSecretSource
 	receiver         *trigger.Receiver
@@ -133,6 +135,12 @@ func WithApprovals(coord *approval.Coordinator, store *approval.Store) Option {
 		o.approvalCoord = coord
 		o.approvalStore = store
 	}
+}
+
+// WithSpecLoader 注入「流水线即代码」感知的 spec 加载器(与执行器同一实例,main 装配):
+// 供失败运行按节点恢复(POST /api/runs/{id}/resume)做配置一致性校验。nil → 恢复端点 503。
+func WithSpecLoader(l dagrun.SpecLoader) Option {
+	return func(o *options) { o.specLoader = l }
 }
 
 // WithApprovalLinks 注入审批链接签名器(「从通知直接审批」),挂载**公开**端点(豁免 requireAuth +
@@ -635,6 +643,10 @@ func New(webFS fs.FS, authn auth.Authenticator, opts ...Option) http.Handler {
 		// 测试报告 + 质量门禁(Story 8-6 / FR-8-6):只读 + 认证;通过/失败/跳过 + 覆盖率 + 门禁裁决。
 		ar.Get("/runs/{id}/test-report", makeRunTestReportHandler(rs))
 		ar.Post("/runs/{id}/cancel", makeCancelRunHandler(rs))
+		// 失败运行按节点恢复(FR:失败重试/跳过):校验配置一致性 → 创建派生运行(继承成功
+		// 节点、重试/跳过失败节点、部署节点只重试失败机器)。写方法,过 auth + CSRF;
+		// specLoader 为 nil(legacy runner 模式)→ 503。返回 201 + 子运行详情。
+		ar.Post("/runs/{id}/resume", makeResumeRunHandler(rs, o.specLoader, aud))
 		// 人工审批门(Story 8-4):批准/拒绝某运行的审批门阶段 + 列审批记录。
 		// approve/reject 为写方法,过 auth + CSRF;coord/store 为 nil → 503。
 		ar.Post("/runs/{id}/approve", makeApprovalDecisionHandler(o.approvalCoord, o.approvalStore, aud, true))
@@ -913,6 +925,7 @@ func New(webFS fs.FS, authn auth.Authenticator, opts ...Option) http.Handler {
 		ar.Delete("/servicereg/domains/{id}", makeDeleteServiceRegDomainHandler(sr, aud))
 		ar.Get("/servicereg/services", makeListServiceRegServicesHandler(sr))
 		ar.Post("/servicereg/services", makeCreateServiceRegServiceHandler(sr, aud))
+		ar.Post("/servicereg/services/ensure", makeEnsureServiceRegServiceHandler(sr, aud))
 		ar.Put("/servicereg/services/{id}", makeUpdateServiceRegServiceHandler(sr, aud))
 		ar.Post("/servicereg/services/{id}/enabled", makeSetServiceRegServiceEnabledHandler(sr, aud))
 		ar.Delete("/servicereg/services/{id}", makeDeleteServiceRegServiceHandler(sr, aud))

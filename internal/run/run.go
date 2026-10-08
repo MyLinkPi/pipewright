@@ -69,7 +69,35 @@ const (
 	TriggerSchedule = "schedule"
 	// TriggerChain 表示由上游流水线成功后串联触发(Story FR-8-11;由 internal/chain 串联钩子创建)。
 	TriggerChain = "chain"
+	// TriggerResume 表示由失败运行按节点恢复(派生重跑)创建。**落库为 manual**——恢复运行
+	// 复用 manual 的 when 条件语义(when: type=manual 的阶段照常命中),Trigger.Type 不落此值;
+	// 此常量仅供恢复链路内部语义标注/测试引用,恢复溯源走 Run.ResumeOfRunID。
+	TriggerResume = "resume"
 )
+
+// 节点恢复动作枚举(ResumePlan.Actions 的元素;下标 = run_steps.ordinal)。
+const (
+	// NodeInherit 继承父运行结果为成功,不重跑(父运行该节点 success)。
+	NodeInherit = "inherit"
+	// NodeRun 正常执行(父运行该节点未执行过:skipped/pending 等)。
+	NodeRun = "run"
+	// NodeRetry 真实重跑该节点(父运行该节点 failed,用户选择重试)。
+	NodeRetry = "retry"
+	// NodeSkip 人工跳过该节点但放行下游(父运行该节点 failed,用户选择跳过继续)。
+	NodeSkip = "skip"
+)
+
+// ResumePlan 是「失败运行按节点恢复」的计划:对派生运行里每个节点(ordinal 下标)的处置。
+// 由 httpapi 层经 dagrun.BuildResumePlan 依当前 spec + 父运行步骤生成(全量、与布局等长),
+// 持久化到 pipeline_runs.resume_plan_json,执行器(dagrun.Runner)纯按它应用,无需回读父运行。
+type ResumePlan struct {
+	ParentRunID string
+	// Actions 下标 = step ordinal,长度必须等于当前 spec 的节点布局长度。
+	Actions []string
+}
+
+// ResumeOf 报告本次运行是否为「按节点恢复」的派生运行。
+func (r *Run) ResumeOf() bool { return r != nil && r.Resume != nil }
 
 // 领域错误。错误体不含敏感数据。
 var (
@@ -91,6 +119,10 @@ var (
 	ErrInvalidArtifactType = errors.New("run: invalid artifact type")
 	// ErrInvalidTargetStatus 表示部署目标 status 非冻结枚举(pending|deploying|success|failed|rolled_back)。
 	ErrInvalidTargetStatus = errors.New("run: invalid deploy target status")
+	// ErrNotResumable 表示该运行不可按节点恢复(非失败/部分失败终态,或不存在)。
+	ErrNotResumable = errors.New("run: not resumable")
+	// ErrInvalidResumePlan 表示恢复计划非法(空 / 长度与布局不符 / 含未指定处置的失败节点)。
+	ErrInvalidResumePlan = errors.New("run: invalid resume plan")
 )
 
 // Trigger 是运行触发上下文(冻结 DTO 的 trigger 块来源)。
@@ -140,6 +172,10 @@ type Step struct {
 type StepDecl struct {
 	Name  string
 	Stage string
+	// Initial 是该步骤的**初始状态**(可选):空/StepPending = 常规待执行;
+	// StepSuccess / StepSkipped 供「按节点恢复」的继承/人工跳过节点在 Plan 时直接落终态
+	// (执行器不会碰它们;带 finished_at,避免终态步骤悬挂无结束时刻)。其他值非法(Plan 报错)。
+	Initial string
 }
 
 // Run 是一次流水线运行的领域模型。Steps 按 Ordinal 升序。
@@ -165,6 +201,13 @@ type Run struct {
 	// 仓库 `.pipewright.yml`(repo)或库内网页配置(stored)。由 Runner 在加载 spec 时经
 	// StepSink.SetSpecSource 持久化,经 Get 回读供运行详情展示。
 	SpecSource SpecSource
+
+	// ResumeOfRunID 是「按节点恢复」溯源:本次运行由哪个失败运行派生而来(链式恢复各记直接父)。
+	// 空串 = 普通运行。持久化到 pipeline_runs.resume_of_run_id,经 Get 回读供运行详情展示。
+	ResumeOfRunID string
+	// Resume 是本次恢复运行的节点处置计划(非恢复运行恒 nil):下标 = step ordinal。
+	// 由 CreateResume 持久化(pipeline_runs.resume_plan_json),经 Get 解析回填,执行器纯按它应用。
+	Resume *ResumePlan
 }
 
 // SpecSource 记录「本次运行的流水线 spec 来自哪里」(配置来源可见性)。

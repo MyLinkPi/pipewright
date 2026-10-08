@@ -136,6 +136,22 @@ export default {
   retryFailed: "Retry failed ({status})",
   retryRequestFailed: "Retry request failed, please try again later",
 
+  // Resume failed run by node(派生重跑)
+  resumeRegionAria: "Resume run by node",
+  resumeTitle: "Resume run by node",
+  resumeDesc: "Create a derived run: succeeded nodes are inherited as-is, only failed/pending parts re-run; deploy nodes retry only the failed machines.",
+  resumeRetry: "Retry",
+  resumeSkip: "Skip",
+  resumeSkipHint: "Skip this node and let downstream run as usual",
+  resumeLaunch: "Start resumed run",
+  resumeLaunching: "Creating…",
+  resumeSpecChanged: "Pipeline config has changed — cannot resume by node",
+  resumeNotResumable: "This run cannot be resumed by node",
+  resumeRunNotFound: "Run not found",
+  resumeQueueFull: "Scheduling queue is full, please try again later",
+  resumeRequestFailed: "Resume failed ({status})",
+  resumedFrom: "Resumed from #{id}",
+
   partialInfo:
     "Some targets failed and have rolled back independently; the rest keep running, unaffected.",
   multiTargetAria: "Multi-host target status",

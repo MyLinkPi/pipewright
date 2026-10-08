@@ -144,6 +144,22 @@ export default {
   retryRequestFailed:
     "La solicitud de reintento falló, inténtalo de nuevo más tarde",
 
+  // Reanudar por nodo(ejecución derivada de una fallida)
+  resumeRegionAria: "Reanudar ejecución por nodo",
+  resumeTitle: "Reanudar ejecución por nodo",
+  resumeDesc: "Crea una ejecución derivada: los nodos exitosos se heredan tal cual y solo se reejecutan las partes fallidas/pendientes; los nodos de despliegue reintentan solo las máquinas fallidas.",
+  resumeRetry: "Reintentar",
+  resumeSkip: "Omitir",
+  resumeSkipHint: "Omite este nodo; el downstream se ejecuta con normalidad",
+  resumeLaunch: "Iniciar ejecución reanudada",
+  resumeLaunching: "Creando…",
+  resumeSpecChanged: "La configuración del pipeline cambió; no se puede reanudar por nodo",
+  resumeNotResumable: "Esta ejecución no se puede reanudar por nodo",
+  resumeRunNotFound: "Ejecución no encontrada",
+  resumeQueueFull: "La cola de programación está llena, inténtalo de nuevo más tarde",
+  resumeRequestFailed: "Error al reanudar ({status})",
+  resumedFrom: "Reanudada desde #{id}",
+
   partialInfo:
     "Algunos destinos fallaron y los hosts fallidos han retrocedido de forma independiente; el resto siguen ejecutándose sin verse afectados.",
   multiTargetAria: "Estado de destinos multi-host",

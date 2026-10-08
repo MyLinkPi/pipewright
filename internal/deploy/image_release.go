@@ -22,10 +22,12 @@ import (
 
 // imageState 是一台机的 image 蓝绿中间态(stageImageOne 产出,activateImageOne 消费)。
 type imageState struct {
-	name      string   // 容器名(cfg["containerName"] 优先,否则 sanitizeName(产物名))
-	ref       string   // 本次新镜像 ref(repo:tag / image id)
-	prevImage string   // 切换前容器所用镜像(回滚目标;"" = 无上一容器,首次部署)
-	runArgs   []string // docker run 的附加参数(端口映射 / env 等;由 cfg 解析,参数自由)
+	name      string       // 容器名(cfg["containerName"] 优先,否则 sanitizeName(产物名))
+	ref       string       // 本次新镜像 ref(repo:tag / image id)
+	prevImage string       // 切换前容器所用镜像(回滚目标;"" = 无上一容器,首次部署)
+	baseArgs  []string     // docker run 的附加参数(除端口映射外;cfg["runArgs"] 解析,参数自由)
+	portSpecs []portSpec   // 端口映射意图(cfg["ports"];自动项运行时分配)
+	ports     []portBinding // 本次启动的实际端口绑定(健康检查/注册/回滚复用;启动前为空)
 }
 
 // imageContainerName 取部署容器名:cfg["containerName"] 显式优先(净化),否则产物名净化(空 → app)。
@@ -40,23 +42,24 @@ func imageContainerName(a run.Artifact, cfg map[string]string) string {
 	return n
 }
 
-// imageRunArgs 解析 docker run 的附加参数(端口映射 / 自定义 run 参数;参数自由,不写死)。
-// 各参数原样作为 array 元素(绝不拼接 shell;AC-SEC-02),依序拼到 `docker run -d --name <name>` 之后、
-// 镜像 ref 之前:
-//   - cfg["ports"]   : 端口映射,逗号 / 空白分隔,每项展开为 `-p <map>`(如 "8080:80,9000:9000")。
-//   - cfg["runArgs"] : 任意 docker run 参数,按空白切词逐元素追加(如 "-e KEY=v --restart always")。
+// imagePortSpecs 解析 cfg["ports"] 为端口映射意图(显式 host:container / 容器端口自动分配 /
+// auto:容器端口);非法 → 人读错误。空 = 不发布宿主端口。
+func imagePortSpecs(cfg map[string]string) ([]portSpec, error) {
+	if cfg == nil {
+		return nil, nil
+	}
+	return parsePortSpecs(cfg["ports"])
+}
+
+// imageBaseRunArgs 解析 docker run 的附加参数(仅 cfg["runArgs"];端口映射已拆到 portSpecs
+// 运行时解析,见 ports.go)。各参数原样作为 array 元素(绝不拼接 shell;AC-SEC-02)。
 //
-// 注意:凭据绝不经此进命令(registry 凭据沿用既有 docker login 模式);此处仅承载端口 / 运行参数。
-func imageRunArgs(cfg map[string]string) []string {
+// 注意:凭据绝不经此进命令(registry 凭据沿用既有 docker login 模式);此处仅承载运行参数。
+func imageBaseRunArgs(cfg map[string]string) []string {
 	if cfg == nil {
 		return nil
 	}
-	var args []string
-	for _, p := range splitImageList(cfg["ports"]) {
-		args = append(args, "-p", p)
-	}
-	args = append(args, strings.Fields(cfg["runArgs"])...)
-	return args
+	return strings.Fields(cfg["runArgs"])
 }
 
 // splitImageList 按逗号 / 空白切分并去空(端口列表用)。
@@ -83,10 +86,15 @@ func dockerRunCmd(name string, runArgs []string, ref string) []string {
 // stageImageOne 执行 image 部署**预备阶段**:docker login(可选,配了 registryCredentialId)+
 // pull 新镜像(不停旧容器)+ 探测当前容器镜像(回滚目标)。拉取失败 → (中间态, 人读 message, false)。
 func (s *service) stageImageOne(ctx context.Context, srv *target.Server, a run.Artifact, cfg map[string]string) (imageState, string, bool) {
-	st := imageState{name: imageContainerName(a, cfg), ref: strings.TrimSpace(a.Reference), runArgs: imageRunArgs(cfg)}
+	st := imageState{name: imageContainerName(a, cfg), ref: strings.TrimSpace(a.Reference), baseArgs: imageBaseRunArgs(cfg)}
 	if st.ref == "" {
 		return st, "image 产物缺少 reference(repo:tag 或镜像 id)", false
 	}
+	specs, perr := imagePortSpecs(cfg)
+	if perr != nil {
+		return st, perr.Error(), false
+	}
+	st.portSpecs = specs
 	execCtx, cancel := context.WithTimeout(ctx, execTimeout)
 	defer cancel()
 
@@ -110,55 +118,61 @@ func (s *service) stageImageOne(ctx context.Context, srv *target.Server, a run.A
 
 // deployImageOne 执行**滚动 / 金丝雀**单机 image 部署:pull 新镜像(捕获上一镜像作回滚目标)→
 // 停旧起新 + 切后健康门控 → 健康失败回滚到上一镜像。复用蓝绿单机原语 stageImageOne/activateImageOne,
-// 但每机独立(无机群协调)。
-//
-// 这补齐了此前缺口:旧的 buildImageDeploy 扁平命令路径(pull→rm→run)**无任何回滚** —— 新容器起不来
-// 或切后健康失败时,旧容器已被 rm,目标机被留在「无容器 / 坏容器」状态。现在与蓝绿一致:失败即回滚
-// 到上一镜像(首次部署无上一镜像可回滚则记 failed)。
-func (s *service) deployImageOne(ctx context.Context, srv *target.Server, a run.Artifact, cfg map[string]string, hc *HealthCheck, started time.Time) TargetResult {
+// 但每机独立(无机群协调)。返回结果 + 最终中间态(供调用方取实际端口绑定做实例注册)。
+func (s *service) deployImageOne(ctx context.Context, srv *target.Server, a run.Artifact, cfg map[string]string, hsp *healthSpec, started time.Time) (TargetResult, imageState) {
 	st, failMsg, ok := s.stageImageOne(ctx, srv, a, cfg)
 	if !ok {
-		return finishFailed(TargetResult{ServerID: srv.ID, ServerName: srv.Name, StartedAt: started}, failMsg)
+		return finishFailed(TargetResult{ServerID: srv.ID, ServerName: srv.Name, StartedAt: started}, failMsg), st
 	}
-	return s.activateImageOne(ctx, srv, a, hc, st, started, "")
+	return s.activateImageOne(ctx, srv, a, cfg, hsp, st, started, "")
 }
 
-// activateImageOne 执行 image **切换阶段**:停旧容器 + 起新镜像容器 + 切后健康门控 + 失败回滚到上一镜像。
-// modeLabel 仅用于成功文案区分编排策略("蓝绿" / 空=滚动/金丝雀);回滚文案策略无关。
-func (s *service) activateImageOne(ctx context.Context, srv *target.Server, a run.Artifact, hc *HealthCheck, st imageState, started time.Time, modeLabel string) TargetResult {
+// activateImageOne 执行 image **切换阶段**:停旧容器 + 起新镜像容器(自动端口分配 + 竞态重试)
+// + 切后健康门控(端口自动推导:首个映射的宿主端口)+ 失败回滚到上一镜像(复用同端口绑定,
+// 服务地址稳定)。modeLabel 仅用于成功文案区分编排策略("蓝绿" / 空=滚动/金丝雀)。
+// 返回结果 + **含实际端口绑定的最终中间态**(回滚路径同样复用该绑定,宿主端口不变,
+// 调用方据 final.ports 做实例注册才不会丢 hostPort)。
+func (s *service) activateImageOne(ctx context.Context, srv *target.Server, a run.Artifact, cfg map[string]string, hsp *healthSpec, st imageState, started time.Time, modeLabel string) (TargetResult, imageState) {
 	res := TargetResult{ServerID: srv.ID, ServerName: srv.Name, StartedAt: started}
 	execCtx, cancel := context.WithTimeout(ctx, execTimeout)
 	defer cancel()
 
-	// 切换:移除同名旧容器(幂等)→ 后台起新镜像容器(带 cfg 解析的端口 / run 参数)。
-	swap := [][]string{
-		{"docker", "rm", "-f", st.name},
-		dockerRunCmd(st.name, st.runArgs, st.ref),
+	// 切换:移除同名旧容器(幂等)→ 起新镜像容器(端口分配 + docker 仲裁重试)。
+	if failMsg, ok := s.runStep(execCtx, srv.ID, [][]string{{"docker", "rm", "-f", st.name}}); !ok {
+		return s.rollbackImage(execCtx, srv, res, st, failMsg), st
 	}
-	if failMsg, ok := s.runStep(execCtx, srv.ID, swap); !ok {
+	bindings, runMsg, ok := s.runContainerWithPorts(execCtx, srv.ID, st.name, st.baseArgs, st.portSpecs, cfg, st.ref)
+	if !ok {
 		// 起新容器失败:尽力回滚到上一镜像(与健康失败同语义),避免目标机被留在坏状态。
-		return s.rollbackImage(execCtx, srv, res, st, failMsg)
+		return s.rollbackImage(execCtx, srv, res, st, runMsg), st
 	}
+	st.ports = bindings
 
-	// 切后健康门控;失败触发回滚到上一镜像。
+	// 切后健康门控;失败触发回滚到上一镜像。端口自动推导:仅填 healthPath 时取首个映射的宿主端口。
+	hc := hsp.resolve(firstHostPort(st.ports))
 	if hc.enabled() {
 		if herr := s.runHealthCheck(execCtx, srv.ID, hc); herr != nil {
-			return s.rollbackImage(execCtx, srv, res, st, herr.Error())
+			return s.rollbackImage(execCtx, srv, res, st, herr.Error()), st
 		}
 	}
 
 	finish := time.Now().UTC()
 	res.Status = run.TargetSuccess
+	portNote := ""
+	if len(st.ports) > 0 {
+		portNote = ",端口 " + portBindingSummary(st.ports)
+	}
 	if hc.enabled() {
-		res.Message = fmt.Sprintf("image %s部署完成 → 容器 %s(%s,健康检查通过)", modeLabel, st.name, st.ref)
+		res.Message = fmt.Sprintf("image %s部署完成 → 容器 %s(%s%s,健康检查通过)", modeLabel, st.name, st.ref, portNote)
 	} else {
-		res.Message = fmt.Sprintf("image %s部署完成 → 容器 %s(%s)", modeLabel, st.name, st.ref)
+		res.Message = fmt.Sprintf("image %s部署完成 → 容器 %s(%s%s)", modeLabel, st.name, st.ref, portNote)
 	}
 	res.FinishedAt = &finish
-	return res
+	return res, st
 }
 
-// rollbackImage 在健康失败后把容器回滚到上一镜像(rm 新容器 → run 上一镜像)。
+// rollbackImage 在健康失败后把容器回滚到上一镜像(rm 新容器 → run 上一镜像,**复用本次的
+// 端口绑定** —— 宿主端口不变,网关 upstream / 防火墙规则无需跟随)。
 // 无上一镜像(首次部署)→ failed;回滚命令失败仍记 rolled_back(尽力)。
 func (s *service) rollbackImage(ctx context.Context, srv *target.Server, res TargetResult, st imageState, healthMsg string) TargetResult {
 	finish := time.Now().UTC()
@@ -168,10 +182,11 @@ func (s *service) rollbackImage(ctx context.Context, srv *target.Server, res Tar
 		res.Message = fmt.Sprintf("健康检查失败且无上一镜像可回滚(首次部署):%s", healthMsg)
 		return res
 	}
+	rollbackArgs := append(portFlagArgs(st.ports), st.baseArgs...)
 	var rbErr error
 	for _, cmd := range [][]string{
 		{"docker", "rm", "-f", st.name},
-		dockerRunCmd(st.name, st.runArgs, st.prevImage),
+		dockerRunCmd(st.name, rollbackArgs, st.prevImage),
 	} {
 		if _, e := s.exec(ctx, srv.ID, cmd); e != nil {
 			rbErr = e
