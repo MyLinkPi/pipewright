@@ -143,11 +143,10 @@ export default {
   // 按节点恢复(失败运行派生重跑)
   resumeRegionAria: "按节点恢复运行",
   resumeTitle: "按节点恢复运行",
-  resumeDesc: "创建派生运行:已成功节点直接继承,只执行失败/未执行部分;部署节点只重试失败的机器。",
+  resumeDesc: "点击「重试 / 跳过」立即创建派生运行:点击的节点按所选处置执行,其余失败节点默认重试;已成功节点直接继承,部署节点只重试失败的机器。",
   resumeRetry: "重试",
   resumeSkip: "跳过",
   resumeSkipHint: "跳过该节点,下游照常执行",
-  resumeLaunch: "启动恢复运行",
   resumeLaunching: "创建中…",
   resumeSpecChanged: "流水线配置已变化,无法按节点恢复",
   resumeNotResumable: "该运行不可按节点恢复",
