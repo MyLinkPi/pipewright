@@ -194,6 +194,43 @@ func TestStageExecutorNilRunnerIsLocal(t *testing.T) {
 	}
 }
 
+// 纯部署阶段(无 script job)即使项目配了默认构建机池,也必须本地真实执行——远程 runner
+// 只跑 script 类型,派发过去会逐节点「放行」空转,部署节点的目标选择器完全不生效
+// (回归:部署阶段被派到构建机,deploy_container 日志「本阶段放行」,实际未部署)。
+func TestStageExecutorDeployOnlyStageStaysLocal(t *testing.T) {
+	local := &recordingDriver{}
+	b := newRemoteTestBuilder(local)
+	tgt := &fakeRemoteTarget{}
+	fr := &fakeRunnerResolver{selector: "test_build", pick: "srv-1"} // 项目默认构建机池非空
+	exec := NewStageExecutorWithRunner(b, nil, fr, tgt)
+
+	rep := &fakeReporter{}
+	r := &run.Run{ID: "run-1", ProjectID: "p1", Trigger: run.Trigger{Branch: "main"}}
+	stage := pipeline.Stage{
+		ID: "s-dep", Name: "部署", Kind: pipeline.KindDeploy,
+		Jobs: []pipeline.Job{
+			{ID: "j-dep", Name: "容器部署", Type: "deploy_container", Config: map[string]any{"selector": "test"}},
+		},
+	}
+	if err := exec(context.Background(), r, stage, rep); err != nil {
+		t.Fatalf("exec: %v", err)
+	}
+
+	// 不占构建机槽、零远程动作;节点由本地执行器走完(deployer 未注入 → 诚实跳过日志,仍成功)。
+	if len(fr.acquired) != 0 {
+		t.Fatalf("纯部署阶段不应占用构建机,实际 Acquire %v", fr.acquired)
+	}
+	if len(tgt.cmds) != 0 || len(tgt.uploaded) != 0 {
+		t.Fatal("纯部署阶段不应有任何远程动作")
+	}
+	if joined := strings.Join(rep.logs, "\n"); !strings.Contains(joined, "执行机器:本机") {
+		t.Fatalf("应本地执行(日志含「执行机器:本机」),实际日志:%s", joined)
+	}
+	if len(rep.jobDone) != 1 || rep.jobDone[0] != "j-dep="+run.StepSuccess {
+		t.Fatalf("部署节点应本地执行成功,实际 jobDone=%v", rep.jobDone)
+	}
+}
+
 // stage.Runner 覆盖项目默认选择器(FR-8-19 阶段级覆盖)。
 func TestStageRunnerOverridesProjectSelector(t *testing.T) {
 	local := &recordingDriver{}

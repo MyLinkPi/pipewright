@@ -69,23 +69,13 @@ func NewStageExecutorWithRunner(b *Builder, reportSink TestReportSink, resolve R
 		stageSel := strings.TrimSpace(stage.Runner)
 
 		scriptJobs := scriptJobsOf(stage)
-		if len(scriptJobs) == 0 {
-			// 无 script job:与旧行为一致——阶段/项目选择器非空时走远程放行,否则整体本地。
-			sel := stageSel
-			if sel == "" {
-				sel = projSel
-			}
-			if sel == "" {
-				return local(ctx, r, stage, rep)
-			}
-			serverID, serverName, release, err := resolve.Acquire(ctx, r.ProjectID, sel, log)
-			if err != nil {
-				return acquireFail(ctx, rep, sel, err)
-			}
-			defer release()
-			_ = rep.Log(ctx, streamStdout, fmt.Sprintf("→ 构建机:%s(选择器 %s)", serverName, sel))
-			return b.runStageRemote(ctx, r, stage, rep, serverID, serverName, tgt, "")
-		}
+	if len(scriptJobs) == 0 {
+		// 无 script job 的阶段(纯部署/健康检查/通知等)只能由本地执行器真实执行:
+		// 远程 runner 仅支持 script 类型,派过去只会逐节点「放行」空转——部署节点的目标
+		// 选择器完全不生效(部署由控制机经 SSH 驱动目标机,与构建机池无关),阶段还白白
+		// 占一个构建机槽位。一律本地,不看阶段/项目构建机选择器(那些只约束 script 节点)。
+		return local(ctx, r, stage, rep)
+	}
 
 		// 逐节点判定有效选择器;全部为空 → 整体本地(行为不变,零额外开销)。
 		effs := make([]string, len(scriptJobs))
