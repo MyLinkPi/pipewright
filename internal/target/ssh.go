@@ -351,9 +351,19 @@ func dialClient(ctx context.Context, addr string, cfg SSHConfig) (*ssh.Client, f
 	})
 
 	var chain []*ssh.Client
+	// rawConns 是各跳的原始 socket:握手未完成/通道未开时链上还没有 client 可关,
+	// 唯一的拆除手段就是 socket 级关闭。stops 撤销尚未触发的取消回调(正常路径不留悬挂)。
+	var rawConns []net.Conn
+	var stops []func() bool
 	closeChain := func() {
+		for _, stop := range stops {
+			stop()
+		}
 		for i := len(chain) - 1; i >= 0; i-- {
 			_ = chain[i].Close()
+		}
+		for _, c := range rawConns {
+			_ = c.Close()
 		}
 	}
 
@@ -412,6 +422,10 @@ func dialClient(ctx context.Context, addr string, cfg SSHConfig) (*ssh.Client, f
 			}
 			return nil, nil, &hopError{label: hopLabel(i, sp.addr), err: classifyDialErr(err)}
 		}
+		rawConns = append(rawConns, conn)
+		// ctx 取消 → 立即关本跳原始 socket:阻塞中的 NewClientConn/NewSession 不认 ctx,
+		// 只有 socket 级拆除能让传输 goroutine 即刻收敛(对齐上游 dialSSH 的取消语义)。
+		stops = append(stops, context.AfterFunc(ctx, func() { _ = conn.Close() }))
 		sshConn, chans, reqs, err := ssh.NewClientConn(conn, sp.addr, clientCfg)
 		if err != nil {
 			_ = conn.Close()
