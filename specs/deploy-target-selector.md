@@ -40,6 +40,10 @@ serverIds」改为「选择器圈选」,与构建共用 `servers.labels` 同一�
 
 ### 前端(web/src/lib/selectorMatch.test.ts)
 - [x] 与服务端同语义:AND 项、纯 tag ≠ k=v、`server:<id>` 钉单机、零命中/空 → 空数组
+- [x] LabelSelectorEditor 回显(web/src/components/pipeline/LabelSelectorEditor.test.ts):
+  挂载时 modelValue 已有值(重新打开已保存的选择器)→ 反解出全部条件行;空值 → 无行;
+  自身 emit 回声不重建行、外部真变更才重解(修复:lastEmitted 以 undefined 哨兵起始,
+  否则 immediate 首次回调被跳过,已保存选择器永远回显为空)
 - [x] RunDetail 部署面板:选择器输入 + 实时命中预览(RunnerPanel 共用 lib/selectorMatch);
   空目标提交 → 200 后面板明示「已跳过」;上次选择器按项目记 localStorage
 

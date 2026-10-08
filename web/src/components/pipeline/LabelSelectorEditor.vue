@@ -57,7 +57,9 @@ function parseTerms(raw: string): SelectorTerm[] {
 
 // 外部回写(切 job / 切 stage / 表单重解)→ 重解选择器;自身 emit 引起的回写若与
 // lastEmitted 等价则跳过,避免重建行打断正在进行的编辑。
-let lastEmitted = props.modelValue
+// lastEmitted 必须以 undefined 哨兵起始:若直接取 props.modelValue,immediate 首次回调
+// 会因「相等」被跳过,已保存的选择器在重新打开时永远反解不出条件行(回显为空)。
+let lastEmitted: string | undefined = undefined
 watch(
   () => props.modelValue,
   (raw) => {
