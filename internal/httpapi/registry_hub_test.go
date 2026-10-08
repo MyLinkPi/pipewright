@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -314,4 +315,46 @@ func (f *fakeRegistryAPIHub) TagInfos(_ context.Context, repo string) ([]registr
 func (f *fakeRegistryAPIHub) DeleteManifest(_ context.Context, _, _ string) error {
 	f.deleted++
 	return nil
+}
+
+// fakeHubCerts 是 registryhub.CertSource 的 httpapi 测试 fake(cert-1 覆盖 *.mylinkpi.cn)。
+type fakeHubCerts struct{}
+
+func (fakeHubCerts) GetCert(_ context.Context, id string) (*registryhub.CertInfo, error) {
+	if id == "cert-1" {
+		return &registryhub.CertInfo{ID: id, PrimaryDomain: "mylinkpi.cn", Domains: []string{"mylinkpi.cn", "*.mylinkpi.cn"}}, nil
+	}
+	return nil, errors.New("not found")
+}
+
+func (fakeHubCerts) OpenCertPEM(_ context.Context, _ string) (string, string, error) {
+	return "---CERT---", "---KEY---", nil
+}
+
+func TestRegistryHubPutTLSCert(t *testing.T) {
+	srv, client, csrf := setupRegistryHubServer(t, registryhub.Options{Certs: fakeHubCerts{}})
+
+	// 证书不存在 → 422 invalid_registry_tls。
+	resp := doJSON(t, client, http.MethodPut, srv.URL+"/api/settings/registry", csrf,
+		`{"enabled":true,"externalAddr":"pipe.mylinkpi.cn","tlsCertId":"cert-404"}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("证书不存在应 422, got %d body=%s", resp.StatusCode, raw)
+	}
+
+	// 域名覆盖 → 200,DTO 回显 tlsCertId。
+	resp = doJSON(t, client, http.MethodPut, srv.URL+"/api/settings/registry", csrf,
+		`{"enabled":true,"externalAddr":"pipe.mylinkpi.cn","tlsCertId":"cert-1"}`)
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("合法 TLS 证书应 200, got %d body=%s", resp.StatusCode, raw)
+	}
+	var dto map[string]any
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	_ = json.Unmarshal(raw, &dto)
+	if dto["tlsCertId"] != "cert-1" {
+		t.Fatalf("tlsCertId 应回显: %s", raw)
+	}
 }

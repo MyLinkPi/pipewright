@@ -299,7 +299,7 @@ func (s *service) Deploy(ctx context.Context, in DeployInput) ([]TargetResult, e
 	// 每机按产物类型 + 网关托管情况执行(换实例 / 摘挂 / 直接部署),失败机独立回滚。
 	// 每机独立 goroutine + recover,有界信号量(cap 4)防同时打爆 N 台;结果按输入顺序独立收集。
 	var results []TargetResult
-	results = s.deployRolling(ctx, servers, *artifact, in.Config, in.HealthCheck)
+	results = s.deployRolling(ctx, servers, *artifact, in.Config, fixedHealthSpec(in.HealthCheck))
 
 	// 5) 持久化每机结果(填 run-detail targets slot)。
 	dts := make([]run.DeployTarget, 0, len(results))
@@ -345,10 +345,41 @@ func (s *service) DeployForStage(ctx context.Context, runID string, selector str
 	if len(servers) == 0 {
 		return []TargetResult{}, nil
 	}
+	// 全量目标(恢复过滤前):注册表清理的基准 —— 恢复运行跳过的机器已成功,其实例必须保留。
+	allServerIDs := make([]string, 0, len(servers))
+	for _, srv := range servers {
+		allServerIDs = append(allServerIDs, srv.ID)
+	}
+	// 恢复运行(按节点恢复)的部署节点走**增量语义**:本 run 的部署目标行(创建时已复制父运行)
+	// 里已 success 的机器不再重复部署,只推 failed/rolled_back/pending 及选择器新增的机器;
+	// 持久化改逐目标 upsert(保留未涉及机器的继承状态)。普通运行行为不变(整批 save)。
+	persist := stagePersistFunc(s.runs.SaveDeployTargets)
+	skipSucceeded, err := s.resumeSucceededServers(ctx, runID)
+	if err != nil {
+		return nil, err
+	}
+	if len(skipSucceeded) > 0 {
+		filtered := make([]*target.Server, 0, len(servers))
+		for _, srv := range servers {
+			if !skipSucceeded[srv.ID] {
+				filtered = append(filtered, srv)
+			}
+		}
+		if len(filtered) == 0 {
+			// 全部目标机都已成功:不落库(保留继承行原状),返回非空跳过结果——节点按成功放行,
+			// 且调用方(build 层 runDeployJob)会逐机打出「已成功,跳过重部署」日志。
+			return skippedSuccessResults(servers, skipSucceeded), nil
+		}
+		if len(filtered) < len(servers) {
+			servers = filtered
+		}
+		persist = stagePersistFunc(s.runs.UpsertDeployTargets)
+	}
 	// 「命令型」部署(deployMode=command;旧键 artifactType=command 兼容):不取构建产物,
-	// 直接在目标机执行 cfg["restartCommand"]。与产物发布完全隔离。
+	// 直接在目标机执行 cfg["restartCommand"]。与产物发布完全隔离。allServerIDs 一并传入,
+	// 供全成功后的注册表清理(与产物路径同语义)。
 	if strings.TrimSpace(cfg["deployMode"]) == "command" || strings.TrimSpace(cfg["artifactType"]) == "command" {
-		return s.runCommandOnly(ctx, runID, servers, cfg)
+		return s.runCommandOnly(ctx, runID, servers, allServerIDs, cfg, persist)
 	}
 	// 取该 run 已产出的可部署产物并精确挑选。
 	arts, err := s.runs.ListArtifacts(ctx, runID)
@@ -370,14 +401,28 @@ func (s *service) DeployForStage(ctx context.Context, runID string, selector str
 		}
 	}
 
-	// 健康门控:从节点 config 构造(容器内命令 / 端口+路径 / 存量完整 URL / 主机命令,重试/间隔可选)。
-	// 此前流水线节点硬编码传 nil → 健康检查与失败回滚从未生效。
+	// 健康门控:从节点 config 构造**待解析 spec**(容器部署的端口要等自动分配完成才可知 ——
+	// 仅填 healthPath 时探测地址 = http://127.0.0.1:<分配出的宿主端口><path>,deployOne 内解析)。
 	// 容器名与部署本体同一解析(config 显式名 → 产物名 → app),docker exec 探测才打得中。
-	hc := healthCheckFromCfg(cfg, imageContainerName(*artifact, cfg))
+	hsp := healthCheckSpecFromCfg(cfg, imageContainerName(*artifact, cfg))
 
-	results := s.deployRolling(ctx, servers, *artifact, cfg, hc)
+	// 服务注册联动(非容器产物):实例行的预注册(detached)+ 摘/挂在 deployWithGatewayDetach
+	// 内逐机做(消除「先注册后部署」的未就绪接流窗口)。容器产物的注册在 instance_rolling
+	// 内做(需感知端口分配与轮转)。
+	regService := regServiceRef(cfg)
+
+	results := s.deployRolling(ctx, servers, *artifact, cfg, hsp)
+
+	// 部署全部成功 → 同步清理注册表(删除该服务下不再属于本次目标集合的实例,含遗留行)。
+	// 部分失败/重试时不清(拓扑未定型;重试成功后下一轮自然收敛)。
+	if regService != "" && s.instanceGateway != nil && allTargetSuccess(results) && len(allServerIDs) > 0 {
+		if perr := s.instanceGateway.PruneInstances(ctx, regService, allServerIDs); perr != nil {
+			cmdLogFrom(ctx)(cmdStreamStderr, "  ⚠ 同步清理注册实例失败:"+humanExecError(perr))
+		}
+	}
 
 	// 持久化每机结果(填 run-detail targets slot);**不置 run 终态**(dag 调度器控制)。
+	// 恢复运行为逐目标 upsert(见上方增量语义),普通运行为整批 save。
 	dts := make([]run.DeployTarget, 0, len(results))
 	for _, r := range results {
 		dts = append(dts, run.DeployTarget{
@@ -385,38 +430,86 @@ func (s *service) DeployForStage(ctx context.Context, runID string, selector str
 			Status: r.Status, Message: r.Message, StartedAt: r.StartedAt, FinishedAt: r.FinishedAt,
 		})
 	}
-	if err := s.runs.SaveDeployTargets(ctx, runID, dts); err != nil {
+	if err := persist(ctx, runID, dts); err != nil {
 		return nil, err
 	}
 	return results, nil
 }
 
+// stagePersistFunc 是 DeployForStage 的目标结果持久化函数形状(整批 save / 逐目标 upsert 二选一)。
+type stagePersistFunc func(ctx context.Context, runID string, targets []run.DeployTarget) error
+
+// resumeSucceededServers 在 run 为「恢复运行」时返回其部署目标里已 success 的机器集合
+// (增量部署要跳过的机器);普通运行 / 读不到目标行 → 空集合(行为不变)。
+func (s *service) resumeSucceededServers(ctx context.Context, runID string) (map[string]bool, error) {
+	rn, err := s.runs.Get(ctx, runID)
+	if err != nil || rn == nil || rn.Resume == nil {
+		return nil, nil // 非恢复运行(Get 失败亦按普通运行走,后续持久化自会暴露问题)
+	}
+	existing, err := s.runs.ListDeployTargets(ctx, runID)
+	if err != nil {
+		return nil, err
+	}
+	skip := make(map[string]bool, len(existing))
+	for _, t := range existing {
+		if t.Status == run.TargetSuccess {
+			skip[t.ServerID] = true
+		}
+	}
+	return skip, nil
+}
+
+// skippedSuccessResults 为「全部目标机都已成功」的恢复部署合成跳过结果(逐机一条,
+// 供节点日志展示;不落库,保留继承目标行的原状)。调用前提:servers ⊆ skipSucceeded。
+func skippedSuccessResults(servers []*target.Server, _ map[string]bool) []TargetResult {
+	results := make([]TargetResult, 0, len(servers))
+	for _, srv := range servers {
+		results = append(results, TargetResult{
+			ServerID: srv.ID, ServerName: srv.Name, Status: run.TargetSuccess,
+			Message: "恢复部署:该机上次已部署成功,跳过重部署",
+		})
+	}
+	return results
+}
+
 // runCommandOnly 执行「命令型」部署:在每台目标机直接跑 cfg["restartCommand"](无构建产物)。
-// 命令文本里的 {{param}} 已在 build 层(runDeployJob)用本次运行参数渲染好;此处只逐机执行 +
-// 经 s.exec 把命令/输出实时回流步骤日志(脱敏由 sink Masker 兜底)+ 持久化每机结果。
-func (s *service) runCommandOnly(ctx context.Context, runID string, servers []*target.Server, cfg map[string]string) ([]TargetResult, error) {
+// 命令文本里的 {{param}} 已在 build 层(runDeployJob)用本次运行参数渲染好;此处逐机执行 +
+// 经 s.exec 把命令/输出实时回流步骤日志(脱敏由 sink Masker 兜底)+ 持久化每机结果
+// (persist 由调用方按「普通运行=整批 save / 恢复运行=逐目标 upsert」选定)。
+// 服务注册联动与产物路径一致:逐机包「预注册(detached)→ 摘 → 执行 → 挂回」,
+// 全部成功后按 allServerIDs(恢复过滤前的全量目标)同步清理注册表。
+func (s *service) runCommandOnly(ctx context.Context, runID string, servers []*target.Server, allServerIDs []string, cfg map[string]string, persist stagePersistFunc) ([]TargetResult, error) {
 	command := strings.TrimSpace(cfg["restartCommand"])
 	if command == "" {
 		return nil, fmt.Errorf("deploy: 命令型部署缺少 restartCommand")
 	}
 	results := make([]TargetResult, 0, len(servers))
 	for _, srv := range servers {
-		started := time.Now().UTC()
-		out, err := s.exec(ctx, srv.ID, []string{"sh", "-c", command})
-		fin := time.Now().UTC()
-		tr := TargetResult{ServerID: srv.ID, ServerName: srv.Name, StartedAt: started, FinishedAt: &fin}
-		switch {
-		case err != nil:
-			tr.Status = run.TargetFailed
-			tr.Message = humanExecError(err)
-		case out != nil && out.ExitCode != 0:
-			tr.Status = run.TargetFailed
-			tr.Message = fmt.Sprintf("命令退出码 %d", out.ExitCode)
-		default:
-			tr.Status = run.TargetSuccess
-			tr.Message = "命令执行成功"
+		results = append(results, s.deployWithGatewayDetach(ctx, srv, cfg, func() TargetResult {
+			started := time.Now().UTC()
+			out, err := s.exec(ctx, srv.ID, []string{"sh", "-c", command})
+			fin := time.Now().UTC()
+			tr := TargetResult{ServerID: srv.ID, ServerName: srv.Name, StartedAt: started, FinishedAt: &fin}
+			switch {
+			case err != nil:
+				tr.Status = run.TargetFailed
+				tr.Message = humanExecError(err)
+			case out != nil && out.ExitCode != 0:
+				tr.Status = run.TargetFailed
+				tr.Message = fmt.Sprintf("命令退出码 %d", out.ExitCode)
+			default:
+				tr.Status = run.TargetSuccess
+				tr.Message = "命令执行成功"
+			}
+			return tr
+		}))
+	}
+	// 部署全部成功 → 同步清理注册表(删除该服务下不再属于本次目标集合的实例,含遗留行)。
+	// 部分失败/重试时不清(拓扑未定型;重试成功后下一轮自然收敛)。
+	if regService := regServiceRef(cfg); regService != "" && s.instanceGateway != nil && allTargetSuccess(results) && len(allServerIDs) > 0 {
+		if perr := s.instanceGateway.PruneInstances(ctx, regService, allServerIDs); perr != nil {
+			cmdLogFrom(ctx)(cmdStreamStderr, "  ⚠ 同步清理注册实例失败:"+humanExecError(perr))
 		}
-		results = append(results, tr)
 	}
 	dts := make([]run.DeployTarget, 0, len(results))
 	for _, r := range results {
@@ -425,7 +518,7 @@ func (s *service) runCommandOnly(ctx context.Context, runID string, servers []*t
 			Status: r.Status, Message: r.Message, StartedAt: r.StartedAt, FinishedAt: r.FinishedAt,
 		})
 	}
-	if err := s.runs.SaveDeployTargets(ctx, runID, dts); err != nil {
+	if err := persist(ctx, runID, dts); err != nil {
 		return nil, err
 	}
 	return results, nil
@@ -537,48 +630,11 @@ func pickStageArtifact(arts []run.Artifact, prefer string) *run.Artifact {
 	return firstImage
 }
 
-// healthCheckFromCfg 从部署节点 config 构造健康门控(未配 → nil,行为与旧 nil 一致):
-//   - healthCommand 非空 → command 型,在部署目标服务器 shell 执行(存量/进阶写法);
-//   - 否则 healthExec 非空 → command 型,**在部署的容器内执行**:`docker exec <容器名> sh -c <命令>`
-//     (不发布端口的后台容器 —— 队列/迁移/内部服务 —— 用它在容器里探活,如 pg_isready);
-//     containerName 与部署本体同一解析(显式名 → 产物名 → app),保证 exec 打得中;
-//   - 否则 healthPort 非空 → http 型,URL = http://127.0.0.1:<port><path>(探测经 SSH 在
-//     部署目标服务器本机执行,127.0.0.1 即该服务器自己 —— 用户只需给端口和路径,不写完整 URL);
-//   - 否则 healthUrl 非空(存量完整 URL 写法)→ http 型原样使用;
-//   - healthRetries / healthIntervalSeconds / healthTimeoutSeconds 可选(缺省走 HealthCheck 默认)。
+// healthCheckFromCfg 从部署节点 config 立即构造健康门控(端口不可推导时端口型返回 nil)。
+// 语义与 healthCheckSpecFromCfg 完全一致 —— 优先级 healthCommand > healthExec > healthUrl >
+// 端口+路径;测试与无自动端口的消费方用它,主链路走 spec + 部署期端口推导。
 func healthCheckFromCfg(cfg map[string]string, containerName string) *HealthCheck {
-	cmdStr := strings.TrimSpace(cfg["healthCommand"])
-	execStr := strings.TrimSpace(cfg["healthExec"])
-	url := strings.TrimSpace(cfg["healthUrl"])
-	port := strings.TrimSpace(cfg["healthPort"])
-	path := strings.TrimSpace(cfg["healthPath"])
-	if cmdStr == "" && execStr == "" && url == "" && port == "" {
-		return nil
-	}
-	hc := &HealthCheck{
-		Retries:         cfgNonNeg(cfg, "healthRetries"),
-		IntervalSeconds: cfgNonNeg(cfg, "healthIntervalSeconds"),
-		TimeoutSeconds:  cfgNonNeg(cfg, "healthTimeoutSeconds"),
-	}
-	if cmdStr != "" {
-		hc.Type = HealthCheckCommand
-		hc.Command = []string{"sh", "-c", cmdStr}
-		return hc
-	}
-	if execStr != "" {
-		hc.Type = HealthCheckCommand
-		hc.Command = []string{"docker", "exec", containerName, "sh", "-c", execStr}
-		return hc
-	}
-	if url == "" && port != "" {
-		if path != "" && !strings.HasPrefix(path, "/") {
-			path = "/" + path
-		}
-		url = "http://127.0.0.1:" + port + path
-	}
-	hc.Type = HealthCheckHTTP
-	hc.URL = url
-	return hc
+	return healthCheckSpecFromCfg(cfg, containerName).resolve(0)
 }
 
 // cfgNonNeg 解析 cfg 里的非负整数(缺省 / 非法 → 0,交由 HealthCheck 默认值兜底)。
@@ -592,6 +648,19 @@ func cfgNonNeg(cfg map[string]string, key string) int {
 		return 0
 	}
 	return n
+}
+
+// allTargetSuccess 报告一批结果是否全部成功(注册表同步清理的门槛)。
+func allTargetSuccess(results []TargetResult) bool {
+	if len(results) == 0 {
+		return false
+	}
+	for i := range results {
+		if results[i].Status != run.TargetSuccess {
+			return false
+		}
+	}
+	return true
 }
 
 // retryableTargetStatus 报告某目标状态是否可被 RetryFailed 推进:
@@ -688,7 +757,7 @@ func (s *service) RetryFailed(ctx context.Context, in RetryInput) ([]TargetResul
 	}
 
 	// 6) 对这些机并行重跑 deployOne(复用产物 + 配置)。
-	retried := s.deployFanout(ctx, servers, *artifact, in.Config, in.HealthCheck)
+	retried := s.deployFanout(ctx, servers, *artifact, in.Config, fixedHealthSpec(in.HealthCheck))
 
 	// 7) **逐目标 upsert**:只更新被重试目标对应行,**保留**本次未重试的成功目标(别用整批删的 SaveDeployTargets)。
 	dts := make([]run.DeployTarget, 0, len(retried))
@@ -740,7 +809,7 @@ func (s *service) RetryFailed(ctx context.Context, in RetryInput) ([]TargetResul
 // deployFanout 并行扇出多机部署(Story 4.5):每机独立 goroutine + recover,有界信号量
 // (maxParallelDeploys)限并发 SSH;单机 panic 不连累其它机(recover → 该机 failed 人读)。
 // 结果按 servers 输入顺序回填(稳定可断言),失败台不阻断其它台。
-func (s *service) deployFanout(ctx context.Context, servers []*target.Server, a run.Artifact, cfg map[string]string, hc *HealthCheck) []TargetResult {
+func (s *service) deployFanout(ctx context.Context, servers []*target.Server, a run.Artifact, cfg map[string]string, hsp *healthSpec) []TargetResult {
 	results := make([]TargetResult, len(servers))
 	sem := make(chan struct{}, maxParallelDeploys)
 	var wg sync.WaitGroup
@@ -765,7 +834,7 @@ func (s *service) deployFanout(ctx context.Context, servers []*target.Server, a 
 					}
 				}
 			}()
-			results[idx] = s.deployOne(ctx, srv, a, cfg, hc)
+			results[idx] = s.deployOne(ctx, srv, a, cfg, hsp)
 		}(i, servers[i])
 	}
 	wg.Wait()
@@ -773,23 +842,27 @@ func (s *service) deployFanout(ctx context.Context, servers []*target.Server, a 
 }
 
 // deployOne 在一台目标机上构造并执行该产物类型的部署命令,返回该机结果。
-// 部署命令全部成功后,若配置了健康检查(Story 4.3),再经同一 Exec 链路做健康门控:
-// 探测通过 → success(message 含"健康检查通过");重试耗尽仍失败 → failed + 人读 message。
-// 执行错误**不上抛**:映射为 status=failed + 人读 message(绝无明文密钥)。
 //
-// 网关联动(统一滚动,两种并存):
-//   - image 产物:先试 maxSurge 换实例(deployInstanceRollingOne 内部:网关托管命中 → 逐实例
-//     零停机替换;未装配网关 / 反查不到 → 回退 pull→rm→run 硬切 + 回滚上一镜像)。
-//   - 文件 / 命令部署:若 cfg["gatewayService"] 指明网关服务(且该机反查到 attached 实例)→
-//     「摘 → 部署 → 健康通过 → 挂回」;部署失败保持摘除(故障机不回流量)。
-func (s *service) deployOne(ctx context.Context, srv *target.Server, a run.Artifact, cfg map[string]string, hc *HealthCheck) TargetResult {
-	// image 走 maxSurge 换实例(网关托管)/ pull→停旧起新→健康→回滚上一镜像(非托管)。
+// 健康门控:hsp 为待解析 spec —— 端口型探测的端口在部署期推导(容器 = 分配出的首个宿主端口,
+// 在镜像路径内部解析;非容器 = regPort,此处静态解析)。执行错误**不上抛**:映射为 failed + 人读
+// message(绝无明文密钥)。
+//
+// 网关联动(统一滚动,两条单机升级路径并存):
+//   - image 产物:扩缩容轮转(deployInstanceRollingOne 内部:注册绑定命中 → 逐实例
+//     「扩容起新(自动端口)→ 预热 → 原子切换 → 排空 → 缩容停旧」;未装配网关 / 反查不到 →
+//     回退 pull→rm→run 硬切 + 回滚上一镜像)。
+//   - 文件 / 命令部署:注册绑定反查到本机实例 → 「摘 → 部署 → 健康通过 → 挂回」;
+//     部署失败保持摘除(故障机不回流量)。
+func (s *service) deployOne(ctx context.Context, srv *target.Server, a run.Artifact, cfg map[string]string, hsp *healthSpec) TargetResult {
+	// image 走扩缩容轮转(注册绑定)/ pull→停旧起新→健康→回滚上一镜像(非托管)。
 	if a.Type == run.ArtifactImage {
-		return s.deployInstanceRollingOne(ctx, srv, a, cfg, hc)
+		return s.deployInstanceRollingOne(ctx, srv, a, cfg, hsp)
 	}
 
 	// dist / jar / archive 走「发布目录 + current 软链原子切换 + 健康门控 + 失败回滚」零停机模式(Story 4.4);
-	// 其余(理论上无)走扁平命令路径。两者都包一层网关摘/挂。
+	// 其余(理论上无)走扁平命令路径。两者都包一层网关摘/挂;非容器的探测端口 = regPort(静态)。
+	regPort, _ := parsePortNumber(strings.TrimSpace(cfg["regPort"]))
+	hc := hsp.resolve(regPort)
 	if releaseModeArtifact(a) {
 		return s.deployWithGatewayDetach(ctx, srv, cfg, func() TargetResult {
 			return s.deployReleaseOne(ctx, srv, a, cfg, hc)
@@ -800,20 +873,34 @@ func (s *service) deployOne(ctx context.Context, srv *target.Server, a run.Artif
 	})
 }
 
-// deployWithGatewayDetach 给单机部署包一层「摘 → 部署 → 挂回」:
-//   - 未装配网关 / 未配 gatewayService / 反查不到 attached 实例 → 直接执行 deployFn(行为不变);
+// deployWithGatewayDetach 给单机部署包一层「预注册(detached)→ 摘 → 部署 → 挂回」
+// (非容器实例的本机摘挂升级):
+//   - 未装配网关 / 无注册绑定 → 直接执行 deployFn(行为不变);
+//   - 配了 regPort 先经 EnsureInstanceDetached 预注册:实例行在部署前就存在(摘挂反查得到),
+//     但以 detached 形态落库,未就绪不接流;部署成功后随摘除名单一起挂回;
 //   - 反查到实例 → 逐实例摘除(失败仅记告警继续,摘除失败通常意味着网关不可达)→ 部署 →
 //     成功则把**确实摘除成功**的实例挂回(一次重试;最终失败追加告警,状态保持 success 但 message 明示)→
 //     失败/回滚则保持摘除并人读提示(摘除本身失败的实例照实说明,绝不谎称「已摘除」)。
 //
-// gatewayKey:文件/命令部署用 cfg["gatewayService"](网关服务名,经「服务名匹配」反查实例)。
+// serviceRef:注册绑定的服务引用(regServiceId 优先;legacy 键 gatewayService = 服务名)。
+// 本机在升级窗口内不接流量,集群可用性由其余机器实例保证(滚动批次编排不会同时摘光)。
 func (s *service) deployWithGatewayDetach(ctx context.Context, srv *target.Server, cfg map[string]string, deployFn func() TargetResult) TargetResult {
-	key := strings.TrimSpace(cfg["gatewayService"])
+	key := regServiceRef(cfg)
 	if s.instanceGateway == nil || key == "" {
 		return deployFn()
 	}
-	instances, err := s.instanceGateway.ResolveInstances(ctx, srv.ID, key)
-	if err != nil || len(instances) == 0 {
+	// 预注册(非容器,配了 regPort):实例行先以 detached 落库再进部署 —— 消除「先注册
+	// attached 后部署」的未就绪接流窗口;失败仅告警(部署本体不受影响,注册表下轮收敛)。
+	var ensured *InstanceRef
+	if regPort, _ := parsePortNumber(strings.TrimSpace(cfg["regPort"])); regPort > 0 {
+		if ref, eerr := s.instanceGateway.EnsureInstanceDetached(ctx, key, srv.ID, "", regPort, regPort); eerr != nil {
+			cmdLogFrom(ctx)(cmdStreamStderr, "  ⚠ 注册实例失败("+srv.Name+"):"+humanExecError(eerr))
+		} else {
+			ensured = &ref
+		}
+	}
+	instances, err := s.instanceGateway.ResolveInstances(ctx, srv.ID, key, "")
+	if err != nil || (len(instances) == 0 && ensured == nil) {
 		return deployFn()
 	}
 
@@ -831,8 +918,14 @@ func (s *service) deployWithGatewayDetach(ctx context.Context, srv *target.Serve
 
 	res := deployFn()
 	if res.Status == run.TargetSuccess {
+		// 挂回名单 = 确实摘除的实例 + 本轮预注册的新实例(存量 attached 行已在摘除名单,
+		// 按 InstanceID 去重防重复挂回)。
+		toAttach := detached
+		if ensured != nil && !instanceIDIn(detached, ensured.InstanceID) {
+			toAttach = append(toAttach, *ensured)
+		}
 		attachWarn := ""
-		for _, inst := range detached {
+		for _, inst := range toAttach {
 			if aerr := s.instanceGateway.AttachInstance(ctx, inst.InstanceID); aerr != nil {
 				// 一次重试(挂回失败 = 机器已健康却不接流量,必须兜底再试)。
 				if aerr2 := s.instanceGateway.AttachInstance(ctx, inst.InstanceID); aerr2 != nil {
@@ -860,6 +953,17 @@ func (s *service) deployWithGatewayDetach(ctx context.Context, srv *target.Serve
 	}
 	res.Message += "(网关联动:" + detachWarn + fact + ")"
 	return res
+}
+
+// instanceIDIn 报告 refs 中是否已含 id(挂回去重:存量 attached 行可能同时出现在摘除与
+// 预注册名单)。
+func instanceIDIn(refs []InstanceRef, id string) bool {
+	for _, r := range refs {
+		if r.InstanceID == id {
+			return true
+		}
+	}
+	return false
 }
 
 // deployCommandsOne 旧扁平命令路径(非 release 类文件的兜底;现仅理论可达):逐条执行部署命令 +

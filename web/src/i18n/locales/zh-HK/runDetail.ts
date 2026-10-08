@@ -126,6 +126,22 @@ export default {
   retryFailed: "重試失敗({status})",
   retryRequestFailed: "重試請求失敗,請稍後重試",
 
+  // 按節點恢復(失敗運行派生重跑)
+  resumeRegionAria: "按節點恢復運行",
+  resumeTitle: "按節點恢復運行",
+  resumeDesc: "創建派生運行:已成功節點直接繼承,只執行失敗/未執行部分;部署節點只重試失敗的機器。",
+  resumeRetry: "重試",
+  resumeSkip: "跳過",
+  resumeSkipHint: "跳過該節點,下游照常執行",
+  resumeLaunch: "啟動恢復運行",
+  resumeLaunching: "創建中…",
+  resumeSpecChanged: "流水線配置已變化,無法按節點恢復",
+  resumeNotResumable: "該運行不可按節點恢復",
+  resumeRunNotFound: "運行不存在",
+  resumeQueueFull: "調度隊列已滿,請稍後重試",
+  resumeRequestFailed: "恢復失敗({status})",
+  resumedFrom: "恢復自 #{id}",
+
   partialInfo: "部分目標失敗,失敗台已獨立回滾;其餘台繼續執行,互不連累。",
   multiTargetAria: "多機目標狀態",
   multiTargetFanout: "多機目標扇出",

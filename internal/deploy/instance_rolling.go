@@ -1,25 +1,27 @@
 package deploy
 
-// instance_rolling.go 实现「网关托管机的 maxSurge 换实例」单机执行序:配合服务注册网关(nginx)的
-// 多实例 upstream,把一次 image 部署从「整机硬切(rm 旧 → run 新,窗口内 502)」升级为
-// 逐实例零停机替换(统一滚动策略的 image 托管路径;不再是独立策略)。
+// instance_rolling.go 实现容器实例的「扩容升级缩容」单机执行序(maxSurge 轮转):配合服务
+// 注册网关(nginx)的集群实例池,把一次 image 部署升级为逐实例零停机替换。
 //
 // 单实例执行序(k8s maxSurge 语义):
 //
 //	1. docker pull 新镜像(预备,不动旧实例)
-//	2. docker run 起一个**新名字**的实例容器(旧实例继续服务;新实例先不进 upstream)
-//	3. 预热健康:对新实例容器探测(切流量**之前**验证)
-//	4. SwapInstance:upstream 成员原子替换(旧出、新进,一次 reload)—— 新实例已健康、
-//	   旧实例还在跑,任何时刻不为零后端
+//	2. docker run 起一个**新名字**的实例容器 —— 宿主端口范围探测自动分配(旧容器占用的口
+//	   自然被探测跳过);旧实例继续服务,新实例先不进 upstream
+//	3. 预热健康:对新实例容器探测(切流量**之前**验证;走容器 IP:容器端口,不依赖映射)
+//	4. SwapInstance:upstream 成员原子替换(旧出、新进 + host_port 同步,一次 reload)——
+//	   新实例已健康、旧实例还在跑,任何时刻不为零后端
 //	5. 排空窗口(drainSeconds,等存量请求;OSS nginx 无逐连接排空,固定等待)
-//	6. docker rm -f 旧实例容器
+//	6. docker rm -f 旧实例容器(缩容)
 //
 // 失败语义:步骤 2/3/4 失败 → 删除新容器、该实例保留旧版本、该机 failed 并**中止其余实例**
 // (未动实例保持旧版本);步骤 6 失败仅记告警(已切换,残留旧容器无害)。
 // 天然无需回滚:旧实例从头到尾未停止服务。
 //
-// 回退:未装配 InstanceGateway / 反查不到匹配服务 → 与既有 rolling 逐字节
-// 一致的单机部署(deployImageOne),存量部署行为不变。
+// 注册联动:cfg["regServiceId"](部署节点「一键生成」的绑定;legacy 键 gatewayService 兼容)
+// 非空且反查不到实例 → 先 EnsureInstance 落行(首台部署/新扩机器),再进入轮转。
+// 非网关托管(未装配 InstanceGateway / 反查不到服务)→ 与既有 rolling 一致的单机部署
+// (deployImageOne),成功后 best-effort 落实例行(硬切路径也保持注册表与实况一致)。
 //
 // 网关交互经 InstanceGateway 小接口由 main 晚绑(deploy 不 import servicereg,保持包间单向依赖)。
 
@@ -29,7 +31,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -43,22 +44,33 @@ type InstanceRef struct {
 	ServiceID   string
 	ServiceName string // 展示名(FQDN)
 	InstanceID  string
-	Container   string // 旧实例容器名(轮转后由新容器名接替)
-	Port        int    // 实例生效端口
+	ServerID    string // 实例归属服务器(= 部署目标机)
+	Container   string // 旧实例容器名(轮转后由新容器名接替);非容器实例为空
+	Port        int    // 实例生效服务端口(容器内应用端口)
+	HostPort    int    // 实例生效宿主端口(网关反代地址)
 }
 
-// InstanceGateway 抽象服务注册网关的实例级能力:按部署容器名反查网关服务实例 + 原子摘挂。
-// nil(未装配)→ maxSurge 路径回退既有滚动,摘挂路径跳过(直接部署)。
+// InstanceGateway 抽象服务注册网关的实例级能力:按部署目标机反查实例 + 原子摘挂/换实例 +
+// 部署期注册(ensure/prune)。nil(未装配)→ maxSurge 路径回退既有滚动,摘挂路径跳过。
 type InstanceGateway interface {
-	// ResolveInstances 返回(部署容器名所对应的)网关服务的全部 attached 实例;
-	// 无匹配 / 目标机不是网关主机 → 空切片(调用方据此回退)。
-	ResolveInstances(ctx context.Context, serverID, container string) ([]InstanceRef, error)
-	// SwapInstance 原子替换实例(单次 reload):upstream 中 old 出、new 进。
-	SwapInstance(ctx context.Context, serviceID, oldContainer, newContainer string) error
-	// DetachInstance 把实例从 upstream 摘除(attempted=0)+ reload(文件/命令部署的「摘→部署→挂回」用)。
+	// ResolveInstances 返回该部署目标机(serverID)上的 attached 实例。serviceRef 是服务
+	// 引用(注册绑定的服务 ID,legacy 为服务名);container 是容器名(镜像部署反查键,可空)。
+	// 两者至少给一个;匹配不到 → 空切片(调用方回退旧滚动)。
+	ResolveInstances(ctx context.Context, serverID, serviceRef, container string) ([]InstanceRef, error)
+	// SwapInstance 原子替换实例(单次 reload):upstream 中 old 出、new 进,host_port 同步更新。
+	SwapInstance(ctx context.Context, serviceID, serverID, oldContainer, newContainer string, hostPort int) error
+	// DetachInstance 把实例从 upstream 摘除 + reload(非容器「摘→升→挂回」的摘)。
 	DetachInstance(ctx context.Context, instanceID string) error
-	// AttachInstance 把实例挂回 upstream(attempted=1)+ reload(部署健康通过后恢复流量)。
+	// AttachInstance 把实例挂回 upstream + reload(部署健康通过后恢复流量)。
 	AttachInstance(ctx context.Context, instanceID string) error
+	// EnsureInstance 幂等 upsert 实例行(port<=0/hostPort<=0 = 存量行保持;部署期注册用)。
+	EnsureInstance(ctx context.Context, serviceID, serverID, container string, port, hostPort int) error
+	// EnsureInstanceDetached 部署期预注册(摘挂流程第一步):确保实例行存在且本轮部署期间
+	// 不进 upstream(新行 detached;存量行只更新端口/归属,attached 保持)。返回实例引用,
+	// 供部署成功后挂回。
+	EnsureInstanceDetached(ctx context.Context, serviceID, serverID, container string, port, hostPort int) (InstanceRef, error)
+	// PruneInstances 删除服务下 server 不在列表内的实例(部署全部成功后同步拓扑)。
+	PruneInstances(ctx context.Context, serviceID string, serverIDs []string) error
 }
 
 // 排空窗口(秒):默认 / 上限。
@@ -66,7 +78,7 @@ const (
 	defaultDrainSeconds = 5
 	maxDrainSeconds     = 60
 	// instanceRollBaseTimeout / perInstance 是整轮实例轮转的预算基数(秒):pull + 每实例
-	// (run + 预热健康(含重试)+ swap + drain + rm)。
+	// (端口分配 + run + 预热健康(含重试)+ swap + drain + rm)。
 	instanceRollBaseTimeout     = 3 * time.Minute
 	instanceRollPerInstanceTime = 90 * time.Second
 )
@@ -76,25 +88,49 @@ func WithInstanceGateway(g InstanceGateway) Option {
 	return func(s *service) { s.instanceGateway = g }
 }
 
-// deployInstanceRollingOne 单机入口:装配了网关且能反查到实例 → 逐实例轮转;否则回退旧路径。
-func (s *service) deployInstanceRollingOne(ctx context.Context, srv *target.Server, a run.Artifact, cfg map[string]string, hc *HealthCheck) TargetResult {
-	started := time.Now().UTC()
-	if s.instanceGateway == nil {
-		return s.deployImageOne(ctx, srv, a, cfg, hc, started)
+// regServiceRef 取部署节点的服务注册绑定:regServiceId(一键生成)优先,gatewayService(legacy
+// 服务名)兜底。
+func regServiceRef(cfg map[string]string) string {
+	if id := strings.TrimSpace(cfg["regServiceId"]); id != "" {
+		return id
 	}
+	return strings.TrimSpace(cfg["gatewayService"])
+}
+
+// deployInstanceRollingOne 单机入口:装配了网关且能反查到服务 → 逐实例轮转;否则回退旧路径。
+func (s *service) deployInstanceRollingOne(ctx context.Context, srv *target.Server, a run.Artifact, cfg map[string]string, hsp *healthSpec) TargetResult {
+	started := time.Now().UTC()
 	st := imageState{
 		name:     imageContainerName(a, cfg),
 		ref:      strings.TrimSpace(a.Reference),
-		runArgs:  imageRunArgs(cfg),
+		baseArgs: imageBaseRunArgs(cfg),
 	}
+	specs, perr := imagePortSpecs(cfg)
+	if perr != nil {
+		return finishFailed(TargetResult{ServerID: srv.ID, ServerName: srv.Name, StartedAt: started}, perr.Error())
+	}
+	st.portSpecs = specs
 	if st.ref == "" {
 		return finishFailed(TargetResult{ServerID: srv.ID, ServerName: srv.Name, StartedAt: started},
 			"image 产物缺少 reference(repo:tag 或镜像 id)")
 	}
-	instances, err := s.instanceGateway.ResolveInstances(ctx, srv.ID, st.name)
+
+	serviceRef := regServiceRef(cfg)
+	if s.instanceGateway == nil {
+		return s.deployImageFallback(ctx, srv, a, cfg, hsp, st, serviceRef, started)
+	}
+	instances, err := s.instanceGateway.ResolveInstances(ctx, srv.ID, serviceRef, st.name)
 	if err != nil || len(instances) == 0 {
-		// 非网关托管(或反查出错,保守起见)→ 既有单机滚动(含 pull/健康/回滚),行为不变。
-		return s.deployImageOne(ctx, srv, a, cfg, hc, started)
+		// 首台部署 / 新扩机器:注册绑定存在但本机还没有实例行 → 先落行再轮转(SwapInstance
+		// 需要行存在)。仍反查不到(服务不存在等)→ 回退既有单机滚动,行为不变。
+		if serviceRef != "" && err == nil {
+			if eerr := s.instanceGateway.EnsureInstance(ctx, serviceRef, srv.ID, st.name, firstContainerPort(specs), 0); eerr == nil {
+				instances, err = s.instanceGateway.ResolveInstances(ctx, srv.ID, serviceRef, st.name)
+			}
+		}
+		if err != nil || len(instances) == 0 {
+			return s.deployImageFallback(ctx, srv, a, cfg, hsp, st, serviceRef, started)
+		}
 	}
 
 	rollCtx, cancel := context.WithTimeout(ctx, instanceRollBaseTimeout+instanceRollPerInstanceTime*time.Duration(len(instances)))
@@ -107,7 +143,7 @@ func (s *service) deployInstanceRollingOne(ctx context.Context, srv *target.Serv
 
 	var done int
 	for _, inst := range instances {
-		if msg, ok := s.rollOneInstance(rollCtx, srv, st, inst, hc, cfg); !ok {
+		if msg, ok := s.rollOneInstance(rollCtx, srv, st, inst, hsp, cfg); !ok {
 			finish := time.Now().UTC()
 			return TargetResult{
 				ServerID: srv.ID, ServerName: srv.Name,
@@ -123,40 +159,45 @@ func (s *service) deployInstanceRollingOne(ctx context.Context, srv *target.Serv
 	return TargetResult{
 		ServerID: srv.ID, ServerName: srv.Name,
 		Status: run.TargetSuccess,
-		Message: fmt.Sprintf("image 实例轮转完成 → 服务 %s:%d 个实例逐个「起新→预热健康→原子切换→排空→停旧」零停机替换(%s)",
+		Message: fmt.Sprintf("image 实例轮转完成 → 服务 %s:%d 个实例逐个「扩容起新→预热健康→原子切换→排空→缩容停旧」零停机替换(%s)",
 			instances[0].ServiceName, len(instances), st.ref),
 		StartedAt: started, FinishedAt: &finish,
 	}
 }
 
-// rollOneInstance 替换单个实例(五步序);失败返回 (false, 人读原因),调用方中止其余实例。
-func (s *service) rollOneInstance(ctx context.Context, srv *target.Server, st imageState, inst InstanceRef, hc *HealthCheck, cfg map[string]string) (string, bool) {
+// deployImageFallback 非网关托管路径:既有单机滚动(含 pull/健康/回滚);成功后 best-effort
+// 落实例行(注册表与实况一致 —— 硬切路径的宿主端口同样要进集群 upstream)。
+func (s *service) deployImageFallback(ctx context.Context, srv *target.Server, a run.Artifact, cfg map[string]string, hsp *healthSpec, st imageState, serviceRef string, started time.Time) TargetResult {
+	res, final := s.deployImageOne(ctx, srv, a, cfg, hsp, started)
+	if res.Status == run.TargetSuccess && s.instanceGateway != nil && serviceRef != "" {
+		if eerr := s.instanceGateway.EnsureInstance(ctx, serviceRef, srv.ID, st.name, firstContainerPort(final.portSpecs), firstHostPort(final.ports)); eerr != nil {
+			res.Message += "(网关注册告警:" + humanExecError(eerr) + ")"
+		}
+	}
+	return res
+}
+
+// rollOneInstance 替换单个实例(六步序);失败返回 (人读原因, false),调用方中止其余实例。
+func (s *service) rollOneInstance(ctx context.Context, srv *target.Server, st imageState, inst InstanceRef, hsp *healthSpec, cfg map[string]string) (string, bool) {
 	newName := st.name + "-r" + instanceRandSuffix()
 
-	// 1) 起新实例容器(旧实例继续服务)。
-	out, err := s.exec(ctx, srv.ID, dockerRunCmd(newName, st.runArgs, st.ref))
-	if err != nil {
-		return humanExecError(err), false
-	}
-	if out != nil && out.ExitCode != 0 {
-		msg := truncate(strings.TrimSpace(firstString(out.Stderr, out.Stdout)))
-		if strings.Contains(strings.ToLower(out.Stderr+out.Stdout), "port is already allocated") {
-			msg = "宿主端口冲突;网关托管实例不应发布宿主端口(-p,流量经 nginx 共享网络进实例)—— " + msg
-		}
-		return "起新实例容器失败:" + msg, false
+	// 1) 扩容:起新实例容器(宿主端口自动分配;旧容器占用的端口被探测自然跳过)。
+	bindings, runMsg, ok := s.runContainerWithPorts(ctx, srv.ID, newName, st.baseArgs, st.portSpecs, cfg, st.ref)
+	if !ok {
+		return "起新实例容器失败:" + runMsg, false
 	}
 	cleanupNew := func() {
 		_, _ = s.exec(ctx, srv.ID, []string{"docker", "rm", "-f", newName})
 	}
 
-	// 2) 预热健康:切流量之前验证新实例。
-	if perr := s.probeInstance(ctx, srv, inst, hc, newName); perr != nil {
+	// 2) 预热健康:切流量之前验证新实例(容器 IP:容器端口,不依赖宿主映射)。
+	if perr := s.probeInstance(ctx, srv, inst, hsp, newName); perr != nil {
 		cleanupNew()
 		return "新实例预热健康未通过(已删除新容器,旧实例未受影响):" + perr.Error(), false
 	}
 
-	// 3) 原子切换:upstream 成员 old 出、new 进(一次 reload)。
-	if serr := s.instanceGateway.SwapInstance(ctx, inst.ServiceID, inst.Container, newName); serr != nil {
+	// 3) 原子切换:upstream 成员 old 出、new 进 + host_port 同步(一次 reload)。
+	if serr := s.instanceGateway.SwapInstance(ctx, inst.ServiceID, srv.ID, inst.Container, newName, firstHostPort(bindings)); serr != nil {
 		cleanupNew()
 		return "切换 upstream 失败(已删除新容器,旧实例未受影响):" + serr.Error(), false
 	}
@@ -171,7 +212,7 @@ func (s *service) rollOneInstance(ctx context.Context, srv *target.Server, st im
 		}
 	}
 
-	// 5) 停旧实例容器(已切换;失败仅告警不判败 —— 残留旧容器无害,下轮可清)。
+	// 5) 缩容:停旧实例容器(已切换;失败仅告警不判败 —— 残留旧容器无害,下轮可清)。
 	if out, err := s.exec(ctx, srv.ID, []string{"docker", "rm", "-f", inst.Container}); err != nil || (out != nil && out.ExitCode != 0) {
 		_, _ = s.exec(ctx, srv.ID, []string{"docker", "rm", "-f", inst.Container})
 	}
@@ -179,30 +220,41 @@ func (s *service) rollOneInstance(ctx context.Context, srv *target.Server, st im
 }
 
 // probeInstance 在切流量前验证新实例:
-//   - hc=http   :探测 URL 重写为 scheme://<容器IP>:<实例端口><path+query>(取容器 IP,宿主 curl
-//     直达容器网段;此时新容器尚未接共享网络,用其默认网络 IP 即可);
-//   - hc=command:原样执行(语义由用户把握);
-//   - 无 hc     :容器 Running settle 检查(短等待 × 3 次)。
-func (s *service) probeInstance(ctx context.Context, srv *target.Server, inst InstanceRef, hc *HealthCheck, newContainer string) error {
-	if hc != nil && hc.Type == HealthCheckHTTP && strings.TrimSpace(hc.URL) != "" {
-		ip := s.containerIP(ctx, srv.ID, newContainer)
-		if ip == "" {
-			return errors.New("取新实例容器 IP 失败(docker inspect Networks)")
+//   - 端口型健康门控:探测 URL = scheme://<容器IP>:<实例服务端口><path>(取容器 IP,宿主 curl
+//     直达容器网段;不依赖宿主端口映射 —— 新容器尚未接流量、宿主口是全新分配的,容器口才稳定);
+//   - command/exec/url 型:原样执行(语义由用户把握);
+//   - 无健康配置:容器 Running settle 检查(短等待 × 3 次)。
+func (s *service) probeInstance(ctx context.Context, srv *target.Server, inst InstanceRef, hsp *healthSpec, newContainer string) error {
+	if hsp != nil {
+		switch hsp.kind {
+		case specCommand, specExec, specURL:
+			if hc := hsp.resolve(0); hc != nil && hc.enabled() {
+				return s.runHealthCheck(ctx, srv.ID, hc)
+			}
+		case specPort:
+			ip := s.containerIP(ctx, srv.ID, newContainer)
+			if ip == "" {
+				return errors.New("取新实例容器 IP 失败(docker inspect Networks)")
+			}
+			if inst.Port <= 0 {
+				return errors.New("注册实例缺少服务端口,无法预热探测;请在注册绑定里配置端口")
+			}
+			path := hsp.path
+			if path == "" {
+				path = "/"
+			}
+			if !strings.HasPrefix(path, "/") {
+				path = "/" + path
+			}
+			probe := &HealthCheck{
+				Type:            HealthCheckHTTP,
+				URL:             "http://" + ip + ":" + strconv.Itoa(inst.Port) + path,
+				Retries:         hsp.retries,
+				IntervalSeconds: hsp.intervalSeconds,
+				TimeoutSeconds:  hsp.timeoutSeconds,
+			}
+			return s.runHealthCheck(ctx, srv.ID, probe)
 		}
-		u, perr := url.Parse(strings.TrimSpace(hc.URL))
-		if perr != nil {
-			return fmt.Errorf("健康检查 URL 非法:%v", perr)
-		}
-		scheme := u.Scheme
-		if scheme == "" {
-			scheme = "http"
-		}
-		probe := *hc
-		probe.URL = scheme + "://" + ip + ":" + strconv.Itoa(inst.Port) + u.RequestURI()
-		return s.runHealthCheck(ctx, srv.ID, &probe)
-	}
-	if hc != nil && hc.Type == HealthCheckCommand {
-		return s.runHealthCheck(ctx, srv.ID, hc)
 	}
 	// 无健康检查配置:容器进入运行态的 settle 检查。
 	for i := 0; i < 3; i++ {
@@ -256,14 +308,4 @@ func instanceRandSuffix() string {
 	b := make([]byte, 3)
 	_, _ = rand.Read(b)
 	return hex.EncodeToString(b)
-}
-
-// firstString 返回首个非空白串。
-func firstString(ss ...string) string {
-	for _, s := range ss {
-		if strings.TrimSpace(s) != "" {
-			return s
-		}
-	}
-	return ""
 }

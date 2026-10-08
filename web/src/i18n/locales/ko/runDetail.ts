@@ -131,6 +131,22 @@ export default {
   retryFailed: "재시도 실패({status})",
   retryRequestFailed: "재시도 요청에 실패했습니다. 잠시 후 다시 시도하세요",
 
+  // 노드 단위 재개(실행 실패 런에서 파생 재실행)
+  resumeRegionAria: "노드 단위로 런 재개",
+  resumeTitle: "노드 단위로 런 재개",
+  resumeDesc: "파생 런을 생성합니다: 성공한 노드는 그대로 상속되고 실패/미실행 부분만 다시 실행합니다. 배포 노드는 실패한 머신만 재시도합니다.",
+  resumeRetry: "재시도",
+  resumeSkip: "건너뛰기",
+  resumeSkipHint: "이 노드를 건너뛰고 하위는 그대로 실행합니다",
+  resumeLaunch: "재개 런 시작",
+  resumeLaunching: "생성 중…",
+  resumeSpecChanged: "파이프라인 설정이 변경되어 노드 단위로 재개할 수 없습니다",
+  resumeNotResumable: "이 런은 노드 단위로 재개할 수 없습니다",
+  resumeRunNotFound: "런을 찾을 수 없습니다",
+  resumeQueueFull: "스케줄링 대기열이 가득 찼습니다. 잠시 후 다시 시도하세요",
+  resumeRequestFailed: "재개 실패({status})",
+  resumedFrom: "#{id} 에서 재개",
+
   partialInfo:
     "일부 대상이 실패하여 실패한 호스트는 개별적으로 롤백되었습니다. 나머지 호스트는 영향 없이 계속 실행됩니다.",
   multiTargetAria: "다중 호스트 대상 상태",

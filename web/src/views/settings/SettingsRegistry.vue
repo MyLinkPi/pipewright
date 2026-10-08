@@ -28,6 +28,7 @@ import {
   type RegistryDaemonInspect,
 } from '../../api/registryHub'
 import { listServers, type Server } from '../../api/servers'
+import { listCerts, type Cert } from '../../api/certMgmt'
 import { HttpError } from '../../api/http'
 import AppButton from '../../components/ui/AppButton.vue'
 
@@ -86,6 +87,29 @@ function toggleEnabled(): void {
   if (cfg.value) cfg.value.enabled = !cfg.value.enabled
 }
 
+// ─── TLS 证书(证书管理已签发的公共可信证书;空 = 明文 HTTP) ──────────────────
+const certs = ref<Cert[]>([])
+const certsError = ref(false)
+
+/** 只列已签发(pending/failed 无可用 PEM,选了也部署不了)。 */
+const issuedCerts = computed(() => certs.value.filter((c) => c.status === 'issued'))
+
+function certLabel(c: Cert): string {
+  const until = c.notAfter ? ` · ${c.notAfter.slice(0, 10)}` : ''
+  return `${c.primaryDomain}${until}`
+}
+
+const mirrorScheme = computed(() => (cfg.value?.tlsCertId ? 'https' : 'http'))
+
+async function loadCerts(): Promise<void> {
+  try {
+    certs.value = (await listCerts()).items
+    certsError.value = false
+  } catch {
+    certsError.value = true
+  }
+}
+
 async function saveConfig(): Promise<void> {
   if (!cfg.value) return
   saving.value = true
@@ -100,6 +124,7 @@ async function saveConfig(): Promise<void> {
       cachePort: Math.floor(Number(cfg.value.cachePort) || 0),
       artifactDataDir: cfg.value.artifactDataDir.trim(),
       cacheDataDir: cfg.value.cacheDataDir.trim(),
+      tlsCertId: cfg.value.tlsCertId.trim(),
       keepPerProject: Math.max(0, Math.floor(Number(cfg.value.keepPerProject) || 0)),
       maxAgeDays: Math.max(0, Math.floor(Number(cfg.value.maxAgeDays) || 0)),
     })
@@ -220,7 +245,7 @@ async function apply(): Promise<void> {
   ]
   const ok = await confirm.open({
     title: t('settingsRegistry.applyConfirmTitle'),
-    body: t('settingsRegistry.applyConfirmBody', { targets: names.join('、'), mirror: `http://${cfg.value.cacheAddr}` }),
+    body: t('settingsRegistry.applyConfirmBody', { targets: names.join('、'), mirror: `${mirrorScheme.value}://${cfg.value.cacheAddr}` }),
     confirmLabel: t('settingsRegistry.applyConfirmLabel'),
     variant: 'danger',
   })
@@ -245,6 +270,7 @@ onMounted(() => {
   void loadConfig()
   void loadStatus()
   void loadServers()
+  void loadCerts()
 })
 </script>
 
@@ -327,6 +353,18 @@ onMounted(() => {
           <span class="reg-label">{{ t('settingsRegistry.cacheDataDir') }}</span>
           <input class="reg-input mono" v-model="cfg.cacheDataDir" :disabled="loading" :placeholder="cfg.effectiveCacheDataDir" spellcheck="false" />
           <span class="reg-hint">{{ t('settingsRegistry.cacheDataDirHint') }}</span>
+        </label>
+
+        <label class="reg-field">
+          <span class="reg-label">{{ t('settingsRegistry.tlsCert') }}</span>
+          <select class="reg-input" v-model="cfg.tlsCertId" :disabled="loading">
+            <option value="">{{ t('settingsRegistry.tlsCertOff') }}</option>
+            <option v-for="c in issuedCerts" :key="c.id" :value="c.id">{{ certLabel(c) }}</option>
+          </select>
+          <span class="reg-hint">
+            {{ issuedCerts.length ? t('settingsRegistry.tlsCertHint') : t('settingsRegistry.tlsCertNone') }}
+            <span v-if="certsError">{{ t('settingsRegistry.tlsCertErr') }}</span>
+          </span>
         </label>
 
         <label class="reg-field">
@@ -415,7 +453,8 @@ onMounted(() => {
         </AppButton>
       </div>
 
-      <p v-if="cfg?.enabled" class="reg-warn reg-warn--danger">{{ t('settingsRegistry.applyWarn', { mirror: `http://${cfg.cacheAddr}` }) }}</p>
+      <p v-if="cfg?.enabled && cfg?.tlsCertId" class="reg-warn reg-warn--danger">{{ t('settingsRegistry.applyWarnTls', { mirror: `${mirrorScheme}://${cfg.cacheAddr}` }) }}</p>
+      <p v-else-if="cfg?.enabled" class="reg-warn reg-warn--danger">{{ t('settingsRegistry.applyWarn', { mirror: `${mirrorScheme}://${cfg.cacheAddr}` }) }}</p>
       <p v-else class="reg-warn">{{ t('settingsRegistry.disabledHint') }}</p>
       <p v-if="serversError" class="reg-err" role="alert">{{ serversError }}</p>
 

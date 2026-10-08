@@ -134,6 +134,18 @@ const modelIs = (v: string) => (c: Record<string, string>) =>
   (c.buildModel || 'dockerfile') === v
 const probeIs = (v: string) => (c: Record<string, string>) =>
   (c.probeMode || 'http') === v
+const healthConfigured = (c: Record<string, string>) =>
+  !!(c.healthUrl || '').trim() || !!(c.healthPort || '').trim() ||
+  !!(c.healthPath || '').trim() || !!(c.healthCommand || '').trim() || !!(c.healthExec || '').trim()
+
+// 服务注册区(基域/服务名/端口/绑定结果)由 JobDrawer 的专属区块渲染(ServiceRegBinding),
+// 此处仅登记键归属(when:false 不进常规字段循环),避免它们漏进「原始参数」高级区。
+const REG_BINDING_FIELDS: JobField[] = [
+  { key: 'regDomainId', label: 'regDomainId', kind: 'text', when: () => false },
+  { key: 'regServiceName', label: 'regServiceName', kind: 'text', when: () => false },
+  { key: 'regPort', label: 'regPort', kind: 'text', when: () => false },
+  { key: 'regServiceId', label: 'regServiceId', kind: 'text', when: () => false },
+]
 
 // ─── Per-type specs ──────────────────────────────────────────────────────────────
 
@@ -319,19 +331,21 @@ const DEPLOY_SSH_FIELDS: JobField[] = [
     get hint() { return t('pipelineJob.fieldBatchSizeHint') },
   },
   {
-    key: 'healthPort',
-    get label() { return t('pipelineJob.fieldHealthPortLabel') },
-    kind: 'number',
-    placeholder: '8080',
-    get hint() { return t('pipelineJob.fieldHealthPortHint') },
-  },
-  {
     key: 'healthPath',
     get label() { return t('pipelineJob.fieldHealthPathLabel') },
     kind: 'text',
     monospace: true,
     placeholder: '/healthz',
     get hint() { return t('pipelineJob.fieldHealthPathHint') },
+  },
+  {
+    // 端口自动推导:容器 = 自动分配/映射出的首个宿主端口;非容器 = 注册端口(regPort)。
+    // 显式覆盖仅在已配置时出现(存量/特殊场景)。
+    key: 'healthPort',
+    get label() { return t('pipelineJob.fieldHealthPortLabel') },
+    kind: 'number',
+    placeholder: '',
+    get hint() { return t('pipelineJob.fieldHealthPortOverrideHint') },
     when: (c) => !!(c.healthPort || '').trim(),
   },
   {
@@ -351,7 +365,7 @@ const DEPLOY_SSH_FIELDS: JobField[] = [
     monospace: true,
     placeholder: 'curl -fsS 127.0.0.1:8080/healthz',
     get hint() { return t('pipelineJob.fieldHealthCommandHint') },
-    when: (c) => !(c.healthUrl || '').trim() && !(c.healthPort || '').trim(),
+    when: (c) => !(c.healthUrl || '').trim() && !(c.healthPort || '').trim() && !(c.healthPath || '').trim(),
   },
   {
     key: 'healthRetries',
@@ -359,7 +373,7 @@ const DEPLOY_SSH_FIELDS: JobField[] = [
     kind: 'number',
     placeholder: '3',
     get hint() { return t('pipelineJob.fieldHealthRetriesHint') },
-    when: (c) => !!(c.healthUrl || '').trim() || !!(c.healthPort || '').trim() || !!(c.healthCommand || '').trim(),
+    when: healthConfigured,
   },
   {
     key: 'healthIntervalSeconds',
@@ -367,7 +381,7 @@ const DEPLOY_SSH_FIELDS: JobField[] = [
     kind: 'number',
     placeholder: '3',
     get hint() { return t('pipelineJob.fieldHealthIntervalHint') },
-    when: (c) => !!(c.healthUrl || '').trim() || !!(c.healthCommand || '').trim(),
+    when: healthConfigured,
   },
   {
     key: 'deployPath',
@@ -385,6 +399,7 @@ const DEPLOY_SSH_FIELDS: JobField[] = [
     placeholder: 'systemctl restart app\nnginx -s reload',
     get hint() { return t('pipelineJob.fieldRestartCommandHint') },
   },
+  ...REG_BINDING_FIELDS,
 ]
 
 // 容器部署节点字段(deploy_container):固定部署 image 产物。
@@ -431,19 +446,20 @@ const DEPLOY_CONTAINER_FIELDS: JobField[] = [
     get hint() { return t('pipelineJob.fieldBatchSizeHint') },
   },
   {
-    key: 'healthPort',
-    get label() { return t('pipelineJob.fieldHealthPortLabel') },
-    kind: 'number',
-    placeholder: '8080',
-    get hint() { return t('pipelineJob.fieldHealthPortHint') },
-  },
-  {
     key: 'healthPath',
     get label() { return t('pipelineJob.fieldHealthPathLabel') },
     kind: 'text',
     monospace: true,
     placeholder: '/healthz',
     get hint() { return t('pipelineJob.fieldHealthPathHint') },
+  },
+  {
+    // 端口自动推导:容器 = 自动分配/映射出的首个宿主端口。显式覆盖仅在已配置时出现。
+    key: 'healthPort',
+    get label() { return t('pipelineJob.fieldHealthPortLabel') },
+    kind: 'number',
+    placeholder: '',
+    get hint() { return t('pipelineJob.fieldHealthPortOverrideHint') },
     when: (c) => !!(c.healthPort || '').trim(),
   },
   {
@@ -463,7 +479,7 @@ const DEPLOY_CONTAINER_FIELDS: JobField[] = [
     monospace: true,
     placeholder: 'pg_isready -U postgres',
     get hint() { return t('pipelineJob.fieldHealthExecHint') },
-    when: (c) => !(c.healthPort || '').trim() && !(c.healthUrl || '').trim() && !(c.healthCommand || '').trim(),
+    when: (c) => !(c.healthPort || '').trim() && !(c.healthUrl || '').trim() && !(c.healthCommand || '').trim() && !(c.healthPath || '').trim(),
   },
   {
     // 存量主机命令写法:只在已配置时出现(容器部署常用端口探测或容器内命令)。
@@ -480,14 +496,14 @@ const DEPLOY_CONTAINER_FIELDS: JobField[] = [
     get label() { return t('pipelineJob.fieldHealthRetriesLabel') },
     kind: 'number',
     placeholder: '3',
-    when: (c) => !!(c.healthUrl || '').trim() || !!(c.healthPort || '').trim() || !!(c.healthCommand || '').trim() || !!(c.healthExec || '').trim(),
+    when: healthConfigured,
   },
   {
     key: 'healthIntervalSeconds',
     get label() { return t('pipelineJob.fieldHealthIntervalLabel') },
     kind: 'number',
     placeholder: '3',
-    when: (c) => !!(c.healthUrl || '').trim() || !!(c.healthPort || '').trim() || !!(c.healthCommand || '').trim() || !!(c.healthExec || '').trim(),
+    when: healthConfigured,
   },
   {
     key: 'containerName',
@@ -502,8 +518,17 @@ const DEPLOY_CONTAINER_FIELDS: JobField[] = [
     get label() { return t('pipelineJob.fieldPortsLabel') },
     kind: 'text',
     monospace: true,
-    placeholder: '8080:80, 9000:9000',
+    placeholder: '8080, auto:9000, 8080:80',
     get hint() { return t('pipelineJob.fieldPortsHint') },
+  },
+  {
+    key: 'autoPortRange',
+    get label() { return t('pipelineJob.fieldAutoPortRangeLabel') },
+    kind: 'text',
+    monospace: true,
+    placeholder: '20000-30000',
+    get hint() { return t('pipelineJob.fieldAutoPortRangeHint') },
+    when: (c) => !!(c.autoPortRange || '').trim(),
   },
   {
     key: 'runArgs',
@@ -528,6 +553,7 @@ const DEPLOY_CONTAINER_FIELDS: JobField[] = [
     credentialType: 'registry',
     get hint() { return t('pipelineJob.fieldRegistryCredentialHint') },
   },
+  ...REG_BINDING_FIELDS,
 ]
 
 export const JOB_TYPE_SPECS: Record<string, JobTypeSpec> = {

@@ -113,6 +113,132 @@ func (hc *HealthCheck) timeout() time.Duration {
 	return d
 }
 
+// healthSpec 是部署节点健康门控的「待解析」形态。端口号可在部署期自动推导 ——
+// 容器部署 = 自动分配 / 显式映射出的首个宿主端口(起容器后才知道);非容器部署 = regPort ——
+// 故先持有 spec,待端口确定后 resolve 成最终 HealthCheck。用户只需填探测路径(path)。
+//
+// 解析优先级(与既有 cfg 键一致):healthCommand > healthExec > healthUrl > 端口+路径。
+type healthSpec struct {
+	kind            string   // specCommand | specExec | specURL | specPort
+	command         []string // kind=command/exec 时的命令 array
+	url             string   // kind=url(存量完整 URL 写法)
+	path            string   // kind=port 的探测路径(缺省 /)
+	port            int      // kind=port 的显式端口(healthPort);0 = 部署期推导
+	retries         int
+	intervalSeconds int
+	timeoutSeconds  int
+}
+
+const (
+	specCommand = "command"
+	specExec    = "exec"
+	specURL     = "url"
+	specPort    = "port"
+)
+
+// healthCheckSpecFromCfg 从部署节点 config 构造健康门控 spec(未配任何键 → nil,行为与旧一致):
+//   - healthCommand 非空 → command 型,在部署目标服务器 shell 执行(存量/进阶写法);
+//   - 否则 healthExec 非空 → command 型,在部署的容器内执行(docker exec <容器名> sh -c <命令>);
+//   - 否则 healthUrl 非空(存量完整 URL)→ http 型原样使用;
+//   - 否则 healthPort / healthPath / regPort 任一非空 → port 型:URL = http://127.0.0.1:<port><path>,
+//     port 显式值优先,缺省时部署期推导(容器 = 首个映射宿主端口;非容器 = regPort);
+//   - healthRetries / healthIntervalSeconds / healthTimeoutSeconds 可选。
+func healthCheckSpecFromCfg(cfg map[string]string, containerName string) *healthSpec {
+	cmdStr := strings.TrimSpace(cfg["healthCommand"])
+	execStr := strings.TrimSpace(cfg["healthExec"])
+	url := strings.TrimSpace(cfg["healthUrl"])
+	port := strings.TrimSpace(cfg["healthPort"])
+	path := strings.TrimSpace(cfg["healthPath"])
+	if cmdStr == "" && execStr == "" && url == "" && port == "" && path == "" {
+		return nil
+	}
+	sp := &healthSpec{
+		retries:         cfgNonNeg(cfg, "healthRetries"),
+		intervalSeconds: cfgNonNeg(cfg, "healthIntervalSeconds"),
+		timeoutSeconds:  cfgNonNeg(cfg, "healthTimeoutSeconds"),
+	}
+	switch {
+	case cmdStr != "":
+		sp.kind = specCommand
+		sp.command = []string{"sh", "-c", cmdStr}
+	case execStr != "":
+		sp.kind = specExec
+		sp.command = []string{"docker", "exec", containerName, "sh", "-c", execStr}
+	case url != "":
+		sp.kind = specURL
+		sp.url = url
+	default:
+		sp.kind = specPort
+		sp.path = path
+		if p, err := strconv.Atoi(port); err == nil && p > 0 {
+			sp.port = p
+		}
+	}
+	return sp
+}
+
+// resolve 在端口确定后构造最终 HealthCheck:
+//   - command/exec/url 型与端口无关,直接构造;
+//   - port 型取「显式 healthPort > hostPort(部署期推导)」;两者皆无 → nil(无从探测,跳过 ——
+//     与未配置健康检查的旧行为一致)。
+func (sp *healthSpec) resolve(hostPort int) *HealthCheck {
+	if sp == nil {
+		return nil
+	}
+	hc := &HealthCheck{
+		Retries:         sp.retries,
+		IntervalSeconds: sp.intervalSeconds,
+		TimeoutSeconds:  sp.timeoutSeconds,
+	}
+	switch sp.kind {
+	case specCommand, specExec:
+		hc.Type = HealthCheckCommand
+		hc.Command = sp.command
+	case specURL:
+		hc.Type = HealthCheckHTTP
+		hc.URL = sp.url
+	default:
+		port := sp.port
+		if port <= 0 {
+			port = hostPort
+		}
+		if port <= 0 {
+			return nil
+		}
+		path := sp.path
+		if path != "" && !strings.HasPrefix(path, "/") {
+			path = "/" + path
+		}
+		hc.Type = HealthCheckHTTP
+		hc.URL = "http://127.0.0.1:" + strconv.Itoa(port) + path
+	}
+	return hc
+}
+
+// fixedHealthSpec 把显式 HealthCheck(HTTP 直连部署请求的 healthCheck DTO)包装为 spec,
+// 使其与部署节点 spec 走同一条 resolve 链(端口推导不改变显式配置)。
+func fixedHealthSpec(hc *HealthCheck) *healthSpec {
+	if hc == nil {
+		return nil
+	}
+	sp := &healthSpec{
+		retries:         hc.Retries,
+		intervalSeconds: hc.IntervalSeconds,
+		timeoutSeconds:  hc.TimeoutSeconds,
+	}
+	switch hc.Type {
+	case HealthCheckCommand:
+		sp.kind = specCommand
+		sp.command = hc.Command
+	case HealthCheckHTTP:
+		sp.kind = specURL
+		sp.url = strings.TrimSpace(hc.URL) // 空 URL 原样保留:探测时报「缺少 url」(不静默跳过显式配置)
+	default:
+		return nil
+	}
+	return sp
+}
+
 // probeCommand 构造单次探测要跑的 array 命令(AC-SEC-02:各参数独立元素,不拼 shell)。
 //   - http   : curl -fsS --max-time <T> <url>(-f:HTTP 错误码即非零退出;-sS:静默但保留错误)。
 //   - command: 原样返回调用方给定的 cmd array。

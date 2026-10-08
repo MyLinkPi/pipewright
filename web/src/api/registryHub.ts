@@ -28,6 +28,8 @@ export interface RegistryHubConfig {
   /** 服务端解析后的生效目录(占位展示用)。 */
   effectiveArtifactDataDir: string
   effectiveCacheDataDir: string
+  /** 「证书管理」证书 ID(空 = 明文 HTTP;非空 = 双服务挂载该证书走 HTTPS)。 */
+  tlsCertId: string
   keepPerProject: number
   maxAgeDays: number
   /** 只读展示:生成 daemon.json / remoteTag 用的完整地址。 */
@@ -44,6 +46,7 @@ export interface SaveRegistryHubInput {
   cachePort: number
   artifactDataDir: string
   cacheDataDir: string
+  tlsCertId: string
   keepPerProject: number
   maxAgeDays: number
 }

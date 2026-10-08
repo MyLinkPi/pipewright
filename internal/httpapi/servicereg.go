@@ -189,9 +189,9 @@ func writeServiceRegError(w http.ResponseWriter, err error) {
 	case errors.Is(err, servicereg.ErrInstanceTaken):
 		writeError(w, http.StatusConflict, "instance_taken", "该服务下此实例容器名已被占用")
 	case errors.Is(err, servicereg.ErrInvalidInstance):
-		writeError(w, http.StatusBadRequest, "invalid_service_reg", "实例非法:容器名仅字母数字与 . _ -,端口 0..65535(0=继承服务端口)")
-	case errors.Is(err, servicereg.ErrNotContainerService):
-		writeError(w, http.StatusBadRequest, "invalid_service_reg", "实例仅适用于「HTTP + 容器上游」的服务")
+		writeError(w, http.StatusBadRequest, "invalid_service_reg", "实例非法:服务器必填,容器名仅字母数字与 . _ -(非容器实例留空),端口 0..65535(0=继承)")
+	case errors.Is(err, servicereg.ErrNotHTTPService):
+		writeError(w, http.StatusBadRequest, "invalid_service_reg", "实例仅适用于 HTTP 服务(TCP 服务保持单上游)")
 	case errors.Is(err, servicereg.ErrInvalidCert):
 		writeError(w, http.StatusBadRequest, "invalid_cert", "证书/私钥 PEM 非法或两者不配对")
 	case errors.Is(err, servicereg.ErrNoGateway):
@@ -453,12 +453,15 @@ func makeCreateServiceRegServiceHandler(svc servicereg.Service, aud audit.Record
 			writeError(w, http.StatusBadRequest, "bad_request", "请求体格式错误")
 			return
 		}
-		if req.DomainID == nil || req.Name == nil || req.Upstream == nil || req.UpstreamPort == nil {
-			writeError(w, http.StatusBadRequest, "invalid_service_reg", "domainId / name / upstream / upstreamPort 必填")
+		if req.DomainID == nil || req.Name == nil || req.UpstreamPort == nil {
+			writeError(w, http.StatusBadRequest, "invalid_service_reg", "domainId / name / upstreamPort 必填")
 			return
 		}
 		in := servicereg.CreateServiceInput{
-			DomainID: *req.DomainID, Name: *req.Name, Upstream: *req.Upstream, UpstreamPort: *req.UpstreamPort,
+			DomainID: *req.DomainID, Name: *req.Name, UpstreamPort: *req.UpstreamPort,
+		}
+		if req.Upstream != nil {
+			in.Upstream = *req.Upstream
 		}
 		if req.Protocol != nil {
 			in.Protocol = *req.Protocol
@@ -480,6 +483,52 @@ func makeCreateServiceRegServiceHandler(svc servicereg.Service, aud audit.Record
 		})
 		writeJSON(w, http.StatusCreated, map[string]any{
 			"id": created.ID, "name": created.Name, "enabled": created.Enabled,
+		})
+	}
+}
+
+// makeEnsureServiceRegServiceHandler 返回 POST /api/servicereg/services/ensure
+// (部署节点「一键生成」):幂等注册/刷新服务 —— 按(基域, 服务名)定位,存在即刷新上游默认,
+// 不存在即创建;不自动建实例(实例由部署按目标机自动注册)。返回服务 + FQDN 供表单回显。
+func makeEnsureServiceRegServiceHandler(svc servicereg.Service, aud audit.Recorder) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if svc == nil {
+			writeError(w, http.StatusServiceUnavailable, "internal", "服务注册未初始化")
+			return
+		}
+		r.Body = http.MaxBytesReader(w, r.Body, 8<<10)
+		var req serviceRegServiceRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "bad_request", "请求体格式错误")
+			return
+		}
+		if req.DomainID == nil || req.Name == nil || req.UpstreamPort == nil {
+			writeError(w, http.StatusBadRequest, "invalid_service_reg", "domainId / name / upstreamPort 必填")
+			return
+		}
+		in := servicereg.CreateServiceInput{
+			DomainID: *req.DomainID, Name: *req.Name, UpstreamPort: *req.UpstreamPort,
+		}
+		if req.Upstream != nil {
+			in.Upstream = *req.Upstream
+		}
+		if req.Protocol != nil {
+			in.Protocol = *req.Protocol
+		}
+		if req.UpstreamKind != nil {
+			in.UpstreamKind = *req.UpstreamKind
+		}
+		ensured, err := svc.EnsureService(r.Context(), in)
+		if err != nil {
+			writeServiceRegError(w, err)
+			return
+		}
+		recordAudit(r.Context(), aud, audit.Entry{
+			Actor: auditActor, Action: auditActionSRServiceCreate, TargetType: auditTargetServiceReg,
+			TargetID: ensured.ID, Detail: map[string]any{"name": ensured.Name, "ensured": true}, IP: clientIP(r),
+		})
+		writeJSON(w, http.StatusOK, map[string]any{
+			"id": ensured.ID, "name": ensured.Name, "enabled": ensured.Enabled,
 		})
 	}
 }
@@ -604,8 +653,10 @@ func makeApplyServiceRegHandler(svc servicereg.Service, aud audit.Recorder) http
 type serviceRegInstanceDTO struct {
 	ID        string `json:"id"`
 	ServiceID string `json:"serviceId"`
-	Container string `json:"container"`
-	Port      int    `json:"port"` // 0 = 继承服务端口
+	ServerID  string `json:"serverId"`           // 归属服务器('' = 遗留数据待部署认领)
+	Container string `json:"container"`           // 容器名;非容器实例为空
+	Port      int    `json:"port"`                // 服务端口(0 = 继承服务端口)
+	HostPort  int    `json:"hostPort"`            // 网关反代宿主端口(0 = 继承)
 	Attached  bool   `json:"attached"`
 	CreatedAt string `json:"createdAt"`
 	UpdatedAt string `json:"updatedAt"`
@@ -613,8 +664,8 @@ type serviceRegInstanceDTO struct {
 
 func toServiceRegInstanceDTO(i servicereg.Instance) serviceRegInstanceDTO {
 	return serviceRegInstanceDTO{
-		ID: i.ID, ServiceID: i.ServiceID, Container: i.Container, Port: i.Port,
-		Attached: i.Attached,
+		ID: i.ID, ServiceID: i.ServiceID, ServerID: i.ServerID, Container: i.Container,
+		Port: i.Port, HostPort: i.HostPort, Attached: i.Attached,
 		CreatedAt: i.CreatedAt.UTC().Format(time.RFC3339),
 		UpdatedAt: i.UpdatedAt.UTC().Format(time.RFC3339),
 	}
@@ -641,11 +692,14 @@ func makeListServiceRegInstancesHandler(svc servicereg.Service) http.HandlerFunc
 }
 
 // makeAddServiceRegInstanceHandler 返回 POST /api/servicereg/services/{id}/instances
-// {container, port}(port=0 继承服务端口;默认 attached 并立即 apply)。
+// {serverId, container, port, hostPort}(集群模型:server 必填;container 空 = 非容器实例;
+// hostPort 0 = 继承。默认 attached 并立即 apply)。
 func makeAddServiceRegInstanceHandler(svc servicereg.Service, aud audit.Recorder) http.HandlerFunc {
 	type request struct {
+		ServerID  string `json:"serverId"`
 		Container string `json:"container"`
 		Port      int    `json:"port"`
+		HostPort  int    `json:"hostPort"`
 	}
 	return func(w http.ResponseWriter, r *http.Request) {
 		if svc == nil {
@@ -658,14 +712,14 @@ func makeAddServiceRegInstanceHandler(svc servicereg.Service, aud audit.Recorder
 			writeError(w, http.StatusBadRequest, "bad_request", "请求体格式错误")
 			return
 		}
-		inst, err := svc.AddInstance(r.Context(), chi.URLParam(r, "id"), req.Container, req.Port)
+		inst, err := svc.AddInstance(r.Context(), chi.URLParam(r, "id"), req.ServerID, req.Container, req.Port, req.HostPort)
 		if err != nil {
 			writeServiceRegError(w, err)
 			return
 		}
 		recordAudit(r.Context(), aud, audit.Entry{
 			Actor: auditActor, Action: auditActionSRInstanceAdd, TargetType: auditTargetServiceReg,
-			TargetID: inst.ServiceID, Detail: map[string]any{"container": inst.Container}, IP: clientIP(r),
+			TargetID: inst.ServiceID, Detail: map[string]any{"serverId": inst.ServerID, "container": inst.Container}, IP: clientIP(r),
 		})
 		writeJSON(w, http.StatusCreated, toServiceRegInstanceDTO(*inst))
 	}

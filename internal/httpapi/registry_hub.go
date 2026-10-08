@@ -48,6 +48,7 @@ type registryHubConfigDTO struct {
 	CacheDataDir               string  `json:"cacheDataDir"`
 	EffectiveArtifactDataDir   string  `json:"effectiveArtifactDataDir"`
 	EffectiveCacheDataDir      string  `json:"effectiveCacheDataDir"`
+	TLSCertID                  string  `json:"tlsCertId"`
 	KeepPerProject             int     `json:"keepPerProject"`
 	MaxAgeDays                 int     `json:"maxAgeDays"`
 	ArtifactAddr               string  `json:"artifactAddr"`
@@ -68,6 +69,7 @@ func toRegistryHubConfigDTO(c *registryhub.Config, svc registryHubService) regis
 		CacheDataDir:             c.CacheDataDir,
 		EffectiveArtifactDataDir: artifactDir,
 		EffectiveCacheDataDir:    cacheDir,
+		TLSCertID:                c.TLSCertID,
 		KeepPerProject:           c.KeepPerProject,
 		MaxAgeDays:               c.MaxAgeDays,
 		ArtifactAddr:             c.ArtifactAddr(),
@@ -91,6 +93,8 @@ func writeRegistryHubError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusUnprocessableEntity, "invalid_registry_port", "端口非法:须为 1-65535,且制品/缓存端口不得相同")
 	case errors.Is(err, registryhub.ErrInvalidDataDir):
 		writeError(w, http.StatusUnprocessableEntity, "invalid_registry_data_dir", "存储目录非法:须为控制机上的绝对路径,制品/缓存目录不得相同或互为嵌套,也不得罩住栈基目录")
+	case errors.Is(err, registryhub.ErrInvalidTLSCert):
+		writeError(w, http.StatusUnprocessableEntity, "invalid_registry_tls", "TLS 证书非法:证书不存在,或其域名未覆盖外部地址(须公共可信,客户端才能零配置直连)")
 	case errors.Is(err, registryhub.ErrDisabled):
 		writeError(w, http.StatusUnprocessableEntity, "registry_disabled", "内置 registry 未启用:先在设置中开启并保存")
 	case errors.Is(err, registryhub.ErrNoLocalDocker):
@@ -136,6 +140,7 @@ func makeSaveRegistryHubHandler(svc registryHubService) http.HandlerFunc {
 			CachePort       int    `json:"cachePort"`
 			ArtifactDataDir string `json:"artifactDataDir"`
 			CacheDataDir    string `json:"cacheDataDir"`
+			TLSCertID       string `json:"tlsCertId"`
 			KeepPerProject  int    `json:"keepPerProject"`
 			MaxAgeDays      int    `json:"maxAgeDays"`
 		}
@@ -151,6 +156,7 @@ func makeSaveRegistryHubHandler(svc registryHubService) http.HandlerFunc {
 			CachePort:       req.CachePort,
 			ArtifactDataDir: req.ArtifactDataDir,
 			CacheDataDir:    req.CacheDataDir,
+			TLSCertID:       req.TLSCertID,
 			KeepPerProject:  req.KeepPerProject,
 			MaxAgeDays:      req.MaxAgeDays,
 		})

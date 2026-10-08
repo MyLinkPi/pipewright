@@ -27,6 +27,7 @@ import JobTypeIcon from './JobTypeIcon.vue'
 import StepBuilder from './StepBuilder.vue'
 import StudioInstanceParams from './StudioInstanceParams.vue'
 import LabelSelectorEditor from './LabelSelectorEditor.vue'
+import ServiceRegBinding from './ServiceRegBinding.vue'
 
 const props = defineProps<{
   job: PipelineJob
@@ -371,6 +372,29 @@ function updateLocal(key: string, value: string): void {
 
 function setField(key: string, value: string): void {
   updateLocal(key, value)
+  flush()
+}
+
+// ─── 服务注册(部署节点「一键生成」)─────────────────────────────────────────
+// 部署节点专属区块:选基域 + 填服务名 → 幂等注册服务并回填 regServiceId 绑定;
+// 实例由部署按目标机自动注册(容器 = 自动宿主端口 + 扩缩容轮转;非容器 = 摘→升→挂回)。
+
+const DEPLOY_REG_TYPES = new Set(['deploy_container', 'deploy_ssh', 'deploy_frontend'])
+
+const isDeployRegType = computed(() => DEPLOY_REG_TYPES.has(localType.value))
+
+const regContainerMode = computed(() => localType.value === 'deploy_container')
+
+/** 服务注册区写键(空值 = 删除键,如解绑)。 */
+function setRegField(key: string, value: string): void {
+  const v = value.trim()
+  if (v === '') {
+    const next = { ...typedConfig.value }
+    delete next[key]
+    typedConfig.value = next
+  } else {
+    typedConfig.value = { ...typedConfig.value, [key]: v }
+  }
   flush()
 }
 
@@ -732,6 +756,16 @@ async function confirmSave(): Promise<void> {
           {{ t('pipelineJob.stepBuilderHint') }}
         </p>
       </div>
+    </div>
+
+    <!-- 服务注册(部署节点专属:选基域 + 填服务名一键生成;实例部署时自动注册) -->
+    <div v-if="isDeployRegType" class="drawer-section">
+      <div class="drawer-section-label">{{ t('pipelineJob.regSectionLabel') }}</div>
+      <ServiceRegBinding
+        :container-mode="regContainerMode"
+        :config="typedConfig"
+        @set="setRegField"
+      />
     </div>
 
     <!-- Advanced raw KV (extras not covered by the schema) -->

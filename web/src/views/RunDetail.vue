@@ -44,6 +44,7 @@ import TestReportPanel from '../components/run/TestReportPanel.vue'
 import DeployTargets from '../components/run/DeployTargets.vue'
 import RunDagView from '../components/run/RunDagView.vue'
 import PromotionPanel from '../components/run/PromotionPanel.vue'
+import RunResumePanel from '../components/run/RunResumePanel.vue'
 
 // ─── route ────────────────────────────────────────────────────────────────────
 
@@ -640,6 +641,16 @@ function goBack(): void {
           {{ cancelError }}
         </div>
 
+        <!-- ── 按节点恢复溯源:本运行由某个失败运行派生而来 ── -->
+        <div v-if="run.resumedFrom" class="resumed-from-banner" role="status">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+            <path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/>
+          </svg>
+          <router-link class="resumed-from-link" :to="`/runs/${run.resumedFrom}`">
+            {{ t('runDetail.resumedFrom', { id: shortId(run.resumedFrom) }) }}
+          </router-link>
+        </div>
+
         <!-- ── Approval gate (Story 8-4): waiting for manual approval ── -->
         <div
           v-if="run.status === 'waiting_approval' && pendingApproval"
@@ -1071,6 +1082,9 @@ function goBack(): void {
               </div>
             </div>
 
+            <!-- 按节点恢复(FR:失败重试/跳过):逐失败节点选择重试/跳过,创建派生运行 -->
+            <RunResumePanel :run-id="run.id" :steps="run.steps" />
+
             <!-- 失败日志证据(只读历史回放,Story 3-6)。在 AI 诊断面板之上;
                  不属于 7-2 的 DiagnosisPanel slot,二者共存。 -->
             <div class="log-history" role="region" :aria-label="t('runDetail.failedLogAria')">
@@ -1122,6 +1136,9 @@ function goBack(): void {
               </svg>
               {{ t('runDetail.partialInfo') }}
             </div>
+
+            <!-- 按节点恢复(FR:失败重试/跳过):部分失败同样可按节点恢复 -->
+            <RunResumePanel :run-id="run.id" :steps="run.steps" />
 
             <!-- 历史日志回放(只读,Story 3-6) -->
             <div class="log-history" role="region" :aria-label="t('runDetail.historyLogAria')">
@@ -1965,6 +1982,30 @@ function goBack(): void {
 
 .inline-banner {
   margin: 0 24px;
+}
+
+/* ─── resumed-from banner(按节点恢复溯源)────────────────────────────────── */
+.resumed-from-banner {
+  margin: 0 24px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 0.82rem;
+  color: var(--color-cyan);
+  background: var(--color-primary-soft);
+  border: 1px solid var(--color-border);
+  border-radius: var(--rounded);
+  padding: 8px 14px;
+}
+
+.resumed-from-link {
+  color: inherit;
+  text-decoration: none;
+  font-weight: 600;
+}
+
+.resumed-from-link:hover {
+  text-decoration: underline;
 }
 
 /* ─── error state ────────────────────────────────────────────────────────── */

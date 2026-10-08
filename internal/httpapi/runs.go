@@ -52,6 +52,9 @@ type runDetailDTO struct {
 	Targets *any `json:"targets"`
 	// diagnosis:Epic 7 填(AI 诊断);本期恒 null。形状冻结,不在本期建模。
 	Diagnosis *any `json:"diagnosis"`
+	// ResumedFrom:按节点恢复的溯源——本次运行由哪个失败运行派生(链式恢复记直接父运行 id)。
+	// 非恢复运行 / 老数据 → null。**additive 字段**:供运行详情「恢复自 #xxxx」横幅,不改既有形状。
+	ResumedFrom *string `json:"resumedFrom,omitempty"`
 }
 
 type triggerInfo struct {
@@ -69,6 +72,9 @@ type stepDTO struct {
 	StartedAt  *string `json:"startedAt"`
 	FinishedAt *string `json:"finishedAt"`
 	DurationMs *int64  `json:"durationMs"`
+	// Ordinal 是该步骤的全局序号(**additive 字段**):恢复计划(POST /runs/{id}/resume)以它
+	// 标识节点;前端日志过滤亦不再依赖数组下标。与 run_steps.ordinal 同源。
+	Ordinal int `json:"ordinal"`
 }
 
 // runListItemDTO 是 GET /api/runs 列表行(精简;不含 steps/targets/diagnosis)。
@@ -124,6 +130,7 @@ func toRunDetailDTO(r *run.Run, artifacts []run.Artifact, targets []run.DeployTa
 			StartedAt:  rfc3339Ptr(st.StartedAt),
 			FinishedAt: rfc3339Ptr(st.FinishedAt),
 			DurationMs: durationMs(st.StartedAt, st.FinishedAt),
+			Ordinal:    st.Ordinal,
 		})
 	}
 	// diagnosis:Story 7.2 填(失败且已诊断时非 null;否则 null)。冻结子 DTO 形状。
@@ -140,7 +147,7 @@ func toRunDetailDTO(r *run.Run, artifacts []run.Artifact, targets []run.DeployTa
 		targetsSlot = &v
 	}
 
-	return runDetailDTO{
+	dto := runDetailDTO{
 		ID:          r.ID,
 		ProjectID:   r.ProjectID,
 		ProjectName: r.ProjectName,
@@ -161,6 +168,11 @@ func toRunDetailDTO(r *run.Run, artifacts []run.Artifact, targets []run.DeployTa
 		Targets:   targetsSlot,               // Story 4.2 填(部署过 → 数组;否则 null);形状冻结
 		Diagnosis: diagnosis,                 // Story 7.2 填(无诊断 → nil);形状冻结
 	}
+	if r.ResumeOfRunID != "" {
+		rid := r.ResumeOfRunID
+		dto.ResumedFrom = &rid
+	}
+	return dto
 }
 
 func toRunListItemDTO(r *run.Run) runListItemDTO {

@@ -84,7 +84,7 @@ export default {
 
   instances: {
     toggle: 'Instances',
-    hint: 'Une instance est un conteneur sur l’hôte passerelle. La stratégie de déploiement par défaut (rolling d’instances) remplace les instances une à une sans interruption (démarrage → santé de préchauffage → bascule atomique → drain → arrêt de l’ancienne). Les instances détachées gardent leur configuration mais ne reçoivent pas de trafic.',
+    hint: 'Une instance est un membre upstream du cluster (serveur + port hôte) : chaque hôte passerelle rend la même configuration et proxifie toutes les instances du cluster, même les services non déployés localement. Les instances conteneur sont enregistrées automatiquement au déploiement et roulent avec montée→bascule→descente (sans interruption) ; les instances hôte sont enregistrées au déploiement ou ajoutées manuellement et roulent en détacher→mettre à jour→health→rattacher.',
     count: '{n} instances',
     detached: 'détachée',
     detach: 'Détacher',
@@ -94,5 +94,10 @@ export default {
     addFail: 'Échec de l’ajout de l’instance',
     delTitle: 'Supprimer l’instance ?',
     portPlaceholder: 'port (par défaut comme le service)',
+    legacy: 'migration en attente',
+    hostKind: 'processus hôte',
+    containerPlaceholder: 'nom du conteneur (vide pour hôte)',
+    serverPlaceholder: 'Choisir un serveur',
+    hostPortPlaceholder: 'port hôte (0=hériter)',
   },
 }

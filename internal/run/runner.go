@@ -41,6 +41,19 @@ type Runner interface {
 	Run(ctx context.Context, r *Run, sink StepSink) error
 }
 
+// ResumeCapable 是支持「按节点恢复(派生重跑)」的 Runner 可选能力:实现 SupportsResume()
+// 返回 true。仅 DAG runner(dagrun.Runner)实现;legacy Builder / Stub 未实现——恢复运行
+// 交由它们会违背恢复语义(继承节点被重复执行),worker 据此拒绝执行并诚实置失败。
+type ResumeCapable interface {
+	SupportsResume() bool
+}
+
+// SupportsResume 报告 runner 是否支持按节点恢复(见 ResumeCapable)。
+func SupportsResume(rr Runner) bool {
+	rc, ok := rr.(ResumeCapable)
+	return ok && rc.SupportsResume()
+}
+
 // ErrCanceled 表示运行因 context 取消而中止(worker 将其归一为 StatusFailed)。
 var ErrCanceled = errors.New("run: canceled")
 

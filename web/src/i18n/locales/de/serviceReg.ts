@@ -84,7 +84,7 @@ export default {
 
   instances: {
     toggle: 'Instanzen',
-    hint: 'Eine Instanz ist ein Container auf dem Gateway-Host. Die Standard-Deploy-Strategie (Instance-Rolling) ersetzt Instanzen einzeln ohne Ausfallzeit (neu starten → Warm-up-Healthcheck → atomarer Wechsel → Drain → alten stoppen). Abgehängte Instanzen behalten ihre Konfiguration, erhalten aber keinen Traffic.',
+    hint: 'Eine Instanz ist ein Cluster-Upstream-Mitglied (Server + Host-Port): jeder Gateway-Host rendert dieselbe Konfiguration und proxyt alle Cluster-Instanzen — auch lokal nicht deployte Dienste. Container-Instanzen werden beim Deploy automatisch registriert und rollen mit Surge→Wechsel→Runterfahren (ohne Ausfall); Host-Instanzen werden beim Deploy registriert oder manuell angelegt und rollen via Abhängen→Upgrade→Health→Wieder-Anhängen.',
     count: '{n} Instanzen',
     detached: 'abgehängt',
     detach: 'Abhängen',
@@ -94,5 +94,10 @@ export default {
     addFail: 'Instanz konnte nicht hinzugefügt werden',
     delTitle: 'Instanz löschen?',
     portPlaceholder: 'Port (Standard wie Dienst)',
+    legacy: 'Migration ausstehend',
+    hostKind: 'Host-Prozess',
+    containerPlaceholder: 'Containername (leer für Host)',
+    serverPlaceholder: 'Server wählen',
+    hostPortPlaceholder: 'Host-Port (0=erben)',
   },
 }

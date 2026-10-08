@@ -40,11 +40,12 @@ func NormalizeStrategy(string) string {
 // deployRolling 统一滚动编排(结果按 servers 输入顺序对齐,稳定可断言):
 //
 //  1. 预检排序(故障机优先):配置了健康检查 → 先对全部目标机逐台预检(复用 runHealthCheck),
-//     预检不过的排到队首先修,其余保持稳定顺序;预检原因记入该机结果 message。
+//     预检不过的排到队首先修,其余保持稳定顺序;预检原因记入该机结果 message。端口型探测在
+//     预检阶段仅当端口可静态推导(显式 healthPort / regPort)时执行 —— 自动分配端口起容器前不可知。
 //  2. 分批:首批 = 排序后前 firstBatchSize 台(默认 1),之后每批 batchSize 台(默认全部剩余);
 //     任一批有失败 → 立即停止,未轮到的机器记 pending(未部署,仍运行旧版本)。
 //  3. 每机独立执行 + 独立回滚(deployOne;批次内并行 deployFanout)。
-func (s *service) deployRolling(ctx context.Context, servers []*target.Server, a run.Artifact, cfg map[string]string, hc *HealthCheck) []TargetResult {
+func (s *service) deployRolling(ctx context.Context, servers []*target.Server, a run.Artifact, cfg map[string]string, hsp *healthSpec) []TargetResult {
 	total := len(servers)
 	if total == 0 {
 		return nil
@@ -56,8 +57,9 @@ func (s *service) deployRolling(ctx context.Context, servers []*target.Server, a
 		order[i] = i
 	}
 	precheckReasons := map[int]string{}
-	if hc.enabled() {
-		failing := s.precheckFailing(ctx, servers, hc)
+	precheckHC := hsp.resolve(cfgNonNeg(cfg, "regPort"))
+	if precheckHC.enabled() {
+		failing := s.precheckFailing(ctx, servers, precheckHC)
 		if len(failing) > 0 {
 			ordered := make([]int, 0, total)
 			for _, i := range order {
@@ -98,7 +100,7 @@ func (s *service) deployRolling(ctx context.Context, servers []*target.Server, a
 		for _, i := range batchIdx {
 			batch = append(batch, servers[i])
 		}
-		batchRes := s.deployFanout(ctx, batch, a, cfg, hc)
+		batchRes := s.deployFanout(ctx, batch, a, cfg, hsp)
 		for j, r := range batchRes {
 			i := batchIdx[j]
 			if reason, bad := precheckReasons[i]; bad && r.Status == run.TargetFailed {

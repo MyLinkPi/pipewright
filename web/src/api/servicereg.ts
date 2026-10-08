@@ -92,13 +92,19 @@ export interface Gateway {
   lastApplyErrors: Record<string, string> | null
 }
 
-/** 服务实例:多实例 upstream 成员(实例级轮转的单元)。 */
+/** 服务实例:集群 upstream 成员 = (服务器, 宿主端口)。容器实例 container 非空,
+ * 由部署自动注册(宿主端口自动分配);非容器实例 container 为空(部署注册或人工添加)。 */
 export interface ServiceInstance {
   id: string
   serviceId: string
+  /** 归属服务器;'' = 遗留数据(待下次部署认领)。 */
+  serverId: string
+  /** 容器名;非容器实例为空。 */
   container: string
-  /** 0 = 继承服务默认端口。 */
+  /** 服务端口(0 = 继承服务默认端口)。 */
   port: number
+  /** 网关反代宿主端口(0 = 继承)。 */
+  hostPort: number
   /** false = 已摘除(不渲染进 upstream)。 */
   attached: boolean
   createdAt: string
@@ -123,6 +129,7 @@ export interface ServiceCreateInput {
   name: string
   protocol: ServiceProtocol
   upstreamKind: UpstreamKind
+  /** http+container 部署托管服务可空(实例行携带容器名)。 */
   upstream: string
   upstreamPort: number
   tcpListenPort?: number
@@ -158,6 +165,10 @@ export const listServices = (): Promise<{ items: RegisteredService[] }> =>
 export const createService = (in_: ServiceCreateInput): Promise<{ id: string; name: string; enabled: boolean }> =>
   http.post('/api/servicereg/services', in_)
 
+/** 一键生成(幂等):按(基域, 服务名)注册/刷新服务;实例由部署按目标机自动注册。 */
+export const ensureService = (in_: ServiceCreateInput): Promise<{ id: string; name: string; enabled: boolean }> =>
+  http.post('/api/servicereg/services/ensure', in_)
+
 export const deleteService = (id: string): Promise<{ ok: boolean }> =>
   http.delete(`/api/servicereg/services/${encodeURIComponent(id)}`)
 
@@ -170,8 +181,16 @@ export const applyServiceReg = (): Promise<{ ok: boolean }> =>
 export const listInstances = (serviceId: string): Promise<{ items: ServiceInstance[] }> =>
   http.get(`/api/servicereg/services/${encodeURIComponent(serviceId)}/instances`)
 
-export const addInstance = (serviceId: string, container: string, port: number): Promise<ServiceInstance> =>
-  http.post(`/api/servicereg/services/${encodeURIComponent(serviceId)}/instances`, { container, port })
+export const addInstance = (
+  serviceId: string,
+  serverId: string,
+  container: string,
+  port: number,
+  hostPort: number,
+): Promise<ServiceInstance> =>
+  http.post(`/api/servicereg/services/${encodeURIComponent(serviceId)}/instances`, {
+    serverId, container, port, hostPort,
+  })
 
 export const removeInstance = (id: string): Promise<{ ok: boolean }> =>
   http.delete(`/api/servicereg/instances/${encodeURIComponent(id)}`)

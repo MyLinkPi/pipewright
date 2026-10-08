@@ -84,7 +84,7 @@ export default {
 
   instances: {
     toggle: 'Instances',
-    hint: 'An instance is one container on the gateway host. The default deploy strategy (instance rolling) replaces instances one by one with zero downtime (start new → warm-up health → atomic swap → drain → stop old). Detached instances keep their config but take no traffic.',
+    hint: 'An instance is a cluster upstream member (server + host port): every gateway host renders the same config and proxies all cluster instances — even services not deployed locally. Container instances are auto-registered at deploy time and roll with surge→swap→scale-down (zero downtime); host instances are deploy-registered or added manually and roll via detach→upgrade→health→re-attach.',
     count: '{n} instances',
     detached: 'detached',
     detach: 'Detach',
@@ -94,5 +94,10 @@ export default {
     addFail: 'Failed to add instance',
     delTitle: 'Delete instance?',
     portPlaceholder: 'port (defaults to service)',
+    legacy: 'pending migration',
+    hostKind: 'host process',
+    containerPlaceholder: 'container name (empty for host)',
+    serverPlaceholder: 'Select a server',
+    hostPortPlaceholder: 'host port (0=inherit)',
   },
 }

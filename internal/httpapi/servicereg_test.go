@@ -280,32 +280,40 @@ func TestServiceRegInstanceFlow(t *testing.T) {
 	_ = json.NewDecoder(resp.Body).Decode(&created)
 	resp.Body.Close()
 
-	// 列表:自动实例 #1。
+	// 列表:集群模型不自动建实例(实例 = 服务器+端口,由部署自动注册或人工添加)。
 	resp = doJSON(t, client, http.MethodGet, srv.URL+"/api/servicereg/services/"+created.ID+"/instances", "", "")
 	var list struct {
 		Items []struct {
 			ID        string `json:"id"`
+			ServerID  string `json:"serverId"`
 			Container string `json:"container"`
+			HostPort  int    `json:"hostPort"`
 			Attached  bool   `json:"attached"`
 		} `json:"items"`
 	}
 	_ = json.NewDecoder(resp.Body).Decode(&list)
 	resp.Body.Close()
-	if len(list.Items) != 1 || list.Items[0].Container != "web" {
-		t.Fatalf("应自动建实例 #1:%+v", list.Items)
+	if len(list.Items) != 0 {
+		t.Fatalf("集群模型创建服务不应自动建实例:%+v", list.Items)
 	}
 
-	// 加实例 + 摘挂 + 删除。
+	// 加实例(server 必填;缺 server → 400)+ 摘挂 + 删除。
 	resp = doJSON(t, client, http.MethodPost, srv.URL+"/api/servicereg/services/"+created.ID+"/instances", csrf,
 		`{"container":"web-2","port":9090}`)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("缺 serverId 应 400:%d", resp.StatusCode)
+	}
+	resp.Body.Close()
+	resp = doJSON(t, client, http.MethodPost, srv.URL+"/api/servicereg/services/"+created.ID+"/instances", csrf,
+		`{"serverId":"srv-2","container":"web-2","port":9090,"hostPort":20002}`)
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("加实例:%d", resp.StatusCode)
 	}
 	resp.Body.Close()
 	resp = doJSON(t, client, http.MethodPost, srv.URL+"/api/servicereg/services/"+created.ID+"/instances", csrf,
-		`{"container":"web-2","port":0}`)
+		`{"serverId":"srv-2","container":"web-2","port":0}`)
 	if resp.StatusCode != http.StatusConflict {
-		t.Fatalf("重名实例应 409:%d", resp.StatusCode)
+		t.Fatalf("同服务器重名实例应 409:%d", resp.StatusCode)
 	}
 	resp.Body.Close()
 
@@ -335,6 +343,43 @@ func TestServiceRegInstanceFlow(t *testing.T) {
 	// 未配网关:全程无编排命令。
 	if len(ft.execCalls) != 0 {
 		t.Fatalf("未配网关不应编排:%v", ft.execCalls)
+	}
+}
+
+// TestServiceRegEnsureService:「一键生成」幂等注册 —— 首保创建、重复 ensure 复用同一服务。
+func TestServiceRegEnsureService(t *testing.T) {
+	srv, _, _ := setupServiceRegServer(t)
+	client, csrf := loginSR(t, srv.URL)
+
+	resp := doJSON(t, client, http.MethodPost, srv.URL+"/api/servicereg/domains", csrf, `{"baseDomain":"efg.com"}`)
+	var dom struct {
+		ID string `json:"id"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&dom)
+	resp.Body.Close()
+
+	body := `{"domainId":"` + dom.ID + `","name":"shop","upstreamKind":"container","upstreamPort":8080}`
+	resp = doJSON(t, client, http.MethodPost, srv.URL+"/api/servicereg/services/ensure", csrf, body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("首保 ensure:%d", resp.StatusCode)
+	}
+	var first struct {
+		ID string `json:"id"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&first)
+	resp.Body.Close()
+
+	resp = doJSON(t, client, http.MethodPost, srv.URL+"/api/servicereg/services/ensure", csrf, body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("重复 ensure:%d", resp.StatusCode)
+	}
+	var second struct {
+		ID string `json:"id"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&second)
+	resp.Body.Close()
+	if first.ID == "" || first.ID != second.ID {
+		t.Fatalf("重复 ensure 应复用同一服务:%q vs %q", first.ID, second.ID)
 	}
 }
 

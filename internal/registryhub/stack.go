@@ -2,6 +2,7 @@ package registryhub
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -22,6 +23,12 @@ const (
 	registryImage = "registry:2"
 	artifactCont  = "pipewright-registry"
 	cacheCont     = "pipewright-registry-cache"
+
+	// TLS PEM 落盘文件名与容器内路径(挂载 <certsDir>:/certs:ro,registry:2 原生支持)。
+	certPEMName    = "fullchain.pem"
+	certKeyName    = "privkey.pem"
+	certPathInCont = "/certs/" + certPEMName
+	keyPathInCont  = "/certs/" + certKeyName
 )
 
 // defaultArtifactDataDir / defaultCacheDataDir 返回存储目录默认值;baseDir 未知(空)时
@@ -53,6 +60,34 @@ func (h *Hub) resolveCacheDir(cfg *Config) string {
 		return cfg.CacheDataDir
 	}
 	return defaultCacheDataDir(h.opts.BaseDir)
+}
+
+// resolveCertsDir 返回 TLS 证书 PEM 在控制机的落盘目录(部署时挂载进双服务容器)。
+func (h *Hub) resolveCertsDir() string {
+	return filepath.Join(h.opts.BaseDir, "certs")
+}
+
+// localRegistryURL 返回控制机本机访问 registry 的 base URL(TLS on → https;127.0.0.1 直打,
+// 不经 external_addr,避免依赖外部 DNS/防火墙)。
+func (h *Hub) localRegistryURL(cfg *Config, port int) string {
+	scheme := "http"
+	if cfg.TLSEnabled() {
+		scheme = "https"
+	}
+	return fmt.Sprintf("%s://127.0.0.1:%d", scheme, port)
+}
+
+// probeHTTPClient 返回本机访问 registry 的 HTTP 客户端:TLS on 时跳过证书校验 —— 请求打的是
+// 127.0.0.1,证书 SAN 不覆盖回环地址;此处只验证「服务在 speak TLS/HTTP」,不验证身份
+// (控制机自调用,无中间人面,goosec 豁免)。TLS off 原样返回共享客户端。
+func (h *Hub) probeHTTPClient(cfg *Config) *http.Client {
+	if !cfg.TLSEnabled() {
+		return h.opts.HTTPClient
+	}
+	return &http.Client{
+		Timeout:   10 * time.Second,
+		Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}, //nolint:gosec // 本机探活,见上
+	}
 }
 
 // DeployResult 是 DeployStack 的结果(ok=false 时 error 人读)。
@@ -114,10 +149,18 @@ func (h *Hub) composeBin(ctx context.Context) ([]string, error) {
 // renderCompose 生成栈 compose 文件内容(端口/上游/存储路径全部具值渲染,不依赖 env 替换)。
 //   - 制品服务:开 REGISTRY_STORAGE_DELETE_ENABLED(保留策略 DELETE manifest 需要)
 //   - 缓存服务:REGISTRY_PROXY_REMOTEURL=上游(pull-through 只读代理;切上游改此值重建即可)
-//   - 卷源整行加引号:路径可含空格;解析方(parseComposeDataDirs)按此格式还原
+//   - TLS:选了证书 → 双服务同挂只读证书卷 + REGISTRY_HTTP_TLS_*(同域名不同端口共用一张);
+//     空 = 明文 HTTP
+//   - 卷源整行加引号:路径可含空格;解析方(parseComposeDataDirs)按 `- "<dir>:/var/lib/registry"`
+//     形态还原,该行格式不得变
 func (h *Hub) renderCompose(cfg *Config) string {
 	dataDir := h.resolveArtifactDir(cfg)
 	cacheDir := h.resolveCacheDir(cfg)
+	tlsEnv, tlsVol := "", ""
+	if cfg.TLSEnabled() {
+		tlsEnv = fmt.Sprintf("      %s: %s\n      %s: %s\n", "REGISTRY_HTTP_TLS_CERTIFICATE", certPathInCont, "REGISTRY_HTTP_TLS_KEY", keyPathInCont)
+		tlsVol = fmt.Sprintf("      - \"%s:/certs:ro\"\n", h.resolveCertsDir())
+	}
 	return fmt.Sprintf(`# 由 pipewright 自动生成,手动修改会在下次部署时被覆盖。
 services:
   registry:
@@ -128,9 +171,9 @@ services:
       - "%d:5000"
     environment:
       REGISTRY_STORAGE_DELETE_ENABLED: "true"
-    volumes:
+%s    volumes:
       - "%s:/var/lib/registry"
-  registry-cache:
+%s  registry-cache:
     image: %s
     container_name: %s
     restart: unless-stopped
@@ -138,11 +181,11 @@ services:
       - "%d:5000"
     environment:
       REGISTRY_PROXY_REMOTEURL: %q
-    volumes:
+%s    volumes:
       - "%s:/var/lib/registry"
-`,
-		registryImage, artifactCont, cfg.ArtifactPort, dataDir,
-		registryImage, cacheCont, cfg.CachePort, cfg.UpstreamURL, cacheDir)
+%s`,
+		registryImage, artifactCont, cfg.ArtifactPort, tlsEnv, dataDir, tlsVol,
+		registryImage, cacheCont, cfg.CachePort, cfg.UpstreamURL, tlsEnv, cacheDir, tlsVol)
 }
 
 // DeployStack 在控制机本机部署/更新 registry 栈:渲染 compose → 落盘 → compose up -d
@@ -166,6 +209,9 @@ func (h *Hub) DeployStack(ctx context.Context) (*DeployResult, error) {
 	notes, err := h.convergeDataDirs(ctx, cfg, composePath)
 	if err != nil {
 		return &DeployResult{OK: false, Output: tail(strings.Join(notes, "\n"), 4096), Error: err.Error()}, nil
+	}
+	if cerr := h.syncCertPEMs(ctx, cfg); cerr != nil {
+		return &DeployResult{OK: false, Error: cerr.Error()}, nil
 	}
 	for _, dir := range []string{h.opts.BaseDir, h.resolveArtifactDir(cfg), h.resolveCacheDir(cfg)} {
 		if mkErr := os.MkdirAll(dir, 0o755); mkErr != nil {
@@ -262,6 +308,40 @@ func (h *Hub) resetCacheData(ctx context.Context, oldDir, newArtifactDir string)
 	return []string{"已清除缓存旧目录:" + oldDir + "(缓存将按需重新拉取)"}, nil
 }
 
+// syncCertPEMs 在写 compose 前收敛 TLS 证书落盘:TLS on → 经 CertSource 进程内解密,把
+// fullchain(0644)/私钥(0600)写入 certs 目录(挂载进容器,私钥不留全局可读);证书读取
+// 失败诚实报错(compose 不动,绝不让半成品证书进容器)。TLS off → 清掉 certs 目录(切换
+// 回明文后私钥不留盘)。基目录未知时拒绝(无处落盘,与 DeployStack 的 MkdirAll 语义一致)。
+func (h *Hub) syncCertPEMs(ctx context.Context, cfg *Config) error {
+	if h.opts.BaseDir == "" {
+		return errors.New("栈基目录未知,无法收敛 TLS 证书")
+	}
+	dir := h.resolveCertsDir()
+	if !cfg.TLSEnabled() {
+		if err := os.RemoveAll(dir); err != nil {
+			return fmt.Errorf("清除证书目录 %s 失败:%w", dir, err)
+		}
+		return nil
+	}
+	if h.opts.Certs == nil {
+		return errors.New("证书能力未装配,无法部署 TLS 栈")
+	}
+	certPEM, keyPEM, err := h.opts.Certs.OpenCertPEM(ctx, cfg.TLSCertID)
+	if err != nil {
+		return fmt.Errorf("读取证书 %s 失败:%w", cfg.TLSCertID, err)
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("创建证书目录 %s 失败:%w", dir, err)
+	}
+	if werr := os.WriteFile(filepath.Join(dir, certPEMName), []byte(certPEM), 0o644); werr != nil {
+		return fmt.Errorf("写入 %s 失败:%w", certPEMName, werr)
+	}
+	if werr := os.WriteFile(filepath.Join(dir, certKeyName), []byte(keyPEM), 0o600); werr != nil {
+		return fmt.Errorf("写入 %s 失败:%w", certKeyName, werr)
+	}
+	return nil
+}
+
 // Status 汇总栈当前状态(compose 文件存在性 + 容器 State + 本机 /v2/ 探活 + 存储占用)。
 // 全部探测 best-effort:任何子项失败仅置 false/汇总 Error,绝不因单项失败整体报错。
 func (h *Hub) Status(ctx context.Context) (*Status, error) {
@@ -276,8 +356,8 @@ func (h *Hub) Status(ctx context.Context) (*Status, error) {
 	}
 	st.ArtifactRunning = h.containerRunning(ctx, artifactCont)
 	st.CacheRunning = h.containerRunning(ctx, cacheCont)
-	st.ArtifactReachable = pingV2(ctx, h.opts.HTTPClient, cfg.ArtifactPort)
-	st.CacheReachable = pingV2(ctx, h.opts.HTTPClient, cfg.CachePort)
+	st.ArtifactReachable = pingV2(ctx, h.probeHTTPClient(cfg), h.localRegistryURL(cfg, cfg.ArtifactPort))
+	st.CacheReachable = pingV2(ctx, h.probeHTTPClient(cfg), h.localRegistryURL(cfg, cfg.CachePort))
 	st.DataDirBytes = dirSize(h.resolveArtifactDir(cfg))
 	st.CacheDirBytes = dirSize(h.resolveCacheDir(cfg))
 	return st, nil
@@ -292,12 +372,13 @@ func (h *Hub) containerRunning(ctx context.Context, name string) bool {
 	return strings.TrimSpace(out) == "running"
 }
 
-// pingV2 对本机 <port>/v2/ 发 GET:200/401 都算可达(registry 无鉴权时 200)。
-func pingV2(ctx context.Context, hc *http.Client, port int) bool {
+// pingV2 对本机 <base>/v2/ 发 GET:200/401 都算可达(registry 无鉴权时 200;TLS 栈的
+// base 为 https 且客户端已带 InsecureSkipVerify,见 probeHTTPClient)。
+func pingV2(ctx context.Context, hc *http.Client, base string) bool {
 	if hc == nil {
 		hc = &http.Client{Timeout: 3 * time.Second}
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("http://127.0.0.1:%d/v2/", port), nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(base, "/")+"/v2/", nil)
 	if err != nil {
 		return false
 	}

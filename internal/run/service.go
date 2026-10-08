@@ -27,6 +27,14 @@ type Service interface {
 	// Create 创建一次流水线运行(状态 queued)并入库,随后入队由 worker pool 调度。
 	// 供 Story 3-2(触发)调用;本期亦内部 + 测试用。项目不存在 → ErrProjectNotFound。
 	Create(ctx context.Context, projectID string, trigger Trigger) (*Run, error)
+	// CreateResume 从失败/部分失败的父运行**按节点恢复**创建派生运行(FR:失败重试/跳过):
+	// 复制父运行的触发上下文(分支/commit/参数/解析环境;type=manual 使 when 条件行为一致,
+	// actor=操作人)+ 产物行 + 部署目标行(部署增量重试的状态基线),记录 resume_of_run_id
+	// 溯源与 resume_plan_json(下标 = ordinal 的节点动作数组)。随后入队调度,执行器(dagrun)
+	// 纯按计划应用:inherit 继承为成功不重跑、retry 真实重跑、skip 跳过放行下游、run 正常执行。
+	// 父运行不存在 → ErrNotFound;非失败/部分失败终态 → ErrNotResumable;
+	// 计划非法(空 / 含未知动作 / 全 inherit 无任何实际动作)→ ErrInvalidResumePlan。
+	CreateResume(ctx context.Context, parentID string, actions []string, actor string) (*Run, error)
 	// Get 返回单次运行(含步骤,按 ordinal 升序;join 项目名)。不存在 → ErrNotFound。
 	Get(ctx context.Context, id string) (*Run, error)
 	// List 按筛选/分页返回运行(列表行精简,不含步骤)。
@@ -241,8 +249,9 @@ func (s *service) Create(ctx context.Context, projectID string, trigger Trigger)
 		`INSERT INTO pipeline_runs
 		   (id, project_id, status, trigger_type, trigger_branch, trigger_commit, trigger_actor,
 		    resolved_environment, resolved_target_server_ids, params_json,
-		    chain_source_run_id, chain_depth, created_at, started_at, finished_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)`,
+		    chain_source_run_id, chain_depth, created_at, started_at, finished_at,
+		    resume_of_run_id, resume_plan_json)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, '', '')`,
 		id, projectID, StatusQueued, tt, trigger.Branch, trigger.Commit, trigger.Actor,
 		trigger.ResolvedEnvironment, string(targetIDsJSON), string(paramsJSON),
 		strings.TrimSpace(trigger.ChainSourceRunID), chainDepth,
@@ -273,6 +282,157 @@ func (s *service) Create(ctx context.Context, projectID string, trigger Trigger)
 	return created, nil
 }
 
+// CreateResume 实现 Service.CreateResume(见接口注释):失败运行按节点恢复的派生运行创建。
+//
+// 与 Create 的差异:触发上下文整体复制自父运行(不再走环境补解析——父运行已解析,分支未变);
+// type 落 manual(when: type 条件与手动运行同语义);额外记录 resume 两列,并把父运行的
+// run_artifacts / deploy_targets 行复制过来——前者供跨阶段产物恢复(restorePriorArtifacts 按
+// run_id 查询),后者是部署节点增量重试的状态基线(已成功机器不再重复部署)。
+func (s *service) CreateResume(ctx context.Context, parentID string, actions []string, actor string) (*Run, error) {
+	parent, err := s.Get(ctx, strings.TrimSpace(parentID))
+	if err != nil {
+		return nil, err // ErrNotFound 原样上抛(HTTP 层映射 404)
+	}
+	if parent.Status != StatusFailed && parent.Status != StatusPartialFailed {
+		return nil, ErrNotResumable
+	}
+	hasAction := false
+	for _, a := range actions {
+		switch a {
+		case NodeInherit, NodeRun, NodeRetry, NodeSkip:
+			if a != NodeInherit {
+				hasAction = true
+			}
+		default:
+			return nil, ErrInvalidResumePlan
+		}
+	}
+	if len(actions) == 0 || !hasAction {
+		return nil, ErrInvalidResumePlan // 空 / 全 inherit = 无任何实际动作的空转运行,拒绝
+	}
+	planJSON, err := json.Marshal(actions)
+	if err != nil {
+		return nil, fmt.Errorf("run: marshal resume plan: %w", err)
+	}
+
+	// 触发上下文复制自父运行;操作人 = 恢复发起者(审计语义),空则沿用父运行 actor。
+	trigger := parent.Trigger
+	trigger.Type = TriggerManual
+	if a := strings.TrimSpace(actor); a != "" {
+		trigger.Actor = a
+	}
+	targetIDs := trigger.ResolvedTargetServerIDs
+	if targetIDs == nil {
+		targetIDs = []string{}
+	}
+	targetIDsJSON, merr := json.Marshal(targetIDs)
+	if merr != nil {
+		return nil, fmt.Errorf("run: marshal resolved target server ids: %w", merr)
+	}
+	params := trigger.Params
+	if params == nil {
+		params = map[string]string{}
+	}
+	paramsJSON, merr := json.Marshal(params)
+	if merr != nil {
+		return nil, fmt.Errorf("run: marshal params: %w", merr)
+	}
+
+	now := time.Now().UTC()
+	id := uuid.NewString()
+	// 插入运行 + 复制产物/部署目标同事务:任一失败整体回滚,不留半套派生数据。
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("run: begin resume tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }() // 成功路径显式 Commit 后为 no-op
+
+	if _, err = tx.ExecContext(ctx,
+		`INSERT INTO pipeline_runs
+		   (id, project_id, status, trigger_type, trigger_branch, trigger_commit, trigger_actor,
+		    resolved_environment, resolved_target_server_ids, params_json,
+		    chain_source_run_id, chain_depth, created_at, started_at, finished_at,
+		    resume_of_run_id, resume_plan_json)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?)`,
+		id, parent.ProjectID, StatusQueued, TriggerManual, trigger.Branch, trigger.Commit, trigger.Actor,
+		trigger.ResolvedEnvironment, string(targetIDsJSON), string(paramsJSON),
+		trigger.ChainSourceRunID, trigger.ChainDepth,
+		now.Format(time.RFC3339),
+		parent.ID, string(planJSON),
+	); err != nil {
+		return nil, fmt.Errorf("run: insert resume run: %w", err)
+	}
+
+	// 复制父运行产物行(新 id / 新 run_id,引用与 metadata 原样):先读全再逐行插,
+	// 避免同事务内边遍历边写。产物量级小(几十条),循环插入即可。
+	type copiedRow struct{ vals []any }
+	copyRows := func(selectSQL string, cols int, insertSQL string) error {
+		rows, err := tx.QueryContext(ctx, selectSQL, parent.ID)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		var batch []copiedRow
+		for rows.Next() {
+			vals := make([]any, cols)
+			ptrs := make([]any, cols)
+			for i := range vals {
+				ptrs[i] = &vals[i]
+			}
+			if err := rows.Scan(ptrs...); err != nil {
+				return err
+			}
+			batch = append(batch, copiedRow{vals: vals})
+		}
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		for _, cr := range batch {
+			args := append([]any{uuid.NewString(), id}, cr.vals...)
+			if _, err := tx.ExecContext(ctx, insertSQL, args...); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	if err := copyRows(
+		`SELECT type, name, reference, size_bytes, metadata_json, created_at
+		   FROM run_artifacts WHERE run_id = ?`, 6,
+		`INSERT INTO run_artifacts (id, run_id, type, name, reference, size_bytes, metadata_json, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`); err != nil {
+		return nil, fmt.Errorf("run: copy resume artifacts: %w", err)
+	}
+	if err := copyRows(
+		`SELECT server_id, server_name, status, message, started_at, finished_at
+		   FROM deploy_targets WHERE run_id = ?`, 6,
+		`INSERT INTO deploy_targets (id, run_id, server_id, server_name, status, message, started_at, finished_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`); err != nil {
+		return nil, fmt.Errorf("run: copy resume deploy targets: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("run: commit resume: %w", err)
+	}
+
+	created, err := s.Get(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	// 入队与 Create 同约定:入队失败删净派生数据,不留永不调度的运行(注意 deploy_targets
+	// 无级联删除,须先删子表)。
+	s.enqueueMu.RLock()
+	fn := s.enqueue
+	s.enqueueMu.RUnlock()
+	if fn != nil {
+		if err := fn(id); err != nil {
+			_, _ = s.db.ExecContext(ctx, `DELETE FROM deploy_targets WHERE run_id = ?`, id)
+			_, _ = s.db.ExecContext(ctx, `DELETE FROM run_artifacts WHERE run_id = ?`, id)
+			_, _ = s.db.ExecContext(ctx, `DELETE FROM pipeline_runs WHERE id = ? AND status = ?`, id, StatusQueued)
+			return nil, err
+		}
+	}
+	return created, nil
+}
+
 func (s *service) Get(ctx context.Context, id string) (*Run, error) {
 	var (
 		r             Run
@@ -283,6 +443,8 @@ func (s *service) Get(ctx context.Context, id string) (*Run, error) {
 		diagnosisJSON string
 		paramsJSON    string
 		targetIDsJSON sql.NullString
+		resumeOf      string
+		resumePlan    string
 	)
 	r.ID = id
 	err := s.db.QueryRowContext(ctx,
@@ -292,7 +454,8 @@ func (s *service) Get(ctx context.Context, id string) (*Run, error) {
 		        pr.failure_log, pr.diagnosis_json, pr.params_json,
 		        pr.chain_source_run_id, pr.chain_depth,
 		        pr.resolved_environment, pr.resolved_target_server_ids,
-		        pr.spec_source, pr.spec_source_ref, pr.spec_source_file, pr.spec_source_fallback
+		        pr.spec_source, pr.spec_source_ref, pr.spec_source_file, pr.spec_source_fallback,
+		        pr.resume_of_run_id, pr.resume_plan_json
 		 FROM pipeline_runs pr
 		 LEFT JOIN projects p ON p.id = pr.project_id
 		 WHERE pr.id = ?`, id,
@@ -302,7 +465,8 @@ func (s *service) Get(ctx context.Context, id string) (*Run, error) {
 		&failureLog, &diagnosisJSON, &paramsJSON,
 		&r.Trigger.ChainSourceRunID, &r.Trigger.ChainDepth,
 		&r.Trigger.ResolvedEnvironment, &targetIDsJSON,
-		&r.SpecSource.Source, &r.SpecSource.Ref, &r.SpecSource.File, &r.SpecSource.Fallback)
+		&r.SpecSource.Source, &r.SpecSource.Ref, &r.SpecSource.File, &r.SpecSource.Fallback,
+		&resumeOf, &resumePlan)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
@@ -328,6 +492,19 @@ func (s *service) Get(ctx context.Context, id string) (*Run, error) {
 		var params map[string]string
 		if json.Unmarshal([]byte(paramsJSON), &params) == nil {
 			r.Trigger.Params = params
+		}
+	}
+
+	// 恢复溯源(FR:失败按节点恢复):resume_of_run_id 非空即派生运行。计划 JSON 解析失败/为空
+	// (脏数据防御,不阻断详情读取)时置**空计划而非 nil**——nil 会被执行器当普通运行静默全量
+	// 重跑(继承语义丢失);空计划则因长度与布局不符被 dagrun 明确判失败,绝不静默全量。
+	r.ResumeOfRunID = strings.TrimSpace(resumeOf)
+	if r.ResumeOfRunID != "" {
+		var actions []string
+		if json.Unmarshal([]byte(resumePlan), &actions) == nil && len(actions) > 0 {
+			r.Resume = &ResumePlan{ParentRunID: r.ResumeOfRunID, Actions: actions}
+		} else {
+			r.Resume = &ResumePlan{ParentRunID: r.ResumeOfRunID}
 		}
 	}
 
