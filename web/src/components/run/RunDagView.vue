@@ -26,7 +26,7 @@ import {
 } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { localizeName } from '../../lib/pipelineLabels'
-import type { RunStep, StepStatus } from '../../api/runs'
+import type { RunStep, StepStatus, ApprovalRecord } from '../../api/runs'
 import type { PipelineStage } from '../../api/pipeline'
 import { getPipeline } from '../../api/pipeline'
 import { HttpError } from '../../api/http'
@@ -48,6 +48,8 @@ const props = defineProps<{
   steps: RunStep[]
   /** Run status string (for edge color cues). */
   runStatus: string
+  /** 审批记录(可选):阶段存在 rejected 记录 → 红色「已拒绝」徽标。 */
+  approvals?: ApprovalRecord[]
 }>()
 
 // ─── Pipeline spec loading ────────────────────────────────────────────────────
@@ -204,8 +206,13 @@ function stageVis(status: StepStatus): StatusVis {
 /**
  * 阶段视觉:零 step 但因整轮失败被卡住(blocked)的阶段单独呈现「未执行」(红色失败语义),
  * 不再当成「等待」(误导成还在跑)。其余照常按聚合状态。
+ * 审批门被拒(人工拒绝/超时)的阶段优先呈现「已拒绝」——其步骤记 skipped,聚合会显示「跳过」,
+ * 但那是人的决定,须与普通跳过区分。
  */
 function stageVisFor(stage: RunStage): StatusVis {
+  if (props.approvals?.some((a) => a.status === 'rejected' && a.stageId === stage.id)) {
+    return { dotColor: 'var(--color-red)', label: t('run.stageStatusRejected'), cardClass: 'card--failed', pulse: false }
+  }
   if (stage.blocked) {
     return { dotColor: 'var(--color-red)', label: t('run.stageStatusBlocked'), cardClass: 'card--blocked', pulse: false }
   }

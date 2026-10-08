@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 
@@ -104,8 +105,9 @@ func StubStageExecutor(ctx context.Context, _ *run.Run, stage pipeline.Stage, re
 // 决定后置回 running。dagrun 经此 hook 解耦,不直接 import run.Service / approval。
 type GateFunc func(ctx context.Context, r *run.Run, stage pipeline.Stage) (approved bool, err error)
 
-// ErrGateRejected 表示审批门被人工拒绝(该阶段失败 → 运行终止)。
-var ErrGateRejected = errors.New("dagrun: approval gate rejected")
+// ErrGateRejected 表示审批门未放行(人工拒绝)。包装 run.ErrGateRejected,worker(pool)据
+// errors.Is 判定把 run 落为 StatusRejected(已拒绝)而非 failed。
+var ErrGateRejected = fmt.Errorf("dagrun: approval gate rejected: %w", run.ErrGateRejected)
 
 // Runner 是 DAG 感知的 run.Runner 实现。
 type Runner struct {
@@ -227,6 +229,10 @@ func (r *Runner) Run(ctx context.Context, rn *run.Run, sink run.StepSink) error 
 		maxc = len(stageByID)
 	}
 
+	// 门控未放行的阶段(id → 展示名):人工拒绝 / 审批超时。供失败汇总拆分——全部为门控未放行
+	// 时运行落「已拒绝」而非「失败」。
+	rejectedStages := make(map[string]string)
+
 	result := lo.graph.Schedule(ctx, func(ctx context.Context, stageID string) error {
 		stage := stageByID[stageID]
 		rep := &stageReporter{sink: tap, mu: &mu, jobOrd: jobOrdinals[stageID], firstOrd: stageFirstOrd[stageID]}
@@ -252,14 +258,24 @@ func (r *Runner) Run(ctx context.Context, rn *run.Run, sink run.StepSink) error 
 		if execStage.Gate && r.gate != nil {
 			_ = rep.Log(ctx, "stdout", fmt.Sprintf("⏸ 阶段「%s」等待人工审批…", execStage.Name))
 			approved, gerr := r.gate(ctx, rn, execStage)
+			if gerr != nil && errors.Is(gerr, run.ErrGateRejected) {
+				// 审批超时等「未放行但非取消」的门错误:与人工拒绝同语义——阶段从未执行,步骤记
+				// skipped(如实反映);运行最终落「已拒绝」(见下方失败汇总拆分)。
+				_ = rep.Log(ctx, "stderr", fmt.Sprintf("⛔ 审批门未放行(%v),终止该阶段", gerr))
+				rep.finishRemaining(ctx, run.StepSkipped)
+				rejectedStages[stageID] = execStage.Name
+				return gerr
+			}
 			if gerr != nil {
+				// 取消等运行级中断:维持失败路径(ctx 取消由 worker 归一为 failed)。
 				_ = rep.Log(ctx, "stderr", fmt.Sprintf("审批门中断:%v", gerr))
 				rep.finishRemaining(ctx, run.StepFailed)
 				return gerr
 			}
 			if !approved {
 				_ = rep.Log(ctx, "stderr", "⛔ 审批被拒绝,终止该阶段")
-				rep.finishRemaining(ctx, run.StepFailed)
+				rep.finishRemaining(ctx, run.StepSkipped)
+				rejectedStages[stageID] = execStage.Name
 				return ErrGateRejected
 			}
 			_ = rep.Log(ctx, "stdout", "✅ 审批通过,继续执行")
@@ -287,6 +303,26 @@ func (r *Runner) Run(ctx context.Context, rn *run.Run, sink run.StepSink) error 
 	// 整体失败判定:仅当有阶段**真失败**(StatusFailed)。条件跳过 / 上游被跳过不令整体失败
 	// (上游若真失败,该失败阶段本身即计入 StatusFailed)。
 	if result.Counts()[dag.StatusFailed] > 0 {
+		// 区分「门控未放行」与「真失败」:前者是人的决定(人工拒绝/审批超时),不是系统故障。
+		// 失败阶段全部为门控未放行 → 返回包装 run.ErrGateRejected 的错误,worker 据此把 run
+		// 落「已拒绝」;存在任一真失败 → 维持 failed(真失败优先,拒绝徽标由审批记录展示)。
+		realFailed := 0
+		for id, nr := range result {
+			if nr.Status != dag.StatusFailed {
+				continue
+			}
+			if _, gated := rejectedStages[id]; !gated {
+				realFailed++
+			}
+		}
+		if realFailed == 0 {
+			names := make([]string, 0, len(rejectedStages))
+			for _, name := range rejectedStages {
+				names = append(names, name)
+			}
+			sort.Strings(names)
+			return fmt.Errorf("dagrun: 审批门未放行(阶段: %s): %w", strings.Join(names, ", "), ErrGateRejected)
+		}
 		// 把捕获的日志尾部落为 failure_log,喂 7-2 AI 诊断(best-effort,不阻断终态)。
 		if fl := tap.tail(); fl != "" {
 			_ = lockedSink(func() error { return sink.SetFailureLog(ctx, fl) })

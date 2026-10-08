@@ -155,6 +155,16 @@ export default {
   resumeQueueFull: "File d'attente de planification pleine, réessayez plus tard",
   resumeRequestFailed: "Échec de la reprise ({status})",
   resumedFrom: "Reprise depuis #{id}",
+  // 审批记录(谁/何时/批准还是拒绝)
+  approvalRecords: "Historique d'approbation",
+  approvalRecordsAria: "Historique d'approbation",
+  approvalRecordApproved: "Approuvé",
+  approvalRecordRejected: "Rejeté",
+  approvalRecordPending: "En attente",
+  approvalActor: "Par",
+  approvalByTimeout: "Approbation expirée",
+  approvalByCanceled: "Annulé",
+  rejectedInfo: "Cette exécution a été arrêtée à une porte d'approbation (rejetée ou expirée) ; consultez l'historique d'approbation pour savoir qui et quand. Pour continuer, déclenchez une nouvelle exécution.",
 
   partialInfo:
     "Certaines cibles ont échoué et les hôtes en échec ont effectué un retour arrière indépendant ; les autres continuent de s'exécuter sans être affectés.",

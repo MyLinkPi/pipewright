@@ -16,6 +16,7 @@ export type RunStatus =
   | 'waiting_approval'
   | 'success'
   | 'failed'
+  | 'rejected'
   | 'partial_failed'
   | 'rolled_back'
 

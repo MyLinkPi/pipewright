@@ -185,6 +185,7 @@ const ja: typeof zhCN = {
     waiting_approval: '承認待ち',
     success: '成功',
     failed: '失敗',
+    rejected: '却下',
     partial_failed: '一部失敗',
     rolled_back: 'ロールバック済み',
   },

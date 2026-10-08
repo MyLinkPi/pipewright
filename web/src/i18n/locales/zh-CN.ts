@@ -185,6 +185,7 @@ export default {
     waiting_approval: '待审批',
     success: '成功',
     failed: '失败',
+    rejected: '已拒绝',
     partial_failed: '部分失败',
     rolled_back: '已回滚',
   },

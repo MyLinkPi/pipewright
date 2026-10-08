@@ -145,6 +145,16 @@ export default {
   resumeQueueFull: "스케줄링 대기열이 가득 찼습니다. 잠시 후 다시 시도하세요",
   resumeRequestFailed: "재개 실패({status})",
   resumedFrom: "#{id} 에서 재개",
+  // 审批记录(谁/何时/批准还是拒绝)
+  approvalRecords: "승인 기록",
+  approvalRecordsAria: "승인 기록",
+  approvalRecordApproved: "승인됨",
+  approvalRecordRejected: "거부됨",
+  approvalRecordPending: "승인 대기",
+  approvalActor: "실행자",
+  approvalByTimeout: "승인 시간 초과",
+  approvalByCanceled: "취소됨",
+  rejectedInfo: "이 런은 승인 게이트에서 중단되었습니다(거부 또는 시간 초과). 실행자와 시각은 승인 기록을 참고하세요. 계속하려면 새 런을 트리거하세요.",
 
   partialInfo:
     "일부 대상이 실패하여 실패한 호스트는 개별적으로 롤백되었습니다. 나머지 호스트는 영향 없이 계속 실행됩니다.",

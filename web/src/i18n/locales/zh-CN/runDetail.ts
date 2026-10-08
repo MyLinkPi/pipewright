@@ -154,6 +154,16 @@ export default {
   resumeQueueFull: "调度队列已满,请稍后重试",
   resumeRequestFailed: "恢复失败({status})",
   resumedFrom: "恢复自 #{id}",
+  // 审批记录(谁/何时/批准还是拒绝)
+  approvalRecords: "审批记录",
+  approvalRecordsAria: "审批记录",
+  approvalRecordApproved: "已批准",
+  approvalRecordRejected: "已拒绝",
+  approvalRecordPending: "待审批",
+  approvalActor: "操作人",
+  approvalByTimeout: "审批超时",
+  approvalByCanceled: "已取消",
+  rejectedInfo: "运行因审批门未放行而终止(人工拒绝或审批超时),决定人与时刻见「审批记录」。如需继续,请重新触发新流水线。",
 
   // partial_failed
   partialInfo: "部分目标失败,失败台已独立回滚;其余台继续运行,互不连累。",

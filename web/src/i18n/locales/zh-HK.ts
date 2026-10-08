@@ -185,6 +185,7 @@ const zhHK: typeof zhCN = {
     waiting_approval: '待審核',
     success: '成功',
     failed: '失敗',
+    rejected: '已拒絕',
     partial_failed: '部分失敗',
     rolled_back: '已回滾',
   },

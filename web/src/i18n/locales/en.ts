@@ -191,6 +191,7 @@ const en: typeof zhCN = {
     waiting_approval: 'Awaiting approval',
     success: 'Success',
     failed: 'Failed',
+    rejected: 'Rejected',
     partial_failed: 'Partial failure',
     rolled_back: 'Rolled back',
   },

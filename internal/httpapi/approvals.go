@@ -72,7 +72,9 @@ func NewApprovalGate(runs run.Service, coord *approval.Coordinator, store *appro
 			by = "timeout"
 			_ = store.Decide(context.Background(), r.ID, stage.ID, status, by)
 			_ = runs.ResumeFromApproval(context.Background(), r.ID)
-			return false, fmt.Errorf("approval gate timed out after %s", defaultGateTimeout)
+			// 超时与人工拒绝同语义(审批记录已记 decidedBy=timeout):包装哨兵,worker 据此
+			// 把 run 落 rejected(已拒绝)而非 failed。
+			return false, fmt.Errorf("approval gate timed out after %s: %w", defaultGateTimeout, run.ErrGateRejected)
 		}
 		_ = store.Decide(context.Background(), r.ID, stage.ID, status, by)
 		// 决定后置回 running,让 worker 在收尾时按 running→终态 落定。

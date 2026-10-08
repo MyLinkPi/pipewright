@@ -150,6 +150,16 @@ export default {
   resumeQueueFull: "Scheduling queue is full, please try again later",
   resumeRequestFailed: "Resume failed ({status})",
   resumedFrom: "Resumed from #{id}",
+  // 审批记录(谁/何时/批准还是拒绝)
+  approvalRecords: "Approval records",
+  approvalRecordsAria: "Approval records",
+  approvalRecordApproved: "Approved",
+  approvalRecordRejected: "Rejected",
+  approvalRecordPending: "Pending",
+  approvalActor: "By",
+  approvalByTimeout: "Approval timed out",
+  approvalByCanceled: "Canceled",
+  rejectedInfo: "This run was stopped at an approval gate (rejected or timed out) — see Approval records for who and when. To proceed, trigger a new run.",
 
   partialInfo:
     "Some targets failed and have rolled back independently; the rest keep running, unaffected.",

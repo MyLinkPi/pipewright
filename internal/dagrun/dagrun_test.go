@@ -3,6 +3,8 @@ package dagrun
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -185,6 +187,7 @@ func TestRunnerGateRejectedFailsStage(t *testing.T) {
 	cfg := cfgWith(
 		pipeline.Stage{ID: "src", Name: "源"},
 		pipeline.Stage{ID: "deploy", Name: "部署", Needs: []string{"src"}, Gate: true},
+		pipeline.Stage{ID: "notify", Name: "通知", Needs: []string{"deploy"}},
 	)
 	var ran bool
 	r := New(&fakeLoader{cfg: cfg},
@@ -202,6 +205,10 @@ func TestRunnerGateRejectedFailsStage(t *testing.T) {
 	if err == nil {
 		t.Fatal("拒绝应使 Run 失败")
 	}
+	// 拒绝是人的决定而非系统故障:错误包装 run.ErrGateRejected,worker 据此落「已拒绝」。
+	if !errors.Is(err, run.ErrGateRejected) {
+		t.Fatalf("拒绝错误应包装 run.ErrGateRejected:%v", err)
+	}
 	if ran {
 		t.Error("拒绝后 deploy executor 不应被调用")
 	}
@@ -213,8 +220,105 @@ func TestRunnerGateRejectedFailsStage(t *testing.T) {
 		}
 		return -1
 	}
+	// 门控阶段从未执行:步骤记 skipped(如实反映),不再误标 failed。
+	if sink.done[ord("部署")] != run.StepSkipped {
+		t.Errorf("部署 step = %q, want skipped(被拒绝:从未执行)", sink.done[ord("部署")])
+	}
+	if sink.done[ord("通知")] != run.StepSkipped {
+		t.Errorf("通知 step = %q, want skipped(下游)", sink.done[ord("通知")])
+	}
+}
+
+// TestRunnerGateTimeoutSameAsRejected 回归:审批超时(gate 返回包装 run.ErrGateRejected 的错误)
+// 与人工拒绝同语义——步骤 skipped、错误包装哨兵(worker 落「已拒绝」)。
+func TestRunnerGateTimeoutSameAsRejected(t *testing.T) {
+	cfg := cfgWith(
+		pipeline.Stage{ID: "src", Name: "源"},
+		pipeline.Stage{ID: "deploy", Name: "部署", Needs: []string{"src"}, Gate: true},
+	)
+	gateErr := fmt.Errorf("approval gate timed out after 24s: %w", run.ErrGateRejected)
+	r := New(&fakeLoader{cfg: cfg},
+		WithGate(func(_ context.Context, _ *run.Run, _ pipeline.Stage) (bool, error) {
+			return false, gateErr
+		}))
+	sink := newFakeSink()
+	err := r.Run(context.Background(), &run.Run{ProjectID: "p"}, sink)
+	if !errors.Is(err, run.ErrGateRejected) {
+		t.Fatalf("超时错误应包装 run.ErrGateRejected:%v", err)
+	}
+	ord := func(name string) int {
+		for i, n := range sink.planned {
+			if n == name {
+				return i
+			}
+		}
+		return -1
+	}
+	if sink.done[ord("部署")] != run.StepSkipped {
+		t.Errorf("部署 step = %q, want skipped(超时:从未执行)", sink.done[ord("部署")])
+	}
+}
+
+// TestRunnerGateCancelStaysFailed 回归:门控等待中被取消(ctx 取消,gate 返回 ctx.Err)→
+// 维持失败语义(取消优先),错误不包装拒绝哨兵,步骤仍记 failed。
+func TestRunnerGateCancelStaysFailed(t *testing.T) {
+	cfg := cfgWith(
+		pipeline.Stage{ID: "src", Name: "源"},
+		pipeline.Stage{ID: "deploy", Name: "部署", Needs: []string{"src"}, Gate: true},
+	)
+	r := New(&fakeLoader{cfg: cfg},
+		WithGate(func(_ context.Context, _ *run.Run, _ pipeline.Stage) (bool, error) {
+			return false, context.Canceled
+		}))
+	sink := newFakeSink()
+	err := r.Run(context.Background(), &run.Run{ProjectID: "p"}, sink)
+	if err == nil {
+		t.Fatal("门控取消应使 Run 失败")
+	}
+	if errors.Is(err, run.ErrGateRejected) {
+		t.Fatalf("取消不应包装拒绝哨兵:%v", err)
+	}
+	ord := func(name string) int {
+		for i, n := range sink.planned {
+			if n == name {
+				return i
+			}
+		}
+		return -1
+	}
 	if sink.done[ord("部署")] != run.StepFailed {
-		t.Errorf("部署 step = %q, want failed(被拒绝)", sink.done[ord("部署")])
+		t.Errorf("部署 step = %q, want failed(取消)", sink.done[ord("部署")])
+	}
+}
+
+// TestRunnerMixedRealFailureAndRejectionStaysFailed 回归:真失败 + 门控拒绝并存 →
+// 整体仍为失败(真失败优先),错误不包装拒绝哨兵(拒绝可见性由审批记录承担)。
+func TestRunnerMixedRealFailureAndRejectionStaysFailed(t *testing.T) {
+	cfg := cfgWith(
+		pipeline.Stage{ID: "src", Name: "源"},
+		pipeline.Stage{ID: "gate-stage", Name: "门控阶段", Needs: []string{"src"}, Gate: true},
+		pipeline.Stage{ID: "build", Name: "构建", Needs: []string{"src"}},
+	)
+	r := New(&fakeLoader{cfg: cfg},
+		WithGate(func(_ context.Context, _ *run.Run, _ pipeline.Stage) (bool, error) {
+			return false, nil // gate-stage 被拒绝
+		}),
+		WithStageExecutor(func(_ context.Context, _ *run.Run, st pipeline.Stage, rep StageReporter) error {
+			if st.ID == "build" {
+				_ = rep.Log(context.Background(), "stderr", "boom")
+				return errors.New("build failed") // 真失败
+			}
+			return nil
+		}))
+	err := r.Run(context.Background(), &run.Run{ProjectID: "p"}, newFakeSink())
+	if err == nil {
+		t.Fatal("真失败应使 Run 失败")
+	}
+	if errors.Is(err, run.ErrGateRejected) {
+		t.Fatalf("混合情况应维持失败语义,不包装拒绝哨兵:%v", err)
+	}
+	if !strings.Contains(err.Error(), "pipeline failed") {
+		t.Fatalf("混合情况应走 pipeline failed 错误:%v", err)
 	}
 }
 

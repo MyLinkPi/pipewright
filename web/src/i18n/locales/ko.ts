@@ -185,6 +185,7 @@ const ko: typeof zhCN = {
     waiting_approval: '승인 대기',
     success: '성공',
     failed: '실패',
+    rejected: '거부됨',
     partial_failed: '부분 실패',
     rolled_back: '롤백됨',
   },
