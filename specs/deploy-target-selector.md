@@ -37,6 +37,9 @@ serverIds」改为「选择器圈选」,与构建共用 `servers.labels` 同一�
 - [x] 节点 `selector` 键优先,旧 `serverId` → `server:<id>` 规范形式透传
 - [x] 两者皆空 → 不调部署服务、节点跳过成功(不再 ErrBuildFailed)
 - [x] DeployForStage 返回空结果(零命中)→ 节点跳过成功
+- [x] 纯部署阶段(无 script job)配了构建机池也强制本地执行(internal/build/remote_stage_exec_test.go
+  TestStageExecutorDeployOnlyStageStaysLocal):不占构建机槽、零远程动作。修复前该场景被
+  「远程放行」空转,deploy_container 的选择器完全不生效(部署由控制机 SSH 驱动,与构建机池无关)
 
 ### 前端(web/src/lib/selectorMatch.test.ts)
 - [x] 与服务端同语义:AND 项、纯 tag ≠ k=v、`server:<id>` 钉单机、零命中/空 → 空数组
