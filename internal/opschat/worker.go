@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"strconv"
 	"strings"
 	"time"
@@ -314,6 +315,17 @@ func (s *Service) failRun(id, run, status string) {
 	}
 }
 
+// failFrom converges a run after a worker error: cancellation and conflict
+// races (cancel requested, concurrent state change) resolve to Interrupted,
+// matching Cancel semantics; genuine execution failures resolve to Failed.
+func (s *Service) failFrom(id, run string, err error, ctx context.Context) {
+	if errors.Is(err, ErrConflict) || ctx.Err() != nil {
+		s.failRun(id, run, Interrupted)
+		return
+	}
+	s.failRun(id, run, Failed)
+}
+
 func (s *Service) fenceWorker() {
 	s.mu.Lock()
 	s.lost = true
@@ -559,10 +571,33 @@ func (s *Service) work(parent context.Context, id, run string) {
 			return s.append(c, tx, Entry{SessionID: id, RunID: run, Kind: "run_status", Status: Running}, false, false)
 		})
 		if err != nil {
-			s.failRun(id, run, Failed)
+			s.failFrom(id, run, err, ctx)
 			return
 		}
 		calls = candidates
+	}
+	// A confirmation replay skips the planning block above, which owns the only
+	// Running transition; publish it here so execution never shows as planning.
+	err = s.persist(id, func(c context.Context, tx *sql.Tx) error {
+		current, e := s.run(c, tx, id, run)
+		if e != nil {
+			return e
+		}
+		if current.View.Status != Planning {
+			return nil
+		}
+		if current.View.CancelRequested {
+			return ErrConflict
+		}
+		current.View.Status = Running
+		if e = s.saveRun(c, tx, current); e != nil {
+			return e
+		}
+		return s.append(c, tx, Entry{SessionID: id, RunID: run, Kind: "run_status", Status: Running}, false, false)
+	})
+	if err != nil {
+		s.failFrom(id, run, err, ctx)
+		return
 	}
 	// Calls in a run are serial; separate sessions can use the four global SSH slots.
 	barrier := false
@@ -583,7 +618,7 @@ func (s *Service) work(parent context.Context, id, run string) {
 			if !approved {
 				barrier = true
 				if e = s.prepareMutation(ctx, call); e != nil {
-					s.failRun(id, run, Failed)
+					s.failFrom(id, run, e, ctx)
 					return
 				}
 				continue
@@ -594,7 +629,7 @@ func (s *Service) work(parent context.Context, id, run string) {
 			continue
 		}
 		if err = s.executeCall(ctx, call); err != nil {
-			s.failRun(id, run, Failed)
+			s.failFrom(id, run, err, ctx)
 			return
 		}
 	}
