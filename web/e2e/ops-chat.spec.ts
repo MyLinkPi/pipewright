@@ -1210,7 +1210,9 @@ for (const width of [1366, 1920, 390])
       )
       await page.goto('/servers')
       const actions = page.locator('.view-header__actions')
-      await expect(actions.getByRole('button')).toHaveCount(2)
+      // fork 差异:本仓头部比上游多「批量执行/历史」两按钮(批量命令特性),
+      // 上游为 2(AI+刷新),此处为 4(批量执行/历史/AI/刷新)。
+      await expect(actions.getByRole('button')).toHaveCount(4)
       const buttons = await actions.getByRole('button').all()
       const a = (await buttons[0]!.boundingBox())!,
         b = (await buttons[1]!.boundingBox())!
