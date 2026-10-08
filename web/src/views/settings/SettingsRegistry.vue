@@ -87,6 +87,11 @@ function toggleEnabled(): void {
   if (cfg.value) cfg.value.enabled = !cfg.value.enabled
 }
 
+/** 部署相关字段的生效值快照(存储目录用服务端解析后的生效值,避免默认值物化造成假 diff)。 */
+function deployRelevantSnapshot(c: RegistryHubConfig): string {
+  return [c.upstreamUrl, c.artifactPort, c.cachePort, c.effectiveArtifactDataDir, c.effectiveCacheDataDir, c.tlsCertId].join('\u0000')
+}
+
 // ─── TLS 证书(证书管理已签发的公共可信证书;空 = 明文 HTTP) ──────────────────
 const certs = ref<Cert[]>([])
 const certsError = ref(false)
@@ -115,6 +120,7 @@ async function saveConfig(): Promise<void> {
   saving.value = true
   savedFlash.value = false
   saveError.value = ''
+  const before = deployRelevantSnapshot(cfg.value)
   try {
     cfg.value = await saveRegistryHubConfig({
       enabled: cfg.value.enabled,
@@ -131,6 +137,17 @@ async function saveConfig(): Promise<void> {
     savedFlash.value = true
     window.setTimeout(() => { savedFlash.value = false }, 2000)
     void loadStatus()
+    // 部署相关配置(端口/目录/上游/TLS 证书)有变更且已启用 → 询问是否立即重新部署
+    // (保存本身仍只写库,不悄悄重建容器;但也不能让用户漏掉生效这一步)。
+    if (cfg.value.enabled && deployRelevantSnapshot(cfg.value) !== before) {
+      const ok = await confirm.open({
+        title: t('settingsRegistry.redeployTitle'),
+        body: t('settingsRegistry.redeployBody'),
+        confirmLabel: t('settingsRegistry.redeployConfirm'),
+        variant: 'primary',
+      })
+      if (ok) await deploy()
+    }
   } catch (err) {
     saveError.value = err instanceof HttpError ? (err.apiError?.message ?? t('settingsRegistry.errSave')) : t('settingsRegistry.errSave')
   } finally {
