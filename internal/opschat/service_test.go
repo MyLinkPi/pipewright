@@ -64,6 +64,75 @@ func TestCancelDispatchedMutationUnknownAndDeleteNoOrphans(t *testing.T) {
 		t.Fatal(n, err)
 	}
 }
+
+// A confirmed replay skips the planning block, which owns the only Running
+// transition; the execution phase must still publish Running while dispatched.
+func TestConfirmReplayPublishesRunning(t *testing.T) {
+	id := uuid.NewString()
+	f := executor(id)
+	dispatched := make(chan struct{}, 1)
+	release := make(chan struct{})
+	f.run = func(ctx context.Context, _ target.ConnectionSnapshot, argv []string, _ target.ExecutionLimits) (*target.LimitedResult, error) {
+		if len(argv) > 1 && argv[0] == "docker" && argv[1] == "restart" {
+			dispatched <- struct{}{}
+			select {
+			case <-release:
+				return &target.LimitedResult{Stdout: "restarted\n"}, nil
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		}
+		if len(argv) > 1 && argv[0] == "docker" && argv[1] == "inspect" {
+			for _, a := range argv {
+				if a == "{{.Id}}" {
+					return &target.LimitedResult{Stdout: strings.Repeat("a", 64) + "\n"}, nil
+				}
+			}
+			return &target.LimitedResult{Stdout: `{"Running":true,"Paused":false}`}, nil
+		}
+		return &target.LimitedResult{Stdout: "ok\n"}, nil
+	}
+	s, _, _ := fixture(t, f, nil)
+	c := chat(t, s, id)
+	r := submitTool(t, s, c, "docker_action", `{"container":"app","action":"restart"}`)
+	snap := waitRun(t, s, c.ID, r.ID, AwaitingConfirmation)
+	a := snap.Confirmations[0]
+	if _, err := s.Confirm(context.Background(), c.ID, ConfirmInput{RunID: r.ID, Nonce: a.Nonce, Calls: a.Calls}); err != nil {
+		t.Fatal(err)
+	}
+	<-dispatched
+	waitRun(t, s, c.ID, r.ID, Running)
+	close(release)
+	waitRun(t, s, c.ID, r.ID, Succeeded)
+}
+
+// A cancel that lands between two calls (CancelRequested committed while the
+// worker ctx is still live) must converge to Interrupted, never to Failed.
+func TestCancelBetweenCallsConvergesInterrupted(t *testing.T) {
+	idA, idB := uuid.NewString(), uuid.NewString()
+	f := executor(idA, idB)
+	s, _, db := fixture(t, f, nil)
+	c := chat(t, s, idA, idB)
+	f.run = func(_ context.Context, snap target.ConnectionSnapshot, _ []string, _ target.ExecutionLimits) (*target.LimitedResult, error) {
+		if snap.Server.ID == idA {
+			// Simulate Cancel's committed write without its job cancellation.
+			if _, err := db.Exec("UPDATE ops_chat_runs SET cancel_requested=1 WHERE session_id=?", c.ID); err != nil {
+				t.Error(err)
+			}
+			return &target.LimitedResult{Stderr: "boom\n", ExitCode: 1}, nil
+		}
+		return &target.LimitedResult{Stdout: "ok\n"}, nil
+	}
+	r := submitTool(t, s, c, "host_ports", `{}`)
+	snap := waitRun(t, s, c.ID, r.ID, Interrupted)
+	byServer := map[string]string{}
+	for _, call := range snap.Calls {
+		byServer[call.ServerID] = call.Status
+	}
+	if byServer[idA] != Failed || byServer[idB] != Interrupted {
+		t.Fatal(snap.Calls)
+	}
+}
 func TestConcurrencyFourGlobalOnePerServerAndDetachedHTTP(t *testing.T) {
 	ids := []string{uuid.NewString(), uuid.NewString(), uuid.NewString(), uuid.NewString(), uuid.NewString()}
 	f := executor(ids...)

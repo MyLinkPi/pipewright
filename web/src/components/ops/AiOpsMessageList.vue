@@ -60,7 +60,7 @@ const visible = computed(() => {
       <div v-else class="message" :class="{ user: entry.kind === 'user' }">
         <p class="ops-wrap">{{ entry.text }}</p>
         <button
-          v-if="entry.kind === 'assistant' || entry.kind === 'manual_advice'"
+          v-if="entry.kind === 'assistant'"
           class="ops-btn"
           @click="emit('copy', entry.text ?? '')"
         >
