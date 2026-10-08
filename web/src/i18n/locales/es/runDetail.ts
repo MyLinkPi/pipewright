@@ -147,11 +147,10 @@ export default {
   // Reanudar por nodo(ejecución derivada de una fallida)
   resumeRegionAria: "Reanudar ejecución por nodo",
   resumeTitle: "Reanudar ejecución por nodo",
-  resumeDesc: "Crea una ejecución derivada: los nodos exitosos se heredan tal cual y solo se reejecutan las partes fallidas/pendientes; los nodos de despliegue reintentan solo las máquinas fallidas.",
+  resumeDesc: "Pulsa Reintentar / Omitir para crear al instante una ejecución derivada: el nodo pulsado sigue la acción elegida, los demás nodos fallidos reintentan por defecto; los nodos exitosos se heredan y los de despliegue solo reintentan las máquinas fallidas.",
   resumeRetry: "Reintentar",
   resumeSkip: "Omitir",
   resumeSkipHint: "Omite este nodo; el downstream se ejecuta con normalidad",
-  resumeLaunch: "Iniciar ejecución reanudada",
   resumeLaunching: "Creando…",
   resumeSpecChanged: "La configuración del pipeline cambió; no se puede reanudar por nodo",
   resumeNotResumable: "Esta ejecución no se puede reanudar por nodo",

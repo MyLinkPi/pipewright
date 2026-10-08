@@ -15,18 +15,6 @@
         <div class="resume-title">{{ t('runDetail.resumeTitle') }}</div>
         <div class="resume-sub">{{ t('runDetail.resumeDesc') }}</div>
       </div>
-      <button
-        class="resume-btn"
-        :disabled="submitting"
-        :aria-busy="submitting"
-        @click="handleResume"
-      >
-        <span v-if="submitting" class="spinner" aria-hidden="true" />
-        <svg v-else width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
-          <polygon points="5 3 19 12 5 21 5 3"/>
-        </svg>
-        {{ submitting ? t('runDetail.resumeLaunching') : t('runDetail.resumeLaunch') }}
-      </button>
     </div>
 
     <div v-if="error" class="banner banner--error" role="alert">{{ error }}</div>
@@ -41,19 +29,20 @@
           <button
             type="button"
             class="resume-action"
-            :class="{ 'resume-action--retry-active': actions[fs.ordinal] === 'retry' }"
-            :aria-pressed="actions[fs.ordinal] === 'retry'"
-            @click="setAction(fs.ordinal, 'retry')"
+            :class="{ 'resume-action--busy': pendingOrdinal === fs.ordinal }"
+            :disabled="submitting"
+            :aria-busy="pendingOrdinal === fs.ordinal"
+            @click="handleNodeAction(fs.ordinal, 'retry')"
           >
-            {{ t('runDetail.resumeRetry') }}
+            <span v-if="pendingOrdinal === fs.ordinal" class="spinner" aria-hidden="true" />
+            {{ pendingOrdinal === fs.ordinal ? t('runDetail.resumeLaunching') : t('runDetail.resumeRetry') }}
           </button>
           <button
             type="button"
             class="resume-action"
-            :class="{ 'resume-action--skip-active': actions[fs.ordinal] === 'skip' }"
-            :aria-pressed="actions[fs.ordinal] === 'skip'"
+            :disabled="submitting"
             :title="t('runDetail.resumeSkipHint')"
-            @click="setAction(fs.ordinal, 'skip')"
+            @click="handleNodeAction(fs.ordinal, 'skip')"
           >
             {{ t('runDetail.resumeSkip') }}
           </button>
@@ -65,14 +54,15 @@
 
 <script setup lang="ts">
 /**
- * RunResumePanel — 失败运行「按节点恢复」面板(失败/部分失败状态挂载)。
+ * RunResumePanel — 失败运行「按节点恢复」面板(失败/部分失败状态挂载),**一步式**交互:
  *
- * 列出全部失败节点,逐节点选择 重试 / 跳过(默认重试),一键创建派生运行:
- * 已成功节点继承为成功不重跑;跳过节点的下游照常执行;部署节点在派生运行里
- * 只重试失败的机器(服务端增量语义)。成功后跳转子运行详情。
- * 服务端 409 spec_changed → 明确提示配置已变化,无法按节点恢复。
+ * 点击某节点的「重试 / 跳过」立即创建派生运行并跳转——
+ *   - 点击的节点按所选处置执行(重试=真实重跑 / 跳过=标记跳过放行下游);
+ *   - 其余失败节点默认重试;已成功节点继承为成功不重跑;
+ *   - 部署节点在派生运行里只重试失败的机器(服务端增量语义)。
+ * 父运行历史保持不动;失败(如 409 spec_changed)时面板内出错误横幅,可再次点击。
  */
-import { computed, reactive, ref, watch } from 'vue'
+import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { resumeRun, type ResumeAction, type RunStep } from '../../api/runs'
@@ -91,38 +81,28 @@ const failedSteps = computed(() => {
   return out
 })
 
-// 逐节点处置(默认全部重试;新增失败节点自动补默认值)。
-const actions = reactive<Record<number, ResumeAction>>({})
-watch(
-  () => failedSteps.value.map((f) => f.ordinal).join(','),
-  () => {
-    for (const f of failedSteps.value) {
-      if (actions[f.ordinal] !== 'retry' && actions[f.ordinal] !== 'skip') {
-        actions[f.ordinal] = 'retry'
-      }
-    }
-  },
-  { immediate: true },
-)
-
-function setAction(ordinal: number, action: ResumeAction) {
-  actions[ordinal] = action
-}
-
 const submitting = ref(false)
+const pendingOrdinal = ref<number | null>(null)
 const error = ref('')
 
-async function handleResume() {
+async function handleNodeAction(ordinal: number, action: ResumeAction) {
   if (submitting.value) return
   submitting.value = true
+  pendingOrdinal.value = ordinal
   error.value = ''
+  // 处置计划:点击节点按所选动作,其余失败节点默认重试。
+  const actions: Record<number, ResumeAction> = {}
+  for (const f of failedSteps.value) {
+    actions[f.ordinal] = f.ordinal === ordinal ? action : 'retry'
+  }
   try {
-    const child = await resumeRun(props.runId, { ...actions })
+    const child = await resumeRun(props.runId, actions)
+    // 成功即跳转子运行详情;保持 submitting 禁用按钮防重复点击(组件随路由卸载)。
     await router.push(`/runs/${child.id}`)
   } catch (err) {
     error.value = errorMessage(err)
-  } finally {
     submitting.value = false
+    pendingOrdinal.value = null
   }
 }
 
@@ -193,31 +173,6 @@ function errorMessage(err: unknown): string {
   margin-top: 2px;
 }
 
-.resume-btn {
-  flex: none;
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  padding: 7px 14px;
-  border: 1px solid var(--color-amber-line);
-  border-radius: var(--rounded-md);
-  background: var(--color-amber);
-  color: #fff;
-  font-size: 12.5px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: opacity var(--duration-fast) ease;
-}
-
-.resume-btn:hover:not(:disabled) {
-  opacity: 0.9;
-}
-
-.resume-btn:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
-}
-
 .resume-nodes {
   list-style: none;
   margin: 0;
@@ -267,6 +222,9 @@ function errorMessage(err: unknown): string {
 }
 
 .resume-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   padding: 4px 12px;
   border: 1px solid var(--color-border);
   border-radius: var(--rounded-md);
@@ -277,17 +235,52 @@ function errorMessage(err: unknown): string {
   transition: all var(--duration-fast) ease;
 }
 
-.resume-action--retry-active {
+/* 悬停预览所选动作的主色:重试=绿 / 跳过=amber。 */
+.resume-action:first-child:not(:disabled):hover {
+  border-color: var(--color-green);
+  background: var(--color-green-soft);
+  color: var(--color-green);
+}
+
+.resume-action:last-child:not(:disabled):hover {
+  border-color: var(--color-amber);
+  background: var(--color-amber-soft);
+  color: var(--color-amber);
+}
+
+.resume-action:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* 提交中被点击的按钮呈重试主色,提示「这一下正在创建派生运行」。 */
+.resume-action--busy {
   border-color: var(--color-green);
   background: var(--color-green-soft);
   color: var(--color-green);
   font-weight: 600;
 }
 
-.resume-action--skip-active {
-  border-color: var(--color-amber);
-  background: var(--color-amber-soft);
-  color: var(--color-amber);
-  font-weight: 600;
+/* 本组件不在 RunDetail 的 scoped 作用域内,自带 spinner(1em 圈,currentColor)。 */
+.spinner {
+  width: 11px;
+  height: 11px;
+  flex: none;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: resume-spin 0.7s linear infinite;
+}
+
+@keyframes resume-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spinner {
+    animation: none;
+  }
 }
 </style>

@@ -146,11 +146,10 @@ export default {
   // Lauf nach Knoten fortsetzen(Resume ab fehlgeschlagenem Lauf)
   resumeRegionAria: "Lauf knotenweise fortsetzen",
   resumeTitle: "Lauf knotenweise fortsetzen",
-  resumeDesc: "Erzeugt einen abgeleiteten Lauf: erfolgreiche Knoten werden übernommen, nur fehlgeschlagene/ausstehende Teile laufen erneut; Bereitstellungsknoten wiederholen nur die fehlgeschlagenen Maschinen.",
+  resumeDesc: "Klick auf Wiederholen / Überspringen erstellt sofort einen abgeleiteten Lauf: der geklickte Knoten folgt der gewählten Aktion, weitere fehlgeschlagene Knoten werden standardmäßig wiederholt; erfolgreiche Knoten werden übernommen, Bereitstellungsknoten wiederholen nur die fehlgeschlagenen Maschinen.",
   resumeRetry: "Wiederholen",
   resumeSkip: "Überspringen",
   resumeSkipHint: "Diesen Knoten überspringen, nachgelagerte laufen wie üblich",
-  resumeLaunch: "Fortgesetzten Lauf starten",
   resumeLaunching: "Wird erstellt…",
   resumeSpecChanged: "Pipeline-Konfiguration hat sich geändert — Fortsetzen knotenweise nicht möglich",
   resumeNotResumable: "Dieser Lauf kann nicht knotenweise fortgesetzt werden",

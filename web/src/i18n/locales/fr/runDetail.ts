@@ -144,11 +144,10 @@ export default {
   // Reprise par nœud(exécution dérivée d'un échec)
   resumeRegionAria: "Reprendre l'exécution par nœud",
   resumeTitle: "Reprendre l'exécution par nœud",
-  resumeDesc: "Crée une exécution dérivée : les nœuds réussis sont hérités tels quels, seules les parties échouées/en attente réexécutées ; les nœuds de déploiement ne réessaient que les machines en échec.",
+  resumeDesc: "Cliquez sur Réessayer / Ignorer pour créer immédiatement une exécution dérivée : le nœud cliqué suit l'action choisie, les autres nœuds en échec réessaient par défaut ; les nœuds réussis sont hérités et les nœuds de déploiement ne réessaient que les machines en échec.",
   resumeRetry: "Réessayer",
   resumeSkip: "Ignorer",
   resumeSkipHint: "Ignore ce nœud ; l'aval s'exécute normalement",
-  resumeLaunch: "Lancer l'exécution reprise",
   resumeLaunching: "Création…",
   resumeSpecChanged: "La configuration du pipeline a changé — reprise par nœud impossible",
   resumeNotResumable: "Cette exécution ne peut pas être reprise par nœud",

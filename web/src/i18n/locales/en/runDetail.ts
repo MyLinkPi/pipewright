@@ -139,11 +139,10 @@ export default {
   // Resume failed run by node(派生重跑)
   resumeRegionAria: "Resume run by node",
   resumeTitle: "Resume run by node",
-  resumeDesc: "Create a derived run: succeeded nodes are inherited as-is, only failed/pending parts re-run; deploy nodes retry only the failed machines.",
+  resumeDesc: "Click Retry / Skip to immediately create a derived run: the clicked node follows the chosen action, other failed nodes default to retry; succeeded nodes are inherited and deploy nodes only retry failed machines.",
   resumeRetry: "Retry",
   resumeSkip: "Skip",
   resumeSkipHint: "Skip this node and let downstream run as usual",
-  resumeLaunch: "Start resumed run",
   resumeLaunching: "Creating…",
   resumeSpecChanged: "Pipeline config has changed — cannot resume by node",
   resumeNotResumable: "This run cannot be resumed by node",
