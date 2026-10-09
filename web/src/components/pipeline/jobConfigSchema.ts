@@ -455,6 +455,15 @@ const DEPLOY_CONTAINER_FIELDS: JobField[] = [
     get hint() { return t('pipelineJob.fieldBatchSizeHint') },
   },
   {
+    // 目标数量上限:命中机器多于上限时,按主机负载(CPU/内存)只部署最空的 N 台。
+    // 裁切发生在滚动之前(先选机、后分批),与上面两个批次参数互不干扰。
+    key: 'maxTargets',
+    get label() { return t('pipelineJob.fieldMaxTargetsLabel') },
+    kind: 'number',
+    placeholder: '0',
+    get hint() { return t('pipelineJob.fieldMaxTargetsHint') },
+  },
+  {
     key: 'healthPath',
     get label() { return t('pipelineJob.fieldHealthPathLabel') },
     kind: 'text',

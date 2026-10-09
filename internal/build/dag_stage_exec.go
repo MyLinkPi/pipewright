@@ -642,7 +642,8 @@ func (b *Builder) runDeployJob(ctx context.Context, rep dagrun.StageReporter, jb
 	// 部署语义键透传(deploy 层消费):产物精确绑定(deployMode/artifactJob/artifactName)、
 	// 镜像容器参数(artifactType/containerName/ports/runArgs/autoPortRange + 结构化常用项
 	// cpuLimit/memoryLimit/restartPolicy/envVars)、私有仓库登录(registryUrl/registryCredentialId)、
-	// 滚动批次(firstBatchSize/batchSize)、目标匹配方式(selectorMode)、服务注册绑定
+	// 滚动批次(firstBatchSize/batchSize)、目标匹配方式(selectorMode)、目标数量上限 maxTargets
+	// (仅 deploy_container 透传)、服务注册绑定
 	// (regServiceId 一键生成 / gatewayService 兼容 / regPort / drainSeconds)、健康门控
 	// (healthExec/healthPort/healthPath/healthUrl/healthCommand/…)。
 	// 各值原样搬运(deploy 层 array 化、绝不拼 shell,守 AC-SEC-02);空值不入 cfg 保持默认。
@@ -656,6 +657,14 @@ func (b *Builder) runDeployJob(ctx context.Context, rep dagrun.StageReporter, jb
 	} {
 		if v := cfgString(jb.Config, k); v != "" {
 			cfg[k] = v
+		}
+	}
+	// 目标数量上限**仅容器部署节点**透传:选择器命中数超过上限时,部署层按主机负载(CPU/内存)
+	// 只圈最空的 N 台(见 internal/deploy/host_load.go)。deploy_ssh / deploy_frontend 即使配了
+	// 该键也不透传——文件部署的多机语义是「全部命中目标都推」,不做负载裁切。
+	if strings.TrimSpace(jb.Type) == "deploy_container" {
+		if v := cfgString(jb.Config, "maxTargets"); v != "" {
+			cfg["maxTargets"] = v
 		}
 	}
 	// 产物来源/artifactName/健康探测配置支持 {{param}} 渲染(与 deployPath 同语义)。

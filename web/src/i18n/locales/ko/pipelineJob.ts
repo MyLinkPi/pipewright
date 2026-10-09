@@ -339,6 +339,8 @@ export default {
   fieldFirstBatchSizeHint: 'Hosts in the first rolling batch (default 1 — verify small first).',
   fieldBatchSizeLabel: 'Batch size',
   fieldBatchSizeHint: 'Hosts upgraded simultaneously per batch after the first (empty/0 = all remaining at once; any batch failure stops the rollout).',
+  fieldMaxTargetsLabel: '대상 호스트 수 상한',
+  fieldMaxTargetsHint: '셀렉터에 매칭된 호스트가 이 상한보다 많으면 가장 여유로운 N대에만 배포합니다(호스트 실시간 부하 = CPU 로드 평균/코어 수와 메모리 사용률 중 큰 값). 나머지는 이번 배포에서 건너뜁니다. 비워두거나 0 = 제한 없음. 롤링 배치 전에 적용되며 첫 배치/각 배치 대수와는 서로 독립입니다.',
   fieldHealthExecLabel: '컨테이너 내 프로브 명령',
   fieldHealthExecHint: '배포된 컨테이너 안에서 실행합니다(docker exec <이름> sh -c <명령>). 포트를 게시하지 않는 컨테이너(워커/큐/내부 서비스)용. 예: pg_isready. 포트 프로브와 배타적.',
   fieldHealthPortLabel: '헬스체크 포트',

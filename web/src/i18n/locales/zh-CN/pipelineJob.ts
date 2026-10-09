@@ -327,6 +327,8 @@ export default {
   fieldFirstBatchSizeHint: '滚动升级首批先发的机器数(默认 1,先小批验证)。',
   fieldBatchSizeLabel: '每批机器数',
   fieldBatchSizeHint: '首批之后每批同时升级的机器数(留空/0 = 其余一次推完;任一批失败即停)。',
+  fieldMaxTargetsLabel: '目标数量上限',
+  fieldMaxTargetsHint: '选择器命中的机器多于上限时,按主机实时负载(CPU 负载率/内存使用率取高者)只部署最空的 N 台,其余机器本次不部署;留空/0 = 不限。裁切发生在滚动之前,与首批/每批机器数互不干扰。',
   fieldHealthExecLabel: '容器内探测命令',
   fieldHealthExecHint: '在部署的容器内执行(docker exec <容器名> sh -c <命令>),适合不发布端口的后台容器(队列/迁移/内部服务),如 pg_isready。与端口探测二选一。',
   fieldHealthPortLabel: '健康检查端口',

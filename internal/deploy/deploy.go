@@ -157,6 +157,8 @@ type Service interface {
 	// 目标经 selector 圈选(`server:<id>` 钉单机 / 标签项;见 selector_targets.go):空 / 零命中 →
 	// 返回空结果 nil(节点按跳过成功处理)。无可发布产物 → ErrArtifactNotFound;选择器语法非法 →
 	// ErrInvalidSelector;有目标失败 → 返回 error 令该阶段失败、阻断下游(复用 dagrun「阶段失败→下游不执行」)。
+	// cfg["maxTargets"] > 0 且命中数超上限 → 先按**主机负载**(CPU/内存)裁到最空的 N 台再滚动
+	// (见 host_load.go;裁切后的 N 台即本次部署拓扑,未入选机器不部署、不落结果)。
 	DeployForStage(ctx context.Context, runID string, selector string, cfg map[string]string, strategy string) ([]TargetResult, error)
 
 	// CheckHealth 是「流水线 health_check 节点」用的目标机健康探测:经 selector/selectorMode 圈选
@@ -344,6 +346,13 @@ func (s *service) DeployForStage(ctx context.Context, runID string, selector str
 	}
 	if len(servers) == 0 {
 		return []TargetResult{}, nil
+	}
+	// 目标数量上限(cfg["maxTargets"],仅容器部署节点透传):命中数超上限时按主机负载只留最空的
+	// N 台(见 host_load.go)。裁切发生在**滚动之前**——上限后的集合即本次部署拓扑:注册表清理
+	// 基准、恢复过滤、deployRolling、deploy_targets 持久化全部只看这 N 台,未入选机器完全不动。
+	// 上限 ≤ 0 / 非法 / ≥ 命中数 → 不探测不裁切(行为与现状一致)。
+	if limit := maxTargetsLimit(cfg); limit > 0 {
+		servers = s.limitServersByLoad(ctx, servers, limit)
 	}
 	// 全量目标(恢复过滤前):注册表清理的基准 —— 恢复运行跳过的机器已成功,其实例必须保留。
 	allServerIDs := make([]string, 0, len(servers))
