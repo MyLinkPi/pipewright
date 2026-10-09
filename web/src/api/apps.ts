@@ -66,9 +66,23 @@ export const createAppTemplate = (in_: AppTemplateInput): Promise<AppTemplate> =
 export const deleteAppTemplate = (id: string): Promise<{ ok: boolean }> =>
   http.delete(`/api/ops/apps/${encodeURIComponent(id)}`)
 
+/** 部署时可选的全服务资源限制(注入 compose deploy.resources.limits)。 */
+export interface AppDeployLimits {
+  /** CPU 核数上限,如 "1.0"。 */
+  cpus?: string
+  /** 内存硬上限,如 "512m"。 */
+  memory?: string
+}
+
 export const deployApp = (
   serverId: string,
   templateId: string,
   params: Record<string, string>,
+  limits?: AppDeployLimits,
 ): Promise<AppDeployResult> =>
-  http.post(`/api/servers/${encodeURIComponent(serverId)}/apps/deploy`, { templateId, params })
+  http.post(`/api/servers/${encodeURIComponent(serverId)}/apps/deploy`, {
+    templateId,
+    params,
+    ...(limits?.cpus?.trim() ? { cpus: limits.cpus.trim() } : {}),
+    ...(limits?.memory?.trim() ? { memory: limits.memory.trim() } : {}),
+  })

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"github.com/huangchengsir/pipewright/internal/appstore"
 	"github.com/huangchengsir/pipewright/internal/audit"
 	"github.com/huangchengsir/pipewright/internal/target"
+	"gopkg.in/yaml.v3"
 )
 
 // 应用商店(DPanel 式一键部署)。模板 CRUD + 参数渲染部署;部署复用 Stacks 受管链路
@@ -59,6 +61,52 @@ func deployComposeToServer(ctx context.Context, svc target.Service, serverID, na
 		return false, "", truncateLog(msg, 1024)
 	}
 	return true, truncateLog(strings.TrimSpace(res.Stdout)+"\n"+strings.TrimSpace(res.Stderr), 2048), ""
+}
+
+// injectComposeLimits 把 CPU/内存上限注入 compose 每个 service 的 deploy.resources.limits
+//(docker compose v2 非 swarm 模式同样生效;模板已写同名键时被本次部署选择覆盖)。
+// 两者皆空 → 原样返回(零开销);模板产出非法 YAML → 错误,不部署。
+func injectComposeLimits(compose, cpus, memory string) (string, error) {
+	if cpus == "" && memory == "" {
+		return compose, nil
+	}
+	var doc map[string]any
+	if err := yaml.Unmarshal([]byte(compose), &doc); err != nil {
+		return "", fmt.Errorf("解析 compose YAML: %w", err)
+	}
+	services, _ := doc["services"].(map[string]any)
+	for _, raw := range services {
+		svcMap, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		deploy, _ := svcMap["deploy"].(map[string]any)
+		if deploy == nil {
+			deploy = map[string]any{}
+		}
+		resources, _ := deploy["resources"].(map[string]any)
+		if resources == nil {
+			resources = map[string]any{}
+		}
+		limits, _ := resources["limits"].(map[string]any)
+		if limits == nil {
+			limits = map[string]any{}
+		}
+		if cpus != "" {
+			limits["cpus"] = cpus
+		}
+		if memory != "" {
+			limits["memory"] = memory
+		}
+		resources["limits"] = limits
+		deploy["resources"] = resources
+		svcMap["deploy"] = deploy
+	}
+	out, err := yaml.Marshal(doc)
+	if err != nil {
+		return "", fmt.Errorf("重编码 compose YAML: %w", err)
+	}
+	return string(out), nil
 }
 
 // writeAppStoreError 把应用商店领域错误映射为契约错误码/状态码。
@@ -260,13 +308,16 @@ func makeDeleteAppTemplateHandler(svc appstore.Service, aud audit.Recorder) http
 	}
 }
 
-// makeDeployAppHandler 返回 POST /api/servers/{id}/apps/deploy {templateId, params}。
-// 渲染参数(自动生成 secret)→ 复用 Stacks 链路部署到该主机;生成的 secret 随响应一次性返回
-// (部署后以明文存在于目标机 compose 文件,与 Stacks 语义一致;审计只记模板名,不记参数值)。
+// makeDeployAppHandler 返回 POST /api/servers/{id}/apps/deploy {templateId, params, cpus?, memory?}。
+// 渲染参数(自动生成 secret)→ 可选注入资源限制(deploy.resources.limits)→ 复用 Stacks 链路
+// 部署到该主机;生成的 secret 随响应一次性返回(部署后以明文存在于目标机 compose 文件,与
+// Stacks 语义一致;审计只记模板名,不记参数值)。
 func makeDeployAppHandler(apps appstore.Service, servers target.Service, aud audit.Recorder) http.HandlerFunc {
 	type request struct {
 		TemplateID string            `json:"templateId"`
 		Params     map[string]string `json:"params"`
+		CPUs       string            `json:"cpus,omitempty"`   // 可选,全服务 CPU 核数上限(如 "1.0")
+		Memory     string            `json:"memory,omitempty"` // 可选,全服务内存硬上限(如 "512m")
 	}
 	type response struct {
 		ServerID string            `json:"serverId"`
@@ -296,6 +347,15 @@ func makeDeployAppHandler(apps appstore.Service, servers target.Service, aud aud
 			writeError(w, http.StatusBadRequest, "invalid_app_template", "templateId 必填")
 			return
 		}
+		// 资源限制复用容器创建的同一白名单校验(reCPUs/reMemory,防非法值进 compose)。
+		if req.CPUs != "" && !reCPUs.MatchString(req.CPUs) {
+			writeError(w, http.StatusBadRequest, "invalid_app_deploy", "非法 CPU 上限(正整数/小数,如 0.5、1、2.5)")
+			return
+		}
+		if req.Memory != "" && !reMemory.MatchString(req.Memory) {
+			writeError(w, http.StatusBadRequest, "invalid_app_deploy", "非法内存上限(正整数 + 单位 b/k/m/g,如 512m、1g)")
+			return
+		}
 		tpl, err := apps.Get(r.Context(), req.TemplateID)
 		if err != nil {
 			writeAppStoreError(w, err)
@@ -310,11 +370,16 @@ func makeDeployAppHandler(apps appstore.Service, servers target.Service, aud aud
 			writeAppStoreError(w, err)
 			return
 		}
+		compose := rendered.Compose
+		if compose, err = injectComposeLimits(compose, req.CPUs, req.Memory); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_app_deploy", "资源限制注入失败:"+err.Error())
+			return
+		}
 
 		out := response{ServerID: serverID, Name: tpl.Name, Params: rendered.Used}
 		cctx, cancel := context.WithTimeout(r.Context(), stacksUpTimeout)
 		defer cancel()
-		out.OK, out.Output, out.Error = deployComposeToServer(cctx, servers, serverID, tpl.Name, rendered.Compose)
+		out.OK, out.Output, out.Error = deployComposeToServer(cctx, servers, serverID, tpl.Name, compose)
 
 		recordAudit(r.Context(), aud, audit.Entry{
 			Actor: auditActor, Action: auditActionAppDeploy, TargetType: audit.TargetServer, TargetID: serverID,

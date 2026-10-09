@@ -55,6 +55,8 @@ func setupServiceRegServer(t *testing.T) (*httptest.Server, *store.Store, *fakeS
 type fakeSRTarget struct {
 	execCalls [][]string
 	uploads   []string
+	// uploadBodies 记录上传内容(应用商店部署测试断言注入后的 compose 文本)。
+	uploadBodies []string
 }
 
 // DockerLogin 满足 target.Service 接口(部署私有仓库登录追加);测试桩不触网,直接成功。
@@ -76,7 +78,9 @@ func (f *fakeSRTarget) ExecWithStdin(ctx context.Context, _ string, cmd []string
 }
 func (f *fakeSRTarget) Upload(ctx context.Context, _ string, content io.Reader, remotePath string) error {
 	f.uploads = append(f.uploads, remotePath)
-	_, _ = io.Copy(io.Discard, content)
+	var buf bytes.Buffer
+	_, _ = io.Copy(&buf, content)
+	f.uploadBodies = append(f.uploadBodies, buf.String())
 	return nil
 }
 func (f *fakeSRTarget) List(context.Context) ([]*target.Server, error) { return nil, nil }
@@ -259,6 +263,69 @@ func TestAppStoreListAndDeploy(t *testing.T) {
 		t.Fatalf("删内置模板应 400:%d", resp.StatusCode)
 	}
 	resp.Body.Close()
+}
+
+// TestAppStoreDeployResourceLimits:部署携带 cpus/memory → 注入 compose 的
+// deploy.resources.limits(上传体可断言);非法值 → 400,不执行任何部署命令。
+func TestAppStoreDeployResourceLimits(t *testing.T) {
+	srv, _, ft := setupServiceRegServer(t)
+	client, csrf := loginSR(t, srv.URL)
+
+	resp := doJSON(t, client, http.MethodGet, srv.URL+"/api/ops/apps", "", "")
+	var list struct {
+		Items []struct {
+			ID   string `json:"id"`
+			Name string `json:"name"`
+		} `json:"items"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&list)
+	resp.Body.Close()
+	var redisID string
+	for _, it := range list.Items {
+		if it.Name == "redis" {
+			redisID = it.ID
+		}
+	}
+	if redisID == "" {
+		t.Fatal("缺 redis 模板")
+	}
+
+	// 非法 CPU 上限 → 400 且无任何 SSH 命令。
+	before := len(ft.execCalls)
+	resp = doJSON(t, client, http.MethodPost, srv.URL+"/api/servers/srv1/apps/deploy", csrf,
+		`{"templateId":"`+redisID+`","params":{},"cpus":"abc"}`)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("非法 cpus 应 400:%d", resp.StatusCode)
+	}
+	resp.Body.Close()
+	if len(ft.execCalls) != before {
+		t.Fatalf("非法参数不应触机:多了 %v", ft.execCalls[before:])
+	}
+
+	// 合法限制 → 上传的 compose 含 deploy.resources.limits。
+	resp = doJSON(t, client, http.MethodPost, srv.URL+"/api/servers/srv1/apps/deploy", csrf,
+		`{"templateId":"`+redisID+`","params":{},"cpus":"1.0","memory":"256m"}`)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("部署:%d", resp.StatusCode)
+	}
+	var dep struct {
+		OK    bool   `json:"ok"`
+		Error string `json:"error"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&dep)
+	resp.Body.Close()
+	if !dep.OK {
+		t.Fatalf("部署失败:%s", dep.Error)
+	}
+	if len(ft.uploadBodies) == 0 {
+		t.Fatal("应有 compose 上传")
+	}
+	uploaded := ft.uploadBodies[len(ft.uploadBodies)-1]
+	for _, want := range []string{"limits:", "cpus", "1.0", "memory", "256m"} {
+		if !strings.Contains(uploaded, want) {
+			t.Fatalf("上传的 compose 缺 %q:\n%s", want, uploaded)
+		}
+	}
 }
 
 // TestServiceRegInstanceFlow:实例 CRUD + 摘挂(未配网关 → 配置态,无 SSH 命令)。

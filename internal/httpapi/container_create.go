@@ -32,6 +32,10 @@ var (
 	reEnvKey = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 	// 卷路径段(host 路径 / 命名卷 / 容器内路径):字母数字 + `._/@-`,无 shell 元字符。
 	reVolumeSeg = regexp.MustCompile(`^[\w/][\w./@-]*$`)
+	// CPU 核数上限(--cpus 语义):正整数或小数,如 0.5 / 1 / 2.5(禁首字符 `-` 防 flag 注入)。
+	reCPUs = regexp.MustCompile(`^\d+(\.\d+)?$`)
+	// 内存硬上限(--memory 语义):正整数 + 可选单位后缀,如 512m / 1g / 1073741824。
+	reMemory = regexp.MustCompile(`^[1-9]\d*[bkmgBKMG]?$`)
 )
 
 // restartPolicies 是允许的重启策略(docker 枚举)。
@@ -46,6 +50,8 @@ type createContainerRequest struct {
 	Volumes []string `json:"volumes,omitempty"` // "/host:/ctr" / "/host:/ctr:ro" / "vol:/ctr"
 	Restart string   `json:"restart,omitempty"` // no|always|unless-stopped|on-failure
 	Command string   `json:"command,omitempty"` // 可选,按空白拆成参数(不经 shell)
+	CPUs    string   `json:"cpus,omitempty"`    // 可选,CPU 核数上限(--cpus,如 "1.5")
+	Memory  string   `json:"memory,omitempty"`  // 可选,内存硬上限(--memory,如 "512m";超限 OOM kill)
 }
 
 // createContainerDTO 是响应体(冻结契约)。
@@ -74,6 +80,12 @@ func validateCreateSpec(req *createContainerRequest) error {
 	}
 	if req.Restart != "" && !restartPolicies[req.Restart] {
 		return errors.New("非法重启策略(no/always/unless-stopped/on-failure)")
+	}
+	if req.CPUs != "" && !reCPUs.MatchString(req.CPUs) {
+		return errors.New("非法 CPU 上限(正整数/小数,如 0.5、1、2.5)")
+	}
+	if req.Memory != "" && !reMemory.MatchString(req.Memory) {
+		return errors.New("非法内存上限(正整数 + 单位 b/k/m/g,如 512m、1g)")
 	}
 	if len(req.Ports) > 64 || len(req.Env) > 128 || len(req.Volumes) > 64 {
 		return errors.New("端口/环境变量/卷数量过多")
@@ -170,6 +182,12 @@ func buildDockerRunCmd(req *createContainerRequest) []string {
 	}
 	if req.Restart != "" {
 		cmd = append(cmd, "--restart", req.Restart)
+	}
+	if req.CPUs != "" {
+		cmd = append(cmd, "--cpus", req.CPUs)
+	}
+	if req.Memory != "" {
+		cmd = append(cmd, "--memory", req.Memory)
 	}
 	for _, p := range req.Ports {
 		cmd = append(cmd, "-p", p)
