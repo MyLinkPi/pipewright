@@ -185,6 +185,88 @@ func TestStageImageHonorsContainerNamePortsRunArgs(t *testing.T) {
 	}
 }
 
+// TestStageImageStructuredContainerParams 验证结构化容器参数键(cpuLimit/memoryLimit/
+// restartPolicy/envVars)翻译为对应 docker run flag 且排在 runArgs 自由参数之前
+//(同名 flag 后写生效,runArgs 作逃生舱;envVars 整行为单值,含空格不被拆)。
+func TestStageImageStructuredContainerParams(t *testing.T) {
+	db := testDB(t)
+	rsvc := run.New(db)
+	tgt := &stubTarget{}
+	srv := seedServer(t, tgt, "web-1")
+	runID, _ := seedSuccessRunWithArtifact(t, db, rsvc, run.ArtifactImage, "registry/shop:1.0")
+
+	svc := New(tgt, rsvc)
+	cfg := map[string]string{
+		"containerName": "shopapp",
+		"cpuLimit":      "1.5",
+		"memoryLimit":   "512m",
+		"restartPolicy": "unless-stopped",
+		"envVars":       "KEY=value\nGREETING=hello world\n\n",
+		"runArgs":       "--log-opt max-size=10m",
+	}
+	res, err := svc.DeployForStage(context.Background(), runID, "server:"+srv.ID, cfg, "")
+	if err != nil {
+		t.Fatalf("DeployForStage: %v", err)
+	}
+	if res[0].Status != run.TargetSuccess {
+		t.Fatalf("want success, got %+v", res)
+	}
+	rc := runCmd(tgt.calls)
+	if rc == nil {
+		t.Fatalf("无 docker run 命令: %v", tgt.calls)
+	}
+	want := []string{
+		"docker", "run", "-d", "--name", "shopapp",
+		"--cpus", "1.5", "--memory", "512m", "--restart", "unless-stopped",
+		"-e", "KEY=value", "-e", "GREETING=hello world",
+		"--log-opt", "max-size=10m",
+		"registry/shop:1.0",
+	}
+	if len(rc) != len(want) {
+		t.Fatalf("docker run 参数不符\n got: %v\nwant: %v", rc, want)
+	}
+	for i := range want {
+		if rc[i] != want[i] {
+			t.Fatalf("docker run[%d]=%q, want %q\n got: %v", i, rc[i], want[i], rc)
+		}
+	}
+}
+
+// TestImageBaseRunArgs 单测 imageBaseRunArgs:空配置零参数、仅 runArgs 向后兼容、
+// 结构化键单独/组合、空行与空白裁剪。
+func TestImageBaseRunArgs(t *testing.T) {
+	cases := []struct {
+		name string
+		cfg  map[string]string
+		want []string
+	}{
+		{"nil 配置", nil, nil},
+		{"空配置", map[string]string{}, nil},
+		{"仅 runArgs 兼容", map[string]string{"runArgs": "-e A=1 --rm"}, []string{"-e", "A=1", "--rm"}},
+		{"仅结构化键", map[string]string{"cpuLimit": "0.5", "memoryLimit": "1g"}, []string{"--cpus", "0.5", "--memory", "1g"}},
+		{"空白值忽略", map[string]string{"cpuLimit": "  ", "restartPolicy": ""}, nil},
+		{"envVars 裁空行", map[string]string{"envVars": "\n A=1 \n\nB=2\n"}, []string{"-e", "A=1", "-e", "B=2"}},
+		{
+			"组合:结构化在前 runArgs 在后",
+			map[string]string{"cpuLimit": "1", "restartPolicy": "always", "runArgs": "--cpus 2"},
+			[]string{"--cpus", "1", "--restart", "always", "--cpus", "2"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := imageBaseRunArgs(tc.cfg)
+			if len(got) != len(tc.want) {
+				t.Fatalf("got %v, want %v", got, tc.want)
+			}
+			for i := range tc.want {
+				if got[i] != tc.want[i] {
+					t.Fatalf("got[%d]=%q, want %q(全量 got=%v)", i, got[i], tc.want[i], got)
+				}
+			}
+		})
+	}
+}
+
 
 
 // hasRunWithRef 报告命令序列里是否有「docker run … <ref>」(ref 为末参,用于断言回滚到上一镜像)。

@@ -32,6 +32,7 @@ export interface Session {
   serverIds: string[] | null
   activeRunId: string
   watermark: number
+  storageBytes?: number
   createdAt: string
   updatedAt: string
 }

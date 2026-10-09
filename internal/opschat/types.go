@@ -58,6 +58,35 @@ type Limits struct {
 
 var resourceLimits = Limits{100, 2000, 8 << 20, 8 << 10, 8, 24, 64 << 10, 1000, 512 << 10, 32 << 10, 20, 4000}
 
+// RuntimeLimits tunes worker execution. Zero values fall back to defaults;
+// it is operational configuration, unlike the user-facing resource caps above.
+type RuntimeLimits struct {
+	SSHSlots     int           // global bounded SSH slots (default 4)
+	ApprovalTTL  time.Duration // confirmation validity window (default 15m)
+	WorkBudget   time.Duration // per worker activation (default 3m)
+	ModelTimeout time.Duration // per model request (default 1m)
+	ModelCalls   int           // model requests per run (default 2)
+}
+
+func (l RuntimeLimits) withDefaults() RuntimeLimits {
+	if l.SSHSlots <= 0 {
+		l.SSHSlots = 4
+	}
+	if l.ApprovalTTL <= 0 {
+		l.ApprovalTTL = 15 * time.Minute
+	}
+	if l.WorkBudget <= 0 {
+		l.WorkBudget = 3 * time.Minute
+	}
+	if l.ModelTimeout <= 0 {
+		l.ModelTimeout = time.Minute
+	}
+	if l.ModelCalls <= 0 {
+		l.ModelCalls = 2
+	}
+	return l
+}
+
 type ProviderInfo struct {
 	Provider string `json:"provider"`
 	Model    string `json:"model"`
@@ -78,6 +107,7 @@ type Options struct {
 	// LocalRecorder must be audit.New(db, masker, nil), never the shared remote-sink recorder.
 	LocalRecorder audit.Recorder
 	Masker        *mask.Masker
+	Runtime       RuntimeLimits
 }
 type Session struct {
 	ID          string    `json:"id"`
@@ -87,8 +117,11 @@ type Session struct {
 	ServerIDs   []string  `json:"serverIds"`
 	ActiveRunID string    `json:"activeRunId"`
 	Watermark   int64     `json:"watermark"`
-	CreatedAt   time.Time `json:"createdAt"`
-	UpdatedAt   time.Time `json:"updatedAt"`
+	// StorageBytes is the tracked visible-entry byte counter, an approximation
+	// of the session storage quota basis; use it only for near-quota hints.
+	StorageBytes int64     `json:"storageBytes"`
+	CreatedAt    time.Time `json:"createdAt"`
+	UpdatedAt    time.Time `json:"updatedAt"`
 }
 type CreateInput struct {
 	Title     string   `json:"title"`

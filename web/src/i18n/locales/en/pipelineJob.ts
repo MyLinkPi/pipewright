@@ -69,7 +69,16 @@ export default {
     'Container port mappings, comma / whitespace separated: "8080" (container port only, host port auto-allocated), "auto:9000" (explicit form), "8080:80" (explicit mapping).',
   fieldRunArgsLabel: "docker run args",
   fieldRunArgsHint:
-    "Image deploy: appended verbatim to docker run (any args; for credentials use registry login, don’t put them here)",
+    "Image deploy: appended verbatim to docker run (free-form args — only for flags the structured fields above don't cover; same-named flags here win; for credentials use registry login, don’t put them here)",
+  fieldCpuLimitLabel: "CPU limit",
+  fieldCpuLimitHint: "Max CPU cores the container may use (e.g. 0.5 / 1 / 2.5); empty = unlimited",
+  fieldMemoryLimitLabel: "Memory limit",
+  fieldMemoryLimitHint: "Hard memory cap for the container (e.g. 512m / 1g); exceeding it triggers OOM kill. Empty = unlimited",
+  fieldRestartPolicyLabel: "Restart policy",
+  fieldRestartPolicyHint: "Restart behaviour after container exit / host reboot (same as docker run --restart)",
+  fieldEnvVarsLabel: "Environment variables",
+  fieldEnvVarsHint: "One KEY=value per line, injected into the container (values may contain spaces); don't put plaintext secrets here",
+  restartPolicyUnset: "Not set",
   fieldStrategyLabel: "Deploy strategy",
   fieldRestartCommandLabel: "Restart / switch command",
   fieldRestartCommandHint:

@@ -33,7 +33,7 @@ type imageState struct {
 	name      string       // 容器名(cfg["containerName"] 优先,否则 sanitizeName(产物名))
 	ref       string       // 本次新镜像 ref(repo:tag / image id)
 	prevImage string       // 切换前容器所用镜像 **digest**(sha256:…;回滚目标 —— 可变 tag 会被本次 pull 改指,只有 digest 能钉住旧镜像;"" = 无上一容器/读失败,无可回滚)
-	baseArgs  []string     // docker run 的附加参数(除端口映射外;cfg["runArgs"] 解析,参数自由)
+	baseArgs  []string     // docker run 的附加参数(除端口映射外;结构化键 + cfg["runArgs"] 解析,见 imageBaseRunArgs)
 	portSpecs []portSpec   // 端口映射意图(cfg["ports"];自动项运行时分配)
 	ports     []portBinding // 本次启动的实际端口绑定(健康检查/注册/回滚复用;启动前为空)
 }
@@ -59,15 +59,37 @@ func imagePortSpecs(cfg map[string]string) ([]portSpec, error) {
 	return parsePortSpecs(cfg["ports"])
 }
 
-// imageBaseRunArgs 解析 docker run 的附加参数(仅 cfg["runArgs"];端口映射已拆到 portSpecs
-// 运行时解析,见 ports.go)。各参数原样作为 array 元素(绝不拼接 shell;AC-SEC-02)。
+// imageBaseRunArgs 解析 docker run 的附加参数(端口映射已拆到 portSpecs 运行时解析,见 ports.go):
+// 先把结构化常用键翻译为对应 flag,再原样追加 cfg["runArgs"] 自由参数(同名 flag 后写生效,
+// runArgs 仍作逃生舱)。各参数原样作为 array 元素(绝不拼接 shell;AC-SEC-02)。
+//
+// 结构化键(UI 表单字段,免手写 flag):
+//   - cpuLimit      → --cpus <v>      (CPU 核数上限,如 "1.5")
+//   - memoryLimit   → --memory <v>    (内存硬上限,如 "512m";超限 OOM kill)
+//   - restartPolicy → --restart <v>   (no/always/unless-stopped/on-failure)
+//   - envVars       → 每行一条 KEY=value 各成一个 -e(整行作单值,值含空格不被拆)
 //
 // 注意:凭据绝不经此进命令(registry 凭据沿用既有 docker login 模式);此处仅承载运行参数。
 func imageBaseRunArgs(cfg map[string]string) []string {
 	if cfg == nil {
 		return nil
 	}
-	return strings.Fields(cfg["runArgs"])
+	var out []string
+	if v := strings.TrimSpace(cfg["cpuLimit"]); v != "" {
+		out = append(out, "--cpus", v)
+	}
+	if v := strings.TrimSpace(cfg["memoryLimit"]); v != "" {
+		out = append(out, "--memory", v)
+	}
+	if v := strings.TrimSpace(cfg["restartPolicy"]); v != "" {
+		out = append(out, "--restart", v)
+	}
+	for _, line := range strings.Split(cfg["envVars"], "\n") {
+		if kv := strings.TrimSpace(line); kv != "" {
+			out = append(out, "-e", kv)
+		}
+	}
+	return append(out, strings.Fields(cfg["runArgs"])...)
 }
 
 // splitImageList 按逗号 / 空白切分并去空(端口列表用)。

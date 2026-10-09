@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -323,6 +324,10 @@ func (m *opsModel) chat(ctx context.Context, cfg *Config, key, prompt string, li
 		pinned.DisableKeepAlives = true
 		client.Transport = pinned
 		defer pinned.CloseIdleConnections()
+	} else {
+		// IP pinning cannot be injected into a custom RoundTripper; make the
+		// trust assumption visible instead of skipping it silently.
+		log.Printf("[ai] ops endpoint IP pinning skipped: custom RoundTripper %T is a trusted in-process adapter", transport)
 	}
 	resp, err := client.Do(req)
 	if err != nil {
@@ -397,6 +402,14 @@ func opsResolve(ctx context.Context, base string, lookup func(context.Context, s
 		validated[i].IP = append(net.IP(nil), address.IP...)
 	}
 	out.ips = validated
+	// Private/loopback destinations are an explicit exception for local model
+	// runtimes (e.g. Ollama); surface them instead of allowing silently.
+	for _, address := range out.ips {
+		if ip := address.IP; ip.IsPrivate() || ip.IsLoopback() {
+			log.Printf("[ai] ops endpoint %s resolves to private/loopback %s; allowed for local model runtimes", out.host, ip)
+			break
+		}
+	}
 	return out, nil
 }
 

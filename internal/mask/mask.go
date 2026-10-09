@@ -28,6 +28,10 @@ type Masker struct {
 	// secrets 去重存放已登记 secret;scrub 时按长度降序替换(长串优先,
 	// 避免短 secret 先替换破坏长 secret 的匹配)。
 	secrets map[string]struct{}
+	// ordered 是按长度降序的 secret 快照,仅在 RegisterSecret 写锁内整体重建,
+	// 发布后永不原地修改;Scrub/ScrubTruncated 读锁取引用后直接使用,
+	// 免去每次调用的拷贝+排序开销。
+	ordered []string
 }
 
 // NewMasker 构造空 Masker。不做任何重计算(无包级重对象)。
@@ -48,7 +52,21 @@ func (m *Masker) RegisterSecret(s string) {
 	if m.secrets == nil {
 		m.secrets = make(map[string]struct{})
 	}
+	if _, ok := m.secrets[s]; ok {
+		m.mu.Unlock()
+		return
+	}
 	m.secrets[s] = struct{}{}
+	// 从 map 全量重建新切片再排序后发布;严禁对旧切片原地 append/sort,
+	// 旧切片可能正被 Scrub 并发读取,已发布的快照必须永不原地修改。
+	ordered := make([]string, 0, len(m.secrets))
+	for secret := range m.secrets {
+		ordered = append(ordered, secret)
+	}
+	sort.Slice(ordered, func(i, j int) bool {
+		return len(ordered[i]) > len(ordered[j])
+	})
+	m.ordered = ordered
 	m.mu.Unlock()
 }
 
@@ -62,19 +80,11 @@ func (m *Masker) Scrub(line string) string {
 		return line
 	}
 	m.mu.RLock()
-	if len(m.secrets) == 0 {
-		m.mu.RUnlock()
+	ordered := m.ordered
+	m.mu.RUnlock()
+	if len(ordered) == 0 {
 		return line
 	}
-	ordered := make([]string, 0, len(m.secrets))
-	for s := range m.secrets {
-		ordered = append(ordered, s)
-	}
-	m.mu.RUnlock()
-
-	sort.Slice(ordered, func(i, j int) bool {
-		return len(ordered[i]) > len(ordered[j])
-	})
 
 	out := line
 	for _, s := range ordered {
@@ -93,10 +103,7 @@ func (m *Masker) ScrubTruncated(text string) string {
 		return text
 	}
 	m.mu.RLock()
-	secrets := make([]string, 0, len(m.secrets))
-	for secret := range m.secrets {
-		secrets = append(secrets, secret)
-	}
+	secrets := m.ordered
 	m.mu.RUnlock()
 	if len(secrets) == 0 {
 		return text

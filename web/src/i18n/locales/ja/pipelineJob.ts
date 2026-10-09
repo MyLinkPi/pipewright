@@ -67,7 +67,16 @@ export default {
     'コンテナポートマッピング(カンマ/空白区切り):"8080"(コンテナポートのみ、ホスト側は自動割り当て)、"auto:9000"(明示形式)、"8080:80"(固定マッピング)。',
   fieldRunArgsLabel: "docker run 引数",
   fieldRunArgsHint:
-    "イメージデプロイ:docker run にそのまま追記(引数は自由。認証情報は registry ログインを使用、ここに書かない)",
+    "イメージデプロイ:docker run にそのまま追記(自由引数。上の構造化フィールドで足りない flag のみ記入。同名 flag はこちらが優先。認証情報は registry ログインを使用、ここに書かない)",
+  fieldCpuLimitLabel: "CPU 上限",
+  fieldCpuLimitHint: "コンテナが使用できる CPU コア数の上限(例:0.5 / 1 / 2.5)。空欄 = 無制限",
+  fieldMemoryLimitLabel: "メモリ上限",
+  fieldMemoryLimitHint: "コンテナのメモリハード上限(例:512m / 1g)。超過時は OOM kill。空欄 = 無制限",
+  fieldRestartPolicyLabel: "再起動ポリシー",
+  fieldRestartPolicyHint: "コンテナ終了 / ホスト再起動後の再起動ポリシー(docker run --restart と同じ)",
+  fieldEnvVarsLabel: "環境変数",
+  fieldEnvVarsHint: "1 行に 1 つ KEY=value 形式でコンテナに注入(値に空白を含められる)。機密値は平文で書かないこと",
+  restartPolicyUnset: "設定しない",
   fieldStrategyLabel: "デプロイ戦略",
   fieldRestartCommandLabel: "再起動 / 切替コマンド",
   fieldRestartCommandHint:

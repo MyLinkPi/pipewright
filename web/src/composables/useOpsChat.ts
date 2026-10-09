@@ -26,16 +26,14 @@ import { listServers, type Server } from '../api/servers'
 import { HttpError } from '../api/http'
 import { useOpsChatStore, type PendingSubmission } from '../stores/opsChat'
 import { onOpsAuthReset, opsAuthEpoch, resetOpsAuth } from '../utils/opsAuth'
+import {
+  cursorSeq,
+  makeCursor,
+  mergeEntries as mergeEntryLists,
+} from '../utils/opsChatEntries'
 
 let owner = 0
 const relinquish = new Set<() => void>()
-const visibleKinds = new Set([
-  'user',
-  'assistant',
-  'analysis',
-  'tool_request',
-  'tool_call',
-])
 export function useOpsChat(options: {
   active: Ref<boolean>
   initialServerIds: () => string[]
@@ -127,13 +125,7 @@ export function useOpsChat(options: {
     error.value = errorCode(e)
   }
   function mergeEntries(entries: Entry[]): void {
-    const bySeq = new Map(state.entries.map((e) => [e.seq, e]))
-    for (const entry of entries)
-      if (entry.sessionId === state.currentId && visibleKinds.has(entry.kind))
-        bySeq.set(entry.seq, entry)
-    state.entries = [...bySeq.values()]
-      .sort((a, b) => a.seq - b.seq)
-      .slice(-2000)
+    state.entries = mergeEntryLists(state.currentId, state.entries, entries)
   }
   function applySession(
     value: Session,
@@ -284,7 +276,7 @@ export function useOpsChat(options: {
       detach()
       void refresh().then((ok) => {
         if (valid(g, auth) && state.snapshot) {
-          if (ok) cursor = state.currentId + ':' + state.snapshot.watermark
+          if (ok) cursor = makeCursor(state.currentId, state.snapshot.watermark)
           reconnect = setTimeout(connect, ok ? 0 : backoff)
         }
       })
@@ -298,7 +290,7 @@ export function useOpsChat(options: {
     if (event.type === 'ready' || event.type === 'heartbeat') {
       connected.value = true
       backoff = 500
-      const seq = Number(cursor.slice(cursor.lastIndexOf(':') + 1))
+      const seq = cursorSeq(cursor)
       if (
         resetHistoryPending ||
         (state.snapshot && seq > state.snapshot.watermark)
@@ -314,7 +306,7 @@ export function useOpsChat(options: {
       event.id !== state.currentId + ':' + entry.seq
     )
       return
-    const last = Number(cursor.slice(cursor.lastIndexOf(':') + 1))
+    const last = cursorSeq(cursor)
     if (entry.seq <= last) return
     cursor = event.id
     mergeEntries([entry])
@@ -381,7 +373,7 @@ export function useOpsChat(options: {
       const value = await opsApi.snapshot(id)
       if (!valid(t.g, t.auth)) return false
       applySnapshot(value, true)
-      cursor = id + ':' + value.watermark
+      cursor = makeCursor(id, value.watermark)
       await hydrateCalls()
       connect()
       return true

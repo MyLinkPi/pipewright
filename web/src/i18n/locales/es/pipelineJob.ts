@@ -70,7 +70,16 @@ export default {
     'Mapeos de puertos del contenedor, separados por coma/espacios: "8080" (solo puerto del contenedor, el host se asigna automáticamente), "auto:9000" (forma explícita), "8080:80" (mapeo fijo).',
   fieldRunArgsLabel: "Argumentos de docker run",
   fieldRunArgsHint:
-    "Despliegue de imagen: se añaden tal cual a docker run (argumentos libres; para credenciales usa el login del registry, no los pongas aquí)",
+    "Despliegue de imagen: se añaden tal cual a docker run (argumentos libres — solo para flags que los campos estructurados de arriba no cubren; los flags duplicados aquí prevalecen; para credenciales usa el login del registry, no los pongas aquí)",
+  fieldCpuLimitLabel: "Límite de CPU",
+  fieldCpuLimitHint: "Máximo de núcleos de CPU que puede usar el contenedor (p. ej. 0.5 / 1 / 2.5); vacío = sin límite",
+  fieldMemoryLimitLabel: "Límite de memoria",
+  fieldMemoryLimitHint: "Tope estricto de memoria del contenedor (p. ej. 512m / 1g); al superarlo se aplica OOM kill. Vacío = sin límite",
+  fieldRestartPolicyLabel: "Política de reinicio",
+  fieldRestartPolicyHint: "Comportamiento de reinicio tras salir el contenedor / reiniciar el host (igual que docker run --restart)",
+  fieldEnvVarsLabel: "Variables de entorno",
+  fieldEnvVarsHint: "Una línea KEY=value por línea, inyectada en el contenedor (los valores pueden contener espacios); no escribas secretos en texto plano aquí",
+  restartPolicyUnset: "Sin definir",
   fieldStrategyLabel: "Estrategia de despliegue",
   fieldRestartCommandLabel: "Comando de reinicio / cambio",
   fieldRestartCommandHint:

@@ -11,7 +11,14 @@ const panelState = vi.hoisted(() => ({
   stop: vi.fn().mockResolvedValue(true),
   confirm: vi.fn(),
   session: undefined as unknown as {
-    value: { id: string; activeRunId: string } | null
+    value: { id: string; activeRunId: string; storageBytes?: number } | null
+  },
+  capabilities: undefined as unknown as {
+    value: {
+      available: boolean
+      modelAvailable: boolean
+      limits?: Record<string, number>
+    }
   },
 }))
 vi.mock('../../composables/useConfirm', () => ({
@@ -48,6 +55,7 @@ vi.mock('../../composables/useOpsChat', () => ({
       stop: panelState.stop,
     }
     panelState.session = value.session
+    panelState.capabilities = value.capabilities
     return value
   },
 }))
@@ -84,6 +92,33 @@ describe('ops output copies and authentication', () => {
     w.getComponent(AiOpsComposer).vm.$emit('stop')
     await flushPromises()
     expect(panelState.stop).toHaveBeenCalledWith('old')
+  })
+  it('warns when session storage exceeds 80% of the limit', async () => {
+    w = mount(AiOpsPanel, { attachTo: document.body })
+    panelState.capabilities.value = {
+      available: true,
+      modelAvailable: false,
+      limits: { sessionBytes: 1000 },
+    }
+    panelState.session.value = { id: 'chat', activeRunId: '', storageBytes: 900 }
+    await flushPromises()
+    const warning = w.find('[data-testid="ops-storage-warning"]')
+    expect(warning.exists()).toBe(true)
+    expect(warning.text()).toContain('会话存储已接近上限')
+  })
+  it('hides the storage warning at or below 80% of the limit', async () => {
+    w = mount(AiOpsPanel, { attachTo: document.body })
+    panelState.capabilities.value = {
+      available: true,
+      modelAvailable: false,
+      limits: { sessionBytes: 1000 },
+    }
+    panelState.session.value = { id: 'chat', activeRunId: '', storageBytes: 800 }
+    await flushPromises()
+    expect(w.find('[data-testid="ops-storage-warning"]').exists()).toBe(false)
+    panelState.session.value = { id: 'chat', activeRunId: '' }
+    await flushPromises()
+    expect(w.find('[data-testid="ops-storage-warning"]').exists()).toBe(false)
   })
   it('clears an already-open manual copy dialog on authentication loss', async () => {
     vi.mocked(copyText).mockResolvedValueOnce(false)

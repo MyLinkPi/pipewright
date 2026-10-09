@@ -133,6 +133,73 @@ func TestCancelBetweenCallsConvergesInterrupted(t *testing.T) {
 		t.Fatal(snap.Calls)
 	}
 }
+
+// finishTx is the terminal funnel: a run with CancelRequested committed must
+// never land on Failed, even when the failure is genuine (nonzero exit).
+func TestCancelRequestedRunNeverFails(t *testing.T) {
+	id := uuid.NewString()
+	f := executor(id)
+	s, _, db := fixture(t, f, nil)
+	c := chat(t, s, id)
+	f.run = func(_ context.Context, _ target.ConnectionSnapshot, _ []string, _ target.ExecutionLimits) (*target.LimitedResult, error) {
+		// Simulate Cancel's committed write without its job cancellation.
+		if _, err := db.Exec("UPDATE ops_chat_runs SET cancel_requested=1 WHERE session_id=?", c.ID); err != nil {
+			t.Error(err)
+		}
+		return &target.LimitedResult{Stderr: "boom\n", ExitCode: 1}, nil
+	}
+	r := submitTool(t, s, c, "host_ports", `{}`)
+	waitRun(t, s, c.ID, r.ID, Interrupted)
+}
+
+// Lease renewals persist no session data and skip the full storage scan;
+// every other lease write keeps quota enforcement.
+func TestLeaseWriteWithoutQuotaSkipsEnforcement(t *testing.T) {
+	id := uuid.NewString()
+	s, _, db := fixture(t, executor(id), nil)
+	c := chat(t, s, id)
+	if _, err := db.Exec("UPDATE ops_chat_sessions SET visible_count=? WHERE id=?", resourceLimits.Entries+1, c.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.transaction(context.Background(), true, func(*sql.Tx) error { return nil }); err != ErrQuota {
+		t.Fatal(err)
+	}
+	if err := s.transactionQuota(context.Background(), true, false, func(*sql.Tx) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRuntimeLimitsDefaultsAndOverrides(t *testing.T) {
+	d := RuntimeLimits{}.withDefaults()
+	if d.SSHSlots != 4 || d.ApprovalTTL != 15*time.Minute || d.WorkBudget != 3*time.Minute || d.ModelTimeout != time.Minute || d.ModelCalls != 2 {
+		t.Fatal(d)
+	}
+	db := storetest.OpenDB(t)
+	v := vault.New(db, &[32]byte{1})
+	s, err := New(Options{DB: db, Vault: v, Runtime: RuntimeLimits{SSHSlots: 1, ApprovalTTL: time.Hour}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cap(s.slots) != 1 || s.runtime.ApprovalTTL != time.Hour || s.runtime.WorkBudget != 3*time.Minute {
+		t.Fatal(s.runtime)
+	}
+}
+
+// The session view exposes the tracked entry byte counter for near-quota hints.
+func TestSessionReportsStorageBytes(t *testing.T) {
+	id := uuid.NewString()
+	s, _, _ := fixture(t, executor(id), nil)
+	c := chat(t, s, id)
+	r := submitTool(t, s, c, "host_ports", `{}`)
+	waitRun(t, s, c.ID, r.ID, Succeeded)
+	view, err := s.Get(context.Background(), c.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if view.StorageBytes <= 0 {
+		t.Fatal(view.StorageBytes)
+	}
+}
 func TestConcurrencyFourGlobalOnePerServerAndDetachedHTTP(t *testing.T) {
 	ids := []string{uuid.NewString(), uuid.NewString(), uuid.NewString(), uuid.NewString(), uuid.NewString()}
 	f := executor(ids...)

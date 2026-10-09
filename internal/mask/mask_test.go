@@ -153,6 +153,38 @@ func TestNilMaskerSafe(t *testing.T) {
 	}
 }
 
+// TestScrubAfterRepeatedRegister 多次登记(含重复注册、长短混合)后,
+// ordered 快照仍正确:Scrub 结果正确且长 secret 优先替换。
+func TestScrubAfterRepeatedRegister(t *testing.T) {
+	const long = "masterkey_full_value_0123456789"
+	const mid = "masterkey_full"
+	const short = "masterkey"
+	m := NewMasker()
+	// 乱序 + 重复注册:重复注册幂等,不应产生重复快照项。
+	m.RegisterSecret(short)
+	m.RegisterSecret(long)
+	m.RegisterSecret(mid)
+	m.RegisterSecret(long)
+	m.RegisterSecret(short)
+	m.RegisterSecret(short)
+
+	out := m.Scrub("k=" + long)
+	if out != "k="+Placeholder {
+		t.Fatalf("长串优先替换失败, got %q, want %q", out, "k="+Placeholder)
+	}
+	if n := strings.Count(out, Placeholder); n != 1 {
+		t.Fatalf("重复注册不应导致重复替换, got %d 处: %q", n, out)
+	}
+
+	out = m.Scrub(mid + " / " + short)
+	if strings.Contains(out, mid) || strings.Contains(out, short) {
+		t.Fatalf("仍残留明文: %q", out)
+	}
+	if out != Placeholder+" / "+Placeholder {
+		t.Fatalf("脱敏结果 = %q, want %q", out, Placeholder+" / "+Placeholder)
+	}
+}
+
 // TestConcurrentRegisterScrub 并发登记 + 脱敏不触发竞态(-race 下断言)。
 func TestConcurrentRegisterScrub(t *testing.T) {
 	m := NewMasker()

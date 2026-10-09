@@ -67,7 +67,16 @@ export default {
     '컨테이너 포트 매핑(쉼표/공백 구분): "8080"(컨테이너 포트만, 호스트 포트 자동 할당), "auto:9000"(명시 형식), "8080:80"(고정 매핑).',
   fieldRunArgsLabel: "docker run 인자",
   fieldRunArgsHint:
-    "이미지 배포: docker run 에 그대로 추가(인자 자유. 자격 증명은 registry 로그인을 사용하고 여기에 쓰지 말 것)",
+    "이미지 배포: docker run 에 그대로 추가(자유 인자. 위 구조화 필드로 안 되는 flag 만 기입. 동일 flag 는 여기 값이 우선. 자격 증명은 registry 로그인을 사용하고 여기에 쓰지 말 것)",
+  fieldCpuLimitLabel: "CPU 상한",
+  fieldCpuLimitHint: "컨테이너가 사용할 수 있는 CPU 코어 수 상한(예: 0.5 / 1 / 2.5). 비우면 무제한",
+  fieldMemoryLimitLabel: "메모리 상한",
+  fieldMemoryLimitHint: "컨테이너 메모리 하드 상한(예: 512m / 1g). 초과 시 OOM kill. 비우면 무제한",
+  fieldRestartPolicyLabel: "재시작 정책",
+  fieldRestartPolicyHint: "컨테이너 종료 / 호스트 재부팅 후 재시작 정책(docker run --restart 와 동일)",
+  fieldEnvVarsLabel: "환경 변수",
+  fieldEnvVarsHint: "한 줄에 하나씩 KEY=value 형식으로 컨테이너에 주입(값에 공백 포함 가능). 비밀 값은 평문으로 쓰지 말 것",
+  restartPolicyUnset: "설정 안 함",
   fieldStrategyLabel: "배포 전략",
   fieldRestartCommandLabel: "재시작 / 전환 명령",
   fieldRestartCommandHint:
