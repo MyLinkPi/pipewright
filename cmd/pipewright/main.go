@@ -295,9 +295,26 @@ func main() {
 		opsMasker.RegisterSecret(base64.StdEncoding.EncodeToString(masterKey[:]))
 	}
 	var opsChatSvc *opschat.Service
+	// opschat 运行参数:PIPEWRIGHT_OPS_SSH_SLOTS 调全局受限 SSH 槽位(默认 4),
+	// PIPEWRIGHT_OPS_APPROVAL_TTL_MINUTES 调审批有效期(默认 15 分钟)。
+	opsRuntime := opschat.RuntimeLimits{}
+	if v := strings.TrimSpace(os.Getenv("PIPEWRIGHT_OPS_SSH_SLOTS")); v != "" {
+		if n, perr := strconv.Atoi(v); perr == nil && n > 0 {
+			opsRuntime.SSHSlots = n
+		} else {
+			log.Printf("[opschat] 警告:PIPEWRIGHT_OPS_SSH_SLOTS=%q 非法(须为正整数),用默认 4", v)
+		}
+	}
+	if v := strings.TrimSpace(os.Getenv("PIPEWRIGHT_OPS_APPROVAL_TTL_MINUTES")); v != "" {
+		if n, perr := strconv.Atoi(v); perr == nil && n > 0 {
+			opsRuntime.ApprovalTTL = time.Duration(n) * time.Minute
+		} else {
+			log.Printf("[opschat] 警告:PIPEWRIGHT_OPS_APPROVAL_TTL_MINUTES=%q 非法(须为正整数分钟),用默认 15", v)
+		}
+	}
 	if limited, ok := targetSvc.(target.LimitedExecutor); ok {
 		chat, err := opschat.New(opschat.Options{DB: st.DB, Vault: credVault, Executor: limited,
-			Model: ai.NewOpsModel(aiSvc, opsMasker), Masker: opsMasker, LocalRecorder: audit.New(st.DB, opsMasker, nil)})
+			Model: ai.NewOpsModel(aiSvc, opsMasker), Masker: opsMasker, LocalRecorder: audit.New(st.DB, opsMasker, nil), Runtime: opsRuntime})
 		if err == nil {
 			err = chat.Start(context.Background())
 		}

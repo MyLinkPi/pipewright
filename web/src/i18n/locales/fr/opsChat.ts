@@ -57,6 +57,8 @@ export default {
     'Envoyer uniquement le contenu ci-dessus au modèle affiché pour cette analyse.',
   idle: 'Inactif',
   refresh: 'Actualiser',
+  storageNearQuota:
+    'Le stockage de la session approche la limite ; envisagez de créer une nouvelle session.',
   unsaved: 'Brouillon non enregistré',
   discardBody:
     'Le contenu non enregistré en mémoire locale peut être perdu. L’abandonner ?',

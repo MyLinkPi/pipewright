@@ -91,6 +91,47 @@ func TestImmediateCrashRestartWaitsForOldLeaseWithoutReplay(t *testing.T) {
 	}
 }
 
+// A crash mid-dispatch leaves a Running+Dispatched call behind; the next
+// instance must converge it to Unknown without replaying remote work.
+func TestCrashDuringDispatchRecoversUnknownWithoutReplay(t *testing.T) {
+	id := uuid.NewString()
+	f := executor(id)
+	dispatches := make(chan struct{}, 8)
+	f.run = func(_ context.Context, _ target.ConnectionSnapshot, _ []string, _ target.ExecutionLimits) (*target.LimitedResult, error) {
+		dispatches <- struct{}{}
+		select {} // process death: never return, never write again
+	}
+	s, v, db := fixture(t, f, nil)
+	c := chat(t, s, id)
+	r := submitTool(t, s, c, "host_ports", `{}`)
+	<-dispatches
+	// Stop the heartbeat without Close; the blocked worker never converges, as
+	// a crash. Drop the hung job so the fixture's Close does not wait on it.
+	s.stop()
+	<-s.leaseDone
+	s.mu.Lock()
+	delete(s.jobs, r.ID)
+	s.mu.Unlock()
+	if _, err := db.Exec("UPDATE ops_chat_state SET lease_until=? WHERE id=1", time.Now().Add(200*time.Millisecond).UnixMilli()); err != nil {
+		t.Fatal(err)
+	}
+	next, err := New(Options{DB: db, Vault: v, Executor: f})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = next.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = next.Close(context.Background()) })
+	snap := waitRun(t, next, c.ID, r.ID, Unknown)
+	if len(snap.Calls) != 1 || snap.Calls[0].Status != Unknown {
+		t.Fatal(snap.Calls)
+	}
+	if len(dispatches) != 0 {
+		t.Fatal("recovery replayed remote work")
+	}
+}
+
 func TestStartupLeaseWaitHonorsRootAndRejectsRenewedConsumer(t *testing.T) {
 	s, v, db := fixture(t, executor(), nil)
 	other, err := New(Options{DB: db, Vault: v})

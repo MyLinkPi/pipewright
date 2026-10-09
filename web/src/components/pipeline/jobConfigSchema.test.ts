@@ -225,6 +225,38 @@ describe('jobConfigSchema', () => {
     })
   })
 
+  describe('deploy_container structured container params (cpu/memory/restart/env)', () => {
+    const fields = JOB_TYPE_SPECS.deploy_container.fields
+    const keys = fields.map((f) => f.key)
+
+    it('exposes cpuLimit/memoryLimit/restartPolicy/envVars ahead of runArgs', () => {
+      for (const k of ['cpuLimit', 'memoryLimit', 'restartPolicy', 'envVars']) {
+        expect(keys).toContain(k)
+        expect(keys.indexOf(k), `${k} before runArgs`).toBeLessThan(keys.indexOf('runArgs'))
+      }
+    })
+
+    it('restartPolicy is a select with an empty "unset" first option', () => {
+      const f = fields.find((x) => x.key === 'restartPolicy')!
+      expect(f.kind).toBe('select')
+      expect(f.options![0].value).toBe('')
+    })
+
+    it('envVars is a multiline field (one KEY=value per line)', () => {
+      expect(fields.find((x) => x.key === 'envVars')!.kind).toBe('textarea')
+    })
+
+    it('owns the new keys so they stay typed instead of falling into raw extras', () => {
+      const { extras } = splitConfig('deploy_container', {
+        cpuLimit: '1.0',
+        memoryLimit: '512m',
+        restartPolicy: 'always',
+        envVars: 'KEY=value',
+      })
+      expect(extras.length).toBe(0)
+    })
+  })
+
   describe('deploy_ssh restartCommand visibility (regression: tautological `when` removed)', () => {
     const field = JOB_TYPE_SPECS.deploy_ssh.fields.find((f) => f.key === 'restartCommand')!
 

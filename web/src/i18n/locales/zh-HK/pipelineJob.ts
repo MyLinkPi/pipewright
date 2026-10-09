@@ -63,7 +63,16 @@ export default {
   fieldPortsHint: '容器埠對映,逗號 / 空白分隔:"8080"(僅容器埠,宿主自動分配)、"auto:9000"(同前顯式寫法)、"8080:80"(顯式對映)。',
   fieldRunArgsLabel: "docker run 參數",
   fieldRunArgsHint:
-    "映像部署:原樣追加到 docker run(參數自由;憑證請用 registry 登入,勿寫進此處)",
+    "映像部署:原樣追加到 docker run(自由參數,僅上方結構化欄位覆蓋不到的 flag 才寫這裡;同名 flag 以此處為準;憑證請用 registry 登入,勿寫進此處)",
+  fieldCpuLimitLabel: "CPU 上限",
+  fieldCpuLimitHint: "容器可用 CPU 核心數上限(如 0.5 / 1 / 2.5);留空不限制",
+  fieldMemoryLimitLabel: "記憶體上限",
+  fieldMemoryLimitHint: "容器記憶體硬上限(如 512m / 1g),超限會被 OOM kill;留空不限制",
+  fieldRestartPolicyLabel: "重啟策略",
+  fieldRestartPolicyHint: "容器退出 / 宿主機重啟後的重啟策略(同 docker run --restart)",
+  fieldEnvVarsLabel: "環境變數",
+  fieldEnvVarsHint: "每行一條 KEY=value,逐個注入容器(值含空格也可以);機密值勿在此寫明文",
+  restartPolicyUnset: "不設定",
   fieldStrategyLabel: "部署策略",
   fieldRestartCommandLabel: "重啟 / 切換命令",
   fieldRestartCommandHint:

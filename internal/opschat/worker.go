@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"log"
 	"strconv"
 	"strings"
 	"time"
@@ -49,6 +50,7 @@ func (s *Service) Start(root context.Context) error {
 	s.started = true
 	s.leaseDone = make(chan struct{})
 	go s.leaseLoop()
+	log.Printf("[opschat] started instance=%s", s.instance)
 	return nil
 }
 
@@ -145,6 +147,9 @@ func (s *Service) acquireLease(root context.Context, seen *leaseObservation) err
 				return e
 			}
 		}
+		if len(ids) > 0 {
+			log.Printf("[opschat] lease acquired: recovered %d interrupted/unknown run(s)", len(ids))
+		}
 		_, e = tx.ExecContext(root, "UPDATE ops_chat_state SET lease_owner=?,lease_until=? WHERE id=1", s.instance, time.Now().Add(leaseDuration).UnixMilli())
 		return databaseError(e)
 	})
@@ -190,12 +195,14 @@ func (s *Service) leaseLoop() {
 			return
 		case <-ticker.C:
 			ctx, cancel := context.WithTimeout(s.root, 5*time.Second)
-			err := s.transaction(ctx, true, func(tx *sql.Tx) error {
+			// Renewal persists no session data; skip the full storage scan.
+			err := s.transactionQuota(ctx, true, false, func(tx *sql.Tx) error {
 				_, e := tx.ExecContext(ctx, "UPDATE ops_chat_state SET lease_until=? WHERE id=1 AND lease_owner=?", time.Now().Add(leaseDuration).UnixMilli(), s.instance)
 				return databaseError(e)
 			})
 			cancel()
 			if err != nil {
+				log.Printf("[opschat] lease lost: %v", err)
 				s.mu.Lock()
 				s.lost = true
 				s.stop()
@@ -327,6 +334,7 @@ func (s *Service) failFrom(id, run string, err error, ctx context.Context) {
 }
 
 func (s *Service) fenceWorker() {
+	log.Printf("[opschat] worker fenced; instance giving up lease")
 	s.mu.Lock()
 	s.lost = true
 	if s.stop != nil {
@@ -337,7 +345,7 @@ func (s *Service) fenceWorker() {
 
 // Only reconcile local facts. Never retry model, SSH, or consumed mutations.
 func (s *Service) convergeRun(id, run, status string, onlyWorking bool) error {
-	return s.persistAttempts(id, func(ctx context.Context, tx *sql.Tx) error {
+	err := s.persistAttempts(id, func(ctx context.Context, tx *sql.Tx) error {
 		r, e := s.run(ctx, tx, id, run)
 		if e != nil {
 			return e
@@ -380,6 +388,10 @@ func (s *Service) convergeRun(id, run, status string, onlyWorking bool) error {
 		}
 		return s.finishTx(ctx, tx, r, status)
 	}, 50)
+	if err == nil {
+		log.Printf("[opschat] run converged session=%s run=%s status=%s", id, run, status)
+	}
+	return err
 }
 func (s *Service) work(parent context.Context, id, run string) {
 	defer func() {
@@ -395,7 +407,7 @@ func (s *Service) work(parent context.Context, id, run string) {
 	if r.View.Status != Queued {
 		return
 	}
-	remaining := 180*time.Second - time.Duration(r.Body.ActiveMillis)*time.Millisecond
+	remaining := s.runtime.WorkBudget - time.Duration(r.Body.ActiveMillis)*time.Millisecond
 	if remaining <= 0 {
 		s.failRun(id, run, Interrupted)
 		return
@@ -476,7 +488,7 @@ func (s *Service) work(parent context.Context, id, run string) {
 				return
 			}
 			r.Body.ModelCalls++
-			if r.Body.ModelCalls > 2 {
+			if r.Body.ModelCalls > s.runtime.ModelCalls {
 				s.failRun(id, run, Failed)
 				return
 			}
@@ -491,7 +503,7 @@ func (s *Service) work(parent context.Context, id, run string) {
 			if e != nil {
 				return
 			}
-			modelCtx, stop := context.WithTimeout(ctx, 60*time.Second)
+			modelCtx, stop := context.WithTimeout(ctx, s.runtime.ModelTimeout)
 			plan, e = s.model.Plan(modelCtx, req)
 			stop()
 			if e != nil || s.registerSecrets() != nil {
@@ -526,7 +538,7 @@ func (s *Service) work(parent context.Context, id, run string) {
 				}
 				view := Call{ID: uuid.NewString(), RunID: run, SessionID: id, ServerID: snap.Server.ID, ServerName: s.scrub(snap.Server.Name, 1024), ToolID: a.ToolID, Args: args, Object: object, Status: Queued, ArgsHash: digest(args), TargetHash: snap.Fingerprint()}
 				candidates = append(candidates, callRecord{Body: callBody{View: view, Snapshot: snap}, Created: time.Now().UnixMilli(), Ordinal: len(candidates)})
-				if len(candidates) > 24 {
+				if len(candidates) > resourceLimits.Calls {
 					s.failRun(id, run, Failed)
 					return
 				}
@@ -599,7 +611,7 @@ func (s *Service) work(parent context.Context, id, run string) {
 		s.failFrom(id, run, err, ctx)
 		return
 	}
-	// Calls in a run are serial; separate sessions can use the four global SSH slots.
+	// Calls in a run are serial; separate sessions share the global SSH slots.
 	barrier := false
 	for _, call := range calls {
 		if ctx.Err() != nil {
@@ -628,10 +640,13 @@ func (s *Service) work(parent context.Context, id, run string) {
 		if barrier {
 			continue
 		}
+		callStart := time.Now()
 		if err = s.executeCall(ctx, call); err != nil {
 			s.failFrom(id, run, err, ctx)
 			return
 		}
+		log.Printf("[opschat] call done session=%s run=%s call=%s tool=%s server=%s status=%s elapsed=%s",
+			id, run, call.Body.View.ID, call.Body.View.ToolID, call.Body.View.ServerID, call.Body.View.Status, time.Since(callStart).Round(time.Millisecond))
 	}
 	if ctx.Err() != nil {
 		return
@@ -723,7 +738,7 @@ func (s *Service) analyzeWork(ctx context.Context, id, run string, r runRecord) 
 		if e != nil {
 			return e
 		}
-		if current.View.CancelRequested || current.Body.ModelCalls >= 2 {
+		if current.View.CancelRequested || current.Body.ModelCalls >= s.runtime.ModelCalls {
 			return ErrConflict
 		}
 		current.Body.ModelCalls++
@@ -732,7 +747,7 @@ func (s *Service) analyzeWork(ctx context.Context, id, run string, r runRecord) 
 	if err != nil {
 		return
 	}
-	modelCtx, stop := context.WithTimeout(ctx, 60*time.Second)
+	modelCtx, stop := context.WithTimeout(ctx, s.runtime.ModelTimeout)
 	text, err := s.model.Analyze(modelCtx, req)
 	stop()
 	if err != nil || len(text) > 16<<10 || s.registerSecrets() != nil {

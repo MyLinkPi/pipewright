@@ -59,6 +59,8 @@ export default {
     'Nur die oben angezeigten Inhalte für diese Analyse an das angezeigte Modell senden.',
   idle: 'Inaktiv',
   refresh: 'Aktualisieren',
+  storageNearQuota:
+    'Der Sitzungsspeicher nähert sich dem Limit; starten Sie eine neue Sitzung.',
   unsaved: 'Entwurf nicht gespeichert',
   discardBody:
     'Ungespeicherter Inhalt im lokalen Speicher kann verloren gehen. Verwerfen?',

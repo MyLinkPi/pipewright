@@ -56,6 +56,8 @@ export default {
   consent: '위 내용만 표시된 모델에 이번 분석을 위해 전송하는 데 동의합니다.',
   idle: '대기',
   refresh: '새로고침',
+  storageNearQuota:
+    '세션 저장소가 한도에 가까워졌습니다. 새 세션을 만드는 것이 좋습니다.',
   unsaved: '초안 저장 안 됨',
   discardBody:
     '로컬 메모리의 저장되지 않은 내용이 손실될 수 있습니다. 삭제할까요?',

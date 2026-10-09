@@ -39,7 +39,7 @@ func BuiltinNodeCatalog() []NodeKind {
 		{Type: "deploy_ssh", Label: "主机部署", Category: "deploy",
 			Description: "经 SSH 把文件产物(jar/dist)滚动部署到目标机:releases/<runId>/ + 原子 current 软链 + 重启命令 + 健康门控 + 失败自动回滚。config 必填 artifactJob(产物来源节点名);多机支持 firstBatchSize/batchSize 分批。"},
 		{Type: "deploy_container", Label: "容器部署", Category: "deploy",
-			Description: "经 SSH 在目标机部署镜像产物:docker login(可选)→ pull → 停旧容器 → run 新容器(ports/runArgs)→ 健康门控 → 失败回滚上一镜像。config 必填 artifactJob(指向 build_image 节点)、containerName。"},
+			Description: "经 SSH 在目标机部署镜像产物:docker login(可选)→ pull → 停旧容器 → run 新容器(ports + 结构化常用项 cpuLimit/memoryLimit/restartPolicy/envVars,或 runArgs 自由参数)→ 健康门控 → 失败回滚上一镜像。config 必填 artifactJob(指向 build_image 节点)、containerName。"},
 		{Type: "health_check", Label: "健康检查", Category: "deploy",
 			Description: "对目标机(selector/serverId 圈选)做健康探测(http=curl / command=自定义命令,带重试);失败令阶段失败。建议接在部署节点之后。"},
 		{Type: "notify", Label: "通知", Category: "notify",

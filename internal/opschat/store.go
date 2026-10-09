@@ -45,6 +45,12 @@ func databaseError(err error) error {
 	return nil
 }
 func (s *Service) transaction(ctx context.Context, lease bool, fn func(*sql.Tx) error) error {
+	return s.transactionQuota(ctx, lease, true, fn)
+}
+
+// transactionQuota runs fn like transaction; quota=false skips the full
+// storage scan for lease writes that persist no session data (lease renewal).
+func (s *Service) transactionQuota(ctx context.Context, lease, quota bool, fn func(*sql.Tx) error) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return ErrStorage
@@ -68,8 +74,10 @@ func (s *Service) transaction(ctx context.Context, lease bool, fn func(*sql.Tx) 
 		return err
 	}
 	if lease {
-		if err = s.enforceStorage(ctx, tx); err != nil {
-			return err
+		if quota {
+			if err = s.enforceStorage(ctx, tx); err != nil {
+				return err
+			}
 		}
 		var owner string
 		var until int64
@@ -98,6 +106,7 @@ func (s *Service) session(ctx context.Context, q querier, id string) (sessionRec
 		return r, err
 	}
 	r.View.Title, r.View.Draft, r.View.ServerIDs = r.Body.Title, r.Body.Draft, r.Body.ServerIDs
+	r.View.StorageBytes = int64(r.Bytes)
 	r.View.CreatedAt, r.View.UpdatedAt = time.UnixMilli(created).UTC(), time.UnixMilli(updated).UTC()
 	return r, nil
 }
@@ -216,10 +225,15 @@ func (s *Service) append(ctx context.Context, tx *sql.Tx, e Entry, visible, allo
 		return ErrStorage
 	}
 	// Retain visible history independently from the bounded event replay window.
-	_, err = tx.ExecContext(ctx, `DELETE FROM ops_chat_entries WHERE session_id=? AND visible=0 AND (seq<=? OR created_at<?)`, e.SessionID, seq-4000, time.Now().Add(-30*24*time.Hour).UnixMilli())
+	_, err = tx.ExecContext(ctx, `DELETE FROM ops_chat_entries WHERE session_id=? AND visible=0 AND (seq<=? OR created_at<?)`, e.SessionID, seq-int64(resourceLimits.Replay), time.Now().Add(-30*24*time.Hour).UnixMilli())
 	return databaseError(err)
 }
 func (s *Service) finishTx(ctx context.Context, tx *sql.Tx, r runRecord, status string) error {
+	// A user-cancelled run never lands on Failed; Interrupted is the cancel
+	// terminal. Unknown is left untouched: dispatched effects stay uncertain.
+	if r.View.CancelRequested && status == Failed {
+		status = Interrupted
+	}
 	if !terminal(r.View.Status) && (status == Failed || status == Interrupted && r.View.Status == Planning) {
 		text := "Operation could not be completed."
 		if r.View.Status == Planning {
@@ -251,4 +265,4 @@ func terminal(status string) bool {
 	}
 	return false
 }
-func activeBudget(r sessionRecord) bool { return r.Count+27 <= 2000 }
+func activeBudget(r sessionRecord) bool { return r.Count+27 <= resourceLimits.Entries }

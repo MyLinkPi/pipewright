@@ -59,6 +59,11 @@ onBeforeUnmount(() => {
 const disabled = computed(
   () => busy.value || loading.value || !capabilities.value?.available,
 )
+const storageNearQuota = computed(() => {
+  const limit = capabilities.value?.limits?.sessionBytes,
+    used = session.value?.storageBytes
+  return !!limit && !!used && used > 0.8 * limit
+})
 async function leave(): Promise<boolean> {
   if (await chat.close()) return true
   if (
@@ -274,6 +279,14 @@ defineExpose({ close })
         @approve="chat.analyze"
         @cancel="preview = null"
       />
+    </div>
+    <div
+      v-if="storageNearQuota"
+      class="ops-section ops-row ops-feedback"
+      role="status"
+      data-testid="ops-storage-warning"
+    >
+      <span class="ops-grow ops-wrap">{{ t('opsChat.storageNearQuota') }}</span>
     </div>
     <AiOpsComposer
       class="ops-composer"

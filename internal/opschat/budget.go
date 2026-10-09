@@ -3,6 +3,7 @@ package opschat
 import (
 	"context"
 	"database/sql"
+	"log"
 )
 
 const runStorageReserve int64 = 4 << 20
@@ -62,7 +63,8 @@ func (s *Service) enforceStorage(ctx context.Context, tx *sql.Tx) error {
 		if e != nil {
 			return e
 		}
-		if size > 8<<20 || r.count > 2000 {
+		if size > int64(resourceLimits.SessionBytes) || r.count > resourceLimits.Entries {
+			log.Printf("[opschat] storage quota hit session=%s bytes=%d entries=%d", r.id, size, r.count)
 			return ErrQuota
 		}
 		if r.run != "" {
@@ -71,7 +73,8 @@ func (s *Service) enforceStorage(ctx context.Context, tx *sql.Tx) error {
 				return e
 			}
 			// Only this run can spend its reserve. Draft/title edits count as historical storage.
-			if size+max(int64(0), runStorageReserve-used) > 8<<20 {
+			if size+max(int64(0), runStorageReserve-used) > int64(resourceLimits.SessionBytes) {
+				log.Printf("[opschat] storage quota hit (run reserve) session=%s run=%s bytes=%d", r.id, r.run, size)
 				return ErrQuota
 			}
 		}

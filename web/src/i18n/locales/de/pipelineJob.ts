@@ -69,7 +69,16 @@ export default {
     'Container-Port-Mapping, Komma/Leerzeichen getrennt: "8080" (nur Container-Port, Host-Port automatisch vergeben), "auto:9000" (explizite Form), "8080:80" (feste Zuordnung).',
   fieldRunArgsLabel: "docker-run-Argumente",
   fieldRunArgsHint:
-    "Image-Bereitstellung: unverändert an docker run angehängt (beliebige Argumente; für Anmeldedaten den Registry-Login nutzen, nicht hier eintragen)",
+    "Image-Bereitstellung: unverändert an docker run angehängt (freie Argumente — nur für Flags, die die strukturierten Felder oben nicht abdecken; gleichnamige Flags hier gewinnen; für Anmeldedaten den Registry-Login nutzen, nicht hier eintragen)",
+  fieldCpuLimitLabel: "CPU-Limit",
+  fieldCpuLimitHint: "Maximale CPU-Kerne für den Container (z. B. 0.5 / 1 / 2.5); leer = unbegrenzt",
+  fieldMemoryLimitLabel: "Speicherlimit",
+  fieldMemoryLimitHint: "Hartes Speicherlimit für den Container (z. B. 512m / 1g); bei Überschreitung OOM-Kill. Leer = unbegrenzt",
+  fieldRestartPolicyLabel: "Neustartrichtlinie",
+  fieldRestartPolicyHint: "Neustartverhalten nach Container-Ende / Host-Neustart (wie docker run --restart)",
+  fieldEnvVarsLabel: "Umgebungsvariablen",
+  fieldEnvVarsHint: "Eine KEY=value-Zeile pro Zeile, wird in den Container injiziert (Werte dürfen Leerzeichen enthalten); keine Klartext-Geheimnisse hier eintragen",
+  restartPolicyUnset: "Nicht gesetzt",
   fieldStrategyLabel: "Bereitstellungsstrategie",
   fieldRestartCommandLabel: "Neustart-/Umschaltbefehl",
   fieldRestartCommandHint:

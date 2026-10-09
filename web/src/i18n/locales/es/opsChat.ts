@@ -57,6 +57,8 @@ export default {
     'Enviar solo el contenido mostrado al modelo indicado para este análisis.',
   idle: 'Inactivo',
   refresh: 'Actualizar',
+  storageNearQuota:
+    'El almacenamiento de la sesión se acerca al límite; considere crear una nueva sesión.',
   unsaved: 'Borrador sin guardar',
   discardBody:
     'El contenido sin guardar en la memoria local puede perderse. ¿Descartarlo?',

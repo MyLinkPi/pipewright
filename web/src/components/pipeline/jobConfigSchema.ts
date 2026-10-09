@@ -112,6 +112,15 @@ const SELECTOR_MODE_OPTIONS: SelectOption[] = [
   { value: 'any', get label() { return t('pipelineJob.selectorModeAny') } },
 ]
 
+// 容器重启策略(restartPolicy):空 = 不设置(docker 默认 no);其余同 docker run --restart。
+const RESTART_POLICY_OPTIONS: SelectOption[] = [
+  { value: '', get label() { return t('pipelineJob.restartPolicyUnset') } },
+  { value: 'no', label: 'no' },
+  { value: 'always', label: 'always' },
+  { value: 'unless-stopped', label: 'unless-stopped' },
+  { value: 'on-failure', label: 'on-failure' },
+]
+
 // 产物打包方式(artifactPackMode):目录打包 tar.gz(默认)| 不打包按文件清单。
 const ARTIFACT_PACK_OPTIONS: SelectOption[] = [
   { value: 'tar', get label() { return t('pipelineJob.artifactPackTar') } },
@@ -531,11 +540,40 @@ const DEPLOY_CONTAINER_FIELDS: JobField[] = [
     when: (c) => !!(c.autoPortRange || '').trim(),
   },
   {
+    key: 'cpuLimit',
+    get label() { return t('pipelineJob.fieldCpuLimitLabel') },
+    kind: 'text',
+    placeholder: '1.0',
+    get hint() { return t('pipelineJob.fieldCpuLimitHint') },
+  },
+  {
+    key: 'memoryLimit',
+    get label() { return t('pipelineJob.fieldMemoryLimitLabel') },
+    kind: 'text',
+    placeholder: '512m',
+    get hint() { return t('pipelineJob.fieldMemoryLimitHint') },
+  },
+  {
+    key: 'restartPolicy',
+    get label() { return t('pipelineJob.fieldRestartPolicyLabel') },
+    kind: 'select',
+    options: RESTART_POLICY_OPTIONS,
+    get hint() { return t('pipelineJob.fieldRestartPolicyHint') },
+  },
+  {
+    key: 'envVars',
+    get label() { return t('pipelineJob.fieldEnvVarsLabel') },
+    kind: 'textarea',
+    monospace: true,
+    placeholder: 'KEY=value',
+    get hint() { return t('pipelineJob.fieldEnvVarsHint') },
+  },
+  {
     key: 'runArgs',
     get label() { return t('pipelineJob.fieldRunArgsLabel') },
     kind: 'text',
     monospace: true,
-    placeholder: '-e KEY=value --restart always',
+    placeholder: '--log-opt max-size=10m',
     get hint() { return t('pipelineJob.fieldRunArgsHint') },
   },
   {

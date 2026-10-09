@@ -4,8 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"github.com/google/uuid"
+	"log"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 func bound(c Call) BoundCall {
@@ -55,9 +57,9 @@ func (s *Service) issueApproval(ctx context.Context, tx *sql.Tx, id, run string,
 	var existing string
 	err = tx.QueryRowContext(ctx, "SELECT id FROM ops_chat_approvals WHERE run_id=?", run).Scan(&existing)
 	if err == sql.ErrNoRows {
-		_, err = tx.ExecContext(ctx, `INSERT INTO ops_chat_approvals(id,session_id,run_id,status,instance_id,expires_at,body) VALUES(?,?,?,'pending',?,?,?)`, uuid.NewString(), id, run, s.instance, time.Now().Add(15*time.Minute).UnixMilli(), b)
+		_, err = tx.ExecContext(ctx, `INSERT INTO ops_chat_approvals(id,session_id,run_id,status,instance_id,expires_at,body) VALUES(?,?,?,'pending',?,?,?)`, uuid.NewString(), id, run, s.instance, time.Now().Add(s.runtime.ApprovalTTL).UnixMilli(), b)
 	} else if err == nil {
-		_, err = tx.ExecContext(ctx, "UPDATE ops_chat_approvals SET status='pending',instance_id=?,expires_at=?,body=? WHERE id=?", s.instance, time.Now().Add(15*time.Minute).UnixMilli(), b, existing)
+		_, err = tx.ExecContext(ctx, "UPDATE ops_chat_approvals SET status='pending',instance_id=?,expires_at=?,body=? WHERE id=?", s.instance, time.Now().Add(s.runtime.ApprovalTTL).UnixMilli(), b, existing)
 	}
 	return databaseError(err)
 }
@@ -121,7 +123,7 @@ func (s *Service) Confirm(ctx context.Context, id string, in ConfirmInput) (*Run
 	if err := s.ready(); err != nil {
 		return nil, err
 	}
-	if len(in.Calls) < 1 || len(in.Calls) > 24 || !validID(in.Nonce) {
+	if len(in.Calls) < 1 || len(in.Calls) > resourceLimits.Calls || !validID(in.Nonce) {
 		return nil, ErrApproval
 	}
 	a, err := s.approval(ctx, s.db, id, in.RunID)
@@ -191,6 +193,7 @@ func (s *Service) Confirm(ctx context.Context, id string, in ConfirmInput) (*Run
 	if err != nil {
 		return nil, err
 	}
+	log.Printf("[opschat] confirmation consumed session=%s run=%s calls=%d", id, in.RunID, len(in.Calls))
 	s.notify(id)
 	s.launch(id, in.RunID)
 	r, err := s.run(ctx, s.db, id, in.RunID)
@@ -214,7 +217,7 @@ func (s *Service) AnalysisPreview(ctx context.Context, id string, ids []string) 
 		return nil, ErrUnavailable
 	}
 	out := &AnalysisPreview{CallIDs: append([]string{}, ids...), Items: []AnalysisItem{}, Provider: p}
-	if len(ids) == 0 || len(ids) > 24 {
+	if len(ids) == 0 || len(ids) > resourceLimits.Calls {
 		return nil, ErrInvalid
 	}
 	seen := map[string]bool{}

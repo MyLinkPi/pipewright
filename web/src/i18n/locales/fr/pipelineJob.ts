@@ -69,7 +69,16 @@ export default {
     'Mappages de ports conteneur, séparés par virgule/espaces : "8080" (port conteneur seul, port hôte alloué automatiquement), "auto:9000" (forme explicite), "8080:80" (mappage fixe).',
   fieldRunArgsLabel: "Arguments docker run",
   fieldRunArgsHint:
-    "Déploiement d’image : ajoutés tels quels à docker run (arguments libres ; pour les identifiants, utilisez la connexion au registry, ne les mettez pas ici)",
+    "Déploiement d’image : ajoutés tels quels à docker run (arguments libres — uniquement pour les flags non couverts par les champs structurés ci-dessus ; en cas de doublon, ceux-ci priment ; pour les identifiants, utilisez la connexion au registry, ne les mettez pas ici)",
+  fieldCpuLimitLabel: "Limite CPU",
+  fieldCpuLimitHint: "Nombre maximal de cœurs CPU utilisables par le conteneur (ex. 0.5 / 1 / 2.5) ; vide = illimité",
+  fieldMemoryLimitLabel: "Limite mémoire",
+  fieldMemoryLimitHint: "Limite mémoire stricte du conteneur (ex. 512m / 1g) ; dépassement = OOM kill. Vide = illimité",
+  fieldRestartPolicyLabel: "Politique de redémarrage",
+  fieldRestartPolicyHint: "Comportement de redémarrage après arrêt du conteneur / reboot de l’hôte (comme docker run --restart)",
+  fieldEnvVarsLabel: "Variables d’environnement",
+  fieldEnvVarsHint: "Une ligne KEY=value par ligne, injectée dans le conteneur (les valeurs peuvent contenir des espaces) ; ne pas écrire de secrets en clair ici",
+  restartPolicyUnset: "Non défini",
   fieldStrategyLabel: "Stratégie de déploiement",
   fieldRestartCommandLabel: "Commande de redémarrage / bascule",
   fieldRestartCommandHint:

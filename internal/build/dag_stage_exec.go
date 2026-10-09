@@ -640,13 +640,15 @@ func (b *Builder) runDeployJob(ctx context.Context, rep dagrun.StageReporter, jb
 		cfg["restartCommand"] = rc
 	}
 	// 部署语义键透传(deploy 层消费):产物精确绑定(deployMode/artifactJob/artifactName)、
-	// 镜像容器参数(artifactType/containerName/ports/runArgs/autoPortRange)、私有仓库登录
-	// (registryUrl/registryCredentialId)、滚动批次(firstBatchSize/batchSize)、目标匹配方式
-	// (selectorMode)、服务注册绑定(regServiceId 一键生成 / gatewayService 兼容 / regPort /
-	// drainSeconds)、健康门控(healthExec/healthPort/healthPath/healthUrl/healthCommand/…)。
+	// 镜像容器参数(artifactType/containerName/ports/runArgs/autoPortRange + 结构化常用项
+	// cpuLimit/memoryLimit/restartPolicy/envVars)、私有仓库登录(registryUrl/registryCredentialId)、
+	// 滚动批次(firstBatchSize/batchSize)、目标匹配方式(selectorMode)、服务注册绑定
+	// (regServiceId 一键生成 / gatewayService 兼容 / regPort / drainSeconds)、健康门控
+	// (healthExec/healthPort/healthPath/healthUrl/healthCommand/…)。
 	// 各值原样搬运(deploy 层 array 化、绝不拼 shell,守 AC-SEC-02);空值不入 cfg 保持默认。
 	for _, k := range []string{
 		"deployMode", "artifactJob", "artifactName", "artifactType", "containerName", "ports", "runArgs",
+		"cpuLimit", "memoryLimit", "restartPolicy", "envVars",
 		"registryUrl", "registryCredentialId", "autoPortRange",
 		"firstBatchSize", "batchSize", "selectorMode", "gatewayService",
 		"regServiceId", "regPort", "drainSeconds",

@@ -408,7 +408,7 @@ needs 填「本阶段内它所依赖的其它 job 的 name」(数组)。**凡有
 - build_image:buildModel("dockerfile" 有 Dockerfile 否则 "toolchain")、dockerfilePath(检测到的 Dockerfile 路径,如 "backend/Dockerfile")、context(Dockerfile 所在目录,如 "backend")、artifactType("image")。
 - push_image:无需 config(随 build_image 推送)。
 - deploy_ssh(文件产物 jar/dist):artifactJob(必填 = 产出该产物的构建节点 name)、deployPath、restartCommand、firstBatchSize/batchSize(多机分批,可选);serverId 留空(用户选目标机)。
-- deploy_container(镜像产物):artifactJob(必填 = build_image 节点 name)、containerName(据项目名取,如 "<proj>-app")、ports(如 "8080:8080")、runArgs 可选;serverId 留空。
+- deploy_container(镜像产物):artifactJob(必填 = build_image 节点 name)、containerName(据项目名取,如 "<proj>-app")、ports(如 "8080:8080");常用容器参数用结构化键 cpuLimit(如 "1.0")/memoryLimit(如 "512m")/restartPolicy(no/always/unless-stopped/on-failure)/envVars(每行一条 KEY=value),仅特殊 flag 才用 runArgs(可选);serverId 留空。
 - health_check:probeMode("http")、url(据服务端口/框架填,Spring Boot 用 "http://localhost:<宿主端口>/actuator/health",其它用 "/healthz")、retries("10")、intervalSeconds("3");可选 selector 圈选目标机(留空 = 平台本机 http 探测)。
 - notify:titleTemplate/bodyTemplate(可用 {{project}} {{branch}} {{status}});channel 留空(用户选渠道)。
 - git_source:config 留空 {}。

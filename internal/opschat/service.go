@@ -31,6 +31,7 @@ type Service struct {
 	audit       audit.Recorder
 	masker      *mask.Masker
 	instance    string
+	runtime     RuntimeLimits
 	mu          sync.Mutex
 	root        context.Context
 	stop        context.CancelFunc
@@ -51,7 +52,8 @@ func New(o Options) (*Service, error) {
 	if o.Masker == nil {
 		o.Masker = mask.NewMasker()
 	}
-	s := &Service{db: o.DB, vault: o.Vault, executor: o.Executor, model: o.Model, audit: o.LocalRecorder, masker: o.Masker, instance: uuid.NewString(), jobs: map[string]*job{}, wake: map[string]map[chan struct{}]bool{}, slots: make(chan struct{}, 4), serverSlots: map[string]chan struct{}{}}
+	runtime := o.Runtime.withDefaults()
+	s := &Service{db: o.DB, vault: o.Vault, executor: o.Executor, model: o.Model, audit: o.LocalRecorder, masker: o.Masker, instance: uuid.NewString(), runtime: runtime, jobs: map[string]*job{}, wake: map[string]map[chan struct{}]bool{}, slots: make(chan struct{}, runtime.SSHSlots), serverSlots: map[string]chan struct{}{}}
 	check, err := s.seal("pipewright.opschat.keycheck.v1")
 	if err != nil {
 		return nil, err
@@ -106,7 +108,7 @@ func (s *Service) ready() error {
 }
 func validID(id string) bool { _, err := uuid.Parse(id); return err == nil }
 func validTargets(ids []string) bool {
-	if len(ids) > 8 {
+	if len(ids) > resourceLimits.Targets {
 		return false
 	}
 	seen := map[string]bool{}
@@ -145,7 +147,7 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (*Session, error) 
 		if tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM ops_chat_sessions").Scan(&count) != nil {
 			return ErrStorage
 		}
-		if count >= 100 {
+		if count >= resourceLimits.Sessions {
 			return ErrQuota
 		}
 		_, e := tx.ExecContext(ctx, "INSERT INTO ops_chat_sessions(id,revision,body,created_at,updated_at) VALUES(?,1,?,?,?)", id, sealed, now, now)

@@ -54,6 +54,7 @@ export default {
   consent: '仅同意将上方这批内容发送给显示的模型作本次分析。',
   idle: '空闲',
   refresh: '刷新',
+  storageNearQuota: '会话存储已接近上限，建议新建会话。',
   unsaved: '草稿尚未保存',
   discardBody: '保留在本机内存中的未保存内容可能丢失，确定放弃吗？',
   discard: '放弃未保存内容',
