@@ -32,6 +32,19 @@ serverIds」改为「选择器圈选」,与构建共用 `servers.labels` 同一�
 - [x] 空目标三态(空选择器 / 零命中 / server:gone)→ 200 空 targets 数组;run-detail targets slot 保持 null
 - [x] 语法非法 → 422 invalid_deploy_selector
 - [x] 既有 serverIds 路径回归(存在性 422、CSRF、产物校验)不变
+- [x] 空目标响应不回读旧 targets(TestDeployEmptyAfterSuccessReturnsEmptyTargets):同 run 先成功
+  部署再空部署 → 响应为空数组(修复前回读上一次旧 targets,"跳过"伪装成"成功")
+
+### 部署正确性加固(2026-10 全链路审查修复)
+- [x] 可变 tag 假回滚修复:prevImage 改记镜像 digest(`{{.Image}}`),回滚按 digest 起容器
+  (TestRollingImageRollbackTargetsDigest);此前 `latest` 被 pull 重指向后"回滚"起的还是坏镜像
+- [x] 健康门控/回滚/docker pull 独立 ctx 预算,不再共用 60s execTimeout(pull 15min 对齐
+  uploadTimeout);修复前健康耗尽后回滚首条命令即 DeadlineExceeded、current 软链滞留坏版本
+- [x] 回滚命令失败(含非零退出)→ 状态记 failed + "回滚未确认"message,不再谎称 rolled_back;
+  retryableTargetStatus 含 failed,重试不受影响。**行为变更**:部分原 rolled_back 场景现显示 failed
+- [x] maxSurge 预热 healthExec/command 探测目标改为新实例容器名 `<base>-r<hex>`(修复前打旧
+  容器假通过或 no such container 必失败)
+- [x] 显式 serverIDs 保序去重(修复前同机部署两次、RetryFailed 同机竞态)
 
 ### 流水线派发(internal/build/dag_stage_exec_test.go)
 - [x] 节点 `selector` 键优先,旧 `serverId` → `server:<id>` 规范形式透传

@@ -111,6 +111,40 @@ func TestSettingsBuildModelToggleRoundTripHTTP(t *testing.T) {
 	}
 }
 
+// TestSettingsBuildContextRoundTripHTTP 锁构建上下文目录(build.context)经 HTTP API 的
+// 端到端往返:此前请求/响应 DTO 均无 context 键,保存即丢、回读也没有。
+func TestSettingsBuildContextRoundTripHTTP(t *testing.T) {
+	srv, client, csrf, projID := setupSettingsServer(t)
+	base := srv.URL + "/api/projects/" + projID + "/pipeline/settings"
+
+	body := `{"build":{"model":"dockerfile","dockerfilePath":"backend/Dockerfile","context":"backend",
+	          "artifactType":"image"},"environments":[]}`
+	resp := doJSON(t, client, http.MethodPut, base, csrf, body)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("PUT status = %d, body=%s", resp.StatusCode, raw)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	var dto map[string]any
+	_ = json.Unmarshal(raw, &dto)
+	build, _ := dto["build"].(map[string]any)
+	if build["context"] != "backend" {
+		t.Fatalf("PUT 响应 context = %v, want backend", build["context"])
+	}
+
+	// 刷新 GET 仍读得回(持久化不丢)。
+	gresp := doJSON(t, client, http.MethodGet, base, csrf, "")
+	defer gresp.Body.Close()
+	graw, _ := io.ReadAll(gresp.Body)
+	var gdto map[string]any
+	_ = json.Unmarshal(graw, &gdto)
+	gbuild, _ := gdto["build"].(map[string]any)
+	if gbuild["context"] != "backend" {
+		t.Fatalf("GET context = %v, want backend(往返保留); body=%s", gbuild["context"], graw)
+	}
+}
+
 func TestSettingsSecretVarRoundTripMaskedHTTP(t *testing.T) {
 	srv, client, csrf, projID := setupSettingsServer(t)
 	base := srv.URL + "/api/projects/" + projID + "/pipeline/settings"

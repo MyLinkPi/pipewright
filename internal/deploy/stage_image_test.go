@@ -2,9 +2,13 @@ package deploy
 
 import (
 	"context"
+	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/huangchengsir/pipewright/internal/run"
+	"github.com/huangchengsir/pipewright/internal/target"
 )
 
 // stage_image_test.go 覆盖「流水线部署节点」(DeployForStage)对 **镜像产物** 的部署编排:
@@ -282,6 +286,179 @@ func TestRollingImageSwapFailureRollsBack(t *testing.T) {
 	}
 	if !hasRunWithRef(rec.calls2, "registry/app:v1") {
 		t.Fatalf("应回滚到上一镜像 v1: %v", rec.calls2)
+	}
+}
+
+// TestRollingImageRollbackTargetsDigest 可变 tag 假回滚修复:prevImage 必须是镜像 digest
+// (inspect {{.Image}}),回滚 docker run 用 digest —— 用引用串({{.Config.Image}})的话,
+// app:latest 在本次 pull 后已指向刚拉的坏镜像,回滚等于把坏镜像再跑一遍。
+func TestRollingImageRollbackTargetsDigest(t *testing.T) {
+	db := testDB(t)
+	rsvc := run.New(db)
+	const digest = "sha256:01d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d"
+	var mu sync.Mutex
+	var inspectFormats []string
+	tgt := &stubTarget{execFn: func(_ string, cmd []string) (*target.ExecResult, error) {
+		switch {
+		case len(cmd) >= 4 && cmd[0] == "docker" && cmd[1] == "inspect":
+			mu.Lock()
+			inspectFormats = append(inspectFormats, cmd[3])
+			mu.Unlock()
+			return &target.ExecResult{ExitCode: 0, Stdout: digest + "\n"}, nil
+		case len(cmd) > 0 && cmd[0] == "true": // 健康命令必失败 → 触发回滚
+			return &target.ExecResult{ExitCode: 1, Stderr: "unhealthy"}, nil
+		default:
+			return &target.ExecResult{ExitCode: 0}, nil
+		}
+	}}
+	srv := seedServer(t, tgt, "web-1")
+	runID, artID := seedSuccessRunWithArtifact(t, db, rsvc, run.ArtifactImage, "registry/app:latest")
+
+	svc := New(tgt, rsvc)
+	hc := &HealthCheck{Type: HealthCheckCommand, Command: []string{"true"}, Retries: 1}
+	res, err := svc.Deploy(context.Background(), DeployInput{
+		RunID: runID, ArtifactID: artID, ServerIDs: []string{srv.ID}, HealthCheck: hc,
+	})
+	if err != nil {
+		t.Fatalf("Deploy: %v", err)
+	}
+	if len(res) != 1 || res[0].Status != run.TargetRolledBack {
+		t.Fatalf("健康失败有上一镜像应 rolled_back,实际 %+v", res)
+	}
+	// 回滚的 docker run 必须用 digest,不是可变 tag。
+	if !hasRunWithRef(tgt.calls, digest) {
+		t.Fatalf("回滚应用 digest 起旧镜像: %v", tgt.calls)
+	}
+	// 回滚目标探测必须读 {{.Image}}(digest),不得再读 {{.Config.Image}}(引用串)。
+	mu.Lock()
+	defer mu.Unlock()
+	if len(inspectFormats) == 0 {
+		t.Fatalf("应有回滚目标 inspect 探测")
+	}
+	for _, f := range inspectFormats {
+		if f == "{{.Config.Image}}" {
+			t.Fatalf("回滚目标不得再读引用串 {{.Config.Image}}(可变 tag 假回滚): %v", inspectFormats)
+		}
+	}
+	if inspectFormats[0] != "{{.Image}}" {
+		t.Fatalf("回滚目标应读 digest {{.Image}},实际 %q", inspectFormats[0])
+	}
+}
+
+// TestImageHealthExhaustRollbackUsesFreshCtx 健康门控耗尽后回滚命令仍被执行,且用**独立预算**
+// 的新 ctx(不复用切换阶段的 60s execCtx —— 健康耗尽后它已过期,复用会让第一条 docker rm
+// 就 DeadlineExceeded,坏容器还在跑状态却 rolled_back)。
+func TestImageHealthExhaustRollbackUsesFreshCtx(t *testing.T) {
+	db := testDB(t)
+	rsvc := run.New(db)
+	const digest = "sha256:prev0ld"
+	rec := &touchRecorder{
+		inspectImage: digest,
+		failOn: func(_ string, cmd []string) bool {
+			return len(cmd) > 0 && cmd[0] == "true" // 健康命令必失败 → 门控耗尽
+		},
+	}
+	tgt := &ctxCaptureTarget{stubTarget: &stubTarget{execFn: rec.exec}}
+	srv := seedServer(t, tgt.stubTarget, "web-1")
+	runID, artID := seedSuccessRunWithArtifact(t, db, rsvc, run.ArtifactImage, "registry/app:v2")
+
+	svc := New(tgt, rsvc)
+	hc := &HealthCheck{Type: HealthCheckCommand, Command: []string{"true"}, Retries: 1, IntervalSeconds: 0}
+	res, err := svc.Deploy(context.Background(), DeployInput{
+		RunID: runID, ArtifactID: artID, ServerIDs: []string{srv.ID}, HealthCheck: hc,
+	})
+	if err != nil {
+		t.Fatalf("Deploy: %v", err)
+	}
+	if len(res) != 1 || res[0].Status != run.TargetRolledBack {
+		t.Fatalf("健康耗尽有上一镜像应 rolled_back,实际 %+v", res)
+	}
+	// 回滚命令仍被执行:docker rm -f 出现两次(切换一次 + 回滚一次),且回滚 run digest。
+	deployCtx := tgt.ctxAt("docker rm -f shop", 0)
+	rollbackCtx := tgt.ctxAt("docker rm -f shop", 1)
+	if deployCtx == nil || rollbackCtx == nil {
+		t.Fatalf("健康耗尽后回滚命令未执行(rm 应出现两次)")
+	}
+	if !hasRunWithRef(rec.calls2, digest) {
+		t.Fatalf("回滚应用 digest 起旧镜像: %v", rec.calls2)
+	}
+	// 回滚用新 ctx:与切换阶段 execCtx 不是同一个,且有独立 execTimeout 级预算。
+	if deployCtx == rollbackCtx {
+		t.Fatalf("回滚不应复用切换阶段的 execCtx(健康耗尽后它已过期)")
+	}
+	dl, ok := rollbackCtx.Deadline()
+	if !ok || time.Until(dl) < 30*time.Second {
+		t.Fatalf("回滚应有独立 execTimeout 级预算,deadline=%v ok=%v", dl, ok)
+	}
+}
+
+// TestStageImagePullUsesLongTimeout docker pull 走独立长超时(pullTimeout,对齐 uploadTimeout
+// 的 15min 约定),不占 60s 命令预算(大镜像慢链路 60s 拉不完)。
+func TestStageImagePullUsesLongTimeout(t *testing.T) {
+	db := testDB(t)
+	rsvc := run.New(db)
+	rec := &touchRecorder{}
+	tgt := &ctxCaptureTarget{stubTarget: &stubTarget{execFn: rec.exec}}
+	srv := seedServer(t, tgt.stubTarget, "web-1")
+	runID, artID := seedSuccessRunWithArtifact(t, db, rsvc, run.ArtifactImage, "registry/shop:1.0")
+
+	svc := New(tgt, rsvc)
+	res, err := svc.Deploy(context.Background(), DeployInput{
+		RunID: runID, ArtifactID: artID, ServerIDs: []string{srv.ID},
+	})
+	if err != nil {
+		t.Fatalf("Deploy: %v", err)
+	}
+	if len(res) != 1 || res[0].Status != run.TargetSuccess {
+		t.Fatalf("want success, got %+v", res)
+	}
+	pullCtx := tgt.ctxAt("docker pull registry/shop:1.0", 0)
+	if pullCtx == nil {
+		t.Fatalf("应有 docker pull 命令: %v", rec.calls2)
+	}
+	dl, ok := pullCtx.Deadline()
+	if !ok || time.Until(dl) < 10*time.Minute {
+		t.Fatalf("docker pull 应走独立长超时(pullTimeout=15min),deadline=%v ok=%v", dl, ok)
+	}
+}
+
+// TestRollingImageRollbackCmdFailMarkedFailed 回滚命令失败 → status=failed(回滚未确认):
+// rolled_back 语义是「仍运行旧版本」;rm 成功 run 失败时机器上没有容器在跑,记 rolled_back
+// 是撒谎。failed 仍在 retryableTargetStatus 集合内,修复后可重试。
+func TestRollingImageRollbackCmdFailMarkedFailed(t *testing.T) {
+	db := testDB(t)
+	rsvc := run.New(db)
+	const digest = "sha256:prev0ld"
+	rec := &touchRecorder{
+		inspectImage: digest,
+		failOn: func(_ string, cmd []string) bool {
+			if len(cmd) > 0 && cmd[0] == "true" {
+				return true // 健康命令失败 → 触发回滚
+			}
+			// 回滚的 docker run <digest> 也失败(rm 成功、run 失败 → 机器上无容器在跑)。
+			return len(cmd) >= 3 && cmd[0] == "docker" && cmd[1] == "run" && cmd[len(cmd)-1] == digest
+		},
+	}
+	tgt := &stubTarget{execFn: rec.exec}
+	srv := seedServer(t, tgt, "web-1")
+	runID, artID := seedSuccessRunWithArtifact(t, db, rsvc, run.ArtifactImage, "registry/app:v2")
+
+	svc := New(tgt, rsvc)
+	hc := &HealthCheck{Type: HealthCheckCommand, Command: []string{"true"}, Retries: 1}
+	res, err := svc.Deploy(context.Background(), DeployInput{
+		RunID: runID, ArtifactID: artID, ServerIDs: []string{srv.ID}, HealthCheck: hc,
+	})
+	if err != nil {
+		t.Fatalf("Deploy 不应上抛(回滚失败也内化): %v", err)
+	}
+	if len(res) != 1 || res[0].Status != run.TargetFailed {
+		t.Fatalf("回滚命令失败应记 failed(回滚未确认),实际 %+v", res)
+	}
+	if !strings.Contains(res[0].Message, "回滚命令失败") || !strings.Contains(res[0].Message, "回滚未确认") {
+		t.Fatalf("message 应说明回滚未确认: %q", res[0].Message)
+	}
+	if !retryableTargetStatus(res[0].Status) {
+		t.Fatalf("回滚失败记 failed 后仍应可重试,实际 %s", res[0].Status)
 	}
 }
 

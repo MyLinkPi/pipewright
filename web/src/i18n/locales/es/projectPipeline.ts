@@ -65,6 +65,7 @@ export default {
 
   // ─── errores de guardado ────────────────────────────────────────
   errSaveFailedRetry: 'Error al guardar. Inténtalo de nuevo más tarde.',
+  errSettingsNotLoaded: 'La configuración no se cargó; no se guardó nada. Actualiza la página e inténtalo de nuevo.',
   errSaveFailedStatus: 'Error al guardar ({status})',
   errInvalidStage: 'El nombre de la etapa no puede estar vacío y kind debe ser un valor permitido. Revísalo e inténtalo de nuevo.',
   errInvalidJob: 'El nombre o el tipo de la tarea no pueden estar vacíos. Complétalos e inténtalo de nuevo.',

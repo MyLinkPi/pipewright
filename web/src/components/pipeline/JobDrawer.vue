@@ -700,11 +700,13 @@ async function confirmSave(): Promise<void> {
         </select>
 
         <!-- 标签选择器(选值控件:从机器实际标签里选 key/value,多条件且/或显式选) -->
+        <!-- 绑定走 field.key:当前三个 labelSelector 字段 key 恰好都是 'selector',
+             但新增 key≠selector 的字段时硬编码会读错/写错键。 -->
         <LabelSelectorEditor
           v-else-if="field.kind === 'labelSelector'"
-          :model-value="typedConfig.selector ?? ''"
+          :model-value="fieldValue(field.key)"
           :servers="props.servers"
-          @update:model-value="(v: string) => setField('selector', v)"
+          @update:model-value="(v: string) => setField(field.key, v)"
         />
 
         <!-- 产物来源(精确绑定:选哪个节点产出的产物;无「自动」) -->
@@ -751,7 +753,8 @@ async function confirmSave(): Promise<void> {
 
       <!-- 可视化步骤构建器(脚本类节点;编译进 commands/artifactPath,经 update 落库) -->
       <div v-if="canUseStepBuilder && viewMode === 'steps'" class="drawer-field step-builder-field">
-        <StepBuilder :config="typedConfig" @update="onStepsUpdate" />
+        <!-- :key 按 job 重建:切 job 时强制重挂,避免回声判据恰好相等而展示陈旧步骤结构。 -->
+        <StepBuilder :key="props.job.id" :config="typedConfig" @update="onStepsUpdate" />
         <p class="field-hint">
           {{ t('pipelineJob.stepBuilderHint') }}
         </p>

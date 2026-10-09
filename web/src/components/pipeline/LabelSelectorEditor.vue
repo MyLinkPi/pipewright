@@ -159,6 +159,8 @@ function onTermValueChange(row: SelectorTerm, value: string): void {
           @change="onTermKeyChange(row, ($event.target as HTMLSelectElement).value)"
         >
           <option v-for="k in labelKeys()" :key="k" :value="k">{{ k }}</option>
+          <!-- 陈旧 key 兜底:标签后来被删时,补原始值 option,避免下拉显示与 model 分叉 -->
+          <option v-if="row.k && !labelKeys().includes(row.k)" :value="row.k">{{ row.k }}</option>
         </select>
         <template v-if="!isBareTag(row.k)">
           <span class="selector-eq">=</span>
@@ -169,6 +171,9 @@ function onTermValueChange(row: SelectorTerm, value: string): void {
             @change="onTermValueChange(row, ($event.target as HTMLSelectElement).value)"
           >
             <option v-for="v in labelValues(row.k)" :key="v" :value="v">{{ v }}</option>
+            <!-- 陈旧 value 兜底:与 JobDrawer runnerServerMissing 同款,
+                 当前值不在候选时补原始值 option,否则保存下去的是不可见旧值 -->
+            <option v-if="row.v && !labelValues(row.k).includes(row.v)" :value="row.v">{{ row.v }}</option>
           </select>
         </template>
         <button

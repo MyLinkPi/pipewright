@@ -65,6 +65,7 @@ export default {
 
   // ─── erreurs d'enregistrement ───────────────────────────────────
   errSaveFailedRetry: 'Échec de l’enregistrement. Veuillez réessayer plus tard.',
+  errSettingsNotLoaded: 'Les paramètres n’ont pas pu être chargés ; rien n’a été enregistré. Actualisez la page puis réessayez.',
   errSaveFailedStatus: 'Échec de l’enregistrement ({status})',
   errInvalidStage: 'Le nom de l’étape ne peut pas être vide et kind doit être une valeur autorisée. Vérifiez puis réessayez.',
   errInvalidJob: 'Le nom ou le type de la tâche ne peut pas être vide. Complétez-les puis réessayez.',

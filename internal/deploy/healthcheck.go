@@ -121,6 +121,7 @@ func (hc *HealthCheck) timeout() time.Duration {
 type healthSpec struct {
 	kind            string   // specCommand | specExec | specURL | specPort
 	command         []string // kind=command/exec 时的命令 array
+	container       string   // kind=exec 时 docker exec 的目标容器名(构造期烤入;实例轮转预热时替换为新实例名)
 	url             string   // kind=url(存量完整 URL 写法)
 	path            string   // kind=port 的探测路径(缺省 /)
 	port            int      // kind=port 的显式端口(healthPort);0 = 部署期推导
@@ -163,6 +164,7 @@ func healthCheckSpecFromCfg(cfg map[string]string, containerName string) *health
 		sp.command = []string{"sh", "-c", cmdStr}
 	case execStr != "":
 		sp.kind = specExec
+		sp.container = containerName
 		sp.command = []string{"docker", "exec", containerName, "sh", "-c", execStr}
 	case url != "":
 		sp.kind = specURL
@@ -327,4 +329,32 @@ func healthCtxReason(err error) string {
 		return "整体超时"
 	}
 	return "已取消"
+}
+
+// healthBudget 推导一次健康门控的整体预算:重试次数 ×(单次超时 + 间隔)+ 一次单次超时作余量。
+// 重型配置(如 20 次 ×(60s+60s))远超 60s 命令超时(execTimeout),门控必须用独立预算的
+// ctx —— 复用部署命令的 execCtx 会让重试矩阵没跑完就被砍(并连带拖死其后的回滚,见
+// image_release.go / release.go 的 activate*)。
+func healthBudget(hc *HealthCheck) time.Duration {
+	return time.Duration(hc.retries())*(hc.timeout()+hc.interval()) + hc.timeout()
+}
+
+// healthCheckCtx 给健康门控挂独立预算的 ctx(与部署命令的 60s execCtx 解耦)。
+func healthCheckCtx(ctx context.Context, hc *HealthCheck) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(ctx, healthBudget(hc))
+}
+
+// retargetExecContainer 把 healthExec 探测命令(docker exec <container> sh -c …)里的容器名
+// 替换为实际目标容器:实例轮转(maxSurge)预热要打的是新实例 <base>-r<hex>,而不是 spec 构造时
+// 烤入的基础容器名 —— 打旧容器会假通过;旧容器名不存在则 docker exec no such container 必失败。
+func retargetExecContainer(cmd []string, oldName, newName string) []string {
+	if newName == "" || newName == oldName {
+		return cmd
+	}
+	out := make([]string, len(cmd))
+	copy(out, cmd)
+	if len(out) >= 3 && out[0] == "docker" && out[1] == "exec" && out[2] == oldName {
+		out[2] = newName
+	}
+	return out
 }

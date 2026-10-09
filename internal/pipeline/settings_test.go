@@ -3,6 +3,7 @@ package pipeline
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -151,6 +152,85 @@ func TestSettingsSaveBuildModelToggleRoundTrip(t *testing.T) {
 	}
 	if st2.Build.Model != BuildModelDockerfile || st2.Build.DockerfilePath != defaultDockerfilePath {
 		t.Fatalf("模型 A 切换失败: %+v", st2.Build)
+	}
+}
+
+// TestSettingsBuildContextRoundTrip 锁构建上下文目录(build.context)的保存/回读往返:
+// 此前 normalizeBuild 不拷贝、storedBuild 无该字段,保存即丢(monorepo 子目录构建失效)。
+func TestSettingsBuildContextRoundTrip(t *testing.T) {
+	svc, _, _, _, projID := newSettingsSvc(t)
+	ctx := context.Background()
+
+	// 含外围空白的 context 应 trim 后持久化。
+	_, err := svc.Save(ctx, projID, SettingsInput{Build: BuildConfig{
+		Model:          BuildModelDockerfile,
+		DockerfilePath: "backend/Dockerfile",
+		Context:        " backend ",
+		ArtifactType:   ArtifactImage,
+	}})
+	if err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	st, err := svc.Get(ctx, projID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if st.Build.Context != "backend" {
+		t.Fatalf("context 往返失败: got %q, want %q", st.Build.Context, "backend")
+	}
+
+	// 清空 context 回退为仓库根(空串语义)。
+	if _, err := svc.Save(ctx, projID, SettingsInput{Build: BuildConfig{
+		Model: BuildModelDockerfile, ArtifactType: ArtifactImage,
+	}}); err != nil {
+		t.Fatalf("Save 清空: %v", err)
+	}
+	st2, err := svc.Get(ctx, projID)
+	if err != nil {
+		t.Fatalf("Get 2: %v", err)
+	}
+	if st2.Build.Context != "" {
+		t.Fatalf("清空后 context = %q, want 空串", st2.Build.Context)
+	}
+}
+
+// TestSettingsSaveDuplicateIDsRejected 锁环境/步骤/变量 id 的唯一性校验:
+// 此前只补空 id 不查重,同 id 记录会静默共存(回读/引用语义错乱)。
+func TestSettingsSaveDuplicateIDsRejected(t *testing.T) {
+	svc, _, _, _, projID := newSettingsSvc(t)
+	ctx := context.Background()
+
+	// 变量 id 重复 → ErrInvalidVar。
+	_, err := svc.Save(ctx, projID, SettingsInput{Build: BuildConfig{
+		Vars: []BuildVar{
+			{ID: "vdup", Key: "A", Value: "1"},
+			{ID: "vdup", Key: "B", Value: "2"},
+		},
+	}})
+	if !errors.Is(err, ErrInvalidVar) {
+		t.Fatalf("变量 id 重复 err = %v, want ErrInvalidVar", err)
+	}
+
+	// 环境 id 重复 → ErrInvalidEnvironment。
+	_, err = svc.Save(ctx, projID, SettingsInput{
+		Environments: []Environment{
+			{ID: "edup", Name: "staging"},
+			{ID: "edup", Name: "prod"},
+		},
+	})
+	if !errors.Is(err, ErrInvalidEnvironment) {
+		t.Fatalf("环境 id 重复 err = %v, want ErrInvalidEnvironment", err)
+	}
+
+	// 步骤 id 重复 → ErrInvalidStep。
+	_, err = svc.Save(ctx, projID, SettingsInput{
+		Steps: []PipelineStep{
+			{ID: "sdup", Name: "单测", Image: "golang:1.23", Commands: []string{"go test ./..."}},
+			{ID: "sdup", Name: "构建", Image: "golang:1.23", Commands: []string{"go build ./..."}},
+		},
+	})
+	if !errors.Is(err, ErrInvalidStep) {
+		t.Fatalf("步骤 id 重复 err = %v, want ErrInvalidStep", err)
 	}
 }
 

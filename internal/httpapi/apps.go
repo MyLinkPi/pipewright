@@ -99,16 +99,16 @@ type appParamSpecDTO struct {
 
 // appTemplateDTO 是应用模板对外响应体(冻结契约)。
 type appTemplateDTO struct {
-	ID          string           `json:"id"`
-	Name        string           `json:"name"`
-	DisplayName string           `json:"displayName"`
-	Description string           `json:"description"`
-	Icon        string           `json:"icon"`
-	ComposeYAML string           `json:"composeYaml"`
+	ID          string            `json:"id"`
+	Name        string            `json:"name"`
+	DisplayName string            `json:"displayName"`
+	Description string            `json:"description"`
+	Icon        string            `json:"icon"`
+	ComposeYAML string            `json:"composeYaml"`
 	Params      []appParamSpecDTO `json:"params"`
-	Builtin     bool             `json:"builtin"`
-	CreatedAt   string           `json:"createdAt"`
-	UpdatedAt   string           `json:"updatedAt"`
+	Builtin     bool              `json:"builtin"`
+	CreatedAt   string            `json:"createdAt"`
+	UpdatedAt   string            `json:"updatedAt"`
 }
 
 func toAppTemplateDTO(t appstore.Template) appTemplateDTO {
@@ -166,12 +166,12 @@ func makeGetAppTemplateHandler(svc appstore.Service) http.HandlerFunc {
 // makeCreateAppTemplateHandler 返回 POST /api/ops/apps(自定义模板)。
 func makeCreateAppTemplateHandler(svc appstore.Service, aud audit.Recorder) http.HandlerFunc {
 	type request struct {
-		Name        string             `json:"name"`
-		DisplayName string             `json:"displayName"`
-		Description string             `json:"description"`
-		Icon        string             `json:"icon"`
-		ComposeYAML string             `json:"composeYaml"`
-		Params      []appParamSpecDTO  `json:"params"`
+		Name        string            `json:"name"`
+		DisplayName string            `json:"displayName"`
+		Description string            `json:"description"`
+		Icon        string            `json:"icon"`
+		ComposeYAML string            `json:"composeYaml"`
+		Params      []appParamSpecDTO `json:"params"`
 	}
 	return func(w http.ResponseWriter, r *http.Request) {
 		if svc == nil {
@@ -203,11 +203,11 @@ func makeCreateAppTemplateHandler(svc appstore.Service, aud audit.Recorder) http
 // makeUpdateAppTemplateHandler 返回 PUT /api/ops/apps/{id}(自定义模板)。
 func makeUpdateAppTemplateHandler(svc appstore.Service, aud audit.Recorder) http.HandlerFunc {
 	type request struct {
-		DisplayName *string            `json:"displayName"`
-		Description *string            `json:"description"`
-		Icon        *string            `json:"icon"`
-		ComposeYAML *string            `json:"composeYaml"`
-		Params      []appParamSpecDTO  `json:"params"`
+		DisplayName *string           `json:"displayName"`
+		Description *string           `json:"description"`
+		Icon        *string           `json:"icon"`
+		ComposeYAML *string           `json:"composeYaml"`
+		Params      []appParamSpecDTO `json:"params"`
 	}
 	return func(w http.ResponseWriter, r *http.Request) {
 		if svc == nil {

@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -79,6 +80,25 @@ func TestNormalizeMatrixCellExplosionCapped(t *testing.T) {
 	})
 	if !errors.Is(err, ErrInvalidStage) {
 		t.Errorf("乘积爆炸应报 ErrInvalidStage,得 %v", err)
+	}
+}
+
+// TestNormalizeMatrixCellOverflowCapped 验证溢出安全:8 轴 × 256 值的笛卡尔积为 2^64,
+// 直接累乘会 int64 溢出回绕为 0 绕过上限(组合爆炸压力转嫁 dagrun.cartesian,DoS 面)。
+// 边乘边判后必须在乘法前判定超限并报错。
+func TestNormalizeMatrixCellOverflowCapped(t *testing.T) {
+	// 256 个互异值(去重后仍 256),8 轴笛卡尔积 256^8 = 2^64 恰好溢出回绕为 0。
+	vals := make([]string, 256)
+	for i := range vals {
+		vals[i] = fmt.Sprintf("v%03d", i)
+	}
+	m := map[string][]string{}
+	for i := 0; i < MatrixMaxAxes; i++ {
+		m[string(rune('a'+i))] = vals
+	}
+	_, err := normalizeMatrix(m)
+	if !errors.Is(err, ErrInvalidStage) {
+		t.Fatalf("溢出 payload 应报 ErrInvalidStage(不得回绕放行), 得 %v", err)
 	}
 }
 

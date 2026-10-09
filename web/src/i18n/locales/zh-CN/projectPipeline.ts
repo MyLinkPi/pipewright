@@ -66,6 +66,7 @@ export default {
   // ─── 保存错误 ───────────────────────────────────────────────────
   errSaveFailedRetry: '保存失败,请稍后重试。',
   errSaveFailedStatus: '保存失败({status})',
+  errSettingsNotLoaded: '设置尚未加载成功,本次未保存任何内容。请刷新页面后重试。',
   errInvalidStage: '阶段名不能为空或 kind 不在允许值内,请检查后重试。',
   errInvalidJob: '任务名称或类型不能为空,请补充后重试。',
   errDuplicateId: '阶段或任务 ID 重复,请删除重复项后重试。',

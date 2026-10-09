@@ -24,6 +24,7 @@ import { listServers, type Server } from '../api/servers'
 import { listChannels, type NotificationChannel } from '../api/notifications'
 import { getValidation, type ValidationDTO, type IssueScope } from '../api/pipelineValidation'
 import { HttpError } from '../api/http'
+import { stableStringify } from '../lib/stableJson'
 import { anyDirty, useDirtyGuard } from '../composables/useDirtyGuard'
 import PipelineCanvas from '../components/pipeline/PipelineCanvas.vue'
 import VarsCacheTab from '../components/pipeline/VarsCacheTab.vue'
@@ -87,7 +88,9 @@ const editStages = ref<PipelineStage[]>([])
 function applyPipeline(dto: PipelineDTO): void {
   pipeline.value = dto
   editStages.value = JSON.parse(JSON.stringify(dto.stages)) as PipelineStage[]
-  stagesSnapshot.value = JSON.stringify(editStages.value)
+  // 快照用键序无关序列化:画布回写(如 JobDrawer {...extras, ...typed} 重建 config)
+  // 键序与 DTO 不同但内容等价时不该判脏。
+  stagesSnapshot.value = stableStringify(editStages.value)
 }
 
 async function loadPipeline(): Promise<void> {
@@ -165,7 +168,8 @@ const stagesSnapshot = ref('')
 const buildSnapshot  = ref('')
 const envsSnapshot   = ref('')
 
-const pipelineDirty = computed(() => JSON.stringify(editStages.value) !== stagesSnapshot.value)
+// 脏检查与快照同走 stableStringify:只比内容、不比键序(改回原值不报脏)。
+const pipelineDirty = computed(() => stableStringify(editStages.value) !== stagesSnapshot.value)
 const settingsDirty = computed(() =>
   JSON.stringify(editBuild.value) !== buildSnapshot.value ||
   JSON.stringify(editEnvs.value) !== envsSnapshot.value,
@@ -278,12 +282,16 @@ async function handleSave(): Promise<void> {
     // The vars/envs tabs persist build/deploy settings; canvas/triggers persist the spec.
     if (activeTab.value === 'vars' || activeTab.value === 'envs') {
       const payload = buildSettingsPayload()
-      if (payload) {
-        const dto = await saveSettings(projectId.value, payload)
-        applySettings(dto)
-        // Refresh credential masks in case a referenced credential changed.
-        credentials.value = await listCredentials().catch(() => credentials.value)
+      if (!payload) {
+        // settings 未加载成功(loadSettings 失败 → editBuild 为 null):此前会跳过请求
+        // 却照样报「已保存」。语义诚实地给错误横幅并中止,不假装成功。
+        saveBanner.value = t('projectPipeline.errSettingsNotLoaded')
+        return
       }
+      const dto = await saveSettings(projectId.value, payload)
+      applySettings(dto)
+      // Refresh credential masks in case a referenced credential changed.
+      credentials.value = await listCredentials().catch(() => credentials.value)
     } else {
       const dto = await savePipeline(projectId.value, { stages: editStages.value })
       applyPipeline(dto)

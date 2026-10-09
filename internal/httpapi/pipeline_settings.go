@@ -32,12 +32,15 @@ type toolchainDTO struct {
 }
 
 type buildConfigDTO struct {
-	Model          string        `json:"model"`
-	DockerfilePath string        `json:"dockerfilePath"`
-	Toolchain      toolchainDTO  `json:"toolchain"`
-	ArtifactType   string        `json:"artifactType"`
-	Vars           []buildVarDTO `json:"vars"`
-	Cache          cacheDTO      `json:"cache"`
+	Model          string `json:"model"`
+	DockerfilePath string `json:"dockerfilePath"`
+	// Context 是 docker build 构建上下文目录(相对仓库根;空=仓库根)。
+	// monorepo 子目录 Dockerfile 必须;此前 DTO 缺该键,保存/回读均静默丢失。
+	Context      string        `json:"context"`
+	Toolchain    toolchainDTO  `json:"toolchain"`
+	ArtifactType string        `json:"artifactType"`
+	Vars         []buildVarDTO `json:"vars"`
+	Cache        cacheDTO      `json:"cache"`
 }
 
 type imageRegistryDTO struct {
@@ -99,6 +102,7 @@ func toSettingsDTO(st *pipeline.Settings) settingsDTO {
 	build := buildConfigDTO{
 		Model:          st.Build.Model,
 		DockerfilePath: st.Build.DockerfilePath,
+		Context:        st.Build.Context,
 		Toolchain:      toolchainDTO{Language: st.Build.Toolchain.Language, Version: st.Build.Toolchain.Version},
 		ArtifactType:   st.Build.ArtifactType,
 		Vars:           toBuildVarDTOs(st.Build.Vars),
@@ -207,7 +211,9 @@ func makeSavePipelineSettingsHandler(svc pipeline.SettingsService) http.HandlerF
 			Build struct {
 				Model          string `json:"model"`
 				DockerfilePath string `json:"dockerfilePath"`
-				Toolchain      struct {
+				// Context 是 docker build 构建上下文目录(空=仓库根);此前请求体缺该键被静默丢弃。
+				Context   string `json:"context"`
+				Toolchain struct {
 					Language string `json:"language"`
 					Version  string `json:"version"`
 				} `json:"toolchain"`
@@ -247,6 +253,7 @@ func makeSavePipelineSettingsHandler(svc pipeline.SettingsService) http.HandlerF
 		build := pipeline.BuildConfig{
 			Model:          req.Build.Model,
 			DockerfilePath: req.Build.DockerfilePath,
+			Context:        req.Build.Context,
 			Toolchain: pipeline.Toolchain{
 				Language: req.Build.Toolchain.Language,
 				Version:  req.Build.Toolchain.Version,

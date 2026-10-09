@@ -1042,7 +1042,13 @@ export function jobTypeLabel(type: string): string {
 /** The set of config keys owned by a type's schema (used to split out raw extras). */
 export function schemaKeys(type: string): Set<string> {
   const spec = JOB_TYPE_SPECS[type]
-  return new Set(spec ? spec.fields.map((f) => f.key) : [])
+  const keys = new Set(spec ? spec.fields.map((f) => f.key) : [])
+  // runner(构建机)由 JobDrawer 的独立「构建机」区块渲染、不依赖字段清单渲染;
+  // 若某脚本类类型(如 templated 的内联字段数组)漏配 RUNNER_FIELD,runner 会落进
+  // 「原始参数」extras:回显丢失,切「跟随」时旧值也清不掉。这里对所有脚本类类型
+  // 强制登记 runner 为 schema 所有,与 JobDrawer 的渲染条件对齐,防今后新增类型再踩坑。
+  if (isScriptClassType(type)) keys.add(RUNNER_FIELD_KEY)
+  return keys
 }
 
 /**

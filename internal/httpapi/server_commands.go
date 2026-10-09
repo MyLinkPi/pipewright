@@ -26,9 +26,9 @@ import (
 
 // batchCommandRequest 是 POST /api/servers/commands/batch 请求体(冻结契约)。
 type batchCommandRequest struct {
-	Command      string   `json:"command"`   // shell 命令串(经 sh -c 执行)
-	ServerIDs    []string `json:"serverIds"` // 目标机 id(1..100,重复项去重)
-	TimeoutSec   int      `json:"timeoutSeconds,omitempty"`
+	Command    string   `json:"command"`   // shell 命令串(经 sh -c 执行)
+	ServerIDs  []string `json:"serverIds"` // 目标机 id(1..100,重复项去重)
+	TimeoutSec int      `json:"timeoutSeconds,omitempty"`
 }
 
 // batchCommandItemDTO 是单机结果(冻结契约)。ok=false 时 error 为人读串;绝无凭据明文。
@@ -173,8 +173,8 @@ func makeBatchCommandHandler(svc *servercmd.Service, aud audit.Recorder) http.Ha
 			items = append(items, toBatchCommandItemDTO(it))
 		}
 		writeJSON(w, http.StatusOK, batchCommandResponse{
-			RunID:  res.RunID,
-			Items:  items,
+			RunID:   res.RunID,
+			Items:   items,
 			Summary: batchCommandSummaryDTO{Total: res.Total, OK: res.OK, Failed: res.Failed},
 		})
 	}

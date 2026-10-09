@@ -420,9 +420,12 @@ func normalizeSpec(in Spec) (Spec, error) {
 			}
 			seen[jobID] = struct{}{}
 
-			cfg := jb.Config
-			if cfg == nil {
-				cfg = map[string]any{}
+			// 浅拷贝 config map 再规范化:normalizeJobRunner 会写回 trim 后的 runner,
+			// 原地改入参 map 会让复用同一 spec 的调用方在校验中途失败时看到被部分改写的
+			// 入参(导出函数 NormalizeSpec 的隐蔽副作用)。值不动,仅换容器。
+			cfg := make(map[string]any, len(jb.Config))
+			for k, v := range jb.Config {
+				cfg[k] = v
 			}
 			// 节点级构建机选择器(FR-8-19):config["runner"] 非空时按阶段级同一规则轻校验。
 			if err := normalizeJobRunner(cfg); err != nil {
@@ -540,20 +543,24 @@ func validateSelectorSyntax(s string) error {
 		return errSelectorLen
 	}
 	terms := strings.Split(s, ",")
-	if len(terms) > 16 {
-		return errSelectorTerms
-	}
+	// 项数口径与 runner.ParseSelector 一致:按去重后计数。此前按原始 split 项数计,
+	// 「17 个重复项」在保存侧 422、runner 侧却合法,两处裁决不一致。
+	seen := make(map[string]struct{}, len(terms))
 	for _, t := range terms {
 		t = strings.TrimSpace(t)
 		if k, v, isKV := strings.Cut(t, "="); isKV {
 			if !selectorTermOK(k) || !selectorTermOK(v) {
 				return errSelectorTerm
 			}
-			continue
-		}
-		if !selectorTermOK(t) {
+		} else if !selectorTermOK(t) {
 			return errSelectorTerm
 		}
+		if _, dup := seen[t]; !dup {
+			seen[t] = struct{}{}
+		}
+	}
+	if len(seen) > 16 {
+		return errSelectorTerms
 	}
 	return nil
 }
@@ -716,7 +723,11 @@ type yamlStage struct {
 	Gate         bool                `yaml:"gate,omitempty"`
 	When         *yamlWhen           `yaml:"when,omitempty"`
 	Matrix       map[string][]string `yaml:"matrix,omitempty"`
-	Jobs         []yamlJob           `yaml:"jobs"`
+	// Post / Services 复用领域类型(yaml tag 已与 pipelineyaml 的 postNode/serviceNode 对齐):
+	// 此前 yamlStage 缺这两个字段,落库 spec_yaml /「查看源码」/导出再导入会丢 post 与 services。
+	Post     []PostStep    `yaml:"post,omitempty"`
+	Services []ServiceSpec `yaml:"services,omitempty"`
+	Jobs     []yamlJob     `yaml:"jobs"`
 }
 
 type yamlWhen struct {
@@ -761,6 +772,8 @@ func renderYAML(spec Spec) (string, error) {
 			Runner:       st.Runner,
 			Gate:         st.Gate,
 			Matrix:       st.Matrix,
+			Post:         st.Post,
+			Services:     st.Services,
 			Jobs:         jobs,
 		}
 		if !st.When.IsEmpty() {

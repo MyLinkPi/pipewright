@@ -3,10 +3,12 @@ import {
   JOB_TYPE_SPECS,
   JOB_TYPE_OPTIONS,
   PICKABLE_TYPES,
+  RUNNER_FIELD_KEY,
   getJobTypeSpec,
   jobTypeLabel,
   jobTypeAccent,
   groupedJobTypes,
+  isScriptClassType,
   schemaKeys,
   splitConfig,
 } from './jobConfigSchema'
@@ -132,6 +134,34 @@ describe('jobConfigSchema', () => {
       const config = { a: '1', b: '2' }
       const { extras } = splitConfig('unknown', config)
       expect(extras.map(([k]) => k)).toEqual(['a', 'b'])
+    })
+  })
+
+  describe('runner 键归属(脚本类节点构建机选择 · FR-8-19)', () => {
+    it('every script-class type owns runner (even without a declared RUNNER_FIELD)', () => {
+      // templated 的字段清单是内联数组、不含 RUNNER_FIELD —— 靠 schemaKeys 强制登记兜底。
+      expect(JOB_TYPE_SPECS.templated.fields.some((f) => f.key === RUNNER_FIELD_KEY)).toBe(false)
+      for (const type of Object.keys(JOB_TYPE_SPECS)) {
+        if (!isScriptClassType(type)) continue
+        expect(schemaKeys(type).has(RUNNER_FIELD_KEY), `${type} owns runner`).toBe(true)
+      }
+    })
+
+    it('templated 类型下 runner 不落入 extras(原始参数高级区)', () => {
+      const { extras } = splitConfig('templated', {
+        image: 'node:20',
+        commandTemplate: 'npm run build',
+        runner: 'server:srv-1',
+      })
+      expect(extras.map(([k]) => k)).not.toContain('runner')
+      expect(extras.length).toBe(0)
+    })
+
+    it('non-script types do not own runner', () => {
+      expect(schemaKeys('deploy_ssh').has(RUNNER_FIELD_KEY)).toBe(false)
+      expect(schemaKeys('git_source').has(RUNNER_FIELD_KEY)).toBe(false)
+      const { extras } = splitConfig('deploy_ssh', { runner: 'server:srv-1' })
+      expect(extras.map(([k]) => k)).toContain('runner')
     })
   })
 
