@@ -345,6 +345,8 @@ export default {
   fieldFirstBatchSizeHint: 'Hosts in the first rolling batch (default 1 — verify small first).',
   fieldBatchSizeLabel: 'Batch size',
   fieldBatchSizeHint: 'Hosts upgraded simultaneously per batch after the first (empty/0 = all remaining at once; any batch failure stops the rollout).',
+  fieldMaxTargetsLabel: 'デプロイ先ホスト数の上限',
+  fieldMaxTargetsHint: 'セレクタの該当ホストがこの上限を超える場合、負荷が最も低い N 台のみにデプロイします（ホストのリアルタイム負荷 = CPU ロード平均/コア数とメモリ使用率の大きい方）。それ以外は今回の対象外です。空/0 = 無制限。ローリング展開の前に行われ、初回/各バッチの台数とは互いに独立です。',
   fieldHealthExecLabel: 'コンテナ内プローブコマンド',
   fieldHealthExecHint: 'デプロイしたコンテナ内で実行します(docker exec <名前> sh -c <コマンド>)。ポートを公開しないコンテナ(ワーカー/キュー/内部サービス)向け。例: pg_isready。ポートプローブとは二択。',
   fieldHealthPortLabel: 'ヘルスチェックポート',

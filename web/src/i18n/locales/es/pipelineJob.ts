@@ -358,6 +358,8 @@ export default {
   fieldFirstBatchSizeHint: 'Hosts in the first rolling batch (default 1 — verify small first).',
   fieldBatchSizeLabel: 'Batch size',
   fieldBatchSizeHint: 'Hosts upgraded simultaneously per batch after the first (empty/0 = all remaining at once; any batch failure stops the rollout).',
+  fieldMaxTargetsLabel: 'Límite de hosts destino',
+  fieldMaxTargetsHint: 'Si el selector coincide con más hosts que este límite, solo se despliega en los N con menor carga (carga en vivo del host = el mayor entre ratio de carga de CPU y uso de memoria); el resto se omite por completo. Vacío/0 = sin límite. Se aplica antes de los lotes rotativos e independiente del tamaño del primer lote y de cada lote.',
   fieldHealthExecLabel: 'Comando de sondeo en el contenedor',
   fieldHealthExecHint: 'Se ejecuta dentro del contenedor desplegado (docker exec <nombre> sh -c <comando>) — para contenedores sin puertos (workers/colas/servicios internos), p. ej. pg_isready. Excluyente con el sondeo por puerto.',
   fieldHealthPortLabel: 'Puerto de health check',

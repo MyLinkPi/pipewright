@@ -611,6 +611,48 @@ func TestRunDeployJobSelectorKey(t *testing.T) {
 	}
 }
 
+// TestRunDeployJobMaxTargetsOnlyForContainer 证:目标数量上限 maxTargets **仅容器部署节点**
+// 透传给部署层(部署层据此按主机负载裁到最空的 N 台);deploy_ssh / deploy_frontend 即使配了
+// 该键也不透传——文件部署的多机语义是「全部命中目标都推」,不做负载裁切。
+func TestRunDeployJobMaxTargetsOnlyForContainer(t *testing.T) {
+	cases := []struct {
+		name    string
+		jobType string
+		want    string // "" = 不应透传
+	}{
+		{"容器节点透传", "deploy_container", "3"},
+		{"主机节点不透传", "deploy_ssh", ""},
+		{"旧前端部署节点不透传", "deploy_frontend", ""},
+	}
+	for _, tc := range cases {
+		dep := &stubStageDeployer{}
+		b := &Builder{deployer: dep}
+		jb := pipeline.Job{ID: "d", Name: "部署", Type: tc.jobType, Config: map[string]any{
+			"selector":   "role=web",
+			"maxTargets": "3",
+		}}
+		if err := b.runDeployJob(context.Background(), &fakeReporter{}, jb, "run-1", nil); err != nil {
+			t.Fatalf("%s: runDeployJob err: %v", tc.name, err)
+		}
+		if got := dep.gotCfg["maxTargets"]; got != tc.want {
+			t.Fatalf("%s: cfg[maxTargets] = %q, want %q(全 cfg=%v)", tc.name, got, tc.want, dep.gotCfg)
+		}
+	}
+
+	// 空值不入 cfg(与其余键同口径:deploy 层按「未配 = 不限」处理)。
+	dep := &stubStageDeployer{}
+	b := &Builder{deployer: dep}
+	jb := pipeline.Job{ID: "d", Name: "部署", Type: "deploy_container", Config: map[string]any{
+		"selector": "role=web", "maxTargets": "",
+	}}
+	if err := b.runDeployJob(context.Background(), &fakeReporter{}, jb, "run-1", nil); err != nil {
+		t.Fatalf("runDeployJob err: %v", err)
+	}
+	if _, ok := dep.gotCfg["maxTargets"]; ok {
+		t.Fatalf("空 maxTargets 不应入 cfg:%+v", dep.gotCfg)
+	}
+}
+
 // TestRunDeployJobZeroMatchSkips 证:部署服务返回空结果(选择器零命中)→ 节点按跳过成功。
 func TestRunDeployJobZeroMatchSkips(t *testing.T) {
 	b := &Builder{deployer: &zeroMatchDeployer{}}
