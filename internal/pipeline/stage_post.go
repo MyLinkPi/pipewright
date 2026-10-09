@@ -24,15 +24,17 @@ const (
 const maxPostSteps = 32
 
 // PostStep 是一个阶段后置步骤(脚本类:镜像 + 多行命令 + 可选工作目录 + 触发条件)。
+// yaml tag 与 pipelineyaml.postNode 对齐(workDir 驼峰),保证 renderYAML 导出的
+// 「查看源码」/落库 YAML 再经 pipelineyaml.Parse 导入时无损往返。
 type PostStep struct {
 	// Condition 为 always | on_success | on_failure(空 → always)。
-	Condition string `json:"condition"`
+	Condition string `json:"condition" yaml:"condition,omitempty"`
 	// Image 是运行镜像(必填)。
-	Image string `json:"image"`
+	Image string `json:"image" yaml:"image"`
 	// Commands 是多行命令(顺序执行,至少一条非空)。
-	Commands []string `json:"commands"`
+	Commands []string `json:"commands" yaml:"commands,omitempty"`
 	// WorkDir 是容器内相对工作目录(相对克隆工作区根;空 = 根)。
-	WorkDir string `json:"workDir,omitempty"`
+	WorkDir string `json:"workDir,omitempty" yaml:"workDir,omitempty"`
 }
 
 // PostConditionMatches 报告某 condition 在「阶段是否失败」下是否应执行。

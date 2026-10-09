@@ -28,6 +28,9 @@ type stageDTO struct {
 	AllowFailure bool     `json:"allowFailure"`
 	When         whenDTO  `json:"when"`
 	Gate         bool     `json:"gate"`
+	// Runner 是阶段级构建机选择器覆盖(FR-8-19):空串=用项目默认。omitempty:未声明时
+	// 不出现在响应里(与 Matrix/Post/Services 同一契约风格),声明时原样回传。
+	Runner string `json:"runner,omitempty"`
 	// Matrix / Post / Services 是 P1 阶段扩展(对标 matrix / Jenkins post / GitLab services)。
 	// 用 omitempty:未声明时不出现在响应里,保持原冻结契约的基线形状不变;声明时按领域
 	// json tag 原样回传,与画布编辑器(StagePostEditor / StageServicesEditor / 矩阵)读写的
@@ -89,7 +92,7 @@ func toStageDTOs(in []pipeline.Stage) []stageDTO {
 		if needs == nil {
 			needs = []string{}
 		}
-		stages = append(stages, stageDTO{ID: st.ID, Name: st.Name, Kind: st.Kind, Needs: needs, AllowFailure: st.AllowFailure, When: toWhenDTO(st.When), Gate: st.Gate, Matrix: st.Matrix, Post: st.Post, Services: st.Services, Jobs: jobs})
+		stages = append(stages, stageDTO{ID: st.ID, Name: st.Name, Kind: st.Kind, Needs: needs, AllowFailure: st.AllowFailure, When: toWhenDTO(st.When), Gate: st.Gate, Runner: st.Runner, Matrix: st.Matrix, Post: st.Post, Services: st.Services, Jobs: jobs})
 	}
 	return stages
 }
@@ -116,6 +119,9 @@ type reqStage struct {
 		Events   []string `json:"events"`
 	} `json:"when"`
 	Gate bool `json:"gate"`
+	// Runner 是阶段级构建机选择器覆盖(FR-8-19):画布 StageDrawer 随 PUT 上行。
+	// 此前 DTO 缺该键,JSON 解码静默丢弃;空串=用项目默认(领域层 trim+轻校验)。
+	Runner string `json:"runner"`
 	// P1 阶段扩展:画布编辑器写入、随 PUT 上行。缺失这些字段时画布配置的
 	// 矩阵/后置步骤/旁挂服务会被静默丢弃(本次修复点)。领域层 Save/NormalizeSpec
 	// 兜规范化与校验(空 → nil = 行为不变)。
@@ -155,6 +161,7 @@ func reqStagesToDomain(in []reqStage) []pipeline.Stage {
 			AllowFailure: st.AllowFailure,
 			When:         pipeline.When{Branches: st.When.Branches, Events: st.When.Events},
 			Gate:         st.Gate,
+			Runner:       st.Runner,
 			Matrix:       st.Matrix,
 			Post:         st.Post,
 			Services:     st.Services,

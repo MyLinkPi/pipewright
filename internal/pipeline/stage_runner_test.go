@@ -54,6 +54,26 @@ func TestNormalizeSpecRejectsBadStageRunner(t *testing.T) {
 	}
 }
 
+// TestValidateSelectorTermCountDeduped 锁项数口径与 runner.ParseSelector 一致(去重后计数):
+// 17 个重复项(去重后 ≤16)应放行;17 个互异项(去重后仍超限)应拒绝。
+func TestValidateSelectorTermCountDeduped(t *testing.T) {
+	// 17 个重复项:去重后仅 1 项,runner 侧合法,保存侧不应再 422。
+	dup := "gpu,gpu,gpu,gpu,gpu,gpu,gpu,gpu,gpu,gpu,gpu,gpu,gpu,gpu,gpu,gpu,gpu"
+	if err := validateSelectorSyntax(dup); err != nil {
+		t.Errorf("17 个重复项(去重后 1 项)应放行, 得 %v", err)
+	}
+	// 混合:16 个互异项 + 重复项 → 去重后 16 项,恰上限放行。
+	sixteen := "a,b,c,d,e,f,g,h,i,j,k,l,m,n,o,p,p,p"
+	if err := validateSelectorSyntax(sixteen); err != nil {
+		t.Errorf("去重后恰 16 项应放行, 得 %v", err)
+	}
+	// 17 个互异项:去重后仍超限 → 拒绝。
+	seventeen := "a,b,c,d,e,f,g,h,i,j,k,l,m,n,o,p,q"
+	if err := validateSelectorSyntax(seventeen); !errors.Is(err, errSelectorTerms) {
+		t.Errorf("17 个互异项应报 errSelectorTerms, 得 %v", err)
+	}
+}
+
 func TestNormalizeSpecJobRunner(t *testing.T) {
 	base := func(jobs []Job) Spec {
 		return Spec{Stages: []Stage{
@@ -81,11 +101,11 @@ func TestNormalizeSpecJobRunner(t *testing.T) {
 
 	// 非法:语法错 → ErrInvalidJob;非字符串 → ErrInvalidJob。
 	for name, bad := range map[string]any{
-		"非法字符": "gpu;rm -rf",
-		"空值键":  "arch=",
+		"非法字符":  "gpu;rm -rf",
+		"空值键":   "arch=",
 		"钉死空id": "server:",
-		"超长":   strings.Repeat("a", 256),
-		"非字符串": 42,
+		"超长":    strings.Repeat("a", 256),
+		"非字符串":  42,
 	} {
 		_, err := NormalizeSpec(base([]Job{{Name: "a", Type: "script", Config: map[string]any{"runner": bad}}}))
 		if !errors.Is(err, ErrInvalidJob) {

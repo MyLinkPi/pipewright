@@ -65,7 +65,9 @@ func setupCertMgmtServer(t *testing.T) (*httptest.Server, certmgmt.Service, *fak
 	if cfg, ok := cm.(interface{ SetHomeDir(string) }); ok {
 		cfg.SetHomeDir(t.TempDir())
 	}
-	if cfg, ok := cm.(interface{ SetCredentialsResolver(certmgmt.CredentialsResolver) }); ok {
+	if cfg, ok := cm.(interface {
+		SetCredentialsResolver(certmgmt.CredentialsResolver)
+	}); ok {
 		cfg.SetCredentialsResolver(fakeCertResolver{})
 	}
 	sink := &fakeCertSink{}
@@ -276,8 +278,8 @@ func TestCertMgmtEngine(t *testing.T) {
 	// 探测 → 200,三态字段可解码(初始未安装)。
 	resp := doJSON(t, client, http.MethodGet, srv.URL+"/api/certmgmt/engine", "", "")
 	var eng struct {
-		Installed bool `json:"installed"`
-		Ready     bool `json:"ready"`
+		Installed bool   `json:"installed"`
+		Ready     bool   `json:"ready"`
 		Version   string `json:"version"`
 	}
 	_ = json.NewDecoder(resp.Body).Decode(&eng)

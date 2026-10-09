@@ -65,6 +65,7 @@ export default {
 
   // ─── 儲存錯誤 ───────────────────────────────────────────────────
   errSaveFailedRetry: '儲存失敗,請稍後重試。',
+  errSettingsNotLoaded: '設定尚未載入成功,本次未儲存任何內容。請重新整理頁面後重試。',
   errSaveFailedStatus: '儲存失敗({status})',
   errInvalidStage: '階段名稱不能為空或 kind 不在允許值內,請檢查後重試。',
   errInvalidJob: '任務名稱或類型不能為空,請補充後重試。',

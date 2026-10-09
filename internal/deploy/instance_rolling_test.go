@@ -242,6 +242,56 @@ func TestInstanceRollingHealthFailKeepsOld(t *testing.T) {
 	}
 }
 
+// TestInstanceRollingHealthExecTargetsNewContainer:healthExec 预热探测必须打**新实例容器**
+// (<base>-r<hex>)—— spec 构造时烤入的是基础容器名(deploy.go 调用链 healthCheckSpecFromCfg),
+// 直接打会命中旧实例(假通过)或 no such container(必失败)。
+func TestInstanceRollingHealthExecTargetsNewContainer(t *testing.T) {
+	db := testDB(t)
+	rsvc := run.New(db)
+	tgt := &stubTarget{execFn: rollExecFn}
+	srv := seedServer(t, tgt, "gw-1")
+	runID, _ := seedSuccessRunWithArtifact(t, db, rsvc, run.ArtifactImage, "registry.acme.io/shop:2")
+
+	gw := &fakeGateway{refs: twoInstanceRefs()}
+	svc := New(tgt, rsvc, WithInstanceGateway(gw))
+	res, err := svc.DeployForStage(context.Background(), runID, "server:"+srv.ID,
+		map[string]string{"healthExec": "pg_isready", "drainSeconds": "0"}, "")
+	if err != nil {
+		t.Fatalf("DeployForStage: %v", err)
+	}
+	if len(res) != 1 || res[0].Status != run.TargetSuccess {
+		t.Fatalf("want success, got %+v", res)
+	}
+	// 首个「起新实例」命令(新名 <base>-r<hex>)之后的 docker exec 探测必须打新实例名。
+	// (起新实例之前的 docker exec 是滚动预检,打当前在线的基础容器,语义正确。)
+	firstNewRun := -1
+	for i, c := range tgt.calls {
+		if len(c) >= 5 && c[0] == "docker" && c[1] == "run" && strings.HasPrefix(c[4], "shop-r") {
+			firstNewRun = i
+			break
+		}
+	}
+	if firstNewRun < 0 {
+		t.Fatalf("缺起新实例命令:\n%v", tgt.calls)
+	}
+	seenNewProbe := false
+	for i, c := range tgt.calls {
+		if len(c) < 3 || c[0] != "docker" || c[1] != "exec" {
+			continue
+		}
+		if strings.HasPrefix(c[2], "shop-r") {
+			seenNewProbe = true
+			continue
+		}
+		if i > firstNewRun {
+			t.Fatalf("起新实例后的预热探测仍打旧容器 %s:%v", c[2], c)
+		}
+	}
+	if !seenNewProbe {
+		t.Fatalf("预热探测应打新实例容器 shop-r*:\n%v", tgt.calls)
+	}
+}
+
 // TestInstanceRollingFallbackNoMatch:反查不到网关服务 → 回退既有单机 image 滚动
 // (pull → rm 旧同名 → run 新同名)。
 func TestInstanceRollingFallbackNoMatch(t *testing.T) {

@@ -68,15 +68,15 @@ type healthCheckDTO struct {
 //   - deployConfig["releaseBase"] : 发布根目录 <base>(缺省从 path 推导);dist/jar 落 <base>/releases/<runId>,current 软链落 <base>/current。
 //   - deployConfig["keepReleases"]: 额外保留旧发布份数(缺省 1,上限 50)。
 type deployRequest struct {
-	ArtifactID   string            `json:"artifactId"`
-	ServerIDs    []string          `json:"serverIds"`
+	ArtifactID string   `json:"artifactId"`
+	ServerIDs  []string `json:"serverIds"`
 	// Selector 是目标选择器(语法复用构建机池):`server:<id>` 钉单机、`linux,arch=arm64` 标签圈选。
 	// serverIds 非空时优先;selector 空 / 零命中 → 无目标,跳过即成功(200 空数组)。
 	Selector string `json:"selector"`
 	// SelectorMode 是标签匹配方式:all(满足全部条件,且,默认)| any(满足任一条件,或)。
-	SelectorMode   string            `json:"selectorMode"`
-	DeployConfig   map[string]string `json:"deployConfig"`
-	HealthCheck    *healthCheckDTO   `json:"healthCheck"`
+	SelectorMode string            `json:"selectorMode"`
+	DeployConfig map[string]string `json:"deployConfig"`
+	HealthCheck  *healthCheckDTO   `json:"healthCheck"`
 	// Strategy 已废弃(统一滚动):保留字段接受旧客户端,后端一律按 rolling 执行。
 	Strategy string `json:"strategy"`
 }
@@ -133,9 +133,9 @@ func makeDeployRunHandler(svc deploy.Service, runSvc run.Service) http.HandlerFu
 		}
 
 		results, err := svc.Deploy(r.Context(), deploy.DeployInput{
-			RunID:       id,
-			ArtifactID:  req.ArtifactID,
-			ServerIDs:   req.ServerIDs,
+			RunID:        id,
+			ArtifactID:   req.ArtifactID,
+			ServerIDs:    req.ServerIDs,
 			Selector:     req.Selector,
 			SelectorMode: req.SelectorMode,
 			Config:       req.DeployConfig,
@@ -147,8 +147,16 @@ func makeDeployRunHandler(svc deploy.Service, runSvc run.Service) http.HandlerFu
 			return
 		}
 
-		// 部署后回读权威持久化结果(填 run-detail targets slot 同源);保证响应与详情一致。
-		targets, lerr := runSvc.ListDeployTargets(r.Context(), id)
+		// 空目标(选择器空 / 零命中)= 跳过即成功:deploy.Deploy 不写 deploy_targets,此处必须
+	// 直接回空数组 —— 无条件回读会把同 run 上一次部署的旧 targets 带回来,把「跳过」伪装成
+	// 「成功」(与本 handler 头部注释的「200 空 targets」承诺矛盾)。
+	if len(results) == 0 {
+		writeJSON(w, http.StatusOK, deployResponse{Targets: []targetDTO{}})
+		return
+	}
+
+	// 部署后回读权威持久化结果(填 run-detail targets slot 同源);保证响应与详情一致。
+	targets, lerr := runSvc.ListDeployTargets(r.Context(), id)
 		if lerr != nil {
 			// 回读失败:降级用执行结果直接映射(不阻断已成功的部署)。
 			out := make([]targetDTO, 0, len(results))

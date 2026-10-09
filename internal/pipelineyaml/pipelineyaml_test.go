@@ -500,6 +500,64 @@ func TestParseJobLevelNeeds(t *testing.T) {
 	}
 }
 
+// TestRoundTripPostServices 后置步骤/旁挂服务的完整往返:spec →(RenderYAML)→ YAML →(Parse)→ spec。
+// 此前存储层 renderYAML 的 yamlStage 缺 post/services 字段,落库 spec_yaml 与「查看源码」导出即丢;
+// 且领域类型无 yaml tag 时 workDir 会被序列化成 workdir,被 Parse 的 KnownFields 拒绝。
+func TestRoundTripPostServices(t *testing.T) {
+	spec := pipeline.Spec{Stages: []pipeline.Stage{
+		{ID: "src", Name: "源", Kind: pipeline.KindSource, Jobs: []pipeline.Job{
+			{ID: "j1", Name: "源", Type: "git_source"},
+		}},
+		{ID: "test", Name: "测试", Kind: pipeline.KindBuild, Needs: []string{"src"},
+			Post: []pipeline.PostStep{
+				{Condition: "always", Image: "alpine", Commands: []string{"echo collect"}, WorkDir: "app"},
+				{Condition: "on_failure", Image: "alpine", Commands: []string{"echo notify"}},
+			},
+			Services: []pipeline.ServiceSpec{
+				{Name: "testdb", Image: "postgres:16", Env: []string{"POSTGRES_PASSWORD=pw"}, Ports: []string{"5432:5432"}},
+				{Name: "redis", Image: "redis:7"},
+			},
+			Jobs: []pipeline.Job{
+				{ID: "t1", Name: "单测", Type: "script", Config: map[string]any{"image": "golang:1.23"}},
+			}},
+	}}
+	yml, err := pipeline.RenderYAML(spec)
+	if err != nil {
+		t.Fatalf("RenderYAML: %v", err)
+	}
+	// 导出 YAML 必须含 post/services 块(落库 spec_yaml 不再丢配置)。
+	for _, want := range []string{"post:", "services:", "workDir: app", "condition: on_failure", "testdb", "redis:7"} {
+		if !strings.Contains(yml, want) {
+			t.Fatalf("导出 YAML 应含 %q:\n%s", want, yml)
+		}
+	}
+
+	cfg, err := Parse([]byte(yml))
+	if err != nil {
+		t.Fatalf("re-Parse 导出 YAML 失败:\n%s\nerr=%v", yml, err)
+	}
+	st := cfg.Spec.Stages[1]
+	if len(st.Post) != 2 {
+		t.Fatalf("post 往返后 = %+v, want 2 步", st.Post)
+	}
+	if st.Post[0].Condition != "always" || st.Post[0].Image != "alpine" || st.Post[0].WorkDir != "app" {
+		t.Fatalf("post[0] 往返不一致: %+v", st.Post[0])
+	}
+	if st.Post[1].Condition != "on_failure" {
+		t.Fatalf("post[1].condition = %q, want on_failure", st.Post[1].Condition)
+	}
+	if len(st.Services) != 2 {
+		t.Fatalf("services 往返后 = %+v, want 2 个", st.Services)
+	}
+	s0 := st.Services[0]
+	if s0.Name != "testdb" || s0.Image != "postgres:16" || len(s0.Env) != 1 || len(s0.Ports) != 1 {
+		t.Fatalf("service[0] 往返不一致: %+v", s0)
+	}
+	if st.Services[1].Name != "redis" || st.Services[1].Image != "redis:7" {
+		t.Fatalf("service[1] 往返不一致: %+v", st.Services[1])
+	}
+}
+
 // TestRoundTripJobNeeds 任务级 needs 的完整往返:spec →(RenderYAML)→ YAML →(Parse)→ spec,
 // needs 与 gate/when 等编排字段都必须无损(此前 renderYAML 缺字段,导出即丢配置)。
 func TestRoundTripJobNeeds(t *testing.T) {

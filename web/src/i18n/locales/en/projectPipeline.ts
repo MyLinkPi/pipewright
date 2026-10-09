@@ -65,6 +65,7 @@ export default {
 
   // ─── save errors ────────────────────────────────────────────────
   errSaveFailedRetry: 'Save failed. Please try again later.',
+  errSettingsNotLoaded: 'Settings failed to load, so nothing was saved. Refresh the page and try again.',
   errSaveFailedStatus: 'Save failed ({status})',
   errInvalidStage: 'Stage name cannot be empty and kind must be an allowed value. Please check and try again.',
   errInvalidJob: 'Job name or type cannot be empty. Please complete them and try again.',

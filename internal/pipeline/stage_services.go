@@ -17,15 +17,16 @@ const maxStageServices = 16
 var serviceNameRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_-]*$`)
 
 // ServiceSpec 是一个旁挂服务(镜像 + 服务名 + 可选环境变量 + 可选端口映射)。
+// yaml tag 与 pipelineyaml.serviceNode 对齐,保证 renderYAML 导出 → Parse 再导入无损往返。
 type ServiceSpec struct {
 	// Name 是服务名:同网络内的访问主机名(network-alias)+ 容器名后缀。必填、阶段内唯一。
-	Name string `json:"name"`
+	Name string `json:"name" yaml:"name"`
 	// Image 是服务镜像(如 postgres:16 / redis:7)。必填。
-	Image string `json:"image"`
+	Image string `json:"image" yaml:"image"`
 	// Env 是服务容器环境变量(K=V,如 POSTGRES_PASSWORD=x)。可选。
-	Env []string `json:"env,omitempty"`
+	Env []string `json:"env,omitempty" yaml:"env,omitempty"`
 	// Ports 是端口映射(host:container,可选;同网络互访通常无需暴露端口)。
-	Ports []string `json:"ports,omitempty"`
+	Ports []string `json:"ports,omitempty" yaml:"ports,omitempty"`
 }
 
 // normalizeServices 规范化 + 校验阶段旁挂服务:服务名合法/唯一、image 非空。空 → nil(行为不变)。

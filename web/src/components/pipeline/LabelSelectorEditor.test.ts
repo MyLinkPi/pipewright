@@ -78,3 +78,36 @@ describe('LabelSelectorEditor 回显(重新打开已保存的选择器)', () => 
     expect(w.findAll('select.selector-value').length).toBe(0) // 纯标记无 value 下拉
   })
 })
+
+describe('LabelSelectorEditor 陈旧值回显(标签后来被删)', () => {
+  it('row.v 不在候选 → 补原始值 option,下拉选中态与 model 一致(不显示分叉)', async () => {
+    // 候选只有 env=prod / env=stage,已保存值 env=legacy 已被删除。
+    const w = mountEditor('env=legacy')
+    await nextTick()
+
+    const sel = w.find('select.selector-value')
+    expect(sel.exists()).toBe(true)
+    const el = sel.element as HTMLSelectElement
+    // 修复前:下拉显示第一个候选(prod)但 model 仍是 legacy —— 显示与保存值分叉。
+    expect(el.value).toBe('legacy')
+    expect(Array.from(el.options).map((o) => o.value)).toContain('legacy')
+  })
+
+  it('row.k 不在候选 → 补原始 key option', async () => {
+    const w = mountEditor('oldzone=1')
+    await nextTick()
+
+    const sel = w.find('select.selector-key')
+    expect(sel.exists()).toBe(true)
+    const el = sel.element as HTMLSelectElement
+    expect(el.value).toBe('oldzone')
+    expect(Array.from(el.options).map((o) => o.value)).toContain('oldzone')
+  })
+
+  it('候选齐全时不产生多余兜底 option', async () => {
+    const w = mountEditor('env=prod')
+    await nextTick()
+    const el = w.find('select.selector-value').element as HTMLSelectElement
+    expect(Array.from(el.options).map((o) => o.value)).toEqual(['prod', 'stage'])
+  })
+})

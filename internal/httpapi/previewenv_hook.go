@@ -113,11 +113,11 @@ func NewPreviewProvisionHook(
 		}
 
 		env, perr := preview.Provision(ctx, previewenv.ProvisionInput{
-			ProjectID:  r.ProjectID,
-			PRNumber:   prNumber,
-			Branch:     r.Trigger.Branch,
-			ServerID:   serverID,
-			HostIP:     hostIP,
+			ProjectID: r.ProjectID,
+			PRNumber:  prNumber,
+			Branch:    r.Trigger.Branch,
+			ServerID:  serverID,
+			HostIP:    hostIP,
 		})
 		if perr != nil {
 			log.Printf("[preview] run %s: PR #%d 预览环境分配失败(不影响部署):%v", runID, prNumber, perr)

@@ -342,6 +342,42 @@ func TestSaveGetRoundTrip(t *testing.T) {
 	}
 }
 
+// TestNormalizeSpecDoesNotMutateInputConfig 验证 NormalizeSpec 不原地修改调用方的
+// config map:此前 cfg := jb.Config 直接复用入参 map,runner 规范化会写回 trim 值,
+// 校验中途失败时调用方手里的 spec 已被部分改写(导出函数的隐蔽副作用)。
+func TestNormalizeSpecDoesNotMutateInputConfig(t *testing.T) {
+	jobCfg := map[string]any{"runner": " gpu ", "image": "alpine"}
+	in := Spec{Stages: []Stage{
+		{Name: "源", Kind: KindSource, Jobs: []Job{{Name: "s", Type: "git_source"}}},
+		{Name: "构建", Kind: KindBuild, Jobs: []Job{{Name: "b", Type: "script", Config: jobCfg}}},
+	}}
+	out, err := NormalizeSpec(in)
+	if err != nil {
+		t.Fatalf("NormalizeSpec: %v", err)
+	}
+	// 入参 map 内容必须原样不动(未被 trim 写回)。
+	if got := jobCfg["runner"]; got != " gpu " {
+		t.Fatalf("入参 config 被原地改写: runner = %q, want %q", got, " gpu ")
+	}
+	// 输出是规范化后的独立副本。
+	if got := out.Stages[1].Jobs[0].Config["runner"]; got != "gpu" {
+		t.Fatalf("输出 config 应含 trim 后 runner, got %q", got)
+	}
+
+	// 失败路径同样不得改写入参(校验中途报错时)。
+	badCfg := map[string]any{"runner": "gpu;rm -rf"}
+	_, err = NormalizeSpec(Spec{Stages: []Stage{
+		{Name: "源", Kind: KindSource, Jobs: []Job{{Name: "s", Type: "git_source"}}},
+		{Name: "构建", Kind: KindBuild, Jobs: []Job{{Name: "b", Type: "script", Config: badCfg}}},
+	}})
+	if err == nil {
+		t.Fatal("非法 runner 应报错")
+	}
+	if got := badCfg["runner"]; got != "gpu;rm -rf" {
+		t.Fatalf("失败路径入参 config 被改写: runner = %q", got)
+	}
+}
+
 func TestRenderYAMLDeterministic(t *testing.T) {
 	a, err := renderYAML(validSpec())
 	if err != nil {

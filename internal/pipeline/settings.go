@@ -444,6 +444,9 @@ func (s *settingsService) normalizeBuild(in BuildConfig) (BuildConfig, error) {
 	return BuildConfig{
 		Model:          model,
 		DockerfilePath: dockerfilePath,
+		// 构建上下文目录(monorepo 子目录 Dockerfile 必须):此前 normalizeBuild 不拷贝,
+		// 保存即丢。trim 即可,空=仓库根(与执行层 build.builder 的语义一致)。
+		Context: strings.TrimSpace(in.Context),
 		Toolchain: Toolchain{
 			Language: strings.TrimSpace(in.Toolchain.Language),
 			Version:  strings.TrimSpace(in.Toolchain.Version),
@@ -457,6 +460,7 @@ func (s *settingsService) normalizeBuild(in BuildConfig) (BuildConfig, error) {
 // normalizeEnvironments 校验并规范化环境定义列表。
 func (s *settingsService) normalizeEnvironments(in []Environment) ([]Environment, error) {
 	out := make([]Environment, 0, len(in))
+	seenIDs := make(map[string]struct{}, len(in))
 	for _, e := range in {
 		name := strings.TrimSpace(e.Name)
 		if name == "" {
@@ -466,6 +470,11 @@ func (s *settingsService) normalizeEnvironments(in []Environment) ([]Environment
 		if id == "" {
 			id = uuid.NewString()
 		}
+		// id 唯一性:此前只补空 id 不查重,同 id 环境会静默共存(回读/引用语义错乱)。
+		if _, dup := seenIDs[id]; dup {
+			return nil, fmt.Errorf("%w: duplicate environment id %q", ErrInvalidEnvironment, id)
+		}
+		seenIDs[id] = struct{}{}
 
 		// 目标服务器引用:本期仅校验字符串非空(存在性留 4-1,仿 trigger)。
 		ids := make([]string, 0, len(e.TargetServerIDs))
@@ -506,6 +515,7 @@ func (s *settingsService) normalizeEnvironments(in []Environment) ([]Environment
 //   - workDir trim(空=工作区根)。
 func (s *settingsService) normalizeSteps(in []PipelineStep) ([]PipelineStep, error) {
 	out := make([]PipelineStep, 0, len(in))
+	seenIDs := make(map[string]struct{}, len(in))
 	for _, st := range in {
 		name := strings.TrimSpace(st.Name)
 		if name == "" {
@@ -515,6 +525,11 @@ func (s *settingsService) normalizeSteps(in []PipelineStep) ([]PipelineStep, err
 		if id == "" {
 			id = uuid.NewString()
 		}
+		// id 唯一性:同 id 步骤不可静默共存。
+		if _, dup := seenIDs[id]; dup {
+			return nil, fmt.Errorf("%w: duplicate step id %q", ErrInvalidStep, id)
+		}
+		seenIDs[id] = struct{}{}
 		stepType := strings.TrimSpace(st.Type)
 		if stepType == "" {
 			stepType = StepTypeScript
@@ -597,6 +612,7 @@ func (s *settingsService) normalizeRegistry(in ImageRegistry) (ImageRegistry, er
 func (s *settingsService) normalizeVars(in []BuildVar) ([]BuildVar, error) {
 	out := make([]BuildVar, 0, len(in))
 	seenKeys := make(map[string]struct{}, len(in))
+	seenIDs := make(map[string]struct{}, len(in))
 	for _, v := range in {
 		key := strings.TrimSpace(v.Key)
 		if key == "" {
@@ -611,6 +627,11 @@ func (s *settingsService) normalizeVars(in []BuildVar) ([]BuildVar, error) {
 		if id == "" {
 			id = uuid.NewString()
 		}
+		// id 唯一性:同 id 变量不可静默共存(与 key 查重同理)。
+		if _, dup := seenIDs[id]; dup {
+			return nil, fmt.Errorf("%w: duplicate variable id %q", ErrInvalidVar, id)
+		}
+		seenIDs[id] = struct{}{}
 
 		nv := BuildVar{ID: id, Key: key, Secret: v.Secret}
 		if v.Secret {
@@ -733,12 +754,14 @@ type storedVar struct {
 }
 
 type storedBuild struct {
-	Model          string      `json:"model"`
-	DockerfilePath string      `json:"dockerfilePath"`
-	Toolchain      Toolchain   `json:"toolchain"`
-	ArtifactType   string      `json:"artifactType"`
-	Vars           []storedVar `json:"vars"`
-	Cache          Cache       `json:"cache"`
+	Model          string `json:"model"`
+	DockerfilePath string `json:"dockerfilePath"`
+	// Context 是 docker build 构建上下文目录;此前持久化形状缺该字段,落库即丢。
+	Context      string      `json:"context"`
+	Toolchain    Toolchain   `json:"toolchain"`
+	ArtifactType string      `json:"artifactType"`
+	Vars         []storedVar `json:"vars"`
+	Cache        Cache       `json:"cache"`
 }
 
 type storedRegistry struct {
@@ -790,6 +813,7 @@ func toStoredBuild(b BuildConfig) storedBuild {
 	return storedBuild{
 		Model:          b.Model,
 		DockerfilePath: b.DockerfilePath,
+		Context:        b.Context,
 		Toolchain:      b.Toolchain,
 		ArtifactType:   b.ArtifactType,
 		Vars:           toStoredVars(b.Vars),

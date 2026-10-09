@@ -42,9 +42,16 @@ func normalizeSelectorMode(s string) string {
 // resolveTargets 解析部署目标(见文件头语义)。servers 为 nil 且 err 为 nil = 无目标(跳过即成功)。
 func (s *service) resolveTargets(ctx context.Context, serverIDs []string, selector, selectorMode string) ([]*target.Server, error) {
 	// 显式机器列表优先:逐台解析,任一不存在 → ErrServerNotFound(整次拒绝,不留半截)。
+	// 重复 ID 保序去重:不去重会同机部署两次、写两行 deploy_targets,
+	// RetryFailed 并行扇出还会同机竞态。
 	if len(serverIDs) > 0 {
 		servers := make([]*target.Server, 0, len(serverIDs))
+		seen := make(map[string]bool, len(serverIDs))
 		for _, sid := range serverIDs {
+			if seen[sid] {
+				continue
+			}
+			seen[sid] = true
 			srv, err := s.targets.Get(ctx, sid)
 			if err != nil {
 				if errors.Is(err, target.ErrNotFound) {

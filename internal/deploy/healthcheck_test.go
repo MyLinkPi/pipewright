@@ -10,6 +10,57 @@ import (
 	"github.com/huangchengsir/pipewright/internal/target"
 )
 
+// TestHealthBudgetDerivesFromRetries 健康门控预算按 重试×(单次超时+间隔)+一次超时余量 推导;
+// 重型配置必须超过 60s 命令预算 execTimeout(门控走独立 ctx,不被切换阶段 execCtx 砍)。
+func TestHealthBudgetDerivesFromRetries(t *testing.T) {
+	// 重型:5×(10s+10s)+10s = 110s > execTimeout(60s)。
+	heavy := &HealthCheck{Type: HealthCheckHTTP, URL: "http://x/", Retries: 5, TimeoutSeconds: 10, IntervalSeconds: 10}
+	want := 5*(10*time.Second+10*time.Second) + 10*time.Second
+	if got := healthBudget(heavy); got != want {
+		t.Fatalf("healthBudget = %v, want %v", got, want)
+	}
+	if want <= execTimeout {
+		t.Fatalf("重型健康配置预算应超过 execTimeout(%v),得 %v", execTimeout, want)
+	}
+	// 缺省归一:重试 3、单次超时 5s、interval=0(显式无间隔)→ 3×(5s+0)+5s = 20s。
+	def := &HealthCheck{Type: HealthCheckHTTP, URL: "http://x/"}
+	wantDef := 3*5*time.Second + 5*time.Second
+	if got := healthBudget(def); got != wantDef {
+		t.Fatalf("默认 healthBudget = %v, want %v", got, wantDef)
+	}
+	// 负 interval 归一为默认 3s:3×(5s+3s)+5s = 29s。
+	defNeg := &HealthCheck{Type: HealthCheckHTTP, URL: "http://x/", IntervalSeconds: -1}
+	if got := healthBudget(defNeg); got != 3*(5*time.Second+3*time.Second)+5*time.Second {
+		t.Fatalf("负 interval 默认 3s 的 healthBudget = %v", got)
+	}
+}
+
+// TestRetargetExecContainer healthExec 探测命令的容器名替换(实例轮转预热打新实例用)。
+func TestRetargetExecContainer(t *testing.T) {
+	cmd := []string{"docker", "exec", "shop", "sh", "-c", "pg_isready"}
+	got := retargetExecContainer(cmd, "shop", "shop-r1a2b3c")
+	want := []string{"docker", "exec", "shop-r1a2b3c", "sh", "-c", "pg_isready"}
+	if len(got) != len(want) {
+		t.Fatalf("retarget 结果异常: %v", got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("retarget[%d]=%q want %q: %v", i, got[i], want[i], got)
+		}
+	}
+	// 原切片不被篡改。
+	if cmd[2] != "shop" {
+		t.Fatalf("retarget 不应改原命令切片: %v", cmd)
+	}
+	// 容器名相同 / 新名为空 → 原样返回。
+	if retargetExecContainer(cmd, "shop", "shop")[2] != "shop" {
+		t.Fatalf("同名不应变化")
+	}
+	if retargetExecContainer(cmd, "shop", "")[2] != "shop" {
+		t.Fatalf("空新名不应变化")
+	}
+}
+
 // TestHealthCheckCommandSuccess 验证 command 探测一次通过 → 该机 success,message 含「健康检查通过」。
 func TestHealthCheckCommandSuccess(t *testing.T) {
 	db := testDB(t)

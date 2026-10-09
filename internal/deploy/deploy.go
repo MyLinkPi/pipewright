@@ -664,7 +664,8 @@ func allTargetSuccess(results []TargetResult) bool {
 }
 
 // retryableTargetStatus 报告某目标状态是否可被 RetryFailed 推进:
-//   - failed / rolled_back:本机部署失败或已回滚(仍运行旧版本);
+//   - failed:本机部署失败(含回滚命令失败、回滚未确认 —— 机器上可能已没有容器/服务在跑);
+//   - rolled_back:已确认回滚(仍运行旧版本);
 //   - pending:统一滚动在前一批失败后停止铺开,本机**从未部署**(仍运行旧版本)。
 //
 // 三者的共同点是「用户修好后希望把这台机推上去」,故都算可重试;success 不在其列(不重复部署)。
@@ -1010,8 +1011,12 @@ func (s *service) deployCommandsOne(ctx context.Context, srv *target.Server, a r
 
 	// 部署命令全部成功 → 若配置了健康检查,做部署后健康门控(Story 4.3 / FR-12)。
 	// 探测在部署命令成功之后跑;每机独立;经同一 target.Exec 链路(array 不拼 shell)。
+	// 门控用独立预算 ctx(重试矩阵可远超 60s execCtx,复用会让重试没跑完就被砍)。
 	if hc.enabled() {
-		if herr := s.runHealthCheck(execCtx, srv.ID, hc); herr != nil {
+		hcCtx, hcCancel := healthCheckCtx(ctx, hc)
+		herr := s.runHealthCheck(hcCtx, srv.ID, hc)
+		hcCancel()
+		if herr != nil {
 			finish := time.Now().UTC()
 			res.Status = run.TargetFailed
 			res.Message = herr.Error()

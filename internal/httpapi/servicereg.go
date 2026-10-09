@@ -60,8 +60,8 @@ func toServiceRegSettingsDTO(st *servicereg.Settings) serviceRegSettingsDTO {
 		ServerID: st.PrimaryServerID(), ServerIDs: ids,
 		HTTPPort: st.HTTPPort, HTTPSPort: st.HTTPSPort,
 		Image: st.Image, Network: st.Network, ContainerName: st.ContainerName,
-		VolumeName:      st.VolumeName,
-		LastApplyAt:     last, LastApplyError: st.LastApplyError, LastApplyErrors: st.LastApplyErrors,
+		VolumeName:  st.VolumeName,
+		LastApplyAt: last, LastApplyError: st.LastApplyError, LastApplyErrors: st.LastApplyErrors,
 	}
 }
 
@@ -111,7 +111,7 @@ func toServiceRegServiceDTO(s servicereg.ServiceWithDomain) serviceRegServiceDTO
 		ID: s.ID, DomainID: s.DomainID, BaseDomain: s.BaseDomain, Name: s.Name,
 		FQDN: s.FQDN(s.BaseDomain), Protocol: s.Protocol, UpstreamKind: s.UpstreamKind,
 		Upstream: s.Upstream, UpstreamPort: s.UpstreamPort, TCPListenPort: s.TCPListenPort,
-		Enabled: s.Enabled,
+		Enabled:   s.Enabled,
 		CreatedAt: s.CreatedAt.UTC().Format(time.RFC3339),
 		UpdatedAt: s.UpdatedAt.UTC().Format(time.RFC3339),
 	}
@@ -120,17 +120,17 @@ func toServiceRegServiceDTO(s servicereg.ServiceWithDomain) serviceRegServiceDTO
 // serviceRegGatewayDTO 是网关容器状态对外响应体。
 // 多机:servers 为逐台状态;旧平铺字段填第一台(兼容保留)。
 type serviceRegGatewayDTO struct {
-	Configured      bool                           `json:"configured"`
-	ServerID        string                         `json:"serverId"`
-	ServerName      string                         `json:"serverName"`
-	Installed       bool                           `json:"installed"`
-	Running         bool                           `json:"running"`
-	Image           string                         `json:"image"`
-	Ports           string                         `json:"ports"`
-	Servers         []serviceRegGatewayServerDTO   `json:"servers"`
-	LastApplyAt     string                         `json:"lastApplyAt"`
-	LastApplyError  string                         `json:"lastApplyError"`
-	LastApplyErrors map[string]string              `json:"lastApplyErrors"`
+	Configured      bool                         `json:"configured"`
+	ServerID        string                       `json:"serverId"`
+	ServerName      string                       `json:"serverName"`
+	Installed       bool                         `json:"installed"`
+	Running         bool                         `json:"running"`
+	Image           string                       `json:"image"`
+	Ports           string                       `json:"ports"`
+	Servers         []serviceRegGatewayServerDTO `json:"servers"`
+	LastApplyAt     string                       `json:"lastApplyAt"`
+	LastApplyError  string                       `json:"lastApplyError"`
+	LastApplyErrors map[string]string            `json:"lastApplyErrors"`
 }
 
 // serviceRegGatewayServerDTO 是单台网关主机的容器状态。
@@ -158,8 +158,8 @@ func toServiceRegGatewayDTO(g *servicereg.GatewayStatus) serviceRegGatewayDTO {
 	return serviceRegGatewayDTO{
 		Configured: g.Configured, ServerID: g.ServerID, ServerName: g.ServerName,
 		Installed: g.Installed, Running: g.Running, Image: g.Image, Ports: g.Ports,
-		Servers:        servers,
-		LastApplyAt:    last, LastApplyError: g.LastApplyError, LastApplyErrors: g.LastApplyErrors,
+		Servers:     servers,
+		LastApplyAt: last, LastApplyError: g.LastApplyError, LastApplyErrors: g.LastApplyErrors,
 	}
 }
 
@@ -653,10 +653,10 @@ func makeApplyServiceRegHandler(svc servicereg.Service, aud audit.Recorder) http
 type serviceRegInstanceDTO struct {
 	ID        string `json:"id"`
 	ServiceID string `json:"serviceId"`
-	ServerID  string `json:"serverId"`           // 归属服务器('' = 遗留数据待部署认领)
-	Container string `json:"container"`           // 容器名;非容器实例为空
-	Port      int    `json:"port"`                // 服务端口(0 = 继承服务端口)
-	HostPort  int    `json:"hostPort"`            // 网关反代宿主端口(0 = 继承)
+	ServerID  string `json:"serverId"`  // 归属服务器('' = 遗留数据待部署认领)
+	Container string `json:"container"` // 容器名;非容器实例为空
+	Port      int    `json:"port"`      // 服务端口(0 = 继承服务端口)
+	HostPort  int    `json:"hostPort"`  // 网关反代宿主端口(0 = 继承)
 	Attached  bool   `json:"attached"`
 	CreatedAt string `json:"createdAt"`
 	UpdatedAt string `json:"updatedAt"`

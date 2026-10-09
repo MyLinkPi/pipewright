@@ -5,6 +5,8 @@ package deploy
 // 并模拟 readlink current(上一发布)/ docker inspect(上一镜像),使回滚路径可离线断言。
 
 import (
+	"context"
+	"strings"
 	"sync"
 
 	"github.com/huangchengsir/pipewright/internal/target"
@@ -50,4 +52,33 @@ func (r *touchRecorder) exec(serverID string, cmd []string) (*target.ExecResult,
 		return &target.ExecResult{ExitCode: 1, Stderr: "injected failure"}, nil
 	}
 	return &target.ExecResult{ExitCode: 0}, nil
+}
+
+// ctxCaptureTarget 包装 stubTarget:记录每条命令执行时收到的 ctx,供断言「健康门控 / 回滚 /
+// docker pull 是否用独立预算的 ctx,而非共用切换阶段的 60s execCtx」(超时会话预算回归)。
+type ctxCaptureTarget struct {
+	*stubTarget
+	mu   sync.Mutex
+	ctxs map[string][]context.Context // key = 命令空格连接;值 = 每次执行收到的 ctx
+}
+
+func (c *ctxCaptureTarget) Exec(ctx context.Context, serverID string, cmd []string) (*target.ExecResult, error) {
+	key := strings.Join(cmd, " ")
+	c.mu.Lock()
+	if c.ctxs == nil {
+		c.ctxs = map[string][]context.Context{}
+	}
+	c.ctxs[key] = append(c.ctxs[key], ctx)
+	c.mu.Unlock()
+	return c.stubTarget.Exec(ctx, serverID, cmd)
+}
+
+// ctxAt 取 key 命令第 i 次执行时收到的 ctx(无则 nil)。
+func (c *ctxCaptureTarget) ctxAt(key string, i int) context.Context {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if i < len(c.ctxs[key]) {
+		return c.ctxs[key][i]
+	}
+	return nil
 }

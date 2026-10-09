@@ -106,9 +106,9 @@ func TestSystemConfigReleaseMirror(t *testing.T) {
 	client, csrf := loginSR(t, srv.URL)
 
 	var cfg struct {
-		PublicURL string `json:"publicUrl"`
+		PublicURL     string `json:"publicUrl"`
 		ReleaseMirror string `json:"releaseMirror"`
-		Effective struct {
+		Effective     struct {
 			Origin  string `json:"origin"`
 			APIBase string `json:"apiBase"`
 			DLBase  string `json:"dlBase"`

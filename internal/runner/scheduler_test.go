@@ -526,3 +526,149 @@ func TestMigrationBackfillsSelector(t *testing.T) {
 		t.Fatalf("回填 selector = %q, want server:srv-old", sel)
 	}
 }
+
+// waitWaiters 轮询直到等待队列长度达到 n(确定性等待,替代 sleep 猜时序:
+// 高负载下 goroutine 调度延迟可能超过固定 sleep,导致"以为已入队其实还没"的误判)。
+func waitWaiters(t *testing.T, s *Scheduler, n int) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		s.mu.Lock()
+		cur := len(s.waiters)
+		s.mu.Unlock()
+		if cur >= n {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("等待者未入队:当前 %d,期望 %d", cur, n)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// 回归(唤醒丢失):队首 A 已收到 release 的唤醒信号但 ctx 同时超时、选择放弃时,
+// 不得吞掉这笔唤醒——应转发给队列下一位 B,B 必须被唤醒拿到槽,而不是干等下一次 release。
+// 修复前 A 走 removeWaiter 直接剔出,信号烂在 buffered channel 里,B 挂到超时。
+func TestAcquireWaiterGiveUpForwardsWakeup(t *testing.T) {
+	for i := 0; i < 100; i++ {
+		st := openMigrated(t)
+		seedServer(t, st, "s-a", "alpha", "linux", 1, 0)
+		s := NewScheduler(st.DB, nil, 1)
+
+		_, _, hold, err := s.Acquire(context.Background(), "p0", "linux", nil)
+		if err != nil {
+			t.Fatalf("iter %d 占槽: %v", i, err)
+		}
+
+		// A 先排队(ctx 可取消),B 排其后;确定性等 A 入队再启动 B,保证 A 是队首。
+		ctxA, cancelA := context.WithCancel(context.Background())
+		doneA := make(chan error, 1)
+		go func() {
+			_, _, rel, err := s.Acquire(ctxA, "pa", "linux", nil)
+			if err == nil {
+				rel() // A 若抢到也立即归还,让 B 继续
+			}
+			doneA <- err
+		}()
+		waitWaiters(t, s, 1)
+		doneB := make(chan error, 1)
+		go func() {
+			_, _, rel, err := s.Acquire(context.Background(), "pb", "linux", nil)
+			if err == nil {
+				rel()
+			}
+			doneB <- err
+		}()
+		waitWaiters(t, s, 2)
+
+		hold()    // 释放:唤醒信号同步投进队首 A 的 buffered channel
+		cancelA() // 随即取消 A:其 select 两路就绪,走 ctx.Done 时即触发被测竞态
+
+		select {
+		case err := <-doneB:
+			if err != nil {
+				t.Fatalf("iter %d B 出错: %v", i, err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("iter %d: A 放弃后唤醒被吞,B 未被转发唤醒(missed wakeup)", i)
+		}
+		select {
+		case <-doneA: // A 必然退出:要么 ctx 取消返回,要么抢到并已归还
+		case <-time.After(2 * time.Second):
+			t.Fatalf("iter %d: A 未退出", i)
+		}
+	}
+}
+
+// 回归(FIFO 插队):槽空但等待队列非空时,新 Acquire 不得抢在既有排队者之前拿槽,
+// 必须入队,让队首按 FIFO 拿走。修复前新请求直接抢空槽,排队者继续等。
+func TestAcquireNoQueueJumping(t *testing.T) {
+	for i := 0; i < 100; i++ {
+		st := openMigrated(t)
+		seedServer(t, st, "s-a", "alpha", "linux", 1, 0)
+		s := NewScheduler(st.DB, nil, 1)
+
+		_, _, hold, err := s.Acquire(context.Background(), "p0", "linux", nil)
+		if err != nil {
+			t.Fatalf("iter %d 占槽: %v", i, err)
+		}
+
+		// W1、W2 依次排队(谁前谁后不影响断言:X 不得先于队首拿槽)。
+		// 用原子序号记录各自 Acquire 返回(=拿到槽)的先后,判定是否插队;
+		// 等待者的错误不得静默(它会吞掉一笔唤醒,表现为后继超时/次序错乱)。
+		var seq, w1Order, xOrder int32
+		w1done := make(chan error, 1)
+		go func() {
+			_, _, rel, err := s.Acquire(context.Background(), "pw1", "linux", nil)
+			if err == nil {
+				atomic.StoreInt32(&w1Order, atomic.AddInt32(&seq, 1))
+				rel()
+			}
+			w1done <- err
+		}()
+		w2done := make(chan error, 1)
+		go func() {
+			_, _, rel, err := s.Acquire(context.Background(), "pw2", "linux", nil)
+			if err == nil {
+				rel()
+			}
+			w2done <- err
+		}()
+		waitWaiters(t, s, 2) // 确定性等 W1、W2 都入队
+
+		hold() // 释放:唤醒队首,槽空、队列还剩一人 —— 正是"槽空+队列非空"窗口
+
+		// 主 goroutine 同步发起新 Acquire:修复后它应入队,直到 W1、W2 各拿一轮才返回;
+		// 修复前它会立刻抢到刚空出的槽(插队)。
+		_, _, relX, err := s.Acquire(context.Background(), "px", "linux", nil)
+		if err != nil {
+			t.Fatalf("iter %d 新 Acquire: %v", i, err)
+		}
+		atomic.StoreInt32(&xOrder, atomic.AddInt32(&seq, 1))
+		// 修复后 X 拿槽必然晚于 W1:X 直接抢槽的前提是队列空且无 pending 主张,这要求
+		// W1 已兑现其唤醒(retry 时注销)→ W1 的 Acquire 已返回并记录 w1Order;
+		// X 走排队路径则更晚。故 w1Order 必已记录且小于 xOrder。
+		if atomic.LoadInt32(&w1Order) == 0 || atomic.LoadInt32(&xOrder) < atomic.LoadInt32(&w1Order) {
+			relX() // 先归还,放 W1/W2 走完,避免泄漏 goroutine 互等
+			t.Fatalf("iter %d: 新 Acquire 插队抢在排队者之前拿到槽 (w1=%d, x=%d, w1err=%v)",
+				i, w1Order, xOrder, <-w1done)
+		}
+		relX()
+		select {
+		case err := <-w1done:
+			if err != nil {
+				t.Fatalf("iter %d: W1 出错: %v", i, err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("iter %d: W1 未拿到槽", i)
+		}
+		select {
+		case err := <-w2done:
+			if err != nil {
+				t.Fatalf("iter %d: W2 出错: %v", i, err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("iter %d: W2 未拿到槽", i)
+		}
+	}
+}

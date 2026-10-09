@@ -67,10 +67,13 @@ func normalizeMatrix(in map[string][]string) (map[string][]string, error) {
 	}
 	cells := 1
 	for _, vals := range out {
+		// 边乘边判(乘法前):直接累乘会在极大声明下 int 溢出回绕(如 8 轴 × 256 值 = 2^64 ≡ 0),
+		// 把 cells 绕回小值绕过上限校验,组合爆炸的压力会转嫁到调度层 dagrun.cartesian。
+		// len(vals) ≥ 1(空值轴已在上方报错),除法安全。
+		if cells > MatrixMaxCells/len(vals) {
+			return nil, fmt.Errorf("%w: matrix cell count exceeds limit %d", ErrInvalidStage, MatrixMaxCells)
+		}
 		cells *= len(vals)
-	}
-	if cells > MatrixMaxCells {
-		return nil, fmt.Errorf("%w: matrix expands to %d cells, exceeds limit %d", ErrInvalidStage, cells, MatrixMaxCells)
 	}
 	return out, nil
 }

@@ -222,12 +222,19 @@ func (s *service) rollOneInstance(ctx context.Context, srv *target.Server, st im
 // probeInstance 在切流量前验证新实例:
 //   - 端口型健康门控:探测 URL = scheme://<容器IP>:<实例服务端口><path>(取容器 IP,宿主 curl
 //     直达容器网段;不依赖宿主端口映射 —— 新容器尚未接流量、宿主口是全新分配的,容器口才稳定);
-//   - command/exec/url 型:原样执行(语义由用户把握);
+//   - exec 型(docker exec):目标容器名替换为新实例名再探测 —— spec 构造时烤入的是基础容器名
+//     (deploy.go 调用链),直接打会命中旧实例(假通过)或 no such container(必失败);
+//   - command/url 型:原样执行(command 在目标机 shell 跑、无容器名可换;语义由用户把握);
 //   - 无健康配置:容器 Running settle 检查(短等待 × 3 次)。
 func (s *service) probeInstance(ctx context.Context, srv *target.Server, inst InstanceRef, hsp *healthSpec, newContainer string) error {
 	if hsp != nil {
 		switch hsp.kind {
-		case specCommand, specExec, specURL:
+		case specExec:
+			if hc := hsp.resolve(0); hc != nil && hc.enabled() {
+				hc.Command = retargetExecContainer(hc.Command, hsp.container, newContainer)
+				return s.runHealthCheck(ctx, srv.ID, hc)
+			}
+		case specCommand, specURL:
 			if hc := hsp.resolve(0); hc != nil && hc.enabled() {
 				return s.runHealthCheck(ctx, srv.ID, hc)
 			}

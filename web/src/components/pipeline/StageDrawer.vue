@@ -68,13 +68,16 @@ watch(
   },
 )
 
-/** 打开抽屉时聚焦名称输入(画布「添加阶段 → 自动打开设置」流程依赖)。 */
+/** 打开抽屉时聚焦名称输入(画布「添加阶段 → 自动打开设置」流程依赖)。
+ *  抽屉每次打开都是新挂载,watch 必须 immediate 才会在首挂载时回调;
+ *  nextTick 后 nameInput 已挂上,?.focus() 判空兜底。 */
 const nameInput = ref<HTMLInputElement | null>(null)
 watch(
   () => props.stage.id,
   () => {
     void nextTick(() => nameInput.value?.focus())
   },
+  { immediate: true },
 )
 
 const KIND_OPTIONS: Array<{ value: StageKind; labelKey: string }> = [

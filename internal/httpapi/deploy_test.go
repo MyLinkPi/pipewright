@@ -408,6 +408,54 @@ func TestDeployNoTargetsSkipsSuccess(t *testing.T) {
 	}
 }
 
+// TestDeployEmptyAfterSuccessReturnsEmptyTargets 同 run 先成功部署一次、再空选择器部署:
+// 第二次是「跳过即成功」(不写 deploy_targets),响应必须回空 targets 数组 —— 不得回读出
+// 上一次部署的旧 targets 把「跳过」伪装成「成功」。
+func TestDeployEmptyAfterSuccessReturnsEmptyTargets(t *testing.T) {
+	srv, client, csrf, projID, rsvc, _ := setupDeployServer(t,
+		stubDialer{res: &target.ExecResult{ExitCode: 0}})
+	r, err := rsvc.Create(context.Background(), projID,
+		run.Trigger{Type: run.TriggerManual, Branch: "main", Commit: "abc", Actor: "admin"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	waitRunStatus(t, client, srv, csrf, r.ID, run.StatusSuccess)
+	artID := firstArtifactID(t, client, srv.URL, csrf, r.ID)
+	serverID := createServer(t, client, srv.URL, csrf, "web-prod-1")
+
+	// 第一次:真部署成功 → targets 一条。
+	body := `{"artifactId":"` + artID + `","serverIds":["` + serverID + `"]}`
+	resp := doJSON(t, client, http.MethodPost, srv.URL+"/api/runs/"+r.ID+"/deploy", csrf, body)
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("第一次部署 status = %d, want 200: %s", resp.StatusCode, raw)
+	}
+	var dr1 struct {
+		Targets []map[string]any `json:"targets"`
+	}
+	_ = json.Unmarshal(raw, &dr1)
+	if len(dr1.Targets) != 1 {
+		t.Fatalf("第一次部署应有 1 条 target: %s", raw)
+	}
+
+	// 第二次:零命中选择器 → 跳过即成功,响应 targets 必须为空(非上一次旧值)。
+	body = `{"artifactId":"` + artID + `","selector":"gpu"}`
+	resp = doJSON(t, client, http.MethodPost, srv.URL+"/api/runs/"+r.ID+"/deploy", csrf, body)
+	raw, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("空选择器部署 status = %d, want 200: %s", resp.StatusCode, raw)
+	}
+	var dr2 struct {
+		Targets []map[string]any `json:"targets"`
+	}
+	_ = json.Unmarshal(raw, &dr2)
+	if dr2.Targets == nil || len(dr2.Targets) != 0 {
+		t.Fatalf("空目标部署应回空 targets 数组(不得回读上次旧值): %s", raw)
+	}
+}
+
 // TestDeployInvalidSelector422 验证选择器语法非法 → 422 invalid_deploy_selector。
 func TestDeployInvalidSelector422(t *testing.T) {
 	srv, client, csrf, projID, rsvc, _ := setupDeployServer(t,

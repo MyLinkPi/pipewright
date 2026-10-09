@@ -38,22 +38,22 @@ type registryHubService interface {
 // 生成 daemon.json / remoteTag 用的完整 host:port 展示值;artifactDataDir/cacheDataDir 是
 // 配置值(空=默认),*Effective 是服务端解析后的生效目录(供占位展示)。
 type registryHubConfigDTO struct {
-	Enabled                    bool    `json:"enabled"`
-	ExternalAddr               string  `json:"externalAddr"`
-	SuggestedAddr              string  `json:"suggestedAddr"`
-	UpstreamURL                string  `json:"upstreamUrl"`
-	ArtifactPort               int     `json:"artifactPort"`
-	CachePort                  int     `json:"cachePort"`
-	ArtifactDataDir            string  `json:"artifactDataDir"`
-	CacheDataDir               string  `json:"cacheDataDir"`
-	EffectiveArtifactDataDir   string  `json:"effectiveArtifactDataDir"`
-	EffectiveCacheDataDir      string  `json:"effectiveCacheDataDir"`
-	TLSCertID                  string  `json:"tlsCertId"`
-	KeepPerProject             int     `json:"keepPerProject"`
-	MaxAgeDays                 int     `json:"maxAgeDays"`
-	ArtifactAddr               string  `json:"artifactAddr"`
-	CacheAddr                  string  `json:"cacheAddr"`
-	UpdatedAt                  *string `json:"updatedAt"`
+	Enabled                  bool    `json:"enabled"`
+	ExternalAddr             string  `json:"externalAddr"`
+	SuggestedAddr            string  `json:"suggestedAddr"`
+	UpstreamURL              string  `json:"upstreamUrl"`
+	ArtifactPort             int     `json:"artifactPort"`
+	CachePort                int     `json:"cachePort"`
+	ArtifactDataDir          string  `json:"artifactDataDir"`
+	CacheDataDir             string  `json:"cacheDataDir"`
+	EffectiveArtifactDataDir string  `json:"effectiveArtifactDataDir"`
+	EffectiveCacheDataDir    string  `json:"effectiveCacheDataDir"`
+	TLSCertID                string  `json:"tlsCertId"`
+	KeepPerProject           int     `json:"keepPerProject"`
+	MaxAgeDays               int     `json:"maxAgeDays"`
+	ArtifactAddr             string  `json:"artifactAddr"`
+	CacheAddr                string  `json:"cacheAddr"`
+	UpdatedAt                *string `json:"updatedAt"`
 }
 
 func toRegistryHubConfigDTO(c *registryhub.Config, svc registryHubService) registryHubConfigDTO {

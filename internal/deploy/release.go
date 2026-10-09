@@ -19,7 +19,8 @@ package deploy
 //       - 通过 → 该机 success(保留上一发布供回滚)+ keepReleases 清理旧发布。
 //       - 失败 + 有上一发布 → **回滚**:ln -sfn <上一发布> <base>/current + status=rolled_back + 人读 message。
 //       - 失败 + 无上一发布(首次)→ status=failed(无可回滚)+ 人读 message。
-//       - 回滚动作本身失败 → 仍记录 rolled_back + 人读(不 500;尽力回滚)。
+//       - 回滚动作本身失败 → status=failed + 人读(回滚未确认,不 500;rolled_back 语义是
+//         「仍运行旧版本」,回滚未确认时 current 可能仍指坏版本,记 rolled_back 是撒谎)。
 //
 // 全程命令 **array 化**([]string)经 target.Exec(AC-SEC-02 不拼 shell);切换 / 回滚命令幂等。
 
@@ -333,14 +334,19 @@ func (s *service) activateReleaseOne(ctx context.Context, srv *target.Server, a 
 	if rc := restartCmd; rc != "" {
 		script := "cd \"$0\" && set -e\n" + rc
 		if failMsg, ok := s.runStep(execCtx, srv.ID, [][]string{{"sh", "-c", script, st.current}}); !ok {
-			return s.rollback(execCtx, srv, res, st.current, st.prev, st.release, "重启/切换命令失败:"+failMsg, restartCmd)
+			// 回滚传父 ctx(rollback 内部挂独立预算;execCtx 可能已被前面命令消耗)。
+			return s.rollback(ctx, srv, res, st.current, st.prev, st.release, "重启/切换命令失败:"+failMsg, restartCmd)
 		}
 	}
 
-	// 4) 切换之后跑健康门控(4-3);失败触发回滚。
+	// 4) 切换之后跑健康门控(4-3);失败触发回滚。门控用独立预算 ctx(重试矩阵可远超 60s
+	// execCtx;否则重试没跑完就被砍,还会让回滚复用到已过期的 ctx,current 留在坏版本)。
 	if hc.enabled() {
-		if herr := s.runHealthCheck(execCtx, srv.ID, hc); herr != nil {
-			return s.rollback(execCtx, srv, res, st.current, st.prev, st.release, herr.Error(), restartCmd)
+		hcCtx, hcCancel := healthCheckCtx(ctx, hc)
+		herr := s.runHealthCheck(hcCtx, srv.ID, hc)
+		hcCancel()
+		if herr != nil {
+			return s.rollback(ctx, srv, res, st.current, st.prev, st.release, herr.Error(), restartCmd)
 		}
 	}
 
@@ -361,10 +367,15 @@ func (s *service) activateReleaseOne(ctx context.Context, srv *target.Server, a 
 
 // rollback 在健康门控/重启命令失败后回滚 current 软链到上一发布。
 //   - 有上一发布:ln -sfn <上一发布> current → status=rolled_back + 人读(说明回滚到哪个 release)。
-//     回滚命令本身失败 → 仍记 rolled_back(尽力回滚)+ 人读说明回滚未确认(不 500)。
+//     回滚命令本身失败 → status=**failed** + 人读说明回滚未确认(不 500):rolled_back 的语义是
+//     「仍运行旧版本」,回滚未确认时 current 可能仍指坏版本,记 rolled_back 是撒谎;
+//     failed 与 rolled_back 同样可被 RetryFailed 推进(见 retryableTargetStatus)。
 //     回滚切回软链后**尽力重跑一次重启命令**(在上一发布目录内):修复此前「只切软链不重启,
 //     旧服务可能起不来」的缺口;重跑失败仅追加告警,不改变 rolled_back 状态。
 //   - 无上一发布(首次部署):无可回滚 → status=failed + 人读。
+//
+// ctx 传调用方的**父 ctx**:回滚命令内部挂独立 execTimeout 级预算 —— 健康门控耗尽后切换阶段的
+// execCtx 已过期,复用它会让回滚第一条 ln 就 DeadlineExceeded,current 留在坏版本却记rolled_back。
 func (s *service) rollback(ctx context.Context, srv *target.Server, res TargetResult, current, prev, release, healthMsg, restartCommand string) TargetResult {
 	finish := time.Now().UTC()
 	res.FinishedAt = &finish
@@ -377,28 +388,38 @@ func (s *service) rollback(ctx context.Context, srv *target.Server, res TargetRe
 	}
 
 	// 回滚:把 current 软链原子切回上一发布(code-review P2:同样 ln tmp + mv -T,避免回滚窗口)。
-	var rbErr error
+	// 独立预算 ctx(见函数头注释)。
+	rbCtx, rbCancel := context.WithTimeout(ctx, execTimeout)
+	defer rbCancel()
+	// 回滚失败 = 执行错误 **或非零退出**(软链没切回去时 current 仍指坏版本,绝非「仍运行旧版本」)。
+	rbFail := ""
 	for _, cmd := range atomicSymlinkCmds(prev, current) {
-		if _, e := s.exec(ctx, srv.ID, cmd); e != nil {
-			rbErr = e
+		out, e := s.exec(rbCtx, srv.ID, cmd)
+		if e != nil {
+			rbFail = humanExecError(e)
+			break
+		}
+		if out != nil && out.ExitCode != 0 {
+			rbFail = fmt.Sprintf("回滚命令退出码 %d:%s", out.ExitCode, truncate(strings.TrimSpace(out.Stderr)))
 			break
 		}
 	}
-	res.Status = run.TargetRolledBack
 	prevName := path.Base(prev)
-	if rbErr != nil {
-		// 回滚动作本身失败:仍记 rolled_back(语义:意图回滚),人读说明回滚未确认。
-		res.Message = fmt.Sprintf("健康检查失败,已尝试回滚 current → 上一发布 %s,但回滚命令执行失败:%s(健康原因:%s)",
-			prevName, humanExecError(rbErr), healthMsg)
+	if rbFail != "" {
+		// 回滚动作本身失败:记 failed(回滚未确认;current 可能仍指坏版本,绝非「仍运行旧版本」)。
+		res.Status = run.TargetFailed
+		res.Message = fmt.Sprintf("健康检查失败,已尝试回滚 current → 上一发布 %s,但回滚命令执行失败(回滚未确认,current 可能仍指坏版本):%s(健康原因:%s)",
+			prevName, rbFail, healthMsg)
 		return res
 	}
+	res.Status = run.TargetRolledBack
 	res.Message = fmt.Sprintf("健康检查失败,已回滚 current → 上一发布 %s(失败发布 %s 保留供排查;健康原因:%s)",
 		prevName, path.Base(release), healthMsg)
 
 	// 尽力重跑重启命令:软链已切回旧版本,把旧服务拉起来(失败仅追加告警)。
 	if rc := strings.TrimSpace(restartCommand); rc != "" {
 		script := "cd \"$0\" && set -e\n" + rc
-		out, eerr := s.exec(ctx, srv.ID, []string{"sh", "-c", script, prev})
+		out, eerr := s.exec(rbCtx, srv.ID, []string{"sh", "-c", script, prev})
 		switch {
 		case eerr != nil:
 			res.Message += "(注意:回滚后重跑重启命令失败:" + humanExecError(eerr) + ")"
@@ -430,7 +451,8 @@ func (s *service) readCurrentRelease(ctx context.Context, serverID, current stri
 }
 
 // pruneReleases 清理 releasesDir 下超出 keepReleases 的旧发布(尽力;失败不影响成功态)。
-// 保留:当前发布(curRunID)+ 上一发布(prev,回滚目标)+ 最近 keep-1 个其它发布。
+// 保留:当前发布(curRunID)+ 上一发布(prev,回滚目标)+ 最近 keep 个其它发布
+// (脚本 n>keep 才删,即保留 keep 个 —— 此前注释写「keep-1 个」与实现不符,以实现为准,更保守)。
 // 用 find + sort 经单条 array 化 sh -c(脚本体为固定模板,目录 / 保留名作位置参数传入,不拼 shell)。
 func (s *service) pruneReleases(ctx context.Context, serverID, releasesDir, curRunID, prev string, keep int) {
 	prevName := ""

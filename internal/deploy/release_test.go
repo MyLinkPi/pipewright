@@ -240,14 +240,17 @@ func TestReleaseFirstDeployHealthFailNoRollback(t *testing.T) {
 	}
 }
 
-// TestReleaseRollbackCmdFailStillRecorded:回滚命令本身失败 → 仍记 rolled_back + 人读(不上抛/不 500)。
-func TestReleaseRollbackCmdFailStillRecorded(t *testing.T) {
+// TestReleaseRollbackCmdFailRecordedFailed:回滚命令本身失败 → status=failed(回滚未确认;
+// 不上抛/不 500)。rolled_back 语义是「仍运行旧版本」—— 回滚 ln 失败时 current 可能仍指坏版本,
+// 记 rolled_back 是撒谎;failed 仍可被 RetryFailed 推进。另断言回滚用独立预算的新 ctx
+// (不复用切换阶段的 60s execCtx)。
+func TestReleaseRollbackCmdFailRecordedFailed(t *testing.T) {
 	db := testDB(t)
 	rsvc := run.New(db)
 	prev := "/srv/shop/releases/old-run"
 	// 切换阶段需要 ln 成功;回滚阶段 ln 失败。用计数器:首条 ln(切换)成功,之后(回滚)失败。
 	lnSeen := 0
-	tgt := &stubTarget{execFn: func(_ string, cmd []string) (*target.ExecResult, error) {
+	tgt := &ctxCaptureTarget{stubTarget: &stubTarget{execFn: func(_ string, cmd []string) (*target.ExecResult, error) {
 		switch cmd[0] {
 		case "readlink":
 			return &target.ExecResult{ExitCode: 0, Stdout: prev + "\n"}, nil
@@ -262,8 +265,8 @@ func TestReleaseRollbackCmdFailStillRecorded(t *testing.T) {
 		default:
 			return &target.ExecResult{ExitCode: 0}, nil
 		}
-	}}
-	srv := seedServer(t, tgt, "web-1")
+	}}}
+	srv := seedServer(t, tgt.stubTarget, "web-1")
 	runID, artID := seedSuccessRunWithArtifact(t, db, rsvc, run.ArtifactDist, "dist/shop.tar.gz")
 
 	svc := New(tgt, rsvc)
@@ -275,11 +278,23 @@ func TestReleaseRollbackCmdFailStillRecorded(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Deploy 不应上抛(回滚失败也内化): %v", err)
 	}
-	if res[0].Status != run.TargetRolledBack {
-		t.Fatalf("回滚命令失败仍应记 rolled_back, got %+v", res[0])
+	if res[0].Status != run.TargetFailed {
+		t.Fatalf("回滚命令失败应记 failed(回滚未确认), got %+v", res[0])
 	}
-	if !strings.Contains(res[0].Message, "回滚命令执行失败") {
+	if !strings.Contains(res[0].Message, "回滚命令执行失败") || !strings.Contains(res[0].Message, "回滚未确认") {
 		t.Fatalf("message 应说明回滚未确认: %q", res[0].Message)
+	}
+	if !retryableTargetStatus(res[0].Status) {
+		t.Fatalf("回滚失败记 failed 后仍应可重试,实际 %s", res[0].Status)
+	}
+	// 回滚的 ln 用独立预算的新 ctx(与切换阶段的 ln 不是同一个 ctx)。
+	cutoverCtx := tgt.ctxAt("ln -sfn /srv/shop/releases/"+runID+" /srv/shop/current.tmp", 0)
+	rollbackCtx := tgt.ctxAt("ln -sfn "+prev+" /srv/shop/current.tmp", 0)
+	if cutoverCtx == nil || rollbackCtx == nil {
+		t.Fatalf("切换与回滚的 ln 都应被执行")
+	}
+	if cutoverCtx == rollbackCtx {
+		t.Fatalf("回滚不应复用切换阶段的 execCtx(健康耗尽后它已过期)")
 	}
 }
 

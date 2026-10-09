@@ -129,6 +129,36 @@ func TestDeployForStagePinnedAndLabel(t *testing.T) {
 	}
 }
 
+// TestDeployExplicitServerIDsDeduped 显式 serverIDs 重复 → 保序去重:同机只部署一次、
+// deploy_targets 只写一行(不去重会同机部署两次,RetryFailed 并行扇出还会同机竞态)。
+func TestDeployExplicitServerIDsDeduped(t *testing.T) {
+	db := testDB(t)
+	rsvc := run.New(db)
+	tgt := &stubTarget{}
+	s1 := seedServer(t, tgt, "s1")
+	s2 := seedServer(t, tgt, "s2")
+	runID, artID := seedSuccessRunWithArtifact(t, db, rsvc, run.ArtifactDist, "dist/shop.tar.gz")
+
+	svc := New(tgt, rsvc)
+	res, err := svc.Deploy(context.Background(), DeployInput{
+		RunID: runID, ArtifactID: artID,
+		ServerIDs: []string{s1.ID, s2.ID, s1.ID, s1.ID, s2.ID}, // 重复 ID
+	})
+	if err != nil {
+		t.Fatalf("Deploy: %v", err)
+	}
+	if len(res) != 2 || res[0].ServerID != s1.ID || res[1].ServerID != s2.ID {
+		t.Fatalf("重复 ID 应保序去重为 2 台, got %+v", res)
+	}
+	targets, err := rsvc.ListDeployTargets(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("ListDeployTargets: %v", err)
+	}
+	if len(targets) != 2 {
+		t.Fatalf("deploy_targets 应只写 2 行, got %+v", targets)
+	}
+}
+
 // TestResolveTargetsExplicitMissing 显式 serverIDs 任一不存在 → 整次拒绝(存在性从严,不留半截)。
 func TestResolveTargetsExplicitMissing(t *testing.T) {
 	db := testDB(t)

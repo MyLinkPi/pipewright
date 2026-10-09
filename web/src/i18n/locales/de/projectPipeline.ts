@@ -65,6 +65,7 @@ export default {
 
   // ─── Speicherfehler ─────────────────────────────────────────────
   errSaveFailedRetry: 'Speichern fehlgeschlagen. Bitte versuchen Sie es später erneut.',
+  errSettingsNotLoaded: 'Einstellungen konnten nicht geladen werden – es wurde nichts gespeichert. Bitte laden Sie die Seite neu und versuchen Sie es erneut.',
   errSaveFailedStatus: 'Speichern fehlgeschlagen ({status})',
   errInvalidStage: 'Der Phasenname darf nicht leer sein und kind muss ein zulässiger Wert sein. Bitte prüfen und erneut versuchen.',
   errInvalidJob: 'Job-Name oder -Typ dürfen nicht leer sein. Bitte ergänzen und erneut versuchen.',
