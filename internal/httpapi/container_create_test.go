@@ -44,6 +44,12 @@ func TestValidateCreateSpec_RejectsInjection(t *testing.T) {
 		{"volume one part", createContainerRequest{Image: "nginx", Volumes: []string{"/onlyone"}}},
 		{"volume bad mode", createContainerRequest{Image: "nginx", Volumes: []string{"/a:/b:xx"}}},
 		{"volume shell char", createContainerRequest{Image: "nginx", Volumes: []string{"/a:/b;c"}}},
+		{"cpus non-numeric", createContainerRequest{Image: "nginx", CPUs: "abc"}},
+		{"cpus flag injection", createContainerRequest{Image: "nginx", CPUs: "-1"}},
+		{"cpus trailing garbage", createContainerRequest{Image: "nginx", CPUs: "1.5;rm"}},
+		{"memory no digits", createContainerRequest{Image: "nginx", Memory: "m"}},
+		{"memory bad unit", createContainerRequest{Image: "nginx", Memory: "512x"}},
+		{"memory flag injection", createContainerRequest{Image: "nginx", Memory: "--privileged"}},
 	}
 	for _, tc := range cases {
 		req := tc.req
@@ -61,6 +67,8 @@ func TestBuildDockerRunCmd(t *testing.T) {
 		Env:     []string{"X=1"},
 		Volumes: []string{"data:/data"},
 		Restart: "always",
+		CPUs:    "0.5",
+		Memory:  "256m",
 		Command: "redis-server --appendonly yes",
 	}
 	got := buildDockerRunCmd(req)
@@ -68,6 +76,8 @@ func TestBuildDockerRunCmd(t *testing.T) {
 		"docker", "run", "-d",
 		"--name", "cache",
 		"--restart", "always",
+		"--cpus", "0.5",
+		"--memory", "256m",
 		"-p", "6379:6379",
 		"-e", "X=1",
 		"-v", "data:/data",

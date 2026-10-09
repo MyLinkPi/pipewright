@@ -94,6 +94,10 @@ export interface CreateContainerInput {
   restart?: RestartPolicy
   /** Optional container command; split on whitespace into args (no shell). */
   command?: string
+  /** Optional CPU core limit (docker `--cpus`), e.g. `"1.5"`. */
+  cpus?: string
+  /** Optional hard memory limit (docker `--memory`), e.g. `"512m"`. */
+  memory?: string
 }
 
 export interface CreateContainerResult {

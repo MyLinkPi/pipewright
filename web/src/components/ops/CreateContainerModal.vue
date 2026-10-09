@@ -32,6 +32,8 @@ const envText = ref('')
 const volumesText = ref('')
 const restart = ref<RestartPolicy>('unless-stopped')
 const command = ref('')
+const cpus = ref('')
+const memory = ref('')
 
 // ─── Unsaved-change guard (✕ / 取消 with dirty check) ────────────────────────
 
@@ -45,6 +47,8 @@ function formJson(): string {
     volumesText: volumesText.value,
     restart: restart.value,
     command: command.value,
+    cpus: cpus.value,
+    memory: memory.value,
   })
 }
 const initialJson = formJson()
@@ -87,6 +91,8 @@ async function aiGenerate(): Promise<void> {
     if (parsed.volumes.length) volumesText.value = parsed.volumes.join('\n')
     if (parsed.restart) restart.value = parsed.restart
     if (parsed.command) command.value = parsed.command
+    if (parsed.cpus) cpus.value = parsed.cpus
+    if (parsed.memory) memory.value = parsed.memory
     aiNote.value = t('opsContainer.create.aiFilled', { command: res.command })
     toast.success(t('opsContainer.create.aiGenerated'), { detail: t('opsContainer.create.aiGeneratedDetail') })
   } catch (err) {
@@ -128,6 +134,8 @@ async function submit(): Promise<void> {
     volumes: linesToArray(volumesText.value),
     restart: restart.value,
     command: command.value.trim() || undefined,
+    cpus: cpus.value.trim() || undefined,
+    memory: memory.value.trim() || undefined,
   }
   try {
     const res = await createContainer(serverId.value, input)
@@ -215,6 +223,17 @@ async function submit(): Promise<void> {
           <span class="field__k">{{ t('opsContainer.create.volumes') }} <span class="field__hint">{{ t('opsContainer.create.volumesHint') }}</span></span>
           <textarea v-model="volumesText" class="field__in mono" rows="2" placeholder="/data/web:/usr/share/nginx/html:ro&#10;myvol:/cache" />
         </label>
+
+        <div class="grid2">
+          <label class="field">
+            <span class="field__k">{{ t('opsContainer.create.cpuLimit') }} <span class="field__hint">{{ t('opsContainer.create.cpuLimitHint') }}</span></span>
+            <input v-model="cpus" class="field__in mono" placeholder="1.0" />
+          </label>
+          <label class="field">
+            <span class="field__k">{{ t('opsContainer.create.memoryLimit') }} <span class="field__hint">{{ t('opsContainer.create.memoryLimitHint') }}</span></span>
+            <input v-model="memory" class="field__in mono" placeholder="512m" />
+          </label>
+        </div>
 
         <label class="field">
           <span class="field__k">{{ t('opsContainer.create.command') }}</span>

@@ -35,6 +35,16 @@ describe('parseDockerRun', () => {
     expect(p!.command).toBe('sh')
   })
 
+  it('parses --cpus / --memory (and -m) resource limits', () => {
+    const p = parseDockerRun('docker run -d --cpus 1.5 --memory=512m nginx')
+    expect(p!.cpus).toBe('1.5')
+    expect(p!.memory).toBe('512m')
+    expect(p!.image).toBe('nginx')
+    const p2 = parseDockerRun('docker run -m 1g redis')
+    expect(p2!.memory).toBe('1g')
+    expect(p2!.image).toBe('redis')
+  })
+
   it('returns null for non docker-run', () => {
     expect(parseDockerRun('ls -la')).toBeNull()
     expect(parseDockerRun('docker ps')).toBeNull()

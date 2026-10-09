@@ -12,6 +12,10 @@ export interface ParsedRun {
   volumes: string[]
   restart?: RestartPolicy
   command: string
+  /** `--cpus` 值(如 "1.5")。 */
+  cpus?: string
+  /** `--memory`/`-m` 值(如 "512m")。 */
+  memory?: string
 }
 
 /** 不带值的布尔 flag(出现即开,不吞下一个 token)。 */
@@ -94,6 +98,13 @@ export function parseDockerRun(cmd: string): ParsedRun | null {
         break
       case '--restart':
         if (RESTART_VALUES.has(value as RestartPolicy)) res.restart = value as RestartPolicy
+        break
+      case '--cpus':
+        if (value) res.cpus = value
+        break
+      case '-m':
+      case '--memory':
+        if (value) res.memory = value
         break
       default:
         break // 其它 flag(--network/-w 等)暂不映射,但仍吞掉其值避免误判为镜像

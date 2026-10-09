@@ -63,6 +63,8 @@ const customTemplates = computed(() => templates.value.filter((x) => !x.builtin)
 const deploying = ref<AppTemplate | null>(null)
 const deployServer = ref('')
 const paramValues = ref<Record<string, string>>({})
+const deployCpus = ref('')
+const deployMemory = ref('')
 const deployBusy = ref(false)
 const deployResult = ref<AppDeployResult | null>(null)
 
@@ -81,6 +83,8 @@ const missingRequired = computed(() => {
 function openDeploy(tpl: AppTemplate): void {
   deploying.value = tpl
   deployResult.value = null
+  deployCpus.value = ''
+  deployMemory.value = ''
   deployServer.value = servers.value.length === 1 ? servers.value[0].id : ''
   const vals: Record<string, string> = {}
   for (const p of tpl.params) vals[p.name] = p.default ?? ''
@@ -91,7 +95,10 @@ async function submitDeploy(): Promise<void> {
   if (!deploying.value || !deployServer.value) return
   deployBusy.value = true
   try {
-    const res = await deployApp(deployServer.value, deploying.value.id, paramValues.value)
+    const res = await deployApp(deployServer.value, deploying.value.id, paramValues.value, {
+      cpus: deployCpus.value,
+      memory: deployMemory.value,
+    })
     deployResult.value = res
     if (res.ok) toast.success(t('appStore.deployed', { name: deploying.value.displayName || deploying.value.name }))
     else toast.error(res.error || t('appStore.deployFail'))
@@ -310,6 +317,17 @@ async function removeCustom(tpl: AppTemplate): Promise<void> {
             />
             <input v-else class="field__in" type="password" :value="t('appStore.deploy.autoValue')" disabled />
           </label>
+          <div class="apps__grid2">
+            <label class="field">
+              <span class="field__lbl">{{ t('appStore.deploy.cpuLimit') }}</span>
+              <input v-model="deployCpus" class="field__in" type="text" placeholder="1.0" />
+            </label>
+            <label class="field">
+              <span class="field__lbl">{{ t('appStore.deploy.memoryLimit') }}</span>
+              <input v-model="deployMemory" class="field__in" type="text" placeholder="512m" />
+            </label>
+          </div>
+          <p class="apps__hint">{{ t('appStore.deploy.limitsHint') }}</p>
           <p class="apps__hint">{{ t('appStore.deploy.hint') }}</p>
           <div class="apps__form-actions">
             <AppButton variant="primary" type="submit" :loading="deployBusy" :disabled="!deployServer || missingRequired">
