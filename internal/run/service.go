@@ -73,7 +73,8 @@ type Service interface {
 	// AppendLog 追加一行运行日志(Story 3.6):分配该 run 内单调 seq → 落 run_logs → 返回 seq。
 	// **text 须由调用方在落库前脱敏**(本层只搬运形状落库;dbStepSink.Log 负责脱敏)。
 	// seq 分配并发安全(service 内对 run_logs 的 MAX(seq) 读 + 插入以 logMu 串行化)。
-	AppendLog(ctx context.Context, runID, stream string, stepOrdinal int, text string) (seq int, err error)
+	// machine 是来源机器显示名快照("":控制机/运行级),原样落库不做脱敏。
+	AppendLog(ctx context.Context, runID, stream string, stepOrdinal int, text, machine string) (seq int, err error)
 	// GetLogs 取某次运行 sinceSeq 之后的日志行(升序;sinceSeq<=0 取全部)。
 	// 不全量驻留:调用方按需分页(NFR-4)。run 不存在不报错(返回空切片);由 HTTP 层据 run 存在性决定 404。
 	GetLogs(ctx context.Context, runID string, sinceSeq int) ([]LogLine, error)
@@ -800,7 +801,8 @@ func (s *service) GetDiagnosis(ctx context.Context, id string) (*Diagnosis, erro
 
 // AppendLog 分配该 run 内单调 seq 并落 run_logs(text 须已脱敏)。参数化 SQL。
 // seq = COALESCE(MAX(seq),0)+1,经 logMu 串行化以保证并发下 seq 单调不撞号。
-func (s *service) AppendLog(ctx context.Context, runID, stream string, stepOrdinal int, text string) (int, error) {
+// machine 是来源机器显示名快照("":控制机/运行级),原样落库不做脱敏。
+func (s *service) AppendLog(ctx context.Context, runID, stream string, stepOrdinal int, text, machine string) (int, error) {
 	switch stream {
 	case streamStdout, streamStderr:
 	default:
@@ -819,9 +821,9 @@ func (s *service) AppendLog(ctx context.Context, runID, stream string, stepOrdin
 	seq := maxSeq + 1
 
 	if _, err := s.db.ExecContext(ctx,
-		`INSERT INTO run_logs (id, run_id, seq, ts, stream, step_ordinal, text)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		uuid.NewString(), runID, seq, now, stream, stepOrdinal, text,
+		`INSERT INTO run_logs (id, run_id, seq, ts, stream, step_ordinal, machine, text)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		uuid.NewString(), runID, seq, now, stream, stepOrdinal, machine, text,
 	); err != nil {
 		return 0, fmt.Errorf("run: insert log: %w", err)
 	}
@@ -834,7 +836,7 @@ func (s *service) GetLogs(ctx context.Context, runID string, sinceSeq int) ([]Lo
 		sinceSeq = 0
 	}
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT seq, ts, stream, step_ordinal, text
+		`SELECT seq, ts, stream, step_ordinal, machine, text
 		 FROM run_logs WHERE run_id = ? AND seq > ? ORDER BY seq ASC`, runID, sinceSeq)
 	if err != nil {
 		return nil, fmt.Errorf("run: load logs: %w", err)
@@ -847,7 +849,7 @@ func (s *service) GetLogs(ctx context.Context, runID string, sinceSeq int) ([]Lo
 			l     LogLine
 			tsStr string
 		)
-		if err := rows.Scan(&l.Seq, &tsStr, &l.Stream, &l.StepOrdinal, &l.Text); err != nil {
+		if err := rows.Scan(&l.Seq, &tsStr, &l.Stream, &l.StepOrdinal, &l.Machine, &l.Text); err != nil {
 			return nil, fmt.Errorf("run: scan log: %w", err)
 		}
 		if t, perr := time.Parse(time.RFC3339, tsStr); perr == nil {

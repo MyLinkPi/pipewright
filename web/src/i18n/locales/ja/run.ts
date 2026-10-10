@@ -160,6 +160,9 @@ export default {
   maskedTitle: '機密情報はマスクされています',
   jumpToLatest: '最新のログへ移動',
   jumpToBottom: '最下部へ移動',
+  machineAll: 'すべて',
+  machineCtrl: '制御マシン',
+  machineFilterAria: 'マシンでログを絞り込み',
 
   // ─── SuccessFailDiff ────────────────────────────────────────────
   diffRegion: 'このコミットのコード変更',

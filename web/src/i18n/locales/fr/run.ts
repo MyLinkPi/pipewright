@@ -160,6 +160,9 @@ export default {
   maskedTitle: 'Informations sensibles masquées',
   jumpToLatest: 'Aller au journal le plus récent',
   jumpToBottom: 'Aller en bas',
+  machineAll: 'Tous',
+  machineCtrl: 'Machine de contrôle',
+  machineFilterAria: 'Filtrer les journaux par machine',
 
   // ─── SuccessFailDiff ────────────────────────────────────────────
   diffRegion: 'Modifications de code de ce commit',

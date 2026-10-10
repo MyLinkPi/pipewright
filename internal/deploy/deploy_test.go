@@ -217,6 +217,52 @@ func TestDeployForStageCommandOnlyMissingCmd(t *testing.T) {
 // svcCmdOnly 构造一个 deploy.Service(便于命令型用例复用)。
 func svcCmdOnly(tgt *stubTarget, rsvc run.Service) Service { return New(tgt, rsvc) }
 
+// TestDeployForStageLogsResolvedTargets 验证:部署动手前把选择器解析出的**实际部署拓扑**
+// (人读机名 name(host))经命令日志回流到步骤日志 —— 不用翻到结尾逐机摘要就知道部署到哪台机。
+// 同时验证**逐机归属**(步骤 × 机器分组的数据来源):命令行输出 machine=该机名,运行级行 machine=""。
+func TestDeployForStageLogsResolvedTargets(t *testing.T) {
+	db := testDB(t)
+	rsvc := run.New(db)
+	tgt := &stubTarget{}
+	seedLabeledServer(t, tgt, "web-01", "web")
+	seedLabeledServer(t, tgt, "web-02", "web")
+	runID, _ := seedSuccessRunWithArtifact(t, db, rsvc, run.ArtifactDist, "dist/unused")
+
+	var mu sync.Mutex
+	var lines []string
+	ctx := WithCmdLog(context.Background(), func(stream, machine, text string) {
+		mu.Lock()
+		defer mu.Unlock()
+		lines = append(lines, machine+"|"+stream+"|"+text)
+	})
+	res, err := svcCmdOnly(tgt, rsvc).DeployForStage(ctx, runID, "web",
+		map[string]string{"artifactType": "command", "restartCommand": "true"}, "")
+	if err != nil {
+		t.Fatalf("DeployForStage: %v", err)
+	}
+	if len(res) != 2 {
+		t.Fatalf("want 2 targets, got %+v", res)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	joined := strings.Join(lines, "\n")
+	// 目标机名单行:两台机器的人读名(名+host)都应在动手前打出(List 顺序不定,两种序都认)。
+	if !strings.Contains(joined, "|→ 目标机(2 台):web-01(127.0.0.1), web-02(127.0.0.1)") &&
+		!strings.Contains(joined, "|→ 目标机(2 台):web-02(127.0.0.1), web-01(127.0.0.1)") {
+		t.Fatalf("应打目标机名单行:lines=%v", lines)
+	}
+	// 运行级行(拓扑明示)machine 应为空串(行首 "|")。
+	if !strings.Contains(joined, "\n|stdout|→ 目标机(2 台):") && !strings.HasPrefix(lines[0], "|stdout|→ 目标机(2 台):") {
+		t.Fatalf("目标机拓扑行应为运行级(machine 空):lines=%v", lines)
+	}
+	// 逐机归属:每台机的命令回显行 machine 应为该机名(命令型部署经 runCommandOnly 单机作用域)。
+	for _, name := range []string{"web-01", "web-02"} {
+		if !strings.Contains(joined, name+"|stdout|$ true") {
+			t.Fatalf("机器 %s 的命令输出应带该机归属:lines=%v", name, lines)
+		}
+	}
+}
+
 // TestDeployDistSuccess 验证 dist 产物部署:命令 array 化、每机 success、run 终态保持 success。
 func TestDeployDistSuccess(t *testing.T) {
 	db := testDB(t)

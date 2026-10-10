@@ -283,7 +283,7 @@ func (s *service) runContainerWithPorts(ctx context.Context, serverID, name stri
 			return nil, lastMsg, false
 		}
 		lg := cmdLogFrom(ctx)
-		lg(cmdStreamStdout, "  → 容器 "+name+" 端口映射:"+portBindingSummary(bindings))
+		lg(cmdStreamStdout, "", "  → 容器 "+name+" 端口映射:"+portBindingSummary(bindings))
 		return bindings, "", true
 	}
 	return nil, lastMsg, false

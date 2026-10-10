@@ -195,6 +195,7 @@ func (s *service) stageStoredArtifact(ctx context.Context, srv *target.Server, a
 	case "tar.gz":
 		// dist:上传 tar.gz → 远端解包 → 删包。
 		tarPath := path.Join(st.release, ".pw-artifact.tar.gz")
+		cmdLogFrom(ctx)(cmdStreamStdout, "", fmt.Sprintf("→ 上传 dist 制品到 %s …", srv.Name))
 		upCtx, upCancel := uploadCtx(ctx)
 		uerr := s.targets.Upload(upCtx, srv.ID, rc, tarPath)
 		upCancel()
@@ -216,6 +217,7 @@ func (s *service) stageStoredArtifact(ctx context.Context, srv *target.Server, a
 		if name := artifactFilename(a); name != "" {
 			dest = path.Join(st.release, name)
 		}
+		cmdLogFrom(ctx)(cmdStreamStdout, "", fmt.Sprintf("→ 上传制品到 %s:%s …", srv.Name, dest))
 		upCtx, upCancel := uploadCtx(ctx)
 		uerr := s.targets.Upload(upCtx, srv.ID, rc, dest)
 		upCancel()
@@ -280,6 +282,7 @@ func (s *service) stageFilesManifest(ctx context.Context, srv *target.Server, a 
 		if err != nil {
 			return "从制品库取文件 " + fe.Path + " 失败:" + err.Error(), false
 		}
+		cmdLogFrom(ctx)(cmdStreamStdout, "", fmt.Sprintf("→ 上传 %s 到 %s:%s …", fe.Path, srv.Name, dest))
 		upCtx, upCancel := uploadCtx(ctx)
 		uerr := s.targets.Upload(upCtx, srv.ID, rc, dest)
 		upCancel()

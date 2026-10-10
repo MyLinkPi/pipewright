@@ -154,7 +154,7 @@ func NewStageExecutorWithRunner(b *Builder, reportSink TestReportSink, resolve R
 			// 派发与执行日志都归到该节点自己的 step(而非阶段首节点):点开单节点过滤日志时,
 			// 能直接看到它被调度到哪台机、传输/容器执行/完成的全过程。
 			jrep := rep.JobReporter(jb.ID)
-			_ = jrep.Log(ctx, streamStdout, fmt.Sprintf("→ 节点「%s」→ 构建机:%s(选择器 %s)", jb.Name, serverName, sel))
+			_ = jrep.Log(run.WithLogMachine(ctx, serverName), streamStdout, fmt.Sprintf("→ 节点「%s」→ 构建机:%s(选择器 %s)", jb.Name, serverName, sel))
 			sub := stage
 			sub.Jobs = []pipeline.Job{jb}
 			if rerr := b.runStageRemote(ctx, r, sub, jrep, serverID, serverName, tgt, "-"+sanitizeRemoteSeg(jobRemoteKey(jb, i))); rerr != nil {
@@ -387,7 +387,7 @@ func (b *Builder) runStageMixedTopo(
 			return acquireFail(ctx, rep, sel, aerr)
 		}
 		defer release()
-		_ = jrep.Log(ctx, streamStdout, fmt.Sprintf("→ 节点「%s」→ 构建机:%s(选择器 %s)", jb.Name, serverName, sel))
+		_ = jrep.Log(run.WithLogMachine(ctx, serverName), streamStdout, fmt.Sprintf("→ 节点「%s」→ 构建机:%s(选择器 %s)", jb.Name, serverName, sel))
 		sub := stage
 		sub.Jobs = []pipeline.Job{jb}
 		return b.runStageRemote(ctx, r, sub, jrep, serverID, serverName, tgt, "-"+sanitizeRemoteSeg(jb.ID))
@@ -544,6 +544,8 @@ func (b *Builder) runLiftedStagePost(ctx context.Context, r *run.Run, stage pipe
 // 制品库来源);env 注入顺序 = 运行参数 → 流水线级变量(settings.Build.Vars,含 secret)→ job
 // 自身 env → PIPEWRIGHT_ENV(同 runScriptJobIsolated;上游 job 输出 env 在远程独立工作区无来源,省)。
 func (b *Builder) runStageRemote(ctx context.Context, r *run.Run, stage pipeline.Stage, rep dagrun.StageReporter, serverID, serverName string, tgt remoteExec, wsSuffix string) error {
+	// 本节点的全部日志行都归属到该构建机(步骤 × 机器分组展示);控制流(克隆/传输/取消)仍用原 ctx。
+	lctx := run.WithLogMachine(ctx, serverName)
 	scriptJobs := make([]pipeline.Job, 0, len(stage.Jobs))
 	for _, jb := range stage.Jobs {
 		if isScriptJob(jb.Type) {
@@ -552,21 +554,21 @@ func (b *Builder) runStageRemote(ctx context.Context, r *run.Run, stage pipeline
 	}
 	if len(scriptJobs) == 0 {
 		for _, jb := range stage.Jobs {
-			_ = rep.Log(ctx, streamStdout, fmt.Sprintf("· %s(%s)— 远程 runner 仅执行 script 类型;本阶段放行", jb.Name, jb.Type))
+			_ = rep.Log(lctx, streamStdout, fmt.Sprintf("· %s(%s)— 远程 runner 仅执行 script 类型;本阶段放行", jb.Name, jb.Type))
 		}
 		return nil
 	}
 
 	proj, settings, perr := b.resolve(ctx, r)
 	if perr != nil {
-		_ = rep.Log(ctx, streamStderr, "无法加载项目构建配置:"+perr.Error())
+		_ = rep.Log(lctx, streamStderr, "无法加载项目构建配置:"+perr.Error())
 		return ErrBuildFailed
 	}
 
 	// 1) 控制机本地克隆(token 只在控制机)。
 	workspace, mkErr := mkTempWorkspace()
 	if mkErr != nil {
-		_ = rep.Log(ctx, streamStderr, "创建临时工作区失败:"+mkErr.Error())
+		_ = rep.Log(lctx, streamStderr, "创建临时工作区失败:"+mkErr.Error())
 		return ErrBuildFailed
 	}
 	defer func() { _ = os.RemoveAll(workspace) }()
@@ -578,7 +580,7 @@ func (b *Builder) runStageRemote(ctx context.Context, r *run.Run, stage pipeline
 		if errors.Is(ctx.Err(), context.Canceled) {
 			return run.ErrCanceled
 		}
-		_ = rep.Log(ctx, streamStderr, "源码克隆失败(鉴权/网络/ref 不存在或被 SSRF 拒绝)")
+		_ = rep.Log(lctx, streamStderr, "源码克隆失败(鉴权/网络/ref 不存在或被 SSRF 拒绝)")
 		return ErrBuildFailed
 	}
 	if resolved != nil && resolved.CommitShort != "" && b.recordCommit != nil {
@@ -591,30 +593,30 @@ func (b *Builder) runStageRemote(ctx context.Context, r *run.Run, stage pipeline
 	// 2) 打包工作区 → 经 SSH 传到远程并解包。
 	remoteWS := "/tmp/pipewright-remote/" + sanitizeRemoteSeg(r.ID) + "-" + sanitizeRemoteSeg(stage.ID) + wsSuffix
 	remoteTar := remoteWS + ".tar.gz"
-	_ = rep.Log(ctx, streamStdout, "→ 远程 runner:打包工作区并经 SSH 传输…")
+	_ = rep.Log(lctx, streamStdout, "→ 远程 runner:打包工作区并经 SSH 传输…")
 	if err := uploadWorkspace(ctx, tgt, serverID, workspace, remoteTar); err != nil {
-		_ = rep.Log(ctx, streamStderr, "传输工作区到远程失败:"+err.Error())
+		_ = rep.Log(lctx, streamStderr, "传输工作区到远程失败:"+err.Error())
 		return ErrBuildFailed
 	}
 	// 远程解包 + 收尾清理(尽力)。
 	if out, eerr := tgt.Exec(ctx, serverID, []string{"sh", "-c", `mkdir -p "$0" && tar -xzf "$1" -C "$0" && rm -f "$1"`, remoteWS, remoteTar}); eerr != nil || (out != nil && out.ExitCode != 0) {
-		_ = rep.Log(ctx, streamStderr, "远程解包工作区失败")
+		_ = rep.Log(lctx, streamStderr, "远程解包工作区失败")
 		return ErrBuildFailed
 	}
 	defer func() { _, _ = tgt.Exec(context.WithoutCancel(ctx), serverID, []string{"rm", "-rf", remoteWS}) }()
 
 	// 3) 在远程机用容器跑 script job(远程 driver:按机探测 CLI —— nerdctl/docker/podman)。
 	bin := DetectRemoteCLI(ctx, tgt, serverID)
-	_ = rep.Log(ctx, streamStdout, "远程容器 CLI:"+bin)
+	_ = rep.Log(lctx, streamStdout, "远程容器 CLI:"+bin)
 	driver := NewRemoteDriver(tgt, serverID, bin)
-	onLine := func(stream, line string) { _ = rep.Log(ctx, stream, line) }
+	onLine := func(stream, line string) { _ = rep.Log(lctx, stream, line) }
 	for _, jb := range scriptJobs {
 		if canceled(ctx) {
 			return run.ErrCanceled
 		}
 		step, verr := scriptStepFromJob(jb)
 		if verr != nil {
-			_ = rep.Log(ctx, streamStderr, fmt.Sprintf("script job「%s」配置无效:%v", jb.Name, verr))
+			_ = rep.Log(lctx, streamStderr, fmt.Sprintf("script job「%s」配置无效:%v", jb.Name, verr))
 			return ErrBuildFailed
 		}
 		// 注入顺序与本地 runScriptJobIsolated 完全对齐:运行参数 → 流水线级变量(「变量与缓存」,
@@ -631,7 +633,7 @@ func (b *Builder) runStageRemote(ctx context.Context, r *run.Run, stage pipeline
 		}
 	}
 
-	_ = rep.Log(ctx, streamStdout, fmt.Sprintf("✓ 远程 runner(%s)执行完成;测试报告/质量门禁在远程模式暂不回采(后续增量)", serverName))
+	_ = rep.Log(lctx, streamStdout, fmt.Sprintf("✓ 远程 runner(%s)执行完成;测试报告/质量门禁在远程模式暂不回采(后续增量)", serverName))
 	return nil
 }
 

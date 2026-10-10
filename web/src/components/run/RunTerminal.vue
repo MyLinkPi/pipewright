@@ -13,6 +13,9 @@
       不触发布局抖动。
     · stdout 默认色 / stderr 红色着色;行号(line-num token);命中 [MASKED]
       子串高亮标识(脱敏由后端完成,前端仅渲染标记)。
+    · 步骤 × 机器分组:「全部日志」视图在步骤切换处插入标题分隔行(steps prop 提供
+      名称/阶段/状态);行带 machine 归属(来源构建机/部署目标机)时行首渲染机器徽标,
+      同一视图内出现 ≥2 台机器时头部出现机器切换标签(全部/控制机/各机器)。
 
   脱敏铁律:text 已由后端脱敏,前端绝不二次处理 secret,仅按 [MASKED] 标记渲染。
   动效:仅 opacity(新行淡入);prefers-reduced-motion 降级。
@@ -24,6 +27,7 @@ import {
   getRunLogs,
   subscribeRunEvents,
   type RunLogLine,
+  type RunStep,
 } from '../../api/runs'
 
 const { t } = useI18n()
@@ -34,6 +38,8 @@ const props = defineProps<{
   live: boolean
   /** 仅显示该步骤序号(stepOrdinal)的日志;null/undefined = 全部步骤。点步骤详情切换。 */
   filterOrdinal?: number | null
+  /** 步骤元数据(ordinal → 名称/阶段/状态),供「全部日志」视图渲染步骤分段标题。 */
+  steps?: RunStep[]
 }>()
 
 // ─── log buffer: seq-keyed, ascending ─────────────────────────────────────────
@@ -174,7 +180,87 @@ const visibleLines = computed(() =>
     ? lines.value
     : lines.value.filter((l) => l.stepOrdinal === props.filterOrdinal),
 )
-const hasLines = computed(() => visibleLines.value.length > 0)
+
+// ─── 机器维度:同一视图内出现多台机器时,给机器切换标签(全部/控制机/各机器)─────────
+// machine 为空 = 控制机本机执行/运行级;非空 = 来源构建机/部署目标机的显示名快照。
+
+/** 当前过滤范围内出现过的机器(按首次出现序;"":控制机/运行级桶)。 */
+const machineBuckets = computed<string[]>(() => {
+  const seen: string[] = []
+  for (const l of visibleLines.value) {
+    const m = l.machine ?? ''
+    if (!seen.includes(m)) seen.push(m)
+  }
+  return seen
+})
+
+const showMachineTabs = computed(() => machineBuckets.value.length > 1)
+
+/** 机器标签选中值(null = 全部,按时间序)。 */
+const selectedMachine = ref<string | null>(null)
+
+// 切换运行/步骤过滤时回到「全部」:机器桶随范围变化,保留旧选择会指向不存在的桶。
+watch(
+  () => [props.runId, props.filterOrdinal] as const,
+  () => {
+    selectedMachine.value = null
+  },
+)
+
+const filteredLines = computed(() =>
+  selectedMachine.value == null
+    ? visibleLines.value
+    : visibleLines.value.filter((l) => (l.machine ?? '') === selectedMachine.value),
+)
+
+function machineLabel(m: string): string {
+  return m === '' ? t('run.machineCtrl') : m
+}
+
+// ─── 渲染模型:行 + (全部视图)步骤分段标题 ────────────────────────────────────
+// 「全部日志」视图在 stepOrdinal 变化处插入步骤标题分隔行(阶段 · 步骤名 + 状态点),
+// 日志自动归段;单步过滤视图不重复插标题(侧边栏已表明当前步骤)。运行级行(-1)归入
+// 开头不设标题。
+
+const stepByOrdinal = computed(() => {
+  const m = new Map<number, RunStep>()
+  for (const [i, s] of (props.steps ?? []).entries()) m.set(s.ordinal ?? i, s)
+  return m
+})
+
+interface SectionRow {
+  kind: 'section'
+  key: string
+  step: RunStep
+}
+
+interface LineRow {
+  kind: 'line'
+  key: string
+  line: RunLogLine
+}
+
+type RenderRow = SectionRow | LineRow
+
+const renderRows = computed<RenderRow[]>(() => {
+  const rows: RenderRow[] = []
+  let lastOrd: number | null = null
+  for (const l of filteredLines.value) {
+    if (props.filterOrdinal == null && l.stepOrdinal !== lastOrd) {
+      lastOrd = l.stepOrdinal
+      const st = stepByOrdinal.value.get(l.stepOrdinal)
+      if (st) rows.push({ kind: 'section', key: `s-${l.stepOrdinal}`, step: st })
+    }
+    rows.push({ kind: 'line', key: `l-${l.seq}`, line: l })
+  }
+  return rows
+})
+
+function sectionLabel(step: RunStep): string {
+  return step.stage ? `${step.stage} · ${step.name}` : step.name
+}
+
+const hasLines = computed(() => filteredLines.value.length > 0)
 const showFollowButton = computed(() => !stickToBottom.value && hasLines.value)
 
 // ─── [MASKED] segmentation ─────────────────────────────────────────────────────
@@ -202,11 +288,6 @@ function segments(text: string): Segment[] {
   if (rest.length > 0) out.push({ text: rest, masked: false })
   return out
 }
-
-// Stable line key — seq is unique per run.
-function lineKey(line: RunLogLine): number {
-  return line.seq
-}
 </script>
 
 <template>
@@ -227,7 +308,29 @@ function lineKey(line: RunLogLine): number {
         <span class="term-live-dot" aria-hidden="true" />
         LIVE
       </span>
-      <span class="term-count mono" v-if="hasLines">{{ t('run.lineCount', { n: visibleLines.length }) }}</span>
+      <span class="term-count mono" v-if="hasLines">{{ t('run.lineCount', { n: filteredLines.length }) }}</span>
+    </div>
+
+    <!-- Machine tabs:同一视图内出现 ≥2 台机器时显示(全部 / 控制机 / 各机器) -->
+    <div v-if="showMachineTabs" class="term-filters" role="group" :aria-label="t('run.machineFilterAria')">
+      <button
+        type="button"
+        class="term-tab mono"
+        :class="{ 'term-tab--active': selectedMachine === null }"
+        @click="selectedMachine = null"
+      >
+        {{ t('run.machineAll') }}
+      </button>
+      <button
+        v-for="m in machineBuckets"
+        :key="m"
+        type="button"
+        class="term-tab mono"
+        :class="{ 'term-tab--active': selectedMachine === m }"
+        @click="selectedMachine = m"
+      >
+        {{ machineLabel(m) }}
+      </button>
     </div>
 
     <!-- Log surface — 封顶 56vh,框内纵向滚动;实时 tail 框内贴底跟随 -->
@@ -259,22 +362,33 @@ function lineKey(line: RunLogLine): number {
         <template v-else>{{ t('run.noLogRecords') }}</template>
       </div>
 
-      <!-- Lines -->
-      <ol v-else class="term-lines" :aria-label="t('run.totalLinesAria', { n: visibleLines.length })">
-        <li
-          v-for="line in visibleLines"
-          :key="lineKey(line)"
-          class="term-line"
-          :class="{ 'term-line--err': line.stream === 'stderr' }"
-        >
-          <span class="term-ln mono" aria-hidden="true">{{ line.seq }}</span>
-          <span class="term-text mono">
-            <template v-for="(seg, i) in segments(line.text)" :key="i">
-              <span v-if="seg.masked" class="term-masked" :title="t('run.maskedTitle')">{{ seg.text }}</span>
-              <template v-else>{{ seg.text }}</template>
-            </template>
-          </span>
-        </li>
+      <!-- Lines(+「全部日志」视图的步骤分段标题) -->
+      <ol v-else class="term-lines" :aria-label="t('run.totalLinesAria', { n: filteredLines.length })">
+        <template v-for="row in renderRows" :key="row.key">
+          <!-- 步骤分段标题:阶段 · 步骤名 + 状态点(仅全部视图、步骤元数据可得时) -->
+          <li v-if="row.kind === 'section'" class="term-section">
+            <span class="term-section-dot" :class="`term-section-dot--${row.step.status}`" aria-hidden="true" />
+            <span class="term-section-name mono">{{ sectionLabel(row.step) }}</span>
+          </li>
+          <li
+            v-else
+            class="term-line"
+            :class="{ 'term-line--err': row.line.stream === 'stderr' }"
+          >
+            <span class="term-ln mono" aria-hidden="true">{{ row.line.seq }}</span>
+            <span
+              v-if="row.line.machine"
+              class="term-machine mono"
+              :title="row.line.machine"
+            >{{ row.line.machine }}</span>
+            <span class="term-text mono">
+              <template v-for="(seg, i) in segments(row.line.text)" :key="i">
+                <span v-if="seg.masked" class="term-masked" :title="t('run.maskedTitle')">{{ seg.text }}</span>
+                <template v-else>{{ seg.text }}</template>
+              </template>
+            </span>
+          </li>
+        </template>
       </ol>
     </div>
 
@@ -372,6 +486,101 @@ function lineKey(line: RunLogLine): number {
   margin-left: auto;
   font-size: 0.68rem;
   color: var(--color-line-num);
+}
+
+/* ─── machine tabs(步骤 × 机器分组)────────────────────────────────────────── */
+.term-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 14px;
+  background: oklch(11% 0.004 270);
+  border-bottom: 1px solid var(--color-border);
+  flex-shrink: 0;
+}
+
+.term-tab {
+  padding: 3px 10px;
+  font-size: 0.68rem;
+  color: var(--color-faint);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--rounded-full);
+  cursor: pointer;
+  transition: color var(--duration-fast), background var(--duration-fast),
+              border-color var(--duration-fast);
+}
+
+.term-tab:hover {
+  color: var(--color-text);
+  background: oklch(100% 0 0 / 0.05);
+}
+
+.term-tab--active {
+  color: var(--color-text);
+  background: oklch(100% 0 0 / 0.09);
+  border-color: var(--color-border-strong);
+}
+
+.term-tab:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 1px;
+}
+
+/* ─── 步骤分段标题(「全部日志」视图)────────────────────────────────────────── */
+.term-section {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 16px 4px;
+  /* 与上一段拉开一点距离;首段上方也有细线,视觉可接受 */
+  border-top: 1px dashed oklch(100% 0 0 / 0.09);
+  min-width: max-content;
+}
+
+.term-section:first-child {
+  border-top: none;
+  padding-top: 6px;
+}
+
+.term-section-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: var(--rounded-full);
+  flex-shrink: 0;
+}
+
+.term-section-dot--success { background: oklch(72% 0.16 150); }
+.term-section-dot--failed   { background: var(--color-red); }
+.term-section-dot--running  { background: var(--color-amber); }
+.term-section-dot--partial_failed { background: var(--color-amber); }
+.term-section-dot--pending,
+.term-section-dot--skipped  { background: var(--color-border-strong); }
+
+.term-section-name {
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: oklch(78% 0.01 270);
+}
+
+/* ─── 行首机器徽标 ────────────────────────────────────────────────────────── */
+.term-machine {
+  flex-shrink: 0;
+  max-width: 24ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 0 6px;
+  border-radius: var(--rounded-sm);
+  background: oklch(100% 0 0 / 0.07);
+  border: 1px solid oklch(100% 0 0 / 0.09);
+  font-size: 0.64rem;
+  line-height: 1.6;
+  color: oklch(80% 0.02 230);
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 /* ─── scroll surface ──────────────────────────────────────────────────────── */

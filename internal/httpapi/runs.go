@@ -412,12 +412,14 @@ func stepPayload(runID string, st run.Step) string {
 // ---- 冻结 log 契约(Story 3.6;camelCase;text 已脱敏) ----------------------
 
 // logLineDTO 是单行日志(SSE log 事件负载 + logs 拉取 DTO 共用形状)。
+// machine 是来源机器显示名快照(步骤 × 机器分组展示;"" = 控制机/运行级;老运行无此数据)。
 type logLineDTO struct {
 	Seq         int    `json:"seq"`
 	Ts          string `json:"ts"`
 	Stream      string `json:"stream"`
 	StepOrdinal int    `json:"stepOrdinal"`
 	Text        string `json:"text"`
+	Machine     string `json:"machine,omitempty"`
 }
 
 // runLogsDTO 是 GET /api/runs/{id}/logs 响应体(冻结)。
@@ -434,6 +436,7 @@ func toLogLineDTO(l run.LogLine) logLineDTO {
 		Stream:      l.Stream,
 		StepOrdinal: l.StepOrdinal,
 		Text:        l.Text,
+		Machine:     l.Machine,
 	}
 }
 

@@ -268,7 +268,7 @@ func (s *service) limitServersByLoad(ctx context.Context, servers []*target.Serv
 	})
 
 	// 3) 一行人读日志:选中/未选中都列出读数,让「为什么是这 N 台」在步骤日志里可核对。
-	cmdLogFrom(ctx)(cmdStreamStdout, fmt.Sprintf(
+	cmdLogFrom(ctx)(cmdStreamStdout, "", fmt.Sprintf(
 		"· 目标数量上限 %d:选择器命中 %d 台,按主机负载(CPU 负载率/内存使用率取高者)选取最空的 %d 台 → %s;本次不部署:%s",
 		limit, len(servers), limit, renderLoad(servers, ok, full, order[:limit]), renderLoad(servers, ok, full, order[limit:])))
 

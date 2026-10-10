@@ -19,7 +19,7 @@ func TestAppendLogSeqMonotonic(t *testing.T) {
 	}
 
 	for i := 1; i <= 5; i++ {
-		seq, err := svc.AppendLog(context.Background(), r.ID, streamStdout, 0, "line")
+		seq, err := svc.AppendLog(context.Background(), r.ID, streamStdout, 0, "line", "")
 		if err != nil {
 			t.Fatalf("AppendLog: %v", err)
 		}
@@ -37,7 +37,7 @@ func TestGetLogsSincePaging(t *testing.T) {
 	r, _ := svc.Create(context.Background(), projID, Trigger{Type: TriggerManual})
 
 	for i := 0; i < 4; i++ {
-		if _, err := svc.AppendLog(context.Background(), r.ID, streamStdout, i, "L"); err != nil {
+		if _, err := svc.AppendLog(context.Background(), r.ID, streamStdout, i, "L", ""); err != nil {
 			t.Fatalf("AppendLog: %v", err)
 		}
 	}
@@ -122,5 +122,52 @@ func TestStubRunnerEmitsMaskedLogs(t *testing.T) {
 	}
 	if leak != 0 {
 		t.Fatalf("run_logs 表残留 %d 行明文假 secret", leak)
+	}
+}
+
+// TestLogMachineRoundTrip 验证日志行的机器归属(ctx 通道 → 落库 → 读回):
+// WithLogMachine 挂载的行 machine 落 run_logs.machine,GetLogs 原样读回;未挂载行为空串。
+func TestLogMachineRoundTrip(t *testing.T) {
+	db := testDB(t)
+	svc := New(db)
+	projID := seedProject(t, db)
+	r, err := svc.Create(context.Background(), projID, Trigger{Type: TriggerManual})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	if _, err := svc.AppendLog(context.Background(), r.ID, streamStdout, 0, "控制机行", ""); err != nil {
+		t.Fatalf("AppendLog 控制机行: %v", err)
+	}
+	if _, err := svc.AppendLog(context.Background(), r.ID, streamStdout, 0, "构建机行", "build-01(10.0.0.5)"); err != nil {
+		t.Fatalf("AppendLog 构建机行: %v", err)
+	}
+
+	lines, err := svc.GetLogs(context.Background(), r.ID, 0)
+	if err != nil {
+		t.Fatalf("GetLogs: %v", err)
+	}
+	if len(lines) != 2 {
+		t.Fatalf("应返回 2 行, got %d", len(lines))
+	}
+	if lines[0].Machine != "" {
+		t.Fatalf("未标注行 machine 应为空串, got %q", lines[0].Machine)
+	}
+	if lines[1].Machine != "build-01(10.0.0.5)" {
+		t.Fatalf("标注行 machine 应原样读回, got %q", lines[1].Machine)
+	}
+}
+
+// TestLogMachineFromCtx 验证 ctx 通道语义:WithLogMachine 挂载/LogMachineFrom 读出,空串不挂载。
+func TestLogMachineFromCtx(t *testing.T) {
+	ctx := context.Background()
+	if got := LogMachineFrom(ctx); got != "" {
+		t.Fatalf("裸 ctx 应为空串, got %q", got)
+	}
+	if got := LogMachineFrom(WithLogMachine(ctx, "")); got != "" {
+		t.Fatalf("空机器名不应挂载, got %q", got)
+	}
+	if got := LogMachineFrom(WithLogMachine(ctx, "web-01")); got != "web-01" {
+		t.Fatalf("应读回挂载值, got %q", got)
 	}
 }

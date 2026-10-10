@@ -160,6 +160,9 @@ export default {
   maskedTitle: 'Sensitive information masked',
   jumpToLatest: 'Jump to latest log',
   jumpToBottom: 'Jump to bottom',
+  machineAll: 'All',
+  machineCtrl: 'Control machine',
+  machineFilterAria: 'Filter logs by machine',
 
   // ─── SuccessFailDiff ────────────────────────────────────────────
   diffRegion: 'Code changes in this commit',

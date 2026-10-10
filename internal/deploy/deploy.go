@@ -347,6 +347,7 @@ func (s *service) DeployForStage(ctx context.Context, runID string, selector str
 	if len(servers) == 0 {
 		return []TargetResult{}, nil
 	}
+	hitCount := len(servers)
 	// 目标数量上限(cfg["maxTargets"],仅容器部署节点透传):命中数超上限时按主机负载只留最空的
 	// N 台(见 host_load.go)。裁切发生在**滚动之前**——上限后的集合即本次部署拓扑:注册表清理
 	// 基准、恢复过滤、deployRolling、deploy_targets 持久化全部只看这 N 台,未入选机器完全不动。
@@ -367,12 +368,15 @@ func (s *service) DeployForStage(ctx context.Context, runID string, selector str
 	if err != nil {
 		return nil, err
 	}
+	skippedNames := []string(nil)
 	if len(skipSucceeded) > 0 {
 		filtered := make([]*target.Server, 0, len(servers))
 		for _, srv := range servers {
-			if !skipSucceeded[srv.ID] {
-				filtered = append(filtered, srv)
+			if skipSucceeded[srv.ID] {
+				skippedNames = append(skippedNames, serverDisplayName(srv))
+				continue
 			}
+			filtered = append(filtered, srv)
 		}
 		if len(filtered) == 0 {
 			// 全部目标机都已成功:不落库(保留继承行原状),返回非空跳过结果——节点按成功放行,
@@ -383,6 +387,19 @@ func (s *service) DeployForStage(ctx context.Context, runID string, selector str
 			servers = filtered
 		}
 		persist = stagePersistFunc(s.runs.UpsertDeployTargets)
+	}
+	// 目标机可见性(与构建路径「→ 构建机:<名字>」对齐):选择器命中经 maxTargets 负载裁切、
+	// 恢复运行增量过滤后,把**本次实际部署拓扑**在动手前明示到步骤日志——否则 docker 拉包/发布
+	// 的大段输出里看不到要部署到哪台机,只能翻到结尾逐机摘要。经 cmdLog 回流(无挂载方时零副作用)。
+	if names := serverDisplayNames(servers); len(names) > 0 {
+		note := ""
+		if len(servers) < hitCount {
+			note = fmt.Sprintf("(按负载从命中 %d 台裁切)", hitCount)
+		}
+		cmdLogFrom(ctx)(cmdStreamStdout, "", fmt.Sprintf("→ 目标机%s(%d 台):%s", note, len(servers), strings.Join(names, ", ")))
+	}
+	if len(skippedNames) > 0 {
+		cmdLogFrom(ctx)(cmdStreamStdout, "", fmt.Sprintf("· 已成功跳过重部署(%d 台):%s", len(skippedNames), strings.Join(skippedNames, ", ")))
 	}
 	// 「命令型」部署(deployMode=command;旧键 artifactType=command 兼容):不取构建产物,
 	// 直接在目标机执行 cfg["restartCommand"]。与产物发布完全隔离。allServerIDs 一并传入,
@@ -426,7 +443,7 @@ func (s *service) DeployForStage(ctx context.Context, runID string, selector str
 	// 部分失败/重试时不清(拓扑未定型;重试成功后下一轮自然收敛)。
 	if regService != "" && s.instanceGateway != nil && allTargetSuccess(results) && len(allServerIDs) > 0 {
 		if perr := s.instanceGateway.PruneInstances(ctx, regService, allServerIDs); perr != nil {
-			cmdLogFrom(ctx)(cmdStreamStderr, "  ⚠ 同步清理注册实例失败:"+humanExecError(perr))
+			cmdLogFrom(ctx)(cmdStreamStderr, "", "  ⚠ 同步清理注册实例失败:"+humanExecError(perr))
 		}
 	}
 
@@ -494,9 +511,11 @@ func (s *service) runCommandOnly(ctx context.Context, runID string, servers []*t
 	}
 	results := make([]TargetResult, 0, len(servers))
 	for _, srv := range servers {
-		results = append(results, s.deployWithGatewayDetach(ctx, srv, cfg, func() TargetResult {
+		// 单机作用域:本机命令输出归属到该机(步骤 × 机器分组)。
+		mctx := scopeCmdLog(ctx, srv.Name)
+		results = append(results, s.deployWithGatewayDetach(mctx, srv, cfg, func() TargetResult {
 			started := time.Now().UTC()
-			out, err := s.exec(ctx, srv.ID, []string{"sh", "-c", command})
+			out, err := s.exec(mctx, srv.ID, []string{"sh", "-c", command})
 			fin := time.Now().UTC()
 			tr := TargetResult{ServerID: srv.ID, ServerName: srv.Name, StartedAt: started, FinishedAt: &fin}
 			switch {
@@ -517,7 +536,7 @@ func (s *service) runCommandOnly(ctx context.Context, runID string, servers []*t
 	// 部分失败/重试时不清(拓扑未定型;重试成功后下一轮自然收敛)。
 	if regService := regServiceRef(cfg); regService != "" && s.instanceGateway != nil && allTargetSuccess(results) && len(allServerIDs) > 0 {
 		if perr := s.instanceGateway.PruneInstances(ctx, regService, allServerIDs); perr != nil {
-			cmdLogFrom(ctx)(cmdStreamStderr, "  ⚠ 同步清理注册实例失败:"+humanExecError(perr))
+			cmdLogFrom(ctx)(cmdStreamStderr, "", "  ⚠ 同步清理注册实例失败:"+humanExecError(perr))
 		}
 	}
 	dts := make([]run.DeployTarget, 0, len(results))
@@ -844,7 +863,8 @@ func (s *service) deployFanout(ctx context.Context, servers []*target.Server, a 
 					}
 				}
 			}()
-			results[idx] = s.deployOne(ctx, srv, a, cfg, hsp)
+			// 单机作用域:本 goroutine 内所有命令/上传/告警输出都归属到该机(步骤 × 机器分组)。
+			results[idx] = s.deployOne(scopeCmdLog(ctx, srv.Name), srv, a, cfg, hsp)
 		}(i, servers[i])
 	}
 	wg.Wait()
@@ -904,7 +924,7 @@ func (s *service) deployWithGatewayDetach(ctx context.Context, srv *target.Serve
 	var ensured *InstanceRef
 	if regPort, _ := parsePortNumber(strings.TrimSpace(cfg["regPort"])); regPort > 0 {
 		if ref, eerr := s.instanceGateway.EnsureInstanceDetached(ctx, key, srv.ID, "", regPort, regPort); eerr != nil {
-			cmdLogFrom(ctx)(cmdStreamStderr, "  ⚠ 注册实例失败("+srv.Name+"):"+humanExecError(eerr))
+			cmdLogFrom(ctx)(cmdStreamStderr, "", "  ⚠ 注册实例失败("+srv.Name+"):"+humanExecError(eerr))
 		} else {
 			ensured = &ref
 		}

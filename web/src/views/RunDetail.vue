@@ -787,7 +787,7 @@ function goBack(): void {
             <div class="running-body">
               <RunStepList :steps="run.steps" :selected="selectedStepOrdinal" @select="selectedStepOrdinal = $event" />
               <div class="slot-log-live" role="region" :aria-label="t('runDetail.liveLogAria')">
-                <RunTerminal :run-id="run.id" :live="true" :filter-ordinal="selectedStepOrdinal" />
+                <RunTerminal :run-id="run.id" :live="true" :filter-ordinal="selectedStepOrdinal" :steps="run.steps" />
               </div>
             </div>
           </div>
@@ -859,7 +859,7 @@ function goBack(): void {
             <div class="running-body">
               <RunStepList :steps="run.steps" :selected="selectedStepOrdinal" @select="selectedStepOrdinal = $event" />
               <div class="log-history" role="region" :aria-label="t('runDetail.historyLogAria')">
-                <RunTerminal :run-id="run.id" :live="false" :filter-ordinal="selectedStepOrdinal" />
+                <RunTerminal :run-id="run.id" :live="false" :filter-ordinal="selectedStepOrdinal" :steps="run.steps" />
               </div>
             </div>
 
@@ -1133,7 +1133,7 @@ function goBack(): void {
             <!-- 失败日志证据(只读历史回放,Story 3-6)。在 AI 诊断面板之上;
                  不属于 7-2 的 DiagnosisPanel slot,二者共存。 -->
             <div class="log-history" role="region" :aria-label="t('runDetail.failedLogAria')">
-              <RunTerminal :run-id="run.id" :live="false" />
+              <RunTerminal :run-id="run.id" :live="false" :steps="run.steps" />
             </div>
 
             <!--
@@ -1185,7 +1185,7 @@ function goBack(): void {
 
             <!-- 历史日志回放(只读,Story 3-6) -->
             <div class="log-history" role="region" :aria-label="t('runDetail.historyLogAria')">
-              <RunTerminal :run-id="run.id" :live="false" />
+              <RunTerminal :run-id="run.id" :live="false" :steps="run.steps" />
             </div>
 
           </div>
@@ -1219,7 +1219,7 @@ function goBack(): void {
 
             <!-- 历史日志回放(只读,Story 3-6) -->
             <div class="log-history" role="region" :aria-label="t('runDetail.historyLogAria')">
-              <RunTerminal :run-id="run.id" :live="false" />
+              <RunTerminal :run-id="run.id" :live="false" :steps="run.steps" />
             </div>
 
             <!--
@@ -1306,7 +1306,7 @@ function goBack(): void {
 
             <!-- 历史日志回放(只读,Story 3-6) -->
             <div class="log-history" role="region" :aria-label="t('runDetail.historyLogAria')">
-              <RunTerminal :run-id="run.id" :live="false" />
+              <RunTerminal :run-id="run.id" :live="false" :steps="run.steps" />
             </div>
 
           </div>

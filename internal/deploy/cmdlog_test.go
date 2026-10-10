@@ -43,7 +43,7 @@ func TestExecStreamsToCmdLog(t *testing.T) {
 
 	var mu sync.Mutex
 	var lines []string
-	ctx := WithCmdLog(context.Background(), func(stream, text string) {
+	ctx := WithCmdLog(context.Background(), func(stream, machine, text string) {
 		mu.Lock()
 		defer mu.Unlock()
 		lines = append(lines, stream+"|"+text)

@@ -160,6 +160,9 @@ export default {
   maskedTitle: '敏感信息已脱敏',
   jumpToLatest: '跳到最新日志',
   jumpToBottom: '跳到底部',
+  machineAll: '全部',
+  machineCtrl: '控制机',
+  machineFilterAria: '按机器过滤日志',
 
   // ─── SuccessFailDiff ────────────────────────────────────────────
   diffRegion: '本次提交代码变更',
