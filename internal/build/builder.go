@@ -432,6 +432,8 @@ func (b *Builder) build(ctx context.Context, sink run.StepSink, ordinal int, pro
 		if code != 0 {
 			return "", nil, ErrBuildFailed
 		}
+		// 元数据采集也回显执行的命令(「所有执行的命令可见」口径;接口无 onLine,故在调用点输出)。
+		onLine(streamStdout, "$ "+b.driver.Binary()+" inspect --format {{json .}} "+localTag)
 		digest, size, _ := b.driver.InspectImage(ctx, localTag)
 		art := &run.Artifact{
 			Type:      run.ArtifactImage,
@@ -502,6 +504,8 @@ func (b *Builder) push(ctx context.Context, sink run.StepSink, ordinal int, loca
 	} else if code != 0 {
 		return "", "", ErrBuildFailed
 	}
+	// 推送后 digest 采集同样回显命令(与 build 路径同口径)。
+	onLine(streamStdout, "$ "+b.driver.Binary()+" inspect --format {{json .}} "+remoteTag)
 	digest, _, _ := b.driver.InspectImage(ctx, remoteTag)
 	return remoteTag, digest, nil
 }

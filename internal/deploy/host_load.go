@@ -5,7 +5,8 @@ package deploy
 // 其余机器本次不部署(不预检、不落 deploy_targets、不进注册表保留集)。
 //
 // 采集形态与 Story 6.1 服务器指标同一纪律:一条**纯静态** sh -c 脚本(`##PW:` 分段标记)经
-// target.Exec 单次 SSH 采 loadavg / cores / free,绝不接受任何用户输入拼接(AC-SEC-02)。
+// s.exec 单次 SSH 采 loadavg / cores / free(命令与输出回流运行日志,「用什么探测的」可见),
+// 绝不接受任何用户输入拼接(AC-SEC-02)。
 //
 // 语义边界:
 //   - 只对**标签选择器圈选**结果生效(显式 serverIDs 的回滚回放 / 手工部署 API 不经过此处);
@@ -196,12 +197,13 @@ func parseHostLoad(out string) hostLoad {
 	return h
 }
 
-// probeHostLoad 经单次 SSH 采集一台机器的实时负载。Exec 失败 / 命令非零退出 / 两维皆
-// 不可解析 → ok=false(调用方按「探测失败」排到最后,绝不把未知负载当作 0 抢先用它)。
+// probeHostLoad 经单次 SSH 采集一台机器的实时负载。命令/输出经 s.exec 回流运行日志(命令级可见)。
+// Exec 失败 / 命令非零退出 / 两维皆不可解析 → ok=false(调用方按「探测失败」排到最后,
+// 绝不把未知负载当作 0 抢先用它)。
 func (s *service) probeHostLoad(ctx context.Context, serverID string) (hostLoad, bool) {
 	cctx, cancel := context.WithTimeout(ctx, hostLoadProbeTimeout)
 	defer cancel()
-	res, err := s.targets.Exec(cctx, serverID, hostLoadArgs())
+	res, err := s.exec(cctx, serverID, hostLoadArgs())
 	if err != nil || res == nil || res.ExitCode != 0 {
 		return hostLoad{}, false
 	}
@@ -240,7 +242,8 @@ func (s *service) limitServersByLoad(ctx context.Context, servers []*target.Serv
 	ok := make([]bool, len(servers))
 	full := make([]float64, len(servers))
 	s.forEachServer(servers, func(idx int, srv *target.Server) {
-		h, hk := s.probeHostLoad(ctx, srv.ID)
+		// 单机作用域:负载采集命令/输出归属到该机(步骤 × 机器分组,与部署命令同口径)。
+		h, hk := s.probeHostLoad(scopeCmdLog(ctx, srv.Name), srv.ID)
 		load[idx], ok[idx] = h, hk
 	}, func(idx int, _ *target.Server) {
 		ok[idx] = false // panic 兜底:按「探测失败」处理,排最后

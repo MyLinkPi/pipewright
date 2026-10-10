@@ -858,3 +858,26 @@ func TestMixedTopoRemoteFailureSkipsDependents(t *testing.T) {
 		t.Fatalf("post 应按合并失败条件执行(on_failure 跑/on_success 不跑);images=%v", drv.images)
 	}
 }
+
+// TestStageRemoteEchoesUnpackAndCleanupCommands 远程派发的解包 / 收尾清理命令(不经 driver 的
+// 远程 Exec)也必须出现在步骤日志 —— 「流水线日志可见所有执行的命令」。
+func TestStageRemoteEchoesUnpackAndCleanupCommands(t *testing.T) {
+	local := &recordingDriver{}
+	b := newRemoteTestBuilder(local)
+	tgt := &fakeRemoteTarget{}
+	fr := &fakeRunnerResolver{selector: "server:srv-1", pick: "srv-1"}
+	exec := NewStageExecutorWithRunner(b, nil, fr, tgt)
+
+	rep := &fakeReporter{}
+	r := &run.Run{ID: "run-1", ProjectID: "p1", Trigger: run.Trigger{Branch: "main"}}
+	if err := exec(context.Background(), r, scriptStage(scriptJob("build", "node:20", "npm ci")), rep); err != nil {
+		t.Fatalf("remote exec: %v", err)
+	}
+	joined := strings.Join(rep.logs, "\n")
+	if !strings.Contains(joined, "$ sh -c mkdir -p") || !strings.Contains(joined, "tar -xzf") {
+		t.Fatalf("应回显远程解包命令, got:\n%s", joined)
+	}
+	if !strings.Contains(joined, "$ rm -rf /tmp/pipewright-remote/") {
+		t.Fatalf("应回显远程工作区清理命令, got:\n%s", joined)
+	}
+}

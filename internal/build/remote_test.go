@@ -3,6 +3,8 @@ package build
 import (
 	"context"
 	"errors"
+	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -205,11 +207,11 @@ func TestDetectRemoteCLITTLExpiry(t *testing.T) {
 		atomic.AddInt32(&calls, 1)
 		return &target.ExecResult{Stdout: "docker\n", ExitCode: 0}, nil
 	})
-	if bin := detectRemoteCLI(context.Background(), ex, "srv-1", clock); bin != "docker" {
+	if bin := detectRemoteCLI(context.Background(), ex, "srv-1", clock, nil); bin != "docker" {
 		t.Fatalf("bin = %q, want docker", bin)
 	}
 	now = now.Add(remoteCLITTL + time.Minute) // 越过 TTL
-	if bin := detectRemoteCLI(context.Background(), ex, "srv-1", clock); bin != "docker" {
+	if bin := detectRemoteCLI(context.Background(), ex, "srv-1", clock, nil); bin != "docker" {
 		t.Fatalf("过期重探仍应得 docker, got %q", bin)
 	}
 	if n := atomic.LoadInt32(&calls); n != 2 {
@@ -242,5 +244,34 @@ func TestDetectRemoteCLIFallbackNotCached(t *testing.T) {
 	}
 	if n := atomic.LoadInt32(&calls); n != 3 {
 		t.Fatalf("失败结果不得缓存,每次都应真探测,实际调用 %d 次", n)
+	}
+}
+
+// TestDetectRemoteCLIWithLogEchoesProbe 探测命令仅在**真正执行**时经 log 回显;
+// 命中 TTL 缓存直接返回 → 不输出(避免回显未执行的命令,误导排查)。
+func TestDetectRemoteCLIWithLogEchoesProbe(t *testing.T) {
+	resetRemoteCLICache(t)
+	ex := remoteExecFunc(func(_ context.Context, _ string, _ []string) (*target.ExecResult, error) {
+		return &target.ExecResult{Stdout: "docker\n", ExitCode: 0}, nil
+	})
+	var mu sync.Mutex
+	var lines []string
+	log := func(line string) {
+		mu.Lock()
+		defer mu.Unlock()
+		lines = append(lines, line)
+	}
+	if bin := DetectRemoteCLIWithLog(context.Background(), ex, "srv-echo", log); bin != "docker" {
+		t.Fatalf("bin = %q, want docker", bin)
+	}
+	if len(lines) != 1 || !strings.Contains(lines[0], "$ sh -c ") {
+		t.Fatalf("首次探测应回显探测命令, got %v", lines)
+	}
+	// TTL 缓存命中 → 不再执行探测,也不回显。
+	if bin := DetectRemoteCLIWithLog(context.Background(), ex, "srv-echo", log); bin != "docker" {
+		t.Fatalf("缓存命中应得 docker, got %q", bin)
+	}
+	if len(lines) != 1 {
+		t.Fatalf("缓存命中不应重复回显, got %v", lines)
 	}
 }

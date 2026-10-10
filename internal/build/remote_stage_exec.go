@@ -598,15 +598,29 @@ func (b *Builder) runStageRemote(ctx context.Context, r *run.Run, stage pipeline
 		_ = rep.Log(lctx, streamStderr, "传输工作区到远程失败:"+err.Error())
 		return ErrBuildFailed
 	}
-	// 远程解包 + 收尾清理(尽力)。
-	if out, eerr := tgt.Exec(ctx, serverID, []string{"sh", "-c", `mkdir -p "$0" && tar -xzf "$1" -C "$0" && rm -f "$1"`, remoteWS, remoteTar}); eerr != nil || (out != nil && out.ExitCode != 0) {
-		_ = rep.Log(lctx, streamStderr, "远程解包工作区失败")
+	// 远程解包 + 收尾清理(尽力)。命令回显经 rep.Log(远程命令不经过 build 的本地命令日志通道,
+	// 与本地 driver 的 emitCmd 同口径:执行前先让日志看到「执行了什么」)。
+	unpackCmd := []string{"sh", "-c", `mkdir -p "$0" && tar -xzf "$1" -C "$0" && rm -f "$1"`, remoteWS, remoteTar}
+	_ = rep.Log(lctx, streamStdout, "$ "+strings.Join(unpackCmd, " "))
+	if out, eerr := tgt.Exec(ctx, serverID, unpackCmd); eerr != nil || (out != nil && out.ExitCode != 0) {
+		detail := ""
+		if out != nil {
+			if s := truncateLine(strings.TrimSpace(out.Stderr), remoteErrDetailLimit); s != "" {
+				detail = ":" + s
+			}
+		}
+		_ = rep.Log(lctx, streamStderr, "远程解包工作区失败"+detail)
 		return ErrBuildFailed
 	}
-	defer func() { _, _ = tgt.Exec(context.WithoutCancel(ctx), serverID, []string{"rm", "-rf", remoteWS}) }()
+	defer func() {
+		rmCmd := []string{"rm", "-rf", remoteWS}
+		_ = rep.Log(lctx, streamStdout, "$ "+strings.Join(rmCmd, " "))
+		_, _ = tgt.Exec(context.WithoutCancel(ctx), serverID, rmCmd)
+	}()
 
 	// 3) 在远程机用容器跑 script job(远程 driver:按机探测 CLI —— nerdctl/docker/podman)。
-	bin := DetectRemoteCLI(ctx, tgt, serverID)
+	// 探测命令回显:仅真正执行探测(未命中 TTL 缓存)时输出,避免回显未执行的命令。
+	bin := DetectRemoteCLIWithLog(ctx, tgt, serverID, func(line string) { _ = rep.Log(lctx, streamStdout, line) })
 	_ = rep.Log(lctx, streamStdout, "远程容器 CLI:"+bin)
 	driver := NewRemoteDriver(tgt, serverID, bin)
 	onLine := func(stream, line string) { _ = rep.Log(lctx, stream, line) }
@@ -690,4 +704,18 @@ func sanitizeRemoteSeg(s string) string {
 		return "x"
 	}
 	return b.String()
+}
+
+// remoteErrDetailLimit 是远程命令失败时回显 stderr 摘要的字节上限(定位失败原因足够,防爆量)。
+const remoteErrDetailLimit = 300
+
+// truncateLine 取文本首行并截断到 max 字节(远程错误摘要用;超出追加省略号)。空 → ""。
+func truncateLine(s string, max int) string {
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		s = s[:i]
+	}
+	if len(s) > max {
+		s = s[:max] + "…"
+	}
+	return s
 }

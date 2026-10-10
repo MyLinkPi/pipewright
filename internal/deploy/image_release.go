@@ -130,7 +130,14 @@ func (s *service) stageImageOne(ctx context.Context, srv *target.Server, a run.A
 
 	// 私有仓库:配了 registryCredentialId → 先在目标机 docker login(明文仅 target 层经 vault
 	// 即取即用,不落日志;失败仅记日志继续,pull 自身可能走匿名缓存)。
+	// 命令先回显(「用什么登录」可见);用户名/口令均由 target 层从凭据解密后经 stdin 注入,不回显。
 	if cred := strings.TrimSpace(cfg["registryCredentialId"]); cred != "" {
+		loginEcho := "$ docker login"
+		if reg := strings.TrimSpace(cfg["registryUrl"]); reg != "" {
+			loginEcho += " " + reg
+		}
+		loginEcho += " --password-stdin  (凭据经 stdin 注入,不回显)"
+		cmdLogFrom(ctx)(cmdStreamStdout, "", loginEcho)
 		if lerr := s.targets.DockerLogin(ctx, srv.ID, cfg["registryUrl"], cred); lerr != nil {
 			cmdLogFrom(ctx)(cmdStreamStderr, "", "  ⚠ 目标机 docker login 失败(继续尝试 pull):"+humanExecError(lerr))
 		}

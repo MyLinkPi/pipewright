@@ -87,6 +87,38 @@ func TestStageDeploysImageArtifact(t *testing.T) {
 	}
 }
 
+// TestStageImageEchoesDockerLogin 配了 registryCredentialId → 目标机 docker login 命令先回显
+// (「用什么登录」可见;用户名/口令由 target 层经 stdin 注入,绝不回显)。
+func TestStageImageEchoesDockerLogin(t *testing.T) {
+	db := testDB(t)
+	rsvc := run.New(db)
+	tgt := &stubTarget{}
+	srv := seedServer(t, tgt, "web-1")
+	runID, _ := seedSuccessRunWithArtifact(t, db, rsvc, run.ArtifactImage, "registry.example.com/shop:1.0")
+
+	var mu sync.Mutex
+	var lines []string
+	ctx := WithCmdLog(context.Background(), func(_, _, text string) {
+		mu.Lock()
+		defer mu.Unlock()
+		lines = append(lines, text)
+	})
+	svc := New(tgt, rsvc)
+	res, err := svc.DeployForStage(ctx, runID, "server:"+srv.ID, map[string]string{
+		"registryCredentialId": "cred-1", "registryUrl": "registry.example.com",
+	}, "")
+	if err != nil {
+		t.Fatalf("DeployForStage: %v", err)
+	}
+	if len(res) != 1 || res[0].Status != run.TargetSuccess {
+		t.Fatalf("want success, got %+v", res)
+	}
+	joined := strings.Join(lines, "\n")
+	if !strings.Contains(joined, "$ docker login registry.example.com --password-stdin") {
+		t.Fatalf("应回显 docker login 命令: %q", joined)
+	}
+}
+
 // TestStagePrefersFileArtifactByDefault 镜像+文件并存,默认(cfg 空)优先文件发布(保持既有行为)。
 func TestStagePrefersFileArtifactByDefault(t *testing.T) {
 	db := testDB(t)

@@ -69,10 +69,14 @@ func (s *service) CheckHealth(ctx context.Context, selector, selectorMode string
 }
 
 // probeLocalHTTP 从平台本机直接做 HTTP 探测(不经 SSH;健康检查节点未圈选目标机时的兜底)。
+// 探测不发 SSH 命令(Go http 客户端直连),但每次尝试仍按「执行的命令」口径回显等效 curl
+// (与目标机路径 runHealthCheck 的命令回显同形,让运行日志说清「用什么检查的」),
+// 失败时同步回显原因。
 func probeLocalHTTP(ctx context.Context, hc *HealthCheck) HealthProbeResult {
 	res := HealthProbeResult{ServerName: "platform"}
 	client := &http.Client{Timeout: hc.timeout()}
 	url := strings.TrimSpace(hc.URL)
+	lg := cmdLogFrom(ctx)
 	var lastErr error
 	attempts := hc.retries()
 	for i := 0; i < attempts; i++ {
@@ -80,14 +84,20 @@ func probeLocalHTTP(ctx context.Context, hc *HealthCheck) HealthProbeResult {
 			res.Message = "健康检查中止:" + err.Error()
 			return res
 		}
+		// 等效命令回显:本机探测的语义即 `curl -fsS --max-time <T> <url>`(curl -f:4xx/5xx 即失败)。
+		if url != "" {
+			lg(cmdStreamStdout, "", fmt.Sprintf("$ curl -fsS --max-time %d %s  (平台本机 HTTP 探测,不经 SSH)", int(hc.timeout().Seconds()), url))
+		}
 		req, rerr := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 		if rerr != nil {
 			res.Message = "健康检查 URL 非法:" + rerr.Error()
+			lg(cmdStreamStderr, "", "  ✗ "+res.Message)
 			return res
 		}
 		resp, err := client.Do(req)
 		if err != nil {
 			lastErr = err
+			lg(cmdStreamStderr, "", "  ✗ "+truncate(err.Error()))
 		} else {
 			_ = resp.Body.Close()
 			// curl -f 语义:2xx 即健康;4xx/5xx 视为失败。
@@ -97,6 +107,7 @@ func probeLocalHTTP(ctx context.Context, hc *HealthCheck) HealthProbeResult {
 				return res
 			}
 			lastErr = fmt.Errorf("HTTP %d", resp.StatusCode)
+			lg(cmdStreamStderr, "", fmt.Sprintf("  ✗ HTTP %d", resp.StatusCode))
 		}
 		// 还有后续尝试才等间隔(与 runHealthCheck 同语义:末次失败立即返回,不空等一个间隔)。
 		if i == attempts-1 {

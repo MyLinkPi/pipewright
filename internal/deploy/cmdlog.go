@@ -52,9 +52,16 @@ func scopeCmdLog(ctx context.Context, machine string) context.Context {
 // 返回值与 targets.Exec 完全一致,不改变任何控制流(无 ctx 日志时 = 纯透传)。
 // 机器归属由上层单机作用域(scopeCmdLog)注入,此处只透传 machine=""(交由作用域填)。
 func (s *service) exec(ctx context.Context, serverID string, cmd []string) (*target.ExecResult, error) {
+	return execObserved(ctx, s.targets.Exec, serverID, cmd)
+}
+
+// execObserved 执行一条 array 命令并把「命令 + 输出」回流到 ctx 的命令日志(若挂了):
+// 命令以 `$ ` 前缀回显、执行错误以 `  ✗ ` 前缀、stdout/stderr 原样回流、非零退出码显式标注。
+// s.exec(部署链路)与 observingTarget.Exec(第三方编排组件)共用同一口径,日志格式全局一致。
+func execObserved(ctx context.Context, run func(context.Context, string, []string) (*target.ExecResult, error), serverID string, cmd []string) (*target.ExecResult, error) {
 	lg := cmdLogFrom(ctx)
 	lg(cmdStreamStdout, "", "$ "+displayCmd(cmd))
-	out, err := s.targets.Exec(ctx, serverID, cmd)
+	out, err := run(ctx, serverID, cmd)
 	if err != nil {
 		lg(cmdStreamStderr, "", "  ✗ "+humanExecError(err))
 		return out, err
@@ -71,6 +78,30 @@ func (s *service) exec(ctx context.Context, serverID string, cmd []string) (*tar
 		}
 	}
 	return out, err
+}
+
+// observingTarget 装饰 target.Service:每条 Exec 的命令与输出回流到 ctx 上的命令日志(若有);
+// 其余方法(Get/List/Upload/DockerLogin/…)**匿名嵌入**原样透传。
+type observingTarget struct{ target.Service }
+
+// ObservingTarget 返回「命令可见」的 target.Service 包装:每条经 Exec 的目标机命令 + stdout/stderr
+// 在 ctx 挂有命令日志(WithCmdLog)时回流;无日志 ctx = 纯透传(行为与裸 target.Service 逐字节一致)。
+//
+// 用途:servicereg 等底层编排组件各自直接持有 target.Service(deploy 不 import servicereg),
+// 其 SSH 命令(网关 nginx 容器编排等)默认不出现于运行日志;main 装配时用它包一层,这些命令即经
+// 部署链路注入的日志回调进入步骤日志(「流水线日志可见所有执行的命令」)。
+//
+// 机器归属:沿用调用方 ctx 上的单机作用域(部署路径为触发本动作的目标机);后台/管理页调用
+// 无作用域 → 运行级,不误导来源。
+func ObservingTarget(inner target.Service) target.Service {
+	if inner == nil {
+		return nil
+	}
+	return observingTarget{Service: inner}
+}
+
+func (o observingTarget) Exec(ctx context.Context, serverID string, cmd []string) (*target.ExecResult, error) {
+	return execObserved(ctx, o.Service.Exec, serverID, cmd)
 }
 
 // displayCmd 把 array 命令拼为可读单行;对敏感参数值就地打码(第一道脱敏)。
