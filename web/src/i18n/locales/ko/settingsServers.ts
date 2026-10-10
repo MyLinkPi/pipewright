@@ -93,4 +93,8 @@ export default {
   poolBadgeHint: '빌드 머신: 슬롯 {slots}, 우선순위 {priority}',
   errMaxBuildsRange: '동시 빌드 슬롯은 0..64 범위여야 합니다',
   errPriorityRange: '스케줄 우선순위는 0..100 범위여야 합니다',
+  fieldGpu: 'GPU 머신',
+  fieldGpuCheckbox: '이 머신에 GPU 있음(그래픽 모니터링)',
+  gpuHint: '체크하면 멀티 머신 상태 개요가 nvtop -s를 추가 실행해 각 카드의 사용률/VRAM/온도/전력을 수집합니다(대상 머신에 nvtop 필요). 모니터링 전용이며 빌드/배포 스케줄링에는 영향을 주지 않습니다.',
+  gpuBadge: 'GPU',
 }

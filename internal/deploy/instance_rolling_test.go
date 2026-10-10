@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/huangchengsir/pipewright/internal/run"
 	"github.com/huangchengsir/pipewright/internal/target"
@@ -240,6 +241,19 @@ func TestInstanceRollingHealthFailKeepsOld(t *testing.T) {
 	if !startsWithAny(tgt.calls, "docker rm -f shop-r") {
 		t.Fatalf("新实例应被清理:\n%v", tgt.calls)
 	}
+	// 删新容器前必须回捞其日志(否则失败原因随容器一起消失)。
+	logsIdx, rmIdx := -1, -1
+	for i, c := range tgt.calls {
+		if logsIdx < 0 && len(c) >= 5 && c[0] == "docker" && c[1] == "logs" && strings.HasPrefix(c[4], "shop-r") {
+			logsIdx = i
+		}
+		if rmIdx < 0 && len(c) == 4 && c[0] == "docker" && c[1] == "rm" && strings.HasPrefix(c[3], "shop-r") {
+			rmIdx = i
+		}
+	}
+	if logsIdx < 0 || rmIdx < 0 || logsIdx > rmIdx {
+		t.Fatalf("清理新容器前应回捞 docker logs:logsIdx=%d rmIdx=%d:\n%v", logsIdx, rmIdx, tgt.calls)
+	}
 }
 
 // TestInstanceRollingHealthExecTargetsNewContainer:healthExec 预热探测必须打**新实例容器**
@@ -289,6 +303,135 @@ func TestInstanceRollingHealthExecTargetsNewContainer(t *testing.T) {
 	}
 	if !seenNewProbe {
 		t.Fatalf("预热探测应打新实例容器 shop-r*:\n%v", tgt.calls)
+	}
+}
+
+// TestInstanceRollingPortProbeUsesHostPort:端口型预热探测必须打**宿主映射端口**
+// (127.0.0.1:<首个映射宿主端口>,与切后门控 / 网关 upstream 同一条链路);绝不再走
+// 「docker inspect 取容器 IP → curl 容器口」(rootless docker / 防火墙拦 host→docker0
+// 等环境下容器网段不可达,且不是流量真正要走的地址)。
+func TestInstanceRollingPortProbeUsesHostPort(t *testing.T) {
+	db := testDB(t)
+	rsvc := run.New(db)
+	tgt := &stubTarget{execFn: rollExecFn}
+	srv := seedServer(t, tgt, "gw-1")
+	runID, _ := seedSuccessRunWithArtifact(t, db, rsvc, run.ArtifactImage, "registry.acme.io/shop:2")
+
+	gw := &fakeGateway{refs: twoInstanceRefs()}
+	svc := New(tgt, rsvc, WithInstanceGateway(gw))
+	res, err := svc.DeployForStage(context.Background(), runID, "server:"+srv.ID,
+		map[string]string{"ports": "20000:8080", "healthPath": "/healthz", "drainSeconds": "0"}, "")
+	if err != nil {
+		t.Fatalf("DeployForStage: %v", err)
+	}
+	if len(res) != 1 || res[0].Status != run.TargetSuccess {
+		t.Fatalf("want success, got %+v", res)
+	}
+	if gw.swapCount() != 2 {
+		t.Fatalf("预热通过应完成 2 次 Swap,得 %d", gw.swapCount())
+	}
+	// 预热探测 = curl 宿主映射端口(新容器 run 命令里的 -p 20000:8080)。
+	if !startsWithAny(tgt.calls, "curl -fsS --max-time 5 http://127.0.0.1:20000/healthz") {
+		t.Fatalf("缺宿主端口预热探测:\n%v", tgt.calls)
+	}
+	// 绝无「docker inspect Networks 取容器 IP」。
+	for _, c := range tgt.calls {
+		if len(c) >= 4 && c[0] == "docker" && c[1] == "inspect" && strings.Contains(c[3], "NetworkSettings") {
+			t.Fatalf("不应再取容器 IP 探测:%v", c)
+		}
+	}
+}
+
+// TestInstanceRollingPortProbeWithoutHostPortFails:配置 healthPath 但无端口映射(也无显式
+// healthPort)→ 新实例宿主端口推不出来,预热探测硬失败(不再回退容器网段直连探测):不 Swap、
+// 新容器被清理、旧实例保留,错误信息引导配置 ports / 显式 healthPort。
+func TestInstanceRollingPortProbeWithoutHostPortFails(t *testing.T) {
+	db := testDB(t)
+	rsvc := run.New(db)
+	tgt := &stubTarget{execFn: rollExecFn}
+	srv := seedServer(t, tgt, "gw-1")
+	runID, _ := seedSuccessRunWithArtifact(t, db, rsvc, run.ArtifactImage, "registry.acme.io/shop:2")
+
+	gw := &fakeGateway{refs: twoInstanceRefs()}
+	svc := New(tgt, rsvc, WithInstanceGateway(gw))
+	res, err := svc.DeployForStage(context.Background(), runID, "server:"+srv.ID,
+		map[string]string{"healthPath": "/healthz", "drainSeconds": "0"}, "")
+	if err != nil {
+		t.Fatalf("DeployForStage: %v", err)
+	}
+	if len(res) != 1 || res[0].Status != run.TargetFailed {
+		t.Fatalf("want failed, got %+v", res)
+	}
+	if !strings.Contains(res[0].Message, "无法推导新实例宿主端口") {
+		t.Fatalf("message 应引导显式配置端口:%s", res[0].Message)
+	}
+	if !strings.Contains(res[0].Message, "已删除新容器") {
+		t.Fatalf("清理成功时消息应如实报告:%s", res[0].Message)
+	}
+	if gw.swapCount() != 0 {
+		t.Fatalf("预热失败绝不应 Swap")
+	}
+	if hasCmd(tgt.calls, "docker", "rm", "-f", "shop-1") || hasCmd(tgt.calls, "docker", "rm", "-f", "shop-2") {
+		t.Fatalf("旧实例不应被删:\n%v", tgt.calls)
+	}
+	if !startsWithAny(tgt.calls, "docker rm -f shop-r") {
+		t.Fatalf("新实例应被清理:\n%v", tgt.calls)
+	}
+}
+
+// TestInstanceRollingFailCleanupUsesFreshCtx:预热失败的收尾(回捞日志 / 删新容器)必须挂
+// 部署父 ctx 的独立预算 —— rollCtx 被重型健康重试矩阵耗尽(已取消)时,复用它会让 logs / rm
+// 都被 DeadlineExceeded 拦住(失败现场丢失 + 新容器残留);断言两条收尾命令收到的 ctx 未被取消。
+func TestInstanceRollingFailCleanupUsesFreshCtx(t *testing.T) {
+	db := testDB(t)
+	rsvc := run.New(db)
+	tgt := &ctxCaptureTarget{stubTarget: &stubTarget{execFn: rollExecFn}}
+	srv := seedServer(t, tgt.stubTarget, "gw-1")
+	// 直接调内部 rollOneInstance(经 New 的具体类型);先模拟整轮预算已被健康重试矩阵耗尽。
+	impl, ok := New(tgt, rsvc, WithInstanceGateway(&fakeGateway{})).(*service)
+	if !ok {
+		t.Fatal("New 应返回 *service")
+	}
+
+	// rollCtx 已过期(模拟整轮预算被健康重试矩阵耗尽);failCtx(部署父 ctx)仍可用。
+	rollCtx, rollCancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer rollCancel()
+
+	st := imageState{name: "shop", ref: "registry.acme.io/shop:2"}
+	// healthPath 型但无端口映射:宿主端口推不出来 → 预热立即失败(不等 settle 轮询)。
+	hsp := &healthSpec{kind: specPort, path: "/healthz"}
+	msg, rok := impl.rollOneInstance(rollCtx, context.Background(), srv, st, twoInstanceRefs()[0], hsp, map[string]string{})
+	if rok {
+		t.Fatal("预热失败应返回 false")
+	}
+	if !strings.Contains(msg, "无法推导新实例宿主端口") || !strings.Contains(msg, "已删除新容器") {
+		t.Fatalf("失败消息应说明宿主端口推不出来且如实报告清理结果:%s", msg)
+	}
+
+	tgt.mu.Lock()
+	defer tgt.mu.Unlock()
+	var sawLogs, sawRm bool
+	for key, cs := range tgt.ctxs {
+		if len(cs) == 0 {
+			continue
+		}
+		// 收尾 ctx 必须挂部署父 ctx 的独立 execTimeout 级预算:复用已过期 rollCtx 会让
+		// deadline 落在过去(必被 DeadlineExceeded 拦住),这里按「deadline 仍在未来」断言。
+		switch {
+		case strings.HasPrefix(key, "docker logs --tail 100 shop-r"):
+			sawLogs = true
+			if dl, dok := cs[0].Deadline(); !dok || time.Until(dl) < 30*time.Second {
+				t.Fatalf("回捞日志应挂独立预算 ctx(不被已过期 rollCtx 拖累):deadline=%v ok=%v", dl, dok)
+			}
+		case strings.HasPrefix(key, "docker rm -f shop-r"):
+			sawRm = true
+			if dl, dok := cs[0].Deadline(); !dok || time.Until(dl) < 30*time.Second {
+				t.Fatalf("清理新容器应挂独立预算 ctx(不被已过期 rollCtx 拖累):deadline=%v ok=%v", dl, dok)
+			}
+		}
+	}
+	if !sawLogs || !sawRm {
+		t.Fatalf("收尾应同时执行日志回捞与删新容器:logs=%v rm=%v", sawLogs, sawRm)
 	}
 }
 

@@ -26,6 +26,8 @@
 /web/pw-*.mjs
 # 一次性演示/原型 scratch — 不入库
 /demos/
+# 根目录误跑 npm 生成的空 lock(前端锁文件在 web/package-lock.json,根目录无 package.json)
+/package-lock.json
 
 # docker-compose 本地密钥(含 master key / 口令),不入库;仅 .env.example 入库
 .env

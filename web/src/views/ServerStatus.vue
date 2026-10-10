@@ -37,6 +37,8 @@ interface ServerPoolInfo {
   maxBuilds: number
   /** 调度优先级 0-100;tooltip 用。 */
   priority: number
+  /** GPU 机型开关(勾选后卡片额外展示每张显卡的指标)。 */
+  gpu: boolean
 }
 
 const loadState = ref<LoadState>('idle')
@@ -115,7 +117,10 @@ async function load(): Promise<void> {
     ])
     nameById.value = new Map(servers.map((s) => [s.id, s.name]))
     poolById.value = new Map(
-      servers.map((s) => [s.id, { labels: s.labels, maxBuilds: s.maxBuilds, priority: s.priority }]),
+      servers.map((s) => [
+        s.id,
+        { labels: s.labels, maxBuilds: s.maxBuilds, priority: s.priority, gpu: s.gpu ?? false },
+      ]),
     )
     metrics.value = items
     loadState.value = 'idle'
@@ -264,6 +269,7 @@ onUnmounted(() => {
         :name="displayName(m)"
         :metrics="m"
         :pool="poolById.get(m.serverId)"
+        :gpu="poolById.get(m.serverId)?.gpu ?? false"
         selectable
         :selected="selected.has(m.serverId)"
         @toggle="toggleSelect(m.serverId)"

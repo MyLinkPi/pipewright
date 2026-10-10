@@ -145,6 +145,57 @@ func TestCRUD(t *testing.T) {
 	}
 }
 
+// TestGPUFlagRoundTrip 验证 GPU 机型开关的建/取/改往返:创建带 Gpu → 落库可读;
+// 部分更新(仅 Gpu)可开可关;不带该字段的更新不修改它。
+func TestGPUFlagRoundTrip(t *testing.T) {
+	db := testDB(t)
+	v := vault.New(db, testMasterKey())
+	credID := newSSHCred(t, v, "secret-pw")
+	svc := New(db, v, &capturingDialer{})
+	ctx := context.Background()
+
+	srv, err := svc.Create(ctx, CreateInput{
+		Name: "gpu-1", Host: "10.0.0.9", User: "deploy", CredentialID: credID, Gpu: true,
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if !srv.Gpu {
+		t.Fatalf("created server should carry gpu=true: %+v", srv)
+	}
+	if got, err := svc.Get(ctx, srv.ID); err != nil || !got.Gpu {
+		t.Fatalf("Get: %v / gpu=%v", err, got.Gpu)
+	}
+	list, err := svc.List(ctx)
+	if err != nil || len(list) != 1 || !list[0].Gpu {
+		t.Fatalf("List: %v / %+v", err, list)
+	}
+
+	// 部分更新:只改 Gpu → 关掉。
+	off := false
+	upd, err := svc.Update(ctx, srv.ID, UpdateInput{Gpu: &off})
+	if err != nil {
+		t.Fatalf("Update(gpu=false): %v", err)
+	}
+	if upd.Gpu {
+		t.Fatalf("gpu should be false after update: %+v", upd)
+	}
+
+	// 不带 Gpu 的更新不改动它(先打开,再用不带该字段的更新确认仍为 true)。
+	on := true
+	if _, err := svc.Update(ctx, srv.ID, UpdateInput{Gpu: &on}); err != nil {
+		t.Fatalf("Update(gpu=true): %v", err)
+	}
+	newName := "gpu-1-renamed"
+	upd2, err := svc.Update(ctx, srv.ID, UpdateInput{Name: &newName})
+	if err != nil {
+		t.Fatalf("Update(name only): %v", err)
+	}
+	if !upd2.Gpu || upd2.Name != newName {
+		t.Fatalf("omitted gpu must stay unchanged: %+v", upd2)
+	}
+}
+
 func TestCreateValidation(t *testing.T) {
 	db := testDB(t)
 	v := vault.New(db, testMasterKey())

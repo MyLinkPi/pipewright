@@ -184,7 +184,8 @@ func (s *service) activateImageOne(ctx context.Context, srv *target.Server, a ru
 	}
 	st.ports = bindings
 
-	// 切后健康门控;失败触发回滚到上一镜像。端口自动推导:仅填 healthPath 时取首个映射的宿主端口。
+	// 切后健康门控;失败触发回滚到上一镜像(回滚 rm 容器前先回捞日志,保住失败现场)。
+	// 端口自动推导:仅填 healthPath 时取首个映射的宿主端口。
 	// 门控用独立预算 ctx(重试矩阵可远超 60s execCtx;否则重试没跑完就被砍,还拖死回滚)。
 	hc := hsp.resolve(firstHostPort(st.ports))
 	if hc.enabled() {
@@ -192,6 +193,7 @@ func (s *service) activateImageOne(ctx context.Context, srv *target.Server, a ru
 		herr := s.runHealthCheck(hcCtx, srv.ID, hc)
 		hcCancel()
 		if herr != nil {
+			s.dumpContainerLogs(ctx, srv.ID, st.name)
 			return s.rollbackImage(ctx, srv, res, st, herr.Error()), st
 		}
 	}

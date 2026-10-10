@@ -57,6 +57,12 @@ export interface Server {
   maxBuilds: number
   /** Scheduling priority, 0-100 — higher wins (FR-8-19). */
   priority: number
+  /**
+   * GPU machine flag: when on, the status overview additionally runs `nvtop -s`
+   * over SSH to collect per-card utilization / VRAM / temperature / power (multi-card,
+   * NVIDIA + AMD). Monitoring only — it does not affect build/deploy scheduling.
+   */
+  gpu: boolean
   createdAt: string
   updatedAt: string
 }
@@ -74,6 +80,8 @@ export interface CreateServerInput {
   labels?: string
   maxBuilds?: number
   priority?: number
+  /** GPU machine flag (monitoring only). Omit = not a GPU machine. */
+  gpu?: boolean
 }
 
 export interface UpdateServerInput {
@@ -89,6 +97,8 @@ export interface UpdateServerInput {
   labels?: string
   maxBuilds?: number
   priority?: number
+  /** Present = set the GPU flag; omit = keep it. */
+  gpu?: boolean
 }
 
 export interface ServerTestResult {
@@ -254,7 +264,8 @@ export function subscribeServerLogs(
 // GET /api/servers/metrics      → { items: ServerMetrics[] }  (batch; parallel)
 //
 // Metrics are collected over SSH by running a FIXED read-only command whitelist
-// (`cat /proc/loadavg`/`uptime`, `nproc`/`getconf`, `free -b`, `df -B1 /`/`df -k /`).
+// (`cat /proc/loadavg`/`uptime`, `nproc`/`getconf`, `free -b`, `df -B1 /`/`df -k /`,
+// plus `timeout 5 nvtop -s` for GPU-flagged servers only).
 // AC-SEC-02: the commands are static argv arrays and never incorporate any user
 // input — no injection surface; metrics carry no secrets.
 //
@@ -292,6 +303,45 @@ export interface DiskMetric {
   totalBytes: number
 }
 
+/**
+ * One GPU's metrics, from `nvtop -s` on GPU-flagged servers only (multi-card: one
+ * entry per card). Every field is nullable because NVIDIA and AMD expose different
+ * values — AMD reports no VRAM byte counters and no encoder/decoder utilization.
+ */
+export interface GpuDeviceMetric {
+  /** Position in nvtop's output (0..N-1) — display index for multi-card hosts. */
+  index: number
+  /** `device_name` as reported by nvtop, e.g. "NVIDIA CMP 40HX". */
+  name: string
+  /** GPU utilization %, null when the field is absent/unparseable ("N/A"). */
+  gpuUtil: number | null
+  /** VRAM utilization % — present on both vendors (AMD's only VRAM signal). */
+  memUtil: number | null
+  /** VRAM bytes: NVIDIA only → null on AMD (use `memUtil` there). */
+  memTotalBytes: number | null
+  memUsedBytes: number | null
+  memFreeBytes: number | null
+  /** Temperature in °C. */
+  tempC: number | null
+  /** Fan speed %. */
+  fanSpeedPct: number | null
+  /** Power draw in watts. */
+  powerDrawW: number | null
+  /** Core clock in MHz. */
+  gpuClockMhz: number | null
+  /** Memory clock in MHz. */
+  memClockMhz: number | null
+  /** Encoder utilization % (NVIDIA only). */
+  encodeUtil: number | null
+  /** Decoder utilization % (NVIDIA only). */
+  decodeUtil: number | null
+}
+
+/** All GPUs of one host (multi-card). At least one card is required to be non-null. */
+export interface GpuMetric {
+  devices: GpuDeviceMetric[]
+}
+
 export interface ServerMetrics {
   serverId: string
   /** False when SSH/auth/connect failed; metrics are null and `error` is human-readable. */
@@ -304,6 +354,11 @@ export interface ServerMetrics {
   memory: MemoryMetric | null
   /** Null on parse failure; `df` is cross-platform so usually present. */
   disk: DiskMetric | null
+  /**
+   * Null unless the server is flagged as a GPU machine AND `nvtop -s` produced at
+   * least one card — i.e. null for plain hosts, missing nvtop, or unparseable output.
+   */
+  gpu: GpuMetric | null
   /** RFC3339 collection timestamp. */
   collectedAt: string
 }

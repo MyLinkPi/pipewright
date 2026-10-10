@@ -236,6 +236,66 @@ func TestServerListServiceUnavailable(t *testing.T) {
 
 // TestServerRunnerPoolFields 验证构建机池字段(FR-8-19):合法 labels/maxBuilds/priority 可写可读,
 // 非法 labels → 400,槽位/优先级越界 → 400。
+// TestServerGPUFlag 验证「GPU 机型」开关的契约往返:缺省不勾选 / 勾选创建 / 部分更新可开可关 /
+// 不带该字段的更新不修改(纯监控开关,无额外汇总校验)。
+func TestServerGPUFlag(t *testing.T) {
+	srv, client, csrf := setupServerAPI(t, stubDialer{})
+	credID := newSSHCredAPI(t, client, srv.URL, csrf, "priv_key_marker")
+
+	// 缺省(老客户端请求体不带 gpu)→ false。
+	resp := doJSON(t, client, http.MethodPost, srv.URL+"/api/servers", csrf,
+		`{"name":"plain","host":"h","user":"u","credentialId":"`+credID+`"}`)
+	defer resp.Body.Close()
+	var plain map[string]any
+	_ = json.NewDecoder(resp.Body).Decode(&plain)
+	if plain["gpu"] != false {
+		t.Fatalf("缺省 gpu 应为 false: %v", plain)
+	}
+
+	// 勾选创建。
+	resp2 := doJSON(t, client, http.MethodPost, srv.URL+"/api/servers", csrf,
+		`{"name":"gpu-1","host":"h","user":"u","credentialId":"`+credID+`","gpu":true}`)
+	defer resp2.Body.Close()
+	if resp2.StatusCode != http.StatusCreated {
+		t.Fatalf("create status = %d, want 201", resp2.StatusCode)
+	}
+	var created map[string]any
+	_ = json.NewDecoder(resp2.Body).Decode(&created)
+	if created["gpu"] != true {
+		t.Fatalf("创建响应应带 gpu=true: %v", created)
+	}
+	id, _ := created["id"].(string)
+	if id == "" {
+		t.Fatalf("no id in response: %v", created)
+	}
+
+	// 列表也带该字段。
+	lresp := doJSON(t, client, http.MethodGet, srv.URL+"/api/servers", csrf, "")
+	lraw, _ := io.ReadAll(lresp.Body)
+	lresp.Body.Close()
+	if !strings.Contains(string(lraw), `"gpu":true`) {
+		t.Fatalf("列表响应应带 gpu 字段: %s", lraw)
+	}
+
+	// 部分更新:显式 false → 关闭;不带该字段的更新不修改。
+	resp3 := doJSON(t, client, http.MethodPut, srv.URL+"/api/servers/"+id, csrf, `{"gpu":false}`)
+	defer resp3.Body.Close()
+	var off map[string]any
+	_ = json.NewDecoder(resp3.Body).Decode(&off)
+	if off["gpu"] != false {
+		t.Fatalf("显式 false 应关闭 gpu: %v", off)
+	}
+	resp4 := doJSON(t, client, http.MethodPut, srv.URL+"/api/servers/"+id, csrf, `{"gpu":true}`)
+	resp4.Body.Close()
+	resp5 := doJSON(t, client, http.MethodPut, srv.URL+"/api/servers/"+id, csrf, `{"name":"gpu-1b"}`)
+	defer resp5.Body.Close()
+	var renamed map[string]any
+	_ = json.NewDecoder(resp5.Body).Decode(&renamed)
+	if renamed["gpu"] != true || renamed["name"] != "gpu-1b" {
+		t.Fatalf("不带 gpu 的更新不应改动它: %v", renamed)
+	}
+}
+
 func TestServerRunnerPoolFields(t *testing.T) {
 	srv, client, csrf := setupServerAPI(t, stubDialer{})
 	credID := newSSHCredAPI(t, client, srv.URL, csrf, "priv_key_marker")

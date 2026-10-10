@@ -93,4 +93,8 @@ export default {
   poolBadgeHint: '构建机:槽位 {slots},优先级 {priority}',
   errMaxBuildsRange: '并发构建槽位必须在 0..64 之间',
   errPriorityRange: '调度优先级必须在 0..100 之间',
+  fieldGpu: 'GPU 机型',
+  fieldGpuCheckbox: '该机带 GPU(显卡监控)',
+  gpuHint: '勾选后,多机状态总览会额外运行 nvtop -s 采集每张显卡的利用率/显存/温度/功耗(需目标机已安装 nvtop)。纯监控开关,不参与构建/部署调度。',
+  gpuBadge: 'GPU',
 }

@@ -93,4 +93,8 @@ export default {
   poolBadgeHint: 'ビルドマシン:スロット {slots}、優先度 {priority}',
   errMaxBuildsRange: '同時ビルドスロットは 0..64 の範囲で指定してください',
   errPriorityRange: 'スケジュール優先度は 0..100 の範囲で指定してください',
+  fieldGpu: 'GPU マシン',
+  fieldGpuCheckbox: 'このマシンは GPU を搭載(グラフィック監視)',
+  gpuHint: 'チェックすると、マルチマシン状態一覧が nvtop -s を追加実行し、各カードの使用率/VRAM/温度/消費電力を収集します(対象機に nvtop が必要)。監視専用で、ビルド/デプロイのスケジューリングには影響しません。',
+  gpuBadge: 'GPU',
 }

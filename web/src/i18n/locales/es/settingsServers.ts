@@ -93,4 +93,8 @@ export default {
   poolBadgeHint: 'Maquina de build: {slots} slots, prioridad {priority}',
   errMaxBuildsRange: 'Los slots deben estar entre 0 y 64',
   errPriorityRange: 'La prioridad debe estar entre 0 y 100',
+  fieldGpu: 'Máquina con GPU',
+  fieldGpuCheckbox: 'Esta máquina tiene GPU (monitorización de tarjeta)',
+  gpuHint: 'Al marcarlo, el resumen de estado ejecuta además nvtop -s para recopilar por tarjeta el uso / VRAM / temperatura / consumo (requiere nvtop en el destino). Solo monitorización: no afecta a la planificación de build ni de despliegue.',
+  gpuBadge: 'GPU',
 }

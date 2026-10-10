@@ -309,6 +309,26 @@ func TestRollingImageHealthFailureRollsBack(t *testing.T) {
 	if !hasRunWithRef(rec.calls2, "registry/app:v1") {
 		t.Fatalf("应回滚到上一镜像 registry/app:v1: %v", rec.calls2)
 	}
+	// 回滚删容器前必须回捞失败容器日志(否则失败原因随容器一起消失)。
+	var runName string
+	for _, c := range rec.calls2 {
+		if len(c) >= 5 && c[0] == "docker" && c[1] == "run" {
+			runName = c[4] // dockerRunCmd 序:[docker run -d --name <name> …]
+			break
+		}
+	}
+	logsIdx, rbIdx := -1, -1
+	for i, c := range rec.calls2 {
+		if logsIdx < 0 && len(c) >= 5 && c[0] == "docker" && c[1] == "logs" && c[4] == runName {
+			logsIdx = i
+		}
+		if rbIdx < 0 && len(c) >= 3 && c[0] == "docker" && c[1] == "run" && c[len(c)-1] == "registry/app:v1" {
+			rbIdx = i
+		}
+	}
+	if logsIdx < 0 || rbIdx < 0 || logsIdx > rbIdx {
+		t.Fatalf("回滚前应回捞失败容器日志:logsIdx=%d rbIdx=%d: %v", logsIdx, rbIdx, rec.calls2)
+	}
 }
 
 // TestRollingImageFirstDeployHealthFailureFails 滚动 image 首次部署(无上一镜像)健康失败 → failed

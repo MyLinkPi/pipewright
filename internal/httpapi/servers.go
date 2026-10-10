@@ -46,8 +46,10 @@ type serverDTO struct {
 	Labels    string          `json:"labels"`
 	MaxBuilds int             `json:"maxBuilds"`
 	Priority  int             `json:"priority"`
-	CreatedAt string          `json:"createdAt"`
-	UpdatedAt string          `json:"updatedAt"`
+	// Gpu 标记该机带显卡:开启后多机状态总览额外经 `nvtop -s` 采集显卡指标(纯监控开关)。
+	Gpu       bool   `json:"gpu"`
+	CreatedAt string `json:"createdAt"`
+	UpdatedAt string `json:"updatedAt"`
 }
 
 // toServerDTO 把领域 Server 转为契约 DTO。
@@ -75,6 +77,7 @@ func toServerDTO(s *target.Server) serverDTO {
 		Labels:             s.Labels,
 		MaxBuilds:          s.MaxBuilds,
 		Priority:           s.Priority,
+		Gpu:                s.Gpu,
 		CreatedAt:          s.CreatedAt.UTC().Format(time.RFC3339),
 		UpdatedAt:          s.UpdatedAt.UTC().Format(time.RFC3339),
 	}
@@ -209,6 +212,7 @@ func makeCreateServerHandler(svc target.Service) http.HandlerFunc {
 			Labels           string            `json:"labels"`
 			MaxBuilds        int               `json:"maxBuilds"`
 			Priority         int               `json:"priority"`
+			Gpu              bool              `json:"gpu"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, "bad_request", "请求体格式错误")
@@ -229,6 +233,7 @@ func makeCreateServerHandler(svc target.Service) http.HandlerFunc {
 			Labels:           req.Labels,
 			MaxBuilds:        req.MaxBuilds,
 			Priority:         req.Priority,
+			Gpu:              req.Gpu,
 		})
 		if err != nil {
 			writeServerError(w, err)
@@ -258,6 +263,7 @@ func makeUpdateServerHandler(svc target.Service) http.HandlerFunc {
 			Labels           *string            `json:"labels"`
 			MaxBuilds        *int               `json:"maxBuilds"`
 			Priority         *int               `json:"priority"`
+			Gpu              *bool              `json:"gpu"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, "bad_request", "请求体格式错误")
@@ -298,6 +304,7 @@ func makeUpdateServerHandler(svc target.Service) http.HandlerFunc {
 			Labels:           req.Labels,
 			MaxBuilds:        req.MaxBuilds,
 			Priority:         req.Priority,
+			Gpu:              req.Gpu,
 		})
 		if err != nil {
 			writeServerError(w, err)
