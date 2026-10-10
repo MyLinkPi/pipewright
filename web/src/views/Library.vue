@@ -1182,7 +1182,7 @@ onMounted(() => {
   z-index: 50;
 }
 .modal {
-  width: min(620px, 100%);
+  width: min(840px, 100%);
   max-height: 88vh;
   overflow-y: auto;
   background: var(--color-card);

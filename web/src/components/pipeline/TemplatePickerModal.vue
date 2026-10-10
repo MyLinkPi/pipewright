@@ -251,7 +251,7 @@ onMounted(loadTemplates)
   z-index: 60;
 }
 .modal {
-  width: min(560px, 100%);
+  width: min(720px, 100%);
   max-height: 86vh;
   overflow-y: auto;
   background: var(--color-card);

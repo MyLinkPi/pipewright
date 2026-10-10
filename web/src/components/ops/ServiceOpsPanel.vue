@@ -419,7 +419,7 @@ async function runAction(a: ServiceAction): Promise<void> {
 }
 
 .ops-confirm {
-  width: min(420px, 100%);
+  width: min(560px, 100%);
   background: var(--color-surface, #fff);
   border-radius: 12px;
   padding: 20px;

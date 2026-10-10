@@ -1071,7 +1071,7 @@ async function submitImport(): Promise<void> {
   background: color-mix(in srgb, #000 45%, transparent);
 }
 .modal {
-  width: min(560px, 100%);
+  width: min(720px, 100%);
   max-height: min(86vh, 720px);
   display: flex;
   flex-direction: column;

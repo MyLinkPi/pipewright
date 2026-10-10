@@ -92,7 +92,7 @@ onBeforeUnmount(() => {
   justify-content: flex-end;
 }
 .ops-drawer {
-  width: min(560px, 100vw);
+  width: min(720px, 100vw);
   height: 100%;
   min-width: 0;
   background: var(--color-card);

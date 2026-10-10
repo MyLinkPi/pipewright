@@ -1459,7 +1459,7 @@ async function confirmDelete(): Promise<void> {
 
 .modal {
   width: 100%;
-  max-width: 520px;
+  max-width: 680px;
   background: var(--color-card);
   border: 1px solid var(--color-border-strong);
   border-radius: var(--rounded-xl);
@@ -1469,7 +1469,7 @@ async function confirmDelete(): Promise<void> {
 }
 
 .modal--sm {
-  max-width: 420px;
+  max-width: 520px;
 }
 
 @keyframes modal-in {

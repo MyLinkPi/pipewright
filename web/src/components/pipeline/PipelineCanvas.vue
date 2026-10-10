@@ -546,7 +546,7 @@ function handleDrawerUpdate(patch: Partial<PipelineJob>): void {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  min-width: 220px;
+  min-width: 260px;
   padding: 14px;
   background: var(--color-surface, #fff);
   border: 1px solid var(--color-border-strong);

@@ -147,7 +147,7 @@ void run()
   padding: 24px;
 }
 .modal {
-  width: min(640px, 96vw);
+  width: min(840px, 96vw);
   max-height: 88vh;
   display: flex;
   flex-direction: column;
