@@ -117,6 +117,7 @@ const form = ref({
   labels: '',
   maxBuilds: 0,
   priority: 0,
+  gpu: false,
 })
 
 const formErrors = ref({
@@ -329,6 +330,7 @@ function openAddModal(): void {
     labels: '',
     maxBuilds: 0,
     priority: 0,
+    gpu: false,
   }
   clearFormErrors()
   formBanner.value = ''
@@ -350,6 +352,7 @@ function openEditModal(s: Server): void {
     labels: s.labels ?? '',
     maxBuilds: s.maxBuilds ?? 0,
     priority: s.priority ?? 0,
+    gpu: s.gpu ?? false,
   }
   clearFormErrors()
   formBanner.value = ''
@@ -470,6 +473,7 @@ async function handleFormSubmit(): Promise<void> {
         labels: form.value.labels.trim(),
         maxBuilds: Number(form.value.maxBuilds) || 0,
         priority: Number(form.value.priority) || 0,
+        gpu: form.value.gpu,
       }
       const created = await createServer(payload)
       servers.value = [created, ...servers.value]
@@ -485,6 +489,7 @@ async function handleFormSubmit(): Promise<void> {
         labels: form.value.labels.trim(),
         maxBuilds: Number(form.value.maxBuilds) || 0,
         priority: Number(form.value.priority) || 0,
+        gpu: form.value.gpu,
       }
       const updated = await updateServer(editingId.value, payload)
       servers.value = servers.value.map((s) => (s.id === updated.id ? updated : s))
@@ -632,6 +637,7 @@ async function handleTest(s: Server): Promise<void> {
               <span v-if="s.jumps?.length" class="cred-tag cred-tag--jump" :title="t('settingsServers.jumpBadgeHint', { n: s.jumps.length })">⛓ {{ t('settingsServers.jumpBadge', { n: s.jumps.length }) }}</span>
               <span class="cred-tag">🔑 {{ credentialLabel(s.credentialId) }}</span>
               <span v-if="s.labels" class="cred-tag cred-tag--pool" :title="t('settingsServers.poolBadgeHint', { slots: s.maxBuilds || 1, priority: s.priority })">🏗 {{ s.labels }}</span>
+              <span v-if="s.gpu" class="cred-tag cred-tag--gpu" :title="t('settingsServers.gpuHint')">🎮 {{ t('settingsServers.gpuBadge') }}</span>
             </div>
             <!-- test result -->
             <div
@@ -889,6 +895,16 @@ async function handleTest(s: Server): Promise<void> {
               <span class="field-hint">{{ t('settingsServers.priorityHint') }}</span>
               <span v-if="formErrors.priority" class="field-error">{{ formErrors.priority }}</span>
             </label>
+          </div>
+
+          <!-- GPU 机型(纯监控开关):勾选后状态总览额外跑 `nvtop -s` 采集每张显卡指标。 -->
+          <div class="field">
+            <span class="field-label">{{ t('settingsServers.fieldGpu') }}</span>
+            <label class="gpu-check">
+              <input v-model="form.gpu" type="checkbox" />
+              <span>{{ t('settingsServers.fieldGpuCheckbox') }}</span>
+            </label>
+            <span class="field-hint">{{ t('settingsServers.gpuHint') }}</span>
           </div>
 
           <div class="modal-actions">
@@ -1273,6 +1289,25 @@ async function handleTest(s: Server): Promise<void> {
 .cred-tag--jump {
   color: var(--color-warn, #b45309);
   background: var(--color-warn-soft, rgba(180, 83, 9, 0.12));
+}
+.cred-tag--gpu {
+  color: var(--color-success, #2e8b57);
+  background: var(--color-success-soft, rgba(46, 139, 87, 0.12));
+}
+/* GPU 机型勾选:纯监控开关,与「构建机池」字段并列但语义独立。 */
+.gpu-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--text-body);
+  color: var(--color-text);
+  cursor: pointer;
+}
+.gpu-check input {
+  width: 15px;
+  height: 15px;
+  accent-color: var(--color-primary);
+  cursor: pointer;
 }
 /* 跳板链编辑:每行 = 序号 + 主机/端口/用户/凭据 + 删除;行间留白表达连接顺序。 */
 .jump-row {

@@ -16,7 +16,7 @@
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import ProgressBar, { type ProgressVariant } from '../ui/ProgressBar.vue'
-import type { ServerMetrics } from '../../api/servers'
+import type { GpuDeviceMetric, ServerMetrics } from '../../api/servers'
 
 const { t } = useI18n()
 
@@ -27,6 +27,8 @@ const props = defineProps<{
   metrics: ServerMetrics
   /** 构建池登记信息(labels 逗号分隔 + 槽位/优先级);缺省或无标签 → 不渲染标签区。 */
   pool?: { labels: string; maxBuilds: number; priority: number }
+  /** 该机勾选了「GPU 机型」(监控开关):为 true 时才渲染显卡区块。 */
+  gpu?: boolean
   /** 批量命令选择态:为 true 时卡头显示复选框(服务器状态页批量执行命令用)。 */
   selectable?: boolean
   /** 父持有的选中态(按 serverId)。 */
@@ -135,6 +137,62 @@ const loadText = computed(() => {
   const coresText = cpu.cores !== null ? t('opsServer.metrics.cores', { n: cpu.cores }) : ''
   return `${cpu.loadavg1.toFixed(2)}${coresText}`
 })
+
+// ─── GPU(仅勾选「GPU 机型」的服务器;多卡逐张展示)─────────────────────────────
+
+/** 该机显卡列表(未勾选 / 未装 nvtop / 无显卡 → 空数组)。 */
+const gpuDevices = computed<GpuDeviceMetric[]>(() => props.metrics.gpu?.devices ?? [])
+
+/** 标签带卡数:多卡时标明张数。 */
+const gpuLabel = computed(() =>
+  gpuDevices.value.length > 1
+    ? t('opsServer.metrics.gpuCount', { n: gpuDevices.value.length })
+    : t('opsServer.metrics.gpu'),
+)
+
+/** 进度条取值钳到 0–100(防脏数据撑爆条宽)。 */
+function clampPct(v: number): number {
+  return Math.min(100, Math.max(0, v))
+}
+
+/**
+ * 显存占用率:有字节口径(NVIDIA)时用 used/total 精算 —— 与下方展示的字节数一致
+ * (与 nvtop 的 mem_util 可能差 1% 的取整噪声);AMD 无字节总量 → 退回 nvtop 给的 mem_util。
+ */
+function gpuMemPercent(dev: GpuDeviceMetric): number | null {
+  if (dev.memTotalBytes !== null && dev.memTotalBytes > 0 && dev.memUsedBytes !== null) {
+    return pct(dev.memUsedBytes, dev.memTotalBytes)
+  }
+  return dev.memUtil === null ? null : clampPct(dev.memUtil)
+}
+
+/** 显存进度条取值(只在 gpuMemPercent 非 null 时渲染该条,null 兜底 0 仅为类型方便)。 */
+function gpuMemBar(dev: GpuDeviceMetric): number {
+  return gpuMemPercent(dev) ?? 0
+}
+
+/** 温度/功耗/风扇/时钟/编解码的次级信息行(仅为有值的项;编解码 0% 是噪声,>0 才显示)。 */
+function gpuTelemetry(dev: GpuDeviceMetric): string[] {
+  const parts: string[] = []
+  if (dev.tempC !== null) parts.push(t('opsServer.metrics.gpuTemp', { n: Math.round(dev.tempC) }))
+  if (dev.powerDrawW !== null) parts.push(t('opsServer.metrics.gpuPower', { n: Math.round(dev.powerDrawW) }))
+  if (dev.fanSpeedPct !== null) parts.push(t('opsServer.metrics.gpuFan', { n: Math.round(dev.fanSpeedPct) }))
+  if (dev.gpuClockMhz !== null) parts.push(t('opsServer.metrics.gpuClock', { n: Math.round(dev.gpuClockMhz) }))
+  if (dev.memClockMhz !== null) parts.push(t('opsServer.metrics.gpuMemClock', { n: Math.round(dev.memClockMhz) }))
+  if (dev.encodeUtil !== null && dev.encodeUtil > 0) {
+    parts.push(t('opsServer.metrics.gpuEncode', { n: Math.round(dev.encodeUtil) }))
+  }
+  if (dev.decodeUtil !== null && dev.decodeUtil > 0) {
+    parts.push(t('opsServer.metrics.gpuDecode', { n: Math.round(dev.decodeUtil) }))
+  }
+  return parts
+}
+
+/** 显存字节次级行:仅当有字节口径(NVIDIA)时非空;AMD 无 → 只靠上面的百分比条。 */
+function gpuMemBytesText(dev: GpuDeviceMetric): string {
+  if (dev.memTotalBytes === null || dev.memTotalBytes <= 0 || dev.memUsedBytes === null) return ''
+  return `${humanBytes(dev.memUsedBytes)} / ${humanBytes(dev.memTotalBytes)}`
+}
 </script>
 
 <template>
@@ -253,6 +311,49 @@ const loadText = computed(() => {
             </span>
           </template>
           <span v-else class="metric-num metric-num--na">{{ t('opsServer.metrics.unavailable') }}</span>
+        </dd>
+      </div>
+
+      <!-- GPU(仅勾选「GPU 机型」的服务器;多卡逐张展示,某张卡字段缺失只影响该行) -->
+      <div v-if="gpu" class="metric-row">
+        <dt class="metric-row__label">{{ gpuLabel }}</dt>
+        <dd class="metric-row__value">
+          <template v-if="gpuDevices.length > 0">
+            <div v-for="dev in gpuDevices" :key="dev.index" class="gpu-card">
+              <div class="gpu-card__head">
+                <span class="gpu-card__idx">#{{ dev.index }}</span>
+                <span class="gpu-card__name" :title="dev.name">{{ dev.name }}</span>
+              </div>
+              <!-- 两条进度条带可见标签:利用率 / 显存(否则两条同色细条无从区分) -->
+              <div v-if="dev.gpuUtil !== null" class="gpu-bar">
+                <span class="gpu-bar__label">{{ t('opsServer.metrics.gpuUtil') }}</span>
+                <span class="gpu-bar__bar">
+                  <ProgressBar
+                    :value="clampPct(dev.gpuUtil)"
+                    :variant="usageVariant(clampPct(dev.gpuUtil))"
+                    :label="t('opsServer.metrics.gpuUtilLabel', { n: Math.round(dev.gpuUtil) })"
+                  />
+                </span>
+                <span class="gpu-bar__value">{{ Math.round(dev.gpuUtil) }}%</span>
+              </div>
+              <div v-if="gpuMemPercent(dev) !== null" class="gpu-bar">
+                <span class="gpu-bar__label">{{ t('opsServer.metrics.gpuMem') }}</span>
+                <span class="gpu-bar__bar">
+                  <ProgressBar
+                    :value="gpuMemBar(dev)"
+                    :variant="usageVariant(gpuMemPercent(dev))"
+                    :label="t('opsServer.metrics.gpuMemUsageLabel', { n: gpuMemBar(dev).toFixed(0) })"
+                  />
+                </span>
+                <span class="gpu-bar__value">{{ gpuMemBar(dev).toFixed(0) }}%</span>
+              </div>
+              <span v-if="gpuMemBytesText(dev)" class="metric-sub">{{ gpuMemBytesText(dev) }}</span>
+              <span v-if="gpuTelemetry(dev).length > 0" class="metric-sub gpu-card__telemetry">
+                <span v-for="part in gpuTelemetry(dev)" :key="part">{{ part }}</span>
+              </span>
+            </div>
+          </template>
+          <span v-else class="metric-num metric-num--na">{{ t('opsServer.metrics.gpuUnavailable') }}</span>
         </dd>
       </div>
     </dl>
@@ -440,6 +541,68 @@ const loadText = computed(() => {
   color: var(--color-dim);
   background: var(--color-inset);
   vertical-align: 1px;
+}
+
+/* ——— GPU 区块(每张卡一块;多卡纵向堆叠) ——— */
+.gpu-card {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 5px;
+  padding: 8px 10px;
+  border: 1px solid var(--color-line);
+  border-radius: var(--rounded-md);
+  background: var(--color-inset);
+}
+.gpu-card__head {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  gap: 6px;
+}
+.gpu-card__idx {
+  flex-shrink: 0;
+  font-size: var(--text-label);
+  font-weight: 700;
+  color: var(--color-faint);
+  font-variant-numeric: tabular-nums;
+}
+.gpu-card__name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-label);
+  font-weight: 600;
+  color: var(--color-text);
+}
+.gpu-card__telemetry {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px 10px;
+}
+/* 带标签的进度条行:标签 / 条 / 百分比,条占满中间剩余宽度。 */
+.gpu-bar {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+}
+.gpu-bar__label {
+  flex-shrink: 0;
+  min-width: 3.2em;
+  font-size: var(--text-label);
+  color: var(--color-dim);
+}
+.gpu-bar__bar {
+  flex: 1;
+  min-width: 0;
+}
+.gpu-bar__value {
+  flex-shrink: 0;
+  font-size: var(--text-label);
+  font-variant-numeric: tabular-nums;
+  color: var(--color-dim);
 }
 
 .metrics-card__foot {

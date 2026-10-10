@@ -331,6 +331,20 @@ func healthCtxReason(err error) string {
 	return "已取消"
 }
 
+// containerLogTailLines 是健康失败回捞容器日志的尾部行数(定位失败原因足够,截断防爆量)。
+const containerLogTailLines = 100
+
+// dumpContainerLogs 在删除 / 回滚失败容器**之前** best-effort 回捞容器日志尾部到部署日志:
+// 容器一删,启动崩溃 / 应用报错的现场就没了,失败原因无从判断。日志经 s.exec 自然回流
+// 命令日志(含机器归属);取日志失败仅回显一行 ✗,不改变原有失败语义与控制流。
+// ctx 传调用方的父 ctx(健康门控耗尽后其专用 ctx 已过期;此处自挂 execTimeout 级预算)。
+func (s *service) dumpContainerLogs(ctx context.Context, serverID, container string) {
+	dctx, cancel := context.WithTimeout(ctx, execTimeout)
+	defer cancel()
+	cmdLogFrom(ctx)(cmdStreamStdout, "", "  → 容器将被清理/回滚,先回捞日志尾部:")
+	_, _ = s.exec(dctx, serverID, []string{"docker", "logs", "--tail", strconv.Itoa(containerLogTailLines), container})
+}
+
 // healthBudget 推导一次健康门控的整体预算:重试次数 ×(单次超时 + 间隔)+ 一次单次超时作余量。
 // 重型配置(如 20 次 ×(60s+60s))远超 60s 命令超时(execTimeout),门控必须用独立预算的
 // ctx —— 复用部署命令的 execCtx 会让重试矩阵没跑完就被砍(并连带拖死其后的回滚,见

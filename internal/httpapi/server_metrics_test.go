@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -168,7 +169,7 @@ func TestParseInt(t *testing.T) {
 // --- 合并采集脚本与分段(1 台 = 1 次 SSH 连接的核心) ---
 
 func TestMetricsCollectScript(t *testing.T) {
-	base := metricsCollectArgs(false)
+	base := metricsCollectArgs(false, false)
 	if len(base) != 3 || base[0] != "sh" || base[1] != "-c" {
 		t.Fatalf("collect args should be sh -c script: %v", base)
 	}
@@ -189,12 +190,32 @@ func TestMetricsCollectScript(t *testing.T) {
 	if strings.Contains(script, "dmidecode") {
 		t.Fatalf("non-probe script should not contain dmidecode:\n%s", script)
 	}
+	// 非 GPU 机型脚本**绝不含** nvtop(老行为逐字不变)。
+	if strings.Contains(script, "nvtop") {
+		t.Fatalf("non-gpu script should not contain nvtop:\n%s", script)
+	}
 
 	// 探测版:追加 dmidecode 段,其余不变。
-	probe := metricsCollectArgs(true)
+	probe := metricsCollectArgs(true, false)
 	if !strings.Contains(probe[2], `dmidecode -t 17 2>/dev/null`) ||
 		!strings.Contains(probe[2], metricMarker+secPhysMem) {
 		t.Fatalf("probe script missing dmidecode section:\n%s", probe[2])
+	}
+	if strings.Contains(probe[2], "nvtop") {
+		t.Fatalf("probe-only script should not contain nvtop:\n%s", probe[2])
+	}
+
+	// GPU 版:追加 nvtop 段(带 timeout 兜底),且与 dmidecode 段互不干扰。
+	gpuScript := metricsCollectArgs(false, true)[2]
+	if !strings.Contains(gpuScript, metricMarker+secGpu) || !strings.Contains(gpuScript, `timeout 5 nvtop -s 2>/dev/null`) {
+		t.Fatalf("gpu script missing nvtop section:\n%s", gpuScript)
+	}
+	if strings.Contains(gpuScript, "dmidecode") {
+		t.Fatalf("gpu-only script should not contain dmidecode:\n%s", gpuScript)
+	}
+	both := metricsCollectArgs(true, true)[2]
+	if !strings.Contains(both, "dmidecode") || !strings.Contains(both, "nvtop -s") {
+		t.Fatalf("probe+gpu script should carry both sections:\n%s", both)
 	}
 }
 
@@ -222,6 +243,198 @@ func TestSplitMetricSections(t *testing.T) {
 	}
 }
 
+// --- GPU 段解析(nvtop -s;多卡 + NVIDIA/AMD 字段差异)---
+
+// nvidiaGPUSample 是 `nvtop -s` 的 NVIDIA 输出样例(两张卡,证明支持多卡;含 processes
+// 明细 —— 本需求不展示进程,解析时应被忽略)。
+const nvidiaGPUSample = `[
+  {
+    "device_name": "NVIDIA CMP 40HX",
+    "gpu_clock": "300MHz",
+    "mem_clock": "405MHz",
+    "temp": "37C",
+    "fan_speed": "36%",
+    "power_draw": "13W",
+    "gpu_util": "0%",
+    "encode": "0%",
+    "decode": "0%",
+    "mem_util": "82%",
+    "mem_total": "8589934592",
+    "mem_used": "7120289792",
+    "mem_free": "1469644800",
+    "processes" : [
+      {
+        "pid": "1158",
+        "cmdline": "./llama-server -m qwen3-reranker-8b-q4_k_m.gguf --port 11437 --reranking --ctx-size 4096 --host 0.0.0.0 -ub 2048",
+        "kind": "compute",
+        "user": "xufan",
+        "gpu_usage": null,
+        "gpu_mem_bytes_alloc": "6694109184",
+        "gpu_mem_usage": "78%",
+        "encode": null,
+        "decode": null
+      }
+    ]
+  },
+  {
+    "device_name": "NVIDIA CMP 40HX",
+    "gpu_clock": "1560MHz",
+    "mem_clock": "1000MHz",
+    "temp": "61C",
+    "fan_speed": "N/A",
+    "power_draw": "95W",
+    "gpu_util": "97%",
+    "encode": "12%",
+    "decode": "0%",
+    "mem_util": "41%",
+    "mem_total": "8589934592",
+    "mem_used": "3520289792",
+    "mem_free": "5069644800",
+    "processes": []
+  }
+]`
+
+// amdGPUSample 是 `nvtop -s` 的 AMD 输出样例:无 mem_total/mem_used/mem_free,也无
+// encode/decode(这些字段在 DTO 里应为 null,显存退化到 mem_util 百分比)。
+const amdGPUSample = `[
+  {
+    "device_name": "AMD Instinct MI60 / MI50",
+    "gpu_clock": "926MHz",
+    "mem_clock": "350MHz",
+    "temp": "44C",
+    "fan_speed": "14%",
+    "power_draw": "19W",
+    "gpu_util": "0%",
+    "mem_util": "0%"
+  }
+]`
+
+func TestParseNVTopNum(t *testing.T) {
+	cases := map[string]struct {
+		v  float64
+		ok bool
+	}{
+		"926MHz": {926, true},
+		"350MHz": {350, true},
+		"44C":    {44, true},
+		"14%":    {14, true},
+		"19W":    {19, true},
+		"0%":     {0, true},
+		" 82% ":  {82, true},
+		"N/A":    {0, false},
+		"":       {0, false},
+		"-1W":    {0, false},
+		"MHz":    {0, false},
+	}
+	for in, want := range cases {
+		v, ok := parseNVTopNum(in)
+		if ok != want.ok || (ok && v != want.v) {
+			t.Fatalf("parseNVTopNum(%q) = %v,%v want %v,%v", in, v, ok, want.v, want.ok)
+		}
+	}
+}
+
+func TestParseNVTopBytes(t *testing.T) {
+	cases := map[string]struct {
+		v  int64
+		ok bool
+	}{
+		"8589934592":   {8589934592, true},
+		"0":            {0, true},
+		" 1469644800 ": {1469644800, true},
+		"":             {0, false},
+		"N/A":          {0, false},
+		"8GiB":         {0, false},
+		"-1":           {0, false},
+	}
+	for in, want := range cases {
+		v, ok := parseNVTopBytes(in)
+		if ok != want.ok || (ok && v != want.v) {
+			t.Fatalf("parseNVTopBytes(%q) = %v,%v want %v,%v", in, v, ok, want.v, want.ok)
+		}
+	}
+}
+
+func TestGPUFromSections(t *testing.T) {
+	// NVIDIA 双卡:多卡顺序即 index;显存字节与编解码均有值;processes 明细被忽略。
+	m := gpuFromSections(map[string]string{secGpu: nvidiaGPUSample})
+	if m == nil || len(m.Devices) != 2 {
+		t.Fatalf("nvidia devices = %+v, want 2 cards", m)
+	}
+	d0, d1 := m.Devices[0], m.Devices[1]
+	if d0.Index != 0 || d0.Name != "NVIDIA CMP 40HX" {
+		t.Fatalf("card 0 identity wrong: %+v", d0)
+	}
+	if d0.GpuUtil == nil || *d0.GpuUtil != 0 || d0.MemUtil == nil || *d0.MemUtil != 82 {
+		t.Fatalf("card 0 util wrong: %+v", d0)
+	}
+	if d0.MemTotalBytes == nil || *d0.MemTotalBytes != 8589934592 ||
+		d0.MemUsedBytes == nil || *d0.MemUsedBytes != 7120289792 ||
+		d0.MemFreeBytes == nil || *d0.MemFreeBytes != 1469644800 {
+		t.Fatalf("card 0 memory wrong: %+v", d0)
+	}
+	if d0.TempC == nil || *d0.TempC != 37 || d0.FanSpeedPct == nil || *d0.FanSpeedPct != 36 ||
+		d0.PowerDrawW == nil || *d0.PowerDrawW != 13 ||
+		d0.GpuClockMHz == nil || *d0.GpuClockMHz != 300 || d0.MemClockMHz == nil || *d0.MemClockMHz != 405 {
+		t.Fatalf("card 0 telemetry wrong: %+v", d0)
+	}
+	if d0.EncodeUtil == nil || *d0.EncodeUtil != 0 || d0.DecodeUtil == nil || *d0.DecodeUtil != 0 {
+		t.Fatalf("card 0 codec wrong: %+v", d0)
+	}
+	if d1.Index != 1 || d1.GpuUtil == nil || *d1.GpuUtil != 97 {
+		t.Fatalf("card 1 wrong: %+v", d1)
+	}
+	// "N/A" 的风扇 → 该字段 null,同一张卡的其它字段照常。
+	if d1.FanSpeedPct != nil {
+		t.Fatalf("card 1 fan should be null on N/A: %+v", d1.FanSpeedPct)
+	}
+	if d1.TempC == nil || *d1.TempC != 61 {
+		t.Fatalf("card 1 temp wrong: %+v", d1)
+	}
+
+	// AMD 单卡:显存字节与编解码缺失 → null;mem_util 百分比兜底。
+	amd := gpuFromSections(map[string]string{secGpu: amdGPUSample})
+	if amd == nil || len(amd.Devices) != 1 {
+		t.Fatalf("amd devices = %+v, want 1 card", amd)
+	}
+	a := amd.Devices[0]
+	if a.Name != "AMD Instinct MI60 / MI50" || a.MemUtil == nil || *a.MemUtil != 0 {
+		t.Fatalf("amd card wrong: %+v", a)
+	}
+	if a.MemTotalBytes != nil || a.MemUsedBytes != nil || a.MemFreeBytes != nil {
+		t.Fatalf("amd has no memory bytes → all null: %+v", a)
+	}
+	if a.EncodeUtil != nil || a.DecodeUtil != nil {
+		t.Fatalf("amd has no codec util → null: %+v", a)
+	}
+	if a.TempC == nil || *a.TempC != 44 || a.PowerDrawW == nil || *a.PowerDrawW != 19 {
+		t.Fatalf("amd telemetry wrong: %+v", a)
+	}
+
+	// 前后夹带噪声文本仍能解析(回退到首个 [ 到末个 ] 的片段)。
+	noisy := gpuFromSections(map[string]string{secGpu: "warning: no display\n" + amdGPUSample + "\nsome trailing note\n"})
+	if noisy == nil || len(noisy.Devices) != 1 {
+		t.Fatalf("noisy output should still parse: %+v", noisy)
+	}
+
+	// 进程 cmdline 里出现 `]`:整串解析路径不受影响(不靠括号猜边界)。
+	bracket := `[{"device_name":"NVIDIA A100","gpu_util":"50%","processes":[{"cmdline":"python -c print([1,2])"}]}]`
+	if got := gpuFromSections(map[string]string{secGpu: bracket}); got == nil || len(got.Devices) != 1 ||
+		got.Devices[0].GpuUtil == nil || *got.Devices[0].GpuUtil != 50 {
+		t.Fatalf("cmdline containing brackets should parse: %+v", got)
+	}
+
+	// 空段(未装 nvtop / 命令失败)/ 空数组 / 垃圾 → nil(该维度不可用,不报错)。
+	for _, bad := range []string{"", "\n", "[]", "nvtop: command not found", "[not json]"} {
+		if got := gpuFromSections(map[string]string{secGpu: bad}); got != nil {
+			t.Fatalf("gpu section %q should degrade to nil, got %+v", bad, got)
+		}
+	}
+	if gpuFromSections(map[string]string{}) != nil {
+		t.Fatalf("missing gpu section should be nil")
+	}
+}
+
 // --- 假远端机:按合并脚本回一份带 ##PW: 标记的完整 stdout ---
 
 // fakeMetricsHost 是一台假远端机的各采集段内容(段空 = 该命令在远端缺失/失败 → 指标 null)。
@@ -234,6 +447,7 @@ type fakeMetricsHost struct {
 	diskB   string
 	diskK   string
 	phys    string
+	gpu     string
 }
 
 // linuxFakeHost:全命令可用(真 Linux 形态)。
@@ -244,8 +458,16 @@ var linuxFakeHost = fakeMetricsHost{
 	diskB:   "Filesystem 1B-blocks Used Available Use% Mounted on\n/dev/sda1 494384795648 123456789012 370927006636 25% /\n",
 }
 
-// fakeMetricsStdout 把假机段内容拼成合并脚本输出。dmidecode 段仅当脚本带探测(含
-// "dmidecode")时输出,与真脚本行为一致;end 标记收尾(脚本恒 0 退出)。
+// gpuFakeHost:同 linuxFakeHost,但装了 nvtop 并能回显卡 JSON(两张 NVIDIA 卡)。
+var gpuFakeHost = func() fakeMetricsHost {
+	h := linuxFakeHost
+	h.gpu = nvidiaGPUSample + "\n"
+	return h
+}()
+
+// fakeMetricsStdout 把假机段内容拼成合并脚本输出。dmidecode / nvtop 段仅当脚本带上对应
+// 命令时才输出,与真脚本行为一致(非 GPU 机型脚本不含 nvtop → 不出 GPU 段);end 标记收尾
+// (脚本恒 0 退出)。
 func fakeMetricsStdout(script string, h fakeMetricsHost) string {
 	var b strings.Builder
 	sec := func(name, content string) {
@@ -259,6 +481,9 @@ func fakeMetricsStdout(script string, h fakeMetricsHost) string {
 	sec(secDiskK, h.diskK)
 	if strings.Contains(script, "dmidecode") {
 		sec(secPhysMem, h.phys)
+	}
+	if strings.Contains(script, "nvtop") {
+		sec(secGpu, h.gpu)
 	}
 	b.WriteString(metricMarker + secEnd + "\n")
 	return b.String()
@@ -379,6 +604,75 @@ func TestServerMetricsLinux(t *testing.T) {
 	}
 	if out.CollectedAt == "" {
 		t.Fatalf("collectedAt empty")
+	}
+}
+
+// createServerAPIGPU 同 createServerAPI(登记一台 127.0.0.1 的服务器),但带 gpu 开关。
+func createServerAPIGPU(t *testing.T, client *http.Client, srvURL, csrf, credID string, gpu bool) string {
+	t.Helper()
+	body := `{"name":"gpu1","host":"127.0.0.1","port":22,"user":"deploy","credentialId":"` + credID + `","gpu":` + strconv.FormatBool(gpu) + `}`
+	resp := doJSON(t, client, http.MethodPost, srvURL+"/api/servers", csrf, body)
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	var s map[string]any
+	_ = json.Unmarshal(raw, &s)
+	id, _ := s["id"].(string)
+	if id == "" {
+		t.Fatalf("create server failed: %s", raw)
+	}
+	if s["gpu"] != gpu {
+		t.Fatalf("create 响应 gpu = %v, want %v: %s", s["gpu"], gpu, raw)
+	}
+	return id
+}
+
+// TestServerMetricsGPU 验证 GPU 机型的显卡段采集与非 GPU 机型的不采集。
+// 假机只在脚本含 nvtop 时回 GPU 段,故「非 GPU 机型 gpu == nil」同时证明其脚本没跑 nvtop。
+func TestServerMetricsGPU(t *testing.T) {
+	resetMetricsCacheForTest(t)
+	srv, client, csrf := setupServerAPI(t, cmdDialer{fn: func(cmd []string) (*target.ExecResult, error) {
+		return scriptFakeExec(cmd, gpuFakeHost), nil
+	}})
+	credID := newSSHCredAPI(t, client, srv.URL, csrf, "pw")
+	gpuID := createServerAPIGPU(t, client, srv.URL, csrf, credID, true)
+	plainID := createServerAPI(t, client, srv.URL, csrf, credID)
+
+	// GPU 机型:CPU/内存/磁盘照常 + gpu 两卡解析成功。
+	resp, _ := client.Get(srv.URL + "/api/servers/" + gpuID + "/metrics")
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", resp.StatusCode, raw)
+	}
+	var out serverMetricsDTO
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatalf("unmarshal: %v: %s", err, raw)
+	}
+	if !out.Reachable || out.CPU == nil || out.Disk == nil {
+		t.Fatalf("base metrics should stay intact: %+v", out)
+	}
+	if out.GPU == nil || len(out.GPU.Devices) != 2 {
+		t.Fatalf("gpu metrics missing: %+v", out.GPU)
+	}
+	dev := out.GPU.Devices[1]
+	if dev.Index != 1 || dev.GpuUtil == nil || *dev.GpuUtil != 97 ||
+		dev.MemTotalBytes == nil || *dev.MemTotalBytes != 8589934592 {
+		t.Fatalf("gpu card wrong: %+v", dev)
+	}
+
+	// 非 GPU 机型:不拼 nvtop 段 → gpu null(其余指标照常)。
+	resp2, _ := client.Get(srv.URL + "/api/servers/" + plainID + "/metrics")
+	raw2, _ := io.ReadAll(resp2.Body)
+	resp2.Body.Close()
+	var out2 serverMetricsDTO
+	if err := json.Unmarshal(raw2, &out2); err != nil {
+		t.Fatalf("unmarshal: %v: %s", err, raw2)
+	}
+	if !out2.Reachable || out2.CPU == nil {
+		t.Fatalf("plain host metrics should stay intact: %+v", out2)
+	}
+	if out2.GPU != nil {
+		t.Fatalf("non-gpu server must not collect gpu metrics: %+v", out2.GPU)
 	}
 }
 

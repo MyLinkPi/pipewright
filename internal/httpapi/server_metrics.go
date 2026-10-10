@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strconv"
@@ -14,7 +15,8 @@ import (
 )
 
 // Story 6.1(FR-15):多机状态总览 —— 服务器层资源指标(CPU 负载/核数、内存 used/total、
-// 磁盘 used/total),经 SSH 跑**固定白名单只读命令**采集,解析为结构化指标。
+// 磁盘 used/total;GPU 机型另加每张显卡的利用率/显存/温度/功耗),经 SSH 跑**固定白名单
+// 只读命令**采集,解析为结构化指标。
 //
 // 采集形态:每台**一次** SSH 连接跑一个合并脚本(metricsCollectArgs),脚本按 ##PW: 标记行
 // 分段输出,解析层逐段取值 —— 把原来 ~5 条命令 × 各自一次完整 TCP+SSH 握手压成 1 次握手。
@@ -43,8 +45,11 @@ const (
 	// 几乎每拍命中,或恰好触发一轮后台刷新;异常检测 / 采样器的 60s tick 读到的至多是
 	// 一个采集周期前的数据,对阈值判定无感。
 	metricsCacheTTL = 10 * time.Second
-	// metricsOutMax 是脚本 stdout 解析前的截断上限(防超大输出撑爆内存;指标输出本就极小)。
-	metricsOutMax = 64 * 1024
+	// metricsOutMax 是脚本 stdout 解析前的截断上限(防超大输出撑爆内存)。GPU 机型的
+	// `nvtop -s` 段是 JSON,含每进程明细(cmdline 可能很长;解析层只取显卡级字段却无法在
+	// 远端剔除),故留 256KiB 余量 —— 截断会打断 JSON,宁可多留。磁盘/内存段在 GPU 段之前,
+	// 万一真被截断也只损失 GPU 一行(降级为「不可用」),其余指标不受影响。
+	metricsOutMax = 256 * 1024
 )
 
 // ─── 合并采集脚本(AC-SEC-02:纯静态文本,绝不含任何用户输入)────────────────────
@@ -59,6 +64,10 @@ const (
 //   - physmem:`dmidecode -t 17` 物理/分配内存(SMBIOS Type 17 容量之和)。需 root;非 root /
 //     无 dmidecode / 虚拟化未暴露 SMBIOS → 段空 → 0(不展示)。静态量,经 physMem 缓存,
 //     仅缓存未命中时才把该段拼进脚本(成功值长期复用,失败 10min 冷却)。
+//   - gpu:`nvtop -s`(JSON,含每张卡的利用率/显存/温度/功耗/时钟,支持多卡、兼容 NVIDIA 与
+//     AMD)。**仅勾选「GPU 机型」的服务器才拼进脚本**(登记开关,见 target.Server.Gpu);
+//     未装 nvtop / 无显卡 / 输出不可解析 → 段空 → 该维度 null。前缀 `timeout 5` 兜底卡死
+//     (见 metricsCollectArgs)。
 //   - end:收尾标记,保证脚本恒以 0 退出(段命令失败不影响整体执行)。
 const metricMarker = "##PW:"
 
@@ -69,12 +78,14 @@ const (
 	secDiskB   = "diskb"
 	secDiskK   = "diskk"
 	secPhysMem = "physmem"
+	secGpu     = "gpu"
 	secEnd     = "end"
 )
 
 // metricsCollectArgs 返回单台一次性采集命令(sh -c 脚本;sh 在 Linux/macOS 恒在,
 // 与 target.Upload / build.DetectRemoteCLI 的 sh -c 组合命令同款做法)。
-func metricsCollectArgs(probePhys bool) []string {
+// probePhys = 需要把 dmidecode 段拼进脚本;gpu = 该机为 GPU 机型(需要 nvtop 段)。
+func metricsCollectArgs(probePhys, gpu bool) []string {
 	parts := []string{
 		`echo "` + metricMarker + secLoadavg + `"`,
 		`cat /proc/loadavg 2>/dev/null || uptime`,
@@ -91,6 +102,14 @@ func metricsCollectArgs(probePhys bool) []string {
 		parts = append(parts,
 			`echo "`+metricMarker+secPhysMem+`"`,
 			`dmidecode -t 17 2>/dev/null`)
+	}
+	if gpu {
+		// `timeout 5` 兜底:驱动异常时 nvtop 可能长时间卡住,不设上限会把整台机的 CPU/内存/
+		// 磁盘采集一起拖进 10s 总超时(该台显示「采集超时」);有上限则最坏只是 GPU 段为空 →
+		// 该行「不可用」。timeout 缺失(核心工具被裁)同样只让 GPU 段为空,不影响其它维度。
+		parts = append(parts,
+			`echo "`+metricMarker+secGpu+`"`,
+			`timeout 5 nvtop -s 2>/dev/null`)
 	}
 	parts = append(parts, `echo "`+metricMarker+secEnd+`"`)
 	return []string{"sh", "-c", strings.Join(parts, "; ")}
@@ -150,17 +169,45 @@ type diskMetric struct {
 	TotalBytes int64  `json:"totalBytes"`
 }
 
+// gpuDeviceMetric 是**单张显卡**的指标(nvtop -s 一条记录)。字段全部为指针:采不到的
+// 维度为 null(NVIDIA / AMD 暴露的字段本就不同 —— AMD 无显存字节总量与编解码利用率)。
+type gpuDeviceMetric struct {
+	Index         int      `json:"index"`         // nvtop 输出顺序(多卡时 0..N-1)
+	Name          string   `json:"name"`          // device_name
+	GpuUtil       *float64 `json:"gpuUtil"`       // GPU 利用率 %
+	MemUtil       *float64 `json:"memUtil"`       // 显存利用率 %
+	MemTotalBytes *int64   `json:"memTotalBytes"` // 显存总量(字节;AMD 无 → null)
+	MemUsedBytes  *int64   `json:"memUsedBytes"`
+	MemFreeBytes  *int64   `json:"memFreeBytes"`
+	TempC         *float64 `json:"tempC"`
+	FanSpeedPct   *float64 `json:"fanSpeedPct"`
+	PowerDrawW    *float64 `json:"powerDrawW"`
+	GpuClockMHz   *float64 `json:"gpuClockMhz"`
+	MemClockMHz   *float64 `json:"memClockMhz"`
+	EncodeUtil    *float64 `json:"encodeUtil"` // 编码器利用率 %(NVIDIA 可见)
+	DecodeUtil    *float64 `json:"decodeUtil"` // 解码器利用率 %
+}
+
+// gpuMetric 是该机的显卡集合(多卡:devices 按 nvtop 输出顺序;至少 1 张才会非 null 挂到
+// serverMetricsDTO 上 —— 见 gpuFromSections)。
+type gpuMetric struct {
+	Devices []gpuDeviceMetric `json:"devices"`
+}
+
 // serverMetricsDTO 是单台服务器指标响应体(冻结契约)。
 //   - reachable:false 时 cpu/memory/disk 为 null,error 人读非空。
 //   - reachable:true 时各指标独立:解析失败的维度为 null,其余正常。
 type serverMetricsDTO struct {
-	ServerID    string        `json:"serverId"`
-	Reachable   bool          `json:"reachable"`
-	Error       string        `json:"error"`
-	CPU         *cpuMetric    `json:"cpu"`
-	Memory      *memoryMetric `json:"memory"`
-	Disk        *diskMetric   `json:"disk"`
-	CollectedAt string        `json:"collectedAt"`
+	ServerID  string        `json:"serverId"`
+	Reachable bool          `json:"reachable"`
+	Error     string        `json:"error"`
+	CPU       *cpuMetric    `json:"cpu"`
+	Memory    *memoryMetric `json:"memory"`
+	Disk      *diskMetric   `json:"disk"`
+	// GPU 是显卡指标(仅勾选「GPU 机型」的服务器采集;未勾选 / 未装 nvtop / 无显卡 / 输出
+	// 不可解析 → null)。多卡为一个 devices 数组。
+	GPU         *gpuMetric `json:"gpu"`
+	CollectedAt string     `json:"collectedAt"`
 }
 
 // isLocateError 判定是否为「定位类」错误(服务器/凭据不存在、保险库未配)——这类该映射
@@ -228,6 +275,144 @@ func diskFromSections(sections map[string]string) *diskMetric {
 	return nil
 }
 
+// ─── GPU 段解析(nvtop -s)──────────────────────────────────────────────────────
+
+// nvtopDeviceRaw 是 `nvtop -s` JSON 里一张显卡的原始记录:值多为**带单位的字符串**
+// ("926MHz" / "44C" / "14%" / "19W"),显存字节是纯十进制串;缺项为空串。processes 等
+// 未列出的字段被忽略(本需求只看显卡级指标,不展示进程明细)。
+type nvtopDeviceRaw struct {
+	DeviceName string `json:"device_name"`
+	GpuClock   string `json:"gpu_clock"`
+	MemClock   string `json:"mem_clock"`
+	Temp       string `json:"temp"`
+	FanSpeed   string `json:"fan_speed"`
+	PowerDraw  string `json:"power_draw"`
+	GpuUtil    string `json:"gpu_util"`
+	MemUtil    string `json:"mem_util"`
+	Encode     string `json:"encode"`
+	Decode     string `json:"decode"`
+	MemTotal   string `json:"mem_total"`
+	MemUsed    string `json:"mem_used"`
+	MemFree    string `json:"mem_free"`
+}
+
+// parseNVTopDevices 解析 `nvtop -s` 的 JSON 数组。先按整串解析(常态:输出就是纯 JSON);
+// 失败再取**首个 `[` 到末个 `]`** 之间的片段重试 —— 容忍命令在 JSON 前后夹带的提示/告警文本。
+// 空 / 无数组 / 解析失败 / 0 张卡 → false。
+func parseNVTopDevices(s string) ([]nvtopDeviceRaw, bool) {
+	t := strings.TrimSpace(s)
+	if t == "" {
+		return nil, false
+	}
+	var raw []nvtopDeviceRaw
+	// 常态:输出就是纯 JSON,整串直接解析(进程 cmdline 里出现 `]` 也不影响)。
+	if err := json.Unmarshal([]byte(t), &raw); err != nil {
+		// 退一步:取首个 `[` 到末个 `]` 之间的片段重试(容忍 JSON 前后夹带的提示/告警文本)。
+		start := strings.Index(t, "[")
+		end := strings.LastIndex(t, "]")
+		if start < 0 || end <= start {
+			return nil, false
+		}
+		if err := json.Unmarshal([]byte(t[start:end+1]), &raw); err != nil {
+			return nil, false
+		}
+	}
+	if len(raw) == 0 {
+		return nil, false
+	}
+	return raw, true
+}
+
+// parseNVTopNum 解析 nvtop 指标值的**前缀数值**(单位后缀直接忽略):
+// "926MHz" → 926、"350MHz" → 350、"44C" → 44、"14%" → 14、"19W" → 19、"0%" → 0。
+// 空 / "N/A" / 非数字开头 / 负数 → false(该字段留 null,不影响同一张卡的其它字段)。
+func parseNVTopNum(s string) (float64, bool) {
+	t := strings.TrimSpace(s)
+	end := 0
+	for end < len(t) {
+		c := t[end]
+		if (c >= '0' && c <= '9') || c == '.' || (end == 0 && (c == '+' || c == '-')) {
+			end++
+			continue
+		}
+		break
+	}
+	if end == 0 {
+		return 0, false
+	}
+	v, err := strconv.ParseFloat(t[:end], 64)
+	if err != nil || v < 0 {
+		return 0, false
+	}
+	return v, true
+}
+
+// parseNVTopBytes 解析 nvtop 的显存字节字段(mem_total / mem_used / mem_free,纯十进制串)。
+// 空(AMD 输出没有这些字段)/ 非整数 / 负数 → false(该字段留 null,由 mem_util 百分比兜底)。
+func parseNVTopBytes(s string) (int64, bool) {
+	t := strings.TrimSpace(s)
+	if t == "" {
+		return 0, false
+	}
+	v, err := strconv.ParseInt(t, 10, 64)
+	if err != nil || v < 0 {
+		return 0, false
+	}
+	return v, true
+}
+
+// gpuFromSections 解析 gpu 段(`timeout 5 nvtop -s` 的 JSON)为多卡 DTO。
+// 段空(非 GPU 机型不拼该段 / 未装 nvtop / 命令失败)/ 无显卡 / 解析失败 → nil(卡片该行
+// 「不可用」,不报错、不影响其它维度)。
+func gpuFromSections(sections map[string]string) *gpuMetric {
+	raw, ok := parseNVTopDevices(sections[secGpu])
+	if !ok {
+		return nil
+	}
+	m := &gpuMetric{Devices: make([]gpuDeviceMetric, 0, len(raw))}
+	for i, d := range raw {
+		dev := gpuDeviceMetric{Index: i, Name: d.DeviceName}
+		if v, ok := parseNVTopNum(d.GpuUtil); ok {
+			dev.GpuUtil = &v
+		}
+		if v, ok := parseNVTopNum(d.MemUtil); ok {
+			dev.MemUtil = &v
+		}
+		if v, ok := parseNVTopBytes(d.MemTotal); ok {
+			dev.MemTotalBytes = &v
+		}
+		if v, ok := parseNVTopBytes(d.MemUsed); ok {
+			dev.MemUsedBytes = &v
+		}
+		if v, ok := parseNVTopBytes(d.MemFree); ok {
+			dev.MemFreeBytes = &v
+		}
+		if v, ok := parseNVTopNum(d.Temp); ok {
+			dev.TempC = &v
+		}
+		if v, ok := parseNVTopNum(d.FanSpeed); ok {
+			dev.FanSpeedPct = &v
+		}
+		if v, ok := parseNVTopNum(d.PowerDraw); ok {
+			dev.PowerDrawW = &v
+		}
+		if v, ok := parseNVTopNum(d.GpuClock); ok {
+			dev.GpuClockMHz = &v
+		}
+		if v, ok := parseNVTopNum(d.MemClock); ok {
+			dev.MemClockMHz = &v
+		}
+		if v, ok := parseNVTopNum(d.Encode); ok {
+			dev.EncodeUtil = &v
+		}
+		if v, ok := parseNVTopNum(d.Decode); ok {
+			dev.DecodeUtil = &v
+		}
+		m.Devices = append(m.Devices, dev)
+	}
+	return m
+}
+
 // ─── 物理内存缓存 ──────────────────────────────────────────────────────────────
 //
 // dmidecode 取的物理/分配内存是静态量(不随负载变),但采集页可能每 10s 轮询一次。
@@ -277,11 +462,23 @@ func physMemStore(id string, phys int64) {
 func collectServerMetrics(ctx context.Context, svc target.Service, id string) (serverMetricsDTO, error) {
 	out := serverMetricsDTO{ServerID: id, CollectedAt: time.Now().UTC().Format(time.RFC3339)}
 
+	// 先取登记信息:GPU 机型才把 nvtop 段拼进采集脚本(非 GPU 机型脚本与历史完全一致)。
+	// 一次本地库读,便宜;定位类错误语义与原来从 Exec 内部抛出时一致(单台端点映射 422/503)。
+	srv, err := svc.Get(ctx, id)
+	if err != nil {
+		out.Reachable = false
+		out.Error = humanMetricsError(err)
+		if isLocateError(err) {
+			return out, err
+		}
+		return out, nil
+	}
+
 	cctx, cancel := context.WithTimeout(ctx, metricsCollectTimeout)
 	defer cancel()
 
 	cachedPhys, probePhys := physMemLookup(id)
-	outStr, err := runMetricCmd(cctx, svc, id, metricsCollectArgs(probePhys))
+	outStr, err := runMetricCmd(cctx, svc, id, metricsCollectArgs(probePhys, srv.Gpu))
 	if err != nil {
 		out.Reachable = false
 		out.Error = humanMetricsError(err)
@@ -295,6 +492,7 @@ func collectServerMetrics(ctx context.Context, svc target.Service, id string) (s
 	out.CPU = cpuFromSections(sections)
 	out.Memory = memoryFromSections(sections)
 	out.Disk = diskFromSections(sections)
+	out.GPU = gpuFromSections(sections)
 	// 物理/分配内存:本轮带探测段才解析入库(成功值长期复用);无探测段直接用缓存值。
 	// 内存段失败时整块跳过(物理量以内核可用量做合理性校验,没 total 无从校验)。
 	if out.Memory != nil {

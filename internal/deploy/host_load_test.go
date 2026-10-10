@@ -43,49 +43,49 @@ func memLine(total, used int64) string {
 
 func TestParseHostLoad(t *testing.T) {
 	cases := []struct {
-		name     string
-		out      string
-		wantCPU  float64
-		wantMem  float64
+		name    string
+		out     string
+		wantCPU float64
+		wantMem float64
 		wantFull float64
-		wantOK   bool
-		cpuOK    bool
-		memOK    bool
+		wantOK  bool
+		cpuOK   bool
+		memOK   bool
 	}{
 		{
-			name:    "两维取高者(内存更忙)",
-			out:     loadOut("0.52 0.58 0.59 1/123 4567", "4", memLine(8000, 6000)),
-			wantCPU: 0.13, wantMem: 0.75, wantFull: 0.75, wantOK: true, cpuOK: true, memOK: true,
+			name:     "两维取高者(内存更忙)",
+			out:      loadOut("0.52 0.58 0.59 1/123 4567", "4", memLine(8000, 6000)),
+			wantCPU:  0.13, wantMem: 0.75, wantFull: 0.75, wantOK: true, cpuOK: true, memOK: true,
 		},
 		{
-			name:    "两维取高者(CPU 更忙且超载)",
-			out:     loadOut("8 4 2 1/123 4567", "4", memLine(8000, 1000)),
-			wantCPU: 2, wantMem: 0.125, wantFull: 2, wantOK: true, cpuOK: true, memOK: true,
+			name:     "两维取高者(CPU 更忙且超载)",
+			out:      loadOut("8 4 2 1/123 4567", "4", memLine(8000, 1000)),
+			wantCPU:  2, wantMem: 0.125, wantFull: 2, wantOK: true, cpuOK: true, memOK: true,
 		},
 		{
-			name:    "uptime 回退格式(macOS 无 /proc)",
-			out:     loadOut("14:23:01 up 3 days, 2:04, 1 user, load average: 1.50, 1.00, 0.50", "2", ""),
-			wantCPU: 0.75, wantFull: 0.75, wantOK: true, cpuOK: true,
+			name:     "uptime 回退格式(macOS 无 /proc)",
+			out:      loadOut("14:23:01 up 3 days, 2:04, 1 user, load average: 1.50, 1.00, 0.50", "2", ""),
+			wantCPU:  0.75, wantFull: 0.75, wantOK: true, cpuOK: true,
 		},
 		{
-			name:    "无 free → 仅 CPU 维度可用",
-			out:     loadOut("2.0 1 1 1/2 3", "4", ""),
-			wantCPU: 0.5, wantFull: 0.5, wantOK: true, cpuOK: true,
+			name:     "无 free → 仅 CPU 维度可用",
+			out:      loadOut("2.0 1 1 1/2 3", "4", ""),
+			wantCPU:  0.5, wantFull: 0.5, wantOK: true, cpuOK: true,
 		},
 		{
-			name:    "无核数 → 仅内存维度可用",
-			out:     loadOut("2.0 1 1 1/2 3", "", memLine(1000, 900)),
-			wantMem: 0.9, wantFull: 0.9, wantOK: true, memOK: true,
+			name:     "无核数 → 仅内存维度可用",
+			out:      loadOut("2.0 1 1 1/2 3", "", memLine(1000, 900)),
+			wantMem:  0.9, wantFull: 0.9, wantOK: true, memOK: true,
 		},
 		{
-			name:   "全段空 → 探测失败",
-			out:    loadOut("", "", ""),
-			wantOK: false,
+			name:    "全段空 → 探测失败",
+			out:     loadOut("", "", ""),
+			wantOK:  false,
 		},
 		{
-			name:    "核数为 0 → CPU 维不可用",
-			out:     loadOut("2.0 1 1 1/2 3", "0", memLine(1000, 100)),
-			wantMem: 0.1, wantFull: 0.1, wantOK: true, memOK: true,
+			name:     "核数为 0 → CPU 维不可用",
+			out:      loadOut("2.0 1 1 1/2 3", "0", memLine(1000, 100)),
+			wantMem:  0.1, wantFull: 0.1, wantOK: true, memOK: true,
 		},
 		{
 			name:    "free 的 Mem total 为 0 → 内存维不可用(仅剩 CPU)",
@@ -98,9 +98,9 @@ func TestParseHostLoad(t *testing.T) {
 			wantOK: false,
 		},
 		{
-			name:   "空输出",
-			out:    "",
-			wantOK: false,
+			name:    "空输出",
+			out:     "",
+			wantOK:  false,
 		},
 	}
 	for _, tc := range cases {
@@ -202,9 +202,9 @@ func isLoadProbe(cmd []string) bool {
 // 探测失败的两台(连接失败 / 输出无指标)排最后且不被选中。
 func TestLimitServersByLoadPicksEmptyest(t *testing.T) {
 	st := loadStubTarget(t, map[string]string{
-		"w-busy":  loadOut("8.0 4 2 1/2 3", "4", memLine(8000, 2000)),     // max(2.0, 0.25) = 2.0
+		"w-busy": loadOut("8.0 4 2 1/2 3", "4", memLine(8000, 2000)),  // max(2.0, 0.25) = 2.0
 		"w-empty": loadOut("0.40 0.4 0.4 1/2 3", "4", memLine(8000, 800)), // max(0.10, 0.10) = 0.10
-		"w-mid":   loadOut("2.0 1 1 1/2 3", "4", memLine(8000, 2400)),     // max(0.50, 0.30) = 0.50
+		"w-mid":   loadOut("2.0 1 1 1/2 3", "4", memLine(8000, 2400)),  // max(0.50, 0.30) = 0.50
 		"w-mem":   loadOut("0.2 0.2 0.2 1/2 3", "4", memLine(8000, 5600)), // max(0.05, 0.70) = 0.70
 	}, map[string]bool{"w-down": true})
 
@@ -293,11 +293,11 @@ func TestDeployForStageRespectsMaxTargets(t *testing.T) {
 	db := testDB(t)
 	rsvc := run.New(db)
 	st := loadStubTarget(t, map[string]string{
-		"c-1": loadOut("6.0 3 2 1/2 3", "4", memLine(8000, 1000)),    // 1.5
+		"c-1": loadOut("6.0 3 2 1/2 3", "4", memLine(8000, 1000)), // 1.5
 		"c-2": loadOut("0.8 0.8 0.8 1/2 3", "4", memLine(8000, 800)), // 0.2
-		"c-3": loadOut("2.4 2 1 1/2 3", "4", memLine(8000, 1200)),    // 0.6/0.15 → 0.6
+		"c-3": loadOut("2.4 2 1 1/2 3", "4", memLine(8000, 1200)), // 0.6/0.15 → 0.6
 		"c-4": loadOut("0.4 0.4 0.4 1/2 3", "4", memLine(8000, 400)), // 0.1
-		"c-5": loadOut("1.2 1 1 1/2 3", "4", memLine(8000, 600)),     // 0.3/0.075 → 0.3
+		"c-5": loadOut("1.2 1 1 1/2 3", "4", memLine(8000, 600)),  // 0.3/0.075 → 0.3
 	}, nil)
 	seedLabeledServer(t, st, "c-3", "app")
 	seedLabeledServer(t, st, "c-1", "app")
@@ -358,10 +358,10 @@ func TestDeployForStageWithoutMaxTargetsUnchanged(t *testing.T) {
 
 	svc := New(st, rsvc)
 	for name, cfg := range map[string]map[string]string{
-		"未配置":   nil,
-		"空串":    {"maxTargets": ""},
-		"非法值":   {"maxTargets": "abc"},
-		"零":     {"maxTargets": "0"},
+		"未配置":  nil,
+		"空串":   {"maxTargets": ""},
+		"非法值":  {"maxTargets": "abc"},
+		"零":    {"maxTargets": "0"},
 		"上限≥命中": {"maxTargets": "5"},
 	} {
 		probes = 0

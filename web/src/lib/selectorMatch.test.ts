@@ -8,7 +8,7 @@ function srv(id: string, name: string, labels = ''): Server {
     credentialId: 'cred', credentialName: 'cred',
     sudoCredentialId: '', sudoCredentialName: '',
     jumps: [],
-    labels, maxBuilds: 1, priority: 0, createdAt: '', updatedAt: '',
+    labels, maxBuilds: 1, priority: 0, gpu: false, createdAt: '', updatedAt: '',
   }
 }
 

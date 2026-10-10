@@ -93,4 +93,8 @@ export default {
   poolBadgeHint: 'Build machine: {slots} slots, priority {priority}',
   errMaxBuildsRange: 'Concurrent build slots must be within 0..64',
   errPriorityRange: 'Scheduling priority must be within 0..100',
+  fieldGpu: 'GPU machine',
+  fieldGpuCheckbox: 'This machine has a GPU (card monitoring)',
+  gpuHint: 'When checked, the status overview additionally runs nvtop -s to collect per-card utilization / VRAM / temperature / power (requires nvtop on the target). Monitoring only — it does not affect build or deploy scheduling.',
+  gpuBadge: 'GPU',
 }

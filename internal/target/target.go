@@ -98,12 +98,16 @@ type Server struct {
 	MaxBuilds int
 	// Priority 是调度优先级(数值越大越优先;0-100)。
 	Priority int
+	// Gpu 标记该机带显卡:开启后多机状态总览(FR-15)额外经 `nvtop -s` 采集每张卡的利用率/
+	// 显存/温度/功耗(支持多卡,兼容 NVIDIA 与 AMD)。**纯监控开关** —— 不参与构建机池调度
+	// (调度仍看 Labels/槽位/优先级),也不影响部署目标选择。
+	Gpu bool
 	// CredentialName 是冗余只读展示名(join credentials),便于列表展示;非持久列。
 	CredentialName string
 	// SudoCredentialName 是 sudo 凭据的冗余只读展示名(第二个 join credentials);非持久列。
 	SudoCredentialName string
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
 }
 
 // CreateInput 是登记服务器的入参。
@@ -115,10 +119,12 @@ type CreateInput struct {
 	CredentialID     string
 	SudoCredentialID string // 可选;空 = 不使用密码 sudo
 	// Jumps 是可选跳板链(≤ MaxJumps;Port <=0 时归一为 DefaultPort)。空 = 直连。
-	Jumps      []ServerJump
-	Labels     string
-	MaxBuilds  int
-	Priority   int
+	Jumps     []ServerJump
+	Labels    string
+	MaxBuilds int
+	Priority  int
+	// Gpu 标记该机带显卡(纯监控开关;语义见 Server.Gpu)。
+	Gpu bool
 }
 
 // UpdateInput 是更新服务器的入参;指针字段为 nil 表示不修改。
@@ -134,6 +140,8 @@ type UpdateInput struct {
 	Labels    *string
 	MaxBuilds *int
 	Priority  *int
+	// Gpu 非 nil = 修改显卡标记(纯监控开关)。
+	Gpu *bool
 }
 
 // ExecResult 是通用 Exec 的结果(冻结契约;Epic 4/6 消费)。
@@ -418,9 +426,9 @@ func (s *service) Create(ctx context.Context, in CreateInput) (*Server, error) {
 	nowStr := now.Format(time.RFC3339)
 
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO servers (id, name, host, port, user, credential_id, sudo_credential_id, jumps, labels, max_builds, priority, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		id, in.Name, in.Host, port, in.User, in.CredentialID, in.SudoCredentialID, marshalJumps(jumps), in.Labels, in.MaxBuilds, in.Priority, nowStr, nowStr,
+		`INSERT INTO servers (id, name, host, port, user, credential_id, sudo_credential_id, jumps, labels, max_builds, priority, gpu, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		id, in.Name, in.Host, port, in.User, in.CredentialID, in.SudoCredentialID, marshalJumps(jumps), in.Labels, in.MaxBuilds, in.Priority, in.Gpu, nowStr, nowStr,
 	)
 	if err != nil {
 		if isForeignKeyErr(err) {
@@ -465,7 +473,7 @@ func (s *service) validateSudoCredential(id string) error {
 func (s *service) List(ctx context.Context) ([]*Server, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT s.id, s.name, s.host, s.port, s.user, s.credential_id, COALESCE(s.sudo_credential_id, ''),
-		        COALESCE(s.jumps, '[]'), COALESCE(s.labels, ''), COALESCE(s.max_builds, 0), COALESCE(s.priority, 0),
+		        COALESCE(s.jumps, '[]'), COALESCE(s.labels, ''), COALESCE(s.max_builds, 0), COALESCE(s.priority, 0), COALESCE(s.gpu, 0),
 		        COALESCE(c.name, ''), COALESCE(sc.name, ''), s.created_at, s.updated_at
 		 FROM servers s
 		 LEFT JOIN credentials c ON c.id = s.credential_id
@@ -494,7 +502,7 @@ func (s *service) List(ctx context.Context) ([]*Server, error) {
 func (s *service) Get(ctx context.Context, id string) (*Server, error) {
 	row := s.db.QueryRowContext(ctx,
 		`SELECT s.id, s.name, s.host, s.port, s.user, s.credential_id, COALESCE(s.sudo_credential_id, ''),
-		        COALESCE(s.jumps, '[]'), COALESCE(s.labels, ''), COALESCE(s.max_builds, 0), COALESCE(s.priority, 0),
+		        COALESCE(s.jumps, '[]'), COALESCE(s.labels, ''), COALESCE(s.max_builds, 0), COALESCE(s.priority, 0), COALESCE(s.gpu, 0),
 		        COALESCE(c.name, ''), COALESCE(sc.name, ''), s.created_at, s.updated_at
 		 FROM servers s
 		 LEFT JOIN credentials c ON c.id = s.credential_id
@@ -514,16 +522,17 @@ func (s *service) Get(ctx context.Context, id string) (*Server, error) {
 func (s *service) Update(ctx context.Context, id string, in UpdateInput) (*Server, error) {
 	// 先取当前行。
 	var name, host, user, credentialID, sudoCredentialID, labels, jumpsStr string
-	var port, maxBuilds, priority int
+	var port, maxBuilds, priority, gpuInt int
 	err := s.db.QueryRowContext(ctx,
-		`SELECT name, host, port, user, credential_id, COALESCE(sudo_credential_id,''), COALESCE(jumps,'[]'), COALESCE(labels,''), COALESCE(max_builds,0), COALESCE(priority,0) FROM servers WHERE id = ?`, id,
-	).Scan(&name, &host, &port, &user, &credentialID, &sudoCredentialID, &jumpsStr, &labels, &maxBuilds, &priority)
+		`SELECT name, host, port, user, credential_id, COALESCE(sudo_credential_id,''), COALESCE(jumps,'[]'), COALESCE(labels,''), COALESCE(max_builds,0), COALESCE(priority,0), COALESCE(gpu,0) FROM servers WHERE id = ?`, id,
+	).Scan(&name, &host, &port, &user, &credentialID, &sudoCredentialID, &jumpsStr, &labels, &maxBuilds, &priority, &gpuInt)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
 		}
 		return nil, fmt.Errorf("target: load: %w", err)
 	}
+	gpu := gpuInt != 0
 
 	if in.Name != nil {
 		if *in.Name == "" {
@@ -585,11 +594,14 @@ func (s *service) Update(ctx context.Context, id string, in UpdateInput) (*Serve
 	if in.Priority != nil {
 		priority = *in.Priority
 	}
+	if in.Gpu != nil {
+		gpu = *in.Gpu
+	}
 
 	nowStr := time.Now().UTC().Format(time.RFC3339)
 	_, err = s.db.ExecContext(ctx,
-		`UPDATE servers SET name = ?, host = ?, port = ?, user = ?, credential_id = ?, sudo_credential_id = ?, jumps = ?, labels = ?, max_builds = ?, priority = ?, updated_at = ? WHERE id = ?`,
-		name, host, port, user, credentialID, sudoCredentialID, marshalJumps(jumps), labels, maxBuilds, priority, nowStr, id,
+		`UPDATE servers SET name = ?, host = ?, port = ?, user = ?, credential_id = ?, sudo_credential_id = ?, jumps = ?, labels = ?, max_builds = ?, priority = ?, gpu = ?, updated_at = ? WHERE id = ?`,
+		name, host, port, user, credentialID, sudoCredentialID, marshalJumps(jumps), labels, maxBuilds, priority, gpu, nowStr, id,
 	)
 	if err != nil {
 		if isForeignKeyErr(err) {
@@ -957,14 +969,16 @@ type scanner interface {
 func scanServer(sc scanner) (*Server, error) {
 	var srv Server
 	var jumpsStr, createdStr, updatedStr string
+	var gpuInt int
 	if err := sc.Scan(
 		&srv.ID, &srv.Name, &srv.Host, &srv.Port, &srv.User, &srv.CredentialID, &srv.SudoCredentialID,
-		&jumpsStr, &srv.Labels, &srv.MaxBuilds, &srv.Priority,
+		&jumpsStr, &srv.Labels, &srv.MaxBuilds, &srv.Priority, &gpuInt,
 		&srv.CredentialName, &srv.SudoCredentialName, &createdStr, &updatedStr,
 	); err != nil {
 		return nil, err
 	}
 	srv.Jumps = parseJumps(jumpsStr)
+	srv.Gpu = gpuInt != 0
 	created, err := time.Parse(time.RFC3339, createdStr)
 	if err != nil {
 		return nil, fmt.Errorf("target: parse created_at: %w", err)
