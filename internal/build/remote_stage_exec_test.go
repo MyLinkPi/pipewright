@@ -82,7 +82,8 @@ func (f *fakeRunnerResolver) Acquire(_ context.Context, _, selector string, _ fu
 // 供断言派发日志路由到节点自身的 step(生产实现在 dagrun.stageReporter.JobReporter)。
 type routingReporter struct {
 	*fakeReporter
-	jobLogs map[string][]string
+	jobLogs     map[string][]string
+	jobMachines map[string][]string // 与 jobLogs 一一对应:该节点日志行的来源机器
 }
 
 func (r *routingReporter) JobReporter(jobID string) dagrun.StageReporter {
@@ -94,8 +95,9 @@ type jobLineRecorder struct {
 	jobID string
 }
 
-func (j *jobLineRecorder) Log(_ context.Context, _ string, line string) error {
+func (j *jobLineRecorder) Log(ctx context.Context, _ string, line string) error {
 	j.jobLogs[j.jobID] = append(j.jobLogs[j.jobID], line)
+	j.jobMachines[j.jobID] = append(j.jobMachines[j.jobID], run.LogMachineFrom(ctx))
 	return nil
 }
 
@@ -454,7 +456,7 @@ func TestStageExecutorDispatchLogShowsMachineName(t *testing.T) {
 	fr := &fakeRunnerResolver{pickBy: map[string]string{"server:srv-a": "srv-a", "server:srv-b": "srv-b"}}
 	exec := NewStageExecutorWithRunner(b, nil, fr, tgt)
 
-	rep := &routingReporter{fakeReporter: &fakeReporter{}, jobLogs: map[string][]string{}}
+	rep := &routingReporter{fakeReporter: &fakeReporter{}, jobLogs: map[string][]string{}, jobMachines: map[string][]string{}}
 	r := &run.Run{ID: "run-1", ProjectID: "p1", Trigger: run.Trigger{Branch: "main"}}
 	ja := scriptJobWithConfig("a", "node:20", "echo a", map[string]any{"runner": "server:srv-a"})
 	ja.ID = "ja"
@@ -478,6 +480,12 @@ func TestStageExecutorDispatchLogShowsMachineName(t *testing.T) {
 	// 派发日志不得再出现裸机器 id(旧行为)。
 	if joined := strings.Join(rep.jobLogs["ja"], "\n"); strings.Contains(joined, "构建机:srv-a(") {
 		t.Fatalf("派发日志不应打裸机器 id:got %q", joined)
+	}
+	// 机器归属(步骤 × 机器分组的数据来源):该节点全部日志行的 machine 应 = 构建机显示名。
+	for i, m := range rep.jobMachines["ja"] {
+		if m != "srv-a-name" {
+			t.Fatalf("节点 a 第 %d 行 machine 应为 srv-a-name, got %q(行:%q)", i, m, rep.jobLogs["ja"][i])
+		}
 	}
 }
 

@@ -160,6 +160,9 @@ export default {
   maskedTitle: 'Vertrauliche Informationen maskiert',
   jumpToLatest: 'Zum neuesten Log springen',
   jumpToBottom: 'Zum Ende springen',
+  machineAll: 'Alle',
+  machineCtrl: 'Steuerungsmaschine',
+  machineFilterAria: 'Logs nach Maschine filtern',
 
   // ─── SuccessFailDiff ────────────────────────────────────────────
   diffRegion: 'Code-Änderungen in diesem Commit',

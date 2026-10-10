@@ -656,14 +656,15 @@ func (d *dbStepSink) SetSpecSource(_ context.Context, src SpecSource) error {
 // run 内单调 seq)→ 经事件总线发 EventLog(text 已脱敏)。AC-SEC-04:落库/出网前一律 Scrub,
 // 桩假 secret 在 run_logs 表/SSE 中一律 [MASKED]、绝无明文。
 //
-// 用后台 ctx 落库以容忍取消场景(日志须被持久化);best-effort:落库失败返回 error 由
-// 调用方(StubRunner)忽略,绝不阻断步骤/运行终态。
-func (d *dbStepSink) Log(_ context.Context, stream string, stepOrdinal int, line string) error {
+// 机器归属从传入 ctx 读(WithLogMachine 挂载,步骤 × 机器分组展示);落库仍用后台 ctx
+// 以容忍取消场景(日志须被持久化)。best-effort:落库失败返回 error 由调用方忽略,绝不阻断终态。
+func (d *dbStepSink) Log(ctx context.Context, stream string, stepOrdinal int, line string) error {
 	text := line
 	if d.masker != nil {
 		text = d.masker.Scrub(line)
 	}
-	seq, err := d.svc.AppendLog(context.Background(), d.runID, stream, stepOrdinal, text)
+	machine := LogMachineFrom(ctx)
+	seq, err := d.svc.AppendLog(context.Background(), d.runID, stream, stepOrdinal, text, machine)
 	if err != nil {
 		return fmt.Errorf("run: append log: %w", err)
 	}
@@ -676,6 +677,7 @@ func (d *dbStepSink) Log(_ context.Context, stream string, stepOrdinal int, line
 			Stream:      stream,
 			StepOrdinal: stepOrdinal,
 			Text:        text,
+			Machine:     machine,
 		},
 	})
 	return nil

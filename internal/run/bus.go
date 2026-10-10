@@ -19,7 +19,7 @@ const (
 
 // Event 是事件总线发布/订阅的载荷。
 // EventStatus/EventStep 仅携带状态/步骤元数据(3-1 冻结形状,不得改动);
-// EventLog 额外携带 Log 负载(seq/ts/stream/stepOrdinal/text,text 已脱敏)。
+// EventLog 额外携带 Log 负载(seq/ts/stream/stepOrdinal/machine/text,text 已脱敏)。
 type Event struct {
 	Kind  EventKind
 	RunID string
@@ -38,6 +38,9 @@ type LogLine struct {
 	Stream      string    // stdout | stderr
 	StepOrdinal int       // 关联步骤序号(-1 = 运行级)
 	Text        string    // 单行已脱敏日志文本(无尾换行)
+	// Machine 是该行的来源机器显示名快照(部署/取机时刻;步骤 × 机器分组展示用)。
+	// "" = 控制机本机执行或运行级日志。机器名非敏感,不参与脱敏。
+	Machine string
 }
 
 // bus 是进程内内存事件总线:worker 发布运行/步骤变更,SSE handler 订阅。

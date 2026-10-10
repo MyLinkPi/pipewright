@@ -139,7 +139,7 @@ func (s *service) precheckFailing(ctx context.Context, servers []*target.Server,
 	reasons := make(map[int]string, len(servers))
 	var mu sync.Mutex
 	s.forEachServer(servers, func(idx int, srv *target.Server) {
-		perr := s.runHealthCheck(ctx, srv.ID, hc)
+		perr := s.runHealthCheck(scopeCmdLog(ctx, srv.Name), srv.ID, hc)
 		if perr == nil {
 			return
 		}

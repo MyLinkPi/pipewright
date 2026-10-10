@@ -44,11 +44,14 @@ func (s *service) CheckHealth(ctx context.Context, selector, selectorMode string
 		}
 		return nil, fmt.Errorf("健康检查节点未圈选任何目标机:command 探测须指定目标机(selector 或 serverId)")
 	}
+	// 目标机可见性:探测前明示选择器圈中了哪些机器(与部署路径同格式)。
+	cmdLogFrom(ctx)(cmdStreamStdout, "", fmt.Sprintf("→ 目标机(%d 台):%s", len(servers), strings.Join(serverDisplayNames(servers), ", ")))
 
 	out := make([]HealthProbeResult, 0, len(servers))
 	var failedMsgs []string
 	for _, srv := range servers {
-		perr := s.runHealthCheck(ctx, srv.ID, hc)
+		// 单机作用域:探测命令输出归属到该机(步骤 × 机器分组)。
+		perr := s.runHealthCheck(scopeCmdLog(ctx, srv.Name), srv.ID, hc)
 		r := HealthProbeResult{ServerID: srv.ID, ServerName: srv.Name}
 		if perr == nil {
 			r.OK = true

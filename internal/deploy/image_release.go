@@ -132,7 +132,7 @@ func (s *service) stageImageOne(ctx context.Context, srv *target.Server, a run.A
 	// 即取即用,不落日志;失败仅记日志继续,pull 自身可能走匿名缓存)。
 	if cred := strings.TrimSpace(cfg["registryCredentialId"]); cred != "" {
 		if lerr := s.targets.DockerLogin(ctx, srv.ID, cfg["registryUrl"], cred); lerr != nil {
-			cmdLogFrom(ctx)(cmdStreamStderr, "  ⚠ 目标机 docker login 失败(继续尝试 pull):"+humanExecError(lerr))
+			cmdLogFrom(ctx)(cmdStreamStderr, "", "  ⚠ 目标机 docker login 失败(继续尝试 pull):"+humanExecError(lerr))
 		}
 	}
 

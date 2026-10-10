@@ -160,6 +160,9 @@ export default {
   maskedTitle: '敏感資訊已遮罩',
   jumpToLatest: '跳到最新日誌',
   jumpToBottom: '跳到底部',
+  machineAll: '全部',
+  machineCtrl: '控制機',
+  machineFilterAria: '按機器過濾日誌',
 
   // ─── SuccessFailDiff ────────────────────────────────────────────
   diffRegion: '本次提交程式碼變更',

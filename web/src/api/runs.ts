@@ -353,6 +353,8 @@ export interface RunLogLine {
   stream: LogStream
   stepOrdinal: number
   text: string          // single line, already masked, no trailing newline
+  /** Source machine display-name snapshot ('' / undefined = control machine or run-level). Absent on pre-0070 runs. */
+  machine?: string
 }
 
 // GET /api/runs/{id}/logs?sinceSeq=<int>  → historical / paginated pull (non-SSE)

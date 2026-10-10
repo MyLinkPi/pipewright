@@ -19,7 +19,8 @@ const (
 )
 
 // CmdLogFunc 接收一行待写入运行日志的部署命令/输出(stream = stdout | stderr)。
-type CmdLogFunc func(stream, text string)
+// machine 是该行的来源机器显示名("":运行级/控制机,或由 scopeCmdLog 注入单机归属)。
+type CmdLogFunc func(stream, machine, text string)
 
 type cmdLogKey struct{}
 
@@ -36,28 +37,37 @@ func cmdLogFrom(ctx context.Context) CmdLogFunc {
 	if fn, ok := ctx.Value(cmdLogKey{}).(CmdLogFunc); ok && fn != nil {
 		return fn
 	}
-	return func(string, string) {}
+	return func(string, string, string) {}
+}
+
+// scopeCmdLog 返回单机作用域子 ctx:深层经 cmdLogFrom 发射的行自动带上 machine 归属,
+// 逐机执行点(deployFanout 并行体 / runCommandOnly 循环体 / 逐机探测循环)包一次即可,
+// 深处(s.exec、端口映射、登录告警等)零改动获得归属。
+func scopeCmdLog(ctx context.Context, machine string) context.Context {
+	base := cmdLogFrom(ctx)
+	return WithCmdLog(ctx, func(stream, _, text string) { base(stream, machine, text) })
 }
 
 // exec 包裹 targets.Exec:执行前回显命令、执行后回流 stdout/stderr 到 ctx 的命令日志(若挂了)。
 // 返回值与 targets.Exec 完全一致,不改变任何控制流(无 ctx 日志时 = 纯透传)。
+// 机器归属由上层单机作用域(scopeCmdLog)注入,此处只透传 machine=""(交由作用域填)。
 func (s *service) exec(ctx context.Context, serverID string, cmd []string) (*target.ExecResult, error) {
 	lg := cmdLogFrom(ctx)
-	lg(cmdStreamStdout, "$ "+displayCmd(cmd))
+	lg(cmdStreamStdout, "", "$ "+displayCmd(cmd))
 	out, err := s.targets.Exec(ctx, serverID, cmd)
 	if err != nil {
-		lg(cmdStreamStderr, "  ✗ "+humanExecError(err))
+		lg(cmdStreamStderr, "", "  ✗ "+humanExecError(err))
 		return out, err
 	}
 	if out != nil {
 		if t := strings.Trim(out.Stdout, "\r\n"); strings.TrimSpace(t) != "" {
-			lg(cmdStreamStdout, t)
+			lg(cmdStreamStdout, "", t)
 		}
 		if t := strings.Trim(out.Stderr, "\r\n"); strings.TrimSpace(t) != "" {
-			lg(cmdStreamStderr, t)
+			lg(cmdStreamStderr, "", t)
 		}
 		if out.ExitCode != 0 {
-			lg(cmdStreamStderr, fmt.Sprintf("  ✗ 退出码 %d", out.ExitCode))
+			lg(cmdStreamStderr, "", fmt.Sprintf("  ✗ 退出码 %d", out.ExitCode))
 		}
 	}
 	return out, err

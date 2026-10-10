@@ -160,6 +160,9 @@ export default {
   maskedTitle: '민감 정보가 마스킹되었습니다',
   jumpToLatest: '최신 로그로 이동',
   jumpToBottom: '맨 아래로 이동',
+  machineAll: '전체',
+  machineCtrl: '제어 머신',
+  machineFilterAria: '머신별 로그 필터',
 
   // ─── SuccessFailDiff ────────────────────────────────────────────
   diffRegion: '이 커밋의 코드 변경',

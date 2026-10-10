@@ -22,13 +22,15 @@ import (
 
 // fakeReporter 记录 dagrun.StageReporter 调用。
 type fakeReporter struct {
-	logs    []string
-	arts    []run.Artifact
-	jobDone []string // 记录 "jobID=status",验证节点级上报
+	logs     []string
+	machines []string // 与 logs 一一对应:该行的来源机器(run.LogMachineFrom(ctx),"":控制机/运行级)
+	arts     []run.Artifact
+	jobDone  []string // 记录 "jobID=status",验证节点级上报
 }
 
-func (r *fakeReporter) Log(_ context.Context, _ string, line string) error {
+func (r *fakeReporter) Log(ctx context.Context, _ string, line string) error {
 	r.logs = append(r.logs, line)
+	r.machines = append(r.machines, run.LogMachineFrom(ctx))
 	return nil
 }
 func (r *fakeReporter) EmitArtifact(_ context.Context, a run.Artifact) error {

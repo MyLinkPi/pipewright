@@ -683,7 +683,10 @@ func (b *Builder) runDeployJob(ctx context.Context, rep dagrun.StageReporter, jb
 	}
 	_ = rep.Log(ctx, streamStdout, fmt.Sprintf("→ 部署本次产物到目标机(选择器 %s,滚动策略 %s)…", selector, stratLabel))
 	// 把目标机真实执行的命令 + stdout/stderr 实时回流到本部署步骤日志(脱敏由 sink Masker 兜底)。
-	dctx := deploy.WithCmdLog(ctx, func(stream, text string) { _ = rep.Log(ctx, stream, text) })
+	// machine = 该行来源目标机(空 = 运行级/控制机):经 ctx 通道落 run_logs.machine,前端按机器分组。
+	dctx := deploy.WithCmdLog(ctx, func(stream, machine, text string) {
+		_ = rep.Log(run.WithLogMachine(ctx, machine), stream, text)
+	})
 	results, err := b.deployer.DeployForStage(dctx, runID, selector, cfg, strategy)
 	if err != nil {
 		_ = rep.Log(ctx, streamStderr, "部署失败:"+err.Error())
@@ -742,7 +745,10 @@ func (b *Builder) runHealthCheckJob(ctx context.Context, rep dagrun.StageReporte
 		hc.URL = u
 	}
 	_ = rep.Log(ctx, streamStdout, fmt.Sprintf("→ 健康检查(目标 %s,模式 %s)…", selectorOrLabel(selector), hc.Type))
-	dctx := deploy.WithCmdLog(ctx, func(stream, text string) { _ = rep.Log(ctx, stream, text) })
+	// machine = 该行来源目标机(空 = 运行级/控制机):经 ctx 通道落 run_logs.machine,前端按机器分组。
+	dctx := deploy.WithCmdLog(ctx, func(stream, machine, text string) {
+		_ = rep.Log(run.WithLogMachine(ctx, machine), stream, text)
+	})
 	results, err := b.deployer.CheckHealth(dctx, selector, cfgString(jb.Config, "selectorMode"), hc)
 	if err != nil {
 		for _, r := range results {

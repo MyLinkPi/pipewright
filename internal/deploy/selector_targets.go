@@ -104,3 +104,25 @@ func (s *service) resolveTargets(ctx context.Context, serverIDs []string, select
 	}
 	return servers, nil
 }
+
+// serverDisplayName 目标机人读显示名:name(host);host 空 → name;name 也空 → id 兜底。
+// 与构建机池调度器的显示名规则一致:运行日志里人读名优先,不甩不可读 uuid。
+func serverDisplayName(srv *target.Server) string {
+	switch {
+	case srv.Name != "" && srv.Host != "":
+		return srv.Name + "(" + srv.Host + ")"
+	case srv.Name != "":
+		return srv.Name
+	default:
+		return srv.ID
+	}
+}
+
+// serverDisplayNames 批量取人读显示名(保序)。
+func serverDisplayNames(servers []*target.Server) []string {
+	out := make([]string, 0, len(servers))
+	for _, srv := range servers {
+		out = append(out, serverDisplayName(srv))
+	}
+	return out
+}
