@@ -672,7 +672,7 @@ watch(() => props.projectId, () => {
   border-radius: var(--rounded-card);
   box-shadow: var(--shadow-modal);
   width: 100%;
-  max-width: 620px;
+  max-width: 820px;
   max-height: calc(100vh - 48px);
   display: flex;
   flex-direction: column;

@@ -213,7 +213,7 @@ function portLabel(p: ContainerInspect['ports'][number]): string {
 }
 
 .ci-modal {
-  width: min(680px, 100%);
+  width: min(920px, 100%);
   max-height: min(82vh, 880px);
   display: flex;
   flex-direction: column;

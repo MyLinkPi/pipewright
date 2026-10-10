@@ -266,7 +266,7 @@ async function copyText(text: string): Promise<void> {
   to { opacity: 1; }
 }
 .modal {
-  width: min(720px, 96vw);
+  width: min(960px, 96vw);
   max-height: 90vh;
   display: flex;
   flex-direction: column;

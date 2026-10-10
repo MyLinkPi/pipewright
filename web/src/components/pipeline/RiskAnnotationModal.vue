@@ -184,7 +184,7 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKeydown))
 }
 
 .rap-modal {
-  width: min(720px, 96vw);
+  width: min(960px, 96vw);
   max-height: 88vh;
   display: flex;
   flex-direction: column;

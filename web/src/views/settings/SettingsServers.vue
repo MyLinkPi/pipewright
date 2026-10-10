@@ -919,7 +919,7 @@ async function handleTest(s: Server): Promise<void> {
 
     <!-- ─── delete confirm modal ──────────────────────────────────────────────── -->
     <div v-if="deleteModalOpen" class="modal-backdrop">
-      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="server-del-title">
+      <div class="modal modal--sm" role="dialog" aria-modal="true" aria-labelledby="server-del-title">
         <h3 id="server-del-title" class="modal-title">{{ t('settingsServers.deleteServer') }}</h3>
         <div v-if="deleteBanner" class="banner banner--error" role="alert">{{ deleteBanner }}</div>
         <p class="modal-text">
@@ -1214,7 +1214,7 @@ async function handleTest(s: Server): Promise<void> {
 }
 .modal {
   width: 100%;
-  max-width: 440px;
+  max-width: 640px;
   background: var(--color-surface);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-lg);
@@ -1225,7 +1225,11 @@ async function handleTest(s: Server): Promise<void> {
   box-shadow: var(--shadow-lg, 0 24px 60px rgba(0, 0, 0, 0.24));
 }
 .modal--wide {
-  max-width: min(960px, 92vw);
+  max-width: min(1200px, 92vw);
+}
+
+.modal--sm {
+  max-width: 520px;
 }
 .logs-modal-head {
   display: flex;

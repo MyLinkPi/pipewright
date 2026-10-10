@@ -152,7 +152,7 @@ onMounted(() => {
 }
 
 .pp-modal {
-  width: min(620px, 100%);
+  width: min(800px, 100%);
   max-height: min(86vh, 720px);
   display: flex;
   flex-direction: column;

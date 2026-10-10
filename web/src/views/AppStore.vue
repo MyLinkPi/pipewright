@@ -499,7 +499,7 @@ async function removeCustom(tpl: AppTemplate): Promise<void> {
   background: var(--bg, #fff);
   border-radius: 12px;
   padding: 18px;
-  width: min(560px, 100%);
+  width: min(760px, 100%);
   max-height: 85vh;
   overflow: auto;
   display: flex;

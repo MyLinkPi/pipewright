@@ -235,7 +235,7 @@ onMounted(() => void loadDf())
   z-index: 500;
 }
 .modal {
-  width: min(600px, 100%);
+  width: min(760px, 100%);
   max-height: 88vh;
   overflow-y: auto;
   background: var(--color-card);

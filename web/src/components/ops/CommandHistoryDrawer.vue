@@ -168,7 +168,7 @@ void load()
   to { opacity: 1; }
 }
 .drawer {
-  width: min(760px, 92vw);
+  width: min(1000px, 92vw);
   height: 100%;
   display: flex;
   flex-direction: column;

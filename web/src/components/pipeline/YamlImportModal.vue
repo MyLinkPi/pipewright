@@ -196,7 +196,7 @@ function loadStarter(): void {
 }
 
 .yi-modal {
-  width: min(720px, 100%);
+  width: min(960px, 100%);
   max-height: min(86vh, 760px);
   display: flex;
   flex-direction: column;

@@ -62,7 +62,7 @@ onBeforeUnmount(() => restore?.())
 
 <style scoped>
 .copy-overlay { position: fixed; inset: 0; z-index: 10001; display: grid; place-items: center; padding: 16px; background: rgb(0 0 0 / 55%); }
-.copy-dialog { box-sizing: border-box; width: min(640px, 100%); max-height: calc(100dvh - 32px); overflow: auto; padding: 16px; border: 1px solid var(--color-border-strong); border-radius: 8px; background: var(--color-card); color: var(--color-text); box-shadow: var(--shadow-modal); }
+.copy-dialog { box-sizing: border-box; width: min(820px, 100%); max-height: calc(100dvh - 32px); overflow: auto; padding: 16px; border: 1px solid var(--color-border-strong); border-radius: 8px; background: var(--color-card); color: var(--color-text); box-shadow: var(--shadow-modal); }
 .copy-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .copy-title { margin: 0; font-size: 16px; overflow-wrap: anywhere; }
 .copy-close { flex: 0 0 44px; width: 44px; height: 44px; display: grid; place-items: center; border: 1px solid var(--color-border); border-radius: var(--rounded-sm); color: var(--color-dim); background: transparent; cursor: pointer; }

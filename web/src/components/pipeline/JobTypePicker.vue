@@ -173,7 +173,7 @@ watch(
 }
 
 .jtp-dialog {
-  width: min(840px, 100%);
+  width: min(1080px, 100%);
   max-height: min(82vh, 760px);
   display: flex;
   flex-direction: column;

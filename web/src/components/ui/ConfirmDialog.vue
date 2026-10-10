@@ -189,7 +189,7 @@ function doConfirm() {
   left: 50%;
   translate: -50% -50%;
   z-index: 8001;
-  width: min(400px, calc(100vw - 40px));
+  width: min(480px, calc(100vw - 40px));
   background: var(--color-card);
   border: 1px solid var(--color-border-strong);
   border-radius: var(--rounded-xl);
