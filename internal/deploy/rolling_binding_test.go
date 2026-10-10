@@ -10,7 +10,10 @@ package deploy
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -408,6 +411,39 @@ func TestCheckHealthLocalProbeNoTrailingWait(t *testing.T) {
 	}
 	if elapsed < 2*time.Second {
 		t.Fatalf("前两次尝试后应各等一个间隔,elapsed=%s", elapsed)
+	}
+}
+
+// TestCheckHealthLocalProbeEchoesCurlCommand 本机 http 探测(不经 SSH)也要在日志里说清
+// 「用什么检查的」:回显等效 curl 命令;失败时回显失败原因(如 HTTP 5xx)。
+func TestCheckHealthLocalProbeEchoesCurlCommand(t *testing.T) {
+	db := testDB(t)
+	rsvc := run.New(db)
+	svc := New(&stubTarget{}, rsvc)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	var mu sync.Mutex
+	var lines []string
+	ctx := WithCmdLog(context.Background(), func(stream, _, text string) {
+		mu.Lock()
+		defer mu.Unlock()
+		lines = append(lines, stream+"|"+text)
+	})
+	hc := &HealthCheck{Type: HealthCheckHTTP, URL: srv.URL + "/healthz", Retries: 1, TimeoutSeconds: 2}
+	res, err := svc.CheckHealth(ctx, "", "", hc)
+	if err == nil || len(res) != 1 || res[0].OK {
+		t.Fatalf("500 应探测失败: %v / %+v", err, res)
+	}
+	joined := strings.Join(lines, "\n")
+	if !strings.Contains(joined, "$ curl -fsS --max-time 2 "+srv.URL+"/healthz") {
+		t.Fatalf("应回显等效 curl 探测命令: %q", joined)
+	}
+	if !strings.Contains(joined, "✗ HTTP 500") {
+		t.Fatalf("应回显探测失败原因: %q", joined)
 	}
 }
 

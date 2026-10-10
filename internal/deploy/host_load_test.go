@@ -13,6 +13,7 @@ import (
 	"errors"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/huangchengsir/pipewright/internal/run"
@@ -126,6 +127,33 @@ func TestParseHostLoad(t *testing.T) {
 				t.Errorf("fullness = %v, want %v", f, tc.wantFull)
 			}
 		})
+	}
+}
+
+// TestProbeHostLoadStreamsCmdLog 负载探测经 s.exec → 采集命令与输出回流步骤日志
+// (「用什么探测的」可见,与部署命令同口径);命令归属到被探测机器的单机作用域。
+func TestProbeHostLoadStreamsCmdLog(t *testing.T) {
+	st := loadStubTarget(t, map[string]string{"s1": loadOut("0.5 0.4 0.3 1/2 3", "4", memLine(8000, 2000))}, nil)
+	svc := New(st, nil).(*service)
+
+	var mu sync.Mutex
+	var lines []string
+	ctx := WithCmdLog(context.Background(), func(stream, machine, text string) {
+		mu.Lock()
+		defer mu.Unlock()
+		lines = append(lines, stream+"|"+machine+"|"+text)
+	})
+	h, ok := svc.probeHostLoad(scopeCmdLog(ctx, "s1"), "s1")
+	if !ok {
+		t.Fatalf("探测应成功: %+v", h)
+	}
+	joined := strings.Join(lines, "\n")
+	// 命令回显口径与部署命令一致:sh -c 展示脚本本体(displayCmd)。
+	if !strings.Contains(joined, "stdout|s1|$ echo \"##PW:loadavg\"") || !strings.Contains(joined, "free -b 2>/dev/null") {
+		t.Fatalf("应回显采集命令(脚本本体): %q", joined)
+	}
+	if !strings.Contains(joined, "stdout|s1|"+loadMarker+loadSecLoadavg) || !strings.Contains(joined, "0.5 0.4 0.3") {
+		t.Fatalf("采集输出应回流且带机器归属: %q", joined)
 	}
 }
 

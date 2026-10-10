@@ -408,7 +408,9 @@ func main() {
 	// 复用 targetSvc(SSH + docker)与 credVault(证书 SealSecret 密文);vault 未配 master key
 	// 时证书上传不可用,其余功能照常(优雅降级)。集群反代渲染需要 serverID → 可达地址,
 	// 一并注入解析器(target 查 SSH Host,主机名经控制端 DNS 解析为 IP)。
-	serviceRegSvc := servicereg.New(st.DB, targetSvc, credVault)
+	// target 经 deploy.ObservingTarget 包装:网关编排的 SSH 命令(nginx 容器渲染/热加载等)在
+	// 部署链路内回流到运行日志(「流水线日志可见所有执行的命令」;无日志 ctx = 纯透传)。
+	serviceRegSvc := servicereg.New(st.DB, deploy.ObservingTarget(targetSvc), credVault)
 	serviceRegSvc.SetServerAddrResolver(serverAddrResolver{tg: targetSvc}.resolve)
 
 	// 系统级运行时配置(public_url = 平台对外访问地址):取代环境变量 PIPEWRIGHT_PUBLIC_URL,

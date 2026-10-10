@@ -81,11 +81,17 @@ type remoteCLIAt struct {
 // DetectRemoteCLI 探测某远程机构建可用的容器 CLI(经一条 SSH 命令逐个 command -v)。
 // 成功结果进程内 TTL 缓存(remoteCLITTL);任何失败(SSH 不通/输出异常)不缓存、回落 "docker"。
 func DetectRemoteCLI(ctx context.Context, execer RemoteExecer, serverID string) string {
-	return detectRemoteCLI(ctx, execer, serverID, time.Now)
+	return detectRemoteCLI(ctx, execer, serverID, time.Now, nil)
 }
 
-// detectRemoteCLI 与 DetectRemoteCLI 同,注入时钟便于单测 TTL 过期路径。
-func detectRemoteCLI(ctx context.Context, execer RemoteExecer, serverID string, now func() time.Time) string {
+// DetectRemoteCLIWithLog 与 DetectRemoteCLI 同,但把**真正执行探测时**的命令经 log 回显
+// (命中 TTL 缓存直接返回时不会调用 log —— 避免把没执行的命令写进日志误导排查)。
+func DetectRemoteCLIWithLog(ctx context.Context, execer RemoteExecer, serverID string, log func(string)) string {
+	return detectRemoteCLI(ctx, execer, serverID, time.Now, log)
+}
+
+// detectRemoteCLI 与 DetectRemoteCLI 同,注入时钟便于单测 TTL 过期路径;log 非 nil 时回显探测命令。
+func detectRemoteCLI(ctx context.Context, execer RemoteExecer, serverID string, now func() time.Time, log func(string)) string {
 	remoteCLIMu.Lock()
 	if h, ok := remoteCLICache[serverID]; ok && now().Sub(h.at) < remoteCLITTL {
 		remoteCLIMu.Unlock()
@@ -94,6 +100,9 @@ func detectRemoteCLI(ctx context.Context, execer RemoteExecer, serverID string, 
 	remoteCLIMu.Unlock()
 
 	probe := []string{"sh", "-c", `for b in nerdctl docker podman; do command -v "$b" >/dev/null 2>&1 && { echo "$b"; exit 0; }; done; echo none`}
+	if log != nil {
+		log("$ " + strings.Join(probe, " "))
+	}
 	if res, err := execer.Exec(ctx, serverID, probe); err == nil && res != nil {
 		for _, line := range strings.Split(res.Stdout, "\n") {
 			switch strings.TrimSpace(line) {

@@ -116,11 +116,11 @@ func (b *Builder) startStageServices(ctx context.Context, r *run.Run, stage pipe
 		_ = rep.Log(ctx, streamStdout, fmt.Sprintf("→ 起旁挂服务「%s」(%s)…", sv.Name, sv.Image))
 		if code, err := runner.RunService(ctx, cname, sv.Name, sv.Image, network, sv.Env, sv.Ports, mkLineLogger(ctx, rep)); err != nil || code != 0 {
 			_ = rep.Log(ctx, streamStderr, fmt.Sprintf("旁挂服务「%s」启动失败(code=%d):%v", sv.Name, code, err))
-			// 拆除已起的服务 + 网络,避免泄漏。
+			// 拆除已起的服务 + 网络,避免泄漏(逐条命令回显,「执行了什么清理」在日志里可见)。
 			for _, c := range started {
-				_, _ = runner.StopService(context.WithoutCancel(ctx), c, nil)
+				_, _ = runner.StopService(context.WithoutCancel(ctx), c, mkLineLogger(ctx, rep))
 			}
-			_, _ = runner.RemoveNetwork(context.WithoutCancel(ctx), network, nil)
+			_, _ = runner.RemoveNetwork(context.WithoutCancel(ctx), network, mkLineLogger(ctx, rep))
 			return "", false
 		}
 		started = append(started, cname)
@@ -128,7 +128,7 @@ func (b *Builder) startStageServices(ctx context.Context, r *run.Run, stage pipe
 	return network, true
 }
 
-// stopStageServices 拆除阶段旁挂服务容器 + 网络(best-effort,失败只记日志)。
+// stopStageServices 拆除阶段旁挂服务容器 + 网络(best-effort,失败只记日志;清理命令同样回显)。
 func (b *Builder) stopStageServices(ctx context.Context, r *run.Run, stage pipeline.Stage, network string, rep dagrun.StageReporter) {
 	runner, ok := b.driver.(ServiceRunner)
 	if !ok || network == "" {
@@ -136,11 +136,11 @@ func (b *Builder) stopStageServices(ctx context.Context, r *run.Run, stage pipel
 	}
 	for _, sv := range stage.Services {
 		cname := network + "-" + sv.Name
-		if _, err := runner.StopService(ctx, cname, nil); err != nil {
+		if _, err := runner.StopService(ctx, cname, mkLineLogger(ctx, rep)); err != nil {
 			_ = rep.Log(ctx, streamStderr, fmt.Sprintf("清理旁挂服务「%s」失败(best-effort):%v", sv.Name, err))
 		}
 	}
-	if _, err := runner.RemoveNetwork(ctx, network, nil); err != nil {
+	if _, err := runner.RemoveNetwork(ctx, network, mkLineLogger(ctx, rep)); err != nil {
 		_ = rep.Log(ctx, streamStderr, fmt.Sprintf("清理服务网络失败(best-effort):%v", err))
 	}
 }

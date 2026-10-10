@@ -358,6 +358,26 @@ func TestBuildImageSuccessEmitsArtifact(t *testing.T) {
 	}
 }
 
+// TestInspectImageCommandEchoed 元数据采集(docker inspect)命令也出现在可见日志(所有执行的命令可见)。
+func TestInspectImageCommandEchoed(t *testing.T) {
+	cmdr := newFakeCommander()
+	cmdr.script("build", fakeCmd{stdoutLines: []string{"Successfully built abc"}, exitCode: 0})
+	cmdr.script("inspect", fakeCmd{stdoutLines: []string{`{"Id":"sha256:abc","Size":10}`}, exitCode: 0})
+
+	proj := &project.Project{ID: "p1", Name: "app", RepoURL: "https://example.com/r.git"}
+	b := newTestBuilder(t, cmdr, proj, imageSettings(nil), nil)
+	b.cloner = newSuccessCloner("abc1234")
+
+	sink := newFakeSink()
+	r := &run.Run{ID: "run1", ProjectID: "p1", Trigger: run.Trigger{Commit: "abc1234x"}}
+	if err := b.Run(context.Background(), r, sink); err != nil {
+		t.Fatalf("Run failed: %v", err)
+	}
+	if logs := sink.allLogText(); !strings.Contains(logs, "$ docker inspect --format {{json .}} pipewright/app:abc1234") {
+		t.Fatalf("inspect 命令应回显, got:\n%s", logs)
+	}
+}
+
 // TestBuildFailureSetsFailureLog 验证构建命令非零退出 → 步骤 failed + SetFailureLog + 返回错误。
 func TestBuildFailureSetsFailureLog(t *testing.T) {
 	cmdr := newFakeCommander()

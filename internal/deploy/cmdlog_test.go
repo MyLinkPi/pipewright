@@ -65,3 +65,50 @@ func TestExecStreamsToCmdLog(t *testing.T) {
 		t.Fatalf("exec without sink: %v", err)
 	}
 }
+
+// TestObservingTargetStreamsCmdLog ObservingTarget 包装的 target.Service(供 servicereg 等
+// 第三方编排组件复用命令日志):命令/输出/退出码回流;无日志 ctx 纯透传;
+// 机器归属沿用调用方 ctx 的单机作用域(部署路径 = 触发本动作的目标机)。
+func TestObservingTargetStreamsCmdLog(t *testing.T) {
+	inner := &stubTarget{execFn: func(_ string, _ []string) (*target.ExecResult, error) {
+		return &target.ExecResult{Stdout: "syntax is ok\n", Stderr: "warn\n", ExitCode: 1}, nil
+	}}
+	obs := ObservingTarget(inner)
+	if obs == nil {
+		t.Fatal("ObservingTarget(nil 之外)不应返回 nil")
+	}
+
+	var mu sync.Mutex
+	var lines []string
+	ctx := WithCmdLog(context.Background(), func(stream, machine, text string) {
+		mu.Lock()
+		defer mu.Unlock()
+		lines = append(lines, stream+"|"+machine+"|"+text)
+	})
+	// 部署路径的 ctx 带目标机作用域 → 包装层回显沿用该归属(与部署命令同分组)。
+	ctx = scopeCmdLog(ctx, "web-1")
+	if _, err := obs.Exec(ctx, "gw-1", []string{"docker", "exec", "ng", "nginx", "-t"}); err != nil {
+		t.Fatalf("exec: %v", err)
+	}
+	if len(inner.calls) != 1 {
+		t.Fatalf("底层 target.Service 应收到命令, got %v", inner.calls)
+	}
+	joined := strings.Join(lines, "\n")
+	if !strings.Contains(joined, "stdout|web-1|$ docker exec ng nginx -t") {
+		t.Fatalf("命令回显应沿用作用域归属: %q", joined)
+	}
+	if !strings.Contains(joined, "stdout|web-1|syntax is ok") || !strings.Contains(joined, "stderr|web-1|warn") {
+		t.Fatalf("stdout/stderr 应回流: %q", joined)
+	}
+	if !strings.Contains(joined, "✗ 退出码 1") {
+		t.Fatalf("非零退出码应标注: %q", joined)
+	}
+
+	// 无日志 ctx:纯透传,不 panic。
+	if _, err := obs.Exec(context.Background(), "gw-1", []string{"echo", "hi"}); err != nil {
+		t.Fatalf("无日志 ctx 应透传: %v", err)
+	}
+	if len(inner.calls) != 2 {
+		t.Fatalf("透传应仍执行命令, got %d 次", len(inner.calls))
+	}
+}
