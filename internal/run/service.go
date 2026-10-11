@@ -799,16 +799,27 @@ func (s *service) GetDiagnosis(ctx context.Context, id string) (*Diagnosis, erro
 	return decodeDiagnosis(diagnosisJSON)
 }
 
+// LogTimeLayout 是日志行时间戳前缀的显示格式(本地时区;秒级足够定位操作时刻,人读优先)。
+// 导出一份供其它包(如 dagrun 的失败日志尾部缓冲)生成同格式前缀,避免多处格式漂移。
+// 与 run_logs.ts 同刻落库(同一 now),文本前缀与结构化时间列始终一致。
+const LogTimeLayout = "2006-01-02 15:04:05"
+
 // AppendLog 分配该 run 内单调 seq 并落 run_logs(text 须已脱敏)。参数化 SQL。
 // seq = COALESCE(MAX(seq),0)+1,经 logMu 串行化以保证并发下 seq 单调不撞号。
 // machine 是来源机器显示名快照("":控制机/运行级),原样落库不做脱敏。
+//
+// 行首注入 `[YYYY-MM-DD HH:MM:SS] ` 时间戳(本地时区,与 ts 列/StepRunning/StepDone 锚点同刻):
+// 让日志文本自身回答「什么时候发生了什么」(命令/输出/步骤边界的执行时间点),
+// UI 终端、导出文本、失败摘要、AI 诊断的 evidence 一致可见。定长前缀在前端天然列对齐。
 func (s *service) AppendLog(ctx context.Context, runID, stream string, stepOrdinal int, text, machine string) (int, error) {
 	switch stream {
 	case streamStdout, streamStderr:
 	default:
 		stream = streamStdout
 	}
-	now := time.Now().UTC().Format(time.RFC3339)
+	now := time.Now()
+	ts := now.UTC().Format(time.RFC3339)
+	text = "[" + now.Local().Format(LogTimeLayout) + "] " + text
 
 	s.logMu.Lock()
 	defer s.logMu.Unlock()
@@ -823,7 +834,7 @@ func (s *service) AppendLog(ctx context.Context, runID, stream string, stepOrdin
 	if _, err := s.db.ExecContext(ctx,
 		`INSERT INTO run_logs (id, run_id, seq, ts, stream, step_ordinal, machine, text)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		uuid.NewString(), runID, seq, now, stream, stepOrdinal, machine, text,
+		uuid.NewString(), runID, seq, ts, stream, stepOrdinal, machine, text,
 	); err != nil {
 		return 0, fmt.Errorf("run: insert log: %w", err)
 	}
