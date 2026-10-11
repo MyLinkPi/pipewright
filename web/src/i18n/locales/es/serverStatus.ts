@@ -1,6 +1,7 @@
 export default {
   title: 'Estado de los servidores',
   subtitle: 'Carga de CPU, memoria y uso de disco de todos los servidores registrados, recopilados en tiempo real por SSH',
+  localName: 'Este host (nodo de control)',
   reachableSummary: '{reachable}/{total} accesibles',
   autoRefresh: 'Se actualiza cada {n} s',
   loadingAria: 'Cargando el estado de los servidores',

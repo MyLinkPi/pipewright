@@ -374,6 +374,27 @@ export async function getAllServerMetrics(): Promise<ServerMetrics[]> {
   return res.items
 }
 
+// ─── Local control-node metrics ──────────────────────────────────────────────
+//
+// GET /api/system/metrics → ServerMetrics   (the host Pipewright itself runs on)
+//
+// The control node's own CPU/memory/disk, collected **locally** (no SSH) with the
+// same static read-only script used for remote hosts — so the shape and
+// tolerance rules are identical and the same ServerMetricsCard renders it.
+// `serverId` is the fixed sentinel below, not a registry id.
+
+/** Sentinel serverId carried by the control-node (local) metrics response. */
+export const LOCAL_HOST_ID = '__local__'
+
+/**
+ * Fetch the control node's own resource metrics (one-shot, read-only, no SSH).
+ * Availability mirrors remote semantics: on hosts without `sh` (e.g. a Windows
+ * control node) the response is `reachable: false` with a human `error`.
+ */
+export async function getLocalHostMetrics(): Promise<ServerMetrics> {
+  return http.get<ServerMetrics>('/api/system/metrics')
+}
+
 // ─── Service operations (Story 6-3, FR-17) ───────────────────────────────────
 //
 // POST /api/servers/:id/service/action → ServiceActionResult  (needs CSRF; write)

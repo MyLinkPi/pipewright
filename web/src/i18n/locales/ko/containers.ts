@@ -1,6 +1,8 @@
 export default {
   title: '컨테이너',
   subtitle: '등록된 모든 서버를 가로질러 호스트별로 컨테이너와 이미지를 관리',
+  localName: '이 호스트(컨트롤 노드)',
+  localHost: 'localhost · 컨트롤 노드',
   countSummary: '· 총 {total}개 컨테이너 · {running}개 실행 중',
   autoRefresh: '· {n}초마다 자동 새로 고침',
 

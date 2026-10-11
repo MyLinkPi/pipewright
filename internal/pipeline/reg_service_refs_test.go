@@ -32,7 +32,7 @@ func TestRegServiceRefsCollectsDedupsAndOrders(t *testing.T) {
 	svc, _, projID := newSvc(t)
 	spec := Spec{Stages: []Stage{
 		{Name: "流水线源", Kind: KindSource, Jobs: []Job{
-			{Name: "Gitee 源", Type: "git_source", Config: map[string]any{}},
+			{Name: "流水线源", Type: "git_source", Config: map[string]any{}},
 		}},
 		{Name: "部署", Kind: KindDeploy, Jobs: []Job{
 			{Name: "d1", Type: "deploy", Config: map[string]any{"regServiceId": "svc-1", "regPort": "8080"}},

@@ -1,6 +1,8 @@
 export default {
   title: '容器',
   subtitle: '跨所有已登記伺服器,按主機管理容器與映像',
+  localName: '本機(控制節點)',
+  localHost: 'localhost · 控制節點',
   countSummary: '· 共 {total} 個容器 · {running} 執行中',
   autoRefresh: '· 每 {n} 秒自動重新整理',
 

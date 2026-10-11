@@ -1,6 +1,7 @@
 export default {
   title: '服务器状态',
   subtitle: '所有已登记服务器的 CPU 负载、内存与磁盘使用,经 SSH 实时采集',
+  localName: '本机(控制节点)',
   reachableSummary: '{reachable}/{total} 可达',
   autoRefresh: '每 {n} 秒自动刷新',
   loadingAria: '正在加载服务器状态',

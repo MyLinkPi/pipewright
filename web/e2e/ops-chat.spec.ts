@@ -1,5 +1,11 @@
 import { test, expect, type Page, type Route } from '@playwright/test'
-import { stubLoggedIn, stubEnvelopeDefaults } from './_stubs'
+import {
+  stubLoggedIn,
+  stubEnvelopeDefaults,
+  localHostMetricsFixture,
+  localHostContainersFixture,
+  localHostContainerStatsFixture,
+} from './_stubs'
 import type {
   Call,
   Entry,
@@ -204,6 +210,16 @@ async function fixture(
   await page.route(
     (u) => u.pathname === '/api/servers/containers',
     (r) => json(r, inventory),
+  )
+  // 控制节点本机容器(置首卡):可达有运行时但**无容器** —— 本机卡不遮挡首张服务器卡的
+  // 动作按钮(日志用例依赖 `.first()` 命中服务器卡)。stats 同给,卡片挂载即采样。
+  await page.route(
+    (u) => u.pathname === '/api/servers/__local__/containers/stats',
+    (r) => json(r, localHostContainerStatsFixture()),
+  )
+  await page.route(
+    (u) => u.pathname === '/api/servers/__local__/containers',
+    (r) => json(r, localHostContainersFixture()),
   )
   await page.route(
     (u) => u.pathname === '/api/servers/metrics',
@@ -1208,6 +1224,11 @@ for (const width of [1366, 1920, 390])
             })),
           }),
       )
+      // 控制节点「本机」指标(裸对象)——置首的只读卡牌。
+      await page.route(
+        (u) => u.pathname === '/api/system/metrics',
+        (r) => json(r, localHostMetricsFixture()),
+      )
       await page.goto('/servers')
       const actions = page.locator('.view-header__actions')
       // fork 差异:本仓头部比上游多「批量执行/历史」两按钮(批量命令特性),
@@ -1218,7 +1239,9 @@ for (const width of [1366, 1920, 390])
         b = (await buttons[1]!.boundingBox())!
       expect(Math.abs(a.y - b.y)).toBeLessThan(2)
       expect(b.x - (a.x + a.width)).toBeLessThanOrEqual(17)
-      await expect(page.locator('.metrics-card')).toHaveCount(2)
+      // 本机(控制节点)卡置首 + 两张服务器卡。
+      await expect(page.locator('.metrics-card')).toHaveCount(3)
+      // 仅服务器卡带 AI 动作按钮(本机卡只读,不参与批量命令/单机 AI)。
       await expect(
         page.locator('.metrics-card .metrics-card__actions button'),
       ).toHaveCount(2)
@@ -1227,11 +1250,12 @@ for (const width of [1366, 1920, 390])
           await card.evaluate((el) => el.scrollWidth <= el.clientWidth + 1),
         ).toBe(true)
         const rect = (await card.boundingBox())!,
-          button = (await card
+          button = await card
             .locator('.metrics-card__actions button')
-            .boundingBox())!
-        expect(button.y + button.height).toBeLessThan(rect.y + rect.height)
+            .first()
+            .boundingBox()
         expect(rect.x + rect.width).toBeLessThanOrEqual(width + 1)
+        if (button) expect(button.y + button.height).toBeLessThan(rect.y + rect.height)
       }
       await page.screenshot({
         path: testInfo.outputPath('server-entries.png'),

@@ -19,6 +19,7 @@ import {
   listServers,
   openServerTerminal,
   openContainerTerminal,
+  LOCAL_HOST_ID,
   type Server,
   type TerminalConnection,
   type TerminalHandlers,
@@ -62,10 +63,15 @@ const connState = ref<ConnState>('idle')
 const statusMsg = ref('')
 const latencyMs = ref<number | null>(null)
 
-const hostLabel = computed(() =>
-  server.value ? `${server.value.user}@${server.value.host}:${server.value.port}` : serverId.value,
+// 控制节点本机:不在登记表里(server 为 null),顶栏改用固定文案,别把 `__local__` 直接露给用户。
+const isLocalHost = computed(() => serverId.value === LOCAL_HOST_ID)
+const hostLabel = computed(() => {
+  if (isLocalHost.value) return tg('containers.localHost')
+  return server.value ? `${server.value.user}@${server.value.host}:${server.value.port}` : serverId.value
+})
+const serverName = computed(() =>
+  isLocalHost.value ? tg('containers.localName') : (server.value?.name ?? tg('serverTerminal.serverFallback')),
 )
-const serverName = computed(() => server.value?.name ?? tg('serverTerminal.serverFallback'))
 
 // 标签页标题随服务器名 + 连接状态细化(终端常在新标签页打开:多开时一眼区分是哪台机,
 // 且后台挂着的 tab 掉线时标题前缀能直接看出来,不用切过去)。router 的 afterEach 先兜底

@@ -1,6 +1,7 @@
 export default {
   title: 'Serverstatus',
   subtitle: 'CPU-Last, Speicher- und Festplattennutzung aller registrierten Server, live über SSH erfasst',
+  localName: 'Dieser Host (Steuerknoten)',
   reachableSummary: '{reachable}/{total} erreichbar',
   autoRefresh: 'Aktualisiert automatisch alle {n} s',
   loadingAria: 'Serverstatus wird geladen',

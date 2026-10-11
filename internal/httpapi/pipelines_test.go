@@ -90,7 +90,7 @@ func TestPipelineSaveRoundTrip(t *testing.T) {
 	// 含源阶段(前端 save 始终带源阶段;API 要求恰一个 source 阶段不变式)。
 	body := `{"stages":[
 	  {"name":"流水线源","kind":"source","jobs":[
-	    {"name":"Gitee 源","type":"git_source","summary":"main","config":{}}
+	    {"name":"流水线源","type":"git_source","summary":"main","config":{}}
 	  ]},
 	  {"name":"构建","kind":"build","jobs":[
 	    {"name":"打镜像","type":"build_image","summary":"docker build","config":{"dockerfile":"Dockerfile"}}
@@ -142,7 +142,7 @@ func TestPipelineSaveRoundTripMatrixPostServices(t *testing.T) {
 
 	body := `{"stages":[
 	  {"name":"流水线源","kind":"source","jobs":[
-	    {"name":"Gitee 源","type":"git_source","summary":"main","config":{}}
+	    {"name":"流水线源","type":"git_source","summary":"main","config":{}}
 	  ]},
 	  {"name":"构建","kind":"build",
 	    "matrix":{"go":["1.21","1.22"],"os":["linux"]},
@@ -211,7 +211,7 @@ func TestPipelineSaveRoundTripStageRunner(t *testing.T) {
 
 	body := `{"stages":[
 	  {"name":"流水线源","kind":"source","jobs":[
-	    {"name":"Gitee 源","type":"git_source","summary":"main","config":{}}
+	    {"name":"流水线源","type":"git_source","summary":"main","config":{}}
 	  ]},
 	  {"name":"构建","kind":"build","runner":"gpu,arch=arm64","jobs":[
 	    {"name":"训练","type":"script","config":{"image":"pytorch/pytorch"}}
@@ -276,7 +276,7 @@ func TestPipelineSaveRoundTripJobNeeds(t *testing.T) {
 
 	body := `{"stages":[
 	  {"name":"流水线源","kind":"source","jobs":[
-	    {"name":"Gitee 源","type":"git_source","summary":"main","config":{}}
+	    {"name":"流水线源","type":"git_source","summary":"main","config":{}}
 	  ]},
 	  {"name":"构建","kind":"build","jobs":[
 	    {"id":"j_fe","name":"前端构建","type":"build_frontend","config":{}},
@@ -425,7 +425,7 @@ stages:
     name: 流水线源
     kind: source
     jobs:
-      - name: Gitee 源
+      - name: 流水线源
         type: git_source
   - id: stg_build
     name: 构建

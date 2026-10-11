@@ -8,12 +8,21 @@
     · 「刷新」重取(指标实时、不落库)。
 
   这是一个**新增**的总览入口,不动 4-1 SettingsServers CRUD、6-2 日志入口。
+
+  另:网格**置首**展示一张「本机(控制节点)」只读卡牌 —— 运行 Pipewright 的这台主机自身的
+  CPU/内存/磁盘,由 GET /api/system/metrics 在**本地**采集(不走 SSH、不占登记服务器名额)。
+  本机卡不可勾选(不参与批量命令)、无单机 AI 入口;本机请求失败只隐藏该卡,不影响服务器卡。
 -->
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Robot, Refresh } from '@vicons/tabler'
-import { getAllServerMetrics, listServers, type ServerMetrics } from '../api/servers'
+import {
+  getAllServerMetrics,
+  getLocalHostMetrics,
+  listServers,
+  type ServerMetrics,
+} from '../api/servers'
 import { HttpError } from '../api/http'
 import ServerMetricsCard from '../components/ops/ServerMetricsCard.vue'
 import BatchCommandModal from '../components/ops/BatchCommandModal.vue'
@@ -44,6 +53,8 @@ interface ServerPoolInfo {
 const loadState = ref<LoadState>('idle')
 const loadError = ref('')
 const metrics = ref<ServerMetrics[]>([])
+/** 本机(控制节点)指标;不可采(请求失败 / 前端未知) → null,不渲染本机卡。 */
+const localMetrics = ref<ServerMetrics | null>(null)
 /** serverId → 展示名(来自登记列表,用于卡片标题)。 */
 const nameById = ref<Map<string, string>>(new Map())
 /** serverId → 构建池信息(卡片标签 chips 展示用)。 */
@@ -110,10 +121,12 @@ async function load(): Promise<void> {
   loadError.value = ''
   if (!firstLoad) refreshing.value = true
   try {
-    // 并行:登记列表(取展示名 + 构建池标签)+ 批量指标。互不阻塞。
-    const [servers, items] = await Promise.all([
+    // 并行:登记列表(取展示名 + 构建池标签)+ 批量指标 + 本机(控制节点)指标。互不阻塞。
+    // 本机请求失败(接口 5xx)只让本机卡消失,绝不拖垮已登记服务器的采集展示。
+    const [servers, items, local] = await Promise.all([
       listServers(),
       getAllServerMetrics(),
+      getLocalHostMetrics().catch(() => null),
     ])
     nameById.value = new Map(servers.map((s) => [s.id, s.name]))
     poolById.value = new Map(
@@ -123,6 +136,7 @@ async function load(): Promise<void> {
       ]),
     )
     metrics.value = items
+    localMetrics.value = local
     loadState.value = 'idle'
   } catch (err) {
     if (err instanceof HttpError) {
@@ -234,12 +248,12 @@ onUnmounted(() => {
 
     <!-- Initial loading skeletons -->
     <div
-      v-if="loadState === 'loading' && metrics.length === 0"
+      v-if="loadState === 'loading' && metrics.length === 0 && localMetrics === null"
       class="metrics-grid"
       aria-busy="true"
       :aria-label="t('serverStatus.loadingAria')"
     >
-      <div v-for="n in 3" :key="n" class="skeleton-card">
+      <div v-for="n in 4" :key="n" class="skeleton-card">
         <SkeletonBlock :height="20" width="50%" />
         <SkeletonBlock :height="14" width="80%" />
         <SkeletonBlock :height="14" width="80%" />
@@ -254,15 +268,21 @@ onUnmounted(() => {
       @retry="load"
     />
 
-    <!-- Empty: no registered servers -->
+    <!-- Empty: neither the control node nor any registered server has data -->
     <EmptyState
-      v-else-if="metrics.length === 0"
+      v-else-if="metrics.length === 0 && localMetrics === null"
       :title="t('serverStatus.emptyTitle')"
       :description="t('serverStatus.emptyDesc')"
     />
 
-    <!-- Metrics grid (per-host cards) -->
+    <!-- Metrics grid: local (control-node) card first, then per-host cards -->
     <div v-else class="metrics-grid" :aria-busy="refreshing || undefined">
+      <!-- 本机(控制节点)卡牌:固定置首,只读 —— 不参与批量命令勾选(它不是登记服务器)。 -->
+      <ServerMetricsCard
+        v-if="localMetrics"
+        :name="t('serverStatus.localName')"
+        :metrics="localMetrics"
+      />
       <ServerMetricsCard
         v-for="m in metrics"
         :key="m.serverId"

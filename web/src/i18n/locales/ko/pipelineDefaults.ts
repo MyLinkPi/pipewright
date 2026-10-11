@@ -4,5 +4,4 @@ export default {
   buildStage: '빌드',
   deployStage: '배포',
   notifyStage: '알림',
-  gitSourceJob: 'Git 소스',
 }

@@ -129,6 +129,68 @@ export function diagnosisReadyFixture(over: Record<string, unknown> = {}): Recor
 }
 
 /**
+ * Control-node (local) container inventory — `GET /api/servers/__local__/containers`.
+ * Deliberately reachable-with-runtime but with **no** containers: the local card then
+ * renders its "no containers" hint and cannot steal `.first()` action buttons from the
+ * first registered server card in layout specs.
+ */
+export function localHostContainersFixture(
+  over: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    serverId: '__local__',
+    reachable: true,
+    runtime: 'docker',
+    error: '',
+    containers: [],
+    running: 0,
+    total: 0,
+    collectedAt: '2026-05-29T08:00:00Z',
+    ...over,
+  }
+}
+
+/** Control-node container stats — `GET /api/servers/__local__/containers/stats` (empty). */
+export function localHostContainerStatsFixture(
+  over: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    serverId: '__local__',
+    reachable: true,
+    runtime: 'docker',
+    error: '',
+    stats: [],
+    collectedAt: '2026-05-29T08:00:00Z',
+    ...over,
+  }
+}
+
+/**
+ * Control-node (local) metrics — a bare ServerMetrics object, matching
+ * GET /api/system/metrics (the host status card on the server-status page).
+ */
+export function localHostMetricsFixture(over: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    serverId: '__local__',
+    reachable: true,
+    error: '',
+    cpu: { loadavg1: 0.42, cores: 8 },
+    memory: {
+      usedBytes: 4123456789,
+      usedWithCacheBytes: 6173456789,
+      totalBytes: 17179869184,
+      physicalTotalBytes: 0,
+      swapUsedBytes: 0,
+      swapTotalBytes: 0,
+    },
+    disk: { path: '/', usedBytes: 123456789012, totalBytes: 494384795648 },
+    gpu: null,
+    collectedAt: '2026-05-29T08:00:00Z',
+    ...over,
+  }
+}
+
+/**
  * Install the logged-in catch-all PLUS object-shaped stubs for the endpoints
  * that return an envelope ({ items }) rather than a bare array — the bare-[]
  * catch-all would otherwise break listChannels/listRuns/listServers etc.
@@ -152,4 +214,23 @@ export async function stubEnvelopeDefaults(page: Page): Promise<void> {
       },
     )
   }
+  // 控制节点「本机」指标是**裸 ServerMetrics 对象**(非 { items } 信封)——落到 bare-[]
+  // 兜底会让状态页渲染出一张错卡,这里补一份可达样例。
+  await page.route(
+    (u) => isApiPath(u, '/api/system/metrics'),
+    (route) => {
+      if (route.request().method() === 'GET') return json(route, 200, localHostMetricsFixture())
+      return json(route, 204, {})
+    },
+  )
+  // 控制节点「本机」容器(serverID __local__):容器页会单独拉这一份并置首成卡。
+  // containers/stats 也要给(卡片挂载即采样),否则会落到 catch-all 的空数组上。
+  await page.route(
+    (u) => isApiPath(u, '/api/servers/__local__/containers/stats'),
+    (route) => json(route, 200, localHostContainerStatsFixture()),
+  )
+  await page.route(
+    (u) => isApiPath(u, '/api/servers/__local__/containers'),
+    (route) => json(route, 200, localHostContainersFixture()),
+  )
 }

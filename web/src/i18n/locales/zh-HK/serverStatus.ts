@@ -1,6 +1,7 @@
 export default {
   title: '伺服器狀態',
   subtitle: '所有已登記伺服器的 CPU 負載、記憶體與磁碟使用,經 SSH 即時採集',
+  localName: '本機(控制節點)',
   reachableSummary: '{reachable}/{total} 可達',
   autoRefresh: '每 {n} 秒自動重新整理',
   loadingAria: '正在載入伺服器狀態',

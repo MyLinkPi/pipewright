@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"os/exec"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -887,5 +888,127 @@ func TestSnapshotServerMetricsLocateErrorNotCached(t *testing.T) {
 	metricsSnapMu.Unlock()
 	if n != 0 {
 		t.Fatalf("locate error should not be cached, %d entries", n)
+	}
+}
+
+// --- 本机(控制节点)指标:同款脚本、本地执行 ---
+
+// withLocalMetricsRun 注入本机采集执行器(不依赖真 sh),测毕自动还原。
+func withLocalMetricsRun(t *testing.T, fn func(context.Context, []string) (string, error)) {
+	t.Helper()
+	old := localMetricsRun
+	localMetricsRun = fn
+	t.Cleanup(func() { localMetricsRun = old })
+}
+
+// TestCollectLocalMetrics 本机采集:与远程同款脚本(纯静态、最小子集),本地执行后逐段解析。
+func TestCollectLocalMetrics(t *testing.T) {
+	var gotArgs []string
+	withLocalMetricsRun(t, func(_ context.Context, args []string) (string, error) {
+		gotArgs = args
+		return fakeMetricsStdout(args[2], linuxFakeHost), nil
+	})
+
+	out := collectLocalMetrics(context.Background())
+	if !out.Reachable || out.Error != "" {
+		t.Fatalf("want reachable, no error: %+v", out)
+	}
+	if out.ServerID != localHostServerID {
+		t.Fatalf("serverId = %q, want %q", out.ServerID, localHostServerID)
+	}
+	if out.CollectedAt == "" {
+		t.Fatalf("collectedAt should be set")
+	}
+	if out.CPU == nil || out.CPU.Loadavg1 == nil || *out.CPU.Loadavg1 != 0.42 {
+		t.Fatalf("cpu loadavg wrong: %+v", out.CPU)
+	}
+	if out.CPU.Cores == nil || *out.CPU.Cores != 8 {
+		t.Fatalf("cpu cores wrong: %+v", out.CPU)
+	}
+	if out.Memory == nil || out.Memory.TotalBytes != 17179869184 {
+		t.Fatalf("memory wrong: %+v", out.Memory)
+	}
+	if out.Disk == nil || out.Disk.TotalBytes != 494384795648 {
+		t.Fatalf("disk wrong: %+v", out.Disk)
+	}
+	// 本机不采集 GPU / 物理内存(无 GPU 登记开关,取最小子集)。
+	if out.GPU != nil {
+		t.Fatalf("local metrics must not collect gpu: %+v", out.GPU)
+	}
+	if out.Memory.PhysicalTotalBytes != 0 {
+		t.Fatalf("local metrics must not probe physical memory: %+v", out.Memory)
+	}
+	// 脚本形态:`sh -c <静态脚本>`,且不含 dmidecode / nvtop 段。
+	if len(gotArgs) != 3 || gotArgs[0] != "sh" || gotArgs[1] != "-c" {
+		t.Fatalf("local command should be sh -c <script>, got %v", gotArgs)
+	}
+	if strings.Contains(gotArgs[2], "dmidecode") || strings.Contains(gotArgs[2], "nvtop") {
+		t.Fatalf("local script must stay minimal (no dmidecode/nvtop): %s", gotArgs[2])
+	}
+}
+
+// TestCollectLocalMetricsUnavailable 本机命令无法启动(如 Windows 无 sh)→ reachable:false + 人读错误,
+// 各指标 null(不 500、不 panic)。
+func TestCollectLocalMetricsUnavailable(t *testing.T) {
+	withLocalMetricsRun(t, func(_ context.Context, _ []string) (string, error) {
+		return "", exec.ErrNotFound
+	})
+
+	out := collectLocalMetrics(context.Background())
+	if out.Reachable {
+		t.Fatalf("want unreachable: %+v", out)
+	}
+	if out.Error == "" {
+		t.Fatalf("want human error")
+	}
+	if out.CPU != nil || out.Memory != nil || out.Disk != nil {
+		t.Fatalf("metrics should be null when unavailable: %+v", out)
+	}
+}
+
+// TestHumanLocalMetricsError 三种失败形态映射为人读文案。
+func TestHumanLocalMetricsError(t *testing.T) {
+	cases := []struct {
+		err  error
+		want string
+	}{
+		{context.DeadlineExceeded, "本机采集超时"},
+		{exec.ErrNotFound, "本机不可用:缺少 sh 命令(仅支持类 Unix 控制节点)"},
+		{errors.New("boom"), "本机采集失败:无法执行采集命令"},
+	}
+	for _, c := range cases {
+		if got := humanLocalMetricsError(c.err); got != c.want {
+			t.Fatalf("humanLocalMetricsError(%v) = %q want %q", c.err, got, c.want)
+		}
+	}
+}
+
+// TestLocalMetricsEndpoint HTTP 契约:认证可访问、返回本机 DTO;未认证 → 401。
+func TestLocalMetricsEndpoint(t *testing.T) {
+	withLocalMetricsRun(t, func(_ context.Context, args []string) (string, error) {
+		return fakeMetricsStdout(args[2], linuxFakeHost), nil
+	})
+	srv, client, _ := setupServerAPI(t, linuxLikeDialer())
+
+	resp, _ := client.Get(srv.URL + "/api/system/metrics")
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", resp.StatusCode, raw)
+	}
+	var out serverMetricsDTO
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatalf("unmarshal: %v: %s", err, raw)
+	}
+	if out.ServerID != localHostServerID || !out.Reachable || out.CPU == nil || out.Disk == nil {
+		t.Fatalf("local metrics contract wrong: %+v", out)
+	}
+
+	// 未认证 → 401(与其余 /api 一致)。
+	bare := &http.Client{}
+	resp2, _ := bare.Get(srv.URL + "/api/system/metrics")
+	resp2.Body.Close()
+	if resp2.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("unauth status = %d, want 401", resp2.StatusCode)
 	}
 }

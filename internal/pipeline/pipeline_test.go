@@ -74,6 +74,10 @@ func TestGetLazyDefaultShape(t *testing.T) {
 	if src.Jobs[0].Type != "git_source" {
 		t.Fatalf("源任务 type = %q, want git_source", src.Jobs[0].Type)
 	}
+	// 源阶段与其 git_source 任务统一叫「流水线源」——不得用某个具体托管平台名。
+	if src.Name != "流水线源" || src.Jobs[0].Name != "流水线源" {
+		t.Fatalf("源名称 = (%q, %q), want 均为 流水线源", src.Name, src.Jobs[0].Name)
+	}
 	if !strings.Contains(src.Jobs[0].Summary, "gitee.com/acme/shop.git") {
 		t.Fatalf("源任务 summary 应含仓库地址, got %q", src.Jobs[0].Summary)
 	}
@@ -117,7 +121,7 @@ func TestGetIdempotent(t *testing.T) {
 func validSpec() Spec {
 	return Spec{Stages: []Stage{
 		{Name: "流水线源", Kind: KindSource, Jobs: []Job{
-			{Name: "Gitee 源", Type: "git_source", Summary: "main", Config: map[string]any{}},
+			{Name: "流水线源", Type: "git_source", Summary: "main", Config: map[string]any{}},
 		}},
 		{Name: "构建", Kind: KindBuild, Jobs: []Job{
 			{Name: "打镜像", Type: "build_image", Summary: "docker build", Config: map[string]any{"dockerfile": "Dockerfile"}},

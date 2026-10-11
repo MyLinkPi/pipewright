@@ -9,6 +9,10 @@
  * socket exposed). Per-host fault isolation: an unreachable host or a host with
  * no container runtime never 500s and never affects the others.
  *
+ * 控制节点(本机):同一批端点也服务 serverId = `LOCAL_HOST_ID`(见 `api/servers.ts`)。
+ * 后端把它当作容器域的一等目标,但命令在**本机**执行(os/exec,不经 SSH),因此前端无需
+ * 新端点 —— 照常调用 `getServerContainers(LOCAL_HOST_ID)` 再把它置首成卡即可。
+ *
  * Container LIFECYCLE (start/stop/restart/pause/unpause/kill/rm) reuses the
  * existing `serviceAction(id, { type: 'docker', ... })` endpoint in `servers.ts`
  * — see ServiceAction there. Interactive container terminals reuse

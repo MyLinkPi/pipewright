@@ -4,5 +4,4 @@ export default {
   buildStage: 'Build',
   deployStage: 'Bereitstellung',
   notifyStage: 'Benachrichtigung',
-  gitSourceJob: 'Git-Quelle',
 }

@@ -1,6 +1,8 @@
 export default {
   title: 'コンテナ',
   subtitle: '登録済みの全サーバーを横断し、ホストごとにコンテナとイメージを管理',
+  localName: 'このホスト(コントロールノード)',
+  localHost: 'localhost · コントロールノード',
   countSummary: '· 合計 {total} 個のコンテナ · {running} 起動中',
   autoRefresh: '· {n} 秒ごとに自動更新',
 

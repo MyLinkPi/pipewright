@@ -231,7 +231,7 @@ stages:
     name: Source
     kind: source
     jobs:
-      - name: Gitee source
+      - name: Source
         type: git_source
   - id: stg_build
     name: Build
