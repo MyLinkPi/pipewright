@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/huangchengsir/pipewright/internal/version"
 )
 
 // gitOut 执行一条 git 命令(dir 可空)并返回 stdout;身份/默认分支固定,保证可复现。
@@ -118,6 +120,45 @@ func TestCheck_UpdateAvailable(t *testing.T) {
 	}
 	if !strings.Contains(info.Notes, "落后 1 个提交") || !strings.Contains(info.Notes, "feat: next") {
 		t.Errorf("Notes 应含落后计数与提交列表,得 %q", info.Notes)
+	}
+}
+
+// 工作树已追平上游、但运行中的二进制仍构建自更早的提交(重建失败 / 服务未重启)时,
+// 不能仅比工作树 HEAD(会误报「已是最新」)—— 应以运行构建提交为准报出更新。
+func TestCheck_UsesRunningBuildCommit(t *testing.T) {
+	work := mkRepo(t)
+	pushExtraCommit(t, work)             // 上游领先 1 个提交
+	gitOut(t, work, "pull", "--ff-only") // 工作树追平上游(HEAD == @{u})
+
+	old := gitOut(t, work, "rev-parse", "HEAD~1")
+	prevVer, prevCommit := version.Version, version.Commit
+	version.Version, version.Commit = "v1.0-0-g"+old[:7], old[:7]
+	defer func() { version.Version, version.Commit = prevVer, prevCommit }()
+
+	info := New(work).Check(context.Background())
+	if info.CheckError != "" {
+		t.Fatalf("检查不应报错:%s", info.CheckError)
+	}
+	if !info.UpdateAvailable {
+		t.Fatalf("运行构建落后于上游应报有更新:%+v", info)
+	}
+	if !strings.Contains(info.Notes, "落后 1 个提交") || !strings.Contains(info.Notes, "feat: next") {
+		t.Errorf("落后清单应基于「运行构建提交..上游」,得 %q", info.Notes)
+	}
+	if info.Current != version.Version {
+		t.Errorf("Current 应取运行构建版本,得 %q", info.Current)
+	}
+}
+
+// 未注入构建元数据(开发态 Commit=none)时回退工作树 HEAD,保持既有语义。
+func TestCheck_FallsBackToHeadWithoutBuildCommit(t *testing.T) {
+	work := mkRepo(t)
+	prevCommit := version.Commit
+	version.Commit = "none"
+	defer func() { version.Commit = prevCommit }()
+
+	if info := New(work).Check(context.Background()); info.UpdateAvailable {
+		t.Errorf("工作树与上游一致时不应报有更新:%+v", info)
 	}
 }
 

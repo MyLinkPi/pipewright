@@ -11,8 +11,8 @@ import (
 )
 
 // makeCheckUpdateHandler 处理 GET /api/version/check:查询升级源最新发布并与当前版本比对。
-// 源码部署(src 非 nil)改走 git 检查(fetch + 比对上游 HEAD)。检查失败(网络/限流)
-// 不返 5xx —— 而是 200 + UpdateInfo.CheckError,让前端稳定渲染降级态。
+// 源码部署(src 非 nil)改走 git 检查(fetch + 比对上游与运行中构建所基于的提交)。检查失败
+// (网络/限流)不返 5xx —— 而是 200 + UpdateInfo.CheckError,让前端稳定渲染降级态。
 func makeCheckUpdateHandler(checker *version.Checker, src *srcupdate.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if src != nil {
