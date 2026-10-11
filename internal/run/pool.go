@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"time"
 
@@ -600,6 +601,9 @@ func (d *dbStepSink) StepRunning(ctx context.Context, ordinal int) error {
 	if err != nil {
 		return fmt.Errorf("run: step running: %w", err)
 	}
+	// 步骤开始时间锚点行:行前缀时间戳由 AppendLog 统一注入,日志文本自身回答
+	// 「这一步什么时候开始」(与 run_steps.started_at 同刻)。
+	_ = d.Log(ctx, streamStdout, ordinal, "→ 步骤开始")
 	d.publish(ordinal, StepRunning, &now, nil)
 	return nil
 }
@@ -623,8 +627,70 @@ func (d *dbStepSink) StepDone(ctx context.Context, ordinal int, status string) e
 	if err != nil {
 		return fmt.Errorf("run: step done: %w", err)
 	}
+	// 步骤结束时间锚点行(状态 + 耗时;行前缀时间戳由 AppendLog 注入):
+	// 与 run_steps.finished_at 同刻,日志文本自身回答「这一步什么时候结束、跑了多久」。
+	_ = d.Log(context.Background(), streamStdout, ordinal, stepDoneText(status, d.stepStartedAt(ordinal)))
 	d.publish(ordinal, status, nil, &now)
 	return nil
+}
+
+// stepDoneText 组装步骤结束锚点行的正文(时间前缀由 AppendLog 统一注入):
+//   - success → `✓ 步骤完成(耗时 12s)`;
+//   - failed  → `✗ 步骤失败(耗时 12s)`;从未 started(终态兜底校正的簿记式标记)→ `✗ 步骤失败(未执行)`;
+//   - skipped → `⏭ 步骤跳过`(被跳过未执行,不给耗时)。
+//
+// 耗时以 run_steps.started_at(秒级)为口径,与前端步骤耗时展示一致;started 为 nil → 不显示耗时。
+func stepDoneText(status string, started *time.Time) string {
+	if status == StepSkipped {
+		return "⏭ 步骤跳过"
+	}
+	word := "✓ 步骤完成"
+	if status == StepFailed {
+		word = "✗ 步骤失败"
+		if started == nil {
+			return word + "(未执行)"
+		}
+	}
+	if started == nil {
+		return word
+	}
+	return fmt.Sprintf("%s(耗时 %s)", word, elapsedText(time.Since(*started)))
+}
+
+// stepStartedAt 读该步骤的 started_at(未开始 / 读失败 → nil)。
+func (d *dbStepSink) stepStartedAt(ordinal int) *time.Time {
+	var startedStr *string
+	err := d.svc.db.QueryRowContext(context.Background(),
+		`SELECT started_at FROM run_steps WHERE id = ?`, d.stepIDs[ordinal]).Scan(&startedStr)
+	if err != nil || startedStr == nil || strings.TrimSpace(*startedStr) == "" {
+		return nil
+	}
+	t, perr := time.Parse(time.RFC3339, *startedStr)
+	if perr != nil {
+		return nil
+	}
+	tt := t.UTC()
+	return &tt
+}
+
+// elapsedText 把时长渲染为人读文本(秒级,与前端步骤耗时口径一致):
+// `12s` / `1m05s` / `2h03m`。
+func elapsedText(d time.Duration) string {
+	if d < 0 {
+		d = 0
+	}
+	s := int(d / time.Second)
+	if s < 60 {
+		return fmt.Sprintf("%ds", s)
+	}
+	m := s / 60
+	s = s % 60
+	if m < 60 {
+		return fmt.Sprintf("%dm%02ds", m, s)
+	}
+	h := m / 60
+	m = m % 60
+	return fmt.Sprintf("%dh%02dm", h, m)
 }
 
 // SetFailureLog 持久化本次运行的失败日志原文(脱敏前)到 pipeline_runs.failure_log。
@@ -713,7 +779,7 @@ func (d *dbStepSink) reconcile(runFinal string) {
 
 	// 用后台 ctx:取消场景下派生 ctx 已 Done,校正仍须持久化。
 	rows, err := d.svc.db.QueryContext(context.Background(),
-		`SELECT id, name, COALESCE(stage, ''), ordinal FROM run_steps
+		`SELECT id, name, COALESCE(stage, ''), ordinal, started_at FROM run_steps
 		 WHERE run_id = ? AND status NOT IN (?, ?, ?)`,
 		d.runID, StepSuccess, StepFailed, StepSkipped)
 	if err != nil {
@@ -721,18 +787,26 @@ func (d *dbStepSink) reconcile(runFinal string) {
 		return
 	}
 	type pending struct {
-		id      string
-		name    string
-		stage   string
-		ordinal int
+		id        string
+		name      string
+		stage     string
+		ordinal   int
+		startedAt *time.Time
 	}
 	var stuck []pending
 	for rows.Next() {
 		var p pending
-		if err := rows.Scan(&p.id, &p.name, &p.stage, &p.ordinal); err != nil {
+		var startedStr *string
+		if err := rows.Scan(&p.id, &p.name, &p.stage, &p.ordinal, &startedStr); err != nil {
 			log.Printf("[run] run %s: reconcile scan step failed: %v", d.runID, err)
 			_ = rows.Close()
 			return
+		}
+		if startedStr != nil && strings.TrimSpace(*startedStr) != "" {
+			if ts, perr := time.Parse(time.RFC3339, *startedStr); perr == nil {
+				tt := ts.UTC()
+				p.startedAt = &tt
+			}
 		}
 		stuck = append(stuck, p)
 	}
@@ -746,6 +820,8 @@ func (d *dbStepSink) reconcile(runFinal string) {
 			log.Printf("[run] run %s: reconcile step %s failed: %v", d.runID, p.id, err)
 			continue
 		}
+		// 校正同样补一条结束时间锚点行(与其它终态路径一致;被中断/未执行的步骤在日志里可见)。
+		_ = d.Log(context.Background(), streamStdout, p.ordinal, stepDoneText(target, p.startedAt))
 		d.svc.bus.publish(Event{
 			Kind:   EventStep,
 			RunID:  d.runID,

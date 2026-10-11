@@ -21,6 +21,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/huangchengsir/pipewright/internal/dag"
 	"github.com/huangchengsir/pipewright/internal/pipeline"
@@ -344,7 +345,9 @@ const tapMaxLines = 400 // 仅留尾部若干行(失败原因通常在末);诊�
 
 func (t *tapSink) Log(ctx context.Context, stream string, stepOrdinal int, line string) error {
 	t.mu.Lock()
-	t.buf = append(t.buf, line)
+	// 缓冲行同样带时间前缀(与 run_logs 行前缀同格式,run.LogTimeLayout 单一来源):
+	// 失败摘要 / AI 诊断输入也看得到每个操作/输出的执行时间点。
+	t.buf = append(t.buf, "["+time.Now().Local().Format(run.LogTimeLayout)+"] "+line)
 	if len(t.buf) > tapMaxLines {
 		t.buf = t.buf[len(t.buf)-tapMaxLines:]
 	}
