@@ -222,7 +222,7 @@ Commit your pipeline structure to `.pipewright.yml` in the repo — **same sourc
 - **Never breaks a run**: if the file is **missing** → falls back to the pipeline configured in the canvas (UI); if it exists but is **invalid YAML** → also falls back to the stored canvas config.
 - **Scope**: the YAML controls **pipeline structure only** (stages / jobs / `needs` / DAG layout). **Variables & cache, environments & credentials, and trigger rules** still come from the canvas (UI) settings — they are **not** in the YAML.
 - **Schema** is the same one used by the platform's "Import from YAML" (`version` + `stages` → `jobs`; a job uses a nested `script:` block for `image`/`commands`/`env`/`workdir`).
-- **Job types** available in both the canvas and the YAML: `git_source`, language-scoped builds `build_nodejs` / `build_java` / `build_golang` / `build_python` (plus legacy `build_frontend` / `build_backend`, still executed for existing pipelines), `script`, `build_image`, `push_image`, deploys `deploy_ssh` (host deploy: releases + atomic `current` symlink + rolling batches + health gate + per-host auto-rollback) and `deploy_container` (image deploy: `docker pull` → swap container → health gate → rollback; common container options via structured keys `cpuLimit` / `memoryLimit` / `restartPolicy` / `envVars`, with free-form `runArgs` as escape hatch), `health_check` (real probing on selected targets now), `notify`, `templated`, `custom`. Deploy nodes bind an artifact **explicitly** via `artifactJob` (+ optional `artifactName` glob) — no silent "auto" picking; label selectors support `selectorMode: all|any` (AND/OR); rolling batches via `firstBatchSize` / `batchSize`; artifact packing is explicit via `artifactPackMode` / `tarLayout`.
+- **Job types** available in both the canvas and the YAML: `git_source`, language-scoped builds `build_nodejs` / `build_java` / `build_golang` / `build_python` (plus legacy `build_frontend` / `build_backend`, still executed for existing pipelines), `script`, `build_image`, `push_image`, `oss_upload` (upload an upstream node's file artifact to a configured object-storage account — Alibaba Cloud OSS; bind the source via `artifactJob`, optional `prefix` placeholders `{{runId}}`/`{{branch}}`/`{{commit}}`/`{{project}}` and `artifactName` glob), deploys `deploy_ssh` (host deploy: releases + atomic `current` symlink + rolling batches + health gate + per-host auto-rollback) and `deploy_container` (image deploy: `docker pull` → swap container → health gate → rollback; common container options via structured keys `cpuLimit` / `memoryLimit` / `restartPolicy` / `envVars`, with free-form `runArgs` as escape hatch), `health_check` (real probing on selected targets now), `notify`, `templated`, `custom`. Deploy nodes bind an artifact **explicitly** via `artifactJob` (+ optional `artifactName` glob) — no silent "auto" picking; label selectors support `selectorMode: all|any` (AND/OR); rolling batches via `firstBatchSize` / `batchSize`; artifact packing is explicit via `artifactPackMode` / `tarLayout`.
 
 ```yaml
 version: 1
@@ -266,10 +266,10 @@ stages:
 
 ## Tech Stack
 
-- **Backend**: Go · Chi (routing) · modernc/sqlite (pure Go, no CGO) + go-sql-driver/mysql · go-git (no host git dependency) · NaCl secretbox (vault) · argon2id + bcrypt · golang.org/x/crypto/ssh (agentless deployment) · coder/websocket (terminals) · nginx (orchestrated on the gateway host) · acme.sh (self-hosted fork, embedded in the binary, issuing locally on the control node)
+- **Backend**: Go · Chi (routing) · modernc/sqlite (pure Go, no CGO) + go-sql-driver/mysql · go-git (no host git dependency) · NaCl secretbox (vault) · argon2id + bcrypt · golang.org/x/crypto/ssh (agentless deployment) · coder/websocket (terminals) · aliyun-oss-go-sdk (Alibaba Cloud OSS uploads) · nginx (orchestrated on the gateway host) · acme.sh (self-hosted fork, embedded in the binary, issuing locally on the control node)
 - **Frontend**: Vue 3 `<script setup>` · Vite · naive-ui · OKLCH dual theme · Monaco (read-only code browsing) · Vitest + Playwright · embedded into the binary via `go:embed`
 
-Deliberately dependency-lean: the cron parser, DAG engine, DNS provider clients, artifact/build caches, and nginx.conf renderer are all in-tree rather than pulled in as libraries.
+Deliberately dependency-lean: the cron parser, DAG engine, DNS provider clients, artifact/build caches, and nginx.conf renderer are all in-tree rather than pulled in as libraries. The one deliberate SDK exception is object-storage uploads (`aliyun-oss-go-sdk`, Alibaba Cloud's official OSS SDK).
 
 ## Architecture
 
@@ -321,6 +321,7 @@ single static binary (cmd/pipewright)
 │  ├── internal/prstatus      PR / commit status reporting (GitHub / Gitee)
 │  ├── internal/certmgmt      certificate management (acme.sh issuance/renewal + import)
 │  ├── internal/dnsprovider   Cloudflare / DNSPod / Alibaba DNS (DNS-01 creds + records)
+│  ├── internal/objectstore   object-storage accounts (Alibaba Cloud OSS; pipeline artifact uploads)
 │  └── internal/previewenv    per-PR preview environments + auto reclamation
 │
 ├─ observability

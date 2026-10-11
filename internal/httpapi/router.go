@@ -36,6 +36,7 @@ import (
 	"github.com/huangchengsir/pipewright/internal/metrics"
 	"github.com/huangchengsir/pipewright/internal/notify"
 	"github.com/huangchengsir/pipewright/internal/oauth"
+	"github.com/huangchengsir/pipewright/internal/objectstore"
 	"github.com/huangchengsir/pipewright/internal/opschat"
 	"github.com/huangchengsir/pipewright/internal/pipeline"
 	"github.com/huangchengsir/pipewright/internal/platformhttps"
@@ -115,6 +116,7 @@ type options struct {
 	retention        *retention.Service
 	certMgmt         certmgmt.Service
 	dnsProviders     dnsprovider.Service
+	objectStores     objectstore.Service
 	previewEnvs      PreviewService
 	serviceReg       servicereg.Service
 	platformHTTPS    platformhttps.Service
@@ -421,6 +423,13 @@ func WithPlatformHTTPS(s platformhttps.Service) Option {
 // 使用,运行时修改即时生效(取代环境变量 PIPEWRIGHT_PUBLIC_URL)。不传则端点返回 503。
 func WithSystemConfig(s systemcfg.Service) Option {
 	return func(o *options) { o.systemConfig = s }
+}
+
+// WithObjectStores 注入「对象存储」服务,挂载 /api/object-stores* 路由
+// (GET auth;写方法 auth + CSRF + 审计;test 为写方法)。AccessKeySecret 经 vault 密文,
+// 响应/审计/日志绝无明文;AccessKeyId 非机密,可回显。不传则相关端点返回 503。
+func WithObjectStores(s objectstore.Service) Option {
+	return func(o *options) { o.objectStores = s }
 }
 
 // WithAppStore 注入应用商店模板服务,挂载 /api/ops/apps* 与 POST /api/servers/{id}/apps/deploy
@@ -913,6 +922,17 @@ func New(webFS fs.FS, authn auth.Authenticator, opts ...Option) http.Handler {
 		ar.Post("/dns/providers/{id}/zones", makeAddDNSZoneHandler(dp, aud))
 		ar.Delete("/dns/providers/{id}/zones/{zoneId}", makeRemoveDNSZoneHandler(dp, aud))
 		ar.Delete("/dns/providers/{id}", makeDeleteDNSProviderHandler(dp, o.vault, aud))
+
+		// 对象存储集成层(流水线 OSS 上传节点配套):本期仅阿里云 OSS(凭据走 vault)。
+		// obs 为 nil → handler 返回 503。GET(列表)过 auth;POST/PUT/DELETE/test 为写方法,
+		// 过 auth + CSRF + 审计。AccessKeySecret 经 vault 密文、上传/测试时即用即弃,
+		// 响应/审计/日志绝无明文;AccessKeyId 非机密,可回显。
+		obs := o.objectStores
+		ar.Get("/object-stores", makeListObjectStoresHandler(obs))
+		ar.Post("/object-stores", makeCreateObjectStoreHandler(obs, o.vault, aud))
+		ar.Put("/object-stores/{id}", makeUpdateObjectStoreHandler(obs, o.vault, aud))
+		ar.Post("/object-stores/{id}/test", makeTestObjectStoreHandler(obs, aud))
+		ar.Delete("/object-stores/{id}", makeDeleteObjectStoreHandler(obs, o.vault, aud))
 
 		// Per-PR 预览环境(R4 E4.1 · 差异化王牌):列预览环境 / 手动回收 / 项目级预览配置。
 		// pv 为 nil → handler 返回 503。GET 过 auth;reclaim + config-PUT 为写方法,过 auth + CSRF + 审计。

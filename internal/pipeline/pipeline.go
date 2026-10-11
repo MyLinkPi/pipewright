@@ -561,6 +561,11 @@ func normalizeSpec(in Spec) (Spec, error) {
 		return Spec{}, err
 	}
 
+	// OSS 上传节点「产物来源节点」(config["artifactJob"])校验:必须引用上游节点(见 object_upload.go)。
+	if err := validateObjectUpload(out.Stages); err != nil {
+		return Spec{}, err
+	}
+
 	return out, nil
 }
 

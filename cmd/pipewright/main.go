@@ -45,6 +45,7 @@ import (
 	"github.com/huangchengsir/pipewright/internal/metrics"
 	"github.com/huangchengsir/pipewright/internal/notify"
 	"github.com/huangchengsir/pipewright/internal/oauth"
+	"github.com/huangchengsir/pipewright/internal/objectstore"
 	"github.com/huangchengsir/pipewright/internal/opschat"
 	"github.com/huangchengsir/pipewright/internal/pacloader"
 	"github.com/huangchengsir/pipewright/internal/pipeline"
@@ -423,6 +424,10 @@ func main() {
 	// servicereg,包间保持单向依赖);未装配时该策略自动回退既有滚动。
 	deploySvc := deploy.New(targetSvc, runSvc, deploy.WithDiagnoseHook(httpapi.NewDiagnoseHook(runSvc, aiSvc, secretSrc)), deploy.WithArtifactStore(artStore), deploy.WithInstanceGateway(&instanceRollGateway{sr: serviceRegSvc}))
 
+	// 对象存储集成层(流水线 OSS 上传节点配套):本期仅阿里云 OSS(AccessKeySecret 走 vault)。
+	// 提前到 dag 装配前构造,供 oss_upload 流水线节点注入;同时供设置页 /api/object-stores 消费。
+	objectStoreSvc := objectstore.New(st.DB, credVault)
+
 	// 运行执行器选择(Epic 8):**默认走 DAG 调度执行器**——它是唯一真正按 UI 配置的
 	// stages/script job/deploy_ssh/notify 编排执行的运行器。只有显式 PIPEWRIGHT_RUNNER=legacy
 	// 才回退旧版固定流程(clone→对仓库根 docker build→deploy,无视可视化流水线)。
@@ -444,7 +449,7 @@ func main() {
 		// 门行为不变;运行时可改)。
 		approvalNotifier := httpapi.NewApprovalNotifier(notifySvc, approvalSigner, publicURLResolver, runSvc)
 		dagOpts = append(dagOpts, dagrun.WithGate(httpapi.NewApprovalGate(runSvc, approvalCoord, approvalStore, approvalNotifier)))
-		builderOpts := []build.BuilderOption{build.WithArtifactStore(artStore), build.WithArtifactLister(runSvc.ListArtifacts), build.WithImageGC(os.Getenv("PIPEWRIGHT_NO_IMAGE_GC") != "1"), build.WithCommitRecorder(func(ctx context.Context, runID, commit string) { _ = runSvc.SetCommit(ctx, runID, commit) }), build.WithStageDeployer(deploySvc), build.WithStageNotifier(notifySvc), clonerOpt, buildCacheOpt, builtinRegistryOpt}
+		builderOpts := []build.BuilderOption{build.WithArtifactStore(artStore), build.WithArtifactLister(runSvc.ListArtifacts), build.WithImageGC(os.Getenv("PIPEWRIGHT_NO_IMAGE_GC") != "1"), build.WithCommitRecorder(func(ctx context.Context, runID, commit string) { _ = runSvc.SetCommit(ctx, runID, commit) }), build.WithStageDeployer(deploySvc), build.WithStageNotifier(notifySvc), build.WithStageObjectUploader(objectStoreSvc), clonerOpt, buildCacheOpt, builtinRegistryOpt}
 		b, berr := build.NewBuilder(projectSvc, pipelineSettingsSvc, credVault, builderOpts...)
 		if berr != nil && errors.Is(berr, build.ErrNoContainerCLI) {
 			// 瘦控制机(FR-8-19):本机无容器 CLI 不再整体回退 stub——改用 errDriver 构造 Builder,
@@ -754,7 +759,7 @@ func main() {
 
 	srv := &http.Server{
 		Addr:              cfg.Addr,
-		Handler:           httpapi.New(webFS, authSvc, httpapi.WithVault(credVault), httpapi.WithProjects(projectSvc), httpapi.WithTriggers(triggerSvc), httpapi.WithPipelines(pipelineSvc), httpapi.WithPipelineSettings(pipelineSettingsSvc), httpapi.WithRuns(runSvc, pool), httpapi.WithWebhooks(webhookReceiver), httpapi.WithAudit(auditRec), httpapi.WithAccount(authSvc), httpapi.WithAISettings(aiSvc), httpapi.WithAIGenerate(repoAnalyzer), httpapi.WithRunDiff(runDiffer), httpapi.WithSource(sourceReader), httpapi.WithRefs(refsLister), httpapi.WithArtifactStore(artStore), httpapi.WithServers(targetSvc), httpapi.WithLabels(labelsSvc), httpapi.WithServerCommands(serverCmdSvc), httpapi.WithRegistryHub(registryHubSvc), httpapi.WithRunnerConfig(runnerSvc), httpapi.WithDeploy(deploySvc), httpapi.WithSpecLoader(resumeSpecLoader), httpapi.WithNotifications(notifySvc), httpapi.WithRetention(retentionSvc), httpapi.WithDNSProviders(dnsSvc), httpapi.WithCertMgmt(certSvc), httpapi.WithPlatformHTTPS(platformHTTPSSvc), httpapi.WithSystemConfig(sysCfgSvc), httpapi.WithPreviewEnvs(previewSvc), httpapi.WithServiceReg(serviceRegSvc), httpapi.WithAppStore(appStoreSvc), httpapi.WithDiagnosisFeedback(feedbackSvc), httpapi.WithAnomaly(anomalySvc), httpapi.WithAnomalyConfig(int(anomalyInterval.Seconds()), int(anomalyCooldown.Seconds())), httpapi.WithMetricsHistory(metricsHist), httpapi.WithSecretSource(secretSrc), httpapi.WithOAuth(oauthSvc), httpapi.WithCron(cronSvc), httpapi.WithChain(chainSvc), httpapi.WithApprovals(approvalCoord, approvalStore), httpapi.WithApprovalLinks(approvalSigner), httpapi.WithConcurrency(concurrencySvc), httpapi.WithParameters(parameterSvc), httpapi.WithPromotion(promotionStore), httpapi.WithEnvironments(environmentsSvc), httpapi.WithDoraMetrics(doraMetricsSvc), httpapi.WithTemplates(templateSvc), httpapi.WithVariableGroups(varGroupSvc), httpapi.WithCustomNodes(customNodeSvc), httpapi.WithOpsChat(opsChatSvc)),
+		Handler:           httpapi.New(webFS, authSvc, httpapi.WithVault(credVault), httpapi.WithProjects(projectSvc), httpapi.WithTriggers(triggerSvc), httpapi.WithPipelines(pipelineSvc), httpapi.WithPipelineSettings(pipelineSettingsSvc), httpapi.WithRuns(runSvc, pool), httpapi.WithWebhooks(webhookReceiver), httpapi.WithAudit(auditRec), httpapi.WithAccount(authSvc), httpapi.WithAISettings(aiSvc), httpapi.WithAIGenerate(repoAnalyzer), httpapi.WithRunDiff(runDiffer), httpapi.WithSource(sourceReader), httpapi.WithRefs(refsLister), httpapi.WithArtifactStore(artStore), httpapi.WithServers(targetSvc), httpapi.WithLabels(labelsSvc), httpapi.WithServerCommands(serverCmdSvc), httpapi.WithRegistryHub(registryHubSvc), httpapi.WithRunnerConfig(runnerSvc), httpapi.WithDeploy(deploySvc), httpapi.WithSpecLoader(resumeSpecLoader), httpapi.WithNotifications(notifySvc), httpapi.WithRetention(retentionSvc), httpapi.WithDNSProviders(dnsSvc), httpapi.WithObjectStores(objectStoreSvc), httpapi.WithCertMgmt(certSvc), httpapi.WithPlatformHTTPS(platformHTTPSSvc), httpapi.WithSystemConfig(sysCfgSvc), httpapi.WithPreviewEnvs(previewSvc), httpapi.WithServiceReg(serviceRegSvc), httpapi.WithAppStore(appStoreSvc), httpapi.WithDiagnosisFeedback(feedbackSvc), httpapi.WithAnomaly(anomalySvc), httpapi.WithAnomalyConfig(int(anomalyInterval.Seconds()), int(anomalyCooldown.Seconds())), httpapi.WithMetricsHistory(metricsHist), httpapi.WithSecretSource(secretSrc), httpapi.WithOAuth(oauthSvc), httpapi.WithCron(cronSvc), httpapi.WithChain(chainSvc), httpapi.WithApprovals(approvalCoord, approvalStore), httpapi.WithApprovalLinks(approvalSigner), httpapi.WithConcurrency(concurrencySvc), httpapi.WithParameters(parameterSvc), httpapi.WithPromotion(promotionStore), httpapi.WithEnvironments(environmentsSvc), httpapi.WithDoraMetrics(doraMetricsSvc), httpapi.WithTemplates(templateSvc), httpapi.WithVariableGroups(varGroupSvc), httpapi.WithCustomNodes(customNodeSvc), httpapi.WithOpsChat(opsChatSvc)),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		// WriteTimeout 置 0:SSE 长连接(/api/runs/{id}/events)不可被写超时切断;

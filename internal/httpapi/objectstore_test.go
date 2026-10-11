@@ -1,0 +1,206 @@
+package httpapi
+
+import (
+	"context"
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	"github.com/huangchengsir/pipewright/internal/audit"
+	"github.com/huangchengsir/pipewright/internal/auth"
+	"github.com/huangchengsir/pipewright/internal/mask"
+	"github.com/huangchengsir/pipewright/internal/objectstore"
+	"github.com/huangchengsir/pipewright/internal/vault"
+)
+
+// setupObjectStoresAPI 构造挂了对象存储端点的测试 server(admin/testpass)。
+func setupObjectStoresAPI(t *testing.T) (srv *httptest.Server, client *http.Client, csrf string, v vault.Vault, rec audit.Recorder) {
+	t.Helper()
+	st := testStoreAuth(t)
+	authSvc := auth.NewService(st.DB, nil)
+	if err := authSvc.Bootstrap("admin", "testpass", ""); err != nil {
+		t.Fatalf("bootstrap: %v", err)
+	}
+	v = vault.New(st.DB, testMasterKey())
+	rec = audit.New(st.DB, mask.NewMasker(), nil)
+	svc := objectstore.New(st.DB, v)
+
+	srv = httptest.NewServer(New(testWebFSAuth(), authSvc,
+		WithVault(v), WithObjectStores(svc), WithAudit(rec)))
+	t.Cleanup(srv.Close)
+
+	client = newTestClient(t)
+	csrf = loginWithClient(t, client, srv.URL)
+	return srv, client, csrf, v, rec
+}
+
+// createObjectStorePOST 经 POST /api/object-stores 建一条配置,返回 (id, 原始响应体, 状态码)。
+func createObjectStorePOST(t *testing.T, client *http.Client, baseURL, csrf, body string) (string, []byte, int) {
+	t.Helper()
+	resp := doJSON(t, client, http.MethodPost, baseURL+"/api/object-stores", csrf, body)
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create 应 201, got %d body=%s", resp.StatusCode, raw)
+	}
+	var dto struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(raw, &dto); err != nil {
+		t.Fatalf("decode create: %v body=%s", err, raw)
+	}
+	return dto.ID, raw, resp.StatusCode
+}
+
+// --- POST:成功创建 → Secret 只写不回显,DTO 不含 credentialId/Secret;凭据入 vault ---
+
+func TestObjectStoreCreateSecretWriteOnly(t *testing.T) {
+	srv, client, csrf, v, _ := setupObjectStoresAPI(t)
+
+	id, raw, _ := createObjectStorePOST(t, client, srv.URL, csrf,
+		`{"type":"aliyun_oss","name":"prod","endpoint":"https://oss-cn-hangzhou.aliyuncs.com","bucket":"my-bucket","accessKeyId":"LTAIxxxx","secret":"super-secret-ak"}`)
+	if id == "" {
+		t.Fatalf("创建应返回 id")
+	}
+	// 响应绝不含 Secret / credentialId;AccessKeyId 非机密可回显。
+	body := string(raw)
+	if strings.Contains(body, "super-secret-ak") || strings.Contains(body, "credentialId") {
+		t.Fatalf("响应不应含 Secret/credentialId: %s", body)
+	}
+	var dto struct {
+		AccessKeyID          string `json:"accessKeyId"`
+		Endpoint             string `json:"endpoint"`
+		CredentialConfigured bool   `json:"credentialConfigured"`
+	}
+	if err := json.Unmarshal(raw, &dto); err != nil {
+		t.Fatalf("decode: %v body=%s", err, raw)
+	}
+	if dto.AccessKeyID != "LTAIxxxx" || dto.Endpoint != "oss-cn-hangzhou.aliyuncs.com" || !dto.CredentialConfigured {
+		t.Fatalf("DTO 不符: %+v", dto)
+	}
+
+	// 凭据已入 vault,类型为 object_store_secret,明文只在此进程内取出验证。
+	creds, err := v.List()
+	if err != nil || len(creds) != 1 {
+		t.Fatalf("应恰有 1 条凭据: %v / %d", err, len(creds))
+	}
+	if creds[0].Type != vault.TypeObjectStoreSecret {
+		t.Fatalf("凭据类型应为 %s, got %s", vault.TypeObjectStoreSecret, creds[0].Type)
+	}
+	secret, err := v.Reveal(creds[0].ID)
+	if err != nil || secret != "super-secret-ak" {
+		t.Fatalf("vault 中 Secret 应可解出: %v", err)
+	}
+}
+
+// --- POST:空 Secret 须落库前拒绝,且不产生凭据 ---
+
+func TestObjectStoreCreateEmptySecretRejected(t *testing.T) {
+	srv, client, csrf, v, _ := setupObjectStoresAPI(t)
+
+	resp := doJSON(t, client, http.MethodPost, srv.URL+"/api/object-stores", csrf,
+		`{"type":"aliyun_oss","name":"prod","endpoint":"oss-cn-hangzhou.aliyuncs.com","bucket":"b","accessKeyId":"LTAI","secret":"  "}`)
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("空 Secret 应 400, got %d body=%s", resp.StatusCode, raw)
+	}
+	creds, err := v.List()
+	if err != nil || len(creds) != 0 {
+		t.Fatalf("拒绝路径不应留凭据, got %d err=%v", len(creds), err)
+	}
+}
+
+// --- PUT:改名 + 轮换 Secret(vault 原地重封,credentialId 不变) ---
+
+func TestObjectStoreUpdateRenameAndRotate(t *testing.T) {
+	srv, client, csrf, v, _ := setupObjectStoresAPI(t)
+	id, _, _ := createObjectStorePOST(t, client, srv.URL, csrf,
+		`{"type":"aliyun_oss","name":"prod","endpoint":"oss-cn-hangzhou.aliyuncs.com","bucket":"b","accessKeyId":"LTAI","secret":"old-secret"}`)
+
+	resp := doJSON(t, client, http.MethodPut, srv.URL+"/api/object-stores/"+id, csrf, `{"name":"renamed"}`)
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("改名应 200, got %d body=%s", resp.StatusCode, raw)
+	}
+	var dto struct {
+		Name                 string `json:"name"`
+		CredentialConfigured bool   `json:"credentialConfigured"`
+	}
+	if err := json.Unmarshal(raw, &dto); err != nil || dto.Name != "renamed" || !dto.CredentialConfigured {
+		t.Fatalf("改名 DTO 不符: %v %+v", err, dto)
+	}
+
+	resp = doJSON(t, client, http.MethodPut, srv.URL+"/api/object-stores/"+id, csrf, `{"secret":"new-secret"}`)
+	raw, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("轮换应 200, got %d body=%s", resp.StatusCode, raw)
+	}
+	creds, err := v.List()
+	if err != nil || len(creds) != 1 {
+		t.Fatalf("应恰有 1 条凭据: %v / %d", err, len(creds))
+	}
+	secret, err := v.Reveal(creds[0].ID)
+	if err != nil || secret != "new-secret" {
+		t.Fatalf("轮换后 vault 应为新 Secret: %v", err)
+	}
+}
+
+// --- DELETE:删除配置 → 级联删除凭据 ---
+
+func TestObjectStoreDeleteCascadesCredential(t *testing.T) {
+	srv, client, csrf, v, rec := setupObjectStoresAPI(t)
+	id, _, _ := createObjectStorePOST(t, client, srv.URL, csrf,
+		`{"type":"aliyun_oss","name":"prod","endpoint":"oss-cn-hangzhou.aliyuncs.com","bucket":"b","accessKeyId":"LTAI","secret":"s"}`)
+
+	resp := doJSON(t, client, http.MethodDelete, srv.URL+"/api/object-stores/"+id, csrf, "")
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("删除应 200, got %d body=%s", resp.StatusCode, raw)
+	}
+	creds, err := v.List()
+	if err != nil || len(creds) != 0 {
+		t.Fatalf("删除配置应级联删凭据, got %d err=%v", len(creds), err)
+	}
+	// 审计留痕。
+	entries, err := rec.List(context.Background(), audit.ListFilter{Action: auditActionObjectStoreDelete})
+	if err != nil || len(entries.Entries) != 1 {
+		t.Fatalf("应恰有 1 条 delete 审计: %v / %d", err, len(entries.Entries))
+	}
+}
+
+// --- POST /{id}/test:不存在的配置 → 404(不触网) ---
+
+func TestObjectStoreTestNotFound(t *testing.T) {
+	srv, client, csrf, _, _ := setupObjectStoresAPI(t)
+	resp := doJSON(t, client, http.MethodPost, srv.URL+"/api/object-stores/missing/test", csrf, "")
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("不存在应 404, got %d body=%s", resp.StatusCode, raw)
+	}
+}
+
+// --- GET:列表初始为空 ---
+
+func TestObjectStoreListEmpty(t *testing.T) {
+	srv, client, csrf, _, _ := setupObjectStoresAPI(t)
+	resp := doJSON(t, client, http.MethodGet, srv.URL+"/api/object-stores", csrf, "")
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("列表应 200, got %d body=%s", resp.StatusCode, raw)
+	}
+	var list struct {
+		Items []any `json:"items"`
+	}
+	if err := json.Unmarshal(raw, &list); err != nil || len(list.Items) != 0 {
+		t.Fatalf("初始列表应为空: %v body=%s", err, raw)
+	}
+}

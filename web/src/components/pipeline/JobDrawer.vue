@@ -6,6 +6,7 @@ import type { PipelineJob, PipelineStage } from '../../api/pipeline'
 import type { Credential } from '../../api/credentials'
 import type { Server } from '../../api/servers'
 import type { NotificationChannel } from '../../api/notifications'
+import type { ObjectStore } from '../../api/objectStores'
 import {
   getJobTypeSpec,
   splitConfig,
@@ -36,6 +37,8 @@ const props = defineProps<{
   credentials?: Credential[]
   servers?: Server[]
   channels?: NotificationChannel[]
+  /** 对象存储配置候选(OSS 上传节点「对象存储」下拉;来自设置页)。 */
+  objectStores?: ObjectStore[]
   /** 全流水线的产物来源候选(部署节点「产物来源」下拉;画布按流水线顺序传入)。 */
   producerOptions?: ProducerOption[]
   /** 通知节点「状态来源节点」候选(仅上游节点;画布按当前编辑节点计算传入)。 */
@@ -737,6 +740,20 @@ async function confirmSave(): Promise<void> {
           <option value="">{{ t('pipelineJob.producerUnselected') }}</option>
           <option v-for="o in producerCandidates(field)" :key="o.name" :value="o.name">
             {{ producerLabel(o) }} · {{ o.stageName }}
+          </option>
+        </select>
+
+        <!-- 对象存储(OSS 上传节点):从设置页已配对象存储里选一条 -->
+        <select
+          v-else-if="field.kind === 'objectStore'"
+          :value="fieldValue(field.key)"
+          class="drawer-select"
+          :aria-label="field.label"
+          @change="setField(field.key, ($event.target as HTMLSelectElement).value)"
+        >
+          <option value="">{{ t('pipelineJob.objectStoreUnselected') }}</option>
+          <option v-for="st in (props.objectStores ?? [])" :key="st.id" :value="st.id">
+            {{ st.name }} · {{ st.bucket }}
           </option>
         </select>
 

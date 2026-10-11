@@ -32,6 +32,8 @@ export type FieldKind =
   | 'producer'
   /** 按名引用另一个节点(值 = 节点名);候选仅上游节点,如通知节点的「状态来源节点」。 */
   | 'nodeRef'
+  /** 引用一条「对象存储」配置(值 = 配置 id);候选来自设置页,如 OSS 上传节点。 */
+  | 'objectStore'
   | 'runnerPicker'
 
 export interface SelectOption {
@@ -762,6 +764,47 @@ export const JOB_TYPE_SPECS: Record<string, JobTypeSpec> = {
     fields: DEPLOY_CONTAINER_FIELDS,
   },
 
+  // OSS 上传节点:把一个上游节点的文件类产物上传到已配置的对象存储(本期仅阿里云 OSS)。
+  // storageId 引用设置页的对象存储配置;artifactJob 精确绑定产物来源节点(保存期后端复校上游)。
+  oss_upload: {
+    type: 'oss_upload',
+    get label() { return t('pipelineJob.typeOssUploadLabel') },
+    get description() { return t('pipelineJob.typeOssUploadDesc') },
+    accent: 'amber',
+    category: 'deploy',
+    fields: [
+      {
+        key: 'storageId',
+        get label() { return t('pipelineJob.fieldObjectStoreLabel') },
+        kind: 'objectStore',
+        get hint() { return t('pipelineJob.fieldObjectStoreHint') },
+      },
+      {
+        key: 'artifactJob',
+        get label() { return t('pipelineJob.fieldArtifactJobLabel') },
+        kind: 'producer',
+        get hint() { return t('pipelineJob.fieldOssArtifactJobHint') },
+      },
+      {
+        key: 'artifactName',
+        get label() { return t('pipelineJob.fieldArtifactNameLabel') },
+        kind: 'text',
+        monospace: true,
+        placeholder: 'app-*.jar',
+        get hint() { return t('pipelineJob.fieldArtifactNameHint') },
+        when: (c) => !!(c.artifactJob || '').trim(),
+      },
+      {
+        key: 'prefix',
+        get label() { return t('pipelineJob.fieldOssPrefixLabel') },
+        kind: 'text',
+        monospace: true,
+        placeholder: 'releases/{{runId}}',
+        get hint() { return t('pipelineJob.fieldOssPrefixHint') },
+      },
+    ],
+  },
+
   health_check: {
     type: 'health_check',
     get label() { return t('pipelineJob.typeHealthCheckLabel') },
@@ -1046,6 +1089,7 @@ export const PICKABLE_TYPES: readonly string[] = [
   'build_python',
   'build_image',
   'push_image',
+  'oss_upload',
   'deploy_container',
   'deploy_ssh',
   'health_check',

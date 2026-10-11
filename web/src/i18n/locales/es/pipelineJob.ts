@@ -135,6 +135,16 @@ export default {
   fieldRegistryUrlHint:
     "Vacío = iniciar sesión en Docker Hub; en un registro privado indique host[:port] (sin https://), coherente con la referencia de la imagen",
 
+  // ─── jobConfigSchema · oss_upload ──────────────────────────────────────
+  typeOssUploadLabel: 'Enviar a OSS',
+  typeOssUploadDesc: 'Envía el artefacto de archivo del nodo anterior al almacenamiento de objetos configurado (Alibaba Cloud OSS).',
+  fieldObjectStoreLabel: 'Almacenamiento de objetos',
+  fieldObjectStoreHint: 'Elige una cuenta configurada en Ajustes · Almacenamiento de objetos; si no hay ninguna, añádela primero en Ajustes.',
+  fieldOssArtifactJobHint: 'De qué nodo subir el artefacto (coincidencia exacta por nodo); solo artefactos de archivo (jar/dist/archivo comprimido): para imágenes usa «Enviar imagen».',
+  fieldOssPrefixLabel: 'Prefijo de clave del objeto (opcional)',
+  fieldOssPrefixHint: "Prefijo de clave dentro del bucket; admite los marcadores {'{{runId}}'} {'{{branch}}'} {'{{commit}}'} {'{{project}}'}; vacío = subir en la raíz del bucket.",
+  objectStoreUnselected: 'Sin especificar (configura primero el almacenamiento de objetos en Ajustes)',
+
   // ─── jobConfigSchema · deploy_ssh ──────────────────────────────────────
   typeDeploySshLabel: 'Host deploy',
   typeDeploySshDesc: 'Roll out file artifacts to target hosts over SSH: releases/<runId> dir + atomic current symlink + restart command + health gate + auto-rollback; supports batched rolling.',

@@ -28,6 +28,7 @@ const (
 	TypeSSHPassword = "ssh_password" // SSH 登录密码(非 PEM);SSH 层据 looksLikePEM 自动按密码认证
 	TypeDNSToken    = "dns_token"    // DNS 提供商 API 凭据(单字串:Cloudflare token / 「ID,Secret」);掩码走 default 全打点
 	TypeSudoPassword = "sudo_password" // 服务器登录用户的 sudo 密码(非 PEM);供提权场景经 sudo -S 从 stdin 喂入;掩码走 default 全打点
+	TypeObjectStoreSecret = "object_store_secret" // 对象存储 AccessKeySecret(单字串);由「对象存储」页管理;掩码走 default 全打点
 )
 
 // 领域错误。错误体永不含明文/密文/master key。
@@ -131,7 +132,7 @@ func (s *service) configured() bool { return s.key != nil }
 // validateType 校验类型枚举。
 func validateType(t string) error {
 	switch t {
-	case TypeGitToken, TypeGitHTTP, TypeSSHKey, TypeRegistry, TypeSSHPassword, TypeDNSToken, TypeSudoPassword:
+	case TypeGitToken, TypeGitHTTP, TypeSSHKey, TypeRegistry, TypeSSHPassword, TypeDNSToken, TypeSudoPassword, TypeObjectStoreSecret:
 		return nil
 	default:
 		return ErrInvalidType
@@ -385,6 +386,13 @@ func (s *service) Delete(id string) error {
 	// 「DNS 提供商」页管理,从保险库删掉会让提供商凭据悬挂(校验/DNS-01 签发时才报错)。
 	if err := s.db.QueryRow(
 		`SELECT COUNT(*) FROM dns_providers WHERE credential_id = ?`, id,
+	).Scan(&refCount); err == nil && refCount > 0 {
+		return ErrCredentialInUse
+	}
+	// object_stores.credential_id 无外键,同样显式检查:对象存储的 AccessKeySecret 凭据由
+	// 「对象存储」页管理,从保险库删掉会让该配置凭据悬挂(运行时上传才报错)。
+	if err := s.db.QueryRow(
+		`SELECT COUNT(*) FROM object_stores WHERE credential_id = ?`, id,
 	).Scan(&refCount); err == nil && refCount > 0 {
 		return ErrCredentialInUse
 	}

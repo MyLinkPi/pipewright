@@ -22,6 +22,7 @@ import { listCredentials, type Credential } from '../api/credentials'
 import { listProjects, updateProject, type Project } from '../api/projects'
 import { listServers, type Server } from '../api/servers'
 import { listChannels, type NotificationChannel } from '../api/notifications'
+import { listObjectStores, type ObjectStore } from '../api/objectStores'
 import { getValidation, type ValidationDTO, type IssueScope } from '../api/pipelineValidation'
 import { HttpError } from '../api/http'
 import { stableStringify } from '../lib/stableJson'
@@ -124,6 +125,7 @@ const editEnvs     = ref<Environment[]>([])
 const credentials  = ref<Credential[]>([])
 const servers      = ref<Server[]>([])
 const channels     = ref<NotificationChannel[]>([])
+const objectStores = ref<ObjectStore[]>([])
 
 function applySettings(dto: SettingsDTO): void {
   settings.value = dto
@@ -135,16 +137,18 @@ function applySettings(dto: SettingsDTO): void {
 
 async function loadSettings(): Promise<void> {
   try {
-    const [dto, creds, srvs, chs] = await Promise.all([
+    const [dto, creds, srvs, chs, stores] = await Promise.all([
       getSettings(projectId.value),
       listCredentials().catch(() => [] as Credential[]),
       listServers().catch(() => [] as Server[]),
       listChannels().catch(() => [] as NotificationChannel[]),
+      listObjectStores().catch(() => [] as ObjectStore[]),
     ])
     applySettings(dto)
     credentials.value = creds
     servers.value = srvs
     channels.value = chs
+    objectStores.value = stores
   } catch {
     // Settings load failure is non-fatal for the canvas; the vars/envs tabs show
     // their own empty state until a successful save. Surfaced on save attempts.
@@ -505,6 +509,8 @@ async function togglePrStatus(next: boolean): Promise<void> {
         <h1 class="pipeline-title">
           {{ t('projectPipeline.title') }}
           <span class="pipeline-tag">{{ pipeline?.status ?? 'draft' }}</span>
+          <!-- 未保存指示:页面级状态,与状态标签并列;不放操作栏以免混进按钮流 -->
+          <span v-if="pageDirty" class="unsaved-chip" role="status">{{ t('misc.unsaved.title') }}</span>
         </h1>
       </div>
 
@@ -571,8 +577,6 @@ async function togglePrStatus(next: boolean): Promise<void> {
           <span v-if="saveSubmitting" class="spinner" aria-hidden="true"/>
           {{ saveSubmitting ? t('projectPipeline.saving') : t('projectPipeline.saveDraft') }}
         </button>
-
-        <span v-if="pageDirty" class="unsaved-chip" role="status">{{ t('misc.unsaved.title') }}</span>
       </div>
     </header>
 
@@ -745,6 +749,7 @@ async function togglePrStatus(next: boolean): Promise<void> {
             :credentials="credentials"
             :servers="servers"
             :channels="channels"
+            :object-stores="objectStores"
             @update="handleCanvasUpdate"
           />
         </div>
@@ -1447,12 +1452,16 @@ async function togglePrStatus(next: boolean): Promise<void> {
   .spinner { animation: none; border-top-color: currentColor; }
 }
 
-/* ─── Unsaved-changes indicator ─────────────────────────────────────────────── */
+/* ─── Unsaved-changes indicator (标题旁,与状态标签同款 pill) ──────────────────── */
 .unsaved-chip {
-  margin-left: 10px;
-  font-size: 12px;
-  font-weight: 500;
-  color: var(--color-warning, #c98a2b);
+  font-size: 0.68rem;
+  font-weight: 600;
+  color: var(--color-amber);
+  background: var(--color-amber-soft);
+  border: 1px solid var(--color-amber-line);
+  border-radius: 100px;
+  padding: 2px 9px;
+  letter-spacing: 0;
   white-space: nowrap;
 }
 </style>

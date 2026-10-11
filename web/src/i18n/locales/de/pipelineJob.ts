@@ -129,6 +129,16 @@ export default {
   fieldRegistryUrlHint:
     "Leer = Anmeldung bei Docker Hub; für eine private Registry host[:port] angeben (ohne https://), passend zur Image-Referenz",
 
+  // ─── jobConfigSchema · oss_upload ──────────────────────────────────────
+  typeOssUploadLabel: 'OSS-Upload',
+  typeOssUploadDesc: 'Lädt das Datei-Artefakt des vorgelagerten Knotens in den konfigurierten Objektspeicher (Alibaba Cloud OSS) hoch.',
+  fieldObjectStoreLabel: 'Objektspeicher',
+  fieldObjectStoreHint: 'Wähle ein unter Einstellungen · Objektspeicher konfiguriertes Konto; gibt es keines, füge zuerst eines in den Einstellungen hinzu.',
+  fieldOssArtifactJobHint: 'Welches Artefakt welches Knotens hochgeladen wird (exakte Übereinstimmung per Knoten); nur Datei-Artefakte (jar/dist/Archiv) — für Images „Image pushen“ verwenden.',
+  fieldOssPrefixLabel: 'Objekt-Schlüsselpräfix (optional)',
+  fieldOssPrefixHint: "Schlüsselpräfix innerhalb des Buckets; unterstützt die Platzhalter {'{{runId}}'} {'{{branch}}'} {'{{commit}}'} {'{{project}}'}; leer = Upload im Bucket-Stamm.",
+  objectStoreUnselected: 'Nicht angegeben (zuerst den Objektspeicher in den Einstellungen konfigurieren)',
+
   // ─── jobConfigSchema · deploy_ssh ──────────────────────────────────────
   typeDeploySshLabel: 'Host deploy',
   typeDeploySshDesc: 'Roll out file artifacts to target hosts over SSH: releases/<runId> dir + atomic current symlink + restart command + health gate + auto-rollback; supports batched rolling.',

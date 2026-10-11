@@ -400,6 +400,7 @@ needs 填「本阶段内它所依赖的其它 job 的 name」(数组)。**凡有
 - monorepo 前后端可并行:同一构建阶段放 build_nodejs 与 build_java(互不依赖 → 并行),build_image 用 needs 串在它们之后。
 - 有 Dockerfile → 用 build_image(产 image),需远端部署再加 push_image(needs build_image);无 Dockerfile → 按语言用 build_nodejs/build_java/build_golang/build_python 产 dist/jar/二进制。
 - 部署后接 health_check(needs deploy_ssh);关键阶段(部署成功/失败)可接 notify。
+- 需要归档/分发构建产物到对象存储 → 在构建后接 oss_upload(needs 填产出该产物的构建节点 name,artifactJob 填同一 name)。
 - 仅在内置节点无法表达的步骤才用 script 或库中的自定义节点(templated)。
 
 ## 每个节点的 config(关键!尽量据仓库分析填满,让流水线直接可用)
@@ -409,6 +410,7 @@ needs 填「本阶段内它所依赖的其它 job 的 name」(数组)。**凡有
 - push_image:无需 config(随 build_image 推送)。
 - deploy_ssh(文件产物 jar/dist):artifactJob(必填 = 产出该产物的构建节点 name)、deployPath、restartCommand、firstBatchSize/batchSize(多机分批,可选);serverId 留空(用户选目标机)。
 - deploy_container(镜像产物):artifactJob(必填 = build_image 节点 name)、containerName(据项目名取,如 "<proj>-app")、ports(如 "8080:8080");常用容器参数用结构化键 cpuLimit(如 "1.0")/memoryLimit(如 "512m")/restartPolicy(no/always/unless-stopped/on-failure)/envVars(每行一条 KEY=value),仅特殊 flag 才用 runArgs(可选);serverId 留空。
+- oss_upload(把文件产物上传到对象存储):artifactJob(必填 = 产出该产物的构建节点 name)、storageId(可选,留空给用户在画布选对象存储配置)、prefix(可选,如 "releases/{{project}}/{{branch}}",支持 {{runId}}/{{branch}}/{{commit}}/{{project}} 占位)、artifactName(可选,产物名 glob,如 "app-*.jar";存在多件同名产物时消歧);只上传文件类产物(jar/dist/归档),镜像产物请用 push_image。
 - health_check:probeMode("http")、url(据服务端口/框架填,Spring Boot 用 "http://localhost:<宿主端口>/actuator/health",其它用 "/healthz")、retries("10")、intervalSeconds("3");可选 selector 圈选目标机(留空 = 平台本机 http 探测)。
 - notify:titleTemplate/bodyTemplate(可用 {{project}} {{branch}} {{commit}} {{status}} {{runId}} 占位);statusFrom 可选 = **上游节点 name**(配了之后 {{status}} 渲染该节点本次运行的状态,而非恒为 running 的运行状态;不确定就留空);channel 留空(用户选渠道)。
 - git_source:config 留空 {}。

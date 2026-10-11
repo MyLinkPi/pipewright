@@ -271,4 +271,45 @@ describe('jobConfigSchema', () => {
       }
     })
   })
+
+  describe('oss_upload(OSS 上传节点)', () => {
+    const spec = JOB_TYPE_SPECS.oss_upload
+
+    it('可被选用且归入 deploy 分类', () => {
+      expect(PICKABLE_TYPES).toContain('oss_upload')
+      expect(spec.category).toBe('deploy')
+    })
+
+    it('声明 storageId / artifactJob / artifactName / prefix 四个字段', () => {
+      expect(spec.fields.map((f) => f.key)).toEqual([
+        'storageId',
+        'artifactJob',
+        'artifactName',
+        'prefix',
+      ])
+      expect(spec.fields.find((f) => f.key === 'storageId')!.kind).toBe('objectStore')
+      expect(spec.fields.find((f) => f.key === 'artifactJob')!.kind).toBe('producer')
+    })
+
+    it('未选产物来源节点时隐藏 artifactName', () => {
+      const nameField = spec.fields.find((f) => f.key === 'artifactName')!
+      expect(nameField.when!({})).toBe(false)
+      expect(nameField.when!({ artifactJob: '构建' })).toBe(true)
+    })
+
+    it('其字段键归属 schema,不落入「原始参数」高级区', () => {
+      const { extras } = splitConfig('oss_upload', {
+        storageId: 'os-1',
+        artifactJob: '构建',
+        artifactName: 'app-*.jar',
+        prefix: 'releases/{{runId}}',
+      })
+      expect(extras.length).toBe(0)
+    })
+
+    it('不是脚本类节点(无步骤构建器 / 构建机区块)', () => {
+      expect(isScriptClassType('oss_upload')).toBe(false)
+      expect(schemaKeys('oss_upload').has(RUNNER_FIELD_KEY)).toBe(false)
+    })
+  })
 })

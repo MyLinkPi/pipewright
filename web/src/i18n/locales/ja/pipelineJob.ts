@@ -126,6 +126,16 @@ export default {
   fieldRegistryUrlHint:
     "空欄 = Docker Hub にログイン;プライベートレジストリは host[:port](https:// なし)を指定し、イメージ参照と一致させる",
 
+  // ─── jobConfigSchema · oss_upload ──────────────────────────────────────
+  typeOssUploadLabel: 'OSS アップロード',
+  typeOssUploadDesc: '上流ノードのファイル成果物を設定済みのオブジェクトストレージ(Alibaba Cloud OSS)へアップロードします。',
+  fieldObjectStoreLabel: 'オブジェクトストレージ',
+  fieldObjectStoreHint: '「設定 · オブジェクトストレージ」で設定済みのアカウントから選択します。ない場合は先に設定で追加してください。',
+  fieldOssArtifactJobHint: 'どのノードの成果物をアップロードするか(ノードで厳密に一致)。ファイル成果物のみ(jar/dist/アーカイブ)に対応し、イメージには「イメージをプッシュ」を使用します。',
+  fieldOssPrefixLabel: 'オブジェクトキーのプレフィックス(任意)',
+  fieldOssPrefixHint: "バケット内のキーのプレフィックス。プレースホルダー {'{{runId}}'} {'{{branch}}'} {'{{commit}}'} {'{{project}}'} に対応。空欄ならバケットのルートにアップロードします。",
+  objectStoreUnselected: '指定しない(先に設定でオブジェクトストレージを設定してください)',
+
   // ─── jobConfigSchema · deploy_ssh ──────────────────────────────────────
   typeDeploySshLabel: 'Host deploy',
   typeDeploySshDesc: 'Roll out file artifacts to target hosts over SSH: releases/<runId> dir + atomic current symlink + restart command + health gate + auto-rollback; supports batched rolling.',

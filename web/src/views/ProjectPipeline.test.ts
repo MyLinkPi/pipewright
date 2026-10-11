@@ -32,6 +32,7 @@ vi.mock('../api/projects', () => ({
 }))
 vi.mock('../api/servers', () => ({ listServers: vi.fn().mockResolvedValue([]) }))
 vi.mock('../api/notifications', () => ({ listChannels: vi.fn().mockResolvedValue([]) }))
+vi.mock('../api/objectStores', () => ({ listObjectStores: vi.fn().mockResolvedValue([]) }))
 vi.mock('../api/pipelineValidation', () => ({ getValidation: vi.fn() }))
 
 let routeQuery: Record<string, string> = { tab: 'vars' }
@@ -186,5 +187,8 @@ describe('ProjectPipeline — 脏检查键序无关(改回原值不判脏)', () 
     await nextTick()
 
     expect(w.find('.unsaved-chip').exists()).toBe(true)
+    // 位置回归:未保存提示应与状态标签同处标题区,而非混进右上操作按钮组
+    expect(w.find('.pipeline-title .unsaved-chip').exists()).toBe(true)
+    expect(w.find('.pipeline-top-actions .unsaved-chip').exists()).toBe(false)
   })
 })

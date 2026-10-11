@@ -7,6 +7,7 @@ export default {
   navNotifications: '通知',
   navVault: '認証情報ボールト',
   navDnsProviders: 'DNS プロバイダー',
+  navObjectStorage: 'オブジェクトストレージ',
   navHttps: 'HTTPS アクセス',
   navAccount: 'アカウント',
   navServers: 'サーバー',

@@ -122,6 +122,16 @@ export default {
   fieldRegistryUrlHint:
     "비워 두면 Docker Hub에 로그인; 프라이빗 레지스트리는 host[:port](https:// 없이) 입력, 이미지 참조와 일치해야 함",
 
+  // ─── jobConfigSchema · oss_upload ──────────────────────────────────────
+  typeOssUploadLabel: 'OSS 업로드',
+  typeOssUploadDesc: '업스트림 노드의 파일 아티팩트를 구성된 오브젝트 스토리지(Alibaba Cloud OSS)로 업로드합니다.',
+  fieldObjectStoreLabel: '오브젝트 스토리지',
+  fieldObjectStoreHint: '「설정 · 오브젝트 스토리지」에서 구성한 계정 중에서 선택하세요. 없으면 먼저 설정에서 추가하세요.',
+  fieldOssArtifactJobHint: '어느 노드의 아티팩트를 업로드할지(노드로 정확히 일치). 파일 아티팩트만 지원하며(jar/dist/압축), 이미지는 「이미지 푸시」를 사용하세요.',
+  fieldOssPrefixLabel: '오브젝트 키 접두사(선택)',
+  fieldOssPrefixHint: "버킷 내 키 접두사. 자리 표시자 {'{{runId}}'} {'{{branch}}'} {'{{commit}}'} {'{{project}}'} 지원. 비워 두면 버킷 루트에 업로드합니다.",
+  objectStoreUnselected: '지정하지 않음(먼저 설정에서 오브젝트 스토리지를 구성하세요)',
+
   // ─── jobConfigSchema · deploy_ssh ──────────────────────────────────────
   typeDeploySshLabel: 'Host deploy',
   typeDeploySshDesc: 'Roll out file artifacts to target hosts over SSH: releases/<runId> dir + atomic current symlink + restart command + health gate + auto-rollback; supports batched rolling.',

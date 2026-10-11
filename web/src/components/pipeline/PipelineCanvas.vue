@@ -5,6 +5,7 @@ import type { PipelineStage, PipelineJob, StageKind } from '../../api/pipeline'
 import type { Credential } from '../../api/credentials'
 import type { Server } from '../../api/servers'
 import type { NotificationChannel } from '../../api/notifications'
+import type { ObjectStore } from '../../api/objectStores'
 import StageColumn from './StageColumn.vue'
 import JobDrawer from './JobDrawer.vue'
 import StageDrawer from './StageDrawer.vue'
@@ -24,6 +25,8 @@ const props = defineProps<{
   credentials?: Credential[]
   servers?: Server[]
   channels?: NotificationChannel[]
+  /** 对象存储配置候选(OSS 上传节点「对象存储」下拉;来自设置页)。 */
+  objectStores?: ObjectStore[]
 }>()
 
 const emit = defineEmits<{
@@ -457,6 +460,7 @@ function handleDrawerUpdate(patch: Partial<PipelineJob>): void {
       :credentials="props.credentials"
       :servers="props.servers"
       :channels="props.channels"
+      :object-stores="props.objectStores"
       :producer-options="producerOptions"
       :upstream-options="upstreamOptions"
       @close="closeDrawer"
