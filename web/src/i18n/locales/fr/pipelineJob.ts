@@ -124,7 +124,11 @@ export default {
   fieldImageNameLabel: "Nom de l’image",
   fieldTagLabel: "Tag",
   fieldTagHint:
-    "Variables disponibles : {'${COMMIT_SHA}'} {'${BRANCH}'} {'${BUILD_NUMBER}'}",
+    "Variables disponibles : {'{{commit}}'} {'{{branch}}'} {'{{runId}}'} {'{{project}}'} ; vide conserve le tag de l’artefact",
+  fieldPushImageArtifactJobHint:
+    "Choisissez l’image produite par quel nœud (doit être un nœud « Build » de la MÊME étape ; le push s’exécute dans ce nœud).",
+  fieldPushImageRegistryHint:
+    "Vide = utiliser le registre d’images lié à l’environnement du nœud source.",
   fieldRegistryCredentialLabel: "Identifiant du registre",
   fieldRegistryCredentialHint:
     "Référence l’identifiant de connexion au registre d’images",

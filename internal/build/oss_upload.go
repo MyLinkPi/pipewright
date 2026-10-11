@@ -21,14 +21,15 @@ func isObjectUploadJob(jobType string) bool {
 	return strings.TrimSpace(jobType) == "oss_upload"
 }
 
-// ossPrefixPlaceholder 匹配 oss_upload 节点 prefix 里受支持的占位。
-var ossPrefixPlaceholder = regexp.MustCompile(`\{\{\s*(runId|branch|commit|project)\s*\}\}`)
+// runPlaceholder 匹配节点 config 里受支持的本次运行占位。
+var runPlaceholder = regexp.MustCompile(`\{\{\s*(runId|branch|commit|project)\s*\}\}`)
 
-// renderOssPrefix 把 prefix 里的通用占位替换为本次运行的值:
+// renderRunPlaceholders 把字符串里的通用占位替换为本次运行的值:
 // {{runId}} / {{branch}} / {{commit}} / {{project}}。未知占位原样保留(不报错)。
-func renderOssPrefix(prefix string, r *run.Run) string {
-	if prefix == "" || !strings.Contains(prefix, "{{") {
-		return prefix
+// 由 oss_upload 的 prefix 与 push_image 的 tag 共用。
+func renderRunPlaceholders(s string, r *run.Run) string {
+	if s == "" || !strings.Contains(s, "{{") {
+		return s
 	}
 	repl := map[string]string{
 		"runId":   r.ID,
@@ -36,8 +37,8 @@ func renderOssPrefix(prefix string, r *run.Run) string {
 		"commit":  strings.TrimSpace(r.Trigger.Commit),
 		"project": r.ProjectName,
 	}
-	return ossPrefixPlaceholder.ReplaceAllStringFunc(prefix, func(m string) string {
-		return repl[ossPrefixPlaceholder.FindStringSubmatch(m)[1]]
+	return runPlaceholder.ReplaceAllStringFunc(s, func(m string) string {
+		return repl[runPlaceholder.FindStringSubmatch(m)[1]]
 	})
 }
 
@@ -190,7 +191,7 @@ func (b *Builder) runOssUploadJob(ctx context.Context, rep dagrun.StageReporter,
 		_ = rep.Log(ctx, streamStderr, "OSS 上传节点:"+err.Error())
 		return ErrBuildFailed
 	}
-	prefix := renderOssPrefix(cfgString(jb.Config, "prefix"), r)
+	prefix := renderRunPlaceholders(cfgString(jb.Config, "prefix"), r)
 	n, uerr := b.uploadArtifact(ctx, rep, storageID, prefix, *art)
 	if uerr != nil {
 		_ = rep.Log(ctx, streamStderr, "OSS 上传节点:上传失败:"+uerr.Error())

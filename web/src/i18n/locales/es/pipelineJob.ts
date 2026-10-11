@@ -127,7 +127,11 @@ export default {
   fieldImageNameLabel: "Nombre de la imagen",
   fieldTagLabel: "Etiqueta",
   fieldTagHint:
-    "Variables disponibles: {'${COMMIT_SHA}'} {'${BRANCH}'} {'${BUILD_NUMBER}'}",
+    "Variables disponibles: {'{{commit}}'} {'{{branch}}'} {'{{runId}}'} {'{{project}}'}; vacío mantiene la etiqueta del artefacto",
+  fieldPushImageArtifactJobHint:
+    'Elige de qué nodo se publica la imagen (debe ser un nodo "Build" de la MISMA etapa; la publicación se ejecuta dentro de ese nodo).',
+  fieldPushImageRegistryHint:
+    "Vacío = usar el registro de imágenes vinculado al entorno del nodo de origen.",
   fieldRegistryCredentialLabel: "Credencial del registro",
   fieldRegistryCredentialHint:
     "Referencia la credencial de login del registro de imágenes",

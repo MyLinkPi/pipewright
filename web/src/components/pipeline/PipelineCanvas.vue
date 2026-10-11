@@ -280,12 +280,12 @@ function onStageKindPick(kind: StageKind): void {
   requestAnimationFrame(() => openStageSettings(newStage.id))
 }
 
-/** 产物来源候选(部署节点「产物来源」下拉):全流水线 job 按声明顺序,带所在阶段名。 */
+/** 产物来源候选(部署节点「产物来源」下拉):全流水线 job 按声明顺序,带所在阶段名/id。 */
 const producerOptions = computed(() => {
-  const out: Array<{ name: string; type: string; stageName: string }> = []
+  const out: Array<{ name: string; type: string; stageName: string; stageId: string }> = []
   for (const s of props.stages) {
     for (const j of s.jobs) {
-      out.push({ name: j.name, type: j.type, stageName: localizeName(s.name) })
+      out.push({ name: j.name, type: j.type, stageName: localizeName(s.name), stageId: s.id })
     }
   }
   return out

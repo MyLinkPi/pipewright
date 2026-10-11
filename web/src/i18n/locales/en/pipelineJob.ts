@@ -120,7 +120,9 @@ export default {
   fieldImageNameLabel: "Image name",
   fieldTagLabel: "Tag",
   fieldTagHint:
-    "Available variables: {'${COMMIT_SHA}'} {'${BRANCH}'} {'${BUILD_NUMBER}'}",
+    "Available variables: {'{{commit}}'} {'{{branch}}'} {'{{runId}}'} {'{{project}}'}; blank keeps the artifact's tag",
+  fieldPushImageArtifactJobHint: 'Which node\'s image to push (must be a "Build" node in the SAME stage; the push runs inside that node).',
+  fieldPushImageRegistryHint: "Blank = use the image registry bound to the source node's environment.",
   fieldRegistryCredentialLabel: "Registry credential",
   fieldRegistryCredentialHint: "Reference the image registry login credential",
   fieldRegistryUrlLabel: "Image registry URL",

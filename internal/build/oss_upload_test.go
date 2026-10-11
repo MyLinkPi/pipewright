@@ -185,10 +185,10 @@ func TestJoinObjectKeyAndRenderPrefix(t *testing.T) {
 		t.Fatalf("斜杠归一: %q", got)
 	}
 	r := ossTestRun()
-	if got := renderOssPrefix("releases/{{runId}}/{{branch}}", r); got != "releases/run-1/main" {
+	if got := renderRunPlaceholders("releases/{{runId}}/{{branch}}", r); got != "releases/run-1/main" {
 		t.Fatalf("占位渲染: %q", got)
 	}
-	if got := renderOssPrefix("plain/path", r); got != "plain/path" {
+	if got := renderRunPlaceholders("plain/path", r); got != "plain/path" {
 		t.Fatalf("无占位应原样: %q", got)
 	}
 }

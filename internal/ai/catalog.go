@@ -33,7 +33,7 @@ func BuiltinNodeCatalog() []NodeKind {
 		{Type: "build_image", Label: "构建镜像", Category: "build",
 			Description: "用 Dockerfile 或工具链构建 Docker 镜像(产物=image)。有 Dockerfile 时优先用它。"},
 		{Type: "push_image", Label: "推送镜像", Category: "build",
-			Description: "把构建出的镜像推送到镜像仓库。通常紧随 build_image,部署 image 产物前需要。"},
+			Description: "把构建出的镜像推送到镜像仓库。config 必填 artifactJob(要推送的镜像来源节点名,必须是**同阶段**的 build_image);可选 registry(目标仓库地址,留空回退环境绑定的仓库)、imageName(远端镜像名,默认沿用产物名)、tag(远端 tag,默认沿用产物 tag;支持 {{runId}}/{{branch}}/{{commit}}/{{project}} 占位)、credentialId(仓库登录凭据)。通常紧随 build_image,部署 image 产物前需要。"},
 		{Type: "script", Label: "自定义脚本", Category: "build",
 			Description: "隔离容器内执行任意命令(跑测试、lint、代码扫描、自定义步骤等)。"},
 		{Type: "deploy_ssh", Label: "主机部署", Category: "deploy",

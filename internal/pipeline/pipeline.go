@@ -566,6 +566,12 @@ func normalizeSpec(in Spec) (Spec, error) {
 		return Spec{}, err
 	}
 
+	// 推送镜像节点「产物来源节点」(config["artifactJob"])校验:必填,且必须是**同阶段**的
+	// build_image 节点(推送在该来源节点内完成,见 push_image.go)。
+	if err := validatePushImage(out.Stages); err != nil {
+		return Spec{}, err
+	}
+
 	return out, nil
 }
 

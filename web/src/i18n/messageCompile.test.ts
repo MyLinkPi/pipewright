@@ -62,6 +62,6 @@ describe('i18n message compilation (production-faithful)', () => {
     expect(render(pj.fieldCommandTemplateHint)).toContain('{{参数}}')
     expect(render(pj.fieldTitleTemplateHint)).toContain('{{project}}')
     // ${VAR} 占位同样原样渲染(此前被当成空命名占位 → 渲染成空)。
-    expect(render(pj.fieldTagHint)).toContain('${COMMIT_SHA}')
+    expect(render("变量:{'${COMMIT_SHA}'}")).toContain('${COMMIT_SHA}')
   })
 })

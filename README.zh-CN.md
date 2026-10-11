@@ -221,7 +221,7 @@ sh install.sh       # 亦可把构建产物装到 /usr/local/bin(见「本地编
 - **永不卡住运行的回退**:文件**缺失** → 回退到画布(UI)里已配置的流水线;文件存在但 **YAML 非法** → 同样回退到已存的画布配置。
 - **作用范围**:YAML 只管**流水线结构**(阶段 / 任务 / `needs` / DAG 编排);**变量与缓存、环境与凭据、触发规则**仍来自画布(UI)设置,**不写在 YAML 里**。
 - **schema** 与平台「从 YAML 导入」用的是同一套(`version` + `stages` → `jobs`,job 用嵌套 `script:` 块写 `image`/`commands`/`env`/`workdir`)。
-- **节点类型**(画布与 YAML 通用):`git_source`、`script`、`build_backend`、`build_frontend`、`build_image`、`push_image`、`oss_upload`、`deploy_ssh`、`deploy_frontend`、`health_check`、`notify`、`templated`、`custom`。
+- **节点类型**(画布与 YAML 通用):`git_source`、`script`、`build_backend`、`build_frontend`、`build_image`、`push_image`(推送镜像:用 `artifactJob` 绑定**同阶段**的来源 `build_image` 节点——推送在该节点内完成;`registry`/`imageName`/`tag`/`credentialId` 可选覆盖目标,留空回退环境绑定的镜像仓库)、`oss_upload`、`deploy_ssh`、`deploy_frontend`、`health_check`、`notify`、`templated`、`custom`。
 
 ```yaml
 version: 1

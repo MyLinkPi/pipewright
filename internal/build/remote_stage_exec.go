@@ -370,14 +370,11 @@ func (b *Builder) runStageMixedTopo(
 		defer b.stopStageServices(context.WithoutCancel(ctx), r, stage, net, rep)
 	}
 
-	hasPushJob := false
-	for _, jb := range stage.Jobs {
-		if strings.TrimSpace(jb.Type) == "push_image" {
-			hasPushJob = true
-		}
-	}
+	// 推送镜像节点声明:与本地执行器同语义(见 push_image.go)——被 push_image 引用的 build_image
+	// 跳过「按环境 registry 自动推送」,改按该节点声明的目标推送(推送仍在 build_image 内完成)。
+	pushPlans := b.pushPlansByBuildNode(ctx, stage.Jobs, settings, r.Trigger.ResolvedEnvironment, r)
 
-	status := make(map[string]string, len(stage.Jobs))              // jobID → run.StepXxx 终态
+	status := make(map[string]string, len(stage.Jobs))                 // jobID → run.StepXxx 终态
 	jobEnvOut := make(map[string][]pipeline.BuildVar, len(stage.Jobs)) // jobID → 该 job 产出的 env(本地节点)
 
 	// dispatchRemote 拓扑路径的远程节点派发:占槽 → 远程执行 → 闭包级 defer 必还槽(panic 不泄漏)。
@@ -435,7 +432,7 @@ func (b *Builder) runStageMixedTopo(
 				continue
 			}
 
-			st, err := b.runMixedNode(ctx, r, stage, jb, rep, reportSink, proj, settings, svcNetwork, hasPushJob, jobEnvOut, dispatchRemote, selByID)
+			st, err := b.runMixedNode(ctx, r, stage, jb, rep, reportSink, proj, settings, svcNetwork, pushPlans, jobEnvOut, dispatchRemote, selByID)
 			status[jb.ID] = st
 			if err != nil && jobErr == nil {
 				jobErr = err
@@ -463,7 +460,7 @@ func (b *Builder) runMixedNode(
 	proj *project.Project,
 	settings *pipeline.Settings,
 	svcNetwork string,
-	hasPushJob bool,
+	pushPlans map[string]imagePushPlan,
 	jobEnvOut map[string][]pipeline.BuildVar,
 	dispatchRemote func(jb pipeline.Job, sel string, jrep dagrun.StageReporter) error,
 	selByID map[string]string,
@@ -491,14 +488,13 @@ func (b *Builder) runMixedNode(
 			}
 		}
 	case isBuildImageJob(jb.Type):
-		err = b.runBuildImageJobIsolated(ctx, jsink, jrep, r, jb, stage, proj, settings, hasPushJob)
+		err = b.runBuildImageJobIsolated(ctx, jsink, jrep, r, jb, stage, proj, settings, pushPlans[jb.Name])
 	case isDeployJob(jb.Type):
 		err = b.runDeployJob(ctx, jrep, jb, r.ID, r.Trigger.Params)
 	case strings.TrimSpace(jb.Type) == "health_check":
 		err = b.runHealthCheckJob(ctx, jrep, jb, r.Trigger.Params)
-	case strings.TrimSpace(jb.Type) == "push_image":
-		// 推送随构建镜像节点完成(hasPushJob);本节点仅用于编排顺序/展示(与 DAG 路径同)。
-		_ = jrep.Log(ctx, streamStdout, fmt.Sprintf("· 推送镜像「%s」:已随构建镜像节点完成推送(本节点用于编排顺序)", jb.Name))
+	case isPushImageJob(jb.Type):
+		err = b.runPushImageJob(ctx, jrep, jb, r, settings, r.Trigger.ResolvedEnvironment)
 	case strings.TrimSpace(jb.Type) == "notify":
 		b.runNotifyJob(ctx, jrep, jb, r)
 	case isObjectUploadJob(jb.Type):
