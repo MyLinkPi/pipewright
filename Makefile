@@ -3,8 +3,10 @@ BIN := pipewright
 
 # 模块代理:默认走国内镜像(proxy.golang.org 在境内常超时),与 Dockerfile 保持一致。
 # 用 ?= 保证 CI / 已有 GOPROXY 环境可覆盖;export 后传入 go 子进程。
+# GOSUMDB 必须保留:goproxy.cn 会代理 sumdb 校验(/sumdb/ 端点),设 off 会在
+# 自动下载工具链(golang.org/toolchain)时被拒——工具链强制要求校验,不允许 GOSUMDB=off。
 GOPROXY ?= https://goproxy.cn,direct
-GOSUMDB ?= off
+GOSUMDB ?= sum.golang.org
 export GOPROXY GOSUMDB
 # 显式包范围:根 + cmd + internal。不用 ./... 以免扫进 web/node_modules 里的 Go 包。
 GO_PKGS := . ./cmd/... ./internal/...
