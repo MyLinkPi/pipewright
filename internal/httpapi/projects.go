@@ -10,6 +10,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/huangchengsir/pipewright/internal/audit"
+	"github.com/huangchengsir/pipewright/internal/identity"
 	"github.com/huangchengsir/pipewright/internal/project"
 	"github.com/huangchengsir/pipewright/internal/servicereg"
 )
@@ -196,7 +197,7 @@ func atoiDefault(s string, def int) int {
 // makeListProjectsHandler 返回 GET /api/projects handler。
 // pipe/sr 用于给每张卡片附带「服务注册地址」展示子集(按流水线绑定实时解析);
 // 任一为 nil(未装配)时 serviceRegs 输出 []。
-func makeListProjectsHandler(svc project.Service, pipe projectRegRefReader, sr serviceRegLister) http.HandlerFunc {
+func makeListProjectsHandler(svc project.Service, id identity.Service, pipe projectRegRefReader, sr serviceRegLister) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if svc == nil {
 			writeError(w, http.StatusServiceUnavailable, "internal", "项目服务未初始化")
@@ -205,7 +206,23 @@ func makeListProjectsHandler(svc project.Service, pipe projectRegRefReader, sr s
 		// 可选分页参数(默认第 1 页);响应保持冻结契约:仍是 projectDTO 数组。
 		page := atoiDefault(r.URL.Query().Get("page"), 1)
 		pageSize := atoiDefault(r.URL.Query().Get("pageSize"), project.DefaultPageSize)
-		res, err := svc.ListPaged(r.Context(), page, pageSize)
+		// 普通用户仅可见自己加入的项目;管理员可见全部。
+		var res *project.ListResult
+		var err error
+		if isMemberSession(r) {
+			var ids []string
+			if id != nil {
+				sess, _ := sessionFromContext(r.Context())
+				ids, err = id.ListUserProjectIDs(r.Context(), sess.UserID)
+				if err != nil {
+					writeError(w, http.StatusInternalServerError, "internal", "服务器内部错误")
+					return
+				}
+			}
+			res, err = svc.ListPagedByIDs(r.Context(), ids, page, pageSize)
+		} else {
+			res, err = svc.ListPaged(r.Context(), page, pageSize)
+		}
 		if err != nil {
 			writeProjectError(w, err)
 			return

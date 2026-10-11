@@ -580,11 +580,25 @@ func (s *service) List(ctx context.Context, f ListFilter) (*ListResult, error) {
 		size = maxPageSize
 	}
 
+	// 成员项目白名单:非 nil 表示按集合过滤;空切片 → 无可用项目,直接空结果。
+	// (避免生成非法的 `IN ()`;也避免越权查询他人项目。)
+	if f.AllowedProjectIDs != nil && len(f.AllowedProjectIDs) == 0 {
+		return &ListResult{Items: []Run{}, Page: page, Total: 0}, nil
+	}
+
 	where := []string{}
 	args := []any{}
 	if f.ProjectID != "" {
 		where = append(where, "pr.project_id = ?")
 		args = append(args, f.ProjectID)
+	}
+	if len(f.AllowedProjectIDs) > 0 {
+		placeholders := make([]string, len(f.AllowedProjectIDs))
+		for i, pid := range f.AllowedProjectIDs {
+			placeholders[i] = "?"
+			args = append(args, pid)
+		}
+		where = append(where, "pr.project_id IN ("+strings.Join(placeholders, ", ")+")")
 	}
 	if f.Status != "" {
 		where = append(where, "pr.status = ?")

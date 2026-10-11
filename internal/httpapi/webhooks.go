@@ -143,11 +143,13 @@ func makeManualRunHandler(svc run.Service, params run.ParameterService, aud audi
 			}
 			runParams = resolved
 		}
+		// 操作人取当前会话用户名(普通用户为其用户名;管理员为其用户名;回退 "admin")。
+		actor := sessionUsernameOrAdmin(r)
 		rn, err := svc.Create(r.Context(), id, run.Trigger{
 			Type:   run.TriggerManual,
 			Branch: branch,
 			Commit: commit,
-			Actor:  "admin",
+			Actor:  actor,
 			Params: runParams,
 		})
 		if err != nil {
@@ -155,7 +157,7 @@ func makeManualRunHandler(svc run.Service, params run.ParameterService, aud audi
 			return
 		}
 		recordAudit(r.Context(), aud, audit.Entry{
-			Actor:      auditActor,
+			Actor:      actor,
 			Action:     audit.ActionRunTriggerManual,
 			TargetType: audit.TargetRun,
 			TargetID:   rn.ID,

@@ -143,39 +143,57 @@ func fileExists(path string) bool {
 }
 
 // Login 认证用户名/口令;通过则创建新会话,失败则记录失败计数。
+// 身份来源双表:管理员(admin_user,id=1)或普通用户(users,status=active)。
+// 无论命中哪一张表(或都不命中),都**只执行一次**口令校验(命中用真实 hash,否则 dummy),
+// 使各失败路径耗时一致,消除用户名存在性/角色枚举侧信道。
 func (s *Service) Login(username, password string) (*Session, error) {
-	// 查询管理员记录。即便不匹配也要继续走口令校验路径以消除时序枚举。
-	var storedUsername, storedHash string
-	err := s.db.QueryRow(
+	// 管理员记录(单行)。
+	var adminUsername, adminHash string
+	adminErr := s.db.QueryRow(
 		`SELECT username, password_hash FROM admin_user WHERE id = 1`,
-	).Scan(&storedUsername, &storedHash)
+	).Scan(&adminUsername, &adminHash)
+	hasAdmin := adminErr == nil
+	if adminErr != nil && !errors.Is(adminErr, sql.ErrNoRows) {
+		return nil, fmt.Errorf("auth: query admin: %w", adminErr)
+	}
 
-	usernameMatches := false
+	// 普通用户记录(仅 active)。
+	var memberID, memberUsername, memberHash string
+	memberErr := s.db.QueryRow(
+		`SELECT id, username, password_hash FROM users WHERE username = ? AND status = 'active'`,
+		username,
+	).Scan(&memberID, &memberUsername, &memberHash)
+	hasMember := memberErr == nil
+	if memberErr != nil && !errors.Is(memberErr, sql.ErrNoRows) {
+		return nil, fmt.Errorf("auth: query user: %w", memberErr)
+	}
+
+	// 选定候选:管理员优先(用户名恒定时间比较);否则普通用户;都未命中 → dummy。
+	role := ""
+	userID := ""
+	echoedUsername := username
 	verifyHash := dummyHash
+	adminMatch := hasAdmin &&
+		subtle.ConstantTimeCompare([]byte(adminUsername), []byte(username)) == 1
 	switch {
-	case err == nil:
-		// 恒定时间比较用户名,避免按字节短路泄露。
-		usernameMatches = subtle.ConstantTimeCompare([]byte(storedUsername), []byte(username)) == 1
-		if usernameMatches {
-			verifyHash = storedHash
-		}
-	case errors.Is(err, sql.ErrNoRows):
-		// 无 admin 账号:用 dummy hash 校验,使耗时与正常路径一致。
-		usernameMatches = false
-	default:
-		return nil, fmt.Errorf("auth: query admin: %w", err)
+	case adminMatch:
+		role = RoleAdmin
+		echoedUsername = adminUsername
+		verifyHash = adminHash
+	case hasMember:
+		role = RoleMember
+		userID = memberID
+		echoedUsername = memberUsername
+		verifyHash = memberHash
 	}
 
 	// 在单次持锁内完成「检查锁定 → 口令校验 → 记失败/重置」,消除 TOCTOU。
-	// 无论用户名是否匹配都执行一次 VerifyPassword(真实 hash 或 dummy),
-	// 使「用户名错」与「口令错」两条失败路径耗时一致。
 	ok, locked, remaining, gErr := s.lockout.Guard(func() (bool, error) {
 		pwOK, vErr := VerifyPassword(password, verifyHash)
 		if vErr != nil {
 			return false, vErr
 		}
-		// 用户名不匹配时即使口令校验偶然通过(dummy 永不通过)也判失败。
-		return usernameMatches && pwOK, nil
+		return pwOK, nil
 	})
 	if locked {
 		return nil, &ErrLockedOut{RetryAfter: remaining}
@@ -187,8 +205,8 @@ func (s *Service) Login(username, password string) (*Session, error) {
 		return nil, ErrInvalidCredentials
 	}
 
-	// 认证成功:创建会话(Guard 已重置计数)。
-	sess, err := s.sessions.Create()
+	// 认证成功:创建会话(Guard 已重置计数)。dummy 永不匹配,故此处 role 必非空。
+	sess, err := s.sessions.Create(role, userID, echoedUsername)
 	if err != nil {
 		return nil, fmt.Errorf("auth: create session: %w", err)
 	}
@@ -232,12 +250,13 @@ func (s *Service) Logout(token string) error {
 }
 
 // ChangePassword 校验当前口令 → 更新为新 argon2id 哈希 → 删除除当前会话外的所有会话。
+//   - role=member 时更新 users WHERE id=userID;否则更新 admin_user(id=1)。
 //   - current 错 → ErrInvalidCurrentPassword(401)。
 //   - new 不满足强度(< minPasswordLen 或空)→ ErrWeakPassword(422)。
-//   - 成功:更新 admin_user.password_hash;DELETE WHERE token != currentToken(当前不掉线)。
+//   - 成功:更新对应表 password_hash;DELETE WHERE token != currentToken(当前不掉线)。
 //
 // 与当前口令相同的新口令也允许(不强制不同)。
-func (s *Service) ChangePassword(current, newPassword, currentToken string) error {
+func (s *Service) ChangePassword(role, userID, current, newPassword, currentToken string) error {
 	// 当前会话 token 必须存在(requireAuth 已保证 cookie 在;空 token 属异常状态)。
 	// 守住此前提,避免后续 DeleteOthers("") 误删全部会话(含当前)。
 	if currentToken == "" {
@@ -248,13 +267,25 @@ func (s *Service) ChangePassword(current, newPassword, currentToken string) erro
 		return ErrWeakPassword
 	}
 
+	// 按身份定位目标行与其当前哈希。
+	isMember := role == RoleMember
 	var storedHash string
-	err := s.db.QueryRow(`SELECT password_hash FROM admin_user WHERE id = 1`).Scan(&storedHash)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return ErrInvalidCurrentPassword
+	if isMember {
+		err := s.db.QueryRow(`SELECT password_hash FROM users WHERE id = ?`, userID).Scan(&storedHash)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return ErrInvalidCurrentPassword
+			}
+			return fmt.Errorf("auth: query user hash: %w", err)
 		}
-		return fmt.Errorf("auth: query admin hash: %w", err)
+	} else {
+		err := s.db.QueryRow(`SELECT password_hash FROM admin_user WHERE id = 1`).Scan(&storedHash)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return ErrInvalidCurrentPassword
+			}
+			return fmt.Errorf("auth: query admin hash: %w", err)
+		}
 	}
 
 	ok, err := VerifyPassword(current, storedHash)
@@ -270,11 +301,20 @@ func (s *Service) ChangePassword(current, newPassword, currentToken string) erro
 		return fmt.Errorf("auth: hash new password: %w", err)
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
-	if _, err := s.db.Exec(
-		`UPDATE admin_user SET password_hash = ?, updated_at = ? WHERE id = 1`,
-		newHash, now,
-	); err != nil {
-		return fmt.Errorf("auth: update password hash: %w", err)
+	if isMember {
+		if _, err := s.db.Exec(
+			`UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?`,
+			newHash, now, userID,
+		); err != nil {
+			return fmt.Errorf("auth: update user password hash: %w", err)
+		}
+	} else {
+		if _, err := s.db.Exec(
+			`UPDATE admin_user SET password_hash = ?, updated_at = ? WHERE id = 1`,
+			newHash, now,
+		); err != nil {
+			return fmt.Errorf("auth: update password hash: %w", err)
+		}
 	}
 
 	// 改口令后使其它会话失效(当前 token 保留,用户不掉线)。

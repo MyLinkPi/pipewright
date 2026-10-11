@@ -14,7 +14,7 @@ import (
 // accountService 是账户设置 handler 依赖的窄接口(改口令 / 会话列表 / 撤销)。
 // 由 *auth.Service 实现;窄接口便于测试替身。
 type accountService interface {
-	ChangePassword(current, newPassword, currentToken string) error
+	ChangePassword(role, userID, current, newPassword, currentToken string) error
 	ListSessions(currentToken string) ([]auth.SessionMeta, error)
 	RevokeSession(id string) error
 }
@@ -72,7 +72,17 @@ func makeChangePasswordHandler(svc accountService, aud audit.Recorder) http.Hand
 		}
 
 		token := currentSessionToken(r)
-		err := svc.ChangePassword(req.CurrentPassword, req.NewPassword, token)
+		// 会话携带身份:普通用户改自己的口令,管理员改 admin_user。
+		role, userID := "", ""
+		actor := auditActor
+		if sess, ok := sessionFromContext(r.Context()); ok && sess != nil {
+			role = sess.Role
+			userID = sess.UserID
+			if sess.Username != "" {
+				actor = sess.Username
+			}
+		}
+		err := svc.ChangePassword(role, userID, req.CurrentPassword, req.NewPassword, token)
 		switch {
 		case err == nil:
 			// continue
@@ -88,10 +98,10 @@ func makeChangePasswordHandler(svc accountService, aud audit.Recorder) http.Hand
 		}
 
 		recordAudit(r.Context(), aud, audit.Entry{
-			Actor:      auditActor,
+			Actor:      actor,
 			Action:     audit.ActionPasswordChange,
 			TargetType: audit.TargetAccount,
-			TargetID:   auditActor,
+			TargetID:   actor,
 			Detail:     map[string]any{"otherSessionsRevoked": true},
 			IP:         clientIP(r),
 		})

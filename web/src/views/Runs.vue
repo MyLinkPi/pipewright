@@ -2,7 +2,7 @@
 import { ref, computed, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useDirtyGuard } from '../composables/useDirtyGuard'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { listRuns, triggerManual, type RunListItem, type RunStatus, type RunDetail, type ListRunsParams, type TriggerManualInput } from '../api/runs'
 import RunParamsEditor from '../components/RunParamsEditor.vue'
 import TypedRunParams from '../components/TypedRunParams.vue'
@@ -10,6 +10,7 @@ import AppSelect from '../components/ui/AppSelect.vue'
 import { getParameters, validateParamValues, type ParamDef } from '../api/parameters'
 import { listProjects, type Project } from '../api/projects'
 import { HttpError } from '../api/http'
+import { useSessionStore } from '../stores/session'
 
 const { t } = useI18n()
 const { confirmDiscard } = useDirtyGuard()
@@ -17,9 +18,21 @@ const { confirmDiscard } = useDirtyGuard()
 // ─── router ───────────────────────────────────────────────────────────────────
 
 const router = useRouter()
+const route = useRoute()
+const sessionStore = useSessionStore()
+
+/**
+ * 详情页路由按角色分流:本页在 /runs(管理员)与 /my-runs(普通用户)复用,
+ * 普通用户须走只读精简页 my-run-detail(管理员 RunDetail 含管理动作,对成员不可见)。
+ */
+function detailRoute(id: string): { name: string; params: { id: string } } {
+  return sessionStore.isMember
+    ? { name: 'my-run-detail', params: { id } }
+    : { name: 'run-detail', params: { id } }
+}
 
 function goToDetail(id: string): void {
-  void router.push({ name: 'run-detail', params: { id } })
+  void router.push(detailRoute(id))
 }
 
 // ─── load state ──────────────────────────────────────────────────────────────
@@ -56,7 +69,8 @@ function filterLabel(value: RunStatus | 'all'): string {
 // 项目筛选:横向标签展示项目列表前 N 个(快捷入口)+ 下拉兜底(全部项目);
 // 与状态筛选组合生效(AND)。'' = 全部项目。
 
-const projectFilter = ref<string>('')
+// 初值支持 `?projectId=<id>` 深链(如普通用户在「我的项目」点「运行」跳转而来)。
+const projectFilter = ref<string>(typeof route.query.projectId === 'string' ? route.query.projectId : '')
 const TOP_PROJECT_TAGS = 6
 
 const topProjects = computed(() => projects.value.slice(0, TOP_PROJECT_TAGS))
@@ -225,7 +239,7 @@ async function handleTriggerSubmit(): Promise<void> {
 
     const run: RunDetail = await triggerManual(triggerForm.value.projectId, input)
     triggerModalOpen.value = false
-    void router.push(`/runs/${run.id}`)
+    void router.push(detailRoute(run.id))
   } catch (err) {
     if (err instanceof HttpError) {
       if (err.status === 0) {

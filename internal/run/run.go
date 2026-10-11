@@ -275,6 +275,9 @@ type ListFilter struct {
 	Status    string // 空 = 不按状态筛选
 	Page      int    // 1-based;<1 视为 1
 	PageSize  int    // <1 时用默认页大小
+	// AllowedProjectIDs 非 nil 时,仅返回属于给定项目集合的运行(普通用户按成员项目过滤)。
+	// 空切片(非 nil)表示"无可用项目" → 直接返回空结果(不生成非法 IN ())。
+	AllowedProjectIDs []string
 }
 
 // ListResult 是分页列表结果。

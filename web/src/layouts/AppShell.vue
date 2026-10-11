@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { Component } from 'vue'
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import {
@@ -19,6 +19,7 @@ import {
   Browser,
   World,
   Apps,
+  Users,
   ChevronRight,
   Logout,
 } from '@vicons/tabler'
@@ -71,7 +72,7 @@ interface NavItem {
   ariaKey: string
 }
 
-const navItems: NavItem[] = [
+const adminNavItems: NavItem[] = [
   { name: 'dashboard',     to: '/dashboard',     icon: Dashboard, labelKey: 'nav.dashboard',     ariaKey: 'nav.dashboard' },
   { name: 'projects',      to: '/projects',      icon: GitBranch,  labelKey: 'nav.projects',      ariaKey: 'nav.projects' },
   { name: 'runs',          to: '/runs',          icon: GitFork,    labelKey: 'nav.runs',          ariaKey: 'nav.runs' },
@@ -96,15 +97,37 @@ const navItems: NavItem[] = [
   // Story 6-5: configurable anomaly detection & alerts (FR-23)
   { name: 'anomaly',       to: '/anomaly',       icon: AlertTriangle, labelKey: 'nav.anomaly',    ariaKey: 'nav.anomaly' },
   { name: 'notifications', to: '/settings/notifications', icon: Bell, labelKey: 'nav.notifications', ariaKey: 'nav.notifications' },
+  // 用户体系:管理员用户 / 邀请 / 项目成员管理。
+  { name: 'users',         to: '/users',         icon: Users,      labelKey: 'nav.users',         ariaKey: 'nav.users' },
 ]
 
-const settingsItem: NavItem = {
+// 普通用户导航(最小面:仅「我的项目 / 运行」;设置项单列在底部)。
+const memberNavItems: NavItem[] = [
+  { name: 'my-projects', to: '/my-projects', icon: GitBranch, labelKey: 'nav.myProjects', ariaKey: 'nav.myProjects' },
+  { name: 'my-runs',     to: '/my-runs',     icon: GitFork,   labelKey: 'nav.runs',       ariaKey: 'nav.runs' },
+]
+
+const adminSettingsItem: NavItem = {
   name: 'settings',
   to: '/settings',
   icon: Settings,
   labelKey: 'nav.settings',
   ariaKey: 'nav.settings',
 }
+
+// 普通用户设置:独立页(不挂管理员 Settings 外壳)。
+const memberSettingsItem: NavItem = {
+  name: 'my-settings',
+  to: '/my-settings',
+  icon: Settings,
+  labelKey: 'nav.mySettings',
+  ariaKey: 'nav.mySettings',
+}
+
+// 角色感知导航:管理员见全量,普通用户仅见最小面(member)。
+const isAdmin = computed(() => sessionStore.isAdmin)
+const navItems = computed<NavItem[]>(() => (isAdmin.value ? adminNavItems : memberNavItems))
+const settingsItem = computed<NavItem>(() => (isAdmin.value ? adminSettingsItem : memberSettingsItem))
 
 function isActive(item: NavItem): boolean {
   if (item.name === 'overview') {

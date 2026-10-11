@@ -67,6 +67,12 @@ const (
 	ActionRegistryDeploy      = "registry_deploy"
 	ActionRegistryDaemonApply = "registry_daemon_apply"
 	ActionRegistryPrune       = "registry_prune"
+	// 用户体系:邀请生成/撤销、普通用户注册、项目成员增删。
+	ActionInvitationCreate      = "invitation_create"
+	ActionInvitationRevoke      = "invitation_revoke"
+	ActionUserRegister          = "user_register"
+	ActionProjectMemberAdd      = "project_member_add"
+	ActionProjectMemberRemove   = "project_member_remove"
 )
 
 // 目标类型枚举(供 TargetType 填值;非强制白名单,便于后续 story 扩展)。
@@ -82,6 +88,8 @@ const (
 	TargetVarGroup    = "variable_group"
 	TargetCustomNode  = "custom_node"
 	TargetRegistryHub = "registry_hub"
+	TargetUser        = "user"
+	TargetInvitation  = "invitation"
 )
 
 // Entry 是一条审计写入入参(冻结契约)。Detail 写库前过 Masker,绝不含明文 secret。
