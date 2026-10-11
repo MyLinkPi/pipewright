@@ -4,6 +4,8 @@ export default {
   manualTrigger: 'Déclenchement manuel',
   retry: 'Réessayer',
   filterAll: 'Toutes',
+  allProjects: 'Tous les projets',
+  projectFilterAria: 'Filtrer par projet',
   filterAriaLabel: 'Filtrer par statut d’exécution',
   loading: 'Chargement',
   empty: 'Aucune exécution pour le moment',

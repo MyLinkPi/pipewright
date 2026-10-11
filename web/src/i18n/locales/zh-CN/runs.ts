@@ -4,6 +4,8 @@ export default {
   manualTrigger: '手动触发',
   retry: '重试',
   filterAll: '全部',
+  allProjects: '全部项目',
+  projectFilterAria: '按项目筛选',
   filterAriaLabel: '运行状态筛选',
   loading: '加载中',
   empty: '暂无运行记录',

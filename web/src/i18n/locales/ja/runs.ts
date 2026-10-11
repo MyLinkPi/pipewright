@@ -4,6 +4,8 @@ export default {
   manualTrigger: '手動トリガー',
   retry: '再試行',
   filterAll: 'すべて',
+  allProjects: 'すべてのプロジェクト',
+  projectFilterAria: 'プロジェクトで絞り込み',
   filterAriaLabel: '実行ステータスで絞り込み',
   loading: '読み込み中',
   empty: '実行履歴はまだありません',

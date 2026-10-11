@@ -6,6 +6,7 @@ import { useRouter } from 'vue-router'
 import { listRuns, triggerManual, type RunListItem, type RunStatus, type RunDetail, type ListRunsParams, type TriggerManualInput } from '../api/runs'
 import RunParamsEditor from '../components/RunParamsEditor.vue'
 import TypedRunParams from '../components/TypedRunParams.vue'
+import AppSelect from '../components/ui/AppSelect.vue'
 import { getParameters, validateParamValues, type ParamDef } from '../api/parameters'
 import { listProjects, type Project } from '../api/projects'
 import { HttpError } from '../api/http'
@@ -50,6 +51,34 @@ function filterLabel(value: RunStatus | 'all'): string {
   return value === 'all' ? t('runs.filterAll') : t(`runStatus.${value}`)
 }
 
+// ─── project filter ──────────────────────────────────────────────────────────
+//
+// 项目筛选:横向标签展示项目列表前 N 个(快捷入口)+ 下拉兜底(全部项目);
+// 与状态筛选组合生效(AND)。'' = 全部项目。
+
+const projectFilter = ref<string>('')
+const TOP_PROJECT_TAGS = 6
+
+const topProjects = computed(() => projects.value.slice(0, TOP_PROJECT_TAGS))
+const projectFilterOptions = computed(() => [
+  { value: '', label: t('runs.allProjects') },
+  ...projects.value.map((p) => ({ value: p.id, label: p.name })),
+])
+
+// 是否有任一筛选生效(供空状态文案 / 清除按钮判断)。
+const hasFilter = computed(() => statusFilter.value !== 'all' || projectFilter.value !== '')
+
+function selectProject(id: string): void {
+  projectFilter.value = id
+  onFilterChange()
+}
+
+function clearFilters(): void {
+  statusFilter.value = 'all'
+  projectFilter.value = ''
+  onFilterChange()
+}
+
 // ─── data loading ─────────────────────────────────────────────────────────────
 
 async function loadRuns(): Promise<void> {
@@ -58,6 +87,7 @@ async function loadRuns(): Promise<void> {
   try {
     const params: ListRunsParams = {}
     if (statusFilter.value !== 'all') params.status = statusFilter.value
+    if (projectFilter.value) params.projectId = projectFilter.value
     const res = await listRuns(params)
     runs.value = res.items
     totalRuns.value = res.total
@@ -74,7 +104,10 @@ async function loadRuns(): Promise<void> {
   }
 }
 
-onMounted(() => { void loadRuns() })
+onMounted(() => {
+  void loadProjects()
+  void loadRuns()
+})
 
 function onFilterChange(): void {
   void loadRuns()
@@ -97,13 +130,14 @@ const selectedProject = computed<Project | undefined>(() =>
   projects.value.find((p) => p.id === triggerForm.value.projectId),
 )
 
-async function loadProjectsForTrigger(): Promise<void> {
+// 加载项目列表(项目筛选 + 手动触发弹窗共用)。失败非致命:筛选区隐藏 / 下拉为空。
+async function loadProjects(): Promise<void> {
   if (projects.value.length > 0) return
   projectsLoading.value = true
   try {
     projects.value = await listProjects()
   } catch {
-    // non-fatal — user will see empty dropdown
+    // non-fatal — user will see empty dropdown / project filter hidden
   } finally {
     projectsLoading.value = false
   }
@@ -128,7 +162,7 @@ function openTriggerModal(): void {
   triggerSubmitting.value   = false
   triggerModalOpen.value    = true
   triggerSnapshot.value     = triggerEditJson()
-  void loadProjectsForTrigger()
+  void loadProjects()
 }
 
 function closeTriggerModal(): void {
@@ -332,7 +366,39 @@ function isFailedStatus(status: RunStatus): boolean {
       <button class="banner-retry" @click="loadRuns">↻ {{ t('runs.retry') }}</button>
     </div>
 
-    <!-- ─── Filter bar ───────────────────────────────────────────────────── -->
+    <!-- ─── Project filter (top-N tags + dropdown fallback) ─────────────── -->
+    <div v-if="projects.length" class="project-filter">
+      <div class="filter-bar" role="group" :aria-label="t('runs.projectFilterAria')">
+        <button
+          type="button"
+          class="filter-tab project-tag"
+          :class="{ 'filter-tab--active': projectFilter === '' }"
+          @click="selectProject('')"
+        >{{ t('runs.allProjects') }}</button>
+        <button
+          v-for="p in topProjects"
+          :key="p.id"
+          type="button"
+          class="filter-tab project-tag"
+          :class="{ 'filter-tab--active': projectFilter === p.id }"
+          :title="p.name"
+          @click="selectProject(p.id)"
+        >{{ p.name }}</button>
+      </div>
+      <span class="project-filter__select">
+        <AppSelect
+          :model-value="projectFilter"
+          :options="projectFilterOptions"
+          :placeholder="t('runs.allProjects')"
+          :aria-label="t('runs.projectFilterAria')"
+          min-width="180px"
+          height="30px"
+          @update:model-value="selectProject"
+        />
+      </span>
+    </div>
+
+    <!-- ─── Status filter bar ───────────────────────────────────────────── -->
     <div class="filter-bar" role="group" :aria-label="t('runs.filterAriaLabel')">
       <button
         v-for="opt in STATUS_FILTER_OPTIONS"
@@ -389,13 +455,13 @@ function isFailedStatus(status: RunStatus): boolean {
         </div>
         <p class="empty-label">{{ t('runs.empty') }}</p>
         <p class="empty-hint">
-          <template v-if="statusFilter !== 'all'">{{ t('runs.emptyFiltered') }}</template>
+          <template v-if="hasFilter">{{ t('runs.emptyFiltered') }}</template>
           <template v-else>{{ t('runs.emptyHint') }}</template>
         </p>
         <button
-          v-if="statusFilter !== 'all'"
+          v-if="hasFilter"
           class="btn-secondary"
-          @click="statusFilter = 'all'; onFilterChange()"
+          @click="clearFilters()"
         >{{ t('runs.clearFilter') }}</button>
       </div>
     </template>
@@ -723,6 +789,26 @@ function isFailedStatus(status: RunStatus): boolean {
   color: var(--color-faint);
   margin-top: 5px;
   line-height: 1.5;
+}
+
+/* ─── project filter ─────────────────────────────────────────────────────── */
+.project-filter {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.project-tag {
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.project-filter__select {
+  display: inline-flex;
+  width: 200px;
+  flex: none;
 }
 
 /* ─── filter bar ─────────────────────────────────────────────────────────── */

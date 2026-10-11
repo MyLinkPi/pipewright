@@ -2,6 +2,7 @@ import { test, expect } from '@playwright/test'
 import {
   stubLoggedIn,
   stubEnvelopeDefaults,
+  projectFixture,
   runListItemFixture,
   runDetailFixture,
   diagnosisReadyFixture,
@@ -68,6 +69,38 @@ test.describe('Runs list', () => {
 
     await page.getByRole('group', { name: '运行状态筛选' }).getByRole('button', { name: '失败', exact: true }).click()
     await expect.poll(() => lastStatus).toBe('failed')
+    await expect(page.getByText('没有符合当前筛选条件的运行。')).toBeVisible()
+  })
+
+  test('project filter re-queries the API with the chosen projectId', async ({ page }) => {
+    await stubLoggedIn(page)
+    await stubEnvelopeDefaults(page)
+    let lastProjectId = ''
+    // Registered AFTER the stubs so these routes win (last route wins).
+    await page.route(
+      (u) => u.pathname === '/api/projects',
+      (route) =>
+        route.fulfill(
+          fulfillJson([
+            projectFixture({ id: 'p-a', name: 'acme-web' }),
+            projectFixture({ id: 'p-b', name: 'billing-svc' }),
+          ]),
+        ),
+    )
+    await page.route(
+      (u) => u.pathname === '/api/runs',
+      (route) => {
+        lastProjectId = new URL(route.request().url()).searchParams.get('projectId') ?? ''
+        return route.fulfill(fulfillJson({ items: [], page: 1, total: 0 }))
+      },
+    )
+    await page.goto('/runs')
+
+    await page
+      .getByRole('group', { name: '按项目筛选' })
+      .getByRole('button', { name: 'acme-web', exact: true })
+      .click()
+    await expect.poll(() => lastProjectId).toBe('p-a')
     await expect(page.getByText('没有符合当前筛选条件的运行。')).toBeVisible()
   })
 })
