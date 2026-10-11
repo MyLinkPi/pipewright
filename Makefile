@@ -1,5 +1,11 @@
 SHELL := /bin/bash
 BIN := pipewright
+
+# 模块代理:默认走国内镜像(proxy.golang.org 在境内常超时),与 Dockerfile 保持一致。
+# 用 ?= 保证 CI / 已有 GOPROXY 环境可覆盖;export 后传入 go 子进程。
+GOPROXY ?= https://goproxy.cn,direct
+GOSUMDB ?= off
+export GOPROXY GOSUMDB
 # 显式包范围:根 + cmd + internal。不用 ./... 以免扫进 web/node_modules 里的 Go 包。
 GO_PKGS := . ./cmd/... ./internal/...
 GO_FMT_DIRS := cmd internal embed.go
