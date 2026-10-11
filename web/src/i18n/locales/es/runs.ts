@@ -4,6 +4,8 @@ export default {
   manualTrigger: 'Disparo manual',
   retry: 'Reintentar',
   filterAll: 'Todas',
+  allProjects: 'Todos los proyectos',
+  projectFilterAria: 'Filtrar por proyecto',
   filterAriaLabel: 'Filtrar por estado de la ejecución',
   loading: 'Cargando',
   empty: 'Aún no hay ejecuciones',

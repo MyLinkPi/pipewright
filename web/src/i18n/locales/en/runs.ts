@@ -4,6 +4,8 @@ export default {
   manualTrigger: 'Manual trigger',
   retry: 'Retry',
   filterAll: 'All',
+  allProjects: 'All projects',
+  projectFilterAria: 'Filter by project',
   filterAriaLabel: 'Filter by run status',
   loading: 'Loading',
   empty: 'No runs yet',

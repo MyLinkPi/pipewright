@@ -4,6 +4,8 @@ export default {
   manualTrigger: '수동 트리거',
   retry: '다시 시도',
   filterAll: '전체',
+  allProjects: '모든 프로젝트',
+  projectFilterAria: '프로젝트로 필터링',
   filterAriaLabel: '실행 상태로 필터',
   loading: '불러오는 중',
   empty: '실행 기록이 없습니다',

@@ -4,6 +4,8 @@ export default {
   manualTrigger: '手動觸發',
   retry: '重試',
   filterAll: '全部',
+  allProjects: '全部專案',
+  projectFilterAria: '依專案篩選',
   filterAriaLabel: '執行狀態篩選',
   loading: '載入中',
   empty: '尚無執行紀錄',
