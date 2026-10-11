@@ -165,6 +165,10 @@ export default {
     "La rama {'{{branch}}'} {'@'} {'{{commit}}'} ha llegado al nodo de notificación.",
   fieldBodyTemplateHint:
     "Vacío = texto predeterminado; también admite {'{{marcadores}}'}, los desconocidos se renderizan vacíos",
+  fieldStatusFromLabel: "Nodo de origen del estado (opcional)",
+  fieldStatusFromHint:
+    "Elige un nodo anterior y {'{{status}}'} muestra el estado de ese nodo en esta ejecución (success/failed/skipped…); vacío = el estado de la ejecución. Solo se listan nodos anteriores; se valida al guardar.",
+  statusFromUnselected: "Sin especificar (usar el estado de la ejecución)",
 
   // ─── jobConfigSchema · template nodes ──────────────────────────────────
   typeBuildFrontendLabel: "Build de frontend",

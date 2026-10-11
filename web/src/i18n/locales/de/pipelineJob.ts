@@ -160,6 +160,10 @@ export default {
     "Branch {'{{branch}}'} {'@'} {'{{commit}}'} hat den Benachrichtigungsknoten erreicht.",
   fieldBodyTemplateHint:
     "Leer = Standardtext; unterstützt ebenfalls {'{{Platzhalter}}'}, unbekannte werden leer gerendert",
+  fieldStatusFromLabel: "Status-Quellknoten (optional)",
+  fieldStatusFromHint:
+    "Upstream-Knoten wählen: {'{{status}}'} zeigt dessen Status in diesem Lauf (success/failed/skipped …). Leer = Lauf-Status. Nur Upstream-Knoten wählbar; Prüfung beim Speichern.",
+  statusFromUnselected: "Nicht angeben (Lauf-Status verwenden)",
 
   // ─── jobConfigSchema · template nodes ──────────────────────────────────
   typeBuildFrontendLabel: "Frontend-Build",

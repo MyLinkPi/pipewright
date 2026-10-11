@@ -14,6 +14,7 @@ import {
   type JobField,
 } from './jobConfigSchema'
 import { configUsesTemplate } from './stepCompile'
+import type { NodeRefOption } from './nodeUpstream'
 import {
   isStudioNode,
   parsePromotedParams,
@@ -37,6 +38,8 @@ const props = defineProps<{
   channels?: NotificationChannel[]
   /** 全流水线的产物来源候选(部署节点「产物来源」下拉;画布按流水线顺序传入)。 */
   producerOptions?: ProducerOption[]
+  /** 通知节点「状态来源节点」候选(仅上游节点;画布按当前编辑节点计算传入)。 */
+  upstreamOptions?: NodeRefOption[]
 }>()
 
 /** 产物来源候选:job 名(即产物元数据 sourceJob)+ 类型 + 所在阶段名。 */
@@ -696,6 +699,20 @@ async function confirmSave(): Promise<void> {
           <option value="">{{ t('pipelineJob.channelUnselected') }}</option>
           <option v-for="ch in (channels ?? [])" :key="ch.id" :value="ch.id">
             {{ ch.name }} · {{ channelTypeLabel(ch.type) }}{{ ch.enabled ? '' : t('pipelineJob.channelDisabled') }}
+          </option>
+        </select>
+
+        <!-- 状态来源节点(按名引用上游节点;候选由画布按「仅上游」规则算出,保存期后端复校) -->
+        <select
+          v-else-if="field.kind === 'nodeRef'"
+          :value="fieldValue(field.key)"
+          class="drawer-select"
+          :aria-label="field.label"
+          @change="setField(field.key, ($event.target as HTMLSelectElement).value)"
+        >
+          <option value="">{{ t('pipelineJob.statusFromUnselected') }}</option>
+          <option v-for="o in (props.upstreamOptions ?? [])" :key="o.name" :value="o.name">
+            {{ o.name }} · {{ o.stageName }}
           </option>
         </select>
 

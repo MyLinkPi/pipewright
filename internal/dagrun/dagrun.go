@@ -225,6 +225,25 @@ func (r *Runner) Run(ctx context.Context, rn *run.Run, sink run.StepSink) error 
 		return fmt.Errorf("dagrun: plan: %w", err)
 	}
 
+	// 运行内节点状态注册表:预置全部节点为 pending(按节点恢复的继承/人工跳过节点按 Plan 语义
+	// 预置 success/skipped),挂到 ctx 上供执行器在运行中途读取上游节点状态(通知节点 {{status}});
+	// 此后所有节点上报同步刷新它。表随本次 ctx 释放,绝不跨运行残留(执行器是复用闭包)。
+	reg := NewNodeStatusRegistry()
+	for _, st := range stages {
+		ords := jobOrdinals[st.ID]
+		for _, jb := range st.Jobs {
+			st0 := run.StepPending
+			if ord, ok := ords[jb.ID]; ok {
+				switch decls[ord].Initial {
+				case run.StepSuccess, run.StepSkipped:
+					st0 = decls[ord].Initial
+				}
+			}
+			reg.Add(jb.ID, jb.Name, st0)
+		}
+	}
+	ctx = WithNodeStatusRegistry(ctx, reg)
+
 	maxc := r.concurrency
 	if maxc <= 0 {
 		maxc = len(stageByID)
@@ -236,7 +255,7 @@ func (r *Runner) Run(ctx context.Context, rn *run.Run, sink run.StepSink) error 
 
 	result := lo.graph.Schedule(ctx, func(ctx context.Context, stageID string) error {
 		stage := stageByID[stageID]
-		rep := &stageReporter{sink: tap, mu: &mu, jobOrd: jobOrdinals[stageID], firstOrd: stageFirstOrd[stageID]}
+		rep := &stageReporter{sink: tap, mu: &mu, jobOrd: jobOrdinals[stageID], firstOrd: stageFirstOrd[stageID], reg: reg}
 		// 恢复运行:先按计划整理本阶段(继承/跳过节点预收尾 + 过滤出要执行的 job 副本)。
 		// 放在条件执行/审批门**之前**:纯继承/跳过的阶段不产生执行体,不应触发条件跳过语义
 		// 或再阻塞在审批门上。
@@ -296,7 +315,7 @@ func (r *Runner) Run(ctx context.Context, rn *run.Run, sink run.StepSink) error 
 	// 被跳过/取消(从未进入执行)的阶段:其全部节点 step 记为 skipped,避免悬挂 pending。
 	for id, nr := range result {
 		if nr.Status == dag.StatusSkipped || nr.Status == dag.StatusCanceled {
-			rep := &stageReporter{sink: tap, mu: &mu, jobOrd: jobOrdinals[id], firstOrd: stageFirstOrd[id]}
+			rep := &stageReporter{sink: tap, mu: &mu, jobOrd: jobOrdinals[id], firstOrd: stageFirstOrd[id], reg: reg}
 			rep.finishRemaining(ctx, run.StepSkipped)
 		}
 	}
@@ -369,6 +388,8 @@ type stageReporter struct {
 	jobOrd   map[string]int // jobID → 全局 step ordinal
 	firstOrd int            // 阶段级日志/产物归位的 step ordinal
 	done     map[string]bool
+	// reg 是运行内节点状态注册表(可 nil):节点上报时同步刷新,供执行器中途读取上游节点状态。
+	reg *NodeStatusRegistry
 }
 
 // Log 阶段级日志 → 归到首个节点 step(节点级 reporter 见 jobReporter 覆盖到各自 ordinal)。
@@ -391,6 +412,9 @@ func (s *stageReporter) JobRunning(ctx context.Context, jobID string) error {
 	if !ok {
 		return nil
 	}
+	if s.reg != nil {
+		s.reg.Update(jobID, run.StepRunning)
+	}
 	return s.sink.StepRunning(ctx, ord)
 }
 
@@ -405,6 +429,9 @@ func (s *stageReporter) JobDone(ctx context.Context, jobID, status string) error
 		s.done = make(map[string]bool, len(s.jobOrd))
 	}
 	s.done[jobID] = true
+	if s.reg != nil {
+		s.reg.Update(jobID, status)
+	}
 	return s.sink.StepDone(ctx, ord, status)
 }
 
@@ -431,12 +458,17 @@ func (s *stageReporter) finishRemaining(ctx context.Context, status string) {
 			s.done = make(map[string]bool, len(s.jobOrd))
 		}
 		s.done[jobID] = true
+		if s.reg != nil {
+			s.reg.Update(jobID, status)
+		}
 		_ = s.sink.StepDone(ctx, ord, status)
 	}
 }
 
 // jobReporter 是绑定到单个 job step ordinal 的节点级 reporter;其 Log/EmitArtifact 都归该节点。
 // JobRunning/JobDone/JobReporter 作用于自身 ordinal(执行器拿到它后直接用 Log/EmitArtifact 即可)。
+// 注意:节点状态同步进运行内状态注册表(stageReporter.reg)由 stageReporter 完成 —— 执行器按约定
+// 经 stageReporter 上报 JobRunning/JobDone,本类型只负责把日志/产物归位到该节点 ordinal。
 type jobReporter struct {
 	sink    run.StepSink
 	mu      *sync.Mutex

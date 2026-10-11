@@ -66,6 +66,8 @@ stages:
       - id: job_notify
         name: 钉钉通知
         type: notify
+        config:
+          statusFrom: SSH 部署   # {{status}} 渲染该上游节点的状态(NormalizeSpec 校验上游性)
 `
 
 func TestParseMultiStageDAG(t *testing.T) {
@@ -128,6 +130,10 @@ func TestParseMultiStageDAG(t *testing.T) {
 	if st[2].Jobs[0].Config["targetEnv"] != "prod" {
 		t.Fatalf("deploy job config 透传 = %+v", st[2].Jobs[0].Config)
 	}
+	// 通知节点「状态来源节点」透传(GitOps 路径;引用上游性由 NormalizeSpec 校验)。
+	if st[3].Jobs[0].Config["statusFrom"] != "SSH 部署" {
+		t.Fatalf("notify job statusFrom 透传 = %+v", st[3].Jobs[0].Config)
+	}
 
 	// 渲染 YAML 非空(规范回填)。
 	if strings.TrimSpace(cfg.YAML) == "" {
@@ -177,7 +183,7 @@ func TestRoundTrip(t *testing.T) {
 				t.Fatalf("阶段 %d 任务 %d 往返字段不一致:\n a=%+v\n b=%+v", i, j, ja, jb)
 			}
 			// Config 关键键往返一致。
-			for _, k := range []string{"image", "commands", "workDir", "env", "targetEnv"} {
+			for _, k := range []string{"image", "commands", "workDir", "env", "targetEnv", "statusFrom"} {
 				if asString(ja.Config[k]) != asString(jb.Config[k]) {
 					t.Fatalf("阶段 %d 任务 %d config[%q] 往返不一致: %q vs %q", i, j, k, asString(ja.Config[k]), asString(jb.Config[k]))
 				}

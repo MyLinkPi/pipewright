@@ -156,6 +156,10 @@ export default {
     "Branch {'{{branch}}'} {'@'} {'{{commit}}'} has reached the notify node.",
   fieldBodyTemplateHint:
     "Empty = default copy; also supports {'{{placeholders}}'}, unknown ones render empty",
+  fieldStatusFromLabel: "Status source node (optional)",
+  fieldStatusFromHint:
+    "Pick an upstream node and {'{{status}}'} renders that node's status in this run (success/failed/skipped…); empty = the run status. Only upstream nodes are listed — enforced on save.",
+  statusFromUnselected: "None (use run status)",
 
   // ─── jobConfigSchema · template nodes ──────────────────────────────────
   typeBuildFrontendLabel: "Frontend build",

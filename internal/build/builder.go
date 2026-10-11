@@ -60,7 +60,7 @@ type Builder struct {
 	// deployer/notifier:dag 里 deploy_ssh / notify 节点真实化所需(main 注入 deploy.Service / notify.Service)。
 	// nil → 该类节点退化为占位日志(向后兼容;非-dag Builder.Run 路径不用)。
 	deployer deploy.Service
-	notifier notify.Service
+	notifier stageNotifier
 	// buildCache 是构建依赖缓存库(build cache · P0):非 nil 时 script 类 job 执行前后据 job.Config
 	// 的 cachePaths/cacheKey 恢复/保存依赖目录(node_modules/.m2/.gradle 等),跨 run 持久化提速。
 	// nil 则不缓存(向后兼容)。由 main 注入(WithBuildCache)。缓存问题绝不让构建失败(best-effort)。
@@ -86,6 +86,15 @@ type buildCacheStore interface {
 // 避免单测真触网)。默认实现是 *Cloner(go-git PlainClone + SSRF 收口)。
 type repoCloner interface {
 	Clone(ctx context.Context, repoURL string, cred vault.GitAuth, branch, commit, destDir string) (*CloneResolved, error)
+}
+
+// stageNotifier 是 notify 节点真实化所需的**最小能力面**(notify.Service 原样满足):
+// 解析渠道引用(Get/List)+ 按渠道投递(SendVia)。收窄接口便于单测注入 fake,而不必伪造
+// 通知领域全部 CRUD。
+type stageNotifier interface {
+	Get(ctx context.Context, id string) (*notify.Channel, error)
+	List(ctx context.Context) ([]notify.Channel, error)
+	SendVia(ctx context.Context, channelID string, payload notify.Payload) error
 }
 
 // BuilderOption 配置 Builder(测试注入 fake driver/cloner)。
