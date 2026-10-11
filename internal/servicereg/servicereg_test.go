@@ -56,11 +56,19 @@ func TestRenderNginxConfHTTPS(t *testing.T) {
 		"server_name abc.efg.com;\n        return 301 https://$host$request_uri;",
 		// WebSocket 头。
 		"proxy_set_header Upgrade $http_upgrade;",
+		// 上游长连接池 + 实例池非 WS 请求清空 Connection(否则 keepalive 无法复用后端连接)。
+		"keepalive 32;",
+		"''      \"\";",
+		"proxy_set_header Connection $connection_upgrade;",
 	}
 	for _, want := range mustContain {
 		if !strings.Contains(out, want) {
 			t.Fatalf("缺片段 %q:\n%s", want, out)
 		}
+	}
+	// 实例池服务不得走 address 的 close 变量(否则与 upstream keepalive 冲突)。
+	if strings.Contains(out, "proxy_set_header Connection $connection_upgrade_addr;") {
+		t.Fatalf("实例池服务不应使用 address 的 Connection 变量:\n%s", out)
 	}
 	if strings.Contains(out, "load_module") {
 		t.Fatalf("无 tcp 服务不应加载 stream 模块:\n%s", out)
@@ -144,6 +152,10 @@ func TestRenderNginxConfAddressServiceWithInstances(t *testing.T) {
 	}
 	if !strings.Contains(out, "set $up_plain 10.0.0.9:3001;") {
 		t.Fatalf("无实例的 address 服务应保留单上游动态解析:\n%s", out)
+	}
+	// address 单上游不复用连接 → 非 WS 用 close 变量;实例池服务用清空变量。
+	if !strings.Contains(out, "proxy_set_header Connection $connection_upgrade_addr;") {
+		t.Fatalf("address 单上游应用 close 变量:\n%s", out)
 	}
 }
 

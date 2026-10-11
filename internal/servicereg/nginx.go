@@ -64,10 +64,10 @@ const nginxBootstrapScript = `conf=/etc/pipewright/nginx.conf; mkdir -p /etc/pip
 //	load_module stream 模块          —— 仅当存在 tcp 服务
 //	events / http
 //	  resolver 127.0.0.11 valid=10s  —— Docker 内嵌 DNS(address 上游 / TCP 透传的运行期动态解析)
-//	  upstream pw_<name> { server <实例容器>:<端口> max_fails=2 fail_timeout=10s; ... }
-//	                                  —— http+container 服务:成员 = attached 实例;nginx 在 reload
-//	                                     时解析成员名(平台每次变更/轮转都伴随 reload,解析始终新鲜);
-//	                                     max_fails/fail_timeout 为被动健康兜底(实例无响应临时摘除)
+//	  upstream pw_<name> { server <服务器地址>:<宿主端口> max_fails=2 fail_timeout=10s; keepalive 32; }
+//	                                  —— 有 attached 实例的 http 服务:成员 = 服务器地址:宿主端口
+//	                                     (静态 IP,reload 原子增减);max_fails/fail_timeout 为被动健康
+//	                                     兜底(实例无响应临时摘除);keepalive 为上游长连接池
 //	  80:证书基域的 http 服务 → 301 跳 https;无证书基域的 http 服务 → 直接反代;default → 404
 //	  443:证书基域的 http 服务逐个 server 块(泛域名证书按基域共用);default → 444
 //	  http+container 服务实例全摘除 → 该 server 块 location 返回 503(维护态)
@@ -172,11 +172,19 @@ func renderNginxConf(domains []Domain, services []RegisteredService, instances [
 	b.WriteString("    default_type application/octet-stream;\n")
 	b.WriteString("    access_log /var/log/nginx/access.log;\n")
 	b.WriteString("    sendfile on;\n")
+	b.WriteString("    # 下游(客户端)长连接超时;上游长连接池见各 upstream 块的 keepalive 指令。\n")
 	b.WriteString("    keepalive_timeout 65;\n\n")
 	b.WriteString("    # Docker 内嵌 DNS:address 上游 / TCP 透传的运行期动态解析。\n")
 	b.WriteString("    # (实例池成员为静态 IP:宿主端口,成员经 reload 原子增减。)\n")
 	b.WriteString("    resolver 127.0.0.11 valid=10s ipv6=off;\n\n")
+	b.WriteString("    # WebSocket 升级用($http_upgrade 非空 → Connection: upgrade)。非升级请求:\n")
+	b.WriteString("    #   实例池:清空 Connection → 交给 upstream keepalive 复用后端连接;\n")
+	b.WriteString("    #   address 单上游(变量反代,不复用连接):显式 close → 不留悬挂空闲连接。\n")
 	b.WriteString("    map $http_upgrade $connection_upgrade {\n")
+	b.WriteString("        default upgrade;\n")
+	b.WriteString("        ''      \"\";\n")
+	b.WriteString("    }\n")
+	b.WriteString("    map $http_upgrade $connection_upgrade_addr {\n")
 	b.WriteString("        default upgrade;\n")
 	b.WriteString("        ''      close;\n")
 	b.WriteString("    }\n\n")
@@ -197,6 +205,8 @@ func renderNginxConf(domains []Domain, services []RegisteredService, instances [
 			b.WriteString("        server " + net.JoinHostPort(serverAddr[inst.ServerID], strconv.Itoa(inst.EffectiveHostPort(&s.svc))) +
 				" max_fails=2 fail_timeout=10s;\n")
 		}
+		// keepalive:上游长连接池(配合 proxy_http_version 1.1 + 非 WS 请求清空 Connection)。
+		b.WriteString("        keepalive 32;\n")
 		b.WriteString("    }\n\n")
 	}
 
@@ -285,6 +295,10 @@ func renderHTTPServer(b *strings.Builder, indent string, site httpSite, useUpstr
 //   - useUpstream(有集群实例成员):proxy_pass http://pw_<name>(成员 = attached 实例);
 //   - maintenance(声明实例池但无成员):return 503 维护态;
 //   - 其余(address 单上游):set 变量 + proxy_pass http://$var(resolver 运行期解析)。
+//
+// 反代头:proxy_http_version 1.1 + Upgrade $http_upgrade。Connection 分两种:
+//   实例池 → $connection_upgrade(非 WS 为空 → 不发送,使 upstream keepalive 复用连接);
+//   address 单上游 → $connection_upgrade_addr(非 WS 为 close → 不复用即显式关闭)。
 func writeProxyLocation(b *strings.Builder, indent string, svc RegisteredService, useUpstream, maintenance bool, upsName, proto string) {
 	if maintenance && !useUpstream {
 		// 实例全部摘除/地址不可解析:维护态,不做反代。
@@ -306,7 +320,12 @@ func writeProxyLocation(b *strings.Builder, indent string, svc RegisteredService
 	b.WriteString(indent + "    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n")
 	b.WriteString(indent + "    proxy_set_header X-Forwarded-Proto " + proto + ";\n")
 	b.WriteString(indent + "    proxy_set_header Upgrade $http_upgrade;\n")
-	b.WriteString(indent + "    proxy_set_header Connection $connection_upgrade;\n")
+	// 实例池:非 WS 清空 Connection(upstream keepalive 复用);address 单上游:非 WS 显式 close。
+	if useUpstream {
+		b.WriteString(indent + "    proxy_set_header Connection $connection_upgrade;\n")
+	} else {
+		b.WriteString(indent + "    proxy_set_header Connection $connection_upgrade_addr;\n")
+	}
 	b.WriteString(indent + "}\n")
 }
 
