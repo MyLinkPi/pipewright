@@ -1,7 +1,9 @@
 // Package srcupdate 是「源码部署」形态的自升级(internal/version.Mode() == ModeSource):
 //
-//	检查:git fetch 后比对本地 HEAD 与上游分支,落后即有更新(不走 GitHub release,
-//	      远端可以是任意 git 源 —— 官方仓库、fork 或镜像,天然与升级源镜像配置解耦);
+//	检查:git fetch 后比对「运行中构建所基于的提交」与上游分支,落后即有更新(不走
+//	      GitHub release,远端可以是任意 git 源 —— 官方仓库、fork 或镜像,天然与升级源
+//	      镜像配置解耦);比对运行构建而非工作树 HEAD,可识别「已 pull 到位但未重建/未
+//	      重启」的滞后部署(见 Check);
 //	升级:git pull --ff-only → make build → install.sh,后台任务串行执行并维护进度快照,
 //	      供 /api/version/update/status 轮询。
 //
@@ -84,13 +86,17 @@ func New(dir string) *Service {
 
 // ── 检查 ─────────────────────────────────────────────────────────────────────
 
-// Check 拉取上游并与本地 HEAD 比对,产出与 GitHub 检查同形的 UpdateInfo:
+// Check 拉取上游并与「运行中构建所基于的提交」比对,产出与 GitHub 检查同形的 UpdateInfo:
 // Latest = 上游短 SHA;Notes = 落后提交列表(≤20 行)。任何失败以 CheckError 返回
 // (不返 error),让 /version/check 稳定 200、前端优雅降级。
+//
+// 本地侧取构建期注入的 version.Commit,而非工作树 HEAD:源码重建管线可能已 git pull 到位,
+// 却因构建失败/服务未重启仍跑着旧二进制;此时工作树 HEAD 已等于上游,若拿 HEAD 比会误报
+// 「已是最新」,用户被卡在无法重试更新。构建提交不可用时(开发态未注入)回退 HEAD。
 func (s *Service) Check(ctx context.Context) version.UpdateInfo {
 	out := version.UpdateInfo{Current: version.Version}
 
-	local, err := s.git(ctx, gitTimeout, "rev-parse", "HEAD")
+	local, err := s.buildCommit(ctx)
 	if err != nil {
 		out.CheckError = "读取本地提交失败: " + err.Error()
 		return out
@@ -115,10 +121,13 @@ func (s *Service) Check(ctx context.Context) version.UpdateInfo {
 	}
 	if local != upstream {
 		out.UpdateAvailable = true
-		if n, err := s.git(ctx, gitTimeout, "rev-list", "--count", "HEAD..@{u}"); err == nil {
+		// 落后清单以「运行构建提交..上游」计,而非 HEAD..上游 —— 工作树已 pull、仅二进制滞后时,
+		// HEAD..上游 为空,列不出用户真正缺的提交。
+		rng := local + "..@{u}"
+		if n, err := s.git(ctx, gitTimeout, "rev-list", "--count", rng); err == nil {
 			out.Notes = "落后 " + n + " 个提交:"
 		}
-		if log, err := s.git(ctx, gitTimeout, "log", "--oneline", fmt.Sprintf("-%d", fetchNoteLimit), "HEAD..@{u}"); err == nil && log != "" {
+		if log, err := s.git(ctx, gitTimeout, "log", "--oneline", fmt.Sprintf("-%d", fetchNoteLimit), rng); err == nil && log != "" {
 			if out.Notes == "" {
 				out.Notes = "落后若干提交:"
 			}
@@ -126,6 +135,18 @@ func (s *Service) Check(ctx context.Context) version.UpdateInfo {
 		}
 	}
 	return out
+}
+
+// buildCommit 解析「正在运行的构建」对应的提交全 SHA,供与上游比对。优先取构建期注入的
+// version.Commit(短/全 SHA 或 tag 均可,经 ^{commit} 归一为提交对象);开发态未注入
+// ("none"/空)或仓库内解析不到该对象时,回退到工作树 HEAD —— 任何情况下都给出可比较的提交。
+func (s *Service) buildCommit(ctx context.Context) (string, error) {
+	if c := strings.TrimSpace(version.Commit); c != "" && c != "none" {
+		if full, err := s.git(ctx, gitTimeout, "rev-parse", c+"^{commit}"); err == nil && full != "" {
+			return full, nil
+		}
+	}
+	return s.git(ctx, gitTimeout, "rev-parse", "HEAD")
 }
 
 // ── 升级管线 ─────────────────────────────────────────────────────────────────

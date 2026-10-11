@@ -2,7 +2,7 @@
  * Version API — 构建版本元数据 + 一键检查更新。
  *
  * GET /version                  → VersionInfo(公开,构建期注入的版本/commit/日期/部署形态)
- * GET /api/version/check        → UpdateInfo(鉴权;二进制/Docker 查升级源,源码部署查 git 上游)
+ * GET /api/version/check        → UpdateInfo(鉴权;二进制/Docker 查升级源,源码部署比对 git 上游)
  * POST /api/version/update      → UpdateResult(鉴权+CSRF;binary 自替换重启 / docker 给命令 /
  *                                 source 启动后台管线后立即返回)
  * GET /api/version/update/status → UpdateJobStatus(鉴权;source 后台管线的进度快照)
