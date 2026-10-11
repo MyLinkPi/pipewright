@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/huangchengsir/pipewright/internal/identity"
 	"github.com/huangchengsir/pipewright/internal/run"
 )
 
@@ -204,7 +205,7 @@ func writeRunError(w http.ResponseWriter, err error) {
 }
 
 // makeListRunsHandler 返回 GET /api/runs handler(筛选 projectId/status + 分页 page）。
-func makeListRunsHandler(svc run.Service) http.HandlerFunc {
+func makeListRunsHandler(svc run.Service, id identity.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if svc == nil {
 			writeError(w, http.StatusServiceUnavailable, "internal", "运行服务未初始化")
@@ -224,11 +225,33 @@ func makeListRunsHandler(svc run.Service) http.HandlerFunc {
 			}
 			page = p
 		}
-		res, err := svc.List(r.Context(), run.ListFilter{
+		filter := run.ListFilter{
 			ProjectID: q.Get("projectId"),
 			Status:    q.Get("status"),
 			Page:      page,
-		})
+		}
+		// 普通用户仅可见其加入项目的运行;请求的 projectId 若不属于其项目集合,则返回空集。
+		if isMemberSession(r) {
+			var allowed []string
+			if id != nil {
+				sess, _ := sessionFromContext(r.Context())
+				var err error
+				allowed, err = id.ListUserProjectIDs(r.Context(), sess.UserID)
+				if err != nil {
+					writeError(w, http.StatusInternalServerError, "internal", "服务器内部错误")
+					return
+				}
+			}
+			if allowed == nil {
+				allowed = []string{}
+			}
+			if filter.ProjectID != "" && !containsString(allowed, filter.ProjectID) {
+				filter.ProjectID = ""
+				allowed = []string{}
+			}
+			filter.AllowedProjectIDs = allowed
+		}
+		res, err := svc.List(r.Context(), filter)
 		if err != nil {
 			writeRunError(w, err)
 			return

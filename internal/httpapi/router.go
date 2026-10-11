@@ -31,6 +31,7 @@ import (
 	"github.com/huangchengsir/pipewright/internal/dnsprovider"
 	"github.com/huangchengsir/pipewright/internal/environments"
 	"github.com/huangchengsir/pipewright/internal/i18n"
+	"github.com/huangchengsir/pipewright/internal/identity"
 	"github.com/huangchengsir/pipewright/internal/labels"
 	"github.com/huangchengsir/pipewright/internal/library"
 	"github.com/huangchengsir/pipewright/internal/metrics"
@@ -88,6 +89,7 @@ type options struct {
 	receiver         *trigger.Receiver
 	audit            audit.Recorder
 	account          accountService
+	identity         identity.Service
 	aiSettings       ai.Service
 	aiAnalyzer       ai.RepoAnalyzer
 	runDiffer        ai.RunDiffer
@@ -290,6 +292,15 @@ func WithAudit(rec audit.Recorder) Option {
 // (改口令 / 会话列表 / 撤销会话)。不传则相关端点返回 503。
 func WithAccount(s accountService) Option {
 	return func(o *options) { o.account = s }
+}
+
+// WithIdentity 注入普通用户体系服务,挂载:
+//   - 公开:POST /api/auth/register、GET /api/auth/invitations/{token};
+//   - 管理员:GET /api/users、/api/invitations*、/api/projects/{id}/members*;
+//   - 并为受保护 /api 组启用普通用户默认拒绝门(memberGate)。
+// 不传则相关端点返回 503;普通用户会话(memberGate 依赖 identity)一律拒绝。
+func WithIdentity(s identity.Service) Option {
+	return func(o *options) { o.identity = s }
 }
 
 // WithAISettings 注入可配置 AI 提供商服务(Story 7.1),挂载 /api/settings/ai* 路由
@@ -519,6 +530,10 @@ func New(webFS fs.FS, authn auth.Authenticator, opts ...Option) http.Handler {
 	r.Route("/api/auth", func(ar chi.Router) {
 		ar.Post("/login", makeLoginHandler(svc))
 		ar.Get("/session", makeSessionHandler(svc))
+		// 普通用户注册(公开):邀请 token + 自填用户名/口令;成功后自动登录。
+		ar.Post("/register", makeRegisterHandler(o.identity, svc))
+		// 邀请状态查询(公开只读):供注册页展示 pending/used/expired。
+		ar.Get("/invitations/{token}", makeInvitationInfoHandler(o.identity))
 		// 登出属写操作:先认证后 CSRF。
 		ar.Post("/logout", func(w http.ResponseWriter, r *http.Request) {
 			requireAuth(svc, requireCSRF(makeLogoutHandler(svc))).ServeHTTP(w, r)
@@ -542,6 +557,11 @@ func New(webFS fs.FS, authn auth.Authenticator, opts ...Option) http.Handler {
 		})
 		ar.Use(func(next http.Handler) http.Handler {
 			return requireCSRF(next)
+		})
+		// 普通用户默认拒绝门:成员仅可访问白名单端点(项目/运行/日志/自身账户);
+		// 管理员不受影响。必须在 requireAuth 之后(依赖 context 中的 Session)。
+		ar.Use(func(next http.Handler) http.Handler {
+			return memberGate(o.identity, o.runs, next)
 		})
 		mountOpsChat(ar, o.opsChat, svc)
 
@@ -573,11 +593,24 @@ func New(webFS fs.FS, authn auth.Authenticator, opts ...Option) http.Handler {
 		// 列表/更新响应附带 serviceRegs(卡片展示的服务注册地址):由 o.pipelines(流水线绑定引用)
 		// 与 o.serviceReg(注册服务清单)实时解析;任一未装配时该字段输出 []。
 		p := o.projects
-		ar.Get("/projects", makeListProjectsHandler(p, o.pipelines, o.serviceReg))
+		ar.Get("/projects", makeListProjectsHandler(p, o.identity, o.pipelines, o.serviceReg))
 		ar.Post("/projects", makeCreateProjectHandler(p, aud))
 		ar.Post("/projects/test-clone", makeTestCloneHandler(p))
 		ar.Patch("/projects/{id}", makeUpdateProjectHandler(p, aud, o.pipelines, o.serviceReg))
 		ar.Delete("/projects/{id}", makeDeleteProjectHandler(p, aud))
+
+		// 用户体系(管理员):普通用户列表、邀请生成/列表/撤销、项目成员增删查。
+		// 普通用户由 memberGate 默认拒绝;此组再叠加 requireAdmin 做纵深防御。
+		ar.Group(func(ar chi.Router) {
+			ar.Use(requireAdmin)
+			ar.Get("/users", makeListUsersHandler(o.identity))
+			ar.Post("/invitations", makeCreateInvitationHandler(o.identity, aud))
+			ar.Get("/invitations", makeListInvitationsHandler(o.identity))
+			ar.Delete("/invitations/{id}", makeRevokeInvitationHandler(o.identity, aud))
+			ar.Get("/projects/{id}/members", makeListProjectMembersHandler(o.identity))
+			ar.Post("/projects/{id}/members", makeAddProjectMemberHandler(o.identity, aud))
+			ar.Delete("/projects/{id}/members/{userId}", makeRemoveProjectMemberHandler(o.identity, aud))
+		})
 
 		// 触发设置与分支映射(Story 2.3)。t 为 nil 时 handler 返回 503。
 		// secret/reset 须在通用 trigger 路由之外单独注册;均过 auth + 写方法 CSRF。
@@ -645,7 +678,7 @@ func New(webFS fs.FS, authn auth.Authenticator, opts ...Option) http.Handler {
 		// 运行模型 + 列表 + 详情 + 取消 + SSE 状态流(Story 3.1)。rs 为 nil 时返回 503。
 		// SSE events 为 GET,豁免 CSRF;cancel 为写方法,过 CSRF。均过 requireAuth。
 		rs := o.runs
-		ar.Get("/runs", makeListRunsHandler(rs))
+		ar.Get("/runs", makeListRunsHandler(rs, o.identity))
 		ar.Get("/runs/{id}", makeGetRunHandler(rs))
 		ar.Get("/runs/{id}/events", makeRunEventsHandler(rs, o.runSub))
 		// 历史日志拉取 / 分页(Story 3.6):只读 + 认证;sinceSeq 分页;complete=终态。
@@ -1209,34 +1242,35 @@ func makeLoginHandler(svc auth.Authenticator) http.HandlerFunc {
 			return
 		}
 
-		// 设置 HttpOnly 会话 cookie(Secure 在 TLS 时自动加)。
-		secure := r.TLS != nil
-		http.SetCookie(w, &http.Cookie{
-			Name:     cookieSession,
-			Value:    sess.Token,
-			Path:     "/",
-			HttpOnly: true,
-			SameSite: http.SameSiteLaxMode,
-			Secure:   secure,
-			Expires:  sess.ExpiresAt,
-		})
-		// 下发可读 CSRF cookie(非 HttpOnly,前端 JS 读取)。
-		http.SetCookie(w, &http.Cookie{
-			Name:     cookieCsrf,
-			Value:    sess.CSRFToken,
-			Path:     "/",
-			HttpOnly: false,
-			SameSite: http.SameSiteLaxMode,
-			Secure:   secure,
-			Expires:  sess.ExpiresAt,
-		})
-		// 回显真实存储的用户名(不再硬编码 "admin")。
-		username := req.Username
-		if u, err := svc.AdminUsername(); err == nil {
-			username = u
-		}
-		writeJSON(w, http.StatusOK, map[string]string{"username": username})
+		// 设置会话 cookie 与可读 CSRF cookie,并回显身份(用户名 + 角色)。
+		setSessionCookies(w, r, sess)
+		writeJSON(w, http.StatusOK, map[string]string{"username": sess.Username, "role": sess.Role})
 	}
+}
+
+// setSessionCookies 下发 HttpOnly 会话 cookie 与可读 CSRF cookie(Secure 在 TLS 时自动加)。
+// 供登录与注册自动登录复用。
+func setSessionCookies(w http.ResponseWriter, r *http.Request, sess *auth.Session) {
+	secure := r.TLS != nil
+	http.SetCookie(w, &http.Cookie{
+		Name:     cookieSession,
+		Value:    sess.Token,
+		Path:     "/",
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+		Secure:   secure,
+		Expires:  sess.ExpiresAt,
+	})
+	// 下发可读 CSRF cookie(非 HttpOnly,前端 JS 读取)。
+	http.SetCookie(w, &http.Cookie{
+		Name:     cookieCsrf,
+		Value:    sess.CSRFToken,
+		Path:     "/",
+		HttpOnly: false,
+		SameSite: http.SameSiteLaxMode,
+		Secure:   secure,
+		Expires:  sess.ExpiresAt,
+	})
 }
 
 // makeSessionHandler 返回 GET /api/auth/session handler。
@@ -1261,23 +1295,20 @@ func makeSessionHandler(svc auth.Authenticator) http.HandlerFunc {
 			writeError(w, http.StatusInternalServerError, "internal", "服务器内部错误")
 			return
 		}
-		// 续期 CSRF cookie。
-		secure := r.TLS != nil
-		http.SetCookie(w, &http.Cookie{
-			Name:     cookieCsrf,
-			Value:    sess.CSRFToken,
-			Path:     "/",
-			HttpOnly: false,
-			SameSite: http.SameSiteLaxMode,
-			Secure:   secure,
-			Expires:  sess.ExpiresAt,
-		})
-		// 回显真实存储的用户名。
-		username := "admin"
-		if u, err := svc.AdminUsername(); err == nil {
-			username = u
+		// 续期 CSRF cookie(会话 cookie 已存在,无需重设;setSessionCookies 两者皆发,幂等)。
+		setSessionCookies(w, r, sess)
+		// 回显会话身份(用户名 + 角色)。旧升级前的会话 username 为空,回退到管理员用户名。
+		username := sess.Username
+		if username == "" {
+			if u, err := svc.AdminUsername(); err == nil {
+				username = u
+			}
 		}
-		writeJSON(w, http.StatusOK, map[string]string{"username": username})
+		role := sess.Role
+		if role == "" {
+			role = auth.RoleAdmin
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"username": username, "role": role})
 	}
 }
 

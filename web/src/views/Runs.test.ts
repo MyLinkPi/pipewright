@@ -7,6 +7,7 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { mount, flushPromises, type VueWrapper } from '@vue/test-utils'
+import { createPinia, setActivePinia } from 'pinia'
 
 const listRunsMock = vi.fn()
 const listProjectsMock = vi.fn()
@@ -25,6 +26,7 @@ vi.mock('../api/parameters', () => ({
 }))
 vi.mock('vue-router', () => ({
   useRouter: () => ({ push: pushMock }),
+  useRoute: () => ({ query: {} }),
 }))
 
 import Runs from './Runs.vue'
@@ -65,6 +67,8 @@ function lastParams(): Record<string, unknown> {
 }
 
 beforeEach(() => {
+  // Runs.vue 现按角色分流详情路由 → 需激活 pinia 供 useSessionStore() 使用。
+  setActivePinia(createPinia())
   vi.clearAllMocks()
   listRunsMock.mockResolvedValue({ items: [], page: 1, total: 0 })
   listProjectsMock.mockResolvedValue([project('p-a', 'acme-web'), project('p-b', 'billing-svc')])

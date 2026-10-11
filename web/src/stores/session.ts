@@ -9,13 +9,17 @@
  *     instead of kicking a logged-in user to /login)
  */
 
+import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
-import { ref } from 'vue'
 import { http, HttpError } from '../api/http'
 import { resetOpsAuth } from '../utils/opsAuth'
 
+/** 角色:admin(管理员)/ member(普通用户)。 */
+export type UserRole = 'admin' | 'member'
+
 export interface SessionUser {
   username: string
+  role: UserRole
 }
 
 /** Discriminated result returned by fetchSession */
@@ -24,10 +28,26 @@ export type SessionResult =
   | { kind: 'unauthenticated' }
   | { kind: 'error'; status: number; message: string }
 
+/**
+ * 归一化会话身份:老会话可能缺 role 字段(升级前签发),按管理员处理,
+ * 与后端 makeSessionHandler 的兜底语义一致。仅显式 'member' 才视为普通用户。
+ */
+function normalizeUser(data: SessionUser): SessionUser {
+  return {
+    username: data.username,
+    role: data.role === 'member' ? 'member' : 'admin',
+  }
+}
+
 export const useSessionStore = defineStore('session', () => {
   /** null = not logged in (confirmed 401); undefined = not yet fetched */
   const user = ref<SessionUser | null | undefined>(undefined)
   const isNetworkError = ref(false)
+
+  /** 当前用户是否为管理员(未登录 → false)。 */
+  const isAdmin = computed(() => user.value?.role === 'admin')
+  /** 当前用户是否为普通用户。 */
+  const isMember = computed(() => user.value?.role === 'member')
 
   /** Whether we have already fetched once (cache primed). */
   let fetched = false
@@ -50,10 +70,11 @@ export const useSessionStore = defineStore('session', () => {
 
     try {
       const data = await http.get<SessionUser>('/api/auth/session')
-      user.value = data
+      const normalized = normalizeUser(data)
+      user.value = normalized
       isNetworkError.value = false
       fetched = true
-      return { kind: 'ok', user: data }
+      return { kind: 'ok', user: normalized }
     } catch (err) {
       if (err instanceof HttpError && err.status === 401) {
         resetOpsAuth()
@@ -80,7 +101,7 @@ export const useSessionStore = defineStore('session', () => {
 
   /** Prime the cache with a known user (call after a successful login). */
   function setUser(u: SessionUser): void {
-    user.value = u
+    user.value = normalizeUser(u)
     isNetworkError.value = false
     fetched = true
   }
@@ -93,5 +114,5 @@ export const useSessionStore = defineStore('session', () => {
     fetched = true
   }
 
-  return { user, isNetworkError, ensureSession, setUser, clearSession }
+  return { user, isNetworkError, isAdmin, isMember, ensureSession, setUser, clearSession }
 })

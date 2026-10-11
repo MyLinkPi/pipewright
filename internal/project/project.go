@@ -14,6 +14,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -128,6 +129,9 @@ type Service interface {
 	// ListPaged 按页返回项目(page 从 1 起;pageSize<=0 用默认;超过 MaxPageSize 收敛),
 	// 并返回总数供前端分页。
 	ListPaged(ctx context.Context, page, pageSize int) (*ListResult, error)
+	// ListPagedByIDs 按页返回 id 集合内的项目(普通用户按成员项目过滤);
+	// 空 ids → 空结果(不生成非法 IN ())。分页/总数按过滤后计。
+	ListPagedByIDs(ctx context.Context, ids []string, page, pageSize int) (*ListResult, error)
 	// Get 返回单个项目(无明文)。
 	Get(ctx context.Context, id string) (*Project, error)
 	// Update 改名/改默认分支/改绑凭据;改绑凭据时重做 ls-remote 校验。
@@ -287,6 +291,56 @@ func (s *service) ListPaged(ctx context.Context, page, pageSize int) (*ListResul
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("project: iterate: %w", err)
+	}
+	return &ListResult{Items: out, Page: page, PageSize: pageSize, Total: total}, nil
+}
+
+// ListPagedByIDs 仅返回 id 集合内的项目(普通用户成员过滤)。
+func (s *service) ListPagedByIDs(ctx context.Context, ids []string, page, pageSize int) (*ListResult, error) {
+	page, pageSize = normalizePage(page, pageSize)
+	if len(ids) == 0 {
+		return &ListResult{Items: []Project{}, Page: page, PageSize: pageSize, Total: 0}, nil
+	}
+	placeholders := make([]string, len(ids))
+	args := make([]any, 0, len(ids))
+	for i, id := range ids {
+		placeholders[i] = "?"
+		args = append(args, id)
+	}
+	inClause := "p.id IN (" + strings.Join(placeholders, ", ") + ")"
+
+	var total int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(1) FROM projects p WHERE `+inClause, args...).Scan(&total); err != nil {
+		return nil, fmt.Errorf("project: count by ids: %w", err)
+	}
+
+	offset := (page - 1) * pageSize
+	listArgs := append(append([]any{}, args...), pageSize, offset)
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT p.id, p.name, p.repo_url, p.default_branch, p.credential_id,
+		        COALESCE(c.name, ''), p.pac_enabled, p.pr_status_enabled, p.created_at, p.updated_at
+		 FROM projects p
+		 LEFT JOIN credentials c ON c.id = p.credential_id
+		 WHERE `+inClause+`
+		 ORDER BY p.created_at DESC, p.id
+		 LIMIT ? OFFSET ?`,
+		listArgs...,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("project: list by ids: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	out := make([]Project, 0)
+	for rows.Next() {
+		p, err := scanProject(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *p)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("project: iterate by ids: %w", err)
 	}
 	return &ListResult{Items: out, Page: page, PageSize: pageSize, Total: total}, nil
 }

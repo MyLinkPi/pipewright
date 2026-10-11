@@ -1,9 +1,15 @@
 import { createRouter, createWebHistory } from 'vue-router'
-import { useSessionStore } from '../stores/session'
+import { useSessionStore, type UserRole } from '../stores/session'
 
 // Lazy-loaded views
 const Login       = () => import('../views/Login.vue')
 const AppShell    = () => import('../layouts/AppShell.vue')
+// 用户体系:邀请注册(公开)+ 普通用户精简页 + 管理员用户管理页
+const Register    = () => import('../views/Register.vue')
+const MyProjects  = () => import('../views/MyProjects.vue')
+const MemberRunDetail = () => import('../views/MemberRunDetail.vue')
+const MemberSettings  = () => import('../views/MemberSettings.vue')
+const Users       = () => import('../views/Users.vue')
 // Story 1-7: first-run onboarding guide
 const Onboarding  = () => import('../views/Onboarding.vue')
 const Dashboard   = () => import('../views/Dashboard.vue')
@@ -76,6 +82,13 @@ const router = createRouter({
       component: Login,
       meta: { public: true, title: '登录' },
     },
+    // ——— 邀请注册(shell 外,公开):?token=<invitation token> ———
+    {
+      path: '/register',
+      name: 'register',
+      component: Register,
+      meta: { public: true, title: '注册' },
+    },
     // ——— Story 1-6: Component library living styleguide (shell-free, public) ———
     {
       path: '/states',
@@ -123,6 +136,16 @@ const router = createRouter({
         // Story 7-4: read-only code browsing (FR-4)
         { path: 'projects/:id/code', name: 'project-code', component: ProjectCode, meta: { title: '代码' } },
         { path: 'runs', name: 'runs', component: Runs, meta: { title: '运行' } },
+        // ——— 普通用户(member)精简页:仅项目 / 运行 / 日志 / 自身设置 ———
+        // 用 meta.roles 显式声明;守卫对 member 采用「默认拒绝」——未声明 roles 的路由一律不可见。
+        { path: 'my-projects', name: 'my-projects', component: MyProjects, meta: { title: '我的项目', roles: ['member'] } },
+        // 复用 Runs.vue(本就不含管理动作;详情跳转按角色分流)。
+        { path: 'my-runs', name: 'my-runs', component: Runs, meta: { title: '运行', roles: ['member'] } },
+        { path: 'my-runs/:id', name: 'my-run-detail', component: MemberRunDetail, meta: { title: '运行详情', roles: ['member'] } },
+        // 普通用户设置:独立页,不挂管理员 Settings 外壳(不暴露 12 项管理员子导航)。
+        { path: 'my-settings', name: 'my-settings', component: MemberSettings, meta: { title: '设置', roles: ['member'] } },
+        // ——— 管理员:用户 / 邀请 / 项目成员管理 ———
+        { path: 'users', name: 'users', component: Users, meta: { title: '用户', roles: ['admin'] } },
         // FR-8-13: 复用库(流水线模板 + 变量组)
         { path: 'library', name: 'library', component: Library, meta: { title: '复用库' } },
         { path: 'runs/:id', name: 'run-detail', component: RunDetail, meta: { title: '运行详情' } },
@@ -185,24 +208,33 @@ const router = createRouter({
   ],
 })
 
-// ——— Route guard: session check with Pinia cache ———
+// ——— Route guard: session check with Pinia cache + role enforcement ———
 //
 // Error semantics:
-//   kind:'ok'            → proceed
+//   kind:'ok'            → proceed (after role check)
 //   kind:'unauthenticated' → redirect to /login (confirmed 401)
 //   kind:'error'          → backend unreachable / 5xx:
 //       • if user already had a cached session → stay on current page
 //         (do NOT kick them to /login; the page should show a fault state)
 //       • if session was never established → redirect to /login
 //         (we can't display authenticated content anyway)
+//
+// Role enforcement mirrors the backend's default-deny memberGate:
+//   - routes with meta.roles: the current role MUST be listed → else bounce home
+//   - routes WITHOUT meta.roles: admins pass; members are denied (bounced home)
+//     so any future admin-only page is automatically invisible to members.
+
+/** 各角色首页:管理员 → 概览;普通用户 → 我的项目。 */
+function homeFor(role: UserRole): string {
+  return role === 'member' ? '/my-projects' : '/dashboard'
+}
+
 router.beforeEach(async (to) => {
   if (to.meta.public) return true
 
   // useSessionStore() must be called inside the guard (after pinia is installed)
   const sessionStore = useSessionStore()
   const result = await sessionStore.ensureSession()
-
-  if (result.kind === 'ok') return true
 
   if (result.kind === 'unauthenticated') {
     return {
@@ -211,18 +243,30 @@ router.beforeEach(async (to) => {
     }
   }
 
-  // kind === 'error' (5xx / network)
-  if (sessionStore.user !== undefined && sessionStore.user !== null) {
-    // Had a previously confirmed session — let the navigation proceed;
-    // the view can show a degraded/retry state via isNetworkError.
-    return true
+  if (result.kind === 'error') {
+    // kind === 'error' (5xx / network)
+    if (sessionStore.user !== undefined && sessionStore.user !== null) {
+      // Had a previously confirmed session — let the navigation proceed;
+      // the view can show a degraded/retry state via isNetworkError.
+      return true
+    }
+    // Session was never established — can't show authenticated content
+    return {
+      name: 'login',
+      query: { redirect: to.fullPath },
+    }
   }
 
-  // Session was never established — can't show authenticated content
-  return {
-    name: 'login',
-    query: { redirect: to.fullPath },
+  // kind === 'ok' — enforce role-scoped visibility.
+  const role: UserRole = result.user.role
+  const roles = to.meta.roles as UserRole[] | undefined
+  if (roles) {
+    if (!roles.includes(role)) return { path: homeFor(role) }
+  } else if (role === 'member') {
+    // 默认拒绝:未显式声明 roles 的路由对普通用户不可见。
+    return { path: homeFor(role) }
   }
+  return true
 })
 
 // ——— 标签页标题:每个路由独立 document.title,多标签(尤其终端在新标签开)可区分 ———

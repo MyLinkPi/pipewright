@@ -74,6 +74,24 @@ It has since grown past that trio: publishing a deployed service on an HTTPS dom
 
 > Security is non-negotiable: credentials stored as ciphertext only, commands arrayified against injection, outbound SSRF locked down, logs redacted.
 
+## Users & permissions
+
+Two roles ship built in — a single admin account plus multiple normal users, strictly separated:
+
+- **Admin** — the platform's one super account, generated on first launch (or set via `PIPEWRIGHT_ADMIN_PASSWORD`). Full access to everything: projects, pipelines, servers, containers, notifications, AI, settings, and so on.
+- **Member (normal user)** — invited and registered by an admin. **Deny by default**: everything is hidden unless explicitly granted. A member can only:
+  1. see **the projects they have been added to** (read-only list);
+  2. **trigger runs** on those projects;
+  3. **view run details and live/history logs** (including artifact downloads).
+
+  The admin settings shell, user management, servers, containers, the app store, notifications, AI, and every other page/endpoint are invisible to members — requests return 403.
+
+**Invite → register flow**: an admin opens *User management* and generates a one-time invitation link (valid 7 days by default) → sends the link over a secure channel → the invitee opens it and sets their own username and password (auto signed in) → the admin adds them to a project → the member can then see and run that project under *My projects*.
+
+**Admin path**: left nav *User management* → create / copy / revoke invitations; pick a project → add or remove members. Members land on *My projects / Runs / My settings*.
+
+> Details (role model, permission matrix, deny-by-default middleware, migrations, and security notes) live in [docs/user-management.md](docs/user-management.md).
+
 ## Install / Deploy
 
 Pick any of three form factors. The platform itself is a single static binary with **zero runtime dependencies** (no Go/Node required).

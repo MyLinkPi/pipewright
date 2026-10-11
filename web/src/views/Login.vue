@@ -73,6 +73,12 @@ async function handleSubmit(): Promise<void> {
       return
     }
 
+    // 普通用户没有概览/引导页,直接落到「我的项目」。
+    if (user.role === 'member') {
+      await router.replace('/my-projects')
+      return
+    }
+
     // No explicit target: first-run instances (no project, not dismissed) land on
     // the onboarding guide; otherwise fall to the overview. hasAI/hasServer are
     // forward-declared (7-1/4-1 not built) so onboarding is gated on project存在.

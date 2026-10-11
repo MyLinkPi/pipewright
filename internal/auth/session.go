@@ -23,13 +23,20 @@ const (
 // ErrSessionNotFound 表示会话不存在或已过期。
 var ErrSessionNotFound = errors.New("auth: session not found or expired")
 
-// Session 代表一个服务端会话。
+// Session 代表一个服务端会话。会话携带身份(角色/用户),供权限校验与回显;
+// 管理员会话的 UserID 为空串("")。
 type Session struct {
 	Token      string
 	CSRFToken  string
 	CreatedAt  time.Time
 	ExpiresAt  time.Time
 	LastSeenAt time.Time
+	// Role 是会话角色:"admin" 或 "member"。
+	Role string
+	// UserID 是普通用户(user)的 id;管理员会话为空串。
+	UserID string
+	// Username 是会话所属用户名(用于回显/审计)。
+	Username string
 }
 
 // SessionStore 操作 sessions 表。
@@ -42,8 +49,17 @@ func NewSessionStore(db *sql.DB) *SessionStore {
 	return &SessionStore{db: db}
 }
 
+// 会话角色常量。
+const (
+	// RoleAdmin 是管理员角色(唯一,存于 admin_user)。
+	RoleAdmin = "admin"
+	// RoleMember 是普通用户角色。
+	RoleMember = "member"
+)
+
 // Create 创建新会话并持久化到 DB。返回 Session(含 Token 与 CSRFToken)。
-func (ss *SessionStore) Create() (*Session, error) {
+// role 为 RoleAdmin / RoleMember;userID 仅普通用户非空;username 为会话所属用户名。
+func (ss *SessionStore) Create(role, userID, username string) (*Session, error) {
 	token, err := randHex(tokenBytes)
 	if err != nil {
 		return nil, fmt.Errorf("auth: generate session token: %w", err)
@@ -56,13 +72,16 @@ func (ss *SessionStore) Create() (*Session, error) {
 	exp := now.Add(sessionTTL)
 
 	_, err = ss.db.Exec(
-		`INSERT INTO sessions (token, csrf_token, created_at, expires_at, last_seen_at)
-		 VALUES (?, ?, ?, ?, ?)`,
+		`INSERT INTO sessions (token, csrf_token, created_at, expires_at, last_seen_at, role, user_id, username)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 		token,
 		csrfToken,
 		now.Format(time.RFC3339),
 		exp.Format(time.RFC3339),
 		now.Format(time.RFC3339),
+		role,
+		userID,
+		username,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("auth: persist session: %w", err)
@@ -73,6 +92,9 @@ func (ss *SessionStore) Create() (*Session, error) {
 		CreatedAt:  now,
 		ExpiresAt:  exp,
 		LastSeenAt: now,
+		Role:       role,
+		UserID:     userID,
+		Username:   username,
 	}, nil
 }
 
@@ -82,10 +104,12 @@ func (ss *SessionStore) Get(token string) (*Session, error) {
 	var s Session
 	var createdStr, expiresStr, lastSeenStr string
 	err := ss.db.QueryRow(
-		`SELECT token, csrf_token, created_at, expires_at, last_seen_at
+		`SELECT token, csrf_token, created_at, expires_at, last_seen_at,
+		        COALESCE(role, ?), COALESCE(user_id, ''), COALESCE(username, '')
 		 FROM sessions WHERE token = ?`,
-		token,
-	).Scan(&s.Token, &s.CSRFToken, &createdStr, &expiresStr, &lastSeenStr)
+		RoleAdmin, token,
+	).Scan(&s.Token, &s.CSRFToken, &createdStr, &expiresStr, &lastSeenStr,
+		&s.Role, &s.UserID, &s.Username)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrSessionNotFound
