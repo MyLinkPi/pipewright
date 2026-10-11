@@ -87,7 +87,8 @@ const filteredProjects = computed(() => {
       (p) =>
         p.name.toLowerCase().includes(q) ||
         p.repoUrl.toLowerCase().includes(q) ||
-        p.defaultBranch.toLowerCase().includes(q),
+        p.defaultBranch.toLowerCase().includes(q) ||
+        p.serviceRegs.some((r) => r.fqdn.toLowerCase().includes(q)),
     )
   }
   if (statusFilter.value !== 'all') {
@@ -852,25 +853,41 @@ const STATUS_CONFIG: Record<RunStatus, StatusConfig> = {
             </div>
           </div>
 
-          <!-- Repo + branch (equal-width columns) -->
-          <div class="card-repo">
-            <div class="repo-url-row">
+          <!-- Registered services: every binding is listed (FQDN for http, gateway port for tcp) -->
+          <div class="card-services">
+            <template v-if="project.serviceRegs && project.serviceRegs.length > 0">
+              <div
+                v-for="reg in project.serviceRegs"
+                :key="reg.id"
+                class="service-reg-row"
+              >
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                  <circle cx="12" cy="12" r="10"/>
+                  <line x1="2" y1="12" x2="22" y2="12"/>
+                  <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
+                </svg>
+                <a
+                  v-if="reg.protocol === 'http'"
+                  class="service-reg-url mono"
+                  :href="`https://${reg.fqdn}`"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  :title="reg.fqdn"
+                >{{ reg.fqdn }}</a>
+                <span
+                  v-else
+                  class="service-reg-url mono"
+                  :title="reg.name"
+                >:{{ reg.tcpListenPort }}</span>
+              </div>
+            </template>
+            <div v-else class="service-reg-row">
               <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
-                <path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22"/>
+                <circle cx="12" cy="12" r="10"/>
+                <line x1="2" y1="12" x2="22" y2="12"/>
+                <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
               </svg>
-              <a
-                class="repo-url mono"
-                :href="project.repoUrl"
-                target="_blank"
-                rel="noopener noreferrer"
-                :title="project.repoUrl"
-              >{{ project.repoUrl.replace(/^(https?|ssh):\/\//, '') }}</a>
-            </div>
-            <div class="branch-row">
-              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
-                <path d="M6 3v12"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/>
-              </svg>
-              <span class="branch-name mono">{{ project.defaultBranch || '—' }}</span>
+              <span class="meta-empty">{{ t('projects.noServiceReg') }}</span>
             </div>
           </div>
 
@@ -1861,23 +1878,22 @@ const STATUS_CONFIG: Record<RunStatus, StatusConfig> = {
   }
 }
 
-/* repo + branch */
-.card-repo {
+/* registered services (one row per binding) */
+.card-services {
   display: flex;
   flex-direction: column;
   gap: 6px;
   margin-bottom: 14px;
 }
 
-.repo-url-row,
-.branch-row {
+.service-reg-row {
   display: flex;
   align-items: center;
   gap: 6px;
   color: var(--color-faint);
 }
 
-.repo-url {
+.service-reg-url {
   font-size: 0.74rem;
   color: var(--color-dim);
   white-space: nowrap;
@@ -1888,21 +1904,16 @@ const STATUS_CONFIG: Record<RunStatus, StatusConfig> = {
   min-width: 0;
 }
 
-.repo-url:hover {
+.service-reg-url:hover {
   color: var(--color-primary);
   text-decoration: underline;
   text-underline-offset: 2px;
 }
 
-.repo-url:focus-visible {
+.service-reg-url:focus-visible {
   outline: 2px solid var(--color-primary);
   outline-offset: 2px;
   border-radius: 2px;
-}
-
-.branch-name {
-  font-size: 0.72rem;
-  color: var(--color-dim);
 }
 
 .mono {

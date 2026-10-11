@@ -7,6 +7,9 @@ import { stubLoggedIn, projectFixture } from './_stubs'
  */
 
 test.describe('Projects page', () => {
+  // The spec asserts zh-CN copy; pin the locale (the app auto-detects from navigator.languages).
+  test.use({ locale: 'zh-CN' })
+
   test('renders the project grid from GET /api/projects', async ({ page }) => {
     await stubLoggedIn(page)
     await page.route(
@@ -17,7 +20,15 @@ test.describe('Projects page', () => {
           status: 200,
           contentType: 'application/json',
           body: JSON.stringify([
-            projectFixture({ id: 'p1', name: 'acme-web', lastRunStatus: '成功' }),
+            projectFixture({
+              id: 'p1',
+              name: 'acme-web',
+              lastRunStatus: '成功',
+              serviceRegs: [
+                { id: 'svc-1', name: 'acme-web', fqdn: 'acme-web.example.com', protocol: 'http', tcpListenPort: 0 },
+                { id: 'svc-2', name: 'acme-api', fqdn: 'acme-api.example.com', protocol: 'http', tcpListenPort: 0 },
+              ],
+            }),
             projectFixture({ id: 'p2', name: 'billing-svc', lastRunStatus: '失败' }),
           ]),
         })
@@ -28,6 +39,11 @@ test.describe('Projects page', () => {
     await expect(page.getByRole('heading', { name: '项目', exact: true })).toBeVisible()
     await expect(page.getByRole('heading', { name: 'acme-web' })).toBeVisible()
     await expect(page.getByRole('heading', { name: 'billing-svc' })).toBeVisible()
+    // Registered services: every binding is listed as a link (FQDN).
+    await expect(page.getByRole('link', { name: 'acme-web.example.com' })).toBeVisible()
+    await expect(page.getByRole('link', { name: 'acme-api.example.com' })).toBeVisible()
+    // No bindings → the card shows the empty state.
+    await expect(page.getByText('未注册服务')).toBeVisible()
     // The search/filter toolbar appears only when projects exist.
     await expect(page.getByRole('search', { name: '项目搜索与筛选' })).toBeVisible()
   })
@@ -85,7 +101,9 @@ test.describe('Projects page', () => {
     // Fill a valid form and submit → POST → card appears in the grid.
     await dialog.locator('#proj-name').fill('new-app')
     await dialog.locator('#proj-repo').fill('https://gitee.com/acme/new-app.git')
-    await dialog.locator('#proj-cred').selectOption('c-git')
+    // Credential picker is a custom combobox (CredentialSelect), not a native <select>.
+    await dialog.locator('#proj-cred').click()
+    await dialog.getByRole('option', { name: /gitee-token/ }).click()
     await dialog.getByRole('button', { name: '创建项目' }).click()
 
     await expect(dialog).toBeHidden()

@@ -67,6 +67,8 @@ export function projectFixture(over: Record<string, unknown> = {}): Record<strin
     credentialName: 'gitee-token · ghp_••••a91f',
     lastRunStatus: '成功',
     targetServers: [],
+    // No registered services by default; specs override with ProjectServiceReg[] entries.
+    serviceRegs: [],
     createdAt: '2026-05-01T08:00:00Z',
     updatedAt: '2026-05-28T08:00:00Z',
     ...over,

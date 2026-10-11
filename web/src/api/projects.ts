@@ -9,6 +9,9 @@
  *
  * credentialName is read-only display; credentialId is the reference.
  * lastRunStatus / targetServers may be null/[] until future stories fill them.
+ * serviceRegs lists the project's registered services (card display subset), resolved
+ * server-side from the pipeline's deploy-node bindings (regServiceId / legacy
+ * gatewayService by name); [] when nothing is bound.
  * The API never returns credential plaintext — only credentialName (masked display).
  */
 
@@ -21,6 +24,17 @@ export type RunStatus =
   | '部分失败'
   | '已回滚'
   | '排队中'
+
+/** A service the project has registered in the service-registry gateway (card display subset). */
+export interface ProjectServiceReg {
+  id: string
+  name: string
+  /** HTTP service access domain (e.g. shop.example.com); meaningless for tcp. */
+  fqdn: string
+  protocol: 'http' | 'tcp'
+  /** Gateway listen port for tcp services (always 0 for http). */
+  tcpListenPort: number
+}
 
 export interface Project {
   id: string
@@ -46,6 +60,12 @@ export interface Project {
   lastRunStatus: RunStatus | null
   /** Empty until servers are bound (Story 2.x). */
   targetServers: string[]
+  /**
+   * Services registered in the service-registry gateway, resolved from the pipeline's
+   * deploy-node bindings (regServiceId; legacy gatewayService by service name).
+   * Empty until a deploy node binds a service — the project card lists every entry.
+   */
+  serviceRegs: ProjectServiceReg[]
   createdAt: string
   updatedAt: string
 }

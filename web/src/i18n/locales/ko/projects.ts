@@ -7,7 +7,7 @@ export default {
 
   // ─── toolbar / search / filter ─────────────────────────────────
   searchFilterAria: '프로젝트 검색 및 필터',
-  searchPlaceholder: '프로젝트 이름, 저장소 URL, 브랜치로 검색…',
+  searchPlaceholder: '프로젝트 이름, 저장소 URL, 서비스 주소로 검색…',
   searchAria: '프로젝트 검색',
   statusFilterAria: '상태로 필터',
   statusAll: '모든 상태',
@@ -30,6 +30,7 @@ export default {
   notBound: '미연결',
   credential: '저장소 자격 증명',
   credentialRefTitle: '자격 증명 참조(평문 아님)',
+  noServiceReg: '등록된 서비스 없음',
   updatedAt: '{time} 업데이트됨',
 
   // ─── card actions ──────────────────────────────────────────────

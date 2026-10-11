@@ -7,7 +7,7 @@ export default {
 
   // ─── toolbar / search / filter ─────────────────────────────────
   searchFilterAria: '專案搜尋與篩選',
-  searchPlaceholder: '搜尋專案名、倉庫位址、分支…',
+  searchPlaceholder: '搜尋專案名、倉庫位址、服務位址…',
   searchAria: '搜尋專案',
   statusFilterAria: '狀態篩選',
   statusAll: '全部狀態',
@@ -30,6 +30,7 @@ export default {
   notBound: '未綁定',
   credential: '倉庫憑證',
   credentialRefTitle: '憑證引用(非明文)',
+  noServiceReg: '未註冊服務',
   updatedAt: '更新於 {time}',
 
   // ─── card actions ──────────────────────────────────────────────

@@ -7,7 +7,7 @@ export default {
 
   // ─── toolbar / search / filter ─────────────────────────────────
   searchFilterAria: 'Projekte suchen und filtern',
-  searchPlaceholder: 'Nach Name, Repository-URL oder Branch suchen…',
+  searchPlaceholder: 'Nach Name, Repository-URL oder Dienstadresse suchen…',
   searchAria: 'Projekte suchen',
   statusFilterAria: 'Nach Status filtern',
   statusAll: 'Alle Status',
@@ -30,6 +30,7 @@ export default {
   notBound: 'Nicht gebunden',
   credential: 'Repository-Anmeldedaten',
   credentialRefTitle: 'Anmeldedaten-Referenz (kein Klartext)',
+  noServiceReg: 'Keine Dienste registriert',
   updatedAt: 'Aktualisiert {time}',
 
   // ─── card actions ──────────────────────────────────────────────

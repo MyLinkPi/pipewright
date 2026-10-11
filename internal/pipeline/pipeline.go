@@ -132,6 +132,10 @@ type Service interface {
 	// Save 校验并规范化 spec → 渲染 YAML → 持久化(status=draft)→ 回读返回。
 	// 校验失败 → ErrInvalidStage / ErrInvalidJob / ErrDuplicateID;项目不存在 → ErrProjectNotFound。
 	Save(ctx context.Context, projectID string, spec Spec) (*Config, error)
+	// RegServiceRefs 返回项目流水线全部部署节点绑定的「服务注册」引用(去重、保持出现顺序):
+	// regServiceId(一键生成)优先,gatewayService(legacy 服务名)兜底 —— 与部署期 regServiceRef 的
+	// 取值语义一致。只读:项目尚无流水线配置行时返回空切片(不惰性生成默认配置,无副作用)。
+	RegServiceRefs(ctx context.Context, projectID string) ([]string, error)
 }
 
 // StatusDraft 是本期唯一发布状态(导出供 pipelineyaml 等同包域外构造 Config 时复用)。
@@ -252,6 +256,62 @@ func (s *service) Save(ctx context.Context, projectID string, spec Spec) (*Confi
 		return nil, fmt.Errorf("pipeline: update config: %w", err)
 	}
 	return s.Get(ctx, projectID)
+}
+
+// RegServiceRefs 返回项目流水线全部部署节点绑定的服务注册引用(去重、保持出现顺序):
+// regServiceId(一键生成)优先,gatewayService(legacy 服务名)兜底(与部署期 regServiceRef 一致)。
+// 只读实现:直接查配置行,不触碰惰性默认生成 —— 项目尚无流水线配置行时返回空切片。
+func (s *service) RegServiceRefs(ctx context.Context, projectID string) ([]string, error) {
+	var specJSON string
+	err := s.db.QueryRowContext(ctx,
+		`SELECT spec_json FROM pipeline_configs WHERE project_id = ?`, projectID).Scan(&specJSON)
+	if errors.Is(err, sql.ErrNoRows) {
+		return []string{}, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("pipeline: load spec for reg refs: %w", err)
+	}
+	var spec Spec
+	if strings.TrimSpace(specJSON) != "" {
+		if err := json.Unmarshal([]byte(specJSON), &spec); err != nil {
+			return nil, fmt.Errorf("pipeline: parse spec for reg refs: %w", err)
+		}
+	}
+	return collectRegServiceRefs(&spec), nil
+}
+
+// collectRegServiceRefs 遍历 spec 收集部署节点上的服务注册引用:regServiceId 优先、
+// gatewayService(legacy 服务名)兜底;去重且保持出现顺序,悬空/空值跳过。
+func collectRegServiceRefs(spec *Spec) []string {
+	seen := make(map[string]struct{})
+	out := make([]string, 0)
+	for i := range spec.Stages {
+		for j := range spec.Stages[i].Jobs {
+			cfg := spec.Stages[i].Jobs[j].Config
+			if cfg == nil {
+				continue
+			}
+			ref := strings.TrimSpace(jobConfigString(cfg, "regServiceId"))
+			if ref == "" {
+				ref = strings.TrimSpace(jobConfigString(cfg, "gatewayService"))
+			}
+			if ref == "" {
+				continue
+			}
+			if _, dup := seen[ref]; dup {
+				continue
+			}
+			seen[ref] = struct{}{}
+			out = append(out, ref)
+		}
+	}
+	return out
+}
+
+// jobConfigString 从自由 KV 的 job.config 取字符串值(非字符串/缺失 → 空串)。
+func jobConfigString(cfg map[string]any, key string) string {
+	s, _ := cfg[key].(string)
+	return s
 }
 
 // load 读取已存在的配置行。无行 → sql.ErrNoRows(由 Get 转惰性默认)。

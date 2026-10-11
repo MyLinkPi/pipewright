@@ -7,7 +7,7 @@ export default {
 
   // ─── toolbar / search / filter ─────────────────────────────────
   searchFilterAria: 'Buscar y filtrar proyectos',
-  searchPlaceholder: 'Buscar por nombre, URL del repositorio o rama…',
+  searchPlaceholder: 'Buscar por nombre, URL del repositorio o dirección de servicio…',
   searchAria: 'Buscar proyectos',
   statusFilterAria: 'Filtrar por estado',
   statusAll: 'Todos los estados',
@@ -30,6 +30,7 @@ export default {
   notBound: 'Sin vincular',
   credential: 'Credencial del repositorio',
   credentialRefTitle: 'Referencia de credencial (no texto plano)',
+  noServiceReg: 'Sin servicios registrados',
   updatedAt: 'Actualizado {time}',
 
   // ─── card actions ──────────────────────────────────────────────
