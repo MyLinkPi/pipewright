@@ -1,6 +1,8 @@
 export default {
   title: 'Container',
   subtitle: 'Container und Images pro Host über alle registrierten Server hinweg verwalten',
+  localName: 'Dieser Host (Steuerknoten)',
+  localHost: 'localhost · Steuerknoten',
   countSummary: '· Insgesamt {total} Container · {running} laufen',
   autoRefresh: '· Aktualisiert sich automatisch alle {n} s',
 

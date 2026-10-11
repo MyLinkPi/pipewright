@@ -1,6 +1,7 @@
 export default {
   title: 'Server Status',
   subtitle: 'CPU load, memory and disk usage for all registered servers, collected live over SSH',
+  localName: 'This host (control node)',
   reachableSummary: '{reachable}/{total} reachable',
   autoRefresh: 'Auto-refreshes every {n}s',
   loadingAria: 'Loading server status',

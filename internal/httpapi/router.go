@@ -792,6 +792,13 @@ func New(webFS fs.FS, authn auth.Authenticator, opts ...Option) http.Handler {
 		ar.Delete("/servers/{id}", makeDeleteServerHandler(sv))
 		ar.Post("/servers/{id}/test", makeTestServerHandler(sv))
 
+		// 容器域(容器/镜像/栈/卷/网络/日志/交互终端/服务操作)额外支持「控制节点本机」:
+		// csv 对 serverID == target.LocalHostID("__local__")改为在**本机执行**(os/exec,不经 SSH),
+		// 对真实 serverID 逐字透传(零行为变化)。命令仍是 []string array、不经 shell(AC-SEC-02);
+		// 本机无 SSH 凭据参与,故无凭据泄漏面。**登记类端点(CRUD/test)刻意不套 csv** —— 本机不是
+		// 可登记实体(Update/Delete 返回 target.ErrLocalHostImmutable),它也不进 List(批量端点不含它)。
+		csv := target.WithLocalHost(sv)
+
 		// 机器标签登记处(标签字典,可先建后挂):GET 过 auth;POST/DELETE 过 auth + CSRF。
 		// 字面段 /labels 与 /servers/{id} 互不干扰。
 		ar.Get("/labels", makeListLabelsHandler(o.labels))
@@ -801,8 +808,8 @@ func New(webFS fs.FS, authn auth.Authenticator, opts ...Option) http.Handler {
 		// 均为 GET 只读 → 过 auth、豁免 CSRF。source/target 严格白名单校验(AC-SEC-02);
 		// SSH/命令失败人读不 500;实时 /logs/stream 为 SSE,客户端断开即关 SSH session。
 		// 比 /servers/{id} 多一段,不会被吞。
-		ar.Get("/servers/{id}/logs", makeServerLogsHandler(sv))
-		ar.Get("/servers/{id}/logs/stream", makeServerLogsStreamHandler(sv))
+		ar.Get("/servers/{id}/logs", makeServerLogsHandler(csv))
+		ar.Get("/servers/{id}/logs/stream", makeServerLogsStreamHandler(csv))
 		// 多机状态总览 —— 服务器层指标(Story 6.1;FR-15,经 SSH 跑固定白名单只读命令采集
 		// CPU/内存/磁盘)。复用 sv(4-1 装配,无新服务)。均为 GET 只读 → 过 auth、豁免 CSRF。
 		// 采集命令纯静态 array、不接受任何用户输入(AC-SEC-02);某台不可达/某指标缺失 →
@@ -816,63 +823,63 @@ func New(webFS fs.FS, authn auth.Authenticator, opts ...Option) http.Handler {
 		// ,不 500。批量端点逐台并行有界、各自独立。容器**生命周期**写操作复用上面的 /service/action
 		// (type=docker)。chi 字面段 /servers/containers 优先于 {id},不会被吞。
 		ar.Get("/servers/containers", makeAllServerContainersHandler(sv))
-		ar.Get("/servers/{id}/containers", makeServerContainersHandler(sv))
+		ar.Get("/servers/{id}/containers", makeServerContainersHandler(csv))
 		// 容器实时资源 stats(docker stats --no-stream)。字面段 stats 不与 {id}/containers 冲突。
-		ar.Get("/servers/{id}/containers/stats", makeServerContainerStatsHandler(sv))
+		ar.Get("/servers/{id}/containers/stats", makeServerContainerStatsHandler(csv))
 		// 容器详情 inspect(docker inspect → 精选字段)。
-		ar.Get("/servers/{id}/containers/{containerId}/inspect", makeContainerInspectHandler(sv))
+		ar.Get("/servers/{id}/containers/{containerId}/inspect", makeContainerInspectHandler(csv))
 		// 一键清理:磁盘占用(docker system df)+ prune(写,过 CSRF + 审计)。
-		ar.Get("/servers/{id}/system/df", makeSystemDfHandler(sv))
-		ar.Post("/servers/{id}/system/prune", makeSystemPruneHandler(sv, aud))
+		ar.Get("/servers/{id}/system/df", makeSystemDfHandler(csv))
+		ar.Post("/servers/{id}/system/prune", makeSystemPruneHandler(csv, aud))
 		// 新增容器(docker run) —— 写操作,过 auth + CSRF。参数严格白名单 + array 化,
 		// 非法 400 invalid_create_spec;SSH/命令失败人读不 500;成功后写审计(detail 仅 image/name)。
-		ar.Post("/servers/{id}/containers", makeCreateContainerHandler(sv, aud))
+		ar.Post("/servers/{id}/containers", makeCreateContainerHandler(csv, aud))
 		// 镜像管理 —— 列表(只读)+ 拉取/删除(写,过 CSRF + 审计)。镜像引用严格白名单 + array 化。
-		ar.Get("/servers/{id}/images", makeServerImagesHandler(sv))
-		ar.Post("/servers/{id}/images/pull", makeImagePullHandler(sv, aud))
-		ar.Post("/servers/{id}/images/remove", makeImageRemoveHandler(sv, aud))
+		ar.Get("/servers/{id}/images", makeServerImagesHandler(csv))
+		ar.Post("/servers/{id}/images/pull", makeImagePullHandler(csv, aud))
+		ar.Post("/servers/{id}/images/remove", makeImageRemoveHandler(csv, aud))
 		// Compose/Stacks —— 列表(只读)+ 部署(贴 yaml → up)+ start/stop/restart/down。
 		// 项目名严格白名单 + array 化;compose 内容经 Upload 落文件(非 shell 注入面)。写过 CSRF + 审计。
-		ar.Get("/servers/{id}/stacks", makeServerStacksHandler(sv))
-		ar.Get("/servers/{id}/stacks/{name}", makeServerStackDetailHandler(sv))
-		ar.Post("/servers/{id}/stacks/deploy", makeStackDeployHandler(sv, aud))
-		ar.Post("/servers/{id}/stacks/action", makeStackActionHandler(sv, aud))
-		ar.Post("/servers/{id}/stacks/save", makeStackSaveHandler(sv, aud))
+		ar.Get("/servers/{id}/stacks", makeServerStacksHandler(csv))
+		ar.Get("/servers/{id}/stacks/{name}", makeServerStackDetailHandler(csv))
+		ar.Post("/servers/{id}/stacks/deploy", makeStackDeployHandler(csv, aud))
+		ar.Post("/servers/{id}/stacks/action", makeStackActionHandler(csv, aud))
+		ar.Post("/servers/{id}/stacks/save", makeStackSaveHandler(csv, aud))
 		// 应用商店一键部署(DPanel 式):模板参数渲染 → 复用 Stacks 链路 up -d。
 		// 生成的 secret 仅部署响应一次性返回;审计只记模板名,不记参数值。
-		ar.Post("/servers/{id}/apps/deploy", makeDeployAppHandler(o.appStore, sv, aud))
-		// 容器 AI 诊断 / 看日志(AI moat):取容器日志 → ai.Diagnose 出根因+修复。复用 sv +
+		ar.Post("/servers/{id}/apps/deploy", makeDeployAppHandler(o.appStore, csv, aud))
+		// 容器 AI 诊断 / 看日志(AI moat):取容器日志 → ai.Diagnose 出根因+修复。复用 csv +
 		// o.aiSettings。出网前脱敏;AI 未配/失败 → 200 unavailable,绝不 500。比 {id} 多两段不被吞。
-		ar.Post("/servers/{id}/containers/{containerId}/diagnose", makeContainerDiagnoseHandler(sv, o.aiSettings))
+		ar.Post("/servers/{id}/containers/{containerId}/diagnose", makeContainerDiagnoseHandler(csv, o.aiSettings))
 		// 数据卷 + 网络 —— 列表(只读)+ 创建/删除(写,过 CSRF + 审计)。名称白名单 + array 化。
-		ar.Get("/servers/{id}/volumes", makeServerVolumesHandler(sv))
-		ar.Post("/servers/{id}/volumes/create", makeVolumeCreateHandler(sv, aud))
-		ar.Post("/servers/{id}/volumes/remove", makeVolumeRemoveHandler(sv, aud))
-		ar.Get("/servers/{id}/networks", makeServerNetworksHandler(sv))
-		ar.Post("/servers/{id}/networks/create", makeNetworkCreateHandler(sv, aud))
-		ar.Post("/servers/{id}/networks/remove", makeNetworkRemoveHandler(sv, aud))
+		ar.Get("/servers/{id}/volumes", makeServerVolumesHandler(csv))
+		ar.Post("/servers/{id}/volumes/create", makeVolumeCreateHandler(csv, aud))
+		ar.Post("/servers/{id}/volumes/remove", makeVolumeRemoveHandler(csv, aud))
+		ar.Get("/servers/{id}/networks", makeServerNetworksHandler(csv))
+		ar.Post("/servers/{id}/networks/create", makeNetworkCreateHandler(csv, aud))
+		ar.Post("/servers/{id}/networks/remove", makeNetworkRemoveHandler(csv, aud))
 		// 网络详情:某网络上连着哪些容器 + 连接/断开。network 段白名单 + array 化。
-		ar.Get("/servers/{id}/networks/{network}/containers", makeNetworkContainersHandler(sv))
-		ar.Post("/servers/{id}/networks/{network}/connect", makeNetworkConnectHandler(sv, aud))
-		ar.Post("/servers/{id}/networks/{network}/disconnect", makeNetworkDisconnectHandler(sv, aud))
+		ar.Get("/servers/{id}/networks/{network}/containers", makeNetworkContainersHandler(csv))
+		ar.Post("/servers/{id}/networks/{network}/connect", makeNetworkConnectHandler(csv, aud))
+		ar.Post("/servers/{id}/networks/{network}/disconnect", makeNetworkDisconnectHandler(csv, aud))
 		// 服务操作 —— 重启/停止/启动(Story 6.3;FR-17,经 SSH 跑 systemctl/docker)。
 		// 复用 sv(4-1 装配)+ aud(1-4 装配),无需新服务。写操作 → 过 auth + CSRF。
 		// type/target/action 严格白名单(AC-SEC-02:首字符非 `-` 防 flag 注入、无 shell 元字符
 		// 防命令注入、action 枚举);命令 array 化经 target.Exec 不拼 shell。非法 → 400
 		// invalid_service_target;SSH/命令失败人读不 500;成功投递后写审计(detail 脱敏)。
 		// 比 /servers/{id} 多两段,不会被吞。
-		ar.Post("/servers/{id}/service/action", makeServiceActionHandler(sv, aud))
+		ar.Post("/servers/{id}/service/action", makeServiceActionHandler(csv, aud))
 		// 容器内交互终端(Story 6.4;FR-18,WS ↔ SSH → docker exec -it)。复用 sv(4-1 装配)
 		// + aud(1-4 装配),无需新服务。**平台唯一 WS 升级点**(其余实时流走 SSE)。GET 升级
 		// → 过 auth(未登录 401 不升级);CSRF 对 GET 豁免,改以同源(Origin)校验防跨站劫持。
 		// containerId 严格白名单(首字符非 `-` 防 flag 注入、无 shell 元字符)+ shell 枚举白名单;
 		// 命令 array 化经 target.ExecInteractive 不拼 shell。握手成功(PTY 建立)后写审计(detail 脱敏)。
 		// 比 /servers/{id} 多两段,不会被吞。
-		ar.Get("/servers/{id}/containers/{containerId}/terminal", makeContainerTerminalHandler(sv, aud))
+		ar.Get("/servers/{id}/containers/{containerId}/terminal", makeContainerTerminalHandler(csv, aud))
 		// 主机 shell 终端(「连服务器终端」的目标:SSH 直起交互 shell)。进容器留给用户在 shell 里
 		// 自己 docker exec 自由探索(不绑死容器;很多服务器没 docker)。WS 升级,同源校验 + shell
 		// 白名单;审计 server_terminal。比 /servers/{id} 多一段,不会被吞。
-		ar.Get("/servers/{id}/terminal", makeServerTerminalHandler(sv, aud))
+		ar.Get("/servers/{id}/terminal", makeServerTerminalHandler(csv, aud))
 		// 批量执行命令(服务器状态页 → 勾选多机 → 同步执行 + 历史回看)。任意 shell 命令是功能
 		// 本质:单管理员平台、既有 WS 终端单机本就任意命令,批量入口不提升权限面。护栏:命令 ≤8KiB、
 		// 机器数 ≤100、单机超时 5-300s、并发 6、输出截 64KiB;逐机独立容错(200 + ok:false,不 500);
@@ -970,6 +977,12 @@ func New(webFS fs.FS, authn auth.Authenticator, opts ...Option) http.Handler {
 		sc := o.systemConfig
 		ar.Get("/system/config", makeGetSystemConfigHandler(sc))
 		ar.Put("/system/config", makeSetSystemConfigHandler(sc, aud))
+
+		// 本机(控制节点)指标 —— 运行 Pipewright 的这台机器自身的 CPU/内存/磁盘。与远程服务器
+		// 共用同款纯静态只读脚本,但**在本机执行**(os/exec,不走 SSH、不选服务器、无需 svc)。
+		// GET 只读 → 过 auth、豁免 CSRF。命令纯静态、无用户输入(AC-SEC-02);采集失败 →
+		// 200 + reachable:false + 人读错误,不 500。字面段 /system/metrics 与 /system/config 互不干扰。
+		ar.Get("/system/metrics", makeLocalMetricsHandler())
 
 		// 应用商店模板(DPanel 式):内置 seed + 自定义 CRUD。GET 过 auth;写方法过 auth + CSRF + 审计。
 		// apps 为 nil → handler 返回 503。/ops/apps/{id} 比 /ops/apps 多一段,不会被吞。

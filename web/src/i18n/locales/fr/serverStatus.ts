@@ -1,6 +1,7 @@
 export default {
   title: 'État des serveurs',
   subtitle: "Charge CPU, mémoire et utilisation du disque de tous les serveurs enregistrés, collectées en temps réel via SSH",
+  localName: 'Cet hôte (nœud de contrôle)',
   reachableSummary: '{reachable}/{total} joignables',
   autoRefresh: 'Actualisation automatique toutes les {n} s',
   loadingAria: "Chargement de l'état des serveurs",

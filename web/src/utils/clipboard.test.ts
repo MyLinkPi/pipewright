@@ -23,6 +23,8 @@ vi.mock('../api/servers', () => ({
     resize: vi.fn(),
   })),
   openContainerTerminal: vi.fn(),
+  // ServerTerminal 现在会用它区分「控制节点本机」;mock 必须提供同名导出。
+  LOCAL_HOST_ID: '__local__',
 }))
 vi.mock('../api/aiOps', () => ({ completeCommand: vi.fn() }))
 vi.mock('@xterm/xterm', () => ({

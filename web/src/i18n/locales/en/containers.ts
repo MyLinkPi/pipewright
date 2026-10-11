@@ -1,6 +1,8 @@
 export default {
   title: 'Containers',
   subtitle: 'Manage containers and images per host across all registered servers',
+  localName: 'This host (control node)',
+  localHost: 'localhost · control node',
   countSummary: '· {total} containers total · {running} running',
   autoRefresh: '· Auto-refreshes every {n}s',
 

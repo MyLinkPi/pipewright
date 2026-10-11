@@ -1,6 +1,8 @@
 export default {
   title: '容器',
   subtitle: '跨所有已登记服务器,按主机管理容器与镜像',
+  localName: '本机(控制节点)',
+  localHost: 'localhost · 控制节点',
   countSummary: '· 共 {total} 个容器 · {running} 运行中',
   autoRefresh: '· 每 {n} 秒自动刷新',
 

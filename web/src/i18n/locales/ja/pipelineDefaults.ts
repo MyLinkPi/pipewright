@@ -4,5 +4,4 @@ export default {
   buildStage: 'ビルド',
   deployStage: 'デプロイ',
   notifyStage: '通知',
-  gitSourceJob: 'Git ソース',
 }

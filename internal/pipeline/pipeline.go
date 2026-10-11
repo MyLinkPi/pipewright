@@ -427,7 +427,7 @@ func defaultSpec(sourceSummary string) Spec {
 			Kind: KindSource,
 			Jobs: []Job{{
 				ID:      "job_src",
-				Name:    "Gitee 源",
+				Name:    "流水线源",
 				Type:    "git_source",
 				Summary: sourceSummary,
 				Config:  map[string]any{},

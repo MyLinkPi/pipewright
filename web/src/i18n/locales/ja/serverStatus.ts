@@ -1,6 +1,7 @@
 export default {
   title: 'サーバーの状態',
   subtitle: '登録済みのすべてのサーバーの CPU 負荷・メモリ・ディスク使用量を、SSH 経由でリアルタイムに収集',
+  localName: 'このホスト(コントロールノード)',
   reachableSummary: '{reachable}/{total} 到達可能',
   autoRefresh: '{n} 秒ごとに自動更新',
   loadingAria: 'サーバーの状態を読み込み中',

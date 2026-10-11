@@ -7,8 +7,13 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
-import { getAllContainers, type ServerContainers, type ContainerInfo } from '../api/containers'
-import { listServers, serviceAction, type Server, type ServiceAction } from '../api/servers'
+import {
+  getAllContainers,
+  getServerContainers,
+  type ServerContainers,
+  type ContainerInfo,
+} from '../api/containers'
+import { listServers, serviceAction, LOCAL_HOST_ID, type Server, type ServiceAction } from '../api/servers'
 import { HttpError } from '../api/http'
 import { stateBucket, type StateBucket } from '../lib/containerState'
 import { useToast } from '../composables/useToast'
@@ -49,9 +54,12 @@ const stoppedContainers = computed(() => totalContainers.value - runningContaine
 const coveredServers = computed(() => groups.value.filter((g) => g.reachable && g.runtime).length)
 
 function serverName(id: string): string {
+  // 控制节点本机不在登记表里,卡片标题用固定文案。
+  if (id === LOCAL_HOST_ID) return t('containers.localName')
   return serverById.value.get(id)?.name ?? id
 }
 function serverHost(id: string): string {
+  if (id === LOCAL_HOST_ID) return t('containers.localHost')
   const s = serverById.value.get(id)
   return s ? `${s.user}@${s.host}:${s.port}` : ''
 }
@@ -229,11 +237,18 @@ async function load(): Promise<void> {
   loadError.value = ''
   if (!firstLoad) refreshing.value = true
   try {
-    const [servers, items] = await Promise.all([listServers(), getAllContainers()])
+    // 并行:登记服务器 + 各台容器聚合 + **控制节点本机**容器(serverID = __local__)。
+    // 本机请求失败(接口 5xx)只让本机卡消失,绝不拖垮已登记服务器的展示。
+    const [servers, items, local] = await Promise.all([
+      listServers(),
+      getAllContainers(),
+      getServerContainers(LOCAL_HOST_ID).catch(() => null),
+    ])
     const m = new Map<string, Server>()
     for (const s of servers) m.set(s.id, s)
     serverById.value = m
-    groups.value = items
+    // 本机置首:它的容器/镜像/栈/卷/网络/日志/终端全部由后端在**本机**执行(不经 SSH)。
+    groups.value = local ? [local, ...items] : items
     loadState.value = 'idle'
   } catch (err) {
     if (err instanceof HttpError) {

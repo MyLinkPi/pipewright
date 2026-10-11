@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"os/exec"
 	"strconv"
 	"strings"
 	"sync"
@@ -921,5 +922,95 @@ func makeAllServerMetricsHandler(svc target.Service) http.HandlerFunc {
 		}
 		wg.Wait()
 		writeJSON(w, http.StatusOK, map[string]any{"items": items})
+	}
+}
+
+// ─── 本机(控制节点)指标:同款采集脚本,本地执行 ────────────────────────────────
+//
+// 「本机」= 运行 Pipewright 的控制节点(平台自身所在主机)。与远程服务器共用**同一套**静态
+// 采集脚本(metricsCollectArgs)与分段解析器,唯一差别是执行方式:远程经 SSH,本机经 os/exec
+// 在本地跑 `sh -c`。故指标口径、容错规则(某段缺失 → 该维度 null)与远程完全一致。
+//
+// 范围:控制节点为类 Unix(生产形态 —— acme.sh / 宿主 nginx 均要求 sh)时可用;Windows 无 sh
+// → 本地命令启动失败 → reachable:false + 人读错误(不 500,也不影响已登记服务器的采集)。
+// 本机无「GPU 机型」登记开关,故只采集 CPU/内存/磁盘最小子集(不带 dmidecode / nvtop 段)。
+
+// localHostServerID 是本机卡片在 DTO.serverId 上的固定标识(前端据此识别;非登记服务器 id,
+// 不会与任何真实 server 冲突)。与 target.LocalHostID 同源 —— 容器域的本机执行用同一个 id,
+// 不可各写各的字面量。
+const localHostServerID = target.LocalHostID
+
+// localMetricsRun 在本机执行采集命令并返回 stdout(默认 os/exec;单测注入 fake,不依赖真 sh)。
+var localMetricsRun = runLocalMetricCmd
+
+// runLocalMetricCmd 用 os/exec 跑本机命令,返回截断后的 stdout。语义与 runMetricCmd(远程)对齐:
+// 命令跑完但**非零退出不算失败**(返回 stdout,由解析层据空/异常输出降级);仅「无法启动」
+// (如无 sh,exec.ErrNotFound)才算错。超时/取消额外返回 ctx.Err(),便于映射「采集超时」。
+func runLocalMetricCmd(ctx context.Context, args []string) (string, error) {
+	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
+	var out, errBuf strings.Builder
+	cmd.Stdout = &out
+	cmd.Stderr = &errBuf
+	if err := cmd.Run(); err != nil {
+		if ctx.Err() != nil {
+			return out.String(), ctx.Err()
+		}
+		var ee *exec.ExitError
+		if errors.As(err, &ee) {
+			return out.String(), nil // 跑完非零:退出码说话(与远程一致,不算连接失败)
+		}
+		return "", err // 启动失败(命令不存在等)
+	}
+	res := out.String()
+	if len(res) > metricsOutMax {
+		res = res[:metricsOutMax]
+	}
+	return res, nil
+}
+
+// collectLocalMetrics 采集本机(控制节点)指标。永不返回 error:采集失败落到 reachable:false +
+// 人读错误。命令在本机执行(os/exec),不走 SSH、不选服务器;不进 TTL 快照缓存(本地 exec 廉价,
+// 无需后台单飞)。
+func collectLocalMetrics(ctx context.Context) serverMetricsDTO {
+	out := serverMetricsDTO{
+		ServerID:    localHostServerID,
+		CollectedAt: time.Now().UTC().Format(time.RFC3339),
+	}
+	cctx, cancel := context.WithTimeout(ctx, metricsCollectTimeout)
+	defer cancel()
+	// probePhys=false(不探物理内存)/ gpu=false(不采 nvtop):本机无 GPU 登记开关,取最小子集。
+	outStr, err := localMetricsRun(cctx, metricsCollectArgs(false, false))
+	if err != nil {
+		out.Reachable = false
+		out.Error = humanLocalMetricsError(err)
+		return out
+	}
+	out.Reachable = true
+	sections := splitMetricSections(outStr)
+	out.CPU = cpuFromSections(sections)
+	out.Memory = memoryFromSections(sections)
+	out.Disk = diskFromSections(sections)
+	return out
+}
+
+// humanLocalMetricsError 把本机采集失败映射为人读文案(绝不含内部细节)。
+func humanLocalMetricsError(err error) string {
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		return "本机采集超时"
+	case errors.Is(err, exec.ErrNotFound):
+		return "本机不可用:缺少 sh 命令(仅支持类 Unix 控制节点)"
+	default:
+		return "本机采集失败:无法执行采集命令"
+	}
+}
+
+// makeLocalMetricsHandler 返回 GET /api/system/metrics(认证,只读)。采集**控制节点**自身
+// (运行 Pipewright 的这台机器)的 CPU/内存/磁盘 —— 与远程同款纯静态脚本,在本机执行。
+// AC-SEC-02:命令纯静态 array、不接受任何用户输入(无注入面);采集失败 → 200 + reachable:false
+// + 人读错误,不 500(与远程语义一致)。
+func makeLocalMetricsHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, collectLocalMetrics(r.Context()))
 	}
 }

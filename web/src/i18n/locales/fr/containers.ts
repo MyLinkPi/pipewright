@@ -1,6 +1,8 @@
 export default {
   title: 'Conteneurs',
   subtitle: 'Gérez les conteneurs et les images par hôte sur tous les serveurs enregistrés',
+  localName: 'Cet hôte (nœud de contrôle)',
+  localHost: 'localhost · nœud de contrôle',
   countSummary: '· {total} conteneurs au total · {running} en cours d’exécution',
   autoRefresh: '· Actualisation automatique toutes les {n} s',
 

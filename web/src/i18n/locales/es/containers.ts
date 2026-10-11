@@ -1,6 +1,8 @@
 export default {
   title: 'Contenedores',
   subtitle: 'Gestiona contenedores e imágenes por host en todos los servidores registrados',
+  localName: 'Este host (nodo de control)',
+  localHost: 'localhost · nodo de control',
   countSummary: '· {total} contenedores en total · {running} en ejecución',
   autoRefresh: '· Se actualiza cada {n} s',
 

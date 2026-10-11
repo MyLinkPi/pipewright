@@ -11,6 +11,10 @@
 //
 // AC-SEC-02:命令以 []string(程序 + 参数)传入,经各参数 shell 转义后再交 SSH session,
 // 绝不让调用方拼接原始 shell 字符串;杜绝命令注入。
+//
+// 另:控制节点自身(LocalHostID)不是登记服务器,但容器域可经 WithLocalHost 把它当作一等
+// 目标 —— 命令改在**本机**执行(os/exec;unix 上 PTY 走 creack/pty),从而复用同一套容器
+// handler 与「目标机零侵入」纪律。详见 local.go。
 package target
 
 import (

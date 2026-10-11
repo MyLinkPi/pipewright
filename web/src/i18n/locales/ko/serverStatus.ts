@@ -1,6 +1,7 @@
 export default {
   title: '서버 상태',
   subtitle: '등록된 모든 서버의 CPU 부하, 메모리, 디스크 사용량을 SSH로 실시간 수집',
+  localName: '이 호스트(컨트롤 노드)',
   reachableSummary: '{reachable}/{total} 연결 가능',
   autoRefresh: '{n}초마다 자동 새로 고침',
   loadingAria: '서버 상태를 불러오는 중',
