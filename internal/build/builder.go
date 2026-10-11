@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -61,6 +62,9 @@ type Builder struct {
 	// nil → 该类节点退化为占位日志(向后兼容;非-dag Builder.Run 路径不用)。
 	deployer deploy.Service
 	notifier stageNotifier
+	// objectUploader:dag 里 oss_upload 节点真实化所需(main 注入 objectstore.Service)。nil → 该
+	// 节点退化为「未注入,跳过」日志(向后兼容;非-dag Builder.Run 路径不用)。
+	objectUploader stageObjectUploader
 	// buildCache 是构建依赖缓存库(build cache · P0):非 nil 时 script 类 job 执行前后据 job.Config
 	// 的 cachePaths/cacheKey 恢复/保存依赖目录(node_modules/.m2/.gradle 等),跨 run 持久化提速。
 	// nil 则不缓存(向后兼容)。由 main 注入(WithBuildCache)。缓存问题绝不让构建失败(best-effort)。
@@ -95,6 +99,13 @@ type stageNotifier interface {
 	Get(ctx context.Context, id string) (*notify.Channel, error)
 	List(ctx context.Context) ([]notify.Channel, error)
 	SendVia(ctx context.Context, channelID string, payload notify.Payload) error
+}
+
+// stageObjectUploader 是 oss_upload 节点真实化所需的**最小能力面**(objectstore.Service 原样满足):
+// 按 providerID 解析 endpoint/bucket/AK,上传一段字节流到 objectKey。收窄接口便于单测注入 fake,
+// 而不必伪造对象存储领域全部 CRUD。
+type stageObjectUploader interface {
+	Upload(ctx context.Context, providerID, objectKey string, body io.Reader) error
 }
 
 // BuilderOption 配置 Builder(测试注入 fake driver/cloner)。
@@ -157,6 +168,11 @@ func WithStageDeployer(d deploy.Service) BuilderOption {
 // WithStageNotifier 注入通知服务,使 dag 里的 notify 节点真实发通知。
 func WithStageNotifier(n notify.Service) BuilderOption {
 	return func(b *Builder) { b.notifier = n }
+}
+
+// WithStageObjectUploader 注入对象存储服务,使 dag 里的 oss_upload 节点真实上传产物到对象存储。
+func WithStageObjectUploader(u stageObjectUploader) BuilderOption {
+	return func(b *Builder) { b.objectUploader = u }
 }
 
 // WithBuildCache 注入构建依赖缓存库(build cache · P0):script 类 job 配了 cachePaths 时,

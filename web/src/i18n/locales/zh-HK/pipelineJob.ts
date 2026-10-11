@@ -117,6 +117,16 @@ export default {
   fieldRegistryUrlHint:
     "留空 = 登入 Docker Hub;私有倉庫填 host[:port](不帶 https://),需與映像引用一致",
 
+  // ─── jobConfigSchema · oss_upload ──────────────────────────────────────
+  typeOssUploadLabel: 'OSS 上傳',
+  typeOssUploadDesc: '把上游節點的文件產物上傳到已設定的物件儲存(阿里雲 OSS)。',
+  fieldObjectStoreLabel: '物件儲存',
+  fieldObjectStoreHint: '從「設定 · 物件儲存」裡已設定的帳戶中選擇;沒有就先去設定裡加一個。',
+  fieldOssArtifactJobHint: '要上傳哪個節點產出的產物(按節點精確匹配);僅支援文件類產物(jar/dist/歸檔),映像請用「推送映像」。',
+  fieldOssPrefixLabel: '物件路徑前綴(可選)',
+  fieldOssPrefixHint: "上傳到桶內的路徑前綴,支援佔位 {'{{runId}}'} {'{{branch}}'} {'{{commit}}'} {'{{project}}'};留空則直接放在桶根。",
+  objectStoreUnselected: '不指定(請先在設定裡設定物件儲存)',
+
   // ─── jobConfigSchema · deploy_ssh ──────────────────────────────────────
   typeDeploySshLabel: 'Host deploy',
   typeDeploySshDesc: 'Roll out file artifacts to target hosts over SSH: releases/<runId> dir + atomic current symlink + restart command + health gate + auto-rollback; supports batched rolling.',

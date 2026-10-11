@@ -121,6 +121,7 @@ func NewStageExecutor(b *Builder, reportSink TestReportSink) dagrun.StageExecuto
 		deployJobs := make([]pipeline.Job, 0, len(stage.Jobs))
 		healthJobs := make([]pipeline.Job, 0, len(stage.Jobs))
 		notifyJobs := make([]pipeline.Job, 0, len(stage.Jobs))
+		ossUploadJobs := make([]pipeline.Job, 0, len(stage.Jobs))
 		hasPushJob := false
 		for _, jb := range stage.Jobs {
 			switch {
@@ -136,12 +137,14 @@ func NewStageExecutor(b *Builder, reportSink TestReportSink) dagrun.StageExecuto
 				healthJobs = append(healthJobs, jb)
 			case strings.TrimSpace(jb.Type) == "notify":
 				notifyJobs = append(notifyJobs, jb)
+			case isObjectUploadJob(jb.Type):
+				ossUploadJobs = append(ossUploadJobs, jb)
 			}
 		}
 
 		needsBuild := len(scriptJobs) > 0 || len(buildImageJobs) > 0
-		// 没有任何可执行节点(script/build_image/deploy/health_check/notify)且无 post → 诚实占位放行。
-		if !needsBuild && len(deployJobs) == 0 && len(healthJobs) == 0 && len(notifyJobs) == 0 && len(stage.Post) == 0 {
+		// 没有任何可执行节点(script/build_image/deploy/health_check/notify/oss_upload)且无 post → 诚实占位放行。
+		if !needsBuild && len(deployJobs) == 0 && len(healthJobs) == 0 && len(notifyJobs) == 0 && len(ossUploadJobs) == 0 && len(stage.Post) == 0 {
 			for _, jb := range stage.Jobs {
 				_ = rep.JobRunning(ctx, jb.ID)
 				jr := rep.JobReporter(jb.ID)
@@ -303,6 +306,20 @@ func NewStageExecutor(b *Builder, reportSink TestReportSink) dagrun.StageExecuto
 				}
 			}
 
+			// ── OSS 上传节点(oss_upload):把上游节点产出的产物上传到对象存储(失败令阶段失败)──
+			for _, jb := range ossUploadJobs {
+				if canceled(ctx) {
+					return run.ErrCanceled
+				}
+				_ = rep.JobRunning(ctx, jb.ID)
+				jrep := rep.JobReporter(jb.ID)
+				if err := b.runOssUploadJob(ctx, jrep, jb, r); err != nil {
+					_ = rep.JobDone(ctx, jb.ID, run.StepFailed)
+					return err
+				}
+				_ = rep.JobDone(ctx, jb.ID, run.StepSuccess)
+			}
+
 			// ── 部署节点(deploy_ssh / deploy_container):把本 run 已产出的产物经 SSH 部署到目标机(中途部署,不动 run 终态)──
 			for _, jb := range deployJobs {
 				if canceled(ctx) {
@@ -460,6 +477,8 @@ func (b *Builder) runStageJobsDAG(
 			case strings.TrimSpace(jb.Type) == "notify":
 				b.runNotifyJob(ctx, jrep, jb, r)
 				return nil
+			case isObjectUploadJob(jb.Type):
+				return b.runOssUploadJob(ctx, jrep, jb, r)
 			default:
 				_ = jrep.Log(ctx, streamStdout, fmt.Sprintf("· %s(%s)— 真实执行未接入;本节点放行", jb.Name, jb.Type))
 				return nil

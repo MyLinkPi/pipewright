@@ -7,6 +7,7 @@ export default {
   navNotifications: 'Benachrichtigungen',
   navVault: 'Anmeldedaten-Tresor',
   navDnsProviders: 'DNS-Anbieter',
+  navObjectStorage: 'Objektspeicher',
   navHttps: 'HTTPS-Zugriff',
   navAccount: 'Konto',
   navServers: 'Server',

@@ -169,6 +169,9 @@ const typeLabels = computed<Record<CredentialType, string>>(() => ({
   ssh_password: t('settingsVault.typeSshPassword'),
   registry: t('settingsVault.typeRegistry'),
   sudo_password: t('settingsVault.typeSudoPassword'),
+  // object_store_secret 由「对象存储」页全权管理,已被 isSystemManagedType 过滤,
+  // 不会在此列表渲染;仅补齐 Record<CredentialType,…> 的类型完备性。
+  object_store_secret: t('settingsObjectStorage.title'),
 }))
 
 const typeDescriptions = computed<Record<CredentialType, string>>(() => ({
@@ -178,6 +181,7 @@ const typeDescriptions = computed<Record<CredentialType, string>>(() => ({
   ssh_password: t('settingsVault.descSshPassword'),
   registry: t('settingsVault.descRegistry'),
   sudo_password: t('settingsVault.descSudoPassword'),
+  object_store_secret: t('settingsObjectStorage.desc'),
 }))
 
 const idleCount = computed(

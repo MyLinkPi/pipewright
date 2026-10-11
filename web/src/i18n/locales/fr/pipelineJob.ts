@@ -132,6 +132,16 @@ export default {
   fieldRegistryUrlHint:
     "Vide = connexion à Docker Hub ; pour un registre privé, indiquez host[:port] (sans https://), en cohérence avec la référence de l’image",
 
+  // ─── jobConfigSchema · oss_upload ──────────────────────────────────────
+  typeOssUploadLabel: 'Pousser vers OSS',
+  typeOssUploadDesc: 'Téléverse l\'artefact fichier du nœud amont vers le stockage d\'objets configuré (Alibaba Cloud OSS).',
+  fieldObjectStoreLabel: 'Stockage d\'objets',
+  fieldObjectStoreHint: 'Choisis un compte configuré dans « Paramètres · Stockage d\'objets » ; s\'il n\'y en a aucun, ajoutes-en un d\'abord dans les paramètres.',
+  fieldOssArtifactJobHint: 'De quel nœud téléverser l\'artefact (correspondance exacte par nœud) ; uniquement les artefacts fichiers (jar/dist/archive) — pour les images, utilise « Pousser l\'image ».',
+  fieldOssPrefixLabel: 'Préfixe de clé d\'objet (facultatif)',
+  fieldOssPrefixHint: "Préfixe de clé dans le bucket ; prend en charge les espaces réservés {'{{runId}}'} {'{{branch}}'} {'{{commit}}'} {'{{project}}'} ; vide = téléverser à la racine du bucket.",
+  objectStoreUnselected: 'Non spécifié (configurez d\'abord le stockage d\'objets dans les paramètres)',
+
   // ─── jobConfigSchema · deploy_ssh ──────────────────────────────────────
   typeDeploySshLabel: 'Host deploy',
   typeDeploySshDesc: 'Roll out file artifacts to target hosts over SSH: releases/<runId> dir + atomic current symlink + restart command + health gate + auto-rollback; supports batched rolling.',

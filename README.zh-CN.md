@@ -221,7 +221,7 @@ sh install.sh       # 亦可把构建产物装到 /usr/local/bin(见「本地编
 - **永不卡住运行的回退**:文件**缺失** → 回退到画布(UI)里已配置的流水线;文件存在但 **YAML 非法** → 同样回退到已存的画布配置。
 - **作用范围**:YAML 只管**流水线结构**(阶段 / 任务 / `needs` / DAG 编排);**变量与缓存、环境与凭据、触发规则**仍来自画布(UI)设置,**不写在 YAML 里**。
 - **schema** 与平台「从 YAML 导入」用的是同一套(`version` + `stages` → `jobs`,job 用嵌套 `script:` 块写 `image`/`commands`/`env`/`workdir`)。
-- **节点类型**(画布与 YAML 通用):`git_source`、`script`、`build_backend`、`build_frontend`、`build_image`、`push_image`、`deploy_ssh`、`deploy_frontend`、`health_check`、`notify`、`templated`、`custom`。
+- **节点类型**(画布与 YAML 通用):`git_source`、`script`、`build_backend`、`build_frontend`、`build_image`、`push_image`、`oss_upload`、`deploy_ssh`、`deploy_frontend`、`health_check`、`notify`、`templated`、`custom`。
 
 ```yaml
 version: 1
@@ -265,10 +265,10 @@ stages:
 
 ## 技术栈
 
-- **后端**:Go · Chi(路由)· modernc/sqlite(纯 Go,无 CGO)+ go-sql-driver/mysql · go-git(不依赖宿主 git)· NaCl secretbox(保险库)· argon2id + bcrypt · golang.org/x/crypto/ssh(免 Agent 部署)· coder/websocket(终端)· Caddy(在目标主机上编排,提供自动 HTTPS)
+- **后端**:Go · Chi(路由)· modernc/sqlite(纯 Go,无 CGO)+ go-sql-driver/mysql · go-git(不依赖宿主 git)· NaCl secretbox(保险库)· argon2id + bcrypt · golang.org/x/crypto/ssh(免 Agent 部署)· coder/websocket(终端)· aliyun-oss-go-sdk(阿里云 OSS 上传)· Caddy(在目标主机上编排,提供自动 HTTPS)
 - **前端**:Vue 3 `<script setup>` · Vite · naive-ui · OKLCH 双主题 · Monaco(只读代码浏览)· Vitest + Playwright · 经 `go:embed` 内嵌进二进制
 
-依赖刻意保持精简:cron 解析器、DAG 引擎、DNS 厂商客户端、制品库/构建缓存、Caddyfile 渲染器全部自己实现,不引三方库。
+依赖刻意保持精简:cron 解析器、DAG 引擎、DNS 厂商客户端、制品库/构建缓存、Caddyfile 渲染器全部自己实现;唯一引入 SDK 的是对象存储上传(`aliyun-oss-go-sdk`,阿里云 OSS 官方 SDK)。
 
 ## 架构
 
@@ -320,6 +320,7 @@ stages:
 │  ├── internal/prstatus      PR / 提交状态回写(GitHub / Gitee)
 │  ├── internal/proxy         自动 HTTPS + 域名反向代理(Caddy 编排)
 │  ├── internal/dnsprovider   Cloudflare / DNSPod / 阿里云 DNS(DNS-01 + 子域名)
+│  ├── internal/objectstore   对象存储接入(阿里云 OSS;流水线产物上传)
 │  └── internal/previewenv    Per-PR 预览环境 + 自动回收
 │
 ├─ 可观测

@@ -501,6 +501,8 @@ func (b *Builder) runMixedNode(
 		_ = jrep.Log(ctx, streamStdout, fmt.Sprintf("· 推送镜像「%s」:已随构建镜像节点完成推送(本节点用于编排顺序)", jb.Name))
 	case strings.TrimSpace(jb.Type) == "notify":
 		b.runNotifyJob(ctx, jrep, jb, r)
+	case isObjectUploadJob(jb.Type):
+		err = b.runOssUploadJob(ctx, jrep, jb, r)
 	default:
 		_ = jrep.Log(ctx, streamStdout, fmt.Sprintf("· %s(%s)— 真实执行未接入;本节点放行", jb.Name, jb.Type))
 	}

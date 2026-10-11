@@ -7,6 +7,7 @@ export default {
   navNotifications: '알림',
   navVault: '자격 증명 보관소',
   navDnsProviders: 'DNS 공급자',
+  navObjectStorage: '오브젝트 스토리지',
   navHttps: 'HTTPS 접속',
   navAccount: '계정',
   navServers: '서버',

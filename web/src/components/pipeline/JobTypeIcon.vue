@@ -21,6 +21,9 @@ const ICONS: Record<string, string> = {
     '<path d="M21 7.5 12 3 3 7.5 12 12l9-4.5Z"/><path d="M3 7.5v9l9 4.5 9-4.5v-9"/><path d="M12 12v9"/>',
   push_image:
     '<path d="M12 15V4"/><path d="m8 8 4-4 4 4"/><path d="M5 15v3a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-3"/>',
+  // OSS 上传:云 + 上箭头(推送产物到对象存储)。
+  oss_upload:
+    '<path d="M6.5 19a4 4 0 0 1-.5-8A5.5 5.5 0 0 1 17 10.5a3.5 3.5 0 0 1 .5 7"/><path d="M12 21v-7"/><path d="m9 17 3-3 3 3"/>',
   deploy_ssh:
     '<rect x="3" y="4" width="18" height="6" rx="1.6"/><rect x="3" y="14" width="18" height="6" rx="1.6"/><path d="M7 7h.01M7 17h.01"/>',
   deploy_container:

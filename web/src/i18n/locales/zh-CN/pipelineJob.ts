@@ -117,6 +117,16 @@ export default {
   fieldRegistryUrlHint:
     "留空 = 登录 Docker Hub;私有仓库填 host[:port](不带 https://),需与镜像引用一致",
 
+  // ─── jobConfigSchema · oss_upload ──────────────────────────────────────
+  typeOssUploadLabel: 'OSS 上传',
+  typeOssUploadDesc: '把上游节点的文件产物上传到已配置的对象存储(阿里云 OSS)。',
+  fieldObjectStoreLabel: '对象存储',
+  fieldObjectStoreHint: '从「设置 · 对象存储」里已配置的账户中选择;没有就先去设置里加一个。',
+  fieldOssArtifactJobHint: '要上传哪个节点产出的产物(按节点精确匹配);仅支持文件类产物(jar/dist/归档),镜像请用「推送镜像」。',
+  fieldOssPrefixLabel: '对象路径前缀(可选)',
+  fieldOssPrefixHint: "上传到桶内的路径前缀,支持占位 {'{{runId}}'} {'{{branch}}'} {'{{commit}}'} {'{{project}}'};留空则直接放在桶根。",
+  objectStoreUnselected: '不指定(请先在设置里配置对象存储)',
+
   // ─── jobConfigSchema · deploy_ssh ──────────────────────────────────────
   typeDeploySshLabel: '主机部署',
   typeDeploySshDesc: '经 SSH 把文件产物滚动部署到目标机:releases/<runId>/ 发布目录 + current 原子软链 + 重启命令 + 健康门控 + 失败自动回滚;支持分批滚动。',

@@ -19,6 +19,26 @@ func TestBuiltinNodeCatalogSourceLabel(t *testing.T) {
 	}
 }
 
+// oss_upload 节点应登记进目录(供 LLM 选用),归类 deploy,且描述点明必填 config。
+func TestBuiltinNodeCatalogIncludesOssUpload(t *testing.T) {
+	var got NodeKind
+	found := false
+	for _, n := range BuiltinNodeCatalog() {
+		if n.Type == "oss_upload" {
+			got, found = n, true
+		}
+	}
+	if !found {
+		t.Fatal("目录缺少 oss_upload 节点")
+	}
+	if got.Category != "deploy" {
+		t.Fatalf("oss_upload 分类 = %q, want deploy", got.Category)
+	}
+	if !strings.Contains(got.Description, "storageId") || !strings.Contains(got.Description, "artifactJob") {
+		t.Fatalf("oss_upload 描述应说明必填 config, got %q", got.Description)
+	}
+}
+
 // 目录不得把任何内置节点误标为具体托管平台名「Gitee」。
 func TestBuiltinNodeCatalogNoPlatformName(t *testing.T) {
 	for _, n := range BuiltinNodeCatalog() {
