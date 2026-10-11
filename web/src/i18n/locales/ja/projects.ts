@@ -7,7 +7,7 @@ export default {
 
   // ─── toolbar / search / filter ─────────────────────────────────
   searchFilterAria: 'プロジェクトの検索と絞り込み',
-  searchPlaceholder: 'プロジェクト名、リポジトリ URL、ブランチで検索…',
+  searchPlaceholder: 'プロジェクト名、リポジトリ URL、サービスアドレスで検索…',
   searchAria: 'プロジェクトを検索',
   statusFilterAria: 'ステータスで絞り込み',
   statusAll: 'すべてのステータス',
@@ -30,6 +30,7 @@ export default {
   notBound: '未バインド',
   credential: 'リポジトリ認証情報',
   credentialRefTitle: '認証情報の参照（平文ではありません）',
+  noServiceReg: 'サービス未登録',
   updatedAt: '{time}に更新',
 
   // ─── card actions ──────────────────────────────────────────────

@@ -561,11 +561,13 @@ func New(webFS fs.FS, authn auth.Authenticator, opts ...Option) http.Handler {
 
 		// 项目接入与列表(Story 2.1)。p 为 nil 时 handler 返回 503。
 		// test-clone 须在 {id} 路由之前注册,否则被 /projects/{id} 吞掉。
+		// 列表/更新响应附带 serviceRegs(卡片展示的服务注册地址):由 o.pipelines(流水线绑定引用)
+		// 与 o.serviceReg(注册服务清单)实时解析;任一未装配时该字段输出 []。
 		p := o.projects
-		ar.Get("/projects", makeListProjectsHandler(p))
+		ar.Get("/projects", makeListProjectsHandler(p, o.pipelines, o.serviceReg))
 		ar.Post("/projects", makeCreateProjectHandler(p, aud))
 		ar.Post("/projects/test-clone", makeTestCloneHandler(p))
-		ar.Patch("/projects/{id}", makeUpdateProjectHandler(p, aud))
+		ar.Patch("/projects/{id}", makeUpdateProjectHandler(p, aud, o.pipelines, o.serviceReg))
 		ar.Delete("/projects/{id}", makeDeleteProjectHandler(p, aud))
 
 		// 触发设置与分支映射(Story 2.3)。t 为 nil 时 handler 返回 503。

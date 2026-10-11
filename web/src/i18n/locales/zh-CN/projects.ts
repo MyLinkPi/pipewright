@@ -7,7 +7,7 @@ export default {
 
   // ─── toolbar / search / filter ─────────────────────────────────
   searchFilterAria: '项目搜索与筛选',
-  searchPlaceholder: '搜索项目名、仓库地址、分支…',
+  searchPlaceholder: '搜索项目名、仓库地址、服务地址…',
   searchAria: '搜索项目',
   statusFilterAria: '状态筛选',
   statusAll: '全部状态',
@@ -30,6 +30,7 @@ export default {
   notBound: '未绑定',
   credential: '仓库凭据',
   credentialRefTitle: '凭据引用(非明文)',
+  noServiceReg: '未注册服务',
   updatedAt: '更新于 {time}',
 
   // ─── card actions ──────────────────────────────────────────────

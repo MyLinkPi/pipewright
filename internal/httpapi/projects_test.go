@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -10,7 +11,9 @@ import (
 	"testing"
 
 	"github.com/huangchengsir/pipewright/internal/auth"
+	"github.com/huangchengsir/pipewright/internal/pipeline"
 	"github.com/huangchengsir/pipewright/internal/project"
+	"github.com/huangchengsir/pipewright/internal/servicereg"
 	"github.com/huangchengsir/pipewright/internal/vault"
 )
 
@@ -249,5 +252,175 @@ func TestProjectRequiresAuth(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want 401", resp.StatusCode)
+	}
+}
+
+// ─── 卡片「服务注册地址」(serviceRegs)────────────────────────────────────────
+
+// stubServiceReg 是 servicereg.Service 的测试替身:只覆盖 ListServices(其余方法不参与
+// 本组用例;嵌入 nil 接口,误调会 panic 以暴露越界依赖)。
+type stubServiceReg struct {
+	servicereg.Service
+	items []servicereg.ServiceWithDomain
+	err   error
+}
+
+func (s stubServiceReg) ListServices(context.Context) ([]servicereg.ServiceWithDomain, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
+	return s.items, nil
+}
+
+// setupProjectRegServer 构造带 pipeline 真实现 + 服务注册替身的测试 server。
+func setupProjectRegServer(t *testing.T, sr stubServiceReg) (*httptest.Server, *http.Client, string, pipeline.Service) {
+	t.Helper()
+	st := testStoreAuth(t)
+	asvc := auth.NewService(st.DB, nil)
+	if err := asvc.Bootstrap("admin", "testpass", ""); err != nil {
+		t.Fatalf("bootstrap: %v", err)
+	}
+	v := vault.New(st.DB, testMasterKey())
+	psvc := project.New(st.DB, v, stubProber{branch: "main"})
+	pipe := pipeline.New(st.DB)
+	srv := httptest.NewServer(New(testWebFSAuth(), asvc,
+		WithVault(v), WithProjects(psvc), WithPipelines(pipe), WithServiceReg(sr)))
+	t.Cleanup(srv.Close)
+
+	client := newTestClient(t)
+	csrf := loginWithClient(t, client, srv.URL)
+	return srv, client, csrf, pipe
+}
+
+// regBoundSpec 构造一份合法流水线 spec:部署阶段两个节点分别以 regServiceId
+// 与 legacy gatewayService(服务名)绑定服务注册。
+func regBoundSpec() pipeline.Spec {
+	return pipeline.Spec{Stages: []pipeline.Stage{
+		{Name: "源", Kind: pipeline.KindSource, Jobs: []pipeline.Job{
+			{Name: "src", Type: "git_source", Config: map[string]any{}},
+		}},
+		{Name: "部署", Kind: pipeline.KindDeploy, Jobs: []pipeline.Job{
+			{Name: "d1", Type: "deploy", Config: map[string]any{"regServiceId": "svc-1"}},
+			{Name: "d2", Type: "deploy", Config: map[string]any{"gatewayService": "admin"}},
+		}},
+	}}
+}
+
+// createProjectViaAPI 经 API 建一个项目,返回 id。
+func createProjectViaAPI(t *testing.T, client *http.Client, srvURL, csrf, credID, name string) string {
+	t.Helper()
+	resp := doJSON(t, client, http.MethodPost, srvURL+"/api/projects", csrf,
+		`{"name":"`+name+`","repoUrl":"https://gitee.com/acme/`+name+`.git","credentialId":"`+credID+`"}`)
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create project %s: status %d, body %s", name, resp.StatusCode, raw)
+	}
+	var p map[string]any
+	_ = json.Unmarshal(raw, &p)
+	id, _ := p["id"].(string)
+	if id == "" {
+		t.Fatalf("create project %s: 响应无 id: %s", name, raw)
+	}
+	return id
+}
+
+// fetchProjectServiceRegs 拉取项目列表,返回 projectID → serviceRegs 原始条目
+// (并断言 serviceRegs 恒为数组,而非 null/缺失)。
+func fetchProjectServiceRegs(t *testing.T, client *http.Client, srvURL string) map[string][]map[string]any {
+	t.Helper()
+	resp := doJSON(t, client, http.MethodGet, srvURL+"/api/projects", "", "")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("list status = %d, want 200", resp.StatusCode)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	var list []map[string]any
+	if err := json.Unmarshal(raw, &list); err != nil {
+		t.Fatalf("list 解析失败: %v(body %s)", err, raw)
+	}
+	out := make(map[string][]map[string]any, len(list))
+	for _, p := range list {
+		id, _ := p["id"].(string)
+		items, ok := p["serviceRegs"].([]any)
+		if !ok {
+			t.Fatalf("项目 %s 的 serviceRegs 应为数组(而非 null/缺失): %v", id, p["serviceRegs"])
+		}
+		regs := make([]map[string]any, 0, len(items))
+		for _, it := range items {
+			m, ok := it.(map[string]any)
+			if !ok {
+				t.Fatalf("serviceRegs 条目形状异常: %v", it)
+			}
+			regs = append(regs, m)
+		}
+		out[id] = regs
+	}
+	return out
+}
+
+// TestProjectListIncludesServiceRegs 验证项目列表按流水线部署节点绑定解析服务注册地址:
+// regServiceId 精确匹配(FQDN / TCP 端口),legacy gatewayService 按服务名兜底;无绑定 → []。
+func TestProjectListIncludesServiceRegs(t *testing.T) {
+	sr := stubServiceReg{items: []servicereg.ServiceWithDomain{
+		{RegisteredService: servicereg.RegisteredService{
+			ID: "svc-1", Name: "shop", Protocol: servicereg.ProtocolHTTP,
+		}, BaseDomain: "efg.com"},
+		{RegisteredService: servicereg.RegisteredService{
+			ID: "svc-2", Name: "admin", Protocol: servicereg.ProtocolTCP, TCPListenPort: 19000,
+		}, BaseDomain: "efg.com"},
+	}}
+	srv, client, csrf, pipe := setupProjectRegServer(t, sr)
+	credID := newGitCred(t, client, srv.URL, csrf, "tok")
+	bound := createProjectViaAPI(t, client, srv.URL, csrf, credID, "shop-app")
+	plain := createProjectViaAPI(t, client, srv.URL, csrf, credID, "plain-app")
+
+	if _, err := pipe.Save(context.Background(), bound, regBoundSpec()); err != nil {
+		t.Fatalf("save pipeline: %v", err)
+	}
+
+	regsByID := fetchProjectServiceRegs(t, client, srv.URL)
+	regs := regsByID[bound]
+	if len(regs) != 2 {
+		t.Fatalf("绑定项目 serviceRegs = %v, want 2 条", regs)
+	}
+	if regs[0]["id"] != "svc-1" || regs[0]["fqdn"] != "shop.efg.com" || regs[0]["protocol"] != "http" {
+		t.Fatalf("serviceRegs[0] = %v, want svc-1/shop.efg.com/http", regs[0])
+	}
+	if regs[1]["id"] != "svc-2" || regs[1]["protocol"] != "tcp" {
+		t.Fatalf("serviceRegs[1] = %v, want svc-2/tcp(legacy 服务名兜底)", regs[1])
+	}
+	if got, _ := regs[1]["tcpListenPort"].(float64); got != 19000 {
+		t.Fatalf("tcpListenPort = %v, want 19000", regs[1]["tcpListenPort"])
+	}
+	if len(regsByID[plain]) != 0 {
+		t.Fatalf("无绑定项目 serviceRegs = %v, want []", regsByID[plain])
+	}
+
+	// 更新响应同样携带 serviceRegs(前端以更新响应替换卡片,缺省会丢展示)。
+	patchResp := doJSON(t, client, http.MethodPatch, srv.URL+"/api/projects/"+bound, csrf, `{"name":"shop-app-2"}`)
+	defer patchResp.Body.Close()
+	if patchResp.StatusCode != http.StatusOK {
+		t.Fatalf("patch status = %d, want 200", patchResp.StatusCode)
+	}
+	var patched map[string]any
+	_ = json.NewDecoder(patchResp.Body).Decode(&patched)
+	if pregs, _ := patched["serviceRegs"].([]any); len(pregs) != 2 {
+		t.Fatalf("更新响应 serviceRegs = %v, want 2 条", patched["serviceRegs"])
+	}
+}
+
+// TestProjectListServiceRegsDegradesWhenRegistryUnavailable 验证服务注册读取失败时
+// 列表仍 200 且 serviceRegs 输出 [](卡片附加展示不阻断项目列表)。
+func TestProjectListServiceRegsDegradesWhenRegistryUnavailable(t *testing.T) {
+	srv, client, csrf, pipe := setupProjectRegServer(t, stubServiceReg{err: errors.New("boom")})
+	credID := newGitCred(t, client, srv.URL, csrf, "tok")
+	id := createProjectViaAPI(t, client, srv.URL, csrf, credID, "shop-app")
+	if _, err := pipe.Save(context.Background(), id, regBoundSpec()); err != nil {
+		t.Fatalf("save pipeline: %v", err)
+	}
+	regsByID := fetchProjectServiceRegs(t, client, srv.URL)
+	if len(regsByID[id]) != 0 {
+		t.Fatalf("注册服务不可用时 serviceRegs 应输出 [], got %v", regsByID[id])
 	}
 }
