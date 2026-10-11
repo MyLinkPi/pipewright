@@ -780,6 +780,10 @@ func probeStatus(ok bool) string {
 }
 
 // runNotifyJob 执行一个 notify 节点:按节点配的渠道(id 或名称)发一条通知。
+//
+// config:channel(渠道 id/名)、titleTemplate/bodyTemplate(可选 {{占位}} 模板)、
+// statusFrom(可选,状态来源节点名;{{status}} 渲染该节点本次运行的当前状态,保存期已校验
+// 为上游节点;未配则沿用运行状态——内联节点执行时恒 running)。
 // best-effort:通知失败只记日志、不令阶段失败(与终态通知钩子一致)。
 func (b *Builder) runNotifyJob(ctx context.Context, rep dagrun.StageReporter, jb pipeline.Job, r *run.Run) {
 	if b.notifier == nil {
@@ -800,13 +804,33 @@ func (b *Builder) runNotifyJob(ctx context.Context, rep dagrun.StageReporter, jb
 	if len(commit) > 7 {
 		commit = commit[:7]
 	}
-	payload := notify.Payload{
-		Title:  "流水线通知",
-		Body:   fmt.Sprintf("流水线执行到通知节点:分支 %s,commit %s。", r.Trigger.Branch, commit),
-		Fields: map[string]string{"branch": r.Trigger.Branch, "commit": commit, "runId": r.ID, "stage": "notify"},
+	// 状态取值({{status}} 占位与默认文案同源):
+	//   - 未配 statusFrom → 运行状态。内联 notify 节点执行时运行尚未结束,恒为 running ——
+	//     这是既有语义(向后兼容);要报具体节点的成败,配 statusFrom。
+	//   - 配了 statusFrom(节点名,保存期已校验为上游节点)→ 该节点**当前状态**(终态或进行中;
+	//     未开始/找不到 → pending,如实反映进度),从运行内节点状态注册表读取(见 dagrun 包)。
+	statusFrom := strings.TrimSpace(cfgString(jb.Config, "statusFrom"))
+	status := strings.TrimSpace(r.Status)
+	if statusFrom != "" {
+		status = run.StepPending
+		if reg := dagrun.NodeStatusFrom(ctx); reg != nil {
+			if st, ok := reg.StatusByName(statusFrom); ok {
+				status = st
+			}
+		}
 	}
+	fields := map[string]string{"branch": r.Trigger.Branch, "commit": commit, "runId": r.ID, "stage": "notify"}
+	body := fmt.Sprintf("流水线执行到通知节点:分支 %s,commit %s。", r.Trigger.Branch, commit)
+	if statusFrom != "" {
+		// 默认文案也把所选节点状态说清楚(否则配了 statusFrom 却看不到它,等于白配)。
+		body += fmt.Sprintf("节点「%s」状态:%s。", statusFrom, status)
+		fields["status"] = status
+		fields["statusNode"] = statusFrom
+	}
+	payload := notify.Payload{Title: "流水线通知", Body: body, Fields: fields}
 	// 节点级内联模板(可选):配了标题/正文模板就按 {{占位}} 渲染覆盖默认文案,
-	// 占位语义与「通知」设置里的模板一致(project/branch/commit/status/runId 等)。
+	// 占位语义与「通知」设置里的模板一致(project/branch/commit/status/runId 等;
+	// 配了 statusFrom 时 {{status}} = 所选节点的当前状态)。
 	titleTpl := strings.TrimSpace(cfgString(jb.Config, "titleTemplate"))
 	bodyTpl := strings.TrimSpace(cfgString(jb.Config, "bodyTemplate"))
 	if titleTpl != "" || bodyTpl != "" {
@@ -814,7 +838,7 @@ func (b *Builder) runNotifyJob(ctx context.Context, rep dagrun.StageReporter, jb
 			Project: r.ProjectName,
 			Branch:  r.Trigger.Branch,
 			Commit:  commit,
-			Status:  r.Status,
+			Status:  status,
 			Event:   "notify",
 			RunID:   r.ID,
 		}

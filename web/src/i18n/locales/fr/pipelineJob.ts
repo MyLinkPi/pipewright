@@ -162,6 +162,10 @@ export default {
     "La branche {'{{branch}}'} {'@'} {'{{commit}}'} a atteint le nœud de notification.",
   fieldBodyTemplateHint:
     "Vide = texte par défaut ; prend aussi en charge {'{{espaces réservés}}'}, les inconnus sont rendus vides",
+  fieldStatusFromLabel: "Nœud source du statut (optionnel)",
+  fieldStatusFromHint:
+    "Choisissez un nœud amont : {'{{status}}'} affiche son statut pour cette exécution (success/failed/skipped…). Vide = le statut de l'exécution. Seuls les nœuds amont sont proposés ; validation à l'enregistrement.",
+  statusFromUnselected: "Non spécifié (utiliser le statut de l'exécution)",
 
   // ─── jobConfigSchema · template nodes ──────────────────────────────────
   typeBuildFrontendLabel: "Build frontend",

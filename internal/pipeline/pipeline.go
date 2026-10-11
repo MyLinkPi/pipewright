@@ -495,6 +495,12 @@ func normalizeSpec(in Spec) (Spec, error) {
 		return Spec{}, err
 	}
 
+	// 通知节点「状态来源节点」(config["statusFrom"])校验:必须引用上游节点(见 notify_status.go),
+	// 保证执行期 {{status}} 能读到该节点的真实状态而非恒为 running 的运行状态。
+	if err := validateNotifyStatusFrom(out.Stages); err != nil {
+		return Spec{}, err
+	}
+
 	return out, nil
 }
 

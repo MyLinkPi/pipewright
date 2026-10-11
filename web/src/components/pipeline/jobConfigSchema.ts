@@ -30,6 +30,8 @@ export type FieldKind =
   | 'channel'
   | 'labelSelector'
   | 'producer'
+  /** 按名引用另一个节点(值 = 节点名);候选仅上游节点,如通知节点的「状态来源节点」。 */
+  | 'nodeRef'
   | 'runnerPicker'
 
 export interface SelectOption {
@@ -821,6 +823,14 @@ export const JOB_TYPE_SPECS: Record<string, JobTypeSpec> = {
         get label() { return t('pipelineJob.fieldChannelLabel') },
         kind: 'channel',
         get hint() { return t('pipelineJob.fieldChannelHint') },
+      },
+      {
+        // 状态来源节点(可选):配了之后 {{status}} 渲染该节点本次运行的当前状态,
+        // 不再是内联通知时恒为 running 的运行状态。候选仅上游节点(保存期后端复校)。
+        key: 'statusFrom',
+        get label() { return t('pipelineJob.fieldStatusFromLabel') },
+        kind: 'nodeRef',
+        get hint() { return t('pipelineJob.fieldStatusFromHint') },
       },
       {
         key: 'titleTemplate',

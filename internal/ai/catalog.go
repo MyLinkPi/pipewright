@@ -43,7 +43,7 @@ func BuiltinNodeCatalog() []NodeKind {
 		{Type: "health_check", Label: "健康检查", Category: "deploy",
 			Description: "对目标机(selector/serverId 圈选)做健康探测(http=curl / command=自定义命令,带重试);失败令阶段失败。建议接在部署节点之后。"},
 		{Type: "notify", Label: "通知", Category: "notify",
-			Description: "运行到此节点时向已配渠道(飞书/Webhook/邮件)发通知,支持标题/正文模板。"},
+			Description: "运行到此节点时向已配渠道(飞书/Webhook/邮件)发通知,支持标题/正文模板;可选 statusFrom(上游节点名)让 {{status}} 渲染该节点状态。"},
 		{Type: "templated", Label: "自定义节点", Category: "custom",
 			Description: "用户自定义节点:参数 + 命令模板({{参数}}),用于产品未内置的步骤。"},
 	}

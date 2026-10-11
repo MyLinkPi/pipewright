@@ -145,6 +145,10 @@ export default {
     "分支 {'{{branch}}'} {'@'} {'{{commit}}'} 已執行到通知節點。",
   fieldBodyTemplateHint:
     "留空用預設文案;同樣支援 {'{{佔位}}'},未知佔位算繪為空",
+  fieldStatusFromLabel: "狀態來源節點(可選)",
+  fieldStatusFromHint:
+    "選一個上游節點後,{'{{status}}'} 會算繪該節點本次運行的狀態(成功/失敗/跳過等);留空 = 沿用運行狀態。只能選上游節點,儲存時會校驗。",
+  statusFromUnselected: "不指定(沿用運行狀態)",
 
   // ─── jobConfigSchema · template nodes ──────────────────────────────────
   typeBuildFrontendLabel: "前端構建",

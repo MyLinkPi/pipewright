@@ -13,6 +13,7 @@ import type { CustomNode } from '../../api/customNodes'
 import { jobTypeLabel, getJobTypeSpec } from './jobConfigSchema'
 import { localizeName } from '../../lib/pipelineLabels'
 import { hasAnyNeeds } from './stageDeps'
+import { upstreamNodeOptions } from './nodeUpstream'
 import './pipeline.css'
 
 // ─── Props / emits ────────────────────────────────────────────────────────────
@@ -287,6 +288,17 @@ const producerOptions = computed(() => {
   return out
 })
 
+/** 「状态来源节点」候选(notify 节点):仅**上游**节点(与后端保存校验同一规则,见 nodeUpstream.ts)。 */
+const upstreamOptions = computed(() => {
+  const job = selectedJob.value
+  if (!job) return []
+  return upstreamNodeOptions(props.stages, job.id).map((o) => ({
+    name: o.name,
+    type: o.type,
+    stageName: localizeName(o.stageName),
+  }))
+})
+
 // ─── DAG edge overlay (Story 8-7) ─────────────────────────────────────────────
 // Draw connectors from each stage's declared needs (upstream → downstream). When no
 // stage declares needs, fall back to a linear chain (mirrors backend BuildGraph).
@@ -446,6 +458,7 @@ function handleDrawerUpdate(patch: Partial<PipelineJob>): void {
       :servers="props.servers"
       :channels="props.channels"
       :producer-options="producerOptions"
+      :upstream-options="upstreamOptions"
       @close="closeDrawer"
       @update="handleDrawerUpdate"
       @change-type="requestChangeType"

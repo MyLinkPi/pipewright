@@ -155,6 +155,10 @@ export default {
     "ブランチ {'{{branch}}'} {'@'} {'{{commit}}'} が通知ノードまで実行されました。",
   fieldBodyTemplateHint:
     "空 = デフォルト文言。同様に {'{{プレースホルダ}}'} に対応、未知のものは空で描画",
+  fieldStatusFromLabel: "ステータス参照元ノード(任意)",
+  fieldStatusFromHint:
+    "上流ノードを選ぶと {'{{status}}'} がそのノードの今回のステータス(成功/失敗/スキップなど)を表示します。空 = 実行ステータスのまま。選べるのは上流ノードのみ(保存時に検証)。",
+  statusFromUnselected: "指定しない(実行ステータスを使用)",
 
   // ─── jobConfigSchema · template nodes ──────────────────────────────────
   typeBuildFrontendLabel: "フロントエンドビルド",

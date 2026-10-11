@@ -151,6 +151,10 @@ export default {
     "브랜치 {'{{branch}}'} {'@'} {'{{commit}}'} 가 알림 노드까지 실행되었습니다.",
   fieldBodyTemplateHint:
     "비움 = 기본 문구. 마찬가지로 {'{{자리표시자}}'} 지원, 알 수 없는 것은 빈 값으로 렌더링",
+  fieldStatusFromLabel: "상태 출처 노드(선택)",
+  fieldStatusFromHint:
+    "상류 노드를 선택하면 {'{{status}}'}가 해당 노드의 이번 실행 상태(성공/실패/건너뜀 등)를 표시합니다. 비움 = 실행 상태 사용. 상류 노드만 선택 가능(저장 시 검증).",
+  statusFromUnselected: "지정 안 함(실행 상태 사용)",
 
   // ─── jobConfigSchema · template nodes ──────────────────────────────────
   typeBuildFrontendLabel: "프런트엔드 빌드",
