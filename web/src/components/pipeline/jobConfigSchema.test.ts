@@ -312,4 +312,54 @@ describe('jobConfigSchema', () => {
       expect(schemaKeys('oss_upload').has(RUNNER_FIELD_KEY)).toBe(false)
     })
   })
+
+  describe('push_image(推送镜像节点)', () => {
+    const spec = JOB_TYPE_SPECS.push_image
+
+    it('可被选用且归入 build 分类', () => {
+      expect(PICKABLE_TYPES).toContain('push_image')
+      expect(spec.category).toBe('build')
+    })
+
+    it('声明 artifactJob / registry / imageName / tag / credentialId 五个字段', () => {
+      expect(spec.fields.map((f) => f.key)).toEqual([
+        'artifactJob',
+        'registry',
+        'imageName',
+        'tag',
+        'credentialId',
+      ])
+    })
+
+    it('artifactJob 是 producer,限定同阶段 build_image', () => {
+      const f = spec.fields.find((x) => x.key === 'artifactJob')!
+      expect(f.kind).toBe('producer')
+      expect(f.producerKinds).toEqual(['build_image'])
+      expect(f.producerSameStage).toBe(true)
+    })
+
+    it('未选产物来源节点时隐藏目标覆盖字段', () => {
+      for (const key of ['registry', 'imageName', 'tag', 'credentialId']) {
+        const f = spec.fields.find((x) => x.key === key)!
+        expect(f.when!({}), `${key} hidden without artifactJob`).toBe(false)
+        expect(f.when!({ artifactJob: '构建镜像' }), `${key} shown with artifactJob`).toBe(true)
+      }
+    })
+
+    it('其字段键归属 schema,不落入「原始参数」高级区', () => {
+      const { extras } = splitConfig('push_image', {
+        artifactJob: '构建镜像',
+        registry: 'registry.cn-hangzhou.aliyuncs.com',
+        imageName: 'org/app',
+        tag: '{{commit}}',
+        credentialId: 'cred-1',
+      })
+      expect(extras.length).toBe(0)
+    })
+
+    it('不是脚本类节点(无步骤构建器 / 构建机区块)', () => {
+      expect(isScriptClassType('push_image')).toBe(false)
+      expect(schemaKeys('push_image').has(RUNNER_FIELD_KEY)).toBe(false)
+    })
+  })
 })

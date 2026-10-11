@@ -60,6 +60,8 @@ export interface JobField {
   when?: (config: Record<string, string>) => boolean
   /** labelSelector / producer 控件的候选来源约束(如只列产镜像节点的类型集合) */
   producerKinds?: string[]
+  /** producer 控件是否只允许**同阶段**节点(值 = 节点名;镜像推送在来源节点内完成,须同阶段) */
+  producerSameStage?: boolean
 }
 
 /** Accent palette keys — map to --color-{accent} / --color-{accent}-soft tokens. */
@@ -707,6 +709,11 @@ export const JOB_TYPE_SPECS: Record<string, JobTypeSpec> = {
     ],
   },
 
+  // 推送镜像节点:把**同阶段**某个 build_image 节点产出的镜像推送到镜像仓库。
+  // artifactJob 必填(值 = 来源节点名);推送在该 build_image 节点内完成(它持有本地 tag,且
+  // 产物引用须在登记前改写为远端引用),故来源必须**同阶段**(保存期后端复校,见
+  // internal/pipeline/push_image.go)。registry/imageName/tag/credentialId 为可选覆盖:留空
+  // 则用来源节点所在环境绑定的镜像仓库 / 默认镜像名与 tag。
   push_image: {
     type: 'push_image',
     get label() { return t('pipelineJob.typePushImageLabel') },
@@ -715,11 +722,21 @@ export const JOB_TYPE_SPECS: Record<string, JobTypeSpec> = {
     category: 'build',
     fields: [
       {
+        key: 'artifactJob',
+        get label() { return t('pipelineJob.fieldArtifactJobLabel') },
+        kind: 'producer',
+        producerKinds: ['build_image'],
+        producerSameStage: true,
+        get hint() { return t('pipelineJob.fieldPushImageArtifactJobHint') },
+      },
+      {
         key: 'registry',
         get label() { return t('pipelineJob.fieldRegistryLabel') },
         kind: 'text',
         monospace: true,
         placeholder: 'registry.cn-hangzhou.aliyuncs.com',
+        get hint() { return t('pipelineJob.fieldPushImageRegistryHint') },
+        when: (c) => !!(c.artifactJob || '').trim(),
       },
       {
         key: 'imageName',
@@ -727,14 +744,16 @@ export const JOB_TYPE_SPECS: Record<string, JobTypeSpec> = {
         kind: 'text',
         monospace: true,
         placeholder: 'org/app',
+        when: (c) => !!(c.artifactJob || '').trim(),
       },
       {
         key: 'tag',
         get label() { return t('pipelineJob.fieldTagLabel') },
         kind: 'text',
         monospace: true,
-        placeholder: '${COMMIT_SHA}',
+        placeholder: '{{commit}}',
         get hint() { return t('pipelineJob.fieldTagHint') },
+        when: (c) => !!(c.artifactJob || '').trim(),
       },
       {
         key: 'credentialId',
@@ -742,6 +761,7 @@ export const JOB_TYPE_SPECS: Record<string, JobTypeSpec> = {
         kind: 'credential',
         credentialType: 'registry',
         get hint() { return t('pipelineJob.fieldRegistryCredentialHint') },
+        when: (c) => !!(c.artifactJob || '').trim(),
       },
     ],
   },

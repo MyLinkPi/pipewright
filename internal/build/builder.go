@@ -498,17 +498,28 @@ func (b *Builder) build(ctx context.Context, sink run.StepSink, ordinal int, pro
 }
 
 // push 执行镜像推送(3-5):login(口令经 stdin)→ tag → push → inspect 取推送后 digest。
+// 远端 tag 约定 <registry-url>/<project-slug>:<commit7>(URL 去协议/尾斜杠)。
 func (b *Builder) push(ctx context.Context, sink run.StepSink, ordinal int, localTag string, registry *pipeline.ImageRegistry, proj *project.Project, commitTag string) (string, string, error) {
+	return b.pushImageTo(ctx, sink, ordinal, localTag, registry.URL, registry.CredentialID, slugify(proj.Name), commitTag)
+}
+
+// pushImageTo 是镜像推送的通用实现:把本地镜像 localTag 推送到 registryURL,远端引用为
+// <registryURL 去协议/尾斜杠>/<imageName>:<tag>。可显式指定目标仓库凭据(credentialID;空 =
+// 匿名/已登录)与远端镜像名/tag —— push_image 节点据此覆盖默认(registry + 项目 slug + commit 短 SHA)。
+// login(口令经 stdin,绝不进 argv/日志)→ tag → push → inspect(取推送后 digest)。
+func (b *Builder) pushImageTo(ctx context.Context, sink run.StepSink, ordinal int, localTag, registryURL, credentialID, imageName, tag string) (string, string, error) {
 	onLine := b.lineSink(sink, ordinal)
 
-	user, pass := b.revealRegistryCred(registry.CredentialID)
-	// 远端 tag:<registry-url>/<project-slug>:<commit7>(URL 去协议/尾斜杠)。
-	remoteTag := strings.TrimRight(stripScheme(registry.URL), "/") + "/" + slugify(proj.Name) + ":" + commitTag
+	registryURL = strings.TrimSpace(registryURL)
+	imageName = strings.Trim(strings.TrimSpace(imageName), "/")
+	tag = strings.TrimSpace(tag)
+	remoteTag := strings.TrimRight(stripScheme(registryURL), "/") + "/" + imageName + ":" + tag
 
+	user, pass := b.revealRegistryCred(credentialID)
 	// 登录(口令经 stdin,绝不进 argv/日志)。凭据缺失(user 空)时跳过登录,直接 tag/push
 	// (匿名/已登录场景);仓库要求鉴权则 push 自身会失败并落失败日志。
 	if user != "" {
-		code, err := b.driver.Login(ctx, registry.URL, user, pass, onLine)
+		code, err := b.driver.Login(ctx, registryURL, user, pass, onLine)
 		pass = "" // 口令用完即弃
 		_ = pass
 		if err != nil && code < 0 {

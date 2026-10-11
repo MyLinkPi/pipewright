@@ -45,11 +45,13 @@ const props = defineProps<{
   upstreamOptions?: NodeRefOption[]
 }>()
 
-/** 产物来源候选:job 名(即产物元数据 sourceJob)+ 类型 + 所在阶段名。 */
+/** 产物来源候选:job 名(即产物元数据 sourceJob)+ 类型 + 所在阶段(名/id)。 */
 export interface ProducerOption {
   name: string
   type: string
   stageName: string
+  /** 所在阶段 id;producerSameStage 字段据此过滤出同阶段候选。 */
+  stageId: string
 }
 
 const emit = defineEmits<{
@@ -262,11 +264,16 @@ function channelTypeLabel(type: string): string {
   return CHANNEL_TYPE_LABELS[type] ?? type
 }
 
-/** producer 下拉选项(按 producerKinds 过滤类型;排除自身)。 */
+/** producer 下拉选项(按 producerKinds 过滤类型;producerSameStage 时仅同阶段;排除自身)。 */
 function producerCandidates(field: JobField): ProducerOption[] {
   const all = props.producerOptions ?? []
   const kinds = field.producerKinds
-  return all.filter((o) => o.name !== props.job.name && (!kinds || kinds.includes(o.type)))
+  return all.filter(
+    (o) =>
+      o.name !== props.job.name &&
+      (!kinds || kinds.includes(o.type)) &&
+      (!field.producerSameStage || o.stageId === props.stage.id),
+  )
 }
 
 function producerLabel(o: ProducerOption): string {

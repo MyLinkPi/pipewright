@@ -407,7 +407,7 @@ needs 填「本阶段内它所依赖的其它 job 的 name」(数组)。**凡有
 为每个 job 填 "config" 对象,**凡能从仓库分析推断的都填**;只有环境相关项(serverId/channel/credentialId)留空给用户选。各类型 config 字段:
 - build_nodejs/build_java/build_golang/build_python/script:image(运行镜像,据语言/版本选,如 node:20、maven:3.9-eclipse-temurin-21、golang:1.22、python:3.12)、commands(多行命令,据构建工具写)、artifactPath(产物路径,如 "backend/target/*.jar"、"frontend/dist"、"bin/app")。命令里的子目录要用分析里检测到的真实路径(如 backend/、frontend/)。
 - build_image:buildModel("dockerfile" 有 Dockerfile 否则 "toolchain")、dockerfilePath(检测到的 Dockerfile 路径,如 "backend/Dockerfile")、context(Dockerfile 所在目录,如 "backend")、artifactType("image")。
-- push_image:无需 config(随 build_image 推送)。
+- push_image:artifactJob(必填 = 要推送的镜像来源节点 name,必须是**同阶段**的 build_image 节点);registry(可选,目标仓库地址如 "registry.cn-hangzhou.aliyuncs.com",留空 = 用环境绑定的镜像仓库)、imageName(可选,远端镜像名如 "org/app",留空用产物名)、tag(可选,如 "{{commit}}",留空沿用产物 tag)、credentialId(可选,仓库登录凭据,留空给用户在画布选)。
 - deploy_ssh(文件产物 jar/dist):artifactJob(必填 = 产出该产物的构建节点 name)、deployPath、restartCommand、firstBatchSize/batchSize(多机分批,可选);serverId 留空(用户选目标机)。
 - deploy_container(镜像产物):artifactJob(必填 = build_image 节点 name)、containerName(据项目名取,如 "<proj>-app")、ports(如 "8080:8080");常用容器参数用结构化键 cpuLimit(如 "1.0")/memoryLimit(如 "512m")/restartPolicy(no/always/unless-stopped/on-failure)/envVars(每行一条 KEY=value),仅特殊 flag 才用 runArgs(可选);serverId 留空。
 - oss_upload(把文件产物上传到对象存储):artifactJob(必填 = 产出该产物的构建节点 name)、storageId(可选,留空给用户在画布选对象存储配置)、prefix(可选,如 "releases/{{project}}/{{branch}}",支持 {{runId}}/{{branch}}/{{commit}}/{{project}} 占位)、artifactName(可选,产物名 glob,如 "app-*.jar";存在多件同名产物时消歧);只上传文件类产物(jar/dist/归档),镜像产物请用 push_image。

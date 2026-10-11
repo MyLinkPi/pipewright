@@ -121,7 +121,11 @@ export default {
   fieldImageNameLabel: "Image-Name",
   fieldTagLabel: "Tag",
   fieldTagHint:
-    "Verfügbare Variablen: {'${COMMIT_SHA}'} {'${BRANCH}'} {'${BUILD_NUMBER}'}",
+    "Verfügbare Variablen: {'{{commit}}'} {'{{branch}}'} {'{{runId}}'} {'{{project}}'}; leer behält den Tag des Artefakts",
+  fieldPushImageArtifactJobHint:
+    "Wähle, welches Image eines Knotens gepusht wird (muss ein „Build“-Knoten in DERSELBEN Phase sein; der Push läuft in diesem Knoten).",
+  fieldPushImageRegistryHint:
+    "Leer = die im Umfeld des Quellknotens gebundene Image-Registry verwenden.",
   fieldRegistryCredentialLabel: "Registry-Anmeldedaten",
   fieldRegistryCredentialHint:
     "Referenziert die Login-Anmeldedaten der Image-Registry",
