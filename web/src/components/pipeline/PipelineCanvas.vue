@@ -14,6 +14,7 @@ import type { CustomNode } from '../../api/customNodes'
 import { jobTypeLabel, getJobTypeSpec } from './jobConfigSchema'
 import { localizeName } from '../../lib/pipelineLabels'
 import { hasAnyNeeds } from './stageDeps'
+import { stageEdgePath } from './stageEdgePath'
 import { upstreamNodeOptions } from './nodeUpstream'
 import './pipeline.css'
 
@@ -343,8 +344,13 @@ function measureEdges(): void {
     const y1 = a.offsetTop + HEADER_Y
     const x2 = b.offsetLeft
     const y2 = b.offsetTop + HEADER_Y
-    const dx = Math.max(26, Math.abs(x2 - x1) * 0.5)
-    paths.push(`M${x1},${y1} C${x1 + dx},${y1} ${x2 - dx},${y2} ${x2},${y2}`)
+    // 中间是否隔着其他阶段列(跨级跳):是则下潜绕行(见 stageEdgePath.ts),否则画浅 S 曲线。
+    const left = Math.min(x1, x2)
+    const right = Math.max(x1, x2)
+    const hopsOver = cols.some(
+      (c) => c !== a && c !== b && c.offsetLeft + c.offsetWidth > left && c.offsetLeft < right,
+    )
+    paths.push(stageEdgePath(x1, y1, x2, y2, hopsOver))
   }
   edgePaths.value = paths
 }
