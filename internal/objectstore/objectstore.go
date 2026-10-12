@@ -60,6 +60,7 @@ type Provider struct {
 	Name         string
 	Endpoint     string // 服务接入点(如 oss-cn-hangzhou.aliyuncs.com;不含 scheme)
 	Bucket       string // 默认桶
+	PathPrefix   string // 可选:所有上传对象键统一附加的路径前缀(存储级默认;已归一化,无首尾斜杠)
 	AccessKeyID  string // 非机密:AccessKeyId,明文存储可回显
 	CredentialID string // 指向 vault 凭据(只存 AccessKeySecret);明文绝不入此结构体
 	CreatedAt    time.Time
@@ -72,6 +73,7 @@ type CreateInput struct {
 	Name         string
 	Endpoint     string
 	Bucket       string
+	PathPrefix   string // 可选,归一化后落库
 	AccessKeyID  string
 	CredentialID string
 }
@@ -82,6 +84,7 @@ type UpdateInput struct {
 	Name        *string
 	Endpoint    *string
 	Bucket      *string
+	PathPrefix  *string // 可改可清空(传非 nil 空串 = 清空前缀)
 	AccessKeyID *string
 }
 
@@ -118,6 +121,7 @@ type Service interface {
 	Test(ctx context.Context, id string) (*TestResult, error)
 
 	// Upload 取该配置凭据 → 上传一段字节流到 objectKey(流水线 oss_upload 节点用)。
+	// objectKey 前会自动附加配置的 PathPrefix(存储级默认前缀;节点级前缀拼在其后)。
 	// Secret 用完即弃,绝不外泄。
 	Upload(ctx context.Context, providerID, objectKey string, body io.Reader) error
 }
@@ -141,12 +145,19 @@ func normalizeEndpoint(s string) string {
 	return s
 }
 
-// normalizeCreate 原地归一化登记入参(去空白 / 类型小写 / Endpoint 去 scheme)。
+// NormalizePathPrefix 归一化路径前缀:去空白、去首尾斜杠(「/a/b/」与「a/b」等价,
+// 拼接时统一由本包补分隔符)。归一化结果为空 = 不附加前缀。
+func NormalizePathPrefix(s string) string {
+	return strings.Trim(strings.TrimSpace(s), "/")
+}
+
+// normalizeCreate 原地归一化登记入参(去空白 / 类型小写 / Endpoint 去 scheme / 前缀去首尾斜杠)。
 func normalizeCreate(in *CreateInput) {
 	in.Type = strings.ToLower(strings.TrimSpace(in.Type))
 	in.Name = strings.TrimSpace(in.Name)
 	in.Endpoint = normalizeEndpoint(in.Endpoint)
 	in.Bucket = strings.TrimSpace(in.Bucket)
+	in.PathPrefix = NormalizePathPrefix(in.PathPrefix)
 	in.AccessKeyID = strings.TrimSpace(in.AccessKeyID)
 	in.CredentialID = strings.TrimSpace(in.CredentialID)
 }

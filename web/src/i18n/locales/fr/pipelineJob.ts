@@ -143,7 +143,7 @@ export default {
   fieldObjectStoreHint: 'Choisis un compte configuré dans « Paramètres · Stockage d\'objets » ; s\'il n\'y en a aucun, ajoutes-en un d\'abord dans les paramètres.',
   fieldOssArtifactJobHint: 'De quel nœud téléverser l\'artefact (correspondance exacte par nœud) ; uniquement les artefacts fichiers (jar/dist/archive) — pour les images, utilise « Pousser l\'image ».',
   fieldOssPrefixLabel: 'Préfixe de clé d\'objet (facultatif)',
-  fieldOssPrefixHint: "Préfixe de clé dans le bucket ; prend en charge les espaces réservés {'{{runId}}'} {'{{branch}}'} {'{{commit}}'} {'{{project}}'} ; vide = téléverser à la racine du bucket.",
+  fieldOssPrefixHint: "Préfixe de clé d'objet dans le bucket ; prend en charge les paramètres fictifs {'{{runId}}'} {'{{branch}}'} {'{{commit}}'} {'{{project}}'} ; si la configuration du stockage d'objets définit aussi un préfixe de chemin, celui-ci est ajouté après.",
   objectStoreUnselected: 'Non spécifié (configurez d\'abord le stockage d\'objets dans les paramètres)',
 
   // ─── jobConfigSchema · deploy_ssh ──────────────────────────────────────

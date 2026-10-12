@@ -126,7 +126,7 @@ export default {
   fieldObjectStoreHint: '从「设置 · 对象存储」里已配置的账户中选择;没有就先去设置里加一个。',
   fieldOssArtifactJobHint: '要上传哪个节点产出的产物(按节点精确匹配);仅支持文件类产物(jar/dist/归档),镜像请用「推送镜像」。',
   fieldOssPrefixLabel: '对象路径前缀(可选)',
-  fieldOssPrefixHint: "上传到桶内的路径前缀,支持占位 {'{{runId}}'} {'{{branch}}'} {'{{commit}}'} {'{{project}}'};留空则直接放在桶根。",
+  fieldOssPrefixHint: "上传到桶内的路径前缀,支持占位 {'{{runId}}'} {'{{branch}}'} {'{{commit}}'} {'{{project}}'};若对象存储配置里也设了路径前缀,会拼在其后。",
   objectStoreUnselected: '不指定(请先在设置里配置对象存储)',
 
   // ─── jobConfigSchema · deploy_ssh ──────────────────────────────────────

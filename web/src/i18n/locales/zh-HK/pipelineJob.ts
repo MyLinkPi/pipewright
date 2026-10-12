@@ -126,7 +126,7 @@ export default {
   fieldObjectStoreHint: '從「設定 · 物件儲存」裡已設定的帳戶中選擇;沒有就先去設定裡加一個。',
   fieldOssArtifactJobHint: '要上傳哪個節點產出的產物(按節點精確匹配);僅支援文件類產物(jar/dist/歸檔),映像請用「推送映像」。',
   fieldOssPrefixLabel: '物件路徑前綴(可選)',
-  fieldOssPrefixHint: "上傳到桶內的路徑前綴,支援佔位 {'{{runId}}'} {'{{branch}}'} {'{{commit}}'} {'{{project}}'};留空則直接放在桶根。",
+  fieldOssPrefixHint: "上傳到桶內的路徑前綴,支援佔位 {'{{runId}}'} {'{{branch}}'} {'{{commit}}'} {'{{project}}'};若物件儲存設定裡也設了路徑前綴,會拼在其後。",
   objectStoreUnselected: '不指定(請先在設定裡設定物件儲存)',
 
   // ─── jobConfigSchema · deploy_ssh ──────────────────────────────────────

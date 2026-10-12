@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 
 	"github.com/huangchengsir/pipewright/internal/vault"
@@ -134,7 +135,7 @@ func (s *service) Upload(ctx context.Context, providerID, objectKey string, body
 	if err != nil {
 		return fmt.Errorf("%w:%s", ErrUploadFailed, describeClientError(err))
 	}
-	if err := client.PutObject(ctx, objectKey, body); err != nil {
+	if err := client.PutObject(ctx, joinPrefixKey(p.PathPrefix, objectKey), body); err != nil {
 		return fmt.Errorf("%w:%s", ErrUploadFailed, describeClientError(err))
 	}
 	return nil
@@ -149,5 +150,20 @@ func mapVaultErr(err error) error {
 		return ErrCredentialNotFound
 	default:
 		return err
+	}
+}
+
+// joinPrefixKey 把配置级路径前缀拼到调用方给的对象键前(两侧各去首尾斜杠,空侧省略分隔符)。
+// 语义:存储配置的 PathPrefix 在最前(存储级默认),节点级前缀/文件名拼在其后。
+func joinPrefixKey(prefix, objectKey string) string {
+	prefix = strings.Trim(strings.TrimSpace(prefix), "/")
+	key := strings.Trim(strings.TrimSpace(objectKey), "/")
+	switch {
+	case prefix == "":
+		return key
+	case key == "":
+		return prefix
+	default:
+		return prefix + "/" + key
 	}
 }

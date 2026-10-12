@@ -135,7 +135,7 @@ export default {
   fieldObjectStoreHint: '「設定 · オブジェクトストレージ」で設定済みのアカウントから選択します。ない場合は先に設定で追加してください。',
   fieldOssArtifactJobHint: 'どのノードの成果物をアップロードするか(ノードで厳密に一致)。ファイル成果物のみ(jar/dist/アーカイブ)に対応し、イメージには「イメージをプッシュ」を使用します。',
   fieldOssPrefixLabel: 'オブジェクトキーのプレフィックス(任意)',
-  fieldOssPrefixHint: "バケット内のキーのプレフィックス。プレースホルダー {'{{runId}}'} {'{{branch}}'} {'{{commit}}'} {'{{project}}'} に対応。空欄ならバケットのルートにアップロードします。",
+  fieldOssPrefixHint: "バケット内のオブジェクトキー接頭辞。プレースホルダー {'{{runId}}'} {'{{branch}}'} {'{{commit}}'} {'{{project}}'} をサポート。オブジェクトストレージ設定にもパス接頭辞が設定されている場合は、その後に連結されます。",
   objectStoreUnselected: '指定しない(先に設定でオブジェクトストレージを設定してください)',
 
   // ─── jobConfigSchema · deploy_ssh ──────────────────────────────────────

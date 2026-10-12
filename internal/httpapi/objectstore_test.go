@@ -151,6 +151,47 @@ func TestObjectStoreUpdateRenameAndRotate(t *testing.T) {
 	}
 }
 
+// --- POST/PUT:pathPrefix 创建时归一化落库,编辑时可改可清空(空串=清空) ---
+
+func TestObjectStorePathPrefix(t *testing.T) {
+	srv, client, csrf, _, _ := setupObjectStoresAPI(t)
+
+	// 创建带前缀(带空白与斜杠,应归一化为 ci/prod)。
+	id, raw, _ := createObjectStorePOST(t, client, srv.URL, csrf,
+		`{"type":"aliyun_oss","name":"prod","endpoint":"oss-cn-hangzhou.aliyuncs.com","bucket":"b","pathPrefix":" /ci/prod/ ","accessKeyId":"LTAI","secret":"s"}`)
+	var dto struct {
+		PathPrefix string `json:"pathPrefix"`
+	}
+	if err := json.Unmarshal(raw, &dto); err != nil || dto.PathPrefix != "ci/prod" {
+		t.Fatalf("创建后 pathPrefix 应归一化: %v %+v", err, dto)
+	}
+
+	// 编辑改前缀。
+	resp := doJSON(t, client, http.MethodPut, srv.URL+"/api/object-stores/"+id, csrf, `{"pathPrefix":"/backups/2026/"}`)
+	raw, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("改前缀应 200, got %d body=%s", resp.StatusCode, raw)
+	}
+	dto = struct {
+		PathPrefix string `json:"pathPrefix"`
+	}{}
+	if err := json.Unmarshal(raw, &dto); err != nil || dto.PathPrefix != "backups/2026" {
+		t.Fatalf("改后 pathPrefix 应归一化: %v %+v", err, dto)
+	}
+
+	// 空串 = 清空。
+	resp = doJSON(t, client, http.MethodPut, srv.URL+"/api/object-stores/"+id, csrf, `{"pathPrefix":""}`)
+	raw, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("清空前缀应 200, got %d body=%s", resp.StatusCode, raw)
+	}
+	if err := json.Unmarshal(raw, &dto); err != nil || dto.PathPrefix != "" {
+		t.Fatalf("清空后 pathPrefix 应为空: %v %+v", err, dto)
+	}
+}
+
 // --- DELETE:删除配置 → 级联删除凭据 ---
 
 func TestObjectStoreDeleteCascadesCredential(t *testing.T) {

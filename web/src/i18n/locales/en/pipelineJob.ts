@@ -136,7 +136,7 @@ export default {
   fieldObjectStoreHint: 'Pick an account configured under Settings · Object Storage; if there is none, add one in Settings first.',
   fieldOssArtifactJobHint: "Which node's artifact to upload (matched precisely by node); file artifacts only (jar/dist/archive) — use “Push image” for images.",
   fieldOssPrefixLabel: 'Object key prefix (optional)',
-  fieldOssPrefixHint: "Key prefix inside the bucket; supports placeholders {'{{runId}}'} {'{{branch}}'} {'{{commit}}'} {'{{project}}'}; blank = upload at the bucket root.",
+  fieldOssPrefixHint: "Object key prefix inside the bucket; supports placeholders {'{{runId}}'} {'{{branch}}'} {'{{commit}}'} {'{{project}}'}; if the object storage configuration also defines a path prefix, this one is appended after it.",
   objectStoreUnselected: 'Unspecified (configure object storage in Settings first)',
 
   // ─── jobConfigSchema · deploy_ssh ──────────────────────────────────────
