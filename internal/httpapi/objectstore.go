@@ -32,6 +32,7 @@ type objectStoreDTO struct {
 	Name                 string `json:"name"`
 	Endpoint             string `json:"endpoint"`
 	Bucket               string `json:"bucket"`
+	PathPrefix           string `json:"pathPrefix"`
 	AccessKeyID          string `json:"accessKeyId"`
 	CredentialConfigured bool   `json:"credentialConfigured"`
 	CreatedAt            string `json:"createdAt"`
@@ -45,6 +46,7 @@ func toObjectStoreDTO(p objectstore.Provider) objectStoreDTO {
 		Name:                 p.Name,
 		Endpoint:             p.Endpoint,
 		Bucket:               p.Bucket,
+		PathPrefix:           p.PathPrefix,
 		AccessKeyID:          p.AccessKeyID,
 		CredentialConfigured: strings.TrimSpace(p.CredentialID) != "",
 		CreatedAt:            p.CreatedAt.UTC().Format(time.RFC3339),
@@ -104,7 +106,7 @@ func makeListObjectStoresHandler(svc objectstore.Service) http.HandlerFunc {
 }
 
 // makeCreateObjectStoreHandler 返回 POST /api/object-stores(认证 + CSRF)→ ObjectStore(201)。
-// body: { type, name, endpoint, bucket, accessKeyId, secret }。
+// body: { type, name, endpoint, bucket, pathPrefix?, accessKeyId, secret }。
 func makeCreateObjectStoreHandler(svc objectstore.Service, v vault.Vault, rec audit.Recorder) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if svc == nil {
@@ -120,6 +122,7 @@ func makeCreateObjectStoreHandler(svc objectstore.Service, v vault.Vault, rec au
 			Name        string `json:"name"`
 			Endpoint    string `json:"endpoint"`
 			Bucket      string `json:"bucket"`
+			PathPrefix  string `json:"pathPrefix"`
 			AccessKeyID string `json:"accessKeyId"`
 			Secret      string `json:"secret"`
 		}
@@ -150,6 +153,7 @@ func makeCreateObjectStoreHandler(svc objectstore.Service, v vault.Vault, rec au
 			Name:         in.Name,
 			Endpoint:     in.Endpoint,
 			Bucket:       in.Bucket,
+			PathPrefix:   in.PathPrefix,
 			AccessKeyID:  in.AccessKeyID,
 			CredentialID: cred.ID,
 		})
@@ -164,7 +168,7 @@ func makeCreateObjectStoreHandler(svc objectstore.Service, v vault.Vault, rec au
 			Action:     auditActionObjectStoreCreate,
 			TargetType: auditTargetObjectStore,
 			TargetID:   p.ID,
-			Detail:     map[string]any{"type": p.Type, "name": p.Name, "endpoint": p.Endpoint, "bucket": p.Bucket, "accessKeyId": p.AccessKeyID}, // 绝无 AccessKeySecret
+			Detail:     map[string]any{"type": p.Type, "name": p.Name, "endpoint": p.Endpoint, "bucket": p.Bucket, "pathPrefix": p.PathPrefix, "accessKeyId": p.AccessKeyID}, // 绝无 AccessKeySecret
 			IP:         clientIP(r),
 		})
 		writeJSON(w, http.StatusCreated, toObjectStoreDTO(*p))
@@ -172,7 +176,8 @@ func makeCreateObjectStoreHandler(svc objectstore.Service, v vault.Vault, rec au
 }
 
 // makeUpdateObjectStoreHandler 返回 PUT /api/object-stores/{id}(认证 + CSRF)→ ObjectStore。
-// body: { name?, endpoint?, bucket?, accessKeyId?, secret? }(指针语义:缺省字段不修改;secret 非空即原地轮换,credentialId 不变)。
+// body: { name?, endpoint?, bucket?, pathPrefix?, accessKeyId?, secret? }(指针语义:缺省字段不修改;
+// pathPrefix 传空串 = 清空前缀;secret 非空即原地轮换,credentialId 不变)。
 func makeUpdateObjectStoreHandler(svc objectstore.Service, v vault.Vault, rec audit.Recorder) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if svc == nil {
@@ -185,6 +190,7 @@ func makeUpdateObjectStoreHandler(svc objectstore.Service, v vault.Vault, rec au
 			Name        *string `json:"name"`
 			Endpoint    *string `json:"endpoint"`
 			Bucket      *string `json:"bucket"`
+			PathPrefix  *string `json:"pathPrefix"`
 			AccessKeyID *string `json:"accessKeyId"`
 			Secret      *string `json:"secret"`
 		}
@@ -207,6 +213,7 @@ func makeUpdateObjectStoreHandler(svc objectstore.Service, v vault.Vault, rec au
 			Name:        in.Name,
 			Endpoint:    in.Endpoint,
 			Bucket:      in.Bucket,
+			PathPrefix:  in.PathPrefix,
 			AccessKeyID: in.AccessKeyID,
 		})
 		if err != nil {
@@ -235,7 +242,7 @@ func makeUpdateObjectStoreHandler(svc objectstore.Service, v vault.Vault, rec au
 			Action:     auditActionObjectStoreUpdate,
 			TargetType: auditTargetObjectStore,
 			TargetID:   p.ID,
-			Detail:     map[string]any{"name": p.Name, "endpoint": p.Endpoint, "bucket": p.Bucket, "accessKeyId": p.AccessKeyID, "secretRotated": rotated}, // 绝无 AccessKeySecret
+			Detail:     map[string]any{"name": p.Name, "endpoint": p.Endpoint, "bucket": p.Bucket, "pathPrefix": p.PathPrefix, "accessKeyId": p.AccessKeyID, "secretRotated": rotated}, // 绝无 AccessKeySecret
 			IP:         clientIP(r),
 		})
 		writeJSON(w, http.StatusOK, toObjectStoreDTO(*p))

@@ -217,3 +217,85 @@ func TestUploadAndTestWithoutVault(t *testing.T) {
 		t.Fatalf("vault 未配时 Upload 应 ErrVaultUnconfigured, got %v", err)
 	}
 }
+
+// TestNormalizePathPrefix 覆盖配置级路径前缀的归一化(去空白 / 首尾斜杠;/a/b/ 与 a/b 等价)。
+func TestNormalizePathPrefix(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"", ""},
+		{"   ", ""},
+		{"/", ""},
+		{"releases", "releases"},
+		{" /releases/ ", "releases"},
+		{"releases/", "releases"},
+		{"ci/prod/apps/", "ci/prod/apps"},
+		{"/ci//prod/", "ci//prod"}, // 仅去首尾斜杠,内部双斜杠保留(调用方自担)
+	}
+	for _, c := range cases {
+		if got := NormalizePathPrefix(c.in); got != c.want {
+			t.Errorf("NormalizePathPrefix(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+// TestUploadAppliesPathPrefix 配置了 pathPrefix 时,Upload 应把前缀附加到所有对象键前
+// (存储级默认前缀,调用方无感知;无前缀配置时行为不变)。
+func TestUploadAppliesPathPrefix(t *testing.T) {
+	ctx := context.Background()
+	fv := &fakeVault{configured: true, secrets: map[string]string{"cred-1": "secret-value"}}
+	fc := &fakeClient{}
+	svc := newTestService(t, fv, fc)
+
+	in := sampleInput()
+	in.PathPrefix = " /ci/prod/ " // 归一化为 ci/prod
+	p, err := svc.Create(ctx, in)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if p.PathPrefix != "ci/prod" {
+		t.Fatalf("pathPrefix 应归一化: %q", p.PathPrefix)
+	}
+
+	if err := svc.Upload(ctx, p.ID, "releases/app.jar", strings.NewReader("bytes")); err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+	if fc.puts["ci/prod/releases/app.jar"] != "bytes" {
+		t.Fatalf("对象键应带配置前缀: %+v", fc.puts)
+	}
+
+	// 无前缀配置 → 键原样(回归)。
+	plain, _ := svc.Create(ctx, sampleInput())
+	if err := svc.Upload(ctx, plain.ID, "k", strings.NewReader("x")); err != nil {
+		t.Fatalf("Upload(无前缀): %v", err)
+	}
+	if fc.puts["k"] != "x" {
+		t.Fatalf("无前缀时对象键应原样: %+v", fc.puts)
+	}
+}
+
+// TestUpdatePathPrefix 编辑可改、可清空 pathPrefix(空串 = 清空,非 nil 即生效)。
+func TestUpdatePathPrefix(t *testing.T) {
+	ctx := context.Background()
+	fv := &fakeVault{configured: true, secrets: map[string]string{"cred-1": "secret-value"}}
+	svc := newTestService(t, fv, &fakeClient{})
+	in := sampleInput()
+	in.PathPrefix = "ci/prod"
+	p, _ := svc.Create(ctx, in)
+
+	changed := "/backups/2026/"
+	upd, err := svc.Update(ctx, p.ID, UpdateInput{PathPrefix: &changed})
+	if err != nil || upd.PathPrefix != "backups/2026" {
+		t.Fatalf("改前缀: %v, %+v", err, upd)
+	}
+
+	cleared := ""
+	upd, err = svc.Update(ctx, p.ID, UpdateInput{PathPrefix: &cleared})
+	if err != nil || upd.PathPrefix != "" {
+		t.Fatalf("清前缀(空串): %v, %+v", err, upd)
+	}
+
+	// 缺省(nil)不改动。
+	upd, err = svc.Update(ctx, p.ID, UpdateInput{})
+	if err != nil || upd.PathPrefix != "" {
+		t.Fatalf("nil 前缀应保持: %v, %+v", err, upd)
+	}
+}

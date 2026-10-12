@@ -72,21 +72,23 @@ const form = ref<{
   name: string
   endpoint: string
   bucket: string
+  pathPrefix: string
   accessKeyId: string
   secret: string
-}>({ type: 'aliyun_oss', name: '', endpoint: '', bucket: '', accessKeyId: '', secret: '' })
-const errors = ref<{ name: string; endpoint: string; bucket: string; accessKeyId: string; secret: string }>({
+}>({ type: 'aliyun_oss', name: '', endpoint: '', bucket: '', pathPrefix: '', accessKeyId: '', secret: '' })
+const errors = ref<{ name: string; endpoint: string; bucket: string; pathPrefix: string; accessKeyId: string; secret: string }>({
   name: '',
   endpoint: '',
   bucket: '',
+  pathPrefix: '',
   accessKeyId: '',
   secret: '',
 })
 const formSnapshot = ref('')
 
 function openAdd(): void {
-  form.value = { type: 'aliyun_oss', name: '', endpoint: '', bucket: '', accessKeyId: '', secret: '' }
-  errors.value = { name: '', endpoint: '', bucket: '', accessKeyId: '', secret: '' }
+  form.value = { type: 'aliyun_oss', name: '', endpoint: '', bucket: '', pathPrefix: '', accessKeyId: '', secret: '' }
+  errors.value = { name: '', endpoint: '', bucket: '', pathPrefix: '', accessKeyId: '', secret: '' }
   formBanner.value = ''
   modalOpen.value = true
   formSnapshot.value = JSON.stringify(form.value)
@@ -105,7 +107,7 @@ async function requestClose(): Promise<void> {
 }
 
 function validate(): boolean {
-  errors.value = { name: '', endpoint: '', bucket: '', accessKeyId: '', secret: '' }
+  errors.value = { name: '', endpoint: '', bucket: '', pathPrefix: '', accessKeyId: '', secret: '' }
   let ok = true
   if (!form.value.name.trim()) {
     errors.value.name = t('settingsObjectStorage.valNameRequired')
@@ -140,6 +142,7 @@ async function submit(): Promise<void> {
       name: form.value.name.trim(),
       endpoint: form.value.endpoint.trim(),
       bucket: form.value.bucket.trim(),
+      pathPrefix: form.value.pathPrefix.trim(),
       accessKeyId: form.value.accessKeyId.trim(),
       secret: form.value.secret,
     }
@@ -162,10 +165,11 @@ const editOpen = ref(false)
 const editSubmitting = ref(false)
 const editBanner = ref('')
 const editing = ref<ObjectStore | null>(null)
-const editForm = ref<{ name: string; endpoint: string; bucket: string; accessKeyId: string; secret: string }>({
+const editForm = ref<{ name: string; endpoint: string; bucket: string; pathPrefix: string; accessKeyId: string; secret: string }>({
   name: '',
   endpoint: '',
   bucket: '',
+  pathPrefix: '',
   accessKeyId: '',
   secret: '',
 })
@@ -183,6 +187,7 @@ function openEdit(s: ObjectStore): void {
     name: s.name,
     endpoint: s.endpoint,
     bucket: s.bucket,
+    pathPrefix: s.pathPrefix,
     accessKeyId: s.accessKeyId,
     secret: '',
   }
@@ -236,6 +241,8 @@ async function submitEdit(): Promise<void> {
       name: editForm.value.name.trim(),
       endpoint: editForm.value.endpoint.trim(),
       bucket: editForm.value.bucket.trim(),
+      // 空串 = 清空前缀(可选字段,允许显式清空)。
+      pathPrefix: editForm.value.pathPrefix.trim(),
       accessKeyId: editForm.value.accessKeyId.trim(),
       // 留空 = 不轮换;填新值 = 原地轮换(credentialId 不变)。
       ...(editForm.value.secret ? { secret: editForm.value.secret } : {}),
@@ -371,7 +378,7 @@ async function confirmDelete(): Promise<void> {
             <strong class="obj-name">{{ s.name }}</strong>
             <span v-if="s.endpoint" class="obj-ep mono">{{ s.endpoint }}</span>
           </div>
-          <span class="obj-bucket mono">{{ s.bucket }}</span>
+          <span class="obj-bucket mono">{{ s.bucket }}<span v-if="s.pathPrefix" class="obj-prefix">/{{ s.pathPrefix }}/</span></span>
           <span class="cred-state" :class="s.credentialConfigured ? 'cred-state--ok' : 'cred-state--missing'">
             <NIcon :size="13"><CircleCheck v-if="s.credentialConfigured" /><CircleX v-else /></NIcon>
             {{ s.credentialConfigured ? t('settingsObjectStorage.credConfigured') : t('settingsObjectStorage.credMissing') }}
@@ -502,6 +509,21 @@ async function confirmDelete(): Promise<void> {
           </div>
 
           <div class="field">
+            <label class="field-label" for="obj-prefix">{{ t('settingsObjectStorage.fieldPathPrefix') }}</label>
+            <input
+              id="obj-prefix"
+              v-model="form.pathPrefix"
+              class="field-input field-input--mono"
+              type="text"
+              :placeholder="t('settingsObjectStorage.pathPrefixPlaceholder')"
+              :disabled="submitting"
+              autocomplete="off"
+              spellcheck="false"
+            />
+            <span class="field-hint">{{ t('settingsObjectStorage.pathPrefixHint') }}</span>
+          </div>
+
+          <div class="field">
             <label class="field-label" for="obj-ak">{{ t('settingsObjectStorage.fieldAccessKeyId') }}</label>
             <input
               id="obj-ak"
@@ -618,6 +640,21 @@ async function confirmDelete(): Promise<void> {
               @input="editErrors.bucket = ''"
             />
             <span v-if="editErrors.bucket" class="field-error" role="alert">{{ editErrors.bucket }}</span>
+          </div>
+
+          <div class="field">
+            <label class="field-label" for="edit-obj-prefix">{{ t('settingsObjectStorage.fieldPathPrefix') }}</label>
+            <input
+              id="edit-obj-prefix"
+              v-model="editForm.pathPrefix"
+              class="field-input field-input--mono"
+              type="text"
+              :placeholder="t('settingsObjectStorage.pathPrefixPlaceholder')"
+              :disabled="editSubmitting"
+              autocomplete="off"
+              spellcheck="false"
+            />
+            <span class="field-hint">{{ t('settingsObjectStorage.pathPrefixHint') }}</span>
           </div>
 
           <div class="field">
@@ -868,6 +905,9 @@ async function confirmDelete(): Promise<void> {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+.obj-prefix {
+  color: var(--color-faint);
 }
 .mono {
   font-family: var(--font-mono);

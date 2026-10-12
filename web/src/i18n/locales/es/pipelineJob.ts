@@ -146,7 +146,7 @@ export default {
   fieldObjectStoreHint: 'Elige una cuenta configurada en Ajustes · Almacenamiento de objetos; si no hay ninguna, añádela primero en Ajustes.',
   fieldOssArtifactJobHint: 'De qué nodo subir el artefacto (coincidencia exacta por nodo); solo artefactos de archivo (jar/dist/archivo comprimido): para imágenes usa «Enviar imagen».',
   fieldOssPrefixLabel: 'Prefijo de clave del objeto (opcional)',
-  fieldOssPrefixHint: "Prefijo de clave dentro del bucket; admite los marcadores {'{{runId}}'} {'{{branch}}'} {'{{commit}}'} {'{{project}}'}; vacío = subir en la raíz del bucket.",
+  fieldOssPrefixHint: "Prefijo de clave de objeto dentro del bucket; admite los marcadores {'{{runId}}'} {'{{branch}}'} {'{{commit}}'} {'{{project}}'}; si la configuración del almacenamiento de objetos también define un prefijo de ruta, este se añade después.",
   objectStoreUnselected: 'Sin especificar (configura primero el almacenamiento de objetos en Ajustes)',
 
   // ─── jobConfigSchema · deploy_ssh ──────────────────────────────────────

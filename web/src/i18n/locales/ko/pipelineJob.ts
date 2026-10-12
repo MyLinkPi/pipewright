@@ -131,7 +131,7 @@ export default {
   fieldObjectStoreHint: '「설정 · 오브젝트 스토리지」에서 구성한 계정 중에서 선택하세요. 없으면 먼저 설정에서 추가하세요.',
   fieldOssArtifactJobHint: '어느 노드의 아티팩트를 업로드할지(노드로 정확히 일치). 파일 아티팩트만 지원하며(jar/dist/압축), 이미지는 「이미지 푸시」를 사용하세요.',
   fieldOssPrefixLabel: '오브젝트 키 접두사(선택)',
-  fieldOssPrefixHint: "버킷 내 키 접두사. 자리 표시자 {'{{runId}}'} {'{{branch}}'} {'{{commit}}'} {'{{project}}'} 지원. 비워 두면 버킷 루트에 업로드합니다.",
+  fieldOssPrefixHint: "버킷 내 객체 키 접두어. {'{{runId}}'} {'{{branch}}'} {'{{commit}}'} {'{{project}}'} 플레이스홀더를 지원합니다. 오브젝트 스토리지 설정에도 경로 접두어가 설정되어 있으면 그 뒤에 이어 붙입니다.",
   objectStoreUnselected: '지정하지 않음(먼저 설정에서 오브젝트 스토리지를 구성하세요)',
 
   // ─── jobConfigSchema · deploy_ssh ──────────────────────────────────────

@@ -18,10 +18,10 @@ func TestValidType(t *testing.T) {
 
 func TestNormalizeEndpoint(t *testing.T) {
 	cases := map[string]string{
-		"  oss-cn-hangzhou.aliyuncs.com  ":         "oss-cn-hangzhou.aliyuncs.com",
-		"https://oss-cn-hangzhou.aliyuncs.com":     "oss-cn-hangzhou.aliyuncs.com",
-		"http://oss-cn-beijing.aliyuncs.com/":      "oss-cn-beijing.aliyuncs.com",
-		"https://oss-cn-shanghai.aliyuncs.com///":  "oss-cn-shanghai.aliyuncs.com",
+		"  oss-cn-hangzhou.aliyuncs.com  ":        "oss-cn-hangzhou.aliyuncs.com",
+		"https://oss-cn-hangzhou.aliyuncs.com":    "oss-cn-hangzhou.aliyuncs.com",
+		"http://oss-cn-beijing.aliyuncs.com/":     "oss-cn-beijing.aliyuncs.com",
+		"https://oss-cn-shanghai.aliyuncs.com///": "oss-cn-shanghai.aliyuncs.com",
 		"": "",
 	}
 	for in, want := range cases {

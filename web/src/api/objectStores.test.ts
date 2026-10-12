@@ -72,6 +72,7 @@ describe('objectStores api client', () => {
       name: '生产 OSS',
       endpoint: 'oss-cn-hangzhou.aliyuncs.com',
       bucket: 'prod-bucket',
+      pathPrefix: '/ci/prod/',
       accessKeyId: 'LTAI5t',
       secret: 'super-secret',
     })
@@ -83,6 +84,7 @@ describe('objectStores api client', () => {
       name: '生产 OSS',
       endpoint: 'oss-cn-hangzhou.aliyuncs.com',
       bucket: 'prod-bucket',
+      pathPrefix: '/ci/prod/',
       accessKeyId: 'LTAI5t',
       secret: 'super-secret',
     })
@@ -98,6 +100,14 @@ describe('objectStores api client', () => {
     const body = JSON.parse(init.body)
     expect(body).toEqual({ name: 'renamed', bucket: 'new-bucket' })
     expect(body).not.toHaveProperty('secret')
+  })
+
+  it('updateObjectStore can change or clear the path prefix (empty string clears)', async () => {
+    fetchMock.mockResolvedValue(jsonResponse(200, {}))
+    await updateObjectStore('os-1', { pathPrefix: '/backups/2026/' })
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ pathPrefix: '/backups/2026/' })
+    await updateObjectStore('os-1', { pathPrefix: '' })
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({ pathPrefix: '' })
   })
 
   it('updateObjectStore forwards the secret when rotating', async () => {

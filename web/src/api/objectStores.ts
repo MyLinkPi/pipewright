@@ -33,6 +33,8 @@ export interface ObjectStore {
   endpoint: string
   /** 默认桶名。 */
   bucket: string
+  /** 可选：所有上传对象键统一附加的路径前缀（存储级默认；已归一化，无首尾斜杠）。 */
+  pathPrefix: string
   /** 非机密的凭据半段（阿里云 AccessKeyId）。 */
   accessKeyId: string
   /** 服务端派生：保险库中是否已存 AccessKeySecret。永不返回 Secret 本身。 */
@@ -46,6 +48,8 @@ export interface CreateObjectStoreInput {
   name: string
   endpoint: string
   bucket: string
+  /** 可选：对象键路径前缀（服务端归一化，去首尾斜杠）。 */
+  pathPrefix: string
   accessKeyId: string
   /** AccessKeySecret（只写）。经保险库存储，永不返回。 */
   secret: string
@@ -56,6 +60,8 @@ export interface UpdateObjectStoreInput {
   name?: string
   endpoint?: string
   bucket?: string
+  /** 可选：路径前缀；传空串 = 清空前缀。 */
+  pathPrefix?: string
   accessKeyId?: string
   /** 可选的 AccessKeySecret 轮换（只写）。 */
   secret?: string

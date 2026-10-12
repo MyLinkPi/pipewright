@@ -23,9 +23,9 @@ func NewStore(db *sql.DB) *Store { return &Store{db: db} }
 // create 落库一条对象存储配置。
 func (s *Store) create(ctx context.Context, p *Provider) error {
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO object_stores (id, type, name, endpoint, bucket, access_key_id, credential_id, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		p.ID, p.Type, p.Name, p.Endpoint, p.Bucket, p.AccessKeyID, p.CredentialID,
+		`INSERT INTO object_stores (id, type, name, endpoint, bucket, path_prefix, access_key_id, credential_id, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		p.ID, p.Type, p.Name, p.Endpoint, p.Bucket, p.PathPrefix, p.AccessKeyID, p.CredentialID,
 		p.CreatedAt.UTC().Format(time.RFC3339), p.UpdatedAt.UTC().Format(time.RFC3339),
 	)
 	if err != nil {
@@ -37,7 +37,7 @@ func (s *Store) create(ctx context.Context, p *Provider) error {
 // get 读取单条配置;不存在 → ErrNotFound。
 func (s *Store) get(ctx context.Context, id string) (*Provider, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT id, type, name, endpoint, bucket, access_key_id, credential_id, created_at, updated_at
+		`SELECT id, type, name, endpoint, bucket, path_prefix, access_key_id, credential_id, created_at, updated_at
 		 FROM object_stores WHERE id = ?`, id)
 	p, err := scanProvider(row)
 	if err != nil {
@@ -52,7 +52,7 @@ func (s *Store) get(ctx context.Context, id string) (*Provider, error) {
 // list 返回全部配置(created_at 倒序)。
 func (s *Store) list(ctx context.Context) ([]Provider, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, type, name, endpoint, bucket, access_key_id, credential_id, created_at, updated_at
+		`SELECT id, type, name, endpoint, bucket, path_prefix, access_key_id, credential_id, created_at, updated_at
 		 FROM object_stores ORDER BY created_at DESC, id`)
 	if err != nil {
 		return nil, fmt.Errorf("objectstore: list: %w", err)
@@ -100,6 +100,10 @@ func (s *Store) update(ctx context.Context, id string, in UpdateInput) (*Provide
 		}
 		p.Bucket = bucket
 	}
+	if in.PathPrefix != nil {
+		// 非 nil 即改;空串 = 清空前缀(可选字段,允许为空)。
+		p.PathPrefix = NormalizePathPrefix(*in.PathPrefix)
+	}
 	if in.AccessKeyID != nil {
 		ak := strings.TrimSpace(*in.AccessKeyID)
 		if ak == "" {
@@ -108,8 +112,8 @@ func (s *Store) update(ctx context.Context, id string, in UpdateInput) (*Provide
 		p.AccessKeyID = ak
 	}
 	_, err = s.db.ExecContext(ctx,
-		`UPDATE object_stores SET name = ?, endpoint = ?, bucket = ?, access_key_id = ?, updated_at = ? WHERE id = ?`,
-		p.Name, p.Endpoint, p.Bucket, p.AccessKeyID, time.Now().UTC().Format(time.RFC3339), id)
+		`UPDATE object_stores SET name = ?, endpoint = ?, bucket = ?, path_prefix = ?, access_key_id = ?, updated_at = ? WHERE id = ?`,
+		p.Name, p.Endpoint, p.Bucket, p.PathPrefix, p.AccessKeyID, time.Now().UTC().Format(time.RFC3339), id)
 	if err != nil {
 		return nil, fmt.Errorf("objectstore: update: %w", err)
 	}
@@ -140,7 +144,7 @@ func scanProvider(sc scanner) (*Provider, error) {
 		createdStr string
 		updatedStr string
 	)
-	if err := sc.Scan(&p.ID, &p.Type, &p.Name, &p.Endpoint, &p.Bucket, &p.AccessKeyID, &p.CredentialID, &createdStr, &updatedStr); err != nil {
+	if err := sc.Scan(&p.ID, &p.Type, &p.Name, &p.Endpoint, &p.Bucket, &p.PathPrefix, &p.AccessKeyID, &p.CredentialID, &createdStr, &updatedStr); err != nil {
 		return nil, err
 	}
 	created, err := time.Parse(time.RFC3339, createdStr)
@@ -165,6 +169,7 @@ func newProvider(in CreateInput) *Provider {
 		Name:         in.Name,
 		Endpoint:     in.Endpoint,
 		Bucket:       in.Bucket,
+		PathPrefix:   in.PathPrefix,
 		AccessKeyID:  in.AccessKeyID,
 		CredentialID: in.CredentialID,
 		CreatedAt:    now,

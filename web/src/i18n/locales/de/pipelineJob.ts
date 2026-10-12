@@ -140,7 +140,7 @@ export default {
   fieldObjectStoreHint: 'Wähle ein unter Einstellungen · Objektspeicher konfiguriertes Konto; gibt es keines, füge zuerst eines in den Einstellungen hinzu.',
   fieldOssArtifactJobHint: 'Welches Artefakt welches Knotens hochgeladen wird (exakte Übereinstimmung per Knoten); nur Datei-Artefakte (jar/dist/Archiv) — für Images „Image pushen“ verwenden.',
   fieldOssPrefixLabel: 'Objekt-Schlüsselpräfix (optional)',
-  fieldOssPrefixHint: "Schlüsselpräfix innerhalb des Buckets; unterstützt die Platzhalter {'{{runId}}'} {'{{branch}}'} {'{{commit}}'} {'{{project}}'}; leer = Upload im Bucket-Stamm.",
+  fieldOssPrefixHint: "Objektschlüssel-Präfix im Bucket; unterstützt die Platzhalter {'{{runId}}'} {'{{branch}}'} {'{{commit}}'} {'{{project}}'}; wenn in der Objektspeicher-Konfiguration ebenfalls ein Pfadpräfix gesetzt ist, wird dieses danach angehängt.",
   objectStoreUnselected: 'Nicht angegeben (zuerst den Objektspeicher in den Einstellungen konfigurieren)',
 
   // ─── jobConfigSchema · deploy_ssh ──────────────────────────────────────
