@@ -44,6 +44,7 @@ export default {
     fail: '部署失败',
     generated: '生效参数(仅此一次展示,请妥善保存)',
     onceHint: '生成的口令同时存在于目标机的 compose 文件中,可在该机的 Stacks 里查看。',
+    autoRegistered: '已自动登记为对象存储配置',
     close: '关闭',
   },
 }

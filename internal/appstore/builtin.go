@@ -127,6 +127,41 @@ volumes:
 		Builtin: true,
 	},
 	{
+		Name:        "rustfs",
+		DisplayName: "RustFS",
+		Description: "Rust 高性能 S3 兼容对象存储(含控制台);部署成功后自动登记到「设置 → 对象存储」。",
+		Icon:        "🦀",
+		ComposeYAML: `services:
+  rustfs:
+    image: rustfs/rustfs:{{version}}
+    restart: unless-stopped
+    command: ["/data"]
+    environment:
+      RUSTFS_ACCESS_KEY: {{access_key}}
+      RUSTFS_SECRET_KEY: {{secret_key}}
+      RUSTFS_ADDRESS: ":9000"
+      RUSTFS_CONSOLE_ADDRESS: ":9001"
+      RUSTFS_CONSOLE_ENABLE: "true"
+    ports:
+      - "{{api_port}}:9000"
+      - "{{console_port}}:9001"
+    volumes:
+      - rustfs-data:/data
+volumes:
+  rustfs-data:
+`,
+		Params: []ParamSpec{
+			{Name: "version", Label: "镜像版本", Type: ParamTypeString, Default: "latest"},
+			{Name: "access_key", Label: "Access Key", Type: ParamTypeString, Default: "rustfsadmin"},
+			{Name: "secret_key", Label: "Secret Key", Type: ParamTypeSecret, Required: true, AutoGenerate: true},
+			{Name: "api_port", Label: "API 端口", Type: ParamTypeInt, Default: "9000"},
+			{Name: "console_port", Label: "控制台端口", Type: ParamTypeInt, Default: "9001"},
+			// bucket 不进 compose,仅供部署后自动登记对象存储配置时读取(Render 会放入 Used)。
+			{Name: "bucket", Label: "自动登记的桶名", Type: ParamTypeString, Default: "pipewright"},
+		},
+		Builtin: true,
+	},
+	{
 		Name:        "rabbitmq",
 		DisplayName: "RabbitMQ",
 		Description: "消息队列(含管理插件);数据落具名卷 rabbitmq-data。",

@@ -40,6 +40,7 @@ export default {
     fail: "Deploy failed",
     generated: "Effective params (shown once — store them safely)",
     onceHint: "Generated passwords also live in the compose file on the target host (see its Stacks tab).",
+    autoRegistered: "오브젝트 스토리지 구성으로 자동 등록됨",
     close: "Close",
   },
 }

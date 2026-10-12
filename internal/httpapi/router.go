@@ -889,7 +889,8 @@ func New(webFS fs.FS, authn auth.Authenticator, opts ...Option) http.Handler {
 		ar.Post("/servers/{id}/stacks/save", makeStackSaveHandler(csv, aud))
 		// 应用商店一键部署(DPanel 式):模板参数渲染 → 复用 Stacks 链路 up -d。
 		// 生成的 secret 仅部署响应一次性返回;审计只记模板名,不记参数值。
-		ar.Post("/servers/{id}/apps/deploy", makeDeployAppHandler(o.appStore, csv, aud))
+		// RustFS 模板部署成功后联动自动登记对象存储(o.objectStores 未注入则跳过)。
+		ar.Post("/servers/{id}/apps/deploy", makeDeployAppHandler(o.appStore, csv, aud, o.objectStores))
 		// 容器 AI 诊断 / 看日志(AI moat):取容器日志 → ai.Diagnose 出根因+修复。复用 csv +
 		// o.aiSettings。出网前脱敏;AI 未配/失败 → 200 unavailable,绝不 500。比 {id} 多两段不被吞。
 		ar.Post("/servers/{id}/containers/{containerId}/diagnose", makeContainerDiagnoseHandler(csv, o.aiSettings))

@@ -59,7 +59,7 @@ func writeObjectStoreError(w http.ResponseWriter, err error) {
 	case errors.Is(err, objectstore.ErrNotFound):
 		writeError(w, http.StatusNotFound, "object_store_not_found", "对象存储配置不存在")
 	case errors.Is(err, objectstore.ErrInvalidType):
-		writeError(w, http.StatusBadRequest, "invalid_object_store", "对象存储类型非法(本期仅支持 aliyun_oss)")
+		writeError(w, http.StatusBadRequest, "invalid_object_store", "对象存储类型非法(支持 aliyun_oss / rustfs)")
 	case errors.Is(err, objectstore.ErrEmptyName):
 		writeError(w, http.StatusBadRequest, "invalid_object_store", "请填写对象存储展示名")
 	case errors.Is(err, objectstore.ErrEmptyEndpoint):
