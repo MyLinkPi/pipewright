@@ -40,6 +40,7 @@ export default {
     fail: "Deploy failed",
     generated: "Effective params (shown once — store them safely)",
     onceHint: "Generated passwords also live in the compose file on the target host (see its Stacks tab).",
+    autoRegistered: "Auto-registered as an object storage config",
     close: "Close",
   },
 }

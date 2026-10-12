@@ -1,6 +1,6 @@
 // Package objectstore 是「对象存储集成层」的领域层(流水线 OSS 上传节点配套)。
 //
-// 一条 Provider 代表一个对象存储账户接入(本期仅阿里云 OSS;类型枚举可扩展多云/多账户)。
+// 一条 Provider 代表一个对象存储账户接入(阿里云 OSS / S3 兼容的 RustFS;类型枚举可继续扩展多云/多账户)。
 //
 // 凭据按机密性拆开存储:
 //   - AccessKeyId 非机密 → 明文列存储,可回显可编辑;
@@ -20,10 +20,12 @@ import (
 	"time"
 )
 
-// 提供商类型枚举(DB 存小写字串;JSON 同名)。本期仅阿里云 OSS。
+// 提供商类型枚举(DB 存小写字串;JSON 同名)。
 const (
 	// TypeAliyunOSS 是阿里云对象存储 OSS(已真实实现)。
 	TypeAliyunOSS = "aliyun_oss"
+	// TypeRustFS 是 RustFS(Rust 实现的 S3 兼容对象存储;经 minio-go 以 S3 API/SigV4 访问)。
+	TypeRustFS = "rustfs"
 )
 
 // 领域错误(人话由 httpapi 层映射状态码;错误体绝不含敏感信息)。
@@ -42,6 +44,8 @@ var (
 	ErrEmptyAccessKeyID = errors.New("objectstore: access key id must not be empty")
 	// ErrEmptyCredentialID 表示未选择凭据。
 	ErrEmptyCredentialID = errors.New("objectstore: credential id must not be empty")
+	// ErrEmptySecret 表示自动登记入参的 Secret 明文为空。
+	ErrEmptySecret = errors.New("objectstore: secret must not be empty")
 	// ErrCredentialNotFound 表示引用的凭据不存在。
 	ErrCredentialNotFound = errors.New("objectstore: referenced credential not found")
 	// ErrVaultUnconfigured 表示保险库未配置 master key,无法取 AccessKeySecret。
@@ -56,7 +60,7 @@ var (
 // AccessKeyID 非机密,明文存储可回显。
 type Provider struct {
 	ID           string
-	Type         string // aliyun_oss
+	Type         string // aliyun_oss | rustfs
 	Name         string
 	Endpoint     string // 服务接入点(如 oss-cn-hangzhou.aliyuncs.com;不含 scheme)
 	Bucket       string // 默认桶
@@ -88,6 +92,25 @@ type UpdateInput struct {
 	AccessKeyID *string
 }
 
+// RegisterInput 是自动登记入参(应用商店部署 RustFS 的联动链路)。与 CreateInput 的差别:
+// Secret 明文直达本层,由本层经 vault 密封后落库,调用方(httpapi 部署链路)不留存。
+type RegisterInput struct {
+	Type        string
+	Name        string
+	Endpoint    string // 如 192.168.1.10:9000
+	Bucket      string
+	AccessKeyID string
+	Secret      string
+}
+
+// RegisterResult 是自动登记结果:配置视图 + 是否命中既有配置原地更新 + 尽力而为环节
+//(建桶)的结果说明(空串 = 无异常)。
+type RegisterResult struct {
+	Provider *Provider
+	Updated  bool
+	Note     string
+}
+
 // TestResult 是连通性测试结果(Err 为 nil 表示通过;Detail 为人话,绝不含密钥)。
 type TestResult struct {
 	OK        bool
@@ -102,6 +125,12 @@ type ObjectClient interface {
 	VerifyBucket(ctx context.Context) error
 	// PutObject 上传一个对象(objectKey 为对象键,body 为内容流)。
 	PutObject(ctx context.Context, objectKey string, body io.Reader) error
+}
+
+// bucketEnsurer 是 ObjectClient 的可选能力:支持自动建桶的实现(自建 S3 兼容存储如 RustFS;
+// 阿里云 OSS 客户端不实现)。自动登记链路(Register)据此决定是否在建配置前确保默认桶存在。
+type bucketEnsurer interface {
+	EnsureBucket(ctx context.Context) error
 }
 
 // Service 定义对象存储领域对外接口(httpapi 消费 + 流水线节点上传)。
@@ -120,6 +149,11 @@ type Service interface {
 	// Test 取该配置凭据 → 经 ObjectClient 校验桶可访问,返回耗时/结果。Secret 用完即弃,绝不外泄。
 	Test(ctx context.Context, id string) (*TestResult, error)
 
+	// Register 自动登记一份对象存储配置(应用商店部署 RustFS 联动):尽力而为确保默认桶存在,
+	// Secret 明文经 vault 密封。同 type+endpoint 已有配置 → 原地轮换凭据与接入参数(Updated=true),
+	// 不产生重复条目(重新部署会重新生成凭据,旧凭据必须跟着换)。
+	Register(ctx context.Context, in RegisterInput) (*RegisterResult, error)
+
 	// Upload 取该配置凭据 → 上传一段字节流到 objectKey(流水线 oss_upload 节点用)。
 	// objectKey 前会自动附加配置的 PathPrefix(存储级默认前缀;节点级前缀拼在其后)。
 	// Secret 用完即弃,绝不外泄。
@@ -129,7 +163,7 @@ type Service interface {
 // ValidType 报告提供商类型是否为受支持枚举。
 func ValidType(t string) bool {
 	switch t {
-	case TypeAliyunOSS:
+	case TypeAliyunOSS, TypeRustFS:
 		return true
 	default:
 		return false

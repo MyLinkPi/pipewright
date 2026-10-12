@@ -9,7 +9,10 @@ func TestValidType(t *testing.T) {
 	if !ValidType(TypeAliyunOSS) {
 		t.Fatalf("aliyun_oss 应为合法类型")
 	}
-	for _, bad := range []string{"", "s3", "minio", "Aliyun_OSS"} {
+	if !ValidType(TypeRustFS) {
+		t.Fatalf("rustfs 应为合法类型")
+	}
+	for _, bad := range []string{"", "s3", "minio", "Aliyun_OSS", "RustFS"} {
 		if ValidType(bad) {
 			t.Fatalf("类型 %q 不应合法", bad)
 		}

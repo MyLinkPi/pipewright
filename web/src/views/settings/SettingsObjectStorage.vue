@@ -1,13 +1,14 @@
 <script setup lang="ts">
 /*
-  SettingsObjectStorage.vue — 对象存储管理（本期仅阿里云 OSS）。
+  SettingsObjectStorage.vue — 对象存储管理（阿里云 OSS / S3 兼容的 RustFS）。
 
-  为流水线 `oss_upload` 节点提供上传目标：一份配置 = 一个 OSS 账户（Endpoint + Bucket）。
-  凭据按机密性拆分：AccessKeyId 非机密（明文可回显可编辑）；AccessKeySecret 只写不读 ——
+  为流水线 `oss_upload` 节点提供上传目标：一份配置 = 一个对象存储账户（Endpoint + Bucket）。
+  凭据按机密性拆开：AccessKeyId 非机密（明文可回显可编辑）；AccessKeySecret 只写不读 ——
   存入保险库，列表只显示「已配置 / 未配置」，绝不回显（可在编辑中轮换）。
+  RustFS 配置也可由应用商店部署 RustFS 成功后自动登记（尽力而为，含默认建桶）。
 
   - 列表：类型徽章、名称（附 Endpoint）、Bucket、凭据状态；每行「编辑」+「测试连接」+ 删除。
-  - 添加弹窗：类型（本期仅阿里云 OSS）+ 名称 + Endpoint + Bucket + AccessKeyId + AccessKeySecret（必填）。
+  - 添加弹窗：类型 + 名称 + Endpoint + Bucket + AccessKeyId + AccessKeySecret（必填）。
   - 编辑弹窗：改名称 / Endpoint / Bucket / AccessKeyId，轮换 Secret（留空不改动）。
   - 删除二次确认（连带删除其保险库凭据）。
   数据来自 GET /api/object-stores（只读聚合，从不含 Secret）。
@@ -40,11 +41,26 @@ const loadState = ref<LoadState>('idle')
 const loadError = ref('')
 const stores = ref<ObjectStore[]>([])
 
-// 本期仅阿里云 OSS;分段选择器留出扩展位,新增后端时加一项即可。
-const STORE_TYPES: ObjectStoreType[] = ['aliyun_oss']
+// 类型分段选择器:阿里云 OSS + S3 兼容的 RustFS(自建,应用商店部署后自动登记)。
+const STORE_TYPES: ObjectStoreType[] = ['aliyun_oss', 'rustfs']
 const typeLabels = computed<Record<ObjectStoreType, string>>(() => ({
   aliyun_oss: t('settingsObjectStorage.typeAliyunOss'),
+  rustfs: t('settingsObjectStorage.typeRustfs'),
 }))
+
+/** Endpoint 占位符按类型切换（RustFS 是 host:port 形式的自建接入点）。 */
+function endpointPlaceholderFor(type: ObjectStoreType | undefined): string {
+  return type === 'rustfs'
+    ? t('settingsObjectStorage.endpointPlaceholderRustfs')
+    : t('settingsObjectStorage.endpointPlaceholder')
+}
+
+/** Endpoint 提示按类型切换。 */
+function endpointHintFor(type: ObjectStoreType | undefined): string {
+  return type === 'rustfs'
+    ? t('settingsObjectStorage.endpointHintRustfs')
+    : t('settingsObjectStorage.endpointHint')
+}
 
 async function load(): Promise<void> {
   loadState.value = 'loading'
@@ -480,14 +496,14 @@ async function confirmDelete(): Promise<void> {
               class="field-input field-input--mono"
               :class="{ 'field-input--error': errors.endpoint }"
               type="text"
-              :placeholder="t('settingsObjectStorage.endpointPlaceholder')"
+              :placeholder="endpointPlaceholderFor(form.type)"
               :disabled="submitting"
               autocomplete="off"
               spellcheck="false"
               @input="errors.endpoint = ''"
             />
             <span v-if="errors.endpoint" class="field-error" role="alert">{{ errors.endpoint }}</span>
-            <span class="field-hint">{{ t('settingsObjectStorage.endpointHint') }}</span>
+            <span class="field-hint">{{ endpointHintFor(form.type) }}</span>
           </div>
 
           <div class="field">

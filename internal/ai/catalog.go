@@ -41,7 +41,7 @@ func BuiltinNodeCatalog() []NodeKind {
 		{Type: "deploy_container", Label: "容器部署", Category: "deploy",
 			Description: "经 SSH 在目标机部署镜像产物:docker login(可选)→ pull → 停旧容器 → run 新容器(ports + 结构化常用项 cpuLimit/memoryLimit/restartPolicy/envVars,或 runArgs 自由参数)→ 健康门控 → 失败回滚上一镜像。config 必填 artifactJob(指向 build_image 节点)、containerName。"},
 		{Type: "oss_upload", Label: "OSS 上传", Category: "deploy",
-			Description: "把上游节点产出的文件类产物(jar/dist/归档)上传到已配置的阿里云 OSS。config 必填 storageId(设置页里的对象存储配置)、artifactJob(产物来源节点 name);可选 prefix(对象路径前缀,支持 {{runId}}/{{branch}}/{{commit}}/{{project}})、artifactName(产物名 glob,多件时消歧)。"},
+			Description: "把上游节点产出的文件类产物(jar/dist/归档)上传到已配置的对象存储(阿里云 OSS / S3 兼容的 RustFS)。config 必填 storageId(设置页里的对象存储配置)、artifactJob(产物来源节点 name);可选 prefix(对象路径前缀,支持 {{runId}}/{{branch}}/{{commit}}/{{project}})、artifactName(产物名 glob,多件时消歧)。"},
 		{Type: "health_check", Label: "健康检查", Category: "deploy",
 			Description: "对目标机(selector/serverId 圈选)做健康探测(http=curl / command=自定义命令,带重试);失败令阶段失败。建议接在部署节点之后。"},
 		{Type: "notify", Label: "通知", Category: "notify",

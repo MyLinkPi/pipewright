@@ -342,6 +342,11 @@ async function removeCustom(tpl: AppTemplate): Promise<void> {
             {{ deployResult.ok ? t('appStore.deploy.ok') : t('appStore.deploy.fail') }}
           </p>
           <p v-if="deployResult.error" class="apps__fail-detail">{{ deployResult.error }}</p>
+          <!-- RustFS 联动:部署成功后自动登记对象存储的结果(尽力而为,失败不影响部署) -->
+          <p v-if="deployResult.objectStoreRegistered" class="apps__reg-ok">
+            {{ t('appStore.deploy.autoRegistered') }}<template v-if="deployResult.objectStoreNote"> · {{ deployResult.objectStoreNote }}</template>
+          </p>
+          <p v-else-if="deployResult.objectStoreNote" class="apps__reg-warn">{{ deployResult.objectStoreNote }}</p>
           <div v-if="deployResult.ok && deployResult.params" class="apps__params">
             <h4>{{ t('appStore.deploy.generated') }}</h4>
             <ul>
@@ -538,6 +543,16 @@ async function removeCustom(tpl: AppTemplate): Promise<void> {
   font-size: 12px;
   color: #b3261e;
   white-space: pre-wrap;
+  margin: 0;
+}
+.apps__reg-ok {
+  font-size: 12px;
+  color: #0a7d32;
+  margin: 0;
+}
+.apps__reg-warn {
+  font-size: 12px;
+  color: #9a6700;
   margin: 0;
 }
 .apps__params h4 {

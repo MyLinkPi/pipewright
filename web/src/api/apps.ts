@@ -46,6 +46,10 @@ export interface AppDeployResult {
   error: string
   /** 生效参数(含自动生成的 secret;仅本次部署响应一次性返回)。 */
   params?: Record<string, string>
+  /** RustFS 联动:部署成功后是否已自动登记为对象存储配置(尽力而为,失败不影响 ok)。 */
+  objectStoreRegistered?: boolean
+  /** RustFS 联动登记的人话备注(成功说明或失败原因;未触发时缺省)。 */
+  objectStoreNote?: string
 }
 
 export interface AppTemplateInput {

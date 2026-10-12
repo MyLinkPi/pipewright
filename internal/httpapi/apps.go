@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/huangchengsir/pipewright/internal/appstore"
 	"github.com/huangchengsir/pipewright/internal/audit"
+	"github.com/huangchengsir/pipewright/internal/objectstore"
 	"github.com/huangchengsir/pipewright/internal/target"
 	"gopkg.in/yaml.v3"
 )
@@ -26,8 +28,76 @@ const (
 	auditActionAppTemplateUpdate = "appstore.template.update"
 	auditActionAppTemplateDelete = "appstore.template.delete"
 	auditActionAppDeploy         = "appstore.deploy"
+	auditActionObjectStoreReg    = "objectstore.register"
 	auditTargetAppStore          = "app_template"
 )
+
+// appAutoRegisterTemplate 是「部署后自动登记为对象存储配置」的内置模板名(应用商店 RustFS 联动)。
+const appAutoRegisterTemplate = "rustfs"
+
+// appRegisterTimeout 是部署后联动登记对象存储的独立超时(含建桶短重试),不占 compose up 的窗口。
+const appRegisterTimeout = 20 * time.Second
+
+// registerRustFSObjectStore 是应用商店部署 RustFS 成功后的联动登记(尽力而为,绝不影响部署结果):
+// 从渲染后的生效参数取接入信息(endpoint = 服务器地址 + API 端口),交给 objectstore.Register
+// 完成「确保默认桶 + 凭据入 vault + 同 type+endpoint 幂等轮换」。返回 (是否已登记, 人话备注)。
+// 备注会进入部署响应与审计 detail;绝不含 Secret(审计只记接入参数,与 objectstore.create 同纪律)。
+func registerRustFSObjectStore(ctx context.Context, objStores objectstore.Service, aud audit.Recorder, r *http.Request, srv target.Server, used map[string]string) (bool, string) {
+	if objStores == nil {
+		return false, "" // 服务未注入(如裁剪装配)→ 静默跳过,部署不受影响
+	}
+	accessKey, secret, apiPort := used["access_key"], used["secret_key"], used["api_port"]
+	if accessKey == "" || secret == "" || apiPort == "" {
+		return false, "生效参数缺少 access_key / secret_key / api_port,未自动登记对象存储"
+	}
+	bucket := used["bucket"]
+	if bucket == "" {
+		bucket = "pipewright"
+	}
+	name := "RustFS · " + srv.Name
+	if strings.TrimSpace(name) == "RustFS ·" {
+		name = "RustFS · " + srv.Host
+	}
+	endpoint := net.JoinHostPort(srv.Host, apiPort)
+	res, err := objStores.Register(ctx, objectstore.RegisterInput{
+		Type:        objectstore.TypeRustFS,
+		Name:        name,
+		Endpoint:    endpoint,
+		Bucket:      bucket,
+		AccessKeyID: accessKey,
+		Secret:      secret,
+	})
+	if err != nil {
+		msg := "自动登记对象存储失败"
+		if errors.Is(err, objectstore.ErrVaultUnconfigured) {
+			msg += ":保险库未配置 master key"
+		} else {
+			msg += ":" + err.Error()
+		}
+		recordAudit(r.Context(), aud, audit.Entry{
+			Actor: auditActor, Action: auditActionObjectStoreReg, TargetType: auditTargetObjectStore,
+			Detail: map[string]any{"type": objectstore.TypeRustFS, "endpoint": endpoint, "bucket": bucket, "source": "appstore", "ok": false, "error": msg}, IP: clientIP(r),
+		})
+		return false, msg
+	}
+	note := "已自动登记到「设置 → 对象存储」"
+	if res.Updated {
+		note = "已更新既有对象存储配置的凭据(同 Endpoint 原地轮换)"
+	}
+	if res.Note != "" {
+		note += ";" + res.Note
+	}
+	targetID := ""
+	if res.Provider != nil {
+		targetID = res.Provider.ID
+	}
+	recordAudit(r.Context(), aud, audit.Entry{
+		Actor: auditActor, Action: auditActionObjectStoreReg, TargetType: auditTargetObjectStore,
+		TargetID: targetID,
+		Detail:   map[string]any{"type": objectstore.TypeRustFS, "endpoint": endpoint, "bucket": bucket, "source": "appstore", "ok": true, "updated": res.Updated}, IP: clientIP(r),
+	})
+	return true, note
+}
 
 // deployComposeToServer 把一段 compose 内容部署为受管 Stacks 项目(与 Stacks 部署同一条链路):
 // 建受管目录 → Upload compose 文件(字节流)→ 探测 compose CLI → `compose -p <name> up -d`。
@@ -311,8 +381,9 @@ func makeDeleteAppTemplateHandler(svc appstore.Service, aud audit.Recorder) http
 // makeDeployAppHandler 返回 POST /api/servers/{id}/apps/deploy {templateId, params, cpus?, memory?}。
 // 渲染参数(自动生成 secret)→ 可选注入资源限制(deploy.resources.limits)→ 复用 Stacks 链路
 // 部署到该主机;生成的 secret 随响应一次性返回(部署后以明文存在于目标机 compose 文件,与
-// Stacks 语义一致;审计只记模板名,不记参数值)。
-func makeDeployAppHandler(apps appstore.Service, servers target.Service, aud audit.Recorder) http.HandlerFunc {
+// Stacks 语义一致;审计只记模板名,不记参数值)。RustFS 模板部署成功后联动自动登记对象存储
+// 配置(尽力而为,结果见响应 objectStoreRegistered / objectStoreNote)。
+func makeDeployAppHandler(apps appstore.Service, servers target.Service, aud audit.Recorder, objStores objectstore.Service) http.HandlerFunc {
 	type request struct {
 		TemplateID string            `json:"templateId"`
 		Params     map[string]string `json:"params"`
@@ -326,6 +397,9 @@ func makeDeployAppHandler(apps appstore.Service, servers target.Service, aud aud
 		Output   string            `json:"output"`
 		Error    string            `json:"error"`
 		Params   map[string]string `json:"params,omitempty"` // 生效参数(含生成的 secret,仅此一次)
+		// RustFS 联动登记结果(仅 rustfs 模板且部署成功时出现;尽力而为,失败不影响 OK)。
+		ObjectStoreRegistered bool   `json:"objectStoreRegistered,omitempty"`
+		ObjectStoreNote       string `json:"objectStoreNote,omitempty"`
 	}
 	return func(w http.ResponseWriter, r *http.Request) {
 		if apps == nil {
@@ -361,7 +435,8 @@ func makeDeployAppHandler(apps appstore.Service, servers target.Service, aud aud
 			writeAppStoreError(w, err)
 			return
 		}
-		if _, err := servers.Get(r.Context(), serverID); err != nil {
+		srv, err := servers.Get(r.Context(), serverID)
+		if err != nil {
 			writeServerError(w, err)
 			return
 		}
@@ -380,6 +455,13 @@ func makeDeployAppHandler(apps appstore.Service, servers target.Service, aud aud
 		cctx, cancel := context.WithTimeout(r.Context(), stacksUpTimeout)
 		defer cancel()
 		out.OK, out.Output, out.Error = deployComposeToServer(cctx, servers, serverID, tpl.Name, compose)
+
+		// RustFS 联动:部署成功后自动登记为对象存储配置(尽力而为,独立超时,不影响部署结果)。
+		if out.OK && tpl.Name == appAutoRegisterTemplate {
+			rctx, rcancel := context.WithTimeout(r.Context(), appRegisterTimeout)
+			out.ObjectStoreRegistered, out.ObjectStoreNote = registerRustFSObjectStore(rctx, objStores, aud, r, *srv, rendered.Used)
+			rcancel()
+		}
 
 		recordAudit(r.Context(), aud, audit.Entry{
 			Actor: auditActor, Action: auditActionAppDeploy, TargetType: audit.TargetServer, TargetID: serverID,

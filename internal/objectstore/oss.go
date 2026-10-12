@@ -6,13 +6,16 @@ import (
 	"io"
 
 	"github.com/aliyun/aliyun-oss-go-sdk/oss"
+	"github.com/minio/minio-go/v7"
 )
 
-// newObjectClient 按提供商类型造真实 ObjectClient(本期仅阿里云 OSS)。
+// newObjectClient 按提供商类型造真实 ObjectClient(阿里云 OSS / S3 兼容 RustFS)。
 func newObjectClient(providerType, endpoint, accessKeyID, accessKeySecret, bucketName string) (ObjectClient, error) {
 	switch providerType {
 	case TypeAliyunOSS:
 		return newAliyunOSSClient(endpoint, accessKeyID, accessKeySecret, bucketName)
+	case TypeRustFS:
+		return newRustFSClient(endpoint, accessKeyID, accessKeySecret, bucketName)
 	default:
 		return nil, ErrInvalidType
 	}
@@ -53,7 +56,8 @@ func (c *aliyunObjectClient) PutObject(ctx context.Context, objectKey string, bo
 }
 
 // describeClientError 把 SDK / 网络错误渲染为人话(绝不含 AccessKey 明文)。
-// 服务端错误(oss.ServiceError)输出其 Code/Message;其余(网络/连接)输出通用短语,不泄露原始串。
+// 服务端错误(oss.ServiceError / minio.ErrorResponse)输出其 Code/Message;其余(网络/连接)
+// 输出通用短语,不泄露原始串。
 func describeClientError(err error) string {
 	if err == nil {
 		return ""
@@ -68,6 +72,18 @@ func describeClientError(err error) string {
 		}
 		if se.Code != "" {
 			return se.Code
+		}
+	}
+	var me minio.ErrorResponse
+	if errors.As(err, &me) {
+		if me.Message != "" {
+			if me.Code != "" {
+				return me.Code + ": " + me.Message
+			}
+			return me.Message
+		}
+		if me.Code != "" {
+			return me.Code
 		}
 	}
 	return "无法连接对象存储(网络异常、Endpoint 不可达或凭据无效)"

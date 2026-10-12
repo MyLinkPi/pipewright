@@ -1,7 +1,7 @@
 /**
  * Object-storage API client（设置 · 对象存储）。
  *
- * 一个 `ObjectStore` 是一份对象存储**账户**配置（本期仅阿里云 OSS），供流水线
+ * 一个 `ObjectStore` 是一份对象存储**账户**配置（阿里云 OSS / S3 兼容的 RustFS），供流水线
  * `oss_upload` 节点把构建产物推送到桶。凭据按机密性拆分：
  *  - `accessKeyId` 非机密 —— 明文存储、可回显 / 可编辑；
  *  - AccessKeySecret **只写** —— 提交一次（可轮换），经后端保险库加密存储，**绝不回显**；
@@ -18,8 +18,8 @@
 
 import { http } from './http'
 
-/** 受支持的对象存储后端（本期仅阿里云 OSS）。 */
-export type ObjectStoreType = 'aliyun_oss'
+/** 受支持的对象存储后端（阿里云 OSS / S3 兼容的 RustFS）。 */
+export type ObjectStoreType = 'aliyun_oss' | 'rustfs'
 
 /**
  * 一份对象存储账户配置。Secret 永不返回；`accessKeyId` 非机密，明文回显。
@@ -35,7 +35,7 @@ export interface ObjectStore {
   bucket: string
   /** 可选：所有上传对象键统一附加的路径前缀（存储级默认；已归一化，无首尾斜杠）。 */
   pathPrefix: string
-  /** 非机密的凭据半段（阿里云 AccessKeyId）。 */
+  /** 非机密的凭据半段（阿里云 AccessKeyId / RustFS Access Key）。 */
   accessKeyId: string
   /** 服务端派生：保险库中是否已存 AccessKeySecret。永不返回 Secret 本身。 */
   credentialConfigured: boolean

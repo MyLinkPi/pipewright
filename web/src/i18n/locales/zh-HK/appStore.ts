@@ -40,6 +40,7 @@ export default {
     fail: "部署失敗",
     generated: "生效參數(僅此一次展示,請妥善保存)",
     onceHint: "產生的密碼同時存在於目標主機的 compose 檔案中,可在該機的 Stacks 檢視。",
+    autoRegistered: "已自動登記為物件儲存設定",
     close: "關閉",
   },
 }
