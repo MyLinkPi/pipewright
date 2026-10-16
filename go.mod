@@ -11,7 +11,7 @@ require (
 	github.com/go-git/go-git/v5 v5.19.1
 	github.com/go-sql-driver/mysql v1.10.0
 	github.com/google/uuid v1.6.0
-	github.com/minio/minio-go/v7 v7.3.0
+	github.com/minio/minio-go/v7 v7.2.1
 	golang.org/x/crypto v0.55.0
 	golang.org/x/net v0.58.0
 	gopkg.in/yaml.v3 v3.0.1
