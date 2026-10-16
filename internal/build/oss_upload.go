@@ -2,6 +2,7 @@ package build
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path"
 	"regexp"
@@ -21,15 +22,19 @@ func isObjectUploadJob(jobType string) bool {
 	return strings.TrimSpace(jobType) == "oss_upload"
 }
 
-// runPlaceholder 匹配节点 config 里受支持的本次运行占位。
-var runPlaceholder = regexp.MustCompile(`\{\{\s*(runId|branch|commit|project)\s*\}\}`)
+// runPlaceholder 匹配节点 config 里受支持的本次运行占位;date 支持 {{date}} 与
+// {{date:格式}} 两种形态(格式字符集宽匹配,合法性由 imageDateLayout 严格校验)。
+var runPlaceholder = regexp.MustCompile(`\{\{\s*(runId|branch|commit|project|date(?::[^{}]*)?)\s*\}\}`)
 
 // renderRunPlaceholders 把字符串里的通用占位替换为本次运行的值:
-// {{runId}} / {{branch}} / {{commit}} / {{project}}。未知占位原样保留(不报错)。
+// {{runId}} / {{branch}} / {{commit}} / {{project}} / {{date}} / {{date:格式}}。
+// 未知占位原样保留(不报错,既有语义);date 语法/格式非法则显式报错(移植上游
+// expandImageTag 的严格性)。日期用 run 创建时刻(已持久化)按 UTC 渲染——同一
+// run 并行/先后执行的多个节点得到相同日期(确定性,不随任务执行时刻漂移)。
 // 由 oss_upload 的 prefix 与 push_image 的 tag 共用。
-func renderRunPlaceholders(s string, r *run.Run) string {
+func renderRunPlaceholders(s string, r *run.Run) (string, error) {
 	if s == "" || !strings.Contains(s, "{{") {
-		return s
+		return s, nil
 	}
 	repl := map[string]string{
 		"runId":   r.ID,
@@ -37,9 +42,75 @@ func renderRunPlaceholders(s string, r *run.Run) string {
 		"commit":  strings.TrimSpace(r.Trigger.Commit),
 		"project": r.ProjectName,
 	}
-	return runPlaceholder.ReplaceAllStringFunc(s, func(m string) string {
-		return repl[runPlaceholder.FindStringSubmatch(m)[1]]
+	var renderErr error
+	out := runPlaceholder.ReplaceAllStringFunc(s, func(m string) string {
+		name := runPlaceholder.FindStringSubmatch(m)[1]
+		if !strings.HasPrefix(name, "date") {
+			if v, ok := repl[name]; ok {
+				return v
+			}
+			return m
+		}
+		if renderErr != nil {
+			return m
+		}
+		format := "yyyy-MM-dd-HH-mm"
+		if suffix, ok := strings.CutPrefix(name, "date:"); ok && strings.TrimSpace(suffix) != "" {
+			format = strings.TrimSpace(suffix)
+		}
+		layout, err := imageDateLayout(format)
+		if err != nil {
+			renderErr = fmt.Errorf("日期占位格式非法(%q):%w", format, err)
+			return m
+		}
+		if r.CreatedAt.IsZero() {
+			renderErr = errors.New("run 创建时间不可用,无法渲染日期占位")
+			return m
+		}
+		return r.CreatedAt.UTC().Format(layout)
 	})
+	if renderErr != nil {
+		return "", renderErr
+	}
+	return out, nil
+}
+
+// imageDateLayout 把日期格式模板翻译为 Go layout。仅允许 yyyy/MM/dd/HH/mm/ss
+// 六个 token 与 - _ . 三种分隔符(移植上游 89ed90d,防注入 Go layout 语义)。
+func imageDateLayout(format string) (string, error) {
+	bad := errors.New("仅支持 yyyy、MM、dd、HH、mm、ss 与 - _ . 分隔符")
+	if format == "" || len(format) > 128 {
+		return "", bad
+	}
+	var layout strings.Builder
+	tokens := 0
+	for format != "" {
+		matched := false
+		for _, token := range []struct{ name, layout string }{
+			{"yyyy", "2006"}, {"MM", "01"}, {"dd", "02"},
+			{"HH", "15"}, {"mm", "04"}, {"ss", "05"},
+		} {
+			if strings.HasPrefix(format, token.name) {
+				layout.WriteString(token.layout)
+				format = format[len(token.name):]
+				tokens++
+				matched = true
+				break
+			}
+		}
+		if matched {
+			continue
+		}
+		if !strings.ContainsRune("-_.", rune(format[0])) {
+			return "", bad
+		}
+		layout.WriteByte(format[0])
+		format = format[1:]
+	}
+	if tokens == 0 {
+		return "", bad
+	}
+	return layout.String(), nil
 }
 
 // joinObjectKey 拼接对象键:prefix 与 name 各去首尾斜杠,空侧省略分隔符。
@@ -191,7 +262,11 @@ func (b *Builder) runOssUploadJob(ctx context.Context, rep dagrun.StageReporter,
 		_ = rep.Log(ctx, streamStderr, "OSS 上传节点:"+err.Error())
 		return ErrBuildFailed
 	}
-	prefix := renderRunPlaceholders(cfgString(jb.Config, "prefix"), r)
+	prefix, perr := renderRunPlaceholders(cfgString(jb.Config, "prefix"), r)
+	if perr != nil {
+		_ = rep.Log(ctx, streamStderr, "OSS 上传节点:prefix 占位渲染失败:"+perr.Error())
+		return ErrBuildFailed
+	}
 	n, uerr := b.uploadArtifact(ctx, rep, storageID, prefix, *art)
 	if uerr != nil {
 		_ = rep.Log(ctx, streamStderr, "OSS 上传节点:上传失败:"+uerr.Error())

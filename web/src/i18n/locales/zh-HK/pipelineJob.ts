@@ -113,7 +113,7 @@ export default {
   fieldRegistryLabel: "映像倉庫位址",
   fieldImageNameLabel: "映像名",
   fieldTagLabel: "標籤",
-  fieldTagHint: "可用變數:{'{{commit}}'} {'{{branch}}'} {'{{runId}}'} {'{{project}}'};留空沿用產物標籤",
+  fieldTagHint: "可用變數:{'{{commit}}'} {'{{branch}}'} {'{{runId}}'} {'{{project}}'};留空沿用產物標籤;另支援 {'{{date}}'} {'{{date:yyyyMMddHHmmss}}'} 日期佔位(取 run 建立時間 UTC,預設 yyyy-MM-dd-HH-mm,token 支援 yyyy、MM、dd、HH、mm、ss)",
   fieldPushImageArtifactJobHint: '選擇要推送哪個節點產出的映像(須選「同階段」的「構建」節點;推送在該節點內完成)。',
   fieldPushImageRegistryHint: '留空 = 用該節點所在環境綁定的映像倉庫。',
   fieldRegistryCredentialLabel: "倉庫憑證",

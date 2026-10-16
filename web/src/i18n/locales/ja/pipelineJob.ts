@@ -122,7 +122,7 @@ export default {
   fieldImageNameLabel: "イメージ名",
   fieldTagLabel: "タグ",
   fieldTagHint:
-    "使用可能な変数:{'{{commit}}'} {'{{branch}}'} {'{{runId}}'} {'{{project}}'};空欄は成果物のタグを沿用",
+    "使用可能な変数:{'{{commit}}'} {'{{branch}}'} {'{{runId}}'} {'{{project}}'};空欄は成果物のタグを沿用 追加変数: {'{{date}}'} {'{{date:yyyyMMddHHmmss}}'}(日付は run 作成時刻 UTC、デフォルト yyyy-MM-dd-HH-mm。トークン: yyyy、MM、dd、HH、mm、ss)",
   fieldPushImageArtifactJobHint: 'どのノードが生成したイメージをプッシュするか(必ず「同じステージ」の「ビルド」ノード;プッシュはそのノード内で実行)。',
   fieldPushImageRegistryHint: '空欄 = ソースノードの環境に紐づくイメージレジストリを使用。',
   fieldRegistryCredentialLabel: "レジストリ認証情報",
