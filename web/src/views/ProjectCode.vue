@@ -168,8 +168,10 @@ function retryProject(): void {
 .code-page {
   display: flex;
   flex-direction: column;
-  height: 100%;
-  min-height: 0;
+  /* 外层 shell 只有 min-height,百分比高度解析不出,代码预览高度会被目录树撑爆。
+     fork 无上游的语言切换带(-38px)与 onboarding 底部让位,直接用 tokens 的上下留白。 */
+  height: calc(100dvh - var(--main-pad-top) - var(--main-pad-bottom));
+  min-height: 320px;
   gap: 14px;
 }
 
@@ -247,7 +249,8 @@ function retryProject(): void {
   flex: 1;
   min-height: 0;
   display: grid;
-  grid-template-columns: minmax(220px, 300px) 1fr;
+  grid-template-columns: minmax(220px, 300px) minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
   gap: 14px;
 }
 
@@ -361,9 +364,15 @@ function retryProject(): void {
 
 /* ─── responsive ──────────────────────────────────────────────────────────── */
 @media (max-width: 760px) {
+  .code-page {
+    height: auto;
+    min-height: 0;
+  }
+
   .code-split {
+    flex: none;
     grid-template-columns: 1fr;
-    grid-template-rows: minmax(180px, 36vh) 1fr;
+    grid-template-rows: minmax(160px, 24dvh) minmax(360px, 60dvh);
   }
 }
 
