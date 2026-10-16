@@ -82,19 +82,19 @@ func NewStageExecutorWithRunner(b *Builder, reportSink TestReportSink, resolve R
 		}
 		stageSel := strings.TrimSpace(stage.Runner)
 
-		scriptJobs := scriptJobsOf(stage)
-		if len(scriptJobs) == 0 {
-			// 无 script job 的阶段(纯部署/健康检查/通知等)只能由本地执行器真实执行:
-			// 远程 runner 仅支持 script 类型,派过去只会逐节点「放行」空转——部署节点的目标
-			// 选择器完全不生效(部署由控制机经 SSH 驱动目标机,与构建机池无关),阶段还白白
-			// 占一个构建机槽位。一律本地,不看阶段/项目构建机选择器(那些只约束 script 节点)。
+		rjobs := runnerJobsOf(stage)
+		if len(rjobs) == 0 {
+			// 无可远程构建节点的阶段(纯部署/健康检查/通知等)只能由本地执行器真实执行:
+			// 远程 runner 仅支持 script / build_image 类型,派过去只会逐节点「放行」空转——
+			// 部署节点的目标选择器完全不生效(部署由控制机经 SSH 驱动目标机,与构建机池无关),
+			// 阶段还白白占一个构建机槽位。一律本地,不看阶段/项目构建机选择器(那些只约束构建节点)。
 			return local(ctx, r, stage, rep)
 		}
 
 		// 逐节点判定有效选择器;全部为空 → 整体本地(行为不变,零额外开销)。
-		effs := make([]string, len(scriptJobs))
+		effs := make([]string, len(rjobs))
 		hasRemote := false
-		for i, jb := range scriptJobs {
+		for i, jb := range rjobs {
 			effs[i] = effRunnerSelector(jb, stageSel, projSel)
 			if effs[i] != "" {
 				hasRemote = true
@@ -104,9 +104,9 @@ func NewStageExecutorWithRunner(b *Builder, reportSink TestReportSink, resolve R
 			return local(ctx, r, stage, rep)
 		}
 
-		// 节点有效选择器(jobID → 非空选择器 = 远程节点;仅 script 节点可远程)。
-		selByID := make(map[string]string, len(scriptJobs))
-		for i, jb := range scriptJobs {
+		// 节点有效选择器(jobID → 非空选择器 = 远程节点;仅 script / build_image 节点可远程)。
+		selByID := make(map[string]string, len(rjobs))
+		for i, jb := range rjobs {
 			if effs[i] != "" && strings.TrimSpace(jb.ID) != "" {
 				selByID[jb.ID] = effs[i]
 			}
@@ -120,13 +120,13 @@ func NewStageExecutorWithRunner(b *Builder, reportSink TestReportSink, resolve R
 		}
 
 		// ── 批量路径(无跨组依赖,行为兼容):本地侧先跑,远程节点随后逐节点独立取机 ──
-		// 本地侧:无选择器的 script 节点 + 全部非 script 节点(部署/通知等只能由本地执行器执行)。
+		// 本地侧:无选择器的构建节点(script / build_image)+ 全部其余节点(部署/通知等只能由本地执行器执行)。
 		// post 剥离提升到本层:post 必须在本地+远程全部结束后按合并成败执行(全远程阶段本地侧
 		// 为空,post 留在本地执行器里永远不会触发)。
 		var localJobs []pipeline.Job
 		for _, jb := range stage.Jobs {
-			if isScriptJob(jb.Type) {
-				if effs[indexOfScriptJob(scriptJobs, jb)] != "" {
+			if isScriptJob(jb.Type) || isBuildImageJob(jb.Type) {
+				if effs[indexOfRunnerJob(rjobs, jb)] != "" {
 					continue
 				}
 			}
@@ -142,8 +142,8 @@ func NewStageExecutorWithRunner(b *Builder, reportSink TestReportSink, resolve R
 		}
 
 		// dispatch 派发单个远程节点:占槽(失败返回 started=false)→ JobRunning → 远程执行 →
-		// 按结果 JobDone。release 由闭包级 defer 保证:即使 runStageRemote panic(worker 层有
-		// recover,见 internal/run/pool.go)槽位也必归还,不再泄漏。
+		// 按结果 JobDone。release 由闭包级 defer 保证:即使执行 panic(worker 层有 recover,
+		// 见 internal/run/pool.go)槽位也必归还,不再泄漏。
 		dispatch := func(i int, jb pipeline.Job, sel string) (started bool, err error) {
 			serverID, serverName, release, aerr := resolve.Acquire(ctx, r.ProjectID, sel, log)
 			if aerr != nil {
@@ -155,9 +155,7 @@ func NewStageExecutorWithRunner(b *Builder, reportSink TestReportSink, resolve R
 			// 能直接看到它被调度到哪台机、传输/容器执行/完成的全过程。
 			jrep := rep.JobReporter(jb.ID)
 			_ = jrep.Log(run.WithLogMachine(ctx, serverName), streamStdout, fmt.Sprintf("→ 节点「%s」→ 构建机:%s(选择器 %s)", jb.Name, serverName, sel))
-			sub := stage
-			sub.Jobs = []pipeline.Job{jb}
-			if rerr := b.runStageRemote(ctx, r, sub, jrep, serverID, serverName, tgt, "-"+sanitizeRemoteSeg(jobRemoteKey(jb, i))); rerr != nil {
+			if rerr := b.runJobRemote(ctx, r, stage, jb, jrep, serverID, serverName, tgt, "-"+sanitizeRemoteSeg(jobRemoteKey(jb, i))); rerr != nil {
 				_ = rep.JobDone(ctx, jb.ID, run.StepFailed)
 				return true, rerr
 			}
@@ -167,9 +165,9 @@ func NewStageExecutorWithRunner(b *Builder, reportSink TestReportSink, resolve R
 
 		// 远程节点:逐节点独立取机(同选择器=同池各占一槽,可并行/排队),各自独立工作区。
 		// 本地侧已失败/取消时不再派发,未执行的远程节点统一在收尾标 skipped。
-		executed := make(map[int]bool, len(scriptJobs))
+		executed := make(map[int]bool, len(rjobs))
 		if jobErr == nil {
-			for i, jb := range scriptJobs {
+			for i, jb := range rjobs {
 				if canceled(ctx) {
 					jobErr = run.ErrCanceled
 					break
@@ -192,7 +190,7 @@ func NewStageExecutorWithRunner(b *Builder, reportSink TestReportSink, resolve R
 		// (与 DAG 路径 dag_stage_exec.go 的 skipped 口径一致),避免执行中 UI 一直 pending、
 		// 早退时被 finishRemaining 兜底成 failed。
 		if jobErr != nil {
-			for i, jb := range scriptJobs {
+			for i, jb := range rjobs {
 				if effs[i] != "" && !executed[i] {
 					_ = rep.JobDone(ctx, jb.ID, run.StepSkipped)
 				}
@@ -225,21 +223,21 @@ func stageHasRemoteNeeds(jobs []pipeline.Job, selByID map[string]string) bool {
 	return false
 }
 
-// scriptJobsOf 返回阶段内的 script job(保序)。
-func scriptJobsOf(stage pipeline.Stage) []pipeline.Job {
+// runnerJobsOf 返回阶段内可远程派发的构建节点(script 类 + build_image;保序)。
+func runnerJobsOf(stage pipeline.Stage) []pipeline.Job {
 	out := make([]pipeline.Job, 0, len(stage.Jobs))
 	for _, jb := range stage.Jobs {
-		if isScriptJob(jb.Type) {
+		if isScriptJob(jb.Type) || isBuildImageJob(jb.Type) {
 			out = append(out, jb)
 		}
 	}
 	return out
 }
 
-// indexOfScriptJob 返回 jb 在 scriptJobs 中的下标(-1 = 不在;stage.Jobs 与 scriptJobs 同序,故 O(n))。
-func indexOfScriptJob(scriptJobs []pipeline.Job, jb pipeline.Job) int {
-	for i := range scriptJobs {
-		if scriptJobs[i].ID == jb.ID && scriptJobs[i].Name == jb.Name {
+// indexOfRunnerJob 返回 jb 在 runnerJobs 中的下标(-1 = 不在;stage.Jobs 与 runnerJobs 同序,故 O(n))。
+func indexOfRunnerJob(runnerJobs []pipeline.Job, jb pipeline.Job) int {
+	for i := range runnerJobs {
+		if runnerJobs[i].ID == jb.ID && runnerJobs[i].Name == jb.Name {
 			return i
 		}
 	}
@@ -378,6 +376,7 @@ func (b *Builder) runStageMixedTopo(
 	jobEnvOut := make(map[string][]pipeline.BuildVar, len(stage.Jobs)) // jobID → 该 job 产出的 env(本地节点)
 
 	// dispatchRemote 拓扑路径的远程节点派发:占槽 → 远程执行 → 闭包级 defer 必还槽(panic 不泄漏)。
+	// script / build_image 按 runJobRemote 分发;wsSuffix 用 job ID(拓扑路径节点必带 ID)。
 	dispatchRemote := func(jb pipeline.Job, sel string, jrep dagrun.StageReporter) error {
 		serverID, serverName, release, aerr := resolve.Acquire(ctx, r.ProjectID, sel, log)
 		if aerr != nil {
@@ -385,9 +384,7 @@ func (b *Builder) runStageMixedTopo(
 		}
 		defer release()
 		_ = jrep.Log(run.WithLogMachine(ctx, serverName), streamStdout, fmt.Sprintf("→ 节点「%s」→ 构建机:%s(选择器 %s)", jb.Name, serverName, sel))
-		sub := stage
-		sub.Jobs = []pipeline.Job{jb}
-		return b.runStageRemote(ctx, r, sub, jrep, serverID, serverName, tgt, "-"+sanitizeRemoteSeg(jb.ID))
+		return b.runJobRemote(ctx, r, stage, jb, jrep, serverID, serverName, tgt, "-"+sanitizeRemoteSeg(jb.ID))
 	}
 
 	// Kahn 拓扑序逐节点执行(同层按声明序)。顺序确定性 > 并发度:跨组依赖场景重在依赖正确。
@@ -488,7 +485,11 @@ func (b *Builder) runMixedNode(
 			}
 		}
 	case isBuildImageJob(jb.Type):
-		err = b.runBuildImageJobIsolated(ctx, jsink, jrep, r, jb, stage, proj, settings, pushPlans[jb.Name])
+		if sel := selByID[jb.ID]; sel != "" {
+			err = dispatchRemote(jb, sel, jrep)
+		} else {
+			err = b.runBuildImageJobIsolated(ctx, jsink, jrep, r, jb, stage, proj, settings, pushPlans[jb.Name])
+		}
 	case isDeployJob(jb.Type):
 		err = b.runDeployJob(ctx, jrep, jb, r.ID, r.Trigger.Params)
 	case strings.TrimSpace(jb.Type) == "health_check":
@@ -536,6 +537,84 @@ func (b *Builder) runLiftedStagePost(ctx context.Context, r *run.Run, stage pipe
 }
 
 // runStageRemote 在远程 runner 上执行本阶段的 script job(见文件头模型)。
+// runJobRemote 在远程构建机上执行单个节点(按类型分发):script 类 → runStageRemote(容器跑
+// 命令);build_image → runBuildImageJobRemote(远程 docker build + 推送)。两类之外不应被
+// 派发到远程(见 runnerJobsOf 的筛选),此处兜底拒绝而非静默放行。
+func (b *Builder) runJobRemote(ctx context.Context, r *run.Run, stage pipeline.Stage, jb pipeline.Job, jrep dagrun.StageReporter, serverID, serverName string, tgt remoteExec, wsSuffix string) error {
+	switch {
+	case isScriptJob(jb.Type):
+		sub := stage
+		sub.Jobs = []pipeline.Job{jb}
+		return b.runStageRemote(ctx, r, sub, jrep, serverID, serverName, tgt, wsSuffix)
+	case isBuildImageJob(jb.Type):
+		return b.runBuildImageJobRemote(ctx, r, stage, jb, jrep, serverID, serverName, tgt, wsSuffix)
+	default:
+		_ = jrep.Log(ctx, streamStderr, fmt.Sprintf("节点「%s」(%s)不支持远程构建机执行", jb.Name, jb.Type))
+		return ErrBuildFailed
+	}
+}
+
+// runBuildImageJobRemote 在远程构建机上执行一个 build_image 节点:控制机克隆(含恢复上游
+// 归档产物)→ tar 经 SSH 上传解包 → 远程 docker build → 按 push 计划(推送镜像节点声明 /
+// 环境绑定 registry 兜底)在远程 Tag/Login/Push。镜像留在远程并推到仓库,部署节点按产物
+// 引用从仓库 pull,与「构建在哪台机发生」解耦。
+// 边界(诚实失败,不静默):artifactType 非 image(jar/dist)的产物文件会留在远程机、控制机
+// 制品库收不到 → 明确报错;测试报告/缓存同远程 script 路径口径,不回采。
+func (b *Builder) runBuildImageJobRemote(ctx context.Context, r *run.Run, stage pipeline.Stage, jb pipeline.Job, rep dagrun.StageReporter, serverID, serverName string, tgt remoteExec, wsSuffix string) error {
+	lctx := run.WithLogMachine(ctx, serverName)
+
+	// 产物类型前置检查:image(默认)全链路支持;jar/dist 远程不可回收 → 立即诚实失败。
+	if at := strings.TrimSpace(cfgString(jb.Config, "artifactType")); at != "" && at != pipeline.ArtifactImage {
+		_ = rep.Log(lctx, streamStderr, fmt.Sprintf("构建节点「%s」:远程构建机暂仅支持镜像(image)产物;jar/dist 产物请配置为本地执行", jb.Name))
+		return ErrBuildFailed
+	}
+
+	proj, settings, perr := b.resolve(ctx, r)
+	if perr != nil {
+		_ = rep.Log(lctx, streamStderr, "无法加载项目构建配置:"+perr.Error())
+		return ErrBuildFailed
+	}
+
+	// 1) 控制机本地克隆 + 恢复上游归档产物(与 runStageRemote 同骨架;token 只在控制机)。
+	workspace, commitTag, cleanup, err := b.cloneJobWorkspace(ctx, r, proj, rep)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+
+	// 2) 打包 → SSH 上传 → 远程解包(远程工作区按节点 ID 区分,同机多节点互不碰撞)。
+	remoteWS := "/tmp/pipewright-remote/" + sanitizeRemoteSeg(r.ID) + "-" + sanitizeRemoteSeg(stage.ID) + wsSuffix
+	remoteTar := remoteWS + ".tar.gz"
+	_ = rep.Log(lctx, streamStdout, "→ 远程构建机:打包工作区并经 SSH 传输…")
+	if err := uploadWorkspace(ctx, tgt, serverID, workspace, remoteTar); err != nil {
+		_ = rep.Log(lctx, streamStderr, "传输工作区到远程失败:"+err.Error())
+		return ErrBuildFailed
+	}
+	unpackCmd := []string{"sh", "-c", `mkdir -p "$0" && tar -xzf "$1" -C "$0" && rm -f "$1"`, remoteWS, remoteTar}
+	_ = rep.Log(lctx, streamStdout, "$ "+strings.Join(unpackCmd, " "))
+	if out, eerr := tgt.Exec(ctx, serverID, unpackCmd); eerr != nil || (out != nil && out.ExitCode != 0) {
+		_ = rep.Log(lctx, streamStderr, "远程解包工作区失败")
+		return ErrBuildFailed
+	}
+	defer func() {
+		rmCmd := []string{"rm", "-rf", remoteWS}
+		_ = rep.Log(lctx, streamStdout, "$ "+strings.Join(rmCmd, " "))
+		_, _ = tgt.Exec(context.WithoutCancel(ctx), serverID, rmCmd)
+	}()
+
+	// 3) 远程执行 docker build / tag / login / push:Builder 浅拷贝换 remote driver ——
+	//    runBuildImageJob 的 build/push 全走 b.driver,换成 SSH driver 后真实构建发生在
+	//    远程机(工作区用远程路径);vault/项目/推送计划等仍在控制机解析。
+	bin := DetectRemoteCLIWithLog(ctx, tgt, serverID, func(line string) { _ = rep.Log(lctx, streamStdout, line) })
+	_ = rep.Log(lctx, streamStdout, "远程容器 CLI:"+bin)
+	rb := *b
+	rb.driver = NewRemoteDriver(tgt, serverID, bin)
+
+	pushPlans := b.pushPlansByBuildNode(ctx, stage.Jobs, settings, r.Trigger.ResolvedEnvironment, r)
+	sink := &reporterSink{rep: rep}
+	return rb.runBuildImageJob(ctx, sink, rep, jb, stage.Name, proj, settings, r.Trigger.ResolvedEnvironment, remoteWS, commitTag, pushPlans[jb.Name])
+}
+
 // serverName 是机器人读显示名(完成日志用);wsSuffix 是远程工作区路径后缀(节点级独立取机时
 // 用 job id 区分同阶段各节点的路径,防同机碰撞)。
 // 与本地路径对齐的语义:克隆后先在控制机工作区恢复上游阶段归档产物(随 tar 一起上传,远程无

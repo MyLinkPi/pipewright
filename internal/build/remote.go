@@ -15,8 +15,9 @@ package build
 //   - **流式**:target.Service.ExecStream 只回 io.ReadCloser(无退出码/无 stdout-stderr 分流),
 //     而 Commander.Stream 需退出码。故本期 Stream 走「同步 Exec + 逐行回放」(命令完成后整段回放
 //     日志再返回退出码);实时逐字流式留待 target 层补「带退出码的流」后再接。
-//   - **stdin**:target.Exec 不收 stdin,故 docker login --password-stdin 这类 secret-stdin 操作
-//     在远程模式暂不支持(Run/Stream stdin 非空 → 明确报错)。镜像推送的远程化留后续增量。
+//   - **stdin**:target.Exec 不收 stdin;execer 若实现 ExecWithStdin(生产 target.Service
+//     实现)则 secret-stdin 操作(docker login --password-stdin)经 SSH stdin 投递,口令
+//     绝不进 argv/日志;不具备该能力的 execer(fake 裁剪)→ ErrRemoteStdinUnsupported。
 //   - **远程克隆 + runner 调度/标签**:把源码安全送上远程机(token 不进 argv/日志,需 target 层加
 //     stdin/env 注入)与「按 stage 选 runner」的调度,是后续增量;本文件只交付**远程命令执行内核**
 //     (已单测 + 真容器 e2e)。
@@ -24,6 +25,7 @@ package build
 import (
 	"context"
 	"errors"
+	"io"
 	"strings"
 	"sync"
 	"time"
@@ -118,16 +120,36 @@ func detectRemoteCLI(ctx context.Context, execer RemoteExecer, serverID string, 
 	return "docker"
 }
 
+// remoteStdinExecer 是「支持把 stdin 喂给远程命令」的执行器(target.Service 满足:
+// ExecWithStdin 经 SSH session 的 stdin 投递,如 docker login --password-stdin 的口令)。
+// sshCommander 在需要 stdin 时对注入的 execer 做能力探测;不具备该能力的 execer 保持
+// 旧的 ErrRemoteStdinUnsupported 行为(便于 fake 单测按需裁剪)。
+type remoteStdinExecer interface {
+	ExecWithStdin(ctx context.Context, serverID string, cmd []string, stdin io.Reader) (*target.ExecResult, error)
+}
+
 // Run 实现 Commander.Run:把 name+args 投到远程机同步执行,取回 stdout/stderr/退出码。
-// stdin 非空 → ErrRemoteStdinUnsupported(远程模式本期不支持 secret-stdin)。
+// stdin 非空且 execer 支持 ExecWithStdin(生产 target.Service 支持)→ 经 SSH stdin 投递
+// (secret 只进 stdin,绝不进 argv/日志);否则 ErrRemoteStdinUnsupported。
 // exitCode<0 表示无法在远程启动 / SSH 连接错误(err 非 nil)。
 func (c *sshCommander) Run(ctx context.Context, name string, args []string, stdin string) (string, string, int, error) {
-	if stdin != "" {
-		return "", "", -1, ErrRemoteStdinUnsupported
-	}
 	cmd := make([]string, 0, len(args)+1)
 	cmd = append(cmd, name)
 	cmd = append(cmd, args...)
+	if stdin != "" {
+		ex, ok := c.execer.(remoteStdinExecer)
+		if !ok {
+			return "", "", -1, ErrRemoteStdinUnsupported
+		}
+		res, err := ex.ExecWithStdin(ctx, c.serverID, cmd, strings.NewReader(stdin))
+		if err != nil {
+			return "", "", -1, err
+		}
+		if res == nil {
+			return "", "", -1, nil
+		}
+		return res.Stdout, res.Stderr, res.ExitCode, nil
+	}
 	res, err := c.execer.Exec(ctx, c.serverID, cmd)
 	if err != nil {
 		return "", "", -1, err
@@ -139,15 +161,34 @@ func (c *sshCommander) Run(ctx context.Context, name string, args []string, stdi
 }
 
 // Stream 实现 Commander.Stream:本期走「同步 Exec + 逐行回放」(见文件头边界说明)。
-// 命令在远程机完成后,把 stdout/stderr 逐行回调 onLine,再返回退出码。stdin 非空 → 报错。
+// 命令在远程机完成后,把 stdout/stderr 逐行回调 onLine,再返回退出码。
+// stdin 非空:与 Run 同口径,execer 支持 ExecWithStdin 则投递,否则 ErrRemoteStdinUnsupported。
 func (c *sshCommander) Stream(ctx context.Context, name string, args []string, stdin string, onLine func(stream, line string)) (int, error) {
-	if stdin != "" {
+	if stdin == "" {
+		cmd := make([]string, 0, len(args)+1)
+		cmd = append(cmd, name)
+		cmd = append(cmd, args...)
+		res, err := c.execer.Exec(ctx, c.serverID, cmd)
+		if err != nil {
+			return -1, err
+		}
+		if res == nil {
+			return -1, nil
+		}
+		if onLine != nil {
+			replayLines(res.Stdout, "stdout", onLine)
+			replayLines(res.Stderr, "stderr", onLine)
+		}
+		return res.ExitCode, nil
+	}
+	ex, ok := c.execer.(remoteStdinExecer)
+	if !ok {
 		return -1, ErrRemoteStdinUnsupported
 	}
 	cmd := make([]string, 0, len(args)+1)
 	cmd = append(cmd, name)
 	cmd = append(cmd, args...)
-	res, err := c.execer.Exec(ctx, c.serverID, cmd)
+	res, err := ex.ExecWithStdin(ctx, c.serverID, cmd, strings.NewReader(stdin))
 	if err != nil {
 		return -1, err
 	}
