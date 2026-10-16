@@ -440,6 +440,19 @@ func makeDeployAppHandler(apps appstore.Service, servers target.Service, aud aud
 			writeServerError(w, err)
 			return
 		}
+		// 约定参数 advertise_host(如 Redpanda 模板):未显式提供时注入目标机 Host,
+		// 让 Kafka advertise 等客户端通告地址自动指向部署宿主。
+		if _, ok := req.Params["advertise_host"]; !ok {
+			for _, p := range tpl.Params {
+				if p.Name == "advertise_host" {
+					if req.Params == nil {
+						req.Params = map[string]string{}
+					}
+					req.Params["advertise_host"] = srv.Host
+					break
+				}
+			}
+		}
 		rendered, err := apps.Render(r.Context(), req.TemplateID, req.Params)
 		if err != nil {
 			writeAppStoreError(w, err)
