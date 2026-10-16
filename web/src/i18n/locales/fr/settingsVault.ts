@@ -113,4 +113,10 @@ export default {
   errSaveRetry: 'Échec de l’enregistrement. Veuillez réessayer plus tard.',
   errDeleteStatus: 'Échec de la suppression ({status})',
   errDeleteRetry: 'Échec de la suppression. Veuillez réessayer plus tard.',
+
+  revealCurrent: 'Afficher l’actuel',
+  hideCurrent: 'Masquer',
+  revealFailed: 'Échec de l’affichage du secret',
+  fieldSecretNew: 'Contenu du nouveau secret',
+  secretOptionalEdit: '(laisser vide pour ne pas faire pivoter)',
 }

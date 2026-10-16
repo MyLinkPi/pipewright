@@ -17,7 +17,8 @@ import fr from '../../i18n/locales/fr/opsChat'
 import ja from '../../i18n/locales/ja/opsChat'
 import ko from '../../i18n/locales/ko/opsChat'
 import zhCN from '../../i18n/locales/zh-CN/opsChat'
-import zhTW from '../../i18n/locales/zh-TW/opsChat'
+// fork 用 zh-HK 承载繁体(上游为 zh-TW)。
+import zhTW from '../../i18n/locales/zh-HK/opsChat'
 const call: Call = {
   callId: 'c',
   runId: 'r',

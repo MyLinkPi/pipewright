@@ -77,3 +77,12 @@ export async function updateCredential(
 export async function deleteCredential(id: string): Promise<void> {
   return http.delete<void>(`/api/credentials/${id}`)
 }
+
+/**
+ * Reveal the plaintext secret on explicit demand (POST + CSRF; audited server-side
+ * as `credential_reveal`). The only endpoint that returns plaintext — use sparingly.
+ */
+export async function revealCredential(id: string): Promise<string> {
+  const res = await http.post<{ secret: string }>(`/api/credentials/${id}/reveal`, {})
+  return res.secret
+}

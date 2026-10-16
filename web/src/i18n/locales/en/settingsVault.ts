@@ -113,4 +113,10 @@ export default {
   errSaveRetry: 'Save failed. Please try again later.',
   errDeleteStatus: 'Delete failed ({status})',
   errDeleteRetry: 'Delete failed. Please try again later.',
+
+  revealCurrent: 'Reveal current',
+  hideCurrent: 'Hide',
+  revealFailed: 'Failed to reveal secret',
+  fieldSecretNew: 'New secret',
+  secretOptionalEdit: '(leave blank to keep current)',
 }

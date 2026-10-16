@@ -113,4 +113,10 @@ export default {
   errSaveRetry: '保存に失敗しました。しばらくしてから再試行してください',
   errDeleteStatus: '削除に失敗しました（{status}）',
   errDeleteRetry: '削除に失敗しました。しばらくしてから再試行してください',
+
+  revealCurrent: '現在の平文を表示',
+  hideCurrent: '隠す',
+  revealFailed: '平文の表示に失敗しました',
+  fieldSecretNew: '新しいシークレットの内容',
+  secretOptionalEdit: '（空欄ならローテーションしません）',
 }
