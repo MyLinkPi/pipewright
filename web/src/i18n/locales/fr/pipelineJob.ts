@@ -127,7 +127,7 @@ export default {
   fieldImageNameLabel: "Nom de l’image",
   fieldTagLabel: "Tag",
   fieldTagHint:
-    "Variables disponibles : {'{{commit}}'} {'{{branch}}'} {'{{runId}}'} {'{{project}}'} ; vide conserve le tag de l’artefact",
+    "Variables disponibles : {'{{commit}}'} {'{{branch}}'} {'{{runId}}'} {'{{project}}'} ; vide conserve le tag de l’artefact Autres variables : {'{{date}}'} {'{{date:yyyyMMddHHmmss}}'} (date = heure de création du run en UTC, défaut yyyy-MM-dd-HH-mm ; jetons : yyyy, MM, dd, HH, mm, ss)",
   fieldPushImageArtifactJobHint:
     "Choisissez l’image produite par quel nœud (doit être un nœud « Build » de la MÊME étape ; le push s’exécute dans ce nœud).",
   fieldPushImageRegistryHint:

@@ -118,7 +118,7 @@ export default {
   fieldImageNameLabel: "이미지 이름",
   fieldTagLabel: "태그",
   fieldTagHint:
-    "사용 가능한 변수: {'{{commit}}'} {'{{branch}}'} {'{{runId}}'} {'{{project}}'}; 비워 두면 산출물 태그를 그대로 사용",
+    "사용 가능한 변수: {'{{commit}}'} {'{{branch}}'} {'{{runId}}'} {'{{project}}'}; 비워 두면 산출물 태그를 그대로 사용 추가 변수: {'{{date}}'} {'{{date:yyyyMMddHHmmss}}'}(날짜는 run 생성 시각 UTC, 기본 yyyy-MM-dd-HH-mm. 토큰: yyyy, MM, dd, HH, mm, ss)",
   fieldPushImageArtifactJobHint: "어느 노드가 만든 이미지를 푸시할지 선택하세요(반드시 '같은 스테이지'의 '빌드' 노드이며, 푸시는 해당 노드 안에서 수행됩니다).",
   fieldPushImageRegistryHint: "비워 두면 소스 노드의 환경에 바인딩된 이미지 레지스트리를 사용합니다.",
   fieldRegistryCredentialLabel: "레지스트리 자격 증명",

@@ -130,7 +130,7 @@ export default {
   fieldImageNameLabel: "Nombre de la imagen",
   fieldTagLabel: "Etiqueta",
   fieldTagHint:
-    "Variables disponibles: {'{{commit}}'} {'{{branch}}'} {'{{runId}}'} {'{{project}}'}; vacío mantiene la etiqueta del artefacto",
+    "Variables disponibles: {'{{commit}}'} {'{{branch}}'} {'{{runId}}'} {'{{project}}'}; vacío mantiene la etiqueta del artefacto Más variables: {'{{date}}'} {'{{date:yyyyMMddHHmmss}}'} (la fecha usa la hora de creación del run en UTC, por defecto yyyy-MM-dd-HH-mm; tokens: yyyy, MM, dd, HH, mm, ss)",
   fieldPushImageArtifactJobHint:
     'Elige de qué nodo se publica la imagen (debe ser un nodo "Build" de la MISMA etapa; la publicación se ejecuta dentro de ese nodo).',
   fieldPushImageRegistryHint:

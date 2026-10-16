@@ -6,6 +6,7 @@ import (
 	"io"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/huangchengsir/pipewright/internal/artifactstore"
 	"github.com/huangchengsir/pipewright/internal/pipeline"
@@ -185,10 +186,51 @@ func TestJoinObjectKeyAndRenderPrefix(t *testing.T) {
 		t.Fatalf("斜杠归一: %q", got)
 	}
 	r := ossTestRun()
-	if got := renderRunPlaceholders("releases/{{runId}}/{{branch}}", r); got != "releases/run-1/main" {
-		t.Fatalf("占位渲染: %q", got)
+	if got, err := renderRunPlaceholders("releases/{{runId}}/{{branch}}", r); err != nil || got != "releases/run-1/main" {
+		t.Fatalf("占位渲染: %q err=%v", got, err)
 	}
-	if got := renderRunPlaceholders("plain/path", r); got != "plain/path" {
-		t.Fatalf("无占位应原样: %q", got)
+	if got, err := renderRunPlaceholders("plain/path", r); err != nil || got != "plain/path" {
+		t.Fatalf("无占位应原样: %q err=%v", got, err)
+	}
+	if got, err := renderRunPlaceholders("releases/{{unknown}}/{{branch}}", r); err != nil || got != "releases/{{unknown}}/main" {
+		t.Fatalf("未知占位应原样保留且不报错: %q err=%v", got, err)
+	}
+}
+
+// TestRenderDatePlaceholder 固化 {{date}}/{{date:格式}} 的确定性与严格校验
+// (移植上游 89ed90d expandImageTag 的语义,适配本地 {{}} 占位体系)。
+func TestRenderDatePlaceholder(t *testing.T) {
+	// 自建带创建时间的 run(ossTestRun fixture 不设 CreatedAt)。
+	r := &run.Run{ID: "run-1", ProjectName: "proj", Trigger: run.Trigger{Branch: "main"}, CreatedAt: time.Date(2026, 10, 1, 8, 9, 10, 0, time.UTC)}
+	cases := []struct {
+		in, want string
+	}{
+		{"v-{{date}}", "v-2026-10-01-08-09"},
+		{"v-{{date:yyyyMMddHHmmss}}", "v-20261001080910"},
+		{"v-{{date:yyyy.MM.dd}}", "v-2026.10.01"},
+		{"v-{{date:yyyy_MM_dd_HH_mm_ss}}", "v-2026_10_01_08_09_10"},
+		{"v-{{date}}-{{date:MMdd}}", "v-2026-10-01-08-09-1001"},
+	}
+	for _, c := range cases {
+		got, err := renderRunPlaceholders(c.in, r)
+		if err != nil || got != c.want {
+			t.Fatalf("%s → %q (want %q) err=%v", c.in, got, c.want, err)
+		}
+	}
+	for _, bad := range []string{
+		"v-{{date:YYYY}}",    // 大写 YYYY 非法
+		"v-{{date:yyyy:MM}}", // 冒号非法分隔符
+		"v-{{date:-_-}}",     // 无任何时间 token
+		"v-{{date:yyyy/MM}}", // 斜杠非允许分隔符
+	} {
+		if _, err := renderRunPlaceholders(bad, r); err == nil {
+			t.Fatalf("%s 应报错却成功", bad)
+		}
+	}
+	// 确定性:同一 run 渲染两次结果一致;零值 CreatedAt 报错而非渲染零点。
+	zero := *r
+	zero.CreatedAt = time.Time{}
+	if _, err := renderRunPlaceholders("{{date}}", &zero); err == nil {
+		t.Fatal("零值创建时间应报错")
 	}
 }
