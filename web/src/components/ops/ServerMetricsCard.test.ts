@@ -10,6 +10,7 @@ const metrics: ServerMetrics = {
   cpu: null,
   memory: null,
   disk: null,
+  disks: null,
   gpu: null,
   collectedAt: '2026-10-07T00:00:00Z',
 }
@@ -94,6 +95,40 @@ const amdGpu: GpuMetric = {
     },
   ],
 }
+
+describe('server metric card disk rows (all real disks)', () => {
+  it('renders one labeled row per real disk with its own usage bar', () => {
+    const w = mount(ServerMetricsCard, {
+      props: {
+        name: 'srv-1',
+        metrics: {
+          ...metrics,
+          disk: { path: '/', usedBytes: 100, totalBytes: 1000 },
+          disks: [
+            { path: '/', usedBytes: 100, totalBytes: 1000 },
+            { path: '/data', usedBytes: 600, totalBytes: 2000 },
+          ],
+        },
+      },
+    })
+    // 系统盘 + 数据盘各一行(标签含挂载点;tmpfs/nfs 等伪文件系统后端已剔除不进前端)。
+    const labels = w.findAll('.metric-row__label').map((l) => l.text())
+    const diskLabels = labels.filter((x) => x.includes('/'))
+    expect(diskLabels).toHaveLength(2)
+    expect(diskLabels.some((x) => x.includes('/data'))).toBe(true)
+    // 每块盘独立渲染百分比与 used/total(600/2000 = 30%;2000B → 2.0 KiB)。
+    expect(w.text()).toContain('30%')
+    expect(w.text()).toContain('2.0 KiB')
+    w.unmount()
+  })
+
+  it('shows a single unavailable disk row when collection failed', () => {
+    const w = mount(ServerMetricsCard, { props: { name: 'srv-2', metrics } })
+    const labels = w.findAll('.metric-row__label').map((l) => l.text())
+    expect(labels.filter((x) => x.includes('/'))).toHaveLength(1)
+    w.unmount()
+  })
+})
 
 describe('server metric card GPU row (opt-in per server)', () => {
   it('renders one block per card on GPU machines (multi-card)', () => {

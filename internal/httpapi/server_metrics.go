@@ -60,8 +60,9 @@ const (
 //     格式都试。
 //   - cores:`nproc`;缺失回退 `getconf _NPROCESSORS_ONLN`(跨平台,含 macOS)。
 //   - memory:`free -b`;macOS 无 free → 段空 → 该指标 null(契约允许)。
-//   - disk:`df -B1 /`(字节)与 `df -k /`(KiB)**两段总是都跑** —— 不按数字大小猜口径
-//     (KiB 数当字节解析会差 1024 倍),解析层先取字节段、缺失再取 KiB 段换算。
+//   - disk:`df -B1`(字节)与 `df -k`(KiB)**两段总是都跑、不带路径参数**(列出所有
+//     文件系统)—— 不按数字大小猜口径(KiB 数当字节解析会差 1024 倍),解析层先取字节段、
+//     缺失再取 KiB 段换算;tmpfs/nfs 等伪文件系统在解析层过滤(见 isPseudoDfRow)。
 //   - physmem:`dmidecode -t 17` 物理/分配内存(SMBIOS Type 17 容量之和)。需 root;非 root /
 //     无 dmidecode / 虚拟化未暴露 SMBIOS → 段空 → 0(不展示)。静态量,经 physMem 缓存,
 //     仅缓存未命中时才把该段拼进脚本(成功值长期复用,失败 10min 冷却)。
@@ -95,9 +96,9 @@ func metricsCollectArgs(probePhys, gpu bool) []string {
 		`echo "` + metricMarker + secMemory + `"`,
 		`free -b 2>/dev/null`,
 		`echo "` + metricMarker + secDiskB + `"`,
-		`df -B1 / 2>/dev/null`,
+		`df -B1 2>/dev/null`,
 		`echo "` + metricMarker + secDiskK + `"`,
-		`df -k / 2>/dev/null`,
+		`df -k 2>/dev/null`,
 	}
 	if probePhys {
 		parts = append(parts,
@@ -165,7 +166,7 @@ type memoryMetric struct {
 }
 
 type diskMetric struct {
-	Path       string `json:"path"`
+	Path       string `json:"path"` // 挂载点(df 的 Mounted on 列)
 	UsedBytes  int64  `json:"usedBytes"`
 	TotalBytes int64  `json:"totalBytes"`
 }
@@ -204,7 +205,13 @@ type serverMetricsDTO struct {
 	Error     string        `json:"error"`
 	CPU       *cpuMetric    `json:"cpu"`
 	Memory    *memoryMetric `json:"memory"`
-	Disk      *diskMetric   `json:"disk"`
+	// Disk 是根分区(挂载点 `/`)的单盘口径,供异常检测 / 历史采样 / 概览紧凑卡等
+	// 单值消费方使用;无 `/` 行时回退首个真实磁盘。多盘明细看 Disks。
+	Disk *diskMetric `json:"disk"`
+	// Disks 是**所有真实磁盘**(挂载点 `/` 在内,按 df 输出顺序),已剔除 tmpfs/nfs
+	// 等伪文件系统并按设备去重(btrfs 子卷 / bind mount 只保留首个挂载点)。
+	// 与 Disk 同生同灭:两段 df 皆空/皆解析失败(或过滤后一个不剩)→ nil。
+	Disks       []diskMetric `json:"disks"`
 	// GPU 是显卡指标(仅勾选「GPU 机型」的服务器采集;未勾选 / 未装 nvtop / 无显卡 / 输出
 	// 不可解析 → null)。多卡为一个 devices 数组。
 	GPU         *gpuMetric `json:"gpu"`
@@ -264,14 +271,36 @@ func memoryFromSections(sections map[string]string) *memoryMetric {
 	return m
 }
 
-// diskFromSections 解析磁盘两段:字节段(`df -B1 /`)优先,KiB 段(`df -k /`)回退换算。
-// 两段皆空/皆解析失败 → nil。
-func diskFromSections(sections map[string]string) *diskMetric {
-	if used, total, ok := parseDf(sections[secDiskB], 1); ok {
-		return &diskMetric{Path: "/", UsedBytes: used, TotalBytes: total}
+// disksFromSections 解析磁盘两段:字节段(`df -B1`)优先,KiB 段(`df -k`)回退换算。
+// 返回**所有真实磁盘**(按 df 输出顺序;伪文件系统过滤与去重见 parseDfRows)。
+// 两段皆空/皆解析失败(且过滤后一个不剩)→ nil。
+func disksFromSections(sections map[string]string) []diskMetric {
+	for _, sec := range []struct {
+		name string
+		mult int64
+	}{{secDiskB, 1}, {secDiskK, 1024}} {
+		rows := parseDfRows(sections[sec.name], sec.mult)
+		if len(rows) == 0 {
+			continue
+		}
+		disks := make([]diskMetric, 0, len(rows))
+		for _, r := range rows {
+			disks = append(disks, diskMetric{Path: r.mount, UsedBytes: r.used, TotalBytes: r.total})
+		}
+		return disks
 	}
-	if used, total, ok := parseDf(sections[secDiskK], 1024); ok {
-		return &diskMetric{Path: "/", UsedBytes: used, TotalBytes: total}
+	return nil
+}
+
+// primaryDisk 从多盘列表取单盘口径:优先挂载点 `/`(系统盘),否则首个(保底非空)。
+func primaryDisk(disks []diskMetric) *diskMetric {
+	for i := range disks {
+		if disks[i].Path == "/" {
+			return &disks[i]
+		}
+	}
+	if len(disks) > 0 {
+		return &disks[0]
 	}
 	return nil
 }
@@ -492,7 +521,8 @@ func collectServerMetrics(ctx context.Context, svc target.Service, id string) (s
 	sections := splitMetricSections(outStr)
 	out.CPU = cpuFromSections(sections)
 	out.Memory = memoryFromSections(sections)
-	out.Disk = diskFromSections(sections)
+	out.Disks = disksFromSections(sections)
+	out.Disk = primaryDisk(out.Disks)
 	out.GPU = gpuFromSections(sections)
 	// 物理/分配内存:本轮带探测段才解析入库(成功值长期复用);无探测段直接用缓存值。
 	// 内存段失败时整块跳过(物理量以内核可用量做合理性校验,没 total 无从校验)。
@@ -801,36 +831,112 @@ func memUnitMultiplier(unit string) (int64, bool) {
 	return 0, false
 }
 
-// parseDf 解析 `df` 输出的根分区行,取 total(第 2 列)/ used(第 3 列),乘以 unit 化为字节。
-// `df -B1 /` 时 unit=1(已是字节);`df -k /` 时 unit=1024(KiB)。
-// 形如:
+// dfRow 是 `df` 输出中的一行数据(total/used 已乘 unit 换算为字节)。
+type dfRow struct {
+	device string // Filesystem 列(/dev/sda1、tmpfs、host:/export 等;折行时来自上一行)
+	mount  string // Mounted on 列
+	used   int64
+	total  int64
+}
+
+// parseDfRows 解析 `df`(不带路径参数,列出所有文件系统)的输出为数据行列表,unit 为
+// 块大小字节数(`df -B1` → 1;`df -k` → 1024)。形如:
 //
-//	Filesystem     1B-blocks       Used   Available Use% Mounted on
-//	/dev/disk1  494384795648  ...
+//	Filesystem      1B-blocks         Used    Available Use% Mounted on
+//	/dev/sda1   494384795648  123456789012  370927006636  25% /
+//	tmpfs         4136650752       1234567     4135416185   1% /dev/shm
 //
-// df 可能把长设备名折行;故扫描所有非表头行,取**首个含 ≥4 个数值列**的数据行。容错 → false。
-func parseDf(s string, unit int64) (used, total int64, ok bool) {
-	lines := strings.Split(s, "\n")
-	for i, line := range lines {
+// 逐行容错(个别坏行丢弃,不连累整段):
+//   - 跳过表头与空行;容忍 GNU df 把长设备名折到单独一行(数据在下一行,设备名由
+//     上一行接住)。
+//   - total<=0 / used 越界 / 挂载点不以 `/` 开头的行丢弃(macOS autofs 的
+//     `map auto_home 0 0 0 …` 0 块行在此天然过滤)。
+//   - 剔除 tmpfs/nfs 等伪文件系统(isPseudoDfRow)。
+//   - 同一设备多次挂载(btrfs 子卷 / bind mount)只保留首个挂载点(面向「磁盘」而非
+//     「挂载点」)。
+//
+// 一个有效行都没有 → nil。
+func parseDfRows(s string, unit int64) []dfRow {
+	var rows []dfRow
+	seen := map[string]bool{}
+	pendingDevice := ""
+	for i, line := range strings.Split(s, "\n") {
 		fields := strings.Fields(line)
 		if len(fields) == 0 {
 			continue
 		}
-		// 跳过表头(首列 Filesystem)。
 		if i == 0 || strings.EqualFold(fields[0], "Filesystem") {
+			pendingDevice = ""
 			continue
 		}
-		// df 折行时数据可能在下一行,字段数少；规整后期望:[fs] total used avail use% mounted
-		// 或折行后:total used avail use% mounted(无 fs 列)。统一找连续两个可解析为大整数的列。
-		t, u, found := extractDfTotalsUsed(fields)
-		if found {
-			if t <= 0 || u < 0 {
-				return 0, 0, false
-			}
-			return u * unit, t * unit, true
+		total, used, found := extractDfTotalsUsed(fields)
+		if !found {
+			// 无数据列:折行场景的设备名单独成行(接住供下一行用);垃圾行同样无害。
+			pendingDevice = fields[0]
+			continue
+		}
+		// 首列能解析为整数 → 折行数据行(设备名已折到上一行);否则首列即设备名。
+		device := pendingDevice
+		if _, err := strconv.ParseInt(fields[0], 10, 64); err != nil {
+			device = fields[0]
+		}
+		pendingDevice = ""
+		mount := fields[len(fields)-1]
+		if total <= 0 || used < 0 || used > total || !strings.HasPrefix(mount, "/") {
+			continue
+		}
+		if isPseudoDfRow(device, mount) || (device != "" && seen[device]) {
+			continue
+		}
+		if device != "" {
+			seen[device] = true
+		}
+		rows = append(rows, dfRow{device: device, mount: mount, used: used * unit, total: total * unit})
+	}
+	return rows
+}
+
+// pseudoFsDevices 是 df 输出中常见的内存/虚拟文件系统设备名(tmpfs 家族与内核伪文件
+// 系统)。df 不带 `-T`(BusyBox 无 `-T/-x`,带上会整段失败拿不到回退口径),故按设备名
+// 黑名单 + 挂载点前缀 + 网络共享形态识别伪文件系统。
+var pseudoFsDevices = map[string]bool{
+	"tmpfs": true, "devtmpfs": true, "ramfs": true, "shm": true,
+	"mqueue": true, "hugetlbfs": true, "efivarfs": true, "devfs": true,
+	"proc": true, "sysfs": true, "devpts": true, "cgroup": true, "cgroup2": true,
+	"none": true, "overlay": true, "aufs": true, "squashfs": true, "nsfs": true,
+	"sunrpc": true, "nfsd": true, "rpc_pipefs": true, "autofs": true, "fusectl": true,
+	"configfs": true, "debugfs": true, "tracefs": true, "securityfs": true,
+	"pstore": true, "bpf": true, "binfmt_misc": true, "udev": true, "gvfsd-fuse": true,
+}
+
+// pseudoMountPrefixes 是伪文件系统/容器运行时的典型挂载点前缀(snap squashfs、docker
+// overlay 合并层等 —— 这些行的设备名多为 /dev/loopN 或具体块设备,按设备名拦不住)。
+var pseudoMountPrefixes = []string{
+	"/proc", "/sys", "/dev", "/run", "/snap", "/var/lib/snapd",
+	"/var/lib/docker", "/var/lib/containers", "/var/lib/kubelet", "/mnt/wsl",
+}
+
+// isPseudoDfRow 判断一行 df 数据是否伪文件系统(tmpfs/nfs 等,不属于「磁盘」)。
+// 根挂载点 `/` 恒为真实磁盘(容器内 overlay 根、无盘站的 nfs 根、live 系统的 tmpfs 根
+// 都是该机的系统盘,且与旧 `df /` 单盘口径保持一致)。
+func isPseudoDfRow(device, mount string) bool {
+	if mount == "/" {
+		return false
+	}
+	dev := strings.ToLower(device)
+	if pseudoFsDevices[dev] || strings.Contains(dev, "tmpfs") {
+		return true
+	}
+	// NFS / sshfs 导出("host:/path"、"user@host:/path")与 CIFS 共享("//host/share")。
+	if strings.Contains(dev, ":") || strings.HasPrefix(dev, "//") {
+		return true
+	}
+	for _, p := range pseudoMountPrefixes {
+		if mount == p || strings.HasPrefix(mount, p+"/") {
+			return true
 		}
 	}
-	return 0, 0, false
+	return false
 }
 
 // extractDfTotalsUsed 从 df 数据行字段里取 total/used。标准布局:
@@ -989,7 +1095,8 @@ func collectLocalMetrics(ctx context.Context) serverMetricsDTO {
 	sections := splitMetricSections(outStr)
 	out.CPU = cpuFromSections(sections)
 	out.Memory = memoryFromSections(sections)
-	out.Disk = diskFromSections(sections)
+	out.Disks = disksFromSections(sections)
+	out.Disk = primaryDisk(out.Disks)
 	return out
 }
 

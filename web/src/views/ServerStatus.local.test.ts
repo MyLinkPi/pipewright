@@ -62,6 +62,7 @@ function metrics(serverId: string, over: Partial<ServerMetrics> = {}): ServerMet
       swapTotalBytes: 0,
     },
     disk: { path: '/', usedBytes: 100, totalBytes: 1000 },
+    disks: [{ path: '/', usedBytes: 100, totalBytes: 1000 }],
     gpu: null,
     collectedAt: '2026-10-11T00:00:00Z',
     ...over,

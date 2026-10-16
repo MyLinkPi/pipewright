@@ -6,7 +6,7 @@
     · 构建池标签 chips(登记数据,不可达也显示;tooltip 含槽位/优先级)
     · CPU:1 分钟负载 + 核数(负载相对核数着色:>1×核数 偏红、>0.7× 偏黄)
     · 内存 used/total 进度条 + 人读字节
-    · 磁盘 used/total 进度条 + 人读字节
+    · 磁盘:每块真实磁盘一行 used/total 进度条(tmpfs/nfs 等伪文件系统后端已剔除)
     · 某指标 null → 该行标「不可用」(跨平台 best-effort,如 macOS 无 free → memory 不可用)
     · 不可达 → 整卡灰显 + 人读错误(绝不含凭据明文)
 
@@ -103,8 +103,18 @@ const memCachePercent = computed(() =>
     ? pct(props.metrics.memory.usedWithCacheBytes, memCacheTotal.value)
     : null,
 )
-const diskPercent = computed(() =>
-  props.metrics.disk ? pct(props.metrics.disk.usedBytes, props.metrics.disk.totalBytes) : null,
+/**
+ * 磁盘行(多盘逐块展示):后端列出所有真实磁盘(tmpfs/nfs 等伪文件系统已剔除),
+ * 与 disk 单盘字段同生同灭 —— disks 为 null 即全部不可用。percent 为 null 的盘仍占一行,
+ * 只是不渲染进度(与内存行的降级一致)。
+ */
+const diskRows = computed(() =>
+  (props.metrics.disks ?? []).map((d) => ({
+    path: d.path,
+    percent: pct(d.usedBytes, d.totalBytes),
+    usedBytes: d.usedBytes,
+    totalBytes: d.totalBytes,
+  })),
 )
 
 /** 交换分区用量(swapTotalBytes 为 0 → 未配置,不渲染)。 */
@@ -295,22 +305,28 @@ function gpuMemBytesText(dev: GpuDeviceMetric): string {
         </dd>
       </div>
 
-      <!-- Disk -->
-      <div class="metric-row">
-        <dt class="metric-row__label">{{ t('opsServer.metrics.disk', { path: metrics.disk?.path ?? '/' }) }}</dt>
+      <!-- Disks(多盘逐块展示:系统盘 + 数据盘;tmpfs/nfs 等伪文件系统后端已剔除) -->
+      <div v-for="d in diskRows" :key="d.path" class="metric-row">
+        <dt class="metric-row__label">{{ t('opsServer.metrics.disk', { path: d.path }) }}</dt>
         <dd class="metric-row__value">
-          <template v-if="metrics.disk && diskPercent !== null">
+          <template v-if="d.percent !== null">
             <ProgressBar
-              :value="diskPercent"
-              :variant="usageVariant(diskPercent)"
-              :label="t('opsServer.metrics.diskUsageLabel', { n: diskPercent.toFixed(0) })"
+              :value="d.percent"
+              :variant="usageVariant(d.percent)"
+              :label="t('opsServer.metrics.diskUsageLabel', { n: d.percent.toFixed(0) })"
             />
             <span class="metric-sub">
-              {{ humanBytes(metrics.disk.usedBytes) }} / {{ humanBytes(metrics.disk.totalBytes) }}
-              <span class="metric-pct">({{ diskPercent.toFixed(0) }}%)</span>
+              {{ humanBytes(d.usedBytes) }} / {{ humanBytes(d.totalBytes) }}
+              <span class="metric-pct">({{ d.percent.toFixed(0) }}%)</span>
             </span>
           </template>
           <span v-else class="metric-num metric-num--na">{{ t('opsServer.metrics.unavailable') }}</span>
+        </dd>
+      </div>
+      <div v-if="diskRows.length === 0" class="metric-row">
+        <dt class="metric-row__label">{{ t('opsServer.metrics.disk', { path: '/' }) }}</dt>
+        <dd class="metric-row__value">
+          <span class="metric-num metric-num--na">{{ t('opsServer.metrics.unavailable') }}</span>
         </dd>
       </div>
 

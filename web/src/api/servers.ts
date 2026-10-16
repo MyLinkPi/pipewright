@@ -296,7 +296,7 @@ export interface MemoryMetric {
   swapTotalBytes: number
 }
 
-/** Disk used/total in bytes for a mount path (root `/`). */
+/** Disk used/total in bytes for one mount path (the `Mounted on` column of `df`). */
 export interface DiskMetric {
   path: string
   usedBytes: number
@@ -352,8 +352,15 @@ export interface ServerMetrics {
   cpu: CpuMetric | null
   /** Null on hosts without `free` (e.g. macOS) or on parse failure. */
   memory: MemoryMetric | null
-  /** Null on parse failure; `df` is cross-platform so usually present. */
+  /** Root (`/`) disk only — kept for single-value consumers (anomaly rules, trend history, dashboard). */
   disk: DiskMetric | null
+  /**
+   * All real disks (root included, in `df` output order). Pseudo filesystems — tmpfs,
+   * nfs, snap loops, container overlays — are filtered server-side; same-device
+   * duplicate mounts (btrfs subvolumes) collapse to the first mount. Null on parse
+   * failure or when nothing survived filtering.
+   */
+  disks: DiskMetric[] | null
   /**
    * Null unless the server is flagged as a GPU machine AND `nvtop -s` produced at
    * least one card — i.e. null for plain hosts, missing nvtop, or unparseable output.
