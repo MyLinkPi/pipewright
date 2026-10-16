@@ -137,6 +137,16 @@ export interface ServiceCreateInput {
   tcpListenPort?: number
 }
 
+/** 更新可改字段(基域不可换;更新后后端自动 apply 收敛)。缺省字段保持原值。 */
+export interface ServiceUpdateInput {
+  name?: string
+  protocol?: ServiceProtocol
+  upstreamKind?: UpstreamKind
+  upstream?: string
+  upstreamPort?: number
+  tcpListenPort?: number
+}
+
 export const getServiceRegSettings = (): Promise<Settings> =>
   http.get('/api/servicereg/settings')
 
@@ -166,6 +176,9 @@ export const listServices = (): Promise<{ items: RegisteredService[] }> =>
 
 export const createService = (in_: ServiceCreateInput): Promise<{ id: string; name: string; enabled: boolean }> =>
   http.post('/api/servicereg/services', in_)
+
+export const updateService = (id: string, in_: ServiceUpdateInput): Promise<{ id: string; name: string }> =>
+  http.put(`/api/servicereg/services/${encodeURIComponent(id)}`, in_)
 
 /** 一键生成(幂等):按(基域, 服务名)注册/刷新服务;实例由部署按目标机自动注册。 */
 export const ensureService = (in_: ServiceCreateInput): Promise<{ id: string; name: string; enabled: boolean }> =>

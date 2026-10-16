@@ -1,7 +1,7 @@
 // Package appstore 是「应用商店模板」的领域层(DPanel 式一键部署)。
 //
 // 模板 = docker-compose YAML + 参数 schema:预置内置模板(MySQL/Redis/Postgres/Nginx/MinIO/
-// RustFS/RabbitMQ/Gitea,启动幂等 seed,builtin=1 不可改删),用户可建自定义模板。部署本身不在本包 ——
+// RustFS/RabbitMQ/Gitea/Redpanda,启动幂等 seed,builtin=1 不可改删),用户可建自定义模板。部署本身不在本包 ——
 // httpapi 侧复用 Stacks 受管链路(Upload 到 /opt/pipewright/stacks/<name> → docker compose up -d),
 // 本包只负责模板 CRUD 与「参数校验 + 占位符替换 + secret 自动生成」的纯渲染。
 //
@@ -130,7 +130,8 @@ type Service interface {
 	Update(ctx context.Context, id string, in UpdateInput) (*Template, error)
 	// Delete 删除自定义模板;内置模板 → ErrBuiltin。
 	Delete(ctx context.Context, id string) error
-	// EnsureBuiltins 幂等 seed 内置模板(main 启动时调用一次;已存在同名内置行则跳过)。
+	// EnsureBuiltins 幂等 seed 内置模板(main 启动时调用一次;新名字插入,已有内置行随
+	// 新版定义刷新,同名自定义模板跳过不覆盖)。
 	EnsureBuiltins(ctx context.Context) error
 	// Render 校验参数 → 应用默认值/自动生成 secret → 替换 {{param}} 占位符。
 	Render(ctx context.Context, id string, params map[string]string) (*RenderResult, error)
@@ -223,12 +224,12 @@ func (s *service) Delete(ctx context.Context, id string) error {
 func (s *service) EnsureBuiltins(ctx context.Context) error {
 	for i := range builtins {
 		tpl := builtins[i]
+		tpl.UpdatedAt = time.Now().UTC()
 		existing, err := s.store.getByName(ctx, tpl.Name)
 		if err != nil {
 			if errors.Is(err, ErrNotFound) {
-				now := time.Now().UTC()
 				tpl.ID = uuid.NewString()
-				tpl.CreatedAt, tpl.UpdatedAt = now, now
+				tpl.CreatedAt = tpl.UpdatedAt
 				if err := s.store.insert(ctx, &tpl); err != nil && !errors.Is(err, ErrNameTaken) {
 					return err
 				}
@@ -236,9 +237,31 @@ func (s *service) EnsureBuiltins(ctx context.Context) error {
 			}
 			return err
 		}
-		_ = existing // 已有同名行(含用户改名遗留)→ 跳过,不覆盖用户数据
+		// 同名行:自定义模板(如内置名启用前的历史遗留)→ 跳过,不覆盖用户数据;
+		// 内置行(用户不可改,内容必来自旧版 seed)→ 随新版定义幂等刷新,保留 ID 与创建时间。
+		if !existing.Builtin || sameBuiltin(existing, &tpl) {
+			continue
+		}
+		tpl.ID, tpl.CreatedAt = existing.ID, existing.CreatedAt
+		if err := s.store.update(ctx, &tpl); err != nil {
+			return err
+		}
 	}
 	return nil
+}
+
+// sameBuiltin 判断库中内置行与当前内置定义是否一致(一致则跳过刷新,避免每次启动空写)。
+func sameBuiltin(a, b *Template) bool {
+	if a.DisplayName != b.DisplayName || a.Description != b.Description ||
+		a.Icon != b.Icon || a.ComposeYAML != b.ComposeYAML || len(a.Params) != len(b.Params) {
+		return false
+	}
+	for i := range a.Params {
+		if a.Params[i] != b.Params[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // Render 校验并渲染参数。

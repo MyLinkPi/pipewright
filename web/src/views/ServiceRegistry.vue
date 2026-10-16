@@ -25,6 +25,7 @@ import {
   deleteDomain,
   listServices,
   createService,
+  updateService,
   deleteService,
   setServiceEnabled,
   applyServiceReg,
@@ -338,9 +339,12 @@ const instancesBySvc = ref<Record<string, ServiceInstance[]>>({})
 const instForm = ref<{ serviceId: string; serverId: string; container: string; port: number | ''; hostPort: number | '' } | null>(null)
 const instBusy = ref(false)
 
-/** http 服务展示实例面板(集群模型:容器/非容器实例一视同仁)。 */
+/** 实例面板:container 类 http 服务恒为部署托管实例池;address 类声明了实例(部署注册)
+ * 才是实例池,否则为人工静态直连模式(固定上游直接反代,工作正常但无实例概念)。 */
 function hasInstancePool(s: RegisteredService): boolean {
-  return s.protocol === 'http'
+  if (s.protocol !== 'http') return false
+  if (s.upstreamKind === 'container') return true
+  return instanceCount(s) > 0
 }
 
 /** 实例数徽标:展开过(实例列表已加载)用实时长度,否则用列表接口带回的 instanceCount。 */
@@ -350,6 +354,7 @@ function instanceCount(s: RegisteredService): number {
 
 async function toggleExpand(s: RegisteredService): Promise<void> {
   if (!hasInstancePool(s)) return
+  editingSvcId.value = ''
   if (expandedSvc.value === s.id) {
     expandedSvc.value = ''
     return
@@ -427,6 +432,65 @@ function effectiveHostPort(inst: ServiceInstance, s: RegisteredService): number 
 function instServerName(inst: ServiceInstance): string {
   if (!inst.serverId) return t('serviceReg.instances.legacy')
   return serverNameById.value[inst.serverId] ?? inst.serverId
+}
+
+// ─── 服务编辑(改定义 → apply 收敛;基域不可换) ───────────────────────────────
+// 字段与创建表单同构(无 domain);名称/协议/上游/端口均可改 —— 静态直连改上游地址就在这里。
+const editingSvcId = ref('')
+const svcEditBusy = ref(false)
+const svcEditForm = ref({
+  name: '',
+  protocol: 'http' as ServiceProtocol,
+  upstreamKind: 'container' as UpstreamKind,
+  upstream: '',
+  upstreamPort: 8080,
+  tcpListenPort: 13306,
+})
+
+function startSvcEdit(s: RegisteredService): void {
+  expandedSvc.value = ''
+  instForm.value = null
+  editingSvcId.value = s.id
+  svcEditForm.value = {
+    name: s.name,
+    protocol: s.protocol,
+    upstreamKind: s.upstreamKind,
+    upstream: s.upstream,
+    upstreamPort: s.upstreamPort,
+    tcpListenPort: s.tcpListenPort || 13306,
+  }
+}
+
+function svcEditPreview(s: RegisteredService): string {
+  const f = svcEditForm.value
+  if (!f.name) return ''
+  return f.protocol === 'http'
+    ? `${f.name}.${s.baseDomain}`
+    : `:${f.tcpListenPort} → ${f.upstream}:${f.upstreamPort}`
+}
+
+async function saveSvcEdit(s: RegisteredService): Promise<void> {
+  const f = svcEditForm.value
+  svcEditBusy.value = true
+  try {
+    await updateService(s.id, {
+      name: f.name.trim(),
+      protocol: f.protocol,
+      upstreamKind: f.upstreamKind,
+      upstream: f.upstream.trim(),
+      upstreamPort: Number(f.upstreamPort),
+      tcpListenPort: f.protocol === 'tcp' ? Number(f.tcpListenPort) : undefined,
+    })
+    editingSvcId.value = ''
+    const sv = await listServices()
+    services.value = sv.items
+    settings.value = await getServiceRegSettings()
+    toast.success(t('serviceReg.services.updated'))
+  } catch (err) {
+    toast.error(errMsg(err, t('serviceReg.services.updateFail')))
+  } finally {
+    svcEditBusy.value = false
+  }
 }
 </script>
 
@@ -726,6 +790,9 @@ function instServerName(inst: ServiceInstance): string {
                   <span v-if="hasInstancePool(s)" class="sreg__tag">
                     {{ t('serviceReg.instances.count', { n: instanceCount(s) }) }}
                   </span>
+                  <span v-else-if="s.protocol === 'http'" class="sreg__tag">
+                    {{ t('serviceReg.instances.staticUpstream') }}
+                  </span>
                   <span v-if="!s.enabled" class="sreg__tag sreg__tag--off">{{ t('serviceReg.services.disabled') }}</span>
                 </span>
               </div>
@@ -739,6 +806,9 @@ function instServerName(inst: ServiceInstance): string {
                 >
                   <NIcon :size="13"><ExternalLink /></NIcon>
                 </a>
+                <AppButton v-if="editingSvcId !== s.id" variant="default" @click="startSvcEdit(s)">
+                  {{ t('serviceReg.btn.edit') }}
+                </AppButton>
                 <AppButton variant="default" @click="toggleService(s)">
                   {{ s.enabled ? t('serviceReg.services.disable') : t('serviceReg.services.enable') }}
                 </AppButton>
@@ -807,6 +877,67 @@ function instServerName(inst: ServiceInstance): string {
                 {{ t('serviceReg.instances.add') }}
               </AppButton>
             </div>
+
+            <!-- 编辑面板:改服务定义(名称/协议/上游/端口)→ 保存后自动收敛;基域不可换 -->
+            <form v-if="editingSvcId === s.id" class="sreg__inst" @submit.prevent="saveSvcEdit(s)">
+              <div class="sreg__grid2">
+                <label class="field">
+                  <span class="field__lbl">{{ t('serviceReg.services.name') }}</span>
+                  <input v-model="svcEditForm.name" class="field__in" type="text" placeholder="abc" required />
+                </label>
+                <label class="field">
+                  <span class="field__lbl">{{ t('serviceReg.services.protocol') }}</span>
+                  <AppSelect
+                    :model-value="svcEditForm.protocol"
+                    :options="[
+                      { value: 'http', label: 'HTTP' },
+                      { value: 'tcp', label: 'TCP' },
+                    ]"
+                    @update:model-value="(v) => (svcEditForm.protocol = v as ServiceProtocol)"
+                  />
+                </label>
+              </div>
+              <div class="sreg__grid3">
+                <label class="field">
+                  <span class="field__lbl">{{ t('serviceReg.services.upstreamKind') }}</span>
+                  <AppSelect
+                    :model-value="svcEditForm.upstreamKind"
+                    :options="[
+                      { value: 'container', label: t('serviceReg.services.kindContainer') },
+                      { value: 'address', label: t('serviceReg.services.kindAddress') },
+                    ]"
+                    @update:model-value="(v) => (svcEditForm.upstreamKind = v as UpstreamKind)"
+                  />
+                </label>
+                <label class="field">
+                  <span class="field__lbl">
+                    {{ svcEditForm.upstreamKind === 'container' ? t('serviceReg.services.container') : t('serviceReg.services.address') }}
+                  </span>
+                  <input
+                    v-model="svcEditForm.upstream"
+                    class="field__in"
+                    type="text"
+                    :placeholder="svcEditForm.upstreamKind === 'container' ? 'web' : '10.0.0.5'"
+                  />
+                </label>
+                <label class="field">
+                  <span class="field__lbl">{{ t('serviceReg.services.upstreamPort') }}</span>
+                  <input v-model.number="svcEditForm.upstreamPort" class="field__in" type="number" min="1" max="65535" required />
+                </label>
+              </div>
+              <label v-if="svcEditForm.protocol === 'tcp'" class="field">
+                <span class="field__lbl">{{ t('serviceReg.services.listenPort') }}</span>
+                <input v-model.number="svcEditForm.tcpListenPort" class="field__in" type="number" min="1" max="65535" required />
+              </label>
+              <p v-if="svcEditPreview(s)" class="sreg__preview">
+                <NIcon :size="13"><ExternalLink /></NIcon>&nbsp;
+                <code>{{ svcEditPreview(s) }}</code>
+              </p>
+              <div class="sreg__form-actions">
+                <AppButton variant="primary" type="submit" :loading="svcEditBusy">{{ t('serviceReg.btn.save') }}</AppButton>
+                <AppButton variant="default" @click="editingSvcId = ''">{{ t('serviceReg.btn.cancel') }}</AppButton>
+              </div>
+            </form>
           </li>
         </ul>
       </section>
