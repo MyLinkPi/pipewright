@@ -283,9 +283,12 @@ function producerLabel(o: ProducerOption): string {
 // ─── 构建机选择(节点级 runner · FR-8-19)────────────────────────────────────
 // 脚本类节点各自声明「本节点跑在哪台构建机上」:config.runner 覆盖 > 阶段覆盖 > 项目默认;
 // 空 = 跟随。选择器语法与全系统一致:标签项(`linux,arch=arm64`)/ `server:<id>` 钉死。
-// 同一阶段内选择器相同的节点共享一台机器与工作区;不同选择器各自派发(后端按组调度)。
+// 每个节点独立占槽选机:同选择器的节点从同一池子各取一台,有空位即并行、满则排队;工作区互相独立。
 
 type RunnerMode = 'inherit' | 'label' | 'pinned'
+
+/** 构建机选择适用范围:脚本类节点 + build_image(镜像构建)——两类真实「构建」节点。 */
+const supportsRunner = computed<boolean>(() => isScriptClassType(localType.value) || localType.value === 'build_image')
 
 const runnerMode = ref<RunnerMode>('inherit')
 const runnerSelectorText = ref('')
@@ -813,8 +816,8 @@ async function confirmSave(): Promise<void> {
     </div>
 
     <!-- Advanced raw KV (extras not covered by the schema) -->
-    <!-- 构建机选择(RUNNER · FR-8-19):脚本类节点各自声明跑在哪台构建机上 -->
-    <div v-if="isScriptClassType(localType)" class="drawer-section">
+    <!-- 构建机选择(RUNNER · FR-8-19):脚本类 + 镜像构建节点各自声明跑在哪台构建机上 -->
+    <div v-if="supportsRunner" class="drawer-section">
       <div class="drawer-section-label">{{ t('pipelineCanvas.runnerSectionLabel') }}</div>
       <div class="drawer-field">
         <div class="drawer-field-label">{{ t('pipelineCanvas.runnerModeLabel') }}</div>

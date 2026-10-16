@@ -881,3 +881,74 @@ func TestStageRemoteEchoesUnpackAndCleanupCommands(t *testing.T) {
 		t.Fatalf("应回显远程工作区清理命令, got:\n%s", joined)
 	}
 }
+
+func TestStageExecutorBuildImageRemote(t *testing.T) {
+	local := &recordingDriver{}
+	b := newRemoteTestBuilder(local)
+	tgt := &fakeRemoteTarget{}
+	fr := &fakeRunnerResolver{pickBy: map[string]string{"server:srv-a": "srv-a"}}
+	exec := NewStageExecutorWithRunner(b, nil, fr, tgt)
+
+	rep := &fakeReporter{}
+	r := &run.Run{ID: "run-1", ProjectID: "p1", Trigger: run.Trigger{Branch: "main"}}
+	// build_image 节点(用户拖的「构建」节点)自带 runner → 派发到选中的构建机远程 docker build。
+	jb := pipeline.Job{
+		Name: "img",
+		Type: "build_image",
+		Config: map[string]any{
+			"runner":       "server:srv-a",
+			"buildModel":   "dockerfile",
+			"dockerfilePath": "Dockerfile",
+		},
+	}
+	if err := exec(context.Background(), r, scriptStage(jb), rep); err != nil {
+		t.Fatalf("exec: %v", err)
+	}
+	if len(fr.acquired) != 1 || fr.acquired[0] != "server:srv-a" {
+		t.Fatalf("build_image 应按节点选择器取机,实际 %v", fr.acquired)
+	}
+	if fr.releases != 1 {
+		t.Fatalf("槽位应归还,实际 %d", fr.releases)
+	}
+	if !tgt.serverIDs["srv-a"] {
+		t.Fatalf("构建应发生在 srv-a;serverIDs=%v", tgt.serverIDs)
+	}
+	sawBuild := false
+	for _, c := range tgt.cmds {
+		if len(c) >= 2 && (c[0] == "docker" || c[0] == "nerdctl" || c[0] == "podman") && c[1] == "build" {
+			sawBuild = true
+		}
+	}
+	if !sawBuild {
+		t.Fatalf("远程应执行容器 build;cmds=%v", tgt.cmds)
+	}
+	if local.callCount != 0 {
+		t.Fatalf("远程派发时本地 driver 不应被调,实际 %d 次", local.callCount)
+	}
+}
+
+func TestStageExecutorBuildImageRemoteRejectsNonImageArtifact(t *testing.T) {
+	local := &recordingDriver{}
+	b := newRemoteTestBuilder(local)
+	tgt := &fakeRemoteTarget{}
+	fr := &fakeRunnerResolver{pickBy: map[string]string{"server:srv-a": "srv-a"}}
+	exec := NewStageExecutorWithRunner(b, nil, fr, tgt)
+
+	rep := &fakeReporter{}
+	r := &run.Run{ID: "run-1", ProjectID: "p1", Trigger: run.Trigger{Branch: "main"}}
+	jb := pipeline.Job{
+		Name: "img",
+		Type: "build_image",
+		Config: map[string]any{
+			"runner":       "server:srv-a",
+			"artifactType": "jar",
+		},
+	}
+	if err := exec(context.Background(), r, scriptStage(jb), rep); err == nil {
+		t.Fatal("jar 产物远程应诚实失败,不得静默放行")
+	}
+	joined := strings.Join(rep.logs, "\n")
+	if !strings.Contains(joined, "仅支持镜像") {
+		t.Fatalf("应给出人读边界说明;logs=%v", rep.logs)
+	}
+}
