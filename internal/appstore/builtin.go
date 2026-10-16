@@ -196,8 +196,10 @@ volumes:
 		Description: "轻量 Git 代码托管(含 Actions CI);SQLite 起步,数据与配置全落具名卷 gitea-data,SSH 克隆端口默认 2222 避开宿主 22;首启经 Web 页完成初始化。",
 		Icon:        "🍵",
 		// rootful 镜像:容器内 sshd 恒听 22(SSH_LISTEN_PORT 默认跟随 SSH_PORT,须显式钉住),
-		// SSH_PORT 只决定克隆地址展示的端口(= 宿主映射端口);ROOT_URL 不预设,留给首启
-		// 安装页按浏览器请求自动探测,避免预设错误值覆盖。
+		// SSH_PORT 只决定克隆地址展示的端口(= 宿主映射端口),SSH_DOMAIN 决定克隆地址主机
+		//(缺省回落 localhost,首启安装页也带不出正确值,故必填;部署 handler 对留空的
+		// 宿主地址约定参数自动注入目标机 Host);ROOT_URL 不预设,留给首启安装页按浏览器
+		// 请求自动探测,避免预设错误值覆盖。
 		ComposeYAML: `services:
   gitea:
     image: gitea/gitea:{{version}}
@@ -205,6 +207,7 @@ volumes:
     environment:
       USER_UID: "1000"
       USER_GID: "1000"
+      GITEA__server__SSH_DOMAIN: "{{ssh_domain}}"
       GITEA__server__SSH_PORT: "{{ssh_port}}"
       GITEA__server__SSH_LISTEN_PORT: "22"
     ports:
@@ -220,6 +223,7 @@ volumes:
 			// port 命名沿用其他模板约定:一键服务注册的端口启发式优先取键 port(Web 才是反代目标)。
 			{Name: "port", Label: "Web 端口(宿主)", Type: ParamTypeInt, Default: "3000"},
 			{Name: "ssh_port", Label: "SSH 克隆端口(宿主)", Type: ParamTypeInt, Default: "2222"},
+			{Name: "ssh_domain", Label: "SSH 克隆域名(服务器 IP 或域名)", Type: ParamTypeString, Required: true},
 		},
 		Builtin: true,
 	},
@@ -227,7 +231,7 @@ volumes:
 		Name:        "redpanda",
 		DisplayName: "Redpanda",
 		Description: "Kafka 协议兼容的高性能流数据平台;附带 Console 管理界面,数据落具名卷 redpanda-data。",
-		Icon: "🐼",
+		Icon:        "🐼",
 		// 单节点开发者模式:--overprovisioned + --mode dev-container 免去生产级的
 		// 内核参数与资源检查,普通容器即可跑通;advertise 地址必须是客户端可达的
 		// 宿主地址(部署 handler 对 advertise_host 参数自动注入机器配置的 Host),

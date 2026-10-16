@@ -99,7 +99,7 @@ func TestRenderParams(t *testing.T) {
 			t.Fatalf("换行注入应 ErrInvalidValue,得 %v", err)
 		}
 
-		// 4) gitea:SSH_PORT 跟宿主映射走、SSH_LISTEN_PORT 恒 22;port 即 Web 端口。
+		// 4) gitea:SSH_DOMAIN 必填、SSH_PORT 跟宿主映射走、SSH_LISTEN_PORT 恒 22;port 即 Web 端口。
 		var gitea *Template
 		for i := range list {
 			if list[i].Name == "gitea" {
@@ -109,17 +109,21 @@ func TestRenderParams(t *testing.T) {
 		if gitea == nil {
 			t.Fatal("缺 gitea 内置模板")
 		}
-		res, err = svc.Render(ctx, gitea.ID, map[string]string{})
+		if _, err := svc.Render(ctx, gitea.ID, map[string]string{}); !errors.Is(err, ErrMissingParam) {
+			t.Fatalf("缺 ssh_domain 应 ErrMissingParam,得 %v", err)
+		}
+		res, err = svc.Render(ctx, gitea.ID, map[string]string{"ssh_domain": "git.example.com"})
 		if err != nil || !strings.Contains(res.Compose, "gitea/gitea:28.1.0") {
 			t.Fatalf("gitea 默认渲染:%v\n%s", err, res.Compose)
 		}
 		if !strings.Contains(res.Compose, "3000:3000") || !strings.Contains(res.Compose, "2222:22") ||
+			!strings.Contains(res.Compose, `SSH_DOMAIN: "git.example.com"`) ||
 			!strings.Contains(res.Compose, `SSH_PORT: "2222"`) || !strings.Contains(res.Compose, `SSH_LISTEN_PORT: "22"`) {
-			t.Fatalf("gitea 端口渲染不符:\n%s", res.Compose)
+			t.Fatalf("gitea 端口/域名渲染不符:\n%s", res.Compose)
 		}
-		res, err = svc.Render(ctx, gitea.ID, map[string]string{"port": "13000", "ssh_port": "2222"})
-		if err != nil || !strings.Contains(res.Compose, "13000:3000") || !strings.Contains(res.Compose, "2222:22") {
-			t.Fatalf("gitea 显式端口未生效:%v\n%s", err, res.Compose)
+		res, err = svc.Render(ctx, gitea.ID, map[string]string{"ssh_domain": "10.0.0.8", "port": "13000", "ssh_port": "2222"})
+		if err != nil || !strings.Contains(res.Compose, "13000:3000") || !strings.Contains(res.Compose, `SSH_DOMAIN: "10.0.0.8"`) {
+			t.Fatalf("gitea 显式参数未生效:%v\n%s", err, res.Compose)
 		}
 	})
 }
@@ -187,6 +191,79 @@ func TestMissingRequiredParam(t *testing.T) {
 		}
 		if _, err := svc.Render(ctx, tpl.ID, map[string]string{"must": "ok"}); err != nil {
 			t.Fatalf("补齐必填应成功:%v", err)
+		}
+	})
+}
+
+func TestEnsureBuiltinsRefreshesStaleBuiltin(t *testing.T) {
+	storetest.ForEachDialect(t, func(t *testing.T, st *store.Store) {
+		svc := newTestService(t, st)
+		ctx := context.Background()
+		list, err := svc.List(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var gitea *Template
+		for i := range list {
+			if list[i].Name == "gitea" {
+				gitea = &list[i]
+			}
+		}
+		if gitea == nil {
+			t.Fatal("缺 gitea 内置模板")
+		}
+		// 服务层禁止改内置,直接改 store 模拟旧版 seed 遗留的旧行(如尚未有 ssh_domain 参数)。
+		stale := *gitea
+		stale.ComposeYAML = "services:\n  gitea:\n    image: gitea/gitea:1.0\n"
+		stale.Params = []ParamSpec{{Name: "version", Type: ParamTypeString, Default: "1.0"}}
+		if err := NewStore(st.DB).update(ctx, &stale); err != nil {
+			t.Fatal(err)
+		}
+		if err := svc.EnsureBuiltins(ctx); err != nil {
+			t.Fatal(err)
+		}
+		fresh, err := svc.Get(ctx, gitea.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(fresh.ComposeYAML, `SSH_DOMAIN: "{{ssh_domain}}"`) || !strings.Contains(fresh.ComposeYAML, "gitea/gitea:{{version}}") {
+			t.Fatalf("内置行应随新版定义刷新:\n%s", fresh.ComposeYAML)
+		}
+		if fresh.ID != gitea.ID || fresh.CreatedAt.IsZero() {
+			t.Fatal("刷新应保留 ID 与创建时间")
+		}
+		// 内容已一致时再 seed 不报错不空写。
+		if err := svc.EnsureBuiltins(ctx); err != nil {
+			t.Fatal(err)
+		}
+	})
+}
+
+func TestEnsureBuiltinsSkipsCustomSameName(t *testing.T) {
+	storetest.ForEachDialect(t, func(t *testing.T, st *store.Store) {
+		// 先以空内置集合 seed(模拟内置名启用前的老库),用户自建同名模板。
+		old := builtins
+		builtins = nil
+		defer func() { builtins = old }()
+		svc := newTestService(t, st)
+		ctx := context.Background()
+		mine, err := svc.Create(ctx, CreateInput{
+			Name: "mine", DisplayName: "我的", ComposeYAML: "services:\n  a:\n    image: x:1\n",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		// 新版引入同名内置 → seed 让路,不覆盖用户模板。
+		builtins = []Template{{Name: "mine", DisplayName: "内置 Mine", ComposeYAML: "services:\n  a:\n    image: y:2\n", Builtin: true}}
+		if err := svc.EnsureBuiltins(ctx); err != nil {
+			t.Fatal(err)
+		}
+		got, err := svc.Get(ctx, mine.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Builtin || got.DisplayName != "我的" || !strings.Contains(got.ComposeYAML, "x:1") {
+			t.Fatalf("同名自定义模板不应被覆盖:%+v", got)
 		}
 	})
 }

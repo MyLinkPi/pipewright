@@ -133,8 +133,34 @@ func deployComposeToServer(ctx context.Context, svc target.Service, serverID, na
 	return true, truncateLog(strings.TrimSpace(res.Stdout)+"\n"+strings.TrimSpace(res.Stderr), 2048), ""
 }
 
+// hostParamNames 是「部署宿主地址」约定参数:模板声明了这些参数且用户未显式提供
+// (键缺省或留空)时,部署 handler 注入目标机 Host,使客户端通告/克隆地址自动指向
+// 部署宿主(advertise_host 如 Redpanda Kafka advertise,ssh_domain 如 Gitea SSH
+// 克隆地址主机——缺省会回落 localhost)。
+var hostParamNames = map[string]bool{
+	"advertise_host": true,
+	"ssh_domain":     true,
+}
+
+// injectHostParams 对模板声明的宿主地址约定参数注入 host(仅键缺省或留空时,显式填写优先)。
+// 返回更新后的参数表(入参 nil 时新建)。
+func injectHostParams(params map[string]string, tpl *appstore.Template, host string) map[string]string {
+	for _, p := range tpl.Params {
+		if !hostParamNames[p.Name] {
+			continue
+		}
+		if params == nil {
+			params = map[string]string{}
+		}
+		if strings.TrimSpace(params[p.Name]) == "" {
+			params[p.Name] = host
+		}
+	}
+	return params
+}
+
 // injectComposeLimits 把 CPU/内存上限注入 compose 每个 service 的 deploy.resources.limits
-//(docker compose v2 非 swarm 模式同样生效;模板已写同名键时被本次部署选择覆盖)。
+// (docker compose v2 非 swarm 模式同样生效;模板已写同名键时被本次部署选择覆盖)。
 // 两者皆空 → 原样返回(零开销);模板产出非法 YAML → 错误,不部署。
 func injectComposeLimits(compose, cpus, memory string) (string, error) {
 	if cpus == "" && memory == "" {
@@ -440,19 +466,9 @@ func makeDeployAppHandler(apps appstore.Service, servers target.Service, aud aud
 			writeServerError(w, err)
 			return
 		}
-		// 约定参数 advertise_host(如 Redpanda 模板):未显式提供时注入目标机 Host,
-		// 让 Kafka advertise 等客户端通告地址自动指向部署宿主。
-		if _, ok := req.Params["advertise_host"]; !ok {
-			for _, p := range tpl.Params {
-				if p.Name == "advertise_host" {
-					if req.Params == nil {
-						req.Params = map[string]string{}
-					}
-					req.Params["advertise_host"] = srv.Host
-					break
-				}
-			}
-		}
+		// 宿主地址约定参数(advertise_host/ssh_domain,见 hostParamNames):未显式提供或
+		// 留空时注入目标机 Host,让 Kafka advertise、SSH 克隆地址等自动指向部署宿主。
+		req.Params = injectHostParams(req.Params, tpl, srv.Host)
 		rendered, err := apps.Render(r.Context(), req.TemplateID, req.Params)
 		if err != nil {
 			writeAppStoreError(w, err)

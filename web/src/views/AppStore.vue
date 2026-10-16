@@ -93,6 +93,21 @@ const missingRequired = computed(() => {
   )
 })
 
+// prefillHostParams 选中目标机后为 ssh_domain 预填该机地址(为空时):SSH 克隆地址主机
+// 缺省回落 localhost;后端对留空的约定参数也会注入目标机 Host,此处预填让用户看得见生效值。
+function prefillHostParams(tpl: AppTemplate, serverId: string): void {
+  if (!tpl.params.some((p) => p.name === 'ssh_domain')) return
+  const srv = servers.value.find((s) => s.id === serverId)
+  if (srv && !(paramValues.value.ssh_domain ?? '').trim()) {
+    paramValues.value.ssh_domain = srv.host
+  }
+}
+
+function onDeployServer(v: string): void {
+  deployServer.value = v
+  if (deploying.value) prefillHostParams(deploying.value, v)
+}
+
 function openDeploy(tpl: AppTemplate): void {
   deploying.value = tpl
   deployResult.value = null
@@ -103,6 +118,7 @@ function openDeploy(tpl: AppTemplate): void {
   const vals: Record<string, string> = {}
   for (const p of tpl.params) vals[p.name] = p.default ?? ''
   paramValues.value = vals
+  if (deployServer.value) prefillHostParams(tpl, deployServer.value)
 }
 
 async function submitDeploy(): Promise<void> {
@@ -418,7 +434,7 @@ async function removeCustom(tpl: AppTemplate): Promise<void> {
               :model-value="deployServer"
               :options="serverOptions"
               :placeholder="t('appStore.deploy.pickTarget')"
-              @update:model-value="(v: string) => (deployServer = v)"
+              @update:model-value="onDeployServer"
             />
           </label>
           <label v-for="p in deploying.params" :key="p.name" class="field">
