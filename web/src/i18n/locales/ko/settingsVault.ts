@@ -113,4 +113,10 @@ export default {
   errSaveRetry: '저장에 실패했습니다. 잠시 후 다시 시도하세요',
   errDeleteStatus: '삭제 실패({status})',
   errDeleteRetry: '삭제에 실패했습니다. 잠시 후 다시 시도하세요',
+
+  revealCurrent: '현재 평문 보기',
+  hideCurrent: '숨기기',
+  revealFailed: '평문 보기에 실패했습니다',
+  fieldSecretNew: '새 시크릿 내용',
+  secretOptionalEdit: '(비워 두면 교체하지 않음)',
 }

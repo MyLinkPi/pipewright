@@ -113,4 +113,10 @@ export default {
   errSaveRetry: 'Error al guardar. Inténtalo de nuevo más tarde.',
   errDeleteStatus: 'Error al eliminar ({status})',
   errDeleteRetry: 'Error al eliminar. Inténtalo de nuevo más tarde.',
+
+  revealCurrent: 'Mostrar actual',
+  hideCurrent: 'Ocultar',
+  revealFailed: 'No se pudo mostrar el secreto',
+  fieldSecretNew: 'Contenido del nuevo secreto',
+  secretOptionalEdit: '(déjalo en blanco para no rotar)',
 }

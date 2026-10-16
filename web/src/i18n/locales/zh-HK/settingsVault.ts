@@ -113,4 +113,10 @@ export default {
   errSaveRetry: '儲存失敗,請稍後重試',
   errDeleteStatus: '刪除失敗({status})',
   errDeleteRetry: '刪除失敗,請稍後重試',
+
+  revealCurrent: '檢視目前明文',
+  hideCurrent: '隱藏明文',
+  revealFailed: '檢視明文失敗',
+  fieldSecretNew: '新密鑰內容',
+  secretOptionalEdit: '（留空則不輪換）',
 }

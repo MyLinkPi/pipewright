@@ -6,6 +6,7 @@ import {
   updateCredential,
   deleteCredential,
   isSystemManagedType,
+  revealCredential,
 } from '../../api/credentials'
 import type { Credential, CredentialType, CreateCredentialInput, UpdateCredentialInput } from '../../api/credentials'
 import { HttpError } from '../../api/http'
@@ -59,6 +60,12 @@ const deleteModalOpen = ref(false)
 const deletingCredential = ref<Credential | null>(null)
 const deleteSubmitting = ref(false)
 const deleteBanner = ref('')
+
+// ─── reveal current plaintext inside the edit modal (on-demand, audited) ──────
+
+// Current plaintext while shown in the edit modal; null = hidden. Cleared on close.
+const editRevealed = ref<string | null>(null)
+const editRevealing = ref(false)
 
 // ─── OAuth connect (enabled providers only) ──────────────────────────────────
 
@@ -236,6 +243,7 @@ function openEditModal(c: Credential): void {
   editingId.value = c.id
   // secret is intentionally blank — user must re-enter to rotate
   form.value = { name: c.name, type: c.type, scope: c.scope, username: c.username, secret: '' }
+  editRevealed.value = null
   clearFormErrors()
   formBanner.value = ''
   modalOpen.value = true
@@ -245,8 +253,9 @@ function openEditModal(c: Credential): void {
 function closeModal(): void {
   if (formSubmitting.value) return
   modalOpen.value = false
-  // Clear secret immediately when modal closes
+  // Clear secret + any revealed plaintext immediately when modal closes
   form.value.secret = ''
+  editRevealed.value = null
 }
 
 /** Shared close path for ✕ / 取消 / ESC: confirm before discarding a dirty form. */
@@ -371,6 +380,25 @@ async function confirmDelete(): Promise<void> {
     }
   } finally {
     deleteSubmitting.value = false
+  }
+}
+
+// ─── reveal / hide current plaintext in the edit modal (audited server-side) ──
+
+async function toggleEditReveal(): Promise<void> {
+  // Already shown → hide and drop the plaintext from memory.
+  if (editRevealed.value !== null) {
+    editRevealed.value = null
+    return
+  }
+  if (!editingId.value || editRevealing.value) return
+  editRevealing.value = true
+  try {
+    editRevealed.value = await revealCredential(editingId.value)
+  } catch (err) {
+    toast.error(err instanceof HttpError ? err.message : t('settingsVault.revealFailed'))
+  } finally {
+    editRevealing.value = false
   }
 }
 </script>

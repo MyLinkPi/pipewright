@@ -113,4 +113,10 @@ export default {
   errSaveRetry: 'Speichern fehlgeschlagen. Bitte später erneut versuchen.',
   errDeleteStatus: 'Löschen fehlgeschlagen ({status})',
   errDeleteRetry: 'Löschen fehlgeschlagen. Bitte später erneut versuchen.',
+
+  revealCurrent: 'Aktuelles anzeigen',
+  hideCurrent: 'Verbergen',
+  revealFailed: 'Geheimnis konnte nicht angezeigt werden',
+  fieldSecretNew: 'Neuer Geheimnis-Inhalt',
+  secretOptionalEdit: '(leer lassen, um nicht zu rotieren)',
 }
