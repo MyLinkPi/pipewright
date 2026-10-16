@@ -265,7 +265,7 @@ func TestStageImageStructuredContainerParams(t *testing.T) {
 }
 
 // TestImageBaseRunArgs 单测 imageBaseRunArgs:空配置零参数、仅 runArgs 向后兼容、
-// 结构化键单独/组合、空行与空白裁剪。
+// 结构化键单独/组合、空行与空白裁剪、volumes 翻译与顺序(结构化 → -v → runArgs)。
 func TestImageBaseRunArgs(t *testing.T) {
 	cases := []struct {
 		name string
@@ -278,15 +278,22 @@ func TestImageBaseRunArgs(t *testing.T) {
 		{"仅结构化键", map[string]string{"cpuLimit": "0.5", "memoryLimit": "1g"}, []string{"--cpus", "0.5", "--memory", "1g"}},
 		{"空白值忽略", map[string]string{"cpuLimit": "  ", "restartPolicy": ""}, nil},
 		{"envVars 裁空行", map[string]string{"envVars": "\n A=1 \n\nB=2\n"}, []string{"-e", "A=1", "-e", "B=2"}},
+		{"仅 volumes:自动卷按容器名推导", map[string]string{"volumes": "/var/lib/mysql"},
+			[]string{"-v", "pw-shopapp__var-lib-mysql:/var/lib/mysql"}},
+		{"volumes:显式绑定 / 命名卷 / ro", map[string]string{"volumes": "/data/app:/app/data:ro\nappdata:/app/data"},
+			[]string{"-v", "/data/app:/app/data:ro", "-v", "appdata:/app/data"}},
 		{
-			"组合:结构化在前 runArgs 在后",
-			map[string]string{"cpuLimit": "1", "restartPolicy": "always", "runArgs": "--cpus 2"},
-			[]string{"--cpus", "1", "--restart", "always", "--cpus", "2"},
+			"组合:结构化 → volumes → runArgs",
+			map[string]string{"cpuLimit": "1", "volumes": "/app/data", "runArgs": "--cpus 2"},
+			[]string{"--cpus", "1", "-v", "pw-shopapp__app-data:/app/data", "--cpus", "2"},
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := imageBaseRunArgs(tc.cfg)
+			got, _, err := imageBaseRunArgs(tc.cfg, "shopapp")
+			if err != nil {
+				t.Fatalf("意外错误: %v", err)
+			}
 			if len(got) != len(tc.want) {
 				t.Fatalf("got %v, want %v", got, tc.want)
 			}
@@ -297,6 +304,172 @@ func TestImageBaseRunArgs(t *testing.T) {
 			}
 		})
 	}
+	// 非法 volumes → 人读 error,绝不产出半截参数。
+	if got, _, err := imageBaseRunArgs(map[string]string{"volumes": "var/lib/mysql"}, "shopapp"); err == nil || got != nil {
+		t.Fatalf("容器路径非 / 开头应报错且无参数,得到 err=%v args=%v", err, got)
+	}
+}
+
+// TestParseVolumeMounts 单测 parseVolumeMounts / autoVolumeName:自动命名卷确定性推导
+//(升级稳定的核心)、显式绑定 / 命名卷原样透传、:ro、空行裁剪、路径含空格不拆、非法人读错误。
+func TestParseVolumeMounts(t *testing.T) {
+	cases := []struct {
+		name    string
+		volumes string
+		want    []volumeMount
+	}{
+		{"空 / 仅空白", " \n \n", nil},
+		{"自动卷:容器路径推导卷名", "/var/lib/mysql",
+			[]volumeMount{{spec: "pw-shop__var-lib-mysql:/var/lib/mysql", auto: true}}},
+		{"自动卷 + :ro", "/app/logs:ro",
+			[]volumeMount{{spec: "pw-shop__app-logs:/app/logs:ro", auto: true}}},
+		{"显式绑定宿主目录", "/data/app:/app/data", []volumeMount{{spec: "/data/app:/app/data"}}},
+		{"显式绑定 + :ro", "/data/app:/app/data:ro", []volumeMount{{spec: "/data/app:/app/data:ro"}}},
+		{"显式命名卷", "appdata:/app/data", []volumeMount{{spec: "appdata:/app/data"}}},
+		{"多行混合裁空行", "\n/var/lib/mysql\n\n/data/app:/app/data\n", []volumeMount{
+			{spec: "pw-shop__var-lib-mysql:/var/lib/mysql", auto: true},
+			{spec: "/data/app:/app/data"},
+		}},
+		{"路径含空格不拆(逐行解析,非 Fields)", "/data/my app:/app/my data",
+			[]volumeMount{{spec: "/data/my app:/app/my data"}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := parseVolumeMounts(map[string]string{"volumes": tc.volumes}, "shop")
+			if err != nil {
+				t.Fatalf("意外错误: %v", err)
+			}
+			if len(got) != len(tc.want) {
+				t.Fatalf("got %+v, want %+v", got, tc.want)
+			}
+			for i := range tc.want {
+				if got[i] != tc.want[i] {
+					t.Fatalf("got[%d]=%+v, want %+v", i, got[i], tc.want[i])
+				}
+			}
+		})
+	}
+	for _, bad := range []string{
+		"var/lib/mysql", // 容器路径非 / 开头
+		"/a:/b:ro:extra", // 段数超三
+		"/a:/b:rw",       // 模式仅支持 ro
+	} {
+		if _, err := parseVolumeMounts(map[string]string{"volumes": bad}, "shop"); err == nil {
+			t.Fatalf("%q 应报错", bad)
+		}
+	}
+}
+
+// TestStageImageVolumes 验证 volumes 结构化键翻译为 -v 进 docker run(自动卷名按基础容器名
+// 推导);非法配置 → failed 人读且不执行任何 docker 命令。
+func TestStageImageVolumes(t *testing.T) {
+	t.Run("自动 + 显式卷进 docker run", func(t *testing.T) {
+		db := testDB(t)
+		rsvc := run.New(db)
+		tgt := &stubTarget{}
+		srv := seedServer(t, tgt, "web-1")
+		runID, _ := seedSuccessRunWithArtifact(t, db, rsvc, run.ArtifactImage, "registry/shop:1.0")
+
+		svc := New(tgt, rsvc)
+		cfg := map[string]string{
+			"containerName": "shopapp",
+			"volumes":       "/var/lib/mysql\n/data/app:/app/data:ro",
+		}
+		res, err := svc.DeployForStage(context.Background(), runID, "server:"+srv.ID, cfg, "")
+		if err != nil {
+			t.Fatalf("DeployForStage: %v", err)
+		}
+		if res[0].Status != run.TargetSuccess {
+			t.Fatalf("want success, got %+v", res)
+		}
+		rc := runCmd(tgt.calls)
+		if rc == nil {
+			t.Fatalf("无 docker run 命令: %v", tgt.calls)
+		}
+		want := []string{
+			"docker", "run", "-d", "--name", "shopapp",
+			"-v", "pw-shopapp__var-lib-mysql:/var/lib/mysql",
+			"-v", "/data/app:/app/data:ro",
+			"registry/shop:1.0",
+		}
+		if len(rc) != len(want) {
+			t.Fatalf("docker run 参数不符\n got: %v\nwant: %v", rc, want)
+		}
+		for i := range want {
+			if rc[i] != want[i] {
+				t.Fatalf("docker run[%d]=%q, want %q\n got: %v", i, rc[i], want[i], rc)
+			}
+		}
+	})
+	t.Run("非法 volumes → failed 人读且不发 docker 命令", func(t *testing.T) {
+		db := testDB(t)
+		rsvc := run.New(db)
+		tgt := &stubTarget{}
+		srv := seedServer(t, tgt, "web-1")
+		runID, _ := seedSuccessRunWithArtifact(t, db, rsvc, run.ArtifactImage, "registry/shop:1.0")
+
+		svc := New(tgt, rsvc)
+		cfg := map[string]string{"containerName": "shopapp", "volumes": "var/lib/mysql"}
+		res, err := svc.DeployForStage(context.Background(), runID, "server:"+srv.ID, cfg, "")
+		if err != nil {
+			t.Fatalf("DeployForStage: %v", err)
+		}
+		if len(res) != 1 || res[0].Status != run.TargetFailed {
+			t.Fatalf("非法 volumes 应 failed,实际 %+v", res)
+		}
+		if !strings.Contains(res[0].Message, "容器路径必须以 / 开头") {
+			t.Fatalf("失败消息应人读指出原因,实际:%s", res[0].Message)
+		}
+		if runCmd(tgt.calls) != nil {
+			t.Fatalf("非法配置不应执行 docker run: %v", tgt.calls)
+		}
+	})
+}
+
+// TestRollingImageVolumesKeptOnRollback 健康失败回滚:回滚 docker run(上一镜像)复用同一
+// -v(baseArgs)→ 回滚后容器仍挂同一卷,数据保持。
+func TestRollingImageVolumesKeptOnRollback(t *testing.T) {
+	db := testDB(t)
+	rsvc := run.New(db)
+	rec := &touchRecorder{
+		inspectImage: "registry/app:v1", // 已有上一镜像 → 可回滚
+		failOn: func(_ string, cmd []string) bool {
+			return len(cmd) > 0 && cmd[0] == "true" // 健康命令失败
+		},
+	}
+	tgt := &stubTarget{execFn: rec.exec}
+	srv := seedServer(t, tgt, "web-1")
+	runID, artID := seedSuccessRunWithArtifact(t, db, rsvc, run.ArtifactImage, "registry/app:v2")
+
+	svc := New(tgt, rsvc)
+	hc := &HealthCheck{Type: HealthCheckCommand, Command: []string{"true"}, Retries: 1}
+	res, err := svc.Deploy(context.Background(), DeployInput{
+		RunID: runID, ArtifactID: artID, ServerIDs: []string{srv.ID},
+		Strategy: "rolling", HealthCheck: hc,
+		Config: map[string]string{"containerName": "app", "volumes": "/var/lib/mysql"},
+	})
+	if err != nil {
+		t.Fatalf("Deploy: %v", err)
+	}
+	if len(res) != 1 || res[0].Status != run.TargetRolledBack {
+		t.Fatalf("健康失败应 rolled_back,实际 %+v", res)
+	}
+	const vol = "-v:pw-app__var-lib-mysql:/var/lib/mysql"
+	for _, c := range rec.calls2 {
+		if len(c) >= 3 && c[0] == "docker" && c[1] == "run" && c[len(c)-1] == "registry/app:v1" {
+			var joined []string
+			for i := 5; i+1 < len(c); i++ { // 跳过 docker run -d --name <name>
+				if c[i] == "-v" {
+					joined = append(joined, "-v:"+c[i+1])
+				}
+			}
+			if len(joined) != 1 || joined[0] != vol {
+				t.Fatalf("回滚 run 应带且仅带同一卷 %s,实际 %v(完整命令 %v)", vol, joined, c)
+			}
+			return
+		}
+	}
+	t.Fatalf("未找到回滚到 v1 的 docker run: %v", rec.calls2)
 }
 
 

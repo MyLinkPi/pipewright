@@ -532,7 +532,7 @@ func (d *stubStageDeployer) DeployForStage(_ context.Context, _ string, selector
 
 // TestRunDeployJobPassesImageParams 证 #55:部署节点把镜像产物参数
 // (artifactType/containerName/ports/runArgs + 结构化常用项 cpuLimit/memoryLimit/
-// restartPolicy/envVars)透传给 deploy.DeployForStage,
+// restartPolicy/envVars/volumes)透传给 deploy.DeployForStage,
 // 使流水线部署节点能部署 #51 的镜像产物(而非只透传 releaseBase/restartCommand)。
 func TestRunDeployJobPassesImageParams(t *testing.T) {
 	dep := &stubStageDeployer{}
@@ -548,6 +548,7 @@ func TestRunDeployJobPassesImageParams(t *testing.T) {
 		"memoryLimit":   "512m",
 		"restartPolicy": "unless-stopped",
 		"envVars":       "KEY=v",
+		"volumes":       "/var/lib/mysql",
 		"strategy":      "blue_green",
 		"deployPath":    "/opt/app", // 文件态键仍应透传,不互斥
 	}}
@@ -563,6 +564,7 @@ func TestRunDeployJobPassesImageParams(t *testing.T) {
 		"memoryLimit":   "512m",
 		"restartPolicy": "unless-stopped",
 		"envVars":       "KEY=v",
+		"volumes":       "/var/lib/mysql",
 		"releaseBase":   "/opt/app",
 	} {
 		if got := dep.gotCfg[k]; got != want {

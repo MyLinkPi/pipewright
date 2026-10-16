@@ -246,12 +246,19 @@ describe('jobConfigSchema', () => {
       expect(fields.find((x) => x.key === 'envVars')!.kind).toBe('textarea')
     })
 
+    it('exposes volumes (multiline, one mount per line) ahead of runArgs', () => {
+      expect(keys).toContain('volumes')
+      expect(keys.indexOf('volumes'), 'volumes before runArgs').toBeLessThan(keys.indexOf('runArgs'))
+      expect(fields.find((x) => x.key === 'volumes')!.kind).toBe('textarea')
+    })
+
     it('owns the new keys so they stay typed instead of falling into raw extras', () => {
       const { extras } = splitConfig('deploy_container', {
         cpuLimit: '1.0',
         memoryLimit: '512m',
         restartPolicy: 'always',
         envVars: 'KEY=value',
+        volumes: '/var/lib/mysql',
       })
       expect(extras.length).toBe(0)
     })

@@ -584,6 +584,14 @@ const DEPLOY_CONTAINER_FIELDS: JobField[] = [
     get hint() { return t('pipelineJob.fieldEnvVarsHint') },
   },
   {
+    key: 'volumes',
+    get label() { return t('pipelineJob.fieldVolumesLabel') },
+    kind: 'textarea',
+    monospace: true,
+    placeholder: '/var/lib/mysql\n/data/app:/app/data\nappdata:/app/data',
+    get hint() { return t('pipelineJob.fieldVolumesHint') },
+  },
+  {
     key: 'runArgs',
     get label() { return t('pipelineJob.fieldRunArgsLabel') },
     kind: 'text',
