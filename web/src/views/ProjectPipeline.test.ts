@@ -33,7 +33,7 @@ vi.mock('../api/projects', () => ({
 vi.mock('../api/servers', () => ({ listServers: vi.fn().mockResolvedValue([]) }))
 vi.mock('../api/notifications', () => ({ listChannels: vi.fn().mockResolvedValue([]) }))
 vi.mock('../api/objectStores', () => ({ listObjectStores: vi.fn().mockResolvedValue([]) }))
-vi.mock('../api/pipelineValidation', () => ({ getValidation: vi.fn() }))
+vi.mock('../api/pipelineValidation', () => ({ getValidation: vi.fn().mockResolvedValue({ ready: true, issues: [] }) }))
 
 let routeQuery: Record<string, string> = { tab: 'vars' }
 vi.mock('vue-router', () => ({
@@ -116,17 +116,145 @@ describe('ProjectPipeline — settings 加载失败时保存不假成功', () =>
     expect(w.find('.pipeline-banner--success').exists()).toBe(false)
   })
 
-  it('loadSettings 成功 → vars tab 保存:正常发请求并显示成功横幅', async () => {
+  it('loadSettings 成功且无任何脏改动 → 保存:不发包,如实提示「没有未保存的修改」', async () => {
     getSettingsMock.mockResolvedValue(settingsDTO())
-    vi.mocked(saveSettings).mockResolvedValue(settingsDTO())
     const w = mountView()
     await flushPromises()
 
     await w.find('.top-btn--save').trigger('click')
     await flushPromises()
 
+    expect(saveSettings).not.toHaveBeenCalled()
+    expect(w.find('.pipeline-banner--success').text()).toContain('没有未保存的修改')
+  })
+})
+
+// ─── #190 回归:按 dirty 全 scope 保存,不再按激活 tab 决定范围 ────────────────
+
+/** 供 settings 脏用例:stub VarsCacheTab,捕获实例以手动 emit update。 */
+const VarsCacheTabStub = {
+  name: 'VarsCacheTab',
+  template: '<div class="vars-stub" />',
+  emits: ['update'],
+}
+
+/** 供模板应用用例:stub TemplatePickerModal,可手动 emit applied。 */
+const TemplatePickerModalStub = {
+  name: 'TemplatePickerModal',
+  template: '<div class="tpl-stub" />',
+  emits: ['applied', 'close'],
+}
+
+function mountViewEx(extra: Record<string, unknown> = {}) {
+  return mount(ProjectPipeline, {
+    global: {
+      stubs: {
+        PipelineCanvas: PipelineCanvasStub,
+        VarsCacheTab: VarsCacheTabStub,
+        TriggersPanel: true,
+        RunnerPanel: true,
+        ValidationPanel: true,
+        AIGenerateWizard: true,
+        RiskAnnotationModal: true,
+        YamlImportModal: true,
+        TemplatePickerModal: TemplatePickerModalStub,
+        PacPreviewModal: true,
+        ProjectPreviewConfig: true,
+        AppTooltip: true,
+        RouterLink: { template: '<a><slot /></a>' },
+        ...extra,
+      },
+    },
+  })
+}
+
+describe('ProjectPipeline — 按 dirty 全 scope 保存(#190)', () => {
+  const serverStage: PipelineStage = { id: 'p_s1', name: 's1', jobs: [] } as unknown as PipelineStage
+
+  function dirtyBuild(dto: SettingsDTO): SettingsDTO {
+    return { ...dto, build: { ...dto.build, dockerfilePath: 'Dockerfile.prod' } }
+  }
+
+  it('激活 vars tab 但只有画布脏 → 保存发 savePipeline 不发 saveSettings(与激活 tab 无关)', async () => {
+    getSettingsMock.mockResolvedValue(settingsDTO())
+    getPipelineMock.mockResolvedValue(pipelineDTO([serverStage]))
+    const { savePipeline } = await import('../api/pipeline')
+    vi.mocked(savePipeline).mockResolvedValue(pipelineDTO([serverStage]))
+    const w = mountViewEx()
+    await flushPromises()
+
+    // 画布替换 stages → pipeline 脏;settings 未动。
+    w.findComponent(PipelineCanvasStub).vm.$emit('update', [{ ...serverStage, name: 's1-renamed' } as unknown as PipelineStage])
+    await nextTick()
+    await w.find('.top-btn--save').trigger('click')
+    await flushPromises()
+
+    expect(savePipeline).toHaveBeenCalledTimes(1)
+    expect(saveSettings).not.toHaveBeenCalled()
+    expect(w.find('.pipeline-banner--success').text()).toContain('流水线已保存')
+  })
+
+  it('settings 与画布都脏 → 两个 scope 依次保存', async () => {
+    getSettingsMock.mockResolvedValue(settingsDTO())
+    vi.mocked(saveSettings).mockResolvedValue(settingsDTO())
+    getPipelineMock.mockResolvedValue(pipelineDTO([serverStage]))
+    const { savePipeline } = await import('../api/pipeline')
+    vi.mocked(savePipeline).mockResolvedValue(pipelineDTO([serverStage]))
+    const w = mountViewEx()
+    await flushPromises()
+
+    w.findComponent(VarsCacheTabStub).vm.$emit('update', dirtyBuild(settingsDTO()).build)
+    w.findComponent(PipelineCanvasStub).vm.$emit('update', [{ ...serverStage, name: 'renamed' } as unknown as PipelineStage])
+    await nextTick()
+    await w.find('.top-btn--save').trigger('click')
+    await flushPromises()
+
     expect(saveSettings).toHaveBeenCalledTimes(1)
+    expect(savePipeline).toHaveBeenCalledTimes(1)
     expect(w.find('.pipeline-banner--success').exists()).toBe(true)
+  })
+
+  it('settings 保存成功但画布保存失败 → 错误横幅如实列出已保存 scope(#190 部分失败可见)', async () => {
+    getSettingsMock.mockResolvedValue(settingsDTO())
+    vi.mocked(saveSettings).mockResolvedValue(settingsDTO())
+    getPipelineMock.mockResolvedValue(pipelineDTO([serverStage]))
+    const { savePipeline } = await import('../api/pipeline')
+    vi.mocked(savePipeline).mockRejectedValue(new Error('boom'))
+    const w = mountViewEx()
+    await flushPromises()
+
+    w.findComponent(VarsCacheTabStub).vm.$emit('update', dirtyBuild(settingsDTO()).build)
+    w.findComponent(PipelineCanvasStub).vm.$emit('update', [{ ...serverStage, name: 'renamed' } as unknown as PipelineStage])
+    await nextTick()
+    await w.find('.top-btn--save').trigger('click')
+    await flushPromises()
+
+    expect(saveSettings).toHaveBeenCalledTimes(1)
+    const banner = w.find('.pipeline-banner--error')
+    expect(banner.exists()).toBe(true)
+    expect(banner.text()).toContain('变量/环境')
+  })
+
+  it('模板应用只重载流水线,不再覆写未保存的 settings 草稿(#190)', async () => {
+    getSettingsMock.mockResolvedValue(settingsDTO())
+    getPipelineMock.mockResolvedValue(pipelineDTO([serverStage]))
+    const w = mountViewEx()
+    await flushPromises()
+    const settingsCallsBefore = getSettingsMock.mock.calls.length
+
+    // 打开模板弹窗(v-if 挂载),再触发 applied(stages-only 持久化):
+    // 此前会 loadSettings() 把草稿冲掉。
+    // 头部按钮按顺序找到「模板」入口(点击后模板弹窗挂载)。
+    for (const btn of w.findAll('.top-btn')) {
+      await btn.trigger('click')
+      if (w.findComponent(TemplatePickerModalStub).exists()) break
+    }
+    expect(w.findComponent(TemplatePickerModalStub).exists()).toBe(true)
+    w.findComponent(TemplatePickerModalStub).vm.$emit('applied', pipelineDTO([serverStage]))
+    await flushPromises()
+
+    expect(getPipelineMock.mock.calls.length).toBeGreaterThanOrEqual(2)
+    expect(getSettingsMock.mock.calls.length).toBe(settingsCallsBefore) // 未再拉 settings
   })
 })
 

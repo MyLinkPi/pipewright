@@ -25,6 +25,7 @@ import { listChannels, type NotificationChannel } from '../api/notifications'
 import { listObjectStores, type ObjectStore } from '../api/objectStores'
 import { getValidation, type ValidationDTO, type IssueScope } from '../api/pipelineValidation'
 import { HttpError } from '../api/http'
+import { useConfirm } from '../composables/useConfirm'
 import { stableStringify } from '../lib/stableJson'
 import { anyDirty, useDirtyGuard } from '../composables/useDirtyGuard'
 import PipelineCanvas from '../components/pipeline/PipelineCanvas.vue'
@@ -174,10 +175,9 @@ const envsSnapshot   = ref('')
 
 // 脏检查与快照同走 stableStringify:只比内容、不比键序(改回原值不报脏)。
 const pipelineDirty = computed(() => stableStringify(editStages.value) !== stagesSnapshot.value)
-const settingsDirty = computed(() =>
-  JSON.stringify(editBuild.value) !== buildSnapshot.value ||
-  JSON.stringify(editEnvs.value) !== envsSnapshot.value,
-)
+const buildDirty = computed(() => JSON.stringify(editBuild.value) !== buildSnapshot.value)
+const envsDirty = computed(() => JSON.stringify(editEnvs.value) !== envsSnapshot.value)
+const settingsDirty = computed(() => buildDirty.value || envsDirty.value)
 /** Header indicator: pipeline spec or build/env settings differ from the server state. */
 const pageDirty = computed(() => pipelineDirty.value || settingsDirty.value)
 
@@ -214,9 +214,11 @@ function handleCanvasUpdate(stages: PipelineStage[]): void {
 const saveSubmitting = ref(false)
 const saveBanner     = ref('')
 const saveSuccess    = ref(false)
+const saveSuccessText = ref('')
 let saveSuccessTimer: ReturnType<typeof setTimeout> | null = null
 
-function showSaveSuccess(): void {
+function showSaveSuccess(text?: string): void {
+  saveSuccessText.value = text ?? t('projectPipeline.draftSaved')
   saveSuccess.value = true
   if (saveSuccessTimer) clearTimeout(saveSuccessTimer)
   saveSuccessTimer = setTimeout(() => { saveSuccess.value = false }, 3200)
@@ -282,9 +284,13 @@ async function handleSave(): Promise<void> {
   saveBanner.value     = ''
   saveSuccess.value    = false
 
+  /** 已成功落库的 scope 名单(多 scope 非事务;失败时如实告知哪些已存,#190)。 */
+  const savedScopes: string[] = []
   try {
-    // The vars/envs tabs persist build/deploy settings; canvas/triggers persist the spec.
-    if (activeTab.value === 'vars' || activeTab.value === 'envs') {
+    // 按 dirty 逐 scope 保存(变量/环境 → settings;画布 → pipeline spec),不再按
+    // 当前激活 tab 决定范围——「环境 tab 编辑 → 切画布 → 保存」曾只存画布却弹全局
+    // 成功横幅,环境编辑被静默丢弃(issue #190)。
+    if (settingsDirty.value) {
       const payload = buildSettingsPayload()
       if (!payload) {
         // settings 未加载成功(loadSettings 失败 → editBuild 为 null):此前会跳过请求
@@ -296,21 +302,31 @@ async function handleSave(): Promise<void> {
       applySettings(dto)
       // Refresh credential masks in case a referenced credential changed.
       credentials.value = await listCredentials().catch(() => credentials.value)
-    } else {
+      savedScopes.push(t('projectPipeline.scopeSettings'))
+    }
+    if (pipelineDirty.value) {
       const dto = await savePipeline(projectId.value, { stages: editStages.value })
       applyPipeline(dto)
+      savedScopes.push(t('projectPipeline.scopePipeline'))
     }
-    showSaveSuccess()
+    if (savedScopes.length === 0) {
+      showSaveSuccess(t('projectPipeline.noChanges'))
+    } else {
+      showSaveSuccess()
+    }
     // Revalidate after a successful save (debounced, only when panel is open).
     scheduleValidation(400)
   } catch (err) {
+    let reason: string
     if (err instanceof HttpError) {
-      saveBanner.value = err.status === 0
-        ? t('projectPipeline.errNoServer')
-        : mapSaveError(err)
+      reason = err.status === 0 ? t('projectPipeline.errNoServer') : mapSaveError(err)
     } else {
-      saveBanner.value = t('projectPipeline.errSaveFailedRetry')
+      reason = t('projectPipeline.errSaveFailedRetry')
     }
+    // 中途失败:已保存的 scope 如实列出(未保存部分仍留在编辑器,dirty 星标仍在)。
+    saveBanner.value = savedScopes.length > 0
+      ? t('projectPipeline.errSavePartial', { saved: savedScopes.join('、') }) + reason
+      : reason
   } finally {
     saveSubmitting.value = false
   }
@@ -332,6 +348,36 @@ function handleRiskScan(): void {
   riskModalOpen.value = true
 }
 
+// ─── 替换画布前的脏检查确认(#190/#193 家族)─────────────────────────────────
+
+const confirm = useConfirm()
+
+/** 画布有未保存修改时,整体替换(模板应用/YAML 导入)前先确认丢弃;干净画布直接放行。 */
+async function confirmCanvasReplace(): Promise<boolean> {
+  if (!pipelineDirty.value) return true
+  return confirm.open({
+    title: t('projectPipeline.replaceDirtyTitle'),
+    body: t('projectPipeline.replaceDirtyBody'),
+    confirmLabel: t('projectPipeline.replaceDirtyConfirm'),
+    variant: 'danger',
+  })
+}
+
+/** Tab 标题旁的脏星标:让「哪些范围没保存」始终可见(#193),不再只靠记忆。 */
+function tabDirty(key: TabKey): boolean {
+  switch (key) {
+    case 'canvas':   return pipelineDirty.value
+    case 'vars':     return buildDirty.value
+    case 'envs':     return envsDirty.value
+    case 'triggers': {
+      // ref 在挂载间隙可能为空;面板未暴露 isDirty 时按不脏处理(不阻塞渲染)。
+      const fn = triggersPanelRef.value?.isDirty
+      return typeof fn === 'function' ? fn.call(triggersPanelRef.value) : false
+    }
+    default:         return false
+  }
+}
+
 // ─── YAML import (Pipeline-as-code, FR-8-12) ──────────────────────────────────
 
 const yamlImportOpen = ref(false)
@@ -348,11 +394,12 @@ function handleTemplates(): void {
   templateModalOpen.value = true
 }
 
-/** Apply-template succeeded: server already persisted; reload pipeline + settings + revalidate. */
+/** Apply-template succeeded: server persisted **stages only**; reload the pipeline and
+ *  revalidate. 不再 loadSettings() 整体覆写——未保存的变量/环境草稿不再被静默丢弃
+ *  (issue #190;模板从不持久化 settings),也不再弹误导性的「已保存」横幅。 */
 async function handleTemplateApplied(): Promise<void> {
-  await Promise.all([loadPipeline(), loadSettings()])
+  await loadPipeline()
   if (activeTab.value !== 'canvas') setTab('canvas')
-  showSaveSuccess()
   scheduleValidation(400)
 }
 
@@ -361,17 +408,19 @@ async function handleTemplateApplied(): Promise<void> {
  * Reflect it on the canvas WITHOUT persisting — the user reviews, then clicks 保存.
  * We jump to the canvas tab so the change is visible.
  */
-function handleImportPreview(dto: PipelineDTO): void {
+async function handleImportPreview(dto: PipelineDTO): Promise<void> {
+  // 导入到画布会整体替换未保存的画布编辑:先确认(干净画布直接放行)。
+  if (!(await confirmCanvasReplace())) return
   pipeline.value = dto
   editStages.value = JSON.parse(JSON.stringify(dto.stages)) as PipelineStage[]
   if (activeTab.value !== 'canvas') setTab('canvas')
 }
 
-/** Save (save=true): the modal already persisted. Reload everything + revalidate. */
+/** Save (save=true): the modal persisted **stages only**; variable/environment drafts
+ *  stay intact in the editor (issue #190) — 与模板应用同语义,不弹「已保存」横幅。 */
 async function handleImportSaved(): Promise<void> {
-  await Promise.all([loadPipeline(), loadSettings()])
+  await loadPipeline()
   if (activeTab.value !== 'canvas') setTab('canvas')
-  showSaveSuccess()
   scheduleValidation(400)
 }
 
@@ -600,7 +649,7 @@ async function togglePrStatus(next: boolean): Promise<void> {
       <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true">
         <path d="M20 6 9 17l-5-5"/>
       </svg>
-      <span>{{ t('projectPipeline.draftSaved') }}</span>
+      <span>{{ saveSuccessText }}</span>
     </div>
 
     <!-- ─── Tab strip ──────────────────────────────────────────────────────── -->
@@ -621,7 +670,7 @@ async function togglePrStatus(next: boolean): Promise<void> {
           :aria-selected="activeTab === tab.key"
           :aria-controls="`tabpanel-${tab.key}`"
           @click="setTab(tab.key)"
-        >{{ tab.label }}</button>
+        >{{ tab.label }}<span v-if="tabDirty(tab.key)" class="tab-dirty-marker" :aria-label="t('projectPipeline.tabDirtyAria')">●</span></button>
       </nav>
 
       <div class="tab-strip-tools">
@@ -845,6 +894,7 @@ async function togglePrStatus(next: boolean): Promise<void> {
     <YamlImportModal
       v-if="yamlImportOpen"
       :project-id="projectId"
+      :before-apply="confirmCanvasReplace"
       @close="yamlImportOpen = false"
       @preview="handleImportPreview"
       @saved="handleImportSaved"
@@ -855,6 +905,7 @@ async function togglePrStatus(next: boolean): Promise<void> {
       v-if="templateModalOpen"
       :project-id="projectId"
       :stages="editStages"
+      :before-apply="confirmCanvasReplace"
       @close="templateModalOpen = false"
       @applied="handleTemplateApplied"
     />
@@ -1186,6 +1237,14 @@ async function togglePrStatus(next: boolean): Promise<void> {
 
 .tab-btn:hover { color: var(--color-dim); }
 .tab-btn:focus-visible { outline: 2px solid var(--color-primary); outline-offset: -2px; }
+
+/* 脏星标:某 tab 有未保存修改时常驻可见(#193)。 */
+.tab-dirty-marker {
+  margin-left: 4px;
+  font-size: 0.62rem;
+  color: var(--color-warning, #d97706);
+  vertical-align: 0.14em;
+}
 
 .tab-btn--active {
   color: var(--color-text);

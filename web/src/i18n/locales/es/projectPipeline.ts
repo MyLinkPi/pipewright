@@ -54,6 +54,14 @@ export default {
   // ─── banners / estado ───────────────────────────────────────────
   dismiss: 'Descartar',
   draftSaved: 'Pipeline guardado',
+  scopeSettings: 'variables/entornos',
+  scopePipeline: 'especificación del pipeline',
+  noChanges: 'Sin cambios sin guardar',
+  errSavePartial: 'Guardado parcialmente ({saved}); falló: ',
+  replaceDirtyTitle: 'Cambios sin guardar en el lienzo',
+  replaceDirtyBody: 'Esta acción reemplaza todo el lienzo. Los cambios sin guardar se perderán. ¿Continuar?',
+  replaceDirtyConfirm: 'Descartar y continuar',
+  tabDirtyAria: 'Cambios sin guardar',
   retry: 'Reintentar',
   loading: 'Cargando',
 

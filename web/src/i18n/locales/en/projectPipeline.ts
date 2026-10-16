@@ -54,6 +54,14 @@ export default {
   // ─── banners / status ───────────────────────────────────────────
   dismiss: 'Dismiss',
   draftSaved: 'Pipeline saved',
+  scopeSettings: 'variables/environments',
+  scopePipeline: 'pipeline spec',
+  noChanges: 'No unsaved changes',
+  errSavePartial: 'Partially saved ({saved}); failed: ',
+  replaceDirtyTitle: 'Unsaved canvas changes',
+  replaceDirtyBody: 'This action replaces the whole canvas. Unsaved changes will be lost. Continue?',
+  replaceDirtyConfirm: 'Discard and continue',
+  tabDirtyAria: 'Unsaved changes',
   retry: 'Retry',
   loading: 'Loading',
 

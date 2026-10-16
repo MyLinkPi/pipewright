@@ -54,6 +54,14 @@ export default {
   // ─── 橫幅 / 狀態 ────────────────────────────────────────────────
   dismiss: '關閉提示',
   draftSaved: '流水線已儲存',
+  scopeSettings: '變數/環境',
+  scopePipeline: '流水線編排',
+  noChanges: '沒有未儲存的修改',
+  errSavePartial: '部分已儲存({saved});失敗:',
+  replaceDirtyTitle: '畫布有未儲存修改',
+  replaceDirtyBody: '該操作會整體替換畫布,未儲存的修改將遺失。確定繼續?',
+  replaceDirtyConfirm: '捨棄並繼續',
+  tabDirtyAria: '有未儲存修改',
   retry: '重試',
   loading: '載入中',
 
