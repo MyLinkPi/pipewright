@@ -120,31 +120,80 @@ func TestParseDmidecodeMemBytes(t *testing.T) {
 	}
 }
 
-func TestParseDf(t *testing.T) {
-	// df -B1 (bytes)
+func TestParseDfRows(t *testing.T) {
+	// df -B1 (bytes):多文件系统(真实盘 + tmpfs + nfs + snap loop + docker overlay),
+	// 只有真实盘应保留,根分区即使在 overlay/tmpfs 上也算系统盘。
 	out := "Filesystem      1B-blocks         Used    Available Use% Mounted on\n" +
-		"/dev/disk1   494384795648  123456789012  370927006636  25% /\n"
-	used, total, ok := parseDf(out, 1)
-	if !ok || total != 494384795648 || used != 123456789012 {
-		t.Fatalf("parseDf bytes = %d,%d,%v", used, total, ok)
+		"/dev/sda1   494384795648  123456789012  370927006636  25% /\n" +
+		"tmpfs         4136650752       1234567     4135416185   1% /dev/shm\n" +
+		"/dev/sdb1  2000000000000 1000000000000 1000000000000  50% /data\n" +
+		"192.168.1.100:/export  999999999999  1  999999999998  1% /mnt/nfs\n" +
+		"/dev/loop0       99999999     1     99999998  1% /snap/core20/1974\n" +
+		"overlay      494384795648  123456789012  370927006636  25% /var/lib/docker/overlay2/x/merged\n"
+	rows := parseDfRows(out, 1)
+	if len(rows) != 2 {
+		t.Fatalf("parseDfRows should keep only real disks, got %d rows: %+v", len(rows), rows)
 	}
+	if rows[0].device != "/dev/sda1" || rows[0].mount != "/" ||
+		rows[0].total != 494384795648 || rows[0].used != 123456789012 {
+		t.Fatalf("root row wrong: %+v", rows[0])
+	}
+	if rows[1].device != "/dev/sdb1" || rows[1].mount != "/data" || rows[1].total != 2000000000000 {
+		t.Fatalf("data row wrong: %+v", rows[1])
+	}
+
+	// 同一设备多挂载(btrfs 子卷 / bind mount)只保留首个挂载点。
+	dup := "Filesystem 1B-blocks Used Available Use% Mounted on\n" +
+		"/dev/sda2 1000 400 600 40% /data2\n" +
+		"/dev/sda2 1000 400 600 40% /data2-subvol\n" +
+		"/dev/sda3 2000 800 1200 40% /home\n"
+	if rows := parseDfRows(dup, 1); len(rows) != 2 || rows[0].mount != "/data2" || rows[1].mount != "/home" {
+		t.Fatalf("duplicate mounts should dedupe by device: %+v", rows)
+	}
+
+	// 根挂载点恒为系统盘:容器内 overlay 根 / 无盘站 nfs 根 / live 系统 tmpfs 根都保留。
+	for _, dev := range []string{"overlay", "192.168.1.100:/export", "tmpfs"} {
+		rootOnly := "Filesystem 1B-blocks Used Available Use% Mounted on\n" +
+			dev + " 1000 400 600 40% /\n"
+		if rows := parseDfRows(rootOnly, 1); len(rows) != 1 || rows[0].mount != "/" {
+			t.Fatalf("root on %q should be kept: %+v", dev, rows)
+		}
+	}
+
 	// df -k (KiB) → ×1024
 	outK := "Filesystem 1024-blocks    Used Available Capacity Mounted on\n" +
 		"/dev/disk1   1000000  400000    600000      40% /\n"
-	usedK, totalK, okK := parseDf(outK, 1024)
-	if !okK || totalK != 1000000*1024 || usedK != 400000*1024 {
-		t.Fatalf("parseDf kib = %d,%d,%v", usedK, totalK, okK)
+	rowsK := parseDfRows(outK, 1024)
+	if len(rowsK) != 1 || rowsK[0].total != 1000000*1024 || rowsK[0].used != 400000*1024 {
+		t.Fatalf("parseDfRows kib = %+v", rowsK)
 	}
+
 	// folded long device name (data on its own line)
 	outFold := "Filesystem                 1B-blocks         Used    Available Use% Mounted on\n" +
 		"/dev/mapper/very-long-name\n" +
 		"            494384795648  123456789012  370927006636  25% /\n"
-	uf, tf, of := parseDf(outFold, 1)
-	if !of || tf != 494384795648 || uf != 123456789012 {
-		t.Fatalf("parseDf folded = %d,%d,%v", uf, tf, of)
+	rowsF := parseDfRows(outFold, 1)
+	if len(rowsF) != 1 || rowsF[0].device != "/dev/mapper/very-long-name" ||
+		rowsF[0].total != 494384795648 || rowsF[0].used != 123456789012 {
+		t.Fatalf("parseDfRows folded = %+v", rowsF)
 	}
-	if _, _, ok := parseDf("", 1); ok {
-		t.Fatalf("empty df should be false")
+
+	// macOS autofs 的 0 块 map 行(total=0)与垃圾行被丢弃,真实 APFS 卷保留。
+	mac := "Filesystem   1024-blocks      Used Available Capacity iused ifree %iused  Mounted on\n" +
+		"/dev/disk3s1s1      487559968  31446976  456112992     7%  524175 9122259     1%   /\n" +
+		"map auto_home              0         0          0   100%        0       0     0   /System/Volumes/home\n" +
+		"/dev/disk3s5        487559968 250454064  237105904    52% 1292761 4719673    22%   /System/Volumes/Data\n"
+	rowsM := parseDfRows(mac, 1024)
+	if len(rowsM) != 2 || rowsM[0].mount != "/" || rowsM[1].mount != "/System/Volumes/Data" {
+		t.Fatalf("mac rows wrong: %+v", rowsM)
+	}
+
+	// 空输出 / 仅表头 → nil。
+	if rows := parseDfRows("", 1); rows != nil {
+		t.Fatalf("empty df should be nil, got %+v", rows)
+	}
+	if rows := parseDfRows("Filesystem 1B-blocks Used Available Use% Mounted on\n", 1); rows != nil {
+		t.Fatalf("header-only df should be nil, got %+v", rows)
 	}
 }
 
@@ -179,8 +228,8 @@ func TestMetricsCollectScript(t *testing.T) {
 		`cat /proc/loadavg 2>/dev/null || uptime`,
 		`nproc 2>/dev/null || getconf _NPROCESSORS_ONLN 2>/dev/null`,
 		`free -b 2>/dev/null`,
-		`df -B1 / 2>/dev/null`,
-		`df -k / 2>/dev/null`,
+		`df -B1 2>/dev/null`,
+		`df -k 2>/dev/null`,
 		metricMarker + secLoadavg, metricMarker + secCores, metricMarker + secMemory,
 		metricMarker + secDiskB, metricMarker + secDiskK, metricMarker + secEnd,
 	} {
@@ -451,12 +500,18 @@ type fakeMetricsHost struct {
 	gpu     string
 }
 
-// linuxFakeHost:全命令可用(真 Linux 形态)。
+// linuxFakeHost:全命令可用(真 Linux 形态)。df 列出所有文件系统:两块真实盘 +
+// tmpfs/nfs/snap/docker 等伪文件系统(解析层应只保留真实盘)。
 var linuxFakeHost = fakeMetricsHost{
 	loadavg: "0.42 0.35 0.30 1/234 5678\n",
 	cores:   "8\n",
 	memory:  "              total        used        free\nMem:    17179869184  4123456789  1000000000\n",
-	diskB:   "Filesystem 1B-blocks Used Available Use% Mounted on\n/dev/sda1 494384795648 123456789012 370927006636 25% /\n",
+	diskB: "Filesystem      1B-blocks         Used    Available Use% Mounted on\n" +
+		"/dev/sda1   494384795648  123456789012  370927006636  25% /\n" +
+		"tmpfs         4136650752       1234567     4135416185   1% /dev/shm\n" +
+		"/dev/sdb1  2000000000000 1000000000000 1000000000000  50% /data\n" +
+		"192.168.1.100:/export  999999999999  1  999999999998  1% /mnt/nfs\n" +
+		"/dev/loop0       99999999     1     99999998  1% /snap/core20/1974\n",
 }
 
 // gpuFakeHost:同 linuxFakeHost,但装了 nvtop 并能回显卡 JSON(两张 NVIDIA 卡)。
@@ -528,11 +583,14 @@ func linuxLikeDialer() cmdDialer {
 
 // macLikeDialer 模拟 macOS:无 /proc/loadavg(uptime 回退)、无 nproc(getconf 回退)、
 // 无 free(memory null)、df -B1 不识别(df -k 回退)—— 段内容即脚本回退后的产物。
+// df -k 同样列所有文件系统:含 autofs 的 0 块 map 行(应被过滤)。
 func macLikeDialer() cmdDialer {
 	h := fakeMetricsHost{
 		loadavg: "12:00  up 5 days, load averages: 1.23 1.10 1.05\n",
 		cores:   "10\n",
-		diskK:   "Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/disk1 1000000 400000 600000 40% /\n",
+		diskK: "Filesystem 1024-blocks Used Available Capacity Mounted on\n" +
+			"/dev/disk1 1000000 400000 600000 40% /\n" +
+			"map auto_home 0 0 0 100% /System/Volumes/home\n",
 	}
 	return cmdDialer{fn: func(cmd []string) (*target.ExecResult, error) {
 		return scriptFakeExec(cmd, h), nil
@@ -602,6 +660,16 @@ func TestServerMetricsLinux(t *testing.T) {
 	}
 	if out.Disk == nil || out.Disk.Path != "/" || out.Disk.TotalBytes != 494384795648 || out.Disk.UsedBytes != 123456789012 {
 		t.Fatalf("disk wrong: %+v", out.Disk)
+	}
+	// 多盘:两块真实盘按 df 顺序;tmpfs/nfs/snap 等伪文件系统被过滤。
+	if len(out.Disks) != 2 {
+		t.Fatalf("disks should list real disks only: %+v", out.Disks)
+	}
+	if out.Disks[0].Path != "/" || out.Disks[0].TotalBytes != 494384795648 {
+		t.Fatalf("disks[0] wrong: %+v", out.Disks[0])
+	}
+	if out.Disks[1].Path != "/data" || out.Disks[1].TotalBytes != 2000000000000 || out.Disks[1].UsedBytes != 1000000000000 {
+		t.Fatalf("disks[1] wrong: %+v", out.Disks[1])
 	}
 	if out.CollectedAt == "" {
 		t.Fatalf("collectedAt empty")
@@ -709,6 +777,10 @@ func TestServerMetricsMacFallback(t *testing.T) {
 	// df -k fallback
 	if out.Disk == nil || out.Disk.TotalBytes != 1000000*1024 || out.Disk.UsedBytes != 400000*1024 {
 		t.Fatalf("disk fallback wrong: %+v", out.Disk)
+	}
+	// autofs 的 0 块 map 行被过滤,只剩真实卷。
+	if len(out.Disks) != 1 || out.Disks[0].Path != "/" {
+		t.Fatalf("mac disks wrong: %+v", out.Disks)
 	}
 }
 
