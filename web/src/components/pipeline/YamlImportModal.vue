@@ -18,6 +18,8 @@ import { HttpError } from '../../api/http'
 
 const props = defineProps<{
   projectId: string
+  /** 破坏性动作(导入到画布/导入并保存)前的父级确认钩子:画布脏时先确认丢弃。 */
+  beforeApply?: () => Promise<boolean>
 }>()
 
 const { t } = useI18n()
@@ -99,8 +101,10 @@ async function onPreview(): Promise<void> {
   if (dto) emit('preview', dto)
 }
 
-/** 导入到画布:与预览同一动作语义,关闭弹窗,让用户在画布上确认后再保存。 */
+/** 导入到画布:与预览同一动作语义,关闭弹窗,让用户在画布上确认后再保存。
+ *  会整体替换画布上的未保存编辑:先过父级脏检查确认(#190)。 */
 async function onApplyToCanvas(): Promise<void> {
+  if (props.beforeApply && !(await props.beforeApply())) return
   const dto = await runPreview()
   if (dto) {
     emit('preview', dto)
@@ -108,8 +112,9 @@ async function onApplyToCanvas(): Promise<void> {
   }
 }
 
-/** 导入并保存:解析 + 持久化 + 重载。 */
+/** 导入并保存:解析 + 持久化 + 重载。同样会整体替换画布:先过父级确认。 */
 async function onImportAndSave(): Promise<void> {
+  if (props.beforeApply && !(await props.beforeApply())) return
   errorMsg.value = ''
   busy.value = 'save'
   try {

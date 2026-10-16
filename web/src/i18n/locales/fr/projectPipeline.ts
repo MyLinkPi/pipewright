@@ -54,6 +54,14 @@ export default {
   // ─── bannières / état ───────────────────────────────────────────
   dismiss: 'Ignorer',
   draftSaved: 'Pipeline enregistré',
+  scopeSettings: 'variables/environnements',
+  scopePipeline: 'spécification du pipeline',
+  noChanges: 'Aucune modification non enregistrée',
+  errSavePartial: 'Enregistré partiellement ({saved}) ; échec : ',
+  replaceDirtyTitle: 'Modifications non enregistrées du canevas',
+  replaceDirtyBody: 'Cette action remplace tout le canevas. Les modifications non enregistrées seront perdues. Continuer ?',
+  replaceDirtyConfirm: 'Ignorer et continuer',
+  tabDirtyAria: 'Modifications non enregistrées',
   retry: 'Réessayer',
   loading: 'Chargement',
 
