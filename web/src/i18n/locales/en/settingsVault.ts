@@ -1,4 +1,8 @@
 export default {
+  registryUsername: 'Registry username',
+  registryPassword: 'Password or token',
+  registryUsernameOptional: 'Optional; blank preserves legacy tokens',
+  invalidRegistryUsername: 'Username cannot contain colons or control characters',
   title: 'Credential Vault',
   desc: 'All secrets are encrypted with NaCl secretbox and stored on this instance, masked at rest. Revealing plaintext is an explicit, audited action here. Pipelines reference them by scope, and they never reach logs or diagnostic context.',
   addCredential: 'Add credential',
@@ -109,4 +113,10 @@ export default {
   errSaveRetry: 'Save failed. Please try again later.',
   errDeleteStatus: 'Delete failed ({status})',
   errDeleteRetry: 'Delete failed. Please try again later.',
+
+  revealCurrent: 'Reveal current',
+  hideCurrent: 'Hide',
+  revealFailed: 'Failed to reveal secret',
+  fieldSecretNew: 'New secret',
+  secretOptionalEdit: '(leave blank to keep current)',
 }

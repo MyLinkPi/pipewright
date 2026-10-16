@@ -1,4 +1,8 @@
 export default {
+  registryUsername: '映像倉庫使用者名稱',
+  registryPassword: '密碼或 Token',
+  registryUsernameOptional: '選填，留空相容舊 Token',
+  invalidRegistryUsername: '使用者名稱不可包含冒號或控制字元',
   title: '憑證保險庫',
   desc: '所有密鑰經 NaCl secretbox 加密後存於本實例,落庫即遮罩;檢視明文需在此頁顯式操作並留審計。流水線依作用域引用,絕不進入日誌或診斷上下文。',
   addCredential: '新增憑證',
@@ -109,4 +113,10 @@ export default {
   errSaveRetry: '儲存失敗,請稍後重試',
   errDeleteStatus: '刪除失敗({status})',
   errDeleteRetry: '刪除失敗,請稍後重試',
+
+  revealCurrent: '檢視目前明文',
+  hideCurrent: '隱藏明文',
+  revealFailed: '檢視明文失敗',
+  fieldSecretNew: '新密鑰內容',
+  secretOptionalEdit: '（留空則不輪換）',
 }
