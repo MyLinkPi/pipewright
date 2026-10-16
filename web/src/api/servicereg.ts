@@ -64,6 +64,8 @@ export interface RegisteredService {
   upstreamPort: number
   tcpListenPort: number
   enabled: boolean
+  /** 实例总数(含 detached;列表接口带回,徽标直显免逐服务加载)。 */
+  instanceCount: number
   createdAt: string
   updatedAt: string
 }

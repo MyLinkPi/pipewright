@@ -89,7 +89,8 @@ func toServiceRegDomainDTO(d servicereg.Domain) serviceRegDomainDTO {
 	}
 }
 
-// serviceRegServiceDTO 是注册服务对外响应体(附基域名与完整 FQDN 便于前端直显)。
+// serviceRegServiceDTO 是注册服务对外响应体(附基域名与完整 FQDN 便于前端直显;
+// instanceCount 供列表徽标直显,免逐服务再查实例)。
 type serviceRegServiceDTO struct {
 	ID            string `json:"id"`
 	DomainID      string `json:"domainId"`
@@ -102,6 +103,7 @@ type serviceRegServiceDTO struct {
 	UpstreamPort  int    `json:"upstreamPort"`
 	TCPListenPort int    `json:"tcpListenPort"`
 	Enabled       bool   `json:"enabled"`
+	InstanceCount int    `json:"instanceCount"`
 	CreatedAt     string `json:"createdAt"`
 	UpdatedAt     string `json:"updatedAt"`
 }
@@ -111,9 +113,10 @@ func toServiceRegServiceDTO(s servicereg.ServiceWithDomain) serviceRegServiceDTO
 		ID: s.ID, DomainID: s.DomainID, BaseDomain: s.BaseDomain, Name: s.Name,
 		FQDN: s.FQDN(s.BaseDomain), Protocol: s.Protocol, UpstreamKind: s.UpstreamKind,
 		Upstream: s.Upstream, UpstreamPort: s.UpstreamPort, TCPListenPort: s.TCPListenPort,
-		Enabled:   s.Enabled,
-		CreatedAt: s.CreatedAt.UTC().Format(time.RFC3339),
-		UpdatedAt: s.UpdatedAt.UTC().Format(time.RFC3339),
+		Enabled:       s.Enabled,
+		InstanceCount: s.InstanceCount,
+		CreatedAt:     s.CreatedAt.UTC().Format(time.RFC3339),
+		UpdatedAt:     s.UpdatedAt.UTC().Format(time.RFC3339),
 	}
 }
 
