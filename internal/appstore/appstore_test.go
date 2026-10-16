@@ -98,6 +98,29 @@ func TestRenderParams(t *testing.T) {
 		if _, err := svc.Render(ctx, mysql.ID, map[string]string{"root_password": "a\nb: evil"}); !errors.Is(err, ErrInvalidValue) {
 			t.Fatalf("换行注入应 ErrInvalidValue,得 %v", err)
 		}
+
+		// 4) gitea:SSH_PORT 跟宿主映射走、SSH_LISTEN_PORT 恒 22;port 即 Web 端口。
+		var gitea *Template
+		for i := range list {
+			if list[i].Name == "gitea" {
+				gitea = &list[i]
+			}
+		}
+		if gitea == nil {
+			t.Fatal("缺 gitea 内置模板")
+		}
+		res, err = svc.Render(ctx, gitea.ID, map[string]string{})
+		if err != nil || !strings.Contains(res.Compose, "gitea/gitea:28.1.0") {
+			t.Fatalf("gitea 默认渲染:%v\n%s", err, res.Compose)
+		}
+		if !strings.Contains(res.Compose, "3000:3000") || !strings.Contains(res.Compose, "2222:22") ||
+			!strings.Contains(res.Compose, `SSH_PORT: "2222"`) || !strings.Contains(res.Compose, `SSH_LISTEN_PORT: "22"`) {
+			t.Fatalf("gitea 端口渲染不符:\n%s", res.Compose)
+		}
+		res, err = svc.Render(ctx, gitea.ID, map[string]string{"port": "13000", "ssh_port": "2222"})
+		if err != nil || !strings.Contains(res.Compose, "13000:3000") || !strings.Contains(res.Compose, "2222:22") {
+			t.Fatalf("gitea 显式端口未生效:%v\n%s", err, res.Compose)
+		}
 	})
 }
 

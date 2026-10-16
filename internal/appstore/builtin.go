@@ -190,4 +190,89 @@ volumes:
 		},
 		Builtin: true,
 	},
+	{
+		Name:        "gitea",
+		DisplayName: "Gitea",
+		Description: "轻量 Git 代码托管(含 Actions CI);SQLite 起步,数据与配置全落具名卷 gitea-data,SSH 克隆端口默认 2222 避开宿主 22;首启经 Web 页完成初始化。",
+		Icon:        "🍵",
+		// rootful 镜像:容器内 sshd 恒听 22(SSH_LISTEN_PORT 默认跟随 SSH_PORT,须显式钉住),
+		// SSH_PORT 只决定克隆地址展示的端口(= 宿主映射端口);ROOT_URL 不预设,留给首启
+		// 安装页按浏览器请求自动探测,避免预设错误值覆盖。
+		ComposeYAML: `services:
+  gitea:
+    image: gitea/gitea:{{version}}
+    restart: unless-stopped
+    environment:
+      USER_UID: "1000"
+      USER_GID: "1000"
+      GITEA__server__SSH_PORT: "{{ssh_port}}"
+      GITEA__server__SSH_LISTEN_PORT: "22"
+    ports:
+      - "{{port}}:3000"
+      - "{{ssh_port}}:22"
+    volumes:
+      - gitea-data:/data
+volumes:
+  gitea-data:
+`,
+		Params: []ParamSpec{
+			{Name: "version", Label: "镜像版本", Type: ParamTypeString, Default: "28.1.0"},
+			// port 命名沿用其他模板约定:一键服务注册的端口启发式优先取键 port(Web 才是反代目标)。
+			{Name: "port", Label: "Web 端口(宿主)", Type: ParamTypeInt, Default: "3000"},
+			{Name: "ssh_port", Label: "SSH 克隆端口(宿主)", Type: ParamTypeInt, Default: "2222"},
+		},
+		Builtin: true,
+	},
+	{
+		Name:        "redpanda",
+		DisplayName: "Redpanda",
+		Description: "Kafka 协议兼容的高性能流数据平台;附带 Console 管理界面,数据落具名卷 redpanda-data。",
+		Icon: "🐼",
+		// 单节点开发者模式:--overprovisioned + --mode dev-container 免去生产级的
+		// 内核参数与资源检查,普通容器即可跑通;advertise 地址必须是客户端可达的
+		// 宿主地址(部署 handler 对 advertise_host 参数自动注入机器配置的 Host),
+		// Console 为独立镜像,经容器网络连 broker。
+		ComposeYAML: `services:
+  redpanda:
+    image: redpandadata/redpanda:{{version}}
+    restart: unless-stopped
+    command:
+      - redpanda
+      - start
+      - --overprovisioned
+      - --mode dev-container
+      - --smp 1
+      - --memory 1G
+      - --kafka-addr internal://0.0.0.0:9092
+      - --advertise-kafka-addr internal://{{advertise_host}}:{{kafka_port}}
+      - --schema-registry-addr internal://0.0.0.0:8081
+    ports:
+      - "{{kafka_port}}:9092"
+      - "{{schema_port}}:8081"
+    volumes:
+      - redpanda-data:/var/lib/redpanda/data
+  console:
+    image: redpandadata/console:{{console_version}}
+    restart: unless-stopped
+    depends_on:
+      - redpanda
+    environment:
+      KAFKA_BROKERS: redpanda:9092
+    ports:
+      - "{{console_port}}:8080"
+volumes:
+  redpanda-data:
+`,
+		Params: []ParamSpec{
+			{Name: "version", Label: "镜像版本", Type: ParamTypeString, Default: "latest"},
+			// advertise_host 留空则由部署 handler 自动注入目标机的 Host 地址;
+			// 默认 127.0.0.1 兜底本机部署场景。
+			{Name: "advertise_host", Label: "客户端通告地址(Kafka advertise)", Type: ParamTypeString, Default: "127.0.0.1"},
+			{Name: "console_version", Label: "Console 镜像版本", Type: ParamTypeString, Default: "latest"},
+			{Name: "kafka_port", Label: "Kafka API 端口", Type: ParamTypeInt, Default: "9092"},
+			{Name: "schema_port", Label: "Schema Registry 端口", Type: ParamTypeInt, Default: "8081"},
+			{Name: "console_port", Label: "Console 管理界面端口", Type: ParamTypeInt, Default: "8080"},
+		},
+		Builtin: true,
+	},
 }
