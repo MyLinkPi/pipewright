@@ -40,7 +40,7 @@ func opsLoopbackProxy(t *testing.T, secure bool, target, upstream, auth string, 
 			defer transport.CloseIdleConnections()
 			response, err := transport.RoundTrip(request)
 			if err != nil {
-				t.Error("fixture forward failed")
+				t.Error("fixture forward failed", err)
 				w.WriteHeader(http.StatusBadGateway)
 				return
 			}
@@ -142,7 +142,9 @@ func TestOpsProxyServiceCompatibility(t *testing.T) {
 		for _, proxyTLS := range []bool{false, true} {
 			t.Run(fmt.Sprintf("originTLS=%v/proxyTLS=%v", originTLS, proxyTLS), func(t *testing.T) {
 				origin, transport, requests, tunnels := opsProxyFixture(t, originTLS, proxyTLS, "")
-				svc, _, _ := newService(t, &http.Client{Transport: transport, Timeout: time.Second})
+				// 整包并行跑测时 TLS 代理握手 + 三次串行请求可能超过 1s(隔离跑无压力),
+	//			 放宽到 5s 保持语义(仍会捕获真挂死)。
+				svc, _, _ := newService(t, &http.Client{Transport: transport, Timeout: 5 * time.Second})
 				if _, err := svc.Save(ctx(), SaveInput{Provider: ProviderOpenAI, BaseURL: origin.URL, Model: "test-model", APIKey: strp("test-api-key"), Enabled: true}); err != nil {
 					t.Fatal(err)
 				}
