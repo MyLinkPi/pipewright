@@ -25,6 +25,8 @@ const props = defineProps<{
   projectId: string
   /** Current canvas stages — snapshotted when saving as a template. */
   stages: PipelineStage[]
+  /** 应用模板(服务端整体替换画布)前的父级确认钩子:画布脏时先确认丢弃。 */
+  beforeApply?: () => Promise<boolean>
 }>()
 
 const { t } = useI18n()
@@ -64,6 +66,8 @@ async function doApply(): Promise<void> {
     errorMsg.value = t('pipelinePanels.tplSelectFirst')
     return
   }
+  // 画布有未保存修改时先确认丢弃(服务端模板应用会整体替换画布,#190)。
+  if (props.beforeApply && !(await props.beforeApply())) return
   if (!(await confirm.open({
     title: t('pipelinePanels.tplApplyTab'),
     body: t('pipelinePanels.tplConfirmApply'),

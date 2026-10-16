@@ -54,6 +54,14 @@ export default {
   // ─── Banner / Status ────────────────────────────────────────────
   dismiss: 'Schließen',
   draftSaved: 'Pipeline gespeichert',
+  scopeSettings: 'Variablen/Umgebungen',
+  scopePipeline: 'Pipeline-Spezifikation',
+  noChanges: 'Keine ungespeicherten Änderungen',
+  errSavePartial: 'Teilweise gespeichert ({saved}); fehlgeschlagen: ',
+  replaceDirtyTitle: 'Ungespeicherte Canvas-Änderungen',
+  replaceDirtyBody: 'Diese Aktion ersetzt die Canvas vollständig. Ungespeicherte Änderungen gehen verloren. Fortfahren?',
+  replaceDirtyConfirm: 'Verwerfen und fortfahren',
+  tabDirtyAria: 'Ungespeicherte Änderungen',
   retry: 'Erneut versuchen',
   loading: 'Wird geladen',
 

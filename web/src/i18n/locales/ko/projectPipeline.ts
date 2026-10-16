@@ -54,6 +54,14 @@ export default {
   // ─── 배너 / 상태 ────────────────────────────────────────────────
   dismiss: '닫기',
   draftSaved: '파이프라인이 저장되었습니다',
+  scopeSettings: '변수/환경',
+  scopePipeline: '파이프라인 정의',
+  noChanges: '저장되지 않은 변경 없음',
+  errSavePartial: '일부만 저장됨({saved});실패: ',
+  replaceDirtyTitle: '저장되지 않은 캔버스 변경',
+  replaceDirtyBody: '이 작업은 캔버스 전체를 교체합니다. 저장되지 않은 변경 사항은 사라집니다. 계속할까요?',
+  replaceDirtyConfirm: '버리고 계속',
+  tabDirtyAria: '저장되지 않은 변경',
   retry: '다시 시도',
   loading: '로딩 중',
 
