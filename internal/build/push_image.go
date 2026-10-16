@@ -3,6 +3,7 @@ package build
 import (
 	"context"
 	"fmt"
+	"log"
 	"strings"
 
 	"github.com/huangchengsir/pipewright/internal/dagrun"
@@ -80,11 +81,16 @@ func (b *Builder) pushPlansByBuildNode(ctx context.Context, jobs []pipeline.Job,
 			}
 		}
 		if regURL != "" {
+			tag, terr := renderRunPlaceholders(strings.TrimSpace(cfgString(jb.Config, "tag")), r)
+			if terr != nil {
+				log.Printf("build: push_image 节点「%s」tag 占位渲染失败: %v", jb.Name, terr)
+				continue
+			}
 			plan.Specs = append(plan.Specs, pushSpec{
 				RegistryURL:  regURL,
 				CredentialID: credID,
 				ImageName:    strings.TrimSpace(cfgString(jb.Config, "imageName")),
-				Tag:          renderRunPlaceholders(strings.TrimSpace(cfgString(jb.Config, "tag")), r),
+				Tag:          tag,
 			})
 		}
 		out[src] = plan
@@ -142,7 +148,11 @@ func (b *Builder) runPushImageJob(ctx context.Context, rep dagrun.StageReporter,
 		return ErrBuildFailed
 	}
 	name := strings.TrimSpace(cfgString(jb.Config, "imageName"))
-	tag := renderRunPlaceholders(strings.TrimSpace(cfgString(jb.Config, "tag")), r)
+	tag, terr := renderRunPlaceholders(strings.TrimSpace(cfgString(jb.Config, "tag")), r)
+	if terr != nil {
+		_ = rep.Log(ctx, streamStderr, "推送镜像节点「"+jb.Name+"」:tag 占位渲染失败:"+terr.Error())
+		return ErrBuildFailed
+	}
 	detail := stripScheme(regURL)
 	if name != "" || tag != "" {
 		if name == "" {

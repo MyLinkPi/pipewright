@@ -124,7 +124,7 @@ export default {
   fieldImageNameLabel: "Image-Name",
   fieldTagLabel: "Tag",
   fieldTagHint:
-    "Verfügbare Variablen: {'{{commit}}'} {'{{branch}}'} {'{{runId}}'} {'{{project}}'}; leer behält den Tag des Artefakts",
+    "Verfügbare Variablen: {'{{commit}}'} {'{{branch}}'} {'{{runId}}'} {'{{project}}'}; leer behält den Tag des Artefakts Weitere Variablen: {'{{date}}'} {'{{date:yyyyMMddHHmmss}}'} (Datum = Run-Erstellungszeit UTC, Standard yyyy-MM-dd-HH-mm; Tokens: yyyy, MM, dd, HH, mm, ss)",
   fieldPushImageArtifactJobHint:
     "Wähle, welches Image eines Knotens gepusht wird (muss ein „Build“-Knoten in DERSELBEN Phase sein; der Push läuft in diesem Knoten).",
   fieldPushImageRegistryHint:

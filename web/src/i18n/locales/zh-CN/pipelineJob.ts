@@ -113,7 +113,7 @@ export default {
   fieldRegistryLabel: "镜像仓库地址",
   fieldImageNameLabel: "镜像名",
   fieldTagLabel: "标签",
-  fieldTagHint: "可用变量:{'{{commit}}'} {'{{branch}}'} {'{{runId}}'} {'{{project}}'};留空沿用产物标签",
+  fieldTagHint: "可用变量:{'{{commit}}'} {'{{branch}}'} {'{{runId}}'} {'{{project}}'};留空沿用产物标签;另支持 {'{{date}}'} {'{{date:yyyyMMddHHmmss}}'} 日期占位(取 run 创建时间 UTC,默认 yyyy-MM-dd-HH-mm,token 支持 yyyy、MM、dd、HH、mm、ss)",
   fieldPushImageArtifactJobHint: '选择要推送哪个节点产出的镜像(须选「同阶段」的「构建」节点;推送在该节点内完成)。',
   fieldPushImageRegistryHint: '留空 = 用该节点所在环境绑定的镜像仓库。',
   fieldRegistryCredentialLabel: "仓库凭据",
