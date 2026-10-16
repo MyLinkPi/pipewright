@@ -1,4 +1,8 @@
 export default {
+  registryUsername: '레지스트리 사용자 이름',
+  registryPassword: '비밀번호 또는 토큰',
+  registryUsernameOptional: '선택 사항. 기존 토큰은 비워 두세요',
+  invalidRegistryUsername: '사용자 이름에 콜론이나 제어 문자를 사용할 수 없습니다',
   title: '자격 증명 볼트',
   desc: '모든 시크릿은 NaCl secretbox로 암호화되어 이 인스턴스에 저장되며 저장 시 마스킹됩니다. 평문 보기는 이 페이지에서의 명시적 작업이며 감사 로그에 기록됩니다. 파이프라인은 범위로 참조하며, 로그나 진단 컨텍스트에 절대 포함되지 않습니다.',
   addCredential: '자격 증명 추가',
@@ -109,4 +113,10 @@ export default {
   errSaveRetry: '저장에 실패했습니다. 잠시 후 다시 시도하세요',
   errDeleteStatus: '삭제 실패({status})',
   errDeleteRetry: '삭제에 실패했습니다. 잠시 후 다시 시도하세요',
+
+  revealCurrent: '현재 평문 보기',
+  hideCurrent: '숨기기',
+  revealFailed: '평문 보기에 실패했습니다',
+  fieldSecretNew: '새 시크릿 내용',
+  secretOptionalEdit: '(비워 두면 교체하지 않음)',
 }

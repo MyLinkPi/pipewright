@@ -755,6 +755,7 @@ func New(webFS fs.FS, authn auth.Authenticator, opts ...Option) http.Handler {
 		ar.Get("/settings/ai", makeGetAISettingsHandler(aiSvc))
 		ar.Put("/settings/ai", makeSaveAISettingsHandler(aiSvc))
 		ar.Post("/settings/ai/test", makeTestAISettingsHandler(aiSvc))
+		ar.Post("/settings/ai/models", makeAIModelsHandler(aiSvc))
 
 		// 内置本地 registry(registryhub)。rh 为 nil 时各端点 503。GET 过 auth;
 		// PUT(只写库,不触碰机器)与 deploy/prune/daemon-apply(显式触碰机器)过 auth + CSRF;

@@ -1,4 +1,8 @@
 export default {
+  registryUsername: 'レジストリのユーザー名',
+  registryPassword: 'パスワードまたは Token',
+  registryUsernameOptional: '任意。空欄で従来の Token に対応',
+  invalidRegistryUsername: 'ユーザー名にコロンや制御文字は使えません',
   title: '認証情報の保管庫',
   desc: 'すべてのシークレットは NaCl secretbox で暗号化され、本インスタンスに保存され、保存時にマスクされます。平文の表示はこのページでの明示的な操作で、監査に記録されます。パイプラインはスコープで参照し、ログや診断コンテキストには一切含まれません。',
   addCredential: '認証情報を追加',
@@ -109,4 +113,10 @@ export default {
   errSaveRetry: '保存に失敗しました。しばらくしてから再試行してください',
   errDeleteStatus: '削除に失敗しました（{status}）',
   errDeleteRetry: '削除に失敗しました。しばらくしてから再試行してください',
+
+  revealCurrent: '現在の平文を表示',
+  hideCurrent: '隠す',
+  revealFailed: '平文の表示に失敗しました',
+  fieldSecretNew: '新しいシークレットの内容',
+  secretOptionalEdit: '（空欄ならローテーションしません）',
 }

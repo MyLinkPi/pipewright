@@ -6,6 +6,7 @@ import {
   updateCredential,
   deleteCredential,
   isSystemManagedType,
+  revealCredential,
 } from '../../api/credentials'
 import type { Credential, CredentialType, CreateCredentialInput, UpdateCredentialInput } from '../../api/credentials'
 import { HttpError } from '../../api/http'
@@ -59,6 +60,12 @@ const deleteModalOpen = ref(false)
 const deletingCredential = ref<Credential | null>(null)
 const deleteSubmitting = ref(false)
 const deleteBanner = ref('')
+
+// ─── reveal current plaintext inside the edit modal (on-demand, audited) ──────
+
+// Current plaintext while shown in the edit modal; null = hidden. Cleared on close.
+const editRevealed = ref<string | null>(null)
+const editRevealing = ref(false)
 
 // ─── OAuth connect (enabled providers only) ──────────────────────────────────
 
@@ -236,6 +243,7 @@ function openEditModal(c: Credential): void {
   editingId.value = c.id
   // secret is intentionally blank — user must re-enter to rotate
   form.value = { name: c.name, type: c.type, scope: c.scope, username: c.username, secret: '' }
+  editRevealed.value = null
   clearFormErrors()
   formBanner.value = ''
   modalOpen.value = true
@@ -245,8 +253,9 @@ function openEditModal(c: Credential): void {
 function closeModal(): void {
   if (formSubmitting.value) return
   modalOpen.value = false
-  // Clear secret immediately when modal closes
+  // Clear secret + any revealed plaintext immediately when modal closes
   form.value.secret = ''
+  editRevealed.value = null
 }
 
 /** Shared close path for ✕ / 取消 / ESC: confirm before discarding a dirty form. */
@@ -274,6 +283,10 @@ function validateForm(): boolean {
   }
   if (modalMode.value === 'add' && !form.value.secret) {
     formErrors.value.secret = t('settingsVault.valSecretRequired')
+    ok = false
+  }
+  if (form.value.type === 'registry' && /[:\x00-\x1f\x7f-\x9f]/.test(form.value.username)) {
+    formBanner.value = t('settingsVault.invalidRegistryUsername')
     ok = false
   }
   return ok
@@ -367,6 +380,25 @@ async function confirmDelete(): Promise<void> {
     }
   } finally {
     deleteSubmitting.value = false
+  }
+}
+
+// ─── reveal / hide current plaintext in the edit modal (audited server-side) ──
+
+async function toggleEditReveal(): Promise<void> {
+  // Already shown → hide and drop the plaintext from memory.
+  if (editRevealed.value !== null) {
+    editRevealed.value = null
+    return
+  }
+  if (!editingId.value || editRevealing.value) return
+  editRevealing.value = true
+  try {
+    editRevealed.value = await revealCredential(editingId.value)
+  } catch (err) {
+    toast.error(err instanceof HttpError ? err.message : t('settingsVault.revealFailed'))
+  } finally {
+    editRevealing.value = false
   }
 }
 </script>
@@ -697,9 +729,9 @@ async function confirmDelete(): Promise<void> {
           </div>
 
           <!-- Secret — password type, never echoed back -->
-          <div v-if="form.type === 'git_token' || form.type === 'git_http'" class="field">
+          <div v-if="form.type === 'git_token' || form.type === 'git_http' || form.type === 'registry'" class="field">
             <label class="field-label" for="cred-username">
-              {{ t('settingsVault.fieldGitUsername') }}
+              {{ t(form.type === 'registry' ? 'settingsVault.registryUsername' : 'settingsVault.fieldGitUsername') }}
               <span class="field-optional">{{ t('settingsVault.optional') }}</span>
             </label>
             <input
@@ -711,11 +743,35 @@ async function confirmDelete(): Promise<void> {
               :disabled="formSubmitting"
               autocomplete="username"
             />
-            <span class="field-hint">{{ t('settingsVault.hintGitUsername') }}</span>
+            <span class="field-hint">{{ t(form.type === 'registry' ? 'settingsVault.registryUsernameOptional' : 'settingsVault.hintGitUsername') }}</span>
           </div>
 
           <div class="field">
-            <label class="field-label" for="cred-secret">{{ form.type === 'git_http' ? t('settingsVault.fieldSecretGitHttp') : t('settingsVault.fieldSecret') }}</label>
+            <div class="field-label-row">
+              <label class="field-label" for="cred-secret">
+                {{ form.type === 'registry' ? t('settingsVault.registryPassword') : (modalMode === 'add' && form.type === 'git_http' ? t('settingsVault.fieldSecretGitHttp') : (modalMode === 'add' ? t('settingsVault.fieldSecret') : t('settingsVault.fieldSecretNew'))) }}
+                <span v-if="modalMode === 'edit'" class="field-optional">{{ t('settingsVault.secretOptionalEdit') }}</span>
+              </label>
+              <!-- Reveal current plaintext (edit only; audited server-side) -->
+              <button
+                v-if="modalMode === 'edit'"
+                type="button"
+                class="reveal-current-btn"
+                :class="{ 'reveal-current-btn--active': editRevealed !== null }"
+                :disabled="editRevealing"
+                @click="toggleEditReveal"
+              >
+                <svg v-if="editRevealed !== null" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9">
+                  <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/>
+                  <path d="M1 1l22 22"/>
+                </svg>
+                <svg v-else width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9">
+                  <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+                  <circle cx="12" cy="12" r="3"/>
+                </svg>
+                {{ editRevealed !== null ? t('settingsVault.hideCurrent') : t('settingsVault.revealCurrent') }}
+              </button>
+            </div>
 
             <!-- SSH 私钥是多行 PEM/OpenSSH 文本:必须用 textarea,单行 <input> 会按 HTML 规范清除换行
                  → 私钥结构破坏、ssh.ParsePrivateKey 失败「凭据不是可用的 SSH 私钥」。令牌/镜像仓库仍用
