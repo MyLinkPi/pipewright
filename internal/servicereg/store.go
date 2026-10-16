@@ -406,11 +406,13 @@ func (s *Store) listServices(ctx context.Context) ([]RegisteredService, error) {
 	return out, rows.Err()
 }
 
-// listServicesWithDomain 返回全部服务 + 所属基域名(join 展示用)。
+// listServicesWithDomain 返回全部服务 + 所属基域名(join 展示用)+ 实例数(列表徽标直显,
+// 免前端逐服务再查一次实例)。
 func (s *Store) listServicesWithDomain(ctx context.Context) ([]ServiceWithDomain, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT s.id, s.domain_id, s.name, s.protocol, s.upstream_kind, s.upstream, s.upstream_port,
-		        s.tcp_listen_port, s.enabled, s.created_at, s.updated_at, d.base_domain
+		        s.tcp_listen_port, s.enabled, s.created_at, s.updated_at, d.base_domain,
+		        (SELECT COUNT(*) FROM service_reg_instances i WHERE i.service_id = s.id) AS instance_count
 		 FROM service_reg_services s
 		 JOIN service_reg_domains d ON d.id = s.domain_id
 		 ORDER BY s.created_at DESC, s.id`)
@@ -429,6 +431,7 @@ func (s *Store) listServicesWithDomain(ctx context.Context) ([]ServiceWithDomain
 		if err := rows.Scan(
 			&swd.ID, &swd.DomainID, &swd.Name, &swd.Protocol, &swd.UpstreamKind, &swd.Upstream,
 			&swd.UpstreamPort, &swd.TCPListenPort, &enabled, &createdS, &updatedS, &swd.BaseDomain,
+			&swd.InstanceCount,
 		); err != nil {
 			return nil, err
 		}

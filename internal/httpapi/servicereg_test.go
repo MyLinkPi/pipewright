@@ -401,6 +401,23 @@ func TestServiceRegInstanceFlow(t *testing.T) {
 		t.Fatalf("摘除:%d", resp.StatusCode)
 	}
 	resp.Body.Close()
+
+	// 服务列表带回实例数(含 detached;前端徽标直显)。
+	resp = doJSON(t, client, http.MethodGet, srv.URL+"/api/servicereg/services", "", "")
+	var svcList struct {
+		Items []struct {
+			ID            string `json:"id"`
+			InstanceCount int    `json:"instanceCount"`
+		} `json:"items"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&svcList)
+	resp.Body.Close()
+	for _, s := range svcList.Items {
+		if s.ID == created.ID && s.InstanceCount != 1 {
+			t.Fatalf("摘除后实例数应仍计 1(含 detached),得 %d", s.InstanceCount)
+		}
+	}
+
 	resp = doJSON(t, client, http.MethodDelete, srv.URL+"/api/servicereg/instances/"+inst2, csrf, "")
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("删除:%d", resp.StatusCode)

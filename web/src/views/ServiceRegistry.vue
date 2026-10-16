@@ -343,6 +343,11 @@ function hasInstancePool(s: RegisteredService): boolean {
   return s.protocol === 'http'
 }
 
+/** 实例数徽标:展开过(实例列表已加载)用实时长度,否则用列表接口带回的 instanceCount。 */
+function instanceCount(s: RegisteredService): number {
+  return instancesBySvc.value[s.id]?.length ?? s.instanceCount
+}
+
 async function toggleExpand(s: RegisteredService): Promise<void> {
   if (!hasInstancePool(s)) return
   if (expandedSvc.value === s.id) {
@@ -719,7 +724,7 @@ function instServerName(inst: ServiceInstance): string {
                   → {{ s.upstream }}:{{ s.upstreamPort }}
                   <span class="sreg__tag">{{ s.protocol.toUpperCase() }}</span>
                   <span v-if="hasInstancePool(s)" class="sreg__tag">
-                    {{ t('serviceReg.instances.count', { n: (instancesBySvc[s.id] ?? []).length }) }}
+                    {{ t('serviceReg.instances.count', { n: instanceCount(s) }) }}
                   </span>
                   <span v-if="!s.enabled" class="sreg__tag sreg__tag--off">{{ t('serviceReg.services.disabled') }}</span>
                 </span>

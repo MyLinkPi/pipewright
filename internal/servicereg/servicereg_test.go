@@ -1304,6 +1304,65 @@ func TestInstanceLifecycleAndSwap(t *testing.T) {
 	})
 }
 
+// TestListServicesInstanceCount 列表接口带回实例总数(前端「N 实例」徽标直显,
+// 免逐服务加载实例;detached 实例也计入,与 ListInstances 口径一致)。
+func TestListServicesInstanceCount(t *testing.T) {
+	storetest.ForEachDialect(t, func(t *testing.T, st *store.Store) {
+		svc, _ := newTestService(t, st.DB)
+		ctx := context.Background()
+		dom, _ := svc.CreateDomain(ctx, "efg.com")
+		if _, err := svc.UpdateSettings(ctx, SettingsUpdate{ServerID: strPtr("srv1")}); err != nil {
+			t.Fatal(err)
+		}
+		created, err := svc.CreateService(ctx, CreateServiceInput{
+			DomainID: dom.ID, Name: "abc", Upstream: "abc-1", UpstreamPort: 8080,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		countOf := func() int {
+			list, err := svc.ListServices(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, s := range list {
+				if s.ID == created.ID {
+					return s.InstanceCount
+				}
+			}
+			t.Fatalf("服务应仍在列表:%v", list)
+			return -1
+		}
+		if c := countOf(); c != 0 {
+			t.Fatalf("无实例应计 0,得 %d", c)
+		}
+		inst1, err := svc.AddInstance(ctx, created.ID, "srv1", "abc-1", 0, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		inst2, err := svc.AddInstance(ctx, created.ID, "srv2", "abc-2", 0, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if c := countOf(); c != 2 {
+			t.Fatalf("2 实例应计 2,得 %d", c)
+		}
+		// detached 实例仍在配置中(仅不进 upstream),计数不变。
+		if err := svc.SetInstanceAttached(ctx, inst2.ID, false); err != nil {
+			t.Fatal(err)
+		}
+		if c := countOf(); c != 2 {
+			t.Fatalf("摘除后仍应计 2(含 detached),得 %d", c)
+		}
+		if err := svc.RemoveInstance(ctx, inst1.ID); err != nil {
+			t.Fatal(err)
+		}
+		if c := countOf(); c != 1 {
+			t.Fatalf("删 1 实例后应计 1,得 %d", c)
+		}
+	})
+}
+
 func TestResolveDeployInstances(t *testing.T) {
 	storetest.ForEachDialect(t, func(t *testing.T, st *store.Store) {
 		svc, _ := newTestService(t, st.DB)

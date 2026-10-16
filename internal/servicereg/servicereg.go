@@ -309,10 +309,13 @@ type Service interface {
 	Apply(ctx context.Context) error
 }
 
-// ServiceWithDomain 是服务 + 所属基域展示名(列表用)。
+// ServiceWithDomain 是服务 + 所属基域展示名(列表用);InstanceCount 为该服务实例总数
+// (列表徽标直显,免前端逐服务加载实例)。
 type ServiceWithDomain struct {
 	RegisteredService
 	BaseDomain string
+	// InstanceCount 含 detached 实例(与 ListInstances 口径一致)。
+	InstanceCount int
 }
 
 // service 是 store + target + vault 支撑的 Service 实现。
