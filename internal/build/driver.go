@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
 	"os/exec"
 	"strings"
 
@@ -157,7 +158,21 @@ func DetectDriver(cmdr Commander) (Driver, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &shellDriver{bin: bin, cmdr: cmdr}, nil
+	return &shellDriver{bin: bin, cmdr: cmdr, copyWorkspace: bin == "docker" && isolatedDockerWorkspace()}, nil
+}
+
+// isolatedDockerWorkspace 判定「pipewright 自身跑在容器里且 docker CLI 指向宿主 daemon」的
+// 拓扑:此时 bind mount 的源路径是本容器内路径,宿主 daemon 解析不到,工具链容器拿到空
+// /src(issue #192)。检测 /.dockerenv、/run/.containerenv、DOCKER_HOST、K8s 环境与非默认
+// DOCKER_CONTEXT —— 命中即改走「docker cp 拷贝工作区进命名卷」的隔离路径。
+func isolatedDockerWorkspace() bool {
+	for _, marker := range []string{"/.dockerenv", "/run/.containerenv"} {
+		if _, err := os.Stat(marker); err == nil {
+			return true
+		}
+	}
+	return os.Getenv("DOCKER_HOST") != "" || os.Getenv("KUBERNETES_SERVICE_HOST") != "" ||
+		(os.Getenv("DOCKER_CONTEXT") != "" && os.Getenv("DOCKER_CONTEXT") != "default")
 }
 
 // errDriver 是「本机无容器 CLI」的占位 Driver(FR-8-19 瘦控制机):任何本地容器操作都诚实
