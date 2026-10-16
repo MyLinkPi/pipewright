@@ -53,14 +53,8 @@ export default {
   paramNotInChoice: '매개변수 "{label}"은(는) 선택 항목에 없습니다',
 
   // ─── 승격 상태 ───
-  promotionPromoted: '승격됨',
-  promotionPending: '승인 대기',
-  promotionRejected: '거부됨',
 
   // ─── 환경 이름 검증 ───
-  envNameEmpty: '환경 이름은 비워 둘 수 없습니다',
-  envNameInvalid: '환경 이름에는 문자, 숫자, 하이픈, 밑줄만 사용할 수 있습니다',
-  envNameTooLong: '환경 이름은 64자를 초과할 수 없습니다',
 
   // ─── 동시 실행 한도 ───
   concurrencyNotInteger: '동시 실행 한도는 정수여야 합니다',

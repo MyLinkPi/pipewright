@@ -229,21 +229,14 @@ func newTestBuilder(t *testing.T, cmdr Commander, proj *project.Project, setting
 	return b
 }
 
-func imageSettings(registry *pipeline.ImageRegistry) *pipeline.Settings {
-	st := &pipeline.Settings{
+func imageSettings() *pipeline.Settings {
+	return &pipeline.Settings{
 		Build: pipeline.BuildConfig{
 			Model:          pipeline.BuildModelDockerfile,
 			DockerfilePath: "Dockerfile",
 			ArtifactType:   pipeline.ArtifactImage,
 		},
 	}
-	if registry != nil {
-		st.Environments = []pipeline.Environment{{
-			Name:          "prod",
-			ImageRegistry: *registry,
-		}}
-	}
-	return st
 }
 
 // stubCloner 是不触网的克隆 stub:直接成功、返回固定短 sha(单测隔离网络)。
@@ -329,7 +322,7 @@ func TestBuildImageSuccessEmitsArtifact(t *testing.T) {
 	cmdr.script("inspect", fakeCmd{stdoutLines: []string{`{"Id":"sha256:abc","RepoDigests":[],"Size":48210432}`}, exitCode: 0})
 
 	proj := &project.Project{ID: "p1", Name: "My App", RepoURL: "https://example.com/r.git"}
-	b := newTestBuilder(t, cmdr, proj, imageSettings(nil), nil)
+	b := newTestBuilder(t, cmdr, proj, imageSettings(), nil)
 	b.cloner = newSuccessCloner("abc1234")
 
 	sink := newFakeSink()
@@ -365,7 +358,7 @@ func TestInspectImageCommandEchoed(t *testing.T) {
 	cmdr.script("inspect", fakeCmd{stdoutLines: []string{`{"Id":"sha256:abc","Size":10}`}, exitCode: 0})
 
 	proj := &project.Project{ID: "p1", Name: "app", RepoURL: "https://example.com/r.git"}
-	b := newTestBuilder(t, cmdr, proj, imageSettings(nil), nil)
+	b := newTestBuilder(t, cmdr, proj, imageSettings(), nil)
 	b.cloner = newSuccessCloner("abc1234")
 
 	sink := newFakeSink()
@@ -387,7 +380,7 @@ func TestBuildFailureSetsFailureLog(t *testing.T) {
 		exitCode:    1,
 	})
 	proj := &project.Project{ID: "p1", Name: "app", RepoURL: "https://example.com/r.git"}
-	b := newTestBuilder(t, cmdr, proj, imageSettings(nil), nil)
+	b := newTestBuilder(t, cmdr, proj, imageSettings(), nil)
 	b.cloner = newSuccessCloner("c0ffee0")
 
 	sink := newFakeSink()
@@ -415,7 +408,7 @@ func TestSecretNotInVisibleLogs(t *testing.T) {
 	cmdr.script("inspect", fakeCmd{stdoutLines: []string{`{"Id":"sha256:x","Size":10}`}, exitCode: 0})
 
 	proj := &project.Project{ID: "p1", Name: "app", RepoURL: "https://example.com/r.git"}
-	st := imageSettings(nil)
+	st := imageSettings()
 	st.Build.Vars = []pipeline.BuildVar{
 		{Key: "API_TOKEN", Secret: true, CredentialID: "cred-secret"},
 		{Key: "PUBLIC_VAR", Secret: false, Value: "hello"},
@@ -451,7 +444,7 @@ func TestSecretNotInVisibleLogs(t *testing.T) {
 func TestCancelReturnsErrCanceled(t *testing.T) {
 	cmdr := newFakeCommander()
 	proj := &project.Project{ID: "p1", Name: "app", RepoURL: "https://example.com/r.git"}
-	b := newTestBuilder(t, cmdr, proj, imageSettings(nil), nil)
+	b := newTestBuilder(t, cmdr, proj, imageSettings(), nil)
 	b.cloner = newSuccessCloner("abc1234")
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -464,24 +457,22 @@ func TestCancelReturnsErrCanceled(t *testing.T) {
 	}
 }
 
-// TestPushFlow 验证 image + 配 registry 时:计划含推送步骤;login 口令经 stdin(不进 argv);
-// tag/push 执行;产物 reference 改为远端 tag。
+// TestPushFlow 验证 image + 内置 registry 启用时:计划含推送步骤;tag/push 执行;
+// 产物 reference 改为远端 tag。(凭据 login 经 stdin 的行为由 push_image 节点测试覆盖。)
 func TestPushFlow(t *testing.T) {
-	const regPass = " registry:password:xyz "
 	cmdr := newFakeCommander()
 	cmdr.script("build", fakeCmd{stdoutLines: []string{"built"}, exitCode: 0})
-	cmdr.script("inspect", fakeCmd{stdoutLines: []string{`{"Id":"sha256:x","RepoDigests":["reg.example.com/app@sha256:deadbeef"],"Size":100}`}, exitCode: 0})
-	cmdr.script("login", fakeCmd{stdoutLines: []string{"Login Succeeded"}, exitCode: 0})
+	cmdr.script("inspect", fakeCmd{stdoutLines: []string{`{"Id":"sha256:x","RepoDigests":["192.168.1.10:5000/app@sha256:deadbeef"],"Size":100}`}, exitCode: 0})
 	cmdr.script("tag", fakeCmd{exitCode: 0})
 	cmdr.script("push", fakeCmd{stdoutLines: []string{"pushed"}, exitCode: 0})
 
-	registry := &pipeline.ImageRegistry{Type: pipeline.RegistryHarbor, URL: "https://reg.example.com", CredentialID: "cred-reg"}
 	proj := &project.Project{ID: "p1", Name: "app", RepoURL: "https://example.com/r.git"}
-	b := newTestBuilder(t, cmdr, proj, imageSettings(registry), map[string]string{"cred-reg": "robot$ci:" + regPass})
+	b := newTestBuilder(t, cmdr, proj, imageSettings(), nil)
+	b.builtinRegistry = func(context.Context) (string, bool) { return "192.168.1.10:5000", true }
 	b.cloner = newSuccessCloner("abc1234")
 
 	sink := newFakeSink()
-	r := &run.Run{ID: "run1", ProjectID: "p1", Trigger: run.Trigger{Commit: "abc1234", ResolvedEnvironment: "prod"}}
+	r := &run.Run{ID: "run1", ProjectID: "p1", Trigger: run.Trigger{Commit: "abc1234"}}
 	if err := b.Run(context.Background(), r, sink); err != nil {
 		t.Fatalf("Run failed: %v", err)
 	}
@@ -491,25 +482,18 @@ func TestPushFlow(t *testing.T) {
 	if sink.done[2] != run.StepSuccess {
 		t.Fatalf("expected push step success, got %v", sink.done)
 	}
-	// 口令经 stdin,绝不进 argv。
-	if strings.Contains(cmdr.allArgsText(), regPass) {
-		t.Fatalf("registry password leaked into argv")
-	}
-	var loginStdin string
+	// 内置 registry 无凭据:不应执行 login。
 	for _, e := range cmdr.execs {
 		if len(e.args) > 0 && e.args[0] == "login" {
-			loginStdin = e.stdin
+			t.Fatalf("内置 registry 不应 login: %+v", e.args)
 		}
-	}
-	if loginStdin != regPass {
-		t.Fatalf("expected password via stdin, got %q", loginStdin)
 	}
 	// 产物 reference 为远端 tag,digest 取推送后 repoDigest。
 	if len(sink.artifacts) != 1 {
 		t.Fatalf("expected 1 artifact")
 	}
 	a := sink.artifacts[0]
-	if a.Reference != "reg.example.com/app:abc1234" {
+	if a.Reference != "192.168.1.10:5000/app:abc1234" {
 		t.Fatalf("expected remote tag reference, got %q", a.Reference)
 	}
 	if a.Metadata["digest"] != "sha256:deadbeef" {
@@ -526,13 +510,13 @@ func TestPushFailureSetsFailureLog(t *testing.T) {
 	cmdr.script("tag", fakeCmd{exitCode: 0})
 	cmdr.script("push", fakeCmd{stderrLines: []string{"denied: requested access to the resource is denied"}, exitCode: 1})
 
-	registry := &pipeline.ImageRegistry{Type: pipeline.RegistryHarbor, URL: "https://reg.example.com", CredentialID: "cred-reg"}
 	proj := &project.Project{ID: "p1", Name: "app", RepoURL: "https://example.com/r.git"}
-	b := newTestBuilder(t, cmdr, proj, imageSettings(registry), map[string]string{"cred-reg": "u:p"})
+	b := newTestBuilder(t, cmdr, proj, imageSettings(), nil)
+	b.builtinRegistry = func(context.Context) (string, bool) { return "192.168.1.10:5000", true }
 	b.cloner = newSuccessCloner("abc1234")
 
 	sink := newFakeSink()
-	r := &run.Run{ID: "run1", ProjectID: "p1", Trigger: run.Trigger{Commit: "abc1234", ResolvedEnvironment: "prod"}}
+	r := &run.Run{ID: "run1", ProjectID: "p1", Trigger: run.Trigger{Commit: "abc1234"}}
 	if err := b.Run(context.Background(), r, sink); err != ErrBuildFailed {
 		t.Fatalf("expected ErrBuildFailed, got %v", err)
 	}

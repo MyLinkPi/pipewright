@@ -9,7 +9,6 @@ export default {
   tabBuild: 'Build',
   tabVars: 'Variables & Cache',
   tabTriggers: 'Trigger Settings',
-  tabEnvs: 'Environments & Credentials',
   tabStripAria: 'Pipeline configuration tabs',
 
   // ─── Pipeline as code (GitOps · FR-8-12) ────────────────────────
@@ -80,7 +79,6 @@ export default {
   errDuplicateId: 'Duplicate stage or job ID. Please remove duplicates and try again.',
   errInvalidBuild: 'Build model must be dockerfile/toolchain, and artifact type must be image/jar/dist.',
   errInvalidVar: 'Variable key cannot be empty and must be unique within its scope; secret variables require a vault credential.',
-  errInvalidEnvironment: 'Environment name cannot be empty, and image registry type must be harbor/acr/dockerhub/custom.',
   errCredentialNotFound: 'The referenced vault credential does not exist. Please reselect and try again.',
   errVaultUnconfigured: 'The vault has no master key configured, so secret credentials cannot be referenced.',
 }

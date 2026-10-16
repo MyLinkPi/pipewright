@@ -26,10 +26,6 @@ func init() {
 			"zh-HK": "window 必須形如 30d / 7d / 90d,且不超過 730 天", "en": "window must be in the form 30d / 7d / 90d and must not exceed 730 days", "ja": "window は 30d / 7d / 90d の形式で、730 日を超えてはなりません",
 			"ko": "window는 30d / 7d / 90d 형식이어야 하며 730일을 초과할 수 없습니다", "es": "window debe tener el formato 30d / 7d / 90d y no debe superar los 730 días", "fr": "window doit être de la forme 30d / 7d / 90d et ne doit pas dépasser 730 jours", "de": "window muss das Format 30d / 7d / 90d haben und darf 730 Tage nicht überschreiten",
 		},
-		"不可跳级:只能晋级到下一环境": {
-			"zh-HK": "不可跳級:只能晉級到下一環境", "en": "cannot skip levels: promotion is only allowed to the next environment", "ja": "段階を飛ばすことはできません:次の環境にのみ昇格できます",
-			"ko": "단계를 건너뛸 수 없습니다: 다음 환경으로만 승격할 수 있습니다", "es": "no se pueden saltar niveles: solo se permite promover al siguiente entorno", "fr": "impossible de sauter des niveaux : la promotion n'est autorisée que vers l'environnement suivant", "de": "Stufen können nicht übersprungen werden: Eine Beförderung ist nur in die nächste Umgebung möglich",
-		},
 		"仓库地址不可达,请检查地址": {
 			"zh-HK": "倉庫地址不可達,請檢查地址", "en": "repository address is unreachable, please check the address", "ja": "リポジトリのアドレスに到達できません。アドレスを確認してください",
 			"ko": "저장소 주소에 연결할 수 없습니다. 주소를 확인하세요", "es": "no se puede acceder a la dirección del repositorio, compruebe la dirección", "fr": "l'adresse du dépôt est inaccessible, veuillez vérifier l'adresse", "de": "Repository-Adresse ist nicht erreichbar, bitte überprüfen Sie die Adresse",

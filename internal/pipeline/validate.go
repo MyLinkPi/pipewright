@@ -4,9 +4,6 @@
 // 兜住;本期补的是**跨 tab 整体就绪度**校验:聚合 spec + settings + triggers + 项目
 // 凭据存在性,产出结构化 Issue 列表(error/warning/info,定位到 tab + 字段)。
 //
-// 核心跨 tab 校验:分支映射的 environment 必须匹配「环境与凭据」(settings.Environments)
-// 中已定义的环境名(trim 后精确匹配、大小写敏感)——单 tab 内无法做。
-//
 // Validate 是纯函数:无 init 副作用、无 DB、无包级重对象;DB 读(spec/settings/triggers/
 // vault.Exists)全在 handler 层完成后塞进 ValidationInput。易 -race 单测。
 package pipeline
@@ -29,8 +26,6 @@ const (
 	ScopeCanvas = "canvas"
 	// ScopeVars 对应 2-4 构建配置(变量)tab。
 	ScopeVars = "vars"
-	// ScopeEnvs 对应 2-4 环境与凭据 tab。
-	ScopeEnvs = "envs"
 	// ScopeTriggers 对应 2-3 触发设置 tab。
 	ScopeTriggers = "triggers"
 )
@@ -54,29 +49,6 @@ type ValidationVar struct {
 	CredentialExists bool
 }
 
-// ValidationRegistry 是参与校验的镜像仓库绑定的中性视图。
-// CredentialExists 仅在 CredentialID 非空时有意义,由 handler 层预判。
-type ValidationRegistry struct {
-	Type             string
-	URL              string
-	CredentialID     string
-	CredentialExists bool
-}
-
-// ValidationEnvironment 是参与校验的一个环境的中性视图(name + 变量 + 镜像仓库)。
-type ValidationEnvironment struct {
-	Name          string
-	EnvVars       []ValidationVar
-	ImageRegistry ValidationRegistry
-}
-
-// ValidationBranchMapping 是参与校验的一条分支映射的中性视图。
-type ValidationBranchMapping struct {
-	BranchPattern   string
-	Environment     string
-	TargetServerIDs []string
-}
-
 // ValidationEvents 是触发事件开关的中性视图。
 type ValidationEvents struct {
 	Push        bool
@@ -85,7 +57,7 @@ type ValidationEvents struct {
 }
 
 // ValidationInput 是 Validate 的全部输入(中性值类型,与 DB/HTTP 解耦)。
-// secret 引用的悬挂判定经各 *Var/*Registry 的 CredentialExists 标记(handler 层
+// secret 引用的悬挂判定经各 *Var 的 CredentialExists 标记(handler 层
 // vault.Exists 预判后塞入),纯函数据此判 credential_missing 而不触 DB。
 type ValidationInput struct {
 	// Stages 是 2-2 spec 的阶段集合(复用本包 Stage)。
@@ -94,10 +66,6 @@ type ValidationInput struct {
 	Build BuildConfig
 	// BuildVars 是构建变量的中性视图(带 secret 引用存在性标记)。
 	BuildVars []ValidationVar
-	// Environments 是 2-4 环境定义的中性视图(name + envVars + imageRegistry)。
-	Environments []ValidationEnvironment
-	// BranchMappings 是 2-3 分支映射的中性视图。
-	BranchMappings []ValidationBranchMapping
 	// Events 是 2-3 触发事件开关。
 	Events ValidationEvents
 	// ProjectCredentialOK 表示项目主凭据存在且可读(handler 层预判)。
@@ -107,7 +75,7 @@ type ValidationInput struct {
 	VaultUnconfigured bool
 }
 
-// Validate 执行跨 tab 整体就绪度校验,返回 Issue 列表(顺序:canvas→vars→envs→triggers→project)。
+// Validate 执行跨 tab 整体就绪度校验,返回 Issue 列表(顺序:canvas→vars→triggers→project)。
 // 纯函数:不触 DB、无副作用。
 func Validate(in ValidationInput) []Issue {
 	issues := make([]Issue, 0)
@@ -117,21 +85,13 @@ func Validate(in ValidationInput) []Issue {
 	if in.VaultUnconfigured {
 		in.ProjectCredentialOK = true
 		in.BuildVars = markCredentialExists(in.BuildVars)
-		envs := make([]ValidationEnvironment, len(in.Environments))
-		copy(envs, in.Environments)
-		for i := range envs {
-			envs[i].EnvVars = markCredentialExists(envs[i].EnvVars)
-			envs[i].ImageRegistry.CredentialExists = true
-		}
-		in.Environments = envs
 		issues = append(issues, Issue{
-			Severity: SeverityWarning, Code: "vault_unconfigured", Scope: ScopeEnvs,
+			Severity: SeverityWarning, Code: "vault_unconfigured", Scope: ScopeVars,
 			Field: "", Message: "保险库未配置 master key,暂无法校验 secret 凭据引用;请先在 设置·凭据保险库 配置",
 		})
 	}
 	issues = append(issues, validateCanvas(in)...)
 	issues = append(issues, validateVars(in)...)
-	issues = append(issues, validateEnvs(in)...)
 	issues = append(issues, validateTriggers(in)...)
 	issues = append(issues, validateProject(in)...)
 	return issues
@@ -157,7 +117,7 @@ func Ready(issues []Issue) bool {
 	return true
 }
 
-// validateCanvas 校验 2-2 spec:源阶段存在性 + build/deploy 阶段存在性 + deploy 需环境定义。
+// validateCanvas 校验 2-2 spec:源阶段存在性 + build/deploy 阶段存在性。
 func validateCanvas(in ValidationInput) []Issue {
 	var issues []Issue
 
@@ -190,14 +150,6 @@ func validateCanvas(in ValidationInput) []Issue {
 		issues = append(issues, Issue{
 			Severity: SeverityWarning, Code: "no_build_or_deploy", Scope: ScopeCanvas,
 			Field: "stages", Message: "流水线无构建或部署任务,触发后无实际产出",
-		})
-	}
-
-	// 有 deploy 阶段任务但 settings 无环境定义:部署无落点。
-	if hasDeploy && len(in.Environments) == 0 {
-		issues = append(issues, Issue{
-			Severity: SeverityWarning, Code: "deploy_without_environment", Scope: ScopeCanvas,
-			Field: "stages", Message: "存在部署任务但未在「环境与凭据」中定义任何环境",
 		})
 	}
 
@@ -238,90 +190,12 @@ func validateVars(in ValidationInput) []Issue {
 	return issues
 }
 
-// validateEnvs 校验 2-4 环境定义:镜像仓库 url/凭据完整性 + 环境变量 secret 引用悬挂。
-func validateEnvs(in ValidationInput) []Issue {
-	var issues []Issue
-
-	for ei, env := range in.Environments {
-		prefix := "environments[" + itoa(ei) + "]"
-
-		reg := env.ImageRegistry
-		regType := strings.TrimSpace(reg.Type)
-		if regType != "" {
-			// 镜像仓库 type 非空但 url 空 → error。
-			if strings.TrimSpace(reg.URL) == "" {
-				issues = append(issues, Issue{
-					Severity: SeverityError, Code: "registry_url_missing", Scope: ScopeEnvs,
-					Field: prefix + ".imageRegistry.url", Message: "环境「" + strings.TrimSpace(env.Name) + "」的镜像仓库已选类型但未填仓库地址",
-				})
-			}
-			// 镜像仓库绑定但无 credentialId → warning。
-			if strings.TrimSpace(reg.CredentialID) == "" {
-				issues = append(issues, Issue{
-					Severity: SeverityWarning, Code: "registry_credential_missing", Scope: ScopeEnvs,
-					Field: prefix + ".imageRegistry.credentialId", Message: "环境「" + strings.TrimSpace(env.Name) + "」的镜像仓库未绑定推送凭据",
-				})
-			} else if !reg.CredentialExists {
-				// 镜像仓库凭据引用悬挂 → error。
-				issues = append(issues, Issue{
-					Severity: SeverityError, Code: "credential_missing", Scope: ScopeEnvs,
-					Field: prefix + ".imageRegistry.credentialId", Message: "环境「" + strings.TrimSpace(env.Name) + "」的镜像仓库凭据已不存在",
-				})
-			}
-		}
-
-		// 环境的 secret envVar credentialId 悬挂 → error。
-		for vi, v := range env.EnvVars {
-			if issue, ok := secretVarIssue(v, ScopeEnvs, prefix+".envVars["+itoa(vi)+"]"); ok {
-				issues = append(issues, issue)
-			}
-		}
-	}
-
-	return issues
-}
-
-// validateTriggers 校验 2-3 触发设置:分支映射 environment 跨 tab 匹配(核心)+
-// 手动触发提示 + 目标服务器留 4-1。
+// validateTriggers 校验 2-3 触发设置:手动触发提示。
 func validateTriggers(in ValidationInput) []Issue {
 	var issues []Issue
 
-	// 已定义环境名集合(trim 后精确匹配、大小写敏感)。
-	defined := make(map[string]struct{}, len(in.Environments))
-	for _, env := range in.Environments {
-		name := strings.TrimSpace(env.Name)
-		if name != "" {
-			defined[name] = struct{}{}
-		}
-	}
-
-	for i, m := range in.BranchMappings {
-		prefix := "branchMappings[" + itoa(i) + "]"
-
-		// 核心跨 tab 校验:分支映射 environment 非空但未在 settings.environments 中定义 → error。
-		envName := strings.TrimSpace(m.Environment)
-		if envName != "" {
-			if _, ok := defined[envName]; !ok {
-				issues = append(issues, Issue{
-					Severity: SeverityError, Code: "environment_undefined", Scope: ScopeTriggers,
-					Field:   prefix + ".environment",
-					Message: "分支映射「" + strings.TrimSpace(m.BranchPattern) + "」引用的环境「" + envName + "」未在「环境与凭据」中定义",
-				})
-			}
-		}
-
-		// targetServerIds 非空 → warning（留 4-1）。
-		if len(m.TargetServerIDs) > 0 {
-			issues = append(issues, Issue{
-				Severity: SeverityWarning, Code: "target_servers_pending", Scope: ScopeTriggers,
-				Field:   prefix + ".targetServerIds",
-				Message: "目标服务器登记将在 Story 4-1 提供;当前映射的服务器引用暂不校验",
-			})
-		}
-	}
-
-	// 所有触发事件关闭且无分支映射 → info（仅手动触发）。
-	if !in.Events.Push && !in.Events.Tag && !in.Events.PullRequest && len(in.BranchMappings) == 0 {
+	// 所有触发事件关闭 → info(仅手动触发)。
+	if !in.Events.Push && !in.Events.Tag && !in.Events.PullRequest {
 		issues = append(issues, Issue{
 			Severity: SeverityInfo, Code: "manual_only", Scope: ScopeTriggers,
 			Field: "events", Message: "未开启任何自动触发事件,流水线仅能手动触发",

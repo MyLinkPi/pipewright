@@ -75,7 +75,7 @@ func setupWebhookServer(t *testing.T) (*httptest.Server, *http.Client, string, s
 	}
 
 	resp = doJSON(t, client, http.MethodPut, srv.URL+"/api/projects/"+projID+"/trigger", csrf,
-		`{"events":{"push":true,"tag":false,"pullRequest":false},"branchMappings":[{"branchPattern":"main","environment":"prod","targetServerIds":["srv-1"]}],"unmatchedPolicy":"ignore"}`)
+		`{"events":{"push":true,"tag":false,"pullRequest":false},"branchFilters":["main"]}`)
 	_ = resp.Body.Close()
 
 	return srv, client, csrf, projID, token, secret
@@ -234,7 +234,7 @@ func TestWebhookBranchNoMatch(t *testing.T) {
 	if out["accepted"] != false {
 		t.Fatalf("expected accepted:false for unmatched branch, got %s", raw)
 	}
-	if out["ignored"] != "unmatched_ignored" {
-		t.Fatalf("expected unmatched_ignored, got %v", out["ignored"])
+	if out["ignored"] != "no_branch_match" {
+		t.Fatalf("expected no_branch_match, got %v", out["ignored"])
 	}
 }

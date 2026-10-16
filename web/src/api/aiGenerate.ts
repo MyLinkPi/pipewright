@@ -54,16 +54,9 @@ export interface AIProposalBuild {
   dockerfilePath: string
 }
 
-export interface AIProposalBranchMapping {
-  id: string
-  branchPattern: string
-  environment: string
-}
-
 export interface AIProposal {
   stages: AIProposalStage[]
   build: AIProposalBuild
-  branchMappings: AIProposalBranchMapping[]
   rationale: string
 }
 
@@ -83,15 +76,12 @@ export interface AIApplySelections {
   stageIds: string[]
   /** Whether to write the build config from proposal. */
   build: boolean
-  /** BranchMapping IDs from proposal to merge into triggers. */
-  branchMappingIds: string[]
 }
 
 export interface AIApplyResponse {
   applied: {
     spec: boolean
     settings: boolean
-    triggers: boolean
   }
 }
 

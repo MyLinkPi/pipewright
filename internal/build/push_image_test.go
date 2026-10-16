@@ -29,9 +29,7 @@ func pushImageJob(cfg map[string]any) pipeline.Job {
 // --- 推送目标声明解析 ---
 
 func TestPushPlansByBuildNode(t *testing.T) {
-	envReg := pipeline.ImageRegistry{Type: pipeline.RegistryHarbor, URL: "https://env.example.com", CredentialID: "cred-env"}
-	settings := &pipeline.Settings{Environments: []pipeline.Environment{{Name: "prod", ImageRegistry: envReg}}}
-	b := &Builder{}
+	b := &Builder{builtinRegistry: func(context.Context) (string, bool) { return "192.168.1.10:5000", true }}
 	r := pushTestRun()
 
 	// 节点显式声明 registry/imageName/tag(含占位)+ credentialId。
@@ -41,7 +39,7 @@ func TestPushPlansByBuildNode(t *testing.T) {
 			"artifactJob": "构建镜像", "registry": "reg2.example.com", "imageName": "org/app", "tag": "v-{{commit}}", "credentialId": "cred-2",
 		}),
 	}
-	plans := b.pushPlansByBuildNode(context.Background(), jobs, settings, "prod", r)
+	plans := b.pushPlansByBuildNode(context.Background(), jobs, &pipeline.Settings{}, r)
 	p := plans["构建镜像"]
 	if !p.Referenced {
 		t.Fatalf("应标记为被 push_image 引用: %+v", plans)
@@ -57,27 +55,27 @@ func TestPushPlansByBuildNode(t *testing.T) {
 		t.Fatalf("tag 占位未渲染: %q", s.Tag)
 	}
 
-	// 节点未配 registry → 回退环境绑定仓库(URL + 凭据)。
+	// 节点未配 registry → 回退内置 registry(无凭据)。
 	plans = b.pushPlansByBuildNode(context.Background(), []pipeline.Job{
 		buildImageJobSet("构建镜像"),
 		pushImageJob(map[string]any{"artifactJob": "构建镜像"}),
-	}, settings, "prod", r)
+	}, &pipeline.Settings{}, r)
 	s = plans["构建镜像"].Specs[0]
-	if s.RegistryURL != "https://env.example.com" || s.CredentialID != "cred-env" {
-		t.Fatalf("应回退环境 registry: %+v", s)
+	if s.RegistryURL != "192.168.1.10:5000" || s.CredentialID != "" {
+		t.Fatalf("应回退内置 registry: %+v", s)
 	}
 
 	// 无 artifactJob → 不产生计划(节点自身校验会拒绝)。
-	plans = b.pushPlansByBuildNode(context.Background(), []pipeline.Job{pushImageJob(map[string]any{})}, settings, "prod", r)
+	plans = b.pushPlansByBuildNode(context.Background(), []pipeline.Job{pushImageJob(map[string]any{})}, &pipeline.Settings{}, r)
 	if len(plans) != 0 {
 		t.Fatalf("无 artifactJob 不应产生计划: %+v", plans)
 	}
 
-	// 有 artifactJob 但仓库不可解析(无环境绑定、无内置)→ Referenced=true、Specs 为空。
-	plans = b.pushPlansByBuildNode(context.Background(), []pipeline.Job{
+// 有 artifactJob 但仓库不可解析(无内置)→ Referenced=true、Specs 为空。
+	plans = (&Builder{}).pushPlansByBuildNode(context.Background(), []pipeline.Job{
 		buildImageJobSet("构建镜像"),
 		pushImageJob(map[string]any{"artifactJob": "构建镜像"}),
-	}, &pipeline.Settings{}, "", r)
+	}, &pipeline.Settings{}, r)
 	p = plans["构建镜像"]
 	if !p.Referenced || len(p.Specs) != 0 {
 		t.Fatalf("仓库不可解析时应 Referenced 且无目标: %+v", p)
@@ -108,7 +106,7 @@ func TestRunPushImageJobLogsTarget(t *testing.T) {
 	b := &Builder{}
 	rep := &fakeReporter{}
 	jb := pushImageJob(map[string]any{"artifactJob": "构建镜像", "registry": "https://reg2.example.com", "imageName": "org/app", "tag": "v1"})
-	if err := b.runPushImageJob(context.Background(), rep, jb, pushTestRun(), nil, ""); err != nil {
+	if err := b.runPushImageJob(context.Background(), rep, jb, pushTestRun(), nil); err != nil {
 		t.Fatalf("配了 registry 应成功: %v", err)
 	}
 	joined := strings.Join(rep.logs, "\n")
@@ -120,7 +118,7 @@ func TestRunPushImageJobLogsTarget(t *testing.T) {
 func TestRunPushImageJobRequiresArtifactJob(t *testing.T) {
 	b := &Builder{}
 	rep := &fakeReporter{}
-	if err := b.runPushImageJob(context.Background(), rep, pushImageJob(map[string]any{}), pushTestRun(), nil, ""); !errors.Is(err, ErrBuildFailed) {
+	if err := b.runPushImageJob(context.Background(), rep, pushImageJob(map[string]any{}), pushTestRun(), nil); !errors.Is(err, ErrBuildFailed) {
 		t.Fatalf("缺 artifactJob 应 ErrBuildFailed, got %v", err)
 	}
 }
@@ -129,12 +127,12 @@ func TestRunPushImageJobRequiresRegistry(t *testing.T) {
 	b := &Builder{}
 	rep := &fakeReporter{}
 	jb := pushImageJob(map[string]any{"artifactJob": "构建镜像"})
-	if err := b.runPushImageJob(context.Background(), rep, jb, pushTestRun(), &pipeline.Settings{}, ""); !errors.Is(err, ErrBuildFailed) {
+	if err := b.runPushImageJob(context.Background(), rep, jb, pushTestRun(), &pipeline.Settings{}); !errors.Is(err, ErrBuildFailed) {
 		t.Fatalf("无可用仓库应 ErrBuildFailed, got %v", err)
 	}
 }
 
-// --- build_image 按 push_image 声明推送(覆盖环境 registry)---
+// --- build_image 按 push_image 声明推送(跳过内置 registry 自动推送)---
 
 func TestRunBuildImageJobPushesPerPushSpec(t *testing.T) {
 	cmdr := newFakeCommander()
@@ -144,14 +142,14 @@ func TestRunBuildImageJobPushesPerPushSpec(t *testing.T) {
 	cmdr.script("push", fakeCmd{stdoutLines: []string{"pushed"}, exitCode: 0})
 
 	proj := &project.Project{ID: "p1", Name: "app"}
-	// 环境绑定了另一个仓库:应被 push_image 节点的声明覆盖,不推 env 仓库。
-	settings := imageSettings(&pipeline.ImageRegistry{Type: pipeline.RegistryHarbor, URL: "https://env.example.com", CredentialID: "cred-env"})
+	// 内置 registry 自动推送应被 push_image 节点的声明取代(按声明目标推送)。
+	settings := imageSettings()
 	b := newTestBuilder(t, cmdr, proj, settings, nil)
 
 	plan := imagePushPlan{Referenced: true, Specs: []pushSpec{{RegistryURL: "reg2.example.com", ImageName: "org/app", Tag: "v1"}}}
 	rep := &fakeReporter{}
 	jb := pipeline.Job{ID: "j-build", Name: "构建镜像", Type: "build_image", Config: map[string]any{}}
-	if err := b.runBuildImageJob(context.Background(), &reporterSink{rep: rep}, rep, jb, "构建", proj, settings, "prod", t.TempDir(), "abc1234", plan); err != nil {
+	if err := b.runBuildImageJob(context.Background(), &reporterSink{rep: rep}, rep, jb, "构建", proj, settings, t.TempDir(), "abc1234", plan); err != nil {
 		t.Fatalf("runBuildImageJob: %v", err)
 	}
 	if len(rep.arts) != 1 {
@@ -180,13 +178,13 @@ func TestRunBuildImageJobReferencedWithoutRegistrySkipsPush(t *testing.T) {
 	cmdr.script("push", fakeCmd{stdoutLines: []string{"pushed"}, exitCode: 0})
 
 	proj := &project.Project{ID: "p1", Name: "app"}
-	settings := imageSettings(&pipeline.ImageRegistry{Type: pipeline.RegistryHarbor, URL: "https://env.example.com"})
+	settings := imageSettings()
 	b := newTestBuilder(t, cmdr, proj, settings, nil)
 
 	plan := imagePushPlan{Referenced: true}
 	rep := &fakeReporter{}
 	jb := pipeline.Job{ID: "j-build", Name: "构建镜像", Type: "build_image", Config: map[string]any{}}
-	if err := b.runBuildImageJob(context.Background(), &reporterSink{rep: rep}, rep, jb, "构建", proj, settings, "prod", t.TempDir(), "abc1234", plan); err != nil {
+	if err := b.runBuildImageJob(context.Background(), &reporterSink{rep: rep}, rep, jb, "构建", proj, settings, t.TempDir(), "abc1234", plan); err != nil {
 		t.Fatalf("runBuildImageJob: %v", err)
 	}
 	if got := rep.arts[0].Reference; !strings.HasPrefix(got, localTagPrefix+"/") {
@@ -206,13 +204,13 @@ func TestRunBuildImageJobPushFailure(t *testing.T) {
 	cmdr.script("push", fakeCmd{stderrLines: []string{"denied"}, exitCode: 1})
 
 	proj := &project.Project{ID: "p1", Name: "app"}
-	settings := imageSettings(nil)
+	settings := imageSettings()
 	b := newTestBuilder(t, cmdr, proj, settings, nil)
 
 	plan := imagePushPlan{Referenced: true, Specs: []pushSpec{{RegistryURL: "reg2.example.com"}}}
 	rep := &fakeReporter{}
 	jb := pipeline.Job{ID: "j-build", Name: "构建镜像", Type: "build_image", Config: map[string]any{}}
-	err := b.runBuildImageJob(context.Background(), &reporterSink{rep: rep}, rep, jb, "构建", proj, settings, "", t.TempDir(), "abc1234", plan)
+	err := b.runBuildImageJob(context.Background(), &reporterSink{rep: rep}, rep, jb, "构建", proj, settings, t.TempDir(), "abc1234", plan)
 	if !errors.Is(err, ErrBuildFailed) {
 		t.Fatalf("推送失败应 ErrBuildFailed, got %v", err)
 	}

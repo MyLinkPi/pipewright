@@ -8,7 +8,7 @@
  *
  * ready = true iff zero error-severity issues.
  * severity ∈ 'error' | 'warning' | 'info'
- * scope    ∈ 'canvas' | 'vars' | 'triggers' | 'envs'  (maps to pipeline tabs)
+ * scope    ∈ 'canvas' | 'vars' | 'triggers'  (maps to pipeline tabs)
  * code     is a stable enum usable for localisation / routing (see story 2-6)
  * field    is a dot/bracket path into the config; may be empty string
  * message  is human-readable Chinese text from the server
@@ -21,7 +21,7 @@ import { http } from './http'
 export type IssueSeverity = 'error' | 'warning' | 'info'
 
 /** Scope maps 1-to-1 with the four pipeline tab keys. */
-export type IssueScope = 'canvas' | 'vars' | 'triggers' | 'envs'
+export type IssueScope = 'canvas' | 'vars' | 'triggers'
 
 export interface ValidationIssue {
   severity: IssueSeverity

@@ -196,7 +196,7 @@ func NewStageExecutor(b *Builder, reportSink TestReportSink) dagrun.StageExecuto
 		// 推送镜像节点声明:同阶段内被 push_image 引用的 build_image 跳过「按环境 registry 自动推送」,
 		// 改按该节点声明的目标推送。推送仍在 build_image 内完成(它持有本地 tag,且产物引用须在
 		// EmitArtifact 前改写为远端引用,部署节点才能 pull);push_image 节点自身只校验目标并播报。
-		pushPlans := b.pushPlansByBuildNode(ctx, stage.Jobs, settings, r.Trigger.ResolvedEnvironment, r)
+		pushPlans := b.pushPlansByBuildNode(ctx, stage.Jobs, settings, r)
 		needStageWS := hasPost || (needsBuild && !hasJobDAG)
 		if needStageWS {
 			ws, mkErr := mkTempWorkspace()
@@ -298,7 +298,7 @@ func NewStageExecutor(b *Builder, reportSink TestReportSink) dagrun.StageExecuto
 					_ = rep.JobRunning(ctx, jb.ID)
 					jrep := rep.JobReporter(jb.ID)
 					jsink := &reporterSink{rep: jrep}
-					if err := b.runBuildImageJob(ctx, jsink, jrep, jb, stage.Name, proj, settings, r.Trigger.ResolvedEnvironment, workspace, commitTag, pushPlans[jb.Name]); err != nil {
+					if err := b.runBuildImageJob(ctx, jsink, jrep, jb, stage.Name, proj, settings, workspace, commitTag, pushPlans[jb.Name]); err != nil {
 						_ = rep.JobDone(ctx, jb.ID, run.StepFailed)
 						return err
 					}
@@ -319,7 +319,7 @@ func NewStageExecutor(b *Builder, reportSink TestReportSink) dagrun.StageExecuto
 				}
 				_ = rep.JobRunning(ctx, jb.ID)
 				jrep := rep.JobReporter(jb.ID)
-				if err := b.runPushImageJob(ctx, jrep, jb, r, settings, r.Trigger.ResolvedEnvironment); err != nil {
+				if err := b.runPushImageJob(ctx, jrep, jb, r, settings); err != nil {
 					_ = rep.JobDone(ctx, jb.ID, run.StepFailed)
 					return err
 				}
@@ -491,7 +491,7 @@ func (b *Builder) runStageJobsDAG(
 			case strings.TrimSpace(jb.Type) == "health_check":
 				return b.runHealthCheckJob(ctx, jrep, jb, r.Trigger.Params)
 			case isPushImageJob(jb.Type):
-				return b.runPushImageJob(ctx, jrep, jb, r, settings, r.Trigger.ResolvedEnvironment)
+				return b.runPushImageJob(ctx, jrep, jb, r, settings)
 			case strings.TrimSpace(jb.Type) == "notify":
 				b.runNotifyJob(ctx, jrep, jb, r)
 				return nil
@@ -644,7 +644,7 @@ func (b *Builder) runBuildImageJobIsolated(
 		return err
 	}
 	defer cleanup()
-	return b.runBuildImageJob(ctx, sink, rep, jb, stage.Name, proj, settings, r.Trigger.ResolvedEnvironment, ws, commitTag, plan)
+	return b.runBuildImageJob(ctx, sink, rep, jb, stage.Name, proj, settings, ws, commitTag, plan)
 }
 
 // runDeployJob 执行一个 deploy_ssh 节点:把本 run 已产出的产物经 SSH 部署到节点圈选的目标机
@@ -917,7 +917,7 @@ func (b *Builder) resolveChannel(ctx context.Context, ref string) (id, name stri
 // 推送成功后产物引用改写为远端引用 + digest;无仓库 → 镜像留本地,emit 本地 tag。
 // 其它产物(jar/dist)直接 emit。失败映射 ErrBuildFailed / 取消。
 // 边界:docker build 上下文沿用工作区根(子目录上下文 = 后续);buildCommand 覆盖工具链默认命令 = 后续。
-func (b *Builder) runBuildImageJob(ctx context.Context, sink run.StepSink, rep dagrun.StageReporter, jb pipeline.Job, stageName string, proj *project.Project, settings *pipeline.Settings, envName, workspace, commitTag string, plan imagePushPlan) error {
+func (b *Builder) runBuildImageJob(ctx context.Context, sink run.StepSink, rep dagrun.StageReporter, jb pipeline.Job, stageName string, proj *project.Project, settings *pipeline.Settings, workspace, commitTag string, plan imagePushPlan) error {
 	cfg := pipeline.BuildConfig{
 		Model:          cfgString(jb.Config, "buildModel"),
 		DockerfilePath: cfgString(jb.Config, "dockerfilePath"),
@@ -980,9 +980,9 @@ func (b *Builder) runBuildImageJob(ctx context.Context, sink run.StepSink, rep d
 				_ = rep.Log(ctx, streamStdout, "→ 已推送 "+remoteTag)
 			}
 		case plan.Referenced:
-			_ = rep.Log(ctx, streamStdout, "本节点镜像由「推送镜像」节点声明推送,但其目标仓库不可解析(节点 registry 为空且环境未绑定镜像仓库);镜像留本地")
+			_ = rep.Log(ctx, streamStdout, "本节点镜像由「推送镜像」节点声明推送,但其目标仓库不可解析(节点 registry 为空且内置 registry 未启用);镜像留本地")
 		default:
-			registry := b.resolveRegistry(ctx, settings, envName)
+			registry := b.resolveRegistry(ctx)
 			if registry != nil {
 				remoteTag, digest, perr := b.push(ctx, sink, 0, localTag, registry, proj, commitTag)
 				if perr != nil {

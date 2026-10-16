@@ -17,8 +17,8 @@ func seedRunRow(t *testing.T, svc Service, projID, status string) string {
 	if _, err := s.db.Exec(
 		`INSERT INTO pipeline_runs
 		   (id, project_id, status, trigger_type, trigger_branch, trigger_commit, trigger_actor,
-		    resolved_environment, resolved_target_server_ids, created_at, started_at, finished_at)
-		 VALUES (?, ?, ?, 'manual', 'main', 'abc', 'admin', '', '[]', ?, ?, ?)`,
+		    created_at, started_at, finished_at)
+		 VALUES (?, ?, ?, 'manual', 'main', 'abc', 'admin', ?, ?, ?)`,
 		runID, projID, status, now, now, now); err != nil {
 		t.Fatalf("seed run: %v", err)
 	}

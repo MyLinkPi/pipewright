@@ -9,7 +9,6 @@ export default {
   tabBuild: '构建配置',
   tabVars: '变量与缓存',
   tabTriggers: '触发设置',
-  tabEnvs: '环境与凭据',
   tabStripAria: '流水线配置标签页',
 
   // ─── 流水线即代码(GitOps · FR-8-12)──────────────────────────────
@@ -54,7 +53,7 @@ export default {
   // ─── 横幅 / 状态 ────────────────────────────────────────────────
   dismiss: '关闭提示',
   draftSaved: '流水线已保存',
-  scopeSettings: '变量/环境',
+  scopeSettings: '变量',
   scopePipeline: '流水线编排',
   noChanges: '没有未保存的修改',
   errSavePartial: '部分已保存({saved});失败:',
@@ -80,7 +79,6 @@ export default {
   errDuplicateId: '阶段或任务 ID 重复,请删除重复项后重试。',
   errInvalidBuild: '构建模型须为 dockerfile/toolchain,产物类型须为 image/jar/dist。',
   errInvalidVar: '变量键不能为空且同作用域内不可重复;secret 变量须选择保险库凭据。',
-  errInvalidEnvironment: '环境名不能为空,镜像仓库类型须为 harbor/acr/dockerhub/custom。',
   errCredentialNotFound: '引用的保险库凭据不存在,请重新选择后重试。',
   errVaultUnconfigured: '保险库未配置 master key,无法引用 secret 凭据。',
 }

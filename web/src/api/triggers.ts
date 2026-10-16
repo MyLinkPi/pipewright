@@ -7,11 +7,7 @@
  *
  * webhookSecretMasked is always masked (e.g. "whsec_••••a91f").
  * The full plaintext secret is ONLY available in SecretResetResult.webhookSecret,
- * returned once at reset time and never again.
- *
- * targetServerIds: column modeled for forward compat (Story 4-1), not
- * validated for server existence in this story (TODO: enable in 4-1).
- */
+ * returned once at reset time and never again.*/
 
 import { http } from './http'
 
@@ -24,20 +20,6 @@ export interface TriggerEvents {
   release: boolean
 }
 
-export interface BranchMapping {
-  /** Server-assigned id present on existing rows; undefined for new (unsaved) rows. */
-  id?: string
-  branchPattern: string
-  environment: string
-  /**
-   * TODO (Story 4-1): Once target_servers table exists, validate ids here.
-   * For now, the list is accepted as-is without existence checking.
-   */
-  targetServerIds: string[]
-}
-
-export type UnmatchedPolicy = 'record' | 'ignore'
-
 export interface TriggerConfig {
   /** Read-only webhook endpoint URL, e.g. "/api/webhooks/<token>". */
   webhookUrl: string
@@ -47,20 +29,15 @@ export interface TriggerConfig {
    */
   webhookSecretMasked: string
   events: TriggerEvents
-  branchMappings: BranchMapping[]
-  unmatchedPolicy: UnmatchedPolicy
+  /** 分支过滤 glob 白名单;空 = 所有分支触发。 */
+  branchFilters: string[]
   /** 路径过滤 glob 列表(monorepo · P0);空 = 不启用(放行一切)。 */
   pathFilters: string[]
 }
 
 export interface SaveTriggerInput {
   events: TriggerEvents
-  branchMappings: Array<{
-    branchPattern: string
-    environment: string
-    targetServerIds: string[]
-  }>
-  unmatchedPolicy: UnmatchedPolicy
+  branchFilters: string[]
   pathFilters: string[]
 }
 

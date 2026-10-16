@@ -69,14 +69,12 @@ const response = ref<AIGenerateResponse | null>(null)
 // ─── Selection state ──────────────────────────────────────────────────────────
 
 /** Set of selected stage IDs */
-const selectedStageIds    = ref<Set<string>>(new Set())
-const buildSelected       = ref(true)
-const selectedMappingIds  = ref<Set<string>>(new Set())
+const selectedStageIds = ref<Set<string>>(new Set())
+const buildSelected   = ref(true)
 
 function initSelections(proposal: AIProposal): void {
-  selectedStageIds.value   = new Set(proposal.stages.map((s) => s.id))
-  buildSelected.value      = true
-  selectedMappingIds.value = new Set(proposal.branchMappings.map((m) => m.id))
+  selectedStageIds.value = new Set(proposal.stages.map((s) => s.id))
+  buildSelected.value    = true
 }
 
 function toggleStage(id: string): void {
@@ -85,20 +83,13 @@ function toggleStage(id: string): void {
   selectedStageIds.value = s
 }
 
-function toggleMapping(id: string): void {
-  const s = new Set(selectedMappingIds.value)
-  if (s.has(id)) { s.delete(id) } else { s.add(id) }
-  selectedMappingIds.value = s
-}
-
 /** Are all selectable items checked? */
 const allSelected = computed<boolean>(() => {
   if (!response.value?.proposal) return false
   const p = response.value.proposal
   return (
     p.stages.every((s) => selectedStageIds.value.has(s.id)) &&
-    buildSelected.value &&
-    p.branchMappings.every((m) => selectedMappingIds.value.has(m.id))
+    buildSelected.value
   )
 })
 
@@ -106,8 +97,7 @@ const noneSelected = computed<boolean>(() => {
   if (!response.value?.proposal) return true
   return (
     selectedStageIds.value.size === 0 &&
-    !buildSelected.value &&
-    selectedMappingIds.value.size === 0
+    !buildSelected.value
   )
 })
 
@@ -117,9 +107,8 @@ function selectAll(): void {
 }
 
 function deselectAll(): void {
-  selectedStageIds.value   = new Set()
-  buildSelected.value      = false
-  selectedMappingIds.value = new Set()
+  selectedStageIds.value = new Set()
+  buildSelected.value    = false
 }
 
 // ─── Generate ─────────────────────────────────────────────────────────────────
@@ -163,7 +152,6 @@ async function apply(): Promise<void> {
       selections: {
         stageIds: [...selectedStageIds.value],
         build: buildSelected.value,
-        branchMappingIds: [...selectedMappingIds.value],
       },
     })
     applySuccess.value = true
@@ -499,38 +487,6 @@ watch(() => props.projectId, () => {
                 </div>
               </div>
 
-              <!-- Branch mappings -->
-              <div v-if="response.proposal.branchMappings.length" class="proposal-group">
-                <div class="proposal-group-label">{{ t('pipelinePanels.wizBranchMappings') }}</div>
-                <div
-                  v-for="mapping in response.proposal.branchMappings"
-                  :key="mapping.id"
-                  class="proposal-item"
-                  :class="{ 'proposal-item--selected': selectedMappingIds.has(mapping.id) }"
-                >
-                  <label class="proposal-item-check">
-                    <input
-                      type="checkbox"
-                      class="prop-checkbox"
-                      :checked="selectedMappingIds.has(mapping.id)"
-                      :aria-label="t('pipelinePanels.wizSelectBranchMapping', { pattern: mapping.branchPattern, env: mapping.environment })"
-                      @change="toggleMapping(mapping.id)"
-                    />
-                    <span class="prop-checkbox-visual" aria-hidden="true" />
-                  </label>
-                  <div class="proposal-item-content">
-                    <div class="proposal-item-head">
-                      <span class="proposal-item-name">
-                        <code class="branch-code">{{ mapping.branchPattern }}</code>
-                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
-                          <path d="M5 12h14M13 6l6 6-6 6"/>
-                        </svg>
-                        {{ mapping.environment }}
-                      </span>
-                    </div>
-                  </div>
-                </div>
-              </div>
             </section>
             </template><!-- /v-if response.proposal -->
 

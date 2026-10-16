@@ -78,10 +78,6 @@ func init() {
 			"zh-HK": "新密碼至少 8 位", "en": "new password must be at least 8 characters", "ja": "新しいパスワードは 8 文字以上である必要があります",
 			"ko": "새 비밀번호는 8자 이상이어야 합니다", "es": "La nueva contraseña debe tener al menos 8 caracteres", "fr": "Le nouveau mot de passe doit comporter au moins 8 caractères", "de": "Das neue Passwort muss mindestens 8 Zeichen lang sein",
 		},
-		"晋级服务未初始化": {
-			"zh-HK": "晉級服務尚未初始化", "en": "promotion service not initialized", "ja": "昇格サービスが初期化されていません",
-			"ko": "승격 서비스가 초기화되지 않았습니다", "es": "El servicio de promoción no está inicializado", "fr": "Le service de promotion n'est pas initialisé", "de": "Promotion-Dienst ist nicht initialisiert",
-		},
 		"服务器服务未初始化": {
 			"zh-HK": "伺服器服務尚未初始化", "en": "server service not initialized", "ja": "サーバーサービスが初期化されていません",
 			"ko": "서버 서비스가 초기화되지 않았습니다", "es": "El servicio de servidor no está inicializado", "fr": "Le service serveur n'est pas initialisé", "de": "Server-Dienst ist nicht initialisiert",
@@ -97,10 +93,6 @@ func init() {
 		"流水线配置服务未初始化": {
 			"zh-HK": "流水線配置服務尚未初始化", "en": "pipeline configuration service not initialized", "ja": "パイプライン設定サービスが初期化されていません",
 			"ko": "파이프라인 구성 서비스가 초기화되지 않았습니다", "es": "El servicio de configuración de pipeline no está inicializado", "fr": "Le service de configuration de pipeline n'est pas initialisé", "de": "Pipeline-Konfigurationsdienst ist nicht initialisiert",
-		},
-		"源运行未成功,不可晋级": {
-			"zh-HK": "來源執行未成功,不可晉級", "en": "source run did not succeed; cannot promote", "ja": "ソースの実行が成功していないため、昇格できません",
-			"ko": "소스 실행이 성공하지 않아 승격할 수 없습니다", "es": "La ejecución de origen no fue exitosa; no se puede promover", "fr": "L'exécution source n'a pas réussi ; promotion impossible", "de": "Quell-Ausführung war nicht erfolgreich; Promotion nicht möglich",
 		},
 		"环境服务未初始化": {
 			"zh-HK": "環境服務尚未初始化", "en": "environment service not initialized", "ja": "環境サービスが初期化されていません",
@@ -125,10 +117,6 @@ func init() {
 		"该环境暂无部署历史": {
 			"zh-HK": "該環境暫無部署歷史", "en": "this environment has no deployment history yet", "ja": "この環境にはまだデプロイ履歴がありません",
 			"ko": "이 환경에는 아직 배포 이력이 없습니다", "es": "Este entorno aún no tiene historial de despliegues", "fr": "Cet environnement n'a pas encore d'historique de déploiement", "de": "Diese Umgebung hat noch keinen Bereitstellungsverlauf",
-		},
-		"该运行已晋级到该环境": {
-			"zh-HK": "該執行已晉級到該環境", "en": "this run has already been promoted to this environment", "ja": "この実行はすでにこの環境へ昇格されています",
-			"ko": "이 실행은 이미 해당 환경으로 승격되었습니다", "es": "Esta ejecución ya ha sido promovida a este entorno", "fr": "Cette exécution a déjà été promue vers cet environnement", "de": "Diese Ausführung wurde bereits in diese Umgebung übernommen",
 		},
 		"请先登录": {
 			"zh-HK": "請先登入", "en": "please log in first", "ja": "先にログインしてください",

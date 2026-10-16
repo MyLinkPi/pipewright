@@ -3,7 +3,7 @@
  * Dashboard — 全局概览首页(container)。
  *
  * 并行(Promise.allSettled,单点失败不拖垮整页)拉取真实数据:运行 / 项目 / 服务器 + 指标 /
- * DORA / 异常告警 / AI 诊断 / 各项目环境部署,派生 KPI 并以 bento 网格组织各 presentational widget。
+ * DORA / 异常告警 / AI 诊断,派生 KPI 并以 bento 网格组织各 presentational widget。
  * 无数据各 widget 自行降级到空状态(自托管首启即可用,不白屏)。
  */
 import { ref, computed, onMounted } from 'vue'
@@ -13,14 +13,12 @@ import { useRouter } from 'vue-router'
 import { listRuns, type RunListItem } from '../api/runs'
 import { listProjects, type Project } from '../api/projects'
 import { listServers, getAllServerMetrics, type Server, type ServerMetrics } from '../api/servers'
-import { listEnvironmentDeployments } from '../api/environments'
 import { getDoraMetrics, type DoraMetrics, formatFrequency, formatDuration, formatPercent } from '../api/metrics'
 import { listAnomalyAlerts, type AnomalyAlert } from '../api/anomaly'
 import { getDiagnosisStats, type DiagnosisStats } from '../api/settings'
 
 import DashRecentRuns from '../components/dashboard/DashRecentRuns.vue'
 import DashServers from '../components/dashboard/DashServers.vue'
-import DashEnvironments, { type DashEnvEntry } from '../components/dashboard/DashEnvironments.vue'
 import DashAlerts from '../components/dashboard/DashAlerts.vue'
 import DoraMetricCard from '../components/metrics/DoraMetricCard.vue'
 import '../components/dashboard/dashboard.css'
@@ -40,7 +38,6 @@ const serverMetrics = ref<ServerMetrics[]>([])
 const dora = ref<DoraMetrics | null>(null)
 const alerts = ref<AnomalyAlert[]>([])
 const diagnosis = ref<DiagnosisStats | null>(null)
-const envEntries = ref<DashEnvEntry[]>([])
 
 /** allSettled 取值助手:fulfilled 返回值,否则 fallback。 */
 function val<T>(r: PromiseSettledResult<T>, fallback: T): T {
@@ -73,27 +70,6 @@ async function load(isRefresh = false): Promise<void> {
   alerts.value = val(alertsR, [])
   diagnosis.value = diagR.status === 'fulfilled' ? diagR.value : null
 
-  // 环境:逐项目拉部署时间线并聚合(自托管项目数少,并行可控)。
-  const envResults = await Promise.allSettled(
-    projects.value.map((p) =>
-      listEnvironmentDeployments(p.id).then((timelines) =>
-        timelines.map<DashEnvEntry>((t) => ({
-          projectId: p.id,
-          projectName: p.name,
-          environment: t.environment,
-          active: t.active,
-        })),
-      ),
-    ),
-  )
-  const flat = envResults.flatMap((r) => (r.status === 'fulfilled' ? r.value : []))
-  // 已部署的(有 active)按部署时间倒序在前,未部署的在后。
-  flat.sort((a, b) => {
-    const ta = a.active ? new Date(a.active.deployedAt).getTime() : 0
-    const tb = b.active ? new Date(b.active.deployedAt).getTime() : 0
-    return tb - ta
-  })
-  envEntries.value = flat
 
   loading.value = false
   refreshing.value = false
@@ -167,7 +143,6 @@ onMounted(load)
     <!-- bento 网格 -->
     <div class="bento">
       <div class="bento-runs"><DashRecentRuns :runs="runs" :loading="loading" /></div>
-      <div class="bento-env"><DashEnvironments :entries="envEntries" :loading="loading" /></div>
       <div class="bento-srv"><DashServers :servers="servers" :metrics="serverMetrics" :loading="loading" /></div>
       <div class="bento-alerts"><DashAlerts :alerts="alerts" :diagnosis="diagnosis" :loading="loading" /></div>
 
@@ -359,14 +334,11 @@ onMounted(load)
 .bento-runs {
   grid-column: 1;
 }
-.bento-env {
-  grid-column: 2;
-}
 .bento-srv {
-  grid-column: 1;
+  grid-column: 2;
 }
 .bento-alerts {
-  grid-column: 2;
+  grid-column: 1;
 }
 .bento-dora {
   grid-column: 1 / -1;
@@ -409,7 +381,6 @@ onMounted(load)
     grid-template-columns: 1fr;
   }
   .bento-runs,
-  .bento-env,
   .bento-srv,
   .bento-alerts,
   .bento-dora {

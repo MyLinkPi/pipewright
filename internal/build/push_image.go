@@ -56,8 +56,8 @@ type imagePushPlan struct {
 }
 
 // pushPlansByBuildNode 汇总本阶段内各 push_image 节点对「产物来源(build_image 节点名)」的推送声明。
-// registry 留空时回退环境绑定/内置 registry(与 build_image 的自动推送同源),故需 settings/envName。
-func (b *Builder) pushPlansByBuildNode(ctx context.Context, jobs []pipeline.Job, settings *pipeline.Settings, envName string, r *run.Run) map[string]imagePushPlan {
+// registry 留空时回退内置 registry(与 build_image 的自动推送同源),故需 settings。
+func (b *Builder) pushPlansByBuildNode(ctx context.Context, jobs []pipeline.Job, settings *pipeline.Settings, r *run.Run) map[string]imagePushPlan {
 	out := make(map[string]imagePushPlan)
 	for _, jb := range jobs {
 		if !isPushImageJob(jb.Type) {
@@ -73,7 +73,7 @@ func (b *Builder) pushPlansByBuildNode(ctx context.Context, jobs []pipeline.Job,
 		regURL := strings.TrimSpace(cfgString(jb.Config, "registry"))
 		credID := strings.TrimSpace(cfgString(jb.Config, "credentialId"))
 		if regURL == "" && settings != nil {
-			if reg := b.resolveRegistry(ctx, settings, envName); reg != nil {
+			if reg := b.resolveRegistry(ctx); reg != nil {
 				regURL = reg.URL
 				if credID == "" {
 					credID = reg.CredentialID
@@ -131,7 +131,7 @@ func defaultImageTag(localRef string) string {
 // runPushImageJob 执行一个 push_image 节点:校验推送目标可用并播报结果。
 // 真正的 docker push 已在来源 build_image 节点内按本节点声明完成(见文件头注释);
 // 目标不可用(缺 artifactJob / 无仓库)时明确失败,阻断下游(强失败语义,对齐 deploy_ssh)。
-func (b *Builder) runPushImageJob(ctx context.Context, rep dagrun.StageReporter, jb pipeline.Job, r *run.Run, settings *pipeline.Settings, envName string) error {
+func (b *Builder) runPushImageJob(ctx context.Context, rep dagrun.StageReporter, jb pipeline.Job, r *run.Run, settings *pipeline.Settings) error {
 	src := strings.TrimSpace(cfgString(jb.Config, pushImageArtifactJobKey))
 	if src == "" {
 		_ = rep.Log(ctx, streamStderr, "推送镜像节点:未指定产物来源节点(artifactJob)")
@@ -139,12 +139,12 @@ func (b *Builder) runPushImageJob(ctx context.Context, rep dagrun.StageReporter,
 	}
 	regURL := strings.TrimSpace(cfgString(jb.Config, "registry"))
 	if regURL == "" && settings != nil {
-		if reg := b.resolveRegistry(ctx, settings, envName); reg != nil {
+		if reg := b.resolveRegistry(ctx); reg != nil {
 			regURL = reg.URL
 		}
 	}
 	if regURL == "" {
-		_ = rep.Log(ctx, streamStderr, fmt.Sprintf("推送镜像节点「%s」:未指定目标镜像仓库(节点 registry 为空且环境未绑定镜像仓库)", jb.Name))
+		_ = rep.Log(ctx, streamStderr, fmt.Sprintf("推送镜像节点「%s」:未指定目标镜像仓库(节点 registry 为空且内置 registry 未启用)", jb.Name))
 		return ErrBuildFailed
 	}
 	name := strings.TrimSpace(cfgString(jb.Config, "imageName"))

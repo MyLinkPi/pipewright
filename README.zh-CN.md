@@ -20,7 +20,7 @@
 
 主流方案要么重(Jenkins 一堆插件 + JVM),要么是三个工具拼装(Woodpecker/Drone + Ansible/Kamal + Portainer)。Pipewright 把「持续集成、多服务器部署、服务器/容器运维」装进**一个静态二进制**:下载、启动、打开浏览器,就是全部安装过程。
 
-如今它已长过那三件套:把部署好的服务挂上 HTTPS 域名(原本的 nginx + certbot 那一步)、给每个 PR 一个能点开的预览地址,也都内置了。
+如今它已长过那三件套:把部署好的服务挂上 HTTPS 域名(原本的 nginx + certbot 那一步)也内置了。
 
 | | Pipewright | Jenkins | Drone + Ansible + Portainer |
 |---|:---:|:---:|:---:|
@@ -32,14 +32,13 @@
 | 服务器 / 容器运维 | ✅ 内置 | ❌ | Portainer |
 | 零停机 + 失败回滚 | ✅ | 插件 | 自己写 |
 | 自动 HTTPS + 域名反向代理 | ✅ 内置 | ❌ | ❌ |
-| Per-PR 预览环境 | ✅ 内置 | ❌ | ❌ |
 | DORA 指标 | ✅ 内置 | 插件 | ❌ |
 | AI 失败诊断 | ✅ 可选 | ❌ | ❌ |
 | 一键自更新 | ✅ | ❌ | ❌ |
 
 ## 界面预览
 
-**全局概览** —— 项目、运行成功率、环境部署态、服务器健康、DORA 指标,一屏全局:
+**全局概览** —— 项目、运行成功率、服务器健康、DORA 指标,一屏全局:
 
 ![Dashboard](docs/screenshots/dashboard.png)
 
@@ -58,13 +57,12 @@
 ## 能力总览
 
 - **🔐 安全地基** —— 单管理员认证(argon2id + CSRF)· 凭据加密保险库(NaCl secretbox,掩码呈现,绝无明文)· OAuth 应用接入 Gitee / GitHub / GitLab / 自建实例(拿到的 access token 直接存成可复用的保险库凭据)· append-only 审计(SQLite trigger 硬拦 UPDATE/DELETE)+ 可选远端 sink · 按 run 解析真实凭据后对日志 / 诊断 / 通知全链路脱敏。
-- **🧩 项目与流水线** —— 可视化编排画布(阶段 DAG + 阶段内任务级 DAG)· 矩阵构建 · 人工审批门(可直接在通知里点签名链接审批)· 旁挂服务(测试挂 DB/Redis)· 阶段 `when` 条件 + 阶段后置步骤 · 类型化运行参数(枚举/布尔/数字,触发时即校验)· 触发方式:webhook、分支→环境映射、5 字段 cron 定时、上游→下游流水线串联(深度门 + 路径门防环)· 项目级并发上限 + 超限 FIFO 排队 · 复用库:流水线模板 / 变量组 / 自定义节点 · 服务端权威合法性校验。
+- **🧩 项目与流水线** —— 可视化编排画布(阶段 DAG + 阶段内任务级 DAG)· 矩阵构建 · 人工审批门(可直接在通知里点签名链接审批)· 旁挂服务(测试挂 DB/Redis)· 阶段 `when` 条件 + 阶段后置步骤 · 类型化运行参数(枚举/布尔/数字,触发时即校验)· 触发方式:webhook(事件开关 + 分支过滤 glob 白名单 + 路径过滤)、5 字段 cron 定时、上游→下游流水线串联(深度门 + 路径门防环)· 项目级并发上限 + 超限 FIFO 排队 · 复用库:流水线模板 / 变量组 / 自定义节点 · 服务端权威合法性校验。
 - **📝 流水线即代码** —— 把流水线结构写进 `.pipewright.yml`、按分支各自演进,画布配置始终作为兜底回退([详见下文](#流水线即代码gitops))。
 - **🏗 隔离构建与产物** —— 版本钉死的容器内隔离构建(docker/nerdctl/podman)· 代码管理区:本地 bare 镜像 + 增量 fetch,秒级出工作区 · 构建依赖缓存(按分支 + lockfile hash 寻址)· 内容寻址制品库,jar/dist 存**真字节**供部署(而非占位 reference)· 镜像构建 + 推送私有仓库 + 镜像 GC · **内置镜像仓库**:控制机自管 registry:2 双服务(制品推送 + 基础镜像 pull-through 缓存),各机 daemon.json 一键下发;可选挂载「证书管理」的公共可信证书以 **HTTPS** 服务(客户端机器零配置,明文模式自动回退 insecure-registries)· 多节点构建机池:给服务器打标签即成构建机,项目/阶段用标签选择器调度(优先级 → 流水线亲和 → 负载,全忙自动排队,每机默认并发 1;构建经 SSH 下沉到远程,token 只留控制机;控制机自身无容器 CLI 也可纯靠远程机池构建)· JUnit + Cobertura 测试报告喂质量门禁,不过则阶段失败、阻断下游部署 · 实时终端日志(SSE)+ 历史回放 · 只读代码浏览(Monaco)。
-- **🚀 多服务器部署** —— 经 SSH 免 Agent 部署 · 健康门控 · 零停机切换 + 失败回滚 · 多机并行扇出 + 部分失败可见 · 命令型部署(无产物,直接重启服务)· **环境一等公民**:逐环境部署时间线、当前活跃版本、一键回滚到上一次全成功部署 · 环境晋级流(dev→staging→prod)+ 逐环境变量/密钥 + 审批门。
+- **🚀 多服务器部署** —— 经 SSH 免 Agent 部署 · 健康门控 · 零停机切换 + 失败回滚 · 多机并行扇出 + 部分失败可见 · 命令型部署(无产物,直接重启服务)。
 - **🌐 服务注册网关(集群反代)+ 托管证书** —— 在你选定的(一台或多台)网关主机上,经 SSH 各编排一个配置完全一致的 nginx 容器(渲染 nginx.conf → `nginx -t` → 优雅 reload):注册基域后「服务名 + 基域」即成为子域名(`abc.efg.com`)。**集群模型**:实例 = (服务器, 宿主端口),各网关主机渲染同一份配置、按 `服务器地址:端口` 反代**集群所有实例** —— 本机没有部署的服务同样代理;容器实例由部署自动注册,宿主端口**范围探测自动分配**(默认 20000-30000,防火墙放行该段即可);部署节点内选基域 + 填服务名**一键生成**注册绑定,实例与端口随部署自动维护、自动清理失联实例。容器升级走「扩容起新→预热健康→原子切换→排空→缩容停旧」零停机轮转;非容器服务填端口注册,升级走「摘除→升级→健康→挂回」,集群可用性由其余机器保证。健康检查只需填探测路径,端口自动推导。证书为一等公民:自托管 acme.sh(二进制内嵌、控制机本地执行)经 **DNS-01**(Cloudflare / DNSPod / 阿里云 DNS,含通配符)签发并自动续期,支持导入既有证书,PEM 密文存保险库,签发后自动下发到匹配基域 —— 证书管理页全程可见。
 - **🔒 平台 HTTPS(宿主 nginx)** —— 当运行 Pipewright 的主机装有 nginx 时,平台可把自己的 Web 页面发布为 **HTTPS**:选访问域名 + 复用「证书管理」的证书,平台在自身所在主机自动下发证书并写入 `/etc/nginx/conf.d` vhost(443 ssl 反代平台端口 + 80→443 跳转),`nginx -t` 校验(失败自动回滚)、`nginx -T` 验证 include 生效后热加载;需要 root 或免密 sudo,与本机既有 nginx 配置共存。证书续期后自动重新下发;被平台 HTTPS 占用的证书禁止误删。
-- **🔎 Per-PR 预览环境** —— 某 PR 的运行成功部署后,自动分配一次性域名 `pr-<n>-<proj>.<base>`(带自己的证书与路由),评审者点开链接就能看到这条 PR 真实跑起来的样子。同一 PR 幂等复用;自动回收,但**仅在**确证 PR 已关闭/合并时才回收。
 - **📣 通知** —— 企业微信 / 钉钉 / 飞书 / Slack / 邮件 / 自定义 webhook · 事件→渠道细粒度路由 · 模板 + 变量自定义 · 飞书富卡片(审批/详情行动按钮 + 发版汇总)· 流水线内通知节点。
 - **🖥 服务器与容器运维** —— 多机状态总览(CPU/内存/磁盘)+ 指标时序趋势图 · 容器/镜像/Stacks/卷/网络管理 · 容器创建/inspect/prune · 实时 + 历史服务日志 · 实时 stats · 容器交互终端 · Web 运维终端(主机 shell,完整复制粘贴/信号支持)· 可配置异常检测:定时自动跑、冷却去重、命中走通知渠道。
 - **🤖 AI 辅助(可选,完全可降级)** —— 自带 Claude / OpenAI / Ollama 端点(apiKey 密文入保险库)。构建/部署失败自动根因诊断 + 👍/👎 反馈飞轮与准确率统计 · 仓库分析 → 生成流水线草案 · 成功/失败提交差异 · 脚本风险标注 · 运维终端的自然语言→shell 助手与容器诊断。核心 CI/CD 路径完全不依赖它(NFR-10)。
@@ -219,7 +217,6 @@ sh install.sh       # 亦可把构建产物装到 /usr/local/bin(见「本地编
 | `PIPEWRIGHT_PR_STATUS_GITHUB_BASE` | GitHub API 基址(GitHub Enterprise 用) | 公有 GitHub |
 | `PIPEWRIGHT_PR_STATUS_GITEE_BASE` | Gitee API 基址(自建 Gitee 用) | 公有 Gitee |
 | `PIPEWRIGHT_CADDY_IMAGE` | 反代镜像。默认是自构建的 Caddy(含 DNS-01 / ratelimit / layer4 插件);用原版 `caddy:2` 也能跑,但会失去 DNS-01/通配符/TCP 能力 | `ghcr.io/huangchengsir/pipewright-caddy:latest` |
-| `PIPEWRIGHT_PREVIEW_SWEEP_INTERVAL` | 预览环境回收扫描间隔(Go duration,如 `10m`) | `5m` |
 
 **运维监控**
 
@@ -237,9 +234,9 @@ sh install.sh       # 亦可把构建产物装到 /usr/local/bin(见「本地编
 - **开启**:在项目的流水线页打开「流水线即代码 / Pipeline as code」开关(按项目维度)。
 - **生效方式**:开启后,每次运行都从**本次构建分支**的**仓库根**读取 `.pipewright.yml`(分支为空时回退项目默认分支),用其中的流水线 spec 驱动本次运行;不同分支可携带各自的 `.pipewright.yml`。文件用项目绑定的仓库凭据临时拉取,无新增暴露面。
 - **永不卡住运行的回退**:文件**缺失** → 回退到画布(UI)里已配置的流水线;文件存在但 **YAML 非法** → 同样回退到已存的画布配置。
-- **作用范围**:YAML 只管**流水线结构**(阶段 / 任务 / `needs` / DAG 编排);**变量与缓存、环境与凭据、触发规则**仍来自画布(UI)设置,**不写在 YAML 里**。
+- **作用范围**:YAML 只管**流水线结构**(阶段 / 任务 / `needs` / DAG 编排);**变量与缓存、触发规则**仍来自画布(UI)设置,**不写在 YAML 里**。
 - **schema** 与平台「从 YAML 导入」用的是同一套(`version` + `stages` → `jobs`,job 用嵌套 `script:` 块写 `image`/`commands`/`env`/`workdir`)。
-- **节点类型**(画布与 YAML 通用):`git_source`、`script`、`build_backend`、`build_frontend`、`build_image`、`push_image`(推送镜像:用 `artifactJob` 绑定**同阶段**的来源 `build_image` 节点——推送在该节点内完成;`registry`/`imageName`/`tag`/`credentialId` 可选覆盖目标,留空回退环境绑定的镜像仓库)、`oss_upload`、`deploy_ssh`、`deploy_frontend`、`health_check`、`notify`、`templated`、`custom`。
+- **节点类型**(画布与 YAML 通用):`git_source`、`script`、`build_backend`、`build_frontend`、`build_image`、`push_image`(推送镜像:用 `artifactJob` 绑定**同阶段**的来源 `build_image` 节点——推送在该节点内完成;`registry`/`imageName`/`tag`/`credentialId` 可选覆盖目标,留空回退内置镜像仓库)、`oss_upload`、`deploy_ssh`、`deploy_frontend`、`health_check`、`notify`、`templated`、`custom`。
 
 ```yaml
 version: 1
@@ -312,7 +309,7 @@ stages:
 │  ├── internal/pipelineyaml  YAML ↔ spec 双向往返(导入 / 导出)
 │  ├── internal/pacloader     流水线即代码加载(.pipewright.yml,按分支)
 │  ├── internal/library       可复用模板 + 变量组 + 自定义节点
-│  ├── internal/trigger       webhook + 分支→环境映射
+│  ├── internal/trigger       webhook + 分支过滤 + 路径过滤
 │  ├── internal/cron          5 字段 cron 解析器 + 分钟粒度调度器
 │  └── internal/chain         上游→下游串联(防环)
 │
@@ -333,13 +330,10 @@ stages:
 ├─ 交付
 │  ├── internal/target        通用 SSH exec/session 层(部署 + 运维共享)
 │  ├── internal/deploy        SSH 部署执行 + 健康门控 + 回滚
-│  ├── internal/environments  环境一等公民 + 回滚目标定位
-│  ├── internal/promotion     环境晋级流 + 逐环境变量
 │  ├── internal/prstatus      PR / 提交状态回写(GitHub / Gitee)
 │  ├── internal/proxy         自动 HTTPS + 域名反向代理(Caddy 编排)
 │  ├── internal/dnsprovider   Cloudflare / DNSPod / 阿里云 DNS(DNS-01 + 子域名)
 │  ├── internal/objectstore   对象存储接入(阿里云 OSS;流水线产物上传)
-│  └── internal/previewenv    Per-PR 预览环境 + 自动回收
 │
 ├─ 可观测
 │  ├── internal/notify        多渠道通知 + 事件路由 + 模板

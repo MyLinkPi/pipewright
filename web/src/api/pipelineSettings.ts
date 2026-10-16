@@ -16,7 +16,6 @@ import { http } from './http'
 
 export type BuildModel = 'dockerfile' | 'toolchain'
 export type ArtifactType = 'image' | 'jar' | 'dist'
-export type RegistryType = 'harbor' | 'acr' | 'dockerhub' | 'custom'
 
 // ─── Domain types (frozen DTO shape) ─────────────────────────────────────────
 
@@ -51,25 +50,8 @@ export interface BuildConfig {
   cache: Cache
 }
 
-export interface ImageRegistry {
-  /** Empty string means "not bound yet". */
-  type: RegistryType | ''
-  url: string
-  credentialId?: string
-  maskedCredential?: string
-}
-
-export interface Environment {
-  id: string
-  name: string
-  targetServerIds: string[]
-  envVars: BuildVar[]
-  imageRegistry: ImageRegistry
-}
-
 export interface SettingsDTO {
   build: BuildConfig
-  environments: Environment[]
   updatedAt: string
 }
 
@@ -83,20 +65,6 @@ export interface SaveBuildVar {
   credentialId?: string
 }
 
-export interface SaveImageRegistry {
-  type: RegistryType | ''
-  url: string
-  credentialId?: string
-}
-
-export interface SaveEnvironment {
-  id?: string
-  name: string
-  targetServerIds: string[]
-  envVars: SaveBuildVar[]
-  imageRegistry: SaveImageRegistry
-}
-
 export interface SaveSettingsInput {
   build: {
     model: BuildModel
@@ -106,7 +74,6 @@ export interface SaveSettingsInput {
     vars: SaveBuildVar[]
     cache: Cache
   }
-  environments: SaveEnvironment[]
 }
 
 // ─── API functions ────────────────────────────────────────────────────────────

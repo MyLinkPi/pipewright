@@ -133,10 +133,6 @@ type service struct {
 	// 返回非 nil 错误(队列满/已停机)时 Create 据此回滚并失败返回(不留挂死)。
 	enqueueMu sync.RWMutex
 	enqueue   func(runID string) error
-
-	// envResolver 可选:手动/定时/串联触发未显式带环境时,据项目分支映射补解析环境
-	// (与 webhook 路径对齐)。nil(纯单测 Service / 未注入)时 Create 不补解析,行为不变。
-	envResolver EnvResolver
 }
 
 // setEnqueue 由 WorkerPool 注入调度回调(Create 入库后调用)。
@@ -146,21 +142,8 @@ func (s *service) setEnqueue(fn func(runID string) error) {
 	s.enqueueMu.Unlock()
 }
 
-// EnvResolver 把(项目, 分支)解析为映射的环境名 + 目标服务器引用 id 列表。
-// 手动 / 定时 / 串联触发未显式带环境时,Create 经此按项目分支映射补解析,与 webhook 接收
-// 路径保持一致(否则 build_image 不知推哪个 registry、环境变量 / 目标机全落空)。
-// 无映射命中 → ("", nil),行为不变。trigger 包提供实现(同一套 matchBranch glob)。
-type EnvResolver interface {
-	ResolveEnv(ctx context.Context, projectID, branch string) (environment string, targetServerIDs []string)
-}
-
 // Option 配置运行 Service 的可选依赖。
 type Option func(*service)
-
-// WithEnvResolver 注入分支→环境解析器(供手动/定时/串联触发补解析环境;见 EnvResolver)。
-func WithEnvResolver(r EnvResolver) Option {
-	return func(s *service) { s.envResolver = r }
-}
 
 // New 构造运行 Service。db 经参数化 SQL 触库;事件总线用于 SSE 推送(不轮询 DB)。
 // 不做任何重活(无 init() 副作用,避免抬高空载内存)。
@@ -198,19 +181,6 @@ func (s *service) Create(ctx context.Context, projectID string, trigger Trigger)
 		}
 	}
 
-	// 环境补解析(#56):手动 / 定时 / 串联触发未显式带环境时,据项目分支映射(与 webhook 同一套
-	// glob 匹配)解析出环境名 + 目标服务器。否则 resolveRegistry(settings, env="") → nil → build_image
-	// 不知推哪个 registry(部署节点 pull 不到镜像)、环境 envVars / targetServerIds 也全落空。
-	// webhook 路径已显式带 ResolvedEnvironment → 此处跳过(不二次解析,与既有行为字节级一致)。
-	if strings.TrimSpace(trigger.ResolvedEnvironment) == "" && s.envResolver != nil {
-		if env, servers := s.envResolver.ResolveEnv(ctx, projectID, trigger.Branch); env != "" {
-			trigger.ResolvedEnvironment = env
-			if len(trigger.ResolvedTargetServerIDs) == 0 {
-				trigger.ResolvedTargetServerIDs = servers
-			}
-		}
-	}
-
 	tt := trigger.Type
 	if tt != TriggerWebhook && tt != TriggerManual && tt != TriggerSchedule && tt != TriggerChain {
 		tt = TriggerManual
@@ -221,17 +191,6 @@ func (s *service) Create(ctx context.Context, projectID string, trigger Trigger)
 	chainDepth := trigger.ChainDepth
 	if chainDepth < 0 {
 		chainDepth = 0
-	}
-
-	// 解析出的目标元数据(webhook 分支映射)持久化为运行内部列;手动触发为空/[]。
-	// 这些列**不**进入冻结 run-detail DTO 输出,仅供 Epic 4 的 targets 消费。
-	targetIDs := trigger.ResolvedTargetServerIDs
-	if targetIDs == nil {
-		targetIDs = []string{}
-	}
-	targetIDsJSON, err := json.Marshal(targetIDs)
-	if err != nil {
-		return nil, fmt.Errorf("run: marshal resolved target server ids: %w", err)
 	}
 
 	// 参数化运行参数(Story 8-11):空 → {}。
@@ -249,12 +208,12 @@ func (s *service) Create(ctx context.Context, projectID string, trigger Trigger)
 	_, err = s.db.ExecContext(ctx,
 		`INSERT INTO pipeline_runs
 		   (id, project_id, status, trigger_type, trigger_branch, trigger_commit, trigger_actor,
-		    resolved_environment, resolved_target_server_ids, params_json,
+		    params_json,
 		    chain_source_run_id, chain_depth, created_at, started_at, finished_at,
 		    resume_of_run_id, resume_plan_json)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, '', '')`,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, '', '')`,
 		id, projectID, StatusQueued, tt, trigger.Branch, trigger.Commit, trigger.Actor,
-		trigger.ResolvedEnvironment, string(targetIDsJSON), string(paramsJSON),
+		string(paramsJSON),
 		strings.TrimSpace(trigger.ChainSourceRunID), chainDepth,
 		now.Format(time.RFC3339),
 	)
@@ -285,7 +244,7 @@ func (s *service) Create(ctx context.Context, projectID string, trigger Trigger)
 
 // CreateResume 实现 Service.CreateResume(见接口注释):失败运行按节点恢复的派生运行创建。
 //
-// 与 Create 的差异:触发上下文整体复制自父运行(不再走环境补解析——父运行已解析,分支未变);
+// 与 Create 的差异:触发上下文整体复制自父运行;
 // type 落 manual(when: type 条件与手动运行同语义);额外记录 resume 两列,并把父运行的
 // run_artifacts / deploy_targets 行复制过来——前者供跨阶段产物恢复(restorePriorArtifacts 按
 // run_id 查询),后者是部署节点增量重试的状态基线(已成功机器不再重复部署)。
@@ -322,14 +281,6 @@ func (s *service) CreateResume(ctx context.Context, parentID string, actions []s
 	if a := strings.TrimSpace(actor); a != "" {
 		trigger.Actor = a
 	}
-	targetIDs := trigger.ResolvedTargetServerIDs
-	if targetIDs == nil {
-		targetIDs = []string{}
-	}
-	targetIDsJSON, merr := json.Marshal(targetIDs)
-	if merr != nil {
-		return nil, fmt.Errorf("run: marshal resolved target server ids: %w", merr)
-	}
 	params := trigger.Params
 	if params == nil {
 		params = map[string]string{}
@@ -351,12 +302,12 @@ func (s *service) CreateResume(ctx context.Context, parentID string, actions []s
 	if _, err = tx.ExecContext(ctx,
 		`INSERT INTO pipeline_runs
 		   (id, project_id, status, trigger_type, trigger_branch, trigger_commit, trigger_actor,
-		    resolved_environment, resolved_target_server_ids, params_json,
+		    params_json,
 		    chain_source_run_id, chain_depth, created_at, started_at, finished_at,
 		    resume_of_run_id, resume_plan_json)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?)`,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?)`,
 		id, parent.ProjectID, StatusQueued, TriggerManual, trigger.Branch, trigger.Commit, trigger.Actor,
-		trigger.ResolvedEnvironment, string(targetIDsJSON), string(paramsJSON),
+		string(paramsJSON),
 		trigger.ChainSourceRunID, trigger.ChainDepth,
 		now.Format(time.RFC3339),
 		parent.ID, string(planJSON),
@@ -443,7 +394,6 @@ func (s *service) Get(ctx context.Context, id string) (*Run, error) {
 		failureLog    string
 		diagnosisJSON string
 		paramsJSON    string
-		targetIDsJSON sql.NullString
 		resumeOf      string
 		resumePlan    string
 	)
@@ -454,7 +404,6 @@ func (s *service) Get(ctx context.Context, id string) (*Run, error) {
 		        pr.created_at, pr.started_at, pr.finished_at,
 		        pr.failure_log, pr.diagnosis_json, pr.params_json,
 		        pr.chain_source_run_id, pr.chain_depth,
-		        pr.resolved_environment, pr.resolved_target_server_ids,
 		        pr.spec_source, pr.spec_source_ref, pr.spec_source_file, pr.spec_source_fallback,
 		        pr.resume_of_run_id, pr.resume_plan_json
 		 FROM pipeline_runs pr
@@ -465,7 +414,6 @@ func (s *service) Get(ctx context.Context, id string) (*Run, error) {
 		&createdStr, &startedStr, &finishStr,
 		&failureLog, &diagnosisJSON, &paramsJSON,
 		&r.Trigger.ChainSourceRunID, &r.Trigger.ChainDepth,
-		&r.Trigger.ResolvedEnvironment, &targetIDsJSON,
 		&r.SpecSource.Source, &r.SpecSource.Ref, &r.SpecSource.File, &r.SpecSource.Fallback,
 		&resumeOf, &resumePlan)
 	if err != nil {
@@ -473,16 +421,6 @@ func (s *service) Get(ctx context.Context, id string) (*Run, error) {
 			return nil, ErrNotFound
 		}
 		return nil, fmt.Errorf("run: load run: %w", err)
-	}
-
-	// 回填解析出的目标服务器引用(JSON 数组)。Get 此前漏读 resolved_environment /
-	// resolved_target_server_ids → 构建执行器拿到的 run 恒无环境 → resolveRegistry 返回 nil →
-	// 镜像永不推送、部署节点 pull 不到(image build→push→deploy 全链路在 Get 路径下形同虚设)。
-	if s := strings.TrimSpace(targetIDsJSON.String); s != "" {
-		var ids []string
-		if json.Unmarshal([]byte(s), &ids) == nil {
-			r.Trigger.ResolvedTargetServerIDs = ids
-		}
 	}
 
 	r.FailureLog = failureLog

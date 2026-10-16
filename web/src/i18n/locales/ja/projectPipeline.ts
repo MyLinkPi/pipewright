@@ -9,7 +9,6 @@ export default {
   tabBuild: 'ビルド',
   tabVars: '変数とキャッシュ',
   tabTriggers: 'トリガー設定',
-  tabEnvs: '環境と認証情報',
   tabStripAria: 'パイプライン設定タブ',
 
   // ─── パイプライン・アズ・コード(GitOps · FR-8-12)──────────────
@@ -54,7 +53,7 @@ export default {
   // ─── バナー / ステータス ────────────────────────────────────────
   dismiss: '閉じる',
   draftSaved: 'パイプラインを保存しました',
-  scopeSettings: '変数/環境',
+  scopeSettings: '変数',
   scopePipeline: 'パイプライン定義',
   noChanges: '未保存の変更はありません',
   errSavePartial: '一部のみ保存済み({saved});失敗: ',
@@ -80,7 +79,6 @@ export default {
   errDuplicateId: 'ステージまたはジョブの ID が重複しています。重複を削除して再試行してください。',
   errInvalidBuild: 'ビルドモデルは dockerfile/toolchain、成果物の種類は image/jar/dist である必要があります。',
   errInvalidVar: '変数キーは空にできず、同一スコープ内で重複できません。secret 変数にはボールトの認証情報を選択する必要があります。',
-  errInvalidEnvironment: '環境名は空にできず、イメージレジストリの種類は harbor/acr/dockerhub/custom である必要があります。',
   errCredentialNotFound: '参照されているボールトの認証情報が存在しません。選び直して再試行してください。',
   errVaultUnconfigured: 'ボールトに master key が設定されていないため、secret 認証情報を参照できません。',
 }

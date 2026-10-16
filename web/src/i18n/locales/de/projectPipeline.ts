@@ -9,7 +9,6 @@ export default {
   tabBuild: 'Build',
   tabVars: 'Variablen & Cache',
   tabTriggers: 'Auslöser-Einstellungen',
-  tabEnvs: 'Umgebungen & Anmeldedaten',
   tabStripAria: 'Tabs der Pipeline-Konfiguration',
 
   // ─── Pipeline as Code (GitOps · FR-8-12) ────────────────────────
@@ -80,7 +79,6 @@ export default {
   errDuplicateId: 'Doppelte Phasen- oder Job-ID. Bitte entfernen Sie Duplikate und versuchen Sie es erneut.',
   errInvalidBuild: 'Das Build-Modell muss dockerfile/toolchain sein und der Artefakttyp muss image/jar/dist sein.',
   errInvalidVar: 'Der Variablenschlüssel darf nicht leer sein und muss innerhalb seines Geltungsbereichs eindeutig sein; secret-Variablen erfordern eine Vault-Anmeldedaten.',
-  errInvalidEnvironment: 'Der Umgebungsname darf nicht leer sein und der Image-Registry-Typ muss harbor/acr/dockerhub/custom sein.',
   errCredentialNotFound: 'Die referenzierte Vault-Anmeldedaten existiert nicht. Bitte erneut auswählen und versuchen.',
   errVaultUnconfigured: 'Im Vault ist kein Master Key konfiguriert, daher können secret-Anmeldedaten nicht referenziert werden.',
 }

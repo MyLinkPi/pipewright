@@ -37,7 +37,6 @@ import (
 	"github.com/huangchengsir/pipewright/internal/dagrun"
 	"github.com/huangchengsir/pipewright/internal/deploy"
 	"github.com/huangchengsir/pipewright/internal/dnsprovider"
-	"github.com/huangchengsir/pipewright/internal/environments"
 	"github.com/huangchengsir/pipewright/internal/httpapi"
 	"github.com/huangchengsir/pipewright/internal/identity"
 	"github.com/huangchengsir/pipewright/internal/labels"
@@ -51,9 +50,7 @@ import (
 	"github.com/huangchengsir/pipewright/internal/pacloader"
 	"github.com/huangchengsir/pipewright/internal/pipeline"
 	"github.com/huangchengsir/pipewright/internal/platformhttps"
-	"github.com/huangchengsir/pipewright/internal/previewenv"
 	"github.com/huangchengsir/pipewright/internal/project"
-	"github.com/huangchengsir/pipewright/internal/promotion"
 	"github.com/huangchengsir/pipewright/internal/prstatus"
 	"github.com/huangchengsir/pipewright/internal/registryhub"
 	"github.com/huangchengsir/pipewright/internal/repocache"
@@ -191,10 +188,7 @@ func main() {
 
 	// 装配运行服务(Story 3.1):本期桩 runner 跑占位步骤打通状态机;真实构建/部署=3-3/4-x。
 	// worker pool 在 aiSvc 装配后创建(以便注入 best-effort 自动诊断钩子,Story 7.2)。
-	// 注入分支→环境解析器(#56):手动/定时/串联触发未显式带环境时,据项目分支映射补解析
-	// 环境 + 目标服务器,与 webhook 接收路径一致(否则 build_image 不知推哪个 registry、
-	// 部署节点 pull 不到镜像)。复用 trigger 包同一套 matchBranch glob。
-	runSvc := run.New(st.DB, run.WithEnvResolver(trigger.NewEnvironmentResolver(st.DB)))
+	runSvc := run.New(st.DB)
 	// DORA 指标只读聚合(FR-8-15):同一 *service 实现暴露为 MetricsService,无新连接/新表。
 	doraMetricsSvc := run.NewMetricsService(runSvc)
 
@@ -202,14 +196,6 @@ func main() {
 	// 协调器为进程内(零持久状态);记录落 run_approvals 供 UI/审计/重启清理。
 	approvalCoord := approval.New()
 	approvalStore := approval.NewStore(st.DB)
-
-	// 装配环境晋级流持久层(Story 8-7 / FR-8-7):环境链 + 逐环境变量/密钥 + 晋级记录。
-	// 晋级审批门复用上面的 approvalCoord/approvalStore(不另起协调器)。
-	promotionStore := promotion.NewStore(st.DB)
-
-	// 装配「环境一等公民」只读聚合服务(对标 GitLab environments):按环境聚合部署历史 +
-	// 一键回滚定位。纯查询既有表(pipeline_runs + deploy_targets + run_artifacts),零迁移、无副作用。
-	environmentsSvc := environments.NewService(st.DB)
 
 	// 重启清理:进程重启会丢失内存等待者,把残留 waiting_approval 运行清为 failed(孤儿不可恢复)。
 	if n, err := runSvc.FailOrphanedRuns(context.Background()); err != nil {
@@ -548,17 +534,6 @@ func main() {
 		}})
 	}
 
-	// Per-PR 预览环境(R4 E4.1 · 差异化王牌):某 PR 运行成功部署 → 在项目预览配置的根域下分配
-	// pr-<n>-<proj> 预览域名(Caddy 反代下线后只建 DNS A 记录)。allocator 复用 dnsSvc.AllocateFQDN;
-	// (allocator/recordDeleter 经适配器晚绑,避免 previewenv import dnsprovider 形成环。)
-	// 根域校验复用 dnsprovider.ValidBaseDomain;根区覆盖校验复用 dnsSvc.ZoneCovers(多根区模型)。
-	// 优雅降级:未配 allocator / 项目未开启 → provision no-op。
-	previewSvc := previewenv.New(st.DB)
-	previewSvc.SetAllocator(&previewAllocator{dns: dnsSvc})
-	previewSvc.SetRecordDeleter(&previewRecordDeleter{dns: dnsSvc})
-	previewSvc.SetZoneCoverer(&previewZoneCoverer{dns: dnsSvc})
-	previewSvc.SetBaseDomainValidator(dnsprovider.ValidBaseDomain)
-
 	// 应用商店(DPanel 式一键部署):模板 CRUD + 内置 seed(幂等;失败仅记日志,不阻断启动)。
 	appStoreSvc := appstore.New(st.DB)
 	if err := appStoreSvc.EnsureBuiltins(context.Background()); err != nil {
@@ -606,15 +581,6 @@ func main() {
 	terminalHook = func(ctx context.Context, runID, finalStatus string) {
 		priorTerminal(ctx, runID, finalStatus)
 		chainHook(ctx, runID, finalStatus)
-	}
-
-	// Per-PR 预览环境分配钩子(R4 E4.1):run 落 success 且属于某 PR、其项目开启预览 → 分配预览域名。
-	// best-effort + recover-safe:任何前置不满足 / 分配失败一律静默或仅记日志,绝不阻断 run 终态。
-	previewHook := httpapi.NewPreviewProvisionHook(runSvc, previewSvc, targetSvc)
-	beforePreview := terminalHook
-	terminalHook = func(ctx context.Context, runID, finalStatus string) {
-		beforePreview(ctx, runID, finalStatus)
-		previewHook(ctx, runID, finalStatus)
 	}
 
 	// 并发/队列控制(FR-8-10):全局上限经 PIPEWRIGHT_MAX_CONCURRENT 设置(默认 = worker 数);
@@ -690,28 +656,6 @@ func main() {
 	}
 
 	// Per-PR 预览环境自动回收器(R4 E4.1 收尾):按固定间隔遍历 active 预览环境,查其 PR 是否
-	// 已 closed/merged,**确证已终结**才回收(删路由 + 标记 reclaimed)。安全铁律:一切不确定不回收
-	// (API 错误 / 缺凭据 / 未知平台 → unknown → 跳过)。间隔经 PIPEWRIGHT_PREVIEW_SWEEP_INTERVAL
-	// 覆盖(Go duration,如 "10m";默认 5m);PR 状态读取的 API base 复用 PR 回写的同名 env 覆盖。
-	// checker 复用项目凭据(vault)+ 仓库地址识别 GitHub/Gitee;无凭据/未知平台时自动降级为不回收。
-	previewSweepInterval := 5 * time.Minute
-	if v := strings.TrimSpace(os.Getenv("PIPEWRIGHT_PREVIEW_SWEEP_INTERVAL")); v != "" {
-		if d, perr := time.ParseDuration(v); perr == nil && d > 0 {
-			previewSweepInterval = d
-		} else {
-			log.Printf("[previewenv] 警告:PIPEWRIGHT_PREVIEW_SWEEP_INTERVAL=%q 非法(须为正 Go duration),用默认 %s", v, previewSweepInterval)
-		}
-	}
-	previewChecker := previewenv.NewPRStateChecker(
-		&previewRepoResolver{projects: projectSvc, vault: credVault},
-		&http.Client{Timeout: 10 * time.Second},
-	).WithBaseURLs(
-		strings.TrimSpace(os.Getenv("PIPEWRIGHT_PR_STATUS_GITHUB_BASE")),
-		strings.TrimSpace(os.Getenv("PIPEWRIGHT_PR_STATUS_GITEE_BASE")))
-	previewSweeper := previewenv.NewSweeper(previewSvc, previewChecker, previewSweepInterval)
-	previewSweeper.Start(context.Background())
-	log.Printf("[previewenv] 预览环境自动回收器已启动(每 %s 一扫;仅回收确证 PR 已关闭/合并的环境)", previewSweepInterval)
-
 	// 装配只读源码读取器(Story 3.6;FR-4 预埋):go-git 浅克隆读 tree/blob;严格 SSRF 收口;
 	// 克隆失败优雅降级(不致命)。无 init 副作用/不驻留。
 	sourceReader := httpapi.NewSourceReader()
@@ -763,7 +707,7 @@ func main() {
 
 	srv := &http.Server{
 		Addr:              cfg.Addr,
-		Handler:           httpapi.New(webFS, authSvc, httpapi.WithVault(credVault), httpapi.WithProjects(projectSvc), httpapi.WithTriggers(triggerSvc), httpapi.WithPipelines(pipelineSvc), httpapi.WithPipelineSettings(pipelineSettingsSvc), httpapi.WithRuns(runSvc, pool), httpapi.WithWebhooks(webhookReceiver), httpapi.WithAudit(auditRec), httpapi.WithAccount(authSvc), httpapi.WithIdentity(identitySvc), httpapi.WithAISettings(aiSvc), httpapi.WithAIGenerate(repoAnalyzer), httpapi.WithRunDiff(runDiffer), httpapi.WithSource(sourceReader), httpapi.WithRefs(refsLister), httpapi.WithArtifactStore(artStore), httpapi.WithServers(targetSvc), httpapi.WithLabels(labelsSvc), httpapi.WithServerCommands(serverCmdSvc), httpapi.WithRegistryHub(registryHubSvc), httpapi.WithRunnerConfig(runnerSvc), httpapi.WithDeploy(deploySvc), httpapi.WithSpecLoader(resumeSpecLoader), httpapi.WithNotifications(notifySvc), httpapi.WithRetention(retentionSvc), httpapi.WithDNSProviders(dnsSvc), httpapi.WithObjectStores(objectStoreSvc), httpapi.WithCertMgmt(certSvc), httpapi.WithPlatformHTTPS(platformHTTPSSvc), httpapi.WithSystemConfig(sysCfgSvc), httpapi.WithPreviewEnvs(previewSvc), httpapi.WithServiceReg(serviceRegSvc), httpapi.WithAppStore(appStoreSvc), httpapi.WithDiagnosisFeedback(feedbackSvc), httpapi.WithAnomaly(anomalySvc), httpapi.WithAnomalyConfig(int(anomalyInterval.Seconds()), int(anomalyCooldown.Seconds())), httpapi.WithMetricsHistory(metricsHist), httpapi.WithSecretSource(secretSrc), httpapi.WithOAuth(oauthSvc), httpapi.WithCron(cronSvc), httpapi.WithChain(chainSvc), httpapi.WithApprovals(approvalCoord, approvalStore), httpapi.WithApprovalLinks(approvalSigner), httpapi.WithConcurrency(concurrencySvc), httpapi.WithParameters(parameterSvc), httpapi.WithPromotion(promotionStore), httpapi.WithEnvironments(environmentsSvc), httpapi.WithDoraMetrics(doraMetricsSvc), httpapi.WithTemplates(templateSvc), httpapi.WithVariableGroups(varGroupSvc), httpapi.WithCustomNodes(customNodeSvc), httpapi.WithOpsChat(opsChatSvc)),
+		Handler:           httpapi.New(webFS, authSvc, httpapi.WithVault(credVault), httpapi.WithProjects(projectSvc), httpapi.WithTriggers(triggerSvc), httpapi.WithPipelines(pipelineSvc), httpapi.WithPipelineSettings(pipelineSettingsSvc), httpapi.WithRuns(runSvc, pool), httpapi.WithWebhooks(webhookReceiver), httpapi.WithAudit(auditRec), httpapi.WithAccount(authSvc), httpapi.WithIdentity(identitySvc), httpapi.WithAISettings(aiSvc), httpapi.WithAIGenerate(repoAnalyzer), httpapi.WithRunDiff(runDiffer), httpapi.WithSource(sourceReader), httpapi.WithRefs(refsLister), httpapi.WithArtifactStore(artStore), httpapi.WithServers(targetSvc), httpapi.WithLabels(labelsSvc), httpapi.WithServerCommands(serverCmdSvc), httpapi.WithRegistryHub(registryHubSvc), httpapi.WithRunnerConfig(runnerSvc), httpapi.WithDeploy(deploySvc), httpapi.WithSpecLoader(resumeSpecLoader), httpapi.WithNotifications(notifySvc), httpapi.WithRetention(retentionSvc), httpapi.WithDNSProviders(dnsSvc), httpapi.WithObjectStores(objectStoreSvc), httpapi.WithCertMgmt(certSvc), httpapi.WithPlatformHTTPS(platformHTTPSSvc), httpapi.WithSystemConfig(sysCfgSvc), httpapi.WithServiceReg(serviceRegSvc), httpapi.WithAppStore(appStoreSvc), httpapi.WithDiagnosisFeedback(feedbackSvc), httpapi.WithAnomaly(anomalySvc), httpapi.WithAnomalyConfig(int(anomalyInterval.Seconds()), int(anomalyCooldown.Seconds())), httpapi.WithMetricsHistory(metricsHist), httpapi.WithSecretSource(secretSrc), httpapi.WithOAuth(oauthSvc), httpapi.WithCron(cronSvc), httpapi.WithChain(chainSvc), httpapi.WithApprovals(approvalCoord, approvalStore), httpapi.WithApprovalLinks(approvalSigner), httpapi.WithConcurrency(concurrencySvc), httpapi.WithParameters(parameterSvc), httpapi.WithDoraMetrics(doraMetricsSvc), httpapi.WithTemplates(templateSvc), httpapi.WithVariableGroups(varGroupSvc), httpapi.WithCustomNodes(customNodeSvc), httpapi.WithOpsChat(opsChatSvc)),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		// WriteTimeout 置 0:SSE 长连接(/api/runs/{id}/events)不可被写超时切断;
@@ -856,7 +800,6 @@ func main() {
 	cronScheduler.Stop()
 	retentionSweeper.Stop()
 	registryHubSweeper.Stop()
-	previewSweeper.Stop()
 	pool.Stop(shutdownCtx)
 	log.Printf("[run] worker pool stopped")
 }
@@ -1097,19 +1040,6 @@ func (r serverAddrResolver) resolve(ctx context.Context, serverID string) (strin
 	return addrs[0], nil
 }
 
-// previewAllocator 适配 previewenv.Allocator:把「为指定 FQDN 建 A 记录」下沉到
-// dnsprovider.AllocateFQDN(R4 E4.1 预览域名 pr-<n>-<proj>.base)。避免 previewenv import dnsprovider 形成环。
-type previewAllocator struct{ dns dnsprovider.Service }
-
-func (a *previewAllocator) Allocate(ctx context.Context, in previewenv.AllocateInput) error {
-	_, err := a.dns.AllocateFQDN(ctx, dnsprovider.AllocateInput{
-		ProviderID: in.ProviderID,
-		HostIP:     in.HostIP,
-		Subdomain:  in.Subdomain,
-	})
-	return err
-}
-
 // platformCertSource 适配 platformhttps.CertSource:证书元数据/PEM 解密下沉 certmgmt
 // (PEM 仅进程内传递,绝不过 HTTP;晚绑防 platformhttps 直接依赖 certmgmt)。
 type platformCertSource struct{ cm certmgmt.Service }
@@ -1262,39 +1192,3 @@ func (a *certSinkAdapter) ClearCert(ctx context.Context, domainID string) error 
 	return a.sr.ClearCert(ctx, domainID)
 }
 
-// previewRecordDeleter 适配 previewenv.RecordDeleter:回收预览环境时删该子域名的 DNS A 记录。
-type previewRecordDeleter struct{ dns dnsprovider.Service }
-
-func (d *previewRecordDeleter) DeleteRecord(ctx context.Context, providerID, fqdn string) error {
-	return d.dns.DeleteSubdomainRecord(ctx, providerID, fqdn)
-}
-
-// previewZoneCoverer 适配 previewenv.ZoneCoverer:预览配置的 baseDomain 须落在所选提供商
-// 托管的某个根区下(多根区模型)。复用 dnsSvc.ZoneCovers。
-type previewZoneCoverer struct{ dns dnsprovider.Service }
-
-func (c *previewZoneCoverer) ZoneCovers(ctx context.Context, providerID, fqdn string) (bool, bool, error) {
-	return c.dns.ZoneCovers(ctx, providerID, fqdn)
-}
-
-// previewRepoResolver 适配 previewenv.ProjectRepoResolver:把项目 id 解析为「仓库地址 + 平台令牌」,
-// 供自动回收 sweeper 据此查 PR 状态。token 经 vault 即取即用,绝不进 URL/日志。
-// 避免 previewenv import project/vault 形成环。
-type previewRepoResolver struct {
-	projects project.Service
-	vault    vault.Vault
-}
-
-func (r *previewRepoResolver) Resolve(ctx context.Context, projectID string) (string, string, error) {
-	proj, err := r.projects.Get(ctx, projectID)
-	if err != nil {
-		return "", "", err
-	}
-	token := ""
-	if r.vault != nil && strings.TrimSpace(proj.CredentialID) != "" {
-		if tok, terr := r.vault.Reveal(proj.CredentialID); terr == nil {
-			token = tok
-		}
-	}
-	return proj.RepoURL, token, nil
-}

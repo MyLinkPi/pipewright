@@ -97,36 +97,6 @@ volumes:
 		Builtin: true,
 	},
 	{
-		Name:        "minio",
-		DisplayName: "MinIO",
-		Description: "S3 兼容对象存储;API 与控制台两个端口,数据落具名卷 minio-data。",
-		Icon:        "🪣",
-		ComposeYAML: `services:
-  minio:
-    image: minio/minio:{{version}}
-    restart: unless-stopped
-    command: ["server", "/data", "--console-address", ":9001"]
-    environment:
-      MINIO_ROOT_USER: {{root_user}}
-      MINIO_ROOT_PASSWORD: {{root_password}}
-    ports:
-      - "{{api_port}}:9000"
-      - "{{console_port}}:9001"
-    volumes:
-      - minio-data:/data
-volumes:
-  minio-data:
-`,
-		Params: []ParamSpec{
-			{Name: "version", Label: "镜像版本", Type: ParamTypeString, Default: "latest"},
-			{Name: "root_user", Label: "root 用户名", Type: ParamTypeString, Default: "minioadmin"},
-			{Name: "root_password", Label: "root 密码", Type: ParamTypeSecret, Required: true, AutoGenerate: true},
-			{Name: "api_port", Label: "API 端口", Type: ParamTypeInt, Default: "9000"},
-			{Name: "console_port", Label: "控制台端口", Type: ParamTypeInt, Default: "9001"},
-		},
-		Builtin: true,
-	},
-	{
 		Name:        "rustfs",
 		DisplayName: "RustFS",
 		Description: "Rust 高性能 S3 兼容对象存储(含控制台);部署成功后自动登记到「设置 → 对象存储」。",
@@ -280,3 +250,7 @@ volumes:
 		Builtin: true,
 	},
 }
+
+// retiredBuiltins 是已从商店下架的内置模板名:EnsureBuiltins 时对库中的内置行删除,
+// 使老环境升级后不再展示(如 MinIO 官方已停止维护社区版镜像);同名自定义模板不受影响。
+var retiredBuiltins = []string{"minio"}

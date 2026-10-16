@@ -19,17 +19,12 @@ const Runs        = () => import('../views/Runs.vue')
 const Library     = () => import('../views/Library.vue')
 // FR-8-15: DORA 四指标仪表盘(部署频率 / 前置时长 / 变更失败率 / MTTR;只读聚合)
 const DoraDashboard = () => import('../views/DoraDashboard.vue')
-// 环境一等公民:按环境聚合部署历史 + 一键回滚(对标 GitLab environments;只读聚合 + 复用部署链路回滚)
-const Environments = () => import('../views/Environments.vue')
 // Story 6-1: multi-host status overview (server-layer CPU/memory/disk metrics, FR-15)
 const ServerStatus = () => import('../views/ServerStatus.vue')
 // 容器管理:跨所有已登记服务器聚合容器(docker ps over SSH)+ 行内生命周期操作
 const Containers = () => import('../views/Containers.vue')
 // R2 / E2.4: 证书总览大盘(跨主机跨域名一张表 + 到期高亮;只读聚合)
 const Certificates = () => import('../views/Certificates.vue')
-// R4 / E4.1: PR 预览环境大盘(临时环境列表 + 手动回收;对标 Vercel preview deployments)
-const Previews = () => import('../views/Previews.vue')
-
 // 服务注册网关(nginx):基域/泛域名证书/子域名服务(DPanel 式容器面板的配套入口)。
 const ServiceRegistry = () => import('../views/ServiceRegistry.vue')
 // 应用商店:模板参数一键部署(复用 Stacks 链路)。
@@ -152,8 +147,6 @@ const router = createRouter({
         // FR-8-15: DORA 指标仪表盘(只读聚合;projectId / window 经 query 即状态)
         { path: 'metrics/dora', name: 'dora', component: DoraDashboard, meta: { title: 'DORA 指标' } },
 
-        // 环境一等公民:按环境聚合部署历史 + 一键回滚。projectId 落 query(URL 即状态)。
-        { path: 'environments', name: 'environments', component: Environments, meta: { title: '环境部署历史' } },
         // 顶层「服务器」占位页 → 重定向到真实的多机状态页(登记在 /settings/servers)。
         { path: 'servers', name: 'servers', redirect: { name: 'server-status' } },
         // Story 6-1: multi-host status overview (server-layer metrics, FR-15)
@@ -168,8 +161,6 @@ const router = createRouter({
         { path: 'certificates', name: 'cert-mgmt', component: Certificates, meta: { title: '证书管理' } },
         // 旧「证书总览」(/proxy)书签兼容:重定向到证书管理。
         { path: 'proxy', redirect: { name: 'cert-mgmt' } },
-        // R4 / E4.1: PR 预览环境大盘(临时环境列表 + 手动回收)
-        { path: 'previews', name: 'previews', component: Previews, meta: { title: '预览环境' } },
         // Story 6-5: configurable anomaly detection & alerts (FR-23)
         { path: 'anomaly', name: 'anomaly', component: AnomalyDetection, meta: { title: '异常检测' } },
         // 顶层「通知」占位页 → 重定向到真实的通知配置页。

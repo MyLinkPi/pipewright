@@ -15,8 +15,6 @@ import {
   Bell,
   Settings,
   Stack2,
-  Rocket,
-  Browser,
   World,
   Apps,
   Users,
@@ -79,7 +77,6 @@ const adminNavItems: NavItem[] = [
   // FR-8-13: 复用库(流水线模板 + 变量组)。
   { name: 'library',       to: '/library',       icon: Stack2,     labelKey: 'nav.library',       ariaKey: 'nav.library' },
   // 环境一等公民:按环境聚合的部署历史 + 一键回滚(对标 GitLab environments)。
-  { name: 'environments',  to: '/environments',  icon: Rocket,     labelKey: 'nav.environments',  ariaKey: 'nav.ariaEnvironments' },
   // FR-8-15: DORA 四指标仪表盘(交付效能;只读聚合)。
   { name: 'dora',          to: '/metrics/dora',  icon: ChartBar,   labelKey: 'nav.dora',          ariaKey: 'nav.dora' },
   // Story 6-1: 多机状态总览(服务器层指标 FR-15);登记在 设置 → 服务器。
@@ -93,7 +90,6 @@ const adminNavItems: NavItem[] = [
   // 应用商店:MySQL/Redis 等模板参数一键部署(DPanel 式)。
   { name: 'app-store',     to: '/app-store',     icon: Apps,       labelKey: 'nav.appStore',      ariaKey: 'nav.appStore' },
   // R4 / E4.1: PR 预览环境大盘(临时环境列表 + 手动回收)。
-  { name: 'previews',      to: '/previews',      icon: Browser,    labelKey: 'nav.previews',      ariaKey: 'nav.previews' },
   // Story 6-5: configurable anomaly detection & alerts (FR-23)
   { name: 'anomaly',       to: '/anomaly',       icon: AlertTriangle, labelKey: 'nav.anomaly',    ariaKey: 'nav.anomaly' },
   { name: 'notifications', to: '/settings/notifications', icon: Bell, labelKey: 'nav.notifications', ariaKey: 'nav.notifications' },

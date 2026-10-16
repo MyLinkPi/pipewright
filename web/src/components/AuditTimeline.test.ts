@@ -33,13 +33,11 @@ describe('AuditTimeline action 文案', () => {
       entry({ id: 'e1', action: 'credential_reveal', targetId: 'cred-9', detail: { name: '部署密钥' } }),
       entry({ id: 'e2', action: 'platformhttps.settings.save', targetId: 'pipe.example.com', detail: { ok: true } }),
       entry({ id: 'e3', action: 'certmgmt.cert.renew', targetId: 'cert-1', detail: { primaryDomain: 'example.com' } }),
-      entry({ id: 'e4', action: 'environment.rollback', targetId: 'proj-1', detail: { environment: 'staging' } }),
     ])
     const txt = w.text()
     expect(txt).toContain('查看凭据 部署密钥')
     expect(txt).toContain('修改平台 HTTPS pipe.example.com')
     expect(txt).toContain('续期证书 example.com')
-    expect(txt).toContain('回滚环境 staging')
     expect(txt).not.toContain('credential_reveal')
     expect(txt).not.toContain('platformhttps.settings.save')
   })

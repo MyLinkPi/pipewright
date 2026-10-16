@@ -43,21 +43,6 @@ type buildConfigDTO struct {
 	Cache        cacheDTO      `json:"cache"`
 }
 
-type imageRegistryDTO struct {
-	Type             string `json:"type"`
-	URL              string `json:"url"`
-	CredentialID     string `json:"credentialId,omitempty"`
-	MaskedCredential string `json:"maskedCredential,omitempty"`
-}
-
-type environmentDTO struct {
-	ID              string           `json:"id"`
-	Name            string           `json:"name"`
-	TargetServerIDs []string         `json:"targetServerIds"`
-	EnvVars         []buildVarDTO    `json:"envVars"`
-	ImageRegistry   imageRegistryDTO `json:"imageRegistry"`
-}
-
 // pipelineStepDTO 是一条自定义脚本步骤的契约 DTO(Epic 8 · Story 8-1;冻结)。
 // secret env 项绝无明文,仅 credentialId + maskedValue。
 type pipelineStepDTO struct {
@@ -71,10 +56,9 @@ type pipelineStepDTO struct {
 }
 
 type settingsDTO struct {
-	Build        buildConfigDTO    `json:"build"`
-	Environments []environmentDTO  `json:"environments"`
-	Steps        []pipelineStepDTO `json:"steps"`
-	UpdatedAt    string            `json:"updatedAt"`
+	Build     buildConfigDTO    `json:"build"`
+	Steps     []pipelineStepDTO `json:"steps"`
+	UpdatedAt string            `json:"updatedAt"`
 }
 
 // toBuildVarDTOs 把领域变量转 DTO(secret 项只暴露 credentialId + maskedValue,绝无明文)。
@@ -109,26 +93,6 @@ func toSettingsDTO(st *pipeline.Settings) settingsDTO {
 		Cache:          cacheDTO{Enabled: st.Build.Cache.Enabled, Paths: paths},
 	}
 
-	envs := make([]environmentDTO, 0, len(st.Environments))
-	for _, e := range st.Environments {
-		ids := e.TargetServerIDs
-		if ids == nil {
-			ids = []string{}
-		}
-		envs = append(envs, environmentDTO{
-			ID:              e.ID,
-			Name:            e.Name,
-			TargetServerIDs: ids,
-			EnvVars:         toBuildVarDTOs(e.EnvVars),
-			ImageRegistry: imageRegistryDTO{
-				Type:             e.ImageRegistry.Type,
-				URL:              e.ImageRegistry.URL,
-				CredentialID:     e.ImageRegistry.CredentialID,
-				MaskedCredential: e.ImageRegistry.MaskedCredential,
-			},
-		})
-	}
-
 	steps := make([]pipelineStepDTO, 0, len(st.Steps))
 	for _, s := range st.Steps {
 		cmds := s.Commands
@@ -147,10 +111,9 @@ func toSettingsDTO(st *pipeline.Settings) settingsDTO {
 	}
 
 	return settingsDTO{
-		Build:        build,
-		Environments: envs,
-		Steps:        steps,
-		UpdatedAt:    st.UpdatedAt.UTC().Format(time.RFC3339),
+		Build:     build,
+		Steps:     steps,
+		UpdatedAt: st.UpdatedAt.UTC().Format(time.RFC3339),
 	}
 }
 
@@ -167,8 +130,6 @@ func writeSettingsError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusUnprocessableEntity, "invalid_build", "构建模型必须为 dockerfile/toolchain,产物类型必须为 image/jar/dist")
 	case errors.Is(err, pipeline.ErrInvalidVar):
 		writeError(w, http.StatusUnprocessableEntity, "invalid_var", "变量键不能为空且同作用域内不可重复,secret 项须指定保险库凭据")
-	case errors.Is(err, pipeline.ErrInvalidEnvironment):
-		writeError(w, http.StatusUnprocessableEntity, "invalid_environment", "环境名不能为空,镜像仓库类型须为 harbor/acr/dockerhub/custom")
 	case errors.Is(err, pipeline.ErrInvalidStep):
 		writeError(w, http.StatusUnprocessableEntity, "invalid_step", "脚本步骤名不能为空,type 须为 script,且必须指定 image 与至少一条命令")
 	default:
@@ -177,7 +138,7 @@ func writeSettingsError(w http.ResponseWriter, err error) {
 }
 
 // makeGetPipelineSettingsHandler 返回 GET /api/projects/{id}/pipeline/settings handler。
-// 首次访问无配置 → 惰性生成默认(模型 dockerfile/产物 image/空变量/空环境)并返回;secret 仅掩码。
+// 首次访问无配置 → 惰性生成默认(模型 dockerfile/产物 image/空变量)并返回;secret 仅掩码。
 func makeGetPipelineSettingsHandler(svc pipeline.SettingsService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if svc == nil {
@@ -195,7 +156,7 @@ func makeGetPipelineSettingsHandler(svc pipeline.SettingsService) http.HandlerFu
 }
 
 // makeSavePipelineSettingsHandler 返回 PUT /api/projects/{id}/pipeline/settings handler。
-// 收 {build, environments};secret 项只传 {key,secret:true,credentialId}(不传明文/掩码)。
+// 收 {build, steps};secret 项只传 {key,secret:true,credentialId}(不传明文/掩码)。
 // 服务端规范化 → 校验 → 持久化(只存引用,绝无明文 secret)→ 回读返回(secret 回掩码)。
 // 校验失败 → 422 定位到项;请求体限 256KB。
 func makeSavePipelineSettingsHandler(svc pipeline.SettingsService) http.HandlerFunc {
@@ -224,17 +185,6 @@ func makeSavePipelineSettingsHandler(svc pipeline.SettingsService) http.HandlerF
 					Paths   []string `json:"paths"`
 				} `json:"cache"`
 			} `json:"build"`
-			Environments []struct {
-				ID              string   `json:"id"`
-				Name            string   `json:"name"`
-				TargetServerIDs []string `json:"targetServerIds"`
-				EnvVars         []reqVar `json:"envVars"`
-				ImageRegistry   struct {
-					Type         string `json:"type"`
-					URL          string `json:"url"`
-					CredentialID string `json:"credentialId"`
-				} `json:"imageRegistry"`
-			} `json:"environments"`
 			Steps []struct {
 				ID       string   `json:"id"`
 				Name     string   `json:"name"`
@@ -263,21 +213,6 @@ func makeSavePipelineSettingsHandler(svc pipeline.SettingsService) http.HandlerF
 			Cache:        pipeline.Cache{Enabled: req.Build.Cache.Enabled, Paths: req.Build.Cache.Paths},
 		}
 
-		envs := make([]pipeline.Environment, 0, len(req.Environments))
-		for _, e := range req.Environments {
-			envs = append(envs, pipeline.Environment{
-				ID:              e.ID,
-				Name:            e.Name,
-				TargetServerIDs: e.TargetServerIDs,
-				EnvVars:         toDomainVars(e.EnvVars),
-				ImageRegistry: pipeline.ImageRegistry{
-					Type:         e.ImageRegistry.Type,
-					URL:          e.ImageRegistry.URL,
-					CredentialID: e.ImageRegistry.CredentialID,
-				},
-			})
-		}
-
 		steps := make([]pipeline.PipelineStep, 0, len(req.Steps))
 		for _, s := range req.Steps {
 			steps = append(steps, pipeline.PipelineStep{
@@ -291,7 +226,7 @@ func makeSavePipelineSettingsHandler(svc pipeline.SettingsService) http.HandlerF
 			})
 		}
 
-		st, err := svc.Save(r.Context(), id, pipeline.SettingsInput{Build: build, Environments: envs, Steps: steps})
+		st, err := svc.Save(r.Context(), id, pipeline.SettingsInput{Build: build, Steps: steps})
 		if err != nil {
 			writeSettingsError(w, err)
 			return

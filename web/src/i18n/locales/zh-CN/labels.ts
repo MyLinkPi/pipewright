@@ -53,14 +53,8 @@ export default {
   paramNotInChoice: '参数「{label}」不在可选项中',
 
   // ─── 晋级状态 ───
-  promotionPromoted: '已晋级',
-  promotionPending: '待审批',
-  promotionRejected: '已拒绝',
 
   // ─── 环境名校验 ───
-  envNameEmpty: '环境名不能为空',
-  envNameInvalid: '环境名只能含字母、数字、连字符、下划线',
-  envNameTooLong: '环境名不能超过 64 个字符',
 
   // ─── 并发上限 ───
   concurrencyNotInteger: '并发上限须为整数',

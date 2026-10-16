@@ -97,11 +97,6 @@ func init() {
 			"ko": "파일을 찾을 수 없습니다", "es": "Archivo no encontrado",
 			"fr": "Fichier introuvable", "de": "Datei nicht gefunden",
 		},
-		"晋级审批被拒绝": {
-			"zh-HK": "晉級審批被拒絕", "en": "Promotion approval was rejected", "ja": "昇格の承認が却下されました",
-			"ko": "승격 승인이 거부되었습니다", "es": "La aprobación de promoción fue rechazada",
-			"fr": "L'approbation de promotion a été rejetée", "de": "Die Freigabe der Promotion wurde abgelehnt",
-		},
 		"服务器名称不能为空": {
 			"zh-HK": "伺服器名稱不能為空", "en": "Server name must not be empty", "ja": "サーバー名を空にすることはできません",
 			"ko": "서버 이름은 비워 둘 수 없습니다", "es": "El nombre del servidor no puede estar vacío",

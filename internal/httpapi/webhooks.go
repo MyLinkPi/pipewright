@@ -23,7 +23,7 @@ func NewRunCreator(svc run.Service) trigger.RunCreator {
 }
 
 // runCreatorAdapter 把 run.Service 适配为 trigger.RunCreator:
-// 注入解析出的环境/目标服务器为运行内部元数据(供 Epic 4),并返回新运行 id。
+// 以 webhook 触发类型创建运行,并返回新运行 id。
 type runCreatorAdapter struct {
 	svc run.Service
 }
@@ -31,12 +31,10 @@ type runCreatorAdapter struct {
 // CreateWebhookRun 实现 trigger.RunCreator:以 webhook 触发类型创建运行。
 func (a runCreatorAdapter) CreateWebhookRun(ctx context.Context, projectID string, in trigger.RunRequest) (string, error) {
 	r, err := a.svc.Create(ctx, projectID, run.Trigger{
-		Type:                    run.TriggerWebhook,
-		Branch:                  in.Branch,
-		Commit:                  in.Commit,
-		Actor:                   in.Actor,
-		ResolvedEnvironment:     in.ResolvedEnvironment,
-		ResolvedTargetServerIDs: in.ResolvedTargetServerIDs,
+		Type:   run.TriggerWebhook,
+		Branch: in.Branch,
+		Commit: in.Commit,
+		Actor:  in.Actor,
 	})
 	if err != nil {
 		return "", err

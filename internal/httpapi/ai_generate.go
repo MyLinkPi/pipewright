@@ -57,17 +57,10 @@ type aiProposalBuildDTO struct {
 	DockerfilePath string         `json:"dockerfilePath"`
 }
 
-type aiBranchMappingDTO struct {
-	ID            string `json:"id"`
-	BranchPattern string `json:"branchPattern"`
-	Environment   string `json:"environment"`
-}
-
 type aiProposalDTO struct {
-	Stages         []aiProposalStageDTO `json:"stages"`
-	Build          aiProposalBuildDTO   `json:"build"`
-	BranchMappings []aiBranchMappingDTO `json:"branchMappings"`
-	Rationale      string               `json:"rationale"`
+	Stages    []aiProposalStageDTO `json:"stages"`
+	Build     aiProposalBuildDTO   `json:"build"`
+	Rationale string               `json:"rationale"`
 }
 
 // aiGenerateDTO 是 generate 端点响应(冻结契约:available/reason/analysis/proposal)。
@@ -78,12 +71,11 @@ type aiGenerateDTO struct {
 	Proposal  *aiProposalDTO `json:"proposal"`
 }
 
-// aiApplyDTO 是 apply 端点响应(冻结契约:applied{spec,settings,triggers})。
+// aiApplyDTO 是 apply 端点响应(冻结契约:applied{spec,settings})。
 type aiApplyDTO struct {
 	Applied struct {
 		Spec     bool `json:"spec"`
 		Settings bool `json:"settings"`
-		Triggers bool `json:"triggers"`
 	} `json:"applied"`
 }
 
@@ -115,10 +107,6 @@ func toAIProposalDTO(p *ai.Proposal) *aiProposalDTO {
 		}
 		stages = append(stages, aiProposalStageDTO{ID: st.ID, Name: st.Name, Kind: st.Kind, Jobs: jobs})
 	}
-	mappings := make([]aiBranchMappingDTO, 0, len(p.BranchMappings))
-	for _, m := range p.BranchMappings {
-		mappings = append(mappings, aiBranchMappingDTO{ID: m.ID, BranchPattern: m.BranchPattern, Environment: m.Environment})
-	}
 	return &aiProposalDTO{
 		Stages: stages,
 		Build: aiProposalBuildDTO{
@@ -127,7 +115,6 @@ func toAIProposalDTO(p *ai.Proposal) *aiProposalDTO {
 			ArtifactType:   p.Build.ArtifactType,
 			DockerfilePath: p.Build.DockerfilePath,
 		},
-		BranchMappings: mappings,
 		Rationale:      p.Rationale,
 	}
 }
@@ -139,7 +126,6 @@ type aiGenerateDeps struct {
 	projects    project.Service
 	pipes       pipeline.Service
 	settings    pipeline.SettingsService
-	triggers    trigger.Service
 	vault       vault.Vault
 	customNodes library.CustomNodeService // 复用库自定义节点(动态拼入 AI 节点目录;可 nil)
 }
@@ -264,11 +250,11 @@ func humanizeGenerateErr(err error) string {
 //
 // 仅写被勾选项:selections.stageIds → 合入 pipeline spec(始终保留/补源阶段,满足不变式)
 // 经 pipeline.Save;selections.build=true → SettingsService.Save(secret 引用留空,不编造
-// credentialId);selections.branchMappingIds → trigger.Save(合并去重既有)。
+// credentialId)。
 // 各服务校验仍生效:校验失败透传 422;项目不存在 404。
 func makeAIApplyHandler(d aiGenerateDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if d.pipes == nil || d.settings == nil || d.triggers == nil {
+		if d.pipes == nil || d.settings == nil {
 			writeError(w, http.StatusServiceUnavailable, "internal", "AI 应用所需服务未初始化")
 			return
 		}
@@ -279,9 +265,8 @@ func makeAIApplyHandler(d aiGenerateDeps) http.HandlerFunc {
 		var req struct {
 			Proposal   aiProposalReq `json:"proposal"`
 			Selections struct {
-				StageIDs         []string `json:"stageIds"`
-				Build            bool     `json:"build"`
-				BranchMappingIDs []string `json:"branchMappingIds"`
+				StageIDs []string `json:"stageIds"`
+				Build    bool     `json:"build"`
 			} `json:"selections"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -307,15 +292,6 @@ func makeAIApplyHandler(d aiGenerateDeps) http.HandlerFunc {
 				return
 			}
 			resp.Applied.Settings = true
-		}
-
-		// 3) branchMappingIds → 合入 trigger 分支映射(合并去重)。
-		if len(req.Selections.BranchMappingIDs) > 0 {
-			if err := applySelectedMappings(ctx, d.triggers, id, req.Proposal.BranchMappings, req.Selections.BranchMappingIDs); err != nil {
-				writeAIApplyError(w, err)
-				return
-			}
-			resp.Applied.Triggers = true
 		}
 
 		writeJSON(w, http.StatusOK, resp)
@@ -346,11 +322,6 @@ type aiProposalReq struct {
 		ArtifactType   string `json:"artifactType"`
 		DockerfilePath string `json:"dockerfilePath"`
 	} `json:"build"`
-	BranchMappings []struct {
-		ID            string `json:"id"`
-		BranchPattern string `json:"branchPattern"`
-		Environment   string `json:"environment"`
-	} `json:"branchMappings"`
 }
 
 // isSingletonStageKind 报告该 kind 是否为「标准单例阶段」(每条流水线至多一个)。
@@ -458,7 +429,6 @@ func applySelectedStages(ctx context.Context, svc pipeline.Service, projectID st
 }
 
 // applySelectedBuild 把提案 build 写入 pipeline_settings(secret 引用留空,不编造 credentialId)。
-// 保留既有环境定义(仅覆盖 build 部分)。
 func applySelectedBuild(ctx context.Context, svc pipeline.SettingsService, projectID string, b struct {
 	Model     string `json:"model"`
 	Toolchain struct {
@@ -468,11 +438,6 @@ func applySelectedBuild(ctx context.Context, svc pipeline.SettingsService, proje
 	ArtifactType   string `json:"artifactType"`
 	DockerfilePath string `json:"dockerfilePath"`
 }) error {
-	cur, err := svc.Get(ctx, projectID)
-	if err != nil {
-		return err
-	}
-
 	build := pipeline.BuildConfig{
 		Model:          b.Model,
 		DockerfilePath: b.DockerfilePath,
@@ -482,59 +447,7 @@ func applySelectedBuild(ctx context.Context, svc pipeline.SettingsService, proje
 		Cache:          pipeline.Cache{Enabled: false, Paths: []string{}},
 	}
 
-	_, err = svc.Save(ctx, projectID, pipeline.SettingsInput{
-		Build:        build,
-		Environments: cur.Environments, // 保留既有环境
-	})
-	return err
-}
-
-// applySelectedMappings 把勾选的提案分支映射合入既有 trigger 分支映射(去重:同 pattern+env 不重复)。
-func applySelectedMappings(ctx context.Context, svc trigger.Service, projectID string, mappings []struct {
-	ID            string `json:"id"`
-	BranchPattern string `json:"branchPattern"`
-	Environment   string `json:"environment"`
-}, mappingIDs []string) error {
-	cur, err := svc.Get(ctx, projectID)
-	if err != nil {
-		return err
-	}
-
-	want := make(map[string]struct{}, len(mappingIDs))
-	for _, mid := range mappingIDs {
-		want[mid] = struct{}{}
-	}
-
-	// 去重键:branchPattern + "\x00" + environment(已存的不重复合入)。
-	seen := make(map[string]struct{}, len(cur.BranchMappings))
-	merged := make([]trigger.BranchMapping, 0, len(cur.BranchMappings)+len(mappings))
-	for _, m := range cur.BranchMappings {
-		seen[m.BranchPattern+"\x00"+m.Environment] = struct{}{}
-		merged = append(merged, m)
-	}
-
-	for _, m := range mappings {
-		if _, ok := want[m.ID]; !ok {
-			continue
-		}
-		key := strings.TrimSpace(m.BranchPattern) + "\x00" + strings.TrimSpace(m.Environment)
-		if _, dup := seen[key]; dup {
-			continue
-		}
-		seen[key] = struct{}{}
-		merged = append(merged, trigger.BranchMapping{
-			ID:              "", // 服务端补新 id
-			BranchPattern:   m.BranchPattern,
-			Environment:     m.Environment,
-			TargetServerIDs: []string{},
-		})
-	}
-
-	_, err = svc.Save(ctx, projectID, trigger.SaveInput{
-		Events:          cur.Events,
-		BranchMappings:  merged,
-		UnmatchedPolicy: cur.UnmatchedPolicy,
-	})
+	_, err := svc.Save(ctx, projectID, pipeline.SettingsInput{Build: build})
 	return err
 }
 
@@ -554,9 +467,7 @@ func writeAIApplyError(w http.ResponseWriter, err error) {
 	case errors.Is(err, pipeline.ErrInvalidBuild):
 		writeError(w, http.StatusUnprocessableEntity, "invalid_build", "构建配置非法")
 	case errors.Is(err, trigger.ErrInvalidBranchPattern):
-		writeError(w, http.StatusUnprocessableEntity, "invalid_branch_pattern", "分支模式非法")
-	case errors.Is(err, trigger.ErrInvalidPolicy):
-		writeError(w, http.StatusUnprocessableEntity, "invalid_policy", "未匹配策略非法")
+		writeError(w, http.StatusUnprocessableEntity, "invalid_branch_pattern", "分支过滤非法")
 	case errors.Is(err, pipeline.ErrSettingsVaultUnconfigured),
 		errors.Is(err, trigger.ErrVaultUnconfigured):
 		writeError(w, http.StatusServiceUnavailable, "vault_unconfigured", "保险库未配置")

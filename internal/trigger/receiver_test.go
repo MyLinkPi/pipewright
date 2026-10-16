@@ -36,7 +36,7 @@ func (f *fakeRunCreator) count() int {
 	return len(f.calls)
 }
 
-// newReceiver 装配 Receiver + 已配 push 事件 + 分支映射 main→prod 的项目;返回 token、明文密钥。
+// newReceiver 装配 Receiver + 已配 push 事件 + 分支过滤 [main, release/*] 的项目;返回 token、明文密钥。
 func newReceiver(t *testing.T) (*Receiver, *fakeRunCreator, string, string) {
 	t.Helper()
 	db, _ := testDB(t)
@@ -58,12 +58,8 @@ func newReceiver(t *testing.T) (*Receiver, *fakeRunCreator, string, string) {
 	secret := reset.Secret
 
 	if _, err := svc.Save(ctx, projID, SaveInput{
-		Events: Events{Push: true},
-		BranchMappings: []BranchMapping{
-			{BranchPattern: "main", Environment: "prod", TargetServerIDs: []string{"srv-1", "srv-2"}},
-			{BranchPattern: "release/*", Environment: "staging", TargetServerIDs: []string{"srv-3"}},
-		},
-		UnmatchedPolicy: PolicyIgnore,
+		Events:        Events{Push: true},
+		BranchFilters: []string{"main", "release/*"},
 	}); err != nil {
 		t.Fatalf("save config: %v", err)
 	}
@@ -98,12 +94,6 @@ func TestWebhookPasswordModeCreatesRun(t *testing.T) {
 	got := fake.calls[0]
 	if got.Branch != "main" || got.Commit != "abc123" {
 		t.Fatalf("unexpected run req: %+v", got)
-	}
-	if got.ResolvedEnvironment != "prod" {
-		t.Fatalf("expected resolved env prod, got %q", got.ResolvedEnvironment)
-	}
-	if len(got.ResolvedTargetServerIDs) != 2 {
-		t.Fatalf("expected 2 target servers, got %v", got.ResolvedTargetServerIDs)
 	}
 	if got.Actor != "gitee" {
 		t.Fatalf("expected actor gitee, got %q", got.Actor)
@@ -246,7 +236,7 @@ func TestWebhookEventNotSubscribed(t *testing.T) {
 
 func TestWebhookNoBranchMatchIgnored(t *testing.T) {
 	rc, fake, token, secret := newReceiver(t)
-	// UnmatchedPolicy=ignore;dev 不匹配任何映射。
+	// dev 不匹配任何过滤 glob(main / release/*)。
 	res, err := rc.Handle(context.Background(), Delivery{
 		Token:      token,
 		Event:      eventPush,
@@ -257,8 +247,8 @@ func TestWebhookNoBranchMatchIgnored(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Handle: %v", err)
 	}
-	if res.Accepted || res.Ignored != IgnoredUnmatchedIgnored {
-		t.Fatalf("expected unmatched_ignored, got %+v", res)
+	if res.Accepted || res.Ignored != IgnoredNoBranchMatch {
+		t.Fatalf("expected no_branch_match, got %+v", res)
 	}
 	if fake.count() != 0 {
 		t.Fatalf("expected no run, got %d", fake.count())
@@ -280,8 +270,31 @@ func TestWebhookWildcardBranchMatch(t *testing.T) {
 	if !res.Accepted {
 		t.Fatalf("expected accepted for release/1.2, got %+v", res)
 	}
-	if fake.calls[0].ResolvedEnvironment != "staging" {
-		t.Fatalf("expected staging env, got %q", fake.calls[0].ResolvedEnvironment)
+	if fake.count() != 1 {
+		t.Fatalf("expected 1 run, got %d", fake.count())
+	}
+}
+
+// TestWebhookEmptyFiltersTriggerAllBranches 验证空过滤列表 = 所有分支触发。
+func TestWebhookEmptyFiltersTriggerAllBranches(t *testing.T) {
+	rc, fake, token, secret := newReceiver(t)
+	// 清空过滤(空列表放行一切)。
+	rc2 := clearBranchFilters(t, rc)
+	res, err := rc2.Handle(context.Background(), Delivery{
+		Token:      token,
+		Event:      eventPush,
+		TokenHdr:   secret,
+		DeliveryID: "d-any",
+		RawBody:    pushBody("feature/anything", "c9"),
+	})
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if !res.Accepted {
+		t.Fatalf("expected accepted with empty filters, got %+v", res)
+	}
+	if fake.count() != 1 {
+		t.Fatalf("expected 1 run, got %d", fake.count())
 	}
 }
 
@@ -325,9 +338,9 @@ func TestDerivedKeyNoColonCollision(t *testing.T) {
 	}
 }
 
-// TestWebhookUnmatchedRecordIdempotent 验证未匹配 record 路径走同一 dedup claim:
+// TestWebhookNoBranchMatchIdempotent 验证分支不匹配路径走同一 dedup claim:
 // 同 delivery 重复投递不无界灌库(第二次判 duplicate),只入一行。
-func TestWebhookUnmatchedRecordIdempotent(t *testing.T) {
+func TestWebhookNoBranchMatchIdempotent(t *testing.T) {
 	db, _ := testDB(t)
 	v := vault.New(db, testMasterKey())
 	svc := New(db, v)
@@ -338,11 +351,10 @@ func TestWebhookUnmatchedRecordIdempotent(t *testing.T) {
 		t.Fatalf("get: %v", err)
 	}
 	reset, _ := svc.ResetSecret(ctx, projID)
-	// Push 订阅,但无任何分支映射 + policy=record(分支必不匹配 → unmatched_recorded)。
+	// Push 订阅 + 仅 main 过滤(feature/x 必不匹配 → no_branch_match)。
 	if _, err := svc.Save(ctx, projID, SaveInput{
-		Events:          Events{Push: true},
-		BranchMappings:  []BranchMapping{},
-		UnmatchedPolicy: PolicyRecord,
+		Events:        Events{Push: true},
+		BranchFilters: []string{"main"},
 	}); err != nil {
 		t.Fatalf("save: %v", err)
 	}
@@ -355,8 +367,8 @@ func TestWebhookUnmatchedRecordIdempotent(t *testing.T) {
 		RawBody:    pushBody("feature/x", "c1"),
 	}
 	r1, err := rc.Handle(ctx, d)
-	if err != nil || r1.Ignored != IgnoredUnmatchedRecorded {
-		t.Fatalf("first: %+v err=%v, want unmatched_recorded", r1, err)
+	if err != nil || r1.Ignored != IgnoredNoBranchMatch {
+		t.Fatalf("first: %+v err=%v, want no_branch_match", r1, err)
 	}
 	r2, err := rc.Handle(ctx, d)
 	if err != nil || r2.Ignored != IgnoredDuplicate {
@@ -371,7 +383,38 @@ func TestWebhookUnmatchedRecordIdempotent(t *testing.T) {
 	}
 }
 
-// newTagReleaseReceiver 装配 Receiver + 已配 tag+release 事件 + 分支映射 v*→prod 的项目;
+// TestWebhookEmptyBranchIgnored 验证畸形 payload(解析不出引用名)即便过滤为空也不触发(防御)。
+func TestWebhookEmptyBranchIgnored(t *testing.T) {
+	db, _ := testDB(t)
+	v := vault.New(db, testMasterKey())
+	svc := New(db, v)
+	projID := seedProject(t, db)
+	ctx := context.Background()
+	cfg, err := svc.Get(ctx, projID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	reset, _ := svc.ResetSecret(ctx, projID)
+	if _, err := svc.Save(ctx, projID, SaveInput{Events: Events{Push: true}}); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	rc := NewReceiver(db, v, &fakeRunCreator{})
+	res, err := rc.Handle(ctx, Delivery{
+		Token:      cfg.WebhookToken,
+		Event:      eventPush,
+		TokenHdr:   reset.Secret,
+		DeliveryID: "d-noref",
+		RawBody:    []byte(`{"after":"c0"}`), // 无 ref → 空分支
+	})
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if res.Accepted || res.Ignored != IgnoredNoBranchMatch {
+		t.Fatalf("expected no_branch_match for empty ref, got %+v", res)
+	}
+}
+
+// newTagReleaseReceiver 装配 Receiver + 已配 tag+release 事件 + 分支过滤 [v*] 的项目;
 // 返回 token、明文密钥(供 tag/release 上下文与订阅用例复用)。
 func newTagReleaseReceiver(t *testing.T) (*Receiver, *fakeRunCreator, string, string) {
 	t.Helper()
@@ -394,11 +437,8 @@ func newTagReleaseReceiver(t *testing.T) (*Receiver, *fakeRunCreator, string, st
 	secret := reset.Secret
 
 	if _, err := svc.Save(ctx, projID, SaveInput{
-		Events: Events{Tag: true, Release: true},
-		BranchMappings: []BranchMapping{
-			{BranchPattern: "v*", Environment: "prod", TargetServerIDs: []string{"srv-1"}},
-		},
-		UnmatchedPolicy: PolicyIgnore,
+		Events:        Events{Tag: true, Release: true},
+		BranchFilters: []string{"v*"},
 	}); err != nil {
 		t.Fatalf("save config: %v", err)
 	}
@@ -409,7 +449,7 @@ func newTagReleaseReceiver(t *testing.T) (*Receiver, *fakeRunCreator, string, st
 }
 
 // TestWebhookTagPushCarriesTagRefAndCommit 验证 Tag Push Hook 命中后:
-// 运行携带标签名(refs/tags/v1.2.3 → v1.2.3,落入 Branch)与 commit,并经 v* 映射到 prod。
+// 运行携带标签名(refs/tags/v1.2.3 → v1.2.3,落入 Branch)与 commit,并经 v* 过滤放行。
 func TestWebhookTagPushCarriesTagRefAndCommit(t *testing.T) {
 	rc, fake, token, secret := newTagReleaseReceiver(t)
 	res, err := rc.Handle(context.Background(), Delivery{
@@ -435,13 +475,10 @@ func TestWebhookTagPushCarriesTagRefAndCommit(t *testing.T) {
 	if got.Commit != "tagsha123" {
 		t.Fatalf("expected commit tagsha123, got %q", got.Commit)
 	}
-	if got.ResolvedEnvironment != "prod" {
-		t.Fatalf("expected env prod via v* mapping, got %q", got.ResolvedEnvironment)
-	}
 }
 
 // TestWebhookReleaseHookCreatesRunWithTagName 验证 Release Hook 命中后:
-// 运行携带 release.tag_name(落入 Branch),commit 回退到 target_commitish,经 v* 映射到 prod。
+// 运行携带 release.tag_name(落入 Branch),commit 回退到 target_commitish,经 v* 过滤放行。
 func TestWebhookReleaseHookCreatesRunWithTagName(t *testing.T) {
 	rc, fake, token, secret := newTagReleaseReceiver(t)
 	res, err := rc.Handle(context.Background(), Delivery{
@@ -466,9 +503,6 @@ func TestWebhookReleaseHookCreatesRunWithTagName(t *testing.T) {
 	}
 	if got.Commit != "main" {
 		t.Fatalf("expected commit fallback to target_commitish 'main', got %q", got.Commit)
-	}
-	if got.ResolvedEnvironment != "prod" {
-		t.Fatalf("expected env prod via v* mapping, got %q", got.ResolvedEnvironment)
 	}
 }
 
@@ -548,4 +582,38 @@ func TestGlobMatch(t *testing.T) {
 			t.Errorf("globMatch(%q,%q)=%v want %v", c.pattern, c.s, got, c.want)
 		}
 	}
+}
+
+// TestMatchBranchFilter 验证分支过滤白名单语义:空列表放行、命中放行、不匹配/空分支拒绝。
+func TestMatchBranchFilter(t *testing.T) {
+	cases := []struct {
+		name    string
+		branch  string
+		filters []string
+		want    bool
+	}{
+		{"空过滤放行任意分支", "anything", nil, true},
+		{"空过滤放行空列表形式", "dev", []string{}, true},
+		{"精确命中", "main", []string{"main", "dev"}, true},
+		{"glob 命中", "release/1.2", []string{"release/*"}, true},
+		{"不匹配拒绝", "dev", []string{"main"}, false},
+		{"空分支一律拒绝(防御)", "", nil, false},
+		{"空分支在空过滤下也拒绝", "", []string{}, false},
+	}
+	for _, c := range cases {
+		if got := matchBranchFilter(c.branch, c.filters); got != c.want {
+			t.Errorf("%s: matchBranchFilter(%q,%v)=%v want %v", c.name, c.branch, c.filters, got, c.want)
+		}
+	}
+}
+
+// clearBranchFilters 清空 newReceiver 所建项目的分支过滤(改为"全分支触发")。
+func clearBranchFilters(t *testing.T, rc *Receiver) *Receiver {
+	t.Helper()
+	// 直接对库内唯一项目的触发配置清空过滤。
+	_, err := rc.db.Exec(`UPDATE pipeline_triggers SET branch_filters_json = '[]'`)
+	if err != nil {
+		t.Fatalf("clear branch filters: %v", err)
+	}
+	return rc
 }

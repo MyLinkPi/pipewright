@@ -50,11 +50,8 @@ const (
 	IgnoredEventNotSubscribed = "event_not_subscribed"
 	IgnoredNoBranchMatch      = "no_branch_match"
 	IgnoredDuplicate          = "duplicate"
-	IgnoredUnmatchedIgnored   = "unmatched_ignored"
 	// IgnoredPathNoMatch:配了路径过滤,但本次 push 改动文件不匹配任一 glob(monorepo · P0)。
 	IgnoredPathNoMatch = "path_no_match"
-	// IgnoredUnmatchedRecorded:未匹配但策略=record——本期记录一次「已记录未部署」,不创建可执行运行。
-	IgnoredUnmatchedRecorded = "unmatched_recorded"
 )
 
 // 接收层错误。错误体永不含密钥明文/密文/master key。
@@ -66,18 +63,15 @@ var (
 )
 
 // RunCreator 抽象「创建一次运行」的能力,由 run.Service 实现(在 httpapi/main 装配时适配)。
-// 解析出的环境/目标服务器作为运行内部元数据传入(供 Epic 4),不进入冻结 run-detail DTO。
 type RunCreator interface {
 	CreateWebhookRun(ctx context.Context, projectID string, in RunRequest) (runID string, err error)
 }
 
 // RunRequest 是创建一次运行的入参(去耦 run 包类型,避免在领域层互相引用)。
 type RunRequest struct {
-	Branch                  string
-	Commit                  string
-	Actor                   string
-	ResolvedEnvironment     string
-	ResolvedTargetServerIDs []string
+	Branch string
+	Commit string
+	Actor  string
 }
 
 // Result 是一次 webhook 投递的处理结果(供 HTTP 层构造响应体)。
@@ -166,17 +160,11 @@ func (rc *Receiver) Handle(ctx context.Context, d Delivery) (*Result, error) {
 		return &Result{Accepted: false, Ignored: IgnoredEventNotSubscribed}, nil
 	}
 
-	// 分支匹配(通配 glob)。
-	mapping, matched := matchBranch(parsed.Branch, cfg.BranchMappings)
-	if !matched {
-		reason := IgnoredNoBranchMatch
-		if cfg.UnmatchedPolicy == PolicyRecord {
-			reason = IgnoredUnmatchedRecorded
-		} else {
-			reason = IgnoredUnmatchedIgnored
-		}
-		rc.setOutcome(ctx, recID, reason)
-		return &Result{Accepted: false, Ignored: reason}, nil
+	// 分支过滤(通配 glob 白名单):空列表 = 所有分支触发;非空 = 触发引用名匹配任一 glob
+	// 才触发。解析不出引用名(空分支)一律不触发(畸形 payload 防御)。
+	if !matchBranchFilter(parsed.Branch, cfg.BranchFilters) {
+		rc.setOutcome(ctx, recID, IgnoredNoBranchMatch)
+		return &Result{Accepted: false, Ignored: IgnoredNoBranchMatch}, nil
 	}
 
 	// 路径过滤(monorepo · P0):配了 glob 且**拿得到**改动文件时,文件不匹配任一 glob → 忽略。
@@ -187,11 +175,9 @@ func (rc *Receiver) Handle(ctx context.Context, d Delivery) (*Result, error) {
 	}
 
 	runID, err := rc.runner.CreateWebhookRun(ctx, cfg.ProjectID, RunRequest{
-		Branch:                  parsed.Branch,
-		Commit:                  parsed.Commit,
-		Actor:                   "gitee",
-		ResolvedEnvironment:     mapping.Environment,
-		ResolvedTargetServerIDs: mapping.TargetServerIDs,
+		Branch: parsed.Branch,
+		Commit: parsed.Commit,
+		Actor:  "gitee",
 	})
 	if err != nil {
 		// 创建失败:回滚去重占位,允许重试。回滚 DELETE 的错误不吞,合并进返回错误
@@ -241,17 +227,17 @@ func (rc *Receiver) loadForVerify(ctx context.Context, token string) (*Config, [
 		return nil, nil, ErrTokenNotFound
 	}
 	var (
-		cfg             Config
-		sealed          []byte
-		eventsJSON      string
-		mappingsJSON    string
-		pathFiltersJSON string
+		cfg               Config
+		sealed            []byte
+		eventsJSON        string
+		branchFiltersJSON string
+		pathFiltersJSON   string
 	)
 	err := rc.db.QueryRowContext(ctx,
 		`SELECT project_id, webhook_token, webhook_secret_ciphertext, events_json,
-		        branch_mappings_json, unmatched_policy, path_filters_json
+		        branch_filters_json, path_filters_json
 		 FROM pipeline_triggers WHERE webhook_token = ?`, token,
-	).Scan(&cfg.ProjectID, &cfg.WebhookToken, &sealed, &eventsJSON, &mappingsJSON, &cfg.UnmatchedPolicy, &pathFiltersJSON)
+	).Scan(&cfg.ProjectID, &cfg.WebhookToken, &sealed, &eventsJSON, &branchFiltersJSON, &pathFiltersJSON)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil, ErrTokenNotFound
@@ -262,10 +248,10 @@ func (rc *Receiver) loadForVerify(ctx context.Context, token string) (*Config, [
 	if err := json.Unmarshal([]byte(eventsJSON), &cfg.Events); err != nil {
 		return nil, nil, fmt.Errorf("trigger: parse events: %w", err)
 	}
-	cfg.BranchMappings = []BranchMapping{}
-	if strings.TrimSpace(mappingsJSON) != "" {
-		if err := json.Unmarshal([]byte(mappingsJSON), &cfg.BranchMappings); err != nil {
-			return nil, nil, fmt.Errorf("trigger: parse branch mappings: %w", err)
+	cfg.BranchFilters = []string{}
+	if strings.TrimSpace(branchFiltersJSON) != "" {
+		if err := json.Unmarshal([]byte(branchFiltersJSON), &cfg.BranchFilters); err != nil {
+			return nil, nil, fmt.Errorf("trigger: parse branch filters: %w", err)
 		}
 	}
 	cfg.PathFilters = []string{}
@@ -535,26 +521,33 @@ func refToBranch(ref string) string {
 // ---- 分支匹配 -----------------------------------------------------------
 
 // matchBranch 在分支映射中找第一条通配命中 branch 的映射(path.Match glob,支持 `*`)。
-func matchBranch(branch string, mappings []BranchMapping) (BranchMapping, bool) {
+// matchBranchFilter 判定触发引用名是否通过分支过滤白名单:
+//   - 过滤列表空 → 一律放行(所有分支触发)。
+//   - 引用名空(畸形 payload 解析不出 ref)→ 一律不触发(防御)。
+//   - 非空列表 → 引用名匹配任一 glob 才放行。
+func matchBranchFilter(branch string, filters []string) bool {
 	branch = strings.TrimSpace(branch)
 	if branch == "" {
-		return BranchMapping{}, false
+		return false
 	}
-	for _, m := range mappings {
-		pattern := strings.TrimSpace(m.BranchPattern)
+	if len(filters) == 0 {
+		return true
+	}
+	for _, pattern := range filters {
+		pattern = strings.TrimSpace(pattern)
 		if pattern == "" {
 			continue
 		}
 		if ok, err := path.Match(pattern, branch); err == nil && ok {
-			return m, true
+			return true
 		}
 		// path.Match 的 `*` 不跨 `/`;分支模式如 release/* 需对含 `/` 的分支也命中,
 		// 故对含 `/` 的模式额外做前缀通配兜底(release/* 命中 release/1.2)。
 		if globMatch(pattern, branch) {
-			return m, true
+			return true
 		}
 	}
-	return BranchMapping{}, false
+	return false
 }
 
 // globMatch 是补充的 glob 匹配:`*` 匹配任意字符(含 `/`),其余字符精确。

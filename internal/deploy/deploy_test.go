@@ -118,8 +118,8 @@ func seedSuccessRunWithArtifact(t *testing.T, db *sql.DB, rsvc run.Service, artT
 	if _, err := db.Exec(
 		`INSERT INTO pipeline_runs
 		   (id, project_id, status, trigger_type, trigger_branch, trigger_commit, trigger_actor,
-		    resolved_environment, resolved_target_server_ids, created_at, started_at, finished_at)
-		 VALUES (?, ?, 'success', 'manual', 'main', 'abc', 'admin', '', '[]', ?, ?, ?)`,
+		    created_at, started_at, finished_at)
+		 VALUES (?, ?, 'success', 'manual', 'main', 'abc', 'admin', ?, ?, ?)`,
 		runID, projID, now, now, now); err != nil {
 		t.Fatalf("seed run: %v", err)
 	}
@@ -736,8 +736,8 @@ func TestDeployNonSuccessRunRejected(t *testing.T) {
 	runID := uuid.NewString()
 	_, _ = db.Exec(`INSERT INTO pipeline_runs
 		   (id, project_id, status, trigger_type, trigger_branch, trigger_commit, trigger_actor,
-		    resolved_environment, resolved_target_server_ids, created_at, started_at, finished_at)
-		 VALUES (?, ?, 'failed', 'manual', 'main', 'abc', 'admin', '', '[]', ?, ?, ?)`,
+		    created_at, started_at, finished_at)
+		 VALUES (?, ?, 'failed', 'manual', 'main', 'abc', 'admin', ?, ?, ?)`,
 		runID, projID, now, now, now)
 
 	svc := New(tgt, rsvc)

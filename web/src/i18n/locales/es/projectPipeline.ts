@@ -9,7 +9,6 @@ export default {
   tabBuild: 'Build',
   tabVars: 'Variables y caché',
   tabTriggers: 'Ajustes de activación',
-  tabEnvs: 'Entornos y credenciales',
   tabStripAria: 'Pestañas de configuración del pipeline',
 
   // ─── Pipeline como código (GitOps · FR-8-12) ────────────────────
@@ -80,7 +79,6 @@ export default {
   errDuplicateId: 'ID de etapa o tarea duplicado. Elimina los duplicados e inténtalo de nuevo.',
   errInvalidBuild: 'El modelo de compilación debe ser dockerfile/toolchain y el tipo de artefacto debe ser image/jar/dist.',
   errInvalidVar: 'La clave de la variable no puede estar vacía y debe ser única dentro de su ámbito; las variables secret requieren una credencial del vault.',
-  errInvalidEnvironment: 'El nombre del entorno no puede estar vacío y el tipo de registro de imágenes debe ser harbor/acr/dockerhub/custom.',
   errCredentialNotFound: 'La credencial del vault referenciada no existe. Vuelve a seleccionarla e inténtalo de nuevo.',
   errVaultUnconfigured: 'El vault no tiene configurada una master key, por lo que no se pueden referenciar credenciales secret.',
 }

@@ -53,14 +53,8 @@ export default {
   paramNotInChoice: 'パラメータ「{label}」は選択肢に含まれていません',
 
   // ─── 昇格ステータス ───
-  promotionPromoted: '昇格済み',
-  promotionPending: '承認待ち',
-  promotionRejected: '却下',
 
   // ─── 環境名の検証 ───
-  envNameEmpty: '環境名を空にすることはできません',
-  envNameInvalid: '環境名には英数字、ハイフン、アンダースコアのみ使用できます',
-  envNameTooLong: '環境名は 64 文字を超えることはできません',
 
   // ─── 同時実行数の上限 ───
   concurrencyNotInteger: '同時実行数の上限は整数である必要があります',

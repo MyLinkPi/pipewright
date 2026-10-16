@@ -16,11 +16,11 @@ const webhookURLPrefix = "/api/webhooks/"
 
 // triggerDTO 是触发配置对外响应体(冻结契约;camelCase;密钥仅掩码,绝无明文)。
 type triggerDTO struct {
-	WebhookURL          string             `json:"webhookUrl"`
-	WebhookSecretMasked string             `json:"webhookSecretMasked"`
-	Events              eventsDTO          `json:"events"`
-	BranchMappings      []branchMappingDTO `json:"branchMappings"`
-	UnmatchedPolicy     string             `json:"unmatchedPolicy"`
+	WebhookURL          string    `json:"webhookUrl"`
+	WebhookSecretMasked string    `json:"webhookSecretMasked"`
+	Events              eventsDTO `json:"events"`
+	// BranchFilters 为分支过滤 glob 白名单;空 = 所有分支触发。
+	BranchFilters []string `json:"branchFilters"`
 	// PathFilters 为路径过滤 glob 列表(monorepo · P0);空 = 不启用(放行一切)。
 	PathFilters []string `json:"pathFilters"`
 }
@@ -32,27 +32,11 @@ type eventsDTO struct {
 	Release     bool `json:"release"`
 }
 
-type branchMappingDTO struct {
-	ID              string   `json:"id"`
-	BranchPattern   string   `json:"branchPattern"`
-	Environment     string   `json:"environment"`
-	TargetServerIDs []string `json:"targetServerIds"`
-}
-
 // toTriggerDTO 把领域 Config 转为契约 DTO(密钥仅掩码)。
 func toTriggerDTO(c *trigger.Config) triggerDTO {
-	mappings := make([]branchMappingDTO, 0, len(c.BranchMappings))
-	for _, m := range c.BranchMappings {
-		ids := m.TargetServerIDs
-		if ids == nil {
-			ids = []string{}
-		}
-		mappings = append(mappings, branchMappingDTO{
-			ID:              m.ID,
-			BranchPattern:   m.BranchPattern,
-			Environment:     m.Environment,
-			TargetServerIDs: ids,
-		})
+	branchFilters := c.BranchFilters
+	if branchFilters == nil {
+		branchFilters = []string{}
 	}
 	filters := c.PathFilters
 	if filters == nil {
@@ -67,9 +51,8 @@ func toTriggerDTO(c *trigger.Config) triggerDTO {
 			PullRequest: c.Events.PullRequest,
 			Release:     c.Events.Release,
 		},
-		BranchMappings:  mappings,
-		UnmatchedPolicy: c.UnmatchedPolicy,
-		PathFilters:     filters,
+		BranchFilters: branchFilters,
+		PathFilters:   filters,
 	}
 }
 
@@ -83,9 +66,7 @@ func writeTriggerError(w http.ResponseWriter, err error) {
 	case errors.Is(err, trigger.ErrNotFound):
 		writeError(w, http.StatusNotFound, "trigger_not_found", "触发配置不存在")
 	case errors.Is(err, trigger.ErrInvalidBranchPattern):
-		writeError(w, http.StatusUnprocessableEntity, "invalid_branch_pattern", "分支模式不能为空且需为合法通配(如 main、release/*)")
-	case errors.Is(err, trigger.ErrInvalidPolicy):
-		writeError(w, http.StatusUnprocessableEntity, "invalid_unmatched_policy", "未匹配策略只能为 record 或 ignore")
+		writeError(w, http.StatusUnprocessableEntity, "invalid_branch_pattern", "分支过滤不能为空且需为合法通配(如 main、release/*)")
 	case errors.Is(err, trigger.ErrInvalidPathFilter):
 		writeError(w, http.StatusUnprocessableEntity, "invalid_path_filter", "路径过滤 glob 不能含空白(如 backend/**、*.go)")
 	default:
@@ -112,7 +93,7 @@ func makeGetTriggerHandler(svc trigger.Service) http.HandlerFunc {
 }
 
 // makeSaveTriggerHandler 返回 PUT /api/projects/{id}/trigger handler。
-// 保存 events / 分支映射 / 未匹配策略;不触碰密钥。校验失败 → 422 定位到项。
+// 保存 events / 分支过滤 / 路径过滤;不触碰密钥。校验失败 → 422 定位到项。
 func makeSaveTriggerHandler(svc trigger.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if svc == nil {
@@ -128,28 +109,12 @@ func makeSaveTriggerHandler(svc trigger.Service) http.HandlerFunc {
 				PullRequest bool `json:"pullRequest"`
 				Release     bool `json:"release"`
 			} `json:"events"`
-			BranchMappings []struct {
-				ID              string   `json:"id"`
-				BranchPattern   string   `json:"branchPattern"`
-				Environment     string   `json:"environment"`
-				TargetServerIDs []string `json:"targetServerIds"`
-			} `json:"branchMappings"`
-			UnmatchedPolicy string   `json:"unmatchedPolicy"`
-			PathFilters     []string `json:"pathFilters"`
+			BranchFilters []string `json:"branchFilters"`
+			PathFilters   []string `json:"pathFilters"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, "bad_request", "请求体格式错误")
 			return
-		}
-
-		mappings := make([]trigger.BranchMapping, 0, len(req.BranchMappings))
-		for _, m := range req.BranchMappings {
-			mappings = append(mappings, trigger.BranchMapping{
-				ID:              m.ID,
-				BranchPattern:   m.BranchPattern,
-				Environment:     m.Environment,
-				TargetServerIDs: m.TargetServerIDs,
-			})
 		}
 		cfg, err := svc.Save(r.Context(), id, trigger.SaveInput{
 			Events: trigger.Events{
@@ -158,9 +123,8 @@ func makeSaveTriggerHandler(svc trigger.Service) http.HandlerFunc {
 				PullRequest: req.Events.PullRequest,
 				Release:     req.Events.Release,
 			},
-			BranchMappings:  mappings,
-			UnmatchedPolicy: req.UnmatchedPolicy,
-			PathFilters:     req.PathFilters,
+			BranchFilters: req.BranchFilters,
+			PathFilters:   req.PathFilters,
 		})
 		if err != nil {
 			writeTriggerError(w, err)
@@ -171,7 +135,7 @@ func makeSaveTriggerHandler(svc trigger.Service) http.HandlerFunc {
 }
 
 // makeResetTriggerSecretHandler 返回 POST /api/projects/{id}/trigger/secret/reset handler。
-// 重新生成并加密签名密钥(旧值失效),完整明文仅在此响应里一次性回显(供粘贴 Gitee)。
+// 重新生成并加密签名密钥(旧值失效),完整明文仅在此响应里一次性回显(供粘贴到 Gitee)。
 // 成功后追加 trigger_secret_reset 审计;detail **绝不含密钥明文/密文**,仅记掩码。
 func makeResetTriggerSecretHandler(svc trigger.Service, aud audit.Recorder) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {

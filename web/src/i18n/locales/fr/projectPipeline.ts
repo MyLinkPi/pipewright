@@ -9,7 +9,6 @@ export default {
   tabBuild: 'Build',
   tabVars: 'Variables et cache',
   tabTriggers: 'Paramètres de déclenchement',
-  tabEnvs: 'Environnements et identifiants',
   tabStripAria: 'Onglets de configuration du pipeline',
 
   // ─── Pipeline en tant que code (GitOps · FR-8-12) ───────────────
@@ -80,7 +79,6 @@ export default {
   errDuplicateId: 'ID d’étape ou de tâche en double. Supprimez les doublons puis réessayez.',
   errInvalidBuild: 'Le modèle de build doit être dockerfile/toolchain et le type d’artefact doit être image/jar/dist.',
   errInvalidVar: 'La clé de variable ne peut pas être vide et doit être unique dans sa portée ; les variables secret nécessitent un identifiant du coffre-fort.',
-  errInvalidEnvironment: 'Le nom de l’environnement ne peut pas être vide et le type de registre d’images doit être harbor/acr/dockerhub/custom.',
   errCredentialNotFound: 'L’identifiant du coffre-fort référencé n’existe pas. Resélectionnez-le puis réessayez.',
   errVaultUnconfigured: 'Le coffre-fort n’a pas de master key configurée, les identifiants secret ne peuvent donc pas être référencés.',
 }

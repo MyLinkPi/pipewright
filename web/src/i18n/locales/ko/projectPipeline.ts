@@ -9,7 +9,6 @@ export default {
   tabBuild: '빌드',
   tabVars: '변수 및 캐시',
   tabTriggers: '트리거 설정',
-  tabEnvs: '환경 및 자격 증명',
   tabStripAria: '파이프라인 설정 탭',
 
   // ─── 코드형 파이프라인 (GitOps · FR-8-12) ───────────────────────
@@ -54,7 +53,7 @@ export default {
   // ─── 배너 / 상태 ────────────────────────────────────────────────
   dismiss: '닫기',
   draftSaved: '파이프라인이 저장되었습니다',
-  scopeSettings: '변수/환경',
+  scopeSettings: '변수',
   scopePipeline: '파이프라인 정의',
   noChanges: '저장되지 않은 변경 없음',
   errSavePartial: '일부만 저장됨({saved});실패: ',
@@ -80,7 +79,6 @@ export default {
   errDuplicateId: '스테이지 또는 작업 ID가 중복됩니다. 중복 항목을 삭제한 후 다시 시도하세요.',
   errInvalidBuild: '빌드 모델은 dockerfile/toolchain이어야 하고, 산출물 유형은 image/jar/dist여야 합니다.',
   errInvalidVar: '변수 키는 비워 둘 수 없고 동일 범위 내에서 중복될 수 없습니다. secret 변수에는 볼트 자격 증명을 선택해야 합니다.',
-  errInvalidEnvironment: '환경 이름은 비워 둘 수 없으며 이미지 레지스트리 유형은 harbor/acr/dockerhub/custom이어야 합니다.',
   errCredentialNotFound: '참조된 볼트 자격 증명이 존재하지 않습니다. 다시 선택한 후 시도하세요.',
   errVaultUnconfigured: '볼트에 master key가 설정되지 않아 secret 자격 증명을 참조할 수 없습니다.',
 }

@@ -102,15 +102,14 @@ func TestE2EDockerBuildPushReal(t *testing.T) {
 		"CMD [\"cat\", \"/built.txt\"]\n"
 
 	proj := &project.Project{ID: "p1", Name: "e2e-app", RepoURL: "https://example.com/r.git"}
-	registry := &pipeline.ImageRegistry{Type: pipeline.RegistryCustom, URL: registryAddr} // 无 cred → 匿名推送
-	settings := imageSettings(registry)
 
 	b := &Builder{
 		projects: fakeProjects{proj: proj},
-		settings: fakeSettings{settings: settings},
+		settings: fakeSettings{settings: imageSettings()},
 		vault:    fakeVault{secrets: map[string]string{}},
 		driver:   drv, // 真 docker 驱动
 		cloner:   &copyDockerfileCloner{dockerfile: dockerfile, commitShort: shortSha},
+		builtinRegistry: func(context.Context) (string, bool) { return registryAddr, true }, // 无 cred → 匿名推送
 	}
 
 	localTag := "pipewright/e2e-app:" + shortSha
@@ -123,7 +122,7 @@ func TestE2EDockerBuildPushReal(t *testing.T) {
 
 	r := &run.Run{
 		ID: "r1", ProjectID: "p1",
-		Trigger: run.Trigger{Type: run.TriggerManual, Branch: "main", Commit: commit, ResolvedEnvironment: "prod"},
+		Trigger: run.Trigger{Type: run.TriggerManual, Branch: "main", Commit: commit},
 	}
 	sink := newFakeSink()
 
@@ -195,7 +194,7 @@ func TestE2EDockerSecretBuildArgReal(t *testing.T) {
 		"CMD [\"cat\", \"/tokchk.txt\"]\n"
 
 	proj := &project.Project{ID: "p1", Name: "sec-app", RepoURL: "https://example.com/r.git"}
-	settings := imageSettings(nil) // 不推送
+	settings := imageSettings() // 不推送
 	settings.Build.Vars = []pipeline.BuildVar{{Key: "API_TOKEN", Secret: true, CredentialID: "cred-1"}}
 
 	b := &Builder{
