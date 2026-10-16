@@ -31,6 +31,7 @@ import (
 
 	"github.com/huangchengsir/pipewright/internal/build"
 	"github.com/huangchengsir/pipewright/internal/gitauth"
+	"github.com/huangchengsir/pipewright/internal/submodule"
 	"github.com/huangchengsir/pipewright/internal/vault"
 )
 
@@ -157,6 +158,13 @@ func (c *Cache) Clone(ctx context.Context, repoURL string, cred vault.GitAuth, b
 			return c.fallback.Clone(ctx, repoURL, cred, branch, commit, destDir)
 		}
 		return nil, cerr
+	}
+
+	// 子模块不在镜像里(镜像仅含超仓库对象)→ 按真实远端 URL 递归拉取(相对子模块
+	// URL 须按远端解析而非镜像路径)。失败不回退直连:直连同网络同凭据,重试无益,
+	// 让构建以克隆失败干净退出。
+	if perr := submodule.Populate(ctx, destDir, repoURL, cred, c.allowInsecure); perr != nil {
+		return nil, perr
 	}
 	return resolved, nil
 }

@@ -11,6 +11,7 @@ import (
 	"github.com/go-git/go-git/v5/plumbing"
 
 	"github.com/huangchengsir/pipewright/internal/gitauth"
+	"github.com/huangchengsir/pipewright/internal/submodule"
 	"github.com/huangchengsir/pipewright/internal/vault"
 )
 
@@ -48,9 +49,10 @@ type CloneResolved struct {
 // 凭据经 gitauth.TransportAuth 按协议装配(https token/密码 → BasicAuth;ssh_key/
 // ssh_password → SSH 私钥/密码),明文绝不进 URL/日志/错误。失败统一映射干净错误。
 //
-// 策略:先克隆默认/指定分支(Depth:1 浅克隆省带宽),若指定了 commit 则再 checkout 到该 commit
-//
-//	(commit 不在浅克隆历史里时回退为不限深克隆重试一次,best-effort)。
+// 策略:先克隆默认/指定分支(Depth:1 浅克隆省带宽);指定了 commit 时不浅克隆,
+// 克隆后 checkout 到该 commit。检出完成后递归拉取 .gitmodules 声明的子模块
+// (submodule.Populate:子模块 URL 走同款 SSRF 收口,凭据仅在子模块 host 与主仓
+// 一致时转发,跨 host 匿名)。
 func (c *Cloner) Clone(ctx context.Context, repoURL string, cred vault.GitAuth, branch, commit, destDir string) (*CloneResolved, error) {
 	repoURL = strings.TrimSpace(repoURL)
 	if repoURL == "" {
@@ -104,6 +106,14 @@ func (c *Cloner) Clone(ctx context.Context, repoURL string, cred vault.GitAuth, 
 		resolved.CommitShort = shortSHA(commit)
 	} else if head, herr := repo.Head(); herr == nil {
 		resolved.CommitShort = shortSHA(head.Hash().String())
+	}
+
+	// 递归拉取子模块(.gitmodules 声明 → pinned gitlink commit;无子模块时秒回)。
+	if perr := submodule.Populate(ctx, destDir, repoURL, cred, c.allowInsecure); perr != nil {
+		if errors.Is(perr, submodule.ErrBlocked) {
+			return nil, ErrRepoBlocked
+		}
+		return nil, ErrCloneFailed
 	}
 	return resolved, nil
 }
