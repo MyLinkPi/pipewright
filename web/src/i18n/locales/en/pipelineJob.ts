@@ -123,7 +123,7 @@ export default {
   fieldImageNameLabel: "Image name",
   fieldTagLabel: "Tag",
   fieldTagHint:
-    "Available variables: {'{{commit}}'} {'{{branch}}'} {'{{runId}}'} {'{{project}}'}; blank keeps the artifact's tag",
+    "Available variables: {'{{commit}}'} {'{{branch}}'} {'{{runId}}'} {'{{project}}'}; blank keeps the artifact's tag More variables: {'{{date}}'} {'{{date:yyyyMMddHHmmss}}'} (date = run creation time UTC, default yyyy-MM-dd-HH-mm; tokens: yyyy, MM, dd, HH, mm, ss)",
   fieldPushImageArtifactJobHint: 'Which node\'s image to push (must be a "Build" node in the SAME stage; the push runs inside that node).',
   fieldPushImageRegistryHint: "Blank = use the image registry bound to the source node's environment.",
   fieldRegistryCredentialLabel: "Registry credential",
