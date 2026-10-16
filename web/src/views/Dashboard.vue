@@ -140,12 +140,8 @@ onMounted(load)
       </button>
     </section>
 
-    <!-- bento 网格 -->
+    <!-- bento 网格:DORA 通栏在顶部,下方等宽两栏(左:运行+告警,右:服务器) -->
     <div class="bento">
-      <div class="bento-runs"><DashRecentRuns :runs="runs" :loading="loading" /></div>
-      <div class="bento-srv"><DashServers :servers="servers" :metrics="serverMetrics" :loading="loading" /></div>
-      <div class="bento-alerts"><DashAlerts :alerts="alerts" :diagnosis="diagnosis" :loading="loading" /></div>
-
       <section class="card bento-dora" aria-labelledby="dash-dora-h">
         <header class="card-head">
           <h2 id="dash-dora-h" class="card-title">{{ t('dashboard.doraTitle') }} <span class="dora-window">{{ dora?.window ?? '30d' }}</span></h2>
@@ -180,6 +176,12 @@ onMounted(load)
         </div>
         <p v-else class="card-empty">{{ t('dashboard.doraEmpty') }}</p>
       </section>
+
+      <div class="bento-left">
+        <div class="bento-runs"><DashRecentRuns :runs="runs" :loading="loading" /></div>
+        <div class="bento-alerts"><DashAlerts :alerts="alerts" :diagnosis="diagnosis" :loading="loading" /></div>
+      </div>
+      <div class="bento-srv"><DashServers :servers="servers" :metrics="serverMetrics" :loading="loading" /></div>
     </div>
   </div>
 </template>
@@ -325,23 +327,29 @@ onMounted(load)
   color: var(--color-faint);
 }
 
-/* bento 网格 */
+/* bento 网格:DORA 通栏 + 等宽两栏 */
 .bento {
   display: grid;
-  grid-template-columns: 1.5fr 1fr;
+  grid-template-columns: 1fr 1fr;
   gap: 16px;
-}
-.bento-runs {
-  grid-column: 1;
-}
-.bento-srv {
-  grid-column: 2;
-}
-.bento-alerts {
-  grid-column: 1;
 }
 .bento-dora {
   grid-column: 1 / -1;
+}
+.bento-left {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+.bento-srv {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+/* 服务器卡片撑满右栏行高:左栏(运行+告警)通常更高,避免右栏下方露出页面底色。 */
+.bento-srv .card {
+  flex: 1;
 }
 .dora-window {
   font-size: var(--text-micro);
@@ -380,9 +388,6 @@ onMounted(load)
   .bento {
     grid-template-columns: 1fr;
   }
-  .bento-runs,
-  .bento-srv,
-  .bento-alerts,
   .bento-dora {
     grid-column: 1;
   }
