@@ -93,13 +93,21 @@ const missingRequired = computed(() => {
   )
 })
 
-// prefillHostParams 选中目标机后为 ssh_domain 预填该机地址(为空时):SSH 克隆地址主机
-// 缺省回落 localhost;后端对留空的约定参数也会注入目标机 Host,此处预填让用户看得见生效值。
+// sshDomainAuto 记录上次为 ssh_domain 自动预填的值:当前值与之相等 = 用户未手改,
+// 切换目标机时跟随刷新;用户改过的自定义值不覆盖。
+const sshDomainAuto = ref('')
+
+// prefillHostParams 选中目标机后为 ssh_domain 预填该机地址(为空或未手改时):SSH 克隆
+// 地址主机缺省回落 localhost;后端对留空的约定参数也会注入目标机 Host,此处预填让用户
+// 看得见生效值、切换机器自动跟随。
 function prefillHostParams(tpl: AppTemplate, serverId: string): void {
   if (!tpl.params.some((p) => p.name === 'ssh_domain')) return
   const srv = servers.value.find((s) => s.id === serverId)
-  if (srv && !(paramValues.value.ssh_domain ?? '').trim()) {
+  if (!srv) return
+  const cur = (paramValues.value.ssh_domain ?? '').trim()
+  if (cur === '' || cur === sshDomainAuto.value) {
     paramValues.value.ssh_domain = srv.host
+    sshDomainAuto.value = srv.host
   }
 }
 
@@ -114,6 +122,7 @@ function openDeploy(tpl: AppTemplate): void {
   deployCpus.value = ''
   deployMemory.value = ''
   regDoneFqdn.value = ''
+  sshDomainAuto.value = ''
   deployServer.value = servers.value.length === 1 ? servers.value[0].id : ''
   const vals: Record<string, string> = {}
   for (const p of tpl.params) vals[p.name] = p.default ?? ''
