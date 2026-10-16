@@ -115,35 +115,7 @@ func buildValidationInput(
 	// 构建变量 secret 引用存在性。
 	in.BuildVars = toValidationVars(st.Build.Vars, v)
 
-	// 环境(含环境变量 + 镜像仓库)secret 引用存在性。
-	envs := make([]pipeline.ValidationEnvironment, 0, len(st.Environments))
-	for _, e := range st.Environments {
-		reg := pipeline.ValidationRegistry{
-			Type:         e.ImageRegistry.Type,
-			URL:          e.ImageRegistry.URL,
-			CredentialID: e.ImageRegistry.CredentialID,
-		}
-		if e.ImageRegistry.CredentialID != "" {
-			reg.CredentialExists = credentialExists(v, e.ImageRegistry.CredentialID)
-		}
-		envs = append(envs, pipeline.ValidationEnvironment{
-			Name:          e.Name,
-			EnvVars:       toValidationVars(e.EnvVars, v),
-			ImageRegistry: reg,
-		})
-	}
-	in.Environments = envs
-
-	// 分支映射 + 事件。
-	mappings := make([]pipeline.ValidationBranchMapping, 0, len(tcfg.BranchMappings))
-	for _, m := range tcfg.BranchMappings {
-		mappings = append(mappings, pipeline.ValidationBranchMapping{
-			BranchPattern:   m.BranchPattern,
-			Environment:     m.Environment,
-			TargetServerIDs: m.TargetServerIDs,
-		})
-	}
-	in.BranchMappings = mappings
+	// 事件。
 	in.Events = pipeline.ValidationEvents{
 		Push:        tcfg.Events.Push,
 		Tag:         tcfg.Events.Tag,
@@ -171,7 +143,7 @@ func isVaultUnconfiguredErr(err error) bool {
 // degradedVaultIssues 返回保险库未配置时的降级校验结果(单条 warning,不报一堆 credential_missing)。
 func degradedVaultIssues() []pipeline.Issue {
 	return []pipeline.Issue{{
-		Severity: pipeline.SeverityWarning, Code: "vault_unconfigured", Scope: pipeline.ScopeEnvs,
+		Severity: pipeline.SeverityWarning, Code: "vault_unconfigured", Scope: pipeline.ScopeVars,
 		Field: "", Message: "保险库未配置 master key,暂无法校验流水线配置;请先在 设置·凭据保险库 配置",
 	}}
 }

@@ -53,14 +53,8 @@ export default {
   paramNotInChoice: 'Parameter "{label}" is not among the available options',
 
   // ─── Promotion status ───
-  promotionPromoted: 'Promoted',
-  promotionPending: 'Pending approval',
-  promotionRejected: 'Rejected',
 
   // ─── Environment name validation ───
-  envNameEmpty: 'Environment name cannot be empty',
-  envNameInvalid: 'Environment name may only contain letters, digits, hyphens, and underscores',
-  envNameTooLong: 'Environment name cannot exceed 64 characters',
 
   // ─── Concurrency limit ───
   concurrencyNotInteger: 'The concurrency limit must be an integer',

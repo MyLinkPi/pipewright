@@ -91,10 +91,9 @@ func newReceiverWithPaths(t *testing.T, pathFilters []string) (*Receiver, *fakeR
 	}
 
 	saved, err := svc.Save(ctx, projID, SaveInput{
-		Events:          Events{Push: true},
-		BranchMappings:  []BranchMapping{{BranchPattern: "main", Environment: "prod"}},
-		UnmatchedPolicy: PolicyIgnore,
-		PathFilters:     pathFilters,
+		Events:        Events{Push: true},
+		BranchFilters: []string{"main"},
+		PathFilters:   pathFilters,
 	})
 	if err != nil {
 		t.Fatalf("save config: %v", err)

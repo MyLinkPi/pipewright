@@ -16,7 +16,6 @@ const stubProposalJSON = `{
     {"name":"部署","kind":"deploy","jobs":[{"name":"部署","type":"deploy","summary":"部署到环境"}]}
   ],
   "build": {"model":"toolchain","toolchain":{"language":"node","version":"22"},"artifactType":"image","dockerfilePath":""},
-  "branchMappings": [{"branchPattern":"main","environment":"生产"}],
   "rationale": "检测到 Node 22"
 }`
 
@@ -97,9 +96,6 @@ func TestGenerateThreeProviders(t *testing.T) {
 			if p.Build.Model != "toolchain" || p.Build.Toolchain.Version != "22" {
 				t.Fatalf("build 解析错误: %+v", p.Build)
 			}
-			if len(p.BranchMappings) != 1 || p.BranchMappings[0].Environment != "生产" {
-				t.Fatalf("branchMappings 解析错误: %+v", p.BranchMappings)
-			}
 			// 每 stage/job/mapping 应有 p_ 前缀 id。
 			for _, st := range p.Stages {
 				if !strings.HasPrefix(st.ID, "p_s") {
@@ -110,9 +106,6 @@ func TestGenerateThreeProviders(t *testing.T) {
 						t.Fatalf("job id 缺 p_j 前缀: %q", jb.ID)
 					}
 				}
-			}
-			if !strings.HasPrefix(p.BranchMappings[0].ID, "p_m") {
-				t.Fatalf("mapping id 缺 p_m 前缀: %q", p.BranchMappings[0].ID)
 			}
 		})
 	}

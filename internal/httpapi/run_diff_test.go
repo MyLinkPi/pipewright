@@ -100,8 +100,8 @@ func seedDiffRun(t *testing.T, db *sql.DB, projID, branch, commit, status string
 	if _, err := db.Exec(
 		`INSERT INTO pipeline_runs
 		   (id, project_id, status, trigger_type, trigger_branch, trigger_commit, trigger_actor,
-		    resolved_environment, resolved_target_server_ids, created_at, started_at, finished_at)
-		 VALUES (?, ?, ?, 'manual', ?, ?, 'admin', '', '[]', ?, NULL, NULL)`,
+		    created_at, started_at, finished_at)
+		 VALUES (?, ?, ?, 'manual', ?, ?, 'admin', ?, NULL, NULL)`,
 		id, projID, status, branch, commit, createdAt.UTC().Format(time.RFC3339),
 	); err != nil {
 		t.Fatalf("seed run: %v", err)

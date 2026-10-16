@@ -68,7 +68,7 @@ type stubAnalyzer struct {
 
 func (a stubAnalyzer) Analyze(context.Context, string, vault.GitAuth) ai.RepoAnalysis { return a.res }
 
-// sampleProposal 是一份合法提案(node:22 + main→生产)。
+// sampleProposal 是一份合法提案(node:22)。
 func sampleProposal() *ai.Proposal {
 	return &ai.Proposal{
 		Stages: []ai.ProposalStage{
@@ -81,7 +81,6 @@ func sampleProposal() *ai.Proposal {
 			Toolchain:    ai.ProposalToolchain{Language: "node", Version: "22"},
 			ArtifactType: "image",
 		},
-		BranchMappings: []ai.ProposalBranchMapping{{ID: "p_m1", BranchPattern: "main", Environment: "生产"}},
 		Rationale:      "检测到 Node 22",
 	}
 }
@@ -277,10 +276,9 @@ func TestAIGenerateRequiresCSRF(t *testing.T) {
 func proposalJSON() string {
 	p := sampleProposal()
 	raw, _ := json.Marshal(map[string]any{
-		"stages":         p.Stages,
-		"build":          p.Build,
-		"branchMappings": p.BranchMappings,
-		"rationale":      p.Rationale,
+		"stages":    p.Stages,
+		"build":     p.Build,
+		"rationale": p.Rationale,
 	})
 	return string(raw)
 }
@@ -288,7 +286,7 @@ func proposalJSON() string {
 func TestAIApplyAllSelected(t *testing.T) {
 	srv, client, csrf, projID := setupAIGenServer(t, &stubAIService{proposal: sampleProposal()}, stubAnalyzer{res: ai.RepoAnalysis{Cloned: true}})
 
-	body := `{"proposal":` + proposalJSON() + `,"selections":{"stageIds":["p_s2","p_s3"],"build":true,"branchMappingIds":["p_m1"]}}`
+	body := `{"proposal":` + proposalJSON() + `,"selections":{"stageIds":["p_s2","p_s3"],"build":true}}`
 	resp := doJSON(t, client, http.MethodPost, srv.URL+"/api/projects/"+projID+"/pipeline/ai-apply", csrf, body)
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
@@ -297,8 +295,8 @@ func TestAIApplyAllSelected(t *testing.T) {
 	}
 	dto := decode(t, resp)
 	applied, _ := dto["applied"].(map[string]any)
-	if applied["spec"] != true || applied["settings"] != true || applied["triggers"] != true {
-		t.Fatalf("全选应三项都写: %v", applied)
+	if applied["spec"] != true || applied["settings"] != true {
+		t.Fatalf("全选应两项都写: %v", applied)
 	}
 
 	// 验证 spec 写入了构建/部署阶段(且仍恰一个源阶段)。
@@ -339,21 +337,6 @@ func TestAIApplyAllSelected(t *testing.T) {
 		t.Fatalf("toolchain 应为 node/22: %v", tc)
 	}
 
-	// 验证 trigger 写入了 main→生产 映射。
-	tResp := doJSON(t, client, http.MethodGet, srv.URL+"/api/projects/"+projID+"/trigger", csrf, "")
-	defer tResp.Body.Close()
-	tdto := decode(t, tResp)
-	mappings, _ := tdto["branchMappings"].([]any)
-	found := false
-	for _, m := range mappings {
-		mm, _ := m.(map[string]any)
-		if mm["branchPattern"] == "main" && mm["environment"] == "生产" {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatalf("trigger 应含 main→生产 映射: %v", mappings)
-	}
 }
 
 func TestAIApplyPartialSelected(t *testing.T) {
@@ -372,17 +355,8 @@ func TestAIApplyPartialSelected(t *testing.T) {
 	if applied["settings"] != true {
 		t.Fatalf("应写 settings: %v", applied)
 	}
-	if applied["spec"] != false || applied["triggers"] != false {
+	if applied["spec"] != false {
 		t.Fatalf("未勾选项不应写: %v", applied)
-	}
-
-	// trigger 不应有 main→生产 映射(未勾选)。
-	tResp := doJSON(t, client, http.MethodGet, srv.URL+"/api/projects/"+projID+"/trigger", csrf, "")
-	defer tResp.Body.Close()
-	tdto := decode(t, tResp)
-	mappings, _ := tdto["branchMappings"].([]any)
-	if len(mappings) != 0 {
-		t.Fatalf("未勾选 branch 映射,trigger 应为空: %v", mappings)
 	}
 }
 

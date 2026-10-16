@@ -68,9 +68,6 @@ func TestSettingsGetLazyDefaultHTTP(t *testing.T) {
 	if vars, ok := build["vars"].([]any); !ok || len(vars) != 0 {
 		t.Fatalf("默认构建变量应为 []: %v", build["vars"])
 	}
-	if envs, ok := dto["environments"].([]any); !ok || len(envs) != 0 {
-		t.Fatalf("默认环境应为 []: %v", dto["environments"])
-	}
 }
 
 func TestSettingsBuildModelToggleRoundTripHTTP(t *testing.T) {

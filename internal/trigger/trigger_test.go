@@ -75,11 +75,8 @@ func TestGetLazyDefault(t *testing.T) {
 	if cfg.Events.Push || cfg.Events.Tag || cfg.Events.PullRequest {
 		t.Fatalf("默认 events 应全 false, got %+v", cfg.Events)
 	}
-	if len(cfg.BranchMappings) != 0 {
-		t.Fatalf("默认映射应为空, got %d", len(cfg.BranchMappings))
-	}
-	if cfg.UnmatchedPolicy != PolicyRecord {
-		t.Fatalf("默认策略应为 record, got %s", cfg.UnmatchedPolicy)
+	if len(cfg.BranchFilters) != 0 {
+		t.Fatalf("默认分支过滤应为空, got %d", len(cfg.BranchFilters))
 	}
 	if !strings.HasPrefix(cfg.WebhookSecretMasked, secretPrefix) || !strings.Contains(cfg.WebhookSecretMasked, "••••") {
 		t.Fatalf("密钥应掩码, got %q", cfg.WebhookSecretMasked)
@@ -106,15 +103,12 @@ func TestGetProjectNotFound(t *testing.T) {
 	}
 }
 
-func TestSaveRoundTrip(t *testing.T) {
+// TestSaveBranchFiltersRoundTrip 验证分支过滤 glob 往返:trim、剔空、去重、保序;回读一致。
+func TestSaveBranchFiltersRoundTrip(t *testing.T) {
 	svc, _, _, projID := newSvc(t)
 	in := SaveInput{
-		Events: Events{Push: true, Tag: false, PullRequest: true},
-		BranchMappings: []BranchMapping{
-			{BranchPattern: "main", Environment: "生产", TargetServerIDs: []string{"srv-1", "srv-2"}},
-			{BranchPattern: "release/*", Environment: "预发"},
-		},
-		UnmatchedPolicy: PolicyIgnore,
+		Events:        Events{Push: true, Tag: false, PullRequest: true},
+		BranchFilters: []string{" main ", "release/*", "main", "  "},
 	}
 	saved, err := svc.Save(context.Background(), projID, in)
 	if err != nil {
@@ -123,28 +117,21 @@ func TestSaveRoundTrip(t *testing.T) {
 	if !saved.Events.Push || saved.Events.Tag || !saved.Events.PullRequest {
 		t.Fatalf("events 未持久化正确: %+v", saved.Events)
 	}
-	if saved.UnmatchedPolicy != PolicyIgnore {
-		t.Fatalf("policy = %s, want ignore", saved.UnmatchedPolicy)
+	want := []string{"main", "release/*"}
+	if len(saved.BranchFilters) != len(want) {
+		t.Fatalf("branch filters = %v, want %v", saved.BranchFilters, want)
 	}
-	if len(saved.BranchMappings) != 2 {
-		t.Fatalf("映射数 = %d, want 2", len(saved.BranchMappings))
-	}
-	for _, m := range saved.BranchMappings {
-		if m.ID == "" {
-			t.Fatal("映射应补全 id")
-		}
-		if m.TargetServerIDs == nil {
-			t.Fatal("targetServerIds 应非 nil")
+	for i, p := range want {
+		if saved.BranchFilters[i] != p {
+			t.Fatalf("branch filter[%d] = %q, want %q (order/trim/dedup)", i, saved.BranchFilters[i], p)
 		}
 	}
-
-	// 回读验证持久化。
 	got, err := svc.Get(context.Background(), projID)
 	if err != nil {
 		t.Fatalf("Get after save: %v", err)
 	}
-	if len(got.BranchMappings) != 2 || got.BranchMappings[0].Environment != "生产" {
-		t.Fatalf("回读映射不符: %+v", got.BranchMappings)
+	if len(got.BranchFilters) != len(want) || got.BranchFilters[0] != "main" {
+		t.Fatalf("回读分支过滤不符: %v", got.BranchFilters)
 	}
 }
 
@@ -152,9 +139,8 @@ func TestSaveRoundTrip(t *testing.T) {
 func TestSavePathFiltersRoundTrip(t *testing.T) {
 	svc, _, _, projID := newSvc(t)
 	in := SaveInput{
-		Events:          Events{Push: true},
-		UnmatchedPolicy: PolicyRecord,
-		PathFilters:     []string{" backend/** ", "frontend/**", "backend/**", "  ", "*.go"},
+		Events:      Events{Push: true},
+		PathFilters: []string{" backend/** ", "frontend/**", "backend/**", "  ", "*.go"},
 	}
 	saved, err := svc.Save(context.Background(), projID, in)
 	if err != nil {
@@ -182,9 +168,8 @@ func TestSavePathFiltersRoundTrip(t *testing.T) {
 func TestSaveInvalidPathFilter(t *testing.T) {
 	svc, _, _, projID := newSvc(t)
 	_, err := svc.Save(context.Background(), projID, SaveInput{
-		Events:          Events{Push: true},
-		UnmatchedPolicy: PolicyRecord,
-		PathFilters:     []string{"back end/**"},
+		Events:      Events{Push: true},
+		PathFilters: []string{"back end/**"},
 	})
 	if !errors.Is(err, ErrInvalidPathFilter) {
 		t.Fatalf("err = %v, want ErrInvalidPathFilter", err)
@@ -193,11 +178,11 @@ func TestSaveInvalidPathFilter(t *testing.T) {
 
 func TestSaveInvalidBranchPattern(t *testing.T) {
 	svc, _, _, projID := newSvc(t)
-	cases := []string{"", "  ", "feature branch", "*", "**"}
+	// 空串/纯空白在列表语义下是"剔除"而非报错(与 pathFilters 一致);非法语法才拒绝。
+	cases := []string{"feature branch", "*", "**"}
 	for _, p := range cases {
 		_, err := svc.Save(context.Background(), projID, SaveInput{
-			BranchMappings:  []BranchMapping{{BranchPattern: p, Environment: "e"}},
-			UnmatchedPolicy: PolicyRecord,
+			BranchFilters: []string{p},
 		})
 		if err != ErrInvalidBranchPattern {
 			t.Fatalf("pattern %q: err = %v, want ErrInvalidBranchPattern", p, err)
@@ -209,20 +194,11 @@ func TestSaveValidWildcards(t *testing.T) {
 	svc, _, _, projID := newSvc(t)
 	for _, p := range []string{"main", "dev", "release/*", "feature/*-hotfix", "v*.*"} {
 		_, err := svc.Save(context.Background(), projID, SaveInput{
-			BranchMappings:  []BranchMapping{{BranchPattern: p, Environment: "e"}},
-			UnmatchedPolicy: PolicyRecord,
+			BranchFilters: []string{p},
 		})
 		if err != nil {
 			t.Fatalf("pattern %q should be valid, got %v", p, err)
 		}
-	}
-}
-
-func TestSaveInvalidPolicy(t *testing.T) {
-	svc, _, _, projID := newSvc(t)
-	_, err := svc.Save(context.Background(), projID, SaveInput{UnmatchedPolicy: "deploy"})
-	if err != ErrInvalidPolicy {
-		t.Fatalf("err = %v, want ErrInvalidPolicy", err)
 	}
 }
 

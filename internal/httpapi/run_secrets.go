@@ -85,21 +85,13 @@ func (s *RunSecretSource) registerProjectSecrets(ctx context.Context, m *mask.Ma
 		}
 	}
 
-	// ② 流水线 settings(2-4)的 secret 引用:构建变量 + 各环境变量 + 镜像仓库凭据。
+	// ② 流水线 settings(2-4)的 secret 引用:构建变量。
 	if s.settings != nil {
 		if st, err := s.settings.Get(ctx, projectID); err == nil && st != nil {
 			for _, v := range st.Build.Vars {
 				if v.Secret {
 					reveal(v.CredentialID)
 				}
-			}
-			for _, e := range st.Environments {
-				for _, v := range e.EnvVars {
-					if v.Secret {
-						reveal(v.CredentialID)
-					}
-				}
-				reveal(e.ImageRegistry.CredentialID, true)
 			}
 			// ③ 自定义脚本步骤(Epic 8)的 secret env 引用。
 			for _, step := range st.Steps {

@@ -3,7 +3,7 @@
 // Service.Generate 据仓库分析(RepoAnalysis)+ 用户自然语言补充构造 prompt(含期望
 // JSON schema),调 LLM 的 chat 接口(claude /v1/messages、openai /v1/chat/completions、
 // ollama /api/chat,均经注入的 http.Client),取回文本,容错剥离 markdown ```json fence
-// 后 json.Unmarshal 到 Proposal,并给每个 stage/job/branchMapping 补 `p_` 前缀 id 供前端逐项勾选。
+// 后 json.Unmarshal 到 Proposal,并给每个 stage/job 补 `p_` 前缀 id 供前端逐项勾选。
 //
 // 安全(AC-SEC):apiKey 仅进程内解密取用、用完即弃;绝不进 prompt / 日志 / 错误 / 响应。
 // 调用 / 解析失败统一映射为 ErrGenerateFailed 包裹的人读错误(不 %w 底层网络错误,避免
@@ -37,7 +37,7 @@ type GenerateInput struct {
 	Catalog []NodeKind
 }
 
-// ---- Proposal 结构(冻结契约;对齐 2-2 spec / 2-4 build / 2-3 branchMappings 子集) ----
+// ---- Proposal 结构(冻结契约;对齐 2-2 spec / 2-4 build 子集) ----
 
 // ProposalJob 是提案中的一个任务(对齐 pipeline.Job 子集)。
 // Config 是 LLM 据仓库分析填好的可执行配置(命令/镜像/Dockerfile 路径/端口等),
@@ -75,19 +75,11 @@ type ProposalBuild struct {
 	DockerfilePath string            `json:"dockerfilePath"`
 }
 
-// ProposalBranchMapping 对齐 trigger.BranchMapping 子集。
-type ProposalBranchMapping struct {
-	ID            string `json:"id"`
-	BranchPattern string `json:"branchPattern"`
-	Environment   string `json:"environment"`
-}
-
 // Proposal 是 LLM 生成的结构化流水线提案(供前端逐项勾选后 apply)。
 type Proposal struct {
-	Stages         []ProposalStage         `json:"stages"`
-	Build          ProposalBuild           `json:"build"`
-	BranchMappings []ProposalBranchMapping `json:"branchMappings"`
-	Rationale      string                  `json:"rationale"`
+	Stages    []ProposalStage `json:"stages"`
+	Build     ProposalBuild   `json:"build"`
+	Rationale string          `json:"rationale"`
 }
 
 func (s *service) Generate(ctx context.Context, in GenerateInput) (*Proposal, error) {
@@ -336,14 +328,11 @@ func stripJSONFence(text string) string {
 	return t
 }
 
-// assignProposalIDs 给每个 stage/job/branchMapping 补 `p_` 前缀 id(供前端逐项勾选)。
-// 已有 id 保留;空 id 按序号生成稳定值(p_sN / p_jN / p_mN)。
+// assignProposalIDs 给每个 stage/job 补 `p_` 前缀 id(供前端逐项勾选)。
+// 已有 id 保留;空 id 按序号生成稳定值(p_sN / p_jN)。
 func assignProposalIDs(p *Proposal) {
 	if p.Stages == nil {
 		p.Stages = []ProposalStage{}
-	}
-	if p.BranchMappings == nil {
-		p.BranchMappings = []ProposalBranchMapping{}
 	}
 	jobSeq := 0
 	for i := range p.Stages {
@@ -358,11 +347,6 @@ func assignProposalIDs(p *Proposal) {
 			if strings.TrimSpace(p.Stages[i].Jobs[j].ID) == "" {
 				p.Stages[i].Jobs[j].ID = fmt.Sprintf("p_j%d", jobSeq)
 			}
-		}
-	}
-	for i := range p.BranchMappings {
-		if strings.TrimSpace(p.BranchMappings[i].ID) == "" {
-			p.BranchMappings[i].ID = fmt.Sprintf("p_m%d", i+1)
 		}
 	}
 }
@@ -460,7 +444,6 @@ needs 填「本阶段内它所依赖的其它 job 的 name」(数组)。**凡有
         { "name": "健康检查", "type": "health_check", "summary": "...", "needs": ["容器部署"], "config": { "probeMode": "http", "url": "http://localhost:8080/actuator/health", "retries": "10", "intervalSeconds": "3" } } ] }
   ],
   "build": { "model": "toolchain|dockerfile", "toolchain": { "language": "node|go|java|python", "version": "..." }, "artifactType": "image|jar|dist", "dockerfilePath": "" },
-  "branchMappings": [ { "branchPattern": "main", "environment": "生产" } ],
   "rationale": "一句话说明推荐依据"
 }
 约束:

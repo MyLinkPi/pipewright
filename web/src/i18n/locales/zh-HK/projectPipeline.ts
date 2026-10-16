@@ -9,7 +9,6 @@ export default {
   tabBuild: '構建配置',
   tabVars: '變數與快取',
   tabTriggers: '觸發設定',
-  tabEnvs: '環境與憑證',
   tabStripAria: '流水線設定標籤頁',
 
   // ─── 流水線即程式碼(GitOps · FR-8-12)─────────────────────────────
@@ -54,7 +53,7 @@ export default {
   // ─── 橫幅 / 狀態 ────────────────────────────────────────────────
   dismiss: '關閉提示',
   draftSaved: '流水線已儲存',
-  scopeSettings: '變數/環境',
+  scopeSettings: '變數',
   scopePipeline: '流水線編排',
   noChanges: '沒有未儲存的修改',
   errSavePartial: '部分已儲存({saved});失敗:',
@@ -80,7 +79,6 @@ export default {
   errDuplicateId: '階段或任務 ID 重複,請刪除重複項後重試。',
   errInvalidBuild: '構建模型須為 dockerfile/toolchain,產物類型須為 image/jar/dist。',
   errInvalidVar: '變數鍵不能為空且同作用域內不可重複;secret 變數須選擇保險庫憑證。',
-  errInvalidEnvironment: '環境名稱不能為空,映像倉庫類型須為 harbor/acr/dockerhub/custom。',
   errCredentialNotFound: '引用的保險庫憑證不存在,請重新選擇後重試。',
   errVaultUnconfigured: '保險庫未設定 master key,無法引用 secret 憑證。',
 }

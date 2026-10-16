@@ -18,8 +18,8 @@ func seedFailedRunWithDeps(t *testing.T, svc Service, projID string) string {
 	if _, err := s.db.Exec(
 		`INSERT INTO pipeline_runs
 		   (id, project_id, status, trigger_type, trigger_branch, trigger_commit, trigger_actor,
-		    resolved_environment, resolved_target_server_ids, params_json, created_at, started_at, finished_at)
-		 VALUES (?, ?, 'failed', 'webhook', 'main', 'abc1234', 'ci', 'prod', '["srv-a"]', '{"k":"v"}', ?, ?, ?)`,
+		    params_json, created_at, started_at, finished_at)
+		 VALUES (?, ?, 'failed', 'webhook', 'main', 'abc1234', 'ci', '{"k":"v"}', ?, ?, ?)`,
 		runID, projID, now, now, now); err != nil {
 		t.Fatalf("seed parent run: %v", err)
 	}
@@ -46,8 +46,8 @@ func seedFailedRunWithDeps(t *testing.T, svc Service, projID string) string {
 	return runID
 }
 
-// TestCreateResumeCopiesContextAndRows 验证派生运行:触发上下文复制(type=manual/分支/参数/
-// 解析环境与目标机)、resume 两列、产物与部署目标行复制。
+// TestCreateResumeCopiesContextAndRows 验证派生运行:触发上下文复制(type=manual/分支/参数)、
+// resume 两列、产物与部署目标行复制。
 func TestCreateResumeCopiesContextAndRows(t *testing.T) {
 	db := testDB(t)
 	svc := New(db)
@@ -67,11 +67,8 @@ func TestCreateResumeCopiesContextAndRows(t *testing.T) {
 	if child.Trigger.Branch != "main" || child.Trigger.Commit != "abc1234" {
 		t.Fatalf("分支/commit 应复制自父运行:%+v", child.Trigger)
 	}
-	if child.Trigger.Params["k"] != "v" || child.Trigger.ResolvedEnvironment != "prod" {
-		t.Fatalf("参数/解析环境应复制:%+v", child.Trigger)
-	}
-	if len(child.Trigger.ResolvedTargetServerIDs) != 1 || child.Trigger.ResolvedTargetServerIDs[0] != "srv-a" {
-		t.Fatalf("目标机应复制:%v", child.Trigger.ResolvedTargetServerIDs)
+	if child.Trigger.Params["k"] != "v" {
+		t.Fatalf("参数应复制:%+v", child.Trigger)
 	}
 	if child.Trigger.Actor != "operator" {
 		t.Fatalf("actor 应为恢复操作人,得到 %q", child.Trigger.Actor)

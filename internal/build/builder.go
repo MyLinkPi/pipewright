@@ -235,8 +235,8 @@ func (b *Builder) Run(ctx context.Context, r *run.Run, sink run.StepSink) error 
 		return b.failPlan(ctx, sink, stepClone, "无法加载项目构建配置:"+perr.Error())
 	}
 
-	// 是否需要推送:产物为 image 且解析出镜像仓库(环境绑定优先,未绑定回退内置 registry)。
-	registry := b.resolveRegistry(ctx, settings, r.Trigger.ResolvedEnvironment)
+	// 是否需要推送:产物为 image 且解析出镜像仓库(未配仓库时回退内置 registry)。
+	registry := b.resolveRegistry(ctx)
 	artifactType := settings.Build.ArtifactType
 	willPush := artifactType == pipeline.ArtifactImage && registry != nil
 
@@ -392,24 +392,10 @@ func (b *Builder) resolve(ctx context.Context, r *run.Run) (*project.Project, *p
 	return proj, settings, nil
 }
 
-// resolveRegistry 取镜像产物应推送的仓库:环境显式绑定优先(非空且 Type/URL 非空);
-// 未绑定(含环境名为空的手动触发、无匹配环境)时回退内置本地 registry(装配且启用时),
+// resolveRegistry 取镜像产物应推送的仓库:回退内置本地 registry(装配且启用时),
 // 让产物引用成为任意目标机可 pull 的远端 tag(补齐「本地 tag 只在构建机有效」的缺口)。
-// 两者皆无 → nil(不推送,旧行为)。
-func (b *Builder) resolveRegistry(ctx context.Context, settings *pipeline.Settings, envName string) *pipeline.ImageRegistry {
-	envName = strings.TrimSpace(envName)
-	if envName != "" {
-		for i := range settings.Environments {
-			e := &settings.Environments[i]
-			if e.Name == envName {
-				if strings.TrimSpace(e.ImageRegistry.Type) != "" && strings.TrimSpace(e.ImageRegistry.URL) != "" {
-					reg := e.ImageRegistry
-					return &reg
-				}
-				break
-			}
-		}
-	}
+// 未装配/未启用 → nil(不推送;push_image 节点仍可用节点级 registryUrl 显式指定仓库)。
+func (b *Builder) resolveRegistry(ctx context.Context) *pipeline.ImageRegistry {
 	if b.builtinRegistry != nil {
 		if addr, ok := b.builtinRegistry(ctx); ok && addr != "" {
 			// Type=builtin 仅供展示/追溯;推送链路只用 URL(无凭据 → 跳过 login,匿名推内网 HTTP registry)。

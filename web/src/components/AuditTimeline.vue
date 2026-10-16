@@ -50,11 +50,7 @@ const ACTION_META: Record<string, ActionMeta> = {
   project_create: { dot: 'add', verb: 'verbCreate', noun: 'nounProject' },
   project_update: { dot: 'cfg', verb: 'verbUpdate', noun: 'nounProject' },
   project_delete: { dot: 'del', verb: 'verbDelete', noun: 'nounProject' },
-  'project.environments.save': { dot: 'cfg', verb: 'verbUpdate', noun: 'nounEnvironments' },
   run_trigger_manual: { dot: 'use', verb: 'verbTrigger', noun: 'nounRun' },
-  'run.promote': { dot: 'use', verb: 'verbPromote' },
-  'run.promote.reject': { dot: 'cfg', verb: 'verbReject' },
-  'environment.rollback': { dot: 'cfg', verb: 'verbRollback', noun: 'nounEnvironment' },
   // 账号 / 会话
   password_change: { dot: 'cfg', verb: 'verbUpdate', noun: 'nounPassword' },
   session_revoke: { dot: 'del', verb: 'verbRevoke', noun: 'nounSession' },

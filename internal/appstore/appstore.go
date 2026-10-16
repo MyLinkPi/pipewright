@@ -1,7 +1,8 @@
 // Package appstore 是「应用商店模板」的领域层(DPanel 式一键部署)。
 //
-// 模板 = docker-compose YAML + 参数 schema:预置内置模板(MySQL/Redis/Postgres/Nginx/MinIO/
-// RustFS/RabbitMQ/Gitea/Redpanda,启动幂等 seed,builtin=1 不可改删),用户可建自定义模板。部署本身不在本包 ——
+// 模板 = docker-compose YAML + 参数 schema:预置内置模板(MySQL/Redis/Postgres/Nginx/
+// RustFS/RabbitMQ/Gitea/Redpanda,启动幂等 seed,builtin=1 不可改删;已下架内置名见
+// retiredBuiltins,seed 时顺带清掉老库遗留的内置行),用户可建自定义模板。部署本身不在本包 ——
 // httpapi 侧复用 Stacks 受管链路(Upload 到 /opt/pipewright/stacks/<name> → docker compose up -d),
 // 本包只负责模板 CRUD 与「参数校验 + 占位符替换 + secret 自动生成」的纯渲染。
 //
@@ -131,7 +132,7 @@ type Service interface {
 	// Delete 删除自定义模板;内置模板 → ErrBuiltin。
 	Delete(ctx context.Context, id string) error
 	// EnsureBuiltins 幂等 seed 内置模板(main 启动时调用一次;新名字插入,已有内置行随
-	// 新版定义刷新,同名自定义模板跳过不覆盖)。
+	// 新版定义刷新,同名自定义模板跳过不覆盖;已下架内置名清掉库中内置行)。
 	EnsureBuiltins(ctx context.Context) error
 	// Render 校验参数 → 应用默认值/自动生成 secret → 替换 {{param}} 占位符。
 	Render(ctx context.Context, id string, params map[string]string) (*RenderResult, error)
@@ -222,6 +223,21 @@ func (s *service) Delete(ctx context.Context, id string) error {
 }
 
 func (s *service) EnsureBuiltins(ctx context.Context) error {
+	// 先清下架内置:老版本 seed 过、新版已移除的模板行删掉(同名自定义行让路,不删)。
+	for _, name := range retiredBuiltins {
+		existing, err := s.store.getByName(ctx, name)
+		if err != nil {
+			if errors.Is(err, ErrNotFound) {
+				continue
+			}
+			return err
+		}
+		if existing.Builtin {
+			if err := s.store.delete(ctx, existing.ID); err != nil {
+				return err
+			}
+		}
+	}
 	for i := range builtins {
 		tpl := builtins[i]
 		tpl.UpdatedAt = time.Now().UTC()

@@ -90,9 +90,6 @@ func TestSettingsGetLazyDefault(t *testing.T) {
 	if st.Build.Vars == nil || len(st.Build.Vars) != 0 {
 		t.Fatalf("默认构建变量应为空切片, got %+v", st.Build.Vars)
 	}
-	if st.Environments == nil || len(st.Environments) != 0 {
-		t.Fatalf("默认环境应为空切片, got %+v", st.Environments)
-	}
 
 	// 二次 Get 幂等。
 	st2, err := svc.Get(context.Background(), projID)
@@ -194,7 +191,7 @@ func TestSettingsBuildContextRoundTrip(t *testing.T) {
 	}
 }
 
-// TestSettingsSaveDuplicateIDsRejected 锁环境/步骤/变量 id 的唯一性校验:
+// TestSettingsSaveDuplicateIDsRejected 锁步骤/变量 id 的唯一性校验:
 // 此前只补空 id 不查重,同 id 记录会静默共存(回读/引用语义错乱)。
 func TestSettingsSaveDuplicateIDsRejected(t *testing.T) {
 	svc, _, _, _, projID := newSettingsSvc(t)
@@ -211,16 +208,6 @@ func TestSettingsSaveDuplicateIDsRejected(t *testing.T) {
 		t.Fatalf("变量 id 重复 err = %v, want ErrInvalidVar", err)
 	}
 
-	// 环境 id 重复 → ErrInvalidEnvironment。
-	_, err = svc.Save(ctx, projID, SettingsInput{
-		Environments: []Environment{
-			{ID: "edup", Name: "staging"},
-			{ID: "edup", Name: "prod"},
-		},
-	})
-	if !errors.Is(err, ErrInvalidEnvironment) {
-		t.Fatalf("环境 id 重复 err = %v, want ErrInvalidEnvironment", err)
-	}
 
 	// 步骤 id 重复 → ErrInvalidStep。
 	_, err = svc.Save(ctx, projID, SettingsInput{
@@ -327,87 +314,15 @@ func TestSettingsSecretVarVaultUnconfigured(t *testing.T) {
 	}
 }
 
-func TestSettingsEnvironmentRoundTrip(t *testing.T) {
-	svc, v, _, _, projID := newSettingsSvc(t)
-	const dbPass = "registry_user:registry_LEAKMARKER_pass"
-	regCredID := seedRealCred(t, v, "ghp_envsecret_marker_aaaa") // git_token 充当通用引用
-	regBindCred, _ := v.Create(vault.CreateInput{Name: "reg", Type: vault.TypeRegistry, Secret: dbPass})
-
-	in := SettingsInput{
-		Environments: []Environment{
-			{
-				Name:            "生产",
-				TargetServerIDs: []string{"srv-1", "srv-2"},
-				EnvVars: []BuildVar{
-					{Key: "API_URL", Secret: false, Value: "https://api.acme.io"},
-					{Key: "DB_PASS", Secret: true, CredentialID: regCredID},
-				},
-				ImageRegistry: ImageRegistry{Type: RegistryHarbor, URL: "harbor.acme.com", CredentialID: regBindCred.ID},
-			},
-		},
-	}
-	st, err := svc.Save(context.Background(), projID, in)
-	if err != nil {
-		t.Fatalf("Save env: %v", err)
-	}
-	if len(st.Environments) != 1 {
-		t.Fatalf("环境数 = %d", len(st.Environments))
-	}
-	e := st.Environments[0]
-	if e.Name != "生产" || e.ID == "" {
-		t.Fatalf("环境名/id 异常: %+v", e)
-	}
-	if len(e.TargetServerIDs) != 2 {
-		t.Fatalf("目标服务器引用应保留: %+v", e.TargetServerIDs)
-	}
-	if len(e.EnvVars) != 2 {
-		t.Fatalf("环境变量数 = %d", len(e.EnvVars))
-	}
-	if e.EnvVars[1].Value != "" || e.EnvVars[1].MaskedValue == "" {
-		t.Fatalf("secret 环境变量应掩码且无明文: %+v", e.EnvVars[1])
-	}
-	if e.ImageRegistry.Type != RegistryHarbor || e.ImageRegistry.URL != "harbor.acme.com" {
-		t.Fatalf("镜像仓库往返失败: %+v", e.ImageRegistry)
-	}
-	if e.ImageRegistry.MaskedCredential == "" || strings.Contains(e.ImageRegistry.MaskedCredential, "LEAKMARKER") {
-		t.Fatalf("镜像仓库凭据应掩码且不含明文: %q", e.ImageRegistry.MaskedCredential)
-	}
-}
-
-func TestSettingsEnvEmptyNameRejected(t *testing.T) {
-	svc, _, _, _, projID := newSettingsSvc(t)
-	_, err := svc.Save(context.Background(), projID, SettingsInput{
-		Environments: []Environment{{Name: "  "}},
-	})
-	if err == nil || !strings.Contains(err.Error(), "environment name must not be empty") {
-		t.Fatalf("err = %v, want ErrInvalidEnvironment", err)
-	}
-}
-
-func TestSettingsInvalidRegistryType(t *testing.T) {
-	svc, _, _, _, projID := newSettingsSvc(t)
-	_, err := svc.Save(context.Background(), projID, SettingsInput{
-		Environments: []Environment{{Name: "e", ImageRegistry: ImageRegistry{Type: "bogus", URL: "x"}}},
-	})
-	if err == nil || !strings.Contains(err.Error(), "invalid imageRegistry type") {
-		t.Fatalf("err = %v, want ErrInvalidEnvironment", err)
-	}
-}
-
 // TestSettingsSecAfterDBNoPlaintext 断言:存含 secret 引用的 settings 后,整库二进制不含任何明文 secret(AC-SEC)。
 func TestSettingsSecAfterDBNoPlaintext(t *testing.T) {
 	svc, v, db, dbPath, projID := newSettingsSvc(t)
 	const buildSecret = "ghp_BUILDLEAK_marker_value_xyz9"
-	const envSecret = "DBPASS_ENVLEAK_marker_value_888"
 	buildCred := seedRealCred(t, v, buildSecret)
-	envCred := seedRealCred(t, v, envSecret)
 
 	_, err := svc.Save(context.Background(), projID, SettingsInput{
 		Build: BuildConfig{
 			Vars: []BuildVar{{Key: "NPM_TOKEN", Secret: true, CredentialID: buildCred, Value: buildSecret}},
-		},
-		Environments: []Environment{
-			{Name: "prod", EnvVars: []BuildVar{{Key: "DB_PASS", Secret: true, CredentialID: envCred, Value: envSecret}}},
 		},
 	})
 	if err != nil {
@@ -416,13 +331,13 @@ func TestSettingsSecAfterDBNoPlaintext(t *testing.T) {
 	_, _ = db.Exec(`PRAGMA wal_checkpoint(TRUNCATE)`)
 
 	// pipeline_settings 表的 JSON 列裸读:断言不含明文。
-	var buildJSON, envsJSON string
-	if err := db.QueryRow(`SELECT build_json, environments_json FROM pipeline_settings WHERE project_id = ?`, projID).
-		Scan(&buildJSON, &envsJSON); err != nil {
+	var buildJSON string
+	if err := db.QueryRow(`SELECT build_json FROM pipeline_settings WHERE project_id = ?`, projID).
+		Scan(&buildJSON); err != nil {
 		t.Fatalf("read settings row: %v", err)
 	}
-	for _, blob := range []string{buildJSON, envsJSON} {
-		if strings.Contains(blob, buildSecret) || strings.Contains(blob, envSecret) {
+	for _, blob := range []string{buildJSON} {
+		if strings.Contains(blob, buildSecret) {
 			t.Fatalf("pipeline_settings JSON 含明文 secret!: %s", blob)
 		}
 		if strings.Contains(blob, "LEAK") {
@@ -434,7 +349,7 @@ func TestSettingsSecAfterDBNoPlaintext(t *testing.T) {
 	if dbPath != "" {
 		for _, suffix := range []string{"", "-wal", "-shm"} {
 			raw := readSettingsFileMaybe(t, dbPath+suffix)
-			if strings.Contains(string(raw), buildSecret) || strings.Contains(string(raw), envSecret) {
+			if strings.Contains(string(raw), buildSecret) {
 				t.Fatalf("整库文件 %s 含明文 secret!", dbPath+suffix)
 			}
 		}

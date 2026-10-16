@@ -32,9 +32,9 @@ func seedResumeRun(t *testing.T, db *sql.DB) string {
 	if _, err := db.Exec(
 		`INSERT INTO pipeline_runs
 		   (id, project_id, status, trigger_type, trigger_branch, trigger_commit, trigger_actor,
-		    resolved_environment, resolved_target_server_ids, created_at, started_at, finished_at,
+		    created_at, started_at, finished_at,
 		    resume_of_run_id, resume_plan_json)
-		 VALUES (?, ?, 'failed', 'manual', 'main', 'abc', 'admin', '', '[]', ?, ?, ?, 'parent', '["run","retry"]')`,
+		 VALUES (?, ?, 'failed', 'manual', 'main', 'abc', 'admin', ?, ?, ?, 'parent', '["run","retry"]')`,
 		runID, projID, now, now, now); err != nil {
 		t.Fatalf("seed resume run: %v", err)
 	}

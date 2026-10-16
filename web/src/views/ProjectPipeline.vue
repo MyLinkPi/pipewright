@@ -1,8 +1,8 @@
 <script setup lang="ts">
 /**
- * ProjectPipeline — 5-tab pipeline configuration editor.
- * Tabs: 流水线编排 / 构建配置 / 变量与缓存 / 触发设置 / 环境与凭据
- * URL state: ?tab=canvas|build|vars|triggers|envs  (shareable)
+ * ProjectPipeline — 4-tab pipeline configuration editor.
+ * Tabs: 流水线编排 / 构建配置 / 变量与缓存 / 触发设置
+ * URL state: ?tab=canvas|build|vars|triggers  (shareable)
  * 两个低频项目级开关(流水线即代码 / PR 状态检查)以紧凑开关常驻 tab 栏右侧,
  * 说明文字走悬浮 tooltip,不再以横条形式占用画布/检视抽屉的纵向空间。
  */
@@ -15,7 +15,6 @@ import {
   saveSettings,
   type SettingsDTO,
   type BuildConfig,
-  type Environment,
   type SaveSettingsInput,
 } from '../api/pipelineSettings'
 import { listCredentials, type Credential } from '../api/credentials'
@@ -30,7 +29,6 @@ import { stableStringify } from '../lib/stableJson'
 import { anyDirty, useDirtyGuard } from '../composables/useDirtyGuard'
 import PipelineCanvas from '../components/pipeline/PipelineCanvas.vue'
 import VarsCacheTab from '../components/pipeline/VarsCacheTab.vue'
-import EnvCredsTab from '../components/pipeline/EnvCredsTab.vue'
 import TriggersPanel from '../components/TriggersPanel.vue'
 import RunnerPanel from '../components/RunnerPanel.vue'
 import ValidationPanel from '../components/pipeline/ValidationPanel.vue'
@@ -39,7 +37,6 @@ import RiskAnnotationModal from '../components/pipeline/RiskAnnotationModal.vue'
 import YamlImportModal from '../components/pipeline/YamlImportModal.vue'
 import TemplatePickerModal from '../components/pipeline/TemplatePickerModal.vue'
 import PacPreviewModal from '../components/pipeline/PacPreviewModal.vue'
-import ProjectPreviewConfig from '../components/pipeline/ProjectPreviewConfig.vue'
 import AppTooltip from '../components/ui/AppTooltip.vue'
 
 // ─── Route ────────────────────────────────────────────────────────────────────
@@ -53,19 +50,18 @@ const projectId = computed(() => route.params.id as string)
 
 // ─── Tabs ─────────────────────────────────────────────────────────────────────
 
-type TabKey = 'canvas' | 'build' | 'vars' | 'triggers' | 'envs'
+type TabKey = 'canvas' | 'build' | 'vars' | 'triggers'
 
 const TABS = computed<Array<{ key: TabKey; label: string }>>(() => [
   { key: 'canvas',   label: t('projectPipeline.tabCanvas') },
   { key: 'build',    label: t('projectPipeline.tabBuild') },
   { key: 'vars',     label: t('projectPipeline.tabVars') },
   { key: 'triggers', label: t('projectPipeline.tabTriggers') },
-  { key: 'envs',     label: t('projectPipeline.tabEnvs') },
 ])
 
 const activeTab = computed<TabKey>(() => {
   const q = route.query.tab
-  if (q === 'canvas' || q === 'build' || q === 'vars' || q === 'triggers' || q === 'envs') return q
+  if (q === 'canvas' || q === 'build' || q === 'vars' || q === 'triggers') return q
   return 'canvas'
 })
 
@@ -122,7 +118,6 @@ async function loadPipeline(): Promise<void> {
 
 const settings    = ref<SettingsDTO | null>(null)
 const editBuild    = ref<BuildConfig | null>(null)
-const editEnvs     = ref<Environment[]>([])
 const credentials  = ref<Credential[]>([])
 const servers      = ref<Server[]>([])
 const channels     = ref<NotificationChannel[]>([])
@@ -131,9 +126,7 @@ const objectStores = ref<ObjectStore[]>([])
 function applySettings(dto: SettingsDTO): void {
   settings.value = dto
   editBuild.value = JSON.parse(JSON.stringify(dto.build)) as BuildConfig
-  editEnvs.value  = JSON.parse(JSON.stringify(dto.environments)) as Environment[]
   buildSnapshot.value = JSON.stringify(editBuild.value)
-  envsSnapshot.value  = JSON.stringify(editEnvs.value)
 }
 
 async function loadSettings(): Promise<void> {
@@ -160,10 +153,6 @@ function handleBuildUpdate(build: BuildConfig): void {
   editBuild.value = build
 }
 
-function handleEnvsUpdate(envs: Environment[]): void {
-  editEnvs.value = envs
-}
-
 watch(projectId, () => { void loadProject(); void loadPipeline(); void loadSettings() })
 onMounted(() => { void loadProject(); void loadPipeline(); void loadSettings() })
 
@@ -171,14 +160,12 @@ onMounted(() => { void loadProject(); void loadPipeline(); void loadSettings() }
 
 const stagesSnapshot = ref('')
 const buildSnapshot  = ref('')
-const envsSnapshot   = ref('')
 
 // 脏检查与快照同走 stableStringify:只比内容、不比键序(改回原值不报脏)。
 const pipelineDirty = computed(() => stableStringify(editStages.value) !== stagesSnapshot.value)
 const buildDirty = computed(() => JSON.stringify(editBuild.value) !== buildSnapshot.value)
-const envsDirty = computed(() => JSON.stringify(editEnvs.value) !== envsSnapshot.value)
-const settingsDirty = computed(() => buildDirty.value || envsDirty.value)
-/** Header indicator: pipeline spec or build/env settings differ from the server state. */
+const settingsDirty = computed(() => buildDirty.value)
+/** Header indicator: pipeline spec or build settings differ from the server state. */
 const pageDirty = computed(() => pipelineDirty.value || settingsDirty.value)
 
 const triggersPanelRef = ref<{ isDirty: () => boolean } | null>(null)
@@ -233,7 +220,6 @@ function mapSaveError(err: HttpError): string {
     case 'duplicate_id':         return t('projectPipeline.errDuplicateId')
     case 'invalid_build':        return t('projectPipeline.errInvalidBuild')
     case 'invalid_var':          return t('projectPipeline.errInvalidVar')
-    case 'invalid_environment':  return t('projectPipeline.errInvalidEnvironment')
     case 'credential_not_found': return t('projectPipeline.errCredentialNotFound')
     case 'vault_unconfigured':   return t('projectPipeline.errVaultUnconfigured')
     default:                     return err.apiError?.message ?? t('projectPipeline.errSaveFailedStatus', { status: err.status })
@@ -259,23 +245,6 @@ function buildSettingsPayload(): SaveSettingsInput | null {
       })),
       cache: b.cache,
     },
-    environments: editEnvs.value.map((e) => ({
-      id: e.id || undefined,
-      name: e.name,
-      targetServerIds: e.targetServerIds,
-      envVars: e.envVars.map((v) => ({
-        id: v.id || undefined,
-        key: v.key,
-        secret: v.secret,
-        value: v.secret ? undefined : v.value,
-        credentialId: v.secret ? v.credentialId : undefined,
-      })),
-      imageRegistry: {
-        type: e.imageRegistry.type,
-        url: e.imageRegistry.url,
-        credentialId: e.imageRegistry.credentialId || undefined,
-      },
-    })),
   }
 }
 
@@ -287,7 +256,7 @@ async function handleSave(): Promise<void> {
   /** 已成功落库的 scope 名单(多 scope 非事务;失败时如实告知哪些已存,#190)。 */
   const savedScopes: string[] = []
   try {
-    // 按 dirty 逐 scope 保存(变量/环境 → settings;画布 → pipeline spec),不再按
+    // 按 dirty 逐 scope 保存(变量 → settings;画布 → pipeline spec),不再按
     // 当前激活 tab 决定范围——「环境 tab 编辑 → 切画布 → 保存」曾只存画布却弹全局
     // 成功横幅,环境编辑被静默丢弃(issue #190)。
     if (settingsDirty.value) {
@@ -368,7 +337,6 @@ function tabDirty(key: TabKey): boolean {
   switch (key) {
     case 'canvas':   return pipelineDirty.value
     case 'vars':     return buildDirty.value
-    case 'envs':     return envsDirty.value
     case 'triggers': {
       // ref 在挂载间隙可能为空;面板未暴露 isDirty 时按不脏处理(不阻塞渲染)。
       const fn = triggersPanelRef.value?.isDirty
@@ -841,26 +809,7 @@ async function togglePrStatus(next: boolean): Promise<void> {
         >
           <div class="triggers-stack">
             <TriggersPanel ref="triggersPanelRef" :project-id="projectId" />
-            <!-- R4 / E4.1: 每项目 PR 预览环境配置 -->
-            <ProjectPreviewConfig :project-id="projectId" />
           </div>
-        </div>
-
-        <!-- 环境与凭据 -->
-        <div
-          v-show="activeTab === 'envs'"
-          id="tabpanel-envs"
-          class="tab-panel"
-          role="tabpanel"
-          aria-labelledby="tab-envs"
-        >
-          <EnvCredsTab
-            :environments="editEnvs"
-            :credentials="credentials"
-            :servers="servers"
-            :disabled="saveSubmitting"
-            @update="handleEnvsUpdate"
-          />
         </div>
 
       </div><!-- /tab-panels -->

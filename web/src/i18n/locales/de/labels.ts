@@ -53,14 +53,8 @@ export default {
   paramNotInChoice: 'Der Parameter „{label}“ ist nicht unter den verfügbaren Optionen',
 
   // ─── Promotion-Status ───
-  promotionPromoted: 'Hochgestuft',
-  promotionPending: 'Genehmigung ausstehend',
-  promotionRejected: 'Abgelehnt',
 
   // ─── Validierung des Umgebungsnamens ───
-  envNameEmpty: 'Der Umgebungsname darf nicht leer sein',
-  envNameInvalid: 'Der Umgebungsname darf nur Buchstaben, Ziffern, Bindestriche und Unterstriche enthalten',
-  envNameTooLong: 'Der Umgebungsname darf 64 Zeichen nicht überschreiten',
 
   // ─── Nebenläufigkeitslimit ───
   concurrencyNotInteger: 'Das Nebenläufigkeitslimit muss eine Ganzzahl sein',

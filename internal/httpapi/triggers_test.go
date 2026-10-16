@@ -68,15 +68,18 @@ func TestTriggerGetLazyDefaultMasked(t *testing.T) {
 	if _, ok := dto["webhookSecret"]; ok {
 		t.Fatal("GET 不应回显完整密钥字段")
 	}
-	if dto["unmatchedPolicy"] != "record" {
-		t.Fatalf("默认策略应为 record, got %v", dto["unmatchedPolicy"])
+	if _, ok := dto["unmatchedPolicy"]; ok {
+		t.Fatal("unmatchedPolicy 已随分支映射移除,不应出现在响应")
+	}
+	if _, ok := dto["branchMappings"]; ok {
+		t.Fatal("branchMappings 已随环境功能移除,不应出现在响应")
 	}
 	ev, _ := dto["events"].(map[string]any)
 	if ev["push"] != false || ev["tag"] != false || ev["pullRequest"] != false {
 		t.Fatalf("默认 events 应全 false: %v", ev)
 	}
-	if bm, ok := dto["branchMappings"].([]any); !ok || len(bm) != 0 {
-		t.Fatalf("默认映射应为 []: %v", dto["branchMappings"])
+	if bf, ok := dto["branchFilters"].([]any); !ok || len(bf) != 0 {
+		t.Fatalf("默认分支过滤应为 []: %v", dto["branchFilters"])
 	}
 }
 
@@ -84,11 +87,9 @@ func TestTriggerSaveAndReset(t *testing.T) {
 	srv, client, csrf, projID := setupTriggerServer(t)
 	base := srv.URL + "/api/projects/" + projID + "/trigger"
 
-	// 保存 events + 映射 + 策略。
+	// 保存 events + 分支过滤。
 	body := `{"events":{"push":true,"tag":false,"pullRequest":true},
-	          "branchMappings":[{"branchPattern":"main","environment":"生产","targetServerIds":[]},
-	                            {"branchPattern":"release/*","environment":"预发"}],
-	          "unmatchedPolicy":"ignore"}`
+	          "branchFilters":["main","release/*"]}`
 	resp := doJSON(t, client, http.MethodPut, base, csrf, body)
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
@@ -98,12 +99,9 @@ func TestTriggerSaveAndReset(t *testing.T) {
 	raw, _ := io.ReadAll(resp.Body)
 	var dto map[string]any
 	_ = json.Unmarshal(raw, &dto)
-	if dto["unmatchedPolicy"] != "ignore" {
-		t.Fatalf("policy = %v, want ignore", dto["unmatchedPolicy"])
-	}
-	bm, _ := dto["branchMappings"].([]any)
-	if len(bm) != 2 {
-		t.Fatalf("映射数 = %d, want 2", len(bm))
+	bf, _ := dto["branchFilters"].([]any)
+	if len(bf) != 2 || bf[0] != "main" || bf[1] != "release/*" {
+		t.Fatalf("branchFilters = %v, want [main release/*]", bf)
 	}
 	if !strings.Contains(string(raw), "••••") {
 		t.Fatal("PUT 响应密钥应掩码")
@@ -139,7 +137,7 @@ func TestTriggerSaveInvalidBranchPattern422(t *testing.T) {
 	srv, client, csrf, projID := setupTriggerServer(t)
 	base := srv.URL + "/api/projects/" + projID + "/trigger"
 	resp := doJSON(t, client, http.MethodPut, base, csrf,
-		`{"events":{},"branchMappings":[{"branchPattern":"","environment":"e"}],"unmatchedPolicy":"record"}`)
+		`{"events":{},"branchFilters":["feature branch"]}`)
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusUnprocessableEntity {
 		t.Fatalf("status = %d, want 422", resp.StatusCode)
@@ -169,7 +167,7 @@ func TestTriggerWriteRequiresCSRF(t *testing.T) {
 	srv, client, _, projID := setupTriggerServer(t)
 	base := srv.URL + "/api/projects/" + projID + "/trigger"
 	// 带会话但不带 CSRF header 的 PUT。
-	req, _ := http.NewRequest(http.MethodPut, base, strings.NewReader(`{"unmatchedPolicy":"record"}`))
+	req, _ := http.NewRequest(http.MethodPut, base, strings.NewReader(`{"events":{"push":true}}`))
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := client.Do(req)
 	if err != nil {

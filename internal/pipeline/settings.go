@@ -73,8 +73,6 @@ var (
 	ErrInvalidBuild = errors.New("pipeline: invalid build config")
 	// ErrInvalidVar 表示构建/环境变量校验失败(key 空或同作用域内重复)。
 	ErrInvalidVar = errors.New("pipeline: invalid variable")
-	// ErrInvalidEnvironment 表示环境定义校验失败(名称空 / 目标服务器 id 空 / 镜像仓库类型非法)。
-	ErrInvalidEnvironment = errors.New("pipeline: invalid environment")
 	// ErrInvalidStep 表示自定义脚本步骤校验失败(名称空 / 类型非法 / script 缺 image 或 commands)。
 	ErrInvalidStep = errors.New("pipeline: invalid step")
 	// ErrCredentialNotFound 表示 secret 引用的 credentialId 不存在于保险库。
@@ -129,15 +127,6 @@ type ImageRegistry struct {
 	MaskedCredential string `json:"maskedCredential,omitempty"`
 }
 
-// Environment 是一个部署环境(名称 + 目标服务器引用占位 + 环境变量 + 镜像仓库)。
-type Environment struct {
-	ID              string        `json:"id"`
-	Name            string        `json:"name"`
-	TargetServerIDs []string      `json:"targetServerIds"`
-	EnvVars         []BuildVar    `json:"envVars"`
-	ImageRegistry   ImageRegistry `json:"imageRegistry"`
-}
-
 // PipelineStep 是一条自定义脚本步骤(Epic 8 地基 · Story 8-1)。**冻结 DTO**:前端按此对接。
 //
 // 一条 script 步骤在隔离构建容器(Image)内,以克隆出的源码工作区(挂载到 WorkDir 上下文)
@@ -184,17 +173,15 @@ func (r Resource) IsZero() bool {
 
 // Settings 是构建/部署配置领域模型(冻结 DTO 外层形状)。
 type Settings struct {
-	Build        BuildConfig
-	Environments []Environment
-	Steps        []PipelineStep
-	UpdatedAt    time.Time
+	Build     BuildConfig
+	Steps     []PipelineStep
+	UpdatedAt time.Time
 }
 
 // SettingsInput 是保存入参(secret 项只传 credentialId,不传明文/掩码)。
 type SettingsInput struct {
-	Build        BuildConfig
-	Environments []Environment
-	Steps        []PipelineStep
+	Build BuildConfig
+	Steps []PipelineStep
 }
 
 // SettingsService 定义构建/部署配置领域对外接口。
@@ -275,10 +262,6 @@ func (s *settingsService) Save(ctx context.Context, projectID string, in Setting
 	if err != nil {
 		return nil, err
 	}
-	envs, err := s.normalizeEnvironments(in.Environments)
-	if err != nil {
-		return nil, err
-	}
 	steps, err := s.normalizeSteps(in.Steps)
 	if err != nil {
 		return nil, err
@@ -289,10 +272,6 @@ func (s *settingsService) Save(ctx context.Context, projectID string, in Setting
 	if err != nil {
 		return nil, fmt.Errorf("pipeline: marshal build: %w", err)
 	}
-	envsJSON, err := json.Marshal(toStoredEnvironments(envs))
-	if err != nil {
-		return nil, fmt.Errorf("pipeline: marshal environments: %w", err)
-	}
 	stepsJSON, err := json.Marshal(toStoredSteps(steps))
 	if err != nil {
 		return nil, fmt.Errorf("pipeline: marshal steps: %w", err)
@@ -301,9 +280,9 @@ func (s *settingsService) Save(ctx context.Context, projectID string, in Setting
 	nowStr := time.Now().UTC().Format(time.RFC3339)
 	_, err = s.db.ExecContext(ctx,
 		`UPDATE pipeline_settings
-		 SET build_json = ?, environments_json = ?, steps_json = ?, updated_at = ?
+		 SET build_json = ?, steps_json = ?, updated_at = ?
 		 WHERE project_id = ?`,
-		string(buildJSON), string(envsJSON), string(stepsJSON), nowStr, projectID,
+		string(buildJSON), string(stepsJSON), nowStr, projectID,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("pipeline: update settings: %w", err)
@@ -315,14 +294,13 @@ func (s *settingsService) Save(ctx context.Context, projectID string, in Setting
 func (s *settingsService) load(ctx context.Context, projectID string) (*Settings, error) {
 	var (
 		buildJSON  string
-		envsJSON   string
 		stepsJSON  string
 		updatedStr string
 	)
 	err := s.db.QueryRowContext(ctx,
-		`SELECT build_json, environments_json, steps_json, updated_at
+		`SELECT build_json, steps_json, updated_at
 		 FROM pipeline_settings WHERE project_id = ?`, projectID,
-	).Scan(&buildJSON, &envsJSON, &stepsJSON, &updatedStr)
+	).Scan(&buildJSON, &stepsJSON, &updatedStr)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, sql.ErrNoRows
@@ -334,12 +312,6 @@ func (s *settingsService) load(ctx context.Context, projectID string) (*Settings
 	if strings.TrimSpace(buildJSON) != "" {
 		if err := json.Unmarshal([]byte(buildJSON), &build); err != nil {
 			return nil, fmt.Errorf("pipeline: parse build: %w", err)
-		}
-	}
-	var envs []Environment
-	if strings.TrimSpace(envsJSON) != "" {
-		if err := json.Unmarshal([]byte(envsJSON), &envs); err != nil {
-			return nil, fmt.Errorf("pipeline: parse environments: %w", err)
 		}
 	}
 	var steps []PipelineStep
@@ -354,7 +326,7 @@ func (s *settingsService) load(ctx context.Context, projectID string) (*Settings
 		return nil, fmt.Errorf("pipeline: parse updated_at: %w", err)
 	}
 
-	st := &Settings{Build: build, Environments: envs, Steps: steps, UpdatedAt: updated}
+	st := &Settings{Build: build, Steps: steps, UpdatedAt: updated}
 	normalizeSettingsShape(st)
 	// 回算掩码(读取库内引用对应保险库 masked_value;明文 secret 从不入库)。
 	if err := s.applyMasks(ctx, st); err != nil {
@@ -382,8 +354,8 @@ func (s *settingsService) createDefault(ctx context.Context, projectID string) (
 	now := time.Now().UTC()
 	nowStr := now.Format(time.RFC3339)
 	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO pipeline_settings (project_id, build_json, environments_json, created_at, updated_at)
-		 VALUES (?, ?, '[]', ?, ?) `+
+		`INSERT INTO pipeline_settings (project_id, build_json, created_at, updated_at)
+		 VALUES (?, ?, ?, ?) `+
 			store.DoNothingSuffix(store.DialectOf(s.db), []string{"project_id"}),
 		projectID, string(buildJSON), nowStr, nowStr,
 	)
@@ -399,7 +371,7 @@ func (s *settingsService) createDefault(ctx context.Context, projectID string) (
 	if lerr != nil {
 		// 极端情况下行被并发删除:退化为内存默认(避免 500)。
 		if errors.Is(lerr, sql.ErrNoRows) {
-			return &Settings{Build: defaultBuild, Environments: []Environment{}, Steps: []PipelineStep{}, UpdatedAt: now}, nil
+			return &Settings{Build: defaultBuild, Steps: []PipelineStep{}, UpdatedAt: now}, nil
 		}
 		return nil, lerr
 	}
@@ -455,56 +427,6 @@ func (s *settingsService) normalizeBuild(in BuildConfig) (BuildConfig, error) {
 		Vars:         vars,
 		Cache:        Cache{Enabled: in.Cache.Enabled, Paths: paths},
 	}, nil
-}
-
-// normalizeEnvironments 校验并规范化环境定义列表。
-func (s *settingsService) normalizeEnvironments(in []Environment) ([]Environment, error) {
-	out := make([]Environment, 0, len(in))
-	seenIDs := make(map[string]struct{}, len(in))
-	for _, e := range in {
-		name := strings.TrimSpace(e.Name)
-		if name == "" {
-			return nil, fmt.Errorf("%w: environment name must not be empty", ErrInvalidEnvironment)
-		}
-		id := strings.TrimSpace(e.ID)
-		if id == "" {
-			id = uuid.NewString()
-		}
-		// id 唯一性:此前只补空 id 不查重,同 id 环境会静默共存(回读/引用语义错乱)。
-		if _, dup := seenIDs[id]; dup {
-			return nil, fmt.Errorf("%w: duplicate environment id %q", ErrInvalidEnvironment, id)
-		}
-		seenIDs[id] = struct{}{}
-
-		// 目标服务器引用:本期仅校验字符串非空(存在性留 4-1,仿 trigger)。
-		ids := make([]string, 0, len(e.TargetServerIDs))
-		for _, sid := range e.TargetServerIDs {
-			sid = strings.TrimSpace(sid)
-			if sid == "" {
-				return nil, fmt.Errorf("%w: target server id must not be empty", ErrInvalidEnvironment)
-			}
-			ids = append(ids, sid)
-		}
-
-		envVars, err := s.normalizeVars(e.EnvVars)
-		if err != nil {
-			return nil, err
-		}
-
-		registry, err := s.normalizeRegistry(e.ImageRegistry)
-		if err != nil {
-			return nil, err
-		}
-
-		out = append(out, Environment{
-			ID:              id,
-			Name:            name,
-			TargetServerIDs: ids,
-			EnvVars:         envVars,
-			ImageRegistry:   registry,
-		})
-	}
-	return out, nil
 }
 
 // normalizeSteps 校验并规范化自定义脚本步骤列表(Epic 8 · Story 8-1)。
@@ -582,28 +504,6 @@ func (s *settingsService) normalizeSteps(in []PipelineStep) ([]PipelineStep, err
 		})
 	}
 	return out, nil
-}
-
-// normalizeRegistry 校验并规范化镜像仓库绑定。空类型(未绑定)直接放行。
-func (s *settingsService) normalizeRegistry(in ImageRegistry) (ImageRegistry, error) {
-	regType := strings.TrimSpace(in.Type)
-	url := strings.TrimSpace(in.URL)
-	credID := strings.TrimSpace(in.CredentialID)
-
-	// 完全未绑定:三字段皆空 → 视为空仓库,放行。
-	if regType == "" && url == "" && credID == "" {
-		return ImageRegistry{}, nil
-	}
-	if regType != RegistryHarbor && regType != RegistryACR && regType != RegistryDockerhub && regType != RegistryCustom {
-		return ImageRegistry{}, fmt.Errorf("%w: invalid imageRegistry type %q", ErrInvalidEnvironment, in.Type)
-	}
-	// 镜像仓库凭据为 secret 引用:存在则经保险库校验存在性。
-	if credID != "" {
-		if err := s.ensureCredentialExists(credID); err != nil {
-			return ImageRegistry{}, err
-		}
-	}
-	return ImageRegistry{Type: regType, URL: url, CredentialID: credID}, nil
 }
 
 // normalizeVars 校验并规范化一组变量(构建变量或环境变量,同一作用域)。
@@ -686,24 +586,6 @@ func (s *settingsService) applyMasks(ctx context.Context, st *Settings) error {
 			st.Build.Vars[i].MaskedValue = masked
 		}
 	}
-	for ei := range st.Environments {
-		for vi := range st.Environments[ei].EnvVars {
-			if st.Environments[ei].EnvVars[vi].Secret {
-				masked, err := s.maskedFor(ctx, st.Environments[ei].EnvVars[vi].CredentialID)
-				if err != nil {
-					return err
-				}
-				st.Environments[ei].EnvVars[vi].MaskedValue = masked
-			}
-		}
-		if st.Environments[ei].ImageRegistry.CredentialID != "" {
-			masked, err := s.maskedFor(ctx, st.Environments[ei].ImageRegistry.CredentialID)
-			if err != nil {
-				return err
-			}
-			st.Environments[ei].ImageRegistry.MaskedCredential = masked
-		}
-	}
 	for si := range st.Steps {
 		for vi := range st.Steps[si].Env {
 			if st.Steps[si].Env[vi].Secret {
@@ -764,20 +646,6 @@ type storedBuild struct {
 	Cache        Cache       `json:"cache"`
 }
 
-type storedRegistry struct {
-	Type         string `json:"type"`
-	URL          string `json:"url"`
-	CredentialID string `json:"credentialId,omitempty"`
-}
-
-type storedEnvironment struct {
-	ID              string         `json:"id"`
-	Name            string         `json:"name"`
-	TargetServerIDs []string       `json:"targetServerIds"`
-	EnvVars         []storedVar    `json:"envVars"`
-	ImageRegistry   storedRegistry `json:"imageRegistry"`
-}
-
 type storedStep struct {
 	ID             string      `json:"id"`
 	Name           string      `json:"name"`
@@ -820,29 +688,6 @@ func toStoredBuild(b BuildConfig) storedBuild {
 		Cache:          Cache{Enabled: b.Cache.Enabled, Paths: paths},
 	}
 }
-
-func toStoredEnvironments(in []Environment) []storedEnvironment {
-	out := make([]storedEnvironment, 0, len(in))
-	for _, e := range in {
-		ids := e.TargetServerIDs
-		if ids == nil {
-			ids = []string{}
-		}
-		out = append(out, storedEnvironment{
-			ID:              e.ID,
-			Name:            e.Name,
-			TargetServerIDs: ids,
-			EnvVars:         toStoredVars(e.EnvVars),
-			ImageRegistry: storedRegistry{
-				Type:         e.ImageRegistry.Type,
-				URL:          e.ImageRegistry.URL,
-				CredentialID: e.ImageRegistry.CredentialID,
-			},
-		})
-	}
-	return out
-}
-
 // toStoredSteps 把脚本步骤转持久化形状(剥离掩码;明文 secret 从不存在于此结构)。
 func toStoredSteps(in []PipelineStep) []storedStep {
 	out := make([]storedStep, 0, len(in))
@@ -874,17 +719,6 @@ func normalizeSettingsShape(st *Settings) {
 	}
 	if st.Build.Cache.Paths == nil {
 		st.Build.Cache.Paths = []string{}
-	}
-	if st.Environments == nil {
-		st.Environments = []Environment{}
-	}
-	for i := range st.Environments {
-		if st.Environments[i].TargetServerIDs == nil {
-			st.Environments[i].TargetServerIDs = []string{}
-		}
-		if st.Environments[i].EnvVars == nil {
-			st.Environments[i].EnvVars = []BuildVar{}
-		}
 	}
 	if st.Steps == nil {
 		st.Steps = []PipelineStep{}

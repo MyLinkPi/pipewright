@@ -146,15 +146,6 @@ func init() {
 			"fr":    "Le service de porte d'approbation n'est pas initialisé",
 			"de":    "Genehmigungsgatter-Dienst nicht initialisiert",
 		},
-		"已晋级到链尾环境": {
-			"zh-HK": "已晉級到鏈尾環境",
-			"en":    "Already promoted to the last environment in the chain",
-			"ja":    "チェーン末尾の環境まで昇格済みです",
-			"ko":    "체인의 마지막 환경까지 이미 승급되었습니다",
-			"es":    "Ya promovido al último entorno de la cadena",
-			"fr":    "Déjà promu vers le dernier environnement de la chaîne",
-			"de":    "Bereits zur letzten Umgebung in der Kette befördert",
-		},
 		"引用的保险库凭据不存在": {
 			"zh-HK": "引用的保險庫憑據不存在",
 			"en":    "Referenced vault credential not found",

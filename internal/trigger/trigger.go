@@ -1,16 +1,12 @@
-// Package trigger 是「项目触发设置与分支映射」的领域层(FR-1 / FR-2 / Story 2.3)。
+// Package trigger 是「项目触发设置与分支过滤」的领域层(FR-1 / FR-2 / Story 2.3)。
 //
 // 每个项目持有一份触发配置:webhook 接收端点 token、签名密钥、触发事件开关、
-// 分支(通配)→ 环境 + 目标服务器映射、未匹配策略。webhook 签名密钥经 vault
-// secretbox(master key)加密后仅以**密文 BLOB** 入库;DB dump 绝无明文(AC1 / AC-SEC)。
+// 分支过滤 glob 白名单。webhook 签名密钥经 vault secretbox(master key)加密后
+// 仅以**密文 BLOB** 入库;DB dump 绝无明文(AC1 / AC-SEC)。
 // 对外(REST)常态只暴露掩码;明文仅在 ResetSecret 重置时一次性返回(供粘贴到 Gitee)。
 //
 // master key 缺失时,涉及密钥的读取/重置降级为明确错误(ErrVaultUnconfigured),
 // 平台不 panic。
-//
-// 本期为「最小前向兼容」:branchMappings 的 targetServerIds 列建模占位、可空;
-// 服务器存在性校验留 TODO,目标服务器表(Story 4-1)落地后启用。webhook **接收**
-// 端点(验签 + 创建运行)= Story 3-2,本期只做配置。
 package trigger
 
 import (
@@ -24,17 +20,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/huangchengsir/pipewright/internal/store"
 	"github.com/huangchengsir/pipewright/internal/vault"
-)
-
-// 未匹配策略枚举(DB 存 snake/小写字串;JSON camelCase 字段)。
-const (
-	// PolicyRecord 表示未匹配任何映射的分支「记录但不部署」。
-	PolicyRecord = "record"
-	// PolicyIgnore 表示未匹配任何映射的分支「忽略」。
-	PolicyIgnore = "ignore"
 )
 
 // webhook 签名密钥前缀(供用户在 Gitee 端识别;掩码也保留此前缀)。
@@ -48,10 +35,8 @@ var (
 	ErrProjectNotFound = errors.New("trigger: project not found")
 	// ErrVaultUnconfigured 表示保险库未配置 master key,无法生成/读取签名密钥。
 	ErrVaultUnconfigured = errors.New("trigger: vault unconfigured")
-	// ErrInvalidBranchPattern 表示分支模式非空校验或通配语法校验失败。
+	// ErrInvalidBranchPattern 表示分支过滤 glob 非空/语法校验失败。
 	ErrInvalidBranchPattern = errors.New("trigger: invalid branch pattern")
-	// ErrInvalidPolicy 表示未匹配策略枚举非法。
-	ErrInvalidPolicy = errors.New("trigger: invalid unmatched policy")
 	// ErrInvalidPathFilter 表示路径过滤 glob 非空校验失败(去空白后为空)。
 	ErrInvalidPathFilter = errors.New("trigger: invalid path filter")
 )
@@ -67,17 +52,11 @@ type Events struct {
 	Release     bool `json:"release"`
 }
 
-// BranchMapping 是一条分支映射:分支(通配)模式 → 环境名 + 目标服务器引用 id 列表。
-// 本期 Environment 为文本名(2-4 落地后可升级为环境引用);TargetServerIDs 为占位
-// 引用列表(目标服务器表尚不存在,4-1 后做存在性校验)。
-type BranchMapping struct {
-	ID              string   `json:"id"`
-	BranchPattern   string   `json:"branchPattern"`
-	Environment     string   `json:"environment"`
-	TargetServerIDs []string `json:"targetServerIds"`
-}
-
 // Config 是触发配置领域模型。WebhookSecretMasked 为掩码;明文绝不在此模型常驻。
+//
+// BranchFilters 为分支过滤 glob 白名单:空列表 = 所有分支触发(向后兼容);
+// 非空 = 触发引用名(push/tag 的 ref 末段、release 的 tag、PR 的源分支)匹配
+// 任一 glob 才触发。glob 支持 `*`(含 `/` 的模式自动前缀通配兜底)。
 //
 // PathFilters 为路径过滤 glob 列表(monorepo · P0):非空时仅当本次 push 改动文件匹配任一 glob 才触发;
 // 空列表 = 不启用(放行一切,向后兼容)。glob 支持 `*`(单段)与 `**`(跨 `/`)。
@@ -86,8 +65,7 @@ type Config struct {
 	WebhookToken        string
 	WebhookSecretMasked string
 	Events              Events
-	BranchMappings      []BranchMapping
-	UnmatchedPolicy     string
+	BranchFilters       []string
 	PathFilters         []string
 	CreatedAt           time.Time
 	UpdatedAt           time.Time
@@ -95,10 +73,9 @@ type Config struct {
 
 // SaveInput 是保存配置的入参(不含 webhook 密钥;密钥只经 ResetSecret 轮换)。
 type SaveInput struct {
-	Events          Events
-	BranchMappings  []BranchMapping
-	UnmatchedPolicy string
-	PathFilters     []string
+	Events        Events
+	BranchFilters []string
+	PathFilters   []string
 }
 
 // ResetResult 是重置密钥的结果:完整明文仅此一次返回,同时给掩码。
@@ -110,9 +87,9 @@ type ResetResult struct {
 // Service 定义触发配置领域对外接口。
 type Service interface {
 	// Get 返回项目触发配置(密钥仅掩码)。首次访问无配置时惰性生成默认
-	// (随机 token + 生成并加密的签名密钥 + events 全 false + 空映射 + policy=record)。
+	// (随机 token + 生成并加密的签名密钥 + events 全 false + 空分支过滤)。
 	Get(ctx context.Context, projectID string) (*Config, error)
-	// Save 校验并持久化 events/分支映射/未匹配策略(不触碰密钥);返回更新后配置(掩码)。
+	// Save 校验并持久化 events/分支过滤/路径过滤(不触碰密钥);返回更新后配置(掩码)。
 	Save(ctx context.Context, projectID string, in SaveInput) (*Config, error)
 	// ResetSecret 重新生成并加密签名密钥(旧值失效),返回完整明文(仅此一次)+ 掩码。
 	ResetSecret(ctx context.Context, projectID string) (*ResetResult, error)
@@ -153,11 +130,7 @@ func (s *service) Save(ctx context.Context, projectID string, in SaveInput) (*Co
 		return nil, err
 	}
 
-	policy, err := normalizePolicy(in.UnmatchedPolicy)
-	if err != nil {
-		return nil, err
-	}
-	mappings, err := normalizeMappings(in.BranchMappings)
+	branchFilters, err := normalizeBranchFilters(in.BranchFilters)
 	if err != nil {
 		return nil, err
 	}
@@ -170,9 +143,9 @@ func (s *service) Save(ctx context.Context, projectID string, in SaveInput) (*Co
 	if err != nil {
 		return nil, fmt.Errorf("trigger: marshal events: %w", err)
 	}
-	mappingsJSON, err := json.Marshal(mappings)
+	branchFiltersJSON, err := json.Marshal(branchFilters)
 	if err != nil {
-		return nil, fmt.Errorf("trigger: marshal branch mappings: %w", err)
+		return nil, fmt.Errorf("trigger: marshal branch filters: %w", err)
 	}
 	pathFiltersJSON, err := json.Marshal(pathFilters)
 	if err != nil {
@@ -182,9 +155,9 @@ func (s *service) Save(ctx context.Context, projectID string, in SaveInput) (*Co
 	nowStr := time.Now().UTC().Format(time.RFC3339)
 	_, err = s.db.ExecContext(ctx,
 		`UPDATE pipeline_triggers
-		 SET events_json = ?, branch_mappings_json = ?, unmatched_policy = ?, path_filters_json = ?, updated_at = ?
+		 SET events_json = ?, branch_filters_json = ?, path_filters_json = ?, updated_at = ?
 		 WHERE project_id = ?`,
-		string(eventsJSON), string(mappingsJSON), policy, string(pathFiltersJSON), nowStr, projectID,
+		string(eventsJSON), string(branchFiltersJSON), string(pathFiltersJSON), nowStr, projectID,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("trigger: update config: %w", err)
@@ -221,21 +194,21 @@ func (s *service) ResetSecret(ctx context.Context, projectID string) (*ResetResu
 // 永不返回密钥明文;掩码由密文解密后即时计算并即弃明文。
 func (s *service) load(ctx context.Context, projectID string) (*Config, string, error) {
 	var (
-		cfg             Config
-		sealed          []byte
-		eventsJSON      string
-		mappingsJSON    string
-		pathFiltersJSON string
-		createdStr      string
-		updatedStr      string
+		cfg               Config
+		sealed            []byte
+		eventsJSON        string
+		branchFiltersJSON string
+		pathFiltersJSON   string
+		createdStr        string
+		updatedStr        string
 	)
 	cfg.ProjectID = projectID
 	err := s.db.QueryRowContext(ctx,
-		`SELECT webhook_token, webhook_secret_ciphertext, events_json, branch_mappings_json,
-		        unmatched_policy, path_filters_json, created_at, updated_at
+		`SELECT webhook_token, webhook_secret_ciphertext, events_json, branch_filters_json,
+		        path_filters_json, created_at, updated_at
 		 FROM pipeline_triggers WHERE project_id = ?`, projectID,
-	).Scan(&cfg.WebhookToken, &sealed, &eventsJSON, &mappingsJSON,
-		&cfg.UnmatchedPolicy, &pathFiltersJSON, &createdStr, &updatedStr)
+	).Scan(&cfg.WebhookToken, &sealed, &eventsJSON, &branchFiltersJSON,
+		&pathFiltersJSON, &createdStr, &updatedStr)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, "", ErrNotFound
@@ -246,13 +219,13 @@ func (s *service) load(ctx context.Context, projectID string) (*Config, string, 
 	if err := json.Unmarshal([]byte(eventsJSON), &cfg.Events); err != nil {
 		return nil, "", fmt.Errorf("trigger: parse events: %w", err)
 	}
-	cfg.BranchMappings = []BranchMapping{}
-	if strings.TrimSpace(mappingsJSON) != "" {
-		if err := json.Unmarshal([]byte(mappingsJSON), &cfg.BranchMappings); err != nil {
-			return nil, "", fmt.Errorf("trigger: parse branch mappings: %w", err)
+	cfg.BranchFilters = []string{}
+	if strings.TrimSpace(branchFiltersJSON) != "" {
+		if err := json.Unmarshal([]byte(branchFiltersJSON), &cfg.BranchFilters); err != nil {
+			return nil, "", fmt.Errorf("trigger: parse branch filters: %w", err)
 		}
-		if cfg.BranchMappings == nil {
-			cfg.BranchMappings = []BranchMapping{}
+		if cfg.BranchFilters == nil {
+			cfg.BranchFilters = []string{}
 		}
 	}
 	cfg.PathFilters = []string{}
@@ -284,7 +257,7 @@ func (s *service) load(ctx context.Context, projectID string) (*Config, string, 
 }
 
 // createDefault 惰性生成项目默认触发配置:随机 token + 生成并加密的签名密钥 +
-// events 全 false + 空映射 + policy=record。项目不存在 → ErrProjectNotFound。
+// events 全 false + 空分支过滤。项目不存在 → ErrProjectNotFound。
 func (s *service) createDefault(ctx context.Context, projectID string) (*Config, error) {
 	if err := s.ensureProjectExists(ctx, projectID); err != nil {
 		return nil, err
@@ -305,10 +278,10 @@ func (s *service) createDefault(ctx context.Context, projectID string) (*Config,
 	// 避免 500;无论本次是否真正插入,随后统一 load 当前权威行(防双方各持不同 token/密钥)。
 	res, err := s.db.ExecContext(ctx,
 		`INSERT INTO pipeline_triggers
-		   (project_id, webhook_token, webhook_secret_ciphertext, events_json, branch_mappings_json, unmatched_policy, created_at, updated_at)
-		 VALUES (?, ?, ?, '{"push":false,"tag":false,"pullRequest":false,"release":false}', '[]', ?, ?, ?) `+
+		   (project_id, webhook_token, webhook_secret_ciphertext, events_json, branch_filters_json, created_at, updated_at)
+		 VALUES (?, ?, ?, '{"push":false,"tag":false,"pullRequest":false,"release":false}', '[]', ?, ?) `+
 			store.DoNothingSuffix(store.DialectOf(s.db), []string{"project_id"}),
-		projectID, token, sealed, PolicyRecord, nowStr, nowStr,
+		projectID, token, sealed, nowStr, nowStr,
 	)
 	if err != nil {
 		if isForeignKeyErr(err) {
@@ -333,8 +306,7 @@ func (s *service) createDefault(ctx context.Context, projectID string) (*Config,
 		WebhookToken:        token,
 		WebhookSecretMasked: masked,
 		Events:              Events{},
-		BranchMappings:      []BranchMapping{},
-		UnmatchedPolicy:     PolicyRecord,
+		BranchFilters:       []string{},
 		PathFilters:         []string{},
 		CreatedAt:           now,
 		UpdatedAt:           now,
@@ -421,48 +393,27 @@ func randHex(n int) (string, error) {
 	return hex.EncodeToString(b), nil
 }
 
-// normalizePolicy 校验并归一未匹配策略;空串默认 record。
-func normalizePolicy(p string) (string, error) {
-	switch p {
-	case "":
-		return PolicyRecord, nil
-	case PolicyRecord, PolicyIgnore:
-		return p, nil
-	default:
-		return "", ErrInvalidPolicy
-	}
-}
-
-// normalizeMappings 校验每条分支映射并补全 id；保证 targetServerIds 非 nil(JSON [])。
+// normalizeBranchFilters 校验并规范化分支过滤 glob 列表:
+//   - 每条 trim、剔空、去重(保留首次出现序)。
+//   - 语法见 validateBranchPattern;空列表 = 所有分支触发。
 //
-// branchPattern 非空 + 合法通配(见 validateBranchPattern)。
-// TODO(Story 4-1):接入 target_servers 表后,对 TargetServerIDs 做存在性校验
-// (调用 validateTargetServerIDs);本期不拦(目标服务器表尚不存在)。
-func normalizeMappings(in []BranchMapping) ([]BranchMapping, error) {
-	out := make([]BranchMapping, 0, len(in))
-	for _, m := range in {
-		pattern := strings.TrimSpace(m.BranchPattern)
-		if err := validateBranchPattern(pattern); err != nil {
+// 返回非 nil 切片。
+func normalizeBranchFilters(in []string) ([]string, error) {
+	out := make([]string, 0, len(in))
+	seen := make(map[string]struct{}, len(in))
+	for _, raw := range in {
+		p := strings.TrimSpace(raw)
+		if p == "" {
+			continue
+		}
+		if err := validateBranchPattern(p); err != nil {
 			return nil, err
 		}
-		id := strings.TrimSpace(m.ID)
-		if id == "" {
-			id = uuid.NewString()
+		if _, dup := seen[p]; dup {
+			continue
 		}
-		ids := m.TargetServerIDs
-		if ids == nil {
-			ids = []string{}
-		}
-		// 前向兼容占位:本期不校验存在性(留 4-1)。
-		if err := validateTargetServerIDs(ids); err != nil {
-			return nil, err
-		}
-		out = append(out, BranchMapping{
-			ID:              id,
-			BranchPattern:   pattern,
-			Environment:     strings.TrimSpace(m.Environment),
-			TargetServerIDs: ids,
-		})
+		seen[p] = struct{}{}
+		out = append(out, p)
 	}
 	return out, nil
 }
@@ -492,7 +443,7 @@ func normalizePathFilters(in []string) ([]string, error) {
 	return out, nil
 }
 
-// validateBranchPattern 校验分支(通配)模式:非空;仅允许 glob 通配 `*`(及普通字符)。
+// validateBranchPattern 校验分支过滤 glob:非空;仅允许 glob 通配 `*`(及普通字符)。
 // 合法:main / dev / release/* / feature/*-hotfix。非法:空串。
 // 校验通配语法:`*` 是允许的唯一通配元字符,任意位置任意个;不接受单独空白模式。
 func validateBranchPattern(pattern string) error {
@@ -505,20 +456,6 @@ func validateBranchPattern(pattern string) error {
 	// 仅含 `*` 也无意义(匹配一切但无定位);其余含至少一个非 `*` 字符即合法。
 	if strings.Trim(pattern, "*") == "" {
 		return ErrInvalidBranchPattern
-	}
-	return nil
-}
-
-// validateTargetServerIDs 是目标服务器存在性校验的占位函数。
-//
-// TODO(Story 4-1):target_servers 表落地后,在此对每个 id 做存在性校验
-// (SELECT 1 FROM target_servers WHERE id = ?),不存在则返回错误并联动 FR-9。
-// 本期目标服务器表尚不存在,故仅做基础结构校验(非空字符串),不拦截不存在性。
-func validateTargetServerIDs(ids []string) error {
-	for _, id := range ids {
-		if strings.TrimSpace(id) == "" {
-			return fmt.Errorf("%w: target server id must not be empty", ErrInvalidBranchPattern)
-		}
 	}
 	return nil
 }

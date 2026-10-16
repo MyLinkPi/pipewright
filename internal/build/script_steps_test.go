@@ -13,7 +13,7 @@ import (
 // imageSettingsWithSteps 复用 image 构建配置(build 走 docker build,不占 "run" 子命令),
 // 并挂上若干自定义脚本步骤(脚本经 docker run 执行 → 子命令 "run",与 build 不冲突)。
 func imageSettingsWithSteps(steps []pipeline.PipelineStep) *pipeline.Settings {
-	st := imageSettings(nil)
+	st := imageSettings()
 	st.Steps = steps
 	return st
 }

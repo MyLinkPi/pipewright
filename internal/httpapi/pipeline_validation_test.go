@@ -158,39 +158,10 @@ func TestValidationDefaultReadyManualOnly(t *testing.T) {
 	}
 }
 
-// TestValidationEnvironmentUndefined 分支映射引用未定义环境 → error environment_undefined,ready=false。
-func TestValidationEnvironmentUndefined(t *testing.T) {
-	env := setupValidationServer(t)
-	// settings 仍无任何环境定义;trigger 加一条映射引用「生产」。
-	putTrigger(t, env, `{"events":{"push":true,"tag":false,"pullRequest":false},
-	  "branchMappings":[{"branchPattern":"main","environment":"生产","targetServerIds":[]}],
-	  "unmatchedPolicy":"record"}`)
-
-	ready, issues := getValidation(t, env)
-	is, ok := hasIssueCode(issues, "environment_undefined")
-	if !ok {
-		t.Fatalf("应报 environment_undefined: %+v", issues)
-	}
-	if is["severity"] != "error" || is["scope"] != "triggers" {
-		t.Fatalf("environment_undefined 应 error/triggers: %+v", is)
-	}
-	if ready {
-		t.Fatalf("含 error 不应 ready")
-	}
-
-	// 在 settings 定义同名环境后,重拉应不再报 environment_undefined。
-	putSettings(t, env, `{"build":{"model":"dockerfile","artifactType":"image"},
-	  "environments":[{"name":"生产","targetServerIds":[],"envVars":[],"imageRegistry":{"type":"","url":"","credentialId":""}}]}`)
-	_, issues2 := getValidation(t, env)
-	if _, ok := hasIssueCode(issues2, "environment_undefined"); ok {
-		t.Fatalf("定义环境后不应再报 environment_undefined: %+v", issues2)
-	}
-}
-
 // TestValidationToolchainIncomplete model=toolchain 缺版本 → error toolchain_incomplete。
 func TestValidationToolchainIncomplete(t *testing.T) {
 	env := setupValidationServer(t)
-	putSettings(t, env, `{"build":{"model":"toolchain","toolchain":{"language":"node","version":""},"artifactType":"jar"},"environments":[]}`)
+	putSettings(t, env, `{"build":{"model":"toolchain","toolchain":{"language":"node","version":""},"artifactType":"jar"}}`)
 	ready, issues := getValidation(t, env)
 	is, ok := hasIssueCode(issues, "toolchain_incomplete")
 	if !ok {
@@ -201,47 +172,5 @@ func TestValidationToolchainIncomplete(t *testing.T) {
 	}
 	if ready {
 		t.Fatalf("toolchain 不全不应 ready")
-	}
-}
-
-// TestValidationRegistryUrlMissing 镜像仓库选型但无 url → error registry_url_missing。
-func TestValidationRegistryUrlMissing(t *testing.T) {
-	env := setupValidationServer(t)
-	putSettings(t, env, `{"build":{"model":"dockerfile","artifactType":"image"},
-	  "environments":[{"name":"生产","targetServerIds":[],"envVars":[],
-	    "imageRegistry":{"type":"harbor","url":"","credentialId":""}}]}`)
-	ready, issues := getValidation(t, env)
-	is, ok := hasIssueCode(issues, "registry_url_missing")
-	if !ok {
-		t.Fatalf("应报 registry_url_missing: %+v", issues)
-	}
-	if is["severity"] != "error" {
-		t.Fatalf("应为 error: %+v", is)
-	}
-	if ready {
-		t.Fatalf("registry url 缺失不应 ready")
-	}
-}
-
-// TestValidationTargetServersPending targetServerIds 非空 → warning target_servers_pending,ready 不受影响。
-func TestValidationTargetServersPending(t *testing.T) {
-	env := setupValidationServer(t)
-	// 先定义环境「生产」,再加引用它且带目标服务器的映射(避免 environment_undefined error)。
-	putSettings(t, env, `{"build":{"model":"dockerfile","artifactType":"image"},
-	  "environments":[{"name":"生产","targetServerIds":[],"envVars":[],"imageRegistry":{"type":"","url":"","credentialId":""}}]}`)
-	putTrigger(t, env, `{"events":{"push":true,"tag":false,"pullRequest":false},
-	  "branchMappings":[{"branchPattern":"main","environment":"生产","targetServerIds":["srv-1"]}],
-	  "unmatchedPolicy":"record"}`)
-
-	ready, issues := getValidation(t, env)
-	is, ok := hasIssueCode(issues, "target_servers_pending")
-	if !ok {
-		t.Fatalf("应报 target_servers_pending: %+v", issues)
-	}
-	if is["severity"] != "warning" {
-		t.Fatalf("应为 warning: %+v", is)
-	}
-	if !ready {
-		t.Fatalf("仅 warning(无 error)应 ready, issues=%+v", issues)
 	}
 }

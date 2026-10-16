@@ -134,20 +134,11 @@ var (
 )
 
 // Trigger 是运行触发上下文(冻结 DTO 的 trigger 块来源)。
-//
-// ResolvedEnvironment / ResolvedTargetServerIDs 是 Story 3-2 由 webhook 分支映射
-// 解析出的**运行内部元数据**(供 Epic 4 的 targets 扇出消费);它们**不进入**冻结的
-// run-detail DTO 输出(骨架所有权),仅持久化到 pipeline_runs 的内部列。
 type Trigger struct {
 	Type   string // webhook | manual
 	Branch string
 	Commit string
 	Actor  string
-
-	// ResolvedEnvironment 是解析出的目标环境名(手动触发为空)。
-	ResolvedEnvironment string
-	// ResolvedTargetServerIDs 是解析出的目标服务器引用 id 列表(手动触发为空)。
-	ResolvedTargetServerIDs []string
 
 	// Params 是参数化手动运行的 key=value 参数(Story 8-11);执行时注入 script 步骤容器作环境变量。
 	// 非敏感明文(含密钥应走保险库引用);为空表示无参数。

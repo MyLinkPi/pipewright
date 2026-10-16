@@ -370,7 +370,7 @@ func (b *Builder) runStageMixedTopo(
 
 	// 推送镜像节点声明:与本地执行器同语义(见 push_image.go)——被 push_image 引用的 build_image
 	// 跳过「按环境 registry 自动推送」,改按该节点声明的目标推送(推送仍在 build_image 内完成)。
-	pushPlans := b.pushPlansByBuildNode(ctx, stage.Jobs, settings, r.Trigger.ResolvedEnvironment, r)
+	pushPlans := b.pushPlansByBuildNode(ctx, stage.Jobs, settings, r)
 
 	status := make(map[string]string, len(stage.Jobs))                 // jobID → run.StepXxx 终态
 	jobEnvOut := make(map[string][]pipeline.BuildVar, len(stage.Jobs)) // jobID → 该 job 产出的 env(本地节点)
@@ -495,7 +495,7 @@ func (b *Builder) runMixedNode(
 	case strings.TrimSpace(jb.Type) == "health_check":
 		err = b.runHealthCheckJob(ctx, jrep, jb, r.Trigger.Params)
 	case isPushImageJob(jb.Type):
-		err = b.runPushImageJob(ctx, jrep, jb, r, settings, r.Trigger.ResolvedEnvironment)
+		err = b.runPushImageJob(ctx, jrep, jb, r, settings)
 	case strings.TrimSpace(jb.Type) == "notify":
 		b.runNotifyJob(ctx, jrep, jb, r)
 	case isObjectUploadJob(jb.Type):
@@ -610,9 +610,9 @@ func (b *Builder) runBuildImageJobRemote(ctx context.Context, r *run.Run, stage 
 	rb := *b
 	rb.driver = NewRemoteDriver(tgt, serverID, bin)
 
-	pushPlans := b.pushPlansByBuildNode(ctx, stage.Jobs, settings, r.Trigger.ResolvedEnvironment, r)
+	pushPlans := b.pushPlansByBuildNode(ctx, stage.Jobs, settings, r)
 	sink := &reporterSink{rep: rep}
-	return rb.runBuildImageJob(ctx, sink, rep, jb, stage.Name, proj, settings, r.Trigger.ResolvedEnvironment, remoteWS, commitTag, pushPlans[jb.Name])
+	return rb.runBuildImageJob(ctx, sink, rep, jb, stage.Name, proj, settings, remoteWS, commitTag, pushPlans[jb.Name])
 }
 
 // serverName 是机器人读显示名(完成日志用);wsSuffix 是远程工作区路径后缀(节点级独立取机时

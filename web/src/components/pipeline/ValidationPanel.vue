@@ -75,7 +75,6 @@ const scopeLabel = computed<Record<IssueScope, string>>(() => ({
   canvas:   t('pipelinePanels.vpScopeCanvas'),
   vars:     t('pipelinePanels.vpScopeVars'),
   triggers: t('pipelinePanels.vpScopeTriggers'),
-  envs:     t('pipelinePanels.vpScopeEnvs'),
 }))
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -512,7 +511,6 @@ function handleLocate(scope: IssueScope): void {
 .vp-scope-tag--canvas   { background: var(--color-primary-soft); color: var(--color-primary); border-color: oklch(66% 0.155 258 / 0.25); }
 .vp-scope-tag--vars     { background: var(--color-cyan-soft);    color: var(--color-cyan);    border-color: var(--color-cyan-line); }
 .vp-scope-tag--triggers { background: var(--color-amber-soft);   color: var(--color-amber);   border-color: var(--color-amber-line); }
-.vp-scope-tag--envs     { background: var(--color-green-soft);   color: var(--color-green);   border-color: var(--color-green-line); }
 
 /* ─── Message ────────────────────────────────────────────────────────────── */
 .vp-issue-msg {

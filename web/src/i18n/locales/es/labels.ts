@@ -53,14 +53,8 @@ export default {
   paramNotInChoice: 'El parámetro «{label}» no está entre las opciones disponibles',
 
   // ─── Estado de promoción ───
-  promotionPromoted: 'Promovido',
-  promotionPending: 'Pendiente de aprobación',
-  promotionRejected: 'Rechazado',
 
   // ─── Validación del nombre del entorno ───
-  envNameEmpty: 'El nombre del entorno no puede estar vacío',
-  envNameInvalid: 'El nombre del entorno solo puede contener letras, dígitos, guiones y guiones bajos',
-  envNameTooLong: 'El nombre del entorno no puede superar los 64 caracteres',
 
   // ─── Límite de concurrencia ───
   concurrencyNotInteger: 'El límite de concurrencia debe ser un entero',

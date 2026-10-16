@@ -267,3 +267,50 @@ func TestEnsureBuiltinsSkipsCustomSameName(t *testing.T) {
 		}
 	})
 }
+
+func TestEnsureBuiltinsRetiresRemovedBuiltin(t *testing.T) {
+	storetest.ForEachDialect(t, func(t *testing.T, st *store.Store) {
+		ctx := context.Background()
+		// 先以仍含 minio 的内置集合 seed(模拟老版本库),再恢复真实定义。
+		oldBuiltins, oldRetired := builtins, retiredBuiltins
+		defer func() { builtins, retiredBuiltins = oldBuiltins, oldRetired }()
+		builtins = append([]Template{{
+			Name: "minio", DisplayName: "MinIO", ComposeYAML: "services:\n  minio:\n    image: minio/minio:latest\n", Builtin: true,
+		}}, oldBuiltins...)
+		retiredBuiltins = nil
+		svc := newTestService(t, st)
+		builtins, retiredBuiltins = oldBuiltins, []string{"minio"}
+
+		// 升级后 seed → 内置 minio 行被清掉;其余内置不受影响。
+		if err := svc.EnsureBuiltins(ctx); err != nil {
+			t.Fatal(err)
+		}
+		list, err := svc.List(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(list) != len(builtins) {
+			t.Fatalf("下架后模板数不符:%d != %d", len(list), len(builtins))
+		}
+		for _, tpl := range list {
+			if tpl.Name == "minio" {
+				t.Fatalf("下架内置应被删除:%+v", tpl)
+			}
+		}
+
+		// 同名自定义模板让路:不被下架逻辑删除。
+		mine, err := svc.Create(ctx, CreateInput{
+			Name: "minio", DisplayName: "我的 minio", ComposeYAML: "services:\n  a:\n    image: x:1\n",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := svc.EnsureBuiltins(ctx); err != nil {
+			t.Fatal(err)
+		}
+		got, err := svc.Get(ctx, mine.ID)
+		if err != nil || got.Builtin {
+			t.Fatalf("同名自定义模板不应被下架逻辑删除:%v %+v", err, got)
+		}
+	})
+}

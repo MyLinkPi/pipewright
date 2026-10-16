@@ -59,7 +59,6 @@ function settingsDTO(): SettingsDTO {
       vars: [],
       cache: { enabled: false, paths: [] },
     },
-    environments: [],
     updatedAt: '2026-01-01T00:00:00Z',
   }
 }
@@ -77,7 +76,6 @@ function mountView() {
       stubs: {
         PipelineCanvas: PipelineCanvasStub,
         VarsCacheTab: true,
-        EnvCredsTab: true,
         TriggersPanel: true,
         RunnerPanel: true,
         ValidationPanel: true,
@@ -86,7 +84,6 @@ function mountView() {
         YamlImportModal: true,
         TemplatePickerModal: true,
         PacPreviewModal: true,
-        ProjectPreviewConfig: true,
         AppTooltip: true,
         RouterLink: { template: '<a><slot /></a>' },
       },
@@ -159,7 +156,6 @@ function mountViewEx(extra: Record<string, unknown> = {}) {
         YamlImportModal: true,
         TemplatePickerModal: TemplatePickerModalStub,
         PacPreviewModal: true,
-        ProjectPreviewConfig: true,
         AppTooltip: true,
         RouterLink: { template: '<a><slot /></a>' },
         ...extra,
@@ -232,7 +228,7 @@ describe('ProjectPipeline — 按 dirty 全 scope 保存(#190)', () => {
     expect(saveSettings).toHaveBeenCalledTimes(1)
     const banner = w.find('.pipeline-banner--error')
     expect(banner.exists()).toBe(true)
-    expect(banner.text()).toContain('变量/环境')
+    expect(banner.text()).toContain('变量')
   })
 
   it('模板应用只重载流水线,不再覆写未保存的 settings 草稿(#190)', async () => {
