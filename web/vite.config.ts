@@ -14,8 +14,9 @@ export default defineConfig({
   },
   server: {
     proxy: {
-      '/api': 'http://localhost:8080',
-      '/healthz': 'http://localhost:8080',
+      // 默认指向本机默认后端;多实例联调可用 PIPEWRIGHT_API_TARGET 覆盖(如 :8081)。
+      '/api': process.env.PIPEWRIGHT_API_TARGET ?? 'http://localhost:8080',
+      '/healthz': process.env.PIPEWRIGHT_API_TARGET ?? 'http://localhost:8080',
     },
   },
   // Vitest 单元/组件测试配置(内联到 vite.config,复用同一份插件与解析规则)。
