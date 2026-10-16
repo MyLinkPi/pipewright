@@ -139,13 +139,15 @@ describe('server metric card GPU row (opt-in per server)', () => {
     expect(cards).toHaveLength(2)
     expect(cards[0].get('.gpu-card__idx').text()).toBe('#0')
     expect(cards[0].get('.gpu-card__name').text()).toBe('NVIDIA CMP 40HX')
-    // 两条带标签的进度条(利用率 / 显存)+ 显存字节行 + 遥测行。
+    // 三行同构进度条(利用率 / 显存 / 风扇);显存字节并入显存行,频率裸 MHz 靠右。
     // 显存百分比按字节口径精算(7120289792 / 8589934592 ≈ 82.9% → 83%),与展示的字节一致。
-    expect(cards[0].findAll('.gpu-bar')).toHaveLength(2)
-    expect(cards[0].findAll('.gpu-bar__value').map((v) => v.text())).toEqual(['0%', '83%'])
+    expect(cards[0].findAll('.gpu-bar')).toHaveLength(3)
+    expect(cards[0].findAll('.gpu-bar__value').map((v) => v.text())).toEqual(['0%', '83%', '36%'])
     expect(cards[0].text()).toContain('8.0 GiB')
+    expect(cards[0].text()).toContain('300MHz')
+    expect(cards[0].text()).toContain('405MHz')
     expect(cards[1].text()).toContain('97')
-    // 风扇为 null 的卡不多渲染该段:第 2 张卡的遥测行仍有温度/功耗。
+    // 风扇为 null 的卡不多渲染该段:第 2 张卡仍有温度/功耗读数。
     expect(cards[1].text()).toContain('61')
     w.unmount()
   })
@@ -156,10 +158,13 @@ describe('server metric card GPU row (opt-in per server)', () => {
     })
     const card = w.get('.gpu-card')
     expect(card.text()).toContain('AMD Instinct MI60 / MI50')
-    expect(card.findAll('.gpu-bar')).toHaveLength(2)
-    // 无字节口径 → 不渲染 used/total 行。
+    expect(card.findAll('.gpu-bar')).toHaveLength(3)
+    // 无字节口径 → 不渲染 used/total 读数。
     expect(card.text()).not.toContain('GiB')
-    expect(card.find('.gpu-card__telemetry').exists()).toBe(true)
+    // 频率裸 MHz(不带「核心/显存」前缀),温度/功耗在行尾。
+    expect(card.text()).toContain('926MHz')
+    expect(card.text()).toContain('350MHz')
+    expect(card.text()).toContain('44')
     w.unmount()
   })
 
