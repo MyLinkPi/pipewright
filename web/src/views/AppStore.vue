@@ -5,9 +5,12 @@
   模板卡片网格(内置 + 自定义)→ 点开参数表单(按 params schema 渲染;secret 自动生成)
   → 选目标主机部署 → 展示部署结果与一次性返回的生成口令。部署复用 Stacks 受管链路,
   部署完可在「容器」页对应主机的 Stacks 标签页管理。
+  部署成功后结果卡内置「一键服务注册」:选基域 + 服务名/端口(自动预填)→ 幂等注册
+  网关子域名并挂载本机实例,nginx 自动收敛,完成态展示 FQDN。
 */
 import { ref, computed, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { useRouter } from 'vue-router'
 import { NIcon } from 'naive-ui'
 import { Apps, Rocket, Trash } from '@vicons/tabler'
 import {
@@ -20,6 +23,15 @@ import {
   type AppDeployResult,
 } from '../api/apps'
 import { listServers, type Server } from '../api/servers'
+import {
+  listDomains,
+  getGateway,
+  ensureService,
+  listInstances,
+  addInstance,
+  removeInstance,
+  type Domain,
+} from '../api/servicereg'
 import { HttpError } from '../api/http'
 import { useToast } from '../composables/useToast'
 import { useConfirm } from '../composables/useConfirm'
@@ -30,6 +42,7 @@ import AppSelect from '../components/ui/AppSelect.vue'
 const { t } = useI18n()
 const toast = useToast()
 const confirm = useConfirm()
+const router = useRouter()
 
 function errMsg(err: unknown, fallback: string): string {
   return err instanceof HttpError ? (err.apiError?.message ?? fallback) : fallback
@@ -85,6 +98,7 @@ function openDeploy(tpl: AppTemplate): void {
   deployResult.value = null
   deployCpus.value = ''
   deployMemory.value = ''
+  regDoneFqdn.value = ''
   deployServer.value = servers.value.length === 1 ? servers.value[0].id : ''
   const vals: Record<string, string> = {}
   for (const p of tpl.params) vals[p.name] = p.default ?? ''
@@ -100,13 +114,118 @@ async function submitDeploy(): Promise<void> {
       memory: deployMemory.value,
     })
     deployResult.value = res
-    if (res.ok) toast.success(t('appStore.deployed', { name: deploying.value.displayName || deploying.value.name }))
-    else toast.error(res.error || t('appStore.deployFail'))
+    if (res.ok) {
+      toast.success(t('appStore.deployed', { name: deploying.value.displayName || deploying.value.name }))
+      void prepareReg()
+    } else {
+      toast.error(res.error || t('appStore.deployFail'))
+    }
   } catch (err) {
     toast.error(errMsg(err, t('appStore.deployFail')))
   } finally {
     deployBusy.value = false
   }
+}
+
+// ─── 一键服务注册(部署成功后的网关联动)──────────────────────────────────────
+// 复用服务注册既有端点:ensureService 幂等建服务(子域名),addInstance 把部署目标机
+// 挂为 upstream 成员(非容器实例:服务器 IP + 宿主端口),触发网关 nginx 自动收敛。
+const regDomains = ref<Domain[]>([])
+const regLoaded = ref(false) // 基域/网关状态是否拉取完成(区分「无基域」与「加载中」)
+const regGatewayReady = ref<boolean | null>(null) // null = 未知
+const regForm = ref({ domainId: '', name: '', port: '' })
+const regBusy = ref(false)
+const regDoneFqdn = ref('') // 非空 = 已注册成功,切换结果卡为完成态
+
+const domainOptions = computed(() => regDomains.value.map((d) => ({ value: d.id, label: d.baseDomain })))
+const regDomain = computed(() => regDomains.value.find((d) => d.id === regForm.value.domainId))
+const regPreview = computed(() => {
+  const d = regDomain.value
+  const name = regForm.value.name.trim()
+  return d && name ? `${name}.${d.baseDomain}` : ''
+})
+
+// sanitizeServiceName 把模板名清洗成合法子域前缀(^[a-z0-9][a-z0-9-]{0,62}$)。
+function sanitizeServiceName(raw: string): string {
+  return raw
+    .toLowerCase()
+    .replace(/[^a-z0-9-]+/g, '-')
+    .replace(/^-+/, '')
+    .replace(/-+$/, '')
+    .slice(0, 63)
+}
+
+// pickPortParam 从部署生效参数启发式取宿主端口:键 port 优先,其次 *port;须为 1-65535 整数。
+function pickPortParam(params?: Record<string, string>): string {
+  if (!params) return ''
+  const names = Object.keys(params)
+  const key = names.includes('port') ? 'port' : names.find((k) => k.endsWith('port'))
+  if (!key) return ''
+  const n = Number(params[key])
+  return Number.isInteger(n) && n >= 1 && n <= 65535 ? String(n) : ''
+}
+
+// prepareReg 部署成功后预取基域与网关状态并预填表单(尽力而为,失败不影响结果展示)。
+async function prepareReg(): Promise<void> {
+  regDomains.value = []
+  regLoaded.value = false
+  regGatewayReady.value = null
+  regForm.value = {
+    domainId: '',
+    name: sanitizeServiceName(deploying.value?.name ?? ''),
+    port: pickPortParam(deployResult.value?.params),
+  }
+  regDoneFqdn.value = ''
+  try {
+    const [dom, gw] = await Promise.all([listDomains(), getGateway()])
+    regDomains.value = dom.items
+    regGatewayReady.value = gw.configured && gw.servers.some((s) => s.running)
+    if (dom.items.length === 1) regForm.value.domainId = dom.items[0].id
+  } catch {
+    regDomains.value = []
+  } finally {
+    regLoaded.value = true
+  }
+}
+
+// submitRegister 一键注册:幂等建服务 → 幂等挂实例(同机已有非容器实例行:端口一致
+// 跳过,变了先删后加刷新)→ 完成态展示 FQDN。仅 HTTP 协议;TCP 走服务注册页完整表单。
+async function submitRegister(): Promise<void> {
+  const res = deployResult.value
+  if (!res || regBusy.value) return
+  const name = regForm.value.name.trim()
+  const port = Number(regForm.value.port)
+  if (!regForm.value.domainId || !name || !Number.isInteger(port) || port < 1 || port > 65535) {
+    toast.error(t('appStore.deploy.regNeedFields'))
+    return
+  }
+  regBusy.value = true
+  try {
+    const svc = await ensureService({
+      domainId: regForm.value.domainId,
+      name,
+      protocol: 'http',
+      upstreamKind: 'address',
+      upstream: '',
+      upstreamPort: port,
+    })
+    const insts = await listInstances(svc.id)
+    const stale = insts.items.find((i) => i.serverId === res.serverId && !i.container)
+    if (!stale || stale.hostPort !== port) {
+      if (stale) await removeInstance(stale.id)
+      await addInstance(svc.id, res.serverId, '', port, port)
+    }
+    regDoneFqdn.value = regPreview.value || name
+    toast.success(t('appStore.deploy.regDoneTitle'))
+  } catch (err) {
+    toast.error(errMsg(err, t('appStore.deploy.regFail')))
+  } finally {
+    regBusy.value = false
+  }
+}
+
+function goServiceReg(): void {
+  router.push({ name: 'service-registry' })
 }
 
 // ─── 自定义模板 ───────────────────────────────────────────────────────────────
@@ -356,6 +475,64 @@ async function removeCustom(tpl: AppTemplate): Promise<void> {
             </ul>
             <p class="apps__hint">{{ t('appStore.deploy.onceHint') }}</p>
           </div>
+
+          <!-- 一键服务注册:部署成功后把应用挂到网关子域名(幂等 ensure + 实例挂载自动收敛) -->
+          <div v-if="deployResult.ok && regDoneFqdn" class="apps__sr">
+            <h4>{{ t('appStore.deploy.regDoneTitle') }}</h4>
+            <p class="apps__sr-fqdn"><code>{{ regDoneFqdn }}</code></p>
+            <p v-if="regDomain?.hasCert" class="apps__sr-ok">{{ t('appStore.deploy.regHttps') }}</p>
+            <p class="apps__hint">{{ t('appStore.deploy.regDoneHint') }}</p>
+            <button type="button" class="apps__sr-link" @click="goServiceReg">
+              {{ t('appStore.deploy.regGoServiceReg') }} →
+            </button>
+          </div>
+          <div v-else-if="deployResult.ok" class="apps__sr">
+            <h4>{{ t('appStore.deploy.regTitle') }}</h4>
+            <p class="apps__hint">{{ t('appStore.deploy.regHint') }}</p>
+            <template v-if="regDomains.length">
+              <div class="apps__grid2">
+                <label class="field">
+                  <span class="field__lbl">{{ t('appStore.deploy.regDomain') }}</span>
+                  <AppSelect
+                    :model-value="regForm.domainId"
+                    :options="domainOptions"
+                    placeholder="example.com"
+                    @update:model-value="(v: string) => (regForm.domainId = v)"
+                  />
+                </label>
+                <label class="field">
+                  <span class="field__lbl">{{ t('appStore.deploy.regPort') }}</span>
+                  <input v-model="regForm.port" class="field__in" type="number" min="1" max="65535" />
+                </label>
+              </div>
+              <label class="field">
+                <span class="field__lbl">{{ t('appStore.deploy.regName') }}</span>
+                <input v-model="regForm.name" class="field__in" type="text" :placeholder="deploying.name" />
+              </label>
+              <p class="apps__hint">{{ t('appStore.deploy.regPortHint') }}</p>
+              <p v-if="regPreview" class="apps__sr-preview"><code>{{ regPreview }}</code></p>
+              <p v-if="regGatewayReady === false" class="apps__sr-warn">{{ t('appStore.deploy.regGatewayMissing') }}</p>
+              <div class="apps__form-actions">
+                <AppButton
+                  variant="primary"
+                  type="button"
+                  :loading="regBusy"
+                  :disabled="!regForm.domainId || !regForm.name.trim() || !regForm.port"
+                  @click="submitRegister"
+                >
+                  {{ t('appStore.deploy.regSubmit') }}
+                </AppButton>
+              </div>
+            </template>
+            <template v-else-if="regLoaded">
+              <p class="apps__hint">{{ t('appStore.deploy.regNoDomains') }}</p>
+              <div class="apps__form-actions">
+                <AppButton variant="default" type="button" @click="goServiceReg">
+                  {{ t('appStore.deploy.regGoServiceReg') }}
+                </AppButton>
+              </div>
+            </template>
+          </div>
           <pre v-if="deployResult.output" class="apps__output">{{ deployResult.output }}</pre>
           <div class="apps__form-actions">
             <AppButton variant="default" @click="deploying = null">{{ t('appStore.deploy.close') }}</AppButton>
@@ -570,6 +747,52 @@ async function removeCustom(tpl: AppTemplate): Promise<void> {
 }
 .apps__secret {
   word-break: break-all;
+}
+.apps__sr {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border: 1px solid var(--border, #d4d4d4);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+.apps__sr h4 {
+  margin: 0;
+  font-size: 13px;
+}
+.apps__sr-fqdn {
+  margin: 0;
+  font-size: 12px;
+}
+.apps__sr-fqdn code {
+  font-size: 13px;
+  word-break: break-all;
+}
+.apps__sr-preview {
+  margin: 0;
+  font-size: 12px;
+}
+.apps__sr-ok {
+  font-size: 12px;
+  color: #0a7d32;
+  margin: 0;
+}
+.apps__sr-warn {
+  font-size: 12px;
+  color: #9a6700;
+  margin: 0;
+}
+.apps__sr-link {
+  align-self: flex-start;
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: 12px;
+  color: #1a66d4;
+  cursor: pointer;
+}
+.apps__sr-link:hover {
+  text-decoration: underline;
 }
 .apps__output {
   font-size: 11px;
