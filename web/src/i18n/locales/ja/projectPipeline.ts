@@ -54,6 +54,14 @@ export default {
   // ─── バナー / ステータス ────────────────────────────────────────
   dismiss: '閉じる',
   draftSaved: 'パイプラインを保存しました',
+  scopeSettings: '変数/環境',
+  scopePipeline: 'パイプライン定義',
+  noChanges: '未保存の変更はありません',
+  errSavePartial: '一部のみ保存済み({saved});失敗: ',
+  replaceDirtyTitle: '未保存のキャンバス変更',
+  replaceDirtyBody: 'この操作はキャンバス全体を置き換えます。未保存の変更は失われます。続行しますか?',
+  replaceDirtyConfirm: '破棄して続行',
+  tabDirtyAria: '未保存の変更',
   retry: '再試行',
   loading: '読み込み中',
 
