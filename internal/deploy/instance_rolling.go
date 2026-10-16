@@ -103,10 +103,16 @@ func regServiceRef(cfg map[string]string) string {
 func (s *service) deployInstanceRollingOne(ctx context.Context, srv *target.Server, a run.Artifact, cfg map[string]string, hsp *healthSpec) TargetResult {
 	started := time.Now().UTC()
 	st := imageState{
-		name:     imageContainerName(a, cfg),
-		ref:      strings.TrimSpace(a.Reference),
-		baseArgs: imageBaseRunArgs(cfg),
+		name: imageContainerName(a, cfg),
+		ref:  strings.TrimSpace(a.Reference),
 	}
+	// 卷名从基础容器名推导(不掺 -r 随机后缀的新实例容器名)→ 轮转前后同一卷,数据保持。
+	baseArgs, mounts, verr := imageBaseRunArgs(cfg, st.name)
+	if verr != nil {
+		return finishFailed(TargetResult{ServerID: srv.ID, ServerName: srv.Name, StartedAt: started}, verr.Error())
+	}
+	st.baseArgs = baseArgs
+	logVolumeMounts(ctx, mounts, "(卷名从基础容器名推导,实例轮转起新容器名后仍挂同一卷)")
 	specs, perr := imagePortSpecs(cfg)
 	if perr != nil {
 		return finishFailed(TargetResult{ServerID: srv.ID, ServerName: srv.Name, StartedAt: started}, perr.Error())

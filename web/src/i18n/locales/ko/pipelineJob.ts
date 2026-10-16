@@ -76,6 +76,9 @@ export default {
   fieldRestartPolicyHint: "컨테이너 종료 / 호스트 재부팅 후 재시작 정책(docker run --restart 와 동일)",
   fieldEnvVarsLabel: "환경 변수",
   fieldEnvVarsHint: "한 줄에 하나씩 KEY=value 형식으로 컨테이너에 주입(값에 공백 포함 가능). 비밀 값은 평문으로 쓰지 말 것",
+  fieldVolumesLabel: "볼륨 마운트",
+  fieldVolumesHint:
+    "한 줄에 하나: 컨테이너 경로만(예: /var/lib/mysql)→ 영구 named volume 자동 생성(업그레이드 / 롤백 후에도 같은 볼륨으로 데이터 유지). 명시 형식은 \"호스트 디렉터리:컨테이너 경로\" 또는 \"볼륨 이름:컨테이너 경로\". 끝에 :ro 를 붙이면 읽기 전용",
   restartPolicyUnset: "설정 안 함",
   fieldStrategyLabel: "배포 전략",
   fieldRestartCommandLabel: "재시작 / 전환 명령",

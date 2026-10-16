@@ -201,6 +201,52 @@ func TestInstanceRollingSuccess(t *testing.T) {
 	}
 }
 
+// TestInstanceRollingVolumesStableAcrossRotation 卷名必须从**基础容器名**推导:实例轮转起的
+// 新容器名带 -r 随机后缀(每次轮转都不同),但 -v 卷名保持同一个 → 升级数据保持的核心断言。
+func TestInstanceRollingVolumesStableAcrossRotation(t *testing.T) {
+	db := testDB(t)
+	rsvc := run.New(db)
+	tgt := &stubTarget{execFn: rollExecFn}
+	srv := seedServer(t, tgt, "gw-1")
+	runID, artID := seedSuccessRunWithArtifact(t, db, rsvc, run.ArtifactImage, "registry.acme.io/shop:2")
+
+	gw := &fakeGateway{refs: twoInstanceRefs()}
+	svc := New(tgt, rsvc, WithInstanceGateway(gw))
+	res, err := svc.Deploy(context.Background(), DeployInput{
+		RunID: runID, ArtifactID: artID, ServerIDs: []string{srv.ID},
+		Config: map[string]string{"containerName": "shop", "drainSeconds": "0", "volumes": "/var/lib/mysql"},
+	})
+	if err != nil {
+		t.Fatalf("Deploy: %v", err)
+	}
+	if len(res) != 1 || res[0].Status != run.TargetSuccess {
+		t.Fatalf("want success, got %+v", res)
+	}
+
+	// 两实例 → 两次新容器 run;容器名(-r 后缀)各不相同,但 -v 必须都是
+	// pw-shop__var-lib-mysql(从基础容器名 shop 推导,与随机后缀无关)。
+	const vol = "pw-shop__var-lib-mysql:/var/lib/mysql"
+	newRuns := 0
+	for _, c := range tgt.calls {
+		// dockerRunCmd 序:[docker run -d --name <name> … ref];实例轮转的新名 = 基础名-r<hex>。
+		if len(c) >= 3 && c[0] == "docker" && c[1] == "run" && strings.Contains(c[4], "-r") {
+			newRuns++
+			found := false
+			for i := 5; i+1 < len(c); i++ {
+				if c[i] == "-v" && c[i+1] == vol {
+					found = true
+				}
+			}
+			if !found {
+				t.Fatalf("新实例 run 缺 -v %s: %v", vol, c)
+			}
+		}
+	}
+	if newRuns != 2 {
+		t.Fatalf("应有 2 次新实例 run(两实例轮转),实际 %d: %v", newRuns, tgt.calls)
+	}
+}
+
 // TestInstanceRollingHealthFailKeepsOld:新实例预热失败 → 删新容器、不 Swap、旧实例保留,
 // 该机 failed 且中止剩余实例。
 func TestInstanceRollingHealthFailKeepsOld(t *testing.T) {

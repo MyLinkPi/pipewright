@@ -62,17 +62,19 @@ func imagePortSpecs(cfg map[string]string) ([]portSpec, error) {
 // imageBaseRunArgs 解析 docker run 的附加参数(端口映射已拆到 portSpecs 运行时解析,见 ports.go):
 // 先把结构化常用键翻译为对应 flag,再原样追加 cfg["runArgs"] 自由参数(同名 flag 后写生效,
 // runArgs 仍作逃生舱)。各参数原样作为 array 元素(绝不拼接 shell;AC-SEC-02)。
+// 返回 (参数元素, 解析出的卷挂载(供调用方记日志), 错误(卷配置非法时人读))。
 //
 // 结构化键(UI 表单字段,免手写 flag):
 //   - cpuLimit      → --cpus <v>      (CPU 核数上限,如 "1.5")
 //   - memoryLimit   → --memory <v>    (内存硬上限,如 "512m";超限 OOM kill)
 //   - restartPolicy → --restart <v>   (no/always/unless-stopped/on-failure)
 //   - envVars       → 每行一条 KEY=value 各成一个 -e(整行作单值,值含空格不被拆)
+//   - volumes       → 每行一条挂载各成一个 -v(见 parseVolumeMounts;自动命名卷升级保持)
 //
 // 注意:凭据绝不经此进命令(registry 凭据沿用既有 docker login 模式);此处仅承载运行参数。
-func imageBaseRunArgs(cfg map[string]string) []string {
+func imageBaseRunArgs(cfg map[string]string, containerName string) ([]string, []volumeMount, error) {
 	if cfg == nil {
-		return nil
+		return nil, nil, nil
 	}
 	var out []string
 	if v := strings.TrimSpace(cfg["cpuLimit"]); v != "" {
@@ -89,7 +91,117 @@ func imageBaseRunArgs(cfg map[string]string) []string {
 			out = append(out, "-e", kv)
 		}
 	}
-	return append(out, strings.Fields(cfg["runArgs"])...)
+	mounts, verr := parseVolumeMounts(cfg, containerName)
+	if verr != nil {
+		return nil, nil, verr
+	}
+	for _, m := range mounts {
+		out = append(out, "-v", m.spec)
+	}
+	return append(out, strings.Fields(cfg["runArgs"])...), mounts, nil
+}
+
+// volumeMount 是一条卷挂载(parseVolumeMounts 产出;进 docker run 的 -v 值)。
+type volumeMount struct {
+	spec string // docker -v 的值:src:dst[:ro](自动命名卷时 src 即推导出的卷名)
+	auto bool   // true = 平台自动生成的命名卷(日志标注,运维可核对推导结果)
+}
+
+// parseVolumeMounts 解析 cfg["volumes"](每行一条,镜像 docker -v 语义)为卷挂载列表:
+//   - /var/lib/mysql       → 只写容器路径 = **自动命名卷**:卷名由基础容器名确定性推导
+//     (autoVolumeName),docker 首次挂载自动创建,docker rm -f 不删卷 —— 蓝绿切换 / 滚动 /
+//     实例轮转(新容器名)/ 回滚重建容器时同一卷继续挂载,数据保持。
+//   - /data/app:/app/data  → source 以 / 开头 = 显式绑定宿主目录(原样交 docker)。
+//   - appdata:/app/data    → source 非 / 开头 = 显式命名卷(原样交 docker)。
+//   - 任意形式尾部可加 :ro(只读)。
+// 逐行解析(非 strings.Fields):路径含空格保得住;非法 → 人读 error;空行跳过。
+// containerName 必须传**基础容器名**(imageContainerName),绝不掺运行时容器名 / runId ——
+// 卷名稳定是升级数据保持的前提。
+func parseVolumeMounts(cfg map[string]string, containerName string) ([]volumeMount, error) {
+	if cfg == nil {
+		return nil, nil
+	}
+	raw := strings.TrimSpace(cfg["volumes"])
+	if raw == "" {
+		return nil, nil
+	}
+	var out []volumeMount
+	for i, line := range strings.Split(raw, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		// 形态归一:1 段 = dst(自动卷);2 段 = src:dst 或 dst:ro;3 段 = src:dst:ro。
+		var src, dst, mode string
+		switch parts := strings.Split(line, ":"); len(parts) {
+		case 1:
+			dst = parts[0]
+		case 2:
+			if parts[1] == "ro" {
+				dst, mode = parts[0], parts[1]
+			} else {
+				src, dst = parts[0], parts[1]
+			}
+		case 3:
+			src, dst, mode = parts[0], parts[1], parts[2]
+		default:
+			return nil, fmt.Errorf("卷挂载第 %d 行无法解析(至多 src:dst:ro 三段):%s", i+1, line)
+		}
+		if dst == "" || !strings.HasPrefix(dst, "/") {
+			return nil, fmt.Errorf("卷挂载第 %d 行容器路径必须以 / 开头:%s", i+1, line)
+		}
+		if mode != "" && mode != "ro" {
+			return nil, fmt.Errorf("卷挂载第 %d 行挂载模式仅支持 ro:%s", i+1, line)
+		}
+		auto := false
+		if src == "" {
+			auto = true
+			src = autoVolumeName(containerName, dst)
+		}
+		spec := src + ":" + dst
+		if mode != "" {
+			spec += ":" + mode
+		}
+		out = append(out, volumeMount{spec: spec, auto: auto})
+	}
+	return out, nil
+}
+
+// autoVolumeName 从基础容器名 + 容器路径确定性推导自动命名卷名:
+// pw-<容器名净化>__<容器路径 / 换 ->,如 shopapp + /var/lib/mysql → pw-shopapp__var-lib-mysql。
+// pw- 前缀标记平台托管(运维页卷面板可与手工卷区分);名字只依赖这两个输入,升级 / 回滚 /
+// 实例轮转(新容器名带 -r 随机后缀)均不参与推导 → 同一容器路径永远同一个卷。
+func autoVolumeName(containerName, containerPath string) string {
+	c := sanitizeName(containerName)
+	if c == "" {
+		c = "app"
+	}
+	seg := sanitizeName(strings.ReplaceAll(strings.TrimPrefix(containerPath, "/"), "/", "-"))
+	if seg == "" {
+		seg = "root" // 容器路径为 / 等极端形态的兜底段
+	}
+	return "pw-" + c + "__" + seg
+}
+
+// volumeMountSummary 渲染卷映射的一行日志(自动命名卷标注「自动」;端口映射 summary 同风格)。
+func volumeMountSummary(mounts []volumeMount) string {
+	parts := make([]string, 0, len(mounts))
+	for _, m := range mounts {
+		if m.auto {
+			parts = append(parts, m.spec+"(自动)")
+		} else {
+			parts = append(parts, m.spec)
+		}
+	}
+	return strings.Join(parts, ", ")
+}
+
+// logVolumeMounts 把解析出的卷映射记入部署日志(有卷才记;自动卷名是推导出来的,必须可核对)。
+func logVolumeMounts(ctx context.Context, mounts []volumeMount, note string) {
+	if len(mounts) == 0 {
+		return
+	}
+	cmdLogFrom(ctx)(cmdStreamStdout, "", "· 卷映射:"+volumeMountSummary(mounts)+note)
 }
 
 // splitImageList 按逗号 / 空白切分并去空(端口列表用)。
@@ -116,10 +228,16 @@ func dockerRunCmd(name string, runArgs []string, ref string) []string {
 // stageImageOne 执行 image 部署**预备阶段**:docker login(可选,配了 registryCredentialId)+
 // pull 新镜像(不停旧容器)+ 探测当前容器镜像(回滚目标)。拉取失败 → (中间态, 人读 message, false)。
 func (s *service) stageImageOne(ctx context.Context, srv *target.Server, a run.Artifact, cfg map[string]string) (imageState, string, bool) {
-	st := imageState{name: imageContainerName(a, cfg), ref: strings.TrimSpace(a.Reference), baseArgs: imageBaseRunArgs(cfg)}
+	st := imageState{name: imageContainerName(a, cfg), ref: strings.TrimSpace(a.Reference)}
 	if st.ref == "" {
 		return st, "image 产物缺少 reference(repo:tag 或镜像 id)", false
 	}
+	baseArgs, mounts, verr := imageBaseRunArgs(cfg, st.name)
+	if verr != nil {
+		return st, verr.Error(), false
+	}
+	st.baseArgs = baseArgs
+	logVolumeMounts(ctx, mounts, "(自动命名卷在容器重建 / 回滚后保持同一卷,数据不丢)")
 	specs, perr := imagePortSpecs(cfg)
 	if perr != nil {
 		return st, perr.Error(), false
