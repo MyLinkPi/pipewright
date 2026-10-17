@@ -103,7 +103,7 @@ func makeRegisterHandler(id identity.Service, authn auth.Authenticator) http.Han
 		}
 
 		// 自动登录:注册成功即建立会话,避免用户再手动登录一次。
-		sess, err := authn.Login(u.Username, req.Password)
+		sess, err := authn.Login(u.Username, req.Password, clientIP(r))
 		if err != nil {
 			// 注册已成功(账号已建),登录异常不阻断:前端据 username 引导去登录页。
 			writeJSON(w, http.StatusCreated, map[string]string{"username": u.Username, "role": u.Role})

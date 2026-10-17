@@ -221,7 +221,7 @@ func TestRegisterSuccess(t *testing.T) {
 		}
 
 		// 用该账号登录(auth 与 identity 共用 argon2id 规则)。
-		sess, err := auth.NewService(db, nil).Login("alice", "password123")
+		sess, err := auth.NewService(db, nil).Login("alice", "password123", "")
 		if err != nil {
 			t.Fatalf("Login(alice): %v", err)
 		}

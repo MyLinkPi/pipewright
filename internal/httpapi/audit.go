@@ -52,6 +52,25 @@ func isLoopbackHost(host string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
+// requestIsSecure 判断请求是否应按 HTTPS 对待:直连 TLS,或经可信反代
+// (显式 PIPEWRIGHT_TRUST_PROXY,或直连对端为回环——platformHTTPS 的本机 nginx 即此
+// 形态,与 clientIP 同一信任模型)且反代下发的 X-Forwarded-Proto 声明 https。
+// 供会话/CSRF cookie 决定 Secure 标志:反代终止 TLS 时 r.TLS 恒为 nil,若只看 r.TLS
+// 会在生产 HTTPS 部署下漏设 Secure(浏览器可能在明文 HTTP 上回传会话 cookie)。
+func requestIsSecure(r *http.Request) bool {
+	if r.TLS != nil {
+		return true
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = strings.TrimSpace(r.RemoteAddr)
+	}
+	if !trustForwardedHeader() && !isLoopbackHost(host) {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(r.Header.Get("X-Forwarded-Proto")), "https")
+}
+
 // trustForwardedHeader 报告是否显式配置了可信反代。
 func trustForwardedHeader() bool {
 	switch strings.ToLower(strings.TrimSpace(os.Getenv("PIPEWRIGHT_TRUST_PROXY"))) {

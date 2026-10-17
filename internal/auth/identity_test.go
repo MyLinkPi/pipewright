@@ -40,7 +40,7 @@ func TestAdminLoginIdentity(t *testing.T) {
 		t.Fatalf("Bootstrap: %v", err)
 	}
 
-	sess, err := svc.Login("admin", "testpass")
+	sess, err := svc.Login("admin", "testpass", "")
 	if err != nil {
 		t.Fatalf("Login(admin): %v", err)
 	}
@@ -54,7 +54,7 @@ func TestAdminLoginIdentity(t *testing.T) {
 		t.Fatalf("username = %q, want admin", sess.Username)
 	}
 
-	if _, err := svc.Login("admin", "wrongpass"); !errors.Is(err, ErrInvalidCredentials) {
+	if _, err := svc.Login("admin", "wrongpass", ""); !errors.Is(err, ErrInvalidCredentials) {
 		t.Fatalf("错误口令应 ErrInvalidCredentials, got %v", err)
 	}
 }
@@ -67,7 +67,7 @@ func TestMemberLoginIdentity(t *testing.T) {
 	}
 	insertUserRow(t, db, "u1", "alice", "password123", "active")
 
-	sess, err := svc.Login("alice", "password123")
+	sess, err := svc.Login("alice", "password123", "")
 	if err != nil {
 		t.Fatalf("Login(alice): %v", err)
 	}
@@ -90,7 +90,7 @@ func TestDisabledMemberCannotLogin(t *testing.T) {
 	}
 	insertUserRow(t, db, "u1", "disabled", "password123", "disabled")
 
-	if _, err := svc.Login("disabled", "password123"); !errors.Is(err, ErrInvalidCredentials) {
+	if _, err := svc.Login("disabled", "password123", ""); !errors.Is(err, ErrInvalidCredentials) {
 		t.Fatalf("disabled 用户应 ErrInvalidCredentials, got %v", err)
 	}
 }
@@ -134,11 +134,11 @@ func TestChangePasswordAdmin(t *testing.T) {
 		t.Fatalf("Bootstrap: %v", err)
 	}
 
-	s1, err := svc.Login("admin", "testpass")
+	s1, err := svc.Login("admin", "testpass", "")
 	if err != nil {
 		t.Fatalf("Login(s1): %v", err)
 	}
-	s2, err := svc.Login("admin", "testpass")
+	s2, err := svc.Login("admin", "testpass", "")
 	if err != nil {
 		t.Fatalf("Login(s2): %v", err)
 	}
@@ -156,10 +156,10 @@ func TestChangePasswordAdmin(t *testing.T) {
 	}
 
 	// 旧口令失效、新口令可登录。
-	if _, err := svc.Login("admin", "testpass"); !errors.Is(err, ErrInvalidCredentials) {
+	if _, err := svc.Login("admin", "testpass", ""); !errors.Is(err, ErrInvalidCredentials) {
 		t.Fatalf("旧口令应失效, got %v", err)
 	}
-	if _, err := svc.Login("admin", "newpass123"); err != nil {
+	if _, err := svc.Login("admin", "newpass123", ""); err != nil {
 		t.Fatalf("新口令应可登录, got %v", err)
 	}
 }
@@ -173,11 +173,11 @@ func TestChangePasswordMember(t *testing.T) {
 	}
 	insertUserRow(t, db, "u1", "alice", "password123", "active")
 
-	s1, err := svc.Login("alice", "password123")
+	s1, err := svc.Login("alice", "password123", "")
 	if err != nil {
 		t.Fatalf("Login(s1): %v", err)
 	}
-	s2, err := svc.Login("alice", "password123")
+	s2, err := svc.Login("alice", "password123", "")
 	if err != nil {
 		t.Fatalf("Login(s2): %v", err)
 	}
@@ -195,14 +195,14 @@ func TestChangePasswordMember(t *testing.T) {
 	}
 
 	// 管理员口令不受影响。
-	if _, err := svc.Login("admin", "testpass"); err != nil {
+	if _, err := svc.Login("admin", "testpass", ""); err != nil {
 		t.Fatalf("管理员口令不应受影响, got %v", err)
 	}
 	// 成员旧口令失效、新口令可登录。
-	if _, err := svc.Login("alice", "password123"); !errors.Is(err, ErrInvalidCredentials) {
+	if _, err := svc.Login("alice", "password123", ""); !errors.Is(err, ErrInvalidCredentials) {
 		t.Fatalf("成员旧口令应失效, got %v", err)
 	}
-	if _, err := svc.Login("alice", "memberpass1"); err != nil {
+	if _, err := svc.Login("alice", "memberpass1", ""); err != nil {
 		t.Fatalf("成员新口令应可登录, got %v", err)
 	}
 }
@@ -213,7 +213,7 @@ func TestChangePasswordErrors(t *testing.T) {
 	if err := svc.Bootstrap("admin", "testpass", ""); err != nil {
 		t.Fatalf("Bootstrap: %v", err)
 	}
-	sess, err := svc.Login("admin", "testpass")
+	sess, err := svc.Login("admin", "testpass", "")
 	if err != nil {
 		t.Fatalf("Login: %v", err)
 	}

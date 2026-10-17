@@ -8,13 +8,15 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
 // Authenticator 定义认证领域对外接口。(-er 命名约定)
 type Authenticator interface {
-	// Login 以用户名/口令认证;成功返回新 Session,失败或锁定返回相应错误。
-	Login(username, password string) (*Session, error)
+	// Login 以用户名/口令认证;clientIP 用于按 IP 分桶的失败锁定(可空串=只按账户分桶);
+	// 成功返回新 Session,失败或锁定返回相应错误。
+	Login(username, password, clientIP string) (*Session, error)
 	// Verify 校验会话 token 是否有效;有效返回 Session。
 	Verify(token string) (*Session, error)
 	// Logout 使指定 token 的会话失效。
@@ -142,11 +144,11 @@ func fileExists(path string) bool {
 	return err == nil
 }
 
-// Login 认证用户名/口令;通过则创建新会话,失败则记录失败计数。
+// Login 认证用户名/口令;通过则创建新会话,失败则记录失败计数(按账户与来源 IP 分桶)。
 // 身份来源双表:管理员(admin_user,id=1)或普通用户(users,status=active)。
 // 无论命中哪一张表(或都不命中),都**只执行一次**口令校验(命中用真实 hash,否则 dummy),
 // 使各失败路径耗时一致,消除用户名存在性/角色枚举侧信道。
-func (s *Service) Login(username, password string) (*Session, error) {
+func (s *Service) Login(username, password, clientIP string) (*Session, error) {
 	// 管理员记录(单行)。
 	var adminUsername, adminHash string
 	adminErr := s.db.QueryRow(
@@ -188,7 +190,14 @@ func (s *Service) Login(username, password string) (*Session, error) {
 	}
 
 	// 在单次持锁内完成「检查锁定 → 口令校验 → 记失败/重置」,消除 TOCTOU。
-	ok, locked, remaining, gErr := s.lockout.Guard(func() (bool, error) {
+	// 桶:按提交的用户名(是否命中真实账户无差别,无存在性侧信道)+ 按来源 IP
+	// (空则跳过)。账户桶隔离各账户;IP 桶拦「单 IP 轮换用户名」的绕过。
+	keys := make([]lockoutKey, 0, 2)
+	keys = append(keys, userLockoutKey(username))
+	if ip := strings.TrimSpace(clientIP); ip != "" {
+		keys = append(keys, ipLockoutKey(ip))
+	}
+	ok, locked, remaining, gErr := s.lockout.Guard(keys, func() (bool, error) {
 		pwOK, vErr := VerifyPassword(password, verifyHash)
 		if vErr != nil {
 			return false, vErr
@@ -288,7 +297,14 @@ func (s *Service) ChangePassword(role, userID, current, newPassword, currentToke
 		}
 	}
 
-	ok, err := VerifyPassword(current, storedHash)
+	// 当前口令校验同样受锁定节流:已持会话者不可无限试当前口令(改密是持久化入口)。
+	changeKey := pwChangeLockoutKey(role, userID)
+	ok, locked, remaining, err := s.lockout.Guard([]lockoutKey{changeKey}, func() (bool, error) {
+		return VerifyPassword(current, storedHash)
+	})
+	if locked {
+		return &ErrLockedOut{RetryAfter: remaining}
+	}
 	if err != nil {
 		return fmt.Errorf("auth: verify current password: %w", err)
 	}

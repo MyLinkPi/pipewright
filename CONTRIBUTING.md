@@ -178,7 +178,7 @@ git push origin v1.2.3
 #    goreleaser check && goreleaser release --snapshot --clean --skip=publish,docker
 ```
 
-版本元数据经 `-ldflags` 注入 `internal/version`,运行期可由 `pipewright --version` 或 `GET /version` 读取。
+版本元数据经 `-ldflags` 注入 `internal/version`,运行期可由 `pipewright --version` 或 `GET /api/version` 读取。
 
 ---
 

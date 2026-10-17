@@ -377,3 +377,110 @@ func TestLockoutExpiry(t *testing.T) {
 		t.Fatalf("after lockout expiry: status = %d, want 200", resp.StatusCode)
 	}
 }
+
+// TestCookieSecureBehindTrustedProxy 可信反代(直连对端为回环,即 platformHTTPS 的
+// 本机 nginx 形态)且 X-Forwarded-Proto: https 时,会话/CSRF cookie 带 Secure;
+// 直连明文则不带。
+func TestCookieSecureBehindTrustedProxy(t *testing.T) {
+	srv, _ := setupAuthServer(t)
+
+	login := func(forwardedProto string) (session, csrf *http.Cookie) {
+		body := strings.NewReader(`{"username":"admin","password":"testpass"}`)
+		req, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/auth/login", body)
+		req.Header.Set("Content-Type", "application/json")
+		if forwardedProto != "" {
+			req.Header.Set("X-Forwarded-Proto", forwardedProto)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("login: %v", err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("login status = %d", resp.StatusCode)
+		}
+		for _, c := range resp.Cookies() {
+			switch c.Name {
+			case cookieSession:
+				session = c
+			case cookieCsrf:
+				csrf = c
+			}
+		}
+		if session == nil || csrf == nil {
+			t.Fatal("session/csrf cookies not set")
+		}
+		return
+	}
+
+	// httptest 服务端 RemoteAddr 恒为 127.0.0.1 → 落入可信反代(回环)分支。
+	s1, c1 := login("https")
+	if !s1.Secure || !c1.Secure {
+		t.Fatal("cookies must carry Secure behind trusted proxy (X-Forwarded-Proto: https)")
+	}
+	// 无反代头(直连明文):不得置 Secure(否则纯 HTTP 环境下浏览器会拒收 cookie)。
+	s2, c2 := login("")
+	if s2.Secure || c2.Secure {
+		t.Fatal("cookies must NOT be Secure on plain direct connection")
+	}
+}
+
+// TestVersionEndpointRequiresAuth /api/version 需要登录;原公开 /version 已移除
+//(版本元数据会帮助攻击者匹配已知漏洞版本)。
+func TestVersionEndpointRequiresAuth(t *testing.T) {
+	srv, _ := setupAuthServer(t)
+
+	resp, err := http.Get(srv.URL + "/api/version")
+	if err != nil {
+		t.Fatalf("GET /api/version: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated status = %d, want 401", resp.StatusCode)
+	}
+
+	client := newTestClient(t)
+	loginWithClient(t, client, srv.URL)
+	resp2, err := client.Get(srv.URL + "/api/version")
+	if err != nil {
+		t.Fatalf("GET /api/version (authed): %v", err)
+	}
+	defer resp2.Body.Close()
+	if resp2.StatusCode != http.StatusOK {
+		t.Fatalf("authenticated status = %d, want 200", resp2.StatusCode)
+	}
+	var body map[string]string
+	if err := json.NewDecoder(resp2.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if _, ok := body["version"]; !ok {
+		t.Fatal("version field missing in response")
+	}
+}
+
+// TestSecurityHeaders 全局安全响应头:CSP(frame-ancestors 'none' 等)/X-Frame-Options/
+// Referrer-Policy/nosniff。
+func TestSecurityHeaders(t *testing.T) {
+	srv, _ := setupAuthServer(t)
+
+	resp, err := http.Get(srv.URL + "/healthz")
+	if err != nil {
+		t.Fatalf("GET /healthz: %v", err)
+	}
+	defer resp.Body.Close()
+
+	h := resp.Header
+	csp := h.Get("Content-Security-Policy")
+	if !strings.Contains(csp, "frame-ancestors 'none'") || !strings.Contains(csp, "script-src 'self'") {
+		t.Fatalf("Content-Security-Policy missing/too lax: %q", csp)
+	}
+	if h.Get("X-Frame-Options") != "DENY" {
+		t.Fatalf("X-Frame-Options = %q, want DENY", h.Get("X-Frame-Options"))
+	}
+	if h.Get("Referrer-Policy") != "no-referrer" {
+		t.Fatalf("Referrer-Policy = %q, want no-referrer", h.Get("Referrer-Policy"))
+	}
+	if h.Get("X-Content-Type-Options") != "nosniff" {
+		t.Fatalf("X-Content-Type-Options = %q, want nosniff", h.Get("X-Content-Type-Options"))
+	}
+}

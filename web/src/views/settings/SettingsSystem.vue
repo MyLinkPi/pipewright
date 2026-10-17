@@ -2,7 +2,7 @@
 /**
  * SettingsSystem — 系统信息与一键检查更新。
  *
- * - 挂载时读 GET /version 显示当前构建版本与元数据(commit / 构建时间 / 平台 / Go 版本)。
+ * - 挂载时读 GET /api/version 显示当前构建版本与元数据(commit / 构建时间 / 平台 / Go 版本)。
  * - 「检查更新」按钮调 GET /api/version/check(查 GitHub 最新发布并比对):
  *     状态收敛到 hero 右上的状态药丸;仅当有新版时,下方展开强调升级卡(CTA + 可折叠更新说明)。
  * - 开发态(version=dev)永不误报更新,药丸显示「开发构建」。
@@ -89,7 +89,7 @@ function pollSourceJob(from: string): void {
   stopSrcPoll()
   let statusFails = 0
   srcTimer = window.setInterval(async () => {
-    // 状态接口先查进度;连不上(服务重启窗口)时改看 /version 是否已切到新版本。
+    // 状态接口先查进度;连不上(服务重启窗口)时改看 /api/version 是否已切到新版本。
     try {
       const st: UpdateJobStatus = await updateJobStatus()
       statusFails = 0
@@ -101,7 +101,7 @@ function pollSourceJob(from: string): void {
       if (st.done || st.step === 'restart' || !st.running) {
         // done / step=restart 是显式完成态;而 running=false 且无 error 时,任务快照多半
         // 已随旧进程丢失(install.sh 的 systemctl restart / 裸跑 re-exec 都会换掉进程,
-        // 内存任务态不跨进程)——在空快照上干等会永远卡住。一律转去轮询 /version,
+        // 内存任务态不跨进程)——在空快照上干等会永远卡住。一律转去轮询 /api/version,
         // 版本切到新版即整页刷新加载新前端。
         stopSrcPoll()
         srcPhase.value = 'restarting'
@@ -191,7 +191,7 @@ async function runCheck(): Promise<void> {
 // 一键自动更新:
 //  - source 模式:后端启动 git pull → make build → install.sh 后台管线,返回 building/busy →
 //    轮询进度;管线完成自动重启,版本变化即整页 reload 到新版。
-//  - binary 模式:后端下载+替换二进制后自重启 → 前端进入"重启中"并轮询 /version,
+//  - binary 模式:后端下载+替换二进制后自重启 → 前端进入"重启中"并轮询 /api/version,
 //    版本变化即整页 reload 到新版。
 //  - docker 模式:后端返回升级命令,前端展示 + 复制(容器不能自换镜像)。
 async function runUpdate(): Promise<void> {
@@ -239,7 +239,7 @@ async function runUpdate(): Promise<void> {
   }
 }
 
-// 轮询 /version,直到版本号与旧版不同(新进程已起),然后整页刷新加载新版前端。
+// 轮询 /api/version,直到版本号与旧版不同(新进程已起),然后整页刷新加载新版前端。
 function pollUntilRestarted(from: string): void {
   let tries = 0
   const timer = window.setInterval(async () => {

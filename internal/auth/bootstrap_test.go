@@ -32,7 +32,7 @@ func TestBootstrapRandomPassword(t *testing.T) {
 	}
 
 	// 文件里的口令必须能登录(哈希入库与文件明文一致)。
-	if _, err := svc.Login("admin", password); err != nil {
+	if _, err := svc.Login("admin", password, ""); err != nil {
 		t.Fatalf("login with generated password: %v", err)
 	}
 
@@ -70,10 +70,10 @@ func TestBootstrapExistingAdminKeepsPasswordFile(t *testing.T) {
 		t.Fatal("password file rewritten after admin already exists")
 	}
 	// env 口令不得生效。
-	if _, err := svc.Login("admin", "some-env-password"); err == nil {
+	if _, err := svc.Login("admin", "some-env-password", ""); err == nil {
 		t.Fatal("env password must be ignored when admin exists")
 	}
-	if _, err := svc.Login("admin", strings.TrimSpace(string(after))); err != nil {
+	if _, err := svc.Login("admin", strings.TrimSpace(string(after)), ""); err != nil {
 		t.Fatalf("original password must still work: %v", err)
 	}
 }
@@ -92,7 +92,7 @@ func TestBootstrapEnvPasswordNoFile(t *testing.T) {
 	if _, err := os.Stat(pwdFile); !os.IsNotExist(err) {
 		t.Fatal("password file must not be written when env password provided")
 	}
-	if _, err := svc.Login("admin", "env-pass-123"); err != nil {
+	if _, err := svc.Login("admin", "env-pass-123", ""); err != nil {
 		t.Fatalf("login with env password: %v", err)
 	}
 }

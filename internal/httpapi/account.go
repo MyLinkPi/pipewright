@@ -3,6 +3,7 @@ package httpapi
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -83,9 +84,15 @@ func makeChangePasswordHandler(svc accountService, aud audit.Recorder) http.Hand
 			}
 		}
 		err := svc.ChangePassword(role, userID, req.CurrentPassword, req.NewPassword, token)
+		var lockedErr *auth.ErrLockedOut
 		switch {
 		case err == nil:
 			// continue
+		case errors.As(err, &lockedErr):
+			mins := int(lockedErr.RetryAfter.Minutes()) + 1
+			msg := fmt.Sprintf("当前口令尝试次数过多,请 %d 分钟后重试", mins)
+			writeError(w, http.StatusTooManyRequests, "locked_out", msg)
+			return
 		case errors.Is(err, auth.ErrInvalidCurrentPassword):
 			writeError(w, http.StatusUnauthorized, "invalid_current_password", "当前口令错误")
 			return
