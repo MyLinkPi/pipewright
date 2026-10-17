@@ -91,5 +91,7 @@ export default {
     secretGenerate: 'Generar',
     secretCopy: 'Copiar',
     secretHint: 'Todos los nodos del clúster deben usar el mismo secret (junto con el nombre de red); pega el mismo secret en cada nodo nuevo. Revelarlo queda auditado.',
+    actionFailed: 'La acción falló',
+    identitySaveHint: 'El nombre del nodo y el interruptor se guardan con este formulario (comparten un Guardar con la configuración de red)',
   },
 }

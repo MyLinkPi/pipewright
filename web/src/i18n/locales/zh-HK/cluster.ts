@@ -91,5 +91,7 @@ export default {
     secretGenerate: '生成',
     secretCopy: '複製',
     secretHint: '全集群所有節點必須填同一密鑰(與網絡名稱配套);新節點加入時在對端粘貼同一密鑰即可。「顯示」會留審計。',
+    actionFailed: '操作失敗',
+    identitySaveHint: '節點名稱與啟用開關隨本表單儲存(與下方組網設定共用一個「儲存」)',
   },
 }
