@@ -147,8 +147,8 @@ func (s *service) deployStaticForStage(ctx context.Context, runID string, cfg ma
 	hsp := healthCheckSpecFromCfg(cfg, "")
 	if hsp == nil || hsp.kind == specPort || hsp.kind == specExec {
 		hsp = &healthSpec{
-			kind:          specCommand,
-			command:       []string{"test", "-f", path.Join(spec.BaseDir, "current", "index.html")},
+			kind:           specCommand,
+			command:        []string{"test", "-f", path.Join(spec.BaseDir, "current", "index.html")},
 			timeoutSeconds: 5,
 		}
 	}

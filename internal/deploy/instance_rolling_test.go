@@ -21,18 +21,18 @@ import (
 // fakeGateway 是注入的假 InstanceGateway:捕获 Swap / Detach / Attach / Ensure / Prune 调用,
 // 可注入各自错误。
 type fakeGateway struct {
-	mu        sync.Mutex
-	refs      []InstanceRef
-	resolveBy string // 非空时只在 container == resolveBy 或 serviceRef == resolveBy 时返回 refs
-	swapErr   error
-	detachErr error
-	attachErr error
-	swaps     [][2]string // (old, new)
-	detached  []string
-	attached  []string
-	ensures   []string // EnsureInstance(serviceID/server/container)
-	ensurePorts []int   // EnsureInstance 的 (port, hostPort) 对,按调用序两两排列
-	pruned    []string // PruneInstances(serviceID)
+	mu          sync.Mutex
+	refs        []InstanceRef
+	resolveBy   string // 非空时只在 container == resolveBy 或 serviceRef == resolveBy 时返回 refs
+	swapErr     error
+	detachErr   error
+	attachErr   error
+	swaps       [][2]string // (old, new)
+	detached    []string
+	attached    []string
+	ensures     []string // EnsureInstance(serviceID/server/container)
+	ensurePorts []int    // EnsureInstance 的 (port, hostPort) 对,按调用序两两排列
+	pruned      []string // PruneInstances(serviceID)
 
 	ensureDetachedErr error    // EnsureInstanceDetached 注入错误
 	ensureDetachedID  string   // 非空时 EnsureInstanceDetached 返回该 InstanceID(模拟命中存量行)

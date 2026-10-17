@@ -2,12 +2,12 @@ package servicereg
 
 import (
 	"context"
-	"database/sql"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"database/sql"
 	"encoding/pem"
 	"errors"
 	"io"
@@ -85,8 +85,8 @@ func TestRenderNginxConfMultiInstance(t *testing.T) {
 		{ID: "i2", ServiceID: "s1", ServerID: "sv2", Container: "abc-2", HostPort: 20002, Attached: true},
 		{ID: "i1", ServiceID: "s1", ServerID: "sv1", Container: "abc-1", Port: 9090, HostPort: 20001, Attached: true},
 		{ID: "i3", ServiceID: "s1", ServerID: "sv1", Container: "abc-3", Attached: false},
-		{ID: "i4", ServiceID: "s1", ServerID: "sv9", Container: "abc-4", Attached: true}, // 地址未解析 → 跳过
-		{ID: "i5", ServiceID: "s1", ServerID: "", Container: "abc-5", Attached: true},    // 遗留行 → 跳过
+		{ID: "i4", ServiceID: "s1", ServerID: "sv9", Container: "abc-4", Attached: true},             // 地址未解析 → 跳过
+		{ID: "i5", ServiceID: "s1", ServerID: "", Container: "abc-5", Attached: true},                // 遗留行 → 跳过
 		{ID: "i6", ServiceID: "s1", ServerID: "sv2", Container: "abc-6", Port: 8080, Attached: true}, // 容器实例无宿主端口 → 跳过(死成员)
 	}
 	addrs := map[string]string{"sv1": "10.0.0.1", "sv2": "10.0.0.2"}
@@ -404,13 +404,13 @@ func TestValidateSettings(t *testing.T) {
 		t.Fatalf("默认设置应合法:%v", err)
 	}
 	bads := []Settings{
-		{HTTPPort: 0, HTTPSPort: 443},                 // 端口越界
-		{HTTPPort: 80, HTTPSPort: 80},                  // 端口相同
-		{HTTPPort: 80, HTTPSPort: 443, Image: "-x"},    // 镜像 flag 注入
-		{HTTPPort: 80, HTTPSPort: 443, Network: "a b"}, // 网络名非法
-		{HTTPPort: 80, HTTPSPort: 443, StaticRoot: "var/lib/x"},  // 静态根目录非绝对路径
-		{HTTPPort: 80, HTTPSPort: 443, StaticRoot: "/a b/c"},     // 静态根目录非法字符
-		{HTTPPort: 80, HTTPSPort: 443, StaticRoot: "/a/"},        // 静态根目录尾斜杠
+		{HTTPPort: 0, HTTPSPort: 443},                           // 端口越界
+		{HTTPPort: 80, HTTPSPort: 80},                           // 端口相同
+		{HTTPPort: 80, HTTPSPort: 443, Image: "-x"},             // 镜像 flag 注入
+		{HTTPPort: 80, HTTPSPort: 443, Network: "a b"},          // 网络名非法
+		{HTTPPort: 80, HTTPSPort: 443, StaticRoot: "var/lib/x"}, // 静态根目录非绝对路径
+		{HTTPPort: 80, HTTPSPort: 443, StaticRoot: "/a b/c"},    // 静态根目录非法字符
+		{HTTPPort: 80, HTTPSPort: 443, StaticRoot: "/a/"},       // 静态根目录尾斜杠
 	}
 	for i, b := range bads {
 		b.Image = orDefaultStr(b.Image, good.Image)
@@ -451,7 +451,6 @@ type fakeTarget struct {
 	resultFor       func(cmd []string) *target.ExecResult
 	resultForServer func(serverID string, cmd []string) *target.ExecResult // 优先于 resultFor
 }
-
 
 // DockerLogin 满足 target.Service 接口(部署私有仓库登录追加);测试桩不触网,直接成功。
 func (f *fakeTarget) DockerLogin(context.Context, string, string, string) error { return nil }
@@ -974,7 +973,9 @@ func TestCreateDomainCertSyncHook(t *testing.T) {
 		svc, _ := newTestService(t, st.DB)
 		ctx := context.Background()
 		setHook := func(h func(context.Context) error) {
-			svc.(interface{ SetCertSyncHook(func(context.Context) error) }).SetCertSyncHook(h)
+			svc.(interface {
+				SetCertSyncHook(func(context.Context) error)
+			}).SetCertSyncHook(h)
 		}
 
 		// 未注入钩子:建域照常。
@@ -1141,13 +1142,13 @@ func TestResolveInstanceAddrsSkippedCountsAttachedOnly(t *testing.T) {
 		return "10.0.0.1", nil
 	}}
 	instances := []Instance{
-		{ID: "i1", ServerID: "ok", Attached: false},     // detached:不计
-		{ID: "i2", ServerID: "", Attached: false},       // detached 遗留:不计
-		{ID: "i3", ServerID: "", Attached: true},        // 遗留行:计
-		{ID: "i4", ServerID: "bad", Attached: true},     // 地址解析失败:计
-		{ID: "i5", ServerID: "ok", Container: "app-1", Attached: true},                // 容器无宿主端口:计
+		{ID: "i1", ServerID: "ok", Attached: false},                                     // detached:不计
+		{ID: "i2", ServerID: "", Attached: false},                                       // detached 遗留:不计
+		{ID: "i3", ServerID: "", Attached: true},                                        // 遗留行:计
+		{ID: "i4", ServerID: "bad", Attached: true},                                     // 地址解析失败:计
+		{ID: "i5", ServerID: "ok", Container: "app-1", Attached: true},                  // 容器无宿主端口:计
 		{ID: "i6", ServerID: "ok", Container: "app-2", HostPort: 20001, Attached: true}, // 正常容器实例:不计
-		{ID: "i7", ServerID: "ok", Attached: true},      // 非容器实例(HostPort=0=继承 Port):不计
+		{ID: "i7", ServerID: "ok", Attached: true},                                      // 非容器实例(HostPort=0=继承 Port):不计
 	}
 	addrs, skipped := s.resolveInstanceAddrs(context.Background(), instances)
 	if skipped != 3 {
@@ -1430,7 +1431,7 @@ func TestResolveDeployInstances(t *testing.T) {
 }
 
 // TestApplyClusterRender 集群渲染:apply 不再探活/剔除本机容器,各网关推同一份全量配置,
-// upstream 成员 = 服务器地址:宿主端口;遗留行(server_id='')跳过并写入提示注释。
+// upstream 成员 = 服务器地址:宿主端口;遗留行(server_id=”)跳过并写入提示注释。
 func TestApplyClusterRender(t *testing.T) {
 	storetest.ForEachDialect(t, func(t *testing.T, st *store.Store) {
 		svc, ft := newTestServiceMulti(t, st.DB, "gw1", "gw2")

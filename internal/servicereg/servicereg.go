@@ -135,13 +135,13 @@ type Settings struct {
 	// ServerIDs 是全部网关主机引用 id(升序无关,按用户选择顺序)。空 = 未配置(配置态)。
 	ServerIDs []string
 	// ServerID 是 ServerIDs[0] 的派生镜像(读侧兜底同步;仅兼容展示,勿用于编排判断)。
-	ServerID       string
-	HTTPPort       int // 宿主 HTTP 端口(容器内恒 80)
-	HTTPSPort      int // 宿主 HTTPS 端口(容器内恒 443)
-	Image          string
-	Network        string
-	ContainerName  string
-	VolumeName     string
+	ServerID      string
+	HTTPPort      int // 宿主 HTTP 端口(容器内恒 80)
+	HTTPSPort     int // 宿主 HTTPS 端口(容器内恒 443)
+	Image         string
+	Network       string
+	ContainerName string
+	VolumeName    string
 	// StaticRoot 是各网关主机上的静态发布根目录(bind mount 只读挂进网关容器的
 	// /etc/pipewright/static;全部网关主机使用同一路径约定)。
 	StaticRoot     string
@@ -205,16 +205,16 @@ type RegisteredService struct {
 // GatewayStatus 是网关容器探测快照(前端展示 + 部署前知情)。多机:每台一项 Servers;
 // 旧平铺字段(ServerID/ServerName/Installed/Running/Image/Ports)填第一台,兼容旧前端。
 type GatewayStatus struct {
-	Configured     bool // 是否已配置网关主机
-	ServerID       string
-	ServerName     string
-	Installed      bool   // 容器是否存在
-	Running        bool   //
-	Image          string //
-	Ports          string // 发布端口摘要,如 "80,443,3306"
-	Servers        []GatewayServerStatus
-	LastApplyAt    time.Time
-	LastApplyError string
+	Configured      bool // 是否已配置网关主机
+	ServerID        string
+	ServerName      string
+	Installed       bool   // 容器是否存在
+	Running         bool   //
+	Image           string //
+	Ports           string // 发布端口摘要,如 "80,443,3306"
+	Servers         []GatewayServerStatus
+	LastApplyAt     time.Time
+	LastApplyError  string
 	LastApplyErrors map[string]string // 逐台收敛错误(serverID → 文案,仅失败项)
 }
 
@@ -461,10 +461,10 @@ func (s *service) CreateDomain(ctx context.Context, baseDomain string) (*Domain,
 		return nil, err
 	}
 	dom := &Domain{
-		ID:        uuid.NewString(),
+		ID:         uuid.NewString(),
 		BaseDomain: d,
-		CreatedAt: time.Now().UTC(),
-		UpdatedAt: time.Now().UTC(),
+		CreatedAt:  time.Now().UTC(),
+		UpdatedAt:  time.Now().UTC(),
 	}
 	if err := s.store.insertDomain(ctx, dom); err != nil {
 		return nil, err
@@ -993,7 +993,7 @@ func (s *service) applyWithServer(ctx context.Context, st *Settings, serverID st
 }
 
 // resolveInstanceAddrs 解析实例引用到的全部服务器地址(serverID → 可达 IP)。
-// 返回可解析映射 + 被跳过的 attached 实例数(遗留行 server_id='' / 地址解析失败 /
+// 返回可解析映射 + 被跳过的 attached 实例数(遗留行 server_id=” / 地址解析失败 /
 // 容器实例未发布宿主端口;detached 实例本就不参与渲染,不计入)。
 func (s *service) resolveInstanceAddrs(ctx context.Context, instances []Instance) (map[string]string, int) {
 	ids := make(map[string]struct{})
@@ -1167,7 +1167,7 @@ func normalizeServicePath(p string) (string, error) {
 	return p, nil
 }
 
-// DisplayPath 返回路由/展示用的 path('' → "/")。
+// DisplayPath 返回路由/展示用的 path(” → "/")。
 func (rs RegisteredService) DisplayPath() string {
 	if rs.Path == "" {
 		return "/"
