@@ -1,5 +1,13 @@
 // status.go 经 easytier-cli(白名单子进程)查询组网状态,TTL 缓存 + 后台单飞刷新。
 //
+// 调用姿势(PR #882 起,JSON 输出为**根级**参数,必须置于子命令之前,且新版子命令带
+// 子动作):`easytier-cli --rpc-portal <addr> -o json node info`。旧版 CLI 则是参数后置
+// (`node --output json`)。两侧版本都可能存在 → 每个 verb 按候选形态**自动探测**,
+// 命中后缓存(参数放错位置的用法错误在 clap 下退出码恰为 2,曾让状态查询全挂)。
+//
+// 可诊断性:调用失败必须携带 stderr 摘要(clap/连接错误的原因都写在 stderr,不透出
+// 则无从排查);对「连不上 RPC」与「版本过旧不支持 JSON」两类常见原因追加人读提示。
+//
 // 输出解析对 EasyTier 各版本的字段差异保持宽容:字段可能为字符串/数字/内嵌对象
 // (如虚拟 IP 形如 {"addr":"10.x.x.x"}),统一经宽容取值器提取;缺字段降级为空值,
 // 绝不因单个字段形状变化整体失败。p2p/中继判定:
@@ -10,6 +18,7 @@ package easytier
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os/exec"
 	"strconv"
@@ -46,15 +55,90 @@ type Status struct {
 // statusTTL 是快照缓存窗口;窗口内直接回缓存,过期后台单飞刷新(stale-while-revalidate)。
 const statusTTL = 10 * time.Second
 
+// verbShapes 是各查询的候选调用形态(追加在 ["--rpc-portal", addr] 之后):
+// 新版(PR #882+,旗子前置 + 子动作)→ 次新版(旗子前置)→ 旧版(旗子后置)。
+var (
+	nodeShapes = [][]string{
+		{"-o", "json", "node", "info"},
+		{"-o", "json", "node"},
+		{"node", "--output", "json"},
+	}
+	peerShapes = [][]string{
+		{"-o", "json", "peer", "list"},
+		{"-o", "json", "peer"},
+		{"peer", "--output", "json"},
+	}
+	routeShapes = [][]string{
+		{"-o", "json", "route", "list"},
+		{"-o", "json", "route"},
+		{"route", "--output", "json"},
+	}
+)
+
+// cliRunner 抽象一次 easytier-cli 调用(测试注入 fake;错误文本应自带 stderr 摘要)。
+type cliRunner func(ctx context.Context, args []string) ([]byte, error)
+
+// execCLIRunner 返回基于 os/exec 的实现:stderr 摘要必进错误文本(截断到一行)。
+func execCLIRunner(cliPath string) cliRunner {
+	return func(ctx context.Context, args []string) ([]byte, error) {
+		out, err := exec.CommandContext(ctx, cliPath, args...).Output()
+		if err == nil {
+			return out, nil
+		}
+		desc := describeArgs(args)
+		var ee *exec.ExitError
+		if errors.As(err, &ee) && len(ee.Stderr) > 0 {
+			return nil, fmt.Errorf("easytier-cli %s: %s", desc, oneLine(string(ee.Stderr)))
+		}
+		return nil, fmt.Errorf("easytier-cli %s: %v", desc, err)
+	}
+}
+
+// describeArgs 取人读的动词部分(剥掉旗子与其值):如 "-o json node info" → "node info"。
+func describeArgs(args []string) string {
+	verbs := make([]string, 0, 4)
+	skipValue := false
+	for _, a := range args {
+		if skipValue {
+			skipValue = false
+			continue
+		}
+		if a == "--rpc-portal" || a == "-o" || a == "--output" {
+			skipValue = true
+			continue
+		}
+		if strings.HasPrefix(a, "-") {
+			continue
+		}
+		verbs = append(verbs, a)
+	}
+	if len(verbs) == 0 {
+		return "(query)"
+	}
+	return strings.Join(verbs, " ")
+}
+
+// oneLine 把 stderr 压成一行并截断(错误横幅/日志友好)。
+func oneLine(s string) string {
+	s = strings.Join(strings.Fields(s), " ")
+	if len(s) > 200 {
+		s = s[:200] + "…"
+	}
+	return s
+}
+
 // StatusProvider 带缓存的组网状态查询器。线程安全;零值不可用,经 NewStatusProvider 构造。
 type StatusProvider struct {
 	cliPath string
 	rpcAddr string
+	run     cliRunner
 
 	mu         sync.Mutex
 	cached     *Status
 	fetched    time.Time
 	refreshing bool
+	// shapeByVerb 缓存每个 verb 探测成功的调用形态(verb → suffix)。
+	shapeByVerb map[string][]string
 }
 
 // NewStatusProvider 构造查询器。cliPath 为 easytier-cli 路径;rpcAddr 为其 --rpc-portal 目标。
@@ -62,7 +146,17 @@ func NewStatusProvider(cliPath, rpcAddr string) *StatusProvider {
 	if rpcAddr == "" {
 		rpcAddr = "127.0.0.1:15888"
 	}
-	return &StatusProvider{cliPath: cliPath, rpcAddr: rpcAddr}
+	return &StatusProvider{
+		cliPath:     cliPath,
+		rpcAddr:     rpcAddr,
+		run:         execCLIRunner(cliPath),
+		shapeByVerb: map[string][]string{},
+	}
+}
+
+// newStatusProviderForTest 用注入 runner 构造(单测;不触真机 CLI)。
+func newStatusProviderForTest(run cliRunner) *StatusProvider {
+	return &StatusProvider{run: run, shapeByVerb: map[string][]string{}}
 }
 
 // Get 返回状态快照(缓存窗口内即时返回;过期触发后台刷新并回旧值)。
@@ -81,7 +175,7 @@ func (p *StatusProvider) Get(ctx context.Context) *Status {
 	if refreshing {
 		return orUnavailable(stale)
 	}
-	fresh := collectStatus(ctx, p.cliPath, p.rpcAddr)
+	fresh := p.collect(ctx)
 	p.mu.Lock()
 	p.cached = fresh
 	p.fetched = time.Now()
@@ -97,17 +191,68 @@ func orUnavailable(stale *Status) *Status {
 	return &Status{OK: false, Err: "status refresh in progress"}
 }
 
-// collectStatus 依次跑 node/peer/route 三条 CLI 查询并归并(任一失败记入 Err,不整体失败)。
-func collectStatus(ctx context.Context, cliPath, rpcAddr string) *Status {
+// runShaped 按 verb 的候选形态执行:命中(成功且 stdout 非空)后缓存形态;
+// 全部失败返回最后一次错误,并对两类常见原因追加人读提示。
+func (p *StatusProvider) runShaped(ctx context.Context, verb string, shapes [][]string) ([]byte, error) {
+	p.mu.Lock()
+	cached := p.shapeByVerb[verb]
+	p.mu.Unlock()
+	candidates := [][]string{}
+	if cached != nil {
+		candidates = append(candidates, cached)
+	}
+	candidates = append(candidates, shapes...)
+
+	base := []string{"--rpc-portal", p.rpcAddr}
+	var lastErr error
+	for _, suffix := range candidates {
+		out, err := p.run(ctx, append(append([]string{}, base...), suffix...))
+		if err == nil && len(out) > 0 {
+			p.mu.Lock()
+			p.shapeByVerb[verb] = suffix
+			p.mu.Unlock()
+			return out, nil
+		}
+		if err != nil {
+			lastErr = err
+		} else {
+			lastErr = fmt.Errorf("easytier-cli %s: empty output", describeArgs(append(base, suffix...)))
+		}
+	}
+	return nil, withHints(lastErr)
+}
+
+// withHints 对常见失败原因追加人读提示(仅依据错误文本关键字,保守匹配)。
+func withHints(err error) error {
+	if err == nil {
+		return nil
+	}
+	msg := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(msg, "connect") || strings.Contains(msg, "transport") ||
+		strings.Contains(msg, "timeout") || strings.Contains(msg, "refused"):
+		return fmt.Errorf("%w(可能 easytier-core 未运行,或 RPC 端口不一致)", err)
+	case strings.Contains(msg, "unexpected argument") || strings.Contains(msg, "unrecognized") ||
+		strings.Contains(msg, "invalid") && strings.Contains(msg, "--"):
+		return fmt.Errorf("%w(easytier-cli 版本可能过旧,不支持 JSON 输出)", err)
+	}
+	return err
+}
+
+// collect 依次跑 node/peer/route 三条查询并归并(任一失败记入 Err,不整体失败)。
+func (p *StatusProvider) collect(ctx context.Context) *Status {
 	st := &Status{Links: []Link{}}
-	if cliPath == "" {
-		st.Err = fmt.Sprintf("easytier-cli not found (place %s under <data>/bin or PATH)", CliBinary())
+	if p.cliPath == "" && p.run == nil {
+		st.Err = fmt.Sprintf("easytier-cli not found (place %s under <data>/bin or PATH, or use auto-download)", CliBinary())
 		return st
 	}
-	base := []string{"--rpc-portal", rpcAddr}
+	// 仅 exec 路径需要 cliPath;注入 runner 的测试路径 run 已就绪。
+	if p.run == nil {
+		p.run = execCLIRunner(p.cliPath)
+	}
 
 	var node obj
-	if raw, err := runCLI(ctx, cliPath, append(base, "node", "--output", "json")...); err == nil {
+	if raw, err := p.runShaped(ctx, "node", nodeShapes); err == nil {
 		_ = json.Unmarshal(raw, &node)
 		st.SelfIP = pickStr(node, "virtual_ipv4", "ipv4", "ip", "tun_ip")
 		st.Hostname = pickStr(node, "hostname", "name")
@@ -117,14 +262,14 @@ func collectStatus(ctx context.Context, cliPath, rpcAddr string) *Status {
 	}
 
 	var peers []obj
-	if raw, err := runCLI(ctx, cliPath, append(base, "peer", "--output", "json")...); err == nil {
+	if raw, err := p.runShaped(ctx, "peer", peerShapes); err == nil {
 		_ = json.Unmarshal(raw, &peers)
 	} else if st.Err == "" {
 		st.Err = err.Error()
 	}
 
 	nextHops := map[string]string{}
-	if raw, err := runCLI(ctx, cliPath, append(base, "route", "--output", "json")...); err == nil {
+	if raw, err := p.runShaped(ctx, "route", routeShapes); err == nil {
 		var routes []obj
 		if json.Unmarshal(raw, &routes) == nil {
 			for _, rt := range routes {
@@ -167,16 +312,7 @@ func collectStatus(ctx context.Context, cliPath, rpcAddr string) *Status {
 	return st
 }
 
-// runCLI 执行白名单子查询(超时 8s),返回 stdout。
-func runCLI(ctx context.Context, cliPath string, args ...string) ([]byte, error) {
-	cctx, cancel := context.WithTimeout(ctx, 8*time.Second)
-	defer cancel()
-	out, err := exec.CommandContext(cctx, cliPath, args...).Output()
-	if err != nil {
-		return nil, fmt.Errorf("easytier-cli %s: %v", args[len(args)-3], err)
-	}
-	return out, nil
-}
+// --- 解析器(纯函数,可单测;空/格式异常一律零值,绝不 panic) ---
 
 // obj 是宽容 JSON 对象(值可为任意形状)。
 type obj map[string]any
