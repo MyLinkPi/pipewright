@@ -91,5 +91,7 @@ export default {
     secretGenerate: '生成',
     secretCopy: '复制',
     secretHint: '全集群所有节点必须填同一密钥(与网络名称配套);新节点加入时在对端粘贴同一密钥即可。「显示」会留审计。',
+    actionFailed: '操作失败',
+    identitySaveHint: '节点名称与启用开关随本表单保存(与下方组网配置共用一个「保存」)',
   },
 }

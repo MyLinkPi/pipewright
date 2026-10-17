@@ -91,5 +91,7 @@ export default {
     secretGenerate: '生成',
     secretCopy: 'コピー',
     secretHint: 'クラスタ内の全ノードで同一のシークレット(ネットワーク名と対)が必要。新ノードには同じ値を貼り付けてください。表示は監査に記録されます。',
+    actionFailed: '操作に失敗しました',
+    identitySaveHint: 'ノード名と有効化スイッチはこのフォームで保存されます(下のネットワーク設定と保存ボタンを共用)',
   },
 }

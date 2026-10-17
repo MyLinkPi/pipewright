@@ -91,5 +91,7 @@ export default {
     secretGenerate: 'Générer',
     secretCopy: 'Copier',
     secretHint: 'Tous les nœuds du cluster doivent utiliser le même secret (associé au nom de réseau) ; collez le même secret sur chaque nouveau nœud. La révélation est auditée.',
+    actionFailed: 'Échec de l’action',
+    identitySaveHint: 'Le nom du nœud et l’interrupteur sont enregistrés via ce formulaire (un seul Enregistrer partagé avec la config réseau)',
   },
 }

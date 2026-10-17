@@ -32,8 +32,20 @@ const { t } = useI18n()
 type LoadState = 'loading' | 'ready' | 'error'
 const state = ref<LoadState>('loading')
 const errorMsg = ref('')
+// actionError 是保存/授权/补录等**动作**失败的可视横幅(与初始加载失败分开:
+// 此前动作失败只写 errorMsg,而它只在加载态渲染 → 保存失败毫无提示,像存上了)。
+const actionError = ref('')
 const saved = ref(false)
 const saving = ref(false)
+let savedTimer: number | undefined
+
+/** markSaved 显示「已保存 ✓」并在 3s 后自动消失;同时清掉动作错误横幅。 */
+function markSaved(): void {
+  actionError.value = ''
+  saved.value = true
+  if (savedTimer !== undefined) window.clearTimeout(savedTimer)
+  savedTimer = window.setTimeout(() => { saved.value = false }, 3000)
+}
 
 const settings = ref<MeshSettings | null>(null)
 const peers = ref<MeshPeer[]>([])
@@ -55,16 +67,14 @@ const manualPeer = ref({ nodeId: '', name: '', virtualIp: '', apiPort: 8080, pub
 const binaries = ref<EasyTierBinaries | null>(null)
 // 组网密钥回显:点击「显示」拉取已存明文(带审计);「生成」本地造 24 位随机强密钥。
 const secretRevealed = ref(false)
-const revealedSecret = ref('')
 
 async function toggleSecret(): Promise<void> {
   if (!secretRevealed.value) {
     try {
       const res = await revealMeshNetworkSecret()
-      revealedSecret.value = res.secret
       if (res.secret) form.value.networkSecret = res.secret
     } catch (err) {
-      errorMsg.value = err instanceof Error ? err.message : String(err)
+      actionError.value = err instanceof Error ? err.message : String(err)
       return
     }
   }
@@ -78,7 +88,6 @@ function generateSecret(): void {
   crypto.getRandomValues(bytes)
   form.value.networkSecret = Array.from(bytes, (b) => alphabet[b % alphabet.length]).join('')
   secretRevealed.value = true
-  revealedSecret.value = form.value.networkSecret
 }
 
 async function copySecret(): Promise<void> {
@@ -113,7 +122,7 @@ async function downloadBinaries(): Promise<void> {
       }
     }, 3000)
   } catch (err) {
-    errorMsg.value = err instanceof Error ? err.message : String(err)
+    actionError.value = err instanceof Error ? err.message : String(err)
   }
 }
 
@@ -145,11 +154,6 @@ async function load(): Promise<void> {
   }
 }
 
-function peerLabel(id: string): string {
-  const p = peers.value.find((x) => x.nodeId === id)
-  return p ? (p.name || p.nodeId.slice(0, 8)) : id
-}
-
 async function persistSettings(): Promise<void> {
   if (!settings.value) return
   saving.value = true
@@ -165,11 +169,23 @@ async function persistSettings(): Promise<void> {
       peers: form.value.peers.split('\n').map((s) => s.trim()).filter(Boolean),
     }
     if (form.value.networkSecret.trim() !== '') body.networkSecret = form.value.networkSecret.trim()
-    settings.value = await saveMeshSettings(body as never)
-    form.value.networkSecret = ''
-    saved.value = true
+    const st = await saveMeshSettings(body as never)
+    settings.value = st
+    // 用服务端权威值回填表单(密钥只写不回显,置空):所见即已存,消除「存没存上」疑惑。
+    form.value = {
+      name: st.name,
+      enabled: st.enabled,
+      easytierMode: st.easytierMode,
+      easytierRpc: st.easytierRpc || '127.0.0.1:15888',
+      networkName: st.networkName,
+      networkSecret: '',
+      virtualIp: st.virtualIp,
+      peers: st.peers.join('\n'),
+    }
+    secretRevealed.value = false
+    markSaved()
   } catch (err) {
-    errorMsg.value = err instanceof Error ? err.message : String(err)
+    actionError.value = err instanceof Error ? err.message : String(err)
   } finally {
     saving.value = false
   }
@@ -180,9 +196,9 @@ async function persistACL(): Promise<void> {
   saved.value = false
   try {
     await saveMeshACL(acl.value)
-    saved.value = true
+    markSaved()
   } catch (err) {
-    errorMsg.value = err instanceof Error ? err.message : String(err)
+    actionError.value = err instanceof Error ? err.message : String(err)
   } finally {
     saving.value = false
   }
@@ -201,7 +217,7 @@ async function addManualPeer(): Promise<void> {
     manualPeer.value = { nodeId: '', name: '', virtualIp: '', apiPort: 8080, publicUrl: '' }
     await load()
   } catch (err) {
-    errorMsg.value = err instanceof Error ? err.message : String(err)
+    actionError.value = err instanceof Error ? err.message : String(err)
   }
 }
 
@@ -214,7 +230,7 @@ async function removePeer(nodeId: string): Promise<void> {
     acl.value.triggerAllowed = acl.value.triggerAllowed.filter((x) => x !== nodeId)
     await Promise.all([saveMeshACL(acl.value), load()])
   } catch (err) {
-    errorMsg.value = err instanceof Error ? err.message : String(err)
+    actionError.value = err instanceof Error ? err.message : String(err)
   }
 }
 
@@ -238,6 +254,10 @@ onMounted(() => {
   <div class="mesh-settings">
     <p v-if="state === 'loading'">…</p>
     <p v-else-if="state === 'error'" class="err">{{ errorMsg }}</p>
+    <div v-if="actionError" class="action-banner" role="alert">
+      {{ t('cluster.settings.actionFailed') }}:{{ actionError }}
+      <button class="link-btn" type="button" @click="actionError = ''">✕</button>
+    </div>
 
     <template v-if="state === 'ready' && settings">
       <!-- 身份与组网 -->
@@ -254,6 +274,11 @@ onMounted(() => {
             <label class="switch"><input v-model="form.enabled" type="checkbox" /> {{ t('cluster.settings.enabledHint') }}</label>
           </div>
         </div>
+        <div class="row-end">
+          <span v-if="saved" class="ok-text">{{ t('cluster.settings.saved') }}</span>
+          <AppButton :loading="saving" @click="persistSettings">{{ t('cluster.settings.save') }}</AppButton>
+        </div>
+        <p class="hint">{{ t('cluster.settings.identitySaveHint') }}</p>
       </section>
 
       <section class="block">
@@ -267,8 +292,22 @@ onMounted(() => {
         </div>
         <div class="grid2">
           <label class="fld"><span>{{ t('cluster.settings.networkName') }}</span><input v-model="form.networkName" class="inp" type="text" placeholder="pipewright-net" /></label>
-          <label class="fld"><span>{{ t('cluster.settings.networkSecret') + (settings.hasSecret ? ' ✓' : '') }}</span><input v-model="form.networkSecret" class="inp" type="password" autocomplete="new-password"
-              :placeholder="settings.hasSecret ? t('cluster.settings.secretKept') : ''" /></label>
+          <div class="fld">
+            <span>{{ t('cluster.settings.networkSecret') + (settings.hasSecret ? ' ✓' : '') }}</span>
+            <div class="secret-row">
+              <input
+                v-model="form.networkSecret"
+                class="inp mono"
+                :type="secretRevealed ? 'text' : 'password'"
+                autocomplete="new-password"
+                :placeholder="settings.hasSecret ? t('cluster.settings.secretKept') : t('cluster.settings.secretPlaceholder')"
+              />
+              <button class="mini-btn" type="button" @click="toggleSecret">{{ secretRevealed ? t('cluster.settings.secretHide') : t('cluster.settings.secretShow') }}</button>
+              <button class="mini-btn" type="button" @click="generateSecret">{{ t('cluster.settings.secretGenerate') }}</button>
+              <button class="mini-btn" type="button" :disabled="!form.networkSecret.trim()" @click="copySecret">{{ t('cluster.settings.secretCopy') }}</button>
+            </div>
+            <span class="hint">{{ t('cluster.settings.secretHint') }}</span>
+          </div>
         </div>
         <div class="grid2">
           <label class="fld"><span>{{ t('cluster.settings.virtualIp') }}</span><input v-model="form.virtualIp" class="inp mono" type="text" :placeholder="t('cluster.settings.dhcp')" /></label>
@@ -372,6 +411,7 @@ onMounted(() => {
 .secret-row .inp { flex: 1; min-width: 0; }
 .mini-btn { border: 1px solid var(--color-border); background: var(--color-bg-soft); color: var(--color-text); border-radius: 6px; padding: 0 10px; font-size: 12px; cursor: pointer; white-space: nowrap; }
 .mini-btn:disabled { opacity: 0.5; cursor: default; }
+.action-banner { display: flex; align-items: center; gap: 8px; border: 1px solid var(--color-amber); border-radius: 8px; padding: 8px 12px; color: var(--color-amber); font-size: 13px; }
 .bin-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .bin-label { font-size: 13px; font-weight: 600; }
 .bin-status { font-size: 13px; flex: 1; min-width: 200px; }
