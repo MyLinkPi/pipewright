@@ -159,4 +159,14 @@ export default {
   triggerErrNotFound: 'Projekt nicht gefunden, bitte aktualisieren und erneut versuchen.',
   triggerErrStatus: 'Auslösen fehlgeschlagen ({status})',
   triggerErrRetry: 'Auslösen fehlgeschlagen, bitte später erneut versuchen.',
+
+  // ─── 被推送源项目(集群推送自动创建)─────────────────────────────────────
+  pushedRevision: 'Push-Revision',
+  pushedRevisionHint: 'Beim Deploy wählen; keine = neueste',
+  pushedRevisionLatest: 'Neueste Revision',
+  pushedItemsUnit: 'Elemente',
+  pushedItems: 'Push-Elemente',
+  pushedItemsHint: 'unmarkiert = alle',
+  pushedBadge: 'Push-Quelle',
+  pushedBadgeHint: 'Durch einen Peer-Push im Cluster automatisch erstelltes Projekt (Quelle: gepushte Artefakte/Images)',
 }

@@ -159,4 +159,14 @@ export default {
   triggerErrNotFound: '프로젝트가 존재하지 않습니다. 새로고침한 후 다시 시도하세요.',
   triggerErrStatus: '트리거에 실패했습니다({status})',
   triggerErrRetry: '트리거에 실패했습니다. 잠시 후 다시 시도하세요.',
+
+  // ─── 被推送源项目(集群推送自动创建)─────────────────────────────────────
+  pushedRevision: '푸시 리비전',
+  pushedRevisionHint: '배포 시 선택, 미선택 = 최신',
+  pushedRevisionLatest: '최신 리비전',
+  pushedItemsUnit: '항목',
+  pushedItems: '푸시 항목',
+  pushedItemsHint: '선택 안 함 = 전체 항목',
+  pushedBadge: '푸시 소스',
+  pushedBadgeHint: '클러스터 피어 푸시로 자동 생성된 프로젝트(소스는 푸시된 아티팩트/이미지)',
 }

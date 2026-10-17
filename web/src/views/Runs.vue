@@ -338,8 +338,12 @@ function formatTime(iso: string): string {
   return d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
 }
 
-function triggerTypeLabel(type: 'webhook' | 'manual'): string {
-  return type === 'webhook' ? 'Webhook' : t('runs.triggerManual')
+function triggerTypeLabel(type: string): string {
+  if (type === 'webhook') return 'Webhook'
+  if (type === 'schedule') return t('runs.triggerSchedule')
+  if (type === 'chain') return t('runs.triggerChain')
+  if (type === 'mesh') return t('runs.triggerMesh')
+  return t('runs.triggerManual')
 }
 
 function isFailedStatus(status: RunStatus): boolean {

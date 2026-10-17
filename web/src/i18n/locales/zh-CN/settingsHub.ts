@@ -11,6 +11,7 @@ export default {
   navHttps: 'HTTPS 访问',
   navAccount: '账户',
   navServers: '服务器',
+  navMesh: '集群',
   navRegistry: '镜像仓库',
   navDiagnosisStats: '诊断反馈',
   navSystem: '系统',

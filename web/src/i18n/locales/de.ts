@@ -72,6 +72,7 @@ const de: typeof zhCN = {
     library: 'Bibliothek',
     dora: 'DORA-Metriken',
     serverStatus: 'Server',
+    cluster: 'Cluster',
     containers: 'Container',
     serviceReg: 'Serviceregistrierung',
     appStore: 'App-Store',

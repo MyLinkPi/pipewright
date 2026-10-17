@@ -136,6 +136,9 @@ type Service interface {
 	// regServiceId(一键生成)优先,gatewayService(legacy 服务名)兜底 —— 与部署期 regServiceRef 的
 	// 取值语义一致。只读:项目尚无流水线配置行时返回空切片(不惰性生成默认配置,无副作用)。
 	RegServiceRefs(ctx context.Context, projectID string) ([]string, error)
+	// HasConfig 只读报告项目是否已有已保存的流水线配置行(不惰性生成默认种子;
+	// 供集群对端展示「流水线就绪」等无副作用探测)。
+	HasConfig(ctx context.Context, projectID string) bool
 }
 
 // StatusDraft 是本期唯一发布状态(导出供 pipelineyaml 等同包域外构造 Config 时复用)。
@@ -173,6 +176,14 @@ func (s *service) Get(ctx context.Context, projectID string) (*Config, error) {
 	}
 	// 首次访问无配置:惰性生成默认种子。
 	return s.createDefault(ctx, projectID)
+}
+
+// HasConfig 实现 Service.HasConfig:只读查配置行是否存在(无惰性生成)。
+func (s *service) HasConfig(ctx context.Context, projectID string) bool {
+	var one int
+	err := s.db.QueryRowContext(ctx,
+		`SELECT 1 FROM pipeline_configs WHERE project_id = ?`, projectID).Scan(&one)
+	return err == nil
 }
 
 // fillSourceDefaults 为 git_source 任务预填项目绑定的仓库/分支/凭据(仅当对应字段为空,
@@ -233,6 +244,12 @@ func (s *service) Save(ctx context.Context, projectID string, spec Spec) (*Confi
 
 	normalized, err := normalizeSpec(spec)
 	if err != nil {
+		return nil, err
+	}
+
+	// 项目源类型匹配(pushed 项目必须 pushed_source;git 项目必须 git_source):
+	// 需要项目上下文,故在 Save 级查库(NormalizeSpec 纯函数层不触库)。
+	if err := validateSourceTypeForProject(normalized.Stages, s.projectSourceType(ctx, projectID)); err != nil {
 		return nil, err
 	}
 
@@ -358,6 +375,10 @@ func (s *service) createDefault(ctx context.Context, projectID string) (*Config,
 	}
 
 	spec := defaultSpec(summary)
+	if s.projectSourceType(ctx, projectID) == sourceTypePushed {
+		// 「被推送源」项目:种子源节点用 pushed_source(修订按最新,部署时可选条目)。
+		spec = defaultPushedSpec()
+	}
 	specJSON, err := json.Marshal(spec)
 	if err != nil {
 		return nil, fmt.Errorf("pipeline: marshal default spec: %w", err)
@@ -435,6 +456,37 @@ func defaultSpec(sourceSummary string) Spec {
 		},
 		{ID: "stg_build", Name: "构建", Kind: KindBuild, Jobs: []Job{}},
 	}}
+}
+
+// defaultPushedSpec 构造「被推送源」项目的默认种子:源阶段用 pushed_source(修订按最新,
+// 条目部署时选择),附一个空部署阶段提示用户接线。对端首次推送自动建项目后即得到此骨架。
+func defaultPushedSpec() Spec {
+	return Spec{Stages: []Stage{
+		{
+			ID:   "stg_src",
+			Name: "流水线源",
+			Kind: KindSource,
+			Jobs: []Job{{
+				ID:      "job_src",
+				Name:    "推送源",
+				Type:    JobTypePushedSource,
+				Summary: "集群推送 · 修订按最新,条目部署时选择",
+				Config:  map[string]any{},
+			}},
+		},
+		{ID: "stg_deploy", Name: "部署", Kind: KindDeploy, Jobs: []Job{}},
+	}}
+}
+
+// projectSourceType 读项目源类型(查询失败按 git,不阻断主流程)。
+func (s *service) projectSourceType(ctx context.Context, projectID string) string {
+	var st string
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT COALESCE(NULLIF(source_type, ''), 'git') FROM projects WHERE id = ?`, projectID,
+	).Scan(&st); err != nil {
+		return sourceTypeGit
+	}
+	return st
 }
 
 // normalizeSpec 校验并规范化 spec:trim 各字段、补空 id(uuid)、Config nil 补 {}、
@@ -569,6 +621,11 @@ func normalizeSpec(in Spec) (Spec, error) {
 	// 推送镜像节点「产物来源节点」(config["artifactJob"])校验:必填,且必须是**同阶段**的
 	// build_image 节点(推送在该来源节点内完成,见 push_image.go)。
 	if err := validatePushImage(out.Stages); err != nil {
+		return Spec{}, err
+	}
+
+	// 集群节点(mesh_push/mesh_trigger)配置与 pushed 源不变式校验(见 mesh_nodes.go)。
+	if err := validateMeshNodes(out.Stages); err != nil {
 		return Spec{}, err
 	}
 

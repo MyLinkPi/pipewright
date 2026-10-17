@@ -159,4 +159,14 @@ export default {
   triggerErrNotFound: '專案不存在,請重新整理後重試。',
   triggerErrStatus: '觸發失敗({status})',
   triggerErrRetry: '觸發失敗,請稍後重試。',
+
+  // ─── 被推送源项目(集群推送自动创建)─────────────────────────────────────
+  pushedRevision: '推送修訂',
+  pushedRevisionHint: '部署時選擇;不選 = 最新',
+  pushedRevisionLatest: '最新修訂',
+  pushedItemsUnit: '項',
+  pushedItems: '推送條目',
+  pushedItemsHint: '不勾 = 全部條目',
+  pushedBadge: '推送源',
+  pushedBadgeHint: '集群對端推送自動建立的專案(源為被推送的產物/鏡像)',
 }

@@ -268,7 +268,12 @@ func (r *Runner) Run(ctx context.Context, rn *run.Run, sink run.StepSink) error 
 			execStage = *fs
 		}
 		// 条件执行(Story 8-5):when 不满足 → 整阶段所有节点 skipped(非失败),其下游照「未成功」跳过。
-		if !execStage.When.Matches(rn.Trigger.Branch, rn.Trigger.Type) {
+		// mesh(集群远程触发)按 manual 同语义命中(见 run.TriggerMesh 注释)。
+		whenEvent := rn.Trigger.Type
+		if whenEvent == run.TriggerMesh {
+			whenEvent = run.TriggerManual
+		}
+		if !execStage.When.Matches(rn.Trigger.Branch, whenEvent) {
 			_ = rep.Log(ctx, "stdout", fmt.Sprintf(
 				"阶段「%s」条件不满足(分支=%q 触发=%q),跳过", execStage.Name, rn.Trigger.Branch, rn.Trigger.Type))
 			rep.finishRemaining(ctx, run.StepSkipped)

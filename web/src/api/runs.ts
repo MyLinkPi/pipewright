@@ -331,6 +331,9 @@ export interface TriggerManualInput {
   commit?: string
   /** Parameterized run (Story 8-11): key=value injected as container env (PW_<KEY>). */
   params?: Record<string, string>
+  /** Pushed-source deploy-time selection: revision label (empty = latest) + item names (empty = all). */
+  revision?: string
+  items?: string[]
 }
 
 export function triggerManual(projectId: string, input: TriggerManualInput): Promise<RunDetail> {

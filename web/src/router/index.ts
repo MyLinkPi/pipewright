@@ -31,6 +31,9 @@ const ServiceRegistry = () => import('../views/ServiceRegistry.vue')
 const AppStore = () => import('../views/AppStore.vue')
 // Story 6-5: configurable anomaly detection & alerts (FR-23)
 const AnomalyDetection = () => import('../views/AnomalyDetection.vue')
+// 集群(对等节点 + EasyTier 自组网):节点状态/链路(p2p|中继)总览 + 授权管理入口
+const Cluster = () => import('../views/Cluster.vue')
+const SettingsMesh = () => import('../views/settings/SettingsMesh.vue')
 const Settings    = () => import('../views/Settings.vue')
 const SettingsAI  = () => import('../views/settings/SettingsAI.vue')
 // OAuth app config: per-provider Client ID/Secret for one-click "连接" in the vault
@@ -151,6 +154,8 @@ const router = createRouter({
         { path: 'servers', name: 'servers', redirect: { name: 'server-status' } },
         // Story 6-1: multi-host status overview (server-layer metrics, FR-15)
         { path: 'server-status', name: 'server-status', component: ServerStatus, meta: { title: '服务器状态' } },
+        // 集群:对等节点总览(EasyTier 链路 p2p/中继、机器状态、流水线状态;FR-集群)
+        { path: 'cluster', name: 'cluster', component: Cluster, meta: { title: '集群', roles: ['admin'] } },
 
         { path: 'containers', name: 'containers', component: Containers, meta: { title: '容器' } },
         // 服务注册网关(nginx):abc.efg.com 子域名反代 + TCP 透传 + 泛域名证书上传。
@@ -186,6 +191,8 @@ const router = createRouter({
             { path: 'system', name: 'settings-system', component: SettingsSystem, meta: { title: '系统信息' } },
             // Story 4-1: target servers + shared SSH layer (FR-14)
             { path: 'servers', name: 'settings-servers', component: SettingsServers, meta: { title: '服务器' } },
+            // 集群:本节点身份/EasyTier 组网/授权单(默认全拒绝)/节点注册表
+            { path: 'mesh', name: 'settings-mesh', component: SettingsMesh, meta: { title: '集群' } },
             // 内置本地 Docker registry:构建产物统一推送 + 上游可切换 + daemon.json 下发
             { path: 'registry', name: 'settings-registry', component: SettingsRegistry, meta: { title: '镜像仓库' } },
             // Story 7-5: diagnosis feedback-loop stats (FR-26)

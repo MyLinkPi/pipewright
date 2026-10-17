@@ -72,6 +72,7 @@ const es: typeof zhCN = {
     library: 'Biblioteca',
     dora: 'Métricas DORA',
     serverStatus: 'Servidores',
+    cluster: 'Clúster',
     containers: 'Contenedores',
     serviceReg: 'Registro de servicios',
     appStore: 'Tienda de apps',

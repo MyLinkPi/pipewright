@@ -71,6 +71,7 @@ const zhHK: typeof zhCN = {
     library: '複用庫',
     dora: 'DORA 指標',
     serverStatus: '伺服器',
+    cluster: '集群',
     containers: '容器',
     serviceReg: '服務註冊',
     appStore: '應用商店',

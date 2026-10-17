@@ -72,6 +72,7 @@ const ko: typeof zhCN = {
     library: '라이브러리',
     dora: 'DORA 지표',
     serverStatus: '서버',
+    cluster: '클러스터',
     containers: '컨테이너',
     serviceReg: '서비스 등록',
     appStore: '앱 스토어',

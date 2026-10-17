@@ -42,6 +42,8 @@ import (
 	"github.com/huangchengsir/pipewright/internal/labels"
 	"github.com/huangchengsir/pipewright/internal/library"
 	"github.com/huangchengsir/pipewright/internal/mask"
+	"github.com/huangchengsir/pipewright/internal/mesh"
+	"github.com/huangchengsir/pipewright/internal/mesh/easytier"
 	"github.com/huangchengsir/pipewright/internal/metrics"
 	"github.com/huangchengsir/pipewright/internal/notify"
 	"github.com/huangchengsir/pipewright/internal/oauth"
@@ -49,6 +51,7 @@ import (
 	"github.com/huangchengsir/pipewright/internal/opschat"
 	"github.com/huangchengsir/pipewright/internal/pacloader"
 	"github.com/huangchengsir/pipewright/internal/pipeline"
+	"github.com/huangchengsir/pipewright/internal/pushsource"
 	"github.com/huangchengsir/pipewright/internal/platformhttps"
 	"github.com/huangchengsir/pipewright/internal/project"
 	"github.com/huangchengsir/pipewright/internal/prstatus"
@@ -414,6 +417,21 @@ func main() {
 	// servicereg,包间保持单向依赖);未装配时该策略自动回退既有滚动。
 	deploySvc := deploy.New(targetSvc, runSvc, deploy.WithDiagnoseHook(httpapi.NewDiagnoseHook(runSvc, aiSvc, secretSrc)), deploy.WithArtifactStore(artStore), deploy.WithInstanceGateway(&instanceRollGateway{sr: serviceRegSvc}))
 
+	// ── 集群(对等节点 + EasyTier 自组网)装配 ─────────────────────────────────────
+	// 全节点同构:mesh 服务、推送接收器、出站签名客户端、修订存储与镜像传输器一律构造
+	// (端点是否可达/节点是否启用由运行时设置决定,不装配则集群功能整体缺席)。
+	meshSvc := mesh.New(st.DB, credVault)
+	pushedStore := pushsource.New(st.DB)
+	meshClient := mesh.NewClient(meshSvc)
+	meshImageBinary := "docker"
+	if drv, derr := build.DetectDriver(nil); derr == nil {
+		meshImageBinary = drv.Binary()
+	}
+	meshImages := &build.ImageTransfer{Binary: meshImageBinary, BuiltinRegistry: registryHubSvc.ResolveBuiltin}
+	meshReceiver := mesh.NewReceiver(projectSvc, artStore, meshImages, pushedStore)
+	var meshOpts []build.BuilderOption
+	meshOpts = append(meshOpts, build.WithMeshStage(meshSvc, meshClient, meshImages), build.WithPushedSource(pushedStore))
+
 	// 对象存储集成层(流水线 OSS 上传节点配套):本期仅阿里云 OSS(AccessKeySecret 走 vault)。
 	// 提前到 dag 装配前构造,供 oss_upload 流水线节点注入;同时供设置页 /api/object-stores 消费。
 	objectStoreSvc := objectstore.New(st.DB, credVault)
@@ -440,6 +458,7 @@ func main() {
 		approvalNotifier := httpapi.NewApprovalNotifier(notifySvc, approvalSigner, publicURLResolver, runSvc)
 		dagOpts = append(dagOpts, dagrun.WithGate(httpapi.NewApprovalGate(runSvc, approvalCoord, approvalStore, approvalNotifier)))
 		builderOpts := []build.BuilderOption{build.WithArtifactStore(artStore), build.WithArtifactLister(runSvc.ListArtifacts), build.WithImageGC(os.Getenv("PIPEWRIGHT_NO_IMAGE_GC") != "1"), build.WithCommitRecorder(func(ctx context.Context, runID, commit string) { _ = runSvc.SetCommit(ctx, runID, commit) }), build.WithStageDeployer(deploySvc), build.WithStageNotifier(notifySvc), build.WithStageObjectUploader(objectStoreSvc), clonerOpt, buildCacheOpt, builtinRegistryOpt}
+		builderOpts = append(builderOpts, meshOpts...)
 		b, berr := build.NewBuilder(projectSvc, pipelineSettingsSvc, credVault, builderOpts...)
 		if berr != nil && errors.Is(berr, build.ErrNoContainerCLI) {
 			// 瘦控制机(FR-8-19):本机无容器 CLI 不再整体回退 stub——改用 errDriver 构造 Builder,
@@ -610,6 +629,30 @@ func main() {
 	pool.Start()
 	log.Printf("[run] worker pool started")
 
+	// 集群运行时与 HTTP 依赖(在 pool 之后:meshDeps 需要 runSub/pool 做 SSE 事件回流)。
+	// 运行时循环的启动在 ctx(signal)就绪后(见下方 meshRT.start 调用)。
+	meshDataDir := filepath.Dir(cfg.DBPath)
+	meshCorePath := easytier.Locate(os.Getenv("PIPEWRIGHT_EASYTIER_BIN"), meshDataDir, easytier.CoreBinary())
+	meshCLIPath := easytier.Locate(os.Getenv("PIPEWRIGHT_EASYTIER_CLI"), meshDataDir, easytier.CliBinary())
+	// EasyTier 二进制自动下载器:升级源复用平台镜像机制(设置库 release_mirror >
+	// env PIPEWRIGHT_RELEASE_MIRROR > GitHub 官方),仅换 Repo 为 EasyTier/EasyTier;
+	// 资产 sha256 digest 硬校验。托管模式启用而二进制缺失时由运行时自动触发。
+	meshDownloader := &easytier.Downloader{
+		DataDir: meshDataDir,
+		Source: func(ctx context.Context) version.Source {
+			base := version.ResolveSource(systemcfg.ResolveReleaseMirror(ctx, sysCfgSvc))
+			return version.Source{Repo: "EasyTier/EasyTier", APIBase: base.APIBase, WebBase: base.WebBase, DLBase: base.DLBase}
+		},
+	}
+	meshAdvertisePort := defaultPortFromAddr(cfg.Addr)
+	if v := strings.TrimSpace(os.Getenv("PIPEWRIGHT_MESH_API_PORT")); v != "" {
+		if n, perr := strconv.Atoi(v); perr == nil && n > 0 {
+			meshAdvertisePort = n
+		}
+	}
+	meshRT := newMeshRuntime(meshSvc, meshClient, meshCorePath, meshCLIPath, meshDataDir, meshDownloader)
+	meshAdminDeps := httpapi.NewMeshDeps(meshSvc, meshReceiver, meshClient, projectSvc, runSvc, pool, parameterSvc, targetSvc, pipelineSvc, auditRec, pushedStore, meshAdvertisePort).WithRuntime(meshRT)
+
 	// 装配并启动定时(cron)调度器(Story 8-6):分钟粒度扫描启用的项目 cron,到点经 run.Service
 	// 创建「定时」触发的运行(入 pool 调度)。同一项目同一分钟去重;表达式非法的项目跳过。
 	// 无启用配置时空转无副作用。优雅停机随 worker pool 停。
@@ -707,7 +750,7 @@ func main() {
 
 	srv := &http.Server{
 		Addr:              cfg.Addr,
-		Handler:           httpapi.New(webFS, authSvc, httpapi.WithVault(credVault), httpapi.WithProjects(projectSvc), httpapi.WithTriggers(triggerSvc), httpapi.WithPipelines(pipelineSvc), httpapi.WithPipelineSettings(pipelineSettingsSvc), httpapi.WithRuns(runSvc, pool), httpapi.WithWebhooks(webhookReceiver), httpapi.WithAudit(auditRec), httpapi.WithAccount(authSvc), httpapi.WithIdentity(identitySvc), httpapi.WithAISettings(aiSvc), httpapi.WithAIGenerate(repoAnalyzer), httpapi.WithRunDiff(runDiffer), httpapi.WithSource(sourceReader), httpapi.WithRefs(refsLister), httpapi.WithArtifactStore(artStore), httpapi.WithServers(targetSvc), httpapi.WithLabels(labelsSvc), httpapi.WithServerCommands(serverCmdSvc), httpapi.WithRegistryHub(registryHubSvc), httpapi.WithRunnerConfig(runnerSvc), httpapi.WithDeploy(deploySvc), httpapi.WithSpecLoader(resumeSpecLoader), httpapi.WithNotifications(notifySvc), httpapi.WithRetention(retentionSvc), httpapi.WithDNSProviders(dnsSvc), httpapi.WithObjectStores(objectStoreSvc), httpapi.WithCertMgmt(certSvc), httpapi.WithPlatformHTTPS(platformHTTPSSvc), httpapi.WithSystemConfig(sysCfgSvc), httpapi.WithServiceReg(serviceRegSvc), httpapi.WithAppStore(appStoreSvc), httpapi.WithDiagnosisFeedback(feedbackSvc), httpapi.WithAnomaly(anomalySvc), httpapi.WithAnomalyConfig(int(anomalyInterval.Seconds()), int(anomalyCooldown.Seconds())), httpapi.WithMetricsHistory(metricsHist), httpapi.WithSecretSource(secretSrc), httpapi.WithOAuth(oauthSvc), httpapi.WithCron(cronSvc), httpapi.WithChain(chainSvc), httpapi.WithApprovals(approvalCoord, approvalStore), httpapi.WithApprovalLinks(approvalSigner), httpapi.WithConcurrency(concurrencySvc), httpapi.WithParameters(parameterSvc), httpapi.WithDoraMetrics(doraMetricsSvc), httpapi.WithTemplates(templateSvc), httpapi.WithVariableGroups(varGroupSvc), httpapi.WithCustomNodes(customNodeSvc), httpapi.WithOpsChat(opsChatSvc)),
+		Handler:           httpapi.New(webFS, authSvc, httpapi.WithVault(credVault), httpapi.WithProjects(projectSvc), httpapi.WithTriggers(triggerSvc), httpapi.WithPipelines(pipelineSvc), httpapi.WithPipelineSettings(pipelineSettingsSvc), httpapi.WithRuns(runSvc, pool), httpapi.WithWebhooks(webhookReceiver), httpapi.WithAudit(auditRec), httpapi.WithAccount(authSvc), httpapi.WithIdentity(identitySvc), httpapi.WithAISettings(aiSvc), httpapi.WithAIGenerate(repoAnalyzer), httpapi.WithRunDiff(runDiffer), httpapi.WithSource(sourceReader), httpapi.WithRefs(refsLister), httpapi.WithArtifactStore(artStore), httpapi.WithServers(targetSvc), httpapi.WithLabels(labelsSvc), httpapi.WithServerCommands(serverCmdSvc), httpapi.WithRegistryHub(registryHubSvc), httpapi.WithRunnerConfig(runnerSvc), httpapi.WithDeploy(deploySvc), httpapi.WithSpecLoader(resumeSpecLoader), httpapi.WithNotifications(notifySvc), httpapi.WithRetention(retentionSvc), httpapi.WithDNSProviders(dnsSvc), httpapi.WithObjectStores(objectStoreSvc), httpapi.WithCertMgmt(certSvc), httpapi.WithPlatformHTTPS(platformHTTPSSvc), httpapi.WithSystemConfig(sysCfgSvc), httpapi.WithServiceReg(serviceRegSvc), httpapi.WithAppStore(appStoreSvc), httpapi.WithDiagnosisFeedback(feedbackSvc), httpapi.WithAnomaly(anomalySvc), httpapi.WithAnomalyConfig(int(anomalyInterval.Seconds()), int(anomalyCooldown.Seconds())), httpapi.WithMetricsHistory(metricsHist), httpapi.WithSecretSource(secretSrc), httpapi.WithOAuth(oauthSvc), httpapi.WithCron(cronSvc), httpapi.WithChain(chainSvc), httpapi.WithApprovals(approvalCoord, approvalStore), httpapi.WithApprovalLinks(approvalSigner), httpapi.WithConcurrency(concurrencySvc), httpapi.WithParameters(parameterSvc), httpapi.WithDoraMetrics(doraMetricsSvc), httpapi.WithTemplates(templateSvc), httpapi.WithVariableGroups(varGroupSvc), httpapi.WithCustomNodes(customNodeSvc), httpapi.WithOpsChat(opsChatSvc), httpapi.WithMesh(meshAdminDeps)),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		// WriteTimeout 置 0:SSE 长连接(/api/runs/{id}/events)不可被写超时切断;
@@ -719,6 +762,15 @@ func main() {
 	// 优雅停机:SIGINT/SIGTERM 后 Shutdown,放行在途请求并让 defer st.Close() 生效。
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	// 集群运行时(设置监督 + 对等发现)随 ctx 启停;托管 easytier-core 时二进制定位结果
+	// 打一行日志便于排障(找不到时集群页会给出放置指引)。
+	meshRT.start(ctx)
+	if meshCorePath != "" {
+		log.Printf("[mesh] 集群运行时已启动(easytier-core: %s)", meshCorePath)
+	} else {
+		log.Printf("[mesh] 集群运行时已启动(未定位到 easytier-core:启用托管模式后将自动下载;亦可在 设置→集群 手动触发,或放置 %s 于 %s/bin)", easytier.CoreBinary(), meshDataDir)
+	}
 
 	// 异常检测定时器(Story 6.5 增强):周期性 Check → 命中产告警 + best-effort 通知(去重已在服务内)。
 	// 间隔 env PIPEWRIGHT_ANOMALY_INTERVAL(秒)覆盖,默认 60s;置 "0" 关闭定时(仍可手动「立即检测」)。
