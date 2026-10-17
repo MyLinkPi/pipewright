@@ -2,7 +2,7 @@
 # 同时构建 linux amd64/arm64 镜像并合并为多架构清单推 ghcr.io。
 # 仓库自适应:Release 目标由 git remote 推断(tag 推到哪个仓库就发到哪);镜像命名空间与
 # 升级渠道经 env 注入 —— CI(release.yml)始终导出 IMAGE_NAMESPACE/RELEASE_REPO,本地干跑
-# 需先 export(如 RELEASE_REPO=huangchengsir/pipewright IMAGE_NAMESPACE=huangchengsir)。
+# 需先 export(如 RELEASE_REPO=<owner>/pipewright IMAGE_NAMESPACE=<owner>)。
 # 本地干跑(含真建 docker,需本机 docker daemon):goreleaser release --snapshot --clean --skip=publish
 # 仅二进制/不建镜像:再加 --skip=docker;校验配置:goreleaser check
 version: 2

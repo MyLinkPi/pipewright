@@ -15,7 +15,7 @@
 # 可配环境变量:
 #   BIN_PATH            本地二进制路径;缺省取脚本所在目录的 ./pipewright(即 make build 的产物)。
 #   PIPEWRIGHT_VERSION  下载模式钉版本(如 v1.2.3,可省 v);缺省取最新正式版。
-#   PIPEWRIGHT_RELEASE_REPO   发布仓库 owner/name;缺省 huangchengsir/pipewright(fork 发版时指向自己仓库)。
+#   PIPEWRIGHT_RELEASE_REPO   发布仓库 owner/name;缺省 MyLinkPi/pipewright(上游/其它 fork 发版时覆盖)。
 #   PIPEWRIGHT_RELEASE_MIRROR 镜像,两种形态:GitHub 路径兼容反代(须按 GitHub 路径布局转发)
 #                      或前缀式代理(如 https://gh-proxy.com/https://github.com,自动派生下载/解析地址);
 #                      缺省 GitHub 官方。
@@ -54,7 +54,7 @@ err() {
 # GitHub 路径布局转发;PIPEWRIGHT_RELEASE_REPO 缺省上游仓库(fork 发版时指向自己仓库)。
 # 完整性由 Release 附带的 checksums.txt 把关(与 Web 端自升级同一防线)。
 download_binary() {
-	RELEASE_REPO="${PIPEWRIGHT_RELEASE_REPO:-huangchengsir/pipewright}"
+	RELEASE_REPO="${PIPEWRIGHT_RELEASE_REPO:-MyLinkPi/pipewright}"
 	MIRROR="${PIPEWRIGHT_RELEASE_MIRROR:-}"
 	DL_BASE="https://github.com"      # 官方下载 base(github.com 形态)
 	API_BASE="https://api.github.com" # 官方 API base(api.github.com 形态)
