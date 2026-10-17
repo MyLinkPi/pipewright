@@ -33,6 +33,10 @@ export default {
   deploy: {
     target: '目标主机',
     pickTarget: '选择要部署到的主机',
+    instance: '实例名(可选)',
+    instanceHint: '留空即默认实例;填写后栈名为 <模板名>-<实例名>,可同机部署多副本,注意错开端口',
+    instanceInvalid: '实例名非法:仅字母数字与 . _ -,不以 - 开头',
+    stackTaken: '该机器已存在同名栈 {name}:本次部署将更新它而非新建;数据卷按项目隔离,不受影响',
     autogen: '留空自动生成',
     autoValue: '(自动生成)',
     cpuLimit: 'CPU 上限(核,可选)',

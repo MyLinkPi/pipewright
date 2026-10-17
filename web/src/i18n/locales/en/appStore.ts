@@ -29,6 +29,10 @@ export default {
   deploy: {
     target: "Target host",
     pickTarget: "Pick a host to deploy to",
+    instance: "Instance name (optional)",
+    instanceHint: "Empty = default instance; a name makes the stack <template>-<instance>, so multiple copies can run on one host — pick distinct ports",
+    instanceInvalid: "Invalid instance name: letters, digits, . _ - only; must not start with -",
+    stackTaken: "A stack named {name} already exists on this host: deploying will update it instead of creating a new one; volumes stay isolated per project",
     autogen: "left blank = auto-generated",
     autoValue: "(auto-generated)",
     cpuLimit: "CPU limit (cores, optional)",

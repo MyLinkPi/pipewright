@@ -29,6 +29,10 @@ export default {
   deploy: {
     target: "Target host",
     pickTarget: "Pick a host to deploy to",
+    instance: "Nombre de instancia (opcional)",
+    instanceHint: "Vacío = instancia por defecto; con un nombre el stack pasa a ser <plantilla>-<instancia>, permitiendo varias copias en el mismo host — usa puertos distintos",
+    instanceInvalid: "Nombre de instancia no válido: solo letras, dígitos, . _ -; no empezar por -",
+    stackTaken: "Ya existe un stack llamado {name} en este host: el despliegue lo actualizará en lugar de crear uno nuevo; los volúmenes quedan aislados por proyecto",
     autogen: "left blank = auto-generated",
     autoValue: "(auto-generated)",
     cpuLimit: "Límite de CPU (núcleos, opcional)",

@@ -29,6 +29,10 @@ export default {
   deploy: {
     target: "目標主機",
     pickTarget: "選擇要部署到的主機",
+    instance: "實例名(可選)",
+    instanceHint: "留空即預設實例;填寫後棧名為 <模板名>-<實例名>,可同機部署多副本,注意錯開端口",
+    instanceInvalid: "實例名非法:僅字母數字與 . _ -,不以 - 開頭",
+    stackTaken: "該機器已存在同名棧 {name}:本次部署將更新它而非新建;數據卷按項目隔離,不受影響",
     autogen: "留空自動產生",
     autoValue: "(自動產生)",
     cpuLimit: "CPU 上限(核心,可選)",
