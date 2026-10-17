@@ -27,9 +27,13 @@ var DefaultRepo = fallbackRepo
 //   - 兜底: {WebBase}/{Repo}/releases/latest(302 重定向解析 tag)与 {WebBase}/{Repo}/releases.atom
 //   - 下载: {DLBase}/{Repo}/releases/download/{tag}/{资产} 与 checksums.txt
 //
-// 留空字段回落 GitHub 官方源。自建镜像(如 nginx 反代 api.github.com 与 github.com)或
-// 内网发布站只需按同样路径布局转发,即可替代 GitHub;二进制完整性仍由 sha256 校验和保障
-// (镜像属管理员显式配置的信任源,与信任 GitHub 本身同级)。
+// 留空字段回落 GitHub 官方源。镜像支持两种形态(见 buildSource):
+//   - 路径兼容反代:自建 nginx 按同样路径布局转发 api.github.com 与 github.com;
+//   - 前缀式代理:形如 https://gh-proxy.com/https://github.com —— base 内嵌完整上游
+//     origin(gh-proxy / ghproxy 系公共代理的通用用法),自动派生 API 与下载两种上游。
+//
+// 二进制完整性仍由 sha256 校验和保障(镜像属管理员显式配置的信任源,与信任 GitHub
+// 本身同级)。
 type Source struct {
 	Repo    string
 	APIBase string
@@ -73,13 +77,43 @@ func releaseRepo() string {
 	return fallbackRepo
 }
 
-// buildSource 以镜像 base 组装升级源;base 为空 = GitHub 官方(检查走 api.github.com,
-// 网页兜底/下载走 github.com),非空 = 三个 base 都指向镜像(须按 GitHub 路径布局转发)。
+// buildSource 以镜像 base 组装升级源。base 为空 = GitHub 官方(检查走 api.github.com,
+// 网页兜底/下载走 github.com);内嵌上游 origin 的前缀式代理按 splitPrefixProxy 拆分并
+// 分别派生 API(api.github.com)与网页/下载(github.com)上游;其余 = 路径兼容反代,
+// 三个 base 都指向镜像(须按 GitHub 路径布局转发)。
 func buildSource(repo, base string) Source {
 	if base == "" {
 		return Source{Repo: repo, APIBase: githubAPIBase, WebBase: githubWebBase, DLBase: githubWebBase}
 	}
+	// 前缀式代理:不管内嵌的是 github.com 还是 api.github.com 形态,一律经代理根重组 ——
+	// 检查走 {根}/https://api.github.com、网页/下载走 {根}/https://github.com,两类请求
+	// 都不绕过代理(拆分重组同时归一了手滑的双斜杠)。
+	if root, ok := splitPrefixProxy(base); ok {
+		return Source{Repo: repo, APIBase: root + "/" + githubAPIBase, WebBase: root + "/" + githubWebBase, DLBase: root + "/" + githubWebBase}
+	}
 	return Source{Repo: repo, APIBase: base, WebBase: base, DLBase: base}
+}
+
+// splitPrefixProxy 识别前缀式代理 base(形如 https://gh-proxy.com/https://github.com:
+// 代理根后跟完整上游 origin),返回归一化的代理根(去全部尾斜杠,容忍 //https:// 这类
+// 手滑)。非该形态(路径兼容反代)返回 ok=false。上游 origin 只用于识别形态,两类
+// base 恒经代理根重组为 GitHub 官方域,不做它用。
+func splitPrefixProxy(base string) (root string, ok bool) {
+	i := strings.Index(base, "://")
+	if i < 0 {
+		return "", false
+	}
+	rest := base[i+3:]
+	best := -1
+	for _, scheme := range []string{"https://", "http://"} {
+		if j := strings.Index(rest, scheme); j > 0 && (best < 0 || j < best) {
+			best = j
+		}
+	}
+	if best < 0 {
+		return "", false
+	}
+	return strings.TrimRight(base[:i+3+best], "/"), true
 }
 
 // ResolveSource 把镜像 base 组装成升级源,优先级:传入的库内配置 > env

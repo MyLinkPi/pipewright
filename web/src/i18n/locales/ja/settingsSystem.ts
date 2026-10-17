@@ -50,7 +50,7 @@ export default {
   updateSrcSub: 'アップデートの確認とアップグレードパッケージのダウンロード元。ミラー未設定時は GitHub Releases を使用(確認 api.github.com、ダウンロード github.com)。GitHub に到達できない環境(社内ネットワーク等)では自己ホストのミラーを指定できます。バイナリの完全性は常に sha256 チェックサムで保証されます。',
   updateSrcLabel: 'ミラー URL',
   updateSrcPlaceholder: 'https://mirror.example.com',
-  updateSrcHint: 'GitHub 互換のパスを提供する必要があります:/repos/<owner>/<repo>/releases/latest と /<owner>/<repo>/releases/download/…(例:api.github.com と github.com の手前に nginx リバースプロキシを置く)。空欄でこの設定を解除し、環境変数または既定のソース(上の「現在生效」参照)にフォールバックします。変更は即時反映されます。',
+  updateSrcHint: 'ミラーは 2 形式:(1) GitHub パス互換リバースプロキシ — /repos/<owner>/<repo>/releases/latest と /<owner>/<repo>/releases/download/… を提供する必要があります(例:api.github.com と github.com の手前に nginx を配置);(2) プレフィックス型プロキシ — https://gh-proxy.com/https://github.com のようなアドレスを入力するだけで、確認・ダウンロード URL は自動的に導出されます。空欄でこの設定を解除し、環境変数または既定のソース(上の「現在生效」参照)にフォールバックします。変更は即時反映されます。',
   updateSrcSave: 'アップデートソースを保存',
   updateSrcSaved: '保存しました',
   updateSrcSaveFailed: '保存に失敗しました。もう一度お試しください。',

@@ -116,6 +116,9 @@ func TestNormalizeMirrorURL(t *testing.T) {
 		{" https://mirror.example.com/ ", "https://mirror.example.com", false},     // 去空白 + 去尾斜杠
 		{"https://mirror.example.com/gh/", "https://mirror.example.com/gh", false}, // 子路径前缀合法
 		{"http://10.0.0.8:8080", "http://10.0.0.8:8080", false},
+		// 前缀式代理(gh-proxy 系):路径内嵌完整上游 origin,属合法路径形态(version 包按此拆分派生)。
+		{"https://gh-proxy.com/https://github.com", "https://gh-proxy.com/https://github.com", false},
+		{"https://gh-proxy.com//https://api.github.com", "https://gh-proxy.com//https://api.github.com", false},
 		{"ftp://mirror.example.com", "", true},        // 非 http(s)
 		{"mirror.example.com", "", true},              // 缺 scheme
 		{"https://", "", true},                        // 缺 host

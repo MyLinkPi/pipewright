@@ -111,7 +111,7 @@ curl -fsSL https://raw.githubusercontent.com/<owner>/pipewright/master/install.s
   PIPEWRIGHT_RELEASE_REPO=<owner>/pipewright sh
 ```
 
-升级即**重跑同一命令**:自动进入升级模式,替换二进制并重启服务。GitHub 不可达时可用 `PIPEWRIGHT_RELEASE_MIRROR` 指向 GitHub 路径兼容镜像;`PIPEWRIGHT_NO_DOWNLOAD=1` 恢复「本地无产物即报错」的旧行为。
+升级即**重跑同一命令**:自动进入升级模式,替换二进制并重启服务。GitHub 不可达时可用 `PIPEWRIGHT_RELEASE_MIRROR` 指向镜像(GitHub 路径兼容反代,或 `https://gh-proxy.com/https://github.com` 这类前缀式代理);`PIPEWRIGHT_NO_DOWNLOAD=1` 恢复「本地无产物即报错」的旧行为。
 
 > Windows 用户:从 [Releases](https://github.com/huangchengsir/pipewright/releases) 下载 `pipewright_<版本>_windows_<架构>.zip` 解压后直接运行 `pipewright.exe`(无 systemd,install.sh 不适用)。
 
@@ -182,7 +182,7 @@ sh install.sh       # 亦可把构建产物装到 /usr/local/bin(见「本地编
 - **源码部署**(git clone → `make build` → `sh install.sh`):检查更新改为比对 git 上游(`git fetch` 后比**运行中构建所基于的提交**,未注入构建信息时回退工作树 HEAD —— 这样即便代码已 pull 到位而二进制尚未重建/重启,也能正确报出有更新);点「立即更新」后台自动执行 `git pull --ff-only` → `make build` → `install.sh`,页面实时展示步骤与日志,装完自动重启服务(裸跑则自重启)。仓库根由 install.sh 自动记录(env `PIPEWRIGHT_SOURCE_DIR` / 安装目录 `.pipewright-source` 标记),也可手动指定。git 拉取自动以仓库属主身份执行(root 服务 + 普通用户克隆的场景会复用其 `~/.ssh` 密钥与主机指纹),失败时页面给出针对性修复指引。
   想改走**二进制一键更新**(如小内存机器跑不动 `make build`):重跑①的一键下载命令即可 —— install.sh 会清除源码部署标记,部署形态自动转为二进制部署。
 
-升级源不强制依赖 GitHub:内网或 GitHub 不可达的环境,可在 **设置 → 系统 → 升级源** 里把检查与下载指向自建镜像(须提供 GitHub 兼容路径,如 nginx 反代 `api.github.com` 与 `github.com`),修改即时生效;也可用环境变量 `PIPEWRIGHT_RELEASE_MIRROR` 兜底。
+升级源不强制依赖 GitHub:内网或 GitHub 不可达的环境,可在 **设置 → 系统 → 升级源** 里把检查与下载指向镜像,修改即时生效;也可用环境变量 `PIPEWRIGHT_RELEASE_MIRROR` 兜底。镜像支持两种形态:**GitHub 路径兼容反代**(须按同样路径布局转发,如 nginx 反代 `api.github.com` 与 `github.com`)或**前缀式公共代理** —— 直接填 `https://gh-proxy.com/https://github.com` 这类地址,检查(api.github.com)与下载(github.com)地址会自动派生。
 
 ### 配置(环境变量)
 

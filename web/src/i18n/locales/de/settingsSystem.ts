@@ -50,7 +50,7 @@ export default {
   updateSrcSub: 'Quelle für Update-Prüfung und Download des Upgrade-Pakets. Ohne Mirror wird GitHub Releases verwendet (Prüfung api.github.com, Download github.com); in internen Netzen oder bei nicht erreichbarem GitHub kann ein selbst betriebener Spiegelserver hinterlegt werden. Die Binär-Integrität wird stets per sha256-Prüfsumme gesichert.',
   updateSrcLabel: 'Spiegel-Adresse',
   updateSrcPlaceholder: 'https://mirror.example.com',
-  updateSrcHint: 'Muss GitHub-kompatible Pfade bereitstellen: /repos/<owner>/<repo>/releases/latest sowie /<owner>/<repo>/releases/download/… (z. B. nginx-Reverse-Proxy für api.github.com und github.com). Leer lassen, um diese Einstellung zu löschen und auf die Umgebungsvariable oder die Standardquelle zurückzufallen (siehe „Aktiv“ oben). Änderungen wirken sofort.',
+  updateSrcHint: 'Zwei Mirror-Formen: (1) GitHub-pfadkompatibler Reverse-Proxy — muss /repos/<owner>/<repo>/releases/latest und /<owner>/<repo>/releases/download/… bereitstellen (z. B. nginx vor api.github.com und github.com); (2) Präfix-Proxy — einfach eine Adresse wie https://gh-proxy.com/https://github.com eintragen, Prüf- und Download-URLs werden automatisch abgeleitet. Leer lassen, um diese Einstellung zu löschen und auf die Umgebungsvariable oder die Standardquelle zurückzufallen (siehe „Aktiv“ oben). Änderungen wirken sofort.',
   updateSrcSave: 'Upgrade-Quelle speichern',
   updateSrcSaved: 'Gespeichert',
   updateSrcSaveFailed: 'Speichern fehlgeschlagen, bitte erneut versuchen.',

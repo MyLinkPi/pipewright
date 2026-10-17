@@ -50,7 +50,7 @@ export default {
   updateSrcSub: '업데이트 확인과 업그레이드 패키지 다운로드에 사용할 소스입니다. 미러가 없으면 GitHub Releases를 사용(확인 api.github.com, 다운로드 github.com). GitHub에 접근할 수 없는 환경(내부망 등)에서는 자체 호스팅 미러를 지정할 수 있습니다. 바이너리 무결성은 항상 sha256 체크섬으로 보장됩니다.',
   updateSrcLabel: '미러 URL',
   updateSrcPlaceholder: 'https://mirror.example.com',
-  updateSrcHint: 'GitHub 호환 경로를 제공해야 합니다: /repos/<owner>/<repo>/releases/latest 및 /<owner>/<repo>/releases/download/… (예: api.github.com과 github.com 앞에 nginx 리버스 프록시 배치). 비워 두면 이 설정을 해제하고 환경 변수 또는 기본 소스(위의 «현재 적용» 참조)로 폴백합니다. 변경 즉시 적용됩니다.',
+  updateSrcHint: '두 가지 미러 형태: (1) GitHub 경로 호환 리버스 프록시 — /repos/<owner>/<repo>/releases/latest 및 /<owner>/<repo>/releases/download/… 를 제공해야 합니다(예: api.github.com과 github.com 앞에 nginx 배치); (2) 접두사형 프록시 — https://gh-proxy.com/https://github.com 같은 주소만 입력하면 확인/다운로드 URL이 자동으로 파생됩니다. 비워 두면 이 설정을 해제하고 환경 변수 또는 기본 소스(위의 «현재 적용» 참조)로 폴백합니다. 변경 즉시 적용됩니다.',
   updateSrcSave: '업그레이드 소스 저장',
   updateSrcSaved: '저장됨',
   updateSrcSaveFailed: '저장에 실패했습니다. 다시 시도하세요.',
