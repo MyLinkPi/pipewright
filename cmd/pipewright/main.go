@@ -1068,6 +1068,19 @@ func (g *instanceRollGateway) PruneInstances(ctx context.Context, serviceID stri
 	return err
 }
 
+// ResolveStaticDeploy 把静态发布目标解析适配为 deploy.StaticDeploySpec(deploy_static 节点
+// 的目标/发布目录来源;实现 deploy.StaticDeployResolver 可选扩展)。
+func (g *instanceRollGateway) ResolveStaticDeploy(ctx context.Context, serviceRef string) (deploy.StaticDeploySpec, error) {
+	spec, err := g.sr.ResolveStaticDeploy(ctx, serviceRef)
+	if err != nil {
+		return deploy.StaticDeploySpec{}, err
+	}
+	return deploy.StaticDeploySpec{
+		ServiceID: spec.ServiceID, FQDN: spec.FQDN, Path: spec.Path,
+		ServerIDs: spec.ServerIDs, BaseDir: spec.BaseDir,
+	}, nil
+}
+
 // serverAddrResolver 把 serverID 解析为网关可达地址(target 查 SSH Host;主机名经控制端
 // DNS 解析为 IP —— nginx upstream 静态成员必须可解析,否则 reload 卡死)。注入 servicereg
 // 供集群反代渲染。

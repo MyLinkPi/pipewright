@@ -426,11 +426,14 @@ function setField(key: string, value: string): void {
 // 部署节点专属区块:选基域 + 填服务名 → 幂等注册服务并回填 regServiceId 绑定;
 // 实例由部署按目标机自动注册(容器 = 自动宿主端口 + 扩缩容轮转;非容器 = 摘→升→挂回)。
 
-const DEPLOY_REG_TYPES = new Set(['deploy_container', 'deploy_ssh', 'deploy_frontend'])
+const DEPLOY_REG_TYPES = new Set(['deploy_container', 'deploy_ssh', 'deploy_frontend', 'deploy_static'])
 
 const isDeployRegType = computed(() => DEPLOY_REG_TYPES.has(localType.value))
 
 const regContainerMode = computed(() => localType.value === 'deploy_container')
+
+// 网关静态发布节点:注册绑定固定为静态托管形态(无端口,可选子路径,内容由本节点发布)。
+const regStaticMode = computed(() => localType.value === 'deploy_static')
 
 /** 服务注册区写键(空值 = 删除键,如解绑)。 */
 function setRegField(key: string, value: string): void {
@@ -873,6 +876,7 @@ async function confirmSave(): Promise<void> {
       <div class="drawer-section-label">{{ t('pipelineJob.regSectionLabel') }}</div>
       <ServiceRegBinding
         :container-mode="regContainerMode"
+        :static-mode="regStaticMode"
         :config="typedConfig"
         @set="setRegField"
       />

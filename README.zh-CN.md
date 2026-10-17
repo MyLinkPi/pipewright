@@ -61,7 +61,7 @@
 - **📝 流水线即代码** —— 把流水线结构写进 `.pipewright.yml`、按分支各自演进,画布配置始终作为兜底回退([详见下文](#流水线即代码gitops))。
 - **🏗 隔离构建与产物** —— 版本钉死的容器内隔离构建(docker/nerdctl/podman)· 代码管理区:本地 bare 镜像 + 增量 fetch,秒级出工作区 · 构建依赖缓存(按分支 + lockfile hash 寻址)· 内容寻址制品库,jar/dist 存**真字节**供部署(而非占位 reference)· 镜像构建 + 推送私有仓库 + 镜像 GC · **内置镜像仓库**:控制机自管 registry:2 双服务(制品推送 + 基础镜像 pull-through 缓存),各机 daemon.json 一键下发;可选挂载「证书管理」的公共可信证书以 **HTTPS** 服务(客户端机器零配置,明文模式自动回退 insecure-registries)· 多节点构建机池:给服务器打标签即成构建机,项目/阶段用标签选择器调度(优先级 → 流水线亲和 → 负载,全忙自动排队,每机默认并发 1;构建经 SSH 下沉到远程,token 只留控制机;控制机自身无容器 CLI 也可纯靠远程机池构建)· JUnit + Cobertura 测试报告喂质量门禁,不过则阶段失败、阻断下游部署 · 实时终端日志(SSE)+ 历史回放 · 只读代码浏览(Monaco)。
 - **🚀 多服务器部署** —— 经 SSH 免 Agent 部署 · 健康门控 · 零停机切换 + 失败回滚 · 多机并行扇出 + 部分失败可见 · 命令型部署(无产物,直接重启服务)。
-- **🌐 服务注册网关(集群反代)+ 托管证书** —— 在你选定的(一台或多台)网关主机上,经 SSH 各编排一个配置完全一致的 nginx 容器(渲染 nginx.conf → `nginx -t` → 优雅 reload):注册基域后「服务名 + 基域」即成为子域名(`abc.efg.com`)。**集群模型**:实例 = (服务器, 宿主端口),各网关主机渲染同一份配置、按 `服务器地址:端口` 反代**集群所有实例** —— 本机没有部署的服务同样代理;容器实例由部署自动注册,宿主端口**范围探测自动分配**(默认 20000-30000,防火墙放行该段即可);部署节点内选基域 + 填服务名**一键生成**注册绑定,实例与端口随部署自动维护、自动清理失联实例。容器升级走「扩容起新→预热健康→原子切换→排空→缩容停旧」零停机轮转;非容器服务填端口注册,升级走「摘除→升级→健康→挂回」,集群可用性由其余机器保证。健康检查只需填探测路径,端口自动推导。证书为一等公民:自托管 acme.sh(二进制内嵌、控制机本地执行)经 **DNS-01**(Cloudflare / DNSPod / 阿里云 DNS,含通配符)签发并自动续期,支持导入既有证书,PEM 密文存保险库,签发后自动下发到匹配基域 —— 证书管理页全程可见。
+- **🌐 服务注册网关(集群反代)+ 托管证书** —— 在你选定的(一台或多台)网关主机上,经 SSH 各编排一个配置完全一致的 nginx 容器(渲染 nginx.conf → `nginx -t` → 优雅 reload):注册基域后「服务名 + 基域」即成为子域名(`abc.efg.com`),服务还可注册**子路径**(`/api` → `abc.efg.com/api`;同域名不同路径的服务自动合并共存,路径冲突保存时报 409;反代默认原样透传完整路径,可按服务选择剥离前缀)。**集群模型**:实例 = (服务器, 宿主端口),各网关主机渲染同一份配置、按 `服务器地址:端口` 反代**集群所有实例** —— 本机没有部署的服务同样代理;容器实例由部署自动注册,宿主端口**范围探测自动分配**(默认 20000-30000,防火墙放行该段即可);部署节点内选基域 + 填服务名**一键生成**注册绑定,实例与端口随部署自动维护、自动清理失联实例。容器升级走「扩容起新→预热健康→原子切换→排空→缩容停旧」零停机轮转;非容器服务填端口注册,升级走「摘除→升级→健康→挂回」,集群可用性由其余机器保证。健康检查只需填探测路径,端口自动推导。**前后端分离一体化发布**:前端服务可注册为**静态托管**形态(无端口/实例),配合 `deploy_static`「网关静态发布」节点 —— 无需选机器,dist 产物自动发布到全部网关主机(发布目录 + current 软链原子切换 + SPA 回退,失败自动回滚),由网关 nginx 直接托管,与 `/api` 后端服务共用同一子域名。证书为一等公民:自托管 acme.sh(二进制内嵌、控制机本地执行)经 **DNS-01**(Cloudflare / DNSPod / 阿里云 DNS,含通配符)签发并自动续期,支持导入既有证书,PEM 密文存保险库,签发后自动下发到匹配基域 —— 证书管理页全程可见。
 - **🔒 平台 HTTPS(宿主 nginx)** —— 当运行 Pipewright 的主机装有 nginx 时,平台可把自己的 Web 页面发布为 **HTTPS**:选访问域名 + 复用「证书管理」的证书,平台在自身所在主机自动下发证书并写入 `/etc/nginx/conf.d` vhost(443 ssl 反代平台端口 + 80→443 跳转),`nginx -t` 校验(失败自动回滚)、`nginx -T` 验证 include 生效后热加载;需要 root 或免密 sudo,与本机既有 nginx 配置共存。证书续期后自动重新下发;被平台 HTTPS 占用的证书禁止误删。
 - **📣 通知** —— 企业微信 / 钉钉 / 飞书 / Slack / 邮件 / 自定义 webhook · 事件→渠道细粒度路由 · 模板 + 变量自定义 · 飞书富卡片(审批/详情行动按钮 + 发版汇总)· 流水线内通知节点。
 - **🖥 服务器与容器运维** —— 多机状态总览(CPU/内存/磁盘)+ 指标时序趋势图 · 容器/镜像/Stacks/卷/网络管理 · 容器创建/inspect/prune · 实时 + 历史服务日志 · 实时 stats · 容器交互终端 · Web 运维终端(主机 shell,完整复制粘贴/信号支持)· 可配置异常检测:定时自动跑、冷却去重、命中走通知渠道。
@@ -92,13 +92,32 @@
 
 ## 安装 / 部署
 
-三种形态任选,平台本体是单静态二进制、**运行时零依赖**(无需 Go/Node)。
+四种形态任选,平台本体是单静态二进制、**运行时零依赖**(无需 Go/Node)。
 
 > **Docker 前置**:平台本体不依赖 Docker,但**「隔离构建 / 容器部署」需要 Docker**(没有则降级到桩 runner、不做真实构建)。控制台 / SSH 部署 / 通知不需要。一键脚本会**检测 Docker** 并在缺失时提示;Linux 下可 `INSTALL_DOCKER=1` 自动安装(经官方 get.docker.com),macOS 请装 Docker Desktop。
 
-### ① 本地编译安装(Linux / macOS)
+### ① 一键下载安装(Linux / macOS,推荐)
 
-`install.sh` 安装**本地 `make build` 产出的二进制**到 `/usr/local/bin`(不联网下载,含 Docker 检测),需先装 Go 与 Node:
+本地无构建产物时,`install.sh` 自动从 GitHub Release 下载当前平台二进制(sha256 校验)并安装 —— 无需 Go/Node,小内存机器也无需本地编译:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/huangchengsir/pipewright/master/install.sh | sh
+
+# 直接装为 systemd 服务(开机自启 + 一键自更新;Linux,需 root):
+curl -fsSL https://raw.githubusercontent.com/huangchengsir/pipewright/master/install.sh | SETUP_SERVICE=1 sh
+
+# 从自己的 fork 发版仓库下载(fork 推 v* tag,GitHub Actions 自动出包),或用 PIPEWRIGHT_VERSION=v1.2.3 钉版本:
+curl -fsSL https://raw.githubusercontent.com/<owner>/pipewright/master/install.sh | \
+  PIPEWRIGHT_RELEASE_REPO=<owner>/pipewright sh
+```
+
+升级即**重跑同一命令**:自动进入升级模式,替换二进制并重启服务。GitHub 不可达时可用 `PIPEWRIGHT_RELEASE_MIRROR` 指向 GitHub 路径兼容镜像;`PIPEWRIGHT_NO_DOWNLOAD=1` 恢复「本地无产物即报错」的旧行为。
+
+> Windows 用户:从 [Releases](https://github.com/huangchengsir/pipewright/releases) 下载 `pipewright_<版本>_windows_<架构>.zip` 解压后直接运行 `pipewright.exe`(无 systemd,install.sh 不适用)。
+
+### ② 本地编译安装(Linux / macOS)
+
+`install.sh` 安装**本地 `make build` 产出的二进制**到 `/usr/local/bin`(含 Docker 检测;仓库根无产物时自动转入①的下载安装),需先装 Go 与 Node:
 
 ```bash
 git clone https://github.com/huangchengsir/pipewright && cd pipewright
@@ -126,9 +145,9 @@ SETUP_SERVICE=1 PIPEWRIGHT_DB_DRIVER=mysql \
   sh install.sh
 ```
 
-> Windows 用户:在 Git Bash 里 `make build` 后直接运行 `./pipewright.exe`(无 systemd,install.sh 不适用)。
+> Windows 用户:在 Git Bash 里 `make build` 后直接运行 `./pipewright.exe`,或从 [Releases](https://github.com/huangchengsir/pipewright/releases) 下载 zip 解压运行(无 systemd,install.sh 不适用)。
 
-### ② docker compose(推荐自托管)
+### ③ docker compose(推荐自托管)
 
 ```bash
 curl -fsSLO https://raw.githubusercontent.com/huangchengsir/pipewright/master/docker-compose.yml
@@ -137,7 +156,7 @@ cp .env.example .env       # 生成 MASTER_KEY:openssl rand -base64 32;管理员
 docker compose up -d       # 数据持久化在具名卷 pipewright-data;切 MySQL 见 .env 注释
 ```
 
-### ③ docker run(最快试用)
+### ④ docker run(最快试用)
 
 ```bash
 docker run -d -p 8080:8080 -v pipewright-data:/data \
@@ -161,6 +180,7 @@ sh install.sh       # 亦可把构建产物装到 /usr/local/bin(见「本地编
 - **二进制部署**:点「立即更新」即自动下载新版 + 校验和核验 + 替换 + 重启(需对二进制文件有写权限;装在 `$HOME/.local/bin` 免 sudo,或用 `SETUP_SERVICE=1` 装的 root systemd 服务亦满足)。
 - **Docker 部署**:容器不替换自身镜像,按提示在宿主执行 `docker compose pull && docker compose up -d`(数据卷保留)。
 - **源码部署**(git clone → `make build` → `sh install.sh`):检查更新改为比对 git 上游(`git fetch` 后比**运行中构建所基于的提交**,未注入构建信息时回退工作树 HEAD —— 这样即便代码已 pull 到位而二进制尚未重建/重启,也能正确报出有更新);点「立即更新」后台自动执行 `git pull --ff-only` → `make build` → `install.sh`,页面实时展示步骤与日志,装完自动重启服务(裸跑则自重启)。仓库根由 install.sh 自动记录(env `PIPEWRIGHT_SOURCE_DIR` / 安装目录 `.pipewright-source` 标记),也可手动指定。git 拉取自动以仓库属主身份执行(root 服务 + 普通用户克隆的场景会复用其 `~/.ssh` 密钥与主机指纹),失败时页面给出针对性修复指引。
+  想改走**二进制一键更新**(如小内存机器跑不动 `make build`):重跑①的一键下载命令即可 —— install.sh 会清除源码部署标记,部署形态自动转为二进制部署。
 
 升级源不强制依赖 GitHub:内网或 GitHub 不可达的环境,可在 **设置 → 系统 → 升级源** 里把检查与下载指向自建镜像(须提供 GitHub 兼容路径,如 nginx 反代 `api.github.com` 与 `github.com`),修改即时生效;也可用环境变量 `PIPEWRIGHT_RELEASE_MIRROR` 兜底。
 

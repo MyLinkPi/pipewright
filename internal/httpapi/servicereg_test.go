@@ -161,6 +161,76 @@ func TestServiceRegDomainAndServiceFlow(t *testing.T) {
 	resp.Body.Close()
 }
 
+// TestServiceRegPathAndStatic:子路径 + 静态托管 —— ensure 放行静态无端口、同 FQDN 不同
+// path 共存、相同 path 409 path_taken、列表回显 path/stripPathPrefix。
+func TestServiceRegPathAndStatic(t *testing.T) {
+	srv, _, ft := setupServiceRegServer(t)
+	client, csrf := loginSR(t, srv.URL)
+
+	resp := doJSON(t, client, http.MethodPost, srv.URL+"/api/servicereg/domains", csrf, `{"baseDomain":"efg.com"}`)
+	var dom struct {
+		ID string `json:"id"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&dom)
+	resp.Body.Close()
+
+	// ensure 静态服务(无端口):deploy_static 节点「一键生成」的请求形态。
+	resp = doJSON(t, client, http.MethodPost, srv.URL+"/api/servicereg/services/ensure", csrf,
+		`{"domainId":"`+dom.ID+`","name":"app","protocol":"http","upstreamKind":"static"}`)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("ensure 静态服务:%d", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	// 同 FQDN /api 反代(剥离前缀)共存。
+	resp = doJSON(t, client, http.MethodPost, srv.URL+"/api/servicereg/services", csrf,
+		`{"domainId":"`+dom.ID+`","name":"app","path":"/api","protocol":"http","upstreamKind":"address","upstream":"10.0.0.9","upstreamPort":9000,"stripPathPrefix":true}`)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("同 FQDN /api 服务应共存:%d", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	// 相同 path → 409 path_taken。
+	resp = doJSON(t, client, http.MethodPost, srv.URL+"/api/servicereg/services", csrf,
+		`{"domainId":"`+dom.ID+`","name":"app","protocol":"http","upstreamKind":"static"}`)
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("根路径重复应 409:%d", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if !strings.Contains(string(body), "path_taken") {
+		t.Fatalf("错误码应为 path_taken:%s", body)
+	}
+
+	// 列表回显 path / stripPathPrefix / kind。
+	resp = doJSON(t, client, http.MethodGet, srv.URL+"/api/servicereg/services", "", "")
+	var list struct {
+		Items []struct {
+			FQDN            string `json:"fqdn"`
+			Path            string `json:"path"`
+			UpstreamKind    string `json:"upstreamKind"`
+			StripPathPrefix bool   `json:"stripPathPrefix"`
+		} `json:"items"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&list)
+	resp.Body.Close()
+	if len(list.Items) != 2 {
+		t.Fatalf("应 2 个服务:%+v", list.Items)
+	}
+	for _, it := range list.Items {
+		if it.Path == "/api" {
+			if !it.StripPathPrefix || it.UpstreamKind != "address" {
+				t.Fatalf("/api 服务回显不符:%+v", it)
+			}
+		} else if it.Path != "" || it.UpstreamKind != "static" {
+			t.Fatalf("静态服务回显不符:%+v", it)
+		}
+	}
+	if len(ft.execCalls) != 0 {
+		t.Fatalf("未配网关不应编排:%v", ft.execCalls)
+	}
+}
+
 // TestServiceRegCertPEMNeverLeaked:基域列表响应绝不含 PEM 内容(证书经进程内 UploadCert 种入,
 // 模拟证书管理页同步后的形态)。
 func TestServiceRegCertPEMNeverLeaked(t *testing.T) {

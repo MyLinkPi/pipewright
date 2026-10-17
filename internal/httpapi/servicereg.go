@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -42,6 +43,7 @@ type serviceRegSettingsDTO struct {
 	Network         string            `json:"network"`
 	ContainerName   string            `json:"containerName"`
 	VolumeName      string            `json:"volumeName"`
+	StaticRoot      string            `json:"staticRoot"`
 	LastApplyAt     string            `json:"lastApplyAt"`
 	LastApplyError  string            `json:"lastApplyError"`
 	LastApplyErrors map[string]string `json:"lastApplyErrors"`
@@ -60,7 +62,7 @@ func toServiceRegSettingsDTO(st *servicereg.Settings) serviceRegSettingsDTO {
 		ServerID: st.PrimaryServerID(), ServerIDs: ids,
 		HTTPPort: st.HTTPPort, HTTPSPort: st.HTTPSPort,
 		Image: st.Image, Network: st.Network, ContainerName: st.ContainerName,
-		VolumeName:  st.VolumeName,
+		VolumeName:  st.VolumeName, StaticRoot: st.StaticRoot,
 		LastApplyAt: last, LastApplyError: st.LastApplyError, LastApplyErrors: st.LastApplyErrors,
 	}
 }
@@ -97,26 +99,30 @@ type serviceRegServiceDTO struct {
 	BaseDomain    string `json:"baseDomain"`
 	Name          string `json:"name"`
 	FQDN          string `json:"fqdn"`
+	Path          string `json:"path"`
 	Protocol      string `json:"protocol"`
 	UpstreamKind  string `json:"upstreamKind"`
 	Upstream      string `json:"upstream"`
 	UpstreamPort  int    `json:"upstreamPort"`
 	TCPListenPort int    `json:"tcpListenPort"`
-	Enabled       bool   `json:"enabled"`
-	InstanceCount int    `json:"instanceCount"`
-	CreatedAt     string `json:"createdAt"`
-	UpdatedAt     string `json:"updatedAt"`
+	// StripPathPrefix 反代剥离 location 前缀(默认 false = 原样透传;仅 http 反代有效)。
+	StripPathPrefix bool `json:"stripPathPrefix"`
+	Enabled         bool `json:"enabled"`
+	InstanceCount   int  `json:"instanceCount"`
+	CreatedAt       string `json:"createdAt"`
+	UpdatedAt       string `json:"updatedAt"`
 }
 
 func toServiceRegServiceDTO(s servicereg.ServiceWithDomain) serviceRegServiceDTO {
 	return serviceRegServiceDTO{
 		ID: s.ID, DomainID: s.DomainID, BaseDomain: s.BaseDomain, Name: s.Name,
-		FQDN: s.FQDN(s.BaseDomain), Protocol: s.Protocol, UpstreamKind: s.UpstreamKind,
+		FQDN: s.FQDN(s.BaseDomain), Path: s.Path, Protocol: s.Protocol, UpstreamKind: s.UpstreamKind,
 		Upstream: s.Upstream, UpstreamPort: s.UpstreamPort, TCPListenPort: s.TCPListenPort,
-		Enabled:       s.Enabled,
-		InstanceCount: s.InstanceCount,
-		CreatedAt:     s.CreatedAt.UTC().Format(time.RFC3339),
-		UpdatedAt:     s.UpdatedAt.UTC().Format(time.RFC3339),
+		StripPathPrefix: s.StripPathPrefix,
+		Enabled:         s.Enabled,
+		InstanceCount:   s.InstanceCount,
+		CreatedAt:       s.CreatedAt.UTC().Format(time.RFC3339),
+		UpdatedAt:       s.UpdatedAt.UTC().Format(time.RFC3339),
 	}
 }
 
@@ -175,14 +181,20 @@ func writeServiceRegError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusConflict, "base_domain_taken", "该基域已注册")
 	case errors.Is(err, servicereg.ErrServiceTaken):
 		writeError(w, http.StatusConflict, "service_name_taken", "该基域下服务名已被占用")
+	case errors.Is(err, servicereg.ErrPathTaken):
+		writeError(w, http.StatusConflict, "path_taken", "该子域名下此路径已被其它服务占用")
 	case errors.Is(err, servicereg.ErrFQDNTaken):
 		writeError(w, http.StatusConflict, "fqdn_taken", "该子域名已全局被其它服务占用")
+	case errors.Is(err, servicereg.ErrStaticService):
+		writeError(w, http.StatusConflict, "static_service", "静态托管服务不支持实例等上游操作(内容由静态发布部署下发)")
 	case errors.Is(err, servicereg.ErrTCPPortTaken):
 		writeError(w, http.StatusConflict, "tcp_port_taken", "TCP 监听端口与其它服务或 80/443 冲突")
 	case errors.Is(err, servicereg.ErrInvalidBaseDomain):
 		writeError(w, http.StatusBadRequest, "invalid_service_reg", "基域格式非法,请填写小写 FQDN(如 efg.com,不带 www/通配符)")
 	case errors.Is(err, servicereg.ErrInvalidServiceName):
 		writeError(w, http.StatusBadRequest, "invalid_service_reg", "服务名非法:小写字母/数字(可含 -,不以 - 开头),将作为子域名前缀")
+	case errors.Is(err, servicereg.ErrInvalidPath):
+		writeError(w, http.StatusBadRequest, "invalid_service_reg", "子路径非法:须以 / 开头,仅含字母数字与 . _ ~ - /(如 /api;留空表示根路径;TCP 服务不支持子路径)")
 	case errors.Is(err, servicereg.ErrInvalidProtocol):
 		writeError(w, http.StatusBadRequest, "invalid_service_reg", "协议只支持 http 或 tcp")
 	case errors.Is(err, servicereg.ErrInvalidUpstream):
@@ -254,6 +266,7 @@ func makeUpdateServiceRegSettingsHandler(svc servicereg.Service, aud audit.Recor
 		Network       *string   `json:"network"`
 		ContainerName *string   `json:"containerName"`
 		VolumeName    *string   `json:"volumeName"`
+		StaticRoot    *string   `json:"staticRoot"`
 	}
 	return func(w http.ResponseWriter, r *http.Request) {
 		if svc == nil {
@@ -269,6 +282,7 @@ func makeUpdateServiceRegSettingsHandler(svc servicereg.Service, aud audit.Recor
 		st, err := svc.UpdateSettings(r.Context(), servicereg.SettingsUpdate{
 			ServerIDs: req.ServerIDs, ServerID: req.ServerID, HTTPPort: req.HTTPPort, HTTPSPort: req.HTTPSPort,
 			Image: req.Image, Network: req.Network, ContainerName: req.ContainerName, VolumeName: req.VolumeName,
+			StaticRoot: req.StaticRoot,
 		})
 		if err != nil {
 			writeServiceRegError(w, err)
@@ -436,11 +450,54 @@ func makeListServiceRegServicesHandler(svc servicereg.Service) http.HandlerFunc 
 type serviceRegServiceRequest struct {
 	DomainID      *string `json:"domainId"`
 	Name          *string `json:"name"`
+	Path          *string `json:"path"`
 	Protocol      *string `json:"protocol"`
 	UpstreamKind  *string `json:"upstreamKind"`
 	Upstream      *string `json:"upstream"`
 	UpstreamPort  *int    `json:"upstreamPort"`
 	TCPListenPort *int    `json:"tcpListenPort"`
+	StripPathPrefix *bool `json:"stripPathPrefix"`
+}
+
+// serviceRegUpstreamKind 归一化请求的上游形态(缺省 = container)。
+func (req serviceRegServiceRequest) serviceRegUpstreamKind() string {
+	if req.UpstreamKind == nil || strings.TrimSpace(*req.UpstreamKind) == "" {
+		return servicereg.UpstreamKindContainer
+	}
+	return strings.TrimSpace(*req.UpstreamKind)
+}
+
+// toCreateServiceInput 组装领域入参;端口必填校验对 static 放行(静态托管无端口)。
+func (req serviceRegServiceRequest) toCreateServiceInput() (servicereg.CreateServiceInput, bool) {
+	kind := req.serviceRegUpstreamKind()
+	if req.DomainID == nil || req.Name == nil {
+		return servicereg.CreateServiceInput{}, false
+	}
+	port := 0
+	if req.UpstreamPort != nil {
+		port = *req.UpstreamPort
+	} else if kind != servicereg.UpstreamKindStatic {
+		return servicereg.CreateServiceInput{}, false
+	}
+	in := servicereg.CreateServiceInput{
+		DomainID: *req.DomainID, Name: *req.Name, UpstreamKind: kind, UpstreamPort: port,
+	}
+	if req.Path != nil {
+		in.Path = *req.Path
+	}
+	if req.Upstream != nil {
+		in.Upstream = *req.Upstream
+	}
+	if req.Protocol != nil {
+		in.Protocol = *req.Protocol
+	}
+	if req.TCPListenPort != nil {
+		in.TCPListenPort = *req.TCPListenPort
+	}
+	if req.StripPathPrefix != nil {
+		in.StripPathPrefix = *req.StripPathPrefix
+	}
+	return in, true
 }
 
 // makeCreateServiceRegServiceHandler 返回 POST /api/servicereg/services。
@@ -456,24 +513,10 @@ func makeCreateServiceRegServiceHandler(svc servicereg.Service, aud audit.Record
 			writeError(w, http.StatusBadRequest, "bad_request", "请求体格式错误")
 			return
 		}
-		if req.DomainID == nil || req.Name == nil || req.UpstreamPort == nil {
-			writeError(w, http.StatusBadRequest, "invalid_service_reg", "domainId / name / upstreamPort 必填")
+		in, ok := req.toCreateServiceInput()
+		if !ok {
+			writeError(w, http.StatusBadRequest, "invalid_service_reg", "domainId / name / upstreamPort 必填(静态托管服务可省略端口)")
 			return
-		}
-		in := servicereg.CreateServiceInput{
-			DomainID: *req.DomainID, Name: *req.Name, UpstreamPort: *req.UpstreamPort,
-		}
-		if req.Upstream != nil {
-			in.Upstream = *req.Upstream
-		}
-		if req.Protocol != nil {
-			in.Protocol = *req.Protocol
-		}
-		if req.UpstreamKind != nil {
-			in.UpstreamKind = *req.UpstreamKind
-		}
-		if req.TCPListenPort != nil {
-			in.TCPListenPort = *req.TCPListenPort
 		}
 		created, err := svc.CreateService(r.Context(), in)
 		if err != nil {
@@ -482,7 +525,7 @@ func makeCreateServiceRegServiceHandler(svc servicereg.Service, aud audit.Record
 		}
 		recordAudit(r.Context(), aud, audit.Entry{
 			Actor: auditActor, Action: auditActionSRServiceCreate, TargetType: auditTargetServiceReg,
-			TargetID: created.ID, Detail: map[string]any{"name": created.Name, "protocol": created.Protocol}, IP: clientIP(r),
+			TargetID: created.ID, Detail: map[string]any{"name": created.Name, "protocol": created.Protocol, "path": created.Path}, IP: clientIP(r),
 		})
 		writeJSON(w, http.StatusCreated, map[string]any{
 			"id": created.ID, "name": created.Name, "enabled": created.Enabled,
@@ -491,8 +534,8 @@ func makeCreateServiceRegServiceHandler(svc servicereg.Service, aud audit.Record
 }
 
 // makeEnsureServiceRegServiceHandler 返回 POST /api/servicereg/services/ensure
-// (部署节点「一键生成」):幂等注册/刷新服务 —— 按(基域, 服务名)定位,存在即刷新上游默认,
-// 不存在即创建;不自动建实例(实例由部署按目标机自动注册)。返回服务 + FQDN 供表单回显。
+// (部署节点「一键生成」):幂等注册/刷新服务 —— 按(基域, 服务名, path)定位,存在即刷新上游
+// 默认,不存在即创建;不自动建实例(实例由部署按目标机自动注册;static 无实例)。返回服务供表单回显。
 func makeEnsureServiceRegServiceHandler(svc servicereg.Service, aud audit.Recorder) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if svc == nil {
@@ -505,21 +548,10 @@ func makeEnsureServiceRegServiceHandler(svc servicereg.Service, aud audit.Record
 			writeError(w, http.StatusBadRequest, "bad_request", "请求体格式错误")
 			return
 		}
-		if req.DomainID == nil || req.Name == nil || req.UpstreamPort == nil {
-			writeError(w, http.StatusBadRequest, "invalid_service_reg", "domainId / name / upstreamPort 必填")
+		in, ok := req.toCreateServiceInput()
+		if !ok {
+			writeError(w, http.StatusBadRequest, "invalid_service_reg", "domainId / name / upstreamPort 必填(静态托管服务可省略端口)")
 			return
-		}
-		in := servicereg.CreateServiceInput{
-			DomainID: *req.DomainID, Name: *req.Name, UpstreamPort: *req.UpstreamPort,
-		}
-		if req.Upstream != nil {
-			in.Upstream = *req.Upstream
-		}
-		if req.Protocol != nil {
-			in.Protocol = *req.Protocol
-		}
-		if req.UpstreamKind != nil {
-			in.UpstreamKind = *req.UpstreamKind
 		}
 		ensured, err := svc.EnsureService(r.Context(), in)
 		if err != nil {
@@ -553,6 +585,9 @@ func makeUpdateServiceRegServiceHandler(svc servicereg.Service, aud audit.Record
 		if req.Name != nil {
 			in.Name = req.Name
 		}
+		if req.Path != nil {
+			in.Path = req.Path
+		}
 		if req.Protocol != nil {
 			in.Protocol = req.Protocol
 		}
@@ -567,6 +602,9 @@ func makeUpdateServiceRegServiceHandler(svc servicereg.Service, aud audit.Record
 		}
 		if req.TCPListenPort != nil {
 			in.TCPListenPort = req.TCPListenPort
+		}
+		if req.StripPathPrefix != nil {
+			in.StripPathPrefix = req.StripPathPrefix
 		}
 		id := chi.URLParam(r, "id")
 		updated, err := svc.UpdateService(r.Context(), id, in)

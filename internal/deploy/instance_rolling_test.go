@@ -37,6 +37,9 @@ type fakeGateway struct {
 	ensureDetachedErr error    // EnsureInstanceDetached 注入错误
 	ensureDetachedID  string   // 非空时 EnsureInstanceDetached 返回该 InstanceID(模拟命中存量行)
 	ensuredRefs       []string // EnsureInstanceDetached(serviceID/server/container)
+
+	// static 非空时 ResolveStaticDeploy 返回该静态发布目标(nil → 模拟非静态/未装配)。
+	static *StaticDeploySpec
 }
 
 func (g *fakeGateway) ResolveInstances(_ context.Context, _, serviceRef, container string) ([]InstanceRef, error) {
@@ -96,6 +99,16 @@ func (g *fakeGateway) PruneInstances(_ context.Context, serviceID string, _ []st
 	g.pruned = append(g.pruned, serviceID)
 	g.mu.Unlock()
 	return nil
+}
+
+// ResolveStaticDeploy 实现 StaticDeployResolver 可选扩展(静态发布目标解析)。
+func (g *fakeGateway) ResolveStaticDeploy(_ context.Context, _ string) (StaticDeploySpec, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.static == nil {
+		return StaticDeploySpec{}, ErrStaticGatewayUnavailable
+	}
+	return *g.static, nil
 }
 
 func (g *fakeGateway) swapCount() int {

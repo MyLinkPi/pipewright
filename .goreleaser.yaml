@@ -1,5 +1,8 @@
 # GoReleaser 发版配置:推 v* tag → 跨平台静态二进制 + 校验和 + changelog → GitHub Release;
 # 同时构建 linux amd64/arm64 镜像并合并为多架构清单推 ghcr.io。
+# 仓库自适应:Release 目标由 git remote 推断(tag 推到哪个仓库就发到哪);镜像命名空间与
+# 升级渠道经 env 注入 —— CI(release.yml)始终导出 IMAGE_NAMESPACE/RELEASE_REPO,本地干跑
+# 需先 export(如 RELEASE_REPO=huangchengsir/pipewright IMAGE_NAMESPACE=huangchengsir)。
 # 本地干跑(含真建 docker,需本机 docker daemon):goreleaser release --snapshot --clean --skip=publish
 # 仅二进制/不建镜像:再加 --skip=docker;校验配置:goreleaser check
 version: 2
@@ -31,6 +34,8 @@ builds:
       - -X github.com/huangchengsir/pipewright/internal/version.Version={{ .Version }}
       - -X github.com/huangchengsir/pipewright/internal/version.Commit={{ .ShortCommit }}
       - -X github.com/huangchengsir/pipewright/internal/version.Date={{ .CommitDate }}
+      # 默认升级渠道 = 构建仓库:产物自报「从哪查更新」,fork 发版自洽(未注入时后端回落硬编码)。
+      - -X github.com/huangchengsir/pipewright/internal/version.DefaultRepo={{ .Env.RELEASE_REPO }}
 
 archives:
   - id: default
@@ -75,7 +80,8 @@ changelog:
 
 # 每架构单独构建单平台镜像(二进制在 context 根名为 pipewright,与 Dockerfile.goreleaser 匹配),
 # 再由 docker_manifests 合并为多架构清单。注:dockers_v2 一次构建多平台时二进制不落 context 根,
-# COPY 会失败,故用经典 dockers(弃用告警仅提示,功能稳定)。
+# COPY 会失败,故用经典 dockers(弃用告警仅提示,功能稳定)。镜像命名空间经 env 注入(tag 推到
+# 自己的仓库即推自己账号下的 ghcr)。
 dockers:
   - id: amd64
     goos: linux
@@ -83,13 +89,13 @@ dockers:
     dockerfile: Dockerfile.goreleaser
     use: buildx
     image_templates:
-      - "ghcr.io/huangchengsir/pipewright:{{ .Version }}-amd64"
+      - "ghcr.io/{{ .Env.IMAGE_NAMESPACE }}/pipewright:{{ .Version }}-amd64"
     build_flag_templates:
       - "--platform=linux/amd64"
       - "--label=org.opencontainers.image.title={{ .ProjectName }}"
       - "--label=org.opencontainers.image.version={{ .Version }}"
       - "--label=org.opencontainers.image.revision={{ .FullCommit }}"
-      - "--label=org.opencontainers.image.source=https://github.com/huangchengsir/pipewright"
+      - "--label=org.opencontainers.image.source=https://github.com/{{ .Env.RELEASE_REPO }}"
       - "--label=org.opencontainers.image.licenses=MIT"
   - id: arm64
     goos: linux
@@ -97,31 +103,29 @@ dockers:
     dockerfile: Dockerfile.goreleaser
     use: buildx
     image_templates:
-      - "ghcr.io/huangchengsir/pipewright:{{ .Version }}-arm64"
+      - "ghcr.io/{{ .Env.IMAGE_NAMESPACE }}/pipewright:{{ .Version }}-arm64"
     build_flag_templates:
       - "--platform=linux/arm64"
       - "--label=org.opencontainers.image.title={{ .ProjectName }}"
       - "--label=org.opencontainers.image.version={{ .Version }}"
       - "--label=org.opencontainers.image.revision={{ .FullCommit }}"
-      - "--label=org.opencontainers.image.source=https://github.com/huangchengsir/pipewright"
+      - "--label=org.opencontainers.image.source=https://github.com/{{ .Env.RELEASE_REPO }}"
       - "--label=org.opencontainers.image.licenses=MIT"
 
 docker_manifests:
-  - name_template: "ghcr.io/huangchengsir/pipewright:{{ .Version }}"
+  - name_template: "ghcr.io/{{ .Env.IMAGE_NAMESPACE }}/pipewright:{{ .Version }}"
     image_templates:
-      - "ghcr.io/huangchengsir/pipewright:{{ .Version }}-amd64"
-      - "ghcr.io/huangchengsir/pipewright:{{ .Version }}-arm64"
+      - "ghcr.io/{{ .Env.IMAGE_NAMESPACE }}/pipewright:{{ .Version }}-amd64"
+      - "ghcr.io/{{ .Env.IMAGE_NAMESPACE }}/pipewright:{{ .Version }}-arm64"
   # latest 仅正式版推送(预发布 tag 自动跳过)。
-  - name_template: "ghcr.io/huangchengsir/pipewright:latest"
+  - name_template: "ghcr.io/{{ .Env.IMAGE_NAMESPACE }}/pipewright:latest"
     skip_push: auto
     image_templates:
-      - "ghcr.io/huangchengsir/pipewright:{{ .Version }}-amd64"
-      - "ghcr.io/huangchengsir/pipewright:{{ .Version }}-arm64"
+      - "ghcr.io/{{ .Env.IMAGE_NAMESPACE }}/pipewright:{{ .Version }}-amd64"
+      - "ghcr.io/{{ .Env.IMAGE_NAMESPACE }}/pipewright:{{ .Version }}-arm64"
 
+# Release 目标不写死 owner/name:由 git remote 推断 —— tag 推到哪个仓库,Release 就发到哪。
 release:
-  github:
-    owner: huangchengsir
-    name: pipewright
   draft: false
   # 含 -rc/-beta 等预发布标识的 tag 自动标记为 prerelease。
   prerelease: auto
@@ -130,14 +134,20 @@ release:
     ---
     ## 安装
 
-    本地编译安装(Linux / macOS,不联网下载二进制):
+    一行命令(Linux / macOS,自动下载本 Release 的平台二进制并安装;如需装为 systemd 服务
+    前置 `SETUP_SERVICE=1 `):
     ```sh
-    git clone https://github.com/huangchengsir/pipewright && cd pipewright
+    curl -fsSL https://raw.githubusercontent.com/{{ .Env.RELEASE_REPO }}/{{ .Tag }}/install.sh | sh
+    ```
+
+    本地编译安装(Linux / macOS):
+    ```sh
+    git clone https://github.com/{{ .Env.RELEASE_REPO }} && cd pipewright
     make build
     sh install.sh
     ```
 
     Docker:
     ```sh
-    docker run -d -p 8080:8080 -v pipewright-data:/data ghcr.io/huangchengsir/pipewright:{{ .Version }}
+    docker run -d -p 8080:8080 -v pipewright-data:/data ghcr.io/{{ .Env.IMAGE_NAMESPACE }}/pipewright:{{ .Version }}
     ```

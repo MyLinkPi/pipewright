@@ -55,6 +55,10 @@ const (
 	UpstreamKindContainer = "container"
 	// UpstreamKindAddress 表示上游为任意地址(Upstream=HOST:IP/FQDN/host.docker.internal)。
 	UpstreamKindAddress = "address"
+	// UpstreamKindStatic 表示网关 nginx 直接托管静态文件(纯前端 dist):Upstream 恒空、
+	// UpstreamPort 恒 0、无实例;内容由「网关静态发布」部署节点落到各网关主机的
+	// <StaticRoot>/<服务ID>/ 目录(bind mount 只读挂进网关容器)。
+	UpstreamKindStatic = "static"
 )
 
 // 领域错误(httpapi 层映射状态码;错误体绝无敏感信息)。
@@ -67,6 +71,12 @@ var (
 	ErrServiceTaken = errors.New("servicereg: service name already in use")
 	// ErrFQDNTaken 表示子域名已全局被其它服务占用(FQDN 唯一,防跨基域撞名)。
 	ErrFQDNTaken = errors.New("servicereg: subdomain already in use")
+	// ErrPathTaken 表示同一 FQDN 下相同 path 已被其它服务占用(同域多服务靠不同 path 共存)。
+	ErrPathTaken = errors.New("servicereg: path already in use")
+	// ErrInvalidPath 表示子路径格式非法(须 / 开头、合法字符集、≤128 字符;tcp 服务不允许 path)。
+	ErrInvalidPath = errors.New("servicereg: invalid service path")
+	// ErrStaticService 表示该操作不适用于静态托管服务(静态服务无实例/上游端口语义)。
+	ErrStaticService = errors.New("servicereg: not supported for static service")
 	// ErrInvalidBaseDomain 表示基域格式非法。
 	ErrInvalidBaseDomain = errors.New("servicereg: invalid base domain")
 	// ErrInvalidServiceName 表示服务名非法(子域名 label)。
@@ -112,6 +122,11 @@ var (
 	dockerNameRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]*$`)
 	// imageRefRe:镜像引用(registry/repo:tag@digest;首字符字母数字防 flag 注入)。
 	imageRefRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/:@-]*$`)
+	// servicePathRe:URL 子路径(/ 开头,字母数字与 . _ ~ - /;归一化后无尾斜杠、无 // ;
+	// "." / ".." 段由 normalizeServicePath 逐段拒绝)。
+	servicePathRe = regexp.MustCompile(`^/[A-Za-z0-9._~/-]+$`)
+	// staticRootRe:静态发布根目录(绝对路径,路径安全字符集,无尾斜杠)。
+	staticRootRe = regexp.MustCompile(`^/[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$`)
 )
 
 // Settings 是网关设置(单例行;已剥离敏感字段——只有 token 哈希存库,哈希也不出本包)。
@@ -127,6 +142,9 @@ type Settings struct {
 	Network        string
 	ContainerName  string
 	VolumeName     string
+	// StaticRoot 是各网关主机上的静态发布根目录(bind mount 只读挂进网关容器的
+	// /etc/pipewright/static;全部网关主机使用同一路径约定)。
+	StaticRoot     string
 	LastApplyAt    time.Time
 	LastApplyError string // 最近一轮聚合错误文案(逐台明细见 LastApplyErrors)
 	// LastApplyErrors 是最近一轮逐台错误(serverID → 文案,仅失败项;nil = 全部成功)。
@@ -170,14 +188,18 @@ type RegisteredService struct {
 	ID            string
 	DomainID      string
 	Name          string // abc;FQDN = Name + "." + BaseDomain
+	Path          string // 子路径('' = 根路径 /);同 FQDN 下多服务靠不同 path 共存
 	Protocol      string // http | tcp
-	UpstreamKind  string // container | address
-	Upstream      string // 容器名 或 HOST(IP/FQDN/host.docker.internal)
-	UpstreamPort  int
-	TCPListenPort int // tcp 协议:网关监听端口;http 协议恒 0
-	Enabled       bool
-	CreatedAt     time.Time
-	UpdatedAt     time.Time
+	UpstreamKind  string // container | address | static
+	Upstream      string // 容器名 或 HOST(IP/FQDN/host.docker.internal);static 恒空
+	UpstreamPort  int    // static 恒 0
+	TCPListenPort int    // tcp 协议:网关监听端口;http 协议恒 0
+	// StripPathPrefix 反代是否剥离 location 前缀再转发(默认 false = 原样透传完整路径);
+	// 仅 http 反代形态有效,static/tcp 恒 false。
+	StripPathPrefix bool
+	Enabled         bool
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
 }
 
 // GatewayStatus 是网关容器探测快照(前端展示 + 部署前知情)。多机:每台一项 Servers;
@@ -218,27 +240,33 @@ type SettingsUpdate struct {
 	Network       *string
 	ContainerName *string
 	VolumeName    *string
+	StaticRoot    *string
 }
 
 // CreateServiceInput 是注册服务的入参。
 type CreateServiceInput struct {
 	DomainID      string
 	Name          string
+	Path          string
 	Protocol      string
 	UpstreamKind  string
 	Upstream      string
 	UpstreamPort  int
 	TCPListenPort int
+	// StripPathPrefix 反代剥离 location 前缀(默认保留前缀原样透传)。
+	StripPathPrefix bool
 }
 
 // UpdateServiceInput 是更新服务的入参(指针字段,nil = 保持不变)。
 type UpdateServiceInput struct {
-	Name          *string
-	Protocol      *string
-	UpstreamKind  *string
-	Upstream      *string
-	UpstreamPort  *int
-	TCPListenPort *int
+	Name            *string
+	Path            *string
+	Protocol        *string
+	UpstreamKind    *string
+	Upstream        *string
+	UpstreamPort    *int
+	TCPListenPort   *int
+	StripPathPrefix *bool
 }
 
 // Service 定义服务注册网关领域对外接口(httpapi 消费)。
@@ -278,8 +306,8 @@ type Service interface {
 	// AddInstance 给 http 服务人工加实例(默认 attached):server 必填;container 空 = 非容器
 	// 实例(hostPort 即进程端口)。触发 apply,失败回滚删除。
 	AddInstance(ctx context.Context, serviceID, serverID, container string, port, hostPort int) (*Instance, error)
-	// EnsureService 幂等注册/刷新服务(部署节点「一键生成」):按(基域, 服务名)定位,存在即
-	// 刷新上游默认,不存在即创建;不自动建实例(实例由部署按目标机自动注册)。
+	// EnsureService 幂等注册/刷新服务(部署节点「一键生成」):按(基域, 服务名, path)定位,
+	// 存在即刷新上游默认,不存在即创建;不自动建实例(实例由部署按目标机自动注册;static 无实例)。
 	EnsureService(ctx context.Context, in CreateServiceInput) (*RegisteredService, error)
 	// EnsureInstance 部署期幂等 upsert 实例(认领遗留行/更新端点/插入),行保留、apply 尽力。
 	EnsureInstance(ctx context.Context, serviceID, serverID, container string, port, hostPort int) (*Instance, error)
@@ -298,6 +326,9 @@ type Service interface {
 	// ResolveDeployInstances 供 deploy 反查(serviceRef=服务 ID 或 container=容器名/服务名 →
 	// **该 serverID 上**的 attached 实例清单;滚动升级只动本机)。
 	ResolveDeployInstances(ctx context.Context, serverID, serviceRef, container string) ([]DeployInstance, error)
+	// ResolveStaticDeploy 供 deploy 反查静态发布目标(serviceRef 须定位到 static 形态服务):
+	// 返回全部网关主机与发布根目录(deploy_static 节点消费)。
+	ResolveStaticDeploy(ctx context.Context, serviceRef string) (*StaticDeploySpec, error)
 
 	// GatewayStatus 探测网关容器状态(容器不存在不算错误)。
 	GatewayStatus(ctx context.Context) (*GatewayStatus, error)
@@ -390,6 +421,12 @@ func (s *service) UpdateSettings(ctx context.Context, in SettingsUpdate) (*Setti
 		next.VolumeName = strings.TrimSpace(*in.VolumeName)
 		if next.VolumeName == "" {
 			next.VolumeName = defaultVolumeName
+		}
+	}
+	if in.StaticRoot != nil {
+		next.StaticRoot = strings.TrimSpace(*in.StaticRoot)
+		if next.StaticRoot == "" {
+			next.StaticRoot = defaultStaticRoot
 		}
 	}
 	if err := validateSettings(next); err != nil {
@@ -536,9 +573,9 @@ func (s *service) CreateService(ctx context.Context, in CreateServiceInput) (*Re
 	return svc, nil
 }
 
-// EnsureService 幂等注册/刷新服务(部署节点「一键生成」):按(基域, 服务名)定位 ——
-// 存在 → 校验一致性后刷新上游默认(kind/Upstream/UpstreamPort);不存在 → 创建。
-// 不自动建实例(部署按目标机 EnsureInstance)。重复点击/多流水线共用同一服务均安全。
+// EnsureService 幂等注册/刷新服务(部署节点「一键生成」):按(基域, 服务名, path)定位 ——
+// 存在 → 校验一致性后刷新上游默认(kind/Upstream/UpstreamPort/StripPathPrefix);不存在 → 创建。
+// 不自动建实例(部署按目标机 EnsureInstance;static 服务无实例)。重复点击/多流水线共用同一服务均安全。
 func (s *service) EnsureService(ctx context.Context, in CreateServiceInput) (*RegisteredService, error) {
 	in.Name = strings.ToLower(strings.TrimSpace(in.Name))
 	if in.Protocol == "" {
@@ -547,21 +584,27 @@ func (s *service) EnsureService(ctx context.Context, in CreateServiceInput) (*Re
 	if in.UpstreamKind == "" {
 		in.UpstreamKind = UpstreamKindContainer
 	}
+	path, perr := normalizeServicePath(in.Path)
+	if perr != nil {
+		return nil, perr
+	}
+	in.Path = path
 	all, err := s.store.listServices(ctx)
 	if err != nil {
 		return nil, err
 	}
 	for _, o := range all {
-		if o.DomainID != in.DomainID || o.Name != in.Name {
+		if o.DomainID != in.DomainID || o.Name != in.Name || o.Path != in.Path {
 			continue
 		}
 		if o.Protocol != in.Protocol {
-			return nil, ErrServiceTaken // 同名服务协议不同:人工决断,不静默改写
+			return nil, ErrServiceTaken // 同名同 path 服务协议不同:人工决断,不静默改写
 		}
 		upd := UpdateServiceInput{
-			UpstreamKind: &in.UpstreamKind,
-			Upstream:     &in.Upstream,
-			UpstreamPort: &in.UpstreamPort,
+			UpstreamKind:    &in.UpstreamKind,
+			Upstream:        &in.Upstream,
+			UpstreamPort:    &in.UpstreamPort,
+			StripPathPrefix: &in.StripPathPrefix,
 		}
 		return s.UpdateService(ctx, o.ID, upd)
 	}
@@ -574,16 +617,21 @@ func (s *service) UpdateService(ctx context.Context, id string, in UpdateService
 		return nil, err
 	}
 	ci := CreateServiceInput{
-		DomainID:      cur.DomainID,
-		Name:          cur.Name,
-		Protocol:      cur.Protocol,
-		UpstreamKind:  cur.UpstreamKind,
-		Upstream:      cur.Upstream,
-		UpstreamPort:  cur.UpstreamPort,
-		TCPListenPort: cur.TCPListenPort,
+		DomainID:        cur.DomainID,
+		Name:            cur.Name,
+		Path:            cur.Path,
+		Protocol:        cur.Protocol,
+		UpstreamKind:    cur.UpstreamKind,
+		Upstream:        cur.Upstream,
+		UpstreamPort:    cur.UpstreamPort,
+		TCPListenPort:   cur.TCPListenPort,
+		StripPathPrefix: cur.StripPathPrefix,
 	}
 	if in.Name != nil {
 		ci.Name = *in.Name
+	}
+	if in.Path != nil {
+		ci.Path = *in.Path
 	}
 	if in.Protocol != nil {
 		ci.Protocol = *in.Protocol
@@ -599,6 +647,9 @@ func (s *service) UpdateService(ctx context.Context, id string, in UpdateService
 	}
 	if in.TCPListenPort != nil {
 		ci.TCPListenPort = *in.TCPListenPort
+	}
+	if in.StripPathPrefix != nil {
+		ci.StripPathPrefix = *in.StripPathPrefix
 	}
 	svc, err := s.prepareService(ctx, id, ci)
 	if err != nil {
@@ -631,7 +682,7 @@ func (s *service) SetServiceEnabled(ctx context.Context, id string, on bool) err
 	return s.applyBestEffort(ctx)
 }
 
-// prepareService 把入参归一化 + 全量校验(含跨服务 FQDN / TCP 端口唯一性),构造待落库对象。
+// prepareService 把入参归一化 + 全量校验(含跨服务 FQDN+path / TCP 端口唯一性),构造待落库对象。
 // selfID 为更新场景自身 id(唯一性检查排除自己);创建时为空。
 func (s *service) prepareService(ctx context.Context, selfID string, in CreateServiceInput) (*RegisteredService, error) {
 	in.Name = strings.ToLower(strings.TrimSpace(in.Name))
@@ -644,6 +695,11 @@ func (s *service) prepareService(ctx context.Context, selfID string, in CreateSe
 		in.UpstreamKind = UpstreamKindContainer
 	}
 	in.Upstream = strings.TrimSpace(in.Upstream)
+	path, perr := normalizeServicePath(in.Path)
+	if perr != nil {
+		return nil, perr
+	}
+	in.Path = path
 
 	dom, err := s.store.getDomain(ctx, in.DomainID)
 	if err != nil {
@@ -655,36 +711,50 @@ func (s *service) prepareService(ctx context.Context, selfID string, in CreateSe
 	if in.Protocol != ProtocolHTTP && in.Protocol != ProtocolTCP {
 		return nil, ErrInvalidProtocol
 	}
-	if in.UpstreamKind != UpstreamKindContainer && in.UpstreamKind != UpstreamKindAddress {
+	if in.UpstreamKind != UpstreamKindContainer && in.UpstreamKind != UpstreamKindAddress && in.UpstreamKind != UpstreamKindStatic {
 		return nil, ErrInvalidUpstream
 	}
-	// 上游校验按形态分叉:仅 tcp 强制显式上游;http 的 Upstream 均可空(部署托管:
-	// container 由实例行携带容器名,address 由实例行携带主机地址,空时渲染维护态)。
-	// 非空时按形态校验:container=容器名,address=主机地址。
-	if in.Upstream == "" {
-		if in.Protocol == ProtocolTCP {
+	if in.UpstreamKind == UpstreamKindStatic {
+		// 静态托管:仅 http;无上游/端口/前缀语义,统一归零(存库形态唯一)。
+		if in.Protocol != ProtocolHTTP {
+			return nil, ErrInvalidProtocol
+		}
+		in.Upstream = ""
+		in.UpstreamPort = 0
+		in.TCPListenPort = 0
+		in.StripPathPrefix = false
+	} else {
+		// 上游校验按形态分叉:仅 tcp 强制显式上游;http 的 Upstream 均可空(部署托管:
+		// container 由实例行携带容器名,address 由实例行携带主机地址,空时渲染维护态)。
+		// 非空时按形态校验:container=容器名,address=主机地址。
+		if in.Upstream == "" {
+			if in.Protocol == ProtocolTCP {
+				return nil, ErrInvalidUpstream
+			}
+		} else if in.UpstreamKind == UpstreamKindContainer {
+			if len(in.Upstream) > 128 || !dockerNameRe.MatchString(in.Upstream) {
+				return nil, ErrInvalidUpstream
+			}
+		} else if !validUpstreamHost(in.Upstream) {
 			return nil, ErrInvalidUpstream
 		}
-	} else if in.UpstreamKind == UpstreamKindContainer {
-		if len(in.Upstream) > 128 || !dockerNameRe.MatchString(in.Upstream) {
-			return nil, ErrInvalidUpstream
-		}
-	} else if !validUpstreamHost(in.Upstream) {
-		return nil, ErrInvalidUpstream
-	}
-	if in.UpstreamPort < 1 || in.UpstreamPort > 65535 {
-		return nil, ErrInvalidPort
-	}
-	if in.Protocol == ProtocolTCP {
-		if in.TCPListenPort < 1 || in.TCPListenPort > 65535 {
+		if in.UpstreamPort < 1 || in.UpstreamPort > 65535 {
 			return nil, ErrInvalidPort
 		}
-	} else {
-		in.TCPListenPort = 0
+		if in.Protocol == ProtocolTCP {
+			if in.TCPListenPort < 1 || in.TCPListenPort > 65535 {
+				return nil, ErrInvalidPort
+			}
+		} else {
+			in.TCPListenPort = 0
+		}
+	}
+	if in.Protocol == ProtocolTCP && in.Path != "" {
+		return nil, ErrInvalidPath // tcp 透传无 URL 语义,不允许子路径
 	}
 
-	// 跨服务唯一性:FQDN 全局唯一(防 efg.com 与 x.efg.com 两个基域撞出同名 FQDN)、TCP 监听端口
-	// 全局唯一且避开 80/443(容器内 HTTP 监听)。
+	// 跨服务唯一性:同一 FQDN 下相同 path 互斥(ErrPathTaken;同 FQDN 不同 path 共存于同一
+	// server 块)、TCP 监听端口全局唯一且避开 80/443(容器内 HTTP 监听)。
 	all, err := s.store.listServices(ctx)
 	if err != nil {
 		return nil, err
@@ -694,19 +764,24 @@ func (s *service) prepareService(ctx context.Context, selfID string, in CreateSe
 		if o.ID == selfID {
 			continue
 		}
-		// TCP 监听端口全局唯一(先于同域跳过:同域服务也要查端口)。
+		// TCP 监听端口全局唯一(先于其它检查:同域服务也要查端口)。
 		if in.Protocol == ProtocolTCP && o.Protocol == ProtocolTCP && o.TCPListenPort == in.TCPListenPort {
 			return nil, ErrTCPPortTaken
 		}
 		if o.DomainID == in.DomainID {
-			// 同域重名由 (domain_id,name) 唯一约束兜底(ErrServiceTaken);FQDN 检查只管跨域撞名。
+			// 同域同服务名同 path:领域层直接报 ErrPathTaken(比 DB 唯一约束的 ErrServiceTaken
+			// 语义更准确);同服务名不同 path 合法共存。
+			if o.Name == in.Name && o.Path == in.Path {
+				return nil, ErrPathTaken
+			}
 			continue
 		}
 		od, derr := s.store.getDomain(ctx, o.DomainID)
 		if derr != nil {
 			continue
 		}
-		if o.Name+"."+od.BaseDomain == fqdn {
+		// 跨基域撞出同名 FQDN(防御:服务名字符集不含点,理论不可达)时同 path 仍互斥。
+		if o.Name+"."+od.BaseDomain == fqdn && o.Path == in.Path {
 			return nil, ErrFQDNTaken
 		}
 	}
@@ -716,17 +791,19 @@ func (s *service) prepareService(ctx context.Context, selfID string, in CreateSe
 
 	now := time.Now().UTC()
 	svc := &RegisteredService{
-		ID:            uuid.NewString(),
-		DomainID:      in.DomainID,
-		Name:          in.Name,
-		Protocol:      in.Protocol,
-		UpstreamKind:  in.UpstreamKind,
-		Upstream:      in.Upstream,
-		UpstreamPort:  in.UpstreamPort,
-		TCPListenPort: in.TCPListenPort,
-		Enabled:       true,
-		CreatedAt:     now,
-		UpdatedAt:     now,
+		ID:              uuid.NewString(),
+		DomainID:        in.DomainID,
+		Name:            in.Name,
+		Path:            in.Path,
+		Protocol:        in.Protocol,
+		UpstreamKind:    in.UpstreamKind,
+		Upstream:        in.Upstream,
+		UpstreamPort:    in.UpstreamPort,
+		TCPListenPort:   in.TCPListenPort,
+		StripPathPrefix: in.StripPathPrefix,
+		Enabled:         true,
+		CreatedAt:       now,
+		UpdatedAt:       now,
 	}
 	if selfID != "" {
 		cur, err := s.store.getService(ctx, selfID)
@@ -1043,6 +1120,11 @@ func validateSettings(st Settings) error {
 			return ErrInvalidSetting
 		}
 	}
+	// 静态根目录:绝对路径,无尾斜杠,路径安全字符集(bind mount 目标;渲染不回显进配置,
+	// 仅部署侧拼 <root>/<serviceID>,serviceID 为 uuid,无注入面)。
+	if st.StaticRoot == "" || len(st.StaticRoot) > 255 || !staticRootRe.MatchString(st.StaticRoot) {
+		return ErrInvalidSetting
+	}
 	return nil
 }
 
@@ -1055,6 +1137,42 @@ func validUpstreamHost(h string) bool {
 		return true
 	}
 	return len(h) <= 253 && baseDomainRe.MatchString(strings.ToLower(h))
+}
+
+// normalizeServicePath 归一化子路径:去空白;无前导 / 自动补;去尾 /;根路径("/")与空串 → ""
+// (存储与冲突比较的规范形态)。非法字符集/过长/"//"/"."/".." 段 → ErrInvalidPath。
+func normalizeServicePath(p string) (string, error) {
+	p = strings.TrimSpace(p)
+	if p == "" {
+		return "", nil
+	}
+	if !strings.HasPrefix(p, "/") {
+		p = "/" + p
+	}
+	p = strings.TrimRight(p, "/")
+	if p == "" {
+		return "", nil // 全斜杠输入归一根路径
+	}
+	if len(p) > 128 || !servicePathRe.MatchString(p) || strings.Contains(p, "//") {
+		return "", ErrInvalidPath
+	}
+	for i, seg := range strings.Split(p, "/") {
+		if i == 0 {
+			continue // 前导 / 产生的空段
+		}
+		if seg == "." || seg == ".." {
+			return "", ErrInvalidPath
+		}
+	}
+	return p, nil
+}
+
+// DisplayPath 返回路由/展示用的 path('' → "/")。
+func (rs RegisteredService) DisplayPath() string {
+	if rs.Path == "" {
+		return "/"
+	}
+	return rs.Path
 }
 
 // FQDN 返回服务的完整域名(供展示;http 服务即访问地址)。

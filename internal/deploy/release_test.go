@@ -18,6 +18,8 @@ type fakeFS struct {
 	tmpTargets map[string]string
 	// failHealthCmd 命中健康探测命令时返回非零(模拟健康失败)。
 	failHealth bool
+	// failTest 命中 test -f 静态门控命令时返回非零(模拟 index.html 缺失)。
+	failTest bool
 	// failLn 命中 ln 切换/回滚时返回执行错误(模拟回滚命令失败)。
 	failLn bool
 	// removed 记录被 prune rm -rf 的发布(断言清理)。
@@ -63,6 +65,11 @@ func (f *fakeFS) exec(cmd []string) (*target.ExecResult, error) {
 	case "curl":
 		if f.failHealth {
 			return &target.ExecResult{ExitCode: 22, Stderr: "curl: (22) 503 Service Unavailable"}, nil
+		}
+		return &target.ExecResult{ExitCode: 0}, nil
+	case "test":
+		if f.failTest {
+			return &target.ExecResult{ExitCode: 1, Stderr: "index.html missing"}, nil
 		}
 		return &target.ExecResult{ExitCode: 0}, nil
 	default:

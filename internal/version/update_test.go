@@ -208,7 +208,7 @@ func TestResolveSource(t *testing.T) {
 
 	// 未配镜像:GitHub 官方源。
 	s := ResolveSource("")
-	if s.Repo != defaultRepo || s.APIBase != "https://api.github.com" ||
+	if s.Repo != DefaultRepo || s.APIBase != "https://api.github.com" ||
 		s.WebBase != "https://github.com" || s.DLBase != "https://github.com" {
 		t.Errorf("空镜像应回落 GitHub 官方源,得 %+v", s)
 	}
@@ -218,7 +218,7 @@ func TestResolveSource(t *testing.T) {
 	if s.APIBase != "https://mirror.example.com/gh" || s.WebBase != s.APIBase || s.DLBase != s.APIBase {
 		t.Errorf("镜像应同时充当 API/网页/下载 base(去空白与尾斜杠),得 %+v", s)
 	}
-	if s.Repo != defaultRepo {
+	if s.Repo != DefaultRepo {
 		t.Errorf("repo 不应受镜像影响,得 %q", s.Repo)
 	}
 

@@ -29,11 +29,15 @@ const (
 	nginxImageEnv = "PIPEWRIGHT_NGINX_IMAGE"
 	// streamModulePath 是官方 nginx 镜像的 stream 动态模块路径(TCP 反代需要)。
 	streamModulePath = "/usr/lib/nginx/modules/ngx_stream_module.so"
-	// nginxBootstrapLabel/Ver 是容器自举脚本版本标签:入口脚本在 docker run 时烧进容器,
-	// 平台升级改了脚本不会作用于既有容器,故打版本标签,ensureNginx 见版本不符即重建容器
-	// (配置/证书在具名卷,重建不丢;重建后同轮 apply 会覆盖真实配置)。
+	// nginxBootstrapLabel/Ver 是容器自举脚本/挂载形态的版本标签:入口脚本在 docker run 时烧进
+	// 容器,平台升级改了脚本或挂载不会作用于既有容器,故打版本标签,ensureNginx 见版本不符即
+	// 重建容器(配置/证书在具名卷,重建不丢;重建后同轮 apply 会覆盖真实配置)。
+	// v3:新增静态发布目录 bind mount(StaticRoot → /etc/pipewright/static,只读)。
 	nginxBootstrapLabel = "pipewright.bootstrap"
-	nginxBootstrapVer   = "2"
+	nginxBootstrapVer   = "3"
+	// nginxStaticDir 是容器内静态托管目录(bind mount 自宿主 StaticRoot,只读):
+	// static/<serviceID>/current/ 由「网关静态发布」部署落盘,nginx alias 直接托管。
+	nginxStaticDir = "/etc/pipewright/static"
 )
 
 // nginxImageRefRe 防注入:镜像引用字符集(首字符字母数字,防经 env 注入 docker flag)。
@@ -112,10 +116,11 @@ func renderNginxConf(domains []Domain, services []RegisteredService, instances [
 		instByService[sid] = list
 	}
 
-	// 拆分:http 服务(附 FQDN 与基域)按 FQDN 升序;tcp 服务按监听端口升序。
-	var https []httpSite  // cert 域的 http 服务(443 server 块)
-	var plain []httpSite  // 无证书域的 http 服务(80 server 块)
-	var redirects []string // cert 域 http 服务的 FQDN(80 → 443 跳转名单)
+	// http 服务按 FQDN 分组(同域名不同 path 的服务共存,合并进同一 server 块的多 location;
+	// nginx 前缀 location 最长匹配与书写顺序无关);tcp 服务按监听端口升序。
+	var groups []*httpGroup
+	byFqdn := make(map[string]*httpGroup)
+	var redirects []string // cert 域 FQDN(80 → 443 跳转名单;每组一条)
 	var tcps []RegisteredService
 	for _, svc := range services {
 		if !svc.Enabled {
@@ -129,33 +134,62 @@ func renderNginxConf(domains []Domain, services []RegisteredService, instances [
 			tcps = append(tcps, svc)
 			continue
 		}
-		site := httpSite{svc: svc, fqdn: svc.Name + "." + dom.BaseDomain, dom: dom, certd: dom.HasCert}
-		if dom.HasCert {
-			https = append(https, site)
-			redirects = append(redirects, site.fqdn)
-		} else {
-			plain = append(plain, site)
+		fqdn := svc.Name + "." + dom.BaseDomain
+		g := byFqdn[fqdn]
+		if g == nil {
+			g = &httpGroup{fqdn: fqdn, dom: dom, certd: dom.HasCert}
+			byFqdn[fqdn] = g
+			groups = append(groups, g)
+			if dom.HasCert {
+				redirects = append(redirects, fqdn)
+			}
 		}
+		g.sites = append(g.sites, httpSite{svc: svc, fqdn: fqdn, dom: dom, certd: dom.HasCert})
 	}
-	sort.Slice(https, func(i, j int) bool { return https[i].fqdn < https[j].fqdn })
-	sort.Slice(plain, func(i, j int) bool { return plain[i].fqdn < plain[j].fqdn })
+	sort.Slice(groups, func(i, j int) bool { return groups[i].fqdn < groups[j].fqdn })
+	for _, g := range groups {
+		sort.Slice(g.sites, func(i, j int) bool { return g.sites[i].svc.Path < g.sites[j].svc.Path })
+	}
 	sort.Strings(redirects)
 	sort.Slice(tcps, func(i, j int) bool { return tcps[i].TCPListenPort < tcps[j].TCPListenPort })
 
-	// 有可渲染成员的 http 服务统一走 upstream 块(容器与非容器实例一视同仁);
+	// 有可渲染成员的 http 反代服务统一走 upstream 块(容器与非容器实例一视同仁);
 	// 声明了实例但无可渲染成员(全摘除/地址不可解析)→ 503 维护态;
-	// 无实例声明的 address 服务 → 保留单上游变量 + resolver 动态解析(人工 address 模式)。
+	// 无实例声明的 address 服务 → 保留单上游变量 + resolver 动态解析(人工 address 模式);
+	// static 服务 → 网关直接托管静态文件(location alias),无上游/实例语义。
 	needsUpstream := func(s httpSite) bool {
-		return len(instByService[s.svc.ID]) > 0
+		return s.svc.UpstreamKind != UpstreamKindStatic && len(instByService[s.svc.ID]) > 0
 	}
 	maintenance := func(s httpSite) bool {
+		if s.svc.UpstreamKind == UpstreamKindStatic {
+			return false
+		}
 		// 容器服务恒为部署托管(无实例即维护态);address 服务声明了实例或上游为空
 		// (部署托管待首批实例上线)时同样进入维护态;仅「无实例且配了静态上游」的
 		// 人工 address 模式走变量 + resolver 动态解析。
 		return !needsUpstream(s) && (s.svc.UpstreamKind == UpstreamKindContainer ||
 			declaredByService[s.svc.ID] > 0 || s.svc.Upstream == "")
 	}
-	upstreamName := func(s httpSite) string { return "pw_" + nginxUpstreamID(s.svc.Name) }
+
+	// 每站点渲染决策(upstream/变量名 + 维护态)按 (FQDN, path) 升序一次性分配:
+	// 命名 pw_<name>[_<path>] / $up_<name>[_<path>],重名(跨基域同名服务等)追加序号去重。
+	upAlloc, varAlloc := newNameAlloc(), newNameAlloc()
+	renders := make(map[string]*siteRender)
+	for _, g := range groups {
+		for _, st := range g.sites {
+			r := &siteRender{}
+			if st.svc.UpstreamKind != UpstreamKindStatic {
+				r.useUpstream = needsUpstream(st)
+				r.maintenance = maintenance(st)
+				if r.useUpstream {
+					r.upsName = upAlloc.alloc("pw_" + nginxNameID(st.svc.Name, st.svc.Path))
+				} else if !r.maintenance {
+					r.varName = varAlloc.alloc("up_" + nginxNameID(st.svc.Name, st.svc.Path))
+				}
+			}
+			renders[st.svc.ID] = r
+		}
+	}
 
 	var b strings.Builder
 	b.WriteString("# 由 Pipewright 自动生成,请勿手改。\n")
@@ -189,27 +223,34 @@ func renderNginxConf(domains []Domain, services []RegisteredService, instances [
 	b.WriteString("        ''      close;\n")
 	b.WriteString("    }\n\n")
 
-	// upstream 块(全部有实例成员的 http 服务,plain/https 两类;按名升序输出)。
-	var ups []httpSite
-	ups = append(ups, plain...)
-	ups = append(ups, https...)
-	sort.Slice(ups, func(i, j int) bool { return ups[i].svc.Name < ups[j].svc.Name })
-	for _, s := range ups {
-		if !needsUpstream(s) {
-			continue
+	// upstream 块(全部有实例成员的 http 反代服务;按 FQDN+path 升序确定性输出)。
+	for _, g := range groups {
+		for _, st := range g.sites {
+			r := renders[st.svc.ID]
+			if !r.useUpstream {
+				continue
+			}
+			b.WriteString("    # 服务 " + st.fqdn + st.svc.Path + " 的集群实例池(成员 = 服务器地址:宿主端口,经 reload 原子增减)。\n")
+			b.WriteString("    upstream " + r.upsName + " {\n")
+			for _, inst := range instByService[st.svc.ID] {
+				// net.JoinHostPort:IPv6 地址自动加方括号(裸 IPv6 冒号拼接会让 nginx -t 失败)。
+				b.WriteString("        server " + net.JoinHostPort(serverAddr[inst.ServerID], strconv.Itoa(inst.EffectiveHostPort(&st.svc))) +
+					" max_fails=2 fail_timeout=10s;\n")
+			}
+			// keepalive:上游长连接池(配合 proxy_http_version 1.1 + 非 WS 请求清空 Connection)。
+			b.WriteString("        keepalive 32;\n")
+			b.WriteString("    }\n\n")
 		}
-		b.WriteString("    # 服务 " + s.fqdn + " 的集群实例池(成员 = 服务器地址:宿主端口,经 reload 原子增减)。\n")
-		b.WriteString("    upstream " + upstreamName(s) + " {\n")
-		for _, inst := range instByService[s.svc.ID] {
-			// net.JoinHostPort:IPv6 地址自动加方括号(裸 IPv6 冒号拼接会让 nginx -t 失败)。
-			b.WriteString("        server " + net.JoinHostPort(serverAddr[inst.ServerID], strconv.Itoa(inst.EffectiveHostPort(&s.svc))) +
-				" max_fails=2 fail_timeout=10s;\n")
-		}
-		// keepalive:上游长连接池(配合 proxy_http_version 1.1 + 非 WS 请求清空 Connection)。
-		b.WriteString("        keepalive 32;\n")
-		b.WriteString("    }\n\n")
 	}
 
+	var plain, https []*httpGroup
+	for _, g := range groups {
+		if g.certd {
+			https = append(https, g)
+		} else {
+			plain = append(plain, g)
+		}
+	}
 	if len(redirects) > 0 {
 		b.WriteString("    # 证书就绪的域名:80 → 443。\n")
 		b.WriteString("    server {\n")
@@ -218,8 +259,8 @@ func renderNginxConf(domains []Domain, services []RegisteredService, instances [
 		b.WriteString("        return 301 https://$host$request_uri;\n")
 		b.WriteString("    }\n\n")
 	}
-	for _, site := range plain {
-		renderHTTPServer(&b, "    ", site, needsUpstream(site), maintenance(site), upstreamName(site), "http")
+	for _, g := range plain {
+		renderHTTPServer(&b, "    ", g, "http", renders)
 	}
 	b.WriteString("    server {\n")
 	b.WriteString("        listen 80 default_server;\n")
@@ -227,8 +268,8 @@ func renderNginxConf(domains []Domain, services []RegisteredService, instances [
 	b.WriteString("        return 404;\n")
 	b.WriteString("    }\n\n")
 
-	for _, site := range https {
-		renderHTTPServer(&b, "    ", site, needsUpstream(site), maintenance(site), upstreamName(site), "https")
+	for _, g := range https {
+		renderHTTPServer(&b, "    ", g, "https", renders)
 	}
 	// 未知 SNI 的 443 兜底(需任一证书);无任何证书时不监听 443。
 	if len(https) > 0 {
@@ -267,52 +308,102 @@ type httpSite struct {
 	certd bool
 }
 
-// renderHTTPServer 输出一个 http 服务的 server 块。useUpstream 表示走实例池 upstream 块
-// (proxy_pass 指向集群成员);maintenance 表示声明了实例池但无可渲染成员(全摘除/地址不可
-// 解析)→ 503 维护态;其余(无实例声明的 address 服务)走变量 + resolver 单上游动态解析。
-func renderHTTPServer(b *strings.Builder, indent string, site httpSite, useUpstream, maintenance bool, upsName, proto string) {
-	svc := site.svc
-	if site.certd {
-		certDir := nginxCertsDir + "/" + site.dom.BaseDomain
-		b.WriteString(indent + "# " + site.fqdn + " → " + upstreamTarget(svc) + "。\n")
+// httpGroup 是同一 FQDN 下的全部 http 服务(同域名不同 path 共存,合并进同一 server 块)。
+type httpGroup struct {
+	fqdn  string
+	dom   Domain
+	certd bool
+	sites []httpSite // 按 path 升序(确定性;nginx 前缀 location 最长匹配与顺序无关)
+}
+
+// siteRender 是单站点(单 location)的渲染决策,由 renderNginxConf 按 (FQDN, path) 升序
+// 预计算(含确定性分配的 upstream/变量名)。
+type siteRender struct {
+	useUpstream bool // 走实例池 upstream 块(proxy_pass 指向集群成员)
+	maintenance bool // 声明了实例池但无可渲染成员(全摘除/不可解析)→ 503 维护态
+	upsName     string
+	varName     string // 不含 $ 前缀(address 单上游变量)
+}
+
+// renderHTTPServer 输出一个 FQDN 的 server 块(组内每个服务一个 location,path 升序)。
+// 单服务单根路径的输出与旧版(每服务独立 server 块)保持一致。
+func renderHTTPServer(b *strings.Builder, indent string, group *httpGroup, proto string, renders map[string]*siteRender) {
+	if group.certd {
+		certDir := nginxCertsDir + "/" + group.dom.BaseDomain
+		b.WriteString(indent + "# " + groupTargetComment(group) + "。\n")
 		b.WriteString(indent + "server {\n")
 		b.WriteString(indent + "    listen 443 ssl;\n")
-		b.WriteString(indent + "    server_name " + site.fqdn + ";\n")
+		b.WriteString(indent + "    server_name " + group.fqdn + ";\n")
 		b.WriteString(indent + "    ssl_certificate " + certDir + "/fullchain.pem;\n")
 		b.WriteString(indent + "    ssl_certificate_key " + certDir + "/privkey.pem;\n")
 		b.WriteString(indent + "    ssl_protocols TLSv1.2 TLSv1.3;\n")
 	} else {
-		b.WriteString(indent + "# " + site.fqdn + " → " + upstreamTarget(svc) + "(基域未上传证书,仅 HTTP)。\n")
+		b.WriteString(indent + "# " + groupTargetComment(group) + "(基域未上传证书,仅 HTTP)。\n")
 		b.WriteString(indent + "server {\n")
 		b.WriteString(indent + "    listen 80;\n")
-		b.WriteString(indent + "    server_name " + site.fqdn + ";\n")
+		b.WriteString(indent + "    server_name " + group.fqdn + ";\n")
 	}
-	writeProxyLocation(b, indent+"    ", svc, useUpstream, maintenance, upsName, proto)
+	for _, st := range group.sites {
+		if st.svc.UpstreamKind == UpstreamKindStatic {
+			writeStaticLocation(b, indent+"    ", st.svc)
+			continue
+		}
+		writeProxyLocation(b, indent+"    ", st.svc, renders[st.svc.ID], proto)
+	}
 	b.WriteString(indent + "}\n\n")
 }
 
-// writeProxyLocation 输出反代 location 块:
-//   - useUpstream(有集群实例成员):proxy_pass http://pw_<name>(成员 = attached 实例);
+// groupTargetComment 生成 server 块头部注释:单一反代服务保持旧格式「fqdn → 上游:端口」,
+// 静态托管 / 多服务(同域名多 path)逐项列出「path → 目标」。
+func groupTargetComment(group *httpGroup) string {
+	if len(group.sites) == 1 && group.sites[0].svc.UpstreamKind != UpstreamKindStatic {
+		return group.fqdn + " → " + upstreamTarget(group.sites[0].svc)
+	}
+	parts := make([]string, 0, len(group.sites))
+	for _, st := range group.sites {
+		target := "静态托管"
+		if st.svc.UpstreamKind != UpstreamKindStatic {
+			target = upstreamTarget(st.svc)
+		}
+		parts = append(parts, st.svc.DisplayPath()+" → "+target)
+	}
+	return group.fqdn + " → " + strings.Join(parts, " · ")
+}
+
+// writeProxyLocation 输出反代 location 块(location 路径 = 服务 path,根路径为 /):
+//   - useUpstream(有集群实例成员):proxy_pass http://pw_<name>[_<path>](成员 = attached 实例);
 //   - maintenance(声明实例池但无成员):return 503 维护态;
 //   - 其余(address 单上游):set 变量 + proxy_pass http://$var(resolver 运行期解析)。
+//
+// StripPathPrefix(仅 path 非根时生效):实例池用 proxy_pass 尾斜杠(URI "/",nginx 以之
+// 替换匹配的 location 前缀);address 变量反代的 proxy_pass 不允许 URI,改用 rewrite 剥前缀。
 //
 // 反代头:proxy_http_version 1.1 + Upgrade $http_upgrade。Connection 分两种:
 //   实例池 → $connection_upgrade(非 WS 为空 → 不发送,使 upstream keepalive 复用连接);
 //   address 单上游 → $connection_upgrade_addr(非 WS 为 close → 不复用即显式关闭)。
-func writeProxyLocation(b *strings.Builder, indent string, svc RegisteredService, useUpstream, maintenance bool, upsName, proto string) {
-	if maintenance && !useUpstream {
+func writeProxyLocation(b *strings.Builder, indent string, svc RegisteredService, r *siteRender, proto string) {
+	loc := svc.DisplayPath()
+	if r.maintenance && !r.useUpstream {
 		// 实例全部摘除/地址不可解析:维护态,不做反代。
-		b.WriteString(indent + "location / {\n")
+		b.WriteString(indent + "location " + loc + " {\n")
 		b.WriteString(indent + "    return 503;\n")
 		b.WriteString(indent + "}\n")
 		return
 	}
-	b.WriteString(indent + "location / {\n")
-	if useUpstream {
-		b.WriteString(indent + "    proxy_pass http://" + upsName + ";\n")
+	strip := svc.StripPathPrefix && svc.Path != ""
+	b.WriteString(indent + "location " + loc + " {\n")
+	if strip && !r.useUpstream {
+		b.WriteString(indent + "    rewrite ^" + escapeLocationRegex(svc.Path) + "(/.*)?$ /$1 break;\n")
+	}
+	if r.useUpstream {
+		pass := "http://" + r.upsName
+		if strip {
+			pass += "/"
+		}
+		b.WriteString(indent + "    proxy_pass " + pass + ";\n")
 	} else {
-		b.WriteString(indent + "    set " + nginxVarName(svc.Name) + " " + upstreamTarget(svc) + ";\n")
-		b.WriteString(indent + "    proxy_pass http://" + nginxVarName(svc.Name) + ";\n")
+		b.WriteString(indent + "    set $" + r.varName + " " + upstreamTarget(svc) + ";\n")
+		b.WriteString(indent + "    proxy_pass http://$" + r.varName + ";\n")
 	}
 	b.WriteString(indent + "    proxy_http_version 1.1;\n")
 	b.WriteString(indent + "    proxy_set_header Host $host;\n")
@@ -321,7 +412,7 @@ func writeProxyLocation(b *strings.Builder, indent string, svc RegisteredService
 	b.WriteString(indent + "    proxy_set_header X-Forwarded-Proto " + proto + ";\n")
 	b.WriteString(indent + "    proxy_set_header Upgrade $http_upgrade;\n")
 	// 实例池:非 WS 清空 Connection(upstream keepalive 复用);address 单上游:非 WS 显式 close。
-	if useUpstream {
+	if r.useUpstream {
 		b.WriteString(indent + "    proxy_set_header Connection $connection_upgrade;\n")
 	} else {
 		b.WriteString(indent + "    proxy_set_header Connection $connection_upgrade_addr;\n")
@@ -329,9 +420,91 @@ func writeProxyLocation(b *strings.Builder, indent string, svc RegisteredService
 	b.WriteString(indent + "}\n")
 }
 
-// nginxUpstreamID 返回 nginx upstream 名后缀(服务名 `-` 归一为 `_`,与服务名字符集无碰撞)。
-func nginxUpstreamID(name string) string {
-	return strings.ReplaceAll(name, "-", "_")
+// writeStaticLocation 输出静态托管 location:alias 指向网关容器内该服务的发布目录
+// (<nginxStaticDir>/<服务ID>/current/,由「网关静态发布」部署节点落盘,current 软链
+// 原子切换,nginx 按请求读盘即生效,无需 reload);try_files 兜底回退本站点 index.html
+// (SPA 路由;末参是 URI,内部重定向回本 location 由 alias 命中文件)。发布目录不存在
+// (尚未首发)时请求 404。
+func writeStaticLocation(b *strings.Builder, indent string, svc RegisteredService) {
+	loc := svc.DisplayPath()
+	fallback := "/index.html"
+	if loc != "/" {
+		fallback = loc + "/index.html"
+	}
+	b.WriteString(indent + "location " + loc + " {\n")
+	b.WriteString(indent + "    alias " + nginxStaticDir + "/" + svc.ID + "/current/;\n")
+	b.WriteString(indent + "    index index.html;\n")
+	b.WriteString(indent + "    try_files $uri " + fallback + ";\n")
+	b.WriteString(indent + "}\n")
+}
+
+// escapeLocationRegex 把已白名单校验的 path 转为 rewrite 模式的字面量(仅 "." 等
+// 正则元字符需转义;字符集经 servicePathRe 白名单,无注入面)。
+func escapeLocationRegex(p string) string {
+	var b strings.Builder
+	for _, r := range p {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '/', r == '_', r == '-':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('\\')
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+// ngNameAlloc 按确定性顺序分配 nginx upstream/变量名:基础名重复时追加 _2/_3 去重
+// (跨基域同名服务等场景;分配顺序由 (FQDN, path) 升序保证稳定)。
+type ngNameAlloc struct {
+	used map[string]int
+}
+
+func newNameAlloc() *ngNameAlloc { return &ngNameAlloc{used: make(map[string]int)} }
+
+func (a *ngNameAlloc) alloc(base string) string {
+	n := a.used[base]
+	a.used[base] = n + 1
+	if n == 0 {
+		return base
+	}
+	return base + "_" + strconv.Itoa(n+1)
+}
+
+// nginxNameID 把「服务名 + 子路径」净化为 nginx upstream/变量名标识片段(保留
+// [A-Za-z0-9_],其余字符映射为 _;如 web + /api → web_api,a-b + /api/v1 → a_b_api_v1)。
+// path 的前导 / 由分隔符 _ 承担(不再叠加,免出双下划线);不同输入净化后可能撞名
+// (如 /api/v1 与 /api_v1),由 ngNameAlloc 兜底去重。
+func nginxNameID(name, path string) string {
+	var b strings.Builder
+	writeSanitized(&b, name)
+	if path == "" {
+		return b.String()
+	}
+	b.WriteByte('_')
+	for i, r := range path {
+		if i == 0 && r == '/' {
+			continue // 前导 / 由上面的分隔符 _ 承担
+		}
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+		default: // '/' '-' '.' '~' 等 → _
+			b.WriteByte('_')
+		}
+	}
+	return b.String()
+}
+
+func writeSanitized(b *strings.Builder, s string) {
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+		default: // '-' '/' '.' '~' 等 → _
+			b.WriteByte('_')
+		}
+	}
 }
 
 // upstreamTarget 返回「上游:端口」渲染串(container=容器名,由 resolver 动态解析;address=HOST)。
@@ -438,6 +611,9 @@ func runNginxContainer(ctx context.Context, tg target.Service, st *Settings, ser
 	}
 	runCmd = append(runCmd,
 		"-v", st.VolumeName+":/etc/pipewright",
+		// 静态托管:各网关主机 StaticRoot(同一路径约定)只读挂进容器,nginx alias 直接
+		// 服务 <serviceID>/current/(发布侧软链切换,免 reload;宿主目录缺失时 Docker 自动建)。
+		"-v", st.StaticRoot+":"+nginxStaticDir+":ro",
 		image,
 		"sh", "-c", nginxBootstrapScript,
 	)

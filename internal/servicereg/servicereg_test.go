@@ -331,7 +331,7 @@ func TestEnsureNginxRecreatesOnBootstrapVerMismatch(t *testing.T) {
 		hasLabeledRun := false
 		for _, c := range ft.execCalls {
 			if strings.HasPrefix(strings.Join(c, " "), "docker run") &&
-				strings.Contains(strings.Join(c, " "), "--label pipewright.bootstrap=2") {
+				strings.Contains(strings.Join(c, " "), "--label "+nginxBootstrapLabel+"="+nginxBootstrapVer) {
 				hasLabeledRun = true
 			}
 		}
@@ -398,7 +398,8 @@ func TestValidUpstreamHost(t *testing.T) {
 
 func TestValidateSettings(t *testing.T) {
 	good := Settings{HTTPPort: 80, HTTPSPort: 443, Image: "nginx:stable-alpine",
-		Network: "pipewright-gateway", ContainerName: "pipewright-nginx", VolumeName: "pipewright_nginx"}
+		Network: "pipewright-gateway", ContainerName: "pipewright-nginx", VolumeName: "pipewright_nginx",
+		StaticRoot: defaultStaticRoot}
 	if err := validateSettings(good); err != nil {
 		t.Fatalf("默认设置应合法:%v", err)
 	}
@@ -407,12 +408,16 @@ func TestValidateSettings(t *testing.T) {
 		{HTTPPort: 80, HTTPSPort: 80},                  // 端口相同
 		{HTTPPort: 80, HTTPSPort: 443, Image: "-x"},    // 镜像 flag 注入
 		{HTTPPort: 80, HTTPSPort: 443, Network: "a b"}, // 网络名非法
+		{HTTPPort: 80, HTTPSPort: 443, StaticRoot: "var/lib/x"},  // 静态根目录非绝对路径
+		{HTTPPort: 80, HTTPSPort: 443, StaticRoot: "/a b/c"},     // 静态根目录非法字符
+		{HTTPPort: 80, HTTPSPort: 443, StaticRoot: "/a/"},        // 静态根目录尾斜杠
 	}
 	for i, b := range bads {
 		b.Image = orDefaultStr(b.Image, good.Image)
 		b.Network = orDefaultStr(b.Network, good.Network)
 		b.ContainerName = orDefaultStr(b.ContainerName, good.ContainerName)
 		b.VolumeName = orDefaultStr(b.VolumeName, good.VolumeName)
+		b.StaticRoot = orDefaultStr(b.StaticRoot, good.StaticRoot)
 		if err := validateSettings(b); err == nil {
 			t.Fatalf("第 %d 组应非法:%+v", i, b)
 		}
@@ -583,8 +588,8 @@ func TestDomainCRUDAndServiceCreate(t *testing.T) {
 		if _, err := svc.CreateService(ctx, CreateServiceInput{
 			DomainID: dom.ID, Name: "abc", Protocol: ProtocolHTTP,
 			UpstreamKind: UpstreamKindContainer, Upstream: "web2", UpstreamPort: 80,
-		}); err != ErrServiceTaken {
-			t.Fatalf("同名服务应 ErrServiceTaken,得 %v", err)
+		}); err != ErrPathTaken {
+			t.Fatalf("同名同 path 服务应 ErrPathTaken,得 %v", err)
 		}
 		// 非法输入。
 		if _, err := svc.CreateService(ctx, CreateServiceInput{DomainID: dom.ID, Name: "-bad", UpstreamPort: 80}); err != ErrInvalidServiceName {
@@ -1496,6 +1501,260 @@ func TestApplyClusterRender(t *testing.T) {
 		}
 		if pushes != 2 {
 			t.Fatalf("两台网关应各推一份配置,得 %d:\n%s", pushes, joinAllCmds(ft))
+		}
+	})
+}
+
+// --- path / 静态托管(0081) ------------------------------------------------
+
+// TestRenderNginxConfPathMergeAndStatic 验证前后端分离场景的渲染:同一 FQDN 下
+// 静态根路径 + 反代 /api(剥离前缀)合并进同一个 server 块,upstream 名带 path 段。
+func TestRenderNginxConfPathMergeAndStatic(t *testing.T) {
+	dom := Domain{ID: "d1", BaseDomain: "efg.com", HasCert: false}
+	web := RegisteredService{ID: "s-web", Name: "app", DomainID: "d1", Protocol: ProtocolHTTP,
+		UpstreamKind: UpstreamKindStatic, Enabled: true}
+	api := RegisteredService{ID: "s-api", Name: "app", Path: "/api", DomainID: "d1", Protocol: ProtocolHTTP,
+		UpstreamKind: UpstreamKindContainer, Upstream: "app-1", UpstreamPort: 8080,
+		StripPathPrefix: true, Enabled: true}
+	inst := Instance{ID: "i1", ServiceID: "s-api", ServerID: "sv1", Container: "app-1", Port: 8080, HostPort: 20001, Attached: true}
+	out := renderNginxConf([]Domain{dom}, []RegisteredService{web, api}, []Instance{inst}, map[string]string{"sv1": "10.0.0.5"}, 0)
+
+	for _, want := range []string{
+		// 同 FQDN 合并:server_name 只出现一次;两个 location 共存。
+		"server_name app.efg.com;",
+		// 静态托管:alias 指向服务 ID 发布目录,SPA 回退根 index.html。
+		"location / {",
+		"alias /etc/pipewright/static/s-web/current/;",
+		"try_files $uri /index.html;",
+		// 反代 /api:upstream 名带 path 段;剥离前缀 = proxy_pass 尾斜杠。
+		"location /api {",
+		"upstream pw_app_api {",
+		"proxy_pass http://pw_app_api/;",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("缺片段 %q:\n%s", want, out)
+		}
+	}
+	if n := strings.Count(out, "server_name app.efg.com;"); n != 1 {
+		t.Fatalf("同 FQDN 应合并为单个 server 块,得 %d 处:\n%s", n, out)
+	}
+	// 静态服务不应产生 upstream / 实例语义。
+	if strings.Contains(out, "pw_app {") {
+		t.Fatalf("静态服务不应有根名 upstream:\n%s", out)
+	}
+}
+
+// TestRenderNginxConfPathKeepPrefix 验证默认保留前缀:proxy_pass 无尾斜杠,完整路径透传;
+// 静态子路径站点的 alias 与回退带子路径。
+func TestRenderNginxConfPathKeepPrefix(t *testing.T) {
+	dom := Domain{ID: "d1", BaseDomain: "efg.com", HasCert: false}
+	admin := RegisteredService{ID: "s-adm", Name: "app", Path: "/admin", DomainID: "d1", Protocol: ProtocolHTTP,
+		UpstreamKind: UpstreamKindStatic, Enabled: true}
+	api := RegisteredService{ID: "s-api", Name: "app", Path: "/api", DomainID: "d1", Protocol: ProtocolHTTP,
+		UpstreamKind: UpstreamKindAddress, Upstream: "10.0.0.9", UpstreamPort: 9000, Enabled: true}
+	out := renderNginxConf([]Domain{dom}, []RegisteredService{admin, api}, nil, nil, 0)
+
+	for _, want := range []string{
+		"location /admin {",
+		"alias /etc/pipewright/static/s-adm/current/;",
+		"try_files $uri /admin/index.html;",
+		// address 单上游变量名带 path 段;保留前缀 = 无尾斜杠、无 rewrite。
+		"set $up_app_api 10.0.0.9:9000;",
+		"proxy_pass http://$up_app_api;",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("缺片段 %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "rewrite ^") {
+		t.Fatalf("默认保留前缀不应输出 rewrite:\n%s", out)
+	}
+}
+
+// TestServicePathConflictAndCoexist 验证同 FQDN 多 path 共存与相同 path 冲突(ErrPathTaken)。
+func TestServicePathConflictAndCoexist(t *testing.T) {
+	storetest.ForEachDialect(t, func(t *testing.T, st *store.Store) {
+		svc, _ := newTestService(t, st.DB)
+		ctx := context.Background()
+		dom, err := svc.CreateDomain(ctx, "efg.com")
+		if err != nil {
+			t.Fatal(err)
+		}
+		// 前端:静态根路径;后端:反代 /api(剥离前缀)—— 共存合法。
+		if _, err := svc.CreateService(ctx, CreateServiceInput{
+			DomainID: dom.ID, Name: "app", UpstreamKind: UpstreamKindStatic,
+		}); err != nil {
+			t.Fatalf("静态根路径服务:%v", err)
+		}
+		api, err := svc.CreateService(ctx, CreateServiceInput{
+			DomainID: dom.ID, Name: "app", Path: "/api", UpstreamKind: UpstreamKindAddress,
+			Upstream: "10.0.0.9", UpstreamPort: 9000, StripPathPrefix: true,
+		})
+		if err != nil {
+			t.Fatalf("同 FQDN /api 服务应共存:%v", err)
+		}
+		if api.Path != "/api" || !api.StripPathPrefix {
+			t.Fatalf("path/strip 应原样落库:%+v", api)
+		}
+		// 相同 path(含同为根路径)→ ErrPathTaken;前缀嵌套(/ 与 /api)合法。
+		if _, err := svc.CreateService(ctx, CreateServiceInput{
+			DomainID: dom.ID, Name: "app", UpstreamKind: UpstreamKindStatic,
+		}); err != ErrPathTaken {
+			t.Fatalf("根路径重复应 ErrPathTaken,得 %v", err)
+		}
+		if _, err := svc.CreateService(ctx, CreateServiceInput{
+			DomainID: dom.ID, Name: "app", Path: "api", UpstreamKind: UpstreamKindAddress,
+			Upstream: "10.0.0.9", UpstreamPort: 9000,
+		}); err != ErrPathTaken {
+			t.Fatalf("同 path(自动归一 /api)应 ErrPathTaken,得 %v", err)
+		}
+		if _, err := svc.CreateService(ctx, CreateServiceInput{
+			DomainID: dom.ID, Name: "app", Path: "/api/v2", UpstreamKind: UpstreamKindAddress,
+			Upstream: "10.0.0.9", UpstreamPort: 9001,
+		}); err != nil {
+			t.Fatalf("前缀嵌套(/api 与 /api/v2)应合法:%v", err)
+		}
+	})
+}
+
+// TestServicePathAndStaticValidation 验证 path/静态形态的入参校验与归一。
+func TestServicePathAndStaticValidation(t *testing.T) {
+	storetest.ForEachDialect(t, func(t *testing.T, st *store.Store) {
+		svc, _ := newTestService(t, st.DB)
+		ctx := context.Background()
+		dom, err := svc.CreateDomain(ctx, "efg.com")
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, bad := range []string{"/a b", "/a//b", "/../x", "/.", strings.Repeat("/a", 100)} {
+			if _, err := svc.CreateService(ctx, CreateServiceInput{
+				DomainID: dom.ID, Name: "x", Path: bad, UpstreamKind: UpstreamKindAddress,
+				Upstream: "10.0.0.9", UpstreamPort: 9000,
+			}); err != ErrInvalidPath {
+				t.Fatalf("path %q 应 ErrInvalidPath,得 %v", bad, err)
+			}
+		}
+		// tcp 服务不允许 path。
+		if _, err := svc.CreateService(ctx, CreateServiceInput{
+			DomainID: dom.ID, Name: "db", Path: "/x", Protocol: ProtocolTCP,
+			Upstream: "10.0.0.9", UpstreamPort: 3306, TCPListenPort: 13306,
+		}); err != ErrInvalidPath {
+			t.Fatalf("tcp + path 应 ErrInvalidPath,得 %v", err)
+		}
+		// 静态形态:上游/端口/前缀统一归零;协议仅 http。
+		got, err := svc.CreateService(ctx, CreateServiceInput{
+			DomainID: dom.ID, Name: "app", Path: "/docs", Protocol: ProtocolHTTP,
+			UpstreamKind: UpstreamKindStatic, Upstream: "should-drop", UpstreamPort: 8080,
+			TCPListenPort: 13306, StripPathPrefix: true,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Upstream != "" || got.UpstreamPort != 0 || got.TCPListenPort != 0 || got.StripPathPrefix {
+			t.Fatalf("静态形态应归零上游/端口/前缀:%+v", got)
+		}
+		if _, err := svc.CreateService(ctx, CreateServiceInput{
+			DomainID: dom.ID, Name: "bad", Protocol: ProtocolTCP, UpstreamKind: UpstreamKindStatic,
+			Upstream: "10.0.0.9", UpstreamPort: 3306, TCPListenPort: 13307,
+		}); err != ErrInvalidProtocol {
+			t.Fatalf("tcp + static 应 ErrInvalidProtocol,得 %v", err)
+		}
+		// 静态服务禁止实例。
+		if _, err := svc.AddInstance(ctx, got.ID, "sv1", "", 80, 80); err != ErrStaticService {
+			t.Fatalf("静态服务加实例应 ErrStaticService,得 %v", err)
+		}
+	})
+}
+
+// TestEnsureServicePathKey 验证 ensure 幂等键 = (基域, 服务名, path):不同 path 建独立服务,
+// 同键刷新而非新建。
+func TestEnsureServicePathKey(t *testing.T) {
+	storetest.ForEachDialect(t, func(t *testing.T, st *store.Store) {
+		svc, _ := newTestService(t, st.DB)
+		ctx := context.Background()
+		dom, err := svc.CreateDomain(ctx, "efg.com")
+		if err != nil {
+			t.Fatal(err)
+		}
+		a, err := svc.EnsureService(ctx, CreateServiceInput{
+			DomainID: dom.ID, Name: "app", UpstreamKind: UpstreamKindStatic,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, err := svc.EnsureService(ctx, CreateServiceInput{
+			DomainID: dom.ID, Name: "app", Path: "/api", UpstreamKind: UpstreamKindAddress,
+			Upstream: "10.0.0.9", UpstreamPort: 9000,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if a.ID == b.ID {
+			t.Fatalf("不同 path 应是两个服务:%s", a.ID)
+		}
+		// 同键再 ensure:刷新(同 ID),且静态形态刷新后仍归零端口。
+		c, err := svc.EnsureService(ctx, CreateServiceInput{
+			DomainID: dom.ID, Name: "app", UpstreamKind: UpstreamKindStatic, UpstreamPort: 9999,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if c.ID != a.ID {
+			t.Fatalf("同键 ensure 应复用服务:%s ≠ %s", c.ID, a.ID)
+		}
+		if c.UpstreamPort != 0 {
+			t.Fatalf("静态服务刷新后端口应归零:%d", c.UpstreamPort)
+		}
+		list, err := svc.ListServices(ctx)
+		if err != nil || len(list) != 2 {
+			t.Fatalf("应恰有 2 个服务:%v %v", list, err)
+		}
+	})
+}
+
+// TestResolveStaticDeploy 验证静态发布目标解析:网关主机列表 + 发布目录;非静态服务拒绝。
+func TestResolveStaticDeploy(t *testing.T) {
+	storetest.ForEachDialect(t, func(t *testing.T, st *store.Store) {
+		svc, _ := newTestService(t, st.DB)
+		ctx := context.Background()
+		dom, err := svc.CreateDomain(ctx, "efg.com")
+		if err != nil {
+			t.Fatal(err)
+		}
+		web, err := svc.CreateService(ctx, CreateServiceInput{
+			DomainID: dom.ID, Name: "app", UpstreamKind: UpstreamKindStatic,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		proxy, err := svc.CreateService(ctx, CreateServiceInput{
+			DomainID: dom.ID, Name: "api", UpstreamKind: UpstreamKindAddress,
+			Upstream: "10.0.0.9", UpstreamPort: 9000,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := svc.ResolveStaticDeploy(ctx, proxy.ID); err != ErrStaticService {
+			t.Fatalf("非静态服务应 ErrStaticService,得 %v", err)
+		}
+		if _, err := svc.ResolveStaticDeploy(ctx, web.ID); err != ErrNoGateway {
+			t.Fatalf("未配网关应 ErrNoGateway,得 %v", err)
+		}
+		if _, err := svc.UpdateSettings(ctx, SettingsUpdate{ServerIDs: &[]string{"srv1", "srv2"}}); err != nil {
+			t.Fatal(err)
+		}
+		spec, err := svc.ResolveStaticDeploy(ctx, web.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if spec.FQDN != "app.efg.com" || spec.ServiceID != web.ID {
+			t.Fatalf("解析不符:%+v", spec)
+		}
+		if len(spec.ServerIDs) != 2 || spec.ServerIDs[0] != "srv1" {
+			t.Fatalf("网关主机不符:%v", spec.ServerIDs)
+		}
+		if want := defaultStaticRoot + "/" + web.ID; spec.BaseDir != want {
+			t.Fatalf("发布目录应 %s,得 %s", want, spec.BaseDir)
 		}
 	})
 }

@@ -1,13 +1,23 @@
 #!/bin/sh
-# Pipewright 本地编译安装(Linux / macOS)。不联网下载二进制,安装你本地 make build 的产物。
+# Pipewright 安装/升级脚本(Linux / macOS)。
 #
-#   make build && sh install.sh
+#   方式一(一键,联网下载 Release 二进制):
+#     curl -fsSL https://raw.githubusercontent.com/<owner>/pipewright/<ref>/install.sh | sh
+#     本地无 make build 产物时自动从 GitHub Release 下载当前平台资产(sha256 校验)。
+#   方式二(本地编译):make build && sh install.sh
 #
-# 流程:定位本地二进制 → 装到 /usr/local/bin → 可选装为 systemd 服务 + Docker 检测。
+# 流程:定位二进制(本地产物优先,缺失自动下载)→ 装到 /usr/local/bin → 可选装为
+# systemd 服务 + Docker 检测。
 # 升级:检测到已有二进制或已装 systemd 服务时自动进入升级模式 —— 仅替换二进制并重启
 # 已有服务,零交互(不询问 Docker 安装与服务安装);SETUP_SERVICE=1 可在升级时重建服务配置。
+# 下载安装即「二进制部署」:会清除源码部署标记(.pipewright-source 与 env 里的
+# PIPEWRIGHT_SOURCE_DIR),Web 端自升级转为直接下载 Release(小内存机器也能一键升级)。
 # 可配环境变量:
-#   BIN_PATH        本地二进制路径;缺省取脚本所在目录的 ./pipewright(即 make build 的产物)。
+#   BIN_PATH            本地二进制路径;缺省取脚本所在目录的 ./pipewright(即 make build 的产物)。
+#   PIPEWRIGHT_VERSION  下载模式钉版本(如 v1.2.3,可省 v);缺省取最新正式版。
+#   PIPEWRIGHT_RELEASE_REPO   发布仓库 owner/name;缺省 huangchengsir/pipewright(fork 发版时指向自己仓库)。
+#   PIPEWRIGHT_RELEASE_MIRROR 镜像 base(须按 GitHub 路径布局转发);缺省 GitHub 官方。
+#   PIPEWRIGHT_NO_DOWNLOAD=1  禁止自动下载:本地无产物时报错(旧行为)。
 #   INSTALL_DIR     安装目录;缺省 /usr/local/bin(不可写时自动 sudo)。
 #   INSTALL_DOCKER  =1 时,Linux 下若缺 Docker 自动经官方 get.docker.com 安装(隔离构建/容器部署需要)。
 #   SETUP_SERVICE   =1 装为 systemd 服务(开机自启 + 崩溃重启 + 自更新可用;Linux,需 root);=0 强制跳过;
@@ -18,7 +28,8 @@
 #                   装服务时选 DB 后端:缺省 sqlite(数据落 /var/lib/pipewright);
 #                   传 mysql + DSN(user:pw@tcp(host:3306)/db?parseTime=true&charset=utf8mb4)则用 MySQL。
 #
-# Windows 不支持此脚本(服务装的是 systemd):请直接运行 make build 产出的 pipewright.exe。
+# Windows 不支持此脚本(服务装的是 systemd):请从 GitHub Release 下载
+# pipewright_<版本>_windows_<架构>.zip 解压后直接运行。
 set -eu
 
 BIN="pipewright"
@@ -35,19 +46,114 @@ err() {
 	exit 1
 }
 
-# 依赖检查:本地二进制必须存在且可执行。
-[ -f "$BIN_PATH" ] || err "找不到 ${BIN_PATH}。请先在仓库根目录执行 make build,或用 BIN_PATH=<路径> 指定。"
-[ -x "$BIN_PATH" ] || err "${BIN_PATH} 不可执行。请确认是 make build 产出的二进制。"
+# ── 下载模式:从 Release 获取平台资产 ─────────────────────────────────
+# download_binary:下载当前平台资产并做 sha256 校验,置 BIN_PATH 指向解包产物。
+# 仓库/镜像语义与后端 internal/version/source.go 一致:PIPEWRIGHT_RELEASE_MIRROR 须按
+# GitHub 路径布局转发;PIPEWRIGHT_RELEASE_REPO 缺省上游仓库(fork 发版时指向自己仓库)。
+# 完整性由 Release 附带的 checksums.txt 把关(与 Web 端自升级同一防线)。
+download_binary() {
+	RELEASE_REPO="${PIPEWRIGHT_RELEASE_REPO:-huangchengsir/pipewright}"
+	WEB_BASE="${PIPEWRIGHT_RELEASE_MIRROR:-https://github.com}"
+	WEB_BASE="${WEB_BASE%/}"
+	command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1 ||
+		err "自动下载需要 curl 或 wget(或在内存充足的机器 make build 后用 BIN_PATH=<路径> 安装)。"
 
-# 平台探测(仅用于决定是否提供 systemd 服务与 Docker 自动安装)。
+	# 解析目标 tag:PIPEWRIGHT_VERSION 钉版本;缺省经 /releases/latest 的 302 重定向取最新
+	# 正式版(不经 API、无限流,与 Go 端自升级同法)。
+	TAG="${PIPEWRIGHT_VERSION:-}"
+	if [ -z "$TAG" ]; then
+		latest_url="${WEB_BASE}/${RELEASE_REPO}/releases/latest"
+		if command -v curl >/dev/null 2>&1; then
+			TAG="$(curl -fsSIL -o /dev/null -w '%{url_effective}' "$latest_url" 2>/dev/null |
+				sed 's|.*/tag/||' | tr -d '\r')"
+		else
+			TAG="$(wget --spider -S --max-redirect=0 "$latest_url" 2>&1 |
+				sed -n 's/^ *Location: //p' | tail -1 | tr -d '\r' | sed 's|.*/tag/||')"
+		fi
+		case "$TAG" in
+		v*) ;;
+		"") err "无法解析最新版本:检查网络与 ${WEB_BASE} 可达性,或用 PIPEWRIGHT_VERSION=v1.2.3 钉版本。" ;;
+		*) err "意外的最新版本引用:${TAG}" ;;
+		esac
+	else
+		# 钉版本时容许省 v 前缀,统一成 tag 形态。
+		case "$TAG" in v*) ;; *) TAG="v${TAG}" ;; esac
+	fi
+	VER="${TAG#v}"
+	ASSET="pipewright_${VER}_${OS}_${ARCH}.tar.gz"
+
+	info "下载 ${RELEASE_REPO} ${TAG}(${ASSET})"
+	DL_DIR="$(mktemp -d)"
+	trap 'rm -rf "$DL_DIR"' EXIT
+	base_url="${WEB_BASE}/${RELEASE_REPO}/releases/download/${TAG}"
+	if command -v curl >/dev/null 2>&1; then
+		curl -fsSL -o "${DL_DIR}/${ASSET}" "${base_url}/${ASSET}" || err "下载失败:${base_url}/${ASSET}"
+		curl -fsSL -o "${DL_DIR}/checksums.txt" "${base_url}/checksums.txt" || err "下载失败:${base_url}/checksums.txt"
+	else
+		wget -qO "${DL_DIR}/${ASSET}" "${base_url}/${ASSET}" || err "下载失败:${base_url}/${ASSET}"
+		wget -qO "${DL_DIR}/checksums.txt" "${base_url}/checksums.txt" || err "下载失败:${base_url}/checksums.txt"
+	fi
+
+	# sha256 校验(checksums.txt 行格式:<sha256>  <文件名>)。
+	want="$(awk -v f="$ASSET" '$NF==f {print $1; exit}' "${DL_DIR}/checksums.txt")"
+	[ -n "$want" ] || err "checksums.txt 中没有 ${ASSET} 的条目。"
+	if command -v sha256sum >/dev/null 2>&1; then
+		got="$(sha256sum "${DL_DIR}/${ASSET}" | cut -d' ' -f1)"
+	elif command -v shasum >/dev/null 2>&1; then
+		got="$(shasum -a 256 "${DL_DIR}/${ASSET}" | cut -d' ' -f1)"
+	else
+		err "需要 sha256sum 或 shasum 校验下载完整性。"
+	fi
+	[ "$got" = "$want" ] || err "sha256 校验失败:期望 ${want},实际 ${got}。"
+
+	tar -xzf "${DL_DIR}/${ASSET}" -C "$DL_DIR" || err "解压 ${ASSET} 失败。"
+	BIN_PATH="${DL_DIR}/pipewright"
+	[ -f "$BIN_PATH" ] || err "资产里没有 ${BIN}。"
+	chmod +x "$BIN_PATH"
+}
+
+# rm_env_line:从 env 文件删除匹配行(经临时文件重写并保留 600 权限;需要时经 sudo)。
+rm_env_line() { # $1 = sed 表达式,如 /^PIPEWRIGHT_SOURCE_DIR=/d
+	if [ "$(id -u)" -eq 0 ]; then
+		sed "$1" "$ENV_FILE_PATH" >"${ENV_FILE_PATH}.pwtmp" &&
+			mv "${ENV_FILE_PATH}.pwtmp" "$ENV_FILE_PATH" && chmod 600 "$ENV_FILE_PATH"
+	elif command -v sudo >/dev/null 2>&1; then
+		sudo sh -c "sed '$1' '$ENV_FILE_PATH' > '$ENV_FILE_PATH.pwtmp' && mv '$ENV_FILE_PATH.pwtmp' '$ENV_FILE_PATH' && chmod 600 '$ENV_FILE_PATH'"
+	fi
+}
+
+# 平台探测(决定下载资产名,及是否提供 systemd 服务与 Docker 自动安装)。
 OS="$(uname -s)"
 case "$OS" in
 Linux) OS="linux" ;;
 Darwin) OS="darwin" ;;
-*) err "不支持的系统:$OS(Windows 请直接运行 make build 产出的 pipewright.exe)。" ;;
+*) err "不支持的系统:$OS(Windows 请从 GitHub Release 下载 zip 解压运行)。" ;;
+esac
+ARCH="$(uname -m)"
+case "$ARCH" in
+x86_64) ARCH="amd64" ;;
+aarch64 | arm64) ARCH="arm64" ;;
+*) err "不支持的架构:$ARCH(发布资产仅覆盖 linux/darwin × amd64/arm64)。" ;;
 esac
 
-info "安装本地编译的 ${BIN}(${BIN_PATH})"
+# 获取二进制:本地产物优先;缺失时自动下载 Release(PIPEWRIGHT_NO_DOWNLOAD=1 恢复旧行为)。
+# curl|sh 管道安装即走此路径 —— 当前目录通常没有构建产物。
+DOWNLOAD=0
+if [ ! -f "$BIN_PATH" ]; then
+	if [ "${PIPEWRIGHT_NO_DOWNLOAD:-}" = "1" ]; then
+		err "找不到 ${BIN_PATH}。请先在仓库根目录执行 make build,或用 BIN_PATH=<路径> 指定。"
+	fi
+	DOWNLOAD=1
+	download_binary
+else
+	[ -x "$BIN_PATH" ] || err "${BIN_PATH} 不可执行。请确认是 make build 产出的二进制。"
+fi
+
+if [ "$DOWNLOAD" = "1" ]; then
+	info "安装下载的 ${BIN} ${TAG}(${BIN_PATH})"
+else
+	info "安装本地编译的 ${BIN}(${BIN_PATH})"
+fi
 
 # 安装:目录不可写则用 sudo。
 info "安装到 ${INSTALL_DIR}…"
@@ -60,12 +166,38 @@ else
 fi
 chmod +x "${INSTALL_DIR}/${BIN}" 2>/dev/null || sudo chmod +x "${INSTALL_DIR}/${BIN}"
 
-# 源码部署标记:记录仓库根目录。平台自升级(设置→系统:git pull + make build + install.sh)
-# 据此识别「源码部署」形态并定位仓库。每次安装/升级都刷新(仓库可能被移动)。
-if [ -w "$INSTALL_DIR" ]; then
-	printf '%s\n' "$SCRIPT_DIR" >"${INSTALL_DIR}/.pipewright-source" 2>/dev/null || true
-elif command -v sudo >/dev/null 2>&1; then
-	printf '%s\n' "$SCRIPT_DIR" | sudo tee "${INSTALL_DIR}/.pipewright-source" >/dev/null 2>&1 || true
+# 部署形态标记:本地编译安装记录源码仓库根,平台自升级据此走 git pull + make build
+# (每次安装/升级都刷新,仓库可能被移动)。下载安装是二进制部署 —— 不写标记,且清掉
+# 旧标记与 env 残留,Web 自升级转为直接下载 Release。
+if [ "$DOWNLOAD" = "1" ]; then
+	if [ -f "${INSTALL_DIR}/.pipewright-source" ]; then
+		rm -f "${INSTALL_DIR}/.pipewright-source" 2>/dev/null ||
+			sudo rm -f "${INSTALL_DIR}/.pipewright-source" 2>/dev/null || true
+		info "已清除源码部署标记:本次起为二进制部署,Web 端自升级将直接下载 Release。"
+	fi
+else
+	if [ -w "$INSTALL_DIR" ]; then
+		printf '%s\n' "$SCRIPT_DIR" >"${INSTALL_DIR}/.pipewright-source" 2>/dev/null || true
+	elif command -v sudo >/dev/null 2>&1; then
+		printf '%s\n' "$SCRIPT_DIR" | sudo tee "${INSTALL_DIR}/.pipewright-source" >/dev/null 2>&1 || true
+	fi
+fi
+
+# 已有 env 文件时同步部署形态:删 PIPEWRIGHT_SOURCE_DIR 残留;记录发布仓库,使 Web 自升级
+# 与本次安装同渠道。SETUP_SERVICE 首装路径在 setup_service 里处理(env 文件彼时才创建)。
+ENV_FILE_PATH=/etc/pipewright/pipewright.env
+if [ "$DOWNLOAD" = "1" ] && [ -f "$ENV_FILE_PATH" ]; then
+	if grep -q '^PIPEWRIGHT_SOURCE_DIR=' "$ENV_FILE_PATH" 2>/dev/null; then
+		rm_env_line '/^PIPEWRIGHT_SOURCE_DIR=/d'
+		info "已从 ${ENV_FILE_PATH} 移除 PIPEWRIGHT_SOURCE_DIR(源码部署残留)。"
+	fi
+	if ! grep -q '^PIPEWRIGHT_RELEASE_REPO=' "$ENV_FILE_PATH" 2>/dev/null; then
+		if [ "$(id -u)" -eq 0 ]; then
+			echo "PIPEWRIGHT_RELEASE_REPO=${RELEASE_REPO}" >>"$ENV_FILE_PATH"
+		elif command -v sudo >/dev/null 2>&1; then
+			echo "PIPEWRIGHT_RELEASE_REPO=${RELEASE_REPO}" | sudo tee -a "$ENV_FILE_PATH" >/dev/null
+		fi
+	fi
 fi
 
 # SELinux(RHEL/CentOS/Rocky/Fedora 系,强制模式):二进制带错误类型时 systemd(init_t)
@@ -131,10 +263,15 @@ setup_service() {
 		$SUDO chmod 600 "$ENV_FILE"
 	fi
 
-	# 源码部署:把仓库根路径记入 env(平台据此识别源码部署并定位仓库做自升级)。
-	# env 文件已存在且缺该项时补写(升级既有安装);仓库移动后改此项即可。
-	if ! grep -q '^PIPEWRIGHT_SOURCE_DIR=' "$ENV_FILE" 2>/dev/null; then
-		echo "PIPEWRIGHT_SOURCE_DIR=${SCRIPT_DIR}" | $SUDO tee -a "$ENV_FILE" >/dev/null
+	# 部署形态记入 env:源码部署记仓库根路径(平台据此识别源码部署并定位仓库做自升级,
+	# 已存在则不重复写;仓库移动后改此项即可);下载安装改记发布仓库,使 Web 自升级与
+	# 安装渠道一致(源码残留的清理已在主流程做过)。
+	if [ "$DOWNLOAD" = "0" ]; then
+		if ! grep -q '^PIPEWRIGHT_SOURCE_DIR=' "$ENV_FILE" 2>/dev/null; then
+			echo "PIPEWRIGHT_SOURCE_DIR=${SCRIPT_DIR}" | $SUDO tee -a "$ENV_FILE" >/dev/null
+		fi
+	elif ! grep -q '^PIPEWRIGHT_RELEASE_REPO=' "$ENV_FILE" 2>/dev/null; then
+		echo "PIPEWRIGHT_RELEASE_REPO=${RELEASE_REPO}" | $SUDO tee -a "$ENV_FILE" >/dev/null
 	fi
 
 	# systemd unit。User=root:自更新须写 ${INSTALL_DIR}、隔离构建须用 docker、SSH 部署须读密钥。
