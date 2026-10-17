@@ -522,7 +522,7 @@ func (b *Builder) runLiftedStagePost(ctx context.Context, r *run.Run, stage pipe
 	}
 	// WithoutCancel:阶段被取消/失败后清理步骤仍能跑(与本地执行器 post 同语义)。
 	pctx := context.WithoutCancel(ctx)
-	proj, _, perr := b.resolve(pctx, r)
+	proj, settings, perr := b.resolve(pctx, r)
 	if perr != nil {
 		_ = rep.Log(pctx, streamStderr, "阶段后置步骤:无法加载项目构建配置,跳过:"+perr.Error())
 		return
@@ -533,7 +533,7 @@ func (b *Builder) runLiftedStagePost(ctx context.Context, r *run.Run, stage pipe
 		return
 	}
 	defer cleanup()
-	b.runStagePost(pctx, &reporterSink{rep: rep}, r, stage, ws, stageFailed, rep)
+	b.runStagePost(pctx, &reporterSink{rep: rep}, r, stage, ws, stageFailed, rep, settings)
 }
 
 // runStageRemote 在远程 runner 上执行本阶段的 script job(见文件头模型)。
@@ -618,8 +618,9 @@ func (b *Builder) runBuildImageJobRemote(ctx context.Context, r *run.Run, stage 
 // serverName 是机器人读显示名(完成日志用);wsSuffix 是远程工作区路径后缀(节点级独立取机时
 // 用 job id 区分同阶段各节点的路径,防同机碰撞)。
 // 与本地路径对齐的语义:克隆后先在控制机工作区恢复上游阶段归档产物(随 tar 一起上传,远程无
-// 制品库来源);env 注入顺序 = 运行参数 → 流水线级变量(settings.Build.Vars,含 secret)→ job
-// 自身 env → PIPEWRIGHT_ENV(同 runScriptJobIsolated;上游 job 输出 env 在远程独立工作区无来源,省)。
+// 制品库来源);env 注入顺序见统一口径(builder.go buildArgs 注释):运行参数 → 流水线级变量
+// (settings.Build.Vars,含 secret)→ job 自身 env → PIPEWRIGHT_ENV(上游 job 输出 env 在远程
+// 独立工作区无来源,省)。
 func (b *Builder) runStageRemote(ctx context.Context, r *run.Run, stage pipeline.Stage, rep dagrun.StageReporter, serverID, serverName string, tgt remoteExec, wsSuffix string) error {
 	// 本节点的全部日志行都归属到该构建机(步骤 × 机器分组展示);控制流(克隆/传输/取消)仍用原 ctx。
 	lctx := run.WithLogMachine(ctx, serverName)

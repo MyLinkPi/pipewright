@@ -20,7 +20,8 @@ import (
 const postTotalTimeout = 10 * time.Minute
 
 // runStagePost 按 condition 顺序执行阶段后置步骤。stageFailed 表示阶段主体是否失败(on_failure/on_success 据此)。
-func (b *Builder) runStagePost(ctx context.Context, sink run.StepSink, r *run.Run, stage pipeline.Stage, workspace string, stageFailed bool, rep dagrun.StageReporter) {
+// settings 供注入流水线级构建变量(统一口径见 builder.go buildArgs 注释);可为 nil(跳过该层注入)。
+func (b *Builder) runStagePost(ctx context.Context, sink run.StepSink, r *run.Run, stage pipeline.Stage, workspace string, stageFailed bool, rep dagrun.StageReporter, settings *pipeline.Settings) {
 	if len(stage.Post) == 0 {
 		return
 	}
@@ -30,6 +31,10 @@ func (b *Builder) runStagePost(ctx context.Context, sink run.StepSink, r *run.Ru
 	statusWord := "成功"
 	if stageFailed {
 		statusWord = "失败"
+	}
+	var pipelineVars []pipeline.BuildVar
+	if settings != nil {
+		pipelineVars = settings.Build.Vars
 	}
 	for i, ps := range stage.Post {
 		if !pipeline.PostConditionMatches(ps.Condition, stageFailed) {
@@ -42,8 +47,9 @@ func (b *Builder) runStagePost(ctx context.Context, sink run.StepSink, r *run.Ru
 			Commands: ps.Commands,
 			WorkDir:  ps.WorkDir,
 		}
-		// post 也享运行参数环境(便于引用分支/参数);不接步骤输出捕获(post 不向下游传值)。
-		step.Env = append(runParamsAsEnv(r.Trigger.Params), step.Env...)
+		// env 按统一口径(见 builder.go buildArgs 注释):运行参数 → 流水线级构建变量;post 无自身
+		// env,无覆盖问题。不接步骤输出捕获(post 不向下游传值)。
+		step.Env = append(runParamsAsEnv(r.Trigger.Params), pipelineVars...)
 		if err := b.runScriptStep(ctx, sink, 0, step, workspace); err != nil {
 			// best-effort:记日志,继续后续 post 步骤,绝不覆盖阶段结果。
 			_ = rep.Log(ctx, streamStderr, fmt.Sprintf("· 阶段后置步骤 #%d 未成功(best-effort,不影响阶段结果):%v", i+1, err))

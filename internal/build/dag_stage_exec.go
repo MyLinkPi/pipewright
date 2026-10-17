@@ -384,7 +384,7 @@ func NewStageExecutor(b *Builder, reportSink TestReportSink) dagrun.StageExecuto
 		// 阶段后置步骤(P1 · 对标 Jenkins post):无论 job 成败,按 condition 在同工作区跑清理/通知/归档
 		// (best-effort,post 失败只记日志、不改阶段结果)。用 WithoutCancel,使取消/失败后清理仍能跑。
 		if hasPost && workspace != "" {
-			b.runStagePost(context.WithoutCancel(ctx), sink, r, stage, workspace, jobErr != nil, rep)
+			b.runStagePost(context.WithoutCancel(ctx), sink, r, stage, workspace, jobErr != nil, rep, settings)
 		}
 		return jobErr
 	}
@@ -575,8 +575,9 @@ func (b *Builder) cloneJobWorkspace(ctx context.Context, r *run.Run, proj *proje
 }
 
 // runScriptJobIsolated 在独立工作区内执行单个 script 类 job(DAG 路径用)。返回该 job 写入
-// $PIPEWRIGHT_ENV 的变量(供下游 needs 合并)。env 注入序与既有串行路径一致:
-// 运行参数 → 上游 job 输出 → job 自身 env → PIPEWRIGHT_ENV。产物 + 测试报告逐 job 收集/门禁。
+// $PIPEWRIGHT_ENV 的变量(供下游 needs 合并)。env 注入序见统一口径(builder.go buildArgs 注释):
+// 运行参数 → 上游 job 输出 → 流水线级构建变量 → job 自身 env → PIPEWRIGHT_ENV。
+// 产物 + 测试报告逐 job 收集/门禁。
 func (b *Builder) runScriptJobIsolated(
 	ctx context.Context,
 	sink *reporterSink,
@@ -930,6 +931,11 @@ func (b *Builder) runBuildImageJob(ctx context.Context, sink run.StepSink, rep d
 	}
 	if cfg.Model == "" {
 		cfg.Model = pipeline.BuildModelDockerfile
+	}
+	// 流水线级构建变量(「变量与缓存」)注入构建:与旧单镜像路径 b.build(settings.Build) 同口径
+	// (统一口径见 builder.go buildArgs 注释),docker build 经 --build-arg、工具链构建经 -e。
+	if settings != nil {
+		cfg.Vars = settings.Build.Vars
 	}
 
 	localTag, art, berr := b.build(ctx, sink, 0, proj, cfg, workspace, commitTag)
