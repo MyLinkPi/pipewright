@@ -323,9 +323,9 @@ func makeMeshPeersDeleteHandler(svc mesh.Service, aud audit.Recorder) http.Handl
 // meshOverviewPeer 是集群页节点行:注册表信息 + EasyTier 链路(p2p/中继)按虚拟 IP 关联。
 type meshOverviewPeer struct {
 	mesh.Peer
-	Online   bool   `json:"online"`   // EasyTier 链路存在且 hello 最近可达
-	LinkType string `json:"linkType"` // p2p | relay | ""
-	RelayVia string `json:"relayVia"` // 中继节点标识(relay 时)
+	Online    bool    `json:"online"`   // EasyTier 链路存在且 hello 最近可达
+	LinkType  string  `json:"linkType"` // p2p | relay | ""
+	RelayVia  string  `json:"relayVia"` // 中继节点标识(relay 时)
 	LatencyMS float64 `json:"latencyMs"`
 }
 

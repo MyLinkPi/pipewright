@@ -115,7 +115,7 @@ func toAIProposalDTO(p *ai.Proposal) *aiProposalDTO {
 			ArtifactType:   p.Build.ArtifactType,
 			DockerfilePath: p.Build.DockerfilePath,
 		},
-		Rationale:      p.Rationale,
+		Rationale: p.Rationale,
 	}
 }
 

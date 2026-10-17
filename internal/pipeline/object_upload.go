@@ -14,8 +14,8 @@ import (
 // 上游判定与 notify_status.go 的 guaranteedBeforeNotify 同口径(跨阶段走 needs 传递闭包 /
 // 线性退化按声明序;同阶段走 job needs 闭包)。
 const (
-	objectUploadType            = "oss_upload"
-	objectUploadArtifactJobKey  = "artifactJob"
+	objectUploadType           = "oss_upload"
+	objectUploadArtifactJobKey = "artifactJob"
 )
 
 // validateObjectUpload 校验全部 oss_upload 节点的 artifactJob 引用(错误归一为 ErrInvalidJob)。

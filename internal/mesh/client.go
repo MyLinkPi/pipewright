@@ -45,7 +45,7 @@ type PushManifest struct {
 	OriginProjectName string `json:"originProjectName"`
 	OriginRunID       string `json:"originRunId"`
 	// RevisionLabel 是本次修订标签(支持 {{branch}}/{{commit}} 等占位,由发送侧渲染)。
-	RevisionLabel string `json:"revisionLabel"`
+	RevisionLabel string     `json:"revisionLabel"`
 	Items         []PushItem `json:"items"`
 }
 

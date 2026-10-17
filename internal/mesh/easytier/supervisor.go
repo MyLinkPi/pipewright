@@ -54,28 +54,28 @@ func Locate(envPath, dataDir, name string) string {
 
 // Config 是监督器启动参数(来自 mesh 设置;Secret 为明文,仅进程内使用,绝不落日志)。
 type Config struct {
-	Mode         string // managed | external
-	RPCAddr      string // easytier-cli --rpc-portal 目标(默认 127.0.0.1:15888)
-	NetworkName  string
+	Mode          string // managed | external
+	RPCAddr       string // easytier-cli --rpc-portal 目标(默认 127.0.0.1:15888)
+	NetworkName   string
 	NetworkSecret string
-	VirtualIP    string // 静态虚拟 IP;空 = --dhcp 自动分配
-	Hostname     string // easytier --hostname(展示名)
-	Peers        []string
-	DataDir      string // 二进制定位目录(<data>/bin)
-	CorePath     string // 已定位的 easytier-core(托管模式必填)
-	CliPath      string // 已定位的 easytier-cli
+	VirtualIP     string // 静态虚拟 IP;空 = --dhcp 自动分配
+	Hostname      string // easytier --hostname(展示名)
+	Peers         []string
+	DataDir       string // 二进制定位目录(<data>/bin)
+	CorePath      string // 已定位的 easytier-core(托管模式必填)
+	CliPath       string // 已定位的 easytier-cli
 }
 
 // Supervisor 是托管模式子进程监督器。零值不可用,经 New 构造;线程安全。
 type Supervisor struct {
 	cfg Config
 
-	mu       sync.Mutex
-	cmd      *exec.Cmd
-	stopped  bool
-	lastErr  string
+	mu        sync.Mutex
+	cmd       *exec.Cmd
+	stopped   bool
+	lastErr   string
 	startedAt time.Time
-	restarts int
+	restarts  int
 }
 
 // New 构造监督器(不启动;Start 拉起)。

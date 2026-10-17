@@ -41,10 +41,10 @@ func (s stubVault) Exists(id string) (bool, error) {
 
 // stubClient 是注入用的假 DNSClient:记录 Verify/Ensure/Delete 调用,可配置逐 zone 校验错误。
 type stubClient struct {
-	verifyCalls  []string          // 每次 VerifyZone 的 zone 参数
-	ensureZones  []string          // 每次 EnsureARecord 的 zone 参数
-	deleteZones  []string          // 每次 DeleteARecord 的 zone 参数
-	verifyErrBy  map[string]error  // zone → 校验错误(缺省 nil)
+	verifyCalls []string         // 每次 VerifyZone 的 zone 参数
+	ensureZones []string         // 每次 EnsureARecord 的 zone 参数
+	deleteZones []string         // 每次 DeleteARecord 的 zone 参数
+	verifyErrBy map[string]error // zone → 校验错误(缺省 nil)
 }
 
 func (c *stubClient) EnsureARecord(_ context.Context, zone, _, _ string) error {
@@ -288,8 +288,8 @@ func TestZoneCoveringAndDeleteRecord(t *testing.T) {
 
 	// ZoneCovers:等值 / 后缀 / 最长后缀 / 不覆盖。
 	cases := []struct {
-		fqdn         string
-		covered, ok  bool
+		fqdn        string
+		covered, ok bool
 	}{
 		{"example.com", true, true},
 		{"a.example.com", true, true},

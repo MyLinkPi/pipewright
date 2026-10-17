@@ -81,7 +81,7 @@ func sampleProposal() *ai.Proposal {
 			Toolchain:    ai.ProposalToolchain{Language: "node", Version: "22"},
 			ArtifactType: "image",
 		},
-		Rationale:      "检测到 Node 22",
+		Rationale: "检测到 Node 22",
 	}
 }
 

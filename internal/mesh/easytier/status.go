@@ -28,8 +28,8 @@ type Link struct {
 	LossRate  string  `json:"lossRate"`
 	RxBytes   uint64  `json:"rxBytes"`
 	TxBytes   uint64  `json:"txBytes"`
-	Tunnel    string  `json:"tunnel"`  // 原始 tunnel/conn 字段(p2p / relay(x))
-	Relay     bool    `json:"relay"`   // 是否经中继
+	Tunnel    string  `json:"tunnel"`   // 原始 tunnel/conn 字段(p2p / relay(x))
+	Relay     bool    `json:"relay"`    // 是否经中继
 	RelayVia  string  `json:"relayVia"` // 中继节点(虚拟 IP 或 peer 标识)
 }
 
@@ -51,9 +51,9 @@ type StatusProvider struct {
 	cliPath string
 	rpcAddr string
 
-	mu       sync.Mutex
-	cached   *Status
-	fetched  time.Time
+	mu         sync.Mutex
+	cached     *Status
+	fetched    time.Time
 	refreshing bool
 }
 

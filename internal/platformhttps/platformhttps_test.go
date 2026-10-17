@@ -557,7 +557,7 @@ func TestDetect(t *testing.T) {
 				return &cmdRes{code: 0, stdout: "include /etc/nginx/conf.d/*.conf;\n..."}
 			case joined == "id -u":
 				return &cmdRes{code: 0, stdout: "0"}
-			case joined == "test -f " + managedConfPath:
+			case joined == "test -f "+managedConfPath:
 				return &cmdRes{code: 0}
 			}
 			return nil

@@ -291,6 +291,7 @@ func WithAccount(s accountService) Option {
 //   - 公开:POST /api/auth/register、GET /api/auth/invitations/{token};
 //   - 管理员:GET /api/users、/api/invitations*、/api/projects/{id}/members*;
 //   - 并为受保护 /api 组启用普通用户默认拒绝门(memberGate)。
+//
 // 不传则相关端点返回 503;普通用户会话(memberGate 依赖 identity)一律拒绝。
 func WithIdentity(s identity.Service) Option {
 	return func(o *options) { o.identity = s }
@@ -399,7 +400,6 @@ func WithCertMgmt(s certmgmt.Service) Option {
 func WithDNSProviders(s dnsprovider.Service) Option {
 	return func(o *options) { o.dnsProviders = s }
 }
-
 
 // WithServiceReg 注入「服务注册网关」(nginx)服务,挂载 /api/servicereg/* 路由
 // (GET auth;写方法 auth + CSRF + 审计)。

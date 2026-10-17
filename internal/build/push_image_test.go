@@ -71,7 +71,7 @@ func TestPushPlansByBuildNode(t *testing.T) {
 		t.Fatalf("无 artifactJob 不应产生计划: %+v", plans)
 	}
 
-// 有 artifactJob 但仓库不可解析(无内置)→ Referenced=true、Specs 为空。
+	// 有 artifactJob 但仓库不可解析(无内置)→ Referenced=true、Specs 为空。
 	plans = (&Builder{}).pushPlansByBuildNode(context.Background(), []pipeline.Job{
 		buildImageJobSet("构建镜像"),
 		pushImageJob(map[string]any{"artifactJob": "构建镜像"}),

@@ -208,7 +208,6 @@ func TestSettingsSaveDuplicateIDsRejected(t *testing.T) {
 		t.Fatalf("变量 id 重复 err = %v, want ErrInvalidVar", err)
 	}
 
-
 	// 步骤 id 重复 → ErrInvalidStep。
 	_, err = svc.Save(ctx, projID, SettingsInput{
 		Steps: []PipelineStep{

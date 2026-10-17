@@ -22,13 +22,13 @@ import (
 
 // 凭据类型枚举(DB 存 snake_case 字串;JSON camelCase 字段)。
 const (
-	TypeGitToken    = "git_token"
-	TypeGitHTTP     = "git_http" // Git HTTPS 用户名 + 密码或 Token
-	TypeSSHKey      = "ssh_key"
-	TypeRegistry    = "registry"
-	TypeSSHPassword = "ssh_password" // SSH 登录密码(非 PEM);SSH 层据 looksLikePEM 自动按密码认证
-	TypeDNSToken    = "dns_token"    // DNS 提供商 API 凭据(单字串:Cloudflare token / 「ID,Secret」);掩码走 default 全打点
-	TypeSudoPassword = "sudo_password" // 服务器登录用户的 sudo 密码(非 PEM);供提权场景经 sudo -S 从 stdin 喂入;掩码走 default 全打点
+	TypeGitToken          = "git_token"
+	TypeGitHTTP           = "git_http" // Git HTTPS 用户名 + 密码或 Token
+	TypeSSHKey            = "ssh_key"
+	TypeRegistry          = "registry"
+	TypeSSHPassword       = "ssh_password"        // SSH 登录密码(非 PEM);SSH 层据 looksLikePEM 自动按密码认证
+	TypeDNSToken          = "dns_token"           // DNS 提供商 API 凭据(单字串:Cloudflare token / 「ID,Secret」);掩码走 default 全打点
+	TypeSudoPassword      = "sudo_password"       // 服务器登录用户的 sudo 密码(非 PEM);供提权场景经 sudo -S 从 stdin 喂入;掩码走 default 全打点
 	TypeObjectStoreSecret = "object_store_secret" // 对象存储 AccessKeySecret(单字串);由「对象存储」页管理;掩码走 default 全打点
 )
 

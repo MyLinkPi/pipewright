@@ -32,10 +32,10 @@ type meshRuntime struct {
 	// 亦可手动触发。nil = 禁用自动下载(退回手工放置二进制的既有行为)。
 	downloader *easytier.Downloader
 
-	mu          sync.Mutex
-	supervisor  *easytier.Supervisor
-	status      *easytier.StatusProvider
-	external    bool
+	mu         sync.Mutex
+	supervisor *easytier.Supervisor
+	status     *easytier.StatusProvider
+	external   bool
 	// supervisorKey 是当前监督器对应的设置指纹;变化即重建。
 	supervisorKey string
 	// statusRPC 记录当前状态查询器绑定的 RPC 地址。

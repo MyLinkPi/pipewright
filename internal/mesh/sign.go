@@ -2,12 +2,12 @@
 //
 // 签名串(ed25519,base64 编码放 X-PW-Mesh-Sig):
 //
-//	METHOD + "\n" + path + "\n" + bodyHash + "\n" + timestamp
+//		METHOD + "\n" + path + "\n" + bodyHash + "\n" + timestamp
 //
-//   - bodyHash 为请求头 X-PW-Mesh-Body 的值(小 JSON 请求 = body 的 sha256 hex,由发送方
-//     计算并随头携带;流式推送等大体量请求省略该头,签名串取 "-",完整性改由应用层逐 blob
-//     sha256 校验兜底)。接收方不读 body 即可验签,避免为验签缓冲整个上传流。
-//   - timestamp 为 Unix 秒;接收方校验 ±SignatureWindow 防重放。
+//	  - bodyHash 为请求头 X-PW-Mesh-Body 的值(小 JSON 请求 = body 的 sha256 hex,由发送方
+//	    计算并随头携带;流式推送等大体量请求省略该头,签名串取 "-",完整性改由应用层逐 blob
+//	    sha256 校验兜底)。接收方不读 body 即可验签,避免为验签缓冲整个上传流。
+//	  - timestamp 为 Unix 秒;接收方校验 ±SignatureWindow 防重放。
 package mesh
 
 import (

@@ -22,9 +22,9 @@ import (
 type DeploymentMode string
 
 const (
-	ModeBinary  DeploymentMode = "binary" // 裸机 / release 二进制 —— 可自替换 + 自重启
-	ModeDocker  DeploymentMode = "docker" // 容器 —— 不能替换自身镜像,给升级命令
-	ModeSource  DeploymentMode = "source" // 源码部署(git clone + make build + install.sh)—— git pull 重建
+	ModeBinary DeploymentMode = "binary" // 裸机 / release 二进制 —— 可自替换 + 自重启
+	ModeDocker DeploymentMode = "docker" // 容器 —— 不能替换自身镜像,给升级命令
+	ModeSource DeploymentMode = "source" // 源码部署(git clone + make build + install.sh)—— git pull 重建
 )
 
 // Mode 探测当前部署形态,决定自更新策略。优先级:显式 PIPEWRIGHT_RUNTIME(docker|source)

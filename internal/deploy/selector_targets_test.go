@@ -73,8 +73,8 @@ func TestDeployNoTargetsSkips(t *testing.T) {
 
 	svc := New(tgt, rsvc)
 	for name, selector := range map[string]string{
-		"空选择器":       "",
-		"零命中":        "gpu",
+		"空选择器":     "",
+		"零命中":      "gpu",
 		"钉单机但机器已删": "server:gone",
 	} {
 		res, err := svc.Deploy(context.Background(), DeployInput{RunID: runID, ArtifactID: artID, Selector: selector})

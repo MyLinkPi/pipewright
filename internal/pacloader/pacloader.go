@@ -25,8 +25,8 @@ import (
 	"strings"
 
 	"github.com/huangchengsir/pipewright/internal/pipeline"
-	"github.com/huangchengsir/pipewright/internal/vault"
 	"github.com/huangchengsir/pipewright/internal/pipelineyaml"
+	"github.com/huangchengsir/pipewright/internal/vault"
 )
 
 // DefaultFile 是仓库根「流水线即代码」文件名。

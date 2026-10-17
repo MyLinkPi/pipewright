@@ -233,7 +233,7 @@ func errorCode(t *testing.T, resp *http.Response) string {
 }
 
 // TestChangePasswordLockout 连续错当前口令 5 次后,即使口令正确也 429 locked_out
-//(防已持会话者无限试当前口令)。
+// (防已持会话者无限试当前口令)。
 func TestChangePasswordLockout(t *testing.T) {
 	srv, client, csrf, _ := setupAccountServer(t)
 

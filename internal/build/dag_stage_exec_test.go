@@ -642,7 +642,7 @@ func TestRunDeployJobPassesImageParams(t *testing.T) {
 }
 
 // TestRunDeployJobSelectorKey 证:节点 `selector` 键优先于旧 `serverId` 键原样透传
-//(标签圈选多机部署的入口);两者皆空 → 不调部署服务、节点按跳过成功(不再失败)。
+// (标签圈选多机部署的入口);两者皆空 → 不调部署服务、节点按跳过成功(不再失败)。
 func TestRunDeployJobSelectorKey(t *testing.T) {
 	dep := &stubStageDeployer{}
 	b := &Builder{deployer: dep}

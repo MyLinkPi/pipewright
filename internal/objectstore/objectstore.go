@@ -104,7 +104,7 @@ type RegisterInput struct {
 }
 
 // RegisterResult 是自动登记结果:配置视图 + 是否命中既有配置原地更新 + 尽力而为环节
-//(建桶)的结果说明(空串 = 无异常)。
+// (建桶)的结果说明(空串 = 无异常)。
 type RegisterResult struct {
 	Provider *Provider
 	Updated  bool

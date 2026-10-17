@@ -112,7 +112,7 @@ type releaseAsset struct {
 }
 
 type releaseInfo struct {
-	TagName string          `json:"tag_name"`
+	TagName string         `json:"tag_name"`
 	Assets  []releaseAsset `json:"assets"`
 }
 

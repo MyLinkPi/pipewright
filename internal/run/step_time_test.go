@@ -157,13 +157,13 @@ func TestStepDoneText(t *testing.T) {
 // TestElapsedText 耗时人读格式化(秒级;与前端步骤耗时口径一致)。
 func TestElapsedText(t *testing.T) {
 	cases := map[time.Duration]string{
-		0:                             "0s",
-		12 * time.Second:              "12s",
-		65 * time.Second:              "1m05s",
-		2*time.Hour + 3*time.Minute:   "2h03m",
-		-1 * time.Second:              "0s", // 负值(时钟回拨防御)归零
-		59 * time.Second:              "59s",
-		60 * time.Second:              "1m00s",
+		0:                           "0s",
+		12 * time.Second:            "12s",
+		65 * time.Second:            "1m05s",
+		2*time.Hour + 3*time.Minute: "2h03m",
+		-1 * time.Second:            "0s", // 负值(时钟回拨防御)归零
+		59 * time.Second:            "59s",
+		60 * time.Second:            "1m00s",
 	}
 	for d, want := range cases {
 		if got := elapsedText(d); got != want {
