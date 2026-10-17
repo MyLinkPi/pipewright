@@ -6,8 +6,8 @@
 单个 Go 静态二进制(内嵌前端,运行时零依赖),
 一个工具替掉「CI + Ansible/Kamal + Portainer」三件套。
 
-[![Release](https://img.shields.io/github/v/release/huangchengsir/pipewright)](https://github.com/huangchengsir/pipewright/releases)
-[![CI](https://github.com/huangchengsir/pipewright/actions/workflows/ci.yml/badge.svg)](https://github.com/huangchengsir/pipewright/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/MyLinkPi/pipewright)](https://github.com/MyLinkPi/pipewright/releases)
+[![CI](https://github.com/MyLinkPi/pipewright/actions/workflows/ci.yml/badge.svg)](https://github.com/MyLinkPi/pipewright/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 [English](README.md) | 简体中文
@@ -101,26 +101,34 @@
 本地无构建产物时,`install.sh` 自动从 GitHub Release 下载当前平台二进制(sha256 校验)并安装 —— 无需 Go/Node,小内存机器也无需本地编译:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/huangchengsir/pipewright/master/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/MyLinkPi/pipewright/master/install.sh | sh
 
 # 直接装为 systemd 服务(开机自启 + 一键自更新;Linux,需 root):
-curl -fsSL https://raw.githubusercontent.com/huangchengsir/pipewright/master/install.sh | SETUP_SERVICE=1 sh
+curl -fsSL https://raw.githubusercontent.com/MyLinkPi/pipewright/master/install.sh | SETUP_SERVICE=1 sh
 
 # 从自己的 fork 发版仓库下载(fork 推 v* tag,GitHub Actions 自动出包),或用 PIPEWRIGHT_VERSION=v1.2.3 钉版本:
 curl -fsSL https://raw.githubusercontent.com/<owner>/pipewright/master/install.sh | \
   PIPEWRIGHT_RELEASE_REPO=<owner>/pipewright sh
 ```
 
+GitHub 不可达的网络(如境内)可经前缀式代理安装,升级源同步走代理:
+
+```bash
+curl -fsSL https://gh-proxy.com/https://raw.githubusercontent.com/MyLinkPi/pipewright/master/install.sh | \
+  SETUP_SERVICE=1 PIPEWRIGHT_RELEASE_REPO=MyLinkPi/pipewright \
+  PIPEWRIGHT_RELEASE_MIRROR=https://gh-proxy.com/https://github.com sh
+```
+
 升级即**重跑同一命令**:自动进入升级模式,替换二进制并重启服务。GitHub 不可达时可用 `PIPEWRIGHT_RELEASE_MIRROR` 指向镜像(GitHub 路径兼容反代,或 `https://gh-proxy.com/https://github.com` 这类前缀式代理);`PIPEWRIGHT_NO_DOWNLOAD=1` 恢复「本地无产物即报错」的旧行为。
 
-> Windows 用户:从 [Releases](https://github.com/huangchengsir/pipewright/releases) 下载 `pipewright_<版本>_windows_<架构>.zip` 解压后直接运行 `pipewright.exe`(无 systemd,install.sh 不适用)。
+> Windows 用户:从 [Releases](https://github.com/MyLinkPi/pipewright/releases) 下载 `pipewright_<版本>_windows_<架构>.zip` 解压后直接运行 `pipewright.exe`(无 systemd,install.sh 不适用)。
 
 ### ② 本地编译安装(Linux / macOS)
 
 `install.sh` 安装**本地 `make build` 产出的二进制**到 `/usr/local/bin`(含 Docker 检测;仓库根无产物时自动转入①的下载安装),需先装 Go 与 Node:
 
 ```bash
-git clone https://github.com/huangchengsir/pipewright && cd pipewright
+git clone https://github.com/MyLinkPi/pipewright && cd pipewright
 make build
 sh install.sh
 
@@ -145,13 +153,13 @@ SETUP_SERVICE=1 PIPEWRIGHT_DB_DRIVER=mysql \
   sh install.sh
 ```
 
-> Windows 用户:在 Git Bash 里 `make build` 后直接运行 `./pipewright.exe`,或从 [Releases](https://github.com/huangchengsir/pipewright/releases) 下载 zip 解压运行(无 systemd,install.sh 不适用)。
+> Windows 用户:在 Git Bash 里 `make build` 后直接运行 `./pipewright.exe`,或从 [Releases](https://github.com/MyLinkPi/pipewright/releases) 下载 zip 解压运行(无 systemd,install.sh 不适用)。
 
 ### ③ docker compose(推荐自托管)
 
 ```bash
-curl -fsSLO https://raw.githubusercontent.com/huangchengsir/pipewright/master/docker-compose.yml
-curl -fsSLO https://raw.githubusercontent.com/huangchengsir/pipewright/master/.env.example
+curl -fsSLO https://raw.githubusercontent.com/MyLinkPi/pipewright/master/docker-compose.yml
+curl -fsSLO https://raw.githubusercontent.com/MyLinkPi/pipewright/master/.env.example
 cp .env.example .env       # 生成 MASTER_KEY:openssl rand -base64 32;管理员口令可不设(首启随机生成)
 docker compose up -d       # 数据持久化在具名卷 pipewright-data;切 MySQL 见 .env 注释
 ```
@@ -161,7 +169,7 @@ docker compose up -d       # 数据持久化在具名卷 pipewright-data;切 MyS
 ```bash
 docker run -d -p 8080:8080 -v pipewright-data:/data \
   -e PIPEWRIGHT_MASTER_KEY=$(openssl rand -base64 32) \
-  ghcr.io/huangchengsir/pipewright:latest
+  ghcr.io/mylinkpi/pipewright:latest
 # 管理员初始口令(随机生成,0600):docker exec <容器> cat /data/admin_password.txt
 ```
 
@@ -198,7 +206,7 @@ sh install.sh       # 亦可把构建产物装到 /usr/local/bin(见「本地编
 | `PIPEWRIGHT_ADDR` | HTTP 监听地址 | `:8080` |
 | `PIPEWRIGHT_ADMIN_USERNAME` | 首次启动管理员用户名 | `admin` |
 | `PIPEWRIGHT_TRUST_PROXY` | 采信转发头(`X-Real-IP` 优先,其次 `X-Forwarded-For` 首段)作为审计来源 IP(`1`/`true`/`yes`/`on`)。本机反代(对端为 127.0.0.1/::1,如平台 HTTPS 内置 nginx)无需此变量即自动采信;它只对**非回环**的外部反代生效 —— 除非前面确有可信反代,否则别开,否则任意客户端都能伪造审计来源 IP | 关 |
-| `PIPEWRIGHT_RELEASE_REPO` | 检查更新所查的仓库(fork 可改) | `huangchengsir/pipewright` |
+| `PIPEWRIGHT_RELEASE_REPO` | 检查更新所查的仓库(fork 可改) | `mylinkpi/pipewright`(发版构建注入,跟随构建仓库;本地 `make build` 回落 `huangchengsir/pipewright`) |
 | `PIPEWRIGHT_RELEASE_MIRROR` | 自升级镜像源 base URL(部署级兜底;运行时改用 **设置 → 系统 → 升级源**,库内配置优先) | 空(GitHub 官方源) |
 | `PIPEWRIGHT_RUNTIME` | 设 `docker`/`source` 显式声明部署形态(影响自更新方式);否则自动探测(`/.dockerenv` / 源码仓库标记) | 自动探测 |
 | `PIPEWRIGHT_SOURCE_DIR` | 源码部署的仓库根目录(install.sh 装服务时自动写入;手动源码部署可自设) | 自动探测 |
@@ -368,7 +376,7 @@ stages:
 
 ## 开发状态
 
-✅ **已正式发布**,持续迭代中 —— 最新版本见 [Releases](https://github.com/huangchengsir/pipewright/releases)(tag 驱动发版:6 平台二进制 + ghcr 多架构镜像)。已在真实生产环境承载多项目的构建、部署与日常运维。
+✅ **已正式发布**,持续迭代中 —— 最新版本见 [Releases](https://github.com/MyLinkPi/pipewright/releases)(tag 驱动发版:6 平台二进制 + ghcr 多架构镜像)。已在真实生产环境承载多项目的构建、部署与日常运维。
 
 ## 贡献 / Contributing
 
