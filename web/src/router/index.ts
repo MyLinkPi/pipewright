@@ -35,6 +35,9 @@ const Databases = () => import('../views/Databases.vue')
 const AnomalyDetection = () => import('../views/AnomalyDetection.vue')
 // 集群(对等节点 + EasyTier 自组网):节点状态/链路(p2p|中继)总览 + 授权管理入口
 const Cluster = () => import('../views/Cluster.vue')
+// Ceph 集群部署与管理:cephadm 引导向导 + 状态/主机/OSD/存储池/RBD/CephFS 管理
+const Ceph = () => import('../views/Ceph.vue')
+const CephClusterDetail = () => import('../views/CephClusterDetail.vue')
 const SettingsMesh = () => import('../views/settings/SettingsMesh.vue')
 const Settings    = () => import('../views/Settings.vue')
 const SettingsAI  = () => import('../views/settings/SettingsAI.vue')
@@ -160,6 +163,9 @@ const router = createRouter({
         { path: 'server-status', name: 'server-status', component: ServerStatus, meta: { title: '服务器状态' } },
         // 集群:对等节点总览(EasyTier 链路 p2p/中继、机器状态、流水线状态;FR-集群)
         { path: 'cluster', name: 'cluster', component: Cluster, meta: { title: '集群', roles: ['admin'] } },
+        // Ceph 集群:部署向导(cephadm)+ 管理(状态/主机/OSD/池/RBD/CephFS)
+        { path: 'ceph', name: 'ceph', component: Ceph, meta: { title: 'Ceph', roles: ['admin'] } },
+        { path: 'ceph/:id', name: 'ceph-cluster-detail', component: CephClusterDetail, meta: { title: 'Ceph 集群', roles: ['admin'] } },
 
         { path: 'containers', name: 'containers', component: Containers, meta: { title: '容器' } },
         // 服务注册网关(nginx):abc.efg.com 子域名反代 + TCP 透传 + 泛域名证书上传。

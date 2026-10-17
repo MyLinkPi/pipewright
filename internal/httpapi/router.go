@@ -23,6 +23,7 @@ import (
 	"github.com/huangchengsir/pipewright/internal/artifactstore"
 	"github.com/huangchengsir/pipewright/internal/audit"
 	"github.com/huangchengsir/pipewright/internal/auth"
+	"github.com/huangchengsir/pipewright/internal/ceph"
 	"github.com/huangchengsir/pipewright/internal/certmgmt"
 	"github.com/huangchengsir/pipewright/internal/chain"
 	"github.com/huangchengsir/pipewright/internal/cron"
@@ -124,6 +125,14 @@ type options struct {
 	serverCmds       *servercmd.Service
 	registryHub      registryHubService
 	mesh             *meshAdminDeps
+	ceph             ceph.Service
+}
+
+// WithCeph 注入 Ceph 集群部署与管理服务(internal/ceph),在 admin 组挂载 /api/ceph/* 路由
+// (集群登记/部署管线/状态 + 主机/OSD/存储池/RBD/CephFS 管理;GET 过 auth,写方法过
+// auth + CSRF + 审计)。不传则 Ceph 功能整体不可用(端点 503)。
+func WithCeph(s ceph.Service) Option {
+	return func(o *options) { o.ceph = s }
 }
 
 // WithMesh 注入集群(对等节点 + EasyTier)依赖,挂载两组路由:
@@ -624,6 +633,10 @@ func New(webFS fs.FS, authn auth.Authenticator, opts ...Option) http.Handler {
 			// 数据库管理面(管理员):MySQL/PostgreSQL 实例注册 + phpMyAdmin 式在线管理。
 			if o.dbAdmin != nil {
 				mountDBAdmin(ar, o.dbAdmin, aud)
+			}
+			// Ceph 管理面(管理员):集群登记/cephadm 部署管线/状态 + 主机/OSD/池/RBD/CephFS 管理。
+			if o.ceph != nil {
+				mountCeph(ar, o.ceph, aud)
 			}
 		})
 

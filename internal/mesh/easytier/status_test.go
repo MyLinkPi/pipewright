@@ -1,22 +1,25 @@
 // status_test.go 用注入的 fake CLI runner 验证状态采集的关键行为:
 //   - 形态探测:新版旗子前置(-o json node info)优先,旧版旗子后置兜底,命中后缓存;
 //   - stderr 透出与提示:连不上 RPC → 追加「可能未运行」提示;参数不识别 → 追加版本提示;
-//   - 解析归并:node/peer/route 三路数据合成 Status(p2p/中继判定走 route 交叉验证)。
+//   - 解析归并:node/peer/route 三路数据合成 Status(p2p/中继判定走 route 交叉验证);
+//   - Get 缓存语义:真后台刷新(调用即回、采集不随请求取消),取消类失败不清缓存。
 package easytier
 
 import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 // fakeCLI 按「形态签名 → 响应」模拟 easytier-cli:未匹配的形态返回退出码 2 风格错误
 // (stderr 即原因),模拟真实 clap 行为。
 type fakeCLI struct {
-	responses map[string]string   // 形态签名(动词串) → JSON 输出
-	stderr    map[string]string   // 形态签名 → 失败 stderr
-	calls     []string            // 记录实际调用形态(验证缓存命中)
+	responses map[string]string // 形态签名(动词串) → JSON 输出
+	stderr    map[string]string // 形态签名 → 失败 stderr
+	calls     []string          // 记录实际调用形态(验证缓存命中)
 }
 
 func shapeKey(args []string) string { return describeArgs(args) }
@@ -87,8 +90,8 @@ func TestStatusProbesShapesAndCaches(t *testing.T) {
 func TestStatusFallsBackToOldStyleFlags(t *testing.T) {
 	// 模拟旧版 CLI:不认旗子前置,只认「node --output json」后置形态。
 	fake := &fakeCLI{responses: map[string]string{
-		"node": `{"hostname":"old","ipv4":"10.1.1.1"}`,
-		"peer": `[]`,
+		"node":  `{"hostname":"old","ipv4":"10.1.1.1"}`,
+		"peer":  `[]`,
 		"route": `[]`,
 	}}
 	p := newStatusProviderForTest(fake.run)
@@ -116,5 +119,101 @@ func TestStatusHintsOnConnectAndVersionErrors(t *testing.T) {
 	st2 := p2.collect(context.Background())
 	if st2.Err == "" || !strings.Contains(st2.Err, "版本可能过旧") {
 		t.Fatalf("version hint missing: %q", st2.Err)
+	}
+}
+
+// goodResponses 是一份可正常采集的最小响应(node 有 SelfIP 便于断言)。
+func goodResponses() map[string]string {
+	return map[string]string{
+		"node info":  `{"hostname":"alpha","virtual_ipv4":{"addr":"10.126.126.1"}}`,
+		"peer list":  `[]`,
+		"route list": `[]`,
+	}
+}
+
+// waitRefreshSettled 等待后台刷新单飞结束并返回当前缓存(测试与刷新 goroutine 经
+// p.mu 建立先后关系,可安全读取 runnerCtx 等旁路写入)。
+func waitRefreshSettled(t *testing.T, p *StatusProvider) *Status {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		p.mu.Lock()
+		st := p.cached
+		busy := p.refreshing
+		p.mu.Unlock()
+		if !busy && st != nil {
+			return st
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	t.Fatal("background refresh did not settle in time")
+	return nil
+}
+
+func TestStatusGetRefreshesInBackgroundAndSurvivesRequestCancel(t *testing.T) {
+	fake := &fakeCLI{responses: goodResponses()}
+	// 首个 CLI 调用阻塞到 release:让采集「正在进行」跨越请求取消的时刻。
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	var runnerCtx context.Context
+	run := func(ctx context.Context, args []string) ([]byte, error) {
+		once.Do(func() {
+			runnerCtx = ctx
+			close(started)
+		})
+		select {
+		case <-ctx.Done(): // 请求取消若传导进刷新 context,采集即失败(测试据此失败)
+			return nil, ctx.Err()
+		case <-release:
+		}
+		return fake.run(ctx, args)
+	}
+	p := newStatusProviderForTest(run)
+
+	reqCtx, cancel := context.WithCancel(context.Background())
+	// 真后台:首次调用立即返回占位(尚无缓存),不内联等待采集。
+	if st := p.Get(reqCtx); st.SelfIP != "" {
+		t.Fatalf("first Get should not block on collect: %+v", st)
+	}
+	<-started
+	cancel()
+	time.Sleep(20 * time.Millisecond) // 给「误随请求取消」留暴露窗口
+	if runnerCtx.Err() != nil {
+		t.Fatalf("refresh ctx must outlive request cancel: %v", runnerCtx.Err())
+	}
+	// 放行采集:请求已取消,刷新仍应正常完成并落缓存。
+	close(release)
+	if got := waitRefreshSettled(t, p); got.SelfIP != "10.126.126.1" {
+		t.Fatalf("refresh after request cancel should fill cache: %+v", got)
+	}
+}
+
+func TestStatusCanceledRefreshKeepsLastGood(t *testing.T) {
+	fake := &fakeCLI{responses: goodResponses()}
+	p := newStatusProviderForTest(fake.run)
+	_ = p.Get(context.Background())
+	if got := waitRefreshSettled(t, p); got.SelfIP != "10.126.126.1" {
+		t.Fatalf("no good snapshot cached: %+v", got)
+	}
+
+	// CLI 开始返回取消类错误(所有形态);TTL 过期后 Get:立即回旧值。
+	fake.stderr = map[string]string{}
+	for _, k := range []string{"node info", "node", "peer list", "peer", "route list", "route"} {
+		fake.stderr[k] = "context canceled"
+	}
+	p.mu.Lock()
+	p.fetched = time.Now().Add(-statusTTL - time.Second)
+	p.mu.Unlock()
+
+	if st := p.Get(context.Background()); st.SelfIP != "10.126.126.1" {
+		t.Fatalf("Get should return last good snapshot: %+v", st)
+	}
+	waitRefreshSettled(t, p) // 等这轮失败刷新结束
+	p.mu.Lock()
+	got := p.cached
+	p.mu.Unlock()
+	if got == nil || got.SelfIP != "10.126.126.1" || got.Err != "" {
+		t.Fatalf("canceled refresh must not evict last good snapshot: %+v", got)
 	}
 }
