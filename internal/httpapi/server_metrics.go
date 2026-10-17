@@ -910,9 +910,11 @@ var pseudoFsDevices = map[string]bool{
 }
 
 // pseudoMountPrefixes 是伪文件系统/容器运行时的典型挂载点前缀(snap squashfs、docker
-// overlay 合并层等 —— 这些行的设备名多为 /dev/loopN 或具体块设备,按设备名拦不住)。
+// overlay 合并层等 —— 这些行的设备名多为 /dev/loopN 或具体块设备,按设备名拦不住),
+// 以及 /boot:独立的引导/EFI 小分区是真实块设备但容量常年不变,不属于用户关心的
+// 「磁盘」,与 /boot/efi 一并按前缀隐藏。
 var pseudoMountPrefixes = []string{
-	"/proc", "/sys", "/dev", "/run", "/snap", "/var/lib/snapd",
+	"/proc", "/sys", "/dev", "/run", "/snap", "/boot", "/var/lib/snapd",
 	"/var/lib/docker", "/var/lib/containers", "/var/lib/kubelet", "/mnt/wsl",
 }
 

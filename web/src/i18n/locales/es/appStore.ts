@@ -45,6 +45,7 @@ export default {
     generated: "Effective params (shown once — store them safely)",
     onceHint: "Generated passwords also live in the compose file on the target host (see its Stacks tab).",
     autoRegistered: "Registrado automáticamente como configuración de almacenamiento",
+    dbAutoRegistered: "Registrado automáticamente como instancia de base de datos",
     close: "Close",
 
     regTitle: "Registrar en la pasarela",

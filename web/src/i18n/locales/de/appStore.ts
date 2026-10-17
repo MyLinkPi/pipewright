@@ -45,6 +45,7 @@ export default {
     generated: "Effective params (shown once — store them safely)",
     onceHint: "Generated passwords also live in the compose file on the target host (see its Stacks tab).",
     autoRegistered: "Automatisch als Objektspeicher-Konfiguration registriert",
+    dbAutoRegistered: "Automatisch als Datenbankinstanz registriert",
     close: "Close",
 
     regTitle: "Am Gateway registrieren",

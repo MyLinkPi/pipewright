@@ -7,12 +7,14 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/huangchengsir/pipewright/internal/appstore"
 	"github.com/huangchengsir/pipewright/internal/audit"
+	"github.com/huangchengsir/pipewright/internal/dbadmin"
 	"github.com/huangchengsir/pipewright/internal/objectstore"
 	"github.com/huangchengsir/pipewright/internal/target"
 	"gopkg.in/yaml.v3"
@@ -32,8 +34,14 @@ const (
 	auditTargetAppStore          = "app_template"
 )
 
-// appAutoRegisterTemplate 是「部署后自动登记为对象存储配置」的内置模板名(应用商店 RustFS 联动)。
-const appAutoRegisterTemplate = "rustfs"
+// appAutoRegisterTemplates 是「部署成功后联动自动登记」的内置模板名集合:
+// rustfs → 登记为对象存储配置;mysql / postgres → 登记为数据库管理实例。
+const appAutoRegisterObjectStoreTemplate = "rustfs"
+
+var appAutoRegisterDBTemplates = map[string]bool{
+	"mysql":    true,
+	"postgres": true,
+}
 
 // appRegisterTimeout 是部署后联动登记对象存储的独立超时(含建桶短重试),不占 compose up 的窗口。
 const appRegisterTimeout = 20 * time.Second
@@ -99,6 +107,67 @@ func registerRustFSObjectStore(ctx context.Context, objStores objectstore.Servic
 		Actor: auditActor, Action: auditActionObjectStoreReg, TargetType: auditTargetObjectStore,
 		TargetID: targetID,
 		Detail:   map[string]any{"type": objectstore.TypeRustFS, "endpoint": endpoint, "bucket": bucket, "source": "appstore", "ok": true, "updated": res.Updated}, IP: clientIP(r),
+	})
+	return true, note
+}
+
+// registerDatabaseInstance 是应用商店部署 mysql/postgres 成功后的联动登记(尽力而为,
+// 绝不影响部署结果):从渲染后的生效参数取 root/postgres 密码与端口,交给 dbadmin.Register
+// 完成幂等登记(同引擎同地址原地轮换密码)。密码经 vault 密封,审计只记接入参数,
+// 绝不含密码。不在部署链路里做连接测试——数据库容器首启初始化可达分钟级,
+// 连通性由「数据库」管理页的连接测试兜底。返回 (是否已登记, 人话备注)。
+func registerDatabaseInstance(ctx context.Context, dbAdmins dbadmin.Service, aud audit.Recorder, r *http.Request, srv target.Server, tplName, stackName string, used map[string]string, instance string) (bool, string) {
+	if dbAdmins == nil {
+		return false, "" // 服务未注入(如裁剪装配)→ 静默跳过,部署不受影响
+	}
+	username, password, portParam, display := "", "", "", ""
+	switch tplName {
+	case "mysql":
+		username, password, portParam, display = "root", used["root_password"], used["port"], "MySQL"
+	case "postgres":
+		username, password, portParam, display = "postgres", used["password"], used["port"], "PostgreSQL"
+	default:
+		return false, ""
+	}
+	if password == "" || portParam == "" {
+		return false, "生效参数缺少密码/端口,未自动登记数据库实例"
+	}
+	port, err := strconv.Atoi(strings.TrimSpace(portParam))
+	if err != nil || port < 1 || port > 65535 {
+		return false, "生效端口参数非法,未自动登记数据库实例"
+	}
+	name := display + " · " + srv.Name
+	if strings.TrimSpace(name) == display+" ·" {
+		name = display + " · " + srv.Host
+	}
+	if instance != "" {
+		name += " · " + instance
+	}
+	res, err := dbAdmins.Register(ctx, dbadmin.RegisterInput{
+		Engine: tplName, Name: name, Host: srv.Host, Port: port,
+		Username: username, Password: password, ServerID: srv.ID, StackName: stackName,
+	})
+	if err != nil {
+		msg := "自动登记数据库实例失败"
+		if errors.Is(err, dbadmin.ErrVaultUnconfigured) {
+			msg += ":保险库未配置 master key"
+		} else {
+			msg += ":" + err.Error()
+		}
+		recordAudit(r.Context(), aud, audit.Entry{
+			Actor: auditActor, Action: auditActionDBInstanceRegister, TargetType: auditTargetAppStore,
+			Detail: map[string]any{"engine": tplName, "host": srv.Host, "port": port, "source": "appstore", "ok": false, "error": msg}, IP: clientIP(r),
+		})
+		return false, msg
+	}
+	note := "已自动登记到「设置 → 数据库」,可在「数据库」页在线管理"
+	if res.Updated {
+		note = "已更新既有数据库实例的密码(同地址原地轮换)"
+	}
+	recordAudit(r.Context(), aud, audit.Entry{
+		Actor: auditActor, Action: auditActionDBInstanceRegister, TargetType: auditTargetAppStore,
+		TargetID: res.Instance.ID,
+		Detail:   map[string]any{"engine": tplName, "host": srv.Host, "port": port, "source": "appstore", "ok": true, "updated": res.Updated}, IP: clientIP(r),
 	})
 	return true, note
 }
@@ -413,11 +482,11 @@ func makeDeleteAppTemplateHandler(svc appstore.Service, aud audit.Recorder) http
 // makeDeployAppHandler 返回 POST /api/servers/{id}/apps/deploy {templateId, params, instance?, cpus?, memory?}。
 // 渲染参数(自动生成 secret)→ 可选注入资源限制(deploy.resources.limits)→ 复用 Stacks 链路
 // 部署到该主机;生成的 secret 随响应一次性返回(部署后以明文存在于目标机 compose 文件,与
-// Stacks 语义一致;审计只记模板名,不记参数值)。RustFS 模板部署成功后联动自动登记对象存储
-// 配置(尽力而为,结果见响应 objectStoreRegistered / objectStoreNote)。可选 instance 支持
-// 同机多副本:栈目录与 compose 项目名用 <模板名>-<实例名>(留空即模板名,默认单实例);
-// 数据卷/网络按 compose 项目名前缀自动隔离。
-func makeDeployAppHandler(apps appstore.Service, servers target.Service, aud audit.Recorder, objStores objectstore.Service) http.HandlerFunc {
+// Stacks 语义一致;审计只记模板名,不记参数值)。联动登记(均尽力而为,结果见响应字段):
+// RustFS 部署成功 → 自动登记对象存储配置;mysql/postgres 部署成功 → 自动登记数据库实例。
+// 可选 instance 支持同机多副本:栈目录与 compose 项目名用 <模板名>-<实例名>(留空即模板名,
+// 默认单实例);数据卷/网络按 compose 项目名前缀自动隔离。
+func makeDeployAppHandler(apps appstore.Service, servers target.Service, aud audit.Recorder, objStores objectstore.Service, dbAdmins dbadmin.Service) http.HandlerFunc {
 	type request struct {
 		TemplateID string            `json:"templateId"`
 		Params     map[string]string `json:"params"`
@@ -435,6 +504,9 @@ func makeDeployAppHandler(apps appstore.Service, servers target.Service, aud aud
 		// RustFS 联动登记结果(仅 rustfs 模板且部署成功时出现;尽力而为,失败不影响 OK)。
 		ObjectStoreRegistered bool   `json:"objectStoreRegistered,omitempty"`
 		ObjectStoreNote       string `json:"objectStoreNote,omitempty"`
+		// 数据库联动登记结果(仅 mysql/postgres 模板且部署成功时出现;尽力而为,失败不影响 OK)。
+		DBRegistered bool   `json:"dbRegistered,omitempty"`
+		DBNote       string `json:"dbNote,omitempty"`
 	}
 	return func(w http.ResponseWriter, r *http.Request) {
 		if apps == nil {
@@ -510,9 +582,16 @@ func makeDeployAppHandler(apps appstore.Service, servers target.Service, aud aud
 		out.OK, out.Output, out.Error = deployComposeToServer(cctx, servers, serverID, stackName, compose)
 
 		// RustFS 联动:部署成功后自动登记为对象存储配置(尽力而为,独立超时,不影响部署结果)。
-		if out.OK && tpl.Name == appAutoRegisterTemplate {
+		if out.OK && tpl.Name == appAutoRegisterObjectStoreTemplate {
 			rctx, rcancel := context.WithTimeout(r.Context(), appRegisterTimeout)
 			out.ObjectStoreRegistered, out.ObjectStoreNote = registerRustFSObjectStore(rctx, objStores, aud, r, *srv, rendered.Used, req.Instance)
+			rcancel()
+		}
+		// mysql/postgres 联动:部署成功后自动登记为数据库管理实例(尽力而为,独立超时;
+		// 不做连接测试,容器首启初始化由管理页的连接测试兜底)。
+		if out.OK && appAutoRegisterDBTemplates[tpl.Name] {
+			rctx, rcancel := context.WithTimeout(r.Context(), appRegisterTimeout)
+			out.DBRegistered, out.DBNote = registerDatabaseInstance(rctx, dbAdmins, aud, r, *srv, tpl.Name, stackName, rendered.Used, req.Instance)
 			rcancel()
 		}
 

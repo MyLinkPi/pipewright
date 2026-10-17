@@ -7,7 +7,7 @@ var builtins = []Template{
 	{
 		Name:        "mysql",
 		DisplayName: "MySQL",
-		Description: "关系型数据库;数据落具名卷 mysql-data,重建容器不丢。",
+		Description: "关系型数据库;数据落具名卷 mysql-data,重建容器不丢。部署成功后自动登记到「设置 → 数据库」,可在「数据库」页在线管理。",
 		Icon:        "🐬",
 		ComposeYAML: `services:
   mysql:
@@ -56,7 +56,7 @@ volumes:
 	{
 		Name:        "postgres",
 		DisplayName: "PostgreSQL",
-		Description: "关系型数据库;数据落具名卷 postgres-data。",
+		Description: "关系型数据库;数据落具名卷 postgres-data。部署成功后自动登记到「设置 → 数据库」,可在「数据库」页在线管理。",
 		Icon:        "🐘",
 		ComposeYAML: `services:
   postgres:

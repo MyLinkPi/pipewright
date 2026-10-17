@@ -27,6 +27,7 @@ import (
 	"github.com/huangchengsir/pipewright/internal/chain"
 	"github.com/huangchengsir/pipewright/internal/cron"
 	"github.com/huangchengsir/pipewright/internal/dagrun"
+	"github.com/huangchengsir/pipewright/internal/dbadmin"
 	"github.com/huangchengsir/pipewright/internal/deploy"
 	"github.com/huangchengsir/pipewright/internal/dnsprovider"
 	"github.com/huangchengsir/pipewright/internal/i18n"
@@ -119,6 +120,7 @@ type options struct {
 	platformHTTPS    platformhttps.Service
 	systemConfig     systemcfg.Service
 	appStore         appstore.Service
+	dbAdmin          dbadmin.Service
 	serverCmds       *servercmd.Service
 	registryHub      registryHubService
 	mesh             *meshAdminDeps
@@ -437,6 +439,14 @@ func WithAppStore(s appstore.Service) Option {
 	return func(o *options) { o.appStore = s }
 }
 
+// WithDBAdmin 注入「数据库管理」服务,挂载 /api/db-instances* 路由(admin 子组:
+// auth + CSRF + 审计;MySQL/PostgreSQL 实例注册与 phpMyAdmin 式在线管理)。
+// 连接密码经 vault 密文,响应/审计/日志绝无明文;实例默认只读,解锁为显式审计动作。
+// 应用市场部署 mysql/postgres 模板成功后经此服务联动自动登记实例。不传则端点 503。
+func WithDBAdmin(s dbadmin.Service) Option {
+	return func(o *options) { o.dbAdmin = s }
+}
+
 // WithAnomaly 注入可配置异常检测服务(Story 6.5;FR-23),挂载 /api/anomaly/* 路由
 // (GET rules/alerts auth;POST rules/check + DELETE rules/{id} auth + CSRF)。检测复用 6-1
 // 指标采集(metricsCollector 适配 collectServerMetrics);不可达/指标 null 的服务器跳过(不误报)。
@@ -610,6 +620,10 @@ func New(webFS fs.FS, authn auth.Authenticator, opts ...Option) http.Handler {
 			// 集群管理面(管理员):本节点配置/授权单/节点注册表/集群页聚合 + 对端代理查询。
 			if o.mesh != nil {
 				mountMeshAdmin(ar, *o.mesh)
+			}
+			// 数据库管理面(管理员):MySQL/PostgreSQL 实例注册 + phpMyAdmin 式在线管理。
+			if o.dbAdmin != nil {
+				mountDBAdmin(ar, o.dbAdmin, aud)
 			}
 		})
 
@@ -877,8 +891,9 @@ func New(webFS fs.FS, authn auth.Authenticator, opts ...Option) http.Handler {
 		ar.Post("/servers/{id}/stacks/save", makeStackSaveHandler(csv, aud))
 		// 应用商店一键部署(DPanel 式):模板参数渲染 → 复用 Stacks 链路 up -d。
 		// 生成的 secret 仅部署响应一次性返回;审计只记模板名,不记参数值。
-		// RustFS 模板部署成功后联动自动登记对象存储(o.objectStores 未注入则跳过)。
-		ar.Post("/servers/{id}/apps/deploy", makeDeployAppHandler(o.appStore, csv, aud, o.objectStores))
+		// RustFS 模板部署成功后联动自动登记对象存储;mysql/postgres 模板联动自动登记
+		// 数据库实例(均尽力而为,不影响部署结果)。
+		ar.Post("/servers/{id}/apps/deploy", makeDeployAppHandler(o.appStore, csv, aud, o.objectStores, o.dbAdmin))
 		// 容器 AI 诊断 / 看日志(AI moat):取容器日志 → ai.Diagnose 出根因+修复。复用 csv +
 		// o.aiSettings。出网前脱敏;AI 未配/失败 → 200 unavailable,绝不 500。比 {id} 多两段不被吞。
 		ar.Post("/servers/{id}/containers/{containerId}/diagnose", makeContainerDiagnoseHandler(csv, o.aiSettings))
@@ -1322,9 +1337,11 @@ func makeLogoutHandler(svc auth.Authenticator) http.HandlerFunc {
 // ---- Static / SPA --------------------------------------------------------
 
 // securityHeaders 为全部响应设置安全响应头:
-//   - CSP:前端构建产物无内联脚本/样式、无外部源(字体 @fontsource 自托管、WS/SSE/
-//     Monaco worker 均同源),可采严格同源策略;即使未来出现 XSS 注入,外联脚本
-//     与内联执行也被拒。
+//   - CSP:前端构建产物无内联脚本、无外部源(字体 @fontsource 自托管、WS/SSE/
+//     Monaco worker 均同源)。script-src 严格同源,即使出现 XSS 注入,内联脚本
+//     也被拒。样式必须放行 'unsafe-inline':naive-ui 组件样式经 css-render 在
+//     运行时注入内联 <style>,Vue 动态 :style 依赖内联 style 属性 —— 收紧到
+//     'self' 会让浏览器拒绝创建样式表,图标(n-icon)等组件样式全部失效。
 //   - X-Frame-Options + frame-ancestors:管理面板禁止被 iframe 嵌套(点击劫持)。
 //   - Referrer-Policy: no-referrer:URL(含审批 token 等 query)不随 Referer 外泄。
 //   - X-Content-Type-Options: nosniff:禁 MIME 嗅探。
@@ -1334,7 +1351,7 @@ func securityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
 		h.Set("Content-Security-Policy",
-			"default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; "+
+			"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; "+
 				"font-src 'self' data:; connect-src 'self'; worker-src 'self'; "+
 				"object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'")
 		h.Set("X-Frame-Options", "DENY")

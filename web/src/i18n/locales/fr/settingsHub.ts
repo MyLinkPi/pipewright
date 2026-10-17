@@ -8,6 +8,7 @@ export default {
   navVault: 'Coffre de justificatifs',
   navDnsProviders: 'Fournisseurs DNS',
   navObjectStorage: 'Stockage d’objets',
+  navDatabases: 'Bases de données',
   navHttps: 'Accès HTTPS',
   navAccount: 'Compte',
   navServers: 'Serveurs',

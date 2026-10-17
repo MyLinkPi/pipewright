@@ -8,6 +8,7 @@ export default {
   navVault: 'Credential Vault',
   navDnsProviders: 'DNS Providers',
   navObjectStorage: 'Object Storage',
+  navDatabases: 'Databases',
   navHttps: 'HTTPS',
   navAccount: 'Account',
   navServers: 'Servers',
