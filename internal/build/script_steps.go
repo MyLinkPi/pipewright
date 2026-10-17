@@ -55,7 +55,8 @@ func (b *Builder) runScriptStep(ctx context.Context, sink run.StepSink, ordinal 
 	onLine := b.lineSink(sink, ordinal)
 
 	// env:非 secret → 明文 K=V;secret → vault.Reveal 明文 K=V(注入容器,绝不回显值)。
-	// 复用与构建变量同款拆分(buildArgs):secret 明文即取即用,脱敏由 per-run Masker 兜底。
+	// step.Env 由调用方按统一口径装配(见 builder.go buildArgs 注释);本函数只做拆分注入,
+	// secret 明文即取即用,脱敏由 per-run Masker 兜底。
 	plain, secretEnv := b.buildArgs(step.Env)
 	env := append(plain, secretEnv...)
 

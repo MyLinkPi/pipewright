@@ -350,6 +350,10 @@ func (b *Builder) Run(ctx context.Context, r *run.Run, sink run.StepSink) error 
 		if err := sink.StepRunning(ctx, ordinal); err != nil {
 			return err
 		}
+		// env 注入对齐统一口径(见 buildArgs 注释):运行参数 → 流水线级构建变量 → 步骤自身 env
+		// (同名覆盖),与 DAG script 节点同序。本路径不引入 $PIPEWRIGHT_ENV 传值(阶段级特性)。
+		base := append(runParamsAsEnv(r.Trigger.Params), settings.Build.Vars...)
+		cs.Env = append(base, cs.Env...)
 		serr := b.runScriptStep(ctx, sink, ordinal, cs, workspace)
 		if serr != nil {
 			if errors.Is(serr, run.ErrCanceled) || errors.Is(ctx.Err(), context.Canceled) {
@@ -531,6 +535,18 @@ func (b *Builder) pushImageTo(ctx context.Context, sink run.StepSink, ordinal in
 	digest, _, _ := b.driver.InspectImage(ctx, remoteTag)
 	return remoteTag, digest, nil
 }
+
+// ── env / build-arg 注入统一口径(各执行路径以本注释为准;调整语义先改这里,再同步各路径)──
+//
+//   - 规则一(脚本容器):凡执行用户脚本的隔离容器(DAG script 节点、旧路径自定义脚本步骤、阶段
+//     post 步骤),env 注入序 = 运行参数 → 上游 job 输出(仅 DAG 同阶段有来源)→ 流水线级构建变量
+//     (settings.Build.Vars,secret 在注入时经 vault.Reveal)→ 步骤自身 env → PIPEWRIGHT_ENV(系统,末位)。
+//   - 规则二(构建):凡 docker build / 工具链构建(旧路径构建步骤、DAG build_image 节点,本地或
+//     远程),构建变量一律作为 --build-arg / 工具链 -e 注入(消费方都是 b.build 的 cfg.Vars)。
+//   - 规则三(非脚本节点):deploy_ssh / push_image / oss_upload / notify 消费节点配置,不注入 env。
+//
+// 优先级(docker run 中后出现的 -e 胜出):步骤自身 env > 构建变量 > 上游 job 输出 > 运行参数。
+// secret 脱敏:登记在 httpapi registerProjectSecrets(per-run Masker),命令回显只列 key(maskKV)。
 
 // buildArgs 把构建变量拆成非 secret(明文 K=V)与 secret(vault.Reveal 明文 K=V)。
 // secret 明文即取即用,登记进 Masker 的脱敏由 sink 侧兜底;本包仅注入子进程不回显值。

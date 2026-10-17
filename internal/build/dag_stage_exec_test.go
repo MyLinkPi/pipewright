@@ -87,6 +87,27 @@ func (d *recordingDriver) InspectImage(context.Context, string) (string, int64, 
 	panic("InspectImage not expected")
 }
 
+// buildRecordingDriver 记录 Build 的 build args(build_image 节点测试用;script job 的
+// recordingDriver 保留「Build 不应被调到」守卫)。
+type buildRecordingDriver struct {
+	recordingDriver
+	gotTag        string
+	gotBuildArgs  []string
+	gotSecretArgs []string
+}
+
+func (d *buildRecordingDriver) Build(_ context.Context, _, _, tag string, buildArgs, secretArgs []string, _ func(string, string)) (int, error) {
+	d.gotTag = tag
+	d.gotBuildArgs = buildArgs
+	d.gotSecretArgs = secretArgs
+	return 0, nil
+}
+
+// b.build 成功后采集镜像元数据会调 InspectImage;返回桩值即可。
+func (d *buildRecordingDriver) InspectImage(context.Context, string) (string, int64, error) {
+	return "sha256:stub", 1024, nil
+}
+
 // markerCloner 把一个标记文件写进工作区(替代真触网克隆)。
 type markerCloner struct {
 	file    string
@@ -188,6 +209,42 @@ func TestStageExecutorInjectsRunParams(t *testing.T) {
 	env := strings.Join(drv.gotEnv, " ")
 	if !strings.Contains(env, "DEPLOY_ENV=staging") || !strings.Contains(env, "VER=1.2") {
 		t.Errorf("run params not injected into container env: %v", drv.gotEnv)
+	}
+}
+
+// buildImageJob 构造一条 build_image job(镜像产物)。
+func buildImageJob(name string) pipeline.Job {
+	return pipeline.Job{ID: "j-img", Name: name, Type: "build_image",
+		Config: map[string]any{"dockerfilePath": "Dockerfile", "artifactType": "image"}}
+}
+
+// TestBuildImageJobInjectsPipelineVars 验证 build_image 节点按统一口径(builder.go buildArgs 注释)
+// 把流水线级构建变量注入 docker build:非 secret 走 buildArgs,secret 经 vault.Reveal 走 secretArgs。
+func TestBuildImageJobInjectsPipelineVars(t *testing.T) {
+	drv := &buildRecordingDriver{}
+	st := &pipeline.Settings{Build: pipeline.BuildConfig{Vars: []pipeline.BuildVar{
+		{Key: "APP_ENV", Value: "prod"},
+		{Key: "REL_TOKEN", Secret: true, CredentialID: "c1"},
+	}}}
+	b := newDAGTestBuilder(drv, &markerCloner{})
+	b.settings = fakeSettings{settings: st}
+	b.vault = fakeVault{secrets: map[string]string{"c1": "sec-value"}}
+
+	rep := &fakeReporter{}
+	proj := &project.Project{ID: "p1", Name: "app", RepoURL: "https://example.com/r.git"}
+	err := b.runBuildImageJob(context.Background(), &reporterSink{rep: rep}, rep,
+		buildImageJob("build"), "构建", proj, st, t.TempDir(), "abc1234", imagePushPlan{})
+	if err != nil {
+		t.Fatalf("runBuildImageJob: %v", err)
+	}
+	if args := strings.Join(drv.gotBuildArgs, " "); !strings.Contains(args, "APP_ENV=prod") {
+		t.Errorf("build args 应含非 secret 构建变量, got %q", args)
+	}
+	if secrets := strings.Join(drv.gotSecretArgs, " "); !strings.Contains(secrets, "REL_TOKEN=sec-value") {
+		t.Errorf("secretArgs 应含 Reveal 后的 secret 构建变量, got %q", secrets)
+	}
+	if !strings.Contains(drv.gotTag, "app:abc1234") {
+		t.Errorf("local tag = %q", drv.gotTag)
 	}
 }
 

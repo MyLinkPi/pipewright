@@ -440,6 +440,63 @@ func TestSecretNotInVisibleLogs(t *testing.T) {
 	}
 }
 
+// TestLegacyScriptStepInjectsParamsAndVars 旧单镜像路径的自定义脚本步骤按统一口径(builder.go
+// buildArgs 注释)拿到运行参数与流水线级构建变量:运行参数 → 构建变量 → 步骤自身 env
+// (同名时步骤自身 env 在 argv 末位,docker run 后者胜出);secret 明文进 argv 但不进可见日志。
+func TestLegacyScriptStepInjectsParamsAndVars(t *testing.T) {
+	const secretVal = "LEGACY_SCRIPT_TOKEN_xyz"
+	cmdr := newFakeCommander()
+	cmdr.script("build", fakeCmd{stdoutLines: []string{"built"}, exitCode: 0})
+	cmdr.script("inspect", fakeCmd{stdoutLines: []string{`{"Id":"sha256:x","Size":10}`}, exitCode: 0})
+
+	st := imageSettings()
+	st.Build.Vars = []pipeline.BuildVar{
+		{Key: "APP_ENV", Value: "prod"},
+		{Key: "FROM_STEP", Value: "from-vars"},
+		{Key: "S_TOKEN", Secret: true, CredentialID: "c9"},
+	}
+	st.Steps = []pipeline.PipelineStep{{
+		Type: pipeline.StepTypeScript, Name: "post-build", Image: "busybox",
+		Commands: []string{"echo done"},
+		Env:      []pipeline.BuildVar{{Key: "FROM_STEP", Value: "from-step"}},
+	}}
+	proj := &project.Project{ID: "p1", Name: "app", RepoURL: "https://example.com/r.git"}
+	b := newTestBuilder(t, cmdr, proj, st, map[string]string{"c9": secretVal})
+	b.cloner = newSuccessCloner("abc1234")
+
+	sink := newFakeSink()
+	r := &run.Run{ID: "run1", ProjectID: "p1",
+		Trigger: run.Trigger{Commit: "abc1234x", Params: map[string]string{"DEPLOY_ENV": "staging"}}}
+	if err := b.Run(context.Background(), r, sink); err != nil {
+		t.Fatalf("Run failed: %v", err)
+	}
+
+	// 定位脚本步骤的 docker run argv(构建步骤是 docker build,脚本步骤是 docker run)。
+	var runArgs []string
+	for _, e := range cmdr.execs {
+		if len(e.args) > 0 && e.args[0] == "run" {
+			runArgs = e.args
+		}
+	}
+	if runArgs == nil {
+		t.Fatal("自定义脚本步骤应经 docker run 执行")
+	}
+	joined := strings.Join(runArgs, " ")
+	for _, want := range []string{"-e DEPLOY_ENV=staging", "-e APP_ENV=prod", "-e S_TOKEN=" + secretVal} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("script 步骤 env 缺 %s:\n%s", want, joined)
+		}
+	}
+	// 同名覆盖:步骤自身 env 的 -e 位置在构建变量之后。
+	if strings.LastIndex(joined, "FROM_STEP=from-step") < strings.Index(joined, "FROM_STEP=from-vars") {
+		t.Fatalf("步骤自身 env 应覆盖同名构建变量:\n%s", joined)
+	}
+	// secret 明文进 argv 但绝不进可见日志(回显经 maskKV 只列 key)。
+	if strings.Contains(sink.allLogText(), secretVal) {
+		t.Fatalf("secret 明文泄漏进可见日志:\n%s", sink.allLogText())
+	}
+}
+
 // TestCancelReturnsErrCanceled 验证 ctx 取消时返回 run.ErrCanceled。
 func TestCancelReturnsErrCanceled(t *testing.T) {
 	cmdr := newFakeCommander()

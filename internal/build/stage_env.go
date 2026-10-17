@@ -18,6 +18,7 @@ import (
 //
 // 文件位于工作区根(挂载进容器),宿主可读;每个 job 执行后即捕获并清空,故各 job 的写入隔离、
 // 捕获结果在内存累积(后写覆盖同名键,与环境变量语义一致)。绝不改单机执行语义、无新依赖。
+// env 注入的完整统一口径(含本机制的位次)见 builder.go buildArgs 注释。
 
 // pipewrightEnvFileName 是阶段内「步骤输出环境」文件名(工作区根相对)。
 const pipewrightEnvFileName = ".pipewright_env"

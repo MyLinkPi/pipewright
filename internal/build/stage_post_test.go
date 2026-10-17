@@ -9,15 +9,17 @@ import (
 	"github.com/huangchengsir/pipewright/internal/run"
 )
 
-// postRecDriver 记录每次 RunToolchain 的镜像(按调用序),并可让指定镜像返回非零(失败)。
+// postRecDriver 记录每次 RunToolchain 的镜像与 env(按调用序),并可让指定镜像返回非零(失败)。
 type postRecDriver struct {
 	images    []string
+	envs      []string // 与 images 一一对齐:该次调用的完整 env 拼接
 	failImage string
 }
 
 func (d *postRecDriver) Binary() string { return "fake" }
-func (d *postRecDriver) RunToolchain(_ context.Context, image, _, _ string, _ []string, _ []string, _ pipeline.Resource, _ func(string, string)) (int, error) {
+func (d *postRecDriver) RunToolchain(_ context.Context, image, _, _ string, env []string, _ []string, _ pipeline.Resource, _ func(string, string)) (int, error) {
 	d.images = append(d.images, image)
+	d.envs = append(d.envs, strings.Join(env, " "))
 	if image == d.failImage {
 		return 1, nil
 	}
@@ -136,5 +138,24 @@ func TestStagePostMessageHasCondition(t *testing.T) {
 	_ = exec(context.Background(), &run.Run{ProjectID: "p1"}, postStage("job-img", postSet[:1]), rep)
 	if !strings.Contains(strings.Join(rep.logs, "\n"), "阶段后置步骤") {
 		t.Errorf("应有 post 步骤日志;logs=%v", rep.logs)
+	}
+}
+
+// post 步骤按统一口径(builder.go buildArgs 注释)拿到运行参数与流水线级构建变量。
+func TestStagePostInjectsParamsAndVars(t *testing.T) {
+	drv := &postRecDriver{}
+	b := newDAGTestBuilder(drv, &markerCloner{})
+	b.settings = fakeSettings{settings: &pipeline.Settings{Build: pipeline.BuildConfig{Vars: []pipeline.BuildVar{
+		{Key: "APP_ENV", Value: "prod"},
+	}}}}
+	exec := NewStageExecutor(b, nil)
+	r := &run.Run{ProjectID: "p1", Trigger: run.Trigger{Params: map[string]string{"DEPLOY_ENV": "staging"}}}
+	if err := exec(context.Background(), r, postStage("job-img", postSet[:1]), &fakeReporter{}); err != nil {
+		t.Fatalf("exec: %v", err)
+	}
+	// 最后一次 RunToolchain 是 post 步骤(post-always);job 本体在前。
+	postEnv := drv.envs[len(drv.envs)-1]
+	if !strings.Contains(postEnv, "DEPLOY_ENV=staging") || !strings.Contains(postEnv, "APP_ENV=prod") {
+		t.Errorf("post env 缺运行参数/构建变量:%s", postEnv)
 	}
 }
