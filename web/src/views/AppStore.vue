@@ -23,6 +23,7 @@ import {
   type AppDeployResult,
 } from '../api/apps'
 import { listServers, type Server } from '../api/servers'
+import { getServerStacks } from '../api/containers'
 import {
   listDomains,
   getGateway,
@@ -82,6 +83,38 @@ const deployBusy = ref(false)
 const deployResult = ref<AppDeployResult | null>(null)
 
 const serverOptions = computed(() => servers.value.map((s) => ({ value: s.id, label: s.name })))
+
+// 实例名(可选):生效栈名 = 模板名(留空)或 模板名-实例名,同机多副本按 compose 项目前缀隔离。
+const deployInstance = ref('')
+const stackNames = ref<string[] | null>(null) // null = 未拉取到(未选机器/不可达),提醒静默跳过
+const instanceRe = /^[\w][\w.-]*$/ // 与后端 Stacks 项目名同规则
+const instanceInvalid = computed(() => {
+  const inst = deployInstance.value.trim()
+  return inst !== '' && !instanceRe.test(inst)
+})
+const effectiveStackName = computed(() => {
+  if (!deploying.value) return ''
+  const inst = deployInstance.value.trim()
+  return inst ? `${deploying.value.name}-${inst}` : deploying.value.name
+})
+// 与目标机现有栈重名(大小写不敏感:compose v2 会把项目名转小写)→ 非阻断提醒。
+const stackNameTaken = computed(() => {
+  if (!stackNames.value) return false
+  const want = effectiveStackName.value.toLowerCase()
+  return stackNames.value.some((n) => n.toLowerCase() === want)
+})
+
+// loadStackNames 拉取目标机现有栈名(提醒仅建议性;拉取失败 → 静默跳过)。
+async function loadStackNames(serverId: string): Promise<void> {
+  stackNames.value = null
+  if (!serverId) return
+  try {
+    const res = await getServerStacks(serverId)
+    stackNames.value = res.stacks.map((s) => s.name)
+  } catch {
+    stackNames.value = null
+  }
+}
 const missingRequired = computed(() => {
   if (!deploying.value) return false
   return deploying.value.params.some(
@@ -113,6 +146,7 @@ function prefillHostParams(tpl: AppTemplate, serverId: string): void {
 
 function onDeployServer(v: string): void {
   deployServer.value = v
+  void loadStackNames(v)
   if (deploying.value) prefillHostParams(deploying.value, v)
 }
 
@@ -121,23 +155,34 @@ function openDeploy(tpl: AppTemplate): void {
   deployResult.value = null
   deployCpus.value = ''
   deployMemory.value = ''
+  deployInstance.value = ''
+  stackNames.value = null
   regDoneFqdn.value = ''
   sshDomainAuto.value = ''
   deployServer.value = servers.value.length === 1 ? servers.value[0].id : ''
   const vals: Record<string, string> = {}
   for (const p of tpl.params) vals[p.name] = p.default ?? ''
   paramValues.value = vals
-  if (deployServer.value) prefillHostParams(tpl, deployServer.value)
+  if (deployServer.value) {
+    prefillHostParams(tpl, deployServer.value)
+    void loadStackNames(deployServer.value)
+  }
 }
 
 async function submitDeploy(): Promise<void> {
   if (!deploying.value || !deployServer.value) return
   deployBusy.value = true
   try {
-    const res = await deployApp(deployServer.value, deploying.value.id, paramValues.value, {
-      cpus: deployCpus.value,
-      memory: deployMemory.value,
-    })
+    const res = await deployApp(
+      deployServer.value,
+      deploying.value.id,
+      paramValues.value,
+      {
+        cpus: deployCpus.value,
+        memory: deployMemory.value,
+      },
+      deployInstance.value,
+    )
     deployResult.value = res
     if (res.ok) {
       toast.success(t('appStore.deployed', { name: deploying.value.displayName || deploying.value.name }))
@@ -197,7 +242,8 @@ async function prepareReg(): Promise<void> {
   regGatewayReady.value = null
   regForm.value = {
     domainId: '',
-    name: sanitizeServiceName(deploying.value?.name ?? ''),
+    // 服务名预填用生效栈名(多副本注册不重名),退回模板名。
+    name: sanitizeServiceName(deployResult.value?.name || deploying.value?.name || ''),
     port: pickPortParam(deployResult.value?.params),
   }
   regDoneFqdn.value = ''
@@ -446,6 +492,15 @@ async function removeCustom(tpl: AppTemplate): Promise<void> {
               @update:model-value="onDeployServer"
             />
           </label>
+          <label class="field">
+            <span class="field__lbl">{{ t('appStore.deploy.instance') }}</span>
+            <input v-model="deployInstance" class="field__in" type="text" placeholder="2" />
+            <span class="apps__hint">{{ t('appStore.deploy.instanceHint') }}</span>
+          </label>
+          <p v-if="instanceInvalid" class="apps__sr-warn">{{ t('appStore.deploy.instanceInvalid') }}</p>
+          <p v-else-if="stackNameTaken" class="apps__sr-warn">
+            {{ t('appStore.deploy.stackTaken', { name: effectiveStackName }) }}
+          </p>
           <label v-for="p in deploying.params" :key="p.name" class="field">
             <span class="field__lbl">
               {{ p.label || p.name }}
@@ -474,7 +529,12 @@ async function removeCustom(tpl: AppTemplate): Promise<void> {
           <p class="apps__hint">{{ t('appStore.deploy.limitsHint') }}</p>
           <p class="apps__hint">{{ t('appStore.deploy.hint') }}</p>
           <div class="apps__form-actions">
-            <AppButton variant="primary" type="submit" :loading="deployBusy" :disabled="!deployServer || missingRequired">
+            <AppButton
+              variant="primary"
+              type="submit"
+              :loading="deployBusy"
+              :disabled="!deployServer || missingRequired || instanceInvalid"
+            >
               <NIcon :size="14"><Rocket /></NIcon>&nbsp;{{ t('appStore.deploy.submit') }}
             </AppButton>
             <AppButton variant="default" @click="deploying = null">{{ t('serviceReg.btn.cancel') }}</AppButton>

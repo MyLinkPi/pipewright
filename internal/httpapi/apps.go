@@ -42,7 +42,8 @@ const appRegisterTimeout = 20 * time.Second
 // 从渲染后的生效参数取接入信息(endpoint = 服务器地址 + API 端口),交给 objectstore.Register
 // 完成「确保默认桶 + 凭据入 vault + 同 type+endpoint 幂等轮换」。返回 (是否已登记, 人话备注)。
 // 备注会进入部署响应与审计 detail;绝不含 Secret(审计只记接入参数,与 objectstore.create 同纪律)。
-func registerRustFSObjectStore(ctx context.Context, objStores objectstore.Service, aud audit.Recorder, r *http.Request, srv target.Server, used map[string]string) (bool, string) {
+// instance 非空(多副本部署)时登记名带实例后缀,区分同机多个 RustFS。
+func registerRustFSObjectStore(ctx context.Context, objStores objectstore.Service, aud audit.Recorder, r *http.Request, srv target.Server, used map[string]string, instance string) (bool, string) {
 	if objStores == nil {
 		return false, "" // 服务未注入(如裁剪装配)→ 静默跳过,部署不受影响
 	}
@@ -57,6 +58,9 @@ func registerRustFSObjectStore(ctx context.Context, objStores objectstore.Servic
 	name := "RustFS · " + srv.Name
 	if strings.TrimSpace(name) == "RustFS ·" {
 		name = "RustFS · " + srv.Host
+	}
+	if instance != "" {
+		name += " · " + instance
 	}
 	endpoint := net.JoinHostPort(srv.Host, apiPort)
 	res, err := objStores.Register(ctx, objectstore.RegisterInput{
@@ -404,17 +408,20 @@ func makeDeleteAppTemplateHandler(svc appstore.Service, aud audit.Recorder) http
 	}
 }
 
-// makeDeployAppHandler 返回 POST /api/servers/{id}/apps/deploy {templateId, params, cpus?, memory?}。
+// makeDeployAppHandler 返回 POST /api/servers/{id}/apps/deploy {templateId, params, instance?, cpus?, memory?}。
 // 渲染参数(自动生成 secret)→ 可选注入资源限制(deploy.resources.limits)→ 复用 Stacks 链路
 // 部署到该主机;生成的 secret 随响应一次性返回(部署后以明文存在于目标机 compose 文件,与
 // Stacks 语义一致;审计只记模板名,不记参数值)。RustFS 模板部署成功后联动自动登记对象存储
-// 配置(尽力而为,结果见响应 objectStoreRegistered / objectStoreNote)。
+// 配置(尽力而为,结果见响应 objectStoreRegistered / objectStoreNote)。可选 instance 支持
+// 同机多副本:栈目录与 compose 项目名用 <模板名>-<实例名>(留空即模板名,默认单实例);
+// 数据卷/网络按 compose 项目名前缀自动隔离。
 func makeDeployAppHandler(apps appstore.Service, servers target.Service, aud audit.Recorder, objStores objectstore.Service) http.HandlerFunc {
 	type request struct {
 		TemplateID string            `json:"templateId"`
 		Params     map[string]string `json:"params"`
-		CPUs       string            `json:"cpus,omitempty"`   // 可选,全服务 CPU 核数上限(如 "1.0")
-		Memory     string            `json:"memory,omitempty"` // 可选,全服务内存硬上限(如 "512m")
+		Instance   string            `json:"instance,omitempty"` // 可选实例名:栈名后缀,同机多副本
+		CPUs       string            `json:"cpus,omitempty"`     // 可选,全服务 CPU 核数上限(如 "1.0")
+		Memory     string            `json:"memory,omitempty"`   // 可选,全服务内存硬上限(如 "512m")
 	}
 	type response struct {
 		ServerID string            `json:"serverId"`
@@ -456,6 +463,12 @@ func makeDeployAppHandler(apps appstore.Service, servers target.Service, aud aud
 			writeError(w, http.StatusBadRequest, "invalid_app_deploy", "非法内存上限(正整数 + 单位 b/k/m/g,如 512m、1g)")
 			return
 		}
+		// 实例名与 Stacks 部署的项目名同规则(reDockerTgt,防 shell 元字符/路径注入);留空 = 默认单实例。
+		req.Instance = strings.TrimSpace(req.Instance)
+		if req.Instance != "" && !reDockerTgt.MatchString(req.Instance) {
+			writeError(w, http.StatusBadRequest, "invalid_app_deploy", "非法实例名(仅字母数字与 . _ -,不以 - 开头)")
+			return
+		}
 		tpl, err := apps.Get(r.Context(), req.TemplateID)
 		if err != nil {
 			writeAppStoreError(w, err)
@@ -479,22 +492,36 @@ func makeDeployAppHandler(apps appstore.Service, servers target.Service, aud aud
 			writeError(w, http.StatusBadRequest, "invalid_app_deploy", "资源限制注入失败:"+err.Error())
 			return
 		}
+		// 生效栈名:实例名留空 = 模板名(兼容既有单实例部署);组合长度与 Stacks 项目名上限一致。
+		stackName := tpl.Name
+		if req.Instance != "" {
+			stackName = tpl.Name + "-" + req.Instance
+			if len(stackName) > 128 {
+				writeError(w, http.StatusBadRequest, "invalid_app_deploy", "实例名过长:组合栈名超过 128 字符")
+				return
+			}
+		}
 
-		out := response{ServerID: serverID, Name: tpl.Name, Params: rendered.Used}
+		out := response{ServerID: serverID, Name: stackName, Params: rendered.Used}
 		cctx, cancel := context.WithTimeout(r.Context(), stacksUpTimeout)
 		defer cancel()
-		out.OK, out.Output, out.Error = deployComposeToServer(cctx, servers, serverID, tpl.Name, compose)
+		out.OK, out.Output, out.Error = deployComposeToServer(cctx, servers, serverID, stackName, compose)
 
 		// RustFS 联动:部署成功后自动登记为对象存储配置(尽力而为,独立超时,不影响部署结果)。
 		if out.OK && tpl.Name == appAutoRegisterTemplate {
 			rctx, rcancel := context.WithTimeout(r.Context(), appRegisterTimeout)
-			out.ObjectStoreRegistered, out.ObjectStoreNote = registerRustFSObjectStore(rctx, objStores, aud, r, *srv, rendered.Used)
+			out.ObjectStoreRegistered, out.ObjectStoreNote = registerRustFSObjectStore(rctx, objStores, aud, r, *srv, rendered.Used, req.Instance)
 			rcancel()
 		}
 
+		detail := map[string]any{"template": tpl.Name, "ok": out.OK}
+		if req.Instance != "" {
+			detail["instance"] = req.Instance
+			detail["stack"] = stackName
+		}
 		recordAudit(r.Context(), aud, audit.Entry{
 			Actor: auditActor, Action: auditActionAppDeploy, TargetType: audit.TargetServer, TargetID: serverID,
-			Detail: map[string]any{"template": tpl.Name, "ok": out.OK}, IP: clientIP(r),
+			Detail: detail, IP: clientIP(r),
 		})
 		writeJSON(w, http.StatusOK, out)
 	}

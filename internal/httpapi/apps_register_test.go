@@ -36,10 +36,13 @@ func (f *deployAppFake) Render(ctx context.Context, id string, params map[string
 }
 
 // deployTargetFake:Exec/Upload 全成功(execFail=true 时模拟远端失败);Get 返回固定服务器。
+// execCmds/uploads 记录调用参数供断言(栈名/路径是否带实例后缀)。
 type deployTargetFake struct {
 	target.Service
 	srv      *target.Server
 	execFail bool
+	execCmds [][]string
+	uploads  []string
 }
 
 func (f *deployTargetFake) Get(ctx context.Context, id string) (*target.Server, error) {
@@ -47,6 +50,7 @@ func (f *deployTargetFake) Get(ctx context.Context, id string) (*target.Server, 
 }
 
 func (f *deployTargetFake) Exec(ctx context.Context, serverID string, cmd []string) (*target.ExecResult, error) {
+	f.execCmds = append(f.execCmds, append([]string{}, cmd...))
 	if f.execFail {
 		return &target.ExecResult{ExitCode: 1, Stderr: "boom"}, nil
 	}
@@ -54,6 +58,7 @@ func (f *deployTargetFake) Exec(ctx context.Context, serverID string, cmd []stri
 }
 
 func (f *deployTargetFake) Upload(ctx context.Context, serverID string, content io.Reader, remotePath string) error {
+	f.uploads = append(f.uploads, remotePath)
 	return nil
 }
 
@@ -80,21 +85,34 @@ type appDeployResponse struct {
 	ObjectStoreNote       string            `json:"objectStoreNote"`
 }
 
-func runDeploy(t *testing.T, apps appstore.Service, servers target.Service, objStores objectstore.Service) appDeployResponse {
+// runDeployRaw 以给定请求体打部署端点,返回状态码与响应体(供预期非 200 的用例)。
+func runDeployRaw(t *testing.T, apps appstore.Service, servers target.Service, objStores objectstore.Service, body string) (int, string) {
 	t.Helper()
 	r := chi.NewRouter()
 	r.Post("/servers/{id}/apps/deploy", makeDeployAppHandler(apps, servers, nil, objStores))
-	req := httptest.NewRequest(http.MethodPost, "/servers/srv-1/apps/deploy", strings.NewReader(`{"templateId":"tpl-1","params":{}}`))
+	req := httptest.NewRequest(http.MethodPost, "/servers/srv-1/apps/deploy", strings.NewReader(body))
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("状态码 %d: %s", rec.Code, rec.Body.String())
+	return rec.Code, rec.Body.String()
+}
+
+// runDeployBody 以给定请求体部署并解码 200 响应。
+func runDeployBody(t *testing.T, apps appstore.Service, servers target.Service, objStores objectstore.Service, body string) appDeployResponse {
+	t.Helper()
+	code, raw := runDeployRaw(t, apps, servers, objStores, body)
+	if code != http.StatusOK {
+		t.Fatalf("状态码 %d: %s", code, raw)
 	}
 	var out appDeployResponse
-	if err := json.NewDecoder(rec.Body).Decode(&out); err != nil {
+	if err := json.NewDecoder(strings.NewReader(raw)).Decode(&out); err != nil {
 		t.Fatalf("解码响应: %v", err)
 	}
 	return out
+}
+
+func runDeploy(t *testing.T, apps appstore.Service, servers target.Service, objStores objectstore.Service) appDeployResponse {
+	t.Helper()
+	return runDeployBody(t, apps, servers, objStores, `{"templateId":"tpl-1","params":{}}`)
 }
 
 func rustfsDeployFakes() (*deployAppFake, *deployTargetFake) {

@@ -40,6 +40,7 @@ export interface AppTemplate {
 
 export interface AppDeployResult {
   serverId: string
+  /** 生效栈名:模板名,或填写实例名后的「模板名-实例名」。 */
   name: string
   ok: boolean
   output: string
@@ -83,10 +84,12 @@ export const deployApp = (
   templateId: string,
   params: Record<string, string>,
   limits?: AppDeployLimits,
+  instance?: string,
 ): Promise<AppDeployResult> =>
   http.post(`/api/servers/${encodeURIComponent(serverId)}/apps/deploy`, {
     templateId,
     params,
+    ...(instance?.trim() ? { instance: instance.trim() } : {}),
     ...(limits?.cpus?.trim() ? { cpus: limits.cpus.trim() } : {}),
     ...(limits?.memory?.trim() ? { memory: limits.memory.trim() } : {}),
   })

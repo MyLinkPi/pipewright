@@ -29,6 +29,10 @@ export default {
   deploy: {
     target: "Target host",
     pickTarget: "Pick a host to deploy to",
+    instance: "Instance name (optional)",
+    instanceHint: "비우면 기본 인스턴스입니다. 입력하면 스택 이름이 <템플릿>-<인스턴스>가 되어 같은 호스트에 여러 복제본을 배포할 수 있습니다(포트는 다르게 지정)",
+    instanceInvalid: "잘못된 인스턴스 이름: 영숫자와 . _ - 만 사용 가능(- 로 시작 불가)",
+    stackTaken: "이 호스트에 {name} 스택이 이미 있습니다: 배포하면 새로 만들지 않고 업데이트합니다. 볼륨은 프로젝트별로 격리됩니다",
     autogen: "left blank = auto-generated",
     autoValue: "(auto-generated)",
     cpuLimit: "CPU 상한(코어, 선택)",

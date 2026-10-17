@@ -29,6 +29,10 @@ export default {
   deploy: {
     target: "Target host",
     pickTarget: "Pick a host to deploy to",
+    instance: "Instanzname (optional)",
+    instanceHint: "Leer = Standardinstanz; mit Name heißt der Stack <Template>-<Instanz>, sodass mehrere Kopien auf einem Host laufen können — Ports auseinanderhalten",
+    instanceInvalid: "Ungültiger Instanzname: nur Buchstaben, Ziffern, . _ -; nicht mit - beginnen",
+    stackTaken: "Ein Stack namens {name} existiert auf diesem Host bereits: das Deployment aktualisiert ihn, statt neu anzulegen; Volumes bleiben pro Projekt isoliert",
     autogen: "left blank = auto-generated",
     autoValue: "(auto-generated)",
     cpuLimit: "CPU-Limit (Kerne, optional)",
