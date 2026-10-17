@@ -427,6 +427,9 @@ onUnmounted(() => {
             <template v-else-if="binaries?.lastErr">{{ t('cluster.settings.binFailed') }}:{{ binaries.lastErr }}</template>
             <template v-else>{{ t('cluster.settings.binMissing') }}</template>
           </span>
+          <span v-if="binaries?.cliPath || binaries?.corePath" class="bin-paths mono">
+            {{ [binaries?.cliPath, binaries?.corePath].filter(Boolean).join(' · ') }}
+          </span>
           <AppButton variant="default" :disabled="!!binaries?.downloading" @click="downloadBinaries">
             {{ binaries?.corePath ? t('cluster.settings.binRedownload') : t('cluster.settings.binDownload') }}
           </AppButton>
@@ -524,6 +527,7 @@ onUnmounted(() => {
 .bin-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .bin-label { font-size: 13px; font-weight: 600; }
 .bin-status { font-size: 13px; flex: 1; min-width: 200px; }
+.bin-paths { width: 100%; font-size: 11px; color: var(--color-text-muted); word-break: break-all; }
 .hint { margin: 0; color: var(--color-text-muted); font-size: 12px; }
 .row-end { display: flex; justify-content: flex-end; align-items: center; gap: 12px; }
 .acl-row { display: flex; align-items: flex-start; gap: 12px; }
