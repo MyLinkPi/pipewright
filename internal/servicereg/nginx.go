@@ -379,8 +379,9 @@ func groupTargetComment(group *httpGroup) string {
 // 替换匹配的 location 前缀);address 变量反代的 proxy_pass 不允许 URI,改用 rewrite 剥前缀。
 //
 // 反代头:proxy_http_version 1.1 + Upgrade $http_upgrade。Connection 分两种:
-//   实例池 → $connection_upgrade(非 WS 为空 → 不发送,使 upstream keepalive 复用连接);
-//   address 单上游 → $connection_upgrade_addr(非 WS 为 close → 不复用即显式关闭)。
+//
+//	实例池 → $connection_upgrade(非 WS 为空 → 不发送,使 upstream keepalive 复用连接);
+//	address 单上游 → $connection_upgrade_addr(非 WS 为 close → 不复用即显式关闭)。
 func writeProxyLocation(b *strings.Builder, indent string, svc RegisteredService, r *siteRender, proto string) {
 	loc := svc.DisplayPath()
 	if r.maintenance && !r.useUpstream {
@@ -845,7 +846,7 @@ func (s *service) deployCerts(ctx context.Context, st *Settings, serverID string
 			return err
 		}
 		// 私钥收紧权限(best-effort)。
-		_, _ = s.tg.Exec(ctx, serverID, []string{"docker", "exec", st.ContainerName, "chmod", "600", dir+"/privkey.pem"})
+		_, _ = s.tg.Exec(ctx, serverID, []string{"docker", "exec", st.ContainerName, "chmod", "600", dir + "/privkey.pem"})
 	}
 	return nil
 }

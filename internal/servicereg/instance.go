@@ -195,7 +195,7 @@ func (s *service) AddInstance(ctx context.Context, serviceID, serverID, containe
 }
 
 // EnsureInstance 部署期幂等 upsert(一键注册的部署联动):按(服务, 服务器, 容器)定位 ——
-// 精确命中 → 更新端口并置 attached;命中同(服务, 容器)的遗留行(server_id='')→ 认领
+// 精确命中 → 更新端口并置 attached;命中同(服务, 容器)的遗留行(server_id=”)→ 认领
 // (补 server_id + 端口);否则插入。返回最终实例;apply 失败时返回实例 + 错误(行保留,
 // 下轮 apply 自愈 —— 部署已把进程拉起,不应因网关暂不可达回滚注册)。
 func (s *service) EnsureInstance(ctx context.Context, serviceID, serverID, container string, port, hostPort int) (*Instance, error) {
@@ -231,7 +231,7 @@ func (s *service) EnsureInstance(ctx context.Context, serviceID, serverID, conta
 }
 
 // EnsureInstanceDetached 部署期「预注册」(摘挂升级流程的第一步):确保实例行存在且**本轮
-// 部署期间不进 upstream** —— 新行以 attached=false 落库;存量行(含遗留 '' 行认领)只更新
+// 部署期间不进 upstream** —— 新行以 attached=false 落库;存量行(含遗留 ” 行认领)只更新
 // 端口/归属,attached 原状保持(摘挂流程随后统一摘除,部署成功再挂回)。不触发 apply:
 // detached 行本就不渲染,attached 存量行的端口变化由紧随的摘/挂 apply 承载。
 func (s *service) EnsureInstanceDetached(ctx context.Context, serviceID, serverID, container string, port, hostPort int) (*Instance, error) {
@@ -263,7 +263,7 @@ func (s *service) EnsureInstanceDetached(ctx context.Context, serviceID, serverI
 	return s.store.getInstance(ctx, inst.ID)
 }
 
-// PruneInstancesNotIn 同步清理:删除该服务下 server_id 不在 serverIDs 内的实例(含遗留 ''
+// PruneInstancesNotIn 同步清理:删除该服务下 server_id 不在 serverIDs 内的实例(含遗留 ”
 // 行),返回删除数;触发 apply。部署全部目标成功后调用,使实例表与实际部署拓扑一致。
 func (s *service) PruneInstancesNotIn(ctx context.Context, serviceID string, serverIDs []string) (int, error) {
 	n, err := s.store.deleteInstancesNotIn(ctx, serviceID, serverIDs)
@@ -338,7 +338,7 @@ func (s *service) SwapInstance(ctx context.Context, serviceID, serverID, oldCont
 //  2. container 匹配任一 http 服务的实例容器名;
 //  3. container 匹配服务名(服务 abc 的实例惯例命名 abc-1/abc-2…,存量兼容)。
 //
-// 返回实例含遗留行(server_id='' —— 本机部署先行认领,旧模型平滑迁移)。非 http /
+// 返回实例含遗留行(server_id=” —— 本机部署先行认领,旧模型平滑迁移)。非 http /
 // static(无实例语义)/ 未启用服务不参与。serverID 无需是网关主机(集群模型:任何部署
 // 目标机都可承载实例)。
 func (s *service) ResolveDeployInstances(ctx context.Context, serverID, serviceRef, container string) ([]DeployInstance, error) {

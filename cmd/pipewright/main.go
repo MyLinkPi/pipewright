@@ -51,10 +51,10 @@ import (
 	"github.com/huangchengsir/pipewright/internal/opschat"
 	"github.com/huangchengsir/pipewright/internal/pacloader"
 	"github.com/huangchengsir/pipewright/internal/pipeline"
-	"github.com/huangchengsir/pipewright/internal/pushsource"
 	"github.com/huangchengsir/pipewright/internal/platformhttps"
 	"github.com/huangchengsir/pipewright/internal/project"
 	"github.com/huangchengsir/pipewright/internal/prstatus"
+	"github.com/huangchengsir/pipewright/internal/pushsource"
 	"github.com/huangchengsir/pipewright/internal/registryhub"
 	"github.com/huangchengsir/pipewright/internal/repocache"
 	"github.com/huangchengsir/pipewright/internal/retention"
@@ -1256,4 +1256,3 @@ func (a *certSinkAdapter) CurrentCertPEM(ctx context.Context, domainID string) (
 func (a *certSinkAdapter) ClearCert(ctx context.Context, domainID string) error {
 	return a.sr.ClearCert(ctx, domainID)
 }
-

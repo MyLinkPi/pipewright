@@ -334,11 +334,11 @@ func (s *Store) deleteDomain(ctx context.Context, id string) error {
 
 func scanDomain(sc scanner) (*Domain, error) {
 	var (
-		d         Domain
-		hasCert   bool
-		expires   sql.NullString
-		createdS  string
-		updatedS  string
+		d        Domain
+		hasCert  bool
+		expires  sql.NullString
+		createdS string
+		updatedS string
 	)
 	if err := sc.Scan(&d.ID, &d.BaseDomain, &d.CertSubject, &expires, &hasCert, &createdS, &updatedS); err != nil {
 		return nil, err
@@ -434,11 +434,11 @@ func (s *Store) listServicesWithDomain(ctx context.Context) ([]ServiceWithDomain
 	out := make([]ServiceWithDomain, 0)
 	for rows.Next() {
 		var (
-			swd       ServiceWithDomain
-			enabled   int
-			strip     int
-			createdS  string
-			updatedS  string
+			swd      ServiceWithDomain
+			enabled  int
+			strip    int
+			createdS string
+			updatedS string
 		)
 		if err := rows.Scan(
 			&swd.ID, &swd.DomainID, &swd.Name, &swd.Path, &swd.Protocol, &swd.UpstreamKind, &swd.Upstream,
@@ -514,11 +514,11 @@ func (s *Store) deleteService(ctx context.Context, id string) error {
 
 func scanService(sc scanner) (*RegisteredService, error) {
 	var (
-		svc       RegisteredService
-		enabled   int
-		strip     int
-		createdS  string
-		updatedS  string
+		svc      RegisteredService
+		enabled  int
+		strip    int
+		createdS string
+		updatedS string
 	)
 	if err := sc.Scan(
 		&svc.ID, &svc.DomainID, &svc.Name, &svc.Path, &svc.Protocol, &svc.UpstreamKind, &svc.Upstream,
@@ -565,7 +565,7 @@ func (s *Store) insertInstance(ctx context.Context, i *Instance) error {
 }
 
 // findInstanceForUpsert 定位 upsert 目标行:先精确 (service, server, container);
-// 未命中且 container 非空 → 认领同 (service, container) 的遗留行(server_id='',0068 前单机
+// 未命中且 container 非空 → 认领同 (service, container) 的遗留行(server_id=”,0068 前单机
 // 模型)。都没有 → nil(调用方插入新行)。
 func (s *Store) findInstanceForUpsert(ctx context.Context, serviceID, serverID, container string) *Instance {
 	if container == "" {
@@ -621,7 +621,7 @@ func (s *Store) updateInstanceEndpoint(ctx context.Context, id, serverID string,
 	return nil
 }
 
-// deleteInstancesNotIn 删除该服务下 server_id 不在列表内的实例(含遗留 '' 行)。
+// deleteInstancesNotIn 删除该服务下 server_id 不在列表内的实例(含遗留 ” 行)。
 func (s *Store) deleteInstancesNotIn(ctx context.Context, serviceID string, serverIDs []string) (int64, error) {
 	// 动态 NOT IN 占位;列表空 → 删全量(该服务已无覆盖服务器)。
 	sqlText := `DELETE FROM service_reg_instances WHERE service_id = ?`
@@ -768,10 +768,10 @@ func (s *Store) deleteInstance(ctx context.Context, id string) error {
 
 func scanInstance(sc scanner) (*Instance, error) {
 	var (
-		i         Instance
-		attached  int
-		createdS  string
-		updatedS  string
+		i        Instance
+		attached int
+		createdS string
+		updatedS string
 	)
 	if err := sc.Scan(&i.ID, &i.ServiceID, &i.ServerID, &i.Container, &i.Port, &i.HostPort, &attached, &createdS, &updatedS); err != nil {
 		return nil, err

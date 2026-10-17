@@ -62,7 +62,7 @@ func toServiceRegSettingsDTO(st *servicereg.Settings) serviceRegSettingsDTO {
 		ServerID: st.PrimaryServerID(), ServerIDs: ids,
 		HTTPPort: st.HTTPPort, HTTPSPort: st.HTTPSPort,
 		Image: st.Image, Network: st.Network, ContainerName: st.ContainerName,
-		VolumeName:  st.VolumeName, StaticRoot: st.StaticRoot,
+		VolumeName: st.VolumeName, StaticRoot: st.StaticRoot,
 		LastApplyAt: last, LastApplyError: st.LastApplyError, LastApplyErrors: st.LastApplyErrors,
 	}
 }
@@ -106,9 +106,9 @@ type serviceRegServiceDTO struct {
 	UpstreamPort  int    `json:"upstreamPort"`
 	TCPListenPort int    `json:"tcpListenPort"`
 	// StripPathPrefix 反代剥离 location 前缀(默认 false = 原样透传;仅 http 反代有效)。
-	StripPathPrefix bool `json:"stripPathPrefix"`
-	Enabled         bool `json:"enabled"`
-	InstanceCount   int  `json:"instanceCount"`
+	StripPathPrefix bool   `json:"stripPathPrefix"`
+	Enabled         bool   `json:"enabled"`
+	InstanceCount   int    `json:"instanceCount"`
 	CreatedAt       string `json:"createdAt"`
 	UpdatedAt       string `json:"updatedAt"`
 }
@@ -448,15 +448,15 @@ func makeListServiceRegServicesHandler(svc servicereg.Service) http.HandlerFunc 
 
 // serviceRegServiceRequest 是创建/更新服务的请求体字段(创建时全量,更新时缺省保持)。
 type serviceRegServiceRequest struct {
-	DomainID      *string `json:"domainId"`
-	Name          *string `json:"name"`
-	Path          *string `json:"path"`
-	Protocol      *string `json:"protocol"`
-	UpstreamKind  *string `json:"upstreamKind"`
-	Upstream      *string `json:"upstream"`
-	UpstreamPort  *int    `json:"upstreamPort"`
-	TCPListenPort *int    `json:"tcpListenPort"`
-	StripPathPrefix *bool `json:"stripPathPrefix"`
+	DomainID        *string `json:"domainId"`
+	Name            *string `json:"name"`
+	Path            *string `json:"path"`
+	Protocol        *string `json:"protocol"`
+	UpstreamKind    *string `json:"upstreamKind"`
+	Upstream        *string `json:"upstream"`
+	UpstreamPort    *int    `json:"upstreamPort"`
+	TCPListenPort   *int    `json:"tcpListenPort"`
+	StripPathPrefix *bool   `json:"stripPathPrefix"`
 }
 
 // serviceRegUpstreamKind 归一化请求的上游形态(缺省 = container)。
