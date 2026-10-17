@@ -159,4 +159,14 @@ export default {
   triggerErrNotFound: 'Projet introuvable, veuillez actualiser et réessayer.',
   triggerErrStatus: 'Échec du déclenchement ({status})',
   triggerErrRetry: 'Échec du déclenchement, veuillez réessayer plus tard.',
+
+  // ─── 被推送源项目(集群推送自动创建)─────────────────────────────────────
+  pushedRevision: 'Révision poussée',
+  pushedRevisionHint: 'À choisir au déploiement ; aucune = dernière',
+  pushedRevisionLatest: 'Dernière révision',
+  pushedItemsUnit: 'éléments',
+  pushedItems: 'Éléments poussés',
+  pushedItemsHint: 'non coché = tous',
+  pushedBadge: 'source poussée',
+  pushedBadgeHint: 'Projet créé automatiquement par un push d’un pair du cluster (source : artefacts/images poussés)',
 }

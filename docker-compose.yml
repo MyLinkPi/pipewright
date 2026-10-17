@@ -16,6 +16,12 @@ services:
     restart: unless-stopped
     ports:
       - "${PIPEWRIGHT_PORT:-8080}:8080"
+    # 集群(EasyTier 自组网,可选):托管 easytier-core 需要 TUN 设备与 NET_ADMIN。
+    # 启用集群时取消下面两行注释(并把 easytier-core/easytier-cli 放进挂载卷的 bin/ 目录)。
+    # devices:
+    #   - /dev/net/tun:/dev/net/tun
+    # cap_add:
+    #   - NET_ADMIN
     environment:
       # 初始管理员口令(可选,首启建账;之后改这里不改库)。
       # 不设则首启生成随机口令落 /data/admin_password.txt(见文件头说明)。设了则务必改掉。

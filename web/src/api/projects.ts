@@ -40,6 +40,11 @@ export interface Project {
   id: string
   name: string
   repoUrl: string
+  /** Source kind: 'git' (default) | 'pushed' (cluster-pushed artifacts/images; auto-created on first push, no repo). Optional: older fixtures/tests may omit. */
+  sourceType?: 'git' | 'pushed'
+  /** Pushed-source provenance: originating cluster node id + its project id (empty for git projects). */
+  originNodeId?: string
+  originProjectRef?: string
   defaultBranch: string
   credentialId: string
   /** Masked display name from the vault — never plaintext. */

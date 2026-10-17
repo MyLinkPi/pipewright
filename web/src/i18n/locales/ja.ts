@@ -72,6 +72,7 @@ const ja: typeof zhCN = {
     library: 'ライブラリ',
     dora: 'DORA 指標',
     serverStatus: 'サーバー',
+    cluster: 'クラスタ',
     containers: 'コンテナ',
     serviceReg: 'サービス登録',
     appStore: 'アプリストア',

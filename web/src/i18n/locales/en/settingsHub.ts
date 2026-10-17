@@ -11,6 +11,7 @@ export default {
   navHttps: 'HTTPS',
   navAccount: 'Account',
   navServers: 'Servers',
+  navMesh: 'Cluster',
   navRegistry: 'Registry',
   navDiagnosisStats: 'Diagnosis Feedback',
   navSystem: 'System',

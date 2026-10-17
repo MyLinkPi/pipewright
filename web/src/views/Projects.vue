@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { useDirtyGuard } from '../composables/useDirtyGuard'
@@ -15,6 +15,7 @@ import {
   type UpdateProjectInput,
 } from '../api/projects'
 import { listCredentials, createCredential, type Credential, type CredentialType } from '../api/credentials'
+import { listPushedRevisions, type PushedRevision } from '../api/mesh'
 import { triggerManual, type RunDetail, type TriggerManualInput } from '../api/runs'
 import { listRefs, listCommits, type GitRef, type GitCommit } from '../api/refs'
 import RunParamsEditor from '../components/RunParamsEditor.vue'
@@ -535,6 +536,10 @@ const triggerProject     = ref<Project | null>(null)
 const triggerForm        = ref({ branch: '', commit: '' })
 const triggerParams      = ref<Record<string, string>>({})
 const triggerDefs        = ref<ParamDef[]>([])
+const triggerPushed     = ref(false)          // 触发对象是被推送源项目 → 修订/条目选择
+const triggerRevisions  = ref<PushedRevision[]>([])
+const triggerRevision   = ref('')
+const triggerItemSel    = ref<Record<string, boolean>>({})
 const triggerBranchError = ref('')
 const triggerBanner      = ref('')
 const triggerSubmitting  = ref(false)
@@ -558,7 +563,18 @@ function openTriggerModal(p: Project): void {
   triggerSubmitting.value  = false
   triggerModalOpen.value   = true
   triggerSnapshot.value    = triggerEditJson()
-  void loadBranchOptions(p.id)
+  const pushed = p.sourceType === 'pushed'
+  triggerPushed.value    = pushed
+  triggerRevisions.value = []
+  triggerRevision.value  = ''
+  triggerItemSel.value   = {}
+  if (pushed) {
+    listPushedRevisions(p.id)
+      .then((res) => { triggerRevisions.value = res.items ?? [] })
+      .catch(() => { triggerRevisions.value = [] })
+  } else {
+    void loadBranchOptions(p.id)
+  }
   void loadTriggerDefs(p.id)
 }
 
@@ -598,6 +614,16 @@ async function loadCommitOptions(projectId: string, ref: string): Promise<void> 
   }
 }
 
+/** 当前所选修订(或最新修订)的条目名列表(条目多选候选)。 */
+const revisionItems = computed<string[]>(() => {
+  const revs = triggerRevisions.value
+  if (!triggerRevision.value) return revs.length ? revs[0].items : []
+  const hit = revs.find((r) => r.label === triggerRevision.value)
+  return hit ? hit.items : []
+})
+
+watch(triggerRevision, () => { triggerItemSel.value = {} })
+
 function onTriggerBranchInput(): void {
   triggerBranchError.value = ''
   if (triggerProject.value) void loadCommitOptions(triggerProject.value.id, triggerForm.value.branch)
@@ -635,6 +661,12 @@ async function handleTriggerSubmit(): Promise<void> {
     const commit = triggerForm.value.commit.trim()
     if (commit) input.commit = commit
     if (Object.keys(triggerParams.value).length) input.params = triggerParams.value
+    // 被推送源:部署时选择修订与条目(默认最新修订 / 全部条目)。
+    if (triggerPushed.value) {
+      if (triggerRevision.value) input.revision = triggerRevision.value
+      const items = Object.entries(triggerItemSel.value).filter(([, on]) => on).map(([n]) => n)
+      if (items.length) input.items = items
+    }
 
     const run: RunDetail = await triggerManual(triggerProject.value.id, input)
     triggerModalOpen.value = false
@@ -831,6 +863,13 @@ const STATUS_CONFIG: Record<RunStatus, StatusConfig> = {
               </svg>
             </div>
             <h2 class="project-name" :title="project.name">{{ project.name }}</h2>
+
+            <!-- 被推送源徽标:集群对端推送自动创建的项目(无 git 仓库) -->
+            <span
+              v-if="project.sourceType === 'pushed'"
+              class="pushed-badge"
+              :title="t('projects.pushedBadgeHint')"
+            >{{ t('projects.pushedBadge') }}</span>
 
             <!-- Status badge: only if we have a run status -->
             <div
@@ -1059,8 +1098,8 @@ const STATUS_CONFIG: Record<RunStatus, StatusConfig> = {
           novalidate
           @submit.prevent="handleTriggerSubmit"
         >
-          <!-- Branch -->
-          <div class="field">
+          <!-- Branch(仅 git 项目;被推送源项目无分支) -->
+          <div v-if="!triggerPushed" class="field">
             <label class="field-label" for="trigger-branch">
               {{ t('projects.branch') }}
               <span class="field-hint-inline">{{ t('projects.branchHint') }}</span>
@@ -1091,8 +1130,8 @@ const STATUS_CONFIG: Record<RunStatus, StatusConfig> = {
             >{{ triggerBranchError }}</span>
           </div>
 
-          <!-- Commit (optional) -->
-          <div class="field">
+          <!-- Commit (optional; 仅 git 项目) -->
+          <div v-if="!triggerPushed" class="field">
             <label class="field-label" for="trigger-commit">
               {{ t('projects.commit') }}
               <span class="field-hint-inline">{{ t('projects.commitHint') }}</span>
@@ -1111,6 +1150,36 @@ const STATUS_CONFIG: Record<RunStatus, StatusConfig> = {
             <datalist id="trigger-commit-options">
               <option v-for="c in commitOptions" :key="c.sha" :value="c.short">{{ c.subject }}</option>
             </datalist>
+          </div>
+
+          <!-- Pushed source · 部署时选择修订与条目(空 = 最新修订 / 全部条目) -->
+          <div v-if="triggerPushed" class="field">
+            <label class="field-label" for="trigger-revision">
+              {{ t('projects.pushedRevision') }}
+              <span class="field-hint-inline">{{ t('projects.pushedRevisionHint') }}</span>
+            </label>
+            <select
+              id="trigger-revision"
+              v-model="triggerRevision"
+              class="field-input"
+              :disabled="triggerSubmitting"
+            >
+              <option value="">{{ t('projects.pushedRevisionLatest') }}</option>
+              <option v-for="r in triggerRevisions" :key="r.id" :value="r.label">
+                {{ r.label }} · {{ r.items.length }} {{ t('projects.pushedItemsUnit') }}
+              </option>
+            </select>
+          </div>
+          <div v-if="triggerPushed && revisionItems.length" class="field">
+            <label class="field-label">{{ t('projects.pushedItems') }}
+              <span class="field-hint-inline">{{ t('projects.pushedItemsHint') }}</span>
+            </label>
+            <div class="pushed-items">
+              <label v-for="name in revisionItems" :key="name" class="pushed-item">
+                <input v-model="triggerItemSel[name]" type="checkbox" :disabled="triggerSubmitting" />
+                <span class="field-input--mono">{{ name }}</span>
+              </label>
+            </div>
           </div>
 
           <!-- Parameters · 有类型化定义(P0)→ 渲染类型化控件;无 → 自由 KV(Story 8-11) -->
@@ -2747,4 +2816,7 @@ const STATUS_CONFIG: Record<RunStatus, StatusConfig> = {
 @media (prefers-reduced-motion: reduce) {
   .spinner { animation: none; border-top-color: currentColor; }
 }
+.pushed-items { display: flex; flex-wrap: wrap; gap: 8px; }
+.pushed-badge { flex-shrink: 0; align-self: center; font-size: 11px; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--color-primary); color: var(--color-primary); background: var(--color-primary-soft); }
+.pushed-item { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--color-border); border-radius: 8px; padding: 4px 10px; font-size: 12px; cursor: pointer; }
 </style>

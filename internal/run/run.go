@@ -77,6 +77,9 @@ const (
 	// 复用 manual 的 when 条件语义(when: type=manual 的阶段照常命中),Trigger.Type 不落此值;
 	// 此常量仅供恢复链路内部语义标注/测试引用,恢复溯源走 Run.ResumeOfRunID。
 	TriggerResume = "resume"
+	// TriggerMesh 表示由集群对等节点的 mesh_trigger 节点远程触发(经 /api/mesh/projects/{id}/runs)。
+	// when 条件按 manual 同语义命中(dagrun 侧映射);来源节点记在 Trigger.Actor(mesh:<节点名>)。
+	TriggerMesh = "mesh"
 )
 
 // 节点恢复动作枚举(ResumePlan.Actions 的元素;下标 = run_steps.ordinal)。

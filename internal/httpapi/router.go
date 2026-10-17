@@ -121,6 +121,19 @@ type options struct {
 	appStore         appstore.Service
 	serverCmds       *servercmd.Service
 	registryHub      registryHubService
+	mesh             *meshAdminDeps
+}
+
+// WithMesh 注入集群(对等节点 + EasyTier)依赖,挂载两组路由:
+//   - 根级 /api/mesh/*(与 webhook 同级,豁免 session/CSRF;节点签名 + ACL 鉴权):
+//     hello 发现握手 / servers-metrics / projects / runs / push / SSE 事件回流;
+//   - 受保护组内 /api/mesh/{settings,acl,peers,overview,...}(admin session + CSRF):
+//     本节点配置、授权单、节点注册表、集群页聚合与对端代理查询。
+//
+// 不传则集群功能整体不可用(端点不挂载)。nil 子依赖(如 status/supervisor)由各
+// handler 优雅降级(503/空态),不阻断其余功能。
+func WithMesh(d meshAdminDeps) Option {
+	return func(o *options) { o.mesh = &d }
 }
 
 // WithArtifactStore 注入制品库(Story 8-16):挂载产物下载端点
@@ -518,6 +531,12 @@ func New(webFS fs.FS, authn auth.Authenticator, opts ...Option) http.Handler {
 	// 必须在受保护 /api 组之外注册;限请求体大小在 handler 内(MaxBytesReader)。
 	r.Post("/api/webhooks/{token}", makeWebhookHandler(o.receiver))
 
+	// 集群对等入站(公开入口=网络层 EasyTier 把关):豁免 session/CSRF,靠节点 ed25519
+	// 签名头 + 接收方 ACL(默认全拒绝)鉴权。与 webhook 同级注册在受保护 /api 组之外。
+	if o.mesh != nil {
+		mountMeshInbound(r, o.mesh.meshDeps)
+	}
+
 	// 从通知直接审批(公开入口,SECURITY-SENSITIVE):豁免 requireAuth + CSRF——token(HMAC+过期+
 	// 常量时间比较)即认证。GET 仅渲染确认页(无副作用,防 IM 预取自动放行);POST 才解析门。
 	// signer 为 nil/禁用时页面提示不可用、不解析任何门。
@@ -584,6 +603,10 @@ func New(webFS fs.FS, authn auth.Authenticator, opts ...Option) http.Handler {
 			ar.Get("/projects/{id}/members", makeListProjectMembersHandler(o.identity))
 			ar.Post("/projects/{id}/members", makeAddProjectMemberHandler(o.identity, aud))
 			ar.Delete("/projects/{id}/members/{userId}", makeRemoveProjectMemberHandler(o.identity, aud))
+			// 集群管理面(管理员):本节点配置/授权单/节点注册表/集群页聚合 + 对端代理查询。
+			if o.mesh != nil {
+				mountMeshAdmin(ar, *o.mesh)
+			}
 		})
 
 		// 触发设置与分支映射(Story 2.3)。t 为 nil 时 handler 返回 503。
@@ -695,6 +718,12 @@ func New(webFS fs.FS, authn auth.Authenticator, opts ...Option) http.Handler {
 		// 手动触发创建运行(Story 3.2):认证 + CSRF;actor=admin;返 201 run-detail DTO。
 		// o.parameters 非 nil 时,据项目参数定义校验 + 强转 + 填默认(typed params,P0);无定义则透传。
 		ar.Post("/projects/{id}/runs", makeManualRunHandler(rs, o.parameters, aud))
+
+		// 被推送源项目的修订查询(集群推送接收侧):运行对话框的修订/条目选择器用。
+		// 比手动触发多一段,不会被吞;集群未装配时不挂载(前端降级为「最新修订/全部条目」)。
+		if o.mesh != nil {
+			mountPushedSource(ar, o.mesh.meshDeps)
+		}
 
 		// 账户设置(Story 1.7):改口令 / 会话列表 / 撤销会话。ac 为 nil 时 handler 返回 503。
 		// 改口令、撤销会话为写方法,过 auth + CSRF;列表为 GET,过 auth。

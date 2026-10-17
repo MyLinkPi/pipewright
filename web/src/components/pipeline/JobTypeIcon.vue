@@ -24,6 +24,15 @@ const ICONS: Record<string, string> = {
   // OSS 上传:云 + 上箭头(推送产物到对象存储)。
   oss_upload:
     '<path d="M6.5 19a4 4 0 0 1-.5-8A5.5 5.5 0 0 1 17 10.5a3.5 3.5 0 0 1 .5 7"/><path d="M12 21v-7"/><path d="m9 17 3-3 3 3"/>',
+  // 集群推送:两节点 + 传递箭头(产物/镜像 → 对端节点)。
+  mesh_push:
+    '<circle cx="6" cy="12" r="2.6"/><circle cx="18" cy="12" r="2.6"/><path d="M8.6 12h6.8"/><path d="m13 9.5 2.5 2.5-2.5 2.5"/>',
+  // 集群触发:播放三角 + 节点(启动对端工作流)。
+  mesh_trigger:
+    '<circle cx="17" cy="12" r="3"/><path d="M14 12H4"/><path d="m7 9-3 3 3 3"/><path d="M16.4 11v2l1.6 1"/>',
+  // 被推送源:入站托盘(集群推送来的产物/镜像)。
+  pushed_source:
+    '<path d="M12 4v9"/><path d="m8.5 9.5 3.5 3.5 3.5-3.5"/><path d="M4 15.5v2A2.5 2.5 0 0 0 6.5 20h11a2.5 2.5 0 0 0 2.5-2.5v-2"/>',
   deploy_ssh:
     '<rect x="3" y="4" width="18" height="6" rx="1.6"/><rect x="3" y="14" width="18" height="6" rx="1.6"/><path d="M7 7h.01M7 17h.01"/>',
   deploy_container:

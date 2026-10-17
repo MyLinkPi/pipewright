@@ -159,4 +159,14 @@ export default {
   triggerErrNotFound: 'プロジェクトが存在しません。更新して再試行してください。',
   triggerErrStatus: 'トリガーに失敗しました（{status}）',
   triggerErrRetry: 'トリガーに失敗しました。しばらくしてから再試行してください。',
+
+  // ─── 被推送源项目(集群推送自动创建)─────────────────────────────────────
+  pushedRevision: 'プッシュリビジョン',
+  pushedRevisionHint: 'デプロイ時に選択。未選択 = 最新',
+  pushedRevisionLatest: '最新リビジョン',
+  pushedItemsUnit: '項目',
+  pushedItems: 'プッシュ項目',
+  pushedItemsHint: '未チェック = 全項目',
+  pushedBadge: 'プッシュ源',
+  pushedBadgeHint: 'クラスタ対等ノードのプッシュで自動作成されたプロジェクト(ソースはプッシュされた成果物/イメージ)',
 }

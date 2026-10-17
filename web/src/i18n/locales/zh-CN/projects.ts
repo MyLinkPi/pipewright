@@ -159,4 +159,14 @@ export default {
   triggerErrNotFound: '项目不存在,请刷新后重试。',
   triggerErrStatus: '触发失败({status})',
   triggerErrRetry: '触发失败,请稍后重试。',
+
+  // ─── 被推送源项目(集群推送自动创建)─────────────────────────────────────
+  pushedRevision: '推送修订',
+  pushedRevisionHint: '部署时选择;不选 = 最新',
+  pushedRevisionLatest: '最新修订',
+  pushedItemsUnit: '项',
+  pushedItems: '推送条目',
+  pushedItemsHint: '不勾 = 全部条目',
+  pushedBadge: '推送源',
+  pushedBadgeHint: '集群对端推送自动创建的项目(源为被推送的产物/镜像)',
 }

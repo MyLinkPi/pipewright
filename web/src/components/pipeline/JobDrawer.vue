@@ -24,12 +24,43 @@ import {
   type PromotedParam,
 } from './studioCompile'
 import { createCustomNode } from '../../api/customNodes'
+import { listMeshPeers, fetchPeerProjects, type MeshPeer, type MeshPeerProject, type MeshProxyDegraded } from '../../api/mesh'
 import { matchServers } from '../../lib/selectorMatch'
 import JobTypeIcon from './JobTypeIcon.vue'
 import StepBuilder from './StepBuilder.vue'
 import StudioInstanceParams from './StudioInstanceParams.vue'
 import LabelSelectorEditor from './LabelSelectorEditor.vue'
 import ServiceRegBinding from './ServiceRegBinding.vue'
+
+
+// 集群节点/对端项目候选(meshNode/meshProject 控件自取;请求失败降级为空列表)。
+const meshPeers = ref<MeshPeer[]>([])
+const meshPeerProjects = ref<Record<string, MeshPeerProject[] | MeshProxyDegraded>>({})
+let meshPeersLoaded = false
+
+async function ensureMeshPeers(): Promise<void> {
+  if (meshPeersLoaded) return
+  meshPeersLoaded = true
+  try {
+    const res = await listMeshPeers()
+    meshPeers.value = res.items ?? []
+  } catch {
+    meshPeers.value = []
+  }
+}
+
+async function loadMeshPeerProjects(nodeId: string): Promise<void> {
+  if (!nodeId || meshPeerProjects.value[nodeId]) return
+  try {
+    meshPeerProjects.value[nodeId] = (await fetchPeerProjects(nodeId)) as MeshPeerProject[] | MeshProxyDegraded
+  } catch {
+    meshPeerProjects.value[nodeId] = { available: false, reason: 'unreachable' }
+  }
+}
+
+function meshPeerLabel(p: MeshPeer): string {
+  return p.name || p.nodeId.slice(0, 8)
+}
 
 const props = defineProps<{
   job: PipelineJob
@@ -685,6 +716,38 @@ async function confirmSave(): Promise<void> {
           <option v-for="c in credentialOptions(field)" :key="c.id" :value="c.id">
             {{ c.name }} ({{ c.maskedValue }})
           </option>
+        </select>
+
+        <!-- cluster peer node picker(mesh_push / mesh_trigger) -->
+        <select
+          v-else-if="field.kind === 'meshNode'"
+          :value="fieldValue(field.key)"
+          class="drawer-select"
+          :aria-label="field.label"
+          @focus="ensureMeshPeers()"
+          @change="setField(field.key, ($event.target as HTMLSelectElement).value); loadMeshPeerProjects(($event.target as HTMLSelectElement).value)"
+        >
+          <option value="">{{ t('pipelineJob.meshNodeUnselected') }}</option>
+          <option v-for="p in meshPeers" :key="p.nodeId" :value="p.nodeId">
+            {{ meshPeerLabel(p) }} · {{ p.virtualIp || p.nodeId.slice(0, 8) }}
+          </option>
+        </select>
+
+        <!-- remote peer project picker(候选随所选节点联动拉取) -->
+        <select
+          v-else-if="field.kind === 'meshProject'"
+          :value="fieldValue(field.key)"
+          class="drawer-select"
+          :aria-label="field.label"
+          @focus="loadMeshPeerProjects(fieldValue('node'))"
+          @change="setField(field.key, ($event.target as HTMLSelectElement).value)"
+        >
+          <option value="">{{ t('pipelineJob.meshProjectUnselected') }}</option>
+          <template v-if="meshPeerProjects[fieldValue('node')] && !('available' in meshPeerProjects[fieldValue('node')])">
+            <option v-for="pr in (meshPeerProjects[fieldValue('node')] as MeshPeerProject[])" :key="pr.id" :value="pr.id">
+              {{ pr.name }}{{ pr.hasPipeline ? '' : ' ⚠' }}
+            </option>
+          </template>
         </select>
 
         <!-- server picker -->

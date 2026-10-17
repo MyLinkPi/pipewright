@@ -159,4 +159,14 @@ export default {
   triggerErrNotFound: 'El proyecto no existe; actualiza y reinténtalo.',
   triggerErrStatus: 'El disparo falló ({status})',
   triggerErrRetry: 'El disparo falló, inténtalo de nuevo más tarde.',
+
+  // ─── 被推送源项目(集群推送自动创建)─────────────────────────────────────
+  pushedRevision: 'Revisión push',
+  pushedRevisionHint: 'Elegir al desplegar; nada = última',
+  pushedRevisionLatest: 'Última revisión',
+  pushedItemsUnit: 'elementos',
+  pushedItems: 'Elementos push',
+  pushedItemsHint: 'sin marcar = todos',
+  pushedBadge: 'fuente push',
+  pushedBadgeHint: 'Proyecto creado automáticamente por un push de par del clúster (fuente: artefactos/imágenes empujados)',
 }

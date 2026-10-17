@@ -46,6 +46,8 @@ var (
 	ErrCredentialNotFound = errors.New("project: referenced credential not found")
 	// ErrProjectHasActiveRuns 表示项目有进行中的运行(queued/running),不可删除。
 	ErrProjectHasActiveRuns = errors.New("project: has active runs")
+	// ErrInvalidInput 表示创建 pushed 项目入参非法(来源键为空等)。
+	ErrInvalidInput = errors.New("project: invalid input")
 )
 
 // 分页上限常量:防全量返回拖垮内存/响应。
@@ -54,6 +56,15 @@ const (
 	DefaultPageSize = 50
 	// MaxPageSize 是单页硬上限(请求 pageSize 超过则收敛到此)。
 	MaxPageSize = 500
+)
+
+// 源类型枚举(projects.source_type)。
+const (
+	// SourceTypeGit 是普通 git 仓库源(默认;既有行为)。
+	SourceTypeGit = "git"
+	// SourceTypePushed 是「被推送的产物/镜像」源:由对等集群节点首次推送自动创建,
+	// 不走手工建库;克隆/ls-remote 校验对其跳过(无仓库)。
+	SourceTypePushed = "pushed"
 )
 
 // Project 是项目领域模型。绝不含凭据明文,只持 credentialId 引用。
@@ -65,6 +76,12 @@ type Project struct {
 	CredentialID  string
 	// CredentialName 是冗余只读展示名(join credentials),便于列表展示;非持久列。
 	CredentialName string
+	// SourceType 是源类型:git(默认)| pushed(被推送的产物/镜像;见枚举注释)。
+	SourceType string
+	// OriginNodeID / OriginProjectRef 是 pushed 项目的对应键:来源集群节点 id + 来源项目 id。
+	// 两者共同唯一确定一个 pushed 项目(一一对应);git 项目恒为空。
+	OriginNodeID     string
+	OriginProjectRef string
 	// PacEnabled 是「流水线即代码」开关(GitOps · FR-8-12):开启后运行时按运行分支读仓库根
 	// .pipewright.yml 驱动该 run(缺失/非法回退库内配置)。默认 false。
 	PacEnabled bool
@@ -140,6 +157,19 @@ type Service interface {
 	Delete(ctx context.Context, id string) error
 	// TestClone 用所选凭据对仓库做 ls-remote 校验(不落库)。
 	TestClone(ctx context.Context, repoURL, credentialID string) (*TestCloneResult, error)
+	// CreatePushed 创建「被推送的产物/镜像」源项目(集群对端首次推送时;不做克隆校验,
+	// 凭据/仓库字段恒空)。名称冲突自动加后缀;同 (originNodeID, originProjectRef)
+	// 已存在时幂等返回既有项目。
+	CreatePushed(ctx context.Context, in PushedCreateInput) (*Project, error)
+	// GetByOrigin 按对应键取 pushed 项目;无 → ErrNotFound。
+	GetByOrigin(ctx context.Context, originNodeID, originProjectRef string) (*Project, error)
+}
+
+// PushedCreateInput 是创建 pushed 源项目的入参(来自集群推送接收侧)。
+type PushedCreateInput struct {
+	OriginNodeID     string
+	OriginProjectRef string
+	Name             string // 来源项目名(冲突自动加 -pushed-N 后缀)
 }
 
 // service 是 store + vault 支撑的 Service 实现。
@@ -269,7 +299,8 @@ func (s *service) ListPaged(ctx context.Context, page, pageSize int) (*ListResul
 	offset := (page - 1) * pageSize
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT p.id, p.name, p.repo_url, p.default_branch, p.credential_id,
-		        COALESCE(c.name, ''), p.pac_enabled, p.pr_status_enabled, p.created_at, p.updated_at
+		        COALESCE(c.name, ''), p.pac_enabled, p.pr_status_enabled, p.created_at, p.updated_at,
+		        p.source_type, p.origin_node_id, p.origin_project_ref
 		 FROM projects p
 		 LEFT JOIN credentials c ON c.id = p.credential_id
 		 ORDER BY p.created_at DESC, p.id
@@ -318,7 +349,8 @@ func (s *service) ListPagedByIDs(ctx context.Context, ids []string, page, pageSi
 	listArgs := append(append([]any{}, args...), pageSize, offset)
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT p.id, p.name, p.repo_url, p.default_branch, p.credential_id,
-		        COALESCE(c.name, ''), p.pac_enabled, p.pr_status_enabled, p.created_at, p.updated_at
+		        COALESCE(c.name, ''), p.pac_enabled, p.pr_status_enabled, p.created_at, p.updated_at,
+		        p.source_type, p.origin_node_id, p.origin_project_ref
 		 FROM projects p
 		 LEFT JOIN credentials c ON c.id = p.credential_id
 		 WHERE `+inClause+`
@@ -348,7 +380,8 @@ func (s *service) ListPagedByIDs(ctx context.Context, ids []string, page, pageSi
 func (s *service) Get(ctx context.Context, id string) (*Project, error) {
 	row := s.db.QueryRowContext(ctx,
 		`SELECT p.id, p.name, p.repo_url, p.default_branch, p.credential_id,
-		        COALESCE(c.name, ''), p.pac_enabled, p.pr_status_enabled, p.created_at, p.updated_at
+		        COALESCE(c.name, ''), p.pac_enabled, p.pr_status_enabled, p.created_at, p.updated_at,
+		        p.source_type, p.origin_node_id, p.origin_project_ref
 		 FROM projects p
 		 LEFT JOIN credentials c ON c.id = p.credential_id
 		 WHERE p.id = ?`, id,
@@ -481,8 +514,12 @@ func scanProject(sc scanner) (*Project, error) {
 	if err := sc.Scan(
 		&p.ID, &p.Name, &p.RepoURL, &p.DefaultBranch, &p.CredentialID,
 		&p.CredentialName, &pacInt, &prStatusInt, &createdStr, &updatedStr,
+		&p.SourceType, &p.OriginNodeID, &p.OriginProjectRef,
 	); err != nil {
 		return nil, err
+	}
+	if p.SourceType == "" {
+		p.SourceType = SourceTypeGit
 	}
 	p.PacEnabled = pacInt != 0
 	p.PRStatusEnabled = prStatusInt != 0
@@ -501,3 +538,85 @@ func scanProject(sc scanner) (*Project, error) {
 
 // isForeignKeyErr 判断错误是否为外键约束失败(modernc sqlite 文本含 FOREIGN KEY)。
 func isForeignKeyErr(err error) bool { return store.IsForeignKeyErr(err) }
+
+// PushedSentinelCredentialID 是 pushed 项目满足 projects.credential_id
+// NOT NULL + FK(credentials) 约束的系统占位凭据 id(迁移 0078 建行;领域层自愈补插)。
+const PushedSentinelCredentialID = "__pushed__"
+
+// CreatePushed 实现 Service.CreatePushed:集群对端首次推送时自动建 pushed 源项目。
+// 幂等:同 (originNodeID, originProjectRef) 已存在 → 直接返回既有项目(不重名加后缀);
+// 名称冲突(其他来源/普通项目占名)→ 追加 -pushed-N 后缀。不做克隆/凭据校验。
+func (s *service) CreatePushed(ctx context.Context, in PushedCreateInput) (*Project, error) {
+	in.OriginNodeID = strings.TrimSpace(in.OriginNodeID)
+	in.OriginProjectRef = strings.TrimSpace(in.OriginProjectRef)
+	if in.OriginNodeID == "" || in.OriginProjectRef == "" {
+		return nil, fmt.Errorf("%w: pushed origin must not be empty", ErrInvalidInput)
+	}
+	if existing, err := s.GetByOrigin(ctx, in.OriginNodeID, in.OriginProjectRef); err == nil {
+		return existing, nil
+	} else if !errors.Is(err, ErrNotFound) {
+		return nil, err
+	}
+
+	name := strings.TrimSpace(in.Name)
+	if name == "" {
+		name = "pushed-" + in.OriginProjectRef
+	}
+	name = s.uniqueName(ctx, name)
+
+	// 占位凭据自愈补插(运维误删后推送不因此失败;幂等)。
+	_, _ = s.db.ExecContext(ctx,
+		`INSERT INTO credentials (id, name, type, scope, username, ciphertext, masked_value, last_used_at, created_at, updated_at)
+		 VALUES (?, ?, 'internal', '', '', x'', '', NULL, ?, ?)
+		 `+store.DoNothingSuffix(store.DialectOf(s.db), []string{"id"}),
+		PushedSentinelCredentialID, "被推送源(系统占位,勿删)", nowRFC3339(), nowRFC3339(),
+	)
+
+	id := uuid.NewString()
+	nowStr := nowRFC3339()
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO projects (id, name, repo_url, default_branch, credential_id,
+		 source_type, origin_node_id, origin_project_ref, created_at, updated_at)
+		 VALUES (?, ?, '', '', ?, 'pushed', ?, ?, ?, ?)`,
+		id, name, PushedSentinelCredentialID, in.OriginNodeID, in.OriginProjectRef, nowStr, nowStr,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("project: insert pushed: %w", err)
+	}
+	return s.Get(ctx, id)
+}
+
+// nowRFC3339 返回当前 UTC 时刻的 RFC3339 串。
+func nowRFC3339() string { return time.Now().UTC().Format(time.RFC3339) }
+
+// GetByOrigin 实现 Service.GetByOrigin:按 (origin_node_id, origin_project_ref) 取 pushed 项目。
+func (s *service) GetByOrigin(ctx context.Context, originNodeID, originProjectRef string) (*Project, error) {
+	row := s.db.QueryRowContext(ctx,
+		`SELECT p.id FROM projects p WHERE p.source_type = 'pushed'
+		 AND p.origin_node_id = ? AND p.origin_project_ref = ?`,
+		strings.TrimSpace(originNodeID), strings.TrimSpace(originProjectRef),
+	)
+	var id string
+	if err := row.Scan(&id); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("project: get by origin: %w", err)
+	}
+	return s.Get(ctx, id)
+}
+
+// uniqueName 为 pushed 项目生成不冲突的名称:原名 → 原名-pushd2 → 原名-pushd3…
+// (保持简短;上限 20 次防御异常数据)。
+func (s *service) uniqueName(ctx context.Context, base string) string {
+	name := base
+	for i := 2; i < 22; i++ {
+		var n int
+		if err := s.db.QueryRowContext(ctx,
+			`SELECT COUNT(1) FROM projects WHERE name = ?`, name).Scan(&n); err != nil || n == 0 {
+			return name
+		}
+		name = fmt.Sprintf("%s-pushd%d", base, i)
+	}
+	return name + "-" + uuid.NewString()[:8]
+}

@@ -35,6 +35,10 @@ export type FieldKind =
   /** 引用一条「对象存储」配置(值 = 配置 id);候选来自设置页,如 OSS 上传节点。 */
   | 'objectStore'
   | 'runnerPicker'
+  /** 集群对端节点选择(候选来自 /api/mesh/peers;mesh_push/mesh_trigger 用)。 */
+  | 'meshNode'
+  /** 对端项目选择(候选随所选节点联动拉取 /api/mesh/peers/{id}/projects)。 */
+  | 'meshProject'
 
 export interface SelectOption {
   value: string
@@ -783,6 +787,115 @@ export const JOB_TYPE_SPECS: Record<string, JobTypeSpec> = {
     fields: DEPLOY_SSH_FIELDS,
   },
 
+  // ─── 集群节点(对等 mesh + EasyTier;internal/build/mesh_nodes.go)──────────────
+  // 推送产物/镜像到对端节点:首推在对端自动创建对应项目并落修订;镜像走 docker save 归档直传。
+  mesh_push: {
+    type: 'mesh_push',
+    get label() { return t('pipelineJob.typeMeshPushLabel') },
+    get description() { return t('pipelineJob.typeMeshPushDesc') },
+    accent: 'primary',
+    category: 'deploy',
+    fields: [
+      {
+        key: 'node',
+        get label() { return t('pipelineJob.fieldMeshNodeLabel') },
+        kind: 'meshNode',
+        get hint() { return t('pipelineJob.fieldMeshNodeHint') },
+      },
+      {
+        key: 'items',
+        get label() { return t('pipelineJob.fieldMeshItemsLabel') },
+        kind: 'text',
+        monospace: true,
+        placeholder: 'app.jar, app-image',
+        get hint() { return t('pipelineJob.fieldMeshItemsHint') },
+      },
+      {
+        key: 'revisionLabel',
+        get label() { return t('pipelineJob.fieldMeshRevisionLabel') },
+        kind: 'text',
+        monospace: true,
+        placeholder: '{{branch}}-{{commit}}',
+        get hint() { return t('pipelineJob.fieldMeshRevisionHint') },
+      },
+      {
+        key: 'timeoutMinutes',
+        get label() { return t('pipelineJob.fieldMeshTimeoutLabel') },
+        kind: 'number',
+        get hint() { return t('pipelineJob.fieldMeshTimeoutHint') },
+      },
+    ],
+  },
+  // 启动对端节点的特定工作流:origin 寻址(用本项目在对方的对应项目)或显式选对方项目;
+  // 可等待对方跑完并把日志回流到本节点。
+  mesh_trigger: {
+    type: 'mesh_trigger',
+    get label() { return t('pipelineJob.typeMeshTriggerLabel') },
+    get description() { return t('pipelineJob.typeMeshTriggerDesc') },
+    accent: 'primary',
+    category: 'deploy',
+    fields: [
+      {
+        key: 'node',
+        get label() { return t('pipelineJob.fieldMeshNodeLabel') },
+        kind: 'meshNode',
+        get hint() { return t('pipelineJob.fieldMeshNodeHint') },
+      },
+      {
+        key: 'targetMode',
+        get label() { return t('pipelineJob.fieldMeshTargetModeLabel') },
+        kind: 'select',
+        options: [
+          { value: 'origin', get label() { return t('pipelineJob.fieldMeshTargetOrigin') } },
+          { value: 'explicit', get label() { return t('pipelineJob.fieldMeshTargetExplicit') } },
+        ],
+        get hint() { return t('pipelineJob.fieldMeshTargetModeHint') },
+      },
+      {
+        key: 'project',
+        get label() { return t('pipelineJob.fieldMeshProjectLabel') },
+        kind: 'meshProject',
+        get hint() { return t('pipelineJob.fieldMeshProjectHint') },
+        when: (c) => (c.targetMode || 'origin') !== 'origin',
+      },
+      {
+        key: 'revision',
+        get label() { return t('pipelineJob.fieldMeshRevPickLabel') },
+        kind: 'text',
+        monospace: true,
+        get hint() { return t('pipelineJob.fieldMeshRevPickHint') },
+      },
+      {
+        key: 'params',
+        get label() { return t('pipelineJob.fieldMeshParamsLabel') },
+        kind: 'textarea',
+        monospace: true,
+        placeholder: 'env=prod\nreplicas=2',
+        get hint() { return t('pipelineJob.fieldMeshParamsHint') },
+      },
+      {
+        key: 'waitForCompletion',
+        get label() { return t('pipelineJob.fieldMeshWaitLabel') },
+        kind: 'toggle',
+        get hint() { return t('pipelineJob.fieldMeshWaitHint') },
+      },
+      {
+        key: 'timeoutMinutes',
+        get label() { return t('pipelineJob.fieldMeshTimeoutLabel') },
+        kind: 'number',
+        get hint() { return t('pipelineJob.fieldMeshTimeoutHint') },
+      },
+    ],
+  },
+  // ─── 被推送源(pushed 项目的 source 阶段声明节点;不进可选目录,自动种子携带)───
+  pushed_source: {
+    type: 'pushed_source',
+    get label() { return t('pipelineJob.typePushedSourceLabel') },
+    get description() { return t('pipelineJob.typePushedSourceDesc') },
+    accent: 'cyan',
+    category: 'source',
+    fields: [],
+  },
   deploy_container: {
     type: 'deploy_container',
     get label() { return t('pipelineJob.typeDeployContainerLabel') },
@@ -1118,6 +1231,8 @@ export const PICKABLE_TYPES: readonly string[] = [
   'build_image',
   'push_image',
   'oss_upload',
+  'mesh_push',
+  'mesh_trigger',
   'deploy_container',
   'deploy_ssh',
   'health_check',

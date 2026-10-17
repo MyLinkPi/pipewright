@@ -71,6 +71,7 @@ export default {
     library: '复用库',
     dora: 'DORA 指标',
     serverStatus: '服务器',
+    cluster: '集群',
     containers: '容器',
     serviceReg: '服务注册',
     appStore: '应用商店',

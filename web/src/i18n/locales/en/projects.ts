@@ -159,4 +159,14 @@ export default {
   triggerErrNotFound: 'Project not found, please refresh and retry.',
   triggerErrStatus: 'Trigger failed ({status})',
   triggerErrRetry: 'Trigger failed, please try again later.',
+
+  // ─── 被推送源项目(集群推送自动创建)─────────────────────────────────────
+  pushedRevision: 'Pushed revision',
+  pushedRevisionHint: 'Pick at deploy time; none = latest',
+  pushedRevisionLatest: 'Latest revision',
+  pushedItemsUnit: 'items',
+  pushedItems: 'Pushed items',
+  pushedItemsHint: 'unchecked = all items',
+  pushedBadge: 'pushed',
+  pushedBadgeHint: 'Auto-created by a cluster peer push (source is pushed artifacts/images)',
 }

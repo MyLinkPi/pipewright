@@ -11,9 +11,11 @@ import (
 
 	"github.com/huangchengsir/pipewright/internal/artifactstore"
 	"github.com/huangchengsir/pipewright/internal/deploy"
+	"github.com/huangchengsir/pipewright/internal/mesh"
 	"github.com/huangchengsir/pipewright/internal/notify"
 	"github.com/huangchengsir/pipewright/internal/pipeline"
 	"github.com/huangchengsir/pipewright/internal/project"
+	"github.com/huangchengsir/pipewright/internal/pushsource"
 	"github.com/huangchengsir/pipewright/internal/run"
 	"github.com/huangchengsir/pipewright/internal/vault"
 )
@@ -76,6 +78,13 @@ type Builder struct {
 	// 推送兜底):返回内置制品 registry 地址(host:port)+ 是否可用。nil = 未装配(向后兼容,
 	// 行为与旧版一致:未绑定不推送,产物只有本地 tag)。
 	builtinRegistry func(ctx context.Context) (addr string, ok bool)
+	// meshPeers/meshClient/meshImages 是集群节点(mesh_push/mesh_trigger)执行依赖
+	// (WithMeshStage 注入):对端解析 + 出站签名客户端 + 镜像导出器。零值 → 该类节点明确失败。
+	meshPeers  meshPeerLookup
+	meshClient *mesh.Client
+	meshImages *ImageTransfer
+	// pushedRevs 是「被推送源」物化依赖(WithPushedSource 注入);nil → pushed_source 节点失败。
+	pushedRevs pushsource.Store
 }
 
 // buildCacheStore 抽象「按 key 恢复/保存工作区缓存路径」的能力(便于 fake 单测注入)。

@@ -123,6 +123,8 @@ func NewStageExecutor(b *Builder, reportSink TestReportSink) dagrun.StageExecuto
 		notifyJobs := make([]pipeline.Job, 0, len(stage.Jobs))
 		ossUploadJobs := make([]pipeline.Job, 0, len(stage.Jobs))
 		pushImageJobs := make([]pipeline.Job, 0, len(stage.Jobs))
+		meshJobs := make([]pipeline.Job, 0, len(stage.Jobs))
+		pushedSourceJobs := make([]pipeline.Job, 0, len(stage.Jobs))
 		for _, jb := range stage.Jobs {
 			switch {
 			case isScriptJob(jb.Type):
@@ -139,12 +141,19 @@ func NewStageExecutor(b *Builder, reportSink TestReportSink) dagrun.StageExecuto
 				notifyJobs = append(notifyJobs, jb)
 			case isObjectUploadJob(jb.Type):
 				ossUploadJobs = append(ossUploadJobs, jb)
+			case isMeshPushJob(jb.Type) || isMeshTriggerJob(jb.Type):
+				meshJobs = append(meshJobs, jb)
+			case isPushedSourceJob(jb.Type):
+				pushedSourceJobs = append(pushedSourceJobs, jb)
 			}
 		}
 
 		needsBuild := len(scriptJobs) > 0 || len(buildImageJobs) > 0
-		// 没有任何可执行节点(script/build_image/deploy/health_check/notify/oss_upload/push_image)且无 post → 诚实占位放行。
-		if !needsBuild && len(deployJobs) == 0 && len(healthJobs) == 0 && len(notifyJobs) == 0 && len(ossUploadJobs) == 0 && len(pushImageJobs) == 0 && len(stage.Post) == 0 {
+		// 没有任何可执行节点(script/build_image/deploy/health_check/notify/oss_upload/push_image/
+		// mesh_push/mesh_trigger/pushed_source)且无 post → 诚实占位放行。
+		if !needsBuild && len(deployJobs) == 0 && len(healthJobs) == 0 && len(notifyJobs) == 0 &&
+			len(ossUploadJobs) == 0 && len(pushImageJobs) == 0 && len(meshJobs) == 0 &&
+			len(pushedSourceJobs) == 0 && len(stage.Post) == 0 {
 			for _, jb := range stage.Jobs {
 				_ = rep.JobRunning(ctx, jb.ID)
 				jr := rep.JobReporter(jb.ID)
@@ -207,20 +216,30 @@ func NewStageExecutor(b *Builder, reportSink TestReportSink) dagrun.StageExecuto
 			workspace = ws
 			defer func() { _ = os.RemoveAll(workspace) }() // 宿主零污染
 
-			auth := b.revealGitAuth(proj.CredentialID)
-			resolved, cerr := b.cloner.Clone(ctx, proj.RepoURL, auth, r.Trigger.Branch, r.Trigger.Commit, workspace)
-			auth = vault.GitAuth{}
-			if cerr != nil {
-				if errors.Is(ctx.Err(), context.Canceled) {
-					return run.ErrCanceled
+			if proj != nil && proj.SourceType == project.SourceTypePushed {
+				// 「被推送源」项目:工作区物化推送修订的 file 条目(替代 git 克隆);
+				// commitTag 取修订标签(build_image 等下游本地 tag 语义对齐)。
+				label, merr := b.materializePushedWorkspace(ctx, r, workspace, rep)
+				if merr != nil {
+					return merr
 				}
-				_ = rep.Log(ctx, streamStderr, "源码克隆失败(鉴权/网络/ref 不存在或被 SSRF 拒绝)")
-				return ErrBuildFailed
-			}
-			if resolved != nil && resolved.CommitShort != "" {
-				commitTag = resolved.CommitShort
-				if b.recordCommit != nil {
-					b.recordCommit(ctx, r.ID, resolved.CommitShort)
+				commitTag = label
+			} else {
+				auth := b.revealGitAuth(proj.CredentialID)
+				resolved, cerr := b.cloner.Clone(ctx, proj.RepoURL, auth, r.Trigger.Branch, r.Trigger.Commit, workspace)
+				auth = vault.GitAuth{}
+				if cerr != nil {
+					if errors.Is(ctx.Err(), context.Canceled) {
+						return run.ErrCanceled
+					}
+					_ = rep.Log(ctx, streamStderr, "源码克隆失败(鉴权/网络/ref 不存在或被 SSRF 拒绝)")
+					return ErrBuildFailed
+				}
+				if resolved != nil && resolved.CommitShort != "" {
+					commitTag = resolved.CommitShort
+					if b.recordCommit != nil {
+						b.recordCommit(ctx, r.ID, resolved.CommitShort)
+					}
 				}
 			}
 			// 跨阶段产物传递:把上游阶段已归档的 jar/dist 真字节恢复回本阶段新工作区的原相对路径,
@@ -334,6 +353,41 @@ func NewStageExecutor(b *Builder, reportSink TestReportSink) dagrun.StageExecuto
 				_ = rep.JobRunning(ctx, jb.ID)
 				jrep := rep.JobReporter(jb.ID)
 				if err := b.runOssUploadJob(ctx, jrep, jb, r); err != nil {
+					_ = rep.JobDone(ctx, jb.ID, run.StepFailed)
+					return err
+				}
+				_ = rep.JobDone(ctx, jb.ID, run.StepSuccess)
+			}
+
+			// ── 推送源节点(pushed_source):解析修订并把条目登记为本 run 产物(下游 deploy 沿
+			// 既有 artifactJob/artifactName 绑定消费;失败令阶段失败)──
+			for _, jb := range pushedSourceJobs {
+				if canceled(ctx) {
+					return run.ErrCanceled
+				}
+				_ = rep.JobRunning(ctx, jb.ID)
+				jrep := rep.JobReporter(jb.ID)
+				if err := b.runPushedSourceJob(ctx, jrep, jb, stage, r); err != nil {
+					_ = rep.JobDone(ctx, jb.ID, run.StepFailed)
+					return err
+				}
+				_ = rep.JobDone(ctx, jb.ID, run.StepSuccess)
+			}
+
+			// ── 集群节点(mesh_push / mesh_trigger):经 EasyTier 与对端交互(失败令阶段失败)──
+			for _, jb := range meshJobs {
+				if canceled(ctx) {
+					return run.ErrCanceled
+				}
+				_ = rep.JobRunning(ctx, jb.ID)
+				jrep := rep.JobReporter(jb.ID)
+				var err error
+				if isMeshPushJob(jb.Type) {
+					err = b.runMeshPushJob(ctx, jrep, jb, r)
+				} else {
+					err = b.runMeshTriggerJob(ctx, jrep, jb, r)
+				}
+				if err != nil {
 					_ = rep.JobDone(ctx, jb.ID, run.StepFailed)
 					return err
 				}
@@ -497,6 +551,12 @@ func (b *Builder) runStageJobsDAG(
 				return nil
 			case isObjectUploadJob(jb.Type):
 				return b.runOssUploadJob(ctx, jrep, jb, r)
+			case isPushedSourceJob(jb.Type):
+				return b.runPushedSourceJob(ctx, jrep, jb, stage, r)
+			case isMeshPushJob(jb.Type):
+				return b.runMeshPushJob(ctx, jrep, jb, r)
+			case isMeshTriggerJob(jb.Type):
+				return b.runMeshTriggerJob(ctx, jrep, jb, r)
 			default:
 				_ = jrep.Log(ctx, streamStdout, fmt.Sprintf("· %s(%s)— 真实执行未接入;本节点放行", jb.Name, jb.Type))
 				return nil
@@ -550,6 +610,17 @@ func (b *Builder) cloneJobWorkspace(ctx context.Context, r *run.Run, proj *proje
 		return "", "", func() {}, ErrBuildFailed
 	}
 	cleanup := func() { _ = os.RemoveAll(ws) }
+
+	if proj != nil && proj.SourceType == project.SourceTypePushed {
+		// 「被推送源」项目:物化推送修订 file 条目(替代 git 克隆),commitTag 取修订标签。
+		label, merr := b.materializePushedWorkspace(ctx, r, ws, rep)
+		if merr != nil {
+			cleanup()
+			return "", "", func() {}, merr
+		}
+		b.restorePriorArtifacts(ctx, r, ws, rep)
+		return ws, label, cleanup, nil
+	}
 
 	auth := b.revealGitAuth(proj.CredentialID)
 	resolved, cerr := b.cloner.Clone(ctx, proj.RepoURL, auth, r.Trigger.Branch, r.Trigger.Commit, ws)

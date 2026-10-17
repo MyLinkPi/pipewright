@@ -10,6 +10,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/huangchengsir/pipewright/internal/audit"
+	"github.com/huangchengsir/pipewright/internal/pushsource"
 	"github.com/huangchengsir/pipewright/internal/run"
 	"github.com/huangchengsir/pipewright/internal/trigger"
 )
@@ -103,8 +104,9 @@ func makeWebhookHandler(rc *trigger.Receiver) http.HandlerFunc {
 }
 
 // makeManualRunHandler 返回 POST /api/projects/{id}/runs handler(认证 + CSRF;手动触发）。
-// body {branch, commit?};actor=admin;成功 → 201 冻结 run-detail DTO。
-// 成功后追加 run_trigger_manual 审计(detail 记分支/commit/运行 id)。
+// body {branch, commit?, params?};被推送源项目额外支持 {revision?, items?}(部署时选择
+// 修订与条目,经保留参数键随运行携带;items 为条目名数组)。
+// actor=admin;成功 → 201 冻结 run-detail DTO。成功后追加 run_trigger_manual 审计。
 func makeManualRunHandler(svc run.Service, params run.ParameterService, aud audit.Recorder) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if svc == nil {
@@ -114,9 +116,11 @@ func makeManualRunHandler(svc run.Service, params run.ParameterService, aud audi
 		id := chi.URLParam(r, "id")
 		r.Body = http.MaxBytesReader(w, r.Body, 1<<16)
 		var req struct {
-			Branch string            `json:"branch"`
-			Commit string            `json:"commit"`
-			Params map[string]string `json:"params"`
+			Branch   string            `json:"branch"`
+			Commit   string            `json:"commit"`
+			Params   map[string]string `json:"params"`
+			Revision string            `json:"revision"`
+			Items    []string          `json:"items"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, "bad_request", "请求体格式错误")
@@ -127,8 +131,34 @@ func makeManualRunHandler(svc run.Service, params run.ParameterService, aud audi
 		commit := strings.TrimSpace(req.Commit)
 		// 参数化运行(Story 8-11):trim key、剔空 key;明文构建参数(注入 script 步骤容器环境)。
 		runParams := normalizeRunParams(req.Params)
+		// 被推送源的部署时选择:修订标签 + 条目名列表(保留参数键;空 = 最新修订/全部条目)。
+		if rev := strings.TrimSpace(req.Revision); rev != "" {
+			if runParams == nil {
+				runParams = map[string]string{}
+			}
+			runParams[pushsource.ParamRevision] = rev
+		}
+		if len(req.Items) > 0 {
+			names := make([]string, 0, len(req.Items))
+			for _, n := range req.Items {
+				if n = strings.TrimSpace(n); n != "" {
+					names = append(names, n)
+				}
+			}
+			if len(names) > 0 {
+				if runParams == nil {
+					runParams = map[string]string{}
+				}
+				runParams[pushsource.ParamItems] = strings.Join(names, ",")
+			}
+		}
 		// 类型化参数(P0):有项目参数定义时校验 + 强转 + 填默认;无定义则透传(向后兼容)。
-		// 非法值(必填缺失 / 枚举越界 / 类型不符)→ 422,不创建运行。
+		// 非法值(必填缺失 / 枚举越界 / 类型不符)→ 422,不创建运行。保留键不参与类型化过滤
+		// (params.Resolve 只保留已定义键,先把选择键存回)。
+		var pushRevision, pushItems string
+		if runParams != nil {
+			pushRevision, pushItems = runParams[pushsource.ParamRevision], runParams[pushsource.ParamItems]
+		}
 		if params != nil {
 			resolved, perr := params.Resolve(r.Context(), id, runParams)
 			if perr != nil {
@@ -140,6 +170,17 @@ func makeManualRunHandler(svc run.Service, params run.ParameterService, aud audi
 				return
 			}
 			runParams = resolved
+		}
+		if pushRevision != "" || pushItems != "" {
+			if runParams == nil {
+				runParams = map[string]string{}
+			}
+			if pushRevision != "" {
+				runParams[pushsource.ParamRevision] = pushRevision
+			}
+			if pushItems != "" {
+				runParams[pushsource.ParamItems] = pushItems
+			}
 		}
 		// 操作人取当前会话用户名(普通用户为其用户名;管理员为其用户名;回退 "admin")。
 		actor := sessionUsernameOrAdmin(r)
