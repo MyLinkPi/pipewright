@@ -30,7 +30,6 @@ type stubTarget struct {
 	uploads map[string][]byte
 }
 
-
 // DockerLogin 满足 target.Service 接口(部署私有仓库登录追加);测试桩不触网,直接成功。
 func (s *stubTarget) DockerLogin(context.Context, string, string, string) error { return nil }
 func (s *stubTarget) Get(_ context.Context, id string) (*target.Server, error) {
@@ -40,6 +39,7 @@ func (s *stubTarget) Get(_ context.Context, id string) (*target.Server, error) {
 	}
 	return srv, nil
 }
+
 // List 返回全部已登记机器(标签圈选 resolveTargets 经它做全表匹配)。
 func (s *stubTarget) List(context.Context) ([]*target.Server, error) {
 	out := make([]*target.Server, 0, len(s.servers))

@@ -219,7 +219,7 @@ func TestStageImageHonorsContainerNamePortsRunArgs(t *testing.T) {
 
 // TestStageImageStructuredContainerParams 验证结构化容器参数键(cpuLimit/memoryLimit/
 // restartPolicy/envVars)翻译为对应 docker run flag 且排在 runArgs 自由参数之前
-//(同名 flag 后写生效,runArgs 作逃生舱;envVars 整行为单值,含空格不被拆)。
+// (同名 flag 后写生效,runArgs 作逃生舱;envVars 整行为单值,含空格不被拆)。
 func TestStageImageStructuredContainerParams(t *testing.T) {
 	db := testDB(t)
 	rsvc := run.New(db)
@@ -311,7 +311,7 @@ func TestImageBaseRunArgs(t *testing.T) {
 }
 
 // TestParseVolumeMounts 单测 parseVolumeMounts / autoVolumeName:自动命名卷确定性推导
-//(升级稳定的核心)、显式绑定 / 命名卷原样透传、:ro、空行裁剪、路径含空格不拆、非法人读错误。
+// (升级稳定的核心)、显式绑定 / 命名卷原样透传、:ro、空行裁剪、路径含空格不拆、非法人读错误。
 func TestParseVolumeMounts(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -350,7 +350,7 @@ func TestParseVolumeMounts(t *testing.T) {
 		})
 	}
 	for _, bad := range []string{
-		"var/lib/mysql", // 容器路径非 / 开头
+		"var/lib/mysql",  // 容器路径非 / 开头
 		"/a:/b:ro:extra", // 段数超三
 		"/a:/b:rw",       // 模式仅支持 ro
 	} {
@@ -471,8 +471,6 @@ func TestRollingImageVolumesKeptOnRollback(t *testing.T) {
 	}
 	t.Fatalf("未找到回滚到 v1 的 docker run: %v", rec.calls2)
 }
-
-
 
 // hasRunWithRef 报告命令序列里是否有「docker run … <ref>」(ref 为末参,用于断言回滚到上一镜像)。
 func hasRunWithRef(calls [][]string, ref string) bool {

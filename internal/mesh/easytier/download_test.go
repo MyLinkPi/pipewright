@@ -33,7 +33,7 @@ func buildAssetZip(t *testing.T) []byte {
 	for name, body := range map[string][]byte{
 		"easytier-linux-x86_64/" + CoreBinary(): fakeCore,
 		"easytier-linux-x86_64/" + CliBinary():  fakeCli,
-		"README.md":                              []byte("readme"),
+		"README.md":                             []byte("readme"),
 	} {
 		w, err := zw.Create(name)
 		if err != nil {
@@ -129,7 +129,7 @@ func TestDownloaderDigestMismatch(t *testing.T) {
 	asset := buildAssetZip(t)
 	apiCalls := 0
 	// digest 声明与实际内容不符 → 必须拒绝且不落任何二进制。
-	d := serveFakeRelease(t, asset, "sha256:" + string(bytes.Repeat([]byte("f"), 64)), &apiCalls)
+	d := serveFakeRelease(t, asset, "sha256:"+string(bytes.Repeat([]byte("f"), 64)), &apiCalls)
 	if _, err := d.Download(context.Background()); err == nil {
 		t.Fatalf("digest mismatch must fail")
 	}

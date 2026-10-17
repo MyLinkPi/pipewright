@@ -39,12 +39,12 @@ type Config struct {
 // Load 从环境变量读取配置,缺失项回退到合理默认值。
 func Load() Config {
 	return Config{
-		Addr:          getenv("PIPEWRIGHT_ADDR", ":8080"),
-		DBDriver:      getenv("PIPEWRIGHT_DB_DRIVER", "sqlite"),
-		DBDSN:         os.Getenv("PIPEWRIGHT_DB_DSN"),
-		DBPath:        getenv("PIPEWRIGHT_DB", "pipewright.db"),
-		AdminUsername: getenv("PIPEWRIGHT_ADMIN_USERNAME", "admin"),
-		AdminPassword: os.Getenv("PIPEWRIGHT_ADMIN_PASSWORD"), // 无默认值,空串表示未设置
+		Addr:              getenv("PIPEWRIGHT_ADDR", ":8080"),
+		DBDriver:          getenv("PIPEWRIGHT_DB_DRIVER", "sqlite"),
+		DBDSN:             os.Getenv("PIPEWRIGHT_DB_DSN"),
+		DBPath:            getenv("PIPEWRIGHT_DB", "pipewright.db"),
+		AdminUsername:     getenv("PIPEWRIGHT_ADMIN_USERNAME", "admin"),
+		AdminPassword:     os.Getenv("PIPEWRIGHT_ADMIN_PASSWORD"), // 无默认值,空串表示未设置
 		AdminPasswordFile: os.Getenv("PIPEWRIGHT_ADMIN_PASSWORD_FILE"),
 	}
 }

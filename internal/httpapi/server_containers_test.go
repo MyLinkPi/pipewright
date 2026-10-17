@@ -320,7 +320,7 @@ func countingDockerDialer(psCalls *int32) cmdDialer {
 }
 
 // TestAllServerContainers_CacheReplayAndInvalidate(HTTP 级):轮询在 TTL 内回放缓存
-//(SSH ps 只跑一次);docker 生命周期操作成功投递后失效;?refresh=1 强制重采。
+// (SSH ps 只跑一次);docker 生命周期操作成功投递后失效;?refresh=1 强制重采。
 func TestAllServerContainers_CacheReplayAndInvalidate(t *testing.T) {
 	var ps int32
 	srv, client, csrf := setupServerAPI(t, countingDockerDialer(&ps))

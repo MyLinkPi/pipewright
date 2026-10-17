@@ -2,6 +2,7 @@
 //   - Export:docker save 归档镜像到临时文件(发送侧;归档哈希在发送前可知);
 //   - Import:docker load 归档 → tag 到 <内置registry>/<repo>:<tag> → push → 读 digest
 //     (接收侧;归档可直接从制品库流式喂入 stdin)。
+//
 // 命令一律 array 化不经 shell(AC-SEC-02);二进制名复用 Driver 探测结果(docker/nerdctl/podman)。
 package build
 

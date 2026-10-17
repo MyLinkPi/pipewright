@@ -211,7 +211,7 @@ type serverMetricsDTO struct {
 	// Disks 是**所有真实磁盘**(挂载点 `/` 在内,按 df 输出顺序),已剔除 tmpfs/nfs
 	// 等伪文件系统并按设备去重(btrfs 子卷 / bind mount 只保留首个挂载点)。
 	// 与 Disk 同生同灭:两段 df 皆空/皆解析失败(或过滤后一个不剩)→ nil。
-	Disks       []diskMetric `json:"disks"`
+	Disks []diskMetric `json:"disks"`
 	// GPU 是显卡指标(仅勾选「GPU 机型」的服务器采集;未勾选 / 未装 nvtop / 无显卡 / 输出
 	// 不可解析 → null)。多卡为一个 devices 数组。
 	GPU         *gpuMetric `json:"gpu"`

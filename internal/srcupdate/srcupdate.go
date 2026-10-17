@@ -49,12 +49,12 @@ const (
 
 // Status 是升级任务的进度快照(GET /api/version/update/status 的载荷)。
 type Status struct {
-	Running bool   `json:"running"`
-	Step    string `json:"step"`              // pull | build | install | restart
-	Message string `json:"message,omitempty"` // 当前步骤的人读简述
-	Done    bool   `json:"done"`              // 管线完成,已触发重启(服务重启 / re-exec)
-	Error   string `json:"error,omitempty"`   // 非空 = 任务失败(管线中止)
-	Log     []string `json:"log,omitempty"`   // 最近输出(环形,新在后)
+	Running bool     `json:"running"`
+	Step    string   `json:"step"`              // pull | build | install | restart
+	Message string   `json:"message,omitempty"` // 当前步骤的人读简述
+	Done    bool     `json:"done"`              // 管线完成,已触发重启(服务重启 / re-exec)
+	Error   string   `json:"error,omitempty"`   // 非空 = 任务失败(管线中止)
+	Log     []string `json:"log,omitempty"`     // 最近输出(环形,新在后)
 }
 
 // Service 源码升级服务。零值不可用,请用 New。

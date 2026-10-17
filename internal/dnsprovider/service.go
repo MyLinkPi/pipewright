@@ -368,7 +368,6 @@ func zoneCovering(zones []Zone, fqdn string) *Zone {
 	return best
 }
 
-
 // validIPv4 报告 s 是否为合法 IPv4 地址(子域名 A 记录指向宿主机 IPv4)。
 func validIPv4(s string) bool {
 	ip := net.ParseIP(strings.TrimSpace(s))

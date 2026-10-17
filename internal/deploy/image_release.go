@@ -30,11 +30,11 @@ const pullTimeout = 15 * time.Minute
 
 // imageState 是一台机的 image 蓝绿中间态(stageImageOne 产出,activateImageOne 消费)。
 type imageState struct {
-	name      string       // 容器名(cfg["containerName"] 优先,否则 sanitizeName(产物名))
-	ref       string       // 本次新镜像 ref(repo:tag / image id)
-	prevImage string       // 切换前容器所用镜像 **digest**(sha256:…;回滚目标 —— 可变 tag 会被本次 pull 改指,只有 digest 能钉住旧镜像;"" = 无上一容器/读失败,无可回滚)
-	baseArgs  []string     // docker run 的附加参数(除端口映射外;结构化键 + cfg["runArgs"] 解析,见 imageBaseRunArgs)
-	portSpecs []portSpec   // 端口映射意图(cfg["ports"];自动项运行时分配)
+	name      string        // 容器名(cfg["containerName"] 优先,否则 sanitizeName(产物名))
+	ref       string        // 本次新镜像 ref(repo:tag / image id)
+	prevImage string        // 切换前容器所用镜像 **digest**(sha256:…;回滚目标 —— 可变 tag 会被本次 pull 改指,只有 digest 能钉住旧镜像;"" = 无上一容器/读失败,无可回滚)
+	baseArgs  []string      // docker run 的附加参数(除端口映射外;结构化键 + cfg["runArgs"] 解析,见 imageBaseRunArgs)
+	portSpecs []portSpec    // 端口映射意图(cfg["ports"];自动项运行时分配)
 	ports     []portBinding // 本次启动的实际端口绑定(健康检查/注册/回滚复用;启动前为空)
 }
 
@@ -114,6 +114,7 @@ type volumeMount struct {
 //   - /data/app:/app/data  → source 以 / 开头 = 显式绑定宿主目录(原样交 docker)。
 //   - appdata:/app/data    → source 非 / 开头 = 显式命名卷(原样交 docker)。
 //   - 任意形式尾部可加 :ro(只读)。
+//
 // 逐行解析(非 strings.Fields):路径含空格保得住;非法 → 人读 error;空行跳过。
 // containerName 必须传**基础容器名**(imageContainerName),绝不掺运行时容器名 / runId ——
 // 卷名稳定是升级数据保持的前提。

@@ -104,11 +104,11 @@ func TestE2EDockerBuildPushReal(t *testing.T) {
 	proj := &project.Project{ID: "p1", Name: "e2e-app", RepoURL: "https://example.com/r.git"}
 
 	b := &Builder{
-		projects: fakeProjects{proj: proj},
-		settings: fakeSettings{settings: imageSettings()},
-		vault:    fakeVault{secrets: map[string]string{}},
-		driver:   drv, // 真 docker 驱动
-		cloner:   &copyDockerfileCloner{dockerfile: dockerfile, commitShort: shortSha},
+		projects:        fakeProjects{proj: proj},
+		settings:        fakeSettings{settings: imageSettings()},
+		vault:           fakeVault{secrets: map[string]string{}},
+		driver:          drv, // 真 docker 驱动
+		cloner:          &copyDockerfileCloner{dockerfile: dockerfile, commitShort: shortSha},
 		builtinRegistry: func(context.Context) (string, bool) { return registryAddr, true }, // 无 cred → 匿名推送
 	}
 

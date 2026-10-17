@@ -11,8 +11,8 @@ import (
 // stubClock 是可手动推进的测试时钟。
 type stubClock struct{ now time.Time }
 
-func newStubClock() *stubClock { return &stubClock{now: time.Now().UTC()} }
-func (c *stubClock) Now() time.Time { return c.now }
+func newStubClock() *stubClock               { return &stubClock{now: time.Now().UTC()} }
+func (c *stubClock) Now() time.Time          { return c.now }
 func (c *stubClock) Advance(d time.Duration) { c.now = c.now.Add(d) }
 
 // newLockoutTestService 建库 + 引导 admin/testpass,可选注入时钟。
@@ -85,7 +85,7 @@ func TestLockoutPerIPLocksRotatingUsernames(t *testing.T) {
 }
 
 // TestLockoutSuccessResetsAccountNotIP 认证成功只重置账户桶;IP 桶计数保留
-//(防攻击者用已知账号穿插成功登录来重置自己 IP 的失败计数)。
+// (防攻击者用已知账号穿插成功登录来重置自己 IP 的失败计数)。
 func TestLockoutSuccessResetsAccountNotIP(t *testing.T) {
 	svc := newLockoutTestService(t, nil)
 

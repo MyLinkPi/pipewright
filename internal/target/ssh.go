@@ -265,7 +265,7 @@ func (s *interactiveSession) Close() error {
 		_ = s.session.Signal(ssh.SIGKILL)
 		_ = s.stdin.Close()
 		_ = s.session.Close()
-		s.chain() // 关整链(含中间跳,防泄漏)
+		s.chain()          // 关整链(含中间跳,防泄漏)
 		_ = s.outW.Close() // 解阻塞任何在 Read 上等待的读者
 	})
 	return nil

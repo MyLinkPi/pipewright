@@ -426,7 +426,7 @@ func TestCookieSecureBehindTrustedProxy(t *testing.T) {
 }
 
 // TestVersionEndpointRequiresAuth /api/version 需要登录;原公开 /version 已移除
-//(版本元数据会帮助攻击者匹配已知漏洞版本)。
+// (版本元数据会帮助攻击者匹配已知漏洞版本)。
 func TestVersionEndpointRequiresAuth(t *testing.T) {
 	srv, _ := setupAuthServer(t)
 

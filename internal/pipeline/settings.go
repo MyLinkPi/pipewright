@@ -688,6 +688,7 @@ func toStoredBuild(b BuildConfig) storedBuild {
 		Cache:          Cache{Enabled: b.Cache.Enabled, Paths: paths},
 	}
 }
+
 // toStoredSteps 把脚本步骤转持久化形状(剥离掩码;明文 secret 从不存在于此结构)。
 func toStoredSteps(in []PipelineStep) []storedStep {
 	out := make([]storedStep, 0, len(in))

@@ -84,15 +84,15 @@ type Settings struct {
 
 // SaveSettingsInput 是保存本节点配置的入参;密钥类字段经专用方法轮换,不在此携带。
 type SaveSettingsInput struct {
-	Name         *string
-	Enabled      *bool
-	APIPort      *int
-	EasyTierMode *string
-	EasyTierRPC  *string
-	NetworkName  *string
+	Name          *string
+	Enabled       *bool
+	APIPort       *int
+	EasyTierMode  *string
+	EasyTierRPC   *string
+	NetworkName   *string
 	NetworkSecret *string // 明文入参,进程内 Seal 后落库;nil = 不改
-	VirtualIP    *string
-	Peers        *[]string
+	VirtualIP     *string
+	Peers         *[]string
 }
 
 // Peer 是已知对等节点。

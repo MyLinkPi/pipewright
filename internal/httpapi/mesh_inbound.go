@@ -40,17 +40,17 @@ func meshCaller(ctx context.Context) string {
 
 // meshDeps 汇集 mesh 入站/管理面所需依赖(装配层一次性注入)。
 type meshDeps struct {
-	mesh          mesh.Service
-	receiver      *mesh.Receiver
-	client        *mesh.Client
-	projects      project.Service
-	runs          run.Service
-	runSub        runSubscriber
-	parameters    run.ParameterService
-	servers       target.Service
-	pipelines     pipelineLister
-	audit         audit.Recorder
-	pushedRevs    pushsource.Store
+	mesh       mesh.Service
+	receiver   *mesh.Receiver
+	client     *mesh.Client
+	projects   project.Service
+	runs       run.Service
+	runSub     runSubscriber
+	parameters run.ParameterService
+	servers    target.Service
+	pipelines  pipelineLister
+	audit      audit.Recorder
+	pushedRevs pushsource.Store
 	// advertisePort 是广播给对端的 HTTP 端口(0 = 跟随服务监听口,装配层已解析)。
 	advertisePort int
 }
@@ -182,11 +182,11 @@ func makeMeshHelloHandler(d meshDeps) http.HandlerFunc {
 
 // meshPeerProject 是 projects 列表条目(供对端 mesh_trigger 选择器与集群页展示)。
 type meshPeerProject struct {
-	ID           string            `json:"id"`
-	Name         string            `json:"name"`
-	SourceType   string            `json:"sourceType"`
-	HasPipeline  bool              `json:"hasPipeline"`
-	Params       []meshPeerParam   `json:"params"`
+	ID          string          `json:"id"`
+	Name        string          `json:"name"`
+	SourceType  string          `json:"sourceType"`
+	HasPipeline bool            `json:"hasPipeline"`
+	Params      []meshPeerParam `json:"params"`
 }
 
 type meshPeerParam struct {

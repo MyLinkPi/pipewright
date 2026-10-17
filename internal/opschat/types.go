@@ -110,13 +110,13 @@ type Options struct {
 	Runtime       RuntimeLimits
 }
 type Session struct {
-	ID          string    `json:"id"`
-	Revision    int64     `json:"revision"`
-	Title       string    `json:"title"`
-	Draft       string    `json:"draft"`
-	ServerIDs   []string  `json:"serverIds"`
-	ActiveRunID string    `json:"activeRunId"`
-	Watermark   int64     `json:"watermark"`
+	ID          string   `json:"id"`
+	Revision    int64    `json:"revision"`
+	Title       string   `json:"title"`
+	Draft       string   `json:"draft"`
+	ServerIDs   []string `json:"serverIds"`
+	ActiveRunID string   `json:"activeRunId"`
+	Watermark   int64    `json:"watermark"`
 	// StorageBytes is the tracked visible-entry byte counter, an approximation
 	// of the session storage quota basis; use it only for near-quota hints.
 	StorageBytes int64     `json:"storageBytes"`

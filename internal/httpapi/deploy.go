@@ -148,15 +148,15 @@ func makeDeployRunHandler(svc deploy.Service, runSvc run.Service) http.HandlerFu
 		}
 
 		// 空目标(选择器空 / 零命中)= 跳过即成功:deploy.Deploy 不写 deploy_targets,此处必须
-	// 直接回空数组 —— 无条件回读会把同 run 上一次部署的旧 targets 带回来,把「跳过」伪装成
-	// 「成功」(与本 handler 头部注释的「200 空 targets」承诺矛盾)。
-	if len(results) == 0 {
-		writeJSON(w, http.StatusOK, deployResponse{Targets: []targetDTO{}})
-		return
-	}
+		// 直接回空数组 —— 无条件回读会把同 run 上一次部署的旧 targets 带回来,把「跳过」伪装成
+		// 「成功」(与本 handler 头部注释的「200 空 targets」承诺矛盾)。
+		if len(results) == 0 {
+			writeJSON(w, http.StatusOK, deployResponse{Targets: []targetDTO{}})
+			return
+		}
 
-	// 部署后回读权威持久化结果(填 run-detail targets slot 同源);保证响应与详情一致。
-	targets, lerr := runSvc.ListDeployTargets(r.Context(), id)
+		// 部署后回读权威持久化结果(填 run-detail targets slot 同源);保证响应与详情一致。
+		targets, lerr := runSvc.ListDeployTargets(r.Context(), id)
 		if lerr != nil {
 			// 回读失败:降级用执行结果直接映射(不阻断已成功的部署)。
 			out := make([]targetDTO, 0, len(results))

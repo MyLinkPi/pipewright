@@ -1,9 +1,9 @@
 // mesh_test.go 覆盖集群入站链路的关键正确性:
-//   1) 路由共存:根级 /api/mesh/*(公开,签名鉴权)与受保护组内 /api/mesh/{settings,acl,...}
-//      (admin session)同树挂载不冲突(webhook 先例的等价性验证);
-//   2) meshAuth:未签名 401;签名有效但 ACL 默认全拒绝 → 403;授权后放行;
-//   3) 推送接收:multipart 推送 → 首推自动创建 pushed 项目(origin 幂等)→ 修订落库,
-//      blob 哈希不符拒绝;pushsource.Resolve 供物化按修订/条目取用。
+//  1. 路由共存:根级 /api/mesh/*(公开,签名鉴权)与受保护组内 /api/mesh/{settings,acl,...}
+//     (admin session)同树挂载不冲突(webhook 先例的等价性验证);
+//  2. meshAuth:未签名 401;签名有效但 ACL 默认全拒绝 → 403;授权后放行;
+//  3. 推送接收:multipart 推送 → 首推自动创建 pushed 项目(origin 幂等)→ 修订落库,
+//     blob 哈希不符拒绝;pushsource.Resolve 供物化按修订/条目取用。
 package httpapi
 
 import (

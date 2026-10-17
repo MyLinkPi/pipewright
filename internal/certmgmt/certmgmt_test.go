@@ -512,8 +512,8 @@ func TestBackfillCleansCoveredCopies(t *testing.T) {
 			t.Fatalf("insert %s: %v", id, err)
 		}
 	}
-	mk("cert-wild", "*.mylinkpi.cn", []string{"*.mylinkpi.cn", "mylinkpi.cn"}, "") // 真身
-	mk("cert-wild2", "*.zz-copy.cn", []string{"*.zz-copy.cn"}, "")                // 真身
+	mk("cert-wild", "*.mylinkpi.cn", []string{"*.mylinkpi.cn", "mylinkpi.cn"}, "")       // 真身
+	mk("cert-wild2", "*.zz-copy.cn", []string{"*.zz-copy.cn"}, "")                       // 真身
 	mk("cert-copy-protected", "mylinkpi.cn", []string{"mylinkpi.cn"}, backfillDetailOld) // 被覆盖+平台 HTTPS 占用 → 保留
 	mk("cert-copy-stale", "zz-copy.cn", []string{"zz-copy.cn"}, backfillDetailOld)       // 被覆盖+旧标记 → 清理
 	mk("cert-orphan", "orphan.io", []string{"orphan.io"}, backfillDetail)                // 未覆盖 → 保留

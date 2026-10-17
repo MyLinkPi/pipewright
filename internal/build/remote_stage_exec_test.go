@@ -896,8 +896,8 @@ func TestStageExecutorBuildImageRemote(t *testing.T) {
 		Name: "img",
 		Type: "build_image",
 		Config: map[string]any{
-			"runner":       "server:srv-a",
-			"buildModel":   "dockerfile",
+			"runner":         "server:srv-a",
+			"buildModel":     "dockerfile",
 			"dockerfilePath": "Dockerfile",
 		},
 	}

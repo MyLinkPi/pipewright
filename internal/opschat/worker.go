@@ -657,14 +657,14 @@ func (s *Service) work(parent context.Context, id, run string) {
 			if mutation(call.Body.View.ToolID) {
 				a, e := s.approval(ctx, s.db, id, run)
 				approved := e == nil && a.Status == "consumed" && a.Instance == s.instance && a.View.ExpiresAt.After(time.Now())
-			if !approved {
-				barrier = true
-				if e = s.prepareMutation(ctx, call); e != nil {
-					s.failFrom(id, run, e, ctx)
-					return
+				if !approved {
+					barrier = true
+					if e = s.prepareMutation(ctx, call); e != nil {
+						s.failFrom(id, run, e, ctx)
+						return
+					}
+					continue
 				}
-				continue
-			}
 			}
 			// Only mutation object resolution may cross the confirmation barrier.
 			if barrier {
