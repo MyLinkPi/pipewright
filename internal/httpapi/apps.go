@@ -127,6 +127,8 @@ func deployComposeToServer(ctx context.Context, svc target.Service, serverID, na
 	if err != nil {
 		return false, "", humanServiceError(err)
 	}
+	// compose up 已投递(容器集合大概率已变)→ 丢弃该台容器清单缓存。
+	serverContainersCache.invalidate(serverID)
 	if res.ExitCode != 0 {
 		msg := strings.TrimSpace(res.Stderr)
 		if msg == "" {

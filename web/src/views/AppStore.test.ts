@@ -15,6 +15,8 @@ const h = vi.hoisted(() => ({
   deleteAppTemplate: vi.fn(),
   deployApp: vi.fn(),
   listServers: vi.fn(),
+  getAllContainers: vi.fn(),
+  getAllServerMetrics: vi.fn(),
   listDomains: vi.fn(),
   getGateway: vi.fn(),
   ensureService: vi.fn(),
@@ -33,8 +35,14 @@ vi.mock('../api/apps', () => ({
   deleteAppTemplate: (...a: unknown[]) => h.deleteAppTemplate(...a),
   deployApp: (...a: unknown[]) => h.deployApp(...a),
 }))
-vi.mock('../api/servers', () => ({ listServers: (...a: unknown[]) => h.listServers(...a) }))
-vi.mock('../api/containers', () => ({ getServerStacks: (...a: unknown[]) => h.getServerStacks(...a) }))
+vi.mock('../api/servers', () => ({
+  listServers: (...a: unknown[]) => h.listServers(...a),
+  getAllServerMetrics: (...a: unknown[]) => h.getAllServerMetrics(...a),
+}))
+vi.mock('../api/containers', () => ({
+  getServerStacks: (...a: unknown[]) => h.getServerStacks(...a),
+  getAllContainers: (...a: unknown[]) => h.getAllContainers(...a),
+}))
 vi.mock('../api/servicereg', () => ({
   listDomains: (...a: unknown[]) => h.listDomains(...a),
   getGateway: (...a: unknown[]) => h.getGateway(...a),
@@ -82,6 +90,9 @@ beforeEach(() => {
   vi.clearAllMocks()
   h.listAppTemplates.mockResolvedValue({ items: [giteaTpl] })
   h.listServers.mockResolvedValue([mkServer('s1', '机器A', '10.0.0.1'), mkServer('s2', '机器B', '10.0.0.2')])
+  // 容量摘要数据源(选机器下拉的 hint):默认无数据 → 选项不带 hint,不影响既有断言。
+  h.getAllContainers.mockResolvedValue([])
+  h.getAllServerMetrics.mockResolvedValue([])
   h.listDomains.mockResolvedValue({ items: [] })
   h.getGateway.mockResolvedValue({ configured: false, servers: [] })
   h.getServerStacks.mockResolvedValue(mkStacks([]))
@@ -166,6 +177,30 @@ describe('AppStore ssh_domain 预填联动', () => {
     const w = await openGitea()
     expect(sshDomainInput(w).value()).toBe('192.168.1.9')
   })
+
+  it('容量数据到位后,目标机下拉选项带容器数/负载/内存/磁盘 hint', async () => {
+    h.getAllContainers.mockResolvedValue([
+      { serverId: 's1', reachable: true, runtime: 'docker', error: '', containers: [], running: 3, total: 5, collectedAt: '' },
+    ])
+    h.getAllServerMetrics.mockResolvedValue([
+      {
+        serverId: 's1', reachable: true, error: '',
+        cpu: { loadavg1: 0.42, cores: 8 },
+        memory: { usedBytes: 4.5 * 1024 ** 3, totalBytes: 16 * 1024 ** 3 },
+        disk: { path: '/', usedBytes: 380, totalBytes: 1000 },
+        collectedAt: '',
+      },
+    ])
+    const w = await openGitea()
+    const opts = w.findAllComponents(AppSelect)[0].props('options') as Array<{ value: string; hint?: string }>
+    const s1 = opts.find((o) => o.value === 's1')!
+    expect(s1.hint).toContain('3') // 容器 3/5
+    expect(s1.hint).toContain('0.42')
+    expect(s1.hint).toContain('4.5 / 16 GiB')
+    expect(s1.hint).toContain('38')
+    // 无数据的机器 hint 为空串(选项照常可选,容量只是参考信息)。
+    expect((opts.find((o) => o.value === 's2')!).hint).toBe('')
+  })
 })
 
 describe('AppStore 实例名与重名提醒', () => {
@@ -234,5 +269,26 @@ describe('AppStore 实例名与重名提醒', () => {
     expect(args[0]).toBe('s1')
     expect(args[4]).toBe('2')
     expect(w.text()).toContain('部署成功')
+  })
+
+  it('注册到网关的端口预填优先 HTTP 管理端口而非协议端口', async () => {
+    h.listDomains.mockResolvedValue({ items: [{ id: 'd1', baseDomain: 'example.com', hasCert: false }] })
+    // deployRound 跑一遍「打开对话框 → 选机 → 提交 → 展示结果」并返回注册卡预填的端口。
+    const deployRound = async (params: Record<string, string>): Promise<string> => {
+      h.deployApp.mockResolvedValue({ serverId: 's1', name: 'gitea', ok: true, output: '', error: '', params })
+      const w = await openGitea()
+      await selectServer(w, 's1')
+      await flushPromises()
+      await w.find('form').trigger('submit')
+      await flushPromises()
+      const label = w.findAll('label.field').find((l) => l.text().includes('网关反代端口'))!
+      return (label.find('input').element as HTMLInputElement).value
+    }
+    // rabbitmq:mgmt(15672)优于 amqp(5672);redpanda:console(8080)优于 kafka(9092);
+    // minio/rustfs:api(9000)保持不变;gitea:port 本体优先。
+    expect(await deployRound({ amqp_port: '5672', mgmt_port: '15672' })).toBe('15672')
+    expect(await deployRound({ kafka_port: '9092', schema_port: '8081', console_port: '8080' })).toBe('8080')
+    expect(await deployRound({ api_port: '9000', console_port: '9001' })).toBe('9000')
+    expect(await deployRound({ port: '3000', ssh_port: '2222' })).toBe('3000')
   })
 })

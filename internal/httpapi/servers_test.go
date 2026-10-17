@@ -55,6 +55,9 @@ func setupServerAPI(t *testing.T, dialer target.SSHDialer) (*httptest.Server, *h
 	tsvc := target.New(st.DB, v, dialer)
 	srv := httptest.NewServer(New(testWebFSAuth(), svc, WithVault(v), WithServers(tsvc)))
 	t.Cleanup(srv.Close)
+	// 容器清单是进程级 TTL 缓存(见 server_containers.go):重置以杜绝用例间串扰
+	//(服务器 ID 虽为 UUID,重置后测试也不依赖执行顺序)。
+	t.Cleanup(func() { serverContainersCache = newContainersCache(containersCacheTTL) })
 
 	client := newTestClient(t)
 	csrf := loginWithClient(t, client, srv.URL)
