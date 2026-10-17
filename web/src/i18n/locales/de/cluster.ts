@@ -93,5 +93,9 @@ export default {
     secretHint: 'Alle Knoten im Cluster müssen dasselbe Secret verwenden (zusammen mit dem Netzwerknamen); füge auf jedem neuen Knoten dasselbe Secret ein. Das Anzeigen wird auditiert.',
     actionFailed: 'Aktion fehlgeschlagen',
     identitySaveHint: 'Knotenname und Schalter werden über dieses Formular gespeichert (ein „Speichern“ gemeinsam mit den Netzwerkeinstellungen)',
+    secretCopied: 'Kopiert',
+    secretCopyFailed: 'Kopieren fehlgeschlagen — über „Anzeigen“ manuell kopieren',
+    statusTitle: 'Laufzeitstatus',
+    viewCluster: 'Clusterseite öffnen',
   },
 }
