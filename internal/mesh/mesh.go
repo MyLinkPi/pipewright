@@ -274,10 +274,13 @@ func (s *service) SaveSettings(ctx context.Context, in SaveSettingsInput) (*Sett
 		setSecret = ", network_secret = ?"
 		secretArg = sealed
 	}
-	args := []any{name, enabled, apiPort, mode, rpc, netName, vip, strings.Join(peers, "\n"), nowStr}
+	// 参数序必须与占位符序严格对齐:network_secret 的占位符位于 network_name 之后、
+	// virtual_ip 之前(此前误把密钥参数追加在末尾,导致各列错位写串)。
+	args := []any{name, enabled, apiPort, mode, rpc, netName}
 	if setSecret != "" {
 		args = append(args, secretArg)
 	}
+	args = append(args, vip, strings.Join(peers, "\n"), nowStr)
 	_, err = s.db.ExecContext(ctx,
 		`UPDATE mesh_settings SET name = ?, enabled = ?, api_port = ?, easytier_mode = ?, easytier_rpc = ?,
 		 network_name = ?`+setSecret+`, virtual_ip = ?, peers = ?, updated_at = ? WHERE id = 1`,

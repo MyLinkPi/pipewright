@@ -88,6 +88,30 @@ func mountMeshAdmin(ar chi.Router, d meshAdminDeps) {
 	ar.Get("/mesh/peers/{id}/runs", makeMeshPeerRunsHandler(d))
 	// 手动触发 EasyTier 二进制自动下载(异步;进度经 overview 的 binaries 字段轮询)。
 	ar.Post("/mesh/easytier/download", makeMeshEasyTierDownloadHandler(d))
+	// 查看已保存的组网密钥(把新节点加入集群时需要对端输入同一密钥——密钥是管理员
+	// 自创的共享密钥,非外发凭据,须可回显;每次查看留审计,同凭据 reveal 先例)。
+	ar.Post("/mesh/settings/reveal-secret", makeMeshRevealSecretHandler(d))
+}
+
+// makeMeshRevealSecretHandler 返回已保存组网密钥的明文(POST + admin + CSRF + 审计)。
+// 未设置时返回空串(非错误,前端据此提示先设置)。
+func makeMeshRevealSecretHandler(d meshAdminDeps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if d.mesh == nil {
+			writeError(w, http.StatusServiceUnavailable, "internal", "集群服务未初始化")
+			return
+		}
+		secret, err := d.mesh.NetworkSecret(r.Context())
+		if err != nil {
+			writeMeshError(w, err)
+			return
+		}
+		recordAudit(r.Context(), d.audit, audit.Entry{
+			Actor: "admin", Action: "mesh_network_secret_reveal", TargetType: "mesh_settings", TargetID: "network_secret",
+			IP:   clientIP(r),
+		})
+		writeJSON(w, http.StatusOK, map[string]string{"secret": secret})
+	}
 }
 
 // makeMeshEasyTierDownloadHandler 触发一次 easytier-core/cli 自动下载(镜像感知 +
