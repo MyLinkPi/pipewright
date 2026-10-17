@@ -93,13 +93,33 @@ Two roles ship built in — a single admin account plus multiple normal users, s
 
 ## Install / Deploy
 
-Pick any of three form factors. The platform itself is a single static binary with **zero runtime dependencies** (no Go/Node required).
+Pick any of four form factors. The platform itself is a single static binary with **zero runtime dependencies** (no Go/Node required).
 
 > **Docker prerequisite**: the platform itself doesn't depend on Docker, but **"isolated builds / container deployment" do require Docker** (without it, it degrades to a stub runner and performs no real builds). The console / SSH deployment / notifications don't need Docker. The one-click script **detects Docker** and prompts if it's missing; on Linux you can set `INSTALL_DOCKER=1` to auto-install it (via the official get.docker.com); on macOS, install Docker Desktop.
 
-### ① Install from a local build (Linux / macOS)
+### ① One-line install from a release (Linux / macOS, recommended)
 
-`install.sh` installs the binary produced by a **local `make build`** to `/usr/local/bin` (no network download; includes Docker detection). Go and Node are required first:
+When no local build artifact exists, `install.sh` automatically downloads the platform binary from the GitHub Release (sha256-verified) and installs it — no Go/Node needed, and no local compilation on low-memory machines:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/huangchengsir/pipewright/master/install.sh | sh
+
+# Install as a systemd service right away (auto-start + one-click self-update; Linux, requires root):
+curl -fsSL https://raw.githubusercontent.com/huangchengsir/pipewright/master/install.sh | SETUP_SERVICE=1 sh
+
+# Download from your own fork's releases (push a v* tag and GitHub Actions builds them),
+# or pin a version with PIPEWRIGHT_VERSION=v1.2.3:
+curl -fsSL https://raw.githubusercontent.com/<owner>/pipewright/master/install.sh | \
+  PIPEWRIGHT_RELEASE_REPO=<owner>/pipewright sh
+```
+
+To upgrade, **re-run the same command**: it enters upgrade mode, replaces the binary and restarts the service. If GitHub is unreachable, point `PIPEWRIGHT_RELEASE_MIRROR` at a GitHub-path-compatible mirror; `PIPEWRIGHT_NO_DOWNLOAD=1` restores the old "error out when no local artifact" behavior.
+
+> Windows users: download `pipewright_<version>_windows_<arch>.zip` from [Releases](https://github.com/huangchengsir/pipewright/releases), unpack and run `pipewright.exe` directly (no systemd, so install.sh doesn't apply).
+
+### ② Install from a local build (Linux / macOS)
+
+`install.sh` installs the binary produced by a **local `make build`** to `/usr/local/bin` (includes Docker detection; with no artifact in the repo root it falls back to the ① download mode). Go and Node are required first:
 
 ```bash
 git clone https://github.com/huangchengsir/pipewright && cd pipewright
@@ -128,9 +148,9 @@ SETUP_SERVICE=1 PIPEWRIGHT_DB_DRIVER=mysql \
   sh install.sh
 ```
 
-> Windows users: run `make build` in Git Bash and execute `./pipewright.exe` directly (no systemd, so install.sh doesn't apply).
+> Windows users: run `make build` in Git Bash and execute `./pipewright.exe` directly, or download the zip from [Releases](https://github.com/huangchengsir/pipewright/releases) (no systemd, so install.sh doesn't apply).
 
-### ② docker compose (recommended for self-hosting)
+### ③ docker compose (recommended for self-hosting)
 
 ```bash
 curl -fsSLO https://raw.githubusercontent.com/huangchengsir/pipewright/master/docker-compose.yml
@@ -139,7 +159,7 @@ cp .env.example .env       # generate MASTER_KEY with: openssl rand -base64 32; 
 docker compose up -d       # data persists in the named volume pipewright-data; see .env comments to switch to MySQL
 ```
 
-### ③ docker run (fastest trial)
+### ④ docker run (fastest trial)
 
 ```bash
 docker run -d -p 8080:8080 -v pipewright-data:/data \
@@ -162,6 +182,7 @@ Open **Settings → System** and click "Check for updates" to query the latest r
 
 - **Binary deployment**: click "Update now" to auto-download the new version + verify checksum + replace + restart (requires write permission to the binary file; installing to `$HOME/.local/bin` avoids sudo, and a root systemd service installed via `SETUP_SERVICE=1` also satisfies this).
 - **Source deployment** (git clone → `make build` → `sh install.sh`): update checks compare against the git upstream instead (`git fetch`, then compare the commit the running build was made from — falling back to the working-tree HEAD when build metadata is not injected, so a stale binary behind an already-pulled checkout is still reported); clicking "Update now" runs `git pull --ff-only` → `make build` → `install.sh` in a background job with live step/log display, then restarts the service automatically (or self-restarts when running bare). The repo root is recorded automatically by install.sh (env `PIPEWRIGHT_SOURCE_DIR` / a `.pipewright-source` marker next to the binary), and can also be set manually.
+  To switch to the **one-click binary updates** instead (e.g. when the machine is too small for `make build`), just re-run the ① one-line install command — install.sh removes the source-deployment markers and the deployment becomes a binary deployment.
 - **Docker deployment**: the container doesn't replace its own image; follow the prompt to run `docker compose pull && docker compose up -d` on the host (the data volume is preserved).
 
 ### Configuration (environment variables)

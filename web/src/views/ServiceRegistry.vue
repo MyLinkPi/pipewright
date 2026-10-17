@@ -112,7 +112,7 @@ onMounted(() => void capacity.load())
 const busy = ref(false)
 const editing = ref(false)
 // 多机网关:每台部署完全一致的网关;serverIds 为选中的全部网关主机。
-const form = ref({ serverIds: [] as string[], httpPort: 80, httpsPort: 443, image: '', network: '', containerName: '', volumeName: '' })
+const form = ref({ serverIds: [] as string[], httpPort: 80, httpsPort: 443, image: '', network: '', containerName: '', volumeName: '', staticRoot: '' })
 
 function toggleHost(id: string): void {
   form.value.serverIds = form.value.serverIds.includes(id)
@@ -145,6 +145,7 @@ function startEdit(): void {
     network: settings.value.network,
     containerName: settings.value.containerName,
     volumeName: settings.value.volumeName,
+    staticRoot: settings.value.staticRoot,
   }
   editing.value = true
 }
@@ -160,6 +161,7 @@ async function saveSettings(): Promise<void> {
       network: form.value.network,
       containerName: form.value.containerName,
       volumeName: form.value.volumeName,
+      staticRoot: form.value.staticRoot.trim(),
     })
     editing.value = false
     gateway.value = await getGateway()
@@ -266,36 +268,62 @@ const showSvcForm = ref(false)
 const svcForm = ref({
   domainId: '',
   name: '',
+  path: '',
   protocol: 'http' as ServiceProtocol,
   upstreamKind: 'container' as UpstreamKind,
   upstream: '',
   upstreamPort: 8080,
   tcpListenPort: 13306,
+  stripPathPrefix: false,
 })
 const addingSvc = ref(false)
+
+/** 切换上游形态:static(网关静态托管)强制 http 协议(静态托管无 TCP 形态)。 */
+function onKindChange(v: string): void {
+  svcForm.value.upstreamKind = v as UpstreamKind
+  if (v === 'static') svcForm.value.protocol = 'http'
+}
+
+/** 编辑表单版 onKindChange(同语义)。 */
+function onEditKindChange(v: string): void {
+  svcEditForm.value.upstreamKind = v as UpstreamKind
+  if (v === 'static') svcEditForm.value.protocol = 'http'
+}
 
 const domainOptions = computed(() =>
   domains.value.map((d) => ({ value: d.id, label: d.baseDomain })),
 )
+
+/** 子路径展示:空 = 根路径 /;确保以 / 开头。 */
+function displayPath(p: string): string {
+  const v = p.trim()
+  if (!v) return '/'
+  return v.startsWith('/') ? v : `/${v}`
+}
+
 const svcPreview = computed(() => {
   const d = domains.value.find((x) => x.id === svcForm.value.domainId)
   if (!d || !svcForm.value.name) return ''
-  return svcForm.value.protocol === 'http'
-    ? `${svcForm.value.name}.${d.baseDomain}`
-    : `:${svcForm.value.tcpListenPort} → ${svcForm.value.upstream}:${svcForm.value.upstreamPort}`
+  if (svcForm.value.protocol === 'tcp') {
+    return `:${svcForm.value.tcpListenPort} → ${svcForm.value.upstream}:${svcForm.value.upstreamPort}`
+  }
+  return `${svcForm.value.name}.${d.baseDomain}${displayPath(svcForm.value.path)}`
 })
 
 async function addService(): Promise<void> {
   addingSvc.value = true
   try {
+    const isStatic = svcForm.value.upstreamKind === 'static'
     await createService({
       domainId: svcForm.value.domainId,
       name: svcForm.value.name.trim(),
+      path: svcForm.value.protocol === 'http' ? svcForm.value.path.trim() : '',
       protocol: svcForm.value.protocol,
       upstreamKind: svcForm.value.upstreamKind,
-      upstream: svcForm.value.upstream.trim(),
-      upstreamPort: Number(svcForm.value.upstreamPort),
+      upstream: isStatic ? '' : svcForm.value.upstream.trim(),
+      upstreamPort: isStatic ? 0 : Number(svcForm.value.upstreamPort),
       tcpListenPort: svcForm.value.protocol === 'tcp' ? Number(svcForm.value.tcpListenPort) : undefined,
+      stripPathPrefix: isStatic ? false : svcForm.value.stripPathPrefix,
     })
     showSvcForm.value = false
     const sv = await listServices()
@@ -345,9 +373,11 @@ const instForm = ref<{ serviceId: string; serverId: string; container: string; p
 const instBusy = ref(false)
 
 /** 实例面板:container 类 http 服务恒为部署托管实例池;address 类声明了实例(部署注册)
- * 才是实例池,否则为人工静态直连模式(固定上游直接反代,工作正常但无实例概念)。 */
+ * 才是实例池,否则为人工静态直连模式(固定上游直接反代,工作正常但无实例概念);
+ * static(网关静态托管)无实例语义 —— 内容由「网关静态发布」部署节点下发。 */
 function hasInstancePool(s: RegisteredService): boolean {
   if (s.protocol !== 'http') return false
+  if (s.upstreamKind === 'static') return false
   if (s.upstreamKind === 'container') return true
   return instanceCount(s) > 0
 }
@@ -440,16 +470,18 @@ function instServerName(inst: ServiceInstance): string {
 }
 
 // ─── 服务编辑(改定义 → apply 收敛;基域不可换) ───────────────────────────────
-// 字段与创建表单同构(无 domain);名称/协议/上游/端口均可改 —— 静态直连改上游地址就在这里。
+// 字段与创建表单同构(无 domain);名称/路径/协议/上游/端口均可改 —— 静态直连改上游地址就在这里。
 const editingSvcId = ref('')
 const svcEditBusy = ref(false)
 const svcEditForm = ref({
   name: '',
+  path: '',
   protocol: 'http' as ServiceProtocol,
   upstreamKind: 'container' as UpstreamKind,
   upstream: '',
   upstreamPort: 8080,
   tcpListenPort: 13306,
+  stripPathPrefix: false,
 })
 
 function startSvcEdit(s: RegisteredService): void {
@@ -458,33 +490,39 @@ function startSvcEdit(s: RegisteredService): void {
   editingSvcId.value = s.id
   svcEditForm.value = {
     name: s.name,
+    path: s.path,
     protocol: s.protocol,
     upstreamKind: s.upstreamKind,
     upstream: s.upstream,
-    upstreamPort: s.upstreamPort,
+    upstreamPort: s.upstreamPort || 8080,
     tcpListenPort: s.tcpListenPort || 13306,
+    stripPathPrefix: s.stripPathPrefix,
   }
 }
 
 function svcEditPreview(s: RegisteredService): string {
   const f = svcEditForm.value
   if (!f.name) return ''
-  return f.protocol === 'http'
-    ? `${f.name}.${s.baseDomain}`
-    : `:${f.tcpListenPort} → ${f.upstream}:${f.upstreamPort}`
+  if (f.protocol === 'tcp') {
+    return `:${f.tcpListenPort} → ${f.upstream}:${f.upstreamPort}`
+  }
+  return `${f.name}.${s.baseDomain}${displayPath(f.path)}`
 }
 
 async function saveSvcEdit(s: RegisteredService): Promise<void> {
   const f = svcEditForm.value
   svcEditBusy.value = true
   try {
+    const isStatic = f.upstreamKind === 'static'
     await updateService(s.id, {
       name: f.name.trim(),
+      path: f.protocol === 'http' ? f.path.trim() : '',
       protocol: f.protocol,
       upstreamKind: f.upstreamKind,
-      upstream: f.upstream.trim(),
-      upstreamPort: Number(f.upstreamPort),
+      upstream: isStatic ? '' : f.upstream.trim(),
+      upstreamPort: isStatic ? 0 : Number(f.upstreamPort),
       tcpListenPort: f.protocol === 'tcp' ? Number(f.tcpListenPort) : undefined,
+      stripPathPrefix: isStatic ? false : f.stripPathPrefix,
     })
     editingSvcId.value = ''
     const sv = await listServices()
@@ -626,6 +664,11 @@ async function saveSvcEdit(s: RegisteredService): Promise<void> {
               <input v-model="form.volumeName" class="field__in" type="text" />
             </label>
           </div>
+          <label class="field">
+            <span class="field__lbl">{{ t('serviceReg.gateway.staticRoot') }}</span>
+            <input v-model="form.staticRoot" class="field__in" type="text" />
+            <span class="sreg__hint">{{ t('serviceReg.gateway.staticRootHint') }}</span>
+          </label>
           <div class="sreg__form-actions">
             <AppButton variant="primary" type="submit" :loading="busy">{{ t('serviceReg.btn.save') }}</AppButton>
             <AppButton variant="default" @click="editing = false">{{ t('serviceReg.btn.cancel') }}</AppButton>
@@ -738,11 +781,12 @@ async function saveSvcEdit(s: RegisteredService): Promise<void> {
                 :options="[
                   { value: 'container', label: t('serviceReg.services.kindContainer') },
                   { value: 'address', label: t('serviceReg.services.kindAddress') },
+                  { value: 'static', label: t('serviceReg.services.kindStatic') },
                 ]"
-                @update:model-value="(v) => (svcForm.upstreamKind = v as UpstreamKind)"
+                @update:model-value="onKindChange"
               />
             </label>
-            <label class="field">
+            <label v-if="svcForm.upstreamKind !== 'static'" class="field">
               <span class="field__lbl">
                 {{ svcForm.upstreamKind === 'container' ? t('serviceReg.services.container') : t('serviceReg.services.address') }}
               </span>
@@ -750,7 +794,17 @@ async function saveSvcEdit(s: RegisteredService): Promise<void> {
             </label>
           </div>
           <div class="sreg__grid2">
-            <label class="field">
+            <label v-if="svcForm.protocol === 'http'" class="field">
+              <span class="field__lbl">{{ t('serviceReg.services.path') }}</span>
+              <input
+                v-model="svcForm.path"
+                class="field__in"
+                type="text"
+                :placeholder="svcForm.upstreamKind === 'static' ? '/' : '/api'"
+              />
+              <span class="sreg__hint">{{ t('serviceReg.services.pathHint') }}</span>
+            </label>
+            <label v-if="svcForm.upstreamKind !== 'static'" class="field">
               <span class="field__lbl">{{ t('serviceReg.services.upstreamPort') }}</span>
               <input v-model.number="svcForm.upstreamPort" class="field__in" type="number" min="1" max="65535" required />
             </label>
@@ -759,6 +813,14 @@ async function saveSvcEdit(s: RegisteredService): Promise<void> {
               <input v-model.number="svcForm.tcpListenPort" class="field__in" type="number" min="1" max="65535" required />
             </label>
           </div>
+          <p v-if="svcForm.upstreamKind === 'static'" class="sreg__hint">{{ t('serviceReg.services.staticHint') }}</p>
+          <label
+            v-else-if="svcForm.protocol === 'http' && svcForm.path.trim()"
+            class="sreg__strip"
+          >
+            <input v-model="svcForm.stripPathPrefix" type="checkbox" />
+            <span>{{ t('serviceReg.services.stripPath') }}</span>
+          </label>
           <p v-if="svcPreview" class="sreg__preview">
             <NIcon :size="13"><ExternalLink /></NIcon>&nbsp;
             <code>{{ svcPreview }}</code>
@@ -793,16 +855,20 @@ async function saveSvcEdit(s: RegisteredService): Promise<void> {
                   {{ expandedSvc === s.id ? '▾' : '▸' }}
                 </button>
                 <span class="sreg__row-title">
-                  <code v-if="s.protocol === 'http'">{{ s.fqdn }}</code>
+                  <code v-if="s.protocol === 'http'">{{ s.fqdn }}<template v-if="s.path">{{ s.path }}</template></code>
                   <code v-else>:{{ s.tcpListenPort }}</code>
                 </span>
                 <span class="sreg__kv-v">
-                  → {{ s.upstream }}:{{ s.upstreamPort }}
+                  <template v-if="s.upstreamKind === 'static'">→ {{ t('serviceReg.services.staticTag') }}</template>
+                  <template v-else>→ {{ s.upstream }}:{{ s.upstreamPort }}</template>
                   <span class="sreg__tag">{{ s.protocol.toUpperCase() }}</span>
+                  <span v-if="s.protocol === 'http' && s.stripPathPrefix" class="sreg__tag">
+                    {{ t('serviceReg.services.stripTag') }}
+                  </span>
                   <span v-if="hasInstancePool(s)" class="sreg__tag">
                     {{ t('serviceReg.instances.count', { n: instanceCount(s) }) }}
                   </span>
-                  <span v-else-if="s.protocol === 'http'" class="sreg__tag">
+                  <span v-else-if="s.protocol === 'http' && s.upstreamKind === 'address'" class="sreg__tag">
                     {{ t('serviceReg.instances.staticUpstream') }}
                   </span>
                   <span v-if="!s.enabled" class="sreg__tag sreg__tag--off">{{ t('serviceReg.services.disabled') }}</span>
@@ -919,11 +985,12 @@ async function saveSvcEdit(s: RegisteredService): Promise<void> {
                     :options="[
                       { value: 'container', label: t('serviceReg.services.kindContainer') },
                       { value: 'address', label: t('serviceReg.services.kindAddress') },
+                      { value: 'static', label: t('serviceReg.services.kindStatic') },
                     ]"
-                    @update:model-value="(v) => (svcEditForm.upstreamKind = v as UpstreamKind)"
+                    @update:model-value="(v) => onEditKindChange(v)"
                   />
                 </label>
-                <label class="field">
+                <label v-if="svcEditForm.upstreamKind !== 'static'" class="field">
                   <span class="field__lbl">
                     {{ svcEditForm.upstreamKind === 'container' ? t('serviceReg.services.container') : t('serviceReg.services.address') }}
                   </span>
@@ -934,14 +1001,34 @@ async function saveSvcEdit(s: RegisteredService): Promise<void> {
                     :placeholder="svcEditForm.upstreamKind === 'container' ? 'web' : '10.0.0.5'"
                   />
                 </label>
-                <label class="field">
+                <label v-if="svcEditForm.upstreamKind !== 'static'" class="field">
                   <span class="field__lbl">{{ t('serviceReg.services.upstreamPort') }}</span>
                   <input v-model.number="svcEditForm.upstreamPort" class="field__in" type="number" min="1" max="65535" required />
                 </label>
               </div>
-              <label v-if="svcEditForm.protocol === 'tcp'" class="field">
-                <span class="field__lbl">{{ t('serviceReg.services.listenPort') }}</span>
-                <input v-model.number="svcEditForm.tcpListenPort" class="field__in" type="number" min="1" max="65535" required />
+              <div class="sreg__grid2">
+                <label v-if="svcEditForm.protocol === 'http'" class="field">
+                  <span class="field__lbl">{{ t('serviceReg.services.path') }}</span>
+                  <input
+                    v-model="svcEditForm.path"
+                    class="field__in"
+                    type="text"
+                    :placeholder="svcEditForm.upstreamKind === 'static' ? '/' : '/api'"
+                  />
+                  <span class="sreg__hint">{{ t('serviceReg.services.pathHint') }}</span>
+                </label>
+                <label v-if="svcEditForm.protocol === 'tcp'" class="field">
+                  <span class="field__lbl">{{ t('serviceReg.services.listenPort') }}</span>
+                  <input v-model.number="svcEditForm.tcpListenPort" class="field__in" type="number" min="1" max="65535" required />
+                </label>
+              </div>
+              <p v-if="svcEditForm.upstreamKind === 'static'" class="sreg__hint">{{ t('serviceReg.services.staticHint') }}</p>
+              <label
+                v-else-if="svcEditForm.protocol === 'http' && svcEditForm.path.trim()"
+                class="sreg__strip"
+              >
+                <input v-model="svcEditForm.stripPathPrefix" type="checkbox" />
+                <span>{{ t('serviceReg.services.stripPath') }}</span>
               </label>
               <p v-if="svcEditPreview(s)" class="sreg__preview">
                 <NIcon :size="13"><ExternalLink /></NIcon>&nbsp;
@@ -960,6 +1047,17 @@ async function saveSvcEdit(s: RegisteredService): Promise<void> {
 </template>
 
 <style scoped>
+.sreg__strip {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 0.78rem;
+  color: var(--color-dim);
+  cursor: pointer;
+}
+.sreg__strip input {
+  accent-color: var(--color-primary);
+}
 .sreg {
   display: flex;
   flex-direction: column;

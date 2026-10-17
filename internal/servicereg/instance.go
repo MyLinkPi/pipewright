@@ -52,6 +52,65 @@ type DeployInstance struct {
 	HostPort    int    // 生效宿主端口(网关反代/宿主健康检查用)
 }
 
+// StaticDeploySpec 是「网关静态发布」部署节点的目标解析结果(deploy 侧消费,经 main.go 适配)。
+type StaticDeploySpec struct {
+	ServiceID string
+	FQDN      string // 展示用(不含 path)
+	Path      string
+	// ServerIDs 是全部网关主机(静态内容必须落到每一台网关,由各台网关的 nginx 本地托管)。
+	ServerIDs []string
+	// BaseDir 是各网关主机上的发布根目录(<StaticRoot>/<服务ID>;releases/ + current 软链)。
+	BaseDir string
+}
+
+// ResolveStaticDeploy 供 deploy 反查静态发布目标:serviceRef 定位服务(ID 优先,legacy
+// 服务名兜底),服务须为 static 形态且已配置网关主机;返回发布目录与网关主机列表。
+func (s *service) ResolveStaticDeploy(ctx context.Context, serviceRef string) (*StaticDeploySpec, error) {
+	serviceRef = strings.TrimSpace(serviceRef)
+	if serviceRef == "" {
+		return nil, ErrNotFound
+	}
+	var svc *RegisteredService
+	if v, err := s.store.getService(ctx, serviceRef); err == nil {
+		svc = v
+	} else {
+		services, lerr := s.store.listServices(ctx)
+		if lerr != nil {
+			return nil, lerr
+		}
+		for i := range services {
+			if services[i].Name == serviceRef {
+				svc = &services[i]
+				break
+			}
+		}
+	}
+	if svc == nil {
+		return nil, ErrNotFound
+	}
+	if svc.UpstreamKind != UpstreamKindStatic {
+		return nil, ErrStaticService
+	}
+	st, err := s.store.getOrCreateSettings(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if len(st.ServerIDs) == 0 {
+		return nil, ErrNoGateway
+	}
+	name := svc.Name
+	if dom, derr := s.store.getDomain(ctx, svc.DomainID); derr == nil {
+		name = svc.Name + "." + dom.BaseDomain
+	}
+	return &StaticDeploySpec{
+		ServiceID: svc.ID,
+		FQDN:      name,
+		Path:      svc.Path,
+		ServerIDs: st.ServerIDs,
+		BaseDir:   st.StaticRoot + "/" + svc.ID,
+	}, nil
+}
+
 // EffectivePort 返回实例生效服务端口(实例端口 >0 优先,否则服务默认端口)。
 func (i Instance) EffectivePort(svc *RegisteredService) int {
 	if i.Port > 0 {
@@ -79,7 +138,8 @@ var (
 )
 
 // validateInstanceInput 校验实例入参(server 必填;容器实例容器名合法;端口范围合法;
-// 服务必须 http)。port/hostPort 均可为 0 = 继承服务默认端口(渲染侧 EffectiveHostPort 回落)。
+// 服务必须 http 且非 static —— 静态托管无上游端口语义,实例不适用)。port/hostPort 均可为
+// 0 = 继承服务默认端口(渲染侧 EffectiveHostPort 回落)。
 func (s *service) validateInstanceInput(svc *RegisteredService, serverID, container string, port, hostPort int) error {
 	serverID = strings.TrimSpace(serverID)
 	if serverID == "" || len(serverID) > 64 {
@@ -91,6 +151,9 @@ func (s *service) validateInstanceInput(svc *RegisteredService, serverID, contai
 	}
 	if port < 0 || port > 65535 || hostPort < 0 || hostPort > 65535 {
 		return ErrInvalidInstance
+	}
+	if svc.UpstreamKind == UpstreamKindStatic {
+		return ErrStaticService
 	}
 	if svc.Protocol != ProtocolHTTP {
 		return ErrNotHTTPService
@@ -239,6 +302,9 @@ func (s *service) SwapInstance(ctx context.Context, serviceID, serverID, oldCont
 	if err != nil {
 		return err
 	}
+	if svc.UpstreamKind == UpstreamKindStatic {
+		return ErrStaticService
+	}
 	if svc.Protocol != ProtocolHTTP {
 		return ErrNotHTTPService
 	}
@@ -273,7 +339,8 @@ func (s *service) SwapInstance(ctx context.Context, serviceID, serverID, oldCont
 //  3. container 匹配服务名(服务 abc 的实例惯例命名 abc-1/abc-2…,存量兼容)。
 //
 // 返回实例含遗留行(server_id='' —— 本机部署先行认领,旧模型平滑迁移)。非 http /
-// 未启用服务不参与。serverID 无需是网关主机(集群模型:任何部署目标机都可承载实例)。
+// static(无实例语义)/ 未启用服务不参与。serverID 无需是网关主机(集群模型:任何部署
+// 目标机都可承载实例)。
 func (s *service) ResolveDeployInstances(ctx context.Context, serverID, serviceRef, container string) ([]DeployInstance, error) {
 	serverID = strings.TrimSpace(serverID)
 	container = strings.TrimSpace(container)
@@ -296,7 +363,7 @@ func (s *service) ResolveDeployInstances(ctx context.Context, serverID, serviceR
 		}
 		for i := range services {
 			c := &services[i]
-			if c.Protocol != ProtocolHTTP || !c.Enabled {
+			if c.Protocol != ProtocolHTTP || !c.Enabled || c.UpstreamKind == UpstreamKindStatic {
 				continue
 			}
 			if c.Name == container {
@@ -314,7 +381,7 @@ func (s *service) ResolveDeployInstances(ctx context.Context, serverID, serviceR
 			}
 		}
 	}
-	if svc == nil || !svc.Enabled || svc.Protocol != ProtocolHTTP {
+	if svc == nil || !svc.Enabled || svc.Protocol != ProtocolHTTP || svc.UpstreamKind == UpstreamKindStatic {
 		return []DeployInstance{}, nil
 	}
 

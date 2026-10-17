@@ -2,11 +2,12 @@
 /**
  * ServiceRegBinding — 部署节点「服务注册」区块(一键生成)。
  *
- * 选基域 + 填服务名(非容器再填端口)→ 一键生成:幂等注册服务并回填 regServiceId 绑定。
- * 绑定后显示 FQDN 预览,可解绑。配置键(写进 job.config,由后端部署联动消费):
- *   regDomainId / regServiceName / regPort / regServiceId(绑定结果)
+ * 选基域 + 填服务名(反代可填子路径;非容器反代再填端口;静态发布无端口)→ 一键生成:
+ * 幂等注册服务并回填 regServiceId 绑定。绑定后显示路由预览,可解绑。
+ * 配置键(写进 job.config,由后端部署联动消费):
+ *   regDomainId / regServiceName / regPath / regPort / regStripPath / regServiceId(绑定结果)
  * 实例无需人工维护 —— 部署时按目标机自动注册(容器 = 自动分配宿主端口 + 扩缩容轮转;
- * 非容器 = 摘 → 升 → 挂回)。
+ * 非容器 = 摘 → 升 → 挂回;静态发布无实例,内容由 deploy_static 节点下发到全部网关)。
  */
 import { computed, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
@@ -15,7 +16,9 @@ import { listDomains, ensureService, type Domain } from '../../api/servicereg'
 const props = defineProps<{
   /** 是否容器部署(容器:端口由 ports 配置推导;非容器:用户填服务端口)。 */
   containerMode: boolean
-  /** 当前 config 值(regDomainId / regServiceName / regPort / regServiceId)。 */
+  /** 是否网关静态发布(deploy_static:注册静态托管服务,无端口,内容发布到全部网关)。 */
+  staticMode: boolean
+  /** 当前 config 值(regDomainId / regServiceName / regPath / regPort / regStripPath / regServiceId)。 */
   config: Record<string, string>
 }>()
 
@@ -33,17 +36,27 @@ const genError = ref('')
 
 const domainId = computed(() => (props.config.regDomainId ?? '').trim())
 const serviceName = computed(() => (props.config.regServiceName ?? '').trim())
+const regPath = computed(() => (props.config.regPath ?? '').trim())
 const regPort = computed(() => (props.config.regPort ?? '').trim())
+const stripPath = computed(() => (props.config.regStripPath ?? '').trim() === '1')
 const boundId = computed(() => (props.config.regServiceId ?? '').trim())
 
 const boundDomain = computed(
   () => domains.value.find((d) => d.id === domainId.value) ?? null,
 )
-/** FQDN 预览(已绑定时按绑定参数,未绑定时按当前输入)。 */
+
+/** 归一化子路径展示:空 = 根路径 /;确保以 / 开头。 */
+function displayPath(p: string): string {
+  const v = p.trim()
+  if (!v) return '/'
+  return v.startsWith('/') ? v : `/${v}`
+}
+
+/** 路由预览 FQDN+path(已绑定时按绑定参数,未绑定时按当前输入)。 */
 const fqdnPreview = computed(() => {
   if (!serviceName.value) return ''
   const base = boundDomain.value?.baseDomain ?? ''
-  return base ? `${serviceName.value}.${base}` : ''
+  return base ? `${serviceName.value}.${base}${displayPath(regPath.value)}` : ''
 })
 
 onMounted(async () => {
@@ -66,12 +79,27 @@ async function generate(): Promise<void> {
     genError.value = t('pipelineJob.regNeedDomainAndName')
     return
   }
-  if (!props.containerMode && !regPort.value) {
+  // 端口仅反代形态需要(容器从 ports 推导;静态托管无端口)。
+  if (!props.containerMode && !props.staticMode && !regPort.value) {
     genError.value = t('pipelineJob.regNeedPort')
     return
   }
   generating.value = true
   try {
+    if (props.staticMode) {
+      // 静态托管:无端口/上游,内容由本节点发布到全部网关主机。
+      const res = await ensureService({
+        domainId: domainId.value,
+        name: serviceName.value,
+        path: regPath.value,
+        protocol: 'http',
+        upstreamKind: 'static',
+        upstream: '',
+        upstreamPort: 0,
+      })
+      set('regServiceId', res.id)
+      return
+    }
     // 容器部署:服务端口从 ports 配置推导(首个容器端口),此处不重复填。
     const upstreamPort = props.containerMode
       ? deriveContainerPort()
@@ -79,10 +107,12 @@ async function generate(): Promise<void> {
     const res = await ensureService({
       domainId: domainId.value,
       name: serviceName.value,
+      path: regPath.value,
       protocol: 'http',
       upstreamKind: props.containerMode ? 'container' : 'address',
       upstream: '',
       upstreamPort,
+      stripPathPrefix: stripPath.value,
     })
     set('regServiceId', res.id)
   } catch (err) {
@@ -132,14 +162,29 @@ function unbind(): void {
           class="drawer-input is-mono"
           type="text"
           :value="serviceName"
-          :placeholder="containerMode ? 'shop' : 'api'"
+          :placeholder="staticMode ? 'app' : containerMode ? 'shop' : 'api'"
           :aria-label="t('pipelineJob.fieldRegServiceNameLabel')"
           @input="set('regServiceName', ($event.target as HTMLInputElement).value)"
         />
         <p v-if="fqdnPreview" class="field-hint">{{ fqdnPreview }}</p>
       </div>
 
-      <div v-if="!containerMode" class="drawer-field">
+      <div class="drawer-field">
+        <div class="drawer-field-label">{{ t('pipelineJob.fieldRegPathLabel') }}</div>
+        <input
+          class="drawer-input is-mono"
+          type="text"
+          :value="regPath"
+          :placeholder="staticMode ? '/' : '/api'"
+          :aria-label="t('pipelineJob.fieldRegPathLabel')"
+          @input="set('regPath', ($event.target as HTMLInputElement).value)"
+        />
+        <p class="field-hint">
+          {{ staticMode ? t('pipelineJob.fieldRegPathStaticHint') : t('pipelineJob.fieldRegPathHint') }}
+        </p>
+      </div>
+
+      <div v-if="!containerMode && !staticMode" class="drawer-field">
         <div class="drawer-field-label">{{ t('pipelineJob.fieldRegPortLabel') }}</div>
         <input
           class="drawer-input is-mono"
@@ -152,10 +197,21 @@ function unbind(): void {
         <p class="field-hint">{{ t('pipelineJob.fieldRegPortHint') }}</p>
       </div>
 
+      <label v-if="!containerMode && !staticMode && regPath" class="reg-strip">
+        <input
+          type="checkbox"
+          :checked="stripPath"
+          @change="set('regStripPath', ($event.target as HTMLInputElement).checked ? '1' : '')"
+        />
+        <span>{{ t('pipelineJob.fieldRegStripLabel') }}</span>
+      </label>
+
       <button class="reg-generate" :disabled="generating" @click="generate">
         {{ generating ? t('pipelineJob.regGenerating') : t('pipelineJob.regGenerate') }}
       </button>
-      <p class="field-hint">{{ t('pipelineJob.regGenerateHint') }}</p>
+      <p class="field-hint">
+        {{ staticMode ? t('pipelineJob.regGenerateStaticHint') : t('pipelineJob.regGenerateHint') }}
+      </p>
       <p v-if="genError" class="reg-error" role="alert">{{ genError }}</p>
     </template>
 
@@ -169,9 +225,11 @@ function unbind(): void {
         </div>
         <p class="field-hint">
           {{
-            containerMode
-              ? t('pipelineJob.regBoundHintContainer')
-              : t('pipelineJob.regBoundHintHost')
+            staticMode
+              ? t('pipelineJob.regBoundHintStatic')
+              : containerMode
+                ? t('pipelineJob.regBoundHintContainer')
+                : t('pipelineJob.regBoundHintHost')
           }}
         </p>
       </div>
@@ -214,6 +272,20 @@ function unbind(): void {
   margin: 5px 0 0;
   font-size: 0.74rem;
   color: var(--color-red, #d33);
+}
+
+.reg-strip {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-top: 6px;
+  font-size: 0.76rem;
+  color: var(--color-dim);
+  cursor: pointer;
+}
+
+.reg-strip input {
+  accent-color: var(--color-primary);
 }
 
 .reg-bound {

@@ -39,6 +39,14 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # 仓库自适应注入:镜像命名空间(ghcr.io/<owner>/pipewright)与升级渠道(二进制内嵌的
+      # 默认发布仓库)。tag 推到哪个仓库,Release/镜像/自升级渠道就都跟着那个仓库 —— fork
+      # 无需改任何配置即可自行发版。goreleaser 模板经 {{ .Env.* }} 读取。
+      - name: Export release repo env
+        run: |
+          echo "IMAGE_NAMESPACE=${GITHUB_REPOSITORY_OWNER}" >> "$GITHUB_ENV"
+          echo "RELEASE_REPO=${GITHUB_REPOSITORY}" >> "$GITHUB_ENV"
+
       - uses: goreleaser/goreleaser-action@e435ccd777264be153ace6237001ef4d979d3a7a # v6
         with:
           distribution: goreleaser

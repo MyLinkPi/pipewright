@@ -23,7 +23,7 @@
 import { http } from './http'
 
 export type ServiceProtocol = 'http' | 'tcp'
-export type UpstreamKind = 'container' | 'address'
+export type UpstreamKind = 'container' | 'address' | 'static'
 
 export interface Settings {
   /** 全部网关主机(多台部署完全一致的网关);空数组 = 未配置。 */
@@ -36,6 +36,8 @@ export interface Settings {
   network: string
   containerName: string
   volumeName: string
+  /** 静态发布根目录(各网关主机同一路径约定,只读挂进网关容器)。 */
+  staticRoot: string
   lastApplyAt: string
   lastApplyError: string
   /** 逐台收敛错误(serverId → 文案,仅失败项)。 */
@@ -58,11 +60,15 @@ export interface RegisteredService {
   baseDomain: string
   name: string
   fqdn: string
+  /** 子路径('' = 根路径 /);同 FQDN 下多服务靠不同 path 共存。 */
+  path: string
   protocol: ServiceProtocol
   upstreamKind: UpstreamKind
   upstream: string
   upstreamPort: number
   tcpListenPort: number
+  /** 反代剥离 location 前缀(默认 false = 原样透传;static/tcp 恒 false)。 */
+  stripPathPrefix: boolean
   enabled: boolean
   /** 实例总数(含 detached;列表接口带回,徽标直显免逐服务加载)。 */
   instanceCount: number
@@ -124,27 +130,35 @@ export interface SettingsUpdate {
   network?: string
   containerName?: string
   volumeName?: string
+  staticRoot?: string
 }
 
 export interface ServiceCreateInput {
   domainId: string
   name: string
+  /** 子路径('' / 缺省 = 根路径 /;tcp 服务不支持)。 */
+  path?: string
   protocol: ServiceProtocol
   upstreamKind: UpstreamKind
-  /** http+container 部署托管服务可空(实例行携带容器名)。 */
+  /** http+container 部署托管服务可空(实例行携带容器名);static 恒空。 */
   upstream: string
+  /** static 形态可填 0(无端口)。 */
   upstreamPort: number
   tcpListenPort?: number
+  /** 反代剥离 location 前缀(默认 false = 保留前缀原样透传)。 */
+  stripPathPrefix?: boolean
 }
 
 /** 更新可改字段(基域不可换;更新后后端自动 apply 收敛)。缺省字段保持原值。 */
 export interface ServiceUpdateInput {
   name?: string
+  path?: string
   protocol?: ServiceProtocol
   upstreamKind?: UpstreamKind
   upstream?: string
   upstreamPort?: number
   tcpListenPort?: number
+  stripPathPrefix?: boolean
 }
 
 export const getServiceRegSettings = (): Promise<Settings> =>
@@ -180,7 +194,7 @@ export const createService = (in_: ServiceCreateInput): Promise<{ id: string; na
 export const updateService = (id: string, in_: ServiceUpdateInput): Promise<{ id: string; name: string }> =>
   http.put(`/api/servicereg/services/${encodeURIComponent(id)}`, in_)
 
-/** 一键生成(幂等):按(基域, 服务名)注册/刷新服务;实例由部署按目标机自动注册。 */
+/** 一键生成(幂等):按(基域, 服务名, path)注册/刷新服务;实例由部署按目标机自动注册。 */
 export const ensureService = (in_: ServiceCreateInput): Promise<{ id: string; name: string; enabled: boolean }> =>
   http.post('/api/servicereg/services/ensure', in_)
 

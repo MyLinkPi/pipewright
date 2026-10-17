@@ -157,12 +157,15 @@ const healthConfigured = (c: Record<string, string>) =>
   !!(c.healthUrl || '').trim() || !!(c.healthPort || '').trim() ||
   !!(c.healthPath || '').trim() || !!(c.healthCommand || '').trim() || !!(c.healthExec || '').trim()
 
-// 服务注册区(基域/服务名/端口/绑定结果)由 JobDrawer 的专属区块渲染(ServiceRegBinding),
-// 此处仅登记键归属(when:false 不进常规字段循环),避免它们漏进「原始参数」高级区。
+// 服务注册区(基域/服务名/路径/端口/剥离前缀/绑定结果)由 JobDrawer 的专属区块渲染
+// (ServiceRegBinding),此处仅登记键归属(when:false 不进常规字段循环),避免它们漏进
+// 「原始参数」高级区。
 const REG_BINDING_FIELDS: JobField[] = [
   { key: 'regDomainId', label: 'regDomainId', kind: 'text', when: () => false },
   { key: 'regServiceName', label: 'regServiceName', kind: 'text', when: () => false },
+  { key: 'regPath', label: 'regPath', kind: 'text', when: () => false },
   { key: 'regPort', label: 'regPort', kind: 'text', when: () => false },
+  { key: 'regStripPath', label: 'regStripPath', kind: 'text', when: () => false },
   { key: 'regServiceId', label: 'regServiceId', kind: 'text', when: () => false },
 ]
 
@@ -417,6 +420,28 @@ const DEPLOY_SSH_FIELDS: JobField[] = [
     monospace: true,
     placeholder: 'systemctl restart app\nnginx -s reload',
     get hint() { return t('pipelineJob.fieldRestartCommandHint') },
+  },
+  ...REG_BINDING_FIELDS,
+]
+
+// 网关静态发布节点字段(deploy_static):产物 = dist,不选机器 —— 目标 = 全部网关主机
+// (由服务注册绑定解析);发布目录 / 软链切换 / 健康门控(index.html 存在性)由部署层决定,
+// 此处只有产物绑定 + 服务注册绑定。
+const DEPLOY_STATIC_FIELDS: JobField[] = [
+  {
+    key: 'artifactJob',
+    get label() { return t('pipelineJob.fieldArtifactJobLabel') },
+    kind: 'producer',
+    get hint() { return t('pipelineJob.fieldArtifactJobStaticHint') },
+  },
+  {
+    key: 'artifactName',
+    get label() { return t('pipelineJob.fieldArtifactNameLabel') },
+    kind: 'text',
+    monospace: true,
+    placeholder: 'dist',
+    get hint() { return t('pipelineJob.fieldArtifactNameHint') },
+    when: (c) => !!(c.artifactJob || '').trim(),
   },
   ...REG_BINDING_FIELDS,
 ]
@@ -1128,6 +1153,16 @@ export const JOB_TYPE_SPECS: Record<string, JobTypeSpec> = {
     defaultConfig: { strategy: 'rolling', restartCommand: 'nginx -s reload' },
   },
 
+  deploy_static: {
+    type: 'deploy_static',
+    get label() { return t('pipelineJob.typeDeployStaticLabel') },
+    get description() { return t('pipelineJob.typeDeployStaticDesc') },
+    accent: 'green',
+    category: 'deploy',
+    fields: DEPLOY_STATIC_FIELDS,
+    defaultConfig: { strategy: 'rolling' },
+  },
+
   templated: {
     type: 'templated',
     get label() { return t('pipelineJob.typeTemplatedLabel') },
@@ -1235,6 +1270,7 @@ export const PICKABLE_TYPES: readonly string[] = [
   'mesh_trigger',
   'deploy_container',
   'deploy_ssh',
+  'deploy_static',
   'health_check',
   'notify',
   'script',

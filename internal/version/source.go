@@ -8,13 +8,18 @@ import (
 )
 
 const (
-	// defaultRepo 是检查更新所查询的默认仓库(owner/name)。可经 PIPEWRIGHT_RELEASE_REPO
-	// 覆盖(便于 fork 指向自己的发布渠道)。
-	defaultRepo = "huangchengsir/pipewright"
+	// fallbackRepo 是默认发布仓库(owner/name)的硬编码兜底。DefaultRepo 为构建期可注入
+	// 变量,未注入(本地 make build)或注入空串时回落到它。
+	fallbackRepo = "huangchengsir/pipewright"
 
 	githubAPIBase = "https://api.github.com"
 	githubWebBase = "https://github.com"
 )
+
+// DefaultRepo 是检查更新所查询的默认仓库(owner/name)。goreleaser 发版时经 -X 注入为
+// 构建仓库 —— tag 推到哪个仓库,产物就默认跟随哪个仓库查更新(fork 发版自洽);本地
+// make build 未注入则保持 fallbackRepo。运行期可经 PIPEWRIGHT_RELEASE_REPO 覆盖。
+var DefaultRepo = fallbackRepo
 
 // Source 是一次「检查更新 / 下载升级包」所用的升级源。各 base 均为 GitHub 路径兼容的
 // 前缀(可含子路径,不带尾斜杠):
@@ -56,13 +61,16 @@ func resolveMirrorBase(configured string) (string, MirrorOrigin) {
 	return "", MirrorOriginDefault
 }
 
-// releaseRepo 取升级检查所查仓库(env PIPEWRIGHT_RELEASE_REPO fork 覆盖)。
+// releaseRepo 取升级检查所查仓库,优先级:env PIPEWRIGHT_RELEASE_REPO(fork 覆盖)>
+// DefaultRepo(构建期注入的构建仓库)> fallbackRepo(兜底,防空串)。
 func releaseRepo() string {
-	repo := strings.TrimSpace(os.Getenv("PIPEWRIGHT_RELEASE_REPO"))
-	if repo == "" {
-		repo = defaultRepo
+	if repo := strings.TrimSpace(os.Getenv("PIPEWRIGHT_RELEASE_REPO")); repo != "" {
+		return repo
 	}
-	return repo
+	if repo := strings.TrimSpace(DefaultRepo); repo != "" {
+		return repo
+	}
+	return fallbackRepo
 }
 
 // buildSource 以镜像 base 组装升级源;base 为空 = GitHub 官方(检查走 api.github.com,

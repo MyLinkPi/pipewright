@@ -94,11 +94,12 @@ func renderTemplate(tpl string, ctx map[string]string) string {
 	})
 }
 
-// isDeployJob 判断是否「部署」类节点(deploy_ssh 主机部署 / deploy_container 容器部署;
-// 旧 deploy_frontend 前端部署模板保留兼容存量流水线)。三者共用 runDeployJob → deploy.Service。
+// isDeployJob 判断是否「部署」类节点(deploy_ssh 主机部署 / deploy_container 容器部署 /
+// deploy_static 网关静态发布;旧 deploy_frontend 前端部署模板保留兼容存量流水线)。
+// 四者共用 runDeployJob → deploy.Service。
 func isDeployJob(jobType string) bool {
 	t := strings.TrimSpace(jobType)
-	return t == "deploy_ssh" || t == "deploy_frontend" || t == "deploy_container"
+	return t == "deploy_ssh" || t == "deploy_frontend" || t == "deploy_container" || t == "deploy_static"
 }
 
 // isBuildImageJob 判断是否「构建产物(镜像/JAR/dist)」节点(画布 build_image 类型)。
@@ -719,15 +720,18 @@ func (b *Builder) runBuildImageJobIsolated(
 	return b.runBuildImageJob(ctx, sink, rep, jb, stage.Name, proj, settings, ws, commitTag, plan)
 }
 
-// runDeployJob 执行一个 deploy_ssh 节点:把本 run 已产出的产物经 SSH 部署到节点圈选的目标机
+// runDeployJob 执行一个部署类节点:把本 run 已产出的产物经 SSH 部署到节点圈选的目标机
 // (复用 deploy.Service.DeployForStage 中途部署,不动 run 终态)。任一目标失败 → 阶段失败、阻断下游。
 // 目标说明:节点 `selector` 键(标签选择器,`server:<id>` 可钉单机)优先;旧 `serverId` 键映射为
 // `server:<id>` 兼容既有流水线。两者皆空 / 零命中 → 跳过即成功(不阻断下游)。
+// deploy_static(网关静态发布)例外:不选机器 —— 目标 = 全部网关主机(注册绑定解析),
+// 以 cfg["staticGateway"]="1" 路由到 deploy 层静态专用路径。
 func (b *Builder) runDeployJob(ctx context.Context, rep dagrun.StageReporter, jb pipeline.Job, runID string, params map[string]string) error {
 	if b.deployer == nil {
 		_ = rep.Log(ctx, streamStdout, "· 部署节点:部署服务未注入,跳过")
 		return nil
 	}
+	staticNode := strings.TrimSpace(jb.Type) == "deploy_static"
 	selector := strings.TrimSpace(cfgString(jb.Config, "selector"))
 	if selector == "" {
 		// 旧 serverId 写法 → 钉单机的规范形式(与构建机选择器同一语法)。
@@ -735,7 +739,7 @@ func (b *Builder) runDeployJob(ctx context.Context, rep dagrun.StageReporter, jb
 			selector = "server:" + sid
 		}
 	}
-	if selector == "" {
+	if selector == "" && !staticNode {
 		_ = rep.Log(ctx, streamStdout, fmt.Sprintf("· 部署节点「%s」未配置目标选择器,跳过部署", jb.Name))
 		return nil
 	}
@@ -785,12 +789,20 @@ func (b *Builder) runDeployJob(ctx context.Context, rep dagrun.StageReporter, jb
 			cfg[k] = renderTemplate(v, params)
 		}
 	}
+	// 网关静态发布:路由标记(deploy 层据此时静态分流;目标/目录由注册绑定解析)。
+	if staticNode {
+		cfg["staticGateway"] = "1"
+	}
 	strategy := cfgString(jb.Config, "strategy")
 	stratLabel := strategy
 	if stratLabel == "" {
 		stratLabel = "rolling(默认)"
 	}
-	_ = rep.Log(ctx, streamStdout, fmt.Sprintf("→ 部署本次产物到目标机(选择器 %s,滚动策略 %s)…", selector, stratLabel))
+	if staticNode {
+		_ = rep.Log(ctx, streamStdout, "→ 网关静态发布:把 dist 产物发布到全部网关主机(由服务注册绑定决定)…")
+	} else {
+		_ = rep.Log(ctx, streamStdout, fmt.Sprintf("→ 部署本次产物到目标机(选择器 %s,滚动策略 %s)…", selector, stratLabel))
+	}
 	// 把目标机真实执行的命令 + stdout/stderr 实时回流到本部署步骤日志(脱敏由 sink Masker 兜底)。
 	// machine = 该行来源目标机(空 = 运行级/控制机):经 ctx 通道落 run_logs.machine,前端按机器分组。
 	dctx := deploy.WithCmdLog(ctx, func(stream, machine, text string) {

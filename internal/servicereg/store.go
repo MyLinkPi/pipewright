@@ -21,6 +21,9 @@ const (
 	defaultNetwork       = "pipewright-gateway"
 	defaultContainerName = "pipewright-nginx"
 	defaultVolumeName    = "pipewright_nginx"
+	// defaultStaticRoot 是静态发布根目录(各网关主机上的同一路径约定,bind mount 只读挂进
+	// 网关容器;每个静态服务占 <root>/<serviceID>/ 一级,releases/ + current 软链切换)。
+	defaultStaticRoot = "/var/lib/pipewright-nginx/static"
 )
 
 // storedSettings 是 settings 的内部存储表示(目前与 Settings 同形,保留包装以便将来扩展)。
@@ -51,9 +54,10 @@ func (s *Store) getOrCreateSettings(ctx context.Context) (*Settings, error) {
 	_, ierr := s.db.ExecContext(ctx,
 		`INSERT INTO service_reg_settings
 		   (id, server_id, http_port, https_port, image, network, container_name, volume_name,
-		    last_apply_at, last_apply_error, created_at, updated_at)
-		 VALUES (?, '', 80, 443, ?, ?, ?, ?, '', '', ?, ?)`,
-		settingsID, defaultNginxImage, defaultNetwork, defaultContainerName, defaultVolumeName, now, now,
+		    static_root, last_apply_at, last_apply_error, created_at, updated_at)
+		 VALUES (?, '', 80, 443, ?, ?, ?, ?, ?, '', '', ?, ?)`,
+		settingsID, defaultNginxImage, defaultNetwork, defaultContainerName, defaultVolumeName,
+		defaultStaticRoot, now, now,
 	)
 	if ierr != nil {
 		// 并发初始化撞唯一键 → 回读即可。
@@ -72,7 +76,7 @@ func (s *Store) getOrCreateSettings(ctx context.Context) (*Settings, error) {
 func (s *Store) getSettings(ctx context.Context) (*storedSettings, error) {
 	row := s.db.QueryRowContext(ctx,
 		`SELECT server_id, server_ids, http_port, https_port, image, network, container_name, volume_name,
-		        last_apply_at, last_apply_error, last_apply_errors, created_at, updated_at
+		        static_root, last_apply_at, last_apply_error, last_apply_errors, created_at, updated_at
 		 FROM service_reg_settings WHERE id = ?`, settingsID)
 	return scanSettings(row)
 }
@@ -84,10 +88,10 @@ func (s *Store) updateSettings(ctx context.Context, st *Settings) error {
 	_, err := s.db.ExecContext(ctx,
 		`UPDATE service_reg_settings
 		 SET server_id = ?, server_ids = ?, http_port = ?, https_port = ?, image = ?, network = ?,
-		     container_name = ?, volume_name = ?, updated_at = ?
+		     container_name = ?, volume_name = ?, static_root = ?, updated_at = ?
 		 WHERE id = ?`,
 		primaryServerID(st.ServerIDs), marshalStrings(st.ServerIDs), st.HTTPPort, st.HTTPSPort,
-		st.Image, st.Network, st.ContainerName, st.VolumeName, now, settingsID,
+		st.Image, st.Network, st.ContainerName, st.VolumeName, st.StaticRoot, now, settingsID,
 	)
 	if err != nil {
 		return fmt.Errorf("servicereg: update settings: %w", err)
@@ -119,12 +123,15 @@ func scanSettings(sc scanner) (*storedSettings, error) {
 	)
 	if err := sc.Scan(
 		&st.ServerID, &srvIDs, &st.HTTPPort, &st.HTTPSPort, &st.Image, &st.Network, &st.ContainerName,
-		&st.VolumeName, &lastApply, &lastErr, &lastSrvErrs, &createdStr, &updatedStr,
+		&st.VolumeName, &st.StaticRoot, &lastApply, &lastErr, &lastSrvErrs, &createdStr, &updatedStr,
 	); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
 		}
 		return nil, err
+	}
+	if st.StaticRoot == "" {
+		st.StaticRoot = defaultStaticRoot // 旧行/坏行自愈
 	}
 	if lastApply.String != "" {
 		if t, err := time.Parse(time.RFC3339, lastApply.String); err == nil {
@@ -349,19 +356,23 @@ func scanDomain(sc scanner) (*Domain, error) {
 
 // ---------- services ----------
 
-// insertService 落库服务;(domain_id,name) 唯一冲突 → ErrServiceTaken。
+// insertService 落库服务;(domain_id,name,path) 唯一冲突 → ErrServiceTaken。
 func (s *Store) insertService(ctx context.Context, svc *RegisteredService) error {
 	enabled := 0
 	if svc.Enabled {
 		enabled = 1
 	}
+	strip := 0
+	if svc.StripPathPrefix {
+		strip = 1
+	}
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO service_reg_services
-		   (id, domain_id, name, protocol, upstream_kind, upstream, upstream_port, tcp_listen_port,
-		    enabled, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		svc.ID, svc.DomainID, svc.Name, svc.Protocol, svc.UpstreamKind, svc.Upstream, svc.UpstreamPort,
-		svc.TCPListenPort, enabled, svc.CreatedAt.UTC().Format(time.RFC3339), svc.UpdatedAt.UTC().Format(time.RFC3339),
+		   (id, domain_id, name, path, protocol, upstream_kind, upstream, upstream_port,
+		    tcp_listen_port, strip_path_prefix, enabled, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		svc.ID, svc.DomainID, svc.Name, svc.Path, svc.Protocol, svc.UpstreamKind, svc.Upstream, svc.UpstreamPort,
+		svc.TCPListenPort, strip, enabled, svc.CreatedAt.UTC().Format(time.RFC3339), svc.UpdatedAt.UTC().Format(time.RFC3339),
 	)
 	if err != nil {
 		if store.IsUniqueErr(err) {
@@ -385,8 +396,8 @@ func (s *Store) getService(ctx context.Context, id string) (*RegisteredService, 
 	return svc, nil
 }
 
-const serviceCols = `SELECT id, domain_id, name, protocol, upstream_kind, upstream, upstream_port,
-       tcp_listen_port, enabled, created_at, updated_at FROM service_reg_services`
+const serviceCols = `SELECT id, domain_id, name, path, protocol, upstream_kind, upstream, upstream_port,
+       tcp_listen_port, strip_path_prefix, enabled, created_at, updated_at FROM service_reg_services`
 
 // listServices 返回全部服务(创建时间倒序)。
 func (s *Store) listServices(ctx context.Context) ([]RegisteredService, error) {
@@ -410,8 +421,8 @@ func (s *Store) listServices(ctx context.Context) ([]RegisteredService, error) {
 // 免前端逐服务再查一次实例)。
 func (s *Store) listServicesWithDomain(ctx context.Context) ([]ServiceWithDomain, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT s.id, s.domain_id, s.name, s.protocol, s.upstream_kind, s.upstream, s.upstream_port,
-		        s.tcp_listen_port, s.enabled, s.created_at, s.updated_at, d.base_domain,
+		`SELECT s.id, s.domain_id, s.name, s.path, s.protocol, s.upstream_kind, s.upstream, s.upstream_port,
+		        s.tcp_listen_port, s.strip_path_prefix, s.enabled, s.created_at, s.updated_at, d.base_domain,
 		        (SELECT COUNT(*) FROM service_reg_instances i WHERE i.service_id = s.id) AS instance_count
 		 FROM service_reg_services s
 		 JOIN service_reg_domains d ON d.id = s.domain_id
@@ -425,16 +436,18 @@ func (s *Store) listServicesWithDomain(ctx context.Context) ([]ServiceWithDomain
 		var (
 			swd       ServiceWithDomain
 			enabled   int
+			strip     int
 			createdS  string
 			updatedS  string
 		)
 		if err := rows.Scan(
-			&swd.ID, &swd.DomainID, &swd.Name, &swd.Protocol, &swd.UpstreamKind, &swd.Upstream,
-			&swd.UpstreamPort, &swd.TCPListenPort, &enabled, &createdS, &updatedS, &swd.BaseDomain,
+			&swd.ID, &swd.DomainID, &swd.Name, &swd.Path, &swd.Protocol, &swd.UpstreamKind, &swd.Upstream,
+			&swd.UpstreamPort, &swd.TCPListenPort, &strip, &enabled, &createdS, &updatedS, &swd.BaseDomain,
 			&swd.InstanceCount,
 		); err != nil {
 			return nil, err
 		}
+		swd.StripPathPrefix = strip != 0
 		swd.Enabled = enabled != 0
 		swd.CreatedAt = parseTime(createdS)
 		swd.UpdatedAt = parseTime(updatedS)
@@ -445,13 +458,17 @@ func (s *Store) listServicesWithDomain(ctx context.Context) ([]ServiceWithDomain
 
 // updateService 全量更新服务列(调用方已校验);不存在 → ErrNotFound。
 func (s *Store) updateService(ctx context.Context, svc *RegisteredService) error {
+	strip := 0
+	if svc.StripPathPrefix {
+		strip = 1
+	}
 	res, err := s.db.ExecContext(ctx,
 		`UPDATE service_reg_services
-		 SET name = ?, protocol = ?, upstream_kind = ?, upstream = ?, upstream_port = ?,
-		     tcp_listen_port = ?, updated_at = ?
+		 SET name = ?, path = ?, protocol = ?, upstream_kind = ?, upstream = ?, upstream_port = ?,
+		     tcp_listen_port = ?, strip_path_prefix = ?, updated_at = ?
 		 WHERE id = ?`,
-		svc.Name, svc.Protocol, svc.UpstreamKind, svc.Upstream, svc.UpstreamPort,
-		svc.TCPListenPort, svc.UpdatedAt.UTC().Format(time.RFC3339), svc.ID,
+		svc.Name, svc.Path, svc.Protocol, svc.UpstreamKind, svc.Upstream, svc.UpstreamPort,
+		svc.TCPListenPort, strip, svc.UpdatedAt.UTC().Format(time.RFC3339), svc.ID,
 	)
 	if err != nil {
 		if store.IsUniqueErr(err) {
@@ -499,15 +516,17 @@ func scanService(sc scanner) (*RegisteredService, error) {
 	var (
 		svc       RegisteredService
 		enabled   int
+		strip     int
 		createdS  string
 		updatedS  string
 	)
 	if err := sc.Scan(
-		&svc.ID, &svc.DomainID, &svc.Name, &svc.Protocol, &svc.UpstreamKind, &svc.Upstream,
-		&svc.UpstreamPort, &svc.TCPListenPort, &enabled, &createdS, &updatedS,
+		&svc.ID, &svc.DomainID, &svc.Name, &svc.Path, &svc.Protocol, &svc.UpstreamKind, &svc.Upstream,
+		&svc.UpstreamPort, &svc.TCPListenPort, &strip, &enabled, &createdS, &updatedS,
 	); err != nil {
 		return nil, err
 	}
+	svc.StripPathPrefix = strip != 0
 	svc.Enabled = enabled != 0
 	svc.CreatedAt = parseTime(createdS)
 	svc.UpdatedAt = parseTime(updatedS)

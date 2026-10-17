@@ -339,6 +339,11 @@ func (s *service) Deploy(ctx context.Context, in DeployInput) ([]TargetResult, e
 // 旧配置(无 artifactJob)→ 按类型偏好挑选 + 记弃用告警。健康门控从 cfg["healthUrl"|"healthCommand"]
 // 构造(此前硬编码 nil,流水线节点健康检查/回滚因此从未生效)。
 func (s *service) DeployForStage(ctx context.Context, runID string, selector string, cfg map[string]string, strategy string) ([]TargetResult, error) {
+	// 「网关静态发布」节点(build 层 runDeployJob 以 staticGateway=1 标记):目标与发布目录
+	// 由注册绑定解析(全部网关主机),不走 selector —— 分流至静态专用路径。
+	if strings.TrimSpace(cfg["staticGateway"]) == "1" {
+		return s.deployStaticForStage(ctx, runID, cfg)
+	}
 	// 目标经 selector 圈选(`server:<id>` / 标签项,匹配方式 cfg["selectorMode"]):空 / 零命中 → 跳过。
 	servers, err := s.resolveTargets(ctx, nil, selector, normalizeSelectorMode(cfg["selectorMode"]))
 	if err != nil {
