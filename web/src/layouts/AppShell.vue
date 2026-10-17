@@ -84,6 +84,8 @@ const adminNavItems: NavItem[] = [
   { name: 'server-status', to: '/server-status', icon: Server,     labelKey: 'nav.serverStatus',  ariaKey: 'nav.serverStatus' },
   // 集群:对等节点总览(EasyTier 链路 p2p/中继、机器与流水线状态)。
   { name: 'cluster',       to: '/cluster',       icon: World,     labelKey: 'nav.cluster',       ariaKey: 'nav.cluster' },
+  // Ceph 集群:cephadm 部署向导 + 存储(主机/OSD/池/RBD/CephFS)管理。
+  { name: 'ceph',          to: '/ceph',          icon: Database,  labelKey: 'nav.ceph',          ariaKey: 'nav.ceph' },
   // 容器管理:跨服务器聚合容器总览 + 行内生命周期操作(docker over SSH)。
   { name: 'containers',    to: '/containers',    icon: Box,        labelKey: 'nav.containers',    ariaKey: 'nav.containers' },
   // 证书管理:acme.sh 自动签发/续期(DNS-01)+ 手动导入,签发引擎跑在网关主机上。

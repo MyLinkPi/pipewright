@@ -55,6 +55,10 @@ type Status struct {
 // statusTTL 是快照缓存窗口;窗口内直接回缓存,过期后台单飞刷新(stale-while-revalidate)。
 const statusTTL = 10 * time.Second
 
+// refreshTimeout 是单轮后台采集的整体超时(node/peer/route 三路 + 形态探测共用,
+// 防 CLI 挂死把单飞位占死)。
+const refreshTimeout = 5 * time.Second
+
 // verbShapes 是各查询的候选调用形态(追加在 ["--rpc-portal", addr] 之后):
 // 新版(PR #882+,旗子前置 + 子动作)→ 次新版(旗子前置)→ 旧版(旗子后置)。
 var (
@@ -159,7 +163,8 @@ func newStatusProviderForTest(run cliRunner) *StatusProvider {
 	return &StatusProvider{run: run, shapeByVerb: map[string][]string{}}
 }
 
-// Get 返回状态快照(缓存窗口内即时返回;过期触发后台刷新并回旧值)。
+// Get 返回状态快照(缓存窗口内即时返回;过期即触发后台单飞刷新并立即回旧值 ——
+// 真后台刷新:查询不随调用方请求生死,本调用永不等待采集)。
 func (p *StatusProvider) Get(ctx context.Context) *Status {
 	p.mu.Lock()
 	if p.cached != nil && time.Since(p.fetched) < statusTTL {
@@ -169,19 +174,36 @@ func (p *StatusProvider) Get(ctx context.Context) *Status {
 	}
 	stale := p.cached
 	refreshing := p.refreshing
-	p.refreshing = true
+	if !refreshing {
+		p.refreshing = true
+	}
 	p.mu.Unlock()
-
 	if refreshing {
 		return orUnavailable(stale)
 	}
+	go p.refresh(ctx)
+	return orUnavailable(stale)
+}
+
+// refresh 在独立 context 下采集一轮并落缓存(单飞 goroutine):
+//   - context 取 WithoutCancel + refreshTimeout:HTTP 客户端断开/代理超时不再杀死
+//     执行中的 easytier-cli,「context canceled」不再经请求传导进状态;
+//   - 取消类失败(context canceled;Err 经错误链拼接已是文本,按子串识别)不落缓存、
+//     不顶掉最后一次成功快照 —— 缓存保持过期,下次 Get 自然重试;
+//   - 其余失败照常落缓存(如 refreshTimeout 的 deadline exceeded),避免坏 CLI 状态
+//     被每个调用反复触发。
+func (p *StatusProvider) refresh(reqCtx context.Context) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(reqCtx), refreshTimeout)
+	defer cancel()
 	fresh := p.collect(ctx)
 	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.refreshing = false
+	if strings.Contains(fresh.Err, "context canceled") {
+		return
+	}
 	p.cached = fresh
 	p.fetched = time.Now()
-	p.refreshing = false
-	p.mu.Unlock()
-	return fresh
 }
 
 func orUnavailable(stale *Status) *Status {

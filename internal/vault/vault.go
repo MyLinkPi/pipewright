@@ -30,6 +30,7 @@ const (
 	TypeDNSToken          = "dns_token"           // DNS 提供商 API 凭据(单字串:Cloudflare token / 「ID,Secret」);掩码走 default 全打点
 	TypeSudoPassword      = "sudo_password"       // 服务器登录用户的 sudo 密码(非 PEM);供提权场景经 sudo -S 从 stdin 喂入;掩码走 default 全打点
 	TypeObjectStoreSecret = "object_store_secret" // 对象存储 AccessKeySecret(单字串);由「对象存储」页管理;掩码走 default 全打点
+	TypeCephDashboard     = "ceph_dashboard"      // Ceph 集群 dashboard 登录密码(单字串);ceph 域部署引导时自动生成;掩码走 default 全打点
 )
 
 // 领域错误。错误体永不含明文/密文/master key。
@@ -137,7 +138,7 @@ func (s *service) configured() bool { return s.key != nil }
 // validateType 校验类型枚举。
 func validateType(t string) error {
 	switch t {
-	case TypeGitToken, TypeGitHTTP, TypeSSHKey, TypeRegistry, TypeSSHPassword, TypeDNSToken, TypeSudoPassword, TypeObjectStoreSecret:
+	case TypeGitToken, TypeGitHTTP, TypeSSHKey, TypeRegistry, TypeSSHPassword, TypeDNSToken, TypeSudoPassword, TypeObjectStoreSecret, TypeCephDashboard:
 		return nil
 	default:
 		return ErrInvalidType

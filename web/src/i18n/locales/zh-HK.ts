@@ -72,6 +72,7 @@ const zhHK: typeof zhCN = {
     dora: 'DORA 指標',
     serverStatus: '伺服器',
     cluster: '集群',
+    ceph: 'Ceph 儲存',
     containers: '容器',
     serviceReg: '服務註冊',
     appStore: '應用商店',

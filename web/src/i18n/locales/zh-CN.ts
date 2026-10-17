@@ -72,6 +72,7 @@ export default {
     dora: 'DORA 指标',
     serverStatus: '服务器',
     cluster: '集群',
+    ceph: 'Ceph 存储',
     containers: '容器',
     serviceReg: '服务注册',
     appStore: '应用商店',

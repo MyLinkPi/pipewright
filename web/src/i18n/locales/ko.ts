@@ -73,6 +73,7 @@ const ko: typeof zhCN = {
     dora: 'DORA 지표',
     serverStatus: '서버',
     cluster: '클러스터',
+    ceph: 'Ceph',
     containers: '컨테이너',
     serviceReg: '서비스 등록',
     appStore: '앱 스토어',

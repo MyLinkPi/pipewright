@@ -30,6 +30,7 @@ import (
 	"github.com/huangchengsir/pipewright/internal/auth"
 	"github.com/huangchengsir/pipewright/internal/build"
 	"github.com/huangchengsir/pipewright/internal/buildcache"
+	"github.com/huangchengsir/pipewright/internal/ceph"
 	"github.com/huangchengsir/pipewright/internal/certmgmt"
 	"github.com/huangchengsir/pipewright/internal/chain"
 	"github.com/huangchengsir/pipewright/internal/config"
@@ -418,6 +419,9 @@ func main() {
 	// servicereg,包间保持单向依赖);未装配时该策略自动回退既有滚动。
 	deploySvc := deploy.New(targetSvc, runSvc, deploy.WithDiagnoseHook(httpapi.NewDiagnoseHook(runSvc, aiSvc, secretSrc)), deploy.WithArtifactStore(artStore), deploy.WithInstanceGateway(&instanceRollGateway{sr: serviceRegSvc}))
 
+	// Ceph 集群部署与管理(cephadm 引导 + 池/RBD/CephFS 管理;命令经 target SSH 层)。
+	cephSvc := ceph.New(st.DB, targetSvc, credVault)
+
 	// ── 集群(对等节点 + EasyTier 自组网)装配 ─────────────────────────────────────
 	// 全节点同构:mesh 服务、推送接收器、出站签名客户端、修订存储与镜像传输器一律构造
 	// (端点是否可达/节点是否启用由运行时设置决定,不装配则集群功能整体缺席)。
@@ -755,7 +759,7 @@ func main() {
 
 	srv := &http.Server{
 		Addr:              cfg.Addr,
-		Handler:           httpapi.New(webFS, authSvc, httpapi.WithVault(credVault), httpapi.WithProjects(projectSvc), httpapi.WithTriggers(triggerSvc), httpapi.WithPipelines(pipelineSvc), httpapi.WithPipelineSettings(pipelineSettingsSvc), httpapi.WithRuns(runSvc, pool), httpapi.WithWebhooks(webhookReceiver), httpapi.WithAudit(auditRec), httpapi.WithAccount(authSvc), httpapi.WithIdentity(identitySvc), httpapi.WithAISettings(aiSvc), httpapi.WithAIGenerate(repoAnalyzer), httpapi.WithRunDiff(runDiffer), httpapi.WithSource(sourceReader), httpapi.WithRefs(refsLister), httpapi.WithArtifactStore(artStore), httpapi.WithServers(targetSvc), httpapi.WithLabels(labelsSvc), httpapi.WithServerCommands(serverCmdSvc), httpapi.WithRegistryHub(registryHubSvc), httpapi.WithRunnerConfig(runnerSvc), httpapi.WithDeploy(deploySvc), httpapi.WithSpecLoader(resumeSpecLoader), httpapi.WithNotifications(notifySvc), httpapi.WithRetention(retentionSvc), httpapi.WithDNSProviders(dnsSvc), httpapi.WithObjectStores(objectStoreSvc), httpapi.WithCertMgmt(certSvc), httpapi.WithPlatformHTTPS(platformHTTPSSvc), httpapi.WithSystemConfig(sysCfgSvc), httpapi.WithServiceReg(serviceRegSvc), httpapi.WithAppStore(appStoreSvc), httpapi.WithDBAdmin(dbAdminSvc), httpapi.WithDiagnosisFeedback(feedbackSvc), httpapi.WithAnomaly(anomalySvc), httpapi.WithAnomalyConfig(int(anomalyInterval.Seconds()), int(anomalyCooldown.Seconds())), httpapi.WithMetricsHistory(metricsHist), httpapi.WithSecretSource(secretSrc), httpapi.WithOAuth(oauthSvc), httpapi.WithCron(cronSvc), httpapi.WithChain(chainSvc), httpapi.WithApprovals(approvalCoord, approvalStore), httpapi.WithApprovalLinks(approvalSigner), httpapi.WithConcurrency(concurrencySvc), httpapi.WithParameters(parameterSvc), httpapi.WithDoraMetrics(doraMetricsSvc), httpapi.WithTemplates(templateSvc), httpapi.WithVariableGroups(varGroupSvc), httpapi.WithCustomNodes(customNodeSvc), httpapi.WithOpsChat(opsChatSvc), httpapi.WithMesh(meshAdminDeps)),
+		Handler:           httpapi.New(webFS, authSvc, httpapi.WithVault(credVault), httpapi.WithProjects(projectSvc), httpapi.WithTriggers(triggerSvc), httpapi.WithPipelines(pipelineSvc), httpapi.WithPipelineSettings(pipelineSettingsSvc), httpapi.WithRuns(runSvc, pool), httpapi.WithWebhooks(webhookReceiver), httpapi.WithAudit(auditRec), httpapi.WithAccount(authSvc), httpapi.WithIdentity(identitySvc), httpapi.WithAISettings(aiSvc), httpapi.WithAIGenerate(repoAnalyzer), httpapi.WithRunDiff(runDiffer), httpapi.WithSource(sourceReader), httpapi.WithRefs(refsLister), httpapi.WithArtifactStore(artStore), httpapi.WithServers(targetSvc), httpapi.WithLabels(labelsSvc), httpapi.WithServerCommands(serverCmdSvc), httpapi.WithRegistryHub(registryHubSvc), httpapi.WithRunnerConfig(runnerSvc), httpapi.WithDeploy(deploySvc), httpapi.WithSpecLoader(resumeSpecLoader), httpapi.WithNotifications(notifySvc), httpapi.WithRetention(retentionSvc), httpapi.WithDNSProviders(dnsSvc), httpapi.WithObjectStores(objectStoreSvc), httpapi.WithCertMgmt(certSvc), httpapi.WithPlatformHTTPS(platformHTTPSSvc), httpapi.WithSystemConfig(sysCfgSvc), httpapi.WithServiceReg(serviceRegSvc), httpapi.WithAppStore(appStoreSvc), httpapi.WithDBAdmin(dbAdminSvc), httpapi.WithDiagnosisFeedback(feedbackSvc), httpapi.WithAnomaly(anomalySvc), httpapi.WithAnomalyConfig(int(anomalyInterval.Seconds()), int(anomalyCooldown.Seconds())), httpapi.WithMetricsHistory(metricsHist), httpapi.WithSecretSource(secretSrc), httpapi.WithOAuth(oauthSvc), httpapi.WithCron(cronSvc), httpapi.WithChain(chainSvc), httpapi.WithApprovals(approvalCoord, approvalStore), httpapi.WithApprovalLinks(approvalSigner), httpapi.WithConcurrency(concurrencySvc), httpapi.WithParameters(parameterSvc), httpapi.WithDoraMetrics(doraMetricsSvc), httpapi.WithTemplates(templateSvc), httpapi.WithVariableGroups(varGroupSvc), httpapi.WithCustomNodes(customNodeSvc), httpapi.WithOpsChat(opsChatSvc), httpapi.WithMesh(meshAdminDeps), httpapi.WithCeph(cephSvc)),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		// WriteTimeout 置 0:SSE 长连接(/api/runs/{id}/events)不可被写超时切断;
