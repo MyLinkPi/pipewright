@@ -81,6 +81,8 @@ const adminNavItems: NavItem[] = [
   { name: 'dora',          to: '/metrics/dora',  icon: ChartBar,   labelKey: 'nav.dora',          ariaKey: 'nav.dora' },
   // Story 6-1: 多机状态总览(服务器层指标 FR-15);登记在 设置 → 服务器。
   { name: 'server-status', to: '/server-status', icon: Server,     labelKey: 'nav.serverStatus',  ariaKey: 'nav.serverStatus' },
+  // 集群:对等节点总览(EasyTier 链路 p2p/中继、机器与流水线状态)。
+  { name: 'cluster',       to: '/cluster',       icon: World,     labelKey: 'nav.cluster',       ariaKey: 'nav.cluster' },
   // 容器管理:跨服务器聚合容器总览 + 行内生命周期操作(docker over SSH)。
   { name: 'containers',    to: '/containers',    icon: Box,        labelKey: 'nav.containers',    ariaKey: 'nav.containers' },
   // 证书管理:acme.sh 自动签发/续期(DNS-01)+ 手动导入,签发引擎跑在网关主机上。

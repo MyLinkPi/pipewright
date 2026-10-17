@@ -8,13 +8,14 @@
     · 节点注册表:发现(auto)登记 + 手工补录(manual;发现兜底,可补对外访问地址)。
 -->
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
   revealMeshNetworkSecret,
   getMeshOverview,
   triggerEasyTierDownload,
   type EasyTierBinaries,
+  type MeshOverview,
   getMeshSettings,
   saveMeshSettings,
   getMeshACL,
@@ -90,24 +91,93 @@ function generateSecret(): void {
   secretRevealed.value = true
 }
 
-async function copySecret(): Promise<void> {
-  const text = form.value.networkSecret.trim()
-  if (!text) return
+// copied:复制成功后按钮短暂显示「已复制」。
+const copied = ref(false)
+let copiedTimer: number | undefined
+
+/** copyText 写剪贴板;非安全上下文(http 局域网)时 navigator.clipboard 不可用,回退 execCommand。 */
+async function copyText(text: string): Promise<boolean> {
   try {
-    await navigator.clipboard.writeText(text)
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text)
+      return true
+    }
   } catch {
-    // 剪贴板被浏览器策略拒绝时静默(输入框已可见,可手选)。
+    // 落入下方回退。
+  }
+  const ta = document.createElement('textarea')
+  ta.value = text
+  ta.style.position = 'fixed'
+  ta.style.opacity = '0'
+  document.body.appendChild(ta)
+  ta.select()
+  let ok = false
+  try {
+    ok = document.execCommand('copy')
+  } catch {
+    ok = false
+  }
+  document.body.removeChild(ta)
+  return ok
+}
+
+/** 一键复制:输入框有内容复制输入框(所见即所复制);为空则直接取服务端已存密钥 —— 不需要先「显示」。 */
+async function copySecret(): Promise<void> {
+  let text = form.value.networkSecret.trim()
+  if (!text) {
+    try {
+      const res = await revealMeshNetworkSecret()
+      text = res.secret
+    } catch (err) {
+      actionError.value = err instanceof Error ? err.message : String(err)
+      return
+    }
+  }
+  if (!text) return
+  if (await copyText(text)) {
+    actionError.value = ''
+    copied.value = true
+    if (copiedTimer !== undefined) window.clearTimeout(copiedTimer)
+    copiedTimer = window.setTimeout(() => { copied.value = false }, 2000)
+  } else {
+    actionError.value = t('cluster.settings.secretCopyFailed')
   }
 }
 
-async function loadBinaries(): Promise<void> {
+// 运行状态(设置页顶部状态条 + EasyTier 区二进制行共用):轮询 overview。
+const overview = ref<MeshOverview | null>(null)
+let statusTimer: number | undefined
+
+async function loadStatus(): Promise<void> {
   try {
     const ov = await getMeshOverview()
+    overview.value = ov
     binaries.value = ov.binaries ?? null
   } catch {
-    binaries.value = null
+    // 状态拉取失败不弹横幅(轮询噪音):保留上一次快照,状态条自会显示其旧值。
   }
 }
+
+/** 状态条数据(计算属性;overview 为空时各格显示 —)。 */
+const stSelfIp = computed(() => overview.value?.easytier.selfIp || '—')
+const stNetwork = computed(() => overview.value?.settings.networkName || '—')
+const stOnline = computed(() => {
+  const peers = overview.value?.peers ?? []
+  return `${peers.filter((x) => x.online).length}/${peers.length}`
+})
+const stProcess = computed(() => {
+  const ov = overview.value
+  if (!ov) return { text: '…', ok: false }
+  if (ov.externalMode) return { text: t('cluster.et.readonly'), ok: true }
+  if (ov.settings.enabled && ov.supervisor?.running) return { text: t('cluster.et.running'), ok: true }
+  return { text: t('cluster.et.stopped'), ok: false }
+})
+/** 需要人看见的最近异常(EasyTier 状态错误 > 托管进程错误),空 = 无。 */
+const stError = computed(() => {
+  const ov = overview.value
+  if (!ov) return ''
+  return ov.easytier.err || ov.supervisor?.lastErr || ''
+})
 
 async function downloadBinaries(): Promise<void> {
   try {
@@ -115,7 +185,7 @@ async function downloadBinaries(): Promise<void> {
     if (binaries.value) binaries.value = { ...binaries.value, downloading: true, lastErr: '' }
     // 异步下载:3s 后探一次进度,仍在下载则继续轮询。
     const poll = window.setInterval(async () => {
-      await loadBinaries()
+      await loadStatus()
       if (binaries.value && !binaries.value.downloading) {
         window.clearInterval(poll)
         await load()
@@ -184,6 +254,7 @@ async function persistSettings(): Promise<void> {
     }
     secretRevealed.value = false
     markSaved()
+    void loadStatus()
   } catch (err) {
     actionError.value = err instanceof Error ? err.message : String(err)
   } finally {
@@ -246,7 +317,12 @@ const knownPeers = computed(() => peers.value)
 
 onMounted(() => {
   void load()
-  void loadBinaries()
+  void loadStatus()
+  statusTimer = window.setInterval(() => void loadStatus(), 10_000)
+})
+
+onUnmounted(() => {
+  if (statusTimer !== undefined) window.clearInterval(statusTimer)
 })
 </script>
 
@@ -260,6 +336,34 @@ onMounted(() => {
     </div>
 
     <template v-if="state === 'ready' && settings">
+      <!-- 运行状态条:配置完立即能看到「进程起没起、拿到虚拟 IP 没有、几个人在线」。 -->
+      <section class="block">
+        <div class="status-head">
+          <h2>{{ t('cluster.settings.statusTitle') }}</h2>
+          <router-link to="/cluster" class="link-btn">{{ t('cluster.settings.viewCluster') }} →</router-link>
+        </div>
+        <div class="status-grid">
+          <div class="st-item">
+            <span class="et-label">{{ t('cluster.et.process') }}</span>
+            <span class="st-value" :class="stProcess.ok ? 'ok-text' : 'warn-text'">{{ stProcess.text }}</span>
+          </div>
+          <div class="st-item">
+            <span class="et-label">{{ t('cluster.et.selfIp') }}</span>
+            <span class="st-value mono">{{ stSelfIp }}</span>
+          </div>
+          <div class="st-item">
+            <span class="et-label">{{ t('cluster.et.network') }}</span>
+            <span class="st-value mono">{{ stNetwork }}</span>
+          </div>
+          <div class="st-item">
+            <span class="et-label">{{ t('cluster.et.peers') }}</span>
+            <span class="st-value">{{ stOnline }}</span>
+          </div>
+        </div>
+        <p v-if="stError" class="et-hint warn-text">{{ stError }}</p>
+        <p v-else-if="!settings.enabled" class="et-hint">{{ t('cluster.et.disabledHint') }}</p>
+      </section>
+
       <!-- 身份与组网 -->
       <section class="block">
         <h2>{{ t('cluster.settings.identity') }}</h2>
@@ -304,7 +408,7 @@ onMounted(() => {
               />
               <button class="mini-btn" type="button" @click="toggleSecret">{{ secretRevealed ? t('cluster.settings.secretHide') : t('cluster.settings.secretShow') }}</button>
               <button class="mini-btn" type="button" @click="generateSecret">{{ t('cluster.settings.secretGenerate') }}</button>
-              <button class="mini-btn" type="button" :disabled="!form.networkSecret.trim()" @click="copySecret">{{ t('cluster.settings.secretCopy') }}</button>
+              <button class="mini-btn" type="button" @click="copySecret">{{ copied ? t('cluster.settings.secretCopied') : t('cluster.settings.secretCopy') }}</button>
             </div>
             <span class="hint">{{ t('cluster.settings.secretHint') }}</span>
           </div>
@@ -411,6 +515,11 @@ onMounted(() => {
 .secret-row .inp { flex: 1; min-width: 0; }
 .mini-btn { border: 1px solid var(--color-border); background: var(--color-bg-soft); color: var(--color-text); border-radius: 6px; padding: 0 10px; font-size: 12px; cursor: pointer; white-space: nowrap; }
 .mini-btn:disabled { opacity: 0.5; cursor: default; }
+.status-head { display: flex; align-items: baseline; justify-content: space-between; }
+.status-head h2 { margin: 0; }
+.status-grid { display: flex; flex-wrap: wrap; gap: 24px; }
+.st-item { display: flex; flex-direction: column; gap: 2px; }
+.st-value { font-size: 14px; font-weight: 600; }
 .action-banner { display: flex; align-items: center; gap: 8px; border: 1px solid var(--color-amber); border-radius: 8px; padding: 8px 12px; color: var(--color-amber); font-size: 13px; }
 .bin-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .bin-label { font-size: 13px; font-weight: 600; }

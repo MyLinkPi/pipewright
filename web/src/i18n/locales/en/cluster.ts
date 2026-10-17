@@ -93,5 +93,9 @@ export default {
     secretHint: 'Every node in the cluster must use the same secret (paired with the network name); paste the same secret on each joining node. Revealing is audited.',
     actionFailed: 'Action failed',
     identitySaveHint: 'Node name and the enable toggle are saved by this form (shared with the networking settings below via one Save)',
+    secretCopied: 'Copied',
+    secretCopyFailed: 'Copy failed — click Show and copy manually',
+    statusTitle: 'Runtime status',
+    viewCluster: 'Open cluster page',
   },
 }

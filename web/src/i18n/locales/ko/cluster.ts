@@ -93,5 +93,9 @@ export default {
     secretHint: '클러스터의 모든 노드에 동일한 시크릿(네트워크 이름과 세트)을 입력해야 합니다. 새 노드에는 같은 값을 붙여넣으세요. 표시 시 감사 로그에 남습니다.',
     actionFailed: '작업 실패',
     identitySaveHint: '노드 이름과 활성화 토글은 이 폼으로 저장됩니다(아래 네트워킹 설정과 저장 버튼 공유)',
+    secretCopied: '복사됨',
+    secretCopyFailed: '복사 실패 — 「표시」를 눌러 직접 선택해 복사하세요',
+    statusTitle: '실행 상태',
+    viewCluster: '클러스터 상세 보기',
   },
 }
