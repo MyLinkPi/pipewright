@@ -18,7 +18,7 @@ export default {
     errLoadGeneric: '載入觸發設定失敗,請稍後重試。',
 
     webhookTitle: 'Webhook 接入',
-    webhookSub: '程式碼平台 · Gitee',
+    webhookSub: '程式碼平台 · Gitee / Gitea',
     endpointLabel: '接收端點',
     copied: '已複製',
     copyUrlAria: '複製 Webhook URL',
@@ -32,7 +32,7 @@ export default {
     resetSecretAria: '重設簽章金鑰',
     reset: '重設',
     pushConfigLabel: '推送設定',
-    pushConfigHint: '在 Gitee 倉庫 → 管理 → WebHooks 貼上以上位址與金鑰,事件勾選 Push / Tag Push / Release / Pull Request。',
+    pushConfigHint: '在程式碼倉庫(Gitee / Gitea)的 WebHooks 設定中貼上以上位址與金鑰,並按需勾選事件(Gitee:Push / Tag Push / Release / Pull Request;Gitea:Push / Create / Release / Pull Request)。Gitea/Gogs 端必須填寫金鑰文字,否則推送會被拒收。',
 
     eventsTitle: '觸發事件',
     eventsSub: '勾選哪些事件建立流水線執行',
@@ -66,7 +66,7 @@ export default {
     resetModalTitle: '重設簽章金鑰',
     resetModalSub: '重設後舊金鑰立即失效,新金鑰只在本次回應中回顯一次',
     closeDialogAria: '關閉對話框',
-    resetWarnText: '重設後需要在 Gitee 倉庫 WebHooks 設定中更新為新金鑰,否則驗章失敗將導致 webhook 推送被拒絕。',
+    resetWarnText: '重設後需要在程式碼倉庫的 WebHooks 設定中更新為新金鑰,否則驗章失敗將導致 webhook 推送被拒絕。',
     resetWarnSecondary: '新金鑰將在重設完成後一次性顯示,請立即複製並妥善保存。',
     cancel: '取消',
     resetting: '重設中…',

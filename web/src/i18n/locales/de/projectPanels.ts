@@ -18,7 +18,7 @@ export default {
     errLoadGeneric: 'Laden der Auslöser-Einstellungen fehlgeschlagen, bitte später erneut versuchen.',
 
     webhookTitle: 'Webhook-Anbindung',
-    webhookSub: 'Code-Plattform · Gitee',
+    webhookSub: 'Code-Plattform · Gitee / Gitea',
     endpointLabel: 'Empfangs-Endpunkt',
     copied: 'Kopiert',
     copyUrlAria: 'Webhook-URL kopieren',
@@ -32,7 +32,7 @@ export default {
     resetSecretAria: 'Signatur-Schlüssel zurücksetzen',
     reset: 'Zurücksetzen',
     pushConfigLabel: 'Push-Konfiguration',
-    pushConfigHint: 'Im Gitee-Repository → Verwalten → WebHooks die obige Adresse und den Schlüssel einfügen und die Ereignisse Push / Tag Push / Release / Pull Request markieren.',
+    pushConfigHint: 'In den WebHooks-Einstellungen des Repositorys (Gitee / Gitea) die obige Adresse und den Schlüssel einfügen und die benötigten Ereignisse markieren (Gitee: Push / Tag Push / Release / Pull Request; Gitea: Push / Create / Release / Pull Request). Bei Gitea/Gogs muss der Schlüsseltext ausgefüllt sein, sonst werden Zustellungen abgelehnt.',
 
     eventsTitle: 'Auslöser-Ereignisse',
     eventsSub: 'Wählen Sie, welche Ereignisse einen Pipeline-Lauf erzeugen',
@@ -66,7 +66,7 @@ export default {
     resetModalTitle: 'Signatur-Schlüssel zurücksetzen',
     resetModalSub: 'Nach dem Zurücksetzen wird der alte Schlüssel sofort ungültig; der neue Schlüssel wird in dieser Antwort nur einmal angezeigt',
     closeDialogAria: 'Dialog schließen',
-    resetWarnText: 'Nach dem Zurücksetzen müssen Sie den neuen Schlüssel in den WebHooks-Einstellungen des Gitee-Repositorys aktualisieren, sonst schlägt die Signaturprüfung fehl und Webhook-Pushes werden abgelehnt.',
+    resetWarnText: 'Nach dem Zurücksetzen müssen Sie den neuen Schlüssel in den WebHooks-Einstellungen des Repositorys aktualisieren, sonst schlägt die Signaturprüfung fehl und Webhook-Pushes werden abgelehnt.',
     resetWarnSecondary: 'Der neue Schlüssel wird nach Abschluss des Zurücksetzens einmalig angezeigt; kopieren und sichern Sie ihn sofort.',
     cancel: 'Abbrechen',
     resetting: 'Wird zurückgesetzt…',

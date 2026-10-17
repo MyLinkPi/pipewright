@@ -3,10 +3,14 @@ package httpapi
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/huangchengsir/pipewright/internal/auth"
@@ -236,5 +240,99 @@ func TestWebhookBranchNoMatch(t *testing.T) {
 	}
 	if out["ignored"] != "no_branch_match" {
 		t.Fatalf("expected no_branch_match, got %v", out["ignored"])
+	}
+}
+
+// ---- Gitea / Gogs 头兼容 ---------------------------------------------------
+
+// postWebhookGiteaShape 按 Gitea/Gogs 形态投递:小写事件名 + 对 body 的
+// hex(HMAC-SHA256) 签名头 + delivery 头(无 X-Gitee-* 头、无 timestamp)。
+// headerPrefix 为 "Gitea" 或 "Gogs"(决定 X-<prefix>-* 三件套)。
+func postWebhookGiteaShape(t *testing.T, srvURL, token, secret, headerPrefix, deliveryID string, body []byte) *http.Response {
+	t.Helper()
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write(body)
+	req, err := http.NewRequest(http.MethodPost, srvURL+"/api/webhooks/"+token, bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-"+headerPrefix+"-Event", "push")
+	req.Header.Set("X-"+headerPrefix+"-Signature", hex.EncodeToString(mac.Sum(nil)))
+	req.Header.Set("X-"+headerPrefix+"-Delivery", deliveryID)
+	resp, err := (&http.Client{}).Do(req)
+	if err != nil {
+		t.Fatalf("do webhook: %v", err)
+	}
+	return resp
+}
+
+// TestWebhookGiteaHeadersAccepted 验证 Gitea 形态(小写事件名 + body hex HMAC 签名)
+// 经 HTTP 层头解析后创建运行,且运行触发 actor=gitea。
+func TestWebhookGiteaHeadersAccepted(t *testing.T) {
+	srv, client, csrf, _, token, secret := setupWebhookServer(t)
+
+	body := []byte(`{"ref":"refs/heads/main","after":"gitea1"}`)
+	resp := postWebhookGiteaShape(t, srv.URL, token, secret, "Gitea", "delivery-gitea-1", body)
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		t.Fatalf("expected 200, got %d: %s", resp.StatusCode, raw)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	var out map[string]any
+	_ = json.Unmarshal(raw, &out)
+	if out["accepted"] != true {
+		t.Fatalf("expected accepted:true, got %s", raw)
+	}
+	runID, _ := out["runId"].(string)
+	if runID == "" {
+		t.Fatalf("webhook accepted but no runId: %s", raw)
+	}
+	final := waitRunStatus(t, client, srv, csrf, runID, run.StatusSuccess)
+	trig, _ := final["trigger"].(map[string]any)
+	if trig["actor"] != "gitea" || trig["type"] != "webhook" {
+		t.Fatalf("expected webhook run with actor gitea, got %v", trig)
+	}
+}
+
+// TestWebhookGiteaBadSignature401 验证 Gitea 签名不匹配 → 401,不创建。
+func TestWebhookGiteaBadSignature401(t *testing.T) {
+	srv, _, _, _, token, _ := setupWebhookServer(t)
+	body := []byte(`{"ref":"refs/heads/main","after":"x"}`)
+
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/webhooks/"+token, bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Gitea-Event", "push")
+	req.Header.Set("X-Gitea-Signature", strings.Repeat("0", 64))
+	req.Header.Set("X-Gitea-Delivery", "delivery-gitea-bad")
+	resp, err := (&http.Client{}).Do(req)
+	if err != nil {
+		t.Fatalf("do webhook: %v", err)
+	}
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", resp.StatusCode)
+	}
+	_ = resp.Body.Close()
+}
+
+// TestWebhookGogsHeadersAccepted 验证仅 X-Gogs-* 头(Gogs 形态)也能创建运行。
+func TestWebhookGogsHeadersAccepted(t *testing.T) {
+	srv, _, _, _, token, secret := setupWebhookServer(t)
+
+	body := []byte(`{"ref":"refs/heads/main","after":"gogs1"}`)
+	resp := postWebhookGiteaShape(t, srv.URL, token, secret, "Gogs", "delivery-gogs-1", body)
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		t.Fatalf("expected 200, got %d: %s", resp.StatusCode, raw)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	var out map[string]any
+	_ = json.Unmarshal(raw, &out)
+	if out["accepted"] != true {
+		t.Fatalf("expected accepted:true, got %s", raw)
 	}
 }

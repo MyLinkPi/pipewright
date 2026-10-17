@@ -18,7 +18,7 @@ export default {
     errLoadGeneric: 'Failed to load trigger settings, please try again later.',
 
     webhookTitle: 'Webhook Ingress',
-    webhookSub: 'Code platform · Gitee',
+    webhookSub: 'Code platform · Gitee / Gitea',
     endpointLabel: 'Receiving endpoint',
     copied: 'Copied',
     copyUrlAria: 'Copy webhook URL',
@@ -32,7 +32,7 @@ export default {
     resetSecretAria: 'Reset signing secret',
     reset: 'Reset',
     pushConfigLabel: 'Push setup',
-    pushConfigHint: 'In the Gitee repo → Manage → WebHooks, paste the address and secret above and check the Push / Tag Push / Release / Pull Request events.',
+    pushConfigHint: 'In the repository (Gitee / Gitea) WebHooks settings, paste the address and secret above and check the events you need (Gitee: Push / Tag Push / Release / Pull Request; Gitea: Push / Create / Release / Pull Request). Gitea/Gogs require the secret text to be filled in, otherwise deliveries are rejected.',
 
     eventsTitle: 'Trigger Events',
     eventsSub: 'Choose which events create a pipeline run',
@@ -66,7 +66,7 @@ export default {
     resetModalTitle: 'Reset signing secret',
     resetModalSub: 'After reset the old secret is invalidated immediately; the new secret is echoed only once in this response',
     closeDialogAria: 'Close dialog',
-    resetWarnText: 'After reset you must update the new secret in the Gitee repo WebHooks settings, otherwise signature verification will fail and webhook pushes will be rejected.',
+    resetWarnText: 'After reset you must update the new secret in the repository WebHooks settings, otherwise signature verification will fail and webhook pushes will be rejected.',
     resetWarnSecondary: 'The new secret will be shown once after the reset completes; copy and store it safely right away.',
     cancel: 'Cancel',
     resetting: 'Resetting…',

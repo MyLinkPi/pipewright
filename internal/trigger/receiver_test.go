@@ -5,6 +5,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"strconv"
 	"sync"
 	"testing"
@@ -210,6 +211,124 @@ func TestWebhookWrongSecretUnauthorized(t *testing.T) {
 	}
 	if fake.count() != 0 {
 		t.Fatalf("expected no run on bad secret, got %d", fake.count())
+	}
+}
+
+// ---- Gitea / Gogs 兼容 ----------------------------------------------------
+
+// giteaBodySig 按 Gitea/Gogs 协议计算签名:hex(HMAC-SHA256(key=secret, msg=body))。
+func giteaBodySig(secret string, body []byte) string {
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write(body)
+	return hex.EncodeToString(mac.Sum(nil))
+}
+
+// TestWebhookGiteaBodySignatureCreatesRun 验证 Gitea/Gogs body 签名模式
+// (Signature 头 = hex HMAC over RawBody,协议不带 timestamp)创建运行且 actor=gitea。
+func TestWebhookGiteaBodySignatureCreatesRun(t *testing.T) {
+	rc, fake, token, secret := newReceiver(t)
+	body := pushBody("main", "cafe01")
+
+	res, err := rc.Handle(context.Background(), Delivery{
+		Token:         token,
+		Event:         eventGiteaPush,
+		BodySignature: giteaBodySig(secret, body),
+		DeliveryID:    "gitea-d-1",
+		Actor:         "gitea",
+		RawBody:       body,
+	})
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if !res.Accepted || res.RunID == "" {
+		t.Fatalf("expected accepted run, got %+v", res)
+	}
+	if fake.count() != 1 {
+		t.Fatalf("expected 1 run created, got %d", fake.count())
+	}
+	if got := fake.calls[0]; got.Branch != "main" || got.Commit != "cafe01" || got.Actor != "gitea" {
+		t.Fatalf("unexpected run req: %+v", got)
+	}
+}
+
+// TestWebhookGiteaWrongBodySignatureUnauthorized 验证 body 签名不匹配 → 401。
+func TestWebhookGiteaWrongBodySignatureUnauthorized(t *testing.T) {
+	rc, fake, token, secret := newReceiver(t)
+	body := pushBody("main", "cafe01")
+	sig := giteaBodySig(secret, body)
+	tampered := "0" + sig[1:]
+	if tampered == sig {
+		tampered = "1" + sig[1:]
+	}
+
+	_, err := rc.Handle(context.Background(), Delivery{
+		Token:         token,
+		Event:         eventGiteaPush,
+		BodySignature: tampered,
+		DeliveryID:    "gitea-d-bad",
+		RawBody:       body,
+	})
+	if err != ErrUnauthorized {
+		t.Fatalf("expected ErrUnauthorized, got %v", err)
+	}
+	if fake.count() != 0 {
+		t.Fatalf("expected no run on bad signature, got %d", fake.count())
+	}
+}
+
+// TestWebhookGiteaEventNames 验证 Gitea/Gogs 小写事件名映射到对应订阅开关。
+func TestWebhookGiteaEventNames(t *testing.T) {
+	all := Events{Push: true, Tag: true, PullRequest: true, Release: true}
+	cases := []struct {
+		event string
+		ev    Events
+		want  bool
+	}{
+		{eventGiteaPush, Events{Push: true}, true},
+		{eventGiteaPush, Events{}, false},
+		{eventGiteaCreate, Events{Tag: true}, true},
+		{eventGiteaCreate, Events{Push: true}, false},
+		{eventGiteaPullRequest, Events{PullRequest: true}, true},
+		{eventGiteaReleaseEvent, Events{Release: true}, true},
+		{"issues", all, false},                // 未支持的事件一律不订阅
+		{eventPush, Events{Push: true}, true}, // Gitee 取值不受影响
+	}
+	for _, c := range cases {
+		if got := eventSubscribed(c.event, c.ev); got != c.want {
+			t.Errorf("eventSubscribed(%q, %+v) = %v, want %v", c.event, c.ev, got, c.want)
+		}
+	}
+}
+
+// TestWebhookGiteaTagCreateEvent 验证 Gitea create(新建 tag)事件在仅订阅 Tag 时触发;
+// 引用名取 payload 的 ref(tag 名,无 refs/tags/ 前缀),commit 取 sha 字段。
+func TestWebhookGiteaTagCreateEvent(t *testing.T) {
+	rc, fake, token, secret := newReceiver(t)
+	// newReceiver 固定订阅 Push + 分支过滤 [main, release/*];改为仅 Tag、清空分支过滤。
+	if _, err := rc.db.Exec(`UPDATE pipeline_triggers SET events_json = ?`, `{"tag":true}`); err != nil {
+		t.Fatalf("update events: %v", err)
+	}
+	if _, err := rc.db.Exec(`UPDATE pipeline_triggers SET branch_filters_json = '[]'`); err != nil {
+		t.Fatalf("clear branch filters: %v", err)
+	}
+	body := []byte(`{"ref":"v1.2.0","ref_type":"tag","sha":"tagsha9"}`)
+
+	res, err := rc.Handle(context.Background(), Delivery{
+		Token:         token,
+		Event:         eventGiteaCreate,
+		BodySignature: giteaBodySig(secret, body),
+		DeliveryID:    "gitea-d-create",
+		Actor:         "gitea",
+		RawBody:       body,
+	})
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if !res.Accepted {
+		t.Fatalf("expected accepted, got %+v", res)
+	}
+	if got := fake.calls[0]; got.Branch != "v1.2.0" || got.Commit != "tagsha9" {
+		t.Fatalf("expected branch v1.2.0 / commit tagsha9, got %+v", got)
 	}
 }
 
