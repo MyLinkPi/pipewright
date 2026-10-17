@@ -113,7 +113,7 @@ curl -fsSL https://raw.githubusercontent.com/<owner>/pipewright/master/install.s
   PIPEWRIGHT_RELEASE_REPO=<owner>/pipewright sh
 ```
 
-To upgrade, **re-run the same command**: it enters upgrade mode, replaces the binary and restarts the service. If GitHub is unreachable, point `PIPEWRIGHT_RELEASE_MIRROR` at a GitHub-path-compatible mirror; `PIPEWRIGHT_NO_DOWNLOAD=1` restores the old "error out when no local artifact" behavior.
+To upgrade, **re-run the same command**: it enters upgrade mode, replaces the binary and restarts the service. If GitHub is unreachable, point `PIPEWRIGHT_RELEASE_MIRROR` at a mirror (a GitHub-path-compatible reverse proxy, or a prefix-style proxy such as `https://gh-proxy.com/https://github.com`); `PIPEWRIGHT_NO_DOWNLOAD=1` restores the old "error out when no local artifact" behavior.
 
 > Windows users: download `pipewright_<version>_windows_<arch>.zip` from [Releases](https://github.com/huangchengsir/pipewright/releases), unpack and run `pipewright.exe` directly (no systemd, so install.sh doesn't apply).
 
@@ -184,6 +184,8 @@ Open **Settings → System** and click "Check for updates" to query the latest r
 - **Source deployment** (git clone → `make build` → `sh install.sh`): update checks compare against the git upstream instead (`git fetch`, then compare the commit the running build was made from — falling back to the working-tree HEAD when build metadata is not injected, so a stale binary behind an already-pulled checkout is still reported); clicking "Update now" runs `git pull --ff-only` → `make build` → `install.sh` in a background job with live step/log display, then restarts the service automatically (or self-restarts when running bare). The repo root is recorded automatically by install.sh (env `PIPEWRIGHT_SOURCE_DIR` / a `.pipewright-source` marker next to the binary), and can also be set manually.
   To switch to the **one-click binary updates** instead (e.g. when the machine is too small for `make build`), just re-run the ① one-line install command — install.sh removes the source-deployment markers and the deployment becomes a binary deployment.
 - **Docker deployment**: the container doesn't replace its own image; follow the prompt to run `docker compose pull && docker compose up -d` on the host (the data volume is preserved).
+
+Updates don't hard-depend on GitHub: when it's unreachable, point **Settings → System → Upgrade Source** at a mirror (takes effect immediately), or set `PIPEWRIGHT_RELEASE_MIRROR` as a deployment-level fallback. Two mirror forms are supported: a **GitHub-path-compatible reverse proxy** (forwards `/repos/*` to api.github.com and the rest to github.com, e.g. nginx), or a **prefix-style public proxy** — just enter an address like `https://gh-proxy.com/https://github.com` and the check (api.github.com) and download (github.com) URLs are derived automatically.
 
 ### Configuration (environment variables)
 

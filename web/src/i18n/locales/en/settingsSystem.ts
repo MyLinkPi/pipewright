@@ -50,7 +50,7 @@ export default {
   updateSrcSub: 'Where update checks and upgrade packages are fetched from. Without a mirror, GitHub Releases is used (check api.github.com, download github.com); point it to a self-hosted mirror when GitHub is unreachable (e.g. intranet). Binary integrity is always guarded by sha256 checksums.',
   updateSrcLabel: 'Mirror URL',
   updateSrcPlaceholder: 'https://mirror.example.com',
-  updateSrcHint: 'Must serve GitHub-compatible paths: /repos/<owner>/<repo>/releases/latest and /<owner>/<repo>/releases/download/… (e.g. an nginx reverse proxy in front of api.github.com and github.com). Leave empty to clear this setting and fall back to the environment variable or the default source (see “Effective” above). Changes take effect immediately.',
+  updateSrcHint: 'Two mirror forms: (1) GitHub-path-compatible reverse proxy — must serve /repos/<owner>/<repo>/releases/latest and /<owner>/<repo>/releases/download/… (e.g. nginx in front of api.github.com and github.com); (2) prefix-style proxy — just enter an address like https://gh-proxy.com/https://github.com and the check/download URLs are derived automatically. Leave empty to clear this setting and fall back to the environment variable or the default source (see “Effective” above). Changes take effect immediately.',
   updateSrcSave: 'Save upgrade source',
   updateSrcSaved: 'Saved',
   updateSrcSaveFailed: 'Save failed, please try again.',

@@ -50,7 +50,7 @@ export default {
   updateSrcSub: '檢查更新與下載升級套件所用的來源。未設定鏡像時使用 GitHub Releases(檢查 api.github.com、下載 github.com);內部網絡或 GitHub 不可達時可指向自建鏡像。二進位完整性始終由 sha256 校驗和保障。',
   updateSrcLabel: '鏡像地址',
   updateSrcPlaceholder: 'https://mirror.example.com',
-  updateSrcHint: '須提供 GitHub 相容路徑:/repos/<owner>/<repo>/releases/latest 與 /<owner>/<repo>/releases/download/…(如 nginx 反代 api.github.com 與 github.com)。留空 = 清除此處設定,回退到環境變數或預設來源(見上方「目前生效」)。修改即時生效,無需重啟。',
+  updateSrcHint: '兩種鏡像形態:① GitHub 路徑相容反代:須提供 /repos/<owner>/<repo>/releases/latest 與 /<owner>/<repo>/releases/download/…(如 nginx 反代 api.github.com 與 github.com);② 前綴式代理:直接填 https://gh-proxy.com/https://github.com 這類地址,檢查與下載地址自動派生。留空 = 清除此處設定,回退到環境變數或預設來源(見上方「目前生效」)。修改即時生效,無需重啟。',
   updateSrcSave: '儲存升級來源',
   updateSrcSaved: '已儲存',
   updateSrcSaveFailed: '儲存失敗,請重試。',

@@ -50,7 +50,7 @@ export default {
   updateSrcSub: 'Origen de la comprobación de actualizaciones y de la descarga del paquete. Sin espejo se usa GitHub Releases (comprobación api.github.com, descarga github.com); se puede apuntar a un espejo propio cuando GitHub no es accesible (p. ej. red interna). La integridad del binario siempre queda garantizada por sumas sha256.',
   updateSrcLabel: 'URL del espejo',
   updateSrcPlaceholder: 'https://mirror.example.com',
-  updateSrcHint: 'Debe servir rutas compatibles con GitHub: /repos/<owner>/<repo>/releases/latest y /<owner>/<repo>/releases/download/… (p. ej. un proxy inverso nginx frente a api.github.com y github.com). Dejar vacío borra este ajuste y vuelve a la variable de entorno o a la fuente predeterminada (ver «Efectiva» arriba). Los cambios surten efecto de inmediato.',
+  updateSrcHint: 'Dos formas de espejo: (1) proxy inverso compatible con rutas de GitHub — debe servir /repos/<owner>/<repo>/releases/latest y /<owner>/<repo>/releases/download/… (p. ej. nginx frente a api.github.com y github.com); (2) proxy de prefijo — basta con introducir una dirección como https://gh-proxy.com/https://github.com y las URL de comprobación/descarga se derivan automáticamente. Dejar vacío borra este ajuste y vuelve a la variable de entorno o a la fuente predeterminada (ver «Efectiva» arriba). Los cambios surten efecto de inmediato.',
   updateSrcSave: 'Guardar fuente de actualización',
   updateSrcSaved: 'Guardado',
   updateSrcSaveFailed: 'Error al guardar, inténtalo de nuevo.',

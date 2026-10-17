@@ -16,7 +16,9 @@
 #   BIN_PATH            本地二进制路径;缺省取脚本所在目录的 ./pipewright(即 make build 的产物)。
 #   PIPEWRIGHT_VERSION  下载模式钉版本(如 v1.2.3,可省 v);缺省取最新正式版。
 #   PIPEWRIGHT_RELEASE_REPO   发布仓库 owner/name;缺省 huangchengsir/pipewright(fork 发版时指向自己仓库)。
-#   PIPEWRIGHT_RELEASE_MIRROR 镜像 base(须按 GitHub 路径布局转发);缺省 GitHub 官方。
+#   PIPEWRIGHT_RELEASE_MIRROR 镜像,两种形态:GitHub 路径兼容反代(须按 GitHub 路径布局转发)
+#                      或前缀式代理(如 https://gh-proxy.com/https://github.com,自动派生下载/解析地址);
+#                      缺省 GitHub 官方。
 #   PIPEWRIGHT_NO_DOWNLOAD=1  禁止自动下载:本地无产物时报错(旧行为)。
 #   INSTALL_DIR     安装目录;缺省 /usr/local/bin(不可写时自动 sudo)。
 #   INSTALL_DOCKER  =1 时,Linux 下若缺 Docker 自动经官方 get.docker.com 安装(隔离构建/容器部署需要)。
@@ -53,26 +55,62 @@ err() {
 # 完整性由 Release 附带的 checksums.txt 把关(与 Web 端自升级同一防线)。
 download_binary() {
 	RELEASE_REPO="${PIPEWRIGHT_RELEASE_REPO:-huangchengsir/pipewright}"
-	WEB_BASE="${PIPEWRIGHT_RELEASE_MIRROR:-https://github.com}"
-	WEB_BASE="${WEB_BASE%/}"
+	MIRROR="${PIPEWRIGHT_RELEASE_MIRROR:-}"
+	DL_BASE="https://github.com"      # 官方下载 base(github.com 形态)
+	API_BASE="https://api.github.com" # 官方 API base(api.github.com 形态)
+	# 镜像形态识别:前缀式(base 内嵌完整上游 origin,如 https://gh-proxy.com/https://github.com,
+	# gh-proxy 系公共代理的通用用法)拆出代理根 —— 下载走 github.com 形态、版本解析走
+	# api.github.com 形态;其余按路径兼容反代处理(同一 base 直拼两类路径,须按 GitHub
+	# 路径布局转发)。与后端 internal/version/source.go 的 buildSource 同语义。
+	if [ -n "$MIRROR" ]; then
+		MIRROR="${MIRROR%/}"
+		rest="${MIRROR#*://}"
+		prefix=0
+		for s in https:// http://; do
+			case "$rest" in
+			*"$s"*)
+				head="${MIRROR%"$rest"}"
+				root="${head}${rest%%"$s"*}"
+				while :; do case "$root" in */) root="${root%/}" ;; *) break ;; esac done
+				# 前缀式:检查/下载一律经代理根重组,不绕过代理(双斜杠随之归一)。
+				API_BASE="${root}/https://api.github.com"
+				DL_BASE="${root}/https://github.com"
+				prefix=1
+				break
+				;;
+			esac
+		done
+		if [ "$prefix" = "0" ]; then
+			DL_BASE="$MIRROR"
+			API_BASE="$MIRROR"
+		fi
+	fi
 	command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1 ||
 		err "自动下载需要 curl 或 wget(或在内存充足的机器 make build 后用 BIN_PATH=<路径> 安装)。"
 
-	# 解析目标 tag:PIPEWRIGHT_VERSION 钉版本;缺省经 /releases/latest 的 302 重定向取最新
-	# 正式版(不经 API、无限流,与 Go 端自升级同法)。
+	# 解析目标 tag:PIPEWRIGHT_VERSION 钉版本;缺省先试 /releases/latest 的 302 重定向
+	# (免 API、无限流),失败再走 API JSON 兜底(前缀式代理的页面路径通常被拒,API 是可靠路径)。
 	TAG="${PIPEWRIGHT_VERSION:-}"
 	if [ -z "$TAG" ]; then
-		latest_url="${WEB_BASE}/${RELEASE_REPO}/releases/latest"
 		if command -v curl >/dev/null 2>&1; then
-			TAG="$(curl -fsSIL -o /dev/null -w '%{url_effective}' "$latest_url" 2>/dev/null |
+			TAG="$(curl -fsSIL -o /dev/null -w '%{url_effective}' "${DL_BASE}/${RELEASE_REPO}/releases/latest" 2>/dev/null |
 				sed 's|.*/tag/||' | tr -d '\r')"
 		else
-			TAG="$(wget --spider -S --max-redirect=0 "$latest_url" 2>&1 |
+			TAG="$(wget --spider -S --max-redirect=0 "${DL_BASE}/${RELEASE_REPO}/releases/latest" 2>&1 |
 				sed -n 's/^ *Location: //p' | tail -1 | tr -d '\r' | sed 's|.*/tag/||')"
+		fi
+		if [ "${TAG#v}" = "$TAG" ]; then
+			# 重定向解析失败(空/非 v 开头):改从 releases/latest JSON 读 tag_name。
+			if command -v curl >/dev/null 2>&1; then
+				api_json="$(curl -fsSL "${API_BASE}/repos/${RELEASE_REPO}/releases/latest" 2>/dev/null || true)"
+			else
+				api_json="$(wget -qO- "${API_BASE}/repos/${RELEASE_REPO}/releases/latest" 2>/dev/null || true)"
+			fi
+			TAG="$(printf '%s' "$api_json" | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
 		fi
 		case "$TAG" in
 		v*) ;;
-		"") err "无法解析最新版本:检查网络与 ${WEB_BASE} 可达性,或用 PIPEWRIGHT_VERSION=v1.2.3 钉版本。" ;;
+		"") err "无法解析最新版本:检查网络与 ${DL_BASE} 可达性,或用 PIPEWRIGHT_VERSION=v1.2.3 钉版本。" ;;
 		*) err "意外的最新版本引用:${TAG}" ;;
 		esac
 	else
@@ -85,7 +123,7 @@ download_binary() {
 	info "下载 ${RELEASE_REPO} ${TAG}(${ASSET})"
 	DL_DIR="$(mktemp -d)"
 	trap 'rm -rf "$DL_DIR"' EXIT
-	base_url="${WEB_BASE}/${RELEASE_REPO}/releases/download/${TAG}"
+	base_url="${DL_BASE}/${RELEASE_REPO}/releases/download/${TAG}"
 	if command -v curl >/dev/null 2>&1; then
 		curl -fsSL -o "${DL_DIR}/${ASSET}" "${base_url}/${ASSET}" || err "下载失败:${base_url}/${ASSET}"
 		curl -fsSL -o "${DL_DIR}/checksums.txt" "${base_url}/checksums.txt" || err "下载失败:${base_url}/checksums.txt"

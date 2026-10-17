@@ -238,6 +238,24 @@ func TestResolveSource(t *testing.T) {
 	if envMirror() != "https://m.example.com" {
 		t.Errorf("envMirror 应去空白,得 %q", envMirror())
 	}
+
+	// 前缀式代理(gh-proxy 系,base 内嵌上游 origin):自动派生 API 与下载两类上游。
+	s = ResolveSource("https://gh-proxy.com/https://github.com")
+	if s.APIBase != "https://gh-proxy.com/https://api.github.com" ||
+		s.WebBase != "https://gh-proxy.com/https://github.com" || s.DLBase != s.WebBase {
+		t.Errorf("github 形态前缀式应派生 api 上游,得 %+v", s)
+	}
+	// 填 api.github.com 形态(含双斜杠手滑):API 原样归一,网页/下载派生 github.com。
+	s = ResolveSource("https://gh-proxy.com//https://api.github.com")
+	if s.APIBase != "https://gh-proxy.com/https://api.github.com" ||
+		s.WebBase != "https://gh-proxy.com/https://github.com" || s.DLBase != s.WebBase {
+		t.Errorf("api 形态前缀式应归一并派生 github 上游,得 %+v", s)
+	}
+	// repo 与镜像形态正交:前缀式下 env repo 覆盖仍生效。
+	t.Setenv("PIPEWRIGHT_RELEASE_MIRROR", "https://gh-proxy.com/https://github.com")
+	if s := ResolveSource(""); s.Repo != "me/fork" || s.APIBase != "https://gh-proxy.com/https://api.github.com" {
+		t.Errorf("前缀式镜像下 env repo 应照常生效,得 %+v", s)
+	}
 }
 
 // 换源后不得返回旧源缓存:provider 切到另一个 stub,Check 应重新拉取新源。

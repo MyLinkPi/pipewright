@@ -50,7 +50,7 @@ export default {
   updateSrcSub: 'Source utilisée pour la vérification des mises à jour et le téléchargement du paquet. Sans miroir, GitHub Releases est utilisé (vérification api.github.com, téléchargement github.com) ; pointez vers un miroir auto-hébergé si GitHub est inaccessible (ex. intranet). L’intégrité du binaire reste garantie par les sommes sha256.',
   updateSrcLabel: 'URL du miroir',
   updateSrcPlaceholder: 'https://mirror.example.com',
-  updateSrcHint: 'Doit servir des chemins compatibles GitHub : /repos/<owner>/<repo>/releases/latest et /<owner>/<repo>/releases/download/… (ex. un reverse-proxy nginx devant api.github.com et github.com). Laisser vide pour effacer ce réglage et revenir à la variable d’environnement ou à la source par défaut (voir « Effective » ci-dessus). Les changements prennent effet immédiatement.',
+  updateSrcHint: 'Deux formes de miroir : (1) reverse-proxy compatible avec les chemins GitHub — doit servir /repos/<owner>/<repo>/releases/latest et /<owner>/<repo>/releases/download/… (ex. nginx devant api.github.com et github.com) ; (2) proxy à préfixe — saisissez simplement une adresse comme https://gh-proxy.com/https://github.com et les URL de vérification/téléchargement sont déduites automatiquement. Laisser vide pour effacer ce réglage et revenir à la variable d’environnement ou à la source par défaut (voir « Effective » ci-dessus). Les changements prennent effet immédiatement.',
   updateSrcSave: 'Enregistrer la source',
   updateSrcSaved: 'Enregistré',
   updateSrcSaveFailed: 'Échec de l’enregistrement, veuillez réessayer.',
