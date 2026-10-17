@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"regexp"
 	"time"
 )
 
@@ -59,6 +60,7 @@ const (
 
 // Create 创建新会话并持久化到 DB。返回 Session(含 Token 与 CSRFToken)。
 // role 为 RoleAdmin / RoleMember;userID 仅普通用户非空;username 为会话所属用户名。
+// 落库的是 token 的 sha256 hex(见 hashToken),原始 token 仅存于 cookie/内存。
 func (ss *SessionStore) Create(role, userID, username string) (*Session, error) {
 	token, err := randHex(tokenBytes)
 	if err != nil {
@@ -74,7 +76,7 @@ func (ss *SessionStore) Create(role, userID, username string) (*Session, error) 
 	_, err = ss.db.Exec(
 		`INSERT INTO sessions (token, csrf_token, created_at, expires_at, last_seen_at, role, user_id, username)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		token,
+		hashToken(token),
 		csrfToken,
 		now.Format(time.RFC3339),
 		exp.Format(time.RFC3339),
@@ -102,13 +104,14 @@ func (ss *SessionStore) Create(role, userID, username string) (*Session, error) 
 // 若会话有效则滑动更新 last_seen_at。
 func (ss *SessionStore) Get(token string) (*Session, error) {
 	var s Session
+	var storedToken string
 	var createdStr, expiresStr, lastSeenStr string
 	err := ss.db.QueryRow(
 		`SELECT token, csrf_token, created_at, expires_at, last_seen_at,
 		        COALESCE(role, ?), COALESCE(user_id, ''), COALESCE(username, '')
 		 FROM sessions WHERE token = ?`,
-		RoleAdmin, token,
-	).Scan(&s.Token, &s.CSRFToken, &createdStr, &expiresStr, &lastSeenStr,
+		RoleAdmin, hashToken(token),
+	).Scan(&storedToken, &s.CSRFToken, &createdStr, &expiresStr, &lastSeenStr,
 		&s.Role, &s.UserID, &s.Username)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -116,6 +119,8 @@ func (ss *SessionStore) Get(token string) (*Session, error) {
 		}
 		return nil, fmt.Errorf("auth: get session: %w", err)
 	}
+	// 库内存的是哈希;对外回填原始 token(调用方语义不变)。
+	s.Token = token
 
 	if s.CreatedAt, err = time.Parse(time.RFC3339, createdStr); err != nil {
 		return nil, fmt.Errorf("auth: parse created_at: %w", err)
@@ -130,7 +135,7 @@ func (ss *SessionStore) Get(token string) (*Session, error) {
 	now := time.Now().UTC()
 	if now.After(s.ExpiresAt) {
 		// 惰性清理过期会话。
-		_, _ = ss.db.Exec(`DELETE FROM sessions WHERE token = ?`, token)
+		_, _ = ss.db.Exec(`DELETE FROM sessions WHERE token = ?`, hashToken(token))
 		return nil, ErrSessionNotFound
 	}
 
@@ -143,7 +148,7 @@ func (ss *SessionStore) Get(token string) (*Session, error) {
 		newExp := now.Add(sessionTTL)
 		if _, err := ss.db.Exec(
 			`UPDATE sessions SET last_seen_at = ?, expires_at = ? WHERE token = ?`,
-			now.Format(time.RFC3339), newExp.Format(time.RFC3339), token,
+			now.Format(time.RFC3339), newExp.Format(time.RFC3339), hashToken(token),
 		); err == nil {
 			s.LastSeenAt = now
 			s.ExpiresAt = newExp
@@ -166,21 +171,28 @@ func (ss *SessionStore) PurgeExpired() (int64, error) {
 
 // Delete 删除指定 token 对应的会话(登出)。
 func (ss *SessionStore) Delete(token string) error {
-	_, err := ss.db.Exec(`DELETE FROM sessions WHERE token = ?`, token)
+	_, err := ss.db.Exec(`DELETE FROM sessions WHERE token = ?`, hashToken(token))
 	if err != nil {
 		return fmt.Errorf("auth: delete session: %w", err)
 	}
 	return nil
 }
 
-// sessionIDPrefixLen 是会话对外 id 的长度(token 的 sha256 hex 前缀字符数)。
+// sessionIDPrefixLen 是会话对外 id 的长度(库内 token 哈希 hex 的前缀字符数)。
 // 16 hex = 64 bit,足够在单实例会话集合内唯一定位,且**绝不回传原 token**。
 const sessionIDPrefixLen = 16
 
+// hashToken 计算会话 token 的 sha256 hex(64 字符)。sessions.token 列只落该哈希:
+// 即使 DB 文件泄漏,库内值也不能直接当作 cookie 冒充会话(原始 token 仅存在于
+// cookie 与进程内存)。列宽 191 足够容纳 64 hex。
+func hashToken(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:])
+}
+
 // SessionID 返回 token 的 sha256 hex 前 16 位,作为对外可定位 id(绝不暴露原 token)。
 func SessionID(token string) string {
-	sum := sha256.Sum256([]byte(token))
-	return hex.EncodeToString(sum[:])[:sessionIDPrefixLen]
+	return hashToken(token)[:sessionIDPrefixLen]
 }
 
 // SessionMeta 是会话的对外只读元数据(用于列表;不含原 token)。
@@ -209,11 +221,15 @@ func (ss *SessionStore) List(currentToken string) ([]SessionMeta, error) {
 	currentID := SessionID(currentToken)
 	var out []SessionMeta
 	for rows.Next() {
-		var token, createdStr, lastSeenStr, expiresStr string
-		if err := rows.Scan(&token, &createdStr, &lastSeenStr, &expiresStr); err != nil {
+		var storedToken, createdStr, lastSeenStr, expiresStr string
+		if err := rows.Scan(&storedToken, &createdStr, &lastSeenStr, &expiresStr); err != nil {
 			return nil, fmt.Errorf("auth: scan session: %w", err)
 		}
-		m := SessionMeta{ID: SessionID(token)}
+		// 库内即 token 哈希,取前缀即对外 id。短于前缀的异常行直接跳过(不 panic)。
+		if len(storedToken) < sessionIDPrefixLen {
+			continue
+		}
+		m := SessionMeta{ID: storedToken[:sessionIDPrefixLen]}
 		if m.CreatedAt, err = time.Parse(time.RFC3339, createdStr); err != nil {
 			return nil, fmt.Errorf("auth: parse created_at: %w", err)
 		}
@@ -232,34 +248,17 @@ func (ss *SessionStore) List(currentToken string) ([]SessionMeta, error) {
 	return out, nil
 }
 
+// reSessionID 限定对外会话 id 形态:小写 hex(与库内哈希前缀一致)。
+// 拒绝 LIKE 通配符(%/_)等非 hex 输入,防畸形前缀误删(如 "%" 会匹配全部)。
+var reSessionID = regexp.MustCompile(`^[0-9a-f]{1,64}$`)
+
 // DeleteByIDPrefix 删除 sha256 前缀匹配 id 的会话。返回删除行数。
-// 因 id 为 token 自身 sha256 即时算(未存库),逐行比对 token 的 sha256 定位。
+// 库内 token 即 sha256 hex,直接 SQL 前缀匹配;非 hex 的 id 一律不匹配(0 行)。
 func (ss *SessionStore) DeleteByIDPrefix(id string) (int64, error) {
-	rows, err := ss.db.Query(`SELECT token FROM sessions`)
-	if err != nil {
-		return 0, fmt.Errorf("auth: scan tokens: %w", err)
-	}
-	var target string
-	for rows.Next() {
-		var token string
-		if err := rows.Scan(&token); err != nil {
-			_ = rows.Close()
-			return 0, fmt.Errorf("auth: scan token: %w", err)
-		}
-		if SessionID(token) == id {
-			target = token
-			break
-		}
-	}
-	if err := rows.Err(); err != nil {
-		_ = rows.Close()
-		return 0, fmt.Errorf("auth: iterate tokens: %w", err)
-	}
-	_ = rows.Close()
-	if target == "" {
+	if !reSessionID.MatchString(id) {
 		return 0, nil
 	}
-	res, err := ss.db.Exec(`DELETE FROM sessions WHERE token = ?`, target)
+	res, err := ss.db.Exec(`DELETE FROM sessions WHERE token LIKE ?`, id+"%")
 	if err != nil {
 		return 0, fmt.Errorf("auth: delete session by id: %w", err)
 	}
@@ -276,7 +275,7 @@ func (ss *SessionStore) DeleteOthers(keepToken string) (int64, error) {
 	if keepToken == "" {
 		return 0, errors.New("auth: DeleteOthers 拒绝空 keepToken(避免误删全部会话)")
 	}
-	res, err := ss.db.Exec(`DELETE FROM sessions WHERE token != ?`, keepToken)
+	res, err := ss.db.Exec(`DELETE FROM sessions WHERE token != ?`, hashToken(keepToken))
 	if err != nil {
 		return 0, fmt.Errorf("auth: delete other sessions: %w", err)
 	}

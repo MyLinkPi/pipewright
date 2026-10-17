@@ -134,9 +134,9 @@ func TestChangePasswordWeak(t *testing.T) {
 func TestListSessionsNoToken(t *testing.T) {
 	srv, client, _, st := setupAccountServer(t)
 
-	// 取出真实 token 用于断言响应不含它。
-	var token string
-	if err := st.DB.QueryRow(`SELECT token FROM sessions LIMIT 1`).Scan(&token); err != nil {
+	// 库内 token 已是 sha256 hex(原始 token 绝不落库);对外 id 即其前 16 位。
+	var stored string
+	if err := st.DB.QueryRow(`SELECT token FROM sessions LIMIT 1`).Scan(&stored); err != nil {
 		t.Fatalf("read token: %v", err)
 	}
 
@@ -146,8 +146,8 @@ func TestListSessionsNoToken(t *testing.T) {
 		t.Fatalf("status = %d, want 200", resp.StatusCode)
 	}
 	raw, _ := io.ReadAll(resp.Body)
-	if strings.Contains(string(raw), token) {
-		t.Fatalf("session list leaks raw token: %s", raw)
+	if strings.Contains(string(raw), stored) {
+		t.Fatalf("session list leaks stored token hash: %s", raw)
 	}
 	var body struct {
 		Sessions []struct {
@@ -161,8 +161,8 @@ func TestListSessionsNoToken(t *testing.T) {
 	if len(body.Sessions) != 1 {
 		t.Fatalf("want 1 session, got %d", len(body.Sessions))
 	}
-	if body.Sessions[0].ID != auth.SessionID(token) {
-		t.Fatalf("id mismatch: got %s want %s", body.Sessions[0].ID, auth.SessionID(token))
+	if body.Sessions[0].ID != stored[:16] {
+		t.Fatalf("id mismatch: got %s want %s", body.Sessions[0].ID, stored[:16])
 	}
 	if !body.Sessions[0].Current {
 		t.Fatalf("only session should be marked current")
@@ -185,13 +185,14 @@ func TestRevokeSession(t *testing.T) {
 	}
 	curID := auth.SessionID(curToken)
 
+	// 库内 token 即 sha256 hex,取前 16 位即对外 id(与 curID 同口径)。
 	rows, _ := st.DB.Query(`SELECT token FROM sessions`)
 	var otherID string
 	for rows.Next() {
 		var tk string
 		_ = rows.Scan(&tk)
-		if id := auth.SessionID(tk); id != curID {
-			otherID = id
+		if len(tk) >= 16 && tk[:16] != curID {
+			otherID = tk[:16]
 		}
 	}
 	_ = rows.Close()
@@ -229,4 +230,38 @@ func errorCode(t *testing.T, resp *http.Response) string {
 		t.Fatalf("unmarshal error body: %v (%s)", err, raw)
 	}
 	return body.Error.Code
+}
+
+// TestChangePasswordLockout 连续错当前口令 5 次后,即使口令正确也 429 locked_out
+//(防已持会话者无限试当前口令)。
+func TestChangePasswordLockout(t *testing.T) {
+	srv, client, csrf, _ := setupAccountServer(t)
+
+	for i := 0; i < 5; i++ {
+		resp := doJSON(t, client, http.MethodPost, srv.URL+"/api/account/password", csrf,
+			`{"currentPassword":"wrongpass","newPassword":"newpass123"}`)
+		_, _ = io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("attempt %d: status = %d, want 401", i+1, resp.StatusCode)
+		}
+	}
+
+	resp := doJSON(t, client, http.MethodPost, srv.URL+"/api/account/password", csrf,
+		`{"currentPassword":"testpass","newPassword":"newpass123"}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want 429", resp.StatusCode)
+	}
+	var body struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.Error.Code != "locked_out" {
+		t.Fatalf("error.code = %q, want locked_out", body.Error.Code)
+	}
 }

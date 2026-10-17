@@ -1,7 +1,7 @@
 /**
  * Version API — 构建版本元数据 + 一键检查更新。
  *
- * GET /version                  → VersionInfo(公开,构建期注入的版本/commit/日期/部署形态)
+ * GET /api/version            → VersionInfo(鉴权;构建期注入的版本/commit/日期/部署形态)
  * GET /api/version/check        → UpdateInfo(鉴权;二进制/Docker 查升级源,源码部署比对 git 上游)
  * POST /api/version/update      → UpdateResult(鉴权+CSRF;binary 自替换重启 / docker 给命令 /
  *                                 source 启动后台管线后立即返回)
@@ -61,7 +61,7 @@ export interface UpdateJobStatus {
 }
 
 export function getVersion(): Promise<VersionInfo> {
-  return http.get<VersionInfo>('/version')
+  return http.get<VersionInfo>('/api/version')
 }
 
 export function checkUpdate(): Promise<UpdateInfo> {

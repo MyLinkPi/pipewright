@@ -50,7 +50,9 @@ services:
   # 可选:MySQL 8。启用方式:
   #   docker compose --profile mysql up -d
   # 并在 .env 设 PIPEWRIGHT_DB_DRIVER=mysql、
-  #   PIPEWRIGHT_DB_DSN=pipewright:pipewright@tcp(mysql:3306)/pipewright?parseTime=true&charset=utf8mb4
+  #   PIPEWRIGHT_DB_DSN=pipewright:<与 MYSQL_PASSWORD 相同>@tcp(mysql:3306)/pipewright?parseTime=true&charset=utf8mb4
+  # 两项 MySQL 口令无默认值:启用 mysql profile 前必须在 .env 设置强口令,
+  # 留空时 MySQL 容器会启动失败(快速失败优于弱默认口令)。
   mysql:
     image: mysql:8.0
     profiles: ["mysql"]
@@ -58,8 +60,8 @@ services:
     environment:
       MYSQL_DATABASE: pipewright
       MYSQL_USER: pipewright
-      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-pipewright}
-      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-rootpw}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-}
     volumes:
       - pipewright-mysql:/var/lib/mysql
     healthcheck:

@@ -503,13 +503,16 @@ func New(webFS fs.FS, authn auth.Authenticator, opts ...Option) http.Handler {
 
 	r := chi.NewRouter()
 	r.Use(middleware.Recoverer)
+	// 安全响应头(CSP/防点击劫持/引用策略)对全部响应生效,须在任何写 body 的
+	// handler 之前注册。
+	r.Use(securityHeaders)
 	// 解析请求 locale 并包装 writer,使 writeError 能按 UI 语言本地化错误消息
 	// (包装器转发 Flush/Hijack/Unwrap,不影响 SSE 日志流与 WS 终端)。
 	r.Use(localeMiddleware)
 
 	r.Get("/healthz", handleHealthz)
-	// /version 公开只读:暴露构建版本元数据,供升级检查与运维探针使用(非敏感)。
-	r.Get("/version", handleVersion)
+	// /version 已移入受保护 /api 组(版本元数据会帮助攻击者匹配已知漏洞版本;
+	// 前端仅在登录后的「设置→系统」页使用,运维探针用 /healthz)。
 
 	svc := authn
 
@@ -563,6 +566,7 @@ func New(webFS fs.FS, authn auth.Authenticator, opts ...Option) http.Handler {
 		aud := o.audit
 
 		// 检查更新:鉴权只读,查升级源最新发布(源码部署改查 git 上游)并与当前版本比对(GET 免 CSRF)。
+		ar.Get("/version", handleVersion)
 		ar.Get("/version/check", makeCheckUpdateHandler(updateChecker, srcUpdater))
 		// 一键自动更新:鉴权 + CSRF(写操作);source 后台重建管线,binary 自替换+重启,docker 返回升级命令。
 		ar.Post("/version/update", makeSelfUpdateHandler(updateChecker, srcUpdater, updateInflight))
@@ -1200,7 +1204,7 @@ func makeLoginHandler(svc auth.Authenticator) http.HandlerFunc {
 			return
 		}
 
-		sess, err := svc.Login(req.Username, req.Password)
+		sess, err := svc.Login(req.Username, req.Password, clientIP(r))
 		if err != nil {
 			var lockedErr *auth.ErrLockedOut
 			if errors.As(err, &lockedErr) {
@@ -1223,10 +1227,12 @@ func makeLoginHandler(svc auth.Authenticator) http.HandlerFunc {
 	}
 }
 
-// setSessionCookies 下发 HttpOnly 会话 cookie 与可读 CSRF cookie(Secure 在 TLS 时自动加)。
+// setSessionCookies 下发 HttpOnly 会话 cookie 与可读 CSRF cookie。
+// Secure 标志:直连 TLS 或「可信反代 + X-Forwarded-Proto: https」时置位
+// (见 requestIsSecure;平台自身的 platformHTTPS/nginx 反代形态即靠后者)。
 // 供登录与注册自动登录复用。
 func setSessionCookies(w http.ResponseWriter, r *http.Request, sess *auth.Session) {
-	secure := r.TLS != nil
+	secure := requestIsSecure(r)
 	http.SetCookie(w, &http.Cookie{
 		Name:     cookieSession,
 		Value:    sess.Token,
@@ -1314,6 +1320,29 @@ func makeLogoutHandler(svc auth.Authenticator) http.HandlerFunc {
 }
 
 // ---- Static / SPA --------------------------------------------------------
+
+// securityHeaders 为全部响应设置安全响应头:
+//   - CSP:前端构建产物无内联脚本/样式、无外部源(字体 @fontsource 自托管、WS/SSE/
+//     Monaco worker 均同源),可采严格同源策略;即使未来出现 XSS 注入,外联脚本
+//     与内联执行也被拒。
+//   - X-Frame-Options + frame-ancestors:管理面板禁止被 iframe 嵌套(点击劫持)。
+//   - Referrer-Policy: no-referrer:URL(含审批 token 等 query)不随 Referer 外泄。
+//   - X-Content-Type-Options: nosniff:禁 MIME 嗅探。
+//
+// 局部 handler 用 Header().Set 覆盖同值头(如审批页的 Referrer-Policy)不受影响。
+func securityHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h := w.Header()
+		h.Set("Content-Security-Policy",
+			"default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; "+
+				"font-src 'self' data:; connect-src 'self'; worker-src 'self'; "+
+				"object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'")
+		h.Set("X-Frame-Options", "DENY")
+		h.Set("Referrer-Policy", "no-referrer")
+		h.Set("X-Content-Type-Options", "nosniff")
+		next.ServeHTTP(w, r)
+	})
+}
 
 func handleHealthz(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
