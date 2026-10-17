@@ -121,15 +121,18 @@ func TestParseDmidecodeMemBytes(t *testing.T) {
 }
 
 func TestParseDfRows(t *testing.T) {
-	// df -B1 (bytes):多文件系统(真实盘 + tmpfs + nfs + snap loop + docker overlay),
-	// 只有真实盘应保留,根分区即使在 overlay/tmpfs 上也算系统盘。
+	// df -B1 (bytes):多文件系统(真实盘 + tmpfs + nfs + snap loop + docker overlay
+	// + /boot、/boot/efi 引导分区),只有真实盘应保留,根分区即使在 overlay/tmpfs 上
+	// 也算系统盘。
 	out := "Filesystem      1B-blocks         Used    Available Use% Mounted on\n" +
 		"/dev/sda1   494384795648  123456789012  370927006636  25% /\n" +
 		"tmpfs         4136650752       1234567     4135416185   1% /dev/shm\n" +
 		"/dev/sdb1  2000000000000 1000000000000 1000000000000  50% /data\n" +
 		"192.168.1.100:/export  999999999999  1  999999999998  1% /mnt/nfs\n" +
 		"/dev/loop0       99999999     1     99999998  1% /snap/core20/1974\n" +
-		"overlay      494384795648  123456789012  370927006636  25% /var/lib/docker/overlay2/x/merged\n"
+		"overlay      494384795648  123456789012  370927006636  25% /var/lib/docker/overlay2/x/merged\n" +
+		"/dev/nvme0n1p1  536870912  311951360  224919552  59% /boot/efi\n" +
+		"/dev/nvme0n1p2  2046820352  250612736  1691373568  13% /boot\n"
 	rows := parseDfRows(out, 1)
 	if len(rows) != 2 {
 		t.Fatalf("parseDfRows should keep only real disks, got %d rows: %+v", len(rows), rows)

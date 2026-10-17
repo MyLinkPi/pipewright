@@ -29,6 +29,8 @@ const Certificates = () => import('../views/Certificates.vue')
 const ServiceRegistry = () => import('../views/ServiceRegistry.vue')
 // 应用商店:模板参数一键部署(复用 Stacks 链路)。
 const AppStore = () => import('../views/AppStore.vue')
+// 数据库在线管理(phpMyAdmin 式):实例在 设置 → 数据库 注册,此处浏览/查询/管理。
+const Databases = () => import('../views/Databases.vue')
 // Story 6-5: configurable anomaly detection & alerts (FR-23)
 const AnomalyDetection = () => import('../views/AnomalyDetection.vue')
 // 集群(对等节点 + EasyTier 自组网):节点状态/链路(p2p|中继)总览 + 授权管理入口
@@ -43,6 +45,8 @@ const SettingsVault = () => import('../views/settings/SettingsVault.vue')
 const SettingsDnsProviders = () => import('../views/settings/SettingsDnsProviders.vue')
 // 对象存储:流水线 oss_upload 节点上传产物到阿里云 OSS(本期仅阿里云)
 const SettingsObjectStorage = () => import('../views/settings/SettingsObjectStorage.vue')
+// 数据库实例注册(MySQL/PostgreSQL;管理操作在 /databases 顶级页)
+const SettingsDatabases = () => import('../views/settings/SettingsDatabases.vue')
 // 平台 HTTPS 访问:宿主 nginx 自动配置(证书 + 80→443 跳转),证书复用证书管理
 const SettingsHttps = () => import('../views/settings/SettingsHttps.vue')
 const SettingsAccount = () => import('../views/settings/SettingsAccount.vue')
@@ -162,6 +166,8 @@ const router = createRouter({
         { path: 'service-reg', name: 'service-registry', component: ServiceRegistry, meta: { title: '服务注册' } },
         // 应用商店:MySQL/Redis 等模板参数一键部署。
         { path: 'app-store', name: 'app-store', component: AppStore, meta: { title: '应用商店' } },
+        // 数据库在线管理(phpMyAdmin 式):库/表浏览、SQL 控制台、导入导出、账号管理(仅管理员)。
+        { path: 'databases', name: 'databases', component: Databases, meta: { title: '数据库', roles: ['admin'] } },
         // R2 / E2.4: 证书总览大盘(跨主机跨域名 + 到期高亮)
         { path: 'certificates', name: 'cert-mgmt', component: Certificates, meta: { title: '证书管理' } },
         // 旧「证书总览」(/proxy)书签兼容:重定向到证书管理。
@@ -185,6 +191,8 @@ const router = createRouter({
             { path: 'dns-providers', name: 'settings-dns-providers', component: SettingsDnsProviders, meta: { title: 'DNS 提供商' } },
             // 对象存储(流水线 OSS 上传节点的目标存储)
             { path: 'object-storage', name: 'settings-object-storage', component: SettingsObjectStorage, meta: { title: '对象存储' } },
+            // 数据库实例注册(MySQL/PostgreSQL;应用市场部署后自动登记;管理在 /databases)
+            { path: 'databases', name: 'settings-databases', component: SettingsDatabases, meta: { title: '数据库' } },
             { path: 'https', name: 'settings-https', component: SettingsHttps, meta: { title: 'HTTPS 访问' } },
             { path: 'account', name: 'settings-account', component: SettingsAccount, meta: { title: '账户设置' } },
             // 系统信息 + 一键检查更新

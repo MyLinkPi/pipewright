@@ -8,6 +8,7 @@ export default {
   navVault: 'Anmeldedaten-Tresor',
   navDnsProviders: 'DNS-Anbieter',
   navObjectStorage: 'Objektspeicher',
+  navDatabases: 'Datenbanken',
   navHttps: 'HTTPS-Zugriff',
   navAccount: 'Konto',
   navServers: 'Server',

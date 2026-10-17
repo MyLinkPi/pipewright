@@ -51,6 +51,10 @@ export interface AppDeployResult {
   objectStoreRegistered?: boolean
   /** RustFS 联动登记的人话备注(成功说明或失败原因;未触发时缺省)。 */
   objectStoreNote?: string
+  /** mysql/postgres 联动:部署成功后是否已自动登记为数据库实例(尽力而为,失败不影响 ok)。 */
+  dbRegistered?: boolean
+  /** mysql/postgres 联动登记的人话备注(成功说明或失败原因;未触发时缺省)。 */
+  dbNote?: string
 }
 
 export interface AppTemplateInput {

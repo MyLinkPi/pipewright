@@ -45,6 +45,7 @@ export default {
     generated: "有効なパラメータ(一度だけ表示・大切に保管)",
     onceHint: "生成パスワードは対象ホストの compose ファイルにも存在します(Stacks タブで確認)。",
     autoRegistered: "オブジェクトストレージ設定として自動登録しました",
+    dbAutoRegistered: "データベースインスタンスとして自動登録しました",
     close: "閉じる",
 
     regTitle: "ゲートウェイに登録",

@@ -76,6 +76,7 @@ const ko: typeof zhCN = {
     containers: '컨테이너',
     serviceReg: '서비스 등록',
     appStore: '앱 스토어',
+    databases: '데이터베이스',
     certificates: '인증서 관리',
     anomaly: '이상 감지',
     notifications: '알림',

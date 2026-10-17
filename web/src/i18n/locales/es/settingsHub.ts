@@ -8,6 +8,7 @@ export default {
   navVault: 'Bóveda de credenciales',
   navDnsProviders: 'Proveedores DNS',
   navObjectStorage: 'Almacenamiento de objetos',
+  navDatabases: 'Bases de datos',
   navHttps: 'Acceso HTTPS',
   navAccount: 'Cuenta',
   navServers: 'Servidores',

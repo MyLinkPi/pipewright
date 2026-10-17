@@ -17,6 +17,7 @@ import {
   Stack2,
   World,
   Apps,
+  Database,
   Users,
   ChevronRight,
   Logout,
@@ -91,6 +92,8 @@ const adminNavItems: NavItem[] = [
   { name: 'service-reg',   to: '/service-reg',   icon: World,      labelKey: 'nav.serviceReg',    ariaKey: 'nav.serviceReg' },
   // 应用商店:MySQL/Redis 等模板参数一键部署(DPanel 式)。
   { name: 'app-store',     to: '/app-store',     icon: Apps,       labelKey: 'nav.appStore',      ariaKey: 'nav.appStore' },
+  // 数据库在线管理(phpMyAdmin 式):实例在 设置 → 数据库 注册;应用市场部署 mysql/postgres 自动登记。
+  { name: 'databases',     to: '/databases',     icon: Database,   labelKey: 'nav.databases',     ariaKey: 'nav.databases' },
   // R4 / E4.1: PR 预览环境大盘(临时环境列表 + 手动回收)。
   // Story 6-5: configurable anomaly detection & alerts (FR-23)
   { name: 'anomaly',       to: '/anomaly',       icon: AlertTriangle, labelKey: 'nav.anomaly',    ariaKey: 'nav.anomaly' },

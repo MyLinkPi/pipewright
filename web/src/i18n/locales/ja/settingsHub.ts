@@ -8,6 +8,7 @@ export default {
   navVault: '認証情報ボールト',
   navDnsProviders: 'DNS プロバイダー',
   navObjectStorage: 'オブジェクトストレージ',
+  navDatabases: 'データベース',
   navHttps: 'HTTPS アクセス',
   navAccount: 'アカウント',
   navServers: 'サーバー',
