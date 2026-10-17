@@ -6,8 +6,8 @@
 A single static Go binary (frontend embedded, zero runtime dependencies) —
 one tool replacing the "CI + Ansible/Kamal + Portainer" trio.
 
-[![Release](https://img.shields.io/github/v/release/huangchengsir/pipewright)](https://github.com/huangchengsir/pipewright/releases)
-[![CI](https://github.com/huangchengsir/pipewright/actions/workflows/ci.yml/badge.svg)](https://github.com/huangchengsir/pipewright/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/MyLinkPi/pipewright)](https://github.com/MyLinkPi/pipewright/releases)
+[![CI](https://github.com/MyLinkPi/pipewright/actions/workflows/ci.yml/badge.svg)](https://github.com/MyLinkPi/pipewright/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 English | [简体中文](README.zh-CN.md)
@@ -102,10 +102,10 @@ Pick any of four form factors. The platform itself is a single static binary wit
 When no local build artifact exists, `install.sh` automatically downloads the platform binary from the GitHub Release (sha256-verified) and installs it — no Go/Node needed, and no local compilation on low-memory machines:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/huangchengsir/pipewright/master/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/MyLinkPi/pipewright/master/install.sh | sh
 
 # Install as a systemd service right away (auto-start + one-click self-update; Linux, requires root):
-curl -fsSL https://raw.githubusercontent.com/huangchengsir/pipewright/master/install.sh | SETUP_SERVICE=1 sh
+curl -fsSL https://raw.githubusercontent.com/MyLinkPi/pipewright/master/install.sh | SETUP_SERVICE=1 sh
 
 # Download from your own fork's releases (push a v* tag and GitHub Actions builds them),
 # or pin a version with PIPEWRIGHT_VERSION=v1.2.3:
@@ -113,16 +113,24 @@ curl -fsSL https://raw.githubusercontent.com/<owner>/pipewright/master/install.s
   PIPEWRIGHT_RELEASE_REPO=<owner>/pipewright sh
 ```
 
+On networks where raw.githubusercontent.com is unreachable (e.g. mainland China), route the one-liner through a prefix-style proxy and let the upgrade source use it too:
+
+```bash
+curl -fsSL https://gh-proxy.com/https://raw.githubusercontent.com/MyLinkPi/pipewright/master/install.sh | \
+  SETUP_SERVICE=1 PIPEWRIGHT_RELEASE_REPO=MyLinkPi/pipewright \
+  PIPEWRIGHT_RELEASE_MIRROR=https://gh-proxy.com/https://github.com sh
+```
+
 To upgrade, **re-run the same command**: it enters upgrade mode, replaces the binary and restarts the service. If GitHub is unreachable, point `PIPEWRIGHT_RELEASE_MIRROR` at a mirror (a GitHub-path-compatible reverse proxy, or a prefix-style proxy such as `https://gh-proxy.com/https://github.com`); `PIPEWRIGHT_NO_DOWNLOAD=1` restores the old "error out when no local artifact" behavior.
 
-> Windows users: download `pipewright_<version>_windows_<arch>.zip` from [Releases](https://github.com/huangchengsir/pipewright/releases), unpack and run `pipewright.exe` directly (no systemd, so install.sh doesn't apply).
+> Windows users: download `pipewright_<version>_windows_<arch>.zip` from [Releases](https://github.com/MyLinkPi/pipewright/releases), unpack and run `pipewright.exe` directly (no systemd, so install.sh doesn't apply).
 
 ### ② Install from a local build (Linux / macOS)
 
 `install.sh` installs the binary produced by a **local `make build`** to `/usr/local/bin` (includes Docker detection; with no artifact in the repo root it falls back to the ① download mode). Go and Node are required first:
 
 ```bash
-git clone https://github.com/huangchengsir/pipewright && cd pipewright
+git clone https://github.com/MyLinkPi/pipewright && cd pipewright
 make build
 sh install.sh
 
@@ -148,13 +156,13 @@ SETUP_SERVICE=1 PIPEWRIGHT_DB_DRIVER=mysql \
   sh install.sh
 ```
 
-> Windows users: run `make build` in Git Bash and execute `./pipewright.exe` directly, or download the zip from [Releases](https://github.com/huangchengsir/pipewright/releases) (no systemd, so install.sh doesn't apply).
+> Windows users: run `make build` in Git Bash and execute `./pipewright.exe` directly, or download the zip from [Releases](https://github.com/MyLinkPi/pipewright/releases) (no systemd, so install.sh doesn't apply).
 
 ### ③ docker compose (recommended for self-hosting)
 
 ```bash
-curl -fsSLO https://raw.githubusercontent.com/huangchengsir/pipewright/master/docker-compose.yml
-curl -fsSLO https://raw.githubusercontent.com/huangchengsir/pipewright/master/.env.example
+curl -fsSLO https://raw.githubusercontent.com/MyLinkPi/pipewright/master/docker-compose.yml
+curl -fsSLO https://raw.githubusercontent.com/MyLinkPi/pipewright/master/.env.example
 cp .env.example .env       # generate MASTER_KEY with: openssl rand -base64 32; admin password is optional (random on first launch)
 docker compose up -d       # data persists in the named volume pipewright-data; see .env comments to switch to MySQL
 ```
@@ -164,7 +172,7 @@ docker compose up -d       # data persists in the named volume pipewright-data; 
 ```bash
 docker run -d -p 8080:8080 -v pipewright-data:/data \
   -e PIPEWRIGHT_MASTER_KEY=$(openssl rand -base64 32) \
-  ghcr.io/huangchengsir/pipewright:latest
+  ghcr.io/mylinkpi/pipewright:latest
 # initial admin password (random, 0600): docker exec <container> cat /data/admin_password.txt
 ```
 
@@ -201,7 +209,7 @@ A normal install only needs the first two; everything else has a sane default. T
 | `PIPEWRIGHT_ADDR` | HTTP listen address | `:8080` |
 | `PIPEWRIGHT_ADMIN_USERNAME` | Admin username on first launch | `admin` |
 | `PIPEWRIGHT_TRUST_PROXY` | Trust forwarded headers (`X-Real-IP` first, then the first `X-Forwarded-For` hop) as the audit client IP (`1`/`true`/`yes`/`on`). Local proxies (loopback peer `127.0.0.1`/`::1`, e.g. the built-in platform-HTTPS nginx) are trusted without this flag; it only applies to **non-loopback** external proxies — leave off unless a trusted reverse proxy sits in front, otherwise anyone can forge audit source IPs | off |
-| `PIPEWRIGHT_RELEASE_REPO` | Repo queried for update checks (change it for a fork) | `huangchengsir/pipewright` |
+| `PIPEWRIGHT_RELEASE_REPO` | Repo queried for update checks (change it for a fork) | `mylinkpi/pipewright` (injected at build time, follows the build repo; local `make build` falls back to `huangchengsir/pipewright`) |
 | `PIPEWRIGHT_RELEASE_MIRROR` | Mirror base URL for self-upgrades (deployment-level fallback; configure at runtime under **Settings → System → Upgrade Source**, DB config wins) | empty (official GitHub) |
 | `PIPEWRIGHT_RUNTIME` | Set `docker`/`source` to declare the deployment form (affects self-update mode); otherwise auto-detected (`/.dockerenv` / source-repo marker) | auto-detect |
 | `PIPEWRIGHT_SOURCE_DIR` | Repo root for source deployments (written automatically by install.sh; set manually for hand-rolled source setups) | auto-detect |
@@ -373,7 +381,7 @@ single static binary (cmd/pipewright)
 
 ## Project Status
 
-✅ **Officially released** and under active iteration — see the latest version in [Releases](https://github.com/huangchengsir/pipewright/releases) (tag-driven releases: 6-platform binaries + ghcr multi-arch images). Already running in real production, carrying builds, deployments, and daily ops for multiple projects.
+✅ **Officially released** and under active iteration — see the latest version in [Releases](https://github.com/MyLinkPi/pipewright/releases) (tag-driven releases: 6-platform binaries + ghcr multi-arch images). Already running in real production, carrying builds, deployments, and daily ops for multiple projects.
 
 ## Contributing
 
