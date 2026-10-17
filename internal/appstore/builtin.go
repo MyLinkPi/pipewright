@@ -249,6 +249,39 @@ volumes:
 		},
 		Builtin: true,
 	},
+	{
+		Name:        "nfs",
+		DisplayName: "NFS Server",
+		Description: "NFSv4 文件共享服务(仅需 2049 端口);客户端 mount -t nfs4 <宿主IP>:/ 挂载;数据落具名卷 nfs-data;容器需特权模式,宿主机内核需支持 nfsd。",
+		Icon:        "📁",
+		// itsthenetwork/nfs-server-alpine 仅支持 NFSv4(免 rpcbind,只暴露 2049/TCP),
+		// 容器内要写 /etc/exports 并驱动宿主 nfsd 内核线程,必须 privileged;
+		// PERMITTED 为客户端白名单(* 或 IP/CIDR,空格分隔),READ_ONLY 控制只读。
+		ComposeYAML: `services:
+  nfs:
+    image: itsthenetwork/nfs-server-alpine:{{version}}
+    restart: unless-stopped
+    privileged: true
+    environment:
+      SHARED_DIRECTORY: /data/shared
+      PERMITTED: "{{permitted}}"
+      READ_ONLY: "{{read_only}}"
+      SYNC: "true"
+    ports:
+      - "{{port}}:2049"
+    volumes:
+      - nfs-data:/data/shared
+volumes:
+  nfs-data:
+`,
+		Params: []ParamSpec{
+			{Name: "version", Label: "镜像版本", Type: ParamTypeString, Default: "latest"},
+			{Name: "permitted", Label: "允许的客户端(* 或 IP/CIDR,空格分隔)", Type: ParamTypeString, Default: "*"},
+			{Name: "read_only", Label: "只读共享(true/false)", Type: ParamTypeString, Default: "false"},
+			{Name: "port", Label: "宿主端口", Type: ParamTypeInt, Default: "2049"},
+		},
+		Builtin: true,
+	},
 }
 
 // retiredBuiltins 是已从商店下架的内置模板名:EnsureBuiltins 时对库中的内置行删除,
