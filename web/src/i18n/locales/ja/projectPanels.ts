@@ -18,7 +18,7 @@ export default {
     errLoadGeneric: 'トリガー設定の読み込みに失敗しました。しばらくしてから再試行してください。',
 
     webhookTitle: 'Webhook 連携',
-    webhookSub: 'コードプラットフォーム · Gitee',
+    webhookSub: 'コードプラットフォーム · Gitee / Gitea',
     endpointLabel: '受信エンドポイント',
     copied: 'コピーしました',
     copyUrlAria: 'Webhook URL をコピー',
@@ -32,7 +32,7 @@ export default {
     resetSecretAria: '署名シークレットをリセット',
     reset: 'リセット',
     pushConfigLabel: 'プッシュ設定',
-    pushConfigHint: 'Gitee リポジトリ → 管理 → WebHooks で上記のアドレスとシークレットを貼り付け、Push / Tag Push / Release / Pull Request イベントにチェックを入れます。',
+    pushConfigHint: 'リポジトリ(Gitee / Gitea)の WebHooks 設定に上記のアドレスとシークレットを貼り付け、必要なイベントにチェックを入れます(Gitee:Push / Tag Push / Release / Pull Request、Gitea:Push / Create / Release / Pull Request)。Gitea/Gogs ではシークレットテキストの入力が必須です。未入力の場合、配送は拒否されます。',
 
     eventsTitle: 'トリガーイベント',
     eventsSub: 'どのイベントでパイプライン実行を作成するか選択',
@@ -66,7 +66,7 @@ export default {
     resetModalTitle: '署名シークレットをリセット',
     resetModalSub: 'リセット後は旧シークレットが直ちに失効し、新シークレットは今回のレスポンスで一度だけ表示されます',
     closeDialogAria: 'ダイアログを閉じる',
-    resetWarnText: 'リセット後は Gitee リポジトリの WebHooks 設定で新しいシークレットに更新する必要があります。さもないと署名検証に失敗し、webhook の push が拒否されます。',
+    resetWarnText: 'リセット後はリポジトリの WebHooks 設定で新しいシークレットに更新する必要があります。さもないと署名検証に失敗し、webhook の push が拒否されます。',
     resetWarnSecondary: '新しいシークレットはリセット完了後に一度だけ表示されます。直ちにコピーして安全に保管してください。',
     cancel: 'キャンセル',
     resetting: 'リセット中…',

@@ -135,7 +135,7 @@ func makeSaveTriggerHandler(svc trigger.Service) http.HandlerFunc {
 }
 
 // makeResetTriggerSecretHandler 返回 POST /api/projects/{id}/trigger/secret/reset handler。
-// 重新生成并加密签名密钥(旧值失效),完整明文仅在此响应里一次性回显(供粘贴到 Gitee)。
+// 重新生成并加密签名密钥(旧值失效),完整明文仅在此响应里一次性回显(供粘贴到 Gitee/Gitea)。
 // 成功后追加 trigger_secret_reset 审计;detail **绝不含密钥明文/密文**,仅记掩码。
 func makeResetTriggerSecretHandler(svc trigger.Service, aud audit.Recorder) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {

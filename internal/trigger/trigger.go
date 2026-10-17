@@ -3,7 +3,7 @@
 // 每个项目持有一份触发配置:webhook 接收端点 token、签名密钥、触发事件开关、
 // 分支过滤 glob 白名单。webhook 签名密钥经 vault secretbox(master key)加密后
 // 仅以**密文 BLOB** 入库;DB dump 绝无明文(AC1 / AC-SEC)。
-// 对外(REST)常态只暴露掩码;明文仅在 ResetSecret 重置时一次性返回(供粘贴到 Gitee)。
+// 对外(REST)常态只暴露掩码;明文仅在 ResetSecret 重置时一次性返回(供粘贴到 Gitee/Gitea)。
 //
 // master key 缺失时,涉及密钥的读取/重置降级为明确错误(ErrVaultUnconfigured),
 // 平台不 panic。
@@ -24,7 +24,7 @@ import (
 	"github.com/huangchengsir/pipewright/internal/vault"
 )
 
-// webhook 签名密钥前缀(供用户在 Gitee 端识别;掩码也保留此前缀)。
+// webhook 签名密钥前缀(供用户在代码平台(Gitee/Gitea)端识别;掩码也保留此前缀)。
 const secretPrefix = "whsec_"
 
 // 领域错误。错误体永不含密钥明文/密文/master key。

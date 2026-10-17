@@ -75,12 +75,16 @@ func makeWebhookHandler(rc *trigger.Receiver) http.HandlerFunc {
 		}
 
 		res, err := rc.Handle(r.Context(), trigger.Delivery{
-			Token:      token,
-			Event:      r.Header.Get(trigger.HeaderGiteeEvent),
-			TokenHdr:   r.Header.Get(trigger.HeaderGiteeToken),
-			Timestamp:  r.Header.Get(trigger.HeaderGiteeTimestamp),
-			DeliveryID: r.Header.Get(trigger.HeaderGiteeDelivery),
-			RawBody:    body,
+			Token: token,
+			// 头按「Gitee → Gitea → Gogs」fallback 取第一个非空:
+			// Gitea 出于兼容会同时发送 X-Gitea-* 与 X-Gogs-* 两套头,故 Gitea 优先。
+			Event:         firstHeaderValue(r.Header.Get(trigger.HeaderGiteeEvent), r.Header.Get(trigger.HeaderGiteaEvent), r.Header.Get(trigger.HeaderGogsEvent)),
+			TokenHdr:      r.Header.Get(trigger.HeaderGiteeToken),
+			Timestamp:     r.Header.Get(trigger.HeaderGiteeTimestamp),
+			DeliveryID:    firstHeaderValue(r.Header.Get(trigger.HeaderGiteeDelivery), r.Header.Get(trigger.HeaderGiteaDelivery), r.Header.Get(trigger.HeaderGogsDelivery)),
+			BodySignature: firstHeaderValue(r.Header.Get(trigger.HeaderGiteaSignature), r.Header.Get(trigger.HeaderGogsSignature)),
+			Actor:         webhookProvider(r.Header),
+			RawBody:       body,
 		})
 		if err != nil {
 			switch {
@@ -224,4 +228,30 @@ func normalizeRunParams(in map[string]string) map[string]string {
 		return nil
 	}
 	return out
+}
+
+// firstHeaderValue 返回第一个 trim 后非空的值(用于多 provider 头 fallback)。
+func firstHeaderValue(vals ...string) string {
+	for _, v := range vals {
+		if strings.TrimSpace(v) != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+// webhookProvider 据请求头识别投递来源(写入运行触发信息的操作人标签):
+// 任一 X-Gitea-* 头存在 → gitea;否则任一 X-Gogs-* 头存在 → gogs;否则按 Gitee。
+func webhookProvider(h http.Header) string {
+	for _, name := range []string{trigger.HeaderGiteaEvent, trigger.HeaderGiteaSignature, trigger.HeaderGiteaDelivery} {
+		if strings.TrimSpace(h.Get(name)) != "" {
+			return "gitea"
+		}
+	}
+	for _, name := range []string{trigger.HeaderGogsEvent, trigger.HeaderGogsSignature, trigger.HeaderGogsDelivery} {
+		if strings.TrimSpace(h.Get(name)) != "" {
+			return "gogs"
+		}
+	}
+	return "gitee"
 }

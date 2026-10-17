@@ -18,7 +18,7 @@ export default {
     errLoadGeneric: '트리거 설정 로딩에 실패했습니다. 잠시 후 다시 시도하세요.',
 
     webhookTitle: 'Webhook 연동',
-    webhookSub: '코드 플랫폼 · Gitee',
+    webhookSub: '코드 플랫폼 · Gitee / Gitea',
     endpointLabel: '수신 엔드포인트',
     copied: '복사됨',
     copyUrlAria: 'Webhook URL 복사',
@@ -32,7 +32,7 @@ export default {
     resetSecretAria: '서명 시크릿 재설정',
     reset: '재설정',
     pushConfigLabel: '푸시 설정',
-    pushConfigHint: 'Gitee 저장소 → 관리 → WebHooks에서 위 주소와 시크릿을 붙여넣고, Push / Tag Push / Release / Pull Request 이벤트를 체크하세요.',
+    pushConfigHint: '저장소(Gitee / Gitea)의 WebHooks 설정에 위 주소와 시크릿을 붙여넣고 필요한 이벤트를 체크하세요(Gitee: Push / Tag Push / Release / Pull Request, Gitea: Push / Create / Release / Pull Request). Gitea/Gogs에서는 시크릿 텍스트를 반드시 입력해야 하며, 비워 두면 푸시가 거부됩니다.',
 
     eventsTitle: '트리거 이벤트',
     eventsSub: '어떤 이벤트로 파이프라인 실행을 만들지 선택',
@@ -66,7 +66,7 @@ export default {
     resetModalTitle: '서명 시크릿 재설정',
     resetModalSub: '재설정 후 기존 시크릿은 즉시 무효화되며, 새 시크릿은 이번 응답에서 한 번만 표시됩니다',
     closeDialogAria: '대화상자 닫기',
-    resetWarnText: '재설정 후에는 Gitee 저장소 WebHooks 설정에서 새 시크릿으로 업데이트해야 합니다. 그렇지 않으면 서명 검증에 실패하여 webhook 푸시가 거부됩니다.',
+    resetWarnText: '재설정 후에는 저장소 WebHooks 설정에서 새 시크릿으로 업데이트해야 합니다. 그렇지 않으면 서명 검증에 실패하여 webhook 푸시가 거부됩니다.',
     resetWarnSecondary: '새 시크릿은 재설정 완료 후 한 번만 표시됩니다. 즉시 복사하여 안전하게 보관하세요.',
     cancel: '취소',
     resetting: '재설정 중…',

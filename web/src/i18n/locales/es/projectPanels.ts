@@ -18,7 +18,7 @@ export default {
     errLoadGeneric: 'Error al cargar la configuración de disparadores, inténtalo de nuevo más tarde.',
 
     webhookTitle: 'Conexión de Webhook',
-    webhookSub: 'Plataforma de código · Gitee',
+    webhookSub: 'Plataforma de código · Gitee / Gitea',
     endpointLabel: 'Endpoint receptor',
     copied: 'Copiado',
     copyUrlAria: 'Copiar URL del webhook',
@@ -32,7 +32,7 @@ export default {
     resetSecretAria: 'Restablecer clave de firma',
     reset: 'Restablecer',
     pushConfigLabel: 'Configuración de push',
-    pushConfigHint: 'En el repositorio de Gitee → Administrar → WebHooks, pega la dirección y la clave de arriba y marca los eventos Push / Tag Push / Release / Pull Request.',
+    pushConfigHint: 'En la configuración de WebHooks del repositorio (Gitee / Gitea), pega la dirección y la clave de arriba y marca los eventos que necesites (Gitee: Push / Tag Push / Release / Pull Request; Gitea: Push / Create / Release / Pull Request). En Gitea/Gogs es obligatorio rellenar el texto de la clave; de lo contrario, las entregas se rechazan.',
 
     eventsTitle: 'Eventos del Disparador',
     eventsSub: 'Elige qué eventos crean una ejecución de pipeline',
@@ -66,7 +66,7 @@ export default {
     resetModalTitle: 'Restablecer clave de firma',
     resetModalSub: 'Tras restablecer, la clave antigua se invalida de inmediato; la clave nueva se muestra una sola vez en esta respuesta',
     closeDialogAria: 'Cerrar diálogo',
-    resetWarnText: 'Tras restablecer, debes actualizar la nueva clave en la configuración de WebHooks del repositorio de Gitee; de lo contrario, la verificación de firma fallará y los push del webhook serán rechazados.',
+    resetWarnText: 'Tras restablecer, debes actualizar la nueva clave en la configuración de WebHooks del repositorio; de lo contrario, la verificación de firma fallará y los push del webhook serán rechazados.',
     resetWarnSecondary: 'La clave nueva se mostrará una sola vez al completarse el restablecimiento; cópiala y guárdala de forma segura de inmediato.',
     cancel: 'Cancelar',
     resetting: 'Restableciendo…',

@@ -22,7 +22,7 @@ export default {
 
     // Webhook section
     webhookTitle: 'Webhook 接入',
-    webhookSub: '代码平台 · Gitee',
+    webhookSub: '代码平台 · Gitee / Gitea',
     endpointLabel: '接收端点',
     copied: '已复制',
     copyUrlAria: '复制 Webhook URL',
@@ -36,7 +36,7 @@ export default {
     resetSecretAria: '重置签名密钥',
     reset: '重置',
     pushConfigLabel: '推送配置',
-    pushConfigHint: '在 Gitee 仓库 → 管理 → WebHooks 粘贴以上地址与密钥,事件勾选 Push / Tag Push / Release / Pull Request。',
+    pushConfigHint: '在代码仓库(Gitee / Gitea)的 WebHooks 设置中粘贴以上地址与密钥,并按需勾选事件(Gitee:Push / Tag Push / Release / Pull Request;Gitea:Push / Create / Release / Pull Request)。Gitea/Gogs 端必须填写密钥文本,否则推送会被拒收。',
 
     // Events section
     eventsTitle: '触发事件',
@@ -78,7 +78,7 @@ export default {
     resetModalTitle: '重置签名密钥',
     resetModalSub: '重置后旧密钥立即失效,新密钥只在本次响应中回显一次',
     closeDialogAria: '关闭对话框',
-    resetWarnText: '重置后需要在 Gitee 仓库 WebHooks 配置中更新为新密钥,否则验签失败将导致 webhook 推送被拒绝。',
+    resetWarnText: '重置后需要在代码仓库的 WebHooks 配置中更新为新密钥,否则验签失败将导致 webhook 推送被拒绝。',
     resetWarnSecondary: '新密钥将在重置完成后一次性展示,请立即复制并妥善保存。',
     cancel: '取消',
     resetting: '重置中…',

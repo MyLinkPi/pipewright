@@ -18,7 +18,7 @@ export default {
     errLoadGeneric: 'Échec du chargement de la configuration des déclencheurs, réessayez plus tard.',
 
     webhookTitle: 'Intégration Webhook',
-    webhookSub: 'Plateforme de code · Gitee',
+    webhookSub: 'Plateforme de code · Gitee / Gitea',
     endpointLabel: 'Point de réception',
     copied: 'Copié',
     copyUrlAria: 'Copier l’URL du webhook',
@@ -32,7 +32,7 @@ export default {
     resetSecretAria: 'Réinitialiser la clé de signature',
     reset: 'Réinitialiser',
     pushConfigLabel: 'Configuration du push',
-    pushConfigHint: 'Dans le dépôt Gitee → Gérer → WebHooks, collez l’adresse et la clé ci-dessus et cochez les événements Push / Tag Push / Release / Pull Request.',
+    pushConfigHint: 'Dans les paramètres WebHooks du dépôt (Gitee / Gitea), collez l’adresse et la clé ci-dessus et cochez les événements souhaités (Gitee : Push / Tag Push / Release / Pull Request ; Gitea : Push / Create / Release / Pull Request). Sur Gitea/Gogs, le texte de la clé doit être renseigné, sinon les livraisons sont rejetées.',
 
     eventsTitle: 'Événements Déclencheurs',
     eventsSub: 'Choisissez quels événements créent une exécution de pipeline',
@@ -66,7 +66,7 @@ export default {
     resetModalTitle: 'Réinitialiser la clé de signature',
     resetModalSub: 'Après la réinitialisation, l’ancienne clé est immédiatement invalidée ; la nouvelle clé n’est affichée qu’une seule fois dans cette réponse',
     closeDialogAria: 'Fermer la boîte de dialogue',
-    resetWarnText: 'Après la réinitialisation, vous devez mettre à jour la nouvelle clé dans les paramètres WebHooks du dépôt Gitee, sinon la vérification de signature échouera et les push du webhook seront rejetés.',
+    resetWarnText: 'Après la réinitialisation, vous devez mettre à jour la nouvelle clé dans les paramètres WebHooks du dépôt, sinon la vérification de signature échouera et les push du webhook seront rejetés.',
     resetWarnSecondary: 'La nouvelle clé sera affichée une seule fois une fois la réinitialisation terminée ; copiez-la et conservez-la en lieu sûr immédiatement.',
     cancel: 'Annuler',
     resetting: 'Réinitialisation…',
