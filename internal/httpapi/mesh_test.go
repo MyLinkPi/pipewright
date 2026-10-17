@@ -282,3 +282,43 @@ func TestMeshPushCreatesPushedProject(t *testing.T) {
 		t.Fatalf("pushed project mismatch: %+v", origin)
 	}
 }
+
+// TestMeshSecretReveal 验证组网密钥回显:管理员(带 CSRF)可取回明文,便于在对端节点
+// 输入同一密钥;未登录拒绝。密钥是集群共享密钥(非外发凭据),可回显但每次留审计。
+func TestMeshSecretReveal(t *testing.T) {
+	srv, meshSvc, _, _, _ := setupMeshServer(t)
+	enableMesh(t, meshSvc)
+	if _, err := meshSvc.SaveSettings(context.Background(), mesh.SaveSettingsInput{
+		NetworkSecret: strPtr("cluster-shared-secret-24chars"),
+	}); err != nil {
+		t.Fatalf("save secret: %v", err)
+	}
+
+	// 未登录 → 401(端点在受保护 admin 组内)。
+	resp, err := http.Post(srv.URL+"/api/mesh/settings/reveal-secret", "application/json", nil)
+	if err != nil || resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated reveal: resp=%v err=%v", resp, err)
+	}
+	_ = resp.Body.Close()
+
+	// 管理员 + CSRF → 取回明文。
+	client := newTestClient(t)
+	csrf := loginWithClient(t, client, srv.URL)
+	resp = doJSON(t, client, http.MethodPost, srv.URL+"/api/mesh/settings/reveal-secret", csrf, "")
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("reveal status = %d, want 200", resp.StatusCode)
+	}
+	var out struct {
+		Secret string `json:"secret"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if out.Secret != "cluster-shared-secret-24chars" {
+		t.Fatalf("revealed secret = %q", out.Secret)
+	}
+}
+
+// strPtr 是 SaveSettingsInput 指针字段的小助手。
+func strPtr(s string) *string { return &s }

@@ -11,6 +11,7 @@
 import { ref, computed, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
+  revealMeshNetworkSecret,
   getMeshOverview,
   triggerEasyTierDownload,
   type EasyTierBinaries,
@@ -52,6 +53,43 @@ const acl = ref({ visibleTo: [] as string[], pushAllowed: [] as string[], trigge
 const manualPeer = ref({ nodeId: '', name: '', virtualIp: '', apiPort: 8080, publicUrl: '' })
 // EasyTier 二进制状态(就位版本/自动下载进度;来自 overview)。
 const binaries = ref<EasyTierBinaries | null>(null)
+// 组网密钥回显:点击「显示」拉取已存明文(带审计);「生成」本地造 24 位随机强密钥。
+const secretRevealed = ref(false)
+const revealedSecret = ref('')
+
+async function toggleSecret(): Promise<void> {
+  if (!secretRevealed.value) {
+    try {
+      const res = await revealMeshNetworkSecret()
+      revealedSecret.value = res.secret
+      if (res.secret) form.value.networkSecret = res.secret
+    } catch (err) {
+      errorMsg.value = err instanceof Error ? err.message : String(err)
+      return
+    }
+  }
+  secretRevealed.value = !secretRevealed.value
+}
+
+function generateSecret(): void {
+  // 24 位 base62 随机(crypto.getRandomValues);保存后到各对端「设置→集群」粘贴同一密钥。
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'
+  const bytes = new Uint8Array(24)
+  crypto.getRandomValues(bytes)
+  form.value.networkSecret = Array.from(bytes, (b) => alphabet[b % alphabet.length]).join('')
+  secretRevealed.value = true
+  revealedSecret.value = form.value.networkSecret
+}
+
+async function copySecret(): Promise<void> {
+  const text = form.value.networkSecret.trim()
+  if (!text) return
+  try {
+    await navigator.clipboard.writeText(text)
+  } catch {
+    // 剪贴板被浏览器策略拒绝时静默(输入框已可见,可手选)。
+  }
+}
 
 async function loadBinaries(): Promise<void> {
   try {
@@ -330,6 +368,10 @@ onMounted(() => {
 .mono { font-family: var(--font-mono, monospace); }
 .switch { display: flex; align-items: center; gap: 8px; font-size: 13px; }
 .fld { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--color-text-muted); }
+.secret-row { display: flex; gap: 6px; align-items: stretch; }
+.secret-row .inp { flex: 1; min-width: 0; }
+.mini-btn { border: 1px solid var(--color-border); background: var(--color-bg-soft); color: var(--color-text); border-radius: 6px; padding: 0 10px; font-size: 12px; cursor: pointer; white-space: nowrap; }
+.mini-btn:disabled { opacity: 0.5; cursor: default; }
 .bin-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .bin-label { font-size: 13px; font-weight: 600; }
 .bin-status { font-size: 13px; flex: 1; min-width: 200px; }

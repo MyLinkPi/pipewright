@@ -140,6 +140,15 @@ export function saveMeshSettings(body: Partial<MeshSettings> & { networkSecret?:
   return http.put('/api/mesh/settings', body)
 }
 
+/**
+ * Reveal the saved network secret (POST: audited, same pattern as credential reveal).
+ * The secret is a cluster-shared key the admin must re-enter on every joining node —
+ * it has to be viewable, unlike outbound credentials.
+ */
+export function revealMeshNetworkSecret(): Promise<{ secret: string }> {
+  return http.post('/api/mesh/settings/reveal-secret')
+}
+
 export function getMeshACL(): Promise<MeshACL> {
   return http.get('/api/mesh/acl')
 }
