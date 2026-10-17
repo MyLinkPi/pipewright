@@ -48,10 +48,10 @@ func makeSelfUpdateHandler(checker *version.Checker, src *srcupdate.Service, inf
 		if src != nil {
 			if err := src.StartUpdate(); err != nil {
 				if errors.Is(err, srcupdate.ErrBusy) {
-					writeJSON(w, http.StatusConflict, updateResult{Mode: "source", Status: "busy", Message: "已有升级任务在进行,请等待其完成"})
+					writeError(w, http.StatusConflict, "update_busy", "已有升级任务在进行,请等待其完成")
 					return
 				}
-				writeJSON(w, http.StatusBadRequest, updateResult{Mode: "source", Status: "error", Message: err.Error()})
+				writeError(w, http.StatusBadRequest, "update_start_failed", err.Error())
 				return
 			}
 			writeJSON(w, http.StatusOK, updateResult{
@@ -62,7 +62,7 @@ func makeSelfUpdateHandler(checker *version.Checker, src *srcupdate.Service, inf
 		}
 
 		if !inflight.tryAcquire() {
-			writeJSON(w, http.StatusConflict, updateResult{Status: "error", Message: "已有更新正在进行"})
+			writeError(w, http.StatusConflict, "update_busy", "已有更新正在进行")
 			return
 		}
 		// binary 成功路径会 re-exec(不返回),故仅在非成功路径释放。
@@ -73,8 +73,7 @@ func makeSelfUpdateHandler(checker *version.Checker, src *srcupdate.Service, inf
 
 		if info.CheckError != "" {
 			release()
-			res.Status, res.Message = "error", info.CheckError
-			writeJSON(w, http.StatusBadGateway, res)
+			writeError(w, http.StatusBadGateway, "update_check_failed", info.CheckError)
 			return
 		}
 		if !info.UpdateAvailable {
@@ -106,8 +105,8 @@ func makeSelfUpdateHandler(checker *version.Checker, src *srcupdate.Service, inf
 		// 下载 + 校验 + 替换二进制。失败则释放并报错(进程仍跑旧版,不影响服务)。
 		if err := checker.ApplyBinaryUpdate(r.Context(), info.Latest); err != nil {
 			release()
-			res.Status, res.Message = "error", err.Error()
-			writeJSON(w, http.StatusInternalServerError, res)
+			// 标准错误信封:前端 catch 直接展示真实原因(此前 DTO 形状只显示"更新失败(500)")。
+			writeError(w, http.StatusInternalServerError, "update_failed", err.Error())
 			return
 		}
 

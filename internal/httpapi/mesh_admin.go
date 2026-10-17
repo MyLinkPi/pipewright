@@ -108,7 +108,7 @@ func makeMeshRevealSecretHandler(d meshAdminDeps) http.HandlerFunc {
 		}
 		recordAudit(r.Context(), d.audit, audit.Entry{
 			Actor: "admin", Action: "mesh_network_secret_reveal", TargetType: "mesh_settings", TargetID: "network_secret",
-			IP:   clientIP(r),
+			IP: clientIP(r),
 		})
 		writeJSON(w, http.StatusOK, map[string]string{"secret": secret})
 	}
