@@ -1,10 +1,15 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/huangchengsir/pipewright/internal/target"
 )
@@ -205,5 +210,172 @@ func TestBuildServiceCmd_DockerNewActions(t *testing.T) {
 		if len(got) != 3 || got[0] != want[0] || got[1] != want[1] || got[2] != want[2] {
 			t.Fatalf("buildServiceCmd docker %s = %v, want %v", a, got, want)
 		}
+	}
+}
+
+// --- 采集缓存(TTL + single-flight + 写失效)---
+
+// TestContainersCache_TTLInvalidateAndLocErr:冻结时钟驱动 TTL 过期;验证回放、过期重采、
+// 主动失效、定位类错误不缓存。
+func TestContainersCache_TTLInvalidateAndLocErr(t *testing.T) {
+	c := newContainersCache(30 * time.Second)
+	now := time.Now()
+	c.now = func() time.Time { return now }
+
+	calls := 0
+	collect := func(context.Context) (serverContainersDTO, error) {
+		calls++
+		return serverContainersDTO{ServerID: "s1", Runtime: "docker", Containers: []containerDTO{}}, nil
+	}
+
+	if _, err := c.get(context.Background(), "s1", collect); err != nil {
+		t.Fatalf("first get: %v", err)
+	}
+	if _, err := c.get(context.Background(), "s1", collect); err != nil {
+		t.Fatalf("second get: %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("collect calls = %d, want 1(TTL 内应回放缓存)", calls)
+	}
+
+	now = now.Add(31 * time.Second) // 推进过 TTL
+	if _, err := c.get(context.Background(), "s1", collect); err != nil {
+		t.Fatalf("get after TTL: %v", err)
+	}
+	if calls != 2 {
+		t.Fatalf("collect calls after TTL = %d, want 2", calls)
+	}
+
+	c.invalidate("s1") // 主动失效 → 不等 TTL 立即重采
+	if _, err := c.get(context.Background(), "s1", collect); err != nil {
+		t.Fatalf("get after invalidate: %v", err)
+	}
+	if calls != 3 {
+		t.Fatalf("collect calls after invalidate = %d, want 3", calls)
+	}
+
+	// 定位类错误(locErr)透传且不缓存:下次调用仍要真采集。
+	locErr := errors.New("locate boom")
+	calls = 0
+	failing := func(context.Context) (serverContainersDTO, error) {
+		calls++
+		return serverContainersDTO{ServerID: "s2"}, locErr
+	}
+	if _, err := c.get(context.Background(), "s2", failing); !errors.Is(err, locErr) {
+		t.Fatalf("want locErr passthrough, got %v", err)
+	}
+	if _, err := c.get(context.Background(), "s2", failing); !errors.Is(err, locErr) {
+		t.Fatalf("want locErr passthrough again, got %v", err)
+	}
+	if calls != 2 {
+		t.Fatalf("collect calls = %d, want 2(locErr 不应缓存)", calls)
+	}
+}
+
+// TestContainersCache_SingleFlight:并发未命中合并为一次采集,等待方共享同一结果。
+func TestContainersCache_SingleFlight(t *testing.T) {
+	c := newContainersCache(time.Minute)
+	var calls int32
+	collect := func(context.Context) (serverContainersDTO, error) {
+		atomic.AddInt32(&calls, 1)
+		time.Sleep(100 * time.Millisecond) // 留窗口让并发调用都落到 inflight 上等待
+		return serverContainersDTO{ServerID: "s1", Containers: []containerDTO{{ID: "c0"}}}, nil
+	}
+
+	const n = 8
+	var wg sync.WaitGroup
+	results := make([]serverContainersDTO, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			results[i], _ = c.get(context.Background(), "s1", collect)
+		}(i)
+	}
+	wg.Wait()
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Fatalf("collect calls = %d, want 1(并发应合并为一次采集)", got)
+	}
+	for i, r := range results {
+		if len(r.Containers) != 1 || r.Containers[0].ID != "c0" {
+			t.Fatalf("waiter %d got wrong shared result: %+v", i, r)
+		}
+	}
+}
+
+// countingDockerDialer 在 dockerLikeDialer 基础上计数 `docker ps` 次数,并把其余 docker
+// 子命令(restart/stop/...)当作成功 —— 供缓存命中/失效的 HTTP 级测试观察真采集次数。
+func countingDockerDialer(psCalls *int32) cmdDialer {
+	base := dockerLikeDialer()
+	return cmdDialer{fn: func(cmd []string) (*target.ExecResult, error) {
+		if len(cmd) >= 2 && cmd[0] == "docker" && cmd[1] == "ps" {
+			atomic.AddInt32(psCalls, 1)
+			return base.fn(cmd)
+		}
+		if len(cmd) >= 1 && cmd[0] == "docker" {
+			return &target.ExecResult{ExitCode: 0}, nil
+		}
+		return &target.ExecResult{Stderr: "command not found", ExitCode: 127}, nil
+	}}
+}
+
+// TestAllServerContainers_CacheReplayAndInvalidate(HTTP 级):轮询在 TTL 内回放缓存
+//(SSH ps 只跑一次);docker 生命周期操作成功投递后失效;?refresh=1 强制重采。
+func TestAllServerContainers_CacheReplayAndInvalidate(t *testing.T) {
+	var ps int32
+	srv, client, csrf := setupServerAPI(t, countingDockerDialer(&ps))
+	credID := newSSHCredAPI(t, client, srv.URL, csrf, "pw")
+	id := createServerAPI(t, client, srv.URL, csrf, credID)
+
+	getAll := func(url string) []serverContainersDTO {
+		t.Helper()
+		resp, err := client.Get(srv.URL + url)
+		if err != nil {
+			t.Fatalf("get %s: %v", url, err)
+		}
+		raw, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("get %s status = %d: %s", url, resp.StatusCode, raw)
+		}
+		var body struct {
+			Items []serverContainersDTO `json:"items"`
+		}
+		if err := json.Unmarshal(raw, &body); err != nil {
+			t.Fatalf("unmarshal: %v: %s", err, raw)
+		}
+		return body.Items
+	}
+
+	// 首次未命中 → 真采集;TTL 内再读 → 回放缓存(ps 次数不变,CollectedAt 原样)。
+	first := getAll("/api/servers/containers")
+	if atomic.LoadInt32(&ps) != 1 {
+		t.Fatalf("ps calls = %d, want 1 after first get", ps)
+	}
+	replay := getAll("/api/servers/containers")
+	if atomic.LoadInt32(&ps) != 1 {
+		t.Fatalf("ps calls = %d, want still 1(TTL 内应回放缓存)", ps)
+	}
+	if len(first) != 1 || len(replay) != 1 || replay[0].CollectedAt != first[0].CollectedAt {
+		t.Fatalf("replay should return cached copy: first=%+v replay=%+v", first, replay)
+	}
+
+	// docker 生命周期写操作成功投递 → 缓存失效,随后的读取重采。
+	resp := doJSON(t, client, http.MethodPost, srv.URL+"/api/servers/"+id+"/service/action", csrf,
+		`{"type":"docker","target":"web","action":"restart"}`)
+	io.ReadAll(resp.Body)
+	resp.Body.Close()
+	afterAction := getAll("/api/servers/containers")
+	if atomic.LoadInt32(&ps) != 2 {
+		t.Fatalf("ps calls = %d, want 2 after lifecycle action invalidated cache", ps)
+	}
+	if len(afterAction) != 1 || afterAction[0].Total != 2 {
+		t.Fatalf("post-action read should be a fresh collection: %+v", afterAction)
+	}
+
+	// ?refresh=1 强制重采(操作员逃生口)。
+	getAll("/api/servers/containers?refresh=1")
+	if atomic.LoadInt32(&ps) != 3 {
+		t.Fatalf("ps calls = %d, want 3 after refresh=1", ps)
 	}
 }

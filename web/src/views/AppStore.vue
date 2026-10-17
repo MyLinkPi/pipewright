@@ -24,6 +24,7 @@ import {
 } from '../api/apps'
 import { listServers, type Server } from '../api/servers'
 import { getServerStacks } from '../api/containers'
+import { useServerCapacity } from '../composables/useServerCapacity'
 import {
   listDomains,
   getGateway,
@@ -70,6 +71,11 @@ async function load(): Promise<void> {
 }
 onMounted(load)
 
+// 选机器参考:每台机的容器数 + 负载/内存/磁盘容量行(数据来自后端缓存的只读端点,
+// 失败静默降级;未加载完时选项先显示机器名,hint 后到)。
+const capacity = useServerCapacity()
+onMounted(() => void capacity.load())
+
 const builtinTemplates = computed(() => templates.value.filter((x) => x.builtin))
 const customTemplates = computed(() => templates.value.filter((x) => !x.builtin))
 
@@ -82,7 +88,10 @@ const deployMemory = ref('')
 const deployBusy = ref(false)
 const deployResult = ref<AppDeployResult | null>(null)
 
-const serverOptions = computed(() => servers.value.map((s) => ({ value: s.id, label: s.name })))
+// 选项第二行带容量摘要(容器数/负载/内存/磁盘),便于把应用放到还装得下的机器。
+const serverOptions = computed(() =>
+  servers.value.map((s) => ({ value: s.id, label: s.name, hint: capacity.capacityLine(s.id) })),
+)
 
 // 实例名(可选):生效栈名 = 模板名(留空)或 模板名-实例名,同机多副本按 compose 项目前缀隔离。
 const deployInstance = ref('')
@@ -225,11 +234,13 @@ function sanitizeServiceName(raw: string): string {
     .slice(0, 63)
 }
 
-// pickPortParam 从部署生效参数启发式取宿主端口:键 port 优先,其次 *port;须为 1-65535 整数。
+// pickPortParam 从部署生效参数启发式取宿主端口:网关只反代 HTTP,优先取 HTTP 向端口
+//(port 本体 > api/console/mgmt/web 等管理面),amqp/kafka 等协议端口仅作兜底;须为 1-65535 整数。
+const portParamPriority = ['port', 'api_port', 'console_port', 'mgmt_port', 'web_port', 'http_port', 'ui_port']
 function pickPortParam(params?: Record<string, string>): string {
   if (!params) return ''
   const names = Object.keys(params)
-  const key = names.includes('port') ? 'port' : names.find((k) => k.endsWith('port'))
+  const key = portParamPriority.find((k) => names.includes(k)) ?? names.find((k) => k.endsWith('port'))
   if (!key) return ''
   const n = Number(params[key])
   return Number.isInteger(n) && n >= 1 && n <= 65535 ? String(n) : ''

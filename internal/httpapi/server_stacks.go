@@ -506,6 +506,8 @@ func makeStackSaveHandler(svc target.Service, aud audit.Recorder) http.HandlerFu
 			writeJSON(w, http.StatusOK, out)
 			return
 		}
+		// compose up 已投递(容器集合大概率已变)→ 丢弃该台容器清单缓存。
+		serverContainersCache.invalidate(id)
 		if res.ExitCode != 0 {
 			msg := strings.TrimSpace(res.Stderr)
 			if msg == "" {
@@ -714,6 +716,8 @@ func makeStackActionHandler(svc target.Service, aud audit.Recorder) http.Handler
 			writeJSON(w, http.StatusOK, out)
 			return
 		}
+		// stack 动作(up/down/start/stop/restart)已投递 → 丢弃该台容器清单缓存。
+		serverContainersCache.invalidate(id)
 		if res.ExitCode != 0 {
 			msg := strings.TrimSpace(res.Stderr)
 			if msg == "" {

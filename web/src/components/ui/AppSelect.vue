@@ -6,6 +6,11 @@ defineOptions({ inheritAttrs: false })
 export interface SelectOption {
   value: string
   label: string
+  /**
+   * 选项第二行的辅助信息(仅下拉菜单展示,trigger 仍只显示 label),如选机器时的
+   * 容器数/负载/内存容量行。参与 searchable 过滤,便于按容量特征搜机器。
+   */
+  hint?: string
 }
 
 const props = withDefaults(
@@ -52,7 +57,7 @@ const query = ref('')
 const visibleOptions = computed(() =>
   props.searchable && query.value
     ? props.options.filter((option) =>
-        (option.label + ' ' + option.value)
+        (option.label + ' ' + option.value + ' ' + (option.hint ?? ''))
           .toLowerCase()
           .includes(query.value.toLowerCase()),
       )
@@ -256,7 +261,10 @@ onBeforeUnmount(() => {
           @mouseenter="activeIndex = index"
           @click="choose(option)"
         >
-          <span>{{ option.label }}</span>
+          <span class="app-select__option-text">
+            <span class="app-select__option-label">{{ option.label }}</span>
+            <span v-if="option.hint" class="app-select__option-hint">{{ option.hint }}</span>
+          </span>
           <svg
             v-if="option.value === modelValue"
             class="app-select__check"
@@ -381,6 +389,27 @@ onBeforeUnmount(() => {
 .app-select__option--selected,
 .app-select__check {
   color: var(--color-primary);
+}
+/* 带 hint 的选项:左列两行(名称 + 容量小字),对勾仍垂直居中于右缘。 */
+.app-select__option-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+.app-select__option-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.app-select__option-hint {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-faint);
+  font-size: 0.78rem;
+  line-height: 1.2;
 }
 .app-select__empty {
   padding: 10px 9px;

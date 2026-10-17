@@ -160,6 +160,12 @@ func makeServiceActionHandler(svc target.Service, aud audit.Recorder) http.Handl
 			return
 		}
 
+		// 容器生命周期命令已投递 → 丢弃该台容器清单缓存,操作后的刷新立刻重采
+		// (systemd 不涉及 docker ps 清单变化,无需失效)。
+		if req.Type == "docker" {
+			serverContainersCache.invalidate(id)
+		}
+
 		// 命令已投递。退出码非零(无该 unit/无该容器/docker 未装)→ ok:false + stderr 人读,不 500。
 		if res.ExitCode != 0 {
 			msg := strings.TrimSpace(res.Stderr)

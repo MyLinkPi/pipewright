@@ -257,6 +257,8 @@ func makeCreateContainerHandler(svc target.Service, aud audit.Recorder) http.Han
 			writeJSON(w, http.StatusOK, out)
 			return
 		}
+		// docker run 已投递 → 丢弃该台容器清单缓存(新容器应立刻出现在随后的刷新里)。
+		serverContainersCache.invalidate(id)
 		if res.ExitCode != 0 {
 			msg := strings.TrimSpace(res.Stderr)
 			if msg == "" {

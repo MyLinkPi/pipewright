@@ -21,6 +21,8 @@ import (
 //   - 某台连得上但无容器运行时(docker 未装 / 当前用户无权限)→ runtime:"" + 人读 error,
 //     containers 空,仍 reachable:true(连接本身没问题)。
 //   - 批量端点逐台并行采集,有界并发(信号量防 N 台同时 SSH 打爆)。
+//   - 采集结果按台进程内 TTL 缓存 + single-flight(见 containersCache):前端轮询与多
+//     标签页不再放大 SSH 次数;容器变更类写操作成功投递后主动失效,操作后刷新即拿新数据。
 //
 // AC-SEC-02:采集命令是**纯静态命令 array**(`docker ps -a --format {{json .}}`),绝不接受
 // 任何用户输入拼接 —— 无注入面。容器**生命周期**(起停重启/暂停/kill/删除)复用既有
@@ -199,10 +201,125 @@ func humanContainersError(err error) string {
 	}
 }
 
+// --- 采集缓存(TTL + single-flight)---
+
+// containersCacheTTL 是单台容器清单采集结果的进程内缓存时长。前端容器页每 12s 轮询一次
+// 批量端点,不缓存则每次轮询都对全部服务器逐台 SSH 跑 docker ps —— 既慢(单台超时上限
+// 15s),又对目标机形成连接风暴。缓存让 TTL 内的轮询直接回放上次结果;CollectedAt 保持
+// 真实采集时间,消费方可感知数据年龄。30s ≈ 轮询周期的 2.5 倍(多数轮询命中),容器清单
+// 本就是准实时视图,30s 陈旧可接受;变更类写操作(生命周期/建容器/栈部署/清理)成功投递
+// 后主动失效缓存,操作后刷新即拿新数据。
+const containersCacheTTL = 30 * time.Second
+
+// containersCache 是 per-server 采集结果缓存,附带 single-flight:同一台并发未命中只允许
+// 一个采集在飞,其余等待共享结果 —— 多标签页/多客户端同时轮询不再放大 SSH 次数。**失败
+// 结果同样缓存**:不可达台恰是采集最慢的台(连接超时撑满 15s),不缓存会让它们拖慢每
+// 一次轮询。进程内状态(与 build 包 remoteCLICache 同款思路):单实例部署,重启即清空。
+type containersCache struct {
+	mu       sync.Mutex
+	ttl      time.Duration
+	now      func() time.Time // 注入时钟,便于单测 TTL 过期路径
+	entries  map[string]containersCacheEntry
+	inflight map[string]chan struct{}
+}
+
+// containersCacheEntry 是一台服务器的采集缓存。dto 按只读契约共享(handlers 仅序列化,
+// 绝不修改;struct 拷贝返回,Containers 切片底层数组同样只读)。
+type containersCacheEntry struct {
+	dto serverContainersDTO
+	at  time.Time
+}
+
+func newContainersCache(ttl time.Duration) *containersCache {
+	return &containersCache{
+		ttl:      ttl,
+		now:      time.Now,
+		entries:  map[string]containersCacheEntry{},
+		inflight: map[string]chan struct{}{},
+	}
+}
+
+// serverContainersCache 是容器清单的进程级缓存实例(两个只读端点共享,写操作失效它)。
+var serverContainersCache = newContainersCache(containersCacheTTL)
+
+// containersCollectFunc 采集一台服务器的容器清单。locErr 是「定位类」错误(服务器/凭据不
+// 存在、保险库未配):带它返回的结果**不缓存** —— 那是调用参数/装配问题,缓存会把本应
+// 映射 404/422/503 的错误错当成 reachable:false 的采集失败回放。
+type containersCollectFunc func(ctx context.Context) (serverContainersDTO, error)
+
+// get 返回 id 的容器清单:TTL 内命中直接回放;未命中/过期经 collect 采集一次并缓存(含
+// reachable:false 的失败结果)。并发对同一 id 的调用合并为一次采集。ctx 取消只影响「等待
+// 他人结果」的调用方(拿到人读 error 的占位 DTO);采集本身以 Background 跑满自身超时,
+// 发起请求断开不连累共享同一结果的其它等待方,采集结果仍会入缓存供下次轮询使用。
+func (c *containersCache) get(ctx context.Context, id string, collect containersCollectFunc) (serverContainersDTO, error) {
+	c.mu.Lock()
+	if e, ok := c.entries[id]; ok && c.now().Sub(e.at) < c.ttl {
+		c.mu.Unlock()
+		return e.dto, nil
+	}
+	wait, inflight := c.inflight[id]
+	if !inflight {
+		wait = make(chan struct{})
+		c.inflight[id] = wait
+		c.mu.Unlock()
+
+		// 脱离请求 ctx 采集(结果会被其它等待方共享,不能随发起请求断开而中止);
+		// collectServerContainers 内部再套 containersCmdTimeout,时长有界。
+		dto, locErr := collect(context.Background())
+		c.mu.Lock()
+		delete(c.inflight, id)
+		if locErr == nil {
+			c.entries[id] = containersCacheEntry{dto: dto, at: c.now()}
+		}
+		c.mu.Unlock()
+		close(wait)
+		return dto, locErr
+	}
+	c.mu.Unlock()
+
+	select {
+	case <-wait:
+		// 共享到他人结果(已入缓存;若其采集 locErr 失败则未入,重查落空 → 自采)。
+		c.mu.Lock()
+		e, ok := c.entries[id]
+		c.mu.Unlock()
+		if ok {
+			return e.dto, nil
+		}
+	case <-ctx.Done():
+		return serverContainersDTO{ServerID: id, Containers: []containerDTO{}, Error: "等待采集结果时请求已取消"}, nil
+	}
+	// 等到了他人采集但结果未入缓存(定位类失败 / 恰好被写操作失效)→ 自采一次直接返回,
+	// 不回填缓存,避免与可能仍在飞的采集竞态。
+	return collect(ctx)
+}
+
+// invalidate 丢弃 id 的缓存条目(容器变更类写操作成功投递后调用,让随后的读取立刻重新
+// 采集而非回放旧清单)。
+func (c *containersCache) invalidate(id string) {
+	c.mu.Lock()
+	delete(c.entries, id)
+	c.mu.Unlock()
+}
+
+// collectServerContainersCached 经缓存采集单台(handlers 的唯一入口;refresh 时先失效)。
+func collectServerContainersCached(ctx context.Context, svc target.Service, id string) (serverContainersDTO, error) {
+	return serverContainersCache.get(ctx, id, func(ctx context.Context) (serverContainersDTO, error) {
+		return collectServerContainers(ctx, svc, id)
+	})
+}
+
+// wantContainersRefresh 解析只读端点的 ?refresh=1(操作员强制重采的逃生口:怀疑缓存与
+// 真相不符时 curl 一下即可,无需等 TTL 或重启)。
+func wantContainersRefresh(r *http.Request) bool {
+	return r.URL.Query().Get("refresh") == "1"
+}
+
 // --- HTTP handlers ---
 
 // makeServerContainersHandler 返回 GET /api/servers/{id}/containers(认证,只读)。
 // 服务器不存在/凭据不存在/保险库未配 → 标准状态码;连接/采集失败 → 200 + reachable:false,不 500。
+// 结果经进程内 TTL 缓存回放(见 containersCache);?refresh=1 强制重采。
 func makeServerContainersHandler(svc target.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if svc == nil {
@@ -214,7 +331,10 @@ func makeServerContainersHandler(svc target.Service) http.HandlerFunc {
 			writeServerError(w, err)
 			return
 		}
-		out, locErr := collectServerContainers(r.Context(), svc, id)
+		if wantContainersRefresh(r) {
+			serverContainersCache.invalidate(id)
+		}
+		out, locErr := collectServerContainersCached(r.Context(), svc, id)
 		if locErr != nil {
 			writeServerError(w, locErr)
 			return
@@ -225,6 +345,8 @@ func makeServerContainersHandler(svc target.Service) http.HandlerFunc {
 
 // makeAllServerContainersHandler 返回 GET /api/servers/containers(认证,只读;批量聚合)。
 // 逐台并行采集(有界并发),各自独立:某台失败仅该台 reachable:false,不连累其它台、不 500。
+// 结果经进程内 TTL 缓存回放(前端每 12s 轮询不再每次都打 SSH;见 containersCache);
+// ?refresh=1 对全部列出的服务器强制重采。
 func makeAllServerContainersHandler(svc target.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if svc == nil {
@@ -236,17 +358,21 @@ func makeAllServerContainersHandler(svc target.Service) http.HandlerFunc {
 			writeError(w, http.StatusInternalServerError, "internal", "服务器内部错误")
 			return
 		}
+		refresh := wantContainersRefresh(r)
 
 		items := make([]serverContainersDTO, len(servers))
 		sem := make(chan struct{}, containersConcurrency)
 		var wg sync.WaitGroup
 		for i, srv := range servers {
+			if refresh {
+				serverContainersCache.invalidate(srv.ID)
+			}
 			wg.Add(1)
 			go func(i int, id string) {
 				defer wg.Done()
 				sem <- struct{}{}
 				defer func() { <-sem }()
-				items[i], _ = collectServerContainers(r.Context(), svc, id)
+				items[i], _ = collectServerContainersCached(r.Context(), svc, id)
 			}(i, srv.ID)
 		}
 		wg.Wait()

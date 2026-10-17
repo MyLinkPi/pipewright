@@ -45,6 +45,7 @@ import { listServers, type Server } from '../api/servers'
 import { HttpError } from '../api/http'
 import { useToast } from '../composables/useToast'
 import { useConfirm } from '../composables/useConfirm'
+import { useServerCapacity } from '../composables/useServerCapacity'
 import EmptyState from '../components/ui/EmptyState.vue'
 import ErrorState from '../components/ui/ErrorState.vue'
 import AppButton from '../components/ui/AppButton.vue'
@@ -102,6 +103,10 @@ async function load(): Promise<void> {
   }
 }
 onMounted(load)
+
+// 选机器参考:每台机的容器数 + 负载/内存/磁盘容量行(后端缓存端点,失败静默降级)。
+const capacity = useServerCapacity()
+onMounted(() => void capacity.load())
 
 // ─── 网关设置 ─────────────────────────────────────────────────────────────────
 const busy = ref(false)
@@ -579,8 +584,15 @@ async function saveSvcEdit(s: RegisteredService): Promise<void> {
                     :checked="form.serverIds.includes(sv.id)"
                     @change="toggleHost(sv.id)"
                   />
-                  <span class="sreg__host-name">{{ sv.name }}</span>
-                  <span class="sreg__host-meta">{{ sv.host }}:{{ sv.port }}</span>
+                  <span class="sreg__host-main">
+                    <span class="sreg__host-name">{{ sv.name }}</span>
+                    <span class="sreg__host-meta">{{ sv.host }}:{{ sv.port }}</span>
+                    <span
+                      v-if="capacity.capacityLine(sv.id)"
+                      class="sreg__host-meta sreg__host-capacity"
+                      >{{ capacity.capacityLine(sv.id) }}</span
+                    >
+                  </span>
                 </label>
               </li>
             </ul>
@@ -840,7 +852,9 @@ async function saveSvcEdit(s: RegisteredService): Promise<void> {
               >
                 <select v-model="instForm.serverId" class="field__in" required>
                   <option value="" disabled>{{ t('serviceReg.instances.serverPlaceholder') }}</option>
-                  <option v-for="sv in servers" :key="sv.id" :value="sv.id">{{ sv.name }} · {{ sv.host }}</option>
+                  <option v-for="sv in servers" :key="sv.id" :value="sv.id">
+                    {{ sv.name }} · {{ sv.host }}{{ capacity.capacityLine(sv.id) ? ' · ' + capacity.capacityLine(sv.id) : '' }}
+                  </option>
                 </select>
                 <input
                   v-model="instForm.container"
@@ -1112,10 +1126,16 @@ async function saveSvcEdit(s: RegisteredService): Promise<void> {
 }
 .sreg__host-item {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 8px;
   font-size: 13px;
   cursor: pointer;
+}
+.sreg__host-main {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
 }
 .sreg__host-name {
   font-weight: 500;
@@ -1123,6 +1143,12 @@ async function saveSvcEdit(s: RegisteredService): Promise<void> {
 .sreg__host-meta {
   font-size: 12px;
   opacity: 0.6;
+}
+/* 容量摘要行(容器数/负载/内存/磁盘)与地址同款小字,不抢主机名视觉。 */
+.sreg__host-capacity {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .sreg__hint {
   font-size: 12px;

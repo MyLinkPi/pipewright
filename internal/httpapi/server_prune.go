@@ -288,6 +288,9 @@ func makeSystemPruneHandler(svc target.Service, aud audit.Recorder) http.Handler
 			return
 		}
 
+		// prune 命令已投递(containers/all scope 会移除容器)→ 丢弃该台容器清单缓存。
+		serverContainersCache.invalidate(id)
+
 		// 命令已投递。非零退出(未装 docker / 守护进程不可用 / 无权限)→ ok:false + stderr 人读。
 		if res.ExitCode != 0 {
 			msg := strings.TrimSpace(res.Stderr)
