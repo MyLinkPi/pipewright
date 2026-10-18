@@ -217,7 +217,7 @@ async function handleSavePublicUrl(): Promise<void> {
   if (publicUrlSaving.value) return
   publicUrlSaving.value = true
   try {
-    const c = await saveSystemConfig(publicUrl.value.trim())
+    const c = await saveSystemConfig({ publicUrl: publicUrl.value.trim() })
     publicUrl.value = c.publicUrl
     toast.success(t('platformHttps.publicUrlSaved'))
   } catch (err) {

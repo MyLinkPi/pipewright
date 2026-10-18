@@ -71,6 +71,18 @@ export default {
   updateSrcFromEnv: 'from env PIPEWRIGHT_RELEASE_MIRROR',
   updateSrcFromDefault: 'default · no mirror configured',
 
-  langTitle: 'Interface language',
-  langSub: 'Switch the UI language. Takes effect immediately.',
+  langTitle: 'UI Language',
+  langSub: 'Switch the interface language; takes effect immediately.',
+
+  passkeyTitle: 'Passkey / Two-Factor',
+  passkeySub: 'Relying-party (RP) settings for passkey sign-in; left empty they are derived from the public URL. Explicit values are recommended behind proxies or with multiple domains.',
+  passkeyEnabledLabel: 'Enable passkey sign-in',
+  passkeyRpIdLabel: 'RP ID (domain)',
+  passkeyRpIdPlaceholder: 'Leave empty to auto-derive, e.g. ci.example.com',
+  passkeyOriginsLabel: 'Allowed origins (comma-separated)',
+  passkeyOriginsPlaceholder: 'Leave empty to auto-derive, e.g. https://ci.example.com',
+  passkeyNote: 'Changes take effect immediately; browsers require HTTPS (except localhost).',
+  passkeySave: 'Save',
+  passkeySaved: 'Saved',
+  passkeySaveFailed: 'Save failed — please check the input',
 }

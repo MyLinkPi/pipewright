@@ -13,6 +13,8 @@ import { useI18n } from 'vue-i18n'
 import AppButton from '../../components/ui/AppButton.vue'
 import ChangePasswordPanel from '../../components/settings/ChangePasswordPanel.vue'
 import ActiveSessionsPanel from '../../components/settings/ActiveSessionsPanel.vue'
+import TotpPanel from '../../components/settings/mfa/TotpPanel.vue'
+import PasskeysPanel from '../../components/settings/mfa/PasskeysPanel.vue'
 import { useToast } from '../../composables/useToast'
 import { resetOnboarding } from '../../composables/useOnboarding'
 import { useSessionStore } from '../../stores/session'
@@ -54,6 +56,10 @@ function onReopenOnboarding(): void {
         </div>
       </div>
     </section>
+
+    <!-- 两步验证:验证器(TOTP)与通行密钥(Passkey) -->
+    <TotpPanel />
+    <PasskeysPanel />
 
     <!-- 共享改密面板 -->
     <ChangePasswordPanel @updated="onPasswordUpdated" />

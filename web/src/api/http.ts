@@ -9,6 +9,7 @@
 
 import { currentLocale } from '../i18n'
 import { resetOpsAuth } from '../utils/opsAuth'
+import { sessionExpired } from '../utils/sessionExpired'
 
 export interface ApiError {
   code: string
@@ -33,9 +34,6 @@ function getCookie(name: string): string {
 }
 
 const WRITE_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE'])
-
-/** Guard against concurrent 401 responses each triggering a redirect. */
-let redirectingToLogin = false
 
 async function request<T>(
   url: string,
@@ -77,16 +75,8 @@ async function request<T>(
   if (response.status === 401 && !isAuthEndpoint) {
     resetOpsAuth()
     // Not logged in — redirect to login exactly once even if multiple
-    // concurrent requests all return 401 simultaneously.
-    if (!redirectingToLogin) {
-      redirectingToLogin = true
-      const currentPath =
-        location.pathname +
-        (location.search ? location.search : '') +
-        (location.hash ? location.hash : '')
-      const redirectTo = encodeURIComponent(currentPath)
-      location.replace(`/login?redirect=${redirectTo}`)
-    }
+    // concurrent requests all return 401 simultaneously (统一出口见 utils/sessionExpired)。
+    sessionExpired()
     // Return a never-resolving promise so callers don't see undefined
     if (url.startsWith('/api/ai/ops/')) throw new HttpError(401, null, 'Unauthorized')
     return new Promise<never>(() => undefined)

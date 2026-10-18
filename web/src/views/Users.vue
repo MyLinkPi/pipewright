@@ -29,6 +29,7 @@ import {
   type UserDTO,
   type InvitationDTO,
 } from '../api/users'
+import { adminResetPasskeys, adminResetTOTP } from '../api/mfa'
 
 const { t } = useI18n()
 const toast = useToast()
@@ -48,6 +49,51 @@ async function loadUsers(): Promise<void> {
     usersError.value = err instanceof Error ? err.message : t('users.errLoadUsers')
   } finally {
     usersLoading.value = false
+  }
+}
+
+// ─── 两步验证管理(成员被锁死时的恢复通道)───────────────────────────────────
+const mfaBusy = ref('')
+
+async function onResetTOTP(u: UserDTO): Promise<void> {
+  if (mfaBusy.value) return
+  const ok = await confirm.open({
+    title: t('mfa.adminResetTotp'),
+    body: t('mfa.adminResetTotpConfirm', { username: u.username }),
+    confirmLabel: t('mfa.adminResetTotp'),
+    variant: 'danger',
+  })
+  if (!ok) return
+  mfaBusy.value = u.id
+  try {
+    await adminResetTOTP(u.id)
+    toast.success(t('mfa.adminResetDone'))
+    await loadUsers()
+  } catch {
+    toast.error(t('mfa.errCode'))
+  } finally {
+    mfaBusy.value = ''
+  }
+}
+
+async function onResetPasskeys(u: UserDTO): Promise<void> {
+  if (mfaBusy.value) return
+  const ok = await confirm.open({
+    title: t('mfa.adminResetPasskeys'),
+    body: t('mfa.adminResetPasskeysConfirm', { username: u.username }),
+    confirmLabel: t('mfa.adminResetPasskeys'),
+    variant: 'danger',
+  })
+  if (!ok) return
+  mfaBusy.value = u.id
+  try {
+    await adminResetPasskeys(u.id)
+    toast.success(t('mfa.adminResetDone'))
+    await loadUsers()
+  } catch {
+    toast.error(t('mfa.errCode'))
+  } finally {
+    mfaBusy.value = ''
   }
 }
 
@@ -252,6 +298,8 @@ onMounted(async () => {
               <th scope="col">{{ t('users.colUsername') }}</th>
               <th scope="col">{{ t('users.colRole') }}</th>
               <th scope="col">{{ t('users.colStatus') }}</th>
+              <th scope="col">{{ t('mfa.adminColTotp') }}</th>
+              <th scope="col">{{ t('mfa.adminColPasskeys') }}</th>
               <th scope="col">{{ t('users.colCreatedAt') }}</th>
             </tr>
           </thead>
@@ -260,6 +308,33 @@ onMounted(async () => {
               <td class="cell-strong">{{ u.username }}</td>
               <td><span class="pill">{{ u.role === 'member' ? t('users.roleMember') : t('users.roleAdmin') }}</span></td>
               <td><span class="pill pill--ok">{{ t('users.statusActive') }}</span></td>
+              <td>
+                <span class="pill" :class="u.totpEnabled ? 'pill--ok' : 'pill--muted'">
+                  {{ u.totpEnabled ? t('mfa.totpOn') : t('mfa.totpOff') }}
+                </span>
+              </td>
+              <td class="cell-muted users-mfa-cell">
+                <span class="users-mfa-count">{{ u.passkeyCount }}</span>
+                <span
+                  v-if="u.totpEnabled || u.passkeyCount > 0"
+                  class="users-mfa-actions"
+                >
+                  <button
+                    v-if="u.totpEnabled"
+                    type="button"
+                    class="link"
+                    :disabled="mfaBusy === u.id"
+                    @click="onResetTOTP(u)"
+                  >{{ t('mfa.adminResetTotp') }}</button>
+                  <button
+                    v-if="u.passkeyCount > 0"
+                    type="button"
+                    class="link users-mfa-reset"
+                    :disabled="mfaBusy === u.id"
+                    @click="onResetPasskeys(u)"
+                  >{{ t('mfa.adminResetPasskeys') }}</button>
+                </span>
+              </td>
               <td class="cell-muted">{{ formatTime(u.createdAt) }}</td>
             </tr>
           </tbody>
@@ -496,6 +571,10 @@ onMounted(async () => {
   border: 1px solid var(--color-border-strong);
   color: var(--color-dim);
 }
+.pill--muted {
+  background: rgba(107, 114, 128, 0.12);
+  color: #6b7280;
+}
 .pill--ok {
   color: var(--color-green);
   background: var(--color-green-soft);
@@ -574,5 +653,16 @@ onMounted(async () => {
   clip: rect(0, 0, 0, 0);
   white-space: nowrap;
   border: 0;
+}
+.users-mfa-cell {
+  white-space: nowrap;
+}
+.users-mfa-actions {
+  display: inline-flex;
+  gap: 10px;
+  margin-left: 8px;
+}
+.users-mfa-reset {
+  color: #ef4444;
 }
 </style>

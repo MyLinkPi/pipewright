@@ -3,10 +3,18 @@ import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter, useRoute } from 'vue-router'
 import { login } from '../api/auth'
+import type { SessionUser } from '../api/auth'
 import { HttpError } from '../api/http'
+import { beginPasskeyLogin, fetchAuthOptions, finishPasskeyLogin, loginMFA } from '../api/mfa'
 import { listProjects } from '../api/projects'
 import { isOnboardingDismissed } from '../composables/useOnboarding'
 import { useSessionStore } from '../stores/session'
+import {
+  buildAssertionResult,
+  getCredential,
+  isPasskeySupported,
+  prepareCredentialRequestOptions,
+} from '../utils/webauthn'
 
 const router = useRouter()
 const route = useRoute()
@@ -17,6 +25,16 @@ const username = ref('')
 const password = ref('')
 const showPassword = ref(false)
 const loading = ref(false)
+
+// ─── 两步验证(TOTP)与 Passkey 登录 ────────────────────────────────────────
+// step:password → 口令;mfa → 验证码(账户已启用 TOTP,口令已通过)。
+const step = ref<'password' | 'mfa'>('password')
+const mfaCode = ref('')
+const useBackupCode = ref(false)
+const mfaLoading = ref(false)
+const mfaError = ref('')
+const passkeyAvailable = ref(false)
+const passkeyLoading = ref(false)
 
 // Field-level errors
 const usernameError = ref('')
@@ -55,44 +73,16 @@ async function handleSubmit(): Promise<void> {
   clearErrors()
 
   try {
-    const user = await login(username.value.trim(), password.value)
-    // Prime the session cache so the route guard sees the fresh login
-    // instead of the stale "unauthenticated" result from app startup.
-    sessionStore.setUser(user)
-    // Success — navigate to redirect target or root.
-    // Validate redirect: must start with '/' and must NOT start with '//'
-    // (double-slash opens a protocol-relative open-redirect vector).
-    const rawRedirect = route.query.redirect as string | undefined
-    const hasExplicitRedirect =
-      typeof rawRedirect === 'string' &&
-      rawRedirect.startsWith('/') &&
-      !rawRedirect.startsWith('//')
-
-    if (hasExplicitRedirect) {
-      await router.replace(rawRedirect as string)
+    const result = await login(username.value.trim(), password.value)
+    if (result.mfaRequired) {
+      // 账户已启用 TOTP:口令已过,进入验证码步骤(pending 会话 cookie 已下发)。
+      step.value = 'mfa'
+      mfaCode.value = ''
+      useBackupCode.value = false
+      mfaError.value = ''
       return
     }
-
-    // 普通用户没有概览/引导页,直接落到「我的项目」。
-    if (user.role === 'member') {
-      await router.replace('/my-projects')
-      return
-    }
-
-    // No explicit target: first-run instances (no project, not dismissed) land on
-    // the onboarding guide; otherwise fall to the overview. hasAI/hasServer are
-    // forward-declared (7-1/4-1 not built) so onboarding is gated on project存在.
-    let goOnboarding = false
-    if (!isOnboardingDismissed()) {
-      try {
-        const projects = await listProjects()
-        goOnboarding = projects.length === 0
-      } catch {
-        // Projects unreachable — don't block login; fall to overview.
-        goOnboarding = false
-      }
-    }
-    await router.replace(goOnboarding ? '/onboarding' : '/')
+    await finishLogin(result)
   } catch (err) {
     if (err instanceof HttpError) {
       if (err.status === 429) {
@@ -115,7 +105,101 @@ async function handleSubmit(): Promise<void> {
   }
 }
 
+/** 登录成功后的统一跳转(口令单步 / TOTP 两步 / Passkey 共用)。 */
+async function finishLogin(user: SessionUser): Promise<void> {
+  // Prime the session cache so the route guard sees the fresh login
+  // instead of the stale "unauthenticated" result from app startup.
+  sessionStore.setUser(user)
+  // Success — navigate to redirect target or root.
+  // Validate redirect: must start with '/' and must NOT start with '//'
+  // (double-slash opens a protocol-relative open-redirect vector).
+  const rawRedirect = route.query.redirect as string | undefined
+  const hasExplicitRedirect =
+    typeof rawRedirect === 'string' &&
+    rawRedirect.startsWith('/') &&
+    !rawRedirect.startsWith('//')
+
+  if (hasExplicitRedirect) {
+    await router.replace(rawRedirect as string)
+    return
+  }
+
+  // 普通用户没有概览/引导页,直接落到「我的项目」。
+  if (user.role === 'member') {
+    await router.replace('/my-projects')
+    return
+  }
+
+  // No explicit target: first-run instances (no project, not dismissed) land on
+  // the onboarding guide; otherwise fall to the overview.
+  let goOnboarding = false
+  if (!isOnboardingDismissed()) {
+    try {
+      const projects = await listProjects()
+      goOnboarding = projects.length === 0
+    } catch {
+      // Projects unreachable — don't block login; fall to overview.
+      goOnboarding = false
+    }
+  }
+  await router.replace(goOnboarding ? '/onboarding' : '/')
+}
+
+/** 两步验证第二步:提交动态码 / 备份码,成功即完成登录。 */
+async function handleMfaSubmit(): Promise<void> {
+  const code = mfaCode.value.trim()
+  if (!code || mfaLoading.value) return
+  mfaLoading.value = true
+  mfaError.value = ''
+  try {
+    const user = await loginMFA(code)
+    await finishLogin(user)
+  } catch (err) {
+    if (err instanceof HttpError) {
+      if (err.status === 429) {
+        mfaError.value = err.apiError?.message ?? t('login.errLockout')
+      } else if (err.status === 401) {
+        mfaError.value = err.apiError?.message ?? t('login.mfaErrCode')
+      } else {
+        mfaError.value = err.apiError?.message ?? t('login.errGeneric', { status: err.status })
+      }
+    } else {
+      mfaError.value = t('login.errUnknown')
+    }
+  } finally {
+    mfaLoading.value = false
+  }
+}
+
+/** Passkey 登录:begin → 浏览器断言 → finish → 统一跳转。 */
+async function handlePasskeyLogin(): Promise<void> {
+  if (passkeyLoading.value) return
+  passkeyLoading.value = true
+  clearErrors()
+  try {
+    const begin = await beginPasskeyLogin()
+    const credential = await getCredential(prepareCredentialRequestOptions(begin.options))
+    const payload = buildAssertionResult(credential as PublicKeyCredential | null)
+    if (!payload) {
+      bannerError.value = t('mfa.errPasskeyFailed')
+      return
+    }
+    const user = await finishPasskeyLogin(payload)
+    await finishLogin(user)
+  } catch (err) {
+    if (err instanceof HttpError) {
+      bannerError.value = err.apiError?.message ?? t('login.errGeneric', { status: err.status })
+    } else {
+      // 多为用户取消浏览器弹窗(NotAllowedError)。
+      bannerError.value = t('mfa.errPasskeyFailed')
+    }
+  } finally {
+    passkeyLoading.value = false
+  }
+}
+
 const canSubmit = computed(() => !loading.value && !isLockedOut.value)
+const canSubmitMfa = computed(() => !mfaLoading.value && mfaCode.value.trim().length > 0)
 
 // ─── 沉浸式氛围:浮动粒子 + 指针视差(纯装饰,尊重 prefers-reduced-motion) ───────
 // 全部自包含、无外部资源(self-hosted「数据不出网」铁律):字体用项目 token,粒子用 canvas。
@@ -134,6 +218,20 @@ interface Particle {
   a: number
   hue: number
 }
+
+// Passkey 能力探测:实例内有已注册密钥且浏览器支持,才显示「通行密钥登录」按钮。
+onMounted(() => {
+  void (async () => {
+    try {
+      const opts = await fetchAuthOptions()
+      if (opts.passkeyLogin && (await isPasskeySupported())) {
+        passkeyAvailable.value = true
+      }
+    } catch {
+      // 探测失败(后端未就绪)静默:不显示按钮即可。
+    }
+  })()
+})
 
 onMounted(() => {
   const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches
@@ -244,7 +342,13 @@ onBeforeUnmount(() => {
           </h1>
           <p class="lede">{{ t('login.lede') }}</p>
 
-          <form class="login-form" novalidate :aria-label="t('login.formAria')" @submit.prevent="handleSubmit">
+          <form
+            v-if="step === 'password'"
+            class="login-form"
+            novalidate
+            :aria-label="t('login.formAria')"
+            @submit.prevent="handleSubmit"
+          >
             <!-- Banner error (401 / 429 / network) -->
             <div
               v-if="bannerError"
@@ -360,6 +464,83 @@ onBeforeUnmount(() => {
               </svg>
             </button>
           </form>
+
+          <!-- ── 两步验证第二步:动态码 / 备份码 ───────────────────────────── -->
+          <form
+            v-else
+            class="login-form"
+            novalidate
+            :aria-label="t('login.mfaTitle')"
+            @submit.prevent="handleMfaSubmit"
+          >
+            <div
+              v-if="mfaError"
+              class="banner"
+              role="alert"
+              aria-live="assertive"
+            >
+              <span class="banner__icon" aria-hidden="true">⚠</span>
+              <span>{{ mfaError }}</span>
+            </div>
+
+            <p class="mfa-hint">{{ t('login.mfaHint') }}</p>
+
+            <div class="field">
+              <label class="field__label" for="mfa-code">{{
+                useBackupCode ? t('login.mfaBackupLabel') : t('login.mfaCodeLabel')
+              }}</label>
+              <div class="inwrap">
+                <input
+                  id="mfa-code"
+                  v-model="mfaCode"
+                  class="field__input mfa-code-input"
+                  :type="useBackupCode ? 'text' : 'tel'"
+                  :inputmode="useBackupCode ? 'text' : 'numeric'"
+                  :autocomplete="useBackupCode ? 'one-time-code' : 'one-time-code'"
+                  :placeholder="useBackupCode ? t('login.mfaBackupPlaceholder') : t('login.mfaCodePlaceholder')"
+                  :maxlength="useBackupCode ? 9 : 6"
+                  autofocus
+                  :disabled="mfaLoading"
+                  @input="mfaError = ''"
+                />
+              </div>
+            </div>
+
+            <button type="submit" class="submit" :disabled="!canSubmitMfa" :aria-busy="mfaLoading">
+              <span class="submit__shine" aria-hidden="true" />
+              <span v-if="mfaLoading" class="spinner" aria-hidden="true" />
+              <span>{{ mfaLoading ? t('login.mfaVerifying') : t('login.mfaSubmit') }}</span>
+            </button>
+
+            <div class="mfa-alt">
+              <button type="button" class="linkish" @click="useBackupCode = !useBackupCode; mfaCode = ''">
+                {{ useBackupCode ? t('login.useTotp') : t('login.useBackup') }}
+              </button>
+              <button
+                type="button"
+                class="linkish"
+                @click="step = 'password'; mfaCode = ''; mfaError = ''"
+              >
+                {{ t('login.backToPassword') }}
+              </button>
+            </div>
+          </form>
+
+          <!-- ── Passkey 登录(实例内已有注册密钥且浏览器支持时显示)────────── -->
+          <button
+            v-if="passkeyAvailable && step === 'password'"
+            type="button"
+            class="passkey-btn"
+            :disabled="passkeyLoading"
+            @click="handlePasskeyLogin"
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+              <circle cx="9" cy="8" r="4" />
+              <path d="M2 21c0-3.9 3.1-7 7-7 1.6 0 3 .5 4.2 1.4" />
+              <path d="M16 18h6M19 15v6" />
+            </svg>
+            <span>{{ passkeyLoading ? t('login.mfaVerifying') : t('login.passkeyLogin') }}</span>
+          </button>
         </div>
       </div>
     </div>
@@ -929,6 +1110,77 @@ onBeforeUnmount(() => {
   border-radius: 50%;
   animation: spin 0.7s linear infinite;
   flex-shrink: 0;
+}
+
+/* ——— mfa step ——— */
+.mfa-hint {
+  position: relative;
+  z-index: 4;
+  color: var(--lp-dim);
+  font-size: 13px;
+  margin: 18px 0 12px;
+}
+.mfa-code-input {
+  letter-spacing: 0.45em;
+  text-align: center;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 17px;
+}
+.mfa-alt {
+  position: relative;
+  z-index: 4;
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 14px;
+}
+.linkish {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--lp-dim);
+  font-size: 12.5px;
+  font-family: var(--font-sans);
+  cursor: pointer;
+  transition: color 0.2s;
+}
+.linkish:hover {
+  color: var(--lp-cyan);
+}
+
+/* ——— passkey button ——— */
+.passkey-btn {
+  position: relative;
+  z-index: 4;
+  width: 100%;
+  margin-top: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  padding: 13px;
+  border-radius: 14px;
+  border: 1px solid var(--lp-brd);
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--lp-text);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  cursor: pointer;
+  transition:
+    border-color 0.2s,
+    background 0.2s;
+}
+.passkey-btn svg {
+  width: 17px;
+  height: 17px;
+}
+.passkey-btn:hover:not(:disabled) {
+  border-color: var(--lp-blue);
+  background: rgba(59, 130, 246, 0.12);
+}
+.passkey-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 
 /* ——— trust bar ——— */

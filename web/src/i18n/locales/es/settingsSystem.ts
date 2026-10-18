@@ -72,5 +72,17 @@ export default {
   updateSrcFromDefault: 'predeterminada · sin espejo configurado',
 
   langTitle: 'Idioma de la interfaz',
-  langSub: 'Cambia el idioma de la interfaz. Surte efecto de inmediato.',
+  langSub: 'Cambia el idioma de la interfaz; se aplica de inmediato.',
+
+  passkeyTitle: 'Passkey / 2FA',
+  passkeySub: 'Configuración de relying party (RP) para el inicio de sesión con passkey; si se deja vacía se deriva de la URL pública. Se recomienda indicarla explícita tras proxies o con varios dominios.',
+  passkeyEnabledLabel: 'Activar el inicio de sesión con passkey',
+  passkeyRpIdLabel: 'RP ID (dominio)',
+  passkeyRpIdPlaceholder: 'Vacío para derivar automáticamente, p. ej. ci.example.com',
+  passkeyOriginsLabel: 'Orígenes permitidos (separados por comas)',
+  passkeyOriginsPlaceholder: 'Vacío para derivar automáticamente, p. ej. https://ci.example.com',
+  passkeyNote: 'Los cambios se aplican de inmediato; los navegadores exigen HTTPS (salvo localhost).',
+  passkeySave: 'Guardar',
+  passkeySaved: 'Guardado',
+  passkeySaveFailed: 'Error al guardar: revisa los datos',
 }

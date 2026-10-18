@@ -71,6 +71,18 @@ export default {
   updateSrcFromEnv: 'de la variable d’environnement PIPEWRIGHT_RELEASE_MIRROR',
   updateSrcFromDefault: 'par défaut · aucun miroir configuré',
 
-  langTitle: 'Langue de l’interface',
-  langSub: 'Change la langue de l’interface. Prend effet immédiatement.',
+  langTitle: "Langue de l'interface",
+  langSub: "Change la langue de l'interface ; effet immédiat.",
+
+  passkeyTitle: 'Passkey / 2FA',
+  passkeySub: "Configuration de la partie de confiance (RP) pour la connexion par passkey ; laissée vide, elle est déduite de l'URL publique. Une valeur explicite est recommandée derrière un proxy ou avec plusieurs domaines.",
+  passkeyEnabledLabel: 'Activer la connexion par passkey',
+  passkeyRpIdLabel: 'RP ID (domaine)',
+  passkeyRpIdPlaceholder: 'Vide pour déduction auto, ex. ci.example.com',
+  passkeyOriginsLabel: 'Origines autorisées (séparées par des virgules)',
+  passkeyOriginsPlaceholder: 'Vide pour déduction auto, ex. https://ci.example.com',
+  passkeyNote: "Les changements sont immédiats ; les navigateurs exigent HTTPS (sauf localhost).",
+  passkeySave: 'Enregistrer',
+  passkeySaved: 'Enregistré',
+  passkeySaveFailed: "Échec de l'enregistrement — vérifiez la saisie",
 }

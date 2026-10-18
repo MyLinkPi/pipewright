@@ -17,6 +17,8 @@ import { useRouter } from 'vue-router'
 import AppButton from '../components/ui/AppButton.vue'
 import ChangePasswordPanel from '../components/settings/ChangePasswordPanel.vue'
 import ActiveSessionsPanel from '../components/settings/ActiveSessionsPanel.vue'
+import TotpPanel from '../components/settings/mfa/TotpPanel.vue'
+import PasskeysPanel from '../components/settings/mfa/PasskeysPanel.vue'
 import { useConfirm } from '../composables/useConfirm'
 import { useToast } from '../composables/useToast'
 import { useSessionStore } from '../stores/session'
@@ -86,6 +88,10 @@ async function handleLogout(): Promise<void> {
     </section>
 
     <!-- 共享改密面板 -->
+    <!-- 两步验证:验证器(TOTP)与通行密钥(Passkey) -->
+    <TotpPanel />
+    <PasskeysPanel />
+
     <ChangePasswordPanel @updated="onPasswordUpdated" />
 
     <!-- 共享活跃会话面板 -->

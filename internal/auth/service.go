@@ -15,14 +15,25 @@ import (
 // Authenticator 定义认证领域对外接口。(-er 命名约定)
 type Authenticator interface {
 	// Login 以用户名/口令认证;clientIP 用于按 IP 分桶的失败锁定(可空串=只按账户分桶);
-	// 成功返回新 Session,失败或锁定返回相应错误。
+	// 成功返回新 Session,失败或锁定返回相应错误。账户已启用 TOTP 时返回的 Session
+	// 处于 MFAStatePending(10 分钟中间态),需再经 CompleteMFA 升级为正式会话。
 	Login(username, password, clientIP string) (*Session, error)
-	// Verify 校验会话 token 是否有效;有效返回 Session。
+	// Verify 校验会话 token 是否有效;有效返回 Session(可能处于待二步验证状态,调用方自查 MFAPending)。
 	Verify(token string) (*Session, error)
+	// CompleteMFA 把「待二步验证」会话升级为 30 天正式会话(验证码校验由调用方先行完成)。
+	CompleteMFA(token string) (*Session, error)
+	// CreatePasskeySession 为 Passkey 登录成功的身份直接签发已验证会话(30 天滑动)。
+	CreatePasskeySession(role, userID, username string) (*Session, error)
 	// Logout 使指定 token 的会话失效。
 	Logout(token string) error
 	// AdminUsername 返回当前存储的管理员用户名(用于回显)。
 	AdminUsername() (string, error)
+}
+
+// MFAChecker 判定某身份是否已启用 TOTP 二步验证(由 mfa 包实现并注入;
+// nil = 无 mfa 能力,所有登录保持单步)。role/userID 与 Session 同语义。
+type MFAChecker interface {
+	TOTPEnabled(role, userID string) bool
 }
 
 // ErrInvalidCredentials 用户名或口令错误。
@@ -62,16 +73,34 @@ type Service struct {
 	db       *sql.DB
 	sessions *SessionStore
 	lockout  *LockoutManager
+	mfa      MFAChecker
 }
 
 // NewService 构造 Service;clock 为 nil 时使用 RealClock。
-func NewService(db *sql.DB, clock Clock) *Service {
-	return &Service{
+// 可选注入 TOTP 检查器:WithMFAChecker(已在 mfa 包启用二步验证的账户登录走两步)。
+func NewService(db *sql.DB, clock Clock, opts ...ServiceOption) *Service {
+	s := &Service{
 		db:       db,
 		sessions: NewSessionStore(db),
 		lockout:  NewLockoutManager(clock),
 	}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
 }
+
+// ServiceOption 是 Service 的可选装配项。
+type ServiceOption func(*Service)
+
+// WithMFAChecker 注入 TOTP 启用状态检查器(nil 等价不注入)。
+func WithMFAChecker(c MFAChecker) ServiceOption {
+	return func(s *Service) { s.mfa = c }
+}
+
+// SetMFAChecker 后置注入 TOTP 检查器(main 装配顺序里 mfa 服务晚于 auth 构建时使用;
+// 服务启动前的装配期调用,非并发热点)。
+func (s *Service) SetMFAChecker(c MFAChecker) { s.mfa = c }
 
 // Bootstrap 管理员引导:admin_user 为空时创建管理员。每次启动都会执行,以库为准(幂等):
 //   - 已有管理员:直接返回,不触碰任何 env/文件(重启绝不重置口令)。
@@ -215,11 +244,30 @@ func (s *Service) Login(username, password, clientIP string) (*Session, error) {
 	}
 
 	// 认证成功:创建会话(Guard 已重置计数)。dummy 永不匹配,故此处 role 必非空。
-	sess, err := s.sessions.Create(role, userID, echoedUsername)
+	// 账户已启用 TOTP → 建「待二步验证」中间态会话(10 分钟),HTTP 层下发 cookie 后
+	// 返回 mfa_required,由 POST /api/auth/login/mfa 完成第二步升级。
+	mfaState := MFAStateNone
+	if s.mfa != nil && s.mfa.TOTPEnabled(role, userID) {
+		mfaState = MFAStatePending
+	}
+	sess, err := s.sessions.CreateWithMFAState(role, userID, echoedUsername, mfaState)
 	if err != nil {
 		return nil, fmt.Errorf("auth: create session: %w", err)
 	}
 	return sess, nil
+}
+
+// CompleteMFA 把「待二步验证」会话升级为 30 天正式会话。验证码校验由调用方
+// (httpapi → mfa 服务)先行完成,此处仅做会话状态迁移;非 pending 会话报
+// ErrSessionNotFound。升级后返回的 Session 携带新 cookie 所需的全部字段。
+func (s *Service) CompleteMFA(token string) (*Session, error) {
+	return s.sessions.CompleteMFA(token)
+}
+
+// CreatePasskeySession 为 Passkey 登录成功的身份直接签发「已验证」会话
+// (mfa_state=2,30 天滑动):Passkey 即「持有 + 用户验证」双因素,不叠加 TOTP。
+func (s *Service) CreatePasskeySession(role, userID, username string) (*Session, error) {
+	return s.sessions.CreateWithMFAState(role, userID, username, MFAStateVerified)
 }
 
 // PurgeExpiredSessions 删除 DB 中所有已过期会话,返回删除行数。

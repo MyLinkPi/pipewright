@@ -17,13 +17,15 @@ import { http } from './http'
 import type { InvitationState } from './auth'
 import type { UserRole } from '../stores/session'
 
-/** 普通用户对外视图(绝不含口令哈希)。 */
+/** 普通用户对外视图(绝不含口令哈希)。totpEnabled/passkeyCount 是两步验证概要。 */
 export interface UserDTO {
   id: string
   username: string
   role: UserRole
   status: string
   createdAt: string
+  totpEnabled: boolean
+  passkeyCount: number
 }
 
 export interface InvitationDTO {

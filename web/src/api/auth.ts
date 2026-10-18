@@ -46,8 +46,25 @@ export async function fetchSession(): Promise<SessionUser | null> {
   }
 }
 
-export async function login(username: string, password: string): Promise<SessionUser> {
-  return http.post<SessionUser>('/api/auth/login', { username, password })
+/**
+ * 登录结果:账户已启用 TOTP 时后端先返回 mfaRequired(pending 会话 cookie 已下发),
+ * 前端进入验证码步骤,再经 loginMFA(mfa API)完成登录。
+ */
+export type LoginResult = { mfaRequired: true } | ({ mfaRequired: false } & SessionUser)
+
+export async function login(username: string, password: string): Promise<LoginResult> {
+  const data = await http.post<Partial<SessionUser> & { mfa_required?: boolean }>(
+    '/api/auth/login',
+    { username, password },
+  )
+  if (data?.mfa_required) {
+    return { mfaRequired: true }
+  }
+  return {
+    mfaRequired: false,
+    username: data.username ?? '',
+    role: data.role === 'member' ? 'member' : 'admin',
+  }
 }
 
 export async function logout(): Promise<void> {

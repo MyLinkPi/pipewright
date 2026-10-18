@@ -73,4 +73,16 @@ export default {
 
   langTitle: '界面语言',
   langSub: '切换界面显示语言,立即生效。',
+
+  passkeyTitle: 'Passkey / 两步验证',
+  passkeySub: '通行密钥登录的依赖方(RP)配置;留空时按外部访问地址自动推导。多域名 / 反代部署建议显式填写。',
+  passkeyEnabledLabel: '启用通行密钥登录',
+  passkeyRpIdLabel: 'RP ID(域名)',
+  passkeyRpIdPlaceholder: '留空自动推导,如 ci.example.com',
+  passkeyOriginsLabel: '允许来源(逗号分隔)',
+  passkeyOriginsPlaceholder: '留空自动推导,如 https://ci.example.com',
+  passkeyNote: '修改即时生效;浏览器要求 HTTPS(localhost 除外)。',
+  passkeySave: '保存',
+  passkeySaved: '已保存',
+  passkeySaveFailed: '保存失败,请检查输入',
 }
