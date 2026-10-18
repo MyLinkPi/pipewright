@@ -96,6 +96,11 @@ const ja: typeof zhCN = {
     expand: 'サイドバーを展開',
     collapse: 'サイドバーを折りたたむ',
     pve: 'PVE',
+    groupDelivery: 'デリバリー',
+    groupInfra: 'インフラ',
+    groupStorage: 'ストレージとファイル',
+    groupApps: 'アプリとデータ',
+    groupMonitoring: '監視とアラート',
   },
 
   shell: {

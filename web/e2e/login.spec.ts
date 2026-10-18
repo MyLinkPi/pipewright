@@ -9,7 +9,7 @@ test.describe('Login page', () => {
     await expect(page.getByRole('form', { name: '登录表单' })).toBeVisible()
     await expect(page.locator('#username')).toBeVisible()
     await expect(page.locator('#password')).toBeVisible()
-    await expect(page.getByRole('button', { name: '登录' })).toBeVisible()
+    await expect(page.getByRole('button', { name: '进入控制台' })).toBeVisible()
     await expect(page.getByText('Pipewright')).toBeVisible()
   })
 
@@ -17,7 +17,7 @@ test.describe('Login page', () => {
     await stubLoggedOut(page)
     await page.goto('/login')
 
-    await page.getByRole('button', { name: '登录' }).click()
+    await page.getByRole('button', { name: '进入控制台' }).click()
     await expect(page.getByText('请输入用户名')).toBeVisible()
     await expect(page.getByText('请输入密码')).toBeVisible()
   })
