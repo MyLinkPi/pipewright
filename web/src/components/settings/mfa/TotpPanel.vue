@@ -175,7 +175,7 @@ function downloadCodes(codes: string[]): void {
       <span v-if="enabled" class="totp-remaining">{{ t('mfa.backupRemaining', { n: backupRemaining }) }}</span>
       <span class="totp-actions">
         <template v-if="!enabled">
-          <AppButton v-if="setupPending" variant="secondary" size="sm" :disabled="loading" @click="resumeWizard">
+          <AppButton v-if="setupPending" variant="default" size="sm" :disabled="loading" @click="resumeWizard">
             {{ t('mfa.wizardTitle') }}
           </AppButton>
           <AppButton v-else variant="primary" size="sm" :disabled="loading || submitting" @click="startWizard">
@@ -183,7 +183,7 @@ function downloadCodes(codes: string[]): void {
           </AppButton>
         </template>
         <template v-else>
-          <AppButton variant="secondary" size="sm" @click="dialog = 'regen'; regenCodes = null; dialogCode = ''; dialogError = ''">
+          <AppButton variant="default" size="sm" @click="dialog = 'regen'; regenCodes = null; dialogCode = ''; dialogError = ''">
             {{ t('mfa.regenerateBackup') }}
           </AppButton>
           <AppButton variant="danger" size="sm" @click="dialog = 'disable'; dialogCode = ''; dialogError = ''">
@@ -204,7 +204,7 @@ function downloadCodes(codes: string[]): void {
         </div>
         <div v-if="wizardData" class="totp-secret mono">{{ wizardData.secret }}</div>
         <div class="totp-wizard__nav">
-          <AppButton variant="secondary" size="sm" @click="wizard = 'closed'">
+          <AppButton variant="default" size="sm" @click="wizard = 'closed'">
             {{ t('mfa.cancel') }}
           </AppButton>
           <AppButton variant="primary" size="sm" @click="wizard = 'backup'">
@@ -222,9 +222,9 @@ function downloadCodes(codes: string[]): void {
           <code v-for="c in wizardData.backupCodes" :key="c" class="mono">{{ c }}</code>
         </div>
         <div class="totp-wizard__nav">
-          <AppButton variant="secondary" size="sm" @click="wizard = 'scan'">{{ t('mfa.back') }}</AppButton>
+          <AppButton variant="default" size="sm" @click="wizard = 'scan'">{{ t('mfa.back') }}</AppButton>
           <span class="totp-wizard__spacer" />
-          <AppButton variant="secondary" size="sm" @click="wizardData && downloadCodes(wizardData.backupCodes)">
+          <AppButton variant="default" size="sm" @click="wizardData && downloadCodes(wizardData.backupCodes)">
             {{ t('mfa.backupDownload') }}
           </AppButton>
           <AppButton variant="primary" size="sm" @click="wizard = 'verify'">{{ t('mfa.next') }}</AppButton>
@@ -252,7 +252,7 @@ function downloadCodes(codes: string[]): void {
             </template>
           </FormField>
           <div class="totp-wizard__nav">
-            <AppButton variant="secondary" size="sm" type="button" @click="wizard = 'backup'">
+            <AppButton variant="default" size="sm" type="button" @click="wizard = 'backup'">
               {{ t('mfa.back') }}
             </AppButton>
             <AppButton variant="primary" size="sm" type="submit" :disabled="submitting || !verifyCode.trim()">
@@ -300,7 +300,7 @@ function downloadCodes(codes: string[]): void {
           </template>
         </FormField>
         <div class="totp-wizard__nav">
-          <AppButton variant="secondary" size="sm" type="button" @click="dialog = 'none'; regenCodes = null">
+          <AppButton variant="default" size="sm" type="button" @click="dialog = 'none'; regenCodes = null">
             {{ regenCodes ? t('common.refresh') : t('mfa.cancel') }}
           </AppButton>
           <AppButton
@@ -314,10 +314,10 @@ function downloadCodes(codes: string[]): void {
         </div>
       </form>
       <div v-if="regenCodes" class="totp-wizard__nav">
-        <AppButton variant="secondary" size="sm" @click="dialog = 'none'; regenCodes = null">
+        <AppButton variant="default" size="sm" @click="dialog = 'none'; regenCodes = null">
           {{ t('mfa.confirm') }}
         </AppButton>
-        <AppButton variant="secondary" size="sm" @click="downloadCodes(regenCodes)">
+        <AppButton variant="default" size="sm" @click="downloadCodes(regenCodes)">
           {{ t('mfa.backupDownload') }}
         </AppButton>
       </div>

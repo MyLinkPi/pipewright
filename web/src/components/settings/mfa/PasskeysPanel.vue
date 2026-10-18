@@ -131,7 +131,7 @@ async function remove(pk: PasskeyInfo): Promise<void> {
         </template>
       </FormField>
       <div class="pk-add__nav">
-        <AppButton variant="secondary" size="sm" @click="adding = false; addError = ''">
+        <AppButton variant="default" size="sm" @click="adding = false; addError = ''">
           {{ t('mfa.cancel') }}
         </AppButton>
         <AppButton

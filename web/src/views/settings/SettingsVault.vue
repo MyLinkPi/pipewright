@@ -287,7 +287,11 @@ function validateForm(): boolean {
     formErrors.value.secret = t('settingsVault.valSecretRequired')
     ok = false
   }
-  if (form.value.type === 'registry' && /[:\x00-\x1f\x7f-\x9f]/.test(form.value.username)) {
+  if (
+    form.value.type === 'registry' &&
+    // eslint-disable-next-line no-control-regex -- 拒绝控制字符正是该校验的目的
+    /[:\x00-\x1f\x7f-\x9f]/.test(form.value.username)
+  ) {
     formBanner.value = t('settingsVault.invalidRegistryUsername')
     ok = false
   }

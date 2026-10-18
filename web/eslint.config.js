@@ -19,6 +19,11 @@ export default tseslint.config(
     languageOptions: {
       parserOptions: { parser: tseslint.parser },
     },
+    rules: {
+      // typescript-eslint 对 no-undef 的豁免只覆盖 *.ts;.vue 由 vue-tsc 负责未定义标识符
+      // 检查,这里对齐关闭,避免 globals 包缺 WebAuthn 等新标准全局时误报。
+      'no-undef': 'off',
+    },
   },
   {
     languageOptions: {

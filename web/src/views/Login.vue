@@ -206,6 +206,7 @@ const canSubmitMfa = computed(() => !mfaLoading.value && mfaCode.value.trim().le
 const particlesCanvas = ref<HTMLCanvasElement | null>(null)
 const cardShell = ref<HTMLElement | null>(null)
 let rafId = 0
+let parallaxRafId = 0
 let onResize: (() => void) | null = null
 let onPointerMove: ((e: PointerEvent) => void) | null = null
 
@@ -216,7 +217,25 @@ interface Particle {
   vx: number
   vy: number
   a: number
-  hue: number
+  s: number // 光晕 sprite 下标(按 hue 预烘焙)
+}
+
+// 粒子光晕预烘焙:每个 hue 一张离屏径向渐变 sprite,逐帧只做 drawImage。
+// 逐粒子 shadowBlur(canvas 最昂贵的路径)是此页曾经的 CPU 大头,严禁回归。
+const SPRITE_PX = 16
+function makeGlowSprite(hue: number): HTMLCanvasElement {
+  const cv = document.createElement('canvas')
+  cv.width = cv.height = SPRITE_PX
+  const g = cv.getContext('2d')
+  if (!g) return cv
+  const half = SPRITE_PX / 2
+  const grad = g.createRadialGradient(half, half, 0, half, half, half)
+  grad.addColorStop(0, `hsla(${hue}, 90%, 78%, 1)`)
+  grad.addColorStop(0.45, `hsla(${hue}, 90%, 70%, 0.4)`)
+  grad.addColorStop(1, `hsla(${hue}, 90%, 70%, 0)`)
+  g.fillStyle = grad
+  g.fillRect(0, 0, SPRITE_PX, SPRITE_PX)
+  return cv
 }
 
 // Passkey 能力探测:实例内有已注册密钥且浏览器支持,才显示「通行密钥登录」按钮。
@@ -237,18 +256,28 @@ onMounted(() => {
   const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches
   if (reduce) return
 
-  // 指针视差:卡片随鼠标轻微 3D 倾斜。
+  // 指针视差:卡片随鼠标轻微 3D 倾斜。事件里只记坐标,transform 合并到 rAF 每帧写一次,
+  // 避免 pointermove 高频触发 style 重算。
   const shell = cardShell.value
   if (shell) {
+    let dx = 0
+    let dy = 0
+    let pending = false
     onPointerMove = (e: PointerEvent) => {
-      const dx = e.clientX / window.innerWidth - 0.5
-      const dy = e.clientY / window.innerHeight - 0.5
-      shell.style.transform = `perspective(1200px) rotateY(${dx * 5}deg) rotateX(${-dy * 5}deg)`
+      dx = e.clientX / window.innerWidth - 0.5
+      dy = e.clientY / window.innerHeight - 0.5
+      if (pending) return
+      pending = true
+      parallaxRafId = window.requestAnimationFrame(() => {
+        pending = false
+        shell.style.transform = `perspective(1200px) rotateY(${dx * 5}deg) rotateX(${-dy * 5}deg)`
+      })
     }
     window.addEventListener('pointermove', onPointerMove)
   }
 
-  // 浮动粒子:上升的彩色光点,品牌色 hue。
+  // 浮动粒子:上升的彩色光点,品牌色 hue。光晕烘焙进 sprite,逐帧仅 drawImage;
+  // 30fps 上限 + 按 dt 缩放位移,高刷屏(120/144Hz)也不会抬高成本。
   const cv = particlesCanvas.value
   const ctx = cv?.getContext('2d')
   if (!cv || !ctx) return
@@ -258,6 +287,7 @@ onMounted(() => {
   let parts: Particle[] = []
   // 品牌蓝族 hue(HSL):电光蓝 / 青 / 靛 / 天蓝 —— 去掉原先的紫(265)和粉(320)。
   const hues = [217, 190, 235, 205]
+  const sprites = hues.map(makeGlowSprite)
 
   const makeParticle = (): Particle => ({
     x: Math.random() * w,
@@ -266,7 +296,7 @@ onMounted(() => {
     vx: (Math.random() - 0.5) * 0.18,
     vy: -(Math.random() * 0.35 + 0.08),
     a: Math.random() * 0.5 + 0.15,
-    hue: hues[Math.floor(Math.random() * hues.length)],
+    s: Math.floor(Math.random() * sprites.length),
   })
 
   onResize = () => {
@@ -278,32 +308,38 @@ onMounted(() => {
   onResize()
   window.addEventListener('resize', onResize)
 
-  const tick = (): void => {
+  const FRAME_MS = 1000 / 30
+  let lastFrame = 0
+  const tick = (now: number): void => {
+    rafId = window.requestAnimationFrame(tick)
+    const elapsed = now - lastFrame
+    if (elapsed < FRAME_MS - 1) return
+    lastFrame = now
+    const dt = Math.min(elapsed, 64) / (1000 / 60)
     ctx.clearRect(0, 0, w, h)
     for (const p of parts) {
-      p.x += p.vx
-      p.y += p.vy
-      if (p.y < -10) {
-        p.y = h + 10
+      p.x += p.vx * dt
+      p.y += p.vy * dt
+      if (p.y < -14) {
+        p.y = h + 14
         p.x = Math.random() * w
       }
-      if (p.x < -10) p.x = w + 10
-      if (p.x > w + 10) p.x = -10
-      ctx.beginPath()
-      ctx.arc(p.x, p.y, p.r, 0, 7)
-      ctx.fillStyle = `hsla(${p.hue},90%,70%,${p.a})`
-      ctx.shadowBlur = 8
-      ctx.shadowColor = `hsla(${p.hue},90%,70%,${p.a})`
-      ctx.fill()
+      if (p.x < -14) p.x = w + 14
+      if (p.x > w + 14) p.x = -14
+      const sprite = sprites[p.s]
+      if (!sprite) continue
+      const glow = p.r * 6 // 光晕半径 ≈ 实心点 r + 旧 shadowBlur(8)
+      ctx.globalAlpha = p.a
+      ctx.drawImage(sprite, p.x - glow, p.y - glow, glow * 2, glow * 2)
     }
-    ctx.shadowBlur = 0
-    rafId = window.requestAnimationFrame(tick)
+    ctx.globalAlpha = 1
   }
-  tick()
+  rafId = window.requestAnimationFrame(tick)
 })
 
 onBeforeUnmount(() => {
   if (rafId) window.cancelAnimationFrame(rafId)
+  if (parallaxRafId) window.cancelAnimationFrame(parallaxRafId)
   if (onResize) window.removeEventListener('resize', onResize)
   if (onPointerMove) window.removeEventListener('pointermove', onPointerMove)
 })
@@ -316,8 +352,6 @@ onBeforeUnmount(() => {
       <span class="blob b1" />
       <span class="blob b2" />
       <span class="blob b3" />
-      <span class="blob b4" />
-      <span class="blob b5" />
     </div>
     <canvas ref="particlesCanvas" class="particles" aria-hidden="true" />
     <div class="grain" aria-hidden="true" />
@@ -587,19 +621,19 @@ onBeforeUnmount(() => {
 }
 
 /* ——— aurora background ——— */
+/* 性能约束:blob 只留 3 个、blur 收到 48px,且不用 mix-blend-mode / 容器 filter——
+   每个全屏混合层都会让合成器逐帧做全屏混合,深色底上视觉差异可忽略。 */
 .aurora {
   position: absolute;
   inset: 0;
   z-index: 0;
   overflow: hidden;
-  filter: saturate(1.25);
 }
 .blob {
   position: absolute;
   border-radius: 50%;
-  filter: blur(70px);
-  opacity: 0.85;
-  mix-blend-mode: screen;
+  filter: blur(48px);
+  opacity: 0.7;
   will-change: transform;
 }
 .b1 {
@@ -626,22 +660,6 @@ onBeforeUnmount(() => {
   right: 12%;
   animation: float3 16s ease-in-out infinite alternate;
 }
-.b4 {
-  width: 460px;
-  height: 460px;
-  background: radial-gradient(circle, var(--lp-sky), transparent 65%);
-  bottom: 6%;
-  left: 8%;
-  animation: float4 20s ease-in-out infinite alternate;
-}
-.b5 {
-  width: 380px;
-  height: 380px;
-  background: radial-gradient(circle, var(--lp-indigo), transparent 65%);
-  top: 8%;
-  left: 42%;
-  animation: float1 24s ease-in-out infinite alternate-reverse;
-}
 @keyframes float1 {
   0% {
     transform: translate(0, 0) scale(1);
@@ -664,14 +682,6 @@ onBeforeUnmount(() => {
   }
   100% {
     transform: translate(-120px, 140px) scale(1.2);
-  }
-}
-@keyframes float4 {
-  0% {
-    transform: translate(0, 0) scale(1);
-  }
-  100% {
-    transform: translate(120px, -120px) scale(1.15);
   }
 }
 .aurora::after {
@@ -697,8 +707,7 @@ onBeforeUnmount(() => {
   inset: 0;
   z-index: 2;
   pointer-events: none;
-  opacity: 0.05;
-  mix-blend-mode: overlay;
+  opacity: 0.04;
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='3'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
 }
 
@@ -770,7 +779,7 @@ onBeforeUnmount(() => {
     var(--lp-sky),
     var(--lp-blue)
   );
-  filter: blur(9px);
+  filter: blur(6px);
   opacity: 0.55;
   animation: spin 9s linear infinite;
 }
@@ -784,8 +793,10 @@ onBeforeUnmount(() => {
   z-index: 1;
   border-radius: 26px;
   padding: 40px 38px 34px;
-  background: linear-gradient(160deg, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0.03));
-  backdrop-filter: blur(34px) saturate(1.3);
+  /* backdrop-filter 会在背景(aurora/粒子)每帧变化时整帧重算:半径收到 18px,
+     并略微提高卡片自身底色,减弱对模糊的依赖。 */
+  background: linear-gradient(160deg, rgba(255, 255, 255, 0.1), rgba(255, 255, 255, 0.05));
+  backdrop-filter: blur(18px) saturate(1.15);
   border: 1px solid var(--lp-brd);
   box-shadow:
     0 30px 80px -20px rgba(0, 0, 0, 0.7),
@@ -1043,7 +1054,6 @@ onBeforeUnmount(() => {
   color: #fff;
   letter-spacing: 0.01em;
   background: linear-gradient(100deg, var(--lp-blue), var(--lp-indigo), var(--lp-cyan));
-  background-size: 200% 100%;
   box-shadow:
     0 12px 34px -8px rgba(59, 130, 246, 0.7),
     inset 0 1px 0 rgba(255, 255, 255, 0.3);
@@ -1052,16 +1062,6 @@ onBeforeUnmount(() => {
   justify-content: center;
   gap: 10px;
   transition: transform 0.15s;
-  animation: gradmove 5s ease infinite;
-}
-@keyframes gradmove {
-  0%,
-  100% {
-    background-position: 0% 50%;
-  }
-  50% {
-    background-position: 100% 50%;
-  }
 }
 .submit:hover:not(:disabled) {
   transform: translateY(-2px);
@@ -1075,7 +1075,6 @@ onBeforeUnmount(() => {
 .submit:disabled {
   opacity: 0.65;
   cursor: not-allowed;
-  animation: none;
 }
 .submit__arrow {
   width: 17px;
