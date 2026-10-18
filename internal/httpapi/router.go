@@ -24,14 +24,15 @@ import (
 	"github.com/huangchengsir/pipewright/internal/audit"
 	"github.com/huangchengsir/pipewright/internal/auth"
 	"github.com/huangchengsir/pipewright/internal/ceph"
-	"github.com/huangchengsir/pipewright/internal/diskadmin"
 	"github.com/huangchengsir/pipewright/internal/certmgmt"
 	"github.com/huangchengsir/pipewright/internal/chain"
 	"github.com/huangchengsir/pipewright/internal/cron"
 	"github.com/huangchengsir/pipewright/internal/dagrun"
 	"github.com/huangchengsir/pipewright/internal/dbadmin"
 	"github.com/huangchengsir/pipewright/internal/deploy"
+	"github.com/huangchengsir/pipewright/internal/diskadmin"
 	"github.com/huangchengsir/pipewright/internal/dnsprovider"
+	"github.com/huangchengsir/pipewright/internal/fileadmin"
 	"github.com/huangchengsir/pipewright/internal/i18n"
 	"github.com/huangchengsir/pipewright/internal/identity"
 	"github.com/huangchengsir/pipewright/internal/labels"
@@ -39,13 +40,13 @@ import (
 	"github.com/huangchengsir/pipewright/internal/metrics"
 	"github.com/huangchengsir/pipewright/internal/mfa"
 	"github.com/huangchengsir/pipewright/internal/notify"
-	"github.com/huangchengsir/pipewright/internal/pveadmin"
 	"github.com/huangchengsir/pipewright/internal/oauth"
 	"github.com/huangchengsir/pipewright/internal/objectstore"
 	"github.com/huangchengsir/pipewright/internal/opschat"
 	"github.com/huangchengsir/pipewright/internal/pipeline"
 	"github.com/huangchengsir/pipewright/internal/platformhttps"
 	"github.com/huangchengsir/pipewright/internal/project"
+	"github.com/huangchengsir/pipewright/internal/pveadmin"
 	"github.com/huangchengsir/pipewright/internal/redisadmin"
 	"github.com/huangchengsir/pipewright/internal/retention"
 	"github.com/huangchengsir/pipewright/internal/run"
@@ -129,11 +130,13 @@ type options struct {
 	redisAdmin       redisadmin.Service
 	pveAdmin         pveadmin.Service
 	diskAdmin        diskadmin.Service
+	fileAdmin        fileadmin.Service
 	serverCmds       *servercmd.Service
 	registryHub      registryHubService
 	mesh             *meshAdminDeps
 	ceph             ceph.Service
 	mfa              *mfa.Service
+	artifactExporter artifactImageExporter
 }
 
 // WithCeph 注入 Ceph 集群部署与管理服务(internal/ceph),在 admin 组挂载 /api/ceph/* 路由
@@ -149,6 +152,14 @@ func WithCeph(s ceph.Service) Option {
 // (端点 503)。
 func WithDiskAdmin(s diskadmin.Service) Option {
 	return func(o *options) { o.diskAdmin = s }
+}
+
+// WithFileAdmin 注入「服务器文件查看」服务(internal/fileadmin),在 admin 组挂载
+// /api/fileadmin/servers/{id}/* 路由(目录列表 + 小文本查看/编辑 + 流式下载;
+// GET 过 auth,PUT 过 auth + CSRF + 审计,编辑前服务端先同目录备份)。不传则
+// 文件查看功能整体不可用(端点 503)。
+func WithFileAdmin(s fileadmin.Service) Option {
+	return func(o *options) { o.fileAdmin = s }
 }
 
 // WithPVEAdmin 注入 PVE 集群纳管与管理服务(internal/pveadmin):
@@ -178,6 +189,13 @@ func WithMesh(d meshAdminDeps) Option {
 // GET /api/runs/{id}/artifacts/{artifactId}/download(按 reference 句柄取真字节)。nil → 端点 503。
 func WithArtifactStore(s *artifactstore.Store) Option {
 	return func(o *options) { o.artifactStore = s }
+}
+
+// WithArtifactImageTransfer 注入镜像导出器(*build.ImageTransfer):供产物管理面
+// GET /api/runs/{id}/artifacts/{artifactId}/image-archive 做服务端 pull + docker save
+// 流式导出。nil → 该端点 503(文件类产物下载不受影响)。
+func WithArtifactImageTransfer(e artifactImageExporter) Option {
+	return func(o *options) { o.artifactExporter = e }
 }
 
 // WithApprovals 注入审批门协调器 + 持久层(Story 8-4),挂载 /api/runs/{id}/{approve,reject,approvals} 路由。
@@ -465,6 +483,7 @@ func WithSystemConfig(s systemcfg.Service) Option {
 //   - /api/auth/login/mfa、/api/auth/passkey/login/*、/api/auth/options(匿名);
 //   - /api/account/mfa/*(认证 + CSRF + memberGate 白名单,管理员与成员各自管理);
 //   - /api/users/{id}/mfa/*(管理员重置成员 TOTP/Passkey)。
+//
 // 并为登录流程提供 TOTP 启用检查(口令通过 → pending 会话 → 验证码升级)。
 // 不传则两步验证端点 503、登录保持单步。
 func WithMFA(s *mfa.Service) Option {
@@ -699,6 +718,18 @@ func New(webFS fs.FS, authn auth.Authenticator, opts ...Option) http.Handler {
 			// (只读默认 + 显式解锁 + 危险操作逐字确认)。
 			if o.diskAdmin != nil {
 				mountDiskAdmin(ar, o.diskAdmin, aud)
+			}
+			// 文件查看面(管理员):目录浏览 + 文件下载 + ≤64KiB 纯文本在线查看/编辑
+			// (编辑前同目录备份;PUT 留审计)。
+			if o.fileAdmin != nil {
+				mountFileAdmin(ar, o.fileAdmin, aud)
+			}
+			// 产物管理面(管理员):跨运行产物列表 + 删除(镜像类联动删内置 registry tag、
+			// 无引用 blob 回收)+ 镜像 tar 导出下载。文件类按运行查看/下载在受保护组(成员可用)。
+			if o.runs != nil {
+				ar.Get("/artifacts", makeArtifactsListHandler(o.runs))
+				ar.Delete("/runs/{id}/artifacts/{artifactId}", makeArtifactDeleteHandler(o.runs, o.artifactStore, o.registryHub, aud))
+				ar.Get("/runs/{id}/artifacts/{artifactId}/image-archive", makeArtifactImageArchiveHandler(o.runs, o.artifactExporter))
 			}
 		})
 

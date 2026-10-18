@@ -37,11 +37,10 @@ import (
 	"github.com/huangchengsir/pipewright/internal/cron"
 	"github.com/huangchengsir/pipewright/internal/dagrun"
 	"github.com/huangchengsir/pipewright/internal/dbadmin"
-	"github.com/huangchengsir/pipewright/internal/diskadmin"
-	"github.com/huangchengsir/pipewright/internal/pveadmin"
-	"github.com/huangchengsir/pipewright/internal/redisadmin"
 	"github.com/huangchengsir/pipewright/internal/deploy"
+	"github.com/huangchengsir/pipewright/internal/diskadmin"
 	"github.com/huangchengsir/pipewright/internal/dnsprovider"
+	"github.com/huangchengsir/pipewright/internal/fileadmin"
 	"github.com/huangchengsir/pipewright/internal/httpapi"
 	"github.com/huangchengsir/pipewright/internal/identity"
 	"github.com/huangchengsir/pipewright/internal/labels"
@@ -61,6 +60,8 @@ import (
 	"github.com/huangchengsir/pipewright/internal/project"
 	"github.com/huangchengsir/pipewright/internal/prstatus"
 	"github.com/huangchengsir/pipewright/internal/pushsource"
+	"github.com/huangchengsir/pipewright/internal/pveadmin"
+	"github.com/huangchengsir/pipewright/internal/redisadmin"
 	"github.com/huangchengsir/pipewright/internal/registryhub"
 	"github.com/huangchengsir/pipewright/internal/repocache"
 	"github.com/huangchengsir/pipewright/internal/retention"
@@ -472,6 +473,10 @@ func main() {
 	// SSH argv 执行(root/免密 sudo 提权);操作无状态,解锁闸门为进程内 TTL,无需落库。
 	diskAdminSvc := diskadmin.New(targetSvc)
 
+	// 文件查看(目录浏览 + 文件下载 + ≤64KiB 纯文本在线查看/编辑):全部经 target 层
+	// SSH argv 执行(提权可用则用,否则回退登录用户);编辑保存前服务端先同目录备份。
+	fileAdminSvc := fileadmin.New(targetSvc)
+
 	// 运行执行器选择(Epic 8):**默认走 DAG 调度执行器**——它是唯一真正按 UI 配置的
 	// stages/script job/deploy_ssh/notify 编排执行的运行器。只有显式 PIPEWRIGHT_RUNNER=legacy
 	// 才回退旧版固定流程(clone→对仓库根 docker build→deploy,无视可视化流水线)。
@@ -786,7 +791,7 @@ func main() {
 
 	srv := &http.Server{
 		Addr:              cfg.Addr,
-		Handler:           httpapi.New(webFS, authSvc, httpapi.WithVault(credVault), httpapi.WithProjects(projectSvc), httpapi.WithTriggers(triggerSvc), httpapi.WithPipelines(pipelineSvc), httpapi.WithPipelineSettings(pipelineSettingsSvc), httpapi.WithRuns(runSvc, pool), httpapi.WithWebhooks(webhookReceiver), httpapi.WithAudit(auditRec), httpapi.WithAccount(authSvc), httpapi.WithIdentity(identitySvc), httpapi.WithAISettings(aiSvc), httpapi.WithAIGenerate(repoAnalyzer), httpapi.WithRunDiff(runDiffer), httpapi.WithSource(sourceReader), httpapi.WithRefs(refsLister), httpapi.WithArtifactStore(artStore), httpapi.WithServers(targetSvc), httpapi.WithLabels(labelsSvc), httpapi.WithServerCommands(serverCmdSvc), httpapi.WithRegistryHub(registryHubSvc), httpapi.WithRunnerConfig(runnerSvc), httpapi.WithDeploy(deploySvc), httpapi.WithSpecLoader(resumeSpecLoader), httpapi.WithNotifications(notifySvc), httpapi.WithRetention(retentionSvc), httpapi.WithDNSProviders(dnsSvc), httpapi.WithObjectStores(objectStoreSvc), httpapi.WithCertMgmt(certSvc), httpapi.WithPlatformHTTPS(platformHTTPSSvc), httpapi.WithSystemConfig(sysCfgSvc), httpapi.WithMFA(mfaSvc), httpapi.WithServiceReg(serviceRegSvc), httpapi.WithAppStore(appStoreSvc), httpapi.WithDBAdmin(dbAdminSvc), httpapi.WithRedisAdmin(redisAdminSvc), httpapi.WithPVEAdmin(pveAdminSvc), httpapi.WithDiagnosisFeedback(feedbackSvc), httpapi.WithAnomaly(anomalySvc), httpapi.WithAnomalyConfig(int(anomalyInterval.Seconds()), int(anomalyCooldown.Seconds())), httpapi.WithMetricsHistory(metricsHist), httpapi.WithSecretSource(secretSrc), httpapi.WithOAuth(oauthSvc), httpapi.WithCron(cronSvc), httpapi.WithChain(chainSvc), httpapi.WithApprovals(approvalCoord, approvalStore), httpapi.WithApprovalLinks(approvalSigner), httpapi.WithConcurrency(concurrencySvc), httpapi.WithParameters(parameterSvc), httpapi.WithDoraMetrics(doraMetricsSvc), httpapi.WithTemplates(templateSvc), httpapi.WithVariableGroups(varGroupSvc), httpapi.WithCustomNodes(customNodeSvc), httpapi.WithOpsChat(opsChatSvc), httpapi.WithMesh(meshAdminDeps), httpapi.WithCeph(cephSvc), httpapi.WithDiskAdmin(diskAdminSvc)),
+		Handler:           httpapi.New(webFS, authSvc, httpapi.WithVault(credVault), httpapi.WithProjects(projectSvc), httpapi.WithTriggers(triggerSvc), httpapi.WithPipelines(pipelineSvc), httpapi.WithPipelineSettings(pipelineSettingsSvc), httpapi.WithRuns(runSvc, pool), httpapi.WithWebhooks(webhookReceiver), httpapi.WithAudit(auditRec), httpapi.WithAccount(authSvc), httpapi.WithIdentity(identitySvc), httpapi.WithAISettings(aiSvc), httpapi.WithAIGenerate(repoAnalyzer), httpapi.WithRunDiff(runDiffer), httpapi.WithSource(sourceReader), httpapi.WithRefs(refsLister), httpapi.WithArtifactStore(artStore), httpapi.WithArtifactImageTransfer(meshImages), httpapi.WithServers(targetSvc), httpapi.WithLabels(labelsSvc), httpapi.WithServerCommands(serverCmdSvc), httpapi.WithRegistryHub(registryHubSvc), httpapi.WithRunnerConfig(runnerSvc), httpapi.WithDeploy(deploySvc), httpapi.WithSpecLoader(resumeSpecLoader), httpapi.WithNotifications(notifySvc), httpapi.WithRetention(retentionSvc), httpapi.WithDNSProviders(dnsSvc), httpapi.WithObjectStores(objectStoreSvc), httpapi.WithCertMgmt(certSvc), httpapi.WithPlatformHTTPS(platformHTTPSSvc), httpapi.WithSystemConfig(sysCfgSvc), httpapi.WithMFA(mfaSvc), httpapi.WithServiceReg(serviceRegSvc), httpapi.WithAppStore(appStoreSvc), httpapi.WithDBAdmin(dbAdminSvc), httpapi.WithRedisAdmin(redisAdminSvc), httpapi.WithPVEAdmin(pveAdminSvc), httpapi.WithDiagnosisFeedback(feedbackSvc), httpapi.WithAnomaly(anomalySvc), httpapi.WithAnomalyConfig(int(anomalyInterval.Seconds()), int(anomalyCooldown.Seconds())), httpapi.WithMetricsHistory(metricsHist), httpapi.WithSecretSource(secretSrc), httpapi.WithOAuth(oauthSvc), httpapi.WithCron(cronSvc), httpapi.WithChain(chainSvc), httpapi.WithApprovals(approvalCoord, approvalStore), httpapi.WithApprovalLinks(approvalSigner), httpapi.WithConcurrency(concurrencySvc), httpapi.WithParameters(parameterSvc), httpapi.WithDoraMetrics(doraMetricsSvc), httpapi.WithTemplates(templateSvc), httpapi.WithVariableGroups(varGroupSvc), httpapi.WithCustomNodes(customNodeSvc), httpapi.WithOpsChat(opsChatSvc), httpapi.WithMesh(meshAdminDeps), httpapi.WithCeph(cephSvc), httpapi.WithDiskAdmin(diskAdminSvc), httpapi.WithFileAdmin(fileAdminSvc)),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		// WriteTimeout 置 0:SSE 长连接(/api/runs/{id}/events)不可被写超时切断;

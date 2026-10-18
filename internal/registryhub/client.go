@@ -3,6 +3,7 @@ package registryhub
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -17,6 +18,10 @@ type Client struct {
 	base string
 	hc   *http.Client
 }
+
+// ErrTagNotFound 表示指定 repo:tag 在 registry 中不存在(manifest 查询 HTTP 404;
+// 删除 tag 的幂等判定用:已不在 = 无可删,视为成功)。
+var ErrTagNotFound = errors.New("registry: tag not found")
 
 // NewClient 构造客户端。base 形如 http://127.0.0.1:5000(无尾斜杠);hc 为 nil 用 10s 超时默认。
 func NewClient(base string, hc *http.Client) *Client {
@@ -76,6 +81,9 @@ func (c *Client) Manifest(ctx context.Context, repo, tag string) (digest, config
 	}
 	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode == http.StatusNotFound {
+		return "", "", fmt.Errorf("%w: %s:%s", ErrTagNotFound, repo, tag)
+	}
 	if resp.StatusCode != http.StatusOK {
 		return "", "", fmt.Errorf("registry: manifest %s:%s → HTTP %d", repo, tag, resp.StatusCode)
 	}

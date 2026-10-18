@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -310,6 +311,15 @@ func (f *fakeRegistryAPIHub) Catalog(context.Context) ([]string, error) {
 
 func (f *fakeRegistryAPIHub) TagInfos(_ context.Context, repo string) ([]registryhub.TagInfo, error) {
 	return f.repos[repo], nil
+}
+
+func (f *fakeRegistryAPIHub) Manifest(_ context.Context, repo, tag string) (string, string, error) {
+	for _, ti := range f.repos[repo] {
+		if ti.Tag == tag {
+			return ti.Digest, "", nil
+		}
+	}
+	return "", "", fmt.Errorf("%w: %s:%s", registryhub.ErrTagNotFound, repo, tag)
 }
 
 func (f *fakeRegistryAPIHub) DeleteManifest(_ context.Context, _, _ string) error {

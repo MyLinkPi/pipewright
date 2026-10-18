@@ -2,6 +2,7 @@ package registryhub
 
 import (
 	"context"
+	"errors"
 	"log"
 	"sort"
 	"strings"
@@ -131,6 +132,49 @@ func (h *Hub) PruneCount(ctx context.Context, now time.Time) (int, error) {
 		return 0, err
 	}
 	return res.DeletedTags, nil
+}
+
+// DeleteTag 删除制品 registry 中指定 repo 的单个 tag(产物管理页「删除镜像」联动:
+// 删产物记录时一并清掉内置 registry 里的 tag)。与 Prune 同一套安全语义:
+//   - tag 已不在(HTTP 404)→ 幂等成功(deleted=false,无可删);
+//   - digest 共租保护:同仓库另有 tag 引用相同 manifest digest → 不删 manifest
+//     (按 digest 删会连带废掉那个 tag),返回 deleted=false + nil(tag 保留为别名,
+//     记录侧仍可继续删除);
+//   - registry 未启用/不可达/查询失败 → 返回错误(调用方决定是否中止记录删除)。
+//
+// blob 空间由后续 garbage-collect / Prune 回收,这里只删 manifest。
+func (h *Hub) DeleteTag(ctx context.Context, repo, tag string) (deleted bool, err error) {
+	cfg, err := h.Get(ctx)
+	if err != nil {
+		return false, err
+	}
+	if !cfg.Enabled {
+		return false, errors.New("registryhub: builtin registry not enabled")
+	}
+	cli := h.registryClient(ctx, cfg)
+	digest, _, merr := cli.Manifest(ctx, repo, tag)
+	if merr != nil {
+		if errors.Is(merr, ErrTagNotFound) {
+			return false, nil
+		}
+		return false, merr
+	}
+	if digest == "" {
+		return false, errors.New("registryhub: manifest has no digest")
+	}
+	infos, ierr := cli.TagInfos(ctx, repo)
+	if ierr != nil {
+		return false, ierr
+	}
+	for _, ti := range infos {
+		if ti.Tag != tag && ti.Digest == digest {
+			return false, nil // 共租 digest:保留 tag(别名),不连坐删除
+		}
+	}
+	if derr := cli.DeleteManifest(ctx, repo, digest); derr != nil {
+		return false, derr
+	}
+	return true, nil
 }
 
 // Sweeper 是 registry 保留策略的后台周期执行器(仿 retention.Sweeper 模式;平台第二个
