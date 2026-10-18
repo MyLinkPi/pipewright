@@ -12,13 +12,29 @@ import (
 )
 
 const (
-	// sessionTTL 会话有效期(7 天)。
+	// sessionTTL 普通会话有效期(7 天)。
 	sessionTTL = 7 * 24 * time.Hour
+	// mfaSessionTTL 是通过二步验证(TOTP 验证码 / Passkey 登录)的会话有效期(30 天):
+	// 二步验证抬高的是登录门槛,不应因频繁重新登录而反复触发验证;配合会话列表
+	// 可随时强制下线,长会话风险可控。
+	mfaSessionTTL = 30 * 24 * time.Hour
+	// pendingMFATTL 是「密码已过、待二步验证」中间态会话的有效期(10 分钟,固定不滑动)。
+	pendingMFATTL = 10 * time.Minute
 	// sessionRefreshInterval 是滑动过期的最小写库间隔:Get 命中有效会话后,
 	// 仅当距上次 last_seen 超过此间隔才写库刷新,避免每请求一次 UPDATE 的写放大。
 	sessionRefreshInterval = 60 * time.Second
 	// tokenBytes 会话 token 随机字节数(32B → 64 hex chars)。
 	tokenBytes = 32
+)
+
+// 会话二步验证状态(sessions.mfa_state 列)。三档同时决定 TTL 与访问语义:
+//   - MFAStateNone:    未涉及二步验证,7 天滑动;
+//   - MFAStatePending: 密码已过、待验证码,10 分钟固定,受保护 API 一律 401 mfa_required;
+//   - MFAStateVerified:已通过二步验证(TOTP 完成 / Passkey 登录),30 天滑动。
+const (
+	MFAStateNone    = 0
+	MFAStatePending = 1
+	MFAStateVerified = 2
 )
 
 // ErrSessionNotFound 表示会话不存在或已过期。
@@ -38,6 +54,34 @@ type Session struct {
 	UserID string
 	// Username 是会话所属用户名(用于回显/审计)。
 	Username string
+	// MFAState 是二步验证状态(MFAStateNone/Pending/Verified),决定 TTL 档位与访问语义。
+	MFAState int
+	// MFAPending 为 true 表示密码已过、待输 TOTP 验证码(MFAState==MFAStatePending)。
+	MFAPending bool
+	// MFAVerified 为 true 表示会话已通过二步验证(MFAState==MFAStateVerified)。
+	MFAVerified bool
+	// Refreshed 由 Get 在本次调用执行了滑动续期写库时置位(其余路径恒 false)。
+	// HTTP 层据此同步重发 cookie——否则长开不刷新的 SPA 标签页 cookie Expires 固定,
+	// 库内会话虽在滑动,cookie 到期即被动登出。
+	Refreshed bool
+}
+
+// applyMFAState 依据 MFAState 回填派生布尔位。
+func (s *Session) applyMFAState() {
+	s.MFAPending = s.MFAState == MFAStatePending
+	s.MFAVerified = s.MFAState == MFAStateVerified
+}
+
+// ttlForState 返回状态对应的会话有效期档位。
+func ttlForState(state int) time.Duration {
+	switch state {
+	case MFAStateVerified:
+		return mfaSessionTTL
+	case MFAStatePending:
+		return pendingMFATTL
+	default:
+		return sessionTTL
+	}
 }
 
 // SessionStore 操作 sessions 表。
@@ -58,10 +102,16 @@ const (
 	RoleMember = "member"
 )
 
-// Create 创建新会话并持久化到 DB。返回 Session(含 Token 与 CSRFToken)。
+// Create 创建新会话并持久化到 DB(未涉及二步验证,7 天 TTL)。返回 Session(含 Token 与 CSRFToken)。
 // role 为 RoleAdmin / RoleMember;userID 仅普通用户非空;username 为会话所属用户名。
 // 落库的是 token 的 sha256 hex(见 hashToken),原始 token 仅存于 cookie/内存。
 func (ss *SessionStore) Create(role, userID, username string) (*Session, error) {
+	return ss.CreateWithMFAState(role, userID, username, MFAStateNone)
+}
+
+// CreateWithMFAState 按指定二步验证状态创建会话:TTL 随状态分档
+// (None=7 天 / Pending=10 分钟 / Verified=30 天),见 ttlForState。
+func (ss *SessionStore) CreateWithMFAState(role, userID, username string, mfaState int) (*Session, error) {
 	token, err := randHex(tokenBytes)
 	if err != nil {
 		return nil, fmt.Errorf("auth: generate session token: %w", err)
@@ -71,11 +121,12 @@ func (ss *SessionStore) Create(role, userID, username string) (*Session, error) 
 		return nil, fmt.Errorf("auth: generate csrf token: %w", err)
 	}
 	now := time.Now().UTC()
-	exp := now.Add(sessionTTL)
+	ttl := ttlForState(mfaState)
+	exp := now.Add(ttl)
 
 	_, err = ss.db.Exec(
-		`INSERT INTO sessions (token, csrf_token, created_at, expires_at, last_seen_at, role, user_id, username)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO sessions (token, csrf_token, created_at, expires_at, last_seen_at, role, user_id, username, mfa_state)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		hashToken(token),
 		csrfToken,
 		now.Format(time.RFC3339),
@@ -84,11 +135,12 @@ func (ss *SessionStore) Create(role, userID, username string) (*Session, error) 
 		role,
 		userID,
 		username,
+		mfaState,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("auth: persist session: %w", err)
 	}
-	return &Session{
+	sess := &Session{
 		Token:      token,
 		CSRFToken:  csrfToken,
 		CreatedAt:  now,
@@ -97,22 +149,26 @@ func (ss *SessionStore) Create(role, userID, username string) (*Session, error) 
 		Role:       role,
 		UserID:     userID,
 		Username:   username,
-	}, nil
+		MFAState:   mfaState,
+	}
+	sess.applyMFAState()
+	return sess, nil
 }
 
 // Get 按 token 查找会话;不存在或已过期返回 ErrSessionNotFound。
-// 若会话有效则滑动更新 last_seen_at。
+// 若会话有效则滑动更新 last_seen_at(按会话自身 TTL 档位续期,见 ttlForState);
+// 本次调用实际执行了写库续期时,返回的 Session.Refreshed 置位(HTTP 层据此重发 cookie)。
 func (ss *SessionStore) Get(token string) (*Session, error) {
 	var s Session
 	var storedToken string
 	var createdStr, expiresStr, lastSeenStr string
 	err := ss.db.QueryRow(
 		`SELECT token, csrf_token, created_at, expires_at, last_seen_at,
-		        COALESCE(role, ?), COALESCE(user_id, ''), COALESCE(username, '')
+		        COALESCE(role, ?), COALESCE(user_id, ''), COALESCE(username, ''), COALESCE(mfa_state, 0)
 		 FROM sessions WHERE token = ?`,
 		RoleAdmin, hashToken(token),
 	).Scan(&storedToken, &s.CSRFToken, &createdStr, &expiresStr, &lastSeenStr,
-		&s.Role, &s.UserID, &s.Username)
+		&s.Role, &s.UserID, &s.Username, &s.MFAState)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrSessionNotFound
@@ -121,6 +177,7 @@ func (ss *SessionStore) Get(token string) (*Session, error) {
 	}
 	// 库内存的是哈希;对外回填原始 token(调用方语义不变)。
 	s.Token = token
+	s.applyMFAState()
 
 	if s.CreatedAt, err = time.Parse(time.RFC3339, createdStr); err != nil {
 		return nil, fmt.Errorf("auth: parse created_at: %w", err)
@@ -139,19 +196,20 @@ func (ss *SessionStore) Get(token string) (*Session, error) {
 		return nil, ErrSessionNotFound
 	}
 
-	// 滑动空闲超时:命中有效会话时把 expires_at 前移为 now+TTL,并刷新 last_seen_at。
+	// 滑动空闲超时:命中有效会话时把 expires_at 前移为 now+TTL(按档位),并刷新 last_seen_at。
 	// **写节流**:仅当距上次 last_seen 超过 sessionRefreshInterval 才写库。否则每个
 	// 认证请求(列表/SSE 等)都触发一次 UPDATE,在单写 modernc/sqlite 上造成写放大与
-	// 锁竞争(SSE 并发下易 SQLITE_BUSY)。TTL(7d)远大于刷新间隔(1min),跳过几次刷新
-	// 不影响滑动过期语义。
-	if now.Sub(s.LastSeenAt) >= sessionRefreshInterval {
-		newExp := now.Add(sessionTTL)
+	// 锁竞争(SSE 并发下易 SQLITE_BUSY)。
+	// **待二步验证的中间态不滑动**:10 分钟是验证码时限,不是空闲超时。
+	if s.MFAState != MFAStatePending && now.Sub(s.LastSeenAt) >= sessionRefreshInterval {
+		newExp := now.Add(ttlForState(s.MFAState))
 		if _, err := ss.db.Exec(
 			`UPDATE sessions SET last_seen_at = ?, expires_at = ? WHERE token = ?`,
 			now.Format(time.RFC3339), newExp.Format(time.RFC3339), hashToken(token),
 		); err == nil {
 			s.LastSeenAt = now
 			s.ExpiresAt = newExp
+			s.Refreshed = true
 		}
 	}
 	return &s, nil
@@ -176,6 +234,28 @@ func (ss *SessionStore) Delete(token string) error {
 		return fmt.Errorf("auth: delete session: %w", err)
 	}
 	return nil
+}
+
+// CompleteMFA 把「待二步验证」会话升级为「已验证」正式会话:状态置 MFAStateVerified,
+// 有效期重置为 now+mfaSessionTTL(30 天滑动)。仅 MFAStatePending 的会话可升级
+// (WHERE mfa_state = 1);无匹配(不存在/非 pending)返回 ErrSessionNotFound。
+// 验证码本身的校验由调用方(mfa 服务)先行完成,本方法只负责会话状态迁移。
+func (ss *SessionStore) CompleteMFA(token string) (*Session, error) {
+	now := time.Now().UTC()
+	res, err := ss.db.Exec(
+		`UPDATE sessions SET mfa_state = ?, last_seen_at = ?, expires_at = ?
+		 WHERE token = ? AND mfa_state = ?`,
+		MFAStateVerified, now.Format(time.RFC3339),
+		now.Add(mfaSessionTTL).Format(time.RFC3339),
+		hashToken(token), MFAStatePending,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("auth: complete mfa: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return nil, ErrSessionNotFound
+	}
+	return ss.Get(token)
 }
 
 // sessionIDPrefixLen 是会话对外 id 的长度(库内 token 哈希 hex 的前缀字符数)。
@@ -204,14 +284,15 @@ type SessionMeta struct {
 	Current    bool // 是否为当前请求所属会话
 }
 
-// List 返回所有未过期会话的元数据(不含原 token)。currentToken 用于标识 current。
-// 按 created_at DESC 排序(最新在前)。
+// List 返回所有未过期正式会话的元数据(不含原 token)。currentToken 用于标识 current。
+// 按 created_at DESC 排序(最新在前)。待二步验证的中间态会话(mfa_state=1)不列出:
+// 它们不是可用会话,10 分钟内未完成验证即失效。
 func (ss *SessionStore) List(currentToken string) ([]SessionMeta, error) {
 	now := time.Now().UTC().Format(time.RFC3339)
 	rows, err := ss.db.Query(
 		`SELECT token, created_at, last_seen_at, expires_at
-		 FROM sessions WHERE expires_at >= ? ORDER BY created_at DESC`,
-		now,
+		 FROM sessions WHERE expires_at >= ? AND mfa_state <> ? ORDER BY created_at DESC`,
+		now, MFAStatePending,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("auth: list sessions: %w", err)

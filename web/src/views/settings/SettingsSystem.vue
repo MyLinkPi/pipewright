@@ -313,6 +313,52 @@ async function saveRetention(): Promise<void> {
   }
 }
 
+// ─── Passkey / 两步验证 RP 配置 ────────────────────────────────────────────────
+// webauthnRpId / webauthnOrigins 留空 = 自动推导(public_url → 请求 Host);
+// passkeyLoginEnabled 是登录页通行密钥按钮的总开关。修改即时生效。
+const pkEnabled = ref(true)
+const pkRpId = ref('')
+const pkOrigins = ref('')
+const pkLoaded = ref(false)
+const pkSaving = ref(false)
+const pkSaved = ref(false)
+const pkError = ref('')
+
+async function loadPasskeyConfig(): Promise<void> {
+  try {
+    const c = await getSystemConfig()
+    pkEnabled.value = c.passkeyLoginEnabled
+    pkRpId.value = c.webauthnRpId
+    pkOrigins.value = c.webauthnOrigins
+    pkLoaded.value = true
+  } catch {
+    // 读失败保持未加载态,保存按钮禁用,避免误清已有配置。
+  }
+}
+
+async function savePasskeyConfig(): Promise<void> {
+  if (pkSaving.value) return
+  pkSaving.value = true
+  pkSaved.value = false
+  pkError.value = ''
+  try {
+    const c = await saveSystemConfig({
+      webauthnRpId: pkRpId.value.trim(),
+      webauthnOrigins: pkOrigins.value.trim(),
+      passkeyLoginEnabled: pkEnabled.value,
+    })
+    pkRpId.value = c.webauthnRpId
+    pkOrigins.value = c.webauthnOrigins
+    pkSaved.value = true
+    setTimeout(() => { pkSaved.value = false }, 2000)
+  } catch (err) {
+    pkError.value =
+      err instanceof HttpError ? (err.apiError?.message ?? t('settingsSystem.passkeySaveFailed')) : t('settingsSystem.passkeySaveFailed')
+  } finally {
+    pkSaving.value = false
+  }
+}
+
 // ─── 升级源(自升级镜像) ───────────────────────────────────────────────────────
 // 读失败时保持未加载态并禁用保存:此时后端 publicUrl 未知,补发它可能误清已有配置。
 // effectiveSource 是后端解析后的实际生效源(库内配置 > 环境变量 > 默认 GitHub Releases),
@@ -341,7 +387,7 @@ async function saveUpdateSource(): Promise<void> {
   umError.value = ''
   try {
     // 只发 releaseMirror(publicUrl 传 undefined = 后端不动该项)。
-    const c = await saveSystemConfig(undefined, umMirror.value.trim())
+    const c = await saveSystemConfig({ releaseMirror: umMirror.value.trim() })
     umEffective.value = c.effectiveSource ?? null
     umSaved.value = true
     setTimeout(() => { umSaved.value = false }, 2000)
@@ -373,6 +419,7 @@ onMounted(() => {
   void loadVersion()
   void loadRetention()
   void loadUpdateSource()
+  void loadPasskeyConfig()
 })
 </script>
 
@@ -598,6 +645,57 @@ onMounted(() => {
         <AppButton variant="primary" :loading="rtSaving" :disabled="rtLoading" @click="saveRetention">
           {{ t('settingsSystem.retentionSave') }}
         </AppButton>
+      </div>
+    </article>
+
+    <!-- Passkey / 两步验证 RP 配置 -->
+    <article class="sys-panel">
+      <span class="sys-accent" aria-hidden="true" />
+      <div class="rt-head">
+        <div class="rt-head-text">
+          <h3 class="rt-title">{{ t('settingsSystem.passkeyTitle') }}</h3>
+          <p class="rt-sub">{{ t('settingsSystem.passkeySub') }}</p>
+        </div>
+      </div>
+      <div class="rt-fields">
+        <label class="pk-toggle">
+          <input v-model="pkEnabled" type="checkbox" />
+          <span>{{ t('settingsSystem.passkeyEnabledLabel') }}</span>
+        </label>
+        <div class="pk-grid">
+          <label class="pk-field">
+            <span class="pk-field__label">{{ t('settingsSystem.passkeyRpIdLabel') }}</span>
+            <input
+              v-model="pkRpId"
+              type="text"
+              class="pk-input"
+              :placeholder="t('settingsSystem.passkeyRpIdPlaceholder')"
+              :disabled="!pkLoaded"
+            />
+          </label>
+          <label class="pk-field">
+            <span class="pk-field__label">{{ t('settingsSystem.passkeyOriginsLabel') }}</span>
+            <input
+              v-model="pkOrigins"
+              type="text"
+              class="pk-input"
+              :placeholder="t('settingsSystem.passkeyOriginsPlaceholder')"
+              :disabled="!pkLoaded"
+            />
+          </label>
+        </div>
+        <p class="pk-note">{{ t('settingsSystem.passkeyNote') }}</p>
+        <p v-if="pkError" class="pk-error" role="alert">{{ pkError }}</p>
+        <div class="pk-actions">
+          <AppButton
+            variant="primary"
+            size="sm"
+            :disabled="!pkLoaded || pkSaving"
+            @click="savePasskeyConfig"
+          >
+            {{ pkSaved ? t('settingsSystem.passkeySaved') : t('settingsSystem.passkeySave') }}
+          </AppButton>
+        </div>
       </div>
     </article>
 
@@ -1238,5 +1336,65 @@ onMounted(() => {
 /* ─── 界面语言 ───────────────────────────────────────────────────────────────── */
 .lang-field {
   width: 220px;
+}
+
+/* ——— passkey rp config ——— */
+.pk-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.pk-toggle input {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--color-primary, #3b82f6);
+}
+.pk-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+@media (max-width: 720px) {
+  .pk-grid {
+    grid-template-columns: 1fr;
+  }
+}
+.pk-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.pk-field__label {
+  font-size: 12.5px;
+  color: var(--color-text-dim, #6b7280);
+}
+.pk-input {
+  padding: 9px 12px;
+  border-radius: 9px;
+  border: 1px solid var(--color-border, #e5e7eb);
+  background: var(--color-surface, #fff);
+  font-size: 13px;
+  font-family: inherit;
+  outline: none;
+}
+.pk-input:focus {
+  border-color: var(--color-primary, #3b82f6);
+}
+.pk-input:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.pk-note {
+  font-size: 12px;
+  color: var(--color-text-dim, #6b7280);
+}
+.pk-error {
+  font-size: 12.5px;
+  color: #ef4444;
+}
+.pk-actions {
+  display: flex;
 }
 </style>

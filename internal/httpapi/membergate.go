@@ -83,6 +83,12 @@ var memberAllowlist = []memberAllowedPattern{
 	{http.MethodPost, []string{"api", "account", "password"}},
 	{http.MethodDelete, []string{"api", "account", "sessions", "*"}},
 
+	// 自身两步验证管理:状态查询、TOTP 开启/关闭/备份码、Passkey 注册/删除。
+	{http.MethodGet, []string{"api", "account", "mfa"}},
+	{http.MethodPost, []string{"api", "account", "mfa", "totp", "*"}},
+	{http.MethodPost, []string{"api", "account", "mfa", "passkeys", "register", "*"}},
+	{http.MethodDelete, []string{"api", "account", "mfa", "passkeys", "*"}},
+
 	{http.MethodGet, []string{"api", "projects"}},
 	{http.MethodGet, []string{"api", "projects", "*", "parameters"}},
 	{http.MethodPost, []string{"api", "projects", "*", "runs"}},

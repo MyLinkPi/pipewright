@@ -72,5 +72,17 @@ export default {
   updateSrcFromDefault: 'Standard · kein Mirror konfiguriert',
 
   langTitle: 'Sprache der Oberfläche',
-  langSub: 'Ändert die Sprache der Oberfläche. Wirkt sofort.',
+  langSub: 'Wechselt die Sprache der Oberfläche; sofort wirksam.',
+
+  passkeyTitle: 'Passkey / 2FA',
+  passkeySub: 'Relying-Party(RP)-Einstellungen für die Passkey-Anmeldung; leer werden sie von der öffentlichen URL abgeleitet. Hinter Proxys oder mit mehreren Domänen ist eine explizite Angabe empfohlen.',
+  passkeyEnabledLabel: 'Passkey-Anmeldung aktivieren',
+  passkeyRpIdLabel: 'RP ID (Domäne)',
+  passkeyRpIdPlaceholder: 'Leer = automatisch, z. B. ci.example.com',
+  passkeyOriginsLabel: 'Erlaubte Origins (durch Komma getrennt)',
+  passkeyOriginsPlaceholder: 'Leer = automatisch, z. B. https://ci.example.com',
+  passkeyNote: 'Änderungen wirken sofort; Browser verlangen HTTPS (außer localhost).',
+  passkeySave: 'Speichern',
+  passkeySaved: 'Gespeichert',
+  passkeySaveFailed: 'Speichern fehlgeschlagen — Bitte Eingabe prüfen',
 }

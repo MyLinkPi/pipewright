@@ -59,6 +59,12 @@ func pwChangeLockoutKey(role, userID string) lockoutKey {
 	return lockoutKey{name: "pwchange:" + role + ":" + userID, threshold: LockoutThreshold, resetOnSuccess: true}
 }
 
+// GuardMFA 对 TOTP 验证码尝试做失败节流(供 mfa 包使用;桶按 owner 分隔,
+// 阈值/锁定时长与登录口令一致,成功即清零)。
+func (lm *LockoutManager) GuardMFA(owner string, authenticate func() (bool, error)) (ok bool, locked bool, remaining time.Duration, err error) {
+	return lm.Guard([]lockoutKey{{name: "mfa:" + owner, threshold: LockoutThreshold, resetOnSuccess: true}}, authenticate)
+}
+
 // attemptRecord 是单个桶的失败计数与锁定状态。
 type attemptRecord struct {
 	failCount   int

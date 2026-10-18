@@ -36,6 +36,7 @@ import (
 	"github.com/huangchengsir/pipewright/internal/labels"
 	"github.com/huangchengsir/pipewright/internal/library"
 	"github.com/huangchengsir/pipewright/internal/metrics"
+	"github.com/huangchengsir/pipewright/internal/mfa"
 	"github.com/huangchengsir/pipewright/internal/notify"
 	"github.com/huangchengsir/pipewright/internal/oauth"
 	"github.com/huangchengsir/pipewright/internal/objectstore"
@@ -128,6 +129,7 @@ type options struct {
 	registryHub      registryHubService
 	mesh             *meshAdminDeps
 	ceph             ceph.Service
+	mfa              *mfa.Service
 }
 
 // WithCeph 注入 Ceph 集群部署与管理服务(internal/ceph),在 admin 组挂载 /api/ceph/* 路由
@@ -436,6 +438,16 @@ func WithSystemConfig(s systemcfg.Service) Option {
 	return func(o *options) { o.systemConfig = s }
 }
 
+// WithMFA 注入两步验证服务(internal/mfa),挂载:
+//   - /api/auth/login/mfa、/api/auth/passkey/login/*、/api/auth/options(匿名);
+//   - /api/account/mfa/*(认证 + CSRF + memberGate 白名单,管理员与成员各自管理);
+//   - /api/users/{id}/mfa/*(管理员重置成员 TOTP/Passkey)。
+// 并为登录流程提供 TOTP 启用检查(口令通过 → pending 会话 → 验证码升级)。
+// 不传则两步验证端点 503、登录保持单步。
+func WithMFA(s *mfa.Service) Option {
+	return func(o *options) { o.mfa = s }
+}
+
 // WithObjectStores 注入「对象存储」服务,挂载 /api/object-stores* 路由
 // (GET auth;写方法 auth + CSRF + 审计;test 为写方法)。AccessKeySecret 经 vault 密文,
 // 响应/审计/日志绝无明文;AccessKeyId 非机密,可回显。不传则相关端点返回 503。
@@ -551,6 +563,9 @@ func New(webFS fs.FS, authn auth.Authenticator, opts ...Option) http.Handler {
 		ar.Get("/session", makeSessionHandler(svc))
 		// 普通用户注册(公开):邀请 token + 自填用户名/口令;成功后自动登录。
 		ar.Post("/register", makeRegisterHandler(o.identity, svc))
+		// 两步验证匿名端点:登录第二步(验证码)、Passkey discoverable 登录、
+		// 登录页能力探测(passkey_login)。o.mfa 为 nil 时各端点 503。
+		mountMFAAuth(ar, o.mfa, svc)
 		// 邀请状态查询(公开只读):供注册页展示 pending/used/expired。
 		ar.Get("/invitations/{token}", makeInvitationInfoHandler(o.identity))
 		// 登出属写操作:先认证后 CSRF。
@@ -629,7 +644,9 @@ func New(webFS fs.FS, authn auth.Authenticator, opts ...Option) http.Handler {
 		// 普通用户由 memberGate 默认拒绝;此组再叠加 requireAdmin 做纵深防御。
 		ar.Group(func(ar chi.Router) {
 			ar.Use(requireAdmin)
-			ar.Get("/users", makeListUsersHandler(o.identity))
+			ar.Get("/users", makeListUsersHandler(o.identity, o.mfa))
+			// 成员两步验证重置(锁死恢复通道):清除 TOTP/全部通行密钥。
+			mountAdminMFA(ar, o.mfa, aud)
 			ar.Post("/invitations", makeCreateInvitationHandler(o.identity, aud))
 			ar.Get("/invitations", makeListInvitationsHandler(o.identity))
 			ar.Delete("/invitations/{id}", makeRevokeInvitationHandler(o.identity, aud))
@@ -777,6 +794,10 @@ func New(webFS fs.FS, authn auth.Authenticator, opts ...Option) http.Handler {
 		ar.Post("/account/password", makeChangePasswordHandler(ac, aud))
 		ar.Get("/account/sessions", makeListSessionsHandler(ac))
 		ar.Delete("/account/sessions/{id}", makeRevokeSessionHandler(ac, aud))
+
+		// 两步验证(本人管理):TOTP 开启/关闭/备份码 + Passkey 注册/删除。
+		// 已过组级 auth + CSRF;memberGate 白名单放行成员管理自己的 MFA。
+		mountAccountMFA(ar, o.mfa, aud)
 
 		// 可配置 AI 提供商(Story 7.1)。aiSvc 为 nil 时 handler 返回 503。
 		// GET 过 auth;PUT/test 为写方法,过 auth + CSRF。apiKey 加密入库、响应仅掩码。
@@ -1188,6 +1209,17 @@ func requireAuth(svc auth.Authenticator, next http.Handler) http.Handler {
 			writeError(w, http.StatusInternalServerError, "internal", "服务器内部错误")
 			return
 		}
+		// 待二步验证的中间态会话只能访问登录第二步端点(它自行校验),其余一律
+		// 401 mfa_required:前端据此停留在验证码步骤,不误判为已登录。
+		if sess.MFAPending {
+			writeError(w, http.StatusUnauthorized, "mfa_required", "请完成两步验证")
+			return
+		}
+		// 滑动续期刚写库时同步重发会话 cookie:长开不刷新的 SPA 标签页里,
+		// 库内会话在滑动而 cookie Expires 固定,会在固定时刻被动登出。
+		if sess.Refreshed {
+			setSessionCookies(w, r, sess)
+		}
 		ctx := context.WithValue(r.Context(), contextKeySession, sess)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
@@ -1269,6 +1301,12 @@ func makeLoginHandler(svc auth.Authenticator) http.HandlerFunc {
 
 		// 设置会话 cookie 与可读 CSRF cookie,并回显身份(用户名 + 角色)。
 		setSessionCookies(w, r, sess)
+		// 已启用 TOTP 的账户:口令虽过,仍处于「待二步验证」中间态——cookie 已下发
+		// (验证码端点复用该会话 + CSRF),但响应标记 mfa_required,由前端进入第二步。
+		if sess.MFAPending {
+			writeJSON(w, http.StatusOK, map[string]any{"mfa_required": true})
+			return
+		}
 		writeJSON(w, http.StatusOK, map[string]string{"username": sess.Username, "role": sess.Role})
 	}
 }
@@ -1320,6 +1358,11 @@ func makeSessionHandler(svc auth.Authenticator) http.HandlerFunc {
 				return
 			}
 			writeError(w, http.StatusInternalServerError, "internal", "服务器内部错误")
+			return
+		}
+		// 待二步验证的中间态会话不算「已登录」:前端 ensureSession 据此回到验证码步骤。
+		if sess.MFAPending {
+			writeError(w, http.StatusUnauthorized, "mfa_required", "请完成两步验证")
 			return
 		}
 		// 续期 CSRF cookie(会话 cookie 已存在,无需重设;setSessionCookies 两者皆发,幂等)。

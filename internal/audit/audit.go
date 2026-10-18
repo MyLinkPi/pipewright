@@ -73,6 +73,13 @@ const (
 	ActionUserRegister        = "user_register"
 	ActionProjectMemberAdd    = "project_member_add"
 	ActionProjectMemberRemove = "project_member_remove"
+	// 两步验证:开启/关闭 TOTP、备份码重生成、通行密钥增删、管理员重置成员 MFA。
+	ActionTOTPEnabled            = "totp_enabled"
+	ActionTOTPDisabled           = "totp_disabled"
+	ActionBackupCodesRegenerated = "backup_codes_regenerated"
+	ActionPasskeyAdded           = "passkey_added"
+	ActionPasskeyRemoved         = "passkey_removed"
+	ActionMemberMFAReset         = "member_mfa_reset"
 )
 
 // 目标类型枚举(供 TargetType 填值;非强制白名单,便于后续 story 扩展)。

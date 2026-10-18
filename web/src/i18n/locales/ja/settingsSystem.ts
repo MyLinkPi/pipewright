@@ -72,5 +72,17 @@ export default {
   updateSrcFromDefault: '既定 · ミラー未設定',
 
   langTitle: '表示言語',
-  langSub: 'UI の表示言語を切り替えます。即時反映されます。',
+  langSub: 'インターフェースの言語を切り替えます。即時反映。',
+
+  passkeyTitle: 'パスキー / 二要素認証',
+  passkeySub: 'パスキーログインの relying party(RP)設定。空欄の場合は外部アクセス地址から自動導出します。リバースプロキシ・複数ドメインでは明示指定を推奨。',
+  passkeyEnabledLabel: 'パスキーログインを有効化',
+  passkeyRpIdLabel: 'RP ID(ドメイン)',
+  passkeyRpIdPlaceholder: '空欄で自動導出(例:ci.example.com)',
+  passkeyOriginsLabel: '許可オリジン(カンマ区切り)',
+  passkeyOriginsPlaceholder: '空欄で自動導出(例:https://ci.example.com)',
+  passkeyNote: '変更は即時反映。ブラウザは HTTPS を要求します(localhost を除く)。',
+  passkeySave: '保存',
+  passkeySaved: '保存しました',
+  passkeySaveFailed: '保存に失敗しました。入力を確認してください',
 }

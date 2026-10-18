@@ -72,5 +72,17 @@ export default {
   updateSrcFromDefault: '기본값 · 미러 미설정',
 
   langTitle: '인터페이스 언어',
-  langSub: 'UI 표시 언어를 전환합니다. 즉시 적용됩니다.',
+  langSub: '인터페이스 표시 언어를 전환합니다. 즉시 적용됩니다.',
+
+  passkeyTitle: '패스키 / 2단계 인증',
+  passkeySub: '패스키 로그인의 RP(신뢰 당사자) 설정입니다. 비워 두면 외부 접근 주소에서 자동 유추합니다. 리버스 프록시·다중 도메인 배포에서는 명시적 입력을 권장합니다.',
+  passkeyEnabledLabel: '패스키 로그인 사용',
+  passkeyRpIdLabel: 'RP ID(도메인)',
+  passkeyRpIdPlaceholder: '비워 두면 자동 유추, 예: ci.example.com',
+  passkeyOriginsLabel: '허용 출처(쉼표 구분)',
+  passkeyOriginsPlaceholder: '비워 두면 자동 유추, 예: https://ci.example.com',
+  passkeyNote: '변경 사항은 즉시 적용됩니다. 브라우저는 HTTPS를 요구합니다(localhost 제외).',
+  passkeySave: '저장',
+  passkeySaved: '저장됨',
+  passkeySaveFailed: '저장 실패 — 입력을 확인하세요',
 }

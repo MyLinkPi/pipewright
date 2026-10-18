@@ -15,6 +15,7 @@
  */
 
 import { http } from './http'
+import { isRedirectingToLogin, probeSessionExpired } from '../utils/sessionExpired'
 import { t, currentLocale } from '../i18n'
 
 /** One hop in the server's SSH jump chain — manual entry, independent credential per hop. */
@@ -247,8 +248,16 @@ export function subscribeServerLogs(
 
     es.onerror = (err) => {
       if (closed) return
+      // 会话过期时停止自动重连(EventSource 对 401 无限重连即「页面卡死」的来源之一),
+      // 并经统一出口跳登录;其余传输错误维持既有重试语义。
+      if (isRedirectingToLogin()) {
+        cleanup()
+        return
+      }
+      void probeSessionExpired().then((expired) => {
+        if (expired) cleanup()
+      })
       handlers.onTransportError?.(err)
-      // EventSource auto-reconnects; we leave it to retry unless caller cleans up.
     }
   } catch {
     // EventSource unsupported / invalid URL — surface as transport error once.
@@ -579,6 +588,11 @@ function openTerminalWS(path: string, handlers: TerminalHandlers): TerminalConne
   ws.onclose = (ev: CloseEvent) => {
     if (closed) return
     closed = true
+    // 非正常关闭时探测会话:过期则统一跳登录(终端页「卡死」的来源),
+    // 仍在线则按原有语义提示会话结束。
+    if (ev.code !== 1000) {
+      void probeSessionExpired()
+    }
     handlers.onClose?.(ev.reason || t('labels.terminalSessionEnded'))
   }
   ws.onerror = () => {

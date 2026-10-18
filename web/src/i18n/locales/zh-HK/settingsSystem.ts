@@ -72,5 +72,17 @@ export default {
   updateSrcFromDefault: '預設 · 未設定鏡像',
 
   langTitle: '介面語言',
-  langSub: '切換介面顯示語言,即時生效。',
+  langSub: '切換介面顯示語言,立即生效。',
+
+  passkeyTitle: 'Passkey / 兩步驗證',
+  passkeySub: '通行密鑰登入的依賴方(RP)配置;留空時按外部存取地址自動推導。多網域 / 反向代理部署建議明確填寫。',
+  passkeyEnabledLabel: '啟用通行密鑰登入',
+  passkeyRpIdLabel: 'RP ID(網域)',
+  passkeyRpIdPlaceholder: '留空自動推導,如 ci.example.com',
+  passkeyOriginsLabel: '允許來源(逗號分隔)',
+  passkeyOriginsPlaceholder: '留空自動推導,如 https://ci.example.com',
+  passkeyNote: '修改即時生效;瀏覽器要求 HTTPS(localhost 除外)。',
+  passkeySave: '儲存',
+  passkeySaved: '已儲存',
+  passkeySaveFailed: '儲存失敗,請檢查輸入',
 }

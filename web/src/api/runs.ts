@@ -7,6 +7,7 @@
  */
 
 import { http } from './http'
+import { isRedirectingToLogin, probeSessionExpired } from '../utils/sessionExpired'
 
 // ─── Status vocabulary (fixed six-word set; do not alias) ────────────────────
 
@@ -615,7 +616,16 @@ export function subscribeRunEvents(runId: string, handlers: SseHandlers): () => 
 
     es.onerror = (err) => {
       if (closed) return
-      // SSE connection dropped — switch to polling silently
+      // SSE dropped — if the session expired (cookie gone), stop entirely and
+      // go to the login page via the unified handler; polling with a dead
+      // cookie would only 401-loop. Otherwise degrade to polling silently.
+      if (isRedirectingToLogin()) {
+        cleanup()
+        return
+      }
+      void probeSessionExpired().then((expired) => {
+        if (expired) cleanup()
+      })
       if (es) {
         es.close()
         es = null

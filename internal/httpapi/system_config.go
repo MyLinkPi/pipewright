@@ -21,8 +21,12 @@ const (
 type systemConfigDTO struct {
 	PublicURL     string              `json:"publicUrl"`
 	ReleaseMirror string              `json:"releaseMirror"`
-	UpdatedAt     string              `json:"updatedAt"`
-	Effective     *effectiveSourceDTO `json:"effectiveSource"`
+	// Passkey / 两步验证 RP 配置(留空 = 自动推导:public_url → 请求 Host)。
+	WebAuthnRPID        string              `json:"webauthnRpId"`
+	WebAuthnOrigins     string              `json:"webauthnOrigins"`
+	PasskeyLoginEnabled bool                `json:"passkeyLoginEnabled"`
+	UpdatedAt           string              `json:"updatedAt"`
+	Effective           *effectiveSourceDTO `json:"effectiveSource"`
 }
 
 // effectiveSourceDTO 是实际生效的升级源(镜像解析结果),让默认值透明可见:
@@ -41,10 +45,13 @@ func toSystemConfigDTO(c systemcfg.Config) systemConfigDTO {
 	}
 	src, origin := version.ResolveMirror(c.ReleaseMirror)
 	return systemConfigDTO{
-		PublicURL:     c.PublicURL,
-		ReleaseMirror: c.ReleaseMirror,
-		UpdatedAt:     updated,
-		Effective:     &effectiveSourceDTO{Origin: string(origin), APIBase: src.APIBase, DLBase: src.DLBase},
+		PublicURL:           c.PublicURL,
+		ReleaseMirror:       c.ReleaseMirror,
+		WebAuthnRPID:        c.WebAuthnRPID,
+		WebAuthnOrigins:     c.WebAuthnOrigins,
+		PasskeyLoginEnabled: c.PasskeyLoginEnabled,
+		UpdatedAt:           updated,
+		Effective:           &effectiveSourceDTO{Origin: string(origin), APIBase: src.APIBase, DLBase: src.DLBase},
 	}
 }
 
@@ -64,15 +71,21 @@ func makeGetSystemConfigHandler(svc systemcfg.Service) http.HandlerFunc {
 	}
 }
 
-// makeSetSystemConfigHandler 返回 PUT /api/system/config {publicUrl?, releaseMirror?}。
+// makeSetSystemConfigHandler 返回 PUT /api/system/config {publicUrl?, releaseMirror?,
+// webauthnRpId?, webauthnOrigins?, passkeyLoginEnabled?}。
 // 字段按需更新:缺省(null)= 不动该项;空串 = 清除。修改即时生效:
 //   - publicUrl:通知审批链接 / PR 回写 target_url 的前缀;
 //   - releaseMirror:自升级(检查更新 + 二进制下载)的镜像源,下次检查即走新源
-//     (Checker 缓存按源隔离,换源不返回旧源结果)。
+//     (Checker 缓存按源隔离,换源不返回旧源结果);
+//   - webauthnRpId / webauthnOrigins / passkeyLoginEnabled:Passkey 登录依赖方配置,
+//     下次 begin 注册/登录即用新值(实例缓存按配置键隔离)。
 func makeSetSystemConfigHandler(svc systemcfg.Service, aud audit.Recorder) http.HandlerFunc {
 	type request struct {
-		PublicURL     *string `json:"publicUrl"`
-		ReleaseMirror *string `json:"releaseMirror"`
+		PublicURL           *string `json:"publicUrl"`
+		ReleaseMirror       *string `json:"releaseMirror"`
+		WebAuthnRPID        *string `json:"webauthnRpId"`
+		WebAuthnOrigins     *string `json:"webauthnOrigins"`
+		PasskeyLoginEnabled *bool   `json:"passkeyLoginEnabled"`
 	}
 	return func(w http.ResponseWriter, r *http.Request) {
 		if svc == nil {
@@ -112,9 +125,43 @@ func makeSetSystemConfigHandler(svc systemcfg.Service, aud audit.Recorder) http.
 				return
 			}
 		}
+		if req.WebAuthnRPID != nil {
+			if c, err = svc.SetWebAuthnRPID(r.Context(), *req.WebAuthnRPID); err != nil {
+				if errors.Is(err, systemcfg.ErrInvalidRPID) {
+					writeError(w, http.StatusBadRequest, "invalid_webauthn_rp_id",
+						"RP ID 非法:须为域名(可带端口),留空表示自动推导")
+					return
+				}
+				writeError(w, http.StatusInternalServerError, "internal", "服务器内部错误")
+				return
+			}
+		}
+		if req.WebAuthnOrigins != nil {
+			if c, err = svc.SetWebAuthnOrigins(r.Context(), *req.WebAuthnOrigins); err != nil {
+				if errors.Is(err, systemcfg.ErrInvalidOrigins) {
+					writeError(w, http.StatusBadRequest, "invalid_webauthn_origins",
+						"来源非法:须为逗号分隔的 http(s)://host[:port] origin 列表,留空表示自动推导")
+					return
+				}
+				writeError(w, http.StatusInternalServerError, "internal", "服务器内部错误")
+				return
+			}
+		}
+		if req.PasskeyLoginEnabled != nil {
+			if c, err = svc.SetPasskeyLoginEnabled(r.Context(), *req.PasskeyLoginEnabled); err != nil {
+				writeError(w, http.StatusInternalServerError, "internal", "服务器内部错误")
+				return
+			}
+		}
 		recordAudit(r.Context(), aud, audit.Entry{
 			Actor: auditActor, Action: auditActionSystemConfigSet, TargetType: auditTargetSystemConfig,
-			TargetID: "default", Detail: map[string]any{"ok": true, "publicUrl": c.PublicURL, "releaseMirror": c.ReleaseMirror}, IP: clientIP(r),
+			TargetID: "default",
+			Detail: map[string]any{
+				"ok": true, "publicUrl": c.PublicURL, "releaseMirror": c.ReleaseMirror,
+				"webauthnRpId": c.WebAuthnRPID, "webauthnOrigins": c.WebAuthnOrigins,
+				"passkeyLoginEnabled": c.PasskeyLoginEnabled,
+			},
+			IP: clientIP(r),
 		})
 		writeJSON(w, http.StatusOK, toSystemConfigDTO(c))
 	}

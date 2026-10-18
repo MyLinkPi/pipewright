@@ -10,6 +10,7 @@ import (
 	"github.com/huangchengsir/pipewright/internal/audit"
 	"github.com/huangchengsir/pipewright/internal/auth"
 	"github.com/huangchengsir/pipewright/internal/identity"
+	"github.com/huangchengsir/pipewright/internal/mfa"
 )
 
 // userDTO 是普通用户对外响应体(绝不含口令哈希)。
@@ -19,6 +20,9 @@ type userDTO struct {
 	Role      string `json:"role"`
 	Status    string `json:"status"`
 	CreatedAt string `json:"createdAt"`
+	// TOTPEnabled / PasskeyCount 是成员的两步验证概要(mfaSvc 为 nil 时为零值)。
+	TOTPEnabled  bool `json:"totpEnabled"`
+	PasskeyCount int  `json:"passkeyCount"`
 }
 
 func toUserDTO(u identity.User) userDTO {
@@ -137,7 +141,8 @@ func makeInvitationInfoHandler(id identity.Service) http.HandlerFunc {
 }
 
 // makeListUsersHandler 返回 GET /api/users handler(管理员)。
-func makeListUsersHandler(id identity.Service) http.HandlerFunc {
+// 响应附带各成员的两步验证概要(TOTP 是否启用 / 通行密钥数);mfa 为 nil 时为零值。
+func makeListUsersHandler(id identity.Service, mfaSvc *mfa.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if id == nil {
 			writeError(w, http.StatusServiceUnavailable, "internal", "用户服务未初始化")
@@ -150,7 +155,11 @@ func makeListUsersHandler(id identity.Service) http.HandlerFunc {
 		}
 		out := make([]userDTO, 0, len(users))
 		for _, u := range users {
-			out = append(out, toUserDTO(u))
+			dto := toUserDTO(u)
+			if mfaSvc != nil {
+				dto.TOTPEnabled, dto.PasskeyCount = mfaSvc.UserMFASummary(u.ID)
+			}
+			out = append(out, dto)
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"users": out})
 	}
