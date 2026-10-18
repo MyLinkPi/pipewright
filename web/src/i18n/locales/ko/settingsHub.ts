@@ -9,6 +9,7 @@ export default {
   navDnsProviders: 'DNS 공급자',
   navObjectStorage: '오브젝트 스토리지',
   navDatabases: '데이터베이스',
+  navRedis: 'Redis',
   navHttps: 'HTTPS 접속',
   navAccount: '계정',
   navServers: '서버',

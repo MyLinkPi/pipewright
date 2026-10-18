@@ -9,6 +9,7 @@ export default {
   navDnsProviders: 'DNS 供應商',
   navObjectStorage: '物件儲存',
   navDatabases: '資料庫',
+  navRedis: 'Redis',
   navHttps: 'HTTPS 存取',
   navAccount: '帳戶',
   navServers: '伺服器',

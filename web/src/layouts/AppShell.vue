@@ -19,6 +19,7 @@ import {
   Apps,
   Database,
   CloudUpload,
+  Bolt,
   Users,
   ChevronRight,
   Logout,
@@ -97,6 +98,8 @@ const adminNavItems: NavItem[] = [
   { name: 'app-store',     to: '/app-store',     icon: Apps,       labelKey: 'nav.appStore',      ariaKey: 'nav.appStore' },
   // 数据库在线管理(phpMyAdmin 式):实例在 设置 → 数据库 注册;应用市场部署 mysql/postgres 自动登记。
   { name: 'databases',     to: '/databases',     icon: Database,   labelKey: 'nav.databases',     ariaKey: 'nav.databases' },
+  // Redis 在线管理:实例在 设置 → Redis 注册;应用市场部署 redis 自动登记;SCAN 分页键浏览。
+  { name: 'redis',         to: '/redis',         icon: Bolt,       labelKey: 'nav.redis',         ariaKey: 'nav.redis' },
   // 对象存储浏览(只读):实例在 设置 → 对象存储 注册;桶内目录树(marker 游标分页)。
   { name: 'object-storage', to: '/object-storage', icon: CloudUpload, labelKey: 'nav.objectStorage', ariaKey: 'nav.objectStorage' },
   // R4 / E4.1: PR 预览环境大盘(临时环境列表 + 手动回收)。

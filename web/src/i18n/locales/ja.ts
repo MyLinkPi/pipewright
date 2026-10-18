@@ -79,6 +79,7 @@ const ja: typeof zhCN = {
     appStore: 'アプリストア',
     databases: 'データベース',
     objectStorage: 'オブジェクトストレージ',
+    redis: 'Redis',
     certificates: '証明書管理',
     anomaly: '異常検知',
     notifications: '通知',

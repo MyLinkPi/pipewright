@@ -55,6 +55,10 @@ export interface AppDeployResult {
   dbRegistered?: boolean
   /** mysql/postgres 联动登记的人话备注(成功说明或失败原因;未触发时缺省)。 */
   dbNote?: string
+  /** redis 联动:部署成功后是否已自动登记为 Redis 管理实例(尽力而为,失败不影响 ok)。 */
+  redisRegistered?: boolean
+  /** redis 联动登记的人话备注(成功说明或失败原因;未触发时缺省)。 */
+  redisNote?: string
 }
 
 export interface AppTemplateInput {

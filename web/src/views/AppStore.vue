@@ -567,6 +567,11 @@ async function removeCustom(tpl: AppTemplate): Promise<void> {
             {{ t('appStore.deploy.dbAutoRegistered') }}<template v-if="deployResult.dbNote"> · {{ deployResult.dbNote }}</template>
           </p>
           <p v-else-if="deployResult.dbNote" class="apps__reg-warn">{{ deployResult.dbNote }}</p>
+          <!-- redis 联动:部署成功后自动登记 Redis 管理实例的结果(尽力而为,失败不影响部署) -->
+          <p v-if="deployResult.redisRegistered" class="apps__reg-ok">
+            {{ t('appStore.deploy.redisAutoRegistered') }}<template v-if="deployResult.redisNote"> · {{ deployResult.redisNote }}</template>
+          </p>
+          <p v-else-if="deployResult.redisNote" class="apps__reg-warn">{{ deployResult.redisNote }}</p>
           <div v-if="deployResult.ok && deployResult.params" class="apps__params">
             <h4>{{ t('appStore.deploy.generated') }}</h4>
             <ul>

@@ -78,6 +78,7 @@ export default {
     appStore: '应用商店',
     databases: '数据库',
     objectStorage: '对象存储',
+    redis: 'Redis',
     certificates: '证书管理',
     anomaly: '异常检测',
     notifications: '通知',

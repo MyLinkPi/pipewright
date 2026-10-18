@@ -78,6 +78,7 @@ const zhHK: typeof zhCN = {
     appStore: '應用商店',
     databases: '資料庫',
     objectStorage: '物件儲存',
+    redis: 'Redis',
     certificates: '憑證管理',
     anomaly: '異常偵測',
     notifications: '通知',

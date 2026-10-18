@@ -21,6 +21,7 @@ const { t } = useI18n()
       <router-link to="/settings/dns-providers" class="settings-nav-item">{{ t('settingsHub.navDnsProviders') }}</router-link>
       <router-link to="/settings/object-storage" class="settings-nav-item">{{ t('settingsHub.navObjectStorage') }}</router-link>
       <router-link to="/settings/databases" class="settings-nav-item">{{ t('settingsHub.navDatabases') }}</router-link>
+      <router-link to="/settings/redis" class="settings-nav-item">{{ t('settingsHub.navRedis') }}</router-link>
       <router-link to="/settings/https" class="settings-nav-item">{{ t('settingsHub.navHttps') }}</router-link>
       <router-link to="/settings/account" class="settings-nav-item">{{ t('settingsHub.navAccount') }}</router-link>
       <router-link to="/settings/servers" class="settings-nav-item">{{ t('settingsHub.navServers') }}</router-link>

@@ -46,6 +46,7 @@ export default {
     onceHint: "Generated passwords also live in the compose file on the target host (see its Stacks tab).",
     autoRegistered: "Registrado automáticamente como configuración de almacenamiento",
     dbAutoRegistered: "Registrado automáticamente como instancia de base de datos",
+    redisAutoRegistered: "Registrado automáticamente como instancia de Redis",
     close: "Close",
 
     regTitle: "Registrar en la pasarela",
