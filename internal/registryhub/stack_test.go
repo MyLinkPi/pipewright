@@ -3,6 +3,7 @@ package registryhub
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -187,6 +188,15 @@ func (f *fakeRegistryAPI) Catalog(context.Context) ([]string, error) {
 
 func (f *fakeRegistryAPI) TagInfos(_ context.Context, repo string) ([]TagInfo, error) {
 	return f.repos[repo], nil
+}
+
+func (f *fakeRegistryAPI) Manifest(_ context.Context, repo, tag string) (string, string, error) {
+	for _, ti := range f.repos[repo] {
+		if ti.Tag == tag {
+			return ti.Digest, "", nil
+		}
+	}
+	return "", "", fmt.Errorf("%w: %s:%s", ErrTagNotFound, repo, tag)
 }
 
 func (f *fakeRegistryAPI) DeleteManifest(_ context.Context, repo, digest string) error {
@@ -525,5 +535,62 @@ func TestResolveBuiltin(t *testing.T) {
 	addr, ok := h.ResolveBuiltin(context.Background())
 	if !ok || addr != "10.1.1.1:6000" {
 		t.Fatalf("启用后应返回制品地址: %q %v", addr, ok)
+	}
+}
+
+// TestDeleteTag 验证产物管理联动的单 tag 删除:正常删、digest 共租保留别名、
+// tag 已不在幂等、未启用报错。
+func TestDeleteTag(t *testing.T) {
+	// 正常:独占 digest → 删 manifest。
+	api := &fakeRegistryAPI{repos: map[string][]TagInfo{
+		"acme": {
+			{Tag: "v1", Digest: "d1"},
+			{Tag: "v2", Digest: "d2"},
+		},
+	}}
+	h := New(storetestOpen(t), nil, Options{RegistryClient: api})
+	if _, err := h.Save(context.Background(), SaveInput{Enabled: true, ExternalAddr: "ctrl"}); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	deleted, err := h.DeleteTag(context.Background(), "acme", "v1")
+	if err != nil || !deleted {
+		t.Fatalf("独占 digest 应删除: deleted=%v err=%v", deleted, err)
+	}
+	if len(api.deleted) != 1 || api.deleted[0] != "acme@d1" {
+		t.Fatalf("删除对象不符: %v", api.deleted)
+	}
+
+	// 共租:另一 tag 同 digest → 保留别名,不删、不报错。
+	api2 := &fakeRegistryAPI{repos: map[string][]TagInfo{
+		"acme": {
+			{Tag: "v1", Digest: "d1"},
+			{Tag: "latest", Digest: "d1"},
+		},
+	}}
+	h2 := New(storetestOpen(t), nil, Options{RegistryClient: api2})
+	if _, err := h2.Save(context.Background(), SaveInput{Enabled: true, ExternalAddr: "ctrl"}); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	deleted, err = h2.DeleteTag(context.Background(), "acme", "v1")
+	if err != nil || deleted {
+		t.Fatalf("共租 digest 应保留别名: deleted=%v err=%v", deleted, err)
+	}
+	if len(api2.deleted) != 0 {
+		t.Fatalf("共租时不应删 manifest: %v", api2.deleted)
+	}
+
+	// tag 已不在 → 幂等(deleted=false,无错误)。
+	deleted, err = h2.DeleteTag(context.Background(), "acme", "no-such-tag")
+	if err != nil || deleted {
+		t.Fatalf("tag 不存在应幂等: deleted=%v err=%v", deleted, err)
+	}
+
+	// 未启用 → 报错(调用方中止联动)。
+	h3 := New(storetestOpen(t), nil, Options{RegistryClient: api2})
+	if _, err := h3.Save(context.Background(), SaveInput{Enabled: false, ExternalAddr: "ctrl"}); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	if _, err := h3.DeleteTag(context.Background(), "acme", "v1"); err == nil {
+		t.Fatalf("未启用应报错")
 	}
 }

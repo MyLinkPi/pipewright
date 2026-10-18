@@ -134,6 +134,11 @@ var (
 	// StatusRejected 而非 failed)。定义在 run 包供 pool 判定(dagrun 的同名错误包装它,
 	// 避免 pool→dagrun 反向依赖)。
 	ErrGateRejected = errors.New("run: approval gate not approved")
+	// ErrArtifactNotFound 表示指定产物行不存在(产物管理删除/下载用)。
+	ErrArtifactNotFound = errors.New("run: artifact not found")
+	// ErrRunNotFinished 表示运行尚未到终态,产物行不允许删除(进行中产物行是
+	// 按节点恢复/跨阶段产物恢复的基线,删除会破坏执行语义)。
+	ErrRunNotFinished = errors.New("run: not finished")
 )
 
 // Trigger 是运行触发上下文(冻结 DTO 的 trigger 块来源)。

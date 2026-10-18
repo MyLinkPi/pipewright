@@ -37,6 +37,9 @@ const ObjectStorage = () => import('../views/ObjectStorage.vue')
 const Redis = () => import('../views/Redis.vue')
 // 服务器磁盘管理:块设备/LVM 拓扑 + 分区/格式化/挂载/扩缩容(只读默认 + 显式解锁)。
 const Disks = () => import('../views/Disks.vue')
+const Files = () => import('../views/Files.vue')
+// 流水线产物管理:跨运行产物列表(文件/镜像)+ 查看详情 / 下载 / 删除(仅管理员)。
+const Artifacts = () => import('../views/Artifacts.vue')
 // Story 6-5: configurable anomaly detection & alerts (FR-23)
 const AnomalyDetection = () => import('../views/AnomalyDetection.vue')
 // 集群(对等节点 + EasyTier 自组网):节点状态/链路(p2p|中继)总览 + 授权管理入口
@@ -190,6 +193,10 @@ const router = createRouter({
         { path: 'redis', name: 'redis', component: Redis, meta: { title: 'Redis', roles: ['admin'] } },
         // 服务器磁盘管理:lsblk 设备树 + LVM 面板 + 分区/格式化/挂载/扩缩容(仅管理员)。
         { path: 'disks', name: 'disks', component: Disks, meta: { title: 'Disks', roles: ['admin'] } },
+        // 服务器文件查看:目录浏览 + 文件下载 + ≤64KiB 纯文本在线查看/编辑(仅管理员)。
+        { path: 'files', name: 'files', component: Files, meta: { title: 'Files', roles: ['admin'] } },
+        // 流水线产物管理:跨运行产物(文件/镜像)列表 + 查看/下载/删除(仅管理员)。
+        { path: 'artifacts', name: 'artifacts', component: Artifacts, meta: { title: 'Artifacts', roles: ['admin'] } },
         // PVE 集群管理:总览/VM 列表/电源操作/任务(仅管理员;集群经服务器登记自动发现)。
         { path: 'pve', name: 'pve', component: PVE, meta: { title: 'PVE', roles: ['admin'] } },
         // 对象存储浏览(只读;仅管理员):实例在 设置 → 对象存储 注册,此处浏览桶内目录(marker 游标分页)。

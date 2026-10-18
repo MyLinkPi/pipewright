@@ -87,6 +87,16 @@ type Service interface {
 	// run 不存在不报错(返回空切片);由 HTTP 层据 run 存在性决定 404(仿 GetLogs 语义)。
 	ListArtifacts(ctx context.Context, runID string) ([]Artifact, error)
 
+	// ListAllArtifacts 跨运行分页列出全部产物(产物管理页数据源):JOIN 运行/项目带出
+	// 项目名与运行状态;按 created_at 倒序(最新在前)。type 非空须为冻结枚举,
+	// 否则 ErrInvalidArtifactType。
+	ListAllArtifacts(ctx context.Context, f ArtifactFilter) (*ArtifactListResult, error)
+	// DeleteArtifact 删除一条产物记录(产物管理页):运行非终态 → ErrRunNotFinished
+	// (进行中产物行是按节点恢复/跨阶段恢复的基线);产物行不存在 → ErrArtifactNotFound。
+	// 返回被删产物与「已无任何剩余行引用的制品库句柄」(内容寻址去重下句柄可共享),
+	// 调用方据此对制品库 best-effort 物理删除。
+	DeleteArtifact(ctx context.Context, runID, artifactID string) (*Artifact, []string, error)
+
 	// SetCommit 回写本次运行实际检出的 commit 短 SHA(克隆解析出后由执行器调用)。
 	// 触发时未指定 commit(手动触发常见)→ 这里补上真实 commit,供运行详情展示。run 不存在 → ErrNotFound。
 	SetCommit(ctx context.Context, id, commit string) error

@@ -21,6 +21,8 @@ import {
   CloudUpload,
   Bolt,
   DeviceFloppy,
+  Folder,
+  Package,
   Users,
   ChevronRight,
   Logout,
@@ -78,6 +80,8 @@ const adminNavItems: NavItem[] = [
   { name: 'dashboard',     to: '/dashboard',     icon: Dashboard, labelKey: 'nav.dashboard',     ariaKey: 'nav.dashboard' },
   { name: 'projects',      to: '/projects',      icon: GitBranch,  labelKey: 'nav.projects',      ariaKey: 'nav.projects' },
   { name: 'runs',          to: '/runs',          icon: GitFork,    labelKey: 'nav.runs',          ariaKey: 'nav.runs' },
+  // 流水线产物管理:跨运行产物(文件/镜像)查看/下载/删除(镜像导出 tar + 内置 registry tag 联动清理)。
+  { name: 'artifacts',     to: '/artifacts',     icon: Package,    labelKey: 'nav.artifacts',     ariaKey: 'nav.artifacts' },
   // FR-8-13: 复用库(流水线模板 + 变量组)。
   { name: 'library',       to: '/library',       icon: Stack2,     labelKey: 'nav.library',       ariaKey: 'nav.library' },
   // 环境一等公民:按环境聚合的部署历史 + 一键回滚(对标 GitLab environments)。
@@ -103,6 +107,8 @@ const adminNavItems: NavItem[] = [
   { name: 'redis',         to: '/redis',         icon: Bolt,       labelKey: 'nav.redis',         ariaKey: 'nav.redis' },
   // 服务器磁盘管理:块设备/LVM 拓扑 + 分区/格式化/挂载/扩缩容(只读默认 + 显式解锁)。
   { name: 'disks',         to: '/disks',         icon: DeviceFloppy, labelKey: 'nav.disks',        ariaKey: 'nav.disks' },
+  // 服务器文件查看:目录浏览 + 文件下载 + ≤64KiB 纯文本在线查看/编辑(保存前同目录备份)。
+  { name: 'files',         to: '/files',         icon: Folder, labelKey: 'nav.files',             ariaKey: 'nav.files' },
   // PVE 集群管理:总览/VM/电源操作/任务(集群经服务器登记自动发现,Token 在 设置 → PVE)。
   { name: 'pve',           to: '/pve',           icon: Server,    labelKey: 'nav.pve',           ariaKey: 'nav.pve' },
   // 对象存储浏览(只读):实例在 设置 → 对象存储 注册;桶内目录树(marker 游标分页)。

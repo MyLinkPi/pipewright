@@ -31,6 +31,12 @@ type registryHubService interface {
 	InspectDaemon(ctx context.Context, serverID string) (*registryhub.DaemonInspect, error)
 	// ResolveDirs 返回制品/缓存存储的生效目录(UI 占位展示;配置为空时回显服务端默认)。
 	ResolveDirs(cfg *registryhub.Config) (artifact, cache string)
+	// ResolveBuiltin 返回内置制品 registry 地址(产物管理:判定镜像 reference 是否指向
+	// 内置 registry,以联动删除 tag)。未启用 → ok=false。
+	ResolveBuiltin(ctx context.Context) (addr string, ok bool)
+	// DeleteTag 删除内置 registry 中指定 repo:tag(产物管理「删除镜像」联动)。
+	// digest 共租时保留别名返回 (false, nil);tag 已不在幂等 (false, nil)。
+	DeleteTag(ctx context.Context, repo, tag string) (bool, error)
 }
 
 // registryHubConfigDTO 是 GET/PUT /api/settings/registry 的响应体(冻结契约;无任何凭据)。

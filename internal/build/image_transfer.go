@@ -126,3 +126,34 @@ func (t *ImageTransfer) exportImageArchiveToTemp(ctx context.Context, ref string
 	}
 	return name, nil
 }
+
+// EnsureLocal 确保镜像在本地 daemon 存在:先 image inspect 探测,不在则 pull
+// (产物管理页「导出镜像 tar」前置步)。内置 registry 无鉴权可直拉;外置私有 registry
+// 可能因无凭据 pull 失败 → 诚实返回 ErrImageTransfer 包装错误。命令 array 化不经 shell。
+func (t *ImageTransfer) EnsureLocal(ctx context.Context, ref string) error {
+	if strings.TrimSpace(ref) == "" {
+		return fmt.Errorf("%w: empty image ref", ErrImageTransfer)
+	}
+	// image inspect:0 退出码 = 已在本地;-1(命令不存在/不存在该镜像)→ 尝试 pull。
+	if _, err := t.runLine(ctx, []string{"image", "inspect", ref}); err == nil {
+		return nil
+	}
+	if _, err := t.runLine(ctx, []string{"pull", ref}); err != nil {
+		return fmt.Errorf("%w: pull %s(外置私有仓库需凭据时不可拉取)", ErrImageTransfer, ref)
+	}
+	return nil
+}
+
+// ExportStream 把镜像归档(docker save,不带 -o)流式写到 w(产物管理页镜像下载:
+// stdout 直连 HTTP 响应,不落临时文件、不占额外磁盘)。失败 → ErrImageTransfer 包装。
+func (t *ImageTransfer) ExportStream(ctx context.Context, ref string, w io.Writer) error {
+	cmd := exec.CommandContext(ctx, t.binary(), "save", ref)
+	cmd.Stdout = w
+	var errBuf bytes.Buffer
+	cmd.Stderr = &errBuf
+	if err := cmd.Run(); err != nil {
+		t.log("stderr", "  %s save 失败:%s", t.binary(), strings.TrimSpace(errBuf.String()))
+		return fmt.Errorf("%w: save %s", ErrImageTransfer, ref)
+	}
+	return nil
+}

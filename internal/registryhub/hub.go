@@ -32,6 +32,8 @@ type MachineRunner interface {
 type RegistryAPI interface {
 	Catalog(ctx context.Context) ([]string, error)
 	TagInfos(ctx context.Context, repo string) ([]TagInfo, error)
+	// Manifest 查单 tag 的 manifest digest(DeleteTag 的幂等/共租判定用;404 → ErrTagNotFound)。
+	Manifest(ctx context.Context, repo, tag string) (digest, configDigest string, err error)
 	DeleteManifest(ctx context.Context, repo, digest string) error
 }
 
