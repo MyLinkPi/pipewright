@@ -1,4 +1,7 @@
 export default {
+  pveBadge: 'PVE-Host',
+  pveBadgeHint: 'physischer Proxmox-VE-Cluster-Host: automatisch verwaltet (kein Build-/Deploy-Ziel)',
+  pveDiscovered: 'PVE-Cluster „{cluster}“ erkannt — {n} Knoten automatisch in einen dedizierten Serverpool registriert',
   title: 'Server',
   desc: 'Zielserver registrieren (Host / Port / Benutzer + SSH-Anmeldedaten) und Konnektivität testen. SSH-Schlüssel werden nur per Referenz gebunden, über den Tresor verschlüsselt gespeichert und abgerufen und niemals im Klartext gespeichert oder angezeigt. Deployment und Betrieb führen Befehle über diese gemeinsame SSH-Schicht aus.',
   addServer: 'Server registrieren',

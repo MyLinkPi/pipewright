@@ -672,3 +672,44 @@ func TestAcquireNoQueueJumping(t *testing.T) {
 		}
 	}
 }
+
+// seedPVEServer 插一台 kind=pve_node 的 servers 行(PVE 集群物理机;0084 拦截用例)。
+func seedPVEServer(t *testing.T, st *store.Store, id, name, labels string) {
+	t.Helper()
+	now := time.Now().UTC().Format(time.RFC3339)
+	credID := uuid.NewString()
+	if _, err := st.DB.Exec(`INSERT INTO credentials (id,name,type,scope,ciphertext,masked_value,created_at,updated_at) VALUES (?,'c','ssh_key','',X'00','m',?,?)`, credID, now, now); err != nil {
+		t.Fatalf("seed cred: %v", err)
+	}
+	if _, err := st.DB.Exec(`INSERT INTO servers (id,name,host,port,user,credential_id,created_at,updated_at,labels,max_builds,priority,kind) VALUES (?,?,?,22,'u',?,?,?,?,?,?,'pve_node')`,
+		id, name, name+".example", credID, now, now, labels, 4, 1); err != nil {
+		t.Fatalf("seed pve server %s: %v", name, err)
+	}
+}
+
+// TestAcquireExcludesPVENode 验证 0084:PVE 物理机不进标签圈选候选(静默排除,
+// 其余机器正常命中);钉死指向 PVE 机 → 显式报错(配置错误须暴露,不与零命中混淆)。
+func TestAcquireExcludesPVENode(t *testing.T) {
+	st := openMigrated(t)
+	seedServer(t, st, "s-std", "std", "linux", 4, 1)
+	seedPVEServer(t, st, "s-pve", "pve1", "linux")
+
+	s := NewScheduler(st.DB, nil, 1)
+	// 标签圈选:pve 机带同样标签也不命中,只有普通机可调度。
+	id, _, rel, err := s.Acquire(context.Background(), "p1", "linux", nil)
+	if err != nil || id != "s-std" {
+		t.Fatalf("Acquire = %q/%v, want s-std", id, err)
+	}
+	rel()
+
+	// 只有 pve 机带标签时 → 零命中语义(ErrNoRunnerMatch),不是崩溃也不是命中。
+	if _, _, _, err := s.Acquire(context.Background(), "p2", "nosuchtag", nil); err != ErrNoRunnerMatch {
+		t.Fatalf("Acquire no-match = %v, want ErrNoRunnerMatch", err)
+	}
+
+	// 钉死指向 pve 机 → 显式 ErrPVENotTarget 错误。
+	_, _, _, err = s.Acquire(context.Background(), "p3", "server:s-pve", nil)
+	if err == nil || !strings.Contains(err.Error(), "pve node is not a build or deploy target") {
+		t.Fatalf("Acquire pinned pve = %v, want ErrPVENotTarget wrap", err)
+	}
+}

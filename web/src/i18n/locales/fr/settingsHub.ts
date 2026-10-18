@@ -10,6 +10,7 @@ export default {
   navObjectStorage: 'Stockage d’objets',
   navDatabases: 'Bases de données',
   navRedis: 'Redis',
+  navPve: 'PVE',
   navHttps: 'Accès HTTPS',
   navAccount: 'Compte',
   navServers: 'Serveurs',

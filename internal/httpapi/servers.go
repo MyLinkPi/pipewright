@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -8,6 +9,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/huangchengsir/pipewright/internal/pveadmin"
 	"github.com/huangchengsir/pipewright/internal/runner"
 	"github.com/huangchengsir/pipewright/internal/target"
 )
@@ -47,7 +49,12 @@ type serverDTO struct {
 	MaxBuilds int             `json:"maxBuilds"`
 	Priority  int             `json:"priority"`
 	// Gpu 标记该机带显卡:开启后多机状态总览额外经 `nvtop -s` 采集显卡指标(纯监控开关)。
-	Gpu       bool   `json:"gpu"`
+	Gpu bool `json:"gpu"`
+	// PoolID/PoolName/Kind 是系统管理放置字段(0084 服务器池;kind=pve_node 的机器
+	// 不允许作为构建/部署/应用部署目标,前端目标选择器按 kind 过滤)。
+	PoolID   string `json:"poolId"`
+	PoolName string `json:"poolName"`
+	Kind     string `json:"kind"`
 	CreatedAt string `json:"createdAt"`
 	UpdatedAt string `json:"updatedAt"`
 }
@@ -78,6 +85,9 @@ func toServerDTO(s *target.Server) serverDTO {
 		MaxBuilds:          s.MaxBuilds,
 		Priority:           s.Priority,
 		Gpu:                s.Gpu,
+		PoolID:             s.PoolID,
+		PoolName:           s.PoolName,
+		Kind:               s.Kind,
 		CreatedAt:          s.CreatedAt.UTC().Format(time.RFC3339),
 		UpdatedAt:          s.UpdatedAt.UTC().Format(time.RFC3339),
 	}
@@ -194,7 +204,10 @@ func makeGetServerHandler(svc target.Service) http.HandlerFunc {
 }
 
 // makeCreateServerHandler 返回 POST /api/servers handler。
-func makeCreateServerHandler(svc target.Service) http.HandlerFunc {
+// makeCreateServerHandler 返回 POST /api/servers handler。pves 非 nil 时登记成功后
+// 同步触发 PVE 探测(25s 上限、响应结束不中断;探测尽力而为:失败仅不加 pveDiscovery
+// 字段,绝不令登记失败——对齐 appstore 自动登记链路的容错语义)。
+func makeCreateServerHandler(svc target.Service, pves pveadmin.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if svc == nil {
 			writeError(w, http.StatusServiceUnavailable, "internal", "服务器服务未初始化")
@@ -239,7 +252,26 @@ func makeCreateServerHandler(svc target.Service) http.HandlerFunc {
 			writeServerError(w, err)
 			return
 		}
-		writeJSON(w, http.StatusCreated, toServerDTO(s))
+		// PVE 探测(尽力而为):非 PVE / 探测不可达 → pveDiscovery 缺省(null)。
+		var disco *pveadmin.DiscoveryResult
+		if pves != nil {
+			pctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 25*time.Second)
+			d, derr := pves.OnServerRegistered(pctx, s.ID)
+			cancel()
+			if derr == nil {
+				disco = d
+			}
+			if disco != nil {
+				// 探测会改放置字段(归池/kind),重取一次让响应反映纳管后状态。
+				if fresh, gerr := svc.Get(r.Context(), s.ID); gerr == nil {
+					s = fresh
+				}
+			}
+		}
+		writeJSON(w, http.StatusCreated, struct {
+			serverDTO
+			PVEDiscovery *pveadmin.DiscoveryResult `json:"pveDiscovery"`
+		}{toServerDTO(s), disco})
 	}
 }
 

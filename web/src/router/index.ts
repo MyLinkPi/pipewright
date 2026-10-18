@@ -56,6 +56,10 @@ const SettingsObjectStorage = () => import('../views/settings/SettingsObjectStor
 const SettingsDatabases = () => import('../views/settings/SettingsDatabases.vue')
 // Redis 实例注册(应用市场部署 redis 后自动登记;管理在 /redis 顶级页)
 const SettingsRedis = () => import('../views/settings/SettingsRedis.vue')
+// PVE 集群管理:集群经服务器登记自动发现(设置 → PVE 配 Token),此处总览/VM/电源/任务。
+const PVE = () => import('../views/PVE.vue')
+// PVE 集群 Token 配置(集群记录由服务器登记探测自动生成)
+const SettingsPVE = () => import('../views/settings/SettingsPVE.vue')
 // 平台 HTTPS 访问:宿主 nginx 自动配置(证书 + 80→443 跳转),证书复用证书管理
 const SettingsHttps = () => import('../views/settings/SettingsHttps.vue')
 const SettingsAccount = () => import('../views/settings/SettingsAccount.vue')
@@ -182,6 +186,8 @@ const router = createRouter({
         { path: 'databases', name: 'databases', component: Databases, meta: { title: '数据库', roles: ['admin'] } },
         // Redis 在线管理:SCAN 游标分页键浏览 + 键详情 + 删键/改 TTL(仅管理员)。
         { path: 'redis', name: 'redis', component: Redis, meta: { title: 'Redis', roles: ['admin'] } },
+        // PVE 集群管理:总览/VM 列表/电源操作/任务(仅管理员;集群经服务器登记自动发现)。
+        { path: 'pve', name: 'pve', component: PVE, meta: { title: 'PVE', roles: ['admin'] } },
         // 对象存储浏览(只读;仅管理员):实例在 设置 → 对象存储 注册,此处浏览桶内目录(marker 游标分页)。
         { path: 'object-storage', name: 'object-storage', component: ObjectStorage, meta: { title: '对象存储', roles: ['admin'] } },
         // R2 / E2.4: 证书总览大盘(跨主机跨域名 + 到期高亮)
@@ -211,6 +217,8 @@ const router = createRouter({
             { path: 'databases', name: 'settings-databases', component: SettingsDatabases, meta: { title: '数据库' } },
             // Redis 实例注册(应用市场部署 redis 后自动登记;管理在 /redis)
             { path: 'redis', name: 'settings-redis', component: SettingsRedis, meta: { title: 'Redis' } },
+            // PVE 集群 Token 配置(集群经服务器登记自动发现;管理在 /pve)
+            { path: 'pve', name: 'settings-pve', component: SettingsPVE, meta: { title: 'PVE' } },
             { path: 'https', name: 'settings-https', component: SettingsHttps, meta: { title: 'HTTPS 访问' } },
             { path: 'account', name: 'settings-account', component: SettingsAccount, meta: { title: '账户设置' } },
             // 系统信息 + 一键检查更新

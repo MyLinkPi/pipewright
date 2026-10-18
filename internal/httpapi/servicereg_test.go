@@ -62,6 +62,10 @@ type fakeSRTarget struct {
 // DockerLogin 满足 target.Service 接口(部署私有仓库登录追加);测试桩不触网,直接成功。
 func (f *fakeSRTarget) DockerLogin(context.Context, string, string, string) error { return nil }
 
+// SetPlacement / ListPools 满足 target.Service 接口(0084 服务器池追加);测试桩不落库。
+func (f *fakeSRTarget) SetPlacement(context.Context, string, string, string) error { return nil }
+func (f *fakeSRTarget) ListPools(context.Context) ([]*target.ServerPool, error)         { return nil, nil }
+
 func (f *fakeSRTarget) Get(_ context.Context, id string) (*target.Server, error) {
 	return &target.Server{ID: id, Name: "srv-" + id}, nil
 }

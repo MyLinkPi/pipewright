@@ -612,6 +612,11 @@ func makeDeployAppHandler(apps appstore.Service, servers target.Service, aud aud
 			writeServerError(w, err)
 			return
 		}
+		// PVE 集群物理机不允许作为应用部署目标(0084:虚拟化宿主机不跑平台部署的栈)。
+		if srv.IsPVENode() {
+			writeError(w, http.StatusUnprocessableEntity, "pve_node_not_target", "PVE 集群物理机不允许作为应用部署目标")
+			return
+		}
 		// 宿主地址约定参数(advertise_host/ssh_domain,见 hostParamNames):未显式提供或
 		// 留空时注入目标机 Host,让 Kafka advertise、SSH 克隆地址等自动指向部署宿主。
 		req.Params = injectHostParams(req.Params, tpl, srv.Host)

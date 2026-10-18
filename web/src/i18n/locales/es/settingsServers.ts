@@ -1,4 +1,7 @@
 export default {
+  pveBadge: 'host PVE',
+  pveBadgeHint: 'máquina física del clúster Proxmox VE: gestionada automáticamente (no es destino de build/despliegue)',
+  pveDiscovered: 'clúster PVE «{cluster}» detectado: {n} nodos registrados automáticamente en un grupo de servidores dedicado',
   title: 'Servidores',
   desc: 'Registra servidores de destino (host / puerto / usuario + credencial SSH) y prueba la conectividad. Las claves SSH se vinculan solo por referencia, se almacenan y recuperan cifradas mediante la bóveda, y nunca se persisten ni se muestran en texto plano. El despliegue y las operaciones ejecutan comandos a través de esta capa SSH compartida.',
   addServer: 'Registrar servidor',

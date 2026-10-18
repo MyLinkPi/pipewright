@@ -1,4 +1,7 @@
 export default {
+  pveBadge: 'PVE host',
+  pveBadgeHint: 'Proxmox VE cluster host: auto-managed (not a build/deploy target)',
+  pveDiscovered: 'PVE cluster "{cluster}" detected — {n} nodes auto-registered into a dedicated server pool',
   title: 'Servers',
   desc: 'Register target servers (host / port / user + SSH credential) and test connectivity. SSH keys are bound by reference only, stored and retrieved encrypted via the vault, and never persisted or echoed in plaintext. Deployment and operations both run commands through this shared SSH layer.',
   addServer: 'Register Server',

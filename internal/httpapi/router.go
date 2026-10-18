@@ -38,6 +38,7 @@ import (
 	"github.com/huangchengsir/pipewright/internal/metrics"
 	"github.com/huangchengsir/pipewright/internal/mfa"
 	"github.com/huangchengsir/pipewright/internal/notify"
+	"github.com/huangchengsir/pipewright/internal/pveadmin"
 	"github.com/huangchengsir/pipewright/internal/oauth"
 	"github.com/huangchengsir/pipewright/internal/objectstore"
 	"github.com/huangchengsir/pipewright/internal/opschat"
@@ -125,6 +126,7 @@ type options struct {
 	appStore         appstore.Service
 	dbAdmin          dbadmin.Service
 	redisAdmin       redisadmin.Service
+	pveAdmin         pveadmin.Service
 	serverCmds       *servercmd.Service
 	registryHub      registryHubService
 	mesh             *meshAdminDeps
@@ -137,6 +139,17 @@ type options struct {
 // auth + CSRF + 审计)。不传则 Ceph 功能整体不可用(端点 503)。
 func WithCeph(s ceph.Service) Option {
 	return func(o *options) { o.ceph = s }
+}
+
+// WithPVEAdmin 注入 PVE 集群纳管与管理服务(internal/pveadmin):
+//   - admin 组挂载 /api/pve/*(集群视图/Token 配置/测连/只读开关/删除/总览/VM 列表/
+//     电源操作/任务;Token 密封入 vault,响应绝无密文);
+//   - 服务器登记钩子:POST /api/servers 成功后自动探测 PVE 并建池(svc 为 nil 时跳过);
+//   - 受保护组只读 GET /api/server-pools(池列表,成员可见)。
+//
+// 不传则 PVE 管理面不可用(端点 503)、登记不做探测。
+func WithPVEAdmin(s pveadmin.Service) Option {
+	return func(o *options) { o.pveAdmin = s }
 }
 
 // WithMesh 注入集群(对等节点 + EasyTier)依赖,挂载两组路由:
@@ -666,6 +679,9 @@ func New(webFS fs.FS, authn auth.Authenticator, opts ...Option) http.Handler {
 				mountRedisAdmin(ar, o.redisAdmin, aud)
 			}
 			// Ceph 管理面(管理员):集群登记/cephadm 部署管线/状态 + 主机/OSD/池/RBD/CephFS 管理。
+			if o.pveAdmin != nil {
+				mountPVEAdmin(ar, o.pveAdmin, aud)
+			}
 			if o.ceph != nil {
 				mountCeph(ar, o.ceph, aud)
 			}
@@ -878,7 +894,10 @@ func New(webFS fs.FS, authn auth.Authenticator, opts ...Option) http.Handler {
 		// SSH 私钥/口令经 vault 即用即弃,响应/错误绝无明文(AC-SEC-01/02)。
 		sv := o.servers
 		ar.Get("/servers", makeListServersHandler(sv))
-		ar.Post("/servers", makeCreateServerHandler(sv))
+		ar.Post("/servers", makeCreateServerHandler(sv, o.pveAdmin))
+		// 服务器池(0084,系统管理:default + PVE 探测自动建):只读列表,成员可见,
+		// 供服务器列表分组展示与目标选择器过滤 pve_node。
+		ar.Get("/server-pools", makeServerPoolListHandler(sv))
 		ar.Get("/servers/{id}", makeGetServerHandler(sv))
 		ar.Put("/servers/{id}", makeUpdateServerHandler(sv))
 		ar.Delete("/servers/{id}", makeDeleteServerHandler(sv))

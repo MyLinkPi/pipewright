@@ -1,4 +1,7 @@
 export default {
+  pveBadge: 'PVE 物理マシン',
+  pveBadgeHint: 'Proxmox VE クラスターの物理マシン:自動管理対象(ビルド/デプロイ対象には不可)',
+  pveDiscovered: 'PVE クラスター「{cluster}」を検出 — {n} 台のノードを自動登録し、専用サーバープールに配置しました',
   title: 'サーバー',
   desc: '対象サーバー(host / port / user + SSH 認証情報)を登録し、接続性をテストします。SSH 鍵は参照でのみバインドされ、Vault 経由で暗号化して保存・取得され、平文で保存・表示されることはありません。デプロイと運用はどちらもこの共有 SSH レイヤー経由でコマンドを実行します。',
   addServer: 'サーバーを登録',

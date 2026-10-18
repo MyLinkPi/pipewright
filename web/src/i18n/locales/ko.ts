@@ -92,6 +92,7 @@ const ko: typeof zhCN = {
     ariaBrandHome: 'Pipewright 홈',
     expand: '사이드바 펼치기',
     collapse: '사이드바 접기',
+    pve: 'PVE',
   },
 
   shell: {

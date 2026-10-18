@@ -92,6 +92,7 @@ const de: typeof zhCN = {
     ariaBrandHome: 'Pipewright-Startseite',
     expand: 'Seitenleiste ausklappen',
     collapse: 'Seitenleiste einklappen',
+    pve: 'PVE',
   },
 
   shell: {

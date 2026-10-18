@@ -91,6 +91,7 @@ export default {
     ariaBrandHome: 'Pipewright 主页',
     expand: '展开侧栏',
     collapse: '收起侧栏',
+    pve: 'PVE 集群',
   },
 
   shell: {

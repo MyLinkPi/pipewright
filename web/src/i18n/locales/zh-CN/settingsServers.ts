@@ -1,4 +1,7 @@
 export default {
+  pveBadge: 'PVE 物理机',
+  pveBadgeHint: 'PVE 集群物理机:已自动纳管(不可作为构建/部署目标)',
+  pveDiscovered: '检测到 PVE 集群「{cluster}」,已自动登记 {n} 台节点并归入独立服务器池',
   title: '服务器',
   desc: '登记目标服务器(host / port / user + SSH 凭据),测试连通性。SSH 密钥仅按引用绑定,经保险库密文存取,绝不入库或回显明文。部署与运维都经此共享 SSH 层执行命令。',
   addServer: '登记服务器',

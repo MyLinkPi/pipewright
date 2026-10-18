@@ -1,4 +1,7 @@
 export default {
+  pveBadge: 'PVE 實體機',
+  pveBadgeHint: 'PVE 叢集實體機:已自動納管(不可作為構建/部署目標)',
+  pveDiscovered: '偵測到 PVE 叢集「{cluster}」,已自動登記 {n} 台節點並歸入獨立伺服器池',
   title: '伺服器',
   desc: '登記目標伺服器(host / port / user + SSH 憑證),測試連通性。SSH 金鑰僅按引用綁定,經保險庫密文存取,絕不入庫或回顯明文。部署與維運都經此共享 SSH 層執行命令。',
   addServer: '登記伺服器',

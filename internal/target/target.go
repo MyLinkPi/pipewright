@@ -61,6 +61,13 @@ var (
 	ErrInvalidCredential = errors.New("target: credential is not a usable ssh key or password")
 	// ErrInvalidJump 表示跳板链配置无效(缺主机/用户/凭据、端口越界或超过 MaxJumps)。
 	ErrInvalidJump = errors.New("target: invalid jump configuration")
+	// ErrPVENotTarget 表示 PVE 集群物理机不允许作为构建机或部署目标(域层统一哨兵,
+	// 供 runner/deploy/httpapi errors.Is 映射 422;错误体只带人读机名,绝无凭据)。
+	ErrPVENotTarget = errors.New("target: pve node is not a build or deploy target")
+	// ErrInvalidKind 表示服务器 kind 入参非法(仅 standard | pve_node)。
+	ErrInvalidKind = errors.New("target: invalid server kind")
+	// ErrPoolNotFound 表示入参引用的服务器池不存在。
+	ErrPoolNotFound = errors.New("target: server pool not found")
 )
 
 // MaxJumps 是跳板链的最大跳数(本机 → 跳1 → … → 跳N → 目标)。防呆上限,非性能约束。
@@ -68,6 +75,16 @@ const MaxJumps = 5
 
 // DefaultPort 是未显式给定端口时的 SSH 默认端口。
 const DefaultPort = 22
+
+// 服务器 kind 枚举(系统管理字段,仅 PVE 探测流写入,不进服务器更新 API):
+// standard = 普通服务器;PVE 集群物理机一律 pve_node,不允许作为构建机与部署目标。
+const (
+	KindStandard = "standard"
+	KindPVENode  = "pve_node"
+)
+
+// DefaultPoolID 是标准池单例 id(迁移 0084 回填;存量与普通登记服务器全在此池)。
+const DefaultPoolID = "default"
 
 // probeCommand 是 Test 连通性所跑的只读探测命令(AC-SEC-02:array 形式)。
 var probeCommand = []string{"uname", "-a"}
@@ -103,15 +120,38 @@ type Server struct {
 	// Priority 是调度优先级(数值越大越优先;0-100)。
 	Priority int
 	// Gpu 标记该机带显卡:开启后多机状态总览(FR-15)额外经 `nvtop -s` 采集每张卡的利用率/
-	// 显存/温度/功耗(支持多卡,兼容 NVIDIA 与 AMD)。**纯监控开关** —— 不参与构建机池调度
+	// 显存/温度/功耗(支持多卡,兼容 NVIDIA 与 AMD)。**纯监控**开关 —— 不参与构建机池调度
 	// (调度仍看 Labels/槽位/优先级),也不影响部署目标选择。
 	Gpu bool
+	// PoolID 是所属服务器池 id(0084;默认 default 标准池)。**系统管理字段**:仅 PVE 探测
+	// 流经 SetPlacement/Create(PoolID) 写入,不进服务器更新 API。
+	PoolID string
+	// Kind 是服务器类别(KindStandard | KindPVENode)。**系统管理字段**,同上。置为 pve_node
+	// 时构建机池字段被清空(自动退出调度),且构建/部署/应用商店三处域层拒绝其作为目标。
+	Kind string
+	// PoolName 是所属池展示名(join server_pools),便于列表分组展示;非持久列。
+	PoolName string
 	// CredentialName 是冗余只读展示名(join credentials),便于列表展示;非持久列。
 	CredentialName string
 	// SudoCredentialName 是 sudo 凭据的冗余只读展示名(第二个 join credentials);非持久列。
 	SudoCredentialName string
 	CreatedAt          time.Time
 	UpdatedAt          time.Time
+}
+
+// IsPVENode 报告该机是否 PVE 集群物理机(构建/部署目标拦截的唯一判据)。
+func (s *Server) IsPVENode() bool { return s.Kind == KindPVENode }
+
+// ServerPool 是服务器池视图(kind: standard | pve;cluster_id 关联 pve_clusters,仅 pve 池非空)。
+type ServerPool struct {
+	ID        string
+	Name      string
+	Kind      string
+	ClusterID string
+	// ServerCount 是池内机器数(COUNT(servers);default 池含全部普通服务器)。
+	ServerCount int
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
 }
 
 // CreateInput 是登记服务器的入参。
@@ -129,6 +169,10 @@ type CreateInput struct {
 	Priority  int
 	// Gpu 标记该机带显卡(纯监控开关;语义见 Server.Gpu)。
 	Gpu bool
+	// PoolID / Kind 是系统管理放置字段:空 → default 池 + standard(普通登记路径);
+	// PVE 探测流建兄弟节点占位时传 pve 池 + pve_node。更新 API 无对应字段。
+	PoolID string
+	Kind   string
 }
 
 // UpdateInput 是更新服务器的入参;指针字段为 nil 表示不修改。
@@ -170,10 +214,17 @@ type Service interface {
 	Get(ctx context.Context, id string) (*Server, error)
 	// List 返回所有服务器(join credentials 取展示名;无明文)。
 	List(ctx context.Context) ([]*Server, error)
+	// ListPools 返回所有服务器池(含每池机器数;按创建序)。池由系统管理(default 单例
+	// + PVE 探测自动创建),本方法只读。
+	ListPools(ctx context.Context) ([]*ServerPool, error)
 	// Create 校验入参后入库;返回服务器视图(无明文)。不在此触网(纯登记)。
 	Create(ctx context.Context, in CreateInput) (*Server, error)
 	// Update 改名/改 host/port/user/改绑凭据;返回更新后视图。
 	Update(ctx context.Context, id string, in UpdateInput) (*Server, error)
+	// SetPlacement 设置服务器的池与类别(系统管理:PVE 探测流归池/集群删除回退用,不进
+	// 服务器更新 API)。kind 置为 pve_node 时同时清空 labels 与 max_builds(自动退出
+	// 构建机池,与调度器过滤互为双保险)。
+	SetPlacement(ctx context.Context, id, poolID, kind string) error
 	// Delete 删除服务器。
 	Delete(ctx context.Context, id string) error
 	// Test 经 SSH 实连并跑只读探测命令(uname -a),返回成功/延迟/输出或人读错误。
@@ -423,16 +474,20 @@ func (s *service) Create(ctx context.Context, in CreateInput) (*Server, error) {
 	if err := s.validateJumpCredentials(jumps); err != nil {
 		return nil, err
 	}
+	poolID, kind, err := s.validatePlacement(ctx, in.PoolID, in.Kind)
+	if err != nil {
+		return nil, err
+	}
 	port := normalizePort(in.Port)
 
 	id := uuid.NewString()
 	now := time.Now().UTC()
 	nowStr := now.Format(time.RFC3339)
 
-	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO servers (id, name, host, port, user, credential_id, sudo_credential_id, jumps, labels, max_builds, priority, gpu, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		id, in.Name, in.Host, port, in.User, in.CredentialID, in.SudoCredentialID, marshalJumps(jumps), in.Labels, in.MaxBuilds, in.Priority, in.Gpu, nowStr, nowStr,
+	_, err = s.db.ExecContext(ctx,
+		`INSERT INTO servers (id, name, host, port, user, credential_id, sudo_credential_id, jumps, labels, max_builds, priority, gpu, pool_id, kind, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		id, in.Name, in.Host, port, in.User, in.CredentialID, in.SudoCredentialID, marshalJumps(jumps), in.Labels, in.MaxBuilds, in.Priority, in.Gpu, poolID, kind, nowStr, nowStr,
 	)
 	if err != nil {
 		if isForeignKeyErr(err) {
@@ -474,14 +529,70 @@ func (s *service) validateSudoCredential(id string) error {
 	return nil
 }
 
+// validatePlacement 归一并校验放置字段:空 → default 池 + standard;kind 必须是枚举值;
+// 池必须存在(server_pools 无外键约束,保存时显式校验防悬挂)。
+func (s *service) validatePlacement(ctx context.Context, poolID, kind string) (string, string, error) {
+	if kind == "" {
+		kind = KindStandard
+	}
+	if kind != KindStandard && kind != KindPVENode {
+		return "", "", ErrInvalidKind
+	}
+	if poolID == "" {
+		poolID = DefaultPoolID
+	}
+	var exists string
+	if err := s.db.QueryRowContext(ctx, `SELECT id FROM server_pools WHERE id = ?`, poolID).Scan(&exists); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", "", ErrPoolNotFound
+		}
+		return "", "", fmt.Errorf("target: check pool: %w", err)
+	}
+	return poolID, kind, nil
+}
+
+// SetPlacement 设置服务器的池与类别(系统管理入口,语义见 Service 接口注释)。
+// 置为 pve_node 时清空 labels 与 max_builds(退出构建机池);回退 standard 时保留现状
+// 字段(原 labels 已被清空,不再恢复——回退是罕见的管理动作,由管理员按需重配)。
+func (s *service) SetPlacement(ctx context.Context, id, poolID, kind string) error {
+	poolID, kind, err := s.validatePlacement(ctx, poolID, kind)
+	if err != nil {
+		return err
+	}
+	var curPool, curKind string
+	err = s.db.QueryRowContext(ctx, `SELECT COALESCE(pool_id,'default'), COALESCE(kind,'standard') FROM servers WHERE id = ?`, id).Scan(&curPool, &curKind)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		return fmt.Errorf("target: load placement: %w", err)
+	}
+	nowStr := time.Now().UTC().Format(time.RFC3339)
+	if kind == KindPVENode {
+		_, err = s.db.ExecContext(ctx,
+			`UPDATE servers SET pool_id = ?, kind = ?, labels = '', max_builds = 0, updated_at = ? WHERE id = ?`,
+			poolID, kind, nowStr, id)
+	} else {
+		_, err = s.db.ExecContext(ctx,
+			`UPDATE servers SET pool_id = ?, kind = ?, updated_at = ? WHERE id = ?`,
+			poolID, kind, nowStr, id)
+	}
+	if err != nil {
+		return fmt.Errorf("target: set placement: %w", err)
+	}
+	return nil
+}
+
 func (s *service) List(ctx context.Context) ([]*Server, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT s.id, s.name, s.host, s.port, s.user, s.credential_id, COALESCE(s.sudo_credential_id, ''),
 		        COALESCE(s.jumps, '[]'), COALESCE(s.labels, ''), COALESCE(s.max_builds, 0), COALESCE(s.priority, 0), COALESCE(s.gpu, 0),
+		        COALESCE(s.pool_id, 'default'), COALESCE(s.kind, 'standard'), COALESCE(p.name, ''),
 		        COALESCE(c.name, ''), COALESCE(sc.name, ''), s.created_at, s.updated_at
 		 FROM servers s
 		 LEFT JOIN credentials c ON c.id = s.credential_id
 		 LEFT JOIN credentials sc ON sc.id = s.sudo_credential_id
+		 LEFT JOIN server_pools p ON p.id = s.pool_id
 		 ORDER BY s.created_at DESC, s.id`,
 	)
 	if err != nil {
@@ -503,14 +614,54 @@ func (s *service) List(ctx context.Context) ([]*Server, error) {
 	return out, nil
 }
 
+// ListPools 返回所有服务器池(LEFT JOIN 聚合每池机器数;按创建序,default 恒在最前)。
+func (s *service) ListPools(ctx context.Context) ([]*ServerPool, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT p.id, p.name, p.kind, p.cluster_id, p.created_at, p.updated_at,
+		        (SELECT COUNT(*) FROM servers s WHERE s.pool_id = p.id)
+		 FROM server_pools p
+		 ORDER BY p.created_at, p.id`,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("target: list pools: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	out := make([]*ServerPool, 0)
+	for rows.Next() {
+		var p ServerPool
+		var createdStr, updatedStr string
+		if err := rows.Scan(&p.ID, &p.Name, &p.Kind, &p.ClusterID, &createdStr, &updatedStr, &p.ServerCount); err != nil {
+			return nil, fmt.Errorf("target: scan pool: %w", err)
+		}
+		created, err := time.Parse(time.RFC3339, createdStr)
+		if err != nil {
+			return nil, fmt.Errorf("target: parse pool created_at: %w", err)
+		}
+		updated, err := time.Parse(time.RFC3339, updatedStr)
+		if err != nil {
+			return nil, fmt.Errorf("target: parse pool updated_at: %w", err)
+		}
+		p.CreatedAt = created
+		p.UpdatedAt = updated
+		out = append(out, &p)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("target: iterate pools: %w", err)
+	}
+	return out, nil
+}
+
 func (s *service) Get(ctx context.Context, id string) (*Server, error) {
 	row := s.db.QueryRowContext(ctx,
 		`SELECT s.id, s.name, s.host, s.port, s.user, s.credential_id, COALESCE(s.sudo_credential_id, ''),
 		        COALESCE(s.jumps, '[]'), COALESCE(s.labels, ''), COALESCE(s.max_builds, 0), COALESCE(s.priority, 0), COALESCE(s.gpu, 0),
+		        COALESCE(s.pool_id, 'default'), COALESCE(s.kind, 'standard'), COALESCE(p.name, ''),
 		        COALESCE(c.name, ''), COALESCE(sc.name, ''), s.created_at, s.updated_at
 		 FROM servers s
 		 LEFT JOIN credentials c ON c.id = s.credential_id
 		 LEFT JOIN credentials sc ON sc.id = s.sudo_credential_id
+		 LEFT JOIN server_pools p ON p.id = s.pool_id
 		 WHERE s.id = ?`, id,
 	)
 	srv, err := scanServer(row)
@@ -977,6 +1128,7 @@ func scanServer(sc scanner) (*Server, error) {
 	if err := sc.Scan(
 		&srv.ID, &srv.Name, &srv.Host, &srv.Port, &srv.User, &srv.CredentialID, &srv.SudoCredentialID,
 		&jumpsStr, &srv.Labels, &srv.MaxBuilds, &srv.Priority, &gpuInt,
+		&srv.PoolID, &srv.Kind, &srv.PoolName,
 		&srv.CredentialName, &srv.SudoCredentialName, &createdStr, &updatedStr,
 	); err != nil {
 		return nil, err

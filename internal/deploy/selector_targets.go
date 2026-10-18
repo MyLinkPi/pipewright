@@ -14,6 +14,7 @@ package deploy
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 
 	"github.com/huangchengsir/pipewright/internal/runner"
@@ -22,6 +23,12 @@ import (
 
 // ErrInvalidSelector 表示部署目标选择器语法非法(供 HTTP 层映射 422)。
 var ErrInvalidSelector = errors.New("deploy: invalid target selector")
+
+// pveNotTargetErr 生成「PVE 集群物理机不可作为部署目标」错误(0084 拦截;带人读机名,
+// 绝不带凭据)。供显式/钉单机/重试回放等从严路径使用;标签圈选走静默跳过。
+func pveNotTargetErr(srv *target.Server) error {
+	return fmt.Errorf("%w: %s", target.ErrPVENotTarget, serverDisplayName(srv))
+}
 
 // 标签匹配方式(Config["selectorMode"] / DeployInput.SelectorMode):空 / 未知 → all(存量语义)。
 const (
@@ -59,6 +66,10 @@ func (s *service) resolveTargets(ctx context.Context, serverIDs []string, select
 				}
 				return nil, err
 			}
+			// PVE 集群物理机不允许作为部署目标(0084):显式指定从严整次拒绝。
+			if srv.IsPVENode() {
+				return nil, pveNotTargetErr(srv)
+			}
 			servers = append(servers, srv)
 		}
 		return servers, nil
@@ -68,7 +79,8 @@ func (s *service) resolveTargets(ctx context.Context, serverIDs []string, select
 	if selector == "" {
 		return nil, nil // 未配目标:跳过即成功。
 	}
-	// `server:<id>` 钉单机:机器已删视作零命中 → 跳过(与标签零命中同语义,不区别对待)。
+	// `server:<id>` 钉单机:机器已删视作零命中 → 跳过(与标签零命中同语义,不区别对待);
+	// 钉到 PVE 物理机则是配置错误 → 显式拒绝(区别于「已删除」的静默跳过)。
 	if id, ok := runner.PinnedServer(selector); ok {
 		srv, err := s.targets.Get(ctx, id)
 		switch {
@@ -76,6 +88,9 @@ func (s *service) resolveTargets(ctx context.Context, serverIDs []string, select
 			return nil, nil
 		case err != nil:
 			return nil, err
+		}
+		if srv.IsPVENode() {
+			return nil, pveNotTargetErr(srv)
 		}
 		return []*target.Server{srv}, nil
 	}
@@ -95,6 +110,10 @@ func (s *service) resolveTargets(ctx context.Context, serverIDs []string, select
 	}
 	servers := make([]*target.Server, 0, 4)
 	for _, srv := range all {
+		// PVE 集群物理机不进标签圈选结果(0084;静默排除,与零命中同语义)。
+		if srv.IsPVENode() {
+			continue
+		}
 		if match(srv.Labels, terms) {
 			servers = append(servers, srv)
 		}

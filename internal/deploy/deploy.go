@@ -777,7 +777,7 @@ func (s *service) RetryFailed(ctx context.Context, in RetryInput) ([]TargetResul
 		return nil, ErrArtifactNotFound
 	}
 
-	// 5) 解析待重试服务器(任一不存在 → 422,整次拒绝)。
+	// 5) 解析待重试服务器(任一不存在 → 422,整次拒绝;历史目标后变为 PVE 物理机 → 同样整次拒绝)。
 	servers := make([]*target.Server, 0, len(retrySIDs))
 	for _, sid := range retrySIDs {
 		srv, gerr := s.targets.Get(ctx, sid)
@@ -786,6 +786,9 @@ func (s *service) RetryFailed(ctx context.Context, in RetryInput) ([]TargetResul
 				return nil, ErrServerNotFound
 			}
 			return nil, gerr
+		}
+		if srv.IsPVENode() {
+			return nil, pveNotTargetErr(srv)
 		}
 		servers = append(servers, srv)
 	}

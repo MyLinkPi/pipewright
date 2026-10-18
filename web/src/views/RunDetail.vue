@@ -273,7 +273,8 @@ const specSourceBadge = computed(() => {
 async function ensureDeployServers(): Promise<void> {
   if (deployServersLoaded.value) return
   try {
-    deployServers.value = await listServers()
+    // PVE 集群物理机不可作为部署目标(0084;域层同样拦截,这里过滤只为选择器不误导)。
+    deployServers.value = (await listServers()).filter((s) => s.kind !== 'pve_node')
   } catch {
     deployServers.value = []
   } finally {

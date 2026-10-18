@@ -64,6 +64,15 @@ export interface Server {
    * NVIDIA + AMD). Monitoring only — it does not affect build/deploy scheduling.
    */
   gpu: boolean
+  /**
+   * Server-pool placement (system-managed, 0084): PVE hosts discovered at
+   * registration are placed into a `pve-<cluster>` pool with kind=pve_node.
+   */
+  poolId: string
+  /** Pool display name joined from server_pools ('default' for standard servers). */
+  poolName: string
+  /** standard | pve_node. pve_node machines are rejected as build/deploy/app targets (domain layer). */
+  kind: 'standard' | 'pve_node'
   createdAt: string
   updatedAt: string
 }
@@ -116,8 +125,26 @@ export async function listServers(): Promise<Server[]> {
   return res.items
 }
 
-export async function createServer(input: CreateServerInput): Promise<Server> {
-  return http.post<Server>('/api/servers', input)
+/**
+ * Create result: the server view plus an optional PVE auto-discovery note —
+ * when the registered machine is a Proxmox VE node, the backend probes it,
+ * creates the pve-<cluster> pool and registers all sibling nodes. `pveDiscovery`
+ * is null for non-PVE machines (best-effort; never blocks registration).
+ */
+export interface CreateServerResult extends Server {
+  pveDiscovery: {
+    clusterName: string
+    clusterId: string
+    poolId: string
+    poolName: string
+    standalone: boolean
+    createdSiblings: string[] | null
+    attachedCount: number
+  } | null
+}
+
+export async function createServer(input: CreateServerInput): Promise<CreateServerResult> {
+  return http.post<CreateServerResult>('/api/servers', input)
 }
 
 export async function updateServer(id: string, input: UpdateServerInput): Promise<Server> {
