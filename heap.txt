@@ -1,0 +1,386 @@
+heap profile: 9: 27440 [14: 47168] @ heap/1048576
+0: 0 [1: 112] @ 0x7ff7791a86c5 0x7ff779143625 0x7ff779482114 0x7ff779482071 0x7ff779481c8a 0x7ff77948615c 0x7ff77948437b 0x7ff779492dd0 0x7ff779492dcb 0x7ff77949392c 0x7ff779493920 0x7ff779908b05 0x7ff779184b5a 0x7ff7791751de 0x7ff7791751b5 0x7ff7791b28c1
+#	0x7ff779482113	regexp/syntax.(*parser).newRegexp+0xf3				C:/Program Files/Go/src/regexp/syntax/parse.go:147
+#	0x7ff779482070	regexp/syntax.(*parser).collapse+0x50				C:/Program Files/Go/src/regexp/syntax/parse.go:553
+#	0x7ff779481c89	regexp/syntax.(*parser).concat+0x129				C:/Program Files/Go/src/regexp/syntax/parse.go:493
+#	0x7ff77948615b	regexp/syntax.(*parser).parseRightParen+0x1b			C:/Program Files/Go/src/regexp/syntax/parse.go:1412
+#	0x7ff77948437a	regexp/syntax.parse+0x49a					C:/Program Files/Go/src/regexp/syntax/parse.go:948
+#	0x7ff779492dcf	regexp/syntax.Parse+0x2f					C:/Program Files/Go/src/regexp/syntax/parse.go:888
+#	0x7ff779492dca	regexp.compile+0x2a						C:/Program Files/Go/src/regexp/regexp.go:168
+#	0x7ff77949392b	regexp.Compile+0x2b						C:/Program Files/Go/src/regexp/regexp.go:131
+#	0x7ff77949391f	regexp.MustCompile+0x1f						C:/Program Files/Go/src/regexp/regexp.go:311
+#	0x7ff779908b04	github.com/huangchengsir/pipewright/internal/opschat.init+0x24	C:/Users/xufan/Trae/pipewright/internal/opschat/resources.go:140
+#	0x7ff779184b59	runtime.doInit1+0xd9						C:/Program Files/Go/src/runtime/proc.go:8103
+#	0x7ff7791751dd	runtime.doInit+0x25d						C:/Program Files/Go/src/runtime/proc.go:8070
+#	0x7ff7791751b4	runtime.main+0x234						C:/Program Files/Go/src/runtime/proc.go:258
+
+0: 0 [0: 0] @ 0x7ff7791a86ec 0x7ff7791acd69 0x7ff7791ce8e5 0x7ff779254596 0x7ff779254586 0x7ff77925441d 0x7ff7792543ef 0x7ff77952fd98 0x7ff77952fee8 0x7ff779530cc5 0x7ff779530108 0x7ff77a37f1db 0x7ff77a37f1e1 0x7ff77a4b5c25 0x7ff779175247 0x7ff7791b28c1
+#	0x7ff7791ce8e4	syscall.UTF16FromString+0x64						C:/Program Files/Go/src/syscall/syscall_windows.go:52
+#	0x7ff779254595	syscall.UTF16PtrFromString+0x95						C:/Program Files/Go/src/syscall/syscall_windows.go:114
+#	0x7ff779254585	os.stat+0x85								C:/Program Files/Go/src/os/stat_windows.go:29
+#	0x7ff77925441c	os.statNolog+0x3c							C:/Program Files/Go/src/os/stat_windows.go:127
+#	0x7ff7792543ee	os.Stat+0xe								C:/Program Files/Go/src/os/stat.go:13
+#	0x7ff77952fd97	os/exec.chkStat+0x17							C:/Program Files/Go/src/os/exec/lp_windows.go:19
+#	0x7ff77952fee7	os/exec.findExecutable+0x47						C:/Program Files/Go/src/os/exec/lp_windows.go:42
+#	0x7ff779530cc4	os/exec.lookPathExts+0x384						C:/Program Files/Go/src/os/exec/lp_windows.go:172
+#	0x7ff779530107	os/exec.lookPath+0xe7							C:/Program Files/Go/src/os/exec/lp_windows.go:64
+#	0x7ff77a37f1da	os/exec.LookPath+0x11a							C:/Program Files/Go/src/os/exec/lookpath.go:29
+#	0x7ff77a37f1e0	github.com/huangchengsir/pipewright/internal/mesh/easytier.Locate+0x120	C:/Users/xufan/Trae/pipewright/internal/mesh/easytier/supervisor.go:49
+#	0x7ff77a4b5c24	main.main+0x5784							C:/Users/xufan/Trae/pipewright/cmd/pipewright/main.go:680
+#	0x7ff779175246	runtime.main+0x2c6							C:/Program Files/Go/src/runtime/proc.go:290
+
+0: 0 [0: 0] @ 0x7ff7791a86c5 0x7ff779143625 0x7ff779254ea8 0x7ff77925441d 0x7ff7792543ef 0x7ff77952fd98 0x7ff77952ff76 0x7ff779530cc5 0x7ff779530108 0x7ff77952fd58 0x7ff779aa0ff3 0x7ff779aa0f64 0x7ff779a8f118 0x7ff77a4b8635 0x7ff779175247 0x7ff7791b28c1
+#	0x7ff779254ea7	os.stat+0x9a7								C:/Program Files/Go/src/os/stat_windows.go:39
+#	0x7ff77925441c	os.statNolog+0x3c							C:/Program Files/Go/src/os/stat_windows.go:127
+#	0x7ff7792543ee	os.Stat+0xe								C:/Program Files/Go/src/os/stat.go:13
+#	0x7ff77952fd97	os/exec.chkStat+0x17							C:/Program Files/Go/src/os/exec/lp_windows.go:19
+#	0x7ff77952ff75	os/exec.findExecutable+0xd5						C:/Program Files/Go/src/os/exec/lp_windows.go:49
+#	0x7ff779530cc4	os/exec.lookPathExts+0x384						C:/Program Files/Go/src/os/exec/lp_windows.go:172
+#	0x7ff779530107	os/exec.lookPath+0xe7							C:/Program Files/Go/src/os/exec/lp_windows.go:64
+#	0x7ff77952fd57	os/exec.LookPath+0x17							C:/Program Files/Go/src/os/exec/lookpath.go:29
+#	0x7ff779aa0ff2	github.com/huangchengsir/pipewright/internal/build.detectBinary+0xb2	C:/Users/xufan/Trae/pipewright/internal/build/driver.go:223
+#	0x7ff779aa0f63	github.com/huangchengsir/pipewright/internal/build.DetectDriver+0x23	C:/Users/xufan/Trae/pipewright/internal/build/driver.go:157
+#	0x7ff779a8f117	github.com/huangchengsir/pipewright/internal/build.NewBuilder+0x117	C:/Users/xufan/Trae/pipewright/internal/build/builder.go:221
+#	0x7ff77a4b8634	main.main+0x8194							C:/Users/xufan/Trae/pipewright/cmd/pipewright/main.go:506
+#	0x7ff779175246	runtime.main+0x2c6							C:/Program Files/Go/src/runtime/proc.go:290
+
+0: 0 [0: 0] @ 0x7ff7791a86ec 0x7ff7791acd69 0x7ff7791cb1b3 0x7ff77924c98c 0x7ff779530b30 0x7ff779530108 0x7ff77952fd58 0x7ff779aa0ff3 0x7ff779aa0f64 0x7ff77a4b3837 0x7ff779175247 0x7ff7791b28c1
+#	0x7ff7791cb1b2	syscall.Getenv+0x92							C:/Program Files/Go/src/syscall/env_windows.go:20
+#	0x7ff77924c98b	os.Getenv+0x2b								C:/Program Files/Go/src/os/env.go:103
+#	0x7ff779530b2f	os/exec.lookPathExts+0x1ef						C:/Program Files/Go/src/os/exec/lp_windows.go:164
+#	0x7ff779530107	os/exec.lookPath+0xe7							C:/Program Files/Go/src/os/exec/lp_windows.go:64
+#	0x7ff77952fd57	os/exec.LookPath+0x17							C:/Program Files/Go/src/os/exec/lookpath.go:29
+#	0x7ff779aa0ff2	github.com/huangchengsir/pipewright/internal/build.detectBinary+0xb2	C:/Users/xufan/Trae/pipewright/internal/build/driver.go:223
+#	0x7ff779aa0f63	github.com/huangchengsir/pipewright/internal/build.DetectDriver+0x23	C:/Users/xufan/Trae/pipewright/internal/build/driver.go:157
+#	0x7ff77a4b3836	main.main+0x3396							C:/Users/xufan/Trae/pipewright/cmd/pipewright/main.go:451
+#	0x7ff779175246	runtime.main+0x2c6							C:/Program Files/Go/src/runtime/proc.go:290
+
+0: 0 [0: 0] @ 0x7ff7791a86c5 0x7ff779143625 0x7ff779254ea8 0x7ff77925441d 0x7ff7792543ef 0x7ff77952fd98 0x7ff77952ff76 0x7ff779530cc5 0x7ff779530108 0x7ff77952fd58 0x7ff779aa0ff3 0x7ff779aa0f64 0x7ff77a4b3837 0x7ff779175247 0x7ff7791b28c1
+#	0x7ff779254ea7	os.stat+0x9a7								C:/Program Files/Go/src/os/stat_windows.go:39
+#	0x7ff77925441c	os.statNolog+0x3c							C:/Program Files/Go/src/os/stat_windows.go:127
+#	0x7ff7792543ee	os.Stat+0xe								C:/Program Files/Go/src/os/stat.go:13
+#	0x7ff77952fd97	os/exec.chkStat+0x17							C:/Program Files/Go/src/os/exec/lp_windows.go:19
+#	0x7ff77952ff75	os/exec.findExecutable+0xd5						C:/Program Files/Go/src/os/exec/lp_windows.go:49
+#	0x7ff779530cc4	os/exec.lookPathExts+0x384						C:/Program Files/Go/src/os/exec/lp_windows.go:172
+#	0x7ff779530107	os/exec.lookPath+0xe7							C:/Program Files/Go/src/os/exec/lp_windows.go:64
+#	0x7ff77952fd57	os/exec.LookPath+0x17							C:/Program Files/Go/src/os/exec/lookpath.go:29
+#	0x7ff779aa0ff2	github.com/huangchengsir/pipewright/internal/build.detectBinary+0xb2	C:/Users/xufan/Trae/pipewright/internal/build/driver.go:223
+#	0x7ff779aa0f63	github.com/huangchengsir/pipewright/internal/build.DetectDriver+0x23	C:/Users/xufan/Trae/pipewright/internal/build/driver.go:157
+#	0x7ff77a4b3836	main.main+0x3396							C:/Users/xufan/Trae/pipewright/cmd/pipewright/main.go:451
+#	0x7ff779175246	runtime.main+0x2c6							C:/Program Files/Go/src/runtime/proc.go:290
+
+0: 0 [0: 0] @ 0x7ff7791a86f3 0x7ff7791acd69 0x7ff7797a08d1 0x7ff7797a03b3 0x7ff77997a23c 0x7ff77997a1d5 0x7ff77997b51e 0x7ff77a4b0bd5 0x7ff779175247 0x7ff7791b28c1
+#	0x7ff7797a08d0	golang.org/x/crypto/argon2.initBlocks+0x70					C:/Users/xufan/go/pkg/mod/golang.org/x/crypto@v0.55.0/argon2/argon2.go:163
+#	0x7ff7797a03b2	golang.org/x/crypto/argon2.deriveKey+0x152					C:/Users/xufan/go/pkg/mod/golang.org/x/crypto@v0.55.0/argon2/argon2.go:118
+#	0x7ff77997a23b	golang.org/x/crypto/argon2.IDKey+0x13b						C:/Users/xufan/go/pkg/mod/golang.org/x/crypto@v0.55.0/argon2/argon2.go:102
+#	0x7ff77997a1d4	github.com/huangchengsir/pipewright/internal/auth.HashPassword+0xd4		C:/Users/xufan/Trae/pipewright/internal/auth/password.go:50
+#	0x7ff77997b51d	github.com/huangchengsir/pipewright/internal/auth.(*Service).Bootstrap+0x23d	C:/Users/xufan/Trae/pipewright/internal/auth/service.go:132
+#	0x7ff77a4b0bd4	main.main+0x734									C:/Users/xufan/Trae/pipewright/cmd/pipewright/main.go:128
+#	0x7ff779175246	runtime.main+0x2c6								C:/Program Files/Go/src/runtime/proc.go:290
+
+0: 0 [0: 0] @ 0x7ff7791a86ec 0x7ff779143625 0x7ff77953fe9b 0x7ff7795614e7 0x7ff779580963 0x7ff77958093d 0x7ff779580acd 0x7ff779581758 0x7ff7795735b6 0x7ff779573585 0x7ff7795791f5 0x7ff77958b148 0x7ff7795abad9 0x7ff7795ac131 0x7ff7795b9313 0x7ff7795b2ccc 0x7ff7795b304b 0x7ff7796301ea 0x7ff77972527a 0x7ff779725056 0x7ff7794de129 0x7ff7794e3d91 0x7ff7794de04a 0x7ff77972bed8 0x7ff77972b85a 0x7ff77972b1b6 0x7ff77972af0d 0x7ff77a4b082a 0x7ff779175247 0x7ff7791b28c1
+#	0x7ff77953fe9a	modernc.org/libc.XWriteFile+0x3a							C:/Users/xufan/go/pkg/mod/modernc.org/libc@v1.72.3/libc_windows.go:2550
+#	0x7ff7795614e6	modernc.org/sqlite/lib._winWrite+0x146							C:/Users/xufan/go/pkg/mod/modernc.org/sqlite@v1.51.0/lib/sqlite_windows.go:96678
+#	0x7ff779580962	modernc.org/sqlite/lib._sqlite3OsWrite+0x102						C:/Users/xufan/go/pkg/mod/modernc.org/sqlite@v1.51.0/lib/sqlite_windows.go:31113
+#	0x7ff77958093c	modernc.org/sqlite/lib._walWriteToLog+0xdc						C:/Users/xufan/go/pkg/mod/modernc.org/sqlite@v1.51.0/lib/sqlite_windows.go:113679
+#	0x7ff779580acc	modernc.org/sqlite/lib._walWriteOneFrame+0x10c						C:/Users/xufan/go/pkg/mod/modernc.org/sqlite@v1.51.0/lib/sqlite_windows.go:113702
+#	0x7ff779581757	modernc.org/sqlite/lib._walFrames+0x757							C:/Users/xufan/go/pkg/mod/modernc.org/sqlite@v1.51.0/lib/sqlite_windows.go:113889
+#	0x7ff7795735b5	modernc.org/sqlite/lib._sqlite3WalFrames+0x115						C:/Users/xufan/go/pkg/mod/modernc.org/sqlite@v1.51.0/lib/sqlite_windows.go:114009
+#	0x7ff779573584	modernc.org/sqlite/lib._pagerWalFrames+0xe4						C:/Users/xufan/go/pkg/mod/modernc.org/sqlite@v1.51.0/lib/sqlite_windows.go:106218
+#	0x7ff7795791f4	modernc.org/sqlite/lib._sqlite3PagerCommitPhaseOne+0x174				C:/Users/xufan/go/pkg/mod/modernc.org/sqlite@v1.51.0/lib/sqlite_windows.go:109263
+#	0x7ff77958b147	modernc.org/sqlite/lib._sqlite3BtreeCommitPhaseOne+0xc7					C:/Users/xufan/go/pkg/mod/modernc.org/sqlite@v1.51.0/lib/sqlite_windows.go:118986
+#	0x7ff7795abad8	modernc.org/sqlite/lib._vdbeCommit+0xd58						C:/Users/xufan/go/pkg/mod/modernc.org/sqlite@v1.51.0/lib/sqlite_windows.go:131415
+#	0x7ff7795ac130	modernc.org/sqlite/lib._sqlite3VdbeHalt+0x2b0						C:/Users/xufan/go/pkg/mod/modernc.org/sqlite@v1.51.0/lib/sqlite_windows.go:131834
+#	0x7ff7795b9312	modernc.org/sqlite/lib._sqlite3VdbeExec+0x9d2						C:/Users/xufan/go/pkg/mod/modernc.org/sqlite@v1.51.0/lib/sqlite_windows.go:140684
+#	0x7ff7795b2ccb	modernc.org/sqlite/lib._sqlite3Step+0x6b						C:/Users/xufan/go/pkg/mod/modernc.org/sqlite@v1.51.0/lib/sqlite_windows.go:134865
+#	0x7ff7795b304a	modernc.org/sqlite/lib.Xsqlite3_step+0xaa						C:/Users/xufan/go/pkg/mod/modernc.org/sqlite@v1.51.0/lib/sqlite_windows.go:134928
+#	0x7ff7796301e9	modernc.org/sqlite/lib.Xsqlite3_exec+0x289						C:/Users/xufan/go/pkg/mod/modernc.org/sqlite@v1.51.0/lib/sqlite_windows.go:182824
+#	0x7ff779725279	modernc.org/sqlite.(*tx).exec+0x139							C:/Users/xufan/go/pkg/mod/modernc.org/sqlite@v1.51.0/tx.go:74
+#	0x7ff779725055	modernc.org/sqlite.(*tx).Commit+0x35							C:/Users/xufan/go/pkg/mod/modernc.org/sqlite@v1.51.0/tx.go:36
+#	0x7ff7794de128	database/sql.(*Tx).Commit.func1+0x28							C:/Program Files/Go/src/database/sql/sql.go:2313
+#	0x7ff7794e3d90	database/sql.withLock+0x70								C:/Program Files/Go/src/database/sql/sql.go:3572
+#	0x7ff7794de049	database/sql.(*Tx).Commit+0xe9								C:/Program Files/Go/src/database/sql/sql.go:2312
+#	0x7ff77972bed7	github.com/huangchengsir/pipewright/internal/store.(*Store).applyMigration+0x497	C:/Users/xufan/Trae/pipewright/internal/store/store.go:212
+#	0x7ff77972b859	github.com/huangchengsir/pipewright/internal/store.(*Store).migrate+0x339		C:/Users/xufan/Trae/pipewright/internal/store/store.go:152
+#	0x7ff77972b1b5	github.com/huangchengsir/pipewright/internal/store.Open+0x1f5				C:/Users/xufan/Trae/pipewright/internal/store/store.go:70
+#	0x7ff77972af0c	github.com/huangchengsir/pipewright/internal/store.OpenWithConfig+0x6c			C:/Users/xufan/Trae/pipewright/internal/store/store.go:49
+#	0x7ff77a4b0829	main.main+0x389										C:/Users/xufan/Trae/pipewright/cmd/pipewright/main.go:98
+#	0x7ff779175246	runtime.main+0x2c6									C:/Program Files/Go/src/runtime/proc.go:290
+
+0: 0 [1: 1152] @ 0x7ff7791a86ec 0x7ff779190117 0x7ff77972b83d 0x7ff77972b1b6 0x7ff77972af0d 0x7ff77a4b082a 0x7ff779175247 0x7ff7791b28c1
+#	0x7ff77972b83c	github.com/huangchengsir/pipewright/internal/store.(*Store).migrate+0x31c	C:/Users/xufan/Trae/pipewright/internal/store/store.go:152
+#	0x7ff77972b1b5	github.com/huangchengsir/pipewright/internal/store.Open+0x1f5			C:/Users/xufan/Trae/pipewright/internal/store/store.go:70
+#	0x7ff77972af0c	github.com/huangchengsir/pipewright/internal/store.OpenWithConfig+0x6c		C:/Users/xufan/Trae/pipewright/internal/store/store.go:49
+#	0x7ff77a4b0829	main.main+0x389									C:/Users/xufan/Trae/pipewright/cmd/pipewright/main.go:98
+#	0x7ff779175246	runtime.main+0x2c6								C:/Program Files/Go/src/runtime/proc.go:290
+
+0: 0 [1: 16] @ 0x7ff7791a86c5 0x7ff7791ad307 0x7ff7794821df 0x7ff779481c8a 0x7ff77948615c 0x7ff77948437b 0x7ff779492dd0 0x7ff779492dcb 0x7ff77949392c 0x7ff779493920 0x7ff779908b05 0x7ff779184b5a 0x7ff7791751de 0x7ff7791751b5 0x7ff7791b28c1
+#	0x7ff7794821de	regexp/syntax.(*parser).collapse+0x1be				C:/Program Files/Go/src/regexp/syntax/parse.go:560
+#	0x7ff779481c89	regexp/syntax.(*parser).concat+0x129				C:/Program Files/Go/src/regexp/syntax/parse.go:493
+#	0x7ff77948615b	regexp/syntax.(*parser).parseRightParen+0x1b			C:/Program Files/Go/src/regexp/syntax/parse.go:1412
+#	0x7ff77948437a	regexp/syntax.parse+0x49a					C:/Program Files/Go/src/regexp/syntax/parse.go:948
+#	0x7ff779492dcf	regexp/syntax.Parse+0x2f					C:/Program Files/Go/src/regexp/syntax/parse.go:888
+#	0x7ff779492dca	regexp.compile+0x2a						C:/Program Files/Go/src/regexp/regexp.go:168
+#	0x7ff77949392b	regexp.Compile+0x2b						C:/Program Files/Go/src/regexp/regexp.go:131
+#	0x7ff77949391f	regexp.MustCompile+0x1f						C:/Program Files/Go/src/regexp/regexp.go:311
+#	0x7ff779908b04	github.com/huangchengsir/pipewright/internal/opschat.init+0x24	C:/Users/xufan/Trae/pipewright/internal/opschat/resources.go:140
+#	0x7ff779184b59	runtime.doInit1+0xd9						C:/Program Files/Go/src/runtime/proc.go:8103
+#	0x7ff7791751dd	runtime.doInit+0x25d						C:/Program Files/Go/src/runtime/proc.go:8070
+#	0x7ff7791751b4	runtime.main+0x234						C:/Program Files/Go/src/runtime/proc.go:258
+
+0: 0 [1: 16] @ 0x7ff7791a86c5 0x7ff7791ad307 0x7ff77948c485 0x7ff77948bfe7 0x7ff779492e0d 0x7ff77949392c 0x7ff779493920 0x7ff77a38de9f 0x7ff779184b5a 0x7ff7791751de 0x7ff7791751b5 0x7ff7791b28c1
+#	0x7ff77948c484	regexp/syntax.(*Regexp).Simplify+0x8c4					C:/Program Files/Go/src/regexp/syntax/simplify.go:99
+#	0x7ff77948bfe6	regexp/syntax.(*Regexp).Simplify+0x426					C:/Program Files/Go/src/regexp/syntax/simplify.go:23
+#	0x7ff779492e0c	regexp.compile+0x6c							C:/Program Files/Go/src/regexp/regexp.go:175
+#	0x7ff77949392b	regexp.Compile+0x2b							C:/Program Files/Go/src/regexp/regexp.go:131
+#	0x7ff77949391f	regexp.MustCompile+0x1f							C:/Program Files/Go/src/regexp/regexp.go:311
+#	0x7ff77a38de9e	github.com/huangchengsir/pipewright/internal/platformhttps.init+0x1e	C:/Users/xufan/Trae/pipewright/internal/platformhttps/platformhttps.go:70
+#	0x7ff779184b59	runtime.doInit1+0xd9							C:/Program Files/Go/src/runtime/proc.go:8103
+#	0x7ff7791751dd	runtime.doInit+0x25d							C:/Program Files/Go/src/runtime/proc.go:8070
+#	0x7ff7791751b4	runtime.main+0x234							C:/Program Files/Go/src/runtime/proc.go:258
+
+0: 0 [1: 18432] @ 0x7ff7791a86cc 0x7ff7791acd69 0x7ff779490c1d 0x7ff779492a45 0x7ff779492e2f 0x7ff77949392c 0x7ff779493920 0x7ff779adb58d 0x7ff779184b5a 0x7ff7791751de 0x7ff7791751b5 0x7ff7791b28c1
+#	0x7ff779490c1c	regexp.onePassCopy+0x3c							C:/Program Files/Go/src/regexp/onepass.go:226
+#	0x7ff779492a44	regexp.compileOnePass+0x1a4						C:/Program Files/Go/src/regexp/onepass.go:499
+#	0x7ff779492e2e	regexp.compile+0x8e							C:/Program Files/Go/src/regexp/regexp.go:187
+#	0x7ff77949392b	regexp.Compile+0x2b							C:/Program Files/Go/src/regexp/regexp.go:131
+#	0x7ff77949391f	regexp.MustCompile+0x1f							C:/Program Files/Go/src/regexp/regexp.go:311
+#	0x7ff779adb58c	github.com/huangchengsir/pipewright/internal/certmgmt.init+0x14c	C:/Users/xufan/Trae/pipewright/internal/certmgmt/certmgmt.go:843
+#	0x7ff779184b59	runtime.doInit1+0xd9							C:/Program Files/Go/src/runtime/proc.go:8103
+#	0x7ff7791751dd	runtime.doInit+0x25d							C:/Program Files/Go/src/runtime/proc.go:8070
+#	0x7ff7791751b4	runtime.main+0x234							C:/Program Files/Go/src/runtime/proc.go:258
+
+0: 0 [0: 0] @ 0x7ff7791a86c5 0x7ff7791a88be 0x7ff7791a8953 0x7ff7791274c5 0x7ff7791274b8 0x7ff77912c9f7 0x7ff779cbb3cf 0x7ff779cbb37f 0x7ff779cba845 0x7ff779cb9989 0x7ff779cb7ecd 0x7ff77a437892 0x7ff779cb89df 0x7ff77a42f905 0x7ff77a4b7b85 0x7ff779175247 0x7ff7791b28c1
+#	0x7ff779cbb3ce	github.com/go-chi/chi/v5.endpoints.Value+0x34e				C:/Users/xufan/go/pkg/mod/github.com/go-chi/chi/v5@v5.3.0/tree.go:134
+#	0x7ff779cbb37e	github.com/go-chi/chi/v5.(*node).setEndpoint+0x2fe			C:/Users/xufan/go/pkg/mod/github.com/go-chi/chi/v5@v5.3.0/tree.go:367
+#	0x7ff779cba844	github.com/go-chi/chi/v5.(*node).InsertRoute+0x3c4			C:/Users/xufan/go/pkg/mod/github.com/go-chi/chi/v5@v5.3.0/tree.go:175
+#	0x7ff779cb9988	github.com/go-chi/chi/v5.(*Mux).handle+0x268				C:/Users/xufan/go/pkg/mod/github.com/go-chi/chi/v5@v5.3.0/mux.go:436
+#	0x7ff779cb7ecc	github.com/go-chi/chi/v5.(*Mux).Get+0x2c				C:/Users/xufan/go/pkg/mod/github.com/go-chi/chi/v5@v5.3.0/mux.go:156
+#	0x7ff77a437891	github.com/huangchengsir/pipewright/internal/httpapi.New.func3+0x7bb1	C:/Users/xufan/Trae/pipewright/internal/httpapi/router.go:1188
+#	0x7ff779cb89de	github.com/go-chi/chi/v5.(*Mux).Route+0xde				C:/Users/xufan/go/pkg/mod/github.com/go-chi/chi/v5@v5.3.0/mux.go:277
+#	0x7ff77a42f904	github.com/huangchengsir/pipewright/internal/httpapi.New+0xa04		C:/Users/xufan/Trae/pipewright/internal/httpapi/router.go:636
+#	0x7ff77a4b7b84	main.main+0x76e4							C:/Users/xufan/Trae/pipewright/cmd/pipewright/main.go:797
+#	0x7ff779175246	runtime.main+0x2c6							C:/Program Files/Go/src/runtime/proc.go:290
+
+1: 48 [1: 48] @ 0x7ff7791a86c5 0x7ff779143625 0x7ff7793dd809 0x7ff7793dd863 0x7ff779184b5a 0x7ff7791751de 0x7ff7791751b5 0x7ff7791b28c1
+#	0x7ff7793dd808	sync.OnceFunc+0x88	C:/Program Files/Go/src/sync/oncefunc.go:13
+#	0x7ff7793dd862	hash/crc32.init+0xe2	C:/Program Files/Go/src/hash/crc32/crc32.go:83
+#	0x7ff779184b59	runtime.doInit1+0xd9	C:/Program Files/Go/src/runtime/proc.go:8103
+#	0x7ff7791751dd	runtime.doInit+0x25d	C:/Program Files/Go/src/runtime/proc.go:8070
+#	0x7ff7791751b4	runtime.main+0x234	C:/Program Files/Go/src/runtime/proc.go:258
+
+1: 512 [1: 512] @ 0x7ff7791a86ec 0x7ff779143625 0x7ff77914ec85 0x7ff7791b28c1
+#	0x7ff7791a86eb	runtime.mallocgc+0xcb		C:/Program Files/Go/src/runtime/malloc.go:1143
+#	0x7ff779143624	runtime.newobject+0x24		C:/Program Files/Go/src/runtime/malloc.go:2157
+#	0x7ff77914ec84	runtime.gcBgMarkWorker+0x64	C:/Program Files/Go/src/runtime/mgc.go:1763
+
+1: 2048 [1: 2048] @ 0x7ff7791a86cc 0x7ff779143625 0x7ff779178e71 0x7ff779179915 0x7ff779179fb0 0x7ff7791ab0ec 0x7ff77917cc29 0x7ff77917cf65 0x7ff7791b0bfa
+#	0x7ff7791a86cb	runtime.mallocgc+0xab	C:/Program Files/Go/src/runtime/malloc.go:1152
+#	0x7ff779143624	runtime.newobject+0x24	C:/Program Files/Go/src/runtime/malloc.go:2157
+#	0x7ff779178e70	runtime.allocm+0x90	C:/Program Files/Go/src/runtime/proc.go:2324
+#	0x7ff779179914	runtime.newm+0x34	C:/Program Files/Go/src/runtime/proc.go:2870
+#	0x7ff779179faf	runtime.startm+0x12f	C:/Program Files/Go/src/runtime/proc.go:3096
+#	0x7ff7791ab0eb	runtime.wakep+0xeb	C:/Program Files/Go/src/runtime/proc.go:3243
+#	0x7ff77917cc28	runtime.schedule+0x208	C:/Program Files/Go/src/runtime/proc.go:4221
+#	0x7ff77917cf64	runtime.park_m+0x284	C:/Program Files/Go/src/runtime/proc.go:4304
+#	0x7ff7791b0bf9	runtime.mcall+0x59	C:/Program Files/Go/src/runtime/asm_amd64.s:496
+
+1: 2048 [1: 2048] @ 0x7ff7791a86cc 0x7ff779143625 0x7ff779178e71 0x7ff779179915 0x7ff779179fb0 0x7ff7791ab0ec 0x7ff77917c61e 0x7ff77917cb47 0x7ff779178717 0x7ff77917862a 0x7ff7791b0b6c
+#	0x7ff7791a86cb	runtime.mallocgc+0xab		C:/Program Files/Go/src/runtime/malloc.go:1152
+#	0x7ff779143624	runtime.newobject+0x24		C:/Program Files/Go/src/runtime/malloc.go:2157
+#	0x7ff779178e70	runtime.allocm+0x90		C:/Program Files/Go/src/runtime/proc.go:2324
+#	0x7ff779179914	runtime.newm+0x34		C:/Program Files/Go/src/runtime/proc.go:2870
+#	0x7ff779179faf	runtime.startm+0x12f		C:/Program Files/Go/src/runtime/proc.go:3096
+#	0x7ff7791ab0eb	runtime.wakep+0xeb		C:/Program Files/Go/src/runtime/proc.go:3243
+#	0x7ff77917c61d	runtime.resetspinning+0x3d	C:/Program Files/Go/src/runtime/proc.go:4034
+#	0x7ff77917cb46	runtime.schedule+0x126		C:/Program Files/Go/src/runtime/proc.go:4199
+#	0x7ff779178716	runtime.mstart1+0xd6		C:/Program Files/Go/src/runtime/proc.go:1942
+#	0x7ff779178629	runtime.mstart0+0x69		C:/Program Files/Go/src/runtime/proc.go:1888
+#	0x7ff7791b0b6b	runtime.mstart+0xb		C:/Program Files/Go/src/runtime/asm_amd64.s:426
+
+1: 3072 [1: 3072] @ 0x7ff7791a86cc 0x7ff7791ad307 0x7ff77947f147 0x7ff77947f183 0x7ff77947f0d8 0x7ff77947f4f2 0x7ff77947f78f 0x7ff77947e44b 0x7ff779492e17 0x7ff77949392c 0x7ff779493920 0x7ff77a4a26d9 0x7ff779184b5a 0x7ff7791751de 0x7ff7791751b5 0x7ff7791b28c1
+#	0x7ff77947f146	regexp/syntax.(*compiler).inst+0xb66				C:/Program Files/Go/src/regexp/syntax/compile.go:164
+#	0x7ff77947f182	regexp/syntax.(*compiler).cap+0xba2				C:/Program Files/Go/src/regexp/syntax/compile.go:179
+#	0x7ff77947f0d7	regexp/syntax.(*compiler).compile+0xaf7				C:/Program Files/Go/src/regexp/syntax/compile.go:128
+#	0x7ff77947f4f1	regexp/syntax.(*compiler).compile+0xf11				C:/Program Files/Go/src/regexp/syntax/compile.go:137
+#	0x7ff77947f78e	regexp/syntax.(*compiler).compile+0x11ae			C:/Program Files/Go/src/regexp/syntax/compile.go:147
+#	0x7ff77947e44a	regexp/syntax.Compile+0x12a					C:/Program Files/Go/src/regexp/syntax/compile.go:74
+#	0x7ff779492e16	regexp.compile+0x76						C:/Program Files/Go/src/regexp/regexp.go:176
+#	0x7ff77949392b	regexp.Compile+0x2b						C:/Program Files/Go/src/regexp/regexp.go:131
+#	0x7ff77949391f	regexp.MustCompile+0x1f						C:/Program Files/Go/src/regexp/regexp.go:311
+#	0x7ff77a4a26d8	github.com/huangchengsir/pipewright/internal/httpapi.init+0x198	C:/Users/xufan/Trae/pipewright/internal/httpapi/container_create.go:30
+#	0x7ff779184b59	runtime.doInit1+0xd9						C:/Program Files/Go/src/runtime/proc.go:8103
+#	0x7ff7791751dd	runtime.doInit+0x25d						C:/Program Files/Go/src/runtime/proc.go:8070
+#	0x7ff7791751b4	runtime.main+0x234						C:/Program Files/Go/src/runtime/proc.go:258
+
+2: 4096 [2: 4096] @ 0x7ff7791a86cc 0x7ff779143625 0x7ff779178e71 0x7ff779179915 0x7ff779179fb0 0x7ff7791ab0ec 0x7ff77917c61e 0x7ff77917cb47 0x7ff77917cf65 0x7ff7791b0bfa
+#	0x7ff7791a86cb	runtime.mallocgc+0xab		C:/Program Files/Go/src/runtime/malloc.go:1152
+#	0x7ff779143624	runtime.newobject+0x24		C:/Program Files/Go/src/runtime/malloc.go:2157
+#	0x7ff779178e70	runtime.allocm+0x90		C:/Program Files/Go/src/runtime/proc.go:2324
+#	0x7ff779179914	runtime.newm+0x34		C:/Program Files/Go/src/runtime/proc.go:2870
+#	0x7ff779179faf	runtime.startm+0x12f		C:/Program Files/Go/src/runtime/proc.go:3096
+#	0x7ff7791ab0eb	runtime.wakep+0xeb		C:/Program Files/Go/src/runtime/proc.go:3243
+#	0x7ff77917c61d	runtime.resetspinning+0x3d	C:/Program Files/Go/src/runtime/proc.go:4034
+#	0x7ff77917cb46	runtime.schedule+0x126		C:/Program Files/Go/src/runtime/proc.go:4199
+#	0x7ff77917cf64	runtime.park_m+0x284		C:/Program Files/Go/src/runtime/proc.go:4304
+#	0x7ff7791b0bf9	runtime.mcall+0x59		C:/Program Files/Go/src/runtime/asm_amd64.s:496
+
+1: 6144 [1: 6144] @ 0x7ff7791a86cc 0x7ff7791ad307 0x7ff77947fdea 0x7ff77947fe29 0x7ff77947f51c 0x7ff77947f78f 0x7ff77947f4f2 0x7ff77947f78f 0x7ff77947f4f2 0x7ff77947f78f 0x7ff77947f4f2 0x7ff77947f78f 0x7ff77947f4f2 0x7ff77947f78f 0x7ff77947f4f2 0x7ff77947f78f 0x7ff77947f4f2 0x7ff77947f78f 0x7ff77947f4f2 0x7ff77947f78f 0x7ff77947f4f2 0x7ff77947f78f 0x7ff77947f4f2 0x7ff77947f78f 0x7ff77947f4f2 0x7ff77947f78f 0x7ff77947f4f2 0x7ff77947f78f 0x7ff77947f4f2 0x7ff77947f78f 0x7ff77947f4f2 0x7ff77947f78f 0x7ff77947f4f2 0x7ff77947f78f 0x7ff77947f4f2 0x7ff77947f78f 0x7ff77947f4f2 0x7ff77947f78f 0x7ff77947f4f2 0x7ff77947f78f 0x7ff77947f4f2 0x7ff77947f78f 0x7ff77947f4f2 0x7ff77947f78f 0x7ff77947f4f2 0x7ff77947f78f 0x7ff77947f4f2 0x7ff77947f78f 0x7ff77947f4f2 0x7ff77947f78f 0x7ff77947f4f2 0x7ff77947f78f 0x7ff77947f4f2 0x7ff77947f78f 0x7ff77947f4f2 0x7ff77947f78f 0x7ff77947f4f2 0x7ff77947f78f 0x7ff77947f4f2 0x7ff77947f78f 0x7ff77947f4f2 0x7ff77947f78f 0x7ff77947f4f2 0x7ff77947f78f 0x7ff77947f4f2 0x7ff77947f78f 0x7ff77947f4f2 0x7ff77947f78f 0x7ff77947f4f2 0x7ff77947f78f 0x7ff77947f4f2 0x7ff77947f78f 0x7ff77947f4f2 0x7ff77947f78f 0x7ff77947f4f2 0x7ff77947f78f 0x7ff77947f4f2 0x7ff77947f78f 0x7ff77947f4f2 0x7ff77947f78f 0x7ff77947f4f2 0x7ff77947f78f 0x7ff77947f4f2 0x7ff77947f78f 0x7ff77947f4f2 0x7ff77947f78f 0x7ff77947f4f2 0x7ff77947f78f 0x7ff77947f4f2 0x7ff77947f78f 0x7ff77947f4f2 0x7ff77947f78f 0x7ff77947f4f2 0x7ff77947f78f 0x7ff77947f4f2 0x7ff77947f78f 0x7ff77947f4f2 0x7ff77947f78f 0x7ff77947f4f2 0x7ff77947f78f 0x7ff77947f4f2 0x7ff77947f78f 0x7ff77947f4f2 0x7ff77947f78f 0x7ff77947f4f2 0x7ff77947f78f 0x7ff77947f4f2 0x7ff77947f78f 0x7ff77947f4f2 0x7ff77947f78f 0x7ff77947f78f 0x7ff77947e44b 0x7ff779492e17 0x7ff77949392c 0x7ff779493920 0x7ff77997969f 0x7ff779184b5a 0x7ff7791751de 0x7ff7791751b5 0x7ff7791b28c1
+#	0x7ff77947fde9	regexp/syntax.(*compiler).inst+0x89				C:/Program Files/Go/src/regexp/syntax/compile.go:164
+#	0x7ff77947fe28	regexp/syntax.(*compiler).quest+0xc8				C:/Program Files/Go/src/regexp/syntax/compile.go:220
+#	0x7ff77947f51b	regexp/syntax.(*compiler).compile+0xf3b				C:/Program Files/Go/src/regexp/syntax/compile.go:137
+#	0x7ff77947f78e	regexp/syntax.(*compiler).compile+0x11ae			C:/Program Files/Go/src/regexp/syntax/compile.go:147
+#	0x7ff77947f4f1	regexp/syntax.(*compiler).compile+0xf11				C:/Program Files/Go/src/regexp/syntax/compile.go:137
+#	0x7ff77947f78e	regexp/syntax.(*compiler).compile+0x11ae			C:/Program Files/Go/src/regexp/syntax/compile.go:147
+#	0x7ff77947f4f1	regexp/syntax.(*compiler).compile+0xf11				C:/Program Files/Go/src/regexp/syntax/compile.go:137
+#	0x7ff77947f78e	regexp/syntax.(*compiler).compile+0x11ae			C:/Program Files/Go/src/regexp/syntax/compile.go:147
+#	0x7ff77947f4f1	regexp/syntax.(*compiler).compile+0xf11				C:/Program Files/Go/src/regexp/syntax/compile.go:137
+#	0x7ff77947f78e	regexp/syntax.(*compiler).compile+0x11ae			C:/Program Files/Go/src/regexp/syntax/compile.go:147
+#	0x7ff77947f4f1	regexp/syntax.(*compiler).compile+0xf11				C:/Program Files/Go/src/regexp/syntax/compile.go:137
+#	0x7ff77947f78e	regexp/syntax.(*compiler).compile+0x11ae			C:/Program Files/Go/src/regexp/syntax/compile.go:147
+#	0x7ff77947f4f1	regexp/syntax.(*compiler).compile+0xf11				C:/Program Files/Go/src/regexp/syntax/compile.go:137
+#	0x7ff77947f78e	regexp/syntax.(*compiler).compile+0x11ae			C:/Program Files/Go/src/regexp/syntax/compile.go:147
+#	0x7ff77947f4f1	regexp/syntax.(*compiler).compile+0xf11				C:/Program Files/Go/src/regexp/syntax/compile.go:137
+#	0x7ff77947f78e	regexp/syntax.(*compiler).compile+0x11ae			C:/Program Files/Go/src/regexp/syntax/compile.go:147
+#	0x7ff77947f4f1	regexp/syntax.(*compiler).compile+0xf11				C:/Program Files/Go/src/regexp/syntax/compile.go:137
+#	0x7ff77947f78e	regexp/syntax.(*compiler).compile+0x11ae			C:/Program Files/Go/src/regexp/syntax/compile.go:147
+#	0x7ff77947f4f1	regexp/syntax.(*compiler).compile+0xf11				C:/Program Files/Go/src/regexp/syntax/compile.go:137
+#	0x7ff77947f78e	regexp/syntax.(*compiler).compile+0x11ae			C:/Program Files/Go/src/regexp/syntax/compile.go:147
+#	0x7ff77947f4f1	regexp/syntax.(*compiler).compile+0xf11				C:/Program Files/Go/src/regexp/syntax/compile.go:137
+#	0x7ff77947f78e	regexp/syntax.(*compiler).compile+0x11ae			C:/Program Files/Go/src/regexp/syntax/compile.go:147
+#	0x7ff77947f4f1	regexp/syntax.(*compiler).compile+0xf11				C:/Program Files/Go/src/regexp/syntax/compile.go:137
+#	0x7ff77947f78e	regexp/syntax.(*compiler).compile+0x11ae			C:/Program Files/Go/src/regexp/syntax/compile.go:147
+#	0x7ff77947f4f1	regexp/syntax.(*compiler).compile+0xf11				C:/Program Files/Go/src/regexp/syntax/compile.go:137
+#	0x7ff77947f78e	regexp/syntax.(*compiler).compile+0x11ae			C:/Program Files/Go/src/regexp/syntax/compile.go:147
+#	0x7ff77947f4f1	regexp/syntax.(*compiler).compile+0xf11				C:/Program Files/Go/src/regexp/syntax/compile.go:137
+#	0x7ff77947f78e	regexp/syntax.(*compiler).compile+0x11ae			C:/Program Files/Go/src/regexp/syntax/compile.go:147
+#	0x7ff77947f4f1	regexp/syntax.(*compiler).compile+0xf11				C:/Program Files/Go/src/regexp/syntax/compile.go:137
+#	0x7ff77947f78e	regexp/syntax.(*compiler).compile+0x11ae			C:/Program Files/Go/src/regexp/syntax/compile.go:147
+#	0x7ff77947f4f1	regexp/syntax.(*compiler).compile+0xf11				C:/Program Files/Go/src/regexp/syntax/compile.go:137
+#	0x7ff77947f78e	regexp/syntax.(*compiler).compile+0x11ae			C:/Program Files/Go/src/regexp/syntax/compile.go:147
+#	0x7ff77947f4f1	regexp/syntax.(*compiler).compile+0xf11				C:/Program Files/Go/src/regexp/syntax/compile.go:137
+#	0x7ff77947f78e	regexp/syntax.(*compiler).compile+0x11ae			C:/Program Files/Go/src/regexp/syntax/compile.go:147
+#	0x7ff77947f4f1	regexp/syntax.(*compiler).compile+0xf11				C:/Program Files/Go/src/regexp/syntax/compile.go:137
+#	0x7ff77947f78e	regexp/syntax.(*compiler).compile+0x11ae			C:/Program Files/Go/src/regexp/syntax/compile.go:147
+#	0x7ff77947f4f1	regexp/syntax.(*compiler).compile+0xf11				C:/Program Files/Go/src/regexp/syntax/compile.go:137
+#	0x7ff77947f78e	regexp/syntax.(*compiler).compile+0x11ae			C:/Program Files/Go/src/regexp/syntax/compile.go:147
+#	0x7ff77947f4f1	regexp/syntax.(*compiler).compile+0xf11				C:/Program Files/Go/src/regexp/syntax/compile.go:137
+#	0x7ff77947f78e	regexp/syntax.(*compiler).compile+0x11ae			C:/Program Files/Go/src/regexp/syntax/compile.go:147
+#	0x7ff77947f4f1	regexp/syntax.(*compiler).compile+0xf11				C:/Program Files/Go/src/regexp/syntax/compile.go:137
+#	0x7ff77947f78e	regexp/syntax.(*compiler).compile+0x11ae			C:/Program Files/Go/src/regexp/syntax/compile.go:147
+#	0x7ff77947f4f1	regexp/syntax.(*compiler).compile+0xf11				C:/Program Files/Go/src/regexp/syntax/compile.go:137
+#	0x7ff77947f78e	regexp/syntax.(*compiler).compile+0x11ae			C:/Program Files/Go/src/regexp/syntax/compile.go:147
+#	0x7ff77947f4f1	regexp/syntax.(*compiler).compile+0xf11				C:/Program Files/Go/src/regexp/syntax/compile.go:137
+#	0x7ff77947f78e	regexp/syntax.(*compiler).compile+0x11ae			C:/Program Files/Go/src/regexp/syntax/compile.go:147
+#	0x7ff77947f4f1	regexp/syntax.(*compiler).compile+0xf11				C:/Program Files/Go/src/regexp/syntax/compile.go:137
+#	0x7ff77947f78e	regexp/syntax.(*compiler).compile+0x11ae			C:/Program Files/Go/src/regexp/syntax/compile.go:147
+#	0x7ff77947f4f1	regexp/syntax.(*compiler).compile+0xf11				C:/Program Files/Go/src/regexp/syntax/compile.go:137
+#	0x7ff77947f78e	regexp/syntax.(*compiler).compile+0x11ae			C:/Program Files/Go/src/regexp/syntax/compile.go:147
+#	0x7ff77947f4f1	regexp/syntax.(*compiler).compile+0xf11				C:/Program Files/Go/src/regexp/syntax/compile.go:137
+#	0x7ff77947f78e	regexp/syntax.(*compiler).compile+0x11ae			C:/Program Files/Go/src/regexp/syntax/compile.go:147
+#	0x7ff77947f4f1	regexp/syntax.(*compiler).compile+0xf11				C:/Program Files/Go/src/regexp/syntax/compile.go:137
+#	0x7ff77947f78e	regexp/syntax.(*compiler).compile+0x11ae			C:/Program Files/Go/src/regexp/syntax/compile.go:147
+#	0x7ff77947f4f1	regexp/syntax.(*compiler).compile+0xf11				C:/Program Files/Go/src/regexp/syntax/compile.go:137
+#	0x7ff77947f78e	regexp/syntax.(*compiler).compile+0x11ae			C:/Program Files/Go/src/regexp/syntax/compile.go:147
+#	0x7ff77947f4f1	regexp/syntax.(*compiler).compile+0xf11				C:/Program Files/Go/src/regexp/syntax/compile.go:137
+#	0x7ff77947f78e	regexp/syntax.(*compiler).compile+0x11ae			C:/Program Files/Go/src/regexp/syntax/compile.go:147
+#	0x7ff77947f4f1	regexp/syntax.(*compiler).compile+0xf11				C:/Program Files/Go/src/regexp/syntax/compile.go:137
+#	0x7ff77947f78e	regexp/syntax.(*compiler).compile+0x11ae			C:/Program Files/Go/src/regexp/syntax/compile.go:147
+#	0x7ff77947f4f1	regexp/syntax.(*compiler).compile+0xf11				C:/Program Files/Go/src/regexp/syntax/compile.go:137
+#	0x7ff77947f78e	regexp/syntax.(*compiler).compile+0x11ae			C:/Program Files/Go/src/regexp/syntax/compile.go:147
+#	0x7ff77947f4f1	regexp/syntax.(*compiler).compile+0xf11				C:/Program Files/Go/src/regexp/syntax/compile.go:137
+#	0x7ff77947f78e	regexp/syntax.(*compiler).compile+0x11ae			C:/Program Files/Go/src/regexp/syntax/compile.go:147
+#	0x7ff77947f4f1	regexp/syntax.(*compiler).compile+0xf11				C:/Program Files/Go/src/regexp/syntax/compile.go:137
+#	0x7ff77947f78e	regexp/syntax.(*compiler).compile+0x11ae			C:/Program Files/Go/src/regexp/syntax/compile.go:147
+#	0x7ff77947f4f1	regexp/syntax.(*compiler).compile+0xf11				C:/Program Files/Go/src/regexp/syntax/compile.go:137
+#	0x7ff77947f78e	regexp/syntax.(*compiler).compile+0x11ae			C:/Program Files/Go/src/regexp/syntax/compile.go:147
+#	0x7ff77947f4f1	regexp/syntax.(*compiler).compile+0xf11				C:/Program Files/Go/src/regexp/syntax/compile.go:137
+#	0x7ff77947f78e	regexp/syntax.(*compiler).compile+0x11ae			C:/Program Files/Go/src/regexp/syntax/compile.go:147
+#	0x7ff77947f4f1	regexp/syntax.(*compiler).compile+0xf11				C:/Program Files/Go/src/regexp/syntax/compile.go:137
+#	0x7ff77947f78e	regexp/syntax.(*compiler).compile+0x11ae			C:/Program Files/Go/src/regexp/syntax/compile.go:147
+#	0x7ff77947f4f1	regexp/syntax.(*compiler).compile+0xf11				C:/Program Files/Go/src/regexp/syntax/compile.go:137
+#	0x7ff77947f78e	regexp/syntax.(*compiler).compile+0x11ae			C:/Program Files/Go/src/regexp/syntax/compile.go:147
+#	0x7ff77947f4f1	regexp/syntax.(*compiler).compile+0xf11				C:/Program Files/Go/src/regexp/syntax/compile.go:137
+#	0x7ff77947f78e	regexp/syntax.(*compiler).compile+0x11ae			C:/Program Files/Go/src/regexp/syntax/compile.go:147
+#	0x7ff77947f4f1	regexp/syntax.(*compiler).compile+0xf11				C:/Program Files/Go/src/regexp/syntax/compile.go:137
+#	0x7ff77947f78e	regexp/syntax.(*compiler).compile+0x11ae			C:/Program Files/Go/src/regexp/syntax/compile.go:147
+#	0x7ff77947f4f1	regexp/syntax.(*compiler).compile+0xf11				C:/Program Files/Go/src/regexp/syntax/compile.go:137
+#	0x7ff77947f78e	regexp/syntax.(*compiler).compile+0x11ae			C:/Program Files/Go/src/regexp/syntax/compile.go:147
+#	0x7ff77947f4f1	regexp/syntax.(*compiler).compile+0xf11				C:/Program Files/Go/src/regexp/syntax/compile.go:137
+#	0x7ff77947f78e	regexp/syntax.(*compiler).compile+0x11ae			C:/Program Files/Go/src/regexp/syntax/compile.go:147
+#	0x7ff77947f4f1	regexp/syntax.(*compiler).compile+0xf11				C:/Program Files/Go/src/regexp/syntax/compile.go:137
+#	0x7ff77947f78e	regexp/syntax.(*compiler).compile+0x11ae			C:/Program Files/Go/src/regexp/syntax/compile.go:147
+#	0x7ff77947f4f1	regexp/syntax.(*compiler).compile+0xf11				C:/Program Files/Go/src/regexp/syntax/compile.go:137
+#	0x7ff77947f78e	regexp/syntax.(*compiler).compile+0x11ae			C:/Program Files/Go/src/regexp/syntax/compile.go:147
+#	0x7ff77947f4f1	regexp/syntax.(*compiler).compile+0xf11				C:/Program Files/Go/src/regexp/syntax/compile.go:137
+#	0x7ff77947f78e	regexp/syntax.(*compiler).compile+0x11ae			C:/Program Files/Go/src/regexp/syntax/compile.go:147
+#	0x7ff77947f4f1	regexp/syntax.(*compiler).compile+0xf11				C:/Program Files/Go/src/regexp/syntax/compile.go:137
+#	0x7ff77947f78e	regexp/syntax.(*compiler).compile+0x11ae			C:/Program Files/Go/src/regexp/syntax/compile.go:147
+#	0x7ff77947f4f1	regexp/syntax.(*compiler).compile+0xf11				C:/Program Files/Go/src/regexp/syntax/compile.go:137
+#	0x7ff77947f78e	regexp/syntax.(*compiler).compile+0x11ae			C:/Program Files/Go/src/regexp/syntax/compile.go:147
+#	0x7ff77947f4f1	regexp/syntax.(*compiler).compile+0xf11				C:/Program Files/Go/src/regexp/syntax/compile.go:137
+#	0x7ff77947f78e	regexp/syntax.(*compiler).compile+0x11ae			C:/Program Files/Go/src/regexp/syntax/compile.go:147
+#	0x7ff77947f4f1	regexp/syntax.(*compiler).compile+0xf11				C:/Program Files/Go/src/regexp/syntax/compile.go:137
+#	0x7ff77947f78e	regexp/syntax.(*compiler).compile+0x11ae			C:/Program Files/Go/src/regexp/syntax/compile.go:147
+#	0x7ff77947f4f1	regexp/syntax.(*compiler).compile+0xf11				C:/Program Files/Go/src/regexp/syntax/compile.go:137
+#	0x7ff77947f78e	regexp/syntax.(*compiler).compile+0x11ae			C:/Program Files/Go/src/regexp/syntax/compile.go:147
+#	0x7ff77947f4f1	regexp/syntax.(*compiler).compile+0xf11				C:/Program Files/Go/src/regexp/syntax/compile.go:137
+#	0x7ff77947f78e	regexp/syntax.(*compiler).compile+0x11ae			C:/Program Files/Go/src/regexp/syntax/compile.go:147
+#	0x7ff77947f4f1	regexp/syntax.(*compiler).compile+0xf11				C:/Program Files/Go/src/regexp/syntax/compile.go:137
+#	0x7ff77947f78e	regexp/syntax.(*compiler).compile+0x11ae			C:/Program Files/Go/src/regexp/syntax/compile.go:147
+#	0x7ff77947f4f1	regexp/syntax.(*compiler).compile+0xf11				C:/Program Files/Go/src/regexp/syntax/compile.go:137
+#	0x7ff77947f78e	regexp/syntax.(*compiler).compile+0x11ae			C:/Program Files/Go/src/regexp/syntax/compile.go:147
+#	0x7ff77947f4f1	regexp/syntax.(*compiler).compile+0xf11				C:/Program Files/Go/src/regexp/syntax/compile.go:137
+#	0x7ff77947f78e	regexp/syntax.(*compiler).compile+0x11ae			C:/Program Files/Go/src/regexp/syntax/compile.go:147
+#	0x7ff77947f4f1	regexp/syntax.(*compiler).compile+0xf11				C:/Program Files/Go/src/regexp/syntax/compile.go:137
+#	0x7ff77947f78e	regexp/syntax.(*compiler).compile+0x11ae			C:/Program Files/Go/src/regexp/syntax/compile.go:147
+#	0x7ff77947f78e	regexp/syntax.(*compiler).compile+0x11ae			C:/Program Files/Go/src/regexp/syntax/compile.go:147
+#	0x7ff77947e44a	regexp/syntax.Compile+0x12a					C:/Program Files/Go/src/regexp/syntax/compile.go:74
+#	0x7ff779492e16	regexp.compile+0x76						C:/Program Files/Go/src/regexp/regexp.go:176
+#	0x7ff77949392b	regexp.Compile+0x2b						C:/Program Files/Go/src/regexp/regexp.go:131
+#	0x7ff77949391f	regexp.MustCompile+0x1f						C:/Program Files/Go/src/regexp/regexp.go:311
+#	0x7ff77997969e	github.com/huangchengsir/pipewright/internal/auth.init+0x1e	C:/Users/xufan/Trae/pipewright/internal/auth/session.go:334
+#	0x7ff779184b59	runtime.doInit1+0xd9						C:/Program Files/Go/src/runtime/proc.go:8103
+#	0x7ff7791751dd	runtime.doInit+0x25d						C:/Program Files/Go/src/runtime/proc.go:8070
+#	0x7ff7791751b4	runtime.main+0x234						C:/Program Files/Go/src/runtime/proc.go:258
+
+1: 9472 [1: 9472] @ 0x7ff7791a86cc 0x7ff7791acd69 0x7ff779490c1d 0x7ff779492a45 0x7ff779492e2f 0x7ff77949392c 0x7ff779493920 0x7ff779974d85 0x7ff779184b5a 0x7ff7791751de 0x7ff7791751b5 0x7ff7791b28c1
+#	0x7ff779490c1c	regexp.onePassCopy+0x3c						C:/Program Files/Go/src/regexp/onepass.go:226
+#	0x7ff779492a44	regexp.compileOnePass+0x1a4					C:/Program Files/Go/src/regexp/onepass.go:499
+#	0x7ff779492e2e	regexp.compile+0x8e						C:/Program Files/Go/src/regexp/regexp.go:187
+#	0x7ff77949392b	regexp.Compile+0x2b						C:/Program Files/Go/src/regexp/regexp.go:131
+#	0x7ff77949391f	regexp.MustCompile+0x1f						C:/Program Files/Go/src/regexp/regexp.go:311
+#	0x7ff779974d84	github.com/huangchengsir/pipewright/internal/appstore.init+0x24	C:/Users/xufan/Trae/pipewright/internal/appstore/appstore.go:65
+#	0x7ff779184b59	runtime.doInit1+0xd9						C:/Program Files/Go/src/runtime/proc.go:8103
+#	0x7ff7791751dd	runtime.doInit+0x25d						C:/Program Files/Go/src/runtime/proc.go:8070
+#	0x7ff7791751b4	runtime.main+0x234						C:/Program Files/Go/src/runtime/proc.go:258
+
+
+# runtime.MemStats
+# Alloc = 70454024
+# TotalAlloc = 73185016
+# Sys = 85764344
+# Lookups = 0
+# Mallocs = 66085
+# Frees = 34161
+# HeapAlloc = 70454024
+# HeapSys = 78807040
+# HeapIdle = 6635520
+# HeapInuse = 72171520
+# HeapReleased = 5513216
+# HeapObjects = 31924
+# Stack = 884736 / 884736
+# MSpan = 137120 / 146880
+# MCache = 27168 / 31696
+# BuckHashSys = 1455704
+# GCSys = 3233040
+# OtherSys = 1205248
+# NextGC = 138965042
+# LastGC = 1792327527988328400
+# PauseNs = [0 0 521100 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0]
+# PauseEnd = [1792327527774769300 1792327527948191400 1792327527988328400 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0]
+# NumGC = 3
+# NumForcedGC = 0
+# GCCPUFraction = 0.002467373679943565
+# DebugGC = false
+# MaxRSS = 111210496
