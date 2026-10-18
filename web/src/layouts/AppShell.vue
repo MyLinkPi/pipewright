@@ -20,6 +20,7 @@ import {
   Database,
   CloudUpload,
   Bolt,
+  DeviceFloppy,
   Users,
   ChevronRight,
   Logout,
@@ -100,6 +101,8 @@ const adminNavItems: NavItem[] = [
   { name: 'databases',     to: '/databases',     icon: Database,   labelKey: 'nav.databases',     ariaKey: 'nav.databases' },
   // Redis 在线管理:实例在 设置 → Redis 注册;应用市场部署 redis 自动登记;SCAN 分页键浏览。
   { name: 'redis',         to: '/redis',         icon: Bolt,       labelKey: 'nav.redis',         ariaKey: 'nav.redis' },
+  // 服务器磁盘管理:块设备/LVM 拓扑 + 分区/格式化/挂载/扩缩容(只读默认 + 显式解锁)。
+  { name: 'disks',         to: '/disks',         icon: DeviceFloppy, labelKey: 'nav.disks',        ariaKey: 'nav.disks' },
   // PVE 集群管理:总览/VM/电源操作/任务(集群经服务器登记自动发现,Token 在 设置 → PVE)。
   { name: 'pve',           to: '/pve',           icon: Server,    labelKey: 'nav.pve',           ariaKey: 'nav.pve' },
   // 对象存储浏览(只读):实例在 设置 → 对象存储 注册;桶内目录树(marker 游标分页)。

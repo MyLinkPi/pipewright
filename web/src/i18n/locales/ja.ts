@@ -80,6 +80,7 @@ const ja: typeof zhCN = {
     databases: 'データベース',
     objectStorage: 'オブジェクトストレージ',
     redis: 'Redis',
+    disks: 'ディスク',
     certificates: '証明書管理',
     anomaly: '異常検知',
     notifications: '通知',

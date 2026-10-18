@@ -79,6 +79,7 @@ const zhHK: typeof zhCN = {
     databases: '資料庫',
     objectStorage: '物件儲存',
     redis: 'Redis',
+    disks: '磁碟',
     certificates: '憑證管理',
     anomaly: '異常偵測',
     notifications: '通知',
