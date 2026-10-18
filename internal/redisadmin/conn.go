@@ -61,13 +61,13 @@ type dialFunc func(host string, port int, password string, dbNum int) (redisClie
 // prodDial 构造真实 go-redis 客户端(不重试:管理操作快速失败,错误原样给人话映射)。
 func prodDial(host string, port int, password string, dbNum int) (redisClient, error) {
 	cli := redis.NewClient(&redis.Options{
-		Addr:        hostPort(host, port),
-		Password:    password,
-		DB:          dbNum,
-		DialTimeout: dialTimeout,
-		ReadTimeout: ioTimeout,
+		Addr:         hostPort(host, port),
+		Password:     password,
+		DB:           dbNum,
+		DialTimeout:  dialTimeout,
+		ReadTimeout:  ioTimeout,
 		WriteTimeout: ioTimeout,
-		MaxRetries:  -1,
+		MaxRetries:   -1,
 	})
 	return &liveClient{cli: cli}, nil
 }

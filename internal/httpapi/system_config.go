@@ -19,8 +19,8 @@ const (
 
 // systemConfigDTO 是系统配置对外响应体。
 type systemConfigDTO struct {
-	PublicURL     string              `json:"publicUrl"`
-	ReleaseMirror string              `json:"releaseMirror"`
+	PublicURL     string `json:"publicUrl"`
+	ReleaseMirror string `json:"releaseMirror"`
 	// Passkey / 两步验证 RP 配置(留空 = 自动推导:public_url → 请求 Host)。
 	WebAuthnRPID        string              `json:"webauthnRpId"`
 	WebAuthnOrigins     string              `json:"webauthnOrigins"`

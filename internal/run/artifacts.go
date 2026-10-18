@@ -167,7 +167,7 @@ type ArtifactFilter struct {
 	// Type 过滤产物类型;非空须为冻结枚举,否则 ErrInvalidArtifactType。
 	Type string
 	// Page 为 1 起页码;PageSize 钳制到 [1, maxPageSize](与 List 同口径)。
-	Page    int
+	Page     int
 	PageSize int
 }
 

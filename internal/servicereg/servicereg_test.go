@@ -457,7 +457,7 @@ func (f *fakeTarget) DockerLogin(context.Context, string, string, string) error 
 
 // SetPlacement / ListPools 满足 target.Service 接口(0084 服务器池追加);测试桩不落库。
 func (f *fakeTarget) SetPlacement(context.Context, string, string, string) error { return nil }
-func (f *fakeTarget) ListPools(context.Context) ([]*target.ServerPool, error)         { return nil, nil }
+func (f *fakeTarget) ListPools(context.Context) ([]*target.ServerPool, error)    { return nil, nil }
 func (f *fakeTarget) Exec(_ context.Context, serverID string, cmd []string) (*target.ExecResult, error) {
 	f.execCalls = append(f.execCalls, cmd)
 	f.execServers = append(f.execServers, serverID)

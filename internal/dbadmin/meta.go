@@ -10,9 +10,9 @@ import (
 // ServerInfo 是实例服务端概要(管理页头部)。
 type ServerInfo struct {
 	Engine        string `json:"engine"`
-	Version       string `json:"version"`        // 短版本(如 8.4.3 / 16.4)
-	VersionFull   string `json:"versionFull"`    // 完整版本串(含发行说明)
-	UptimeSeconds int64  `json:"uptimeSeconds"`  // 服务端运行秒数
+	Version       string `json:"version"`       // 短版本(如 8.4.3 / 16.4)
+	VersionFull   string `json:"versionFull"`   // 完整版本串(含发行说明)
+	UptimeSeconds int64  `json:"uptimeSeconds"` // 服务端运行秒数
 }
 
 // DatabaseInfo 是一个库的概要(MySQL 附表数;PG 跨库统计需逐库连接,表数留 0)。
@@ -26,7 +26,7 @@ type DatabaseInfo struct {
 type TableInfo struct {
 	Schema    string `json:"schema"`
 	Name      string `json:"name"`
-	Ref       string `json:"ref"` // MySQL = name;PG = schema.name
+	Ref       string `json:"ref"`                 // MySQL = name;PG = schema.name
 	Engine    string `json:"engine,omitempty"`    // MySQL 存储引擎
 	Collation string `json:"collation,omitempty"` // MySQL 排序规则
 	Rows      int64  `json:"rows"`                // 统计行数(InnoDB/reltuples 为近似值)
@@ -36,13 +36,13 @@ type TableInfo struct {
 
 // ColumnInfo 是表结构的一列。
 type ColumnInfo struct {
-	Name      string  `json:"name"`
-	DataType  string  `json:"dataType"` // MySQL column_type(含长度)/ PG format_type
-	Nullable  bool    `json:"nullable"`
-	Default   *string `json:"default"`
-	Extra     string  `json:"extra,omitempty"` // MySQL auto_increment 等
-	Key       string  `json:"key,omitempty"`   // MySQL PRI/MUL/UNI
-	Comment   string  `json:"comment,omitempty"`
+	Name     string  `json:"name"`
+	DataType string  `json:"dataType"` // MySQL column_type(含长度)/ PG format_type
+	Nullable bool    `json:"nullable"`
+	Default  *string `json:"default"`
+	Extra    string  `json:"extra,omitempty"` // MySQL auto_increment 等
+	Key      string  `json:"key,omitempty"`   // MySQL PRI/MUL/UNI
+	Comment  string  `json:"comment,omitempty"`
 }
 
 // IndexInfo 是表的一个索引。

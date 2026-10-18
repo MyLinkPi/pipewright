@@ -18,14 +18,14 @@ const (
 	queryTimeout   = 60 * time.Second
 	importTimeout  = 10 * time.Minute
 	exportTimeout  = 5 * time.Minute
-	maxCellBytes   = 64 << 10  // 单格 64KB 截断(SQL 控制台/浏览结果)
-	maxResultRows  = 1000      // SQL 控制台结果行上限
-	maxBrowseLimit = 200       // 浏览分页单页上限
+	maxCellBytes   = 64 << 10 // 单格 64KB 截断(SQL 控制台/浏览结果)
+	maxResultRows  = 1000     // SQL 控制台结果行上限
+	maxBrowseLimit = 200      // 浏览分页单页上限
 )
 
 // connOptions 控制本次连接的形态(导入需多语句;导出/导入需更长读写超时)。
 type connOpts struct {
-	multiStatements bool        // MySQL multiStatements / PG simple_protocol(导入)
+	multiStatements bool // MySQL multiStatements / PG simple_protocol(导入)
 	readTimeout     time.Duration
 	connectTimeout  time.Duration
 }
@@ -174,7 +174,7 @@ func quoteIdent(engine, ident string) (string, error) {
 }
 
 // quoteTableRef 组限定表引用:MySQL 为 `db`.`table`;PG 的 table 形如 schema.name
-//(首个 . 分隔,允许 schema 缺省时按裸表名)。
+// (首个 . 分隔,允许 schema 缺省时按裸表名)。
 func quoteTableRef(engine, db, table string) (string, error) {
 	if engine == EngineMySQL {
 		d, err := quoteIdent(engine, db)

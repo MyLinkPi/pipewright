@@ -16,8 +16,8 @@ type ServerInfo struct {
 	UptimeSeconds    int64
 	UsedMemory       string // 人读形式(如 1.5M),服务端原文
 	ConnectedClients int64
-	DBSize           int64            // 当前逻辑库键数
-	Keyspace         map[int]int64    // 各逻辑库键数(INFO keyspace)
+	DBSize           int64             // 当前逻辑库键数
+	Keyspace         map[int]int64     // 各逻辑库键数(INFO keyspace)
 	Raw              map[string]string // 扁平原文字段(前端按需取)
 }
 
@@ -42,10 +42,10 @@ type HashMember struct {
 
 // KeyDetail 是单键详情:类型/TTL/内存 + 按类型的值预览(截断,大值不整读)。
 type KeyDetail struct {
-	Key        string
-	Type       string // string | hash | list | set | zset | stream | ...
-	TTLSeconds int64  // -1 = 持久化
-	MemoryBytes int64 // MEMORY USAGE;0 = 服务端不支持
+	Key         string
+	Type        string // string | hash | list | set | zset | stream | ...
+	TTLSeconds  int64  // -1 = 持久化
+	MemoryBytes int64  // MEMORY USAGE;0 = 服务端不支持
 
 	// string 预览(前 2KB,超出截断标记)。
 	StrValue  string
@@ -159,10 +159,10 @@ func (s *service) Info(ctx context.Context, id string, dbNum int) (*ServerInfo, 
 	}
 	flat := parseInfoFlat(raw)
 	info := &ServerInfo{
-		Version:          flat["redis_version"],
-		UsedMemory:       flat["used_memory_human"],
-		Raw:              flat,
-		Keyspace:         map[int]int64{},
+		Version:    flat["redis_version"],
+		UsedMemory: flat["used_memory_human"],
+		Raw:        flat,
+		Keyspace:   map[int]int64{},
 	}
 	info.UptimeSeconds, _ = strconv.ParseInt(flat["uptime_in_seconds"], 10, 64)
 	info.ConnectedClients, _ = strconv.ParseInt(flat["connected_clients"], 10, 64)

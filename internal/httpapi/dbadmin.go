@@ -504,8 +504,8 @@ func makeDBInsertRowHandler(svc dbadmin.Service, aud audit.Recorder) http.Handle
 
 func makeDBUpdateRowHandler(svc dbadmin.Service, aud audit.Recorder) http.HandlerFunc {
 	type request struct {
-		Key    dbadmin.RowKey  `json:"key"`
-		Values map[string]any  `json:"values"`
+		Key    dbadmin.RowKey `json:"key"`
+		Values map[string]any `json:"values"`
 	}
 	return func(w http.ResponseWriter, r *http.Request) {
 		db, table, err := dbTableParams(r)

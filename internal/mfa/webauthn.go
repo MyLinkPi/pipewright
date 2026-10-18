@@ -32,9 +32,9 @@ type webauthnUser struct {
 	credentials []webauthn.Credential
 }
 
-func (u *webauthnUser) WebAuthnID() []byte                       { return []byte(u.key) }
-func (u *webauthnUser) WebAuthnName() string                     { return u.name }
-func (u *webauthnUser) WebAuthnDisplayName() string              { return u.displayName }
+func (u *webauthnUser) WebAuthnID() []byte                         { return []byte(u.key) }
+func (u *webauthnUser) WebAuthnName() string                       { return u.name }
+func (u *webauthnUser) WebAuthnDisplayName() string                { return u.displayName }
 func (u *webauthnUser) WebAuthnCredentials() []webauthn.Credential { return u.credentials }
 
 // rpConfig 是一次 WebAuthn 交互的依赖方配置。

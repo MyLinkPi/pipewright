@@ -52,9 +52,9 @@ type serverDTO struct {
 	Gpu bool `json:"gpu"`
 	// PoolID/PoolName/Kind 是系统管理放置字段(0084 服务器池;kind=pve_node 的机器
 	// 不允许作为构建/部署/应用部署目标,前端目标选择器按 kind 过滤)。
-	PoolID   string `json:"poolId"`
-	PoolName string `json:"poolName"`
-	Kind     string `json:"kind"`
+	PoolID    string `json:"poolId"`
+	PoolName  string `json:"poolName"`
+	Kind      string `json:"kind"`
 	CreatedAt string `json:"createdAt"`
 	UpdatedAt string `json:"updatedAt"`
 }

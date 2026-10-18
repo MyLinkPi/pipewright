@@ -9,11 +9,11 @@ import (
 
 // QueryResult 是 SQL 控制台执行结果:查询语句返回行集,其余返回影响行数。
 type QueryResult struct {
-	IsSelect     bool   `json:"isSelect"`
+	IsSelect     bool     `json:"isSelect"`
 	Columns      []string `json:"columns,omitempty"`
 	Rows         [][]any  `json:"rows,omitempty"`
-	RowsAffected int64  `json:"rowsAffected,omitempty"`
-	Truncated    bool   `json:"truncated,omitempty"` // 结果行超过上限被截断
+	RowsAffected int64    `json:"rowsAffected,omitempty"`
+	Truncated    bool     `json:"truncated,omitempty"` // 结果行超过上限被截断
 }
 
 // selectLeading 报告语句首词是否「查询类」(决定 Query vs Exec 路径;不完美但足够,
