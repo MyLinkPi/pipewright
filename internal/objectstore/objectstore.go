@@ -16,6 +16,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -56,6 +57,12 @@ var (
 	ErrUploadFailed = errors.New("objectstore: upload failed")
 	// ErrBrowseFailed 表示列举(浏览)失败。
 	ErrBrowseFailed = errors.New("objectstore: browse failed")
+	// ErrInvalidBucket 表示新建桶名非法(3-63 位小写字母/数字/连字符,两端为字母或数字)。
+	ErrInvalidBucket = errors.New("objectstore: invalid bucket name")
+	// ErrDuplicateBucket 表示该账户下此桶已登记为一份配置(新建桶不产生重复条目)。
+	ErrDuplicateBucket = errors.New("objectstore: bucket already registered")
+	// ErrBucketCreateFailed 表示服务端建桶失败(桶名被他人占用 / 凭据无建桶权限)。错误体绝不含密钥。
+	ErrBucketCreateFailed = errors.New("objectstore: bucket create failed")
 )
 
 // Provider 是一条对象存储接入配置的领域模型。绝不含 AccessKeySecret 明文,只持 CredentialID 引用;
@@ -164,6 +171,16 @@ type bucketEnsurer interface {
 	EnsureBucket(ctx context.Context) error
 }
 
+// bucketCreator 是 ObjectClient 的可选能力:显式新建一个桶(浏览页「新建桶」,用户主动
+// 发起的动作;区别于自动登记链路的 bucketEnsurer 幂等建桶)。阿里云 OSS 与 RustFS 均实现。
+type bucketCreator interface {
+	CreateBucket(ctx context.Context, bucketName string) error
+}
+
+// bucketNameRe 是新建桶名的合法规则:S3/OSS 交集 —— 3-63 位小写字母/数字/连字符,两端为
+// 字母或数字。不含点号(点会破坏 OSS 泛域名证书校验,也规避 IP 形态桶名)。
+var bucketNameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$`)
+
 // Service 定义对象存储领域对外接口(httpapi 消费 + 流水线节点上传)。
 type Service interface {
 	// List 返回全部对象存储配置(创建时间倒序;无 Secret)。
@@ -194,6 +211,12 @@ type Service interface {
 	// prefix 相对 PathPrefix(浏览根锚定在配置前缀之下,与 Upload 写入位置一致);空 = 前缀根。
 	// 桶内对象可能巨多:永远单页返回(MaxKeys 钳制),绝不聚合全量。Secret 用完即弃,绝不外泄。
 	Browse(ctx context.Context, id, prefix, marker string, maxKeys int) (*ListPageResult, error)
+
+	// CreateBucket 在 sourceID 配置的账户下新建 bucket,并登记为一份新配置(浏览页「新建桶」)。
+	// 新配置复用同账户 Type/Endpoint/AccessKeyId,凭据经 vault 独立重封(删除级联互不影响);
+	// 展示名 name 为空时取桶名。桶名非法 → ErrInvalidBucket;同账户同桶已登记 → ErrDuplicateBucket;
+	// 服务端建桶失败(名被他人占用/无权限) → ErrBucketCreateFailed。Secret 用完即弃,绝不外泄。
+	CreateBucket(ctx context.Context, sourceID, bucket, name string) (*Provider, error)
 }
 
 // ValidType 报告提供商类型是否为受支持枚举。

@@ -195,6 +195,81 @@ func (s *service) Browse(ctx context.Context, id, prefix, marker string, maxKeys
 	return &res, nil
 }
 
+// CreateBucket 在 sourceID 配置的账户下新建 bucket 并登记为一份新配置(浏览页「新建桶」)。
+// 校验(桶名/重复配置)先于触网;凭据从源配置取出后经 vault 独立重封(不共享 credentialId:
+// 删除配置的级联删凭据会误伤同账户其他配置)。半程失败在服务端留下的孤儿桶(桶已建成但
+// 配置没登记)在重试时经归属校验自动接续,不阻断登记。
+func (s *service) CreateBucket(ctx context.Context, sourceID, bucket, name string) (*Provider, error) {
+	p, err := s.store.get(ctx, sourceID)
+	if err != nil {
+		return nil, err
+	}
+	bucket = strings.ToLower(strings.TrimSpace(bucket))
+	if !bucketNameRe.MatchString(bucket) {
+		return nil, ErrInvalidBucket
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		name = bucket
+	}
+	// 同账户已登记过该桶 → 直接拒绝(不产生重复条目;想浏览旧桶在设置页即可管理)。
+	if existing, err := s.findByTypeEndpointBucket(ctx, p.Type, p.Endpoint, bucket); err != nil {
+		return nil, err
+	} else if existing != nil {
+		return nil, ErrDuplicateBucket
+	}
+	if s.vault == nil || s.vaultW == nil {
+		return nil, ErrVaultUnconfigured
+	}
+	secret, err := s.vault.Reveal(p.CredentialID)
+	if err != nil {
+		return nil, mapVaultErr(err)
+	}
+	client, err := s.dial(p.Type, p.Endpoint, p.AccessKeyID, secret, p.Bucket)
+	if err != nil {
+		return nil, fmt.Errorf("%w:%s", ErrBucketCreateFailed, describeClientError(err))
+	}
+	creator, ok := client.(bucketCreator)
+	if !ok {
+		return nil, fmt.Errorf("%w:%s", ErrBucketCreateFailed, "该存储类型不支持新建桶")
+	}
+	cerr := creator.CreateBucket(ctx, bucket)
+	if cerr != nil {
+		if isBucketAlreadyOwned(cerr) {
+			// 服务端明示桶已存在且归当前账户 → 视为建桶成功(重试接续半程失败)。
+			cerr = nil
+		} else if vclient, derr := s.dial(p.Type, p.Endpoint, p.AccessKeyID, secret, bucket); derr == nil {
+			// 「桶已存在」也可能归当前账户所有(部分 S3 实现不区分归属):用新桶名绑一个客户端
+			// 校验访问权——校验通过视为成功(孤儿桶接续);无权限(名被他人占用)保留原错误。
+			if verr := vclient.VerifyBucket(ctx); verr == nil {
+				cerr = nil
+			}
+		}
+	}
+	if cerr != nil {
+		return nil, fmt.Errorf("%w:%s", ErrBucketCreateFailed, describeClientError(cerr))
+	}
+	// 凭据独立重封:同账户多份配置各持各的 credentialId,删除级联互不影响。
+	cred, err := s.vaultW.Create(vault.CreateInput{
+		Name:   "对象存储 · " + name,
+		Type:   vault.TypeObjectStoreSecret,
+		Secret: secret,
+	})
+	if err != nil {
+		return nil, mapVaultErr(err)
+	}
+	np, err := s.Create(ctx, CreateInput{
+		Type: p.Type, Name: name, Endpoint: p.Endpoint, Bucket: bucket,
+		AccessKeyID: p.AccessKeyID, CredentialID: cred.ID,
+	})
+	if err != nil {
+		// 登记失败 → 回滚刚存的凭据,避免悬挂。
+		_ = s.vaultW.Delete(cred.ID)
+		return nil, err
+	}
+	return np, nil
+}
+
 // registerBucketRetryDelay 是自动登记建桶的重试间隔(部署后容器可能尚未就绪);包级变量便于测试置零。
 var registerBucketRetryDelay = 2 * time.Second
 
@@ -287,6 +362,21 @@ func (s *service) findByEndpoint(ctx context.Context, providerType, endpoint str
 	}
 	for i := range list {
 		if list[i].Type == providerType && list[i].Endpoint == endpoint {
+			return &list[i], nil
+		}
+	}
+	return nil, nil
+}
+
+// findByTypeEndpointBucket 按 type+endpoint+bucket 找既有配置(无 → nil):新建桶的
+// 重复登记检查锚点,同账户同桶只允许存在一份配置。
+func (s *service) findByTypeEndpointBucket(ctx context.Context, providerType, endpoint, bucket string) (*Provider, error) {
+	list, err := s.store.list(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for i := range list {
+		if list[i].Type == providerType && list[i].Endpoint == endpoint && list[i].Bucket == bucket {
 			return &list[i], nil
 		}
 	}

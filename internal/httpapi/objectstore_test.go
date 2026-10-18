@@ -257,3 +257,25 @@ func TestObjectStoreBrowseNotFound(t *testing.T) {
 		t.Fatalf("不存在应 404, got %d body=%s", resp.StatusCode, raw)
 	}
 }
+
+// --- POST /{id}/buckets:校验先于触网 —— 非法桶名 400、同账户重复桶 409(均不触网) ---
+
+func TestObjectStoreCreateBucketValidation(t *testing.T) {
+	srv, client, csrf, _, _ := setupObjectStoresAPI(t)
+	id, _, _ := createObjectStorePOST(t, client, srv.URL, csrf,
+		`{"type":"aliyun_oss","name":"prod","endpoint":"oss-cn-hangzhou.aliyuncs.com","bucket":"my-bucket","accessKeyId":"LTAI","secret":"s"}`)
+
+	resp := doJSON(t, client, http.MethodPost, srv.URL+"/api/object-stores/"+id+"/buckets", csrf, `{"bucket":"my-bucket"}`)
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("重复桶应 409, got %d body=%s", resp.StatusCode, raw)
+	}
+
+	resp = doJSON(t, client, http.MethodPost, srv.URL+"/api/object-stores/"+id+"/buckets", csrf, `{"bucket":"Bad_Name"}`)
+	raw, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("非法桶名应 400, got %d body=%s", resp.StatusCode, raw)
+	}
+}
