@@ -75,6 +75,10 @@ func (f *fakeTarget) ExecWithStdin(_ context.Context, id string, cmd []string, _
 }
 func (f *fakeTarget) DockerLogin(context.Context, string, string, string) error { return nil }
 
+// SetPlacement / ListPools 满足 target.Service 接口(0084 服务器池追加);测试桩不落库。
+func (f *fakeTarget) SetPlacement(context.Context, string, string, string) error { return nil }
+func (f *fakeTarget) ListPools(context.Context) ([]*target.ServerPool, error)         { return nil, nil }
+
 // fakeRunner 是 Runner 的测试桩:handle 按 cmd 前缀路由输出;全部命令留痕。
 type fakeRunner struct {
 	mu     sync.Mutex

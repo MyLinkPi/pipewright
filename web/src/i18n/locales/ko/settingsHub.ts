@@ -10,6 +10,7 @@ export default {
   navObjectStorage: '오브젝트 스토리지',
   navDatabases: '데이터베이스',
   navRedis: 'Redis',
+  navPve: 'PVE',
   navHttps: 'HTTPS 접속',
   navAccount: '계정',
   navServers: '서버',

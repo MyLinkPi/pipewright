@@ -92,6 +92,7 @@ const fr: typeof zhCN = {
     ariaBrandHome: 'Accueil Pipewright',
     expand: 'Déployer la barre latérale',
     collapse: 'Réduire la barre latérale',
+    pve: 'PVE',
   },
 
   shell: {

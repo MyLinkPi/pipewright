@@ -66,6 +66,9 @@ function server(id: string, name: string): Server {
     maxBuilds: 0,
     priority: 0,
     gpu: false,
+    poolId: 'default',
+    poolName: 'default',
+    kind: 'standard',
     createdAt: '2026-01-01T00:00:00Z',
     updatedAt: '2026-01-01T00:00:00Z',
   }

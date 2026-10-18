@@ -1,4 +1,7 @@
 export default {
+  pveBadge: 'hôte PVE',
+  pveBadgeHint: 'machine physique du cluster Proxmox VE : gérée automatiquement (pas une cible de build/déploiement)',
+  pveDiscovered: 'cluster PVE « {cluster} » détecté — {n} nœuds enregistrés automatiquement dans un groupe de serveurs dédié',
   title: 'Serveurs',
   desc: 'Enregistrez les serveurs cibles (hôte / port / utilisateur + identifiant SSH) et testez la connectivité. Les clés SSH sont liées par référence uniquement, stockées et récupérées chiffrées via le coffre, et ne sont jamais conservées ni affichées en clair. Le déploiement et les opérations exécutent leurs commandes via cette couche SSH partagée.',
   addServer: 'Enregistrer un serveur',

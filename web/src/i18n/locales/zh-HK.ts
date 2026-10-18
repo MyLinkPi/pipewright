@@ -91,6 +91,7 @@ const zhHK: typeof zhCN = {
     ariaBrandHome: 'Pipewright 首頁',
     expand: '展開側欄',
     collapse: '收合側欄',
+    pve: 'PVE 叢集',
   },
 
   shell: {

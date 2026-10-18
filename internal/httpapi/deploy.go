@@ -11,6 +11,7 @@ import (
 	"github.com/huangchengsir/pipewright/internal/deploy"
 	"github.com/huangchengsir/pipewright/internal/run"
 	"github.com/huangchengsir/pipewright/internal/runner"
+	"github.com/huangchengsir/pipewright/internal/target"
 )
 
 // ---- 冻结 run-detail targets 子 DTO(Story 4.2;填 3-1 留的 null slot) -------
@@ -266,6 +267,9 @@ func writeDeployError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusUnprocessableEntity, "artifact_ambiguous", err.Error())
 	case errors.Is(err, deploy.ErrServerNotFound):
 		writeError(w, http.StatusUnprocessableEntity, "server_not_found", "目标服务器不存在")
+	case errors.Is(err, target.ErrPVENotTarget):
+		writeError(w, http.StatusUnprocessableEntity, "pve_node_not_target",
+			"PVE 集群物理机不允许作为部署目标:"+strings.TrimPrefix(err.Error(), target.ErrPVENotTarget.Error()+": "))
 	case errors.Is(err, deploy.ErrInvalidSelector):
 		writeError(w, http.StatusUnprocessableEntity, "invalid_deploy_selector",
 			"目标选择器语法非法:应为 `server:<id>` 或逗号分隔的标签项(如 linux,arch=arm64)")

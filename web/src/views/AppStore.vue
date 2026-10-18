@@ -62,7 +62,8 @@ async function load(): Promise<void> {
   try {
     const [tpl, sv] = await Promise.all([listAppTemplates(), listServers()])
     templates.value = tpl.items
-    servers.value = sv
+    // PVE 集群物理机不允许作为应用部署目标(0084;域层同样 422 拦截)。
+    servers.value = sv.filter((s) => s.kind !== 'pve_node')
     loadState.value = 'loaded'
   } catch (err) {
     loadState.value = templates.value.length === 0 ? 'error' : 'loaded'

@@ -92,6 +92,7 @@ const ja: typeof zhCN = {
     ariaBrandHome: 'Pipewright ホーム',
     expand: 'サイドバーを展開',
     collapse: 'サイドバーを折りたたむ',
+    pve: 'PVE',
   },
 
   shell: {

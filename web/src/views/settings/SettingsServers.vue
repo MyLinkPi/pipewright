@@ -79,6 +79,9 @@ function labelUsage(name: string): number {
 
 const modalOpen = ref(false)
 const modalMode = ref<'add' | 'edit'>('add')
+// PVE 自动纳管提示(登记 PVE 物理机 → 探测建池 + 兄弟节点登记;0084)。
+const pveBanner = ref('')
+
 const editingId = ref<string | null>(null)
 
 // 跳板链表单行:rid 供 v-for 稳定 key;errors 存每行自己的校验文案。
@@ -477,6 +480,14 @@ async function handleFormSubmit(): Promise<void> {
       }
       const created = await createServer(payload)
       servers.value = [created, ...servers.value]
+      if (created.pveDiscovery) {
+        const d = created.pveDiscovery
+        const sib = d.createdSiblings?.length ?? 0
+        pveBanner.value = t('settingsServers.pveDiscovered', {
+          cluster: d.clusterName, n: (d.attachedCount ?? 0) + sib + 1,
+        })
+        await loadServers() // 兄弟节点已服务端登记,重取列表
+      }
     } else if (editingId.value) {
       const payload: UpdateServerInput = {
         name: form.value.name.trim(),
@@ -618,6 +629,8 @@ async function handleTest(s: Server): Promise<void> {
         <span class="panel-meta" v-if="loadState === 'idle'">{{ t('settingsServers.serverCount', { n: servers.length }) }}</span>
       </div>
 
+      <div v-if="pveBanner" class="banner banner--ok" role="status">🛡 {{ pveBanner }}</div>
+
       <template v-if="loadState === 'loading'">
         <div class="skel-row" v-for="i in 3" :key="i" aria-hidden="true">
           <div class="skel-bar" />
@@ -638,6 +651,7 @@ async function handleTest(s: Server): Promise<void> {
               <span class="cred-tag">🔑 {{ credentialLabel(s.credentialId) }}</span>
               <span v-if="s.labels" class="cred-tag cred-tag--pool" :title="t('settingsServers.poolBadgeHint', { slots: s.maxBuilds || 1, priority: s.priority })">🏗 {{ s.labels }}</span>
               <span v-if="s.gpu" class="cred-tag cred-tag--gpu" :title="t('settingsServers.gpuHint')">🎮 {{ t('settingsServers.gpuBadge') }}</span>
+              <span v-if="s.kind === 'pve_node'" class="cred-tag cred-tag--pve" :title="t('settingsServers.pveBadgeHint')">🛡 {{ t('settingsServers.pveBadge') }} · {{ s.poolName || 'pve' }}</span>
             </div>
             <!-- test result -->
             <div
@@ -1079,6 +1093,10 @@ async function handleTest(s: Server): Promise<void> {
   color: var(--color-warn, #b88600);
   background: color-mix(in oklch, var(--color-warn, #b88600) 12%, transparent);
 }
+.banner--ok {
+  color: var(--color-ok, #2e9e6b);
+  background: color-mix(in oklch, var(--color-ok, #2e9e6b) 10%, transparent);
+}
 .banner-retry {
   margin-left: auto;
   background: none;
@@ -1297,6 +1315,10 @@ async function handleTest(s: Server): Promise<void> {
 .cred-tag--gpu {
   color: var(--color-success, #2e8b57);
   background: var(--color-success-soft, rgba(46, 139, 87, 0.12));
+}
+.cred-tag--pve {
+  color: #7c5cff;
+  background: color-mix(in oklch, #7c5cff 12%, transparent);
 }
 /* GPU 机型勾选:纯监控开关,与「构建机池」字段并列但语义独立。 */
 .gpu-check {

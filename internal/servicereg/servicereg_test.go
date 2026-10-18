@@ -454,6 +454,10 @@ type fakeTarget struct {
 
 // DockerLogin 满足 target.Service 接口(部署私有仓库登录追加);测试桩不触网,直接成功。
 func (f *fakeTarget) DockerLogin(context.Context, string, string, string) error { return nil }
+
+// SetPlacement / ListPools 满足 target.Service 接口(0084 服务器池追加);测试桩不落库。
+func (f *fakeTarget) SetPlacement(context.Context, string, string, string) error { return nil }
+func (f *fakeTarget) ListPools(context.Context) ([]*target.ServerPool, error)         { return nil, nil }
 func (f *fakeTarget) Exec(_ context.Context, serverID string, cmd []string) (*target.ExecResult, error) {
 	f.execCalls = append(f.execCalls, cmd)
 	f.execServers = append(f.execServers, serverID)

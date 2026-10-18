@@ -9,9 +9,11 @@ package deploy
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/huangchengsir/pipewright/internal/run"
+	"github.com/huangchengsir/pipewright/internal/target"
 )
 
 // TestDeploySelectorResolvesTargets 标签圈选:只有打了匹配标签的机器被部署,顺序无关、AND 语义。
@@ -172,5 +174,80 @@ func TestResolveTargetsExplicitMissing(t *testing.T) {
 		RunID: runID, ArtifactID: artID, ServerIDs: []string{srv.ID, "nope"},
 	}); err != ErrServerNotFound {
 		t.Fatalf("want ErrServerNotFound, got %v", err)
+	}
+}
+
+// ---- 0084:PVE 集群物理机不允许作为部署目标 ------------------------------------------
+
+// TestDeployRejectsPVENodeExplicit 显式 serverIDs(回滚历史回放语义)指向 PVE 物理机 →
+// 整次拒绝(ErrPVENotTarget),不部署任何机器、不写 deploy_targets。
+func TestDeployRejectsPVENodeExplicit(t *testing.T) {
+	db := testDB(t)
+	rsvc := run.New(db)
+	tgt := &stubTarget{}
+	pve := seedLabeledServer(t, tgt, "pve-1", "web")
+	pve.Kind = target.KindPVENode
+	std := seedLabeledServer(t, tgt, "std-1", "web")
+	runID, artID := seedSuccessRunWithArtifact(t, db, rsvc, run.ArtifactDist, "dist/shop.tar.gz")
+
+	svc := New(tgt, rsvc)
+	for name, in := range map[string]DeployInput{
+		"仅 PVE 机":        {RunID: runID, ArtifactID: artID, ServerIDs: []string{pve.ID}},
+		"混合(PVE 在前列)": {RunID: runID, ArtifactID: artID, ServerIDs: []string{pve.ID, std.ID}},
+	} {
+		_, err := svc.Deploy(context.Background(), in)
+		if err == nil || !errors.Is(err, target.ErrPVENotTarget) {
+			t.Fatalf("%s: Deploy err = %v, want ErrPVENotTarget", name, err)
+		}
+	}
+}
+
+// TestDeployRejectsPVENodePinned `server:<id>` 钉到 PVE 物理机 → 显式拒绝
+// (区别于「已删除→跳过」:钉 PVE 是配置错误,须暴露)。
+func TestDeployRejectsPVENodePinned(t *testing.T) {
+	db := testDB(t)
+	rsvc := run.New(db)
+	tgt := &stubTarget{}
+	pve := seedLabeledServer(t, tgt, "pve-1", "")
+	pve.Kind = target.KindPVENode
+	runID, artID := seedSuccessRunWithArtifact(t, db, rsvc, run.ArtifactDist, "dist/shop.tar.gz")
+
+	svc := New(tgt, rsvc)
+	_, err := svc.Deploy(context.Background(), DeployInput{
+		RunID: runID, ArtifactID: artID, Selector: "server:" + pve.ID,
+	})
+	if err == nil || !errors.Is(err, target.ErrPVENotTarget) {
+		t.Fatalf("Deploy pinned pve err = %v, want ErrPVENotTarget", err)
+	}
+}
+
+// TestDeployLabelSkipsPVENode 标签圈选静默排除 PVE 物理机:即使打了匹配标签也不命中;
+// 圈内只剩 PVE 机 → 零命中跳过即成功(与标签配错同语义)。
+func TestDeployLabelSkipsPVENode(t *testing.T) {
+	db := testDB(t)
+	rsvc := run.New(db)
+	tgt := &stubTarget{}
+	pve := seedLabeledServer(t, tgt, "pve-1", "web")
+	pve.Kind = target.KindPVENode
+	std := seedLabeledServer(t, tgt, "std-1", "web")
+	runID, artID := seedSuccessRunWithArtifact(t, db, rsvc, run.ArtifactDist, "dist/shop.tar.gz")
+
+	svc := New(tgt, rsvc)
+	res, err := svc.Deploy(context.Background(), DeployInput{RunID: runID, ArtifactID: artID, Selector: "web"})
+	if err != nil {
+		t.Fatalf("Deploy: %v", err)
+	}
+	if len(res) != 1 || res[0].ServerID != std.ID {
+		t.Fatalf("want only std-1 deployed, got %+v", res)
+	}
+
+	// 圈内只剩 PVE 机 → 零命中跳过。
+	if err := tgt.Delete(context.Background(), std.ID); err != nil {
+		t.Fatalf("delete std: %v", err)
+	}
+	delete(tgt.servers, std.ID)
+	res, err = svc.Deploy(context.Background(), DeployInput{RunID: runID, ArtifactID: artID, Selector: "web"})
+	if err != nil || len(res) != 0 {
+		t.Fatalf("pve-only match should skip: res=%v err=%v", res, err)
 	}
 }

@@ -64,7 +64,7 @@ func (s *service) deployStaticForStage(ctx context.Context, runID string, cfg ma
 	}
 
 	// 目标 = 全部网关主机(逐台解析;任一不存在 → 整次拒绝:静态内容必须每台网关就位,
-	// 静默跳过会造成多网关内容不一致)。
+	// 静默跳过会造成多网关内容不一致。目标为 PVE 物理机 → 同样整次拒绝(0084 拦截))。
 	servers := make([]*target.Server, 0, len(spec.ServerIDs))
 	for _, sid := range spec.ServerIDs {
 		srv, gerr := s.targets.Get(ctx, sid)
@@ -73,6 +73,9 @@ func (s *service) deployStaticForStage(ctx context.Context, runID string, cfg ma
 				return nil, ErrServerNotFound
 			}
 			return nil, gerr
+		}
+		if srv.IsPVENode() {
+			return nil, pveNotTargetErr(srv)
 		}
 		servers = append(servers, srv)
 	}

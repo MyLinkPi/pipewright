@@ -28,6 +28,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/huangchengsir/pipewright/internal/target"
 )
 
 // 领域错误。
@@ -84,6 +86,7 @@ type candidate struct {
 	labels    string
 	maxBuilds int
 	priority  int
+	kind      string
 }
 
 // displayName 返回机器的人读显示名:优先「name(host)」,host 空 → name,name 也空 → id 兜底
@@ -200,7 +203,7 @@ func (s *Scheduler) Acquire(ctx context.Context, pipelineID, selector string, lo
 // candidates 查库取候选集:钉死形式按 id 取一台(不存在 → ErrNoRunnerMatch 语义由空集表达);
 // 标签形式全表扫描后 AND 匹配。
 func (s *Scheduler) candidates(ctx context.Context, pinned string, isPinned bool, terms []string) ([]candidate, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, COALESCE(name,''), COALESCE(host,''), COALESCE(labels,''), COALESCE(max_builds,0), COALESCE(priority,0) FROM servers`)
+	rows, err := s.db.QueryContext(ctx, `SELECT id, COALESCE(name,''), COALESCE(host,''), COALESCE(labels,''), COALESCE(max_builds,0), COALESCE(priority,0), COALESCE(kind,'standard') FROM servers`)
 	if err != nil {
 		return nil, err
 	}
@@ -208,8 +211,17 @@ func (s *Scheduler) candidates(ctx context.Context, pinned string, isPinned bool
 	var out []candidate
 	for rows.Next() {
 		var c candidate
-		if err := rows.Scan(&c.id, &c.name, &c.host, &c.labels, &c.maxBuilds, &c.priority); err != nil {
+		if err := rows.Scan(&c.id, &c.name, &c.host, &c.labels, &c.maxBuilds, &c.priority, &c.kind); err != nil {
 			return nil, err
+		}
+		// PVE 集群物理机不参与构建机池(0084):钉死指向 pve_node → 显式报错(配置错误须
+		// 暴露,不与「零命中」混淆);标签圈选 → 静默不作为候选(SetPlacement 已清 labels,
+		// 此处是双保险)。
+		if c.kind == target.KindPVENode {
+			if isPinned && c.id == pinned {
+				return nil, fmt.Errorf("%w: %s", target.ErrPVENotTarget, c.displayName())
+			}
+			continue
 		}
 		if isPinned {
 			if c.id == pinned {
