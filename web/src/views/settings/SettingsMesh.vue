@@ -62,7 +62,7 @@ const form = ref({
   virtualIp: '',
   peers: '',
 })
-const acl = ref({ visibleTo: [] as string[], pushAllowed: [] as string[], triggerAllowed: [] as string[] })
+const acl = ref({ visibleTo: [] as string[], pushAllowed: [] as string[], triggerAllowed: [] as string[], forwardAllowed: [] as string[] })
 const manualPeer = ref({ nodeId: '', name: '', virtualIp: '', apiPort: 8080, publicUrl: '' })
 // EasyTier 二进制状态(就位版本/自动下载进度;来自 overview)。
 const binaries = ref<EasyTierBinaries | null>(null)
@@ -215,6 +215,7 @@ async function load(): Promise<void> {
       visibleTo: aclRes.visibleTo ?? [],
       pushAllowed: aclRes.pushAllowed ?? [],
       triggerAllowed: aclRes.triggerAllowed ?? [],
+      forwardAllowed: aclRes.forwardAllowed ?? [],
     }
     peers.value = peerRes.items ?? []
     state.value = 'ready'
@@ -299,6 +300,7 @@ async function removePeer(nodeId: string): Promise<void> {
     acl.value.visibleTo = acl.value.visibleTo.filter((x) => x !== nodeId)
     acl.value.pushAllowed = acl.value.pushAllowed.filter((x) => x !== nodeId)
     acl.value.triggerAllowed = acl.value.triggerAllowed.filter((x) => x !== nodeId)
+    acl.value.forwardAllowed = acl.value.forwardAllowed.filter((x) => x !== nodeId)
     await Promise.all([saveMeshACL(acl.value), load()])
   } catch (err) {
     actionError.value = err instanceof Error ? err.message : String(err)
@@ -306,7 +308,7 @@ async function removePeer(nodeId: string): Promise<void> {
 }
 
 /** 授权单编辑:点击行内徽标切换某节点的授权。 */
-function toggleACL(list: 'visibleTo' | 'pushAllowed' | 'triggerAllowed', nodeId: string): void {
+function toggleACL(list: 'visibleTo' | 'pushAllowed' | 'triggerAllowed' | 'forwardAllowed', nodeId: string): void {
   const cur = acl.value[list]
   const idx = cur.indexOf(nodeId)
   if (idx >= 0) cur.splice(idx, 1)
@@ -444,7 +446,7 @@ onUnmounted(() => {
       <section class="block">
         <h2>{{ t('cluster.settings.acl') }}</h2>
         <p class="hint">{{ t('cluster.settings.aclHint') }}</p>
-        <div v-for="row in (['visibleTo','pushAllowed','triggerAllowed'] as const)" :key="row" class="acl-row">
+        <div v-for="row in (['visibleTo','pushAllowed','triggerAllowed','forwardAllowed'] as const)" :key="row" class="acl-row">
           <span class="acl-name">{{ t(`cluster.settings.${row}`) }}</span>
           <span class="acl-badges">
             <span v-if="knownPeers.length === 0" class="muted">{{ t('cluster.settings.noPeers') }}</span>

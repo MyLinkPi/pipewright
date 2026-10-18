@@ -40,6 +40,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/huangchengsir/pipewright/internal/mesh"
 	"github.com/huangchengsir/pipewright/internal/target"
 )
 
@@ -59,6 +60,11 @@ const (
 	// UpstreamPort 恒 0、无实例;内容由「网关静态发布」部署节点落到各网关主机的
 	// <StaticRoot>/<服务ID>/ 目录(bind mount 只读挂进网关容器)。
 	UpstreamKindStatic = "static"
+	// UpstreamKindForward 表示转发 mesh 对端环境注册的服务(跨环境服务转发):Upstream/
+	// UpstreamPort 恒空、无本地实例;PeerNodeID/PeerServiceID 指向对端服务。渲染成员 =
+	// 对端网关 IP:端口(经 /api/mesh/servicereg/catalog 拉取,授权由对端 forward ACL
+	// 控制);数据面 = 网关机 /32 路由 + 本机 ip_forward + EasyTier 子网代理。
+	UpstreamKindForward = "forward"
 )
 
 // 领域错误(httpapi 层映射状态码;错误体绝无敏感信息)。
@@ -77,6 +83,9 @@ var (
 	ErrInvalidPath = errors.New("servicereg: invalid service path")
 	// ErrStaticService 表示该操作不适用于静态托管服务(静态服务无实例/上游端口语义)。
 	ErrStaticService = errors.New("servicereg: not supported for static service")
+	// ErrForwardService 表示该操作不适用于转发服务(转发服务无本地实例语义,
+	// 上游来自对端目录)。
+	ErrForwardService = errors.New("servicereg: not supported for forward service")
 	// ErrInvalidBaseDomain 表示基域格式非法。
 	ErrInvalidBaseDomain = errors.New("servicereg: invalid base domain")
 	// ErrInvalidServiceName 表示服务名非法(子域名 label)。
@@ -85,6 +94,8 @@ var (
 	ErrInvalidProtocol = errors.New("servicereg: invalid protocol")
 	// ErrInvalidUpstream 表示上游值非法(容器名字符集 / 地址形态)。
 	ErrInvalidUpstream = errors.New("servicereg: invalid upstream")
+	// ErrInvalidForwardPeer 表示转发入参非法(peer 未登记/目录不可达(未授权)/协议不匹配/服务不存在)。
+	ErrInvalidForwardPeer = errors.New("servicereg: invalid forward peer or service")
 	// ErrInvalidPort 表示端口越界(1..65535)。
 	ErrInvalidPort = errors.New("servicereg: port must be in 1..65535")
 	// ErrTCPPortTaken 表示 TCP 监听端口与其它服务或 80/443 冲突。
@@ -190,10 +201,14 @@ type RegisteredService struct {
 	Name          string // abc;FQDN = Name + "." + BaseDomain
 	Path          string // 子路径('' = 根路径 /);同 FQDN 下多服务靠不同 path 共存
 	Protocol      string // http | tcp
-	UpstreamKind  string // container | address | static
-	Upstream      string // 容器名 或 HOST(IP/FQDN/host.docker.internal);static 恒空
-	UpstreamPort  int    // static 恒 0
+	UpstreamKind  string // container | address | static | forward
+	Upstream      string // 容器名 或 HOST(IP/FQDN/host.docker.internal);static/forward 恒空
+	UpstreamPort  int    // static/forward 恒 0
 	TCPListenPort int    // tcp 协议:网关监听端口;http 协议恒 0
+	// PeerNodeID / PeerServiceID 是 forward 专用的对端引用(mesh 节点 id + 对端服务 id);
+	// 其余类型恒空。
+	PeerNodeID    string
+	PeerServiceID string
 	// StripPathPrefix 反代是否剥离 location 前缀再转发(默认 false = 原样透传完整路径);
 	// 仅 http 反代形态有效,static/tcp 恒 false。
 	StripPathPrefix bool
@@ -216,6 +231,8 @@ type GatewayStatus struct {
 	LastApplyAt     time.Time
 	LastApplyError  string
 	LastApplyErrors map[string]string // 逐台收敛错误(serverID → 文案,仅失败项)
+	// Forward 是跨环境转发数据面状态(/32 路由对账 + ip_forward + 冲突告警)。
+	Forward *ForwardStatus
 }
 
 // GatewayServerStatus 是单台网关主机的容器探测快照。
@@ -253,6 +270,9 @@ type CreateServiceInput struct {
 	Upstream      string
 	UpstreamPort  int
 	TCPListenPort int
+	// PeerNodeID / PeerServiceID 是 forward 专用(对端 mesh 节点 id + 对端服务 id)。
+	PeerNodeID    string
+	PeerServiceID string
 	// StripPathPrefix 反代剥离 location 前缀(默认保留前缀原样透传)。
 	StripPathPrefix bool
 }
@@ -266,6 +286,8 @@ type UpdateServiceInput struct {
 	Upstream        *string
 	UpstreamPort    *int
 	TCPListenPort   *int
+	PeerNodeID      *string
+	PeerServiceID   *string
 	StripPathPrefix *bool
 }
 
@@ -338,6 +360,13 @@ type Service interface {
 	RemoveGateway(ctx context.Context) error
 	// Apply 手动全量收敛(渲染 → 校验 → 下发 → 热加载)。
 	Apply(ctx context.Context) error
+
+	// MeshCatalog 返回本端服务目录(授权 mesh 对端拉取;/api/mesh/servicereg/catalog 载荷)。
+	MeshCatalog(ctx context.Context) (*mesh.ServiceCatalog, error)
+	// ForwardPeers 返回可用作转发来源的 mesh 对端 + 各自目录可达性(服务表单级联下拉)。
+	ForwardPeers(ctx context.Context) ([]ForwardPeerInfo, error)
+	// ReconcileForwardRoutes 对账网关机上的跨环境 /32 路由(发现循环/apply 触发;幂等)。
+	ReconcileForwardRoutes(ctx context.Context)
 }
 
 // ServiceWithDomain 是服务 + 所属基域展示名(列表用);InstanceCount 为该服务实例总数
@@ -361,6 +390,9 @@ type service struct {
 	// serverAddr 把 serverID 解析为网关可达地址(IP;主机名经控制端 DNS 解析后写入 upstream,
 	// 避免 nginx reload 时静态解析失败)。main.go 注入;nil(单测)→ 实例全部跳过渲染。
 	serverAddr func(ctx context.Context, serverID string) (string, error)
+	// fwd 聚跨环境转发(mesh)运行态:对端目录缓存 + 注入的 peer 清单/目录拉取器 + 路由
+	// 对账快照(见 forward.go)。
+	fwd forwardRuntime
 }
 
 // New 构造 Service。tg 复用已装配的 target.Service(SSH + docker);vault 用于证书密文存储
@@ -373,6 +405,20 @@ func New(db *sql.DB, tg target.Service, vault SecretSealer) *service {
 // 主机名再经 net.LookupHost 解析为 IP)。集群反代的地基:upstream 成员必须可静态解析。
 func (s *service) SetServerAddrResolver(f func(ctx context.Context, serverID string) (string, error)) {
 	s.serverAddr = f
+}
+
+// SetMeshForward 注入跨环境转发(mesh)依赖(main.go 晚绑,防包间依赖):
+// listPeers 返回已知 mesh 对端(服务表单下拉);fetchCatalog 拉取某对端服务目录
+// (mesh 签名客户端,403 = 未授权)。两者任一为 nil → 转发功能优雅关闭(校验拒绝创建)。
+func (s *service) SetMeshForward(
+	listPeers func(ctx context.Context) ([]ForwardPeer, error),
+	fetchCatalog func(ctx context.Context, nodeID string) (*mesh.ServiceCatalog, error),
+) {
+	s.fwd.mu.Lock()
+	s.fwd.listPeers = listPeers
+	s.fwd.fetchCatalog = fetchCatalog
+	s.fwd.cache = nil
+	s.fwd.mu.Unlock()
 }
 
 // ---------- 设置 ----------
@@ -625,6 +671,8 @@ func (s *service) UpdateService(ctx context.Context, id string, in UpdateService
 		Upstream:        cur.Upstream,
 		UpstreamPort:    cur.UpstreamPort,
 		TCPListenPort:   cur.TCPListenPort,
+		PeerNodeID:      cur.PeerNodeID,
+		PeerServiceID:   cur.PeerServiceID,
 		StripPathPrefix: cur.StripPathPrefix,
 	}
 	if in.Name != nil {
@@ -647,6 +695,12 @@ func (s *service) UpdateService(ctx context.Context, id string, in UpdateService
 	}
 	if in.TCPListenPort != nil {
 		ci.TCPListenPort = *in.TCPListenPort
+	}
+	if in.PeerNodeID != nil {
+		ci.PeerNodeID = *in.PeerNodeID
+	}
+	if in.PeerServiceID != nil {
+		ci.PeerServiceID = *in.PeerServiceID
 	}
 	if in.StripPathPrefix != nil {
 		ci.StripPathPrefix = *in.StripPathPrefix
@@ -711,10 +765,41 @@ func (s *service) prepareService(ctx context.Context, selfID string, in CreateSe
 	if in.Protocol != ProtocolHTTP && in.Protocol != ProtocolTCP {
 		return nil, ErrInvalidProtocol
 	}
-	if in.UpstreamKind != UpstreamKindContainer && in.UpstreamKind != UpstreamKindAddress && in.UpstreamKind != UpstreamKindStatic {
+	if in.UpstreamKind != UpstreamKindContainer && in.UpstreamKind != UpstreamKindAddress &&
+		in.UpstreamKind != UpstreamKindStatic && in.UpstreamKind != UpstreamKindForward {
 		return nil, ErrInvalidUpstream
 	}
-	if in.UpstreamKind == UpstreamKindStatic {
+	in.PeerNodeID = strings.TrimSpace(in.PeerNodeID)
+	in.PeerServiceID = strings.TrimSpace(in.PeerServiceID)
+	if in.UpstreamKind == UpstreamKindForward {
+		// 转发远端:无本地上游/实例语义(Upstream 归零);peer 必须已登记且目录可拉取
+		// (= 对端 forward ACL 已授权),对端服务须存在且协议与本端声明一致。
+		in.Upstream = ""
+		in.UpstreamPort = 0
+		if in.PeerNodeID == "" || in.PeerServiceID == "" {
+			return nil, ErrInvalidForwardPeer
+		}
+		var peerSvc *mesh.CatalogService
+		cat, cerr := s.peerCatalog(ctx, in.PeerNodeID)
+		if cerr == nil {
+			for i := range cat.Services {
+				if cat.Services[i].ServiceID == in.PeerServiceID {
+					peerSvc = &cat.Services[i]
+					break
+				}
+			}
+		}
+		if peerSvc == nil || peerSvc.Protocol != in.Protocol {
+			return nil, ErrInvalidForwardPeer
+		}
+		if in.Protocol == ProtocolTCP {
+			if in.TCPListenPort < 1 || in.TCPListenPort > 65535 {
+				return nil, ErrInvalidPort
+			}
+		} else {
+			in.TCPListenPort = 0
+		}
+	} else if in.UpstreamKind == UpstreamKindStatic {
 		// 静态托管:仅 http;无上游/端口/前缀语义,统一归零(存库形态唯一)。
 		if in.Protocol != ProtocolHTTP {
 			return nil, ErrInvalidProtocol
@@ -800,6 +885,8 @@ func (s *service) prepareService(ctx context.Context, selfID string, in CreateSe
 		Upstream:        in.Upstream,
 		UpstreamPort:    in.UpstreamPort,
 		TCPListenPort:   in.TCPListenPort,
+		PeerNodeID:      in.PeerNodeID,
+		PeerServiceID:   in.PeerServiceID,
 		StripPathPrefix: in.StripPathPrefix,
 		Enabled:         true,
 		CreatedAt:       now,
@@ -853,6 +940,8 @@ func (s *service) GatewayStatus(ctx context.Context) (*GatewayStatus, error) {
 		g.Image = g.Servers[0].Image
 		g.Ports = g.Servers[0].Ports
 	}
+	fwd := s.forwardStatusSnapshot()
+	g.Forward = &fwd
 	return g, nil
 }
 
@@ -899,6 +988,8 @@ func (s *service) applyBestEffort(ctx context.Context) error {
 		return nil
 	}
 	serverErrs := s.applyWith(ctx, st)
+	// 转发路由随 apply 对账一次(发现循环节拍兜底;无 forward 服务时零开销)。
+	s.ReconcileForwardRoutes(ctx)
 	if len(serverErrs) > 0 {
 		msg := aggregateApplyErrors(st.ServerIDs, serverErrs)
 		_ = s.store.setApplyResult(ctx, time.Now().UTC(), msg, serverErrs)
@@ -918,6 +1009,8 @@ func (s *service) applyFull(ctx context.Context) error {
 		return ErrNoGateway
 	}
 	serverErrs := s.applyWith(ctx, st)
+	// 转发路由随 apply 对账一次(发现循环节拍兜底;无 forward 服务时零开销)。
+	s.ReconcileForwardRoutes(ctx)
 	if len(serverErrs) > 0 {
 		msg := aggregateApplyErrors(st.ServerIDs, serverErrs)
 		_ = s.store.setApplyResult(ctx, time.Now().UTC(), msg, serverErrs)
@@ -959,7 +1052,9 @@ func (s *service) applyWith(ctx context.Context, st *Settings) map[string]string
 	// 实例归属服务器的可达地址(逐台网关反代集群实例的地基)。解析失败/遗留行(server_id='')
 	// 的实例跳过渲染(渲染注释标注),故障实例交给 upstream max_fails 熔断,不阻断 apply。
 	serverAddr, skipped := s.resolveInstanceAddrs(ctx, allInstances)
-	conf := renderNginxConf(domains, enabled, allInstances, serverAddr, skipped)
+	// forward 服务:拉取引用对端的服务目录 → 解析渲染成员(目录不可达/IP 冲突 → 503 维护态)。
+	plans, conflicts := s.buildForwardPlans(ctx, enabled)
+	conf := renderNginxConf(domains, enabled, allInstances, serverAddr, skipped, plans, conflicts)
 
 	serverErrs := make(map[string]string)
 	for _, sid := range st.ServerIDs {

@@ -32,6 +32,7 @@ export interface MeshACL {
   visibleTo: string[]
   pushAllowed: string[]
   triggerAllowed: string[]
+  forwardAllowed: string[]
 }
 
 export interface MeshPeer {

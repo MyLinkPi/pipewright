@@ -24,7 +24,7 @@ import (
 // --- 渲染单测(纯函数) ----------------------------------------------------
 
 func TestRenderNginxConfEmpty(t *testing.T) {
-	out := renderNginxConf(nil, nil, nil, nil, 0)
+	out := renderNginxConf(nil, nil, nil, nil, 0, nil, nil)
 	if strings.Contains(out, "ssl_certificate") || strings.Contains(out, "stream {") {
 		t.Fatalf("空输入不应渲染证书/流块:\n%s", out)
 	}
@@ -41,7 +41,7 @@ func TestRenderNginxConfHTTPS(t *testing.T) {
 	svc := RegisteredService{ID: "s1", Name: "abc", DomainID: "d1", Protocol: ProtocolHTTP,
 		UpstreamKind: UpstreamKindContainer, Upstream: "web", UpstreamPort: 8080, Enabled: true}
 	inst := Instance{ID: "i1", ServiceID: "s1", ServerID: "sv1", Container: "web", Port: 8080, HostPort: 20001, Attached: true}
-	out := renderNginxConf([]Domain{dom}, []RegisteredService{svc}, []Instance{inst}, map[string]string{"sv1": "10.0.0.5"}, 0)
+	out := renderNginxConf([]Domain{dom}, []RegisteredService{svc}, []Instance{inst}, map[string]string{"sv1": "10.0.0.5"}, 0, nil, nil)
 
 	mustContain := []string{
 		"server_name abc.efg.com;",
@@ -90,7 +90,7 @@ func TestRenderNginxConfMultiInstance(t *testing.T) {
 		{ID: "i6", ServiceID: "s1", ServerID: "sv2", Container: "abc-6", Port: 8080, Attached: true}, // 容器实例无宿主端口 → 跳过(死成员)
 	}
 	addrs := map[string]string{"sv1": "10.0.0.1", "sv2": "10.0.0.2"}
-	out := renderNginxConf([]Domain{dom}, []RegisteredService{svc}, insts, addrs, 3)
+	out := renderNginxConf([]Domain{dom}, []RegisteredService{svc}, insts, addrs, 3, nil, nil)
 	if !strings.Contains(out, "upstream pw_abc {") {
 		t.Fatalf("应渲染 upstream 块:\n%s", out)
 	}
@@ -126,7 +126,7 @@ func TestRenderNginxConfAllInstancesDetached503(t *testing.T) {
 	dom := Domain{ID: "d1", BaseDomain: "efg.com", HasCert: false}
 	svc := RegisteredService{ID: "s1", Name: "abc", DomainID: "d1", Protocol: ProtocolHTTP,
 		UpstreamKind: UpstreamKindContainer, Upstream: "abc-1", UpstreamPort: 8080, Enabled: true}
-	out := renderNginxConf([]Domain{dom}, []RegisteredService{svc}, nil, nil, 0)
+	out := renderNginxConf([]Domain{dom}, []RegisteredService{svc}, nil, nil, 0, nil, nil)
 	if !strings.Contains(out, "server_name abc.efg.com;") {
 		t.Fatalf("server 块应保留:\n%s", out)
 	}
@@ -146,7 +146,7 @@ func TestRenderNginxConfAddressServiceWithInstances(t *testing.T) {
 	plain := RegisteredService{ID: "s2", Name: "plain", DomainID: "d1", Protocol: ProtocolHTTP,
 		UpstreamKind: UpstreamKindAddress, Upstream: "10.0.0.9", UpstreamPort: 3001, Enabled: true}
 	insts := []Instance{{ID: "i1", ServiceID: "s1", ServerID: "app1", Container: "", Port: 8080, HostPort: 8080, Attached: true}}
-	out := renderNginxConf([]Domain{dom}, []RegisteredService{svc, plain}, insts, map[string]string{"app1": "10.0.0.7"}, 0)
+	out := renderNginxConf([]Domain{dom}, []RegisteredService{svc, plain}, insts, map[string]string{"app1": "10.0.0.7"}, 0, nil, nil)
 	if !strings.Contains(out, "upstream pw_abc {") || !strings.Contains(out, "server 10.0.0.7:8080 max_fails=2 fail_timeout=10s;") {
 		t.Fatalf("非容器实例应进集群实例池:\n%s", out)
 	}
@@ -165,7 +165,7 @@ func TestRenderNginxConfAddressEmptyUpstreamMaintenance(t *testing.T) {
 	dom := Domain{ID: "d1", BaseDomain: "efg.com", HasCert: false}
 	svc := RegisteredService{ID: "s1", Name: "abc", DomainID: "d1", Protocol: ProtocolHTTP,
 		UpstreamKind: UpstreamKindAddress, Upstream: "", UpstreamPort: 8080, Enabled: true}
-	out := renderNginxConf([]Domain{dom}, []RegisteredService{svc}, nil, nil, 0)
+	out := renderNginxConf([]Domain{dom}, []RegisteredService{svc}, nil, nil, 0, nil, nil)
 	if !strings.Contains(out, "return 503;") {
 		t.Fatalf("空上游 address 服务应维护态:\n%s", out)
 	}
@@ -174,7 +174,7 @@ func TestRenderNginxConfAddressEmptyUpstreamMaintenance(t *testing.T) {
 	}
 	// 有 attached 实例后恢复正常反代(非容器实例 HostPort=0 继承 Port)。
 	inst := Instance{ID: "i1", ServiceID: "s1", ServerID: "app1", Port: 8080, Attached: true}
-	out = renderNginxConf([]Domain{dom}, []RegisteredService{svc}, []Instance{inst}, map[string]string{"app1": "10.0.0.7"}, 0)
+	out = renderNginxConf([]Domain{dom}, []RegisteredService{svc}, []Instance{inst}, map[string]string{"app1": "10.0.0.7"}, 0, nil, nil)
 	if !strings.Contains(out, "server 10.0.0.7:8080 max_fails=2 fail_timeout=10s;") {
 		t.Fatalf("实例上线后应进实例池:\n%s", out)
 	}
@@ -187,14 +187,14 @@ func TestRenderNginxConfIPv6Bracketed(t *testing.T) {
 	svc := RegisteredService{ID: "s1", Name: "abc", DomainID: "d1", Protocol: ProtocolHTTP,
 		UpstreamKind: UpstreamKindContainer, Upstream: "web", UpstreamPort: 8080, Enabled: true}
 	inst := Instance{ID: "i1", ServiceID: "s1", ServerID: "sv6", Container: "web", HostPort: 20001, Attached: true}
-	out := renderNginxConf([]Domain{dom}, []RegisteredService{svc}, []Instance{inst}, map[string]string{"sv6": "fd00::1"}, 0)
+	out := renderNginxConf([]Domain{dom}, []RegisteredService{svc}, []Instance{inst}, map[string]string{"sv6": "fd00::1"}, 0, nil, nil)
 	if !strings.Contains(out, "server [fd00::1]:20001 max_fails=2 fail_timeout=10s;") {
 		t.Fatalf("IPv6 实例成员应加方括号:\n%s", out)
 	}
 	// address 形态的 IPv6 上游同样加方括号。
 	v6 := RegisteredService{ID: "s2", Name: "v6", DomainID: "d1", Protocol: ProtocolHTTP,
 		UpstreamKind: UpstreamKindAddress, Upstream: "fd00::9", UpstreamPort: 3000, Enabled: true}
-	out = renderNginxConf([]Domain{dom}, []RegisteredService{v6}, nil, nil, 0)
+	out = renderNginxConf([]Domain{dom}, []RegisteredService{v6}, nil, nil, 0, nil, nil)
 	if !strings.Contains(out, "set $up_v6 [fd00::9]:3000;") {
 		t.Fatalf("IPv6 上游应加方括号:\n%s", out)
 	}
@@ -204,7 +204,7 @@ func TestRenderNginxConfHTTPOnlyNoCert(t *testing.T) {
 	dom := Domain{ID: "d1", BaseDomain: "efg.com", HasCert: false}
 	svc := RegisteredService{Name: "abc", DomainID: "d1", Protocol: ProtocolHTTP,
 		UpstreamKind: UpstreamKindAddress, Upstream: "10.0.0.5", UpstreamPort: 3000, Enabled: true}
-	out := renderNginxConf([]Domain{dom}, []RegisteredService{svc}, nil, nil, 0)
+	out := renderNginxConf([]Domain{dom}, []RegisteredService{svc}, nil, nil, 0, nil, nil)
 	if strings.Contains(out, "listen 443") {
 		t.Fatalf("无证书基域不应渲染 443:\n%s", out)
 	}
@@ -224,7 +224,7 @@ func TestRenderNginxConfTCP(t *testing.T) {
 	svc := RegisteredService{Name: "my-db", DomainID: "d1", Protocol: ProtocolTCP,
 		UpstreamKind: UpstreamKindContainer, Upstream: "mysql", UpstreamPort: 3306,
 		TCPListenPort: 13306, Enabled: true}
-	out := renderNginxConf([]Domain{dom}, []RegisteredService{svc}, nil, nil, 0)
+	out := renderNginxConf([]Domain{dom}, []RegisteredService{svc}, nil, nil, 0, nil, nil)
 	for _, want := range []string{
 		"load_module /usr/lib/nginx/modules/ngx_stream_module.so;",
 		"stream {",
@@ -251,11 +251,11 @@ func TestRenderNginxConfSortedDeterministic(t *testing.T) {
 	}
 	addrs := map[string]string{"sv1": "10.0.0.1", "sv2": "10.0.0.2"}
 	services := []RegisteredService{mk("zeta", "d2"), mk("alpha", "d1")}
-	a := renderNginxConf([]Domain{dom1, dom2}, services, insts, addrs, 0)
+	a := renderNginxConf([]Domain{dom1, dom2}, services, insts, addrs, 0, nil, nil)
 	// 输入顺序无关:打乱后重渲染结果应逐字节一致。
 	services2 := []RegisteredService{mk("alpha", "d1"), mk("zeta", "d2")}
 	insts2 := []Instance{insts[1], insts[0]}
-	b := renderNginxConf([]Domain{dom2, dom1}, services2, insts2, addrs, 0)
+	b := renderNginxConf([]Domain{dom2, dom1}, services2, insts2, addrs, 0, nil, nil)
 	if a != b {
 		t.Fatalf("渲染应确定性(输入顺序无关):\n--- a ---\n%s\n--- b ---\n%s", a, b)
 	}
@@ -270,7 +270,7 @@ func TestRenderNginxConfDisabledSkipped(t *testing.T) {
 	dom := Domain{ID: "d1", BaseDomain: "efg.com", HasCert: true}
 	svc := RegisteredService{Name: "abc", DomainID: "d1", Protocol: ProtocolHTTP,
 		UpstreamKind: UpstreamKindContainer, Upstream: "web", UpstreamPort: 8080, Enabled: false}
-	out := renderNginxConf([]Domain{dom}, []RegisteredService{svc}, nil, nil, 0)
+	out := renderNginxConf([]Domain{dom}, []RegisteredService{svc}, nil, nil, 0, nil, nil)
 	if strings.Contains(out, "abc.efg.com") {
 		t.Fatalf("禁用服务不应渲染:\n%s", out)
 	}
@@ -1522,7 +1522,7 @@ func TestRenderNginxConfPathMergeAndStatic(t *testing.T) {
 		UpstreamKind: UpstreamKindContainer, Upstream: "app-1", UpstreamPort: 8080,
 		StripPathPrefix: true, Enabled: true}
 	inst := Instance{ID: "i1", ServiceID: "s-api", ServerID: "sv1", Container: "app-1", Port: 8080, HostPort: 20001, Attached: true}
-	out := renderNginxConf([]Domain{dom}, []RegisteredService{web, api}, []Instance{inst}, map[string]string{"sv1": "10.0.0.5"}, 0)
+	out := renderNginxConf([]Domain{dom}, []RegisteredService{web, api}, []Instance{inst}, map[string]string{"sv1": "10.0.0.5"}, 0, nil, nil)
 
 	for _, want := range []string{
 		// 同 FQDN 合并:server_name 只出现一次;两个 location 共存。
@@ -1557,7 +1557,7 @@ func TestRenderNginxConfPathKeepPrefix(t *testing.T) {
 		UpstreamKind: UpstreamKindStatic, Enabled: true}
 	api := RegisteredService{ID: "s-api", Name: "app", Path: "/api", DomainID: "d1", Protocol: ProtocolHTTP,
 		UpstreamKind: UpstreamKindAddress, Upstream: "10.0.0.9", UpstreamPort: 9000, Enabled: true}
-	out := renderNginxConf([]Domain{dom}, []RegisteredService{admin, api}, nil, nil, 0)
+	out := renderNginxConf([]Domain{dom}, []RegisteredService{admin, api}, nil, nil, 0, nil, nil)
 
 	for _, want := range []string{
 		"location /admin {",

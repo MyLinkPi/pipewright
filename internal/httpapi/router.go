@@ -1100,6 +1100,8 @@ func New(webFS fs.FS, authn auth.Authenticator, opts ...Option) http.Handler {
 		ar.Post("/servicereg/domains", makeCreateServiceRegDomainHandler(sr, aud))
 		ar.Delete("/servicereg/domains/{id}", makeDeleteServiceRegDomainHandler(sr, aud))
 		ar.Get("/servicereg/services", makeListServiceRegServicesHandler(sr))
+		// 跨环境转发:可用对端 + 服务目录(服务表单「转发其他环境」级联下拉)。
+		ar.Get("/servicereg/forward/peers", makeListServiceRegForwardPeersHandler(sr))
 		ar.Post("/servicereg/services", makeCreateServiceRegServiceHandler(sr, aud))
 		ar.Post("/servicereg/services/ensure", makeEnsureServiceRegServiceHandler(sr, aud))
 		ar.Put("/servicereg/services/{id}", makeUpdateServiceRegServiceHandler(sr, aud))

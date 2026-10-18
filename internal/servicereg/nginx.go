@@ -83,7 +83,11 @@ const nginxBootstrapScript = `conf=/etc/pipewright/nginx.conf; mkdir -p /etc/pip
 // 全部 attached 且地址可解析的实例(服务器地址:宿主端口)—— 各网关主机渲染**同一份**配置,
 // 本机没有实例的服务同样代理远端。skipped 是被跳过的实例数(遗留行/地址解析失败),写进
 // 头部注释便于诊断;故障实例交给 max_fails 熔断,不阻断渲染。
-func renderNginxConf(domains []Domain, services []RegisteredService, instances []Instance, serverAddr map[string]string, skipped int) string {
+//
+// forward(跨环境转发):forward 服务无本地实例,upstream 成员来自 forwardPlans(对端
+// 网关 IP:端口,经 mesh 服务目录解析);无规划/无可渲染成员 → 503 维护态。forwardConflicts
+// 是网关 IP 冲突告警(渲染进头部注释,便于运维从配置文件侧定位)。
+func renderNginxConf(domains []Domain, services []RegisteredService, instances []Instance, serverAddr map[string]string, skipped int, forwardPlans map[string]ForwardPlan, forwardConflicts []string) string {
 	// 基域索引(domain_id → Domain)。
 	byID := make(map[string]Domain, len(domains))
 	for _, d := range domains {
@@ -156,13 +160,17 @@ func renderNginxConf(domains []Domain, services []RegisteredService, instances [
 	// 有可渲染成员的 http 反代服务统一走 upstream 块(容器与非容器实例一视同仁);
 	// 声明了实例但无可渲染成员(全摘除/地址不可解析)→ 503 维护态;
 	// 无实例声明的 address 服务 → 保留单上游变量 + resolver 动态解析(人工 address 模式);
-	// static 服务 → 网关直接托管静态文件(location alias),无上游/实例语义。
+	// static 服务 → 网关直接托管静态文件(location alias),无上游/实例语义;
+	// forward 服务 → 成员来自对端目录规划(有成员走 upstream,无成员/冲突 → 503 维护态)。
 	needsUpstream := func(s httpSite) bool {
 		return s.svc.UpstreamKind != UpstreamKindStatic && len(instByService[s.svc.ID]) > 0
 	}
 	maintenance := func(s httpSite) bool {
 		if s.svc.UpstreamKind == UpstreamKindStatic {
 			return false
+		}
+		if s.svc.UpstreamKind == UpstreamKindForward {
+			return true // 无规划/无可渲染成员(目录不可达/对端已删/IP 冲突)→ 维护态
 		}
 		// 容器服务恒为部署托管(无实例即维护态);address 服务声明了实例或上游为空
 		// (部署托管待首批实例上线)时同样进入维护态;仅「无实例且配了静态上游」的
@@ -179,12 +187,23 @@ func renderNginxConf(domains []Domain, services []RegisteredService, instances [
 		for _, st := range g.sites {
 			r := &siteRender{}
 			if st.svc.UpstreamKind != UpstreamKindStatic {
-				r.useUpstream = needsUpstream(st)
-				r.maintenance = maintenance(st)
-				if r.useUpstream {
-					r.upsName = upAlloc.alloc("pw_" + nginxNameID(st.svc.Name, st.svc.Path))
-				} else if !r.maintenance {
-					r.varName = varAlloc.alloc("up_" + nginxNameID(st.svc.Name, st.svc.Path))
+				if st.svc.UpstreamKind == UpstreamKindForward {
+					if p, ok := forwardPlans[st.svc.ID]; ok && len(p.Members) > 0 {
+						r.useUpstream = true
+						r.upsName = upAlloc.alloc("pw_" + nginxNameID(st.svc.Name, st.svc.Path))
+						plan := p
+						r.plan = &plan
+					} else {
+						r.maintenance = true
+					}
+				} else {
+					r.useUpstream = needsUpstream(st)
+					r.maintenance = maintenance(st)
+					if r.useUpstream {
+						r.upsName = upAlloc.alloc("pw_" + nginxNameID(st.svc.Name, st.svc.Path))
+					} else if !r.maintenance {
+						r.varName = varAlloc.alloc("up_" + nginxNameID(st.svc.Name, st.svc.Path))
+					}
 				}
 			}
 			renders[st.svc.ID] = r
@@ -195,6 +214,10 @@ func renderNginxConf(domains []Domain, services []RegisteredService, instances [
 	b.WriteString("# 由 Pipewright 自动生成,请勿手改。\n")
 	if skipped > 0 {
 		b.WriteString("# 注意:有 " + strconv.Itoa(skipped) + " 个实例因遗留数据(待部署认领)或服务器地址解析失败未渲染。\n")
+	}
+	if len(forwardConflicts) > 0 {
+		b.WriteString("# 注意:跨环境转发存在网关 IP 冲突(相关对端已降级为 503 维护态):" +
+			strings.Join(forwardConflicts, ";") + "\n")
 	}
 	if len(tcps) > 0 {
 		b.WriteString("load_module " + streamModulePath + ";\n")
@@ -223,11 +246,24 @@ func renderNginxConf(domains []Domain, services []RegisteredService, instances [
 	b.WriteString("        ''      close;\n")
 	b.WriteString("    }\n\n")
 
-	// upstream 块(全部有实例成员的 http 反代服务;按 FQDN+path 升序确定性输出)。
+	// upstream 块(有实例成员的 http 反代服务与 forward 服务;按 FQDN+path 升序确定性输出)。
 	for _, g := range groups {
 		for _, st := range g.sites {
 			r := renders[st.svc.ID]
 			if !r.useUpstream {
+				continue
+			}
+			if r.plan != nil {
+				// forward:成员 = 对端网关 IP:端口(mesh 服务目录; Secure 时对端为 https)。
+				b.WriteString("    # 服务 " + st.fqdn + st.svc.Path + " 跨环境转发 → 对端 " +
+					r.plan.HostHeader + "(成员 = 对端网关主机)。\n")
+				b.WriteString("    upstream " + r.upsName + " {\n")
+				for _, ip := range r.plan.Members {
+					b.WriteString("        server " + net.JoinHostPort(ip, strconv.Itoa(r.plan.Port)) +
+						" max_fails=2 fail_timeout=10s;\n")
+				}
+				b.WriteString("        keepalive 32;\n")
+				b.WriteString("    }\n\n")
 				continue
 			}
 			b.WriteString("    # 服务 " + st.fqdn + st.svc.Path + " 的集群实例池(成员 = 服务器地址:宿主端口,经 reload 原子增减)。\n")
@@ -288,11 +324,41 @@ func renderNginxConf(domains []Domain, services []RegisteredService, instances [
 	if len(tcps) > 0 {
 		b.WriteString("\nstream {\n")
 		b.WriteString("    resolver 127.0.0.11 valid=10s;\n\n")
+		// forward tcp 服务的 upstream 块成员 = 对端网关 IP:对端监听端口(静态 IP);
+		// 端口升序遍历保证命名分配确定。
+		streamAlloc := newNameAlloc()
+		streamFwd := map[string]string{} // svc.ID → upstream 名
+		for _, svc := range tcps {
+			if svc.UpstreamKind != UpstreamKindForward {
+				continue
+			}
+			p, ok := forwardPlans[svc.ID]
+			if !ok || len(p.Members) == 0 || p.Port <= 0 {
+				continue
+			}
+			name := streamAlloc.alloc("pwf_" + nginxNameID(svc.Name, ""))
+			streamFwd[svc.ID] = name
+			b.WriteString("    # 服务 " + svc.Name + " 跨环境转发 → 对端 TCP " + strconv.Itoa(p.Port) + "(成员 = 对端网关主机)。\n")
+			b.WriteString("    upstream " + name + " {\n")
+			for _, ip := range p.Members {
+				b.WriteString("        server " + net.JoinHostPort(ip, strconv.Itoa(p.Port)) +
+					" max_fails=2 fail_timeout=10s;\n")
+			}
+			b.WriteString("    }\n\n")
+		}
 		for _, svc := range tcps {
 			b.WriteString("    server {\n")
 			b.WriteString("        listen " + strconv.Itoa(svc.TCPListenPort) + ";\n")
-			b.WriteString("        set " + nginxVarName(svc.Name) + " " + upstreamTarget(svc) + ";\n")
-			b.WriteString("        proxy_pass " + nginxVarName(svc.Name) + ";\n")
+			if name, ok := streamFwd[svc.ID]; ok {
+				b.WriteString("        proxy_pass " + name + ";\n")
+			} else if svc.UpstreamKind == UpstreamKindForward {
+				// 目录不可达/对端已删/IP 冲突:stream 无 503 语义,转发到本机拒绝端口(连接拒绝即维护态)。
+				b.WriteString("        # 跨环境转发暂不可用(目录不可达/冲突),连接将被拒绝。\n")
+				b.WriteString("        proxy_pass 127.0.0.1:1;\n")
+			} else {
+				b.WriteString("        set " + nginxVarName(svc.Name) + " " + upstreamTarget(svc) + ";\n")
+				b.WriteString("        proxy_pass " + nginxVarName(svc.Name) + ";\n")
+			}
 			b.WriteString("    }\n\n")
 		}
 		b.WriteString("}\n")
@@ -319,10 +385,12 @@ type httpGroup struct {
 // siteRender 是单站点(单 location)的渲染决策,由 renderNginxConf 按 (FQDN, path) 升序
 // 预计算(含确定性分配的 upstream/变量名)。
 type siteRender struct {
-	useUpstream bool // 走实例池 upstream 块(proxy_pass 指向集群成员)
+	useUpstream bool // 走实例池/转发 upstream 块(proxy_pass 指向集群成员或对端网关)
 	maintenance bool // 声明了实例池但无可渲染成员(全摘除/不可解析)→ 503 维护态
 	upsName     string
 	varName     string // 不含 $ 前缀(address 单上游变量)
+	// plan 非 nil = 跨环境转发:成员/端口/Host 头/SNI 来自对端目录规划。
+	plan *ForwardPlan
 }
 
 // renderHTTPServer 输出一个 FQDN 的 server 块(组内每个服务一个 location,path 升序)。
@@ -354,38 +422,51 @@ func renderHTTPServer(b *strings.Builder, indent string, group *httpGroup, proto
 }
 
 // groupTargetComment 生成 server 块头部注释:单一反代服务保持旧格式「fqdn → 上游:端口」,
-// 静态托管 / 多服务(同域名多 path)逐项列出「path → 目标」。
+// 静态托管 / 跨环境转发 / 多服务(同域名多 path)逐项列出「path → 目标」。
 func groupTargetComment(group *httpGroup) string {
-	if len(group.sites) == 1 && group.sites[0].svc.UpstreamKind != UpstreamKindStatic {
+	targetOf := func(st httpSite) string {
+		switch {
+		case st.svc.UpstreamKind == UpstreamKindStatic:
+			return "静态托管"
+		case st.svc.UpstreamKind == UpstreamKindForward:
+			return "跨环境转发 " + st.svc.PeerNodeID
+		default:
+			return upstreamTarget(st.svc)
+		}
+	}
+	if len(group.sites) == 1 && group.sites[0].svc.UpstreamKind == UpstreamKindContainer {
+		return group.fqdn + " → " + upstreamTarget(group.sites[0].svc)
+	}
+	if len(group.sites) == 1 && group.sites[0].svc.UpstreamKind == UpstreamKindAddress {
 		return group.fqdn + " → " + upstreamTarget(group.sites[0].svc)
 	}
 	parts := make([]string, 0, len(group.sites))
 	for _, st := range group.sites {
-		target := "静态托管"
-		if st.svc.UpstreamKind != UpstreamKindStatic {
-			target = upstreamTarget(st.svc)
-		}
-		parts = append(parts, st.svc.DisplayPath()+" → "+target)
+		parts = append(parts, st.svc.DisplayPath()+" → "+targetOf(st))
 	}
 	return group.fqdn + " → " + strings.Join(parts, " · ")
 }
 
 // writeProxyLocation 输出反代 location 块(location 路径 = 服务 path,根路径为 /):
-//   - useUpstream(有集群实例成员):proxy_pass http://pw_<name>[_<path>](成员 = attached 实例);
-//   - maintenance(声明实例池但无成员):return 503 维护态;
+//   - useUpstream(有集群实例成员/转发规划):proxy_pass [http|https]://pw_<name>[_<path>];
+//   - maintenance(声明实例池但无成员/转发不可用):return 503 维护态;
 //   - 其余(address 单上游):set 变量 + proxy_pass http://$var(resolver 运行期解析)。
+//
+// 跨环境转发(plan 非 nil):Host 头改写为对端 FQDN(对端按 vhost 路由);对端有证书
+// (Secure)时打 https + SNI(对端 80 是 301 跳转,不能走),verify off(mesh 链路自身
+// WireGuard 加密 + 节点签名授权,证书校验交由对端自己的网关)。
 //
 // StripPathPrefix(仅 path 非根时生效):实例池用 proxy_pass 尾斜杠(URI "/",nginx 以之
 // 替换匹配的 location 前缀);address 变量反代的 proxy_pass 不允许 URI,改用 rewrite 剥前缀。
 //
 // 反代头:proxy_http_version 1.1 + Upgrade $http_upgrade。Connection 分两种:
 //
-//	实例池 → $connection_upgrade(非 WS 为空 → 不发送,使 upstream keepalive 复用连接);
+//	实例池/转发 → $connection_upgrade(非 WS 为空 → 不发送,使 upstream keepalive 复用连接);
 //	address 单上游 → $connection_upgrade_addr(非 WS 为 close → 不复用即显式关闭)。
 func writeProxyLocation(b *strings.Builder, indent string, svc RegisteredService, r *siteRender, proto string) {
 	loc := svc.DisplayPath()
 	if r.maintenance && !r.useUpstream {
-		// 实例全部摘除/地址不可解析:维护态,不做反代。
+		// 实例全部摘除/地址不可解析/转发目录不可达:维护态,不做反代。
 		b.WriteString(indent + "location " + loc + " {\n")
 		b.WriteString(indent + "    return 503;\n")
 		b.WriteString(indent + "}\n")
@@ -397,7 +478,11 @@ func writeProxyLocation(b *strings.Builder, indent string, svc RegisteredService
 		b.WriteString(indent + "    rewrite ^" + escapeLocationRegex(svc.Path) + "(/.*)?$ /$1 break;\n")
 	}
 	if r.useUpstream {
-		pass := "http://" + r.upsName
+		scheme := "http"
+		if r.plan != nil && r.plan.Secure {
+			scheme = "https"
+		}
+		pass := scheme + "://" + r.upsName
 		if strip {
 			pass += "/"
 		}
@@ -407,12 +492,22 @@ func writeProxyLocation(b *strings.Builder, indent string, svc RegisteredService
 		b.WriteString(indent + "    proxy_pass http://$" + r.varName + ";\n")
 	}
 	b.WriteString(indent + "    proxy_http_version 1.1;\n")
-	b.WriteString(indent + "    proxy_set_header Host $host;\n")
+	if r.plan != nil {
+		// 对端按 vhost(Host 头)路由;SNI/证书名用对端 FQDN。
+		b.WriteString(indent + "    proxy_set_header Host " + r.plan.HostHeader + ";\n")
+		if r.plan.Secure {
+			b.WriteString(indent + "    proxy_ssl_server_name on;\n")
+			b.WriteString(indent + "    proxy_ssl_name " + r.plan.HostHeader + ";\n")
+			b.WriteString(indent + "    proxy_ssl_verify off;\n")
+		}
+	} else {
+		b.WriteString(indent + "    proxy_set_header Host $host;\n")
+	}
 	b.WriteString(indent + "    proxy_set_header X-Real-IP $remote_addr;\n")
 	b.WriteString(indent + "    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n")
 	b.WriteString(indent + "    proxy_set_header X-Forwarded-Proto " + proto + ";\n")
 	b.WriteString(indent + "    proxy_set_header Upgrade $http_upgrade;\n")
-	// 实例池:非 WS 清空 Connection(upstream keepalive 复用);address 单上游:非 WS 显式 close。
+	// 实例池/转发:非 WS 清空 Connection(upstream keepalive 复用);address 单上游:非 WS 显式 close。
 	if r.useUpstream {
 		b.WriteString(indent + "    proxy_set_header Connection $connection_upgrade;\n")
 	} else {

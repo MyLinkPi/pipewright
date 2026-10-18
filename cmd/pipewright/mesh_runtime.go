@@ -45,7 +45,22 @@ type meshRuntime struct {
 	dlErr     string
 	dlVersion string
 	dlRetryAt time.Time
+	// proxyNetworks 提供本端需通告的子网代理列表(跨环境转发:本端网关 IP 的 /32;
+	// main 注入,变化纳入设置指纹重启 easytier)。nil = 不通告。
+	proxyNetworks func(ctx context.Context) []string
+	// afterDiscover 是发现循环收尾钩子(跨环境转发:路由调和 + ip_forward 保活;
+	// main 注入,nil = 无)。每个发现节拍(30s)在 discoverOnce 后调用。
+	afterDiscover func(ctx context.Context)
+	// failedKey 记录最近一次启动失败对应的指纹(同指纹失败不逐拍刷屏)。
+	failedKey string
 }
+
+// SetProxyNetworks 注入「本端子网代理通告列表」提供器(跨环境转发数据面:
+// 本端网关 IP 的 /32;变化会重启 easytier 使通告生效)。
+func (rt *meshRuntime) SetProxyNetworks(f func(ctx context.Context) []string) { rt.proxyNetworks = f }
+
+// SetAfterDiscover 注入发现循环收尾钩子(跨环境转发:网关机路由对账 + ip_forward 保活)。
+func (rt *meshRuntime) SetAfterDiscover(f func(ctx context.Context)) { rt.afterDiscover = f }
 
 // EasyTierStatus 实现 httpapi.meshRuntimeView。
 func (rt *meshRuntime) EasyTierStatus(ctx context.Context) *easytier.Status {
@@ -178,6 +193,27 @@ func (rt *meshRuntime) superviseLoop(ctx context.Context) {
 	}
 }
 
+// normalizeProxyNetworks 归一化子网代理列表:去空白/去空项/去重(保序),只保留合法 cidr。
+func normalizeProxyNetworks(in []string) []string {
+	out := make([]string, 0, len(in))
+	seen := make(map[string]struct{}, len(in))
+	for _, n := range in {
+		n = strings.TrimSpace(n)
+		if n == "" {
+			continue
+		}
+		if _, _, err := net.ParseCIDR(n); err != nil {
+			continue // 非法 cidr 静默丢弃(提供方只产合法值,防御兜底)
+		}
+		if _, dup := seen[n]; dup {
+			continue
+		}
+		seen[n] = struct{}{}
+		out = append(out, n)
+	}
+	return out
+}
+
 // reconcile 对齐「设置期望」与「运行中的监督器」。
 func (rt *meshRuntime) reconcile(ctx context.Context) {
 	st, err := rt.svc.Settings(ctx)
@@ -193,7 +229,11 @@ func (rt *meshRuntime) reconcile(ctx context.Context) {
 	rt.external = st.EasyTierMode == mesh.ModeExternal
 	rt.mu.Unlock()
 
-	key := fmt.Sprintf("%s|%s|%s|%s|%v", st.EasyTierMode, st.NetworkName, st.VirtualIP, st.Peers, st.Enabled)
+	proxies := []string{}
+	if rt.proxyNetworks != nil {
+		proxies = normalizeProxyNetworks(rt.proxyNetworks(ctx))
+	}
+	key := fmt.Sprintf("%s|%s|%s|%s|%v|%v", st.EasyTierMode, st.NetworkName, st.VirtualIP, st.Peers, st.Enabled, proxies)
 	if !st.Enabled || st.EasyTierMode != mesh.ModeManaged || st.NetworkName == "" {
 		rt.mu.Lock()
 		if rt.supervisor != nil {
@@ -232,14 +272,20 @@ func (rt *meshRuntime) reconcile(ctx context.Context) {
 		VirtualIP:     st.VirtualIP,
 		Hostname:      meshHostname(st),
 		Peers:         st.Peers,
+		ProxyNetworks: proxies,
 		DataDir:       rt.dataDir,
 		CorePath:      rt.corePath,
 		CliPath:       rt.cliPath,
 	})
 	if err := sup.Start(context.WithoutCancel(ctx)); err != nil {
-		log.Printf("[mesh] EasyTier 托管启动失败:%v", err)
+		// 同一指纹的启动失败不逐拍刷屏(探测类失败每进程只发生一次,配置修复后指纹变化即重试)。
+		if rt.failedKey != key {
+			log.Printf("[mesh] EasyTier 托管启动失败:%v", err)
+			rt.failedKey = key
+		}
 		return
 	}
+	rt.failedKey = ""
 	rt.mu.Lock()
 	if rt.supervisor != nil {
 		rt.supervisor.Stop()
@@ -247,8 +293,8 @@ func (rt *meshRuntime) reconcile(ctx context.Context) {
 	rt.supervisor = sup
 	rt.supervisorKey = key
 	rt.mu.Unlock()
-	log.Printf("[mesh] EasyTier 托管进程已启动(网络 %s,虚拟 IP %s,peers %d)",
-		st.NetworkName, orDash(st.VirtualIP), len(st.Peers))
+	log.Printf("[mesh] EasyTier 托管进程已启动(网络 %s,虚拟 IP %s,peers %d,子网代理 %d)",
+		st.NetworkName, orDash(st.VirtualIP), len(st.Peers), len(proxies))
 }
 
 func orDash(s string) string {
@@ -269,7 +315,8 @@ func meshHostname(st *mesh.Settings) string {
 	return st.NodeID
 }
 
-// discoverLoop 周期发现:EasyTier 链路表 → 每虚拟 IP 探测 hello → TOFU upsert。
+// discoverLoop 周期发现:EasyTier 链路表 → 每虚拟 IP 探测 hello → TOFU upsert;
+// 收尾执行 afterDiscover 钩子(跨环境转发的路由对账/ip_forward 保活)。
 func (rt *meshRuntime) discoverLoop(ctx context.Context) {
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
@@ -279,6 +326,9 @@ func (rt *meshRuntime) discoverLoop(ctx context.Context) {
 			return
 		case <-ticker.C:
 			rt.discoverOnce(ctx)
+			if rt.afterDiscover != nil {
+				rt.afterDiscover(ctx)
+			}
 		}
 	}
 }

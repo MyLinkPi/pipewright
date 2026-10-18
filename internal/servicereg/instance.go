@@ -155,6 +155,9 @@ func (s *service) validateInstanceInput(svc *RegisteredService, serverID, contai
 	if svc.UpstreamKind == UpstreamKindStatic {
 		return ErrStaticService
 	}
+	if svc.UpstreamKind == UpstreamKindForward {
+		return ErrForwardService
+	}
 	if svc.Protocol != ProtocolHTTP {
 		return ErrNotHTTPService
 	}
@@ -305,6 +308,9 @@ func (s *service) SwapInstance(ctx context.Context, serviceID, serverID, oldCont
 	if svc.UpstreamKind == UpstreamKindStatic {
 		return ErrStaticService
 	}
+	if svc.UpstreamKind == UpstreamKindForward {
+		return ErrForwardService
+	}
 	if svc.Protocol != ProtocolHTTP {
 		return ErrNotHTTPService
 	}
@@ -363,7 +369,8 @@ func (s *service) ResolveDeployInstances(ctx context.Context, serverID, serviceR
 		}
 		for i := range services {
 			c := &services[i]
-			if c.Protocol != ProtocolHTTP || !c.Enabled || c.UpstreamKind == UpstreamKindStatic {
+			if c.Protocol != ProtocolHTTP || !c.Enabled || c.UpstreamKind == UpstreamKindStatic ||
+				c.UpstreamKind == UpstreamKindForward {
 				continue
 			}
 			if c.Name == container {
@@ -381,7 +388,8 @@ func (s *service) ResolveDeployInstances(ctx context.Context, serverID, serviceR
 			}
 		}
 	}
-	if svc == nil || !svc.Enabled || svc.Protocol != ProtocolHTTP || svc.UpstreamKind == UpstreamKindStatic {
+	if svc == nil || !svc.Enabled || svc.Protocol != ProtocolHTTP || svc.UpstreamKind == UpstreamKindStatic ||
+		svc.UpstreamKind == UpstreamKindForward {
 		return []DeployInstance{}, nil
 	}
 

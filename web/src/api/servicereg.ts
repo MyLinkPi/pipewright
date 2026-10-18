@@ -23,7 +23,7 @@
 import { http } from './http'
 
 export type ServiceProtocol = 'http' | 'tcp'
-export type UpstreamKind = 'container' | 'address' | 'static'
+export type UpstreamKind = 'container' | 'address' | 'static' | 'forward'
 
 export interface Settings {
   /** 全部网关主机(多台部署完全一致的网关);空数组 = 未配置。 */
@@ -67,6 +67,9 @@ export interface RegisteredService {
   upstream: string
   upstreamPort: number
   tcpListenPort: number
+  /** forward 专用:对端 mesh 节点 id + 对端服务 id;其余类型恒空。 */
+  peerNodeId: string
+  peerServiceId: string
   /** 反代剥离 location 前缀(默认 false = 原样透传;static/tcp 恒 false)。 */
   stripPathPrefix: boolean
   enabled: boolean
@@ -74,6 +77,58 @@ export interface RegisteredService {
   instanceCount: number
   createdAt: string
   updatedAt: string
+}
+
+/** 跨环境转发:对端网关(目录下发,upstream 成员来源)。 */
+export interface CatalogGateway {
+  serverId: string
+  serverName: string
+  ip: string
+}
+
+/** 跨环境转发:对端目录里一条可转发服务。 */
+export interface CatalogService {
+  serviceId: string
+  fqdn: string
+  path: string
+  protocol: ServiceProtocol
+  hasCert: boolean
+  tcpListenPort: number
+}
+
+/** 跨环境转发:对端服务目录(GET /api/servicereg/forward/peers 内嵌)。 */
+export interface PeerCatalog {
+  httpPort: number
+  httpsPort: number
+  gateways: CatalogGateway[]
+  services: CatalogService[]
+}
+
+/** 跨环境转发:可用转发来源对端(available = 对端已授权且目录可达)。 */
+export interface ForwardPeer {
+  nodeId: string
+  name: string
+  virtualIp: string
+  available: boolean
+  /** forbidden(对端未授权)| unreachable(不可达)| disabled(集群未装配)| ''。 */
+  reason: string
+  catalog?: PeerCatalog
+}
+
+/** 网关机上一条跨环境 /32 路由的对账结果。 */
+export interface GatewayRoute {
+  serverId: string
+  dest: string
+  state: 'present' | 'applied' | 'removed' | 'missing'
+  error: string
+}
+
+/** 跨环境转发数据面状态(网关状态内嵌)。 */
+export interface ForwardStatus {
+  ipForwardOk: boolean
+  ipForwardDetail: string
+  routes: GatewayRoute[]
+  conflicts: string[]
 }
 
 export interface GatewayServer {
@@ -98,6 +153,8 @@ export interface Gateway {
   lastApplyAt: string
   lastApplyError: string
   lastApplyErrors: Record<string, string> | null
+  /** 跨环境转发数据面状态(路由对账 / ip_forward / IP 冲突);未装配时缺省。 */
+  forward?: ForwardStatus
 }
 
 /** 服务实例:集群 upstream 成员 = (服务器, 宿主端口)。容器实例 container 非空,
@@ -140,11 +197,14 @@ export interface ServiceCreateInput {
   path?: string
   protocol: ServiceProtocol
   upstreamKind: UpstreamKind
-  /** http+container 部署托管服务可空(实例行携带容器名);static 恒空。 */
+  /** http+container 部署托管服务可空(实例行携带容器名);static/forward 恒空。 */
   upstream: string
-  /** static 形态可填 0(无端口)。 */
+  /** static/forward 形态可填 0(无本地端口)。 */
   upstreamPort: number
   tcpListenPort?: number
+  /** forward 专用:对端 mesh 节点 id + 对端服务 id。 */
+  peerNodeId?: string
+  peerServiceId?: string
   /** 反代剥离 location 前缀(默认 false = 保留前缀原样透传)。 */
   stripPathPrefix?: boolean
 }
@@ -158,6 +218,8 @@ export interface ServiceUpdateInput {
   upstream?: string
   upstreamPort?: number
   tcpListenPort?: number
+  peerNodeId?: string
+  peerServiceId?: string
   stripPathPrefix?: boolean
 }
 
@@ -203,6 +265,10 @@ export const deleteService = (id: string): Promise<{ ok: boolean }> =>
 
 export const setServiceEnabled = (id: string, enabled: boolean): Promise<{ ok: boolean }> =>
   http.post(`/api/servicereg/services/${encodeURIComponent(id)}/enabled`, { enabled })
+
+/** 跨环境转发:可用对端 + 各自服务目录(服务表单「转发其他环境」级联下拉)。 */
+export const listForwardPeers = (): Promise<{ items: ForwardPeer[] }> =>
+  http.get('/api/servicereg/forward/peers')
 
 export const applyServiceReg = (): Promise<{ ok: boolean }> =>
   http.post('/api/servicereg/apply')
