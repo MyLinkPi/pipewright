@@ -95,6 +95,11 @@ export default {
     expand: '展开侧栏',
     collapse: '收起侧栏',
     pve: 'PVE 集群',
+    groupDelivery: '交付',
+    groupInfra: '基础设施',
+    groupStorage: '存储与文件',
+    groupApps: '应用与数据',
+    groupMonitoring: '监控与告警',
   },
 
   shell: {

@@ -96,6 +96,11 @@ const fr: typeof zhCN = {
     expand: 'Déployer la barre latérale',
     collapse: 'Réduire la barre latérale',
     pve: 'PVE',
+    groupDelivery: 'Livraison',
+    groupInfra: 'Infrastructure',
+    groupStorage: 'Stockage et fichiers',
+    groupApps: 'Apps et données',
+    groupMonitoring: 'Surveillance et alertes',
   },
 
   shell: {

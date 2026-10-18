@@ -95,6 +95,11 @@ const zhHK: typeof zhCN = {
     expand: '展開側欄',
     collapse: '收合側欄',
     pve: 'PVE 叢集',
+    groupDelivery: '交付',
+    groupInfra: '基礎設施',
+    groupStorage: '儲存與檔案',
+    groupApps: '應用與數據',
+    groupMonitoring: '監控與警報',
   },
 
   shell: {

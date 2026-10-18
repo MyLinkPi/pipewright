@@ -96,6 +96,11 @@ const en: typeof zhCN = {
     expand: 'Expand sidebar',
     collapse: 'Collapse sidebar',
     pve: 'PVE',
+    groupDelivery: 'Delivery',
+    groupInfra: 'Infrastructure',
+    groupStorage: 'Storage & Files',
+    groupApps: 'Apps & Data',
+    groupMonitoring: 'Monitoring & Alerts',
   },
 
   shell: {

@@ -96,6 +96,11 @@ const de: typeof zhCN = {
     expand: 'Seitenleiste ausklappen',
     collapse: 'Seitenleiste einklappen',
     pve: 'PVE',
+    groupDelivery: 'Auslieferung',
+    groupInfra: 'Infrastruktur',
+    groupStorage: 'Speicher & Dateien',
+    groupApps: 'Apps & Daten',
+    groupMonitoring: 'Überwachung & Warnungen',
   },
 
   shell: {

@@ -20,6 +20,9 @@ export default defineConfig({
   reporter: process.env.CI ? 'github' : 'list',
   use: {
     baseURL: BASE_URL,
+    // Playwright 默认 locale 是 en-US,而应用按 navigator.languages 侦测语言、
+    // 全部用例断言中文文案 —— 不钉死 locale 会整套渲染成英文而挂掉。
+    locale: 'zh-CN',
     trace: 'on-first-retry',
   },
   projects: [

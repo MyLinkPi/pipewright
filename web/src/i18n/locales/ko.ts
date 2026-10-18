@@ -96,6 +96,11 @@ const ko: typeof zhCN = {
     expand: '사이드바 펼치기',
     collapse: '사이드바 접기',
     pve: 'PVE',
+    groupDelivery: '딜리버리',
+    groupInfra: '인프라',
+    groupStorage: '스토리지 및 파일',
+    groupApps: '앱 및 데이터',
+    groupMonitoring: '모니터링 및 알림',
   },
 
   shell: {

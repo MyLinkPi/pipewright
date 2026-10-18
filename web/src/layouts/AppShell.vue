@@ -1,5 +1,4 @@
 <script setup lang="ts">
-import type { Component } from 'vue'
 import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
@@ -26,9 +25,15 @@ import {
   Users,
   ChevronRight,
   Logout,
+  Route,
+  Sitemap,
+  Archive,
+  LayoutGrid,
+  Activity,
 } from '@vicons/tabler'
 import { NIcon } from 'naive-ui'
 import ThemeToggle from '../components/ThemeToggle.vue'
+import { useNavGroups, type NavGroup, type NavItem } from '../composables/useNavGroups'
 import { logout } from '../api/auth'
 import { useSessionStore } from '../stores/session'
 import { useConfirm } from '../composables/useConfirm'
@@ -66,59 +71,93 @@ async function handleLogout(): Promise<void> {
   }
 }
 
-interface NavItem {
-  name: string
-  to: string
-  icon: Component
-  /** i18n key under `nav.*` for the visible label. */
-  labelKey: string
-  /** i18n key under `nav.*` for the accessible name. */
-  ariaKey: string
-}
+// 顶层散项:高频入口不参与分组折叠,始终直接可见。
+const adminTopItems: NavItem[] = [
+  { name: 'dashboard', to: '/dashboard', icon: Dashboard, labelKey: 'nav.dashboard', ariaKey: 'nav.dashboard' },
+]
 
-const adminNavItems: NavItem[] = [
-  { name: 'dashboard',     to: '/dashboard',     icon: Dashboard, labelKey: 'nav.dashboard',     ariaKey: 'nav.dashboard' },
-  { name: 'projects',      to: '/projects',      icon: GitBranch,  labelKey: 'nav.projects',      ariaKey: 'nav.projects' },
-  { name: 'runs',          to: '/runs',          icon: GitFork,    labelKey: 'nav.runs',          ariaKey: 'nav.runs' },
-  // 流水线产物管理:跨运行产物(文件/镜像)查看/下载/删除(镜像导出 tar + 内置 registry tag 联动清理)。
-  { name: 'artifacts',     to: '/artifacts',     icon: Package,    labelKey: 'nav.artifacts',     ariaKey: 'nav.artifacts' },
-  // FR-8-13: 复用库(流水线模板 + 变量组)。
-  { name: 'library',       to: '/library',       icon: Stack2,     labelKey: 'nav.library',       ariaKey: 'nav.library' },
-  // 环境一等公民:按环境聚合的部署历史 + 一键回滚(对标 GitLab environments)。
-  // FR-8-15: DORA 四指标仪表盘(交付效能;只读聚合)。
-  { name: 'dora',          to: '/metrics/dora',  icon: ChartBar,   labelKey: 'nav.dora',          ariaKey: 'nav.dora' },
-  // Story 6-1: 多机状态总览(服务器层指标 FR-15);登记在 设置 → 服务器。
-  { name: 'server-status', to: '/server-status', icon: Server,     labelKey: 'nav.serverStatus',  ariaKey: 'nav.serverStatus' },
-  // 集群:对等节点总览(EasyTier 链路 p2p/中继、机器与流水线状态)。
-  { name: 'cluster',       to: '/cluster',       icon: World,     labelKey: 'nav.cluster',       ariaKey: 'nav.cluster' },
-  // Ceph 集群:cephadm 部署向导 + 存储(主机/OSD/池/RBD/CephFS)管理。
-  { name: 'ceph',          to: '/ceph',          icon: Database,  labelKey: 'nav.ceph',          ariaKey: 'nav.ceph' },
-  // 容器管理:跨服务器聚合容器总览 + 行内生命周期操作(docker over SSH)。
-  { name: 'containers',    to: '/containers',    icon: Box,        labelKey: 'nav.containers',    ariaKey: 'nav.containers' },
-  // 证书管理:acme.sh 自动签发/续期(DNS-01)+ 手动导入,签发引擎跑在网关主机上。
-  { name: 'cert-mgmt', to: '/certificates', icon: Certificate, labelKey: 'nav.certificates', ariaKey: 'nav.certificates' },
-  // 服务注册网关(nginx):服务名 + 基域 → 子域名反代(abc.efg.com),证书由「证书管理」签发/同步。
-  { name: 'service-reg',   to: '/service-reg',   icon: World,      labelKey: 'nav.serviceReg',    ariaKey: 'nav.serviceReg' },
-  // 应用商店:MySQL/Redis 等模板参数一键部署(DPanel 式)。
-  { name: 'app-store',     to: '/app-store',     icon: Apps,       labelKey: 'nav.appStore',      ariaKey: 'nav.appStore' },
-  // 数据库在线管理(phpMyAdmin 式):实例在 设置 → 数据库 注册;应用市场部署 mysql/postgres 自动登记。
-  { name: 'databases',     to: '/databases',     icon: Database,   labelKey: 'nav.databases',     ariaKey: 'nav.databases' },
-  // Redis 在线管理:实例在 设置 → Redis 注册;应用市场部署 redis 自动登记;SCAN 分页键浏览。
-  { name: 'redis',         to: '/redis',         icon: Bolt,       labelKey: 'nav.redis',         ariaKey: 'nav.redis' },
-  // 服务器磁盘管理:块设备/LVM 拓扑 + 分区/格式化/挂载/扩缩容(只读默认 + 显式解锁)。
-  { name: 'disks',         to: '/disks',         icon: DeviceFloppy, labelKey: 'nav.disks',        ariaKey: 'nav.disks' },
-  // 服务器文件查看:目录浏览 + 文件下载 + ≤64KiB 纯文本在线查看/编辑(保存前同目录备份)。
-  { name: 'files',         to: '/files',         icon: Folder, labelKey: 'nav.files',             ariaKey: 'nav.files' },
-  // PVE 集群管理:总览/VM/电源操作/任务(集群经服务器登记自动发现,Token 在 设置 → PVE)。
-  { name: 'pve',           to: '/pve',           icon: Server,    labelKey: 'nav.pve',           ariaKey: 'nav.pve' },
-  // 对象存储浏览(只读):实例在 设置 → 对象存储 注册;桶内目录树(marker 游标分页)。
-  { name: 'object-storage', to: '/object-storage', icon: CloudUpload, labelKey: 'nav.objectStorage', ariaKey: 'nav.objectStorage' },
-  // R4 / E4.1: PR 预览环境大盘(临时环境列表 + 手动回收)。
-  // Story 6-5: configurable anomaly detection & alerts (FR-23)
-  { name: 'anomaly',       to: '/anomaly',       icon: AlertTriangle, labelKey: 'nav.anomaly',    ariaKey: 'nav.anomaly' },
-  { name: 'notifications', to: '/settings/notifications', icon: Bell, labelKey: 'nav.notifications', ariaKey: 'nav.notifications' },
+// 尾部散项:贴近底部设置区的管理入口。
+const adminTrailingItems: NavItem[] = [
   // 用户体系:管理员用户 / 邀请 / 项目成员管理。
-  { name: 'users',         to: '/users',         icon: Users,      labelKey: 'nav.users',         ariaKey: 'nav.users' },
+  { name: 'users', to: '/users', icon: Users, labelKey: 'nav.users', ariaKey: 'nav.users' },
+]
+
+// 管理端分组:组头可开合(默认收起;当前路由所在组强制展开,见 useNavGroups)。
+const adminNavGroups: NavGroup[] = [
+  {
+    name: 'delivery',
+    labelKey: 'nav.groupDelivery',
+    icon: Route,
+    items: [
+      { name: 'projects', to: '/projects', icon: GitBranch, labelKey: 'nav.projects', ariaKey: 'nav.projects' },
+      { name: 'runs', to: '/runs', icon: GitFork, labelKey: 'nav.runs', ariaKey: 'nav.runs' },
+      // 流水线产物管理:跨运行产物(文件/镜像)查看/下载/删除(镜像导出 tar + 内置 registry tag 联动清理)。
+      { name: 'artifacts', to: '/artifacts', icon: Package, labelKey: 'nav.artifacts', ariaKey: 'nav.artifacts' },
+      // FR-8-13: 复用库(流水线模板 + 变量组)。
+      { name: 'library', to: '/library', icon: Stack2, labelKey: 'nav.library', ariaKey: 'nav.library' },
+      // 环境一等公民:按环境聚合的部署历史 + 一键回滚(对标 GitLab environments)。
+      // FR-8-15: DORA 四指标仪表盘(交付效能;只读聚合)。
+      { name: 'dora', to: '/metrics/dora', icon: ChartBar, labelKey: 'nav.dora', ariaKey: 'nav.dora' },
+    ],
+  },
+  {
+    name: 'infra',
+    labelKey: 'nav.groupInfra',
+    icon: Sitemap,
+    items: [
+      // Story 6-1: 多机状态总览(服务器层指标 FR-15);登记在 设置 → 服务器。
+      { name: 'server-status', to: '/server-status', icon: Server, labelKey: 'nav.serverStatus', ariaKey: 'nav.serverStatus' },
+      // 集群:对等节点总览(EasyTier 链路 p2p/中继、机器与流水线状态)。
+      { name: 'cluster', to: '/cluster', icon: World, labelKey: 'nav.cluster', ariaKey: 'nav.cluster' },
+      // PVE 集群管理:总览/VM/电源操作/任务(集群经服务器登记自动发现,Token 在 设置 → PVE)。
+      { name: 'pve', to: '/pve', icon: Server, labelKey: 'nav.pve', ariaKey: 'nav.pve' },
+      // 容器管理:跨服务器聚合容器总览 + 行内生命周期操作(docker over SSH)。
+      { name: 'containers', to: '/containers', icon: Box, labelKey: 'nav.containers', ariaKey: 'nav.containers' },
+    ],
+  },
+  {
+    name: 'storage',
+    labelKey: 'nav.groupStorage',
+    icon: Archive,
+    items: [
+      // Ceph 集群:cephadm 部署向导 + 存储(主机/OSD/池/RBD/CephFS)管理。
+      { name: 'ceph', to: '/ceph', icon: Database, labelKey: 'nav.ceph', ariaKey: 'nav.ceph' },
+      // 对象存储浏览(只读):实例在 设置 → 对象存储 注册;桶内目录树(marker 游标分页)。
+      { name: 'object-storage', to: '/object-storage', icon: CloudUpload, labelKey: 'nav.objectStorage', ariaKey: 'nav.objectStorage' },
+      // 服务器磁盘管理:块设备/LVM 拓扑 + 分区/格式化/挂载/扩缩容(只读默认 + 显式解锁)。
+      { name: 'disks', to: '/disks', icon: DeviceFloppy, labelKey: 'nav.disks', ariaKey: 'nav.disks' },
+      // 服务器文件查看:目录浏览 + 文件下载 + ≤64KiB 纯文本在线查看/编辑(保存前同目录备份)。
+      { name: 'files', to: '/files', icon: Folder, labelKey: 'nav.files', ariaKey: 'nav.files' },
+    ],
+  },
+  {
+    name: 'apps',
+    labelKey: 'nav.groupApps',
+    icon: LayoutGrid,
+    items: [
+      // 应用商店:MySQL/Redis 等模板参数一键部署(DPanel 式)。
+      { name: 'app-store', to: '/app-store', icon: Apps, labelKey: 'nav.appStore', ariaKey: 'nav.appStore' },
+      // 数据库在线管理(phpMyAdmin 式):实例在 设置 → 数据库 注册;应用市场部署 mysql/postgres 自动登记。
+      { name: 'databases', to: '/databases', icon: Database, labelKey: 'nav.databases', ariaKey: 'nav.databases' },
+      // Redis 在线管理:实例在 设置 → Redis 注册;应用市场部署 redis 自动登记;SCAN 分页键浏览。
+      { name: 'redis', to: '/redis', icon: Bolt, labelKey: 'nav.redis', ariaKey: 'nav.redis' },
+      // 服务注册网关(nginx):服务名 + 基域 → 子域名反代(abc.efg.com),证书由「证书管理」签发/同步。
+      { name: 'service-reg', to: '/service-reg', icon: World, labelKey: 'nav.serviceReg', ariaKey: 'nav.serviceReg' },
+      // 证书管理:acme.sh 自动签发/续期(DNS-01)+ 手动导入,签发引擎跑在网关主机上。
+      { name: 'cert-mgmt', to: '/certificates', icon: Certificate, labelKey: 'nav.certificates', ariaKey: 'nav.certificates' },
+    ],
+  },
+  {
+    name: 'monitoring',
+    labelKey: 'nav.groupMonitoring',
+    icon: Activity,
+    items: [
+      // R4 / E4.1: PR 预览环境大盘(临时环境列表 + 手动回收)。
+      // Story 6-5: configurable anomaly detection & alerts (FR-23)
+      { name: 'anomaly', to: '/anomaly', icon: AlertTriangle, labelKey: 'nav.anomaly', ariaKey: 'nav.anomaly' },
+      { name: 'notifications', to: '/settings/notifications', icon: Bell, labelKey: 'nav.notifications', ariaKey: 'nav.notifications' },
+    ],
+  },
 ]
 
 // 普通用户导航(最小面:仅「我的项目 / 运行」;设置项单列在底部)。
@@ -144,9 +183,11 @@ const memberSettingsItem: NavItem = {
   ariaKey: 'nav.mySettings',
 }
 
-// 角色感知导航:管理员见全量,普通用户仅见最小面(member)。
+// 角色感知导航:管理员见全量(散项 + 分组),普通用户仅见最小面(member,无分组)。
 const isAdmin = computed(() => sessionStore.isAdmin)
-const navItems = computed<NavItem[]>(() => (isAdmin.value ? adminNavItems : memberNavItems))
+const topItems = computed<NavItem[]>(() => (isAdmin.value ? adminTopItems : memberNavItems))
+const trailingItems = computed<NavItem[]>(() => (isAdmin.value ? adminTrailingItems : []))
+const navGroups = computed<NavGroup[]>(() => (isAdmin.value ? adminNavGroups : []))
 const settingsItem = computed<NavItem>(() => (isAdmin.value ? adminSettingsItem : memberSettingsItem))
 
 function isActive(item: NavItem): boolean {
@@ -155,6 +196,16 @@ function isActive(item: NavItem): boolean {
   }
   return route.path.startsWith(item.to)
 }
+
+function hasActiveItem(group: NavGroup): boolean {
+  return group.items.some(isActive)
+}
+
+// 分组折叠:默认全收、手动开合记忆到 localStorage;当前路由所在组强制展开(useNavGroups)。
+const { isOpen, toggle: toggleGroup } = useNavGroups(
+  adminNavGroups.map((group) => group.name),
+  isActive,
+)
 
 // 侧栏展开/收起:固定按钮切换,状态持久化到 localStorage(刷新/重开保持)。
 const STORAGE_KEY = 'pipewright_sidebar_expanded'
@@ -179,7 +230,52 @@ function toggleExpanded(): void {
 
       <!-- Primary navigation items -->
       <ul class="nav-list" role="list">
-        <li v-for="item in navItems" :key="item.name">
+        <!-- 顶层散项:不经分组折叠,始终直接可见(概览 / member 最小面)。 -->
+        <li v-for="item in topItems" :key="item.name">
+          <router-link
+            :to="item.to"
+            class="nav-item"
+            :class="{ 'nav-item--active': isActive(item) }"
+            :aria-label="t(item.ariaKey)"
+            :aria-current="isActive(item) ? 'page' : undefined"
+          >
+            <n-icon class="nav-icon" :component="item.icon" :size="20" />
+            <span class="nav-label">{{ t(item.labelKey) }}</span>
+          </router-link>
+        </li>
+
+        <!-- 分组:组头开合(收起态为图标手风琴);当前路由所在组强制展开 -->
+        <li v-for="group in navGroups" :key="group.name" class="nav-group">
+          <button
+            type="button"
+            class="nav-group-header"
+            :class="{ 'nav-group-header--active': hasActiveItem(group) }"
+            :aria-expanded="isOpen(group)"
+            :aria-label="t(group.labelKey)"
+            @click="toggleGroup(group)"
+          >
+            <n-icon class="nav-icon" :component="group.icon" :size="18" />
+            <span class="nav-group-title">{{ t(group.labelKey) }}</span>
+            <n-icon class="nav-group-chevron" :class="{ open: isOpen(group) }" :component="ChevronRight" :size="14" />
+          </button>
+          <ul v-show="isOpen(group)" class="nav-group-items" role="list">
+            <li v-for="item in group.items" :key="item.name">
+              <router-link
+                :to="item.to"
+                class="nav-item"
+                :class="{ 'nav-item--active': isActive(item) }"
+                :aria-label="t(item.ariaKey)"
+                :aria-current="isActive(item) ? 'page' : undefined"
+              >
+                <n-icon class="nav-icon" :component="item.icon" :size="20" />
+                <span class="nav-label">{{ t(item.labelKey) }}</span>
+              </router-link>
+            </li>
+          </ul>
+        </li>
+
+        <!-- 尾部散项:贴近底部设置区的管理入口(用户管理)。 -->
+        <li v-for="item in trailingItems" :key="item.name">
           <router-link
             :to="item.to"
             class="nav-item"
@@ -443,6 +539,105 @@ function toggleExpanded(): void {
   left: 0;
   top: 6px;
   bottom: 6px;
+}
+
+/* ——— Nav groups(分组折叠)——— */
+.nav-group {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  /* 组间留白:与上一区块拉开距离,收起态的图标堆里也能分辨组界。 */
+  margin-top: 6px;
+}
+.is-expanded .nav-group {
+  align-items: stretch;
+}
+
+/* 组头:收起态与 nav-item 同为 40×40 图标钮(手风琴);展开态一行(icon + 标题 + chevron)。 */
+.nav-group-header {
+  position: relative;
+  width: 40px;
+  height: 40px;
+  border-radius: var(--rounded);
+  display: grid;
+  place-items: center;
+  color: var(--color-faint);
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  cursor: pointer;
+  transition:
+    color var(--duration-fast),
+    background-color var(--duration-fast);
+}
+.is-expanded .nav-group-header {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 12px;
+  padding: 0 12px;
+}
+.nav-group-header:hover {
+  color: var(--color-text);
+  background-color: var(--color-border);
+}
+.nav-group-header:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+
+/* 组头与条目的层级区分:标题加粗(图标在模板中已小一号 18 vs 20)。 */
+.nav-group-title {
+  font-size: var(--text-label);
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+  overflow: hidden;
+  display: none;
+}
+.is-expanded .nav-group-title {
+  display: inline;
+}
+
+/* 开合箭头:仅展开态显示(收起态没空间),展开组旋转 90° 朝下。 */
+.nav-group-chevron {
+  display: none;
+  margin-left: auto;
+  flex-shrink: 0;
+  transition: transform var(--duration-fast) var(--ease-out-expo, ease);
+}
+.is-expanded .nav-group-chevron {
+  display: inline-flex;
+}
+.nav-group-chevron.open {
+  transform: rotate(90deg);
+}
+
+/* 组内条目:收起态居中纵排;展开态整体左缘缩进 10px 表达层级。
+   width:auto 让条目在 stretch 布局下按可用宽计算(否则 100% + margin 会溢出右缘)。 */
+.nav-group-items {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 100%;
+  align-items: center;
+}
+.is-expanded .nav-group-items {
+  align-items: stretch;
+}
+.is-expanded .nav-group-items .nav-item {
+  width: auto;
+  margin-left: 10px;
+}
+
+/* 组内含当前页:组头转主色提示方位(强指示仍留给活动条目本身)。 */
+.nav-group-header--active {
+  color: var(--color-primary);
 }
 
 /* 边缘切换:骑在侧栏右缘、与品牌行齐平的圆形按钮。随 --rail-width 平移(展开/收起都跟手)。 */
