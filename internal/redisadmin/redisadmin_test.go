@@ -288,7 +288,7 @@ func TestScanPagination(t *testing.T) {
 	fc := &fakeRedisClient{
 		// 三轮各 60 键(第 2 轮故意重复 5 个第 1 轮的键),第 3 轮后归零。
 		scanBatches: map[uint64]fakeScanBatch{
-			0: {next: 11, keys: genKeys("k", 0, 60)},
+			0:  {next: 11, keys: genKeys("k", 0, 60)},
 			11: {next: 22, keys: append(genKeys("k", 55, 60), genKeys("k", 60, 55)...)}, // 前 5 个重复
 			22: {next: 0, keys: genKeys("z", 0, 40)},
 		},

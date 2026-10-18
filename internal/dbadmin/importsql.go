@@ -16,7 +16,7 @@ type ImportResult struct {
 }
 
 // Import 执行多语句 .sql 文本(典型 mysqldump/pg_dump 产物):开启多语句通道
-//(MySQL multiStatements / PG simple_protocol)一次性 Exec;失败时驱动错误原样透出。
+// (MySQL multiStatements / PG simple_protocol)一次性 Exec;失败时驱动错误原样透出。
 // 需要已解锁(只读模式拒绝);语句文本绝不进审计(可能含 CREATE USER 凭据字面量)。
 func (s *service) Import(ctx context.Context, id, database, dump string) (*ImportResult, error) {
 	inst, err := s.Get(ctx, id)

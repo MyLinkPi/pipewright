@@ -257,7 +257,7 @@ func makeRedisInstanceDeleteHandler(svc redisadmin.Service, rec audit.Recorder) 
 		recordAudit(r.Context(), rec, audit.Entry{
 			Actor: auditActor, Action: auditActionRedisInstanceDelete, TargetType: auditTargetRedisInstance,
 			TargetID: id, Detail: map[string]any{},
-			IP:       clientIP(r),
+			IP: clientIP(r),
 		})
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 	}
@@ -279,7 +279,7 @@ func makeRedisInstanceTestHandler(svc redisadmin.Service, rec audit.Recorder) ht
 		recordAudit(r.Context(), rec, audit.Entry{
 			Actor: auditActor, Action: auditActionRedisInstanceTest, TargetType: auditTargetRedisInstance,
 			TargetID: id, Detail: map[string]any{"ok": res.OK},
-			IP:       clientIP(r),
+			IP: clientIP(r),
 		})
 		writeRedisTestResult(w, nil, res)
 	}
@@ -329,7 +329,7 @@ func makeRedisInstanceReadonlyHandler(svc redisadmin.Service, rec audit.Recorder
 		recordAudit(r.Context(), rec, audit.Entry{
 			Actor: auditActor, Action: auditActionRedisInstanceReadonly, TargetType: auditTargetRedisInstance,
 			TargetID: inst.ID, Detail: map[string]any{"readonly": inst.ReadOnly},
-			IP:       clientIP(r),
+			IP: clientIP(r),
 		})
 		writeJSON(w, http.StatusOK, toRedisInstanceDTO(*inst))
 	}
@@ -439,7 +439,7 @@ func makeRedisDeleteKeyHandler(svc redisadmin.Service, rec audit.Recorder) http.
 		recordAudit(r.Context(), rec, audit.Entry{
 			Actor: auditActor, Action: auditActionRedisKeyDelete, TargetType: auditTargetRedisInstance,
 			TargetID: id, Detail: map[string]any{"key": key, "db": dbNum},
-			IP:       clientIP(r),
+			IP: clientIP(r),
 		})
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 	}
@@ -471,7 +471,7 @@ func makeRedisSetTTLHandler(svc redisadmin.Service, rec audit.Recorder) http.Han
 		recordAudit(r.Context(), rec, audit.Entry{
 			Actor: auditActor, Action: auditActionRedisKeyTTL, TargetType: auditTargetRedisInstance,
 			TargetID: id, Detail: map[string]any{"key": in.Key, "db": in.DBNum, "ttl": in.TTL},
-			IP:       clientIP(r),
+			IP: clientIP(r),
 		})
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 	}

@@ -39,7 +39,7 @@ const (
 	SourceAppStore = "appstore"
 )
 
-// TLS 模式:'' = 不加密;TLSSkipVerify = 加密不校验证书(自签名场景)。
+// TLS 模式:” = 不加密;TLSSkipVerify = 加密不校验证书(自签名场景)。
 const TLSSkipVerify = "skip-verify"
 
 // 领域错误(人话由 httpapi 层映射状态码;错误体绝不含密码/DSN)。
@@ -207,7 +207,7 @@ type service struct {
 }
 
 // New 构造数据库管理服务。vault 未配置 master key 时实例登记/连接不可用
-//(ErrVaultUnconfigured),但不影响平台启动。
+// (ErrVaultUnconfigured),但不影响平台启动。
 func New(db *sql.DB, v vault.Vault) Service {
 	return &service{db: db, vault: v}
 }
@@ -564,10 +564,10 @@ type scanner interface {
 // scanInstance 把一行扫描为 Instance(永不读 password_sealed)。
 func scanInstance(sc scanner) (*Instance, error) {
 	var (
-		inst        Instance
-		ro          int
-		createdStr  string
-		updatedStr  string
+		inst       Instance
+		ro         int
+		createdStr string
+		updatedStr string
 	)
 	if err := sc.Scan(&inst.ID, &inst.Name, &inst.Engine, &inst.Host, &inst.Port, &inst.Username,
 		&inst.TLS, &ro, &inst.Source, &inst.ServerID, &inst.StackName, &createdStr, &updatedStr); err != nil {

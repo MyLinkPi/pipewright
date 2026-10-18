@@ -35,7 +35,7 @@ func (s *stubTarget) DockerLogin(context.Context, string, string, string) error 
 
 // SetPlacement / ListPools 满足 target.Service 接口(0084 服务器池追加);测试桩不落库。
 func (s *stubTarget) SetPlacement(context.Context, string, string, string) error { return nil }
-func (s *stubTarget) ListPools(context.Context) ([]*target.ServerPool, error)         { return nil, nil }
+func (s *stubTarget) ListPools(context.Context) ([]*target.ServerPool, error)    { return nil, nil }
 func (s *stubTarget) Get(_ context.Context, id string) (*target.Server, error) {
 	srv, ok := s.servers[id]
 	if !ok {

@@ -264,7 +264,7 @@ func csvCell(v any) string {
 	}
 }
 
-// sqlLiteral 把扫描值转 SQL 字面量(按引擎转义;二进制走 hex/E'' 形态)。
+// sqlLiteral 把扫描值转 SQL 字面量(按引擎转义;二进制走 hex/E” 形态)。
 func sqlLiteral(engine string, v any) string {
 	switch t := v.(type) {
 	case nil:
@@ -304,7 +304,7 @@ func sqlLiteral(engine string, v any) string {
 	}
 }
 
-// sqlStringLiteral 组字符串字面量:MySQL 反斜杠转义;PG 常规 '' 双写、含反斜杠/控制符时 E'' 前缀。
+// sqlStringLiteral 组字符串字面量:MySQL 反斜杠转义;PG 常规 ” 双写、含反斜杠/控制符时 E” 前缀。
 func sqlStringLiteral(engine, s string) string {
 	if engine == EngineMySQL {
 		var b strings.Builder

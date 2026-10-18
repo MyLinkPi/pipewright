@@ -192,7 +192,7 @@ func TestDeployRejectsPVENodeExplicit(t *testing.T) {
 
 	svc := New(tgt, rsvc)
 	for name, in := range map[string]DeployInput{
-		"仅 PVE 机":        {RunID: runID, ArtifactID: artID, ServerIDs: []string{pve.ID}},
+		"仅 PVE 机":     {RunID: runID, ArtifactID: artID, ServerIDs: []string{pve.ID}},
 		"混合(PVE 在前列)": {RunID: runID, ArtifactID: artID, ServerIDs: []string{pve.ID, std.ID}},
 	} {
 		_, err := svc.Deploy(context.Background(), in)

@@ -17,7 +17,7 @@ import (
 	"github.com/huangchengsir/pipewright/internal/store"
 )
 
-func encodeBase64Std(b []byte) string { return base64.StdEncoding.EncodeToString(b) }
+func encodeBase64Std(b []byte) string          { return base64.StdEncoding.EncodeToString(b) }
 func decodeBase64Std(s string) ([]byte, error) { return base64.StdEncoding.DecodeString(s) }
 
 // store 封装 mfa 四张表的直接 SQL 访问(时间串一律 RFC3339 UTC,与全库一致)。
@@ -195,31 +195,31 @@ func replaceBackupCodesTx(tx *sql.Tx, owner string, hashes []string, now string)
 
 // Passkey 是 webauthn_credentials 行的领域视图(不含公钥原文,公钥仅在校验时内部加载)。
 type Passkey struct {
-	ID          int64      `json:"id"`
-	Name        string     `json:"name"`
-	CreatedAt   time.Time  `json:"createdAt"`
-	LastUsedAt  *time.Time `json:"lastUsedAt"`
+	ID         int64      `json:"id"`
+	Name       string     `json:"name"`
+	CreatedAt  time.Time  `json:"createdAt"`
+	LastUsedAt *time.Time `json:"lastUsedAt"`
 }
 
 // passkeyRow 是完整行(含验证所需的二进制字段,base64 串)。
 type passkeyRow struct {
-	ID             int64
-	CredentialID   string // base64 std
-	OwnerKey       string
-	Name           string
-	PublicKey      string // base64 std
+	ID              int64
+	CredentialID    string // base64 std
+	OwnerKey        string
+	Name            string
+	PublicKey       string // base64 std
 	AttestationType string
-	AAGUID         string // base64 std
-	SignCount      uint32
-	Transports     string // JSON 数组串
-	CloneWarning   bool
-	UserPresent    bool
-	UserVerified   bool
-	BackupEligible bool
-	BackupState    bool
-	Attachment     string
-	LastUsedAt     *time.Time
-	CreatedAt      time.Time
+	AAGUID          string // base64 std
+	SignCount       uint32
+	Transports      string // JSON 数组串
+	CloneWarning    bool
+	UserPresent     bool
+	UserVerified    bool
+	BackupEligible  bool
+	BackupState     bool
+	Attachment      string
+	LastUsedAt      *time.Time
+	CreatedAt       time.Time
 }
 
 const passkeyCols = `id, credential_id, owner_key, name, public_key, attestation_type, aaguid,

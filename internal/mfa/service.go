@@ -231,18 +231,18 @@ func (s *Service) consumeBackupCode(owner, code string) (bool, error) {
 
 // PasskeyInfo 对外的通行密钥视图(不含任何密钥材料)。
 type PasskeyInfo struct {
-	ID         int64      `json:"id"`
-	Name       string     `json:"name"`
-	CreatedAt  string     `json:"createdAt"`
-	LastUsedAt *string    `json:"lastUsedAt"`
+	ID         int64   `json:"id"`
+	Name       string  `json:"name"`
+	CreatedAt  string  `json:"createdAt"`
+	LastUsedAt *string `json:"lastUsedAt"`
 }
 
 // StatusInfo 是 GET /api/account/mfa 响应体。
 type StatusInfo struct {
-	TOTPEnabled            bool          `json:"totpEnabled"`
-	TOTPSetupPending       bool          `json:"totpSetupPending"`
-	BackupCodesRemaining   int           `json:"backupCodesRemaining"`
-	Passkeys               []PasskeyInfo `json:"passkeys"`
+	TOTPEnabled          bool          `json:"totpEnabled"`
+	TOTPSetupPending     bool          `json:"totpSetupPending"`
+	BackupCodesRemaining int           `json:"backupCodesRemaining"`
+	Passkeys             []PasskeyInfo `json:"passkeys"`
 }
 
 // Status 汇总 owner 的两步验证状态。
@@ -291,8 +291,8 @@ type BeginResult struct {
 
 // registerChallenge 把挑战与设备名打包存库(finish 时一并取回)。
 type registerChallenge struct {
-	Name string                  `json:"name"`
-	SD   *webauthn.SessionData   `json:"sd"`
+	Name string                `json:"name"`
+	SD   *webauthn.SessionData `json:"sd"`
 }
 
 // BeginPasskeyRegistration 为已登录身份发起注册(排除已有凭据防重复注册同一密钥)。

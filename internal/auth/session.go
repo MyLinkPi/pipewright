@@ -32,8 +32,8 @@ const (
 //   - MFAStatePending: 密码已过、待验证码,10 分钟固定,受保护 API 一律 401 mfa_required;
 //   - MFAStateVerified:已通过二步验证(TOTP 完成 / Passkey 登录),30 天滑动。
 const (
-	MFAStateNone    = 0
-	MFAStatePending = 1
+	MFAStateNone     = 0
+	MFAStatePending  = 1
 	MFAStateVerified = 2
 )
 

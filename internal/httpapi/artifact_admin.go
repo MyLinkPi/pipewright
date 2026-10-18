@@ -1,7 +1,7 @@
 // artifact_admin.go 是「产物管理面」的 HTTP 面(admin 子组挂载):
 //   - GET  /api/artifacts(跨运行产物列表:筛选 projectId/type + 分页;产物管理页数据源);
 //   - DELETE /api/runs/{id}/artifacts/{artifactId}(删记录 + 镜像类联动删内置 registry tag
-//     + 已无引用的制品库 blob best-effort 回收);
+//   - 已无引用的制品库 blob best-effort 回收);
 //   - GET  /api/runs/{id}/artifacts/{artifactId}/image-archive(镜像类产物 tar 导出下载:
 //     EnsureLocal(pull 若不在本地)→ docker save 流式输出)。
 //

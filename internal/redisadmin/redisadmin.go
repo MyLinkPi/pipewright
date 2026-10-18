@@ -64,18 +64,18 @@ var (
 // Instance 是一条受管 Redis 实例的领域模型。密码只持密文 BLOB,永不出此包边界;
 // PasswordConfigured 为 store 层计算的「是否配置了密码」(无密码实例合法)。
 type Instance struct {
-	ID        string
-	Name      string
-	Host      string
-	Port      int
-	DBNum     int // 默认逻辑库号(0-15;页面可临时切换,实例只记默认值)
-	ReadOnly  bool
-	Source    string // manual | appstore
-	ServerID  string // 应用市场部署来源的目标服务器(可空)
-	StackName string // 应用市场部署来源的栈名(可空)
+	ID                 string
+	Name               string
+	Host               string
+	Port               int
+	DBNum              int // 默认逻辑库号(0-15;页面可临时切换,实例只记默认值)
+	ReadOnly           bool
+	Source             string // manual | appstore
+	ServerID           string // 应用市场部署来源的目标服务器(可空)
+	StackName          string // 应用市场部署来源的栈名(可空)
 	PasswordConfigured bool
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
 }
 
 // CreateInput 是设置页登记实例的入参(Password 明文直达本层,由本层密封落库;空 = 无密码实例)。
@@ -168,7 +168,7 @@ type service struct {
 }
 
 // New 构造 Redis 管理服务。vault 未配置 master key 时带密码实例的登记/连接不可用
-//(ErrVaultUnconfigured),但不影响平台启动。
+// (ErrVaultUnconfigured),但不影响平台启动。
 func New(db *sql.DB, v vault.Vault) Service {
 	return &service{db: db, vault: v, dial: prodDial}
 }
@@ -295,15 +295,15 @@ type scanner interface {
 	Scan(dest ...any) error
 }
 
-// scanInstance 把一行扫描为 Instance(LENGTH(COALESCE(password_sealed, '')) 计算 PasswordConfigured,
+// scanInstance 把一行扫描为 Instance(LENGTH(COALESCE(password_sealed, ”)) 计算 PasswordConfigured,
 // 绝不读密文本身)。
 func scanInstance(sc scanner) (*Instance, error) {
 	var (
-		inst        Instance
-		ro          int
-		pwLen       int
-		createdStr  string
-		updatedStr  string
+		inst       Instance
+		ro         int
+		pwLen      int
+		createdStr string
+		updatedStr string
 	)
 	if err := sc.Scan(&inst.ID, &inst.Name, &inst.Host, &inst.Port, &inst.DBNum,
 		&ro, &inst.Source, &inst.ServerID, &inst.StackName, &createdStr, &updatedStr, &pwLen); err != nil {
