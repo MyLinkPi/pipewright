@@ -5,11 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/huangchengsir/pipewright/internal/storetest"
 	"github.com/huangchengsir/pipewright/internal/vault"
+	"github.com/minio/minio-go/v7"
 )
 
 // fakeVault 是 vaultReader/vaultWriter 的内存实现(便于单测,不触真库)。
@@ -74,7 +76,7 @@ func (f *fakeVault) Delete(id string) error {
 	return nil
 }
 
-// fakeClient 是 ObjectClient 的内存实现(记录上传内容与列举调用)。
+// fakeClient 是 ObjectClient 的内存实现(记录上传内容与列举/建桶调用)。
 type fakeClient struct {
 	verifyErr error
 	putErr    error
@@ -83,6 +85,9 @@ type fakeClient struct {
 	// listPages 按 "prefix|marker" 键返回预设页(未命中返回空页)。
 	listPages map[string]ListPageResult
 	listCalls []ListPageInput
+	// 建桶:createErr 非空时原样返回(模拟服务端拒绝);createdBuckets 记录调用。
+	createErr      error
+	createdBuckets []string
 }
 
 func (c *fakeClient) VerifyBucket(ctx context.Context) error { return c.verifyErr }
@@ -113,18 +118,27 @@ func (c *fakeClient) ListPage(ctx context.Context, in ListPageInput) (ListPageRe
 	return ListPageResult{}, nil
 }
 
+func (c *fakeClient) CreateBucket(ctx context.Context, bucketName string) error {
+	c.createdBuckets = append(c.createdBuckets, bucketName)
+	return c.createErr
+}
+
 // newTestService 用内存 DB + fake vault + fake client 构造 Service。
-// fv 为 nil 时代表 vault 未注入(Test/Upload 应返回 ErrVaultUnconfigured)。
+// fv 为 nil 时代表 vault 未注入(Test/Upload/Browse/CreateBucket 应返回 ErrVaultUnconfigured);
+// 非空时同时注入读/写两半边(fakeVault 均满足)。
 func newTestService(t *testing.T, fv *fakeVault, client ObjectClient) Service {
 	t.Helper()
 	db := storetest.OpenDB(t)
 	var vr vaultReader
+	var vw vaultWriter
 	if fv != nil {
 		vr = fv
+		vw = fv
 	}
 	return &service{
-		store: NewStore(db),
-		vault: vr,
+		store:  NewStore(db),
+		vault:  vr,
+		vaultW: vw,
 		dial: func(providerType, endpoint, accessKeyID, accessKeySecret, bucket string) (ObjectClient, error) {
 			if providerType != TypeAliyunOSS {
 				return nil, ErrInvalidType
@@ -476,6 +490,140 @@ func TestUpdatePathPrefix(t *testing.T) {
 	upd, err = svc.Update(ctx, p.ID, UpdateInput{})
 	if err != nil || upd.PathPrefix != "" {
 		t.Fatalf("nil 前缀应保持: %v, %+v", err, upd)
+	}
+}
+
+// ---------- CreateBucket(浏览页「新建桶」:建桶 + 自动登记新配置)----------
+
+// TestCreateBucket 覆盖成功链路:服务端建桶 → 凭据独立重封 → 登记新配置(同账户接入参数,
+// 新桶、空前缀);展示名缺省取桶名;源配置凭据不受影响。
+func TestCreateBucket(t *testing.T) {
+	ctx := context.Background()
+	// nextID: 1 让重封凭据从 cred-2 起,不与预置的 cred-1 撞号(便于断言凭据独立)。
+	fv := &fakeVault{configured: true, nextID: 1, secrets: map[string]string{"cred-1": "secret-value"}}
+	fc := &fakeClient{}
+	svc := newTestService(t, fv, fc)
+	p, _ := svc.Create(ctx, sampleInput())
+
+	np, err := svc.CreateBucket(ctx, p.ID, "brand-new-bucket", "展示名")
+	if err != nil {
+		t.Fatalf("CreateBucket: %v", err)
+	}
+	if !reflect.DeepEqual(fc.createdBuckets, []string{"brand-new-bucket"}) {
+		t.Fatalf("应恰好建桶一次: %v", fc.createdBuckets)
+	}
+	if np.Type != TypeAliyunOSS || np.Endpoint != p.Endpoint || np.Bucket != "brand-new-bucket" ||
+		np.AccessKeyID != p.AccessKeyID || np.Name != "展示名" || np.PathPrefix != "" {
+		t.Fatalf("新配置字段不符: %+v", np)
+	}
+	// 凭据独立:新配置持自己的 credentialId,vault 里两条凭据同 secret 不同 id。
+	if np.CredentialID == p.CredentialID {
+		t.Fatalf("凭据应独立重封,不应共享 credentialId")
+	}
+	if got := fv.secrets[np.CredentialID]; got != "secret-value" {
+		t.Fatalf("新凭据应可解出同源 secret: %q", got)
+	}
+	list, _ := svc.List(ctx)
+	if len(list) != 2 {
+		t.Fatalf("应恰有 2 条配置, got %d", len(list))
+	}
+
+	// 展示名缺省 → 桶名。
+	np2, err := svc.CreateBucket(ctx, p.ID, "another-bucket", "")
+	if err != nil || np2.Name != "another-bucket" {
+		t.Fatalf("空展示名应取桶名: %v %+v", err, np2)
+	}
+}
+
+// TestCreateBucketValidation 桶名规则(3-63 位小写字母/数字/连字符,两端字母数字);
+// 大写输入自动归一为小写(不作为错误)。
+func TestCreateBucketValidation(t *testing.T) {
+	ctx := context.Background()
+	fv := &fakeVault{configured: true, secrets: map[string]string{"cred-1": "secret-value"}}
+	svc := newTestService(t, fv, &fakeClient{})
+	p, _ := svc.Create(ctx, sampleInput())
+
+	for _, bad := range []string{"", "ab", "-abc", "abc-", "a_b", "a.b.c", strings.Repeat("a", 64), "has Upper"} {
+		if _, err := svc.CreateBucket(ctx, p.ID, bad, ""); !errors.Is(err, ErrInvalidBucket) {
+			t.Fatalf("桶名 %q 应 ErrInvalidBucket, got %v", bad, err)
+		}
+	}
+	// 合法名 + 前后空白 → 归一化通过。
+	np, err := svc.CreateBucket(ctx, p.ID, "  Good-Bucket-2  ", "")
+	if err != nil || np.Bucket != "good-bucket-2" {
+		t.Fatalf("大写/空白应归一化: %v %+v", err, np)
+	}
+}
+
+// TestCreateBucketDuplicate 同账户同桶已有配置 → ErrDuplicateBucket(校验先于触网,
+// createErr 不会被触发)。
+func TestCreateBucketDuplicate(t *testing.T) {
+	ctx := context.Background()
+	fv := &fakeVault{configured: true, secrets: map[string]string{"cred-1": "secret-value"}}
+	fc := &fakeClient{}
+	svc := newTestService(t, fv, fc)
+	p, _ := svc.Create(ctx, sampleInput()) // bucket = my-bucket
+
+	if _, err := svc.CreateBucket(ctx, p.ID, "my-bucket", ""); !errors.Is(err, ErrDuplicateBucket) {
+		t.Fatalf("重复桶应 ErrDuplicateBucket, got %v", err)
+	}
+	if len(fc.createdBuckets) != 0 {
+		t.Fatalf("重复检查应在触网前拒绝, got %v", fc.createdBuckets)
+	}
+}
+
+// TestCreateBucketFailureOrphanRecovery 建桶失败的两种恢复/报错路径:
+//   - 「已存在」但凭据可访问(半程失败孤儿桶) → 校验通过视为成功,照常登记;
+//   - 「已存在」且无权访问(名被他人占用) → ErrBucketCreateFailed;
+//   - 服务端明示 BucketAlreadyOwnedByYou → 直接视为成功。
+func TestCreateBucketFailureOrphanRecovery(t *testing.T) {
+	ctx := context.Background()
+	fv := &fakeVault{configured: true, secrets: map[string]string{"cred-1": "secret-value"}}
+
+	// 孤儿桶接续:建桶报已存在,但 VerifyBucket 通过。
+	svc := newTestService(t, fv, &fakeClient{createErr: minio.ErrorResponse{Code: "BucketAlreadyExists"}})
+	p, _ := svc.Create(ctx, sampleInput())
+	if np, err := svc.CreateBucket(ctx, p.ID, "orphan-bucket", ""); err != nil || np.Bucket != "orphan-bucket" {
+		t.Fatalf("孤儿桶应接续登记成功: %v %+v", err, np)
+	}
+
+	// 名被他人占用:建桶报已存在且无权访问。
+	svc2 := newTestService(t, fv, &fakeClient{
+		createErr: minio.ErrorResponse{Code: "BucketAlreadyExists"},
+		verifyErr: errors.New("AccessDenied"),
+	})
+	p2, _ := svc2.Create(ctx, sampleInput())
+	if _, err := svc2.CreateBucket(ctx, p2.ID, "taken-bucket", ""); !errors.Is(err, ErrBucketCreateFailed) {
+		t.Fatalf("他人占用应 ErrBucketCreateFailed, got %v", err)
+	}
+
+	// 服务端明示归己有 → 直接成功。
+	svc3 := newTestService(t, fv, &fakeClient{
+		createErr: minio.ErrorResponse{Code: "BucketAlreadyOwnedByYou"},
+		verifyErr: errors.New("AccessDenied"), // 不应走到校验
+	})
+	p3, _ := svc3.Create(ctx, sampleInput())
+	if _, err := svc3.CreateBucket(ctx, p3.ID, "mine-bucket", ""); err != nil {
+		t.Fatalf("BucketAlreadyOwnedByYou 应视为成功: %v", err)
+	}
+}
+
+// TestCreateBucketWithoutVault vault 未配置 → ErrVaultUnconfigured;源配置不存在 → ErrNotFound。
+func TestCreateBucketWithoutVaultAndNotFound(t *testing.T) {
+	ctx := context.Background()
+	svc := newTestService(t, nil, &fakeClient{})
+	fvInput := sampleInput()
+	normalizeCreate(&fvInput)
+	p := newProvider(fvInput)
+	if err := svc.(*service).store.create(ctx, p); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	if _, err := svc.CreateBucket(ctx, p.ID, "some-bucket", ""); !errors.Is(err, ErrVaultUnconfigured) {
+		t.Fatalf("vault 未配时应 ErrVaultUnconfigured, got %v", err)
+	}
+	if _, err := svc.CreateBucket(ctx, "no-such-id", "some-bucket", ""); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("配置不存在应 ErrNotFound, got %v", err)
 	}
 }
 

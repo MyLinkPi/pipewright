@@ -50,6 +50,12 @@ func (c *rustfsObjectClient) PutObject(ctx context.Context, objectKey string, bo
 	return err
 }
 
+// CreateBucket 显式新建一个桶(浏览页「新建桶」入口)。桶已存在时由服务端返回错误,
+// 归属判定与孤儿桶恢复在 service 层统一处理,此处原样透出。
+func (c *rustfsObjectClient) CreateBucket(ctx context.Context, bucketName string) error {
+	return c.client.MakeBucket(ctx, bucketName, minio.MakeBucketOptions{})
+}
+
 // EnsureBucket 确保目标桶存在(不存在则创建;已存在为幂等 no-op)。供应用商店部署 RustFS
 // 后的自动登记链路使用(见 service.Register)。
 func (c *rustfsObjectClient) EnsureBucket(ctx context.Context) error {

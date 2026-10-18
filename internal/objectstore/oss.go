@@ -56,6 +56,12 @@ func (c *aliyunObjectClient) PutObject(ctx context.Context, objectKey string, bo
 	return c.bucket.PutObject(objectKey, body)
 }
 
+// CreateBucket 显式新建一个桶(浏览页「新建桶」入口;默认私有 ACL,区域跟随 Endpoint)。
+// 桶已存在时由服务端返回错误,归属判定与孤儿桶恢复在 service 层统一处理。
+func (c *aliyunObjectClient) CreateBucket(ctx context.Context, bucketName string) error {
+	return c.client.CreateBucket(bucketName)
+}
+
 // ListPage 单页列举一个目录(V1 列举,delimiter 折叠子目录,marker 游标)。
 // 桶内对象可能巨多,SDK 单次调用单页返回,绝不聚合全量。
 func (c *aliyunObjectClient) ListPage(ctx context.Context, in ListPageInput) (ListPageResult, error) {
@@ -94,6 +100,23 @@ func (c *aliyunObjectClient) ListPage(ctx context.Context, in ListPageInput) (Li
 		}
 	}
 	return out, nil
+}
+
+// isBucketAlreadyOwned 判断建桶错误是否为「桶已存在且归当前账户所有」——可视为建桶成功
+// (覆盖此前半程失败在服务端留下的孤儿桶:桶已建成但配置没登记)。
+func isBucketAlreadyOwned(err error) bool {
+	if err == nil {
+		return false
+	}
+	var se oss.ServiceError
+	if errors.As(err, &se) {
+		return se.Code == "BucketAlreadyOwnedByYou"
+	}
+	var me minio.ErrorResponse
+	if errors.As(err, &me) {
+		return me.Code == "BucketAlreadyOwnedByYou"
+	}
+	return false
 }
 
 // describeClientError 把 SDK / 网络错误渲染为人话(绝不含 AccessKey 明文)。

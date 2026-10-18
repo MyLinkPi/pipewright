@@ -17,11 +17,12 @@ import (
 // 审计 action / target(对象存储配置写操作)。detail 绝无 AccessKeySecret / 凭据明文
 // (AccessKeyId 非机密,可入 detail)。
 const (
-	auditActionObjectStoreCreate = "objectstore.create"
-	auditActionObjectStoreUpdate = "objectstore.update"
-	auditActionObjectStoreDelete = "objectstore.delete"
-	auditActionObjectStoreTest   = "objectstore.test"
-	auditTargetObjectStore       = "object_store"
+	auditActionObjectStoreCreate       = "objectstore.create"
+	auditActionObjectStoreUpdate       = "objectstore.update"
+	auditActionObjectStoreDelete       = "objectstore.delete"
+	auditActionObjectStoreTest         = "objectstore.test"
+	auditActionObjectStoreBucketCreate = "objectstore.bucket_create"
+	auditTargetObjectStore             = "object_store"
 )
 
 // objectStoreDTO 是对象存储配置对外响应体(冻结契约;camelCase)。绝不外泄 Secret:
@@ -80,6 +81,12 @@ func writeObjectStoreError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadGateway, "object_store_upload_failed", "上传失败:请确认凭据有该桶的写权限")
 	case errors.Is(err, objectstore.ErrBrowseFailed):
 		writeError(w, http.StatusBadGateway, "object_store_browse_failed", "浏览失败:请确认凭据有该桶的读权限")
+	case errors.Is(err, objectstore.ErrInvalidBucket):
+		writeError(w, http.StatusBadRequest, "invalid_object_store", "桶名需为 3-63 位小写字母/数字/连字符,且以字母或数字开头结尾")
+	case errors.Is(err, objectstore.ErrDuplicateBucket):
+		writeError(w, http.StatusConflict, "object_store_duplicate", "该桶已在对象存储配置中")
+	case errors.Is(err, objectstore.ErrBucketCreateFailed):
+		writeError(w, http.StatusBadGateway, "object_store_bucket_create_failed", "建桶失败:桶名已被占用或凭据无建桶权限")
 	case errors.Is(err, context.DeadlineExceeded):
 		writeError(w, http.StatusBadGateway, "object_store_unreachable", "连接对象存储超时")
 	default:
@@ -376,5 +383,41 @@ func makeBrowseObjectStoreHandler(svc objectstore.Service) http.HandlerFunc {
 			})
 		}
 		writeJSON(w, http.StatusOK, out)
+	}
+}
+
+// makeCreateBucketHandler 返回 POST /api/object-stores/{id}/buckets(认证 + CSRF)→ 新配置(201)。
+// body: { bucket, name? }。在 id 配置的账户下新建桶并登记为一份新的对象存储配置
+// (浏览页「新建桶」入口;凭据经 vault 独立重封)。Secret 只在服务端流转,绝无明文外泄。
+func makeCreateBucketHandler(svc objectstore.Service, rec audit.Recorder) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if svc == nil {
+			writeError(w, http.StatusServiceUnavailable, "internal", "对象存储服务未初始化")
+			return
+		}
+		id := chi.URLParam(r, "id")
+		r.Body = http.MaxBytesReader(w, r.Body, 1<<14)
+		var in struct {
+			Bucket string `json:"bucket"`
+			Name   string `json:"name"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			writeError(w, http.StatusBadRequest, "bad_request", "请求体格式错误")
+			return
+		}
+		p, err := svc.CreateBucket(r.Context(), id, in.Bucket, in.Name)
+		if err != nil {
+			writeObjectStoreError(w, err)
+			return
+		}
+		recordAudit(r.Context(), rec, audit.Entry{
+			Actor:      auditActor,
+			Action:     auditActionObjectStoreBucketCreate,
+			TargetType: auditTargetObjectStore,
+			TargetID:   p.ID,
+			Detail:     map[string]any{"type": p.Type, "endpoint": p.Endpoint, "bucket": p.Bucket, "name": p.Name, "sourceProvider": id}, // 绝无 AccessKeySecret
+			IP:         clientIP(r),
+		})
+		writeJSON(w, http.StatusCreated, toObjectStoreDTO(*p))
 	}
 }

@@ -146,3 +146,18 @@ export async function browseObjectStore(
     `/api/object-stores/${encodeURIComponent(id)}/objects${query ? `?${query}` : ''}`,
   )
 }
+
+/** 新建桶入参：`name` 为新配置展示名，缺省用桶名。 */
+export interface CreateBucketInput {
+  /** 桶名：3-63 位小写字母/数字/连字符，两端为字母或数字（服务端同规则校验）。 */
+  bucket: string
+  name?: string
+}
+
+/**
+ * 在指定配置的账户下新建桶，并自动登记为一份新的对象存储配置（服务端重封独立凭据）。
+ * 返回新配置（前端可据此切换下拉到新桶）。同账户同桶已登记 → 409；桶名非法 → 400。
+ */
+export async function createObjectStoreBucket(id: string, input: CreateBucketInput): Promise<ObjectStore> {
+  return http.post<ObjectStore>(`/api/object-stores/${encodeURIComponent(id)}/buckets`, input)
+}
