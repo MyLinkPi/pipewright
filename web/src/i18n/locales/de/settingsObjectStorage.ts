@@ -12,6 +12,7 @@ export default {
   credConfigured: 'Konfiguriert',
   credMissing: 'Nicht konfiguriert',
   editBtn: 'Bearbeiten',
+  browse: 'Durchsuchen',
   editTitle: '{name} bearbeiten',
   test: 'Verbindung testen',
   testing: 'Testen…',

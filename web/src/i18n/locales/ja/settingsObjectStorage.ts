@@ -12,6 +12,7 @@ export default {
   credConfigured: '設定済み',
   credMissing: '未設定',
   editBtn: '編集',
+  browse: '参照',
   editTitle: '{name} を編集',
   test: '接続テスト',
   testing: 'テスト中…',

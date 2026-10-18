@@ -12,6 +12,7 @@ export default {
   credConfigured: '已設定',
   credMissing: '未設定',
   editBtn: '編輯',
+  browse: '瀏覽',
   editTitle: '編輯「{name}」',
   test: '測試連接',
   testing: '測試中…',

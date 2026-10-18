@@ -74,11 +74,15 @@ func (f *fakeVault) Delete(id string) error {
 	return nil
 }
 
-// fakeClient 是 ObjectClient 的内存实现(记录上传内容)。
+// fakeClient 是 ObjectClient 的内存实现(记录上传内容与列举调用)。
 type fakeClient struct {
 	verifyErr error
 	putErr    error
 	puts      map[string]string
+	listErr   error
+	// listPages 按 "prefix|marker" 键返回预设页(未命中返回空页)。
+	listPages map[string]ListPageResult
+	listCalls []ListPageInput
 }
 
 func (c *fakeClient) VerifyBucket(ctx context.Context) error { return c.verifyErr }
@@ -96,6 +100,17 @@ func (c *fakeClient) PutObject(ctx context.Context, objectKey string, body io.Re
 	}
 	c.puts[objectKey] = string(b)
 	return nil
+}
+
+func (c *fakeClient) ListPage(ctx context.Context, in ListPageInput) (ListPageResult, error) {
+	c.listCalls = append(c.listCalls, in)
+	if c.listErr != nil {
+		return ListPageResult{}, c.listErr
+	}
+	if res, ok := c.listPages[in.Prefix+"|"+in.Marker]; ok {
+		return res, nil
+	}
+	return ListPageResult{}, nil
 }
 
 // newTestService 用内存 DB + fake vault + fake client 构造 Service。
@@ -253,6 +268,132 @@ func TestUploadAndTestWithoutVault(t *testing.T) {
 	}
 	if err := svc.Upload(ctx, p.ID, "k", strings.NewReader("x")); !errors.Is(err, ErrVaultUnconfigured) {
 		t.Fatalf("vault 未配时 Upload 应 ErrVaultUnconfigured, got %v", err)
+	}
+}
+
+// ---------- Browse(对象存储浏览;marker 游标单页,绝不聚合全量)----------
+
+// TestBrowse 覆盖基本链路:prefix 透传(以 / 结尾,根为空)、结果原样返回。
+func TestBrowse(t *testing.T) {
+	ctx := context.Background()
+	fv := &fakeVault{configured: true, secrets: map[string]string{"cred-1": "secret-value"}}
+	fc := &fakeClient{listPages: map[string]ListPageResult{
+		"releases/|": {Prefixes: []string{"releases/2026/"}, Objects: []ObjectEntry{{Key: "releases/app.jar", Size: 12}}},
+		"|":          {Prefixes: []string{"releases/"}, Objects: nil},
+	}}
+	svc := newTestService(t, fv, fc)
+	p, _ := svc.Create(ctx, sampleInput())
+
+	res, err := svc.Browse(ctx, p.ID, "releases/", "", 100)
+	if err != nil {
+		t.Fatalf("Browse: %v", err)
+	}
+	if len(res.Prefixes) != 1 || res.Prefixes[0] != "releases/2026/" {
+		t.Fatalf("子目录不符: %+v", res.Prefixes)
+	}
+	if len(res.Objects) != 1 || res.Objects[0].Key != "releases/app.jar" || res.Objects[0].Size != 12 {
+		t.Fatalf("对象不符: %+v", res.Objects)
+	}
+
+	// 根目录(prefix 空)→ 列举前缀为空串。
+	if _, err := svc.Browse(ctx, p.ID, "", "", 100); err != nil {
+		t.Fatalf("Browse(根): %v", err)
+	}
+	if got := fc.listCalls[len(fc.listCalls)-1].Prefix; got != "" {
+		t.Fatalf("根目录前缀应为空串, got %q", got)
+	}
+}
+
+// TestBrowseAppliesPathPrefix 浏览根锚定在配置级 PathPrefix 之下(与 Upload 写入位置一致):
+// 用户所见「根」即前缀根,无前缀配置时行为不变。
+func TestBrowseAppliesPathPrefix(t *testing.T) {
+	ctx := context.Background()
+	fv := &fakeVault{configured: true, secrets: map[string]string{"cred-1": "secret-value"}}
+	fc := &fakeClient{}
+	svc := newTestService(t, fv, fc)
+	in := sampleInput()
+	in.PathPrefix = "/ci/prod/"
+	p, _ := svc.Create(ctx, in)
+
+	if _, err := svc.Browse(ctx, p.ID, "", "", 100); err != nil {
+		t.Fatalf("Browse(前缀根): %v", err)
+	}
+	if got := fc.listCalls[0].Prefix; got != "ci/prod/" {
+		t.Fatalf("前缀根应锚定 PathPrefix: %q", got)
+	}
+
+	// 子目录拼在前缀之后;入参不规范(首尾斜杠)也应归一。
+	if _, err := svc.Browse(ctx, p.ID, "/releases", "", 100); err != nil {
+		t.Fatalf("Browse(子目录): %v", err)
+	}
+	if got := fc.listCalls[1].Prefix; got != "ci/prod/releases/" {
+		t.Fatalf("子目录前缀不符: %q", got)
+	}
+}
+
+// TestBrowsePagination 分页契约:marker 原样透传给客户端(S3/OSS V1 游标语义);
+// maxKeys 钳制(<=0 → 默认 100,超上限 → 1000)。
+func TestBrowsePagination(t *testing.T) {
+	ctx := context.Background()
+	fv := &fakeVault{configured: true, secrets: map[string]string{"cred-1": "secret-value"}}
+	fc := &fakeClient{}
+	svc := newTestService(t, fv, fc)
+	p, _ := svc.Create(ctx, sampleInput())
+
+	if _, err := svc.Browse(ctx, p.ID, "", "releases/obj-0100", 50); err != nil {
+		t.Fatalf("Browse(page2): %v", err)
+	}
+	call := fc.listCalls[0]
+	if call.Marker != "releases/obj-0100" {
+		t.Fatalf("marker 应透传: %q", call.Marker)
+	}
+	if call.MaxKeys != 50 {
+		t.Fatalf("maxKeys 应透传: %d", call.MaxKeys)
+	}
+
+	if _, err := svc.Browse(ctx, p.ID, "", "", 0); err != nil {
+		t.Fatalf("Browse(maxKeys=0): %v", err)
+	}
+	if got := fc.listCalls[1].MaxKeys; got != DefaultBrowsePageSize {
+		t.Fatalf("maxKeys<=0 应取默认 %d, got %d", DefaultBrowsePageSize, got)
+	}
+
+	if _, err := svc.Browse(ctx, p.ID, "", "", 99999); err != nil {
+		t.Fatalf("Browse(maxKeys 超上限): %v", err)
+	}
+	if got := fc.listCalls[2].MaxKeys; got != MaxBrowsePageSize {
+		t.Fatalf("超上限应钳到 %d, got %d", MaxBrowsePageSize, got)
+	}
+}
+
+// TestBrowseFailed 列举失败(凭据无读权限 / 网络不可达)→ ErrBrowseFailed。
+func TestBrowseFailed(t *testing.T) {
+	ctx := context.Background()
+	fv := &fakeVault{configured: true, secrets: map[string]string{"cred-1": "secret-value"}}
+	svc := newTestService(t, fv, &fakeClient{listErr: errors.New("AccessDenied")})
+	p, _ := svc.Create(ctx, sampleInput())
+
+	if _, err := svc.Browse(ctx, p.ID, "", "", 100); !errors.Is(err, ErrBrowseFailed) {
+		t.Fatalf("列举失败应 ErrBrowseFailed, got %v", err)
+	}
+}
+
+// TestBrowseWithoutVaultAndNotFound vault 未配置 → ErrVaultUnconfigured;配置不存在 → ErrNotFound。
+func TestBrowseWithoutVaultAndNotFound(t *testing.T) {
+	ctx := context.Background()
+	svc := newTestService(t, nil, &fakeClient{})
+	fvInput := sampleInput()
+	normalizeCreate(&fvInput)
+	p := newProvider(fvInput)
+	if err := svc.(*service).store.create(ctx, p); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	if _, err := svc.Browse(ctx, p.ID, "", "", 100); !errors.Is(err, ErrVaultUnconfigured) {
+		t.Fatalf("vault 未配时 Browse 应 ErrVaultUnconfigured, got %v", err)
+	}
+	if _, err := svc.Browse(ctx, "no-such-id", "", "", 100); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("配置不存在应 ErrNotFound, got %v", err)
 	}
 }
 

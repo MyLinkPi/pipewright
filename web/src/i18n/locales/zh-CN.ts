@@ -77,6 +77,7 @@ export default {
     serviceReg: '服务注册',
     appStore: '应用商店',
     databases: '数据库',
+    objectStorage: '对象存储',
     certificates: '证书管理',
     anomaly: '异常检测',
     notifications: '通知',

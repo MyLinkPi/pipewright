@@ -54,6 +54,8 @@ var (
 	ErrTestFailed = errors.New("objectstore: connection test failed")
 	// ErrUploadFailed 表示上传失败。
 	ErrUploadFailed = errors.New("objectstore: upload failed")
+	// ErrBrowseFailed 表示列举(浏览)失败。
+	ErrBrowseFailed = errors.New("objectstore: browse failed")
 )
 
 // Provider 是一条对象存储接入配置的领域模型。绝不含 AccessKeySecret 明文,只持 CredentialID 引用;
@@ -119,12 +121,41 @@ type TestResult struct {
 	Err       error
 }
 
-// ObjectClient 抽象一个对象存储账户的写/校验能力(注入便于单测,不触真网络)。
+// ListPageInput 是单页目录列举入参(S3 ListObjects V1 语义;delimiter 固定 "/" 折叠子目录)。
+// 桶内对象数可能巨大,列举永远单页返回,绝不聚合全量。
+type ListPageInput struct {
+	// Prefix 是当前目录前缀(以 "/" 结尾;空串 = 根目录)。PathPrefix 由 service 层拼好再传入,
+	// ObjectClient 拿到的已是最终列举前缀。
+	Prefix string
+	// Marker 是分页游标:返回 key 字典序严格大于它的条目(S3/OSS V1 语义,不含自身);空串 = 第一页。
+	Marker string
+	// MaxKeys 是本页最大返回条数(对象 + 子目录合计;调用方已钳制合法区间)。
+	MaxKeys int
+}
+
+// ObjectEntry 是一个对象条目(目录占位对象已被过滤,只含当前层的真实文件)。
+type ObjectEntry struct {
+	Key          string
+	Size         int64
+	LastModified time.Time
+}
+
+// ListPageResult 是单页列举结果。Prefixes 为子目录 common prefix(以 "/" 结尾),
+// Objects 为当前层对象;两者已按字典序各自有序。NextMarker 为下一页游标,空串 = 没有更多页。
+type ListPageResult struct {
+	Prefixes   []string
+	Objects    []ObjectEntry
+	NextMarker string
+}
+
+// ObjectClient 抽象一个对象存储账户的写/校验/列举能力(注入便于单测,不触真网络)。
 type ObjectClient interface {
 	// VerifyBucket 校验凭据可访问目标桶(连通性 + 桶存在),失败返回人话错误(绝不含密钥)。
 	VerifyBucket(ctx context.Context) error
 	// PutObject 上传一个对象(objectKey 为对象键,body 为内容流)。
 	PutObject(ctx context.Context, objectKey string, body io.Reader) error
+	// ListPage 单页列举一个目录(桶可能对象巨多,永远只返回一页,绝不全量聚合)。
+	ListPage(ctx context.Context, in ListPageInput) (ListPageResult, error)
 }
 
 // bucketEnsurer 是 ObjectClient 的可选能力:支持自动建桶的实现(自建 S3 兼容存储如 RustFS;
@@ -158,6 +189,11 @@ type Service interface {
 	// objectKey 前会自动附加配置的 PathPrefix(存储级默认前缀;节点级前缀拼在其后)。
 	// Secret 用完即弃,绝不外泄。
 	Upload(ctx context.Context, providerID, objectKey string, body io.Reader) error
+
+	// Browse 取该配置凭据 → 单页列举 prefix 目录(delimiter="/",marker 游标分页)。
+	// prefix 相对 PathPrefix(浏览根锚定在配置前缀之下,与 Upload 写入位置一致);空 = 前缀根。
+	// 桶内对象可能巨多:永远单页返回(MaxKeys 钳制),绝不聚合全量。Secret 用完即弃,绝不外泄。
+	Browse(ctx context.Context, id, prefix, marker string, maxKeys int) (*ListPageResult, error)
 }
 
 // ValidType 报告提供商类型是否为受支持枚举。

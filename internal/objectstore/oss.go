@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"strings"
 
 	"github.com/aliyun/aliyun-oss-go-sdk/oss"
 	"github.com/minio/minio-go/v7"
@@ -53,6 +54,46 @@ func (c *aliyunObjectClient) VerifyBucket(ctx context.Context) error {
 // PutObject 上传一个对象。
 func (c *aliyunObjectClient) PutObject(ctx context.Context, objectKey string, body io.Reader) error {
 	return c.bucket.PutObject(objectKey, body)
+}
+
+// ListPage 单页列举一个目录(V1 列举,delimiter 折叠子目录,marker 游标)。
+// 桶内对象可能巨多,SDK 单次调用单页返回,绝不聚合全量。
+func (c *aliyunObjectClient) ListPage(ctx context.Context, in ListPageInput) (ListPageResult, error) {
+	res, err := c.bucket.ListObjects(
+		oss.Prefix(in.Prefix),
+		oss.Marker(in.Marker),
+		oss.Delimiter("/"),
+		oss.MaxKeys(in.MaxKeys),
+	)
+	if err != nil {
+		return ListPageResult{}, err
+	}
+	out := ListPageResult{Prefixes: make([]string, 0, len(res.CommonPrefixes)), Objects: make([]ObjectEntry, 0, len(res.Objects))}
+	var last string
+	for _, p := range res.CommonPrefixes {
+		out.Prefixes = append(out.Prefixes, p)
+		if p > last {
+			last = p
+		}
+	}
+	for _, obj := range res.Objects {
+		// 目录占位对象(key 恰等于当前前缀或以 / 结尾)不是文件,不展示。
+		if obj.Key == in.Prefix || strings.HasSuffix(obj.Key, "/") {
+			continue
+		}
+		out.Objects = append(out.Objects, ObjectEntry{Key: obj.Key, Size: obj.Size, LastModified: obj.LastModified})
+		if obj.Key > last {
+			last = obj.Key
+		}
+	}
+	if res.IsTruncated {
+		// OSS 带 delimiter 时返回 NextMarker;个别网关缺失时按 V1 语义取字典序最大 key 兜底。
+		out.NextMarker = res.NextMarker
+		if out.NextMarker == "" {
+			out.NextMarker = last
+		}
+	}
+	return out, nil
 }
 
 // describeClientError 把 SDK / 网络错误渲染为人话(绝不含 AccessKey 明文)。

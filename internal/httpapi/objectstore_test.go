@@ -245,3 +245,15 @@ func TestObjectStoreListEmpty(t *testing.T) {
 		t.Fatalf("初始列表应为空: %v body=%s", err, raw)
 	}
 }
+
+// --- GET /{id}/objects:不存在的配置 → 404(不触网;浏览语义/分页契约由 service 层单测覆盖) ---
+
+func TestObjectStoreBrowseNotFound(t *testing.T) {
+	srv, client, csrf, _, _ := setupObjectStoresAPI(t)
+	resp := doJSON(t, client, http.MethodGet, srv.URL+"/api/object-stores/missing/objects?prefix=&marker=&maxKeys=100", csrf, "")
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("不存在应 404, got %d body=%s", resp.StatusCode, raw)
+	}
+}

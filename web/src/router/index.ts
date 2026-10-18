@@ -31,6 +31,8 @@ const ServiceRegistry = () => import('../views/ServiceRegistry.vue')
 const AppStore = () => import('../views/AppStore.vue')
 // 数据库在线管理(phpMyAdmin 式):实例在 设置 → 数据库 注册,此处浏览/查询/管理。
 const Databases = () => import('../views/Databases.vue')
+// 对象存储浏览(只读):实例在 设置 → 对象存储 注册,此处浏览桶内目录(marker 游标分页)。
+const ObjectStorage = () => import('../views/ObjectStorage.vue')
 // Story 6-5: configurable anomaly detection & alerts (FR-23)
 const AnomalyDetection = () => import('../views/AnomalyDetection.vue')
 // 集群(对等节点 + EasyTier 自组网):节点状态/链路(p2p|中继)总览 + 授权管理入口
@@ -174,6 +176,8 @@ const router = createRouter({
         { path: 'app-store', name: 'app-store', component: AppStore, meta: { title: '应用商店' } },
         // 数据库在线管理(phpMyAdmin 式):库/表浏览、SQL 控制台、导入导出、账号管理(仅管理员)。
         { path: 'databases', name: 'databases', component: Databases, meta: { title: '数据库', roles: ['admin'] } },
+        // 对象存储浏览(只读;仅管理员):实例在 设置 → 对象存储 注册,此处浏览桶内目录(marker 游标分页)。
+        { path: 'object-storage', name: 'object-storage', component: ObjectStorage, meta: { title: '对象存储', roles: ['admin'] } },
         // R2 / E2.4: 证书总览大盘(跨主机跨域名 + 到期高亮)
         { path: 'certificates', name: 'cert-mgmt', component: Certificates, meta: { title: '证书管理' } },
         // 旧「证书总览」(/proxy)书签兼容:重定向到证书管理。

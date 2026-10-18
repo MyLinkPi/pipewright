@@ -78,6 +78,7 @@ const es: typeof zhCN = {
     serviceReg: 'Registro de servicios',
     appStore: 'Tienda de apps',
     databases: 'Bases de datos',
+    objectStorage: 'Almacenamiento de objetos',
     certificates: 'Certificados',
     anomaly: 'Detección de anomalías',
     notifications: 'Notificaciones',

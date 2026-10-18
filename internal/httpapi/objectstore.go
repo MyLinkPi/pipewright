@@ -78,6 +78,8 @@ func writeObjectStoreError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadGateway, "object_store_test_failed", "对象存储连接测试失败:凭据无效、桶不存在或 Endpoint 不可达")
 	case errors.Is(err, objectstore.ErrUploadFailed):
 		writeError(w, http.StatusBadGateway, "object_store_upload_failed", "上传失败:请确认凭据有该桶的写权限")
+	case errors.Is(err, objectstore.ErrBrowseFailed):
+		writeError(w, http.StatusBadGateway, "object_store_browse_failed", "浏览失败:请确认凭据有该桶的读权限")
 	case errors.Is(err, context.DeadlineExceeded):
 		writeError(w, http.StatusBadGateway, "object_store_unreachable", "连接对象存储超时")
 	default:
@@ -321,5 +323,58 @@ func makeTestObjectStoreHandler(svc objectstore.Service, rec audit.Recorder) htt
 			IP:         clientIP(r),
 		})
 		writeJSON(w, http.StatusOK, dto)
+	}
+}
+
+// objectEntryDTO 是浏览列表里的一个对象条目(key 为桶内完整键,前端按当前目录截断展示)。
+type objectEntryDTO struct {
+	Key          string `json:"key"`
+	Size         int64  `json:"size"`
+	LastModified string `json:"lastModified"`
+}
+
+// browseObjectStoreDTO 是 GET /api/object-stores/{id}/objects 响应体(冻结契约):
+// prefixes 为子目录(以 / 结尾),nextMarker 为下一页游标(空 = 最后一页)。
+type browseObjectStoreDTO struct {
+	Prefixes   []string         `json:"prefixes"`
+	Objects    []objectEntryDTO `json:"objects"`
+	NextMarker string           `json:"nextMarker"`
+	Truncated  bool             `json:"truncated"`
+}
+
+// makeBrowseObjectStoreHandler 返回 GET /api/object-stores/{id}/objects?prefix=&marker=&maxKeys=
+// (只读,无审计)。桶内对象可能巨多:marker 游标单页列举,绝不聚合全量。
+func makeBrowseObjectStoreHandler(svc objectstore.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if svc == nil {
+			writeError(w, http.StatusServiceUnavailable, "internal", "对象存储服务未初始化")
+			return
+		}
+		id := chi.URLParam(r, "id")
+		q := r.URL.Query()
+		// maxKeys 负载防御在领域层钳制(默认 100,上限 1000);此处仅解析。
+		maxKeys := atoiDefault(q.Get("maxKeys"), objectstore.DefaultBrowsePageSize)
+		res, err := svc.Browse(r.Context(), id, q.Get("prefix"), q.Get("marker"), maxKeys)
+		if err != nil {
+			writeObjectStoreError(w, err)
+			return
+		}
+		out := browseObjectStoreDTO{
+			Prefixes:   make([]string, 0, len(res.Prefixes)),
+			Objects:    make([]objectEntryDTO, 0, len(res.Objects)),
+			NextMarker: res.NextMarker,
+			Truncated:  res.NextMarker != "",
+		}
+		for _, p := range res.Prefixes {
+			out.Prefixes = append(out.Prefixes, p)
+		}
+		for _, obj := range res.Objects {
+			out.Objects = append(out.Objects, objectEntryDTO{
+				Key:          obj.Key,
+				Size:         obj.Size,
+				LastModified: obj.LastModified.UTC().Format(time.RFC3339),
+			})
+		}
+		writeJSON(w, http.StatusOK, out)
 	}
 }

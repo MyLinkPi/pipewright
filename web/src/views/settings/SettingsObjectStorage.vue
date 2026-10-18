@@ -14,10 +14,11 @@
   数据来自 GET /api/object-stores（只读聚合，从不含 Secret）。
 */
 import { ref, computed, onMounted } from 'vue'
+import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { useDirtyGuard } from '../../composables/useDirtyGuard'
 import { NIcon } from 'naive-ui'
-import { CloudUpload, Plus, Trash, CircleCheck, CircleX, PlugConnected, Pencil } from '@vicons/tabler'
+import { CloudUpload, Plus, Trash, CircleCheck, CircleX, PlugConnected, Pencil, Folder } from '@vicons/tabler'
 import {
   listObjectStores,
   createObjectStore,
@@ -34,6 +35,12 @@ import { useToast } from '../../composables/useToast'
 const { t } = useI18n()
 const { confirmDiscard } = useDirtyGuard()
 const toast = useToast()
+const router = useRouter()
+
+// 浏览桶内容:跳顶级浏览页并预选该实例(只读,marker 游标分页)。
+function browseStore(s: ObjectStore): void {
+  void router.push({ path: '/object-storage', query: { store: s.id } })
+}
 
 // ─── 列表加载 ──────────────────────────────────────────────────────────────────
 type LoadState = 'idle' | 'loading' | 'error'
@@ -400,6 +407,15 @@ async function confirmDelete(): Promise<void> {
             {{ s.credentialConfigured ? t('settingsObjectStorage.credConfigured') : t('settingsObjectStorage.credMissing') }}
           </span>
           <span class="obj-ops">
+            <button
+              class="op-btn"
+              :title="t('settingsObjectStorage.browse')"
+              :aria-label="t('settingsObjectStorage.browse')"
+              @click="browseStore(s)"
+            >
+              <NIcon :size="13"><Folder /></NIcon>
+              <span class="op-btn-txt">{{ t('settingsObjectStorage.browse') }}</span>
+            </button>
             <button
               class="op-btn"
               :title="t('settingsObjectStorage.editTitle', { name: s.name })"
