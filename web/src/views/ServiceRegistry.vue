@@ -33,6 +33,7 @@ import {
   addInstance,
   removeInstance,
   setInstanceAttached,
+  listForwardPeers,
   type Settings,
   type Domain,
   type RegisteredService,
@@ -40,6 +41,7 @@ import {
   type ServiceInstance,
   type ServiceProtocol,
   type UpstreamKind,
+  type ForwardPeer,
 } from '../api/servicereg'
 import { listServers, type Server } from '../api/servers'
 import { HttpError } from '../api/http'
@@ -96,6 +98,8 @@ async function load(): Promise<void> {
     domains.value = dm.items
     services.value = sv.items
     servers.value = ss
+    // 已有转发服务时预载对端目录(列表徽标显示对端名)。
+    if (sv.items.some((s) => s.upstreamKind === 'forward')) void ensureForwardPeers()
   } catch (err) {
     loadError.value = errMsg(err, t('serviceReg.errLoad'))
   } finally {
@@ -275,19 +279,76 @@ const svcForm = ref({
   upstreamPort: 8080,
   tcpListenPort: 13306,
   stripPathPrefix: false,
+  peerNodeId: '',
+  peerServiceId: '',
 })
 const addingSvc = ref(false)
 
-/** 切换上游形态:static(网关静态托管)强制 http 协议(静态托管无 TCP 形态)。 */
+// ─── 跨环境转发(对端目录;懒加载) ──────────────────────────────────────────
+const forwardPeers = ref<ForwardPeer[]>([])
+const forwardPeersLoaded = ref(false)
+const forwardPeersLoading = ref(false)
+
+async function ensureForwardPeers(): Promise<void> {
+  if (forwardPeersLoaded.value || forwardPeersLoading.value) return
+  forwardPeersLoading.value = true
+  try {
+    const res = await listForwardPeers()
+    forwardPeers.value = res.items
+    forwardPeersLoaded.value = true
+  } catch {
+    // 拉取失败保持空列表:下拉提示不可用,创建由后端校验兜底。
+  } finally {
+    forwardPeersLoading.value = false
+  }
+}
+
+const peerOptions = computed(() =>
+  forwardPeers.value.map((p) => ({
+    value: p.nodeId,
+    label: `${p.name || p.nodeId}${p.available ? '' : `(${t(`serviceReg.forward.reason.${p.reason || 'unreachable'}`)})`}`,
+  })),
+)
+
+/** 选中对端目录里可转发的服务(协议须与本端声明一致)。 */
+function peerServiceOptions(protocol: ServiceProtocol): { value: string; label: string }[] {
+  const peer = forwardPeers.value.find((p) => p.nodeId === svcForm.value.peerNodeId)
+  if (!peer?.catalog) return []
+  return peer.catalog.services
+    .filter((s) => s.protocol === protocol)
+    .map((s) => ({
+      value: s.serviceId,
+      label: `${s.fqdn}${s.protocol === 'tcp' ? `:${s.tcpListenPort}` : ''}${s.hasCert ? ' 🔒' : ''}`,
+    }))
+}
+
+function peerServiceEditOptions(protocol: ServiceProtocol): { value: string; label: string }[] {
+  const peer = forwardPeers.value.find((p) => p.nodeId === svcEditForm.value.peerNodeId)
+  if (!peer?.catalog) return []
+  return peer.catalog.services
+    .filter((s) => s.protocol === protocol)
+    .map((s) => ({ value: s.serviceId, label: `${s.fqdn}${s.protocol === 'tcp' ? `:${s.tcpListenPort}` : ''}` }))
+}
+
+/** 切换上游形态:static 强制 http;forward 懒加载对端目录(协议 http/tcp 均可)。 */
 function onKindChange(v: string): void {
   svcForm.value.upstreamKind = v as UpstreamKind
   if (v === 'static') svcForm.value.protocol = 'http'
+  if (v === 'forward') void ensureForwardPeers()
 }
 
 /** 编辑表单版 onKindChange(同语义)。 */
 function onEditKindChange(v: string): void {
   svcEditForm.value.upstreamKind = v as UpstreamKind
   if (v === 'static') svcEditForm.value.protocol = 'http'
+  if (v === 'forward') void ensureForwardPeers()
+}
+
+/** 服务行徽标:forward 显示「转发 → 对端服务」。 */
+function forwardTargetLabel(s: RegisteredService): string {
+  const peer = forwardPeers.value.find((p) => p.nodeId === s.peerNodeId)
+  const name = peer?.name || s.peerNodeId || '?'
+  return `${t('serviceReg.services.forwardTag')} → ${name}`
 }
 
 const domainOptions = computed(() =>
@@ -305,6 +366,7 @@ const svcPreview = computed(() => {
   const d = domains.value.find((x) => x.id === svcForm.value.domainId)
   if (!d || !svcForm.value.name) return ''
   if (svcForm.value.protocol === 'tcp') {
+    if (svcForm.value.upstreamKind === 'forward') return `:${svcForm.value.tcpListenPort} → ${t('serviceReg.services.forwardTag')}`
     return `:${svcForm.value.tcpListenPort} → ${svcForm.value.upstream}:${svcForm.value.upstreamPort}`
   }
   return `${svcForm.value.name}.${d.baseDomain}${displayPath(svcForm.value.path)}`
@@ -314,16 +376,19 @@ async function addService(): Promise<void> {
   addingSvc.value = true
   try {
     const isStatic = svcForm.value.upstreamKind === 'static'
+    const isForward = svcForm.value.upstreamKind === 'forward'
     await createService({
       domainId: svcForm.value.domainId,
       name: svcForm.value.name.trim(),
       path: svcForm.value.protocol === 'http' ? svcForm.value.path.trim() : '',
       protocol: svcForm.value.protocol,
       upstreamKind: svcForm.value.upstreamKind,
-      upstream: isStatic ? '' : svcForm.value.upstream.trim(),
-      upstreamPort: isStatic ? 0 : Number(svcForm.value.upstreamPort),
+      upstream: isStatic || isForward ? '' : svcForm.value.upstream.trim(),
+      upstreamPort: isStatic || isForward ? 0 : Number(svcForm.value.upstreamPort),
       tcpListenPort: svcForm.value.protocol === 'tcp' ? Number(svcForm.value.tcpListenPort) : undefined,
-      stripPathPrefix: isStatic ? false : svcForm.value.stripPathPrefix,
+      peerNodeId: isForward ? svcForm.value.peerNodeId : undefined,
+      peerServiceId: isForward ? svcForm.value.peerServiceId : undefined,
+      stripPathPrefix: isStatic || isForward ? false : svcForm.value.stripPathPrefix,
     })
     showSvcForm.value = false
     const sv = await listServices()
@@ -374,10 +439,11 @@ const instBusy = ref(false)
 
 /** 实例面板:container 类 http 服务恒为部署托管实例池;address 类声明了实例(部署注册)
  * 才是实例池,否则为人工静态直连模式(固定上游直接反代,工作正常但无实例概念);
- * static(网关静态托管)无实例语义 —— 内容由「网关静态发布」部署节点下发。 */
+ * static(网关静态托管)无实例语义 —— 内容由「网关静态发布」部署节点下发;
+ * forward(跨环境转发)成员来自对端服务目录,同样无本地实例语义。 */
 function hasInstancePool(s: RegisteredService): boolean {
   if (s.protocol !== 'http') return false
-  if (s.upstreamKind === 'static') return false
+  if (s.upstreamKind === 'static' || s.upstreamKind === 'forward') return false
   if (s.upstreamKind === 'container') return true
   return instanceCount(s) > 0
 }
@@ -482,6 +548,8 @@ const svcEditForm = ref({
   upstreamPort: 8080,
   tcpListenPort: 13306,
   stripPathPrefix: false,
+  peerNodeId: '',
+  peerServiceId: '',
 })
 
 function startSvcEdit(s: RegisteredService): void {
@@ -497,13 +565,17 @@ function startSvcEdit(s: RegisteredService): void {
     upstreamPort: s.upstreamPort || 8080,
     tcpListenPort: s.tcpListenPort || 13306,
     stripPathPrefix: s.stripPathPrefix,
+    peerNodeId: s.peerNodeId,
+    peerServiceId: s.peerServiceId,
   }
+  if (s.upstreamKind === 'forward') void ensureForwardPeers()
 }
 
 function svcEditPreview(s: RegisteredService): string {
   const f = svcEditForm.value
   if (!f.name) return ''
   if (f.protocol === 'tcp') {
+    if (f.upstreamKind === 'forward') return `:${f.tcpListenPort} → ${t('serviceReg.services.forwardTag')}`
     return `:${f.tcpListenPort} → ${f.upstream}:${f.upstreamPort}`
   }
   return `${f.name}.${s.baseDomain}${displayPath(f.path)}`
@@ -514,15 +586,18 @@ async function saveSvcEdit(s: RegisteredService): Promise<void> {
   svcEditBusy.value = true
   try {
     const isStatic = f.upstreamKind === 'static'
+    const isForward = f.upstreamKind === 'forward'
     await updateService(s.id, {
       name: f.name.trim(),
       path: f.protocol === 'http' ? f.path.trim() : '',
       protocol: f.protocol,
       upstreamKind: f.upstreamKind,
-      upstream: isStatic ? '' : f.upstream.trim(),
-      upstreamPort: isStatic ? 0 : Number(f.upstreamPort),
+      upstream: isStatic || isForward ? '' : f.upstream.trim(),
+      upstreamPort: isStatic || isForward ? 0 : Number(f.upstreamPort),
       tcpListenPort: f.protocol === 'tcp' ? Number(f.tcpListenPort) : undefined,
-      stripPathPrefix: isStatic ? false : f.stripPathPrefix,
+      peerNodeId: isForward ? f.peerNodeId : undefined,
+      peerServiceId: isForward ? f.peerServiceId : undefined,
+      stripPathPrefix: isStatic || isForward ? false : f.stripPathPrefix,
     })
     editingSvcId.value = ''
     const sv = await listServices()
@@ -606,6 +681,24 @@ async function saveSvcEdit(s: RegisteredService): Promise<void> {
               <template v-if="settings.lastApplyError">{{ fmtApplyErr(settings.lastApplyError) }}</template>
               <template v-else-if="settings.lastApplyAt">{{ new Date(settings.lastApplyAt).toLocaleString() }}</template>
               <template v-else>—</template>
+            </span>
+          </div>
+          <div v-if="gateway?.forward && (gateway.forward.routes?.length || gateway.forward.conflicts?.length || !gateway.forward.ipForwardOk)" class="sreg__kv-row">
+            <span class="sreg__kv-k">{{ t('serviceReg.forward.statusTitle') }}</span>
+            <span class="sreg__kv-v">
+              <span v-if="!gateway.forward.ipForwardOk" class="sreg__tag sreg__tag--off">
+                {{ t('serviceReg.forward.ipForwardOff') }}
+              </span>
+              <span v-if="gateway.forward.ipForwardOk && !gateway.forward.ipForwardDetail" class="sreg__tag">ip_forward ✓</span>
+              <span v-for="c in gateway.forward.conflicts" :key="c" class="sreg__tag sreg__tag--off">{{ c }}</span>
+              <span
+                v-for="r in gateway.forward.routes"
+                :key="r.serverId + r.dest"
+                class="sreg__tag"
+                :class="{ 'sreg__tag--off': r.state === 'missing' }"
+              >
+                {{ r.dest }} · {{ t(`serviceReg.forward.routeState.${r.state}`) }}<template v-if="r.error"> · {{ r.error }}</template>
+              </span>
             </span>
           </div>
         </div>
@@ -782,16 +875,37 @@ async function saveSvcEdit(s: RegisteredService): Promise<void> {
                   { value: 'container', label: t('serviceReg.services.kindContainer') },
                   { value: 'address', label: t('serviceReg.services.kindAddress') },
                   { value: 'static', label: t('serviceReg.services.kindStatic') },
+                  { value: 'forward', label: t('serviceReg.services.kindForward') },
                 ]"
                 @update:model-value="onKindChange"
               />
             </label>
-            <label v-if="svcForm.upstreamKind !== 'static'" class="field">
+            <label v-if="svcForm.upstreamKind !== 'static' && svcForm.upstreamKind !== 'forward'" class="field">
               <span class="field__lbl">
                 {{ svcForm.upstreamKind === 'container' ? t('serviceReg.services.container') : t('serviceReg.services.address') }}
               </span>
               <input v-model="svcForm.upstream" class="field__in" type="text" required />
             </label>
+            <template v-else-if="svcForm.upstreamKind === 'forward'">
+              <label class="field">
+                <span class="field__lbl">{{ t('serviceReg.forward.peer') }}</span>
+                <AppSelect
+                  :model-value="svcForm.peerNodeId"
+                  :options="peerOptions"
+                  :placeholder="forwardPeersLoading ? t('serviceReg.forward.loading') : t('serviceReg.forward.peerPlaceholder')"
+                  @update:model-value="((v: string) => { svcForm.peerNodeId = v; svcForm.peerServiceId = '' })"
+                />
+              </label>
+              <label class="field">
+                <span class="field__lbl">{{ t('serviceReg.forward.service') }}</span>
+                <AppSelect
+                  :model-value="svcForm.peerServiceId"
+                  :options="peerServiceOptions(svcForm.protocol)"
+                  :placeholder="t('serviceReg.forward.servicePlaceholder')"
+                  @update:model-value="(v: string) => (svcForm.peerServiceId = v)"
+                />
+              </label>
+            </template>
           </div>
           <div class="sreg__grid2">
             <label v-if="svcForm.protocol === 'http'" class="field">
@@ -804,7 +918,7 @@ async function saveSvcEdit(s: RegisteredService): Promise<void> {
               />
               <span class="sreg__hint">{{ t('serviceReg.services.pathHint') }}</span>
             </label>
-            <label v-if="svcForm.upstreamKind !== 'static'" class="field">
+            <label v-if="svcForm.upstreamKind !== 'static' && svcForm.upstreamKind !== 'forward'" class="field">
               <span class="field__lbl">{{ t('serviceReg.services.upstreamPort') }}</span>
               <input v-model.number="svcForm.upstreamPort" class="field__in" type="number" min="1" max="65535" required />
             </label>
@@ -814,6 +928,7 @@ async function saveSvcEdit(s: RegisteredService): Promise<void> {
             </label>
           </div>
           <p v-if="svcForm.upstreamKind === 'static'" class="sreg__hint">{{ t('serviceReg.services.staticHint') }}</p>
+          <p v-else-if="svcForm.upstreamKind === 'forward'" class="sreg__hint">{{ t('serviceReg.forward.hint') }}</p>
           <label
             v-else-if="svcForm.protocol === 'http' && svcForm.path.trim()"
             class="sreg__strip"
@@ -860,6 +975,7 @@ async function saveSvcEdit(s: RegisteredService): Promise<void> {
                 </span>
                 <span class="sreg__kv-v">
                   <template v-if="s.upstreamKind === 'static'">→ {{ t('serviceReg.services.staticTag') }}</template>
+                  <template v-else-if="s.upstreamKind === 'forward'">→ {{ forwardTargetLabel(s) }}</template>
                   <template v-else>→ {{ s.upstream }}:{{ s.upstreamPort }}</template>
                   <span class="sreg__tag">{{ s.protocol.toUpperCase() }}</span>
                   <span v-if="s.protocol === 'http' && s.stripPathPrefix" class="sreg__tag">
@@ -986,11 +1102,12 @@ async function saveSvcEdit(s: RegisteredService): Promise<void> {
                       { value: 'container', label: t('serviceReg.services.kindContainer') },
                       { value: 'address', label: t('serviceReg.services.kindAddress') },
                       { value: 'static', label: t('serviceReg.services.kindStatic') },
+                      { value: 'forward', label: t('serviceReg.services.kindForward') },
                     ]"
                     @update:model-value="(v) => onEditKindChange(v)"
                   />
                 </label>
-                <label v-if="svcEditForm.upstreamKind !== 'static'" class="field">
+                <label v-if="svcEditForm.upstreamKind !== 'static' && svcEditForm.upstreamKind !== 'forward'" class="field">
                   <span class="field__lbl">
                     {{ svcEditForm.upstreamKind === 'container' ? t('serviceReg.services.container') : t('serviceReg.services.address') }}
                   </span>
@@ -1001,7 +1118,27 @@ async function saveSvcEdit(s: RegisteredService): Promise<void> {
                     :placeholder="svcEditForm.upstreamKind === 'container' ? 'web' : '10.0.0.5'"
                   />
                 </label>
-                <label v-if="svcEditForm.upstreamKind !== 'static'" class="field">
+                <template v-else-if="svcEditForm.upstreamKind === 'forward'">
+                  <label class="field">
+                    <span class="field__lbl">{{ t('serviceReg.forward.peer') }}</span>
+                    <AppSelect
+                      :model-value="svcEditForm.peerNodeId"
+                      :options="peerOptions"
+                      :placeholder="forwardPeersLoading ? t('serviceReg.forward.loading') : t('serviceReg.forward.peerPlaceholder')"
+                      @update:model-value="((v: string) => { svcEditForm.peerNodeId = v; svcEditForm.peerServiceId = '' })"
+                    />
+                  </label>
+                  <label class="field">
+                    <span class="field__lbl">{{ t('serviceReg.forward.service') }}</span>
+                    <AppSelect
+                      :model-value="svcEditForm.peerServiceId"
+                      :options="peerServiceEditOptions(svcEditForm.protocol)"
+                      :placeholder="t('serviceReg.forward.servicePlaceholder')"
+                      @update:model-value="(v: string) => (svcEditForm.peerServiceId = v)"
+                    />
+                  </label>
+                </template>
+                <label v-if="svcEditForm.upstreamKind !== 'static' && svcEditForm.upstreamKind !== 'forward'" class="field">
                   <span class="field__lbl">{{ t('serviceReg.services.upstreamPort') }}</span>
                   <input v-model.number="svcEditForm.upstreamPort" class="field__in" type="number" min="1" max="65535" required />
                 </label>
@@ -1023,6 +1160,7 @@ async function saveSvcEdit(s: RegisteredService): Promise<void> {
                 </label>
               </div>
               <p v-if="svcEditForm.upstreamKind === 'static'" class="sreg__hint">{{ t('serviceReg.services.staticHint') }}</p>
+              <p v-else-if="svcEditForm.upstreamKind === 'forward'" class="sreg__hint">{{ t('serviceReg.forward.hint') }}</p>
               <label
                 v-else-if="svcEditForm.protocol === 'http' && svcEditForm.path.trim()"
                 class="sreg__strip"

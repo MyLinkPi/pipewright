@@ -1,6 +1,6 @@
 // mesh_admin.go 是集群管理面(本节点 UI 用,admin session 鉴权,挂受保护 /api 组内):
 //   - GET/PUT /api/mesh/settings :本节点身份与 EasyTier 组网配置;
-//   - GET/PUT /api/mesh/acl      :三张默认全拒绝的授权单;
+//   - GET/PUT /api/mesh/acl      :四张默认全拒绝的授权单;
 //   - GET/POST/DELETE /api/mesh/peers :已知节点注册表(发现登记 + 手工补录);
 //   - GET /api/mesh/overview     :集群页聚合(本节点视角:EasyTier 链路 + 节点表 + 监督器运行态);
 //   - GET /api/mesh/peers/{id}/{servers,projects,runs} :经本节点代理查询对端数据
@@ -70,6 +70,13 @@ func NewMeshDeps(
 // WithRuntime 注入集群运行时视图(集群页链路状态/监督器运行态展示;nil → 空态降级)。
 func (d meshAdminDeps) WithRuntime(view meshRuntimeView) meshAdminDeps {
 	d.runtime = view
+	return d
+}
+
+// WithServiceCatalog 注入本端服务目录源(跨环境转发;/api/mesh/servicereg/catalog 端点;
+// servicereg.Service 满足接口。nil → 端点 503 降级)。
+func (d meshAdminDeps) WithServiceCatalog(src meshCatalogSource) meshAdminDeps {
+	d.catalogSrc = src
 	return d
 }
 
@@ -280,7 +287,7 @@ func makeMeshACLPutHandler(svc mesh.Service, aud audit.Recorder) http.HandlerFun
 			Actor: "admin", Action: "mesh_acl_save", TargetType: "mesh_acl", TargetID: "acl",
 			Detail: map[string]any{
 				"visibleTo": len(acl.VisibleTo), "pushAllowed": len(acl.PushAllowed),
-				"triggerAllowed": len(acl.TriggerAllowed),
+				"triggerAllowed": len(acl.TriggerAllowed), "forwardAllowed": len(acl.ForwardAllowed),
 			},
 			IP: clientIP(r),
 		})

@@ -51,8 +51,17 @@ type meshDeps struct {
 	pipelines  pipelineLister
 	audit      audit.Recorder
 	pushedRevs pushsource.Store
+	// catalogSrc 提供本端服务目录(跨环境转发;/api/mesh/servicereg/catalog 的数据源;
+	// servicereg.Service 满足;nil = 端点 503 降级)。装配层经 WithServiceCatalog 注入。
+	catalogSrc meshCatalogSource
 	// advertisePort 是广播给对端的 HTTP 端口(0 = 跟随服务监听口,装配层已解析)。
 	advertisePort int
+}
+
+// meshCatalogSource 抽象「本端服务目录」读取(servicereg.Service 原样满足;
+// 出站 catalog 拉取经由 mesh.Client,与该接口无关)。
+type meshCatalogSource interface {
+	MeshCatalog(ctx context.Context) (*mesh.ServiceCatalog, error)
 }
 
 // pipelineLister 抽象「判断项目是否已保存流水线」(pipeline.Service.HasConfig 原样满足)。
@@ -122,7 +131,7 @@ func meshGate(svc mesh.Service, perm func(context.Context, mesh.Service, string)
 	}
 }
 
-// permVisible/permPush/permTrigger 是三张授权单的判定适配。
+// permVisible/permPush/permTrigger/permForward 是四张授权单的判定适配。
 func permVisible(ctx context.Context, svc mesh.Service, nodeID string) bool {
 	return svc.AllowsVisible(ctx, nodeID)
 }
@@ -135,12 +144,17 @@ func permTrigger(ctx context.Context, svc mesh.Service, nodeID string) bool {
 	return svc.AllowsTrigger(ctx, nodeID)
 }
 
+func permForward(ctx context.Context, svc mesh.Service, nodeID string) bool {
+	return svc.AllowsForward(ctx, nodeID)
+}
+
 // mountMeshInbound 把对等入站端点挂到根路由(与 webhook 同级;豁免 session/CSRF)。
 func mountMeshInbound(r chi.Router, d meshDeps) {
 	r.Get("/api/mesh/hello", makeMeshHelloHandler(d))
 	visible := meshGate(d.mesh, permVisible)
 	push := meshGate(d.mesh, permPush)
 	trigger := meshGate(d.mesh, permTrigger)
+	forward := meshGate(d.mesh, permForward)
 	r.Get("/api/mesh/servers/metrics", visible(makeAllServerMetricsHandler(d.servers)))
 	r.Get("/api/mesh/projects", visible(makeMeshProjectsHandler(d)))
 	r.Get("/api/mesh/projects/{id}/runs", visible(makeMeshProjectRunsHandler(d)))
@@ -152,6 +166,25 @@ func mountMeshInbound(r chi.Router, d meshDeps) {
 	r.Get("/api/mesh/runs/{id}/events", trigger(makeRunEventsHandler(d.runs, d.runSub)))
 	r.Post("/api/mesh/push/preflight", push(makeMeshPushPreflightHandler(d)))
 	r.Post("/api/mesh/push", push(makeMeshPushHandler(d)))
+	// 跨环境转发:本端服务目录(对端渲染 forward 服务 + 规划 /32 路由的数据源)。
+	r.Get("/api/mesh/servicereg/catalog", forward(makeMeshServiceCatalogHandler(d)))
+}
+
+// makeMeshServiceCatalogHandler 返回本端服务目录(网关主机 + 可转发服务;授权对端拉取)。
+// 数据源未装配 → 503(对端按目录不可达降级渲染 503 维护态)。
+func makeMeshServiceCatalogHandler(d meshDeps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if d.catalogSrc == nil {
+			writeError(w, http.StatusServiceUnavailable, "internal", "服务注册未初始化")
+			return
+		}
+		cat, err := d.catalogSrc.MeshCatalog(r.Context())
+		if err != nil {
+			writeServerError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, cat)
+	}
 }
 
 // makeMeshHelloHandler 是发现握手:返回本节点身份(公钥随此 TOFU 交换)。

@@ -152,6 +152,42 @@ func scanSettings(sc scanner) (*storedSettings, error) {
 	return &st, nil
 }
 
+// ---------- forward 路由托管账本(0085) ----------
+
+// getForwardRoutes 读取网关机 /32 路由托管账本(server_id → [对端网关 IP];空 map = 从未下发)。
+// 只记录本平台下发的路由,调和删除仅针对账本内的目标。
+func (s *Store) getForwardRoutes(ctx context.Context) (map[string][]string, error) {
+	var raw string
+	err := s.db.QueryRowContext(ctx,
+		`SELECT forward_routes FROM service_reg_settings WHERE id = ?`, settingsID).Scan(&raw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return map[string][]string{}, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("servicereg: load forward routes: %w", err)
+	}
+	out := map[string][]string{}
+	if strings.TrimSpace(raw) != "" {
+		_ = json.Unmarshal([]byte(raw), &out) // 坏值 → 空 map(下轮调和按全量缺失自愈)
+	}
+	return out, nil
+}
+
+// setForwardRoutes 覆写路由托管账本(调和完成后持久化,进程重启后删除侧仍只碰自己的路由)。
+func (s *Store) setForwardRoutes(ctx context.Context, m map[string][]string) error {
+	b, err := json.Marshal(m)
+	if err != nil {
+		return fmt.Errorf("servicereg: marshal forward routes: %w", err)
+	}
+	_, err = s.db.ExecContext(ctx,
+		`UPDATE service_reg_settings SET forward_routes = ?, updated_at = ? WHERE id = ?`,
+		string(b), time.Now().UTC().Format(time.RFC3339), settingsID)
+	if err != nil {
+		return fmt.Errorf("servicereg: save forward routes: %w", err)
+	}
+	return nil
+}
+
 // ---------- JSON 列编解码(server_ids / last_apply_errors)----------
 
 // primaryServerID 返回列表第一台(兼容旧 server_id 列);空列表 → ""。
@@ -369,10 +405,11 @@ func (s *Store) insertService(ctx context.Context, svc *RegisteredService) error
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO service_reg_services
 		   (id, domain_id, name, path, protocol, upstream_kind, upstream, upstream_port,
-		    tcp_listen_port, strip_path_prefix, enabled, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		    tcp_listen_port, strip_path_prefix, enabled, peer_node_id, peer_service_id, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		svc.ID, svc.DomainID, svc.Name, svc.Path, svc.Protocol, svc.UpstreamKind, svc.Upstream, svc.UpstreamPort,
-		svc.TCPListenPort, strip, enabled, svc.CreatedAt.UTC().Format(time.RFC3339), svc.UpdatedAt.UTC().Format(time.RFC3339),
+		svc.TCPListenPort, strip, enabled, svc.PeerNodeID, svc.PeerServiceID,
+		svc.CreatedAt.UTC().Format(time.RFC3339), svc.UpdatedAt.UTC().Format(time.RFC3339),
 	)
 	if err != nil {
 		if store.IsUniqueErr(err) {
@@ -397,7 +434,7 @@ func (s *Store) getService(ctx context.Context, id string) (*RegisteredService, 
 }
 
 const serviceCols = `SELECT id, domain_id, name, path, protocol, upstream_kind, upstream, upstream_port,
-       tcp_listen_port, strip_path_prefix, enabled, created_at, updated_at FROM service_reg_services`
+       tcp_listen_port, strip_path_prefix, enabled, peer_node_id, peer_service_id, created_at, updated_at FROM service_reg_services`
 
 // listServices 返回全部服务(创建时间倒序)。
 func (s *Store) listServices(ctx context.Context) ([]RegisteredService, error) {
@@ -422,7 +459,8 @@ func (s *Store) listServices(ctx context.Context) ([]RegisteredService, error) {
 func (s *Store) listServicesWithDomain(ctx context.Context) ([]ServiceWithDomain, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT s.id, s.domain_id, s.name, s.path, s.protocol, s.upstream_kind, s.upstream, s.upstream_port,
-		        s.tcp_listen_port, s.strip_path_prefix, s.enabled, s.created_at, s.updated_at, d.base_domain,
+		        s.tcp_listen_port, s.strip_path_prefix, s.enabled, s.peer_node_id, s.peer_service_id,
+		        s.created_at, s.updated_at, d.base_domain,
 		        (SELECT COUNT(*) FROM service_reg_instances i WHERE i.service_id = s.id) AS instance_count
 		 FROM service_reg_services s
 		 JOIN service_reg_domains d ON d.id = s.domain_id
@@ -442,7 +480,8 @@ func (s *Store) listServicesWithDomain(ctx context.Context) ([]ServiceWithDomain
 		)
 		if err := rows.Scan(
 			&swd.ID, &swd.DomainID, &swd.Name, &swd.Path, &swd.Protocol, &swd.UpstreamKind, &swd.Upstream,
-			&swd.UpstreamPort, &swd.TCPListenPort, &strip, &enabled, &createdS, &updatedS, &swd.BaseDomain,
+			&swd.UpstreamPort, &swd.TCPListenPort, &strip, &enabled, &swd.PeerNodeID, &swd.PeerServiceID,
+			&createdS, &updatedS, &swd.BaseDomain,
 			&swd.InstanceCount,
 		); err != nil {
 			return nil, err
@@ -465,10 +504,11 @@ func (s *Store) updateService(ctx context.Context, svc *RegisteredService) error
 	res, err := s.db.ExecContext(ctx,
 		`UPDATE service_reg_services
 		 SET name = ?, path = ?, protocol = ?, upstream_kind = ?, upstream = ?, upstream_port = ?,
-		     tcp_listen_port = ?, strip_path_prefix = ?, updated_at = ?
+		     tcp_listen_port = ?, strip_path_prefix = ?, peer_node_id = ?, peer_service_id = ?, updated_at = ?
 		 WHERE id = ?`,
 		svc.Name, svc.Path, svc.Protocol, svc.UpstreamKind, svc.Upstream, svc.UpstreamPort,
-		svc.TCPListenPort, strip, svc.UpdatedAt.UTC().Format(time.RFC3339), svc.ID,
+		svc.TCPListenPort, strip, svc.PeerNodeID, svc.PeerServiceID,
+		svc.UpdatedAt.UTC().Format(time.RFC3339), svc.ID,
 	)
 	if err != nil {
 		if store.IsUniqueErr(err) {
@@ -522,7 +562,8 @@ func scanService(sc scanner) (*RegisteredService, error) {
 	)
 	if err := sc.Scan(
 		&svc.ID, &svc.DomainID, &svc.Name, &svc.Path, &svc.Protocol, &svc.UpstreamKind, &svc.Upstream,
-		&svc.UpstreamPort, &svc.TCPListenPort, &strip, &enabled, &createdS, &updatedS,
+		&svc.UpstreamPort, &svc.TCPListenPort, &strip, &enabled, &svc.PeerNodeID, &svc.PeerServiceID,
+		&createdS, &updatedS,
 	); err != nil {
 		return nil, err
 	}

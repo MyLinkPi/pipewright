@@ -17,6 +17,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 )
@@ -61,6 +62,9 @@ type Config struct {
 	VirtualIP     string // 静态虚拟 IP;空 = --dhcp 自动分配
 	Hostname      string // easytier --hostname(展示名)
 	Peers         []string
+	// ProxyNetworks 是子网代理通告列表(cidr;跨环境转发:本端网关 IP 的 /32)。非空要求
+	// 二进制支持 --proxy-network(v2.1+),不支持则 Start 报错(上层记录并提示升级)。
+	ProxyNetworks []string
 	DataDir       string // 二进制定位目录(<data>/bin)
 	CorePath      string // 已定位的 easytier-core(托管模式必填)
 	CliPath       string // 已定位的 easytier-cli
@@ -106,7 +110,32 @@ func (c Config) args() []string {
 			args = append(args, "-p", p)
 		}
 	}
+	for _, n := range c.ProxyNetworks {
+		if n != "" {
+			args = append(args, "--proxy-network", n)
+		}
+	}
 	return args
+}
+
+// proxySupport 缓存「二进制是否支持 --proxy-network」(--help 探测;进程内每路径一次)。
+var proxySupport sync.Map // corePath → bool
+
+// SupportsProxyNetwork 探测 easytier-core 是否提供 --proxy-network 参数(v2.1+ 的子网代理)。
+// --help 输出包含该参数名即认为支持;探测失败按不支持(保守)。
+func SupportsProxyNetwork(corePath string) bool {
+	if corePath == "" {
+		return false
+	}
+	if v, ok := proxySupport.Load(corePath); ok {
+		return v.(bool)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, corePath, "--help").CombinedOutput()
+	ok := err == nil && strings.Contains(string(out), "--proxy-network")
+	proxySupport.Store(corePath, ok)
+	return ok
 }
 
 // Start 拉起子进程并进入监督循环(退出按退避重启;ctx 取消或 Stop 后退出循环)。
@@ -120,6 +149,9 @@ func (s *Supervisor) Start(ctx context.Context) error {
 	}
 	if s.cfg.NetworkName == "" {
 		return fmt.Errorf("easytier: network name required")
+	}
+	if len(s.cfg.ProxyNetworks) > 0 && !SupportsProxyNetwork(s.cfg.CorePath) {
+		return fmt.Errorf("easytier: %s 不支持 --proxy-network(需 v2.1+),无法通告子网代理(跨环境转发不可用,请升级二进制)", CoreBinary())
 	}
 	go s.supervise(ctx)
 	return nil

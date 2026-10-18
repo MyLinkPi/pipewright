@@ -444,6 +444,31 @@ func main() {
 	meshSvc := mesh.New(st.DB, credVault)
 	pushedStore := pushsource.New(st.DB)
 	meshClient := mesh.NewClient(meshSvc)
+	// 跨环境服务转发:注入 mesh 依赖(peer 注册表 + 签名目录拉取)。对端未启用集群时
+	// 目录拉取快速失败,转发服务渲染为 503 维护态。
+	serviceRegSvc.SetMeshForward(
+		func(ctx context.Context) ([]servicereg.ForwardPeer, error) {
+			peers, perr := meshSvc.ListPeers(ctx)
+			if perr != nil {
+				return nil, perr
+			}
+			out := make([]servicereg.ForwardPeer, 0, len(peers))
+			for _, p := range peers {
+				out = append(out, servicereg.ForwardPeer{NodeID: p.NodeID, Name: p.Name, VirtualIP: p.VirtualIP})
+			}
+			return out, nil
+		},
+		func(ctx context.Context, nodeID string) (*mesh.ServiceCatalog, error) {
+			if mst, merr := meshSvc.Settings(ctx); merr != nil || !mst.Enabled {
+				return nil, fmt.Errorf("集群未启用")
+			}
+			p, perr := meshSvc.GetPeer(ctx, nodeID)
+			if perr != nil {
+				return nil, perr
+			}
+			return meshClient.FetchServiceCatalog(ctx, p)
+		},
+	)
 	meshImageBinary := "docker"
 	if drv, derr := build.DetectDriver(nil); derr == nil {
 		meshImageBinary = drv.Binary()
@@ -692,7 +717,12 @@ func main() {
 		}
 	}
 	meshRT := newMeshRuntime(meshSvc, meshClient, meshCorePath, meshCLIPath, meshDataDir, meshDownloader)
-	meshAdminDeps := httpapi.NewMeshDeps(meshSvc, meshReceiver, meshClient, projectSvc, runSvc, pool, parameterSvc, targetSvc, pipelineSvc, auditRec, pushedStore, meshAdvertisePort).WithRuntime(meshRT)
+	// 跨环境转发数据面:①本端网关 IP 以 /32 通告进 mesh(存在可转发服务时;变化经设置
+	// 指纹重启 easytier);②发现循环节拍收尾对账网关机 /32 路由 + ip_forward 保活。
+	meshRT.SetProxyNetworks(serviceRegSvc.GatewayProxyNetworks)
+	meshRT.SetAfterDiscover(serviceRegSvc.ReconcileForwardRoutes)
+	meshAdminDeps := httpapi.NewMeshDeps(meshSvc, meshReceiver, meshClient, projectSvc, runSvc, pool, parameterSvc, targetSvc, pipelineSvc, auditRec, pushedStore, meshAdvertisePort).
+		WithRuntime(meshRT).WithServiceCatalog(serviceRegSvc)
 
 	// 装配并启动定时(cron)调度器(Story 8-6):分钟粒度扫描启用的项目 cron,到点经 run.Service
 	// 创建「定时」触发的运行(入 pool 调度)。同一项目同一分钟去重;表达式非法的项目跳过。

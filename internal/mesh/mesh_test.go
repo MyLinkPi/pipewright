@@ -111,14 +111,15 @@ func TestACLRoundtrip(t *testing.T) {
 	ctx := context.Background()
 	svc := newTestService(t)
 
-	// 默认全拒绝。
-	if svc.AllowsVisible(ctx, "n1") || svc.AllowsPush(ctx, "n1") || svc.AllowsTrigger(ctx, "n1") {
+	// 默认全拒绝(含 0085 新增的 forward 单)。
+	if svc.AllowsVisible(ctx, "n1") || svc.AllowsPush(ctx, "n1") || svc.AllowsTrigger(ctx, "n1") || svc.AllowsForward(ctx, "n1") {
 		t.Fatalf("default must be deny-all")
 	}
 	if err := svc.SaveACL(ctx, ACL{
 		VisibleTo:      []string{"n1", "n2", ""},
 		PushAllowed:    []string{"n1"},
 		TriggerAllowed: []string{"n2"},
+		ForwardAllowed: []string{"n3", "n3"},
 	}); err != nil {
 		t.Fatalf("save acl: %v", err)
 	}
@@ -131,7 +132,18 @@ func TestACLRoundtrip(t *testing.T) {
 	if !svc.AllowsTrigger(ctx, "n2") || svc.AllowsTrigger(ctx, "n1") {
 		t.Fatalf("trigger grant broken")
 	}
+	if !svc.AllowsForward(ctx, "n3") || svc.AllowsForward(ctx, "n1") {
+		t.Fatalf("forward grant broken")
+	}
 	if svc.AllowsVisible(ctx, "n3") {
 		t.Fatalf("unlisted node must stay denied")
+	}
+	// 回读:四张单齐备(空单归一为 [])。
+	acl, err := svc.ACL(ctx)
+	if err != nil {
+		t.Fatalf("load acl: %v", err)
+	}
+	if len(acl.ForwardAllowed) != 1 || acl.ForwardAllowed[0] != "n3" {
+		t.Fatalf("forward acl roundtrip: %+v", acl.ForwardAllowed)
 	}
 }

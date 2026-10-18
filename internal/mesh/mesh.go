@@ -111,7 +111,7 @@ type Peer struct {
 	UpdatedAt string `json:"updatedAt"`
 }
 
-// ACL 是三张默认全拒绝的授权单(JSON 节点 id 数组)。
+// ACL 是四张默认全拒绝的授权单(JSON 节点 id 数组)。
 type ACL struct {
 	// VisibleTo 允许查询我的服务器指标、项目列表/详情、运行状态(集群页展开数据)。
 	VisibleTo []string `json:"visibleTo"`
@@ -119,6 +119,9 @@ type ACL struct {
 	PushAllowed []string `json:"pushAllowed"`
 	// TriggerAllowed 允许启动我的工作流。
 	TriggerAllowed []string `json:"triggerAllowed"`
+	// ForwardAllowed 允许查询我的服务目录并转发我的服务(跨环境服务转发;
+	// 网关 IP 清单随目录下发,对端网关机据此配 /32 路由)。
+	ForwardAllowed []string `json:"forwardAllowed"`
 }
 
 // Service 定义集群领域对外接口。
@@ -142,14 +145,15 @@ type Service interface {
 	// ApplyHello 应用一次发现探测结果(TOFU:首次登记公钥;已登记且不一致 → ErrKeyMismatch)。
 	ApplyHello(ctx context.Context, virtualIP string, hello HelloInfo) error
 
-	// ACL 返回三张授权单(无行时返回全空单,不报错)。
+	// ACL 返回四张授权单(无行时返回全空单,不报错)。
 	ACL(ctx context.Context) (*ACL, error)
 	// SaveACL 保存授权单(整单覆盖)。
 	SaveACL(ctx context.Context, in ACL) error
-	// AllowsVisible / AllowsPush / AllowsTrigger 判定某节点是否过对应授权(默认拒绝)。
+	// AllowsVisible / AllowsPush / AllowsTrigger / AllowsForward 判定某节点是否过对应授权(默认拒绝)。
 	AllowsVisible(ctx context.Context, nodeID string) bool
 	AllowsPush(ctx context.Context, nodeID string) bool
 	AllowsTrigger(ctx context.Context, nodeID string) bool
+	AllowsForward(ctx context.Context, nodeID string) bool
 }
 
 // HelloInfo 是 /api/mesh/hello 的响应载荷(发现握手)。
@@ -523,9 +527,9 @@ func scanPeer(scan func(dest ...any) error) (*Peer, error) {
 // ---- 授权单(默认全拒绝) ----
 
 func (s *service) ACL(ctx context.Context) (*ACL, error) {
-	var vis, push, trig string
+	var vis, push, trig, fwd string
 	err := s.db.QueryRowContext(ctx,
-		`SELECT visible_to, push_allowed, trigger_allowed FROM mesh_acl WHERE id = 1`).Scan(&vis, &push, &trig)
+		`SELECT visible_to, push_allowed, trigger_allowed, forward_allowed FROM mesh_acl WHERE id = 1`).Scan(&vis, &push, &trig, &fwd)
 	if errors.Is(err, sql.ErrNoRows) {
 		return &ACL{}, nil // 无行 = 全空单(默认全拒绝)
 	}
@@ -536,6 +540,7 @@ func (s *service) ACL(ctx context.Context) (*ACL, error) {
 	_ = jsonUnmarshalList(vis, &out.VisibleTo)
 	_ = jsonUnmarshalList(push, &out.PushAllowed)
 	_ = jsonUnmarshalList(trig, &out.TriggerAllowed)
+	_ = jsonUnmarshalList(fwd, &out.ForwardAllowed)
 	return out, nil
 }
 
@@ -552,17 +557,22 @@ func (s *service) SaveACL(ctx context.Context, in ACL) error {
 	if err != nil {
 		return fmt.Errorf("mesh: marshal trigger_allowed: %w", err)
 	}
+	fwd, err := jsonMarshalList(normalizeIDList(in.ForwardAllowed))
+	if err != nil {
+		return fmt.Errorf("mesh: marshal forward_allowed: %w", err)
+	}
 	nowStr := time.Now().UTC().Format(time.RFC3339)
 	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO mesh_acl (id, visible_to, push_allowed, trigger_allowed, updated_at)
-		 VALUES (1, ?, ?, ?, ?)
+		`INSERT INTO mesh_acl (id, visible_to, push_allowed, trigger_allowed, forward_allowed, updated_at)
+		 VALUES (1, ?, ?, ?, ?, ?)
 		 `+store.UpsertAssignSuffix(s.dialect, []string{"id"}, []string{
 			"visible_to = " + store.Excluded(s.dialect, "visible_to"),
 			"push_allowed = " + store.Excluded(s.dialect, "push_allowed"),
 			"trigger_allowed = " + store.Excluded(s.dialect, "trigger_allowed"),
+			"forward_allowed = " + store.Excluded(s.dialect, "forward_allowed"),
 			"updated_at = " + store.Excluded(s.dialect, "updated_at"),
 		}),
-		vis, push, trig, nowStr,
+		vis, push, trig, fwd, nowStr,
 	)
 	if err != nil {
 		return fmt.Errorf("mesh: save acl: %w", err)
@@ -580,6 +590,10 @@ func (s *service) AllowsPush(ctx context.Context, nodeID string) bool {
 
 func (s *service) AllowsTrigger(ctx context.Context, nodeID string) bool {
 	return s.aclHas(ctx, "trigger_allowed", nodeID)
+}
+
+func (s *service) AllowsForward(ctx context.Context, nodeID string) bool {
+	return s.aclHas(ctx, "forward_allowed", nodeID)
 }
 
 // aclHas 判定授权单(单列 JSON 数组)是否包含 node_id。查询失败按拒绝(保守)。

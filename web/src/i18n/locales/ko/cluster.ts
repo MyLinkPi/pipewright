@@ -69,6 +69,7 @@ export default {
     visibleTo: '공개(서버/프로젝트/실행)',
     pushAllowed: '아티팩트/이미지 푸시 허용',
     triggerAllowed: '워크플로 트리거 허용',
+    forwardAllowed: '내 서비스 전달 허용',
     noPeers: '알려진 노드 없음',
     saveAcl: '권한 저장',
     peersTitle: '노드 등록',

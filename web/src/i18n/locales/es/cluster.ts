@@ -69,6 +69,7 @@ export default {
     visibleTo: 'Visible (servidores/proyectos/ejecuciones)',
     pushAllowed: 'Permitir push de artefactos/imágenes',
     triggerAllowed: 'Permitir disparar flujos',
+    forwardAllowed: 'Permitir reenviar mis servicios',
     noPeers: 'Aún no hay nodos conocidos',
     saveAcl: 'Guardar permisos',
     peersTitle: 'Registro de nodos',

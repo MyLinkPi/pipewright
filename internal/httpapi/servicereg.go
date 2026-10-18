@@ -105,6 +105,9 @@ type serviceRegServiceDTO struct {
 	Upstream      string `json:"upstream"`
 	UpstreamPort  int    `json:"upstreamPort"`
 	TCPListenPort int    `json:"tcpListenPort"`
+	// PeerNodeID / PeerServiceID 是 forward 专用的对端引用(其余类型恒空)。
+	PeerNodeID    string `json:"peerNodeId"`
+	PeerServiceID string `json:"peerServiceId"`
 	// StripPathPrefix 反代剥离 location 前缀(默认 false = 原样透传;仅 http 反代有效)。
 	StripPathPrefix bool   `json:"stripPathPrefix"`
 	Enabled         bool   `json:"enabled"`
@@ -118,6 +121,7 @@ func toServiceRegServiceDTO(s servicereg.ServiceWithDomain) serviceRegServiceDTO
 		ID: s.ID, DomainID: s.DomainID, BaseDomain: s.BaseDomain, Name: s.Name,
 		FQDN: s.FQDN(s.BaseDomain), Path: s.Path, Protocol: s.Protocol, UpstreamKind: s.UpstreamKind,
 		Upstream: s.Upstream, UpstreamPort: s.UpstreamPort, TCPListenPort: s.TCPListenPort,
+		PeerNodeID: s.PeerNodeID, PeerServiceID: s.PeerServiceID,
 		StripPathPrefix: s.StripPathPrefix,
 		Enabled:         s.Enabled,
 		InstanceCount:   s.InstanceCount,
@@ -140,6 +144,16 @@ type serviceRegGatewayDTO struct {
 	LastApplyAt     string                       `json:"lastApplyAt"`
 	LastApplyError  string                       `json:"lastApplyError"`
 	LastApplyErrors map[string]string            `json:"lastApplyErrors"`
+	// Forward 是跨环境转发数据面状态(路由对账 / ip_forward / IP 冲突);nil = 未装配。
+	Forward *serviceRegForwardDTO `json:"forward,omitempty"`
+}
+
+// serviceRegForwardDTO 是跨环境转发数据面状态(网关页展示)。
+type serviceRegForwardDTO struct {
+	IPForwardOK     bool                          `json:"ipForwardOk"`
+	IPForwardDetail string                        `json:"ipForwardDetail"`
+	Routes          []servicereg.GatewayRouteStatus `json:"routes"`
+	Conflicts       []string                      `json:"conflicts"`
 }
 
 // serviceRegGatewayServerDTO 是单台网关主机的容器状态。
@@ -164,12 +178,19 @@ func toServiceRegGatewayDTO(g *servicereg.GatewayStatus) serviceRegGatewayDTO {
 			Installed: s.Installed, Running: s.Running, Image: s.Image, Ports: s.Ports,
 		})
 	}
-	return serviceRegGatewayDTO{
+	dto := serviceRegGatewayDTO{
 		Configured: g.Configured, ServerID: g.ServerID, ServerName: g.ServerName,
 		Installed: g.Installed, Running: g.Running, Image: g.Image, Ports: g.Ports,
-		Servers:     servers,
-		LastApplyAt: last, LastApplyError: g.LastApplyError, LastApplyErrors: g.LastApplyErrors,
+		Servers:        servers,
+		LastApplyAt:    last, LastApplyError: g.LastApplyError, LastApplyErrors: g.LastApplyErrors,
 	}
+	if g.Forward != nil {
+		dto.Forward = &serviceRegForwardDTO{
+			IPForwardOK: g.Forward.IPForwardOK, IPForwardDetail: g.Forward.IPForwardDetail,
+			Routes: g.Forward.Routes, Conflicts: g.Forward.Conflicts,
+		}
+	}
+	return dto
 }
 
 // writeServiceRegError 把领域错误映射为契约错误码/状态码(照 writeProxyError 风格)。
@@ -199,6 +220,10 @@ func writeServiceRegError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadRequest, "invalid_service_reg", "协议只支持 http 或 tcp")
 	case errors.Is(err, servicereg.ErrInvalidUpstream):
 		writeError(w, http.StatusBadRequest, "invalid_service_reg", "上游非法:容器名仅字母数字与 . _ -,地址须为 IP / 域名 / host.docker.internal")
+	case errors.Is(err, servicereg.ErrInvalidForwardPeer):
+		writeError(w, http.StatusBadRequest, "invalid_forward_peer", "转发入参非法:对端节点未登记/未授权(需对端在集群 ACL 勾选允许转发)、目录不可达,或对端服务不存在/协议不匹配")
+	case errors.Is(err, servicereg.ErrForwardService):
+		writeError(w, http.StatusConflict, "forward_service", "转发服务不支持实例等本地上游操作(成员来自对端服务目录)")
 	case errors.Is(err, servicereg.ErrInvalidPort):
 		writeError(w, http.StatusBadRequest, "invalid_service_reg", "端口必须在 1..65535 之间")
 	case errors.Is(err, servicereg.ErrInstanceTaken):
@@ -456,6 +481,8 @@ type serviceRegServiceRequest struct {
 	Upstream        *string `json:"upstream"`
 	UpstreamPort    *int    `json:"upstreamPort"`
 	TCPListenPort   *int    `json:"tcpListenPort"`
+	PeerNodeID      *string `json:"peerNodeId"`
+	PeerServiceID   *string `json:"peerServiceId"`
 	StripPathPrefix *bool   `json:"stripPathPrefix"`
 }
 
@@ -467,7 +494,7 @@ func (req serviceRegServiceRequest) serviceRegUpstreamKind() string {
 	return strings.TrimSpace(*req.UpstreamKind)
 }
 
-// toCreateServiceInput 组装领域入参;端口必填校验对 static 放行(静态托管无端口)。
+// toCreateServiceInput 组装领域入参;端口必填校验对 static/forward 放行(两者无本地上游端口)。
 func (req serviceRegServiceRequest) toCreateServiceInput() (servicereg.CreateServiceInput, bool) {
 	kind := req.serviceRegUpstreamKind()
 	if req.DomainID == nil || req.Name == nil {
@@ -476,11 +503,14 @@ func (req serviceRegServiceRequest) toCreateServiceInput() (servicereg.CreateSer
 	port := 0
 	if req.UpstreamPort != nil {
 		port = *req.UpstreamPort
-	} else if kind != servicereg.UpstreamKindStatic {
+	} else if kind != servicereg.UpstreamKindStatic && kind != servicereg.UpstreamKindForward {
 		return servicereg.CreateServiceInput{}, false
 	}
 	in := servicereg.CreateServiceInput{
 		DomainID: *req.DomainID, Name: *req.Name, UpstreamKind: kind, UpstreamPort: port,
+	}
+	if kind == servicereg.UpstreamKindForward && (req.PeerNodeID == nil || req.PeerServiceID == nil) {
+		return servicereg.CreateServiceInput{}, false
 	}
 	if req.Path != nil {
 		in.Path = *req.Path
@@ -493,6 +523,12 @@ func (req serviceRegServiceRequest) toCreateServiceInput() (servicereg.CreateSer
 	}
 	if req.TCPListenPort != nil {
 		in.TCPListenPort = *req.TCPListenPort
+	}
+	if req.PeerNodeID != nil {
+		in.PeerNodeID = *req.PeerNodeID
+	}
+	if req.PeerServiceID != nil {
+		in.PeerServiceID = *req.PeerServiceID
 	}
 	if req.StripPathPrefix != nil {
 		in.StripPathPrefix = *req.StripPathPrefix
@@ -603,6 +639,12 @@ func makeUpdateServiceRegServiceHandler(svc servicereg.Service, aud audit.Record
 		if req.TCPListenPort != nil {
 			in.TCPListenPort = req.TCPListenPort
 		}
+		if req.PeerNodeID != nil {
+			in.PeerNodeID = req.PeerNodeID
+		}
+		if req.PeerServiceID != nil {
+			in.PeerServiceID = req.PeerServiceID
+		}
 		if req.StripPathPrefix != nil {
 			in.StripPathPrefix = req.StripPathPrefix
 		}
@@ -666,6 +708,24 @@ func makeSetServiceRegServiceEnabledHandler(svc servicereg.Service, aud audit.Re
 			TargetID: id, Detail: map[string]any{"enabled": req.Enabled}, IP: clientIP(r),
 		})
 		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+	}
+}
+
+// makeListServiceRegForwardPeersHandler 返回 GET /api/servicereg/forward/peers:可用作
+// 转发来源的 mesh 对端 + 各自服务目录可达性(服务表单「转发其他环境」的级联下拉数据)。
+// Available = 对端已授权(其 forward ACL 含本节点)且目录可达。
+func makeListServiceRegForwardPeersHandler(svc servicereg.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if svc == nil {
+			writeError(w, http.StatusServiceUnavailable, "internal", "服务注册未初始化")
+			return
+		}
+		items, err := svc.ForwardPeers(r.Context())
+		if err != nil {
+			writeServiceRegError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"items": items})
 	}
 }
 
