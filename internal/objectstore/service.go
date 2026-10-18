@@ -152,6 +152,49 @@ func (s *service) Upload(ctx context.Context, providerID, objectKey string, body
 	return nil
 }
 
+// 浏览分页大小契约:默认 100,上限 1000(桶可能对象巨多,单页绝不大口吞)。
+const (
+	DefaultBrowsePageSize = 100
+	MaxBrowsePageSize     = 1000
+)
+
+// Browse 取该配置凭据 → 单页列举 prefix 目录(delimiter="/",marker 游标分页)。
+// prefix 为相对 PathPrefix 的路径(浏览根锚定在配置前缀之下,与 Upload 写入位置一致);
+// marker 为空 = 第一页。Secret 用完即弃,绝不外泄。
+func (s *service) Browse(ctx context.Context, id, prefix, marker string, maxKeys int) (*ListPageResult, error) {
+	p, err := s.store.get(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if s.vault == nil {
+		return nil, ErrVaultUnconfigured
+	}
+	if maxKeys <= 0 {
+		maxKeys = DefaultBrowsePageSize
+	}
+	if maxKeys > MaxBrowsePageSize {
+		maxKeys = MaxBrowsePageSize
+	}
+	secret, err := s.vault.Reveal(p.CredentialID)
+	if err != nil {
+		return nil, mapVaultErr(err)
+	}
+	client, err := s.dial(p.Type, p.Endpoint, p.AccessKeyID, secret, p.Bucket)
+	if err != nil {
+		return nil, fmt.Errorf("%w:%s", ErrBrowseFailed, describeClientError(err))
+	}
+	// 拼配置级 PathPrefix 并规范成目录前缀形态(以 / 结尾;根目录为空串)。
+	full := strings.Trim(joinPrefixKey(p.PathPrefix, prefix), "/")
+	if full != "" {
+		full += "/"
+	}
+	res, err := client.ListPage(ctx, ListPageInput{Prefix: full, Marker: marker, MaxKeys: maxKeys})
+	if err != nil {
+		return nil, fmt.Errorf("%w:%s", ErrBrowseFailed, describeClientError(err))
+	}
+	return &res, nil
+}
+
 // registerBucketRetryDelay 是自动登记建桶的重试间隔(部署后容器可能尚未就绪);包级变量便于测试置零。
 var registerBucketRetryDelay = 2 * time.Second
 

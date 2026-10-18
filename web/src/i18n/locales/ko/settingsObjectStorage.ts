@@ -12,6 +12,7 @@ export default {
   credConfigured: '구성됨',
   credMissing: '미구성',
   editBtn: '편집',
+  browse: '탐색',
   editTitle: '{name} 편집',
   test: '연결 테스트',
   testing: '테스트 중…',

@@ -78,6 +78,7 @@ const en: typeof zhCN = {
     serviceReg: 'Service Registry',
     appStore: 'App Store',
     databases: 'Databases',
+    objectStorage: 'Object Storage',
     certificates: 'Certificates',
     anomaly: 'Anomaly Detection',
     notifications: 'Notifications',

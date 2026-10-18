@@ -1,5 +1,5 @@
 /**
- * Object-storage API client（设置 · 对象存储）。
+ * Object-storage API client（设置 · 对象存储 + 顶级浏览页）。
  *
  * 一个 `ObjectStore` 是一份对象存储**账户**配置（阿里云 OSS / S3 兼容的 RustFS），供流水线
  * `oss_upload` 节点把构建产物推送到桶。凭据按机密性拆分：
@@ -7,11 +7,12 @@
  *  - AccessKeySecret **只写** —— 提交一次（可轮换），经后端保险库加密存储，**绝不回显**；
  *    列表只以 `credentialConfigured` 告知「是否已绑凭据」。
  *
- * GET    /api/object-stores            → { items: ObjectStore[] }
- * POST   /api/object-stores            → ObjectStore           (needs CSRF)
- * PUT    /api/object-stores/{id}       → ObjectStore           (needs CSRF)
- * DELETE /api/object-stores/{id}       → { ok: true }          (needs CSRF)
- * POST   /api/object-stores/{id}/test  → TestObjectStoreResult (needs CSRF)
+ * GET    /api/object-stores                      → { items: ObjectStore[] }
+ * POST   /api/object-stores                      → ObjectStore           (needs CSRF)
+ * PUT    /api/object-stores/{id}                 → ObjectStore           (needs CSRF)
+ * DELETE /api/object-stores/{id}                 → { ok: true }          (needs CSRF)
+ * POST   /api/object-stores/{id}/test            → TestObjectStoreResult (needs CSRF)
+ * GET    /api/object-stores/{id}/objects         → BrowseObjectStoreResult（marker 游标单页浏览）
  *
  * 写操作走共享 `http` 封装（自动 CSRF + locale）。绝不返回 Secret。
  */
@@ -104,4 +105,44 @@ export async function deleteObjectStore(id: string): Promise<{ ok: boolean }> {
 /** 测试配置的凭据能否访问目标桶。返回耗时 / 详情 / 人读错误。 */
 export async function testObjectStore(id: string): Promise<TestObjectStoreResult> {
   return http.post<TestObjectStoreResult>(`/api/object-stores/${encodeURIComponent(id)}/test`, {})
+}
+
+/** 浏览结果里的一个对象条目（`key` 为桶内完整键；展示时由页面按当前目录截断）。 */
+export interface ObjectStoreEntry {
+  key: string
+  size: number
+  lastModified: string
+}
+
+/**
+ * 浏览一个目录的单页结果。桶内对象可能巨多：marker 游标分页（S3/OSS V1 语义），
+ * `nextMarker` 为空即最后一页；`prefixes` 为子目录（以 `/` 结尾，服务端 delimiter 折叠）。
+ */
+export interface BrowseObjectStoreResult {
+  prefixes: string[]
+  objects: ObjectStoreEntry[]
+  nextMarker: string
+  truncated: boolean
+}
+
+/** 浏览入参：`prefix` 相对配置级 pathPrefix（空 = 前缀根）；`marker` 为空 = 第一页。 */
+export interface BrowseObjectStoreParams {
+  prefix?: string
+  marker?: string
+  maxKeys?: number
+}
+
+/** 单页浏览指定存储的目录（只读；绝不聚合全量，永远一页）。 */
+export async function browseObjectStore(
+  id: string,
+  params: BrowseObjectStoreParams = {},
+): Promise<BrowseObjectStoreResult> {
+  const qs = new URLSearchParams()
+  if (params.prefix !== undefined) qs.set('prefix', params.prefix)
+  if (params.marker !== undefined) qs.set('marker', params.marker)
+  if (params.maxKeys !== undefined) qs.set('maxKeys', String(params.maxKeys))
+  const query = qs.toString()
+  return http.get<BrowseObjectStoreResult>(
+    `/api/object-stores/${encodeURIComponent(id)}/objects${query ? `?${query}` : ''}`,
+  )
 }

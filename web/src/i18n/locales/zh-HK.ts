@@ -77,6 +77,7 @@ const zhHK: typeof zhCN = {
     serviceReg: '服務註冊',
     appStore: '應用商店',
     databases: '資料庫',
+    objectStorage: '物件儲存',
     certificates: '憑證管理',
     anomaly: '異常偵測',
     notifications: '通知',

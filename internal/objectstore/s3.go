@@ -3,6 +3,7 @@ package objectstore
 import (
 	"context"
 	"io"
+	"strings"
 
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
@@ -60,4 +61,41 @@ func (c *rustfsObjectClient) EnsureBucket(ctx context.Context) error {
 		return nil
 	}
 	return c.client.MakeBucket(ctx, c.bucketName, minio.MakeBucketOptions{})
+}
+
+// ListPage 单页列举一个目录(Core API 的 V1 列举,delimiter 折叠子目录,marker 游标)。
+// 高层 ListObjects 是 channel 驱动会拉完全桶,这里必须用单页语义的 Core API,
+// 桶内对象可能巨多,绝不聚合全量。
+func (c *rustfsObjectClient) ListPage(ctx context.Context, in ListPageInput) (ListPageResult, error) {
+	core := minio.Core{Client: c.client}
+	res, err := core.ListObjects(c.bucketName, in.Prefix, in.Marker, "/", in.MaxKeys)
+	if err != nil {
+		return ListPageResult{}, err
+	}
+	out := ListPageResult{Prefixes: make([]string, 0, len(res.CommonPrefixes)), Objects: make([]ObjectEntry, 0, len(res.Contents))}
+	var last string
+	for _, cp := range res.CommonPrefixes {
+		out.Prefixes = append(out.Prefixes, cp.Prefix)
+		if cp.Prefix > last {
+			last = cp.Prefix
+		}
+	}
+	for _, obj := range res.Contents {
+		// 目录占位对象(key 恰等于当前前缀,如 "a/b/")不是文件,不展示。
+		if obj.Key == in.Prefix || strings.HasSuffix(obj.Key, "/") {
+			continue
+		}
+		out.Objects = append(out.Objects, ObjectEntry{Key: obj.Key, Size: obj.Size, LastModified: obj.LastModified})
+		if obj.Key > last {
+			last = obj.Key
+		}
+	}
+	if res.IsTruncated {
+		// NextMarker 仅带 delimiter 时服务端返回;缺失时按 V1 语义取字典序最大的 key 兜底。
+		out.NextMarker = res.NextMarker
+		if out.NextMarker == "" {
+			out.NextMarker = last
+		}
+	}
+	return out, nil
 }
