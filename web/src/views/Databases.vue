@@ -874,7 +874,7 @@ watch(currentDb, (db) => {
                         <tr>
                           <th class="cell-op-col" />
                           <th
-                            v-for="(c, ci) in browse.columns"
+                            v-for="c in browse.columns"
                             :key="c"
                             class="th-sortable"
                             @click="toggleSort(c)"

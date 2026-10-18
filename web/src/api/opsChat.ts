@@ -266,6 +266,7 @@ export function isValidExecArgv(argv: unknown): argv is string[] {
   if (basename === '.' || basename === '..') return false
   let total = 0
   for (const token of argv) {
+    // eslint-disable-next-line no-control-regex -- 拒绝控制字符正是该校验的目的
     if (typeof token !== 'string' || /[\u0000-\u001f\u007f-\u009f]/.test(token)) return false
     for (const character of token) {
       const codePoint = character.codePointAt(0)!

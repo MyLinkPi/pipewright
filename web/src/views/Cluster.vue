@@ -125,7 +125,7 @@ onUnmounted(() => {
         <p class="sub">{{ t('cluster.subtitle') }}</p>
       </div>
       <AppButton variant="default" size="sm" @click="load">
-        < Refresh class="btn-ico" />
+        <Refresh class="btn-ico" />
         <span>{{ t('common.refresh') }}</span>
       </AppButton>
     </header>

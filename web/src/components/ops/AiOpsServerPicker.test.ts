@@ -12,11 +12,14 @@ const servers: Server[] = [
     user: 'fixture',
     credentialId: 'c',
     credentialName: 'fixture',
-    // fork 的 Server 含必填的 sudo/跳板链/构建池/GPU 字段(上游无)。
+    // fork 的 Server 含必填的 sudo/跳板链/构建池/GPU/服务器池字段(上游无)。
     sudoCredentialId: '',
     sudoCredentialName: '',
     jumps: [],
     labels: '',
+    poolId: 'pool-1',
+    poolName: 'default',
+    kind: 'standard',
     maxBuilds: 0,
     priority: 0,
     gpu: false,
