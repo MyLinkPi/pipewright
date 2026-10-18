@@ -33,6 +33,8 @@ const AppStore = () => import('../views/AppStore.vue')
 const Databases = () => import('../views/Databases.vue')
 // 对象存储浏览(只读):实例在 设置 → 对象存储 注册,此处浏览桶内目录(marker 游标分页)。
 const ObjectStorage = () => import('../views/ObjectStorage.vue')
+// Redis 在线管理:实例在 设置 → Redis 注册(应用市场部署 redis 自动登记),此处 SCAN 分页浏览键 + 删键/改 TTL。
+const Redis = () => import('../views/Redis.vue')
 // Story 6-5: configurable anomaly detection & alerts (FR-23)
 const AnomalyDetection = () => import('../views/AnomalyDetection.vue')
 // 集群(对等节点 + EasyTier 自组网):节点状态/链路(p2p|中继)总览 + 授权管理入口
@@ -52,6 +54,8 @@ const SettingsDnsProviders = () => import('../views/settings/SettingsDnsProvider
 const SettingsObjectStorage = () => import('../views/settings/SettingsObjectStorage.vue')
 // 数据库实例注册(MySQL/PostgreSQL;管理操作在 /databases 顶级页)
 const SettingsDatabases = () => import('../views/settings/SettingsDatabases.vue')
+// Redis 实例注册(应用市场部署 redis 后自动登记;管理在 /redis 顶级页)
+const SettingsRedis = () => import('../views/settings/SettingsRedis.vue')
 // 平台 HTTPS 访问:宿主 nginx 自动配置(证书 + 80→443 跳转),证书复用证书管理
 const SettingsHttps = () => import('../views/settings/SettingsHttps.vue')
 const SettingsAccount = () => import('../views/settings/SettingsAccount.vue')
@@ -176,6 +180,8 @@ const router = createRouter({
         { path: 'app-store', name: 'app-store', component: AppStore, meta: { title: '应用商店' } },
         // 数据库在线管理(phpMyAdmin 式):库/表浏览、SQL 控制台、导入导出、账号管理(仅管理员)。
         { path: 'databases', name: 'databases', component: Databases, meta: { title: '数据库', roles: ['admin'] } },
+        // Redis 在线管理:SCAN 游标分页键浏览 + 键详情 + 删键/改 TTL(仅管理员)。
+        { path: 'redis', name: 'redis', component: Redis, meta: { title: 'Redis', roles: ['admin'] } },
         // 对象存储浏览(只读;仅管理员):实例在 设置 → 对象存储 注册,此处浏览桶内目录(marker 游标分页)。
         { path: 'object-storage', name: 'object-storage', component: ObjectStorage, meta: { title: '对象存储', roles: ['admin'] } },
         // R2 / E2.4: 证书总览大盘(跨主机跨域名 + 到期高亮)
@@ -203,6 +209,8 @@ const router = createRouter({
             { path: 'object-storage', name: 'settings-object-storage', component: SettingsObjectStorage, meta: { title: '对象存储' } },
             // 数据库实例注册(MySQL/PostgreSQL;应用市场部署后自动登记;管理在 /databases)
             { path: 'databases', name: 'settings-databases', component: SettingsDatabases, meta: { title: '数据库' } },
+            // Redis 实例注册(应用市场部署 redis 后自动登记;管理在 /redis)
+            { path: 'redis', name: 'settings-redis', component: SettingsRedis, meta: { title: 'Redis' } },
             { path: 'https', name: 'settings-https', component: SettingsHttps, meta: { title: 'HTTPS 访问' } },
             { path: 'account', name: 'settings-account', component: SettingsAccount, meta: { title: '账户设置' } },
             // 系统信息 + 一键检查更新

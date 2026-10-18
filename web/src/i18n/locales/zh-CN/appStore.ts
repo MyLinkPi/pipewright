@@ -50,6 +50,7 @@ export default {
     onceHint: '生成的口令同时存在于目标机的 compose 文件中,可在该机的 Stacks 里查看。',
     autoRegistered: '已自动登记为对象存储配置',
     dbAutoRegistered: '已自动登记为数据库实例',
+    redisAutoRegistered: '已自动登记为 Redis 实例',
     close: '关闭',
 
     regTitle: '注册到网关',

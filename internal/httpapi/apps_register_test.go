@@ -89,7 +89,7 @@ type appDeployResponse struct {
 func runDeployRaw(t *testing.T, apps appstore.Service, servers target.Service, objStores objectstore.Service, body string) (int, string) {
 	t.Helper()
 	r := chi.NewRouter()
-	r.Post("/servers/{id}/apps/deploy", makeDeployAppHandler(apps, servers, nil, objStores, nil))
+	r.Post("/servers/{id}/apps/deploy", makeDeployAppHandler(apps, servers, nil, objStores, nil, nil))
 	req := httptest.NewRequest(http.MethodPost, "/servers/srv-1/apps/deploy", strings.NewReader(body))
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)

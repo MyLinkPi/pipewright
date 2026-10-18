@@ -16,6 +16,7 @@ import (
 	"github.com/huangchengsir/pipewright/internal/audit"
 	"github.com/huangchengsir/pipewright/internal/dbadmin"
 	"github.com/huangchengsir/pipewright/internal/objectstore"
+	"github.com/huangchengsir/pipewright/internal/redisadmin"
 	"github.com/huangchengsir/pipewright/internal/target"
 	"gopkg.in/yaml.v3"
 )
@@ -35,8 +36,9 @@ const (
 )
 
 // appAutoRegisterTemplates 是「部署成功后联动自动登记」的内置模板名集合:
-// rustfs → 登记为对象存储配置;mysql / postgres → 登记为数据库管理实例。
+// rustfs → 登记为对象存储配置;mysql / postgres → 登记为数据库管理实例;redis → 登记为 Redis 管理实例。
 const appAutoRegisterObjectStoreTemplate = "rustfs"
+const appAutoRegisterRedisTemplate = "redis"
 
 var appAutoRegisterDBTemplates = map[string]bool{
 	"mysql":    true,
@@ -168,6 +170,59 @@ func registerDatabaseInstance(ctx context.Context, dbAdmins dbadmin.Service, aud
 		Actor: auditActor, Action: auditActionDBInstanceRegister, TargetType: auditTargetAppStore,
 		TargetID: res.Instance.ID,
 		Detail:   map[string]any{"engine": tplName, "host": srv.Host, "port": port, "source": "appstore", "ok": true, "updated": res.Updated}, IP: clientIP(r),
+	})
+	return true, note
+}
+
+// registerRedisInstance 是应用商店部署 redis 成功后的联动登记(尽力而为,绝不影响部署
+// 结果):从渲染后的生效参数取 requirepass 密码与端口,交给 redisadmin.Register 完成
+// 幂等登记(同地址原地轮换密码)。密码经 vault 密封,审计只记接入参数,绝不含密码。
+// 不在部署链路里做连接测试——容器首启初始化可达秒级,连通性由「Redis」管理页的
+// 连接测试兜底。返回 (是否已登记, 人话备注)。
+func registerRedisInstance(ctx context.Context, redisAdmins redisadmin.Service, aud audit.Recorder, r *http.Request, srv target.Server, stackName string, used map[string]string, instance string) (bool, string) {
+	if redisAdmins == nil {
+		return false, "" // 服务未注入(如裁剪装配)→ 静默跳过,部署不受影响
+	}
+	password, portParam := used["password"], used["port"]
+	if password == "" || portParam == "" {
+		return false, "生效参数缺少密码/端口,未自动登记 Redis 实例"
+	}
+	port, err := strconv.Atoi(strings.TrimSpace(portParam))
+	if err != nil || port < 1 || port > 65535 {
+		return false, "生效端口参数非法,未自动登记 Redis 实例"
+	}
+	name := "Redis · " + srv.Name
+	if strings.TrimSpace(name) == "Redis ·" {
+		name = "Redis · " + srv.Host
+	}
+	if instance != "" {
+		name += " · " + instance
+	}
+	res, err := redisAdmins.Register(ctx, redisadmin.RegisterInput{
+		Name: name, Host: srv.Host, Port: port, Password: password,
+		ServerID: srv.ID, StackName: stackName,
+	})
+	if err != nil {
+		msg := "自动登记 Redis 实例失败"
+		if errors.Is(err, redisadmin.ErrVaultUnconfigured) {
+			msg += ":保险库未配置 master key"
+		} else {
+			msg += ":" + err.Error()
+		}
+		recordAudit(r.Context(), aud, audit.Entry{
+			Actor: auditActor, Action: auditActionRedisInstanceRegister, TargetType: auditTargetAppStore,
+			Detail: map[string]any{"host": srv.Host, "port": port, "source": "appstore", "ok": false, "error": msg}, IP: clientIP(r),
+		})
+		return false, msg
+	}
+	note := "已自动登记到「设置 → Redis」,可在「Redis」页浏览键空间"
+	if res.Updated {
+		note = "已更新既有 Redis 实例的密码(同地址原地轮换)"
+	}
+	recordAudit(r.Context(), aud, audit.Entry{
+		Actor: auditActor, Action: auditActionRedisInstanceRegister, TargetType: auditTargetAppStore,
+		TargetID: res.Instance.ID,
+		Detail:   map[string]any{"host": srv.Host, "port": port, "source": "appstore", "ok": true, "updated": res.Updated}, IP: clientIP(r),
 	})
 	return true, note
 }
@@ -483,10 +538,11 @@ func makeDeleteAppTemplateHandler(svc appstore.Service, aud audit.Recorder) http
 // 渲染参数(自动生成 secret)→ 可选注入资源限制(deploy.resources.limits)→ 复用 Stacks 链路
 // 部署到该主机;生成的 secret 随响应一次性返回(部署后以明文存在于目标机 compose 文件,与
 // Stacks 语义一致;审计只记模板名,不记参数值)。联动登记(均尽力而为,结果见响应字段):
-// RustFS 部署成功 → 自动登记对象存储配置;mysql/postgres 部署成功 → 自动登记数据库实例。
+// RustFS 部署成功 → 自动登记对象存储配置;mysql/postgres → 自动登记数据库实例;
+// redis → 自动登记 Redis 管理实例。
 // 可选 instance 支持同机多副本:栈目录与 compose 项目名用 <模板名>-<实例名>(留空即模板名,
 // 默认单实例);数据卷/网络按 compose 项目名前缀自动隔离。
-func makeDeployAppHandler(apps appstore.Service, servers target.Service, aud audit.Recorder, objStores objectstore.Service, dbAdmins dbadmin.Service) http.HandlerFunc {
+func makeDeployAppHandler(apps appstore.Service, servers target.Service, aud audit.Recorder, objStores objectstore.Service, dbAdmins dbadmin.Service, redisAdmins redisadmin.Service) http.HandlerFunc {
 	type request struct {
 		TemplateID string            `json:"templateId"`
 		Params     map[string]string `json:"params"`
@@ -507,6 +563,9 @@ func makeDeployAppHandler(apps appstore.Service, servers target.Service, aud aud
 		// 数据库联动登记结果(仅 mysql/postgres 模板且部署成功时出现;尽力而为,失败不影响 OK)。
 		DBRegistered bool   `json:"dbRegistered,omitempty"`
 		DBNote       string `json:"dbNote,omitempty"`
+		// Redis 联动登记结果(仅 redis 模板且部署成功时出现;尽力而为,失败不影响 OK)。
+		RedisRegistered bool   `json:"redisRegistered,omitempty"`
+		RedisNote       string `json:"redisNote,omitempty"`
 	}
 	return func(w http.ResponseWriter, r *http.Request) {
 		if apps == nil {
@@ -592,6 +651,13 @@ func makeDeployAppHandler(apps appstore.Service, servers target.Service, aud aud
 		if out.OK && appAutoRegisterDBTemplates[tpl.Name] {
 			rctx, rcancel := context.WithTimeout(r.Context(), appRegisterTimeout)
 			out.DBRegistered, out.DBNote = registerDatabaseInstance(rctx, dbAdmins, aud, r, *srv, tpl.Name, stackName, rendered.Used, req.Instance)
+			rcancel()
+		}
+		// redis 联动:部署成功后自动登记为 Redis 管理实例(尽力而为,独立超时;连通性由
+		// 「Redis」管理页的连接测试兜底)。
+		if out.OK && tpl.Name == appAutoRegisterRedisTemplate {
+			rctx, rcancel := context.WithTimeout(r.Context(), appRegisterTimeout)
+			out.RedisRegistered, out.RedisNote = registerRedisInstance(rctx, redisAdmins, aud, r, *srv, stackName, rendered.Used, req.Instance)
 			rcancel()
 		}
 

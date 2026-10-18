@@ -79,6 +79,7 @@ const de: typeof zhCN = {
     appStore: 'App-Store',
     databases: 'Datenbanken',
     objectStorage: 'Objektspeicher',
+    redis: 'Redis',
     certificates: 'Zertifikate',
     anomaly: 'Anomalieerkennung',
     notifications: 'Benachrichtigungen',

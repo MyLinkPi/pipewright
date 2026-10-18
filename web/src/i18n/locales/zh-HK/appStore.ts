@@ -46,6 +46,7 @@ export default {
     onceHint: "產生的密碼同時存在於目標主機的 compose 檔案中,可在該機的 Stacks 檢視。",
     autoRegistered: "已自動登記為物件儲存設定",
     dbAutoRegistered: "已自動登記為資料庫實例",
+    redisAutoRegistered: "已自動登記為 Redis 實例",
     close: "關閉",
 
     regTitle: "註冊到閘道",

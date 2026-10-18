@@ -46,6 +46,7 @@ export default {
     onceHint: "生成パスワードは対象ホストの compose ファイルにも存在します(Stacks タブで確認)。",
     autoRegistered: "オブジェクトストレージ設定として自動登録しました",
     dbAutoRegistered: "データベースインスタンスとして自動登録しました",
+    redisAutoRegistered: "Redis インスタンスとして自動登録しました",
     close: "閉じる",
 
     regTitle: "ゲートウェイに登録",

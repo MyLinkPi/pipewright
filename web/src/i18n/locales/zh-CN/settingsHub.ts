@@ -9,6 +9,7 @@ export default {
   navDnsProviders: 'DNS 提供商',
   navObjectStorage: '对象存储',
   navDatabases: '数据库',
+  navRedis: 'Redis',
   navHttps: 'HTTPS 访问',
   navAccount: '账户',
   navServers: '服务器',

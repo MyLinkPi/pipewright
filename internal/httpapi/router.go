@@ -43,6 +43,7 @@ import (
 	"github.com/huangchengsir/pipewright/internal/pipeline"
 	"github.com/huangchengsir/pipewright/internal/platformhttps"
 	"github.com/huangchengsir/pipewright/internal/project"
+	"github.com/huangchengsir/pipewright/internal/redisadmin"
 	"github.com/huangchengsir/pipewright/internal/retention"
 	"github.com/huangchengsir/pipewright/internal/run"
 	"github.com/huangchengsir/pipewright/internal/runner"
@@ -122,6 +123,7 @@ type options struct {
 	systemConfig     systemcfg.Service
 	appStore         appstore.Service
 	dbAdmin          dbadmin.Service
+	redisAdmin       redisadmin.Service
 	serverCmds       *servercmd.Service
 	registryHub      registryHubService
 	mesh             *meshAdminDeps
@@ -456,6 +458,14 @@ func WithDBAdmin(s dbadmin.Service) Option {
 	return func(o *options) { o.dbAdmin = s }
 }
 
+// WithRedisAdmin 注入「Redis 管理」服务,挂载 /api/redis-instances* 路由(admin 子组:
+// auth + CSRF + 审计;实例注册 + SCAN 游标分页键浏览 + 删键/改 TTL)。
+// 连接密码经 vault 密文,响应/审计/日志绝无明文;实例默认只读,解锁为显式审计动作。
+// 应用市场部署 redis 模板成功后经此服务联动自动登记实例。不传则端点 503。
+func WithRedisAdmin(s redisadmin.Service) Option {
+	return func(o *options) { o.redisAdmin = s }
+}
+
 // WithAnomaly 注入可配置异常检测服务(Story 6.5;FR-23),挂载 /api/anomaly/* 路由
 // (GET rules/alerts auth;POST rules/check + DELETE rules/{id} auth + CSRF)。检测复用 6-1
 // 指标采集(metricsCollector 适配 collectServerMetrics);不可达/指标 null 的服务器跳过(不误报)。
@@ -633,6 +643,10 @@ func New(webFS fs.FS, authn auth.Authenticator, opts ...Option) http.Handler {
 			// 数据库管理面(管理员):MySQL/PostgreSQL 实例注册 + phpMyAdmin 式在线管理。
 			if o.dbAdmin != nil {
 				mountDBAdmin(ar, o.dbAdmin, aud)
+			}
+			// Redis 管理面(管理员):实例注册 + SCAN 分页键浏览 + 删键/改 TTL。
+			if o.redisAdmin != nil {
+				mountRedisAdmin(ar, o.redisAdmin, aud)
 			}
 			// Ceph 管理面(管理员):集群登记/cephadm 部署管线/状态 + 主机/OSD/池/RBD/CephFS 管理。
 			if o.ceph != nil {
@@ -906,7 +920,7 @@ func New(webFS fs.FS, authn auth.Authenticator, opts ...Option) http.Handler {
 		// 生成的 secret 仅部署响应一次性返回;审计只记模板名,不记参数值。
 		// RustFS 模板部署成功后联动自动登记对象存储;mysql/postgres 模板联动自动登记
 		// 数据库实例(均尽力而为,不影响部署结果)。
-		ar.Post("/servers/{id}/apps/deploy", makeDeployAppHandler(o.appStore, csv, aud, o.objectStores, o.dbAdmin))
+		ar.Post("/servers/{id}/apps/deploy", makeDeployAppHandler(o.appStore, csv, aud, o.objectStores, o.dbAdmin, o.redisAdmin))
 		// 容器 AI 诊断 / 看日志(AI moat):取容器日志 → ai.Diagnose 出根因+修复。复用 csv +
 		// o.aiSettings。出网前脱敏;AI 未配/失败 → 200 unavailable,绝不 500。比 {id} 多两段不被吞。
 		ar.Post("/servers/{id}/containers/{containerId}/diagnose", makeContainerDiagnoseHandler(csv, o.aiSettings))

@@ -1,51 +1,59 @@
-在对象存储浏览页增加「新建桶」功能：在当前存储实例的账户下创建新桶，并自动登记为一份新的对象存储配置（这样它才会出现在浏览页下拉与设置页中）。
+新增「Redis 管理」域：实例注册（设置页）+ 键浏览管理（顶级页）+ 应用商店部署 Redis 自动登记。完整复刻「数据库管理（dbadmin）」的架构模式。
 
-## 关键设计决策
+## 范围（已确认）
 
-- **建桶+登记一体**：Provider 配置绑定单桶，新建桶后自动落一条新配置（同 Type/Endpoint/AccessKeyID，新桶名，PathPrefix 为空，展示名缺省=桶名）。
-- **凭据独立重封**：从源配置 vault 取出 Secret，为 New配置 Create 一条**新的** vault 凭据（绝不共享 credentialId——删除配置会级联删凭据，共享会误伤同账户其他配置）。
-- **孤儿桶恢复**：服务端报“桶已存在且归己有”（BucketAlreadyOwnedByYou）→ 视为成功；报“已存在”但归属不明 → 用新桶名 dial 一个客户端 VerifyBucket，校验通过视为成功（覆盖半程失败遗留），否则报错（名被他人占用）。
-- **支持两类存储**：RustFS（minio MakeBucket）与阿里云 OSS（client.CreateBucket，默认私有 ACL）。此前 EnsureBucket 不含 OSS 是“自动建桶”的保守选择；用户显式点击的建桶动作对云账户同样合理。
-- **校验先于触网**：桶名校验 + 同账户重复配置检查在 dial 之前（httpapi 层可无网测试）。
+INFO 概览 + SCAN 游标分页浏览键（模式匹配）+ 键详情（类型/TTL/值预览/内存）+ 删除键/改 TTL（默认只读锁保护，解锁后可写，过审计）。不做命令控制台与键值编辑器。
 
-## 后端改动
+## 后端
 
-### 1. `internal/objectstore/objectstore.go`
-- 新增错误：`ErrInvalidBucket`（桶名非法）、`ErrDuplicateBucket`（同账户同桶已登记）、`ErrBucketCreateFailed`（服务端建桶失败）
-- 新增桶名规则 `bucketNameRe = ^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$`（S3/OSS 交集；不含点号——点会破坏 OSS 泛域名证书校验，也规避 IP 形态桶名）
-- 新增可选能力接口 `bucketCreator { CreateBucket(ctx, bucketName) error }`（与 bucketEnsurer 同模式）
-- `Service` 接口新增：`CreateBucket(ctx, sourceProviderID, bucket, name string) (*Provider, error)`
+### 0. 依赖
+引入 `github.com/redis/go-redis/v9`（go.mod 现无任何 redis 客户端）。
 
-### 2. `internal/objectstore/s3.go` + `oss.go`
-- 两客户端实现 `CreateBucket`（RustFS: minio MakeBucket 默认参数；OSS: client.CreateBucket 私有 ACL）
-- oss.go 新增 `isBucketAlreadyOwned(err)`：识别 oss.ServiceError / minio.ErrorResponse 的 `BucketAlreadyOwnedByYou` 码
+### 1. 新包 `internal/redisadmin/`
+- **`redisadmin.go`**（领域+存储+服务，照 dbadmin.go 单文件模式）：
+  - `Instance{ID,Name,Host,Port,DBNum,ReadOnly,Source(manual|appstore),ServerID,StackName,CreatedAt,UpdatedAt}`；密码经 `vault.SealSecret/OpenSecret` 密文 BLOB 落库（支持无密码实例，password_sealed 可空）
+  - 错误集：ErrNotFound/ErrInvalidInput/ErrVaultUnconfigured/ErrReadonly/ErrUnreachable/ErrKeyNotFound
+  - `Service`：`List/Get/Create/Update/Delete/Test/TestDirect/SetReadOnly/Register` + `Info/ScanKeys/KeyDetail/DeleteKey/SetTTL`
+  - `Register` 幂等：同 host+port 命中 → 原地轮换密码（Updated=true）；未命中 INSERT source=appstore readonly=1；并发窗口撞唯一索引按更新语义重试（照抄 dbadmin.Register，含 isUniqueViolation）
+- **`conn.go`**：go-redis 客户端即建即弃（拨号 3s/读写 5s 超时）；describeRedisError 人话映射
+- **`scan.go`**：
+  - `Info(db)`：INFO server,memory,clients,keyspace + DBSIZE → {version, uptimeSeconds, usedMemory, connectedClients, keyspace{db→keys}}
+  - `ScanKeys(cursor,match,count)`：**循环 SCAN 补齐至 count 或游标归零**（键空间可能百万级，绝不 KEYS *；COUNT 钳 50–500 默认 100）
+  - `KeyDetail(key)`：TYPE→TTL→MEMORY USAGE（尽力而为）→ 按 type 值预览：string GETRANGE 0..2047+STRLEN（截断标记）、hash HLEN+HSCAN 100、list LLEN+LRANGE 0..99、set SCARD+SSCAN 100、zset ZCARD+ZRANGE 0..99 WITHSCORES、其他类型仅元信息
+  - `DeleteKey`/`SetTTL`（ttl<0 = PERSIST）：ensureWritable 只读守卫（默认锁定，ErrReadonly）
+- **迁移** `0083_redis_instances.sql`（sqlite+mysql 双方言）：表 redis_instances + 唯一索引 (host,port)
+- **领域测试**：client 经接口注入 fake（不引 miniredis，与 dbadmin 测试纪律一致）——覆盖 CRUD/幂等 Register/只读守卫/SCAN 补齐分页/键详情各类型/错误映射
 
-### 3. `internal/objectstore/service.go` — CreateBucket 实现
-流程：get 源配置 → 桶名校验（小写归一化）→ `findByTypeEndpointBucket`（type+endpoint+bucket）重复检查 → vault reveal → dial → CreateBucket（含孤儿桶恢复逻辑）→ vaultW.Create 重封凭据 → s.Create 落库（失败回滚删凭据）→ 返回新配置。新增辅助方法 `findByTypeEndpointBucket`。
+### 2. HTTP 层 `internal/httpapi/redisadmin.go` + 装配
+- `mountRedisAdmin(ar, svc, aud)`，挂 requireAdmin 子组（同 dbadmin）
+- 端点：GET/POST `/redis-instances`；POST `/redis-instances/test`（直连）；PUT/DELETE `/redis-instances/{id}`；POST `/{id}/test`；PUT `/{id}/readonly`；GET `/{id}/info?db=`；GET `/{id}/keys?db=&cursor=&match=&count=`；GET `/{id}/keys/detail?key=&db=`；DELETE `/{id}/keys?key=&db=`；POST `/{id}/keys/ttl`（写操作过审计：redisadmin.key.delete / redisadmin.key.ttl；键名入审计目标，密码绝不入）
+- `WithRedisAdmin` Option + router.go 挂载 + main.go 装配（redisadmin.New(st.DB, credVault)）
+- httpapi 测试：实例 CRUD 无网路径
 
-### 4. `internal/httpapi/objectstore.go` + `router.go`
-- 新审计动作 `objectstore.bucket_create`
-- 错误映射：ErrInvalidBucket→400（提示命名规则）、ErrDuplicateBucket→409 `object_store_duplicate`、ErrBucketCreateFailed→502
-- Handler：`POST /api/object-stores/{id}/buckets`，body `{bucket, name?}`（认证+CSRF+审计），成功 201 返回新配置 DTO（绝无 Secret）
-- 路由注册在现有对象存储路由组
+### 3. 应用商店联动（apps.go）
+- `appAutoRegisterRedisTemplate = "redis"` + `registerRedisInstance(...)`：取 `used["password"]`/`used["port"]`（无 username；redis 模板已存在：requirepass + port 参数，AutoGenerate 密码）；登记名 `Redis · 服务器名 [· 实例]`；vault 未配置 → 备注不阻断
+- `makeDeployAppHandler` 签名加 redisAdmins（router.go:909 同步）；响应加 `redisRegistered`/`redisNote`；审计 `redisadmin.instance.register`
 
-### 5. 后端测试
-- `service_test.go`：fakeClient 补 `CreateBucket` stub（记录调用+错误可控）；新增用例：成功路径（建桶+登记+凭据独立）、桶名校验（非法名）、重复桶→ErrDuplicateBucket、建桶失败→ErrBucketCreateFailed、孤儿桶恢复（AlreadyExists+Verify 通过→成功）、AlreadyOwnedByYou→成功、vault 未配置
-- `objectstore_test.go`（httpapi）：无网路径——重复桶→409、非法桶名→400
+## 前端
 
-## 前端改动
+### 4. `web/src/api/redisAdmin.ts`
+类型（RedisInstance/RedisTestResult/RedisServerInfo/ScanResult/KeyDetail）+ 全端点函数（照 dbAdmin.ts 模式）
 
-### 6. `web/src/api/objectStores.ts`
-- `CreateBucketInput {bucket, name?}` 类型 + `createObjectStoreBucket(id, input)` 函数
+### 5. 顶级页 `web/src/views/Redis.vue`（/redis，admin，照 Databases.vue 风格）
+- 实例下拉 + 只读/写模式 chip + 解锁/上锁（确认弹窗）+ 连接测试
+- INFO 概览条（版本/uptime/内存/连接数/当前库键数）+ DB 切换下拉 0-15（有键数的库标注键数）
+- 键浏览：match 输入（回车/按钮重扫）+ **SCAN 游标分页**（cursor 历史栈，上一页/下一页，页大小 100/200/500；游标归零即末页）
+- 键详情面板：类型徽章/TTL/内存 + 值预览（string 等宽文本、hash/list/set/zset 列表渲染，截断提示）+ 操作：删除（确认）、改 TTL（秒数输入，-1=持久化）
+- loading/错误重试/空态
 
-### 7. `web/src/views/ObjectStorage.vue`
-- header 工具区加「新建桶」按钮（Plus 图标）→ 弹窗（克隆设置页 modal 样式体系：modal-scrim/modal/field/field-input）
-- 弹窗字段：桶名（必填，前端同规则正则实时校验+提示）、展示名（可选，缺省桶名）；提交中/错误提示
-- 成功后：toast + 重拉存储列表 + 切换下拉到新配置（触发现有 watch 自动回到根目录加载）
+### 6. 设置页 `web/src/views/settings/SettingsRedis.vue`（/settings/redis）
+新增表单（name/host/port 默认 6379/password 可空/db 0-15）+ 直连测试 + dirty guard；列表 + 编辑（密码留空不改）+ 删除确认 + 逐行测试；Settings.vue 加子导航
 
-### 8. i18n（8 语言 objectStorage 命名空间各加 12 个词条）
-createBucket / createBucketTitle / createBucketSub / bucketNameField / bucketNamePlaceholder / bucketNameHint / displayNameField / displayNamePlaceholder / createBucketConfirm / creating / cancel / createBucketOk
+### 7. 路由/导航/联动展示/i18n
+- router：`/redis`（roles: admin）+ `/settings/redis`
+- AppShell adminNavItems 加 nav.redis（图标用 @vicons/tabler 的 BrandRedis，不存在则 Bolt）；8 语言 nav + settingsHub.navRedis 词条
+- 8 语言新建 `locales/<lang>/redisAdmin.ts`
+- apps.ts DeployResult 加 redisRegistered/redisNote；AppStore.vue 部署结果跟随 dbRegistered 模式展示 + appStore 词条
 
 ## 验证
-- `go build ./...` + `go test ./internal/objectstore/... ./internal/httpapi/`
-- `vue-tsc --noEmit` + `vitest run`（含 keyParity）+ `vite build`
+`go mod tidy` + `go build ./...` + `go test ./internal/redisadmin/... ./internal/httpapi/`；`vue-tsc --noEmit` + `vitest run`（keyParity）+ `vite build`

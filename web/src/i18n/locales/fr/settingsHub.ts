@@ -9,6 +9,7 @@ export default {
   navDnsProviders: 'Fournisseurs DNS',
   navObjectStorage: 'Stockage d’objets',
   navDatabases: 'Bases de données',
+  navRedis: 'Redis',
   navHttps: 'Accès HTTPS',
   navAccount: 'Compte',
   navServers: 'Serveurs',
