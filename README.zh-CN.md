@@ -2,9 +2,10 @@
 
 # Pipewright
 
-**一个轻量、自托管的 CI/CD + 部署 + 运维一体化平台。**
+**一个轻量、自托管的 DevOps 与基础设施一体化平台。**
 单个 Go 静态二进制(内嵌前端,运行时零依赖),
-一个工具替掉「CI + Ansible/Kamal + Portainer」三件套。
+从 CI/CD、多机部署、容器运维,到镜像仓库、网关与证书、
+应用市场、Redis / 对象存储 / PVE / Ceph 纳管,装进同一个二进制。
 
 [![Release](https://img.shields.io/github/v/release/MyLinkPi/pipewright)](https://github.com/MyLinkPi/pipewright/releases)
 [![CI](https://github.com/MyLinkPi/pipewright/actions/workflows/ci.yml/badge.svg)](https://github.com/MyLinkPi/pipewright/actions/workflows/ci.yml)
@@ -14,27 +15,28 @@
 
 </div>
 
+> [!IMPORTANT]
+> 本项目是 [Pipewright](https://github.com/MyLinkPi/pipewright) 的一个深度定制分支,已在原版基础上大幅扩展与重构,
+> **与上游版本不兼容**:数据、配置与流水线不可直接互换或互相升级。请勿混用两个版本的二进制与数据目录,
+> 也不要向上游提交本分支的问题或 PR。使用前请评估本分支自身的维护状态。
+
 ---
 
 ## 为什么是 Pipewright
 
-主流方案要么重(Jenkins 一堆插件 + JVM),要么是三个工具拼装(Woodpecker/Drone + Ansible/Kamal + Portainer)。Pipewright 把「持续集成、多服务器部署、服务器/容器运维」装进**一个静态二进制**:下载、启动、打开浏览器,就是全部安装过程。
+Pipewright 把「持续集成、多服务器部署、服务器/容器运维」装进**一个静态二进制**:下载、启动、打开浏览器,就是全部安装过程。无需拼装多套系统,无需插件迷宫。
 
-如今它已长过那三件套:把部署好的服务挂上 HTTPS 域名(原本的 nginx + certbot 那一步)也内置了。
+如今它已远不止 CI/CD:内置镜像仓库、HTTPS 域名网关与证书、应用市场一键部署、数据库 / Redis / 对象存储 / PVE / Ceph 纳管 —— 它想成为自托管基础设施的控制平面。
 
-| | Pipewright | Jenkins | Drone + Ansible + Portainer |
-|---|:---:|:---:|:---:|
-| 单二进制部署 | ✅ | ❌ JVM + 插件 | ❌ 三套拼装 |
-| 可视化流水线编排(DAG) | ✅ 内置画布 | 插件 | YAML 手写 |
-| 流水线即代码(按分支演进) | ✅ | 插件 | ✅ |
-| 隔离构建 | ✅ | ✅ | ✅ |
-| 多服务器部署(SSH,免 Agent) | ✅ 内置 | 插件 | Ansible |
-| 服务器 / 容器运维 | ✅ 内置 | ❌ | Portainer |
-| 零停机 + 失败回滚 | ✅ | 插件 | 自己写 |
-| 自动 HTTPS + 域名反向代理 | ✅ 内置 | ❌ | ❌ |
-| DORA 指标 | ✅ 内置 | 插件 | ❌ |
-| AI 失败诊断 | ✅ 可选 | ❌ | ❌ |
-| 一键自更新 | ✅ | ❌ | ❌ |
+开箱即用:
+
+- 单二进制部署,零运行时依赖,页面一键自更新
+- 可视化流水线编排(DAG 画布),流水线即代码按分支演进
+- 容器内隔离构建、免 Agent 多机部署、零停机切换 + 失败回滚
+- 自动 HTTPS + 域名反向代理,内置镜像仓库(制品推送 + 基础镜像缓存)
+- 服务器 / 容器 / 数据库 / Redis / 对象存储 / PVE / Ceph 一站纳管
+- 应用市场模板一键参数化部署
+- DORA 指标开箱即用,AI 失败诊断(可选、完全可降级)
 
 ## 界面预览
 
@@ -65,6 +67,8 @@
 - **🔒 平台 HTTPS(宿主 nginx)** —— 当运行 Pipewright 的主机装有 nginx 时,平台可把自己的 Web 页面发布为 **HTTPS**:选访问域名 + 复用「证书管理」的证书,平台在自身所在主机自动下发证书并写入 `/etc/nginx/conf.d` vhost(443 ssl 反代平台端口 + 80→443 跳转),`nginx -t` 校验(失败自动回滚)、`nginx -T` 验证 include 生效后热加载;需要 root 或免密 sudo,与本机既有 nginx 配置共存。证书续期后自动重新下发;被平台 HTTPS 占用的证书禁止误删。
 - **📣 通知** —— 企业微信 / 钉钉 / 飞书 / Slack / 邮件 / 自定义 webhook · 事件→渠道细粒度路由 · 模板 + 变量自定义 · 飞书富卡片(审批/详情行动按钮 + 发版汇总)· 流水线内通知节点。
 - **🖥 服务器与容器运维** —— 多机状态总览(CPU/内存/磁盘)+ 指标时序趋势图 · 容器/镜像/Stacks/卷/网络管理 · 容器创建/inspect/prune · 实时 + 历史服务日志 · 实时 stats · 容器交互终端 · Web 运维终端(主机 shell,完整复制粘贴/信号支持)· 可配置异常检测:定时自动跑、冷却去重、命中走通知渠道。
+- **🛒 应用市场与中间件纳管** —— 应用商店模板一键参数化部署(内置 MySQL / Redis / Postgres / Nginx / RustFS / RabbitMQ / Gitea / Redpanda,亦可自建模板;参数白名单校验防注入,secret 自动生成且仅部署响应一次性返回)· 数据库管理(MySQL / PostgreSQL 实例注册 + 在线库表数据管理,默认只读、写操作需显式解锁并留审计)· Redis 管理(实例注册 + SCAN 游标分页键浏览/删改/改 TTL,值按类型截断预览;应用市场部署 Redis 自动登记为实例)· 对象存储集成(阿里云 OSS / S3 兼容 RustFS 多账户接入,桶浏览、新建桶自动登记为配置,流水线 `oss_upload` 节点直传)。
+- **🧊 PVE 与 Ceph 纳管** —— PVE 物理机登记即经 SSH 自动发现集群并入服务器池(API Token 密文入保险库;物理机禁止作为构建/部署目标,电源操作默认只读、解锁留审计)· Ceph 集群 cephadm 引导部署(后台任务 + 步骤/日志轮询)+ 主机/OSD/存储池/RBD/CephFS 一站管理(dashboard 密码只入保险库)。
 - **🤖 AI 辅助(可选,完全可降级)** —— 自带 Claude / OpenAI / Ollama 端点(apiKey 密文入保险库)。构建/部署失败自动根因诊断 + 👍/👎 反馈飞轮与准确率统计 · 仓库分析 → 生成流水线草案 · 成功/失败提交差异 · 脚本风险标注 · 运维终端的自然语言→shell 助手与容器诊断。核心 CI/CD 路径完全不依赖它(NFR-10)。
 - **📈 度量** —— DORA 四指标(部署频率/变更前置时长/变更失败率/平均恢复时长)开箱即用,并给 Elite/High/Medium/Low 绩效分档。
 - **🧹 数据与平台** —— 运行数据保留清理器(默认关;绝不动在跑的运行)· SQLite(纯 Go)或 MySQL · 8 种界面语言(简中 / 繁中 / 英 / 日 / 韩 / 德 / 法 / 西),API 错误信息亦服务端本地化。

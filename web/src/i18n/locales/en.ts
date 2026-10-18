@@ -80,6 +80,7 @@ const en: typeof zhCN = {
     databases: 'Databases',
     objectStorage: 'Object Storage',
     redis: 'Redis',
+    disks: 'Disks',
     certificates: 'Certificates',
     anomaly: 'Anomaly Detection',
     notifications: 'Notifications',

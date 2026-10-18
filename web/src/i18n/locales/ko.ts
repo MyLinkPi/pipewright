@@ -80,6 +80,7 @@ const ko: typeof zhCN = {
     databases: '데이터베이스',
     objectStorage: '오브젝트 스토리지',
     redis: 'Redis',
+    disks: '디스크',
     certificates: '인증서 관리',
     anomaly: '이상 감지',
     notifications: '알림',

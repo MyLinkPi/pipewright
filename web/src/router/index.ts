@@ -35,6 +35,8 @@ const Databases = () => import('../views/Databases.vue')
 const ObjectStorage = () => import('../views/ObjectStorage.vue')
 // Redis 在线管理:实例在 设置 → Redis 注册(应用市场部署 redis 自动登记),此处 SCAN 分页浏览键 + 删键/改 TTL。
 const Redis = () => import('../views/Redis.vue')
+// 服务器磁盘管理:块设备/LVM 拓扑 + 分区/格式化/挂载/扩缩容(只读默认 + 显式解锁)。
+const Disks = () => import('../views/Disks.vue')
 // Story 6-5: configurable anomaly detection & alerts (FR-23)
 const AnomalyDetection = () => import('../views/AnomalyDetection.vue')
 // 集群(对等节点 + EasyTier 自组网):节点状态/链路(p2p|中继)总览 + 授权管理入口
@@ -186,6 +188,8 @@ const router = createRouter({
         { path: 'databases', name: 'databases', component: Databases, meta: { title: '数据库', roles: ['admin'] } },
         // Redis 在线管理:SCAN 游标分页键浏览 + 键详情 + 删键/改 TTL(仅管理员)。
         { path: 'redis', name: 'redis', component: Redis, meta: { title: 'Redis', roles: ['admin'] } },
+        // 服务器磁盘管理:lsblk 设备树 + LVM 面板 + 分区/格式化/挂载/扩缩容(仅管理员)。
+        { path: 'disks', name: 'disks', component: Disks, meta: { title: 'Disks', roles: ['admin'] } },
         // PVE 集群管理:总览/VM 列表/电源操作/任务(仅管理员;集群经服务器登记自动发现)。
         { path: 'pve', name: 'pve', component: PVE, meta: { title: 'PVE', roles: ['admin'] } },
         // 对象存储浏览(只读;仅管理员):实例在 设置 → 对象存储 注册,此处浏览桶内目录(marker 游标分页)。

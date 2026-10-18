@@ -2,9 +2,11 @@
 
 # Pipewright
 
-**A lightweight, self-hosted CI/CD + deployment + ops platform.**
+**A lightweight, self-hosted DevOps & infrastructure platform.**
 A single static Go binary (frontend embedded, zero runtime dependencies) —
-one tool replacing the "CI + Ansible/Kamal + Portainer" trio.
+CI/CD, multi-server deploy, and container ops, plus a built-in registry,
+gateway + certificates, an app store, and Redis / object-store / PVE / Ceph
+management, all in one binary.
 
 [![Release](https://img.shields.io/github/v/release/MyLinkPi/pipewright)](https://github.com/MyLinkPi/pipewright/releases)
 [![CI](https://github.com/MyLinkPi/pipewright/actions/workflows/ci.yml/badge.svg)](https://github.com/MyLinkPi/pipewright/actions/workflows/ci.yml)
@@ -14,27 +16,30 @@ English | [简体中文](README.zh-CN.md)
 
 </div>
 
+> [!IMPORTANT]
+> This project is a heavily customized fork of [Pipewright](https://github.com/MyLinkPi/pipewright),
+> substantially extended and reworked on top of the original. **It is incompatible with upstream**:
+> data, configuration, and pipelines cannot be swapped or upgraded between the two. Do not mix
+> binaries and data directories across versions, and do not report issues or send PRs for this
+> fork upstream. Evaluate this fork's own maintenance status before adopting it.
+
 ---
 
 ## Why Pipewright
 
-Mainstream options are either heavy (Jenkins with a pile of plugins + JVM) or a three-tool assembly (Woodpecker/Drone + Ansible/Kamal + Portainer). Pipewright packs "continuous integration, multi-server deployment, and server/container ops" into **one static binary**: download, start, open the browser — that's the entire install.
+Pipewright packs "continuous integration, multi-server deployment, and server/container ops" into **one static binary**: download, start, open the browser — that's the entire install. No multi-tool assembly, no plugin maze.
 
-It has since grown past that trio: publishing a deployed service on an HTTPS domain (the nginx + certbot step) is built in too.
+It has since grown well past CI/CD: a built-in registry, HTTPS domain gateway with managed certificates, one-click app-store deploys, and database / Redis / object-store / PVE / Ceph management — aiming to be the control plane of your self-hosted infrastructure.
 
-| | Pipewright | Jenkins | Drone + Ansible + Portainer |
-|---|:---:|:---:|:---:|
-| Single-binary deploy | ✅ | ❌ JVM + plugins | ❌ three-tool assembly |
-| Visual pipeline orchestration (DAG) | ✅ built-in canvas | plugin | hand-written YAML |
-| Pipeline as code (per-branch YAML) | ✅ | plugin | ✅ |
-| Isolated builds | ✅ | ✅ | ✅ |
-| Multi-server deploy (SSH, agentless) | ✅ built-in | plugin | Ansible |
-| Server / container ops | ✅ built-in | ❌ | Portainer |
-| Zero-downtime + failure rollback | ✅ | plugin | DIY |
-| Auto HTTPS + domain reverse proxy | ✅ built-in | ❌ | ❌ |
-| DORA metrics | ✅ built-in | plugin | ❌ |
-| AI failure diagnosis | ✅ optional | ❌ | ❌ |
-| One-click self-update | ✅ | ❌ | ❌ |
+Out of the box:
+
+- Single-binary deploy, zero runtime dependencies, one-click self-update from the UI
+- Visual pipeline orchestration (DAG canvas) with pipeline-as-code evolving per branch
+- Isolated builds in containers, agentless multi-server deploy, zero-downtime cutover + rollback
+- Auto HTTPS + domain reverse proxy, built-in registry (artifact push + base-image cache)
+- One-stop management of servers, containers, databases, Redis, object stores, PVE, and Ceph
+- One-click parameterized deploys from app-store templates
+- DORA metrics out of the box, optional AI failure diagnosis (fully degradable)
 
 ## Screenshots
 
@@ -66,6 +71,8 @@ It has since grown past that trio: publishing a deployed service on an HTTPS dom
 - **🔒 Platform HTTPS (host nginx)** — when the host Pipewright runs on already has nginx installed, Pipewright can publish **its own web UI over HTTPS**: pick the domain, pick a certificate from the certificate management page, and it deploys the cert + a `/etc/nginx/conf.d` vhost (443 ssl proxying the platform port, 80→443 redirect) locally on that host, validates with `nginx -t` (auto-rollback on failure), verifies the include actually loads via `nginx -T`, then hot-reloads — requires root or passwordless sudo, coexisting with the host's existing nginx config. Certificates redeploy automatically on renewal, and a cert in use by platform HTTPS cannot be deleted by accident.
 - **📣 Notifications** — WeCom / DingTalk / Lark (Feishu) / Slack / email / custom webhook · fine-grained event→channel routing · templates + custom variables · rich Lark cards with approve/detail action buttons and a release summary · in-pipeline notification nodes.
 - **🖥 Server & container ops** — multi-host status overview (CPU/memory/disk) plus time-series trend charts · container/image/Stacks/volume/network management · container create/inspect/prune · live + historical service logs · live stats · interactive container terminal · web ops terminal (host shell, full copy-paste/signal support) · configurable anomaly detection that runs on a timer, dedupes by cooldown, and routes alerts to your notification channels.
+- **🛒 App store & middleware management** — one-click parameterized deploys from app-store templates (built-ins: MySQL / Redis / Postgres / Nginx / RustFS / RabbitMQ / Gitea / Redpanda, plus your own custom templates; allowlist-validated parameters, auto-generated secrets returned only once in the deploy response) · database management (register MySQL / PostgreSQL instances and browse data online; read-only by default, writes need an explicit audited unlock) · Redis management (instance registry + key browsing/edit/TTL via SCAN cursor pagination, per-type truncated value previews; app-store Redis deploys auto-register an instance) · object-store integration (Aliyun OSS / S3-compatible RustFS multi-account onboarding, bucket browsing with new buckets auto-registered as configs, and a pipeline `oss_upload` node for direct uploads).
+- **🧊 PVE & Ceph management** — register a PVE host and the cluster is auto-discovered over SSH and pooled (API token sealed in the vault; physical hosts are barred as build/deploy targets, power ops read-only by default with an explicit audited unlock) · Ceph clusters bootstrap via cephadm (background task with step/log polling) with host/OSD/pool/RBD/CephFS management (dashboard password lives only in the vault).
 - **🤖 AI assist (optional, fully degradable)** — bring your own Claude / OpenAI / Ollama endpoint (API key encrypted in the vault). Automatic root-cause diagnosis when a build or deploy fails, with a 👍/👎 feedback loop and accuracy stats · repo analysis → generated pipeline draft · success-vs-failure commit diff · script risk annotation · natural-language→shell assistant and container diagnosis in the ops terminal. The core CI/CD path never depends on any of it (NFR-10).
 - **📈 Metrics** — the four DORA metrics (deployment frequency / lead time for changes / change failure rate / mean time to restore) out of the box, with Elite/High/Medium/Low performance bands.
 - **🧹 Housekeeping & platform** — configurable run-data retention sweeper (off by default; never touches in-flight runs) · SQLite (pure Go) or MySQL · 8 UI languages (zh-CN / zh-HK / en / ja / ko / de / fr / es) including server-side localization of API error messages.

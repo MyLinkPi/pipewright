@@ -24,6 +24,7 @@ import (
 	"github.com/huangchengsir/pipewright/internal/audit"
 	"github.com/huangchengsir/pipewright/internal/auth"
 	"github.com/huangchengsir/pipewright/internal/ceph"
+	"github.com/huangchengsir/pipewright/internal/diskadmin"
 	"github.com/huangchengsir/pipewright/internal/certmgmt"
 	"github.com/huangchengsir/pipewright/internal/chain"
 	"github.com/huangchengsir/pipewright/internal/cron"
@@ -127,6 +128,7 @@ type options struct {
 	dbAdmin          dbadmin.Service
 	redisAdmin       redisadmin.Service
 	pveAdmin         pveadmin.Service
+	diskAdmin        diskadmin.Service
 	serverCmds       *servercmd.Service
 	registryHub      registryHubService
 	mesh             *meshAdminDeps
@@ -139,6 +141,14 @@ type options struct {
 // auth + CSRF + 审计)。不传则 Ceph 功能整体不可用(端点 503)。
 func WithCeph(s ceph.Service) Option {
 	return func(o *options) { o.ceph = s }
+}
+
+// WithDiskAdmin 注入「服务器磁盘管理」服务(internal/diskadmin),在 admin 组挂载
+// /api/diskadmin/servers/{id}/* 路由(块设备/LVM 拓扑浏览 + 分区/格式化/挂载/扩缩容/
+// LVM 变更;只读默认 + 显式解锁,全部变更留审计)。不传则磁盘管理功能整体不可用
+// (端点 503)。
+func WithDiskAdmin(s diskadmin.Service) Option {
+	return func(o *options) { o.diskAdmin = s }
 }
 
 // WithPVEAdmin 注入 PVE 集群纳管与管理服务(internal/pveadmin):
@@ -684,6 +694,11 @@ func New(webFS fs.FS, authn auth.Authenticator, opts ...Option) http.Handler {
 			}
 			if o.ceph != nil {
 				mountCeph(ar, o.ceph, aud)
+			}
+			// 磁盘管理面(管理员):块设备/LVM 拓扑 + 分区/格式化/挂载/扩缩容/LVM 变更
+			// (只读默认 + 显式解锁 + 危险操作逐字确认)。
+			if o.diskAdmin != nil {
+				mountDiskAdmin(ar, o.diskAdmin, aud)
 			}
 		})
 
