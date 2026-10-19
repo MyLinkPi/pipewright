@@ -156,6 +156,12 @@ export default {
   fieldHealthRetriesLabel: "Retry count",
   fieldIntervalSecondsLabel: "Retry interval (s)",
 
+  // ─── jobConfigSchema · wait ───────────────────────────────────────────
+  typeWaitLabel: "Wait",
+  typeWaitDesc: "Pause for a fixed duration before continuing (deploy timing); skippable while running",
+  fieldWaitSecondsLabel: "Duration (seconds)",
+  fieldWaitSecondsHint: "1–86400 seconds; skippable from the run detail while waiting",
+
   // ─── jobConfigSchema · notify ──────────────────────────────────────────
   typeNotifyLabel: "Notify",
   typeNotifyDesc: "Send a notification when the run reaches this node",

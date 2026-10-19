@@ -108,6 +108,9 @@ export default {
   stepHint: '点击查看单步日志',
   allLogs: '全部日志',
   nodeCount: '{n} 节点',
+  skipWait: '跳过等待',
+  skipWaitDone: '已跳过该等待节点',
+  skipWaitStale: '该节点已不在等待中(可能刚到时或已被跳过)',
 
   // ─── RunTerminal ────────────────────────────────────────────────
   terminalRegion: '运行日志终端',

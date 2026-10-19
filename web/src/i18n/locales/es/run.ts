@@ -108,6 +108,9 @@ export default {
   stepHint: 'Haz clic para ver el registro de un solo paso',
   allLogs: 'Todos los registros',
   nodeCount: '{n} nodos',
+  skipWait: 'Omitir espera',
+  skipWaitDone: 'Nodo de espera omitido',
+  skipWaitStale: 'Este nodo ya no está esperando (puede haber terminado o ya se omitió)',
 
   // ─── RunTerminal ────────────────────────────────────────────────
   terminalRegion: 'Terminal del registro de ejecución',

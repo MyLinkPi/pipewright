@@ -146,6 +146,12 @@ export default {
   fieldHealthRetriesLabel: "重試次數",
   fieldIntervalSecondsLabel: "重試間隔(秒)",
 
+  // ─── jobConfigSchema · wait ───────────────────────────────────────────
+  typeWaitLabel: "等待",
+  typeWaitDesc: "暫停固定秒數再繼續,解決部署時序;運行中可手動跳過",
+  fieldWaitSecondsLabel: "等待時長(秒)",
+  fieldWaitSecondsHint: "1–86400 秒;等待中可在運行詳情點擊「跳過等待」",
+
   // ─── jobConfigSchema · notify ──────────────────────────────────────────
   typeNotifyLabel: "通知",
   typeNotifyDesc: "執行到此節點時傳送通知",

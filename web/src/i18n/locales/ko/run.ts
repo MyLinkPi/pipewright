@@ -108,6 +108,9 @@ export default {
   stepHint: '클릭하여 단일 단계 로그 보기',
   allLogs: '전체 로그',
   nodeCount: '{n} 노드',
+  skipWait: '대기 건너뛰기',
+  skipWaitDone: '대기 노드를 건너뛰었습니다',
+  skipWaitStale: '이 노드는 더 이상 대기 중이 아닙니다(방금 종료되었거나 이미 건너뛰었을 수 있음)',
 
   // ─── RunTerminal ────────────────────────────────────────────────
   terminalRegion: '실행 로그 터미널',

@@ -126,6 +126,7 @@ func NewStageExecutor(b *Builder, reportSink TestReportSink) dagrun.StageExecuto
 		pushImageJobs := make([]pipeline.Job, 0, len(stage.Jobs))
 		meshJobs := make([]pipeline.Job, 0, len(stage.Jobs))
 		pushedSourceJobs := make([]pipeline.Job, 0, len(stage.Jobs))
+		waitJobs := make([]pipeline.Job, 0, len(stage.Jobs))
 		for _, jb := range stage.Jobs {
 			switch {
 			case isScriptJob(jb.Type):
@@ -146,15 +147,17 @@ func NewStageExecutor(b *Builder, reportSink TestReportSink) dagrun.StageExecuto
 				meshJobs = append(meshJobs, jb)
 			case isPushedSourceJob(jb.Type):
 				pushedSourceJobs = append(pushedSourceJobs, jb)
+			case isWaitJob(jb.Type):
+				waitJobs = append(waitJobs, jb)
 			}
 		}
 
 		needsBuild := len(scriptJobs) > 0 || len(buildImageJobs) > 0
 		// 没有任何可执行节点(script/build_image/deploy/health_check/notify/oss_upload/push_image/
-		// mesh_push/mesh_trigger/pushed_source)且无 post → 诚实占位放行。
+		// mesh_push/mesh_trigger/pushed_source/wait)且无 post → 诚实占位放行。
 		if !needsBuild && len(deployJobs) == 0 && len(healthJobs) == 0 && len(notifyJobs) == 0 &&
 			len(ossUploadJobs) == 0 && len(pushImageJobs) == 0 && len(meshJobs) == 0 &&
-			len(pushedSourceJobs) == 0 && len(stage.Post) == 0 {
+			len(pushedSourceJobs) == 0 && len(waitJobs) == 0 && len(stage.Post) == 0 {
 			for _, jb := range stage.Jobs {
 				_ = rep.JobRunning(ctx, jb.ID)
 				jr := rep.JobReporter(jb.ID)
@@ -409,6 +412,26 @@ func NewStageExecutor(b *Builder, reportSink TestReportSink) dagrun.StageExecuto
 				_ = rep.JobDone(ctx, jb.ID, run.StepSuccess)
 			}
 
+			// ── 等待节点(wait):sleep 固定秒数解决部署时序(如等上游服务就绪再健康检查);
+			// 手动跳过 → step 落 skipped 但放行下游(跳过非失败)──
+			for _, jb := range waitJobs {
+				if canceled(ctx) {
+					return run.ErrCanceled
+				}
+				_ = rep.JobRunning(ctx, jb.ID)
+				jrep := rep.JobReporter(jb.ID)
+				skipped, werr := b.runWaitJob(ctx, rep, jrep, jb, r.ID, stage.Name)
+				switch {
+				case werr != nil:
+					_ = rep.JobDone(ctx, jb.ID, run.StepFailed)
+					return werr
+				case skipped:
+					_ = rep.JobDone(ctx, jb.ID, run.StepSkipped)
+				default:
+					_ = rep.JobDone(ctx, jb.ID, run.StepSuccess)
+				}
+			}
+
 			// ── 健康检查节点(health_check):对目标机做健康探测,失败令阶段失败 ──
 			for _, jb := range healthJobs {
 				if canceled(ctx) {
@@ -558,6 +581,16 @@ func (b *Builder) runStageJobsDAG(
 				return b.runMeshPushJob(ctx, jrep, jb, r)
 			case isMeshTriggerJob(jb.Type):
 				return b.runMeshTriggerJob(ctx, jrep, jb, r)
+			case isWaitJob(jb.Type):
+				// 等待节点:被手动跳过 → 哨兵(调用方转 skipped、非失败);到时/失败原样透出。
+				skipped, werr := b.runWaitJob(ctx, rep, jrep, jb, r.ID, stage.Name)
+				if werr != nil {
+					return werr
+				}
+				if skipped {
+					return errWaitSkipped
+				}
+				return nil
 			default:
 				_ = jrep.Log(ctx, streamStdout, fmt.Sprintf("· %s(%s)— 真实执行未接入;本节点放行", jb.Name, jb.Type))
 				return nil
@@ -567,6 +600,11 @@ func (b *Builder) runStageJobsDAG(
 		status := run.StepSuccess
 		if jobErr != nil {
 			status = run.StepFailed
+			if errors.Is(jobErr, errWaitSkipped) {
+				// 等待被手动跳过:step 如实落 skipped,但不算失败——下游节点照常放行。
+				status = run.StepSkipped
+				jobErr = nil
+			}
 		}
 		_ = rep.JobDone(ctx, jb.ID, status)
 		return jobErr

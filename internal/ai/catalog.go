@@ -48,6 +48,8 @@ func BuiltinNodeCatalog() []NodeKind {
 			Description: "启动集群对等节点上的特定工作流(项目流水线)。config 必填 node(目标节点 id);寻址二选一:targetMode=origin(用本项目在对方的对应项目,通常配在 mesh_push 之后)或 explicit+project(显式对方项目 id);可选 params(键值参数)、revision(对方为推送源项目时的修订标签)、waitForCompletion(默认 true,等待对方跑完并把日志回流到本节点)、timeoutMinutes。"},
 		{Type: "health_check", Label: "健康检查", Category: "deploy",
 			Description: "对目标机(selector/serverId 圈选)做健康探测(http=curl / command=自定义命令,带重试);失败令阶段失败。建议接在部署节点之后。"},
+		{Type: "wait", Label: "等待", Category: "deploy",
+			Description: "流水线在此暂停固定秒数再继续,用于解决部署时序问题(如等上游服务就绪再做健康检查)。config 必填 seconds(1–86400)。运行中可在运行详情手动跳过(跳过 = 该节点记 skipped、下游照常执行)。通常插在部署与健康检查之间。"},
 		{Type: "notify", Label: "通知", Category: "notify",
 			Description: "运行到此节点时向已配渠道(飞书/Webhook/邮件)发通知,支持标题/正文模板;可选 statusFrom(上游节点名)让 {{status}} 渲染该节点状态。"},
 		{Type: "templated", Label: "自定义节点", Category: "custom",

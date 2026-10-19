@@ -1020,6 +1020,26 @@ export const JOB_TYPE_SPECS: Record<string, JobTypeSpec> = {
     ],
   },
 
+  // 等待节点:暂停固定秒数再继续(解决部署时序,如等上游服务就绪再做健康检查);
+  // 运行中可在运行详情手动跳过(跳过 = 该节点记 skipped、下游照常执行)。
+  wait: {
+    type: 'wait',
+    get label() { return t('pipelineJob.typeWaitLabel') },
+    get description() { return t('pipelineJob.typeWaitDesc') },
+    accent: 'amber',
+    category: 'deploy',
+    fields: [
+      {
+        key: 'seconds',
+        get label() { return t('pipelineJob.fieldWaitSecondsLabel') },
+        kind: 'number',
+        placeholder: '60',
+        get hint() { return t('pipelineJob.fieldWaitSecondsHint') },
+      },
+    ],
+    defaultConfig: { seconds: '60' },
+  },
+
   notify: {
     type: 'notify',
     get label() { return t('pipelineJob.typeNotifyLabel') },
@@ -1271,6 +1291,7 @@ export const PICKABLE_TYPES: readonly string[] = [
   'deploy_container',
   'deploy_ssh',
   'deploy_static',
+  'wait',
   'health_check',
   'notify',
   'script',

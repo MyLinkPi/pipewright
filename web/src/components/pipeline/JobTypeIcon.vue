@@ -38,6 +38,9 @@ const ICONS: Record<string, string> = {
   deploy_container:
     '<rect x="3" y="9" width="18" height="11" rx="1.6"/><path d="M7 9V6.5A1.5 1.5 0 0 1 8.5 5h2A1.5 1.5 0 0 1 12 6.5V9M12 9V6.5A1.5 1.5 0 0 1 13.5 5h2A1.5 1.5 0 0 1 17 6.5V9M7 13v3M12 13v3M17 13v3"/>',
   health_check: '<path d="M3 12h4l2-6 4 12 2-6h6"/>',
+  // 等待节点:时钟(暂停固定秒数,运行中可手动跳过)。
+  wait:
+    '<circle cx="12" cy="12" r="8.4"/><path d="M12 7.2V12l3 2.4"/>',
   notify:
     '<path d="M18 8.5a6 6 0 0 0-12 0c0 6.5-2.5 8.5-2.5 8.5h17S18 15 18 8.5"/><path d="M13.6 21a2 2 0 0 1-3.2 0"/>',
   script:

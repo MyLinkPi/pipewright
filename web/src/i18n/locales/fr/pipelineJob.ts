@@ -164,6 +164,12 @@ export default {
   fieldHealthRetriesLabel: "Nombre de tentatives",
   fieldIntervalSecondsLabel: "Intervalle entre tentatives (s)",
 
+  // ─── jobConfigSchema · wait ───────────────────────────────────────────
+  typeWaitLabel: "Attente",
+  typeWaitDesc: "Met en pause pendant une durée fixe avant de continuer (timing de déploiement) ; ignorable pendant l’exécution",
+  fieldWaitSecondsLabel: "Durée (secondes)",
+  fieldWaitSecondsHint: "1–86400 secondes ; ignorable depuis le détail de l’exécution pendant l’attente",
+
   // ─── jobConfigSchema · notify ──────────────────────────────────────────
   typeNotifyLabel: "Notifier",
   typeNotifyDesc: "Envoie une notification lorsque l’exécution atteint ce nœud",

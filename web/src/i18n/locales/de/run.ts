@@ -108,6 +108,9 @@ export default {
   stepHint: 'Klicken, um das Log eines einzelnen Schritts anzuzeigen',
   allLogs: 'Alle Logs',
   nodeCount: '{n} Knoten',
+  skipWait: 'Warten überspringen',
+  skipWaitDone: 'Warteknoten übersprungen',
+  skipWaitStale: 'Dieser Knoten wartet nicht mehr (evtl. gerade beendet oder bereits übersprungen)',
 
   // ─── RunTerminal ────────────────────────────────────────────────
   terminalRegion: 'Terminal des Ausführungslogs',

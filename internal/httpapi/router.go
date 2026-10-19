@@ -59,6 +59,7 @@ import (
 	"github.com/huangchengsir/pipewright/internal/trigger"
 	"github.com/huangchengsir/pipewright/internal/vault"
 	"github.com/huangchengsir/pipewright/internal/version"
+	"github.com/huangchengsir/pipewright/internal/waitnode"
 )
 
 const (
@@ -115,6 +116,7 @@ type options struct {
 	approvalCoord    *approval.Coordinator
 	approvalStore    *approval.Store
 	approvalSigner   *approval.Signer
+	waitCoord        *waitnode.Coordinator
 	doraMetrics      run.MetricsService
 	templates        library.TemplateService
 	varGroups        library.VarGroupService
@@ -220,6 +222,12 @@ func WithSpecLoader(l dagrun.SpecLoader) Option {
 // signer 为 nil / 禁用(无 master key)时,公开页提示「链接不可用」、不解析任何门。
 func WithApprovalLinks(signer *approval.Signer) Option {
 	return func(o *options) { o.approvalSigner = signer }
+}
+
+// WithWaitNode 注入「等待」节点(wait)的手动跳过协调器,挂载 /api/runs/{id}/{waits,skip-wait}
+// 路由。不传则等待节点照常执行、只是不可查询/跳过(端点 503)。
+func WithWaitNode(coord *waitnode.Coordinator) Option {
+	return func(o *options) { o.waitCoord = coord }
 }
 
 // WithDoraMetrics 注入 DORA 指标只读聚合服务(FR-8-15),挂载 GET /api/metrics/dora 路由
@@ -809,6 +817,10 @@ func New(webFS fs.FS, authn auth.Authenticator, opts ...Option) http.Handler {
 		ar.Post("/runs/{id}/approve", makeApprovalDecisionHandler(o.approvalCoord, o.approvalStore, aud, true))
 		ar.Post("/runs/{id}/reject", makeApprovalDecisionHandler(o.approvalCoord, o.approvalStore, aud, false))
 		ar.Get("/runs/{id}/approvals", makeListApprovalsHandler(o.approvalStore))
+		// 等待节点(wait)运行中查询 + 手动跳过:GET 为只读;skip-wait 为写方法,过 auth + CSRF。
+		// coord 为 nil → 503(等待节点照常执行,只是不可查询/跳过)。
+		ar.Get("/runs/{id}/waits", makeListRunWaitsHandler(o.waitCoord))
+		ar.Post("/runs/{id}/skip-wait", makeSkipWaitHandler(o.waitCoord, aud))
 		// SSH 部署执行(Story 4.2 / FR-10):认证 + CSRF(写方法)。dep 为 nil → 503。
 		// 取 run + 产物 + 服务器 → deploy.Deploy(逐机经 SSH 执行部署命令,array 不拼 shell)
 		// → 据结果更新 run 终态 → 返回填好的 targets。部署执行失败不 500(每机 status=failed)。

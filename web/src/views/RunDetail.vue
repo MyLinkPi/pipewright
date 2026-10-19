@@ -25,8 +25,11 @@ import {
   listApprovals,
   approveStage,
   rejectStage,
+  listRunWaits,
+  skipRunWait,
   type RunDetail,
   type RunStatus,
+  type RunWait,
   type DiagnosisDTO,
   type HealthCheckType,
   type HealthCheckInput,
@@ -387,6 +390,46 @@ async function handleRetryFailed(): Promise<void> {
 // (原「交互式分批部署:续发/中止」已随策略收敛移除:统一滚动分批自动推进,
 //  未铺开的机器保持 pending,可修复后用「重试失败目标」继续。)
 
+// ─── wait nodes (type=wait) ─────────────────────────────────────────────────────
+// 等待节点执行期 sleep 固定秒数(解决部署时序);等待中在对应步骤行展示「跳过等待」按钮
+// (跳过 = 该节点记 skipped、下游照常执行)。仅运行进行中拉取(终态后协调器无等待者)。
+
+const pendingWaits = ref<RunWait[]>([])
+const skippingWaitJob = ref<string | null>(null)
+const skipWaitError = ref('')
+
+const runInProgress = computed(() => run.value?.status === 'running' || run.value?.status === 'waiting_approval')
+
+async function loadWaits(): Promise<void> {
+  if (!runInProgress.value) {
+    pendingWaits.value = []
+    return
+  }
+  try {
+    pendingWaits.value = await listRunWaits(runId.value)
+  } catch {
+    // Transient fetch failure — next refresh retries; never surfaced to the UI.
+  }
+}
+
+async function handleSkipWait(jobId: string): Promise<void> {
+  if (skippingWaitJob.value) return
+  skippingWaitJob.value = jobId
+  skipWaitError.value = ''
+  try {
+    await skipRunWait(runId.value, jobId)
+    // Step status flips via SSE (skipped); refresh waits immediately for snappy UI.
+    await loadWaits()
+  } catch (err) {
+    skipWaitError.value =
+      err instanceof HttpError
+        ? (err.apiError?.message ?? t('run.skipWaitStale'))
+        : t('run.skipWaitStale')
+  } finally {
+    skippingWaitJob.value = null
+  }
+}
+
 // ─── data loading ─────────────────────────────────────────────────────────────
 
 async function loadRun(): Promise<void> {
@@ -396,6 +439,7 @@ async function loadRun(): Promise<void> {
     run.value = await getRun(runId.value)
     loadState.value = 'idle'
     void loadApprovals() // 审批记录:任何状态都拉(卡片 + 被拒门隐藏恢复面板)
+    void loadWaits() // 等待节点:运行中拉(步骤行「跳过等待」按钮)
   } catch (err) {
     if (err instanceof HttpError) {
       loadError.value = err.status === 404
@@ -419,6 +463,7 @@ async function silentRefresh(): Promise<void> {
     const fresh = await getRun(runId.value)
     run.value = fresh
     void loadApprovals() // 审批记录:任何状态都拉
+    void loadWaits() // 等待节点:运行中拉(剩余时长也随之刷新)
   } catch {
     // Transient fetch failure — next tick retries; never surfaced to the UI.
   }
@@ -442,6 +487,7 @@ function startSse(): void {
       // 审批记录:任何状态都拉(待批横幅 / 审批记录卡片 / 被拒门隐藏恢复面板);
       // loadApprovals 内部会按最新列表重算 pendingApproval(终态后自然清空)。
       void loadApprovals()
+      void loadWaits() // 等待节点:进入 waiting_approval 时可能也有并行等待中的节点
       // Stop SSE on terminal state + 重拉完整 run:终态由后端补齐的 commit / 构建产物 / 时长
       // 经 SSE 只推了 status,需重新 GET 才能拿到 → 否则要手动刷新才出来。
       if (isTerminal(status)) {
@@ -453,6 +499,9 @@ function startSse(): void {
       if (!run.value) return
       const steps = run.value.steps.map((s) => (s.id === step.id ? { ...s, ...step } : s))
       run.value = { ...run.value, steps }
+      // 节点开始/结束(running/终态)时刷新等待列表:等待节点进入 running 即刻可跳过,
+      // 不必等 4s 轮询;节点结束自然摘除对应按钮。
+      void loadWaits()
     },
     // onError is intentionally omitted — subscribeRunEvents falls back to polling
   })
@@ -785,7 +834,16 @@ function goBack(): void {
 
             <!-- Two-column layout: 步骤详情(点击单步看其日志) + 实时日志终端 -->
             <div class="running-body">
-              <RunStepList :steps="run.steps" :selected="selectedStepOrdinal" @select="selectedStepOrdinal = $event" />
+              <div class="step-list-col">
+                <RunStepList
+                  :steps="run.steps"
+                  :selected="selectedStepOrdinal"
+                  :waits="pendingWaits"
+                  @select="selectedStepOrdinal = $event"
+                  @skip="handleSkipWait"
+                />
+                <p v-if="skipWaitError" class="skip-wait-error" role="alert">{{ skipWaitError }}</p>
+              </div>
               <div class="slot-log-live" role="region" :aria-label="t('runDetail.liveLogAria')">
                 <RunTerminal :run-id="run.id" :live="true" :filter-ordinal="selectedStepOrdinal" :steps="run.steps" />
               </div>
@@ -1820,6 +1878,15 @@ function goBack(): void {
   grid-template-columns: 280px minmax(0, 1fr);
   gap: 16px;
   align-items: start;
+}
+
+/* 步骤列表列:列表粘顶由组件自身处理;此处仅为承载「跳过等待」错误提示。 */
+.step-list-col { min-width: 0; }
+
+.skip-wait-error {
+  margin: 8px 0 0;
+  font-size: 0.72rem;
+  color: var(--color-red);
 }
 
 @media (max-width: 820px) {

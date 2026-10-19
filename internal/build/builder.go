@@ -18,6 +18,7 @@ import (
 	"github.com/huangchengsir/pipewright/internal/pushsource"
 	"github.com/huangchengsir/pipewright/internal/run"
 	"github.com/huangchengsir/pipewright/internal/vault"
+	"github.com/huangchengsir/pipewright/internal/waitnode"
 )
 
 // 步骤名(Plan 顺序;固定中文以对齐既有 UI/桩风格)。
@@ -91,6 +92,9 @@ type Builder struct {
 	sharedGW sharedBuildGateway
 	// pushedRevs 是「被推送源」物化依赖(WithPushedSource 注入);nil → pushed_source 节点失败。
 	pushedRevs pushsource.Store
+	// waitCoord 是「等待」节点(wait)的手动跳过协调器(main 注入);nil → 等待节点照常等待,
+	// 只是不暴露跳过能力(向后兼容,如测试装配)。
+	waitCoord *waitnode.Coordinator
 }
 
 // buildCacheStore 抽象「按 key 恢复/保存工作区缓存路径」的能力(便于 fake 单测注入)。
@@ -183,6 +187,16 @@ func WithStageDeployer(d deploy.Service) BuilderOption {
 // WithStageNotifier 注入通知服务,使 dag 里的 notify 节点真实发通知。
 func WithStageNotifier(n notify.Service) BuilderOption {
 	return func(b *Builder) { b.notifier = n }
+}
+
+// WithWaitCoordinator 注入「等待」节点(wait)的手动跳过协调器:等待中的节点可经 HTTP 端点
+// 被手动跳过。nil 不改(等待照常,只是不可跳过;向后兼容)。
+func WithWaitCoordinator(c *waitnode.Coordinator) BuilderOption {
+	return func(b *Builder) {
+		if c != nil {
+			b.waitCoord = c
+		}
+	}
 }
 
 // WithStageObjectUploader 注入对象存储服务,使 dag 里的 oss_upload 节点真实上传产物到对象存储。

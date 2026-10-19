@@ -57,6 +57,16 @@ export interface RunStep {
   ordinal?: number
 }
 
+/** 一条等待中(wait 节点)的记录:ordinal 定位步骤行,jobId 供跳过端点定位。 */
+export interface RunWait {
+  jobId: string
+  jobName: string
+  stageName: string
+  ordinal: number
+  totalSeconds: number
+  remainingSeconds: number
+}
+
 // ─── Trigger ─────────────────────────────────────────────────────────────────
 
 export interface RunTrigger {
@@ -248,6 +258,19 @@ export function approveStage(runId: string, stageId: string): Promise<{ ok: bool
 
 export function rejectStage(runId: string, stageId: string): Promise<{ ok: boolean }> {
   return http.post<{ ok: boolean }>(`/api/runs/${runId}/reject`, { stageId })
+}
+
+// ─── Wait nodes (type=wait) ───────────────────────────────────────────────────
+//
+// 等待节点执行期 sleep 固定秒数(解决部署时序);等待中可查询并手动跳过
+// (跳过 = 该节点记 skipped、下游照常执行)。409 = 该节点已不在等待中。
+
+export function listRunWaits(runId: string): Promise<RunWait[]> {
+  return http.get<{ items: RunWait[] }>(`/api/runs/${runId}/waits`).then((r) => r.items ?? [])
+}
+
+export function skipRunWait(runId: string, jobId: string): Promise<{ ok: boolean }> {
+  return http.post<{ ok: boolean }>(`/api/runs/${runId}/skip-wait`, { jobId })
 }
 
 // ─── (Re-)diagnose a failed run ───────────────────────────────────────────────

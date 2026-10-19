@@ -517,6 +517,13 @@ func (b *Builder) runMixedNode(
 		b.runNotifyJob(ctx, jrep, jb, r)
 	case isObjectUploadJob(jb.Type):
 		err = b.runOssUploadJob(ctx, jrep, jb, r)
+	case isWaitJob(jb.Type):
+		// 等待永远在控制机本地执行(不进构建机池);被手动跳过 → 哨兵(下方转 skipped、非失败)。
+		var skipped bool
+		skipped, err = b.runWaitJob(ctx, rep, jrep, jb, r.ID, stage.Name)
+		if err == nil && skipped {
+			err = errWaitSkipped
+		}
 	default:
 		_ = jrep.Log(ctx, streamStdout, fmt.Sprintf("· %s(%s)— 真实执行未接入;本节点放行", jb.Name, jb.Type))
 	}
@@ -524,6 +531,11 @@ func (b *Builder) runMixedNode(
 	status := run.StepSuccess
 	if err != nil {
 		status = run.StepFailed
+		if errors.Is(err, errWaitSkipped) {
+			// 等待被手动跳过:step 如实落 skipped,但不算失败——下游节点照常放行。
+			status = run.StepSkipped
+			err = nil
+		}
 	}
 	_ = rep.JobDone(ctx, jb.ID, status)
 	return status, err
