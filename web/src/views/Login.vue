@@ -2,7 +2,7 @@
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter, useRoute } from 'vue-router'
-import { login } from '../api/auth'
+import { login, fetchSession } from '../api/auth'
 import type { SessionUser } from '../api/auth'
 import { HttpError } from '../api/http'
 import { beginPasskeyLogin, fetchAuthOptions, finishPasskeyLogin, loginMFA } from '../api/mfa'
@@ -42,6 +42,38 @@ const passwordError = ref('')
 
 // Banner-level error (shown for 401 / 429 / network)
 const bannerError = ref('')
+
+// ─── HTTPS → HTTP 降级提醒 ────────────────────────────────────────────────────
+// 曾用 HTTPS 登录的浏览器里,残留的 Secure 会话 cookie 会让浏览器静默丢弃 HTTP 登录
+// 下发的新 cookie(登录 200 但后续接口 401),只能手动清理站点 cookie。后端仅在
+// HTTPS 请求时写 pipewright_login_scheme 标记(标记自身不带 Secure,http 页面可读);
+// http 登录页读到它即提醒用户。
+const LOGIN_SCHEME_COOKIE = 'pipewright_login_scheme'
+
+function readLoginSchemeCookie(): string {
+  const prefix = LOGIN_SCHEME_COOKIE + '='
+  const match = document.cookie.split(';').find((c) => c.trim().startsWith(prefix))
+  return match ? match.trim().slice(prefix.length) : ''
+}
+
+const showSecureCookieHint =
+  window.location.protocol === 'http:' && readLoginSchemeCookie() === 'https'
+
+/** http 下登录真正生效后清除「https 登录过」标记,让降级提醒停止显示。 */
+function clearLoginSchemeMarkerIfHttp(): void {
+  if (window.location.protocol !== 'http:') return
+  // 登录 200 不代表 cookie 被浏览器接受(残留 Secure cookie 会静默丢弃新 cookie):
+  // 以一次会话探测为准,确认生效才清标记;确认失败则保留,回到登录页继续提醒。
+  void fetchSession()
+    .then((user) => {
+      if (user) {
+        document.cookie = `${LOGIN_SCHEME_COOKIE}=; Max-Age=0; Path=/`
+      }
+    })
+    .catch(() => {
+      // 探测失败不影响登录流程;标记保留,提醒下次仍会显示。
+    })
+}
 
 // Whether this is a lockout (429)
 const isLockedOut = ref(false)
@@ -110,6 +142,8 @@ async function finishLogin(user: SessionUser): Promise<void> {
   // Prime the session cache so the route guard sees the fresh login
   // instead of the stale "unauthenticated" result from app startup.
   sessionStore.setUser(user)
+  // http 场景确认会话 cookie 真正落地后,清除「https 登录过」标记(见函数注释)。
+  clearLoginSchemeMarkerIfHttp()
   // Success — navigate to redirect target or root.
   // Validate redirect: must start with '/' and must NOT start with '//'
   // (double-slash opens a protocol-relative open-redirect vector).
@@ -375,6 +409,12 @@ onBeforeUnmount(() => {
             <span class="headline__grad">{{ t('login.headlineWord') }}</span>{{ t('login.headlinePunct') }}
           </h1>
           <p class="lede">{{ t('login.lede') }}</p>
+
+          <!-- HTTPS→HTTP 降级提醒:残留 Secure cookie 会吞掉 HTTP 登录的会话 cookie -->
+          <div v-if="showSecureCookieHint" class="banner banner--hint" role="note">
+            <span class="banner__icon" aria-hidden="true">⚠</span>
+            <span>{{ t('login.secureCookieHint') }}</span>
+          </div>
 
           <form
             v-if="step === 'password'"
@@ -944,6 +984,11 @@ onBeforeUnmount(() => {
   background: rgba(245, 158, 11, 0.13);
   border-color: rgba(245, 158, 11, 0.4);
   color: #fcd34d;
+}
+.banner--hint {
+  background: rgba(34, 211, 238, 0.1);
+  border-color: rgba(34, 211, 238, 0.35);
+  color: #a5f3fc;
 }
 .banner__icon {
   flex-shrink: 0;

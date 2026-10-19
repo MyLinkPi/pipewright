@@ -152,6 +152,8 @@ const de: typeof zhCN = {
     mfaErrCode: 'Falscher Code oder Backup-Code',
     passkeyLogin: 'Mit Passkey anmelden',
     backToPassword: 'Zurück zur Passwort-Anmeldung',
+    secureCookieHint:
+      'Dieser Browser hat sich zuvor per HTTPS bei dieser Seite angemeldet; ein übrig gebliebenes Secure-Cookie lässt spätere HTTP-Anmeldungen als abgemeldet erscheinen. Löschen Sie die Cookies dieser Seite und versuchen Sie es erneut, oder verwenden Sie weiterhin HTTPS.',
   },
 
   dashboard: {

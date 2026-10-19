@@ -152,6 +152,8 @@ const ja: typeof zhCN = {
     mfaErrCode: 'コードまたはバックアップコードが正しくありません',
     passkeyLogin: 'パスキーでログイン',
     backToPassword: 'パスワードログインに戻る',
+    secureCookieHint:
+      'このブラウザは以前 HTTPS でこのサイトにログインしています。残存する Secure Cookie のせいで、HTTP でログインしても未ログイン扱いになります。このサイトの Cookie を削除して再試行するか、引き続き HTTPS をご利用ください。',
   },
 
   dashboard: {

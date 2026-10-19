@@ -384,7 +384,7 @@ func TestLockoutExpiry(t *testing.T) {
 func TestCookieSecureBehindTrustedProxy(t *testing.T) {
 	srv, _ := setupAuthServer(t)
 
-	login := func(forwardedProto string) (session, csrf *http.Cookie) {
+	login := func(forwardedProto string) (session, csrf, scheme *http.Cookie) {
 		body := strings.NewReader(`{"username":"admin","password":"testpass"}`)
 		req, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/auth/login", body)
 		req.Header.Set("Content-Type", "application/json")
@@ -397,7 +397,7 @@ func TestCookieSecureBehindTrustedProxy(t *testing.T) {
 		}
 		defer resp.Body.Close()
 		if resp.StatusCode != http.StatusOK {
-			t.Fatalf("login status = %d", resp.StatusCode)
+			t.Fatalf("login status = %d, want 200", resp.StatusCode)
 		}
 		for _, c := range resp.Cookies() {
 			switch c.Name {
@@ -405,6 +405,8 @@ func TestCookieSecureBehindTrustedProxy(t *testing.T) {
 				session = c
 			case cookieCsrf:
 				csrf = c
+			case cookieLoginScheme:
+				scheme = c
 			}
 		}
 		if session == nil || csrf == nil {
@@ -414,14 +416,27 @@ func TestCookieSecureBehindTrustedProxy(t *testing.T) {
 	}
 
 	// httptest 服务端 RemoteAddr 恒为 127.0.0.1 → 落入可信反代(回环)分支。
-	s1, c1 := login("https")
+	s1, c1, m1 := login("https")
 	if !s1.Secure || !c1.Secure {
 		t.Fatal("cookies must carry Secure behind trusted proxy (X-Forwarded-Proto: https)")
 	}
-	// 无反代头(直连明文):不得置 Secure(否则纯 HTTP 环境下浏览器会拒收 cookie)。
-	s2, c2 := login("")
+	// HTTPS 登录同时下发「https 登录过」标记:值 https、无 Secure(纯 HTTP 页面要能读)。
+	if m1 == nil {
+		t.Fatal("login scheme marker cookie not set on secure login")
+	}
+	if m1.Value != "https" || m1.Secure || m1.HttpOnly {
+		t.Fatalf("login scheme marker = value:%q secure:%v httpOnly:%v, want value:https secure:false httpOnly:false",
+			m1.Value, m1.Secure, m1.HttpOnly)
+	}
+	// 无反代头(直连明文):不得置 Secure(否则纯 HTTP 环境下浏览器会拒收 cookie),
+	// 也不得下发/覆盖登录协议标记(明文登录可能被残留 Secure cookie 丢弃,改写标记
+	// 会让登录页提醒恰在该场景失效)。
+	s2, c2, m2 := login("")
 	if s2.Secure || c2.Secure {
 		t.Fatal("cookies must NOT be Secure on plain direct connection")
+	}
+	if m2 != nil {
+		t.Fatalf("login scheme marker must not be set on plain HTTP login, got %q", m2.Value)
 	}
 }
 

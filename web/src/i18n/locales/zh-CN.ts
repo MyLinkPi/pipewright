@@ -151,6 +151,8 @@ export default {
     mfaErrCode: '验证码或备份码错误',
     passkeyLogin: '使用通行密钥登录',
     backToPassword: '返回密码登录',
+    secureCookieHint:
+      '此浏览器曾通过 HTTPS 登录本站点,残留的安全 Cookie 会导致 HTTP 下登录后仍被当作未登录。请清理本站点的 Cookie 后重试,或继续使用 HTTPS 访问。',
   },
 
   dashboard: {

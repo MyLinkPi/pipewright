@@ -152,6 +152,8 @@ const es: typeof zhCN = {
     mfaErrCode: 'Código o código de respaldo incorrecto',
     passkeyLogin: 'Iniciar sesión con passkey',
     backToPassword: 'Volver al inicio con contraseña',
+    secureCookieHint:
+      'Este navegador inició sesión antes en este sitio por HTTPS; una cookie segura residual hace que los inicios de sesión por HTTP aparezcan como cerrados. Borra las cookies de este sitio y reintenta, o sigue usando HTTPS.',
   },
 
   dashboard: {
