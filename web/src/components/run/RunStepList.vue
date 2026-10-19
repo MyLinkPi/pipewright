@@ -6,7 +6,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
-import type { RunStep, StepStatus } from '../../api/runs'
+import type { RunStep, RunWait, StepStatus } from '../../api/runs'
 
 const { t } = useI18n()
 
@@ -14,9 +14,15 @@ const props = defineProps<{
   steps: RunStep[]
   /** 当前选中的步骤序号(用于高亮 + 过滤日志);null = 全部。 */
   selected?: number | null
+  /** 等待中(wait 节点)的记录:匹配行显示「跳过等待」按钮(可选,不传则无跳过入口)。 */
+  waits?: RunWait[]
 }>()
 
-const emit = defineEmits<{ select: [ordinal: number | null] }>()
+const emit = defineEmits<{
+  select: [ordinal: number | null]
+  /** 请求手动跳过某个等待节点(参数 = 跳过端点定位用的 jobId)。 */
+  skip: [jobId: string]
+}>()
 
 interface NodeRow {
   step: RunStep
@@ -58,6 +64,17 @@ const groups = computed<StageGroup[]>(() => {
   return out
 })
 
+/** 找该行对应的等待记录:优先按全局 ordinal 精确匹配;ordinal 未知(-1)时按 节点名+阶段名 回退。 */
+function waitFor(n: NodeRow): RunWait | undefined {
+  if (!props.waits?.length) return undefined
+  const ord = n.step.ordinal ?? n.ordinal
+  const byOrd = props.waits.find((w) => w.ordinal >= 0 && w.ordinal === ord)
+  if (byOrd) return byOrd
+  return props.waits.find(
+    (w) => w.ordinal < 0 && w.jobName === n.step.name && (w.stageName === '' || w.stageName === (n.step.stage ?? '')),
+  )
+}
+
 function formatDuration(ms: number | null): string {
   if (ms === null) return '—'
   const s = Math.floor(ms / 1000)
@@ -92,7 +109,7 @@ function formatDuration(ms: number | null): string {
           <span class="stage-head-count">{{ t('run.nodeCount', { n: g.nodes.length }) }}</span>
         </li>
 
-        <li v-for="n in g.nodes" :key="n.step.id">
+        <li v-for="n in g.nodes" :key="n.step.id" :class="{ 'step-item--skip': waitFor(n) }">
           <button
             type="button"
             class="step-row"
@@ -118,6 +135,16 @@ function formatDuration(ms: number | null): string {
               <span class="step-name">{{ n.step.name }}</span>
               <span v-if="n.step.durationMs !== null" class="step-dur mono">{{ formatDuration(n.step.durationMs) }}</span>
             </div>
+          </button>
+          <!-- 等待中节点的「跳过等待」:与行按钮平级(不嵌套 button),点击跳过该次等待、下游照常执行。 -->
+          <button
+            v-if="waitFor(n)"
+            type="button"
+            class="skip-wait-btn mono"
+            :title="t('run.skipWait')"
+            @click.stop="emit('skip', waitFor(n)!.jobId)"
+          >
+            ⏭ {{ t('run.skipWait') }} · {{ formatDuration(waitFor(n)!.remainingSeconds * 1000) }}
           </button>
         </li>
       </template>
@@ -161,6 +188,36 @@ function formatDuration(ms: number | null): string {
 }
 
 .steps li { list-style: none; }
+
+/* 带「跳过等待」按钮的节点行:行按钮与跳过按钮平级并排(不嵌套 button)。 */
+.step-item--skip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.step-item--skip .step-row { flex: 1; min-width: 0; }
+
+.skip-wait-btn {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  border: 1px solid var(--color-amber);
+  border-radius: var(--rounded-md);
+  background: var(--color-amber-soft);
+  color: var(--color-amber);
+  font-size: 0.68rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color var(--duration-fast), border-color var(--duration-fast);
+  white-space: nowrap;
+}
+.skip-wait-btn:hover { border-color: var(--color-amber); color: var(--color-amber); background: transparent; }
+.skip-wait-btn:focus-visible {
+  outline: 2px solid var(--color-amber);
+  outline-offset: 1px;
+}
 
 /* 阶段分组标题(节点级):小标签 + 聚合状态点;节点行在其下缩进。 */
 .stage-head {

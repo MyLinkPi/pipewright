@@ -108,6 +108,9 @@ export default {
   stepHint: 'Cliquez pour voir le journal d’une seule étape',
   allLogs: 'Tous les journaux',
   nodeCount: '{n} nœuds',
+  skipWait: 'Ignorer l’attente',
+  skipWaitDone: 'Nœud d’attente ignoré',
+  skipWaitStale: 'Ce nœud n’attend plus (venu de se terminer ou déjà ignoré)',
 
   // ─── RunTerminal ────────────────────────────────────────────────
   terminalRegion: 'Terminal du journal d’exécution',

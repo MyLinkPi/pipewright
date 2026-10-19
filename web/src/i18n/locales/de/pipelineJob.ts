@@ -161,6 +161,12 @@ export default {
   fieldHealthRetriesLabel: "Anzahl Wiederholungen",
   fieldIntervalSecondsLabel: "Wiederholungsintervall (s)",
 
+  // ─── jobConfigSchema · wait ───────────────────────────────────────────
+  typeWaitLabel: "Warten",
+  typeWaitDesc: "Pausiert für eine feste Dauer, bevor es weitergeht (Deploy-Timing); während der Ausführung überspringbar",
+  fieldWaitSecondsLabel: "Dauer (Sekunden)",
+  fieldWaitSecondsHint: "1–86400 Sekunden; während des Wartens über die Laufzeitdetails überspringbar",
+
   // ─── jobConfigSchema · notify ──────────────────────────────────────────
   typeNotifyLabel: "Benachrichtigen",
   typeNotifyDesc:

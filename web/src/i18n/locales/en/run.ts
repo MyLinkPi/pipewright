@@ -108,6 +108,9 @@ export default {
   stepHint: 'Click to view single-step log',
   allLogs: 'All logs',
   nodeCount: '{n} nodes',
+  skipWait: 'Skip wait',
+  skipWaitDone: 'Wait node skipped',
+  skipWaitStale: 'This node is no longer waiting (it may have just finished or already been skipped)',
 
   // ─── RunTerminal ────────────────────────────────────────────────
   terminalRegion: 'Run log terminal',

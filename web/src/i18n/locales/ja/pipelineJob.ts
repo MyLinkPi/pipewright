@@ -155,6 +155,12 @@ export default {
   fieldHealthRetriesLabel: "リトライ回数",
   fieldIntervalSecondsLabel: "リトライ間隔(秒)",
 
+  // ─── jobConfigSchema · wait ───────────────────────────────────────────
+  typeWaitLabel: "待機",
+  typeWaitDesc: "指定秒数だけ一時停止してから続行(デプロイのタイミング調整)。実行中に手動でスキップ可能",
+  fieldWaitSecondsLabel: "待機時間(秒)",
+  fieldWaitSecondsHint: "1〜86400 秒。待機中は実行詳細からスキップできます",
+
   // ─── jobConfigSchema · notify ──────────────────────────────────────────
   typeNotifyLabel: "通知",
   typeNotifyDesc: "実行がこのノードに到達したら通知を送信",

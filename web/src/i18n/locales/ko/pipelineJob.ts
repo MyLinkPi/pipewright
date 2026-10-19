@@ -151,6 +151,12 @@ export default {
   fieldHealthRetriesLabel: "재시도 횟수",
   fieldIntervalSecondsLabel: "재시도 간격(초)",
 
+  // ─── jobConfigSchema · wait ───────────────────────────────────────────
+  typeWaitLabel: "대기",
+  typeWaitDesc: "고정 시간(초) 동안 일시 정지 후 계속 진행(배포 타이밍 조정). 실행 중 수동 건너뛰기 가능",
+  fieldWaitSecondsLabel: "대기 시간(초)",
+  fieldWaitSecondsHint: "1–86400초. 대기 중 실행 상세에서 건너뛸 수 있습니다",
+
   // ─── jobConfigSchema · notify ──────────────────────────────────────────
   typeNotifyLabel: "알림",
   typeNotifyDesc: "실행이 이 노드에 도달하면 알림 전송",

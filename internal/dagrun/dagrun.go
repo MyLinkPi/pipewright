@@ -80,6 +80,14 @@ type StageReporter interface {
 	JobReporter(jobID string) StageReporter
 }
 
+// OrdinalAwareStageReporter 是 StageReporter 的可选扩展:把 jobID 翻回该节点的全局 step 序号
+// (运行详情步骤列表按序号定位)。dagrun 注入的真实 reporter(stageReporter)实现它;执行器
+// (如 build 的等待节点)经接口断言按需取用——测试 fake 不实现也不受影响,断言不命中即可。
+type OrdinalAwareStageReporter interface {
+	StageReporter
+	JobOrdinal(jobID string) (ordinal int, ok bool)
+}
+
 // StageExecutor 执行单个阶段(跑其 job/step);返回非 nil 表示该阶段失败。须响应 ctx 取消。
 // 真实实现(Story 8-2)在隔离容器内跑 stage 内并行 job 的有序 step;本包默认用 StubStageExecutor。
 type StageExecutor func(ctx context.Context, r *run.Run, stage pipeline.Stage, rep StageReporter) error
@@ -448,6 +456,12 @@ func (s *stageReporter) JobReporter(jobID string) StageReporter {
 		ord = s.firstOrd
 	}
 	return &jobReporter{sink: s.sink, mu: s.mu, ordinal: ord}
+}
+
+// JobOrdinal 把 jobID 翻回全局 step 序号(可选能力,见 OrdinalAwareStageReporter)。
+func (s *stageReporter) JobOrdinal(jobID string) (int, bool) {
+	ord, ok := s.jobOrd[jobID]
+	return ord, ok
 }
 
 // finishRemaining 把本阶段尚未被执行器标记终态的节点 step 统一收尾为 status(skipped/failed),

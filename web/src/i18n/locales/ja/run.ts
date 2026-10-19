@@ -108,6 +108,9 @@ export default {
   stepHint: 'クリックして単一ステップのログを表示',
   allLogs: 'すべてのログ',
   nodeCount: '{n} ノード',
+  skipWait: '待機をスキップ',
+  skipWaitDone: '待機ノードをスキップしました',
+  skipWaitStale: 'このノードは待機中ではありません(完了済みまたはスキップ済みの可能性)',
 
   // ─── RunTerminal ────────────────────────────────────────────────
   terminalRegion: '実行ログターミナル',

@@ -166,6 +166,12 @@ export default {
   fieldHealthRetriesLabel: "Número de reintentos",
   fieldIntervalSecondsLabel: "Intervalo de reintento (s)",
 
+  // ─── jobConfigSchema · wait ───────────────────────────────────────────
+  typeWaitLabel: "Espera",
+  typeWaitDesc: "Pausa durante un tiempo fijo antes de continuar (temporización de despliegue); se puede omitir durante la ejecución",
+  fieldWaitSecondsLabel: "Duración (segundos)",
+  fieldWaitSecondsHint: "1–86400 segundos; se puede omitir desde el detalle de la ejecución mientras espera",
+
   // ─── jobConfigSchema · notify ──────────────────────────────────────────
   typeNotifyLabel: "Notificar",
   typeNotifyDesc:
