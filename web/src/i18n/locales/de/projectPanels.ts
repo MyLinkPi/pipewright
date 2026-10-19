@@ -33,6 +33,9 @@ export default {
     reset: 'Zurücksetzen',
     pushConfigLabel: 'Push-Konfiguration',
     pushConfigHint: 'In den WebHooks-Einstellungen des Repositorys (Gitee / Gitea) die obige Adresse und den Schlüssel einfügen und die benötigten Ereignisse markieren (Gitee: Push / Tag Push / Release / Pull Request; Gitea: Push / Create / Release / Pull Request). Bei Gitea/Gogs muss der Schlüsseltext ausgefüllt sein, sonst werden Zustellungen abgelehnt.',
+    envLocal: 'Diese Umgebung',
+    envSelectAria: 'Empfangsumgebungs-Adresse wählen',
+    forwardHint: 'Cluster aktiv: Die Codeplattform muss nur eine der aufgeführten Umgebungsadressen erreichen — Zustellungen werden automatisch an die Umgebung weitergeleitet, der diese Pipeline gehört (diese Umgebung muss dem Eingangsknoten unter „Cluster → ACL“ die Trigger-Berechtigung erteilen).',
 
     eventsTitle: 'Auslöser-Ereignisse',
     eventsSub: 'Wählen Sie, welche Ereignisse einen Pipeline-Lauf erzeugen',

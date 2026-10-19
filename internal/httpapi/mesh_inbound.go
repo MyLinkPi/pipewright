@@ -24,6 +24,7 @@ import (
 	"github.com/huangchengsir/pipewright/internal/pushsource"
 	"github.com/huangchengsir/pipewright/internal/run"
 	"github.com/huangchengsir/pipewright/internal/target"
+	"github.com/huangchengsir/pipewright/internal/trigger"
 	"github.com/huangchengsir/pipewright/internal/version"
 )
 
@@ -51,6 +52,9 @@ type meshDeps struct {
 	pipelines  pipelineLister
 	audit      audit.Recorder
 	pushedRevs pushsource.Store
+	// webhookReceiver 处理经集群转发的 webhook 投递(/api/mesh/webhooks/{token} 的数据源;
+	// trigger.Receiver;nil = 端点 503 降级)。装配层经 NewMeshDeps 注入。
+	webhookReceiver *trigger.Receiver
 	// catalogSrc 提供本端服务目录(跨环境转发;/api/mesh/servicereg/catalog 的数据源;
 	// servicereg.Service 满足;nil = 端点 503 降级)。装配层经 WithServiceCatalog 注入。
 	catalogSrc meshCatalogSource
@@ -169,10 +173,35 @@ func mountMeshInbound(r chi.Router, d meshDeps) {
 	r.Get("/api/mesh/runs/{id}/events", trigger(makeRunEventsHandler(d.runs, d.runSub)))
 	r.Post("/api/mesh/push/preflight", push(makeMeshPushPreflightHandler(d)))
 	r.Post("/api/mesh/push", push(makeMeshPushHandler(d)))
+	// webhook 集群转发(入口节点 → token 所属环境):原始投递直达本端 receiver,响应
+	// 由入口节点透传给 Git 平台;此处不再二次转发(防环,见 webhook_forward.go)。
+	r.Post("/api/mesh/webhooks/{token}", trigger(makeMeshWebhookHandler(d)))
 	// 跨环境转发:本端服务目录(对端渲染 forward 服务 + 规划 /32 路由的数据源)。
 	r.Get("/api/mesh/servicereg/catalog", forward(makeMeshServiceCatalogHandler(d)))
 	// 集群级共享构建机(0086):目录/任务受理/跟踪/回拉/取消(运行时缺席则端点不挂)。
 	mountMeshSharedBuildInbound(r, d)
+}
+
+// makeMeshWebhookHandler 返回 POST /api/mesh/webhooks/{token} handler(集群转发接收侧)。
+// 入口节点把公网收到的投递原样签名转发到此:与公网入口共用同一套 Delivery 头解析与
+// receiver 处理(验签/防重放/去重/触发都在本端完成),响应由入口节点透传给 Git 平台。
+// 直达 receiver、不经过公网 handler,天然不会再次转发(防环)。
+func makeMeshWebhookHandler(d meshDeps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if d.webhookReceiver == nil {
+			writeError(w, http.StatusServiceUnavailable, "internal", "webhook 接收服务未初始化")
+			return
+		}
+		token := chi.URLParam(r, "token")
+		r.Body = http.MaxBytesReader(w, r.Body, webhookMaxBody)
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "bad_request", "请求体过大或读取失败")
+			return
+		}
+		res, err := d.webhookReceiver.Handle(r.Context(), webhookDelivery(token, r.Header, body))
+		writeWebhookResult(w, res, err)
+	}
 }
 
 // makeMeshServiceCatalogHandler 返回本端服务目录(网关主机 + 可转发服务;授权对端拉取)。

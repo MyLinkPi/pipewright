@@ -37,6 +37,9 @@ export default {
     reset: '重置',
     pushConfigLabel: '推送配置',
     pushConfigHint: '在代码仓库(Gitee / Gitea)的 WebHooks 设置中粘贴以上地址与密钥,并按需勾选事件(Gitee:Push / Tag Push / Release / Pull Request;Gitea:Push / Create / Release / Pull Request)。Gitea/Gogs 端必须填写密钥文本,否则推送会被拒收。',
+    envLocal: '本环境',
+    envSelectAria: '选择接收环境地址',
+    forwardHint: '集群已启用:代码平台只需够到任一已列出的环境地址,投递会自动转发到本流水线所属环境处理(需所属环境在「集群 → 授权」中允许入口节点触发)。',
 
     // Events section
     eventsTitle: '触发事件',

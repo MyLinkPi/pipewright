@@ -33,6 +33,9 @@ export default {
     reset: 'Réinitialiser',
     pushConfigLabel: 'Configuration du push',
     pushConfigHint: 'Dans les paramètres WebHooks du dépôt (Gitee / Gitea), collez l’adresse et la clé ci-dessus et cochez les événements souhaités (Gitee : Push / Tag Push / Release / Pull Request ; Gitea : Push / Create / Release / Pull Request). Sur Gitea/Gogs, le texte de la clé doit être renseigné, sinon les livraisons sont rejetées.',
+    envLocal: 'Cet environnement',
+    envSelectAria: 'Choisir l’adresse de l’environnement récepteur',
+    forwardHint: 'Cluster activé : la plateforme de code n’a besoin d’atteindre qu’une des adresses d’environnement listées — les livraisons sont automatiquement transférées vers l’environnement propriétaire de ce pipeline (celui-ci doit accorder le droit de déclenchement au nœud d’entrée dans « Cluster → ACL »).',
 
     eventsTitle: 'Événements Déclencheurs',
     eventsSub: 'Choisissez quels événements créent une exécution de pipeline',

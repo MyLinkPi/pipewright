@@ -55,10 +55,51 @@ type webhookIgnoredDTO struct {
 	Ignored  string `json:"ignored"`
 }
 
-// makeWebhookHandler 返回 POST /api/webhooks/{token} handler(公开;靠签名校验;豁免 auth/CSRF）。
-// 验签失败 → 401(不创建);命中 → 200 {accepted:true,runId};否则 200 {accepted:false,ignored}.
+// webhookDelivery 从请求头构造一次投递(公网入口与集群转发入口共用同一套头解析,
+// 保证未来新增 provider 时两条路径自动一致)。
+// 头按「Gitee → Gitea → Gogs」fallback 取第一个非空:
+// Gitea 出于兼容会同时发送 X-Gitea-* 与 X-Gogs-* 两套头,故 Gitea 优先。
+func webhookDelivery(token string, h http.Header, body []byte) trigger.Delivery {
+	return trigger.Delivery{
+		Token:         token,
+		Event:         firstHeaderValue(h.Get(trigger.HeaderGiteeEvent), h.Get(trigger.HeaderGiteaEvent), h.Get(trigger.HeaderGogsEvent)),
+		TokenHdr:      h.Get(trigger.HeaderGiteeToken),
+		Timestamp:     h.Get(trigger.HeaderGiteeTimestamp),
+		DeliveryID:    firstHeaderValue(h.Get(trigger.HeaderGiteeDelivery), h.Get(trigger.HeaderGiteaDelivery), h.Get(trigger.HeaderGogsDelivery)),
+		BodySignature: firstHeaderValue(h.Get(trigger.HeaderGiteaSignature), h.Get(trigger.HeaderGogsSignature)),
+		Actor:         webhookProvider(h),
+		RawBody:       body,
+	}
+}
+
+// writeWebhookResult 写回 Receiver.Handle 的结果(公网入口与集群转发入口共用)。
+// 验签失败 → 401(不创建);命中 → 200 {accepted:true,runId};否则 200 {accepted:false,ignored}。
 // 绝不回显密钥明文/密文;错误体永不含 secret。
-func makeWebhookHandler(rc *trigger.Receiver) http.HandlerFunc {
+func writeWebhookResult(w http.ResponseWriter, res *trigger.Result, err error) {
+	if err != nil {
+		switch {
+		case errors.Is(err, trigger.ErrUnauthorized):
+			// 验签失败:401,不创建。错误体不含任何密钥信息。
+			writeError(w, http.StatusUnauthorized, "unauthorized", "webhook 签名校验失败")
+		case errors.Is(err, trigger.ErrTokenNotFound):
+			writeError(w, http.StatusNotFound, "webhook_token_not_found", "webhook 端点不存在")
+		default:
+			writeError(w, http.StatusInternalServerError, "internal", "服务器内部错误")
+		}
+		return
+	}
+
+	if res.Accepted {
+		writeJSON(w, http.StatusOK, webhookAcceptedDTO{Accepted: true, RunID: res.RunID})
+		return
+	}
+	writeJSON(w, http.StatusOK, webhookIgnoredDTO{Accepted: false, Ignored: res.Ignored})
+}
+
+// makeWebhookHandler 返回 POST /api/webhooks/{token} handler(公开;靠签名校验;豁免 auth/CSRF）。
+// 本地无此 token 且集群启用时,尝试把投递转发给 token 所属的对端环境(见 webhook_forward.go),
+// 对端响应原样透传回 Git 平台;转发不可达 → 502,仍找不到归属 → 维持 404。
+func makeWebhookHandler(rc *trigger.Receiver, fwd *WebhookForwarder) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if rc == nil {
 			writeError(w, http.StatusServiceUnavailable, "internal", "webhook 接收服务未初始化")
@@ -66,7 +107,7 @@ func makeWebhookHandler(rc *trigger.Receiver) http.HandlerFunc {
 		}
 		token := chi.URLParam(r, "token")
 
-		// 限体积后读取原始 body(验签 + 解析所需)。
+		// 限体积后读取原始 body(验签 + 解析 + 转发所需)。
 		r.Body = http.MaxBytesReader(w, r.Body, webhookMaxBody)
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
@@ -74,36 +115,14 @@ func makeWebhookHandler(rc *trigger.Receiver) http.HandlerFunc {
 			return
 		}
 
-		res, err := rc.Handle(r.Context(), trigger.Delivery{
-			Token: token,
-			// 头按「Gitee → Gitea → Gogs」fallback 取第一个非空:
-			// Gitea 出于兼容会同时发送 X-Gitea-* 与 X-Gogs-* 两套头,故 Gitea 优先。
-			Event:         firstHeaderValue(r.Header.Get(trigger.HeaderGiteeEvent), r.Header.Get(trigger.HeaderGiteaEvent), r.Header.Get(trigger.HeaderGogsEvent)),
-			TokenHdr:      r.Header.Get(trigger.HeaderGiteeToken),
-			Timestamp:     r.Header.Get(trigger.HeaderGiteeTimestamp),
-			DeliveryID:    firstHeaderValue(r.Header.Get(trigger.HeaderGiteeDelivery), r.Header.Get(trigger.HeaderGiteaDelivery), r.Header.Get(trigger.HeaderGogsDelivery)),
-			BodySignature: firstHeaderValue(r.Header.Get(trigger.HeaderGiteaSignature), r.Header.Get(trigger.HeaderGogsSignature)),
-			Actor:         webhookProvider(r.Header),
-			RawBody:       body,
-		})
-		if err != nil {
-			switch {
-			case errors.Is(err, trigger.ErrUnauthorized):
-				// 验签失败:401,不创建。错误体不含任何密钥信息。
-				writeError(w, http.StatusUnauthorized, "unauthorized", "webhook 签名校验失败")
-			case errors.Is(err, trigger.ErrTokenNotFound):
-				writeError(w, http.StatusNotFound, "webhook_token_not_found", "webhook 端点不存在")
-			default:
-				writeError(w, http.StatusInternalServerError, "internal", "服务器内部错误")
+		res, err := rc.Handle(r.Context(), webhookDelivery(token, r.Header, body))
+		if errors.Is(err, trigger.ErrTokenNotFound) {
+			// token 不属于本环境:先尝试集群转发(命中即已写响应)。
+			if relayWebhookToMesh(w, fwd, r, token, body) {
+				return
 			}
-			return
 		}
-
-		if res.Accepted {
-			writeJSON(w, http.StatusOK, webhookAcceptedDTO{Accepted: true, RunID: res.RunID})
-			return
-		}
-		writeJSON(w, http.StatusOK, webhookIgnoredDTO{Accepted: false, Ignored: res.Ignored})
+		writeWebhookResult(w, res, err)
 	}
 }
 

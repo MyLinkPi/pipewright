@@ -33,6 +33,9 @@ export default {
     reset: '重設',
     pushConfigLabel: '推送設定',
     pushConfigHint: '在程式碼倉庫(Gitee / Gitea)的 WebHooks 設定中貼上以上位址與金鑰,並按需勾選事件(Gitee:Push / Tag Push / Release / Pull Request;Gitea:Push / Create / Release / Pull Request)。Gitea/Gogs 端必須填寫金鑰文字,否則推送會被拒收。',
+    envLocal: '本環境',
+    envSelectAria: '選擇接收環境位址',
+    forwardHint: '叢集已啟用:程式碼平台只需連到任一已列出的環境位址,投遞會自動轉發到本流水線所屬環境處理(需所屬環境在「叢集 → 授權」中允許入口節點觸發)。',
 
     eventsTitle: '觸發事件',
     eventsSub: '勾選哪些事件建立流水線執行',

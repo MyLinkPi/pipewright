@@ -23,6 +23,7 @@ import (
 	"github.com/huangchengsir/pipewright/internal/pushsource"
 	"github.com/huangchengsir/pipewright/internal/run"
 	"github.com/huangchengsir/pipewright/internal/target"
+	"github.com/huangchengsir/pipewright/internal/trigger"
 	"github.com/huangchengsir/pipewright/internal/version"
 )
 
@@ -47,8 +48,8 @@ type meshRuntimeView interface {
 }
 
 // NewMeshDeps 是装配层构造 meshDeps 的导出入口(字段未导出,经此一次性注入;
-// runSub 为 SSE 订阅源,与 WithRuns 注入的相同;pushedRevs 为修订存储;advertisePort
-// 为广播给对端的 HTTP 端口)。
+// runSub 为 SSE 订阅源,与 WithRuns 注入的相同;pushedRevs 为修订存储;webhookReceiver
+// 处理集群转发的 webhook 投递;advertisePort 为广播给对端的 HTTP 端口)。
 func NewMeshDeps(
 	svc mesh.Service,
 	receiver *mesh.Receiver,
@@ -61,12 +62,13 @@ func NewMeshDeps(
 	pipelines pipelineLister,
 	aud audit.Recorder,
 	pushedRevs pushsource.Store,
+	webhookReceiver *trigger.Receiver,
 	advertisePort int,
 ) meshAdminDeps {
 	return meshAdminDeps{meshDeps: meshDeps{
 		mesh: svc, receiver: receiver, client: client, projects: projects, runs: runs,
 		runSub: runSub, parameters: parameters, servers: servers, pipelines: pipelines,
-		audit: aud, pushedRevs: pushedRevs, advertisePort: advertisePort,
+		audit: aud, pushedRevs: pushedRevs, webhookReceiver: webhookReceiver, advertisePort: advertisePort,
 	}}
 }
 
@@ -88,6 +90,15 @@ func (d meshAdminDeps) WithServiceCatalog(src meshCatalogSource) meshAdminDeps {
 func (d meshAdminDeps) WithSharedBuild(rt sharedBuildRuntime) meshAdminDeps {
 	d.shared = rt
 	return d
+}
+
+// meshServices 返回 mesh 服务(未装配集群时为 nil;供挂在受保护组的只读端点取用,
+// 如 webhook-endpoints 的可选环境地址列表)。
+func (o *options) meshServices() mesh.Service {
+	if o.mesh == nil {
+		return nil
+	}
+	return o.mesh.meshDeps.mesh
 }
 
 // mountMeshAdmin 把管理面端点挂进受保护 /api 组(路径前缀 /mesh;admin 组内)。
