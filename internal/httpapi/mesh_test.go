@@ -54,7 +54,7 @@ func setupMeshServer(t *testing.T) (*httptest.Server, mesh.Service, pushsource.S
 	}
 	receiver := mesh.NewReceiver(psvc, blobs, nil, revs)
 	deps := NewMeshDeps(meshSvc, receiver, mesh.NewClient(meshSvc), psvc, rsvc, pool,
-		nil, nil, nil, nil, revs, 8080)
+		nil, nil, nil, nil, revs, nil, 8080)
 
 	srv := httptest.NewServer(New(testWebFSAuth(), svc,
 		WithVault(v), WithProjects(psvc), WithRuns(rsvc, pool), WithMesh(deps)))

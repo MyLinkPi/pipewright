@@ -14,7 +14,9 @@ import {
   getTrigger,
   saveTrigger,
   resetSecret,
+  getWebhookEndpoints,
   type TriggerConfig,
+  type WebhookEndpoint,
 } from '../api/triggers'
 import { HttpError } from '../api/http'
 import CronPanel from './CronPanel.vue'
@@ -110,9 +112,62 @@ async function copyText(text: string, target: CopyTarget): Promise<void> {
 
 const revealedSecret = ref<string | null>(null)
 
-function copyWebhookUrl(): void { void copyText(webhookUrl.value, 'url') }
+function copyWebhookUrl(): void { void copyText(displayWebhookUrl.value, 'url') }
 function copySecret(): void {
   if (revealedSecret.value) void copyText(revealedSecret.value, 'secret')
+}
+
+// ─── Webhook receive environment (cluster forwarding) ─────────────────────────
+
+/** 其他环境的可选接收地址(仅集群中登记了对外地址 publicUrl 的对端环境)。 */
+const envEndpoints = ref<WebhookEndpoint[]>([])
+/** 当前选中的接收环境 id;LOCAL_ENV = 本环境(当前浏览器访问地址)。 */
+const selectedEnv = ref('local')
+const LOCAL_ENV = 'local'
+
+const endpointOptions = computed(() => [
+  { id: LOCAL_ENV, label: t('projectPanels.triggers.envLocal'), base: window.location.origin },
+  ...envEndpoints.value.map((e) => ({ id: e.nodeId, label: e.name, base: e.base })),
+])
+
+const selectedEnvBase = computed(
+  () => endpointOptions.value.find((o) => o.id === selectedEnv.value)?.base ?? '',
+)
+
+const envStorageKey = (projectId: string) => `pw.webhookEnv.${projectId}`
+
+/** 恢复上次选择(localStorage;已不存在的环境回退本环境)。 */
+function applyStoredEnv(): void {
+  let stored: string | null = null
+  try {
+    stored = window.localStorage.getItem(envStorageKey(props.projectId))
+  } catch {
+    stored = null
+  }
+  if (stored && (stored === LOCAL_ENV || envEndpoints.value.some((e) => e.nodeId === stored))) {
+    selectedEnv.value = stored
+    return
+  }
+  selectedEnv.value = LOCAL_ENV
+}
+
+function onEnvChange(): void {
+  try {
+    window.localStorage.setItem(envStorageKey(props.projectId), selectedEnv.value)
+  } catch {
+    /* 隐私模式等存储不可用时静默忽略 */
+  }
+}
+
+/** 拉取可选环境地址;失败静默降级为仅本环境(单实例部署/权限缺失时下拉隐藏)。 */
+async function loadEnvEndpoints(): Promise<void> {
+  try {
+    const res = await getWebhookEndpoints(props.projectId)
+    envEndpoints.value = res.items ?? []
+  } catch {
+    envEndpoints.value = []
+  }
+  applyStoredEnv()
 }
 
 // ─── Reset secret modal ───────────────────────────────────────────────────────
@@ -259,15 +314,22 @@ async function loadTrigger(): Promise<void> {
 }
 
 // Reload when projectId changes (e.g. panel embedded in tab shell)
-watch(() => props.projectId, loadTrigger)
-onMounted(loadTrigger)
+watch(() => props.projectId, () => {
+  void loadTrigger()
+  void loadEnvEndpoints()
+})
+onMounted(() => {
+  void loadTrigger()
+  void loadEnvEndpoints()
+})
 
 // ─── Disclosed webhook URL ────────────────────────────────────────────────────
 
 const displayWebhookUrl = computed(() => {
   if (!webhookUrl.value) return ''
-  if (webhookUrl.value.startsWith('/')) return window.location.origin + webhookUrl.value
-  return webhookUrl.value
+  if (!webhookUrl.value.startsWith('/')) return webhookUrl.value
+  const base = selectedEnvBase.value || window.location.origin
+  return base + webhookUrl.value
 })
 </script>
 
@@ -327,6 +389,15 @@ const displayWebhookUrl = computed(() => {
           <div class="webhook-row">
             <span class="wk-label">{{ t('projectPanels.triggers.endpointLabel') }}</span>
             <div class="url-box">
+              <select
+                v-if="envEndpoints.length > 0"
+                v-model="selectedEnv"
+                class="env-select"
+                :aria-label="t('projectPanels.triggers.envSelectAria')"
+                @change="onEnvChange"
+              >
+                <option v-for="opt in endpointOptions" :key="opt.id" :value="opt.id">{{ opt.label }}</option>
+              </select>
               <span class="url-text mono" :title="displayWebhookUrl">{{ displayWebhookUrl }}</span>
               <button
                 class="url-action-btn"
@@ -376,7 +447,10 @@ const displayWebhookUrl = computed(() => {
           </div>
           <div class="webhook-row">
             <span class="wk-label">{{ t('projectPanels.triggers.pushConfigLabel') }}</span>
-            <p class="wk-hint">{{ t('projectPanels.triggers.pushConfigHint') }}</p>
+            <div>
+              <p class="wk-hint">{{ t('projectPanels.triggers.pushConfigHint') }}</p>
+              <p v-if="envEndpoints.length > 0" class="wk-hint">{{ t('projectPanels.triggers.forwardHint') }}</p>
+            </div>
           </div>
         </div>
       </section>
@@ -573,6 +647,9 @@ const displayWebhookUrl = computed(() => {
 .webhook-row:last-child { border-bottom: none; }
 .wk-label { font-size: 0.79rem; color: var(--color-dim); padding-top: 9px; white-space: nowrap; }
 .url-box { display: flex; align-items: stretch; background: var(--color-inset); border: 1px solid var(--color-border); border-radius: var(--rounded); overflow: hidden; }
+.env-select { height: 38px; border: none; border-right: 1px solid var(--color-border); background: var(--color-card-2); color: var(--color-dim); padding: 0 10px; font-size: 0.78rem; font-family: var(--font-sans); cursor: pointer; max-width: 170px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.env-select:hover { color: var(--color-text); }
+.env-select:focus { outline: none; color: var(--color-text); }
 .url-text { flex: 1; height: 38px; display: flex; align-items: center; padding: 0 13px; font-size: 0.79rem; color: var(--color-text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .mono { font-family: var(--font-mono); }
 .url-action-btn { height: 38px; border: none; border-left: 1px solid var(--color-border); background: var(--color-card-2); color: var(--color-dim); padding: 0 13px; cursor: pointer; font-size: 0.78rem; font-family: var(--font-sans); font-weight: 500; white-space: nowrap; display: inline-flex; align-items: center; gap: 5px; transition: color var(--duration-fast), background-color var(--duration-fast); }

@@ -96,6 +96,7 @@ type options struct {
 	feedback          run.FeedbackService
 	secretSource      *RunSecretSource
 	receiver          *trigger.Receiver
+	webhookForwarder  *WebhookForwarder
 	audit             audit.Recorder
 	account           accountService
 	identity          identity.Service
@@ -350,6 +351,13 @@ func WithSecretSource(s *RunSecretSource) Option {
 // (在 requireAuth/CSRF 白名单外;靠签名校验)。不传则该端点返回 503。
 func WithWebhooks(rc *trigger.Receiver) Option {
 	return func(o *options) { o.receiver = rc }
+}
+
+// WithWebhookForwarder 注入 webhook 集群转发器:公网收到本地不存在的 token 时,把投递
+// 经 mesh 转发给 token 所属的对端环境并透传响应(见 webhook_forward.go)。不传则该端点
+// 维持纯本地行为(token 不存在一律 404)。
+func WithWebhookForwarder(f *WebhookForwarder) Option {
+	return func(o *options) { o.webhookForwarder = f }
 }
 
 // WithAudit 注入审计 Recorder(Story 1.4),挂载 GET /api/audit 查询端点,并令既有
@@ -646,7 +654,8 @@ func New(webFS fs.FS, authn auth.Authenticator, opts ...Option) http.Handler {
 
 	// Webhook 接收(公开入口,Story 3.2):豁免 requireAuth + CSRF,靠签名校验。
 	// 必须在受保护 /api 组之外注册;限请求体大小在 handler 内(MaxBytesReader)。
-	r.Post("/api/webhooks/{token}", makeWebhookHandler(o.receiver))
+	// 本地无此 token 时经集群转发给归属环境(webhookForwarder;mesh 未启用则纯本地)。
+	r.Post("/api/webhooks/{token}", makeWebhookHandler(o.receiver, o.webhookForwarder))
 
 	// 集群对等入站(公开入口=网络层 EasyTier 把关):豁免 session/CSRF,靠节点 ed25519
 	// 签名头 + 接收方 ACL(默认全拒绝)鉴权。与 webhook 同级注册在受保护 /api 组之外。
@@ -776,6 +785,9 @@ func New(webFS fs.FS, authn auth.Authenticator, opts ...Option) http.Handler {
 		ar.Get("/projects/{id}/trigger", makeGetTriggerHandler(t))
 		ar.Put("/projects/{id}/trigger", makeSaveTriggerHandler(t))
 		ar.Post("/projects/{id}/trigger/secret/reset", makeResetTriggerSecretHandler(t, aud))
+		// webhook 接收端点可选环境地址(集群转发;只读,项目成员可用):mesh 启用时返回
+		// 已配置对外地址的对端环境,供 UI 把端点切到其他环境的地址复制。
+		ar.Get("/projects/{id}/trigger/webhook-endpoints", makeWebhookEndpointsHandler(o.meshServices()))
 
 		// 定时(cron)触发配置(Story 8-6)。o.cron 为 nil 时 handler 返回 503。GET 过 auth;PUT 过 auth + CSRF。
 		ar.Get("/projects/{id}/cron", makeGetCronHandler(o.cron))

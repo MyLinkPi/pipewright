@@ -4,6 +4,7 @@
  * GET  /api/projects/{id}/trigger                  → TriggerConfig
  * PUT  /api/projects/{id}/trigger                  → TriggerConfig  (needs CSRF)
  * POST /api/projects/{id}/trigger/secret/reset     → SecretResetResult (needs CSRF)
+ * GET  /api/projects/{id}/trigger/webhook-endpoints → WebhookEndpoints (mesh peers)
  *
  * webhookSecretMasked is always masked (e.g. "whsec_••••a91f").
  * The full plaintext secret is ONLY available in SecretResetResult.webhookSecret,
@@ -47,6 +48,18 @@ export interface SecretResetResult {
   webhookSecretMasked: string
 }
 
+/** 可选接收环境地址(mesh 对端;仅登记了对外地址 publicUrl 的环境)。 */
+export interface WebhookEndpoint {
+  nodeId: string
+  name: string
+  /** 该环境 Web 基址,末尾不带斜杠,如 "https://owner.example.com"。 */
+  base: string
+}
+
+export interface WebhookEndpoints {
+  items: WebhookEndpoint[]
+}
+
 // ─── API functions ────────────────────────────────────────────────────────────
 
 export async function getTrigger(projectId: string): Promise<TriggerConfig> {
@@ -62,4 +75,12 @@ export async function saveTrigger(
 
 export async function resetSecret(projectId: string): Promise<SecretResetResult> {
   return http.post<SecretResetResult>(`/api/projects/${projectId}/trigger/secret/reset`)
+}
+
+/**
+ * 集群启用时返回可作 webhook 接收端点的其他环境地址(供 Git 平台够不到本环境时,
+ * 把端点指到任一可达环境,集群会把投递转发到 token 所属环境)。
+ */
+export async function getWebhookEndpoints(projectId: string): Promise<WebhookEndpoints> {
+  return http.get<WebhookEndpoints>(`/api/projects/${projectId}/trigger/webhook-endpoints`)
 }

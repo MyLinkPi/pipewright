@@ -33,6 +33,9 @@ export default {
     reset: 'リセット',
     pushConfigLabel: 'プッシュ設定',
     pushConfigHint: 'リポジトリ(Gitee / Gitea)の WebHooks 設定に上記のアドレスとシークレットを貼り付け、必要なイベントにチェックを入れます(Gitee:Push / Tag Push / Release / Pull Request、Gitea:Push / Create / Release / Pull Request)。Gitea/Gogs ではシークレットテキストの入力が必須です。未入力の場合、配送は拒否されます。',
+    envLocal: 'この環境',
+    envSelectAria: '受信環境のアドレスを選択',
+    forwardHint: 'クラスタ有効:コードプラットフォームはリスト内のどの環境アドレスに到達できればよく、配送はこのパイプラインの所属環境へ自動転送されます(所属環境が「クラスタ → 認可」で入口ノードにトリガー権限を付与している必要があります)。',
 
     eventsTitle: 'トリガーイベント',
     eventsSub: 'どのイベントでパイプライン実行を作成するか選択',

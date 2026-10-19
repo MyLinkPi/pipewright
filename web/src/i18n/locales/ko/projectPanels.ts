@@ -33,6 +33,9 @@ export default {
     reset: '재설정',
     pushConfigLabel: '푸시 설정',
     pushConfigHint: '저장소(Gitee / Gitea)의 WebHooks 설정에 위 주소와 시크릿을 붙여넣고 필요한 이벤트를 체크하세요(Gitee: Push / Tag Push / Release / Pull Request, Gitea: Push / Create / Release / Pull Request). Gitea/Gogs에서는 시크릿 텍스트를 반드시 입력해야 하며, 비워 두면 푸시가 거부됩니다.',
+    envLocal: '이 환경',
+    envSelectAria: '수신 환경 주소 선택',
+    forwardHint: '클러스터 활성화됨: 코드 플랫폼은 나열된 환경 주소 중 하나에만 도달하면 되며, 전달은 이 파이프라인의 소속 환경으로 자동 전달됩니다(소속 환경의 “클러스터 → 권한”에서 진입 노드에 트리거 권한을 부여해야 합니다).',
 
     eventsTitle: '트리거 이벤트',
     eventsSub: '어떤 이벤트로 파이프라인 실행을 만들지 선택',

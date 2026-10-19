@@ -4,9 +4,11 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/huangchengsir/pipewright/internal/audit"
+	"github.com/huangchengsir/pipewright/internal/mesh"
 	"github.com/huangchengsir/pipewright/internal/trigger"
 )
 
@@ -162,5 +164,62 @@ func makeResetTriggerSecretHandler(svc trigger.Service, aud audit.Recorder) http
 			"webhookSecret":       res.Secret, // 完整明文,仅此一次
 			"webhookSecretMasked": res.Masked,
 		})
+	}
+}
+
+// webhookEndpointDTO 是「接收端点可选环境地址」列表项(集群转发)。
+type webhookEndpointDTO struct {
+	// NodeID 是对端环境节点 id(前端选择器的稳定 key)。
+	NodeID string `json:"nodeId"`
+	// Name 是对端环境名(mesh_peers.name;空则回退虚拟 IP)。
+	Name string `json:"name"`
+	// Base 是该环境的 Web 基址(仅登记了对外地址 publicUrl 的对端;末尾不带 /)。
+	Base string `json:"base"`
+}
+
+// webhookEndpointsDTO 是 GET /api/projects/{id}/trigger/webhook-endpoints 响应体。
+type webhookEndpointsDTO struct {
+	Items []webhookEndpointDTO `json:"items"`
+}
+
+// makeWebhookEndpointsHandler 返回 GET /api/projects/{id}/trigger/webhook-endpoints handler。
+// 集群启用时返回**已配置对外地址(publicUrl)**的对端环境列表,供 UI 把接收端点切换到
+// 其他环境的地址复制(Git 平台只需够到任一环境,集群会把投递转发到 token 所属环境;
+// 归属环境需在集群 ACL 的「允许触发」中授权入口节点)。只读端点,不触碰项目触发配置;
+// 项目成员可用(不暴露 admin 面 /api/mesh/peers 的公钥/版本等完整字段)。
+func makeWebhookEndpointsHandler(svc mesh.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		empty := webhookEndpointsDTO{Items: []webhookEndpointDTO{}}
+		if svc == nil {
+			writeJSON(w, http.StatusOK, empty)
+			return
+		}
+		st, err := svc.Settings(r.Context())
+		if err != nil || !st.Enabled {
+			writeJSON(w, http.StatusOK, empty)
+			return
+		}
+		peers, err := svc.ListPeers(r.Context())
+		if err != nil {
+			writeServerError(w, err)
+			return
+		}
+		items := make([]webhookEndpointDTO, 0, len(peers))
+		for _, p := range peers {
+			base := strings.TrimSpace(p.PublicURL)
+			if base == "" || p.NodeID == st.NodeID {
+				continue
+			}
+			name := strings.TrimSpace(p.Name)
+			if name == "" {
+				name = strings.TrimSpace(p.VirtualIP)
+			}
+			items = append(items, webhookEndpointDTO{
+				NodeID: p.NodeID,
+				Name:   name,
+				Base:   strings.TrimSuffix(base, "/"),
+			})
+		}
+		writeJSON(w, http.StatusOK, webhookEndpointsDTO{Items: items})
 	}
 }
