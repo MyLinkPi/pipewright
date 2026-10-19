@@ -85,6 +85,7 @@ const ko: typeof zhCN = {
     files: '파일',
     certificates: '인증서 관리',
     anomaly: '이상 감지',
+    ssarMonitor: '머신 모니터링',
     notifications: '알림',
     settings: '설정',
     users: '사용자 관리',

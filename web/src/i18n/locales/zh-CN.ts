@@ -84,6 +84,7 @@ export default {
     files: '文件',
     certificates: '证书管理',
     anomaly: '异常检测',
+    ssarMonitor: '机器监控',
     notifications: '通知',
     settings: '设置',
     users: '用户管理',

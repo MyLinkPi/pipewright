@@ -1,0 +1,57 @@
+export default {
+  title: 'Maschinenüberwachung',
+  subtitle:
+    'Serverüberwachung mit ssar (eigene gepflegte Fork): bereitgestellte Collector sampeln lokal, die Plattform speichert periodische Stichproben für die Übersicht, und jede Maschine behält 7 Tage feinkörnige Historie für Detailanalysen',
+  errLoadTitle: 'Laden fehlgeschlagen',
+
+  binHeading: 'ssar-Pakete',
+  binEmpty: 'Noch keine Pakete zwischengespeichert (GitHub Release: MyLinkPi/ssar)',
+  binDownloading: 'Pakete werden heruntergeladen…',
+  binVersion: 'Zwischengespeichert {version} ({n} Paket(e))',
+  binErr: 'Letzter Download fehlgeschlagen: {err}',
+  binDownload: 'Pakete herunterladen',
+  binRedownload: 'Erneut herunterladen',
+  installAll: 'Alle installieren / aktualisieren',
+
+  installAllOk: '{n} Server installiert',
+  installPartial: '{ok} erfolgreich, {fail} fehlgeschlagen',
+  installFailed: 'Installationsanfrage fehlgeschlagen',
+
+  serversHeading: 'Server',
+  colServer: 'Server',
+  colStatus: 'ssar-Status',
+  colLastSample: 'Letzte Stichprobe',
+  colActions: 'Aktionen',
+  notInstalled: 'Nicht installiert',
+  collectorActive: 'Sammelt',
+  collectorStopped: 'Collector gestoppt',
+  install: 'Installieren',
+  upgrade: 'Aktualisieren',
+
+  detailHeading: '{name} · Überwachungsdetails',
+  minutesLabel: '{n} Min.',
+  hoursLabel: '{n} Std.',
+  daysLabel: '{n} T.',
+
+  chartCpu: 'CPU (Jiffies/s, CPU-Gesamtsumme)',
+  chartMem: 'Speicher belegt % (inkl. Page-Cache)',
+  chartLoad: 'Last & Run-Queue',
+  chartTcp: 'TCP-Verbindungen & Retransmits',
+  cpuUser: 'user',
+  cpuSystem: 'system',
+  cpuIowait: 'iowait',
+  cpuSteal: 'steal',
+  memUsed: 'Belegt',
+  load1: 'load1',
+  runq: 'Run-Queue',
+  tcpEstab: 'Bestehend',
+  tcpRetrans: 'Retrans/s',
+
+  drillView: 'Detailansicht',
+  drillMachineLocal:
+    'Die Detailansicht liest die lokale ssar-Historie der Maschine (standardmäßig 7 Tage); die Zeitspalte ist die lokale Zeit der Maschine',
+  drillTime: 'Zeit (Maschinen-lokal)',
+
+  chartEmpty: 'Noch keine Daten',
+  chartAria: 'Metrik-Trend-Liniendiagramm',
+}

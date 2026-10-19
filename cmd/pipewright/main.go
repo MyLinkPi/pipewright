@@ -69,6 +69,7 @@ import (
 	"github.com/huangchengsir/pipewright/internal/runner"
 	"github.com/huangchengsir/pipewright/internal/servercmd"
 	"github.com/huangchengsir/pipewright/internal/servicereg"
+	"github.com/huangchengsir/pipewright/internal/ssar"
 	"github.com/huangchengsir/pipewright/internal/store"
 	"github.com/huangchengsir/pipewright/internal/systemcfg"
 	"github.com/huangchengsir/pipewright/internal/target"
@@ -872,6 +873,25 @@ func main() {
 	}
 	metricsSampleCollector := httpapi.NewAnomalyCollector(targetSvc)
 
+	// 机器监控(自维护 fork MyLinkPi/ssar):安装包下载器 + 领域服务。升级源复用平台
+	// 镜像机制(同 EasyTier 下载器),仅换 Repo;env PIPEWRIGHT_SSAR_VERSION 可钉死
+	// 具体 release tag(默认跟随最新)。采样节奏在下方 ticker(独立于 6-1 指标采样)。
+	ssarDownloader := ssar.NewDownloader(func(ctx context.Context) version.Source {
+		base := version.ResolveSource(systemcfg.ResolveReleaseMirror(ctx, sysCfgSvc))
+		return version.Source{Repo: ssar.Repo, APIBase: base.APIBase, WebBase: base.WebBase, DLBase: base.DLBase}
+	}, meshDataDir, os.Getenv("PIPEWRIGHT_SSAR_VERSION"))
+	ssarSvc := ssar.New(st.DB, targetSvc, ssarDownloader)
+	// 采样间隔 env PIPEWRIGHT_SSAR_SAMPLE_INTERVAL(秒,默认 60,与机器侧 sresar 快照
+	// 同拍;0 关闭),保留天数 env PIPEWRIGHT_SSAR_RETENTION_DAYS(默认 7,与 ssar 本地
+	// 保留窗口对齐)。
+	ssarSampleInterval := envDurationSeconds("PIPEWRIGHT_SSAR_SAMPLE_INTERVAL", 60*time.Second)
+	ssarRetentionDays := 7
+	if v := strings.TrimSpace(os.Getenv("PIPEWRIGHT_SSAR_RETENTION_DAYS")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			ssarRetentionDays = n
+		}
+	}
+
 	// 装配多 provider OAuth 凭据接入服务(连接 Gitee/GitHub/GitLab/自建):复用 vault secretbox 加密
 	// OAuth 应用 client_secret(密文入库);OAuth 拿到的 access_token 经 vault.Create 存成 git_token 凭据,
 	// 之后克隆/构建直接复用(无需改克隆逻辑)。Exchange 兑换用带超时的注入 HTTP 客户端(~10s);
@@ -880,7 +900,7 @@ func main() {
 
 	srv := &http.Server{
 		Addr:              cfg.Addr,
-		Handler:           httpapi.New(webFS, authSvc, httpapi.WithVault(credVault), httpapi.WithProjects(projectSvc), httpapi.WithTriggers(triggerSvc), httpapi.WithPipelines(pipelineSvc), httpapi.WithPipelineSettings(pipelineSettingsSvc), httpapi.WithRuns(runSvc, pool), httpapi.WithWebhooks(webhookReceiver), httpapi.WithAudit(auditRec), httpapi.WithAccount(authSvc), httpapi.WithIdentity(identitySvc), httpapi.WithAISettings(aiSvc), httpapi.WithAIGenerate(repoAnalyzer), httpapi.WithRunDiff(runDiffer), httpapi.WithSource(sourceReader), httpapi.WithRefs(refsLister), httpapi.WithArtifactStore(artStore), httpapi.WithArtifactImageTransfer(meshImages), httpapi.WithArtifactTransfer(artifactTransfers), httpapi.WithServers(targetSvc), httpapi.WithLabels(labelsSvc), httpapi.WithServerCommands(serverCmdSvc), httpapi.WithRegistryHub(registryHubSvc), httpapi.WithRunnerConfig(runnerSvc), httpapi.WithDeploy(deploySvc), httpapi.WithSpecLoader(resumeSpecLoader), httpapi.WithNotifications(notifySvc), httpapi.WithRetention(retentionSvc), httpapi.WithDNSProviders(dnsSvc), httpapi.WithObjectStores(objectStoreSvc), httpapi.WithCertMgmt(certSvc), httpapi.WithPlatformHTTPS(platformHTTPSSvc), httpapi.WithSystemConfig(sysCfgSvc), httpapi.WithMFA(mfaSvc), httpapi.WithServiceReg(serviceRegSvc), httpapi.WithAppStore(appStoreSvc), httpapi.WithDBAdmin(dbAdminSvc), httpapi.WithRedisAdmin(redisAdminSvc), httpapi.WithPVEAdmin(pveAdminSvc), httpapi.WithDiagnosisFeedback(feedbackSvc), httpapi.WithAnomaly(anomalySvc), httpapi.WithAnomalyConfig(int(anomalyInterval.Seconds()), int(anomalyCooldown.Seconds())), httpapi.WithMetricsHistory(metricsHist), httpapi.WithSecretSource(secretSrc), httpapi.WithOAuth(oauthSvc), httpapi.WithCron(cronSvc), httpapi.WithChain(chainSvc), httpapi.WithApprovals(approvalCoord, approvalStore), httpapi.WithApprovalLinks(approvalSigner), httpapi.WithWaitNode(waitCoord), httpapi.WithConcurrency(concurrencySvc), httpapi.WithParameters(parameterSvc), httpapi.WithDoraMetrics(doraMetricsSvc), httpapi.WithTemplates(templateSvc), httpapi.WithVariableGroups(varGroupSvc), httpapi.WithCustomNodes(customNodeSvc), httpapi.WithOpsChat(opsChatSvc), httpapi.WithMesh(meshAdminDeps), httpapi.WithCeph(cephSvc), httpapi.WithDiskAdmin(diskAdminSvc), httpapi.WithFileAdmin(fileAdminSvc)),
+		Handler:           httpapi.New(webFS, authSvc, httpapi.WithVault(credVault), httpapi.WithProjects(projectSvc), httpapi.WithTriggers(triggerSvc), httpapi.WithPipelines(pipelineSvc), httpapi.WithPipelineSettings(pipelineSettingsSvc), httpapi.WithRuns(runSvc, pool), httpapi.WithWebhooks(webhookReceiver), httpapi.WithAudit(auditRec), httpapi.WithAccount(authSvc), httpapi.WithIdentity(identitySvc), httpapi.WithAISettings(aiSvc), httpapi.WithAIGenerate(repoAnalyzer), httpapi.WithRunDiff(runDiffer), httpapi.WithSource(sourceReader), httpapi.WithRefs(refsLister), httpapi.WithArtifactStore(artStore), httpapi.WithArtifactImageTransfer(meshImages), httpapi.WithArtifactTransfer(artifactTransfers), httpapi.WithServers(targetSvc), httpapi.WithLabels(labelsSvc), httpapi.WithServerCommands(serverCmdSvc), httpapi.WithRegistryHub(registryHubSvc), httpapi.WithRunnerConfig(runnerSvc), httpapi.WithDeploy(deploySvc), httpapi.WithSpecLoader(resumeSpecLoader), httpapi.WithNotifications(notifySvc), httpapi.WithRetention(retentionSvc), httpapi.WithDNSProviders(dnsSvc), httpapi.WithObjectStores(objectStoreSvc), httpapi.WithCertMgmt(certSvc), httpapi.WithPlatformHTTPS(platformHTTPSSvc), httpapi.WithSystemConfig(sysCfgSvc), httpapi.WithMFA(mfaSvc), httpapi.WithServiceReg(serviceRegSvc), httpapi.WithAppStore(appStoreSvc), httpapi.WithDBAdmin(dbAdminSvc), httpapi.WithRedisAdmin(redisAdminSvc), httpapi.WithPVEAdmin(pveAdminSvc), httpapi.WithDiagnosisFeedback(feedbackSvc), httpapi.WithAnomaly(anomalySvc), httpapi.WithAnomalyConfig(int(anomalyInterval.Seconds()), int(anomalyCooldown.Seconds())), httpapi.WithMetricsHistory(metricsHist), httpapi.WithSsar(ssarSvc), httpapi.WithSecretSource(secretSrc), httpapi.WithOAuth(oauthSvc), httpapi.WithCron(cronSvc), httpapi.WithChain(chainSvc), httpapi.WithApprovals(approvalCoord, approvalStore), httpapi.WithApprovalLinks(approvalSigner), httpapi.WithWaitNode(waitCoord), httpapi.WithConcurrency(concurrencySvc), httpapi.WithParameters(parameterSvc), httpapi.WithDoraMetrics(doraMetricsSvc), httpapi.WithTemplates(templateSvc), httpapi.WithVariableGroups(varGroupSvc), httpapi.WithCustomNodes(customNodeSvc), httpapi.WithOpsChat(opsChatSvc), httpapi.WithMesh(meshAdminDeps), httpapi.WithCeph(cephSvc), httpapi.WithDiskAdmin(diskAdminSvc), httpapi.WithFileAdmin(fileAdminSvc)),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		// WriteTimeout 置 0:SSE 长连接(/api/runs/{id}/events)不可被写超时切断;
@@ -950,6 +970,36 @@ func main() {
 						log.Printf("[metrics] 清理过期样本失败:%v", err)
 					} else if n > 0 {
 						log.Printf("[metrics] 清理过期样本 %d 行", n)
+					}
+				}
+			}
+		}()
+	}
+
+	// ssar 机器监控采样器:每 ssarSampleInterval 对每台已装 ssar 的服务器跑一条合并
+	// SSH 脚本(机器侧 sresar 供数),解析入 ssar_samples 时序表并按保留窗口清理。
+	// 未装 / 不可达 / 无数据的机器自然跳过;置 0 关闭。随 ctx 停机退出。
+	if ssarSampleInterval > 0 {
+		go func() {
+			ticker := time.NewTicker(ssarSampleInterval)
+			defer ticker.Stop()
+			log.Printf("[ssar] 机器监控采样已启用,间隔 %s,保留 %d 天", ssarSampleInterval, ssarRetentionDays)
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case t := <-ticker.C:
+					if _, err := ssarSvc.SampleAll(ctx); err != nil {
+						if ctx.Err() == nil {
+							log.Printf("[ssar] 采样失败(已跳过本轮):%v", err)
+						}
+						continue
+					}
+					// 顺手清理过期样本(保留窗口外)。
+					if dn, err := ssarSvc.Sweep(ctx, t.UTC().AddDate(0, 0, -ssarRetentionDays)); err != nil && ctx.Err() == nil {
+						log.Printf("[ssar] 清理过期样本失败:%v", err)
+					} else if dn > 0 {
+						log.Printf("[ssar] 清理过期样本 %d 行", dn)
 					}
 				}
 			}

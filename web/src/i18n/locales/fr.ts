@@ -85,6 +85,7 @@ const fr: typeof zhCN = {
     files: 'Fichiers',
     certificates: 'Certificats',
     anomaly: 'Détection d’anomalies',
+    ssarMonitor: 'Surveillance des machines',
     notifications: 'Notifications',
     settings: 'Paramètres',
     users: 'Gestion des utilisateurs',

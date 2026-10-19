@@ -1,0 +1,57 @@
+export default {
+  title: 'Machine Monitoring',
+  subtitle:
+    'Server monitoring via ssar (self-maintained fork): deployed collectors sample locally, the platform stores periodic samples for overviews, and each machine keeps 7 days of fine-grained history for drill-down',
+  errLoadTitle: 'Failed to load',
+
+  binHeading: 'ssar packages',
+  binEmpty: 'No packages cached yet (GitHub Release: MyLinkPi/ssar)',
+  binDownloading: 'Downloading packages…',
+  binVersion: 'Cached {version} ({n} package(s))',
+  binErr: 'Last download failed: {err}',
+  binDownload: 'Download packages',
+  binRedownload: 'Re-download',
+  installAll: 'Install / upgrade all',
+
+  installAllOk: '{n} server(s) installed',
+  installPartial: '{ok} succeeded, {fail} failed',
+  installFailed: 'Install request failed',
+
+  serversHeading: 'Servers',
+  colServer: 'Server',
+  colStatus: 'ssar status',
+  colLastSample: 'Last sample',
+  colActions: 'Actions',
+  notInstalled: 'Not installed',
+  collectorActive: 'Collecting',
+  collectorStopped: 'Collector stopped',
+  install: 'Install',
+  upgrade: 'Upgrade',
+
+  detailHeading: '{name} · monitoring detail',
+  minutesLabel: '{n} min',
+  hoursLabel: '{n} h',
+  daysLabel: '{n} d',
+
+  chartCpu: 'CPU (jiffies/s, all-CPU aggregate)',
+  chartMem: 'Memory used % (page cache included)',
+  chartLoad: 'Load & run queue',
+  chartTcp: 'TCP connections & retransmits',
+  cpuUser: 'user',
+  cpuSystem: 'system',
+  cpuIowait: 'iowait',
+  cpuSteal: 'steal',
+  memUsed: 'Used',
+  load1: 'load1',
+  runq: 'Run queue',
+  tcpEstab: 'Established',
+  tcpRetrans: 'Retrans/s',
+
+  drillView: 'Drill-down view',
+  drillMachineLocal:
+    'Drill-down reads the machine-local ssar history (7 days by default); the time column is machine-local time',
+  drillTime: 'Time (machine-local)',
+
+  chartEmpty: 'No data yet',
+  chartAria: 'Metric trend line chart',
+}

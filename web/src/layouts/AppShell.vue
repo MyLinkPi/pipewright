@@ -30,6 +30,7 @@ import {
   Archive,
   LayoutGrid,
   Activity,
+  ReportAnalytics,
 } from '@vicons/tabler'
 import { NIcon } from 'naive-ui'
 import ThemeToggle from '../components/ThemeToggle.vue'
@@ -155,6 +156,8 @@ const adminNavGroups: NavGroup[] = [
       // R4 / E4.1: PR 预览环境大盘(临时环境列表 + 手动回收)。
       // Story 6-5: configurable anomaly detection & alerts (FR-23)
       { name: 'anomaly', to: '/anomaly', icon: AlertTriangle, labelKey: 'nav.anomaly', ariaKey: 'nav.anomaly' },
+      // 机器监控:ssar(自维护 fork)安装分发 + 平台采样总览 + 机器侧细粒度历史。
+      { name: 'ssar-monitor', to: '/ssar-monitor', icon: ReportAnalytics, labelKey: 'nav.ssarMonitor', ariaKey: 'nav.ssarMonitor' },
       { name: 'notifications', to: '/settings/notifications', icon: Bell, labelKey: 'nav.notifications', ariaKey: 'nav.notifications' },
     ],
   },

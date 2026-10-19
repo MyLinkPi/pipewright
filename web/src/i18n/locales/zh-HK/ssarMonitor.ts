@@ -1,0 +1,56 @@
+export default {
+  title: '機器監控',
+  subtitle:
+    '基於 ssar(自維護版本)的伺服器監控:安裝分發到目標機後本地持續採集,平台側週期採樣入庫存總覽,機器側保留 7 天細粒度歷史可按需下鑽',
+  errLoadTitle: '載入失敗',
+
+  binHeading: 'ssar 安裝包',
+  binEmpty: '尚未快取安裝包(GitHub Release:MyLinkPi/ssar)',
+  binDownloading: '正在下載安裝包…',
+  binVersion: '已快取 {version}(安裝包 {n} 個)',
+  binErr: '最近一次下載失敗:{err}',
+  binDownload: '下載安裝包',
+  binRedownload: '重新下載',
+  installAll: '安裝 / 升級全部',
+
+  installAllOk: '{n} 台安裝成功',
+  installPartial: '{ok} 台成功,{fail} 台失敗',
+  installFailed: '安裝請求失敗',
+
+  serversHeading: '伺服器',
+  colServer: '伺服器',
+  colStatus: 'ssar 狀態',
+  colLastSample: '最近採樣',
+  colActions: '操作',
+  notInstalled: '未安裝',
+  collectorActive: '採集中',
+  collectorStopped: '採集器停止',
+  install: '安裝',
+  upgrade: '升級',
+
+  detailHeading: '{name} · 監控詳情',
+  minutesLabel: '{n} 分鐘',
+  hoursLabel: '{n} 小時',
+  daysLabel: '{n} 天',
+
+  chartCpu: 'CPU(jiffies/s,全 CPU 匯總)',
+  chartMem: '記憶體已用 %(含頁快取口徑)',
+  chartLoad: '負載與執行佇列',
+  chartTcp: 'TCP 連線與重傳',
+  cpuUser: 'user',
+  cpuSystem: 'system',
+  cpuIowait: 'iowait',
+  cpuSteal: 'steal',
+  memUsed: '已用',
+  load1: 'load1',
+  runq: '執行佇列',
+  tcpEstab: '當前連線',
+  tcpRetrans: '重傳/s',
+
+  drillView: '細查視圖',
+  drillMachineLocal: '細查資料來自機器本地 ssar 歷史(預設保留 7 天);時間列為機器本地時間',
+  drillTime: '時間(機器本地)',
+
+  chartEmpty: '暫無資料',
+  chartAria: '指標隨時間走勢折線圖',
+}

@@ -67,6 +67,7 @@ Pipewright 把「持续集成、多服务器部署、服务器/容器运维」�
 - **🔒 平台 HTTPS(宿主 nginx)** —— 当运行 Pipewright 的主机装有 nginx 时,平台可把自己的 Web 页面发布为 **HTTPS**:选访问域名 + 复用「证书管理」的证书,平台在自身所在主机自动下发证书并写入 `/etc/nginx/conf.d` vhost(443 ssl 反代平台端口 + 80→443 跳转),`nginx -t` 校验(失败自动回滚)、`nginx -T` 验证 include 生效后热加载;需要 root 或免密 sudo,与本机既有 nginx 配置共存。证书续期后自动重新下发;被平台 HTTPS 占用的证书禁止误删。
 - **📣 通知** —— 企业微信 / 钉钉 / 飞书 / Slack / 邮件 / 自定义 webhook · 事件→渠道细粒度路由 · 模板 + 变量自定义 · 飞书富卡片(审批/详情行动按钮 + 发版汇总)· 流水线内通知节点。
 - **🖥 服务器与容器运维** —— 多机状态总览(CPU/内存/磁盘)+ 指标时序趋势图 · 容器/镜像/Stacks/卷/网络管理 · 容器创建/inspect/prune · 实时 + 历史服务日志 · 实时 stats · 容器交互终端 · Web 运维终端(主机 shell,完整复制粘贴/信号支持)· 可配置异常检测:定时自动跑、冷却去重、命中走通知渠道。
+- **📊 机器监控(ssar)** —— 基于 [ssar](https://github.com/MyLinkPi/ssar)(Anolis ssar 自维护 fork)的深度服务器指标:安装包(rpm/deb)从其 GitHub Release 自动下载(镜像感知、sha256 校验),经 SSH 分发到 Linux 目标机(root 或免密 sudo;包内 sresar 采集器以 systemd 服务常驻,机器本地保留 7 天 60s/5s 粒度历史)。平台侧周期采样入库做总览图表(CPU 分项、内存、5s 级负载、TCP 重传),细查面板按需直查机器本地高粒度历史(白名单视图:cpu/mem/tcp/retran/softirq/load5s…);不改动既有状态页/异常检测体系。
 - **🛒 应用市场与中间件纳管** —— 应用商店模板一键参数化部署(内置 MySQL / Redis / Postgres / Nginx / RustFS / RabbitMQ / Gitea / Redpanda,亦可自建模板;参数白名单校验防注入,secret 自动生成且仅部署响应一次性返回)· 数据库管理(MySQL / PostgreSQL 实例注册 + 在线库表数据管理,默认只读、写操作需显式解锁并留审计)· Redis 管理(实例注册 + SCAN 游标分页键浏览/删改/改 TTL,值按类型截断预览;应用市场部署 Redis 自动登记为实例)· 对象存储集成(阿里云 OSS / S3 兼容 RustFS 多账户接入,桶浏览、新建桶自动登记为配置,流水线 `oss_upload` 节点直传)。
 - **🧊 PVE 与 Ceph 纳管** —— PVE 物理机登记即经 SSH 自动发现集群并入服务器池(API Token 密文入保险库;物理机禁止作为构建/部署目标,电源操作默认只读、解锁留审计)· Ceph 集群 cephadm 引导部署(后台任务 + 步骤/日志轮询)+ 主机/OSD/存储池/RBD/CephFS 一站管理(dashboard 密码只入保险库)。
 - **🤖 AI 辅助(可选,完全可降级)** —— 自带 Claude / OpenAI / Ollama 端点(apiKey 密文入保险库)。构建/部署失败自动根因诊断 + 👍/👎 反馈飞轮与准确率统计 · 仓库分析 → 生成流水线草案 · 成功/失败提交差异 · 脚本风险标注 · 运维终端的自然语言→shell 助手与容器诊断。核心 CI/CD 路径完全不依赖它(NFR-10)。
@@ -258,6 +259,9 @@ sh install.sh       # 亦可把构建产物装到 /usr/local/bin(见「本地编
 | `PIPEWRIGHT_ANOMALY_COOLDOWN` | 同「服务器×规则」重复告警的最小间隔(秒) | `600` |
 | `PIPEWRIGHT_METRICS_SAMPLE_INTERVAL` | 服务器指标采样间隔(秒,趋势图数据源);`0` 关闭采样 | `60` |
 | `PIPEWRIGHT_METRICS_RETENTION_DAYS` | 指标样本保留天数 | `7` |
+| `PIPEWRIGHT_SSAR_SAMPLE_INTERVAL` | ssar 机器监控采样间隔(秒);`0` 关闭采样 | `60` |
+| `PIPEWRIGHT_SSAR_RETENTION_DAYS` | ssar 采样样本保留天数 | `7` |
+| `PIPEWRIGHT_SSAR_VERSION` | 钉死要安装的 ssar release tag(留空 = 最新) | — |
 
 ## 流水线即代码(GitOps)
 
