@@ -65,7 +65,7 @@ function server(id: string, name: string): Server {
     labels: '',
     maxBuilds: 0,
     priority: 0,
-    gpu: false,
+    gpu: false, sharedBuild: false,
     poolId: 'default',
     poolName: 'default',
     kind: 'standard',

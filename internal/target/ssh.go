@@ -279,9 +279,37 @@ type streamReadCloser struct {
 	chain   func() // 整链收尾(逆序关最外层 client + 全部中间跳)
 	stop    chan struct{}
 	once    sync.Once
+
+	// waitMu/waited/waitErr:读尽(EOF)时收割 session.Wait() 的退出状态(Download 校验
+	// 远端退出码用;tail -f 类消费方读不到 EOF,不受影响)。Close 前未 EOF 则不收割
+	// (SIGKILL 的退出码无意义)。
+	waitMu  sync.Mutex
+	waited  bool
+	waitErr error
 }
 
-func (s *streamReadCloser) Read(p []byte) (int, error) { return s.r.Read(p) }
+func (s *streamReadCloser) Read(p []byte) (int, error) {
+	n, err := s.r.Read(p)
+	if err == io.EOF {
+		s.waitMu.Lock()
+		if !s.waited {
+			s.waited = true
+			s.waitErr = s.session.Wait()
+		}
+		s.waitMu.Unlock()
+	}
+	return n, err
+}
+
+// WaitErr 返回读尽(EOF)后收割到的远端退出状态;未读尽或远端正常退出为 nil。
+func (s *streamReadCloser) WaitErr() error {
+	s.waitMu.Lock()
+	defer s.waitMu.Unlock()
+	if !s.waited {
+		return nil
+	}
+	return s.waitErr
+}
 
 func (s *streamReadCloser) Close() error {
 	s.once.Do(func() {

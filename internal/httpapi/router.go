@@ -700,6 +700,8 @@ func New(webFS fs.FS, authn auth.Authenticator, opts ...Option) http.Handler {
 			// 集群管理面(管理员):本节点配置/授权单/节点注册表/集群页聚合 + 对端代理查询。
 			if o.mesh != nil {
 				mountMeshAdmin(ar, *o.mesh)
+				// 集群级共享构建机管理面(管理员):跨环境任务列表/强制取消(运行时缺席不挂)。
+				mountSharedBuildAdmin(ar, o.mesh.meshDeps)
 			}
 			// 数据库管理面(管理员):MySQL/PostgreSQL 实例注册 + phpMyAdmin 式在线管理。
 			if o.dbAdmin != nil {

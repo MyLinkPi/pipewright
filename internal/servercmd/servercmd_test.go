@@ -73,6 +73,9 @@ func (f *fakeTarget) ExecWithStdin(ctx context.Context, id string, cmd []string,
 	return f.Exec(ctx, id, cmd)
 }
 func (f *fakeTarget) Upload(context.Context, string, io.Reader, string) error { return nil }
+func (f *fakeTarget) Download(_ context.Context, _ string, _ string, _ io.Writer) (int64, error) {
+	return 0, nil
+}
 
 func newTestService(t *testing.T, ft *fakeTarget) *Service {
 	t.Helper()

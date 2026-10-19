@@ -123,6 +123,11 @@ type Server struct {
 	// 显存/温度/功耗(支持多卡,兼容 NVIDIA 与 AMD)。**纯监控**开关 —— 不参与构建机池调度
 	// (调度仍看 Labels/槽位/优先级),也不影响部署目标选择。
 	Gpu bool
+	// SharedBuild 标记该机为集群级共享构建机(0086):开启后进入本端共享构建机目录,
+	// 集群中经 mesh build ACL 授权的对端环境可把构建任务派到该机(排队进本端调度器同一
+	// FIFO;工作区/产物经本端中转暂存,不进本端制品库)。要求 Labels 非空(对端靠标签选中);
+	// 只影响"谁能用这台机构建",本端构建/部署行为不变,对端不能部署到该机。
+	SharedBuild bool
 	// PoolID 是所属服务器池 id(0084;默认 default 标准池)。**系统管理字段**:仅 PVE 探测
 	// 流经 SetPlacement/Create(PoolID) 写入,不进服务器更新 API。
 	PoolID string
@@ -169,6 +174,8 @@ type CreateInput struct {
 	Priority  int
 	// Gpu 标记该机带显卡(纯监控开关;语义见 Server.Gpu)。
 	Gpu bool
+	// SharedBuild 开启集群级共享构建机(语义见 Server.SharedBuild;httpapi 校验 Labels 非空)。
+	SharedBuild bool
 	// PoolID / Kind 是系统管理放置字段:空 → default 池 + standard(普通登记路径);
 	// PVE 探测流建兄弟节点占位时传 pve 池 + pve_node。更新 API 无对应字段。
 	PoolID string
@@ -190,6 +197,8 @@ type UpdateInput struct {
 	Priority  *int
 	// Gpu 非 nil = 修改显卡标记(纯监控开关)。
 	Gpu *bool
+	// SharedBuild 非 nil = 修改集群共享构建机标记。
+	SharedBuild *bool
 }
 
 // ExecResult 是通用 Exec 的结果(冻结契约;Epic 4/6 消费)。
@@ -247,6 +256,11 @@ type Service interface {
 	// 大文件友好;remotePath 作 array 参数 shell 转义(AC-SEC-02),不拼 shell。远端非零退出 / 连接失败
 	// → 人读错误(绝无凭据明文)。供部署把制品库里的 jar/dist 真字节落到目标机。
 	Upload(ctx context.Context, serverID string, content io.Reader, remotePath string) error
+	// Download 把目标机 remotePath 文件的字节流式读回并写入 w(0086 集群共享构建:产物/镜像
+	// 归档从共享机回拉)。实现:经 SSH 跑 `cat <remotePath>`,stdout 流式直灌 w —— 大文件友好、
+	// 无全量内存驻留;remotePath shell 转义不拼 shell(AC-SEC-02)。读尽后校验远端退出码,
+	// 非零(如文件不存在)→ 人读错误(绝无凭据明文);连接/认证失败 → ErrUnreachable / ErrAuth。
+	Download(ctx context.Context, serverID, remotePath string, w io.Writer) (int64, error)
 	// ExecWithStdin 同 Exec,但把 stdin 接到远端命令的标准输入(供 `sudo -S` 从 stdin 读密码等
 	// 场景;stdin 读尽即关闭远端 stdin)。cmd 同样 array 化、各参数 shell 转义(AC-SEC-02);
 	// stdin 内容(如密码)绝不进 argv/日志/错误体。凭据经 vault 即用即弃。
@@ -478,6 +492,9 @@ func (s *service) Create(ctx context.Context, in CreateInput) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := validateSharedBuild(in.SharedBuild && kind == KindStandard, in.Labels); err != nil {
+		return nil, err
+	}
 	port := normalizePort(in.Port)
 
 	id := uuid.NewString()
@@ -485,9 +502,9 @@ func (s *service) Create(ctx context.Context, in CreateInput) (*Server, error) {
 	nowStr := now.Format(time.RFC3339)
 
 	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO servers (id, name, host, port, user, credential_id, sudo_credential_id, jumps, labels, max_builds, priority, gpu, pool_id, kind, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		id, in.Name, in.Host, port, in.User, in.CredentialID, in.SudoCredentialID, marshalJumps(jumps), in.Labels, in.MaxBuilds, in.Priority, in.Gpu, poolID, kind, nowStr, nowStr,
+		`INSERT INTO servers (id, name, host, port, user, credential_id, sudo_credential_id, jumps, labels, max_builds, priority, gpu, shared_build, pool_id, kind, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		id, in.Name, in.Host, port, in.User, in.CredentialID, in.SudoCredentialID, marshalJumps(jumps), in.Labels, in.MaxBuilds, in.Priority, in.Gpu, in.SharedBuild, poolID, kind, nowStr, nowStr,
 	)
 	if err != nil {
 		if isForeignKeyErr(err) {
@@ -552,8 +569,9 @@ func (s *service) validatePlacement(ctx context.Context, poolID, kind string) (s
 }
 
 // SetPlacement 设置服务器的池与类别(系统管理入口,语义见 Service 接口注释)。
-// 置为 pve_node 时清空 labels 与 max_builds(退出构建机池);回退 standard 时保留现状
-// 字段(原 labels 已被清空,不再恢复——回退是罕见的管理动作,由管理员按需重配)。
+// 置为 pve_node 时清空 labels、max_builds 与 shared_build(退出构建机池,同时退出集群共享);
+// 回退 standard 时保留现状字段(原 labels 已被清空,不再恢复——回退是罕见的管理动作,由
+// 管理员按需重配)。
 func (s *service) SetPlacement(ctx context.Context, id, poolID, kind string) error {
 	poolID, kind, err := s.validatePlacement(ctx, poolID, kind)
 	if err != nil {
@@ -570,7 +588,7 @@ func (s *service) SetPlacement(ctx context.Context, id, poolID, kind string) err
 	nowStr := time.Now().UTC().Format(time.RFC3339)
 	if kind == KindPVENode {
 		_, err = s.db.ExecContext(ctx,
-			`UPDATE servers SET pool_id = ?, kind = ?, labels = '', max_builds = 0, updated_at = ? WHERE id = ?`,
+			`UPDATE servers SET pool_id = ?, kind = ?, labels = '', max_builds = 0, shared_build = 0, updated_at = ? WHERE id = ?`,
 			poolID, kind, nowStr, id)
 	} else {
 		_, err = s.db.ExecContext(ctx,
@@ -586,7 +604,7 @@ func (s *service) SetPlacement(ctx context.Context, id, poolID, kind string) err
 func (s *service) List(ctx context.Context) ([]*Server, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT s.id, s.name, s.host, s.port, s.user, s.credential_id, COALESCE(s.sudo_credential_id, ''),
-		        COALESCE(s.jumps, '[]'), COALESCE(s.labels, ''), COALESCE(s.max_builds, 0), COALESCE(s.priority, 0), COALESCE(s.gpu, 0),
+		        COALESCE(s.jumps, '[]'), COALESCE(s.labels, ''), COALESCE(s.max_builds, 0), COALESCE(s.priority, 0), COALESCE(s.gpu, 0), COALESCE(s.shared_build, 0),
 		        COALESCE(s.pool_id, 'default'), COALESCE(s.kind, 'standard'), COALESCE(p.name, ''),
 		        COALESCE(c.name, ''), COALESCE(sc.name, ''), s.created_at, s.updated_at
 		 FROM servers s
@@ -655,7 +673,7 @@ func (s *service) ListPools(ctx context.Context) ([]*ServerPool, error) {
 func (s *service) Get(ctx context.Context, id string) (*Server, error) {
 	row := s.db.QueryRowContext(ctx,
 		`SELECT s.id, s.name, s.host, s.port, s.user, s.credential_id, COALESCE(s.sudo_credential_id, ''),
-		        COALESCE(s.jumps, '[]'), COALESCE(s.labels, ''), COALESCE(s.max_builds, 0), COALESCE(s.priority, 0), COALESCE(s.gpu, 0),
+		        COALESCE(s.jumps, '[]'), COALESCE(s.labels, ''), COALESCE(s.max_builds, 0), COALESCE(s.priority, 0), COALESCE(s.gpu, 0), COALESCE(s.shared_build, 0),
 		        COALESCE(s.pool_id, 'default'), COALESCE(s.kind, 'standard'), COALESCE(p.name, ''),
 		        COALESCE(c.name, ''), COALESCE(sc.name, ''), s.created_at, s.updated_at
 		 FROM servers s
@@ -677,10 +695,10 @@ func (s *service) Get(ctx context.Context, id string) (*Server, error) {
 func (s *service) Update(ctx context.Context, id string, in UpdateInput) (*Server, error) {
 	// 先取当前行。
 	var name, host, user, credentialID, sudoCredentialID, labels, jumpsStr string
-	var port, maxBuilds, priority, gpuInt int
+	var port, maxBuilds, priority, gpuInt, sharedInt int
 	err := s.db.QueryRowContext(ctx,
-		`SELECT name, host, port, user, credential_id, COALESCE(sudo_credential_id,''), COALESCE(jumps,'[]'), COALESCE(labels,''), COALESCE(max_builds,0), COALESCE(priority,0), COALESCE(gpu,0) FROM servers WHERE id = ?`, id,
-	).Scan(&name, &host, &port, &user, &credentialID, &sudoCredentialID, &jumpsStr, &labels, &maxBuilds, &priority, &gpuInt)
+		`SELECT name, host, port, user, credential_id, COALESCE(sudo_credential_id,''), COALESCE(jumps,'[]'), COALESCE(labels,''), COALESCE(max_builds,0), COALESCE(priority,0), COALESCE(gpu,0), COALESCE(shared_build,0) FROM servers WHERE id = ?`, id,
+	).Scan(&name, &host, &port, &user, &credentialID, &sudoCredentialID, &jumpsStr, &labels, &maxBuilds, &priority, &gpuInt, &sharedInt)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
@@ -688,6 +706,7 @@ func (s *service) Update(ctx context.Context, id string, in UpdateInput) (*Serve
 		return nil, fmt.Errorf("target: load: %w", err)
 	}
 	gpu := gpuInt != 0
+	shared := sharedInt != 0
 
 	if in.Name != nil {
 		if *in.Name == "" {
@@ -752,11 +771,18 @@ func (s *service) Update(ctx context.Context, id string, in UpdateInput) (*Serve
 	if in.Gpu != nil {
 		gpu = *in.Gpu
 	}
+	if in.SharedBuild != nil {
+		shared = *in.SharedBuild
+	}
+	// 共享前置在"最终态"上裁决:开着共享把标签清空 = 让对端无法选中,直接拒绝(先关共享)。
+	if err := validateSharedBuild(shared, labels); err != nil {
+		return nil, err
+	}
 
 	nowStr := time.Now().UTC().Format(time.RFC3339)
 	_, err = s.db.ExecContext(ctx,
-		`UPDATE servers SET name = ?, host = ?, port = ?, user = ?, credential_id = ?, sudo_credential_id = ?, jumps = ?, labels = ?, max_builds = ?, priority = ?, gpu = ?, updated_at = ? WHERE id = ?`,
-		name, host, port, user, credentialID, sudoCredentialID, marshalJumps(jumps), labels, maxBuilds, priority, gpu, nowStr, id,
+		`UPDATE servers SET name = ?, host = ?, port = ?, user = ?, credential_id = ?, sudo_credential_id = ?, jumps = ?, labels = ?, max_builds = ?, priority = ?, gpu = ?, shared_build = ?, updated_at = ? WHERE id = ?`,
+		name, host, port, user, credentialID, sudoCredentialID, marshalJumps(jumps), labels, maxBuilds, priority, gpu, shared, nowStr, id,
 	)
 	if err != nil {
 		if isForeignKeyErr(err) {
@@ -896,6 +922,50 @@ func (s *service) Upload(ctx context.Context, serverID string, content io.Reader
 		return fmt.Errorf("target: upload 失败(退出码 %d):%s", res.ExitCode, strings.TrimSpace(res.Stderr))
 	}
 	return nil
+}
+
+// Download 把目标机 remotePath 文件的字节流式读回并写入 w(语义见接口注释)。
+// 经 SSH 跑 `cat <remotePath>`(RunStream,stdout 流直灌 w);读尽后从流实现收割远端退出
+// 状态(fake dialer 的流不实现 waitErr 接口时跳过校验,便于测试)。凭据明文用完即清。
+func (s *service) Download(ctx context.Context, serverID, remotePath string, w io.Writer) (int64, error) {
+	if w == nil {
+		return 0, fmt.Errorf("target: nil writer")
+	}
+	if strings.TrimSpace(remotePath) == "" {
+		return 0, fmt.Errorf("target: empty remote path")
+	}
+	srv, err := s.Get(ctx, serverID)
+	if err != nil {
+		return 0, err
+	}
+	if s.vault == nil {
+		return 0, ErrVaultUnconfigured
+	}
+	cfg, err := s.resolveSSHConfig(srv)
+	if err != nil {
+		return 0, err
+	}
+
+	cmd := []string{"cat", remotePath}
+	addr := fmt.Sprintf("%s:%d", srv.Host, srv.Port)
+	rc, runErr := s.dialer.RunStream(ctx, addr, cfg, cmd)
+
+	wipeSSHConfig(&cfg)
+
+	if runErr != nil {
+		return 0, runErr
+	}
+	defer func() { _ = rc.Close() }()
+	n, cpErr := io.Copy(w, rc)
+	if cpErr != nil {
+		return n, cpErr
+	}
+	if waiter, ok := rc.(interface{ WaitErr() error }); ok {
+		if werr := waiter.WaitErr(); werr != nil {
+			return n, fmt.Errorf("target: download 失败:%v", werr)
+		}
+	}
+	return n, nil
 }
 
 // DockerLogin 在目标机上执行 `docker login [<registry>]`(见接口注释):凭据明文经 vault 即取即用,
@@ -1124,10 +1194,10 @@ type scanner interface {
 func scanServer(sc scanner) (*Server, error) {
 	var srv Server
 	var jumpsStr, createdStr, updatedStr string
-	var gpuInt int
+	var gpuInt, sharedInt int
 	if err := sc.Scan(
 		&srv.ID, &srv.Name, &srv.Host, &srv.Port, &srv.User, &srv.CredentialID, &srv.SudoCredentialID,
-		&jumpsStr, &srv.Labels, &srv.MaxBuilds, &srv.Priority, &gpuInt,
+		&jumpsStr, &srv.Labels, &srv.MaxBuilds, &srv.Priority, &gpuInt, &sharedInt,
 		&srv.PoolID, &srv.Kind, &srv.PoolName,
 		&srv.CredentialName, &srv.SudoCredentialName, &createdStr, &updatedStr,
 	); err != nil {
@@ -1135,6 +1205,7 @@ func scanServer(sc scanner) (*Server, error) {
 	}
 	srv.Jumps = parseJumps(jumpsStr)
 	srv.Gpu = gpuInt != 0
+	srv.SharedBuild = sharedInt != 0
 	created, err := time.Parse(time.RFC3339, createdStr)
 	if err != nil {
 		return nil, fmt.Errorf("target: parse created_at: %w", err)
@@ -1150,3 +1221,15 @@ func scanServer(sc scanner) (*Server, error) {
 
 // isForeignKeyErr 判断错误是否为外键约束失败(modernc sqlite 文本含 FOREIGN KEY)。
 func isForeignKeyErr(err error) bool { return store.IsForeignKeyErr(err) }
+
+// ErrSharedNeedsLabels 表示开启集群共享构建时未打构建机标签(对端无法用标签选中该机,
+// 共享无意义 → 配置错误显式失败)。
+var ErrSharedNeedsLabels = errors.New("target: shared build machine requires labels")
+
+// validateSharedBuild 校验集群共享标记的前置:开启共享必须已打构建机标签。
+func validateSharedBuild(shared bool, labels string) error {
+	if shared && strings.TrimSpace(labels) == "" {
+		return ErrSharedNeedsLabels
+	}
+	return nil
+}

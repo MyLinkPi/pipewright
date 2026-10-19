@@ -99,5 +99,10 @@ export default {
   fieldGpu: 'Máquina con GPU',
   fieldGpuCheckbox: 'Esta máquina tiene GPU (monitorización de tarjeta)',
   gpuHint: 'Al marcarlo, el resumen de estado ejecuta además nvtop -s para recopilar por tarjeta el uso / VRAM / temperatura / consumo (requiere nvtop en el destino). Solo monitorización: no afecta a la planificación de build ni de despliegue.',
-  gpuBadge: 'GPU',
+  gpuBadge: 'GPU',  fieldSharedBuild: 'Máquina de compilación compartida en clúster',
+  fieldSharedBuildCheckbox: 'Compartir esta máquina para compilaciones en el clúster',
+  sharedBuildHint: 'Al activarlo, los entornos remotos con la autorización de compilación compartida pueden enviar trabajos de compilación a esta máquina mediante un selector peer:<entorno>. Los trabajos entran en la misma cola FIFO que los locales; las credenciales SSH nunca salen de este entorno y los espacios de trabajo/artefactos de los pares solo transitan por archivos temporales (nunca el almacén local). Requiere etiquetas de compilación; la compilación/despliegue local no cambia.',
+  sharedBuildBadge: 'Compartida en clúster',
+  errSharedNeedsLabels: 'Activa etiquetas de compilación antes de compartir la máquina (los pares seleccionan por etiqueta)',
+
 }

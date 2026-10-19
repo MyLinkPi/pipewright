@@ -50,6 +50,10 @@ type serverDTO struct {
 	Priority  int             `json:"priority"`
 	// Gpu 标记该机带显卡:开启后多机状态总览额外经 `nvtop -s` 采集显卡指标(纯监控开关)。
 	Gpu bool `json:"gpu"`
+	// SharedBuild 标记该机为集群级共享构建机(0086):集群中经 build ACL 授权的对端环境
+	// 可用 `peer:<本端名>` 选择器把构建任务派到该机(与本端任务同一 FIFO 排队;本端构建/
+	// 部署不变,对端只能构建)。要求 labels 非空。
+	SharedBuild bool `json:"sharedBuild"`
 	// PoolID/PoolName/Kind 是系统管理放置字段(0084 服务器池;kind=pve_node 的机器
 	// 不允许作为构建/部署/应用部署目标,前端目标选择器按 kind 过滤)。
 	PoolID    string `json:"poolId"`
@@ -85,6 +89,7 @@ func toServerDTO(s *target.Server) serverDTO {
 		MaxBuilds:          s.MaxBuilds,
 		Priority:           s.Priority,
 		Gpu:                s.Gpu,
+		SharedBuild:        s.SharedBuild,
 		PoolID:             s.PoolID,
 		PoolName:           s.PoolName,
 		Kind:               s.Kind,
@@ -146,6 +151,8 @@ func writeServerError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadRequest, "invalid_server", "端口必须在 1..65535 之间")
 	case errors.Is(err, target.ErrInvalidJump):
 		writeError(w, http.StatusBadRequest, "invalid_server", "跳板配置无效:每跳需主机、用户与 SSH 凭据,端口 1..65535,最多 5 跳")
+	case errors.Is(err, target.ErrSharedNeedsLabels):
+		writeError(w, http.StatusBadRequest, "invalid_server", "开启集群共享构建机前需先打构建机标签(对端环境靠标签选中该机)")
 	default:
 		// 内部错误:不泄漏细节。
 		writeError(w, http.StatusInternalServerError, "internal", "服务器内部错误")
@@ -226,6 +233,7 @@ func makeCreateServerHandler(svc target.Service, pves pveadmin.Service) http.Han
 			MaxBuilds        int               `json:"maxBuilds"`
 			Priority         int               `json:"priority"`
 			Gpu              bool              `json:"gpu"`
+			SharedBuild      bool              `json:"sharedBuild"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, "bad_request", "请求体格式错误")
@@ -247,6 +255,7 @@ func makeCreateServerHandler(svc target.Service, pves pveadmin.Service) http.Han
 			MaxBuilds:        req.MaxBuilds,
 			Priority:         req.Priority,
 			Gpu:              req.Gpu,
+			SharedBuild:      req.SharedBuild,
 		})
 		if err != nil {
 			writeServerError(w, err)
@@ -296,6 +305,7 @@ func makeUpdateServerHandler(svc target.Service) http.HandlerFunc {
 			MaxBuilds        *int               `json:"maxBuilds"`
 			Priority         *int               `json:"priority"`
 			Gpu              *bool              `json:"gpu"`
+			SharedBuild      *bool              `json:"sharedBuild"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, "bad_request", "请求体格式错误")
@@ -337,6 +347,7 @@ func makeUpdateServerHandler(svc target.Service) http.HandlerFunc {
 			MaxBuilds:        req.MaxBuilds,
 			Priority:         req.Priority,
 			Gpu:              req.Gpu,
+			SharedBuild:      req.SharedBuild,
 		})
 		if err != nil {
 			writeServerError(w, err)

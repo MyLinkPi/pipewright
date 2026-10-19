@@ -27,7 +27,7 @@ function serverFixture(labels: string): Server {
     kind: 'standard',
     maxBuilds: 0,
     priority: 0,
-    gpu: false,
+    gpu: false, sharedBuild: false,
     createdAt: '2026-01-01T00:00:00Z',
     updatedAt: '2026-01-01T00:00:00Z',
   }

@@ -87,6 +87,9 @@ func (f *fakeSRTarget) Upload(ctx context.Context, _ string, content io.Reader, 
 	f.uploadBodies = append(f.uploadBodies, buf.String())
 	return nil
 }
+func (f *fakeSRTarget) Download(ctx context.Context, _ string, _ string, w io.Writer) (int64, error) {
+	return 0, nil
+}
 func (f *fakeSRTarget) List(context.Context) ([]*target.Server, error) { return nil, nil }
 func (f *fakeSRTarget) Create(context.Context, target.CreateInput) (*target.Server, error) {
 	return nil, nil

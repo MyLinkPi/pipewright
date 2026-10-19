@@ -99,5 +99,10 @@ export default {
   fieldGpu: 'Machine GPU',
   fieldGpuCheckbox: 'Cette machine possède un GPU (surveillance des cartes)',
   gpuHint: 'Une fois coché, la vue d’état exécute en plus nvtop -s pour collecter par carte l’utilisation / la VRAM / la température / la consommation (nvtop requis sur la cible). Surveillance uniquement : sans effet sur l’ordonnancement de build ou de déploiement.',
-  gpuBadge: 'GPU',
+  gpuBadge: 'GPU',  fieldSharedBuild: 'Machine de build partagée en cluster',
+  fieldSharedBuildCheckbox: 'Partager cette machine pour les builds du cluster',
+  sharedBuildHint: 'Une fois activé, les environnements pairs autorisés peuvent envoyer des tâches de build sur cette machine via un sélecteur peer:<env>. Les tâches entrent dans la même file FIFO que les locales ; les identifiants SSH ne quittent jamais cet environnement et les espaces de travail/artefacts des pairs ne transitent que par des fichiers temporaires (jamais le dépôt local). Requiert des labels de build ; le build/déploiement local est inchangé.',
+  sharedBuildBadge: 'Partagée cluster',
+  errSharedNeedsLabels: 'Définissez des labels de build avant d’activer le partage (les pairs sélectionnent par label)',
+
 }

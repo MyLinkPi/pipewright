@@ -99,5 +99,10 @@ export default {
   fieldGpu: 'GPU machine',
   fieldGpuCheckbox: 'This machine has a GPU (card monitoring)',
   gpuHint: 'When checked, the status overview additionally runs nvtop -s to collect per-card utilization / VRAM / temperature / power (requires nvtop on the target). Monitoring only — it does not affect build or deploy scheduling.',
-  gpuBadge: 'GPU',
+  gpuBadge: 'GPU',  fieldSharedBuild: 'Cluster-shared build machine',
+  fieldSharedBuildCheckbox: 'Share this machine for builds across the cluster',
+  sharedBuildHint: 'When on, peer environments granted the shared-build ACL may dispatch build jobs onto this machine via a peer:<env> selector. Jobs queue in the local build pool’s FIFO alongside local ones; SSH credentials never leave this environment, and peer workspaces/artifacts only transit temp files (never the local artifact store). Requires build labels first; local build/deploy is unaffected.',
+  sharedBuildBadge: 'Cluster-shared',
+  errSharedNeedsLabels: 'Enable build labels before turning on cluster-shared build (peers select machines by label)',
+
 }

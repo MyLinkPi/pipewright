@@ -493,6 +493,9 @@ func (f *fakeTarget) Upload(_ context.Context, serverID string, content io.Reade
 
 func (f *fakeTarget) Get(context.Context, string) (*target.Server, error) { return nil, nil }
 func (f *fakeTarget) List(context.Context) ([]*target.Server, error)      { return nil, nil }
+func (f *fakeTarget) Download(context.Context, string, string, io.Writer) (int64, error) {
+	return 0, nil
+}
 func (f *fakeTarget) Create(context.Context, target.CreateInput) (*target.Server, error) {
 	return nil, nil
 }

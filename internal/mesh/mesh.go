@@ -111,7 +111,7 @@ type Peer struct {
 	UpdatedAt string `json:"updatedAt"`
 }
 
-// ACL 是四张默认全拒绝的授权单(JSON 节点 id 数组)。
+// ACL 是五张默认全拒绝的授权单(JSON 节点 id 数组)。
 type ACL struct {
 	// VisibleTo 允许查询我的服务器指标、项目列表/详情、运行状态(集群页展开数据)。
 	VisibleTo []string `json:"visibleTo"`
@@ -122,6 +122,9 @@ type ACL struct {
 	// ForwardAllowed 允许查询我的服务目录并转发我的服务(跨环境服务转发;
 	// 网关 IP 清单随目录下发,对端网关机据此配 /32 路由)。
 	ForwardAllowed []string `json:"forwardAllowed"`
+	// BuildAllowed 允许查询我的共享构建机目录并向我的集群共享构建机提交构建任务
+	// (任务进入我的构建机调度器 FIFO,与本端任务统一排队;SSH 凭据仍只由本端使用)。
+	BuildAllowed []string `json:"buildAllowed"`
 }
 
 // Service 定义集群领域对外接口。
@@ -145,15 +148,17 @@ type Service interface {
 	// ApplyHello 应用一次发现探测结果(TOFU:首次登记公钥;已登记且不一致 → ErrKeyMismatch)。
 	ApplyHello(ctx context.Context, virtualIP string, hello HelloInfo) error
 
-	// ACL 返回四张授权单(无行时返回全空单,不报错)。
+	// ACL 返回五张授权单(无行时返回全空单,不报错)。
 	ACL(ctx context.Context) (*ACL, error)
 	// SaveACL 保存授权单(整单覆盖)。
 	SaveACL(ctx context.Context, in ACL) error
-	// AllowsVisible / AllowsPush / AllowsTrigger / AllowsForward 判定某节点是否过对应授权(默认拒绝)。
+	// AllowsVisible / AllowsPush / AllowsTrigger / AllowsForward / AllowsBuild 判定某节点
+	// 是否过对应授权(默认拒绝)。
 	AllowsVisible(ctx context.Context, nodeID string) bool
 	AllowsPush(ctx context.Context, nodeID string) bool
 	AllowsTrigger(ctx context.Context, nodeID string) bool
 	AllowsForward(ctx context.Context, nodeID string) bool
+	AllowsBuild(ctx context.Context, nodeID string) bool
 }
 
 // HelloInfo 是 /api/mesh/hello 的响应载荷(发现握手)。
@@ -527,9 +532,9 @@ func scanPeer(scan func(dest ...any) error) (*Peer, error) {
 // ---- 授权单(默认全拒绝) ----
 
 func (s *service) ACL(ctx context.Context) (*ACL, error) {
-	var vis, push, trig, fwd string
+	var vis, push, trig, fwd, build string
 	err := s.db.QueryRowContext(ctx,
-		`SELECT visible_to, push_allowed, trigger_allowed, forward_allowed FROM mesh_acl WHERE id = 1`).Scan(&vis, &push, &trig, &fwd)
+		`SELECT visible_to, push_allowed, trigger_allowed, forward_allowed, build_allowed FROM mesh_acl WHERE id = 1`).Scan(&vis, &push, &trig, &fwd, &build)
 	if errors.Is(err, sql.ErrNoRows) {
 		return &ACL{}, nil // 无行 = 全空单(默认全拒绝)
 	}
@@ -541,6 +546,7 @@ func (s *service) ACL(ctx context.Context) (*ACL, error) {
 	_ = jsonUnmarshalList(push, &out.PushAllowed)
 	_ = jsonUnmarshalList(trig, &out.TriggerAllowed)
 	_ = jsonUnmarshalList(fwd, &out.ForwardAllowed)
+	_ = jsonUnmarshalList(build, &out.BuildAllowed)
 	return out, nil
 }
 
@@ -561,18 +567,23 @@ func (s *service) SaveACL(ctx context.Context, in ACL) error {
 	if err != nil {
 		return fmt.Errorf("mesh: marshal forward_allowed: %w", err)
 	}
+	build, err := jsonMarshalList(normalizeIDList(in.BuildAllowed))
+	if err != nil {
+		return fmt.Errorf("mesh: marshal build_allowed: %w", err)
+	}
 	nowStr := time.Now().UTC().Format(time.RFC3339)
 	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO mesh_acl (id, visible_to, push_allowed, trigger_allowed, forward_allowed, updated_at)
-		 VALUES (1, ?, ?, ?, ?, ?)
+		`INSERT INTO mesh_acl (id, visible_to, push_allowed, trigger_allowed, forward_allowed, build_allowed, updated_at)
+		 VALUES (1, ?, ?, ?, ?, ?, ?)
 		 `+store.UpsertAssignSuffix(s.dialect, []string{"id"}, []string{
 			"visible_to = " + store.Excluded(s.dialect, "visible_to"),
 			"push_allowed = " + store.Excluded(s.dialect, "push_allowed"),
 			"trigger_allowed = " + store.Excluded(s.dialect, "trigger_allowed"),
 			"forward_allowed = " + store.Excluded(s.dialect, "forward_allowed"),
+			"build_allowed = " + store.Excluded(s.dialect, "build_allowed"),
 			"updated_at = " + store.Excluded(s.dialect, "updated_at"),
 		}),
-		vis, push, trig, fwd, nowStr,
+		vis, push, trig, fwd, build, nowStr,
 	)
 	if err != nil {
 		return fmt.Errorf("mesh: save acl: %w", err)
@@ -594,6 +605,10 @@ func (s *service) AllowsTrigger(ctx context.Context, nodeID string) bool {
 
 func (s *service) AllowsForward(ctx context.Context, nodeID string) bool {
 	return s.aclHas(ctx, "forward_allowed", nodeID)
+}
+
+func (s *service) AllowsBuild(ctx context.Context, nodeID string) bool {
+	return s.aclHas(ctx, "build_allowed", nodeID)
 }
 
 // aclHas 判定授权单(单列 JSON 数组)是否包含 node_id。查询失败按拒绝(保守)。

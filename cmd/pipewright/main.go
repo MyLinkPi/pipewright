@@ -476,7 +476,13 @@ func main() {
 	meshImages := &build.ImageTransfer{Binary: meshImageBinary, BuiltinRegistry: registryHubSvc.ResolveBuiltin}
 	meshReceiver := mesh.NewReceiver(projectSvc, artStore, meshImages, pushedStore)
 	var meshOpts []build.BuilderOption
-	meshOpts = append(meshOpts, build.WithMeshStage(meshSvc, meshClient, meshImages), build.WithPushedSource(pushedStore))
+	meshOpts = append(meshOpts, build.WithMeshStage(meshSvc, meshClient, meshImages), build.WithPushedSource(pushedStore),
+		// 集群共享构建发起网关(0086):含 peer: 选择器的构建节点经 mesh 派发到对端共享机。
+		build.WithSharedBuildGateway(meshSvc, meshClient))
+
+	// sharedBuildSrv 是集群共享构建的提供方运行时(DAG 构建器就绪后装配;legacy 运行器路径
+	// 不构造 → 对端提交共享构建时本端 mesh 端点缺席,按目录不可达降级)。
+	var sharedBuildSrv *build.SharedBuildServer
 
 	// 对象存储集成层(流水线 OSS 上传节点配套):本期仅阿里云 OSS(AccessKeySecret 走 vault)。
 	// 提前到 dag 装配前构造,供 oss_upload 流水线节点注入;同时供设置页 /api/object-stores 消费。
@@ -533,6 +539,30 @@ func main() {
 			b, berr = build.NewBuilder(projectSvc, pipelineSettingsSvc, credVault, append(builderOpts, build.WithRemoteOnlyDriver())...)
 		}
 		if berr == nil {
+			// 集群共享构建提供方运行时(0086):对端提交的共享构建任务进入本端构建机调度器
+			// 同一 FIFO(排队权威在本端);工作区/产物只经 OS 临时文件中转,不进本端制品库。
+			// 审计:受理/终态各留一条(接收端留痕,actor=mesh:<对端名>,同 run_trigger_mesh 先例)。
+			sharedBuildSrv = build.NewSharedBuildServer(b, runnerSched, targetSvc, targetSvc)
+			sharedBuildSrv.OnEvent = func(action string, st mesh.SharedJobStatus) {
+				actor := "mesh:peer"
+				if st.Peer != "" {
+					actor = "mesh:" + st.Peer
+				}
+				detail := map[string]any{"jobId": st.JobID, "peerRun": st.RunID, "state": st.State}
+				if st.ServerName != "" {
+					detail["machine"] = st.ServerName
+				}
+				if st.Error != "" {
+					detail["error"] = st.Error
+				}
+				_ = auditRec.Record(context.Background(), audit.Entry{
+					Actor:      actor,
+					Action:     "shared_build_" + action,
+					TargetType: audit.TargetServer,
+					TargetID:   st.ServerID,
+					Detail:     detail,
+				})
+			}
 			// runSvc 作测试报告持久层注入(Story 8-6 / FR-8-6):script 步骤产报告 → 解析 →
 			// 落库 → 质量门禁裁决(不过则阶段失败,阻断下游部署)。
 			dagOpts = append(dagOpts, dagrun.WithStageExecutor(build.NewStageExecutorWithRunner(b, runSvc, runnerPool{cfg: runnerSvc, sched: runnerSched}, targetSvc)))
@@ -722,7 +752,7 @@ func main() {
 	meshRT.SetProxyNetworks(serviceRegSvc.GatewayProxyNetworks)
 	meshRT.SetAfterDiscover(serviceRegSvc.ReconcileForwardRoutes)
 	meshAdminDeps := httpapi.NewMeshDeps(meshSvc, meshReceiver, meshClient, projectSvc, runSvc, pool, parameterSvc, targetSvc, pipelineSvc, auditRec, pushedStore, meshAdvertisePort).
-		WithRuntime(meshRT).WithServiceCatalog(serviceRegSvc)
+		WithRuntime(meshRT).WithServiceCatalog(serviceRegSvc).WithSharedBuild(sharedBuildSrv)
 
 	// 装配并启动定时(cron)调度器(Story 8-6):分钟粒度扫描启用的项目 cron,到点经 run.Service
 	// 创建「定时」触发的运行(入 pool 调度)。同一项目同一分钟去重;表达式非法的项目跳过。

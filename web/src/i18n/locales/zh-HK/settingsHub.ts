@@ -14,7 +14,8 @@ export default {
   navHttps: 'HTTPS 存取',
   navAccount: '帳戶',
   navServers: '伺服器',
-  navMesh: '集群',
+  navMesh: '集群',  navSharedBuild: '共享構建機',
+
   navRegistry: '鏡像倉庫',
   navDiagnosisStats: '診斷回饋',
   navSystem: '系統',

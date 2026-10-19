@@ -680,14 +680,30 @@ func validateSelectorSyntax(s string) error {
 	// 项数口径与 runner.ParseSelector 一致:按去重后计数。此前按原始 split 项数计,
 	// 「17 个重复项」在保存侧 422、runner 侧却合法,两处裁决不一致。
 	seen := make(map[string]struct{}, len(terms))
+	peerSeen := false
 	for _, t := range terms {
 		t = strings.TrimSpace(t)
-		if k, v, isKV := strings.Cut(t, "="); isKV {
-			if !selectorTermOK(k) || !selectorTermOK(v) {
+		switch {
+		case strings.HasPrefix(t, "peer:"):
+			// 集群共享构建机限定项(0086;≤1 个,名段非空/无空白/≤64,与 runner 侧一致)。
+			name := strings.TrimPrefix(t, "peer:")
+			if name == "" || len(name) > 64 || strings.ContainsAny(name, " \t\r\n") || peerSeen {
 				return errSelectorTerm
 			}
-		} else if !selectorTermOK(t) {
-			return errSelectorTerm
+			peerSeen = true
+		case strings.HasPrefix(t, "server:"):
+			// 组合形式里的钉死项(`peer:prod,server:<id>`);纯钉死形式已在函数开头放行。
+			if !selectorTermOK(strings.TrimPrefix(t, "server:")) {
+				return errSelectorTerm
+			}
+		default:
+			if k, v, isKV := strings.Cut(t, "="); isKV {
+				if !selectorTermOK(k) || !selectorTermOK(v) {
+					return errSelectorTerm
+				}
+			} else if !selectorTermOK(t) {
+				return errSelectorTerm
+			}
 		}
 		if _, dup := seen[t]; !dup {
 			seen[t] = struct{}{}

@@ -96,6 +96,10 @@ func (s *stubTarget) Upload(_ context.Context, _ string, content io.Reader, remo
 	return nil
 }
 
+func (s *stubTarget) Download(_ context.Context, _ string, _ string, _ io.Writer) (int64, error) {
+	return 0, nil
+}
+
 // ---- 测试脚手架 -------------------------------------------------------------
 
 func testDB(t *testing.T) *sql.DB {

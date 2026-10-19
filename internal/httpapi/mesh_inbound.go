@@ -54,6 +54,9 @@ type meshDeps struct {
 	// catalogSrc 提供本端服务目录(跨环境转发;/api/mesh/servicereg/catalog 的数据源;
 	// servicereg.Service 满足;nil = 端点 503 降级)。装配层经 WithServiceCatalog 注入。
 	catalogSrc meshCatalogSource
+	// shared 是集群级共享构建机运行时(build.SharedBuildServer;/api/mesh/build/* 的数据源;
+	// nil = 端点整体缺席)。装配层经 WithSharedBuild 注入。
+	shared sharedBuildRuntime
 	// advertisePort 是广播给对端的 HTTP 端口(0 = 跟随服务监听口,装配层已解析)。
 	advertisePort int
 }
@@ -168,6 +171,8 @@ func mountMeshInbound(r chi.Router, d meshDeps) {
 	r.Post("/api/mesh/push", push(makeMeshPushHandler(d)))
 	// 跨环境转发:本端服务目录(对端渲染 forward 服务 + 规划 /32 路由的数据源)。
 	r.Get("/api/mesh/servicereg/catalog", forward(makeMeshServiceCatalogHandler(d)))
+	// 集群级共享构建机(0086):目录/任务受理/跟踪/回拉/取消(运行时缺席则端点不挂)。
+	mountMeshSharedBuildInbound(r, d)
 }
 
 // makeMeshServiceCatalogHandler 返回本端服务目录(网关主机 + 可转发服务;授权对端拉取)。

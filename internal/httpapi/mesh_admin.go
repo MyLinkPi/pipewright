@@ -80,6 +80,13 @@ func (d meshAdminDeps) WithServiceCatalog(src meshCatalogSource) meshAdminDeps {
 	return d
 }
 
+// WithSharedBuild 注入集群级共享构建机运行时(0086;/api/mesh/build/* 入站端点与
+// /api/build/shared/* 管理端点的数据源;build.SharedBuildServer 满足接口。nil → 端点缺席)。
+func (d meshAdminDeps) WithSharedBuild(rt sharedBuildRuntime) meshAdminDeps {
+	d.shared = rt
+	return d
+}
+
 // mountMeshAdmin 把管理面端点挂进受保护 /api 组(路径前缀 /mesh;admin 组内)。
 func mountMeshAdmin(ar chi.Router, d meshAdminDeps) {
 	ar.Get("/mesh/settings", makeMeshSettingsGetHandler(d.mesh))

@@ -38,6 +38,9 @@ var (
 	ErrNoRunnerMatch = errors.New("runner: no server matches selector")
 	// ErrNoRunnerAvailable 表示有命中但全部健康探测不可达(或钉死的机器已不存在)。
 	ErrNoRunnerAvailable = errors.New("runner: matched servers all unreachable")
+	// ErrServerNotShared 表示钉死的机器未开启集群共享构建(AcquireShared 专用):配置错误
+	// 须显式暴露,不与「零命中」混淆(对端发起方据此得到明确的失败原因)。
+	ErrServerNotShared = errors.New("runner: pinned server is not cluster-shared")
 )
 
 // 健康探测缓存 TTL:可达的结果信任更久,不可达的快速重试。
@@ -87,6 +90,7 @@ type candidate struct {
 	maxBuilds int
 	priority  int
 	kind      string
+	shared    bool // 集群共享构建标记(0086;AcquireShared 候选过滤用)
 }
 
 // displayName 返回机器的人读显示名:优先「name(host)」,host 空 → name,name 也空 → id 兜底
@@ -123,6 +127,18 @@ func NewScheduler(db *sql.DB, prober HealthProber, defaultSlots int) *Scheduler 
 // release 必须被调用(派发侧 defer)以归还槽位并唤醒等待者;幂等安全。
 // log 可为 nil;用于把"等待槽位/选中哪台"写进阶段日志(可见性)。
 func (s *Scheduler) Acquire(ctx context.Context, pipelineID, selector string, log func(string)) (string, string, func(), error) {
+	return s.acquire(ctx, pipelineID, selector, log, false)
+}
+
+// AcquireShared 与 Acquire 同语义,但候选集只含**开启集群共享构建标记**的机器(0086):
+// 供跨环境共享构建任务排队取机 —— 与本端任务共用同一 FIFO/槽位,天然互斥排队;
+// 标签圈选静默排除未共享机器(与 PVE 过滤同口径);钉死未共享的机器 → ErrServerNotShared
+// (对端把 server:<id> 配到了别人的非共享机上,配置错误须显式失败)。
+func (s *Scheduler) AcquireShared(ctx context.Context, pipelineID, selector string, log func(string)) (string, string, func(), error) {
+	return s.acquire(ctx, pipelineID, selector, log, true)
+}
+
+func (s *Scheduler) acquire(ctx context.Context, pipelineID, selector string, log func(string), sharedOnly bool) (string, string, func(), error) {
 	selector = strings.TrimSpace(selector)
 	if selector == "" {
 		return "", "", nil, ErrInvalidSelector // 空=本地,派发侧负责短路,不该走到这
@@ -138,7 +154,7 @@ func (s *Scheduler) Acquire(ctx context.Context, pipelineID, selector string, lo
 
 	for attempt := 0; ; attempt++ {
 		woken := attempt > 0 // 被唤醒后的重试:已消费一笔唤醒,提前失败须转发(见 forwardWake)
-		cands, err := s.candidates(ctx, pinned, isPinned, terms)
+		cands, err := s.candidates(ctx, pinned, isPinned, terms, sharedOnly)
 		if err != nil {
 			s.forwardWake(woken)
 			return "", "", nil, err
@@ -201,9 +217,9 @@ func (s *Scheduler) Acquire(ctx context.Context, pipelineID, selector string, lo
 }
 
 // candidates 查库取候选集:钉死形式按 id 取一台(不存在 → ErrNoRunnerMatch 语义由空集表达);
-// 标签形式全表扫描后 AND 匹配。
-func (s *Scheduler) candidates(ctx context.Context, pinned string, isPinned bool, terms []string) ([]candidate, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, COALESCE(name,''), COALESCE(host,''), COALESCE(labels,''), COALESCE(max_builds,0), COALESCE(priority,0), COALESCE(kind,'standard') FROM servers`)
+// 标签形式全表扫描后 AND 匹配。sharedOnly(AcquireShared)时只保留开启集群共享标记的机器。
+func (s *Scheduler) candidates(ctx context.Context, pinned string, isPinned bool, terms []string, sharedOnly bool) ([]candidate, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id, COALESCE(name,''), COALESCE(host,''), COALESCE(labels,''), COALESCE(max_builds,0), COALESCE(priority,0), COALESCE(kind,'standard'), COALESCE(shared_build,0) FROM servers`)
 	if err != nil {
 		return nil, err
 	}
@@ -211,15 +227,25 @@ func (s *Scheduler) candidates(ctx context.Context, pinned string, isPinned bool
 	var out []candidate
 	for rows.Next() {
 		var c candidate
-		if err := rows.Scan(&c.id, &c.name, &c.host, &c.labels, &c.maxBuilds, &c.priority, &c.kind); err != nil {
+		var shared int
+		if err := rows.Scan(&c.id, &c.name, &c.host, &c.labels, &c.maxBuilds, &c.priority, &c.kind, &shared); err != nil {
 			return nil, err
 		}
+		c.shared = shared != 0
 		// PVE 集群物理机不参与构建机池(0084):钉死指向 pve_node → 显式报错(配置错误须
 		// 暴露,不与「零命中」混淆);标签圈选 → 静默不作为候选(SetPlacement 已清 labels,
 		// 此处是双保险)。
 		if c.kind == target.KindPVENode {
 			if isPinned && c.id == pinned {
 				return nil, fmt.Errorf("%w: %s", target.ErrPVENotTarget, c.displayName())
+			}
+			continue
+		}
+		// 共享构建取机(0086):未开共享标记的机器不进候选;钉死指向未共享机器 → 显式
+		// 报错(对端配置错误,零命中会让发起方误以为机器被删)。标签圈选静默排除。
+		if sharedOnly && !c.shared {
+			if isPinned && c.id == pinned {
+				return nil, fmt.Errorf("%w: %s", ErrServerNotShared, c.displayName())
 			}
 			continue
 		}

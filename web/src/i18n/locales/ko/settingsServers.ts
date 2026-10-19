@@ -99,5 +99,10 @@ export default {
   fieldGpu: 'GPU 머신',
   fieldGpuCheckbox: '이 머신에 GPU 있음(그래픽 모니터링)',
   gpuHint: '체크하면 멀티 머신 상태 개요가 nvtop -s를 추가 실행해 각 카드의 사용률/VRAM/온도/전력을 수집합니다(대상 머신에 nvtop 필요). 모니터링 전용이며 빌드/배포 스케줄링에는 영향을 주지 않습니다.',
-  gpuBadge: 'GPU',
+  gpuBadge: 'GPU',  fieldSharedBuild: '클러스터 공유 빌드 머신',
+  fieldSharedBuildCheckbox: '이 머신을 클러스터 빌드용으로 공유',
+  sharedBuildHint: '켜면 「클러스터」 페이지에서 승인된 상대 환경이 peer:<환경> 셀렉터로 이 머신에 빌드 작업을 보낼 수 있습니다. 작업은 로컬와 동일한 FIFO 대기열에 정렬되고, SSH 자격 증명은 이 환경을 떠나지 않으며, 상대의 소스/산출물은 임시 파일로만 중계되어 로컬 산출물 저장소에 들어가지 않습니다. 빌드 라벨이 먼저 필요합니다. 로컬 빌드/배포에는 영향이 없습니다.',
+  sharedBuildBadge: '클러스터 공유',
+  errSharedNeedsLabels: '클러스터 공유를 켜기 전에 빌드 라벨을 먼저 설정하세요(상대는 라벨로 선택합니다)',
+
 }

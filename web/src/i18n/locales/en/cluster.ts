@@ -69,7 +69,8 @@ export default {
     visibleTo: 'Visible (servers/projects/runs)',
     pushAllowed: 'Allow push of artifacts/images',
     triggerAllowed: 'Allow triggering workflows',
-    forwardAllowed: 'Allow forwarding my services',
+    forwardAllowed: 'Allow forwarding my services',    buildAllowed: 'Allow shared build jobs',
+
     noPeers: 'No known peers yet',
     saveAcl: 'Save permissions',
     peersTitle: 'Peer registry',

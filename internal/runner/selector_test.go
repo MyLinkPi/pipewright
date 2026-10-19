@@ -23,7 +23,14 @@ func TestParseSelector(t *testing.T) {
 		{"非法字符", "os=linux!", nil, ErrInvalidSelector},
 		{"k=v 缺值", "arch=", nil, ErrInvalidSelector},
 		{"项以-开头", "-gpu", nil, ErrInvalidSelector},
-		{"server: 钉死形式不归本函数(: 非法字符,由 PinnedServer 处理)", "server:abc", nil, ErrInvalidSelector},
+		// 0086:server: 项在组合形式里合法(`peer:prod,server:<id>` 钉死对端共享机);
+		// 纯钉死选择器仍由调用方先经 PinnedServer 拦截,不经本函数消费。
+		{"server: 钉死项(组合形式)", "peer:prod,server:abc", []string{"peer:prod", "server:abc"}, nil},
+		{"server: 项 id 非法", "server:ab!c", nil, ErrInvalidSelector},
+		{"peer: 项", "peer:prod,linux", []string{"peer:prod", "linux"}, nil},
+		{"peer: 缺名", "peer:", nil, ErrInvalidSelector},
+		{"peer: 名含空白", "peer:pro d", nil, ErrInvalidSelector},
+		{"双 peer: 项", "peer:a,peer:b", nil, ErrInvalidSelector},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -57,6 +64,44 @@ func TestParseSelectorLimits(t *testing.T) {
 	}
 	if _, err := ParseSelector(long); err == nil {
 		t.Fatal("超总长上限应报非法")
+	}
+
+}
+
+func TestSplitPeerSelector(t *testing.T) {
+	cases := []struct {
+		name    string
+		in      string
+		peer    string
+		rest    string
+		ok      bool
+		wantErr bool
+	}{
+		{"无 peer 项", "linux,gpu", "", "linux,gpu", false, false},
+		{"纯 peer 项", "peer:prod", "prod", "", true, false},
+		{"peer + 标签", "peer:prod, linux ,arch=arm64", "prod", "linux,arch=arm64", true, false},
+		{"peer + 钉死对端机", "peer:prod,server:abc123", "prod", "server:abc123", true, false},
+		{"nodeID 形式", "peer:0a1b2c3d-4e5f", "0a1b2c3d-4e5f", "", true, false},
+		{"本地构建", "", "", "", false, false},
+		{"非法选择器", "a,,b", "", "", false, true},
+		{"双 peer 项", "peer:a,peer:b", "", "", false, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			peer, rest, ok, err := SplitPeerSelector(tc.in)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("want error, got peer=%q rest=%q ok=%v", peer, rest, ok)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("err = %v", err)
+			}
+			if peer != tc.peer || rest != tc.rest || ok != tc.ok {
+				t.Fatalf("got (%q,%q,%v), want (%q,%q,%v)", peer, rest, ok, tc.peer, tc.rest, tc.ok)
+			}
+		})
 	}
 }
 

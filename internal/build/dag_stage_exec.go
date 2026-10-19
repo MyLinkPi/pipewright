@@ -1032,12 +1032,19 @@ func (b *Builder) runBuildImageJob(ctx context.Context, sink run.StepSink, rep d
 	if art == nil {
 		return nil
 	}
+	return b.pushImageArtifact(ctx, sink, rep, jb, stageName, proj, plan, art, localTag, commitTag)
+}
 
-	// 镜像产物推送,三态:
-	//   1) 被同阶段 push_image 节点引用且目标可解析(plan.Specs 非空)→ 只按这些节点声明的目标推送;
-	//   2) 被引用但目标全不可解析 → 不推送(push_image 节点运行期明确报错,不静默成功);
-	//   3) 未被引用 → 回退既有「环境绑定 registry / 内置 registry」自动推送(向后兼容)。
-	// 推送成功后把产物引用改写为远端 tag + digest(部署节点据此 pull)。
+// pushImageArtifact 对已构建出的产物执行镜像推送并登记(本地/远程/集群共享三条构建路径共用):
+// 镜像产物推送,三态:
+//  1. 被同阶段 push_image 节点引用且目标可解析(plan.Specs 非空)→ 只按这些节点声明的目标推送;
+//  2. 被引用但目标全不可解析 → 不推送(push_image 节点运行期明确报错,不静默成功);
+//  3. 未被引用 → 回退既有「环境绑定 registry / 内置 registry」自动推送(向后兼容)。
+//
+// 推送成功后把产物引用改写为远端 tag + digest(部署节点据此 pull);记来源节点(阶段 + job 名,
+// 供运行详情标注「哪个节点产的」)并 EmitArtifact。非镜像产物(理论不达:build_image 仅产
+// image)直接登记。
+func (b *Builder) pushImageArtifact(ctx context.Context, sink run.StepSink, rep dagrun.StageReporter, jb pipeline.Job, stageName string, proj *project.Project, plan imagePushPlan, art *run.Artifact, localTag, commitTag string) error {
 	if art.Type == run.ArtifactImage && localTag != "" {
 		switch {
 		case len(plan.Specs) > 0:

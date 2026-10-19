@@ -33,6 +33,8 @@ export interface MeshACL {
   pushAllowed: string[]
   triggerAllowed: string[]
   forwardAllowed: string[]
+  /** 0066 cluster-shared build machines: peers allowed to submit shared build jobs. */
+  buildAllowed: string[]
 }
 
 export interface MeshPeer {

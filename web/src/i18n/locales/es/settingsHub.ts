@@ -14,7 +14,8 @@ export default {
   navHttps: 'Acceso HTTPS',
   navAccount: 'Cuenta',
   navServers: 'Servidores',
-  navMesh: 'Clúster',
+  navMesh: 'Clúster',  navSharedBuild: 'Compilaciones compartidas',
+
   navRegistry: 'Registro',
   navDiagnosisStats: 'Comentarios de diagnóstico',
   navSystem: 'Sistema',

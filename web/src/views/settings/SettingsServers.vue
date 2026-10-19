@@ -121,6 +121,7 @@ const form = ref({
   maxBuilds: 0,
   priority: 0,
   gpu: false,
+  sharedBuild: false,
 })
 
 const formErrors = ref({
@@ -334,6 +335,7 @@ function openAddModal(): void {
     maxBuilds: 0,
     priority: 0,
     gpu: false,
+    sharedBuild: false,
   }
   clearFormErrors()
   formBanner.value = ''
@@ -356,6 +358,7 @@ function openEditModal(s: Server): void {
     maxBuilds: s.maxBuilds ?? 0,
     priority: s.priority ?? 0,
     gpu: s.gpu ?? false,
+    sharedBuild: s.sharedBuild ?? false,
   }
   clearFormErrors()
   formBanner.value = ''
@@ -444,6 +447,11 @@ function validateForm(): boolean {
     formErrors.value.priority = t('settingsServers.errPriorityRange')
     ok = false
   }
+  // 集群共享构建机前置(0086):对端靠标签选中该机,未打标签的共享无意义(后端同口径 400)。
+  if (form.value.sharedBuild && !form.value.labels.trim()) {
+    formErrors.value.labels = t('settingsServers.errSharedNeedsLabels')
+    ok = false
+  }
   return ok
 }
 
@@ -477,6 +485,7 @@ async function handleFormSubmit(): Promise<void> {
         maxBuilds: Number(form.value.maxBuilds) || 0,
         priority: Number(form.value.priority) || 0,
         gpu: form.value.gpu,
+        sharedBuild: form.value.sharedBuild,
       }
       const created = await createServer(payload)
       servers.value = [created, ...servers.value]
@@ -501,6 +510,7 @@ async function handleFormSubmit(): Promise<void> {
         maxBuilds: Number(form.value.maxBuilds) || 0,
         priority: Number(form.value.priority) || 0,
         gpu: form.value.gpu,
+        sharedBuild: form.value.sharedBuild,
       }
       const updated = await updateServer(editingId.value, payload)
       servers.value = servers.value.map((s) => (s.id === updated.id ? updated : s))
@@ -650,6 +660,7 @@ async function handleTest(s: Server): Promise<void> {
               <span v-if="s.jumps?.length" class="cred-tag cred-tag--jump" :title="t('settingsServers.jumpBadgeHint', { n: s.jumps.length })">⛓ {{ t('settingsServers.jumpBadge', { n: s.jumps.length }) }}</span>
               <span class="cred-tag">🔑 {{ credentialLabel(s.credentialId) }}</span>
               <span v-if="s.labels" class="cred-tag cred-tag--pool" :title="t('settingsServers.poolBadgeHint', { slots: s.maxBuilds || 1, priority: s.priority })">🏗 {{ s.labels }}</span>
+              <span v-if="s.sharedBuild" class="cred-tag cred-tag--pool" :title="t('settingsServers.sharedBuildHint')">🌐 {{ t('settingsServers.sharedBuildBadge') }}</span>
               <span v-if="s.gpu" class="cred-tag cred-tag--gpu" :title="t('settingsServers.gpuHint')">🎮 {{ t('settingsServers.gpuBadge') }}</span>
               <span v-if="s.kind === 'pve_node'" class="cred-tag cred-tag--pve" :title="t('settingsServers.pveBadgeHint')">🛡 {{ t('settingsServers.pveBadge') }} · {{ s.poolName || 'pve' }}</span>
             </div>
@@ -919,6 +930,17 @@ async function handleTest(s: Server): Promise<void> {
               <span>{{ t('settingsServers.fieldGpuCheckbox') }}</span>
             </label>
             <span class="field-hint">{{ t('settingsServers.gpuHint') }}</span>
+          </div>
+
+          <!-- 集群级共享构建机(0086):勾选后集群中经 build ACL 授权的对端环境可用
+               peer: 选择器把构建任务派到该机(与本端任务同一 FIFO 排队;凭据不出本端)。 -->
+          <div class="field">
+            <span class="field-label">{{ t('settingsServers.fieldSharedBuild') }}</span>
+            <label class="gpu-check">
+              <input v-model="form.sharedBuild" type="checkbox" />
+              <span>{{ t('settingsServers.fieldSharedBuildCheckbox') }}</span>
+            </label>
+            <span class="field-hint">{{ t('settingsServers.sharedBuildHint') }}</span>
           </div>
 
           <div class="modal-actions">

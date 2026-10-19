@@ -22,7 +22,7 @@ const servers: Server[] = [
     kind: 'standard',
     maxBuilds: 0,
     priority: 0,
-    gpu: false,
+    gpu: false, sharedBuild: false,
     createdAt: '',
     updatedAt: '',
   },

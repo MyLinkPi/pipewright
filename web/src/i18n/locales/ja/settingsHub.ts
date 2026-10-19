@@ -14,7 +14,8 @@ export default {
   navHttps: 'HTTPS アクセス',
   navAccount: 'アカウント',
   navServers: 'サーバー',
-  navMesh: 'クラスタ',
+  navMesh: 'クラスタ',  navSharedBuild: '共有ビルド',
+
   navRegistry: 'レジストリ',
   navDiagnosisStats: '診断フィードバック',
   navSystem: 'システム',

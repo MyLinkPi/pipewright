@@ -213,7 +213,7 @@ export default {
     optionServer: 'Auf einen Server festlegen',
     selectorLabel: 'Label-Selektor',
     selectorPlaceholder: 'z.B. linux,arch=arm64',
-    selectorHint: 'Kommagetrennte Label-Begriffe, alle muessen passen (UND). Die Planung waehlt nach Prioritaet, dann Pipeline-Affinitaet, dann Last; bei voller Auslastung Warteschlange. Server ohne Label werden nie gewaehlt.',
+    selectorHint: 'Kommagetrennte Label-Begriffe, alle muessen passen (UND). Die Planung waehlt nach Prioritaet, dann Pipeline-Affinitaet, dann Last; bei voller Auslastung Warteschlange. Server ohne Label werden nie gewaehlt. Ein peer:<env>-Term schickt den Build an die Shared-Build-Rechner eines Cluster-Peers (z.B. peer:prod,linux); die Warteschlange liegt beim Peer.',
     matchCount: '{n} Server passen',
     noMatch: 'Kein Server passt: Label-Schreibweise pruefen oder zuerst unter Einstellungen > Server Label vergeben',
     serverLabel: 'Server',

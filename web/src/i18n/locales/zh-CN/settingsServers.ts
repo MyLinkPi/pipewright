@@ -99,5 +99,10 @@ export default {
   fieldGpu: 'GPU 机型',
   fieldGpuCheckbox: '该机带 GPU(显卡监控)',
   gpuHint: '勾选后,多机状态总览会额外运行 nvtop -s 采集每张显卡的利用率/显存/温度/功耗(需目标机已安装 nvtop)。纯监控开关,不参与构建/部署调度。',
-  gpuBadge: 'GPU',
+  gpuBadge: 'GPU',  fieldSharedBuild: '集群共享构建机',
+  fieldSharedBuildCheckbox: '共享给集群其他环境构建',
+  sharedBuildHint: '勾选后,集群中经「集群」页授权的对端环境可用 peer: 选择器把构建任务派到该机:任务进入本端构建机池同一队列,与本端任务统一排队;SSH 凭据不出本端,对端源码/产物只经临时文件中转、不进本端制品库。需先打构建机标签;本端构建/部署不受影响。',
+  sharedBuildBadge: '集群共享',
+  errSharedNeedsLabels: '开启集群共享构建机前需先填写构建机标签(对端环境靠标签选中该机)',
+
 }

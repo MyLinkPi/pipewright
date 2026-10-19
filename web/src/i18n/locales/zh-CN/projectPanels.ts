@@ -232,7 +232,7 @@ export default {
     optionServer: '指定一台服务器(钉死)',
     selectorLabel: '标签选择器',
     selectorPlaceholder: '如 linux,arch=arm64',
-    selectorHint: '逗号分隔标签项,全部命中才匹配(AND);调度按「优先级 → 本流水线亲和 → 负载」选机,全忙自动排队。未打标签的服务器不会入选。',
+    selectorHint: '逗号分隔标签项,全部命中才匹配(AND);调度按「优先级 → 本流水线亲和 → 负载」选机,全忙自动排队。未打标签的服务器不会入选。 可加 peer:<环境名> 项把构建派到集群中已共享构建机的环境(如 peer:prod,linux),排队在对端环境。',
     matchCount: '命中 {n} 台',
     noMatch: '没有命中任何服务器:请检查标签拼写,或先在「设置 → 服务器」给机器打标签',
     serverLabel: '服务器',

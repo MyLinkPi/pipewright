@@ -69,7 +69,8 @@ export default {
     visibleTo: '可視(サーバー/プロジェクト/実行)',
     pushAllowed: '成果物/イメージのプッシュを許可',
     triggerAllowed: 'ワークフロー起動を許可',
-    forwardAllowed: '自分のサービスの転送を許可',
+    forwardAllowed: '自分のサービスの転送を許可',    buildAllowed: '共有ビルドジョブを許可',
+
     noPeers: '既知のノードなし',
     saveAcl: '権限を保存',
     peersTitle: 'ノード一覧',

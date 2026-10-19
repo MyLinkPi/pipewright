@@ -99,5 +99,10 @@ export default {
   fieldGpu: 'GPU マシン',
   fieldGpuCheckbox: 'このマシンは GPU を搭載(グラフィック監視)',
   gpuHint: 'チェックすると、マルチマシン状態一覧が nvtop -s を追加実行し、各カードの使用率/VRAM/温度/消費電力を収集します(対象機に nvtop が必要)。監視専用で、ビルド/デプロイのスケジューリングには影響しません。',
-  gpuBadge: 'GPU',
+  gpuBadge: 'GPU',  fieldSharedBuild: 'クラスタ共有ビルドマシン',
+  fieldSharedBuildCheckbox: 'クラスタ内の他環境にビルド利用を共有',
+  sharedBuildHint: '有効にすると、「クラスタ」ページで許可した対向環境が peer:<環境名> セレクターでビルドジョブをこのマシンに投入できます。ジョブはローカルと同じ FIFO キューで整列し、SSH 認証情報は本環境から出ません。対向のソース/成果物は一時ファイル経由のみで、本環境の成果物庫には入りません。先にビルドラベルが必要です。ローカルのビルド/デプロイには影響しません。',
+  sharedBuildBadge: 'クラスタ共有',
+  errSharedNeedsLabels: 'クラスタ共有を有効化する前にビルドラベルを設定してください(対向はラベルで選択します)',
+
 }

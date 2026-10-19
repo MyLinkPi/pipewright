@@ -69,7 +69,8 @@ export default {
     visibleTo: 'Visible (serveurs/projets/exécutions)',
     pushAllowed: 'Autoriser push d’artefacts/images',
     triggerAllowed: 'Autoriser déclencher des workflows',
-    forwardAllowed: 'Autoriser le transfert de mes services',
+    forwardAllowed: 'Autoriser le transfert de mes services',    buildAllowed: 'Autoriser les tâches de build partagées',
+
     noPeers: 'Aucun nœud connu',
     saveAcl: 'Enregistrer les permissions',
     peersTitle: 'Registre des nœuds',

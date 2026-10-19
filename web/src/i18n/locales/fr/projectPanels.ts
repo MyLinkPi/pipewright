@@ -213,7 +213,7 @@ export default {
     optionServer: 'Epingler un serveur',
     selectorLabel: 'Selecteur de labels',
     selectorPlaceholder: 'ex. linux,arch=arm64',
-    selectorHint: 'Termes de labels separes par des virgules, tous doivent correspondre (ET). Lordonnanceur choisit par priorite, puis affinite de pipeline, puis charge ; file dattente si tout est occupe. Les serveurs sans label ne sont jamais selectionnes.',
+    selectorHint: 'Termes de labels separes par des virgules, tous doivent correspondre (ET). Lordonnanceur choisit par priorite, puis affinite de pipeline, puis charge ; file dattente si tout est occupe. Les serveurs sans label ne sont jamais selectionnes. Un terme peer:<env> envoie le build vers les machines partagées d’un pair du cluster (ex. peer:prod,linux) ; la file d’attente est côté pair.',
     matchCount: '{n} serveur(s) correspondant(s)',
     noMatch: 'Aucun serveur correspondant : verifiez lorthographe des labels ou etiquetez dabord les machines dans Parametres > Serveurs',
     serverLabel: 'Serveur',
