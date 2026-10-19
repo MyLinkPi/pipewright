@@ -10,8 +10,6 @@ package build
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -276,76 +274,24 @@ func (b *Builder) runMeshPushJob(ctx context.Context, rep dagrun.StageReporter, 
 		return ErrBuildFailed
 	}
 
-	manifest := mesh.PushManifest{
-		OriginNodeID:      selfNode,
-		OriginProjectRef:  r.ProjectID,
-		OriginProjectName: r.ProjectName,
-		OriginRunID:       r.ID,
-		RevisionLabel:     label,
-		Items:             []mesh.PushItem{},
+	_ = rep.Log(ctx, streamStdout, fmt.Sprintf("· 集群推送「%s」→ 节点 %s(%s):%d 个条目",
+		jb.Name, peerDisplayName(peer), peer.VirtualIP, len(selected)))
+
+	// 推送核心与产物传输服务共用(artifact_transfer.go):组清单 → 镜像导出 → preflight
+	// 去重 → multipart 直传。typed-nil *ImageTransfer 转真 nil 接口(缺失时核心内报错)。
+	var imgExp pushImageExporter
+	if b.meshImages != nil {
+		imgExp = b.meshImages
 	}
-	// 镜像归档临时文件(发送后清理);文件产物直接流制品库句柄。
-	tempFiles := []string{}
-	defer func() {
-		for _, f := range tempFiles {
-			_ = os.Remove(f)
+	openBlob := func(key string) (io.ReadCloser, error) {
+		if b.artStore == nil {
+			return nil, io.ErrUnexpectedEOF
 		}
-	}()
-	readers := map[string]io.Reader{}
-
-	for _, a := range selected {
-		if a.Type == run.ArtifactImage {
-			if b.meshImages == nil {
-				_ = rep.Log(ctx, streamError, "集群推送节点「"+jb.Name+"」:镜像导出器未装配,无法推送镜像产物")
-				return ErrBuildFailed
-			}
-			tmp, terr := b.meshImages.exportImageArchiveToTemp(ctx, a.Reference)
-			if terr != nil {
-				_ = rep.Log(ctx, streamError, "导出镜像归档失败("+a.Name+"):"+terr.Error())
-				return ErrBuildFailed
-			}
-			tempFiles = append(tempFiles, tmp)
-			sha, size, serr := hashFile(tmp)
-			if serr != nil {
-				_ = rep.Log(ctx, streamError, "计算镜像归档哈希失败:"+serr.Error())
-				return ErrBuildFailed
-			}
-			item := mesh.PushItem{Name: a.Name, Kind: pushsource.KindImage, SHA256: sha, Size: size, ImageRef: a.Reference}
-			if d, ok := a.Metadata["digest"].(string); ok {
-				item.Digest = d
-			}
-			manifest.Items = append(manifest.Items, item)
-			readers[sha] = &lazyFileReader{path: tmp}
-			continue
-		}
-		// 文件产物:reference 即制品库句柄(sha256)。
-		dest := a.Name
-		if wp, ok := a.Metadata["workspacePath"].(string); ok && strings.TrimSpace(wp) != "" {
-			dest = strings.TrimSpace(wp)
-		}
-		manifest.Items = append(manifest.Items, mesh.PushItem{
-			Name: a.Name, Kind: pushsource.KindFile, SHA256: a.Reference, Size: a.SizeBytes, DestName: dest,
-		})
-		readers[a.Reference] = &lazyStoreReader{b: b, key: a.Reference}
+		return b.artStore.Open(key)
 	}
-
-	// preflight:只传对端缺失的 blob(内容寻址去重;文件产物高频重推时省大量带宽)。
-	missing := make([]string, 0)
-	pf := struct {
-		Missing []string `json:"missing"`
-	}{}
-	if err := b.meshClient.Do(ctx, peer, "POST", "/api/mesh/push/preflight", manifest, &pf); err != nil {
-		_ = rep.Log(ctx, streamError, "推送预检失败:"+meshPeerErrText(err))
-		return ErrBuildFailed
-	}
-	for _, m := range pf.Missing {
-		missing = append(missing, m)
-	}
-
-	_ = rep.Log(ctx, streamStdout, fmt.Sprintf("· 集群推送「%s」→ 节点 %s(%s):%d 个条目,%d 个 blob 待传",
-		jb.Name, peerDisplayName(peer), peer.VirtualIP, len(manifest.Items), len(missing)))
-
-	result, err := b.meshClient.Push(ctx, peer, manifest, pickReaders(readers, missing))
+	result, err := pushArtifactsToPeer(ctx, b.meshClient, imgExp, openBlob,
+		func(format string, args ...any) { _ = rep.Log(ctx, streamStdout, "  · "+fmt.Sprintf(format, args...)) },
+		peer, selfNode, r, selected, label)
 	if err != nil {
 		_ = rep.Log(ctx, streamError, "集群推送失败:"+meshPeerErrText(err))
 		return ErrBuildFailed
@@ -532,71 +478,4 @@ func meshPeerErrText(err error) string {
 	default:
 		return err.Error()
 	}
-}
-
-// lazyFileReader 延迟打开的文件 reader(首次 Read 才打开,读完保持句柄直至调用方丢弃)。
-type lazyFileReader struct {
-	path string
-	f    *os.File
-}
-
-func (l *lazyFileReader) Read(p []byte) (int, error) {
-	if l.f == nil {
-		f, err := os.Open(l.path)
-		if err != nil {
-			return 0, err
-		}
-		l.f = f
-	}
-	return l.f.Read(p)
-}
-
-// lazyStoreReader 延迟打开的制品库 reader(同上)。
-type lazyStoreReader struct {
-	b   *Builder
-	key string
-	rc  io.ReadCloser
-}
-
-func (l *lazyStoreReader) Read(p []byte) (int, error) {
-	if l.rc == nil {
-		if l.b == nil || l.b.artStore == nil {
-			return 0, io.ErrUnexpectedEOF
-		}
-		rc, err := l.b.artStore.Open(l.key)
-		if err != nil {
-			return 0, err
-		}
-		l.rc = rc
-	}
-	return l.rc.Read(p)
-}
-
-// hashFile 流式计算文件 sha256 与大小。
-func hashFile(path string) (string, int64, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return "", 0, err
-	}
-	defer func() { _ = f.Close() }()
-	h := sha256.New()
-	n, err := io.Copy(h, f)
-	if err != nil {
-		return "", 0, err
-	}
-	return hex.EncodeToString(h.Sum(nil)), n, nil
-}
-
-// pickReaders 按缺失清单挑出待传 reader(全部缺失时等价全量)。
-func pickReaders(all map[string]io.Reader, missing []string) map[string]io.Reader {
-	if len(missing) == 0 {
-		return all
-	}
-	out := make(map[string]io.Reader, len(missing))
-	for _, m := range missing {
-		if r, ok := all[m]; ok {
-			out[m] = r
-		}
-	}
-	return out
 }

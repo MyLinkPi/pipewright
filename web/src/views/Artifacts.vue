@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /*
-  Artifacts.vue — 流水线产物管理(跨运行产物列表 + 查看/下载/删除;顶部导航「产物」)。
+  Artifacts.vue — 流水线产物管理(跨运行产物列表 + 查看/下载/删除/跨环境传输;顶部导航「产物」)。
 
   数据源是全部运行的产物(run_artifacts JOIN 运行/项目):
     - 查看:列表 + 详情弹窗(metadata 全量键值:digest/filename/format/files 清单/来源节点);
@@ -8,18 +8,24 @@
       镜像类走服务端导出(docker pull + docker save 流式 .tar;大镜像耗时,外置私有
       仓库可能因无凭据失败——服务端诚实报错);
     - 删除:仅终态运行的产物可删(服务端护栏);镜像类联动删内置 registry tag
-      (digest 共租时保留别名),已无引用的制品库 blob 由服务端回收;全程审计。
+      (digest 共租时保留别名),已无引用的制品库 blob 由服务端回收;全程审计;
+    - 跨环境传输:复用 mesh_push 集群推送通道,把所选产物(可勾选同 run 多个)推到
+      指定对端环境,对方自动建/续「被推送源」项目并落修订(异步任务,弹窗内轮询
+      进度、可取消;需对端在「设置 → 集群」授权本节点)。
 */
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
-import { Refresh, Eye, Download, Trash } from '@vicons/tabler'
+import { Refresh, Eye, Download, Trash, CloudUpload } from '@vicons/tabler'
 import AppSelect from '../components/ui/AppSelect.vue'
 import { listProjects, type Project } from '../api/projects'
 import {
   listArtifacts, deleteRunArtifact, runArtifactDownloadUrl, runArtifactImageArchiveUrl,
-  type ArtifactRowDTO, type ArtifactType,
+  transferRunArtifacts, getArtifactTransfer, cancelArtifactTransfer,
+  type ArtifactRowDTO, type ArtifactType, type ArtifactTransferStatus,
 } from '../api/artifactAdmin'
+import { listMeshPeers, type MeshPeer } from '../api/mesh'
+import { getRunArtifacts, type ArtifactDTO } from '../api/runs'
 import { HttpError } from '../api/http'
 import { useToast } from '../composables/useToast'
 import { useConfirm } from '../composables/useConfirm'
@@ -272,6 +278,169 @@ async function removeArtifact(a: ArtifactRowDTO): Promise<void> {
     deleting.value = null
   }
 }
+
+// ─── 传输到其他环境 ──────────────────────────────────────────────────────────
+
+type TransferModalMode = 'pick' | 'running' | 'success' | 'failed'
+
+const transferOpen = ref(false)
+const transferMode = ref<TransferModalMode>('pick')
+const transferRun = ref<ArtifactRowDTO | null>(null)
+const transferPeers = ref<MeshPeer[]>([])
+const transferPeersLoaded = ref(false)
+const transferPeer = ref('')
+const transferArtifacts = ref<ArtifactDTO[]>([])
+const transferLoadingList = ref(false)
+const transferChecked = ref<Record<string, boolean>>({})
+const transferLabel = ref('')
+const transferStarting = ref(false)
+const transferStatus = ref<ArtifactTransferStatus | null>(null)
+const transferError = ref('')
+const transferId = ref('')
+let transferTimer: number | undefined
+
+// 与后端 transferCheck 同口径:镜像需引用;文件类需归档真字节;多文件清单不支持。
+type TransferableArtifact = {
+  id: string
+  type: string
+  reference: string
+  metadata?: Record<string, unknown> | null
+}
+
+function isTransferable(a: TransferableArtifact): boolean {
+  if (a.metadata?.format === 'files') return false
+  if (a.type === 'image') return !!a.reference
+  return a.metadata?.stored === true && !!a.reference
+}
+
+const transferPeerOptions = computed(() =>
+  transferPeers.value
+    .filter((p) => p.virtualIp)
+    .map((p) => ({
+      value: p.nodeId,
+      label: `${p.name || p.nodeId.slice(0, 8)} · ${p.virtualIp}`,
+    })),
+)
+
+const transferCheckedIds = computed(() =>
+  transferArtifacts.value.filter((a) => transferChecked.value[a.id] && isTransferable(a)).map((a) => a.id),
+)
+
+const canStartTransfer = computed(() => !!transferPeer.value && transferCheckedIds.value.length > 0)
+
+function openTransfer(a: ArtifactRowDTO): void {
+  transferRun.value = a
+  transferOpen.value = true
+  transferMode.value = 'pick'
+  transferPeer.value = ''
+  transferLabel.value = ''
+  transferStatus.value = null
+  transferError.value = ''
+  transferChecked.value = { [a.id]: true }
+  void loadTransferPeers()
+  void loadTransferArtifacts(a.runId)
+}
+
+async function loadTransferPeers(): Promise<void> {
+  transferPeersLoaded.value = false
+  try {
+    const res = await listMeshPeers()
+    transferPeers.value = res.items ?? []
+  } catch {
+    transferPeers.value = [] // 非致命:弹窗展示空态提示
+  } finally {
+    transferPeersLoaded.value = true
+  }
+}
+
+async function loadTransferArtifacts(runId: string): Promise<void> {
+  transferLoadingList.value = true
+  transferArtifacts.value = []
+  try {
+    const res = await getRunArtifacts(runId)
+    transferArtifacts.value = res.artifacts ?? []
+  } catch {
+    transferArtifacts.value = [] // 非致命:至少当前产物仍可传
+  } finally {
+    transferLoadingList.value = false
+  }
+}
+
+async function startTransfer(): Promise<void> {
+  if (!transferRun.value || !canStartTransfer.value) return
+  transferStarting.value = true
+  try {
+    const res = await transferRunArtifacts(transferRun.value.runId, {
+      nodeId: transferPeer.value,
+      artifactIds: transferCheckedIds.value,
+      revisionLabel: transferLabel.value.trim() || undefined,
+    })
+    transferId.value = res.transferId
+    transferStatus.value = null
+    transferMode.value = 'running'
+    pollTransfer()
+  } catch (err) {
+    toast.error(t('artifactAdmin.transferStartFailed'), {
+      detail: errMsg(err, t('artifactAdmin.errNetwork')),
+    })
+  } finally {
+    transferStarting.value = false
+  }
+}
+
+function pollTransfer(): void {
+  stopTransferPolling()
+  transferTimer = window.setInterval(async () => {
+    try {
+      const st = await getArtifactTransfer(transferId.value)
+      transferStatus.value = st
+      if (st.status === 'running') return
+      stopTransferPolling()
+      if (st.status === 'success') {
+        transferMode.value = 'success'
+        toast.success(t('artifactAdmin.transferOk'))
+      } else if (st.status === 'canceled') {
+        transferMode.value = 'pick'
+        toast.info(t('artifactAdmin.transferCancelOk'))
+      } else {
+        transferMode.value = 'failed'
+        transferError.value = st.error ?? ''
+      }
+    } catch (err) {
+      if (err instanceof HttpError && err.status === 404) {
+        // 会话丢失(服务重启):停止轮询,提示重新发起。
+        stopTransferPolling()
+        transferMode.value = 'failed'
+        transferError.value = t('artifactAdmin.transferSessionLost')
+      }
+      // 其余错误(瞬时网络抖动):下个节拍重试。
+    }
+  }, 2000)
+}
+
+function stopTransferPolling(): void {
+  if (transferTimer !== undefined) {
+    window.clearInterval(transferTimer)
+    transferTimer = undefined
+  }
+}
+
+async function cancelTransfer(): Promise<void> {
+  if (!transferId.value) return
+  try {
+    await cancelArtifactTransfer(transferId.value)
+    // 不在此处提示:轮询感知 canceled 后统一 toast。
+  } catch {
+    // 已终态/会话丢失:状态轮询会感知,不重复提示。
+  }
+}
+
+function closeTransfer(): void {
+  stopTransferPolling()
+  transferOpen.value = false
+}
+
+onBeforeUnmount(stopTransferPolling)
 </script>
 
 <template>
@@ -440,6 +609,15 @@ async function removeArtifact(a: ArtifactRowDTO): Promise<void> {
             </span>
             <button
               type="button"
+              class="mini-btn"
+              :disabled="!isTransferable(a)"
+              :title="isTransferable(a) ? t('artifactAdmin.transferTitle') : t('artifactAdmin.transferUnavailable')"
+              @click.stop="openTransfer(a)"
+            >
+              <CloudUpload :size="13" aria-hidden="true" />
+            </button>
+            <button
+              type="button"
               class="mini-btn mini-btn--danger"
               :disabled="deleting === a.id"
               :title="t('artifactAdmin.deleteTitle')"
@@ -533,6 +711,14 @@ async function removeArtifact(a: ArtifactRowDTO): Promise<void> {
           </div>
 
           <div class="dlg-foot">
+            <button
+              v-if="detail && isTransferable(detail)"
+              class="btn-secondary"
+              @click="closeDetail(); openTransfer(detail)"
+            >
+              <CloudUpload :size="12" aria-hidden="true" />
+              {{ t('artifactAdmin.transferTitle') }}
+            </button>
             <a
               v-if="isFileDownloadable(detail) || isImage(detail)"
               class="btn-primary"
@@ -543,6 +729,144 @@ async function removeArtifact(a: ArtifactRowDTO): Promise<void> {
               {{ t('artifactAdmin.download') }}
             </a>
             <button class="btn-secondary" @click="closeDetail">{{ t('artifactAdmin.closeDialog') }}</button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
+
+    <!-- ─── 传输到其他环境弹窗 ────────────────────────────────────────────── -->
+    <Teleport to="body">
+      <div
+        v-if="transferOpen"
+        class="dlg-mask"
+        role="dialog"
+        :aria-label="t('artifactAdmin.transferDialogTitle')"
+        aria-modal="true"
+        @keydown.esc="closeTransfer"
+        @click.self="closeTransfer"
+      >
+        <div class="dlg dlg-transfer">
+          <div class="dlg-head">
+            <div class="dlg-head-text">
+              <h3 class="dlg-title">{{ t('artifactAdmin.transferDialogTitle') }}</h3>
+              <code v-if="transferRun" class="dlg-ref mono">
+                {{ transferRun.projectName }} · #{{ shortId(transferRun.runId) }}
+              </code>
+            </div>
+            <button class="dlg-close" :aria-label="t('artifactAdmin.closeDialog')" @click="closeTransfer">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M18 6 6 18M6 6l12 12"/>
+              </svg>
+            </button>
+          </div>
+
+          <div class="dlg-body">
+            <!-- 选择态:目标环境 + 产物勾选 + 修订标签 -->
+            <template v-if="transferMode === 'pick'">
+              <label class="transfer-field-label">{{ t('artifactAdmin.transferTargetEnv') }}</label>
+              <p v-if="transferPeersLoaded && transferPeerOptions.length === 0" class="transfer-empty">
+                {{ t('artifactAdmin.transferNoPeers') }}
+              </p>
+              <AppSelect
+                v-else
+                v-model="transferPeer"
+                :options="transferPeerOptions"
+                :aria-label="t('artifactAdmin.transferTargetEnv')"
+                :placeholder="t('artifactAdmin.transferTargetPlaceholder')"
+              />
+
+              <label class="transfer-field-label">{{ t('artifactAdmin.transferItemsTitle') }}</label>
+              <p class="transfer-hint">{{ t('artifactAdmin.transferItemsHint') }}</p>
+              <p v-if="transferLoadingList" class="transfer-empty">{{ t('artifactAdmin.transferItemsLoading') }}</p>
+              <template v-else>
+                <p v-if="transferArtifacts.length === 0" class="transfer-empty">{{ t('artifactAdmin.transferNoItems') }}</p>
+                <label
+                  v-for="a in transferArtifacts"
+                  :key="a.id"
+                  class="transfer-item"
+                  :class="{ 'transfer-item--off': !isTransferable(a) }"
+                  :title="isTransferable(a) ? a.name : t('artifactAdmin.transferUnavailable')"
+                >
+                  <input v-model="transferChecked[a.id]" type="checkbox" :disabled="!isTransferable(a)" />
+                  <span
+                    class="type-badge"
+                    :style="{ color: typeConfig(a.type).fg, background: typeConfig(a.type).bg }"
+                  >{{ typeConfig(a.type).label }}</span>
+                  <span class="transfer-name">{{ a.name }}</span>
+                  <span class="transfer-size mono">{{ humanSize(a.sizeBytes) }}</span>
+                </label>
+              </template>
+
+              <label class="transfer-field-label">{{ t('artifactAdmin.transferLabelField') }}</label>
+              <input
+                v-model="transferLabel"
+                type="text"
+                class="transfer-label-input"
+                :placeholder="t('artifactAdmin.transferLabelPlaceholder')"
+                maxlength="40"
+              />
+            </template>
+
+            <!-- 传输中 -->
+            <template v-else-if="transferMode === 'running'">
+              <div class="transfer-progress">
+                <span class="spinner" aria-hidden="true"></span>
+                <div class="transfer-progress-text">
+                  <p class="transfer-phase">{{ transferStatus?.phase || t('artifactAdmin.transferPreparing') }}</p>
+                  <p class="transfer-hint">{{ t('artifactAdmin.transferRunningHint') }}</p>
+                </div>
+              </div>
+            </template>
+
+            <!-- 成功 -->
+            <template v-else-if="transferMode === 'success' && transferStatus?.result">
+              <p class="transfer-ok-title">
+                {{ t('artifactAdmin.transferOkBody', { peer: transferStatus.peerName }) }}
+              </p>
+              <dl class="meta-grid">
+                <div class="meta-item">
+                  <dt>{{ t('artifactAdmin.transferOkProject') }}</dt>
+                  <dd class="mono">{{ transferStatus.result.projectId }}</dd>
+                </div>
+                <div class="meta-item">
+                  <dt>{{ t('artifactAdmin.transferOkRevision') }}</dt>
+                  <dd class="mono">{{ transferStatus.result.revisionId }}</dd>
+                </div>
+              </dl>
+              <p v-if="transferStatus.result.created" class="transfer-hint">{{ t('artifactAdmin.transferOkCreated') }}</p>
+              <a
+                class="transfer-peer-link"
+                :href="transferStatus.result.projectUrl"
+                target="_blank"
+                rel="noopener"
+              >{{ t('artifactAdmin.transferOpenPeer') }} ↗</a>
+            </template>
+
+            <!-- 失败 -->
+            <template v-else-if="transferMode === 'failed'">
+              <p class="transfer-fail-title">{{ t('artifactAdmin.transferFailedTitle') }}</p>
+              <pre class="transfer-error mono">{{ transferError || transferStatus?.error || t('artifactAdmin.errNetwork') }}</pre>
+            </template>
+          </div>
+
+          <div class="dlg-foot">
+            <template v-if="transferMode === 'pick'">
+              <button class="btn-secondary" @click="closeTransfer">{{ t('artifactAdmin.transferCancelPick') }}</button>
+              <button class="btn-primary" :disabled="!canStartTransfer || transferStarting" @click="startTransfer">
+                <CloudUpload :size="12" aria-hidden="true" />
+                {{ transferStarting ? t('artifactAdmin.transferStarting') : t('artifactAdmin.transferStart') }}
+              </button>
+            </template>
+            <template v-else-if="transferMode === 'running'">
+              <button class="btn-secondary" @click="cancelTransfer">{{ t('artifactAdmin.transferCancelRun') }}</button>
+            </template>
+            <template v-else-if="transferMode === 'failed'">
+              <button class="btn-secondary" @click="closeTransfer">{{ t('artifactAdmin.closeDialog') }}</button>
+              <button class="btn-primary" @click="transferMode = 'pick'">{{ t('artifactAdmin.transferRetry') }}</button>
+            </template>
+            <template v-else>
+              <button class="btn-primary" @click="closeTransfer">{{ t('artifactAdmin.transferDone') }}</button>
+            </template>
           </div>
         </div>
       </div>
@@ -1226,6 +1550,162 @@ async function removeArtifact(a: ArtifactRowDTO): Promise<void> {
 }
 
 .mono { font-family: var(--font-mono); }
+
+/* ─── 传输到其他环境弹窗 ─────────────────────────────────────────────────── */
+
+.dlg-transfer {
+  width: min(520px, calc(100vw - 48px));
+}
+
+.transfer-field-label {
+  display: block;
+  margin: 14px 0 6px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--color-dim);
+}
+
+.transfer-hint {
+  margin: 0 0 8px;
+  font-size: 0.76rem;
+  color: var(--color-dim);
+}
+
+.transfer-empty {
+  margin: 4px 0;
+  padding: 10px 12px;
+  font-size: 0.78rem;
+  color: var(--color-dim);
+  background: var(--color-inset);
+  border: 1px dashed var(--color-border);
+  border-radius: var(--rounded-md);
+}
+
+.transfer-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--rounded-md);
+  cursor: pointer;
+}
+
+.transfer-item + .transfer-item {
+  margin-top: 6px;
+}
+
+.transfer-item:hover {
+  border-color: var(--color-primary);
+}
+
+.transfer-item--off {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.transfer-item--off:hover {
+  border-color: var(--color-border);
+}
+
+.transfer-item input[type='checkbox'] {
+  flex: none;
+  accent-color: var(--color-primary);
+}
+
+.transfer-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.8rem;
+}
+
+.transfer-size {
+  flex: none;
+  font-size: 0.74rem;
+  color: var(--color-dim);
+}
+
+.transfer-label-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 8px 10px;
+  font-size: 0.8rem;
+  font-family: inherit;
+  color: var(--color-text);
+  background: var(--color-inset);
+  border: 1px solid var(--color-border);
+  border-radius: var(--rounded-md);
+}
+
+.transfer-label-input:focus {
+  outline: none;
+  border-color: var(--color-primary);
+}
+
+.transfer-progress {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  padding: 18px 4px;
+}
+
+.spinner {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  margin-top: 2px;
+  border: 2px solid var(--color-border);
+  border-top-color: var(--color-primary);
+  border-radius: 50%;
+  animation: transfer-spin 0.9s linear infinite;
+}
+
+@keyframes transfer-spin {
+  to { transform: rotate(360deg); }
+}
+
+.transfer-phase {
+  margin: 0 0 6px;
+  font-size: 0.86rem;
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+.transfer-ok-title {
+  margin: 0 0 12px;
+  font-size: 0.86rem;
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+.transfer-peer-link {
+  display: inline-block;
+  margin-top: 10px;
+  font-size: 0.8rem;
+  color: var(--color-primary);
+}
+
+.transfer-fail-title {
+  margin: 0 0 8px;
+  font-size: 0.86rem;
+  font-weight: 600;
+  color: var(--color-danger, #e5484d);
+}
+
+.transfer-error {
+  margin: 0;
+  padding: 10px 12px;
+  font-size: 0.76rem;
+  color: var(--color-text);
+  white-space: pre-wrap;
+  word-break: break-all;
+  background: var(--color-inset);
+  border: 1px solid var(--color-border);
+  border-radius: var(--rounded-md);
+}
 
 /* ─── responsive ───────────────────────────────────────────────────────────── */
 @media (max-width: 900px) {

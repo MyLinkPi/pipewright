@@ -12,7 +12,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"os/exec"
 	"regexp"
 	"strings"
@@ -110,21 +109,6 @@ func (t *ImageTransfer) Import(ctx context.Context, archive io.Reader, repo, tag
 	digest := strings.TrimSpace(digestOut)
 	t.log("stdout", "  镜像已导入内置 registry:%s(%s)", target, digest)
 	return target, digest, nil
-}
-
-// exportImageArchiveToTemp 导出镜像到临时文件并返回路径(发送侧;调用方 defer os.Remove)。
-func (t *ImageTransfer) exportImageArchiveToTemp(ctx context.Context, ref string) (string, error) {
-	tmp, err := os.CreateTemp("", "pw-mesh-img-*.tar")
-	if err != nil {
-		return "", fmt.Errorf("build: create temp archive: %w", err)
-	}
-	name := tmp.Name()
-	_ = tmp.Close()
-	if err := t.Export(ctx, ref, name); err != nil {
-		_ = os.Remove(name)
-		return "", err
-	}
-	return name, nil
 }
 
 // EnsureLocal 确保镜像在本地 daemon 存在:先 image inspect 探测,不在则 pull

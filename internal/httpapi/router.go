@@ -141,6 +141,7 @@ type options struct {
 	ceph             ceph.Service
 	mfa              *mfa.Service
 	artifactExporter artifactImageExporter
+	artifactTransfers artifactTransferService
 }
 
 // WithCeph 注入 Ceph 集群部署与管理服务(internal/ceph),在 admin 组挂载 /api/ceph/* 路由
@@ -200,6 +201,14 @@ func WithArtifactStore(s *artifactstore.Store) Option {
 // 流式导出。nil → 该端点 503(文件类产物下载不受影响)。
 func WithArtifactImageTransfer(e artifactImageExporter) Option {
 	return func(o *options) { o.artifactExporter = e }
+}
+
+// WithArtifactTransfer 注入产物跨环境传输服务(*build.ArtifactTransferService 原样满足):
+// 产物管理面挂载 POST /api/runs/{id}/artifacts/transfer(发起异步传输,复用 mesh_push
+// 推送通道,对端自动建「被推送源」项目落修订)+ GET/DELETE /api/artifacts/transfers/{id}
+// (状态轮询/取消)。不传则端点不挂载。
+func WithArtifactTransfer(s artifactTransferService) Option {
+	return func(o *options) { o.artifactTransfers = s }
 }
 
 // WithApprovals 注入审批门协调器 + 持久层(Story 8-4),挂载 /api/runs/{id}/{approve,reject,approvals} 路由。
@@ -742,6 +751,13 @@ func New(webFS fs.FS, authn auth.Authenticator, opts ...Option) http.Handler {
 				ar.Get("/artifacts", makeArtifactsListHandler(o.runs))
 				ar.Delete("/runs/{id}/artifacts/{artifactId}", makeArtifactDeleteHandler(o.runs, o.artifactStore, o.registryHub, aud))
 				ar.Get("/runs/{id}/artifacts/{artifactId}/image-archive", makeArtifactImageArchiveHandler(o.runs, o.artifactExporter))
+			}
+			// 产物跨环境传输(管理员):发起(异步任务)/状态轮询/取消;发送核心与
+			// mesh_push 流水线节点同路径,对端经 /api/mesh/push 接收(接收侧零改动)。
+			if o.artifactTransfers != nil {
+				ar.Post("/runs/{id}/artifacts/transfer", makeArtifactTransferStartHandler(o.artifactTransfers))
+				ar.Get("/artifacts/transfers/{transferId}", makeArtifactTransferStatusHandler(o.artifactTransfers))
+				ar.Delete("/artifacts/transfers/{transferId}", makeArtifactTransferCancelHandler(o.artifactTransfers))
 			}
 		})
 
