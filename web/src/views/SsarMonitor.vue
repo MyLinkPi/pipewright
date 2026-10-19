@@ -49,7 +49,15 @@ let overviewTimer: ReturnType<typeof setInterval> | null = null
 
 async function loadOverview(): Promise<void> {
   try {
-    overview.value = await getSsarOverview()
+    const o = await getSsarOverview()
+    // 防御性归一:后端 nil 切片可能序列化为 null(老版本/边缘路径),模板按数组消费。
+    if (o?.binaries) {
+      o.binaries.packages = Array.isArray(o.binaries.packages) ? o.binaries.packages : []
+    }
+    if (!Array.isArray(o?.items)) {
+      o.items = []
+    }
+    overview.value = o
     loadState.value = loadState.value === 'error' ? 'idle' : loadState.value
   } catch (e) {
     if (loadState.value !== 'loading') return // 已有数据时静默,不打断页面

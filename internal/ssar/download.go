@@ -90,12 +90,15 @@ type BinStatus struct {
 // BinStatus 返回当前缓存状态(无 DataDir 配置返回空状态)。
 func (d *Downloader) BinStatus() BinStatus {
 	if d == nil || d.DataDir == "" {
-		return BinStatus{}
+		return BinStatus{Packages: []string{}}
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	st := BinStatus{Downloading: d.downloading, LastErr: d.lastErr, Dir: d.binDir()}
+	st := BinStatus{Downloading: d.downloading, LastErr: d.lastErr, Dir: d.binDir(), Packages: []string{}}
 	st.Version, st.Packages = cachedPackages(d.binDir())
+	if st.Packages == nil {
+		st.Packages = []string{} // nil 切片会序列化成 null,前端按数组消费 —— 恒给空数组
+	}
 	return st
 }
 

@@ -129,10 +129,10 @@ func (s *service) Query(ctx context.Context, serverID, view string, minutes, ste
 }
 
 // parseQueryResult 解析 `ssar --api` 输出为 QueryResult(纯函数,可单测)。
-// 列 = 首行键序(除 collect_datetime);值可解析数值 → float64,否则保留字符串;
-// 占位符("-"/"*"/"<"/">")键不写入该行。
+// 列 = 首次出现的键序(与 ssar 输出列序一致,**不依赖 map 迭代序**);值可解析数值 →
+// float64,否则保留字符串;占位符("-"/"*"/"<"/">")键不写入该行。
 func parseQueryResult(view, out string) (*QueryResult, error) {
-	rows, ok := parseJSONRows(out)
+	rows, ok := parseOrderedRows(out)
 	if !ok {
 		return &QueryResult{View: view, Columns: []QueryColumn{}, Rows: []QueryRow{}}, nil
 	}
@@ -140,11 +140,8 @@ func parseQueryResult(view, out string) (*QueryResult, error) {
 	colSeen := map[string]bool{}
 	for _, row := range rows {
 		qr := QueryRow{Values: map[string]any{}}
-		time, hasTime := row["collect_datetime"]
-		if hasTime {
-			qr.Time = strings.TrimSpace(time)
-		}
-		for k, v := range row {
+		qr.Time = strings.TrimSpace(row.vals["collect_datetime"])
+		for _, k := range row.cols {
 			if k == "collect_datetime" {
 				continue
 			}
@@ -152,7 +149,7 @@ func parseQueryResult(view, out string) (*QueryResult, error) {
 				colSeen[k] = true
 				result.Columns = append(result.Columns, QueryColumn{Key: k, Unit: viewUnits[k]})
 			}
-			t := strings.TrimSpace(v)
+			t := strings.TrimSpace(row.vals[k])
 			if t == "" || t == "-" || t == "*" || t == "<" || t == ">" {
 				continue // 占位符:该格无数据
 			}
@@ -173,20 +170,29 @@ func parseQueryResult(view, out string) (*QueryResult, error) {
 	return result, nil
 }
 
-// parseJSONRows 解析 `ssar --api` 的 JSON 数组(先整串,失败取首 [ 到末 ] 片段重试)。
-func parseJSONRows(out string) ([]map[string]string, bool) {
+// orderedRow 是一行 `--api` 记录:cols 记录**原始键序**(ssar 列序),vals 为键值。
+type orderedRow struct {
+	cols []string
+	vals map[string]string
+}
+
+// parseOrderedRows 解析 `ssar --api` 的 JSON 数组为**保序**行(先整串,失败取首 [ 到
+// 末 ] 片段重试)。json.Unmarshal 进 map 会丢键序(map 迭代序随机,列序会抖动),
+// 故用 Decoder 令牌流逐键读 —— 列序与 ssar 输出严格一致。空 / 非 JSON / 0 行 → false。
+func parseOrderedRows(out string) ([]orderedRow, bool) {
 	t := strings.TrimSpace(out)
 	if t == "" {
 		return nil, false
 	}
-	var rows []map[string]string
-	if err := json.Unmarshal([]byte(t), &rows); err != nil {
+	rows, err := decodeOrderedRows(t)
+	if err != nil {
 		start := strings.Index(t, "[")
 		end := strings.LastIndex(t, "]")
 		if start < 0 || end <= start {
 			return nil, false
 		}
-		if err := json.Unmarshal([]byte(t[start:end+1]), &rows); err != nil {
+		rows, err = decodeOrderedRows(t[start : end+1])
+		if err != nil {
 			return nil, false
 		}
 	}
@@ -194,4 +200,59 @@ func parseJSONRows(out string) ([]map[string]string, bool) {
 		return nil, false
 	}
 	return rows, true
+}
+
+// decodeOrderedRows 用 json.Decoder 令牌流解析 `[{...},{...}]` 形态(值必须为字符串,
+// ssar --api 契约如此;出现其它形态 → 错误交由上层降级)。
+func decodeOrderedRows(s string) ([]orderedRow, error) {
+	dec := json.NewDecoder(strings.NewReader(s))
+	tok, err := dec.Token()
+	if err != nil {
+		return nil, err
+	}
+	if d, ok := tok.(json.Delim); !ok || d != '[' {
+		return nil, errors.New("not an array")
+	}
+	var rows []orderedRow
+	for dec.More() {
+		tok, err := dec.Token()
+		if err != nil {
+			return nil, err
+		}
+		if d, ok := tok.(json.Delim); !ok || d != '{' {
+			return nil, errors.New("not an object")
+		}
+		row := orderedRow{vals: map[string]string{}}
+		for dec.More() {
+			keyTok, err := dec.Token()
+			if err != nil {
+				return nil, err
+			}
+			key, ok := keyTok.(string)
+			if !ok {
+				return nil, errors.New("bad key")
+			}
+			valTok, err := dec.Token()
+			if err != nil {
+				return nil, err
+			}
+			val, ok := valTok.(string)
+			if !ok {
+				return nil, errors.New("bad value")
+			}
+			if _, dup := row.vals[key]; dup {
+				return nil, errors.New("duplicate key")
+			}
+			row.cols = append(row.cols, key)
+			row.vals[key] = val
+		}
+		if _, err := dec.Token(); err != nil { // consume '}'
+			return nil, err
+		}
+		rows = append(rows, row)
+	}
+	if _, err := dec.Token(); err != nil { // consume ']'
+		return nil, err
+	}
+	return rows, nil
 }

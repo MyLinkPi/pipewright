@@ -344,10 +344,10 @@ func (s *service) Install(ctx context.Context, serverIDs []string) []InstallResu
 	return results
 }
 
-// BinStatus 透传下载器状态(未配置返回空状态)。
+// BinStatus 透传下载器状态(未配置返回空状态;packages 恒为数组,不为 null)。
 func (s *service) BinStatus() BinStatus {
 	if s.downloader == nil {
-		return BinStatus{}
+		return BinStatus{Packages: []string{}}
 	}
 	return s.downloader.BinStatus()
 }
