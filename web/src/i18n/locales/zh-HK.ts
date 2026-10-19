@@ -151,6 +151,8 @@ const zhHK: typeof zhCN = {
     mfaErrCode: '驗證碼或備份碼錯誤',
     passkeyLogin: '使用通行密鑰登入',
     backToPassword: '返回密碼登入',
+    secureCookieHint:
+      '此瀏覽器曾透過 HTTPS 登入本站點,殘留的安全 Cookie 會導致 HTTP 下登入後仍被視為未登入。請清除本站點的 Cookie 後重試,或繼續使用 HTTPS 存取。',
   },
 
   dashboard: {

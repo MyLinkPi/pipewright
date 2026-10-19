@@ -64,7 +64,9 @@ import (
 const (
 	cookieSession = "pipewright_session"
 	cookieCsrf    = "pipewright_csrf"
-	headerCsrf    = "X-CSRF-Token"
+	// cookieLoginScheme 标记「该浏览器最近一次经 HTTPS 建立会话」(值固定 "https")。
+	cookieLoginScheme = "pipewright_login_scheme"
+	headerCsrf        = "X-CSRF-Token"
 )
 
 // contextKey 用于 context 值键,避免冲突。
@@ -1403,6 +1405,26 @@ func setSessionCookies(w http.ResponseWriter, r *http.Request, sess *auth.Sessio
 		Secure:   secure,
 		Expires:  sess.ExpiresAt,
 	})
+
+	// 仅在安全(HTTPS)请求时下发「HTTPS 登录过」标记 cookie,供前端登录页提醒:
+	// 曾用 HTTPS 访问的浏览器里,残留的 Secure 会话 cookie 会让浏览器静默丢弃后续
+	// HTTP 登录下发的非 Secure cookie(登录 200 但后续接口 401),只能手动清理。
+	// 两个关键属性:
+	//   - 自身绝不带 Secure:Secure cookie 对纯 HTTP 页面不可见,带上标记就读不到了;
+	//   - 明文 HTTP 请求不写、不覆盖:HTTP 登录即使服务端成功,cookie 也可能已被浏览器
+	//     丢弃,此时若把标记改成 http,警告恰好在「登录循环」场景里消失。
+	//     前端在确认 HTTP 登录真正生效后自行清除该标记。
+	// Expires 随会话:残留 Secure cookie 过期被清的同时标记同步失效,提醒自动停止。
+	if secure {
+		http.SetCookie(w, &http.Cookie{
+			Name:     cookieLoginScheme,
+			Value:    "https",
+			Path:     "/",
+			HttpOnly: false,
+			SameSite: http.SameSiteLaxMode,
+			Expires:  sess.ExpiresAt,
+		})
+	}
 }
 
 // makeSessionHandler 返回 GET /api/auth/session handler。

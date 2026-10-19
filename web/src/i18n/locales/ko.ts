@@ -152,6 +152,8 @@ const ko: typeof zhCN = {
     mfaErrCode: '코드 또는 백업 코드가 올바르지 않습니다',
     passkeyLogin: '패스키로 로그인',
     backToPassword: '비밀번호 로그인으로 돌아가기',
+    secureCookieHint:
+      '이 브라우저는 이전에 HTTPS로 이 사이트에 로그인했습니다. 남아 있는 Secure Cookie 때문에 HTTP로 로그인해도 로그인되지 않은 것으로 처리됩니다. 이 사이트의 Cookie를 삭제한 후 다시 시도하거나 HTTPS를 계속 사용하세요.',
   },
 
   dashboard: {

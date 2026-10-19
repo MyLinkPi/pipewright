@@ -152,6 +152,8 @@ const fr: typeof zhCN = {
     mfaErrCode: 'Code ou code de secours incorrect',
     passkeyLogin: 'Se connecter avec une passkey',
     backToPassword: 'Retour à la connexion par mot de passe',
+    secureCookieHint:
+      'Ce navigateur s\u2019est déjà connecté à ce site en HTTPS ; un cookie sécurisé résiduel fait apparaître les connexions suivantes en HTTP comme déconnectées. Effacez les cookies de ce site puis réessayez, ou continuez à utiliser HTTPS.',
   },
 
   dashboard: {

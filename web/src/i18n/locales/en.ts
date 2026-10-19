@@ -152,6 +152,8 @@ const en: typeof zhCN = {
     mfaErrCode: 'Incorrect code or backup code',
     passkeyLogin: 'Sign in with a passkey',
     backToPassword: 'Back to password sign-in',
+    secureCookieHint:
+      'This browser previously signed in to this site over HTTPS; a leftover secure cookie makes later HTTP sign-ins appear logged out. Clear this site\u2019s cookies and retry, or keep using HTTPS.',
   },
 
   dashboard: {
