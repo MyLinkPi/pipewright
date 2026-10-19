@@ -136,7 +136,7 @@ func (b *Builder) runScriptStepWithOpts(ctx context.Context, sink run.StepSink, 
 			return nil
 		}
 		if timedOut {
-			onLine("stderr", fmt.Sprintf("步骤「%s」执行超时(>%ds),已终止本次尝试", step.Name, step.TimeoutSeconds))
+			onLine(streamError, fmt.Sprintf("步骤「%s」执行超时(>%ds),已终止本次尝试", step.Name, step.TimeoutSeconds))
 		}
 		lastErr = ErrBuildFailed // 归一为构建失败(供上层置 failed)
 	}

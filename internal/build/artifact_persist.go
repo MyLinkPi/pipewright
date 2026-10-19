@@ -31,14 +31,14 @@ func (b *Builder) storeJarBytes(art *run.Artifact, jarPath, rename string, onLin
 	}
 	f, err := os.Open(jarPath)
 	if err != nil {
-		onLine(streamStderr, "制品库:打开 jar 失败(降级占位):"+err.Error())
+		onLine(streamError, "制品库:打开 jar 失败(降级占位):"+err.Error())
 		return false
 	}
 	defer func() { _ = f.Close() }()
 
 	key, size, err := b.artStore.Put(f)
 	if err != nil {
-		onLine(streamStderr, "制品库:存 jar 失败(降级占位):"+err.Error())
+		onLine(streamError, "制品库:存 jar 失败(降级占位):"+err.Error())
 		return false
 	}
 	filename := filepath.Base(jarPath)
@@ -82,7 +82,7 @@ func (b *Builder) storeDistDir(art *run.Artifact, dirPath, packMode, layout stri
 	key, size, err := b.artStore.Put(pr)
 	_ = pr.Close()
 	if err != nil {
-		onLine(streamStderr, "制品库:存 dist(tar.gz)失败(降级占位):"+err.Error())
+		onLine(streamError, "制品库:存 dist(tar.gz)失败(降级占位):"+err.Error())
 		return false
 	}
 	art.Reference = key
@@ -145,7 +145,7 @@ func (b *Builder) storeDirFiles(art *run.Artifact, dirPath string, onLine func(s
 		return nil
 	})
 	if walkErr != nil {
-		onLine(streamStderr, "制品库:按文件清单归档失败(降级占位):"+walkErr.Error())
+		onLine(streamError, "制品库:按文件清单归档失败(降级占位):"+walkErr.Error())
 		return false
 	}
 	// 空目录(无普通文件)同样归档为「空清单」而非降级占位:与 tar 路径一致(空目录会归档成
@@ -154,7 +154,7 @@ func (b *Builder) storeDirFiles(art *run.Artifact, dirPath string, onLine func(s
 	if ref == "" {
 		k, _, perr := b.artStore.Put(strings.NewReader(""))
 		if perr != nil {
-			onLine(streamStderr, "制品库:空目录归档失败(降级占位):"+perr.Error())
+			onLine(streamError, "制品库:空目录归档失败(降级占位):"+perr.Error())
 			return false
 		}
 		ref = k

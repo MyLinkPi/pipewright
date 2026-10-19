@@ -40,6 +40,6 @@ func (b *Builder) pruneImagesBestEffort(ctx context.Context, onLine func(stream,
 		return // 远程/桩等不支持本地镜像清理的驱动:跳过(不报错)。
 	}
 	if _, err := pruner.PruneDangling(ctx, onLine); err != nil {
-		onLine(streamStderr, "镜像清理(悬空)失败,忽略不影响构建:"+err.Error())
+		onLine(streamError, "镜像清理(悬空)失败,忽略不影响构建:"+err.Error())
 	}
 }

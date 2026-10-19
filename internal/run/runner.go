@@ -82,9 +82,12 @@ func NewStubRunner() *StubRunner {
 const StubFailureSecret = "SECRET_LEAK_zzz9k3"
 
 // 步骤 stream 取值(StubRunner 逐行 emit 用;真实构建经同一 StepSink.Log 喂行)。
+// streamError 表示框架判定的错误行(前端亮红);子进程 stderr 透传保持 "stderr"
+// (前端暖橙)——docker build 等工具把常规进度也写 stderr,不能按错误染红。
 const (
 	streamStdout = "stdout"
 	streamStderr = "stderr"
+	streamError  = "error"
 )
 
 // stubStepLogs 合成某步骤的真实感 stdout 日志行(每步若干行)。

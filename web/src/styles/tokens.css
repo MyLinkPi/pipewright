@@ -18,6 +18,16 @@
   --color-canvas:       oklch(13.5% 0.003 270);
   --color-term:         oklch(8.5% 0.004 270);
   --color-code:         oklch(13% 0.004 270);
+
+  /* ——— Terminal surface colors ——— */
+  /* 终端两主题下恒为深底,故配色不随主题翻转:这些 token 只为黑底调校,
+     [data-theme="light"] 块不覆盖。若借页面主题色(如 --color-red 的浅色主题
+     55% 深红)会与黑底低对比,错误行反而不醒目。 */
+  --color-term-err:      oklch(77% 0.19 22);            /* error 流:亮红,黑底对比 ≈8:1 */
+  --color-term-warn:     oklch(78% 0.09 70);            /* stderr 流:暖橙,可区分不高亮 */
+  --color-term-masked:   oklch(84% 0.14 92);            /* [MASKED] 标记前景 */
+  --color-term-masked-soft: oklch(80% 0.14 92 / 0.16);  /* [MASKED] 标记底色 */
+  --color-term-ln:       oklch(48% 0.012 270);          /* 行号槽 */
   --color-border:       oklch(100% 0 0 / 0.055);
   --color-border-strong:oklch(100% 0 0 / 0.12);
 

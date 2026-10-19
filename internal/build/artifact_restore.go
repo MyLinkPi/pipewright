@@ -51,13 +51,13 @@ func (b *Builder) restorePriorArtifacts(ctx context.Context, r *run.Run, workspa
 		// zip-slip 防护:相对路径必须落在工作区内。
 		clean := filepath.Clean(wp)
 		if filepath.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
-			onLine(streamStderr, "跨阶段恢复:拒绝越界产物路径 "+wp)
+			onLine(streamError, "跨阶段恢复:拒绝越界产物路径 "+wp)
 			continue
 		}
 		dest := filepath.Join(workspace, clean)
 		rc, oerr := b.artStore.Open(a.Reference)
 		if oerr != nil {
-			onLine(streamStderr, "跨阶段恢复:取产物字节失败 "+a.Name+":"+oerr.Error())
+			onLine(streamError, "跨阶段恢复:取产物字节失败 "+a.Name+":"+oerr.Error())
 			continue
 		}
 		format, _ := a.Metadata["format"].(string)
@@ -73,7 +73,7 @@ func (b *Builder) restorePriorArtifacts(ctx context.Context, r *run.Run, workspa
 		}
 		if format == "files" {
 			if rerr != nil {
-				onLine(streamStderr, "跨阶段恢复:写盘失败 "+a.Name+":"+rerr.Error())
+				onLine(streamError, "跨阶段恢复:写盘失败 "+a.Name+":"+rerr.Error())
 			} else {
 				onLine(streamStdout, "已恢复上游产物:"+a.Name+" → "+clean)
 			}
@@ -81,7 +81,7 @@ func (b *Builder) restorePriorArtifacts(ctx context.Context, r *run.Run, workspa
 		}
 		_ = rc.Close()
 		if rerr != nil {
-			onLine(streamStderr, "跨阶段恢复:写盘失败 "+a.Name+":"+rerr.Error())
+			onLine(streamError, "跨阶段恢复:写盘失败 "+a.Name+":"+rerr.Error())
 			continue
 		}
 		onLine(streamStdout, "已恢复上游产物:"+a.Name+" → "+clean)

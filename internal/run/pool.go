@@ -629,7 +629,12 @@ func (d *dbStepSink) StepDone(ctx context.Context, ordinal int, status string) e
 	}
 	// 步骤结束时间锚点行(状态 + 耗时;行前缀时间戳由 AppendLog 注入):
 	// 与 run_steps.finished_at 同刻,日志文本自身回答「这一步什么时候结束、跑了多久」。
-	_ = d.Log(context.Background(), streamStdout, ordinal, stepDoneText(status, d.stepStartedAt(ordinal)))
+	// 失败完结行走 error 流(前端亮红):失败锚点是日志里最该被一眼看到的行。
+	doneStream := streamStdout
+	if status == StepFailed {
+		doneStream = streamError
+	}
+	_ = d.Log(context.Background(), doneStream, ordinal, stepDoneText(status, d.stepStartedAt(ordinal)))
 	d.publish(ordinal, status, nil, &now)
 	return nil
 }
@@ -821,7 +826,11 @@ func (d *dbStepSink) reconcile(runFinal string) {
 			continue
 		}
 		// 校正同样补一条结束时间锚点行(与其它终态路径一致;被中断/未执行的步骤在日志里可见)。
-		_ = d.Log(context.Background(), streamStdout, p.ordinal, stepDoneText(target, p.startedAt))
+		reconcileStream := streamStdout
+		if target == StepFailed {
+			reconcileStream = streamError
+		}
+		_ = d.Log(context.Background(), reconcileStream, p.ordinal, stepDoneText(target, p.startedAt))
 		d.svc.bus.publish(Event{
 			Kind:   EventStep,
 			RunID:  d.runID,

@@ -11,7 +11,10 @@
     · 自动滚底:新行到达滚到底;但用户手动上滚(离开底部)时暂停自动滚——
       这是终端的常见行为;用户滚回底部自动恢复。滚动用 scrollTop 写入,
       不触发布局抖动。
-    · stdout 默认色 / stderr 红色着色;行号(line-num token);命中 [MASKED]
+    · 三档着色:stdout 默认色 / stderr 暖橙(子进程透传——docker build 等工具把常规
+      进度也写 stderr,不能按错误染红)/ error 亮红(框架判定失败的诊断行,后端专用
+      流值)。终端恒黑底,配色用 --color-term-* 域 token,不随页面主题翻转。
+      行号(line-num token);命中 [MASKED]
       子串高亮标识(脱敏由后端完成,前端仅渲染标记)。
     · 步骤 × 机器分组:「全部日志」视图在步骤切换处插入标题分隔行(steps prop 提供
       名称/阶段/状态);行带 machine 归属(来源构建机/部署目标机)时行首渲染机器徽标,
@@ -373,7 +376,10 @@ function segments(text: string): Segment[] {
           <li
             v-else
             class="term-line"
-            :class="{ 'term-line--err': row.line.stream === 'stderr' }"
+            :class="{
+              'term-line--err': row.line.stream === 'error',
+              'term-line--warn': row.line.stream === 'stderr',
+            }"
           >
             <span class="term-ln mono" aria-hidden="true">{{ row.line.seq }}</span>
             <span
@@ -661,13 +667,13 @@ function segments(text: string): Segment[] {
   background: oklch(100% 0 0 / 0.035);
 }
 
-/* line number / seq gutter */
+/* line number / seq gutter(终端恒黑底 → term 域色,不随主题翻转) */
 .term-ln {
   flex-shrink: 0;
   width: 3.5ch;
   text-align: right;
   font-size: 0.72rem;
-  color: var(--color-line-num);
+  color: var(--color-term-ln);
   user-select: none;
   -webkit-user-select: none;
 }
@@ -680,13 +686,24 @@ function segments(text: string): Segment[] {
   word-break: normal;
 }
 
-/* stderr coloring */
+/* error 流(框架判定失败)→ 亮红:term 域 token,黑底下高对比,两主题一致 */
 .term-line--err .term-text {
-  color: var(--color-red);
+  color: var(--color-term-err);
 }
 
 .term-line--err .term-ln {
-  color: var(--color-red);
+  color: var(--color-term-err);
+  opacity: 0.6;
+}
+
+/* stderr 流(子进程透传)→ 暖橙:可区分但不高亮——docker build 等工具把常规
+   进度也写 stderr,若按错误染红整段会淹没真正的失败行 */
+.term-line--warn .term-text {
+  color: var(--color-term-warn);
+}
+
+.term-line--warn .term-ln {
+  color: var(--color-term-warn);
   opacity: 0.6;
 }
 
@@ -695,8 +712,8 @@ function segments(text: string): Segment[] {
   display: inline-block;
   padding: 0 4px;
   border-radius: var(--rounded-sm);
-  background: var(--color-amber-soft);
-  color: var(--color-amber);
+  background: var(--color-term-masked-soft);
+  color: var(--color-term-masked);
   font-weight: 700;
   letter-spacing: 0.02em;
 }

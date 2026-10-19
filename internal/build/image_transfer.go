@@ -51,7 +51,7 @@ func (t *ImageTransfer) runLine(ctx context.Context, args []string) (string, err
 	cmd.Stdout = &out
 	cmd.Stderr = &errBuf
 	if err := cmd.Run(); err != nil {
-		t.log("stderr", "  %s %v 失败:%s", t.binary(), args[:1], strings.TrimSpace(errBuf.String()))
+		t.log(streamError, "  %s %v 失败:%s", t.binary(), args[:1], strings.TrimSpace(errBuf.String()))
 		return "", fmt.Errorf("%w: %s %s", ErrImageTransfer, t.binary(), args[0])
 	}
 	return out.String(), nil
@@ -152,7 +152,7 @@ func (t *ImageTransfer) ExportStream(ctx context.Context, ref string, w io.Write
 	var errBuf bytes.Buffer
 	cmd.Stderr = &errBuf
 	if err := cmd.Run(); err != nil {
-		t.log("stderr", "  %s save 失败:%s", t.binary(), strings.TrimSpace(errBuf.String()))
+		t.log(streamError, "  %s save 失败:%s", t.binary(), strings.TrimSpace(errBuf.String()))
 		return fmt.Errorf("%w: save %s", ErrImageTransfer, ref)
 	}
 	return nil

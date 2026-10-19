@@ -76,7 +76,7 @@ func (b *Builder) saveJobCache(ctx context.Context, rep dagrun.StageReporter, jb
 	}
 	key := buildcache.DeriveKey(branch, cc.key, workspace)
 	if err := b.buildCache.Save(ctx, key, cc.paths, workspace); err != nil {
-		_ = rep.Log(ctx, streamStderr, "构建缓存保存失败(不影响本次构建结果):"+err.Error())
+		_ = rep.Log(ctx, streamError, "构建缓存保存失败(不影响本次构建结果):"+err.Error())
 		return
 	}
 	_ = rep.Log(ctx, streamStdout, "已保存构建缓存:"+joinPaths(cc.paths))

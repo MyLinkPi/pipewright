@@ -115,7 +115,7 @@ func (b *Builder) resolvePushed(ctx context.Context, r *run.Run) (*pushsource.Re
 func (b *Builder) runPushedSourceJob(ctx context.Context, rep dagrun.StageReporter, jb pipeline.Job, stage pipeline.Stage, r *run.Run) error {
 	rev, items, err := b.resolvePushed(ctx, r)
 	if err != nil {
-		_ = rep.Log(ctx, streamStderr, "推送源解析失败:"+err.Error()+"(项目尚无推送修订,或所选修订/条目不存在)")
+		_ = rep.Log(ctx, streamError, "推送源解析失败:"+err.Error()+"(项目尚无推送修订,或所选修订/条目不存在)")
 		return ErrBuildFailed
 	}
 	_ = rep.Log(ctx, streamStdout, fmt.Sprintf("· 推送源「%s」:修订 %s(%d 个条目,来自集群推送)", jb.Name, rev.Label, len(items)))
@@ -144,7 +144,7 @@ func (b *Builder) runPushedSourceJob(ctx context.Context, rep dagrun.StageReport
 			_ = rep.Log(ctx, streamStdout, fmt.Sprintf("  · 产物 %s(%s)→ %s", it.Name, art.Type, dest))
 		}
 		if err := rep.EmitArtifact(ctx, art); err != nil {
-			_ = rep.Log(ctx, streamStderr, "登记推送源条目失败:"+err.Error())
+			_ = rep.Log(ctx, streamError, "登记推送源条目失败:"+err.Error())
 			return ErrBuildFailed
 		}
 	}
@@ -167,7 +167,7 @@ func artifactTypeForPath(p string) string {
 func (b *Builder) materializePushedWorkspace(ctx context.Context, r *run.Run, workspace string, rep dagrun.StageReporter) (string, error) {
 	rev, items, err := b.resolvePushed(ctx, r)
 	if err != nil {
-		_ = rep.Log(ctx, streamStderr, "推送源物化失败:"+err.Error())
+		_ = rep.Log(ctx, streamError, "推送源物化失败:"+err.Error())
 		return "", ErrBuildFailed
 	}
 	for _, it := range items {
@@ -180,7 +180,7 @@ func (b *Builder) materializePushedWorkspace(ctx context.Context, r *run.Run, wo
 		}
 		clean := filepath.Clean(dest)
 		if filepath.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
-			_ = rep.Log(ctx, streamStderr, "推送条目路径越界,已拒绝:"+dest)
+			_ = rep.Log(ctx, streamError, "推送条目路径越界,已拒绝:"+dest)
 			return "", ErrBuildFailed
 		}
 		full := filepath.Join(workspace, clean)
@@ -189,7 +189,7 @@ func (b *Builder) materializePushedWorkspace(ctx context.Context, r *run.Run, wo
 		}
 		src, oerr := b.artStore.Open(it.SHA256)
 		if oerr != nil {
-			_ = rep.Log(ctx, streamStderr, "推送条目制品缺失:"+it.Name)
+			_ = rep.Log(ctx, streamError, "推送条目制品缺失:"+it.Name)
 			return "", ErrBuildFailed
 		}
 		dst, derr := os.Create(full)
@@ -223,27 +223,27 @@ func meshPushItemNames(cfg map[string]any) []string {
 // 对端缺失 blob → multipart 直传 → 播报对端项目/修订。对端离线/未授权 → 快速失败。
 func (b *Builder) runMeshPushJob(ctx context.Context, rep dagrun.StageReporter, jb pipeline.Job, r *run.Run) error {
 	if b.meshClient == nil || b.meshPeers == nil || b.artifactLister == nil {
-		_ = rep.Log(ctx, streamStderr, "集群推送节点「"+jb.Name+"」:集群依赖未装配(客户端/节点表/产物列举缺失)")
+		_ = rep.Log(ctx, streamError, "集群推送节点「"+jb.Name+"」:集群依赖未装配(客户端/节点表/产物列举缺失)")
 		return ErrBuildFailed
 	}
 	nodeID := strings.TrimSpace(cfgString(jb.Config, "node"))
 	if nodeID == "" {
-		_ = rep.Log(ctx, streamStderr, "集群推送节点「"+jb.Name+"」:未指定目标节点")
+		_ = rep.Log(ctx, streamError, "集群推送节点「"+jb.Name+"」:未指定目标节点")
 		return ErrBuildFailed
 	}
 	peer, err := b.meshPeers.GetPeer(ctx, nodeID)
 	if errors.Is(err, mesh.ErrNotFound) || peer == nil {
-		_ = rep.Log(ctx, streamStderr, "集群推送节点「"+jb.Name+"」:目标节点不存在(节点表未登记)")
+		_ = rep.Log(ctx, streamError, "集群推送节点「"+jb.Name+"」:目标节点不存在(节点表未登记)")
 		return ErrBuildFailed
 	}
 	if peer.VirtualIP == "" {
-		_ = rep.Log(ctx, streamStderr, "集群推送节点「"+jb.Name+"」:目标节点无虚拟 IP(EasyTier 未组网)")
+		_ = rep.Log(ctx, streamError, "集群推送节点「"+jb.Name+"」:目标节点无虚拟 IP(EasyTier 未组网)")
 		return ErrBuildFailed
 	}
 
 	arts, err := b.artifactLister(ctx, r.ID)
 	if err != nil {
-		_ = rep.Log(ctx, streamStderr, "列举本 run 产物失败:"+err.Error())
+		_ = rep.Log(ctx, streamError, "列举本 run 产物失败:"+err.Error())
 		return ErrBuildFailed
 	}
 	names := meshPushItemNames(jb.Config)
@@ -261,18 +261,18 @@ func (b *Builder) runMeshPushJob(ctx context.Context, rep dagrun.StageReporter, 
 		}
 	}
 	if len(selected) == 0 {
-		_ = rep.Log(ctx, streamStderr, fmt.Sprintf("集群推送节点「%s」:未匹配到任何产物(本 run 共 %d 个)", jb.Name, len(arts)))
+		_ = rep.Log(ctx, streamError, fmt.Sprintf("集群推送节点「%s」:未匹配到任何产物(本 run 共 %d 个)", jb.Name, len(arts)))
 		return ErrBuildFailed
 	}
 
 	selfNode, err := b.meshPeers.NodeID(ctx)
 	if err != nil {
-		_ = rep.Log(ctx, streamStderr, "解析本节点身份失败:"+err.Error())
+		_ = rep.Log(ctx, streamError, "解析本节点身份失败:"+err.Error())
 		return ErrBuildFailed
 	}
 	label, lerr := renderRunPlaceholders(strings.TrimSpace(cfgString(jb.Config, "revisionLabel")), r)
 	if lerr != nil {
-		_ = rep.Log(ctx, streamStderr, "集群推送节点「"+jb.Name+"」:修订标签占位渲染失败:"+lerr.Error())
+		_ = rep.Log(ctx, streamError, "集群推送节点「"+jb.Name+"」:修订标签占位渲染失败:"+lerr.Error())
 		return ErrBuildFailed
 	}
 
@@ -296,18 +296,18 @@ func (b *Builder) runMeshPushJob(ctx context.Context, rep dagrun.StageReporter, 
 	for _, a := range selected {
 		if a.Type == run.ArtifactImage {
 			if b.meshImages == nil {
-				_ = rep.Log(ctx, streamStderr, "集群推送节点「"+jb.Name+"」:镜像导出器未装配,无法推送镜像产物")
+				_ = rep.Log(ctx, streamError, "集群推送节点「"+jb.Name+"」:镜像导出器未装配,无法推送镜像产物")
 				return ErrBuildFailed
 			}
 			tmp, terr := b.meshImages.exportImageArchiveToTemp(ctx, a.Reference)
 			if terr != nil {
-				_ = rep.Log(ctx, streamStderr, "导出镜像归档失败("+a.Name+"):"+terr.Error())
+				_ = rep.Log(ctx, streamError, "导出镜像归档失败("+a.Name+"):"+terr.Error())
 				return ErrBuildFailed
 			}
 			tempFiles = append(tempFiles, tmp)
 			sha, size, serr := hashFile(tmp)
 			if serr != nil {
-				_ = rep.Log(ctx, streamStderr, "计算镜像归档哈希失败:"+serr.Error())
+				_ = rep.Log(ctx, streamError, "计算镜像归档哈希失败:"+serr.Error())
 				return ErrBuildFailed
 			}
 			item := mesh.PushItem{Name: a.Name, Kind: pushsource.KindImage, SHA256: sha, Size: size, ImageRef: a.Reference}
@@ -335,7 +335,7 @@ func (b *Builder) runMeshPushJob(ctx context.Context, rep dagrun.StageReporter, 
 		Missing []string `json:"missing"`
 	}{}
 	if err := b.meshClient.Do(ctx, peer, "POST", "/api/mesh/push/preflight", manifest, &pf); err != nil {
-		_ = rep.Log(ctx, streamStderr, "推送预检失败:"+meshPeerErrText(err))
+		_ = rep.Log(ctx, streamError, "推送预检失败:"+meshPeerErrText(err))
 		return ErrBuildFailed
 	}
 	for _, m := range pf.Missing {
@@ -347,7 +347,7 @@ func (b *Builder) runMeshPushJob(ctx context.Context, rep dagrun.StageReporter, 
 
 	result, err := b.meshClient.Push(ctx, peer, manifest, pickReaders(readers, missing))
 	if err != nil {
-		_ = rep.Log(ctx, streamStderr, "集群推送失败:"+meshPeerErrText(err))
+		_ = rep.Log(ctx, streamError, "集群推送失败:"+meshPeerErrText(err))
 		return ErrBuildFailed
 	}
 	created := ""
@@ -362,17 +362,17 @@ func (b *Builder) runMeshPushJob(ctx context.Context, rep dagrun.StageReporter, 
 // origin=按本项目的对应关系寻址,即推送到对方的那份)→ 可选等待完成并回流日志/状态。
 func (b *Builder) runMeshTriggerJob(ctx context.Context, rep dagrun.StageReporter, jb pipeline.Job, r *run.Run) error {
 	if b.meshClient == nil || b.meshPeers == nil {
-		_ = rep.Log(ctx, streamStderr, "集群触发节点「"+jb.Name+"」:集群依赖未装配")
+		_ = rep.Log(ctx, streamError, "集群触发节点「"+jb.Name+"」:集群依赖未装配")
 		return ErrBuildFailed
 	}
 	nodeID := strings.TrimSpace(cfgString(jb.Config, "node"))
 	if nodeID == "" {
-		_ = rep.Log(ctx, streamStderr, "集群触发节点「"+jb.Name+"」:未指定目标节点")
+		_ = rep.Log(ctx, streamError, "集群触发节点「"+jb.Name+"」:未指定目标节点")
 		return ErrBuildFailed
 	}
 	peer, err := b.meshPeers.GetPeer(ctx, nodeID)
 	if errors.Is(err, mesh.ErrNotFound) || peer == nil {
-		_ = rep.Log(ctx, streamStderr, "集群触发节点「"+jb.Name+"」:目标节点不存在(节点表未登记)")
+		_ = rep.Log(ctx, streamError, "集群触发节点「"+jb.Name+"」:目标节点不存在(节点表未登记)")
 		return ErrBuildFailed
 	}
 
@@ -395,14 +395,14 @@ func (b *Builder) runMeshTriggerJob(ctx context.Context, rep dagrun.StageReporte
 	if strings.TrimSpace(cfgString(jb.Config, "targetMode")) == "origin" {
 		selfNode, nerr := b.meshPeers.NodeID(ctx)
 		if nerr != nil {
-			_ = rep.Log(ctx, streamStderr, "解析本节点身份失败:"+nerr.Error())
+			_ = rep.Log(ctx, streamError, "解析本节点身份失败:"+nerr.Error())
 			return ErrBuildFailed
 		}
 		path = fmt.Sprintf("/api/mesh/projects/by-origin/%s/%s/runs", selfNode, r.ProjectID)
 	} else {
 		pid := strings.TrimSpace(cfgString(jb.Config, "project"))
 		if pid == "" {
-			_ = rep.Log(ctx, streamStderr, "集群触发节点「"+jb.Name+"」:未指定对方项目")
+			_ = rep.Log(ctx, streamError, "集群触发节点「"+jb.Name+"」:未指定对方项目")
 			return ErrBuildFailed
 		}
 		path = "/api/mesh/projects/" + pid + "/runs"
@@ -410,7 +410,7 @@ func (b *Builder) runMeshTriggerJob(ctx context.Context, rep dagrun.StageReporte
 
 	var result mesh.RunTriggerResult
 	if err := b.meshClient.Do(ctx, peer, "POST", path, body, &result); err != nil {
-		_ = rep.Log(ctx, streamStderr, "触发对方运行失败:"+meshPeerErrText(err))
+		_ = rep.Log(ctx, streamError, "触发对方运行失败:"+meshPeerErrText(err))
 		return ErrBuildFailed
 	}
 	deep := peer.DeepURL() + result.RunPath
@@ -445,7 +445,7 @@ func (b *Builder) awaitMeshRun(ctx context.Context, rep dagrun.StageReporter, jb
 			return run.ErrCanceled
 		}
 		if time.Now().After(deadline) {
-			_ = rep.Log(ctx, streamStderr, fmt.Sprintf("等待对方运行超时(%s):%s", timeout, deep))
+			_ = rep.Log(ctx, streamError, fmt.Sprintf("等待对方运行超时(%s):%s", timeout, deep))
 			return ErrBuildFailed
 		}
 		remains := time.Until(deadline)
@@ -494,7 +494,7 @@ func (b *Builder) awaitMeshRun(ctx context.Context, rep dagrun.StageReporter, jb
 			}
 		}
 		if time.Now().After(deadline) {
-			_ = rep.Log(ctx, streamStderr, fmt.Sprintf("等待对方运行超时(%s):%s", timeout, deep))
+			_ = rep.Log(ctx, streamError, fmt.Sprintf("等待对方运行超时(%s):%s", timeout, deep))
 			return ErrBuildFailed
 		}
 	}
@@ -503,10 +503,10 @@ func (b *Builder) awaitMeshRun(ctx context.Context, rep dagrun.StageReporter, jb
 		_ = rep.Log(ctx, streamStdout, "  ✓ 对方运行成功:"+deep)
 		return nil
 	case run.StatusPartialFailed:
-		_ = rep.Log(ctx, streamStderr, "  ✗ 对方运行部分失败:"+deep)
+		_ = rep.Log(ctx, streamError, "  ✗ 对方运行部分失败:"+deep)
 		return ErrBuildFailed
 	default:
-		_ = rep.Log(ctx, streamStderr, "  ✗ 对方运行未成功("+terminal+"):"+deep)
+		_ = rep.Log(ctx, streamError, "  ✗ 对方运行未成功("+terminal+"):"+deep)
 		return ErrBuildFailed
 	}
 }

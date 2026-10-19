@@ -27,10 +27,13 @@ const (
 	stepPush  = "推送镜像"
 )
 
-// 日志流取值(对齐 run 包 streamStdout/streamStderr;本包独立常量避免跨包耦合)。
+// 日志流取值(对齐 run 包 streamStdout/streamError/streamError;本包独立常量避免跨包耦合)。
+// streamError 仅用于**框架自身判定失败**的诊断行(克隆失败/缓存保存失败/部署失败…),前端亮红;
+// 子进程 stderr 一律以字面量 "stderr" 原样透传(driver/remote/脚本输出),前端降为暖橙——
+// docker build 等工具把常规进度也写 stderr,不能按错误整段染红。
 const (
 	streamStdout = "stdout"
-	streamStderr = "stderr"
+	streamError  = "error"
 )
 
 // localTagPrefix 是本地镜像 tag 前缀(local-tag = pipewright/<project-slug>:<commit7>)。
@@ -289,7 +292,7 @@ func (b *Builder) Run(ctx context.Context, r *run.Run, sink run.StepSink) error 
 		if errors.Is(ctx.Err(), context.Canceled) {
 			return b.cancelAt(ctx, sink, 0)
 		}
-		_ = sink.Log(ctx, streamStderr, 0, "源码克隆失败(鉴权/网络/ref 不存在或被 SSRF 拒绝)")
+		_ = sink.Log(ctx, streamError, 0, "源码克隆失败(鉴权/网络/ref 不存在或被 SSRF 拒绝)")
 		return b.failStep(ctx, sink, 0, "源码克隆失败:"+cerr.Error())
 	}
 	if resolved != nil && resolved.CommitShort != "" && b.recordCommit != nil {
@@ -673,7 +676,7 @@ func (b *Builder) lineSink(sink run.StepSink, ordinal int) func(stream, line str
 func (b *Builder) failPlan(ctx context.Context, sink run.StepSink, stepName, msg string) error {
 	if err := sink.Plan(ctx, []run.StepDecl{{Name: stepName}}); err == nil {
 		_ = sink.StepRunning(ctx, 0)
-		_ = sink.Log(ctx, streamStderr, 0, msg)
+		_ = sink.Log(ctx, streamError, 0, msg)
 		_ = sink.StepDone(ctx, 0, run.StepFailed)
 	}
 	_ = sink.SetFailureLog(ctx, msg)

@@ -96,14 +96,22 @@ func TestRunLogsEndpointPagingMasked(t *testing.T) {
 	if !dto.Complete {
 		t.Fatalf("终态 run 的 complete 应为 true")
 	}
-	// 冻结字段 + seq 单调升序。
+	// 冻结字段 + seq 单调升序。stream 三档:stdout(默认)/ stderr(子进程透传)/
+	// error(框架判定失败;失败步骤的完结锚点行必为 error,见 pool.StepDone)。
+	sawError := false
 	for i, l := range dto.Lines {
 		if l.Seq != i+1 {
 			t.Fatalf("seq 应从 1 起连续, line[%d].seq=%d", i, l.Seq)
 		}
-		if l.Stream != "stdout" && l.Stream != "stderr" {
+		if l.Stream != "stdout" && l.Stream != "stderr" && l.Stream != "error" {
 			t.Fatalf("stream 非法: %q", l.Stream)
 		}
+		if l.Stream == "error" {
+			sawError = true
+		}
+	}
+	if !sawError {
+		t.Fatalf("失败 run 应至少有一行 stream=error(失败步骤完结行)")
 	}
 	last := dto.Lines[len(dto.Lines)-1].Seq
 	if dto.NextSeq != last+1 {
