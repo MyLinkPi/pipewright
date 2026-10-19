@@ -41,7 +41,7 @@
 - 迁移:`internal/store/migrations/{sqlite,mysql}/0088_ssar_samples.sql`。
 - HTTP 面:`internal/httpapi/ssar.go`(`router.go` 挂载,`WithSsar` 注入);审计动作 `internal/audit`(ssar_download / ssar_install)。
 - 装配:`cmd/pipewright/main.go`(下载器 + 服务构造、采样 ticker 与保留清理)。
-- 前端:`web/src/views/SsarMonitor.vue`(包状态卡 / 服务器表 / 详情图表 + 细查)、`web/src/components/metrics/MultiLineChart.vue`(多量纲 SVG 折线)、`web/src/api/ssar.ts`;路由 `/ssar-monitor`(admin)。
+- 前端(列表 + 独立详情两页):`web/src/views/SsarMonitor.vue`(列表:包状态卡 / 服务器表 / 安装动作;点机器跳详情)、`web/src/views/SsarMonitorDetail.vue`(单机详情:总览图表 60s 自动刷新 + 细查面板)、`web/src/components/metrics/MultiLineChart.vue`(多量纲 SVG 折线)、`web/src/api/ssar.ts`;路由 `/ssar-monitor` 与 `/ssar-monitor/:id`(admin)。
 
 ## 测试
 

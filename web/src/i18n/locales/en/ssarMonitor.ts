@@ -28,7 +28,10 @@ export default {
   install: 'Install',
   upgrade: 'Upgrade',
 
-  detailHeading: '{name} · monitoring detail',
+  back: 'Back to machines',
+  overviewHeading: 'Overview (platform samples)',
+  lastSampleLabel: 'Last sample',
+  notInstalledHint: 'ssar is not installed (or the collector is not running) on this machine — charts have no data; install / upgrade from the list page',
   minutesLabel: '{n} min',
   hoursLabel: '{n} h',
   daysLabel: '{n} d',

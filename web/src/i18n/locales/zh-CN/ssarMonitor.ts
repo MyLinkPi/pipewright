@@ -28,7 +28,10 @@ export default {
   install: '安装',
   upgrade: '升级',
 
-  detailHeading: '{name} · 监控详情',
+  back: '返回机器列表',
+  overviewHeading: '总览(平台采样)',
+  lastSampleLabel: '最近采样',
+  notInstalledHint: '该机尚未安装 ssar(或采集器未运行),图表暂无数据;请回列表页安装 / 升级',
   minutesLabel: '{n} 分钟',
   hoursLabel: '{n} 小时',
   daysLabel: '{n} 天',

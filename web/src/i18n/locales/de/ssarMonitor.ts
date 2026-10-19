@@ -28,7 +28,10 @@ export default {
   install: 'Installieren',
   upgrade: 'Aktualisieren',
 
-  detailHeading: '{name} · Überwachungsdetails',
+  back: 'Zurück zur Maschinenliste',
+  overviewHeading: 'Übersicht (Plattform-Stichproben)',
+  lastSampleLabel: 'Letzte Stichprobe',
+  notInstalledHint: 'ssar ist auf dieser Maschine nicht installiert (oder der Collector läuft nicht) — die Diagramme haben keine Daten; installieren / aktualisieren Sie über die Listenseite',
   minutesLabel: '{n} Min.',
   hoursLabel: '{n} Std.',
   daysLabel: '{n} T.',
