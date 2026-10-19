@@ -1,0 +1,57 @@
+export default {
+  title: 'Surveillance des machines',
+  subtitle:
+    'Supervision des serveurs via ssar (fork maintenu en interne) : les collecteurs déployés échantillonnent localement, la plateforme stocke des échantillons périodiques pour la vue d’ensemble, et chaque machine conserve 7 jours d’historique fin pour l’analyse détaillée',
+  errLoadTitle: 'Échec du chargement',
+
+  binHeading: 'Paquets ssar',
+  binEmpty: 'Aucun paquet en cache (GitHub Release : MyLinkPi/ssar)',
+  binDownloading: 'Téléchargement des paquets…',
+  binVersion: 'En cache {version} ({n} paquet(s))',
+  binErr: 'Dernier téléchargement échoué : {err}',
+  binDownload: 'Télécharger les paquets',
+  binRedownload: 'Retélécharger',
+  installAll: 'Installer / mettre à jour tout',
+
+  installAllOk: '{n} serveur(s) installé(s)',
+  installPartial: '{ok} réussis, {fail} échoués',
+  installFailed: 'La requête d’installation a échoué',
+
+  serversHeading: 'Serveurs',
+  colServer: 'Serveur',
+  colStatus: 'État ssar',
+  colLastSample: 'Dernier échantillon',
+  colActions: 'Actions',
+  notInstalled: 'Non installé',
+  collectorActive: 'Collecte en cours',
+  collectorStopped: 'Collecteur arrêté',
+  install: 'Installer',
+  upgrade: 'Mettre à niveau',
+
+  detailHeading: '{name} · détail de la surveillance',
+  minutesLabel: '{n} min',
+  hoursLabel: '{n} h',
+  daysLabel: '{n} j',
+
+  chartCpu: 'CPU (jiffies/s, cumul toutes CPU)',
+  chartMem: 'Mémoire utilisée % (cache de pages inclus)',
+  chartLoad: 'Charge et file d’exécution',
+  chartTcp: 'Connexions et retransmissions TCP',
+  cpuUser: 'user',
+  cpuSystem: 'system',
+  cpuIowait: 'iowait',
+  cpuSteal: 'steal',
+  memUsed: 'Utilisée',
+  load1: 'load1',
+  runq: 'File d’exécution',
+  tcpEstab: 'Établies',
+  tcpRetrans: 'Retrans/s',
+
+  drillView: 'Vue détaillée',
+  drillMachineLocal:
+    'La vue détaillée lit l’historique ssar local de la machine (7 jours par défaut) ; la colonne horodatage est l’heure locale de la machine',
+  drillTime: 'Heure (locale machine)',
+
+  chartEmpty: 'Pas encore de données',
+  chartAria: 'Graphique linéaire des métriques',
+}

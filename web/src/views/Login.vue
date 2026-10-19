@@ -986,9 +986,10 @@ onBeforeUnmount(() => {
   color: #fcd34d;
 }
 .banner--hint {
-  background: rgba(34, 211, 238, 0.1);
-  border-color: rgba(34, 211, 238, 0.35);
-  color: #a5f3fc;
+  background: rgba(245, 158, 11, 0.13);
+  border-color: rgba(245, 158, 11, 0.45);
+  color: #fcd34d;
+  font-weight: 500;
 }
 .banner__icon {
   flex-shrink: 0;

@@ -42,6 +42,7 @@ const Files = () => import('../views/Files.vue')
 const Artifacts = () => import('../views/Artifacts.vue')
 // Story 6-5: configurable anomaly detection & alerts (FR-23)
 const AnomalyDetection = () => import('../views/AnomalyDetection.vue')
+const SsarMonitor = () => import('../views/SsarMonitor.vue')
 // 集群(对等节点 + EasyTier 自组网):节点状态/链路(p2p|中继)总览 + 授权管理入口
 const Cluster = () => import('../views/Cluster.vue')
 // Ceph 集群部署与管理:cephadm 引导向导 + 状态/主机/OSD/存储池/RBD/CephFS 管理
@@ -209,6 +210,8 @@ const router = createRouter({
         { path: 'proxy', redirect: { name: 'cert-mgmt' } },
         // Story 6-5: configurable anomaly detection & alerts (FR-23)
         { path: 'anomaly', name: 'anomaly', component: AnomalyDetection, meta: { title: '异常检测' } },
+        // 机器监控:ssar(自维护 fork)安装分发 + 平台采样总览 + 机器侧细粒度历史(仅管理员)。
+        { path: 'ssar-monitor', name: 'ssar-monitor', component: SsarMonitor, meta: { title: '机器监控', roles: ['admin'] } },
         // 顶层「通知」占位页 → 重定向到真实的通知配置页。
         { path: 'notifications', name: 'notifications', redirect: { name: 'settings-notifications' } },
         {

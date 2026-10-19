@@ -54,6 +54,7 @@ import (
 	"github.com/huangchengsir/pipewright/internal/servercmd"
 	"github.com/huangchengsir/pipewright/internal/servicereg"
 	"github.com/huangchengsir/pipewright/internal/srcupdate"
+	"github.com/huangchengsir/pipewright/internal/ssar"
 	"github.com/huangchengsir/pipewright/internal/systemcfg"
 	"github.com/huangchengsir/pipewright/internal/target"
 	"github.com/huangchengsir/pipewright/internal/trigger"
@@ -112,6 +113,7 @@ type options struct {
 	anomalyInterval   int // 后台定时检测间隔(秒);0=已关闭。供前端显示节奏。
 	anomalyCooldown   int // 同条件告警去重冷却窗口(秒)。
 	metricsHistory    metrics.Service
+	ssar              ssar.Service
 	oauth             oauth.Service
 	approvalCoord     *approval.Coordinator
 	approvalStore     *approval.Store
@@ -560,6 +562,13 @@ func WithAnomalyConfig(intervalSec, cooldownSec int) Option {
 // 供异常检测页画 CPU/内存/磁盘随时间走势折线。不传则该端点返回 503。
 func WithMetricsHistory(s metrics.Service) Option {
 	return func(o *options) { o.metricsHistory = s }
+}
+
+// WithSsar 注入机器监控服务(internal/ssar),挂载 /api/ssar/* 路由:
+// GET overview/query/history 过 auth(只读);POST download/install 过 auth + CSRF + 审计。
+// 不传则相关端点返回 503(服务未初始化)。
+func WithSsar(s ssar.Service) Option {
+	return func(o *options) { o.ssar = s }
 }
 
 // WithOAuth 注入多 provider OAuth 凭据接入服务,挂载 /api/oauth/* 路由:
@@ -1227,6 +1236,16 @@ func New(webFS fs.FS, authn auth.Authenticator, opts ...Option) http.Handler {
 		ar.Post("/anomaly/check", makeAnomalyCheckHandler(an))
 		ar.Get("/anomaly/alerts", makeListAnomalyAlertsHandler(an))
 		ar.Get("/metrics/history", makeMetricsHistoryHandler(o.metricsHistory))
+
+		// 机器监控(自维护 fork MyLinkPi/ssar):安装分发 + 平台采样总览 + 机器侧细粒度
+		// 历史按需查询。o.ssar 为 nil 时各 handler 返回 503。GET 过 auth;POST 为写
+		// 方法,过 auth + CSRF(审计在 handler 内)。query 的 view 白名单 / 区间校验
+		// 在领域层(绝无用户输入拼进远端命令行,AC-SEC-02)。
+		ar.Get("/ssar/overview", makeSsarOverviewHandler(o.ssar, o.servers))
+		ar.Post("/ssar/download", makeSsarDownloadHandler(o.ssar, aud))
+		ar.Post("/ssar/install", makeSsarInstallHandler(o.ssar, aud))
+		ar.Get("/ssar/query", makeSsarQueryHandler(o.ssar))
+		ar.Get("/ssar/history", makeSsarHistoryHandler(o.ssar))
 
 		// 多 provider OAuth 凭据接入(连接 Gitee/GitHub/GitLab/自建)。oa 为 nil → handler 503。
 		// apps 列表/upsert:GET 过 auth;PUT 写方法过 auth + CSRF(clientSecret 只写、加密入库、响应仅掩码)。

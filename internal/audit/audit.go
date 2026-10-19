@@ -80,6 +80,9 @@ const (
 	ActionPasskeyAdded           = "passkey_added"
 	ActionPasskeyRemoved         = "passkey_removed"
 	ActionMemberMFAReset         = "member_mfa_reset"
+	// 机器监控(ssar):安装包下载触发 / 部署到目标机(敏感:向目标机装包并启动服务)。
+	ActionSsarDownload = "ssar_download"
+	ActionSsarInstall  = "ssar_install"
 )
 
 // 目标类型枚举(供 TargetType 填值;非强制白名单,便于后续 story 扩展)。
@@ -97,6 +100,7 @@ const (
 	TargetRegistryHub = "registry_hub"
 	TargetUser        = "user"
 	TargetInvitation  = "invitation"
+	TargetSsar        = "ssar"
 )
 
 // Entry 是一条审计写入入参(冻结契约)。Detail 写库前过 Masker,绝不含明文 secret。
