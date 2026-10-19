@@ -1,5 +1,6 @@
 SHELL := /bin/bash
 BIN := pipewright
+CLIENT_BIN := pwclient.exe
 
 # 模块代理:默认走国内镜像(proxy.golang.org 在境内常超时),与 Dockerfile 保持一致。
 # 用 ?= 保证 CI / 已有 GOPROXY 环境可覆盖;export 后传入 go 子进程。
@@ -19,7 +20,7 @@ DATE    ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 VPKG    := github.com/huangchengsir/pipewright/internal/version
 LDFLAGS := -s -w -X $(VPKG).Version=$(VERSION) -X $(VPKG).Commit=$(COMMIT) -X $(VPKG).Date=$(DATE)
 
-.PHONY: all build embed-frontend dist-stub go-build test vet fmt fmt-check mem-check dev run version clean
+.PHONY: all build build-client client-syso embed-frontend dist-stub go-build test vet fmt fmt-check mem-check dev run version clean
 
 all: build
 
@@ -34,6 +35,15 @@ dist-stub:
 
 go-build: dist-stub
 	CGO_ENABLED=0 go build -ldflags "$(LDFLAGS)" -o $(BIN) ./cmd/pipewright
+
+## build-client: 构建 Win11 集群客户端(托盘 GUI + Windows 服务,单二进制;无前端依赖)
+build-client:
+	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -ldflags "$(LDFLAGS)" -o $(CLIENT_BIN) ./cmd/pwclient
+
+## client-syso: 由 cmd/pwclient/winres 重新生成 Windows 资源(manifest/版本信息;.syso 已入库,
+## 仅 winres.json 变更后需要重跑)
+client-syso:
+	go run github.com/tc-hib/go-winres@latest make --in cmd/pwclient/winres/winres.json --out cmd/pwclient/rsrc --arch amd64,arm64
 
 ## build: 前端构建 → go:embed → 静态单二进制(双运行模式之原生形态)
 build: embed-frontend go-build
@@ -69,5 +79,5 @@ run: go-build
 	./$(BIN)
 
 clean:
-	rm -f $(BIN) *.db
+	rm -f $(BIN) $(CLIENT_BIN) *.db
 	rm -rf web/dist web/node_modules

@@ -99,5 +99,10 @@ export default {
     secretCopyFailed: 'Copy failed — click Show and copy manually',
     statusTitle: 'Runtime status',
     viewCluster: 'Open cluster page',
+    proxyNetworks: 'Subnet proxy CIDRs (one per line; remote subnets this node can reach. Advertised cluster-wide; built-in NAT makes return traffic work)',
+    clientTitle: 'Cluster client (Windows 11)',
+    clientHint: 'Run the pwclient client on a Win11 machine and import the exported config file below to join the cluster network; the client freely picks which subnets it routes. The exported file contains the plaintext network secret - handle with care.',
+    exportClientConfig: 'Export client config',
+    clientExported: 'Exported pipewright-client.yaml (contains the plaintext secret - handle with care)',
   },
 }

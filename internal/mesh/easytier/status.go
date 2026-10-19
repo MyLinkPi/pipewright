@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -50,6 +51,9 @@ type Status struct {
 	Hostname string `json:"hostname"`
 	Version  string `json:"version"`
 	Links    []Link `json:"links"`
+	// ProxyCIDRs 是全网通告的子网代理网段(route 表 proxy_cidrs 汇总;去重排序)。
+	// 客户端据此展示「可路由的远端网段」清单;平台侧集群页亦可展示。
+	ProxyCIDRs []string `json:"proxyCidrs"`
 }
 
 // statusTTL 是快照缓存窗口;窗口内直接回缓存,过期后台单飞刷新(stale-while-revalidate)。
@@ -263,7 +267,7 @@ func withHints(err error) error {
 
 // collect 依次跑 node/peer/route 三条查询并归并(任一失败记入 Err,不整体失败)。
 func (p *StatusProvider) collect(ctx context.Context) *Status {
-	st := &Status{Links: []Link{}}
+	st := &Status{Links: []Link{}, ProxyCIDRs: []string{}}
 	if p.cliPath == "" && p.run == nil {
 		st.Err = fmt.Sprintf("easytier-cli not found (place %s under <data>/bin or PATH, or use auto-download)", CliBinary())
 		return st
@@ -291,6 +295,7 @@ func (p *StatusProvider) collect(ctx context.Context) *Status {
 	}
 
 	nextHops := map[string]string{}
+	proxySeen := map[string]struct{}{}
 	if raw, err := p.runShaped(ctx, "route", routeShapes); err == nil {
 		var routes []obj
 		if json.Unmarshal(raw, &routes) == nil {
@@ -300,9 +305,15 @@ func (p *StatusProvider) collect(ctx context.Context) *Status {
 				if ip != "" {
 					nextHops[ip] = nh
 				}
+				for _, c := range pickList(rt, "proxy_cidrs") {
+					if c != "" {
+						proxySeen[c] = struct{}{}
+					}
+				}
 			}
 		}
 	}
+	st.ProxyCIDRs = sortedSet(proxySeen)
 
 	for _, pr := range peers {
 		l := Link{
@@ -365,6 +376,37 @@ func pickNum(o obj, keys ...string) float64 {
 		}
 	}
 	return 0
+}
+
+// pickList 取第一个存在且为数组的键,逐元素宽容转为字符串(元素可为 string/对象/数组,
+// 经 stringify 归一;非数组形状返回空)。
+func pickList(o obj, keys ...string) []string {
+	for _, k := range keys {
+		if v, ok := o[k]; ok {
+			arr, isArr := v.([]any)
+			if !isArr {
+				continue
+			}
+			out := make([]string, 0, len(arr))
+			for _, item := range arr {
+				if s := stringify(item); s != "" {
+					out = append(out, s)
+				}
+			}
+			return out
+		}
+	}
+	return nil
+}
+
+// sortedSet 把集合按键序输出为切片(状态展示稳定有序)。
+func sortedSet(set map[string]struct{}) []string {
+	out := make([]string, 0, len(set))
+	for k := range set {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // stringify 把任意 JSON 值宽容转为字符串(对象取 addr/ipv4 键;数组取首元素)。

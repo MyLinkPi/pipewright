@@ -99,5 +99,10 @@ export default {
     secretCopyFailed: '복사 실패 — 「표시」를 눌러 직접 선택해 복사하세요',
     statusTitle: '실행 상태',
     viewCluster: '클러스터 상세 보기',
+    proxyNetworks: '서브넷 프록시 CIDR(한 줄에 하나; 이 노드가 도달 가능한 원격 대역. 클러스터 전체에 광고되며 내장 NAT로 반환 트래픽 동작)',
+    clientTitle: '클러스터 클라이언트(Windows 11)',
+    clientHint: 'Win11 머신에서 pwclient 클라이언트를 실행하고 아래에서 내보낸 구성 파일을 가져오면 클러스터 네트워크에 참여합니다. 클라이언트는 라우팅할 대역을 자유롭게 선택할 수 있습니다. 내보낸 파일에는 평문 네트워크 시크릿이 포함되어 있으니 주의해서 보관하세요.',
+    exportClientConfig: '클라이언트 구성 내보내기',
+    clientExported: 'pipewright-client.yaml 을 내보냈습니다(평문 시크릿 포함, 주의해서 보관)',
   },
 }

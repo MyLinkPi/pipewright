@@ -101,6 +101,39 @@ func TestStatusFallsBackToOldStyleFlags(t *testing.T) {
 	}
 }
 
+// TestStatusCollectsProxyCIDRs 验证 route 表 proxy_cidrs 汇总:多路由行去重、字典序稳定、
+// 无该字段时为空数组而非 null。
+func TestStatusCollectsProxyCIDRs(t *testing.T) {
+	fake := &fakeCLI{responses: map[string]string{
+		"node info": `{"hostname":"alpha","virtual_ipv4":{"addr":"10.126.126.1"}}`,
+		"peer list": `[]`,
+		"route list": `[
+			{"ipv4":"10.126.126.2","next_hop_ipv4":""},
+			{"ipv4":"192.168.30.0","next_hop_ipv4":"10.126.126.2","proxy_cidrs":["192.168.30.0/24"]},
+			{"ipv4":"10.5.0.0","next_hop_ipv4":"10.126.126.2","proxy_cidrs":["10.5.0.0/16","192.168.30.0/24"]},
+			{"ipv4":"10.9.0.0","proxy_cidrs":["10.9.0.0/24",{"addr":"10.10.0.0/24"},""]}
+		]`,
+	}}
+	p := newStatusProviderForTest(fake.run)
+	st := p.collect(context.Background())
+	want := []string{"10.10.0.0/24", "10.5.0.0/16", "10.9.0.0/24", "192.168.30.0/24"}
+	if len(st.ProxyCIDRs) != len(want) {
+		t.Fatalf("proxyCidrs = %v, want %v", st.ProxyCIDRs, want)
+	}
+	for i := range want {
+		if st.ProxyCIDRs[i] != want[i] {
+			t.Fatalf("proxyCidrs[%d] = %q, want %q (full: %v)", i, st.ProxyCIDRs[i], want[i], st.ProxyCIDRs)
+		}
+	}
+
+	// 无 proxy_cidrs 字段 → 空数组(非 nil),JSON 序列化为 []。
+	empty := newStatusProviderForTest((&fakeCLI{responses: goodResponses()}).run)
+	st2 := empty.collect(context.Background())
+	if st2.ProxyCIDRs == nil || len(st2.ProxyCIDRs) != 0 {
+		t.Fatalf("proxyCidrs should be empty slice, got %#v", st2.ProxyCIDRs)
+	}
+}
+
 func TestStatusHintsOnConnectAndVersionErrors(t *testing.T) {
 	// 全形态失败 + 连接类 stderr → 错误带「可能未运行」提示。
 	fake := &fakeCLI{stderr: map[string]string{

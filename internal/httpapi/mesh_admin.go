@@ -14,6 +14,8 @@ import (
 	"strings"
 
 	"github.com/go-chi/chi/v5"
+	"gopkg.in/yaml.v3"
+
 	"github.com/huangchengsir/pipewright/internal/audit"
 	"github.com/huangchengsir/pipewright/internal/mesh"
 	"github.com/huangchengsir/pipewright/internal/mesh/easytier"
@@ -21,6 +23,7 @@ import (
 	"github.com/huangchengsir/pipewright/internal/pushsource"
 	"github.com/huangchengsir/pipewright/internal/run"
 	"github.com/huangchengsir/pipewright/internal/target"
+	"github.com/huangchengsir/pipewright/internal/version"
 )
 
 // meshAdminDeps 扩充 meshDeps:管理面额外需要集群运行时视图(EasyTier 状态/监督器)。
@@ -105,6 +108,80 @@ func mountMeshAdmin(ar chi.Router, d meshAdminDeps) {
 	// 查看已保存的组网密钥(把新节点加入集群时需要对端输入同一密钥——密钥是管理员
 	// 自创的共享密钥,非外发凭据,须可回显;每次查看留审计,同凭据 reveal 先例)。
 	ar.Post("/mesh/settings/reveal-secret", makeMeshRevealSecretHandler(d))
+	// 导出客户端加入配置(YAML 文件下载:网络名/密钥/peers/可路由网段,客户端导入即用;
+	// 含明文密钥,与 reveal-secret 同级敏感,每次导出留审计)。
+	ar.Get("/mesh/client-config", makeMeshClientConfigHandler(d))
+}
+
+// clientJoinYAML / clientConfigExport 是导出文件的 YAML 结构(与 pwclient 客户端配置
+// schema 对齐:join 与 routes 两个顶层键即客户端导入所取的字段)。
+type clientJoinYAML struct {
+	NetworkName   string   `yaml:"networkName"`
+	NetworkSecret string   `yaml:"networkSecret"`
+	Peers         []string `yaml:"peers"`
+}
+
+type clientConfigExport struct {
+	Join   clientJoinYAML `yaml:"join"`
+	Routes []string       `yaml:"routes"`
+	Export struct {
+		From            string `yaml:"from"`
+		NodeID          string `yaml:"nodeId"`
+		PlatformVersion string `yaml:"platformVersion"`
+	} `yaml:"export"`
+}
+
+// makeMeshClientConfigHandler 导出 pipewright-client.yaml:Win11 客户端(pwclient)导入后
+// 加入本集群网络,routes 预填本节点通告的自定义网段(客户端可自行删减;留空 = 路由全部
+// 通告网段)。前置校验:集群已启用且网络名/组网密钥已配置。
+func makeMeshClientConfigHandler(d meshAdminDeps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if d.mesh == nil {
+			writeError(w, http.StatusServiceUnavailable, "internal", "集群服务未初始化")
+			return
+		}
+		st, err := d.mesh.Settings(r.Context())
+		if err != nil {
+			writeServerError(w, err)
+			return
+		}
+		secret, err := d.mesh.NetworkSecret(r.Context())
+		if err != nil {
+			writeMeshError(w, err)
+			return
+		}
+		if !st.Enabled || st.NetworkName == "" || secret == "" {
+			writeError(w, http.StatusConflict, "mesh_incomplete",
+				"集群组网未配置完整(需启用集群并设置网络名与组网密钥),无法导出客户端配置")
+			return
+		}
+		if len(st.Peers) == 0 {
+			writeError(w, http.StatusConflict, "mesh_incomplete",
+				"尚未配置任何对端地址(peers),客户端将无法找到入网入口;请先在集群设置中配置至少一个公网可达的对端地址")
+			return
+		}
+
+		var doc clientConfigExport
+		doc.Join = clientJoinYAML{NetworkName: st.NetworkName, NetworkSecret: secret, Peers: st.Peers}
+		doc.Routes = st.ProxyNetworksCustom
+		doc.Export.From = st.Name
+		doc.Export.NodeID = st.NodeID
+		doc.Export.PlatformVersion = version.Version
+		out, err := yaml.Marshal(doc)
+		if err != nil {
+			writeServerError(w, err)
+			return
+		}
+		recordAudit(r.Context(), d.audit, audit.Entry{
+			Actor: "admin", Action: "mesh_client_config_export", TargetType: "mesh_settings", TargetID: st.NodeID,
+			Detail: map[string]any{"routes": len(doc.Routes), "peers": len(doc.Join.Peers)},
+			IP:     clientIP(r),
+		})
+		w.Header().Set("Content-Type", "application/yaml; charset=utf-8")
+		w.Header().Set("Content-Disposition", `attachment; filename="pipewright-client.yaml"`)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(out)
+	}
 }
 
 // makeMeshRevealSecretHandler 返回已保存组网密钥的明文(POST + admin + CSRF + 审计)。
@@ -193,7 +270,10 @@ type meshSettingsDTO struct {
 	NetworkName  string   `json:"networkName"`
 	VirtualIP    string   `json:"virtualIp"`
 	Peers        []string `json:"peers"`
-	HasSecret    bool     `json:"hasSecret"`
+	// ProxyNetworksCustom 是管理员自定义的子网代理通告网段(cidr;本节点可达的远端网段,
+	// 通告后全网经此访问,EasyTier 内置 NAT 保证返程)。
+	ProxyNetworksCustom []string `json:"proxyNetworksCustom"`
+	HasSecret           bool     `json:"hasSecret"`
 }
 
 func toMeshSettingsDTO(st *mesh.Settings) meshSettingsDTO {
@@ -201,7 +281,8 @@ func toMeshSettingsDTO(st *mesh.Settings) meshSettingsDTO {
 		NodeID: st.NodeID, Name: st.Name, Enabled: st.Enabled, PublicKey: st.PublicKey,
 		APIPort: st.APIPort, EasyTierMode: st.EasyTierMode, EasyTierRPC: st.EasyTierRPC,
 		NetworkName: st.NetworkName, VirtualIP: st.VirtualIP, Peers: st.Peers,
-		HasSecret: st.HasSecret,
+		ProxyNetworksCustom: st.ProxyNetworksCustom,
+		HasSecret:           st.HasSecret,
 	}
 }
 
@@ -227,15 +308,16 @@ func makeMeshSettingsPutHandler(svc mesh.Service, aud audit.Recorder) http.Handl
 			return
 		}
 		var body struct {
-			Name          *string   `json:"name"`
-			Enabled       *bool     `json:"enabled"`
-			APIPort       *int      `json:"apiPort"`
-			EasyTierMode  *string   `json:"easytierMode"`
-			EasyTierRPC   *string   `json:"easytierRpc"`
-			NetworkName   *string   `json:"networkName"`
-			NetworkSecret *string   `json:"networkSecret"`
-			VirtualIP     *string   `json:"virtualIp"`
-			Peers         *[]string `json:"peers"`
+			Name                *string   `json:"name"`
+			Enabled             *bool     `json:"enabled"`
+			APIPort             *int      `json:"apiPort"`
+			EasyTierMode        *string   `json:"easytierMode"`
+			EasyTierRPC         *string   `json:"easytierRpc"`
+			NetworkName         *string   `json:"networkName"`
+			NetworkSecret       *string   `json:"networkSecret"`
+			VirtualIP           *string   `json:"virtualIp"`
+			Peers               *[]string `json:"peers"`
+			ProxyNetworksCustom *[]string `json:"proxyNetworksCustom"`
 		}
 		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&body); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid_body", "请求体不是合法 JSON")
@@ -246,6 +328,7 @@ func makeMeshSettingsPutHandler(svc mesh.Service, aud audit.Recorder) http.Handl
 			EasyTierMode: body.EasyTierMode, EasyTierRPC: body.EasyTierRPC,
 			NetworkName: body.NetworkName, NetworkSecret: body.NetworkSecret,
 			VirtualIP: body.VirtualIP, Peers: body.Peers,
+			ProxyNetworksCustom: body.ProxyNetworksCustom,
 		})
 		if err != nil {
 			writeMeshError(w, err)

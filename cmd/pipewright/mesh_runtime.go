@@ -229,9 +229,11 @@ func (rt *meshRuntime) reconcile(ctx context.Context) {
 	rt.external = st.EasyTierMode == mesh.ModeExternal
 	rt.mu.Unlock()
 
-	proxies := []string{}
+	// 子网代理通告 = 管理员自定义网段(集群设置)∪ servicereg 网关 /32(跨环境转发),
+	// 经 normalizeProxyNetworks 归一去重;变化纳入下方指纹,自动重启 easytier 生效。
+	proxies := normalizeProxyNetworks(st.ProxyNetworksCustom)
 	if rt.proxyNetworks != nil {
-		proxies = normalizeProxyNetworks(rt.proxyNetworks(ctx))
+		proxies = normalizeProxyNetworks(append(proxies, rt.proxyNetworks(ctx)...))
 	}
 	key := fmt.Sprintf("%s|%s|%s|%s|%v|%v", st.EasyTierMode, st.NetworkName, st.VirtualIP, st.Peers, st.Enabled, proxies)
 	if !st.Enabled || st.EasyTierMode != mesh.ModeManaged || st.NetworkName == "" {

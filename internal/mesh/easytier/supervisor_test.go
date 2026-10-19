@@ -1,0 +1,100 @@
+package easytier
+
+import (
+	"reflect"
+	"strings"
+	"testing"
+)
+
+// TestParseHelpFlags 验证 --help 输出 → 旗子集合解析:官方复数形态优先,历史单数兼容,
+// 缺失/探测失败为不支持(保守)。
+func TestParseHelpFlags(t *testing.T) {
+	cases := []struct {
+		name string
+		out  string
+		ok   bool
+		want helpFlags
+	}{
+		{"官方复数", "--proxy-networks <CIDR>...\n--manual-routes <CIDR>...", true,
+			helpFlags{proxyNetwork: "--proxy-networks", manualRoutes: true}},
+		{"历史单数无manual", "  --proxy-network <CIDR>", true,
+			helpFlags{proxyNetwork: "--proxy-network"}},
+		{"两者都没有", "--network-name <NAME>", true, helpFlags{}},
+		{"探测失败", "--proxy-networks whatever", false, helpFlags{}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := parseHelpFlags(c.out, c.ok); got != c.want {
+				t.Fatalf("parseHelpFlags = %+v, want %+v", got, c.want)
+			}
+		})
+	}
+}
+
+// TestBuildArgs 验证参数组装:基础参数序、DHCP/静态 IP 分支、peers、子网代理按探测到的
+// 旗子名逐值重复传、manual-routes 逐值重复传且仅在支持时传递。
+func TestBuildArgs(t *testing.T) {
+	base := Config{
+		NetworkName:   "net",
+		NetworkSecret: "sec",
+		RPCAddr:       "127.0.0.1:15888",
+		Hostname:      "h1",
+		VirtualIP:     "10.1.1.5",
+		Peers:         []string{"tcp://1.2.3.4:11010", ""},
+		ProxyNetworks: []string{"192.168.30.0/24", ""},
+		ManualRoutes:  []string{"10.5.0.0/16"},
+	}
+	got := buildArgs(base, "--proxy-networks", true)
+	want := []string{
+		"--network-name", "net",
+		"--rpc-portal", "127.0.0.1:15888",
+		"--hostname", "h1",
+		"--network-secret", "sec",
+		"-i", "10.1.1.5",
+		"-p", "tcp://1.2.3.4:11010",
+		"--proxy-networks", "192.168.30.0/24",
+		"--manual-routes", "10.5.0.0/16",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("buildArgs = %v, want %v", got, want)
+	}
+
+	// DHCP 分支 + 单数旗子兼容 + 不支持 manual-routes 时忽略列表。
+	dhcp := base
+	dhcp.VirtualIP = ""
+	got = buildArgs(dhcp, "--proxy-network", false)
+	if !containsPair(got, "--dhcp", "") {
+		t.Fatalf("dhcp 分支缺少 --dhcp: %v", got)
+	}
+	if containsPair(got, "-i", "10.1.1.5") {
+		t.Fatalf("dhcp 分支不应传静态 IP: %v", got)
+	}
+	if !containsPair(got, "--proxy-network", "192.168.30.0/24") {
+		t.Fatalf("应按探测旗子名单数传参: %v", got)
+	}
+	if containsPair(got, "--proxy-networks", "192.168.30.0/24") {
+		t.Fatalf("单数旗子形态下不应出现复数参数: %v", got)
+	}
+	for _, a := range got {
+		if strings.HasPrefix(a, "--manual-routes") {
+			t.Fatalf("manual-routes 不支持时不应传参: %v", got)
+		}
+	}
+
+	// 未知子网代理旗子(二进制不支持)→ 不传代理参数。
+	got = buildArgs(base, "", true)
+	for _, a := range got {
+		if strings.HasPrefix(a, "--proxy-network") {
+			t.Fatalf("不支持子网代理时不应传参: %v", got)
+		}
+	}
+}
+
+func containsPair(args []string, flag, val string) bool {
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] == flag && (val == "" || args[i+1] == val) {
+			return true
+		}
+	}
+	return false
+}

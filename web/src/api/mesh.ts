@@ -25,6 +25,8 @@ export interface MeshSettings {
   networkName: string
   virtualIp: string
   peers: string[]
+  /** Admin-configured subnet proxy CIDRs advertised by this node (client route targets). */
+  proxyNetworksCustom: string[]
   hasSecret: boolean
 }
 
@@ -150,6 +152,35 @@ export function saveMeshSettings(body: Partial<MeshSettings> & { networkSecret?:
  */
 export function revealMeshNetworkSecret(): Promise<{ secret: string }> {
   return http.post('/api/mesh/settings/reveal-secret')
+}
+
+/**
+ * Export the Win11 client (pwclient) join config as a YAML file download
+ * (network name + plaintext secret + peers + advertised subnet routes).
+ * Raw fetch instead of the JSON helper: success is a file attachment; failure is
+ * the canonical {error:{code,message}} envelope.
+ */
+export async function downloadMeshClientConfig(): Promise<void> {
+  const resp = await fetch('/api/mesh/client-config', { credentials: 'same-origin' })
+  if (!resp.ok) {
+    let message = `HTTP ${resp.status}`
+    try {
+      const body = (await resp.json()) as { error?: { message?: string } }
+      if (body.error?.message) message = body.error.message
+    } catch { /* keep HTTP status text */ }
+    throw new Error(message)
+  }
+  const disposition = resp.headers.get('content-disposition') ?? ''
+  const m = disposition.match(/filename="?([^";]+)"?/)
+  const blob = await resp.blob()
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = m?.[1] ?? 'pipewright-client.yaml'
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  URL.revokeObjectURL(url)
 }
 
 export function getMeshACL(): Promise<MeshACL> {

@@ -12,6 +12,7 @@ import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
   revealMeshNetworkSecret,
+  downloadMeshClientConfig,
   getMeshOverview,
   triggerEasyTierDownload,
   type EasyTierBinaries,
@@ -61,6 +62,7 @@ const form = ref({
   networkSecret: '',
   virtualIp: '',
   peers: '',
+  proxyNetworks: '',
 })
 const acl = ref({ visibleTo: [] as string[], pushAllowed: [] as string[], triggerAllowed: [] as string[], forwardAllowed: [] as string[], buildAllowed: [] as string[] })
 const manualPeer = ref({ nodeId: '', name: '', virtualIp: '', apiPort: 8080, publicUrl: '' })
@@ -196,6 +198,22 @@ async function downloadBinaries(): Promise<void> {
   }
 }
 
+// 导出 Win11 客户端(pwclient)加入配置:成功后短暂显示「已导出」提示(文件由浏览器下载)。
+const clientExported = ref(false)
+let clientExportedTimer: number | undefined
+
+async function exportClientConfig(): Promise<void> {
+  try {
+    await downloadMeshClientConfig()
+    actionError.value = ''
+    clientExported.value = true
+    if (clientExportedTimer !== undefined) window.clearTimeout(clientExportedTimer)
+    clientExportedTimer = window.setTimeout(() => { clientExported.value = false }, 5000)
+  } catch (err) {
+    actionError.value = err instanceof Error ? err.message : String(err)
+  }
+}
+
 async function load(): Promise<void> {
   state.value = 'loading'
   try {
@@ -210,6 +228,7 @@ async function load(): Promise<void> {
       networkSecret: '',
       virtualIp: st.virtualIp,
       peers: st.peers.join('\n'),
+      proxyNetworks: (st.proxyNetworksCustom ?? []).join('\n'),
     }
     acl.value = {
       visibleTo: aclRes.visibleTo ?? [],
@@ -239,6 +258,7 @@ async function persistSettings(): Promise<void> {
       networkName: form.value.networkName,
       virtualIp: form.value.virtualIp,
       peers: form.value.peers.split('\n').map((s) => s.trim()).filter(Boolean),
+      proxyNetworksCustom: form.value.proxyNetworks.split('\n').map((s) => s.trim()).filter(Boolean),
     }
     if (form.value.networkSecret.trim() !== '') body.networkSecret = form.value.networkSecret.trim()
     const st = await saveMeshSettings(body as never)
@@ -253,6 +273,7 @@ async function persistSettings(): Promise<void> {
       networkSecret: '',
       virtualIp: st.virtualIp,
       peers: st.peers.join('\n'),
+      proxyNetworks: (st.proxyNetworksCustom ?? []).join('\n'),
     }
     secretRevealed.value = false
     markSaved()
@@ -421,6 +442,7 @@ onUnmounted(() => {
           <label class="fld"><span>{{ t('cluster.settings.virtualIp') }}</span><input v-model="form.virtualIp" class="inp mono" type="text" :placeholder="t('cluster.settings.dhcp')" /></label>
           <label class="fld"><span>{{ t('cluster.settings.peers') }}</span><textarea v-model="form.peers" class="inp mono" rows="3" placeholder="tcp://1.2.3.4:11010"></textarea></label>
         </div>
+        <label class="fld"><span>{{ t('cluster.settings.proxyNetworks') }}</span><textarea v-model="form.proxyNetworks" class="inp mono" rows="3" placeholder="192.168.30.0/24"></textarea></label>
         <div class="bin-row">
           <span class="bin-label">{{ t('cluster.settings.binaries') }}</span>
           <span class="bin-status" :class="{ 'ok-text': binaries?.corePath, 'warn-text': !binaries?.corePath }">
@@ -441,6 +463,16 @@ onUnmounted(() => {
         <div class="row-end">
           <span v-if="saved" class="ok-text">{{ t('cluster.settings.saved') }}</span>
           <AppButton :loading="saving" @click="persistSettings">{{ t('cluster.settings.save') }}</AppButton>
+        </div>
+      </section>
+
+      <!-- 集群客户端(Win11 pwclient):导出加入配置文件,拷到客户端导入即用。 -->
+      <section class="block">
+        <h2>{{ t('cluster.settings.clientTitle') }}</h2>
+        <p class="hint">{{ t('cluster.settings.clientHint') }}</p>
+        <div class="row-end">
+          <span v-if="clientExported" class="ok-text">{{ t('cluster.settings.clientExported') }}</span>
+          <AppButton variant="default" @click="exportClientConfig">{{ t('cluster.settings.exportClientConfig') }}</AppButton>
         </div>
       </section>
 

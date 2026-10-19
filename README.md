@@ -183,6 +183,25 @@ docker run -d -p 8080:8080 -v pipewright-data:/data \
 # initial admin password (random, 0600): docker exec <container> cat /data/admin_password.txt
 ```
 
+### ⑤ Cluster client for Windows 11 (`pwclient`)
+
+Join a Win11 machine into the cluster network (EasyTier mesh) with freely configurable
+subnet routes — remote subnets are reachable through the node that advertises them, with
+built-in userspace NAT so **no return routes are needed inside those subnets**.
+
+1. **Server side** (admin UI → *Settings → Cluster*): add the CIDRs this node can reach
+   under "Subnet proxy CIDRs" (e.g. `192.168.30.0/24`), then click **Export client config**
+   to download `pipewright-client.yaml` (contains the plaintext network secret — keep it safe).
+2. **Client side**: grab `pwclient_windows_amd64.zip` from the release (or `make build-client`),
+   unzip, run `pwclient.exe` — the tray app guides you through installing the background
+   service (one UAC prompt; auto-connects on boot without a login prompt) and importing the YAML.
+3. **Routes**: leave the route list empty to route **all** advertised subnets through the
+   tunnel, or list specific CIDRs to pin exactly which subnets this machine routes.
+
+Diagnostics CLI: `pwclient status`, `pwclient doctor`. The client never holds a node signing
+key — cluster APIs (`/api/mesh/*`) stay protected by node signatures + ACLs; a client with
+the network secret only ever gets network-layer reach, the same trust level as a full node.
+
 ### Build from source
 
 ```bash
