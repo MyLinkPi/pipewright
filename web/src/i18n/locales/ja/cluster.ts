@@ -99,5 +99,10 @@ export default {
     secretCopyFailed: 'コピー失敗:「表示」から手動で選択してコピーしてください',
     statusTitle: '実行状態',
     viewCluster: 'クラスタ詳細を開く',
+    proxyNetworks: 'サブネットプロキシ CIDR(1 行 1 件。このノードから到達可能なリモート網段。クラスタ全体に通知され、内蔵 NAT で戻り通信も機能)',
+    clientTitle: 'クラスタクライアント(Windows 11)',
+    clientHint: 'Win11 マシンで pwclient クライアントを実行し、下記からエクスポートした設定ファイルをインポートすればクラスタネットワークに参加できます。クライアント側でルートする網段を自由に選択できます。エクスポートファイルには平文のネットワークシークレットが含まれるため取り扱いに注意してください。',
+    exportClientConfig: 'クライアント設定をエクスポート',
+    clientExported: 'pipewright-client.yaml をエクスポートしました(平文シークレットを含むため取り扱い注意)',
   },
 }

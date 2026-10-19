@@ -99,5 +99,10 @@ export default {
     secretCopyFailed: 'Kopieren fehlgeschlagen — über „Anzeigen“ manuell kopieren',
     statusTitle: 'Laufzeitstatus',
     viewCluster: 'Clusterseite öffnen',
+    proxyNetworks: 'Subnetz-Proxy-CIDRs (eine pro Zeile; entfernte Subnetze, die dieser Knoten erreichen kann. Clusterweit angekuendigt; das eingebaute NAT laesst den Rueckverkehr funktionieren)',
+    clientTitle: 'Cluster-Client (Windows 11)',
+    clientHint: 'Starten Sie den pwclient-Client auf einer Win11-Maschine und importieren Sie die unten exportierte Konfigurationsdatei, um dem Clusternetzwerk beizutreten; der Client waehlt frei, welche Subnetze er routet. Die exportierte Datei enthaelt das Netzwerk-Geheimnis im Klartext - sorgfaeltig behandeln.',
+    exportClientConfig: 'Client-Konfiguration exportieren',
+    clientExported: 'pipewright-client.yaml exportiert (enthaelt das Geheimnis im Klartext - sorgfaeltig behandeln)',
   },
 }

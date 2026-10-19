@@ -99,5 +99,10 @@ export default {
     secretCopyFailed: '复制失败,请点「显示」后手动选择复制',
     statusTitle: '运行状态',
     viewCluster: '查看集群详情',
+    proxyNetworks: '子网代理网段(每行一个 CIDR;本节点可达的远端网段,通告后全网经此访问,EasyTier 内置 NAT 保证返程)',
+    clientTitle: '集群客户端(Windows 11)',
+    clientHint: '在 Win11 机器上运行 pwclient 客户端并导入下方导出的配置文件,即可加入集群网络;客户端可自由限定本机路由哪些网段。导出文件含明文网络密钥,请妥善保管。',
+    exportClientConfig: '导出客户端配置',
+    clientExported: '已导出 pipewright-client.yaml(含明文密钥,请妥善保管)',
   },
 }

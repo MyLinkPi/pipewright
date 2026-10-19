@@ -37,8 +37,28 @@ builds:
       # 默认升级渠道 = 构建仓库:产物自报「从哪查更新」,fork 发版自洽(未注入时后端回落硬编码)。
       - -X github.com/huangchengsir/pipewright/internal/version.DefaultRepo={{ .Env.RELEASE_REPO }}
 
+  # 集群客户端(Win11 托盘 GUI + Windows 服务;lxn/walk 纯 Go 无 CGO;仅 Windows)。
+  # cmd/pwclient 下的 rsrc_windows_{amd64,arm64}.syso(manifest/DPI/版本信息)按目标自动链接。
+  - id: pwclient
+    main: ./cmd/pwclient
+    binary: pwclient
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    mod_timestamp: "{{ .CommitTimestamp }}"
+    ldflags:
+      - -s -w
+      - -X github.com/huangchengsir/pipewright/internal/version.Version={{ .Version }}
+      - -X github.com/huangchengsir/pipewright/internal/version.Commit={{ .ShortCommit }}
+      - -X github.com/huangchengsir/pipewright/internal/version.Date={{ .CommitDate }}
+
 archives:
   - id: default
+    builds: [pipewright]
     formats: [tar.gz]
     name_template: >-
       {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
@@ -49,6 +69,13 @@ archives:
       - README.md
       - LICENSE
       - SECURITY.md
+  - id: pwclient
+    builds: [pwclient]
+    formats: [zip]
+    name_template: >-
+      pwclient_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    files:
+      - LICENSE
 
 checksum:
   name_template: checksums.txt

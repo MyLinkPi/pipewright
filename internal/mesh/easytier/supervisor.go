@@ -62,12 +62,18 @@ type Config struct {
 	VirtualIP     string // 静态虚拟 IP;空 = --dhcp 自动分配
 	Hostname      string // easytier --hostname(展示名)
 	Peers         []string
-	// ProxyNetworks 是子网代理通告列表(cidr;跨环境转发:本端网关 IP 的 /32)。非空要求
-	// 二进制支持 --proxy-network(v2.1+),不支持则 Start 报错(上层记录并提示升级)。
+	// ProxyNetworks 是子网代理通告列表(cidr;跨环境转发:本端网关 IP 的 /32,或管理员
+	// 自定义的可达网段)。非空要求二进制支持子网代理参数(v2.1+),不支持则 Start 报错
+	// (上层记录并提示升级)。通告后 EasyTier 默认启用内置用户态 NAT:被代理网段内的设备
+	// 无需回程路由即可返程(官方 point-to-networking 文档),对端(含客户端)自动获得路由。
 	ProxyNetworks []string
-	DataDir       string // 二进制定位目录(<data>/bin)
-	CorePath      string // 已定位的 easytier-core(托管模式必填)
-	CliPath       string // 已定位的 easytier-cli
+	// ManualRoutes 手工限定本节点路由进虚拟网络的网段(cidr;空 = 自动接受全部子网代理
+	// 通告)。非空时 easytier 以 --manual-routes 启动:禁用自动通告路由,仅保留列表网段。
+	// 客户端(pwclient)用它实现「CIDR 自由配置」;平台节点通常留空。
+	ManualRoutes []string
+	DataDir      string // 二进制定位目录(<data>/bin)
+	CorePath     string // 已定位的 easytier-core(托管模式必填)
+	CliPath      string // 已定位的 easytier-cli
 }
 
 // Supervisor 是托管模式子进程监督器。零值不可用,经 New 构造;线程安全。
@@ -92,6 +98,12 @@ func New(cfg Config) *Supervisor {
 
 // args 生成 easytier-core 参数(固定 RPC portal 端口便于本机状态查询)。
 func (c Config) args() []string {
+	return buildArgs(c, proxyNetworkFlag(c.CorePath), SupportsManualRoutes(c.CorePath))
+}
+
+// buildArgs 是 args 的纯函数形态(proxyFlag 为探测到的子网代理参数名,manualOK 为是否
+// 支持 --manual-routes;单测直接构造,不触真机二进制)。
+func buildArgs(c Config, proxyFlag string, manualOK bool) []string {
 	args := []string{
 		"--network-name", c.NetworkName,
 		"--rpc-portal", c.RPCAddr,
@@ -110,33 +122,75 @@ func (c Config) args() []string {
 			args = append(args, "-p", p)
 		}
 	}
+	// 子网代理:官方 CLI 参数为复数 --proxy-networks(-n),历史上曾有单数 --proxy-network
+	// 形态 —— 以 --help 探测结果为准传参。逐值重复传(clap Vec 追加语义,兼容是否配置
+	// value_delimiter 的两种实现)。
 	for _, n := range c.ProxyNetworks {
-		if n != "" {
-			args = append(args, "--proxy-network", n)
+		if n != "" && proxyFlag != "" {
+			args = append(args, proxyFlag, n)
+		}
+	}
+	// 手工路由:同上逐值重复传。空列表 = 自动接受全部子网代理通告,不传参数。
+	if manualOK {
+		for _, r := range c.ManualRoutes {
+			if r != "" {
+				args = append(args, "--manual-routes", r)
+			}
 		}
 	}
 	return args
 }
 
-// proxySupport 缓存「二进制是否支持 --proxy-network」(--help 探测;进程内每路径一次)。
-var proxySupport sync.Map // corePath → bool
+// probeCache 缓存 --help 探测结果(--help 进程输出 → 目标旗子集合;进程内每路径一次)。
+var probeCache sync.Map // corePath → helpFlags
 
-// SupportsProxyNetwork 探测 easytier-core 是否提供 --proxy-network 参数(v2.1+ 的子网代理)。
-// --help 输出包含该参数名即认为支持;探测失败按不支持(保守)。
-func SupportsProxyNetwork(corePath string) bool {
+// helpFlags 是一次 --help 探测解析出的旗子集合(探测失败为空集,按不支持,保守)。
+type helpFlags struct {
+	proxyNetwork string // "--proxy-networks" | "--proxy-network" | ""
+	manualRoutes bool
+}
+
+// probeHelp 以 5s 超时跑一次 --help 并解析旗子(结果经 probeCache 缓存,每路径只跑一次)。
+func probeHelp(corePath string) helpFlags {
 	if corePath == "" {
-		return false
+		return helpFlags{}
 	}
-	if v, ok := proxySupport.Load(corePath); ok {
-		return v.(bool)
+	if v, ok := probeCache.Load(corePath); ok {
+		return v.(helpFlags)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	out, err := exec.CommandContext(ctx, corePath, "--help").CombinedOutput()
-	ok := err == nil && strings.Contains(string(out), "--proxy-network")
-	proxySupport.Store(corePath, ok)
-	return ok
+	flags := parseHelpFlags(string(out), err == nil)
+	probeCache.Store(corePath, flags)
+	return flags
 }
+
+// parseHelpFlags 是 --help 输出 → 旗子集合的纯函数(子网代理优先匹配复数官方形态,
+// 兼容历史单数;manual-routes 按子串匹配)。
+func parseHelpFlags(out string, ok bool) helpFlags {
+	if !ok {
+		return helpFlags{}
+	}
+	flags := helpFlags{}
+	switch {
+	case strings.Contains(out, "--proxy-networks"):
+		flags.proxyNetwork = "--proxy-networks"
+	case strings.Contains(out, "--proxy-network"):
+		flags.proxyNetwork = "--proxy-network"
+	}
+	flags.manualRoutes = strings.Contains(out, "--manual-routes")
+	return flags
+}
+
+// proxyNetworkFlag 返回该二进制实际支持的子网代理参数名(不支持/无法探测返回空串)。
+func proxyNetworkFlag(corePath string) string { return probeHelp(corePath).proxyNetwork }
+
+// SupportsProxyNetwork 探测 easytier-core 是否提供子网代理参数(v2.1+)。
+func SupportsProxyNetwork(corePath string) bool { return proxyNetworkFlag(corePath) != "" }
+
+// SupportsManualRoutes 探测 easytier-core 是否提供 --manual-routes 参数。
+func SupportsManualRoutes(corePath string) bool { return probeHelp(corePath).manualRoutes }
 
 // Start 拉起子进程并进入监督循环(退出按退避重启;ctx 取消或 Stop 后退出循环)。
 // 运行在独立 goroutine;Start 本身只在参数明显非法时同步报错。
@@ -151,7 +205,10 @@ func (s *Supervisor) Start(ctx context.Context) error {
 		return fmt.Errorf("easytier: network name required")
 	}
 	if len(s.cfg.ProxyNetworks) > 0 && !SupportsProxyNetwork(s.cfg.CorePath) {
-		return fmt.Errorf("easytier: %s 不支持 --proxy-network(需 v2.1+),无法通告子网代理(跨环境转发不可用,请升级二进制)", CoreBinary())
+		return fmt.Errorf("easytier: %s 不支持子网代理参数 --proxy-networks(需 v2.1+),无法通告子网(跨环境转发/自定义网段不可用,请升级二进制)", CoreBinary())
+	}
+	if len(s.cfg.ManualRoutes) > 0 && !SupportsManualRoutes(s.cfg.CorePath) {
+		return fmt.Errorf("easytier: %s 不支持 --manual-routes,无法手工限定路由网段(请升级二进制)", CoreBinary())
 	}
 	go s.supervise(ctx)
 	return nil

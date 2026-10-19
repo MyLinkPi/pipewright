@@ -99,5 +99,10 @@ export default {
     secretCopyFailed: 'Fallo al copiar: pulsa Mostrar y copia manualmente',
     statusTitle: 'Estado del clúster',
     viewCluster: 'Abrir página del clúster',
+    proxyNetworks: 'CIDR de proxy de subred (uno por linea; subredes remotas alcanzables desde este nodo. Se anuncian a todo el cluster; el NAT integrado hace funcionar el trafico de retorno)',
+    clientTitle: 'Cliente de cluster (Windows 11)',
+    clientHint: 'Ejecute el cliente pwclient en una maquina Win11 e importe el archivo exportado a continuacion para unirse a la red del cluster; el cliente elige libremente que subredes enruta. El archivo exportado contiene el secreto de red en texto claro - tratelo con cuidado.',
+    exportClientConfig: 'Exportar config. de cliente',
+    clientExported: 'pipewright-client.yaml exportado (contiene el secreto en texto claro - tratelo con cuidado)',
   },
 }

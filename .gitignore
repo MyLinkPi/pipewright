@@ -1,6 +1,7 @@
 # Go
 /pipewright
 /pipewright.exe
+/pwclient.exe
 /pipewright-*
 *.test
 *.out

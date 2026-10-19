@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"strings"
 	"time"
 
@@ -77,6 +78,11 @@ type Settings struct {
 	NetworkName string
 	VirtualIP   string
 	Peers       []string
+	// ProxyNetworksCustom 是管理员手工配置的「本节点可达、通告进集群虚拟网络」的网段
+	// 列表(cidr;与 servicereg 自动产出的网关 /32 合并后作为 easytier 子网代理参数)。
+	// 通告后 EasyTier 内置用户态 NAT:被代理网段内设备无需回程路由即可返程 —— 客户端
+	// (pwclient)与各节点经此访问这些远端网段。
+	ProxyNetworksCustom []string
 	// HasSecret / HasKey 报告密钥是否已配置(绝不回显内容)。
 	HasSecret bool
 	HasKey    bool
@@ -93,6 +99,8 @@ type SaveSettingsInput struct {
 	NetworkSecret *string // 明文入参,进程内 Seal 后落库;nil = 不改
 	VirtualIP     *string
 	Peers         *[]string
+	// ProxyNetworksCustom 逐项须为合法 cidr;含非法项返回 ErrInvalidInput。
+	ProxyNetworksCustom *[]string
 }
 
 // Peer 是已知对等节点。
@@ -187,7 +195,8 @@ func New(db *sql.DB, v vault.Vault) Service {
 // Settings 实现接口:读取(必要时惰性创建)mesh_settings 单行。
 func (s *service) Settings(ctx context.Context) (*Settings, error) {
 	row := s.db.QueryRowContext(ctx, `SELECT node_id, name, public_key, private_key,
-		enabled, api_port, easytier_mode, easytier_rpc, network_name, network_secret, virtual_ip, peers
+		enabled, api_port, easytier_mode, easytier_rpc, network_name, network_secret, virtual_ip, peers,
+		proxy_networks_custom
 		FROM mesh_settings WHERE id = 1`)
 	st, err := scanSettings(row.Scan)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -241,6 +250,7 @@ func (s *service) SaveSettings(ctx context.Context, in SaveSettingsInput) (*Sett
 	}
 	name, enabled, apiPort := cur.Name, cur.Enabled, cur.APIPort
 	mode, rpc, netName, vip, peers := cur.EasyTierMode, cur.EasyTierRPC, cur.NetworkName, cur.VirtualIP, cur.Peers
+	proxies := cur.ProxyNetworksCustom
 	if in.Name != nil {
 		name = strings.TrimSpace(*in.Name)
 	}
@@ -268,6 +278,12 @@ func (s *service) SaveSettings(ctx context.Context, in SaveSettingsInput) (*Sett
 	if in.Peers != nil {
 		peers = normalizePeers(*in.Peers)
 	}
+	if in.ProxyNetworksCustom != nil {
+		var err error
+		if proxies, err = normalizeCIDRs(*in.ProxyNetworksCustom); err != nil {
+			return nil, err
+		}
+	}
 
 	nowStr := time.Now().UTC().Format(time.RFC3339)
 	setSecret := ""
@@ -289,10 +305,10 @@ func (s *service) SaveSettings(ctx context.Context, in SaveSettingsInput) (*Sett
 	if setSecret != "" {
 		args = append(args, secretArg)
 	}
-	args = append(args, vip, strings.Join(peers, "\n"), nowStr)
+	args = append(args, vip, strings.Join(peers, "\n"), strings.Join(proxies, "\n"), nowStr)
 	_, err = s.db.ExecContext(ctx,
 		`UPDATE mesh_settings SET name = ?, enabled = ?, api_port = ?, easytier_mode = ?, easytier_rpc = ?,
-		 network_name = ?`+setSecret+`, virtual_ip = ?, peers = ?, updated_at = ? WHERE id = 1`,
+		 network_name = ?`+setSecret+`, virtual_ip = ?, peers = ?, proxy_networks_custom = ?, updated_at = ? WHERE id = 1`,
 		args...,
 	)
 	if err != nil {
@@ -372,17 +388,62 @@ func scanSettings(scan func(dest ...any) error) (*Settings, error) {
 	var st Settings
 	var priv, secret []byte
 	var enabled int
-	var peersRaw string
+	var peersRaw, proxiesRaw string
 	if err := scan(&st.NodeID, &st.Name, &st.PublicKey, &priv,
 		&enabled, &st.APIPort, &st.EasyTierMode, &st.EasyTierRPC,
-		&st.NetworkName, &secret, &st.VirtualIP, &peersRaw); err != nil {
+		&st.NetworkName, &secret, &st.VirtualIP, &peersRaw, &proxiesRaw); err != nil {
 		return nil, err
 	}
 	st.Enabled = enabled != 0
 	st.HasSecret = secret != nil
 	st.HasKey = priv != nil && st.PublicKey != ""
 	st.Peers = splitPeers(peersRaw)
+	// 存储值来自归一化后的写入,理论恒合法;解析兜底为静默丢弃(防御旧数据/手工改库)。
+	st.ProxyNetworksCustom = keepValidCIDRs(strings.Split(proxiesRaw, "\n"))
 	return &st, nil
+}
+
+// normalizeCIDRs 归一化 cidr 列表:去空白/去空项/去重(保序),逐项须为合法 cidr
+// (net.ParseCIDR;非法项带原值报 ErrInvalidInput,管理员手输需即时反馈)。
+func normalizeCIDRs(in []string) ([]string, error) {
+	out := make([]string, 0, len(in))
+	seen := make(map[string]struct{}, len(in))
+	for _, c := range in {
+		c = strings.TrimSpace(c)
+		if c == "" {
+			continue
+		}
+		if _, _, err := net.ParseCIDR(c); err != nil {
+			return nil, fmt.Errorf("%w: %q 不是合法的 CIDR 网段(形如 192.168.30.0/24)", ErrInvalidInput, c)
+		}
+		if _, dup := seen[c]; dup {
+			continue
+		}
+		seen[c] = struct{}{}
+		out = append(out, c)
+	}
+	return out, nil
+}
+
+// keepValidCIDRs 保留合法 cidr(去重保序),非法项静默丢弃(读取侧兜底,非用户输入路径)。
+func keepValidCIDRs(in []string) []string {
+	out := make([]string, 0, len(in))
+	seen := make(map[string]struct{}, len(in))
+	for _, c := range in {
+		c = strings.TrimSpace(c)
+		if c == "" {
+			continue
+		}
+		if _, _, err := net.ParseCIDR(c); err != nil {
+			continue
+		}
+		if _, dup := seen[c]; dup {
+			continue
+		}
+		seen[c] = struct{}{}
+		out = append(out, c)
+	}
+	return out
 }
 
 // normalizePeers/splitPeers 处理 peer URL 列表(换行分隔存储)。
