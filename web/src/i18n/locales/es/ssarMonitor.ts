@@ -28,7 +28,10 @@ export default {
   install: 'Instalar',
   upgrade: 'Actualizar',
 
-  detailHeading: '{name} · detalle de monitorización',
+  back: 'Volver a las máquinas',
+  overviewHeading: 'Vista general (muestras de la plataforma)',
+  lastSampleLabel: 'Última muestra',
+  notInstalledHint: 'ssar no está instalado (o el colector no corre) en esta máquina: los gráficos no tienen datos; instala / actualiza desde la página de lista',
   minutesLabel: '{n} min',
   hoursLabel: '{n} h',
   daysLabel: '{n} d',

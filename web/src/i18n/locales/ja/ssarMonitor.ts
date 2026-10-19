@@ -28,7 +28,10 @@ export default {
   install: 'インストール',
   upgrade: 'アップグレード',
 
-  detailHeading: '{name} · 監視詳細',
+  back: 'マシン一覧に戻る',
+  overviewHeading: '概観(プラットフォーム サンプル)',
+  lastSampleLabel: '最終サンプル',
+  notInstalledHint: 'このマシンには ssar が未インストール(またはコレクター未実行)のためグラフデータがありません。一覧ページからインストール / アップグレードしてください',
   minutesLabel: '{n} 分',
   hoursLabel: '{n} 時間',
   daysLabel: '{n} 日',

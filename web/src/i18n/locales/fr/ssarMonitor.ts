@@ -28,7 +28,10 @@ export default {
   install: 'Installer',
   upgrade: 'Mettre à niveau',
 
-  detailHeading: '{name} · détail de la surveillance',
+  back: 'Retour aux machines',
+  overviewHeading: 'Vue d’ensemble (échantillons plateforme)',
+  lastSampleLabel: 'Dernier échantillon',
+  notInstalledHint: 'ssar n’est pas installé (ou le collecteur ne tourne pas) sur cette machine — pas de données pour les graphiques ; installez / mettez à niveau depuis la page de liste',
   minutesLabel: '{n} min',
   hoursLabel: '{n} h',
   daysLabel: '{n} j',

@@ -28,7 +28,10 @@ export default {
   install: '설치',
   upgrade: '업그레이드',
 
-  detailHeading: '{name} · 모니터링 상세',
+  back: '머신 목록으로 돌아가기',
+  overviewHeading: '개요(플랫폼 샘플)',
+  lastSampleLabel: '최근 샘플',
+  notInstalledHint: '이 머신에는 ssar가 설치되지 않았거나(수집기 미실행) 그래프 데이터가 없습니다. 목록 페이지에서 설치 / 업그레이드하세요',
   minutesLabel: '{n}분',
   hoursLabel: '{n}시간',
   daysLabel: '{n}일',

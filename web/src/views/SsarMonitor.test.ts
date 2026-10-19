@@ -1,9 +1,9 @@
 /**
- * SsarMonitor.test.ts — 机器监控页回归测试。
+ * SsarMonitor.test.ts — 机器监控·列表页回归测试。
  *
  * 核心回归:overview.binaries.packages 为 null(后端 nil 切片序列化)时页面不白屏
- * —— 归一化后按空数组消费,面板/表格照常渲染。另覆盖:选中行进入详情时
- * history / query 拉取与图表/表格渲染。
+ * —— 归一化后按空数组消费,面板/表格照常渲染。另覆盖:点机器行 / 「详情 →」
+ * 跳转独立详情路由(不再把详情藏在页底)。
  * i18n 插件与 zh-CN locale 由 src/test/setup.ts 全局安装(故断言中文文案)。
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
@@ -14,6 +14,7 @@ const getSsarHistoryMock = vi.fn()
 const querySsarMock = vi.fn()
 const triggerSsarDownloadMock = vi.fn()
 const installSsarMock = vi.fn()
+const pushMock = vi.fn()
 
 vi.mock('../api/ssar', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../api/ssar')>()
@@ -26,6 +27,11 @@ vi.mock('../api/ssar', async (importOriginal) => {
     installSsar: (...a: unknown[]) => installSsarMock(...a),
   }
 })
+
+vi.mock('vue-router', () => ({
+  useRoute: () => ({ params: {} }),
+  useRouter: () => ({ push: pushMock }),
+}))
 
 import SsarMonitor from './SsarMonitor.vue'
 import type { SsarOverview } from '../api/ssar'
@@ -66,28 +72,28 @@ function overview(over: Partial<SsarOverview> = {}): SsarOverview {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  pushMock.mockReset()
   getSsarOverviewMock.mockResolvedValue(overview())
-  getSsarHistoryMock.mockResolvedValue([])
-  querySsarMock.mockResolvedValue({ view: 'cpu', columns: [], rows: [] })
 })
 
-describe('SsarMonitor', () => {
+describe('SsarMonitor(列表页)', () => {
   it('packages 为 null 不白屏:归一化后渲染面板与服务器表', async () => {
     const wrapper = mount(SsarMonitor)
     await flushPromises()
 
     // 未缓存文案仍在(未被 null .length 异常打断渲染)。
     expect(wrapper.text()).toContain('尚未缓存安装包')
-    // 两台服务器均渲染,含未装/已装两种徽标文案。
+    // 两台服务器均渲染,含未装/已装两种徽标文案 + 每行都有详情入口。
     expect(wrapper.text()).toContain('strata01')
     expect(wrapper.text()).toContain('docker01')
     expect(wrapper.text()).toContain('未安装')
     expect(wrapper.text()).toContain('采集中')
+    expect(wrapper.text()).toContain('详情 →')
     // 归一化后 packages 为数组(包名区不炸)。
     expect((wrapper.vm as unknown as { overview: SsarOverview }).overview.binaries.packages).toEqual([])
   })
 
-  it('已缓存包时展示包名,选中服务器进入详情并拉取细查', async () => {
+  it('已缓存包时展示包名;点机器行与「详情 →」都跳转详情路由', async () => {
     getSsarOverviewMock.mockResolvedValue(
       overview({
         binaries: {
@@ -99,20 +105,6 @@ describe('SsarMonitor', () => {
         },
       }),
     )
-    getSsarHistoryMock.mockResolvedValue([
-      {
-        at: '2026-10-19T11:59:00Z',
-        cpuUser: 11.5, cpuSystem: 4.2, cpuIowait: 2.1, cpuIdle: 840.1, cpuSteal: 0.5,
-        memTotalKb: 16384000, memFreeKb: 2000000, memAvailKb: 8000000,
-        load1: 0.5, runq: 2, threads: 27600,
-        tcpCurrEstab: 42, tcpRetransSegs: 0.35, tcpSynRetrans: 0.1, tcpFastRetrans: 0.2, tcpRetransFail: null,
-      },
-    ])
-    querySsarMock.mockResolvedValue({
-      view: 'cpu',
-      columns: [{ key: 'user', unit: 'jiffies/s' }],
-      rows: [{ time: '2026-10-19T12:00:00', values: { user: 1.5 } }],
-    })
 
     const wrapper = mount(SsarMonitor)
     await flushPromises()
@@ -121,13 +113,14 @@ describe('SsarMonitor', () => {
     expect(wrapper.text()).toContain('ssar-1.0.5-1.x86_64.rpm')
     expect(wrapper.text()).toContain('v1.0.5')
 
-    // 选中 docker01(已装)进入详情:history + query 各拉一次,图表与细查表格渲染。
+    // 点第二行(docker01)→ 跳转对应详情路由;页面本身不再渲染详情区。
     await wrapper.findAll('tbody tr').at(1)!.trigger('click')
-    await flushPromises()
-    expect(getSsarHistoryMock).toHaveBeenCalledWith('s2', 24)
-    expect(querySsarMock).toHaveBeenCalledTimes(1)
-    expect(wrapper.text()).toContain('docker01 · 监控详情')
-    expect(wrapper.text()).toContain('user (jiffies/s)')
-    expect(wrapper.text()).toContain('1.5')
+    expect(pushMock).toHaveBeenCalledWith({ name: 'ssar-monitor-detail', params: { id: 's2' } })
+    expect(wrapper.text()).not.toContain('细查视图')
+
+    // 「详情 →」链接同样跳转。
+    pushMock.mockClear()
+    await wrapper.findAll('tbody tr a.link-btn').at(0)!.trigger('click')
+    expect(pushMock).toHaveBeenCalledWith({ name: 'ssar-monitor-detail', params: { id: 's1' } })
   })
 })
