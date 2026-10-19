@@ -14,7 +14,8 @@ export default {
   navHttps: 'HTTPS-Zugriff',
   navAccount: 'Konto',
   navServers: 'Server',
-  navMesh: 'Cluster',
+  navMesh: 'Cluster',  navSharedBuild: 'Gemeinsame Builds',
+
   navRegistry: 'Registry',
   navDiagnosisStats: 'Diagnose-Feedback',
   navSystem: 'System',

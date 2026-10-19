@@ -99,5 +99,10 @@ export default {
   fieldGpu: 'GPU 機型',
   fieldGpuCheckbox: '該機帶 GPU(顯卡監控)',
   gpuHint: '勾選後,多機狀態總覽會額外執行 nvtop -s 採集每張顯卡的利用率/顯存/溫度/功耗(需目標機已安裝 nvtop)。純監控開關,不參與構建/部署調度。',
-  gpuBadge: 'GPU',
+  gpuBadge: 'GPU',  fieldSharedBuild: '集群共享構建機',
+  fieldSharedBuildCheckbox: '共享給集群其他環境構建',
+  sharedBuildHint: '勾選後,集群中經「集群」頁授權的對端環境可用 peer: 選擇器把構建任務派到該機:任務進入本端構建機池同一佇列,與本端任務統一排隊;SSH 憑證不出本端,對端原始碼/產物只經臨時檔案中轉、不進本端製品庫。需先打構建機標籤;本端構建/部署不受影響。',
+  sharedBuildBadge: '集群共享',
+  errSharedNeedsLabels: '開啟集群共享構建機前需先填寫構建機標籤(對端環境靠標籤選中該機)',
+
 }

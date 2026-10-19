@@ -213,7 +213,7 @@ export default {
     optionServer: '서버 한 대 고정',
     selectorLabel: '라벨 셀렉터',
     selectorPlaceholder: '예: linux,arch=arm64',
-    selectorHint: '쉼표로 구분한 라벨 항목이 모두 일치(AND)해야 매칭됩니다. 스케줄러는 우선순위 → 파이프라인 친화성 → 부하 순으로 선택하며, 모두 사용 중이면 대기합니다. 라벨 없는 서버는 선택되지 않습니다.',
+    selectorHint: '쉼표로 구분한 라벨 항목이 모두 일치(AND)해야 매칭됩니다. 스케줄러는 우선순위 → 파이프라인 친화성 → 부하 순으로 선택하며, 모두 사용 중이면 대기합니다. 라벨 없는 서버는 선택되지 않습니다. peer:<환경> 항을 추가하면 클러스터 상대 환경의 공유 빌드 머신으로 보냅니다(예: peer:prod,linux). 대기열은 상대 환경에 생깁니다.',
     matchCount: '{n}대 일치',
     noMatch: '일치하는 서버 없음: 라벨 철자를 확인하거나 설정 → 서버에서 먼저 라벨을 지정하세요',
     serverLabel: '서버',

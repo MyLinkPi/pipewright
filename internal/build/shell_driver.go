@@ -117,6 +117,15 @@ func (d *shellDriver) Push(ctx context.Context, remoteTag string, onLine func(st
 	return d.cmdr.Stream(ctx, d.bin, args, "", onLine)
 }
 
+// Load 从本地 tar 归档导入镜像(`load -i`;0086 集群共享构建:发起方回收到共享机构建出的
+// 镜像归档后,load 进本端 daemon,再按本端推送计划 push —— registry 凭据不出发起方)。
+// tarPath 是 array 实参(不拼 shell);归档内容不含凭据。
+func (d *shellDriver) Load(ctx context.Context, tarPath string, onLine func(stream, line string)) (int, error) {
+	args := []string{"load", "-i", tarPath}
+	emitCmd(onLine, d.bin, args)
+	return d.cmdr.Stream(ctx, d.bin, args, "", onLine)
+}
+
 // InspectImage 取镜像 digest 与字节大小,经 `inspect --format '{{json ...}}'`(参数化,不拼 shell)。
 // 解析失败时 digest 退化为镜像 ref、size=0(产物仍可落库,只是 metadata 不全),不报致命错。
 func (d *shellDriver) InspectImage(ctx context.Context, ref string) (string, int64, error) {

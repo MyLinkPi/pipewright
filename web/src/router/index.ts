@@ -70,6 +70,8 @@ const SettingsHttps = () => import('../views/settings/SettingsHttps.vue')
 const SettingsAccount = () => import('../views/settings/SettingsAccount.vue')
 // Story 4-1: target server registry + shared SSH layer (FR-14)
 const SettingsServers = () => import('../views/settings/SettingsServers.vue')
+// 集群级共享构建机(0086):owner 视角任务列表/强制取消 + 共享机总览
+const SettingsSharedBuild = () => import('../views/settings/SettingsSharedBuild.vue')
 // Story 5-1: notification channels (FR-19)
 const SettingsNotifications = () => import('../views/settings/SettingsNotifications.vue')
 // Story 7-5: diagnosis feedback-loop stats (FR-26)
@@ -238,6 +240,8 @@ const router = createRouter({
             { path: 'servers', name: 'settings-servers', component: SettingsServers, meta: { title: '服务器' } },
             // 集群:本节点身份/EasyTier 组网/授权单(默认全拒绝)/节点注册表
             { path: 'mesh', name: 'settings-mesh', component: SettingsMesh, meta: { title: '集群' } },
+            // 集群级共享构建机:跨环境共享构建任务(owner 视角)+ 共享机总览
+            { path: 'shared-build', name: 'settings-shared-build', component: SettingsSharedBuild, meta: { title: '共享构建机' } },
             // 内置本地 Docker registry:构建产物统一推送 + 上游可切换 + daemon.json 下发
             { path: 'registry', name: 'settings-registry', component: SettingsRegistry, meta: { title: '镜像仓库' } },
             // Story 7-5: diagnosis feedback-loop stats (FR-26)

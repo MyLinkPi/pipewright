@@ -65,6 +65,15 @@ export interface Server {
    */
   gpu: boolean
   /**
+   * Cluster-shared build machine flag (0086): when on, peer environments in the
+   * mesh cluster that are granted the build ACL may dispatch build jobs onto this
+   * machine via a `peer:<env>` selector. Jobs queue in the local scheduler's FIFO
+   * alongside local ones; SSH credentials never leave this environment, and peer
+   * workspaces/artifacts only transit OS temp files (never the local artifact
+   * store). Requires non-empty labels. Local build/deploy behavior is unchanged.
+   */
+  sharedBuild: boolean
+  /**
    * Server-pool placement (system-managed, 0084): PVE hosts discovered at
    * registration are placed into a `pve-<cluster>` pool with kind=pve_node.
    */
@@ -92,6 +101,8 @@ export interface CreateServerInput {
   priority?: number
   /** GPU machine flag (monitoring only). Omit = not a GPU machine. */
   gpu?: boolean
+  /** Cluster-shared build machine flag (0086). Requires labels; omit = off. */
+  sharedBuild?: boolean
 }
 
 export interface UpdateServerInput {
@@ -109,6 +120,8 @@ export interface UpdateServerInput {
   priority?: number
   /** Present = set the GPU flag; omit = keep it. */
   gpu?: boolean
+  /** Present = set the cluster-shared build flag; omit = keep it. */
+  sharedBuild?: boolean
 }
 
 export interface ServerTestResult {

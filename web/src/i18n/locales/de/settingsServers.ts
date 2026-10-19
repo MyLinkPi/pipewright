@@ -99,5 +99,10 @@ export default {
   fieldGpu: 'GPU-Maschine',
   fieldGpuCheckbox: 'Diese Maschine hat eine GPU (Grafikkarten-Überwachung)',
   gpuHint: 'Wenn aktiviert, führt die Statusübersicht zusätzlich nvtop -s aus und erfasst je Karte Auslastung / VRAM / Temperatur / Leistung (nvtop muss auf dem Ziel installiert sein). Nur Überwachung — ohne Einfluss auf Build- oder Deploy-Planung.',
-  gpuBadge: 'GPU',
+  gpuBadge: 'GPU',  fieldSharedBuild: 'Cluster-geteilter Build-Rechner',
+  fieldSharedBuildCheckbox: 'Diesen Rechner clusterweit für Builds freigeben',
+  sharedBuildHint: 'Wenn aktiviert, dürfen Peer-Umgebungen mit der Shared-Build-Berechtigung Build-Jobs über einen peer:<env>-Selektor auf diesen Rechner schicken. Jobs rechnen in dieselbe FIFO-Warteschlange wie lokale; SSH-Credentials verlassen diese Umgebung nie, Workspaces/Artefakte der Peers durchlaufen nur temporäre Dateien (nie das lokale Artefakt-Repository). Erfordert Build-Labels; lokales Build/Deploy bleibt unberührt.',
+  sharedBuildBadge: 'Cluster-geteilt',
+  errSharedNeedsLabels: 'Vor der Cluster-Freigabe zuerst Build-Labels setzen (Peers wählen Rechner über Labels)',
+
 }

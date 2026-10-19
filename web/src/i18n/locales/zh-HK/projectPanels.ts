@@ -213,7 +213,7 @@ export default {
     optionServer: '指定一台伺服器(釘選)',
     selectorLabel: '標籤選擇器',
     selectorPlaceholder: '如 linux,arch=arm64',
-    selectorHint: '逗號分隔標籤項,全部命中才匹配(AND);調度按「優先級 → 本流水線親和 → 負載」選機,全忙自動排隊。未打標籤的伺服器不會入選。',
+    selectorHint: '逗號分隔標籤項,全部命中才匹配(AND);調度按「優先級 → 本流水線親和 → 負載」選機,全忙自動排隊。未打標籤的伺服器不會入選。 可加 peer:<環境名> 項把構建派到集群中已共享構建機的環境(如 peer:prod,linux),排隊在對端環境。',
     matchCount: '命中 {n} 台',
     noMatch: '沒有命中任何伺服器:請檢查標籤拼寫,或先在「設定 → 伺服器」給機器打標籤',
     serverLabel: '伺服器',

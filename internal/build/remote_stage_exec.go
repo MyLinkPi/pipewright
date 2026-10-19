@@ -144,7 +144,20 @@ func NewStageExecutorWithRunner(b *Builder, reportSink TestReportSink, resolve R
 		// dispatch 派发单个远程节点:占槽(失败返回 started=false)→ JobRunning → 远程执行 →
 		// 按结果 JobDone。release 由闭包级 defer 保证:即使执行 panic(worker 层有 recover,
 		// 见 internal/run/pool.go)槽位也必归还,不再泄漏。
+		// peer: 选择器(集群共享构建,0086)不占本端槽 —— 排队权威在对端环境的调度器,
+		// 经 mesh 提交跟踪,产物回传后由本端回收(见 runJobShared);节点生命周期如实上报
+		// (含对端解析失败等配置错误也显式 failed,不静默跳过)。
 		dispatch := func(i int, jb pipeline.Job, sel string) (started bool, err error) {
+			if peerScopedSelector(sel) {
+				_ = rep.JobRunning(ctx, jb.ID)
+				jrep := rep.JobReporter(jb.ID)
+				if rerr := b.runJobShared(ctx, r, stage, jb, jrep, sel); rerr != nil {
+					_ = rep.JobDone(ctx, jb.ID, run.StepFailed)
+					return true, rerr
+				}
+				_ = rep.JobDone(ctx, jb.ID, run.StepSuccess)
+				return true, nil
+			}
 			serverID, serverName, release, aerr := resolve.Acquire(ctx, r.ProjectID, sel, log)
 			if aerr != nil {
 				return false, acquireFail(ctx, rep, sel, aerr)
@@ -377,7 +390,11 @@ func (b *Builder) runStageMixedTopo(
 
 	// dispatchRemote 拓扑路径的远程节点派发:占槽 → 远程执行 → 闭包级 defer 必还槽(panic 不泄漏)。
 	// script / build_image 按 runJobRemote 分发;wsSuffix 用 job ID(拓扑路径节点必带 ID)。
+	// peer: 选择器(集群共享构建,0086)不占本端槽,经 mesh 派发到对端共享机(见 runJobShared)。
 	dispatchRemote := func(jb pipeline.Job, sel string, jrep dagrun.StageReporter) error {
+		if peerScopedSelector(sel) {
+			return b.runJobShared(ctx, r, stage, jb, jrep, sel)
+		}
 		serverID, serverName, release, aerr := resolve.Acquire(ctx, r.ProjectID, sel, log)
 		if aerr != nil {
 			return acquireFail(ctx, rep, sel, aerr)

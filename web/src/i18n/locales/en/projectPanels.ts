@@ -213,7 +213,7 @@ export default {
     optionServer: 'Pin to one server',
     selectorLabel: 'Label selector',
     selectorPlaceholder: 'e.g. linux,arch=arm64',
-    selectorHint: 'Comma-separated label terms, all must match (AND). Scheduling picks by priority, then pipeline affinity, then load; queues when all busy. Servers without labels are never selected.',
+    selectorHint: 'Comma-separated label terms, all must match (AND). Scheduling picks by priority, then pipeline affinity, then load; queues when all busy. Servers without labels are never selected. A peer:<env> term dispatches the build to a cluster peer’s shared build machines (e.g. peer:prod,linux); queuing happens on the peer.',
     matchCount: '{n} server(s) matched',
     noMatch: 'No server matches: check the label spelling, or label machines under Settings > Servers first',
     serverLabel: 'Server',

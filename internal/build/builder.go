@@ -86,6 +86,9 @@ type Builder struct {
 	meshPeers  meshPeerLookup
 	meshClient *mesh.Client
 	meshImages *ImageTransfer
+	// sharedGW 是集群级共享构建发起网关(0086;WithSharedBuildGateway 注入):含 peer: 选择器
+	// 的构建节点经它派发到对端环境的共享机。零值 → 该类节点明确失败,不静默本地执行。
+	sharedGW sharedBuildGateway
 	// pushedRevs 是「被推送源」物化依赖(WithPushedSource 注入);nil → pushed_source 节点失败。
 	pushedRevs pushsource.Store
 }

@@ -213,7 +213,7 @@ export default {
     optionServer: 'Fijar un servidor',
     selectorLabel: 'Selector de etiquetas',
     selectorPlaceholder: 'p. ej. linux,arch=arm64',
-    selectorHint: 'Terminos de etiqueta separados por comas, todos deben coincidir (Y). La planificacion elige por prioridad, luego afinidad de pipeline, luego carga; pone en cola si todo esta ocupado. Los servidores sin etiquetas nunca se seleccionan.',
+    selectorHint: 'Terminos de etiqueta separados por comas, todos deben coincidir (Y). La planificacion elige por prioridad, luego afinidad de pipeline, luego carga; pone en cola si todo esta ocupado. Los servidores sin etiquetas nunca se seleccionan. Un término peer:<entorno> envía la compilación a las máquinas compartidas de un par del clúster (p. ej. peer:prod,linux); la cola está en el par.',
     matchCount: '{n} servidor(es) coincidentes',
     noMatch: 'Ningun servidor coincide: revisa la ortografia de las etiquetas o etiqueta maquinas en Ajustes > Servidores',
     serverLabel: 'Servidor',

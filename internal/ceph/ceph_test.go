@@ -70,6 +70,9 @@ func (f *fakeTarget) ExecInteractive(context.Context, string, []string) (target.
 func (f *fakeTarget) Upload(context.Context, string, io.Reader, string) error {
 	return nil
 }
+func (f *fakeTarget) Download(_ context.Context, _ string, _ string, _ io.Writer) (int64, error) {
+	return 0, nil
+}
 func (f *fakeTarget) ExecWithStdin(_ context.Context, id string, cmd []string, _ io.Reader) (*target.ExecResult, error) {
 	return f.Exec(context.Background(), id, cmd)
 }

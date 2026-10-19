@@ -100,6 +100,14 @@ func (s *service) resolveTargets(ctx context.Context, serverIDs []string, select
 	if err != nil {
 		return nil, ErrInvalidSelector
 	}
+	// `peer:<环境>` 项只对集群共享构建有意义(0086):部署目标永远是本端服务器,含 peer:
+	// 项的部署选择器必是配置错误。标签匹配对 peer: 项天然零命中,若放行会落入下方
+	// 「零命中 = 跳过即成功」,把配置错误静默成空部署 —— 显式 422 拒绝。
+	for _, t := range terms {
+		if strings.HasPrefix(t, "peer:") {
+			return nil, ErrInvalidSelector
+		}
+	}
 	all, err := s.targets.List(ctx)
 	if err != nil {
 		return nil, err

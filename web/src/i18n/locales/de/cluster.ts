@@ -69,7 +69,8 @@ export default {
     visibleTo: 'Sichtbar (Server/Projekte/Läufe)',
     pushAllowed: 'Push von Artefakten/Images erlauben',
     triggerAllowed: 'Workflows auslösen erlauben',
-    forwardAllowed: 'Weiterleitung meiner Dienste erlauben',
+    forwardAllowed: 'Weiterleitung meiner Dienste erlauben',    buildAllowed: 'Gemeinsame Build-Jobs erlauben',
+
     noPeers: 'Noch keine bekannten Knoten',
     saveAcl: 'Berechtigungen speichern',
     peersTitle: 'Knotenregister',

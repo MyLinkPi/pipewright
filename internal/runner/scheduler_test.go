@@ -713,3 +713,90 @@ func TestAcquireExcludesPVENode(t *testing.T) {
 		t.Fatalf("Acquire pinned pve = %v, want ErrPVENotTarget wrap", err)
 	}
 }
+
+// seedSharedServer 插一台带集群共享标记的 servers 行(0086)。
+func seedSharedServer(t *testing.T, st *store.Store, id, name, labels string, maxBuilds, priority int) {
+	t.Helper()
+	seedServer(t, st, id, name, labels, maxBuilds, priority)
+	if _, err := st.DB.Exec(`UPDATE servers SET shared_build = 1 WHERE id = ?`, id); err != nil {
+		t.Fatalf("seed shared %s: %v", name, err)
+	}
+}
+
+// TestAcquireSharedOnlyPicksSharedMachines(0086):共享取机只在标记机器里选;
+// 普通取机不受影响(仍可选全部)。
+func TestAcquireSharedOnlyPicksSharedMachines(t *testing.T) {
+	st := openMigrated(t)
+	seedServer(t, st, "s-plain", "plain", "linux", 4, 10)
+	seedSharedServer(t, st, "s-shared", "shared", "linux", 4, 1)
+	s := NewScheduler(st.DB, nil, 1)
+
+	id, _, rel, err := s.AcquireShared(context.Background(), "p1", "linux", nil)
+	if err != nil || id != "s-shared" {
+		t.Fatalf("AcquireShared = %q/%v, want s-shared(唯一共享机)", id, err)
+	}
+	rel()
+
+	// 普通取机仍可选中未共享的高优先级机器(本端行为零变化)。
+	id2, _, rel2, err2 := s.Acquire(context.Background(), "p1", "linux", nil)
+	if err2 != nil || id2 != "s-plain" {
+		t.Fatalf("Acquire = %q/%v, want s-plain", id2, err2)
+	}
+	rel2()
+}
+
+// TestAcquireSharedPinnedNotShared(0086):钉死未共享的机器 → ErrServerNotShared
+// (对端配置错误显式失败,不与零命中混淆);钉死共享机正常放行。
+func TestAcquireSharedPinnedNotShared(t *testing.T) {
+	st := openMigrated(t)
+	seedServer(t, st, "s-plain", "plain", "linux", 4, 10)
+	seedSharedServer(t, st, "s-shared", "shared", "linux", 4, 1)
+	s := NewScheduler(st.DB, nil, 1)
+
+	if _, _, _, err := s.AcquireShared(context.Background(), "p", "server:s-plain", nil); !errors.Is(err, ErrServerNotShared) {
+		t.Fatalf("钉死未共享机应报 ErrServerNotShared,got %v", err)
+	}
+	id, _, rel, err := s.AcquireShared(context.Background(), "p", "server:s-shared", nil)
+	if err != nil || id != "s-shared" {
+		t.Fatalf("钉死共享机应放行,got %q/%v", id, err)
+	}
+	rel()
+}
+
+// TestAcquireSharedQueuesInSameFIFO(0086):共享任务与本端任务共用同一 FIFO ——
+// 共享任务占满槽位后,本端任务排队;释放后本端任务被唤醒。
+func TestAcquireSharedQueuesInSameFIFO(t *testing.T) {
+	st := openMigrated(t)
+	seedSharedServer(t, st, "s-shared", "shared", "linux", 1, 1) // 单槽
+	s := NewScheduler(st.DB, nil, 1)
+
+	_, _, relS, err := s.AcquireShared(context.Background(), "peer1", "linux", nil)
+	if err != nil {
+		t.Fatalf("共享取机失败:%v", err)
+	}
+
+	done := make(chan string, 1)
+	go func() {
+		id, _, rel, aerr := s.Acquire(context.Background(), "local", "linux", nil)
+		if aerr != nil {
+			done <- "err:" + aerr.Error()
+			return
+		}
+		rel()
+		done <- id
+	}()
+	select {
+	case v := <-done:
+		t.Fatalf("本端任务不应在共享任务占槽时立即获取:%s", v)
+	case <-time.After(100 * time.Millisecond):
+	}
+	relS()
+	select {
+	case v := <-done:
+		if v != "s-shared" {
+			t.Fatalf("唤醒后应选中 s-shared,got %s", v)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("释放后本端任务未被唤醒(共享/本端未共用 FIFO)")
+	}
+}

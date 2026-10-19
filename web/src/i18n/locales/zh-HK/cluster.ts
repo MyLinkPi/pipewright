@@ -69,7 +69,8 @@ export default {
     visibleTo: '可見(伺服器/專案/運行)',
     pushAllowed: '允許推送產物/鏡像',
     triggerAllowed: '允許觸發工作流',
-    forwardAllowed: '允許轉發我的服務',
+    forwardAllowed: '允許轉發我的服務',    buildAllowed: '允許使用我的共享構建機',
+
     noPeers: '暫無已知節點',
     saveAcl: '儲存授權',
     peersTitle: '節點註冊表',
