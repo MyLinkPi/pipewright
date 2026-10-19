@@ -25,7 +25,7 @@ type fakeTransferPeers struct {
 }
 
 func (f *fakeTransferPeers) GetPeer(context.Context, string) (*mesh.Peer, error) { return f.peer, nil }
-func (f *fakeTransferPeers) NodeID(context.Context) (string, error)             { return f.nodeID, nil }
+func (f *fakeTransferPeers) NodeID(context.Context) (string, error)              { return f.nodeID, nil }
 
 // fakeTransferRuns 实现transferRunSource:固定 run + 产物清单。
 type fakeTransferRuns struct {

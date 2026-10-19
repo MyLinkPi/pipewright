@@ -75,8 +75,8 @@ type GatewayRouteStatus struct {
 
 // ForwardStatus 是跨环境转发数据面的聚合状态(网关页展示)。
 type ForwardStatus struct {
-	IPForwardOK     bool                `json:"ipForwardOk"` // 本机 ip_forward 已开启
-	IPForwardDetail string              `json:"ipForwardDetail"`
+	IPForwardOK     bool                 `json:"ipForwardOk"` // 本机 ip_forward 已开启
+	IPForwardDetail string               `json:"ipForwardDetail"`
 	Routes          []GatewayRouteStatus `json:"routes"`
 	// Conflicts 是冲突告警(本端与对端网关 IP 重复等;空 = 无)。
 	Conflicts []string `json:"conflicts"`
@@ -97,7 +97,7 @@ type forwardCatalogEntry struct {
 	catalog   *mesh.ServiceCatalog
 	fetchedAt time.Time
 	// err/errAt 记录最近一次拉取失败(陈旧宽限期内继续用旧目录)。
-	err error
+	err   error
 	errAt time.Time
 }
 
@@ -346,7 +346,7 @@ func (s *service) buildForwardPlans(ctx context.Context, enabled []RegisteredSer
 // forwardConflict 是一条网关 IP 冲突(本端 ↔ 对端或对端 ↔ 对端;/32 路由按目标 IP 唯一
 // 定向,重复即歧义)。RemotePeers 是涉及冲突的对端 nodeID(整体降级用);Text 是展示文案。
 type forwardConflict struct {
-	IP         string
+	IP          string
 	RemotePeers []string
 	Text        string
 }

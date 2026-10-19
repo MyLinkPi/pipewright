@@ -1,12 +1,12 @@
 // Package netforward 管控本机(pipewright 宿主)的 IPv4 转发开关,供跨环境服务转发的
 // 数据面使用 —— 本机作为「网关机 ↔ EasyTier mesh」之间的三层转发点:
 //
-//	网关机 --/32 路由(下一跳=本机)--> 本机(ip_forward=1)--EasyTier 子网代理--> 对端 pipewright 宿主
+//		网关机 --/32 路由(下一跳=本机)--> 本机(ip_forward=1)--EasyTier 子网代理--> 对端 pipewright 宿主
 //
-//   - Ensure:读 net.ipv4.ip_forward,为 0 时尝试写 1,并落 /etc/sysctl.d 持久化文件
-//     (重启后仍生效);无权限/非 Linux 不报错,只记录状态(界面告警,运维手工处理);
-//   - Probe:只读探测;
-//   - LastStatus:最近一次 Ensure/Probe 的快照(网关页/集群页展示)。
+//	  - Ensure:读 net.ipv4.ip_forward,为 0 时尝试写 1,并落 /etc/sysctl.d 持久化文件
+//	    (重启后仍生效);无权限/非 Linux 不报错,只记录状态(界面告警,运维手工处理);
+//	  - Probe:只读探测;
+//	  - LastStatus:最近一次 Ensure/Probe 的快照(网关页/集群页展示)。
 //
 // 所有环境(对端)pipewright 宿主对称依赖此开关;本包只管本机一侧。
 package netforward
