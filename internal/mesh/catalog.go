@@ -17,8 +17,8 @@ import (
 type ServiceCatalog struct {
 	// HTTPPort / HTTPSPort 是本端网关的 HTTP/HTTPS 宿主端口(转发入口端口;对端据此
 	// 渲染 upstream 成员 —— 有证书服务走 HTTPSPort + SNI,无证书走 HTTPPort)。
-	HTTPPort  int              `json:"httpPort"`
-	HTTPSPort int              `json:"httpsPort"`
+	HTTPPort  int `json:"httpPort"`
+	HTTPSPort int `json:"httpsPort"`
 	// Gateways 是本端全部网关主机(IP 为控制端解析出的可达地址;空 = 解析失败,
 	// 转发端跳过该台并在状态里标注)。
 	Gateways []CatalogGateway `json:"gateways"`
@@ -48,7 +48,7 @@ type CatalogService struct {
 	TCPListenPort int `json:"tcpListenPort"`
 }
 
-// CatalogPath 是 URL 子路径展示('' = 根路径),与 servicereg 的规范形态一致。
+// CatalogPath 是 URL 子路径展示(” = 根路径),与 servicereg 的规范形态一致。
 func (c CatalogService) CatalogPath() string {
 	if c.Path == "" {
 		return "/"

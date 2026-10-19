@@ -150,10 +150,10 @@ type serviceRegGatewayDTO struct {
 
 // serviceRegForwardDTO 是跨环境转发数据面状态(网关页展示)。
 type serviceRegForwardDTO struct {
-	IPForwardOK     bool                          `json:"ipForwardOk"`
-	IPForwardDetail string                        `json:"ipForwardDetail"`
+	IPForwardOK     bool                            `json:"ipForwardOk"`
+	IPForwardDetail string                          `json:"ipForwardDetail"`
 	Routes          []servicereg.GatewayRouteStatus `json:"routes"`
-	Conflicts       []string                      `json:"conflicts"`
+	Conflicts       []string                        `json:"conflicts"`
 }
 
 // serviceRegGatewayServerDTO 是单台网关主机的容器状态。
@@ -181,8 +181,8 @@ func toServiceRegGatewayDTO(g *servicereg.GatewayStatus) serviceRegGatewayDTO {
 	dto := serviceRegGatewayDTO{
 		Configured: g.Configured, ServerID: g.ServerID, ServerName: g.ServerName,
 		Installed: g.Installed, Running: g.Running, Image: g.Image, Ports: g.Ports,
-		Servers:        servers,
-		LastApplyAt:    last, LastApplyError: g.LastApplyError, LastApplyErrors: g.LastApplyErrors,
+		Servers:     servers,
+		LastApplyAt: last, LastApplyError: g.LastApplyError, LastApplyErrors: g.LastApplyErrors,
 	}
 	if g.Forward != nil {
 		dto.Forward = &serviceRegForwardDTO{
