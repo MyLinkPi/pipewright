@@ -52,7 +52,7 @@ func (b *Builder) runStagePost(ctx context.Context, sink run.StepSink, r *run.Ru
 		step.Env = append(runParamsAsEnv(r.Trigger.Params), pipelineVars...)
 		if err := b.runScriptStep(ctx, sink, 0, step, workspace); err != nil {
 			// best-effort:记日志,继续后续 post 步骤,绝不覆盖阶段结果。
-			_ = rep.Log(ctx, streamStderr, fmt.Sprintf("· 阶段后置步骤 #%d 未成功(best-effort,不影响阶段结果):%v", i+1, err))
+			_ = rep.Log(ctx, streamError, fmt.Sprintf("· 阶段后置步骤 #%d 未成功(best-effort,不影响阶段结果):%v", i+1, err))
 		}
 	}
 }

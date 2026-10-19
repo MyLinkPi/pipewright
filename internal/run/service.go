@@ -775,7 +775,7 @@ const LogTimeLayout = "2006-01-02 15:04:05"
 // UI 终端、导出文本、失败摘要、AI 诊断的 evidence 一致可见。定长前缀在前端天然列对齐。
 func (s *service) AppendLog(ctx context.Context, runID, stream string, stepOrdinal int, text, machine string) (int, error) {
 	switch stream {
-	case streamStdout, streamStderr:
+	case streamStdout, streamStderr, streamError:
 	default:
 		stream = streamStdout
 	}

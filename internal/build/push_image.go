@@ -134,7 +134,7 @@ func defaultImageTag(localRef string) string {
 func (b *Builder) runPushImageJob(ctx context.Context, rep dagrun.StageReporter, jb pipeline.Job, r *run.Run, settings *pipeline.Settings) error {
 	src := strings.TrimSpace(cfgString(jb.Config, pushImageArtifactJobKey))
 	if src == "" {
-		_ = rep.Log(ctx, streamStderr, "推送镜像节点:未指定产物来源节点(artifactJob)")
+		_ = rep.Log(ctx, streamError, "推送镜像节点:未指定产物来源节点(artifactJob)")
 		return ErrBuildFailed
 	}
 	regURL := strings.TrimSpace(cfgString(jb.Config, "registry"))
@@ -144,13 +144,13 @@ func (b *Builder) runPushImageJob(ctx context.Context, rep dagrun.StageReporter,
 		}
 	}
 	if regURL == "" {
-		_ = rep.Log(ctx, streamStderr, fmt.Sprintf("推送镜像节点「%s」:未指定目标镜像仓库(节点 registry 为空且内置 registry 未启用)", jb.Name))
+		_ = rep.Log(ctx, streamError, fmt.Sprintf("推送镜像节点「%s」:未指定目标镜像仓库(节点 registry 为空且内置 registry 未启用)", jb.Name))
 		return ErrBuildFailed
 	}
 	name := strings.TrimSpace(cfgString(jb.Config, "imageName"))
 	tag, terr := renderRunPlaceholders(strings.TrimSpace(cfgString(jb.Config, "tag")), r)
 	if terr != nil {
-		_ = rep.Log(ctx, streamStderr, "推送镜像节点「"+jb.Name+"」:tag 占位渲染失败:"+terr.Error())
+		_ = rep.Log(ctx, streamError, "推送镜像节点「"+jb.Name+"」:tag 占位渲染失败:"+terr.Error())
 		return ErrBuildFailed
 	}
 	detail := stripScheme(regURL)

@@ -56,7 +56,7 @@ func (d *shellDriver) reconcileCopiedWorkspaces(onLine func(string, string)) {
 			}
 			_, _, code, err = d.cmdr.Run(ctx, d.bin, []string{"rm", "-v", id}, "")
 			if (err != nil || code != 0) && onLine != nil {
-				onLine("stderr", "build: stale workspace cleanup failed")
+				onLine(streamError, "build: stale workspace cleanup failed")
 			}
 		}
 	}()
@@ -109,7 +109,7 @@ func (d *shellDriver) runCopiedWorkspace(ctx context.Context, image, hostDir, wo
 			}
 		}
 		if onLine != nil {
-			onLine("stderr", "build: toolchain cleanup failed; temporary container may remain")
+			onLine(streamError, "build: toolchain cleanup failed; temporary container may remain")
 		}
 		if resultErr == nil {
 			resultCode, resultErr = -1, fmt.Errorf("build: toolchain cleanup failed")

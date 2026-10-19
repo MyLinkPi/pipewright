@@ -197,7 +197,7 @@ func NewStageExecutor(b *Builder, reportSink TestReportSink) dagrun.StageExecuto
 		if needsBuild || hasPost {
 			p, s, perr := b.resolve(ctx, r)
 			if perr != nil {
-				_ = rep.Log(ctx, streamStderr, "无法加载项目构建配置:"+perr.Error())
+				_ = rep.Log(ctx, streamError, "无法加载项目构建配置:"+perr.Error())
 				return ErrBuildFailed
 			}
 			proj, settings = p, s
@@ -211,7 +211,7 @@ func NewStageExecutor(b *Builder, reportSink TestReportSink) dagrun.StageExecuto
 		if needStageWS {
 			ws, mkErr := mkTempWorkspace()
 			if mkErr != nil {
-				_ = rep.Log(ctx, streamStderr, "创建临时工作区失败:"+mkErr.Error())
+				_ = rep.Log(ctx, streamError, "创建临时工作区失败:"+mkErr.Error())
 				return ErrBuildFailed
 			}
 			workspace = ws
@@ -233,7 +233,7 @@ func NewStageExecutor(b *Builder, reportSink TestReportSink) dagrun.StageExecuto
 					if errors.Is(ctx.Err(), context.Canceled) {
 						return run.ErrCanceled
 					}
-					_ = rep.Log(ctx, streamStderr, "源码克隆失败(鉴权/网络/ref 不存在或被 SSRF 拒绝)")
+					_ = rep.Log(ctx, streamError, "源码克隆失败(鉴权/网络/ref 不存在或被 SSRF 拒绝)")
 					return ErrBuildFailed
 				}
 				if resolved != nil && resolved.CommitShort != "" {
@@ -282,7 +282,7 @@ func NewStageExecutor(b *Builder, reportSink TestReportSink) dagrun.StageExecuto
 					jsink := &reporterSink{rep: jrep}
 					step, verr := scriptStepFromJob(jb)
 					if verr != nil {
-						_ = jrep.Log(ctx, streamStderr, fmt.Sprintf("script job「%s」配置无效:%v", jb.Name, verr))
+						_ = jrep.Log(ctx, streamError, fmt.Sprintf("script job「%s」配置无效:%v", jb.Name, verr))
 						_ = rep.JobDone(ctx, jb.ID, run.StepFailed)
 						return ErrBuildFailed
 					}
@@ -499,7 +499,7 @@ func (b *Builder) runStageJobsDAG(
 	g, gerr := dag.New(nodes)
 	if gerr != nil {
 		// 保存期已校验过;这里再失败属防御(数据异常)。
-		_ = rep.Log(ctx, streamStderr, "阶段内 job 依赖图非法:"+gerr.Error())
+		_ = rep.Log(ctx, streamError, "阶段内 job 依赖图非法:"+gerr.Error())
 		return ErrBuildFailed
 	}
 
@@ -607,7 +607,7 @@ func (b *Builder) runStageJobsDAG(
 func (b *Builder) cloneJobWorkspace(ctx context.Context, r *run.Run, proj *project.Project, rep dagrun.StageReporter) (string, string, func(), error) {
 	ws, mkErr := mkTempWorkspace()
 	if mkErr != nil {
-		_ = rep.Log(ctx, streamStderr, "创建临时工作区失败:"+mkErr.Error())
+		_ = rep.Log(ctx, streamError, "创建临时工作区失败:"+mkErr.Error())
 		return "", "", func() {}, ErrBuildFailed
 	}
 	cleanup := func() { _ = os.RemoveAll(ws) }
@@ -631,7 +631,7 @@ func (b *Builder) cloneJobWorkspace(ctx context.Context, r *run.Run, proj *proje
 		if errors.Is(ctx.Err(), context.Canceled) {
 			return "", "", func() {}, run.ErrCanceled
 		}
-		_ = rep.Log(ctx, streamStderr, "源码克隆失败(鉴权/网络/ref 不存在或被 SSRF 拒绝)")
+		_ = rep.Log(ctx, streamError, "源码克隆失败(鉴权/网络/ref 不存在或被 SSRF 拒绝)")
 		return "", "", func() {}, ErrBuildFailed
 	}
 	commitTag := "latest"
@@ -671,7 +671,7 @@ func (b *Builder) runScriptJobIsolated(
 
 	step, verr := scriptStepFromJob(jb)
 	if verr != nil {
-		_ = rep.Log(ctx, streamStderr, fmt.Sprintf("script job「%s」配置无效:%v", jb.Name, verr))
+		_ = rep.Log(ctx, streamError, fmt.Sprintf("script job「%s」配置无效:%v", jb.Name, verr))
 		return nil, ErrBuildFailed
 	}
 	// 注入顺序:运行参数 → 上游 job 输出 → 流水线级变量(「变量与缓存」,含 secret,vault 即取即用)
@@ -810,7 +810,7 @@ func (b *Builder) runDeployJob(ctx context.Context, rep dagrun.StageReporter, jb
 	})
 	results, err := b.deployer.DeployForStage(dctx, runID, selector, cfg, strategy)
 	if err != nil {
-		_ = rep.Log(ctx, streamStderr, "部署失败:"+err.Error())
+		_ = rep.Log(ctx, streamError, "部署失败:"+err.Error())
 		return ErrBuildFailed
 	}
 	if len(results) == 0 {
@@ -823,7 +823,7 @@ func (b *Builder) runDeployJob(ctx context.Context, rep dagrun.StageReporter, jb
 		if dr.Status == "success" {
 			_ = rep.Log(ctx, streamStdout, line)
 		} else {
-			_ = rep.Log(ctx, streamStderr, line)
+			_ = rep.Log(ctx, streamError, line)
 			failed = true
 		}
 	}
@@ -851,7 +851,7 @@ func (b *Builder) runHealthCheckJob(ctx context.Context, rep dagrun.StageReporte
 	if strings.TrimSpace(cfgString(jb.Config, "probeMode")) == "command" {
 		cmd := renderTemplate(cfgString(jb.Config, "command"), params)
 		if cmd == "" {
-			_ = rep.Log(ctx, streamStderr, "健康检查节点:probeMode=command 但未配置命令")
+			_ = rep.Log(ctx, streamError, "健康检查节点:probeMode=command 但未配置命令")
 			return ErrBuildFailed
 		}
 		hc.Type = deploy.HealthCheckCommand
@@ -859,7 +859,7 @@ func (b *Builder) runHealthCheckJob(ctx context.Context, rep dagrun.StageReporte
 	} else {
 		u := renderTemplate(cfgString(jb.Config, "url"), params)
 		if u == "" {
-			_ = rep.Log(ctx, streamStderr, "健康检查节点:未配置探测 URL")
+			_ = rep.Log(ctx, streamError, "健康检查节点:未配置探测 URL")
 			return ErrBuildFailed
 		}
 		hc.Type = deploy.HealthCheckHTTP
@@ -873,9 +873,9 @@ func (b *Builder) runHealthCheckJob(ctx context.Context, rep dagrun.StageReporte
 	results, err := b.deployer.CheckHealth(dctx, selector, cfgString(jb.Config, "selectorMode"), hc)
 	if err != nil {
 		for _, r := range results {
-			_ = rep.Log(ctx, streamStderr, fmt.Sprintf("· %s:%s — %s", r.ServerName, probeStatus(r.OK), r.Message))
+			_ = rep.Log(ctx, streamError, fmt.Sprintf("· %s:%s — %s", r.ServerName, probeStatus(r.OK), r.Message))
 		}
-		_ = rep.Log(ctx, streamStderr, "健康检查失败:"+err.Error())
+		_ = rep.Log(ctx, streamError, "健康检查失败:"+err.Error())
 		return ErrBuildFailed
 	}
 	for _, r := range results {
@@ -918,7 +918,7 @@ func (b *Builder) runNotifyJob(ctx context.Context, rep dagrun.StageReporter, jb
 	}
 	chID, chName := b.resolveChannel(ctx, chRef)
 	if chID == "" {
-		_ = rep.Log(ctx, streamStderr, "通知节点:找不到渠道「"+chRef+"」,跳过")
+		_ = rep.Log(ctx, streamError, "通知节点:找不到渠道「"+chRef+"」,跳过")
 		return
 	}
 	commit := strings.TrimSpace(r.Trigger.Commit)
@@ -971,7 +971,7 @@ func (b *Builder) runNotifyJob(ctx context.Context, rep dagrun.StageReporter, jb
 		}
 	}
 	if err := b.notifier.SendVia(ctx, chID, payload); err != nil {
-		_ = rep.Log(ctx, streamStderr, "通知发送失败(best-effort):"+err.Error())
+		_ = rep.Log(ctx, streamError, "通知发送失败(best-effort):"+err.Error())
 		return
 	}
 	_ = rep.Log(ctx, streamStdout, "· 已发通知 → 渠道「"+chName+"」")
@@ -1026,7 +1026,7 @@ func (b *Builder) runBuildImageJob(ctx context.Context, sink run.StepSink, rep d
 		if errors.Is(ctx.Err(), context.Canceled) {
 			return run.ErrCanceled
 		}
-		_ = rep.Log(ctx, streamStderr, fmt.Sprintf("构建节点「%s」失败:%v", jb.Name, berr))
+		_ = rep.Log(ctx, streamError, fmt.Sprintf("构建节点「%s」失败:%v", jb.Name, berr))
 		return ErrBuildFailed
 	}
 	if art == nil {
@@ -1055,7 +1055,7 @@ func (b *Builder) runBuildImageJob(ctx context.Context, sink run.StepSink, rep d
 					if errors.Is(ctx.Err(), context.Canceled) {
 						return run.ErrCanceled
 					}
-					_ = rep.Log(ctx, streamStderr, fmt.Sprintf("镜像推送失败(推送镜像节点声明的目标 %s):%v", stripScheme(spec.RegistryURL), perr))
+					_ = rep.Log(ctx, streamError, fmt.Sprintf("镜像推送失败(推送镜像节点声明的目标 %s):%v", stripScheme(spec.RegistryURL), perr))
 					return ErrBuildFailed
 				}
 				// 多目标时以最后一个成功的作为产物引用(部署节点只消费一个引用)。
@@ -1078,7 +1078,7 @@ func (b *Builder) runBuildImageJob(ctx context.Context, sink run.StepSink, rep d
 					if errors.Is(ctx.Err(), context.Canceled) {
 						return run.ErrCanceled
 					}
-					_ = rep.Log(ctx, streamStderr, fmt.Sprintf("镜像推送失败:%v", perr))
+					_ = rep.Log(ctx, streamError, fmt.Sprintf("镜像推送失败:%v", perr))
 					return ErrBuildFailed
 				}
 				art.Reference = remoteTag
@@ -1100,7 +1100,7 @@ func (b *Builder) runBuildImageJob(ctx context.Context, sink run.StepSink, rep d
 	art.Metadata["sourceJob"] = jb.Name
 
 	if err := rep.EmitArtifact(ctx, *art); err != nil {
-		_ = rep.Log(ctx, streamStderr, "登记产物失败:"+err.Error())
+		_ = rep.Log(ctx, streamError, "登记产物失败:"+err.Error())
 	}
 	return nil
 }
@@ -1121,19 +1121,19 @@ func (b *Builder) collectScriptArtifacts(ctx context.Context, jobs []pipeline.Jo
 			// 防误用:rename 仅在产物路径为单条、无通配时生效(glob 展开多件时同名会互相覆盖)。
 			rename = strings.TrimSpace(cfgString(jb.Config, "artifactRename"))
 		} else if strings.TrimSpace(cfgString(jb.Config, "artifactRename")) != "" {
-			onLine(streamStderr, "artifactRename 在多产物/通配路径下不生效,已忽略:"+cfgString(jb.Config, "artifactRename"))
+			onLine(streamError, "artifactRename 在多产物/通配路径下不生效,已忽略:"+cfgString(jb.Config, "artifactRename"))
 		}
 		for _, rel := range splitCommands(renderTemplate(cfgString(jb.Config, "artifactPath"), templateContext(jb.Config))) { // 渲染 {{参数}} + 按行拆分
 			// 通配(如 backend/target/*.jar)→ 展开为实际文件逐个收集;否则按原路径收集。
 			if strings.ContainsAny(rel, "*?[") {
 				clean := filepath.Clean(rel)
 				if filepath.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
-					onLine(streamStderr, "产物路径越界,已拒绝:"+rel)
+					onLine(streamError, "产物路径越界,已拒绝:"+rel)
 					continue
 				}
 				matches, _ := filepath.Glob(filepath.Join(workspace, clean))
 				if len(matches) == 0 {
-					onLine(streamStderr, "产物通配未匹配,跳过:"+rel)
+					onLine(streamError, "产物通配未匹配,跳过:"+rel)
 					continue
 				}
 				for _, m := range matches {
@@ -1156,13 +1156,13 @@ func (b *Builder) collectScriptArtifacts(ctx context.Context, jobs []pipeline.Jo
 func (b *Builder) collectOneFileArtifact(ctx context.Context, workspace, rel, slug, jobName, stageName, packMode, layout, rename string, rep dagrun.StageReporter, onLine func(stream, line string)) {
 	clean := filepath.Clean(rel)
 	if filepath.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
-		onLine(streamStderr, "产物路径越界,已拒绝:"+rel)
+		onLine(streamError, "产物路径越界,已拒绝:"+rel)
 		return
 	}
 	full := filepath.Join(workspace, clean)
 	fi, err := os.Stat(full)
 	if err != nil {
-		onLine(streamStderr, "产物路径未找到,跳过:"+rel)
+		onLine(streamError, "产物路径未找到,跳过:"+rel)
 		return
 	}
 	// 产物名带上路径基名,避免一个 job 多产物同名(如多个 dist 目录)难以区分。
@@ -1186,7 +1186,7 @@ func (b *Builder) collectOneFileArtifact(ctx context.Context, workspace, rel, sl
 		b.storeJarBytes(art, full, rename, onLine) // 单文件原样字节归档(format=file)
 	}
 	if err := rep.EmitArtifact(ctx, *art); err != nil {
-		onLine(streamStderr, "登记产物失败:"+err.Error())
+		onLine(streamError, "登记产物失败:"+err.Error())
 		return
 	}
 	onLine(streamStdout, "已产出产物:"+art.Name+"("+art.Type+","+rel+")")

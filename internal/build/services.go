@@ -102,12 +102,12 @@ func sanitizeDockerName(s string) string {
 func (b *Builder) startStageServices(ctx context.Context, r *run.Run, stage pipeline.Stage, rep dagrun.StageReporter) (string, bool) {
 	runner, ok := b.driver.(ServiceRunner)
 	if !ok {
-		_ = rep.Log(ctx, streamStderr, "阶段声明了旁挂服务(services),但当前构建驱动不支持容器网络能力,无法运行")
+		_ = rep.Log(ctx, streamError, "阶段声明了旁挂服务(services),但当前构建驱动不支持容器网络能力,无法运行")
 		return "", false
 	}
 	network := stageNetworkName(r.ID, stage.ID)
 	if code, err := runner.CreateNetwork(ctx, network, mkLineLogger(ctx, rep)); err != nil || code != 0 {
-		_ = rep.Log(ctx, streamStderr, fmt.Sprintf("创建服务网络失败(code=%d):%v", code, err))
+		_ = rep.Log(ctx, streamError, fmt.Sprintf("创建服务网络失败(code=%d):%v", code, err))
 		return "", false
 	}
 	started := make([]string, 0, len(stage.Services))
@@ -115,7 +115,7 @@ func (b *Builder) startStageServices(ctx context.Context, r *run.Run, stage pipe
 		cname := network + "-" + sv.Name
 		_ = rep.Log(ctx, streamStdout, fmt.Sprintf("→ 起旁挂服务「%s」(%s)…", sv.Name, sv.Image))
 		if code, err := runner.RunService(ctx, cname, sv.Name, sv.Image, network, sv.Env, sv.Ports, mkLineLogger(ctx, rep)); err != nil || code != 0 {
-			_ = rep.Log(ctx, streamStderr, fmt.Sprintf("旁挂服务「%s」启动失败(code=%d):%v", sv.Name, code, err))
+			_ = rep.Log(ctx, streamError, fmt.Sprintf("旁挂服务「%s」启动失败(code=%d):%v", sv.Name, code, err))
 			// 拆除已起的服务 + 网络,避免泄漏(逐条命令回显,「执行了什么清理」在日志里可见)。
 			for _, c := range started {
 				_, _ = runner.StopService(context.WithoutCancel(ctx), c, mkLineLogger(ctx, rep))
@@ -137,11 +137,11 @@ func (b *Builder) stopStageServices(ctx context.Context, r *run.Run, stage pipel
 	for _, sv := range stage.Services {
 		cname := network + "-" + sv.Name
 		if _, err := runner.StopService(ctx, cname, mkLineLogger(ctx, rep)); err != nil {
-			_ = rep.Log(ctx, streamStderr, fmt.Sprintf("清理旁挂服务「%s」失败(best-effort):%v", sv.Name, err))
+			_ = rep.Log(ctx, streamError, fmt.Sprintf("清理旁挂服务「%s」失败(best-effort):%v", sv.Name, err))
 		}
 	}
 	if _, err := runner.RemoveNetwork(ctx, network, mkLineLogger(ctx, rep)); err != nil {
-		_ = rep.Log(ctx, streamStderr, fmt.Sprintf("清理服务网络失败(best-effort):%v", err))
+		_ = rep.Log(ctx, streamError, fmt.Sprintf("清理服务网络失败(best-effort):%v", err))
 	}
 }
 

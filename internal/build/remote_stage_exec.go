@@ -259,7 +259,7 @@ func acquireFail(ctx context.Context, rep dagrun.StageReporter, sel string, err 
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.Canceled) {
 		return run.ErrCanceled
 	}
-	_ = rep.Log(ctx, streamStderr, "构建机池调度失败("+sel+"):"+err.Error())
+	_ = rep.Log(ctx, streamError, "构建机池调度失败("+sel+"):"+err.Error())
 	return ErrBuildFailed
 }
 
@@ -347,13 +347,13 @@ func (b *Builder) runStageMixedTopo(
 		nodes = append(nodes, dag.Node{ID: jb.ID, Needs: jb.Needs})
 	}
 	if _, gerr := dag.New(nodes); gerr != nil {
-		_ = rep.Log(ctx, streamStderr, "阶段内 job 依赖图非法:"+gerr.Error())
+		_ = rep.Log(ctx, streamError, "阶段内 job 依赖图非法:"+gerr.Error())
 		return ErrBuildFailed
 	}
 
 	proj, settings, perr := b.resolve(ctx, r)
 	if perr != nil {
-		_ = rep.Log(ctx, streamStderr, "无法加载项目构建配置:"+perr.Error())
+		_ = rep.Log(ctx, streamError, "无法加载项目构建配置:"+perr.Error())
 		return ErrBuildFailed
 	}
 
@@ -524,12 +524,12 @@ func (b *Builder) runLiftedStagePost(ctx context.Context, r *run.Run, stage pipe
 	pctx := context.WithoutCancel(ctx)
 	proj, settings, perr := b.resolve(pctx, r)
 	if perr != nil {
-		_ = rep.Log(pctx, streamStderr, "阶段后置步骤:无法加载项目构建配置,跳过:"+perr.Error())
+		_ = rep.Log(pctx, streamError, "阶段后置步骤:无法加载项目构建配置,跳过:"+perr.Error())
 		return
 	}
 	ws, _, cleanup, err := b.cloneJobWorkspace(pctx, r, proj, rep)
 	if err != nil {
-		_ = rep.Log(pctx, streamStderr, "阶段后置步骤:工作区不可用,跳过")
+		_ = rep.Log(pctx, streamError, "阶段后置步骤:工作区不可用,跳过")
 		return
 	}
 	defer cleanup()
@@ -549,7 +549,7 @@ func (b *Builder) runJobRemote(ctx context.Context, r *run.Run, stage pipeline.S
 	case isBuildImageJob(jb.Type):
 		return b.runBuildImageJobRemote(ctx, r, stage, jb, jrep, serverID, serverName, tgt, wsSuffix)
 	default:
-		_ = jrep.Log(ctx, streamStderr, fmt.Sprintf("节点「%s」(%s)不支持远程构建机执行", jb.Name, jb.Type))
+		_ = jrep.Log(ctx, streamError, fmt.Sprintf("节点「%s」(%s)不支持远程构建机执行", jb.Name, jb.Type))
 		return ErrBuildFailed
 	}
 }
@@ -565,13 +565,13 @@ func (b *Builder) runBuildImageJobRemote(ctx context.Context, r *run.Run, stage 
 
 	// 产物类型前置检查:image(默认)全链路支持;jar/dist 远程不可回收 → 立即诚实失败。
 	if at := strings.TrimSpace(cfgString(jb.Config, "artifactType")); at != "" && at != pipeline.ArtifactImage {
-		_ = rep.Log(lctx, streamStderr, fmt.Sprintf("构建节点「%s」:远程构建机暂仅支持镜像(image)产物;jar/dist 产物请配置为本地执行", jb.Name))
+		_ = rep.Log(lctx, streamError, fmt.Sprintf("构建节点「%s」:远程构建机暂仅支持镜像(image)产物;jar/dist 产物请配置为本地执行", jb.Name))
 		return ErrBuildFailed
 	}
 
 	proj, settings, perr := b.resolve(ctx, r)
 	if perr != nil {
-		_ = rep.Log(lctx, streamStderr, "无法加载项目构建配置:"+perr.Error())
+		_ = rep.Log(lctx, streamError, "无法加载项目构建配置:"+perr.Error())
 		return ErrBuildFailed
 	}
 
@@ -587,13 +587,13 @@ func (b *Builder) runBuildImageJobRemote(ctx context.Context, r *run.Run, stage 
 	remoteTar := remoteWS + ".tar.gz"
 	_ = rep.Log(lctx, streamStdout, "→ 远程构建机:打包工作区并经 SSH 传输…")
 	if err := uploadWorkspace(ctx, tgt, serverID, workspace, remoteTar); err != nil {
-		_ = rep.Log(lctx, streamStderr, "传输工作区到远程失败:"+err.Error())
+		_ = rep.Log(lctx, streamError, "传输工作区到远程失败:"+err.Error())
 		return ErrBuildFailed
 	}
 	unpackCmd := []string{"sh", "-c", `mkdir -p "$0" && tar -xzf "$1" -C "$0" && rm -f "$1"`, remoteWS, remoteTar}
 	_ = rep.Log(lctx, streamStdout, "$ "+strings.Join(unpackCmd, " "))
 	if out, eerr := tgt.Exec(ctx, serverID, unpackCmd); eerr != nil || (out != nil && out.ExitCode != 0) {
-		_ = rep.Log(lctx, streamStderr, "远程解包工作区失败")
+		_ = rep.Log(lctx, streamError, "远程解包工作区失败")
 		return ErrBuildFailed
 	}
 	defer func() {
@@ -639,14 +639,14 @@ func (b *Builder) runStageRemote(ctx context.Context, r *run.Run, stage pipeline
 
 	proj, settings, perr := b.resolve(ctx, r)
 	if perr != nil {
-		_ = rep.Log(lctx, streamStderr, "无法加载项目构建配置:"+perr.Error())
+		_ = rep.Log(lctx, streamError, "无法加载项目构建配置:"+perr.Error())
 		return ErrBuildFailed
 	}
 
 	// 1) 控制机本地克隆(token 只在控制机)。
 	workspace, mkErr := mkTempWorkspace()
 	if mkErr != nil {
-		_ = rep.Log(lctx, streamStderr, "创建临时工作区失败:"+mkErr.Error())
+		_ = rep.Log(lctx, streamError, "创建临时工作区失败:"+mkErr.Error())
 		return ErrBuildFailed
 	}
 	defer func() { _ = os.RemoveAll(workspace) }()
@@ -658,7 +658,7 @@ func (b *Builder) runStageRemote(ctx context.Context, r *run.Run, stage pipeline
 		if errors.Is(ctx.Err(), context.Canceled) {
 			return run.ErrCanceled
 		}
-		_ = rep.Log(lctx, streamStderr, "源码克隆失败(鉴权/网络/ref 不存在或被 SSRF 拒绝)")
+		_ = rep.Log(lctx, streamError, "源码克隆失败(鉴权/网络/ref 不存在或被 SSRF 拒绝)")
 		return ErrBuildFailed
 	}
 	if resolved != nil && resolved.CommitShort != "" && b.recordCommit != nil {
@@ -673,7 +673,7 @@ func (b *Builder) runStageRemote(ctx context.Context, r *run.Run, stage pipeline
 	remoteTar := remoteWS + ".tar.gz"
 	_ = rep.Log(lctx, streamStdout, "→ 远程 runner:打包工作区并经 SSH 传输…")
 	if err := uploadWorkspace(ctx, tgt, serverID, workspace, remoteTar); err != nil {
-		_ = rep.Log(lctx, streamStderr, "传输工作区到远程失败:"+err.Error())
+		_ = rep.Log(lctx, streamError, "传输工作区到远程失败:"+err.Error())
 		return ErrBuildFailed
 	}
 	// 远程解包 + 收尾清理(尽力)。命令回显经 rep.Log(远程命令不经过 build 的本地命令日志通道,
@@ -687,7 +687,7 @@ func (b *Builder) runStageRemote(ctx context.Context, r *run.Run, stage pipeline
 				detail = ":" + s
 			}
 		}
-		_ = rep.Log(lctx, streamStderr, "远程解包工作区失败"+detail)
+		_ = rep.Log(lctx, streamError, "远程解包工作区失败"+detail)
 		return ErrBuildFailed
 	}
 	defer func() {
@@ -708,7 +708,7 @@ func (b *Builder) runStageRemote(ctx context.Context, r *run.Run, stage pipeline
 		}
 		step, verr := scriptStepFromJob(jb)
 		if verr != nil {
-			_ = rep.Log(lctx, streamStderr, fmt.Sprintf("script job「%s」配置无效:%v", jb.Name, verr))
+			_ = rep.Log(lctx, streamError, fmt.Sprintf("script job「%s」配置无效:%v", jb.Name, verr))
 			return ErrBuildFailed
 		}
 		// 注入顺序与本地 runScriptJobIsolated 完全对齐:运行参数 → 流水线级变量(「变量与缓存」,

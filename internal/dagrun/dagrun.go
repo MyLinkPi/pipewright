@@ -286,19 +286,19 @@ func (r *Runner) Run(ctx context.Context, rn *run.Run, sink run.StepSink) error 
 			if gerr != nil && errors.Is(gerr, run.ErrGateRejected) {
 				// 审批超时等「未放行但非取消」的门错误:与人工拒绝同语义——阶段从未执行,步骤记
 				// skipped(如实反映);运行最终落「已拒绝」(见下方失败汇总拆分)。
-				_ = rep.Log(ctx, "stderr", fmt.Sprintf("⛔ 审批门未放行(%v),终止该阶段", gerr))
+				_ = rep.Log(ctx, "error", fmt.Sprintf("⛔ 审批门未放行(%v),终止该阶段", gerr))
 				rep.finishRemaining(ctx, run.StepSkipped)
 				rejectedStages[stageID] = execStage.Name
 				return gerr
 			}
 			if gerr != nil {
 				// 取消等运行级中断:维持失败路径(ctx 取消由 worker 归一为 failed)。
-				_ = rep.Log(ctx, "stderr", fmt.Sprintf("审批门中断:%v", gerr))
+				_ = rep.Log(ctx, "error", fmt.Sprintf("审批门中断:%v", gerr))
 				rep.finishRemaining(ctx, run.StepFailed)
 				return gerr
 			}
 			if !approved {
-				_ = rep.Log(ctx, "stderr", "⛔ 审批被拒绝,终止该阶段")
+				_ = rep.Log(ctx, "error", "⛔ 审批被拒绝,终止该阶段")
 				rep.finishRemaining(ctx, run.StepSkipped)
 				rejectedStages[stageID] = execStage.Name
 				return ErrGateRejected

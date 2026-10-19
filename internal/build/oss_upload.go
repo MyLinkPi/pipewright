@@ -240,36 +240,36 @@ func (b *Builder) runOssUploadJob(ctx context.Context, rep dagrun.StageReporter,
 	}
 	storageID := strings.TrimSpace(cfgString(jb.Config, "storageId"))
 	if storageID == "" {
-		_ = rep.Log(ctx, streamStderr, "OSS 上传节点:未选择对象存储配置(storageId),无法上传")
+		_ = rep.Log(ctx, streamError, "OSS 上传节点:未选择对象存储配置(storageId),无法上传")
 		return ErrBuildFailed
 	}
 	artifactJob := strings.TrimSpace(cfgString(jb.Config, "artifactJob"))
 	if artifactJob == "" {
-		_ = rep.Log(ctx, streamStderr, "OSS 上传节点:未指定产物来源节点(artifactJob)")
+		_ = rep.Log(ctx, streamError, "OSS 上传节点:未指定产物来源节点(artifactJob)")
 		return ErrBuildFailed
 	}
 	if b.artifactLister == nil || b.artStore == nil {
-		_ = rep.Log(ctx, streamStderr, "OSS 上传节点:制品库未装配,无法读取产物")
+		_ = rep.Log(ctx, streamError, "OSS 上传节点:制品库未装配,无法读取产物")
 		return ErrBuildFailed
 	}
 	arts, err := b.artifactLister(ctx, r.ID)
 	if err != nil {
-		_ = rep.Log(ctx, streamStderr, "OSS 上传节点:读取产物列表失败:"+err.Error())
+		_ = rep.Log(ctx, streamError, "OSS 上传节点:读取产物列表失败:"+err.Error())
 		return ErrBuildFailed
 	}
 	art, err := pickUploadArtifact(arts, artifactJob, strings.TrimSpace(cfgString(jb.Config, "artifactName")))
 	if err != nil {
-		_ = rep.Log(ctx, streamStderr, "OSS 上传节点:"+err.Error())
+		_ = rep.Log(ctx, streamError, "OSS 上传节点:"+err.Error())
 		return ErrBuildFailed
 	}
 	prefix, perr := renderRunPlaceholders(cfgString(jb.Config, "prefix"), r)
 	if perr != nil {
-		_ = rep.Log(ctx, streamStderr, "OSS 上传节点:prefix 占位渲染失败:"+perr.Error())
+		_ = rep.Log(ctx, streamError, "OSS 上传节点:prefix 占位渲染失败:"+perr.Error())
 		return ErrBuildFailed
 	}
 	n, uerr := b.uploadArtifact(ctx, rep, storageID, prefix, *art)
 	if uerr != nil {
-		_ = rep.Log(ctx, streamStderr, "OSS 上传节点:上传失败:"+uerr.Error())
+		_ = rep.Log(ctx, streamError, "OSS 上传节点:上传失败:"+uerr.Error())
 		return ErrBuildFailed
 	}
 	_ = rep.Log(ctx, streamStdout, fmt.Sprintf("· OSS 上传完成:共 %d 个对象(来源节点 %q)", n, artifactJob))

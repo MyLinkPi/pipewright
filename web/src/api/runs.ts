@@ -346,10 +346,13 @@ export function triggerManual(projectId: string, input: TriggerManualInput): Pro
 // A single log line. `text` is already secret-masked by the backend ([MASKED]
 // substrings present) — the frontend never re-processes secrets, only renders.
 // `seq` is monotonic per-run (from 1); the client uses it to de-dupe / order /
-// resume. `stream` distinguishes stdout vs stderr for coloring. `stepOrdinal`
+// resume. `stream` drives line coloring, three tiers: 'stdout' (default),
+// 'stderr' (subprocess passthrough — tools like docker build write routine
+// progress to stderr, so it renders warm-orange, NOT red), and 'error'
+// (framework-detected failures only — bright red). `stepOrdinal`
 // associates the line with a step (-1 ⇒ run-level).
 
-export type LogStream = 'stdout' | 'stderr'
+export type LogStream = 'stdout' | 'stderr' | 'error'
 
 export interface RunLogLine {
   seq: number

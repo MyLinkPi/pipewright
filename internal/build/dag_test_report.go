@@ -104,18 +104,18 @@ func collectStageReport(ctx context.Context, sink TestReportSink, r *run.Run, st
 	data, rerr := os.ReadFile(xmlPath)
 	if rerr != nil {
 		msg := fmt.Sprintf("测试报告文件未找到或不可读:%s", spec.reportPath)
-		_ = rep.Log(ctx, streamStderr, msg)
+		_ = rep.Log(ctx, streamError, msg)
 		if gated {
-			_ = rep.Log(ctx, streamStderr, "⛔ 已声明质量门禁但缺测试报告,阻断后续阶段")
+			_ = rep.Log(ctx, streamError, "⛔ 已声明质量门禁但缺测试报告,阻断后续阶段")
 			return ErrQualityGate
 		}
 		return nil // 仅展示:软失败
 	}
 	summary, perr := testreport.ParseJUnit(data)
 	if perr != nil {
-		_ = rep.Log(ctx, streamStderr, fmt.Sprintf("测试报告解析失败:%v", perr))
+		_ = rep.Log(ctx, streamError, fmt.Sprintf("测试报告解析失败:%v", perr))
 		if gated {
-			_ = rep.Log(ctx, streamStderr, "⛔ 已声明质量门禁但报告无法解析,阻断后续阶段")
+			_ = rep.Log(ctx, streamError, "⛔ 已声明质量门禁但报告无法解析,阻断后续阶段")
 			return ErrQualityGate
 		}
 		return nil
@@ -165,13 +165,13 @@ func collectStageReport(ctx context.Context, sink TestReportSink, r *run.Run, st
 			GateReason:  verdict.Reason(),
 		}
 		if _, serr := sink.SaveTestReport(ctx, tr); serr != nil {
-			_ = rep.Log(ctx, streamStderr, "测试报告汇总持久化失败(不影响门禁裁决)")
+			_ = rep.Log(ctx, streamError, "测试报告汇总持久化失败(不影响门禁裁决)")
 		}
 	}
 
 	if gated && !verdict.Passed {
-		_ = rep.Log(ctx, streamStderr, "⛔ 质量门禁未通过:"+verdict.Reason())
-		_ = rep.Log(ctx, streamStderr, "已阻断后续阶段(含部署)")
+		_ = rep.Log(ctx, streamError, "⛔ 质量门禁未通过:"+verdict.Reason())
+		_ = rep.Log(ctx, streamError, "已阻断后续阶段(含部署)")
 		return ErrQualityGate
 	}
 	if gated {
