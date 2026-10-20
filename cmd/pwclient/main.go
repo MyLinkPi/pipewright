@@ -204,7 +204,7 @@ func printSnapshot(snap *pwclient.StatusSnapshot) {
 	if len(snap.Routes) > 0 {
 		fmt.Println("本机路由:  ", strings.Join(snap.Routes, ", "), "(仅这些网段)")
 	} else if snap.Configured {
-		fmt.Println("本机路由:   全部通告网段(未限定)")
+		fmt.Println("本机路由:   不路由任何通告网段(留空;要访问的网段请加入列表)")
 	}
 	if snap.Socks5.Enabled {
 		fmt.Println("本地代理:   socks5://127.0.0.1:" + strconv.Itoa(snap.Socks5.Port) + "(应用代理指向此地址即经集群访问)")

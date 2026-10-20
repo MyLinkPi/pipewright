@@ -76,10 +76,15 @@ type Config struct {
 	// (上层记录并提示升级)。通告后 EasyTier 默认启用内置用户态 NAT:被代理网段内的设备
 	// 无需回程路由即可返程(官方 point-to-networking 文档),对端(含客户端)自动获得路由。
 	ProxyNetworks []string
-	// ManualRoutes 手工限定本节点路由进虚拟网络的网段(cidr;空 = 自动接受全部子网代理
-	// 通告)。非空时 easytier 以 --manual-routes 启动:禁用自动通告路由,仅保留列表网段。
-	// 客户端(pwclient)用它实现「CIDR 自由配置」;平台节点通常留空。
+	// ManualRoutes 手工限定本节点路由进虚拟网络的网段(cidr)。语义由 StrictManualRoutes
+	// 决定:非空列表恒为「仅路由列表内网段」(--manual-routes 逐值传,禁用广播路由)。
+	// 客户端(pwclient)用它实现「CIDR 自由配置」;平台节点通常留空且不设 Strict。
 	ManualRoutes []string
+	// StrictManualRoutes 声明空 ManualRoutes 的语义(安全默认 fail-closed 的开关):
+	// true = 空列表也传裸 --manual-routes(值可选,num_args=0..)→ 拒绝全部子网代理
+	// 通告,仅虚拟网互通(pwclient 语义:留空 = 什么都不路由);
+	// false(默认)= 空列表不传参 → 接受全部通告(平台中枢节点语义)。
+	StrictManualRoutes bool
 	// Socks5Port 是本地 SOCKS5 服务端口(0 = 关闭)。开启后本机 SOCKS5 客户端(浏览器/
 	// 终端/Clash 等)经此端口访问虚拟网络 —— 拨号目标按虚拟路由表转发,含经子网代理
 	// NAT 的远端网段;不动系统路由,与其他流量互不影响。注意 EasyTier 侧无认证,仅本机
@@ -144,12 +149,18 @@ func buildArgs(c Config, flags helpFlags) []string {
 			args = append(args, flags.proxyNetwork, n)
 		}
 	}
-	// 手工路由:同上逐值重复传。空列表 = 自动接受全部子网代理通告,不传参数。
+	// 手工路由:同上逐值重复传。空列表默认不传参(接受全部通告,平台中枢语义);
+	// StrictManualRoutes时空列表传裸旗子 —— 空值可选,= 拒绝全部子网代理通告(fail-closed)。
 	if flags.manualRoutes {
-		for _, r := range c.ManualRoutes {
-			if r != "" {
-				args = append(args, "--manual-routes", r)
+		switch {
+		case len(c.ManualRoutes) > 0:
+			for _, r := range c.ManualRoutes {
+				if r != "" {
+					args = append(args, "--manual-routes", r)
+				}
 			}
+		case c.StrictManualRoutes:
+			args = append(args, "--manual-routes")
 		}
 	}
 	// 本地 SOCKS5 服务(端口>0 且二进制支持)。
@@ -230,8 +241,8 @@ func (s *Supervisor) Start(ctx context.Context) error {
 	if len(s.cfg.ProxyNetworks) > 0 && !SupportsProxyNetwork(s.cfg.CorePath) {
 		return fmt.Errorf("easytier: %s 不支持子网代理参数 --proxy-networks(需 v2.1+),无法通告子网(跨环境转发/自定义网段不可用,请升级二进制)", CoreBinary())
 	}
-	if len(s.cfg.ManualRoutes) > 0 && !SupportsManualRoutes(s.cfg.CorePath) {
-		return fmt.Errorf("easytier: %s 不支持 --manual-routes,无法手工限定路由网段(请升级二进制)", CoreBinary())
+	if (len(s.cfg.ManualRoutes) > 0 || s.cfg.StrictManualRoutes) && !SupportsManualRoutes(s.cfg.CorePath) {
+		return fmt.Errorf("easytier: %s 不支持 --manual-routes,无法限定路由网段(留空=不路由亦需该参数;请升级二进制)", CoreBinary())
 	}
 	if s.cfg.Socks5Port > 0 && !SupportsSocks5(s.cfg.CorePath) {
 		return fmt.Errorf("easytier: %s 不支持 --socks5,无法开启本地 SOCKS5 服务(请升级二进制)", CoreBinary())

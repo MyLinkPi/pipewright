@@ -127,3 +127,35 @@ func TestLocateExeAdjacent(t *testing.T) {
 		t.Fatalf("Locate 未命中 exe 同级 bin:got %q, want %q", got, adj)
 	}
 }
+
+// TestBuildArgsStrictEmptyRoutes 验证空列表的两种语义:Strict 时传裸 --manual-routes
+//(值可选 = 拒绝全部子网代理通告,fail-closed);非 Strict 不传参(平台中枢接受全部)。
+func TestBuildArgsStrictEmptyRoutes(t *testing.T) {
+	base := Config{NetworkName: "net", RPCAddr: "127.0.0.1:15888", Hostname: "h1", Socks5Port: 1080, StrictManualRoutes: true}
+	flags := helpFlags{manualRoutes: true, socks5: true}
+
+	strict := buildArgs(base, flags)
+	hasFlag := false
+	for _, a := range strict {
+		if a == "--manual-routes" {
+			hasFlag = true
+		}
+	}
+	if !hasFlag {
+		t.Fatalf("Strict 空列表应传裸旗子(不带值):%v", strict)
+	}
+	// 裸旗子后紧跟 --socks5:clap 可选值遇 - 前缀旗子即终止,顺序合法。
+	for i, a := range strict {
+		if a == "--manual-routes" && i+1 < len(strict) && !strings.HasPrefix(strict[i+1], "-") {
+			t.Fatalf("裸 --manual-routes 后不应跟值:%v", strict)
+		}
+	}
+
+	base.StrictManualRoutes = false
+	loose := buildArgs(base, flags)
+	for _, a := range loose {
+		if a == "--manual-routes" {
+			t.Fatalf("非 Strict 空列表不应传 --manual-routes:%v", loose)
+		}
+	}
+}
