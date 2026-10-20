@@ -148,25 +148,28 @@ func TestACLRoundtrip(t *testing.T) {
 	}
 }
 
-// TestRouteWhitelist 验证路由隔离白名单:自动项仅 /32(本端网关 + 路由表发现的远端
-// 网关),自定义网段(非 /32)绝不自动进入;手动接受项并入;排序去重;空 = 拒绝全部。
+// TestRouteWhitelist 验证路由隔离白名单(v1.6.4 事故后语义):
+//   - 本端通告(ownCIDRs:自定义网段 ∪ 本端网关 /32)绝不进白名单 —— 本端网段
+//     经局域网可达,进白名单会被装成 tun 路由吸走本端流量(本端网关 SSH 断联);
+//   - 对端 /32 自动进入;非 /32 的对端通告不自动进入;
+//   - 手动接受项并入(同样剔除本端通告);排序去重;空 = 拒绝全部。
 func TestRouteWhitelist(t *testing.T) {
 	got := RouteWhitelist(
-		[]string{"10.1.1.7/32", "10.1.1.7/32", ""},     // 本端网关(重复/空)
-		[]string{"192.168.50.0/24", "10.2.2.9/32", ""}, // 路由表:自定义网段必须被忽略,仅取 /32
-		[]string{"172.20.0.0/16"},                      // 手动接受
+		[]string{"10.1.1.7/32", "192.168.50.0/24"},                                   // 本端:网关 /32 + 自定义网段
+		[]string{"10.1.1.7/32", "192.168.50.0/24", "10.2.2.9/32", "10.3.0.0/16", ""}, // 路由表所见
+		[]string{"172.20.0.0/16", "10.1.1.7/32"},                                     // 手动接受(含误填本端网关)
 	)
-	want := []string{"10.1.1.7/32", "10.2.2.9/32", "172.20.0.0/16"}
+	want := []string{"10.2.2.9/32", "172.20.0.0/16"}
 	if len(got) != len(want) {
-		t.Fatalf("whitelist = %v, want %v", got, want)
+		t.Fatalf("whitelist = %v, want %v(本端网关/自定义网段/非32 通告均不得进入)", got, want)
 	}
 	for i := range want {
 		if got[i] != want[i] {
 			t.Fatalf("whitelist[%d] = %q, want %q (full: %v)", i, got[i], want[i], got)
 		}
 	}
-	if all := RouteWhitelist(nil, nil, nil); len(all) != 0 {
-		t.Fatalf("空输入应为空列表(fail-closed),got %v", all)
+	if all := RouteWhitelist([]string{"10.1.1.7/32"}, []string{"10.1.1.7/32"}, nil); len(all) != 0 {
+		t.Fatalf("仅本端通告时应为空(fail-closed),got %v", all)
 	}
 }
 

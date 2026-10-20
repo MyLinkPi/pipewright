@@ -252,15 +252,16 @@ func (rt *meshRuntime) reconcile(ctx context.Context) {
 		gateways = rt.proxyNetworks(ctx)
 		proxies = normalizeProxyNetworks(append(proxies, gateways...))
 	}
-	// 路由白名单(路由隔离,见 internal/mesh/routes.go):自动项仅本端网关 /32 +
-	// 路由表已见的远端网关 /32(首连引导:远端网关经发现进入路由表后并入,指纹变化
-	// 重启生效);手动项 = 管理员显式接受网段。自定义通告网段绝不自动路由
-	//(跨环境网段重叠 = 生产事故)。空白名单 = 裸 --manual-routes,拒绝全部通告。
+	// 路由白名单(路由隔离,见 internal/mesh/routes.go):自动项仅**对端**网关 /32
+	//(路由表已见,首连引导:远端网关经发现进入路由表后并入,指纹变化重启生效);
+	// 手动项 = 管理员显式接受网段。本端通告(proxies,含本端网关 /32)只通告不路由
+	// —— 本端网段经局域网可达,进白名单会被装成 tun 路由吸走本端流量(v1.6.4 事故:
+	// 本端网关 SSH 断联)。空白名单 = 裸 --manual-routes,拒绝全部通告。
 	var seenCIDRs []string
 	if sp := rt.statusSnapshot(); sp != nil {
 		seenCIDRs = sp.ProxyCIDRs
 	}
-	manual := mesh.RouteWhitelist(gateways, seenCIDRs, st.AcceptNetworksCustom)
+	manual := mesh.RouteWhitelist(proxies, seenCIDRs, st.AcceptNetworksCustom)
 	key := fmt.Sprintf("%s|%s|%s|%s|%v|%v|%v|%v", st.EasyTierMode, st.NetworkName, st.VirtualIP, st.Peers, st.Enabled, proxies, manual, st.EnableExitNode)
 	if !st.Enabled || st.EasyTierMode != mesh.ModeManaged || st.NetworkName == "" {
 		rt.mu.Lock()
