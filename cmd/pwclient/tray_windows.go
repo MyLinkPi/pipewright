@@ -47,14 +47,19 @@ type trayApp struct {
 	socks5Addr   *walk.Label
 	copyProxyBtn *walk.PushButton
 
+	autoStartCheck *walk.CheckBox
+
 	ipc     *pwclient.IPCClient
 	snap    *pwclient.StatusSnapshot
 	ipcDown bool
 	exiting bool
 }
 
-// runTray 启动托盘 GUI(主入口)。
+// runTray 启动托盘 GUI(主入口)。已有实例时唤起它并直接退出。
 func runTray() {
+	if !ensureSingleInstance() {
+		return
+	}
 	a := &trayApp{}
 	if err := a.build(); err != nil {
 		fmt.Fprintln(os.Stderr, "GUI 初始化失败:", err)
@@ -71,6 +76,7 @@ func (a *trayApp) build() error {
 	if err = (MainWindow{
 		AssignTo: &a.mw,
 		Title:    "pipewright 集群客户端",
+		Icon:     1, // RT_GROUP_ICON 资源 ID(exe 内嵌图标)
 		MinSize:  Size{Width: 620, Height: 700},
 		Layout:   VBox{Margins: Margins{Left: 10, Top: 10, Right: 10, Bottom: 10}, Spacing: 8},
 		Children: []Widget{
@@ -143,6 +149,13 @@ func (a *trayApp) build() error {
 				},
 			},
 			GroupBox{
+				Title:  "常规",
+				Layout: VBox{MarginsZero: true, Spacing: 6},
+				Children: []Widget{
+					CheckBox{AssignTo: &a.autoStartCheck, Text: "开机自启(登录后自动运行托盘;后台组网服务本就随系统启动,与此开关无关)", OnClicked: a.onToggleAutoStart},
+				},
+			},
+			GroupBox{
 				Title:  "日志(尾部)",
 				Layout: VBox{MarginsZero: true},
 				Children: []Widget{
@@ -165,6 +178,7 @@ func (a *trayApp) build() error {
 	if err = a.buildTray(); err != nil {
 		return err
 	}
+	a.syncAutoStart()
 	a.refreshOnce()
 	return nil
 }
@@ -176,7 +190,11 @@ func (a *trayApp) buildTray() error {
 		return err
 	}
 	a.ni = ni
-	_ = ni.SetIcon(walk.IconApplication())
+	trayIcon, err := walk.NewIconFromResourceId(1)
+	if err != nil {
+		trayIcon = walk.IconApplication()
+	}
+	_ = ni.SetIcon(trayIcon)
 	_ = ni.SetToolTip("pipewright 集群客户端")
 
 	addAction := func(text string, fn func()) *walk.Action {
@@ -520,6 +538,25 @@ func (a *trayApp) onCopyProxy() {
 		return
 	}
 	a.socks5Addr.SetText("已复制 " + addr + " — 粘贴到应用或系统代理设置(SOCKS5)")
+}
+
+// syncAutoStart 按注册表实际状态回显勾选框,并自愈过期的自启路径(exe 被移动/改名后)。
+func (a *trayApp) syncAutoStart() {
+	stored := autoStartValue()
+	if cmd, err := autoStartCommand(); err == nil && stored != "" && stored != cmd {
+		if err := setAutoStart(true); err == nil {
+			stored = cmd
+		}
+	}
+	a.autoStartCheck.SetChecked(stored != "")
+}
+
+// onToggleAutoStart 勾选/取消时写/删 HKCU Run 自启项(当前用户级,无需管理员)。
+func (a *trayApp) onToggleAutoStart() {
+	if err := setAutoStart(a.autoStartCheck.Checked()); err != nil {
+		a.actionErr(err)
+	}
+	a.syncAutoStart()
 }
 
 // onInstallService 经 UAC 提权运行 `pwclient service install`,随后轮询服务就绪。
