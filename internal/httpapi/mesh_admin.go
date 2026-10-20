@@ -284,7 +284,10 @@ type meshSettingsDTO struct {
 	// ProxyNetworksCustom 是管理员自定义的子网代理通告网段(cidr;本节点可达的远端网段,
 	// 通告后全网经此访问,EasyTier 内置 NAT 保证返程)。
 	ProxyNetworksCustom []string `json:"proxyNetworksCustom"`
-	HasSecret           bool     `json:"hasSecret"`
+	// AcceptNetworksCustom 是本节点显式接受的跨环境通告网段(路由白名单手动项;
+	// 自动项仅各环境网关 /32,其他环境的自定义网段须在此逐项确认后才路由)。
+	AcceptNetworksCustom []string `json:"acceptNetworksCustom"`
+	HasSecret            bool     `json:"hasSecret"`
 }
 
 func toMeshSettingsDTO(st *mesh.Settings) meshSettingsDTO {
@@ -292,8 +295,9 @@ func toMeshSettingsDTO(st *mesh.Settings) meshSettingsDTO {
 		NodeID: st.NodeID, Name: st.Name, Enabled: st.Enabled, PublicKey: st.PublicKey,
 		APIPort: st.APIPort, EasyTierMode: st.EasyTierMode, EasyTierRPC: st.EasyTierRPC,
 		NetworkName: st.NetworkName, VirtualIP: st.VirtualIP, Peers: st.Peers,
-		ProxyNetworksCustom: st.ProxyNetworksCustom,
-		HasSecret:           st.HasSecret,
+		ProxyNetworksCustom:  st.ProxyNetworksCustom,
+		AcceptNetworksCustom: st.AcceptNetworksCustom,
+		HasSecret:            st.HasSecret,
 	}
 }
 
@@ -319,16 +323,17 @@ func makeMeshSettingsPutHandler(svc mesh.Service, aud audit.Recorder) http.Handl
 			return
 		}
 		var body struct {
-			Name                *string   `json:"name"`
-			Enabled             *bool     `json:"enabled"`
-			APIPort             *int      `json:"apiPort"`
-			EasyTierMode        *string   `json:"easytierMode"`
-			EasyTierRPC         *string   `json:"easytierRpc"`
-			NetworkName         *string   `json:"networkName"`
-			NetworkSecret       *string   `json:"networkSecret"`
-			VirtualIP           *string   `json:"virtualIp"`
-			Peers               *[]string `json:"peers"`
-			ProxyNetworksCustom *[]string `json:"proxyNetworksCustom"`
+			Name                 *string   `json:"name"`
+			Enabled              *bool     `json:"enabled"`
+			APIPort              *int      `json:"apiPort"`
+			EasyTierMode         *string   `json:"easytierMode"`
+			EasyTierRPC          *string   `json:"easytierRpc"`
+			NetworkName          *string   `json:"networkName"`
+			NetworkSecret        *string   `json:"networkSecret"`
+			VirtualIP            *string   `json:"virtualIp"`
+			Peers                *[]string `json:"peers"`
+			ProxyNetworksCustom  *[]string `json:"proxyNetworksCustom"`
+			AcceptNetworksCustom *[]string `json:"acceptNetworksCustom"`
 		}
 		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&body); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid_body", "请求体不是合法 JSON")
@@ -339,7 +344,8 @@ func makeMeshSettingsPutHandler(svc mesh.Service, aud audit.Recorder) http.Handl
 			EasyTierMode: body.EasyTierMode, EasyTierRPC: body.EasyTierRPC,
 			NetworkName: body.NetworkName, NetworkSecret: body.NetworkSecret,
 			VirtualIP: body.VirtualIP, Peers: body.Peers,
-			ProxyNetworksCustom: body.ProxyNetworksCustom,
+			ProxyNetworksCustom:  body.ProxyNetworksCustom,
+			AcceptNetworksCustom: body.AcceptNetworksCustom,
 		})
 		if err != nil {
 			writeMeshError(w, err)

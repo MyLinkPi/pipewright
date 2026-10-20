@@ -27,6 +27,9 @@ export interface MeshSettings {
   peers: string[]
   /** Admin-configured subnet proxy CIDRs advertised by this node (client route targets). */
   proxyNetworksCustom: string[]
+  /** Explicitly accepted cross-env advertised CIDRs (route whitelist manual items; only
+   *  gateway /32s are accepted automatically - see cluster route isolation). */
+  acceptNetworksCustom: string[]
   hasSecret: boolean
 }
 

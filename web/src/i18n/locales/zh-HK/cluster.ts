@@ -100,6 +100,7 @@ export default {
     statusTitle: '運行狀態',
     viewCluster: '查看集群詳情',
     proxyNetworks: '子網代理網段(每行一個 CIDR;本節點可達的遠端網段,通告後全網經此存取,EasyTier 內建 NAT 保證回程)',
+    acceptNetworks: '接受路由的跨環境網段(手動確認;不填=僅自動路由各環境閘道 /32;每行一個 CIDR):',
     clientTitle: '叢集用戶端(Windows 11)',
     clientHint: '在 Win11 機器上執行 pwclient 用戶端並匯入下方匯出的設定檔,即可加入叢集網路;用戶端可自由限定本機路由哪些網段。匯出檔含明文網路密鑰,請妥善保管。',
     exportClientConfig: '匯出用戶端設定',
