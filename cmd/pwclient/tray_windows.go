@@ -50,6 +50,7 @@ type trayApp struct {
 	socks5ApplyBtn  *walk.PushButton
 	socks5ExitCombo *walk.ComboBox
 
+	peerList       *walk.ListBox
 	autoStartCheck *walk.CheckBox
 
 	importEdit *walk.TextEdit // 粘贴 pipewright-client.yaml 全文导入
@@ -92,97 +93,115 @@ func (a *trayApp) build() error {
 		Size:     Size{Width: 720, Height: 760},
 		Layout:   VBox{Margins: Margins{Left: 10, Top: 10, Right: 10, Bottom: 10}, Spacing: 8},
 		Children: []Widget{
-			GroupBox{
-				Title:  "状态",
-				Layout: VBox{MarginsZero: true, Spacing: 6},
-				Children: []Widget{
-					Label{AssignTo: &a.stateLabel, EllipsisMode: EllipsisEnd, Text: "正在连接服务…", TextColor: walk.Color(0x666666)},
-					Label{AssignTo: &a.detailLabel, EllipsisMode: EllipsisEnd, Text: ""},
-					Label{AssignTo: &a.binLabel, EllipsisMode: EllipsisEnd, Text: ""},
-					Composite{
-						Layout: HBox{MarginsZero: true, Spacing: 8},
+			TabWidget{
+				Pages: []TabPage{
+					{
+						Title:  "状态",
+						Layout: VBox{Margins: Margins{Left: 4, Top: 4, Right: 4, Bottom: 4}, Spacing: 8},
 						Children: []Widget{
-							PushButton{AssignTo: &a.connectBtn, Text: "连接", OnClicked: a.onToggleConnect, MinSize: Size{Width: 96}},
-							PushButton{AssignTo: &a.downloadBtn, Text: "下载 EasyTier", OnClicked: a.onDownload},
-							PushButton{AssignTo: &a.installBtn, Text: "安装并启动服务", OnClicked: a.onInstallService},
+							GroupBox{
+								Title:  "状态",
+								Layout: VBox{MarginsZero: true, Spacing: 6},
+								Children: []Widget{
+									Label{AssignTo: &a.stateLabel, EllipsisMode: EllipsisEnd, Text: "正在连接服务…", TextColor: walk.Color(0x666666)},
+									Label{AssignTo: &a.detailLabel, EllipsisMode: EllipsisEnd, Text: ""},
+									Label{AssignTo: &a.binLabel, EllipsisMode: EllipsisEnd, Text: ""},
+									Composite{
+										Layout: HBox{MarginsZero: true, Spacing: 8},
+										Children: []Widget{
+											PushButton{AssignTo: &a.connectBtn, Text: "连接", OnClicked: a.onToggleConnect, MinSize: Size{Width: 96}},
+											PushButton{AssignTo: &a.downloadBtn, Text: "下载 EasyTier", OnClicked: a.onDownload},
+											PushButton{AssignTo: &a.installBtn, Text: "安装并启动服务", OnClicked: a.onInstallService},
+										},
+									},
+									Label{AssignTo: &a.svcLabel, EllipsisMode: EllipsisEnd, TextColor: walk.Color(0x888888)},
+									Label{Text: "对端节点(直连/中继):", TextColor: walk.Color(0x666666)},
+									ListBox{AssignTo: &a.peerList, MinSize: Size{Height: 76}},
+								},
+							},
+							GroupBox{
+								Title:  "日志(尾部)",
+								Layout: VBox{MarginsZero: true},
+								Children: []Widget{
+									TextEdit{AssignTo: &a.logEdit, ReadOnly: true, MinSize: Size{Height: 128}, VScroll: true},
+								},
+							},
 						},
 					},
-					Label{AssignTo: &a.svcLabel, EllipsisMode: EllipsisEnd, TextColor: walk.Color(0x888888)},
-				},
-			},
-			GroupBox{
-				Title:  "网段路由(经集群隧道访问的远端网段)",
-				Layout: VBox{MarginsZero: true, Spacing: 6},
-				Children: []Widget{
-					Label{Text: "集群通告的网段(← 网关节点,双击追加到下方列表):", TextColor: walk.Color(0x666666)},
-					ListBox{AssignTo: &a.availList, MinSize: Size{Height: 76}, OnItemActivated: a.onAddRoute},
-					Label{Text: "本机路由的网段,每行一个 CIDR;留空 = 不路由任何通告网段(仅虚拟网互通):", TextColor: walk.Color(0x666666)},
-					TextEdit{AssignTo: &a.routesEdit, MinSize: Size{Height: 96}, VScroll: true},
-					Composite{
-						Layout: HBox{MarginsZero: true},
+					{
+						Title:  "设置",
+						Layout: VBox{Margins: Margins{Left: 4, Top: 4, Right: 4, Bottom: 4}, Spacing: 8},
 						Children: []Widget{
-							HSpacer{},
-							PushButton{AssignTo: &a.applyRoutes, Text: "保存并应用", OnClicked: a.onApplyRoutes, MinSize: Size{Width: 116}},
+							GroupBox{
+								Title:  "集群配置",
+								Layout: VBox{MarginsZero: true, Spacing: 6},
+								Children: []Widget{
+									Label{Text: "从平台「设置 → 集群 → 导出客户端配置」复制 YAML 粘贴到下面导入(网络/密钥/对端地址一次就位);网段路由与本地代理的流量均经集群侧节点转发。", TextColor: walk.Color(0x666666)},
+									TextEdit{AssignTo: &a.importEdit, MinSize: Size{Height: 72}, VScroll: true},
+									Composite{
+										Layout: HBox{MarginsZero: true, Spacing: 8},
+										Children: []Widget{
+											PushButton{AssignTo: &a.importBtn, Text: "导入粘贴的配置", OnClicked: a.onImportText, MinSize: Size{Width: 136}},
+											PushButton{Text: "从文件导入…", OnClicked: a.onImport},
+											HSpacer{},
+										},
+									},
+									Label{AssignTo: &a.peersLabel, EllipsisMode: EllipsisEnd, TextColor: walk.Color(0x888888)},
+								},
+							},
+							GroupBox{
+								Title:  "网段路由(经集群隧道访问的远端网段)",
+								Layout: VBox{MarginsZero: true, Spacing: 6},
+								Children: []Widget{
+									Label{Text: "集群通告的网段(← 网关节点,双击追加到下方列表):", TextColor: walk.Color(0x666666)},
+									ListBox{AssignTo: &a.availList, MinSize: Size{Height: 76}, OnItemActivated: a.onAddRoute},
+									Label{Text: "本机路由的网段,每行一个 CIDR;留空 = 不路由任何通告网段(仅虚拟网互通):", TextColor: walk.Color(0x666666)},
+									TextEdit{AssignTo: &a.routesEdit, MinSize: Size{Height: 96}, VScroll: true},
+									Composite{
+										Layout: HBox{MarginsZero: true},
+										Children: []Widget{
+											HSpacer{},
+											PushButton{AssignTo: &a.applyRoutes, Text: "保存并应用", OnClicked: a.onApplyRoutes, MinSize: Size{Width: 116}},
+										},
+									},
+								},
+							},
+							GroupBox{
+								Title:  "本地代理(SOCKS5,可选)",
+								Layout: VBox{MarginsZero: true, Spacing: 6},
+								Children: []Widget{
+									Label{Text: "应用(浏览器/终端等)把代理指向 127.0.0.1:端口 即可经集群访问,不影响其他流量;可达范围 = 上方路由列表内的网段。无认证,仅限本机使用;域名解析走本机 DNS。", TextColor: walk.Color(0x666666)},
+									Composite{
+										Layout: HBox{MarginsZero: true, Spacing: 8},
+										Children: []Widget{
+											CheckBox{AssignTo: &a.socks5Check, Text: "启用"},
+											Label{Text: "端口:"},
+											NumberEdit{AssignTo: &a.socks5Port, MinValue: 1, MaxValue: 65535, Value: 1080.0, Decimals: 0, MinSize: Size{Width: 72}},
+											PushButton{AssignTo: &a.copyProxyBtn, Text: "复制代理地址", OnClicked: a.onCopyProxy},
+											HSpacer{},
+											PushButton{AssignTo: &a.socks5ApplyBtn, Text: "保存并应用", OnClicked: a.onApplySocks5, MinSize: Size{Width: 96}},
+										},
+									},
+									Label{AssignTo: &a.socks5Addr, EllipsisMode: EllipsisEnd, TextColor: walk.Color(0x666666)},
+									Composite{
+										Layout: HBox{MarginsZero: true, Spacing: 8},
+										Children: []Widget{
+											Label{Text: "出口节点:"},
+											ComboBox{AssignTo: &a.socks5ExitCombo, MinSize: Size{Width: 220}},
+											Label{Text: "经所选节点访问非虚拟网目标(需对端允许做出口)", TextColor: walk.Color(0x888888)},
+										},
+									},
+								},
+							},
+							GroupBox{
+								Title:  "常规",
+								Layout: VBox{MarginsZero: true, Spacing: 6},
+								Children: []Widget{
+									CheckBox{AssignTo: &a.autoStartCheck, Text: "开机自启(登录后自动运行托盘;后台组网服务本就随系统启动,与此开关无关)", OnClicked: a.onToggleAutoStart},
+								},
+							},
 						},
 					},
-				},
-			},
-			GroupBox{
-				Title:  "本地代理(SOCKS5,可选)",
-				Layout: VBox{MarginsZero: true, Spacing: 6},
-				Children: []Widget{
-					Label{Text: "应用(浏览器/终端等)把代理指向 127.0.0.1:端口 即可经集群访问,不影响其他流量;可达范围 = 上方路由列表内的网段。无认证,仅限本机使用;域名解析走本机 DNS。", TextColor: walk.Color(0x666666)},
-					Composite{
-						Layout: HBox{MarginsZero: true, Spacing: 8},
-						Children: []Widget{
-							CheckBox{AssignTo: &a.socks5Check, Text: "启用"},
-							Label{Text: "端口:"},
-							NumberEdit{AssignTo: &a.socks5Port, MinValue: 1, MaxValue: 65535, Value: 1080.0, Decimals: 0, MinSize: Size{Width: 72}},
-							PushButton{AssignTo: &a.copyProxyBtn, Text: "复制代理地址", OnClicked: a.onCopyProxy},
-							HSpacer{},
-							PushButton{AssignTo: &a.socks5ApplyBtn, Text: "保存并应用", OnClicked: a.onApplySocks5, MinSize: Size{Width: 96}},
-						},
-					},
-					Label{AssignTo: &a.socks5Addr, EllipsisMode: EllipsisEnd, TextColor: walk.Color(0x666666)},
-					Composite{
-						Layout: HBox{MarginsZero: true, Spacing: 8},
-						Children: []Widget{
-							Label{Text: "出口节点:"},
-							ComboBox{AssignTo: &a.socks5ExitCombo, MinSize: Size{Width: 220}},
-							Label{Text: "经所选节点访问非虚拟网目标(需对端允许做出口)", TextColor: walk.Color(0x888888)},
-						},
-					},
-				},
-			},
-			GroupBox{
-				Title:  "集群配置",
-				Layout: VBox{MarginsZero: true, Spacing: 6},
-				Children: []Widget{
-					Label{Text: "从平台「设置 → 集群 → 导出客户端配置」复制 YAML 粘贴到下面导入(网络/密钥/对端地址一次就位);网段路由与本地代理的流量均经集群侧节点转发。", TextColor: walk.Color(0x666666)},
-					TextEdit{AssignTo: &a.importEdit, MinSize: Size{Height: 72}, VScroll: true},
-					Composite{
-						Layout: HBox{MarginsZero: true, Spacing: 8},
-						Children: []Widget{
-							PushButton{AssignTo: &a.importBtn, Text: "导入粘贴的配置", OnClicked: a.onImportText, MinSize: Size{Width: 136}},
-							PushButton{Text: "从文件导入…", OnClicked: a.onImport},
-							HSpacer{},
-						},
-					},
-					Label{AssignTo: &a.peersLabel, EllipsisMode: EllipsisEnd, TextColor: walk.Color(0x888888)},
-				},
-			},
-			GroupBox{
-				Title:  "常规",
-				Layout: VBox{MarginsZero: true, Spacing: 6},
-				Children: []Widget{
-					CheckBox{AssignTo: &a.autoStartCheck, Text: "开机自启(登录后自动运行托盘;后台组网服务本就随系统启动,与此开关无关)", OnClicked: a.onToggleAutoStart},
-				},
-			},
-			GroupBox{
-				Title:  "日志(尾部)",
-				Layout: VBox{MarginsZero: true},
-				Children: []Widget{
-					TextEdit{AssignTo: &a.logEdit, ReadOnly: true, MinSize: Size{Height: 128}, VScroll: true},
 				},
 			},
 		},
@@ -323,6 +342,7 @@ func (a *trayApp) apply(snap *pwclient.StatusSnapshot, err error, logs []string)
 		a.applyRoutes.SetEnabled(false)
 		a.socks5ApplyBtn.SetEnabled(false)
 		a.svcLabel.SetText("")
+		_ = a.peerList.SetModel([]string{"(无在线对端)"})
 		_ = a.ni.SetToolTip("pipewright 客户端 — 服务未运行")
 		a.renderLogs(logs)
 		return
@@ -436,6 +456,8 @@ func (a *trayApp) apply(snap *pwclient.StatusSnapshot, err error, logs []string)
 	}
 	a.syncExitCombo(snap)
 
+	_ = a.peerList.SetModel(peerListItems(snap))
+
 	tooltip := "pipewright 客户端 — " + strings.TrimPrefix(a.stateLabel.Text(), "● ")
 	_ = a.ni.SetToolTip(tooltip)
 	a.renderLogs(logs)
@@ -494,6 +516,35 @@ func (a *trayApp) onAddRoute() {
 	} else {
 		a.routesEdit.SetText(cidr)
 	}
+}
+
+// peerListItems 组装对端节点列表行:虚拟 IP · 主机名 · 延迟 · 直连/中继。
+// 中继判定来自状态层(tunnel 含 relay,或路由表下一跳交叉验证);RelayVia 为
+// 中继节点标识(虚拟 IP 或 peer id)。
+func peerListItems(snap *pwclient.StatusSnapshot) []string {
+	if snap == nil || snap.EasyTier == nil || len(snap.EasyTier.Links) == 0 {
+		return []string{"(无在线对端)"}
+	}
+	items := make([]string, 0, len(snap.EasyTier.Links))
+	for _, l := range snap.EasyTier.Links {
+		name := l.Hostname
+		if name == "" {
+			name = "?"
+		}
+		lat := "—"
+		if l.LatencyMS > 0 {
+			lat = fmt.Sprintf("%.0fms", l.LatencyMS)
+		}
+		kind := "直连 " + l.Tunnel
+		if l.Relay {
+			kind = "中继"
+			if l.RelayVia != "" {
+				kind += " via " + l.RelayVia
+			}
+		}
+		items = append(items, fmt.Sprintf("%s  %s  ·  %s  ·  %s", l.VirtualIP, name, lat, kind))
+	}
+	return items
 }
 
 // routeListItems 组装通告网段列表行:有网关信息时显示 "cidr ← 节点名(ip)"。
