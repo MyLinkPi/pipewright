@@ -2,9 +2,10 @@
 //
 // Service.Diagnose 据一次失败运行的失败日志,先用注入的 mask.Masker **脱敏**(AC-SEC-04
 // 出网前脱敏铁律:发往 LLM 的任何字符 / 取出的证据均不含明文 secret),再构 prompt(脱敏
-// 日志 + 少量通用错误模式提示 + 期望 JSON schema),调 LLM chat(复用 7-1/2-5 per-provider
-// chat),容错剥 fence 解析为结构化诊断,并施加**质量门控**:空 hypothesis / 解析失败 /
-// 超时 / 未配 → status=unavailable + 人读 reason(绝无密钥)。
+// 日志 + 少量通用错误模式提示 + 期望 JSON schema),**流式**调 LLM(SSE 逐帧回收,网关
+// 不流式时自动回退;总上限 + 空闲判超预算),容错剥 fence 解析为结构化诊断,并施加
+// **质量门控**:空 hypothesis / 解析失败 / 超时 / 未配 → status=unavailable + 人读
+// reason(绝无密钥)。
 //
 // 优雅降级铁律(NFR-10):Diagnose 对所有「AI 不可用 / 不可解析 / 低质」路径返回一个
 // status=unavailable 的 *Diagnosis(nil error),供上层 HTTP 200 + 不阻断 run 终态;
@@ -16,15 +17,25 @@ package ai
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 
 	"github.com/huangchengsir/pipewright/internal/mask"
+	"github.com/huangchengsir/pipewright/internal/opschat"
 )
 
 // diagnoseMaxTokens 是诊断 chat 的 max_tokens(够装一份结构化诊断)。
 const diagnoseMaxTokens = 1024
+
+// 诊断流式预算:总上限兜底 + 空闲判超(首字节/帧间隔)。慢模型只要持续出 token
+// 就不会被掐断;只有 provider 长时间毫无输出才判超。输出字节上限同 limit。
+const (
+	diagnoseStreamTotal = 5 * time.Minute
+	diagnoseStreamIdle  = 45 * time.Second
+	diagnoseStreamLimit = 64 << 10
+)
 
 // maxFailureLogChars 是发往 LLM 的失败日志字符上限(防超大日志吃 token / 内存);
 // 超出取**末尾**(失败原因通常在日志末)。脱敏后再截断,确保截断不漏过明文。
@@ -145,12 +156,18 @@ func (s *service) Diagnose(ctx context.Context, in DiagnoseInput) (*Diagnosis, e
 
 	prompt := buildDiagnosePrompt(maskedLines, maskedStep, maskedProject)
 
-	text, cerr := s.chat(ctx, provider, baseURL, cfg.Model, apiKey, prompt)
+	// 流式调用(SSE 逐帧回收;网关不支持流式时自动回退单次响应)。预算语义:
+	// 总上限兜底 + 空闲判超(首字节/帧间隔)—— 慢模型只要持续出 token 就不会被掐断。
+	text, cerr := (&opsModel{service: s}).chatStreamBudget(ctx,
+		&Config{Provider: provider, BaseURL: baseURL, Model: cfg.Model},
+		apiKey, prompt, diagnoseStreamLimit, false,
+		diagnoseStreamTotal, diagnoseStreamIdle,
+		func(opschat.StreamChunk) error { return nil })
 	apiKey = "" // 明文用完即弃
 	_ = apiKey
 	if cerr != nil {
-		// LLM 调用失败(超时 / 网络 / 非 2xx):降级 unavailable + 人读 reason(cerr 已确保不含密钥)。
-		return unavailable("AI 诊断失败:" + humanizeDiagnoseErr(cerr)), nil
+		// LLM 调用失败(空闲/总超时 / 网络 / 非 2xx):降级 unavailable + 人读 reason(cerr 已确保不含密钥)。
+		return unavailable("AI 诊断失败:" + humanizeStreamDiagnoseErr(cerr)), nil
 	}
 
 	// 解析 + 质量门控。
@@ -266,6 +283,37 @@ func humanizeDiagnoseErr(err error) string {
 		return strings.TrimSpace(msg[i+2:])
 	}
 	return "调用模型失败,请稍后重试"
+}
+
+// humanizeStreamDiagnoseErr 把流式诊断错误(OpsFailure 码)转人读消息(绝无明文密钥)。
+func humanizeStreamDiagnoseErr(err error) string {
+	var failure *OpsFailure
+	if errors.As(err, &failure) {
+		switch failure.SafeCode() {
+		case "timeout":
+			return "连接超时:provider 无响应"
+		case "cancelled":
+			return "流式回复中断:provider 停止输出"
+		case "transport_error":
+			return mapTransportError(err)
+		case "http_auth":
+			return "认证失败:请检查 API 密钥"
+		case "rate_limit":
+			return "请求被限流(HTTP 429):请稍后重试"
+		case "context_limit":
+			return "失败日志过长,超出模型上下文"
+		case "token_limit":
+			return "模型输出达到长度限制,未采纳不完整内容"
+		case "response_limit":
+			return "响应超过大小限制"
+		case "incomplete_stream":
+			return "模型流式回复中断"
+		case "empty_response":
+			return "模型未返回内容"
+		}
+		return "请求被 provider 拒绝"
+	}
+	return humanizeDiagnoseErr(err)
 }
 
 // buildDiagnosePrompt 构造发给 LLM 的诊断 prompt:脱敏日志(带行号)+ 通用错误模式提示 +

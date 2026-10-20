@@ -15,7 +15,7 @@ export default {
   // ─── list states ───────────────────────────────────────────────
   loading: '불러오는 중',
   emptyTitle: '아직 프로젝트가 없습니다',
-  emptyHint: '첫 Gitee 저장소를 연결하면 파이프라인을 설정하고 대상 서버에 배포할 수 있습니다.',
+  emptyHint: '첫 Gitee 저장소를 연결하면 파이프라인을 설정할 수 있습니다.',
   noMatchTitle: '일치하는 프로젝트가 없습니다',
   noMatchHint: '검색어나 상태 필터 조건을 조정한 후 다시 시도하세요.',
   clearFilter: '필터 지우기',
@@ -26,8 +26,6 @@ export default {
   runStatusAria: '실행 상태: {status}',
   lastRun: '마지막 실행',
   noRun: '실행 기록 없음',
-  targetServers: '대상 서버',
-  notBound: '미연결',
   credential: '저장소 자격 증명',
   credentialRefTitle: '자격 증명 참조(평문 아님)',
   noServiceReg: '등록된 서비스 없음',

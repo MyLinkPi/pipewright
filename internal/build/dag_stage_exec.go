@@ -245,7 +245,7 @@ func NewStageExecutor(b *Builder, reportSink TestReportSink) dagrun.StageExecuto
 				if resolved != nil && resolved.CommitShort != "" {
 					commitTag = resolved.CommitShort
 					if b.recordCommit != nil {
-						b.recordCommit(ctx, r.ID, resolved.CommitShort)
+						b.recordCommit(ctx, r.ID, resolved.CommitShort, resolved.CommitTime)
 					}
 				}
 			}
@@ -332,7 +332,7 @@ func NewStageExecutor(b *Builder, reportSink TestReportSink) dagrun.StageExecuto
 				}
 
 				b.collectScriptArtifacts(ctx, scriptJobs, workspace, slugify(proj.Name), stage.Name, rep)
-				if err := collectStageReport(ctx, reportSink, r, stage, workspace, rep); err != nil {
+				if err := collectStageReport(ctx, reportSink, r, stage, localReportReader(workspace), rep); err != nil {
 					return err
 				}
 			}
@@ -693,12 +693,12 @@ func (b *Builder) cloneJobWorkspace(ctx context.Context, r *run.Run, proj *proje
 		return "", "", func() {}, ErrBuildFailed
 	}
 	commitTag := "latest"
-	if resolved != nil && resolved.CommitShort != "" {
-		commitTag = resolved.CommitShort
-		if b.recordCommit != nil {
-			b.recordCommit(ctx, r.ID, resolved.CommitShort) // 同一 commit;并发重复记录幂等无害
+		if resolved != nil && resolved.CommitShort != "" {
+			commitTag = resolved.CommitShort
+			if b.recordCommit != nil {
+				b.recordCommit(ctx, r.ID, resolved.CommitShort, resolved.CommitTime) // 同一 commit;并发重复记录幂等无害
+			}
 		}
-	}
 	// 跨阶段 + 阶段内上游 job 产物:把本 run 已归档的 jar/dist 真字节恢复进本 job 工作区原相对路径。
 	b.restorePriorArtifacts(ctx, r, ws, rep)
 	return ws, commitTag, cleanup, nil
@@ -751,7 +751,7 @@ func (b *Builder) runScriptJobIsolated(
 	b.saveJobCache(ctx, rep, jb, r.Trigger.Branch, ws)
 	out := captureStageEnv(ctx, rep, ws)
 	b.collectScriptArtifacts(ctx, []pipeline.Job{jb}, ws, slugify(proj.Name), stage.Name, rep)
-	if rerr := collectStageReport(ctx, reportSink, r, stage, ws, rep); rerr != nil {
+	if rerr := collectStageReport(ctx, reportSink, r, stage, localReportReader(ws), rep); rerr != nil {
 		return out, rerr // 质量门禁阻断
 	}
 	return out, nil

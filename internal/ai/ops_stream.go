@@ -163,12 +163,38 @@ func planTextPrefix(raw string) string {
 	return ""
 }
 
+// chatStream 以 ops 既有语义(60 秒总上限)流式调用;诊断等长生成场景用 chatStreamBudget
+// 自带预算:总上限兜底 + 空闲判超(首字节/帧间隔),慢模型只要持续出 token 就不会被掐断。
 func (m *opsModel) chatStream(ctx context.Context, cfg *Config, key, prompt string, limit int, planning bool, emit func(opschat.StreamChunk) error) (string, error) {
+	return m.chatStreamBudget(ctx, cfg, key, prompt, limit, planning, 60*time.Second, 0, emit)
+}
+
+// idleResetReader 每次读到数据就重置空闲定时器;超时未收到任何字节 → cancel sctx。
+type idleResetReader struct {
+	r io.Reader
+	t *time.Timer
+	d time.Duration
+}
+
+func (i *idleResetReader) Read(p []byte) (int, error) {
+	i.t.Reset(i.d)
+	return i.r.Read(p)
+}
+
+func (m *opsModel) chatStreamBudget(ctx context.Context, cfg *Config, key, prompt string, limit int, planning bool, total, idle time.Duration, emit func(opschat.StreamChunk) error) (string, error) {
 	if len(prompt) > 32<<10 {
 		return "", opschat.ErrQuota
 	}
-	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, total)
 	defer cancel()
+	// sctx 叠加空闲看门狗:idle>0 时,首字节或帧间隔超时即断(总上限仍由 ctx 兜底)。
+	sctx, scancel := context.WithCancel(ctx)
+	defer scancel()
+	var idleTimer *time.Timer
+	if idle > 0 {
+		idleTimer = time.AfterFunc(idle, scancel)
+		defer idleTimer.Stop()
+	}
 	base := cfg.BaseURL
 	if base == "" {
 		base = defaultBaseURL(cfg.Provider)
@@ -178,7 +204,9 @@ func (m *opsModel) chatStream(ctx context.Context, cfg *Config, key, prompt stri
 		return "", err
 	}
 	defer cleanup()
-	client.Timeout = 60 * time.Second
+	// 流式请求用自身预算覆盖更短的服务端 client.Timeout:慢流不应被实例级短超时掐死
+	// (回归测试 TestOpsStreamTimeoutDoesNotInheritProbeTimeout 守护此语义)。
+	client.Timeout = total
 	var endpoint string
 	body := map[string]any{"model": cfg.Model, "messages": []map[string]string{{"role": "user", "content": prompt}}, "stream": true}
 	switch cfg.Provider {
@@ -195,7 +223,7 @@ func (m *opsModel) chatStream(ctx context.Context, cfg *Config, key, prompt stri
 	}
 	opsRequestCompatibility(cfg, base, body)
 	raw, _ := json.Marshal(body)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(raw))
+	req, err := http.NewRequestWithContext(sctx, http.MethodPost, endpoint, bytes.NewReader(raw))
 	if err != nil {
 		return "", opsFailure("invalid_response", 0)
 	}
@@ -214,6 +242,13 @@ func (m *opsModel) chatStream(ctx context.Context, cfg *Config, key, prompt stri
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return "", opsHTTPFailure(resp.StatusCode)
+	}
+	// 空闲看门狗挂到响应体上:流式/回退两条读取路径都按「收到字节」续期。
+	if idleTimer != nil {
+		resp.Body = struct {
+			io.Reader
+			io.Closer
+		}{&idleResetReader{r: resp.Body, t: idleTimer, d: idle}, resp.Body}
 	}
 	contentType, _, _ := mime.ParseMediaType(resp.Header.Get("Content-Type"))
 	streaming := contentType == "text/event-stream" || cfg.Provider == ProviderOllama && (contentType == "application/x-ndjson" || contentType == "application/ndjson")
@@ -371,8 +406,8 @@ func (m *opsModel) chatStream(ctx context.Context, cfg *Config, key, prompt stri
 	}
 	data := ""
 	for scanner.Scan() {
-		if ctx.Err() != nil {
-			return "", opsTransportFailure(ctx, ctx.Err())
+		if sctx.Err() != nil {
+			return "", opsTransportFailure(sctx, sctx.Err())
 		}
 		line := scanner.Text()
 		if cfg.Provider == ProviderOllama {
@@ -402,14 +437,14 @@ func (m *opsModel) chatStream(ctx context.Context, cfg *Config, key, prompt stri
 			return "", err
 		}
 	}
-	if ctx.Err() != nil {
-		return "", opsTransportFailure(ctx, ctx.Err())
+	if sctx.Err() != nil {
+		return "", opsTransportFailure(sctx, sctx.Err())
 	}
 	if reader.N <= 0 || errors.Is(scanner.Err(), bufio.ErrTooLong) {
 		return "", opsResponseLimit()
 	}
 	if scanner.Err() != nil {
-		return "", opsTransportFailure(ctx, scanner.Err())
+		return "", opsTransportFailure(sctx, scanner.Err())
 	}
 	if !done || !finishOK {
 		return "", opsFailure("incomplete_stream", 0)

@@ -1,6 +1,8 @@
 package ai
 
 import (
+	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -239,4 +241,82 @@ func TestDiagnoseStripsFence(t *testing.T) {
 	if d.Status != diagStatusReady {
 		t.Fatalf("带 fence 应仍 ready: %+v", d)
 	}
+}
+
+// TestDiagnoseStreamingSSE 验证诊断走流式路径:SSE 分帧回收全文,请求带 stream=true,
+// 结果与非流式一致(ready + 字段完整)。
+func TestDiagnoseStreamingSSE(t *testing.T) {
+	for _, provider := range []string{ProviderClaude, ProviderOpenAI, ProviderOllama} {
+		t.Run(provider, func(t *testing.T) {
+			streamRequested := false
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				raw, _ := io.ReadAll(r.Body)
+				var payload struct {
+					Stream bool `json:"stream"`
+				}
+				if json.Unmarshal(raw, &payload) == nil && payload.Stream {
+					streamRequested = true
+				}
+				// Ollama 原生流式是 ndjson;OpenAI/Claude 是 SSE。
+				if provider == ProviderOllama {
+					w.Header().Set("Content-Type", "application/x-ndjson")
+				} else {
+					w.Header().Set("Content-Type", "text/event-stream")
+				}
+				flusher := w.(http.Flusher)
+				text := stubDiagnosisJSON
+				// 分 3 段流出,验证逐帧累积。
+				third := len(text) / 3
+				for i := 0; i < len(text); i += third {
+					end := i + third
+					if end > len(text) {
+						end = len(text)
+					}
+					chunk := text[i:end]
+					switch provider {
+					case ProviderClaude:
+						fmt.Fprintf(w, "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":%s}}\n\n", mustJSONString(chunk))
+					case ProviderOpenAI:
+						fmt.Fprintf(w, "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":%s}}]}\n\n", mustJSONString(chunk))
+					default:
+						fmt.Fprintf(w, "{\"message\":{\"content\":%s},\"done\":false}\n", mustJSONString(chunk))
+					}
+					flusher.Flush()
+				}
+				switch provider {
+				case ProviderClaude:
+					fmt.Fprint(w, "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"}}\n\n")
+					fmt.Fprint(w, "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
+				case ProviderOpenAI:
+					fmt.Fprint(w, "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n")
+					fmt.Fprint(w, "data: [DONE]\n\n")
+				default:
+					fmt.Fprint(w, "{\"message\":{\"content\":\"\"},\"done\":true,\"done_reason\":\"stop\"}\n")
+				}
+				flusher.Flush()
+			}))
+			t.Cleanup(srv.Close)
+			svc, _, _ := newService(t, srv.Client())
+			configureEnabled(t, svc, provider, srv.URL)
+
+			d, err := svc.Diagnose(ctx(), DiagnoseInput{FailureLog: failureLogWithSecret, Masker: maskerWithSecret()})
+			if err != nil {
+				t.Fatalf("Diagnose: %v", err)
+			}
+			if !streamRequested {
+				t.Fatal("未发起请求")
+			}
+			if d.Status != diagStatusReady {
+				t.Fatalf("流式应 ready: %+v", d)
+			}
+			if !strings.Contains(d.Hypothesis, "leftpad") || len(d.Evidence) == 0 {
+				t.Fatalf("流式累积内容不完整: %+v", d)
+			}
+		})
+	}
+}
+
+func mustJSONString(s string) string {
+	b, _ := json.Marshal(s)
+	return string(b)
 }

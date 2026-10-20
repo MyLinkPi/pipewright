@@ -7,7 +7,6 @@ export default {
   customGateway: 'Pasarela personalizada',
   modelId: 'ID del modelo',
   availableModels: 'Modelos disponibles',
-  searchModels: 'Buscar modelos',
   fetchModels: 'Obtener modelos',
   modelsUnavailable: 'Lista no disponible; introduzca el ID manualmente.',
   title: 'Proveedor de AI',
@@ -43,14 +42,14 @@ export default {
     'Ollama local no necesita API Key: solo asegúrate de que el servicio de Ollama esté en ejecución en la dirección indicada.',
 
   baseUrlLabel: 'Base URL',
-  baseUrlHint: 'Predeterminado: {url}',
+  baseUrlHint: 'Predeterminado: {url} (se concatena tal cual; conserva prefijos de versión como /v1)',
 
   modelLabel: 'Modelo',
   modelHint:
     'Modelo principal usado para el diagnóstico, p. ej. claude-opus-4-7 / gpt-4o / llama3',
 
   testConnection: 'Probar conexión',
-  testOk: 'Conexión correcta · latencia {ms}ms',
+  testOk: 'Inferencia correcta · latencia {ms}ms',
   testFail: 'Error de conexión',
 
   budgetLabel: 'Límite mensual de Token',

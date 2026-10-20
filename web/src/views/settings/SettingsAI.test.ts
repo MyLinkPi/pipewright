@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import SettingsAI from './SettingsAI.vue'
 import AppSelect from '../../components/ui/AppSelect.vue'
+import AppCombobox from '../../components/ui/AppCombobox.vue'
 
 const api = vi.hoisted(() => ({
   get: vi.fn(),
@@ -83,7 +84,7 @@ describe('draft model configuration', () => {
         { provider: 'openai', baseUrl: url, apiKey: 'mock-key' },
         expect.any(AbortSignal),
       )
-      expect(w.findAllComponents(AppSelect)[1]!.props('options')[0].value).toBe(
+      expect(w.findComponent(AppCombobox).props('options')[0].value).toBe(
         'exact/model:1',
       )
       expect((w.get('#ai-model').element as HTMLInputElement).value).toBe(
@@ -181,7 +182,7 @@ describe('draft model configuration', () => {
     expect(signal.aborted).toBe(true)
     resolve({ ok: true, items: [{ id: 'old', name: 'Old' }] })
     await flushPromises()
-    expect(w.findAllComponents(AppSelect)[1]!.props('options')).toEqual([])
+    expect(w.findComponent(AppCombobox).props('options')).toEqual([])
     await w.get('#ai-apikey').setValue('new-test-key')
     await w.get('button[title="获取模型"]').trigger('click')
     const second = api.models.mock.calls[1]![1] as AbortSignal
@@ -199,13 +200,12 @@ describe('draft model configuration', () => {
     })
     await w.get('button[title="获取模型"]').trigger('click')
     await flushPromises()
-    const select = w.findAllComponents(AppSelect)[1]!
-    expect(select.props('searchable')).toBe(true)
-    expect(select.props('options')[0].value).toBe('provider/custom:1')
+    const combobox = w.findComponent(AppCombobox)
+    expect(combobox.props('options')[0].value).toBe('provider/custom:1')
     expect((w.get('#ai-model').element as HTMLInputElement).value).toBe(
       'manual/model',
     )
-    select.vm.$emit('update:modelValue', 'provider/custom:1')
+    combobox.vm.$emit('update:modelValue', 'provider/custom:1')
     await flushPromises()
     expect((w.get('#ai-model').element as HTMLInputElement).value).toBe(
       'provider/custom:1',
@@ -248,6 +248,7 @@ describe('draft model configuration', () => {
     expect(w.findAllComponents(AppSelect).every((s) => s.props('portal'))).toBe(
       true,
     )
+    expect(w.findComponent(AppCombobox).props('portal')).toBe(true)
     const help = w.get('.protocol-help-button')
     await help.trigger('focusin')
     expect(w.get('[role="tooltip"]').isVisible()).toBe(true)

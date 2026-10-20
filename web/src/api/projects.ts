@@ -8,7 +8,8 @@
  * DELETE /api/projects/{id}             → 204       (needs CSRF)
  *
  * credentialName is read-only display; credentialId is the reference.
- * lastRunStatus / targetServers may be null/[] until future stories fill them.
+ * lastRunStatus is the project's most recent run status (same vocabulary as
+ * /api/runs) or null when the project has no runs yet.
  * serviceRegs lists the project's registered services (card display subset), resolved
  * server-side from the pipeline's deploy-node bindings (regServiceId / legacy
  * gatewayService by name); [] when nothing is bound.
@@ -18,12 +19,14 @@
 import { http } from './http'
 
 export type RunStatus =
-  | '成功'
-  | '失败'
-  | '进行中'
-  | '部分失败'
-  | '已回滚'
-  | '排队中'
+  | 'queued'
+  | 'running'
+  | 'waiting_approval'
+  | 'success'
+  | 'failed'
+  | 'rejected'
+  | 'partial_failed'
+  | 'rolled_back'
 
 /** A service the project has registered in the service-registry gateway (card display subset). */
 export interface ProjectServiceReg {
@@ -61,10 +64,8 @@ export interface Project {
    * back the commit status (PR check) using the project credential. Best-effort.
    */
   prStatusEnabled: boolean
-  /** null until pipeline runs exist (Story 2.x). */
+  /** null until the project has a run. */
   lastRunStatus: RunStatus | null
-  /** Empty until servers are bound (Story 2.x). */
-  targetServers: string[]
   /**
    * Services registered in the service-registry gateway, resolved from the pipeline's
    * deploy-node bindings (regServiceId; legacy gatewayService by service name).

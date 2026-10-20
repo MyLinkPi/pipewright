@@ -124,3 +124,52 @@ func TestMetricsRecords_Empty(t *testing.T) {
 		t.Fatalf("expected empty, got %d", len(recs))
 	}
 }
+
+// TestSetCommitPersistsCommitTime:SetCommit 连带提交时刻落库,MetricsRecords 投影带出;
+// 零值时刻(未解析出)保持 NULL(老运行回退 created_at 代理的口径不受影响)。
+func TestSetCommitPersistsCommitTime(t *testing.T) {
+	db := testDB(t)
+	svc := New(db)
+	ms := NewMetricsService(svc.(*service))
+
+	projA := seedProject(t, db)
+	r1, err := svc.Create(context.Background(), projA, Trigger{Type: TriggerManual, Branch: "main", Actor: "admin"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	commitAt := time.Date(2026, 5, 1, 8, 30, 0, 0, time.UTC)
+	if err := svc.SetCommit(context.Background(), r1.ID, "abc1234", commitAt); err != nil {
+		t.Fatalf("SetCommit: %v", err)
+	}
+	// 同 run 未解析出时刻的回写(零值)→ commit_time 置 NULL。
+	r2, err := svc.Create(context.Background(), projA, Trigger{Type: TriggerManual, Branch: "main", Actor: "admin"})
+	if err != nil {
+		t.Fatalf("Create r2: %v", err)
+	}
+	if err := svc.SetCommit(context.Background(), r2.ID, "def5678", time.Time{}); err != nil {
+		t.Fatalf("SetCommit r2: %v", err)
+	}
+
+	recs, err := ms.MetricsRecords(context.Background(), projA, time.Time{})
+	if err != nil {
+		t.Fatalf("MetricsRecords: %v", err)
+	}
+	if len(recs) != 2 {
+		t.Fatalf("records = %d, want 2", len(recs))
+	}
+	var wantAt, wantNil int
+	for _, rec := range recs {
+		if rec.CommitTime != nil {
+			wantAt++
+			if !rec.CommitTime.Equal(commitAt) {
+				t.Fatalf("CommitTime = %v, want %v", rec.CommitTime, commitAt)
+			}
+		} else {
+			wantNil++
+		}
+	}
+	if wantAt != 1 || wantNil != 1 {
+		t.Fatalf("commit_time 命中数不对:with=%d nil=%d (want 1/1)", wantAt, wantNil)
+	}
+}

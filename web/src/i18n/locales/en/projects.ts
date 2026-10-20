@@ -15,7 +15,7 @@ export default {
   // ─── list states ───────────────────────────────────────────────
   loading: 'Loading',
   emptyTitle: 'No projects yet',
-  emptyHint: 'Connect your first Gitee repository, then configure a pipeline and deploy to target servers.',
+  emptyHint: 'Connect your first Gitee repository, then configure a pipeline.',
   noMatchTitle: 'No matching projects',
   noMatchHint: 'Adjust your search term or status filter and try again.',
   clearFilter: 'Clear filters',
@@ -26,8 +26,6 @@ export default {
   runStatusAria: 'Run status: {status}',
   lastRun: 'Last run',
   noRun: 'No runs yet',
-  targetServers: 'Target servers',
-  notBound: 'Not bound',
   credential: 'Repository credential',
   credentialRefTitle: 'Credential reference (not plaintext)',
   noServiceReg: 'No services registered',

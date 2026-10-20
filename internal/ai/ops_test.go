@@ -53,7 +53,11 @@ func TestOpsProvidersPrivacyAndStrictPlan(t *testing.T) {
 			}))
 			defer server.Close()
 			svc, _, _ := newService(t, server.Client())
-			if _, err := svc.Save(ctx(), SaveInput{Provider: provider, BaseURL: server.URL, Model: "test-model", APIKey: &key, Enabled: true}); err != nil {
+			base := server.URL + "/v1"
+			if provider == ProviderOllama {
+				base = server.URL + "/api"
+			}
+			if _, err := svc.Save(ctx(), SaveInput{Provider: provider, BaseURL: base, Model: "test-model", APIKey: &key, Enabled: true}); err != nil {
 				t.Fatal(err)
 			}
 			masker := mask.NewMasker()

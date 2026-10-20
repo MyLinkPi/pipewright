@@ -9,11 +9,13 @@
 // 平台不 panic。未配置 / 未 enabled → 下游优雅禁用,核心 CI/CD 路径完全不依赖此服务
 // (NFR-10)。
 //
-// 本期为「最小可用」:Test 仅向 provider 发轻量探测(GET models/tags)校验连通 +
-// 认证;budget 仅存声明(monthlyTokenLimit),不强制执行/计量(Epic7 用量统计后做)。
+// 本期为「最小可用」:Test 向 provider 发一次真实推理请求(max_tokens=1)校验 连通 +
+// 认证 + 模型有效 + 推理权限;budget 仅存声明(monthlyTokenLimit),不强制执行/计量
+// (Epic7 用量统计后做)。
 package ai
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -42,9 +44,9 @@ const (
 
 // 各 provider 默认 baseUrl(provider 非空但 baseUrl 为空时后端兜底)。
 const (
-	defaultBaseURLClaude = "https://api.anthropic.com"
-	defaultBaseURLOpenAI = "https://api.openai.com"
-	defaultBaseURLOllama = "http://localhost:11434"
+	defaultBaseURLClaude = "https://api.anthropic.com/v1"
+	defaultBaseURLOpenAI = "https://api.openai.com/v1"
+	defaultBaseURLOllama = "http://localhost:11434/api"
 )
 
 // 领域错误。错误体永不含 apiKey 明文/密文/master key。
@@ -294,34 +296,48 @@ func (s *service) Test(ctx context.Context, in TestInput) (*TestResult, error) {
 		return nil, ErrAPIKeyRequired
 	}
 
-	res := s.probe(ctx, provider, baseURL, apiKey)
+	// model:draft 非空 → 用 draft;否则回退已存配置。真实推理探测必须有模型。
+	model := existing.Model
+	if in.Model != nil {
+		model = strings.TrimSpace(*in.Model)
+	}
+
+	res := s.probe(ctx, provider, baseURL, model, apiKey)
 	// 明文 key 用完即弃(尽力清理本地副本)。
 	apiKey = ""
 	return res, nil
 }
 
-// probe 向 provider 发轻量探测;2xx → ok+延迟;否则 ok=false + 人读错误(绝无密钥)。
-func (s *service) probe(ctx context.Context, provider, baseURL, apiKey string) *TestResult {
-	return (&opsModel{service: s}).probe(ctx, provider, baseURL, apiKey)
+// probe 向 provider 发一次**真实推理请求**(max_tokens=1,与诊断路径同一请求形态):
+// 一次调用同时验证 网络/TLS、鉴权、模型 ID 有效性与推理权限。2xx → ok+延迟;
+// 否则 ok=false + 人读错误(绝无密钥)。
+func (s *service) probe(ctx context.Context, provider, baseURL, model, apiKey string) *TestResult {
+	return (&opsModel{service: s}).probe(ctx, provider, baseURL, model, apiKey)
 }
 
-func (m *opsModel) probe(ctx context.Context, provider, baseURL, apiKey string) *TestResult {
-	ctx, cancel := context.WithTimeout(ctx, 8*time.Second)
+func (m *opsModel) probe(ctx context.Context, provider, baseURL, model, apiKey string) *TestResult {
+	if strings.TrimSpace(model) == "" {
+		return &TestResult{OK: false, Error: "真实推理测试需要模型:请先选择或填写模型 ID"}
+	}
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	// SSRF 收口:baseUrl 用户可控,探测向其发请求——拒云元数据/链路本地/未指定;
 	// 回环仅 ollama(本地默认 localhost:11434)放行,其余 provider 拒回环;私网放行(自托管,
 	// 与仓库既定策略一致)。否则管理员可借 test 探测做内网/元数据端口探活(盲 SSRF)。
-	_, catalogBase, _ := catalogDestination(provider, baseURL)
-	client, cleanup, pinErr := m.pinnedClient(ctx, catalogBase)
+	client, cleanup, pinErr := m.pinnedClient(ctx, baseURL)
 	if pinErr != nil {
 		return &TestResult{OK: false, Error: "baseUrl 不被允许:仅 http/https,且不可指向云元数据/链路本地地址"}
 	}
 	defer cleanup()
 
-	reqURL, header := probeRequest(provider, baseURL, apiKey)
+	endpoint, header, payload := inferenceProbeRequest(provider, baseURL, model, apiKey)
+	opsRequestCompatibility(&Config{Provider: provider, Model: model}, baseURL, payload)
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return &TestResult{OK: false, Error: "请求构造失败:baseUrl 可能非法"}
+	}
 
-	start := time.Now()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
 		// URL 构造失败(如 baseUrl 非法):人读错误,绝不含 key。
 		return &TestResult{OK: false, Error: "请求构造失败:baseUrl 可能非法"}
@@ -330,33 +346,79 @@ func (m *opsModel) probe(ctx context.Context, provider, baseURL, apiKey string) 
 		req.Header.Set(k, v)
 	}
 
+	start := time.Now()
 	resp, err := client.Do(req)
 	latency := time.Since(start).Milliseconds()
 	if err != nil {
 		return &TestResult{OK: false, LatencyMs: latency, Error: mapTransportError(err)}
 	}
 	defer func() { _ = resp.Body.Close() }()
-	// 读弃少量响应体以复用连接;不解析(避免泄漏/重对象)。
+	// 读弃少量响应体以复用连接;不解析内容(max_tokens=1 的回复无诊断价值)。
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
 
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		return &TestResult{
 			OK:        true,
 			LatencyMs: latency,
-			Detail:    fmt.Sprintf("连接正常(HTTP %d)", resp.StatusCode),
+			Detail:    fmt.Sprintf("推理成功(HTTP %d)", resp.StatusCode),
 		}
 	}
 	return &TestResult{
 		OK:        false,
 		LatencyMs: latency,
-		Error:     mapStatusError(resp.StatusCode),
+		Error:     mapInferenceStatusError(resp.StatusCode),
+	}
+}
+
+// inferenceProbeRequest 构造真实推理探测的 URL/header/payload:per-provider 与
+// chat 路径同形态,但 max_tokens=1(OpenAI/Claude)/num_predict=1(Ollama),不期望内容。
+func inferenceProbeRequest(provider, baseURL, model, apiKey string) (string, map[string]string, map[string]any) {
+	header := map[string]string{"Content-Type": "application/json"}
+	messages := []map[string]string{{"role": "user", "content": "ping"}}
+	switch provider {
+	case ProviderClaude:
+		header["x-api-key"] = apiKey
+		header["anthropic-version"] = "2023-06-01"
+		return apiEndpoint(provider, baseURL, "messages"), header, map[string]any{
+			"model":      model,
+			"max_tokens": 1,
+			"messages":   messages,
+		}
+	case ProviderOllama:
+		return apiEndpoint(provider, baseURL, "chat"), header, map[string]any{
+			"model":    model,
+			"stream":   false,
+			"messages": messages,
+			"options":  map[string]int{"num_predict": 1},
+		}
+	default:
+		header["Authorization"] = "Bearer " + apiKey
+		return apiEndpoint(provider, baseURL, "chat/completions"), header, map[string]any{
+			"model":      model,
+			"messages":   messages,
+			"max_tokens": 1,
+		}
+	}
+}
+
+// mapInferenceStatusError 把推理探测的非 2xx 映射为人读错误(绝无密钥)。
+// 400/404 在推理端点上最常见的根因是模型 ID 不存在或地址前缀拼错,给出指向性提示。
+func mapInferenceStatusError(status int) string {
+	switch {
+	case status == http.StatusUnauthorized || status == http.StatusForbidden:
+		return fmt.Sprintf("认证失败(HTTP %d):请检查 API 密钥", status)
+	case status == http.StatusBadRequest || status == http.StatusNotFound:
+		return fmt.Sprintf("模型或地址不可用(HTTP %d):请检查模型 ID 与接入地址前缀", status)
+	default:
+		return fmt.Sprintf("推理探测失败:HTTP %d", status)
 	}
 }
 
 // probeRequest 按 provider 构造探测请求 URL + header(绝不日志 key)。
-//   - claude:GET {baseUrl}/v1/models;header x-api-key + anthropic-version: 2023-06-01
-//   - openai:GET {baseUrl}/v1/models;header Authorization: Bearer <key>
-//   - ollama:GET {baseUrl}/api/tags;无 key
+// 只打模型目录端点,不发任何推理请求:
+//   - claude:GET {baseUrl}/models;header x-api-key + anthropic-version: 2023-06-01
+//   - openai:GET {baseUrl}/models;header Authorization: Bearer <key>
+//   - ollama:GET {baseUrl}/tags;无 key
 func probeRequest(provider, baseURL, apiKey string) (string, map[string]string) {
 	_, _, deepSeek := catalogDestination(provider, baseURL)
 	if deepSeek {
@@ -374,7 +436,7 @@ func probeRequest(provider, baseURL, apiKey string) (string, map[string]string) 
 	case ProviderOllama:
 		return apiEndpoint(provider, baseURL, "tags"), header
 	default:
-		return endpointBase(provider, baseURL), header
+		return strings.TrimRight(strings.TrimSpace(baseURL), "/"), header
 	}
 }
 
@@ -444,7 +506,7 @@ func (s *service) load(ctx context.Context) (*Config, []byte, error) {
 	cfg := &Config{
 		Enabled:  enabledInt != 0,
 		Provider: provider,
-		BaseURL:  baseURL,
+		BaseURL:  migrateLegacyBaseURL(provider, baseURL),
 		Model:    model,
 		Budget:   budget,
 	}
@@ -595,4 +657,24 @@ func defaultBaseURL(provider string) string {
 	default:
 		return ""
 	}
+}
+
+// migrateLegacyBaseURL 一次性升级历史存量:原样拼接不再自动补版本段,旧默认裸根地址
+// (曾依赖补 /v1、/api)与 DeepSeek 根形式升级为完整前缀。仅命中曾由本产品写入的
+// 已知形态;其余自定义值原样保留,由测试连接暴露问题。
+func migrateLegacyBaseURL(provider, base string) string {
+	trimmed := strings.TrimRight(strings.TrimSpace(base), "/")
+	switch {
+	case provider == ProviderOpenAI && trimmed == "https://api.openai.com":
+		return defaultBaseURLOpenAI
+	case provider == ProviderClaude && trimmed == "https://api.anthropic.com":
+		return defaultBaseURLClaude
+	case provider == ProviderOllama && trimmed == "http://localhost:11434":
+		return defaultBaseURLOllama
+	case provider == ProviderOpenAI && trimmed == "https://api.deepseek.com":
+		return "https://api.deepseek.com/v1"
+	case provider == ProviderClaude && trimmed == "https://api.deepseek.com/anthropic":
+		return "https://api.deepseek.com/anthropic/v1"
+	}
+	return base
 }

@@ -3,6 +3,7 @@ package ai
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -185,6 +186,34 @@ func TestRawDBHasNoPlaintextKey(t *testing.T) {
 	}
 }
 
+// 存量迁移:旧默认裸根地址(曾依赖自动补 /v1、/api)读取时一次性升级为完整前缀;
+// 自定义网关值原样保留,不被猜测改写。
+func TestLegacyBaseURLMigration(t *testing.T) {
+	svc, _, _ := newService(t, http.DefaultClient)
+	if _, err := svc.Save(ctx(), SaveInput{Provider: ProviderOpenAI, BaseURL: "https://api.openai.com", APIKey: strp("sk-mig")}); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	got, err := svc.Get(ctx())
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.BaseURL != "https://api.openai.com/v1" {
+		t.Fatalf("旧默认根地址应迁移为带 /v1 形式: %q", got.BaseURL)
+	}
+	for _, tc := range []struct{ provider, raw, want string }{
+		{ProviderClaude, "https://api.anthropic.com", "https://api.anthropic.com/v1"},
+		{ProviderOllama, "http://localhost:11434", "http://localhost:11434/api"},
+		{ProviderOpenAI, "https://api.deepseek.com", "https://api.deepseek.com/v1"},
+		{ProviderClaude, "https://api.deepseek.com/anthropic", "https://api.deepseek.com/anthropic/v1"},
+		{ProviderOpenAI, "https://api.openai.com/", "https://api.openai.com/v1"},
+		{ProviderOpenAI, "https://gw.example/prefix", "https://gw.example/prefix"},
+	} {
+		if got := migrateLegacyBaseURL(tc.provider, tc.raw); got != tc.want {
+			t.Fatalf("migrate(%s, %s) = %q, want %q", tc.provider, tc.raw, got, tc.want)
+		}
+	}
+}
+
 func TestBudgetPersisted(t *testing.T) {
 	svc, _, _ := newService(t, http.DefaultClient)
 	limit := int64(1000000)
@@ -208,20 +237,28 @@ func TestBudgetPersisted(t *testing.T) {
 // ---- Test 探测:三 provider stub ----
 
 func TestProbeClaudeOK(t *testing.T) {
-	var gotPath, gotKey, gotVer string
+	var gotPath, gotMethod, gotKey, gotVer string
+	var gotBody struct {
+		Model      string `json:"model"`
+		MaxTokens  int    `json:"max_tokens"`
+		Messages   []struct {
+			Role    string `json:"role"`
+			Content string `json:"content"`
+		} `json:"messages"`
+	}
 	stub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotPath = r.URL.Path
-		gotKey = r.Header.Get("x-api-key")
-		gotVer = r.Header.Get("anthropic-version")
+		gotPath, gotMethod, gotKey, gotVer = r.URL.Path, r.Method, r.Header.Get("x-api-key"), r.Header.Get("anthropic-version")
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"data":[]}`))
+		_, _ = w.Write([]byte(`{"content":[]}`))
 	}))
 	defer stub.Close()
 
 	svc, _, _ := newService(t, stub.Client())
 	res, err := svc.Test(ctx(), TestInput{
 		Provider: strp(ProviderClaude),
-		BaseURL:  strp(stub.URL),
+		BaseURL:  strp(stub.URL + "/v1"),
+		Model:    strp("claude-sonnet-4"),
 		APIKey:   strp("sk-ant-draftKEY"),
 	})
 	if err != nil {
@@ -236,8 +273,11 @@ func TestProbeClaudeOK(t *testing.T) {
 	if res.Error != "" {
 		t.Fatalf("成功不应有 error: %q", res.Error)
 	}
-	if gotPath != "/v1/models" {
-		t.Fatalf("claude 应 GET /v1/models, got %q", gotPath)
+	if gotMethod != http.MethodPost || gotPath != "/v1/messages" {
+		t.Fatalf("claude 应 POST /v1/messages, got %s %q", gotMethod, gotPath)
+	}
+	if gotBody.Model != "claude-sonnet-4" || gotBody.MaxTokens != 1 || len(gotBody.Messages) != 1 {
+		t.Fatalf("真实推理探测应带模型且 max_tokens=1: %+v", gotBody)
 	}
 	if gotKey != "sk-ant-draftKEY" {
 		t.Fatalf("claude 应带 x-api-key header")
@@ -248,10 +288,14 @@ func TestProbeClaudeOK(t *testing.T) {
 }
 
 func TestProbeOpenAIOK(t *testing.T) {
-	var gotPath, gotAuth string
+	var gotPath, gotMethod, gotAuth string
+	var gotBody struct {
+		Model     string `json:"model"`
+		MaxTokens int    `json:"max_tokens"`
+	}
 	stub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotPath = r.URL.Path
-		gotAuth = r.Header.Get("Authorization")
+		gotPath, gotMethod, gotAuth = r.URL.Path, r.Method, r.Header.Get("Authorization")
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer stub.Close()
@@ -259,7 +303,8 @@ func TestProbeOpenAIOK(t *testing.T) {
 	svc, _, _ := newService(t, stub.Client())
 	res, err := svc.Test(ctx(), TestInput{
 		Provider: strp(ProviderOpenAI),
-		BaseURL:  strp(stub.URL),
+		BaseURL:  strp(stub.URL + "/v1"),
+		Model:    strp("gpt-4o"),
 		APIKey:   strp("sk-openai-XYZ"),
 	})
 	if err != nil {
@@ -268,8 +313,11 @@ func TestProbeOpenAIOK(t *testing.T) {
 	if !res.OK {
 		t.Fatalf("openai 2xx 应 ok=true: %+v", res)
 	}
-	if gotPath != "/v1/models" {
-		t.Fatalf("openai 应 GET /v1/models, got %q", gotPath)
+	if gotMethod != http.MethodPost || gotPath != "/v1/chat/completions" {
+		t.Fatalf("openai 应 POST /v1/chat/completions, got %s %q", gotMethod, gotPath)
+	}
+	if gotBody.Model != "gpt-4o" || gotBody.MaxTokens != 1 {
+		t.Fatalf("真实推理探测应带模型且 max_tokens=1: %+v", gotBody)
 	}
 	if gotAuth != "Bearer sk-openai-XYZ" {
 		t.Fatalf("openai 应带 Authorization: Bearer, got %q", gotAuth)
@@ -277,9 +325,16 @@ func TestProbeOpenAIOK(t *testing.T) {
 }
 
 func TestProbeOllamaOKNoKey(t *testing.T) {
-	var gotPath string
+	var gotPath, gotMethod string
+	var gotBody struct {
+		Model   string `json:"model"`
+		Options struct {
+			NumPredict int `json:"num_predict"`
+		} `json:"options"`
+	}
 	stub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotPath = r.URL.Path
+		gotPath, gotMethod = r.URL.Path, r.Method
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer stub.Close()
@@ -287,7 +342,8 @@ func TestProbeOllamaOKNoKey(t *testing.T) {
 	svc, _, _ := newService(t, stub.Client())
 	res, err := svc.Test(ctx(), TestInput{
 		Provider: strp(ProviderOllama),
-		BaseURL:  strp(stub.URL),
+		BaseURL:  strp(stub.URL + "/api"),
+		Model:    strp("llama3"),
 	})
 	if err != nil {
 		t.Fatalf("Test: %v", err)
@@ -295,8 +351,26 @@ func TestProbeOllamaOKNoKey(t *testing.T) {
 	if !res.OK {
 		t.Fatalf("ollama 2xx 应 ok=true: %+v", res)
 	}
-	if gotPath != "/api/tags" {
-		t.Fatalf("ollama 应 GET /api/tags, got %q", gotPath)
+	if gotMethod != http.MethodPost || gotPath != "/api/chat" {
+		t.Fatalf("ollama 应 POST /api/chat, got %s %q", gotMethod, gotPath)
+	}
+	if gotBody.Model != "llama3" || gotBody.Options.NumPredict != 1 {
+		t.Fatalf("ollama 探测应带模型且 num_predict=1: %+v", gotBody)
+	}
+}
+
+func TestProbeModelRequired(t *testing.T) {
+	svc, _, _ := newService(t, http.DefaultClient)
+	res, err := svc.Test(ctx(), TestInput{
+		Provider: strp(ProviderOpenAI),
+		BaseURL:  strp("https://gateway.invalid/v1"),
+		APIKey:   strp("sk-key"),
+	})
+	if err != nil {
+		t.Fatalf("Test: %v", err)
+	}
+	if res.OK || res.Error == "" {
+		t.Fatalf("缺模型应 ok=false 且有人读 error: %+v", res)
 	}
 }
 
@@ -311,6 +385,7 @@ func TestProbeAuthFailure4xxNoKeyLeak(t *testing.T) {
 	res, err := svc.Test(ctx(), TestInput{
 		Provider: strp(ProviderClaude),
 		BaseURL:  strp(stub.URL),
+		Model:    strp("claude-sonnet-4"),
 		APIKey:   strp(secret),
 	})
 	if err != nil {
@@ -343,6 +418,7 @@ func TestProbeTimeout(t *testing.T) {
 	res, err := svc.Test(ctx(), TestInput{
 		Provider: strp(ProviderOllama),
 		BaseURL:  strp(stub.URL),
+		Model:    strp("llama3"),
 	})
 	if err != nil {
 		t.Fatalf("Test: %v", err)
@@ -361,6 +437,7 @@ func TestProbeConnectionFailure(t *testing.T) {
 	res, err := svc.Test(ctx(), TestInput{
 		Provider: strp(ProviderOllama),
 		BaseURL:  strp("http://127.0.0.1:1"),
+		Model:    strp("llama3"),
 	})
 	if err != nil {
 		t.Fatalf("Test: %v", err)
@@ -382,10 +459,11 @@ func TestTestKeyOmittedUsesStoredKey(t *testing.T) {
 	defer stub.Close()
 
 	svc, _, _ := newService(t, stub.Client())
-	// 先存 claude + key + baseUrl 指向 stub。
+	// 先存 claude + key + baseUrl + model 指向 stub。
 	if _, err := svc.Save(ctx(), SaveInput{
 		Provider: ProviderClaude,
 		BaseURL:  stub.URL,
+		Model:    "claude-sonnet-4",
 		APIKey:   strp("sk-ant-STORED-key1"),
 	}); err != nil {
 		t.Fatalf("Save: %v", err)

@@ -15,7 +15,7 @@ export default {
   // ─── list states ───────────────────────────────────────────────
   loading: '載入中',
   emptyTitle: '還沒有專案',
-  emptyHint: '接入第一個 Gitee 倉庫,後續可設定流水線並部署到目標伺服器。',
+  emptyHint: '接入第一個 Gitee 倉庫,後續可設定流水線。',
   noMatchTitle: '沒有符合的專案',
   noMatchHint: '調整搜尋詞或狀態篩選條件後重試。',
   clearFilter: '清除篩選',
@@ -26,8 +26,6 @@ export default {
   runStatusAria: '執行狀態:{status}',
   lastRun: '上次執行',
   noRun: '尚無執行',
-  targetServers: '目標伺服器',
-  notBound: '未綁定',
   credential: '倉庫憑證',
   credentialRefTitle: '憑證引用(非明文)',
   noServiceReg: '未註冊服務',

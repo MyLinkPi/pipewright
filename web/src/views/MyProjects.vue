@@ -23,17 +23,9 @@ const loadState = ref<LoadState>('loading')
 const loadError = ref('')
 const projects = ref<Project[]>([])
 
-// 复用既有 runStatus.* 词条(与 Projects.vue 同一映射,8 语言齐备)。
-const RUN_STATUS_KEY: Record<RunStatus, string> = {
-  '成功': 'success',
-  '失败': 'failed',
-  '进行中': 'running',
-  '部分失败': 'partial_failed',
-  '已回滚': 'rolled_back',
-  '排队中': 'queued',
-}
+// 后端状态词表与共享 runStatus.* 词条一一对应(与 Projects.vue 同一映射,8 语言齐备)。
 function runStatusLabel(s: RunStatus): string {
-  return t(`runStatus.${RUN_STATUS_KEY[s]}`)
+  return t(`runStatus.${s}`)
 }
 
 const isEmpty = computed(() => loadState.value === 'idle' && projects.value.length === 0)

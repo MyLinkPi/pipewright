@@ -7,7 +7,6 @@ export default {
   customGateway: 'Eigenes Gateway',
   modelId: 'Modell-ID',
   availableModels: 'Verfügbare Modelle',
-  searchModels: 'Modelle suchen',
   fetchModels: 'Modelle abrufen',
   modelsUnavailable: 'Modellliste nicht verfügbar; Modell-ID manuell eingeben.',
   title: 'AI-Anbieter',
@@ -43,14 +42,14 @@ export default {
     'Lokales Ollama benötigt keinen API Key – stelle nur sicher, dass der Ollama-Dienst unter der angegebenen Adresse läuft.',
 
   baseUrlLabel: 'Base URL',
-  baseUrlHint: 'Standard: {url}',
+  baseUrlHint: 'Standard: {url} (unverändert angehängt – Versionspräfixe wie /v1 beibehalten)',
 
   modelLabel: 'Modell',
   modelHint:
     'Hauptmodell für die Diagnose, z. B. claude-opus-4-7 / gpt-4o / llama3',
 
   testConnection: 'Verbindung testen',
-  testOk: 'Verbindung OK · Latenz {ms}ms',
+  testOk: 'Inferenz OK · Latenz {ms}ms',
   testFail: 'Verbindung fehlgeschlagen',
 
   budgetLabel: 'Monatliches Token-Limit',

@@ -37,12 +37,12 @@ func TestDeepSeekClaudeCatalogAndProbeKeepMessagesProtocol(t *testing.T) {
 				body := `{"data":[{"id":"z"},{"id":"a"},{"id":"a"}]}`
 				if r.Method == http.MethodGet {
 					catalogs++
-					if r.URL.String() != "https://api.deepseek.com/models" || r.Header.Get("Authorization") != "Bearer test-key" || r.Header.Get("x-api-key") != "" || r.Header.Get("anthropic-version") != "" || time.Until(deadline) > 8*time.Second {
+					if r.URL.String() != "https://api.deepseek.com/v1/models" || r.Header.Get("Authorization") != "Bearer test-key" || r.Header.Get("x-api-key") != "" || r.Header.Get("anthropic-version") != "" || time.Until(deadline) > 8*time.Second {
 						t.Error("catalog URL/auth/deadline differs from official OpenAI catalog")
 					}
 				} else {
 					messages++
-					if r.URL.String() != "https://api.deepseek.com/anthropic/v1/messages" || r.Header.Get("x-api-key") != "test-key" || r.Header.Get("anthropic-version") != "2023-06-01" || r.Header.Get("Authorization") != "" {
+					if r.URL.String() != "https://api.deepseek.com"+strings.TrimRight(suffix, "/")+"/messages" || r.Header.Get("x-api-key") != "test-key" || r.Header.Get("anthropic-version") != "2023-06-01" || r.Header.Get("Authorization") != "" {
 						t.Error("Claude inference changed")
 					}
 					body = `{"content":[{"type":"text","text":"reply"}]}`
@@ -54,11 +54,11 @@ func TestDeepSeekClaudeCatalogAndProbeKeepMessagesProtocol(t *testing.T) {
 			if err != nil || !res.OK || len(res.Items) != 2 || res.Items[0].ID != "a" || catalogs != 1 {
 				t.Fatal(res, err, catalogs)
 			}
-			if res := m.probe(ctx(), ProviderClaude, base, "test-key"); !res.OK || catalogs != 2 {
-				t.Fatal(res, catalogs)
+			if res := m.probe(ctx(), ProviderClaude, base, "custom-model", "test-key"); !res.OK || messages != 1 {
+				t.Fatal(res, messages)
 			}
 			text, err := m.chat(ctx(), &Config{Provider: ProviderClaude, BaseURL: base, Model: "custom-model"}, "test-key", "question", 4096)
-			if err != nil || text != "reply" || messages != 1 {
+			if err != nil || text != "reply" || messages != 2 {
 				t.Fatal(text, err, messages)
 			}
 		})
@@ -81,7 +81,7 @@ func TestDeepSeekCatalogSpecializationIsExact(t *testing.T) {
 				t.Fatal("custom/invalid destination was rewritten", provider, destination, special)
 			}
 			endpoint, headers := probeRequest(ProviderClaude, base, "test-key")
-			if endpoint != endpointBase(ProviderClaude, base)+"/v1/models" || headers["x-api-key"] != "test-key" || headers["Authorization"] != "" {
+			if endpoint != strings.TrimRight(base, "/")+"/models" || headers["x-api-key"] != "test-key" || headers["Authorization"] != "" {
 				t.Fatal("default Claude catalog changed")
 			}
 		})
@@ -108,8 +108,13 @@ func TestDeepSeekCatalogFailuresBoundedNoRedirectOrClaudePagination(t *testing.T
 			calls := 0
 			m := deepSeekCatalogModel(t, opsTransport(func(r *http.Request) (*http.Response, error) {
 				calls++
-				if r.URL.String() != "https://api.deepseek.com/models" {
-					t.Fatal("redirect/pagination followed")
+				// 目录走 OpenAI /v1/models;真实推理探测走 Claude /anthropic/messages。
+				if r.Method == http.MethodGet {
+					if r.URL.String() != "https://api.deepseek.com/v1/models" {
+						t.Fatal("redirect/pagination followed")
+					}
+				} else if r.URL.String() != "https://api.deepseek.com/anthropic/messages" {
+					t.Fatal("inference probe changed destination")
 				}
 				return &http.Response{StatusCode: tc.status, Header: http.Header{"Location": {"https://other.invalid/models"}}, Body: io.NopCloser(strings.NewReader(tc.body)), Request: r}, nil
 			}))
@@ -118,7 +123,7 @@ func TestDeepSeekCatalogFailuresBoundedNoRedirectOrClaudePagination(t *testing.T
 				t.Fatal(res, err, calls)
 			}
 			if tc.status != 200 {
-				res := m.probe(ctx(), ProviderClaude, "https://api.deepseek.com/anthropic", "test-key")
+				res := m.probe(ctx(), ProviderClaude, "https://api.deepseek.com/anthropic", "test-model", "test-key")
 				if res.OK || strings.Contains(res.Error, "test-key") || calls != 2 {
 					t.Fatal(res, calls)
 				}
@@ -131,7 +136,7 @@ func TestDeepSeekCatalogSavedKeyRemainsInferenceDestinationScoped(t *testing.T) 
 	calls := 0
 	m := deepSeekCatalogModel(t, opsTransport(func(r *http.Request) (*http.Response, error) {
 		calls++
-		if r.URL.String() != "https://api.deepseek.com/models" || r.Header.Get("Authorization") != "Bearer saved-key" {
+		if r.URL.String() != "https://api.deepseek.com/v1/models" || r.Header.Get("Authorization") != "Bearer saved-key" {
 			t.Fatal("saved catalog key/address changed")
 		}
 		return &http.Response{StatusCode: 200, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(`{"data":[{"id":"a"}]}`)), Request: r}, nil
@@ -144,6 +149,9 @@ func TestDeepSeekCatalogSavedKeyRemainsInferenceDestinationScoped(t *testing.T) 
 		t.Fatal(res, err, calls)
 	}
 	for _, in := range []TestInput{
+		// 原样拼接语义:裸 /anthropic(旧写法)与迁移后的 /anthropic/v1 是不同目的地,
+		// 已存密钥不得跨目的地复用;复用仅认迁移后的同串(含尾部斜杠等价)。
+		{BaseURL: strp("https://api.deepseek.com/anthropic")},
 		{BaseURL: strp("https://api.deepseek.com")},
 		{BaseURL: strp("https://api.deepseek.com/gateway/anthropic")},
 		{BaseURL: strp("https://gateway.invalid/anthropic")},
@@ -173,7 +181,7 @@ func TestDeepSeekCatalogDNSAndTimeoutBoundaries(t *testing.T) {
 	if res, err := m.models(ctx(), in); err != nil || res.OK || calls != 1 {
 		t.Fatal(res, err, calls)
 	}
-	if res := m.probe(ctx(), ProviderClaude, *in.BaseURL, *in.APIKey); res.OK || calls != 2 {
+	if res := m.probe(ctx(), ProviderClaude, *in.BaseURL, "test-model", *in.APIKey); res.OK || calls != 2 {
 		t.Fatal(res, calls)
 	}
 	m.lookupIP = func(context.Context, string) ([]net.IPAddr, error) {
@@ -182,7 +190,7 @@ func TestDeepSeekCatalogDNSAndTimeoutBoundaries(t *testing.T) {
 	if res, err := m.models(ctx(), in); err != nil || res.OK || calls != 2 {
 		t.Fatal("unsafe DNS reached transport", res, err, calls)
 	}
-	if res := m.probe(ctx(), ProviderClaude, *in.BaseURL, *in.APIKey); res.OK || calls != 2 {
+	if res := m.probe(ctx(), ProviderClaude, *in.BaseURL, "test-model", *in.APIKey); res.OK || calls != 2 {
 		t.Fatal("unsafe probe DNS reached transport", res, calls)
 	}
 }
@@ -293,7 +301,7 @@ func TestDraftModelsNeverReuseKeyAtNewDestination(t *testing.T) {
 	if _, err = svc.Save(ctx(), SaveInput{Provider: ProviderOpenAI, BaseURL: srv.URL + "/different"}); err != ErrAPIKeyRequired {
 		t.Fatal(err)
 	}
-	res, err := svc.(ModelLister).Models(ctx(), TestInput{BaseURL: strp(srv.URL + "/api")})
+	res, err := svc.(ModelLister).Models(ctx(), TestInput{BaseURL: strp(srv.URL + "/api/v1/")})
 	if err != nil || !res.OK || requests != 1 {
 		t.Fatal(res, err, requests)
 	}

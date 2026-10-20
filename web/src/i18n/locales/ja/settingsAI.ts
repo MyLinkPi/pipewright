@@ -7,7 +7,6 @@ export default {
   customGateway: 'カスタムゲートウェイ',
   modelId: 'モデル ID',
   availableModels: '利用可能なモデル',
-  searchModels: 'モデルを検索',
   fetchModels: 'モデルを取得',
   modelsUnavailable: 'モデル一覧を取得できません。ID を手動入力できます。',
   title: 'AI プロバイダー',
@@ -43,14 +42,14 @@ export default {
     'ローカルの Ollama に API Key は不要です —— Ollama サービスが指定したアドレスで稼働していることを確認してください。',
 
   baseUrlLabel: '接続先 (Base URL)',
-  baseUrlHint: 'デフォルト: {url}',
+  baseUrlHint: 'デフォルト: {url}(アドレスはそのまま連結されます。/v1 などのバージョン接頭辞を保持してください)',
 
   modelLabel: 'モデル',
   modelHint:
     '診断に使用するメインモデル。例: claude-opus-4-7 / gpt-4o / llama3',
 
   testConnection: '接続テスト',
-  testOk: '接続正常 · レイテンシ {ms}ms',
+  testOk: '推論正常 · レイテンシ {ms}ms',
   testFail: '接続に失敗しました',
 
   budgetLabel: '月間 Token 上限',

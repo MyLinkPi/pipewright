@@ -13,6 +13,7 @@ import (
 	"github.com/huangchengsir/pipewright/internal/auth"
 	"github.com/huangchengsir/pipewright/internal/pipeline"
 	"github.com/huangchengsir/pipewright/internal/project"
+	"github.com/huangchengsir/pipewright/internal/run"
 	"github.com/huangchengsir/pipewright/internal/servicereg"
 	"github.com/huangchengsir/pipewright/internal/vault"
 )
@@ -84,11 +85,10 @@ func TestProjectCreateAndList(t *testing.T) {
 		t.Fatalf("credentialName = %v, want ci", p["credentialName"])
 	}
 	if p["lastRunStatus"] != nil {
-		t.Fatalf("lastRunStatus 本期应为 null, got %v", p["lastRunStatus"])
+		t.Fatalf("lastRunStatus 无运行应为 null, got %v", p["lastRunStatus"])
 	}
-	ts, ok := p["targetServers"].([]any)
-	if !ok || len(ts) != 0 {
-		t.Fatalf("targetServers 本期应为 [], got %v", p["targetServers"])
+	if strings.Contains(string(raw), "targetServers") {
+		t.Fatalf("targetServers 字段已随目标服务器绑定功能移除,不应出现在响应: %s", raw)
 	}
 
 	// 列表。
@@ -106,6 +106,69 @@ func TestProjectCreateAndList(t *testing.T) {
 	if len(list) != 1 {
 		t.Fatalf("list len = %d, want 1", len(list))
 	}
+}
+
+// TestProjectListLastRunStatus 验证列表接口回填「上次运行」状态:无运行 → null;
+// 有运行 → 实际状态(与 /api/runs 同词表)。runs 服务缺席时的降级由
+// TestProjectCreateAndList 覆盖(未装配 runs 的 server 输出 null 不阻断列表)。
+func TestProjectListLastRunStatus(t *testing.T) {
+	st := testStoreAuth(t)
+	svc := auth.NewService(st.DB, nil)
+	if err := svc.Bootstrap("admin", "testpass", ""); err != nil {
+		t.Fatalf("bootstrap: %v", err)
+	}
+	v := vault.New(st.DB, testMasterKey())
+	psvc := project.New(st.DB, v, stubProber{branch: "main"})
+	rsvc := run.New(st.DB)
+	srv := httptest.NewServer(New(testWebFSAuth(), svc,
+		WithVault(v), WithProjects(psvc), WithRuns(rsvc, nil)))
+	t.Cleanup(srv.Close)
+
+	client := newTestClient(t)
+	csrf := loginWithClient(t, client, srv.URL)
+	credID := newGitCred(t, client, srv.URL, csrf, "ghp_token_last_run")
+	resp := doJSON(t, client, http.MethodPost, srv.URL+"/api/projects", csrf,
+		`{"name":"shop","repoUrl":"https://gitee.com/acme/shop.git","credentialId":"`+credID+`"}`)
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	var created map[string]any
+	_ = json.Unmarshal(raw, &created)
+	projID, _ := created["id"].(string)
+	if projID == "" {
+		t.Fatalf("create project failed: %s", raw)
+	}
+
+	if got := listLastRunStatus(t, client, srv, projID); got != nil {
+		t.Fatalf("无运行时 lastRunStatus 应为 null, got %v", got)
+	}
+
+	// 建一次运行(worker pool 缺席,状态停留在 queued)→ 列表回填真实状态。
+	if _, err := rsvc.Create(context.Background(), projID, run.Trigger{Type: run.TriggerManual, Branch: "main", Actor: "admin"}); err != nil {
+		t.Fatalf("create run: %v", err)
+	}
+	if got := listLastRunStatus(t, client, srv, projID); got != "queued" {
+		t.Fatalf("有运行时 lastRunStatus 应为 queued, got %v", got)
+	}
+}
+
+// listLastRunStatus 取列表接口中指定项目的 lastRunStatus(项目缺席则 Fatal)。
+func listLastRunStatus(t *testing.T, client *http.Client, srv *httptest.Server, projID string) any {
+	t.Helper()
+	resp := doJSON(t, client, http.MethodGet, srv.URL+"/api/projects", "", "")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("list status = %d, want 200", resp.StatusCode)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	var list []map[string]any
+	_ = json.Unmarshal(raw, &list)
+	for _, p := range list {
+		if p["id"] == projID {
+			return p["lastRunStatus"]
+		}
+	}
+	t.Fatalf("project %s not in list: %s", projID, raw)
+	return nil
 }
 
 func TestProjectCreateMissingCredential422(t *testing.T) {

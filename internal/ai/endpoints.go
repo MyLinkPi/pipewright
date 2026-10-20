@@ -1,46 +1,17 @@
 package ai
 
 import (
-	"net/url"
 	"strings"
 )
 
-// Only documented official OpenAI-compatible bases omit the usual /v1 segment.
-// Custom gateways continue to retain their own prefix and root/v1 normalization.
-func directCompatibleBase(base string) bool {
-	u, err := url.Parse(base)
-	if err != nil || u.Scheme != "https" || u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || u.RawFragment != "" || u.RawPath != "" || u.Opaque != "" || strings.Contains(base, "#") {
-		return false
-	}
-	switch u.Host {
-	case "generativelanguage.googleapis.com":
-		return u.Path == "/v1beta/openai"
-	case "open.bigmodel.cn":
-		return u.Path == "/api/paas/v4" || u.Path == "/api/coding/paas/v4"
-	}
-	return false
-}
-
-func apiBase(provider, base string) string {
-	base = strings.TrimRight(strings.TrimSpace(base), "/")
-	if provider == ProviderOpenAI && directCompatibleBase(base) {
-		return base
-	}
-	base = endpointBase(provider, base)
-	switch provider {
-	case ProviderOpenAI, ProviderClaude:
-		return base + "/v1"
-	case ProviderOllama:
-		return base + "/api"
-	}
-	return base
-}
-
+// Base URL 原样拼接契约:用户填什么前缀就用什么前缀(含 /v1、/v2、/api/paas/v4 等),
+// 仅去除首尾空白与尾部斜杠;绝不猜测或改写版本段 —— 裸根形式(如 https://api.openai.com)
+// 不再自动补 /v1,由默认值/预设直接携带完整前缀。
 func apiEndpoint(provider, base, resource string) string {
 	if resource == "models" {
 		if _, catalogBase, special := catalogDestination(provider, base); special {
 			return catalogBase + "/models"
 		}
 	}
-	return apiBase(provider, base) + "/" + resource
+	return strings.TrimRight(strings.TrimSpace(base), "/") + "/" + resource
 }

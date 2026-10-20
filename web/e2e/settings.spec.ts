@@ -110,7 +110,7 @@ test.describe('Settings · AI provider', () => {
 
     await page.getByRole('radiogroup', { name: 'AI 提供商选择' }).getByLabel('选择 Claude').click()
     // baseUrl gets auto-filled to the Claude default once a provider is chosen.
-    await expect(page.locator('#ai-baseurl')).toHaveValue('https://api.anthropic.com')
+    await expect(page.locator('#ai-baseurl')).toHaveValue('https://api.anthropic.com/v1')
   })
 })
 

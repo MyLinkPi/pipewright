@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"strings"
 	"sync"
 	"time"
@@ -125,7 +126,38 @@ func pushArtifactsToPeer(
 			readers[sha] = &lazyFileReader{path: name}
 			continue
 		}
-		// 文件产物:reference 即制品库句柄(sha256)。
+		// 文件产物。format=files(artifactPackMode=none 的多文件清单):按 metadata.files 清单
+		// 展开为逐文件条目 —— 每文件独立 blob(内容寻址去重照常生效),DestName = 产物工作区
+		// 相对路径 + 清单内相对路径,对端物化/后续部署的目录语义与本地跨阶段恢复一致。
+		if format, _ := a.Metadata["format"].(string); format == "files" {
+			files, ferr := decodeFilesManifest(a.Metadata)
+			if ferr != nil {
+				return nil, fmt.Errorf("产物「%s」%w", a.Name, ferr)
+			}
+			baseDir := ""
+			if wp, ok := a.Metadata["workspacePath"].(string); ok {
+				baseDir = strings.TrimSpace(wp)
+			}
+			for _, fe := range files {
+				rel := cleanSlashRel(fe.Path)
+				if rel == "" {
+					continue
+				}
+				dest := rel
+				if baseDir != "" {
+					dest = baseDir + "/" + rel
+				}
+				manifest.Items = append(manifest.Items, mesh.PushItem{
+					Name: a.Name + "/" + rel, Kind: pushsource.KindFile, SHA256: fe.Key, Size: fe.Size,
+					DestName: cleanSlashRel(dest),
+				})
+				if _, seen := readers[fe.Key]; !seen {
+					readers[fe.Key] = &lazyOpenReader{open: openBlob, key: fe.Key}
+				}
+			}
+			continue
+		}
+		// jar/dist(tar.gz)/archive 单 blob:reference 即制品库句柄(sha256)。
 		dest := a.Name
 		if wp, ok := a.Metadata["workspacePath"].(string); ok && strings.TrimSpace(wp) != "" {
 			dest = strings.TrimSpace(wp)
@@ -349,10 +381,9 @@ func NewArtifactTransferService(svc mesh.Service, client *mesh.Client, images *I
 // OnSettled 注册终态回调(成功/失败/取消各一次;后台 goroutine 调用,回调需自行并发安全)。
 func (s *ArtifactTransferService) OnSettled(fn func(*TransferStatus)) { s.onSettled = fn }
 
-// transferCheck 判定产物可否跨环境传输:镜像(有引用)→ 可;文件类(stored + 句柄 +
-// 非多文件清单)→ 可;其余(占位/未归档/format=files)→ 不可并给原因。
-// format=files 的多文件清单在接收模型(一条目一 blob)下无法忠实还原,显式拒绝
-// (mesh_push 节点对它同样只传首文件,属既有限制)。
+// transferCheck 判定产物可否跨环境传输:镜像(有引用)→ 可;文件类(stored + 句柄)→ 可
+// (format=files 的多文件清单按 metadata.files 逐文件展开传输,与单 blob 同走本核心);
+// 其余(占位/未归档/清单不可解码)→ 不可并给原因。
 func transferCheck(a run.Artifact) (ok bool, reason string) {
 	if a.Type == run.ArtifactImage {
 		if strings.TrimSpace(a.Reference) == "" {
@@ -368,13 +399,26 @@ func transferCheck(a run.Artifact) (ok bool, reason string) {
 	if stored, _ := a.Metadata["stored"].(bool); !stored {
 		return false, "未归档真字节(占位产物)"
 	}
-	if format, _ := a.Metadata["format"].(string); format == "files" {
-		return false, "多文件清单(format=files)暂不支持跨环境传输"
-	}
 	if strings.TrimSpace(a.Reference) == "" {
 		return false, "无制品库句柄"
 	}
+	if format, _ := a.Metadata["format"].(string); format == "files" {
+		if _, ferr := decodeFilesManifest(a.Metadata); ferr != nil {
+			return false, "多文件清单不可解码(" + ferr.Error() + ")"
+		}
+	}
 	return true, ""
+}
+
+// cleanSlashRel 把清单/工作区路径清洗为安全的斜杠相对路径(\\ 归一、剥前导斜杠、消 ..;
+// 与 restoreFilesManifest 及接收端 sanitizeRelPath 同口径)。不可用(空/仅 . 或 /)→ 空串。
+func cleanSlashRel(p string) string {
+	rel := path.Clean("/" + strings.ReplaceAll(p, "\\", "/"))
+	rel = strings.TrimPrefix(rel, "/")
+	if rel == "" || rel == "." {
+		return ""
+	}
+	return rel
 }
 
 // Start 校验并入队一次传输(异步执行,返回任务 id)。校验失败同步报错(HTTP 层映射);

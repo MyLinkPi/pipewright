@@ -4,8 +4,8 @@
  *
  * Delivers:
  *   - Provider selection cards (Claude / OpenAI / Ollama)
- *   - baseUrl auto-filled by provider, editable
- *   - model text input
+ *   - baseUrl auto-filled by provider (full version prefix, joined verbatim), editable
+ *   - model combobox: pick from the provider catalog or type any ID
  *   - apiKey: WRITE-ONLY — never echoed from server; masked placeholder when configured
  *   - Ollama hides apiKey (no key needed for local provider)
  *   - budget (monthly token limit, nullable)
@@ -29,6 +29,7 @@ import { useI18n } from 'vue-i18n'
 import FormField from '../../components/ui/FormField.vue'
 import AppButton from '../../components/ui/AppButton.vue'
 import AppSelect from '../../components/ui/AppSelect.vue'
+import AppCombobox from '../../components/ui/AppCombobox.vue'
 import AppTooltip from '../../components/ui/AppTooltip.vue'
 import { Refresh, Help } from '@vicons/tabler'
 import { useAIModelCatalog } from '../../composables/useAIModelCatalog'
@@ -92,10 +93,11 @@ const PROVIDERS: ProviderMeta[] = [
   },
 ]
 
+// 默认接入地址携带完整版本前缀:后端按「原样拼接」处理 baseUrl,不再自动补 /v1。
 const DEFAULT_BASE_URLS: Record<string, string> = {
-  claude: 'https://api.anthropic.com',
-  openai: 'https://api.openai.com',
-  ollama: 'http://localhost:11434',
+  claude: 'https://api.anthropic.com/v1',
+  openai: 'https://api.openai.com/v1',
+  ollama: 'http://localhost:11434/api',
 }
 const preset = shallowRef('custom')
 const presets = [
@@ -114,7 +116,7 @@ const presetConfig: Record<string, { provider: AIProvider; url: string }> = {
   anthropic: { provider: 'claude', url: DEFAULT_BASE_URLS.claude! },
   openai: { provider: 'openai', url: DEFAULT_BASE_URLS.openai! },
   ollama: { provider: 'ollama', url: DEFAULT_BASE_URLS.ollama! },
-  deepseek: { provider: 'openai', url: 'https://api.deepseek.com' },
+  deepseek: { provider: 'openai', url: 'https://api.deepseek.com/v1' },
   gemini: {
     provider: 'openai',
     url: 'https://generativelanguage.googleapis.com/v1beta/openai',
@@ -133,8 +135,7 @@ function selectPreset(): void {
   const replace =
     !baseUrl.value ||
     Object.values(presetConfig).some(
-      (p) =>
-        normalizedBase(p.url, p.provider) === normalizedBase(baseUrl.value),
+      (p) => normalizedBase(p.url) === normalizedBase(baseUrl.value),
     )
   if (replace && baseUrl.value !== config.url) apiKey.value = ''
   selectProvider(config.provider)
@@ -200,24 +201,15 @@ const hasExistingKey = computed(
       normalizedBase(baseUrl.value),
 )
 
-function normalizedBase(
-  base: string,
-  provider = selectedProvider.value,
-): string {
-  const baseValue = base.trim().replace(/\/+$/, '')
-  const direct =
-    provider === 'openai' &&
-    [
-      'https://generativelanguage.googleapis.com/v1beta/openai',
-      'https://open.bigmodel.cn/api/paas/v4',
-      'https://open.bigmodel.cn/api/coding/paas/v4',
-    ].includes(baseValue.replace(/^https:/i, 'https:'))
-  const suffix = provider === 'ollama' ? '/api' : '/v1'
-  const value = direct
-    ? baseValue
-    : baseValue.replace(provider === 'ollama' ? /\/api$/ : /\/v1$/, '') + suffix
+// 原样拼接语义:身份即字符串本身,仅忽略尾部斜杠与 scheme/host 大小写;
+// 带不带 /v1 等不同前缀视为不同目的地(与后端 sameDestination 一致)。
+function normalizedBase(base: string): string {
+  const value = base.trim().replace(/\/+$/, '')
   try {
-    return new URL(value).href
+    const u = new URL(value)
+    u.protocol = u.protocol.toLowerCase()
+    u.host = u.host.toLowerCase()
+    return u.href.replace(/\/+$/, '')
   } catch {
     return value
   }
@@ -782,7 +774,7 @@ function relativeTime(iso: string | null): string {
                 </FormField>
               </div>
 
-              <!-- Model -->
+              <!-- Model:一个框内可选可填 —— 下拉取自 provider 模型目录,也可手动输入任意 ID -->
               <div class="config-row">
                 <FormField
                   :label="t('settingsAI.modelLabel')"
@@ -790,26 +782,17 @@ function relativeTime(iso: string | null): string {
                   :hint="t('settingsAI.modelHint')"
                 >
                   <template #default="{ fieldId, ariaDescribedby }">
-                    <input
-                      :id="fieldId"
-                      v-model="model"
-                      type="text"
-                      class="field-input field-input--mono"
-                      :placeholder="t('settingsAI.modelId')"
-                      autocomplete="off"
-                      :aria-describedby="ariaDescribedby"
-                      :disabled="saving"
-                    />
                     <div class="model-list-row">
-                      <AppSelect
+                      <AppCombobox
+                        :input-id="fieldId"
                         v-model="model"
                         :options="modelOptions"
                         :placeholder="t('settingsAI.modelId')"
                         :aria-label="t('settingsAI.availableModels')"
-                        :search-placeholder="t('settingsAI.searchModels')"
-                        searchable
+                        mono
                         portal
-                        :disabled="saving || !modelOptions.length"
+                        :disabled="saving"
+                        :aria-describedby="ariaDescribedby"
                       />
                       <AppButton
                         variant="ghost"
@@ -1390,9 +1373,8 @@ function relativeTime(iso: string | null): string {
   display: flex;
   gap: 8px;
   min-width: 0;
-  margin-top: 8px;
 }
-.model-list-row :deep(.app-select) {
+.model-list-row :deep(.app-combobox) {
   min-width: 0 !important;
   flex: 1;
 }

@@ -23,13 +23,13 @@ test.describe('Projects page', () => {
             projectFixture({
               id: 'p1',
               name: 'acme-web',
-              lastRunStatus: '成功',
+              lastRunStatus: 'success',
               serviceRegs: [
                 { id: 'svc-1', name: 'acme-web', fqdn: 'acme-web.example.com', protocol: 'http', tcpListenPort: 0 },
                 { id: 'svc-2', name: 'acme-api', fqdn: 'acme-api.example.com', protocol: 'http', tcpListenPort: 0 },
               ],
             }),
-            projectFixture({ id: 'p2', name: 'billing-svc', lastRunStatus: '失败' }),
+            projectFixture({ id: 'p2', name: 'billing-svc', lastRunStatus: 'failed' }),
           ]),
         })
       },
@@ -44,6 +44,12 @@ test.describe('Projects page', () => {
     await expect(page.getByRole('link', { name: 'acme-api.example.com' })).toBeVisible()
     // No bindings → the card shows the empty state.
     await expect(page.getByText('未注册服务')).toBeVisible()
+    // Last-run status is filled from lastRunStatus (pill + meta row).
+    await expect(page.locator('.status-pill', { hasText: '成功' })).toHaveCount(1)
+    await expect(page.locator('.card-meta-row', { hasText: '上次运行' }).getByText('成功')).toBeVisible()
+    await expect(page.locator('.card-meta-row', { hasText: '上次运行' }).getByText('失败')).toBeVisible()
+    // The target-server binding feature is gone — its card row must not render.
+    await expect(page.getByText('目标服务器')).toHaveCount(0)
     // The search/filter toolbar appears only when projects exist.
     await expect(page.getByRole('search', { name: '项目搜索与筛选' })).toBeVisible()
   })

@@ -30,18 +30,9 @@ import { repoHost, classifyCredentialReject } from './projects.helpers'
 const { t } = useI18n()
 const { confirmDiscard } = useDirtyGuard()
 
-// Map the Chinese-keyed project RunStatus to the shared `runStatus.*` i18n keys.
-const RUN_STATUS_KEY: Record<RunStatus, string> = {
-  '成功': 'success',
-  '失败': 'failed',
-  '进行中': 'running',
-  '部分失败': 'partial_failed',
-  '已回滚': 'rolled_back',
-  '排队中': 'queued',
-}
-
+// Backend run-status vocabulary — labels come from the shared `runStatus.*` i18n keys.
 function runStatusLabel(s: RunStatus): string {
-  return t(`runStatus.${RUN_STATUS_KEY[s]}`)
+  return t(`runStatus.${s}`)
 }
 
 // ─── router ───────────────────────────────────────────────────────────────────
@@ -71,13 +62,13 @@ const searchQuery = ref('')
 const statusFilter = ref<RunStatus | 'all'>('all')
 
 const STATUS_OPTIONS = computed<Array<{ value: RunStatus | 'all'; label: string }>>(() => [
-  { value: 'all',     label: t('projects.statusAll') },
-  { value: '成功',     label: runStatusLabel('成功') },
-  { value: '失败',     label: runStatusLabel('失败') },
-  { value: '进行中',   label: runStatusLabel('进行中') },
-  { value: '部分失败', label: runStatusLabel('部分失败') },
-  { value: '已回滚',   label: runStatusLabel('已回滚') },
-  { value: '排队中',   label: runStatusLabel('排队中') },
+  { value: 'all',              label: t('projects.statusAll') },
+  { value: 'success',          label: runStatusLabel('success') },
+  { value: 'failed',           label: runStatusLabel('failed') },
+  { value: 'running',          label: runStatusLabel('running') },
+  { value: 'partial_failed',   label: runStatusLabel('partial_failed') },
+  { value: 'rolled_back',      label: runStatusLabel('rolled_back') },
+  { value: 'queued',           label: runStatusLabel('queued') },
 ])
 
 const filteredProjects = computed(() => {
@@ -703,16 +694,18 @@ function relativeTime(isoStr: string): string {
   return t('time.dayAgo', { n: d })
 }
 
-// Status pill config — fixed six-word vocabulary, no substitutes
+// Status pill config — keyed by the backend run-status vocabulary, no substitutes
 type StatusConfig = { dot: string; bg: string; border: string; text: string; pulse: boolean }
 
 const STATUS_CONFIG: Record<RunStatus, StatusConfig> = {
-  '成功':   { dot: 'var(--color-green)',  bg: 'var(--color-green-soft)',  border: 'transparent',            text: 'var(--color-green)',  pulse: false },
-  '失败':   { dot: 'var(--color-red)',    bg: 'var(--color-red-soft)',    border: 'var(--color-red-line)',   text: 'var(--color-red)',    pulse: false },
-  '进行中': { dot: 'var(--color-amber)',  bg: 'var(--color-amber-soft)',  border: 'transparent',            text: 'var(--color-amber)',  pulse: true  },
-  '部分失败': { dot: 'var(--color-red)',  bg: 'var(--color-red-soft)',    border: 'var(--color-red-line)',   text: 'var(--color-red)',    pulse: false },
-  '已回滚': { dot: 'var(--color-amber)',  bg: 'var(--color-amber-soft)',  border: 'var(--color-amber-line)', text: 'var(--color-amber)',  pulse: false },
-  '排队中': { dot: 'var(--color-faint)',  bg: 'var(--color-card-2)',      border: 'var(--color-border-strong)', text: 'var(--color-dim)', pulse: false },
+  success:          { dot: 'var(--color-green)',  bg: 'var(--color-green-soft)',  border: 'transparent',               text: 'var(--color-green)',  pulse: false },
+  failed:           { dot: 'var(--color-red)',    bg: 'var(--color-red-soft)',    border: 'var(--color-red-line)',   text: 'var(--color-red)',    pulse: false },
+  running:          { dot: 'var(--color-amber)',  bg: 'var(--color-amber-soft)',  border: 'transparent',               text: 'var(--color-amber)',  pulse: true  },
+  waiting_approval: { dot: 'var(--color-amber)',  bg: 'var(--color-amber-soft)',  border: 'var(--color-amber-line)',  text: 'var(--color-amber)',  pulse: true  },
+  partial_failed:   { dot: 'var(--color-red)',    bg: 'var(--color-red-soft)',    border: 'var(--color-red-line)',   text: 'var(--color-red)',    pulse: false },
+  rejected:         { dot: 'var(--color-red)',    bg: 'var(--color-red-soft)',    border: 'var(--color-red-line)',   text: 'var(--color-red)',    pulse: false },
+  rolled_back:      { dot: 'var(--color-amber)',  bg: 'var(--color-amber-soft)',  border: 'var(--color-amber-line)',  text: 'var(--color-amber)',  pulse: false },
+  queued:           { dot: 'var(--color-faint)',  bg: 'var(--color-card-2)',      border: 'var(--color-border-strong)', text: 'var(--color-dim)', pulse: false },
 }
 </script>
 
@@ -945,18 +938,6 @@ const STATUS_CONFIG: Record<RunStatus, StatusConfig> = {
               class="meta-value"
               :style="{ color: STATUS_CONFIG[project.lastRunStatus].text }"
             >{{ runStatusLabel(project.lastRunStatus) }}</span>
-          </div>
-
-          <!-- Target servers: empty placeholder or list -->
-          <div class="card-meta-row">
-            <span class="meta-label">{{ t('projects.targetServers') }}</span>
-            <span
-              v-if="!project.targetServers || project.targetServers.length === 0"
-              class="meta-empty"
-            >{{ t('projects.notBound') }}</span>
-            <span v-else class="meta-value">
-              {{ project.targetServers.join(', ') }}
-            </span>
           </div>
 
           <!-- Credential reference: display name + masked, never plaintext -->

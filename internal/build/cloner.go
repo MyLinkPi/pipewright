@@ -40,9 +40,11 @@ type Cloner struct {
 // NewCloner 构造生产 Cloner(严格 SSRF 收口)。
 func NewCloner() *Cloner { return &Cloner{} }
 
-// CloneResolved 是克隆结果:实际检出的 commit 短 sha(供产物 tag/引用),空则未解析出。
+// CloneResolved 是克隆结果:实际检出的 commit 短 sha(供产物 tag/引用)与该 commit 的
+// 提交时刻(供 DORA 前置时长;零值 = 未解析出)。
 type CloneResolved struct {
 	CommitShort string
+	CommitTime  time.Time
 }
 
 // Clone 把 repoURL 在 ref(commit sha 优先,否则分支名;皆空则默认分支)上克隆到 destDir。
@@ -94,6 +96,7 @@ func (c *Cloner) Clone(ctx context.Context, repoURL string, cred vault.GitAuth, 
 	}
 
 	resolved := &CloneResolved{}
+	var resolvedHash plumbing.Hash
 	if commit != "" {
 		wt, werr := repo.Worktree()
 		if werr != nil {
@@ -104,8 +107,17 @@ func (c *Cloner) Clone(ctx context.Context, repoURL string, cred vault.GitAuth, 
 			return nil, ErrCloneFailed
 		}
 		resolved.CommitShort = shortSHA(commit)
+		resolvedHash = hash
 	} else if head, herr := repo.Head(); herr == nil {
 		resolved.CommitShort = shortSHA(head.Hash().String())
+		resolvedHash = head.Hash()
+	}
+	// 提交时刻(commit 对象 committer 时间;浅克隆/指定 commit 均持有该对象)供 DORA
+	// 前置时长;解析失败不致命(保持零值,调用方回退入队时刻代理)。
+	if !resolvedHash.IsZero() {
+		if obj, oerr := repo.CommitObject(resolvedHash); oerr == nil {
+			resolved.CommitTime = obj.Committer.When
+		}
 	}
 
 	// 递归拉取子模块(.gitmodules 声明 → pinned gitlink commit;无子模块时秒回)。
