@@ -170,8 +170,8 @@ defineExpose({ getValue, isModified })
   font-family: 'JetBrains Mono', ui-monospace, Menlo, monospace;
   font-size: 13px;
   line-height: 1.55;
-  background: var(--code-bg, #1e1e1e);
-  color: var(--code-fg, #d4d4d4);
+  background: var(--color-code);
+  color: #d4d4d4;
   tab-size: 4;
 }
 .code-editor-empty {

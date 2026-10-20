@@ -634,7 +634,7 @@ function resetDrag(): void {
 .stage-rule-chip svg { flex: none; }
 .stage-rule-chip--when { background: var(--color-primary-soft); color: var(--color-primary); }
 .stage-rule-chip--gate { background: var(--color-amber-soft, rgba(217, 119, 6, 0.14)); color: var(--color-amber, #b45309); }
-.stage-rule-chip--matrix { background: var(--color-violet-soft, rgba(124, 58, 237, 0.13)); color: var(--color-violet, #6d28d9); }
+.stage-rule-chip--matrix { background: var(--color-violet-soft); color: var(--color-violet); }
 .stage-rule-chip--svc { background: var(--color-cyan-soft, rgba(8, 145, 178, 0.13)); color: var(--color-cyan, #0e7490); }
 .stage-rule-chip--post { background: var(--color-amber-soft, rgba(217, 119, 6, 0.14)); color: var(--color-amber, #b45309); }
 

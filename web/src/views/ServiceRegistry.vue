@@ -1208,7 +1208,7 @@ async function saveSvcEdit(s: RegisteredService): Promise<void> {
   border-bottom: none;
 }
 .sreg__svc > .sreg__row {
-  border-bottom: 1px solid var(--border, #ececec);
+  border-bottom: 1px solid var(--color-border);
 }
 .sreg__expander {
   border: none;
@@ -1224,7 +1224,7 @@ async function saveSvcEdit(s: RegisteredService): Promise<void> {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  border-bottom: 1px solid var(--border, #ececec);
+  border-bottom: 1px solid var(--color-border);
 }
 .sreg__inst-list {
   list-style: none;
@@ -1287,7 +1287,7 @@ async function saveSvcEdit(s: RegisteredService): Promise<void> {
   font-size: 13px;
 }
 .sreg__card {
-  border: 1px solid var(--border, #e2e2e2);
+  border: 1px solid var(--color-border);
   border-radius: 10px;
   padding: 16px;
   display: flex;
@@ -1417,10 +1417,10 @@ async function saveSvcEdit(s: RegisteredService): Promise<void> {
 }
 .field__in {
   padding: 7px 10px;
-  border: 1px solid var(--border, #d4d4d4);
+  border: 1px solid var(--color-border);
   border-radius: 7px;
   font-size: 13px;
-  background: var(--bg, inherit);
+  background: inherit;
   color: inherit;
 }
 .sreg__inline-form {
@@ -1435,7 +1435,7 @@ async function saveSvcEdit(s: RegisteredService): Promise<void> {
   font-size: 11px;
   padding: 2px 8px;
   border-radius: 999px;
-  border: 1px solid var(--border, #d4d4d4);
+  border: 1px solid var(--color-border);
 }
 .sreg__pill--ok {
   color: #0a7d32;
@@ -1466,7 +1466,7 @@ async function saveSvcEdit(s: RegisteredService): Promise<void> {
   justify-content: space-between;
   gap: 10px;
   padding: 10px 0;
-  border-bottom: 1px solid var(--border, #ececec);
+  border-bottom: 1px solid var(--color-border);
   flex-wrap: wrap;
 }
 .sreg__row:last-child {
@@ -1494,7 +1494,7 @@ async function saveSvcEdit(s: RegisteredService): Promise<void> {
   font-size: 10px;
   padding: 1px 6px;
   border-radius: 4px;
-  border: 1px solid var(--border, #d4d4d4);
+  border: 1px solid var(--color-border);
   margin-left: 6px;
 }
 .sreg__tag--off {

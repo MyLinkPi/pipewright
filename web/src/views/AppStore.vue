@@ -696,7 +696,7 @@ async function removeCustom(tpl: AppTemplate): Promise<void> {
   margin-top: 10px;
 }
 .apps__card {
-  border: 1px solid var(--border, #e2e2e2);
+  border: 1px solid var(--color-border);
   border-radius: 10px;
   padding: 14px;
   display: flex;
@@ -732,7 +732,7 @@ async function removeCustom(tpl: AppTemplate): Promise<void> {
   display: flex;
   flex-direction: column;
   gap: 10px;
-  border: 1px dashed var(--border, #d4d4d4);
+  border: 1px dashed var(--color-border);
   border-radius: 8px;
   padding: 12px;
   margin-top: 10px;
@@ -753,10 +753,10 @@ async function removeCustom(tpl: AppTemplate): Promise<void> {
 }
 .field__in {
   padding: 7px 10px;
-  border: 1px solid var(--border, #d4d4d4);
+  border: 1px solid var(--color-border);
   border-radius: 7px;
   font-size: 13px;
-  background: var(--bg, inherit);
+  background: inherit;
   color: inherit;
 }
 .apps__ta {
@@ -785,7 +785,7 @@ async function removeCustom(tpl: AppTemplate): Promise<void> {
   z-index: 50;
 }
 .apps__modal-card {
-  background: var(--bg, #fff);
+  background: var(--color-surface);
   border-radius: 12px;
   padding: 18px;
   width: min(760px, 100%);
@@ -859,7 +859,7 @@ async function removeCustom(tpl: AppTemplate): Promise<void> {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  border: 1px solid var(--border, #d4d4d4);
+  border: 1px solid var(--color-border);
   border-radius: 8px;
   padding: 10px 12px;
 }
@@ -903,7 +903,7 @@ async function removeCustom(tpl: AppTemplate): Promise<void> {
 }
 .apps__output {
   font-size: 11px;
-  background: var(--code-bg, #f4f4f4);
+  background: var(--color-inset);
   border-radius: 6px;
   padding: 8px;
   overflow: auto;

@@ -149,7 +149,7 @@ onUnmounted(() => {
 }
 
 .block h2 {
-  font-size: var(--text-title, 16px);
+  font-size: var(--text-title);
   font-weight: 600;
   margin-bottom: 6px;
 }
@@ -200,7 +200,7 @@ onUnmounted(() => {
   font-size: var(--text-label, 13px);
   padding: 2px 8px;
   border-radius: 10px;
-  background: var(--color-hover, rgba(127, 127, 127, 0.12));
+  background: var(--color-hover);
 }
 
 .jobs-table {
@@ -259,7 +259,7 @@ onUnmounted(() => {
 }
 
 .btn-cancel:hover:not(:disabled) {
-  background: var(--color-hover, rgba(127, 127, 127, 0.12));
+  background: var(--color-hover);
 }
 
 .btn-cancel:disabled {
