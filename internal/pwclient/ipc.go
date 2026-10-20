@@ -187,17 +187,18 @@ func (s *ipcServer) handleConfigGet(w http.ResponseWriter, _ *http.Request) {
 
 // ConfigSetRequest 是配置更新请求:全部字段可选,仅提交的字段覆盖;networkSecret 只写不读。
 type ConfigSetRequest struct {
-	Enabled        *bool     `json:"enabled"`
-	NetworkName    *string   `json:"networkName"`
-	NetworkSecret  *string   `json:"networkSecret"`
-	Peers          *[]string `json:"peers"`
-	VirtualIP      *string   `json:"virtualIp"`
-	Hostname       *string   `json:"hostname"`
-	Routes         *[]string `json:"routes"`
-	Socks5Enabled  *bool     `json:"socks5Enabled"`
-	Socks5Port     *int      `json:"socks5Port"`
-	EasyTierBinDir *string   `json:"easytierBinDir"`
-	EasyTierRPC    *string   `json:"easytierRpc"`
+	Enabled         *bool     `json:"enabled"`
+	NetworkName     *string   `json:"networkName"`
+	NetworkSecret   *string   `json:"networkSecret"`
+	Peers           *[]string `json:"peers"`
+	VirtualIP       *string   `json:"virtualIp"`
+	Hostname        *string   `json:"hostname"`
+	Routes          *[]string `json:"routes"`
+	Socks5Enabled   *bool     `json:"socks5Enabled"`
+	Socks5Port      *int      `json:"socks5Port"`
+	Socks5ExitNodes *[]string `json:"socks5ExitNodes"`
+	EasyTierBinDir  *string   `json:"easytierBinDir"`
+	EasyTierRPC     *string   `json:"easytierRpc"`
 }
 
 func (s *ipcServer) handleConfigPut(w http.ResponseWriter, r *http.Request) {
@@ -237,6 +238,9 @@ func (s *ipcServer) handleConfigPut(w http.ResponseWriter, r *http.Request) {
 	}
 	if body.Socks5Port != nil {
 		cfg.Socks5.Port = *body.Socks5Port
+	}
+	if body.Socks5ExitNodes != nil {
+		cfg.Socks5.ExitNodes = *body.Socks5ExitNodes
 	}
 	if body.EasyTierBinDir != nil {
 		cfg.EasyTier.BinDir = *body.EasyTierBinDir

@@ -101,6 +101,7 @@ export default {
     viewCluster: 'Open cluster page',
     proxyNetworks: 'Subnet proxy CIDRs (one per line, /32 not allowed; remote subnets this node can reach, used by clients and peers that explicitly accept them; built-in NAT handles return traffic. Advertising never auto-routes into other environments)',
     acceptNetworks: 'Accepted cross-env CIDRs (manual confirm; empty = only auto-routing gateway /32s; one CIDR per line):',
+    enableExitNode: 'Allow acting as an exit node (client local-proxy traffic to non-virtual destinations NATs out via this node; off by default)',
     clientTitle: 'Cluster client (Windows 11)',
     clientHint: 'Run the pwclient client on a Win11 machine, click Export client config and paste it into the client (a file download also works) to join the cluster network; the client freely picks which subnets it routes. The export contains the plaintext network secret - handle with care.',
     exportClientConfig: 'Export client config',

@@ -30,6 +30,8 @@ export interface MeshSettings {
   /** Explicitly accepted cross-env advertised CIDRs (route whitelist manual items; only
    *  gateway /32s are accepted automatically - see cluster route isolation). */
   acceptNetworksCustom: string[]
+  /** Allow this node to act as an exit node for client local proxies (foreign-network NAT, off by default). */
+  enableExitNode: boolean
   hasSecret: boolean
 }
 

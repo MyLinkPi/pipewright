@@ -101,6 +101,7 @@ export default {
     viewCluster: 'Ouvrir la page cluster',
     proxyNetworks: 'CIDR de proxy de sous-reseau (un par ligne ; sous-reseaux distants joignables depuis ce noeud. Annonces a tout le cluster ; le NAT integre fait fonctionner le trafic de retour)',
     acceptNetworks: 'CIDRs inter-environnements acceptés (confirmation manuelle; vide = uniquement les /32 de passerelles; un par ligne):',
+    enableExitNode: 'Servir de nœud de sortie (NAT sortant pour le trafic proxy client vers destinations non virtuelles ; désactivé par défaut)',
     clientTitle: 'Client de cluster (Windows 11)',
     clientHint: 'Exécutez le client pwclient sur une machine Win11 et importez le fichier exporte ci-dessous pour rejoindre le reseau du cluster ; le client choisit librement les sous-reseaux qu il route. Le fichier exporte contient le secret reseau en clair - a manipuler avec precaution.',
     exportClientConfig: 'Exporter la config. client',

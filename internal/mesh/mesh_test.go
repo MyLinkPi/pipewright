@@ -196,3 +196,32 @@ func TestSaveSettingsRejectsHostRouteAdvertise(t *testing.T) {
 		t.Fatalf("接受列表回显 = %v", st.AcceptNetworksCustom)
 	}
 }
+
+// TestSaveSettingsEnableExitNode 验证出口节点开关存取回路(默认关)。
+func TestSaveSettingsEnableExitNode(t *testing.T) {
+	svc := newTestService(t)
+	ctx := context.Background()
+	st, err := svc.Settings(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.EnableExitNode {
+		t.Fatal("默认应关闭")
+	}
+	on := true
+	st, err = svc.SaveSettings(ctx, SaveSettingsInput{EnableExitNode: &on})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !st.EnableExitNode {
+		t.Fatal("保存后应开启")
+	}
+	off := false
+	st, err = svc.SaveSettings(ctx, SaveSettingsInput{EnableExitNode: &off})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.EnableExitNode {
+		t.Fatal("应能关闭")
+	}
+}

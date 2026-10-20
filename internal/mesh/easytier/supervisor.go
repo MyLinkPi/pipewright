@@ -90,9 +90,16 @@ type Config struct {
 	// NAT 的远端网段;不动系统路由,与其他流量互不影响。注意 EasyTier 侧无认证,仅本机
 	// 使用(客户端侧需防火墙阻断非本机访问)。
 	Socks5Port int
-	DataDir    string // 二进制定位目录(<data>/bin)
-	CorePath   string // 已定位的 easytier-core(托管模式必填)
-	CliPath    string // 已定位的 easytier-cli
+	// ExitNodes 是出口节点虚拟 IP 列表(序即优先级;空 = 不设)。设置后本机经虚拟网
+	// 转发的外来流量(典型:本地 SOCKS5 拨号到非虚拟网目标)经所选节点 NAT 出网;
+	// 目标节点需以 EnableExitNode 允许充当出口(EasyTier 以 network secret 校验接入)。
+	ExitNodes []string
+	// EnableExitNode 允许本节点充当其他节点的出口(foreign network NAT;默认关,
+	// 平台节点显式开启)。
+	EnableExitNode bool
+	DataDir        string // 二进制定位目录(<data>/bin)
+	CorePath       string // 已定位的 easytier-core(托管模式必填)
+	CliPath        string // 已定位的 easytier-cli
 }
 
 // Supervisor 是托管模式子进程监督器。零值不可用,经 New 构造;线程安全。
@@ -167,6 +174,17 @@ func buildArgs(c Config, flags helpFlags) []string {
 	if c.Socks5Port > 0 && flags.socks5 {
 		args = append(args, "--socks5", strconv.Itoa(c.Socks5Port))
 	}
+	// 出口节点:逐值重复传(序即优先级);目标节点需 --enable-exit-node 才会承接。
+	if len(c.ExitNodes) > 0 && flags.exitNodes {
+		for _, ip := range c.ExitNodes {
+			if ip != "" {
+				args = append(args, "--exit-nodes", ip)
+			}
+		}
+	}
+	if c.EnableExitNode && flags.enableExitNode {
+		args = append(args, "--enable-exit-node", "true")
+	}
 	return args
 }
 
@@ -175,9 +193,11 @@ var probeCache sync.Map // corePath → helpFlags
 
 // helpFlags 是一次 --help 探测解析出的旗子集合(探测失败为空集,按不支持,保守)。
 type helpFlags struct {
-	proxyNetwork string // "--proxy-networks" | "--proxy-network" | ""
-	manualRoutes bool
-	socks5       bool
+	proxyNetwork   string // "--proxy-networks" | "--proxy-network" | ""
+	manualRoutes   bool
+	exitNodes      bool
+	enableExitNode bool
+	socks5         bool
 }
 
 // probeHelp 以 5s 超时跑一次 --help 并解析旗子(结果经 probeCache 缓存,每路径只跑一次)。
@@ -211,6 +231,8 @@ func parseHelpFlags(out string, ok bool) helpFlags {
 	}
 	flags.manualRoutes = strings.Contains(out, "--manual-routes")
 	flags.socks5 = strings.Contains(out, "--socks5")
+	flags.exitNodes = strings.Contains(out, "--exit-nodes")
+	flags.enableExitNode = strings.Contains(out, "--enable-exit-node")
 	return flags
 }
 
@@ -225,6 +247,12 @@ func SupportsManualRoutes(corePath string) bool { return probeHelp(corePath).man
 
 // SupportsSocks5 探测 easytier-core 是否提供 --socks5 参数。
 func SupportsSocks5(corePath string) bool { return probeHelp(corePath).socks5 }
+
+// SupportsExitNodes 探测是否提供 --exit-nodes(出口节点;虚拟 IP 列表,序即优先级)。
+func SupportsExitNodes(corePath string) bool { return probeHelp(corePath).exitNodes }
+
+// SupportsEnableExitNode 探测是否提供 --enable-exit-node(允许本节点充当出口)。
+func SupportsEnableExitNode(corePath string) bool { return probeHelp(corePath).enableExitNode }
 
 // Start 拉起子进程并进入监督循环(退出按退避重启;ctx 取消或 Stop 后退出循环)。
 // 运行在独立 goroutine;Start 本身只在参数明显非法时同步报错。
@@ -243,6 +271,12 @@ func (s *Supervisor) Start(ctx context.Context) error {
 	}
 	if (len(s.cfg.ManualRoutes) > 0 || s.cfg.StrictManualRoutes) && !SupportsManualRoutes(s.cfg.CorePath) {
 		return fmt.Errorf("easytier: %s 不支持 --manual-routes,无法限定路由网段(留空=不路由亦需该参数;请升级二进制)", CoreBinary())
+	}
+	if len(s.cfg.ExitNodes) > 0 && !SupportsExitNodes(s.cfg.CorePath) {
+		return fmt.Errorf("easytier: %s 不支持 --exit-nodes,无法配置出口节点(请升级二进制)", CoreBinary())
+	}
+	if s.cfg.EnableExitNode && !SupportsEnableExitNode(s.cfg.CorePath) {
+		return fmt.Errorf("easytier: %s 不支持 --enable-exit-node,无法充当出口节点(请升级二进制)", CoreBinary())
 	}
 	if s.cfg.Socks5Port > 0 && !SupportsSocks5(s.cfg.CorePath) {
 		return fmt.Errorf("easytier: %s 不支持 --socks5,无法开启本地 SOCKS5 服务(请升级二进制)", CoreBinary())

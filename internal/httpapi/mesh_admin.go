@@ -287,7 +287,9 @@ type meshSettingsDTO struct {
 	// AcceptNetworksCustom 是本节点显式接受的跨环境通告网段(路由白名单手动项;
 	// 自动项仅各环境网关 /32,其他环境的自定义网段须在此逐项确认后才路由)。
 	AcceptNetworksCustom []string `json:"acceptNetworksCustom"`
-	HasSecret            bool     `json:"hasSecret"`
+	// EnableExitNode 允许本节点充当客户端本地代理的出口节点(默认关)。
+	EnableExitNode bool `json:"enableExitNode"`
+	HasSecret      bool `json:"hasSecret"`
 }
 
 func toMeshSettingsDTO(st *mesh.Settings) meshSettingsDTO {
@@ -297,6 +299,7 @@ func toMeshSettingsDTO(st *mesh.Settings) meshSettingsDTO {
 		NetworkName: st.NetworkName, VirtualIP: st.VirtualIP, Peers: st.Peers,
 		ProxyNetworksCustom:  st.ProxyNetworksCustom,
 		AcceptNetworksCustom: st.AcceptNetworksCustom,
+		EnableExitNode:       st.EnableExitNode,
 		HasSecret:            st.HasSecret,
 	}
 }
@@ -334,6 +337,7 @@ func makeMeshSettingsPutHandler(svc mesh.Service, aud audit.Recorder) http.Handl
 			Peers                *[]string `json:"peers"`
 			ProxyNetworksCustom  *[]string `json:"proxyNetworksCustom"`
 			AcceptNetworksCustom *[]string `json:"acceptNetworksCustom"`
+			EnableExitNode       *bool     `json:"enableExitNode"`
 		}
 		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&body); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid_body", "请求体不是合法 JSON")
@@ -346,6 +350,7 @@ func makeMeshSettingsPutHandler(svc mesh.Service, aud audit.Recorder) http.Handl
 			VirtualIP: body.VirtualIP, Peers: body.Peers,
 			ProxyNetworksCustom:  body.ProxyNetworksCustom,
 			AcceptNetworksCustom: body.AcceptNetworksCustom,
+			EnableExitNode:       body.EnableExitNode,
 		})
 		if err != nil {
 			writeMeshError(w, err)

@@ -87,6 +87,9 @@ type Settings struct {
 	// AcceptNetworksCustom 是本节点显式接受的跨环境通告网段(路由白名单的手动项;
 	// 自动项仅各环境网关 /32)。访问其他环境的自定义网段必须在此逐项确认。
 	AcceptNetworksCustom []string
+	// EnableExitNode 允许本节点充当客户端本地代理的出口节点(foreign network NAT;
+	// EasyTier 以 network secret 校验接入,默认关闭 —— 管理员显式开启)。
+	EnableExitNode bool
 	// HasSecret / HasKey 报告密钥是否已配置(绝不回显内容)。
 	HasSecret bool
 	HasKey    bool
@@ -108,6 +111,8 @@ type SaveSettingsInput struct {
 	ProxyNetworksCustom *[]string
 	// AcceptNetworksCustom 逐项须为合法 cidr;nil = 不改。
 	AcceptNetworksCustom *[]string
+	// EnableExitNode nil = 不改。
+	EnableExitNode *bool
 }
 
 // Peer 是已知对等节点。
@@ -203,7 +208,7 @@ func New(db *sql.DB, v vault.Vault) Service {
 func (s *service) Settings(ctx context.Context) (*Settings, error) {
 	row := s.db.QueryRowContext(ctx, `SELECT node_id, name, public_key, private_key,
 		enabled, api_port, easytier_mode, easytier_rpc, network_name, network_secret, virtual_ip, peers,
-		proxy_networks_custom, accept_networks_custom
+		proxy_networks_custom, accept_networks_custom, enable_exit_node
 		FROM mesh_settings WHERE id = 1`)
 	st, err := scanSettings(row.Scan)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -259,6 +264,7 @@ func (s *service) SaveSettings(ctx context.Context, in SaveSettingsInput) (*Sett
 	mode, rpc, netName, vip, peers := cur.EasyTierMode, cur.EasyTierRPC, cur.NetworkName, cur.VirtualIP, cur.Peers
 	proxies := cur.ProxyNetworksCustom
 	accepts := cur.AcceptNetworksCustom
+	exitNode := cur.EnableExitNode
 	if in.Name != nil {
 		name = strings.TrimSpace(*in.Name)
 	}
@@ -295,6 +301,9 @@ func (s *service) SaveSettings(ctx context.Context, in SaveSettingsInput) (*Sett
 			return nil, fmt.Errorf("%w: 通告网段 %s 为 /32 —— 该粒度保留给跨环境网关自动通告(路由隔离约定,见 routes.go),请使用更宽网段", ErrInvalidInput, bad)
 		}
 	}
+	if in.EnableExitNode != nil {
+		exitNode = *in.EnableExitNode
+	}
 	if in.AcceptNetworksCustom != nil {
 		var err error
 		if accepts, err = normalizeCIDRs(*in.AcceptNetworksCustom); err != nil {
@@ -323,10 +332,10 @@ func (s *service) SaveSettings(ctx context.Context, in SaveSettingsInput) (*Sett
 		args = append(args, secretArg)
 	}
 	args = append(args, vip, strings.Join(peers, "\n"), strings.Join(proxies, "\n"),
-		strings.Join(accepts, "\n"), nowStr)
+		strings.Join(accepts, "\n"), exitNode, nowStr)
 	_, err = s.db.ExecContext(ctx,
 		`UPDATE mesh_settings SET name = ?, enabled = ?, api_port = ?, easytier_mode = ?, easytier_rpc = ?,
-		 network_name = ?`+setSecret+`, virtual_ip = ?, peers = ?, proxy_networks_custom = ?, accept_networks_custom = ?, updated_at = ? WHERE id = 1`,
+		 network_name = ?`+setSecret+`, virtual_ip = ?, peers = ?, proxy_networks_custom = ?, accept_networks_custom = ?, enable_exit_node = ?, updated_at = ? WHERE id = 1`,
 		args...,
 	)
 	if err != nil {
@@ -407,9 +416,10 @@ func scanSettings(scan func(dest ...any) error) (*Settings, error) {
 	var priv, secret []byte
 	var enabled int
 	var peersRaw, proxiesRaw, acceptsRaw string
+	var exitNode int
 	if err := scan(&st.NodeID, &st.Name, &st.PublicKey, &priv,
 		&enabled, &st.APIPort, &st.EasyTierMode, &st.EasyTierRPC,
-		&st.NetworkName, &secret, &st.VirtualIP, &peersRaw, &proxiesRaw, &acceptsRaw); err != nil {
+		&st.NetworkName, &secret, &st.VirtualIP, &peersRaw, &proxiesRaw, &acceptsRaw, &exitNode); err != nil {
 		return nil, err
 	}
 	st.Enabled = enabled != 0
@@ -419,6 +429,7 @@ func scanSettings(scan func(dest ...any) error) (*Settings, error) {
 	// 存储值来自归一化后的写入,理论恒合法;解析兜底为静默丢弃(防御旧数据/手工改库)。
 	st.ProxyNetworksCustom = keepValidCIDRs(strings.Split(proxiesRaw, "\n"))
 	st.AcceptNetworksCustom = keepValidCIDRs(strings.Split(acceptsRaw, "\n"))
+	st.EnableExitNode = exitNode != 0
 	return &st, nil
 }
 

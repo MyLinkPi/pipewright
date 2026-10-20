@@ -156,3 +156,24 @@ func TestRuntimeImportJoin(t *testing.T) {
 		t.Fatalf("view should report hasSecret")
 	}
 }
+
+// TestNormalizeSocks5ExitNodes 验证出口节点归一化:非法 IP 报错、去重保序、空白剔除。
+func TestNormalizeSocks5ExitNodes(t *testing.T) {
+	cfg, err := Normalize(Config{Socks5: Socks5Config{Enabled: true,
+		ExitNodes: []string{" 10.126.126.2 ", "", "10.126.126.2", "10.126.126.3"}}})
+	if err != nil {
+		t.Fatalf("归一化失败:%v", err)
+	}
+	want := []string{"10.126.126.2", "10.126.126.3"}
+	if len(cfg.Socks5.ExitNodes) != len(want) {
+		t.Fatalf("exitNodes = %v, want %v", cfg.Socks5.ExitNodes, want)
+	}
+	for i := range want {
+		if cfg.Socks5.ExitNodes[i] != want[i] {
+			t.Fatalf("exitNodes[%d] = %q, want %q", i, cfg.Socks5.ExitNodes[i], want[i])
+		}
+	}
+	if _, err := Normalize(Config{Socks5: Socks5Config{Enabled: true, ExitNodes: []string{"10.0.0.0/8"}}}); err == nil {
+		t.Fatal("CIDR 形式的出口节点应报错(须为虚拟 IP)")
+	}
+}
