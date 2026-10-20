@@ -34,6 +34,7 @@ import (
 	"github.com/huangchengsir/pipewright/internal/diskadmin"
 	"github.com/huangchengsir/pipewright/internal/dnsprovider"
 	"github.com/huangchengsir/pipewright/internal/fileadmin"
+	"github.com/huangchengsir/pipewright/internal/firewall"
 	"github.com/huangchengsir/pipewright/internal/i18n"
 	"github.com/huangchengsir/pipewright/internal/identity"
 	"github.com/huangchengsir/pipewright/internal/labels"
@@ -133,6 +134,7 @@ type options struct {
 	objectStores      objectstore.Service
 	serviceReg        servicereg.Service
 	platformHTTPS     platformhttps.Service
+	firewallSvc       firewall.Service
 	systemConfig      systemcfg.Service
 	appStore          appstore.Service
 	dbAdmin           dbadmin.Service
@@ -509,6 +511,14 @@ func WithServiceReg(s servicereg.Service) Option {
 // 80→443 跳转)+ nginx -t + reload;证书复用证书管理模块。不传则相关端点返回 503。
 func WithPlatformHTTPS(s platformhttps.Service) Option {
 	return func(o *options) { o.platformHTTPS = s }
+}
+
+// WithFirewall 注入「集群防火墙访问限制」服务,挂载 /api/firewall/* 路由
+// (GET auth;写方法 auth + CSRF + 审计)。两步生效:apply 临时写运行时 iptables,
+// confirm 经真实来源门(clientIP 信任模型,防经 nginx 伪装本机)固化,rollback/disable
+// 为逃生通道。不传则相关端点返回 503。
+func WithFirewall(s firewall.Service) Option {
+	return func(o *options) { o.firewallSvc = s }
 }
 
 // WithSystemConfig 注入「系统级运行时配置」服务,挂载 /api/system/config 路由
@@ -1214,6 +1224,17 @@ func New(webFS fs.FS, authn auth.Authenticator, opts ...Option) http.Handler {
 		ar.Get("/platform-https/detect", makeDetectPlatformHTTPSHandler(ph))
 		ar.Post("/platform-https/apply", makeApplyPlatformHTTPSHandler(ph, aud))
 		ar.Post("/platform-https/disable", makeDisablePlatformHTTPSHandler(ph, aud))
+
+		// 集群防火墙访问限制(两步生效):apply 临时写运行时 iptables → 从本机/mesh
+		// 网络访问后 confirm 固化;rollback/disable 逃生通道。fw 为 nil → 503。
+		// GET 过 auth;写方法过 auth + CSRF + 审计。
+		fw := o.firewallSvc
+		ar.Get("/firewall/status", makeGetFirewallStatusHandler(fw))
+		ar.Put("/firewall/settings", makeUpdateFirewallSettingsHandler(fw, aud))
+		ar.Post("/firewall/apply", makeApplyFirewallHandler(fw, aud))
+		ar.Post("/firewall/confirm", makeConfirmFirewallHandler(fw, aud))
+		ar.Post("/firewall/rollback", makeRollbackFirewallHandler(fw, aud))
+		ar.Post("/firewall/disable", makeDisableFirewallHandler(fw, aud))
 
 		// 系统级运行时配置(public_url = 平台对外访问地址;通知审批链接 / PR 回写用)。
 		sc := o.systemConfig

@@ -29,8 +29,19 @@ import {
   type MeshPeer,
 } from '../../api/mesh'
 import AppButton from '../../components/ui/AppButton.vue'
+import { useConfirm } from '../../composables/useConfirm'
+import {
+  getFirewallStatus,
+  saveFirewallDraft,
+  applyFirewall as applyFirewallReq,
+  confirmFirewall as confirmFirewallReq,
+  rollbackFirewall as rollbackFirewallReq,
+  disableFirewall as disableFirewallReq,
+  type FirewallStatus,
+} from '../../api/firewall'
 
 const { t } = useI18n()
+const confirm = useConfirm()
 
 type LoadState = 'loading' | 'ready' | 'error'
 const state = ref<LoadState>('loading')
@@ -378,10 +389,134 @@ function toggleACL(list: 'visibleTo' | 'pushAllowed' | 'triggerAllowed' | 'forwa
 
 const knownPeers = computed(() => peers.value)
 
+// ── 防火墙访问限制(两步生效):apply 临时生效 → 从本机/mesh 访问后 confirm 固化 ──
+const fw = ref<FirewallStatus | null>(null)
+const fwPortsText = ref('')
+const fwExtraText = ref('')
+const fwBusy = ref(false)
+const fwDraftTouched = ref(false) // 编辑中不回填草稿输入(避免轮询打断输入)
+
+async function loadFirewall(): Promise<void> {
+  try {
+    fw.value = await getFirewallStatus()
+    if (!fwDraftTouched.value) {
+      fwPortsText.value = (fw.value.ports ?? []).join(',')
+      fwExtraText.value = (fw.value.extraCidrs ?? []).join('\n')
+    }
+  } catch {
+    // 状态拉取失败不弹横幅(轮询噪音):保留上一次快照。
+  }
+}
+
+function parsePortsText(): number[] {
+  return fwPortsText.value
+    .split(/[,，\s]+/).map((s) => s.trim()).filter(Boolean)
+    .map(Number)
+    .filter((n) => Number.isInteger(n) && n >= 1 && n <= 65535)
+}
+
+function parseCidrsText(): string[] {
+  return fwExtraText.value.split('\n').map((s) => s.trim()).filter(Boolean)
+}
+
+function fwRefresh(st: FirewallStatus): void {
+  fw.value = st
+  fwPortsText.value = (st.ports ?? []).join(',')
+  fwExtraText.value = (st.extraCidrs ?? []).join('\n')
+  fwDraftTouched.value = false
+}
+
+async function persistFirewallDraft(): Promise<void> {
+  fwBusy.value = true
+  saved.value = false
+  try {
+    const res = await saveFirewallDraft({ ports: parsePortsText(), extraCidrs: parseCidrsText() })
+    fwPortsText.value = (res.ports ?? []).join(',')
+    fwExtraText.value = (res.extraCidrs ?? []).join('\n')
+    fwDraftTouched.value = false
+    markSaved()
+  } catch (err) {
+    actionError.value = err instanceof Error ? err.message : String(err)
+  } finally {
+    fwBusy.value = false
+  }
+}
+
+/** 应用 = 先保存草稿再临时写入内核规则(所见即所应用;重启/超时未确认自动回退)。 */
+async function doApplyFirewall(): Promise<void> {
+  const ok = await confirm.open({
+    title: t('cluster.settings.fwApplyConfirmTitle'),
+    body: t('cluster.settings.fwApplyConfirmBody'),
+    confirmLabel: t('cluster.settings.fwApplyConfirmLabel'),
+    variant: 'primary',
+  })
+  if (!ok) return
+  fwBusy.value = true
+  saved.value = false
+  try {
+    await saveFirewallDraft({ ports: parsePortsText(), extraCidrs: parseCidrsText() })
+    fwRefresh(await applyFirewallReq())
+    markSaved()
+  } catch (err) {
+    actionError.value = err instanceof Error ? err.message : String(err)
+    void loadFirewall()
+  } finally {
+    fwBusy.value = false
+  }
+}
+
+async function doConfirmFirewall(): Promise<void> {
+  fwBusy.value = true
+  saved.value = false
+  try {
+    fwRefresh(await confirmFirewallReq())
+    markSaved()
+  } catch (err) {
+    actionError.value = err instanceof Error ? err.message : String(err)
+    void loadFirewall()
+  } finally {
+    fwBusy.value = false
+  }
+}
+
+async function doRollbackFirewall(): Promise<void> {
+  fwBusy.value = true
+  try {
+    fwRefresh(await rollbackFirewallReq())
+  } catch (err) {
+    actionError.value = err instanceof Error ? err.message : String(err)
+    void loadFirewall()
+  } finally {
+    fwBusy.value = false
+  }
+}
+
+async function doDisableFirewall(): Promise<void> {
+  const ok = await confirm.open({
+    title: t('cluster.settings.fwDisableConfirmTitle'),
+    body: t('cluster.settings.fwDisableConfirmBody'),
+    confirmLabel: t('cluster.settings.fwDisableConfirmLabel'),
+    variant: 'danger',
+  })
+  if (!ok) return
+  fwBusy.value = true
+  try {
+    fwRefresh(await disableFirewallReq())
+  } catch (err) {
+    actionError.value = err instanceof Error ? err.message : String(err)
+    void loadFirewall()
+  } finally {
+    fwBusy.value = false
+  }
+}
+
+const fwRemainMin = computed(() => Math.max(1, Math.ceil((fw.value?.pendingExpiresInSec ?? 0) / 60)))
+
 onMounted(() => {
   void load()
   void loadStatus()
-  statusTimer = window.setInterval(() => void loadStatus(), 10_000)
+  void loadFirewall()
+  statusTimer = window.setInterval(() => { void loadStatus(); void loadFirewall() }, 10_000)
 })
 
 onUnmounted(() => {
@@ -504,6 +639,55 @@ onUnmounted(() => {
           <span v-if="saved" class="ok-text">{{ t('cluster.settings.saved') }}</span>
           <AppButton :loading="saving" @click="persistSettings">{{ t('cluster.settings.save') }}</AppButton>
         </div>
+      </section>
+
+      <!-- 防火墙访问限制(两步生效):apply 临时生效 → 从本机/mesh 访问后 confirm 固化;
+           rollback/disable 是逃生通道,任何时候可用。 -->
+      <section class="block">
+        <h2>{{ t('cluster.settings.fwTitle') }}</h2>
+        <p class="hint">{{ t('cluster.settings.fwHint') }}</p>
+        <p v-if="fw && !fw.detect.supported" class="et-hint warn-text">{{ fw.detect.reason }}</p>
+
+        <div v-if="fw" class="fw-banner" :class="`fw-${fw.phase}`">
+          <template v-if="fw.phase === 'off'">
+            <span>{{ t('cluster.settings.fwStatusOff') }}</span>
+          </template>
+          <template v-else-if="fw.phase === 'pending'">
+            <span class="fw-phase-text">{{ t('cluster.settings.fwStatusPending') }}</span>
+            <span class="mono">{{ t('cluster.settings.fwLblPorts') }} {{ fw.pending.ports.join(', ') }} · {{ t('cluster.settings.fwLblCidrs') }} {{ fw.pending.cidrs.join(', ') || '—' }}</span>
+            <span>{{ t('cluster.settings.fwRemainHint', { min: fwRemainMin }) }}</span>
+          </template>
+          <template v-else>
+            <span class="fw-phase-text ok-text">{{ t('cluster.settings.fwStatusActive') }}</span>
+            <span class="mono">{{ t('cluster.settings.fwLblPorts') }} {{ fw.confirmed.ports.join(', ') }} · {{ t('cluster.settings.fwLblCidrs') }} {{ fw.confirmed.cidrs.join(', ') || '—' }}</span>
+          </template>
+          <span v-if="fw.statusDetail" class="muted">{{ fw.statusDetail }}</span>
+        </div>
+
+        <div class="grid2">
+          <label class="fld">
+            <span>{{ t('cluster.settings.fwPorts') }}</span>
+            <input v-model="fwPortsText" class="inp mono" type="text" @input="fwDraftTouched = true" />
+          </label>
+          <label class="fld">
+            <span>{{ t('cluster.settings.fwExtraCidrs') }}</span>
+            <textarea v-model="fwExtraText" class="inp mono" rows="2" :placeholder="t('cluster.settings.fwExtraPlaceholder')" @input="fwDraftTouched = true"></textarea>
+          </label>
+        </div>
+        <p class="hint">{{ t('cluster.settings.fwCidrsHint') }}</p>
+
+        <div class="row-end fw-actions">
+          <span v-if="saved" class="ok-text">{{ t('cluster.settings.saved') }}</span>
+          <AppButton variant="default" :loading="fwBusy" @click="persistFirewallDraft">{{ t('cluster.settings.fwSaveDraft') }}</AppButton>
+          <AppButton variant="primary" :disabled="!fw?.detect.supported" :loading="fwBusy" @click="doApplyFirewall">{{ t('cluster.settings.fwApply') }}</AppButton>
+          <AppButton v-if="fw?.phase === 'pending'" variant="primary" :disabled="!fw.confirmAllowed || fwBusy" @click="doConfirmFirewall">{{ t('cluster.settings.fwConfirm') }}</AppButton>
+          <AppButton v-if="fw?.phase === 'pending'" variant="default" :disabled="fwBusy" @click="doRollbackFirewall">{{ t('cluster.settings.fwRollback') }}</AppButton>
+          <AppButton v-if="fw?.phase !== 'off'" variant="danger" :disabled="fwBusy" @click="doDisableFirewall">{{ t('cluster.settings.fwDisable') }}</AppButton>
+        </div>
+        <p v-if="fw?.phase === 'pending'" class="hint">
+          <template v-if="fw.confirmAllowed">{{ t('cluster.settings.fwConfirmAllowedHint', { ip: fw.sourceIp }) }}</template>
+          <template v-else>{{ t('cluster.settings.fwConfirmBlockedHint', { ip: fw.sourceIp }) }}</template>
+        </p>
       </section>
 
       <!-- 集群客户端(Win11 pwclient):导出加入配置 —— 首选复制文本(pwclient 粘贴即用)。 -->
@@ -638,6 +822,14 @@ onUnmounted(() => {
 .ok-text { color: var(--color-green); font-size: 13px; }
 .err { color: var(--color-amber); }
 .muted { color: var(--color-text-muted); font-size: 12px; }
+
+/* ─── 防火墙限制(两步生效) ─────────── */
+.fw-banner { border: 1px solid var(--color-border); border-radius: 8px; padding: 10px 12px; font-size: 13px; display: flex; flex-direction: column; gap: 4px; }
+.fw-banner.fw-pending { border-color: var(--color-amber); }
+.fw-banner.fw-active { border-color: var(--color-green); }
+.fw-phase-text { font-weight: 600; }
+.fw-banner.fw-pending .fw-phase-text { color: var(--color-amber); }
+.fw-actions { flex-wrap: wrap; }
 
 /* ─── 导出配置弹窗(复制文本为主路径) ─────────── */
 .yaml-scrim { position: fixed; inset: 0; background: oklch(0% 0 0 / 0.62); display: grid; place-items: center; z-index: 100; padding: 24px; }
