@@ -138,6 +138,7 @@ type configView struct {
 	Join     joinView       `json:"join"`
 	Routes   []string       `json:"routes"`
 	Socks5   Socks5Config   `json:"socks5"`
+	Proxies  []ProxyConfig  `json:"proxies"`
 	EasyTier EasyTierConfig `json:"easytier"`
 }
 
@@ -150,6 +151,15 @@ type joinView struct {
 }
 
 func toConfigView(cfg Config) configView {
+	proxies := cfg.Proxies
+	if proxies == nil {
+		proxies = []ProxyConfig{}
+	}
+	for i := range proxies {
+		if proxies[i].ExitNodes == nil {
+			proxies[i].ExitNodes = []string{}
+		}
+	}
 	return configView{
 		Enabled: cfg.Enabled,
 		Join: joinView{
@@ -161,6 +171,7 @@ func toConfigView(cfg Config) configView {
 		},
 		Routes:   nonNil(cfg.Routes),
 		Socks5:   cfg.Socks5,
+		Proxies:  proxies,
 		EasyTier: cfg.EasyTier,
 	}
 }
@@ -187,18 +198,19 @@ func (s *ipcServer) handleConfigGet(w http.ResponseWriter, _ *http.Request) {
 
 // ConfigSetRequest 是配置更新请求:全部字段可选,仅提交的字段覆盖;networkSecret 只写不读。
 type ConfigSetRequest struct {
-	Enabled         *bool     `json:"enabled"`
-	NetworkName     *string   `json:"networkName"`
-	NetworkSecret   *string   `json:"networkSecret"`
-	Peers           *[]string `json:"peers"`
-	VirtualIP       *string   `json:"virtualIp"`
-	Hostname        *string   `json:"hostname"`
-	Routes          *[]string `json:"routes"`
-	Socks5Enabled   *bool     `json:"socks5Enabled"`
-	Socks5Port      *int      `json:"socks5Port"`
-	Socks5ExitNodes *[]string `json:"socks5ExitNodes"`
-	EasyTierBinDir  *string   `json:"easytierBinDir"`
-	EasyTierRPC     *string   `json:"easytierRpc"`
+	Enabled         *bool          `json:"enabled"`
+	NetworkName     *string        `json:"networkName"`
+	NetworkSecret   *string        `json:"networkSecret"`
+	Peers           *[]string      `json:"peers"`
+	VirtualIP       *string        `json:"virtualIp"`
+	Hostname        *string        `json:"hostname"`
+	Routes          *[]string      `json:"routes"`
+	Socks5Enabled   *bool          `json:"socks5Enabled"`
+	Socks5Port      *int           `json:"socks5Port"`
+	Socks5ExitNodes *[]string      `json:"socks5ExitNodes"`
+	Socks5Proxies   *[]ProxyConfig `json:"socks5Proxies"`
+	EasyTierBinDir  *string        `json:"easytierBinDir"`
+	EasyTierRPC     *string        `json:"easytierRpc"`
 }
 
 func (s *ipcServer) handleConfigPut(w http.ResponseWriter, r *http.Request) {
@@ -241,6 +253,9 @@ func (s *ipcServer) handleConfigPut(w http.ResponseWriter, r *http.Request) {
 	}
 	if body.Socks5ExitNodes != nil {
 		cfg.Socks5.ExitNodes = *body.Socks5ExitNodes
+	}
+	if body.Socks5Proxies != nil {
+		cfg.Proxies = *body.Socks5Proxies
 	}
 	if body.EasyTierBinDir != nil {
 		cfg.EasyTier.BinDir = *body.EasyTierBinDir

@@ -219,6 +219,22 @@ func printSnapshot(snap *pwclient.StatusSnapshot) {
 	}
 	if snap.Socks5.Enabled {
 		fmt.Println("本地代理:   socks5://127.0.0.1:" + strconv.Itoa(snap.Socks5.Port) + "(应用代理指向此地址即经集群访问)")
+		if len(snap.Socks5.ExitNodes) > 0 {
+			fmt.Println("代理出口:   " + strings.Join(snap.Socks5.ExitNodes, ", ") + "(序即优先级)")
+		}
+	}
+	for _, p := range snap.Proxies {
+		exit := "无出口(仅虚拟网)"
+		if len(p.ExitNodes) > 0 {
+			exit = "出口 " + strings.Join(p.ExitNodes, "/")
+		}
+		state := "启动中"
+		if p.LastErr != "" {
+			state = "错误:" + firstLine(p.LastErr)
+		} else if p.Running {
+			state = "运行中"
+		}
+		fmt.Printf("多出口代理: 127.0.0.1:%d(%s,%s)\n", p.Port, exit, state)
 	}
 	fmt.Println("EasyTier:  ", binState(snap))
 }
@@ -359,6 +375,20 @@ func runDoctor() {
 				}
 				check("SOCKS5 监听", listening, addr,
 					"组网未就绪或二进制不支持 --socks5(pwclient doctor 的运行状态项会给出原因)")
+			}
+			for _, p := range snap.Proxies {
+				addr := fmt.Sprintf("127.0.0.1:%d", p.Port)
+				conn, derr := net.DialTimeout("tcp", addr, 2*time.Second)
+				listening := derr == nil
+				if listening {
+					_ = conn.Close()
+				}
+				detail := addr
+				if len(p.ExitNodes) > 0 {
+					detail += " → " + strings.Join(p.ExitNodes, "/")
+				}
+				check("多出口代理 "+strconv.Itoa(p.Port), listening, detail,
+					"组网未就绪;持续失败看托盘日志(二进制需支持 --exit-nodes)")
 			}
 		}
 	}

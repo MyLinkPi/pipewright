@@ -25,9 +25,9 @@ func (rt *Runtime) ensureFirewall(corePath string) {
 
 // reconcileSocks5Guard 非 Windows 无操作(防火墙规则仅存在于 win_windows.go;
 // 非 Windows 形态部署上应自行以主机防火墙限制 SOCKS5 端口的非本机访问)。
-func (rt *Runtime) reconcileSocks5Guard(port int) {
+func (rt *Runtime) reconcileSocks5Guard(ports []int) {
 	rt.mu.Lock()
-	rt.socks5GuardPort = port
+	rt.socks5GuardPorts = append([]int(nil), ports...)
 	rt.mu.Unlock()
 }
 

@@ -11,6 +11,8 @@ import (
 	"log"
 	"net"
 	"os"
+	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -49,6 +51,14 @@ type trayApp struct {
 	copyProxyBtn    *walk.PushButton
 	socks5ApplyBtn  *walk.PushButton
 	socks5ExitCombo *walk.ComboBox
+	proxyEdit       *walk.TextEdit
+	proxyStatus     *walk.Label
+
+	// 出口下拉的最近一次回填(候选集合 + 已存值)。均未变化时跳过回填,避免 3s 轮询
+	// 打断用户正在展开/选择的过程(选择未保存前轮询不得重置下拉)。
+	exitItems  []string
+	exitCur    string
+	exitSynced bool
 
 	peerList       *walk.ListBox
 	autoStartCheck *walk.CheckBox
@@ -191,6 +201,9 @@ func (a *trayApp) build() error {
 											Label{Text: "经所选节点访问非虚拟网目标(需对端允许做出口)", TextColor: walk.Color(0x888888)},
 										},
 									},
+									Label{Text: "多出口代理(可选,每行:本地端口 出口节点虚拟IP,如 1081 10.126.14.2;可填多个出口按序切换。每条 = 一个独立轻量组网实例,占用一个虚拟 IP,集群节点列表会多出 主机名-p端口 条目)", TextColor: walk.Color(0x666666)},
+									TextEdit{AssignTo: &a.proxyEdit, MinSize: Size{Height: 64}, VScroll: true},
+									Label{AssignTo: &a.proxyStatus, EllipsisMode: EllipsisEnd, TextColor: walk.Color(0x888888)},
 								},
 							},
 							GroupBox{
@@ -455,6 +468,7 @@ func (a *trayApp) apply(snap *pwclient.StatusSnapshot, err error, logs []string)
 		a.copyProxyBtn.SetEnabled(false)
 	}
 	a.syncExitCombo(snap)
+	a.syncProxyEdit(snap)
 
 	_ = a.peerList.SetModel(peerListItems(snap))
 
@@ -658,8 +672,9 @@ func (a *trayApp) onDownload() {
 }
 
 // syncExitCombo 回填出口节点下拉:候选 = 在线对端(虚拟 IP + 主机名);当前配置的
-// 节点离线时仍保留展示;首项固定「不使用」。不覆盖用户正在展开/选择的过程(模型变化
-// 仅在集合或当前值变化时应用)。
+// 节点离线时仍保留展示;首项固定「不使用」。3s 轮询反复触达本函数,而用户可能正展开
+// 或已选了尚未保存的项 —— 候选集合与已存值均未变化时必须跳过,否则会把选择重置回
+// 已存值,保存时读到空列表,表现为「设置后再次进入看不到」。
 func (a *trayApp) syncExitCombo(snap *pwclient.StatusSnapshot) {
 	const noneItem = "(不使用出口节点)"
 	items := []string{noneItem}
@@ -694,6 +709,10 @@ func (a *trayApp) syncExitCombo(snap *pwclient.StatusSnapshot) {
 			items = append(items, cur+"  (离线)")
 		}
 	}
+	if a.exitSynced && cur == a.exitCur && slices.Equal(items, a.exitItems) {
+		return // 候选与已存值均未变化:不打断用户正在展开/选择的过程
+	}
+	a.exitItems, a.exitCur, a.exitSynced = items, cur, true
 	_ = a.socks5ExitCombo.SetModel(items)
 	if cur == "" {
 		a.socks5ExitCombo.SetCurrentIndex(0)
@@ -721,9 +740,14 @@ func (a *trayApp) selectedExitNodes() []string {
 	return []string{}
 }
 
-// onApplySocks5 保存 SOCKS5 开关与端口并立即对账。
+// onApplySocks5 保存 SOCKS5 开关、端口、出口节点与多出口代理列表,并立即对账。
 func (a *trayApp) onApplySocks5() {
 	cli, err := a.client()
+	if err != nil {
+		a.actionErr(err)
+		return
+	}
+	proxies, err := parseProxyLines(a.proxyEdit.Text())
 	if err != nil {
 		a.actionErr(err)
 		return
@@ -733,11 +757,74 @@ func (a *trayApp) onApplySocks5() {
 	exits := a.selectedExitNodes()
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
-	if _, err := cli.PutConfig(ctx, pwclient.ConfigSetRequest{Socks5Enabled: &enabled, Socks5Port: &port, Socks5ExitNodes: &exits}); err != nil {
+	if _, err := cli.PutConfig(ctx, pwclient.ConfigSetRequest{Socks5Enabled: &enabled, Socks5Port: &port,
+		Socks5ExitNodes: &exits, Socks5Proxies: &proxies}); err != nil {
 		a.actionErr(err)
 		return
 	}
 	a.refreshOnce()
+}
+
+// parseProxyLines 解析多出口代理文本(每行:本地端口 [出口虚拟IP…],空白分隔;
+// 端口必填,出口可多个按序优先)。非法行带原值报错,即时反馈。
+func parseProxyLines(text string) ([]pwclient.ProxyConfig, error) {
+	var out []pwclient.ProxyConfig
+	for _, line := range strings.FieldsFunc(text, func(r rune) bool { return r == '\n' || r == '\r' }) {
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
+		port, err := strconv.Atoi(fields[0])
+		if err != nil || port < 1 || port > 65535 {
+			return nil, fmt.Errorf("多出口代理行 %q 的端口须为 1-65535 的数字", line)
+		}
+		p := pwclient.ProxyConfig{Port: port}
+		for _, ip := range fields[1:] {
+			if net.ParseIP(ip) == nil {
+				return nil, fmt.Errorf("多出口代理行 %q 的 %q 不是合法 IP(填对端虚拟 IP)", line, ip)
+			}
+			p.ExitNodes = append(p.ExitNodes, ip)
+		}
+		out = append(out, p)
+	}
+	return out, nil
+}
+
+// proxyLinesText 是代理列表的文本形态(与 parseProxyLines 互逆;回显比对用)。
+func proxyLinesText(proxies []pwclient.ProxyStatus) string {
+	lines := make([]string, 0, len(proxies))
+	for _, p := range proxies {
+		lines = append(lines, strings.Join(append([]string{strconv.Itoa(p.Port)}, p.ExitNodes...), " "))
+	}
+	return strings.Join(lines, "\r\n")
+}
+
+// syncProxyEdit 回显多出口代理:编辑框仅在为空或与已存内容一致时回填(不覆盖用户
+// 编辑中内容);状态行汇总各端口的运行/错误(来自快照的监督器状态)。
+func (a *trayApp) syncProxyEdit(snap *pwclient.StatusSnapshot) {
+	if text := a.proxyEdit.Text(); text == "" || text == proxyLinesText(snap.Proxies) {
+		a.proxyEdit.SetText(proxyLinesText(snap.Proxies))
+	}
+	if len(snap.Proxies) == 0 {
+		a.proxyStatus.SetText("")
+		return
+	}
+	parts := make([]string, 0, len(snap.Proxies))
+	for _, p := range snap.Proxies {
+		exit := "无出口"
+		if len(p.ExitNodes) > 0 {
+			exit = strings.Join(p.ExitNodes, "/")
+		}
+		state := "启动中"
+		switch {
+		case p.LastErr != "":
+			state = "错误:" + firstLine(p.LastErr)
+		case p.Running:
+			state = "运行中"
+		}
+		parts = append(parts, fmt.Sprintf("127.0.0.1:%d→%s(%s)", p.Port, exit, state))
+	}
+	a.proxyStatus.SetText(strings.Join(parts, " · "))
 }
 
 // onCopyProxy 把当前 SOCKS5 地址(127.0.0.1:port)写入剪贴板。

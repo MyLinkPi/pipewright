@@ -195,3 +195,20 @@ func TestBuildArgsExitNodes(t *testing.T) {
 		}
 	}
 }
+
+// TestBuildArgsNetworkDir 验证实例数据目录传参:支持时传 --network-directory,
+// 不支持的旧二进制不传(仅靠 cwd 兜底)。
+func TestBuildArgsNetworkDir(t *testing.T) {
+	cfg := Config{NetworkName: "net", RPCAddr: "127.0.0.1:15890", Hostname: "h-px",
+		NetworkDir: `C:\et\proxy-1081`}
+	got := buildArgs(cfg, helpFlags{networkDir: true})
+	if !containsPair(got, "--network-directory", cfg.NetworkDir) {
+		t.Fatalf("应传实例目录:%v", got)
+	}
+	old := buildArgs(cfg, helpFlags{})
+	for _, a := range old {
+		if a == "--network-directory" {
+			t.Fatalf("不支持的旗子不应传参:%v", old)
+		}
+	}
+}

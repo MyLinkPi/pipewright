@@ -177,3 +177,48 @@ func TestNormalizeSocks5ExitNodes(t *testing.T) {
 		t.Fatal("CIDR 形式的出口节点应报错(须为虚拟 IP)")
 	}
 }
+
+// TestNormalizeProxies 验证多出口代理归一化:出口去重保序、端口冲突/重复/越界报错。
+func TestNormalizeProxies(t *testing.T) {
+	cfg, err := Normalize(Config{Socks5: Socks5Config{Enabled: true, Port: 1080},
+		Proxies: []ProxyConfig{
+			{Port: 1081, ExitNodes: []string{" 10.126.126.2 ", "10.126.126.2", "10.126.126.3"}},
+			{Port: 1082},
+		}})
+	if err != nil {
+		t.Fatalf("归一化失败:%v", err)
+	}
+	if len(cfg.Proxies) != 2 {
+		t.Fatalf("proxies = %+v", cfg.Proxies)
+	}
+	want := []string{"10.126.126.2", "10.126.126.3"}
+	if len(cfg.Proxies[0].ExitNodes) != len(want) || cfg.Proxies[0].ExitNodes[0] != want[0] || cfg.Proxies[0].ExitNodes[1] != want[1] {
+		t.Fatalf("proxy0 exits = %v, want %v", cfg.Proxies[0].ExitNodes, want)
+	}
+	if len(cfg.Proxies[1].ExitNodes) != 0 {
+		t.Fatalf("proxy1 exits should be empty: %v", cfg.Proxies[1].ExitNodes)
+	}
+
+	cases := []struct {
+		name    string
+		proxies []ProxyConfig
+	}{
+		{"端口重复", []ProxyConfig{{Port: 1081}, {Port: 1081}}},
+		{"端口越界", []ProxyConfig{{Port: 0}}},
+		{"端口超上限", []ProxyConfig{{Port: 70000}}},
+		{"与主 SOCKS5 冲突", []ProxyConfig{{Port: 1080}}},
+		{"出口非法 IP", []ProxyConfig{{Port: 1081, ExitNodes: []string{"not-an-ip"}}}},
+	}
+	for _, tc := range cases {
+		base := Config{Socks5: Socks5Config{Enabled: true, Port: 1080}, Proxies: tc.proxies}
+		if _, err := Normalize(base); err == nil {
+			t.Fatalf("%s 应报错", tc.name)
+		}
+	}
+
+	// 主 SOCKS5 未启用时不视为冲突(端口当前未占用)。
+	if _, err := Normalize(Config{Socks5: Socks5Config{Enabled: false, Port: 1080},
+		Proxies: []ProxyConfig{{Port: 1080}}}); err != nil {
+		t.Fatalf("主代理停用时同端口不应报错:%v", err)
+	}
+}

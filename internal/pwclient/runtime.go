@@ -8,7 +8,11 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log"
+	"net"
 	"os"
+	"path/filepath"
+	"sort"
+	"strconv"
 	"sync"
 	"time"
 
@@ -22,6 +26,10 @@ const reconcileInterval = 10 * time.Second
 
 // downloadRetryBackoff 是二进制下载失败后的自动重试退避(手动触发不受限)。
 const downloadRetryBackoff = 10 * time.Minute
+
+// proxyRPCBase 是多出口代理实例的 RPC portal 起始端口(逐条 +1;主实例默认 15889,
+// 取值时按主 RPC 端口避让)。代理实例不参与状态查询,端口仅避免绑定冲突。
+const proxyRPCBase = 15890
 
 // Runtime 是客户端核心运行时。零值不可用,经 NewRuntime 构造;线程安全。
 type Runtime struct {
@@ -44,12 +52,22 @@ type Runtime struct {
 	dlVersion     string
 	dlRetryAt     time.Time
 	fwEnsured     bool
-	// socks5GuardPort 记录当前 SOCKS5 阻断规则覆盖的端口(0 = 无规则;对账幂等用)。
-	socks5GuardPort int
+	// socks5GuardPorts 记录当前 SOCKS5 阻断规则覆盖的端口集(空 = 无规则;对账幂等用)。
+	socks5GuardPorts []int
+	// proxies 是多出口代理的监督器集合(键 = 本地端口;每条 = 独立 easytier 实例)。
+	proxies map[int]*proxySup
 	// svc 是装配层注入的服务进程信息(IPC 状态展示;console 直跑时 RunningAs=console)。
 	svc ServiceInfo
 	// logs 是进程内日志环(GUI「日志」尾部展示)。
 	logs *logRing
+}
+
+// proxySup 是一条多出口代理的运行态(key 变化即重建监督器;err 为启动期错误)。
+type proxySup struct {
+	port int
+	key  string
+	sup  *easytier.Supervisor
+	err  string
 }
 
 // NewRuntime 构造运行时(dataDir 是配置/二进制/日志的根目录)。不启动;Start 拉起对账循环。
@@ -91,6 +109,9 @@ func (rt *Runtime) Start(ctx context.Context) {
 				if rt.supervisor != nil {
 					rt.supervisor.Stop()
 				}
+				for _, ps := range rt.proxies {
+					ps.sup.Stop()
+				}
 				rt.mu.Unlock()
 				return
 			case <-ticker.C:
@@ -126,8 +147,13 @@ func (rt *Runtime) reconcile(ctx context.Context) {
 			rt.supervisorKey = ""
 			log.Printf("[pwclient] 组网已停止(未启用或未配置完整)")
 		}
+		for port, ps := range rt.proxies {
+			ps.sup.Stop()
+			delete(rt.proxies, port)
+			log.Printf("[pwclient] 多出口代理 %d 已停止(未启用或未配置完整)", port)
+		}
 		rt.mu.Unlock()
-		rt.reconcileSocks5Guard(0)
+		rt.reconcileSocks5Guard(nil)
 		return
 	}
 
@@ -148,6 +174,7 @@ func (rt *Runtime) reconcile(ctx context.Context) {
 
 	if corePath == "" {
 		rt.maybeAutoDownload()
+		rt.reconcileProxies(ctx, cfg, "")
 		return
 	}
 
@@ -172,6 +199,7 @@ func (rt *Runtime) reconcile(ctx context.Context) {
 		// 留空 = 不路由任何通告网段(fail-closed:仅虚拟网互通,要访问哪个网段就显式加入)
 		StrictManualRoutes: true,
 		Socks5Port:         socks5Port(cfg),
+		ExitNodes:          cfg.Socks5.ExitNodes,
 		DataDir:            rt.dataDir,
 		CorePath:           corePath,
 		CliPath:            rt.cliPath,
@@ -186,7 +214,15 @@ func (rt *Runtime) reconcile(ctx context.Context) {
 		return
 	}
 	rt.ensureFirewall(corePath)
-	rt.reconcileSocks5Guard(socks5Port(cfg))
+	guardPorts := []int{}
+	if p := socks5Port(cfg); p > 0 {
+		guardPorts = append(guardPorts, p)
+	}
+	for _, p := range cfg.Proxies {
+		guardPorts = append(guardPorts, p.Port)
+	}
+	rt.reconcileSocks5Guard(guardPorts)
+	rt.reconcileProxies(ctx, cfg, corePath)
 	rt.mu.Lock()
 	rt.failedKey = ""
 	if rt.supervisor != nil {
@@ -199,12 +235,89 @@ func (rt *Runtime) reconcile(ctx context.Context) {
 		cfg.Join.NetworkName, orDHCP(cfg.Join.VirtualIP), len(cfg.Join.Peers), len(cfg.Routes), orOff(socks5Port(cfg)))
 }
 
-// socks5Port 取生效的 SOCKS5 端口(未启用 = 0)。
-func socks5Port(cfg Config) int {
-	if cfg.Socks5.Enabled {
-		return cfg.Socks5.Port
+// reconcileProxies 对账多出口代理集合:每条配置(本地端口 + 出口列表)对应一个独立
+// easytier 实例 —— 独立实例目录(身份隔离)、DHCP 虚拟 IP、独立 RPC 端口。指纹变化
+// 重建,配置移除即停。corePath 空/未启用 = 期望集为空(全停,等二进制就位再拉起)。
+func (rt *Runtime) reconcileProxies(ctx context.Context, cfg Config, corePath string) {
+	type want struct {
+		idx  int // 在 cfg.Proxies 中的序(RPC 端口分配,保确定性)
+		key  string
+		port int
 	}
-	return 0
+	desired := map[int]want{}
+	if corePath != "" && cfg.Enabled && cfg.Configured() {
+		for i, p := range cfg.Proxies {
+			key := fmt.Sprintf("%s|%s|%s|%v|%d|%v", cfg.Join.NetworkName, secretFingerprint(cfg.Join.NetworkSecret),
+				rt.hostname(cfg), cfg.Join.Peers, p.Port, p.ExitNodes)
+			desired[p.Port] = want{idx: i, key: key, port: p.Port}
+		}
+	}
+
+	rt.mu.Lock()
+	var stop []*proxySup
+	var start []want
+	for port, ps := range rt.proxies {
+		w, ok := desired[port]
+		if ok && w.key == ps.key {
+			continue
+		}
+		stop = append(stop, ps)
+		delete(rt.proxies, port)
+	}
+	for _, w := range desired {
+		if _, running := rt.proxies[w.port]; !running {
+			start = append(start, w)
+		}
+	}
+	rt.mu.Unlock()
+
+	for _, ps := range stop {
+		ps.sup.Stop()
+		log.Printf("[pwclient] 多出口代理 %d 已停止(配置变更或移除)", ps.port)
+	}
+	if len(start) == 0 {
+		return
+	}
+	sort.Slice(start, func(i, j int) bool { return start[i].idx < start[j].idx })
+
+	// RPC portal 端口按列表序分配(主实例端口之上避让);仅防绑定冲突,不做状态查询。
+	base := proxyRPCBase
+	if _, mainPort, err := net.SplitHostPort(cfg.EasyTier.RPCAddr); err == nil {
+		if v, err := strconv.Atoi(mainPort); err == nil && v >= base {
+			base = v + 1
+		}
+	}
+	for _, w := range start {
+		p := cfg.Proxies[w.idx]
+		sup := easytier.New(easytier.Config{
+			Mode:          "managed",
+			RPCAddr:       fmt.Sprintf("127.0.0.1:%d", base+w.idx),
+			NetworkName:   cfg.Join.NetworkName,
+			NetworkSecret: cfg.Join.NetworkSecret,
+			Hostname:      rt.hostname(cfg) + "-p" + strconv.Itoa(p.Port),
+			Peers:         cfg.Join.Peers,
+			Socks5Port:    p.Port,
+			ExitNodes:     p.ExitNodes,
+			NetworkDir:    filepath.Join(rt.dataDir, "proxy", strconv.Itoa(p.Port)),
+			CorePath:      corePath,
+			CliPath:       rt.cliPath,
+		})
+		ps := &proxySup{port: p.Port, key: w.key, sup: sup}
+		if err := sup.Start(context.WithoutCancel(ctx)); err != nil {
+			// 记录后不再逐拍重试(与主监督器 failedKey 语义一致);错误入状态供界面展示。
+			ps.err = err.Error()
+			log.Printf("[pwclient] 多出口代理 %d 启动失败:%v", p.Port, err)
+		} else {
+			exit := "(无出口,仅虚拟网)"
+			if len(p.ExitNodes) > 0 {
+				exit = fmt.Sprintf("出口 %v", p.ExitNodes)
+			}
+			log.Printf("[pwclient] 多出口代理已启动 127.0.0.1:%d(%s)", p.Port, exit)
+		}
+		rt.mu.Lock()
+		rt.proxies[p.Port] = ps
+		rt.mu.Unlock()
+	}
 }
 
 func orOff(port int) string {
@@ -295,6 +408,7 @@ type StatusSnapshot struct {
 	Join       JoinStatus         `json:"join"`
 	Routes     []string           `json:"routes"`
 	Socks5     Socks5Status       `json:"socks5"`
+	Proxies    []ProxyStatus      `json:"proxies"`
 	Supervisor easytier.Runtime   `json:"supervisor"`
 	EasyTier   *easytier.Status   `json:"easytier"`
 	Binaries   easytier.BinStatus `json:"binaries"`
@@ -304,9 +418,17 @@ type StatusSnapshot struct {
 // Socks5Status 是本地 SOCKS5 服务的状态回显(Listening 由装配/doctor 侧探测补充,
 // 此处回显配置生效值)。
 type Socks5Status struct {
-	ExitNodes []string // 出口节点虚拟 IP(序即优先级;空 = 不使用)
+	ExitNodes []string `json:"exitNodes"` // 出口节点虚拟 IP(序即优先级;空 = 不使用)
 	Enabled   bool     `json:"enabled"`
 	Port      int      `json:"port"`
+}
+
+// ProxyStatus 是一条多出口代理的运行回显(Running 来自监督器;LastErr 含启动期错误)。
+type ProxyStatus struct {
+	Port      int      `json:"port"`
+	ExitNodes []string `json:"exitNodes"` // 空 = 该端口仅虚拟网/通告网段,不出网
+	Running   bool     `json:"running"`
+	LastErr   string   `json:"lastErr"`
 }
 
 // JoinStatus 是加入参数回显(密钥只报存在性)。
@@ -340,7 +462,25 @@ func (rt *Runtime) Snapshot(ctx context.Context) StatusSnapshot {
 		Routes: cfg.Routes,
 		Socks5: Socks5Status{Enabled: socks5Port(cfg) > 0, Port: socks5Port(cfg), ExitNodes: cfg.Socks5.ExitNodes},
 	}
+	snap.Proxies = make([]ProxyStatus, 0, len(cfg.Proxies))
+	for _, p := range cfg.Proxies {
+		ps := ProxyStatus{Port: p.Port, ExitNodes: p.ExitNodes}
+		if p.ExitNodes == nil {
+			ps.ExitNodes = []string{}
+		}
+		snap.Proxies = append(snap.Proxies, ps)
+	}
 	rt.mu.Lock()
+	for i := range snap.Proxies {
+		if ps, ok := rt.proxies[snap.Proxies[i].Port]; ok {
+			run := ps.sup.Snapshot()
+			snap.Proxies[i].Running = run.Running
+			snap.Proxies[i].LastErr = ps.err
+			if run.LastErr != "" {
+				snap.Proxies[i].LastErr = run.LastErr
+			}
+		}
+	}
 	if rt.supervisor != nil {
 		snap.Supervisor = rt.supervisor.Snapshot()
 	}

@@ -10,7 +10,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
+	"sort"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -45,14 +48,17 @@ func (rt *Runtime) ensureFirewall(corePath string) {
 	log.Printf("[pwclient] 已尝试配置防火墙入站放行规则(%s)", fwRuleName)
 }
 
-// reconcileSocks5Guard 按「生效端口」对账 SOCKS5 阻断规则:port>0 确保规则指向该端口;
-// port=0 移除规则。端口变化自动换绑(先删后加)。失败仅记日志,不阻断组网。
-func (rt *Runtime) reconcileSocks5Guard(port int) {
+// reconcileSocks5Guard 按「生效端口集」对账 SOCKS5 阻断规则:非空确保规则覆盖全部
+// 监听端口(主 SOCKS5 + 多出口代理,逗号并列);空集移除规则。端口集变化自动换绑
+// (先删后加)。失败仅记日志,不阻断组网。
+func (rt *Runtime) reconcileSocks5Guard(ports []int) {
+	wanted := append([]int(nil), ports...)
+	sort.Ints(wanted)
 	rt.mu.Lock()
-	applied := rt.socks5GuardPort
-	rt.socks5GuardPort = port
+	applied := append([]int(nil), rt.socks5GuardPorts...)
+	rt.socks5GuardPorts = append([]int(nil), wanted...)
 	rt.mu.Unlock()
-	if applied == port {
+	if slices.Equal(applied, wanted) {
 		return
 	}
 	run := func(args ...string) {
@@ -61,10 +67,14 @@ func (rt *Runtime) reconcileSocks5Guard(port int) {
 		_ = exec.CommandContext(ctx, "netsh", args...).Run()
 	}
 	run("advfirewall", "firewall", "delete", "rule", "name="+socks5GuardRuleName)
-	if port > 0 {
+	if len(wanted) > 0 {
+		strs := make([]string, len(wanted))
+		for i, p := range wanted {
+			strs[i] = strconv.Itoa(p)
+		}
 		run("advfirewall", "firewall", "add", "rule", "name="+socks5GuardRuleName,
-			"dir=in", "action=block", "protocol=TCP", "localport="+strconv.Itoa(port), "enable=yes")
-		log.Printf("[pwclient] 已启用 SOCKS5 端口 %d 的入站阻断规则(仅限本机使用)", port)
+			"dir=in", "action=block", "protocol=TCP", "localport="+strings.Join(strs, ","), "enable=yes")
+		log.Printf("[pwclient] 已启用 SOCKS5 端口 %v 的入站阻断规则(仅限本机使用)", wanted)
 	}
 }
 
