@@ -101,6 +101,7 @@ export default {
     viewCluster: '查看集群详情',
     proxyNetworks: '子网代理网段(每行一个 CIDR,不支持 /32;本节点可达的远端网段,通告后客户端/显式接受的节点经此访问,EasyTier 内置 NAT 保证返程;通告不会自动路由进其他环境)',
     acceptNetworks: '接受路由的跨环境网段(手动确认;不填=仅自动路由各环境网关 /32;每行一个 CIDR):',
+    enableExitNode: '允许作为客户端出口节点(客户端本地代理的非虚拟网流量经本节点 NAT 出网;默认关)',
     clientTitle: '集群客户端(Windows 11)',
     clientHint: '在 Win11 机器上运行 pwclient 客户端,点「导出客户端配置」后复制粘贴到客户端(亦可下载文件导入),即可加入集群网络;客户端可自由限定本机路由哪些网段。导出内容含明文网络密钥,请妥善保管。',
     exportClientConfig: '导出客户端配置',

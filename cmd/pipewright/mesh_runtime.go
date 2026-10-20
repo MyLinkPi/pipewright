@@ -261,7 +261,7 @@ func (rt *meshRuntime) reconcile(ctx context.Context) {
 		seenCIDRs = sp.ProxyCIDRs
 	}
 	manual := mesh.RouteWhitelist(gateways, seenCIDRs, st.AcceptNetworksCustom)
-	key := fmt.Sprintf("%s|%s|%s|%s|%v|%v|%v", st.EasyTierMode, st.NetworkName, st.VirtualIP, st.Peers, st.Enabled, proxies, manual)
+	key := fmt.Sprintf("%s|%s|%s|%s|%v|%v|%v|%v", st.EasyTierMode, st.NetworkName, st.VirtualIP, st.Peers, st.Enabled, proxies, manual, st.EnableExitNode)
 	if !st.Enabled || st.EasyTierMode != mesh.ModeManaged || st.NetworkName == "" {
 		rt.mu.Lock()
 		if rt.supervisor != nil {
@@ -305,9 +305,11 @@ func (rt *meshRuntime) reconcile(ctx context.Context) {
 		// Strict = 空白名单时拒绝全部通告(与 pwclient 客户端同构的 fail-closed)。
 		ManualRoutes:       manual,
 		StrictManualRoutes: true,
-		DataDir:            rt.dataDir,
-		CorePath:           rt.corePath,
-		CliPath:            rt.cliPath,
+		// 出口节点:平台节点可显式允许充当客户端出口(foreign network NAT)。
+		EnableExitNode: st.EnableExitNode,
+		DataDir:        rt.dataDir,
+		CorePath:       rt.corePath,
+		CliPath:        rt.cliPath,
 	})
 	if err := sup.Start(context.WithoutCancel(ctx)); err != nil {
 		// 同一指纹的启动失败不逐拍刷屏(探测类失败每进程只发生一次,配置修复后指纹变化即重试)。

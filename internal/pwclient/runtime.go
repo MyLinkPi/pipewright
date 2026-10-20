@@ -151,8 +151,8 @@ func (rt *Runtime) reconcile(ctx context.Context) {
 		return
 	}
 
-	key := fmt.Sprintf("%s|%s|%s|%s|%v|%v|%d", cfg.Join.NetworkName, secretFingerprint(cfg.Join.NetworkSecret),
-		cfg.Join.VirtualIP, rt.hostname(cfg), cfg.Join.Peers, cfg.Routes, socks5Port(cfg))
+	key := fmt.Sprintf("%s|%s|%s|%s|%v|%v|%d|%v", cfg.Join.NetworkName, secretFingerprint(cfg.Join.NetworkSecret),
+		cfg.Join.VirtualIP, rt.hostname(cfg), cfg.Join.Peers, cfg.Routes, socks5Port(cfg), cfg.Socks5.ExitNodes)
 	rt.mu.Lock()
 	unchanged := rt.supervisor != nil && rt.supervisorKey == key
 	rt.mu.Unlock()
@@ -171,10 +171,10 @@ func (rt *Runtime) reconcile(ctx context.Context) {
 		ManualRoutes:  cfg.Routes, // ProxyNetworks 恒空:客户端不通告任何子网
 		// 留空 = 不路由任何通告网段(fail-closed:仅虚拟网互通,要访问哪个网段就显式加入)
 		StrictManualRoutes: true,
-		Socks5Port:    socks5Port(cfg),
-		DataDir:       rt.dataDir,
-		CorePath:      corePath,
-		CliPath:       rt.cliPath,
+		Socks5Port:         socks5Port(cfg),
+		DataDir:            rt.dataDir,
+		CorePath:           corePath,
+		CliPath:            rt.cliPath,
 	})
 	if err := sup.Start(context.WithoutCancel(ctx)); err != nil {
 		rt.mu.Lock()
@@ -304,8 +304,9 @@ type StatusSnapshot struct {
 // Socks5Status 是本地 SOCKS5 服务的状态回显(Listening 由装配/doctor 侧探测补充,
 // 此处回显配置生效值)。
 type Socks5Status struct {
-	Enabled bool `json:"enabled"`
-	Port    int  `json:"port"`
+	ExitNodes []string // 出口节点虚拟 IP(序即优先级;空 = 不使用)
+	Enabled   bool     `json:"enabled"`
+	Port      int      `json:"port"`
 }
 
 // JoinStatus 是加入参数回显(密钥只报存在性)。
@@ -337,7 +338,7 @@ func (rt *Runtime) Snapshot(ctx context.Context) StatusSnapshot {
 			Hostname:    rt.hostname(cfg),
 		},
 		Routes: cfg.Routes,
-		Socks5: Socks5Status{Enabled: socks5Port(cfg) > 0, Port: socks5Port(cfg)},
+		Socks5: Socks5Status{Enabled: socks5Port(cfg) > 0, Port: socks5Port(cfg), ExitNodes: cfg.Socks5.ExitNodes},
 	}
 	rt.mu.Lock()
 	if rt.supervisor != nil {

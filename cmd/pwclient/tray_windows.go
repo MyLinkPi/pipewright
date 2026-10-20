@@ -9,6 +9,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net"
 	"os"
 	"strings"
 	"time"
@@ -42,11 +43,12 @@ type trayApp struct {
 	actConnect    *walk.Action
 	actDisconnect *walk.Action
 
-	socks5Check    *walk.CheckBox
-	socks5Port     *walk.NumberEdit
-	socks5Addr     *walk.Label
-	copyProxyBtn   *walk.PushButton
-	socks5ApplyBtn *walk.PushButton
+	socks5Check     *walk.CheckBox
+	socks5Port      *walk.NumberEdit
+	socks5Addr      *walk.Label
+	copyProxyBtn    *walk.PushButton
+	socks5ApplyBtn  *walk.PushButton
+	socks5ExitCombo *walk.ComboBox
 
 	autoStartCheck *walk.CheckBox
 
@@ -137,6 +139,14 @@ func (a *trayApp) build() error {
 						},
 					},
 					Label{AssignTo: &a.socks5Addr, TextColor: walk.Color(0x666666)},
+					Composite{
+						Layout: HBox{MarginsZero: true, Spacing: 8},
+						Children: []Widget{
+							Label{Text: "出口节点:"},
+							ComboBox{AssignTo: &a.socks5ExitCombo, MinSize: Size{Width: 220}},
+							Label{Text: "经所选节点访问非虚拟网目标(需对端允许做出口)", TextColor: walk.Color(0x888888)},
+						},
+					},
 				},
 			},
 			GroupBox{
@@ -415,6 +425,7 @@ func (a *trayApp) apply(snap *pwclient.StatusSnapshot, err error, logs []string)
 		a.socks5Addr.SetText("未启用(勾选并保存后,本机该端口即可经集群访问)")
 		a.copyProxyBtn.SetEnabled(false)
 	}
+	a.syncExitCombo(snap)
 
 	tooltip := "pipewright 客户端 — " + strings.TrimPrefix(a.stateLabel.Text(), "● ")
 	_ = a.ni.SetToolTip(tooltip)
@@ -586,6 +597,67 @@ func (a *trayApp) onDownload() {
 	a.refreshOnce()
 }
 
+// syncExitCombo 回填出口节点下拉:候选 = 在线对端(虚拟 IP + 主机名);当前配置的
+// 节点离线时仍保留展示;首项固定「不使用」。不覆盖用户正在展开/选择的过程(模型变化
+// 仅在集合或当前值变化时应用)。
+func (a *trayApp) syncExitCombo(snap *pwclient.StatusSnapshot) {
+	const noneItem = "(不使用出口节点)"
+	items := []string{noneItem}
+	cur := ""
+	if len(snap.Socks5.ExitNodes) > 0 {
+		cur = snap.Socks5.ExitNodes[0]
+	}
+	if snap.EasyTier != nil {
+		for _, l := range snap.EasyTier.Links {
+			label := l.VirtualIP
+			if l.Hostname != "" {
+				label += "  " + l.Hostname
+			}
+			items = append(items, label)
+			if cur == l.VirtualIP {
+				cur = label
+			}
+		}
+	}
+	if cur != "" && cur != noneItem {
+		found := false
+		for _, it := range items {
+			if it == cur {
+				found = true
+				break
+			}
+		}
+		if !found {
+			items = append(items, cur+"  (离线)")
+		}
+	}
+	_ = a.socks5ExitCombo.SetModel(items)
+	if cur == "" {
+		a.socks5ExitCombo.SetCurrentIndex(0)
+		return
+	}
+	for i, it := range items {
+		if it == cur || strings.HasPrefix(it, cur+"  ") {
+			a.socks5ExitCombo.SetCurrentIndex(i)
+			return
+		}
+	}
+	a.socks5ExitCombo.SetCurrentIndex(0)
+}
+
+// selectedExitNodes 解析下拉选择为出口节点列表(空 = 不使用)。
+func (a *trayApp) selectedExitNodes() []string {
+	idx := a.socks5ExitCombo.CurrentIndex()
+	if idx <= 0 {
+		return []string{}
+	}
+	text := strings.TrimSpace(a.socks5ExitCombo.Text())
+	if ip := strings.Fields(text); len(ip) > 0 && net.ParseIP(ip[0]) != nil {
+		return []string{ip[0]}
+	}
+	return []string{}
+}
+
 // onApplySocks5 保存 SOCKS5 开关与端口并立即对账。
 func (a *trayApp) onApplySocks5() {
 	cli, err := a.client()
@@ -595,9 +667,10 @@ func (a *trayApp) onApplySocks5() {
 	}
 	enabled := a.socks5Check.Checked()
 	port := int(a.socks5Port.Value())
+	exits := a.selectedExitNodes()
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
-	if _, err := cli.PutConfig(ctx, pwclient.ConfigSetRequest{Socks5Enabled: &enabled, Socks5Port: &port}); err != nil {
+	if _, err := cli.PutConfig(ctx, pwclient.ConfigSetRequest{Socks5Enabled: &enabled, Socks5Port: &port, Socks5ExitNodes: &exits}); err != nil {
 		a.actionErr(err)
 		return
 	}

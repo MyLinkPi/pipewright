@@ -46,6 +46,9 @@ type EasyTierConfig struct {
 type Socks5Config struct {
 	Enabled bool `yaml:"enabled"`
 	Port    int  `yaml:"port"` // 空/0 且 enabled = 1080;disabled 时端口保留不清空
+	// ExitNodes 是出口节点虚拟 IP 列表(序即优先级;空 = 不使用出口节点)。设置后
+	// SOCKS5 拨向非虚拟网目标的流量经所选节点 NAT 出网;目标节点须显式允许充当出口。
+	ExitNodes []string `yaml:"exitNodes"`
 }
 
 // socks5DefaultPort 是启用 SOCKS5 而未指定端口时的默认端口。
@@ -130,6 +133,22 @@ func Normalize(cfg Config) (Config, error) {
 	if cfg.Socks5.Enabled && cfg.Socks5.Port == 0 {
 		cfg.Socks5.Port = socks5DefaultPort
 	}
+	seenExit := make(map[string]struct{}, len(cfg.Socks5.ExitNodes))
+	exits := make([]string, 0, len(cfg.Socks5.ExitNodes))
+	for _, ip := range cfg.Socks5.ExitNodes {
+		ip = strings.TrimSpace(ip)
+		if ip == "" {
+			continue
+		}
+		if net.ParseIP(ip) == nil {
+			return cfg, fmt.Errorf("%w: 出口节点 %q 不是合法 IP(填对端虚拟 IP)", ErrInvalidConfig, ip)
+		}
+		if _, dup := seenExit[ip]; !dup {
+			seenExit[ip] = struct{}{}
+			exits = append(exits, ip)
+		}
+	}
+	cfg.Socks5.ExitNodes = exits
 	if cfg.Socks5.Port < 0 || cfg.Socks5.Port > 65535 {
 		return cfg, fmt.Errorf("%w: SOCKS5 端口 %d 超出范围(1-65535)", ErrInvalidConfig, cfg.Socks5.Port)
 	}

@@ -101,6 +101,7 @@ export default {
     viewCluster: 'Clusterseite öffnen',
     proxyNetworks: 'Subnetz-Proxy-CIDRs (eine pro Zeile; entfernte Subnetze, die dieser Knoten erreichen kann. Clusterweit angekuendigt; das eingebaute NAT laesst den Rueckverkehr funktionieren)',
     acceptNetworks: 'Akzeptierte CIDRs aus anderen Umgebungen (manuell; leer = nur Gateway-/32 automatisch; eine pro Zeile):',
+    enableExitNode: 'Als Exit-Knoten dienen (NAT-Ausgang für Client-Proxy-Traffic zu Nicht-Virtual-Zielen; standardmäßig aus)',
     clientTitle: 'Cluster-Client (Windows 11)',
     clientHint: 'Starten Sie den pwclient-Client auf einer Win11-Maschine und importieren Sie die unten exportierte Konfigurationsdatei, um dem Clusternetzwerk beizutreten; der Client waehlt frei, welche Subnetze er routet. Die exportierte Datei enthaelt das Netzwerk-Geheimnis im Klartext - sorgfaeltig behandeln.',
     exportClientConfig: 'Client-Konfiguration exportieren',

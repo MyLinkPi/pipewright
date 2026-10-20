@@ -159,3 +159,39 @@ func TestBuildArgsStrictEmptyRoutes(t *testing.T) {
 		}
 	}
 }
+
+// TestBuildArgsExitNodes 验证出口节点传参:逐值重复传(序即优先级)、EnableExitNode
+// 单独成参、不支持的二进制不传参。
+func TestBuildArgsExitNodes(t *testing.T) {
+	cfg := Config{
+		NetworkName: "net", RPCAddr: "127.0.0.1:15888", Hostname: "h1",
+		Socks5Port: 1080, ExitNodes: []string{"10.126.126.2", "10.126.126.3"}, EnableExitNode: true,
+	}
+	got := buildArgs(cfg, helpFlags{socks5: true, exitNodes: true, enableExitNode: true})
+	if !containsPair(got, "--exit-nodes", "10.126.126.2") || !containsPair(got, "--exit-nodes", "10.126.126.3") {
+		t.Fatalf("出口节点应逐值传:%v", got)
+	}
+	if !containsPair(got, "--enable-exit-node", "true") {
+		t.Fatalf("EnableExitNode 应传参:%v", got)
+	}
+	// 顺序即优先级:第一个出口在第二个之前。
+	first, second := -1, -1
+	for i, a := range got {
+		if a == "10.126.126.2" {
+			first = i
+		}
+		if a == "10.126.126.3" {
+			second = i
+		}
+	}
+	if first < 0 || second < 0 || first > second {
+		t.Fatalf("出口节点顺序应保留:%v", got)
+	}
+
+	old := buildArgs(cfg, helpFlags{socks5: true}) // 旧二进制:两个旗子都不支持
+	for _, a := range old {
+		if a == "--exit-nodes" || a == "--enable-exit-node" {
+			t.Fatalf("不支持的旗子不应传参:%v", old)
+		}
+	}
+}
