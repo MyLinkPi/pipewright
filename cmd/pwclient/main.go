@@ -198,11 +198,8 @@ func printSnapshot(snap *pwclient.StatusSnapshot) {
 	if n := len(snap.EasyTier.Links); n > 0 {
 		fmt.Printf("集群链路:   %d 个对端在线\n", n)
 		for _, l := range snap.EasyTier.Links {
-			tunnel := l.Tunnel
-			if tunnel == "" {
-				tunnel = "?"
-			}
-			fmt.Printf("  %-16s %-20s 延迟 %.0fms(%s)\n", l.VirtualIP, l.Hostname, l.LatencyMS, tunnel)
+			fmt.Printf("  %-16s %-20s 延迟 %6.0fms  %s\n", l.VirtualIP, l.Hostname, l.LatencyMS,
+				linkKind(l.Relay, l.RelayVia, l.Tunnel))
 		}
 	}
 	if len(snap.EasyTier.ProxyCIDRs) > 0 {
@@ -224,6 +221,20 @@ func printSnapshot(snap *pwclient.StatusSnapshot) {
 		fmt.Println("本地代理:   socks5://127.0.0.1:" + strconv.Itoa(snap.Socks5.Port) + "(应用代理指向此地址即经集群访问)")
 	}
 	fmt.Println("EasyTier:  ", binState(snap))
+}
+
+// linkKind 返回链路的直连/中继描述(与 GUI 对端列表一致)。
+func linkKind(relay bool, relayVia, tunnel string) string {
+	if relay {
+		if relayVia == "" {
+			relayVia = "?"
+		}
+		return "中继 via " + relayVia
+	}
+	if tunnel == "" {
+		tunnel = "?"
+	}
+	return "直连 " + tunnel
 }
 
 func errSuffix(snap *pwclient.StatusSnapshot) string {
