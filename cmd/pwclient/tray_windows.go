@@ -50,9 +50,9 @@ type trayApp struct {
 
 	autoStartCheck *walk.CheckBox
 
-	importEdit *walk.TextEdit  // 粘贴 pipewright-client.yaml 全文导入
-	peersEdit  *walk.LineEdit  // 对端地址(入网入口)查看与修改
-	routeItems []string        // 通告网段列表当前行(双击取 CIDR)
+	importEdit *walk.TextEdit // 粘贴 pipewright-client.yaml 全文导入
+	peersLabel *walk.Label    // 对端地址(入网入口)只读展示 —— 随导入的配置,不单独配置
+	routeItems []string       // 通告网段列表当前行(双击取 CIDR)
 
 	ipc     *pwclient.IPCClient
 	snap    *pwclient.StatusSnapshot
@@ -143,7 +143,7 @@ func (a *trayApp) build() error {
 				Title:  "集群配置",
 				Layout: VBox{MarginsZero: true, Spacing: 6},
 				Children: []Widget{
-					Label{Text: "从平台「设置 → 集群 → 导出客户端配置」复制 YAML 粘贴到下面导入;对端地址是入网入口,网段路由/本地代理的流量均经集群侧节点转发。", TextColor: walk.Color(0x666666)},
+					Label{Text: "从平台「设置 → 集群 → 导出客户端配置」复制 YAML 粘贴到下面导入(网络/密钥/对端地址一次就位);网段路由与本地代理的流量均经集群侧节点转发。", TextColor: walk.Color(0x666666)},
 					TextEdit{AssignTo: &a.importEdit, MinSize: Size{Height: 72}, VScroll: true},
 					Composite{
 						Layout: HBox{MarginsZero: true, Spacing: 8},
@@ -153,14 +153,7 @@ func (a *trayApp) build() error {
 							HSpacer{},
 						},
 					},
-					Composite{
-						Layout: HBox{MarginsZero: true, Spacing: 8},
-						Children: []Widget{
-							Label{Text: "对端地址:"},
-							LineEdit{AssignTo: &a.peersEdit, CueBanner: "如 tcp://1.2.3.4:11010,多个用逗号分隔"},
-							PushButton{Text: "保存", OnClicked: a.onApplyPeers, MinSize: Size{Width: 72}},
-						},
-					},
+					Label{AssignTo: &a.peersLabel, TextColor: walk.Color(0x888888)},
 				},
 			},
 			GroupBox{
@@ -304,7 +297,9 @@ func (a *trayApp) apply(snap *pwclient.StatusSnapshot, err error, logs []string)
 		a.actConnect.SetEnabled(false)
 		a.actDisconnect.SetEnabled(false)
 		a.installBtn.SetEnabled(true)
+		a.installBtn.SetVisible(true)
 		a.downloadBtn.SetEnabled(false)
+		a.downloadBtn.SetVisible(false)
 		a.importBtn.SetEnabled(false)
 		a.applyRoutes.SetEnabled(false)
 		a.socks5ApplyBtn.SetEnabled(false)
@@ -314,6 +309,7 @@ func (a *trayApp) apply(snap *pwclient.StatusSnapshot, err error, logs []string)
 		return
 	}
 	a.installBtn.SetEnabled(false)
+	a.installBtn.SetVisible(false) // 服务在,安装按钮整体退场
 	// 服务就绪,恢复操作可用性(连接/下载等再按快照细调)。
 	a.importBtn.SetEnabled(true)
 	a.applyRoutes.SetEnabled(true)
@@ -351,24 +347,26 @@ func (a *trayApp) apply(snap *pwclient.StatusSnapshot, err error, logs []string)
 		a.detailLabel.SetText(fmt.Sprintf("网络 %s(配置保留,点「连接」恢复)", orDash(snap.Join.NetworkName)))
 	}
 
-	// EasyTier 二进制行 + 下载按钮。
+	// EasyTier 二进制行 + 下载按钮(兜底:随包自带时二进制已就位,按钮整体隐藏)。
 	if snap.Binaries.Downloading {
 		a.binLabel.SetText("EasyTier:正在自动下载…")
 		a.downloadBtn.SetEnabled(false)
+		a.downloadBtn.SetVisible(true)
 	} else if snap.Binaries.CorePath == "" {
-		msg := "EasyTier:未就位"
+		msg := "EasyTier:未就位(随包 bin/ 缺失时点此从网络获取)"
 		if snap.Binaries.LastErr != "" {
 			msg += "(上次失败:" + firstLine(snap.Binaries.LastErr) + ")"
 		}
 		a.binLabel.SetText(msg)
 		a.downloadBtn.SetEnabled(true)
+		a.downloadBtn.SetVisible(true)
 	} else {
 		v := snap.Binaries.Version
 		if v == "" {
 			v = "已就位"
 		}
 		a.binLabel.SetText("EasyTier:" + v)
-		a.downloadBtn.SetEnabled(snap.Binaries.LastErr != "")
+		a.downloadBtn.SetVisible(false)
 	}
 
 	// 连接/断开可用性。
@@ -395,9 +393,11 @@ func (a *trayApp) apply(snap *pwclient.StatusSnapshot, err error, logs []string)
 		a.routesEdit.SetText(strings.Join(snap.Routes, "\r\n"))
 	}
 
-	// 对端地址回显(同 routes 策略:不覆盖用户编辑中的内容)。
-	if text := a.peersEdit.Text(); text == "" || text == strings.Join(snap.Join.Peers, ", ") {
-		a.peersEdit.SetText(strings.Join(snap.Join.Peers, ", "))
+	// 对端地址只读回显(来自导入的配置;入口变更 → 平台重新导出粘贴)。
+	if len(snap.Join.Peers) > 0 {
+		a.peersLabel.SetText("对端地址(入网入口):" + strings.Join(snap.Join.Peers, ", "))
+	} else {
+		a.peersLabel.SetText("对端地址:未配置 —— 粘贴导入集群配置即可")
 	}
 
 	// SOCKS5 区:回显生效值(启用中显示监听地址;未启用显示预览地址)。
@@ -569,34 +569,6 @@ func (a *trayApp) importConfig(content string) error {
 	_ = a.ni.ShowInfo("pipewright 客户端", "已导入集群 "+view.Join.NetworkName+"(已自动连接)")
 	a.showWindow()
 	return nil
-}
-
-// onApplyPeers 保存对端地址(入网入口;集群侧更换入口后在此同步)。
-func (a *trayApp) onApplyPeers() {
-	var peers []string
-	for _, f := range strings.FieldsFunc(a.peersEdit.Text(), func(r rune) bool {
-		return r == ',' || r == ';' || r == '\n' || r == '\r' || r == ' ' || r == '\t'
-	}) {
-		if f = strings.TrimSpace(f); f != "" {
-			peers = append(peers, f)
-		}
-	}
-	if len(peers) == 0 {
-		a.actionErr(fmt.Errorf("至少需要一个对端地址(如 tcp://1.2.3.4:11010)"))
-		return
-	}
-	cli, err := a.client()
-	if err != nil {
-		a.actionErr(err)
-		return
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
-	defer cancel()
-	if _, err := cli.PutConfig(ctx, pwclient.ConfigSetRequest{Peers: &peers}); err != nil {
-		a.actionErr(err)
-		return
-	}
-	a.refreshOnce()
 }
 
 func (a *trayApp) onDownload() {
