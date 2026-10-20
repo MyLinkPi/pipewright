@@ -227,8 +227,11 @@ func orUnavailable(stale *Status) *Status {
 	return &Status{OK: false, Err: "status refresh in progress"}
 }
 
-// runShaped 按 verb 的候选形态执行:命中(成功且 stdout 非空)后缓存形态;
-// 全部失败返回最后一次错误,并对两类常见原因追加人读提示。
+// runShaped 按 verb 的候选形态执行(缓存的命中形态优先,其余新→旧;与缓存重复的
+// 候选去重):命中(成功且 stdout 非空)后缓存形态。全部失败时按「运行类错误优先」
+// 择因外报:新版 CLI 上旧形态的 clap 用法错误是探测期必然出现的噪声,若作为最终
+// 错误,瞬时的 RPC 未就绪(core 重启窗口)会被误报成「easytier-cli 版本过旧」;
+// 参数类错误仅在没有任何运行类错误时才作为结论。
 func (p *StatusProvider) runShaped(ctx context.Context, verb string, shapes [][]string) ([]byte, error) {
 	p.mu.Lock()
 	cached := p.shapeByVerb[verb]
@@ -237,10 +240,14 @@ func (p *StatusProvider) runShaped(ctx context.Context, verb string, shapes [][]
 	if cached != nil {
 		candidates = append(candidates, cached)
 	}
-	candidates = append(candidates, shapes...)
+	for _, s := range shapes {
+		if !equalArgs(s, cached) {
+			candidates = append(candidates, s)
+		}
+	}
 
 	base := []string{"--rpc-portal", p.rpcAddr}
-	var lastErr error
+	var runErr, argErr error
 	for _, suffix := range candidates {
 		out, err := p.run(ctx, append(append([]string{}, base...), suffix...))
 		if err == nil && len(out) > 0 {
@@ -249,13 +256,28 @@ func (p *StatusProvider) runShaped(ctx context.Context, verb string, shapes [][]
 			p.mu.Unlock()
 			return out, nil
 		}
-		if err != nil {
-			lastErr = err
-		} else {
-			lastErr = fmt.Errorf("easytier-cli %s: empty output", describeArgs(append(base, suffix...)))
+		if err == nil {
+			err = fmt.Errorf("easytier-cli %s: empty output", describeArgs(append(base, suffix...)))
+		}
+		if isArgError(err) {
+			if argErr == nil {
+				argErr = err
+			}
+		} else if runErr == nil {
+			runErr = err
 		}
 	}
-	return nil, withHints(lastErr)
+	if runErr != nil {
+		return nil, withHints(runErr)
+	}
+	return nil, withHints(argErr)
+}
+
+// isArgError 判定是否 clap 参数类错误(当前 CLI 版本不支持该调用形态)。
+func isArgError(err error) bool {
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "unexpected argument") || strings.Contains(msg, "unrecognized") ||
+		strings.Contains(msg, "invalid") && strings.Contains(msg, "--")
 }
 
 // withHints 对常见失败原因追加人读提示(仅依据错误文本关键字,保守匹配)。
@@ -268,11 +290,23 @@ func withHints(err error) error {
 	case strings.Contains(msg, "connect") || strings.Contains(msg, "transport") ||
 		strings.Contains(msg, "timeout") || strings.Contains(msg, "refused"):
 		return fmt.Errorf("%w(可能 easytier-core 未运行,或 RPC 端口不一致)", err)
-	case strings.Contains(msg, "unexpected argument") || strings.Contains(msg, "unrecognized") ||
-		strings.Contains(msg, "invalid") && strings.Contains(msg, "--"):
+	case isArgError(err):
 		return fmt.Errorf("%w(easytier-cli 版本可能过旧,不支持 JSON 输出)", err)
 	}
 	return err
+}
+
+// equalArgs 比较两个参数切片是否相同(候选去重用)。
+func equalArgs(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // collect 依次跑 node/peer/route 三条查询并归并(任一失败记入 Err,不整体失败)。
