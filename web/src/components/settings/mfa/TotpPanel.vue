@@ -358,7 +358,7 @@ function downloadCodes(codes: string[]): void {
 }
 .panel-card__sub {
   font-size: 12.5px;
-  color: var(--color-text-dim, #6b7280);
+  color: var(--color-text-dim);
   margin: 0;
 }
 .totp-state {
@@ -381,7 +381,7 @@ function downloadCodes(codes: string[]): void {
 }
 .totp-remaining {
   font-size: 12.5px;
-  color: var(--color-text-dim, #6b7280);
+  color: var(--color-text-dim);
 }
 .totp-actions {
   margin-left: auto;
@@ -395,7 +395,7 @@ function downloadCodes(codes: string[]): void {
 }
 .totp-wizard__desc {
   font-size: 12.5px;
-  color: var(--color-text-dim, #6b7280);
+  color: var(--color-text-dim);
   margin: 0 0 12px;
 }
 .totp-warn {
@@ -419,7 +419,7 @@ function downloadCodes(codes: string[]): void {
   text-align: center;
   font-size: 12px;
   word-break: break-all;
-  color: var(--color-text-dim, #6b7280);
+  color: var(--color-text-dim);
   margin-bottom: 12px;
 }
 .totp-codes {

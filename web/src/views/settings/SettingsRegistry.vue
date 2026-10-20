@@ -602,7 +602,7 @@ onMounted(() => {
 .reg-mini:disabled { opacity: 0.5; cursor: default; }
 
 .reg-actions { display: flex; align-items: center; justify-content: flex-end; gap: 12px; }
-.reg-ok { font-size: 0.82rem; color: var(--color-ok, #18a058); }
+.reg-ok { font-size: 0.82rem; color: var(--color-ok); }
 .reg-err { font-size: 0.82rem; color: var(--color-danger, #e5484d); }
 .reg-muted { font-size: 0.82rem; color: var(--color-faint); }
 .reg-warn {

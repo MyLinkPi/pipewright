@@ -503,7 +503,7 @@ const managedFilesHint = computed(() => t('platformHttps.managedFiles'))
 
 .panel {
   border: 1px solid var(--color-border);
-  border-radius: var(--radius-card, 10px);
+  border-radius: var(--radius-card);
   background: var(--color-surface);
   padding: 20px;
   display: flex;

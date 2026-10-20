@@ -261,41 +261,121 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
+/* 全部取自 styles/tokens.css 的双主题 token,不写硬编码色值 ——
+   此前 --color-bg-soft 未定义、暗色兜底值在浅色主题下变成黑底灰字,可读性极差。 */
 .cluster-page { display: flex; flex-direction: column; gap: 16px; }
 .page-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
-.page-head h1 { margin: 0; font-size: 20px; }
-.sub { margin: 4px 0 0; color: var(--color-text-muted, #888); font-size: 13px; }
+.page-head h1 { margin: 0; font-size: var(--text-h1); font-weight: 700; color: var(--color-text); }
+.sub { margin: 4px 0 0; color: var(--color-dim); font-size: var(--text-label); }
 .btn-ico { width: 14px; height: 14px; }
 
-.et-card { border: 1px solid var(--color-border, #333); border-radius: 10px; padding: 14px 16px; }
-.et-card.off { opacity: 0.85; }
-.et-grid { display: flex; flex-wrap: wrap; gap: 24px; }
-.et-item { display: flex; flex-direction: column; gap: 2px; }
-.et-label { font-size: 12px; color: var(--color-text-muted, #888); }
-.et-value { font-size: 14px; font-weight: 600; }
-.et-hint { margin: 10px 0 0; font-size: 13px; color: var(--color-text-muted, #888); }
+/* ——— EasyTier 概览卡 ——— */
+.et-card {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-left: 3px solid var(--color-green-line);
+  border-radius: var(--rounded-lg);
+  padding: 16px 20px;
+  box-shadow: var(--shadow);
+}
+.et-card.off { border-left-color: var(--color-amber-line); }
+.et-grid { display: flex; flex-wrap: wrap; gap: 16px 40px; }
+.et-item { display: flex; flex-direction: column; gap: 3px; }
+.et-label { font-size: var(--text-micro); color: var(--color-faint); letter-spacing: 0.03em; }
+.et-value { font-size: var(--text-body); font-weight: 600; color: var(--color-text); }
+.et-hint { margin: 10px 0 0; font-size: var(--text-label); color: var(--color-dim); }
 
-.peer-table { border: 1px solid var(--color-border, #333); border-radius: 10px; overflow: hidden; }
-.peer-row { display: grid; grid-template-columns: 1.4fr 1fr 1.4fr 0.7fr 1.2fr auto; gap: 8px; padding: 10px 16px; align-items: center; border-top: 1px solid var(--color-border, #2a2a2a); font-size: 13px; }
-.peer-row.head { border-top: none; color: var(--color-text-muted, #888); font-size: 12px; background: var(--color-bg-soft, #1c1c1c); }
+/* ——— 节点表 ——— */
+.peer-table {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--rounded-lg);
+  overflow: hidden;
+  box-shadow: var(--shadow);
+}
+.peer-row {
+  display: grid;
+  grid-template-columns: 1.4fr 1fr 1.4fr 0.7fr 1.2fr auto;
+  gap: 8px;
+  padding: 11px 20px;
+  align-items: center;
+  border-top: 1px solid var(--color-border);
+  font-size: var(--text-body);
+  color: var(--color-text);
+}
+.peer-row.head {
+  border-top: none;
+  color: var(--color-faint);
+  font-size: var(--text-caps);
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  background: var(--color-inset);
+}
+.peer-row:not(.head):hover { background: var(--color-card-2); }
 .peer-row.offline { opacity: 0.55; }
 .c-name { display: flex; align-items: center; gap: 8px; font-weight: 600; }
-.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--color-text-muted, #666); }
-.dot.on { background: var(--color-green, #4caf50); }
-.mono { font-family: var(--font-mono, monospace); }
-.tag { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 12px; }
-.tag.ok { background: var(--color-green-soft, rgba(76, 175, 80, 0.15)); color: var(--color-green, #4caf50); }
-.tag.warn { background: var(--color-amber-soft, rgba(255, 193, 7, 0.15)); color: var(--color-amber, #ffc107); }
-.link-btn { background: none; border: none; color: var(--color-primary, #4c6ef5); cursor: pointer; font-size: 13px; padding: 0 4px; text-decoration: none; }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--color-faint); flex: none; }
+.dot.on { background: var(--color-green); }
+.mono { font-family: var(--font-mono); font-size: var(--text-mono); }
+.tag {
+  display: inline-block;
+  padding: 2px 9px;
+  border-radius: var(--rounded-full);
+  font-size: var(--text-caps);
+  font-weight: 600;
+}
+.tag.ok { background: var(--color-green-soft); color: var(--color-green); }
+.tag.warn { background: var(--color-amber-soft); color: var(--color-amber); }
+.link-btn {
+  background: none;
+  border: none;
+  color: var(--color-primary);
+  cursor: pointer;
+  font-size: var(--text-label);
+  padding: 0 4px;
+  text-decoration: none;
+  border-radius: var(--rounded-sm);
+}
+.link-btn:hover { text-decoration: underline; }
 .c-act { display: flex; gap: 4px; white-space: nowrap; }
 
-.peer-detail { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; padding: 12px 16px 16px; border-top: 1px dashed var(--color-border, #2a2a2a); background: var(--color-bg-soft, #161616); }
-.detail-block h3 { margin: 4px 0 8px; font-size: 13px; color: var(--color-text-muted, #999); }
-.srv-line { display: flex; justify-content: space-between; gap: 12px; padding: 4px 0; font-size: 13px; }
-.srv-name { font-weight: 600; }
-.placeholder { color: var(--color-text-muted, #888); font-size: 13px; margin: 4px 0; }
-.muted { color: var(--color-text-muted, #888); }
-.ok-text { color: var(--color-green, #4caf50); }
-.warn-text { color: var(--color-amber, #ffc107); }
-.empty-wrap { border: 1px dashed var(--color-border, #333); border-radius: 10px; padding: 24px; }
+/* ——— 展开区:嵌入式浅底 + 两块白色子卡,与黑底旧版相比恢复正文对比度 ——— */
+.peer-detail {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  padding: 12px 20px 16px;
+  border-top: 1px solid var(--color-border);
+  background: var(--color-inset);
+}
+.detail-block {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--rounded-md);
+  padding: 12px 14px;
+  min-width: 0;
+}
+.detail-block h3 {
+  margin: 0 0 8px;
+  font-size: var(--text-caps);
+  font-weight: 600;
+  color: var(--color-faint);
+  letter-spacing: 0.04em;
+}
+.srv-line { display: flex; justify-content: space-between; gap: 12px; padding: 4px 0; font-size: var(--text-label); }
+.srv-name { font-weight: 600; color: var(--color-text); }
+.placeholder { color: var(--color-faint); font-size: var(--text-label); margin: 4px 0; }
+.muted { color: var(--color-dim); }
+.ok-text { color: var(--color-green); }
+.warn-text { color: var(--color-amber); }
+.empty-wrap {
+  border: 1px dashed var(--color-border-strong);
+  border-radius: var(--rounded-lg);
+  padding: 24px;
+  background: var(--color-surface);
+}
+
+@media (max-width: 900px) {
+  .peer-detail { grid-template-columns: 1fr; }
+}
 </style>

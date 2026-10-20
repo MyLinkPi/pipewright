@@ -1330,7 +1330,7 @@ onMounted(() => {
   gap: 12px;
   margin-top: 18px;
 }
-.rt-saved { font-size: 0.82rem; color: var(--color-ok, #18a058); }
+.rt-saved { font-size: 0.82rem; color: var(--color-ok); }
 .rt-err { font-size: 0.82rem; color: var(--color-danger, #e5484d); }
 
 /* ─── 界面语言 ───────────────────────────────────────────────────────────────── */
@@ -1368,7 +1368,7 @@ onMounted(() => {
 }
 .pk-field__label {
   font-size: 12.5px;
-  color: var(--color-text-dim, #6b7280);
+  color: var(--color-text-dim);
 }
 .pk-input {
   padding: 9px 12px;
@@ -1388,7 +1388,7 @@ onMounted(() => {
 }
 .pk-note {
   font-size: 12px;
-  color: var(--color-text-dim, #6b7280);
+  color: var(--color-text-dim);
 }
 .pk-error {
   font-size: 12.5px;

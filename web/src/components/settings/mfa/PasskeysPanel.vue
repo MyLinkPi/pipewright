@@ -200,7 +200,7 @@ async function remove(pk: PasskeyInfo): Promise<void> {
 }
 .panel-card__sub {
   font-size: 12.5px;
-  color: var(--color-text-dim, #6b7280);
+  color: var(--color-text-dim);
   margin: 0;
 }
 .pk-warn {
@@ -250,14 +250,14 @@ async function remove(pk: PasskeyInfo): Promise<void> {
 }
 .pk-item__meta {
   font-size: 12px;
-  color: var(--color-text-dim, #6b7280);
+  color: var(--color-text-dim);
 }
 .pk-item > :last-child {
   margin-left: auto;
 }
 .pk-empty {
   font-size: 12.5px;
-  color: var(--color-text-dim, #6b7280);
+  color: var(--color-text-dim);
   margin: 12px 0 0;
 }
 </style>

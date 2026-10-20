@@ -407,8 +407,8 @@ function commitRunnerServer(id: string): void {
   font-weight: 700;
   padding: 2px 8px;
   border-radius: 100px;
-  background: var(--color-violet-soft, rgba(124, 58, 237, 0.13));
-  color: var(--color-violet, #6d28d9);
+  background: var(--color-violet-soft);
+  color: var(--color-violet);
   white-space: nowrap;
 }
 

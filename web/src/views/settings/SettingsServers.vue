@@ -1149,8 +1149,8 @@ async function handleTest(s: Server): Promise<void> {
   background: color-mix(in oklch, var(--color-warn, #b88600) 12%, transparent);
 }
 .banner--ok {
-  color: var(--color-ok, #2e9e6b);
-  background: color-mix(in oklch, var(--color-ok, #2e9e6b) 10%, transparent);
+  color: var(--color-ok);
+  background: color-mix(in oklch, var(--color-ok) 10%, transparent);
 }
 .banner-retry {
   margin-left: auto;
@@ -1365,11 +1365,11 @@ async function handleTest(s: Server): Promise<void> {
 }
 .cred-tag--jump {
   color: var(--color-warn, #b45309);
-  background: var(--color-warn-soft, rgba(180, 83, 9, 0.12));
+  background: var(--color-warn-soft);
 }
 .cred-tag--gpu {
   color: var(--color-success, #2e8b57);
-  background: var(--color-success-soft, rgba(46, 139, 87, 0.12));
+  background: var(--color-success-soft);
 }
 .cred-tag--pve {
   color: #7c5cff;
