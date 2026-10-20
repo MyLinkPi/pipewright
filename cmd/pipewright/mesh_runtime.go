@@ -293,6 +293,10 @@ func (rt *meshRuntime) reconcile(ctx context.Context) {
 		rt.maybeAutoDownload()
 		return
 	}
+	// 先清理孤儿 easytier(re-exec/崩溃遗留,占着监听与 rpc-portal 端口会让新进程
+	// 起不来,孤儿以旧参数持续服务 —— v1.6.4 事故链)。
+	easytier.KillStaleByRPCPortal(st.EasyTierRPC)
+
 	sup := easytier.New(easytier.Config{
 		Mode:          mesh.ModeManaged,
 		RPCAddr:       st.EasyTierRPC,
