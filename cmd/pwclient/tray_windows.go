@@ -85,15 +85,16 @@ func (a *trayApp) build() error {
 		Title:    "pipewright 集群客户端",
 		Icon:     1, // RT_GROUP_ICON 资源 ID(exe 内嵌图标)
 		MinSize:  Size{Width: 620, Height: 700},
+		Size:     Size{Width: 720, Height: 760},
 		Layout:   VBox{Margins: Margins{Left: 10, Top: 10, Right: 10, Bottom: 10}, Spacing: 8},
 		Children: []Widget{
 			GroupBox{
 				Title:  "状态",
 				Layout: VBox{MarginsZero: true, Spacing: 6},
 				Children: []Widget{
-					Label{AssignTo: &a.stateLabel, Text: "正在连接服务…", TextColor: walk.Color(0x666666)},
-					Label{AssignTo: &a.detailLabel, Text: ""},
-					Label{AssignTo: &a.binLabel, Text: ""},
+					Label{AssignTo: &a.stateLabel, EllipsisMode: EllipsisEnd, Text: "正在连接服务…", TextColor: walk.Color(0x666666)},
+					Label{AssignTo: &a.detailLabel, EllipsisMode: EllipsisEnd, Text: ""},
+					Label{AssignTo: &a.binLabel, EllipsisMode: EllipsisEnd, Text: ""},
 					Composite{
 						Layout: HBox{MarginsZero: true, Spacing: 8},
 						Children: []Widget{
@@ -102,7 +103,7 @@ func (a *trayApp) build() error {
 							PushButton{AssignTo: &a.installBtn, Text: "安装并启动服务", OnClicked: a.onInstallService},
 						},
 					},
-					Label{AssignTo: &a.svcLabel, TextColor: walk.Color(0x888888)},
+					Label{AssignTo: &a.svcLabel, EllipsisMode: EllipsisEnd, TextColor: walk.Color(0x888888)},
 				},
 			},
 			GroupBox{
@@ -138,7 +139,7 @@ func (a *trayApp) build() error {
 							PushButton{AssignTo: &a.socks5ApplyBtn, Text: "保存并应用", OnClicked: a.onApplySocks5, MinSize: Size{Width: 96}},
 						},
 					},
-					Label{AssignTo: &a.socks5Addr, TextColor: walk.Color(0x666666)},
+					Label{AssignTo: &a.socks5Addr, EllipsisMode: EllipsisEnd, TextColor: walk.Color(0x666666)},
 					Composite{
 						Layout: HBox{MarginsZero: true, Spacing: 8},
 						Children: []Widget{
@@ -163,7 +164,7 @@ func (a *trayApp) build() error {
 							HSpacer{},
 						},
 					},
-					Label{AssignTo: &a.peersLabel, TextColor: walk.Color(0x888888)},
+					Label{AssignTo: &a.peersLabel, EllipsisMode: EllipsisEnd, TextColor: walk.Color(0x888888)},
 				},
 			},
 			GroupBox{
@@ -185,13 +186,16 @@ func (a *trayApp) build() error {
 		return err
 	}
 
-	// 关闭主窗口 = 隐藏到托盘(组网/服务不受影响);退出经托盘菜单。
+	// 关闭主窗口 = 隐藏到托盘(组网/服务不受影响);退出经托盘菜单。隐藏/退出均
+	// 保存窗口边界,下次启动恢复。
 	a.mw.Closing().Attach(func(canceled *bool, reason walk.CloseReason) {
+		a.saveWindowState()
 		if !a.exiting {
 			*canceled = true
 			a.mw.Hide()
 		}
 	})
+	a.restoreWindowState(Size{Width: 620, Height: 700})
 
 	if err = a.buildTray(); err != nil {
 		return err
@@ -247,6 +251,7 @@ func (a *trayApp) showWindow() {
 
 func (a *trayApp) exitApp() {
 	a.exiting = true
+	a.saveWindowState()
 	_ = a.ni.Dispose()
 	a.mw.Close()
 	walk.App().Exit(0)
@@ -610,8 +615,11 @@ func (a *trayApp) syncExitCombo(snap *pwclient.StatusSnapshot) {
 	if snap.EasyTier != nil {
 		for _, l := range snap.EasyTier.Links {
 			label := l.VirtualIP
-			if l.Hostname != "" {
-				label += "  " + l.Hostname
+			if host := l.Hostname; host != "" {
+				if len(host) > 12 { // 候选项宽度有界,避免下拉最小尺寸随主机名漂移
+					host = host[:12] + "…"
+				}
+				label += "  " + host
 			}
 			items = append(items, label)
 			if cur == l.VirtualIP {
