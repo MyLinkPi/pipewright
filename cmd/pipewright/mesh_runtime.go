@@ -393,6 +393,13 @@ func (rt *meshRuntime) discoverOnce(ctx context.Context) {
 	if err != nil || !st.Enabled {
 		return
 	}
+	// 清理历史误登记的本节点自身行(曾因 SelfIP 解析失败期自环探测混入;对端注册表
+	// 语义不含本机,误留行在集群页恒显离线)。幂等:仅存在时删一次。
+	if _, gerr := rt.svc.GetPeer(ctx, st.NodeID); gerr == nil {
+		if derr := rt.svc.DeletePeer(ctx, st.NodeID); derr == nil {
+			log.Printf("[mesh] 已清理误登记的本节点自身注册条目(历史发现循环缺陷遗留)")
+		}
+	}
 	rt.mu.Lock()
 	sp := rt.status
 	rt.mu.Unlock()
@@ -425,6 +432,11 @@ func (rt *meshRuntime) discoverOnce(ctx context.Context) {
 			cancel()
 			if herr != nil {
 				continue
+			}
+			// hello 响应身份即本节点 → 虚拟 IP 自环(SelfIP 解析失败期会漏过滤),
+			// 不登记进对端注册表,也不再试其余端口。
+			if strings.TrimSpace(hello.NodeID) == st.NodeID {
+				break
 			}
 			if aerr := rt.svc.ApplyHello(ctx, link.VirtualIP, *hello); aerr != nil {
 				log.Printf("[mesh] 发现节点 %s 登记失败(公钥变更?拒绝对其服务):%v", hello.NodeID, aerr)

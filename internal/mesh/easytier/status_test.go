@@ -292,6 +292,32 @@ func TestStatusProxyRoutes(t *testing.T) {
 	}
 }
 
+// TestStatusRouteDirectSentinelNotRelay 验证新版 route 表直连占位符(v2.6.4+ 对 cost==1
+// 行输出 "DIRECT",旧版为 "-")不被误当中继节点:直连对端应判 p2p,而非「经 DIRECT 中继」。
+func TestStatusRouteDirectSentinelNotRelay(t *testing.T) {
+	fake := &fakeCLI{responses: map[string]string{
+		"node info": `{"peer_id":1,"ipv4_addr":"10.126.126.1/24","hostname":"alpha","version":"2.7.0"}`,
+		"peer list": `[
+			{"cidr":"10.126.126.1/24","ipv4":"10.126.126.1","hostname":"alpha","cost":"Local","tunnel_proto":"-"},
+			{"cidr":"10.126.126.2/24","ipv4":"10.126.126.2","hostname":"beta","cost":"p2p","tunnel_proto":"tcp","lat_ms":"3.20"}
+		]`,
+		"route list": `[
+			{"ipv4":"10.126.126.1/24","hostname":"alpha","proxy_cidrs":"","next_hop_ipv4":"-","next_hop_hostname":"Local","path_len":0},
+			{"ipv4":"10.126.126.2/24","hostname":"beta","proxy_cidrs":"","next_hop_ipv4":"DIRECT","next_hop_hostname":"DIRECT","path_len":1}
+		]`,
+	}}
+	p := newStatusProviderForTest(fake.run)
+	st := p.collect(context.Background())
+
+	if len(st.Links) != 1 {
+		t.Fatalf("links = %+v, want 1(peer 表本机 Local 行应被排除)", st.Links)
+	}
+	l := st.Links[0]
+	if l.VirtualIP != "10.126.126.2" || l.Relay || l.RelayVia != "" || l.LatencyMS != 3.2 {
+		t.Fatalf("直连对端判定错误:%+v(next_hop \"DIRECT\" 是直连占位符,非中继节点标识)", l)
+	}
+}
+
 // TestStatusParsesRealV26Output 用 easytier v2.6.4 实录 JSON(node/peer/route 三路)
 // 验证解析:proxy_cidrs 为逗号分隔字符串、ipv4 带 /24 后缀、next_hop 直连为 "-"、
 // lat_ms/rx_bytes 为字符串。此前夹具为臆造数组形态,线上恒空。

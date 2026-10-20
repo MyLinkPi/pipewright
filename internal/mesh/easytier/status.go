@@ -314,7 +314,9 @@ func (p *StatusProvider) collect(ctx context.Context) *Status {
 			for _, rt := range routes {
 				ip := pickIP(rt, "ipv4", "destination", "dest")
 				nh := stripCIDR(pickStr(rt, "next_hop_ipv4", "next_hop", "nexthop"))
-				if nh == "-" { // 直连行的占位
+				// 直连行占位归零:旧版输出 "-",v2.6.4+ 为 "DIRECT"(cost==1)。
+				// 漏认会把字面量当中继节点标识,直连链路被误标「经 DIRECT 中继」。
+				if nh == "-" || strings.EqualFold(nh, "direct") {
 					nh = ""
 				}
 				if ip != "" {
