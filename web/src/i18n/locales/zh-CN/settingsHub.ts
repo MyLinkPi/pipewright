@@ -14,6 +14,7 @@ export default {
   navHttps: 'HTTPS 访问',
   navAccount: '账户',
   navServers: '服务器',
+  navAliyunEcs: '阿里云 ECS',
   navMesh: '集群',  navSharedBuild: '共享构建机',
 
   navRegistry: '镜像仓库',

@@ -198,6 +198,11 @@ built-in userspace NAT so **no return routes are needed inside those subnets**.
    service (one UAC prompt; auto-connects on boot without a login prompt) and importing the YAML.
 3. **Routes**: leave the route list empty to route **all** advertised subnets through the
    tunnel, or list specific CIDRs to pin exactly which subnets this machine routes.
+4. **Local SOCKS5 proxy (optional)**: enable it in the client (default port 1080) and point
+   any app's proxy at `socks5://127.0.0.1:1080` — that app then reaches the virtual network
+   and advertised subnets through the tunnel without touching system routes. Note: no auth
+   (local-machine only — the client adds a firewall rule blocking LAN access to the port),
+   and domain names resolve via the local DNS, so prefer IPs for internal hosts.
 
 Diagnostics CLI: `pwclient status`, `pwclient doctor`. The client never holds a node signing
 key — cluster APIs (`/api/mesh/*`) stay protected by node signatures + ACLs; a client with

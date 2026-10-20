@@ -71,6 +71,9 @@ type Builder struct {
 	// objectUploader:dag 里 oss_upload 节点真实化所需(main 注入 objectstore.Service)。nil → 该
 	// 节点退化为「未注入,跳过」日志(向后兼容;非-dag Builder.Run 路径不用)。
 	objectUploader stageObjectUploader
+	// ecsPower:dag 里 ecs_power(阿里云 ECS 开关机)节点真实化所需(main 注入 aliyunecs.Service)。
+	// nil → 该节点退化为「未注入,跳过」日志(向后兼容)。
+	ecsPower stageEcsPowerController
 	// buildCache 是构建依赖缓存库(build cache · P0):非 nil 时 script 类 job 执行前后据 job.Config
 	// 的 cachePaths/cacheKey 恢复/保存依赖目录(node_modules/.m2/.gradle 等),跨 run 持久化提速。
 	// nil 则不缓存(向后兼容)。由 main 注入(WithBuildCache)。缓存问题绝不让构建失败(best-effort)。
@@ -202,6 +205,16 @@ func WithWaitCoordinator(c *waitnode.Coordinator) BuilderOption {
 // WithStageObjectUploader 注入对象存储服务,使 dag 里的 oss_upload 节点真实上传产物到对象存储。
 func WithStageObjectUploader(u stageObjectUploader) BuilderOption {
 	return func(b *Builder) { b.objectUploader = u }
+}
+
+// WithEcsPowerController 注入阿里云 ECS 服务,使 dag 里的 ecs_power 节点真实执行开关机
+// (关机固定节省停机模式)。nil 不改(节点退化为「未注入,跳过」日志,向后兼容)。
+func WithEcsPowerController(c stageEcsPowerController) BuilderOption {
+	return func(b *Builder) {
+		if c != nil {
+			b.ecsPower = c
+		}
+	}
 }
 
 // WithBuildCache 注入构建依赖缓存库(build cache · P0):script 类 job 配了 cachePaths 时,

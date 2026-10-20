@@ -5,6 +5,7 @@ export default {
   title: '服务器',
   desc: '登记目标服务器(host / port / user + SSH 凭据),测试连通性。SSH 密钥仅按引用绑定,经保险库密文存取,绝不入库或回显明文。部署与运维都经此共享 SSH 层执行命令。',
   addServer: '登记服务器',
+  importFromAliyun: '从阿里云导入',
   editServer: '编辑服务器',
   addDisabledHint: '请先在凭据保险库添加一条 SSH 私钥凭据',
   noCredentialHint: '尚无 SSH 凭据。请先到「凭据保险库」添加一条「SSH 私钥」或「SSH 密码」凭据,再登记服务器。',

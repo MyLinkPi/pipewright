@@ -22,11 +22,14 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/huangchengsir/pipewright/internal/pwclient"
 	"github.com/huangchengsir/pipewright/internal/version"
@@ -192,6 +195,9 @@ func printSnapshot(snap *pwclient.StatusSnapshot) {
 	} else if snap.Configured {
 		fmt.Println("本机路由:   全部通告网段(未限定)")
 	}
+	if snap.Socks5.Enabled {
+		fmt.Println("本地代理:   socks5://127.0.0.1:" + strconv.Itoa(snap.Socks5.Port) + "(应用代理指向此地址即经集群访问)")
+	}
 	fmt.Println("EasyTier:  ", binState(snap))
 }
 
@@ -308,6 +314,16 @@ func runDoctor() {
 			}
 			check("EasyTier 二进制", snap.Binaries.CorePath != "" || snap.Binaries.Downloading,
 				binState(snap), "托盘「下载」或检查网络/镜像(PIPEWRIGHT_RELEASE_MIRROR)")
+			if snap.Socks5.Enabled {
+				addr := fmt.Sprintf("127.0.0.1:%d", snap.Socks5.Port)
+				conn, derr := net.DialTimeout("tcp", addr, 2*time.Second)
+				listening := derr == nil
+				if listening {
+					_ = conn.Close()
+				}
+				check("SOCKS5 监听", listening, addr,
+					"组网未就绪或二进制不支持 --socks5(pwclient doctor 的运行状态项会给出原因)")
+			}
 		}
 	}
 	doctorPlatformExtra(check)

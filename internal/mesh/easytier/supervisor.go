@@ -17,6 +17,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -71,9 +72,14 @@ type Config struct {
 	// 通告)。非空时 easytier 以 --manual-routes 启动:禁用自动通告路由,仅保留列表网段。
 	// 客户端(pwclient)用它实现「CIDR 自由配置」;平台节点通常留空。
 	ManualRoutes []string
-	DataDir      string // 二进制定位目录(<data>/bin)
-	CorePath     string // 已定位的 easytier-core(托管模式必填)
-	CliPath      string // 已定位的 easytier-cli
+	// Socks5Port 是本地 SOCKS5 服务端口(0 = 关闭)。开启后本机 SOCKS5 客户端(浏览器/
+	// 终端/Clash 等)经此端口访问虚拟网络 —— 拨号目标按虚拟路由表转发,含经子网代理
+	// NAT 的远端网段;不动系统路由,与其他流量互不影响。注意 EasyTier 侧无认证,仅本机
+	// 使用(客户端侧需防火墙阻断非本机访问)。
+	Socks5Port int
+	DataDir    string // 二进制定位目录(<data>/bin)
+	CorePath   string // 已定位的 easytier-core(托管模式必填)
+	CliPath    string // 已定位的 easytier-cli
 }
 
 // Supervisor 是托管模式子进程监督器。零值不可用,经 New 构造;线程安全。
@@ -98,12 +104,12 @@ func New(cfg Config) *Supervisor {
 
 // args 生成 easytier-core 参数(固定 RPC portal 端口便于本机状态查询)。
 func (c Config) args() []string {
-	return buildArgs(c, proxyNetworkFlag(c.CorePath), SupportsManualRoutes(c.CorePath))
+	return buildArgs(c, probeHelp(c.CorePath))
 }
 
-// buildArgs 是 args 的纯函数形态(proxyFlag 为探测到的子网代理参数名,manualOK 为是否
-// 支持 --manual-routes;单测直接构造,不触真机二进制)。
-func buildArgs(c Config, proxyFlag string, manualOK bool) []string {
+// buildArgs 是 args 的纯函数形态(flags 为 --help 探测出的旗子集合;单测直接构造,
+// 不触真机二进制)。
+func buildArgs(c Config, flags helpFlags) []string {
 	args := []string{
 		"--network-name", c.NetworkName,
 		"--rpc-portal", c.RPCAddr,
@@ -126,17 +132,21 @@ func buildArgs(c Config, proxyFlag string, manualOK bool) []string {
 	// 形态 —— 以 --help 探测结果为准传参。逐值重复传(clap Vec 追加语义,兼容是否配置
 	// value_delimiter 的两种实现)。
 	for _, n := range c.ProxyNetworks {
-		if n != "" && proxyFlag != "" {
-			args = append(args, proxyFlag, n)
+		if n != "" && flags.proxyNetwork != "" {
+			args = append(args, flags.proxyNetwork, n)
 		}
 	}
 	// 手工路由:同上逐值重复传。空列表 = 自动接受全部子网代理通告,不传参数。
-	if manualOK {
+	if flags.manualRoutes {
 		for _, r := range c.ManualRoutes {
 			if r != "" {
 				args = append(args, "--manual-routes", r)
 			}
 		}
+	}
+	// 本地 SOCKS5 服务(端口>0 且二进制支持)。
+	if c.Socks5Port > 0 && flags.socks5 {
+		args = append(args, "--socks5", strconv.Itoa(c.Socks5Port))
 	}
 	return args
 }
@@ -148,6 +158,7 @@ var probeCache sync.Map // corePath → helpFlags
 type helpFlags struct {
 	proxyNetwork string // "--proxy-networks" | "--proxy-network" | ""
 	manualRoutes bool
+	socks5       bool
 }
 
 // probeHelp 以 5s 超时跑一次 --help 并解析旗子(结果经 probeCache 缓存,每路径只跑一次)。
@@ -167,7 +178,7 @@ func probeHelp(corePath string) helpFlags {
 }
 
 // parseHelpFlags 是 --help 输出 → 旗子集合的纯函数(子网代理优先匹配复数官方形态,
-// 兼容历史单数;manual-routes 按子串匹配)。
+// 兼容历史单数;manual-routes/socks5 按子串匹配)。
 func parseHelpFlags(out string, ok bool) helpFlags {
 	if !ok {
 		return helpFlags{}
@@ -180,6 +191,7 @@ func parseHelpFlags(out string, ok bool) helpFlags {
 		flags.proxyNetwork = "--proxy-network"
 	}
 	flags.manualRoutes = strings.Contains(out, "--manual-routes")
+	flags.socks5 = strings.Contains(out, "--socks5")
 	return flags
 }
 
@@ -191,6 +203,9 @@ func SupportsProxyNetwork(corePath string) bool { return proxyNetworkFlag(corePa
 
 // SupportsManualRoutes 探测 easytier-core 是否提供 --manual-routes 参数。
 func SupportsManualRoutes(corePath string) bool { return probeHelp(corePath).manualRoutes }
+
+// SupportsSocks5 探测 easytier-core 是否提供 --socks5 参数。
+func SupportsSocks5(corePath string) bool { return probeHelp(corePath).socks5 }
 
 // Start 拉起子进程并进入监督循环(退出按退避重启;ctx 取消或 Stop 后退出循环)。
 // 运行在独立 goroutine;Start 本身只在参数明显非法时同步报错。
@@ -209,6 +224,12 @@ func (s *Supervisor) Start(ctx context.Context) error {
 	}
 	if len(s.cfg.ManualRoutes) > 0 && !SupportsManualRoutes(s.cfg.CorePath) {
 		return fmt.Errorf("easytier: %s 不支持 --manual-routes,无法手工限定路由网段(请升级二进制)", CoreBinary())
+	}
+	if s.cfg.Socks5Port > 0 && !SupportsSocks5(s.cfg.CorePath) {
+		return fmt.Errorf("easytier: %s 不支持 --socks5,无法开启本地 SOCKS5 服务(请升级二进制)", CoreBinary())
+	}
+	if s.cfg.Socks5Port < 0 || s.cfg.Socks5Port > 65535 {
+		return fmt.Errorf("easytier: socks5 端口 %d 超出范围(1-65535)", s.cfg.Socks5Port)
 	}
 	go s.supervise(ctx)
 	return nil

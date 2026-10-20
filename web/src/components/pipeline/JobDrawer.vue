@@ -25,11 +25,13 @@ import {
 } from './studioCompile'
 import { createCustomNode } from '../../api/customNodes'
 import { listMeshPeers, fetchPeerProjects, type MeshPeer, type MeshPeerProject, type MeshProxyDegraded } from '../../api/mesh'
+import { listAliyunAccounts, aliyunRegionLabel, type AliyunEcsAccount } from '../../api/aliyunEcs'
 import { matchServers } from '../../lib/selectorMatch'
 import JobTypeIcon from './JobTypeIcon.vue'
 import StepBuilder from './StepBuilder.vue'
 import StudioInstanceParams from './StudioInstanceParams.vue'
 import LabelSelectorEditor from './LabelSelectorEditor.vue'
+import EcsInstanceMultiSelect from './EcsInstanceMultiSelect.vue'
 import ServiceRegBinding from './ServiceRegBinding.vue'
 
 
@@ -46,6 +48,20 @@ async function ensureMeshPeers(): Promise<void> {
     meshPeers.value = res.items ?? []
   } catch {
     meshPeers.value = []
+  }
+}
+
+// 阿里云账户候选(ecs_power 节点;设置→阿里云 ECS 登记)——focus 懒加载,同 meshPeers 先例。
+const aliyunAccounts = ref<AliyunEcsAccount[]>([])
+let aliyunAccountsLoaded = false
+
+async function ensureAliyunAccounts(): Promise<void> {
+  if (aliyunAccountsLoaded) return
+  aliyunAccountsLoaded = true
+  try {
+    aliyunAccounts.value = await listAliyunAccounts()
+  } catch {
+    aliyunAccounts.value = []
   }
 }
 
@@ -832,6 +848,29 @@ async function confirmSave(): Promise<void> {
             {{ st.name }} · {{ st.bucket }}
           </option>
         </select>
+
+        <!-- 阿里云账户(ECS 开关机节点):从设置页已配阿里云账户里选一条(focus 懒加载) -->
+        <select
+          v-else-if="field.kind === 'aliyunAccount'"
+          :value="fieldValue(field.key)"
+          class="drawer-select"
+          :aria-label="field.label"
+          @focus="ensureAliyunAccounts()"
+          @change="setField(field.key, ($event.target as HTMLSelectElement).value)"
+        >
+          <option value="">{{ t('pipelineJob.aliyunAccountUnselected') }}</option>
+          <option v-for="acc in aliyunAccounts" :key="acc.id" :value="acc.id">
+            {{ acc.name }} · {{ aliyunRegionLabel(acc.region) }}
+          </option>
+        </select>
+
+        <!-- 阿里云 ECS 实例多选(ECS 开关机节点):候选随所选账户联动拉取,值 = 逗号串 -->
+        <EcsInstanceMultiSelect
+          v-else-if="field.kind === 'ecsInstances'"
+          :account-id="fieldValue('accountId')"
+          :model-value="fieldValue(field.key)"
+          @update:model-value="(v: string) => setField(field.key, v)"
+        />
 
         <!-- toggle -->
         <label v-else-if="field.kind === 'toggle'" class="drawer-toggle">

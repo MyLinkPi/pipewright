@@ -137,6 +137,7 @@ type configView struct {
 	Enabled  bool           `json:"enabled"`
 	Join     joinView       `json:"join"`
 	Routes   []string       `json:"routes"`
+	Socks5   Socks5Config   `json:"socks5"`
 	EasyTier EasyTierConfig `json:"easytier"`
 }
 
@@ -159,6 +160,7 @@ func toConfigView(cfg Config) configView {
 			Hostname:    cfg.Join.Hostname,
 		},
 		Routes:   nonNil(cfg.Routes),
+		Socks5:   cfg.Socks5,
 		EasyTier: cfg.EasyTier,
 	}
 }
@@ -192,6 +194,8 @@ type ConfigSetRequest struct {
 	VirtualIP      *string   `json:"virtualIp"`
 	Hostname       *string   `json:"hostname"`
 	Routes         *[]string `json:"routes"`
+	Socks5Enabled  *bool     `json:"socks5Enabled"`
+	Socks5Port     *int      `json:"socks5Port"`
 	EasyTierBinDir *string   `json:"easytierBinDir"`
 	EasyTierRPC    *string   `json:"easytierRpc"`
 }
@@ -227,6 +231,12 @@ func (s *ipcServer) handleConfigPut(w http.ResponseWriter, r *http.Request) {
 	}
 	if body.Routes != nil {
 		cfg.Routes = *body.Routes
+	}
+	if body.Socks5Enabled != nil {
+		cfg.Socks5.Enabled = *body.Socks5Enabled
+	}
+	if body.Socks5Port != nil {
+		cfg.Socks5.Port = *body.Socks5Port
 	}
 	if body.EasyTierBinDir != nil {
 		cfg.EasyTier.BinDir = *body.EasyTierBinDir
@@ -381,6 +391,17 @@ func (c *IPCClient) do(ctx context.Context, method, path string, body any, out a
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode == http.StatusForbidden {
 		return fmt.Errorf("pwclient: 服务通道鉴权失败(服务重启后请重试)")
+	}
+	if resp.StatusCode >= 400 {
+		// 错误信封 {error: "..."} 统一转 error(调用方据此向用户展示原因)。
+		var body struct {
+			Error string `json:"error"`
+		}
+		_ = json.NewDecoder(resp.Body).Decode(&body)
+		if body.Error == "" {
+			body.Error = fmt.Sprintf("HTTP %d", resp.StatusCode)
+		}
+		return errors.New(body.Error)
 	}
 	if out != nil {
 		if resp.StatusCode == http.StatusNoContent {

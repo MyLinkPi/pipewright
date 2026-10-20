@@ -123,6 +123,7 @@ func NewStageExecutor(b *Builder, reportSink TestReportSink) dagrun.StageExecuto
 		healthJobs := make([]pipeline.Job, 0, len(stage.Jobs))
 		notifyJobs := make([]pipeline.Job, 0, len(stage.Jobs))
 		ossUploadJobs := make([]pipeline.Job, 0, len(stage.Jobs))
+		ecsPowerJobs := make([]pipeline.Job, 0, len(stage.Jobs))
 		pushImageJobs := make([]pipeline.Job, 0, len(stage.Jobs))
 		meshJobs := make([]pipeline.Job, 0, len(stage.Jobs))
 		pushedSourceJobs := make([]pipeline.Job, 0, len(stage.Jobs))
@@ -143,6 +144,8 @@ func NewStageExecutor(b *Builder, reportSink TestReportSink) dagrun.StageExecuto
 				notifyJobs = append(notifyJobs, jb)
 			case isObjectUploadJob(jb.Type):
 				ossUploadJobs = append(ossUploadJobs, jb)
+			case isEcsPowerJob(jb.Type):
+				ecsPowerJobs = append(ecsPowerJobs, jb)
 			case isMeshPushJob(jb.Type) || isMeshTriggerJob(jb.Type):
 				meshJobs = append(meshJobs, jb)
 			case isPushedSourceJob(jb.Type):
@@ -154,10 +157,10 @@ func NewStageExecutor(b *Builder, reportSink TestReportSink) dagrun.StageExecuto
 
 		needsBuild := len(scriptJobs) > 0 || len(buildImageJobs) > 0
 		// 没有任何可执行节点(script/build_image/deploy/health_check/notify/oss_upload/push_image/
-		// mesh_push/mesh_trigger/pushed_source/wait)且无 post → 诚实占位放行。
+		// mesh_push/mesh_trigger/pushed_source/wait/ecs_power)且无 post → 诚实占位放行。
 		if !needsBuild && len(deployJobs) == 0 && len(healthJobs) == 0 && len(notifyJobs) == 0 &&
 			len(ossUploadJobs) == 0 && len(pushImageJobs) == 0 && len(meshJobs) == 0 &&
-			len(pushedSourceJobs) == 0 && len(waitJobs) == 0 && len(stage.Post) == 0 {
+			len(pushedSourceJobs) == 0 && len(waitJobs) == 0 && len(ecsPowerJobs) == 0 && len(stage.Post) == 0 {
 			for _, jb := range stage.Jobs {
 				_ = rep.JobRunning(ctx, jb.ID)
 				jr := rep.JobReporter(jb.ID)
@@ -357,6 +360,21 @@ func NewStageExecutor(b *Builder, reportSink TestReportSink) dagrun.StageExecuto
 				_ = rep.JobRunning(ctx, jb.ID)
 				jrep := rep.JobReporter(jb.ID)
 				if err := b.runOssUploadJob(ctx, jrep, jb, r); err != nil {
+					_ = rep.JobDone(ctx, jb.ID, run.StepFailed)
+					return err
+				}
+				_ = rep.JobDone(ctx, jb.ID, run.StepSuccess)
+			}
+
+			// ── ECS 开关机节点(ecs_power):对所选阿里云 ECS 实例开机/关机(关机固定节省停机
+			// 模式;控制机本地执行,不依赖目标机在线;失败令阶段失败)──
+			for _, jb := range ecsPowerJobs {
+				if canceled(ctx) {
+					return run.ErrCanceled
+				}
+				_ = rep.JobRunning(ctx, jb.ID)
+				jrep := rep.JobReporter(jb.ID)
+				if err := b.runEcsPowerJob(ctx, jrep, jb, r); err != nil {
 					_ = rep.JobDone(ctx, jb.ID, run.StepFailed)
 					return err
 				}
@@ -575,6 +593,8 @@ func (b *Builder) runStageJobsDAG(
 				return nil
 			case isObjectUploadJob(jb.Type):
 				return b.runOssUploadJob(ctx, jrep, jb, r)
+			case isEcsPowerJob(jb.Type):
+				return b.runEcsPowerJob(ctx, jrep, jb, r)
 			case isPushedSourceJob(jb.Type):
 				return b.runPushedSourceJob(ctx, jrep, jb, stage, r)
 			case isMeshPushJob(jb.Type):

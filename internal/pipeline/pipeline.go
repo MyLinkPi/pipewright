@@ -629,6 +629,12 @@ func normalizeSpec(in Spec) (Spec, error) {
 		return Spec{}, err
 	}
 
+	// 阿里云 ECS 开关机节点(ecs_power)配置形态校验:action/账户/选择方式(实例直选或
+	// 阿里云/平台标签),见 ecs_power.go。账户与实例存在性由运行时裁决。
+	if err := validateEcsPower(out.Stages); err != nil {
+		return Spec{}, err
+	}
+
 	return out, nil
 }
 

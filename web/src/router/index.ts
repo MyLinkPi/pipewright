@@ -67,6 +67,8 @@ const SettingsRedis = () => import('../views/settings/SettingsRedis.vue')
 const PVE = () => import('../views/PVE.vue')
 // PVE 集群 Token 配置(集群记录由服务器登记探测自动生成)
 const SettingsPVE = () => import('../views/settings/SettingsPVE.vue')
+// 阿里云 ECS 批量导入:多账户 AK/SK 配置 + 拉实例手选范围批量登记/更新服务器
+const SettingsAliyunEcs = () => import('../views/settings/SettingsAliyunEcs.vue')
 // 平台 HTTPS 访问:宿主 nginx 自动配置(证书 + 80→443 跳转),证书复用证书管理
 const SettingsHttps = () => import('../views/settings/SettingsHttps.vue')
 const SettingsAccount = () => import('../views/settings/SettingsAccount.vue')
@@ -244,6 +246,8 @@ const router = createRouter({
             { path: 'system', name: 'settings-system', component: SettingsSystem, meta: { title: '系统信息' } },
             // Story 4-1: target servers + shared SSH layer (FR-14)
             { path: 'servers', name: 'settings-servers', component: SettingsServers, meta: { title: '服务器' } },
+            // 阿里云 ECS 批量导入(账户配置 + 导入向导;导入的机器进「服务器」)
+            { path: 'aliyun-ecs', name: 'settings-aliyun-ecs', component: SettingsAliyunEcs, meta: { title: '阿里云 ECS' } },
             // 集群:本节点身份/EasyTier 组网/授权单(默认全拒绝)/节点注册表
             { path: 'mesh', name: 'settings-mesh', component: SettingsMesh, meta: { title: '集群' } },
             // 集群级共享构建机:跨环境共享构建任务(owner 视角)+ 共享机总览

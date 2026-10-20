@@ -5,6 +5,7 @@ export default {
   title: 'Server',
   desc: 'Zielserver registrieren (Host / Port / Benutzer + SSH-Anmeldedaten) und Konnektivität testen. SSH-Schlüssel werden nur per Referenz gebunden, über den Tresor verschlüsselt gespeichert und abgerufen und niemals im Klartext gespeichert oder angezeigt. Deployment und Betrieb führen Befehle über diese gemeinsame SSH-Schicht aus.',
   addServer: 'Server registrieren',
+  importFromAliyun: 'Aus Aliyun importieren',
   editServer: 'Server bearbeiten',
   addDisabledHint: 'Fügen Sie zuerst im Anmeldedaten-Tresor SSH-Anmeldedaten mit privatem Schlüssel hinzu',
   noCredentialHint: 'Noch keine SSH-Anmeldedaten. Fügen Sie im „Anmeldedaten-Tresor“ Anmeldedaten vom Typ „SSH-Privatschlüssel“ oder „SSH-Passwort“ hinzu, bevor Sie einen Server registrieren.',

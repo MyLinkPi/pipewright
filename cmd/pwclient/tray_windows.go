@@ -42,6 +42,11 @@ type trayApp struct {
 	actConnect    *walk.Action
 	actDisconnect *walk.Action
 
+	socks5Check  *walk.CheckBox
+	socks5Port   *walk.NumberEdit
+	socks5Addr   *walk.Label
+	copyProxyBtn *walk.PushButton
+
 	ipc     *pwclient.IPCClient
 	snap    *pwclient.StatusSnapshot
 	ipcDown bool
@@ -102,6 +107,25 @@ func (a *trayApp) build() error {
 							PushButton{AssignTo: &a.applyRoutes, Text: "保存并应用", OnClicked: a.onApplyRoutes, MinSize: Size{Width: 116}},
 						},
 					},
+				},
+			},
+			GroupBox{
+				Title:  "本地代理(SOCKS5,可选)",
+				Layout: VBox{MarginsZero: true, Spacing: 6},
+				Children: []Widget{
+					Label{Text: "应用(浏览器/终端等)把代理指向 127.0.0.1:端口 即可经集群访问,不影响其他流量。无认证,仅限本机使用;域名解析走本机 DNS。", TextColor: walk.Color(0x666666)},
+					Composite{
+						Layout: HBox{MarginsZero: true, Spacing: 8},
+						Children: []Widget{
+							CheckBox{AssignTo: &a.socks5Check, Text: "启用"},
+							Label{Text: "端口:"},
+							NumberEdit{AssignTo: &a.socks5Port, MinValue: 1, MaxValue: 65535, Value: 1080, Decimals: 0, MinSize: Size{Width: 72}},
+							PushButton{AssignTo: &a.copyProxyBtn, Text: "复制代理地址", OnClicked: a.onCopyProxy},
+							HSpacer{},
+							PushButton{Text: "保存并应用", OnClicked: a.onApplySocks5, MinSize: Size{Width: 96}},
+						},
+					},
+					Label{AssignTo: &a.socks5Addr, TextColor: walk.Color(0x666666)},
 				},
 			},
 			GroupBox{
@@ -328,6 +352,22 @@ func (a *trayApp) apply(snap *pwclient.StatusSnapshot, err error, logs []string)
 		a.routesEdit.SetText(strings.Join(snap.Routes, "\r\n"))
 	}
 
+	// SOCKS5 区:回显生效值(启用中显示监听地址;未启用显示预览地址)。
+	port := snap.Socks5.Port
+	if port == 0 {
+		port = 1080
+	}
+	if a.socks5Port.Value() != float64(port) {
+		a.socks5Port.SetValue(float64(port))
+	}
+	if snap.Socks5.Enabled {
+		a.socks5Addr.SetText("监听中:socks5://127.0.0.1:" + fmt.Sprintf("%d", port) + "(保存后随组网生效)")
+		a.copyProxyBtn.SetEnabled(true)
+	} else {
+		a.socks5Addr.SetText("未启用(勾选并保存后,本机该端口即可经集群访问)")
+		a.copyProxyBtn.SetEnabled(false)
+	}
+
 	tooltip := "pipewright 客户端 — " + strings.TrimPrefix(a.stateLabel.Text(), "● ")
 	_ = a.ni.SetToolTip(tooltip)
 	a.renderLogs(logs)
@@ -452,6 +492,34 @@ func (a *trayApp) onDownload() {
 		return
 	}
 	a.refreshOnce()
+}
+
+// onApplySocks5 保存 SOCKS5 开关与端口并立即对账。
+func (a *trayApp) onApplySocks5() {
+	cli, err := a.client()
+	if err != nil {
+		a.actionErr(err)
+		return
+	}
+	enabled := a.socks5Check.Checked()
+	port := int(a.socks5Port.Value())
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	if _, err := cli.PutConfig(ctx, pwclient.ConfigSetRequest{Socks5Enabled: &enabled, Socks5Port: &port}); err != nil {
+		a.actionErr(err)
+		return
+	}
+	a.refreshOnce()
+}
+
+// onCopyProxy 把当前 SOCKS5 地址(127.0.0.1:port)写入剪贴板。
+func (a *trayApp) onCopyProxy() {
+	addr := fmt.Sprintf("127.0.0.1:%d", int(a.socks5Port.Value()))
+	if err := walk.Clipboard().SetText(addr); err != nil {
+		a.actionErr(err)
+		return
+	}
+	a.socks5Addr.SetText("已复制 " + addr + " — 粘贴到应用或系统代理设置(SOCKS5)")
 }
 
 // onInstallService 经 UAC 提权运行 `pwclient service install`,随后轮询服务就绪。

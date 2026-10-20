@@ -101,6 +101,25 @@ func TestIPCTokenAndEndpoints(t *testing.T) {
 		t.Fatal("disable not persisted")
 	}
 
+	// SOCKS5:部分更新(启用+端口)→ 回显生效;关闭后端口保留;非法端口报错。
+	on, port := true, 1080
+	view, err = cli.PutConfig(ctx, ConfigSetRequest{Socks5Enabled: &on, Socks5Port: &port})
+	if err != nil {
+		t.Fatalf("socks5 put: %v", err)
+	}
+	if !view.Socks5.Enabled || view.Socks5.Port != 1080 {
+		t.Fatalf("socks5 view: %+v", view.Socks5)
+	}
+	off := false
+	view, err = cli.PutConfig(ctx, ConfigSetRequest{Socks5Enabled: &off})
+	if err != nil || view.Socks5.Enabled || view.Socks5.Port != 1080 {
+		t.Fatalf("socks5 off should keep port: %+v err=%v", view.Socks5, err)
+	}
+	badPort := 99999
+	if _, err := cli.PutConfig(ctx, ConfigSetRequest{Socks5Enabled: &on, Socks5Port: &badPort}); err == nil {
+		t.Fatal("invalid socks5 port should error")
+	}
+
 	// 日志环:写两条,尾部可见。
 	_, _ = rt.LogWriter().Write([]byte("line-1\nline-2\n"))
 	var logs map[string]any

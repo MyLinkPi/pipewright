@@ -40,6 +40,17 @@ type EasyTierConfig struct {
 	RPCAddr string `yaml:"rpcAddr"` // 空 = 127.0.0.1:15889(避开平台节点默认的 15888)
 }
 
+// Socks5Config 是本地 SOCKS5 服务(easytier --socks5):应用把代理指向
+// 127.0.0.1:<port> 即可经集群虚拟网络访问(含经 NAT 的远端网段),不动系统路由,
+// 与「网段路由」互补。注意 EasyTier 侧无认证 —— 仅本机使用(客户端防火墙阻断非本机访问)。
+type Socks5Config struct {
+	Enabled bool `yaml:"enabled"`
+	Port    int  `yaml:"port"` // 空/0 且 enabled = 1080;disabled 时端口保留不清空
+}
+
+// socks5DefaultPort 是启用 SOCKS5 而未指定端口时的默认端口。
+const socks5DefaultPort = 1080
+
 // Config 是客户端全部配置(config.yaml;服务与 GUI 共享读写)。
 type Config struct {
 	// Enabled 是连接开关(托盘「断开/连接」);false = 停止组网、保留配置。
@@ -48,6 +59,7 @@ type Config struct {
 	// Routes 手工限定本机路由的网段(cidr)。空 = 自动接受全部子网代理通告;
 	// 非空 = 经 --manual-routes 仅路由列表内网段。
 	Routes   []string       `yaml:"routes"`
+	Socks5   Socks5Config   `yaml:"socks5"`
 	EasyTier EasyTierConfig `yaml:"easytier"`
 }
 
@@ -115,6 +127,12 @@ func Normalize(cfg Config) (Config, error) {
 	cfg.Join.VirtualIP = strings.TrimSpace(cfg.Join.VirtualIP)
 	cfg.Join.Hostname = strings.TrimSpace(cfg.Join.Hostname)
 	cfg.Join.Peers = dedupeTrim(cfg.Join.Peers)
+	if cfg.Socks5.Enabled && cfg.Socks5.Port == 0 {
+		cfg.Socks5.Port = socks5DefaultPort
+	}
+	if cfg.Socks5.Port < 0 || cfg.Socks5.Port > 65535 {
+		return cfg, fmt.Errorf("%w: SOCKS5 端口 %d 超出范围(1-65535)", ErrInvalidConfig, cfg.Socks5.Port)
+	}
 	cfg.EasyTier.BinDir = strings.TrimSpace(cfg.EasyTier.BinDir)
 	cfg.EasyTier.RPCAddr = strings.TrimSpace(cfg.EasyTier.RPCAddr)
 	if cfg.EasyTier.RPCAddr == "" {
