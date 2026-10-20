@@ -27,6 +27,20 @@ jobs:
       - run: go test . ./cmd/... ./internal/...
       - name: static build
         run: CGO_ENABLED=0 go build -o pipewright ./cmd/pipewright
+      # 发版目标全平台交叉编译:平台专属文件缺口(如某函数缺 darwin 实现)在
+      # linux CI 的 vet/test 里不可见,只在 goreleaser 发版时爆炸,这里提前拦下。
+      - name: cross-compile release targets
+        run: |
+          for goos in linux darwin windows; do
+            for goarch in amd64 arm64; do
+              echo "== pipewright $goos/$goarch"
+              CGO_ENABLED=0 GOOS=$goos GOARCH=$goarch go build -o /dev/null ./cmd/pipewright
+            done
+          done
+          for goarch in amd64 arm64; do
+            echo "== pwclient windows/$goarch"
+            CGO_ENABLED=0 GOOS=windows GOARCH=$goarch go build -o /dev/null ./cmd/pwclient
+          done
 
   frontend:
     runs-on: ubuntu-latest
