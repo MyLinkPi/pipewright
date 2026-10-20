@@ -54,6 +54,14 @@ type Socks5Config struct {
 // socks5DefaultPort 是启用 SOCKS5 而未指定端口时的默认端口。
 const socks5DefaultPort = 1080
 
+// ProxyConfig 是一条独立的多出口代理:EasyTier 单进程仅一个 --socks5 端口且出口是
+// 节点级路由,故每条配置由运行时拉起一个独立轻量组网实例(独立实例目录 + DHCP 虚拟 IP),
+// 本地端口与出口节点一一绑定。ExitNodes 空 = 该端口仅访问虚拟网/通告网段,不出网。
+type ProxyConfig struct {
+	Port      int      `yaml:"port"`
+	ExitNodes []string `yaml:"exitNodes"`
+}
+
 // Config 是客户端全部配置(config.yaml;服务与 GUI 共享读写)。
 type Config struct {
 	// Enabled 是连接开关(托盘「断开/连接」);false = 停止组网、保留配置。
@@ -61,8 +69,10 @@ type Config struct {
 	Join    JoinConfig `yaml:"join"`
 	// Routes 手工限定本机路由的网段(cidr)。空 = 不路由任何通告网段(fail-closed,仅虚拟网互通);
 	// 非空 = 经 --manual-routes 仅路由列表内网段。
-	Routes   []string       `yaml:"routes"`
-	Socks5   Socks5Config   `yaml:"socks5"`
+	Routes []string     `yaml:"routes"`
+	Socks5 Socks5Config `yaml:"socks5"`
+	// Proxies 是附加的多出口代理列表(每条 = 独立本地 SOCKS5 端口 + 各自出口节点)。
+	Proxies  []ProxyConfig  `yaml:"proxies"`
 	EasyTier EasyTierConfig `yaml:"easytier"`
 }
 
@@ -133,24 +143,16 @@ func Normalize(cfg Config) (Config, error) {
 	if cfg.Socks5.Enabled && cfg.Socks5.Port == 0 {
 		cfg.Socks5.Port = socks5DefaultPort
 	}
-	seenExit := make(map[string]struct{}, len(cfg.Socks5.ExitNodes))
-	exits := make([]string, 0, len(cfg.Socks5.ExitNodes))
-	for _, ip := range cfg.Socks5.ExitNodes {
-		ip = strings.TrimSpace(ip)
-		if ip == "" {
-			continue
-		}
-		if net.ParseIP(ip) == nil {
-			return cfg, fmt.Errorf("%w: 出口节点 %q 不是合法 IP(填对端虚拟 IP)", ErrInvalidConfig, ip)
-		}
-		if _, dup := seenExit[ip]; !dup {
-			seenExit[ip] = struct{}{}
-			exits = append(exits, ip)
-		}
+	exits, err := normalizeExitNodes(cfg.Socks5.ExitNodes)
+	if err != nil {
+		return cfg, err
 	}
 	cfg.Socks5.ExitNodes = exits
 	if cfg.Socks5.Port < 0 || cfg.Socks5.Port > 65535 {
 		return cfg, fmt.Errorf("%w: SOCKS5 端口 %d 超出范围(1-65535)", ErrInvalidConfig, cfg.Socks5.Port)
+	}
+	if err := normalizeProxies(&cfg); err != nil {
+		return cfg, err
 	}
 	cfg.EasyTier.BinDir = strings.TrimSpace(cfg.EasyTier.BinDir)
 	cfg.EasyTier.RPCAddr = strings.TrimSpace(cfg.EasyTier.RPCAddr)
@@ -178,6 +180,61 @@ func Normalize(cfg Config) (Config, error) {
 	}
 	cfg.Routes = routes
 	return cfg, nil
+}
+
+// normalizeExitNodes 归一化出口节点列表:去空白、去重(保序)、逐项须为合法 IP
+// (填对端虚拟 IP,非 CIDR)。
+func normalizeExitNodes(ips []string) ([]string, error) {
+	seen := make(map[string]struct{}, len(ips))
+	out := make([]string, 0, len(ips))
+	for _, ip := range ips {
+		ip = strings.TrimSpace(ip)
+		if ip == "" {
+			continue
+		}
+		if net.ParseIP(ip) == nil {
+			return nil, fmt.Errorf("%w: 出口节点 %q 不是合法 IP(填对端虚拟 IP)", ErrInvalidConfig, ip)
+		}
+		if _, dup := seen[ip]; !dup {
+			seen[ip] = struct{}{}
+			out = append(out, ip)
+		}
+	}
+	return out, nil
+}
+
+// normalizeProxies 归一化多出口代理:端口 1-65535、彼此不重复、不与主 SOCKS5 端口冲突
+// (主代理启用时;禁用时不拦,启用时再暴露)。出口列表逐条归一。保序(列表序即实例序)。
+func normalizeProxies(cfg *Config) error {
+	seenPort := make(map[int]struct{}, len(cfg.Proxies))
+	out := make([]ProxyConfig, 0, len(cfg.Proxies))
+	for _, p := range cfg.Proxies {
+		if p.Port < 1 || p.Port > 65535 {
+			return fmt.Errorf("%w: 多出口代理端口 %d 超出范围(1-65535)", ErrInvalidConfig, p.Port)
+		}
+		if _, dup := seenPort[p.Port]; dup {
+			return fmt.Errorf("%w: 多出口代理端口 %d 重复", ErrInvalidConfig, p.Port)
+		}
+		if cfg.Socks5.Enabled && p.Port == socks5Port(*cfg) {
+			return fmt.Errorf("%w: 多出口代理端口 %d 与主 SOCKS5 端口冲突", ErrInvalidConfig, p.Port)
+		}
+		exits, err := normalizeExitNodes(p.ExitNodes)
+		if err != nil {
+			return fmt.Errorf("%w: 代理 %d 的%v", ErrInvalidConfig, p.Port, strings.TrimPrefix(err.Error(), ErrInvalidConfig.Error()+": "))
+		}
+		seenPort[p.Port] = struct{}{}
+		out = append(out, ProxyConfig{Port: p.Port, ExitNodes: exits})
+	}
+	cfg.Proxies = out
+	return nil
+}
+
+// socks5Port 取生效的 SOCKS5 端口(未启用 = 0)。
+func socks5Port(cfg Config) int {
+	if cfg.Socks5.Enabled {
+		return cfg.Socks5.Port
+	}
+	return 0
 }
 
 // ImportExport 解析平台导出的 pipewright-client.yaml,产出可合并的加入参数与预填路由。

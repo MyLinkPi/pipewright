@@ -120,6 +120,37 @@ func TestIPCTokenAndEndpoints(t *testing.T) {
 		t.Fatal("invalid socks5 port should error")
 	}
 
+	// 多出口代理:保存列表 → 回显与状态;端口重复被归一化拦截。
+	proxies := []ProxyConfig{
+		{Port: 1081, ExitNodes: []string{"10.126.126.2"}},
+		{Port: 1082, ExitNodes: []string{"10.126.126.3", "10.126.126.4"}},
+	}
+	view, err = cli.PutConfig(ctx, ConfigSetRequest{Socks5Proxies: &proxies})
+	if err != nil {
+		t.Fatalf("proxies put: %v", err)
+	}
+	if len(view.Proxies) != 2 || view.Proxies[0].Port != 1081 || len(view.Proxies[1].ExitNodes) != 2 {
+		t.Fatalf("proxies view: %+v", view.Proxies)
+	}
+	snap, err = cli.Status(ctx)
+	if err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	if len(snap.Proxies) != 2 || snap.Proxies[0].Port != 1081 || len(snap.Proxies[0].ExitNodes) != 1 {
+		t.Fatalf("proxies snapshot: %+v", snap.Proxies)
+	}
+	dup := []ProxyConfig{{Port: 1081}, {Port: 1081}}
+	if _, err := cli.PutConfig(ctx, ConfigSetRequest{Socks5Proxies: &dup}); err == nil {
+		t.Fatal("duplicate proxy port should error")
+	}
+	empty := []ProxyConfig{}
+	if _, err := cli.PutConfig(ctx, ConfigSetRequest{Socks5Proxies: &empty}); err != nil {
+		t.Fatalf("clear proxies: %v", err)
+	}
+	if cfg, _ := rt.LoadConfig(); len(cfg.Proxies) != 0 {
+		t.Fatalf("proxies should be cleared: %+v", cfg.Proxies)
+	}
+
 	// 日志环:写两条,尾部可见。
 	_, _ = rt.LogWriter().Write([]byte("line-1\nline-2\n"))
 	var logs map[string]any
