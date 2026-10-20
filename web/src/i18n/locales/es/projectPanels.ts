@@ -18,7 +18,7 @@ export default {
     errLoadGeneric: 'Error al cargar la configuración de disparadores, inténtalo de nuevo más tarde.',
 
     webhookTitle: 'Conexión de Webhook',
-    webhookSub: 'Plataforma de código · Gitee / Gitea',
+    webhookSub: 'Plataforma de código · Gitee / GitHub / Gitea',
     endpointLabel: 'Endpoint receptor',
     copied: 'Copiado',
     copyUrlAria: 'Copiar URL del webhook',
@@ -32,7 +32,7 @@ export default {
     resetSecretAria: 'Restablecer clave de firma',
     reset: 'Restablecer',
     pushConfigLabel: 'Configuración de push',
-    pushConfigHint: 'En la configuración de WebHooks del repositorio (Gitee / Gitea), pega la dirección y la clave de arriba y marca los eventos que necesites (Gitee: Push / Tag Push / Release / Pull Request; Gitea: Push / Create / Release / Pull Request). En Gitea/Gogs es obligatorio rellenar el texto de la clave; de lo contrario, las entregas se rechazan.',
+    pushConfigHint: 'En la configuración de WebHooks del repositorio (Gitee / GitHub / Gitea), pega la dirección y la clave de arriba y marca los eventos que necesites (Gitee: Push / Tag Push / Release / Pull Request; GitHub/Gitea: Push / Create / Release / Pull Request). En GitHub/Gitea/Gogs es obligatorio rellenar la clave; de lo contrario, las entregas se rechazan.',
     envLocal: 'Este entorno',
     envSelectAria: 'Seleccionar dirección del entorno receptor',
     forwardHint: 'Clúster activado: la plataforma de código solo necesita alcanzar cualquiera de las direcciones de entorno listadas; las entregas se reenvían automáticamente al entorno propietario de este pipeline (ese entorno debe conceder permiso de disparo al nodo de entrada en «Clúster → ACL»).',

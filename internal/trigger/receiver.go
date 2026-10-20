@@ -27,7 +27,8 @@ const replayWindow = 5 * time.Minute
 // nowFunc 供测试注入当前时间(默认 time.Now)。
 var nowFunc = time.Now
 
-// webhook 头(冻结契约)。Gitee 一套;Gitea/Gogs 一套(Gitea 出于兼容会同时发送两套头)。
+// webhook 头(冻结契约)。Gitee 一套;Gitea/Gogs 一套(Gitea 出于兼容会同时发送两套头);
+// GitHub 一套(事件/投递号头 X-GitHub-*,body 签名头为 X-Hub-Signature-256,格式 sha256=<hex>)。
 const (
 	HeaderGiteeEvent     = "X-Gitee-Event"
 	HeaderGiteeToken     = "X-Gitee-Token"
@@ -41,6 +42,10 @@ const (
 	HeaderGogsEvent     = "X-Gogs-Event"
 	HeaderGogsSignature = "X-Gogs-Signature"
 	HeaderGogsDelivery  = "X-Gogs-Delivery"
+
+	HeaderGitHubEvent     = "X-GitHub-Event"
+	HeaderGitHubDelivery  = "X-GitHub-Delivery"
+	HeaderHubSignature256 = "X-Hub-Signature-256"
 )
 
 // Gitee 事件名(X-Gitee-Event 取值)。
@@ -52,9 +57,10 @@ const (
 	eventRelease = "Release Hook"
 )
 
-// Gitea/Gogs 事件名(X-Gitea-Event / X-Gogs-Event 取值,两方取值一致)。
-// 注意:Gitea 推新 tag 会同时发 push(ref=refs/tags/x)与 create 两个事件,
-// 若同时订阅 Push 和 Tag 可能各触发一次运行,建议在 Gitea 端只勾选需要的事件。
+// Gitea/Gogs/GitHub 事件名(X-Gitea-Event / X-Gogs-Event / X-GitHub-Event 取值,三方取值一致;
+// GitHub 另有 ping 事件(webhook 建立时投递一次),不在订阅映射内,按未订阅忽略)。
+// 注意:Gitea/GitHub 推新 tag 会同时发 push(ref=refs/tags/x)与 create 两个事件,
+// 若同时订阅 Push 和 Tag 可能各触发一次运行,建议在 Git 平台端只勾选需要的事件。
 const (
 	eventGiteaPush         = "push"
 	eventGiteaCreate       = "create"
@@ -101,23 +107,24 @@ type Result struct {
 
 // Delivery 是从 HTTP 请求解析出的 webhook 投递(头 + 原始 body)。
 // RawBody 是验签所需的原始字节(Gitee 签名模式按其文档对 timestamp+"\n"+secret 计算,
-// 不依赖 body;Gitea/Gogs 签名模式对 RawBody 本身计算;body 亦用于解析事件)。
+// 不依赖 body;Gitea/Gogs/GitHub 签名模式对 RawBody 本身计算;body 亦用于解析事件)。
 type Delivery struct {
 	Token      string
 	Event      string
 	TokenHdr   string // X-Gitee-Token 头(密码模式=明文密钥;签名模式=base64 HMAC)
 	Timestamp  string
 	DeliveryID string
-	// BodySignature 是 X-Gitea-Signature / X-Gogs-Signature 头:
-	// hex(HMAC-SHA256(key=secret, msg=RawBody)),Gitea/Gogs 签名模式。
+	// BodySignature 是 X-Gitea-Signature / X-Gogs-Signature / X-Hub-Signature-256 头:
+	// Gitea/Gogs 为 hex(HMAC-SHA256(key=secret, msg=RawBody));GitHub 带 "sha256="
+	// 算法前缀(sha256=<hex>,verifySignature 统一剥前缀后比较)。
 	BodySignature string
-	// Actor 是提供商标签(gitee/gitea/gogs),写入运行触发信息的操作人;
+	// Actor 是提供商标签(gitee/github/gitea/gogs),写入运行触发信息的操作人;
 	// 空时回退 "gitee"(历史行为)。
 	Actor   string
 	RawBody []byte
 }
 
-// Receiver 处理 webhook 投递(Gitee / Gitea / Gogs):定位项目 → 解密密钥验签 → 解析/匹配 → 去重 → 创建运行。
+// Receiver 处理 webhook 投递(Gitee / GitHub / Gitea / Gogs):定位项目 → 解密密钥验签 → 解析/匹配 → 去重 → 创建运行。
 // 它复用 trigger 包内部的密钥解密(经 vault.OpenSecret),不经任何对外暴露明文的接口。
 type Receiver struct {
 	db     *sql.DB
@@ -338,15 +345,16 @@ const (
 	modeNone      = ""
 	modePassword  = "password"
 	modeSignature = "signature"
-	// modeBody 是 Gitea/Gogs 签名模式:对 RawBody 计算 HMAC,协议本身不带 timestamp。
+	// modeBody 是 Gitea/Gogs/GitHub 签名模式:对 RawBody 计算 HMAC,协议本身不带 timestamp。
 	modeBody = "body_signature"
 )
 
-// verifySignature 校验 webhook 签名,密码模式 / Gitee 签名模式 / Gitea(Gogs) body 签名模式
+// verifySignature 校验 webhook 签名,密码模式 / Gitee 签名模式 / Gitea(Gogs/GitHub) body 签名模式
 // 其一通过即可(恒定时间比较)。
 //   - 密码模式:X-Gitee-Token == 明文密钥。
 //   - 签名模式:base64(HMAC-SHA256(key=secret, msg=timestamp+"\n"+secret)) == X-Gitee-Token。
-//   - body 签名模式:hex(HMAC-SHA256(key=secret, msg=RawBody)) == X-Gitea-Signature / X-Gogs-Signature。
+//   - body 签名模式:hex(HMAC-SHA256(key=secret, msg=RawBody)) == X-Gitea-Signature /
+//     X-Gogs-Signature;GitHub 的 X-Hub-Signature-256 同形但带 "sha256=" 算法前缀,剥前缀后比较。
 //
 // 返回 (命中模式, 是否通过)。secret 为空(未配置/解密失败由上层拦截)→ 一律失败。
 func verifySignature(d Delivery, secret []byte) (string, bool) {
@@ -368,8 +376,10 @@ func verifySignature(d Delivery, secret []byte) (string, bool) {
 			return modeSignature, true
 		}
 	}
-	// body 签名模式(Gitea/Gogs):hex(HMAC-SHA256(key=secret, msg=RawBody))。
+	// body 签名模式(Gitea/Gogs/GitHub):hex(HMAC-SHA256(key=secret, msg=RawBody))。
+	// GitHub 头为 sha256=<hex>,剥算法前缀后与 Gitea/Gogs 同形比较。
 	if got := strings.TrimSpace(d.BodySignature); got != "" {
+		got = strings.TrimPrefix(got, "sha256=")
 		mac := hmac.New(sha256.New, secret)
 		mac.Write(d.RawBody)
 		want := hex.EncodeToString(mac.Sum(nil))
@@ -391,7 +401,7 @@ func deliveryActor(actor string) string {
 // timestampFresh 校验 webhook 时间戳新鲜度(防重放)。
 //   - 签名模式:timestamp 必填且 |now-ts| ≤ replayWindow,否则 false。
 //   - 密码模式 / body 签名模式:timestamp 缺失时放行(Gitee 密码模式通常不带;
-//     Gitea/Gogs 协议则根本没有 timestamp 头);存在则同样校验窗口。
+//     Gitea/Gogs/GitHub 协议则根本没有 timestamp 头);存在则同样校验窗口。
 //
 // Gitee timestamp 多为毫秒 epoch,亦容错秒 epoch:按数值量级自适应解析。
 func timestampFresh(raw, mode string) bool {
@@ -426,10 +436,10 @@ func parseEpoch(s string) (time.Time, bool) {
 
 // ---- 事件 / payload 解析 ------------------------------------------------
 
-// eventSubscribed 据事件头(X-Gitee-Event / X-Gitea-Event / X-Gogs-Event)与 events
-// 开关判定该事件类型是否被订阅。Gitee 与 Gitea/Gogs 取值无碰撞,可共存于同一 switch。
-// Gitea/Gogs 的 create(新建 tag/分支)映射到 Tag 订阅;push 携带 refs/tags/x 时
-// 仍走 Push 订阅(Gitea 事件模型如此)。
+// eventSubscribed 据事件头(X-Gitee-Event / X-GitHub-Event / X-Gitea-Event / X-Gogs-Event)与
+// events 开关判定该事件类型是否被订阅。Gitee 与 Gitea/Gogs/GitHub 取值无碰撞,可共存于同一 switch。
+// Gitea/Gogs/GitHub 的 create(新建 tag/分支)映射到 Tag 订阅;push 携带 refs/tags/x 时
+// 仍走 Push 订阅(Gitea/GitHub 事件模型如此)。GitHub 的 ping 不在映射内,按未订阅忽略。
 func eventSubscribed(event string, ev Events) bool {
 	switch strings.TrimSpace(event) {
 	case eventPush:
@@ -475,7 +485,8 @@ type giteePayload struct {
 	Ref         string `json:"ref"`
 	After       string `json:"after"`
 	CheckoutSHA string `json:"checkout_sha"`
-	// SHA 是 Gitea/Gogs create(新建 tag/分支)事件的提交字段(无 after/checkout_sha)。
+	// SHA 是 Gitea/Gogs create(新建 tag/分支)事件的提交字段(无 after/checkout_sha;
+	// GitHub 的 create 事件不含提交字段,commit 留空,运行按引用名取 head)。
 	SHA        string       `json:"sha"`
 	Commits    []pushCommit `json:"commits"`
 	HeadCommit struct {

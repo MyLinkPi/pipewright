@@ -18,7 +18,7 @@ export default {
     errLoadGeneric: '載入觸發設定失敗,請稍後重試。',
 
     webhookTitle: 'Webhook 接入',
-    webhookSub: '程式碼平台 · Gitee / Gitea',
+    webhookSub: '程式碼平台 · Gitee / GitHub / Gitea',
     endpointLabel: '接收端點',
     copied: '已複製',
     copyUrlAria: '複製 Webhook URL',
@@ -32,7 +32,7 @@ export default {
     resetSecretAria: '重設簽章金鑰',
     reset: '重設',
     pushConfigLabel: '推送設定',
-    pushConfigHint: '在程式碼倉庫(Gitee / Gitea)的 WebHooks 設定中貼上以上位址與金鑰,並按需勾選事件(Gitee:Push / Tag Push / Release / Pull Request;Gitea:Push / Create / Release / Pull Request)。Gitea/Gogs 端必須填寫金鑰文字,否則推送會被拒收。',
+    pushConfigHint: '在程式碼倉庫(Gitee / GitHub / Gitea)的 WebHooks 設定中貼上以上位址與金鑰,並按需勾選事件(Gitee:Push / Tag Push / Release / Pull Request;GitHub/Gitea:Push / Create / Release / Pull Request)。GitHub/Gitea/Gogs 端必須填寫金鑰(Secret),否則推送會被拒收。',
     envLocal: '本環境',
     envSelectAria: '選擇接收環境位址',
     forwardHint: '叢集已啟用:程式碼平台只需連到任一已列出的環境位址,投遞會自動轉發到本流水線所屬環境處理(需所屬環境在「叢集 → 授權」中允許入口節點觸發)。',

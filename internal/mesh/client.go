@@ -187,9 +187,10 @@ func (c *Client) DoRaw(ctx context.Context, p *Peer, method, path string, payloa
 }
 
 // ForwardWebhook 把一次公网 webhook 投递签名转发给对端的 POST /api/mesh/webhooks/{token}
-// (集群 webhook 转发;头白名单 X-Gitee-* / X-Gitea-* / X-Gogs-* 与 Content-Type 原样透传,
-// 验签在对端用项目密钥完成)。与 Do/DoRaw 不同:返回对端**原始**状态码与响应体供入口
-// 节点透传(401/404 语义保留,不做 2xx→error 映射);仅传输层错误返回 err。
+// (集群 webhook 转发;头白名单 X-Gitee-* / X-GitHub-* / X-Hub-Signature-256 / X-Gitea-* /
+// X-Gogs-* 与 Content-Type 原样透传,验签在对端用项目密钥完成)。与 Do/DoRaw 不同:返回对端
+// **原始**状态码与响应体供入口节点透传(401/404 语义保留,不做 2xx→error 映射);
+// 仅传输层错误返回 err。
 func (c *Client) ForwardWebhook(ctx context.Context, p *Peer, token string, header http.Header, body []byte) (int, []byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, p.BaseURL()+"/api/mesh/webhooks/"+token, bytes.NewReader(body))
 	if err != nil {
@@ -221,10 +222,10 @@ func (c *Client) ForwardWebhook(ctx context.Context, p *Peer, token string, head
 	return resp.StatusCode, raw, nil
 }
 
-// isWebhookPassthroughHeader 判定是否为 webhook 投递透传头(Gitee/Gitea/Gogs 三家的
+// isWebhookPassthroughHeader 判定是否为 webhook 投递透传头(Gitee/GitHub/Gitea/Gogs 四家的
 // 事件/令牌/时间戳/投递号/签名头;与节点签名头 X-PW-Mesh-* 无前缀冲突)。
 func isWebhookPassthroughHeader(name string) bool {
-	for _, prefix := range []string{"X-Gitee-", "X-Gitea-", "X-Gogs-"} {
+	for _, prefix := range []string{"X-Gitee-", "X-GitHub-", "X-Hub-Signature-256", "X-Gitea-", "X-Gogs-"} {
 		if strings.HasPrefix(name, prefix) {
 			return true
 		}
