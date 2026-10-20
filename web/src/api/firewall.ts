@@ -9,61 +9,64 @@
  *   POST /api/firewall/disable  → FirewallStatus(CSRF, 拆除全部并复位未开启)
  */
 
-import { http } from './http'
+import { http } from "./http";
 
-export type FirewallPhase = 'off' | 'pending' | 'active'
+export type FirewallPhase = "off" | "pending" | "active";
 
 export interface FirewallSnapshot {
-  ports: number[]
-  cidrs: string[]
-  appliedAt: string
+  ports: number[];
+  cidrs: string[];
+  appliedAt: string;
 }
 
 export interface FirewallDetect {
-  supported: boolean
-  reason: string
-  linux: boolean
-  inContainer: boolean
-  iptables: boolean
-  ip6tables: boolean
-  dockerUser: boolean
-  isRoot: boolean
-  sudoOk: boolean
-  notes: string[]
+  supported: boolean;
+  reason: string;
+  linux: boolean;
+  inContainer: boolean;
+  iptables: boolean;
+  ip6tables: boolean;
+  dockerUser: boolean;
+  isRoot: boolean;
+  sudoOk: boolean;
+  notes: string[];
 }
 
 export interface FirewallStatus {
   /** Draft ports for the next apply (comma-edited in UI, stored as list). */
-  ports: number[]
+  ports: number[];
   /** Draft extra allow CIDRs (empty = local + auto mesh /24 only). */
-  extraCidrs: string[]
-  phase: FirewallPhase
-  pending: FirewallSnapshot
-  confirmed: FirewallSnapshot
-  lastResult: '' | 'ok' | 'failed' | 'reverted'
-  statusDetail: string
-  lastAppliedAt: string
+  extraCidrs: string[];
+  phase: FirewallPhase;
+  pending: FirewallSnapshot;
+  confirmed: FirewallSnapshot;
+  lastResult: "" | "ok" | "failed" | "reverted";
+  statusDetail: string;
+  lastAppliedAt: string;
   /** Seconds left in the pending confirmation window (0 outside pending). */
-  pendingExpiresInSec: number
-  detect: FirewallDetect
+  pendingExpiresInSec: number;
+  detect: FirewallDetect;
   /** Real source IP of *this* request (proxy-trust resolved server-side). */
-  sourceIp: string
+  sourceIp: string;
   /** Whether sourceIp can pass the confirm gate right now (pending only). */
-  confirmAllowed: boolean
+  confirmAllowed: boolean;
 }
 
 export function getFirewallStatus(): Promise<FirewallStatus> {
-  return http.get('/api/firewall/status')
+  return http.get("/api/firewall/status");
 }
 
 /** Save the draft (ports / extra CIDRs). Never touches the machine. */
-export function saveFirewallDraft(body: { ports?: number[]; extraCidrs?: string[] }): Promise<{ ports: number[]; extraCidrs: string[] }> {
-  return http.put('/api/firewall/settings', body)
+export function saveFirewallDraft(body: {
+  ports?: number[];
+  extraCidrs?: string[];
+}): Promise<{ ports: number[]; extraCidrs: string[] }> {
+  return http.put("/api/firewall/settings", body);
 }
 
 /** Apply the draft to runtime iptables (temporary until confirmed; reboots revert). */
 export function applyFirewall(): Promise<FirewallStatus> {
-  return http.post('/api/firewall/apply')
+  return http.post("/api/firewall/apply");
 }
 
 /**
@@ -71,15 +74,15 @@ export function applyFirewall(): Promise<FirewallStatus> {
  * (proxy-trust resolved) must be local or inside the mesh allow-set.
  */
 export function confirmFirewall(): Promise<FirewallStatus> {
-  return http.post('/api/firewall/confirm')
+  return http.post("/api/firewall/confirm");
 }
 
 /** Roll back the pending rules immediately (escape hatch; always allowed). */
 export function rollbackFirewall(): Promise<FirewallStatus> {
-  return http.post('/api/firewall/rollback')
+  return http.post("/api/firewall/rollback");
 }
 
 /** Tear down all guard rules and reset to off (escape hatch; always allowed). */
 export function disableFirewall(): Promise<FirewallStatus> {
-  return http.post('/api/firewall/disable')
+  return http.post("/api/firewall/disable");
 }
