@@ -68,3 +68,7 @@ acme/
 
 # ZCode 会话产物(计划文件等,勿入库)
 .zcode/
+
+# EasyTier 官方二进制(fetch-easytier.sh 生成,licenses/NOTICE 入库)
+third_party/easytier/windows-*/
+third_party/easytier/licenses/VERSION

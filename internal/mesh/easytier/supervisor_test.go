@@ -1,6 +1,8 @@
 package easytier
 
 import (
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -104,4 +106,24 @@ func containsPair(args []string, flag, val string) bool {
 		}
 	}
 	return false
+}
+
+// TestLocateExeAdjacent 验证发行包布局:exe 同级 bin/ 下的二进制可被定位
+//(免首连下载的关键回退路径;dataDir 未落盘时也能直接用随包二进制)。
+func TestLocateExeAdjacent(t *testing.T) {
+	exe, err := os.Executable()
+	if err != nil {
+		t.Skipf("取自身路径失败:%v", err)
+	}
+	adj := filepath.Join(filepath.Dir(exe), "bin", CoreBinary())
+	if err := os.MkdirAll(filepath.Dir(adj), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.Remove(adj) }()
+	if err := os.WriteFile(adj, []byte("x"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := Locate("", t.TempDir(), CoreBinary()); got != adj {
+		t.Fatalf("Locate 未命中 exe 同级 bin:got %q, want %q", got, adj)
+	}
 }

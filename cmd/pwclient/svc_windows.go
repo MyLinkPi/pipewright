@@ -7,9 +7,12 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"golang.org/x/sys/windows/svc"
@@ -83,7 +86,66 @@ func connectSCM() (*mgr.Mgr, error) {
 	return m, nil
 }
 
+// installDir 是服务副本的安放目录(稳定位置;从压缩包/下载目录直接安装时,服务
+// 二进制不能指向用户随手清理的临时路径)。
+func installDir() string {
+	return filepath.Join(os.Getenv("ProgramFiles"), "Pipewright Client")
+}
+
+// stageToProgramFiles 把 exe 与随包 bin/(EasyTier)复制到安放目录,返回服务应指向
+// 的路径。已在安放目录运行则原样返回(升级/重装幂等)。
+func stageToProgramFiles(exe string) (string, error) {
+	dest := installDir()
+	if strings.EqualFold(filepath.Dir(exe), dest) {
+		return exe, nil
+	}
+	if err := os.MkdirAll(filepath.Join(dest, "bin"), 0o755); err != nil {
+		return "", fmt.Errorf("创建安放目录失败:%w", err)
+	}
+	target := filepath.Join(dest, filepath.Base(exe))
+	if err := copyFile(exe, target); err != nil {
+		return "", fmt.Errorf("复制程序到 %s 失败:%w", dest, err)
+	}
+	// 随包 EasyTier:服务进程靠 exe 同级 bin/ 定位(离线开箱即连的关键)。
+	binSrc := filepath.Join(filepath.Dir(exe), "bin")
+	if entries, err := os.ReadDir(binSrc); err == nil {
+		for _, e := range entries {
+			if e.IsDir() {
+				continue
+			}
+			if err := copyFile(filepath.Join(binSrc, e.Name()), filepath.Join(dest, "bin", e.Name())); err != nil {
+				return "", fmt.Errorf("复制 EasyTier 二进制失败:%w", err)
+			}
+		}
+	}
+	return target, nil
+}
+
+// copyFile 复制单个文件(覆盖已存在的旧副本)。
+func copyFile(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	st, err := in.Stat()
+	if err != nil {
+		return err
+	}
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, st.Mode().Perm())
+	if err != nil {
+		return err
+	}
+	if _, err = io.Copy(out, in); err != nil {
+		out.Close()
+		return err
+	}
+	return out.Close()
+}
+
 // installService 创建(自启,LocalSystem)+ 描述 + 立即启动。幂等:已存在先删除重建。
+// 服务二进制安放于 %ProgramFiles%\Pipewright Client(与运行位置无关):先停旧服务
+// 再复制(旧副本运行中会被锁),非管理员在复制前即被 SCM 权限拦下。
 func installService() error {
 	exe, err := os.Executable()
 	if err != nil {
@@ -103,6 +165,10 @@ func installService() error {
 		time.Sleep(1 * time.Second)
 	}
 
+	exe, err = stageToProgramFiles(exe)
+	if err != nil {
+		return err
+	}
 	s, err := m.CreateService(serviceName, exe, mgr.Config{
 		StartType:    mgr.StartAutomatic,
 		DisplayName:  "Pipewright Cluster Client",
@@ -116,7 +182,7 @@ func installService() error {
 	if err := s.Start(); err != nil {
 		return fmt.Errorf("服务已创建但启动失败:%w", err)
 	}
-	fmt.Println("服务已安装并启动(开机自启)。")
+	fmt.Printf("服务已安装并启动(开机自启),位于 %s。\n", exe)
 	return nil
 }
 

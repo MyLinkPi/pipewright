@@ -250,3 +250,44 @@ func TestStatusCanceledRefreshKeepsLastGood(t *testing.T) {
 		t.Fatalf("canceled refresh must not evict last good snapshot: %+v", got)
 	}
 }
+
+// TestStatusProxyRoutes 验证 网段→网关节点 映射:next_hop 优先(中继场景可达)、
+// 直连行回落 ipv4、peer 主机名补全 ViaName、本机通告行跳过。
+func TestStatusProxyRoutes(t *testing.T) {
+	fake := &fakeCLI{responses: map[string]string{
+		"node info": `{"hostname":"alpha","virtual_ipv4":{"addr":"10.126.126.1"}}`,
+		"peer list": `[
+			{"peer_id":"p2","hostname":"beta","virtual_ipv4":"10.126.126.2"},
+			{"peer_id":"p4","hostname":"delta","virtual_ipv4":"10.126.126.4"}
+		]`,
+		"route list": `[
+			{"ipv4":"10.126.126.2","next_hop_ipv4":"","proxy_cidrs":["10.5.0.0/16","192.168.30.0/24"]},
+			{"ipv4":"192.168.30.0","next_hop_ipv4":"10.126.126.4","proxy_cidrs":["192.168.30.0/24"]},
+			{"ipv4":"10.126.126.1","next_hop_ipv4":"","proxy_cidrs":["172.16.9.0/24"]}
+		]`,
+	}}
+	p := newStatusProviderForTest(fake.run)
+	st := p.collect(context.Background())
+
+	if len(st.ProxyRoutes) != 2 {
+		t.Fatalf("proxyRoutes = %+v, want 2 条(重复通告去重 + 本机通告跳过)", st.ProxyRoutes)
+	}
+	got := map[string]ProxyRoute{}
+	for _, pr := range st.ProxyRoutes {
+		got[pr.CIDR] = pr
+	}
+	if pr := got["10.5.0.0/16"]; pr.ViaIP != "10.126.126.2" || pr.ViaName != "beta" {
+		t.Fatalf("10.5.0.0/16 → %+v, want beta/10.126.126.2", pr)
+	}
+	// 192.168.30.0/24 两节点重复通告:首见保留(beta 行在前)。
+	if pr := got["192.168.30.0/24"]; pr.ViaIP != "10.126.126.2" || pr.ViaName != "beta" {
+		t.Fatalf("192.168.30.0/24 → %+v, want beta/10.126.126.2(首见保留)", pr)
+	}
+	// 本机(alpha)通告的 172.16.9.0/24 不进映射(客户端不给自己当网关)。
+	if pr, ok := got["172.16.9.0/24"]; ok {
+		t.Fatalf("本机通告应跳过,却得到 %+v", pr)
+	}
+	if st.ProxyRoutes[0].CIDR != "10.5.0.0/16" {
+		t.Fatalf("应按 CIDR 字典序:%+v", st.ProxyRoutes)
+	}
+}

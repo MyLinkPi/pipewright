@@ -12,6 +12,9 @@ project_name: pipewright
 before:
   hooks:
     - go mod download
+    # 取 EasyTier 官方二进制到 third_party/,随 pwclient 归档分发(开箱即用,免首连下载;
+    # 本地干跑网络受限时可 export PIPEWRIGHT_RELEASE_MIRROR=<镜像前缀>)。
+    - bash scripts/fetch-easytier.sh
     # 前端先构建,供 go:embed(web/dist)。各架构二进制共享同一份与平台无关的前端产物。
     - bash -c "cd web && npm ci && npm run build"
 
@@ -52,6 +55,7 @@ builds:
     mod_timestamp: "{{ .CommitTimestamp }}"
     ldflags:
       - -s -w
+      - -H=windowsgui # GUI 子系统:双击不弹控制台窗口(文本子命令经 AttachConsole 接回终端)
       - -X github.com/huangchengsir/pipewright/internal/version.Version={{ .Version }}
       - -X github.com/huangchengsir/pipewright/internal/version.Commit={{ .ShortCommit }}
       - -X github.com/huangchengsir/pipewright/internal/version.Date={{ .CommitDate }}
@@ -76,6 +80,12 @@ archives:
       pwclient_{{ .Version }}_{{ .Os }}_{{ .Arch }}
     files:
       - LICENSE
+      # 随包分发 EasyTier 官方二进制(未修改,LGPL-3.0;运行时 Locate 会找 exe 同级 bin/)。
+      # 许可证全文 + 来源说明 + 版本标记一并入包(LGPL-3.0 §4 义务)。
+      - src: third_party/easytier/windows-{{ .Arch }}/bin/*
+        dst: bin
+      - src: third_party/easytier/licenses/*
+        dst: licenses/easytier
 
 checksum:
   name_template: checksums.txt

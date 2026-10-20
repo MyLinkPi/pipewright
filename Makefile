@@ -18,7 +18,9 @@ VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo none)
 DATE    ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 VPKG    := github.com/huangchengsir/pipewright/internal/version
+# pwclient 是 GUI 程序:windowsgui 子系统免控制台窗口(文本子命令经 AttachConsole 接回终端)。
 LDFLAGS := -s -w -X $(VPKG).Version=$(VERSION) -X $(VPKG).Commit=$(COMMIT) -X $(VPKG).Date=$(DATE)
+CLIENT_LDFLAGS := $(LDFLAGS) -H=windowsgui
 
 .PHONY: all build build-client client-syso embed-frontend dist-stub go-build test vet fmt fmt-check mem-check dev run version clean
 
@@ -38,7 +40,7 @@ go-build: dist-stub
 
 ## build-client: 构建 Win11 集群客户端(托盘 GUI + Windows 服务,单二进制;无前端依赖)
 build-client:
-	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -ldflags "$(LDFLAGS)" -o $(CLIENT_BIN) ./cmd/pwclient
+	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -ldflags "$(CLIENT_LDFLAGS)" -o $(CLIENT_BIN) ./cmd/pwclient
 
 ## client-syso: 由 cmd/pwclient/winres 重新生成 Windows 资源(manifest/版本信息;.syso 已入库,
 ## 仅 winres.json 变更后需要重跑)
