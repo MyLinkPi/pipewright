@@ -109,7 +109,7 @@ func containsPair(args []string, flag, val string) bool {
 }
 
 // TestLocateExeAdjacent 验证发行包布局:exe 同级 bin/ 下的二进制可被定位
-//(免首连下载的关键回退路径;dataDir 未落盘时也能直接用随包二进制)。
+// (免首连下载的关键回退路径;dataDir 未落盘时也能直接用随包二进制)。
 func TestLocateExeAdjacent(t *testing.T) {
 	exe, err := os.Executable()
 	if err != nil {
@@ -129,7 +129,7 @@ func TestLocateExeAdjacent(t *testing.T) {
 }
 
 // TestBuildArgsStrictEmptyRoutes 验证空列表的两种语义:Strict 时传裸 --manual-routes
-//(值可选 = 拒绝全部子网代理通告,fail-closed);非 Strict 不传参(平台中枢接受全部)。
+// (值可选 = 拒绝全部子网代理通告,fail-closed);非 Strict 不传参(平台中枢接受全部)。
 func TestBuildArgsStrictEmptyRoutes(t *testing.T) {
 	base := Config{NetworkName: "net", RPCAddr: "127.0.0.1:15888", Hostname: "h1", Socks5Port: 1080, StrictManualRoutes: true}
 	flags := helpFlags{manualRoutes: true, socks5: true}
