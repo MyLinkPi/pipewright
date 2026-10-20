@@ -31,6 +31,8 @@ export default {
   errCheckStatus: 'Échec de la vérification ({status})',
   errCheckRetry: 'Échec de la vérification. Réessayez plus tard.',
   restartingToNew: 'Redémarrage vers la nouvelle version…',
+  updateDeferred: 'Nouvelle version prête ; redémarrage automatique à la fin des tâches',
+  updateForce: 'Forcer le redémarrage (interrompt les tâches)',
   manualUpgrade: 'Veuillez effectuer la mise à niveau manuellement.',
   updateFailed: 'Échec de la mise à jour',
   errUpdateStatus: 'Échec de la mise à jour ({status})',

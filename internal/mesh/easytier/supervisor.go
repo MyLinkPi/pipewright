@@ -105,6 +105,9 @@ type Config struct {
 // Supervisor 是托管模式子进程监督器。零值不可用,经 New 构造;线程安全。
 type Supervisor struct {
 	cfg Config
+	// done 在监督循环退出(子进程已收尸)时关闭;StopAndWait 等待用。
+	done     chan struct{}
+	doneOnce sync.Once
 
 	mu        sync.Mutex
 	cmd       *exec.Cmd
@@ -119,7 +122,7 @@ func New(cfg Config) *Supervisor {
 	if cfg.RPCAddr == "" {
 		cfg.RPCAddr = "127.0.0.1:15888"
 	}
-	return &Supervisor{cfg: cfg}
+	return &Supervisor{cfg: cfg, done: make(chan struct{})}
 }
 
 // args 生成 easytier-core 参数(固定 RPC portal 端口便于本机状态查询)。
@@ -290,6 +293,7 @@ func (s *Supervisor) Start(ctx context.Context) error {
 
 // supervise 是监督循环:启动 → 等待退出 → 指数退避重启(stopped 后不再拉起)。
 func (s *Supervisor) supervise(ctx context.Context) {
+	defer s.doneOnce.Do(func() { close(s.done) })
 	backoff := 2 * time.Second
 	for {
 		s.mu.Lock()
@@ -330,6 +334,27 @@ func (s *Supervisor) supervise(ctx context.Context) {
 		if backoff < 30*time.Second {
 			backoff *= 2
 		}
+	}
+}
+
+// StopAndWait 停止子进程并**等待进程真正退出**(优雅窗口内未退则强杀再等)。
+// re-exec 自更新前必须走这里:syscall.Exec 不执行清理,不等退出会把子进程
+// 留成孤儿,占着监听/rpc-portal 端口让新进程起不来(v1.6.4 事故)。
+func (s *Supervisor) StopAndWait(grace time.Duration) {
+	s.Stop()
+	select {
+	case <-s.done:
+		return
+	case <-time.After(grace):
+	}
+	s.mu.Lock()
+	if s.cmd != nil && s.cmd.Process != nil {
+		_ = s.cmd.Process.Kill()
+	}
+	s.mu.Unlock()
+	select {
+	case <-s.done:
+	case <-time.After(5 * time.Second): // 理论不可达:SIGKILL 后 cmd.Run 必返回
 	}
 }
 

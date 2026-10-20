@@ -31,6 +31,8 @@ export default {
   errCheckStatus: '檢查失敗({status})',
   errCheckRetry: '檢查失敗,請稍後重試',
   restartingToNew: '正在重新啟動到新版本…',
+  updateDeferred: '新版已就位,等待執行中的任務結束後自動重啟生效',
+  updateForce: '強制重啟(將中斷任務)',
   manualUpgrade: '請手動升級。',
   updateFailed: '更新失敗',
   errUpdateStatus: '更新失敗({status})',

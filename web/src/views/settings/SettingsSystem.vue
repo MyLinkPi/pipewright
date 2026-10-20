@@ -39,7 +39,7 @@ const checkError = ref('')
 const showNotes = ref(false)
 
 // 一键自动更新状态机。
-type UpdatePhase = 'idle' | 'applying' | 'restarting' | 'manual' | 'error'
+type UpdatePhase = 'idle' | 'applying' | 'restarting' | 'deferred' | 'manual' | 'error'
 const updatePhase = ref<UpdatePhase>('idle')
 const updateMsg = ref('')
 const dockerCommand = ref('')
@@ -194,13 +194,14 @@ async function runCheck(): Promise<void> {
 //  - binary 模式:后端下载+替换二进制后自重启 → 前端进入"重启中"并轮询 /api/version,
 //    版本变化即整页 reload 到新版。
 //  - docker 模式:后端返回升级命令,前端展示 + 复制(容器不能自换镜像)。
-async function runUpdate(): Promise<void> {
+async function runUpdate(force = false): Promise<void> {
+  const wasDeferred = updatePhase.value === 'deferred'
   const from = update.value?.current ?? version.value?.version ?? ''
   updatePhase.value = 'applying'
   updateMsg.value = ''
   dockerCommand.value = ''
   try {
-    const res = await applyUpdate()
+    const res = await applyUpdate(force || wasDeferred)
     if (res.mode === 'source') {
       updatePhase.value = 'idle'
       if (res.status === 'building' || res.status === 'busy') {
@@ -214,7 +215,10 @@ async function runUpdate(): Promise<void> {
       }
       return
     }
-    if (res.status === 'restarting') {
+    if (res.status === 'deferred') {
+      updatePhase.value = 'deferred'
+      updateMsg.value = res.message || t('settingsSystem.updateDeferred')
+    } else if (res.status === 'restarting') {
       updatePhase.value = 'restarting'
       updateMsg.value = res.message || t('settingsSystem.restartingToNew')
       pollUntilRestarted(from)
@@ -496,9 +500,9 @@ onMounted(() => {
               variant="primary"
               :loading="updatePhase === 'applying' || updatePhase === 'restarting'"
               :disabled="updatePhase === 'restarting'"
-              @click="runUpdate"
+              @click="runUpdate()"
             >
-              {{ updatePhase === 'applying' ? t('settingsSystem.preparing') : updatePhase === 'restarting' ? t('settingsSystem.restarting') : t('settingsSystem.updateNow') }}
+              {{ updatePhase === 'applying' ? t('settingsSystem.preparing') : updatePhase === 'restarting' ? t('settingsSystem.restarting') : updatePhase === 'deferred' ? t('settingsSystem.updateForce') : t('settingsSystem.updateNow') }}
             </AppButton>
             <a v-if="update?.releaseUrl" class="sys-cta-ghost" :href="update.releaseUrl" target="_blank" rel="noopener noreferrer">
               {{ t('settingsSystem.viewRelease') }}

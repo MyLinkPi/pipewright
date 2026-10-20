@@ -144,6 +144,7 @@ type options struct {
 	fileAdmin         fileadmin.Service
 	serverCmds        *servercmd.Service
 	registryHub       registryHubService
+	reexecGuard       ReexecGuard
 	mesh              *meshAdminDeps
 	ceph              ceph.Service
 	mfa               *mfa.Service
@@ -183,6 +184,12 @@ func WithFileAdmin(s fileadmin.Service) Option {
 // 不传则 PVE 管理面不可用(端点 503)、登记不做探测。
 func WithPVEAdmin(s pveadmin.Service) Option {
 	return func(o *options) { o.pveAdmin = s }
+}
+
+// WithReexecGuard 注入自更新 re-exec 门槛(活跃任务判定 + 托管子进程同步停机;
+// 不传 = 无门槛,更新后直接重启)。
+func WithReexecGuard(g ReexecGuard) Option {
+	return func(o *options) { o.reexecGuard = g }
 }
 
 // WithMesh 注入集群(对等节点 + EasyTier)依赖,挂载两组路由:
@@ -712,7 +719,7 @@ func New(webFS fs.FS, authn auth.Authenticator, opts ...Option) http.Handler {
 		ar.Get("/version", handleVersion)
 		ar.Get("/version/check", makeCheckUpdateHandler(updateChecker, srcUpdater))
 		// 一键自动更新:鉴权 + CSRF(写操作);source 后台重建管线,binary 自替换+重启,docker 返回升级命令。
-		ar.Post("/version/update", makeSelfUpdateHandler(updateChecker, srcUpdater, updateInflight))
+		ar.Post("/version/update", makeSelfUpdateHandler(updateChecker, srcUpdater, updateInflight, o.reexecGuard))
 		// 源码升级进度轮询(鉴权只读):后台管线步骤/日志/完成态。
 		ar.Get("/version/update/status", makeUpdateStatusHandler(srcUpdater))
 

@@ -31,6 +31,8 @@ export default {
   errCheckStatus: 'Prüfung fehlgeschlagen ({status})',
   errCheckRetry: 'Prüfung fehlgeschlagen. Bitte später erneut versuchen.',
   restartingToNew: 'Neustart auf die neue Version…',
+  updateDeferred: 'Neue Version bereit; startet automatisch neu, sobald laufende Aufgaben enden',
+  updateForce: 'Sofort neu starten (unterbricht Aufgaben)',
   manualUpgrade: 'Bitte manuell aktualisieren.',
   updateFailed: 'Update fehlgeschlagen',
   errUpdateStatus: 'Update fehlgeschlagen ({status})',

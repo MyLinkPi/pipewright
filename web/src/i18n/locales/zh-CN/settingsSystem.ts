@@ -31,6 +31,8 @@ export default {
   errCheckStatus: '检查失败({status})',
   errCheckRetry: '检查失败,请稍后重试',
   restartingToNew: '正在重启到新版本…',
+  updateDeferred: '新版已就位,等待运行中的任务结束后自动重启生效',
+  updateForce: '强制重启(将中断任务)',
   manualUpgrade: '请手动升级。',
   updateFailed: '更新失败',
   errUpdateStatus: '更新失败({status})',

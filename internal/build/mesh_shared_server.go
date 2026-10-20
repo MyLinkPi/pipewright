@@ -130,6 +130,23 @@ func NewSharedBuildServer(b *Builder, sched SharedAcquirer, tgt SharedExecTarget
 	}
 }
 
+// ActiveJobs 返回非终态共享构建任务数(queued/running —— 含其他环境提交的入站任务;
+// 自更新 2a 门槛:有活跃任务时推迟 re-exec,避免孤儿构建进程)。nil 接收者安全。
+func (s *SharedBuildServer) ActiveJobs() int {
+	if s == nil {
+		return 0
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := 0
+	for _, j := range s.jobs {
+		if j.state == mesh.SharedJobStateQueued || j.state == mesh.SharedJobStateRunning {
+			n++
+		}
+	}
+	return n
+}
+
 // Accept 受理一个共享构建任务:校验 spec → 流式落盘工作区(sha256/字节数校验)→ 入册为
 // queued 并起 goroutine 排队执行。peerNodeID 来自 mesh 签名验证的调用方身份(可信)。
 // 返回任务 id(发起方据此跟踪/回拉/取消)。

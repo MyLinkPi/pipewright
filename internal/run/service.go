@@ -49,6 +49,10 @@ type Service interface {
 	// 非 waiting_approval → ErrInvalidTransition。
 	ResumeFromApproval(ctx context.Context, id string) error
 
+	// ActiveRuns 返回非终态运行数(queued/running/waiting_approval;自更新 2a 门槛:
+	// 有活跃运行时推迟 re-exec,避免孤儿构建进程)。
+	ActiveRuns(ctx context.Context) (int, error)
+
 	// FailOrphanedRuns 把启动时残留的非终态运行(queued/running/waiting_approval)清为 failed。
 	// 进程重启会丢失内存队列与审批等待者,这些运行无法恢复,应一次性清理(返回清理条数)。
 	FailOrphanedRuns(ctx context.Context) (int, error)
@@ -847,6 +851,18 @@ func (s *service) MarkWaitingApproval(ctx context.Context, id string) error {
 // ResumeFromApproval 实现 Service:waiting_approval → running(决定后让 worker 收尾)。
 func (s *service) ResumeFromApproval(ctx context.Context, id string) error {
 	return s.transition(ctx, id, StatusWaitingApproval, StatusRunning, true)
+}
+
+// ActiveRuns 实现 Service:非终态运行数(自更新 2a 门槛用)。
+func (s *service) ActiveRuns(ctx context.Context) (int, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM pipeline_runs WHERE status IN (?, ?, ?)`,
+		StatusQueued, StatusRunning, StatusWaitingApproval).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("run: count active: %w", err)
+	}
+	return n, nil
 }
 
 // FailOrphanedRuns 实现 Service:启动时把残留非终态运行清为 failed(孤儿,不可恢复)。
