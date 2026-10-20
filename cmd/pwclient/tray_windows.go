@@ -119,7 +119,7 @@ func (a *trayApp) build() error {
 						Children: []Widget{
 							CheckBox{AssignTo: &a.socks5Check, Text: "启用"},
 							Label{Text: "端口:"},
-							NumberEdit{AssignTo: &a.socks5Port, MinValue: 1, MaxValue: 65535, Value: 1080, Decimals: 0, MinSize: Size{Width: 72}},
+							NumberEdit{AssignTo: &a.socks5Port, MinValue: 1, MaxValue: 65535, Value: 1080.0, Decimals: 0, MinSize: Size{Width: 72}},
 							PushButton{AssignTo: &a.copyProxyBtn, Text: "复制代理地址", OnClicked: a.onCopyProxy},
 							HSpacer{},
 							PushButton{Text: "保存并应用", OnClicked: a.onApplySocks5, MinSize: Size{Width: 96}},
