@@ -53,6 +53,10 @@ type meshRuntime struct {
 	afterDiscover func(ctx context.Context)
 	// failedKey 记录最近一次启动失败对应的指纹(同指纹失败不逐拍刷屏)。
 	failedKey string
+	// lastSeenCIDRs 是最近一次成功快照里的全网通告网段(路由白名单自动项数据源;
+	// 仅 superviseLoop 单协程读写)。快照瞬时不可用(core 重启窗口)时沿用上轮值:
+	// 清零会让白名单缩水 → 指纹翻转 → 刚拉起的核心又被重启,失败窗口级联放大。
+	lastSeenCIDRs []string
 }
 
 // SetProxyNetworks 注入「本端子网代理通告列表」提供器(跨环境转发数据面:
@@ -271,11 +275,10 @@ func (rt *meshRuntime) reconcile(ctx context.Context) {
 	// 手动项 = 管理员显式接受网段。本端通告(proxies,含本端网关 /32)只通告不路由
 	// —— 本端网段经局域网可达,进白名单会被装成 tun 路由吸走本端流量(v1.6.4 事故:
 	// 本端网关 SSH 断联)。空白名单 = 裸 --manual-routes,拒绝全部通告。
-	var seenCIDRs []string
 	if sp := rt.statusSnapshot(); sp != nil {
-		seenCIDRs = sp.ProxyCIDRs
+		rt.lastSeenCIDRs = sp.ProxyCIDRs
 	}
-	manual := mesh.RouteWhitelist(proxies, seenCIDRs, st.AcceptNetworksCustom)
+	manual := mesh.RouteWhitelist(proxies, rt.lastSeenCIDRs, st.AcceptNetworksCustom)
 	key := fmt.Sprintf("%s|%s|%s|%s|%v|%v|%v|%v", st.EasyTierMode, st.NetworkName, st.VirtualIP, st.Peers, st.Enabled, proxies, manual, st.EnableExitNode)
 	if !st.Enabled || st.EasyTierMode != mesh.ModeManaged || st.NetworkName == "" {
 		rt.mu.Lock()

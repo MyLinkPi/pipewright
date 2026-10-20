@@ -318,6 +318,38 @@ func TestStatusRouteDirectSentinelNotRelay(t *testing.T) {
 	}
 }
 
+// TestStatusTransientFailureNotMisreportedAsOldCli 复现并锁定误报修复:新版 CLI +
+// core 瞬时不可达(重启窗口)时,新版形态报连接错误、旧形态必然报 clap 用法错误;
+// 最终错误应是运行类原因(未运行提示),而非「版本过旧」。恢复后自愈。
+func TestStatusTransientFailureNotMisreportedAsOldCli(t *testing.T) {
+	fake := &fakeCLI{responses: goodResponses()}
+	p := newStatusProviderForTest(fake.run)
+	if st := p.collect(context.Background()); st.Err != "" {
+		t.Fatalf("健康基线失败: %s", st.Err)
+	}
+
+	// core 重启窗口:新版形态连不上 RPC;旧形态未配置 → 默认 clap 用法错误(噪声)。
+	fake.responses = nil
+	fake.stderr = map[string]string{
+		"node info": "failed to connect to rpc portal 127.0.0.1:15888",
+		"node":      "failed to connect to rpc portal 127.0.0.1:15888",
+	}
+	st := p.collect(context.Background())
+	if st.Err == "" || !strings.Contains(st.Err, "可能 easytier-core 未运行") {
+		t.Fatalf("应报运行类原因(未运行提示),got: %q", st.Err)
+	}
+	if strings.Contains(st.Err, "版本可能过旧") {
+		t.Fatalf("瞬时不可达被误报为版本过旧: %q", st.Err)
+	}
+
+	// 窗口结束:错误清除(形态缓存仍有效)。
+	fake.responses = goodResponses()
+	fake.stderr = nil
+	if st := p.collect(context.Background()); st.Err != "" {
+		t.Fatalf("应自愈,got: %s", st.Err)
+	}
+}
+
 // TestStatusParsesRealV26Output 用 easytier v2.6.4 实录 JSON(node/peer/route 三路)
 // 验证解析:proxy_cidrs 为逗号分隔字符串、ipv4 带 /24 后缀、next_hop 直连为 "-"、
 // lat_ms/rx_bytes 为字符串。此前夹具为臆造数组形态,线上恒空。
