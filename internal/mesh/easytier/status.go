@@ -44,7 +44,7 @@ type Link struct {
 }
 
 // ProxyRoute 是一条子网代理通告:该网段的流量经 ViaIP 对应的集群节点转发
-//(谁通告谁网关;ViaName 为该节点主机名,无 peer 信息时为空)。
+// (谁通告谁网关;ViaName 为该节点主机名,无 peer 信息时为空)。
 type ProxyRoute struct {
 	CIDR    string `json:"cidr"`
 	ViaIP   string `json:"viaIp"`
@@ -290,7 +290,7 @@ func (p *StatusProvider) collect(ctx context.Context) *Status {
 	var node obj
 	if raw, err := p.runShaped(ctx, "node", nodeShapes); err == nil {
 		_ = json.Unmarshal(raw, &node)
-		st.SelfIP = pickStr(node, "virtual_ipv4", "ipv4", "ip", "tun_ip")
+		st.SelfIP = pickIP(node, "ipv4_addr", "virtual_ipv4", "ipv4", "ip", "tun_ip")
 		st.Hostname = pickStr(node, "hostname", "name")
 		st.Version = pickStr(node, "version")
 	} else {
@@ -312,8 +312,11 @@ func (p *StatusProvider) collect(ctx context.Context) *Status {
 		var routes []obj
 		if json.Unmarshal(raw, &routes) == nil {
 			for _, rt := range routes {
-				ip := pickStr(rt, "ipv4", "destination", "dest")
-				nh := pickStr(rt, "next_hop_ipv4", "next_hop", "nexthop")
+				ip := pickIP(rt, "ipv4", "destination", "dest")
+				nh := stripCIDR(pickStr(rt, "next_hop_ipv4", "next_hop", "nexthop"))
+				if nh == "-" { // 直连行的占位
+					nh = ""
+				}
 				if ip != "" {
 					nextHops[ip] = nh
 				}
@@ -340,7 +343,7 @@ func (p *StatusProvider) collect(ctx context.Context) *Status {
 	for _, pr := range peers {
 		l := Link{
 			PeerID:    pickStr(pr, "peer_id", "peerid", "id"),
-			VirtualIP: pickStr(pr, "virtual_ipv4", "ipv4", "ip"),
+			VirtualIP: pickIP(pr, "virtual_ipv4", "ipv4", "ip"),
 			Hostname:  pickStr(pr, "hostname", "name"),
 			Version:   pickStr(pr, "version"),
 			LatencyMS: pickNum(pr, "lat_ms", "latency", "rtt_ms"),
@@ -406,7 +409,7 @@ func pickNum(o obj, keys ...string) float64 {
 			case float64:
 				return t
 			case string:
-				if f, err := strconv.ParseFloat(strings.TrimSuffix(t, "ms"), 64); err == nil {
+				if f, err := strconv.ParseFloat(leadingNumber(t), 64); err == nil {
 					return f
 				}
 			}
@@ -415,17 +418,33 @@ func pickNum(o obj, keys ...string) float64 {
 	return 0
 }
 
-// pickList 取第一个存在且为数组的键,逐元素宽容转为字符串(元素可为 string/对象/数组,
-// 经 stringify 归一;非数组形状返回空)。
+// pickList 取第一个存在的键,归一为字符串列表。真实输出(easytier v2.6 实测)该类
+// 字段多为逗号分隔字符串("a,b"),数组形态作为宽容保留;数组元素可为 string 或
+// {"addr": ...} 对象。
 func pickList(o obj, keys ...string) []string {
 	for _, k := range keys {
 		if v, ok := o[k]; ok {
-			arr, isArr := v.([]any)
-			if !isArr {
+			var items []any
+			switch t := v.(type) {
+			case string:
+				for _, f := range strings.Split(t, ",") {
+					if f = strings.TrimSpace(f); f != "" {
+						items = append(items, f)
+					}
+				}
+			case []any:
+				items = t
+			default:
 				continue
 			}
-			out := make([]string, 0, len(arr))
-			for _, item := range arr {
+			out := make([]string, 0, len(items))
+			for _, item := range items {
+				if m, ok := item.(map[string]any); ok { // {"addr": ...} 对象形态
+					if s := stringify(m["addr"]); s != "" {
+						out = append(out, s)
+					}
+					continue
+				}
 				if s := stringify(item); s != "" {
 					out = append(out, s)
 				}
@@ -447,6 +466,33 @@ func sortedSet(set map[string]struct{}) []string {
 }
 
 // stringify 把任意 JSON 值宽容转为字符串(对象取 addr/ipv4 键;数组取首元素)。
+// leadingNumber 取字符串前导数字部分("0.12"→"0.12";"1.81 kB"→"1.81";"-"→"")。
+func leadingNumber(s string) string {
+	s = strings.TrimSpace(s)
+	end := 0
+	for i, r := range s {
+		if (r >= '0' && r <= '9') || r == '.' || (i == 0 && r == '-') {
+			end = i + len(string(r))
+			continue
+		}
+		break
+	}
+	return s[:end]
+}
+
+// stripCIDR 剥去 IP 的 /prefix 后缀("10.1.1.1/24"→"10.1.1.1";裸 IP 原样)。
+func stripCIDR(s string) string {
+	if i := strings.IndexByte(s, '/'); i >= 0 {
+		return s[:i]
+	}
+	return s
+}
+
+// pickIP 取 IP 字段并剥 /prefix(node/peer/route 的 ipv4 字段实测带后缀或裸 IP 两种)。
+func pickIP(o obj, keys ...string) string {
+	return stripCIDR(pickStr(o, keys...))
+}
+
 func stringify(v any) string {
 	switch t := v.(type) {
 	case string:

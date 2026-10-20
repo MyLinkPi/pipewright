@@ -291,3 +291,45 @@ func TestStatusProxyRoutes(t *testing.T) {
 		t.Fatalf("应按 CIDR 字典序:%+v", st.ProxyRoutes)
 	}
 }
+
+// TestStatusParsesRealV26Output 用 easytier v2.6.4 实录 JSON(node/peer/route 三路)
+// 验证解析:proxy_cidrs 为逗号分隔字符串、ipv4 带 /24 后缀、next_hop 直连为 "-"、
+// lat_ms/rx_bytes 为字符串。此前夹具为臆造数组形态,线上恒空。
+func TestStatusParsesRealV26Output(t *testing.T) {
+	fake := &fakeCLI{responses: map[string]string{
+		"node info": `{"peer_id":2593298815,"ipv4_addr":"10.126.126.61/24","hostname":"cli","version":"2.6.4-8428a89d"}`,
+		"peer list": `[
+			{"cidr":"10.126.126.61/24","ipv4":"10.126.126.61","hostname":"cli","cost":"Local","lat_ms":"-","tunnel_proto":"-","id":"2593298815"},
+			{"cidr":"10.126.126.60/24","ipv4":"10.126.126.60","hostname":"adv","cost":"p2p","lat_ms":"0.12","loss_rate":"0.0%","rx_bytes":"1.81 kB","tx_bytes":"2.17 kB","tunnel_proto":"tcp","id":"3919550984"}
+		]`,
+		"route list": `[
+			{"ipv4":"10.126.126.61/24","hostname":"cli","proxy_cidrs":"","next_hop_ipv4":"-"},
+			{"ipv4":"10.126.126.60/24","hostname":"adv","proxy_cidrs":"192.168.50.0/24,10.77.0.0/16","next_hop_ipv4":"-"}
+		]`,
+	}}
+	p := newStatusProviderForTest(fake.run)
+	st := p.collect(context.Background())
+
+	if st.SelfIP != "10.126.126.61" {
+		t.Fatalf("SelfIP = %q, want 10.126.126.61(ipv4_addr 带 /24 应剥后缀)", st.SelfIP)
+	}
+	if st.Hostname != "cli" || st.Version != "2.6.4-8428a89d" {
+		t.Fatalf("node 字段:%+v", st)
+	}
+	if len(st.Links) != 1 || st.Links[0].VirtualIP != "10.126.126.60" || st.Links[0].LatencyMS != 0.12 {
+		t.Fatalf("links = %+v(延迟字符串 \"0.12\" 应解析为数值)", st.Links)
+	}
+	want := []string{"10.77.0.0/16", "192.168.50.0/24"}
+	if len(st.ProxyCIDRs) != len(want) || st.ProxyCIDRs[0] != want[0] || st.ProxyCIDRs[1] != want[1] {
+		t.Fatalf("proxyCidrs = %v, want %v(逗号分隔字符串形态)", st.ProxyCIDRs, want)
+	}
+	// 网关映射:adv 直连行(next_hop "-")→ 网关回落为该行 ipv4(剥后缀)。
+	if len(st.ProxyRoutes) != 2 {
+		t.Fatalf("proxyRoutes = %+v", st.ProxyRoutes)
+	}
+	for _, pr := range st.ProxyRoutes {
+		if pr.ViaIP != "10.126.126.60" || pr.ViaName != "adv" {
+			t.Fatalf("%s 网关 = %+v, want adv/10.126.126.60", pr.CIDR, pr)
+		}
+	}
+}
