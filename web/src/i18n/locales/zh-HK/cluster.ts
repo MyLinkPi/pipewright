@@ -104,5 +104,11 @@ export default {
     clientHint: '在 Win11 機器上執行 pwclient 用戶端並匯入下方匯出的設定檔,即可加入叢集網路;用戶端可自由限定本機路由哪些網段。匯出檔含明文網路密鑰,請妥善保管。',
     exportClientConfig: '匯出用戶端設定',
     clientExported: '已匯出 pipewright-client.yaml(含明文密鑰,請妥善保管)',
+    clientYamlTitle: '用戶端配置(pipewright-client.yaml)',
+    clientYamlHint: '複製全部內容,貼到 pwclient「集群配置 → 匯入貼上的配置」即可入網。含明文網路密鑰,請妥善保管。',
+    copyYaml: '複製全部',
+    yamlCopied: '已複製,到 pwclient 貼上即可',
+    downloadYaml: '下載檔案',
+    yamlClose: '關閉',
   },
 }

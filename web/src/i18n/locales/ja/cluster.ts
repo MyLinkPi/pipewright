@@ -104,5 +104,11 @@ export default {
     clientHint: 'Win11 マシンで pwclient クライアントを実行し、下記からエクスポートした設定ファイルをインポートすればクラスタネットワークに参加できます。クライアント側でルートする網段を自由に選択できます。エクスポートファイルには平文のネットワークシークレットが含まれるため取り扱いに注意してください。',
     exportClientConfig: 'クライアント設定をエクスポート',
     clientExported: 'pipewright-client.yaml をエクスポートしました(平文シークレットを含むため取り扱い注意)',
+    clientYamlTitle: 'クライアント設定(pipewright-client.yaml)',
+    clientYamlHint: '全文をコピーして pwclient の「クラスタ設定 → 貼り付けた設定を取り込む」に貼り付けるだけで参加できます。平文のネットワーク鍵を含むため取り扱い注意。',
+    copyYaml: 'すべてコピー',
+    yamlCopied: 'コピーしました - pwclient に貼り付け',
+    downloadYaml: 'ファイルをダウンロード',
+    yamlClose: '閉じる',
   },
 }

@@ -13,6 +13,7 @@ import { useI18n } from 'vue-i18n'
 import {
   revealMeshNetworkSecret,
   downloadMeshClientConfig,
+  fetchMeshClientConfigText,
   getMeshOverview,
   triggerEasyTierDownload,
   type EasyTierBinaries,
@@ -198,20 +199,49 @@ async function downloadBinaries(): Promise<void> {
   }
 }
 
-// 导出 Win11 客户端(pwclient)加入配置:成功后短暂显示「已导出」提示(文件由浏览器下载)。
-const clientExported = ref(false)
-let clientExportedTimer: number | undefined
+// 导出 Win11 客户端(pwclient)加入配置:首选「复制文本」弹窗(pwclient 粘贴即用),
+// 弹窗内保留文件下载作为兜底。
+const clientYaml = ref('')
+const clientYamlOpen = ref(false)
+const yamlCopied = ref(false)
+let yamlCopiedTimer: number | undefined
 
 async function exportClientConfig(): Promise<void> {
   try {
-    await downloadMeshClientConfig()
+    clientYaml.value = await fetchMeshClientConfigText()
     actionError.value = ''
-    clientExported.value = true
-    if (clientExportedTimer !== undefined) window.clearTimeout(clientExportedTimer)
-    clientExportedTimer = window.setTimeout(() => { clientExported.value = false }, 5000)
+    yamlCopied.value = false
+    clientYamlOpen.value = true
   } catch (err) {
     actionError.value = err instanceof Error ? err.message : String(err)
   }
+}
+
+async function copyClientYaml(): Promise<void> {
+  try {
+    await navigator.clipboard.writeText(clientYaml.value)
+  } catch {
+    // 非安全上下文(http)无 Clipboard API:textarea 全选兜底,提示手动 Ctrl+C。
+    const el = document.getElementById('client-yaml-text') as HTMLTextAreaElement | null
+    el?.focus()
+    el?.select()
+    return
+  }
+  yamlCopied.value = true
+  if (yamlCopiedTimer !== undefined) window.clearTimeout(yamlCopiedTimer)
+  yamlCopiedTimer = window.setTimeout(() => { yamlCopied.value = false }, 3000)
+}
+
+function downloadClientYaml(): void {
+  const blob = new Blob([clientYaml.value], { type: 'application/yaml' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = 'pipewright-client.yaml'
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  URL.revokeObjectURL(url)
 }
 
 async function load(): Promise<void> {
@@ -466,15 +496,35 @@ onUnmounted(() => {
         </div>
       </section>
 
-      <!-- 集群客户端(Win11 pwclient):导出加入配置文件,拷到客户端导入即用。 -->
+      <!-- 集群客户端(Win11 pwclient):导出加入配置 —— 首选复制文本(pwclient 粘贴即用)。 -->
       <section class="block">
         <h2>{{ t('cluster.settings.clientTitle') }}</h2>
         <p class="hint">{{ t('cluster.settings.clientHint') }}</p>
         <div class="row-end">
-          <span v-if="clientExported" class="ok-text">{{ t('cluster.settings.clientExported') }}</span>
           <AppButton variant="default" @click="exportClientConfig">{{ t('cluster.settings.exportClientConfig') }}</AppButton>
         </div>
       </section>
+
+      <!-- 导出配置弹窗:只读 YAML + 复制(主路径)+ 下载文件(兜底)。 -->
+      <div v-if="clientYamlOpen" class="yaml-scrim" @click.self="clientYamlOpen = false">
+        <div class="yaml-modal" role="dialog" aria-modal="true" :aria-label="t('cluster.settings.clientYamlTitle')">
+          <div class="yaml-head">
+            <div>
+              <div class="yaml-title">{{ t('cluster.settings.clientYamlTitle') }}</div>
+              <div class="yaml-sub">{{ t('cluster.settings.clientYamlHint') }}</div>
+            </div>
+            <button class="yaml-close" type="button" :aria-label="t('cluster.settings.yamlClose')" @click="clientYamlOpen = false">✕</button>
+          </div>
+          <div class="yaml-body">
+            <textarea id="client-yaml-text" class="yaml-text" readonly :value="clientYaml" rows="14" spellcheck="false" />
+          </div>
+          <div class="yaml-foot">
+            <span v-if="yamlCopied" class="ok-text">{{ t('cluster.settings.yamlCopied') }}</span>
+            <AppButton variant="default" @click="downloadClientYaml">{{ t('cluster.settings.downloadYaml') }}</AppButton>
+            <AppButton variant="primary" @click="copyClientYaml">{{ t('cluster.settings.copyYaml') }}</AppButton>
+          </div>
+        </div>
+      </div>
 
       <!-- 授权单 -->
       <section class="block">
@@ -578,4 +628,16 @@ onUnmounted(() => {
 .ok-text { color: var(--color-green); font-size: 13px; }
 .err { color: var(--color-amber); }
 .muted { color: var(--color-text-muted); font-size: 12px; }
+
+/* ─── 导出配置弹窗(复制文本为主路径) ─────────── */
+.yaml-scrim { position: fixed; inset: 0; background: oklch(0% 0 0 / 0.62); display: grid; place-items: center; z-index: 100; padding: 24px; }
+.yaml-modal { width: 100%; max-width: 640px; background: var(--color-card); border: 1px solid var(--color-border-strong); border-radius: var(--rounded-xl); box-shadow: var(--shadow-modal); overflow: hidden; }
+.yaml-head { display: flex; align-items: flex-start; gap: 12px; padding: 18px 20px 14px; border-bottom: 1px solid var(--color-border); }
+.yaml-title { font-size: 1rem; font-weight: 600; color: var(--color-text); letter-spacing: -0.01em; }
+.yaml-sub { font-size: 0.78rem; color: var(--color-faint); margin-top: 3px; line-height: 1.5; }
+.yaml-close { margin-left: auto; flex-shrink: 0; width: 30px; height: 30px; border-radius: var(--rounded-md); border: none; background: transparent; color: var(--color-faint); cursor: pointer; display: grid; place-items: center; }
+.yaml-close:hover { color: var(--color-text); background: var(--color-inset); }
+.yaml-body { padding: 16px 20px; }
+.yaml-text { width: 100%; min-height: 240px; resize: vertical; font-family: var(--font-mono, monospace); font-size: 0.8rem; line-height: 1.5; padding: 10px 12px; border-radius: var(--rounded-md); border: 1px solid var(--color-border); background: var(--color-inset); color: var(--color-text); }
+.yaml-foot { display: flex; justify-content: flex-end; align-items: center; gap: 8px; padding: 0 20px 18px; }
 </style>

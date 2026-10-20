@@ -104,5 +104,11 @@ export default {
     clientHint: 'Exécutez le client pwclient sur une machine Win11 et importez le fichier exporte ci-dessous pour rejoindre le reseau du cluster ; le client choisit librement les sous-reseaux qu il route. Le fichier exporte contient le secret reseau en clair - a manipuler avec precaution.',
     exportClientConfig: 'Exporter la config. client',
     clientExported: 'pipewright-client.yaml exporte (contient le secret en clair - a manipuler avec precaution)',
+    clientYamlTitle: 'Configuration client (pipewright-client.yaml)',
+    clientYamlHint: 'Copiez tout et collez-le dans pwclient (Config. cluster → Importer la config. collée). Contient la clé réseau en clair - à manipuler avec soin.',
+    copyYaml: 'Tout copier',
+    yamlCopied: 'Copié - collez-le dans pwclient',
+    downloadYaml: 'Télécharger le fichier',
+    yamlClose: 'Fermer',
   },
 }

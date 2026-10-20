@@ -104,5 +104,11 @@ export default {
     clientHint: 'Starten Sie den pwclient-Client auf einer Win11-Maschine und importieren Sie die unten exportierte Konfigurationsdatei, um dem Clusternetzwerk beizutreten; der Client waehlt frei, welche Subnetze er routet. Die exportierte Datei enthaelt das Netzwerk-Geheimnis im Klartext - sorgfaeltig behandeln.',
     exportClientConfig: 'Client-Konfiguration exportieren',
     clientExported: 'pipewright-client.yaml exportiert (enthaelt das Geheimnis im Klartext - sorgfaeltig behandeln)',
+    clientYamlTitle: 'Client-Konfiguration (pipewright-client.yaml)',
+    clientYamlHint: 'Alles kopieren und in pwclient einfügen (Clusterkonfiguration → Eingegebene Konfiguration importieren). Enthält den Klartext-Netzwerkschlüssel - sorgfältig behandeln.',
+    copyYaml: 'Alles kopieren',
+    yamlCopied: 'Kopiert - in pwclient einfügen',
+    downloadYaml: 'Datei herunterladen',
+    yamlClose: 'Schließen',
   },
 }
