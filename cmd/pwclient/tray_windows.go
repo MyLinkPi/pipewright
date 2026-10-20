@@ -73,7 +73,11 @@ func runTray() {
 		os.Exit(1)
 	}
 	go a.pollLoop()
-	a.mw.Show()
+	if startMinimized {
+		a.mw.Hide() // --minimized(开机自启):仅托盘,点图标/双击再唤出
+	} else {
+		a.mw.Show() // 双击启动显示界面
+	}
 	a.mw.Run() // 消息循环;主窗口隐藏到托盘,经托盘「退出」结束
 }
 

@@ -35,8 +35,22 @@ import (
 	"github.com/huangchengsir/pipewright/internal/version"
 )
 
+// startMinimized 为 true 时托盘形态启动(不弹主窗口;由 --minimized 触发,开机
+// 自启命令携带,双击启动不带)。
+var startMinimized bool
+
 func main() {
 	args := os.Args[1:]
+	// --minimized 可出现在任意位置(含与子命令并存);从位置参数中摘除。
+	filtered := args[:0]
+	for _, a := range args {
+		if a == "--minimized" || a == "-minimized" {
+			startMinimized = true
+			continue
+		}
+		filtered = append(filtered, a)
+	}
+	args = filtered
 	cmd := "tray"
 	if len(args) > 0 {
 		cmd = args[0]
