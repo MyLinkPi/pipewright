@@ -104,5 +104,11 @@ export default {
     clientHint: 'Win11 머신에서 pwclient 클라이언트를 실행하고 아래에서 내보낸 구성 파일을 가져오면 클러스터 네트워크에 참여합니다. 클라이언트는 라우팅할 대역을 자유롭게 선택할 수 있습니다. 내보낸 파일에는 평문 네트워크 시크릿이 포함되어 있으니 주의해서 보관하세요.',
     exportClientConfig: '클라이언트 구성 내보내기',
     clientExported: 'pipewright-client.yaml 을 내보냈습니다(평문 시크릿 포함, 주의해서 보관)',
+    clientYamlTitle: '클라이언트 설정(pipewright-client.yaml)',
+    clientYamlHint: '전체를 복사해 pwclient의 「클러스터 설정 → 붙여넣은 설정 가져오기」에 붙여넣으면 가입 완료. 평문 네트워크 키 포함 - 주의해서 보관.',
+    copyYaml: '모두 복사',
+    yamlCopied: '복사됨 - pwclient에 붙여넣기',
+    downloadYaml: '파일 다운로드',
+    yamlClose: '닫기',
   },
 }

@@ -160,6 +160,25 @@ export function revealMeshNetworkSecret(): Promise<{ secret: string }> {
  * Raw fetch instead of the JSON helper: success is a file attachment; failure is
  * the canonical {error:{code,message}} envelope.
  */
+/**
+ * Export the Win11 client (pwclient) join config as YAML text (for the
+ * copy-to-clipboard dialog; the pwclient GUI pastes it directly).
+ * Raw fetch instead of the JSON helper: success is a YAML attachment; failure is
+ * the canonical {error:{code,message}} envelope.
+ */
+export async function fetchMeshClientConfigText(): Promise<string> {
+  const resp = await fetch('/api/mesh/client-config', { credentials: 'same-origin' })
+  if (!resp.ok) {
+    let message = `HTTP ${resp.status}`
+    try {
+      const body = (await resp.json()) as { error?: { message?: string } }
+      if (body.error?.message) message = body.error.message
+    } catch { /* keep HTTP status text */ }
+    throw new Error(message)
+  }
+  return resp.text()
+}
+
 export async function downloadMeshClientConfig(): Promise<void> {
   const resp = await fetch('/api/mesh/client-config', { credentials: 'same-origin' })
   if (!resp.ok) {
