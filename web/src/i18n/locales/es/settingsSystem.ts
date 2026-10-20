@@ -31,6 +31,8 @@ export default {
   errCheckStatus: 'Error al comprobar ({status})',
   errCheckRetry: 'Error al comprobar. Inténtalo de nuevo más tarde.',
   restartingToNew: 'Reiniciando a la nueva versión…',
+  updateDeferred: 'Nueva versión lista; se reiniciará automáticamente al terminar las tareas',
+  updateForce: 'Reiniciar ahora (interrumpe tareas)',
   manualUpgrade: 'Actualiza manualmente.',
   updateFailed: 'Error al actualizar',
   errUpdateStatus: 'Error al actualizar ({status})',

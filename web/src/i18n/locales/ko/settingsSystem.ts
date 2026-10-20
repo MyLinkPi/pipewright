@@ -31,6 +31,8 @@ export default {
   errCheckStatus: '확인에 실패했습니다({status})',
   errCheckRetry: '확인에 실패했습니다. 잠시 후 다시 시도하세요.',
   restartingToNew: '새 버전으로 재시작 중…',
+  updateDeferred: '새 버전 준비됨:실행 중 작업이 끝나면 자동으로 재시작합니다',
+  updateForce: '강제 재시작(작업 중단)',
   manualUpgrade: '수동으로 업그레이드하세요.',
   updateFailed: '업데이트 실패',
   errUpdateStatus: '업데이트에 실패했습니다({status})',

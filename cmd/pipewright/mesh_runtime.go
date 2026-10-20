@@ -88,6 +88,20 @@ func (rt *meshRuntime) statusSnapshot() *easytier.Status {
 	return st
 }
 
+// StopMeshAndWait 同步停止托管 easytier 并等待进程退出(re-exec 前置清理:不等退出
+// 会留孤儿占端口,v1.6.4 事故)。停后到 exec 之间若撞上对账节拍会重拉一次,
+// 无害(新进程启动时有孤儿清理兜底)。
+func (rt *meshRuntime) StopMeshAndWait(grace time.Duration) {
+	rt.mu.Lock()
+	sp := rt.supervisor
+	rt.supervisor = nil
+	rt.supervisorKey = ""
+	rt.mu.Unlock()
+	if sp != nil {
+		sp.StopAndWait(grace)
+	}
+}
+
 // SupervisorSnapshot 实现 httpapi.meshRuntimeView。
 func (rt *meshRuntime) SupervisorSnapshot() easytier.Runtime {
 	rt.mu.Lock()

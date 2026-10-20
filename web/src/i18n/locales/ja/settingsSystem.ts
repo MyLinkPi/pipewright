@@ -31,6 +31,8 @@ export default {
   errCheckStatus: '確認に失敗しました({status})',
   errCheckRetry: '確認に失敗しました。しばらくしてから再試行してください。',
   restartingToNew: '新しいバージョンに再起動しています…',
+  updateDeferred: '新バージョン配置済み:実行中タスクの完了後に自動再起動します',
+  updateForce: '強制再起動(タスクを中断)',
   manualUpgrade: '手動でアップグレードしてください。',
   updateFailed: '更新に失敗しました',
   errUpdateStatus: '更新に失敗しました({status})',

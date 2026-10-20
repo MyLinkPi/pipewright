@@ -31,6 +31,8 @@ export default {
   errCheckStatus: 'Check failed ({status})',
   errCheckRetry: 'Check failed. Please try again later.',
   restartingToNew: 'Restarting to the new version…',
+  updateDeferred: 'New version staged; will restart automatically once running tasks finish',
+  updateForce: 'Force restart (interrupts tasks)',
   manualUpgrade: 'Please upgrade manually.',
   updateFailed: 'Update failed',
   errUpdateStatus: 'Update failed ({status})',

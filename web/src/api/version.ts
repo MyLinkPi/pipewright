@@ -38,7 +38,8 @@ export interface UpdateInfo {
 /** 一键自动更新结果。binary 成功后进程自重启;docker 返回升级命令;source 返回 building 后走后台管线。 */
 export interface UpdateResult {
   mode: 'binary' | 'docker' | 'source' | ''
-  status: 'restarting' | 'manual' | 'uptodate' | 'building' | 'busy' | 'error'
+  /** deferred = 新版已就位,等待活跃任务(本地运行+跨环境共享构建)结束自动重启。 */
+  status: 'restarting' | 'deferred' | 'manual' | 'uptodate' | 'building' | 'busy' | 'error'
   from: string
   to: string
   message: string
@@ -69,8 +70,9 @@ export function checkUpdate(): Promise<UpdateInfo> {
 }
 
 /** 触发一键自动更新(写操作,带 CSRF)。 */
-export function applyUpdate(): Promise<UpdateResult> {
-  return http.post<UpdateResult>('/api/version/update')
+// force:有活跃运行/共享构建任务时仍立即重启(将中断它们;默认 false = 等空闲自动重启)。
+export function applyUpdate(force = false): Promise<UpdateResult> {
+  return http.post<UpdateResult>('/api/version/update', { force })
 }
 
 /** 轮询源码升级后台管线的进度(鉴权只读)。 */
