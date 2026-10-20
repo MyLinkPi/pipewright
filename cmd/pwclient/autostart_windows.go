@@ -19,13 +19,14 @@ const (
 	runKeyPath         = `Software\Microsoft\Windows\CurrentVersion\Run`
 )
 
-// autoStartCommand 返回自启命令(带引号的当前 exe 路径;无参数 = 默认托盘形态)。
+// autoStartCommand 返回自启命令:带引号的当前 exe 路径 + --minimized(托盘形态启动)。
 func autoStartCommand() (string, error) {
 	exe, err := os.Executable()
 	if err != nil {
 		return "", fmt.Errorf("定位自身路径失败:%w", err)
 	}
-	return `"` + exe + `"`, nil
+	// --minimized:开机自启以托盘形态启动(不弹主窗口);双击启动无此参数,正常显示。
+	return `"` + exe + `" --minimized`, nil
 }
 
 // autoStartValue 读取已存的自启命令;未配置时返回空串。
