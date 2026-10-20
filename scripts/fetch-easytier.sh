@@ -49,16 +49,17 @@ for arch in amd64 arm64; do
 		echo "既无 unzip 也无 powershell,无法解包" >&2
 		exit 1
 	fi
-	# 官方包是平铺的 easytier-core.exe / easytier-cli.exe。
-	cores="$(find "$tmp/unz" -name 'easytier-core*' ! -name '*.sig' | head -1)"
-	clis="$(find "$tmp/unz" -name 'easytier-cli*' ! -name '*.sig' | head -1)"
-	if [ -z "$cores" ] || [ -z "$clis" ]; then
-		echo "包内未找到 easytier-core/easytier-cli: $asset" >&2
-		exit 1
-	fi
-	cp "$cores" "$bindir/"
-	cp "$clis" "$bindir/"
-	echo "windows/$arch: $(basename "$cores") $(basename "$clis") ← $asset"
+	# 官方包平铺:easytier-core/cli + 运行库(wintun.dll 虚拟网卡 / Packet.dll、
+	# WinDivert64.sys 抓包 —— 缺任一 easytier-core 无法启动或建不了网卡;web 系列不取)。
+	for f in easytier-core* easytier-cli* wintun.dll Packet.dll WinDivert64.sys; do
+		src="$(find "$tmp/unz" -name "$f" ! -name '*.sig' | head -1)"
+		if [ -z "$src" ]; then
+			echo "包内未找到 $f: $asset" >&2
+			exit 1
+		fi
+		cp "$src" "$bindir/"
+	done
+	echo "windows/$arch: $(ls "$bindir" | tr '\n' ' ')← $asset"
 done
 
 echo "$version" > "$dest/licenses/VERSION"

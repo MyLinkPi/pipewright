@@ -169,6 +169,8 @@ func (rt *Runtime) reconcile(ctx context.Context) {
 		Hostname:      rt.hostname(cfg),
 		Peers:         cfg.Join.Peers,
 		ManualRoutes:  cfg.Routes, // ProxyNetworks 恒空:客户端不通告任何子网
+		// 留空 = 不路由任何通告网段(fail-closed:仅虚拟网互通,要访问哪个网段就显式加入)
+		StrictManualRoutes: true,
 		Socks5Port:    socks5Port(cfg),
 		DataDir:       rt.dataDir,
 		CorePath:      corePath,

@@ -56,7 +56,7 @@ type Config struct {
 	// Enabled 是连接开关(托盘「断开/连接」);false = 停止组网、保留配置。
 	Enabled bool       `yaml:"enabled"`
 	Join    JoinConfig `yaml:"join"`
-	// Routes 手工限定本机路由的网段(cidr)。空 = 自动接受全部子网代理通告;
+	// Routes 手工限定本机路由的网段(cidr)。空 = 不路由任何通告网段(fail-closed,仅虚拟网互通);
 	// 非空 = 经 --manual-routes 仅路由列表内网段。
 	Routes   []string       `yaml:"routes"`
 	Socks5   Socks5Config   `yaml:"socks5"`

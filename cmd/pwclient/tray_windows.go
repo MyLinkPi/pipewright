@@ -109,7 +109,7 @@ func (a *trayApp) build() error {
 				Children: []Widget{
 					Label{Text: "集群通告的网段(← 网关节点,双击追加到下方列表):", TextColor: walk.Color(0x666666)},
 					ListBox{AssignTo: &a.availList, MinSize: Size{Height: 76}, OnItemActivated: a.onAddRoute},
-					Label{Text: "本机路由的网段,每行一个 CIDR;留空 = 路由全部通告网段:", TextColor: walk.Color(0x666666)},
+					Label{Text: "本机路由的网段,每行一个 CIDR;留空 = 不路由任何通告网段(仅虚拟网互通):", TextColor: walk.Color(0x666666)},
 					TextEdit{AssignTo: &a.routesEdit, MinSize: Size{Height: 96}, VScroll: true},
 					Composite{
 						Layout: HBox{MarginsZero: true},
@@ -124,7 +124,7 @@ func (a *trayApp) build() error {
 				Title:  "本地代理(SOCKS5,可选)",
 				Layout: VBox{MarginsZero: true, Spacing: 6},
 				Children: []Widget{
-					Label{Text: "应用(浏览器/终端等)把代理指向 127.0.0.1:端口 即可经集群访问,不影响其他流量。无认证,仅限本机使用;域名解析走本机 DNS。", TextColor: walk.Color(0x666666)},
+					Label{Text: "应用(浏览器/终端等)把代理指向 127.0.0.1:端口 即可经集群访问,不影响其他流量;可达范围 = 上方路由列表内的网段。无认证,仅限本机使用;域名解析走本机 DNS。", TextColor: walk.Color(0x666666)},
 					Composite{
 						Layout: HBox{MarginsZero: true, Spacing: 8},
 						Children: []Widget{
