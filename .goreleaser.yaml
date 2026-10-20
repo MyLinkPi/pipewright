@@ -161,10 +161,14 @@ release:
     ---
     ## 安装
 
-    一行命令(Linux / macOS,自动下载本 Release 的平台二进制并安装;如需装为 systemd 服务
-    前置 `SETUP_SERVICE=1 `):
+    一行命令(Linux / macOS,自动下载本 Release 的平台二进制并安装):
     ```sh
     curl -fsSL https://raw.githubusercontent.com/{{ .Env.RELEASE_REPO }}/{{ .Tag }}/install.sh | sh
+    ```
+
+    直接装为 systemd 服务(开机自启 + 一键自更新;Linux,需 root):
+    ```sh
+    curl -fsSL https://raw.githubusercontent.com/{{ .Env.RELEASE_REPO }}/{{ .Tag }}/install.sh | SETUP_SERVICE=1 sh
     ```
 
     本地编译安装(Linux / macOS):
