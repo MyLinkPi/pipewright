@@ -5,6 +5,7 @@ export default {
   title: 'サーバー',
   desc: '対象サーバー(host / port / user + SSH 認証情報)を登録し、接続性をテストします。SSH 鍵は参照でのみバインドされ、Vault 経由で暗号化して保存・取得され、平文で保存・表示されることはありません。デプロイと運用はどちらもこの共有 SSH レイヤー経由でコマンドを実行します。',
   addServer: 'サーバーを登録',
+  importFromAliyun: 'Aliyun からインポート',
   editServer: 'サーバーを編集',
   addDisabledHint: 'まず認証情報 Vault に SSH 秘密鍵の認証情報を追加してください',
   noCredentialHint: 'SSH 認証情報がまだありません。サーバーを登録する前に、「認証情報 Vault」で「SSH 秘密鍵」または「SSH パスワード」の認証情報を追加してください。',

@@ -14,6 +14,7 @@ export default {
   navHttps: 'HTTPS アクセス',
   navAccount: 'アカウント',
   navServers: 'サーバー',
+  navAliyunEcs: 'Aliyun ECS',
   navMesh: 'クラスタ',  navSharedBuild: '共有ビルド',
 
   navRegistry: 'レジストリ',

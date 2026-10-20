@@ -5,6 +5,7 @@ export default {
   title: 'Serveurs',
   desc: 'Enregistrez les serveurs cibles (hôte / port / utilisateur + identifiant SSH) et testez la connectivité. Les clés SSH sont liées par référence uniquement, stockées et récupérées chiffrées via le coffre, et ne sont jamais conservées ni affichées en clair. Le déploiement et les opérations exécutent leurs commandes via cette couche SSH partagée.',
   addServer: 'Enregistrer un serveur',
+  importFromAliyun: 'Importer depuis Aliyun',
   editServer: 'Modifier le serveur',
   addDisabledHint: "Ajoutez d'abord un identifiant de clé privée SSH dans le coffre d'identifiants",
   noCredentialHint: "Aucun identifiant SSH pour l'instant. Ajoutez un identifiant « clé privée SSH » ou « mot de passe SSH » dans le « coffre d'identifiants » avant d'enregistrer un serveur.",

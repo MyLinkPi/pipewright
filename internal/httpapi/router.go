@@ -17,6 +17,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/huangchengsir/pipewright/internal/ai"
+	"github.com/huangchengsir/pipewright/internal/aliyunecs"
 	"github.com/huangchengsir/pipewright/internal/anomaly"
 	"github.com/huangchengsir/pipewright/internal/approval"
 	"github.com/huangchengsir/pipewright/internal/appstore"
@@ -128,6 +129,7 @@ type options struct {
 	retention         *retention.Service
 	certMgmt          certmgmt.Service
 	dnsProviders      dnsprovider.Service
+	aliyunEcs         aliyunecs.Service
 	objectStores      objectstore.Service
 	serviceReg        servicereg.Service
 	platformHTTPS     platformhttps.Service
@@ -484,6 +486,14 @@ func WithCertMgmt(s certmgmt.Service) Option {
 // 不传则相关端点返回 503(服务未初始化)。
 func WithDNSProviders(s dnsprovider.Service) Option {
 	return func(o *options) { o.dnsProviders = s }
+}
+
+// WithAliyunEcs 注入阿里云 ECS 批量导入服务(设置→阿里云 ECS),挂载 /api/aliyun/* 路由
+// (GET auth;POST/PUT/DELETE/test/import auth + CSRF + 审计)。
+// AccessKeySecret 经 vault.SealSecret 密文入库、拉实例/导入时即用即弃,响应/审计/日志
+// 绝无明文;AccessKeyId 非机密可回显。不传则相关端点返回 503(服务未初始化)。
+func WithAliyunEcs(s aliyunecs.Service) Option {
+	return func(o *options) { o.aliyunEcs = s }
 }
 
 // WithServiceReg 注入「服务注册网关」(nginx)服务,挂载 /api/servicereg/* 路由
@@ -1125,6 +1135,19 @@ func New(webFS fs.FS, authn auth.Authenticator, opts ...Option) http.Handler {
 		ar.Post("/dns/providers/{id}/zones", makeAddDNSZoneHandler(dp, aud))
 		ar.Delete("/dns/providers/{id}/zones/{zoneId}", makeRemoveDNSZoneHandler(dp, aud))
 		ar.Delete("/dns/providers/{id}", makeDeleteDNSProviderHandler(dp, o.vault, aud))
+
+		// 阿里云 ECS 批量导入(设置→阿里云 ECS):多套账户配置(AK 明文列 + Secret 密文 BLOB)
+		// + 拉实例 + 手选范围批量导入/更新 servers 行(每批统一认证)。ae 为 nil → handler 返回
+		// 503。GET(列表/实例)过 auth;POST/PUT/DELETE/test/import 为写方法,过 auth + CSRF + 审计。
+		// AccessKeySecret 绝不回显(只写字段,留空=不修改);逐台导入结果独立容错(200 + ok:false)。
+		ae := o.aliyunEcs
+		ar.Get("/aliyun/accounts", makeListAliyunAccountsHandler(ae))
+		ar.Post("/aliyun/accounts", makeCreateAliyunAccountHandler(ae, aud))
+		ar.Put("/aliyun/accounts/{id}", makeUpdateAliyunAccountHandler(ae, aud))
+		ar.Delete("/aliyun/accounts/{id}", makeDeleteAliyunAccountHandler(ae, aud))
+		ar.Post("/aliyun/accounts/{id}/test", makeTestAliyunAccountHandler(ae, aud))
+		ar.Get("/aliyun/accounts/{id}/instances", makeListAliyunInstancesHandler(ae))
+		ar.Post("/aliyun/import", makeAliyunImportHandler(ae, aud))
 
 		// 对象存储集成层(流水线 OSS 上传节点配套):本期仅阿里云 OSS(凭据走 vault)。
 		// obs 为 nil → handler 返回 503。GET(列表)过 auth;POST/PUT/DELETE/test 为写方法,

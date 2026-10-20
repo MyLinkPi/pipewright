@@ -34,6 +34,10 @@ export type FieldKind =
   | 'nodeRef'
   /** 引用一条「对象存储」配置(值 = 配置 id);候选来自设置页,如 OSS 上传节点。 */
   | 'objectStore'
+  /** 引用一条「阿里云账户」配置(值 = 账户 id);候选来自设置页,如 ECS 开关机节点。 */
+  | 'aliyunAccount'
+  /** 阿里云 ECS 实例多选(值 = 逗号串 instanceId 快照;候选随所选账户联动拉取)。 */
+  | 'ecsInstances'
   | 'runnerPicker'
   /** 集群对端节点选择(候选来自 /api/mesh/peers;mesh_push/mesh_trigger 用)。 */
   | 'meshNode'
@@ -971,13 +975,88 @@ export const JOB_TYPE_SPECS: Record<string, JobTypeSpec> = {
     ],
   },
 
+  // 阿里云 ECS 开关机节点:对一台或若干台 ECS 实例开机/关机(关机固定节省停机模式)。
+  // 机器选择三种方式:实例直选(配置时快照)/ 阿里云 ECS 标签 / 平台服务器标签(后两种运行时解析)。
+  // 关机固定 StopCharging(需求要求),不暴露普通停机选项。
+  ecs_power: {
+    type: 'ecs_power',
+    get label() { return t('pipelineJob.typeEcsPowerLabel') },
+    get description() { return t('pipelineJob.typeEcsPowerDesc') },
+    accent: 'amber',
+    category: 'deploy',
+    defaultConfig: { action: 'start', selector: 'instances', waitSeconds: '300' },
+    fields: [
+      {
+        key: 'accountId',
+        get label() { return t('pipelineJob.fieldEcsAccountLabel') },
+        kind: 'aliyunAccount',
+        get hint() { return t('pipelineJob.fieldEcsAccountHint') },
+      },
+      {
+        key: 'action',
+        get label() { return t('pipelineJob.fieldEcsActionLabel') },
+        kind: 'select',
+        options: [
+          { value: 'start', get label() { return t('pipelineJob.ecsActionStart') } },
+          { value: 'stop', get label() { return t('pipelineJob.ecsActionStop') } },
+        ],
+        get hint() { return t('pipelineJob.fieldEcsActionHint') },
+      },
+      {
+        key: 'selector',
+        get label() { return t('pipelineJob.fieldEcsSelectorLabel') },
+        kind: 'select',
+        options: [
+          { value: 'instances', get label() { return t('pipelineJob.ecsSelectorInstances') } },
+          { value: 'tags', get label() { return t('pipelineJob.ecsSelectorTags') } },
+        ],
+      },
+      {
+        key: 'instanceIds',
+        get label() { return t('pipelineJob.fieldEcsInstancesLabel') },
+        kind: 'ecsInstances',
+        get hint() { return t('pipelineJob.fieldEcsInstancesHint') },
+        when: (c) => (c.selector || 'instances') === 'instances',
+      },
+      {
+        key: 'tagSource',
+        get label() { return t('pipelineJob.fieldEcsTagSourceLabel') },
+        kind: 'select',
+        options: [
+          { value: 'aliyun', get label() { return t('pipelineJob.ecsTagSourceAliyun') } },
+          { value: 'platform', get label() { return t('pipelineJob.ecsTagSourcePlatform') } },
+        ],
+        when: (c) => c.selector === 'tags',
+      },
+      {
+        key: 'tags',
+        get label() { return t('pipelineJob.fieldEcsTagsLabel') },
+        kind: 'labelSelector',
+        get hint() { return t('pipelineJob.fieldEcsTagsHint') },
+        when: (c) => c.selector === 'tags',
+      },
+      {
+        key: 'forceStop',
+        get label() { return t('pipelineJob.fieldEcsForceStopLabel') },
+        kind: 'toggle',
+        get hint() { return t('pipelineJob.fieldEcsForceStopHint') },
+        when: (c) => c.action === 'stop',
+      },
+      {
+        key: 'waitSeconds',
+        get label() { return t('pipelineJob.fieldEcsWaitLabel') },
+        kind: 'number',
+        get hint() { return t('pipelineJob.fieldEcsWaitHint') },
+      },
+    ],
+  },
+
   health_check: {
     type: 'health_check',
     get label() { return t('pipelineJob.typeHealthCheckLabel') },
     get description() { return t('pipelineJob.typeHealthCheckDesc') },
     accent: 'green',
-    category: 'quality',
-    fields: [
+    category: 'quality',    fields: [
       {
         key: 'selector',
         get label() { return t('pipelineJob.fieldDeploySelectorLabel') },
@@ -1286,6 +1365,7 @@ export const PICKABLE_TYPES: readonly string[] = [
   'build_image',
   'push_image',
   'oss_upload',
+  'ecs_power',
   'mesh_push',
   'mesh_trigger',
   'deploy_container',

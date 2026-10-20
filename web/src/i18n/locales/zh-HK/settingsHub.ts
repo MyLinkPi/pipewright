@@ -14,6 +14,7 @@ export default {
   navHttps: 'HTTPS 存取',
   navAccount: '帳戶',
   navServers: '伺服器',
+  navAliyunEcs: '阿里雲 ECS',
   navMesh: '集群',  navSharedBuild: '共享構建機',
 
   navRegistry: '鏡像倉庫',

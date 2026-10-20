@@ -605,17 +605,22 @@ async function handleTest(s: Server): Promise<void> {
           {{ t('settingsServers.desc') }}
         </p>
       </div>
-      <button
-        class="btn-primary"
-        :disabled="loadState === 'loading' || !hasSSHCredentials"
-        :title="!hasSSHCredentials ? t('settingsServers.addDisabledHint') : ''"
-        @click="openAddModal"
-      >
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-hidden="true">
-          <path d="M12 5v14M5 12h14" />
-        </svg>
-        {{ t('settingsServers.addServer') }}
-      </button>
+      <div class="section-head-actions">
+        <router-link class="btn-secondary-link" to="/settings/aliyun-ecs">
+          {{ t('settingsServers.importFromAliyun') }}
+        </router-link>
+        <button
+          class="btn-primary"
+          :disabled="loadState === 'loading' || !hasSSHCredentials"
+          :title="!hasSSHCredentials ? t('settingsServers.addDisabledHint') : ''"
+          @click="openAddModal"
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-hidden="true">
+            <path d="M12 5v14M5 12h14" />
+          </svg>
+          {{ t('settingsServers.addServer') }}
+        </button>
+      </div>
     </div>
 
     <!-- ─── no-credential hint ────────────────────────────────────────────────── -->
@@ -1026,6 +1031,34 @@ async function handleTest(s: Server): Promise<void> {
   justify-content: space-between;
   align-items: flex-start;
   gap: 24px;
+}
+
+.section-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+/* 「从阿里云导入」次级跳转(去 设置→阿里云 ECS 的导入向导) */
+.btn-secondary-link {
+  display: inline-flex;
+  align-items: center;
+  height: 36px;
+  padding: 0 12px;
+  background: var(--color-card);
+  color: var(--color-text);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--rounded);
+  font-size: var(--text-label);
+  font-weight: 500;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.btn-secondary-link:hover {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
 }
 
 .section-title {

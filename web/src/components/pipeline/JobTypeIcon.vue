@@ -33,6 +33,9 @@ const ICONS: Record<string, string> = {
   // 被推送源:入站托盘(集群推送来的产物/镜像)。
   pushed_source:
     '<path d="M12 4v9"/><path d="m8.5 9.5 3.5 3.5 3.5-3.5"/><path d="M4 15.5v2A2.5 2.5 0 0 0 6.5 20h11a2.5 2.5 0 0 0 2.5-2.5v-2"/>',
+  // 阿里云 ECS 开关机:电源符号(开机/关机;关机固定节省停机模式)。
+  ecs_power:
+    '<path d="M12 3v8"/><path d="M6.3 6.5a8 8 0 1 0 11.4 0"/>',
   deploy_ssh:
     '<rect x="3" y="4" width="18" height="6" rx="1.6"/><rect x="3" y="14" width="18" height="6" rx="1.6"/><path d="M7 7h.01M7 17h.01"/>',
   deploy_container:

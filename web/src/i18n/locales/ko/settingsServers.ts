@@ -5,6 +5,7 @@ export default {
   title: '서버',
   desc: '대상 서버(host / port / user + SSH 자격 증명)를 등록하고 연결성을 테스트합니다. SSH 키는 참조로만 바인딩되며 볼트를 통해 암호화되어 저장 및 조회되고, 평문으로 저장하거나 표시하지 않습니다. 배포와 운영 모두 이 공유 SSH 계층을 통해 명령을 실행합니다.',
   addServer: '서버 등록',
+  importFromAliyun: 'Aliyun에서 가져오기',
   editServer: '서버 편집',
   addDisabledHint: '먼저 자격 증명 볼트에 SSH 개인 키 자격 증명을 추가하세요',
   noCredentialHint: 'SSH 자격 증명이 아직 없습니다. 서버를 등록하기 전에 「자격 증명 볼트」에서 「SSH 개인 키」 또는 「SSH 비밀번호」 자격 증명을 추가하세요.',

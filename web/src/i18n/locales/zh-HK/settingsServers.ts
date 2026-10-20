@@ -5,6 +5,7 @@ export default {
   title: '伺服器',
   desc: '登記目標伺服器(host / port / user + SSH 憑證),測試連通性。SSH 金鑰僅按引用綁定,經保險庫密文存取,絕不入庫或回顯明文。部署與維運都經此共享 SSH 層執行命令。',
   addServer: '登記伺服器',
+  importFromAliyun: '從阿里雲匯入',
   editServer: '編輯伺服器',
   addDisabledHint: '請先在憑證保險庫新增一條 SSH 私鑰憑證',
   noCredentialHint: '尚無 SSH 憑證。請先到「憑證保險庫」新增一條「SSH 私鑰」或「SSH 密碼」憑證,再登記伺服器。',

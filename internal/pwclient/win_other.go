@@ -23,6 +23,14 @@ func (rt *Runtime) ensureFirewall(corePath string) {
 	log.Printf("[pwclient] 当前平台无需配置防火墙规则")
 }
 
+// reconcileSocks5Guard 非 Windows 无操作(防火墙规则仅存在于 win_windows.go;
+// 非 Windows 形态部署上应自行以主机防火墙限制 SOCKS5 端口的非本机访问)。
+func (rt *Runtime) reconcileSocks5Guard(port int) {
+	rt.mu.Lock()
+	rt.socks5GuardPort = port
+	rt.mu.Unlock()
+}
+
 // DefaultDataDir 返回默认数据目录(非 Windows 形态;/etc/pipewright-client)。
 func DefaultDataDir() string {
 	return filepath.Join("/etc", "pipewright-client")

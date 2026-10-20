@@ -26,6 +26,7 @@ const { t } = useI18n()
       <router-link to="/settings/https" class="settings-nav-item">{{ t('settingsHub.navHttps') }}</router-link>
       <router-link to="/settings/account" class="settings-nav-item">{{ t('settingsHub.navAccount') }}</router-link>
       <router-link to="/settings/servers" class="settings-nav-item">{{ t('settingsHub.navServers') }}</router-link>
+      <router-link to="/settings/aliyun-ecs" class="settings-nav-item">{{ t('settingsHub.navAliyunEcs') }}</router-link>
       <router-link to="/settings/mesh" class="settings-nav-item">{{ t('settingsHub.navMesh') }}</router-link>
       <router-link to="/settings/shared-build" class="settings-nav-item">{{ t('settingsHub.navSharedBuild') }}</router-link>
       <router-link to="/settings/registry" class="settings-nav-item">{{ t('settingsHub.navRegistry') }}</router-link>

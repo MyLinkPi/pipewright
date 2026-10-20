@@ -34,6 +34,19 @@ func TestNormalizeValidatesAndFillsDefaults(t *testing.T) {
 	if cfg.EasyTier.RPCAddr != "127.0.0.1:15889" {
 		t.Fatalf("rpc default not filled: %q", cfg.EasyTier.RPCAddr)
 	}
+
+	// SOCKS5:启用且未填端口 → 默认 1080;非法端口报错;关闭时端口保留。
+	s5, serr := Normalize(Config{Socks5: Socks5Config{Enabled: true}})
+	if serr != nil || s5.Socks5.Port != socks5DefaultPort {
+		t.Fatalf("socks5 default port: %d err=%v", s5.Socks5.Port, serr)
+	}
+	if _, err := Normalize(Config{Socks5: Socks5Config{Enabled: true, Port: 70000}}); err == nil || !strings.Contains(err.Error(), "70000") {
+		t.Fatalf("invalid socks5 port should error: %v", err)
+	}
+	kept := Config{Socks5: Socks5Config{Enabled: false, Port: 1080}}
+	if out, _ := Normalize(kept); out.Socks5.Port != 1080 {
+		t.Fatalf("disabled socks5 should keep port: %+v", out.Socks5)
+	}
 }
 
 func TestStoreRoundtrip(t *testing.T) {

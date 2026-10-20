@@ -14,6 +14,7 @@ export default {
   navHttps: 'Accès HTTPS',
   navAccount: 'Compte',
   navServers: 'Serveurs',
+  navAliyunEcs: 'ECS Aliyun',
   navMesh: 'Cluster',  navSharedBuild: 'Builds partagés',
 
   navRegistry: 'Registre',

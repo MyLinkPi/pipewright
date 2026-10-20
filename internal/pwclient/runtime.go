@@ -44,6 +44,8 @@ type Runtime struct {
 	dlVersion     string
 	dlRetryAt     time.Time
 	fwEnsured     bool
+	// socks5GuardPort 记录当前 SOCKS5 阻断规则覆盖的端口(0 = 无规则;对账幂等用)。
+	socks5GuardPort int
 	// svc 是装配层注入的服务进程信息(IPC 状态展示;console 直跑时 RunningAs=console)。
 	svc ServiceInfo
 	// logs 是进程内日志环(GUI「日志」尾部展示)。
@@ -125,6 +127,7 @@ func (rt *Runtime) reconcile(ctx context.Context) {
 			log.Printf("[pwclient] 组网已停止(未启用或未配置完整)")
 		}
 		rt.mu.Unlock()
+		rt.reconcileSocks5Guard(0)
 		return
 	}
 
@@ -148,8 +151,8 @@ func (rt *Runtime) reconcile(ctx context.Context) {
 		return
 	}
 
-	key := fmt.Sprintf("%s|%s|%s|%s|%v|%v", cfg.Join.NetworkName, secretFingerprint(cfg.Join.NetworkSecret),
-		cfg.Join.VirtualIP, rt.hostname(cfg), cfg.Join.Peers, cfg.Routes)
+	key := fmt.Sprintf("%s|%s|%s|%s|%v|%v|%d", cfg.Join.NetworkName, secretFingerprint(cfg.Join.NetworkSecret),
+		cfg.Join.VirtualIP, rt.hostname(cfg), cfg.Join.Peers, cfg.Routes, socks5Port(cfg))
 	rt.mu.Lock()
 	unchanged := rt.supervisor != nil && rt.supervisorKey == key
 	rt.mu.Unlock()
@@ -166,6 +169,7 @@ func (rt *Runtime) reconcile(ctx context.Context) {
 		Hostname:      rt.hostname(cfg),
 		Peers:         cfg.Join.Peers,
 		ManualRoutes:  cfg.Routes, // ProxyNetworks 恒空:客户端不通告任何子网
+		Socks5Port:    socks5Port(cfg),
 		DataDir:       rt.dataDir,
 		CorePath:      corePath,
 		CliPath:       rt.cliPath,
@@ -180,6 +184,7 @@ func (rt *Runtime) reconcile(ctx context.Context) {
 		return
 	}
 	rt.ensureFirewall(corePath)
+	rt.reconcileSocks5Guard(socks5Port(cfg))
 	rt.mu.Lock()
 	rt.failedKey = ""
 	if rt.supervisor != nil {
@@ -188,8 +193,23 @@ func (rt *Runtime) reconcile(ctx context.Context) {
 	rt.supervisor = sup
 	rt.supervisorKey = key
 	rt.mu.Unlock()
-	log.Printf("[pwclient] EasyTier 已启动(网络 %s,虚拟 IP %s,peers %d,限定网段 %d)",
-		cfg.Join.NetworkName, orDHCP(cfg.Join.VirtualIP), len(cfg.Join.Peers), len(cfg.Routes))
+	log.Printf("[pwclient] EasyTier 已启动(网络 %s,虚拟 IP %s,peers %d,限定网段 %d,socks5 %s)",
+		cfg.Join.NetworkName, orDHCP(cfg.Join.VirtualIP), len(cfg.Join.Peers), len(cfg.Routes), orOff(socks5Port(cfg)))
+}
+
+// socks5Port 取生效的 SOCKS5 端口(未启用 = 0)。
+func socks5Port(cfg Config) int {
+	if cfg.Socks5.Enabled {
+		return cfg.Socks5.Port
+	}
+	return 0
+}
+
+func orOff(port int) string {
+	if port == 0 {
+		return "关"
+	}
+	return fmt.Sprintf("127.0.0.1:%d", port)
 }
 
 func orDHCP(vip string) string {
@@ -272,10 +292,18 @@ type StatusSnapshot struct {
 	Enabled    bool               `json:"enabled"`
 	Join       JoinStatus         `json:"join"`
 	Routes     []string           `json:"routes"`
+	Socks5     Socks5Status       `json:"socks5"`
 	Supervisor easytier.Runtime   `json:"supervisor"`
 	EasyTier   *easytier.Status   `json:"easytier"`
 	Binaries   easytier.BinStatus `json:"binaries"`
 	Service    ServiceInfo        `json:"service"`
+}
+
+// Socks5Status 是本地 SOCKS5 服务的状态回显(Listening 由装配/doctor 侧探测补充,
+// 此处回显配置生效值)。
+type Socks5Status struct {
+	Enabled bool `json:"enabled"`
+	Port    int  `json:"port"`
 }
 
 // JoinStatus 是加入参数回显(密钥只报存在性)。
@@ -307,6 +335,7 @@ func (rt *Runtime) Snapshot(ctx context.Context) StatusSnapshot {
 			Hostname:    rt.hostname(cfg),
 		},
 		Routes: cfg.Routes,
+		Socks5: Socks5Status{Enabled: socks5Port(cfg) > 0, Port: socks5Port(cfg)},
 	}
 	rt.mu.Lock()
 	if rt.supervisor != nil {
