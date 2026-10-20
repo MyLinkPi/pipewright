@@ -46,7 +46,7 @@ func TestProbeUsesOneConfigurationAndKeySnapshot(t *testing.T) {
 	defer newServer.Close()
 	svc, db, _ := newService(t, oldServer.Client())
 	key := "old-key"
-	if _, err := svc.Save(ctx(), SaveInput{Provider: ProviderOpenAI, BaseURL: oldServer.URL, APIKey: &key}); err != nil {
+	if _, err := svc.Save(ctx(), SaveInput{Provider: ProviderOpenAI, BaseURL: oldServer.URL, Model: "probe-model", APIKey: &key}); err != nil {
 		t.Fatal(err)
 	}
 	s := svc.(*service)

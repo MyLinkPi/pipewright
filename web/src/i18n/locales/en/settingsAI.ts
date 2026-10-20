@@ -7,7 +7,6 @@ export default {
   customGateway: 'Custom gateway',
   modelId: 'Model ID',
   availableModels: 'Available models',
-  searchModels: 'Search models',
   fetchModels: 'Fetch models',
   modelsUnavailable: 'Model list unavailable; enter a model ID manually.',
   title: 'AI Provider',
@@ -43,14 +42,14 @@ export default {
     'Local Ollama needs no API Key — just make sure the Ollama service is running at the given address.',
 
   baseUrlLabel: 'Base URL',
-  baseUrlHint: 'Default: {url}',
+  baseUrlHint: 'Default: {url} (joined verbatim — keep version prefixes such as /v1)',
 
   modelLabel: 'Model',
   modelHint:
     'Primary model used for diagnosis, e.g. claude-opus-4-7 / gpt-4o / llama3',
 
   testConnection: 'Test connection',
-  testOk: 'Connection OK · latency {ms}ms',
+  testOk: 'Inference OK · latency {ms}ms',
   testFail: 'Connection failed',
 
   budgetLabel: 'Monthly Token Limit',

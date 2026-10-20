@@ -118,7 +118,9 @@ func makeDoraMetricsHandler(ms run.MetricsService) http.HandlerFunc {
 				Status:     rec.Status,
 				CreatedAt:  rec.CreatedAt,
 				FinishedAt: rec.FinishedAt,
-				// CommitTime 暂不可得(运行模型未持久化提交时间);dora 层回退用 CreatedAt 作代理。
+				// 提交时刻由执行器克隆解析出 commit 时回写(SetCommit);老运行/未解析出为
+				// nil,dora 层回退用 CreatedAt(入队时刻)作提交代理。
+				CommitTime: rec.CommitTime,
 			})
 		}
 

@@ -25,7 +25,8 @@ type runSubscriber interface {
 // ---- 冻结 run-detail DTO 契约 ------------------------------------------
 //
 // 形状由 Story 3.1 定死;Epic 4(targets)/Epic 7(diagnosis)只往 null 块填值、
-// 不得改字段名/层级/可选性。本期 targets/diagnosis 恒为 null。
+// 不得改字段名/层级/可选性。targets = Story 4.2 部署目标(未部署 → null);
+// diagnosis = Story 7.2 AI 诊断(未诊断 → null)。
 
 // runDetailDTO 是 GET /api/runs/{id} 响应体(冻结)。
 type runDetailDTO struct {

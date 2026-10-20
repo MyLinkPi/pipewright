@@ -7,7 +7,6 @@ export default {
   customGateway: '自訂閘道',
   modelId: '模型 ID',
   availableModels: '可用模型',
-  searchModels: '搜尋模型',
   fetchModels: '取得模型',
   modelsUnavailable: '模型清單無法取得，可手動輸入模型 ID。',
   title: 'AI 服務商',
@@ -42,13 +41,13 @@ export default {
     '本機 Ollama 無需 API Key —— 確保 Ollama 服務已在指定位址執行即可。',
 
   baseUrlLabel: '接入位址 (Base URL)',
-  baseUrlHint: '預設: {url}',
+  baseUrlHint: '預設: {url}(地址按原樣拼接介面路徑,請保留 /v1 等版本前綴)',
 
   modelLabel: '模型',
   modelHint: '用於診斷的主模型,如 claude-opus-4-7 / gpt-4o / llama3',
 
   testConnection: '測試連線',
-  testOk: '連線正常 · 延遲 {ms}ms',
+  testOk: '推理正常 · 延遲 {ms}ms',
   testFail: '連線失敗',
 
   budgetLabel: '每月 Token 上限',

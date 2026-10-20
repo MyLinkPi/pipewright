@@ -11,7 +11,9 @@ package storetest
 import (
 	"database/sql"
 	"os"
+	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -21,6 +23,34 @@ import (
 )
 
 var schemaSeq atomic.Int64
+
+var (
+	templateOnce sync.Once
+	// templateDB 是每测试二进制构建一次的「已全量迁移」模板库文件;空串 = 构建失败,
+	// 各用例退回直接全量迁移(行为与旧路径一致)。
+	templateDB string
+)
+
+// ensureSQLiteTemplate 首次调用时全量迁移一个模板库并干净关闭(合并 WAL 得单文件快照)。
+// 之后 openSQLitePath 只需复制该文件再打开 —— store.Open 对已迁移库仅做幂等版本检查,
+// 免于每个用例重放 90+ 个迁移的 DDL(Windows 下这是逐用例数百 ms 的固定大头)。
+func ensureSQLiteTemplate() {
+	templateOnce.Do(func() {
+		dir, err := os.MkdirTemp("", "pwtest-tpl-*")
+		if err != nil {
+			return
+		}
+		path := filepath.Join(dir, "template.db")
+		st, err := store.Open(path)
+		if err != nil {
+			return
+		}
+		if err := st.Close(); err != nil {
+			return
+		}
+		templateDB = path
+	})
+}
 
 // MySQLDSNEnv 是承载 MySQL 测试 DSN 的环境变量名。
 const MySQLDSNEnv = "PIPEWRIGHT_TEST_MYSQL_DSN"
@@ -78,6 +108,16 @@ func OpenForDialect(t *testing.T, d store.Dialect) *store.Store {
 
 func openSQLitePath(t *testing.T, path string) *store.Store {
 	t.Helper()
+	ensureSQLiteTemplate()
+	// 复制模板快照作为起点;失败(模板不可用/目标不可写)则退回空库全量迁移,不影响语义。
+	if templateDB != "" {
+		if data, err := os.ReadFile(templateDB); err == nil {
+			if err := os.WriteFile(path, data, 0o600); err == nil {
+				_ = os.Remove(path + "-wal")
+				_ = os.Remove(path + "-shm")
+			}
+		}
+	}
 	st, err := store.Open(path)
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)

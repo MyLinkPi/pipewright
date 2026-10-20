@@ -1,6 +1,6 @@
 // artifact_transfer_test.go 覆盖产物跨环境传输:可传输性判定、Start 同步校验
-// (未知 run/产物、format=files 拒绝、peer 未组网、并发上限)、文件/镜像成功路径
-// (清单组装与 blob 内容)、对端 403 → 人读错误、取消语义。
+// (未知 run/产物、清单不可解码、peer 未组网、并发上限)、文件/镜像成功路径
+// (清单组装与 blob 内容)、format=files 逐文件展开、对端 403 → 人读错误、取消语义。
 package build
 
 import (
@@ -162,7 +162,11 @@ func TestTransferCheck(t *testing.T) {
 		{name: "镜像无引用", art: run.Artifact{Type: run.ArtifactImage}, wantSub: "无镜像引用"},
 		{name: "jar已归档", art: run.Artifact{Type: run.ArtifactJar, Reference: "ab", Metadata: map[string]any{"stored": true, "format": "file"}}, ok: true},
 		{name: "未归档占位", art: run.Artifact{Type: run.ArtifactJar, Name: "app.jar", Reference: "app.jar"}, wantSub: "未归档"},
-		{name: "多文件清单", art: run.Artifact{Type: run.ArtifactDist, Reference: "ab", Metadata: map[string]any{"stored": true, "format": "files"}}, wantSub: "format=files"},
+		{name: "多文件清单缺清单拒绝", art: run.Artifact{Type: run.ArtifactDist, Name: "web", Reference: "ab", Metadata: map[string]any{"stored": true, "format": "files"}}, wantSub: "不可解码"},
+		{name: "多文件清单可解码放行", art: run.Artifact{Type: run.ArtifactDist, Reference: "ab", Metadata: map[string]any{
+			"stored": true, "format": "files",
+			"files": []any{map[string]any{"path": "js/a.js", "key": strings.Repeat("b", 64), "size": 1}},
+		}}, ok: true},
 		{name: "未知类型", art: run.Artifact{Type: "weird"}, wantSub: "未知产物类型"},
 	}
 	for _, tc := range cases {
@@ -194,14 +198,14 @@ func TestArtifactTransferStartValidation(t *testing.T) {
 			t.Fatalf("err = %v, want ErrArtifactNotFound", err)
 		}
 	})
-	t.Run("format=files 拒绝", func(t *testing.T) {
+	t.Run("format=files 清单缺失拒绝", func(t *testing.T) {
 		svc, _ := newTestTransferService(t, &fakePushClient{}, nil)
 		svc.runs = runsFake
 		_, err := svc.Start(context.Background(), TransferInput{RunID: "run-1", PeerNodeID: "peer-1", ArtifactIDs: []string{"a2"}})
 		if !errors.Is(err, ErrArtifactNotTransferable) {
 			t.Fatalf("err = %v, want ErrArtifactNotTransferable", err)
 		}
-		if msg := err.Error(); !strings.Contains(msg, "web") || !strings.Contains(msg, "format=files") {
+		if msg := err.Error(); !strings.Contains(msg, "web") || !strings.Contains(msg, "不可解码") {
 			t.Fatalf("错误文本应含产物名与原因:%s", msg)
 		}
 	})
@@ -305,6 +309,53 @@ func TestArtifactTransferFileSuccess(t *testing.T) {
 		}
 	default:
 		t.Fatal("OnSettled 未触发")
+	}
+}
+
+// TestArtifactTransferFilesManifestExpand:format=files(artifactPackMode=none)产物按
+// metadata.files 清单逐文件展开传输 —— 每文件独立条目/独立 blob(内容寻址去重),
+// DestName = workspacePath/清单相对路径(对端物化目录结构与本地一致);清单形状用
+// DB 往返后的 []any(读取侧必然形态)。
+func TestArtifactTransferFilesManifestExpand(t *testing.T) {
+	fc := &fakePushClient{result: &mesh.PushResult{ProjectID: "p", RevisionID: "r"}}
+	svc, store := newTestTransferService(t, fc, nil)
+	keyA, sizeA := storeTestBlob(t, store, "console.log('a')")
+	keyB, sizeB := storeTestBlob(t, store, "body{margin:0}")
+	fc.missing = []string{keyA, keyB}
+	svc.runs = &fakeTransferRuns{r: testTransferRun(), arts: []run.Artifact{
+		{ID: "a1", Type: run.ArtifactDist, Name: "web", Reference: keyA, SizeBytes: sizeA + sizeB,
+			Metadata: map[string]any{
+				"stored": true, "format": "files", "workspacePath": "dist",
+				"files": []any{
+					map[string]any{"path": "js/app.js", "key": keyA, "size": sizeA},
+					map[string]any{"path": "css/main.css", "key": keyB, "size": sizeB},
+				},
+			}},
+	}}
+	id, err := svc.Start(context.Background(), TransferInput{RunID: "run-1", PeerNodeID: "peer-1", ArtifactIDs: []string{"a1"}})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if st := waitTransferTerminal(t, svc, id); st.Status != TransferSuccess {
+		t.Fatalf("status = %s(%s)", st.Status, st.Error)
+	}
+	if len(fc.gotManifest.Items) != 2 {
+		t.Fatalf("清单应展开为 2 个文件条目, got %d: %+v", len(fc.gotManifest.Items), fc.gotManifest.Items)
+	}
+	byDest := map[string]mesh.PushItem{}
+	for _, it := range fc.gotManifest.Items {
+		byDest[it.DestName] = it
+	}
+	js, ok := byDest["dist/js/app.js"]
+	if !ok || js.SHA256 != keyA || js.Size != sizeA || js.Kind != "file" {
+		t.Fatalf("js 条目不符:%+v", js)
+	}
+	css, ok := byDest["dist/css/main.css"]
+	if !ok || css.SHA256 != keyB || css.Size != sizeB {
+		t.Fatalf("css 条目不符:%+v", css)
+	}
+	if string(fc.gotBlobs[keyA]) != "console.log('a')" || string(fc.gotBlobs[keyB]) != "body{margin:0}" {
+		t.Fatalf("逐文件 blob 内容不符:%q / %q", fc.gotBlobs[keyA], fc.gotBlobs[keyB])
 	}
 }
 

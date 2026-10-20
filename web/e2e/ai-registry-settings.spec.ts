@@ -98,9 +98,9 @@ for (const [width, theme] of [
       fullPage: true,
     })
     await page.getByRole('option', { name: '自定义网关', exact: true }).click()
-    await page.getByRole('combobox', { name: '可用模型', exact: true }).click()
+    // 模型是单个组合框:直接输入即过滤,点选项即选中。
     await page
-      .getByRole('searchbox', { name: '搜索模型', exact: true })
+      .getByRole('combobox', { name: '可用模型', exact: true })
       .fill('custom')
     await page
       .getByRole('option')

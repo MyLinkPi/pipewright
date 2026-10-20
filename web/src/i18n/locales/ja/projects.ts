@@ -15,7 +15,7 @@ export default {
   // ─── list states ───────────────────────────────────────────────
   loading: '読み込み中',
   emptyTitle: 'プロジェクトがまだありません',
-  emptyHint: '最初の Gitee リポジトリを接続すると、パイプラインを設定してターゲットサーバーへデプロイできます。',
+  emptyHint: '最初の Gitee リポジトリを接続すると、パイプラインを設定できます。',
   noMatchTitle: '一致するプロジェクトがありません',
   noMatchHint: '検索語またはステータスの絞り込み条件を調整して再試行してください。',
   clearFilter: '絞り込みをクリア',
@@ -26,8 +26,6 @@ export default {
   runStatusAria: '実行ステータス:{status}',
   lastRun: '前回の実行',
   noRun: '実行履歴なし',
-  targetServers: 'ターゲットサーバー',
-  notBound: '未バインド',
   credential: 'リポジトリ認証情報',
   credentialRefTitle: '認証情報の参照（平文ではありません）',
   noServiceReg: 'サービス未登録',

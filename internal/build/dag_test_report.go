@@ -88,10 +88,13 @@ func reportSpecFromStage(stage pipeline.Stage) *reportSpec {
 
 // collectStageReport 在阶段 script job 成功执行后采集/解析/持久化测试报告并裁决门禁。
 //
+// readReportFile 按工作区相对路径读报告字节:本地路径读宿主工作区文件;远程构建机路径经
+// SSH cat 回采(文件在远程机)。两条路径同一解析/门禁语义。
+//
 // 返回值:门禁不过 → ErrQualityGate(调用方据此令阶段失败);其余错误(配置缺失文件 + 声明了门禁)
 // 同样阻断。仅展示(无门禁)时解析失败/文件缺失 → 仅记日志,返回 nil(不阻断)。
 // sink 为 nil(未注入持久层)时:仍解析 + 评估门禁(阻断仍生效),只是不落库。
-func collectStageReport(ctx context.Context, sink TestReportSink, r *run.Run, stage pipeline.Stage, workspace string, rep dagrun.StageReporter) error {
+func collectStageReport(ctx context.Context, sink TestReportSink, r *run.Run, stage pipeline.Stage, readReportFile func(rel string) ([]byte, error), rep dagrun.StageReporter) error {
 	spec := reportSpecFromStage(stage)
 	if spec == nil {
 		return nil // 该阶段未声明测试报告
@@ -100,8 +103,7 @@ func collectStageReport(ctx context.Context, sink TestReportSink, r *run.Run, st
 	gated := spec.thresholds.Enabled()
 
 	// 读 + 解析 JUnit。
-	xmlPath := safeJoinWorkspace(workspace, spec.reportPath)
-	data, rerr := os.ReadFile(xmlPath)
+	data, rerr := readReportFile(spec.reportPath)
 	if rerr != nil {
 		msg := fmt.Sprintf("测试报告文件未找到或不可读:%s", spec.reportPath)
 		_ = rep.Log(ctx, streamError, msg)
@@ -123,8 +125,7 @@ func collectStageReport(ctx context.Context, sink TestReportSink, r *run.Run, st
 
 	// 可选覆盖率(次要项;失败软处理)。
 	if spec.coveragePath != "" {
-		covPath := safeJoinWorkspace(workspace, spec.coveragePath)
-		if cdata, cerr := os.ReadFile(covPath); cerr == nil {
+		if cdata, cerr := readReportFile(spec.coveragePath); cerr == nil {
 			if pct, cperr := testreport.ParseCoberturaCoverage(cdata); cperr == nil {
 				summary.Coverage = pct
 			} else {
@@ -178,6 +179,13 @@ func collectStageReport(ctx context.Context, sink TestReportSink, r *run.Run, st
 		_ = rep.Log(ctx, streamStdout, "✅ 质量门禁通过")
 	}
 	return nil
+}
+
+// localReportReader 构造本地工作区的报告读取函数(宿主文件系统;safeJoinWorkspace 清洗防穿越)。
+func localReportReader(workspace string) func(rel string) ([]byte, error) {
+	return func(rel string) ([]byte, error) {
+		return os.ReadFile(safeJoinWorkspace(workspace, rel))
+	}
 }
 
 // safeJoinWorkspace 把工作区根与用户给的相对报告路径拼成宿主绝对路径,清洗 `.`/`..`/前导斜杠

@@ -26,24 +26,16 @@ type ModelLister interface {
 	Models(context.Context, TestInput) (*ModelsResult, error)
 }
 
-// Preserve custom gateway prefixes; root and versioned bases address the same API.
-func endpointBase(provider, base string) string {
-	base = strings.TrimRight(strings.TrimSpace(base), "/")
-	suffix := "/v1"
-	if provider == ProviderOllama {
-		suffix = "/api"
-	}
-	return strings.TrimSuffix(base, suffix)
-}
-
 // DeepSeek's official Anthropic messages API shares its OpenAI model catalog.
 // Never strip a custom gateway prefix or broaden the saved-key destination.
+// /anthropic 与 /anthropic/v1 是 DeepSeek 文档并列的两种写法,仅用于识别目录目的地;
+// 消息端点本身仍按原样拼接(填 /anthropic/v1 得 …/anthropic/v1/messages)。
 func catalogDestination(provider, base string) (string, string, bool) {
 	u, err := url.Parse(strings.TrimSpace(base))
 	if provider == ProviderClaude && err == nil && u.Scheme == "https" && u.Host == "api.deepseek.com" && u.User == nil && u.RawQuery == "" && !u.ForceQuery && u.Fragment == "" && u.RawFragment == "" && u.RawPath == "" && u.Opaque == "" && !strings.Contains(base, "#") {
 		path := strings.TrimRight(u.Path, "/")
 		if path == "/anthropic" || path == "/anthropic/v1" {
-			return ProviderOpenAI, "https://api.deepseek.com", true
+			return ProviderOpenAI, "https://api.deepseek.com/v1", true
 		}
 	}
 	return provider, base, false
@@ -56,8 +48,10 @@ func sameDestination(provider, base string, saved *Config) bool {
 	if old == "" {
 		old = defaultBaseURL(provider)
 	}
+	// 原样拼接语义下,身份即字符串本身:仅忽略尾部斜杠与 scheme/host 大小写。
+	// 不同前缀(如带不带 /v1)视为不同目的地,已存密钥不复用。
 	identity := func(base string) string {
-		u, e := url.Parse(apiBase(provider, base))
+		u, e := url.Parse(strings.TrimRight(strings.TrimSpace(base), "/"))
 		if e != nil || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
 			return ""
 		}

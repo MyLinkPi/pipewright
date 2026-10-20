@@ -22,6 +22,11 @@ import (
 
 func opsLoopbackProxy(t *testing.T, secure bool, target, upstream, auth string, calls *atomic.Int32, forward ...bool) *httptest.Server {
 	t.Helper()
+	// 转发用 Transport 全代理共享一个:每请求新建+CloseIdleConnections 会造成高频建断连,
+	// 在 Windows 回环上触发端口复用竞态(新连接一写入即 RST)。
+	forwardTransport := http.DefaultTransport.(*http.Transport).Clone()
+	forwardTransport.Proxy = nil
+	t.Cleanup(forwardTransport.CloseIdleConnections)
 	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls.Add(1)
 		if len(forward) > 0 && forward[0] {
@@ -35,12 +40,9 @@ func opsLoopbackProxy(t *testing.T, secure bool, target, upstream, auth string, 
 			request.URL.Scheme = "http"
 			request.RequestURI = ""
 			request.Header.Del("Proxy-Authorization")
-			transport := http.DefaultTransport.(*http.Transport).Clone()
-			transport.Proxy = nil
-			defer transport.CloseIdleConnections()
-			response, err := transport.RoundTrip(request)
+			response, err := forwardTransport.RoundTrip(request)
 			if err != nil {
-				t.Error("fixture forward failed", err)
+				t.Error("fixture forward failed", r.Method, r.URL.String(), err)
 				w.WriteHeader(http.StatusBadGateway)
 				return
 			}
@@ -95,6 +97,9 @@ func opsProxyFixture(t *testing.T, originTLS, proxyTLS bool, originHost string) 
 	requests, tunnels := &atomic.Int32{}, &atomic.Int32{}
 	origin := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests.Add(1)
+		// 先读完请求体再响应:真实服务端总是消费请求体;不读就回包会在 Windows 回环上
+		// 触发「响应先于请求体完成 + 提前关连接」竞态,转发方写体时吃到 RST。
+		io.Copy(io.Discard, io.LimitReader(r.Body, 1<<20))
 		if r.Header.Get("Proxy-Authorization") != "" {
 			t.Error("proxy credentials reached the provider")
 		}
@@ -145,7 +150,7 @@ func TestOpsProxyServiceCompatibility(t *testing.T) {
 				// 整包并行跑测时 TLS 代理握手 + 三次串行请求可能超过 1s(隔离跑无压力),
 				//			 放宽到 5s 保持语义(仍会捕获真挂死)。
 				svc, _, _ := newService(t, &http.Client{Transport: transport, Timeout: 5 * time.Second})
-				if _, err := svc.Save(ctx(), SaveInput{Provider: ProviderOpenAI, BaseURL: origin.URL, Model: "test-model", APIKey: strp("test-api-key"), Enabled: true}); err != nil {
+				if _, err := svc.Save(ctx(), SaveInput{Provider: ProviderOpenAI, BaseURL: origin.URL + "/v1", Model: "test-model", APIKey: strp("test-api-key"), Enabled: true}); err != nil {
 					t.Fatal(err)
 				}
 				if result, err := svc.Test(ctx(), TestInput{}); err != nil || !result.OK {
@@ -259,7 +264,7 @@ func TestOpsProxyEnvironment(t *testing.T) {
 			}
 			return (&net.Dialer{}).DialContext(c, network, address)
 		}}
-		if result := m.probe(ctx(), ProviderOpenAI, base, "test-api-key"); !result.OK {
+		if result := m.probe(ctx(), ProviderOpenAI, base, "test-model", "test-api-key"); !result.OK {
 			t.Fatal("environment proxy probe failed")
 		}
 		want := int32(1)
@@ -377,6 +382,9 @@ func TestOpsProxyTimeoutCancellationAndSafeFailure(t *testing.T) {
 			closed := make(chan struct{})
 			proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				close(entered)
+				// 真实代理先读请求才能转发;不读就挂起会让客户端中止带体请求时
+				// 无法关闭底层连接(Go stdlib 行为),与被测语义无关。
+				io.Copy(io.Discard, io.LimitReader(r.Body, 1<<20))
 				if mode == "reject" || mode == "redirect" {
 					w.Header().Set("Location", "http://169.254.169.254")
 					status := "407 fixture-password"
@@ -402,7 +410,7 @@ func TestOpsProxyTimeoutCancellationAndSafeFailure(t *testing.T) {
 				go func() { <-entered; cancel() }()
 			}
 			start := time.Now()
-			result, err := svc.Test(c, TestInput{Provider: strp(ProviderOpenAI), BaseURL: strp("http://127.0.0.1:1"), APIKey: strp("test-api-key")})
+			result, err := svc.Test(c, TestInput{Provider: strp(ProviderOpenAI), BaseURL: strp("http://127.0.0.1:1"), Model: strp("test-model"), APIKey: strp("test-api-key")})
 			if err != nil || result.OK || strings.Contains(result.Error, "fixture-password") || time.Since(start) > time.Second {
 				t.Fatal("proxy failure was unbounded, successful or unsanitized")
 			}

@@ -124,8 +124,8 @@ func TestAIPutClaudeMaskedNoPlaintext(t *testing.T) {
 	if !strings.Contains(masked, "••••") || !strings.HasSuffix(masked, "abcd") {
 		t.Fatalf("apiKeyMasked 应掩码保末 4: %q", masked)
 	}
-	if dto["baseUrl"] != "https://api.anthropic.com" {
-		t.Fatalf("baseUrl 应兜底默认: %v", dto["baseUrl"])
+	if dto["baseUrl"] != "https://api.anthropic.com/v1" {
+		t.Fatalf("baseUrl 应兜底默认(带 /v1 前缀): %v", dto["baseUrl"])
 	}
 	if dto["updatedAt"] == nil {
 		t.Fatalf("保存后 updatedAt 应非 null")
@@ -204,7 +204,7 @@ func TestAITestStubOK(t *testing.T) {
 	defer stub.Close()
 
 	srv, client, csrf := setupAIServer(t, stub.Client())
-	body := `{"provider":"claude","baseUrl":"` + stub.URL + `","apiKey":"sk-ant-draftKEY"}`
+	body := `{"provider":"claude","baseUrl":"` + stub.URL + `","model":"claude-sonnet-4","apiKey":"sk-ant-draftKEY"}`
 	resp := doJSON(t, client, http.MethodPost, srv.URL+"/api/settings/ai/test", csrf, body)
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {

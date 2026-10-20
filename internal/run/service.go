@@ -39,6 +39,9 @@ type Service interface {
 	Get(ctx context.Context, id string) (*Run, error)
 	// List 按筛选/分页返回运行(列表行精简,不含步骤)。
 	List(ctx context.Context, f ListFilter) (*ListResult, error)
+	// LatestStatusByProject 批量返回每个项目最近一次运行的状态(项目列表卡片「上次运行」
+	// 数据源;无运行的项目不出现在结果 map)。排序语义与 List 一致:created_at DESC, id DESC。
+	LatestStatusByProject(ctx context.Context, projectIDs []string) (map[string]string, error)
 	// Cancel 取消进行中(queued/running)运行:经 context 传播到 Runner;终态 → ErrNotCancelable。
 	Cancel(ctx context.Context, id string) (*Run, error)
 
@@ -101,9 +104,11 @@ type Service interface {
 	// 调用方据此对制品库 best-effort 物理删除。
 	DeleteArtifact(ctx context.Context, runID, artifactID string) (*Artifact, []string, error)
 
-	// SetCommit 回写本次运行实际检出的 commit 短 SHA(克隆解析出后由执行器调用)。
-	// 触发时未指定 commit(手动触发常见)→ 这里补上真实 commit,供运行详情展示。run 不存在 → ErrNotFound。
-	SetCommit(ctx context.Context, id, commit string) error
+	// SetCommit 回写本次运行实际检出的 commit 短 SHA 与该 commit 的提交时刻(克隆解析出后
+	// 由执行器调用;commitAt 零值 = 未解析出提交时间,置 NULL)。触发时未指定 commit(手动
+	// 触发常见)→ 这里补上真实 commit,供运行详情展示与 DORA 前置时长计算。
+	// run 不存在 → ErrNotFound。
+	SetCommit(ctx context.Context, id, commit string, commitAt time.Time) error
 
 	// SaveTestReport 持久化一条测试报告汇总(Story 8-6 / FR-8-6)。
 	// 计数 + 可选覆盖率 + 门禁裁决;同 run 多阶段产报告时各存一条(按 stage 区分)。
@@ -613,6 +618,45 @@ func (s *service) List(ctx context.Context, f ListFilter) (*ListResult, error) {
 	return &ListResult{Items: items, Page: page, Total: total}, nil
 }
 
+// LatestStatusByProject 批量返回每个项目最近一次运行的状态。关联子查询取每项目按
+// created_at DESC, id DESC 的第一行(project_id 有索引;写法在 SQLite/MySQL 均可移植);
+// projectIDs 为空返回空 map,无运行的项目不出现在结果中。
+func (s *service) LatestStatusByProject(ctx context.Context, projectIDs []string) (map[string]string, error) {
+	out := make(map[string]string, len(projectIDs))
+	if len(projectIDs) == 0 {
+		return out, nil
+	}
+	placeholders := make([]string, len(projectIDs))
+	args := make([]any, len(projectIDs))
+	for i, pid := range projectIDs {
+		placeholders[i] = "?"
+		args[i] = pid
+	}
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT pr.project_id, pr.status
+		 FROM pipeline_runs pr
+		 WHERE pr.project_id IN (`+strings.Join(placeholders, ", ")+`)
+		   AND pr.id = (SELECT p2.id FROM pipeline_runs p2
+		                WHERE p2.project_id = pr.project_id
+		                ORDER BY p2.created_at DESC, p2.id DESC
+		                LIMIT 1)`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("run: latest status by project: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var pid, status string
+		if err := rows.Scan(&pid, &status); err != nil {
+			return nil, fmt.Errorf("run: scan latest status: %w", err)
+		}
+		out[pid] = status
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("run: iterate latest status: %w", err)
+	}
+	return out, nil
+}
+
 func (s *service) Cancel(ctx context.Context, id string) (*Run, error) {
 	r, err := s.Get(ctx, id)
 	if err != nil {
@@ -690,13 +734,18 @@ func (s *service) LastSuccessfulRun(ctx context.Context, projectID, branch strin
 }
 
 // SetFailureLog 持久化某次运行的失败日志原文(脱敏前)。参数化 SQL;不存在 → ErrNotFound。
-func (s *service) SetCommit(ctx context.Context, id, commit string) error {
+// commitAt 零值 → commit_time 置 NULL(未解析出提交时间;同 commit 重复回写幂等)。
+func (s *service) SetCommit(ctx context.Context, id, commit string, commitAt time.Time) error {
 	commit = strings.TrimSpace(commit)
 	if commit == "" {
 		return nil // 无解析结果 → 不动(保持触发时的值/空)
 	}
+	var commitTime any
+	if !commitAt.IsZero() {
+		commitTime = commitAt.UTC().Format(time.RFC3339)
+	}
 	res, err := s.db.ExecContext(ctx,
-		`UPDATE pipeline_runs SET trigger_commit = ? WHERE id = ?`, commit, id)
+		`UPDATE pipeline_runs SET trigger_commit = ?, commit_time = ? WHERE id = ?`, commit, commitTime, id)
 	if err != nil {
 		return fmt.Errorf("run: set commit: %w", err)
 	}

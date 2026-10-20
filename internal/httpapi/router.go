@@ -739,11 +739,12 @@ func New(webFS fs.FS, authn auth.Authenticator, opts ...Option) http.Handler {
 		// test-clone 须在 {id} 路由之前注册,否则被 /projects/{id} 吞掉。
 		// 列表/更新响应附带 serviceRegs(卡片展示的服务注册地址):由 o.pipelines(流水线绑定引用)
 		// 与 o.serviceReg(注册服务清单)实时解析;任一未装配时该字段输出 []。
+		// o.runs 回填卡片「上次运行」状态(最近一次运行;未装配时输出 null)。
 		p := o.projects
-		ar.Get("/projects", makeListProjectsHandler(p, o.identity, o.pipelines, o.serviceReg))
+		ar.Get("/projects", makeListProjectsHandler(p, o.identity, o.pipelines, o.serviceReg, o.runs))
 		ar.Post("/projects", makeCreateProjectHandler(p, aud))
 		ar.Post("/projects/test-clone", makeTestCloneHandler(p))
-		ar.Patch("/projects/{id}", makeUpdateProjectHandler(p, aud, o.pipelines, o.serviceReg))
+		ar.Patch("/projects/{id}", makeUpdateProjectHandler(p, aud, o.pipelines, o.serviceReg, o.runs))
 		ar.Delete("/projects/{id}", makeDeleteProjectHandler(p, aud))
 
 		// 用户体系(管理员):普通用户列表、邀请生成/列表/撤销、项目成员增删查。

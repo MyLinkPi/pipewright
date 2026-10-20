@@ -59,7 +59,7 @@ func TestCollectStageReport_NoDeclaration(t *testing.T) {
 	stage := pipeline.Stage{ID: "s1", Name: "x", Jobs: []pipeline.Job{
 		{Type: pipeline.StepTypeScript, Config: map[string]any{"image": "x", "commands": "y"}},
 	}}
-	if err := collectStageReport(context.Background(), sink, &run.Run{ID: "r1"}, stage, ws, rep); err != nil {
+	if err := collectStageReport(context.Background(), sink, &run.Run{ID: "r1"}, stage, localReportReader(ws), rep); err != nil {
 		t.Fatalf("err = %v, want nil", err)
 	}
 	if len(sink.saved) != 0 {
@@ -75,7 +75,7 @@ func TestCollectStageReport_PassPersists(t *testing.T) {
 	stage := reportStage(map[string]any{
 		"testReport": "junit", "reportPath": "reports/junit.xml", "gateMaxFailures": "0",
 	})
-	if err := collectStageReport(context.Background(), sink, &run.Run{ID: "r1"}, stage, ws, rep); err != nil {
+	if err := collectStageReport(context.Background(), sink, &run.Run{ID: "r1"}, stage, localReportReader(ws), rep); err != nil {
 		t.Fatalf("err = %v, want nil (gate passes)", err)
 	}
 	if len(sink.saved) != 1 {
@@ -98,7 +98,7 @@ func TestCollectStageReport_GateBlocks(t *testing.T) {
 	stage := reportStage(map[string]any{
 		"testReport": "junit", "reportPath": "reports/junit.xml", "gateMaxFailures": "0",
 	})
-	err := collectStageReport(context.Background(), sink, &run.Run{ID: "r1"}, stage, ws, rep)
+	err := collectStageReport(context.Background(), sink, &run.Run{ID: "r1"}, stage, localReportReader(ws), rep)
 	if !errors.Is(err, ErrQualityGate) {
 		t.Fatalf("err = %v, want ErrQualityGate", err)
 	}
@@ -114,7 +114,7 @@ func TestCollectStageReport_MissingFileWithGateBlocks(t *testing.T) {
 	stage := reportStage(map[string]any{
 		"testReport": "junit", "reportPath": "reports/junit.xml", "gateMaxFailures": "0",
 	})
-	err := collectStageReport(context.Background(), nil, &run.Run{ID: "r1"}, stage, ws, rep)
+	err := collectStageReport(context.Background(), nil, &run.Run{ID: "r1"}, stage, localReportReader(ws), rep)
 	if !errors.Is(err, ErrQualityGate) {
 		t.Fatalf("err = %v, want ErrQualityGate (gate declared but no report)", err)
 	}
@@ -127,7 +127,7 @@ func TestCollectStageReport_MissingFileNoGateSoftSkip(t *testing.T) {
 	stage := reportStage(map[string]any{
 		"testReport": "junit", "reportPath": "reports/junit.xml", // 无门禁
 	})
-	if err := collectStageReport(context.Background(), sink, &run.Run{ID: "r1"}, stage, ws, rep); err != nil {
+	if err := collectStageReport(context.Background(), sink, &run.Run{ID: "r1"}, stage, localReportReader(ws), rep); err != nil {
 		t.Fatalf("err = %v, want nil (display-only, soft skip)", err)
 	}
 	if len(sink.saved) != 0 {
@@ -146,7 +146,7 @@ func TestCollectStageReport_Coverage(t *testing.T) {
 		"coverageReport": "cobertura", "coveragePath": "cobertura.xml",
 		"gateMinCoverage": "80",
 	})
-	if err := collectStageReport(context.Background(), sink, &run.Run{ID: "r1"}, stage, ws, rep); err != nil {
+	if err := collectStageReport(context.Background(), sink, &run.Run{ID: "r1"}, stage, localReportReader(ws), rep); err != nil {
 		t.Fatalf("err = %v, want nil (92%% >= 80%%)", err)
 	}
 	if len(sink.saved) != 1 || sink.saved[0].Coverage < 91 || sink.saved[0].Coverage > 93 {
@@ -158,5 +158,57 @@ func TestSafeJoinWorkspace_NoTraversal(t *testing.T) {
 	got := safeJoinWorkspace("/ws", "../../etc/passwd")
 	if got != filepath.Join("/ws", "etc", "passwd") {
 		t.Errorf("safeJoinWorkspace traversal not contained: %q", got)
+	}
+}
+
+// TestCollectStageReport_RemoteReaderContract:报告读取函数与文件系统解耦(远程构建机路径
+// 经 SSH cat 把字节读回控制机)。内存 reader 模拟远程字节:失败报告 + 门禁 → 先照常采集落库、
+// 再 ErrQualityGate 阻断;缺文件 + 声明门禁 → 同样阻断 —— 与本地路径同一套裁决。
+func TestCollectStageReport_RemoteReaderContract(t *testing.T) {
+	files := map[string][]byte{"reports/junit.xml": []byte(junitFail)}
+	read := func(rel string) ([]byte, error) {
+		if b, ok := files[rel]; ok {
+			return b, nil
+		}
+		return nil, os.ErrNotExist
+	}
+	stage := reportStage(map[string]any{
+		"testReport": "junit", "reportPath": "reports/junit.xml", "gateMaxFailures": "0",
+	})
+
+	rep := &fakeReporter{}
+	sink := &fakeReportSink{}
+	err := collectStageReport(context.Background(), sink, &run.Run{ID: "r1"}, stage, read, rep)
+	if !errors.Is(err, ErrQualityGate) {
+		t.Fatalf("err = %v, want ErrQualityGate (1 失败 > 门禁 0)", err)
+	}
+	if len(sink.saved) != 1 || sink.saved[0].Failed != 1 {
+		t.Fatalf("远程 reader 应照常采集并落库报告:%+v", sink.saved)
+	}
+
+	// 通过的报告 → 不阻断。
+	files["reports/junit.xml"] = []byte(junitPass)
+	if err := collectStageReport(context.Background(), sink, &run.Run{ID: "r1"}, stage, read, rep); err != nil {
+		t.Fatalf("err = %v, want nil (通过报告)", err)
+	}
+
+	// 缺文件 + 门禁 → 阻断(诚实边界:声明了要求拿不到证据宁阻断)。
+	delete(files, "reports/junit.xml")
+	if err := collectStageReport(context.Background(), sink, &run.Run{ID: "r1"}, stage, read, rep); !errors.Is(err, ErrQualityGate) {
+		t.Fatalf("err = %v, want ErrQualityGate", err)
+	}
+}
+
+// TestRemoteJoinWorkspace:远程工作区路径拼接必须产 POSIX 斜杠(控制机可能是 Windows),
+// 且 `..`/前导斜杠/反斜杠全部清洗,不逃出远程工作区根。
+func TestRemoteJoinWorkspace(t *testing.T) {
+	if got := remoteJoinWorkspace("/tmp/pw-remote/r1-s1", "reports/junit.xml"); got != "/tmp/pw-remote/r1-s1/reports/junit.xml" {
+		t.Fatalf("普通拼接不符:%q", got)
+	}
+	if got := remoteJoinWorkspace("/tmp/ws", `..\..\etc\passwd`); got != "/tmp/ws/etc/passwd" {
+		t.Fatalf("穿越未清洗:%q", got)
+	}
+	if got := remoteJoinWorkspace("/tmp/ws", "/abs/leading"); got != "/tmp/ws/abs/leading" {
+		t.Fatalf("前导斜杠未归一:%q", got)
 	}
 }

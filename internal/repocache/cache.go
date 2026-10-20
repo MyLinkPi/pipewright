@@ -191,6 +191,7 @@ func (c *Cache) checkoutFromMirror(ctx context.Context, mirror, branch, commit, 
 	}
 
 	resolved := &build.CloneResolved{}
+	var resolvedHash plumbing.Hash
 	if commit != "" {
 		wt, werr := repo.Worktree()
 		if werr != nil {
@@ -200,8 +201,16 @@ func (c *Cache) checkoutFromMirror(ctx context.Context, mirror, branch, commit, 
 			return nil, cerr
 		}
 		resolved.CommitShort = shortSHA(commit)
+		resolvedHash = plumbing.NewHash(commit)
 	} else if head, herr := repo.Head(); herr == nil {
 		resolved.CommitShort = shortSHA(head.Hash().String())
+		resolvedHash = head.Hash()
+	}
+	// 提交时刻(commit 对象 committer 时间)供 DORA 前置时长;解析失败不致命(零值回退)。
+	if !resolvedHash.IsZero() {
+		if obj, oerr := repo.CommitObject(resolvedHash); oerr == nil {
+			resolved.CommitTime = obj.Committer.When
+		}
 	}
 	return resolved, nil
 }

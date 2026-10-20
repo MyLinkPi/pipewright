@@ -7,7 +7,6 @@ export default {
   customGateway: '사용자 지정 게이트웨이',
   modelId: '모델 ID',
   availableModels: '사용 가능한 모델',
-  searchModels: '모델 검색',
   fetchModels: '모델 가져오기',
   modelsUnavailable:
     '모델 목록을 사용할 수 없습니다. ID를 직접 입력할 수 있습니다.',
@@ -44,13 +43,13 @@ export default {
     '로컬 Ollama는 API Key가 필요 없습니다 —— Ollama 서비스가 지정된 주소에서 실행 중인지 확인하세요.',
 
   baseUrlLabel: '접속 주소 (Base URL)',
-  baseUrlHint: '기본값: {url}',
+  baseUrlHint: '기본값: {url} (주소는 그대로 연결됩니다 — /v1 등 버전 접두사를 유지하세요)',
 
   modelLabel: '모델',
   modelHint: '진단에 사용하는 기본 모델, 예: claude-opus-4-7 / gpt-4o / llama3',
 
   testConnection: '연결 테스트',
-  testOk: '연결 정상 · 지연 {ms}ms',
+  testOk: '추론 정상 · 지연 {ms}ms',
   testFail: '연결 실패',
 
   budgetLabel: '월 Token 한도',

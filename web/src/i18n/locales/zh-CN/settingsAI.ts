@@ -7,7 +7,6 @@ export default {
   customGateway: '自定义网关',
   modelId: '模型 ID',
   availableModels: '可用模型',
-  searchModels: '搜索模型',
   fetchModels: '获取模型',
   modelsUnavailable: '模型列表不可用，可手动输入模型 ID。',
   title: 'AI 提供商',
@@ -42,13 +41,13 @@ export default {
     '本地 Ollama 无需 API Key —— 确保 Ollama 服务已在指定地址运行即可。',
 
   baseUrlLabel: '接入地址 (Base URL)',
-  baseUrlHint: '默认: {url}',
+  baseUrlHint: '默认: {url}(地址按原样拼接接口路径,请保留 /v1 等版本前缀)',
 
   modelLabel: '模型',
   modelHint: '用于诊断的主模型,如 claude-opus-4-7 / gpt-4o / llama3',
 
   testConnection: '测试连接',
-  testOk: '连接正常 · 延迟 {ms}ms',
+  testOk: '推理正常 · 延迟 {ms}ms',
   testFail: '连接失败',
 
   budgetLabel: '月 Token 上限',

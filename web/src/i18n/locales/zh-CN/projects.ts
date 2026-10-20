@@ -15,7 +15,7 @@ export default {
   // ─── list states ───────────────────────────────────────────────
   loading: '加载中',
   emptyTitle: '还没有项目',
-  emptyHint: '接入第一个 Gitee 仓库,后续可配置流水线并部署到目标服务器。',
+  emptyHint: '接入第一个 Gitee 仓库,后续可配置流水线。',
   noMatchTitle: '没有匹配的项目',
   noMatchHint: '调整搜索词或状态筛选条件后重试。',
   clearFilter: '清除筛选',
@@ -26,8 +26,6 @@ export default {
   runStatusAria: '运行状态:{status}',
   lastRun: '上次运行',
   noRun: '尚无运行',
-  targetServers: '目标服务器',
-  notBound: '未绑定',
   credential: '仓库凭据',
   credentialRefTitle: '凭据引用(非明文)',
   noServiceReg: '未注册服务',

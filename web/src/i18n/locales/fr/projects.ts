@@ -15,7 +15,7 @@ export default {
   // ─── list states ───────────────────────────────────────────────
   loading: 'Chargement',
   emptyTitle: 'Aucun projet pour l’instant',
-  emptyHint: 'Connectez votre premier dépôt Gitee, puis configurez un pipeline et déployez vers les serveurs cibles.',
+  emptyHint: 'Connectez votre premier dépôt Gitee, puis configurez un pipeline.',
   noMatchTitle: 'Aucun projet correspondant',
   noMatchHint: 'Ajustez le terme de recherche ou le filtre de statut, puis réessayez.',
   clearFilter: 'Effacer les filtres',
@@ -26,8 +26,6 @@ export default {
   runStatusAria: 'Statut de l’exécution : {status}',
   lastRun: 'Dernière exécution',
   noRun: 'Aucune exécution',
-  targetServers: 'Serveurs cibles',
-  notBound: 'Non lié',
   credential: 'Identifiant du dépôt',
   credentialRefTitle: 'Référence d’identifiant (pas en clair)',
   noServiceReg: 'Aucun service enregistré',

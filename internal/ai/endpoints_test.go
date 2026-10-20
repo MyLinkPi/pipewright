@@ -26,10 +26,10 @@ var compatibleVendors = []struct {
 	{"kimi-cn", "https://api.moonshot.cn/v1", "https://api.moonshot.cn/v1"},
 	{"kimi-ai", "https://api.moonshot.ai/v1", "https://api.moonshot.ai/v1"},
 	{"mimo", "https://api.xiaomimimo.com/v1", "https://api.xiaomimimo.com/v1"},
-	{"custom-root", "https://gateway.invalid/prefix", "https://gateway.invalid/prefix/v1"},
+	{"custom-root", "https://gateway.invalid/prefix", "https://gateway.invalid/prefix"},
 	{"custom-versioned", "https://gateway.invalid/prefix/v1", "https://gateway.invalid/prefix/v1"},
-	{"custom-gemini-prefix", "https://gateway.invalid/v1beta/openai", "https://gateway.invalid/v1beta/openai/v1"},
-	{"custom-glm-prefix", "https://gateway.invalid/api/paas/v4", "https://gateway.invalid/api/paas/v4/v1"},
+	{"custom-gemini-prefix", "https://gateway.invalid/v1beta/openai", "https://gateway.invalid/v1beta/openai"},
+	{"custom-glm-prefix", "https://gateway.invalid/api/paas/v4", "https://gateway.invalid/api/paas/v4"},
 }
 
 func compatibleMockModel(t *testing.T, base string, transport opsTransport) *opsModel {
@@ -94,7 +94,7 @@ func TestCompatibleVendorsCatalogProbeGenerateChatAndStream(t *testing.T) {
 				if err != nil || !res.OK || len(res.Items) != 2 || res.Items[1].ID != "account/model:custom" {
 					t.Fatal(res, err)
 				}
-				if res := m.probe(ctx(), ProviderOpenAI, base, "mock-key"); !res.OK {
+				if res := m.probe(ctx(), ProviderOpenAI, base, "account/model:custom", "mock-key"); !res.OK {
 					t.Fatal(res)
 				}
 				cfg := &Config{Provider: ProviderOpenAI, BaseURL: base, Model: "account/model:custom"}
@@ -116,7 +116,7 @@ func TestCompatibleVendorsCatalogProbeGenerateChatAndStream(t *testing.T) {
 					visible.WriteString(chunk.Text)
 					return nil
 				})
-				if err != nil || text != "First reply" || visible.String() != text || chunks < 2 || catalogs != 2 || chats != 2 || streams != 1 {
+				if err != nil || text != "First reply" || visible.String() != text || chunks < 2 || catalogs != 1 || chats != 3 || streams != 1 {
 					t.Fatal(text, err, visible.String(), chunks, catalogs, chats, streams)
 				}
 			})
@@ -124,50 +124,42 @@ func TestCompatibleVendorsCatalogProbeGenerateChatAndStream(t *testing.T) {
 	}
 }
 
-func TestCompatibleEndpointSpecializationIsNarrow(t *testing.T) {
+// 原样拼接契约:base 仅去空白与尾部斜杠后直接拼接资源路径,任何形态(含裸根、
+// 携带 query/userinfo/fragment 的畸形值)都不被改写;唯一的特例是 DeepSeek 的
+// Claude 协议模型目录映射。
+func TestCompatibleEndpointVerbatimConcatenation(t *testing.T) {
 	for _, base := range []string{
-		"http://generativelanguage.googleapis.com/v1beta/openai",
-		"https://generativelanguage.googleapis.com:443/v1beta/openai",
+		"https://gateway.invalid/prefix",
+		"https://gateway.invalid/prefix/v1",
+		"https://gateway.invalid/prefix/v2",
 		"https://generativelanguage.googleapis.com.evil.invalid/v1beta/openai",
-		"https://user@generativelanguage.googleapis.com/v1beta/openai",
-		"https://generativelanguage.googleapis.com/v1beta/openai?key=x",
-		"https://generativelanguage.googleapis.com/v1beta/openai?",
-		"https://generativelanguage.googleapis.com/v1beta/openai#fragment",
-		"https://generativelanguage.googleapis.com/v1beta/openai#",
-		"https://generativelanguage.googleapis.com/v1beta/%6fpenai",
-		"https://generativelanguage.googleapis.com/v1beta/openai/v1",
-		"https://generativelanguage.googleapis.com/custom/v1beta/openai",
-		"http://open.bigmodel.cn/api/paas/v4",
-		"https://open.bigmodel.cn:443/api/paas/v4",
-		"https://open.bigmodel.cn.evil.invalid/api/paas/v4",
-		"https://user@open.bigmodel.cn/api/paas/v4",
-		"https://open.bigmodel.cn/api/paas/v4?key=x",
-		"https://open.bigmodel.cn/api/paas/v4#fragment",
-		"https://open.bigmodel.cn/api/paas/v4/v1",
-		"https://open.bigmodel.cn/api/paas/v4/custom",
-		"https://open.bigmodel.cn/custom/api/coding/paas/v4",
+		"https://user@gateway.invalid/prefix",
+		"https://gateway.invalid/prefix?key=x",
+		"https://gateway.invalid/prefix#fragment",
+		"https://gateway.invalid/api/paas/v4",
 	} {
-		if directCompatibleBase(base) || apiEndpoint(ProviderOpenAI, base, "chat/completions") != endpointBase(ProviderOpenAI, base)+"/v1/chat/completions" {
-			t.Fatal("nonofficial or custom destination rewritten", base)
+		if apiEndpoint(ProviderOpenAI, base, "chat/completions") != strings.TrimRight(base, "/")+"/chat/completions" {
+			t.Fatal("base rewritten", base)
 		}
 	}
+	// 裸根形式不再自动补版本段;尾部斜杠等价。
+	if apiEndpoint(ProviderOpenAI, "https://api.openai.com", "chat/completions") != "https://api.openai.com/chat/completions" {
+		t.Fatal("bare root gained a version segment")
+	}
+	if apiEndpoint(ProviderOpenAI, "https://api.openai.com/v1/", "models") != "https://api.openai.com/v1/models" {
+		t.Fatal("trailing slash not normalized away")
+	}
 	for _, base := range []string{"https://generativelanguage.googleapis.com/v1beta/openai", "https://open.bigmodel.cn/api/paas/v4"} {
-		if apiEndpoint(ProviderClaude, base, "messages") != base+"/v1/messages" || apiEndpoint(ProviderOllama, base, "chat") != base+"/api/chat" {
+		if apiEndpoint(ProviderClaude, base, "messages") != base+"/messages" || apiEndpoint(ProviderOllama, base, "chat") != base+"/chat" {
 			t.Fatal("non-OpenAI protocol changed", base)
 		}
 	}
-	for _, provider := range []string{ProviderOpenAI, ProviderClaude, ProviderOllama} {
-		resource, version := "chat/completions", "/v1"
-		if provider == ProviderClaude {
-			resource = "messages"
-		} else if provider == ProviderOllama {
-			resource, version = "chat", "/api"
-		}
-		for _, suffix := range []string{"", version, version + "/"} {
-			if apiEndpoint(provider, "http://localhost:1234/gateway"+suffix, resource) != "http://localhost:1234/gateway"+version+"/"+resource {
-				t.Fatal("legacy root/versioned prefix changed", provider, suffix)
-			}
-		}
+	// 唯一特例:DeepSeek Claude 目录走官方 OpenAI 目录前缀。
+	if apiEndpoint(ProviderClaude, "https://api.deepseek.com/anthropic", "models") != "https://api.deepseek.com/v1/models" {
+		t.Fatal("DeepSeek catalog mapping lost")
+	}
+	if apiEndpoint(ProviderClaude, "https://api.deepseek.com/anthropic", "messages") != "https://api.deepseek.com/anthropic/messages" {
+		t.Fatal("inference endpoint specialized")
 	}
 }
 
@@ -177,8 +169,13 @@ func TestCompatibleVendorsCatalog404IsFailureAndPreservesManualModel(t *testing.
 			calls := 0
 			m := compatibleMockModel(t, vendor.base, opsTransport(func(r *http.Request) (*http.Response, error) {
 				calls++
-				if r.URL.String() != vendor.api+"/models" || r.Method != http.MethodGet {
-					t.Fatal("catalog failure retried inference or changed destination")
+				// 目录走 GET models;真实推理探测走 POST chat/completions —— 均返回 404。
+				if r.Method == http.MethodGet {
+					if r.URL.String() != vendor.api+"/models" {
+						t.Fatal("catalog failure retried inference or changed destination")
+					}
+				} else if r.URL.String() != vendor.api+"/chat/completions" || r.Method != http.MethodPost {
+					t.Fatal("inference probe changed destination")
 				}
 				return &http.Response{StatusCode: 404, Header: http.Header{}, Body: io.NopCloser(strings.NewReader("mock-key")), Request: r}, nil
 			}))
@@ -189,7 +186,7 @@ func TestCompatibleVendorsCatalog404IsFailureAndPreservesManualModel(t *testing.
 			if err != nil || res.OK || len(res.Items) != 0 || !strings.Contains(res.Error, "404") || strings.Contains(res.Error, "mock-key") {
 				t.Fatal(res, err)
 			}
-			if res := m.probe(ctx(), ProviderOpenAI, vendor.base, "mock-key"); res.OK || !strings.Contains(res.Error, "404") || strings.Contains(res.Error, "mock-key") {
+			if res := m.probe(ctx(), ProviderOpenAI, vendor.base, "manual-model", "mock-key"); res.OK || !strings.Contains(res.Error, "404") || strings.Contains(res.Error, "mock-key") {
 				t.Fatal(res)
 			}
 			cfg, err := m.service.Get(ctx())
@@ -215,9 +212,6 @@ func TestCompatibleVendorsSavedKeyDestinationBoundaries(t *testing.T) {
 				t.Fatal("same base no longer works", res, err, calls)
 			}
 			changed := vendor.base + "/custom"
-			if directCompatibleBase(vendor.base) {
-				changed = vendor.base + "/v1"
-			}
 			gateway, _ := url.Parse(vendor.base)
 			gateway.Host = "gateway.invalid"
 			for _, in := range []TestInput{

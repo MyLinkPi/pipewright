@@ -14,8 +14,10 @@ package build
 //
 // 安全/语义沿用:命令 array 化(不拼 shell);secret 经 -e 注入容器(与本地同,不更差);失败映射 ErrBuildFailed。
 // env 注入顺序与本地 runScriptJobIsolated 完全对齐:运行参数 → 流水线级变量(settings.Build.Vars,
-// 含 secret,vault 即取即用)→ job env → PIPEWRIGHT_ENV(上游 job 输出在远程独立工作区无来源,不传)。
-// 边界(后续增量):远程测试报告/质量门禁采集(报告文件在远程,本期不回采,优雅跳过)。
+// 含 secret,vault 即取即用)→ job env → PIPEWRIGHT_ENV(上游 job 输出 env 在远程独立工作区无来源,不传)。
+// 测试报告/质量门禁:script 节点声明 testReport=junit 时,报告文件经 SSH cat 回采控制机,解析/门禁/
+// 持久化与本地同一套(门禁不过 → 阶段失败,阻断下游)。边界(后续增量):集群共享构建机(peer:选择器)
+// 的报告仍在对端环境,不回采;远程模式不套 timeout/retry。
 
 import (
 	"bytes"
@@ -24,6 +26,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"strings"
 
 	"github.com/huangchengsir/pipewright/internal/dag"
@@ -168,7 +171,7 @@ func NewStageExecutorWithRunner(b *Builder, reportSink TestReportSink, resolve R
 			// 能直接看到它被调度到哪台机、传输/容器执行/完成的全过程。
 			jrep := rep.JobReporter(jb.ID)
 			_ = jrep.Log(run.WithLogMachine(ctx, serverName), streamStdout, fmt.Sprintf("→ 节点「%s」→ 构建机:%s(选择器 %s)", jb.Name, serverName, sel))
-			if rerr := b.runJobRemote(ctx, r, stage, jb, jrep, serverID, serverName, tgt, "-"+sanitizeRemoteSeg(jobRemoteKey(jb, i))); rerr != nil {
+			if rerr := b.runJobRemote(ctx, r, stage, jb, jrep, reportSink, serverID, serverName, tgt, "-"+sanitizeRemoteSeg(jobRemoteKey(jb, i))); rerr != nil {
 				_ = rep.JobDone(ctx, jb.ID, run.StepFailed)
 				return true, rerr
 			}
@@ -401,7 +404,7 @@ func (b *Builder) runStageMixedTopo(
 		}
 		defer release()
 		_ = jrep.Log(run.WithLogMachine(ctx, serverName), streamStdout, fmt.Sprintf("→ 节点「%s」→ 构建机:%s(选择器 %s)", jb.Name, serverName, sel))
-		return b.runJobRemote(ctx, r, stage, jb, jrep, serverID, serverName, tgt, "-"+sanitizeRemoteSeg(jb.ID))
+		return b.runJobRemote(ctx, r, stage, jb, jrep, reportSink, serverID, serverName, tgt, "-"+sanitizeRemoteSeg(jb.ID))
 	}
 
 	// Kahn 拓扑序逐节点执行(同层按声明序)。顺序确定性 > 并发度:跨组依赖场景重在依赖正确。
@@ -569,12 +572,13 @@ func (b *Builder) runLiftedStagePost(ctx context.Context, r *run.Run, stage pipe
 // runJobRemote 在远程构建机上执行单个节点(按类型分发):script 类 → runStageRemote(容器跑
 // 命令);build_image → runBuildImageJobRemote(远程 docker build + 推送)。两类之外不应被
 // 派发到远程(见 runnerJobsOf 的筛选),此处兜底拒绝而非静默放行。
-func (b *Builder) runJobRemote(ctx context.Context, r *run.Run, stage pipeline.Stage, jb pipeline.Job, jrep dagrun.StageReporter, serverID, serverName string, tgt remoteExec, wsSuffix string) error {
+// reportSink 供 script 节点回采测试报告(报告文件经 SSH cat 读回控制机解析,门禁同本地裁决)。
+func (b *Builder) runJobRemote(ctx context.Context, r *run.Run, stage pipeline.Stage, jb pipeline.Job, jrep dagrun.StageReporter, reportSink TestReportSink, serverID, serverName string, tgt remoteExec, wsSuffix string) error {
 	switch {
 	case isScriptJob(jb.Type):
 		sub := stage
 		sub.Jobs = []pipeline.Job{jb}
-		return b.runStageRemote(ctx, r, sub, jrep, serverID, serverName, tgt, wsSuffix)
+		return b.runStageRemote(ctx, r, sub, jrep, reportSink, serverID, serverName, tgt, wsSuffix)
 	case isBuildImageJob(jb.Type):
 		return b.runBuildImageJobRemote(ctx, r, stage, jb, jrep, serverID, serverName, tgt, wsSuffix)
 	default:
@@ -588,7 +592,7 @@ func (b *Builder) runJobRemote(ctx context.Context, r *run.Run, stage pipeline.S
 // 环境绑定 registry 兜底)在远程 Tag/Login/Push。镜像留在远程并推到仓库,部署节点按产物
 // 引用从仓库 pull,与「构建在哪台机发生」解耦。
 // 边界(诚实失败,不静默):artifactType 非 image(jar/dist)的产物文件会留在远程机、控制机
-// 制品库收不到 → 明确报错;测试报告/缓存同远程 script 路径口径,不回采。
+// 制品库收不到 → 明确报错;缓存与测试报告同远程 script 路径口径(build_image 不产测试报告)。
 func (b *Builder) runBuildImageJobRemote(ctx context.Context, r *run.Run, stage pipeline.Stage, jb pipeline.Job, rep dagrun.StageReporter, serverID, serverName string, tgt remoteExec, wsSuffix string) error {
 	lctx := run.WithLogMachine(ctx, serverName)
 
@@ -650,7 +654,9 @@ func (b *Builder) runBuildImageJobRemote(ctx context.Context, r *run.Run, stage 
 // 制品库来源);env 注入顺序见统一口径(builder.go buildArgs 注释):运行参数 → 流水线级变量
 // (settings.Build.Vars,含 secret)→ job 自身 env → PIPEWRIGHT_ENV(上游 job 输出 env 在远程
 // 独立工作区无来源,省)。
-func (b *Builder) runStageRemote(ctx context.Context, r *run.Run, stage pipeline.Stage, rep dagrun.StageReporter, serverID, serverName string, tgt remoteExec, wsSuffix string) error {
+// reportSink 非空时,script job 声明的测试报告/质量门禁在节点执行后回采:报告文件经 SSH cat
+// 读回控制机,解析/裁决/持久化与本地路径完全同一套(门禁不过 → ErrQualityGate 阻断下游)。
+func (b *Builder) runStageRemote(ctx context.Context, r *run.Run, stage pipeline.Stage, rep dagrun.StageReporter, reportSink TestReportSink, serverID, serverName string, tgt remoteExec, wsSuffix string) error {
 	// 本节点的全部日志行都归属到该构建机(步骤 × 机器分组展示);控制流(克隆/传输/取消)仍用原 ctx。
 	lctx := run.WithLogMachine(ctx, serverName)
 	scriptJobs := make([]pipeline.Job, 0, len(stage.Jobs))
@@ -691,7 +697,7 @@ func (b *Builder) runStageRemote(ctx context.Context, r *run.Run, stage pipeline
 		return ErrBuildFailed
 	}
 	if resolved != nil && resolved.CommitShort != "" && b.recordCommit != nil {
-		b.recordCommit(ctx, r.ID, resolved.CommitShort)
+		b.recordCommit(ctx, r.ID, resolved.CommitShort, resolved.CommitTime)
 	}
 	// 跨阶段产物传递:把上游阶段已归档的 jar/dist 真字节恢复到本地工作区原相对路径,
 	// 随 tar 一起传远程(产物字节在控制机制品库;与本地两条路径同语义,best-effort)。
@@ -754,8 +760,44 @@ func (b *Builder) runStageRemote(ctx context.Context, r *run.Run, stage pipeline
 		}
 	}
 
-	_ = rep.Log(lctx, streamStdout, fmt.Sprintf("✓ 远程 runner(%s)执行完成;测试报告/质量门禁在远程模式暂不回采(后续增量)", serverName))
+	// 4) 测试报告/质量门禁回采:报告文件在远程工作区,经 SSH cat 读回字节后在控制机走与
+	//    本地完全同一套解析/门禁/持久化(门禁不过 → ErrQualityGate,阻断下游部署阶段)。
+	//    collectStageReport 自身按 reportSpec 判定:未声明报告的阶段 no-op。
+	readRemoteFile := func(rel string) ([]byte, error) {
+		cmd := []string{"cat", remoteJoinWorkspace(remoteWS, rel)}
+		out, eerr := tgt.Exec(ctx, serverID, cmd)
+		if eerr != nil {
+			return nil, eerr
+		}
+		if out == nil {
+			return nil, errors.New("远程读取无结果")
+		}
+		if out.ExitCode != 0 {
+			return nil, fmt.Errorf("远程读取退出码 %d", out.ExitCode)
+		}
+		return []byte(out.Stdout), nil
+	}
+	if err := collectStageReport(ctx, reportSink, r, stage, readRemoteFile, rep); err != nil {
+		return err
+	}
+
+	_ = rep.Log(lctx, streamStdout, fmt.Sprintf("✓ 远程 runner(%s)执行完成", serverName))
 	return nil
+}
+
+// remoteJoinWorkspace 把远程工作区根(POSIX 路径)与用户给的相对报告路径拼接并清洗
+// `.`/`..`/前导斜杠/反斜杠防穿越(safeJoinWorkspace 的远程机版;控制机可能跑在 Windows,
+// 不能用 filepath 拼远程路径,反斜杠按分隔符归一)。
+func remoteJoinWorkspace(root, rel string) string {
+	parts := []string{}
+	for _, seg := range strings.Split(strings.ReplaceAll(rel, "\\", "/"), "/") {
+		seg = strings.TrimSpace(seg)
+		if seg == "" || seg == "." || seg == ".." {
+			continue
+		}
+		parts = append(parts, seg)
+	}
+	return path.Join(root, strings.Join(parts, "/"))
 }
 
 // runScriptOnDriver 用给定 driver(本地或远程)跑一条 script 步骤;remoteWS 为容器挂载的工作区(远程机上的路径)。

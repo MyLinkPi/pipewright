@@ -11,8 +11,9 @@ import (
 // metrics.go 暴露 DORA 四指标(FR-8-15)所需的**只读**运行投影查询。
 //
 // 不新增表、不改既有 service.go:只新增一个轻量查询服务,从 pipeline_runs 拉取窗口内
-// 的运行(精简列:status / created_at / finished_at),供 internal/dora 做纯聚合。
-// commit 时间本平台运行模型当前不持久化,故投影只回 created_at(dora 层据此回退作提交代理)。
+// 的运行(精简列:status / created_at / finished_at / commit_time),供 internal/dora
+// 做纯聚合。commit_time 由执行器克隆解析出实际检出 commit 时一并回写(SetCommit);
+// 老运行 / 未解析出 → nil,dora 层回退用 created_at 作提交时间代理。
 
 // MetricsRecord 是计算 DORA 所需的单条运行投影(精简,只取聚合必需列)。
 // 与 dora.Record 字段对齐但解耦(run 包不 import dora;httpapi 层做映射)。
@@ -23,6 +24,9 @@ type MetricsRecord struct {
 	CreatedAt time.Time
 	// FinishedAt 是终态时刻(非终态为 nil;dora 层据此判定「是否一次部署」)。
 	FinishedAt *time.Time
+	// CommitTime 是实际检出 commit 的提交时刻(可空:老运行/未解析出;nil 时 dora 层回退
+	// 用 CreatedAt 作前置时长的提交代理)。
+	CommitTime *time.Time
 }
 
 // MetricsService 暴露 DORA 聚合所需的只读查询。
@@ -53,7 +57,7 @@ func (s *service) MetricsRecords(ctx context.Context, projectID string, since ti
 	}
 
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT status, created_at, finished_at
+		`SELECT status, created_at, finished_at, commit_time
 		 FROM pipeline_runs`+clause+`
 		 ORDER BY created_at ASC, id ASC`, args...)
 	if err != nil {
@@ -67,8 +71,9 @@ func (s *service) MetricsRecords(ctx context.Context, projectID string, since ti
 			rec        MetricsRecord
 			createdStr string
 			finishStr  sql.NullString
+			commitStr  sql.NullString
 		)
-		if err := rows.Scan(&rec.Status, &createdStr, &finishStr); err != nil {
+		if err := rows.Scan(&rec.Status, &createdStr, &finishStr, &commitStr); err != nil {
 			return nil, fmt.Errorf("run: scan metrics record: %w", err)
 		}
 		t, perr := time.Parse(time.RFC3339, createdStr)
@@ -77,6 +82,9 @@ func (s *service) MetricsRecords(ctx context.Context, projectID string, since ti
 		}
 		rec.CreatedAt = t.UTC()
 		if rec.FinishedAt, err = parseNullTime(finishStr); err != nil {
+			return nil, err
+		}
+		if rec.CommitTime, err = parseNullTime(commitStr); err != nil {
 			return nil, err
 		}
 		out = append(out, rec)
