@@ -35,7 +35,8 @@ func withExe(name string) string {
 	return name
 }
 
-// Locate 在 env 覆盖 → dataDir/bin → PATH 中定位二进制;找不到返回空串(调用方给引导提示)。
+// Locate 在 env 覆盖 → dataDir/bin → exe 同级 bin(发行包随附) → PATH 中定位二进制;
+// 找不到返回空串(调用方给引导提示)。
 func Locate(envPath, dataDir, name string) string {
 	if p := filepath.Clean(envPath); p != "." && p != "" {
 		if st, err := os.Stat(p); err == nil && !st.IsDir() {
@@ -44,6 +45,13 @@ func Locate(envPath, dataDir, name string) string {
 	}
 	if dataDir != "" {
 		p := filepath.Join(dataDir, "bin", name)
+		if st, err := os.Stat(p); err == nil && !st.IsDir() {
+			return p
+		}
+	}
+	// 发行包布局:pwclient.exe 与 bin/easytier-*.exe 同级(免首连下载)。
+	if exe, err := os.Executable(); err == nil {
+		p := filepath.Join(filepath.Dir(exe), "bin", name)
 		if st, err := os.Stat(p); err == nil && !st.IsDir() {
 			return p
 		}

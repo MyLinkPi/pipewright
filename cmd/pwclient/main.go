@@ -41,6 +41,10 @@ func main() {
 	if len(args) > 0 {
 		cmd = args[0]
 	}
+	if cmd != "tray" {
+		// 文本子命令接回终端输出(GUI 子系统默认无控制台句柄)。
+		attachParentConsole()
+	}
 	switch cmd {
 	case "tray":
 		runTray()
@@ -190,6 +194,13 @@ func printSnapshot(snap *pwclient.StatusSnapshot) {
 	if len(snap.EasyTier.ProxyCIDRs) > 0 {
 		fmt.Println("通告网段:  ", strings.Join(snap.EasyTier.ProxyCIDRs, ", "))
 	}
+	for _, pr := range snap.EasyTier.ProxyRoutes {
+		via := pr.ViaName
+		if via == "" {
+			via = pr.ViaIP
+		}
+		fmt.Printf("  网段 %-18s 经 %s(%s) 转发\n", pr.CIDR, via, pr.ViaIP)
+	}
 	if len(snap.Routes) > 0 {
 		fmt.Println("本机路由:  ", strings.Join(snap.Routes, ", "), "(仅这些网段)")
 	} else if snap.Configured {
@@ -288,7 +299,7 @@ func runDoctor() {
 	if err != nil {
 		check("配置文件", false, firstLine(err.Error()), "修正 config.yaml")
 	} else if !cfg.Configured() {
-		check("配置文件", false, "尚未导入集群配置", "托盘「导入配置文件」或从平台集群页导出 pipewright-client.yaml")
+		check("配置文件", false, "尚未导入集群配置", "托盘「集群配置」粘贴导入(平台「导出客户端配置」复制全文)")
 	} else {
 		check("配置文件", true, "网络 "+cfg.Join.NetworkName+",peers "+strings.Join(cfg.Join.Peers, ","), "")
 	}

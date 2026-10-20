@@ -42,12 +42,17 @@ type trayApp struct {
 	actConnect    *walk.Action
 	actDisconnect *walk.Action
 
-	socks5Check  *walk.CheckBox
-	socks5Port   *walk.NumberEdit
-	socks5Addr   *walk.Label
-	copyProxyBtn *walk.PushButton
+	socks5Check    *walk.CheckBox
+	socks5Port     *walk.NumberEdit
+	socks5Addr     *walk.Label
+	copyProxyBtn   *walk.PushButton
+	socks5ApplyBtn *walk.PushButton
 
 	autoStartCheck *walk.CheckBox
+
+	importEdit *walk.TextEdit  // 粘贴 pipewright-client.yaml 全文导入
+	peersEdit  *walk.LineEdit  // 对端地址(入网入口)查看与修改
+	routeItems []string        // 通告网段列表当前行(双击取 CIDR)
 
 	ipc     *pwclient.IPCClient
 	snap    *pwclient.StatusSnapshot
@@ -102,7 +107,7 @@ func (a *trayApp) build() error {
 				Title:  "网段路由(经集群隧道访问的远端网段)",
 				Layout: VBox{MarginsZero: true, Spacing: 6},
 				Children: []Widget{
-					Label{Text: "集群通告的网段(双击追加到下方列表):", TextColor: walk.Color(0x666666)},
+					Label{Text: "集群通告的网段(← 网关节点,双击追加到下方列表):", TextColor: walk.Color(0x666666)},
 					ListBox{AssignTo: &a.availList, MinSize: Size{Height: 76}, OnItemActivated: a.onAddRoute},
 					Label{Text: "本机路由的网段,每行一个 CIDR;留空 = 路由全部通告网段:", TextColor: walk.Color(0x666666)},
 					TextEdit{AssignTo: &a.routesEdit, MinSize: Size{Height: 96}, VScroll: true},
@@ -128,7 +133,7 @@ func (a *trayApp) build() error {
 							NumberEdit{AssignTo: &a.socks5Port, MinValue: 1, MaxValue: 65535, Value: 1080.0, Decimals: 0, MinSize: Size{Width: 72}},
 							PushButton{AssignTo: &a.copyProxyBtn, Text: "复制代理地址", OnClicked: a.onCopyProxy},
 							HSpacer{},
-							PushButton{Text: "保存并应用", OnClicked: a.onApplySocks5, MinSize: Size{Width: 96}},
+							PushButton{AssignTo: &a.socks5ApplyBtn, Text: "保存并应用", OnClicked: a.onApplySocks5, MinSize: Size{Width: 96}},
 						},
 					},
 					Label{AssignTo: &a.socks5Addr, TextColor: walk.Color(0x666666)},
@@ -138,12 +143,22 @@ func (a *trayApp) build() error {
 				Title:  "集群配置",
 				Layout: VBox{MarginsZero: true, Spacing: 6},
 				Children: []Widget{
-					Label{Text: "从平台「设置 → 集群 → 导出客户端配置」获取 pipewright-client.yaml 后导入。", TextColor: walk.Color(0x666666)},
+					Label{Text: "从平台「设置 → 集群 → 导出客户端配置」复制 YAML 粘贴到下面导入;对端地址是入网入口,网段路由/本地代理的流量均经集群侧节点转发。", TextColor: walk.Color(0x666666)},
+					TextEdit{AssignTo: &a.importEdit, MinSize: Size{Height: 72}, VScroll: true},
 					Composite{
-						Layout: HBox{MarginsZero: true},
+						Layout: HBox{MarginsZero: true, Spacing: 8},
 						Children: []Widget{
-							PushButton{AssignTo: &a.importBtn, Text: "导入配置文件…", OnClicked: a.onImport, MinSize: Size{Width: 136}},
+							PushButton{AssignTo: &a.importBtn, Text: "导入粘贴的配置", OnClicked: a.onImportText, MinSize: Size{Width: 136}},
+							PushButton{Text: "从文件导入…", OnClicked: a.onImport},
 							HSpacer{},
+						},
+					},
+					Composite{
+						Layout: HBox{MarginsZero: true, Spacing: 8},
+						Children: []Widget{
+							Label{Text: "对端地址:"},
+							LineEdit{AssignTo: &a.peersEdit, CueBanner: "如 tcp://1.2.3.4:11010,多个用逗号分隔"},
+							PushButton{Text: "保存", OnClicked: a.onApplyPeers, MinSize: Size{Width: 72}},
 						},
 					},
 				},
@@ -284,16 +299,25 @@ func (a *trayApp) apply(snap *pwclient.StatusSnapshot, err error, logs []string)
 		a.stateLabel.SetText("● 服务未运行")
 		a.stateLabel.SetTextColor(walk.Color(0xB0551D))
 		a.detailLabel.SetText("核心以 Windows 服务运行;点「安装并启动服务」(需管理员)或管理员终端执行:pwclient service install")
+		// 服务不在,依赖服务的操作全部禁用,只留安装引导(否则按钮可点但只会报错)。
 		a.connectBtn.SetEnabled(false)
 		a.actConnect.SetEnabled(false)
 		a.actDisconnect.SetEnabled(false)
 		a.installBtn.SetEnabled(true)
+		a.downloadBtn.SetEnabled(false)
+		a.importBtn.SetEnabled(false)
+		a.applyRoutes.SetEnabled(false)
+		a.socks5ApplyBtn.SetEnabled(false)
 		a.svcLabel.SetText("")
 		_ = a.ni.SetToolTip("pipewright 客户端 — 服务未运行")
 		a.renderLogs(logs)
 		return
 	}
 	a.installBtn.SetEnabled(false)
+	// 服务就绪,恢复操作可用性(连接/下载等再按快照细调)。
+	a.importBtn.SetEnabled(true)
+	a.applyRoutes.SetEnabled(true)
+	a.socks5ApplyBtn.SetEnabled(true)
 	a.svcLabel.SetText(fmt.Sprintf("服务运行中(PID %d)", snap.Service.PID))
 
 	switch {
@@ -357,9 +381,10 @@ func (a *trayApp) apply(snap *pwclient.StatusSnapshot, err error, logs []string)
 	a.actConnect.SetEnabled(snap.Configured && !enabled)
 	a.actDisconnect.SetEnabled(enabled)
 
-	// 可用网段列表(仅展示;不覆盖用户编辑中的 routes 文本)。
-	if items := snap.EasyTier.ProxyCIDRs; len(items) > 0 {
-		_ = a.availList.SetModel(items)
+	// 可用网段列表:每行附网关节点(谁通告谁网关,流量经它转发);仅展示,不覆盖编辑中内容。
+	a.routeItems = a.routeListItems(snap)
+	if len(a.routeItems) > 0 {
+		_ = a.availList.SetModel(a.routeItems)
 	} else {
 		_ = a.availList.SetModel([]string{"(集群尚未通告任何网段)"})
 	}
@@ -368,6 +393,11 @@ func (a *trayApp) apply(snap *pwclient.StatusSnapshot, err error, logs []string)
 	// 避免覆盖用户正在编辑的内容。
 	if text := a.routesEdit.Text(); text == "" || text == strings.Join(snap.Routes, "\r\n") || text == strings.Join(snap.Routes, "\n") {
 		a.routesEdit.SetText(strings.Join(snap.Routes, "\r\n"))
+	}
+
+	// 对端地址回显(同 routes 策略:不覆盖用户编辑中的内容)。
+	if text := a.peersEdit.Text(); text == "" || text == strings.Join(snap.Join.Peers, ", ") {
+		a.peersEdit.SetText(strings.Join(snap.Join.Peers, ", "))
 	}
 
 	// SOCKS5 区:回显生效值(启用中显示监听地址;未启用显示预览地址)。
@@ -428,10 +458,11 @@ func (a *trayApp) onToggleConnect() {
 
 func (a *trayApp) onAddRoute() {
 	idx := a.availList.CurrentIndex()
-	if idx < 0 || a.snap == nil || idx >= len(a.snap.EasyTier.ProxyCIDRs) {
+	if idx < 0 || idx >= len(a.routeItems) {
 		return
 	}
-	cidr := a.snap.EasyTier.ProxyCIDRs[idx]
+	// 列表行是 "cidr ← name(ip)" 形态,取首列 CIDR。
+	cidr := strings.Fields(a.routeItems[idx])[0]
 	cur := strings.FieldsFunc(a.routesEdit.Text(), func(r rune) bool { return r == '\n' || r == '\r' })
 	for _, line := range cur {
 		if strings.TrimSpace(line) == cidr {
@@ -443,6 +474,30 @@ func (a *trayApp) onAddRoute() {
 	} else {
 		a.routesEdit.SetText(cidr)
 	}
+}
+
+// routeListItems 组装通告网段列表行:有网关信息时显示 "cidr ← 节点名(ip)"。
+func (a *trayApp) routeListItems(snap *pwclient.StatusSnapshot) []string {
+	if snap == nil || snap.EasyTier == nil {
+		return nil
+	}
+	via := map[string]string{}
+	for _, pr := range snap.EasyTier.ProxyRoutes {
+		label := pr.ViaIP
+		if pr.ViaName != "" {
+			label = pr.ViaName + "(" + pr.ViaIP + ")"
+		}
+		via[pr.CIDR] = label
+	}
+	items := make([]string, 0, len(snap.EasyTier.ProxyCIDRs))
+	for _, cidr := range snap.EasyTier.ProxyCIDRs {
+		if label := via[cidr]; label != "" {
+			items = append(items, cidr+"  ←  "+label)
+		} else {
+			items = append(items, cidr)
+		}
+	}
+	return items
 }
 
 func (a *trayApp) onApplyRoutes() {
@@ -466,6 +521,20 @@ func (a *trayApp) onApplyRoutes() {
 	a.refreshOnce()
 }
 
+// onImportText 导入粘贴的 pipewright-client.yaml 全文(与文件导入同一通道)。
+func (a *trayApp) onImportText() {
+	content := strings.TrimSpace(a.importEdit.Text())
+	if content == "" {
+		a.actionErr(fmt.Errorf("请先把从平台复制的 pipewright-client.yaml 粘贴到文本框"))
+		return
+	}
+	if err := a.importConfig(content); err != nil {
+		a.actionErr(err)
+		return
+	}
+}
+
+// onImport 经文件选择器导入(粘贴导入的补充;平台亦可下载 yaml 文件)。
 func (a *trayApp) onImport() {
 	dlg := new(walk.FileDialog)
 	dlg.Title = "导入 pipewright-client.yaml"
@@ -479,22 +548,55 @@ func (a *trayApp) onImport() {
 		a.actionErr(err)
 		return
 	}
+	if err := a.importConfig(string(raw)); err != nil {
+		a.actionErr(err)
+	}
+}
+
+// importConfig 走 IPC 导入并回填界面。
+func (a *trayApp) importConfig(content string) error {
 	cli, err := a.client()
 	if err != nil {
-		a.actionErr(fmt.Errorf("服务未运行,无法导入:%w", err))
-		return
+		return fmt.Errorf("服务未运行,无法导入:%w", err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
-	view, err := cli.Import(ctx, string(raw), true)
+	view, err := cli.Import(ctx, content, true)
+	if err != nil {
+		return err
+	}
+	a.refreshOnce()
+	_ = a.ni.ShowInfo("pipewright 客户端", "已导入集群 "+view.Join.NetworkName+"(已自动连接)")
+	a.showWindow()
+	return nil
+}
+
+// onApplyPeers 保存对端地址(入网入口;集群侧更换入口后在此同步)。
+func (a *trayApp) onApplyPeers() {
+	var peers []string
+	for _, f := range strings.FieldsFunc(a.peersEdit.Text(), func(r rune) bool {
+		return r == ',' || r == ';' || r == '\n' || r == '\r' || r == ' ' || r == '\t'
+	}) {
+		if f = strings.TrimSpace(f); f != "" {
+			peers = append(peers, f)
+		}
+	}
+	if len(peers) == 0 {
+		a.actionErr(fmt.Errorf("至少需要一个对端地址(如 tcp://1.2.3.4:11010)"))
+		return
+	}
+	cli, err := a.client()
 	if err != nil {
 		a.actionErr(err)
 		return
 	}
-	// 导入后立即回填路由编辑框与状态。
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	if _, err := cli.PutConfig(ctx, pwclient.ConfigSetRequest{Peers: &peers}); err != nil {
+		a.actionErr(err)
+		return
+	}
 	a.refreshOnce()
-	_ = a.ni.ShowInfo("pipewright 客户端", "已导入集群 "+view.Join.NetworkName+"(已自动连接)")
-	a.showWindow()
 }
 
 func (a *trayApp) onDownload() {

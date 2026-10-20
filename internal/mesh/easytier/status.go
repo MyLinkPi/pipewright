@@ -43,6 +43,14 @@ type Link struct {
 	RelayVia  string  `json:"relayVia"` // 中继节点(虚拟 IP 或 peer 标识)
 }
 
+// ProxyRoute 是一条子网代理通告:该网段的流量经 ViaIP 对应的集群节点转发
+//(谁通告谁网关;ViaName 为该节点主机名,无 peer 信息时为空)。
+type ProxyRoute struct {
+	CIDR    string `json:"cidr"`
+	ViaIP   string `json:"viaIp"`
+	ViaName string `json:"viaName"`
+}
+
 // Status 是一次组网状态快照。
 type Status struct {
 	OK       bool   `json:"ok"`
@@ -54,6 +62,8 @@ type Status struct {
 	// ProxyCIDRs 是全网通告的子网代理网段(route 表 proxy_cidrs 汇总;去重排序)。
 	// 客户端据此展示「可路由的远端网段」清单;平台侧集群页亦可展示。
 	ProxyCIDRs []string `json:"proxyCidrs"`
+	// ProxyRoutes 是 网段→网关节点 映射(客户端展示「路由到哪去」;无通告时为空数组)。
+	ProxyRoutes []ProxyRoute `json:"proxyRoutes"`
 }
 
 // statusTTL 是快照缓存窗口;窗口内直接回缓存,过期后台单飞刷新(stale-while-revalidate)。
@@ -267,7 +277,7 @@ func withHints(err error) error {
 
 // collect 依次跑 node/peer/route 三条查询并归并(任一失败记入 Err,不整体失败)。
 func (p *StatusProvider) collect(ctx context.Context) *Status {
-	st := &Status{Links: []Link{}, ProxyCIDRs: []string{}}
+	st := &Status{Links: []Link{}, ProxyCIDRs: []string{}, ProxyRoutes: []ProxyRoute{}}
 	if p.cliPath == "" && p.run == nil {
 		st.Err = fmt.Sprintf("easytier-cli not found (place %s under <data>/bin or PATH, or use auto-download)", CliBinary())
 		return st
@@ -296,6 +306,8 @@ func (p *StatusProvider) collect(ctx context.Context) *Status {
 
 	nextHops := map[string]string{}
 	proxySeen := map[string]struct{}{}
+	// cidrVia:网段 → 通告节点虚拟 IP(经中继时 next_hop 为中继节点,取它即可达)。
+	cidrVia := map[string]string{}
 	if raw, err := p.runShaped(ctx, "route", routeShapes); err == nil {
 		var routes []obj
 		if json.Unmarshal(raw, &routes) == nil {
@@ -305,9 +317,19 @@ func (p *StatusProvider) collect(ctx context.Context) *Status {
 				if ip != "" {
 					nextHops[ip] = nh
 				}
+				if len(pickList(rt, "proxy_cidrs")) == 0 {
+					continue
+				}
+				via := nh
+				if via == "" {
+					via = ip // 直连行:ipv4 即通告节点自身
+				}
 				for _, c := range pickList(rt, "proxy_cidrs") {
 					if c != "" {
 						proxySeen[c] = struct{}{}
+						if _, dup := cidrVia[c]; !dup && via != "" && via != st.SelfIP {
+							cidrVia[c] = via
+						}
 					}
 				}
 			}
@@ -340,6 +362,21 @@ func (p *StatusProvider) collect(ctx context.Context) *Status {
 		if l.VirtualIP != "" && l.VirtualIP != st.SelfIP {
 			st.Links = append(st.Links, l)
 		}
+	}
+	// ProxyRoutes:网段→网关(用 peer 主机名补全展示名;无通告时空数组)。
+	nameByIP := make(map[string]string, len(st.Links))
+	for _, l := range st.Links {
+		if l.VirtualIP != "" && l.Hostname != "" {
+			nameByIP[l.VirtualIP] = l.Hostname
+		}
+	}
+	for _, c := range st.ProxyCIDRs {
+		if via := cidrVia[c]; via != "" {
+			st.ProxyRoutes = append(st.ProxyRoutes, ProxyRoute{CIDR: c, ViaIP: via, ViaName: nameByIP[via]})
+		}
+	}
+	if st.ProxyRoutes == nil {
+		st.ProxyRoutes = []ProxyRoute{}
 	}
 	st.OK = st.SelfIP != "" || len(st.Links) > 0 || st.Err == ""
 	return st
