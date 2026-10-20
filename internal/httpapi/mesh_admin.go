@@ -507,6 +507,12 @@ func makeMeshOverviewHandler(d meshAdminDeps) http.HandlerFunc {
 		out["easytier"] = et
 		rows := make([]meshOverviewPeer, 0, len(peers))
 		for _, p := range peers {
+			// 本节点自身不进对端表:注册表语义是「对端」,而 EasyTier 链路表恒不含本机,
+			// 自身行永不匹配链路 → 恒显离线(历史版本发现循环可能把自己误登记,由
+			// mesh_runtime 侧清理;此处兜底不再外显)。本机信息由概览卡 selfIp 呈现。
+			if p.NodeID == st.NodeID || (et.SelfIP != "" && p.VirtualIP == et.SelfIP) {
+				continue
+			}
 			row := meshOverviewPeer{Peer: p}
 			if l, ok := links[p.VirtualIP]; ok {
 				row.Online = true
