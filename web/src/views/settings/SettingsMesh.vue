@@ -64,6 +64,7 @@ const form = ref({
   virtualIp: '',
   peers: '',
   proxyNetworks: '',
+  acceptNetworks: '',
 })
 const acl = ref({ visibleTo: [] as string[], pushAllowed: [] as string[], triggerAllowed: [] as string[], forwardAllowed: [] as string[], buildAllowed: [] as string[] })
 const manualPeer = ref({ nodeId: '', name: '', virtualIp: '', apiPort: 8080, publicUrl: '' })
@@ -259,6 +260,7 @@ async function load(): Promise<void> {
       virtualIp: st.virtualIp,
       peers: st.peers.join('\n'),
       proxyNetworks: (st.proxyNetworksCustom ?? []).join('\n'),
+      acceptNetworks: (st.acceptNetworksCustom ?? []).join('\n'),
     }
     acl.value = {
       visibleTo: aclRes.visibleTo ?? [],
@@ -289,6 +291,7 @@ async function persistSettings(): Promise<void> {
       virtualIp: form.value.virtualIp,
       peers: form.value.peers.split('\n').map((s) => s.trim()).filter(Boolean),
       proxyNetworksCustom: form.value.proxyNetworks.split('\n').map((s) => s.trim()).filter(Boolean),
+      acceptNetworksCustom: form.value.acceptNetworks.split('\n').map((s) => s.trim()).filter(Boolean),
     }
     if (form.value.networkSecret.trim() !== '') body.networkSecret = form.value.networkSecret.trim()
     const st = await saveMeshSettings(body as never)
@@ -304,6 +307,7 @@ async function persistSettings(): Promise<void> {
       virtualIp: st.virtualIp,
       peers: st.peers.join('\n'),
       proxyNetworks: (st.proxyNetworksCustom ?? []).join('\n'),
+      acceptNetworks: (st.acceptNetworksCustom ?? []).join('\n'),
     }
     secretRevealed.value = false
     markSaved()
@@ -473,6 +477,7 @@ onUnmounted(() => {
           <label class="fld"><span>{{ t('cluster.settings.peers') }}</span><textarea v-model="form.peers" class="inp mono" rows="3" placeholder="tcp://1.2.3.4:11010"></textarea></label>
         </div>
         <label class="fld"><span>{{ t('cluster.settings.proxyNetworks') }}</span><textarea v-model="form.proxyNetworks" class="inp mono" rows="3" placeholder="192.168.30.0/24"></textarea></label>
+        <label class="fld"><span>{{ t('cluster.settings.acceptNetworks') }}</span><textarea v-model="form.acceptNetworks" class="inp mono" rows="2" placeholder="172.20.0.0/16"></textarea></label>
         <div class="bin-row">
           <span class="bin-label">{{ t('cluster.settings.binaries') }}</span>
           <span class="bin-status" :class="{ 'ok-text': binaries?.corePath, 'warn-text': !binaries?.corePath }">

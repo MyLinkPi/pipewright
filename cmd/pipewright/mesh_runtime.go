@@ -73,6 +73,21 @@ func (rt *meshRuntime) EasyTierStatus(ctx context.Context) *easytier.Status {
 	return sp.Get(ctx)
 }
 
+// statusSnapshot 取当前路由表通告清单(白名单发现远端网关用;不可用时返回 nil)。
+func (rt *meshRuntime) statusSnapshot() *easytier.Status {
+	rt.mu.Lock()
+	sp := rt.status
+	rt.mu.Unlock()
+	if sp == nil {
+		return nil
+	}
+	st := sp.Get(context.Background())
+	if st == nil || st.Err != "" {
+		return nil
+	}
+	return st
+}
+
 // SupervisorSnapshot 实现 httpapi.meshRuntimeView。
 func (rt *meshRuntime) SupervisorSnapshot() easytier.Runtime {
 	rt.mu.Lock()
@@ -232,10 +247,21 @@ func (rt *meshRuntime) reconcile(ctx context.Context) {
 	// 子网代理通告 = 管理员自定义网段(集群设置)∪ servicereg 网关 /32(跨环境转发),
 	// 经 normalizeProxyNetworks 归一去重;变化纳入下方指纹,自动重启 easytier 生效。
 	proxies := normalizeProxyNetworks(st.ProxyNetworksCustom)
+	gateways := []string{}
 	if rt.proxyNetworks != nil {
-		proxies = normalizeProxyNetworks(append(proxies, rt.proxyNetworks(ctx)...))
+		gateways = rt.proxyNetworks(ctx)
+		proxies = normalizeProxyNetworks(append(proxies, gateways...))
 	}
-	key := fmt.Sprintf("%s|%s|%s|%s|%v|%v", st.EasyTierMode, st.NetworkName, st.VirtualIP, st.Peers, st.Enabled, proxies)
+	// 路由白名单(路由隔离,见 internal/mesh/routes.go):自动项仅本端网关 /32 +
+	// 路由表已见的远端网关 /32(首连引导:远端网关经发现进入路由表后并入,指纹变化
+	// 重启生效);手动项 = 管理员显式接受网段。自定义通告网段绝不自动路由
+	//(跨环境网段重叠 = 生产事故)。空白名单 = 裸 --manual-routes,拒绝全部通告。
+	var seenCIDRs []string
+	if sp := rt.statusSnapshot(); sp != nil {
+		seenCIDRs = sp.ProxyCIDRs
+	}
+	manual := mesh.RouteWhitelist(gateways, seenCIDRs, st.AcceptNetworksCustom)
+	key := fmt.Sprintf("%s|%s|%s|%s|%v|%v|%v", st.EasyTierMode, st.NetworkName, st.VirtualIP, st.Peers, st.Enabled, proxies, manual)
 	if !st.Enabled || st.EasyTierMode != mesh.ModeManaged || st.NetworkName == "" {
 		rt.mu.Lock()
 		if rt.supervisor != nil {
@@ -275,9 +301,13 @@ func (rt *meshRuntime) reconcile(ctx context.Context) {
 		Hostname:      meshHostname(st),
 		Peers:         st.Peers,
 		ProxyNetworks: proxies,
-		DataDir:       rt.dataDir,
-		CorePath:      rt.corePath,
-		CliPath:       rt.cliPath,
+		// 路由隔离:平台节点也白名单化(manual 仅含网关 /32 + 显式接受项),
+		// Strict = 空白名单时拒绝全部通告(与 pwclient 客户端同构的 fail-closed)。
+		ManualRoutes:       manual,
+		StrictManualRoutes: true,
+		DataDir:            rt.dataDir,
+		CorePath:           rt.corePath,
+		CliPath:            rt.cliPath,
 	})
 	if err := sup.Start(context.WithoutCancel(ctx)); err != nil {
 		// 同一指纹的启动失败不逐拍刷屏(探测类失败每进程只发生一次,配置修复后指纹变化即重试)。

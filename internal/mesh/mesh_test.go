@@ -147,3 +147,52 @@ func TestACLRoundtrip(t *testing.T) {
 		t.Fatalf("forward acl roundtrip: %+v", acl.ForwardAllowed)
 	}
 }
+
+// TestRouteWhitelist 验证路由隔离白名单:自动项仅 /32(本端网关 + 路由表发现的远端
+// 网关),自定义网段(非 /32)绝不自动进入;手动接受项并入;排序去重;空 = 拒绝全部。
+func TestRouteWhitelist(t *testing.T) {
+	got := RouteWhitelist(
+		[]string{"10.1.1.7/32", "10.1.1.7/32", ""},      // 本端网关(重复/空)
+		[]string{"192.168.50.0/24", "10.2.2.9/32", ""},  // 路由表:自定义网段必须被忽略,仅取 /32
+		[]string{"172.20.0.0/16"},                       // 手动接受
+	)
+	want := []string{"10.1.1.7/32", "10.2.2.9/32", "172.20.0.0/16"}
+	if len(got) != len(want) {
+		t.Fatalf("whitelist = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("whitelist[%d] = %q, want %q (full: %v)", i, got[i], want[i], got)
+		}
+	}
+	if all := RouteWhitelist(nil, nil, nil); len(all) != 0 {
+		t.Fatalf("空输入应为空列表(fail-closed),got %v", all)
+	}
+}
+
+// TestSaveSettingsRejectsHostRouteAdvertise 验证通告侧禁止 /32(该粒度保留给网关
+// 自动通告,保证「/32 即网关」分类成立),显式接受侧不受限。
+func TestSaveSettingsRejectsHostRouteAdvertise(t *testing.T) {
+	svc := newTestService(t)
+	ctx := context.Background()
+	bad := []string{"192.168.30.0/24", "10.9.9.9/32"}
+	if _, err := svc.SaveSettings(ctx, SaveSettingsInput{ProxyNetworksCustom: &bad}); err == nil {
+		t.Fatal("通告 /32 应被拒绝")
+	}
+	good := []string{"192.168.30.0/24"}
+	st, err := svc.SaveSettings(ctx, SaveSettingsInput{ProxyNetworksCustom: &good})
+	if err != nil {
+		t.Fatalf("合法通告失败:%v", err)
+	}
+	if len(st.ProxyNetworksCustom) != 1 || st.ProxyNetworksCustom[0] != "192.168.30.0/24" {
+		t.Fatalf("通告回显 = %v", st.ProxyNetworksCustom)
+	}
+	accept := []string{"10.9.9.9/32", "172.16.0.0/12"}
+	st, err = svc.SaveSettings(ctx, SaveSettingsInput{AcceptNetworksCustom: &accept})
+	if err != nil {
+		t.Fatalf("显式接受 /32 应允许:%v", err)
+	}
+	if len(st.AcceptNetworksCustom) != 2 {
+		t.Fatalf("接受列表回显 = %v", st.AcceptNetworksCustom)
+	}
+}
