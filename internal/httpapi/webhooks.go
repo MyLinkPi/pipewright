@@ -57,16 +57,18 @@ type webhookIgnoredDTO struct {
 
 // webhookDelivery 从请求头构造一次投递(公网入口与集群转发入口共用同一套头解析,
 // 保证未来新增 provider 时两条路径自动一致)。
-// 头按「Gitee → Gitea → Gogs」fallback 取第一个非空:
-// Gitea 出于兼容会同时发送 X-Gitea-* 与 X-Gogs-* 两套头,故 Gitea 优先。
+// 头按「Gitee → GitHub → Gitea → Gogs」fallback 取第一个非空:
+// Gitea 出于兼容会同时发送 X-Gitea-* 与 X-Gogs-* 两套头,故 Gitea 优先;
+// GitHub 的事件/投递号独立成套,body 签名头为 X-Hub-Signature-256(sha256=<hex>,
+// 原样透传,"sha256=" 前缀由 trigger 验签统一剥离)。
 func webhookDelivery(token string, h http.Header, body []byte) trigger.Delivery {
 	return trigger.Delivery{
 		Token:         token,
-		Event:         firstHeaderValue(h.Get(trigger.HeaderGiteeEvent), h.Get(trigger.HeaderGiteaEvent), h.Get(trigger.HeaderGogsEvent)),
+		Event:         firstHeaderValue(h.Get(trigger.HeaderGiteeEvent), h.Get(trigger.HeaderGitHubEvent), h.Get(trigger.HeaderGiteaEvent), h.Get(trigger.HeaderGogsEvent)),
 		TokenHdr:      h.Get(trigger.HeaderGiteeToken),
 		Timestamp:     h.Get(trigger.HeaderGiteeTimestamp),
-		DeliveryID:    firstHeaderValue(h.Get(trigger.HeaderGiteeDelivery), h.Get(trigger.HeaderGiteaDelivery), h.Get(trigger.HeaderGogsDelivery)),
-		BodySignature: firstHeaderValue(h.Get(trigger.HeaderGiteaSignature), h.Get(trigger.HeaderGogsSignature)),
+		DeliveryID:    firstHeaderValue(h.Get(trigger.HeaderGiteeDelivery), h.Get(trigger.HeaderGitHubDelivery), h.Get(trigger.HeaderGiteaDelivery), h.Get(trigger.HeaderGogsDelivery)),
+		BodySignature: firstHeaderValue(h.Get(trigger.HeaderGiteaSignature), h.Get(trigger.HeaderGogsSignature), h.Get(trigger.HeaderHubSignature256)),
 		Actor:         webhookProvider(h),
 		RawBody:       body,
 	}
@@ -260,8 +262,14 @@ func firstHeaderValue(vals ...string) string {
 }
 
 // webhookProvider 据请求头识别投递来源(写入运行触发信息的操作人标签):
-// 任一 X-Gitea-* 头存在 → gitea;否则任一 X-Gogs-* 头存在 → gogs;否则按 Gitee。
+// 任一 X-GitHub-* / X-Hub-Signature-256 头存在 → github;否则任一 X-Gitea-* 头存在 → gitea;
+// 否则任一 X-Gogs-* 头存在 → gogs;否则按 Gitee。四家头互不重叠,判序无歧义。
 func webhookProvider(h http.Header) string {
+	for _, name := range []string{trigger.HeaderGitHubEvent, trigger.HeaderHubSignature256, trigger.HeaderGitHubDelivery} {
+		if strings.TrimSpace(h.Get(name)) != "" {
+			return "github"
+		}
+	}
 	for _, name := range []string{trigger.HeaderGiteaEvent, trigger.HeaderGiteaSignature, trigger.HeaderGiteaDelivery} {
 		if strings.TrimSpace(h.Get(name)) != "" {
 			return "gitea"

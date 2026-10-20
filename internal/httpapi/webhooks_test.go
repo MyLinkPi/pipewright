@@ -336,3 +336,105 @@ func TestWebhookGogsHeadersAccepted(t *testing.T) {
 		t.Fatalf("expected accepted:true, got %s", raw)
 	}
 }
+
+// ---- GitHub 头兼容 ---------------------------------------------------------
+
+// postWebhookGitHubShape 按 GitHub 形态投递:X-GitHub-Event + X-Hub-Signature-256
+// (sha256=<hex HMAC-SHA256 over body>)+ X-GitHub-Delivery(无 X-Gitee-* 头、无 timestamp)。
+func postWebhookGitHubShape(t *testing.T, srvURL, token, secret, deliveryID string, body []byte) *http.Response {
+	t.Helper()
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write(body)
+	req, err := http.NewRequest(http.MethodPost, srvURL+"/api/webhooks/"+token, bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-GitHub-Event", "push")
+	req.Header.Set("X-Hub-Signature-256", "sha256="+hex.EncodeToString(mac.Sum(nil)))
+	req.Header.Set("X-GitHub-Delivery", deliveryID)
+	resp, err := (&http.Client{}).Do(req)
+	if err != nil {
+		t.Fatalf("do webhook: %v", err)
+	}
+	return resp
+}
+
+// TestWebhookGitHubHeadersAccepted 验证 GitHub 形态(sha256= 前缀 body 签名)经
+// HTTP 层头解析后创建运行,且运行触发 actor=github。
+func TestWebhookGitHubHeadersAccepted(t *testing.T) {
+	srv, client, csrf, _, token, secret := setupWebhookServer(t)
+
+	body := []byte(`{"ref":"refs/heads/main","after":"github1"}`)
+	resp := postWebhookGitHubShape(t, srv.URL, token, secret, "delivery-github-1", body)
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		t.Fatalf("expected 200, got %d: %s", resp.StatusCode, raw)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	var out map[string]any
+	_ = json.Unmarshal(raw, &out)
+	if out["accepted"] != true {
+		t.Fatalf("expected accepted:true, got %s", raw)
+	}
+	runID, _ := out["runId"].(string)
+	if runID == "" {
+		t.Fatalf("webhook accepted but no runId: %s", raw)
+	}
+	final := waitRunStatus(t, client, srv, csrf, runID, run.StatusSuccess)
+	trig, _ := final["trigger"].(map[string]any)
+	if trig["actor"] != "github" || trig["type"] != "webhook" {
+		t.Fatalf("expected webhook run with actor github, got %v", trig)
+	}
+}
+
+// TestWebhookGitHubBadSignature401 验证 GitHub 签名不匹配 → 401,不创建。
+func TestWebhookGitHubBadSignature401(t *testing.T) {
+	srv, _, _, _, token, _ := setupWebhookServer(t)
+	body := []byte(`{"ref":"refs/heads/main","after":"x"}`)
+
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/webhooks/"+token, bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-GitHub-Event", "push")
+	req.Header.Set("X-Hub-Signature-256", "sha256="+strings.Repeat("0", 64))
+	req.Header.Set("X-GitHub-Delivery", "delivery-github-bad")
+	resp, err := (&http.Client{}).Do(req)
+	if err != nil {
+		t.Fatalf("do: %v", err)
+	}
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", resp.StatusCode)
+	}
+	_ = resp.Body.Close()
+}
+
+// TestWebhookGitHubPingIgnored 验证 GitHub 建立 webhook 时的 ping 事件 → 200 accepted:false
+// (event_not_subscribed),不创建运行。
+func TestWebhookGitHubPingIgnored(t *testing.T) {
+	srv, _, _, _, token, secret := setupWebhookServer(t)
+	body := []byte(`{"zen":"Keep it logically awesome.","hook_id":1}`)
+
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/webhooks/"+token, bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-GitHub-Event", "ping")
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write(body)
+	req.Header.Set("X-Hub-Signature-256", "sha256="+hex.EncodeToString(mac.Sum(nil)))
+	req.Header.Set("X-GitHub-Delivery", "delivery-github-ping")
+	resp, err := (&http.Client{}).Do(req)
+	if err != nil {
+		t.Fatalf("do: %v", err)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", resp.StatusCode, raw)
+	}
+	var out map[string]any
+	_ = json.Unmarshal(raw, &out)
+	if out["accepted"] != false || out["ignored"] != "event_not_subscribed" {
+		t.Fatalf("expected accepted:false / event_not_subscribed, got %s", raw)
+	}
+}

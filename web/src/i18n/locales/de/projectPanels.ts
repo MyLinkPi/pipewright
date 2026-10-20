@@ -18,7 +18,7 @@ export default {
     errLoadGeneric: 'Laden der Auslöser-Einstellungen fehlgeschlagen, bitte später erneut versuchen.',
 
     webhookTitle: 'Webhook-Anbindung',
-    webhookSub: 'Code-Plattform · Gitee / Gitea',
+    webhookSub: 'Code-Plattform · Gitee / GitHub / Gitea',
     endpointLabel: 'Empfangs-Endpunkt',
     copied: 'Kopiert',
     copyUrlAria: 'Webhook-URL kopieren',
@@ -32,7 +32,7 @@ export default {
     resetSecretAria: 'Signatur-Schlüssel zurücksetzen',
     reset: 'Zurücksetzen',
     pushConfigLabel: 'Push-Konfiguration',
-    pushConfigHint: 'In den WebHooks-Einstellungen des Repositorys (Gitee / Gitea) die obige Adresse und den Schlüssel einfügen und die benötigten Ereignisse markieren (Gitee: Push / Tag Push / Release / Pull Request; Gitea: Push / Create / Release / Pull Request). Bei Gitea/Gogs muss der Schlüsseltext ausgefüllt sein, sonst werden Zustellungen abgelehnt.',
+    pushConfigHint: 'In den WebHooks-Einstellungen des Repositorys (Gitee / GitHub / Gitea) die obige Adresse und den Schlüssel einfügen und die benötigten Ereignisse markieren (Gitee: Push / Tag Push / Release / Pull Request; GitHub/Gitea: Push / Create / Release / Pull Request). Bei GitHub/Gitea/Gogs muss der Schlüssel ausgefüllt sein, sonst werden Zustellungen abgelehnt.',
     envLocal: 'Diese Umgebung',
     envSelectAria: 'Empfangsumgebungs-Adresse wählen',
     forwardHint: 'Cluster aktiv: Die Codeplattform muss nur eine der aufgeführten Umgebungsadressen erreichen — Zustellungen werden automatisch an die Umgebung weitergeleitet, der diese Pipeline gehört (diese Umgebung muss dem Eingangsknoten unter „Cluster → ACL“ die Trigger-Berechtigung erteilen).',

@@ -18,7 +18,7 @@ export default {
     errLoadGeneric: 'Failed to load trigger settings, please try again later.',
 
     webhookTitle: 'Webhook Ingress',
-    webhookSub: 'Code platform · Gitee / Gitea',
+    webhookSub: 'Code platform · Gitee / GitHub / Gitea',
     endpointLabel: 'Receiving endpoint',
     copied: 'Copied',
     copyUrlAria: 'Copy webhook URL',
@@ -32,7 +32,7 @@ export default {
     resetSecretAria: 'Reset signing secret',
     reset: 'Reset',
     pushConfigLabel: 'Push setup',
-    pushConfigHint: 'In the repository (Gitee / Gitea) WebHooks settings, paste the address and secret above and check the events you need (Gitee: Push / Tag Push / Release / Pull Request; Gitea: Push / Create / Release / Pull Request). Gitea/Gogs require the secret text to be filled in, otherwise deliveries are rejected.',
+    pushConfigHint: 'In the repository (Gitee / GitHub / Gitea) WebHooks settings, paste the address and secret above and check the events you need (Gitee: Push / Tag Push / Release / Pull Request; GitHub/Gitea: Push / Create / Release / Pull Request). GitHub/Gitea/Gogs require the secret to be filled in, otherwise deliveries are rejected.',
     envLocal: 'This environment',
     envSelectAria: 'Select receive environment address',
     forwardHint: 'Cluster enabled: the code platform only needs to reach any listed environment address — deliveries are automatically forwarded to the environment that owns this pipeline (that environment must grant the entry node trigger permission under “Cluster → ACL”).',

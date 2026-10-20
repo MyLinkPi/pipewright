@@ -332,6 +332,127 @@ func TestWebhookGiteaTagCreateEvent(t *testing.T) {
 	}
 }
 
+// ---- GitHub 兼容 -----------------------------------------------------------
+
+// githubBodySig 按 GitHub 协议计算签名:sha256=<hex(HMAC-SHA256(key=secret, msg=body))>。
+func githubBodySig(secret string, body []byte) string {
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write(body)
+	return "sha256=" + hex.EncodeToString(mac.Sum(nil))
+}
+
+// TestWebhookGitHubBodySignatureCreatesRun 验证 GitHub 签名模式(X-Hub-Signature-256,
+// "sha256=" 前缀 + hex HMAC over RawBody,协议不带 timestamp)创建运行且 actor=github;
+// 事件名 push 与 Gitea/Gogs 取值一致,沿用同一订阅映射。
+func TestWebhookGitHubBodySignatureCreatesRun(t *testing.T) {
+	rc, fake, token, secret := newReceiver(t)
+	body := pushBody("main", "ghbeef")
+
+	res, err := rc.Handle(context.Background(), Delivery{
+		Token:         token,
+		Event:         eventGiteaPush, // GitHub 取值与 Gitea 一致:push
+		BodySignature: githubBodySig(secret, body),
+		DeliveryID:    "gh-d-1",
+		Actor:         "github",
+		RawBody:       body,
+	})
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if !res.Accepted || res.RunID == "" {
+		t.Fatalf("expected accepted run, got %+v", res)
+	}
+	if fake.count() != 1 {
+		t.Fatalf("expected 1 run created, got %d", fake.count())
+	}
+	if got := fake.calls[0]; got.Branch != "main" || got.Commit != "ghbeef" || got.Actor != "github" {
+		t.Fatalf("unexpected run req: %+v", got)
+	}
+}
+
+// TestWebhookGitHubWrongSignatureUnauthorized 验证 GitHub 签名不匹配(前缀正确但
+// hex 部分被篡改)→ 401,不创建。
+func TestWebhookGitHubWrongSignatureUnauthorized(t *testing.T) {
+	rc, fake, token, secret := newReceiver(t)
+	body := pushBody("main", "ghbeef")
+	sig := githubBodySig(secret, body)
+	tampered := "sha256=" + "0" + sig[len("sha256=")+1:]
+	if tampered == sig {
+		tampered = "sha256=" + "1" + sig[len("sha256=")+1:]
+	}
+
+	_, err := rc.Handle(context.Background(), Delivery{
+		Token:         token,
+		Event:         eventGiteaPush,
+		BodySignature: tampered,
+		DeliveryID:    "gh-d-bad",
+		Actor:         "github",
+		RawBody:       body,
+	})
+	if err != ErrUnauthorized {
+		t.Fatalf("expected ErrUnauthorized, got %v", err)
+	}
+	if fake.count() != 0 {
+		t.Fatalf("expected no run on bad signature, got %d", fake.count())
+	}
+}
+
+// TestWebhookGitHubCreateEvent 验证 GitHub create(新建 tag)事件在仅订阅 Tag 时触发;
+// GitHub create 载荷不含提交字段(无 sha)→ commit 留空,运行按引用名取 head。
+func TestWebhookGitHubCreateEvent(t *testing.T) {
+	rc, fake, token, secret := newReceiver(t)
+	if _, err := rc.db.Exec(`UPDATE pipeline_triggers SET events_json = ?`, `{"tag":true}`); err != nil {
+		t.Fatalf("update events: %v", err)
+	}
+	if _, err := rc.db.Exec(`UPDATE pipeline_triggers SET branch_filters_json = '[]'`); err != nil {
+		t.Fatalf("clear branch filters: %v", err)
+	}
+	body := []byte(`{"ref":"v3.0.0","ref_type":"tag"}`)
+
+	res, err := rc.Handle(context.Background(), Delivery{
+		Token:         token,
+		Event:         eventGiteaCreate, // GitHub 取值与 Gitea 一致:create
+		BodySignature: githubBodySig(secret, body),
+		DeliveryID:    "gh-d-create",
+		Actor:         "github",
+		RawBody:       body,
+	})
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if !res.Accepted {
+		t.Fatalf("expected accepted, got %+v", res)
+	}
+	if got := fake.calls[0]; got.Branch != "v3.0.0" || got.Commit != "" {
+		t.Fatalf("expected branch v3.0.0 / empty commit, got %+v", got)
+	}
+}
+
+// TestWebhookGitHubPingIgnored 验证 GitHub 建立 webhook 时的 ping 事件
+// 不在订阅映射内,按 event_not_subscribed 忽略(不创建运行)。
+func TestWebhookGitHubPingIgnored(t *testing.T) {
+	rc, fake, token, secret := newReceiver(t)
+	body := []byte(`{"zen":"Keep it logically awesome.","hook_id":1}`)
+
+	res, err := rc.Handle(context.Background(), Delivery{
+		Token:         token,
+		Event:         "ping",
+		BodySignature: githubBodySig(secret, body),
+		DeliveryID:    "gh-d-ping",
+		Actor:         "github",
+		RawBody:       body,
+	})
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if res.Accepted || res.Ignored != IgnoredEventNotSubscribed {
+		t.Fatalf("expected event_not_subscribed for ping, got %+v", res)
+	}
+	if fake.count() != 0 {
+		t.Fatalf("expected no run for ping, got %d", fake.count())
+	}
+}
+
 func TestWebhookEventNotSubscribed(t *testing.T) {
 	rc, fake, token, secret := newReceiver(t)
 	// Tag 未勾选(仅 push 开)。

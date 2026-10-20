@@ -18,7 +18,7 @@ export default {
     errLoadGeneric: '트리거 설정 로딩에 실패했습니다. 잠시 후 다시 시도하세요.',
 
     webhookTitle: 'Webhook 연동',
-    webhookSub: '코드 플랫폼 · Gitee / Gitea',
+    webhookSub: '코드 플랫폼 · Gitee / GitHub / Gitea',
     endpointLabel: '수신 엔드포인트',
     copied: '복사됨',
     copyUrlAria: 'Webhook URL 복사',
@@ -32,7 +32,7 @@ export default {
     resetSecretAria: '서명 시크릿 재설정',
     reset: '재설정',
     pushConfigLabel: '푸시 설정',
-    pushConfigHint: '저장소(Gitee / Gitea)의 WebHooks 설정에 위 주소와 시크릿을 붙여넣고 필요한 이벤트를 체크하세요(Gitee: Push / Tag Push / Release / Pull Request, Gitea: Push / Create / Release / Pull Request). Gitea/Gogs에서는 시크릿 텍스트를 반드시 입력해야 하며, 비워 두면 푸시가 거부됩니다.',
+    pushConfigHint: '저장소(Gitee / GitHub / Gitea)의 WebHooks 설정에 위 주소와 시크릿을 붙여넣고 필요한 이벤트를 체크하세요(Gitee: Push / Tag Push / Release / Pull Request, GitHub/Gitea: Push / Create / Release / Pull Request). GitHub/Gitea/Gogs에서는 시크릿을 반드시 입력해야 하며, 비워 두면 푸시가 거부됩니다.',
     envLocal: '이 환경',
     envSelectAria: '수신 환경 주소 선택',
     forwardHint: '클러스터 활성화됨: 코드 플랫폼은 나열된 환경 주소 중 하나에만 도달하면 되며, 전달은 이 파이프라인의 소속 환경으로 자동 전달됩니다(소속 환경의 “클러스터 → 권한”에서 진입 노드에 트리거 권한을 부여해야 합니다).',

@@ -22,7 +22,7 @@ export default {
 
     // Webhook section
     webhookTitle: 'Webhook 接入',
-    webhookSub: '代码平台 · Gitee / Gitea',
+    webhookSub: '代码平台 · Gitee / GitHub / Gitea',
     endpointLabel: '接收端点',
     copied: '已复制',
     copyUrlAria: '复制 Webhook URL',
@@ -36,7 +36,7 @@ export default {
     resetSecretAria: '重置签名密钥',
     reset: '重置',
     pushConfigLabel: '推送配置',
-    pushConfigHint: '在代码仓库(Gitee / Gitea)的 WebHooks 设置中粘贴以上地址与密钥,并按需勾选事件(Gitee:Push / Tag Push / Release / Pull Request;Gitea:Push / Create / Release / Pull Request)。Gitea/Gogs 端必须填写密钥文本,否则推送会被拒收。',
+    pushConfigHint: '在代码仓库(Gitee / GitHub / Gitea)的 WebHooks 设置中粘贴以上地址与密钥,并按需勾选事件(Gitee:Push / Tag Push / Release / Pull Request;GitHub/Gitea:Push / Create / Release / Pull Request)。GitHub/Gitea/Gogs 端必须填写密钥(Secret),否则推送会被拒收。',
     envLocal: '本环境',
     envSelectAria: '选择接收环境地址',
     forwardHint: '集群已启用:代码平台只需够到任一已列出的环境地址,投递会自动转发到本流水线所属环境处理(需所属环境在「集群 → 授权」中允许入口节点触发)。',
