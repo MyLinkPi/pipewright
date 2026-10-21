@@ -338,6 +338,22 @@ func (s *Service) planningFailure(id, run, status string, reason error) {
 	if errors.Is(reason, ErrInvalid) {
 		text = "[planning:invalid_plan]"
 	}
+	// 详细诊断:服务端日志 + 可见标记附带 HTTP 状态与 provider 错误原文
+	// (错误字符串形如 "ai: ops model rejected (HTTP 400): <provider detail>",已脱敏)。
+	if reason != nil {
+		log.Printf("[opschat] planning failed session=%s run=%s reason=%v", id, run, reason)
+	}
+	msg := ""
+	if reason != nil {
+		msg = reason.Error()
+	}
+	if i := strings.Index(msg, "(HTTP "); i >= 0 {
+		if detail := msg[min(i+7, len(msg)):]; strings.Contains(detail, ": ") {
+			text += " " + msg[i:] // 含 "(HTTP n): detail"
+		} else if j := strings.Index(msg[i:], ")"); j >= 0 {
+			text += " " + msg[i:i+j+1] // 仅 "(HTTP n)"
+		}
+	}
 	if err := s.persistAttempts(id, func(ctx context.Context, tx *sql.Tx) error {
 		r, e := s.run(ctx, tx, id, run)
 		if e != nil || terminal(r.View.Status) {

@@ -17,6 +17,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
 	"strings"
 	"time"
@@ -161,6 +162,7 @@ func (m *opsModel) chatWithTokens(ctx context.Context, provider, baseURL, model,
 		payload = map[string]any{
 			"model":      model,
 			"max_tokens": maxTokens,
+			"stream":     true,
 			"messages": []map[string]string{
 				{"role": "user", "content": prompt},
 			},
@@ -169,7 +171,8 @@ func (m *opsModel) chatWithTokens(ctx context.Context, provider, baseURL, model,
 		endpoint = apiEndpoint(provider, baseURL, "chat/completions")
 		header["Authorization"] = "Bearer " + apiKey
 		payload = map[string]any{
-			"model": model,
+			"model":  model,
+			"stream": true,
 			"messages": []map[string]string{
 				{"role": "user", "content": prompt},
 			},
@@ -208,6 +211,16 @@ func (m *opsModel) chatWithTokens(ctx context.Context, provider, baseURL, model,
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return "", fmt.Errorf("%w: %s", ErrGenerateFailed, mapStatusError(resp.StatusCode))
+	}
+	if contentType, _, _ := mime.ParseMediaType(resp.Header.Get("Content-Type")); contentType == "text/event-stream" {
+		reply, serr := consumeAgentStream(provider, resp.Body)
+		if serr != nil {
+			if errors.Is(serr, ErrGenerateFailed) {
+				return "", serr
+			}
+			return "", fmt.Errorf("%w: 模型未完成有效回复", ErrGenerateFailed)
+		}
+		return reply.Text, nil
 	}
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxLLMRespBytes+1))
 	if err != nil {

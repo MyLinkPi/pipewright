@@ -377,6 +377,7 @@ func inferenceProbeRequest(provider, baseURL, model, apiKey string) (string, map
 		return apiEndpoint(provider, baseURL, "messages"), header, map[string]any{
 			"model":      model,
 			"max_tokens": 1,
+			"stream":     true,
 			"messages":   messages,
 		}
 	default:
@@ -385,6 +386,7 @@ func inferenceProbeRequest(provider, baseURL, model, apiKey string) (string, map
 			"model":      model,
 			"messages":   messages,
 			"max_tokens": 1,
+			"stream":     true,
 		}
 	}
 }

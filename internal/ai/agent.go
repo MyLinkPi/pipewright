@@ -4,15 +4,20 @@
 package ai
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"log"
+	"mime"
 	"net/http"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/huangchengsir/pipewright/internal/opschat"
 )
@@ -77,29 +82,47 @@ func (m *opsModel) AgentRound(ctx context.Context, req opschat.AgentRequest) (op
 	}
 	resp, err := client.Do(r)
 	if err != nil {
+		log.Printf("[ai] agent round transport error provider=%s model=%s host=%s err=%v", cfg.Provider, cfg.Model, destination.host, err)
 		return reply, opsTransportFailure(ctx, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return reply, opsHTTPFailure(resp.StatusCode)
+		// provider 拒绝:状态 + 响应体片段。服务端落完整日志;错误携带脱敏后的
+		// provider 原文(仅清除我们自己登记的 secret,其余原样透出给配置该 provider 的管理员)。
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+		detail := sanitizeProviderDetail(m.safeText(string(raw)))
+		log.Printf("[ai] agent round rejected provider=%s model=%s host=%s status=%d body=%.1000s",
+			cfg.Provider, cfg.Model, destination.host, resp.StatusCode, detail)
+		if detail == "" {
+			return reply, opsHTTPFailure(resp.StatusCode)
+		}
+		return reply, fmt.Errorf("%w: %s", opsHTTPFailure(resp.StatusCode), detail)
 	}
-	payload, err := io.ReadAll(io.LimitReader(resp.Body, opsEnvelopeBytes+1))
-	if err != nil {
-		return reply, opsTransportFailure(ctx, err)
-	}
-	if len(payload) > opsEnvelopeBytes {
-		return reply, opsResponseLimit()
-	}
-	if err := opsCompletionFailure(cfg.Provider, payload); err != nil {
-		return reply, err
-	}
-	if cfg.Provider == ProviderClaude {
-		reply, err = parseClaudeAgentReply(payload)
+	if contentType, _, _ := mime.ParseMediaType(resp.Header.Get("Content-Type")); contentType == "text/event-stream" {
+		reply, err = consumeAgentStream(cfg.Provider, resp.Body)
+		if err != nil {
+			return reply, err
+		}
 	} else {
-		reply, err = parseOpenAIAgentReply(payload)
-	}
-	if err != nil {
-		return reply, err
+		// 网关忽略 stream 参数时回退整包:消费这一个响应,绝不重试计费请求。
+		payload, err := io.ReadAll(io.LimitReader(resp.Body, opsEnvelopeBytes+1))
+		if err != nil {
+			return reply, opsTransportFailure(ctx, err)
+		}
+		if len(payload) > opsEnvelopeBytes {
+			return reply, opsResponseLimit()
+		}
+		if err := opsCompletionFailure(cfg.Provider, payload); err != nil {
+			return reply, err
+		}
+		if cfg.Provider == ProviderClaude {
+			reply, err = parseClaudeAgentReply(payload)
+		} else {
+			reply, err = parseOpenAIAgentReply(payload)
+		}
+		if err != nil {
+			return reply, err
+		}
 	}
 	reply.Text = m.safeText(reply.Text)
 	if reply.Text == "" && len(reply.ToolCalls) == 0 {
@@ -125,6 +148,7 @@ func agentRequest(provider, base, model, key string, req opschat.AgentRequest, q
 		body := map[string]any{
 			"model":      model,
 			"max_tokens": 4096,
+			"stream":     true,
 			"system":     req.System,
 			"messages":   claudeAgentMessages(req, question, history),
 		}
@@ -137,6 +161,7 @@ func agentRequest(provider, base, model, key string, req opschat.AgentRequest, q
 		body := map[string]any{
 			"model":      model,
 			"max_tokens": 4096,
+			"stream":     true,
 			"messages":   openaiAgentMessages(req, question, history),
 		}
 		if len(req.Tools) > 0 {
@@ -435,4 +460,215 @@ func parseClaudeAgentReply(payload []byte) (opschat.AgentReply, error) {
 		return opschat.AgentReply{}, opsFailure("empty_response", 0)
 	}
 	return reply, nil
+}
+
+// sanitizeProviderDetail 把 provider 错误片段压成单行、去控制符、截断到 300 字节
+// (secret 已由调用方 masker 脱敏;这是 provider 生成的诊断文本,面向管理员透出)。
+func sanitizeProviderDetail(text string) string {
+	text = strings.Join(strings.Fields(text), " ")
+	if len(text) > 300 {
+		text = text[:300]
+	}
+	return text
+}
+
+// ─── SSE 增量消费 ─────────────────────────────────────────────────────────────
+//
+// consumeAgentStream 消费 provider 的 SSE 流并累积为 AgentReply:
+// OpenAI(delta.content + delta.tool_calls 按 index 合并)与 Claude
+// (content_block_start/delta 的 text_delta 与 input_json_delta)。限额与
+// chatStreamBudget 同款:wire 512KB、单帧 opsEnvelopeBytes、总帧 4096。
+
+type agentStreamAccum struct {
+	provider string
+	text     strings.Builder
+	calls    []opschat.AgentToolCall
+	args     []strings.Builder // 与 calls 一一对应,累积 arguments/partial_json
+	kind     map[int]int       // Claude index → 0=text / n+1=call n
+	finishOK bool
+	done     bool
+}
+
+func consumeAgentStream(provider string, body io.Reader) (opschat.AgentReply, error) {
+	acc := &agentStreamAccum{provider: provider, kind: map[int]int{}}
+	reader := &io.LimitedReader{R: body, N: 512<<10 + 1}
+	scanner := bufio.NewScanner(reader)
+	scanner.Buffer(make([]byte, 4096), opsEnvelopeBytes)
+	frames := 0
+	data := ""
+	for scanner.Scan() {
+		line := scanner.Text()
+		if provider == ProviderClaude {
+			if strings.HasPrefix(line, "data:") {
+				if err := acc.frame(strings.TrimPrefix(strings.TrimPrefix(line, "data:"), " ")); err != nil {
+					return opschat.AgentReply{}, err
+				}
+				frames++
+				if frames > 4096 {
+					return opschat.AgentReply{}, opsResponseLimit()
+				}
+			}
+			if acc.done {
+				break
+			}
+			continue
+		}
+		// OpenAI:空行结束一帧,多个 data: 行拼接。
+		if line == "" && data != "" {
+			if err := acc.frame(strings.TrimSuffix(data, "\n")); err != nil {
+				return opschat.AgentReply{}, err
+			}
+			data = ""
+			frames++
+			if frames > 4096 {
+				return opschat.AgentReply{}, opsResponseLimit()
+			}
+		} else if strings.HasPrefix(line, "data:") {
+			data += strings.TrimPrefix(strings.TrimPrefix(line, "data:"), " ") + "\n"
+			if len(data) > opsEnvelopeBytes {
+				return opschat.AgentReply{}, opsResponseLimit()
+			}
+		}
+		if acc.done {
+			break
+		}
+	}
+	if !acc.done && data != "" {
+		if err := acc.frame(strings.TrimSuffix(data, "\n")); err != nil {
+			return opschat.AgentReply{}, err
+		}
+	}
+	if reader.N <= 0 || errors.Is(scanner.Err(), bufio.ErrTooLong) {
+		return opschat.AgentReply{}, opsResponseLimit()
+	}
+	if err := scanner.Err(); err != nil {
+		return opschat.AgentReply{}, opsTransportFailure(context.Background(), err)
+	}
+	if !acc.done || !acc.finishOK {
+		return opschat.AgentReply{}, opsFailure("incomplete_stream", 0)
+	}
+	reply := opschat.AgentReply{Text: acc.text.String()}
+	for i := range acc.calls {
+		reply.ToolCalls = append(reply.ToolCalls, opschat.AgentToolCall{
+			ID:      acc.calls[i].ID,
+			ToolID:  acc.calls[i].ToolID,
+			Target:  acc.calls[i].Target,
+			Purpose: acc.calls[i].Purpose,
+			Reason:  acc.calls[i].Reason,
+			Args:    json.RawMessage(acc.args[i].String()),
+		})
+	}
+	return reply, nil
+}
+
+func (a *agentStreamAccum) frame(data string) error {
+	if data == "[DONE]" {
+		a.done = true
+		return nil
+	}
+	if !utf8.ValidString(data) {
+		return opsFailure("invalid_response", 0)
+	}
+	if a.provider == ProviderClaude {
+		return a.claudeFrame(data)
+	}
+	return a.openaiFrame(data)
+}
+
+func (a *agentStreamAccum) openaiFrame(data string) error {
+	var event struct {
+		Choices []struct {
+			Delta struct {
+				Content   string `json:"content"`
+				ToolCalls []struct {
+					Index    int    `json:"index"`
+					ID       string `json:"id"`
+					Function struct {
+						Name      string `json:"name"`
+						Arguments string `json:"arguments"`
+					} `json:"function"`
+				} `json:"tool_calls"`
+			} `json:"delta"`
+			FinishReason *string `json:"finish_reason"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal([]byte(data), &event); err != nil {
+		return opsFailure("invalid_response", 0)
+	}
+	for _, choice := range event.Choices {
+		if choice.FinishReason != nil {
+			if err := opsStopFailure(*choice.FinishReason, "stop", "tool_calls"); err != nil {
+				return err
+			}
+			a.finishOK = true
+		}
+		a.text.WriteString(choice.Delta.Content)
+		for _, tc := range choice.Delta.ToolCalls {
+			for len(a.calls) <= tc.Index {
+				a.calls = append(a.calls, opschat.AgentToolCall{})
+				a.args = append(a.args, strings.Builder{})
+			}
+			call := &a.calls[tc.Index]
+			if tc.ID != "" {
+				call.ID = tc.ID
+			}
+			if tc.Function.Name != "" {
+				call.ToolID = tc.Function.Name
+			}
+			a.args[tc.Index].WriteString(tc.Function.Arguments)
+		}
+	}
+	return nil
+}
+
+func (a *agentStreamAccum) claudeFrame(data string) error {
+	var event struct {
+		Type  string `json:"type"`
+		Index int    `json:"index"`
+		Delta struct {
+			Type        string `json:"type"`
+			Text        string `json:"text"`
+			StopReason  string `json:"stop_reason"`
+			PartialJSON string `json:"partial_json"`
+		} `json:"delta"`
+		ContentBlock struct {
+			Type string `json:"type"`
+			ID   string `json:"id"`
+			Name string `json:"name"`
+		} `json:"content_block"`
+	}
+	if err := json.Unmarshal([]byte(data), &event); err != nil {
+		return opsFailure("invalid_response", 0)
+	}
+	switch event.Type {
+	case "error":
+		return opsFailure("rejected", 0)
+	case "content_block_start":
+		if event.ContentBlock.Type == "tool_use" {
+			a.calls = append(a.calls, opschat.AgentToolCall{ID: event.ContentBlock.ID, ToolID: event.ContentBlock.Name})
+			a.args = append(a.args, strings.Builder{})
+			a.kind[event.Index] = len(a.calls) // n → call n-1
+			return nil
+		}
+		a.kind[event.Index] = 0 // text
+	case "content_block_delta":
+		switch event.Delta.Type {
+		case "text_delta":
+			a.text.WriteString(event.Delta.Text)
+		case "input_json_delta":
+			if n := a.kind[event.Index]; n > 0 {
+				a.args[n-1].WriteString(event.Delta.PartialJSON)
+			}
+		}
+	case "message_delta":
+		if event.Delta.StopReason != "" {
+			if err := opsStopFailure(event.Delta.StopReason, "end_turn", "stop_sequence", "tool_use"); err != nil {
+				return err
+			}
+			a.finishOK = true
+		}
+	case "message_stop":
+		a.done = true
+	}
+	return nil
 }
