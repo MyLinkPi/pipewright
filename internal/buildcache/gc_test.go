@@ -36,12 +36,15 @@ func TestGCEvictsOldestBeyondCap(t *testing.T) {
 	fresh := seedArchive(t, root, "k3", 400, time.Hour)
 
 	// 上限 1000:三个共 1200 → 最旧的 k1(72h)被淘汰,k2/k3 保留。
-	removed, reclaimed, err := s.GC(1000, time.Hour)
+	deleted, reclaimed, err := s.GC(1000, time.Hour)
 	if err != nil {
 		t.Fatalf("GC: %v", err)
 	}
-	if removed != 1 || reclaimed != 400 {
-		t.Fatalf("应淘汰最旧 1 个(400B),实际 removed=%d reclaimed=%d", removed, reclaimed)
+	if len(deleted) != 1 || reclaimed != 400 {
+		t.Fatalf("应淘汰最旧 1 个(400B),实际 deleted=%v reclaimed=%d", deleted, reclaimed)
+	}
+	if len(deleted) != 1 || deleted[0] != old1 {
+		t.Fatalf("应删除最旧的 %s,实际:%v", old1, deleted)
 	}
 	if _, err := os.Stat(old1); !os.IsNotExist(err) {
 		t.Fatalf("最旧条目应被删除:%v", err)
@@ -75,12 +78,12 @@ func TestGCCleansStaleSaveTempsOnly(t *testing.T) {
 		t.Fatalf("seed inflight: %v", err)
 	}
 
-	removed, _, err := s.GC(0, time.Hour) // 0=不限总量,仅清残留
+	deleted, _, err := s.GC(0, time.Hour) // 0=不限总量,仅清残留
 	if err != nil {
 		t.Fatalf("GC: %v", err)
 	}
-	if removed != 1 {
-		t.Fatalf("应只清超龄 .save-*,实际 removed=%d", removed)
+	if len(deleted) != 1 || deleted[0] != stale {
+		t.Fatalf("应只清超龄 .save-*,实际:%v", deleted)
 	}
 	if _, err := os.Stat(inflight); err != nil {
 		t.Fatalf("在途 .save-* 不应被删: %v", err)

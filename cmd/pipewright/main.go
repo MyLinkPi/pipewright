@@ -227,10 +227,13 @@ func main() {
 	// 先带 db 构造(此处即用),缓存/镜像/服务器层在装配好后链式注入;自动定时与设置页手动入口
 	// 共用同一套实现。启动先清一次本机孤儿——上次进程被杀时 defer 未跑的构建工作区/暂存。
 	maintSvc := maintenance.New(st.DB)
-	if removed, reclaimed, err := build.SweepLocalOrphans(os.TempDir(), 48*time.Hour); err != nil {
+	if deleted, reclaimed, err := build.SweepLocalOrphans(os.TempDir(), 48*time.Hour); err != nil {
 		log.Printf("[maintenance] 警告:启动清扫本机孤儿临时文件失败:%v", err)
-	} else if removed > 0 {
-		log.Printf("[maintenance] 启动清扫:删除 %d 个构建孤儿临时文件/目录(48h 前的),回收 %d 字节", removed, reclaimed)
+	} else if len(deleted) > 0 {
+		log.Printf("[maintenance] 启动清扫:删除 %d 个构建孤儿临时文件/目录(48h 前的),回收 %d 字节", len(deleted), reclaimed)
+		for _, p := range deleted {
+			log.Printf("[maintenance] 启动清扫:删除 %s", p)
+		}
 	}
 
 	// 装配诊断反馈服务(Story 7.5;FR-26):诊断 👍/👎(👎 可附正确根因)持久化 + 准确率统计(知识库种子)。

@@ -67,6 +67,7 @@ export default {
   mtReclaimed: 'reclaimed {size}',
   mtFailed: 'Cleanup failed, please retry later.',
   mtWarn: 'Workspace/temp sweeps only touch entries older than 48 hours; in-progress builds are never affected.',
+  mtDetail: 'Execution details',
   updateSrcTitle: 'Upgrade Source',
   updateSrcSub: 'Where update checks and upgrade packages are fetched from. Without a mirror, GitHub Releases is used (check api.github.com, download github.com); point it to a self-hosted mirror when GitHub is unreachable (e.g. intranet). Binary integrity is always guarded by sha256 checksums.',
   updateSrcLabel: 'Mirror URL',

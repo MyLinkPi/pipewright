@@ -67,6 +67,7 @@ export default {
   mtReclaimed: 'recuperado {size}',
   mtFailed: 'La limpieza falló; inténtalo más tarde.',
   mtWarn: 'Las limpiezas de workspace/temporal solo afectan entradas de más de 48 horas; los builds en curso nunca se ven afectados.',
+  mtDetail: 'Detalles de ejecución',
   updateSrcTitle: 'Fuente de actualización',
   updateSrcSub: 'Origen de la comprobación de actualizaciones y de la descarga del paquete. Sin espejo se usa GitHub Releases (comprobación api.github.com, descarga github.com); se puede apuntar a un espejo propio cuando GitHub no es accesible (p. ej. red interna). La integridad del binario siempre queda garantizada por sumas sha256.',
   updateSrcLabel: 'URL del espejo',

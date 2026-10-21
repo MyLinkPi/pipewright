@@ -65,7 +65,7 @@ func TestMaintenanceCleanupWhitelistAndRun(t *testing.T) {
 	}
 	resp.Body.Close()
 
-	// local-temp → 200 + ok + items=1。
+	// local-temp → 200 + ok + items=1 + 执行明细(删了哪个文件一目了然)。
 	resp = doJSON(t, c1, http.MethodPost, withSvc.URL+"/api/maintenance/cleanup", csrf1, `{"target":"local-temp"}`)
 	if resp.StatusCode != http.StatusOK {
 		resp.Body.Close()
@@ -75,6 +75,9 @@ func TestMaintenanceCleanupWhitelistAndRun(t *testing.T) {
 	resp.Body.Close()
 	if !strings.Contains(string(raw), `"target":"local-temp"`) || !strings.Contains(string(raw), `"ok":true`) || !strings.Contains(string(raw), `"items":1`) {
 		t.Fatalf("结果 JSON 不符:%s", raw)
+	}
+	if !strings.Contains(string(raw), "pipewright-build-x") || !strings.Contains(string(raw), "扫描目录") {
+		t.Fatalf("结果应带执行明细(扫描目录 + 删除路径):%s", raw)
 	}
 
 	// 未注入维护服务 → 503。

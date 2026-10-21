@@ -67,6 +67,7 @@ export default {
   mtReclaimed: '{size} 회수됨',
   mtFailed: '정리에 실패했습니다. 나중에 다시 시도하세요.',
   mtWarn: '워크스페이스/임시 파일 정리는 48시간 이전 항목만 다루며, 진행 중인 빌드에는 절대 영향을 주지 않습니다.',
+  mtDetail: '실행 상세',
   updateSrcTitle: '업그레이드 소스',
   updateSrcSub: '업데이트 확인과 업그레이드 패키지 다운로드에 사용할 소스입니다. 미러가 없으면 GitHub Releases를 사용(확인 api.github.com, 다운로드 github.com). GitHub에 접근할 수 없는 환경(내부망 등)에서는 자체 호스팅 미러를 지정할 수 있습니다. 바이너리 무결성은 항상 sha256 체크섬으로 보장됩니다.',
   updateSrcLabel: '미러 URL',

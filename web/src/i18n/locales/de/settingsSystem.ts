@@ -67,6 +67,7 @@ export default {
   mtReclaimed: '{size} freigegeben',
   mtFailed: 'Bereinigung fehlgeschlagen, bitte später erneut versuchen.',
   mtWarn: 'Workspace-/Temp-Bereinigungen erfassen nur Einträge älter als 48 Stunden; laufende Builds sind nie betroffen.',
+  mtDetail: 'Ausführungsdetails',
   updateSrcTitle: 'Upgrade-Quelle',
   updateSrcSub: 'Quelle für Update-Prüfung und Download des Upgrade-Pakets. Ohne Mirror wird GitHub Releases verwendet (Prüfung api.github.com, Download github.com); in internen Netzen oder bei nicht erreichbarem GitHub kann ein selbst betriebener Spiegelserver hinterlegt werden. Die Binär-Integrität wird stets per sha256-Prüfsumme gesichert.',
   updateSrcLabel: 'Spiegel-Adresse',

@@ -273,3 +273,35 @@ describe('ops components', () => {
     w.unmount()
   })
 })
+
+describe('composer keyboard', () => {
+  const mountComposer = (draft = 'hello') =>
+    mount(AiOpsComposer, {
+      props: {
+        draft,
+        draftStatus: 'saved',
+        disabled: false,
+        active: false,
+        modelAvailable: true,
+        hasTargets: true,
+        pending: false,
+      },
+    })
+  it('Enter sends; Ctrl+Enter inserts a newline; empty draft does not send', async () => {
+    const w = mountComposer()
+    try {
+      const area = w.get('textarea')
+      await area.trigger('keydown', { key: 'Enter' })
+      expect(w.emitted('send')).toHaveLength(1)
+      await area.trigger('keydown', { key: 'Enter', ctrlKey: true })
+      const edits = w.emitted('edit')!
+      expect(edits.at(-1)).toEqual(["hello\n"])
+      expect(w.emitted('send')).toHaveLength(1)
+      await w.setProps({ draft: '   ' })
+      await area.trigger('keydown', { key: 'Enter' })
+      expect(w.emitted('send')).toHaveLength(1)
+      await area.trigger('keydown', { key: 'Enter', shiftKey: true })
+      expect(w.emitted('send')).toHaveLength(1)
+    } finally { w.unmount() }
+  })
+})

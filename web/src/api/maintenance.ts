@@ -19,6 +19,8 @@ export interface MachineSweepResult {
   serverId: string
   name: string
   ok: boolean
+  /** Exact command executed on that machine ($ prefix, same echo format as build logs). */
+  command: string
   error?: string
 }
 
@@ -28,6 +30,8 @@ export interface MaintenanceResult {
   items: number
   bytes: number
   detail?: string
+  /** What the cleanup actually did: scanned dirs, deleted paths (capped server-side). */
+  steps?: string[]
   machines?: MachineSweepResult[]
 }
 

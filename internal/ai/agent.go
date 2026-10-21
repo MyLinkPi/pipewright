@@ -1,3 +1,6 @@
+// Package ai — AgentRound:运维 Agent 的单轮原生工具调用请求。
+// 每轮恰好一次 HTTP 请求(无重试、无降级);工具 schema 注入 target 枚举,
+// 变更工具再注入 purpose/reason。输出限额 + 脱敏。
 package ai
 
 import (
@@ -14,9 +17,6 @@ import (
 	"github.com/huangchengsir/pipewright/internal/opschat"
 )
 
-// AgentRound 实现原生工具调用的一轮 Agent 请求(OpenAI / Claude 协议;非流式):
-// 每个工具 schema 注入 target 枚举(必填),变更工具再注入 purpose/reason(必填);
-// 响应解析为 终答文本 或 工具批。输出统一限额 + 脱敏。
 func (m *opsModel) AgentRound(ctx context.Context, req opschat.AgentRequest) (opschat.AgentReply, error) {
 	var reply opschat.AgentReply
 	if req.Provider != m.Info() {
@@ -37,9 +37,10 @@ func (m *opsModel) AgentRound(ctx context.Context, req opschat.AgentRequest) (op
 	if err != nil {
 		return reply, opschat.ErrUnavailable
 	}
-	// 与 opsModel.chat 同款 transport 构建:IP-pin + 禁代理 + 禁重定向;超时由调用方 ctx 控制。
+	// 与 opsModel.chat 同款 transport:IP-pin + 禁代理 + 禁重定向;
+	// 轮次超时由 opschat 的 ModelTimeout ctx 控制,这里再兜一层客户端上限。
 	client := *m.service.client
-	client.Timeout = 2 * time.Minute // 模型轮次超时(opschat 侧另有 ModelTimeout ctx)
+	client.Timeout = 2 * time.Minute
 	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	transport := client.Transport
 	if transport == nil {
@@ -59,43 +60,10 @@ func (m *opsModel) AgentRound(ctx context.Context, req opschat.AgentRequest) (op
 		client.Transport = pinned
 		defer pinned.CloseIdleConnections()
 	}
-	_ = transport
 
-	var (
-		endpoint string
-		header   = map[string]string{"Content-Type": "application/json"}
-		body     map[string]any
-	)
-	switch cfg.Provider {
-	case ProviderClaude:
-		endpoint = apiEndpoint(cfg.Provider, base, "messages")
-		header["x-api-key"] = key
-		header["anthropic-version"] = "2023-06-01"
-		msgs := claudeAgentMessages(scrubAgentRequest(m, req))
-		body = map[string]any{
-			"model":      cfg.Model,
-			"max_tokens": 4096,
-			"system":     req.System,
-			"messages":   msgs,
-			"tools":      claudeAgentTools(req),
-		}
-	case ProviderOpenAI:
-		endpoint = apiEndpoint(cfg.Provider, base, "chat/completions")
-		header["Authorization"] = "Bearer " + key
-		scrubbed := scrubAgentRequest(m, req)
-		body = map[string]any{
-			"model":       cfg.Model,
-			"messages":    openaiAgentMessages(scrubbed),
-			"tools":       openaiAgentTools(scrubbed),
-			"tool_choice": "auto",
-		}
-	default:
-		return reply, opschat.ErrUnavailable
-	}
-	if len(req.Tools) == 0 {
-		delete(body, "tools")
-		delete(body, "tool_choice")
-	}
+	question := m.safeText(req.Question)
+	history := agentHistory(m, req)
+	endpoint, header, body := agentRequest(cfg.Provider, base, cfg.Model, key, req, question, history)
 	raw, err := json.Marshal(body)
 	if err != nil || len(raw) > 256<<10 {
 		return reply, opsFailure("invalid_response", 0)
@@ -137,10 +105,7 @@ func (m *opsModel) AgentRound(ctx context.Context, req opschat.AgentRequest) (op
 	if reply.Text == "" && len(reply.ToolCalls) == 0 {
 		return reply, opsFailure("empty_response", 0)
 	}
-	if len(reply.Text) > req.MaxResponseBytes && req.MaxResponseBytes > 0 {
-		return reply, opsResponseLimit()
-	}
-	if len(reply.Text) > 32<<10 {
+	if len(reply.Text) > 32<<10 || req.MaxResponseBytes > 0 && len(reply.Text) > req.MaxResponseBytes {
 		return reply, opsResponseLimit()
 	}
 	if len(reply.ToolCalls) > 24 {
@@ -149,9 +114,193 @@ func (m *opsModel) AgentRound(ctx context.Context, req opschat.AgentRequest) (op
 	return reply, nil
 }
 
-// ─── schema 注入 ─────────────────────────────────────────────────────────────
+// ─── 请求构造 ─────────────────────────────────────────────────────────────────
 
-// agentSchema 把工具 schema 注入 target(必填枚举)与变更工具的 purpose/reason(必填)。
+func agentRequest(provider, base, model, key string, req opschat.AgentRequest, question string, history []opschat.Message) (string, map[string]string, map[string]any) {
+	header := map[string]string{"Content-Type": "application/json"}
+	switch provider {
+	case ProviderClaude:
+		header["x-api-key"] = key
+		header["anthropic-version"] = "2023-06-01"
+		body := map[string]any{
+			"model":      model,
+			"max_tokens": 4096,
+			"system":     req.System,
+			"messages":   claudeAgentMessages(req, question, history),
+		}
+		if len(req.Tools) > 0 {
+			body["tools"] = claudeAgentTools(req)
+		}
+		return apiEndpoint(provider, base, "messages"), header, body
+	default:
+		header["Authorization"] = "Bearer " + key
+		body := map[string]any{
+			"model":      model,
+			"max_tokens": 4096,
+			"messages":   openaiAgentMessages(req, question, history),
+		}
+		if len(req.Tools) > 0 {
+			body["tools"] = openaiAgentTools(req)
+			body["tool_choice"] = "auto"
+		}
+		return apiEndpoint(provider, base, "chat/completions"), header, body
+	}
+}
+
+// agentHistory 过滤会话历史:仅 user/assistant 角色且文本非空,并脱敏
+// (tool_call/summary 等条目文本为空;Claude 拒绝空 content,部分网关同样拒绝)。
+func agentHistory(m *opsModel, req opschat.AgentRequest) []opschat.Message {
+	out := []opschat.Message{}
+	for _, msg := range req.History {
+		text := m.safeText(msg.Text)
+		if strings.TrimSpace(text) == "" {
+			continue
+		}
+		role := "user"
+		if msg.Role == "assistant" {
+			role = "assistant"
+		}
+		out = append(out, opschat.Message{Role: role, Text: text})
+	}
+	return out
+}
+
+// ─── 消息构造 ─────────────────────────────────────────────────────────────────
+
+func openaiAgentMessages(req opschat.AgentRequest, question string, history []opschat.Message) []map[string]any {
+	msgs := []map[string]any{{"role": "system", "content": req.System}}
+	if req.WrapUp {
+		return append(msgs, map[string]any{"role": "user", "content": wrapUpPrompt(question)})
+	}
+	for _, msg := range history {
+		msgs = append(msgs, map[string]any{"role": msg.Role, "content": msg.Text})
+	}
+	msgs = append(msgs, map[string]any{"role": "user", "content": question})
+	for _, round := range req.Rounds {
+		calls := []map[string]any{}
+		for _, c := range round.Calls {
+			args := map[string]any{}
+			if len(c.Args) > 0 {
+				_ = json.Unmarshal(c.Args, &args)
+			}
+			args["target"] = c.Target
+			raw, _ := json.Marshal(args)
+			calls = append(calls, map[string]any{
+				"id":   c.ID,
+				"type": "function",
+				"function": map[string]any{
+					"name":      c.ToolID,
+					"arguments": string(raw),
+				},
+			})
+		}
+		if len(calls) > 0 {
+			msgs = append(msgs, map[string]any{"role": "assistant", "tool_calls": calls})
+		}
+		for _, res := range round.Results {
+			msgs = append(msgs, map[string]any{"role": "tool", "tool_call_id": res.CallID, "content": agentResultText(res)})
+		}
+	}
+	return msgs
+}
+
+// claudeAgentMessages 满足 Claude 的硬性要求:首条 user、角色交替、content 非空。
+// 历史先合并相邻同角色、丢弃开头 assistant;问题并入末条 user;轮次消息
+// (assistant tool_use / user tool_result)天然交替,直接追加。
+func claudeAgentMessages(req opschat.AgentRequest, question string, history []opschat.Message) []map[string]any {
+	if req.WrapUp {
+		return []map[string]any{{"role": "user", "content": wrapUpPrompt(question)}}
+	}
+	merged := []opschat.Message{}
+	for _, msg := range history {
+		if len(merged) == 0 {
+			if msg.Role != "user" {
+				continue
+			}
+			merged = append(merged, msg)
+			continue
+		}
+		if last := &merged[len(merged)-1]; last.Role == msg.Role {
+			last.Text += "\n\n" + msg.Text
+			continue
+		}
+		merged = append(merged, msg)
+	}
+	if n := len(merged); n > 0 && merged[n-1].Role == "user" {
+		merged[n-1].Text += "\n\n" + question
+	} else {
+		merged = append(merged, opschat.Message{Role: "user", Text: question})
+	}
+	msgs := make([]map[string]any, 0, len(merged)+2*len(req.Rounds))
+	for _, msg := range merged {
+		msgs = append(msgs, map[string]any{"role": msg.Role, "content": msg.Text})
+	}
+	for _, round := range req.Rounds {
+		blocks := []map[string]any{}
+		for _, c := range round.Calls {
+			args := map[string]any{}
+			if len(c.Args) > 0 {
+				_ = json.Unmarshal(c.Args, &args)
+			}
+			args["target"] = c.Target
+			blocks = append(blocks, map[string]any{"type": "tool_use", "id": c.ID, "name": c.ToolID, "input": args})
+		}
+		if len(blocks) > 0 {
+			msgs = append(msgs, map[string]any{"role": "assistant", "content": blocks})
+		}
+		results := []map[string]any{}
+		for _, res := range round.Results {
+			results = append(results, map[string]any{"type": "tool_result", "tool_use_id": res.CallID, "content": agentResultText(res)})
+		}
+		if len(results) > 0 {
+			msgs = append(msgs, map[string]any{"role": "user", "content": results})
+		}
+	}
+	return msgs
+}
+
+// agentResultText 工具结果转非空文本(空输出对 Claude 是非法 content)。
+func agentResultText(res opschat.AgentToolResult) string {
+	switch {
+	case res.Denied:
+		return fmt.Sprintf("denied by user; reason: %s", res.DenialReason)
+	case res.Failed:
+		if strings.TrimSpace(res.Output) == "" {
+			return "failed"
+		}
+		return "failed: " + res.Output
+	case strings.TrimSpace(res.Output) == "":
+		return "ok"
+	default:
+		return res.Output
+	}
+}
+
+// wrapUpPrompt 收尾轮指令:工具结果已随轮次消息在上下文中,不在此重复。
+func wrapUpPrompt(question string) string {
+	return "The tool round budget is exhausted. Regarding the question:\n" + question + "\n\nSummarize honestly: completed progress, what remains unfinished, and concrete suggestions. Never fabricate completion."
+}
+
+// ─── 工具 schema 注入 ─────────────────────────────────────────────────────────
+
+var agentToolDescriptions = map[string]string{
+	"host_resources":    "Disk, memory and uptime facts of the target host",
+	"host_processes":    "Top processes by CPU on the target host",
+	"host_ports":        "Listening TCP/UDP ports on the target host",
+	"docker_containers": "List Docker containers on the target host",
+	"docker_stats":      "Live CPU/memory metrics of Docker containers",
+	"docker_images":     "List Docker images with sizes",
+	"docker_inspect":    "Inspect one Docker container (state, ports, mounts)",
+	"docker_logs":       "Tail logs of one Docker container",
+	"systemd_status":    "Show a systemd unit's active state",
+	"systemd_logs":      "Tail journal logs of a systemd unit",
+	"docker_action":     "start/stop/restart/pause/unpause a container (requires confirmation)",
+	"docker_exec":       "Run a literal-argv command inside a container (requires confirmation)",
+	"systemd_action":    "start/stop/restart a systemd unit (requires confirmation)",
+	"host_exec":         "Run a literal-argv command on the host itself (requires confirmation)",
+}
+
+// agentSchema 注入 target(必填枚举);变更工具再注入 purpose/reason(必填)。
 func agentSchema(t opschat.Tool, targets []string, mut bool) map[string]any {
 	var schema struct {
 		Type       string         `json:"type"`
@@ -172,6 +321,10 @@ func agentSchema(t opschat.Tool, targets []string, mut bool) map[string]any {
 	return map[string]any{"type": schema.Type, "properties": schema.Properties, "required": schema.Required, "additionalProperties": false}
 }
 
+func toolMutates(id string) bool {
+	return id == "docker_action" || id == "systemd_action" || id == "docker_exec" || id == "host_exec"
+}
+
 func openaiAgentTools(req opschat.AgentRequest) []map[string]any {
 	out := []map[string]any{}
 	for _, t := range req.Tools {
@@ -179,7 +332,7 @@ func openaiAgentTools(req opschat.AgentRequest) []map[string]any {
 			"type": "function",
 			"function": map[string]any{
 				"name":        t.ID,
-				"description": agentToolDescription(t.ID, req),
+				"description": agentToolDescriptions[t.ID],
 				"parameters":  agentSchema(t, req.Targets, toolMutates(t.ID)),
 			},
 		})
@@ -192,144 +345,31 @@ func claudeAgentTools(req opschat.AgentRequest) []map[string]any {
 	for _, t := range req.Tools {
 		out = append(out, map[string]any{
 			"name":         t.ID,
-			"description":  agentToolDescription(t.ID, req),
+			"description":  agentToolDescriptions[t.ID],
 			"input_schema": agentSchema(t, req.Targets, toolMutates(t.ID)),
 		})
 	}
 	return out
 }
 
-// toolMutates 与 opschat.mutation 保持一致(本地镜像,避免导出)。
-func toolMutates(id string) bool {
-	return id == "docker_action" || id == "systemd_action" || id == "docker_exec" || id == "host_exec"
+// ─── 响应解析 ─────────────────────────────────────────────────────────────────
+
+func agentCallFromArgs(id, toolID string, args json.RawMessage) (opschat.AgentToolCall, error) {
+	if toolID == "" || (len(args) > 0 && !json.Valid(args)) {
+		return opschat.AgentToolCall{}, opsFailure("invalid_response", 0)
+	}
+	if len(args) == 0 {
+		args = json.RawMessage("{}")
+	}
+	call := opschat.AgentToolCall{ID: id, ToolID: toolID, Args: args}
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(args, &fields) == nil && fields != nil {
+		_ = json.Unmarshal(fields["purpose"], &call.Purpose)
+		_ = json.Unmarshal(fields["reason"], &call.Reason)
+		_ = json.Unmarshal(fields["target"], &call.Target)
+	}
+	return call, nil
 }
-
-func agentToolDescription(id string, req opschat.AgentRequest) string {
-	if toolMutates(id) {
-		return "Mutating operation on the selected target; requires purpose and reason; runs only after human confirmation."
-	}
-	if req.WrapUp {
-		return ""
-	}
-	return "Read-only collection on the selected target."
-}
-
-// ─── messages 构造 ───────────────────────────────────────────────────────────
-
-func openaiAgentMessages(req opschat.AgentRequest) []map[string]any {
-	msgs := []map[string]any{{"role": "system", "content": req.System}}
-	if req.WrapUp {
-		msgs = append(msgs, map[string]any{"role": "user", "content": wrapUpPrompt(req)})
-		return msgs
-	}
-	for _, m := range req.History {
-		role := "user"
-		if m.Role == "assistant" {
-			role = "assistant"
-		}
-		msgs = append(msgs, map[string]any{"role": role, "content": m.Text})
-	}
-	msgs = append(msgs, map[string]any{"role": "user", "content": req.Question})
-	for _, round := range req.Rounds {
-		calls := []map[string]any{}
-		for _, c := range round.Calls {
-			args := map[string]any{"target": c.Target}
-			if len(c.Args) > 0 {
-				_ = json.Unmarshal(c.Args, &args)
-			}
-			args["target"] = c.Target
-			raw, _ := json.Marshal(args)
-			calls = append(calls, map[string]any{
-				"id":   c.ID,
-				"type": "function",
-				"function": map[string]any{
-					"name":      c.ToolID,
-					"arguments": string(raw),
-				},
-			})
-		}
-		if len(calls) > 0 {
-			msgs = append(msgs, map[string]any{"role": "assistant", "tool_calls": calls})
-		}
-		for _, res := range round.Results {
-			content := res.Output
-			if res.Denied {
-				content = fmt.Sprintf("denied by user; reason: %s", res.DenialReason)
-			} else if res.Failed {
-				content = "failed: " + content
-			}
-			msgs = append(msgs, map[string]any{"role": "tool", "tool_call_id": res.CallID, "content": content})
-		}
-	}
-	return msgs
-}
-
-func claudeAgentMessages(req opschat.AgentRequest) []map[string]any {
-	msgs := []map[string]any{}
-	if req.WrapUp {
-		return []map[string]any{{"role": "user", "content": wrapUpPrompt(req)}}
-	}
-	for _, m := range req.History {
-		role := "user"
-		if m.Role == "assistant" {
-			role = "assistant"
-		}
-		msgs = append(msgs, map[string]any{"role": role, "content": m.Text})
-	}
-	msgs = append(msgs, map[string]any{"role": "user", "content": req.Question})
-	for _, round := range req.Rounds {
-		blocks := []map[string]any{}
-		for _, c := range round.Calls {
-			args := map[string]any{"target": c.Target}
-			if len(c.Args) > 0 {
-				_ = json.Unmarshal(c.Args, &args)
-			}
-			args["target"] = c.Target
-			blocks = append(blocks, map[string]any{"type": "tool_use", "id": c.ID, "name": c.ToolID, "input": args})
-		}
-		if len(blocks) > 0 {
-			msgs = append(msgs, map[string]any{"role": "assistant", "content": blocks})
-		}
-		results := []map[string]any{}
-		for _, res := range round.Results {
-			content := res.Output
-			if res.Denied {
-				content = fmt.Sprintf("denied by user; reason: %s", res.DenialReason)
-			} else if res.Failed {
-				content = "failed: " + content
-			}
-			results = append(results, map[string]any{"type": "tool_result", "tool_use_id": res.CallID, "content": content})
-		}
-		if len(results) > 0 {
-			msgs = append(msgs, map[string]any{"role": "user", "content": results})
-		}
-	}
-	return msgs
-}
-
-func wrapUpPrompt(req opschat.AgentRequest) string {
-	summary := ""
-	for _, round := range req.Rounds {
-		for _, c := range round.Calls {
-			summary += c.ToolID + " -> "
-			for _, res := range round.Results {
-				if res.CallID == c.ID {
-					if res.Denied {
-						summary += "denied"
-					} else if res.Failed {
-						summary += "failed"
-					} else {
-						summary += "ok"
-					}
-				}
-			}
-			summary += "\n"
-		}
-	}
-	return "The tool round budget is exhausted. Summarize honestly: completed progress, what remains unfinished, and concrete suggestions for the user. Tool log so far:\n" + summary
-}
-
-// ─── 响应解析 ────────────────────────────────────────────────────────────────
 
 func parseOpenAIAgentReply(payload []byte) (opschat.AgentReply, error) {
 	var r struct {
@@ -353,22 +393,12 @@ func parseOpenAIAgentReply(payload []byte) (opschat.AgentReply, error) {
 	msg := r.Choices[0].Message
 	reply := opschat.AgentReply{Text: msg.Content}
 	for _, tc := range msg.ToolCalls {
-		if tc.Type != "function" || tc.Function.Name == "" {
+		if tc.Type != "function" {
 			return opschat.AgentReply{}, opsFailure("invalid_response", 0)
 		}
-		args := json.RawMessage(tc.Function.Arguments)
-		if len(args) == 0 {
-			args = json.RawMessage("{}")
-		}
-		if !json.Valid(args) {
-			return opschat.AgentReply{}, opsFailure("invalid_response", 0)
-		}
-		call := opschat.AgentToolCall{ID: tc.ID, ToolID: tc.Function.Name, Args: args}
-		var fields map[string]json.RawMessage
-		if json.Unmarshal(args, &fields) == nil {
-			_ = json.Unmarshal(fields["purpose"], &call.Purpose)
-			_ = json.Unmarshal(fields["reason"], &call.Reason)
-			_ = json.Unmarshal(fields["target"], &call.Target)
+		call, err := agentCallFromArgs(tc.ID, tc.Function.Name, json.RawMessage(tc.Function.Arguments))
+		if err != nil {
+			return opschat.AgentReply{}, err
 		}
 		reply.ToolCalls = append(reply.ToolCalls, call)
 	}
@@ -384,7 +414,6 @@ func parseClaudeAgentReply(payload []byte) (opschat.AgentReply, error) {
 			Name  string          `json:"name"`
 			Input json.RawMessage `json:"input"`
 		} `json:"content"`
-		StopReason string `json:"stop_reason"`
 	}
 	if err := json.Unmarshal(payload, &r); err != nil {
 		return opschat.AgentReply{}, opsFailure("invalid_response", 0)
@@ -395,18 +424,9 @@ func parseClaudeAgentReply(payload []byte) (opschat.AgentReply, error) {
 		case "text":
 			reply.Text += block.Text
 		case "tool_use":
-			if block.Name == "" {
-				return opschat.AgentReply{}, opsFailure("invalid_response", 0)
-			}
-			call := opschat.AgentToolCall{ID: block.ID, ToolID: block.Name, Args: block.Input}
-			if len(call.Args) == 0 {
-				call.Args = json.RawMessage("{}")
-			}
-			var fields map[string]json.RawMessage
-			if json.Unmarshal(call.Args, &fields) == nil {
-				_ = json.Unmarshal(fields["purpose"], &call.Purpose)
-				_ = json.Unmarshal(fields["reason"], &call.Reason)
-				_ = json.Unmarshal(fields["target"], &call.Target)
+			call, err := agentCallFromArgs(block.ID, block.Name, block.Input)
+			if err != nil {
+				return opschat.AgentReply{}, err
 			}
 			reply.ToolCalls = append(reply.ToolCalls, call)
 		}
@@ -415,18 +435,4 @@ func parseClaudeAgentReply(payload []byte) (opschat.AgentReply, error) {
 		return opschat.AgentReply{}, opsFailure("empty_response", 0)
 	}
 	return reply, nil
-}
-
-// scrubAgentRequest 对请求内全部文本(问题/历史/系统提示)脱敏;工具结果在 opschat 侧已脱敏。
-func scrubAgentRequest(m *opsModel, req opschat.AgentRequest) opschat.AgentRequest {
-	out := req
-	out.Question = m.safeText(req.Question)
-	out.System = m.safeText(req.System)
-	if len(req.History) > 0 {
-		out.History = append([]opschat.Message(nil), req.History...)
-		for i := range out.History {
-			out.History[i].Text = m.safeText(out.History[i].Text)
-		}
-	}
-	return out
 }

@@ -1,8 +1,9 @@
 <script setup lang="ts">
+import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Send, PlayerStop, Refresh } from '@vicons/tabler'
 import { utf8Bytes } from '../../api/opsChat'
-defineProps<{
+const props = defineProps<{
   draft: string
   draftStatus: string
   disabled: boolean
@@ -21,6 +22,33 @@ const emit = defineEmits<{
   resend: []
 }>()
 const { t } = useI18n()
+const canSend = computed(
+  () =>
+    !props.disabled &&
+    !props.active &&
+    !props.pending &&
+    props.modelAvailable &&
+    props.hasTargets &&
+    !!props.draft.trim() &&
+    utf8Bytes(props.draft) <= 8192,
+)
+// 回车发送;Ctrl/Cmd+回车换行(Shift+回车保留原生换行)。
+function onKeydown(event: KeyboardEvent): void {
+  if (event.key !== 'Enter' || event.shiftKey) return
+  event.preventDefault()
+  if (event.ctrlKey || event.metaKey) {
+    const el = event.target as HTMLTextAreaElement
+    const at = el.selectionStart
+    const next = props.draft.slice(0, at) + "\n" + props.draft.slice(el.selectionEnd)
+    el.value = next
+    emit('edit', next)
+    requestAnimationFrame(() => {
+      el.selectionStart = el.selectionEnd = at + 1
+    })
+    return
+  }
+  if (canSend.value) emit('send')
+}
 </script>
 <template>
   <section class="composer">
@@ -39,18 +67,11 @@ const { t } = useI18n()
         :aria-label="t('opsChat.message')"
         :disabled="disabled"
         @input="emit('edit', ($event.target as HTMLTextAreaElement).value)"
+        @keydown="onKeydown"
       />
       <button
         class="ops-btn ops-icon ops-primary"
-        :disabled="
-          disabled ||
-          active ||
-          pending ||
-          !modelAvailable ||
-          !hasTargets ||
-          !draft.trim() ||
-          utf8Bytes(draft) > 8192
-        "
+        :disabled="!canSend"
         :title="t(hasTargets ? 'opsChat.send' : 'opsChat.noTargets')"
         :aria-label="t('opsChat.send')"
         @click="emit('send')"

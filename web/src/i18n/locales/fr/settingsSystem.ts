@@ -67,6 +67,7 @@ export default {
   mtReclaimed: '{size} récupérés',
   mtFailed: 'Le nettoyage a échoué ; réessayez plus tard.',
   mtWarn: 'Les nettoyages de workspace/temporaire ne touchent que les entrées de plus de 48 heures ; les builds en cours ne sont jamais affectés.',
+  mtDetail: 'Détails d’exécution',
   updateSrcTitle: 'Source de mise à jour',
   updateSrcSub: 'Source utilisée pour la vérification des mises à jour et le téléchargement du paquet. Sans miroir, GitHub Releases est utilisé (vérification api.github.com, téléchargement github.com) ; pointez vers un miroir auto-hébergé si GitHub est inaccessible (ex. intranet). L’intégrité du binaire reste garantie par les sommes sha256.',
   updateSrcLabel: 'URL du miroir',

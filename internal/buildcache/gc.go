@@ -22,10 +22,10 @@ import (
 	"time"
 )
 
-// GC 按上限与年龄门清理缓存库,返回删除条数与回收字节数。
-func (s *Store) GC(maxBytes int64, tempMinAge time.Duration) (int, int64, error) {
+// GC 按上限与年龄门清理缓存库,返回被删除文件的路径清单(供清理留痕展示)与回收字节数。
+func (s *Store) GC(maxBytes int64, tempMinAge time.Duration) ([]string, int64, error) {
 	if s == nil {
-		return 0, 0, nil
+		return nil, 0, nil
 	}
 	now := time.Now()
 	type archive struct {
@@ -35,7 +35,8 @@ func (s *Store) GC(maxBytes int64, tempMinAge time.Duration) (int, int64, error)
 	}
 	var archives []archive
 	var total int64
-	removed, reclaimed := 0, int64(0)
+	var deleted []string
+	reclaimed := int64(0)
 
 	err := filepath.WalkDir(s.root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
@@ -50,7 +51,7 @@ func (s *Store) GC(maxBytes int64, tempMinAge time.Duration) (int, int64, error)
 		case strings.HasPrefix(name, ".save-"):
 			if now.Sub(info.ModTime()) >= tempMinAge {
 				if os.Remove(path) == nil {
-					removed++
+					deleted = append(deleted, path)
 					reclaimed += info.Size()
 				}
 			}
@@ -61,10 +62,10 @@ func (s *Store) GC(maxBytes int64, tempMinAge time.Duration) (int, int64, error)
 		return nil
 	})
 	if err != nil {
-		return removed, reclaimed, err
+		return deleted, reclaimed, err
 	}
 	if maxBytes <= 0 || total <= maxBytes {
-		return removed, reclaimed, nil
+		return deleted, reclaimed, nil
 	}
 	// 超限:按 mtime 降序(最新先占预算)累积到上限,之后的(更旧)全部淘汰——即 LRU 语义。
 	sort.Slice(archives, func(i, j int) bool { return archives[i].modTime.After(archives[j].modTime) })
@@ -75,9 +76,9 @@ func (s *Store) GC(maxBytes int64, tempMinAge time.Duration) (int, int64, error)
 			continue // 最近使用的条目优先保留
 		}
 		if os.Remove(a.path) == nil {
-			removed++
+			deleted = append(deleted, a.path)
 			reclaimed += a.size
 		}
 	}
-	return removed, reclaimed, nil
+	return deleted, reclaimed, nil
 }
