@@ -39,6 +39,7 @@ import (
 	"github.com/huangchengsir/pipewright/internal/identity"
 	"github.com/huangchengsir/pipewright/internal/labels"
 	"github.com/huangchengsir/pipewright/internal/library"
+	"github.com/huangchengsir/pipewright/internal/maintenance"
 	"github.com/huangchengsir/pipewright/internal/metrics"
 	"github.com/huangchengsir/pipewright/internal/mfa"
 	"github.com/huangchengsir/pipewright/internal/notify"
@@ -128,6 +129,8 @@ type options struct {
 	customNodes       library.CustomNodeService
 	artifactStore     *artifactstore.Store
 	retention         *retention.Service
+	maintenance       *maintenance.Service
+	projectMirrorCleaner func(ctx context.Context, repoURL string)
 	certMgmt          certmgmt.Service
 	dnsProviders      dnsprovider.Service
 	aliyunEcs         aliyunecs.Service
@@ -481,6 +484,19 @@ func WithRetention(s *retention.Service) Option {
 	return func(o *options) { o.retention = s }
 }
 
+// WithMaintenance 注入磁盘维护服务,挂载 POST /api/maintenance/cleanup(auth + CSRF + 审计;
+// target 枚举白名单)。与后台定时任务共用同一套清理实现。不传则端点返回 503。
+func WithMaintenance(s *maintenance.Service) Option {
+	return func(o *options) { o.maintenance = s }
+}
+
+// WithProjectMirrorCleaner 注入「项目删除后回收仓库镜像」回调(磁盘治理):项目行删除成功
+// 且无其它项目共用同一 repo_url 时,删除本地 git 镜像(best-effort,残余由定时任务兜底)。
+// 不传则项目删除保持旧行为(镜像留待定时兜底回收)。
+func WithProjectMirrorCleaner(fn func(ctx context.Context, repoURL string)) Option {
+	return func(o *options) { o.projectMirrorCleaner = fn }
+}
+
 // WithCertMgmt 注入证书管理服务(acme.sh 自动签发/续期 + 手动导入),挂载 /api/certmgmt/* 路由
 // (GET auth;写方法 auth + CSRF + 审计;create 为异步签发,201 立即返回 pending 行)。
 // 签发引擎(acme.sh 宿主机脚本)运行在服务注册网关主机上,经已注入的 target.Service 编排。
@@ -745,7 +761,7 @@ func New(webFS fs.FS, authn auth.Authenticator, opts ...Option) http.Handler {
 		ar.Post("/projects", makeCreateProjectHandler(p, aud))
 		ar.Post("/projects/test-clone", makeTestCloneHandler(p))
 		ar.Patch("/projects/{id}", makeUpdateProjectHandler(p, aud, o.pipelines, o.serviceReg, o.runs))
-		ar.Delete("/projects/{id}", makeDeleteProjectHandler(p, aud))
+		ar.Delete("/projects/{id}", makeDeleteProjectHandler(p, aud, o.projectMirrorCleaner))
 
 		// 用户体系(管理员):普通用户列表、邀请生成/列表/撤销、项目成员增删查。
 		// 普通用户由 memberGate 默认拒绝;此组再叠加 requireAdmin 做纵深防御。
@@ -1140,6 +1156,9 @@ func New(webFS fs.FS, authn auth.Authenticator, opts ...Option) http.Handler {
 		// 运行数据保留策略(全局)。GET 过 auth;PUT 写方法过 auth + CSRF。
 		ar.Get("/retention/config", makeGetRetentionConfigHandler(o.retention))
 		ar.Put("/retention/config", makeSetRetentionConfigHandler(o.retention))
+
+		// 磁盘清理手动触发(设置页「立即清理」;target 枚举白名单)。写方法过 auth + CSRF + 审计。
+		ar.Post("/maintenance/cleanup", makeMaintenanceCleanupHandler(o.maintenance, aud))
 
 		// DNS 提供商集成层(R3 E3.1–E3.4):Cloudflare / DNSPod / 阿里云 DNS 接入(凭据走 vault)。
 		// dp 为 nil → handler 返回 503。GET(列表)过 auth;POST/PUT/DELETE 为写方法,过 auth + CSRF + 审计。

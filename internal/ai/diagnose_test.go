@@ -64,7 +64,7 @@ func maskerWithSecret() *mask.Masker {
 
 // TestDiagnoseReady 验证 stub LLM 正常返回 → status=ready，且诊断字段对齐契约。
 func TestDiagnoseReady(t *testing.T) {
-	for _, provider := range []string{ProviderClaude, ProviderOpenAI, ProviderOllama} {
+	for _, provider := range []string{ProviderClaude, ProviderOpenAI} {
 		t.Run(provider, func(t *testing.T) {
 			srv, _ := diagStubLLM(t, provider, stubDiagnosisJSON)
 			svc, _, _ := newService(t, srv.Client())
@@ -246,7 +246,7 @@ func TestDiagnoseStripsFence(t *testing.T) {
 // TestDiagnoseStreamingSSE 验证诊断走流式路径:SSE 分帧回收全文,请求带 stream=true,
 // 结果与非流式一致(ready + 字段完整)。
 func TestDiagnoseStreamingSSE(t *testing.T) {
-	for _, provider := range []string{ProviderClaude, ProviderOpenAI, ProviderOllama} {
+	for _, provider := range []string{ProviderClaude, ProviderOpenAI} {
 		t.Run(provider, func(t *testing.T) {
 			streamRequested := false
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -257,12 +257,7 @@ func TestDiagnoseStreamingSSE(t *testing.T) {
 				if json.Unmarshal(raw, &payload) == nil && payload.Stream {
 					streamRequested = true
 				}
-				// Ollama 原生流式是 ndjson;OpenAI/Claude 是 SSE。
-				if provider == ProviderOllama {
-					w.Header().Set("Content-Type", "application/x-ndjson")
-				} else {
-					w.Header().Set("Content-Type", "text/event-stream")
-				}
+				w.Header().Set("Content-Type", "text/event-stream")
 				flusher := w.(http.Flusher)
 				text := stubDiagnosisJSON
 				// 分 3 段流出,验证逐帧累积。

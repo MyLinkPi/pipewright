@@ -255,33 +255,19 @@ func (s *Service) Submit(ctx context.Context, id string, in TurnInput) (*Run, er
 	if err := s.ready(); err != nil {
 		return nil, err
 	}
-	if !validID(in.ClientRequestID) || !utf8.ValidString(in.Text) || len(in.Text) > 8<<10 {
-		return nil, ErrInvalid
-	}
-	if (in.Text == "") == (in.ToolID == "") {
-		return nil, ErrInvalid
-	}
-	if in.ToolID != "" {
-		a, err := parseArgs(in.ToolID, in.Args)
-		if err != nil {
-			return nil, err
-		}
-		in.Args, _ = json.Marshal(a)
-	} else if len(in.Args) > 0 {
+	// 工具只归 AI 调用:turn 一律是自然语言文本;目标机必选(Agent 循环需要执行目标)。
+	if !validID(in.ClientRequestID) || strings.TrimSpace(in.Text) == "" || !utf8.ValidString(in.Text) || len(in.Text) > 8<<10 {
 		return nil, ErrInvalid
 	}
 	hash := digest(in)
 	if old, err := s.duplicate(ctx, id, in.ClientRequestID, hash); old != nil || err != nil {
 		return old, err
 	}
-	if in.ToolID == "" && (s.model == nil || !validProvider(s.model.Info())) {
+	if s.model == nil || !validProvider(s.model.Info()) {
 		return nil, ErrUnavailable
 	}
-	if in.AnalyzeResults && (in.ToolID != "" || s.model == nil || !validProvider(in.Provider) || in.Provider != s.model.Info()) {
+	if in.AnalyzeResults && (s.model == nil || !validProvider(in.Provider) || in.Provider != s.model.Info()) {
 		return nil, ErrConsent
-	}
-	if in.ToolID != "" && s.executor == nil {
-		return nil, ErrUnavailable
 	}
 	chat, err := s.Get(ctx, id)
 	if err != nil {
@@ -290,7 +276,7 @@ func (s *Service) Submit(ctx context.Context, id string, in TurnInput) (*Run, er
 	if chat.Revision != in.Revision {
 		return nil, ErrConflict
 	}
-	if (in.ToolID != "" || in.AnalyzeResults) && len(chat.ServerIDs) == 0 {
+	if len(chat.ServerIDs) == 0 {
 		return nil, ErrInvalid
 	}
 	snapshots := []target.ConnectionSnapshot{}
@@ -310,15 +296,9 @@ func (s *Service) Submit(ctx context.Context, id string, in TurnInput) (*Run, er
 	if err = s.registerSecrets(); err != nil {
 		return nil, err
 	}
-	if in.ToolID != "" {
-		args, e := parseArgs(in.ToolID, in.Args)
-		if e != nil || s.secretArgs(args) {
-			return nil, ErrInvalid
-		}
-	}
 	in.Text = s.scrub(in.Text, 8<<10)
 	provider := in.Provider
-	if in.ToolID == "" && !in.AnalyzeResults {
+	if !in.AnalyzeResults {
 		provider = s.model.Info()
 	}
 	return s.enqueue(ctx, id, in.ClientRequestID, hash, runBody{Turn: in, Targets: snapshots, Provider: provider, AnalysisAuthorized: in.AnalyzeResults, Question: in.Text}, in.Revision)
@@ -364,7 +344,7 @@ func (s *Service) enqueue(ctx context.Context, id, request, hash string, body ru
 		if e = s.validateRetryTx(ctx, tx, id, body, sr); e != nil {
 			return e
 		}
-		if body.Turn.ToolID == "" && body.Analysis == nil && len(body.RetryActions) == 0 {
+		if body.Analysis == nil && len(body.RetryActions) == 0 {
 			body.Question, e = s.turnQuestion(ctx, tx, id, body)
 			if e != nil {
 				return e
@@ -397,11 +377,6 @@ func (s *Service) enqueue(ctx context.Context, id, request, hash string, body ru
 			text := body.Turn.Text
 			allowed := true
 			kind := "user"
-			if body.Turn.ToolID != "" {
-				text = body.Turn.ToolID
-				allowed = false
-				kind = "tool_request"
-			}
 			if len(body.RetryActions) > 0 {
 				text = "retry_failed"
 				allowed = false

@@ -86,7 +86,7 @@ func TestImmediateCrashRestartWaitsForOldLeaseWithoutReplay(t *testing.T) {
 	defer f.mu.Unlock()
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if len(f.invocations) != 0 || len(m.plans) != 0 || len(m.analyses) != 0 {
+	if len(f.invocations) != 0 || len(m.rounds) != 0 || len(m.analyses) != 0 {
 		t.Fatal("restart replayed remote work")
 	}
 }
@@ -94,6 +94,7 @@ func TestImmediateCrashRestartWaitsForOldLeaseWithoutReplay(t *testing.T) {
 // A crash mid-dispatch leaves a Running+Dispatched call behind; the next
 // instance must converge it to Unknown without replaying remote work.
 func TestCrashDuringDispatchRecoversUnknownWithoutReplay(t *testing.T) {
+	m := model()
 	id := uuid.NewString()
 	f := executor(id)
 	dispatches := make(chan struct{}, 8)
@@ -101,9 +102,9 @@ func TestCrashDuringDispatchRecoversUnknownWithoutReplay(t *testing.T) {
 		dispatches <- struct{}{}
 		select {} // process death: never return, never write again
 	}
-	s, v, db := fixture(t, f, nil)
+	s, v, db := fixture(t, f, m)
 	c := chat(t, s, id)
-	r := submitTool(t, s, c, "host_ports", `{}`)
+	r := submitToolPlan(t, s, m, c, "host_ports", `{}`)
 	<-dispatches
 	// Stop the heartbeat without Close; the blocked worker never converges, as
 	// a crash. Drop the hung job so the fixture's Close does not wait on it.
@@ -163,8 +164,9 @@ func TestStartupLeaseWaitHonorsRootAndRejectsRenewedConsumer(t *testing.T) {
 
 func TestModelCountPersistenceFailureConvergesWithoutModelReplay(t *testing.T) {
 	m := model()
-	s, _, db := fixture(t, executor(), m)
-	c := chat(t, s)
+	recoveryID := uuid.NewString()
+	s, _, db := fixture(t, executor(recoveryID), m)
+	c := chat(t, s, recoveryID)
 	run := seedReviewRun(t, s, db, c, Queued, runBody{Turn: TurnInput{Text: "question"}})
 	if _, err := db.Exec(`CREATE TRIGGER fail_model_count BEFORE UPDATE ON ops_chat_runs
 		WHEN OLD.status='planning' AND NEW.status='planning'
@@ -178,7 +180,7 @@ func TestModelCountPersistenceFailureConvergesWithoutModelReplay(t *testing.T) {
 		t.Fatal("failed worker left active run", snap.Session)
 	}
 	m.mu.Lock()
-	n := len(m.plans)
+	n := len(m.rounds)
 	m.mu.Unlock()
 	if n != 0 {
 		t.Fatal("model ran without persisted count", n)
@@ -194,17 +196,18 @@ func TestModelCountPersistenceFailureConvergesWithoutModelReplay(t *testing.T) {
 	waitJobs(t, s)
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if len(m.plans) != 1 {
-		t.Fatal("old model work replayed", len(m.plans))
+	if len(m.rounds) != 1 {
+		t.Fatal("old model work replayed", len(m.rounds))
 	}
 }
 
 func TestPersistenceFailureAfterMutationConvergesWithoutRedispatch(t *testing.T) {
+	m := model()
 	for _, phase := range []string{"result_save", "read_count", "finish_save", "active_release"} {
 		t.Run(phase, func(t *testing.T) {
 			id := uuid.NewString()
 			f := executor(id)
-			s, _, db := fixture(t, f, nil)
+			s, _, db := fixture(t, f, m)
 			injected := make(chan struct{}, 1)
 			f.run = func(_ context.Context, _ target.ConnectionSnapshot, argv []string, _ target.ExecutionLimits) (*target.LimitedResult, error) {
 				if argv[1] == "show" {
@@ -223,7 +226,7 @@ func TestPersistenceFailureAfterMutationConvergesWithoutRedispatch(t *testing.T)
 				return &target.LimitedResult{Stdout: "mutation completed\n"}, nil
 			}
 			c := chat(t, s, id)
-			r := submitTool(t, s, c, "systemd_action", `{"unit":"nginx.service","action":"start"}`)
+			r := submitToolPlan(t, s, m, c, "systemd_action", `{"unit":"nginx.service","action":"start"}`)
 			a := waitRun(t, s, c.ID, r.ID, AwaitingConfirmation).Confirmations[0]
 			waitJobs(t, s)
 			if _, err := s.Confirm(context.Background(), c.ID, ConfirmInput{RunID: r.ID, Nonce: a.Nonce, Calls: a.Calls}); err != nil {
@@ -278,12 +281,12 @@ type reviewFaultModel struct {
 	afterAnalysis func()
 }
 
-func (m *reviewFaultModel) Plan(ctx context.Context, in PlanRequest) (Plan, error) {
-	plan, err := m.fakeModel.Plan(ctx, in)
+func (m *reviewFaultModel) AgentRound(ctx context.Context, in AgentRequest) (AgentReply, error) {
+	reply, err := m.fakeModel.AgentRound(ctx, in)
 	if m.afterPlan != nil {
 		m.afterPlan()
 	}
-	return plan, err
+	return reply, err
 }
 func (m *reviewFaultModel) Analyze(ctx context.Context, in AnalysisRequest) (string, error) {
 	text, err := m.fakeModel.Analyze(ctx, in)
@@ -296,7 +299,7 @@ func (m *reviewFaultModel) Analyze(ctx context.Context, in AnalysisRequest) (str
 func TestPlanSaveFailureNeverCallsModelAgain(t *testing.T) {
 	id := uuid.NewString()
 	m := &reviewFaultModel{fakeModel: model()}
-	m.plan.Actions = []Action{{ToolID: "host_ports", Args: json.RawMessage("{}"), TargetIndexes: []int{0}}}
+	m.reply.ToolCalls = actionsToCalls([]Action{{ToolID: "host_ports", Args: json.RawMessage(`{}`), TargetIndexes: []int{0}}})
 	f := executor(id)
 	s, _, db := fixture(t, f, m)
 	m.afterPlan = func() {
@@ -318,7 +321,7 @@ func TestPlanSaveFailureNeverCallsModelAgain(t *testing.T) {
 	defer m.mu.Unlock()
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if len(m.plans) != 1 || len(f.invocations) != 0 || snap.Session.ActiveRunID != "" || len(snap.Calls) != 0 {
+	if len(m.rounds) != 1 || len(f.invocations) != 0 || snap.Session.ActiveRunID != "" || len(snap.Calls) != 0 {
 		t.Fatal("plan save failure replayed or orphaned work", snap)
 	}
 }
@@ -328,7 +331,7 @@ func TestAnalysisFinalizationFailureNeverCallsModelAgain(t *testing.T) {
 	m := &reviewFaultModel{fakeModel: model()}
 	s, _, db := fixture(t, executor(id), m)
 	c := chat(t, s, id)
-	r := submitTool(t, s, c, "host_ports", "{}")
+	r := submitToolPlan(t, s, m.fakeModel, c, "host_ports", "{}")
 	snap := waitRun(t, s, c.ID, r.ID, Succeeded)
 	waitJobs(t, s)
 	preview, err := s.AnalysisPreview(context.Background(), c.ID, []string{snap.Calls[0].ID})

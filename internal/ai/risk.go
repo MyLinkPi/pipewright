@@ -187,18 +187,16 @@ func (s *service) AnnotateRisks(ctx context.Context, in AnnotateRisksInput) (*Ri
 	}
 
 	apiKey := ""
-	if provider != ProviderOllama {
 		if len(sealed) == 0 {
-			report.AIReason = "AI 未配置或未启用,仅展示确定性规则结果"
-			return report, nil
-		}
-		plain, oerr := s.openSecret(sealed)
-		if oerr != nil {
-			report.AIReason = "AI 密钥不可用(保险库未配置),仅展示确定性规则结果"
-			return report, nil
-		}
-		apiKey = plain
+		report.AIReason = "AI 未配置或未启用,仅展示确定性规则结果"
+		return report, nil
 	}
+	plain, oerr := s.openSecret(sealed)
+	if oerr != nil {
+		report.AIReason = "AI 密钥不可用(保险库未配置),仅展示确定性规则结果"
+		return report, nil
+	}
+	apiKey = plain
 
 	// 出网前脱敏:脚本进 prompt 前一律 Scrub。
 	prompt := buildRiskPrompt(masker, in.Steps)

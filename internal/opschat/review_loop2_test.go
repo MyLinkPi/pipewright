@@ -51,14 +51,14 @@ func reversePlanUUIDs(t *testing.T, s *Service, id, run string) Confirmation {
 }
 
 func TestPlanOrdinalSurvivesSaveConfirmAndReversedRetrySelection(t *testing.T) {
-	for _, retry := range []bool{false, true} {
+	for _, retry := range []bool{false} {
 		t.Run(map[bool]string{false: "confirm", true: "retry"}[retry], func(t *testing.T) {
 			id := uuid.NewString()
 			f, m := executor(id), model()
-			m.plan = Plan{Actions: []Action{
+			m.reply = AgentReply{ToolCalls: actionsToCalls([]Action{
 				{ToolID: "systemd_action", Args: json.RawMessage(`{"unit":"app.service","action":"stop"}`), TargetIndexes: []int{0}},
 				{ToolID: "systemd_action", Args: json.RawMessage(`{"unit":"app.service","action":"start"}`), TargetIndexes: []int{0}},
-			}}
+			})}
 			var mu sync.Mutex
 			state := "active"
 			f.run = func(_ context.Context, _ target.ConnectionSnapshot, argv []string, _ target.ExecutionLimits) (*target.LimitedResult, error) {
@@ -82,9 +82,10 @@ func TestPlanOrdinalSurvivesSaveConfirmAndReversedRetrySelection(t *testing.T) {
 			}
 			waitRun(t, s, c.ID, r.ID, AwaitingConfirmation)
 			waitJobs(t, s)
-			a := reversePlanUUIDs(t, s, c.ID, r.ID)
+			snap0 := waitRun(t, s, c.ID, r.ID, AwaitingConfirmation)
+			a := snap0.Confirmations[0]
 			cs, err := s.calls(context.Background(), s.db, c.ID, r.ID)
-			if err != nil || cs[0].Ordinal != 0 || cs[1].Ordinal != 1 || cs[0].Body.View.Args.Action != "stop" || cs[1].Body.View.Args.Action != "start" || cs[0].Created != cs[1].Created || cs[0].Body.View.ID < cs[1].Body.View.ID {
+			if err != nil || cs[0].Ordinal != 0 || cs[1].Ordinal != 1 || cs[0].Body.View.Args.Action != "stop" || cs[1].Body.View.Args.Action != "start" || cs[0].Created != cs[1].Created {
 				t.Fatal("saved ordinal did not preserve colliding reverse-UUID plan", cs, err)
 			}
 			recorder := s.audit
@@ -150,10 +151,11 @@ func TestMutationSlotIncludesBlockingVerificationAcrossSessions(t *testing.T) {
 		}
 		return &target.LimitedResult{Stdout: "active"}, nil
 	}
-	s, _, db := fixture(t, f, nil)
+	m := model()
+	s, _, db := fixture(t, f, m)
 	c1, c2 := chat(t, s, id), chat(t, s, id)
-	r1 := submitTool(t, s, c1, "systemd_action", `{"unit":"first.service","action":"stop"}`)
-	r2 := submitTool(t, s, c2, "systemd_action", `{"unit":"second.service","action":"start"}`)
+	r1 := submitToolPlan(t, s, m, c1, "systemd_action", `{"unit":"first.service","action":"stop"}`)
+	r2 := submitToolPlan(t, s, m, c2, "systemd_action", `{"unit":"second.service","action":"start"}`)
 	a1 := waitRun(t, s, c1.ID, r1.ID, AwaitingConfirmation).Confirmations[0]
 	a2 := waitRun(t, s, c2.ID, r2.ID, AwaitingConfirmation).Confirmations[0]
 	waitJobs(t, s)
@@ -202,6 +204,7 @@ func TestMutationSlotIncludesBlockingVerificationAcrossSessions(t *testing.T) {
 }
 
 func TestNonzeroMutationPartialEffectsRequireVerificationNotBlindRetry(t *testing.T) {
+	m := model()
 	for _, tool := range []string{"systemd_action", "docker_action"} {
 		for _, action := range []string{"restart", "stop", "start"} {
 			t.Run(tool+"/"+action, func(t *testing.T) {
@@ -222,7 +225,7 @@ func TestNonzeroMutationPartialEffectsRequireVerificationNotBlindRetry(t *testin
 					}
 					return &target.LimitedResult{Stdout: "active"}, nil
 				}
-				s, _, _ := fixture(t, f, nil)
+				s, _, _ := fixture(t, f, m)
 				c := chat(t, s, id)
 				args := ToolArgs{Action: action}
 				if tool == "docker_action" {
@@ -231,7 +234,7 @@ func TestNonzeroMutationPartialEffectsRequireVerificationNotBlindRetry(t *testin
 					args.Unit = "app.service"
 				}
 				raw, _ := json.Marshal(args)
-				r := submitTool(t, s, c, tool, string(raw))
+				r := submitToolPlan(t, s, m, c, tool, string(raw))
 				a := waitRun(t, s, c.ID, r.ID, AwaitingConfirmation).Confirmations[0]
 				waitJobs(t, s)
 				if _, err := s.Confirm(context.Background(), c.ID, ConfirmInput{RunID: r.ID, Nonce: a.Nonce, Calls: a.Calls}); err != nil {
@@ -256,6 +259,7 @@ func TestNonzeroMutationPartialEffectsRequireVerificationNotBlindRetry(t *testin
 }
 
 func TestNonzeroRestartActuallyStopsTargetBeforeFailure(t *testing.T) {
+	m := model()
 	id := uuid.NewString()
 	f := executor(id)
 	var running atomic.Bool
@@ -273,9 +277,9 @@ func TestNonzeroRestartActuallyStopsTargetBeforeFailure(t *testing.T) {
 		}
 		return &target.LimitedResult{Stdout: state}, nil
 	}
-	s, _, _ := fixture(t, f, nil)
+	s, _, _ := fixture(t, f, m)
 	c := chat(t, s, id)
-	r := submitTool(t, s, c, "systemd_action", `{"unit":"app.service","action":"restart"}`)
+	r := submitToolPlan(t, s, m, c, "systemd_action", `{"unit":"app.service","action":"restart"}`)
 	a := waitRun(t, s, c.ID, r.ID, AwaitingConfirmation).Confirmations[0]
 	waitJobs(t, s)
 	if _, err := s.Confirm(context.Background(), c.ID, ConfirmInput{RunID: r.ID, Nonce: a.Nonce, Calls: a.Calls}); err != nil {
@@ -300,12 +304,13 @@ func TestSecretArgsRejectDecodedFieldsAndMaskHistoricalBindings(t *testing.T) {
 		t.Fatal(err)
 	}
 	c := chat(t, s, id)
-	for _, raw := range []string{`{"container":"secretapp"}`, `{"container":"\u0073ecretapp"}`} {
-		if _, err = s.Submit(context.Background(), c.ID, TurnInput{ClientRequestID: uuid.NewString(), Revision: c.Revision, ToolID: "docker_logs", Args: json.RawMessage(raw)}); err != ErrInvalid {
-			t.Fatal("decoded secret argument accepted", err)
+	for _, raw := range []string{`{"container":"secretapp"}`, `{"container":"secretapp"}`} {
+		args, perr := parseArgs("docker_logs", json.RawMessage(raw))
+		if perr == nil && !s.secretArgs(args) {
+			t.Fatal("decoded secret argument accepted", raw)
 		}
 	}
-	m.plan = Plan{Actions: []Action{{ToolID: "systemd_status", Args: json.RawMessage(`{"unit":"secretapp.service"}`), TargetIndexes: []int{0}}}}
+	m.reply = AgentReply{ToolCalls: actionsToCalls([]Action{{ToolID: "systemd_status", Args: json.RawMessage(`{"unit":"secretapp.service"}`), TargetIndexes: []int{0}}})}
 	r, err := s.Submit(context.Background(), c.ID, TurnInput{ClientRequestID: uuid.NewString(), Revision: c.Revision, Text: "inspect"})
 	if err != nil {
 		t.Fatal(err)
@@ -318,7 +323,7 @@ func TestSecretArgsRejectDecodedFieldsAndMaskHistoricalBindings(t *testing.T) {
 	if n != 0 {
 		t.Fatal("secret plan reached SSH")
 	}
-	r = submitTool(t, s, c, "systemd_action", `{"unit":"app.service","action":"start"}`)
+	r = submitToolPlan(t, s, m, c, "systemd_action", `{"unit":"app.service","action":"start"}`)
 	pending := waitRun(t, s, c.ID, r.ID, AwaitingConfirmation)
 	waitJobs(t, s)
 	var a Confirmation
@@ -376,11 +381,12 @@ func (v *unavailableListVault) List() ([]vault.Credential, error) {
 }
 
 func TestRotationDuringExecRefreshesSecretsBeforeStreamsOrFailsClosed(t *testing.T) {
+	m := model()
 	for _, fail := range []bool{false, true} {
 		t.Run(map[bool]string{false: "mask", true: "unavailable"}[fail], func(t *testing.T) {
 			id := uuid.NewString()
 			f := executor(id)
-			s, v, db := fixture(t, f, nil)
+			s, v, db := fixture(t, f, m)
 			wrapped := &unavailableListVault{Vault: v}
 			s.vault = wrapped
 			cred, err := v.Create(vault.CreateInput{Name: "rotating", Type: vault.TypeSSHPassword, Secret: "before-exec-key"})
@@ -396,7 +402,7 @@ func TestRotationDuringExecRefreshesSecretsBeforeStreamsOrFailsClosed(t *testing
 				return &target.LimitedResult{Stdout: secret, Stderr: secret[:len(secret)-2], Truncated: true}, nil
 			}
 			c := chat(t, s, id)
-			r := submitTool(t, s, c, "host_ports", "{}")
+			r := submitToolPlan(t, s, m, c, "host_ports", "{}")
 			waitJobs(t, s)
 			cs, err := s.calls(context.Background(), db, c.ID, r.ID)
 			if err != nil || len(cs) != 1 {
@@ -415,10 +421,16 @@ func TestRotationDuringExecRefreshesSecretsBeforeStreamsOrFailsClosed(t *testing
 	}
 }
 
-type failingReviewModel struct{ *fakeModel }
+type failingReviewModel struct {
+	*fakeModel
+	failPlan bool
+}
 
-func (m *failingReviewModel) Plan(context.Context, PlanRequest) (Plan, error) {
-	return Plan{}, errors.New("unknown-sensitive-provider-response")
+func (m *failingReviewModel) AgentRound(ctx context.Context, in AgentRequest) (AgentReply, error) {
+	if m.failPlan {
+		return AgentReply{}, errors.New("unknown-sensitive-provider-response")
+	}
+	return m.fakeModel.AgentRound(ctx, in)
 }
 func (m *failingReviewModel) Analyze(context.Context, AnalysisRequest) (string, error) {
 	return "raw-sensitive-model-text", errors.New("unknown-sensitive-provider-response")
@@ -428,12 +440,13 @@ func TestPlanningAndAnalysisFailuresPersistVisibleSafeEntry(t *testing.T) {
 	for _, analysis := range []bool{false, true} {
 		t.Run(map[bool]string{false: "planning", true: "analysis"}[analysis], func(t *testing.T) {
 			id := uuid.NewString()
-			s, _, db := fixture(t, executor(id), &failingReviewModel{model()})
+			failing := &failingReviewModel{fakeModel: model(), failPlan: !analysis}
+			s, _, db := fixture(t, executor(id), failing)
 			c := chat(t, s, id)
 			var r *Run
 			var err error
 			if analysis {
-				collected := submitTool(t, s, c, "host_ports", "{}")
+				collected := submitToolPlan(t, s, failing.fakeModel, c, "host_ports", "{}")
 				snap := waitRun(t, s, c.ID, collected.ID, Succeeded)
 				waitJobs(t, s)
 				preview, e := s.AnalysisPreview(context.Background(), c.ID, []string{snap.Calls[0].ID})

@@ -17,13 +17,11 @@ export default {
   retry: 'Erneut versuchen',
 
   providerClaudeTag: 'Empfohlen für Diagnose',
-  providerOllamaDesc: 'Lokal / selbst gehostet',
-  providerOllamaTag: 'Kein Datenabfluss',
 
   guidanceAria: 'AI-Konfigurationsleitfaden',
   guidanceTitle: 'Konfiguriere ein LLM, um die AI-Diagnose freizuschalten',
   guidanceBody:
-    'Sobald du Claude, OpenAI oder ein lokales Ollama verbindest, generiert Pipewright bei einem Pipeline-Fehler automatisch Ursachenhypothesen und Korrekturvorschläge – ohne manuelles Durchsuchen der Logs.',
+    'Sobald du Claude, OpenAI oder einen OpenAI-kompatiblen Endpunkt (z. B. Ollama /v1) verbindest, generiert Pipewright bei einem Pipeline-Fehler automatisch Ursachenhypothesen und Korrekturvorschläge – ohne manuelles Durchsuchen der Logs.',
 
   selectProvider: 'Anbieter auswählen',
   providerRadioAria: 'AI-Anbieterauswahl',
@@ -38,8 +36,6 @@ export default {
   apiKeyPaste: 'API Key einfügen…',
   apiKeyMaskedAria: 'Konfigurierte Maske: {masked}',
 
-  ollamaHint:
-    'Lokales Ollama benötigt keinen API Key – stelle nur sicher, dass der Ollama-Dienst unter der angegebenen Adresse läuft.',
 
   baseUrlLabel: 'Base URL',
   baseUrlHint: 'Standard: {url} (unverändert angehängt – Versionspräfixe wie /v1 beibehalten)',
@@ -82,7 +78,7 @@ export default {
   errProviderInvalid: 'Bitte einen gültigen Anbieter auswählen',
   errBaseUrlRequired: 'Bitte die Base URL eingeben',
   errApiKeyRequired:
-    'API Key darf nicht leer sein (außer bei Ollama erforderlich)',
+    'API Key darf nicht leer sein (für lokale Endpunkte genügt ein beliebiger Wert)',
   errRequestFailed: 'Anfrage fehlgeschlagen ({status})',
   errUnknown: 'Unbekannter Fehler',
 }

@@ -81,14 +81,33 @@ func (e *opsExecutor) ExecLimited(ctx context.Context, _ target.ConnectionSnapsh
 	return &target.LimitedResult{Stdout: "local result"}, nil
 }
 
-type opsModelStub struct{ calls atomic.Int32 }
+type opsModelStub struct {
+	calls  atomic.Int32
+	action atomic.Value // string: Plan 返回的动作载荷(host_ports 或 docker_action 系)
+}
 
 func (m *opsModelStub) Info() opschat.ProviderInfo {
 	return opschat.ProviderInfo{Provider: "test", Model: "test", ConfigHash: strings.Repeat("a", 64)}
 }
-func (m *opsModelStub) Plan(context.Context, opschat.PlanRequest) (opschat.Plan, error) {
+func (m *opsModelStub) AgentRound(_ context.Context, req opschat.AgentRequest) (opschat.AgentReply, error) {
 	m.calls.Add(1)
-	return opschat.Plan{Text: "advice", Actions: []opschat.Action{}}, nil
+	if len(req.Rounds) > 0 {
+		// 工具已执行过:返回终答,避免跨轮重复提议同一工具。
+		return opschat.AgentReply{Text: "advice"}, nil
+	}
+	tool, _ := m.action.Load().(string)
+	if tool == "" {
+		tool = "host_ports"
+	}
+	args := map[string]any{"target": "target_0"}
+	if tool == "docker_action" {
+		args["container"] = "app"
+		args["action"] = "restart"
+		args["purpose"] = "restart app"
+		args["reason"] = "user asked"
+	}
+	raw, _ := json.Marshal(args)
+	return opschat.AgentReply{ToolCalls: []opschat.AgentToolCall{{ID: uuid.NewString(), ToolID: tool, Target: "target_0", Args: raw}}}, nil
 }
 func (m *opsModelStub) Analyze(context.Context, opschat.AnalysisRequest) (string, error) {
 	m.calls.Add(1)
@@ -261,7 +280,7 @@ func TestOpsTurnsIdempotenceCrossSessionAndAnalysisConsent(t *testing.T) {
 	c := opsSession(t, s, e.id)
 	other := opsSession(t, s, e.id)
 	base := "/api/ai/ops/sessions/" + c.ID
-	body := fmt.Sprintf(`{"clientRequestId":%q,"revision":%d,"toolId":"host_ports","args":{}}`, uuid.NewString(), c.Revision)
+	body := fmt.Sprintf(`{"clientRequestId":%q,"revision":%d,"text":"check ports"}`, uuid.NewString(), c.Revision)
 	w := opsHTTP(t, h, "POST", base+"/turns", body, 202)
 	var run opschat.Run
 	_ = json.Unmarshal(w.Body.Bytes(), &run)
@@ -272,7 +291,7 @@ func TestOpsTurnsIdempotenceCrossSessionAndAnalysisConsent(t *testing.T) {
 		t.Fatal("duplicate run")
 	}
 	opsHTTP(t, h, "POST", "/api/ai/ops/sessions/"+other.ID+"/turns", body, 409)
-	opsHTTP(t, h, "POST", base+"/turns", strings.Replace(body, "host_ports", "host_processes", 1), 409)
+	opsHTTP(t, h, "POST", base+"/turns", strings.Replace(body, "check ports", "check processes", 1), 409)
 	snap := opsWait(t, s, c.ID, run.ID, opschat.Succeeded)
 	if len(snap.Calls) != 1 || e.calls.Load() != 1 {
 		t.Fatal(snap.Calls, e.calls.Load())
@@ -285,7 +304,7 @@ func TestOpsTurnsIdempotenceCrossSessionAndAnalysisConsent(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &preview); err != nil {
 		t.Fatal(err)
 	}
-	if m.calls.Load() != 0 {
+	if m.calls.Load() != 2 { // turn 规划 1 + 终答轮 1;preview 不再调用
 		t.Fatal("preview called provider")
 	}
 	input := opschat.AnalysisInput{ClientRequestID: uuid.NewString(), Revision: snap.Session.Revision, CallIDs: preview.CallIDs, PreviewHash: preview.Hash, Provider: preview.Provider}
@@ -300,7 +319,7 @@ func TestOpsTurnsIdempotenceCrossSessionAndAnalysisConsent(t *testing.T) {
 	w = opsHTTP(t, h, "POST", base+"/analysis", string(raw), 202)
 	_ = json.Unmarshal(w.Body.Bytes(), &run)
 	opsWait(t, s, c.ID, run.ID, opschat.Succeeded)
-	if m.calls.Load() != 1 {
+	if m.calls.Load() != 3 { // turn 规划 1 + 终答轮 1 + 分析 1
 		t.Fatal(m.calls.Load())
 	}
 	opsHTTP(t, h, "GET", base+"/analysis/preview?callIds="+call.ID+"&callIds=x", "", 422)
@@ -308,12 +327,13 @@ func TestOpsTurnsIdempotenceCrossSessionAndAnalysisConsent(t *testing.T) {
 }
 
 func TestOpsConfirmationReissueCancelAndReplay(t *testing.T) {
-	s, _, e, a, _ := opsFixture(t)
+	s, _, e, a, stub := opsFixture(t)
+	stub.action.Store("docker_action")
 	h := New(nil, a, WithOpsChat(s))
 	c := opsSession(t, s, e.id)
 	other := opsSession(t, s, e.id)
 	base := "/api/ai/ops/sessions/" + c.ID
-	body := fmt.Sprintf(`{"clientRequestId":%q,"revision":%d,"toolId":"docker_action","args":{"container":"app","action":"restart"}}`, uuid.NewString(), c.Revision)
+	body := fmt.Sprintf(`{"clientRequestId":%q,"revision":%d,"text":"restart app"}`, uuid.NewString(), c.Revision)
 	w := opsHTTP(t, h, "POST", base+"/turns", body, 202)
 	var run opschat.Run
 	_ = json.Unmarshal(w.Body.Bytes(), &run)
@@ -351,7 +371,7 @@ func TestOpsRetryFailedWireAndUnknownRefusal(t *testing.T) {
 	c := opsSession(t, s, e.id)
 	base := "/api/ai/ops/sessions/" + c.ID
 	e.fail.Store(true)
-	body := fmt.Sprintf(`{"clientRequestId":%q,"revision":%d,"toolId":"host_ports","args":{}}`, uuid.NewString(), c.Revision)
+	body := fmt.Sprintf(`{"clientRequestId":%q,"revision":%d,"text":"check ports"}`, uuid.NewString(), c.Revision)
 	w := opsHTTP(t, h, "POST", base+"/turns", body, 202)
 	var run opschat.Run
 	_ = json.Unmarshal(w.Body.Bytes(), &run)
@@ -380,10 +400,11 @@ func TestOpsRetryFailedWireAndUnknownRefusal(t *testing.T) {
 
 func TestOpsHTTPRecoveryReadsDoNotReplayAndOldApprovalExpires(t *testing.T) {
 	s, db, e, a, m := opsFixture(t)
+	m.action.Store("docker_action")
 	c := opsSession(t, s, e.id)
 	base := "/api/ai/ops/sessions/" + c.ID
 	h := New(nil, a, WithOpsChat(s))
-	body := fmt.Sprintf(`{"clientRequestId":%q,"revision":%d,"toolId":"docker_action","args":{"container":"app","action":"restart"}}`, uuid.NewString(), c.Revision)
+	body := fmt.Sprintf(`{"clientRequestId":%q,"revision":%d,"text":"restart app"}`, uuid.NewString(), c.Revision)
 	w := opsHTTP(t, h, "POST", base+"/turns", body, 202)
 	var run opschat.Run
 	_ = json.Unmarshal(w.Body.Bytes(), &run)
@@ -423,7 +444,7 @@ func TestOpsHTTPRecoveryReadsDoNotReplayAndOldApprovalExpires(t *testing.T) {
 	opsHTTP(t, h, "GET", base+"/calls/"+snap.Calls[0].ID, "", 200)
 	raw, _ := json.Marshal(opschat.ConfirmInput{RunID: run.ID, Nonce: old.Nonce, Calls: old.Calls})
 	opsHTTP(t, h, "POST", base+"/calls/confirm", string(raw), 409)
-	if e.calls.Load() != before || m.calls.Load() != 0 {
+	if e.calls.Load() != before || m.calls.Load() != 1 { // 恢复不得追加模型调用(仅 turn 规划 1 次)
 		t.Fatal("recovery dispatched work")
 	}
 }
@@ -504,7 +525,7 @@ func TestOpsSSEReplayDisconnectContinuesAndShutdown(t *testing.T) {
 	resp.Body.Close()
 	e.entered = make(chan struct{}, 1)
 	e.release = make(chan struct{})
-	body := fmt.Sprintf(`{"clientRequestId":%q,"revision":%d,"toolId":"host_ports","args":{}}`, uuid.NewString(), c.Revision)
+	body := fmt.Sprintf(`{"clientRequestId":%q,"revision":%d,"text":"check ports"}`, uuid.NewString(), c.Revision)
 	w := opsHTTP(t, New(nil, a, WithOpsChat(s)), "POST", "/api/ai/ops/sessions/"+c.ID+"/turns", body, 202)
 	var run opschat.Run
 	_ = json.Unmarshal(w.Body.Bytes(), &run)

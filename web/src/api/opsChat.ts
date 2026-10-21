@@ -92,6 +92,8 @@ export interface Call {
   toolId: string
   args: ToolArgs
   object: string
+  purpose?: string
+  reason?: string
   status: Status
   argsHash: string
   targetHash: string
@@ -107,6 +109,8 @@ export interface BoundCall {
   serverId: string
   toolId: string
   object: string
+  purpose?: string
+  reason?: string
   argsHash: string
   targetHash: string
 }
@@ -176,9 +180,7 @@ export interface Turn {
   provider?: Provider
   clientRequestId: string
   revision: number
-  text?: string
-  toolId?: string
-  args?: ToolArgs
+  text: string
 }
 export interface Patch {
   revision: number
@@ -204,6 +206,17 @@ export interface Analysis {
 const root = '/api/ai/ops'
 const path = (id: string): string =>
   `${root}/sessions/${encodeURIComponent(id)}`
+
+export interface RejectInput { runId: string; nonce: string; calls: BoundCall[]; reason?: string }
+export interface ContinueInput { advice?: string }
+
+async function rejectBatch(sessionId: string, input: RejectInput): Promise<Run> {
+  return http.post<Run>(`/api/ai/ops/sessions/${sessionId}/runs/${input.runId}/reject`, input)
+}
+export async function continueRun(sessionId: string, runId: string, input: ContinueInput = {}): Promise<Run> {
+  return http.post<Run>(`/api/ai/ops/sessions/${sessionId}/runs/${runId}/continue`, input)
+}
+
 export const opsApi = {
   capabilities: () => http.get<Capabilities>(`${root}/capabilities`),
   tools: () => http.get<Tool[]>(`${root}/tools`),
@@ -226,6 +239,10 @@ export const opsApi = {
     http.post<Run>(`${path(id)}/retry`, input),
   cancel: (id: string, run: string) =>
     http.post<Run>(`${path(id)}/runs/${encodeURIComponent(run)}/cancel`, {}),
+  reject: (id: string, input: RejectInput) =>
+    http.post<Run>(`${root}/sessions/${id}/runs/${input.runId}/reject`, input),
+  continueRun: (id: string, runId: string, input: ContinueInput = {}) =>
+    http.post<Run>(`${root}/sessions/${id}/runs/${runId}/continue`, input),
   confirm: (id: string, input: Confirmation) =>
     http.post<Run>(`${path(id)}/calls/confirm`, {
       runId: input.runId,

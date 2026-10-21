@@ -346,9 +346,6 @@ func (s *Service) planningFailure(id, run, status string, reason error) {
 		if r.View.CancelRequested {
 			return s.finishTx(ctx, tx, r, Interrupted)
 		}
-		if r.Body.NeedsDiscovery {
-			text = strings.Replace(text, "[planning:", "[continuation:", 1)
-		}
 		if e = s.append(ctx, tx, Entry{SessionID: id, RunID: run, Kind: "assistant", Text: text, Status: Failed}, true, false); e != nil {
 			return e
 		}
@@ -358,44 +355,18 @@ func (s *Service) planningFailure(id, run, status string, reason error) {
 	}
 }
 
-// Validate every action before publishing success or executing any tool.
-func (s *Service) planCalls(r runRecord, plan Plan) ([]callRecord, error) {
-	raw, err := json.Marshal(plan)
-	if err != nil || len(raw) > 32<<10 || len(plan.Actions) > 24 || (len(plan.Actions) == 0 && strings.TrimSpace(plan.Text+plan.ManualAdvice) == "") {
-		return nil, ErrInvalid
-	}
-	if plan.NeedsDiscovery {
-		if len(plan.Actions) == 0 || r.Body.ContinuationStarted {
-			return nil, ErrInvalid
-		}
-		seen := map[int]bool{}
-		for _, a := range plan.Actions {
-			if a.ToolID != "docker_containers" {
-				return nil, ErrInvalid
-			}
-			for _, i := range a.TargetIndexes {
-				if seen[i] {
-					return nil, ErrInvalid
-				}
-				seen[i] = true
-			}
-		}
-	}
+// retryCalls 把 RetryFailed 预计算的动作展开为待执行调用(不经过模型)。
+func (s *Service) retryCalls(r runRecord) ([]callRecord, error) {
 	candidates := []callRecord{}
-	for _, a := range plan.Actions {
-		if r.Body.ContinuationStarted && a.ToolID == "docker_containers" {
-			return nil, ErrInvalid
-		}
+	for _, a := range r.Body.RetryActions {
 		args, e := parseArgs(a.ToolID, a.Args)
 		if e != nil || s.secretArgs(args) || len(a.TargetIndexes) == 0 {
 			return nil, ErrInvalid
 		}
-		seen := map[int]bool{}
 		for _, index := range a.TargetIndexes {
-			if index < 0 || index >= len(r.Body.Targets) || seen[index] {
+			if index < 0 || index >= len(r.Body.Targets) {
 				return nil, ErrInvalid
 			}
-			seen[index] = true
 			snap := r.Body.Targets[index]
 			object := args.Container
 			if object == "" {
@@ -529,20 +500,19 @@ func (s *Service) work(parent context.Context, id, run string) {
 		s.failRun(id, run, Failed)
 		return
 	}
+	lastReplyText := ""
 	if len(calls) == 0 {
-		plan := Plan{}
 		var candidates []callRecord
 		if len(r.Body.RetryActions) > 0 {
-			plan.Actions = r.Body.RetryActions
-		} else if r.Body.Turn.ToolID != "" {
-			indexes := []int{}
-			for i := range r.Body.Targets {
-				indexes = append(indexes, i)
+			var e error
+			candidates, e = s.retryCalls(r)
+			if e != nil {
+				s.planningFailure(id, run, Failed, e)
+				return
 			}
-			plan.Actions = []Action{{ToolID: r.Body.Turn.ToolID, Args: r.Body.Turn.Args, TargetIndexes: indexes}}
 		} else {
 			var e error
-			plan, candidates, e = s.requestPlan(ctx, r, false)
+			firstReply, cand, e := s.requestRound(ctx, r, false)
 			if e != nil {
 				status := Failed
 				if ctx.Err() != nil {
@@ -551,13 +521,8 @@ func (s *Service) work(parent context.Context, id, run string) {
 				s.planningFailure(id, run, status, e)
 				return
 			}
-		}
-		if candidates == nil {
-			candidates, err = s.planCalls(r, plan)
-			if err != nil {
-				s.planningFailure(id, run, Failed, err)
-				return
-			}
+			candidates = cand
+			lastReplyText = firstReply.Text
 		}
 		// Group only wholly read-only plans; mutation barriers retain their order.
 		readOnly := true
@@ -576,7 +541,7 @@ func (s *Service) work(parent context.Context, id, run string) {
 				candidates[i].Ordinal = i
 			}
 		}
-		text := s.planText(plan)
+		finalText := len(candidates) == 0
 		err = s.persist(id, func(c context.Context, tx *sql.Tx) error {
 			current, e := s.run(c, tx, id, run)
 			if e != nil {
@@ -585,8 +550,8 @@ func (s *Service) work(parent context.Context, id, run string) {
 			if current.View.CancelRequested {
 				return ErrConflict
 			}
-			if text != "" {
-				if e = s.append(c, tx, Entry{SessionID: id, RunID: run, Kind: "assistant", Text: text}, true, len(plan.Actions) == 0); e != nil {
+			if finalText && lastReplyText != "" {
+				if e = s.append(c, tx, Entry{SessionID: id, RunID: run, Kind: "assistant", Text: s.scrub(lastReplyText, 32<<10), Status: Succeeded}, true, true); e != nil {
 					return e
 				}
 			}
@@ -605,7 +570,6 @@ func (s *Service) work(parent context.Context, id, run string) {
 				}
 			}
 			current.View.Status = Running
-			current.Body.NeedsDiscovery = plan.NeedsDiscovery
 			if e = s.saveRun(c, tx, current); e != nil {
 				return e
 			}
@@ -686,7 +650,7 @@ func (s *Service) work(parent context.Context, id, run string) {
 			s.failRun(id, run, Failed)
 			return
 		}
-		if !current.Body.NeedsDiscovery || current.Body.ContinuationStarted {
+		if current.View.CancelRequested || terminal(current.View.Status) {
 			break
 		}
 		cs, e := s.calls(ctx, s.db, id, run)
@@ -694,16 +658,27 @@ func (s *Service) work(parent context.Context, id, run string) {
 			s.failRun(id, run, Failed)
 			return
 		}
-		complete := len(cs) > 0
+		settled := len(cs) > 0
+		pendingConfirm := false
 		for _, c := range cs {
-			complete = complete && c.Body.View.ToolID == "docker_containers" && c.Body.View.Status == Succeeded
+			if !terminal(c.Body.View.Status) {
+				settled = false
+			}
+			if c.Body.View.Status == AwaitingConfirmation {
+				pendingConfirm = true
+			}
 		}
-		if !complete {
+		if !settled || pendingConfirm {
 			break
 		}
-		plan, next, e := s.requestPlan(ctx, current, true)
+		budget := current.Body.RoundBudget
+		if budget <= 0 {
+			budget = s.runtime.MaxAgentRounds
+		}
+		wrapUp := current.Body.Rounds >= budget
+		reply, next, e := s.requestRound(ctx, current, wrapUp)
 		if e == nil {
-			e = s.publishContinuation(ctx, current, plan, next)
+			e = s.publishRound(ctx, current, reply, next, wrapUp)
 		}
 		if e != nil {
 			status := Failed
@@ -712,6 +687,14 @@ func (s *Service) work(parent context.Context, id, run string) {
 			}
 			s.planningFailure(id, run, status, e)
 			return
+		}
+		if len(next) == 0 {
+			if wrapUp {
+				// 收尾轮:publishRound 已置 awaiting_continuation(挂起等用户),不收敛。
+				return
+			}
+			// 终答:文本已落 assistant entry,break 落 phase-five 终态收敛(summary/finishTx)。
+			break
 		}
 		calls = next
 	}
@@ -867,14 +850,11 @@ func (s *Service) analyzeWorkStatus(ctx context.Context, id, run string, r runRe
 		if e != nil {
 			return e
 		}
-		limit := s.runtime.ModelCalls
-		if current.Body.ContinuationStarted {
-			limit = s.runtime.ModelCalls + 1
-		}
-		if current.View.CancelRequested || current.Body.ModelCalls >= limit {
+		// 分析流一次性:AnalysisStarted 已在触发前持久化,这里再以 Rounds==0 作防重放闸。
+		if current.View.CancelRequested || current.Body.Rounds >= 1 {
 			return ErrConflict
 		}
-		current.Body.ModelCalls++
+		current.Body.Rounds++
 		return s.saveRun(c, tx, current)
 	})
 	if err != nil {

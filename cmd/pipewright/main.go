@@ -48,6 +48,7 @@ import (
 	"github.com/huangchengsir/pipewright/internal/labels"
 	"github.com/huangchengsir/pipewright/internal/library"
 	"github.com/huangchengsir/pipewright/internal/mask"
+	"github.com/huangchengsir/pipewright/internal/maintenance"
 	"github.com/huangchengsir/pipewright/internal/mesh"
 	"github.com/huangchengsir/pipewright/internal/mesh/easytier"
 	"github.com/huangchengsir/pipewright/internal/metrics"
@@ -220,6 +221,16 @@ func main() {
 		log.Printf("[run] 警告:清理孤儿运行失败:%v", err)
 	} else if n > 0 {
 		log.Printf("[run] 启动清理孤儿运行(waiting_approval/running):%d 条 → failed", n)
+	}
+
+	// 磁盘维护服务(磁盘治理,0094):构建缓存 GC / 仓库镜像回收 / 构建机与本机孤儿临时文件清扫。
+	// 先带 db 构造(此处即用),缓存/镜像/服务器层在装配好后链式注入;自动定时与设置页手动入口
+	// 共用同一套实现。启动先清一次本机孤儿——上次进程被杀时 defer 未跑的构建工作区/暂存。
+	maintSvc := maintenance.New(st.DB)
+	if removed, reclaimed, err := build.SweepLocalOrphans(os.TempDir(), 48*time.Hour); err != nil {
+		log.Printf("[maintenance] 警告:启动清扫本机孤儿临时文件失败:%v", err)
+	} else if removed > 0 {
+		log.Printf("[maintenance] 启动清扫:删除 %d 个构建孤儿临时文件/目录(48h 前的),回收 %d 字节", removed, reclaimed)
 	}
 
 	// 装配诊断反馈服务(Story 7.5;FR-26):诊断 👍/👎(👎 可附正确根因)持久化 + 准确率统计(知识库种子)。
@@ -532,8 +543,21 @@ func main() {
 	// resumeSpecLoader 供 httpapi「失败运行按节点恢复」端点做配置一致性校验(与执行器同一 spec
 	// 来源)。legacy 模式保持 nil → 恢复端点 503,与其不支持按节点恢复的语义一致。
 	var resumeSpecLoader dagrun.SpecLoader
+	// 产物镜像轮转依赖(磁盘治理,0094):每项目保留最近 N 个本地 tag(pipewright/<slug>:<commit>
+	// 更旧的 rmi)。保留个数每轮构建现读 retention 配置(设置页可调,免重启);读不到配置时取 0
+	// (宁可保留也不误删)。最近提交集来自 run 库的 trigger_commit。
+	imageRotationOpt := build.WithImageRotation(build.ImageRotationConfig{
+		KeepN: func(ctx context.Context) int {
+			cfg, err := retention.NewService(st.DB).GetConfig(ctx)
+			if err != nil {
+				return 0
+			}
+			return cfg.ImageKeepTags
+		},
+		RecentCommits: runSvc.RecentCommitTags,
+	})
 	if strings.EqualFold(strings.TrimSpace(os.Getenv("PIPEWRIGHT_RUNNER")), "legacy") {
-		runnerOpts = buildRunnerOption(projectSvc, pipelineSettingsSvc, credVault, artStore, repoCache, builtinRegistryOpt)
+		runnerOpts = buildRunnerOption(projectSvc, pipelineSettingsSvc, credVault, artStore, repoCache, builtinRegistryOpt, imageRotationOpt)
 		log.Printf("[run] PIPEWRIGHT_RUNNER=legacy:旧版固定流程运行器已启用(clone→对仓库根 docker build→deploy,⚠ 不执行 UI 可视化流水线 stages;如需真按流水线跑请去掉该 env)")
 	} else {
 		// 阶段执行体(Story 8-2):探测到容器 CLI → 注入真实阶段执行器(script 类型 job 在隔离
@@ -544,7 +568,7 @@ func main() {
 		// 门行为不变;运行时可改)。
 		approvalNotifier := httpapi.NewApprovalNotifier(notifySvc, approvalSigner, publicURLResolver, runSvc)
 		dagOpts = append(dagOpts, dagrun.WithGate(httpapi.NewApprovalGate(runSvc, approvalCoord, approvalStore, approvalNotifier)))
-		builderOpts := []build.BuilderOption{build.WithArtifactStore(artStore), build.WithArtifactLister(runSvc.ListArtifacts), build.WithImageGC(os.Getenv("PIPEWRIGHT_NO_IMAGE_GC") != "1"), build.WithCommitRecorder(func(ctx context.Context, runID, commit string, commitAt time.Time) { _ = runSvc.SetCommit(ctx, runID, commit, commitAt) }), build.WithStageDeployer(deploySvc), build.WithStageNotifier(notifySvc), build.WithStageObjectUploader(objectStoreSvc), build.WithEcsPowerController(aliyunSvc), build.WithWaitCoordinator(waitCoord), clonerOpt, buildCacheOpt, builtinRegistryOpt}
+		builderOpts := []build.BuilderOption{build.WithArtifactStore(artStore), build.WithArtifactLister(runSvc.ListArtifacts), build.WithImageGC(os.Getenv("PIPEWRIGHT_NO_IMAGE_GC") != "1"), build.WithCommitRecorder(func(ctx context.Context, runID, commit string, commitAt time.Time) { _ = runSvc.SetCommit(ctx, runID, commit, commitAt) }), build.WithStageDeployer(deploySvc), build.WithStageNotifier(notifySvc), build.WithStageObjectUploader(objectStoreSvc), build.WithEcsPowerController(aliyunSvc), build.WithWaitCoordinator(waitCoord), clonerOpt, buildCacheOpt, builtinRegistryOpt, imageRotationOpt}
 		builderOpts = append(builderOpts, meshOpts...)
 		b, berr := build.NewBuilder(projectSvc, pipelineSettingsSvc, credVault, builderOpts...)
 		if berr != nil && errors.Is(berr, build.ErrNoContainerCLI) {
@@ -826,9 +850,37 @@ func main() {
 	if artStore != nil {
 		retentionSvc.WithBlobStore(retention.NewBlobStore(artStore.Root()))
 	}
-	retentionSweeper := retention.NewSweeper(retentionSvc, time.Hour).WithGC(retentionSvc)
+	// 磁盘治理任务随保留清理器同周期(每小时,各任务独立成败):构建缓存 LRU GC(独立于 enabled
+	// 开关——缓存不是审计数据;上限来自 retention_config.cache_max_gb,默认 10GB)+ 无引用仓库
+	// 镜像回收(兜底项目删除遗漏与历史遗留)。
+	maintSvc.WithBuildCache(cacheStore).WithRepoCache(repoCache).WithTargets(targetSvc)
+	retentionSweeper := retention.NewSweeper(retentionSvc, time.Hour).WithGC(retentionSvc).
+		WithTask("buildcache-gc", func(ctx context.Context) error {
+			maintenance.LogResult(maintSvc.CleanBuildcache(ctx))
+			return nil
+		}).
+		WithTask("repocache-prune", func(ctx context.Context) error {
+			maintenance.LogResult(maintSvc.CleanRepocache(ctx))
+			return nil
+		})
 	retentionSweeper.Start(context.Background())
-	log.Printf("[retention] 保留清理器已启动(每小时一扫;策略默认关,需在设置开启)")
+	log.Printf("[retention] 保留清理器已启动(每小时一扫;策略默认关,需在设置开启;磁盘治理任务除外——缓存/镜像回收默认生效)")
+
+	// 项目删除后的仓库镜像即时回收(磁盘治理):项目行删除后若无其它项目共用同一 repo_url,
+	// 即删本地镜像(多项目同 URL 只删最后一个删的)。best-effort 只记日志;残余由每小时
+	// repocache-prune 兜底。
+	projectMirrorCleaner := func(ctx context.Context, repoURL string) {
+		if repoCache == nil || strings.TrimSpace(repoURL) == "" {
+			return
+		}
+		var n int
+		if err := st.DB.QueryRowContext(ctx, `SELECT COUNT(1) FROM projects WHERE repo_url = ?`, repoURL).Scan(&n); err != nil || n > 0 {
+			return
+		}
+		if err := repoCache.Remove(repoURL); err != nil {
+			log.Printf("[maintenance] 删除项目仓库镜像失败(best-effort,待定时兜底):%v", err)
+		}
+	}
 
 	// 内置 registry 镜像保留清理器:按 registry_hub_config 策略(每仓库保留最近 N tag / 超龄删除)
 	// 每日裁剪制品 registry 并触发 gc。默认策略不限(不删);需在「设置 → 镜像仓库」配置后生效。
@@ -927,7 +979,7 @@ func main() {
 
 	srv := &http.Server{
 		Addr:              cfg.Addr,
-		Handler:           httpapi.New(webFS, authSvc, httpapi.WithVault(credVault), httpapi.WithProjects(projectSvc), httpapi.WithTriggers(triggerSvc), httpapi.WithPipelines(pipelineSvc), httpapi.WithPipelineSettings(pipelineSettingsSvc), httpapi.WithRuns(runSvc, pool), httpapi.WithWebhooks(webhookReceiver), httpapi.WithWebhookForwarder(webhookForwarder), httpapi.WithAudit(auditRec), httpapi.WithAccount(authSvc), httpapi.WithIdentity(identitySvc), httpapi.WithAISettings(aiSvc), httpapi.WithAIGenerate(repoAnalyzer), httpapi.WithRunDiff(runDiffer), httpapi.WithSource(sourceReader), httpapi.WithRefs(refsLister), httpapi.WithArtifactStore(artStore), httpapi.WithArtifactImageTransfer(meshImages), httpapi.WithArtifactTransfer(artifactTransfers), httpapi.WithServers(targetSvc), httpapi.WithLabels(labelsSvc), httpapi.WithServerCommands(serverCmdSvc), httpapi.WithRegistryHub(registryHubSvc), httpapi.WithRunnerConfig(runnerSvc), httpapi.WithDeploy(deploySvc), httpapi.WithSpecLoader(resumeSpecLoader), httpapi.WithNotifications(notifySvc), httpapi.WithRetention(retentionSvc), httpapi.WithDNSProviders(dnsSvc), httpapi.WithAliyunEcs(aliyunSvc), httpapi.WithObjectStores(objectStoreSvc), httpapi.WithCertMgmt(certSvc), httpapi.WithPlatformHTTPS(platformHTTPSSvc), httpapi.WithFirewall(firewallSvc), httpapi.WithSystemConfig(sysCfgSvc), httpapi.WithMFA(mfaSvc), httpapi.WithServiceReg(serviceRegSvc), httpapi.WithAppStore(appStoreSvc), httpapi.WithDBAdmin(dbAdminSvc), httpapi.WithRedisAdmin(redisAdminSvc), httpapi.WithPVEAdmin(pveAdminSvc), httpapi.WithDiagnosisFeedback(feedbackSvc), httpapi.WithAnomaly(anomalySvc), httpapi.WithAnomalyConfig(int(anomalyInterval.Seconds()), int(anomalyCooldown.Seconds())), httpapi.WithMetricsHistory(metricsHist), httpapi.WithSsar(ssarSvc), httpapi.WithSecretSource(secretSrc), httpapi.WithOAuth(oauthSvc), httpapi.WithCron(cronSvc), httpapi.WithChain(chainSvc), httpapi.WithApprovals(approvalCoord, approvalStore), httpapi.WithApprovalLinks(approvalSigner), httpapi.WithWaitNode(waitCoord), httpapi.WithConcurrency(concurrencySvc), httpapi.WithParameters(parameterSvc), httpapi.WithDoraMetrics(doraMetricsSvc), httpapi.WithTemplates(templateSvc), httpapi.WithVariableGroups(varGroupSvc), httpapi.WithCustomNodes(customNodeSvc), httpapi.WithOpsChat(opsChatSvc), httpapi.WithMesh(meshAdminDeps), httpapi.WithCeph(cephSvc), httpapi.WithDiskAdmin(diskAdminSvc), httpapi.WithFileAdmin(fileAdminSvc), httpapi.WithReexecGuard(reexecGuard{runs: runSvc, shared: sharedBuildSrv, mesh: meshRT})),
+		Handler:           httpapi.New(webFS, authSvc, httpapi.WithVault(credVault), httpapi.WithProjects(projectSvc), httpapi.WithTriggers(triggerSvc), httpapi.WithPipelines(pipelineSvc), httpapi.WithPipelineSettings(pipelineSettingsSvc), httpapi.WithRuns(runSvc, pool), httpapi.WithWebhooks(webhookReceiver), httpapi.WithWebhookForwarder(webhookForwarder), httpapi.WithAudit(auditRec), httpapi.WithAccount(authSvc), httpapi.WithIdentity(identitySvc), httpapi.WithAISettings(aiSvc), httpapi.WithAIGenerate(repoAnalyzer), httpapi.WithRunDiff(runDiffer), httpapi.WithSource(sourceReader), httpapi.WithRefs(refsLister), httpapi.WithArtifactStore(artStore), httpapi.WithArtifactImageTransfer(meshImages), httpapi.WithArtifactTransfer(artifactTransfers), httpapi.WithServers(targetSvc), httpapi.WithLabels(labelsSvc), httpapi.WithServerCommands(serverCmdSvc), httpapi.WithRegistryHub(registryHubSvc), httpapi.WithRunnerConfig(runnerSvc), httpapi.WithDeploy(deploySvc), httpapi.WithSpecLoader(resumeSpecLoader), httpapi.WithNotifications(notifySvc), httpapi.WithRetention(retentionSvc), httpapi.WithDNSProviders(dnsSvc), httpapi.WithAliyunEcs(aliyunSvc), httpapi.WithObjectStores(objectStoreSvc), httpapi.WithCertMgmt(certSvc), httpapi.WithPlatformHTTPS(platformHTTPSSvc), httpapi.WithFirewall(firewallSvc), httpapi.WithSystemConfig(sysCfgSvc), httpapi.WithMFA(mfaSvc), httpapi.WithServiceReg(serviceRegSvc), httpapi.WithAppStore(appStoreSvc), httpapi.WithDBAdmin(dbAdminSvc), httpapi.WithRedisAdmin(redisAdminSvc), httpapi.WithPVEAdmin(pveAdminSvc), httpapi.WithDiagnosisFeedback(feedbackSvc), httpapi.WithAnomaly(anomalySvc), httpapi.WithAnomalyConfig(int(anomalyInterval.Seconds()), int(anomalyCooldown.Seconds())), httpapi.WithMetricsHistory(metricsHist), httpapi.WithSsar(ssarSvc), httpapi.WithSecretSource(secretSrc), httpapi.WithOAuth(oauthSvc), httpapi.WithCron(cronSvc), httpapi.WithChain(chainSvc), httpapi.WithApprovals(approvalCoord, approvalStore), httpapi.WithApprovalLinks(approvalSigner), httpapi.WithWaitNode(waitCoord), httpapi.WithConcurrency(concurrencySvc), httpapi.WithParameters(parameterSvc), httpapi.WithDoraMetrics(doraMetricsSvc), httpapi.WithTemplates(templateSvc), httpapi.WithVariableGroups(varGroupSvc), httpapi.WithCustomNodes(customNodeSvc), httpapi.WithOpsChat(opsChatSvc), httpapi.WithMesh(meshAdminDeps), httpapi.WithCeph(cephSvc), httpapi.WithDiskAdmin(diskAdminSvc), httpapi.WithFileAdmin(fileAdminSvc), httpapi.WithMaintenance(maintSvc), httpapi.WithProjectMirrorCleaner(projectMirrorCleaner), httpapi.WithReexecGuard(reexecGuard{runs: runSvc, shared: sharedBuildSrv, mesh: meshRT})),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		// WriteTimeout 置 0:SSE 长连接(/api/runs/{id}/events)不可被写超时切断;
@@ -973,6 +1025,33 @@ func main() {
 			}
 		}()
 	}
+
+	// 构建机/本机孤儿清扫(磁盘治理,0094):每 24h 对全部登记构建机清 /tmp/pipewright-remote|shared
+	// 下 48h 前的残留工作区(控制机崩溃/SSH 清理失败时远端无人回收),并顺带再清一次本机临时目录
+	// (覆盖长驻进程;启动时已清过一次)。年龄门保证进行中构建(现场 mtime 新)绝不受影响。
+	go func() {
+		first := time.NewTimer(5 * time.Minute) // 避开启动高峰
+		defer first.Stop()
+		select {
+		case <-ctx.Done():
+			return
+		case <-first.C:
+			maintenance.LogResult(maintSvc.SweepRemoteWorkspaces(ctx))
+			maintenance.LogResult(maintSvc.SweepLocalTemp(ctx))
+		}
+		ticker := time.NewTicker(24 * time.Hour)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				maintenance.LogResult(maintSvc.SweepRemoteWorkspaces(ctx))
+				maintenance.LogResult(maintSvc.SweepLocalTemp(ctx))
+			}
+		}
+	}()
+	log.Printf("[maintenance] 孤儿清扫已启动(每 24h:构建机 /tmp 残留 + 本机临时文件,仅清 48h 前的)")
 
 	// 指标时序采样器(异常检测「看趋势」数据源):每 metricsSampleInterval 采集一次写时序历史,
 	// 并按保留窗口清理旧样本。独立于异常检测(无规则也采样),随 ctx 停机退出。置 0 关闭采样。

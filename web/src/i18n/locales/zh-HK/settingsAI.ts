@@ -17,13 +17,11 @@ export default {
   retry: '重試',
 
   providerClaudeTag: '診斷推薦',
-  providerOllamaDesc: '本機 / 自架',
-  providerOllamaTag: '零外送',
 
   guidanceAria: 'AI 設定引導',
   guidanceTitle: '設定 LLM 以解鎖 AI 診斷',
   guidanceBody:
-    '接入 Claude、OpenAI 或本機 Ollama 後,流水線失敗時 Pipewright 將自動產生根因假說與修復建議,無需手動排查日誌。',
+    '接入 Claude、OpenAI 或任意 OpenAI 相容端點(如本機 Ollama 的 /v1)後,流水線失敗時 Pipewright 將自動產生根因假說與修復建議,無需手動排查日誌。',
 
   selectProvider: '選擇服務商',
   providerRadioAria: 'AI 服務商選擇',
@@ -37,8 +35,6 @@ export default {
   apiKeyPaste: '貼上 API Key…',
   apiKeyMaskedAria: '已設定遮罩: {masked}',
 
-  ollamaHint:
-    '本機 Ollama 無需 API Key —— 確保 Ollama 服務已在指定位址執行即可。',
 
   baseUrlLabel: '接入位址 (Base URL)',
   baseUrlHint: '預設: {url}(地址按原樣拼接介面路徑,請保留 /v1 等版本前綴)',
@@ -74,7 +70,7 @@ export default {
   errBudgetInvalid: '每月 token 上限須為正整數或留空',
   errProviderInvalid: '請選擇有效的服務商',
   errBaseUrlRequired: '請填寫接入位址',
-  errApiKeyRequired: 'API Key 不可為空(非 Ollama 必填)',
+  errApiKeyRequired: 'API Key 不可為空(本地位點填任意非空值即可)',
   errRequestFailed: '請求失敗({status})',
   errUnknown: '未知錯誤',
 }

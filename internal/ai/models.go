@@ -88,13 +88,13 @@ func (s *service) resolveDraft(ctx context.Context, in TestInput) (provider, bas
 	}
 	if in.APIKey != nil && *in.APIKey != "" {
 		key = *in.APIKey
-	} else if provider != ProviderOllama && len(sealed) > 0 && sameDestination(provider, base, saved) {
+	} else if len(sealed) > 0 && sameDestination(provider, base, saved) {
 		key, err = s.openSecret(sealed)
 	}
 	if err != nil {
 		return "", "", "", err
 	}
-	if provider != ProviderOllama && key == "" {
+	if key == "" {
 		return "", "", "", ErrAPIKeyRequired
 	}
 	return
@@ -178,28 +178,15 @@ func (m *opsModel) models(ctx context.Context, in TestInput) (*ModelsResult, err
 			return fail("Invalid model list JSON.")
 		}
 		rows := []ModelOption{}
-		if catalogProvider == ProviderOllama {
-			if body.Models == nil {
-				return fail("Invalid Ollama model list.")
+		if body.Data == nil {
+			return fail("Invalid compatible model list.")
+		}
+		for _, m := range *body.Data {
+			name := m.DisplayName
+			if name == "" {
+				name = m.Name
 			}
-			for _, m := range *body.Models {
-				id := m.Model
-				if id == "" {
-					id = m.Name
-				}
-				rows = append(rows, ModelOption{id, m.Name})
-			}
-		} else {
-			if body.Data == nil {
-				return fail("Invalid compatible model list.")
-			}
-			for _, m := range *body.Data {
-				name := m.DisplayName
-				if name == "" {
-					name = m.Name
-				}
-				rows = append(rows, ModelOption{m.ID, name})
-			}
+			rows = append(rows, ModelOption{m.ID, name})
 		}
 		for _, m := range rows {
 			if m.ID == "" || len(m.ID) > 256 || len(m.Name) > 512 || strings.IndexFunc(m.ID, unicode.IsControl) >= 0 || strings.IndexFunc(m.Name, unicode.IsControl) >= 0 || (key != "" && (strings.Contains(m.ID, key) || strings.Contains(m.Name, key))) {

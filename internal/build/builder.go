@@ -100,6 +100,9 @@ type Builder struct {
 	// waitCoord 是「等待」节点(wait)的手动跳过协调器(main 注入);nil → 等待节点照常等待,
 	// 只是不暴露跳过能力(向后兼容,如测试装配)。
 	waitCoord *waitnode.Coordinator
+	// imageRotation 是产物镜像轮转依赖(磁盘治理:每项目保留最近 N 个本地 tag,见 image_rotate.go)。
+	// 零值 → 不轮转(向后兼容)。由 main 注入(WithImageRotation)。
+	imageRotation ImageRotationConfig
 }
 
 // buildCacheStore 抽象「按 key 恢复/保存工作区缓存路径」的能力(便于 fake 单测注入)。
@@ -238,6 +241,16 @@ func WithBuiltinRegistry(fn func(ctx context.Context) (addr string, ok bool)) Bu
 	return func(b *Builder) {
 		if fn != nil {
 			b.builtinRegistry = fn
+		}
+	}
+}
+
+// WithImageRotation 注入产物镜像轮转依赖(磁盘治理,见 image_rotate.go):每项目保留最近 N 个
+// 本地 tag,推送完成后轮转删除更旧的。零值/未注入 = 不轮转(向后兼容)。
+func WithImageRotation(c ImageRotationConfig) BuilderOption {
+	return func(b *Builder) {
+		if c.KeepN != nil && c.RecentCommits != nil {
+			b.imageRotation = c
 		}
 	}
 }
@@ -420,6 +433,8 @@ func (b *Builder) Run(ctx context.Context, r *run.Run, sink run.StepSink) error 
 	// 构建后清悬空镜像(Story 8-17):防中控机镜像缓存随重复构建无限增长。
 	// best-effort、只清 dangling、绝不影响构建结果(已 success);经构建步骤序号喂日志。
 	b.pruneImagesBestEffort(ctx, b.lineSink(sink, len(steps)-1))
+	// 产物镜像轮转(磁盘治理:每项目保留最近 N 个本地 tag;与 DAG 路径同口径):best-effort。
+	b.rotateBuildImages(context.WithoutCancel(ctx), proj, commitTag, b.lineSink(sink, len(steps)-1))
 	return nil
 }
 

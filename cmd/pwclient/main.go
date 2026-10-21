@@ -113,6 +113,22 @@ type core struct {
 	cancel context.CancelFunc
 }
 
+// pwclientLogRotateBytes 是日志文件的轮转阈值(超 10MB 时启动一轮换:旧日志改名为 .1,
+// 新日志从空文件开始;单文件保留,防无限追加撑盘)。
+const pwclientLogRotateBytes = 10 << 20
+
+// openRotatedLog 打开日志文件(追加);已存在且超过轮转阈值时先把旧文件改名为 <name>.1
+// (覆盖更旧的 .1)再开新文件。改名/清理失败不阻断——退化为继续追加旧文件。
+func openRotatedLog(path string) (*os.File, error) {
+	if fi, err := os.Stat(path); err == nil && fi.Size() >= pwclientLogRotateBytes {
+		_ = os.Remove(path + ".1")
+		if rerr := os.Rename(path, path+".1"); rerr != nil {
+			log.Printf("[pwclient] 轮转日志失败(继续追加旧文件):%v", rerr)
+		}
+	}
+	return os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+}
+
 // runCore 装配并启动核心运行时 + IPC:日志写文件与进程内日志环(console 形态另回显终端)。
 func runCore(runningAs string) (*core, error) {
 	dir := dataDir()
@@ -124,8 +140,7 @@ func runCore(runningAs string) (*core, error) {
 	rt.SetServiceInfo(pwclient.ServiceInfo{RunningAs: runningAs, PID: os.Getpid()})
 
 	writers := []io.Writer{rt.LogWriter()}
-	if f, err := os.OpenFile(filepath.Join(dir, "logs", "pwclient.log"),
-		os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600); err == nil {
+	if f, err := openRotatedLog(filepath.Join(dir, "logs", "pwclient.log")); err == nil {
 		writers = append(writers, f)
 	} else {
 		log.Printf("[pwclient] 打开日志文件失败(仅用内存日志):%v", err)

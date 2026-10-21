@@ -2,8 +2,6 @@ import { describe, it, expect } from 'vitest'
 import { mount } from '@vue/test-utils'
 import AiOpsServerPicker from './AiOpsServerPicker.vue'
 import AiOpsComposer from './AiOpsComposer.vue'
-import AiOpsExecArgs from './AiOpsExecArgs.vue'
-import AppSelect from '../ui/AppSelect.vue'
 import AiOpsToolResult from './AiOpsToolResult.vue'
 import AiOpsMessageList from './AiOpsMessageList.vue'
 import AiOpsConfirmation from './AiOpsConfirmation.vue'
@@ -58,77 +56,6 @@ describe('ops components', () => {
       expect(Object.values(locale.exec).every((value) => value.length > 0)).toBe(true)
       expect(locale.tools.docker_exec).toBeTruthy()
     }
-  })
-  it('prepares literal docker_exec argv without action, risk or readonly fields', async () => {
-    const w = mount(AiOpsComposer, {
-      props: {
-        draft: '', draftStatus: 'saved',
-        tools: [{ toolId: 'host_resources', mutation: false, schema: {} }, { toolId: 'docker_exec', mutation: true, schema: {} }],
-        disabled: false, active: false, modelAvailable: false, hasTargets: true, pending: false,
-      },
-    })
-    try {
-      w.getComponent(AppSelect).vm.$emit('update:modelValue', 'docker_exec')
-      await w.vm.$nextTick()
-      expect(w.findAllComponents(AppSelect)).toHaveLength(1)
-      const prepare = w.get('.tool-fields > button')
-      expect(prepare.text()).toBe('准备修改')
-      expect(prepare.attributes('disabled')).toBeDefined()
-      await w.get('input[aria-label="容器名称或 ID"]').setValue('web')
-      const editor = w.getComponent(AiOpsExecArgs)
-      await editor.get('input').setValue('sh')
-      const tokens = ['-c', `printf '%s\\n' "quoted"; echo $(date) & <tag>; exit 0`, '  literal spaces  ', '']
-      for (const [i, token] of tokens.entries()) {
-        await editor.get('.exec-add').trigger('click')
-        await editor.findAll('textarea')[i]!.setValue(token)
-      }
-      expect(prepare.attributes('disabled')).toBeUndefined()
-      await prepare.trigger('click')
-      expect(w.emitted('tool')).toEqual([['docker_exec', { container: 'web', argv: ['sh', ...tokens] }]])
-      await w.setProps({ tools: [{ toolId: 'docker_exec', mutation: false, schema: {} }] })
-      expect(prepare.text()).toBe('采集数据')
-    } finally { w.unmount() }
-  })
-  it('blocks invalid or busy exec forms and keeps lifecycle actions separate', async () => {
-    const w = mount(AiOpsComposer, {
-      props: {
-        draft: '', draftStatus: 'saved',
-        tools: [{ toolId: 'docker_exec', mutation: true, schema: {} }, { toolId: 'docker_action', mutation: true, schema: {} }],
-        disabled: false, active: false, modelAvailable: true, hasTargets: true, pending: false,
-      },
-    })
-    try {
-      w.getComponent(AppSelect).vm.$emit('update:modelValue', 'docker_exec')
-      await w.vm.$nextTick()
-      await w.get('input[aria-label="容器名称或 ID"]').setValue('web')
-      const editor = w.getComponent(AiOpsExecArgs)
-      const prepare = w.get('.tool-fields > button')
-      for (const argv of [[''], ['  '], ['sh', '\u6d4b'.repeat(683)], ['sh', 'a'.repeat(2048), 'b'.repeat(2047)], ['sh', 'a\0b'], ['sh', 'a\nb'], ['sh', 'a\tb'], ['sh', '\u0085'], ['sh', '\ud800'], ['sh', '\udfff'], ['.'], ['/bin/..'], ['dir/.'], ['dir/sub/..'], Array<string>(62).fill('x')]) {
-        editor.vm.$emit('update:argv', argv)
-        await w.vm.$nextTick()
-        expect(prepare.attributes('disabled')).toBeDefined()
-        await prepare.trigger('click')
-      }
-      expect(w.emitted('tool')).toBeUndefined()
-      editor.vm.$emit('update:argv', ['sh', '-c', 'echo ok'])
-      await w.vm.$nextTick()
-      for (const prop of ['disabled', 'active', 'pending'] as const) {
-        await w.setProps({ [prop]: true })
-        expect(prepare.attributes('disabled')).toBeDefined()
-        expect(editor.get('input').attributes('disabled')).toBeDefined()
-        await prepare.trigger('click')
-        await w.setProps({ [prop]: false })
-      }
-      await w.setProps({ hasTargets: false })
-      expect(prepare.attributes('disabled')).toBeDefined()
-      await w.setProps({ hasTargets: true })
-      w.findAllComponents(AppSelect)[0]!.vm.$emit('update:modelValue', 'docker_action')
-      await w.vm.$nextTick()
-      expect(w.findComponent(AiOpsExecArgs).exists()).toBe(false)
-      expect(w.findAllComponents(AppSelect)).toHaveLength(2)
-      await prepare.trigger('click')
-      expect(w.emitted('tool')).toEqual([['docker_action', { container: 'web', action: 'restart' }]])
-    } finally { w.unmount() }
   })
   it('displays and confirms full frozen exec argv as escaped text', async () => {
     const argv = ['sh', '-c', `echo "quoted"; <img src=x onerror=alert(1)>; ${'x'.repeat(1800)}`, '']
@@ -203,28 +130,6 @@ describe('ops components', () => {
     await w.findAll('input')[0]!.setValue(true)
     expect(w.emitted('change')).toEqual([[['gone', 'b']]])
     expect(w.props('selected')).toEqual(['gone'])
-    w.unmount()
-  })
-  it('manual tools remain available without model; forms build only typed arguments', async () => {
-    const w = mount(AiOpsComposer, {
-      props: {
-        draft: '',
-        draftStatus: 'saved',
-        tools: [{ toolId: 'host_resources', mutation: false, schema: {} }],
-        disabled: false,
-        active: false,
-        modelAvailable: false,
-        hasTargets: true,
-        pending: false,
-      },
-    })
-    await w.get('.tool-picker summary').trigger('click')
-    const collect = w.findAll('button').find((b) => b.text() === '采集数据')!
-    expect(collect.attributes('disabled')).toBeUndefined()
-    await collect.trigger('click')
-    expect(w.emitted('tool')).toEqual([['host_resources', {}]])
-    expect(w.get('[aria-label="发送"]').attributes('disabled')).toBeDefined()
-    expect(w.find('select').exists()).toBe(false)
     w.unmount()
   })
   it('confirms the exact full batch and never guesses missing actions', async () => {

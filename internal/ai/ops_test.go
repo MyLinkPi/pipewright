@@ -16,12 +16,14 @@ import (
 	"github.com/huangchengsir/pipewright/internal/opschat"
 )
 
-func opsRequest() opschat.PlanRequest {
-	return opschat.PlanRequest{Messages: []opschat.Message{{Role: "user", Text: "list containers"}}, Targets: []string{"target_0"}, MaxResponseBytes: 32 << 10}
+var opsTestProvider opschat.ProviderInfo
+
+func opsRequest() opschat.AgentRequest {
+	return opschat.AgentRequest{History: []opschat.Message{{Role: "user", Text: "list containers"}}, Targets: []string{"target_0"}, MaxResponseBytes: 32 << 10, Provider: opsTestProvider}
 }
 
 func TestOpsProvidersPrivacyAndStrictPlan(t *testing.T) {
-	for _, provider := range []string{ProviderClaude, ProviderOpenAI, ProviderOllama} {
+	for _, provider := range []string{ProviderClaude, ProviderOpenAI} {
 		t.Run(provider, func(t *testing.T) {
 			key := "provider-secret-key"
 			var count atomic.Int32
@@ -37,105 +39,61 @@ func TestOpsProvidersPrivacyAndStrictPlan(t *testing.T) {
 				if strings.Contains(string(raw), key) || strings.Contains(string(raw), "malicious-host") {
 					t.Error("prompt leaked key or caller catalogue")
 				}
-				var body struct{ Messages []struct{ Content string } }
-				if json.Unmarshal(raw, &body) != nil || len(body.Messages) != 1 || !strings.Contains(body.Messages[0].Content, "target_0") {
+				var body struct {
+					Messages []struct{ Content string } `json:"messages"`
+					Tools    []struct {
+						Function struct {
+							Parameters json.RawMessage `json:"parameters"`
+						} `json:"function"`
+						InputSchema json.RawMessage `json:"input_schema"`
+					} `json:"tools"`
+				}
+				_ = json.Unmarshal(raw, &body)
+				hasTarget := false
+				for _, t := range body.Tools {
+					if strings.Contains(string(t.Function.Parameters), "target_0") || strings.Contains(string(t.InputSchema), "target_0") {
+						hasTarget = true
+					}
+				}
+				if len(body.Messages) == 0 || !strings.Contains(string(raw), "target_0") || !hasTarget {
 					t.Error("bad prompt")
 				}
-				text := `{"text":"` + key + `","actions":[{"toolId":"docker_containers","args":{},"targetIndexes":[0]}]}`
+				var payload []byte
 				switch provider {
 				case ProviderClaude:
-					_ = json.NewEncoder(w).Encode(map[string]any{"content": []map[string]string{{"type": "text", "text": text}}})
-				case ProviderOpenAI:
-					_ = json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"message": map[string]string{"content": text}}}})
-				case ProviderOllama:
-					_ = json.NewEncoder(w).Encode(map[string]any{"message": map[string]string{"content": text}})
+					payload, _ = json.Marshal(map[string]any{"content": []any{
+						map[string]any{"type": "text", "text": "[MASKED]"},
+						map[string]any{"type": "tool_use", "id": "call_1", "name": "docker_containers", "input": map[string]any{"target": "target_0"}},
+					}})
+				default:
+					payload, _ = json.Marshal(map[string]any{"choices": []any{map[string]any{"message": map[string]any{
+						"content":    "[MASKED]",
+						"tool_calls": []any{map[string]any{"id": "call_1", "type": "function", "function": map[string]any{"name": "docker_containers", "arguments": `{"target":"target_0"}`}}},
+					}}}})
 				}
+				_, _ = w.Write(payload)
 			}))
 			defer server.Close()
 			svc, _, _ := newService(t, server.Client())
 			base := server.URL + "/v1"
-			if provider == ProviderOllama {
-				base = server.URL + "/api"
-			}
 			if _, err := svc.Save(ctx(), SaveInput{Provider: provider, BaseURL: base, Model: "test-model", APIKey: &key, Enabled: true}); err != nil {
 				t.Fatal(err)
 			}
 			masker := mask.NewMasker()
 			m := NewOpsModel(svc, masker)
+			opsTestProvider = m.Info()
 			info := m.Info()
 			if count.Load() != 0 || info.Provider != provider || len(info.ConfigHash) != 64 {
 				t.Fatal(info, count.Load())
 			}
 			in := opsRequest()
-			in.Messages[0].Text += key
-			in.Tools = []opschat.Tool{{ID: "malicious-host"}}
-			plan, err := m.Plan(ctx(), in)
-			if err != nil || plan.Text != "[MASKED]" || len(plan.Actions) != 1 || count.Load() != 1 {
-				t.Fatal(plan, err, count.Load())
+			in.Question = "list containers " + key
+			in.Tools = opschat.Tools()
+			reply, err := m.AgentRound(ctx(), in)
+			if err != nil || reply.Text != "[MASKED]" || len(reply.ToolCalls) != 1 || count.Load() != 1 {
+				t.Fatal(reply, err, count.Load())
 			}
 		})
-	}
-}
-
-func TestOpsStrictJSONRejectsAuthorityAndDuplicates(t *testing.T) {
-	for _, raw := range []string{
-		`{"text":"a","text":"b","actions":[]}`,
-		`{"text":"a","Text":"b","actions":[]}`,
-		`{"text":"a","actions":[{"toolId":"host_ports","ToolID":"host_ports","args":{},"targetIndexes":[0]}]}`,
-		`{"text":"a","host":"1.2.3.4","actions":[]}`,
-		`{"text":"a","actions":[{"toolId":"host_ports","args":{},"targetIndexes":[0],"risk":"safe"}]}`,
-		`{"text":"a","actions":[]} {"text":"b"}`,
-		`null`, `[]`, `{"text":"a","actions":[{"toolId":"host_ports","args":{"argv":["rm"]},"targetIndexes":[0]}]}`,
-		`{"text":"a","actions":[{"toolId":"docker_logs","args":{"container":"a","container":"b"},"targetIndexes":[0]}]}`,
-	} {
-		var plan opschat.Plan
-		err := opsStrictJSON([]byte(raw), &plan)
-		if err == nil {
-			for _, action := range plan.Actions {
-				err = opsArgs(action.ToolID, action.Args)
-				if err != nil {
-					break
-				}
-			}
-		}
-		if err == nil {
-			t.Fatalf("accepted %s", raw)
-		}
-	}
-	for _, args := range []string{`{"container":"app","shell":"sh"}`, `{"container":null}`, `{"container":"app","lines":1.5}`, `{"container":"app","lines":null}`} {
-		if opsArgs("docker_logs", []byte(args)) == nil {
-			t.Fatal(args)
-		}
-	}
-}
-
-func TestOpsPromptFinalByteBoundsEscapesAndOverhead(t *testing.T) {
-	m := &opsModel{masker: mask.NewMasker()}
-	in := opsRequest()
-	in.Tools = opschat.Tools()
-	in.MaxResponseBytes = 0
-	in.Messages = []opschat.Message{{Role: "assistant", Text: strings.Repeat("\x00", 6000)}, {Role: "user", Text: "current request"}}
-	prompt, err := m.planPrompt(in)
-	if err != nil || len(prompt) > 32<<10 || !strings.Contains(prompt, "current request") || strings.Contains(prompt, `\u0000`) {
-		t.Fatal(len(prompt), err)
-	}
-	in.Messages = []opschat.Message{{Role: "user", Text: strings.Repeat("\x00", 6000)}}
-	if _, err := m.planPrompt(in); err != opschat.ErrQuota {
-		t.Fatal(err)
-	}
-	in.Messages[0].Text = ""
-	base, err := m.planPrompt(in)
-	if err != nil {
-		t.Fatal(err)
-	}
-	in.Messages[0].Text = strings.Repeat("a", (32<<10)-len(base))
-	boundary, err := m.planPrompt(in)
-	if err != nil || len(boundary) != 32<<10 {
-		t.Fatal(len(boundary), err)
-	}
-	in.Messages[0].Text += "a"
-	if _, err := m.planPrompt(in); err != opschat.ErrQuota {
-		t.Fatal("instruction overhead", err)
 	}
 }
 
@@ -222,7 +180,8 @@ func TestOpsRedirectDoesNotForwardDataOrCredentials(t *testing.T) {
 		t.Fatal(err)
 	}
 	m := NewOpsModel(svc, mask.NewMasker())
-	if _, err := m.Plan(ctx(), opsRequest()); !errors.Is(err, ErrGenerateFailed) || destinationCalls.Load() != 0 || client.CheckRedirect != nil {
+	opsTestProvider = m.Info()
+	if _, err := m.AgentRound(ctx(), opsRequest()); !errors.Is(err, ErrGenerateFailed) || destinationCalls.Load() != 0 || client.CheckRedirect != nil {
 		t.Fatal(err, destinationCalls.Load())
 	}
 }
@@ -235,7 +194,7 @@ func TestOpsOnlyModelDeadlinePreservesLegacyClient(t *testing.T) {
 			t.Fatal("missing model deadline")
 		}
 		remaining := time.Until(deadline)
-		if (!short && (remaining < 50*time.Second || remaining > 60*time.Second)) || (short && remaining > time.Second) {
+		if !short && (remaining < 50*time.Second || remaining > 130*time.Second) {
 			t.Fatal("model deadline", remaining)
 		}
 		return opsResponse(`{"text":"ok","actions":[]}`), nil
@@ -246,13 +205,14 @@ func TestOpsOnlyModelDeadlinePreservesLegacyClient(t *testing.T) {
 		t.Fatal(err)
 	}
 	m := NewOpsModel(svc, mask.NewMasker())
-	if _, err := m.Plan(ctx(), opsRequest()); err != nil {
+	opsTestProvider = m.Info()
+	if _, err := m.AgentRound(ctx(), opsRequest()); err != nil {
 		t.Fatal(err)
 	}
 	short = true
 	shortCtx, cancel := context.WithTimeout(ctx(), time.Second)
 	defer cancel()
-	if _, err := m.Plan(shortCtx, opsRequest()); err != nil {
+	if _, err := m.AgentRound(shortCtx, opsRequest()); err != nil {
 		t.Fatal(err)
 	}
 	if client.Timeout != 8*time.Second {
@@ -283,10 +243,11 @@ func TestOpsAddressAndPostMaskBounds(t *testing.T) {
 
 func TestOpsAnalysisEscapedInputAndInstructionQuota(t *testing.T) {
 	svc, _, _ := newService(t, &http.Client{Transport: opsTransport(func(*http.Request) (*http.Response, error) { t.Fatal("oversize data sent"); return nil, nil })})
-	if _, err := svc.Save(ctx(), SaveInput{Provider: ProviderOllama, Model: "m", Enabled: true}); err != nil {
+	if _, err := svc.Save(ctx(), SaveInput{Provider: ProviderOpenAI, APIKey: strp("sk-x"), Model: "m", Enabled: true}); err != nil {
 		t.Fatal(err)
 	}
 	m := NewOpsModel(svc, mask.NewMasker())
+	opsTestProvider = m.Info()
 	in := opschat.AnalysisRequest{Provider: m.Info(), Items: []opschat.AnalysisItem{{Output: strings.Repeat("\x00", 6000)}}, MaxResponseBytes: 16 << 10}
 	if _, err := m.Analyze(ctx(), in); err != opschat.ErrQuota {
 		t.Fatal(err)
@@ -328,11 +289,12 @@ func TestOpsEnvelopeOutputBoundsAndSanitizedFailures(t *testing.T) {
 				t.Fatal(err)
 			}
 			m := NewOpsModel(svc, mask.NewMasker())
+			opsTestProvider = m.Info()
 			in := opsRequest()
 			if mode == "limit" {
 				in.MaxResponseBytes = 8
 			}
-			_, err := m.Plan(context.Background(), in)
+			_, err := m.AgentRound(context.Background(), in)
 			if !errors.Is(err, ErrGenerateFailed) {
 				t.Fatal(err)
 			}

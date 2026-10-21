@@ -453,5 +453,9 @@ func (b *Builder) loadAndPushSharedImage(ctx context.Context, r *run.Run, stage 
 		plan = plans[jb.Name]
 	}
 	sink := &reporterSink{rep: jrep}
-	return b.pushImageArtifact(ctx, sink, jrep, jb, stage.Name, proj, plan, art, localTag, spec.ImageSpec.CommitTag)
+	perr := b.pushImageArtifact(ctx, sink, jrep, jb, stage.Name, proj, plan, art, localTag, spec.ImageSpec.CommitTag)
+	// 发起方本端也轮转(load 进来的镜像副本):保留集来自本端 DB,与本地构建同语义
+	// (共享机上不轮转,见 image_rotate.go)。best-effort,绝不影响构建结果。
+	b.rotateBuildImages(context.WithoutCancel(ctx), proj, spec.ImageSpec.CommitTag, logf)
+	return perr
 }

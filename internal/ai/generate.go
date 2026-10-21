@@ -103,16 +103,14 @@ func (s *service) Generate(ctx context.Context, in GenerateInput) (*Proposal, er
 
 	// apiKey:非 ollama 解密既有密钥进程内取用;ollama 无需 key。
 	apiKey := ""
-	if provider != ProviderOllama {
 		if len(sealed) == 0 {
-			return nil, ErrAINotConfigured
-		}
-		plain, oerr := s.openSecret(sealed)
-		if oerr != nil {
-			return nil, oerr
-		}
-		apiKey = plain
+		return nil, ErrAINotConfigured
 	}
+	plain, oerr := s.openSecret(sealed)
+	if oerr != nil {
+		return nil, oerr
+	}
+	apiKey = plain
 
 	prompt := buildPrompt(in)
 
@@ -172,15 +170,6 @@ func (m *opsModel) chatWithTokens(ctx context.Context, provider, baseURL, model,
 		header["Authorization"] = "Bearer " + apiKey
 		payload = map[string]any{
 			"model": model,
-			"messages": []map[string]string{
-				{"role": "user", "content": prompt},
-			},
-		}
-	case ProviderOllama:
-		endpoint = apiEndpoint(provider, baseURL, "chat")
-		payload = map[string]any{
-			"model":  model,
-			"stream": false,
 			"messages": []map[string]string{
 				{"role": "user", "content": prompt},
 			},
@@ -274,16 +263,6 @@ func extractChatText(provider string, raw []byte) (string, error) {
 			return "", fmt.Errorf("%w: 响应解析失败", ErrGenerateFailed)
 		}
 		return r.Choices[0].Message.Content, nil
-	case ProviderOllama:
-		var r struct {
-			Message struct {
-				Content string `json:"content"`
-			} `json:"message"`
-		}
-		if json.Unmarshal(raw, &r) != nil {
-			return "", fmt.Errorf("%w: 响应解析失败", ErrGenerateFailed)
-		}
-		return r.Message.Content, nil
 	default:
 		return "", fmt.Errorf("%w: 不支持的 provider", ErrGenerateFailed)
 	}

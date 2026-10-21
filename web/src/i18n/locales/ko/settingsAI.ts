@@ -18,13 +18,11 @@ export default {
   retry: '다시 시도',
 
   providerClaudeTag: '진단 추천',
-  providerOllamaDesc: '로컬 / 자체 호스팅',
-  providerOllamaTag: '외부 전송 없음',
 
   guidanceAria: 'AI 구성 가이드',
   guidanceTitle: 'AI 진단을 활성화하려면 LLM을 구성하세요',
   guidanceBody:
-    'Claude, OpenAI 또는 로컬 Ollama를 연결하면 파이프라인 실패 시 Pipewright가 근본 원인 가설과 수정 제안을 자동으로 생성하여 수동 로그 분석이 필요 없습니다.',
+    'Claude, OpenAI 또는 임의의 OpenAI 호환 엔드포인트(예: Ollama /v1)를 연결하면 파이프라인 실패 시 Pipewright가 근본 원인 가설과 수정 제안을 자동으로 생성하여 수동 로그 분석이 필요 없습니다.',
 
   selectProvider: '제공자 선택',
   providerRadioAria: 'AI 제공자 선택',
@@ -39,8 +37,6 @@ export default {
   apiKeyPaste: 'API Key 붙여넣기…',
   apiKeyMaskedAria: '구성된 마스크: {masked}',
 
-  ollamaHint:
-    '로컬 Ollama는 API Key가 필요 없습니다 —— Ollama 서비스가 지정된 주소에서 실행 중인지 확인하세요.',
 
   baseUrlLabel: '접속 주소 (Base URL)',
   baseUrlHint: '기본값: {url} (주소는 그대로 연결됩니다 — /v1 등 버전 접두사를 유지하세요)',
@@ -79,7 +75,7 @@ export default {
   errBudgetInvalid: '월 token 한도는 양의 정수이거나 비워 두어야 합니다',
   errProviderInvalid: '유효한 제공자를 선택하세요',
   errBaseUrlRequired: '접속 주소를 입력하세요',
-  errApiKeyRequired: 'API Key는 비워 둘 수 없습니다(Ollama 외 필수)',
+  errApiKeyRequired: 'API Key는 비워 둘 수 없습니다(로컬 엔드포인트는 아무 값이나 가능))',
   errRequestFailed: '요청 실패({status})',
   errUnknown: '알 수 없는 오류',
 }

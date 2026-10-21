@@ -17,6 +17,10 @@ export interface RetentionConfig {
   keepPerProject: number
   /** Delete terminal runs older than N days (0 = no age limit). */
   maxAgeDays: number
+  /** Build-dependency cache total size cap in GB (LRU eviction; 0 = unlimited). Independent of enabled. */
+  cacheMaxGb: number
+  /** Local image tags kept per project (older pipewright/<slug>:<tag> rotated out; 0 = off). Independent of enabled. */
+  imageKeepTags: number
 }
 
 export async function getRetentionConfig(): Promise<RetentionConfig> {

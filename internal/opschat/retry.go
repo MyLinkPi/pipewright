@@ -81,7 +81,11 @@ func (s *Service) RetryFailed(ctx context.Context, id string, in RetryInput) (*R
 	for _, sid := range sr.ServerIDs {
 		selected[sid] = true
 	}
-	body := runBody{RetryCallIDs: append([]string{}, in.CallIDs...), RetryActions: []Action{}}
+	retryProvider := ProviderInfo{}
+	if s.model != nil {
+		retryProvider = s.model.Info()
+	}
+	body := runBody{Provider: retryProvider, RetryCallIDs: append([]string{}, in.CallIDs...), RetryActions: []Action{}}
 	indexes := map[string]int{}
 	seen := map[string]bool{}
 	// Validate every source before capturing any connection or accepting a new task.

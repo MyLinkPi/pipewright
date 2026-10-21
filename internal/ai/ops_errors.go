@@ -132,10 +132,6 @@ func opsCompletionFailure(provider string, raw []byte) error {
 		if response.StopReason != nil {
 			return opsStopFailure(*response.StopReason, "end_turn", "stop_sequence")
 		}
-	case ProviderOllama:
-		if response.DoneReason != nil {
-			return opsStopFailure(*response.DoneReason, "", "stop")
-		}
 	}
 	return nil
 }

@@ -47,7 +47,7 @@ func (s *Service) turnQuestion(ctx context.Context, tx *sql.Tx, id string, body 
 		return "", err
 	}
 	now := time.Now().UTC()
-	if previous.View.Status != Succeeded || previous.View.CancelRequested || previous.View.CreatedAt.Before(now.Add(-15*time.Minute)) || previous.View.CreatedAt.After(now) || previous.Body.Provider != body.Provider || previous.Body.Turn.ToolID != "" || previous.Body.Analysis != nil || previous.Body.AnalysisStarted || len(previous.Body.RetryActions) != 0 || len(previous.Body.Targets) != len(body.Targets) {
+	if previous.View.Status != Succeeded || previous.View.CancelRequested || previous.View.CreatedAt.Before(now.Add(-15*time.Minute)) || previous.View.CreatedAt.After(now) || previous.Body.Provider != body.Provider || previous.Body.Analysis != nil || previous.Body.AnalysisStarted || len(previous.Body.RetryActions) != 0 || len(previous.Body.Targets) != len(body.Targets) {
 		return question, nil
 	}
 	for i, snapshot := range body.Targets {
@@ -60,7 +60,7 @@ func (s *Service) turnQuestion(ctx context.Context, tx *sql.Tx, id string, body 
 		return "", err
 	}
 	for _, call := range calls {
-		if call.Body.View.ToolID != "docker_containers" || call.Body.View.Status != Succeeded {
+		if call.Body.View.Status != Succeeded {
 			return question, nil
 		}
 	}

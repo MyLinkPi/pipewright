@@ -47,6 +47,7 @@ const (
 	ActionVolumeOp           = "volume_op"
 	ActionNetworkOp          = "network_op"
 	ActionSystemPrune        = "system_prune"
+	ActionMaintenanceCleanup = "maintenance_cleanup"
 	ActionContainerTerminal  = "container_terminal"
 	ActionServerTerminal     = "server_terminal"
 	// 批量执行命令(服务器状态页 → 勾选多机 → sh -c 同步执行):任意 shell 是功能本质,

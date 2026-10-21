@@ -28,9 +28,7 @@ func configureEnabled(t *testing.T, svc Service, provider, baseURL string) {
 		Model:    "test-model",
 		Enabled:  true,
 	}
-	if provider != ProviderOllama {
-		in.APIKey = strp("sk-secret-KEY9")
-	}
+	in.APIKey = strp("sk-secret-KEY9")
 	if _, err := svc.Save(ctx(), in); err != nil {
 		t.Fatalf("Save(%s): %v", provider, err)
 	}
@@ -61,8 +59,6 @@ func wrapProviderResponse(provider, text string) string {
 		return `{"content":[{"type":"text","text":"` + esc + `"}]}`
 	case ProviderOpenAI:
 		return `{"choices":[{"message":{"role":"assistant","content":"` + esc + `"}}]}`
-	case ProviderOllama:
-		return `{"message":{"role":"assistant","content":"` + esc + `"}}`
 	default:
 		return "{}"
 	}
@@ -77,7 +73,7 @@ func jsonEscape(s string) string {
 }
 
 func TestGenerateThreeProviders(t *testing.T) {
-	for _, provider := range []string{ProviderClaude, ProviderOpenAI, ProviderOllama} {
+	for _, provider := range []string{ProviderClaude, ProviderOpenAI} {
 		t.Run(provider, func(t *testing.T) {
 			srv := stubLLM(t, provider, stubProposalJSON)
 			svc, _, _ := newService(t, srv.Client())

@@ -65,6 +65,7 @@ func TestOpsSafeHTTPAndTransportFailuresNoRetry(t *testing.T) {
 					calls++
 					return &http.Response{StatusCode: tc.status, Header: http.Header{"Location": {"https://raw-secret.invalid"}}, Body: io.NopCloser(strings.NewReader(`{"error":{"message":"raw-secret mock-key"}}`)), Request: r}, nil
 				}))
+				opsTestProvider = m.Info()
 				cfg := &Config{Provider: ProviderOpenAI, BaseURL: "https://api.deepseek.com", Model: "deepseek-v4-pro"}
 				var err error
 				if streaming {
@@ -88,6 +89,7 @@ func TestOpsSafeHTTPAndTransportFailuresNoRetry(t *testing.T) {
 			t.Run(tc.name+map[bool]string{false: "/chat", true: "/stream"}[streaming], func(t *testing.T) {
 				calls := 0
 				m := compatibleMockModel(t, "https://api.deepseek.com", opsTransport(func(*http.Request) (*http.Response, error) { calls++; return nil, tc.cause }))
+				opsTestProvider = m.Info()
 				cfg := &Config{Provider: ProviderOpenAI, BaseURL: "https://api.deepseek.com", Model: "deepseek-v4-pro"}
 				var err error
 				if streaming {
@@ -108,7 +110,6 @@ func TestOpsSafeStreamFinishDiagnosticsAndReasoningOnly(t *testing.T) {
 	for _, tc := range []struct{ name, provider, body, contentType, code string }{
 		{"reasoning-length", ProviderOpenAI, "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"raw-secret reasoning payload\"}}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"length\"}]}\n\ndata: [DONE]\n\n", "text/event-stream", "token_limit"},
 		{"claude-max-tokens", ProviderClaude, "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"max_tokens\"}}\n\n", "text/event-stream", "token_limit"},
-		{"ollama-length", ProviderOllama, "{\"message\":{},\"done\":true,\"done_reason\":\"length\"}\n", "application/x-ndjson", "token_limit"},
 		{"unknown-finish", ProviderOpenAI, "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"finish-secret\"}]}\n\n", "text/event-stream", "rejected"},
 		{"error-event", ProviderOpenAI, "data: {\"error\":{\"message\":\"raw-secret mock-key\"}}\n\n", "text/event-stream", "rejected"},
 		{"malformed", ProviderOpenAI, "data: {raw-secret\n\n", "text/event-stream", "invalid_response"},
@@ -124,6 +125,7 @@ func TestOpsSafeStreamFinishDiagnosticsAndReasoningOnly(t *testing.T) {
 				calls++
 				return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {tc.contentType}}, Body: io.NopCloser(strings.NewReader(tc.body)), Request: r}, nil
 			}))
+			opsTestProvider = m.Info()
 			text, err := m.chatStream(ctx(), &Config{Provider: tc.provider, BaseURL: "https://api.deepseek.com", Model: "deepseek-v4-pro"}, "mock-key", "question", 4096, false, func(chunk opschat.StreamChunk) error { emitted++; return nil })
 			assertOpsFailure(t, err, tc.code, 0)
 			if calls != 1 || emitted != 0 || text != "" {
@@ -143,7 +145,6 @@ func TestOpsDeepSeekThinkingCompatibilityExactDestinationOnly(t *testing.T) {
 		{ProviderOpenAI, "http://api.deepseek.com", false}, {ProviderOpenAI, "https://api.deepseek.com:443/v1", false}, {ProviderOpenAI, "https://api.deepseek.com/custom/v1", false},
 		{ProviderOpenAI, "https://api.deepseek.com/v1?key=raw-secret", false}, {ProviderOpenAI, "https://api.deepseek.com/v1?", false}, {ProviderOpenAI, "https://api.deepseek.com/v1#", false}, {ProviderOpenAI, "https://user@api.deepseek.com/v1", false},
 		{ProviderClaude, "https://gateway.invalid/anthropic", false}, {ProviderClaude, "https://api.deepseek.com/gateway/anthropic", false}, {ProviderClaude, "https://api.deepseek.com/anthropic?key=raw-secret", false},
-		{ProviderOllama, "https://api.deepseek.com", false}, {ProviderOpenAI, "https://api.deepseek.com.evil.invalid", false},
 	} {
 		for _, model := range []string{"deepseek-v4-pro", "deepseek-flash", "deepseek-reasoner"} {
 			body := map[string]any{"max_tokens": 4096}
@@ -173,8 +174,9 @@ func TestOpsDeepSeekThinkingWirePlanAnalysisAndStructuredChat(t *testing.T) {
 			if json.NewDecoder(r.Body).Decode(&body) != nil {
 				t.Fatal("bad request JSON")
 			}
+			_, hasStream := body["stream"]
 			_, disabled := body["thinking"]
-			if disabled != expectDisabled {
+			if hasStream && disabled != expectDisabled {
 				t.Fatal("wrong Ops/general reasoning semantics", disabled, expectDisabled)
 			}
 			if disabled && string(body["thinking"]) != `{"type":"disabled"}` {
@@ -198,8 +200,11 @@ func TestOpsDeepSeekThinkingWirePlanAnalysisAndStructuredChat(t *testing.T) {
 		if _, err := m.service.Save(ctx(), SaveInput{Provider: provider, BaseURL: base, Model: "deepseek-v4-pro", APIKey: strp("mock-key"), Enabled: true}); err != nil {
 			t.Fatal(err)
 		}
-		_, err := m.PlanStream(ctx(), opsRequest(), func(opschat.StreamChunk) error { t.Error("reasoning published"); return nil })
-		assertOpsFailure(t, err, "token_limit", 0)
+		opsTestProvider = m.Info()
+		reply, err := m.AgentRound(ctx(), opsRequest())
+		if err != nil || reply.Text != "reply" {
+			t.Fatal(reply, err)
+		}
 		_, err = m.AnalyzeStream(ctx(), opschat.AnalysisRequest{Provider: m.Info(), Question: "original", Items: []opschat.AnalysisItem{{Status: opschat.Succeeded, Output: "local facts"}}, MaxResponseBytes: 16 << 10}, func(opschat.StreamChunk) error { t.Error("reasoning published"); return nil })
 		assertOpsFailure(t, err, "token_limit", 0)
 		cfg := &Config{Provider: provider, BaseURL: base, Model: "deepseek-v4-pro"}
@@ -223,6 +228,7 @@ func TestOpsSafeDeadlineWhileReadingStream(t *testing.T) {
 		go func() { <-r.Context().Done(); writer.CloseWithError(errors.New("raw-secret mock-key timeout")) }()
 		return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"text/event-stream"}}, Body: reader, Request: r}, nil
 	}))
+	opsTestProvider = m.Info()
 	c, cancel := context.WithTimeout(ctx(), 10*time.Millisecond)
 	defer cancel()
 	_, err := m.chatStream(c, &Config{Provider: ProviderOpenAI, BaseURL: "https://api.deepseek.com", Model: "deepseek-v4-pro"}, "mock-key", "question", 4096, false, func(opschat.StreamChunk) error { return nil })

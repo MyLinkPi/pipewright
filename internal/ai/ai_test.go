@@ -89,7 +89,7 @@ func TestSaveClaudeWithKeyMaskedAndConfigured(t *testing.T) {
 	}
 }
 
-func TestSaveNonOllamaWithoutKey422(t *testing.T) {
+func TestSaveWithoutKey422(t *testing.T) {
 	svc, _, _ := newService(t, http.DefaultClient)
 	_, err := svc.Save(ctx(), SaveInput{Provider: ProviderOpenAI})
 	if err != ErrAPIKeyRequired {
@@ -102,23 +102,6 @@ func TestSaveInvalidProvider(t *testing.T) {
 	_, err := svc.Save(ctx(), SaveInput{Provider: "gemini"})
 	if err != ErrInvalidProvider {
 		t.Fatalf("非法 provider 应 ErrInvalidProvider, got %v", err)
-	}
-}
-
-func TestSaveOllamaNoKeyConfigured(t *testing.T) {
-	svc, _, _ := newService(t, http.DefaultClient)
-	cfg, err := svc.Save(ctx(), SaveInput{Provider: ProviderOllama, Enabled: true})
-	if err != nil {
-		t.Fatalf("Save ollama: %v", err)
-	}
-	if !cfg.Configured {
-		t.Fatalf("ollama 无 key 也应 configured")
-	}
-	if cfg.BaseURL != defaultBaseURLOllama {
-		t.Fatalf("ollama baseUrl 应兜底: %q", cfg.BaseURL)
-	}
-	if cfg.APIKeyMasked != "" {
-		t.Fatalf("ollama 不应有掩码 key: %q", cfg.APIKeyMasked)
 	}
 }
 
@@ -202,7 +185,6 @@ func TestLegacyBaseURLMigration(t *testing.T) {
 	}
 	for _, tc := range []struct{ provider, raw, want string }{
 		{ProviderClaude, "https://api.anthropic.com", "https://api.anthropic.com/v1"},
-		{ProviderOllama, "http://localhost:11434", "http://localhost:11434/api"},
 		{ProviderOpenAI, "https://api.deepseek.com", "https://api.deepseek.com/v1"},
 		{ProviderClaude, "https://api.deepseek.com/anthropic", "https://api.deepseek.com/anthropic/v1"},
 		{ProviderOpenAI, "https://api.openai.com/", "https://api.openai.com/v1"},
@@ -214,11 +196,33 @@ func TestLegacyBaseURLMigration(t *testing.T) {
 	}
 }
 
+// TestMigrateOllamaProvider 验证存量 ollama 协议一次性迁移为 openai + /v1。
+func TestMigrateOllamaProvider(t *testing.T) {
+	for _, tc := range []struct{ raw, wantBase string }{
+		{"", "http://localhost:11434/v1"},
+		{"http://localhost:11434", "http://localhost:11434/v1"},
+		{"http://127.0.0.1:11434", "http://127.0.0.1:11434/v1"},
+		{"http://gpu.example:11434/api", "http://gpu.example:11434/v1"},
+		{"http://gpu.example:11434/api/chat", "http://gpu.example:11434/v1"},
+		{"http://gpu.example:11434", "http://gpu.example:11434/v1"},
+		{"http://gpu.example:11434/v1", "http://gpu.example:11434/v1"},
+	} {
+		provider, base := migrateOllamaProvider("ollama", tc.raw)
+		if provider != "openai" || base != tc.wantBase {
+			t.Fatalf("migrateOllama(%q) = (%s, %q), want (openai, %q)", tc.raw, provider, base, tc.wantBase)
+		}
+	}
+	if provider, base := migrateOllamaProvider("claude", "https://api.anthropic.com"); provider != "claude" || base != "https://api.anthropic.com" {
+		t.Fatal("非 ollama provider 不应被改写")
+	}
+}
+
 func TestBudgetPersisted(t *testing.T) {
 	svc, _, _ := newService(t, http.DefaultClient)
 	limit := int64(1000000)
 	cfg, err := svc.Save(ctx(), SaveInput{
-		Provider: ProviderOllama,
+		Provider: ProviderOpenAI,
+		APIKey:   strp("sk-budget"),
 		Budget:   Budget{MonthlyTokenLimit: &limit},
 	})
 	if err != nil {
@@ -324,41 +328,6 @@ func TestProbeOpenAIOK(t *testing.T) {
 	}
 }
 
-func TestProbeOllamaOKNoKey(t *testing.T) {
-	var gotPath, gotMethod string
-	var gotBody struct {
-		Model   string `json:"model"`
-		Options struct {
-			NumPredict int `json:"num_predict"`
-		} `json:"options"`
-	}
-	stub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotPath, gotMethod = r.URL.Path, r.Method
-		_ = json.NewDecoder(r.Body).Decode(&gotBody)
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer stub.Close()
-
-	svc, _, _ := newService(t, stub.Client())
-	res, err := svc.Test(ctx(), TestInput{
-		Provider: strp(ProviderOllama),
-		BaseURL:  strp(stub.URL + "/api"),
-		Model:    strp("llama3"),
-	})
-	if err != nil {
-		t.Fatalf("Test: %v", err)
-	}
-	if !res.OK {
-		t.Fatalf("ollama 2xx 应 ok=true: %+v", res)
-	}
-	if gotMethod != http.MethodPost || gotPath != "/api/chat" {
-		t.Fatalf("ollama 应 POST /api/chat, got %s %q", gotMethod, gotPath)
-	}
-	if gotBody.Model != "llama3" || gotBody.Options.NumPredict != 1 {
-		t.Fatalf("ollama 探测应带模型且 num_predict=1: %+v", gotBody)
-	}
-}
-
 func TestProbeModelRequired(t *testing.T) {
 	svc, _, _ := newService(t, http.DefaultClient)
 	res, err := svc.Test(ctx(), TestInput{
@@ -416,9 +385,10 @@ func TestProbeTimeout(t *testing.T) {
 	client.Timeout = 20 * time.Millisecond
 	svc, _, _ := newService(t, client)
 	res, err := svc.Test(ctx(), TestInput{
-		Provider: strp(ProviderOllama),
-		BaseURL:  strp(stub.URL),
-		Model:    strp("llama3"),
+		Provider: strp(ProviderOpenAI),
+		BaseURL:  strp(stub.URL + "/v1"),
+		Model:    strp("gpt-4o"),
+		APIKey:   strp("sk-x"),
 	})
 	if err != nil {
 		t.Fatalf("Test: %v", err)
@@ -435,9 +405,10 @@ func TestProbeConnectionFailure(t *testing.T) {
 	svc, _, _ := newService(t, &http.Client{Timeout: time.Second})
 	// 指向一个不监听的本地端口。
 	res, err := svc.Test(ctx(), TestInput{
-		Provider: strp(ProviderOllama),
-		BaseURL:  strp("http://127.0.0.1:1"),
-		Model:    strp("llama3"),
+		Provider: strp(ProviderOpenAI),
+		BaseURL:  strp("http://127.0.0.1:1/v1"),
+		Model:    strp("gpt-4o"),
+		APIKey:   strp("sk-x"),
 	})
 	if err != nil {
 		t.Fatalf("Test: %v", err)

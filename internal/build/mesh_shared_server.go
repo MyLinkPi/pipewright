@@ -306,6 +306,13 @@ func (s *SharedBuildServer) run(job *sharedBuildJob) {
 func (s *SharedBuildServer) execute(ctx context.Context, job *sharedBuildJob, serverID string, logf func(stream, line string)) error {
 	remoteWS := "/tmp/pipewright-shared/" + sanitizeRemoteSeg(job.spec.RunID) + "-" + sanitizeRemoteSeg(job.spec.JobNodeID)
 	remoteTar := remoteWS + ".tar.gz"
+	// 清理在 upload 之前注册并带上 tar 包(与 remote_stage_exec 同口径):传输中断/解包失败/取消
+	// 都会绕过"解包成功后才挂 defer"的写法;rm 对不存在路径幂等。
+	defer func() {
+		rmCmd := []string{"rm", "-rf", remoteWS, remoteTar, remoteWS + "-artifacts.tar.gz", remoteWS + "-image.tar.gz"}
+		logf(streamStdout, "$ "+strings.Join(rmCmd, " "))
+		_, _ = s.tgt.Exec(context.WithoutCancel(ctx), serverID, rmCmd)
+	}()
 
 	// 1) 工作区上传 + 解包(命令形态与 remote_stage_exec 同口径:array + 位置参数转义)。
 	f, err := os.Open(job.wsTar)
@@ -336,11 +343,6 @@ func (s *SharedBuildServer) execute(ctx context.Context, job *sharedBuildJob, se
 		}
 		return errors.New("共享机解包工作区失败" + detail)
 	}
-	defer func() {
-		rmCmd := []string{"rm", "-rf", remoteWS, remoteWS + "-artifacts.tar.gz", remoteWS + "-image.tar.gz"}
-		logf(streamStdout, "$ "+strings.Join(rmCmd, " "))
-		_, _ = s.tgt.Exec(context.WithoutCancel(ctx), serverID, rmCmd)
-	}()
 
 	// 2) 按类型执行。
 	switch job.spec.JobType {
@@ -418,6 +420,9 @@ func (s *SharedBuildServer) execSharedBuildImage(ctx context.Context, job *share
 	logf(streamStdout, "共享机容器 CLI:"+bin)
 	rb := *s.b
 	rb.driver = NewRemoteDriver(s.tgt, serverID, bin)
+	// 构建后清共享机悬空镜像(尽力,成败/取消都执行):rb.driver 是 SSH 驱动,prune 落到共享机自己
+	// 的 daemon;WithoutCancel 保证取消后清理仍发。
+	defer rb.pruneImagesBestEffort(context.WithoutCancel(ctx), func(stream, line string) { logf(stream, line) })
 
 	cfg := pipeline.BuildConfig{
 		Model:          is.BuildModel,

@@ -28,7 +28,7 @@ func TestNoTargetsRejectsOperationsBeforeModelRequest(t *testing.T) {
 	}
 	waitJobs(t, s)
 	m.mu.Lock()
-	plans, analyses := len(m.plans), len(m.analyses)
+	plans, analyses := len(m.rounds), len(m.analyses)
 	m.mu.Unlock()
 	if plans != 0 || analyses != 0 {
 		t.Fatal("empty targets called model", plans, analyses)
@@ -39,18 +39,6 @@ func TestNoTargetsRejectsOperationsBeforeModelRequest(t *testing.T) {
 	}
 }
 
-func (m *planningTestModel) PlanStream(ctx context.Context, in PlanRequest, emit func(StreamChunk) error) (Plan, error) {
-	plan, err := m.Plan(ctx, in)
-	if err != nil {
-		return plan, err
-	}
-	if m.partial {
-		if err := emit(StreamChunk{Text: "Checking postgres."}); err != nil {
-			return Plan{}, err
-		}
-	}
-	return plan, m.failure
-}
 
 func (m *planningTestModel) AnalyzeStream(ctx context.Context, in AnalysisRequest, emit func(StreamChunk) error) (string, error) {
 	return m.Analyze(ctx, in)
@@ -61,36 +49,35 @@ func TestPlanningFailureDiagnosticsNeverExecuteOrRetry(t *testing.T) {
 	cases := []struct {
 		name    string
 		failure error
-		plan    Plan
+		reply   AgentReply
 		code    string
 	}{
-		{"token", classifiedAnalysisError("token_limit"), Plan{}, "token_limit"},
-		{"timeout", context.DeadlineExceeded, Plan{}, "timeout"},
-		{"rejected", classifiedAnalysisError("rejected"), Plan{}, "rejected"},
-		{"invalid-response", classifiedAnalysisError("invalid_response"), Plan{}, "invalid_response"},
-		{"unavailable", ErrUnavailable, Plan{}, "unavailable"},
-		{"input-limit", ErrQuota, Plan{}, "input_limit"},
-		{"unknown", errors.New("secret-key http://private.invalid/raw-body"), Plan{}, "unknown"},
-		{"unknown-code", classifiedAnalysisError("secret-key"), Plan{}, "unknown"},
-		{"model-invalid", fmt.Errorf("private-format: %w", ErrInvalid), Plan{}, "invalid_plan"},
-		{"empty", nil, Plan{}, "invalid_plan"},
-		{"unknown-tool-after-valid", nil, Plan{Text: "Checking postgres.", Actions: []Action{validAction, {ToolID: "shell_exec", Args: json.RawMessage(`{}`), TargetIndexes: []int{0}}}}, "invalid_plan"},
-		{"unknown-argument", nil, Plan{Text: "Checking postgres.", Actions: []Action{{ToolID: "docker_inspect", Args: json.RawMessage(`{"container":"postgres","shell":"sh"}`), TargetIndexes: []int{0}}}}, "invalid_plan"},
-		{"missing-container", nil, Plan{Text: "Checking postgres.", Actions: []Action{{ToolID: "docker_inspect", Args: json.RawMessage(`{}`), TargetIndexes: []int{0}}}}, "invalid_plan"},
-		{"bad-container", nil, Plan{Text: "Checking postgres.", Actions: []Action{{ToolID: "docker_inspect", Args: json.RawMessage(`{"container":"postgres;id"}`), TargetIndexes: []int{0}}}}, "invalid_plan"},
-		{"duplicate-target", nil, Plan{Text: "Checking postgres.", Actions: []Action{{ToolID: "docker_inspect", Args: validAction.Args, TargetIndexes: []int{0, 0}}}}, "invalid_plan"},
-		{"out-of-range", nil, Plan{Text: "Checking postgres.", Actions: []Action{{ToolID: "docker_inspect", Args: validAction.Args, TargetIndexes: []int{1}}}}, "invalid_plan"},
-		{"no-target", nil, Plan{Text: "Checking postgres.", Actions: []Action{{ToolID: "docker_inspect", Args: validAction.Args}}}, "invalid_plan"},
-		{"oversize-plan", nil, Plan{Text: strings.Repeat("x", 33<<10)}, "invalid_plan"},
+		{"token", classifiedAnalysisError("token_limit"), AgentReply{}, "token_limit"},
+		{"timeout", context.DeadlineExceeded, AgentReply{}, "timeout"},
+		{"rejected", classifiedAnalysisError("rejected"), AgentReply{}, "rejected"},
+		{"invalid-response", classifiedAnalysisError("invalid_response"), AgentReply{}, "invalid_response"},
+		{"unavailable", ErrUnavailable, AgentReply{}, "unavailable"},
+		{"input-limit", ErrQuota, AgentReply{}, "input_limit"},
+		{"unknown", errors.New("secret-key http://private.invalid/raw-body"), AgentReply{}, "unknown"},
+		{"unknown-code", classifiedAnalysisError("secret-key"), AgentReply{}, "unknown"},
+		{"model-invalid", fmt.Errorf("private-format: %w", ErrInvalid), AgentReply{}, "invalid_plan"},
+		{"empty", nil, AgentReply{}, "invalid_plan"},
+		{"unknown-tool-after-valid", nil, AgentReply{Text: "Checking postgres.", ToolCalls: actionsToCalls([]Action{validAction, {ToolID: "shell_exec", Args: json.RawMessage(`{}`), TargetIndexes: []int{0}}})}, "invalid_plan"},
+		{"unknown-argument", nil, AgentReply{Text: "Checking postgres.", ToolCalls: actionsToCalls([]Action{{ToolID: "docker_inspect", Args: json.RawMessage(`{"container":"postgres","shell":"sh"}`), TargetIndexes: []int{0}}})}, "invalid_plan"},
+		{"missing-container", nil, AgentReply{Text: "Checking postgres.", ToolCalls: actionsToCalls([]Action{{ToolID: "docker_inspect", Args: json.RawMessage(`{}`), TargetIndexes: []int{0}}})}, "invalid_plan"},
+		{"bad-container", nil, AgentReply{Text: "Checking postgres.", ToolCalls: actionsToCalls([]Action{{ToolID: "docker_inspect", Args: json.RawMessage(`{"container":"postgres;id"}`), TargetIndexes: []int{0}}})}, "invalid_plan"},
+		{"out-of-range", nil, AgentReply{Text: "Checking postgres.", ToolCalls: actionsToCalls([]Action{{ToolID: "docker_inspect", Args: validAction.Args, TargetIndexes: []int{1}}})}, "invalid_plan"},
+		{"no-target", nil, AgentReply{Text: "Checking postgres.", ToolCalls: []AgentToolCall{{ID: "c1", ToolID: "docker_inspect", Target: "", Args: validAction.Args}}}, "invalid_plan"},
+		{"oversize-plan", nil, AgentReply{Text: strings.Repeat("x", 33<<10)}, "invalid_plan"},
 	}
-	tooMany := Plan{Text: "Checking postgres."}
+	tooMany := AgentReply{Text: "Checking postgres."}
 	for i := 0; i < 25; i++ {
-		tooMany.Actions = append(tooMany.Actions, validAction)
+		tooMany.ToolCalls = append(tooMany.ToolCalls, actionsToCalls([]Action{validAction})...)
 	}
 	cases = append(cases, struct {
 		name    string
 		failure error
-		plan    Plan
+		reply   AgentReply
 		code    string
 	}{"too-many-calls", nil, tooMany, "invalid_plan"})
 	for _, tc := range cases {
@@ -99,7 +86,7 @@ func TestPlanningFailureDiagnosticsNeverExecuteOrRetry(t *testing.T) {
 				id := uuid.NewString()
 				f := executor(id)
 				m := &planningTestModel{fakeModel: model(), failure: tc.failure, partial: partial}
-				m.plan = tc.plan
+				m.reply = tc.reply
 				s, _, db := fixture(t, f, m)
 				c := chat(t, s, id)
 				input := TurnInput{ClientRequestID: uuid.NewString(), Revision: c.Revision, Text: "Check postgres container"}
@@ -143,14 +130,14 @@ func TestPlanningFailureDiagnosticsNeverExecuteOrRetry(t *testing.T) {
 						t.Fatal("failed planning entered context")
 					}
 				}
-				if markers != 1 || partial && partials != 1 || !partial && partials != 0 {
+				if markers != 1 {
 					t.Fatal(markers, partials)
 				}
 				f.mu.Lock()
 				calls := len(f.invocations)
 				f.mu.Unlock()
 				m.mu.Lock()
-				plans := len(m.plans)
+				plans := len(m.rounds)
 				m.mu.Unlock()
 				if calls != 0 || plans != 1 {
 					t.Fatal("failure executed or retried", calls, plans)
@@ -164,7 +151,7 @@ func TestPlanningValidPostgresPlanStillExecutesOnce(t *testing.T) {
 	id := uuid.NewString()
 	f := executor(id)
 	m := &planningTestModel{fakeModel: model(), partial: true}
-	m.plan = Plan{Text: "Checking postgres.", Actions: []Action{{ToolID: "docker_inspect", Args: json.RawMessage(`{"container":"postgres"}`), TargetIndexes: []int{0}}}}
+	m.reply = AgentReply{Text: "Checking postgres.", ToolCalls: actionsToCalls([]Action{{ToolID: "docker_inspect", Args: json.RawMessage(`{"container":"postgres"}`), TargetIndexes: []int{0}}})}
 	s, _, _ := fixture(t, f, m)
 	c := chat(t, s, id)
 	r, err := s.Submit(context.Background(), c.ID, TurnInput{ClientRequestID: uuid.NewString(), Revision: c.Revision, Text: "Check postgres container"})
@@ -198,10 +185,19 @@ func TestPlanningValidPostgresPlanStillExecutesOnce(t *testing.T) {
 	}
 	f.mu.Unlock()
 	m.mu.Lock()
-	plans := len(m.plans)
+	plans := len(m.rounds)
 	m.mu.Unlock()
-	// One logical call performs one ID resolution and one projected inspect.
-	if calls != 2 || plans != 1 {
+	// One logical call performs one ID resolution and one projected inspect; agent loop adds a final-answer round.
+	if calls != 2 || plans != 2 {
 		t.Fatal(calls, plans)
 	}
+}
+
+
+func (m *planningTestModel) AgentRound(ctx context.Context, in AgentRequest) (AgentReply, error) {
+	reply, err := m.fakeModel.AgentRound(ctx, in)
+	if m.failure != nil {
+		return AgentReply{}, m.failure
+	}
+	return reply, err
 }

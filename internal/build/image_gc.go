@@ -37,7 +37,8 @@ func (b *Builder) pruneImagesBestEffort(ctx context.Context, onLine func(stream,
 	}
 	pruner, ok := b.driver.(imagePruner)
 	if !ok {
-		return // 远程/桩等不支持本地镜像清理的驱动:跳过(不报错)。
+		return // 桩驱动/瘦控制机(errDriver)等未实现镜像清理的驱动:跳过(不报错)。
+		// 注:远程与共享构建机的驱动同为 *shellDriver(仅命令通道换 SSH),断言命中,prune 落到对应机器。
 	}
 	if _, err := pruner.PruneDangling(ctx, onLine); err != nil {
 		onLine(streamError, "镜像清理(悬空)失败,忽略不影响构建:"+err.Error())

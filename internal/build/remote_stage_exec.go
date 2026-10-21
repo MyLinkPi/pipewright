@@ -618,6 +618,13 @@ func (b *Builder) runBuildImageJobRemote(ctx context.Context, r *run.Run, stage 
 	// 2) 打包 → SSH 上传 → 远程解包(远程工作区按节点 ID 区分,同机多节点互不碰撞)。
 	remoteWS := "/tmp/pipewright-remote/" + sanitizeRemoteSeg(r.ID) + "-" + sanitizeRemoteSeg(stage.ID) + wsSuffix
 	remoteTar := remoteWS + ".tar.gz"
+	// 远程清理必须在 upload 之前注册:传输中断只留半个 tar、解包失败在解包命令的 rm -f 之前退出,
+	// 两条路径都会绕过"解包成功后才挂 defer"的写法;列表带上 tar 包,rm 对不存在路径幂等。
+	defer func() {
+		rmCmd := []string{"rm", "-rf", remoteWS, remoteTar}
+		_ = rep.Log(lctx, streamStdout, "$ "+strings.Join(rmCmd, " "))
+		_, _ = tgt.Exec(context.WithoutCancel(ctx), serverID, rmCmd)
+	}()
 	_ = rep.Log(lctx, streamStdout, "→ 远程构建机:打包工作区并经 SSH 传输…")
 	if err := uploadWorkspace(ctx, tgt, serverID, workspace, remoteTar); err != nil {
 		_ = rep.Log(lctx, streamError, "传输工作区到远程失败:"+err.Error())
@@ -629,11 +636,6 @@ func (b *Builder) runBuildImageJobRemote(ctx context.Context, r *run.Run, stage 
 		_ = rep.Log(lctx, streamError, "远程解包工作区失败")
 		return ErrBuildFailed
 	}
-	defer func() {
-		rmCmd := []string{"rm", "-rf", remoteWS}
-		_ = rep.Log(lctx, streamStdout, "$ "+strings.Join(rmCmd, " "))
-		_, _ = tgt.Exec(context.WithoutCancel(ctx), serverID, rmCmd)
-	}()
 
 	// 3) 远程执行 docker build / tag / login / push:Builder 浅拷贝换 remote driver ——
 	//    runBuildImageJob 的 build/push 全走 b.driver,换成 SSH driver 后真实构建发生在
@@ -645,7 +647,11 @@ func (b *Builder) runBuildImageJobRemote(ctx context.Context, r *run.Run, stage 
 
 	pushPlans := b.pushPlansByBuildNode(ctx, stage.Jobs, settings, r)
 	sink := &reporterSink{rep: rep}
-	return rb.runBuildImageJob(ctx, sink, rep, jb, stage.Name, proj, settings, remoteWS, commitTag, pushPlans[jb.Name])
+	berr := rb.runBuildImageJob(ctx, sink, rep, jb, stage.Name, proj, settings, remoteWS, commitTag, pushPlans[jb.Name])
+	// 构建后清远程机悬空镜像(与本地路径同口径):rb.driver 是 SSH 驱动(shellDriver),prune 经 SSH
+	// 落到构建机自己的 daemon;成败与否都尽力,WithoutCancel 保证取消后仍执行。
+	rb.pruneImagesBestEffort(context.WithoutCancel(ctx), func(stream, line string) { _ = rep.Log(lctx, stream, line) })
+	return berr
 }
 
 // serverName 是机器人读显示名(完成日志用);wsSuffix 是远程工作区路径后缀(节点级独立取机时
@@ -706,6 +712,12 @@ func (b *Builder) runStageRemote(ctx context.Context, r *run.Run, stage pipeline
 	// 2) 打包工作区 → 经 SSH 传到远程并解包。
 	remoteWS := "/tmp/pipewright-remote/" + sanitizeRemoteSeg(r.ID) + "-" + sanitizeRemoteSeg(stage.ID) + wsSuffix
 	remoteTar := remoteWS + ".tar.gz"
+	// 同 runBuildImageJobRemote:清理在 upload 之前注册并带上 tar 包,传输中断/解包失败/取消全覆盖。
+	defer func() {
+		rmCmd := []string{"rm", "-rf", remoteWS, remoteTar}
+		_ = rep.Log(lctx, streamStdout, "$ "+strings.Join(rmCmd, " "))
+		_, _ = tgt.Exec(context.WithoutCancel(ctx), serverID, rmCmd)
+	}()
 	_ = rep.Log(lctx, streamStdout, "→ 远程 runner:打包工作区并经 SSH 传输…")
 	if err := uploadWorkspace(ctx, tgt, serverID, workspace, remoteTar); err != nil {
 		_ = rep.Log(lctx, streamError, "传输工作区到远程失败:"+err.Error())
@@ -725,11 +737,6 @@ func (b *Builder) runStageRemote(ctx context.Context, r *run.Run, stage pipeline
 		_ = rep.Log(lctx, streamError, "远程解包工作区失败"+detail)
 		return ErrBuildFailed
 	}
-	defer func() {
-		rmCmd := []string{"rm", "-rf", remoteWS}
-		_ = rep.Log(lctx, streamStdout, "$ "+strings.Join(rmCmd, " "))
-		_, _ = tgt.Exec(context.WithoutCancel(ctx), serverID, rmCmd)
-	}()
 
 	// 3) 在远程机用容器跑 script job(远程 driver:按机探测 CLI —— nerdctl/docker/podman)。
 	// 探测命令回显:仅真正执行探测(未命中 TTL 缓存)时输出,避免回显未执行的命令。
