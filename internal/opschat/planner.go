@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"sort"
 	"strconv"
 	"strings"
@@ -104,8 +105,14 @@ func (s *Service) requestRound(ctx context.Context, r runRecord, wrapUp bool) (A
 // agentCalls 校验模型的工具批并展开为 callRecord:剥 target/purpose/reason、
 // parseArgs、变更工具必须有用途与理由、目标别名映射、去重、总量限额。
 func (s *Service) agentCalls(r runRecord, reply AgentReply) ([]callRecord, error) {
-	if len(reply.ToolCalls) > 24 || (len(reply.ToolCalls) == 0 && strings.TrimSpace(reply.Text) == "") || len(reply.Text) > 32<<10 {
-		return nil, ErrInvalid
+	if len(reply.ToolCalls) == 0 && strings.TrimSpace(reply.Text) == "" {
+		return nil, fmt.Errorf("%w: empty reply (no tool calls, no text)", ErrInvalid)
+	}
+	if len(reply.ToolCalls) > 24 {
+		return nil, fmt.Errorf("%w: too many tool calls in one batch (%d > 24)", ErrInvalid, len(reply.ToolCalls))
+	}
+	if len(reply.Text) > 32<<10 {
+		return nil, fmt.Errorf("%w: reply text too large (%d bytes > %d)", ErrInvalid, len(reply.Text), 32<<10)
 	}
 	aliases := map[string]int{}
 	for i := range r.Body.Targets {
@@ -128,11 +135,11 @@ func (s *Service) agentCalls(r runRecord, reply AgentReply) ([]callRecord, error
 	for _, call := range reply.ToolCalls {
 		index, ok := aliases[call.Target]
 		if !ok {
-			return nil, ErrInvalid
+			return nil, fmt.Errorf("%w: call %q targets %q which is not one of %v", ErrInvalid, call.ToolID, call.Target, aliases)
 		}
 		fields := map[string]json.RawMessage{}
 		if len(call.Args) > 0 && (json.Unmarshal(call.Args, &fields) != nil || fields == nil) {
-			return nil, ErrInvalid
+			return nil, fmt.Errorf("%w: call %q has malformed JSON args", ErrInvalid, call.ToolID)
 		}
 		purpose, reason := call.Purpose, call.Reason
 		if raw, ok := fields["purpose"]; ok {
@@ -146,14 +153,17 @@ func (s *Service) agentCalls(r runRecord, reply AgentReply) ([]callRecord, error
 		delete(fields, "target")
 		stripped, err := json.Marshal(fields)
 		if err != nil {
-			return nil, ErrInvalid
+			return nil, fmt.Errorf("%w: call %q args failed to re-encode: %v", ErrInvalid, call.ToolID, err)
 		}
 		args, e := parseArgs(call.ToolID, stripped)
-		if e != nil || s.secretArgs(args) {
-			return nil, ErrInvalid
+		if e != nil {
+			return nil, fmt.Errorf("%w: call %q args rejected: %v", ErrInvalid, call.ToolID, e)
+		}
+		if s.secretArgs(args) {
+			return nil, fmt.Errorf("%w: call %q args contain a disallowed secret-like value", ErrInvalid, call.ToolID)
 		}
 		if mutation(call.ToolID) && !validAgentJustification(purpose, reason) {
-			return nil, ErrInvalid
+			return nil, fmt.Errorf("%w: mutating call %q lacks a valid purpose/reason", ErrInvalid, call.ToolID)
 		}
 		purpose = s.scrub(purpose, 512)
 		reason = s.scrub(reason, 512)
@@ -167,11 +177,11 @@ func (s *Service) agentCalls(r runRecord, reply AgentReply) ([]callRecord, error
 		}
 		view := Call{ID: callID(call.ID), RunID: r.View.ID, SessionID: r.View.SessionID, ServerID: snap.Server.ID, ServerName: s.scrub(snap.Server.Name, 1024), ToolID: call.ToolID, Args: args, Object: object, Purpose: purpose, Reason: reason, Status: Queued, ArgsHash: digest(args), TargetHash: snap.Fingerprint()}
 		if view.ID == "" {
-			return nil, ErrInvalid
+			return nil, fmt.Errorf("%w: call %q has an empty ID", ErrInvalid, call.ToolID)
 		}
 		candidates = append(candidates, callRecord{Body: callBody{View: view, Snapshot: snap, Round: round}, Created: batch, Ordinal: len(candidates)})
 		if len(candidates) > 24 {
-			return nil, ErrInvalid
+			return nil, fmt.Errorf("%w: batch expanded to more than 24 calls", ErrInvalid)
 		}
 	}
 	return candidates, nil

@@ -112,7 +112,7 @@ func TestPlanningFailureDiagnosticsNeverExecuteOrRetry(t *testing.T) {
 					if entry.Kind != "assistant" {
 						continue
 					}
-					if entry.Text == "[planning:"+tc.code+"]" {
+					if strings.HasPrefix(entry.Text, "[planning:"+tc.code+"]") {
 						markers++
 						if entry.Status != Failed {
 							t.Fatal(entry)
