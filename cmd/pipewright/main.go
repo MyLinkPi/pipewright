@@ -546,6 +546,10 @@ func main() {
 	// resumeSpecLoader 供 httpapi「失败运行按节点恢复」端点做配置一致性校验(与执行器同一 spec
 	// 来源)。legacy 模式保持 nil → 恢复端点 503,与其不支持按节点恢复的语义一致。
 	var resumeSpecLoader dagrun.SpecLoader
+	// dagBuilder 提升 到分支外:磁盘维护的「构建产物镜像」手动清理需要 Builder 的本机
+	// driver(枚举/删除镜像);legacy 分支的构建器在 buildRunnerOption 内部,不暴露(旧路径
+	// 已弃用,手动镜像清理对 legacy 不生效,自动路径不受影响)。
+	var dagBuilder *build.Builder
 	// 产物镜像轮转依赖(磁盘治理,0094):每项目保留最近 N 个本地 tag(pipewright/<slug>:<commit>
 	// 更旧的 rmi)。保留个数每轮构建现读 retention 配置(设置页可调,免重启);读不到配置时取 0
 	// (宁可保留也不误删)。最近提交集来自 run 库的 trigger_commit。
@@ -559,8 +563,17 @@ func main() {
 		},
 		RecentCommits: runSvc.RecentCommitTags,
 	})
+	// 推送成功后回收构建机本机镜像(磁盘治理,0095):镜像已在 registry,构建机无需留存。
+	// 默认回收;设置页可关(留副本复用构建层缓存)。每轮推送现读配置,免重启。
+	imagePushCleanupOpt := build.WithImagePushCleanup(func(ctx context.Context) bool {
+		cfg, err := retention.NewService(st.DB).GetConfig(ctx)
+		if err != nil {
+			return true // 读不到配置:回收(默认行为)
+		}
+		return cfg.ImageRemoveAfterPush
+	})
 	if strings.EqualFold(strings.TrimSpace(os.Getenv("PIPEWRIGHT_RUNNER")), "legacy") {
-		runnerOpts = buildRunnerOption(projectSvc, pipelineSettingsSvc, credVault, artStore, repoCache, builtinRegistryOpt, imageRotationOpt)
+		runnerOpts = buildRunnerOption(projectSvc, pipelineSettingsSvc, credVault, artStore, repoCache, builtinRegistryOpt, imageRotationOpt, imagePushCleanupOpt)
 		log.Printf("[run] PIPEWRIGHT_RUNNER=legacy:旧版固定流程运行器已启用(clone→对仓库根 docker build→deploy,⚠ 不执行 UI 可视化流水线 stages;如需真按流水线跑请去掉该 env)")
 	} else {
 		// 阶段执行体(Story 8-2):探测到容器 CLI → 注入真实阶段执行器(script 类型 job 在隔离
@@ -571,9 +584,12 @@ func main() {
 		// 门行为不变;运行时可改)。
 		approvalNotifier := httpapi.NewApprovalNotifier(notifySvc, approvalSigner, publicURLResolver, runSvc)
 		dagOpts = append(dagOpts, dagrun.WithGate(httpapi.NewApprovalGate(runSvc, approvalCoord, approvalStore, approvalNotifier)))
-		builderOpts := []build.BuilderOption{build.WithArtifactStore(artStore), build.WithArtifactLister(runSvc.ListArtifacts), build.WithImageGC(os.Getenv("PIPEWRIGHT_NO_IMAGE_GC") != "1"), build.WithCommitRecorder(func(ctx context.Context, runID, commit string, commitAt time.Time) { _ = runSvc.SetCommit(ctx, runID, commit, commitAt) }), build.WithStageDeployer(deploySvc), build.WithStageNotifier(notifySvc), build.WithStageObjectUploader(objectStoreSvc), build.WithEcsPowerController(aliyunSvc), build.WithWaitCoordinator(waitCoord), clonerOpt, buildCacheOpt, builtinRegistryOpt, imageRotationOpt}
+		builderOpts := []build.BuilderOption{build.WithArtifactStore(artStore), build.WithArtifactLister(runSvc.ListArtifacts), build.WithImageGC(os.Getenv("PIPEWRIGHT_NO_IMAGE_GC") != "1"), build.WithCommitRecorder(func(ctx context.Context, runID, commit string, commitAt time.Time) { _ = runSvc.SetCommit(ctx, runID, commit, commitAt) }), build.WithStageDeployer(deploySvc), build.WithStageNotifier(notifySvc), build.WithStageObjectUploader(objectStoreSvc), build.WithEcsPowerController(aliyunSvc), build.WithWaitCoordinator(waitCoord), clonerOpt, buildCacheOpt, builtinRegistryOpt, imageRotationOpt, imagePushCleanupOpt}
 		builderOpts = append(builderOpts, meshOpts...)
 		b, berr := build.NewBuilder(projectSvc, pipelineSettingsSvc, credVault, builderOpts...)
+		if berr == nil {
+			dagBuilder = b // 供磁盘维护手动清理(控制机镜像轮转)使用
+		}
 		if berr != nil && errors.Is(berr, build.ErrNoContainerCLI) {
 			// 瘦控制机(FR-8-19):本机无容器 CLI 不再整体回退 stub——改用 errDriver 构造 Builder,
 			// 远程构建机池照常接线(克隆/打包/上传都在控制机,不依赖本机 CLI);未配选择器而回落
@@ -857,6 +873,10 @@ func main() {
 	// 开关——缓存不是审计数据;上限来自 retention_config.cache_max_gb,默认 10GB)+ 无引用仓库
 	// 镜像回收(兜底项目删除遗漏与历史遗留)。
 	maintSvc.WithBuildCache(cacheStore).WithRepoCache(repoCache).WithTargets(targetSvc)
+	if dagBuilder != nil {
+		maintSvc.WithLocalImageRotation(dagBuilder.RotateImagesWithKeep)
+		maintSvc.WithLocalExtraClean(dagBuilder.ExtraImageClean)
+	}
 	retentionSweeper := retention.NewSweeper(retentionSvc, time.Hour).WithGC(retentionSvc).
 		WithTask("buildcache-gc", func(ctx context.Context) error {
 			maintenance.LogResult(maintSvc.CleanBuildcache(ctx))

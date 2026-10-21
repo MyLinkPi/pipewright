@@ -168,6 +168,25 @@ func TestRunBuildImageJobPushesPerPushSpec(t *testing.T) {
 	if strings.Contains(args, "env.example.com") {
 		t.Fatalf("不应再推环境绑定的仓库:\n%s", args)
 	}
+	// 推送成功后应回收构建机上的本机 tag(默认开启;镜像已在 registry)。
+	if !strings.Contains(args, "rmi pipewright/app:abc1234") {
+		t.Fatalf("推送成功后应 rmi 本机 tag:\n%s", args)
+	}
+	// 关闭开关 → 推送后不再回收(留副本复用构建层缓存)。
+	cmdr2 := newFakeCommander()
+	cmdr2.script("build", fakeCmd{stdoutLines: []string{"built"}, exitCode: 0})
+	cmdr2.script("inspect", fakeCmd{stdoutLines: []string{`{"Id":"sha256:x","RepoDigests":["reg2.example.com/org/app@sha256:cafe"],"Size":10}`}, exitCode: 0})
+	cmdr2.script("tag", fakeCmd{exitCode: 0})
+	cmdr2.script("push", fakeCmd{stdoutLines: []string{"pushed"}, exitCode: 0})
+	b2 := newTestBuilder(t, cmdr2, proj, settings, nil)
+	b2.imageRemoveAfterPush = func(context.Context) bool { return false }
+	rep2 := &fakeReporter{}
+	if err := b2.runBuildImageJob(context.Background(), &reporterSink{rep: rep2}, rep2, jb, "构建", proj, settings, t.TempDir(), "abc1234", plan); err != nil {
+		t.Fatalf("runBuildImageJob(关闭回收): %v", err)
+	}
+	if args2 := cmdr2.allArgsText(); strings.Contains(args2, "rmi") {
+		t.Fatalf("关闭回收后不应 rmi:\n%s", args2)
+	}
 }
 
 // 被引用但仓库不可解析 → 不推送(镜像留本地),由 push_image 节点在运行期报错。

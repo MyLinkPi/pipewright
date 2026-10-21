@@ -23,9 +23,9 @@ func NewStore(db *sql.DB) *Store { return &Store{db: db} }
 // create 落库一条对象存储配置。
 func (s *Store) create(ctx context.Context, p *Provider) error {
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO object_stores (id, type, name, endpoint, bucket, path_prefix, access_key_id, credential_id, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		p.ID, p.Type, p.Name, p.Endpoint, p.Bucket, p.PathPrefix, p.AccessKeyID, p.CredentialID,
+		`INSERT INTO object_stores (id, type, name, endpoint, use_ssl, bucket, path_prefix, access_key_id, credential_id, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		p.ID, p.Type, p.Name, p.Endpoint, boolToInt(p.UseSSL), p.Bucket, p.PathPrefix, p.AccessKeyID, p.CredentialID,
 		p.CreatedAt.UTC().Format(time.RFC3339), p.UpdatedAt.UTC().Format(time.RFC3339),
 	)
 	if err != nil {
@@ -37,7 +37,7 @@ func (s *Store) create(ctx context.Context, p *Provider) error {
 // get 读取单条配置;不存在 → ErrNotFound。
 func (s *Store) get(ctx context.Context, id string) (*Provider, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT id, type, name, endpoint, bucket, path_prefix, access_key_id, credential_id, created_at, updated_at
+		`SELECT id, type, name, endpoint, use_ssl, bucket, path_prefix, access_key_id, credential_id, created_at, updated_at
 		 FROM object_stores WHERE id = ?`, id)
 	p, err := scanProvider(row)
 	if err != nil {
@@ -52,7 +52,7 @@ func (s *Store) get(ctx context.Context, id string) (*Provider, error) {
 // list 返回全部配置(created_at 倒序)。
 func (s *Store) list(ctx context.Context) ([]Provider, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, type, name, endpoint, bucket, path_prefix, access_key_id, credential_id, created_at, updated_at
+		`SELECT id, type, name, endpoint, use_ssl, bucket, path_prefix, access_key_id, credential_id, created_at, updated_at
 		 FROM object_stores ORDER BY created_at DESC, id`)
 	if err != nil {
 		return nil, fmt.Errorf("objectstore: list: %w", err)
@@ -111,9 +111,12 @@ func (s *Store) update(ctx context.Context, id string, in UpdateInput) (*Provide
 		}
 		p.AccessKeyID = ak
 	}
+	if in.UseSSL != nil {
+		p.UseSSL = *in.UseSSL
+	}
 	_, err = s.db.ExecContext(ctx,
-		`UPDATE object_stores SET name = ?, endpoint = ?, bucket = ?, path_prefix = ?, access_key_id = ?, updated_at = ? WHERE id = ?`,
-		p.Name, p.Endpoint, p.Bucket, p.PathPrefix, p.AccessKeyID, time.Now().UTC().Format(time.RFC3339), id)
+		`UPDATE object_stores SET name = ?, endpoint = ?, use_ssl = ?, bucket = ?, path_prefix = ?, access_key_id = ?, updated_at = ? WHERE id = ?`,
+		p.Name, p.Endpoint, boolToInt(p.UseSSL), p.Bucket, p.PathPrefix, p.AccessKeyID, time.Now().UTC().Format(time.RFC3339), id)
 	if err != nil {
 		return nil, fmt.Errorf("objectstore: update: %w", err)
 	}
@@ -141,12 +144,14 @@ type scanner interface {
 func scanProvider(sc scanner) (*Provider, error) {
 	var (
 		p          Provider
+		useSSL     int
 		createdStr string
 		updatedStr string
 	)
-	if err := sc.Scan(&p.ID, &p.Type, &p.Name, &p.Endpoint, &p.Bucket, &p.PathPrefix, &p.AccessKeyID, &p.CredentialID, &createdStr, &updatedStr); err != nil {
+	if err := sc.Scan(&p.ID, &p.Type, &p.Name, &p.Endpoint, &useSSL, &p.Bucket, &p.PathPrefix, &p.AccessKeyID, &p.CredentialID, &createdStr, &updatedStr); err != nil {
 		return nil, err
 	}
+	p.UseSSL = useSSL != 0
 	created, err := time.Parse(time.RFC3339, createdStr)
 	if err != nil {
 		return nil, fmt.Errorf("objectstore: parse created_at: %w", err)
@@ -160,14 +165,27 @@ func scanProvider(sc scanner) (*Provider, error) {
 	return &p, nil
 }
 
+// boolToInt 是布尔列的跨方言落库形态(SQLite INTEGER / MySQL TINYINT 均以 0/1 存)。
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
 // newProvider 据归一化后的入参构造一条待插入配置(id/时间戳在此填好)。
 func newProvider(in CreateInput) *Provider {
 	now := time.Now().UTC()
+	useSSL := defaultUseSSL(in.Type)
+	if in.UseSSL != nil {
+		useSSL = *in.UseSSL
+	}
 	return &Provider{
 		ID:           uuid.NewString(),
 		Type:         in.Type,
 		Name:         in.Name,
 		Endpoint:     in.Endpoint,
+		UseSSL:       useSSL,
 		Bucket:       in.Bucket,
 		PathPrefix:   in.PathPrefix,
 		AccessKeyID:  in.AccessKeyID,

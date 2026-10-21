@@ -21,6 +21,8 @@ export interface RetentionConfig {
   cacheMaxGb: number
   /** Local image tags kept per project (older pipewright/<slug>:<tag> rotated out; 0 = off). Independent of enabled. */
   imageKeepTags: number
+  /** Remove the local image tag on the build machine right after a successful push (default true). */
+  imageRemoveAfterPush: boolean
 }
 
 export async function getRetentionConfig(): Promise<RetentionConfig> {

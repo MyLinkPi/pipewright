@@ -88,6 +88,9 @@ type fakeClient struct {
 	// 建桶:createErr 非空时原样返回(模拟服务端拒绝);createdBuckets 记录调用。
 	createErr      error
 	createdBuckets []string
+	// 列桶:buckets 为预设候选;listBucketsErr 非空时模拟失败。
+	buckets        []BucketEntry
+	listBucketsErr error
 }
 
 func (c *fakeClient) VerifyBucket(ctx context.Context) error { return c.verifyErr }
@@ -123,9 +126,17 @@ func (c *fakeClient) CreateBucket(ctx context.Context, bucketName string) error 
 	return c.createErr
 }
 
+// listBucketsErr 非空时 ListBuckets 原样返回(模拟凭据无效/不可达);否则返回 buckets。
+func (c *fakeClient) ListBuckets(ctx context.Context) ([]BucketEntry, error) {
+	if c.listBucketsErr != nil {
+		return nil, c.listBucketsErr
+	}
+	return c.buckets, nil
+}
+
 // newTestService 用内存 DB + fake vault + fake client 构造 Service。
 // fv 为 nil 时代表 vault 未注入(Test/Upload/Browse/CreateBucket 应返回 ErrVaultUnconfigured);
-// 非空时同时注入读/写两半边(fakeVault 均满足)。
+// 非空时同时注入读/写两半边(fakeVault 均满足)。dialed 记录 dial 收到的参数(断言 useSSL 传递)。
 func newTestService(t *testing.T, fv *fakeVault, client ObjectClient) Service {
 	t.Helper()
 	db := storetest.OpenDB(t)
@@ -139,7 +150,7 @@ func newTestService(t *testing.T, fv *fakeVault, client ObjectClient) Service {
 		store:  NewStore(db),
 		vault:  vr,
 		vaultW: vw,
-		dial: func(providerType, endpoint, accessKeyID, accessKeySecret, bucket string) (ObjectClient, error) {
+		dial: func(providerType, endpoint string, useSSL bool, accessKeyID, accessKeySecret, bucket string) (ObjectClient, error) {
 			if providerType != TypeAliyunOSS {
 				return nil, ErrInvalidType
 			}
@@ -236,6 +247,168 @@ func TestTestVerifyFailed(t *testing.T) {
 	}
 	if res.OK || !errors.Is(res.Err, ErrTestFailed) {
 		t.Fatalf("校验失败应 OK=false/ErrTestFailed: %+v", res)
+	}
+}
+
+// newRecordingTestService 同 newTestService,但记录每次 dial 收到的参数(断言 useSSL 传递)。
+func newRecordingTestService(t *testing.T, fv *fakeVault, client ObjectClient, dialed *[]dialRecord) Service {
+	t.Helper()
+	db := storetest.OpenDB(t)
+	var vr vaultReader
+	var vw vaultWriter
+	if fv != nil {
+		vr = fv
+		vw = fv
+	}
+	return &service{
+		store:  NewStore(db),
+		vault:  vr,
+		vaultW: vw,
+		dial: func(providerType, endpoint string, useSSL bool, accessKeyID, accessKeySecret, bucket string) (ObjectClient, error) {
+			if providerType != TypeAliyunOSS {
+				return nil, ErrInvalidType
+			}
+			*dialed = append(*dialed, dialRecord{providerType: providerType, endpoint: endpoint, useSSL: useSSL, accessKeyID: accessKeyID, bucket: bucket})
+			return client, nil
+		},
+	}
+}
+
+// TestCreateUseSSLPersisted 覆盖 useSSL 落库与更新:OSS 缺省 true;Update 指针切换为 false 生效。
+func TestCreateUseSSLPersisted(t *testing.T) {
+	ctx := context.Background()
+	fv := &fakeVault{configured: true, secrets: map[string]string{"cred-1": "secret-value"}}
+	svc := newTestService(t, fv, &fakeClient{})
+
+	p, err := svc.Create(ctx, sampleInput()) // UseSSL=nil → 按类型默认 true
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if !p.UseSSL {
+		t.Fatalf("OSS 缺省应 useSSL=true: %+v", p)
+	}
+	f := false
+	upd, err := svc.Update(ctx, p.ID, UpdateInput{UseSSL: &f})
+	if err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	if upd.UseSSL {
+		t.Fatalf("Update 应切换 useSSL=false: %+v", upd)
+	}
+	// nil = 不修改,开关保持 false。
+	if _, err := svc.Update(ctx, p.ID, UpdateInput{}); err != nil {
+		t.Fatalf("空 Update: %v", err)
+	}
+	got, _ := svc.Get(ctx, p.ID)
+	if got.UseSSL {
+		t.Fatalf("空 Update 不应改动 useSSL: %+v", got)
+	}
+}
+
+// TestTestPassesUseSSLToDial 覆盖 useSSL 向 dial 的传递:配置的开关原样到达客户端工厂。
+func TestTestPassesUseSSLToDial(t *testing.T) {
+	ctx := context.Background()
+	fv := &fakeVault{configured: true, secrets: map[string]string{"cred-1": "secret-value"}}
+	var dialed []dialRecord
+	svc := newRecordingTestService(t, fv, &fakeClient{}, &dialed)
+
+	f := false
+	p, err := svc.Create(ctx, func() CreateInput { in := sampleInput(); in.UseSSL = &f; return in }())
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if _, err := svc.Test(ctx, p.ID); err != nil {
+		t.Fatalf("Test: %v", err)
+	}
+	if len(dialed) != 1 || dialed[0].useSSL {
+		t.Fatalf("dial 应收到 useSSL=false: %+v", dialed)
+	}
+}
+
+// TestListBuckets 覆盖既有配置列桶:按名字排序、失败映射 ErrListBucketsFailed、vault 未配置拒绝。
+func TestListBuckets(t *testing.T) {
+	ctx := context.Background()
+	fv := &fakeVault{configured: true, secrets: map[string]string{"cred-1": "secret-value"}}
+	fc := &fakeClient{buckets: []BucketEntry{{Name: "zeta"}, {Name: "alpha"}}}
+	svc := newTestService(t, fv, fc)
+	p, _ := svc.Create(ctx, sampleInput())
+
+	res, err := svc.ListBuckets(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("ListBuckets: %v", err)
+	}
+	if len(res.Buckets) != 2 || res.Buckets[0].Name != "alpha" || res.Buckets[1].Name != "zeta" || res.Truncated {
+		t.Fatalf("桶列表应按名字排序: %+v", res)
+	}
+
+	failSvc := newTestService(t, fv, &fakeClient{listBucketsErr: errors.New("AccessDenied")})
+	fp, _ := failSvc.Create(ctx, sampleInput())
+	if _, err := failSvc.ListBuckets(ctx, fp.ID); !errors.Is(err, ErrListBucketsFailed) {
+		t.Fatalf("列桶失败应 ErrListBucketsFailed, got %v", err)
+	}
+
+	noVault := newTestService(t, nil, fc) // vault 未注入
+	np, _ := noVault.Create(ctx, sampleInput())
+	if _, err := noVault.ListBuckets(ctx, np.ID); !errors.Is(err, ErrVaultUnconfigured) {
+		t.Fatalf("vault 未配置应 ErrVaultUnconfigured, got %v", err)
+	}
+}
+
+// TestProbeListBuckets 覆盖未落库直连探测:参数原样(含 useSSL/归一化 endpoint)到达 dial、
+// 校验拒绝、失败映射;全程不触 vault。
+func TestProbeListBuckets(t *testing.T) {
+	ctx := context.Background()
+	fv := &fakeVault{configured: true, secrets: map[string]string{}}
+	var dialed []dialRecord
+	svc := newRecordingTestService(t, fv, &fakeClient{buckets: []BucketEntry{{Name: "b1"}}}, &dialed)
+
+	res, err := svc.ProbeListBuckets(ctx, ProbeInput{
+		Type: "Aliyun_OSS", Endpoint: "https://oss-cn-hangzhou.aliyuncs.com/", UseSSL: true,
+		AccessKeyID: "LTAIxxxx", Secret: "probe-secret",
+	})
+	if err != nil {
+		t.Fatalf("ProbeListBuckets: %v", err)
+	}
+	if len(res.Buckets) != 1 || res.Buckets[0].Name != "b1" {
+		t.Fatalf("探测结果不符: %+v", res)
+	}
+	if len(dialed) != 1 || !dialed[0].useSSL || dialed[0].endpoint != "oss-cn-hangzhou.aliyuncs.com" {
+		t.Fatalf("dial 应收到归一化 endpoint + useSSL=true: %+v", dialed)
+	}
+	if len(fv.secrets) != 0 {
+		t.Fatalf("探测绝不写 vault: %+v", fv.secrets)
+	}
+
+	badType := ProbeInput{Type: "minio", Endpoint: "e", AccessKeyID: "ak", Secret: "s"}
+	if _, err := svc.ProbeListBuckets(ctx, badType); !errors.Is(err, ErrInvalidType) {
+		t.Fatalf("非法类型应 ErrInvalidType, got %v", err)
+	}
+	noSecret := ProbeInput{Type: TypeAliyunOSS, Endpoint: "e", AccessKeyID: "ak"}
+	if _, err := svc.ProbeListBuckets(ctx, noSecret); !errors.Is(err, ErrEmptySecret) {
+		t.Fatalf("空 secret 应 ErrEmptySecret, got %v", err)
+	}
+	noEndpoint := ProbeInput{Type: TypeAliyunOSS, AccessKeyID: "ak", Secret: "s"}
+	if _, err := svc.ProbeListBuckets(ctx, noEndpoint); !errors.Is(err, ErrEmptyEndpoint) {
+		t.Fatalf("空 endpoint 应 ErrEmptyEndpoint, got %v", err)
+	}
+}
+
+// TestCapBucketList 覆盖候选截断:超上限取前 N 并置 Truncated;nil 归一为空切片。
+func TestCapBucketList(t *testing.T) {
+	big := make([]BucketEntry, maxBucketCandidates+10)
+	for i := range big {
+		big[i].Name = fmt.Sprintf("bucket-%04d", len(big)-i) // 倒序填充,验证排序
+	}
+	res := capBucketList(big)
+	if len(res.Buckets) != maxBucketCandidates || !res.Truncated {
+		t.Fatalf("超上限应截断: len=%d truncated=%v", len(res.Buckets), res.Truncated)
+	}
+	if res.Buckets[0].Name != "bucket-0001" {
+		t.Fatalf("应按名字排序: %q", res.Buckets[0].Name)
+	}
+	empty := capBucketList(nil)
+	if empty.Buckets == nil || len(empty.Buckets) != 0 || empty.Truncated {
+		t.Fatalf("nil 应归一为空切片: %+v", empty)
 	}
 }
 
@@ -641,8 +814,18 @@ func (c *fakeEnsurerClient) EnsureBucket(ctx context.Context) error {
 	return c.ensureErr
 }
 
-// newRegisterTestService 构造走 rustfs 类型 + 可控 dial 的 Service(Register 链路专用)。
-func newRegisterTestService(t *testing.T, fv *fakeVault, client ObjectClient) *service {
+// dialRecord 记录 dial 工厂收到的一次调用参数(断言 useSSL 传递用)。
+type dialRecord struct {
+	providerType string
+	endpoint     string
+	useSSL       bool
+	accessKeyID  string
+	bucket       string
+}
+
+// newRegisterTestService 构造走 rustfs 类型 + 可控 dial 的 Service(Register 链路专用);
+// dialed 非 nil 时记录每次 dial 参数。
+func newRegisterTestService(t *testing.T, fv *fakeVault, client ObjectClient, dialed *[]dialRecord) *service {
 	t.Helper()
 	db := storetest.OpenDB(t)
 	var vw vaultWriter
@@ -652,9 +835,12 @@ func newRegisterTestService(t *testing.T, fv *fakeVault, client ObjectClient) *s
 	return &service{
 		store:  NewStore(db),
 		vaultW: vw,
-		dial: func(providerType, endpoint, accessKeyID, accessKeySecret, bucket string) (ObjectClient, error) {
+		dial: func(providerType, endpoint string, useSSL bool, accessKeyID, accessKeySecret, bucket string) (ObjectClient, error) {
 			if providerType != TypeRustFS {
 				return nil, ErrInvalidType
+			}
+			if dialed != nil {
+				*dialed = append(*dialed, dialRecord{providerType: providerType, endpoint: endpoint, useSSL: useSSL, accessKeyID: accessKeyID, bucket: bucket})
 			}
 			return client, nil
 		},
@@ -674,7 +860,7 @@ func TestRegisterCreates(t *testing.T) {
 	ctx := context.Background()
 	fv := &fakeVault{configured: true, secrets: map[string]string{}}
 	fc := &fakeEnsurerClient{}
-	svc := newRegisterTestService(t, fv, fc)
+	svc := newRegisterTestService(t, fv, fc, nil)
 
 	res, err := svc.Register(ctx, registerInput())
 	if err != nil {
@@ -691,6 +877,9 @@ func TestRegisterCreates(t *testing.T) {
 		p.AccessKeyID != "rustfsadmin" || p.CredentialID == "" {
 		t.Fatalf("落库字段不符: %+v", p)
 	}
+	if p.UseSSL {
+		t.Fatalf("RustFS 自动登记应为明文(useSSL=false): %+v", p)
+	}
 	if got := fv.secrets[p.CredentialID]; got != "generated-secret" {
 		t.Fatalf("vault 应存入 secret: %q", got)
 	}
@@ -702,7 +891,7 @@ func TestRegisterRotatesExisting(t *testing.T) {
 	restoreRetryDelay(t)
 	ctx := context.Background()
 	fv := &fakeVault{configured: true, secrets: map[string]string{}}
-	svc := newRegisterTestService(t, fv, &fakeEnsurerClient{})
+	svc := newRegisterTestService(t, fv, &fakeEnsurerClient{}, nil)
 
 	first, err := svc.Register(ctx, registerInput())
 	if err != nil {
@@ -748,7 +937,7 @@ func TestRegisterBucketFailure(t *testing.T) {
 	ctx := context.Background()
 	fv := &fakeVault{configured: true, secrets: map[string]string{}}
 	fc := &fakeEnsurerClient{ensureErr: errors.New("connection refused")}
-	svc := newRegisterTestService(t, fv, fc)
+	svc := newRegisterTestService(t, fv, fc, nil)
 
 	res, err := svc.Register(ctx, registerInput())
 	if err != nil {
@@ -773,7 +962,7 @@ func TestRegisterDialFailure(t *testing.T) {
 	svc := &service{
 		store:  NewStore(db),
 		vaultW: fv,
-		dial: func(providerType, endpoint, accessKeyID, accessKeySecret, bucket string) (ObjectClient, error) {
+		dial: func(providerType, endpoint string, useSSL bool, accessKeyID, accessKeySecret, bucket string) (ObjectClient, error) {
 			return nil, errString("bad endpoint")
 		},
 	}
@@ -790,7 +979,7 @@ func TestRegisterDialFailure(t *testing.T) {
 func TestRegisterValidation(t *testing.T) {
 	ctx := context.Background()
 	fv := &fakeVault{configured: true, secrets: map[string]string{}}
-	svc := newRegisterTestService(t, fv, &fakeEnsurerClient{})
+	svc := newRegisterTestService(t, fv, &fakeEnsurerClient{}, nil)
 
 	badType := registerInput()
 	badType.Type = "minio"
@@ -803,7 +992,7 @@ func TestRegisterValidation(t *testing.T) {
 		t.Fatalf("空 secret 应 ErrEmptySecret, got %v", err)
 	}
 	// vaultW 未注入(vault 未配置)→ ErrVaultUnconfigured。
-	noVault := newRegisterTestService(t, nil, &fakeEnsurerClient{})
+	noVault := newRegisterTestService(t, nil, &fakeEnsurerClient{}, nil)
 	if _, err := noVault.Register(ctx, registerInput()); !errors.Is(err, ErrVaultUnconfigured) {
 		t.Fatalf("vault 未配置应 ErrVaultUnconfigured, got %v", err)
 	}

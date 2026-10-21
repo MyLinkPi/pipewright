@@ -31,6 +31,9 @@ type Config struct {
 	// ImageKeepTags 是每项目保留的本地镜像 tag 数(pipewright/<slug>:<commit> 更旧的轮转
 	// 删除)。0=不轮转。独立于 Enabled(同上,默认 10)。
 	ImageKeepTags int
+	// ImageRemoveAfterPush 为 true 时,build_image 推送成功后立即回收构建机上的本机 tag
+	//(镜像已在 registry;关闭 = 留副本复用构建层缓存)。默认开(0095 迁移默认 1)。
+	ImageRemoveAfterPush bool
 }
 
 // Service 读写保留配置并执行清理(经参数化 SQL 触库)。
@@ -48,10 +51,11 @@ func (s *Service) GetConfig(ctx context.Context) (Config, error) {
 	var (
 		enabled, keep, age int
 		cacheGB, keepTags  int
+		removeAfterPush    int
 	)
 	err := s.db.QueryRowContext(ctx,
-		`SELECT enabled, keep_per_project, max_age_days, cache_max_gb, image_keep_tags FROM retention_config WHERE id = 1`,
-	).Scan(&enabled, &keep, &age, &cacheGB, &keepTags)
+		`SELECT enabled, keep_per_project, max_age_days, cache_max_gb, image_keep_tags, image_remove_after_push FROM retention_config WHERE id = 1`,
+	).Scan(&enabled, &keep, &age, &cacheGB, &keepTags, &removeAfterPush)
 	if err == sql.ErrNoRows {
 		return Config{}, nil
 	}
@@ -59,11 +63,12 @@ func (s *Service) GetConfig(ctx context.Context) (Config, error) {
 		return Config{}, fmt.Errorf("retention: get config: %w", err)
 	}
 	return Config{
-		Enabled:        enabled != 0,
-		KeepPerProject: keep,
-		MaxAgeDays:     age,
-		CacheMaxGB:     cacheGB,
-		ImageKeepTags:  keepTags,
+		Enabled:              enabled != 0,
+		KeepPerProject:       keep,
+		MaxAgeDays:           age,
+		CacheMaxGB:           cacheGB,
+		ImageKeepTags:        keepTags,
+		ImageRemoveAfterPush: removeAfterPush != 0,
 	}, nil
 }
 
@@ -85,18 +90,22 @@ func (s *Service) SetConfig(ctx context.Context, c Config) error {
 	if c.Enabled {
 		enabled = 1
 	}
+	removeAfterPush := 0
+	if c.ImageRemoveAfterPush {
+		removeAfterPush = 1
+	}
 	now := time.Now().UTC().Format(time.RFC3339)
 	res, err := s.db.ExecContext(ctx,
-		`UPDATE retention_config SET enabled = ?, keep_per_project = ?, max_age_days = ?, cache_max_gb = ?, image_keep_tags = ?, updated_at = ? WHERE id = 1`,
-		enabled, c.KeepPerProject, c.MaxAgeDays, c.CacheMaxGB, c.ImageKeepTags, now)
+		`UPDATE retention_config SET enabled = ?, keep_per_project = ?, max_age_days = ?, cache_max_gb = ?, image_keep_tags = ?, image_remove_after_push = ?, updated_at = ? WHERE id = 1`,
+		enabled, c.KeepPerProject, c.MaxAgeDays, c.CacheMaxGB, c.ImageKeepTags, removeAfterPush, now)
 	if err != nil {
 		return fmt.Errorf("retention: set config: %w", err)
 	}
 	// 行不存在(迁移种子未跑)→ 兜底插入。
 	if n, _ := res.RowsAffected(); n == 0 {
 		if _, err := s.db.ExecContext(ctx,
-			`INSERT INTO retention_config (id, enabled, keep_per_project, max_age_days, cache_max_gb, image_keep_tags, updated_at) VALUES (1, ?, ?, ?, ?, ?, ?)`,
-			enabled, c.KeepPerProject, c.MaxAgeDays, c.CacheMaxGB, c.ImageKeepTags, now); err != nil {
+			`INSERT INTO retention_config (id, enabled, keep_per_project, max_age_days, cache_max_gb, image_keep_tags, image_remove_after_push, updated_at) VALUES (1, ?, ?, ?, ?, ?, ?, ?)`,
+			enabled, c.KeepPerProject, c.MaxAgeDays, c.CacheMaxGB, c.ImageKeepTags, removeAfterPush, now); err != nil {
 			return fmt.Errorf("retention: insert config: %w", err)
 		}
 	}

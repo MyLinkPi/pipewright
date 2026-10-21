@@ -17,6 +17,7 @@ package deploy
 import (
 	"context"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -336,7 +337,71 @@ func (s *service) activateImageOne(ctx context.Context, srv *target.Server, a ru
 		res.Message = fmt.Sprintf("image %s部署完成 → 容器 %s(%s%s)", modeLabel, st.name, st.ref, portNote)
 	}
 	res.FinishedAt = &finish
+	// 部署成功后回收本机该应用的更旧镜像(磁盘治理,见 cleanupTargetImages):best-effort,
+	// 失败只记日志,绝不影响部署结果;回滚目标镜像在保留集内(蓝绿全局回滚仍可用)。
+	s.cleanupTargetImages(ctx, srv.ID, st.ref, st.prevImage)
 	return res, st
+}
+
+// cleanupTargetImages 在部署成功后回收目标机上本应用更旧的镜像(磁盘治理):每次部署
+// `docker pull` 一个新 tag,历史 tag 在目标机上无限堆积(与构建机镜像泄漏同类)。规则:
+//   - 只处理与新镜像**同仓库**(newRef 去掉 :tag)的带 tag 引用;
+//   - 保留:正在运行的新 ref + 回滚目标(prevImageDigest 对应镜像的引用,按镜像 ID 前缀匹配);
+//   - dangling(<none>)一律不动——同 tag 重拉时旧镜像退化为 dangling,那正是回滚目标的
+//     形态,留给人工经服务器页「一键清理」处置;
+//   - rmi 不带 -f:被任何容器(含停止的)占用的镜像删不动,天然兜底。
+// best-effort:任何失败静默放弃(列不出镜像/单条 rmi 失败都不影响部署结果)。
+func (s *service) cleanupTargetImages(ctx context.Context, serverID, newRef, prevImageDigest string) {
+	repo := imageRepoOfRef(newRef)
+	if repo == "" {
+		return
+	}
+	cctx, cancel := context.WithTimeout(ctx, execTimeout)
+	defer cancel()
+	// 逐字段 Tab 模板(老 docker 1.13 不支持 json 模板函数,同 httpapi/server_images 口径)。
+	out, err := s.exec(cctx, serverID, []string{"docker", "images", "--format", `{{.Repository}}:{{.Tag}}` + "\t" + `{{.ID}}`})
+	if err != nil || out == nil || out.ExitCode != 0 {
+		return
+	}
+	prevID := strings.TrimPrefix(prevImageDigest, "sha256:")
+	removed := 0
+	for _, line := range strings.Split(out.Stdout, "\n") {
+		line = strings.TrimRight(line, "\r")
+		fields := strings.Split(line, "\t")
+		ref := strings.TrimSpace(fields[0])
+		id := ""
+		if len(fields) > 1 {
+			id = strings.TrimSpace(fields[1])
+		}
+		if ref == "" || strings.Contains(ref, "<none>") || !strings.HasPrefix(ref, repo+":") {
+			continue // 空行/dangling/其它仓库:不动
+		}
+		if ref == newRef {
+			continue // 正在运行的新镜像
+		}
+		if prevID != "" && id != "" && (strings.HasPrefix(prevID, id) || strings.HasPrefix(id, prevID)) {
+			continue // 回滚目标(digest ↔ 短 ID 前缀匹配)
+		}
+		if o, e := s.exec(cctx, serverID, []string{"docker", "rmi", ref}); e == nil && o != nil && o.ExitCode == 0 {
+			removed++
+		}
+	}
+	if removed > 0 {
+		log.Printf("[deploy] %s:已回收 %d 个旧镜像(仓库 %s;保留当前运行与回滚目标)", serverID, removed, repo)
+	}
+}
+
+// imageRepoOfRef 取镜像 ref 的仓库部分(repo:tag → repo;无 tag 时原样)。registry 含端口
+//(registry:5000/org/app)时最后一个 ':' 在 '/' 之后才是 tag 分隔。
+func imageRepoOfRef(ref string) string {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return ""
+	}
+	if i := strings.LastIndex(ref, ":"); i > strings.LastIndex(ref, "/") && i >= 0 {
+		return ref[:i]
+	}
+	return ref
 }
 
 // rollbackImage 在健康失败后把容器回滚到上一镜像 digest(rm 新容器 → run 上一镜像,**复用本次的

@@ -77,6 +77,7 @@ func registerRustFSObjectStore(ctx context.Context, objStores objectstore.Servic
 		Type:        objectstore.TypeRustFS,
 		Name:        name,
 		Endpoint:    endpoint,
+		UseSSL:      false, // 部署形态是明文 host:port;若手动改过已有配置,Register 幂等路径不动该开关
 		Bucket:      bucket,
 		AccessKeyID: accessKey,
 		Secret:      secret,

@@ -13,12 +13,14 @@ import (
 //   - maxAgeDays:删除创建早于 N 天的终态运行(0=不限)。
 //   - cacheMaxGB:构建依赖缓存总量上限 GB(0=不限;独立于 enabled,LRU 淘汰)。
 //   - imageKeepTags:每项目保留的本地镜像 tag 数(0=不轮转;独立于 enabled)。
+//   - imageRemoveAfterPush:推送成功后立即回收构建机上的本机镜像 tag(默认 true)。
 type retentionConfigDTO struct {
-	Enabled        bool `json:"enabled"`
-	KeepPerProject int  `json:"keepPerProject"`
-	MaxAgeDays     int  `json:"maxAgeDays"`
-	CacheMaxGB     int  `json:"cacheMaxGb"`
-	ImageKeepTags  int  `json:"imageKeepTags"`
+	Enabled              bool `json:"enabled"`
+	KeepPerProject       int  `json:"keepPerProject"`
+	MaxAgeDays           int  `json:"maxAgeDays"`
+	CacheMaxGB           int  `json:"cacheMaxGb"`
+	ImageKeepTags        int  `json:"imageKeepTags"`
+	ImageRemoveAfterPush bool `json:"imageRemoveAfterPush"`
 }
 
 // GET /api/retention/config — 读取保留策略。
@@ -37,8 +39,9 @@ func makeGetRetentionConfigHandler(svc *retention.Service) http.HandlerFunc {
 			Enabled:        cfg.Enabled,
 			KeepPerProject: cfg.KeepPerProject,
 			MaxAgeDays:     cfg.MaxAgeDays,
-			CacheMaxGB:     cfg.CacheMaxGB,
-			ImageKeepTags:  cfg.ImageKeepTags,
+			CacheMaxGB:           cfg.CacheMaxGB,
+			ImageKeepTags:        cfg.ImageKeepTags,
+			ImageRemoveAfterPush: cfg.ImageRemoveAfterPush,
 		})
 	}
 }
@@ -59,8 +62,9 @@ func makeSetRetentionConfigHandler(svc *retention.Service) http.HandlerFunc {
 			Enabled:        in.Enabled,
 			KeepPerProject: in.KeepPerProject,
 			MaxAgeDays:     in.MaxAgeDays,
-			CacheMaxGB:     in.CacheMaxGB,
-			ImageKeepTags:  in.ImageKeepTags,
+			CacheMaxGB:           in.CacheMaxGB,
+			ImageKeepTags:        in.ImageKeepTags,
+			ImageRemoveAfterPush: in.ImageRemoveAfterPush,
 		}
 		if err := svc.SetConfig(r.Context(), cfg); err != nil {
 			writeError(w, http.StatusInternalServerError, "internal", "服务器内部错误")
@@ -76,8 +80,9 @@ func makeSetRetentionConfigHandler(svc *retention.Service) http.HandlerFunc {
 			Enabled:        saved.Enabled,
 			KeepPerProject: saved.KeepPerProject,
 			MaxAgeDays:     saved.MaxAgeDays,
-			CacheMaxGB:     saved.CacheMaxGB,
-			ImageKeepTags:  saved.ImageKeepTags,
+			CacheMaxGB:           saved.CacheMaxGB,
+			ImageKeepTags:        saved.ImageKeepTags,
+			ImageRemoveAfterPush: saved.ImageRemoveAfterPush,
 		})
 	}
 }

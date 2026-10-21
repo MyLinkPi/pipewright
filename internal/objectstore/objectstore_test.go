@@ -77,6 +77,40 @@ func TestNormalizeCreate(t *testing.T) {
 	}
 }
 
+// TestNormalizeCreateUseSSL 覆盖 useSSL 默认值回填:nil → 按类型(OSS=true / RustFS=false);
+// 显式传值(含 OSS 显式 false)一律尊重调用方。
+func TestNormalizeCreateUseSSL(t *testing.T) {
+	oss := CreateInput{Type: TypeAliyunOSS, Name: "p", Endpoint: "e", Bucket: "b", AccessKeyID: "ak", CredentialID: "c"}
+	normalizeCreate(&oss)
+	if oss.UseSSL == nil || !*oss.UseSSL {
+		t.Fatalf("OSS 缺省应回填 useSSL=true: %+v", oss.UseSSL)
+	}
+	rustfs := oss
+	rustfs.Type = TypeRustFS
+	rustfs.UseSSL = nil
+	normalizeCreate(&rustfs)
+	if rustfs.UseSSL == nil || *rustfs.UseSSL {
+		t.Fatalf("RustFS 缺省应回填 useSSL=false: %+v", rustfs.UseSSL)
+	}
+	explicitFalse := CreateInput{Type: TypeAliyunOSS, Name: "p", Endpoint: "e", Bucket: "b", AccessKeyID: "ak", CredentialID: "c"}
+	f := false
+	explicitFalse.UseSSL = &f
+	normalizeCreate(&explicitFalse)
+	if explicitFalse.UseSSL == nil || *explicitFalse.UseSSL {
+		t.Fatalf("显式 false 不应被类型默认覆盖")
+	}
+}
+
+// TestDefaultUseSSL 锁定类型默认策略:公云 OSS 必走 HTTPS,自建 RustFS 默认明文。
+func TestDefaultUseSSL(t *testing.T) {
+	if !defaultUseSSL(TypeAliyunOSS) {
+		t.Fatalf("aliyun_oss 默认应为 HTTPS")
+	}
+	if defaultUseSSL(TypeRustFS) {
+		t.Fatalf("rustfs 默认应为 HTTP")
+	}
+}
+
 func TestDescribeClientError(t *testing.T) {
 	if got := describeClientError(nil); got != "" {
 		t.Fatalf("nil 错误应返回空串, got %q", got)

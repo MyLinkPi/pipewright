@@ -103,6 +103,9 @@ type Builder struct {
 	// imageRotation 是产物镜像轮转依赖(磁盘治理:每项目保留最近 N 个本地 tag,见 image_rotate.go)。
 	// 零值 → 不轮转(向后兼容)。由 main 注入(WithImageRotation)。
 	imageRotation ImageRotationConfig
+	// imageRemoveAfterPush 在推送成功后回收构建机上的本机 tag(见 removeLocalTagAfterPush)。
+	// nil = 默认回收;返回 false = 设置里关闭(留副本复用构建层缓存)。main 经 WithImagePushCleanup 注入。
+	imageRemoveAfterPush func(ctx context.Context) bool
 }
 
 // buildCacheStore 抽象「按 key 恢复/保存工作区缓存路径」的能力(便于 fake 单测注入)。
@@ -251,6 +254,16 @@ func WithImageRotation(c ImageRotationConfig) BuilderOption {
 	return func(b *Builder) {
 		if c.KeepN != nil && c.RecentCommits != nil {
 			b.imageRotation = c
+		}
+	}
+}
+
+// WithImagePushCleanup 注入「推送成功后是否回收构建机本机镜像」判定(每轮推送现读设置,
+// 免重启)。未注入 = 默认回收;fn 返回 false = 关闭(留副本复用构建层缓存)。
+func WithImagePushCleanup(fn func(ctx context.Context) bool) BuilderOption {
+	return func(b *Builder) {
+		if fn != nil {
+			b.imageRemoveAfterPush = fn
 		}
 	}
 }
@@ -790,6 +803,9 @@ func stripScheme(u string) string {
 	u = strings.TrimPrefix(u, "http://")
 	return u
 }
+
+// Slugify 是 slugify 的导出版(维护手动清理按项目名重构镜像保留集时用)。
+func Slugify(s string) string { return slugify(s) }
 
 // slugify 把项目名归一为引用安全的小写 slug(非字母数字折成 '-';空 → "app")。
 func slugify(s string) string {

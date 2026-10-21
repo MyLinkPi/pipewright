@@ -26,6 +26,7 @@ const maintenanceCleanupTimeout = 120 * time.Second
 var maintenanceTargets = map[string]func(*maintenance.Service, context.Context) maintenance.Result{
 	"buildcache":        (*maintenance.Service).CleanBuildcache,
 	"repocache":         (*maintenance.Service).CleanRepocache,
+	"images":            (*maintenance.Service).CleanImages,
 	"remote-workspaces": (*maintenance.Service).SweepRemoteWorkspaces,
 	"local-temp":        (*maintenance.Service).SweepLocalTemp,
 }

@@ -7,9 +7,9 @@
   存入保险库，列表只显示「已配置 / 未配置」，绝不回显（可在编辑中轮换）。
   RustFS 配置也可由应用商店部署 RustFS 成功后自动登记（尽力而为，含默认建桶）。
 
-  - 列表：类型徽章、名称（附 Endpoint）、Bucket、凭据状态；每行「编辑」+「测试连接」+ 删除。
-  - 添加弹窗：类型 + 名称 + Endpoint + Bucket + AccessKeyId + AccessKeySecret（必填）。
-  - 编辑弹窗：改名称 / Endpoint / Bucket / AccessKeyId，轮换 Secret（留空不改动）。
+  - 列表：类型徽章、名称（附 Endpoint + 协议标签）、Bucket、凭据状态；每行「编辑」+「测试连接」+ 删除。
+  - 添加弹窗：类型 + 名称 + Endpoint + HTTPS 开关 + Bucket（可拉取候选下拉）+ AccessKeyId + AccessKeySecret（必填）。
+  - 编辑弹窗：改名称 / Endpoint / HTTPS 开关 / Bucket / AccessKeyId，轮换 Secret（留空不改动）。
   - 删除二次确认（连带删除其保险库凭据）。
   数据来自 GET /api/object-stores（只读聚合，从不含 Secret）。
 */
@@ -25,8 +25,11 @@ import {
   updateObjectStore,
   deleteObjectStore,
   testObjectStore,
+  listObjectStoreBuckets,
+  probeObjectStoreBuckets,
   type ObjectStore,
   type ObjectStoreType,
+  type ObjectStoreBucket,
   type CreateObjectStoreInput,
 } from '../../api/objectStores'
 import { HttpError } from '../../api/http'
@@ -69,6 +72,11 @@ function endpointHintFor(type: ObjectStoreType | undefined): string {
     : t('settingsObjectStorage.endpointHint')
 }
 
+/** HTTPS 开关的类型默认：公云 OSS 必走 TLS；RustFS 自建内网默认明文（可手动开启）。 */
+function defaultUseSSLFor(type: ObjectStoreType | undefined): boolean {
+  return type !== 'rustfs'
+}
+
 async function load(): Promise<void> {
   loadState.value = 'loading'
   loadError.value = ''
@@ -94,11 +102,12 @@ const form = ref<{
   type: ObjectStoreType
   name: string
   endpoint: string
+  useSSL: boolean
   bucket: string
   pathPrefix: string
   accessKeyId: string
   secret: string
-}>({ type: 'aliyun_oss', name: '', endpoint: '', bucket: '', pathPrefix: '', accessKeyId: '', secret: '' })
+}>({ type: 'aliyun_oss', name: '', endpoint: '', useSSL: true, bucket: '', pathPrefix: '', accessKeyId: '', secret: '' })
 const errors = ref<{ name: string; endpoint: string; bucket: string; pathPrefix: string; accessKeyId: string; secret: string }>({
   name: '',
   endpoint: '',
@@ -109,10 +118,19 @@ const errors = ref<{ name: string; endpoint: string; bucket: string; pathPrefix:
 })
 const formSnapshot = ref('')
 
+/** 类型切换时重置该类型的默认传输协议（OSS→HTTPS / RustFS→HTTP），并清空过时的桶候选。 */
+function switchType(opt: ObjectStoreType): void {
+  if (form.value.type === opt) return
+  form.value.type = opt
+  form.value.useSSL = defaultUseSSLFor(opt)
+  bucketOptions.value = []
+}
+
 function openAdd(): void {
-  form.value = { type: 'aliyun_oss', name: '', endpoint: '', bucket: '', pathPrefix: '', accessKeyId: '', secret: '' }
+  form.value = { type: 'aliyun_oss', name: '', endpoint: '', useSSL: true, bucket: '', pathPrefix: '', accessKeyId: '', secret: '' }
   errors.value = { name: '', endpoint: '', bucket: '', pathPrefix: '', accessKeyId: '', secret: '' }
   formBanner.value = ''
+  bucketOptions.value = []
   modalOpen.value = true
   formSnapshot.value = JSON.stringify(form.value)
 }
@@ -164,6 +182,7 @@ async function submit(): Promise<void> {
       type: form.value.type,
       name: form.value.name.trim(),
       endpoint: form.value.endpoint.trim(),
+      useSSL: form.value.useSSL,
       bucket: form.value.bucket.trim(),
       pathPrefix: form.value.pathPrefix.trim(),
       accessKeyId: form.value.accessKeyId.trim(),
@@ -183,14 +202,15 @@ async function submit(): Promise<void> {
   }
 }
 
-// ─── 编辑弹窗(名称 / Endpoint / Bucket / AccessKeyId + 轮换 Secret)────────────
+// ─── 编辑弹窗(名称 / Endpoint / HTTPS / Bucket / AccessKeyId + 轮换 Secret)────
 const editOpen = ref(false)
 const editSubmitting = ref(false)
 const editBanner = ref('')
 const editing = ref<ObjectStore | null>(null)
-const editForm = ref<{ name: string; endpoint: string; bucket: string; pathPrefix: string; accessKeyId: string; secret: string }>({
+const editForm = ref<{ name: string; endpoint: string; useSSL: boolean; bucket: string; pathPrefix: string; accessKeyId: string; secret: string }>({
   name: '',
   endpoint: '',
+  useSSL: false,
   bucket: '',
   pathPrefix: '',
   accessKeyId: '',
@@ -209,6 +229,7 @@ function openEdit(s: ObjectStore): void {
   editForm.value = {
     name: s.name,
     endpoint: s.endpoint,
+    useSSL: s.useSSL,
     bucket: s.bucket,
     pathPrefix: s.pathPrefix,
     accessKeyId: s.accessKeyId,
@@ -217,6 +238,7 @@ function openEdit(s: ObjectStore): void {
   editErrors.value = { name: '', endpoint: '', bucket: '', accessKeyId: '' }
   editSnapshot.value = JSON.stringify(editForm.value)
   editBanner.value = ''
+  editBucketOptions.value = []
   editOpen.value = true
 }
 
@@ -263,6 +285,7 @@ async function submitEdit(): Promise<void> {
     const updated = await updateObjectStore(id, {
       name: editForm.value.name.trim(),
       endpoint: editForm.value.endpoint.trim(),
+      useSSL: editForm.value.useSSL,
       bucket: editForm.value.bucket.trim(),
       // 空串 = 清空前缀(可选字段,允许显式清空)。
       pathPrefix: editForm.value.pathPrefix.trim(),
@@ -287,6 +310,89 @@ async function submitEdit(): Promise<void> {
 
 // ─── 测试连接 ──────────────────────────────────────────────────────────────────
 const testingId = ref<string | null>(null)
+
+// ─── 桶候选列表（datalist 下拉建议；仍可手输）──────────────────────────────────
+const bucketOptions = ref<ObjectStoreBucket[]>([])
+const fetchingBuckets = ref(false)
+const editBucketOptions = ref<ObjectStoreBucket[]>([])
+const editFetchingBuckets = ref(false)
+
+/** 添加弹窗的拉取条件：endpoint/accessKeyId/secret 齐全（探测端点需要完整凭据）。 */
+const canFetchBuckets = computed(
+  () =>
+    !fetchingBuckets.value &&
+    !submitting.value &&
+    form.value.endpoint.trim() !== '' &&
+    form.value.accessKeyId.trim() !== '' &&
+    form.value.secret !== '',
+)
+
+/** 编辑弹窗的拉取条件：凭据未动（endpoint/AK 未改、未填新 secret）→ 服务端已存凭据即可；
+    改过则与添加同规则 —— 需填新 secret 才能拼出完整凭据。 */
+const canFetchEditBuckets = computed(() => {
+  if (editFetchingBuckets.value || editSubmitting.value || !editing.value) return false
+  const unchanged =
+    editForm.value.endpoint.trim() === editing.value.endpoint &&
+    editForm.value.accessKeyId.trim() === editing.value.accessKeyId &&
+    editForm.value.secret === ''
+  if (unchanged) return editForm.value.endpoint.trim() !== ''
+  return editForm.value.endpoint.trim() !== '' && editForm.value.accessKeyId.trim() !== '' && editForm.value.secret !== ''
+})
+
+/** 拉取失败的人话提示（toast）；字段仍可手输，不阻断表单。 */
+function bucketFetchError(err: unknown): string {
+  return err instanceof HttpError
+    ? (err.apiError?.message ?? t('settingsObjectStorage.errFetchBuckets'))
+    : t('settingsObjectStorage.errFetchBuckets')
+}
+
+/** 添加弹窗：未落库明文凭据直连探测列桶（不产生任何持久化副作用）。 */
+async function fetchBucketOptions(): Promise<void> {
+  if (!canFetchBuckets.value) return
+  fetchingBuckets.value = true
+  try {
+    const res = await probeObjectStoreBuckets({
+      type: form.value.type,
+      endpoint: form.value.endpoint.trim(),
+      useSSL: form.value.useSSL,
+      accessKeyId: form.value.accessKeyId.trim(),
+      secret: form.value.secret,
+    })
+    bucketOptions.value = res.buckets
+  } catch (err) {
+    bucketOptions.value = []
+    toast.error(bucketFetchError(err))
+  } finally {
+    fetchingBuckets.value = false
+  }
+}
+
+/** 编辑弹窗：凭据未动走已存配置的列桶；改过则按当前表单值直连探测。 */
+async function fetchEditBucketOptions(): Promise<void> {
+  if (!canFetchEditBuckets.value || !editing.value) return
+  editFetchingBuckets.value = true
+  try {
+    const unchanged =
+      editForm.value.endpoint.trim() === editing.value.endpoint &&
+      editForm.value.accessKeyId.trim() === editing.value.accessKeyId &&
+      editForm.value.secret === ''
+    const res = unchanged
+      ? await listObjectStoreBuckets(editing.value.id)
+      : await probeObjectStoreBuckets({
+          type: editing.value.type,
+          endpoint: editForm.value.endpoint.trim(),
+          useSSL: editForm.value.useSSL,
+          accessKeyId: editForm.value.accessKeyId.trim(),
+          secret: editForm.value.secret,
+        })
+    editBucketOptions.value = res.buckets
+  } catch (err) {
+    editBucketOptions.value = []
+    toast.error(bucketFetchError(err))
+  } finally {
+    editFetchingBuckets.value = false
+  }
+}
 
 async function testConnection(s: ObjectStore): Promise<void> {
   if (testingId.value) return
@@ -399,7 +505,7 @@ async function confirmDelete(): Promise<void> {
           <span class="type-badge">{{ typeLabels[s.type] }}</span>
           <div class="obj-name-cell">
             <strong class="obj-name">{{ s.name }}</strong>
-            <span v-if="s.endpoint" class="obj-ep mono">{{ s.endpoint }}</span>
+            <span v-if="s.endpoint" class="obj-ep mono">{{ s.endpoint }}<span class="proto-tag" :class="s.useSSL ? 'proto-tag--tls' : ''">{{ s.useSSL ? 'https' : 'http' }}</span></span>
           </div>
           <span class="obj-bucket mono">{{ s.bucket }}<span v-if="s.pathPrefix" class="obj-prefix">/{{ s.pathPrefix }}/</span></span>
           <span class="cred-state" :class="s.credentialConfigured ? 'cred-state--ok' : 'cred-state--missing'">
@@ -483,7 +589,7 @@ async function confirmDelete(): Promise<void> {
                 class="seg-item"
                 :class="{ 'seg-item--active': form.type === opt }"
                 :disabled="submitting"
-                @click="form.type = opt"
+                @click="switchType(opt)"
               >{{ typeLabels[opt] }}</button>
             </div>
           </div>
@@ -522,20 +628,38 @@ async function confirmDelete(): Promise<void> {
             <span class="field-hint">{{ endpointHintFor(form.type) }}</span>
           </div>
 
+          <label class="check-field" :class="{ 'check-field--disabled': submitting }">
+            <input v-model="form.useSSL" type="checkbox" :disabled="submitting" />
+            <span>{{ t('settingsObjectStorage.fieldUseSSL') }}</span>
+          </label>
+          <span class="field-hint check-field-hint">{{ t('settingsObjectStorage.useSSLHint') }}</span>
+
           <div class="field">
-            <label class="field-label" for="obj-bucket">{{ t('settingsObjectStorage.fieldBucket') }}</label>
+            <div class="field-label-row">
+              <label class="field-label" for="obj-bucket">{{ t('settingsObjectStorage.fieldBucket') }}</label>
+              <button
+                type="button"
+                class="link-btn"
+                :disabled="!canFetchBuckets"
+                @click="fetchBucketOptions"
+              >{{ fetchingBuckets ? t('settingsObjectStorage.fetchingBuckets') : t('settingsObjectStorage.fetchBuckets') }}</button>
+            </div>
             <input
               id="obj-bucket"
               v-model="form.bucket"
               class="field-input field-input--mono"
               :class="{ 'field-input--error': errors.bucket }"
               type="text"
+              list="obj-bucket-options"
               :placeholder="t('settingsObjectStorage.bucketPlaceholder')"
               :disabled="submitting"
               autocomplete="off"
               spellcheck="false"
               @input="errors.bucket = ''"
             />
+            <datalist id="obj-bucket-options">
+              <option v-for="b in bucketOptions" :key="b.name" :value="b.name" />
+            </datalist>
             <span v-if="errors.bucket" class="field-error" role="alert">{{ errors.bucket }}</span>
             <span class="field-hint">{{ t('settingsObjectStorage.bucketHint') }}</span>
           </div>
@@ -658,19 +782,37 @@ async function confirmDelete(): Promise<void> {
             <span v-if="editErrors.endpoint" class="field-error" role="alert">{{ editErrors.endpoint }}</span>
           </div>
 
+          <label class="check-field" :class="{ 'check-field--disabled': editSubmitting }">
+            <input v-model="editForm.useSSL" type="checkbox" :disabled="editSubmitting" />
+            <span>{{ t('settingsObjectStorage.fieldUseSSL') }}</span>
+          </label>
+          <span class="field-hint check-field-hint">{{ t('settingsObjectStorage.useSSLHint') }}</span>
+
           <div class="field">
-            <label class="field-label" for="edit-obj-bucket">{{ t('settingsObjectStorage.fieldBucket') }}</label>
+            <div class="field-label-row">
+              <label class="field-label" for="edit-obj-bucket">{{ t('settingsObjectStorage.fieldBucket') }}</label>
+              <button
+                type="button"
+                class="link-btn"
+                :disabled="!canFetchEditBuckets"
+                @click="fetchEditBucketOptions"
+              >{{ editFetchingBuckets ? t('settingsObjectStorage.fetchingBuckets') : t('settingsObjectStorage.fetchBuckets') }}</button>
+            </div>
             <input
               id="edit-obj-bucket"
               v-model="editForm.bucket"
               class="field-input field-input--mono"
               :class="{ 'field-input--error': editErrors.bucket }"
               type="text"
+              list="edit-obj-bucket-options"
               :disabled="editSubmitting"
               autocomplete="off"
               spellcheck="false"
               @input="editErrors.bucket = ''"
             />
+            <datalist id="edit-obj-bucket-options">
+              <option v-for="b in editBucketOptions" :key="b.name" :value="b.name" />
+            </datalist>
             <span v-if="editErrors.bucket" class="field-error" role="alert">{{ editErrors.bucket }}</span>
           </div>
 
@@ -1281,6 +1423,61 @@ async function confirmDelete(): Promise<void> {
   font-size: 0.74rem;
   color: var(--color-faint);
   line-height: 1.4;
+}
+.field-label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.link-btn {
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: 0.74rem;
+  color: var(--color-primary);
+  cursor: pointer;
+}
+.link-btn:hover:not(:disabled) {
+  text-decoration: underline;
+}
+.link-btn:disabled {
+  color: var(--color-faint);
+  cursor: not-allowed;
+}
+.check-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.8rem;
+  color: var(--color-dim);
+  cursor: pointer;
+}
+.check-field input[type='checkbox'] {
+  accent-color: var(--color-primary);
+}
+.check-field--disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.check-field-hint {
+  margin-top: -4px;
+}
+.proto-tag {
+  margin-left: 6px;
+  padding: 0 5px;
+  border-radius: 4px;
+  font-size: 0.62rem;
+  font-weight: 600;
+  line-height: 1.5;
+  color: var(--color-faint);
+  background: var(--color-inset);
+  border: 1px solid var(--color-border);
+  text-transform: uppercase;
+}
+.proto-tag--tls {
+  color: var(--color-green);
+  border-color: var(--color-green-soft);
 }
 
 .segmented {

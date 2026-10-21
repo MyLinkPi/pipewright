@@ -11,12 +11,13 @@ import (
 )
 
 // newObjectClient 按提供商类型造真实 ObjectClient(阿里云 OSS / S3 兼容 RustFS)。
-func newObjectClient(providerType, endpoint, accessKeyID, accessKeySecret, bucketName string) (ObjectClient, error) {
+// useSSL 决定传输层是否走 TLS(Endpoint 本身不含 scheme)。
+func newObjectClient(providerType, endpoint string, useSSL bool, accessKeyID, accessKeySecret, bucketName string) (ObjectClient, error) {
 	switch providerType {
 	case TypeAliyunOSS:
-		return newAliyunOSSClient(endpoint, accessKeyID, accessKeySecret, bucketName)
+		return newAliyunOSSClient(endpoint, useSSL, accessKeyID, accessKeySecret, bucketName)
 	case TypeRustFS:
-		return newRustFSClient(endpoint, accessKeyID, accessKeySecret, bucketName)
+		return newRustFSClient(endpoint, useSSL, accessKeyID, accessKeySecret, bucketName)
 	default:
 		return nil, ErrInvalidType
 	}
@@ -31,7 +32,12 @@ type aliyunObjectClient struct {
 }
 
 // newAliyunOSSClient 构造阿里云 OSS 客户端并绑定目标桶(endpoint 需为不带 scheme 的接入点)。
-func newAliyunOSSClient(endpoint, accessKeyID, accessKeySecret, bucketName string) (ObjectClient, error) {
+// SDK v3 无 SSL 开关选项,scheme 由 endpoint 前缀决定:useSSL 时临时拼 https:// 前缀
+// (仅本方法的局部变量,存储值仍是裸 host)。
+func newAliyunOSSClient(endpoint string, useSSL bool, accessKeyID, accessKeySecret, bucketName string) (ObjectClient, error) {
+	if useSSL {
+		endpoint = "https://" + endpoint
+	}
 	client, err := oss.New(endpoint, accessKeyID, accessKeySecret)
 	if err != nil {
 		return nil, err
@@ -60,6 +66,28 @@ func (c *aliyunObjectClient) PutObject(ctx context.Context, objectKey string, bo
 // 桶已存在时由服务端返回错误,归属判定与孤儿桶恢复在 service 层统一处理。
 func (c *aliyunObjectClient) CreateBucket(ctx context.Context, bucketName string) error {
 	return c.client.CreateBucket(bucketName)
+}
+
+// listBucketsPageSize 是 OSS 列桶的分页步长(账户桶数远小于对象数,200/页翻页拉全)。
+const listBucketsPageSize = 200
+
+// ListBuckets 列举账户下的桶(Marker 游标翻页拉全;截断上限由 service 层统一处理)。
+func (c *aliyunObjectClient) ListBuckets(ctx context.Context) ([]BucketEntry, error) {
+	var out []BucketEntry
+	marker := ""
+	for {
+		res, err := c.client.ListBuckets(oss.Marker(marker), oss.MaxKeys(listBucketsPageSize))
+		if err != nil {
+			return nil, err
+		}
+		for _, b := range res.Buckets {
+			out = append(out, BucketEntry{Name: b.Name, CreatedAt: b.CreationDate})
+		}
+		if !res.IsTruncated || res.NextMarker == "" {
+			return out, nil
+		}
+		marker = res.NextMarker
+	}
 }
 
 // ListPage 单页列举一个目录(V1 列举,delimiter 折叠子目录,marker 游标)。

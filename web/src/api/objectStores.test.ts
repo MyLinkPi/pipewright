@@ -11,6 +11,8 @@ import {
   updateObjectStore,
   deleteObjectStore,
   testObjectStore,
+  listObjectStoreBuckets,
+  probeObjectStoreBuckets,
 } from './objectStores'
 
 function jsonResponse(status: number, body: unknown, ok = status < 400): Response {
@@ -71,6 +73,7 @@ describe('objectStores api client', () => {
       type: 'aliyun_oss',
       name: '生产 OSS',
       endpoint: 'oss-cn-hangzhou.aliyuncs.com',
+      useSSL: true,
       bucket: 'prod-bucket',
       pathPrefix: '/ci/prod/',
       accessKeyId: 'LTAI5t',
@@ -83,6 +86,7 @@ describe('objectStores api client', () => {
       type: 'aliyun_oss',
       name: '生产 OSS',
       endpoint: 'oss-cn-hangzhou.aliyuncs.com',
+      useSSL: true,
       bucket: 'prod-bucket',
       pathPrefix: '/ci/prod/',
       accessKeyId: 'LTAI5t',
@@ -114,6 +118,45 @@ describe('objectStores api client', () => {
     fetchMock.mockResolvedValue(jsonResponse(200, {}))
     await updateObjectStore('os-1', { secret: 'rotated' })
     expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ secret: 'rotated' })
+  })
+
+  it('updateObjectStore toggles useSSL when provided (absent = unchanged)', async () => {
+    fetchMock.mockResolvedValue(jsonResponse(200, {}))
+    await updateObjectStore('os-1', { useSSL: false })
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ useSSL: false })
+  })
+
+  it('listObjectStoreBuckets GETs the per-id bucket candidates', async () => {
+    const result = { buckets: [{ name: 'prod-bucket', createdAt: '2026-01-01T00:00:00Z' }], truncated: false }
+    fetchMock.mockResolvedValue(jsonResponse(200, result))
+    expect(await listObjectStoreBuckets('os-1')).toEqual(result)
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(url).toBe('/api/object-stores/os-1/buckets')
+    expect(init.method).toBe('GET')
+  })
+
+  it('probeObjectStoreBuckets POSTs plaintext probe credentials + CSRF', async () => {
+    document.cookie = 'pipewright_csrf=tok123'
+    const result = { buckets: [], truncated: false }
+    fetchMock.mockResolvedValue(jsonResponse(200, result))
+    expect(await probeObjectStoreBuckets({
+      type: 'rustfs',
+      endpoint: '192.168.1.10:9000',
+      useSSL: false,
+      accessKeyId: 'ak',
+      secret: 'probe-secret',
+    })).toEqual(result)
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(url).toBe('/api/object-stores/buckets/probe')
+    expect(init.method).toBe('POST')
+    expect(JSON.parse(init.body)).toEqual({
+      type: 'rustfs',
+      endpoint: '192.168.1.10:9000',
+      useSSL: false,
+      accessKeyId: 'ak',
+      secret: 'probe-secret',
+    })
+    expect((init.headers as Headers).get('X-CSRF-Token')).toBe('tok123')
   })
 
   it('deleteObjectStore issues DELETE to the per-id URL', async () => {

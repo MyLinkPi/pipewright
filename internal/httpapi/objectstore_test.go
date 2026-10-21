@@ -279,3 +279,101 @@ func TestObjectStoreCreateBucketValidation(t *testing.T) {
 		t.Fatalf("非法桶名应 400, got %d body=%s", resp.StatusCode, raw)
 	}
 }
+
+// --- POST/PUT:useSSL 缺省按类型回填(OSS=true),显式传值尊重,Update 指针切换 ---
+
+func TestObjectStoreUseSSL(t *testing.T) {
+	srv, client, csrf, _, _ := setupObjectStoresAPI(t)
+
+	// OSS 缺省 → true。
+	_, raw, _ := createObjectStorePOST(t, client, srv.URL, csrf,
+		`{"type":"aliyun_oss","name":"prod","endpoint":"oss-cn-hangzhou.aliyuncs.com","bucket":"b","accessKeyId":"LTAI","secret":"s"}`)
+	var dto struct {
+		UseSSL bool `json:"useSSL"`
+	}
+	if err := json.Unmarshal(raw, &dto); err != nil || !dto.UseSSL {
+		t.Fatalf("OSS 缺省应 useSSL=true: %v %+v", err, dto)
+	}
+
+	// RustFS 缺省 → false;显式 true 尊重调用方。
+	_, raw, _ = createObjectStorePOST(t, client, srv.URL, csrf,
+		`{"type":"rustfs","name":"self","endpoint":"192.168.1.10:9000","accessKeyId":"ak","secret":"s","bucket":"pipewright"}`)
+	if err := json.Unmarshal(raw, &dto); err != nil || dto.UseSSL {
+		t.Fatalf("RustFS 缺省应 useSSL=false: %v %+v", err, dto)
+	}
+	_, raw, _ = createObjectStorePOST(t, client, srv.URL, csrf,
+		`{"type":"rustfs","name":"tls","endpoint":"minio.internal:9000","useSSL":true,"accessKeyId":"ak","secret":"s","bucket":"pipewright"}`)
+	if err := json.Unmarshal(raw, &dto); err != nil || !dto.UseSSL {
+		t.Fatalf("显式 useSSL=true 应生效: %v %+v", err, dto)
+	}
+
+	// Update 切换开关(缺省字段不修改)。
+	id, _, _ := createObjectStorePOST(t, client, srv.URL, csrf,
+		`{"type":"rustfs","name":"flip","endpoint":"192.168.1.10:9000","accessKeyId":"ak","secret":"s","bucket":"pipewright"}`)
+	resp := doJSON(t, client, http.MethodPut, srv.URL+"/api/object-stores/"+id, csrf, `{"useSSL":true}`)
+	raw, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("切换 useSSL 应 200, got %d body=%s", resp.StatusCode, raw)
+	}
+	if err := json.Unmarshal(raw, &dto); err != nil || !dto.UseSSL {
+		t.Fatalf("切换后应 useSSL=true: %v %+v", err, dto)
+	}
+	resp = doJSON(t, client, http.MethodPut, srv.URL+"/api/object-stores/"+id, csrf, `{"name":"flip2"}`)
+	raw, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err := json.Unmarshal(raw, &dto); err != nil || !dto.UseSSL {
+		t.Fatalf("无关 Update 不应改动 useSSL: %v %+v", err, dto)
+	}
+}
+
+// --- GET /{id}/buckets:不存在的配置 → 404;不可达端点 → 502(错误码映射) ---
+
+func TestObjectStoreListBuckets(t *testing.T) {
+	srv, client, csrf, _, _ := setupObjectStoresAPI(t)
+	resp := doJSON(t, client, http.MethodGet, srv.URL+"/api/object-stores/missing/buckets", csrf, "")
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("不存在应 404, got %d body=%s", resp.StatusCode, raw)
+	}
+
+	// 不可路由端点(127.0.0.1:1)→ 快速连接拒绝 → 502 + 专用错误码。
+	id, _, _ := createObjectStorePOST(t, client, srv.URL, csrf,
+		`{"type":"rustfs","name":"dead","endpoint":"127.0.0.1:1","accessKeyId":"ak","secret":"s","bucket":"pipewright"}`)
+	resp = doJSON(t, client, http.MethodGet, srv.URL+"/api/object-stores/"+id+"/buckets", csrf, "")
+	raw, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("不可达应 502, got %d body=%s", resp.StatusCode, raw)
+	}
+	if !strings.Contains(string(raw), "object_store_list_buckets_failed") {
+		t.Fatalf("应为列桶专用错误码: %s", raw)
+	}
+}
+
+// --- POST /buckets/probe:校验先于触网(非法类型/缺参 → 400);响应绝不回显 Secret ---
+
+func TestObjectStoreProbeBuckets(t *testing.T) {
+	srv, client, csrf, _, _ := setupObjectStoresAPI(t)
+
+	resp := doJSON(t, client, http.MethodPost, srv.URL+"/api/object-stores/buckets/probe", csrf,
+		`{"type":"minio","endpoint":"127.0.0.1:1","accessKeyId":"ak","secret":"s"}`)
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("非法类型应 400, got %d body=%s", resp.StatusCode, raw)
+	}
+
+	resp = doJSON(t, client, http.MethodPost, srv.URL+"/api/object-stores/buckets/probe", csrf,
+		`{"type":"aliyun_oss","endpoint":"127.0.0.1:1","accessKeyId":"ak","secret":"  "}`)
+	raw, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("空 secret 应 400, got %d body=%s", resp.StatusCode, raw)
+	}
+	if strings.Contains(string(raw), "probe") && strings.Contains(string(raw), "secret") {
+		t.Fatalf("错误体不应回显 Secret: %s", raw)
+	}
+}
+

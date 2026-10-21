@@ -284,7 +284,7 @@ async function copyCommand(): Promise<void> {
 // ─── 运行数据保留策略 ─────────────────────────────────────────────────────────
 // cacheMaxGb / imageKeepTags 属磁盘治理项,独立于 enabled 开关(缓存/镜像不是审计数据,
 // 默认即回收);keepPerProject / maxAgeDays 仍由 enabled 控制。
-const rt = ref<RetentionConfig>({ enabled: false, keepPerProject: 0, maxAgeDays: 0, cacheMaxGb: 10, imageKeepTags: 10 })
+const rt = ref<RetentionConfig>({ enabled: false, keepPerProject: 0, maxAgeDays: 0, cacheMaxGb: 10, imageKeepTags: 10, imageRemoveAfterPush: true })
 const rtLoading = ref(true)
 const rtSaving = ref(false)
 const rtSaved = ref(false)
@@ -312,6 +312,7 @@ async function saveRetention(): Promise<void> {
       maxAgeDays: Math.max(0, Math.floor(Number(rt.value.maxAgeDays) || 0)),
       cacheMaxGb: Math.max(0, Math.floor(Number(rt.value.cacheMaxGb) || 0)),
       imageKeepTags: Math.max(0, Math.floor(Number(rt.value.imageKeepTags) || 0)),
+      imageRemoveAfterPush: rt.value.imageRemoveAfterPush,
     })
     rtSaved.value = true
     setTimeout(() => { rtSaved.value = false }, 2000)
@@ -327,6 +328,7 @@ type CleanupState = { loading: boolean; ok: boolean; text: string; res?: Mainten
 const cleanupTargets = [
   { id: 'buildcache', labelKey: 'settingsSystem.mtBuildcache', hintKey: 'settingsSystem.mtBuildcacheHint' },
   { id: 'repocache', labelKey: 'settingsSystem.mtRepocache', hintKey: 'settingsSystem.mtRepocacheHint' },
+  { id: 'images', labelKey: 'settingsSystem.mtImages', hintKey: 'settingsSystem.mtImagesHint' },
   { id: 'remote-workspaces', labelKey: 'settingsSystem.mtRemote', hintKey: 'settingsSystem.mtRemoteHint' },
   { id: 'local-temp', labelKey: 'settingsSystem.mtLocal', hintKey: 'settingsSystem.mtLocalHint' },
 ] as const
@@ -343,7 +345,7 @@ function fmtBytes(n: number): string {
   return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`
 }
 
-async function runCleanup(target: 'buildcache' | 'repocache' | 'remote-workspaces' | 'local-temp'): Promise<void> {
+async function runCleanup(target: 'buildcache' | 'repocache' | 'images' | 'remote-workspaces' | 'local-temp'): Promise<void> {
   if (mtState.value[target]?.loading) return
   mtState.value[target] = { loading: true, ok: false, text: '' }
   try {
@@ -701,6 +703,12 @@ onMounted(() => {
           <span class="rt-hint">{{ t('settingsSystem.retentionImageKeepHint') }}</span>
         </label>
       </div>
+
+      <label class="pk-toggle mt-push-toggle">
+        <input type="checkbox" v-model="rt.imageRemoveAfterPush" :disabled="rtLoading" />
+        <span>{{ t('settingsSystem.retentionImageRmPush') }}</span>
+        <span class="rt-hint">{{ t('settingsSystem.retentionImageRmPushHint') }}</span>
+      </label>
 
       <p class="rt-warn">{{ t('settingsSystem.retentionWarn') }}</p>
 
@@ -1447,6 +1455,7 @@ onMounted(() => {
 .rt-err { font-size: 0.82rem; color: var(--color-danger, #e5484d); }
 
 /* ─── 磁盘清理(手动触发) ─────────────────────────────────────────────────── */
+.mt-push-toggle { margin: 4px 0 0; align-items: baseline; gap: 8px; }
 .mt-list { display: flex; flex-direction: column; gap: 10px; margin: 12px 0 4px; }
 .mt-row {
   display: flex; align-items: center; justify-content: space-between; gap: 16px;

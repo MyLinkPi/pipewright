@@ -10,20 +10,20 @@ import (
 )
 
 // rustfsObjectClient 是 RustFS(及任意 S3 兼容自建存储)的 ObjectClient 实现,基于 minio-go
-// (S3 API + AWS SigV4)。Endpoint 形如 host:port(不带 scheme);自建存储按 IP/主机名访问,
-// 必须走 path-style(BucketLookupPath),不能用虚拟主机样式。
+// (S3 API + AWS SigV4)。Endpoint 形如 host:port(不带 scheme),是否走 TLS 由 useSSL 决定;
+// 自建存储按 IP/主机名访问,必须走 path-style(BucketLookupPath),不能用虚拟主机样式。
 // 客户端无状态、每次操作即建即弃(与阿里云实现同一纪律)。
 type rustfsObjectClient struct {
 	client     *minio.Client
 	bucketName string
 }
 
-// newRustFSClient 构造 RustFS 客户端并绑定目标桶(endpoint 为 host:port;HTTP,同现有
-// Endpoint 归一化约定——去 scheme)。
-func newRustFSClient(endpoint, accessKeyID, accessKeySecret, bucketName string) (ObjectClient, error) {
+// newRustFSClient 构造 RustFS 客户端并绑定目标桶(endpoint 为 host:port;Endpoint 归一化
+// 约定去 scheme,是否 TLS 由 useSSL 控制——自建内网默认明文,可手动开启)。
+func newRustFSClient(endpoint string, useSSL bool, accessKeyID, accessKeySecret, bucketName string) (ObjectClient, error) {
 	cli, err := minio.New(endpoint, &minio.Options{
 		Creds:        credentials.NewStaticV4(accessKeyID, accessKeySecret, ""),
-		Secure:       false,
+		Secure:       useSSL,
 		BucketLookup: minio.BucketLookupPath,
 	})
 	if err != nil {
@@ -67,6 +67,19 @@ func (c *rustfsObjectClient) EnsureBucket(ctx context.Context) error {
 		return nil
 	}
 	return c.client.MakeBucket(ctx, c.bucketName, minio.MakeBucketOptions{})
+}
+
+// ListBuckets 列举账户下的桶(minio-go 单次调用内部翻页拉全;截断上限由 service 层统一处理)。
+func (c *rustfsObjectClient) ListBuckets(ctx context.Context) ([]BucketEntry, error) {
+	buckets, err := c.client.ListBuckets(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]BucketEntry, 0, len(buckets))
+	for _, b := range buckets {
+		out = append(out, BucketEntry{Name: b.Name, CreatedAt: b.CreationDate})
+	}
+	return out, nil
 }
 
 // ListPage 单页列举一个目录(Core API 的 V1 列举,delimiter 折叠子目录,marker 游标)。
