@@ -29,14 +29,15 @@ var orphanPrefixes = []string{
 }
 
 // SweepLocalOrphans 删除 dir 下匹配构建前缀且 mtime 超过 olderThan 的孤儿文件/目录,
-// 返回删除条目数与回收字节数。目录大小按递归统计(删除前),统计失败按 0 计。
-func SweepLocalOrphans(dir string, olderThan time.Duration) (int, int64, error) {
+// 返回被删除条目的完整路径清单(供清理留痕展示)与回收字节数。目录大小按递归统计(删除前),
+// 统计失败按 0 计。
+func SweepLocalOrphans(dir string, olderThan time.Duration) ([]string, int64, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return 0, 0, err
+		return nil, 0, err
 	}
 	cutoff := time.Now().Add(-olderThan)
-	var removed int
+	var deleted []string
 	var bytes int64
 	for _, e := range entries {
 		name := e.Name()
@@ -64,8 +65,8 @@ func SweepLocalOrphans(dir string, olderThan time.Duration) (int, int64, error) 
 		if err := os.RemoveAll(full); err != nil {
 			continue // best-effort:跳过失败条目
 		}
-		removed++
+		deleted = append(deleted, full)
 		bytes += size
 	}
-	return removed, bytes, nil
+	return deleted, bytes, nil
 }

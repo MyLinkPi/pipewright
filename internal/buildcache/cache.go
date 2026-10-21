@@ -153,6 +153,9 @@ func (s *Store) Save(ctx context.Context, key string, paths []string, workspace 
 	return nil
 }
 
+// Root 返回缓存根目录(维护留痕回显用)。
+func (s *Store) Root() string { return s.root }
+
 // Has 报告 key 是否已有缓存归档。
 func (s *Store) Has(key string) bool {
 	if s == nil || strings.TrimSpace(key) == "" {

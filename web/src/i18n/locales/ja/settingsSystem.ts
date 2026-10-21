@@ -67,6 +67,7 @@ export default {
   mtReclaimed: '{size} 回収',
   mtFailed: 'クリーンアップに失敗しました。後でもう一度お試しください。',
   mtWarn: 'ワークスペース/一時ファイルの清掃は 48 時間より古いものだけを対象とし、実行中のビルドには影響しません。',
+  mtDetail: '実行明細',
   updateSrcTitle: 'アップデートソース',
   updateSrcSub: 'アップデートの確認とアップグレードパッケージのダウンロード元。ミラー未設定時は GitHub Releases を使用(確認 api.github.com、ダウンロード github.com)。GitHub に到達できない環境(社内ネットワーク等)では自己ホストのミラーを指定できます。バイナリの完全性は常に sha256 チェックサムで保証されます。',
   updateSrcLabel: 'ミラー URL',

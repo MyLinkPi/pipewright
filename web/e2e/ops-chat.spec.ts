@@ -1016,6 +1016,28 @@ async function collect(page: Page): Promise<void> {
     await details.locator('summary').click()
 }
 
+test('presses Enter to send and Ctrl+Enter for newline', async ({ page }) => {
+  const f = await fixture(page)
+  await open(page)
+  const area = panel(page).getByRole('textbox', { name: '输入运维需求' })
+  await area.fill('disk usage')
+  await area.press('Enter')
+  await expect
+    .poll(() => f.state.requests.filter((r) => r.path.endsWith('/turns')).length)
+    .toBeGreaterThan(0)
+  // Ctrl+Enter 只换行不发送
+  const before = f.state.requests.filter((r) => r.path.endsWith('/turns')).length
+  await area.fill('two lines')
+  await area.press('Control+Enter')
+  await page.waitForTimeout(300)
+  expect(f.state.requests.filter((r) => r.path.endsWith('/turns')).length).toBe(before)
+  expect(await area.inputValue()).toContain('\n')
+  await area.press('Enter')
+  await expect
+    .poll(() => f.state.requests.filter((r) => r.path.endsWith('/turns')).length)
+    .toBeGreaterThan(before)
+})
+
 test('saved sessions survive hide, reopen and refresh without cancel or model request', async ({
   page,
 }) => {

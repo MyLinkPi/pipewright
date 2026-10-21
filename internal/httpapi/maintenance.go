@@ -55,12 +55,28 @@ func makeMaintenanceCleanupHandler(svc *maintenance.Service, aud audit.Recorder)
 		cctx, cancel := context.WithTimeout(r.Context(), maintenanceCleanupTimeout)
 		defer cancel()
 		res := fn(svc, cctx)
+		// 审计 detail:结论性字段 + 远程清扫的机器成败与命令数(逐条明细在 HTTP 响应里,
+		// 审计不重复搬运路径清单——append-only 日志防撑爆,数量足够对账)。
+		detail := map[string]any{"ok": res.OK, "items": res.Items, "bytes": res.Bytes, "error": res.Detail}
+		if len(res.Machines) > 0 {
+			ok := 0
+			for _, m := range res.Machines {
+				if m.OK {
+					ok++
+				}
+			}
+			detail["machinesOk"] = ok
+			detail["machinesTotal"] = len(res.Machines)
+		}
+		if len(res.Steps) > 0 {
+			detail["steps"] = len(res.Steps)
+		}
 		recordAudit(r.Context(), aud, audit.Entry{
 			Actor:      auditActor,
 			Action:     audit.ActionMaintenanceCleanup,
 			TargetType: "maintenance",
 			TargetID:   res.Target,
-			Detail:     map[string]any{"ok": res.OK, "items": res.Items, "bytes": res.Bytes, "error": res.Detail},
+			Detail:     detail,
 			IP:         clientIP(r),
 		})
 		writeJSON(w, http.StatusOK, res)

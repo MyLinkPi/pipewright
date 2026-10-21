@@ -13,7 +13,7 @@ import { useI18n } from 'vue-i18n'
 import { getVersion, checkUpdate, applyUpdate, updateJobStatus } from '../../api/version'
 import type { VersionInfo, UpdateInfo, UpdateJobStatus } from '../../api/version'
 import { getRetentionConfig, setRetentionConfig, type RetentionConfig } from '../../api/retention'
-import { runMaintenanceCleanup } from '../../api/maintenance'
+import { runMaintenanceCleanup, type MaintenanceResult } from '../../api/maintenance'
 import { getSystemConfig, saveSystemConfig, type SystemConfig } from '../../api/systemConfig'
 import { HttpError } from '../../api/http'
 import AppButton from '../../components/ui/AppButton.vue'
@@ -323,7 +323,7 @@ async function saveRetention(): Promise<void> {
 }
 
 // ─── 磁盘清理(手动触发;与后台定时任务同一套实现) ────────────────────────────
-type CleanupState = { loading: boolean; ok: boolean; text: string }
+type CleanupState = { loading: boolean; ok: boolean; text: string; res?: MaintenanceResult }
 const cleanupTargets = [
   { id: 'buildcache', labelKey: 'settingsSystem.mtBuildcache', hintKey: 'settingsSystem.mtBuildcacheHint' },
   { id: 'repocache', labelKey: 'settingsSystem.mtRepocache', hintKey: 'settingsSystem.mtRepocacheHint' },
@@ -331,6 +331,10 @@ const cleanupTargets = [
   { id: 'local-temp', labelKey: 'settingsSystem.mtLocal', hintKey: 'settingsSystem.mtLocalHint' },
 ] as const
 const mtState = ref<Record<string, CleanupState>>({})
+
+function cleanupRes(id: string): MaintenanceResult | undefined {
+  return mtState.value[id]?.res
+}
 
 function fmtBytes(n: number): string {
   if (n <= 0) return ''
@@ -345,7 +349,7 @@ async function runCleanup(target: 'buildcache' | 'repocache' | 'remote-workspace
   try {
     const res = await runMaintenanceCleanup(target)
     if (!res.ok) {
-      mtState.value[target] = { loading: false, ok: false, text: res.detail || t('settingsSystem.mtFailed') }
+      mtState.value[target] = { loading: false, ok: false, text: res.detail || t('settingsSystem.mtFailed'), res }
       return
     }
     const bytes = fmtBytes(res.bytes)
@@ -353,6 +357,7 @@ async function runCleanup(target: 'buildcache' | 'repocache' | 'remote-workspace
       loading: false,
       ok: true,
       text: t('settingsSystem.mtDone', { n: res.items }) + (bytes ? `,${t('settingsSystem.mtReclaimed', { size: bytes })}` : '') + (res.detail && res.items === 0 ? `(${res.detail})` : ''),
+      res,
     }
   } catch {
     mtState.value[target] = { loading: false, ok: false, text: t('settingsSystem.mtFailed') }
@@ -718,23 +723,39 @@ onMounted(() => {
         </div>
       </div>
       <div class="mt-list">
-        <div v-for="tg in cleanupTargets" :key="tg.id" class="mt-row">
-          <div class="mt-row-text">
-            <span class="rt-label">{{ t(tg.labelKey) }}</span>
-            <span class="rt-hint">{{ t(tg.hintKey) }}</span>
+        <div v-for="tg in cleanupTargets" :key="tg.id" class="mt-item">
+          <div class="mt-row">
+            <div class="mt-row-text">
+              <span class="rt-label">{{ t(tg.labelKey) }}</span>
+              <span class="rt-hint">{{ t(tg.hintKey) }}</span>
+            </div>
+            <div class="mt-row-actions">
+              <span v-if="mtState[tg.id]?.text" class="mt-result" :class="mtState[tg.id]?.ok ? 'mt-result--ok' : 'mt-result--err'" role="status">
+                {{ mtState[tg.id]?.text }}
+              </span>
+              <AppButton
+                variant="default"
+                :loading="mtState[tg.id]?.loading"
+                @click="runCleanup(tg.id)"
+              >
+                {{ t('settingsSystem.mtRun') }}
+              </AppButton>
+            </div>
           </div>
-          <div class="mt-row-actions">
-            <span v-if="mtState[tg.id]?.text" class="mt-result" :class="mtState[tg.id]?.ok ? 'mt-result--ok' : 'mt-result--err'" role="status">
-              {{ mtState[tg.id]?.text }}
-            </span>
-            <AppButton
-              variant="default"
-              :loading="mtState[tg.id]?.loading"
-              @click="runCleanup(tg.id)"
-            >
-              {{ t('settingsSystem.mtRun') }}
-            </AppButton>
-          </div>
+          <!-- 执行明细:在哪台机器上执行了什么命令、删了哪些文件,点了就必须能查 -->
+          <details v-if="cleanupRes(tg.id) && ((cleanupRes(tg.id)?.steps?.length ?? 0) > 0 || (cleanupRes(tg.id)?.machines?.length ?? 0) > 0)" class="mt-detail">
+            <summary>{{ t('settingsSystem.mtDetail') }}</summary>
+            <ul class="mt-steps">
+              <li v-for="st in cleanupRes(tg.id)?.steps ?? []" :key="st"><code>{{ st }}</code></li>
+            </ul>
+            <ul v-if="(cleanupRes(tg.id)?.machines?.length ?? 0) > 0" class="mt-steps">
+              <li v-for="m in cleanupRes(tg.id)?.machines ?? []" :key="m.serverId" :class="{ 'mt-step-err': !m.ok }">
+                <span class="mt-machine">{{ m.ok ? '✓' : '✗' }} {{ m.name }}({{ m.serverId }})</span>
+                <code>{{ m.command }}</code>
+                <span v-if="m.error" class="mt-result--err">{{ m.error }}</span>
+              </li>
+            </ul>
+          </details>
         </div>
       </div>
       <p class="rt-warn">{{ t('settingsSystem.mtWarn') }}</p>
@@ -1436,6 +1457,16 @@ onMounted(() => {
 .mt-result { font-size: 0.82rem; max-width: 320px; text-align: right; }
 .mt-result--ok { color: var(--color-ok); }
 .mt-result--err { color: var(--color-danger, #e5484d); }
+.mt-detail { margin-top: 6px; font-size: 0.8rem; }
+.mt-detail summary { cursor: pointer; color: var(--color-text-dim, #9aa4b2); user-select: none; }
+.mt-steps { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 3px; }
+.mt-steps code {
+  font-family: var(--font-mono, monospace); font-size: 0.76rem; word-break: break-all;
+  background: var(--color-bg-inset, #141821); padding: 1px 5px; border-radius: 4px;
+}
+.mt-steps li { display: flex; flex-wrap: wrap; gap: 6px; align-items: baseline; }
+.mt-machine { font-weight: 600; }
+.mt-step-err { color: var(--color-danger, #e5484d); }
 
 /* ─── 界面语言 ───────────────────────────────────────────────────────────────── */
 .lang-field {

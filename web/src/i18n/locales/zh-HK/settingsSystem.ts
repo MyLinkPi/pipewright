@@ -67,6 +67,7 @@ export default {
   mtReclaimed: '回收 {size}',
   mtFailed: '清理失敗,請稍後重試。',
   mtWarn: '工作區/臨時檔案清掃僅處理 48 小時前的殘留,進行中的構建絕不受影響。',
+  mtDetail: '執行明細',
   updateSrcTitle: '升級來源',
   updateSrcSub: '檢查更新與下載升級套件所用的來源。未設定鏡像時使用 GitHub Releases(檢查 api.github.com、下載 github.com);內部網絡或 GitHub 不可達時可指向自建鏡像。二進位完整性始終由 sha256 校驗和保障。',
   updateSrcLabel: '鏡像地址',

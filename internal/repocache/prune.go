@@ -19,6 +19,9 @@ import (
 	"sync"
 )
 
+// Root 返回镜像根目录(维护留痕回显用)。
+func (c *Cache) Root() string { return c.root }
+
 // Remove 删除 repoURL 对应的本地镜像(不存在视为成功,幂等)。顺带清锁表条目防增长。
 func (c *Cache) Remove(repoURL string) error {
 	mirror := c.mirrorPath(repoURL)
@@ -33,17 +36,19 @@ func (c *Cache) Remove(repoURL string) error {
 	return nil
 }
 
-// Prune 删除 root 下不在 keepURLs 内的镜像(裸 *.git 目录),返回删除数与回收字节数。
-func (c *Cache) Prune(keepURLs []string) (int, int64, error) {
+// Prune 删除 root 下不在 keepURLs 内的镜像(裸 *.git 目录),返回被删除镜像的路径清单
+//(供清理留痕展示)与回收字节数。
+func (c *Cache) Prune(keepURLs []string) ([]string, int64, error) {
 	keep := make(map[string]struct{}, len(keepURLs))
 	for _, u := range keepURLs {
 		keep[filepath.Base(c.mirrorPath(u))] = struct{}{}
 	}
 	entries, err := os.ReadDir(c.root)
 	if err != nil {
-		return 0, 0, err
+		return nil, 0, err
 	}
-	removed, reclaimed := 0, int64(0)
+	var deleted []string
+	reclaimed := int64(0)
 	for _, e := range entries {
 		name := e.Name()
 		if !e.IsDir() || !strings.HasSuffix(name, ".git") {
@@ -62,11 +67,11 @@ func (c *Cache) Prune(keepURLs []string) (int, int64, error) {
 		mu.Unlock()
 		c.locks.Delete(full)
 		if rerr == nil {
-			removed++
+			deleted = append(deleted, full)
 			reclaimed += size
 		}
 	}
-	return removed, reclaimed, nil
+	return deleted, reclaimed, nil
 }
 
 // mirrorSize 递归统计镜像目录字节数(只用于回报,失败按 0 计)。

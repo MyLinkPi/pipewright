@@ -45,15 +45,20 @@ func TestSweepLocalOrphansAgeGateAndPrefix(t *testing.T) {
 	// 超龄但非 pipewright 前缀 → 绝不碰。
 	touchOld(t, dir, filepath.Join(dir, "someone-else.tmp"), 72*time.Hour)
 
-	removed, bytes, err := SweepLocalOrphans(dir, 48*time.Hour)
+	deleted, bytes, err := SweepLocalOrphans(dir, 48*time.Hour)
 	if err != nil {
 		t.Fatalf("SweepLocalOrphans: %v", err)
 	}
-	if removed != 3 {
-		t.Fatalf("应删 3 个孤儿条目,实际 %d", removed)
+	if len(deleted) != 3 {
+		t.Fatalf("应删 3 个孤儿条目,实际 %d:%v", len(deleted), deleted)
 	}
 	if bytes <= 0 {
 		t.Fatalf("应统计到回收字节数,实际 %d", bytes)
+	}
+	for _, d := range deleted {
+		if !strings.HasPrefix(d, filepath.Join(dir, "pipewright-")) && !strings.HasPrefix(d, filepath.Join(dir, "pw-mesh-img-")) {
+			t.Fatalf("删除清单不应包含无关路径:%s", d)
+		}
 	}
 	for _, keep := range []string{
 		filepath.Join(dir, "pipewright-build-fresh", "ws.txt"),
@@ -71,11 +76,11 @@ func TestSweepLocalOrphansKeepsFreshEntries(t *testing.T) {
 	touchOld(t, dir, filepath.Join(dir, "pipewright-build-new"), 2*time.Hour)
 	touchOld(t, dir, filepath.Join(dir, "pipewright-previous-new"), 2*time.Hour)
 
-	removed, _, err := SweepLocalOrphans(dir, 48*time.Hour)
+	deleted, _, err := SweepLocalOrphans(dir, 48*time.Hour)
 	if err != nil {
 		t.Fatalf("SweepLocalOrphans: %v", err)
 	}
-	if removed != 0 {
-		t.Fatalf("新鲜条目不应被删除,实际删除 %d 个", removed)
+	if len(deleted) != 0 {
+		t.Fatalf("新鲜条目不应被删除,实际删除 %d 个:%v", len(deleted), deleted)
 	}
 }

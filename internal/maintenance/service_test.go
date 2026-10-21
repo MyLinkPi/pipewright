@@ -63,6 +63,12 @@ func TestSweepRemoteWorkspacesTargetsBuildMachinesOnly(t *testing.T) {
 			t.Fatalf("清扫命令形态不符:%v", cmd)
 		}
 	}
+	// 每台机器的结果必须带实际执行的命令原文(可审计:在哪台机器上执行了什么一目了然)。
+	for _, m := range res.Machines {
+		if !strings.HasPrefix(m.Command, "$ sh -c find /tmp/pipewright-remote") || !strings.Contains(m.Command, "-mtime +2") {
+			t.Fatalf("机器结果应带命令原文,实际:%+v", m)
+		}
+	}
 }
 
 // 单机 SSH 失败不影响其它机器,汇总如实反映。
@@ -109,6 +115,11 @@ func TestSweepLocalTempViaService(t *testing.T) {
 	res := s.SweepLocalTemp(context.Background())
 	if !res.OK || res.Items != 1 || res.Bytes <= 0 {
 		t.Fatalf("应清 1 项并统计字节,实际:%+v", res)
+	}
+	// Steps 必须带扫描说明与被删路径(点了清理就能看到动了哪些文件)。
+	joined := strings.Join(res.Steps, "\n")
+	if !strings.Contains(joined, "扫描目录") || !strings.Contains(joined, old) {
+		t.Fatalf("Steps 应含扫描说明与删除路径,实际:%v", res.Steps)
 	}
 }
 

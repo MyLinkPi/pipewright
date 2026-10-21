@@ -51,19 +51,48 @@ const (
 type Result struct {
 	Target string `json:"target"`
 	OK     bool   `json:"ok"`
-	Items  int    `json:"items"`  // 删除条数(缓存条目/镜像数/文件数;远程清扫=机器数)
-	Bytes  int64  `json:"bytes"`  // 回收字节数(远程清扫恒 0——远端 find 不回报大小)
-	Detail string          `json:"detail,omitempty"` // 人读说明/跳过原因
-	// Machines 是远程清扫的逐机结果(仅 SweepRemoteWorkspaces 填)。
+	Items  int    `json:"items"` // 删除条数(缓存条目/镜像数/文件数;远程清扫=机器数)
+	Bytes  int64  `json:"bytes"` // 回收字节数(远程清扫恒 0——远端 find 不回报大小)
+	Detail string `json:"detail,omitempty"` // 人读说明/跳过原因
+	// Steps 是清理过程留痕:删了哪些文件/目录、本地执行了什么(上限 stepsMax 条,超出截断)。
+	// 纪律对齐 build 的「所有执行的命令可见」:手动清理点了什么、动了什么,必须可查。
+	Steps []string `json:"steps,omitempty"`
+	// Machines 是远程清扫的逐机结果(仅 SweepRemoteWorkspaces 填;含每台实际执行的命令原文)。
 	Machines []MachineResult `json:"machines,omitempty"`
 }
 
-// MachineResult 是单台构建机的清扫结果。
+// MachineResult 是单台构建机的清扫结果(含实际执行的命令原文,可审计)。
 type MachineResult struct {
 	ServerID string `json:"serverId"`
 	Name     string `json:"name"`
 	OK       bool   `json:"ok"`
-	Error    string `json:"error,omitempty"`
+	// Command 是在该机上实际执行的命令回显($ 前缀,与构建日志 emitCmd 同口径)。
+	Command string `json:"command"`
+	Error   string `json:"error,omitempty"`
+}
+
+// stepsMax 是 Steps 留痕的条数上限(防一次清几千个文件撑爆响应/日志;超出记"另有 N 项")。
+const stepsMax = 100
+
+// appendSteps 把删除路径清单收进 Steps(带动作前缀),超过上限截断并记尾注。
+func appendSteps(steps []string, verb string, paths []string, extra ...string) []string {
+	steps = append(steps, extra...)
+	for _, p := range paths {
+		if len(steps) >= stepsMax {
+			return append(steps, fmt.Sprintf("…另有 %d 项未列出", len(paths)+len(extra)-len(steps)))
+		}
+		steps = append(steps, verb+" "+p)
+	}
+	return steps
+}
+
+// displayCommand 把 array 命令回显成单行(与构建日志 emitCmd 同口径:bin + 空格拼接参数;
+// sh -c 的脚本体保持原样,不引号包裹——参数来自代码常量,无注入面)。
+func displayCommand(cmd []string) string {
+	if len(cmd) == 0 {
+		return ""
+	}
+	return "$ " + strings.Join(cmd, " ")
 }
 
 // serverLister/remoteExecer 是远程清扫的最小依赖面(target.Service 原样满足;收窄接口便于
@@ -134,13 +163,23 @@ func (s *Service) CleanBuildcache(ctx context.Context) Result {
 			res.Detail = "读取缓存上限配置失败,仅清崩溃残留:" + err.Error()
 		}
 	}
-	removed, reclaimed, err := s.cache.GC(int64(maxGB)*(1<<30), buildcacheTempMinAge)
-	res.Items, res.Bytes = removed, reclaimed
+	deleted, reclaimed, err := s.cache.GC(int64(maxGB)*(1<<30), buildcacheTempMinAge)
+	res.Items, res.Bytes = len(deleted), reclaimed
+	res.Steps = appendSteps(nil, "删除", deleted,
+		fmt.Sprintf("缓存目录 %s:上限 %d GB(0=不限),按最久使用淘汰;另清超过 1h 的 .save-* 残留", s.cacheRoot(), maxGB))
 	if err != nil {
 		res.OK = false
 		res.Detail = strings.TrimSpace(res.Detail + " " + err.Error())
 	}
 	return res
+}
+
+// cacheRoot 回显缓存根目录(留痕用;取不到返回 "?")。
+func (s *Service) cacheRoot() string {
+	if s.cache == nil {
+		return "?"
+	}
+	return s.cache.Root()
 }
 
 // CleanRepocache 删除无任何项目引用的仓库镜像(定时兜底;项目删除的即时清理走 httpapi 侧)。
@@ -156,8 +195,10 @@ func (s *Service) CleanRepocache(ctx context.Context) Result {
 		res.Detail = "查询项目仓库地址失败:" + err.Error()
 		return res
 	}
-	removed, reclaimed, err := s.repos.Prune(urls)
-	res.Items, res.Bytes = removed, reclaimed
+	deleted, reclaimed, err := s.repos.Prune(urls)
+	res.Items, res.Bytes = len(deleted), reclaimed
+	res.Steps = appendSteps(nil, "删除无引用镜像", deleted,
+		fmt.Sprintf("镜像目录 %s:保留 %d 个仍在用的仓库地址,其余删除", s.repos.Root(), len(urls)))
 	if err != nil {
 		res.OK = false
 		res.Detail = err.Error()
@@ -203,7 +244,7 @@ func (s *Service) SweepRemoteWorkspaces(ctx context.Context) Result {
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			results[i] = MachineResult{ServerID: j.id, Name: j.name}
+			results[i] = MachineResult{ServerID: j.id, Name: j.name, Command: displayCommand(remoteSweepCmd)}
 			mctx, cancel := context.WithTimeout(ctx, remoteSweepTimeout)
 			defer cancel()
 			if _, err := s.execer.Exec(mctx, j.id, remoteSweepCmd); err != nil {
@@ -237,8 +278,10 @@ func (s *Service) SweepLocalTemp(ctx context.Context) Result {
 		dir = os.TempDir()
 	}
 	res := Result{Target: "local-temp", OK: true}
-	removed, reclaimed, err := build.SweepLocalOrphans(dir, orphanAge)
-	res.Items, res.Bytes = removed, reclaimed
+	deleted, reclaimed, err := build.SweepLocalOrphans(dir, orphanAge)
+	res.Items, res.Bytes = len(deleted), reclaimed
+	res.Steps = appendSteps(nil, "删除", deleted,
+		fmt.Sprintf("扫描目录 %s:仅匹配构建前缀且超过 48h 的条目", dir))
 	if err != nil {
 		res.OK = false
 		res.Detail = err.Error()
@@ -267,10 +310,21 @@ func (s *Service) projectRepoURLs(ctx context.Context) ([]string, error) {
 }
 
 // LogResult 把一次清理结果记进服务日志(自动调度入口用;手动入口由 HTTP 响应带回)。
+// 明细逐行输出(命令回显/删除路径)——与构建日志「所有执行的命令可见」同口径。
 func LogResult(r Result) {
 	if r.OK {
 		log.Printf("[maintenance] %s 完成:删除 %d 项,回收 %d 字节 %s", r.Target, r.Items, r.Bytes, r.Detail)
-		return
+	} else {
+		log.Printf("[maintenance] %s 失败:%s(已删除 %d 项)", r.Target, r.Detail, r.Items)
 	}
-	log.Printf("[maintenance] %s 失败:%s(已删除 %d 项)", r.Target, r.Detail, r.Items)
+	for _, m := range r.Machines {
+		if m.OK {
+			log.Printf("[maintenance] %s @%s(%s): %s", r.Target, m.Name, m.ServerID, m.Command)
+		} else {
+			log.Printf("[maintenance] %s @%s(%s): %s 失败:%s", r.Target, m.Name, m.ServerID, m.Command, m.Error)
+		}
+	}
+	for _, st := range r.Steps {
+		log.Printf("[maintenance] %s: %s", r.Target, st)
+	}
 }

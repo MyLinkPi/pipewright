@@ -11,7 +11,19 @@ const api = vi.hoisted(() => ({
     cacheMaxGb: 10,
     imageKeepTags: 10,
   },
-  cleanup: { target: 'local-temp', ok: true, items: 3, bytes: 2097152 },
+  cleanup: {
+    target: 'local-temp',
+    ok: true,
+    items: 3,
+    bytes: 2097152,
+    steps: [
+      '扫描目录 /tmp:仅匹配构建前缀且超过 48h 的条目',
+      '删除 /tmp/pipewright-build-abc123',
+    ],
+    machines: [
+      { serverId: 'srv-1', name: 'build-1', ok: true, command: '$ sh -c find /tmp/pipewright-remote /tmp/pipewright-shared -mindepth 1 -maxdepth 1 -mtime +2 -exec rm -rf {} +' },
+    ],
+  },
   systemConfig: {
     publicUrl: '',
     releaseMirror: '',
@@ -77,6 +89,20 @@ describe('settings system disk governance', () => {
     // 结果文案包含条数与人读大小。
     expect(wrap.text()).toContain('已清理 3 项')
     expect(wrap.text()).toContain('2.0 MB')
+  })
+
+  it('shows the execution details: deleted paths and per-machine commands', async () => {
+    const wrap = await mountPanel()
+    const runButtons = wrap.findAll('button').filter((b) => b.text().includes('立即清理'))
+    await runButtons[0].trigger('click')
+    await flushPromises()
+    // 执行明细可展开,删除路径逐条可见。
+    expect(wrap.text()).toContain('执行明细')
+    expect(wrap.text()).toContain('删除 /tmp/pipewright-build-abc123')
+    // 每台机器实际执行的命令原文可见。
+    expect(wrap.text()).toContain('build-1(srv-1)')
+    expect(wrap.text()).toContain('find /tmp/pipewright-remote /tmp/pipewright-shared')
+    expect(wrap.text()).toContain('-mtime +2')
   })
 
   it('saves the retention policy including the new disk fields', async () => {

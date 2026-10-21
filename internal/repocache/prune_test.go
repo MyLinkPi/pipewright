@@ -30,12 +30,15 @@ func TestPruneRemovesUnreferencedMirrors(t *testing.T) {
 		t.Fatalf("seed junk: %v", err)
 	}
 
-	removed, reclaimed, err := c.Prune(keepURLs)
+	deleted, reclaimed, err := c.Prune(keepURLs)
 	if err != nil {
 		t.Fatalf("Prune: %v", err)
 	}
-	if removed != 1 || reclaimed <= 0 {
-		t.Fatalf("应删 1 个无引用镜像并统计字节,实际 removed=%d reclaimed=%d", removed, reclaimed)
+	if len(deleted) != 1 || reclaimed <= 0 {
+		t.Fatalf("应删 1 个无引用镜像并统计字节,实际 deleted=%v reclaimed=%d", deleted, reclaimed)
+	}
+	if len(deleted) != 1 || deleted[0] != c.mirrorPath(goneURL) {
+		t.Fatalf("删除清单应是那个无引用镜像,实际:%v", deleted)
 	}
 	if _, err := os.Stat(c.mirrorPath(goneURL)); !os.IsNotExist(err) {
 		t.Fatalf("无引用镜像应被删除:%v", err)
