@@ -54,6 +54,24 @@ type Socks5Config struct {
 // socks5DefaultPort 是启用 SOCKS5 而未指定端口时的默认端口。
 const socks5DefaultPort = 1080
 
+// AliyunGroupConfig 是一个待自动更新的阿里云安全组。Description 是匹配锚点:同步时
+// 在该安全组的既有规则里按描述精确匹配(须组内唯一),协议/端口沿用旧规则,只把源 IP
+// 换成本机当前公网 IP。
+type AliyunGroupConfig struct {
+	RegionID        string `yaml:"regionId"`
+	SecurityGroupID string `yaml:"securityGroupId"`
+	Description     string `yaml:"description"`
+}
+
+// AliyunConfig 是「连接前自动更新阿里云安全组」的配置(可选;不配 = 不启用)。更新方式:
+// 连接/重连前把本机公网 IP 授权进各组匹配描述的规则并回收旧 IP(先加新再删旧),
+// 连接保持期间定期复查自愈。密钥明文落盘(config.yaml 整体 0600);绝不入日志/状态回显。
+type AliyunConfig struct {
+	AccessKeyID     string              `yaml:"accessKeyId"`
+	AccessKeySecret string              `yaml:"accessKeySecret"`
+	Groups          []AliyunGroupConfig `yaml:"groups"`
+}
+
 // ProxyConfig 是一条独立的多出口代理:EasyTier 单进程仅一个 --socks5 端口且出口是
 // 节点级路由,故每条配置由运行时拉起一个独立轻量组网实例(独立实例目录 + DHCP 虚拟 IP),
 // 本地端口与出口节点一一绑定。ExitNodes 空 = 该端口仅访问虚拟网/通告网段,不出网。
@@ -74,6 +92,9 @@ type Config struct {
 	// Proxies 是附加的多出口代理列表(每条 = 独立本地 SOCKS5 端口 + 各自出口节点)。
 	Proxies  []ProxyConfig  `yaml:"proxies"`
 	EasyTier EasyTierConfig `yaml:"easytier"`
+	// Aliyun 是连接前自动更新阿里云安全组的配置(可选)。不参与组网指纹:改动只重跑
+	// 安全组同步,不重启 EasyTier。
+	Aliyun AliyunConfig `yaml:"aliyun"`
 }
 
 // exportMeta 是平台导出文件中客户端不消费的辅助段(来源节点/平台版本,留档展示)。
@@ -154,6 +175,9 @@ func Normalize(cfg Config) (Config, error) {
 	if err := normalizeProxies(&cfg); err != nil {
 		return cfg, err
 	}
+	if err := normalizeAliyun(&cfg); err != nil {
+		return cfg, err
+	}
 	cfg.EasyTier.BinDir = strings.TrimSpace(cfg.EasyTier.BinDir)
 	cfg.EasyTier.RPCAddr = strings.TrimSpace(cfg.EasyTier.RPCAddr)
 	if cfg.EasyTier.RPCAddr == "" {
@@ -227,6 +251,46 @@ func normalizeProxies(cfg *Config) error {
 	}
 	cfg.Proxies = out
 	return nil
+}
+
+// normalizeAliyun 归一化阿里云安全组段:去空白、丢全空行、逐组三字段必填(缺即报错,
+// 配置来自 GUI/手输须即时反馈)、按 (regionId, securityGroupId) 去重(同组多描述无意义
+// —— 描述是组内锚点,同步时一次 Describe 拿全)。配了组但 AK 不成对 → 报错;组为空时
+// AK 残留不报错(先填一半的场景,不拦)。密钥仅去空白,不校验内容。
+func normalizeAliyun(cfg *Config) error {
+	a := &cfg.Aliyun
+	a.AccessKeyID = strings.TrimSpace(a.AccessKeyID)
+	a.AccessKeySecret = strings.TrimSpace(a.AccessKeySecret)
+	out := make([]AliyunGroupConfig, 0, len(a.Groups))
+	seen := make(map[string]struct{}, len(a.Groups))
+	for _, g := range a.Groups {
+		g.RegionID = strings.TrimSpace(g.RegionID)
+		g.SecurityGroupID = strings.TrimSpace(g.SecurityGroupID)
+		g.Description = strings.TrimSpace(g.Description)
+		if g.RegionID == "" && g.SecurityGroupID == "" && g.Description == "" {
+			continue
+		}
+		if g.RegionID == "" || g.SecurityGroupID == "" || g.Description == "" {
+			return fmt.Errorf("%w: 安全组行(regionId=%q, securityGroupId=%q, description=%q)须三项都填写",
+				ErrInvalidConfig, g.RegionID, g.SecurityGroupID, g.Description)
+		}
+		key := g.RegionID + "|" + g.SecurityGroupID
+		if _, dup := seen[key]; dup {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, g)
+	}
+	a.Groups = out
+	if len(out) > 0 && (a.AccessKeyID == "" || a.AccessKeySecret == "") {
+		return fmt.Errorf("%w: 已配置安全组但缺少阿里云 AccessKeyId/AccessKeySecret(须成对)", ErrInvalidConfig)
+	}
+	return nil
+}
+
+// AliyunReady 报告安全组同步是否具备完整配置(AK 成对 + 至少一组)。
+func (c Config) AliyunReady() bool {
+	return c.Aliyun.AccessKeyID != "" && c.Aliyun.AccessKeySecret != "" && len(c.Aliyun.Groups) > 0
 }
 
 // socks5Port 取生效的 SOCKS5 端口(未启用 = 0)。

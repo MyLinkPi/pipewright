@@ -54,6 +54,12 @@ type trayApp struct {
 	proxyEdit       *walk.TextEdit
 	proxyStatus     *walk.Label
 
+	aliyunAkEdit     *walk.LineEdit
+	aliyunSkEdit     *walk.LineEdit
+	aliyunGroupsEdit *walk.TextEdit
+	aliyunApplyBtn   *walk.PushButton
+	aliyunStatus     *walk.Label
+
 	// 出口下拉的最近一次回填(候选集合 + 已存值)。均未变化时跳过回填,避免 3s 轮询
 	// 打断用户正在展开/选择的过程(选择未保存前轮询不得重置下拉)。
 	exitItems  []string
@@ -207,6 +213,33 @@ func (a *trayApp) build() error {
 								},
 							},
 							GroupBox{
+								Title:  "连接前放行(阿里云安全组,可选)",
+								Layout: VBox{MarginsZero: true, Spacing: 6},
+								Children: []Widget{
+									Label{Text: "连接/重连前自动把本机公网 IPv4 更新到下列安全组的既有规则:按规则描述精确匹配,协议/端口沿用,先授权新 IP 再回收旧 IP;连接期间每 5 分钟复查自愈。须先在阿里云控制台按所填描述创建放行规则(该描述在组内唯一)。", TextColor: walk.Color(0x666666)},
+									Composite{
+										Layout: HBox{MarginsZero: true, Spacing: 8},
+										Children: []Widget{
+											Label{Text: "AccessKeyId:"},
+											LineEdit{AssignTo: &a.aliyunAkEdit, MinSize: Size{Width: 168}},
+											Label{Text: "AccessKeySecret:"},
+											LineEdit{AssignTo: &a.aliyunSkEdit, PasswordMode: true, CueBanner: "已配置时留空保持", MinSize: Size{Width: 168}},
+											HSpacer{},
+										},
+									},
+									Label{Text: "安全组列表,每行:地域 安全组ID 规则描述(如 cn-hangzhou sg-xxx pwclient-home;描述可含空格):", TextColor: walk.Color(0x666666)},
+									TextEdit{AssignTo: &a.aliyunGroupsEdit, MinSize: Size{Height: 64}, VScroll: true},
+									Composite{
+										Layout: HBox{MarginsZero: true},
+										Children: []Widget{
+											HSpacer{},
+											PushButton{AssignTo: &a.aliyunApplyBtn, Text: "保存并应用", OnClicked: a.onApplyAliyun, MinSize: Size{Width: 96}},
+										},
+									},
+									Label{AssignTo: &a.aliyunStatus, EllipsisMode: EllipsisEnd, TextColor: walk.Color(0x888888)},
+								},
+							},
+							GroupBox{
 								Title:  "常规",
 								Layout: VBox{MarginsZero: true, Spacing: 6},
 								Children: []Widget{
@@ -354,6 +387,7 @@ func (a *trayApp) apply(snap *pwclient.StatusSnapshot, err error, logs []string)
 		a.importBtn.SetEnabled(false)
 		a.applyRoutes.SetEnabled(false)
 		a.socks5ApplyBtn.SetEnabled(false)
+		a.aliyunApplyBtn.SetEnabled(false)
 		a.svcLabel.SetText("")
 		_ = a.peerList.SetModel([]string{"(无在线对端)"})
 		_ = a.ni.SetToolTip("pipewright 客户端 — 服务未运行")
@@ -366,6 +400,7 @@ func (a *trayApp) apply(snap *pwclient.StatusSnapshot, err error, logs []string)
 	a.importBtn.SetEnabled(true)
 	a.applyRoutes.SetEnabled(true)
 	a.socks5ApplyBtn.SetEnabled(true)
+	a.aliyunApplyBtn.SetEnabled(true)
 	a.svcLabel.SetText(fmt.Sprintf("服务运行中(PID %d)", snap.Service.PID))
 
 	switch {
@@ -469,6 +504,7 @@ func (a *trayApp) apply(snap *pwclient.StatusSnapshot, err error, logs []string)
 	}
 	a.syncExitCombo(snap)
 	a.syncProxyEdit(snap)
+	a.syncAliyun(snap)
 
 	_ = a.peerList.SetModel(peerListItems(snap))
 
@@ -835,6 +871,108 @@ func (a *trayApp) onCopyProxy() {
 		return
 	}
 	a.socks5Addr.SetText("已复制 " + addr + " — 粘贴到应用或系统代理设置(SOCKS5)")
+}
+
+// parseSecGroupLines 解析安全组列表文本(每行:地域 安全组ID 规则描述;前两段空白分隔,
+// 其余整段作为描述 —— 描述可含空格。三段必填,非法行带原值报错)。
+func parseSecGroupLines(text string) ([]pwclient.AliyunGroupConfig, error) {
+	var out []pwclient.AliyunGroupConfig
+	for _, line := range strings.FieldsFunc(text, func(r rune) bool { return r == '\n' || r == '\r' }) {
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
+		if len(fields) < 3 {
+			return nil, fmt.Errorf("安全组行 %q 须为「地域 安全组ID 规则描述」三段(空白分隔)", line)
+		}
+		out = append(out, pwclient.AliyunGroupConfig{
+			RegionID:        fields[0],
+			SecurityGroupID: fields[1],
+			Description:     strings.Join(fields[2:], " "),
+		})
+	}
+	return out, nil
+}
+
+// secGroupLinesText 是安全组列表的文本形态(与 parseSecGroupLines 互逆;回显比对用)。
+func secGroupLinesText(groups []pwclient.AliyunGroupConfig) string {
+	lines := make([]string, 0, len(groups))
+	for _, g := range groups {
+		lines = append(lines, g.RegionID+" "+g.SecurityGroupID+" "+g.Description)
+	}
+	return strings.Join(lines, "\r\n")
+}
+
+// onApplyAliyun 保存阿里云 AK 与安全组列表(Secret 只写不读:留空 = 保持已存),保存后
+// 经 RestartNow 立即对账 —— 连接前的下一次同步即用新配置。
+func (a *trayApp) onApplyAliyun() {
+	cli, err := a.client()
+	if err != nil {
+		a.actionErr(err)
+		return
+	}
+	groups, err := parseSecGroupLines(a.aliyunGroupsEdit.Text())
+	if err != nil {
+		a.actionErr(err)
+		return
+	}
+	ak := strings.TrimSpace(a.aliyunAkEdit.Text())
+	sk := strings.TrimSpace(a.aliyunSkEdit.Text())
+	req := pwclient.ConfigSetRequest{AliyunAccessKeyID: &ak, AliyunGroups: &groups}
+	if sk != "" {
+		req.AliyunAccessKeySecret = &sk
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	if _, err := cli.PutConfig(ctx, req); err != nil {
+		a.actionErr(err)
+		return
+	}
+	a.aliyunSkEdit.SetText("") // 只写不读:保存即清空,不留在界面
+	a.refreshOnce()
+}
+
+// syncAliyun 回显安全组配置与同步状态:AK/列表仅在空或与已存一致时回填(不覆盖用户
+// 编辑中内容);Secret 永不回显;状态行汇总最近一次同步(时间/IP/逐组结果)。
+func (a *trayApp) syncAliyun(snap *pwclient.StatusSnapshot) {
+	sg := snap.SecurityGroup
+	if text := a.aliyunAkEdit.Text(); text == "" || text == sg.AccessKeyID {
+		a.aliyunAkEdit.SetText(sg.AccessKeyID)
+	}
+	if text := a.aliyunGroupsEdit.Text(); text == "" || text == secGroupLinesText(sg.Groups) {
+		a.aliyunGroupsEdit.SetText(secGroupLinesText(sg.Groups))
+	}
+	if !sg.Configured {
+		if len(sg.Groups) == 0 && sg.AccessKeyID == "" {
+			a.aliyunStatus.SetText("")
+		} else {
+			a.aliyunStatus.SetText("未生效:须同时配置 AccessKeyId/Secret 且列表至少一组")
+		}
+		return
+	}
+	run := "尚未同步"
+	if t, err := time.Parse(time.RFC3339, sg.LastRun); err == nil {
+		run = t.Local().Format("01-02 15:04")
+	}
+	parts := make([]string, 0, len(sg.Results))
+	for _, r := range sg.Results {
+		mark := map[string]string{
+			"update": "已更新", "skip": "最新", "warn": "无匹配规则", "fail": "失败", "pending": "待同步",
+		}[r.Status]
+		item := fmt.Sprintf("%s/%s:%s", r.RegionID, r.SecurityGroupID, mark)
+		if r.LastErr != "" {
+			item += "(" + firstLine(r.LastErr) + ")"
+		}
+		parts = append(parts, item)
+	}
+	line := fmt.Sprintf("最近同步 %s · 公网 IP %s", run, orDash(sg.LastIP))
+	if len(parts) > 0 {
+		line += " · " + strings.Join(parts, " · ")
+	}
+	if sg.LastErr != "" {
+		line += " · 上次失败:" + firstLine(sg.LastErr)
+	}
+	a.aliyunStatus.SetText(line)
 }
 
 // syncAutoStart 按注册表实际状态回显勾选框,并自愈过期的自启路径(exe 被移动/改名后)。
