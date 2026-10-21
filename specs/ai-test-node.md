@@ -30,12 +30,12 @@ e2e/ + playwright.config.ts   # 前端沿用 Playwright 标准布局(生态约�
 ---
 id: checkout-flow        # 必填,仓库内唯一
 severity: blocker        # blocker = gate(缺省,fail-closed)/ suggest = advisory
-target: ${BASE_URL}      # 可选 HTTP URL;${VAR} 引用运行参数/构建变量
+target: ${BASE_URL}      # 可选 HTTP URL;${VAR} 引用运行参数/构建变量;缺省继承节点 target
 ---
 登录测试账号,加购任一商品并结算。期望:订单创建成功,金额与购物车一致。
 ```
 
-- `target` 有值时控制面抓取响应文本(限长 + 脱敏后)作评审上下文;无 target 则纯需求文本评审(如评审上游产物)。
+- 目标解析顺序:**需求 frontmatter `target` > 节点 `target`**,两级皆空的需求 → 发现期判 fail(无被测对象,评审无从谈起)。有值时抓取响应文本(限长 + 脱敏后)作评审上下文;无 target 则纯需求文本评审(如评审上游产物)。抓取出发点:缺省控制面直接抓取;节点绑定 `deployJob` 时改**经 SSH 在被测机上执行**(curl,命令数组化),解决内网服务中控不可达的问题。
 - 冒烟/全量分层靠子目录 + 节点 glob 过滤实现,不另造标签机制。
 
 ## ai_test 节点语义
@@ -51,20 +51,36 @@ target: ${BASE_URL}      # 可选 HTTP URL;${VAR} 引用运行参数/构建变�
 
 | 键 | 说明 |
 |---|---|
+| `target` | 节点级缺省目标 URL(如 `http://${BASE_URL}` 或网关域名);${VAR} 引用运行参数/构建变量/`${DEPLOY_HOST}`。需求 frontmatter `target` 按条覆盖。 |
+| `deployJob` | 可选。上游 deploy 节点引用(同 `artifactJob` 校验先例):绑定被测部署的目标机——注入 `${DEPLOY_HOST}`(目标机主机地址),URL 抓取改经 SSH 在被测机上执行。 |
 | `filter` | 需求 glob,缺省 `.pipewright/tests/requirements/**/*.md`(如 `**/smoke/**` 取冒烟子集)。 |
 | `mode` | `auto`(缺省,按各文件 severity)/ `gate`(全部提升)/ `advisory`(全部降级)。 |
 | `onAiUnavailable` | AI 未配置/不可达时:`fail`(缺省——测试静默跳过比失败更危险)/ `skip`(记警告放行)。 |
 | `timeoutSeconds` | 节点整体超时,默认 300,上限 3600。 |
 | `model` | 可选模型覆盖;不填用平台 AI 配置的默认模型。 |
 
-保存期校验(`validateAITest`):mode/onAiUnavailable 枚举、timeout 范围、filter 非空可解析;路径存在性与文件合法性由**运行时发现步骤**裁决(保存期校验只看 spec JSON,看不见仓库)。
+保存期校验(`validateAITest`):mode/onAiUnavailable 枚举、timeout 范围、filter 非空可解析、`deployJob`(若有)必须引用上游 deploy 类节点;路径存在性与文件合法性由**运行时发现步骤**裁决(保存期校验只看 spec JSON,看不见仓库)。
 
 ## 确定性回归(无需新节点,P1)
 
 - Playwright:script 任务 + `mcr.microsoft.com/playwright:v1.x` + `npx playwright test --reporter=junit`;测试目标 = 已部署环境(`BASE_URL` 用类型化运行参数传入)或 sidecar 服务(network alias 互访,远程构建机同样适用);镜像走内置 registry 的 pull-through 缓存(约 2GB,值得缓存)。
 - **Resource 扩展**(P1 唯一必改代码):`pipeline.Resource` 加 `Init bool`(Chromium 子进程收尸,无 init 会积僵尸)与 `ShmSize string`(/dev/shm 默认 64MB,复杂页面崩 Chrome),随 cpu/memory 同路流转:job 配置 → `shell_driver.go RunToolchain` → 远程透传(remote_stage_exec.go)。**不做任意 docker 参数透传**(守住命令数组化防注入基线)。
-- 出厂一个「Playwright E2E」自定义节点预设(library 机制,零代码),预填镜像/命令/报告路径。
+- 出厂一个「Playwright E2E」自定义节点预设(library 机制,零代码),预填镜像/命令/JUnit 报告路径与 artifactPath(HTML 报告 + trace)。
 - 接口套件:runner 不在平台层锁定,只要能产 JUnit(pytest / hurl 均可),`api/suite.yaml` 自声明镜像与入口命令。
+
+## 结果呈现与通知
+
+**报告三层(全部复用现有管道,无新 UI)**:
+
+1. **数值与失败明细**:套件 job 配 `testReport=junit` + `reportPath=.pipewright/tests/reports/junit-<suite>.xml` → 现有质量门禁 + run 详情 TestReportPanel 直接展示(通过/失败数、失败明细、覆盖率)。已知约束:阶段级报告采集只取**第一个**声明 job(`dag_test_report.go reportSpecFromStage`)——e2e 与接口套件分阶段放,或按「落地顺序」P2 扩展为多声明合并采集。
+2. **富报告与取证**:script job 的 `artifactPath`(多行/glob/打包模式)上传 `playwright-report/` 与 `test-results/` 为 run 产物——运行详情与产物管理页可下载;trace.zip 本地 `npx playwright show-trace` 回放,HTML 报告自包含可直接打开。app 内在线预览不做(任意 HTML 注入面,首期下载为主)。
+3. **AI 验收结果**:ai_test 裁决**直接持久化为同构测试报告**(控制面直写 run 测试报告存储,不经工作区文件——远程构建机场景无本地 workspace 可写),TestReportPanel 与 JUnit 报告同屏呈现(每条需求 = 一个用例,reason 进失败明细);job Summary 一行结论;逐条 verdict 流式进节点日志。
+
+**通知(复用事件→通道路由与模板)**:
+
+1. **零改动基线**:blocker fail → 节点失败 → run 失败 → 现有 `build_failed` 事件照发。
+2. **新增两个节点级事件**(先例:`health_check_failed`):`test_gate_failed`(门禁/验收 gate 失败,默认路由随 build_failed 同渠道,便于区别于普通构建失败做定制路由)与 `ai_acceptance_failed`(advisory 失败——run 整体绿但建议项未过;这是**唯一必须新事件**的场景:run 不失败,现有事件不会触发)。
+3. **模板变量增量**:TemplateVars(冻结契约,**只增不改**)补 `{{testSummary}}`(N 通过/M 失败)、`{{failedTests}}`(失败用例/需求名,超长截断)、`{{reportUrl}}`(run 详情锚点);`RenderText` 已被流水线内 notify 节点复用,占位增量自动惠及内联通知模板。
 
 ## 执行位置与密钥边界
 
@@ -73,17 +89,19 @@ target: ${BASE_URL}      # 可选 HTTP URL;${VAR} 引用运行参数/构建变�
 
 ## 落地顺序
 
-1. **P1 确定性回归**:Resource init/shmSize + Playwright 在流水线跑通(用本仓库 `web/e2e-real` dogfood)+ 仓库约定文档化 + 预设节点。
-2. **P2 ai_test 节点**:本 spec 核心;`.pipewright.yml` 经 `config:` 透传即刻可用,专用语法糖块可选。
+1. **P1 确定性回归**:Resource init/shmSize + Playwright 在流水线跑通(用本仓库 `web/e2e-real` dogfood)+ 仓库约定文档化 + 预设节点;报告/取证即走 `testReport=junit` + `artifactPath`(见「结果呈现与通知」,零新代码)。
+2. **P2 ai_test 节点**:本 spec 核心;裁决同构落库(报告面板可见)+ `test_gate_failed`/`ai_acceptance_failed` 事件与模板变量增量;可选:阶段多报告合并采集(解除「一阶段一报告」限制)。`.pipewright.yml` 经 `config:` 透传即刻可用,专用语法糖块可选。
 3. **P3 失败诊断增强**:diagnoseHook 收集 `.pipewright/tests/reports/` 与 Playwright 失败产物喂 AI(mask-first 先行);截图裁决需给 `chatWithTokens` 增加多模态(图片)content 支持。
 4. **P4 生成与代理**:AI 生成需求/用例 → PR(目标路径即约定目录,人审后合入);run-scoped AI 代理端点。
 
 ## 实现位置(预期)
 
 - `internal/pipeline/ai_node.go`:`JobTypeAITest = "ai_test"` 常量 + `validateAITest` 挂 normalizeSpec 末尾(仿 `internal/pipeline/ecs_power.go`)。
-- `internal/build/ai_node.go`:`isAITestJob` 谓词 + `runAITestJob`(窄接口 `stageAITester`,不直接依赖 internal/ai 包);分发共四处:dag_stage_exec 三处(类型分桶/串行循环/job 级 DAG switch)+ remote_stage_exec 控制面桶。
+- `internal/build/ai_node.go`:`isAITestJob` 谓词 + `runAITestJob`(窄接口 `stageAITester`,不直接依赖 internal/ai 包);`deployJob` 目标机解析与 SSH 抓取经窄接口注入(仿 `stageEcsPowerController` 模式);分发共四处:dag_stage_exec 三处(类型分桶/串行循环/job 级 DAG switch)+ remote_stage_exec 控制面桶。
 - `internal/ai`:新增 `JudgeRequirements`(复用 `chatWithTokens` 的流式消费/响应限长/SSRF 钉扎;temperature 0;严格 JSON + 单次重试);`ErrAINotConfigured` → 按 onAiUnavailable 裁决。
 - 注入:`build.WithAITester`(BuilderOption,nil-guard 仿 deployer;服务未注入 → 记「未注入,跳过」,同 ecs_power/oss_upload 向后兼容款)。
+- 报告落库:ai_test 裁决直写 `internal/run` 测试报告存储(同 `dag_test_report.go` 采集后的落库路径),不经工作区文件。
+- 通知:`internal/notify/router.go` 注册 `test_gate_failed` / `ai_acceptance_failed`;`template.go` TemplateVars 只增不改地补测试占位(`{{testSummary}}`/`{{failedTests}}`/`{{reportUrl}}`)。
 - 前端:`jobConfigSchema.ts` 注册 spec(category quality;可选新 FieldKind `aiModel` 下拉,数据源 `/api/settings/ai/models`)+ `JobTypeIcon.vue` 图标 + 8 语言 `pipelineJob.ts`(zh-CN 先定稿)。
 - 无 DB 迁移(spec 以 JSON 存储);自定义节点预设机制直接复用。
 
@@ -95,4 +113,7 @@ target: ${BASE_URL}      # 可选 HTTP URL;${VAR} 引用运行参数/构建变�
 - **裁决不确定性诚实暴露**:JSON 不可解析重试一次后判 fail;Ollama 等本地模型的格式可靠性按同一策略处理。
 - **0 需求/空套件即失败**;advisory 失败不阻塞但必须可见(日志 + 运行摘要)。
 - **`.pipewright/tests/reports/` 由用户 gitignore**(文档提示,不做 lint 强制)。
+- **HTML 报告不做 app 内在线预览**:任意 HTML 有注入面;产物下载 + 本地 `show-trace` 回放已够用,预览(iframe sandbox)留待真有诉求再评估。
+- **通知占位集只增不改**:TemplateVars 是冻结契约,新增占位不破坏既有模板;不做破坏性改名/删除。
 - **AI 配置保持平台级单 profile**:节点仅可覆盖模型名;多供应商/多 profile 是独立前置架构决策,本 spec 不裹挟。
+- **deployJob 多台目标机时 MVP 取第一台抓取**并日志明示;多机扇出对齐 health_check 的逐台语义留后续。被测机需有 curl(部署目标机均为 SSH 可达的 Linux,curl 基本普适,诚实边界)。

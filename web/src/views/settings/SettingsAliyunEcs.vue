@@ -769,6 +769,9 @@ onMounted(() => {
 .modal {
   width: 100%;
   max-width: 560px;
+  max-height: min(90vh, calc(100dvh - 48px));
+  display: flex;
+  flex-direction: column;
   background: var(--color-card);
   border: 1px solid var(--color-border-strong);
   border-radius: var(--rounded-xl);
@@ -794,7 +797,7 @@ onMounted(() => {
 }
 .modal-title { font-size: 1rem; font-weight: 600; color: var(--color-text); margin-top: 2px; }
 .modal-sub { font-size: 0.78rem; color: var(--color-faint); margin-top: 3px; }
-.modal-body { padding: 18px 20px; display: flex; flex-direction: column; gap: 14px; }
+.modal-body { padding: 18px 20px; display: flex; flex-direction: column; gap: 14px; min-height: 0; overflow-y: auto; }
 .modal-foot {
   display: flex;
   justify-content: flex-end;

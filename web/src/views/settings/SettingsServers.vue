@@ -745,207 +745,209 @@ async function handleTest(s: Server): Promise<void> {
 
     <!-- ─── add / edit modal ──────────────────────────────────────────────────── -->
     <div v-if="modalOpen" class="modal-backdrop">
-      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="server-modal-title">
+      <div class="modal modal--form" role="dialog" aria-modal="true" aria-labelledby="server-modal-title">
         <h3 id="server-modal-title" class="modal-title">
           {{ modalMode === 'add' ? t('settingsServers.addServer') : t('settingsServers.editServer') }}
         </h3>
 
         <div v-if="formBanner" class="banner banner--error" role="alert">{{ formBanner }}</div>
 
-        <form @submit.prevent="handleFormSubmit">
-          <label class="field">
-            <span class="field-label">{{ t('settingsServers.fieldName') }}</span>
-            <input v-model="form.name" class="field-input" type="text" placeholder="web-prod-1" autocomplete="off" />
-            <span v-if="formErrors.name" class="field-error">{{ formErrors.name }}</span>
-          </label>
-
-          <div class="field-row">
-            <label class="field field-grow">
-              <span class="field-label">{{ t('settingsServers.fieldHost') }}</span>
-              <input v-model="form.host" class="field-input" type="text" placeholder="10.0.0.5" autocomplete="off" />
-              <span v-if="formErrors.host" class="field-error">{{ formErrors.host }}</span>
+        <form class="server-form" @submit.prevent="handleFormSubmit">
+          <div class="modal-body">
+            <label class="field">
+              <span class="field-label">{{ t('settingsServers.fieldName') }}</span>
+              <input v-model="form.name" class="field-input" type="text" placeholder="web-prod-1" autocomplete="off" />
+              <span v-if="formErrors.name" class="field-error">{{ formErrors.name }}</span>
             </label>
-            <label class="field field-port">
-              <span class="field-label">{{ t('settingsServers.fieldPort') }}</span>
-              <input v-model.number="form.port" class="field-input" type="number" min="1" max="65535" />
-              <span v-if="formErrors.port" class="field-error">{{ formErrors.port }}</span>
+
+            <div class="field-row">
+              <label class="field field-grow">
+                <span class="field-label">{{ t('settingsServers.fieldHost') }}</span>
+                <input v-model="form.host" class="field-input" type="text" placeholder="10.0.0.5" autocomplete="off" />
+                <span v-if="formErrors.host" class="field-error">{{ formErrors.host }}</span>
+              </label>
+              <label class="field field-port">
+                <span class="field-label">{{ t('settingsServers.fieldPort') }}</span>
+                <input v-model.number="form.port" class="field-input" type="number" min="1" max="65535" />
+                <span v-if="formErrors.port" class="field-error">{{ formErrors.port }}</span>
+              </label>
+            </div>
+
+            <label class="field">
+              <span class="field-label">{{ t('settingsServers.fieldUser') }}</span>
+              <input v-model="form.user" class="field-input" type="text" placeholder="deploy" autocomplete="off" />
+              <span v-if="formErrors.user" class="field-error">{{ formErrors.user }}</span>
             </label>
-          </div>
 
-          <label class="field">
-            <span class="field-label">{{ t('settingsServers.fieldUser') }}</span>
-            <input v-model="form.user" class="field-input" type="text" placeholder="deploy" autocomplete="off" />
-            <span v-if="formErrors.user" class="field-error">{{ formErrors.user }}</span>
-          </label>
+            <label class="field">
+              <span class="field-label">{{ t('settingsServers.fieldCredential') }}</span>
+              <select v-model="form.credentialId" class="field-input">
+                <option value="" disabled>{{ t('settingsServers.selectCredential') }}</option>
+                <option v-for="c in sshCredentials" :key="c.id" :value="c.id">{{ c.name }}</option>
+              </select>
+              <span v-if="formErrors.credentialId" class="field-error">{{ formErrors.credentialId }}</span>
+            </label>
 
-          <label class="field">
-            <span class="field-label">{{ t('settingsServers.fieldCredential') }}</span>
-            <select v-model="form.credentialId" class="field-input">
-              <option value="" disabled>{{ t('settingsServers.selectCredential') }}</option>
-              <option v-for="c in sshCredentials" :key="c.id" :value="c.id">{{ c.name }}</option>
-            </select>
-            <span v-if="formErrors.credentialId" class="field-error">{{ formErrors.credentialId }}</span>
-          </label>
+            <!-- Optional sudo escalation credential: used via sudo -S when the login user
+                 is neither root nor passwordless-sudo capable (e.g. platform HTTPS). -->
+            <label class="field">
+              <span class="field-label">{{ t('settingsServers.fieldSudoCredential') }}</span>
+              <select v-model="form.sudoCredentialId" class="field-input">
+                <option value="">{{ t('settingsServers.sudoCredentialNone') }}</option>
+                <option v-for="c in sudoCredentials" :key="c.id" :value="c.id">{{ c.name }}</option>
+              </select>
+              <span class="field-hint">{{ t('settingsServers.sudoCredentialHint') }}</span>
+            </label>
 
-          <!-- Optional sudo escalation credential: used via sudo -S when the login user
-               is neither root nor passwordless-sudo capable (e.g. platform HTTPS). -->
-          <label class="field">
-            <span class="field-label">{{ t('settingsServers.fieldSudoCredential') }}</span>
-            <select v-model="form.sudoCredentialId" class="field-input">
-              <option value="">{{ t('settingsServers.sudoCredentialNone') }}</option>
-              <option v-for="c in sudoCredentials" :key="c.id" :value="c.id">{{ c.name }}</option>
-            </select>
-            <span class="field-hint">{{ t('settingsServers.sudoCredentialHint') }}</span>
-          </label>
-
-          <!-- SSH jump chain (multi-hop): rows are in connection order — the platform
-               connects to hop 1 first and reaches the server through the last hop.
-               Every hop carries its own independent SSH credential reference. -->
-          <div class="field">
-            <span class="field-label">{{ t('settingsServers.jumpTitle') }}</span>
-            <div v-for="(row, idx) in form.jumps" :key="row.rid" class="jump-row">
-              <span class="jump-order" aria-hidden="true">{{ idx + 1 }}</span>
-              <div class="jump-fields">
-                <div class="jump-line">
-                  <input
-                    v-model="row.host"
-                    class="field-input jump-host"
-                    type="text"
-                    :placeholder="t('settingsServers.jumpHostPlaceholder')"
-                    :aria-label="t('settingsServers.jumpHost')"
-                    autocomplete="off"
-                  />
-                  <input
-                    v-model.number="row.port"
-                    class="field-input jump-port"
-                    type="number"
-                    min="1"
-                    max="65535"
-                    :aria-label="t('settingsServers.fieldPort')"
-                  />
-                  <input
-                    v-model="row.user"
-                    class="field-input jump-user"
-                    type="text"
-                    :placeholder="t('settingsServers.fieldUser')"
-                    :aria-label="t('settingsServers.fieldUser')"
-                    autocomplete="off"
-                  />
-                  <select
-                    v-model="row.credentialId"
-                    class="field-input jump-cred"
-                    :aria-label="t('settingsServers.fieldCredential')"
-                  >
-                    <option value="" disabled>{{ t('settingsServers.selectCredential') }}</option>
-                    <option v-for="c in sshCredentials" :key="c.id" :value="c.id">{{ c.name }}</option>
-                  </select>
-                  <button
-                    type="button"
-                    class="jump-del"
-                    :aria-label="t('settingsServers.jumpRemove')"
-                    @click="removeJump(idx)"
-                  >
-                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>
-                  </button>
-                </div>
-                <div v-if="row.errors.host || row.errors.port || row.errors.user || row.errors.credentialId" class="jump-errors">
-                  <span v-if="row.errors.host" class="field-error">{{ row.errors.host }}</span>
-                  <span v-if="row.errors.port" class="field-error">{{ row.errors.port }}</span>
-                  <span v-if="row.errors.user" class="field-error">{{ row.errors.user }}</span>
-                  <span v-if="row.errors.credentialId" class="field-error">{{ row.errors.credentialId }}</span>
+            <!-- SSH jump chain (multi-hop): rows are in connection order — the platform
+                 connects to hop 1 first and reaches the server through the last hop.
+                 Every hop carries its own independent SSH credential reference. -->
+            <div class="field">
+              <span class="field-label">{{ t('settingsServers.jumpTitle') }}</span>
+              <div v-for="(row, idx) in form.jumps" :key="row.rid" class="jump-row">
+                <span class="jump-order" aria-hidden="true">{{ idx + 1 }}</span>
+                <div class="jump-fields">
+                  <div class="jump-line">
+                    <input
+                      v-model="row.host"
+                      class="field-input jump-host"
+                      type="text"
+                      :placeholder="t('settingsServers.jumpHostPlaceholder')"
+                      :aria-label="t('settingsServers.jumpHost')"
+                      autocomplete="off"
+                    />
+                    <input
+                      v-model.number="row.port"
+                      class="field-input jump-port"
+                      type="number"
+                      min="1"
+                      max="65535"
+                      :aria-label="t('settingsServers.fieldPort')"
+                    />
+                    <input
+                      v-model="row.user"
+                      class="field-input jump-user"
+                      type="text"
+                      :placeholder="t('settingsServers.fieldUser')"
+                      :aria-label="t('settingsServers.fieldUser')"
+                      autocomplete="off"
+                    />
+                    <select
+                      v-model="row.credentialId"
+                      class="field-input jump-cred"
+                      :aria-label="t('settingsServers.fieldCredential')"
+                    >
+                      <option value="" disabled>{{ t('settingsServers.selectCredential') }}</option>
+                      <option v-for="c in sshCredentials" :key="c.id" :value="c.id">{{ c.name }}</option>
+                    </select>
+                    <button
+                      type="button"
+                      class="jump-del"
+                      :aria-label="t('settingsServers.jumpRemove')"
+                      @click="removeJump(idx)"
+                    >
+                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>
+                    </button>
+                  </div>
+                  <div v-if="row.errors.host || row.errors.port || row.errors.user || row.errors.credentialId" class="jump-errors">
+                    <span v-if="row.errors.host" class="field-error">{{ row.errors.host }}</span>
+                    <span v-if="row.errors.port" class="field-error">{{ row.errors.port }}</span>
+                    <span v-if="row.errors.user" class="field-error">{{ row.errors.user }}</span>
+                    <span v-if="row.errors.credentialId" class="field-error">{{ row.errors.credentialId }}</span>
+                  </div>
                 </div>
               </div>
-            </div>
-            <button
-              type="button"
-              class="btn-ghost jump-add"
-              :disabled="form.jumps.length >= MAX_JUMPS"
-              :title="form.jumps.length >= MAX_JUMPS ? t('settingsServers.jumpMaxReached') : undefined"
-              @click="addJump"
-            >
-              ＋ {{ t('settingsServers.jumpAdd') }}
-            </button>
-            <span class="field-hint">{{ t('settingsServers.jumpHint') }}</span>
-          </div>
-
-          <!-- build-pool fields (FR-8-19): labels make the machine schedulable; unlabeled machines never pick.
-               标签从登记处 ∪ 机器实际标签里选(chips),也可 inline 新建(自动登记);不再手敲逗号串。 -->
-          <div class="field">
-            <span class="field-label">{{ t('settingsServers.fieldLabels') }}</span>
-            <div class="labelchips" :aria-label="t('settingsServers.labelsEditorAria')">
-              <span v-for="term in formLabelTerms" :key="term" class="labelchip">
-                {{ term }}
-                <button
-                  type="button"
-                  class="labelchip-del"
-                  :aria-label="t('settingsServers.labelDelAria', { term })"
-                  @click="removeFormLabel(term)"
-                >
-                  <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>
-                </button>
-              </span>
-              <span v-if="!formLabelTerms.length" class="labelchips-empty">{{ t('settingsServers.labelsEmpty') }}</span>
-            </div>
-            <div class="labelchips-addrow">
-              <select
-                v-model="formAddPick"
-                class="field-input labelchips-select"
-                :aria-label="t('settingsServers.addLabelAria')"
-                @change="addFormLabel(formAddPick)"
+              <button
+                type="button"
+                class="btn-ghost jump-add"
+                :disabled="form.jumps.length >= MAX_JUMPS"
+                :title="form.jumps.length >= MAX_JUMPS ? t('settingsServers.jumpMaxReached') : undefined"
+                @click="addJump"
               >
-                <option value="" disabled>{{ t('settingsServers.addLabelPick') }}</option>
-                <option v-for="c in formLabelCandidates" :key="c" :value="c">{{ c }}</option>
-              </select>
-              <input
-                v-model="inlineLabelName"
-                class="field-input labelchips-new"
-                type="text"
-                :placeholder="t('settingsServers.newLabelPlaceholder')"
-                :aria-label="t('settingsServers.newLabelAria')"
-                autocomplete="off"
-                @keydown.enter.prevent="createAndAttachLabel"
-              />
-              <button type="button" class="btn-ghost" :disabled="labelSubmitting || !inlineLabelName.trim()" @click="createAndAttachLabel">
-                {{ t('settingsServers.newLabelCreate') }}
+                ＋ {{ t('settingsServers.jumpAdd') }}
               </button>
+              <span class="field-hint">{{ t('settingsServers.jumpHint') }}</span>
             </div>
-            <span class="field-hint">{{ t('settingsServers.labelsHint') }}</span>
-            <span v-if="formErrors.labels" class="field-error">{{ formErrors.labels }}</span>
-          </div>
-          <div class="field-row">
-            <label class="field field-maxbuilds">
-              <span class="field-label">{{ t('settingsServers.fieldMaxBuilds') }}</span>
-              <input v-model.number="form.maxBuilds" class="field-input" type="number" min="0" max="64" />
-              <span class="field-hint">{{ t('settingsServers.maxBuildsHint') }}</span>
-              <span v-if="formErrors.maxBuilds" class="field-error">{{ formErrors.maxBuilds }}</span>
-            </label>
-            <label class="field field-priority">
-              <span class="field-label">{{ t('settingsServers.fieldPriority') }}</span>
-              <input v-model.number="form.priority" class="field-input" type="number" min="0" max="100" />
-              <span class="field-hint">{{ t('settingsServers.priorityHint') }}</span>
-              <span v-if="formErrors.priority" class="field-error">{{ formErrors.priority }}</span>
-            </label>
-          </div>
 
-          <!-- GPU 机型(纯监控开关):勾选后状态总览额外跑 `nvtop -s` 采集每张显卡指标。 -->
-          <div class="field">
-            <span class="field-label">{{ t('settingsServers.fieldGpu') }}</span>
-            <label class="gpu-check">
-              <input v-model="form.gpu" type="checkbox" />
-              <span>{{ t('settingsServers.fieldGpuCheckbox') }}</span>
-            </label>
-            <span class="field-hint">{{ t('settingsServers.gpuHint') }}</span>
-          </div>
+            <!-- build-pool fields (FR-8-19): labels make the machine schedulable; unlabeled machines never pick.
+                 标签从登记处 ∪ 机器实际标签里选(chips),也可 inline 新建(自动登记);不再手敲逗号串。 -->
+            <div class="field">
+              <span class="field-label">{{ t('settingsServers.fieldLabels') }}</span>
+              <div class="labelchips" :aria-label="t('settingsServers.labelsEditorAria')">
+                <span v-for="term in formLabelTerms" :key="term" class="labelchip">
+                  {{ term }}
+                  <button
+                    type="button"
+                    class="labelchip-del"
+                    :aria-label="t('settingsServers.labelDelAria', { term })"
+                    @click="removeFormLabel(term)"
+                  >
+                    <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>
+                  </button>
+                </span>
+                <span v-if="!formLabelTerms.length" class="labelchips-empty">{{ t('settingsServers.labelsEmpty') }}</span>
+              </div>
+              <div class="labelchips-addrow">
+                <select
+                  v-model="formAddPick"
+                  class="field-input labelchips-select"
+                  :aria-label="t('settingsServers.addLabelAria')"
+                  @change="addFormLabel(formAddPick)"
+                >
+                  <option value="" disabled>{{ t('settingsServers.addLabelPick') }}</option>
+                  <option v-for="c in formLabelCandidates" :key="c" :value="c">{{ c }}</option>
+                </select>
+                <input
+                  v-model="inlineLabelName"
+                  class="field-input labelchips-new"
+                  type="text"
+                  :placeholder="t('settingsServers.newLabelPlaceholder')"
+                  :aria-label="t('settingsServers.newLabelAria')"
+                  autocomplete="off"
+                  @keydown.enter.prevent="createAndAttachLabel"
+                />
+                <button type="button" class="btn-ghost" :disabled="labelSubmitting || !inlineLabelName.trim()" @click="createAndAttachLabel">
+                  {{ t('settingsServers.newLabelCreate') }}
+                </button>
+              </div>
+              <span class="field-hint">{{ t('settingsServers.labelsHint') }}</span>
+              <span v-if="formErrors.labels" class="field-error">{{ formErrors.labels }}</span>
+            </div>
+            <div class="field-row">
+              <label class="field field-maxbuilds">
+                <span class="field-label">{{ t('settingsServers.fieldMaxBuilds') }}</span>
+                <input v-model.number="form.maxBuilds" class="field-input" type="number" min="0" max="64" />
+                <span class="field-hint">{{ t('settingsServers.maxBuildsHint') }}</span>
+                <span v-if="formErrors.maxBuilds" class="field-error">{{ formErrors.maxBuilds }}</span>
+              </label>
+              <label class="field field-priority">
+                <span class="field-label">{{ t('settingsServers.fieldPriority') }}</span>
+                <input v-model.number="form.priority" class="field-input" type="number" min="0" max="100" />
+                <span class="field-hint">{{ t('settingsServers.priorityHint') }}</span>
+                <span v-if="formErrors.priority" class="field-error">{{ formErrors.priority }}</span>
+              </label>
+            </div>
 
-          <!-- 集群级共享构建机(0086):勾选后集群中经 build ACL 授权的对端环境可用
-               peer: 选择器把构建任务派到该机(与本端任务同一 FIFO 排队;凭据不出本端)。 -->
-          <div class="field">
-            <span class="field-label">{{ t('settingsServers.fieldSharedBuild') }}</span>
-            <label class="gpu-check">
-              <input v-model="form.sharedBuild" type="checkbox" />
-              <span>{{ t('settingsServers.fieldSharedBuildCheckbox') }}</span>
-            </label>
-            <span class="field-hint">{{ t('settingsServers.sharedBuildHint') }}</span>
+            <!-- GPU 机型(纯监控开关):勾选后状态总览额外跑 `nvtop -s` 采集每张显卡指标。 -->
+            <div class="field">
+              <span class="field-label">{{ t('settingsServers.fieldGpu') }}</span>
+              <label class="gpu-check">
+                <input v-model="form.gpu" type="checkbox" />
+                <span>{{ t('settingsServers.fieldGpuCheckbox') }}</span>
+              </label>
+              <span class="field-hint">{{ t('settingsServers.gpuHint') }}</span>
+            </div>
+
+            <!-- 集群级共享构建机(0086):勾选后集群中经 build ACL 授权的对端环境可用
+                 peer: 选择器把构建任务派到该机(与本端任务同一 FIFO 排队;凭据不出本端)。 -->
+            <div class="field">
+              <span class="field-label">{{ t('settingsServers.fieldSharedBuild') }}</span>
+              <label class="gpu-check">
+                <input v-model="form.sharedBuild" type="checkbox" />
+                <span>{{ t('settingsServers.fieldSharedBuildCheckbox') }}</span>
+              </label>
+              <span class="field-hint">{{ t('settingsServers.sharedBuildHint') }}</span>
+            </div>
           </div>
 
           <div class="modal-actions">
@@ -1303,6 +1305,29 @@ async function handleTest(s: Server): Promise<void> {
 
 .modal--sm {
   max-width: 520px;
+}
+/* 登记表单弹窗限高:标题/横幅/按钮行固定,字段区在 .modal-body 内滚动(小屏也能完整看到并提交)。 */
+.modal--form {
+  max-height: calc(100vh - 48px);
+  max-height: min(90vh, calc(100dvh - 48px));
+}
+.server-form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-height: 0;
+}
+.modal-body {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.modal-body > :last-child {
+  margin-bottom: 0;
+}
+.server-form .modal-actions {
+  border-top: 1px solid var(--color-border);
+  padding-top: 12px;
 }
 .logs-modal-head {
   display: flex;
