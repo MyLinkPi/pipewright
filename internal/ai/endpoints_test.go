@@ -103,7 +103,7 @@ func TestCompatibleVendorsCatalogProbeGenerateChatAndStream(t *testing.T) {
 					t.Fatal(text, err)
 				}
 				text, err = m.chatWithTokens(ctx(), ProviderOpenAI, base, cfg.Model, "mock-key", "question", 4096)
-				if err != nil || text != "reply" {
+				if err != nil || text != "First reply" { // 流式累积(含首帧前缀)
 					t.Fatal("generate/shared chat", text, err)
 				}
 				var visible strings.Builder
@@ -116,7 +116,7 @@ func TestCompatibleVendorsCatalogProbeGenerateChatAndStream(t *testing.T) {
 					visible.WriteString(chunk.Text)
 					return nil
 				})
-				if err != nil || text != "First reply" || visible.String() != text || chunks < 2 || catalogs != 1 || chats != 3 || streams != 1 {
+				if err != nil || text != "First reply" || visible.String() != text || chunks < 2 || catalogs != 1 || chats != 1 || streams != 3 {
 					t.Fatal(text, err, visible.String(), chunks, catalogs, chats, streams)
 				}
 			})

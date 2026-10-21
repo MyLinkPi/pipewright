@@ -32,18 +32,20 @@ function messageText(entry: Entry): string {
   const text = entry.text ?? ''
   if (entry.kind === 'assistant' && entry.status === 'failed') {
     const planning =
-      /^\[(planning|continuation):(unknown|token_limit|timeout|rejected|invalid_response|unavailable|input_limit|invalid_plan)\]$/.exec(
+      /^\[(planning|continuation):(unknown|token_limit|timeout|rejected|invalid_response|unavailable|input_limit|invalid_plan)\](.*)$/.exec(
         text,
       )
     if (planning) {
       const code = planning[2]!
+      const detail = planning[3]!.trim()
+      const suffix = detail ? ` (${detail})` : ''
       if (planning[1] === 'continuation') {
         const reason = ['unknown', 'unavailable', 'invalid_plan'].includes(code)
           ? 'opsChat.continuationError.' + code
           : 'opsChat.planningError.' + code
-        return t(reason) + ' ' + t('opsChat.continuationError.preserved')
+        return t(reason) + suffix + ' ' + t('opsChat.continuationError.preserved')
       }
-      return t('opsChat.planningError.' + code)
+      return t('opsChat.planningError.' + code) + suffix
     }
     if (text === 'Planning could not be completed.')
       return t('opsChat.planningError.unknown')

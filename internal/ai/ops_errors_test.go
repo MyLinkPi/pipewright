@@ -176,13 +176,44 @@ func TestOpsDeepSeekThinkingWirePlanAnalysisAndStructuredChat(t *testing.T) {
 			}
 			_, hasStream := body["stream"]
 			_, disabled := body["thinking"]
-			if hasStream && disabled != expectDisabled {
+			_, hasTools := body["tools"]
+			var probe []struct {
+				Content string `json:"content"`
+			}
+			_ = json.Unmarshal(body["messages"], &probe)
+			isPlainChat := len(probe) > 0 && probe[0].Content == "question"
+			if hasStream && !hasTools && disabled != expectDisabled {
 				t.Fatal("wrong Ops/general reasoning semantics", disabled, expectDisabled)
 			}
 			if disabled && string(body["thinking"]) != `{"type":"disabled"}` {
 				t.Fatal(string(body["thinking"]))
 			}
-			if string(body["stream"]) == "true" {
+			if hasTools {
+				// Agent 轮(带 tools):整包 JSON,走网关忽略 stream 的回退路径。
+			} else if isPlainChat && string(body["stream"]) == "true" {
+				// 结构化 chat(流式):完成流(含被丢弃的推理帧)。
+				if string(body["max_tokens"]) != "4096" {
+					t.Fatal("Ops token budget changed")
+				}
+				if provider == ProviderOpenAI {
+					return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"text/event-stream"}}, Body: io.NopCloser(strings.NewReader(`data: {"choices":[{"delta":{"reasoning_content":"raw-secret"}}]}
+
+data: {"choices":[{"delta":{"content":"reply"},"finish_reason":"stop"}]}
+
+data: [DONE]
+
+`)), Request: r}, nil
+				}
+				return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"text/event-stream"}}, Body: io.NopCloser(strings.NewReader(`data: {"type":"content_block_start","index":0,"content_block":{"type":"text"}}
+
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"reply"}}
+
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}
+
+data: {"type":"message_stop"}
+
+`)), Request: r}, nil
+			} else if string(body["stream"]) == "true" {
 				if string(body["max_tokens"]) != "4096" {
 					t.Fatal("Ops token budget changed")
 				}
@@ -201,7 +232,9 @@ func TestOpsDeepSeekThinkingWirePlanAnalysisAndStructuredChat(t *testing.T) {
 			t.Fatal(err)
 		}
 		opsTestProvider = m.Info()
-		reply, err := m.AgentRound(ctx(), opsRequest())
+		agentReq := opsRequest()
+		agentReq.Tools = opschat.Tools()
+		reply, err := m.AgentRound(ctx(), agentReq)
 		if err != nil || reply.Text != "reply" {
 			t.Fatal(reply, err)
 		}
