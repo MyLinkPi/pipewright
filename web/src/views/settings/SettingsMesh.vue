@@ -1660,6 +1660,9 @@ onUnmounted(() => {
 .yaml-modal {
   width: 100%;
   max-width: 640px;
+  max-height: min(90vh, calc(100dvh - 48px));
+  display: flex;
+  flex-direction: column;
   background: var(--color-card);
   border: 1px solid var(--color-border-strong);
   border-radius: var(--rounded-xl);
@@ -1704,6 +1707,8 @@ onUnmounted(() => {
 }
 .yaml-body {
   padding: 16px 20px;
+  min-height: 0;
+  overflow-y: auto;
 }
 .yaml-text {
   width: 100%;

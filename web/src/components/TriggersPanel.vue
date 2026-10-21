@@ -714,7 +714,7 @@ const displayWebhookUrl = computed(() => {
 /* ─── Modal ───────────────────────────────────── */
 .modal-scrim { position: fixed; inset: 0; background: oklch(0% 0 0 / 0.62); display: grid; place-items: center; z-index: 100; padding: 24px; animation: scrim-in var(--duration-fast) ease both; }
 @keyframes scrim-in { from { opacity: 0; } to { opacity: 1; } }
-.modal { width: 100%; max-width: 520px; background: var(--color-card); border: 1px solid var(--color-border-strong); border-radius: var(--rounded-xl); box-shadow: var(--shadow-modal); overflow: hidden; animation: modal-in 0.35s var(--ease-out-expo) both; }
+.modal { width: 100%; max-width: 520px; max-height: min(90vh, calc(100dvh - 48px)); display: flex; flex-direction: column; background: var(--color-card); border: 1px solid var(--color-border-strong); border-radius: var(--rounded-xl); box-shadow: var(--shadow-modal); overflow: hidden; animation: modal-in 0.35s var(--ease-out-expo) both; }
 @keyframes modal-in { from { opacity: 0; transform: translateY(14px) scale(0.98); } to { opacity: 1; transform: none; } }
 @media (prefers-reduced-motion: reduce) { .modal-scrim { animation: none; } .modal { animation: none; } }
 .modal-head { display: flex; align-items: flex-start; gap: 12px; padding: 20px 20px 16px; border-bottom: 1px solid var(--color-border); }
@@ -725,7 +725,7 @@ const displayWebhookUrl = computed(() => {
 .modal-close { margin-left: auto; flex-shrink: 0; width: 30px; height: 30px; border-radius: var(--rounded-md); border: none; background: transparent; color: var(--color-faint); cursor: pointer; display: grid; place-items: center; transition: color var(--duration-fast), background-color var(--duration-fast); }
 .modal-close:hover { color: var(--color-text); background: var(--color-inset); }
 .modal-close:disabled { opacity: 0.4; cursor: not-allowed; }
-.modal-body { padding: 20px; display: flex; flex-direction: column; gap: 10px; }
+.modal-body { padding: 20px; display: flex; flex-direction: column; gap: 10px; min-height: 0; overflow-y: auto; }
 .modal-warn-text { font-size: 0.86rem; color: var(--color-dim); line-height: 1.6; }
 .modal-warn-secondary { font-size: 0.82rem; color: var(--color-faint); line-height: 1.5; }
 .modal-banner { border-radius: var(--rounded); }

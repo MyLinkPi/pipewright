@@ -420,6 +420,8 @@ async function runAction(a: ServiceAction): Promise<void> {
 
 .ops-confirm {
   width: min(560px, 100%);
+  max-height: min(85vh, calc(100dvh - 32px));
+  overflow-y: auto;
   background: var(--color-surface, #fff);
   border-radius: 12px;
   padding: 20px;

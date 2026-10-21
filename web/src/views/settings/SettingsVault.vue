@@ -1526,6 +1526,9 @@ async function toggleEditReveal(): Promise<void> {
 .modal {
   width: 100%;
   max-width: 680px;
+  max-height: min(90vh, calc(100dvh - 48px));
+  display: flex;
+  flex-direction: column;
   background: var(--color-card);
   border: 1px solid var(--color-border-strong);
   border-radius: var(--rounded-xl);
@@ -1622,6 +1625,8 @@ async function toggleEditReveal(): Promise<void> {
   display: flex;
   flex-direction: column;
   gap: 16px;
+  min-height: 0;
+  overflow-y: auto;
 }
 
 .modal-body {
@@ -1633,6 +1638,15 @@ async function toggleEditReveal(): Promise<void> {
   justify-content: flex-end;
   gap: 8px;
   padding-top: 4px;
+}
+
+/* footer 在滚动表单内:钉在滚动区底部,保存按钮始终可见。 */
+.modal-form > .modal-footer {
+  position: sticky;
+  bottom: 0;
+  padding-top: 12px;
+  background: var(--color-card);
+  border-top: 1px solid var(--color-border);
 }
 
 /* Footer as a direct child of .modal (no padded wrapper) — give it surround padding

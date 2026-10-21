@@ -2519,6 +2519,15 @@ const STATUS_CONFIG: Record<RunStatus, StatusConfig> = {
   padding-top: 4px;
 }
 
+/* footer 在滚动表单内:钉在滚动区底部,参数再多取消/运行也始终可见可点。 */
+.modal-form > .modal-footer {
+  position: sticky;
+  bottom: 0;
+  padding-top: 12px;
+  background: var(--color-card);
+  border-top: 1px solid var(--color-border);
+}
+
 .modal-footer--body {
   padding: 0 20px 20px;
   padding-top: 0;

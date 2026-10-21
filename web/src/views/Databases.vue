@@ -1968,6 +1968,9 @@ watch(currentDb, (db) => {
 .modal {
   width: 100%;
   max-width: 640px;
+  max-height: min(90vh, calc(100dvh - 48px));
+  display: flex;
+  flex-direction: column;
   background: var(--color-card);
   border: 1px solid var(--color-border-strong);
   border-radius: var(--rounded-xl);
@@ -2015,12 +2018,15 @@ watch(currentDb, (db) => {
   display: flex;
   flex-direction: column;
   gap: 10px;
+  min-height: 0;
+  overflow-y: auto;
 }
 .modal-form {
   padding: 18px 20px;
   display: flex;
   flex-direction: column;
   gap: 12px;
+  min-height: 0;
   max-height: min(60vh, 520px);
   overflow-y: auto;
 }

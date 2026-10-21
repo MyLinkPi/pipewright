@@ -190,6 +190,9 @@ function doConfirm() {
   translate: -50% -50%;
   z-index: 8001;
   width: min(480px, calc(100vw - 40px));
+  max-height: min(85vh, calc(100dvh - 40px));
+  display: flex;
+  flex-direction: column;
   background: var(--color-card);
   border: 1px solid var(--color-border-strong);
   border-radius: var(--rounded-xl);
@@ -240,6 +243,8 @@ function doConfirm() {
   font-size: 0.82rem;
   color: var(--color-dim);
   line-height: 1.6;
+  min-height: 0;
+  overflow-y: auto;
 }
 
 /* Type-to-confirm */

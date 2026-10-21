@@ -689,6 +689,9 @@ async function submitCreateBucket(): Promise<void> {
 .modal {
   width: 100%;
   max-width: 480px;
+  max-height: min(90vh, calc(100dvh - 48px));
+  display: flex;
+  flex-direction: column;
   background: var(--color-card);
   border: 1px solid var(--color-border-strong);
   border-radius: var(--rounded-xl);
@@ -735,6 +738,8 @@ async function submitCreateBucket(): Promise<void> {
   display: flex;
   flex-direction: column;
   gap: 14px;
+  min-height: 0;
+  overflow-y: auto;
 }
 .field {
   display: flex;

@@ -1357,6 +1357,9 @@ function isFailedStatus(status: RunStatus): boolean {
 .modal {
   width: 100%;
   max-width: 680px;
+  max-height: min(90vh, calc(100dvh - 48px));
+  display: flex;
+  flex-direction: column;
   background: var(--color-card);
   border: 1px solid var(--color-border-strong);
   border-radius: var(--rounded-xl);
@@ -1453,13 +1456,21 @@ function isFailedStatus(status: RunStatus): boolean {
   display: flex;
   flex-direction: column;
   gap: 16px;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
+/* footer 在滚动表单内:钉在滚动区底部,参数再多取消/运行也始终可见可点。 */
 .modal-footer {
+  position: sticky;
+  bottom: 0;
   display: flex;
   justify-content: flex-end;
   gap: 8px;
-  padding-top: 4px;
+  padding-top: 12px;
+  background: var(--color-card);
+  border-top: 1px solid var(--color-border);
 }
 
 /* ─── form fields ─────────────────────────────────────────────────────────── */
