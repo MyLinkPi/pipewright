@@ -548,6 +548,24 @@ func (m *fakeModel) AgentRound(ctx context.Context, in AgentRequest) (AgentReply
 		m.queue = m.queue[1:]
 		return next, nil
 	}
+	if rejected := func() bool {
+		// 上一轮是校验拒绝回灌(所有结果失败):模拟不改错的弱模型,原样重发。
+		if len(in.Rounds) == 0 {
+			return false
+		}
+		last := in.Rounds[len(in.Rounds)-1]
+		if len(last.Results) == 0 {
+			return false
+		}
+		for _, res := range last.Results {
+			if !res.Failed {
+				return false
+			}
+		}
+		return true
+	}(); rejected {
+		return m.reply, nil
+	}
 	if len(m.rounds) > 1 && len(m.reply.ToolCalls) > 0 && len(in.Rounds) > 0 {
 		// 工具已执行过一轮后仍被要求同样的工具批:给终答,避免查重拒绝循环。
 		if m.reply.Text != "" {

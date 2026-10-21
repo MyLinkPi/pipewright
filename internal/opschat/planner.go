@@ -4,7 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log"
 	"sort"
 	"strconv"
 	"strings"
@@ -88,22 +90,34 @@ func (s *Service) requestRound(ctx context.Context, r runRecord, wrapUp bool) (A
 	}
 	modelCtx, stop := context.WithTimeout(ctx, s.runtime.ModelTimeout)
 	defer stop()
-	reply, err = s.model.AgentRound(modelCtx, req)
-	if err == nil {
-		err = s.registerSecrets()
-	}
 	var candidates []callRecord
-	if err == nil {
+	for attempt := 0; ; attempt++ {
+		reply, err = s.model.AgentRound(modelCtx, req)
+		if err == nil {
+			err = s.registerSecrets()
+		}
+		if err != nil {
+			return reply, nil, err
+		}
 		candidates, err = s.agentCalls(r, reply)
+		if err == nil {
+			return reply, candidates, nil
+		}
+		if !errors.Is(err, ErrInvalid) || attempt >= 1 {
+			return reply, nil, err
+		}
+		// 校验失败不直接报给用户:把错误作为工具失败结果回灌,给模型一次自纠机会。
+		feedback := AgentExchange{Calls: reply.ToolCalls}
+		for _, c := range reply.ToolCalls {
+			feedback.Results = append(feedback.Results, AgentToolResult{CallID: c.ID, Failed: true, Output: s.scrub("rejected by validator: "+err.Error(), 2048)})
+		}
+		req.Rounds = append(req.Rounds, feedback)
+		log.Printf("[opschat] plan rejected, feeding back session=%s run=%s attempt=%d reason=%v", r.View.SessionID, r.View.ID, attempt+1, err)
 	}
-	if err != nil {
-		return reply, nil, err
-	}
-	return reply, candidates, nil
 }
 
 // agentCalls 校验模型的工具批并展开为 callRecord:剥 target/purpose/reason、
-// parseArgs、变更工具必须有用途与理由、目标别名映射、去重、总量限额。
+// parseArgs、变更工具必须有用途与理由、目标别名映射、总量限额。
 func (s *Service) agentCalls(r runRecord, reply AgentReply) ([]callRecord, error) {
 	if len(reply.ToolCalls) == 0 && strings.TrimSpace(reply.Text) == "" {
 		return nil, fmt.Errorf("%w: empty reply (no tool calls, no text)", ErrInvalid)
@@ -115,9 +129,12 @@ func (s *Service) agentCalls(r runRecord, reply AgentReply) ([]callRecord, error
 		return nil, fmt.Errorf("%w: reply text too large (%d bytes > %d)", ErrInvalid, len(reply.Text), 32<<10)
 	}
 	aliases := map[string]int{}
+	names := make([]string, len(r.Body.Targets))
 	for i := range r.Body.Targets {
 		aliases["target_"+strconv.Itoa(i)] = i
+		names[i] = "target_" + strconv.Itoa(i)
 	}
+	allowed := strings.Join(names, ", ")
 	existing, err := s.calls(context.Background(), s.db, r.View.SessionID, r.View.ID)
 	if err != nil {
 		return nil, err
@@ -125,17 +142,25 @@ func (s *Service) agentCalls(r runRecord, reply AgentReply) ([]callRecord, error
 	if len(existing)+len(reply.ToolCalls) > resourceLimits.Calls {
 		return nil, ErrQuota
 	}
-	seen := map[string]bool{}
-	for _, c := range existing {
-		seen[c.Body.View.ServerID+"/"+c.Body.View.ToolID+"/"+c.Body.View.ArgsHash] = true
-	}
+	// 批内去重:同一目标+工具+参数的精确重复几乎必是模型失误,且重复的变更
+	// 调用会真实执行两次(如 double restart)。跨轮重复不拦:刷新数据是合理的。
+	// 批内不去重:同一批中"变更→读→再变更→再读"依赖调用顺序,精确重复
+	// (如两次 restart)也可能是故意的;乱序丢弃会破坏确认屏障语义。
 	round := r.Body.Rounds // 本轮编号(计数已在本轮开始时 +1,requestRound 落库后 r.Body.Rounds 为旧值)
 	batch := time.Now().UTC().UnixMilli()
 	candidates := []callRecord{}
 	for _, call := range reply.ToolCalls {
-		index, ok := aliases[call.Target]
+		target := call.Target
+		if target == "" && len(r.Body.Targets) == 1 {
+			// 单目标时模型省略 target 是无害的,直接落 target_0,不废掉整轮。
+			target = "target_0"
+		}
+		index, ok := aliases[target]
 		if !ok {
-			return nil, fmt.Errorf("%w: call %q targets %q which is not one of %v", ErrInvalid, call.ToolID, call.Target, aliases)
+			if strings.TrimSpace(call.Target) == "" {
+				return nil, fmt.Errorf("%w: call %q is missing the required \"target\" (use one of %s)", ErrInvalid, call.ToolID, allowed)
+			}
+			return nil, fmt.Errorf("%w: call %q uses target %q which is not one of %s", ErrInvalid, call.ToolID, call.Target, allowed)
 		}
 		fields := map[string]json.RawMessage{}
 		if len(call.Args) > 0 && (json.Unmarshal(call.Args, &fields) != nil || fields == nil) {

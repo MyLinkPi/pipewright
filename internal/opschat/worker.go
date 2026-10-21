@@ -1259,6 +1259,23 @@ func (s *Service) executeCall(ctx context.Context, c callRecord) error {
 	if v.ToolID == "host_resources" {
 		v.Resources = &HostResources{Unavailable: []string{}}
 	}
+	// docker_exec 允许传容器名:执行时(已持有变更槽位)解析名字→ID,
+	// 之后用不可变 ID 执行,避免"批准后名字被重建指向别的容器"。
+	if v.ToolID == "docker_exec" && !immutableContainer.MatchString(v.Args.Container) {
+		res, e := exec(callCtx, &c, []string{"docker", "ps", "-a", "--no-trunc", "--filter", "name=^/" + v.Args.Container + "$", "--format", "{{.ID}}"}, b)
+		if e != nil || res.ExitCode != 0 {
+			v.Status = Failed
+			v.Error = "container name could not be resolved"
+			return s.recordResult(c)
+		}
+		id := strings.TrimSpace(res.Stdout)
+		if !immutableContainer.MatchString(id) {
+			v.Status = Failed
+			v.Error = "container name did not resolve to a unique container ID"
+			return s.recordResult(c)
+		}
+		v.Args.Container = id
+	}
 	cmds := commands(v.ToolID, v.Args)
 	if len(cmds) == 0 {
 		v.Status = Failed
