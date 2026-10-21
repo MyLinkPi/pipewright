@@ -28,6 +28,7 @@ var tools = []Tool{
 	{"systemd_status", false, json.RawMessage(`{"type":"object","properties":{"unit":{"type":"string","maxLength":256}},"required":["unit"],"additionalProperties":false}`)},
 	{"systemd_logs", false, json.RawMessage(`{"type":"object","properties":{"unit":{"type":"string","maxLength":256},"lines":{"type":"integer","minimum":1,"maximum":1000,"default":200}},"required":["unit"],"additionalProperties":false}`)},
 	{"docker_action", true, json.RawMessage(`{"type":"object","properties":{"container":{"type":"string","maxLength":256},"action":{"type":"string","enum":["start","stop","restart","pause","unpause"]}},"required":["container","action"],"additionalProperties":false}`)},
+	{"host_exec", true, json.RawMessage(`{"type":"object","properties":{"argv":{"type":"array","minItems":1,"maxItems":61,"items":{"type":"string","maxLength":2048}}},"required":["argv"],"additionalProperties":false}`)},
 	{"docker_exec", true, json.RawMessage(`{"type":"object","properties":{"container":{"type":"string","maxLength":256},"argv":{"type":"array","minItems":1,"maxItems":61,"items":{"type":"string","maxLength":2048}}},"required":["container","argv"],"additionalProperties":false}`)},
 	{"systemd_action", true, json.RawMessage(`{"type":"object","properties":{"unit":{"type":"string","maxLength":256},"action":{"type":"string","enum":["start","stop","restart"]}},"required":["unit","action"],"additionalProperties":false}`)},
 }
@@ -41,7 +42,7 @@ func Tools() []Tool {
 	return out
 }
 func mutation(id string) bool {
-	return id == "docker_action" || id == "systemd_action" || id == "docker_exec"
+	return id == "docker_action" || id == "systemd_action" || id == "docker_exec" || id == "host_exec"
 }
 func parseArgs(id string, raw json.RawMessage) (ToolArgs, error) {
 	var a ToolArgs
@@ -49,7 +50,7 @@ func parseArgs(id string, raw json.RawMessage) (ToolArgs, error) {
 		return a, ErrInvalid
 	}
 	var supplied map[string]json.RawMessage
-	if id == "docker_exec" {
+	if id == "docker_exec" || id == "host_exec" {
 		// A 4096-byte decoded argv can expand sixfold under JSON HTML escaping.
 		if err := strictWithLimit(raw, &supplied, 32<<10); err != nil {
 			return a, err
@@ -108,7 +109,7 @@ func parseArgs(id string, raw json.RawMessage) (ToolArgs, error) {
 			return a, ErrInvalid
 		}
 	}
-	if id == "docker_exec" {
+	if id == "docker_exec" || id == "host_exec" {
 		allowed["argv"] = true
 		if !validExecArgv(a.Argv) {
 			return a, ErrInvalid
@@ -235,6 +236,11 @@ func commands(id string, a ToolArgs) [][]string {
 			return nil
 		}
 		return [][]string{append([]string{"docker", "exec", a.Container}, a.Argv...)}
+	case "host_exec":
+		if !validExecArgv(a.Argv) {
+			return nil
+		}
+		return [][]string{a.Argv}
 	case "systemd_action":
 		return [][]string{target.BuildServiceCmd("systemd", a.Action, a.Unit)}
 	}

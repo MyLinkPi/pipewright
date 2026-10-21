@@ -3,7 +3,6 @@ package opschat
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -14,6 +13,7 @@ import (
 )
 
 func TestRetryPartialFailureOnlySpecifiedTargetsAndHistoricalCall(t *testing.T) {
+	m := model()
 	a, b := uuid.NewString(), uuid.NewString()
 	f := executor(a, b)
 	failed := true
@@ -23,9 +23,9 @@ func TestRetryPartialFailureOnlySpecifiedTargetsAndHistoricalCall(t *testing.T) 
 		}
 		return &target.LimitedResult{Stdout: "ok\n"}, nil
 	}
-	s, _, db := fixture(t, f, nil)
+	s, _, db := fixture(t, f, m)
 	c := chat(t, s, a, b)
-	old := submitTool(t, s, c, "host_ports", "{}")
+	old := submitToolPlan(t, s, m, c, "host_ports", "{}")
 	snap := waitRun(t, s, c.ID, old.ID, PartialFailed)
 	waitJobs(t, s)
 	var failure, success Call
@@ -95,11 +95,12 @@ func TestRetryPartialFailureOnlySpecifiedTargetsAndHistoricalCall(t *testing.T) 
 	}
 }
 func TestRetryRejectsUnknownDispatchInterruptedAndChangedTargets(t *testing.T) {
+	m := model()
 	id := uuid.NewString()
 	f := executor(id)
-	s, _, _ := fixture(t, f, nil)
+	s, _, _ := fixture(t, f, m)
 	c := chat(t, s, id)
-	r := submitTool(t, s, c, "host_ports", "{}")
+	r := submitToolPlan(t, s, m, c, "host_ports", "{}")
 	snap := waitRun(t, s, c.ID, r.ID, Succeeded)
 	waitJobs(t, s)
 	cid := snap.Calls[0].ID
@@ -159,6 +160,7 @@ func TestRetryRejectsUnknownDispatchInterruptedAndChangedTargets(t *testing.T) {
 	}
 }
 func TestMutationReadBudgetPersistsAcrossRenewalAndConfirmation(t *testing.T) {
+	m := model()
 	for _, exhaust := range []bool{false, true} {
 		t.Run(fmt.Sprint(exhaust), func(t *testing.T) {
 			id := uuid.NewString()
@@ -183,9 +185,9 @@ func TestMutationReadBudgetPersistsAcrossRenewalAndConfirmation(t *testing.T) {
 				}
 				return &target.LimitedResult{Stdout: `{"Running":true,"Paused":false}`}, nil
 			}
-			s, _, _ := fixture(t, f, nil)
+			s, _, _ := fixture(t, f, m)
 			c := chat(t, s, id)
-			r := submitTool(t, s, c, "docker_action", `{"container":"app","action":"restart"}`)
+			r := submitToolPlan(t, s, m, c, "docker_action", `{"container":"app","action":"restart"}`)
 			snap := waitRun(t, s, c.ID, r.ID, AwaitingConfirmation)
 			waitJobs(t, s)
 			cid := snap.Calls[0].ID
@@ -234,9 +236,10 @@ func TestMutationReadBudgetPersistsAcrossRenewalAndConfirmation(t *testing.T) {
 	}
 }
 func TestLeaseLossBlocksSubmissionsAndNextDispatch(t *testing.T) {
+	m := model()
 	id := uuid.NewString()
 	f := executor(id)
-	s, _, db := fixture(t, f, nil)
+	s, _, db := fixture(t, f, m)
 	c := chat(t, s, id)
 	count := 0
 	f.run = func(_ context.Context, _ target.ConnectionSnapshot, argv []string, _ target.ExecutionLimits) (*target.LimitedResult, error) {
@@ -246,12 +249,12 @@ func TestLeaseLossBlocksSubmissionsAndNextDispatch(t *testing.T) {
 		}
 		return &target.LimitedResult{Stdout: validDF}, nil
 	}
-	r := submitTool(t, s, c, "host_resources", "{}")
+	r := submitToolPlan(t, s, m, c, "host_resources", "{}")
 	waitJobs(t, s)
 	if count != 1 {
 		t.Fatal("dispatched after lease loss", count)
 	}
-	if _, e := s.Submit(context.Background(), c.ID, TurnInput{ClientRequestID: uuid.NewString(), Revision: c.Revision, ToolID: "host_ports", Args: json.RawMessage("{}")}); e != ErrLease {
+	if _, e := s.Submit(context.Background(), c.ID, TurnInput{ClientRequestID: uuid.NewString(), Revision: c.Revision, Text: "check ports"}); e != ErrLease {
 		t.Fatal(e)
 	}
 	got, e := s.Call(context.Background(), c.ID, func() string {
@@ -268,6 +271,7 @@ func TestLeaseLossBlocksSubmissionsAndNextDispatch(t *testing.T) {
 }
 
 func TestUndispatchedMutationRetryRequiresFreshConfirmation(t *testing.T) {
+	m := model()
 	id := uuid.NewString()
 	f := executor(id)
 	writes := 0
@@ -278,11 +282,11 @@ func TestUndispatchedMutationRetryRequiresFreshConfirmation(t *testing.T) {
 		writes++
 		return &target.LimitedResult{}, nil
 	}
-	s, _, _ := fixture(t, f, nil)
+	s, _, _ := fixture(t, f, m)
 	recorder := s.audit
 	s.audit = nil
 	c := chat(t, s, id)
-	r := submitTool(t, s, c, "systemd_action", `{"unit":"app.service","action":"restart"}`)
+	r := submitToolPlan(t, s, m, c, "systemd_action", `{"unit":"app.service","action":"restart"}`)
 	snap := waitRun(t, s, c.ID, r.ID, AwaitingConfirmation)
 	first := snap.Confirmations[0]
 	if _, err := s.Confirm(context.Background(), c.ID, ConfirmInput{RunID: r.ID, Nonce: first.Nonce, Calls: first.Calls}); err != nil {

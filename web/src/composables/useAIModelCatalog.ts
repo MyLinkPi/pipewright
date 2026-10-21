@@ -33,7 +33,6 @@ export function useAIModelCatalog(config: {
       return false
     }
     return (
-      config.provider.value === 'ollama' ||
       !!config.apiKey.value.trim() ||
       config.hasExistingKey.value
     )

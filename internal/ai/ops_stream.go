@@ -69,6 +69,18 @@ func (m *opsModel) pinnedClient(ctx context.Context, base string) (*http.Client,
 }
 
 // Root text only. Tool-plan JSON and reasoning fields are never published.
+func opsPlanOpening(text string) (string, bool) {
+	i := strings.IndexByte(text, '\n')
+	if i < 0 {
+		return text, false
+	}
+	header := strings.TrimSpace(text[:i])
+	if header != "```" && !strings.EqualFold(header, "```json") {
+		return text, false
+	}
+	return text[i+1:], true
+}
+
 func planTextPrefix(raw string) string {
 	raw = strings.TrimLeft(raw, " \t\r\n")
 	if inner, fenced := opsPlanOpening(raw); fenced {
@@ -216,8 +228,6 @@ func (m *opsModel) chatStreamBudget(ctx context.Context, cfg *Config, key, promp
 	case ProviderClaude:
 		endpoint = apiEndpoint(cfg.Provider, base, "messages")
 		body["max_tokens"] = 4096
-	case ProviderOllama:
-		endpoint = apiEndpoint(cfg.Provider, base, "chat")
 	default:
 		return "", opschat.ErrUnavailable
 	}
@@ -251,7 +261,7 @@ func (m *opsModel) chatStreamBudget(ctx context.Context, cfg *Config, key, promp
 		}{&idleResetReader{r: resp.Body, t: idleTimer, d: idle}, resp.Body}
 	}
 	contentType, _, _ := mime.ParseMediaType(resp.Header.Get("Content-Type"))
-	streaming := contentType == "text/event-stream" || cfg.Provider == ProviderOllama && (contentType == "application/x-ndjson" || contentType == "application/ndjson")
+	streaming := contentType == "text/event-stream"
 	if !streaming {
 		// Some gateways ignore stream. Consume this one response, never retry a billable request.
 		raw, err = io.ReadAll(io.LimitReader(resp.Body, opsEnvelopeBytes+1))
@@ -390,17 +400,6 @@ func (m *opsModel) chatStreamBudget(ctx context.Context, cfg *Config, key, promp
 			if event.Type == "message_stop" {
 				done = true
 			}
-		case ProviderOllama:
-			if err := publish(event.Message.Content); err != nil {
-				return err
-			}
-			if event.Done {
-				done = true
-				if err := opsStopFailure(event.DoneReason, "", "stop"); err != nil {
-					return err
-				}
-				finishOK = true
-			}
 		}
 		return nil
 	}
@@ -410,22 +409,16 @@ func (m *opsModel) chatStreamBudget(ctx context.Context, cfg *Config, key, promp
 			return "", opsTransportFailure(sctx, sctx.Err())
 		}
 		line := scanner.Text()
-		if cfg.Provider == ProviderOllama {
-			if err = frame(line); err != nil {
+		if line == "" && data != "" {
+			err = frame(strings.TrimSuffix(data, "\n"))
+			data = ""
+			if err != nil {
 				return "", err
 			}
-		} else {
-			if line == "" && data != "" {
-				err = frame(strings.TrimSuffix(data, "\n"))
-				data = ""
-				if err != nil {
-					return "", err
-				}
-			} else if strings.HasPrefix(line, "data:") {
-				data += strings.TrimPrefix(strings.TrimPrefix(line, "data:"), " ") + "\n"
-				if len(data) > opsEnvelopeBytes {
-					return "", opsResponseLimit()
-				}
+		} else if strings.HasPrefix(line, "data:") {
+			data += strings.TrimPrefix(strings.TrimPrefix(line, "data:"), " ") + "\n"
+			if len(data) > opsEnvelopeBytes {
+				return "", opsResponseLimit()
 			}
 		}
 		if done {

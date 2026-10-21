@@ -45,7 +45,6 @@ const {
   error,
   pending,
   servers,
-  tools,
   confirmations,
   historyCursor,
 } = chat
@@ -321,6 +320,7 @@ defineExpose({ close })
           :calls="state.calls"
           :disabled="disabled"
           @confirm="chat.confirmBatch"
+      @reject="(c, r) => chat.reject(c.runId, c.nonce, c.calls, r)"
           @cancel="chat.stop"
           @reissue="chat.reissue"
         />
@@ -338,7 +338,6 @@ defineExpose({ close })
       class="ops-composer"
       :draft="draft"
       :draft-status="draftStatus"
-      :tools="tools"
       :disabled="disabled"
       :active="!!session?.activeRunId"
       :model-available="capabilities?.modelAvailable ?? false"
@@ -346,7 +345,6 @@ defineExpose({ close })
       :pending="!!pending"
       @edit="chat.editDraft"
       @send="chat.send"
-      @tool="chat.tool"
       @stop="stop"
       @save="chat.flush"
       @remote="chat.resolveDraft(false)"

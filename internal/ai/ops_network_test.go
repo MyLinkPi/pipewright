@@ -64,6 +64,7 @@ func TestOpsDNSPinnedDialProxyAndTLSHostname(t *testing.T) {
 				t.Fatal(err)
 			}
 			m := NewOpsModel(svc, mask.NewMasker()).(*opsModel)
+			opsTestProvider = m.Info()
 			lookups, dials := 0, 0
 			addresses := []net.IPAddr{{IP: net.ParseIP("127.0.0.1")}}
 			m.lookupIP = func(_ context.Context, name string) ([]net.IPAddr, error) {
@@ -82,13 +83,13 @@ func TestOpsDNSPinnedDialProxyAndTLSHostname(t *testing.T) {
 				}
 				return (&net.Dialer{}).DialContext(ctx, network, address)
 			}
-			if _, err := m.Plan(ctx(), opsRequest()); err != nil {
+			if _, err := m.AgentRound(ctx(), opsRequest()); err != nil {
 				t.Fatal(err)
 			}
 			if lookups != 1 || dials != 1 || requests.Load() != 1 || client.Transport != original || original.Proxy == nil || (secure && original.TLSClientConfig.ServerName != "wrong.invalid") {
 				t.Fatal("pinning changed legacy client or re-resolved", lookups, dials, requests.Load())
 			}
-			if _, err := m.Plan(ctx(), opsRequest()); err != opschat.ErrUnavailable || dials != 1 {
+			if _, err := m.AgentRound(ctx(), opsRequest()); err != opschat.ErrUnavailable || dials != 1 {
 				t.Fatal("prohibited DNS answer connected", err, dials)
 			}
 		})

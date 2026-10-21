@@ -594,8 +594,9 @@ describe('local ops lifecycle and concurrency', () => {
     await open()
     const d = defer<never>()
     vi.mocked(opsApi.turn).mockReturnValueOnce(d.promise)
-    const first = chat.tool('host_resources', {})
-    const second = chat.tool('host_resources', {})
+    chat.editDraft('collect disk usage')
+    const first = chat.send()
+    const second = chat.send()
     await flushPromises()
     expect(opsApi.turn).toHaveBeenCalledTimes(1)
     const input = vi.mocked(opsApi.turn).mock.calls[0]![1]

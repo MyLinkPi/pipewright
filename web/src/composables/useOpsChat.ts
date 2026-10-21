@@ -9,6 +9,7 @@ import {
 } from '../api/opsChat'
 import type {
   Analysis,
+  BoundCall,
   Confirmation,
   Entry,
   Patch,
@@ -770,13 +771,14 @@ export function useOpsChat(options: {
       return false
     return submit('turn', { text, analyzeResults:true, provider:capabilities.value.provider }, text)
   }
-  async function tool(toolId: string, args: ToolArgs): Promise<boolean> {
-    if (
-      !tools.value.some((t) => t.toolId === toolId) ||
-      !session.value?.serverIds?.length
-    )
-      return false
-    return submit('turn', { toolId, args })
+  async function reject(runId: string, nonce: string, calls: BoundCall[], reason: string): Promise<boolean> {
+    return localAction(() => opsApi.reject(state.currentId, { runId, nonce, calls, reason: reason || undefined }))
+  }
+  async function continueWith(advice: string): Promise<boolean> {
+    const snap = state.snapshot
+    const rid = snap?.session.activeRunId
+    if (!rid) return false
+    return localAction(() => opsApi.continueRun(state.currentId, rid, advice ? { advice } : {}))
   }
   async function retry(callIds: string[]): Promise<boolean> {
     return submit('retry', { callIds })
@@ -947,7 +949,8 @@ export function useOpsChat(options: {
     targets,
     rename,
     send,
-    tool,
+    reject,
+    continueWith,
     retry,
     submitPending,
     stop,

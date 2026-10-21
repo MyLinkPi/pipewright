@@ -21,7 +21,7 @@ export default {
 
   step1Title: 'Connect an AI provider',
   step1Badge: 'Diagnostic ace',
-  step1Desc: 'Connect your own LLM (Claude / OpenAI / local Ollama); keys are stored in an encrypted vault.',
+  step1Desc: 'Connect your own LLM (Claude / OpenAI / local Ollama via its OpenAI-compatible /v1 endpoint); keys are stored in an encrypted vault.',
   step2Title: 'Add your first server',
   step2Desc: 'Enter host + pick an SSH credential; the platform verifies SSH + Docker connectivity. Agentless — nothing to install on the target machine.',
   step3Title: 'Create your first project',

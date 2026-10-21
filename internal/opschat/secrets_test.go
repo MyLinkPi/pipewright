@@ -3,7 +3,6 @@ package opschat
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"strings"
 	"sync"
@@ -56,6 +55,14 @@ func TestManualToolsRegisterDisabledAndRotatedProviderSecrets(t *testing.T) {
 	if s.Capabilities().ModelAvailable {
 		t.Fatal("disabled provider is available")
 	}
+	// 工具只归 AI 调用:模型禁用时 turn 直接拒绝,不产生任何注册/执行副作用。
+	if _, e := s.Submit(context.Background(), c.ID, TurnInput{ClientRequestID: uuid.NewString(), Revision: c.Revision, Text: "check ports"}); e != ErrUnavailable {
+		t.Fatal(e)
+	}
+	// 恢复模型后,注册的 provider 密钥不得泄漏进持久化结果(轮换场景同测)。
+	m.mu.Lock()
+	m.info = ProviderInfo{Provider: "fake", Model: "test", ConfigHash: strings.Repeat("0", 64)}
+	m.mu.Unlock()
 	for _, key := range []string{"disabled-provider-api-secret", "rotated-provider-api-secret"} {
 		m.regMu.Lock()
 		m.key = key
@@ -63,7 +70,7 @@ func TestManualToolsRegisterDisabledAndRotatedProviderSecrets(t *testing.T) {
 		f.run = func(context.Context, target.ConnectionSnapshot, []string, target.ExecutionLimits) (*target.LimitedResult, error) {
 			return &target.LimitedResult{Stdout: "provider key: " + key}, nil
 		}
-		r := submitTool(t, s, c, "host_ports", "{}")
+		r := submitToolPlan(t, s, m.fakeModel, c, "host_ports", "{}")
 		snap := waitRun(t, s, c.ID, r.ID, Succeeded)
 		waitJobs(t, s)
 		for _, call := range snap.Calls {
@@ -74,8 +81,8 @@ func TestManualToolsRegisterDisabledAndRotatedProviderSecrets(t *testing.T) {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if len(m.plans) != 0 || len(m.analyses) != 0 || m.registrations < 5 {
-		t.Fatal("manual tools did not register without model inference")
+	if len(m.analyses) != 0 || m.registrations < 2 {
+		t.Fatal("provider secrets not registered per turn", m.registrations)
 	}
 }
 
@@ -94,7 +101,7 @@ func TestProviderSecretRegistrationFailureStopsPersistenceAndDispatch(t *testing
 	if _, err := s.Patch(context.Background(), c.ID, PatchInput{Revision: c.Revision, Draft: &draft}); err != ErrUnavailable {
 		t.Fatal(err)
 	}
-	if _, err := s.Submit(context.Background(), c.ID, TurnInput{ClientRequestID: uuid.NewString(), Revision: c.Revision, ToolID: "host_ports", Args: json.RawMessage("{}")}); err != ErrUnavailable {
+	if _, err := s.Submit(context.Background(), c.ID, TurnInput{ClientRequestID: uuid.NewString(), Revision: c.Revision, Text: "check ports"}); err != ErrUnavailable {
 		t.Fatal(err)
 	}
 	var n int

@@ -22,9 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
-	"net/url"
 	"strings"
 	"time"
 
@@ -38,15 +36,12 @@ const (
 	ProviderClaude = "claude"
 	// ProviderOpenAI 表示 OpenAI(api.openai.com)。
 	ProviderOpenAI = "openai"
-	// ProviderOllama 表示本地 Ollama(localhost:11434;无需 key)。
-	ProviderOllama = "ollama"
 )
 
 // 各 provider 默认 baseUrl(provider 非空但 baseUrl 为空时后端兜底)。
 const (
 	defaultBaseURLClaude = "https://api.anthropic.com/v1"
 	defaultBaseURLOpenAI = "https://api.openai.com/v1"
-	defaultBaseURLOllama = "http://localhost:11434/api"
 )
 
 // 领域错误。错误体永不含 apiKey 明文/密文/master key。
@@ -220,7 +215,7 @@ func (s *service) Save(ctx context.Context, in SaveInput) (*Config, error) {
 	}
 
 	// 非 ollama provider 须有 key(既有或新轮换)。
-	if provider != "" && provider != ProviderOllama && len(sealed) == 0 {
+	if provider != "" && len(sealed) == 0 {
 		return nil, ErrAPIKeyRequired
 	}
 
@@ -285,14 +280,14 @@ func (s *service) Test(ctx context.Context, in TestInput) (*TestResult, error) {
 	apiKey := ""
 	if in.APIKey != nil && *in.APIKey != "" {
 		apiKey = *in.APIKey
-	} else if provider != ProviderOllama && len(existingSealed) > 0 && sameDestination(provider, baseURL, &existing) {
+	} else if len(existingSealed) > 0 && sameDestination(provider, baseURL, &existing) {
 		plain, oerr := s.openSecret(existingSealed)
 		if oerr != nil {
 			return nil, oerr
 		}
 		apiKey = plain
 	}
-	if provider != ProviderOllama && apiKey == "" {
+	if apiKey == "" {
 		return nil, ErrAPIKeyRequired
 	}
 
@@ -371,7 +366,7 @@ func (m *opsModel) probe(ctx context.Context, provider, baseURL, model, apiKey s
 }
 
 // inferenceProbeRequest 构造真实推理探测的 URL/header/payload:per-provider 与
-// chat 路径同形态,但 max_tokens=1(OpenAI/Claude)/num_predict=1(Ollama),不期望内容。
+// chat 路径同形态,但 max_tokens=1,不期望内容。
 func inferenceProbeRequest(provider, baseURL, model, apiKey string) (string, map[string]string, map[string]any) {
 	header := map[string]string{"Content-Type": "application/json"}
 	messages := []map[string]string{{"role": "user", "content": "ping"}}
@@ -383,13 +378,6 @@ func inferenceProbeRequest(provider, baseURL, model, apiKey string) (string, map
 			"model":      model,
 			"max_tokens": 1,
 			"messages":   messages,
-		}
-	case ProviderOllama:
-		return apiEndpoint(provider, baseURL, "chat"), header, map[string]any{
-			"model":    model,
-			"stream":   false,
-			"messages": messages,
-			"options":  map[string]int{"num_predict": 1},
 		}
 	default:
 		header["Authorization"] = "Bearer " + apiKey
@@ -433,8 +421,6 @@ func probeRequest(provider, baseURL, apiKey string) (string, map[string]string) 
 	case ProviderOpenAI:
 		header["Authorization"] = "Bearer " + apiKey
 		return apiEndpoint(provider, baseURL, "models"), header
-	case ProviderOllama:
-		return apiEndpoint(provider, baseURL, "tags"), header
 	default:
 		return strings.TrimRight(strings.TrimSpace(baseURL), "/"), header
 	}
@@ -502,6 +488,10 @@ func (s *service) load(ctx context.Context) (*Config, []byte, error) {
 			return nil, nil, fmt.Errorf("ai: parse budget: %w", jerr)
 		}
 	}
+
+	// 一次性迁移存量 ollama 协议:本地模型统一走 Ollama 的 OpenAI 兼容端点(/v1);
+	// 无密钥时 configured=false,由用户在设置页补任意 key(Ollama 忽略 Authorization)。
+	provider, baseURL = migrateOllamaProvider(provider, baseURL)
 
 	cfg := &Config{
 		Enabled:  enabledInt != 0,
@@ -578,50 +568,11 @@ func maskKey(key string) string {
 	return dots + string(r[len(r)-4:]) // 按 rune 取末 4,避免切坏多字节 UTF-8
 }
 
-// validProbeURL 对 test 探测 baseUrl 做 SSRF 收口:scheme 仅 http/https;**恒拒云元数据
-// (169.254.169.254,链路本地)/链路本地/未指定地址**(最高价值 SSRF 目标)。
-// 回环(本地 Ollama / 管理员本机)与私网(自托管内网 LLM)放行——与 analyze.go/prober「放行私网」
-// 的既定自托管姿态一致(单管理员对 localhost/内网本就有访问,不构成提权)。
-func validProbeURL(_ /*provider*/, baseURL string) bool {
-	u, err := url.Parse(strings.TrimSpace(baseURL))
-	if err != nil {
-		return false
-	}
-	switch strings.ToLower(u.Scheme) {
-	case "http", "https":
-	default:
-		return false
-	}
-	host := u.Hostname()
-	if host == "" {
-		return false
-	}
-	blocked := func(ip net.IP) bool {
-		// 云元数据 169.254.169.254 / 链路本地 / 未指定:恒拒(回环、私网放行)。
-		return ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified()
-	}
-	if ip := net.ParseIP(host); ip != nil {
-		return !blocked(ip)
-	}
-	addrs, lerr := net.LookupIP(host)
-	if lerr != nil || len(addrs) == 0 {
-		return true // DNS 抖动不误拒;探测自身会自然失败
-	}
-	for _, ip := range addrs {
-		if blocked(ip) {
-			return false
-		}
-	}
-	return true
-}
 
 // isConfigured 判定配置是否「已配置」:provider 非空 +(ollama 无需 key / 否则有 key)。
 func isConfigured(provider string, hasKey bool) bool {
 	if provider == "" {
 		return false
-	}
-	if provider == ProviderOllama {
-		return true
 	}
 	return hasKey
 }
@@ -630,7 +581,7 @@ func isConfigured(provider string, hasKey bool) bool {
 func normalizeProvider(p string) (string, error) {
 	p = strings.TrimSpace(p)
 	switch p {
-	case "", ProviderClaude, ProviderOpenAI, ProviderOllama:
+	case "", ProviderClaude, ProviderOpenAI:
 		return p, nil
 	default:
 		return "", ErrInvalidProvider
@@ -652,11 +603,34 @@ func defaultBaseURL(provider string) string {
 		return defaultBaseURLClaude
 	case ProviderOpenAI:
 		return defaultBaseURLOpenAI
-	case ProviderOllama:
-		return defaultBaseURLOllama
 	default:
 		return ""
 	}
+}
+
+// migrateOllamaProvider 把存量 provider="ollama" 迁移为 openai 协议 + /v1 端点。
+func migrateOllamaProvider(provider, baseURL string) (string, string) {
+	if provider != "ollama" {
+		return provider, baseURL
+	}
+	trimmed := strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	switch {
+	case trimmed == "":
+		trimmed = "http://localhost:11434/v1"
+	case trimmed == "http://localhost:11434":
+		trimmed = "http://localhost:11434/v1"
+	case trimmed == "http://127.0.0.1:11434":
+		trimmed = "http://127.0.0.1:11434/v1"
+	case strings.HasSuffix(trimmed, "/api/chat"):
+		trimmed = strings.TrimSuffix(trimmed, "/api/chat") + "/v1"
+	case strings.HasSuffix(trimmed, "/api"):
+		trimmed = strings.TrimSuffix(trimmed, "/api") + "/v1"
+	default:
+		if !strings.HasSuffix(trimmed, "/v1") {
+			trimmed += "/v1"
+		}
+	}
+	return "openai", trimmed
 }
 
 // migrateLegacyBaseURL 一次性升级历史存量:原样拼接不再自动补版本段,旧默认裸根地址
@@ -669,8 +643,6 @@ func migrateLegacyBaseURL(provider, base string) string {
 		return defaultBaseURLOpenAI
 	case provider == ProviderClaude && trimmed == "https://api.anthropic.com":
 		return defaultBaseURLClaude
-	case provider == ProviderOllama && trimmed == "http://localhost:11434":
-		return defaultBaseURLOllama
 	case provider == ProviderOpenAI && trimmed == "https://api.deepseek.com":
 		return "https://api.deepseek.com/v1"
 	case provider == ProviderClaude && trimmed == "https://api.deepseek.com/anthropic":

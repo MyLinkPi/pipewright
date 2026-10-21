@@ -85,6 +85,7 @@ func TestResourcesStrictParsingAndLargeValues(t *testing.T) {
 	}
 }
 func TestHostResourcesTypedSuccessAndPartialUnavailable(t *testing.T) {
+	m := model()
 	for _, broken := range []bool{false, true} {
 		t.Run(fmt.Sprint(broken), func(t *testing.T) {
 			id := uuid.NewString()
@@ -106,9 +107,9 @@ func TestHostResourcesTypedSuccessAndPartialUnavailable(t *testing.T) {
 				}
 				return nil, ErrInvalid
 			}
-			s, _, _ := fixture(t, f, nil)
+			s, _, _ := fixture(t, f, m)
 			c := chat(t, s, id)
-			r := submitTool(t, s, c, "host_resources", "{}")
+			r := submitToolPlan(t, s, m, c, "host_resources", "{}")
 			status := Succeeded
 			if broken {
 				status = PartialFailed

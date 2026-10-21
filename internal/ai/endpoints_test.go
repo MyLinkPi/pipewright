@@ -150,7 +150,7 @@ func TestCompatibleEndpointVerbatimConcatenation(t *testing.T) {
 		t.Fatal("trailing slash not normalized away")
 	}
 	for _, base := range []string{"https://generativelanguage.googleapis.com/v1beta/openai", "https://open.bigmodel.cn/api/paas/v4"} {
-		if apiEndpoint(ProviderClaude, base, "messages") != base+"/messages" || apiEndpoint(ProviderOllama, base, "chat") != base+"/chat" {
+		if apiEndpoint(ProviderClaude, base, "messages") != base+"/messages" {
 			t.Fatal("non-OpenAI protocol changed", base)
 		}
 	}

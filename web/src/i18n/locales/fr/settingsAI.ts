@@ -17,13 +17,11 @@ export default {
   retry: 'Réessayer',
 
   providerClaudeTag: 'Recommandé pour le diagnostic',
-  providerOllamaDesc: 'Local / auto-hébergé',
-  providerOllamaTag: 'Aucune sortie de données',
 
   guidanceAria: 'Guide de configuration AI',
   guidanceTitle: 'Configurez un LLM pour activer le diagnostic AI',
   guidanceBody:
-    'Une fois Claude, OpenAI ou un Ollama local connecté, Pipewright génère automatiquement des hypothèses de cause racine et des suggestions de correction lorsqu’un pipeline échoue, sans avoir à fouiller les journaux manuellement.',
+    'Une fois Claude, OpenAI ou tout endpoint compatible OpenAI (ex. Ollama /v1) connecté, Pipewright génère automatiquement des hypothèses de cause racine et des suggestions de correction lorsqu’un pipeline échoue, sans avoir à fouiller les journaux manuellement.',
 
   selectProvider: 'Sélectionnez un fournisseur',
   providerRadioAria: 'Sélection du fournisseur AI',
@@ -38,8 +36,6 @@ export default {
   apiKeyPaste: 'Collez la API Key…',
   apiKeyMaskedAria: 'Masque configuré : {masked}',
 
-  ollamaHint:
-    'Ollama local ne nécessite aucune API Key — assurez-vous simplement que le service Ollama est en cours d’exécution à l’adresse indiquée.',
 
   baseUrlLabel: 'Base URL',
   baseUrlHint: 'Par défaut : {url} (concaténée telle quelle — conserver les préfixes de version tels que /v1)',
@@ -82,7 +78,7 @@ export default {
   errProviderInvalid: 'Veuillez sélectionner un fournisseur valide',
   errBaseUrlRequired: 'Veuillez saisir la base URL',
   errApiKeyRequired:
-    'La API Key ne peut pas être vide (obligatoire sauf pour Ollama)',
+    'La API Key ne peut pas être vide (toute valeur non vide convient aux endpoints locaux)',
   errRequestFailed: 'Échec de la requête ({status})',
   errUnknown: 'Erreur inconnue',
 }

@@ -138,16 +138,14 @@ func (s *service) Diagnose(ctx context.Context, in DiagnoseInput) (*Diagnosis, e
 
 	// apiKey:非 ollama 解密既有密钥进程内取用即弃;失败 → 降级(绝不泄漏)。
 	apiKey := ""
-	if provider != ProviderOllama {
 		if len(sealed) == 0 {
-			return unavailable("AI 未配置或未启用,无法生成诊断"), nil
-		}
-		plain, oerr := s.openSecret(sealed)
-		if oerr != nil {
-			return unavailable("AI 密钥不可用(保险库未配置),诊断暂不可用"), nil
-		}
-		apiKey = plain
+		return unavailable("AI 未配置或未启用,无法生成诊断"), nil
 	}
+	plain, oerr := s.openSecret(sealed)
+	if oerr != nil {
+		return unavailable("AI 密钥不可用(保险库未配置),诊断暂不可用"), nil
+	}
+	apiKey = plain
 
 	// ---- 出网前脱敏铁律:日志在进 prompt / 取证据前一律 Scrub ----
 	maskedLines := scrubLines(masker, in.FailureLog)

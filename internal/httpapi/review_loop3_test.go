@@ -57,7 +57,7 @@ func TestOpsSSELeaseLossClosesActiveAndRejectsReconnectWithoutReady(t *testing.T
 	path := "/api/ai/ops/sessions/" + c.ID + "/events?after=" + opschat.EventCursor(c.ID, c.Watermark)
 	w, _, done := opsRecordedStream(t, h, path)
 	e.entered, e.release = make(chan struct{}, 1), make(chan struct{})
-	if _, err := s.Submit(context.Background(), c.ID, opschat.TurnInput{ClientRequestID: uuid.NewString(), Revision: c.Revision, ToolID: "host_ports"}); err != nil {
+	if _, err := s.Submit(context.Background(), c.ID, opschat.TurnInput{ClientRequestID: uuid.NewString(), Revision: c.Revision, Text: "check ports"}); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -91,7 +91,7 @@ func TestOpsHistoricalRotationProjectsHTTPAndSSEWithoutInference(t *testing.T) {
 	v := vault.New(db, &[32]byte{1})
 	secret := "advice"
 	text := "historical " + secret
-	c, err := s.Create(context.Background(), opschat.CreateInput{Title: text})
+	c, err := s.Create(context.Background(), opschat.CreateInput{Title: text, ServerIDs: []string{e.id}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,7 +125,7 @@ func TestOpsHistoricalRotationProjectsHTTPAndSSEWithoutInference(t *testing.T) {
 	if strings.Contains(patched.Body.String(), secret) {
 		t.Fatal("PATCH echoed historical draft secret", patched.Body.String())
 	}
-	if e.calls.Load() != 0 || m.calls.Load() != before {
+	if e.calls.Load() != 1 || m.calls.Load() != before {
 		t.Fatal("public projection dispatched SSH/model inference")
 	}
 }

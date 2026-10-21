@@ -56,6 +56,10 @@ type Service interface {
 	// 有活跃运行时推迟 re-exec,避免孤儿构建进程)。
 	ActiveRuns(ctx context.Context) (int, error)
 
+	// RecentCommitTags 返回项目最近 n 个去重 trigger_commit(新→旧;空值剔除)。
+	// 产物镜像轮转(磁盘治理)用它构成「pipewright/<slug>:<commit> 最近 N 个」的保留集。
+	RecentCommitTags(ctx context.Context, projectID string, n int) ([]string, error)
+
 	// FailOrphanedRuns 把启动时残留的非终态运行(queued/running/waiting_approval)清为 failed。
 	// 进程重启会丢失内存队列与审批等待者,这些运行无法恢复,应一次性清理(返回清理条数)。
 	FailOrphanedRuns(ctx context.Context) (int, error)
@@ -912,6 +916,42 @@ func (s *service) ActiveRuns(ctx context.Context) (int, error) {
 		return 0, fmt.Errorf("run: count active: %w", err)
 	}
 	return n, nil
+}
+
+// RecentCommitTags 实现 Service:项目最近 n 个去重 trigger_commit(新→旧)。
+// 全量取该项目的非空 trigger_commit(按 created_at DESC,与 List 同口径),在应用层去重——
+// 同 commit 反复触发很常见,SQL 侧去重无法与排序组合出稳定语义。行数与项目运行数同量级,
+// 规模可控。注:created_at 为秒级精度,同秒多跑的顺序依 id 兜底(随机 UUID),对轮转语义
+// 无害——轮转永远保留当前构建的 tag,误差只是同秒内多留/少留一个旧 tag。
+func (s *service) RecentCommitTags(ctx context.Context, projectID string, n int) ([]string, error) {
+	if n <= 0 {
+		return nil, nil
+	}
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT trigger_commit FROM pipeline_runs
+		 WHERE project_id = ? AND trigger_commit IS NOT NULL AND TRIM(trigger_commit) != ''
+		 ORDER BY created_at DESC, id DESC`, projectID)
+	if err != nil {
+		return nil, fmt.Errorf("run: recent commit tags: %w", err)
+	}
+	defer rows.Close()
+	seen := make(map[string]struct{}, n*2)
+	tags := make([]string, 0, n)
+	for rows.Next() {
+		var c string
+		if err := rows.Scan(&c); err != nil {
+			return nil, fmt.Errorf("run: recent commit tags: %w", err)
+		}
+		if _, dup := seen[c]; dup {
+			continue
+		}
+		seen[c] = struct{}{}
+		tags = append(tags, c)
+		if len(tags) >= n {
+			break
+		}
+	}
+	return tags, rows.Err()
 }
 
 // FailOrphanedRuns 实现 Service:启动时把残留非终态运行清为 failed(孤儿,不可恢复)。

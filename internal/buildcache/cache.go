@@ -29,6 +29,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 )
 
 // 领域错误。
@@ -101,6 +102,8 @@ func (s *Store) Restore(ctx context.Context, key string, _ []string, workspace s
 		// 归档损坏 / 解包中途失败 → 当作未命中(冷构建);残留的半截解包由后续构建覆盖,best-effort。
 		return false, nil
 	}
+	// LRU:命中即刷新归档 mtime(GC 按最近使用淘汰;Save 的原子 rename 已天然刷新写入时间)。
+	_ = os.Chtimes(archive, time.Now(), time.Now())
 	return true, nil
 }
 

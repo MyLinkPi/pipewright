@@ -13,6 +13,7 @@ import { useI18n } from 'vue-i18n'
 import { getVersion, checkUpdate, applyUpdate, updateJobStatus } from '../../api/version'
 import type { VersionInfo, UpdateInfo, UpdateJobStatus } from '../../api/version'
 import { getRetentionConfig, setRetentionConfig, type RetentionConfig } from '../../api/retention'
+import { runMaintenanceCleanup } from '../../api/maintenance'
 import { getSystemConfig, saveSystemConfig, type SystemConfig } from '../../api/systemConfig'
 import { HttpError } from '../../api/http'
 import AppButton from '../../components/ui/AppButton.vue'
@@ -281,7 +282,9 @@ async function copyCommand(): Promise<void> {
 }
 
 // ─── 运行数据保留策略 ─────────────────────────────────────────────────────────
-const rt = ref<RetentionConfig>({ enabled: false, keepPerProject: 0, maxAgeDays: 0 })
+// cacheMaxGb / imageKeepTags 属磁盘治理项,独立于 enabled 开关(缓存/镜像不是审计数据,
+// 默认即回收);keepPerProject / maxAgeDays 仍由 enabled 控制。
+const rt = ref<RetentionConfig>({ enabled: false, keepPerProject: 0, maxAgeDays: 0, cacheMaxGb: 10, imageKeepTags: 10 })
 const rtLoading = ref(true)
 const rtSaving = ref(false)
 const rtSaved = ref(false)
@@ -307,6 +310,8 @@ async function saveRetention(): Promise<void> {
       enabled: rt.value.enabled,
       keepPerProject: Math.max(0, Math.floor(Number(rt.value.keepPerProject) || 0)),
       maxAgeDays: Math.max(0, Math.floor(Number(rt.value.maxAgeDays) || 0)),
+      cacheMaxGb: Math.max(0, Math.floor(Number(rt.value.cacheMaxGb) || 0)),
+      imageKeepTags: Math.max(0, Math.floor(Number(rt.value.imageKeepTags) || 0)),
     })
     rtSaved.value = true
     setTimeout(() => { rtSaved.value = false }, 2000)
@@ -314,6 +319,43 @@ async function saveRetention(): Promise<void> {
     rtError.value = t('settingsSystem.retentionSaveFailed')
   } finally {
     rtSaving.value = false
+  }
+}
+
+// ─── 磁盘清理(手动触发;与后台定时任务同一套实现) ────────────────────────────
+type CleanupState = { loading: boolean; ok: boolean; text: string }
+const cleanupTargets = [
+  { id: 'buildcache', labelKey: 'settingsSystem.mtBuildcache', hintKey: 'settingsSystem.mtBuildcacheHint' },
+  { id: 'repocache', labelKey: 'settingsSystem.mtRepocache', hintKey: 'settingsSystem.mtRepocacheHint' },
+  { id: 'remote-workspaces', labelKey: 'settingsSystem.mtRemote', hintKey: 'settingsSystem.mtRemoteHint' },
+  { id: 'local-temp', labelKey: 'settingsSystem.mtLocal', hintKey: 'settingsSystem.mtLocalHint' },
+] as const
+const mtState = ref<Record<string, CleanupState>>({})
+
+function fmtBytes(n: number): string {
+  if (n <= 0) return ''
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
+  if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`
+  return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`
+}
+
+async function runCleanup(target: 'buildcache' | 'repocache' | 'remote-workspaces' | 'local-temp'): Promise<void> {
+  if (mtState.value[target]?.loading) return
+  mtState.value[target] = { loading: true, ok: false, text: '' }
+  try {
+    const res = await runMaintenanceCleanup(target)
+    if (!res.ok) {
+      mtState.value[target] = { loading: false, ok: false, text: res.detail || t('settingsSystem.mtFailed') }
+      return
+    }
+    const bytes = fmtBytes(res.bytes)
+    mtState.value[target] = {
+      loading: false,
+      ok: true,
+      text: t('settingsSystem.mtDone', { n: res.items }) + (bytes ? `,${t('settingsSystem.mtReclaimed', { size: bytes })}` : '') + (res.detail && res.items === 0 ? `(${res.detail})` : ''),
+    }
+  } catch {
+    mtState.value[target] = { loading: false, ok: false, text: t('settingsSystem.mtFailed') }
   }
 }
 
@@ -641,6 +683,20 @@ onMounted(() => {
         </label>
       </div>
 
+      <!-- 磁盘治理项:独立于上方 enabled 开关(缓存/镜像不是审计数据,配置即生效) -->
+      <div class="rt-fields">
+        <label class="rt-field">
+          <span class="rt-label">{{ t('settingsSystem.retentionCacheGB') }}</span>
+          <input class="rt-input mono" type="number" min="0" step="1" v-model.number="rt.cacheMaxGb" :disabled="rtLoading" />
+          <span class="rt-hint">{{ t('settingsSystem.retentionCacheGBHint') }}</span>
+        </label>
+        <label class="rt-field">
+          <span class="rt-label">{{ t('settingsSystem.retentionImageKeep') }}</span>
+          <input class="rt-input mono" type="number" min="0" step="1" v-model.number="rt.imageKeepTags" :disabled="rtLoading" />
+          <span class="rt-hint">{{ t('settingsSystem.retentionImageKeepHint') }}</span>
+        </label>
+      </div>
+
       <p class="rt-warn">{{ t('settingsSystem.retentionWarn') }}</p>
 
       <div class="rt-actions">
@@ -650,6 +706,38 @@ onMounted(() => {
           {{ t('settingsSystem.retentionSave') }}
         </AppButton>
       </div>
+    </article>
+
+    <!-- 磁盘清理(手动触发;与后台定时任务同一套实现,48h 年龄门不影响进行中构建) -->
+    <article class="sys-panel">
+      <span class="sys-accent" aria-hidden="true" />
+      <div class="rt-head">
+        <div class="rt-head-text">
+          <h3 class="rt-title">{{ t('settingsSystem.mtTitle') }}</h3>
+          <p class="rt-sub">{{ t('settingsSystem.mtSub') }}</p>
+        </div>
+      </div>
+      <div class="mt-list">
+        <div v-for="tg in cleanupTargets" :key="tg.id" class="mt-row">
+          <div class="mt-row-text">
+            <span class="rt-label">{{ t(tg.labelKey) }}</span>
+            <span class="rt-hint">{{ t(tg.hintKey) }}</span>
+          </div>
+          <div class="mt-row-actions">
+            <span v-if="mtState[tg.id]?.text" class="mt-result" :class="mtState[tg.id]?.ok ? 'mt-result--ok' : 'mt-result--err'" role="status">
+              {{ mtState[tg.id]?.text }}
+            </span>
+            <AppButton
+              variant="default"
+              :loading="mtState[tg.id]?.loading"
+              @click="runCleanup(tg.id)"
+            >
+              {{ t('settingsSystem.mtRun') }}
+            </AppButton>
+          </div>
+        </div>
+      </div>
+      <p class="rt-warn">{{ t('settingsSystem.mtWarn') }}</p>
     </article>
 
     <!-- Passkey / 两步验证 RP 配置 -->
@@ -1336,6 +1424,18 @@ onMounted(() => {
 }
 .rt-saved { font-size: 0.82rem; color: var(--color-ok); }
 .rt-err { font-size: 0.82rem; color: var(--color-danger, #e5484d); }
+
+/* ─── 磁盘清理(手动触发) ─────────────────────────────────────────────────── */
+.mt-list { display: flex; flex-direction: column; gap: 10px; margin: 12px 0 4px; }
+.mt-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 16px;
+  padding: 10px 12px; border: 1px solid var(--color-border, #2a2f3a); border-radius: 8px;
+}
+.mt-row-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.mt-row-actions { display: flex; align-items: center; gap: 12px; flex-shrink: 0; }
+.mt-result { font-size: 0.82rem; max-width: 320px; text-align: right; }
+.mt-result--ok { color: var(--color-ok); }
+.mt-result--err { color: var(--color-danger, #e5484d); }
 
 /* ─── 界面语言 ───────────────────────────────────────────────────────────────── */
 .lang-field {

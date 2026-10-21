@@ -3,11 +3,11 @@
  * SettingsAI (Story 7.1) — AI provider configuration (FR-24).
  *
  * Delivers:
- *   - Provider selection cards (Claude / OpenAI / Ollama)
+ *   - Provider selection cards (Claude / OpenAI)
  *   - baseUrl auto-filled by provider (full version prefix, joined verbatim), editable
  *   - model combobox: pick from the provider catalog or type any ID
  *   - apiKey: WRITE-ONLY — never echoed from server; masked placeholder when configured
- *   - Ollama hides apiKey (no key needed for local provider)
+ *   - local models via OpenAI-compatible endpoints (e.g. Ollama /v1)
  *   - budget (monthly token limit, nullable)
  *   - enabled toggle
  *   - "测试连接" with ok/latency/error result
@@ -81,29 +81,17 @@ const PROVIDERS: ProviderMeta[] = [
     logoText: '○',
     logoStyle: 'background:oklch(70% 0.14 160);color:#0b1f17',
   },
-  {
-    id: 'ollama',
-    label: 'Ollama',
-    desc: t('settingsAI.providerOllamaDesc'),
-    logoText: 'Ll',
-    logoStyle:
-      'background:var(--color-inset);color:var(--color-dim);font-size:0.72rem',
-    tag: t('settingsAI.providerOllamaTag'),
-    tagStyle: 'color:var(--color-green);background:var(--color-green-soft)',
-  },
 ]
 
 // 默认接入地址携带完整版本前缀:后端按「原样拼接」处理 baseUrl,不再自动补 /v1。
 const DEFAULT_BASE_URLS: Record<string, string> = {
   claude: 'https://api.anthropic.com/v1',
   openai: 'https://api.openai.com/v1',
-  ollama: 'http://localhost:11434/api',
 }
 const preset = shallowRef('custom')
 const presets = [
   { value: 'anthropic', label: 'Anthropic' },
   { value: 'openai', label: 'OpenAI' },
-  { value: 'ollama', label: 'Ollama' },
   { value: 'deepseek', label: 'DeepSeek' },
   { value: 'gemini', label: 'Gemini' },
   { value: 'glm', label: 'GLM' },
@@ -115,7 +103,6 @@ const presets = [
 const presetConfig: Record<string, { provider: AIProvider; url: string }> = {
   anthropic: { provider: 'claude', url: DEFAULT_BASE_URLS.claude! },
   openai: { provider: 'openai', url: DEFAULT_BASE_URLS.openai! },
-  ollama: { provider: 'ollama', url: DEFAULT_BASE_URLS.ollama! },
   deepseek: { provider: 'openai', url: 'https://api.deepseek.com/v1' },
   gemini: {
     provider: 'openai',
@@ -190,7 +177,6 @@ onBeforeUnmount(() => {
 
 // ─── derived ──────────────────────────────────────────────────────────────────
 
-const isOllama = computed(() => selectedProvider.value === 'ollama')
 
 /** True when there is an existing configured key in the saved settings */
 const hasExistingKey = computed(
@@ -675,8 +661,8 @@ function relativeTime(iso: string | null): string {
           </div>
           <div class="panel-body">
             <form class="config-form" novalidate @submit.prevent="handleSave">
-              <!-- API Key — only shown for non-Ollama -->
-              <div v-if="!isOllama" class="config-row">
+              <!-- API Key -->
+              <div class="config-row">
                 <FormField
                   label="API Key"
                   field-id="ai-apikey"
@@ -723,24 +709,7 @@ function relativeTime(iso: string | null): string {
                 </FormField>
               </div>
 
-              <!-- Ollama key-less hint -->
-              <div v-else class="ollama-hint">
-                <svg
-                  width="14"
-                  height="14"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="2"
-                  aria-hidden="true"
-                >
-                  <path
-                    d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 4v4m0 4h.01"
-                  />
-                </svg>
-                {{ t('settingsAI.ollamaHint') }}
-              </div>
-
+              
               <!-- Base URL -->
               <div class="config-row">
                 <FormField
@@ -1462,23 +1431,6 @@ function relativeTime(iso: string | null): string {
   user-select: none;
 }
 
-/* ─── ollama hint ─────────────────────────────────────────────────────────── */
-.ollama-hint {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 10px 13px;
-  background: var(--color-green-soft);
-  border: 1px solid var(--color-green-line);
-  border-radius: var(--rounded);
-  font-size: 0.8rem;
-  color: var(--color-dim);
-  line-height: 1.5;
-}
-
-.ollama-hint svg {
-  flex-shrink: 0;
-  color: var(--color-green);
 }
 
 /* ─── test row ────────────────────────────────────────────────────────────── */

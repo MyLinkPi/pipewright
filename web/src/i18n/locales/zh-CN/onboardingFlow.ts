@@ -21,7 +21,7 @@ export default {
 
   step1Title: '连接 AI 提供商',
   step1Badge: '诊断王牌',
-  step1Desc: '接入你自己的 LLM(Claude / OpenAI / 本地 Ollama),密钥存入加密保险库。',
+  step1Desc: '接入你自己的 LLM(Claude / OpenAI / 本地 Ollama 的 OpenAI 兼容端点),密钥存入加密保险库。',
   step2Title: '添加第一台服务器',
   step2Desc: '填 host + 选 SSH 凭据,平台校验 SSH + Docker 连通性。agentless,无需在目标机装任何东西。',
   step3Title: '创建第一个项目',

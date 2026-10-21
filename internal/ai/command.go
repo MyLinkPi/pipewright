@@ -368,16 +368,14 @@ func (s *service) resolveChatCreds(ctx context.Context) (provider, baseURL, apiK
 	if baseURL == "" {
 		return "", "", "", ErrAINotConfigured
 	}
-	if provider != ProviderOllama {
 		if len(sealed) == 0 {
-			return "", "", "", ErrAINotConfigured
-		}
-		plain, oerr := s.openSecret(sealed)
-		if oerr != nil {
-			return "", "", "", oerr
-		}
-		apiKey = plain
+		return "", "", "", ErrAINotConfigured
 	}
+	plain, oerr := s.openSecret(sealed)
+	if oerr != nil {
+		return "", "", "", oerr
+	}
+	apiKey = plain
 	return provider, baseURL, apiKey, nil
 }
 

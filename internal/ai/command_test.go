@@ -94,7 +94,7 @@ func TestCommandSuggestNotConfigured(t *testing.T) {
 // TestCommandSuggestThreeProviders 验证三 provider 下命令建议解析(stub LLM 返回结构化命令)。
 func TestCommandSuggestThreeProviders(t *testing.T) {
 	const llmJSON = `{"command":"du -ah . | sort -rh | head -10","explanation":"按大小列出当前目录占用最多的 10 项","risk":"safe","reason":"只读查询,无副作用"}`
-	for _, provider := range []string{ProviderClaude, ProviderOpenAI, ProviderOllama} {
+	for _, provider := range []string{ProviderClaude, ProviderOpenAI} {
 		t.Run(provider, func(t *testing.T) {
 			srv := stubLLM(t, provider, llmJSON)
 			svc, _, _ := newService(t, srv.Client())

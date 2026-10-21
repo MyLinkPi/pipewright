@@ -87,7 +87,7 @@ func toAIConfigDTO(c *ai.Config) aiConfigDTO {
 func writeAIError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, ai.ErrInvalidProvider):
-		writeError(w, http.StatusUnprocessableEntity, "invalid_provider", "provider 只能为 claude、openai 或 ollama")
+		writeError(w, http.StatusUnprocessableEntity, "invalid_provider", "provider 只能为 claude 或 openai")
 	case errors.Is(err, ai.ErrBaseURLRequired):
 		writeError(w, http.StatusUnprocessableEntity, "base_url_required", "baseUrl 不能为空")
 	case errors.Is(err, ai.ErrAPIKeyRequired):

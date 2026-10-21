@@ -39,6 +39,10 @@ const (
 	Failed                  = "failed"
 	Interrupted             = "interrupted"
 	Unknown                 = "unknown"
+	// 轮次预算用尽且任务未完:等待用户「继续」(可附建议)或终止。
+	AwaitingContinuation = "awaiting_continuation"
+	// 用户在确认卡上拒绝执行(终态;拒绝原因回流模型续轮)。
+	Rejected = "rejected"
 )
 
 type Limits struct {
@@ -61,11 +65,11 @@ var resourceLimits = Limits{100, 2000, 8 << 20, 8 << 10, 8, 24, 64 << 10, 1000, 
 // RuntimeLimits tunes worker execution. Zero values fall back to defaults;
 // it is operational configuration, unlike the user-facing resource caps above.
 type RuntimeLimits struct {
-	SSHSlots     int           // global bounded SSH slots (default 4)
-	ApprovalTTL  time.Duration // confirmation validity window (default 15m)
-	WorkBudget   time.Duration // per worker activation (default 3m)
-	ModelTimeout time.Duration // per model request (default 1m)
-	ModelCalls   int           // model requests per run (default 2)
+	SSHSlots      int           // global bounded SSH slots (default 4)
+	ApprovalTTL   time.Duration // confirmation validity window (default 15m)
+	WorkBudget    time.Duration // per granted round window (default 30m)
+	ModelTimeout  time.Duration // per agent round model request (default 2m)
+	MaxAgentRounds int          // rounds per grant (default 20; user may continue)
 }
 
 func (l RuntimeLimits) withDefaults() RuntimeLimits {
@@ -76,13 +80,13 @@ func (l RuntimeLimits) withDefaults() RuntimeLimits {
 		l.ApprovalTTL = 15 * time.Minute
 	}
 	if l.WorkBudget <= 0 {
-		l.WorkBudget = 3 * time.Minute
+		l.WorkBudget = 30 * time.Minute
 	}
 	if l.ModelTimeout <= 0 {
-		l.ModelTimeout = time.Minute
+		l.ModelTimeout = 2 * time.Minute
 	}
-	if l.ModelCalls <= 0 {
-		l.ModelCalls = 2
+	if l.MaxAgentRounds <= 0 {
+		l.MaxAgentRounds = 20
 	}
 	return l
 }
@@ -142,9 +146,7 @@ type TurnInput struct {
 	Provider        ProviderInfo    `json:"provider,omitempty"`
 	ClientRequestID string          `json:"clientRequestId"`
 	Revision        int64           `json:"revision"`
-	Text            string          `json:"text,omitempty"`
-	ToolID          string          `json:"toolId,omitempty"`
-	Args            json.RawMessage `json:"args,omitempty"`
+	Text            string          `json:"text"`
 }
 type RetryInput struct {
 	ClientRequestID string   `json:"clientRequestId"`
@@ -176,15 +178,40 @@ type Message struct {
 	Role string `json:"role"`
 	Text string `json:"text"`
 }
-type PlanRequest struct {
-	Question         string                 `json:"question,omitempty"`
-	Provider         ProviderInfo           `json:"provider,omitempty"`
-	Messages         []Message              `json:"messages"`
-	Targets          []string               `json:"targets"`
-	Tools            []Tool                 `json:"tools"`
-	MaxResponseBytes int                    `json:"maxResponseBytes"`
-	ContainerFacts   []ContainerObservation `json:"containerFacts,omitempty"`
-	Continuation     bool                   `json:"continuation,omitempty"`
+type AgentRequest struct {
+	Question         string          `json:"question"`
+	Provider         ProviderInfo    `json:"provider"`
+	System           string          `json:"system"`
+	History          []Message       `json:"messages"`
+	Targets          []string        `json:"targets"`
+	Tools            []Tool          `json:"tools"` // 收尾轮为空
+	Rounds           []AgentExchange `json:"rounds,omitempty"`
+	MaxResponseBytes int             `json:"maxResponseBytes"`
+	WrapUp           bool            `json:"wrapUp,omitempty"` // 收尾轮:不带 tools,要求进展+建议
+}
+type AgentToolCall struct {
+	ID      string          `json:"id"`      // provider 侧调用 id(结果关联)
+	ToolID  string          `json:"toolId"`
+	Target  string          `json:"target"` // target_N 别名
+	Purpose string          `json:"purpose,omitempty"`
+	Reason  string          `json:"reason,omitempty"`
+	Args    json.RawMessage `json:"args"`
+}
+type AgentToolResult struct {
+	CallID        string `json:"callId"`
+	Output        string `json:"output"`
+	Failed        bool   `json:"failed,omitempty"`
+	Truncated     bool   `json:"truncated,omitempty"`
+	Denied        bool   `json:"denied,omitempty"`
+	DenialReason  string `json:"denialReason,omitempty"`
+}
+type AgentExchange struct {
+	Calls   []AgentToolCall  `json:"calls"`
+	Results []AgentToolResult `json:"results"`
+}
+type AgentReply struct {
+	Text      string          `json:"text"` // 终答/收尾文本(与 ToolCalls 互斥)
+	ToolCalls []AgentToolCall `json:"toolCalls,omitempty"`
 }
 type ContainerFact struct {
 	ID    string `json:"id"`
@@ -199,12 +226,7 @@ type ContainerObservation struct {
 	Truncated   bool            `json:"truncated"`
 	Unavailable string          `json:"unavailable,omitempty"`
 }
-type Plan struct {
-	Text           string   `json:"text"`
-	ManualAdvice   string   `json:"manualAdvice,omitempty"`
-	Actions        []Action `json:"actions"`
-	NeedsDiscovery bool     `json:"needsDiscovery,omitempty"`
-}
+
 type AnalysisItem struct {
 	Truncated   bool       `json:"truncated"`
 	CollectedAt *time.Time `json:"collectedAt,omitempty"`
@@ -226,7 +248,7 @@ type AnalysisRequest struct {
 // Info is strictly local. Adapters MUST bound provider responses while reading, not after buffering.
 type Model interface {
 	Info() ProviderInfo
-	Plan(context.Context, PlanRequest) (Plan, error)
+	AgentRound(context.Context, AgentRequest) (AgentReply, error)
 	Analyze(context.Context, AnalysisRequest) (string, error)
 }
 
@@ -235,9 +257,8 @@ type StreamChunk struct {
 	Fallback bool
 }
 
-// StreamModel publishes only natural text; adapters validate complete plans before returning actions.
+// StreamModel publishes only natural text for the analysis flow.
 type StreamModel interface {
-	PlanStream(context.Context, PlanRequest, func(StreamChunk) error) (Plan, error)
 	AnalyzeStream(context.Context, AnalysisRequest, func(StreamChunk) error) (string, error)
 }
 
@@ -256,6 +277,8 @@ type Call struct {
 	ToolID      string         `json:"toolId"`
 	Args        ToolArgs       `json:"args"`
 	Object      string         `json:"object"`
+	Purpose     string    `json:"purpose,omitempty"`
+	Reason      string    `json:"reason,omitempty"`
 	Status      string         `json:"status"`
 	ArgsHash    string         `json:"argsHash"`
 	TargetHash  string         `json:"targetHash"`
@@ -270,6 +293,8 @@ type BoundCall struct {
 	ServerID   string `json:"serverId"`
 	ToolID     string `json:"toolId"`
 	Object     string `json:"object"`
+	Purpose    string `json:"purpose,omitempty"`
+	Reason     string `json:"reason,omitempty"`
 	ArgsHash   string `json:"argsHash"`
 	TargetHash string `json:"targetHash"`
 }
@@ -359,9 +384,8 @@ type runBody struct {
 	Targets             []target.ConnectionSnapshot
 	Analysis            *AnalysisPreview
 	ActiveMillis        int64
-	ModelCalls          int
-	NeedsDiscovery      bool
-	ContinuationStarted bool
+	Rounds              int  // 已用轮次(persist-before-model 递增)
+	RoundBudget         int  // 已授予轮次(0 → 启动时取 runtime.MaxAgentRounds;继续 +20)
 	OutputBytes         int
 }
 type callBody struct {
@@ -371,6 +395,8 @@ type callBody struct {
 	Dispatched    bool
 	View          Call
 	Snapshot      target.ConnectionSnapshot
+	Round         int
+	DenialReason  string
 }
 type approvalBody struct {
 	Nonce string

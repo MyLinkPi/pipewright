@@ -482,6 +482,12 @@ func NewStageExecutor(b *Builder, reportSink TestReportSink) dagrun.StageExecuto
 		if hasPost && workspace != "" {
 			b.runStagePost(context.WithoutCancel(ctx), sink, r, stage, workspace, jobErr != nil, rep, settings)
 		}
+		// 构建后清悬空镜像(与 legacy Builder.Run 同口径):本阶段含 build_image 时,成败/取消都尽力清
+		// 一次 dangling——失败构建同样积层缓存。类型分组与 job 级 DAG 两条路径在此统一收口。
+		if len(buildImageJobs) > 0 {
+			pctx := context.WithoutCancel(ctx)
+			b.pruneImagesBestEffort(pctx, func(stream, line string) { _ = rep.Log(pctx, stream, line) })
+		}
 		return jobErr
 	}
 }
@@ -1090,7 +1096,11 @@ func (b *Builder) runBuildImageJob(ctx context.Context, sink run.StepSink, rep d
 	if art == nil {
 		return nil
 	}
-	return b.pushImageArtifact(ctx, sink, rep, jb, stageName, proj, plan, art, localTag, commitTag)
+	perr := b.pushImageArtifact(ctx, sink, rep, jb, stageName, proj, plan, art, localTag, commitTag)
+	// 产物镜像轮转(每项目保留最近 N 个本地 tag;本地/远程驱动经 b.driver 各自落到对应机器,
+	// 共享机路径不在此列——接收方无发起方 DB,见 image_rotate.go):best-effort,绝不影响构建结果。
+	b.rotateBuildImages(context.WithoutCancel(ctx), proj, commitTag, func(stream, line string) { _ = rep.Log(ctx, stream, line) })
+	return perr
 }
 
 // pushImageArtifact 对已构建出的产物执行镜像推送并登记(本地/远程/集群共享三条构建路径共用):

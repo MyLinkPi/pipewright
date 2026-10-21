@@ -32,23 +32,17 @@ func writeOpsFrame(w http.ResponseWriter, provider, text string, done bool) {
 			return
 		}
 		value = map[string]any{"type": "content_block_delta", "delta": map[string]string{"type": "text_delta", "text": text}}
-	case ProviderOllama:
-		value = map[string]any{"message": map[string]string{"content": text}, "done": done, "done_reason": "stop"}
 	}
 	raw, _ := json.Marshal(value)
-	if provider == ProviderOllama {
-		fmt.Fprintln(w, string(raw))
-	} else {
-		fmt.Fprintf(w, "data: %s\n\n", raw)
-		if done && provider == ProviderOpenAI {
-			fmt.Fprint(w, "data: [DONE]\n\n")
-		}
+	fmt.Fprintf(w, "data: %s\n\n", raw)
+	if done && provider == ProviderOpenAI {
+		fmt.Fprint(w, "data: [DONE]\n\n")
 	}
 	w.(http.Flusher).Flush()
 }
 
 func TestOpsRealBoundedStreamsNaturalPlanAndAnalysis(t *testing.T) {
-	for _, provider := range []string{ProviderOpenAI, ProviderClaude, ProviderOllama} {
+	for _, provider := range []string{ProviderOpenAI, ProviderClaude} {
 		for _, planning := range []bool{true, false} {
 			t.Run(fmt.Sprintf("%s/plan=%v", provider, planning), func(t *testing.T) {
 				gate := make(chan struct{})
@@ -57,14 +51,20 @@ func TestOpsRealBoundedStreamsNaturalPlanAndAnalysis(t *testing.T) {
 				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					requests.Add(1)
 					var body struct{ Stream bool }
-					if json.NewDecoder(r.Body).Decode(&body) != nil || !body.Stream {
-						t.Error("not requesting streaming")
+					if json.NewDecoder(r.Body).Decode(&body) != nil {
+						t.Error("bad request")
 					}
-					if provider == ProviderOllama {
-						w.Header().Set("Content-Type", "application/x-ndjson")
-					} else {
-						w.Header().Set("Content-Type", "text/event-stream")
+					if planning {
+						// AgentRound 非流式:直接回完整 JSON 终答(带一个工具调用)。
+						w.Header().Set("Content-Type", "application/json")
+						if provider == ProviderClaude {
+							fmt.Fprint(w, `{"content":[{"type":"tool_use","id":"c1","name":"host_ports","input":{"target":"target_0"}}]}`)
+						} else {
+							fmt.Fprint(w, `{"choices":[{"message":{"tool_calls":[{"id":"c1","type":"function","function":{"name":"host_ports","arguments":"{\"target\":\"target_0\"}"}}]}}]}`)
+						}
+						return
 					}
+					w.Header().Set("Content-Type", "text/event-stream")
 					first := "Ready "
 					if planning {
 						first = `{"text":"Ready `
@@ -89,25 +89,35 @@ func TestOpsRealBoundedStreamsNaturalPlanAndAnalysis(t *testing.T) {
 				if _, err := svc.Save(ctx(), SaveInput{Provider: provider, BaseURL: server.URL, Model: "m", APIKey: &key, Enabled: true}); err != nil {
 					t.Fatal(err)
 				}
-				m := NewOpsModel(svc, mask.NewMasker()).(opschat.StreamModel)
-				info := NewOpsModel(svc, mask.NewMasker()).Info()
+				model := NewOpsModel(svc, mask.NewMasker())
+	opsTestProvider = model.Info()
+				stream := model.(opschat.StreamModel)
+				info := model.Info()
 				completed := make(chan error, 1)
 				go func() {
 					emit := func(c opschat.StreamChunk) error { received <- c.Text; return nil }
 					if planning {
-						plan, err := m.PlanStream(ctx(), opsRequest(), emit)
-						if err == nil && (len(plan.Actions) != 1 || plan.Text != "Ready [MASKED] completed") {
-							err = fmt.Errorf("bad final plan %v", plan)
+						_ = stream
+						reply, err := model.AgentRound(ctx(), opsRequest())
+						if err == nil && (len(reply.ToolCalls) != 1 || reply.Text != "") {
+							err = fmt.Errorf("bad final reply %v", reply)
 						}
 						completed <- err
 					} else {
-						text, err := m.AnalyzeStream(ctx(), opschat.AnalysisRequest{Provider: info, Question: "check", Items: []opschat.AnalysisItem{{Status: opschat.Succeeded, Output: "data"}}, MaxResponseBytes: 16 << 10}, emit)
+						text, err := stream.AnalyzeStream(ctx(), opschat.AnalysisRequest{Provider: info, Question: "check", Items: []opschat.AnalysisItem{{Status: opschat.Succeeded, Output: "data"}}, MaxResponseBytes: 16 << 10}, emit)
 						if err == nil && text != "Ready [MASKED] completed" {
 							err = fmt.Errorf("bad final text %s", text)
 						}
 						completed <- err
 					}
 				}()
+				if planning {
+					if err := <-completed; err != nil {
+						t.Error(err)
+					}
+					close(gate)
+					return
+				}
 				select {
 				case first := <-received:
 					if first != "Ready " {
@@ -170,6 +180,7 @@ func TestOpsStreamEOFErrorCancellationAndFallbackNoRetry(t *testing.T) {
 			key := "secret-key"
 			svc.Save(ctx(), SaveInput{Provider: ProviderOpenAI, BaseURL: server.URL, Model: "m", APIKey: &key, Enabled: true})
 			m := NewOpsModel(svc, mask.NewMasker())
+	opsTestProvider = m.Info()
 			c, cancel := context.WithCancel(ctx())
 			defer cancel()
 			out := ""

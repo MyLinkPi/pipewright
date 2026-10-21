@@ -64,8 +64,7 @@ func TestIssue189StructuredReplyRejectsTruncatedCommand(t *testing.T) {
 	}{
 		{ProviderOpenAI, "https://api.deepseek.com", `{"choices":[{"message":{"content":"docker run --name demo"},"finish_reason":"length"}]}`},
 		{ProviderClaude, "https://api.deepseek.com/anthropic", `{"content":[{"type":"text","text":"docker run --name demo"}],"stop_reason":"max_tokens"}`},
-		{ProviderOllama, "https://ollama.example", `{"message":{"content":"docker run --name demo"},"done_reason":"length"}`},
-	} {
+			} {
 		t.Run(tc.provider, func(t *testing.T) {
 			calls := 0
 			m := compatibleMockModel(t, tc.base, opsTransport(func(r *http.Request) (*http.Response, error) {

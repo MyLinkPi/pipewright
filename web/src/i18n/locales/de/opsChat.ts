@@ -6,12 +6,7 @@ export default {
     invalid_plan: 'Die Folgeaufgaben oder Argumente werden nicht unterstützt.',
   },
   exec: {
-    program: 'Programm',
-    argument: 'Argument {index}',
-    addArgument: 'Argument hinzufügen',
-    removeArgument: 'Argument {index} entfernen',
     argv: 'Exakte argv',
-    invalidArgs: 'Ein Programm ist erforderlich. ASCII-Buchstaben, Ziffern und _ . / sind erlaubt, + und - erst nach dem ersten Zeichen; kein Punkt-, Eltern- oder Wurzelpfad und kein abschließendes /. Maximal 61 Elemente, je 2048 UTF-8-Bytes und insgesamt 4096 Bytes. Steuerzeichen (C0/C1), einschließlich NUL, Tabulatoren und Zeilenumbrüchen, sind nicht erlaubt.',
     risk: 'Nichtinteraktive Ausführung im Container kann Daten ändern oder auf Geheimnisse zugreifen. Ein Exit-Code bestätigt nur das Programmende, nicht den Erfolg einer fachlichen Änderung. Stoppen macht Änderungen nicht rückgängig.',
   },
   planningError: {
@@ -66,13 +61,10 @@ export default {
   missingServer: 'Server entfernt',
   noServers: 'Keine registrierten Server',
   noTargets: 'Keine Server ausgewählt',
-  runTool: 'Betriebswerkzeuge',
-  container: 'Containername oder ID',
-  unit: 'Diensteinheit',
-  action: 'Aktion',
-  lines: 'Protokollzeilen',
-  prepareBatch: 'Änderungen vorbereiten',
-  collect: 'Daten erfassen',
+  purpose: "Zweck",
+  reason: "Grund",
+  rejectBatch: "Ablehnen",
+  denialPlaceholder: "Ablehnungsgrund (optional, wird der KI mitgeteilt)",
   modelUnavailable:
     'KI nicht konfiguriert. Betriebswerkzeuge bleiben verfügbar.',
   message: 'Betriebsanfrage',
@@ -132,6 +124,8 @@ export default {
     conflict: 'Entwurfskonflikt; lokaler Text bleibt',
   },
   status: {
+    awaiting_continuation: "Fortsetzung ausstehend",
+    rejected: "Abgelehnt",
     queued: 'Wartend',
     planning: 'Planung',
     running: 'Läuft',
@@ -144,6 +138,7 @@ export default {
     unknown: 'Ergebnis unbekannt',
   },
   tools: {
+    host_exec: "Befehl auf Host ausführen",
     docker_exec: 'Programm im Container ausführen',
     host_resources: 'Host-Ressourcen',
     host_processes: 'Prozesse',

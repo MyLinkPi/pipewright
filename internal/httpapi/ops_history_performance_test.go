@@ -82,7 +82,7 @@ func TestSQLiteHistoryHTTPSizeLatencyAndSend(t *testing.T) {
 	}
 	sort.Slice(times, func(i, j int) bool { return times[i] < times[j] })
 	start := time.Now()
-	w := opsHTTP(t, h, "POST", "/api/ai/ops/sessions/"+c.ID+"/turns", fmt.Sprintf(`{"clientRequestId":%q,"revision":%d,"toolId":"host_ports","args":{}}`, uuid.NewString(), c.Revision), 202)
+	w := opsHTTP(t, h, "POST", "/api/ai/ops/sessions/"+c.ID+"/turns", fmt.Sprintf(`{"clientRequestId":%q,"revision":%d,"text":"check ports"}`, uuid.NewString(), c.Revision), 202)
 	sent := time.Since(start)
 	if size > 512<<10 || times[9] > time.Second || sent > time.Second {
 		t.Fatal(size, times, sent)
@@ -92,7 +92,7 @@ func TestSQLiteHistoryHTTPSizeLatencyAndSend(t *testing.T) {
 		t.Fatal(w.Body.String())
 	}
 	opsWait(t, s, c.ID, run.ID, opschat.Succeeded)
-	if m.calls.Load() != 0 || e.calls.Load() != 1 {
+	if m.calls.Load() != 2 || e.calls.Load() != 1 { // 文本 turn:规划 1 + 终答 1
 		t.Fatal("history reran", m.calls.Load(), e.calls.Load())
 	}
 	t.Logf("real SQLite HTTP 384x8KiB encrypted calls; snapshot bytes=%d p50=%s p95/max=%s; submit response bytes=%d elapsed=%s; one executor, zero model", size, times[4], times[9], w.Body.Len(), sent)

@@ -17,13 +17,11 @@ export default {
   retry: 'Retry',
 
   providerClaudeTag: 'Recommended for diagnosis',
-  providerOllamaDesc: 'Local / self-hosted',
-  providerOllamaTag: 'Zero egress',
 
   guidanceAria: 'AI configuration guide',
   guidanceTitle: 'Configure an LLM to unlock AI diagnosis',
   guidanceBody:
-    'Once you connect Claude, OpenAI, or a local Ollama, Pipewright automatically generates root-cause hypotheses and fix suggestions when a pipeline fails — no manual log digging required.',
+    'Once you connect Claude, OpenAI, or any OpenAI-compatible endpoint (e.g. a local Ollama /v1), Pipewright automatically generates root-cause hypotheses and fix suggestions when a pipeline fails — no manual log digging required.',
 
   selectProvider: 'Select a provider',
   providerRadioAria: 'AI provider selection',
@@ -38,8 +36,6 @@ export default {
   apiKeyPaste: 'Paste API Key…',
   apiKeyMaskedAria: 'Configured mask: {masked}',
 
-  ollamaHint:
-    'Local Ollama needs no API Key — just make sure the Ollama service is running at the given address.',
 
   baseUrlLabel: 'Base URL',
   baseUrlHint: 'Default: {url} (joined verbatim — keep version prefixes such as /v1)',
@@ -80,7 +76,7 @@ export default {
     'Monthly token limit must be a positive integer or left blank',
   errProviderInvalid: 'Please select a valid provider',
   errBaseUrlRequired: 'Please enter the base URL',
-  errApiKeyRequired: 'API Key cannot be empty (required for non-Ollama)',
+  errApiKeyRequired: 'API Key cannot be empty (any non-empty value works for local endpoints)',
   errRequestFailed: 'Request failed ({status})',
   errUnknown: 'Unknown error',
 }

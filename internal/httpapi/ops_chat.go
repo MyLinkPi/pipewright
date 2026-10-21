@@ -27,7 +27,9 @@ func mountOpsChat(r chi.Router, s *opschat.Service, authn auth.Authenticator) {
 			{"GET", "/sessions/{id}", "snapshot"}, {"PATCH", "/sessions/{id}", "patch"}, {"DELETE", "/sessions/{id}", "delete"},
 			{"POST", "/sessions/{id}/activate", "activate"}, {"GET", "/sessions/{id}/entries", "entries"},
 			{"GET", "/sessions/{id}/calls/{callId}", "call"}, {"POST", "/sessions/{id}/turns", "turn"},
-			{"POST", "/sessions/{id}/runs/{runId}/cancel", "cancel"}, {"POST", "/sessions/{id}/calls/confirm", "confirm"},
+			{"POST", "/sessions/{id}/runs/{runId}/cancel", "cancel"},
+			{"POST", "/sessions/{id}/runs/{runId}/continue", "continue"},
+			{"POST", "/sessions/{id}/runs/{runId}/reject", "reject"}, {"POST", "/sessions/{id}/calls/confirm", "confirm"},
 			{"POST", "/sessions/{id}/runs/{runId}/confirmation", "reissue"},
 			{"GET", "/sessions/{id}/analysis/preview", "preview"}, {"POST", "/sessions/{id}/analysis", "analysis"},
 			{"POST", "/sessions/{id}/retry", "retry"},
@@ -128,6 +130,18 @@ func opsHandler(s *opschat.Service, operation string) http.HandlerFunc {
 				status = http.StatusAccepted
 			case "reissue":
 				value, err = s.ReissueConfirmation(r.Context(), id, chi.URLParam(r, "runId"))
+			}
+		case "continue":
+			var in opschat.ContinueInput
+			if err = opsDecode(w, r, &in, true); err == nil {
+				value, err = s.Continue(r.Context(), id, chi.URLParam(r, "runId"), in)
+				status = http.StatusAccepted
+			}
+		case "reject":
+			var in opschat.RejectInput
+			if err = opsDecode(w, r, &in, false); err == nil {
+				value, err = s.Reject(r.Context(), id, in)
+				status = http.StatusAccepted
 			}
 		case "turn":
 			var in opschat.TurnInput

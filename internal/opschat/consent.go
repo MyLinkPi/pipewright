@@ -1,6 +1,7 @@
 package opschat
 
 import (
+	"unicode/utf8"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -11,7 +12,7 @@ import (
 )
 
 func bound(c Call) BoundCall {
-	return BoundCall{CallID: c.ID, ServerID: c.ServerID, ToolID: c.ToolID, Object: c.Object, ArgsHash: c.ArgsHash, TargetHash: c.TargetHash}
+	return BoundCall{CallID: c.ID, ServerID: c.ServerID, ToolID: c.ToolID, Object: c.Object, Purpose: c.Purpose, Reason: c.Reason, ArgsHash: c.ArgsHash, TargetHash: c.TargetHash}
 }
 
 func mutationCommand(argv []string) bool {
@@ -371,4 +372,126 @@ func (s *Service) Analyze(ctx context.Context, id string, in AnalysisInput) (*Ru
 	}
 	preview.Items = nil // Only references and permission persist; result text has a single owner.
 	return s.enqueue(ctx, id, in.ClientRequestID, hash, runBody{Analysis: preview, Provider: preview.Provider, Question: question}, in.Revision)
+}
+
+
+type RejectInput struct {
+	RunID  string      `json:"runId"`
+	Nonce  string      `json:"nonce"`
+	Calls  []BoundCall `json:"calls"`
+	Reason string      `json:"reason,omitempty"`
+}
+
+// Reject 在确认卡上拒绝执行:该批调用置 Rejected 终态(可选原因,≤512B,脱敏),
+// approval 置 rejected;run 重排队续 Agent 循环,拒绝结果回流模型。
+func (s *Service) Reject(ctx context.Context, id string, in RejectInput) (*Run, error) {
+	if err := s.ready(); err != nil {
+		return nil, err
+	}
+	if !utf8.ValidString(in.Reason) || len(in.Reason) > 512 {
+		return nil, ErrInvalid
+	}
+	reason := s.scrub(in.Reason, 512)
+	if len(in.Calls) < 1 || !validID(in.Nonce) {
+		return nil, ErrApproval
+	}
+	err := s.transaction(ctx, true, func(tx *sql.Tx) error {
+		r, e := s.run(ctx, tx, id, in.RunID)
+		if e != nil {
+			return e
+		}
+		if r.View.Status != AwaitingConfirmation || r.View.CancelRequested {
+			return ErrApproval
+		}
+		current, e := s.approval(ctx, tx, id, in.RunID)
+		if e != nil {
+			return e
+		}
+		if !current.View.Valid || current.Body.Nonce != in.Nonce || digest(s.publicConfirmation(current.View).Calls) != digest(in.Calls) {
+			return ErrApproval
+		}
+		if _, e = tx.ExecContext(ctx, "UPDATE ops_chat_approvals SET status='rejected' WHERE id=? AND status='pending'", current.ID); e != nil {
+			return ErrStorage
+		}
+		cs, e := s.calls(ctx, tx, id, in.RunID)
+		if e != nil {
+			return e
+		}
+		for _, c := range cs {
+			if c.Body.View.Status == AwaitingConfirmation {
+				c.Body.View.Status = Rejected
+				c.Body.DenialReason = reason
+				if e = s.saveCall(ctx, tx, c); e != nil {
+					return e
+				}
+				if e = s.append(ctx, tx, Entry{SessionID: id, RunID: in.RunID, CallID: c.Body.View.ID, Kind: "call_status", Status: Rejected}, false, false); e != nil {
+					return e
+				}
+			}
+		}
+		r.View.Status = Queued
+		if e = s.saveRun(ctx, tx, r); e != nil {
+			return e
+		}
+		return s.append(ctx, tx, Entry{SessionID: id, RunID: in.RunID, Kind: "run_status", Status: Queued}, false, false)
+	})
+	if err != nil {
+		return nil, err
+	}
+	log.Printf("[opschat] confirmation rejected session=%s run=%s reason_len=%d", id, in.RunID, len(reason))
+	s.notify(id)
+	s.launch(id, in.RunID)
+	r, err := s.run(ctx, s.db, id, in.RunID)
+	if err != nil {
+		return nil, err
+	}
+	return &r.View, nil
+}
+
+type ContinueInput struct {
+	Advice string `json:"advice,omitempty"`
+}
+
+// Continue 在轮次预算用尽后授权续跑:RoundBudget += MaxAgentRounds、预算窗口顺延,
+// 可附 ≤8KB 建议(脱敏后作为可见 user entry 进入续跑上下文)。
+func (s *Service) Continue(ctx context.Context, id, run string, in ContinueInput) (*Run, error) {
+	if err := s.ready(); err != nil {
+		return nil, err
+	}
+	if !utf8.ValidString(in.Advice) || len(in.Advice) > resourceLimits.MessageBytes {
+		return nil, ErrInvalid
+	}
+	advice := s.scrub(in.Advice, resourceLimits.MessageBytes)
+	err := s.transaction(ctx, true, func(tx *sql.Tx) error {
+		r, e := s.run(ctx, tx, id, run)
+		if e != nil {
+			return e
+		}
+		if r.View.Status != AwaitingContinuation || r.View.CancelRequested {
+			return ErrConflict
+		}
+		r.View.Status = Queued
+		r.Body.RoundBudget += s.runtime.MaxAgentRounds
+		r.Body.ActiveMillis -= int64(s.runtime.WorkBudget) // 授予新的预算窗口
+		if e = s.saveRun(ctx, tx, r); e != nil {
+			return e
+		}
+		if advice != "" {
+			if e = s.append(ctx, tx, Entry{SessionID: id, RunID: run, Kind: "user", Text: advice}, true, true); e != nil {
+				return e
+			}
+		}
+		return s.append(ctx, tx, Entry{SessionID: id, RunID: run, Kind: "run_status", Status: Queued}, false, false)
+	})
+	if err != nil {
+		return nil, err
+	}
+	log.Printf("[opschat] continuation granted session=%s run=%s advice_len=%d", id, run, len(advice))
+	s.notify(id)
+	s.launch(id, run)
+	r, err := s.run(ctx, s.db, id, run)
+	if err != nil {
+		return nil, err
+	}
+	return &r.View, nil
 }

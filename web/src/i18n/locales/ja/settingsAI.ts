@@ -17,13 +17,11 @@ export default {
   retry: '再試行',
 
   providerClaudeTag: '診断におすすめ',
-  providerOllamaDesc: 'ローカル / セルフホスト',
-  providerOllamaTag: '外部送信なし',
 
   guidanceAria: 'AI 設定ガイド',
   guidanceTitle: 'AI 診断を有効化するには LLM を設定してください',
   guidanceBody:
-    'Claude、OpenAI、またはローカルの Ollama を接続すると、パイプライン障害時に Pipewright が根本原因の仮説と修正案を自動生成し、手動でのログ調査が不要になります。',
+    'Claude、OpenAI、または任意の OpenAI 互換エンドポイント(例: Ollama /v1)を接続すると、パイプライン障害時に Pipewright が根本原因の仮説と修正案を自動生成し、手動でのログ調査が不要になります。',
 
   selectProvider: 'プロバイダーを選択',
   providerRadioAria: 'AI プロバイダーの選択',
@@ -38,8 +36,6 @@ export default {
   apiKeyPaste: 'API Key を貼り付け…',
   apiKeyMaskedAria: '設定済みマスク: {masked}',
 
-  ollamaHint:
-    'ローカルの Ollama に API Key は不要です —— Ollama サービスが指定したアドレスで稼働していることを確認してください。',
 
   baseUrlLabel: '接続先 (Base URL)',
   baseUrlHint: 'デフォルト: {url}(アドレスはそのまま連結されます。/v1 などのバージョン接頭辞を保持してください)',
@@ -80,7 +76,7 @@ export default {
   errBudgetInvalid: '月間 token 上限は正の整数か空欄である必要があります',
   errProviderInvalid: '有効なプロバイダーを選択してください',
   errBaseUrlRequired: '接続先を入力してください',
-  errApiKeyRequired: 'API Key は空にできません（Ollama 以外は必須）',
+  errApiKeyRequired: 'API Key は空にできません(ローカルエンドポイントは任意の非空値で可)',
   errRequestFailed: 'リクエストに失敗しました（{status}）',
   errUnknown: '不明なエラー',
 }

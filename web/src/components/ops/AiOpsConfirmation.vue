@@ -9,6 +9,7 @@ const props = defineProps<{
 }>()
 const emit = defineEmits<{
   confirm: [value: Confirmation]
+  reject: [value: Confirmation, reason: string]
   cancel: [runId: string]
   reissue: [runId: string]
 }>()
@@ -30,16 +31,21 @@ function matchingCall(bound: BoundCall): Call | undefined {
     !bound.object || call.object !== bound.object ||
     !bound.argsHash || call.argsHash !== bound.argsHash ||
     !bound.targetHash || call.targetHash !== bound.targetHash) return undefined
-  if (bound.toolId === 'docker_exec') {
+  if (bound.toolId === 'docker_exec' || bound.toolId === 'host_exec') {
     return isValidExecArgv(call.args.argv) && call.args.action === undefined ? call : undefined
   }
   return ['docker_action', 'systemd_action'].includes(bound.toolId) && !!call.args.action ? call : undefined
 }
 const rows = computed(() => props.confirmation.calls.map((bound) => ({ bound, call: matchingCall(bound) })))
 const loaded = computed(() => rows.value.length > 0 && rows.value.every((row) => !!row.call))
-const hasExec = computed(() => props.confirmation.calls.some((bound) => bound.toolId === 'docker_exec'))
+const hasExec = computed(() => props.confirmation.calls.some((bound) => bound.toolId === 'docker_exec' || bound.toolId === 'host_exec'))
+const denial = shallowRef('')
 function confirm(): void {
   if (!props.disabled && fresh.value && loaded.value) emit('confirm', props.confirmation)
+}
+function reject(): void {
+  if (!props.disabled && fresh.value && loaded.value)
+    emit('reject', props.confirmation, denial.value.trim())
 }
 </script>
 <template>
@@ -62,7 +68,13 @@ function confirm(): void {
           }}
         </p>
         <code class="ops-wrap">{{ bound.object }}</code>
-        <pre v-if="call && bound.toolId === 'docker_exec'" class="exec-argv">{{ JSON.stringify(call.args.argv) }}</pre>
+        <p v-if="bound.purpose" class="ops-wrap ops-purpose">
+          {{ t('opsChat.purpose') }}: {{ bound.purpose }}
+        </p>
+        <p v-if="bound.reason" class="ops-wrap ops-purpose">
+          {{ t('opsChat.reason') }}: {{ bound.reason }}
+        </p>
+        <pre v-if="call && (bound.toolId === 'docker_exec' || bound.toolId === 'host_exec')" class="exec-argv">{{ JSON.stringify(call.args.argv) }}</pre>
         <details class="ops-muted">
           <summary>{{ t('opsChat.binding') }}</summary>
           <p class="ops-wrap">
@@ -77,6 +89,15 @@ function confirm(): void {
       {{ t('opsChat.expires') }}
       {{ new Date(confirmation.expiresAt).toLocaleString() }}
     </p>
+    <textarea
+      v-model="denial"
+      class="ops-input denial-input"
+      rows="2"
+      maxlength="512"
+      :placeholder="t('opsChat.denialPlaceholder')"
+      :aria-label="t('opsChat.denialPlaceholder')"
+      :disabled="disabled"
+    ></textarea>
     <div class="ops-row">
       <button
         v-if="fresh"
@@ -85,6 +106,14 @@ function confirm(): void {
         @click="confirm"
       >
         {{ t('opsChat.confirmBatch') }}
+      </button>
+      <button
+        v-if="fresh"
+        class="ops-btn ops-danger"
+        :disabled="disabled || !loaded"
+        @click="reject"
+      >
+        {{ t('opsChat.rejectBatch') }}
       </button>
       <button
         v-else

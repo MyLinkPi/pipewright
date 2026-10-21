@@ -14,9 +14,9 @@ func init() {
 			"zh-HK": "metric 必須是 cpu / memory / disk 之一", "en": "metric must be one of cpu / memory / disk", "ja": "metric は cpu / memory / disk のいずれかである必要があります",
 			"ko": "metric은 cpu / memory / disk 중 하나여야 합니다", "es": "metric debe ser uno de cpu / memory / disk", "fr": "metric doit être l'un de cpu / memory / disk", "de": "metric muss eines von cpu / memory / disk sein",
 		},
-		"provider 只能为 claude、openai 或 ollama": {
-			"zh-HK": "provider 只能為 claude、openai 或 ollama", "en": "provider must be claude, openai or ollama", "ja": "provider は claude、openai または ollama のみ指定できます",
-			"ko": "provider는 claude, openai 또는 ollama만 가능합니다", "es": "provider solo puede ser claude, openai u ollama", "fr": "provider ne peut être que claude, openai ou ollama", "de": "provider darf nur claude, openai oder ollama sein",
+		"provider 只能为 claude 或 openai": {
+			"zh-HK": "provider 只能為 claude 或 openai", "en": "provider must be claude or openai", "ja": "provider は claude または openai のみ指定できます",
+			"ko": "provider는 claude 또는 openai만 가능합니다", "es": "provider solo puede ser claude u openai", "fr": "provider ne peut être que claude ou openai", "de": "provider darf nur claude oder openai sein",
 		},
 		"verdict 只能为 up 或 down": {
 			"zh-HK": "verdict 只能為 up 或 down", "en": "verdict must be up or down", "ja": "verdict は up または down のみ指定できます",

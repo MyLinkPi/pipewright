@@ -54,7 +54,8 @@ func fillStorage(t *testing.T, s *Service, db *sql.DB, id string, targetBytes in
 func TestActualCipherStorageLedgerDraftQuotaRollbackAndSnapshots(t *testing.T) {
 	id := uuid.NewString()
 	f := executor(id)
-	s, _, db := fixture(t, f, nil)
+	m := model()
+	s, _, db := fixture(t, f, m)
 	c := chat(t, s, id)
 	draft := strings.Repeat("\x01", 8192)
 	updated, e := s.Patch(context.Background(), c.ID, PatchInput{Revision: c.Revision, Draft: &draft})
@@ -65,7 +66,7 @@ func TestActualCipherStorageLedgerDraftQuotaRollbackAndSnapshots(t *testing.T) {
 	if e != nil || total < 6*8192 {
 		t.Fatal(total, e)
 	}
-	r := submitTool(t, s, updated, "docker_action", `{"container":"app","action":"restart"}`)
+	r := submitToolPlan(t, s, m, updated, "docker_action", `{"container":"app","action":"restart"}`)
 	waitRun(t, s, c.ID, r.ID, AwaitingConfirmation)
 	waitJobs(t, s)
 	// Each real encrypted body participates: sessions, entries, runs, calls, approvals.
@@ -126,11 +127,12 @@ func TestActualCipherStorageLedgerDraftQuotaRollbackAndSnapshots(t *testing.T) {
 	large.Server.Name = strings.Repeat("n", 9<<10)
 	f.snapshots[id] = large
 	f.mu.Unlock()
-	if _, e = s.Submit(context.Background(), c.ID, TurnInput{ClientRequestID: uuid.NewString(), Revision: prior.Revision, ToolID: "host_ports", Args: json.RawMessage("{}")}); e != ErrQuota {
+	if _, e = s.Submit(context.Background(), c.ID, TurnInput{ClientRequestID: uuid.NewString(), Revision: prior.Revision, Text: "check ports"}); e != ErrQuota {
 		t.Fatal(e)
 	}
 }
 func TestFourMiBReserveCannotBeSpentByDraftAndEscapedOutputFits(t *testing.T) {
+	m := model()
 	id := uuid.NewString()
 	f := executor(id)
 	entered := make(chan struct{}, 1)
@@ -147,10 +149,10 @@ func TestFourMiBReserveCannotBeSpentByDraftAndEscapedOutputFits(t *testing.T) {
 			return nil, ctx.Err()
 		}
 	}
-	s, _, db := fixture(t, f, nil)
+	s, _, db := fixture(t, f, m)
 	c := chat(t, s, id)
 	fillStorage(t, s, db, c.ID, (4<<20)-1024)
-	r := submitTool(t, s, c, "host_ports", "{}")
+	r := submitToolPlan(t, s, m, c, "host_ports", "{}")
 	select {
 	case <-entered:
 	case <-time.After(5 * time.Second):
@@ -179,10 +181,10 @@ func TestFourMiBReserveCannotBeSpentByDraftAndEscapedOutputFits(t *testing.T) {
 func TestStorageAdmissionReservesBeforeAnySSH(t *testing.T) {
 	id := uuid.NewString()
 	f := executor(id)
-	s, _, db := fixture(t, f, nil)
+	s, _, db := fixture(t, f, model())
 	c := chat(t, s, id)
 	fillStorage(t, s, db, c.ID, (4<<20)+1)
-	if _, e := s.Submit(context.Background(), c.ID, TurnInput{ClientRequestID: uuid.NewString(), Revision: c.Revision, ToolID: "host_ports", Args: json.RawMessage("{}")}); e != ErrQuota {
+	if _, e := s.Submit(context.Background(), c.ID, TurnInput{ClientRequestID: uuid.NewString(), Revision: c.Revision, Text: "check host_ports"}); e != ErrQuota {
 		t.Fatal(e)
 	}
 	var n int
@@ -231,7 +233,7 @@ func TestTargetCallMessageDraftAndSessionBoundaries(t *testing.T) {
 		actions = append(actions, Action{ToolID: "host_ports", Args: json.RawMessage("{}"), TargetIndexes: indexes})
 	}
 	m.mu.Lock()
-	m.plan = Plan{Actions: actions}
+	m.reply = AgentReply{ToolCalls: actionsToCalls(actions)}
 	m.mu.Unlock()
 	run, e = s.Submit(context.Background(), c.ID, TurnInput{ClientRequestID: uuid.NewString(), Revision: saved.Revision, Text: "24 calls"})
 	if e != nil {
@@ -252,7 +254,7 @@ func TestTargetCallMessageDraftAndSessionBoundaries(t *testing.T) {
 	before := len(f.invocations)
 	f.mu.Unlock()
 	m.mu.Lock()
-	m.plan = Plan{Actions: append(actions, Action{ToolID: "host_ports", Args: json.RawMessage("{}"), TargetIndexes: []int{0}})}
+	m.reply = AgentReply{ToolCalls: actionsToCalls(append(actions, Action{ToolID: "host_ports", Args: json.RawMessage(`{}`), TargetIndexes: []int{0}}))}
 	m.mu.Unlock()
 	run, e = s.Submit(context.Background(), c.ID, TurnInput{ClientRequestID: uuid.NewString(), Revision: saved.Revision, Text: "25 calls"})
 	if e != nil {
@@ -282,13 +284,14 @@ func TestTargetCallMessageDraftAndSessionBoundaries(t *testing.T) {
 	}
 }
 func TestOldPlaintextCounterIsNotStorageAuthority(t *testing.T) {
+	m := model()
 	id := uuid.NewString()
-	s, _, db := fixture(t, executor(id), nil)
+	s, _, db := fixture(t, executor(id), model())
 	c := chat(t, s, id)
 	if _, e := db.Exec("UPDATE ops_chat_sessions SET body_bytes=8000000 WHERE id=?", c.ID); e != nil {
 		t.Fatal(e)
 	}
-	r := submitTool(t, s, c, "host_ports", "{}")
+	r := submitToolPlan(t, s, m, c, "host_ports", "{}")
 	waitRun(t, s, c.ID, r.ID, Succeeded)
 	actual, e := s.StorageBytes(context.Background(), c.ID)
 	if e != nil || actual > 1<<20 {

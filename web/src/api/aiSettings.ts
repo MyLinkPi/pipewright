@@ -12,7 +12,7 @@
 
 import { http } from './http'
 
-export type AIProvider = 'claude' | 'openai' | 'ollama' | ''
+export type AIProvider = 'claude' | 'openai' | ''
 
 export interface AIBudget {
   monthlyTokenLimit: number | null

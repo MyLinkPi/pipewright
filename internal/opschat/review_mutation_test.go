@@ -12,13 +12,14 @@ import (
 )
 
 func TestApprovalRecheckedAfterWaitingForSSHSlot(t *testing.T) {
+	m := model()
 	for _, change := range []string{"expiry", "instance", "binding"} {
 		t.Run(change, func(t *testing.T) {
 			id := uuid.NewString()
 			f := executor(id)
-			s, _, db := fixture(t, f, nil)
+			s, _, db := fixture(t, f, m)
 			c := chat(t, s, id)
-			r := submitTool(t, s, c, "systemd_action", `{"unit":"nginx.service","action":"restart"}`)
+			r := submitToolPlan(t, s, m, c, "systemd_action", `{"unit":"nginx.service","action":"restart"}`)
 			a := waitRun(t, s, c.ID, r.ID, AwaitingConfirmation).Confirmations[0]
 			waitJobs(t, s)
 			release, err := s.takeSlot(context.Background(), id)
@@ -87,9 +88,10 @@ func TestApprovalRecheckedAfterWaitingForSSHSlot(t *testing.T) {
 }
 
 func TestReadonlyMutationVerificationAllowedAfterApprovalExpires(t *testing.T) {
+	m := model()
 	id := uuid.NewString()
 	f := executor(id)
-	s, _, db := fixture(t, f, nil)
+	s, _, db := fixture(t, f, m)
 	f.run = func(_ context.Context, _ target.ConnectionSnapshot, argv []string, _ target.ExecutionLimits) (*target.LimitedResult, error) {
 		if argv[1] == "show" {
 			return &target.LimitedResult{Stdout: "active\n"}, nil
@@ -100,7 +102,7 @@ func TestReadonlyMutationVerificationAllowedAfterApprovalExpires(t *testing.T) {
 		return &target.LimitedResult{}, nil
 	}
 	c := chat(t, s, id)
-	r := submitTool(t, s, c, "systemd_action", `{"unit":"nginx.service","action":"restart"}`)
+	r := submitToolPlan(t, s, m, c, "systemd_action", `{"unit":"nginx.service","action":"restart"}`)
 	a := waitRun(t, s, c.ID, r.ID, AwaitingConfirmation).Confirmations[0]
 	waitJobs(t, s)
 	if _, err := s.Confirm(context.Background(), c.ID, ConfirmInput{RunID: r.ID, Nonce: a.Nonce, Calls: a.Calls}); err != nil {
@@ -114,6 +116,7 @@ func TestReadonlyMutationVerificationAllowedAfterApprovalExpires(t *testing.T) {
 }
 
 func TestDockerMutationVerificationRequiresExplicitBooleanState(t *testing.T) {
+	m := model()
 	for _, action := range []string{"start", "stop", "restart", "pause", "unpause"} {
 		for _, raw := range []string{
 			`null`, `{}`, `{"Running":false}`, `{"Paused":false}`,
@@ -133,10 +136,10 @@ func TestDockerMutationVerificationRequiresExplicitBooleanState(t *testing.T) {
 					}
 					return &target.LimitedResult{}, nil
 				}
-				s, _, _ := fixture(t, f, nil)
+				s, _, _ := fixture(t, f, m)
 				c := chat(t, s, id)
 				args, _ := json.Marshal(ToolArgs{Container: "app", Action: action})
-				r := submitTool(t, s, c, "docker_action", string(args))
+				r := submitToolPlan(t, s, m, c, "docker_action", string(args))
 				a := waitRun(t, s, c.ID, r.ID, AwaitingConfirmation).Confirmations[0]
 				waitJobs(t, s)
 				if _, err := s.Confirm(context.Background(), c.ID, ConfirmInput{RunID: r.ID, Nonce: a.Nonce, Calls: a.Calls}); err != nil {

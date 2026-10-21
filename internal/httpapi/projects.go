@@ -361,14 +361,22 @@ func makeUpdateProjectHandler(svc project.Service, aud audit.Recorder, pipe proj
 }
 
 // makeDeleteProjectHandler 返回 DELETE /api/projects/{id} handler。
-// 删除成功后追加 project_delete 审计。
-func makeDeleteProjectHandler(svc project.Service, aud audit.Recorder) http.HandlerFunc {
+// 删除成功后追加 project_delete 审计;并经 mirrorCleaner 回收仓库镜像(磁盘治理:无其它
+// 项目共用同一 repo_url 时删本地 git 镜像;nil = 未装配,保持旧行为,best-effort 不影响删除)。
+func makeDeleteProjectHandler(svc project.Service, aud audit.Recorder, mirrorCleaner func(ctx context.Context, repoURL string)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if svc == nil {
 			writeError(w, http.StatusServiceUnavailable, "internal", "项目服务未初始化")
 			return
 		}
 		id := chi.URLParam(r, "id")
+		// 删前取 repo_url(删后行就没了),供镜像回收回调。
+		var repoURL string
+		if mirrorCleaner != nil {
+			if p, gerr := svc.Get(r.Context(), id); gerr == nil && p != nil {
+				repoURL = p.RepoURL
+			}
+		}
 		if err := svc.Delete(r.Context(), id); err != nil {
 			writeProjectError(w, err)
 			return
@@ -380,6 +388,9 @@ func makeDeleteProjectHandler(svc project.Service, aud audit.Recorder) http.Hand
 			TargetID:   id,
 			IP:         clientIP(r),
 		})
+		if mirrorCleaner != nil {
+			mirrorCleaner(context.WithoutCancel(r.Context()), repoURL)
+		}
 		w.WriteHeader(http.StatusNoContent)
 	}
 }

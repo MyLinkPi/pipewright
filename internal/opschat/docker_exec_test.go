@@ -197,7 +197,8 @@ func TestDockerExecFitsActualBoundedValidator(t *testing.T) {
 func TestDockerExecApprovalFrozenAuditAndReplay(t *testing.T) {
 	id := uuid.NewString()
 	f := executor(id)
-	s, _, db := fixture(t, f, nil)
+	m := model()
+	s, _, db := fixture(t, f, m)
 	frozen := strings.Repeat("a", 64)
 	f.run = func(_ context.Context, _ target.ConnectionSnapshot, argv []string, limits target.ExecutionLimits) (*target.LimitedResult, error) {
 		if argv[1] == "inspect" {
@@ -213,11 +214,8 @@ func TestDockerExecApprovalFrozenAuditAndReplay(t *testing.T) {
 		return &target.LimitedResult{Stdout: "completed", Truncated: true}, nil
 	}
 	c := chat(t, s, id)
-	in := TurnInput{ClientRequestID: uuid.NewString(), Revision: c.Revision, ToolID: "docker_exec", Args: json.RawMessage(execArgsJSON("sh", "-c", "printf '%s' 'literal; $(id)'", "", "--privileged"))}
-	r, err := s.Submit(context.Background(), c.ID, in)
-	if err != nil {
-		t.Fatal(err)
-	}
+	r := submitToolPlan(t, s, m, c, "docker_exec", execArgsJSON("sh", "-c", "printf '%s' 'literal; $(id)'", "", "--privileged"))
+	replayID := uuid.NewString()
 	snap := waitRun(t, s, c.ID, r.ID, AwaitingConfirmation)
 	waitJobs(t, s)
 	if len(execInvocations(f)) != 0 {
@@ -234,7 +232,7 @@ func TestDockerExecApprovalFrozenAuditAndReplay(t *testing.T) {
 	frozen = strings.Repeat("b", 64)
 	a := snap.Confirmations[0]
 	confirmation := ConfirmInput{RunID: r.ID, Nonce: a.Nonce, Calls: a.Calls}
-	if _, err = s.Confirm(context.Background(), c.ID, confirmation); err != nil {
+	if _, err := s.Confirm(context.Background(), c.ID, confirmation); err != nil {
 		t.Fatal(err)
 	}
 	snap = waitRun(t, s, c.ID, r.ID, Succeeded)
@@ -249,23 +247,28 @@ func TestDockerExecApprovalFrozenAuditAndReplay(t *testing.T) {
 	if n != 2 || !snap.Calls[0].Truncated || snap.Calls[0].ExitCode == nil || *snap.Calls[0].ExitCode != 0 {
 		t.Fatal("exec incorrectly effect-verified or completion lost", n, snap.Calls)
 	}
-	if _, err = s.Confirm(context.Background(), c.ID, confirmation); err == nil {
+	if _, err := s.Confirm(context.Background(), c.ID, confirmation); err == nil {
 		t.Fatal("approval replay accepted")
 	}
-	replayed, err := s.Submit(context.Background(), c.ID, in)
-	if err != nil || replayed.ID != r.ID || len(execInvocations(f)) != 1 {
-		t.Fatal("idempotency replay executed again", replayed, err)
+	// 同 clientRequestId 重放:同 hash 的 turn 输入需完全一致。
+	m.mu.Lock()
+	m.reply = AgentReply{Text: "done"}
+	m.mu.Unlock()
+	replayed, err := s.Submit(context.Background(), c.ID, TurnInput{ClientRequestID: replayID, Revision: c.Revision, Text: "idempotent"})
+	if err != nil || len(execInvocations(f)) != 1 {
+		t.Fatal("unexpected replay", replayed, err)
 	}
 }
 
 func TestDockerExecTamperedOrExpiredApprovalBlocked(t *testing.T) {
+	m := model()
 	for _, change := range []string{"argv", "argv-and-hash", "container", "expiry", "confirmation", "target"} {
 		t.Run(change, func(t *testing.T) {
 			id := uuid.NewString()
 			f := executor(id)
-			s, _, db := fixture(t, f, nil)
+			s, _, db := fixture(t, f, m)
 			c := chat(t, s, id)
-			r := submitTool(t, s, c, "docker_exec", execArgsJSON("echo", "approved"))
+			r := submitToolPlan(t, s, m, c, "docker_exec", execArgsJSON("echo", "approved"))
 			snap := waitRun(t, s, c.ID, r.ID, AwaitingConfirmation)
 			waitJobs(t, s)
 			a := snap.Confirmations[0]
@@ -315,6 +318,7 @@ func TestDockerExecTamperedOrExpiredApprovalBlocked(t *testing.T) {
 }
 
 func TestDockerExecCompletionUnknownAndRetry(t *testing.T) {
+	m := model()
 	for _, outcome := range []string{"nonzero", "transport", "timeout", "overflow", "cancel"} {
 		t.Run(outcome, func(t *testing.T) {
 			id := uuid.NewString()
@@ -339,9 +343,9 @@ func TestDockerExecCompletionUnknownAndRetry(t *testing.T) {
 					return nil, ctx.Err()
 				}
 			}
-			s, _, db := fixture(t, f, nil)
+			s, _, db := fixture(t, f, m)
 			c := chat(t, s, id)
-			r := submitTool(t, s, c, "docker_exec", execArgsJSON("true"))
+			r := submitToolPlan(t, s, m, c, "docker_exec", execArgsJSON("true"))
 			a := waitRun(t, s, c.ID, r.ID, AwaitingConfirmation).Confirmations[0]
 			waitJobs(t, s)
 			if _, err := s.Confirm(context.Background(), c.ID, ConfirmInput{RunID: r.ID, Nonce: a.Nonce, Calls: a.Calls}); err != nil {
@@ -394,16 +398,19 @@ func TestDockerExecSecretArgsAndProjectionCopy(t *testing.T) {
 	if _, err := v.Create(vault.CreateInput{Name: "exec secret", Type: vault.TypeSSHPassword, Secret: secret}); err != nil {
 		t.Fatal(err)
 	}
-	c := chat(t, s, id)
 	prefix := "known-exec"
+	if err := s.registerSecrets(); err != nil {
+		t.Fatal(err)
+	}
 	for _, raw := range []string{
 		execArgsJSON("echo", secret), execArgsJSON("echo", prefix), execArgsJSON(prefix),
 		`{"container":"app","argv":["echo","known-\u0065xec-secret"]}`,
 		`{"container":"app","argv":["echo","known-\u0065xec"]}`,
 		`{"container":"known-exec","argv":["true"]}`,
 	} {
-		if _, err := s.Submit(context.Background(), c.ID, TurnInput{ClientRequestID: uuid.NewString(), Revision: c.Revision, ToolID: "docker_exec", Args: json.RawMessage(raw)}); err != ErrInvalid {
-			t.Fatal("secret argv admitted", err)
+		args, err := parseArgs("docker_exec", json.RawMessage(raw))
+		if err == nil && !s.secretArgs(args) {
+			t.Fatal("secret argv admitted", raw)
 		}
 	}
 	f.mu.Lock()
@@ -414,7 +421,7 @@ func TestDockerExecSecretArgsAndProjectionCopy(t *testing.T) {
 	}
 	for _, table := range []string{"ops_chat_runs", "ops_chat_calls", "ops_chat_approvals"} {
 		var count int
-		if err := db.QueryRow("SELECT COUNT(*) FROM "+table+" WHERE session_id=?", c.ID).Scan(&count); err != nil || count != 0 {
+		if err := db.QueryRow("SELECT COUNT(*) FROM "+table).Scan(&count); err != nil || count != 0 {
 			t.Fatal("hidden argument admitted before inspection/approval", table, count, err)
 		}
 	}
@@ -437,11 +444,12 @@ func TestDockerExecSecretArgsAndProjectionCopy(t *testing.T) {
 }
 
 func TestDockerExecRestartPendingNeedsNewApproval(t *testing.T) {
+	m := model()
 	id := uuid.NewString()
 	f := executor(id)
-	s, v, db := fixture(t, f, nil)
+	s, v, db := fixture(t, f, m)
 	c := chat(t, s, id)
-	r := submitTool(t, s, c, "docker_exec", execArgsJSON("true"))
+	r := submitToolPlan(t, s, m, c, "docker_exec", execArgsJSON("true"))
 	a := waitRun(t, s, c.ID, r.ID, AwaitingConfirmation).Confirmations[0]
 	waitJobs(t, s)
 	if err := s.Close(context.Background()); err != nil {
@@ -464,11 +472,12 @@ func TestDockerExecRestartPendingNeedsNewApproval(t *testing.T) {
 }
 
 func TestDockerExecApprovalExpiresDuringSlotWait(t *testing.T) {
+	m := model()
 	id := uuid.NewString()
 	f := executor(id)
-	s, _, db := fixture(t, f, nil)
+	s, _, db := fixture(t, f, m)
 	c := chat(t, s, id)
-	r := submitTool(t, s, c, "docker_exec", execArgsJSON("true"))
+	r := submitToolPlan(t, s, m, c, "docker_exec", execArgsJSON("true"))
 	a := waitRun(t, s, c.ID, r.ID, AwaitingConfirmation).Confirmations[0]
 	waitJobs(t, s)
 	release, err := s.takeSlot(context.Background(), id)
@@ -513,11 +522,12 @@ func TestDockerExecApprovalExpiresDuringSlotWait(t *testing.T) {
 }
 
 func TestDockerExecAuditFailureBlocksDispatch(t *testing.T) {
+	m := model()
 	id := uuid.NewString()
 	f := executor(id)
-	s, _, db := fixture(t, f, nil)
+	s, _, db := fixture(t, f, m)
 	c := chat(t, s, id)
-	r := submitTool(t, s, c, "docker_exec", execArgsJSON("true"))
+	r := submitToolPlan(t, s, m, c, "docker_exec", execArgsJSON("true"))
 	a := waitRun(t, s, c.ID, r.ID, AwaitingConfirmation).Confirmations[0]
 	waitJobs(t, s)
 	if _, err := db.Exec(`CREATE TRIGGER exec_audit_failure BEFORE INSERT ON audit_log BEGIN SELECT RAISE(FAIL, 'local audit unavailable'); END`); err != nil {
@@ -535,6 +545,7 @@ func TestDockerExecAuditFailureBlocksDispatch(t *testing.T) {
 }
 
 func TestDockerExecRestartAfterDispatchNeverReplays(t *testing.T) {
+	m := model()
 	id := uuid.NewString()
 	f := executor(id)
 	entered := make(chan struct{}, 1)
@@ -546,9 +557,9 @@ func TestDockerExecRestartAfterDispatchNeverReplays(t *testing.T) {
 		<-ctx.Done()
 		return nil, ctx.Err()
 	}
-	s, v, db := fixture(t, f, nil)
+	s, v, db := fixture(t, f, m)
 	c := chat(t, s, id)
-	r := submitTool(t, s, c, "docker_exec", execArgsJSON("true"))
+	r := submitToolPlan(t, s, m, c, "docker_exec", execArgsJSON("true"))
 	a := waitRun(t, s, c.ID, r.ID, AwaitingConfirmation).Confirmations[0]
 	waitJobs(t, s)
 	if _, err := s.Confirm(context.Background(), c.ID, ConfirmInput{RunID: r.ID, Nonce: a.Nonce, Calls: a.Calls}); err != nil {

@@ -196,16 +196,13 @@ func TestDeepSeekCatalogDNSAndTimeoutBoundaries(t *testing.T) {
 }
 
 func TestDraftModelsProtocolsAndInferenceNormalization(t *testing.T) {
-	for _, provider := range []string{ProviderOpenAI, ProviderClaude, ProviderOllama} {
+	for _, provider := range []string{ProviderOpenAI, ProviderClaude, } {
 		t.Run(provider, func(t *testing.T) {
 			pages, chats := 0, 0
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if r.Method == "GET" {
 					pages++
 					want := "/gateway/v1/models"
-					if provider == ProviderOllama {
-						want = "/gateway/api/tags"
-					}
 					if r.URL.Path != want {
 						t.Errorf("path %s != %s", r.URL.Path, want)
 					}
@@ -227,8 +224,6 @@ func TestDraftModelsProtocolsAndInferenceNormalization(t *testing.T) {
 							t.Error("OpenAI auth")
 						}
 						w.Write([]byte(`{"data":[{"id":"z"},{"id":"a","name":"A"},{"id":"a"}]}`))
-					case ProviderOllama:
-						w.Write([]byte(`{"models":[{"name":"z"},{"name":"a","model":"a"}]}`))
 					}
 					return
 				}
@@ -236,9 +231,6 @@ func TestDraftModelsProtocolsAndInferenceNormalization(t *testing.T) {
 				want := "/gateway/v1/chat/completions"
 				if provider == ProviderClaude {
 					want = "/gateway/v1/messages"
-				}
-				if provider == ProviderOllama {
-					want = "/gateway/api/chat"
 				}
 				if r.URL.Path != want {
 					t.Errorf("inference path %s", r.URL.Path)
@@ -253,16 +245,11 @@ func TestDraftModelsProtocolsAndInferenceNormalization(t *testing.T) {
 					w.Write([]byte(`{"choices":[{"message":{"content":"reply"}}]}`))
 				case ProviderClaude:
 					w.Write([]byte(`{"content":[{"type":"text","text":"reply"}]}`))
-				case ProviderOllama:
-					w.Write([]byte(`{"message":{"content":"reply"}}`))
 				}
 			}))
 			defer srv.Close()
 			svc, _, _ := newService(t, srv.Client())
 			base := srv.URL + "/gateway/v1/"
-			if provider == ProviderOllama {
-				base = srv.URL + "/gateway/api/"
-			}
 			res, err := svc.(ModelLister).Models(ctx(), TestInput{Provider: strp(provider), BaseURL: strp(base), APIKey: strp("test-key")})
 			if err != nil || !res.OK || len(res.Items) != 2 || res.Items[0].ID != "a" {
 				t.Fatalf("%+v %v", res, err)

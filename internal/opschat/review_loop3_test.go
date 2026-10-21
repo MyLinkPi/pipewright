@@ -21,13 +21,13 @@ func TestMixedPlanConfirmationBarrierPreservesReadsAndCompleteBatch(t *testing.T
 		t.Run(fmt.Sprint(unknown), func(t *testing.T) {
 			id := uuid.NewString()
 			f, m := executor(id), model()
-			m.plan = Plan{Actions: []Action{
+			m.reply = AgentReply{ToolCalls: actionsToCalls([]Action{
 				{ToolID: "host_ports", TargetIndexes: []int{0}},
 				{ToolID: "docker_action", Args: json.RawMessage(`{"container":"app","action":"restart"}`), TargetIndexes: []int{0}},
 				{ToolID: "docker_logs", Args: json.RawMessage(`{"container":"app"}`), TargetIndexes: []int{0}},
 				{ToolID: "docker_action", Args: json.RawMessage(`{"container":"app","action":"restart"}`), TargetIndexes: []int{0}},
 				{ToolID: "docker_logs", Args: json.RawMessage(`{"container":"app"}`), TargetIndexes: []int{0}},
-			}}
+			})}
 			var restarts atomic.Int32
 			resolution := strings.Repeat("a", 64) + "\n"
 			f.run = func(_ context.Context, _ target.ConnectionSnapshot, argv []string, limits target.ExecutionLimits) (*target.LimitedResult, error) {
@@ -96,7 +96,7 @@ func TestMixedPlanConfirmationBarrierPreservesReadsAndCompleteBatch(t *testing.T
 				t.Fatal("diagnostics did not observe ordered effects", cs, err)
 			}
 			final, err := s.run(context.Background(), s.db, c.ID, r.ID)
-			if err != nil || final.Body.ActiveMillis < initial.Body.ActiveMillis || final.Body.ModelCalls != 1 || final.Body.ReadBytes <= initial.Body.ReadBytes {
+			if err != nil || final.Body.ActiveMillis < initial.Body.ActiveMillis || final.Body.Rounds != 2 || final.Body.ReadBytes <= initial.Body.ReadBytes {
 				t.Fatal("phase budgets reset", final, err)
 			}
 			if _, err = s.Confirm(context.Background(), c.ID, ConfirmInput{RunID: r.ID, Nonce: a.Nonce, Calls: a.Calls}); err != ErrApproval {
@@ -111,11 +111,11 @@ func TestMixedPlanPreparationFailureAndCancelConvergeQueuedCalls(t *testing.T) {
 		t.Run(mode, func(t *testing.T) {
 			id := uuid.NewString()
 			f, m := executor(id), model()
-			m.plan = Plan{Actions: []Action{
+			m.reply = AgentReply{ToolCalls: actionsToCalls([]Action{
 				{ToolID: "docker_action", Args: json.RawMessage(`{"container":"app","action":"restart"}`), TargetIndexes: []int{0}},
 				{ToolID: "host_ports", TargetIndexes: []int{0}},
 				{ToolID: "docker_action", Args: json.RawMessage(`{"container":"later","action":"restart"}`), TargetIndexes: []int{0}},
-			}}
+			})}
 			if mode != "cancel" {
 				f.run = func(_ context.Context, _ target.ConnectionSnapshot, argv []string, _ target.ExecutionLimits) (*target.LimitedResult, error) {
 					if mode == "failed" || (argv[1] == "inspect" && argv[6] == "app") {
@@ -258,7 +258,7 @@ func TestHistoricalPublicFieldsRefreshRotatedSecretsWithoutChangingHistory(t *te
 			if err != nil || stored.Body.Title != text || stored.Body.Draft != text {
 				t.Fatal("projection changed internal fields", stored, err)
 			}
-			if len(f.invocations) != 0 || len(m.plans) != 0 || len(m.analyses) != 0 {
+			if len(f.invocations) != 0 || len(m.rounds) != 0 || len(m.analyses) != 0 {
 				t.Fatal("GET invoked SSH/model inference")
 			}
 		})
