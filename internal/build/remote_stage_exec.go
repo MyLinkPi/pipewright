@@ -520,6 +520,9 @@ func (b *Builder) runMixedNode(
 		b.runNotifyJob(ctx, jrep, jb, r)
 	case isObjectUploadJob(jb.Type):
 		err = b.runOssUploadJob(ctx, jrep, jb, r)
+	case isAITestJob(jb.Type):
+		// AI 测试恒在控制面执行(远程构建机场景:需求按 run revision 克隆到临时目录读取)。
+		err = b.runAITestJobWithClone(ctx, jrep, jb, r, stage, reportSink)
 	case isWaitJob(jb.Type):
 		// 等待永远在控制机本地执行(不进构建机池);被手动跳过 → 哨兵(下方转 skipped、非失败)。
 		var skipped bool

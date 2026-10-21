@@ -75,6 +75,11 @@ type TemplateVars struct {
 	// Params 是本次运行的参数(如发版审批的 VERSION);非空时透出到 Payload.Fields + 正文,
 	// 让审批卡片展示「要发哪个版本」等汇总信息(审批人据此审核)。键原样、值已是明文非 secret。
 	Params map[string]string
+	// TestSummary/FailedTests/ReportURL 是 AI 测试(ai_test)摘要增量(specs/ai-test-node.md
+	// 「结果呈现与通知」;冻结契约**只增不改**):审批卡片据此内嵌验收结论,人看证据放行/驳回。
+	TestSummary string // 如「验收:2 通过 / 1 失败 / 1 跳过 · 14 轮 · 花费 0.0346」
+	FailedTests string // 失败需求名列表(超长截断;人读,无 secret)
+	ReportURL   string // run 详情测试报告锚点(空 = 未生成)
 }
 
 // asMap 把 TemplateVars 展开为占位名 → 值的映射(冻结占位名)。
@@ -89,6 +94,9 @@ func (v TemplateVars) asMap() map[string]string {
 		"runId":        v.RunID,
 		"errorSummary": v.ErrorSummary,
 		"actionUrl":    v.ActionURL,
+		"testSummary":  v.TestSummary,
+		"failedTests":  v.FailedTests,
+		"reportUrl":    v.ReportURL,
 	}
 }
 

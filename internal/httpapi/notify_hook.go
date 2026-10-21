@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"net/url"
 	"strconv"
@@ -126,6 +127,24 @@ func NewApprovalNotifier(notifySvc notify.Service, signer *approval.Signer, publ
 				vars.Commit = notify.ShortCommit(r.Trigger.Commit)
 				if len(r.Trigger.Params) > 0 {
 					vars.Params = r.Trigger.Params
+				}
+			}
+			// AI 验收摘要(specs/ai-test-node.md「结果呈现与通知」):审批人在卡片里直接看到
+			// 测试结论与用量/费用再放行。best-effort:无报告(未跑 ai_test)则不填,卡片不变。
+			if reports, rerr := runs.ListTestReports(ctx, runID); rerr == nil {
+				var b strings.Builder
+				for i, tr := range reports {
+					if i > 0 {
+						b.WriteString(";")
+					}
+					fmt.Fprintf(&b, "%s:%d 通过/%d 失败/%d 跳过", tr.StageName, tr.Passed, tr.Failed, tr.Skipped)
+					if tr.GateReason != "" {
+						b.WriteString("(" + tr.GateReason + ")")
+					}
+				}
+				if b.Len() > 0 {
+					vars.TestSummary = b.String()
+					vars.ReportURL = base + "/runs/" + runID
 				}
 			}
 		}

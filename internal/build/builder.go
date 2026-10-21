@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -106,6 +107,14 @@ type Builder struct {
 	// imageRemoveAfterPush 在推送成功后回收构建机上的本机 tag(见 removeLocalTagAfterPush)。
 	// nil = 默认回收;返回 false = 设置里关闭(留副本复用构建层缓存)。main 经 WithImagePushCleanup 注入。
 	imageRemoveAfterPush func(ctx context.Context) bool
+	// aiTester/aiInfra/aiContainer 是「AI 测试」节点(ai_test)执行依赖(WithAITester 系注入):
+	// aiTester = ai.Service(AgentTest);aiInfra = deployJob 目标机解析 + 被测机 SSH 执行
+	// (targetSvc 适配);aiContainer = 浏览器桥容器 CLI(与本地 driver 同源)。零值 →
+	// 对应能力诚实降级(nil → 「未注入,跳过」/deployJob 不绑定/浏览器动作集不可用)。
+	aiTester    stageAITester
+	aiInfra     aiTestInfra
+	aiContainer aiTestContainerCLI
+	aiHTTP      *http.Client
 }
 
 // buildCacheStore 抽象「按 key 恢复/保存工作区缓存路径」的能力(便于 fake 单测注入)。
@@ -223,6 +232,45 @@ func WithEcsPowerController(c stageEcsPowerController) BuilderOption {
 	return func(b *Builder) {
 		if c != nil {
 			b.ecsPower = c
+		}
+	}
+}
+
+// WithAITester 注入 AI 服务,使 dag 里的 ai_test 节点真实执行 AI 测试(agent 会话 +
+// 结构化裁决)。nil 不改(节点退化为「未注入,跳过」日志,向后兼容)。
+func WithAITester(c stageAITester) BuilderOption {
+	return func(b *Builder) {
+		if c != nil {
+			b.aiTester = c
+		}
+	}
+}
+
+// WithAITestInfra 注入部署目标解析 + 被测机 SSH 执行能力(targetSvc 适配),支撑 ai_test
+// 的 deployJob 绑定(DEPLOY_HOST 注入 + 内网抓取经被测机)。nil 不改(该绑定降级为日志)。
+func WithAITestInfra(inf aiTestInfra) BuilderOption {
+	return func(b *Builder) {
+		if inf != nil {
+			b.aiInfra = inf
+		}
+	}
+}
+
+// WithAITestContainer 注入容器 CLI 流式执行(浏览器桥编排;与本地 driver 同源 commander)。
+// nil 不改(浏览器动作集不可用,ai_test 退化为纯 HTTP 验收并日志说明)。
+func WithAITestContainer(cli aiTestContainerCLI) BuilderOption {
+	return func(b *Builder) {
+		if cli != nil {
+			b.aiContainer = cli
+		}
+	}
+}
+
+// WithAITestHTTPClient 覆盖 ai_test 的 HTTP 动作集客户端(缺省 30s 超时;测试注入用)。
+func WithAITestHTTPClient(c *http.Client) BuilderOption {
+	return func(b *Builder) {
+		if c != nil {
+			b.aiHTTP = c
 		}
 	}
 }

@@ -81,11 +81,15 @@ func (d *shellDriver) runCopiedWorkspace(ctx context.Context, image, hostDir, wo
 	mount := toolchainWorkspaceMount(workdir)
 	args := []string{"create", "--name", name, "--label", copiedWorkspaceLabel, "--mount", "type=volume,destination=" + mount + ",volume-nocopy", "-w", workdir}
 	display := append([]string(nil), args...)
-	for _, flag := range []struct{ key, value string }{{"--cpus", res.CPU}, {"--memory", res.Memory}, {"--network", res.Network}} {
+	for _, flag := range []struct{ key, value string }{{"--cpus", res.CPU}, {"--memory", res.Memory}, {"--network", res.Network}, {"--shm-size", res.ShmSize}} {
 		if value := strings.TrimSpace(flag.value); value != "" {
 			args = append(args, flag.key, value)
 			display = append(display, flag.key, value)
 		}
+	}
+	if res.Init {
+		args = append(args, "--init")
+		display = append(display, "--init")
 	}
 	for _, value := range env {
 		args = append(args, "-e", value)

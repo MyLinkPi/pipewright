@@ -73,7 +73,7 @@ export interface JobField {
 }
 
 /** Accent palette keys — map to --color-{accent} / --color-{accent}-soft tokens. */
-export type AccentName = 'cyan' | 'primary' | 'green' | 'amber' | 'red' | 'neutral'
+export type AccentName = 'cyan' | 'primary' | 'green' | 'amber' | 'red' | 'neutral' | 'violet'
 
 /** Picker category id for grouping task types (Jenkins/云效-style gallery). */
 export type CategoryId = 'source' | 'build' | 'deploy' | 'quality' | 'notify' | 'custom'
@@ -124,6 +124,12 @@ const DEPLOY_MODE_OPTIONS: SelectOption[] = [
 const SELECTOR_MODE_OPTIONS: SelectOption[] = [
   { value: 'all', get label() { return t('pipelineJob.selectorModeAll') } },
   { value: 'any', get label() { return t('pipelineJob.selectorModeAny') } },
+]
+
+// AI 测试(ai_test):AI 不可达时的裁决档(specs/ai-test-node.md)。
+const AI_UNAVAILABLE_OPTIONS: SelectOption[] = [
+  { value: 'fail', get label() { return t('pipelineJob.aiOnUnavailableFail') } },
+  { value: 'skip', get label() { return t('pipelineJob.aiOnUnavailableSkip') } },
 ]
 
 // 容器重启策略(restartPolicy):空 = 不设置(docker 默认 no);其余同 docker run --restart。
@@ -1119,6 +1125,78 @@ export const JOB_TYPE_SPECS: Record<string, JobTypeSpec> = {
     defaultConfig: { seconds: '60' },
   },
 
+  ai_test: {
+    type: 'ai_test',
+    get label() { return t('pipelineJob.typeAITestLabel') },
+    get description() { return t('pipelineJob.typeAITestDesc') },
+    accent: 'violet',
+    category: 'quality',
+    fields: [
+      {
+        key: 'target',
+        get label() { return t('pipelineJob.fieldAITestTargetLabel') },
+        kind: 'text',
+        monospace: true,
+        placeholder: 'http://${BASE_URL}',
+        get hint() { return t('pipelineJob.fieldAITestTargetHint') },
+      },
+      {
+        key: 'deployJob',
+        get label() { return t('pipelineJob.fieldAITestDeployJobLabel') },
+        kind: 'nodeRef',
+        get hint() { return t('pipelineJob.fieldAITestDeployJobHint') },
+      },
+      {
+        key: 'filter',
+        get label() { return t('pipelineJob.fieldAITestFilterLabel') },
+        kind: 'text',
+        monospace: true,
+        placeholder: '.pipewright/tests/requirements/**/*.md',
+        get hint() { return t('pipelineJob.fieldAITestFilterHint') },
+      },
+      {
+        key: 'onAiUnavailable',
+        get label() { return t('pipelineJob.fieldAITestOnUnavailableLabel') },
+        kind: 'select',
+        options: AI_UNAVAILABLE_OPTIONS,
+      },
+      {
+        key: 'timeoutSeconds',
+        get label() { return t('pipelineJob.fieldAITestTimeoutLabel') },
+        kind: 'number',
+        placeholder: '300',
+      },
+      {
+        key: 'maxSteps',
+        get label() { return t('pipelineJob.fieldAITestMaxStepsLabel') },
+        kind: 'number',
+        placeholder: '25',
+      },
+      {
+        key: 'model',
+        get label() { return t('pipelineJob.fieldAITestModelLabel') },
+        kind: 'text',
+        get hint() { return t('pipelineJob.fieldAITestModelHint') },
+      },
+      {
+        key: 'modelContextTokens',
+        get label() { return t('pipelineJob.fieldAITestModelCtxLabel') },
+        kind: 'number',
+        placeholder: '200000',
+        get hint() { return t('pipelineJob.fieldAITestModelCtxHint') },
+      },
+      {
+        key: 'browserImage',
+        get label() { return t('pipelineJob.fieldAITestBrowserImageLabel') },
+        kind: 'text',
+        monospace: true,
+        placeholder: 'mcr.microsoft.com/playwright:v1.49.0-noble',
+        get hint() { return t('pipelineJob.fieldAITestBrowserImageHint') },
+      },
+    ],
+    defaultConfig: { onAiUnavailable: 'fail' },
+  },
+
   notify: {
     type: 'notify',
     get label() { return t('pipelineJob.typeNotifyLabel') },
@@ -1373,6 +1451,7 @@ export const PICKABLE_TYPES: readonly string[] = [
   'deploy_static',
   'wait',
   'health_check',
+  'ai_test',
   'notify',
   'script',
   'templated',

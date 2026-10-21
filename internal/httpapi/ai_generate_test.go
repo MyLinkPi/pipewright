@@ -392,3 +392,8 @@ func TestAIApplyNoSecretCredentialIDFabricated(t *testing.T) {
 		t.Fatalf("AI 应用 build 不应编造任何 secret 变量: %v", vars)
 	}
 }
+
+// AgentTest 实现 ai.Service(ai_test 节点;生成桩不执行测试)。
+func (s *stubAIService) AgentTest(context.Context, ai.AITestInput) (*ai.AITestResult, error) {
+	return nil, ai.ErrAINotConfigured
+}

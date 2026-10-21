@@ -128,6 +128,7 @@ func NewStageExecutor(b *Builder, reportSink TestReportSink) dagrun.StageExecuto
 		meshJobs := make([]pipeline.Job, 0, len(stage.Jobs))
 		pushedSourceJobs := make([]pipeline.Job, 0, len(stage.Jobs))
 		waitJobs := make([]pipeline.Job, 0, len(stage.Jobs))
+		aiTestJobs := make([]pipeline.Job, 0, len(stage.Jobs))
 		for _, jb := range stage.Jobs {
 			switch {
 			case isScriptJob(jb.Type):
@@ -146,6 +147,8 @@ func NewStageExecutor(b *Builder, reportSink TestReportSink) dagrun.StageExecuto
 				ossUploadJobs = append(ossUploadJobs, jb)
 			case isEcsPowerJob(jb.Type):
 				ecsPowerJobs = append(ecsPowerJobs, jb)
+			case isAITestJob(jb.Type):
+				aiTestJobs = append(aiTestJobs, jb)
 			case isMeshPushJob(jb.Type) || isMeshTriggerJob(jb.Type):
 				meshJobs = append(meshJobs, jb)
 			case isPushedSourceJob(jb.Type):
@@ -157,10 +160,11 @@ func NewStageExecutor(b *Builder, reportSink TestReportSink) dagrun.StageExecuto
 
 		needsBuild := len(scriptJobs) > 0 || len(buildImageJobs) > 0
 		// 没有任何可执行节点(script/build_image/deploy/health_check/notify/oss_upload/push_image/
-		// mesh_push/mesh_trigger/pushed_source/wait/ecs_power)且无 post → 诚实占位放行。
+		// mesh_push/mesh_trigger/pushed_source/wait/ecs_power/ai_test)且无 post → 诚实占位放行。
 		if !needsBuild && len(deployJobs) == 0 && len(healthJobs) == 0 && len(notifyJobs) == 0 &&
 			len(ossUploadJobs) == 0 && len(pushImageJobs) == 0 && len(meshJobs) == 0 &&
-			len(pushedSourceJobs) == 0 && len(waitJobs) == 0 && len(ecsPowerJobs) == 0 && len(stage.Post) == 0 {
+			len(pushedSourceJobs) == 0 && len(waitJobs) == 0 && len(ecsPowerJobs) == 0 &&
+			len(aiTestJobs) == 0 && len(stage.Post) == 0 {
 			for _, jb := range stage.Jobs {
 				_ = rep.JobRunning(ctx, jb.ID)
 				jr := rep.JobReporter(jb.ID)
@@ -375,6 +379,21 @@ func NewStageExecutor(b *Builder, reportSink TestReportSink) dagrun.StageExecuto
 				_ = rep.JobRunning(ctx, jb.ID)
 				jrep := rep.JobReporter(jb.ID)
 				if err := b.runEcsPowerJob(ctx, jrep, jb, r); err != nil {
+					_ = rep.JobDone(ctx, jb.ID, run.StepFailed)
+					return err
+				}
+				_ = rep.JobDone(ctx, jb.ID, run.StepSuccess)
+			}
+
+			// ── AI 测试节点(ai_test):控制面执行;需求源按 run revision 克隆到临时目录读取
+			// (DAG/串行/远程混合三路径统一语义,不依赖各路径 workspace 生命周期)──
+			for _, jb := range aiTestJobs {
+				if canceled(ctx) {
+					return run.ErrCanceled
+				}
+				_ = rep.JobRunning(ctx, jb.ID)
+				jrep := rep.JobReporter(jb.ID)
+				if err := b.runAITestJobWithClone(ctx, jrep, jb, r, stage, reportSink); err != nil {
 					_ = rep.JobDone(ctx, jb.ID, run.StepFailed)
 					return err
 				}
@@ -601,6 +620,8 @@ func (b *Builder) runStageJobsDAG(
 				return b.runOssUploadJob(ctx, jrep, jb, r)
 			case isEcsPowerJob(jb.Type):
 				return b.runEcsPowerJob(ctx, jrep, jb, r)
+			case isAITestJob(jb.Type):
+				return b.runAITestJobWithClone(ctx, jrep, jb, r, stage, reportSink)
 			case isPushedSourceJob(jb.Type):
 				return b.runPushedSourceJob(ctx, jrep, jb, stage, r)
 			case isMeshPushJob(jb.Type):
@@ -699,12 +720,12 @@ func (b *Builder) cloneJobWorkspace(ctx context.Context, r *run.Run, proj *proje
 		return "", "", func() {}, ErrBuildFailed
 	}
 	commitTag := "latest"
-		if resolved != nil && resolved.CommitShort != "" {
-			commitTag = resolved.CommitShort
-			if b.recordCommit != nil {
-				b.recordCommit(ctx, r.ID, resolved.CommitShort, resolved.CommitTime) // 同一 commit;并发重复记录幂等无害
-			}
+	if resolved != nil && resolved.CommitShort != "" {
+		commitTag = resolved.CommitShort
+		if b.recordCommit != nil {
+			b.recordCommit(ctx, r.ID, resolved.CommitShort, resolved.CommitTime) // 同一 commit;并发重复记录幂等无害
 		}
+	}
 	// 跨阶段 + 阶段内上游 job 产物:把本 run 已归档的 jar/dist 真字节恢复进本 job 工作区原相对路径。
 	b.restorePriorArtifacts(ctx, r, ws, rep)
 	return ws, commitTag, cleanup, nil
@@ -1304,8 +1325,10 @@ func scriptStepFromJob(jb pipeline.Job) (pipeline.PipelineStep, error) {
 		TimeoutSeconds: cfgNonNegInt(jb.Config, "timeoutSeconds"),
 		Retries:        cfgNonNegInt(jb.Config, "retries"),
 		Resource: pipeline.Resource{
-			CPU:    cfgString(jb.Config, "cpu"),
-			Memory: cfgString(jb.Config, "memory"),
+			CPU:     cfgString(jb.Config, "cpu"),
+			Memory:  cfgString(jb.Config, "memory"),
+			Init:    strings.TrimSpace(cfgString(jb.Config, "init")) == "true",
+			ShmSize: cfgString(jb.Config, "shmSize"),
 		},
 	}, nil
 }

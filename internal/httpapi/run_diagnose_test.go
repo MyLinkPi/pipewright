@@ -343,3 +343,8 @@ func TestDiagnoseRunPersistUnavailableFlag(t *testing.T) {
 		t.Fatalf("persistUnavailable=true 应落库 unavailable,得 %+v err=%v", got, gerr)
 	}
 }
+
+// AgentTest 实现 ai.Service(ai_test 节点;诊断桩不执行测试)。
+func (s *diagStubAI) AgentTest(context.Context, ai.AITestInput) (*ai.AITestResult, error) {
+	return nil, ai.ErrAINotConfigured
+}
