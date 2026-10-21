@@ -641,7 +641,28 @@ func (s *Service) work(parent context.Context, id, run string) {
 			}
 			if mutation(call.Body.View.ToolID) {
 				a, e := s.approval(ctx, s.db, id, run)
+				// call 级绑定:确认单消费后只放行其 BoundCall 列表内的调用。
+				// 续轮新提议的 mutation 不在列表内 → 重新挂起新确认卡,而非被旧单误放行。
 				approved := e == nil && a.Status == "consumed" && a.Instance == s.instance && a.View.ExpiresAt.After(time.Now())
+				if approved {
+					want := bound(call.Body.View)
+					listed := false
+					approved = false
+					for _, bc := range a.Body.Calls {
+						if bc.CallID != want.CallID {
+							continue
+						}
+						listed = true
+						if bc == want {
+							approved = true
+						}
+					}
+					if listed && !approved {
+						// 在确认单列表内但哈希不匹配:批准后参数被篡改,fail-closed。
+						s.failFrom(id, run, ErrApproval, ctx)
+						return
+					}
+				}
 				if !approved {
 					barrier = true
 					if e = s.prepareMutation(ctx, call); e != nil {
@@ -1227,14 +1248,20 @@ func (s *Service) executeCall(ctx context.Context, c callRecord) error {
 				return e
 			}
 			if r.View.CancelRequested || callCtx.Err() != nil {
-				return ErrConflict
+				return context.Canceled
 			}
 			return s.consumedApproval(cc, tx, *v)
 		})
 		if err != nil {
-			v.Status = Interrupted
-			v.Error = "dispatch blocked"
-			return s.recordResult(c)
+			if errors.Is(err, context.Canceled) || callCtx.Err() != nil {
+				// 用户取消:软中断,带原因。
+				v.Status = Interrupted
+				v.Error = "dispatch blocked: " + dispatchBlockReason(callCtx, err)
+				return s.recordResult(c)
+			}
+			// 确认单绑定不匹配/租约失效等安全事件:fail-closed,run 置 Failed。
+			v.Error = "dispatch blocked: " + dispatchBlockReason(callCtx, err)
+			return err
 		}
 	}
 	// Capture again outside the transaction. Never fall back to the old unbounded Exec.
@@ -1250,7 +1277,7 @@ func (s *Service) executeCall(ctx context.Context, c callRecord) error {
 		release, slotErr := s.takeSlot(callCtx, v.ServerID)
 		if slotErr != nil {
 			v.Status = Interrupted
-			v.Error = "dispatch blocked"
+			v.Error = "dispatch blocked: SSH 槽位等待超时(并发执行已满)"
 			return s.recordResult(c)
 		}
 		defer release()
@@ -1345,7 +1372,7 @@ func (s *Service) executeCall(ctx context.Context, c callRecord) error {
 		}
 	}
 	// Exec exit status proves command completion only, never a verified business effect.
-	if mutation(v.ToolID) && v.ToolID != "docker_exec" && c.Body.Dispatched && v.ExitCode != nil && callCtx.Err() == nil {
+	if mutation(v.ToolID) && v.ToolID != "docker_exec" && v.ToolID != "host_exec" && c.Body.Dispatched && v.ExitCode != nil && callCtx.Err() == nil {
 		if s.verifyMutation(callCtx, &c, b) {
 			v.Status = Succeeded
 			v.Error = ""
@@ -1405,4 +1432,19 @@ func (s *Service) verifyMutation(ctx context.Context, c *callRecord, b *readBudg
 		return state == "inactive"
 	}
 	return state == "active"
+}
+
+
+// dispatchBlockReason 把派发闸门失败映射为人读原因(绝无密钥)。
+func dispatchBlockReason(ctx context.Context, err error) string {
+	switch {
+	case errors.Is(err, context.Canceled) || ctx.Err() != nil:
+		return "任务已取消"
+	case errors.Is(err, ErrLease):
+		return "实例租约失效(重启或多实例)"
+	case errors.Is(err, ErrApproval):
+		return "确认单已失效或与调用不匹配"
+	default:
+		return "状态校验未通过"
+	}
 }
