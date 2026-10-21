@@ -1431,8 +1431,6 @@ function relativeTime(iso: string | null): string {
   user-select: none;
 }
 
-}
-
 /* ─── test row ────────────────────────────────────────────────────────────── */
 .test-row {
   display: flex;
