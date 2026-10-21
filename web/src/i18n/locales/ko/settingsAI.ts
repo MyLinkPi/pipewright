@@ -53,6 +53,27 @@ export default {
     '초과 시 AI 진단을 일시 중지합니다(비워 두면 무제한. 이번 주기에는 선언만, 다음 Epic에서 강제 적용)',
   budgetPlaceholder: '예: 500000, 비워 두면 무제한',
 
+  ctxTitle: '컨텍스트 관리',
+  ctxWindowHint:
+    'Ops 에이전트의 컨텍스트 예산: 창 한계에 가까워지면 오래된 대화를 자동으로 요약 압축하고, 초과 시 압축 후 재시도합니다. 단위는 토큰, 비워 두면 기본값.',
+  ctxWindowLabel: '컨텍스트 창',
+  ctxWindowPlaceholder: '기본 200000',
+  ctxMaxOutputLabel: '호출당 최대 출력',
+  ctxMaxOutputPlaceholder: '기본 8192',
+  ctxKeepLabel: '압축 시 최근 보존',
+  ctxKeepPlaceholder: '기본 15000',
+  ctxAutoCompact: '한계 근처에서 기록 자동 압축',
+  ctxAdvanced: '고급 설정',
+  ctxBufferLabel: '트리거 여유분',
+  ctxBufferPlaceholder: '자동(창의 10%)',
+  ctxHistoryMessagesLabel: '기록 메시지 상한',
+  ctxHistoryMessagesPlaceholder: '기본 100',
+  ctxHistoryBytesLabel: '기록 크기 상한 (KB)',
+  ctxHistoryBytesPlaceholder: '기본 256',
+  ctxNote:
+    '압축은 모델로 보내는 컨텍스트에만 영향을 주며 세션 화면은 전체 기록을 유지합니다. 요약은 현재 구성된 모델이 생성합니다.',
+  errContextInvalid: '컨텍스트 값은 빈 값 또는 음이 아닌 정수여야 합니다',
+
   enableAi: 'AI 기능 활성화',
   enableAiDesc:
     '끄면 AI 진단이 조용히 건너뛰며 핵심 CI/CD 파이프라인에는 영향이 없습니다',

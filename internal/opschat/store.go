@@ -206,7 +206,8 @@ func (s *Service) append(ctx context.Context, tx *sql.Tx, e Entry, visible, allo
 		Status  string
 		Summary *RunSummary
 		RefSeq  int64
-	}{e.Text, e.Status, e.Summary, e.ReplaceSeq})
+		Usage   *AgentUsage
+	}{e.Text, e.Status, e.Summary, e.ReplaceSeq, e.Usage})
 	if err != nil {
 		return err
 	}

@@ -68,9 +68,17 @@ func (m *opsModel) AgentRound(ctx context.Context, req opschat.AgentRequest) (op
 
 	question := m.safeText(req.Question)
 	history := agentHistory(m, req)
-	endpoint, header, body := agentRequest(cfg.Provider, base, cfg.Model, key, req, question, history)
+	maxTokens := req.MaxOutputTokens
+	if maxTokens <= 0 {
+		maxTokens = 4096
+	}
+	requestCap := req.MaxRequestBytes
+	if requestCap <= 0 {
+		requestCap = 256 << 10
+	}
+	endpoint, header, body := agentRequest(cfg.Provider, base, cfg.Model, key, req, question, history, maxTokens)
 	raw, err := json.Marshal(body)
-	if err != nil || len(raw) > 256<<10 {
+	if err != nil || len(raw) > requestCap {
 		return reply, opsFailure("invalid_response", 0)
 	}
 	r, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(raw))
@@ -139,7 +147,7 @@ func (m *opsModel) AgentRound(ctx context.Context, req opschat.AgentRequest) (op
 
 // ─── 请求构造 ─────────────────────────────────────────────────────────────────
 
-func agentRequest(provider, base, model, key string, req opschat.AgentRequest, question string, history []opschat.Message) (string, map[string]string, map[string]any) {
+func agentRequest(provider, base, model, key string, req opschat.AgentRequest, question string, history []opschat.Message, maxTokens int) (string, map[string]string, map[string]any) {
 	header := map[string]string{"Content-Type": "application/json"}
 	switch provider {
 	case ProviderClaude:
@@ -147,7 +155,7 @@ func agentRequest(provider, base, model, key string, req opschat.AgentRequest, q
 		header["anthropic-version"] = "2023-06-01"
 		body := map[string]any{
 			"model":      model,
-			"max_tokens": 4096,
+			"max_tokens": maxTokens,
 			"stream":     true,
 			"system":     req.System,
 			"messages":   claudeAgentMessages(req, question, history),
@@ -160,7 +168,7 @@ func agentRequest(provider, base, model, key string, req opschat.AgentRequest, q
 		header["Authorization"] = "Bearer " + key
 		body := map[string]any{
 			"model":      model,
-			"max_tokens": 4096,
+			"max_tokens": maxTokens,
 			"stream":     true,
 			"messages":   openaiAgentMessages(req, question, history),
 		}
@@ -436,12 +444,16 @@ func parseOpenAIAgentReply(payload []byte) (opschat.AgentReply, error) {
 				} `json:"tool_calls"`
 			} `json:"message"`
 		} `json:"choices"`
+		Usage *struct {
+			PromptTokens     int `json:"prompt_tokens"`
+			CompletionTokens int `json:"completion_tokens"`
+		} `json:"usage"`
 	}
 	if err := json.Unmarshal(payload, &r); err != nil || len(r.Choices) == 0 {
 		return opschat.AgentReply{}, opsFailure("invalid_response", 0)
 	}
 	msg := r.Choices[0].Message
-	reply := opschat.AgentReply{Text: msg.Content}
+	reply := opschat.AgentReply{Text: msg.Content, Usage: openAIUsage(r.Usage)}
 	for _, tc := range msg.ToolCalls {
 		if tc.Type != "function" {
 			return opschat.AgentReply{}, opsFailure("invalid_response", 0)
@@ -455,6 +467,17 @@ func parseOpenAIAgentReply(payload []byte) (opschat.AgentReply, error) {
 	return reply, nil
 }
 
+// openAIUsage 把 OpenAI usage 字段归一为 AgentUsage(prompt 含完整请求)。
+func openAIUsage(u *struct {
+	PromptTokens     int `json:"prompt_tokens"`
+	CompletionTokens int `json:"completion_tokens"`
+}) *opschat.AgentUsage {
+	if u == nil || (u.PromptTokens == 0 && u.CompletionTokens == 0) {
+		return nil
+	}
+	return &opschat.AgentUsage{InputTokens: u.PromptTokens, OutputTokens: u.CompletionTokens}
+}
+
 func parseClaudeAgentReply(payload []byte) (opschat.AgentReply, error) {
 	var r struct {
 		Content []struct {
@@ -464,11 +487,18 @@ func parseClaudeAgentReply(payload []byte) (opschat.AgentReply, error) {
 			Name  string          `json:"name"`
 			Input json.RawMessage `json:"input"`
 		} `json:"content"`
+		Usage *struct {
+			InputTokens  int `json:"input_tokens"`
+			OutputTokens int `json:"output_tokens"`
+		} `json:"usage"`
 	}
 	if err := json.Unmarshal(payload, &r); err != nil {
 		return opschat.AgentReply{}, opsFailure("invalid_response", 0)
 	}
 	reply := opschat.AgentReply{}
+	if r.Usage != nil && (r.Usage.InputTokens != 0 || r.Usage.OutputTokens != 0) {
+		reply.Usage = &opschat.AgentUsage{InputTokens: r.Usage.InputTokens, OutputTokens: r.Usage.OutputTokens}
+	}
 	for _, block := range r.Content {
 		switch block.Type {
 		case "text":
@@ -510,6 +540,7 @@ type agentStreamAccum struct {
 	calls    []opschat.AgentToolCall
 	args     []strings.Builder // 与 calls 一一对应,累积 arguments/partial_json
 	kind     map[int]int       // Claude index → 0=text / n+1=call n
+	usage    *opschat.AgentUsage
 	finishOK bool
 	done     bool
 }
@@ -572,7 +603,7 @@ func consumeAgentStream(provider string, body io.Reader) (opschat.AgentReply, er
 	if !acc.done || !acc.finishOK {
 		return opschat.AgentReply{}, opsFailure("incomplete_stream", 0)
 	}
-	reply := opschat.AgentReply{Text: acc.text.String()}
+	reply := opschat.AgentReply{Text: acc.text.String(), Usage: acc.usage}
 	for i := range acc.calls {
 		reply.ToolCalls = append(reply.ToolCalls, opschat.AgentToolCall{
 			ID:      acc.calls[i].ID,
@@ -616,9 +647,17 @@ func (a *agentStreamAccum) openaiFrame(data string) error {
 			} `json:"delta"`
 			FinishReason *string `json:"finish_reason"`
 		} `json:"choices"`
+		// 部分网关在末帧附 usage(未请求 include_usage 时多数不发):尽力解析。
+		Usage *struct {
+			PromptTokens     int `json:"prompt_tokens"`
+			CompletionTokens int `json:"completion_tokens"`
+		} `json:"usage"`
 	}
 	if err := json.Unmarshal([]byte(data), &event); err != nil {
 		return opsFailure("invalid_response", 0)
+	}
+	if event.Usage != nil && (event.Usage.PromptTokens != 0 || event.Usage.CompletionTokens != 0) {
+		a.usage = &opschat.AgentUsage{InputTokens: event.Usage.PromptTokens, OutputTokens: event.Usage.CompletionTokens}
 	}
 	for _, choice := range event.Choices {
 		if choice.FinishReason != nil {
@@ -661,6 +700,16 @@ func (a *agentStreamAccum) claudeFrame(data string) error {
 			ID   string `json:"id"`
 			Name string `json:"name"`
 		} `json:"content_block"`
+		Message struct {
+			Usage *struct {
+				InputTokens  int `json:"input_tokens"`
+				OutputTokens int `json:"output_tokens"`
+			} `json:"usage"`
+		} `json:"message"`
+		Usage *struct {
+			InputTokens  int `json:"input_tokens"`
+			OutputTokens int `json:"output_tokens"`
+		} `json:"usage"`
 	}
 	if err := json.Unmarshal([]byte(data), &event); err != nil {
 		return opsFailure("invalid_response", 0)
@@ -668,6 +717,10 @@ func (a *agentStreamAccum) claudeFrame(data string) error {
 	switch event.Type {
 	case "error":
 		return opsFailure("rejected", 0)
+	case "message_start":
+		if u := event.Message.Usage; u != nil && (u.InputTokens != 0 || u.OutputTokens != 0) {
+			a.usage = &opschat.AgentUsage{InputTokens: u.InputTokens, OutputTokens: u.OutputTokens}
+		}
 	case "content_block_start":
 		if event.ContentBlock.Type == "tool_use" {
 			a.calls = append(a.calls, opschat.AgentToolCall{ID: event.ContentBlock.ID, ToolID: event.ContentBlock.Name})
@@ -686,6 +739,9 @@ func (a *agentStreamAccum) claudeFrame(data string) error {
 			}
 		}
 	case "message_delta":
+		if u := event.Usage; u != nil && u.OutputTokens != 0 && a.usage != nil {
+			a.usage.OutputTokens = u.OutputTokens
+		}
 		if event.Delta.StopReason != "" {
 			if err := opsStopFailure(event.Delta.StopReason, "end_turn", "stop_sequence", "tool_use"); err != nil {
 				return err

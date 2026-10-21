@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Copy } from '@vicons/tabler'
 import type { Call, Entry, Run, RunSummary } from '../../api/opsChat'
@@ -28,6 +28,17 @@ const emit = defineEmits<{
   history: []
 }>()
 const { t } = useI18n()
+// 压缩分界条:默认折叠,点开看摘要正文。
+const openCheckpoints = ref(new Set<number>())
+function toggleCheckpoint(seq: number): void {
+  const next = new Set(openCheckpoints.value)
+  if (next.has(seq)) {
+    next.delete(seq)
+  } else {
+    next.add(seq)
+  }
+  openCheckpoints.value = next
+}
 function messageText(entry: Entry): string {
   const text = entry.text ?? ''
   if (entry.kind === 'assistant' && entry.status === 'failed') {
@@ -141,6 +152,39 @@ const visible = computed(() => {
         @terminal="emit('terminal', $event)"
       />
       <div
+        v-else-if="row.entry.kind === 'summary_checkpoint'"
+        class="checkpoint"
+        :data-entry-seq="row.entry.seq"
+      >
+        <button
+          type="button"
+          class="checkpoint-toggle"
+          :aria-expanded="openCheckpoints.has(row.entry.seq)"
+          @click="toggleCheckpoint(row.entry.seq)"
+        >
+          {{ t('opsChat.checkpoint') }}
+          <svg
+            width="12"
+            height="12"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2.4"
+            aria-hidden="true"
+            :style="{
+              transform: openCheckpoints.has(row.entry.seq)
+                ? 'rotate(180deg)'
+                : 'none',
+            }"
+          >
+            <path d="m6 9 6 6 6-6" />
+          </svg>
+        </button>
+        <div v-show="openCheckpoints.has(row.entry.seq)" class="checkpoint-body">
+          <AiOpsMarkdown :text="row.entry.text ?? ''" />
+        </div>
+      </div>
+      <div
         v-else
         class="message"
         :class="{
@@ -203,6 +247,33 @@ const visible = computed(() => {
   padding: 10px 12px;
   border-left: 2px solid var(--color-border-strong);
   min-width: 0;
+}
+.checkpoint {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+.checkpoint-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  align-self: center;
+  padding: 4px 12px;
+  border: 1px dashed var(--color-border-strong);
+  border-radius: 999px;
+  background: var(--color-inset);
+  color: var(--color-dim);
+  font-size: 12px;
+  cursor: pointer;
+}
+.checkpoint-toggle:hover {
+  color: var(--color-text);
+}
+.checkpoint-body {
+  padding: 8px 12px;
+  border-left: 2px solid var(--color-border-strong);
+  font-size: 12px;
 }
 .message.copyable {
   padding-bottom: 44px;

@@ -65,6 +65,32 @@ type Budget struct {
 	MonthlyTokenLimit *int64 `json:"monthlyTokenLimit"`
 }
 
+// 上下文管理默认值(0/缺省字段回退到此;由 opschat 注入侧消费)。
+const (
+	DefaultContextWindowTokens     = 200_000 // 模型上下文窗口兜底
+	DefaultMaxOutputTokens         = 8_192   // 单请求输出上限(替换旧硬编码 4096)
+	DefaultHistoryMessages         = 100     // 会话历史条数上限(替换旧 LIMIT 20)
+	DefaultHistoryBytes            = 256 << 10
+	DefaultContextKeepRecentTokens = 15_000 // 压缩时原样保留的最近消息 tokens
+)
+
+// ContextSettings 是上下文管理声明(opschat agent 的窗口预算/压缩策略)。
+// 全部字段 0/nil = 用默认;越界值在 normalizeContext 归一回默认。
+type ContextSettings struct {
+	WindowTokens     int   `json:"windowTokens"`     // 上下文窗口 tokens(1000–2000000)
+	MaxOutputTokens  int   `json:"maxOutputTokens"`  // 单请求输出上限(512–65536)
+	HistoryMessages  int   `json:"historyMessages"`  // 会话历史条数上限(1–2000)
+	HistoryBytes     int   `json:"historyBytes"`     // 会话历史字节上限(4KB–4MB)
+	AutoCompact      *bool `json:"autoCompact"`      // nil = 开
+	KeepRecentTokens int   `json:"keepRecentTokens"` // 压缩保留最近 tokens(1000–窗口50%)
+	BufferTokens     int   `json:"bufferTokens"`     // 触发阈值预留;0 = 自动 max(10% 窗口, 窗口≥32K 时 16K)
+}
+
+// ContextSettingsDefault 返回全默认上下文声明(未配置/存量行 '{}' 时用)。
+func ContextSettingsDefault() ContextSettings {
+	return ContextSettings{}
+}
+
 // Config 是 AI 配置领域模型。APIKeyMasked 为掩码;apiKey 明文绝不在此模型常驻。
 // Configured = provider 非空 +(provider=ollama 无需 key / 否则有 key)。
 type Config struct {
@@ -75,6 +101,7 @@ type Config struct {
 	Model        string
 	APIKeyMasked string
 	Budget       Budget
+	Context      ContextSettings
 	UpdatedAt    *time.Time
 }
 
@@ -86,6 +113,7 @@ type SaveInput struct {
 	Model    string
 	APIKey   *string
 	Budget   Budget
+	Context  ContextSettings
 	Enabled  bool
 }
 
@@ -223,6 +251,10 @@ func (s *service) Save(ctx context.Context, in SaveInput) (*Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("ai: marshal budget: %w", err)
 	}
+	contextJSON, err := json.Marshal(normalizeContext(in.Context))
+	if err != nil {
+		return nil, fmt.Errorf("ai: marshal context: %w", err)
+	}
 
 	enabled := 0
 	if in.Enabled {
@@ -233,11 +265,11 @@ func (s *service) Save(ctx context.Context, in SaveInput) (*Config, error) {
 	// 单例 upsert:首存 INSERT(id=1),已存 ON CONFLICT 更新各列(created_at 保留)。
 	_, err = s.db.ExecContext(ctx,
 		`INSERT INTO ai_config
-		   (id, provider, base_url, model, api_key_ciphertext, budget_json, enabled, created_at, updated_at)
-		 VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?) `+
+		   (id, provider, base_url, model, api_key_ciphertext, budget_json, context_json, enabled, created_at, updated_at)
+		 VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?) `+
 			store.UpsertSuffix(store.DialectOf(s.db), []string{"id"},
-				[]string{"provider", "base_url", "model", "api_key_ciphertext", "budget_json", "enabled", "updated_at"}),
-		provider, baseURL, strings.TrimSpace(in.Model), sealed, string(budgetJSON), enabled, nowStr, nowStr,
+				[]string{"provider", "base_url", "model", "api_key_ciphertext", "budget_json", "context_json", "enabled", "updated_at"}),
+		provider, baseURL, strings.TrimSpace(in.Model), sealed, string(budgetJSON), string(contextJSON), enabled, nowStr, nowStr,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("ai: upsert config: %w", err)
@@ -454,19 +486,20 @@ func mapTransportError(err error) string {
 // 无行 → 返回惰性空默认 Config(configured/enabled false),nil 密文,无错误。
 func (s *service) load(ctx context.Context) (*Config, []byte, error) {
 	var (
-		provider   string
-		baseURL    string
-		model      string
-		sealed     []byte
-		budgetJSON string
-		enabledInt int
-		createdStr string
-		updatedStr string
+		provider    string
+		baseURL     string
+		model       string
+		sealed      []byte
+		budgetJSON  string
+		contextJSON string
+		enabledInt  int
+		createdStr  string
+		updatedStr  string
 	)
 	err := s.db.QueryRowContext(ctx,
-		`SELECT provider, base_url, model, api_key_ciphertext, budget_json, enabled, created_at, updated_at
+		`SELECT provider, base_url, model, api_key_ciphertext, budget_json, context_json, enabled, created_at, updated_at
 		 FROM ai_config WHERE id = 1`,
-	).Scan(&provider, &baseURL, &model, &sealed, &budgetJSON, &enabledInt, &createdStr, &updatedStr)
+	).Scan(&provider, &baseURL, &model, &sealed, &budgetJSON, &contextJSON, &enabledInt, &createdStr, &updatedStr)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			// 惰性空默认:从未配置。
@@ -478,6 +511,7 @@ func (s *service) load(ctx context.Context) (*Config, []byte, error) {
 				Model:        "",
 				APIKeyMasked: "",
 				Budget:       Budget{MonthlyTokenLimit: nil},
+				Context:      ContextSettingsDefault(),
 				UpdatedAt:    nil,
 			}, nil, nil
 		}
@@ -490,6 +524,13 @@ func (s *service) load(ctx context.Context) (*Config, []byte, error) {
 			return nil, nil, fmt.Errorf("ai: parse budget: %w", jerr)
 		}
 	}
+	// 上下文声明:空/坏 JSON 一律回退默认,不让 GET 503(与 budget 不同,它只影响
+	// opschat 预算策略,不涉密钥路径)。
+	context := ContextSettingsDefault()
+	if strings.TrimSpace(contextJSON) != "" {
+		_ = json.Unmarshal([]byte(contextJSON), &context)
+	}
+	context = normalizeContext(context)
 
 	// 一次性迁移存量 ollama 协议:本地模型统一走 Ollama 的 OpenAI 兼容端点(/v1);
 	// 无密钥时 configured=false,由用户在设置页补任意 key(Ollama 忽略 Authorization)。
@@ -501,6 +542,7 @@ func (s *service) load(ctx context.Context) (*Config, []byte, error) {
 		BaseURL:  migrateLegacyBaseURL(provider, baseURL),
 		Model:    model,
 		Budget:   budget,
+		Context:  context,
 	}
 
 	// 掩码:有密钥时解密即时算掩码、明文用完即弃;无密钥(ollama / 未设)为空。
@@ -596,6 +638,58 @@ func normalizeBudget(b Budget) Budget {
 		return Budget{MonthlyTokenLimit: nil}
 	}
 	return b
+}
+
+// normalizeContext 归一上下文声明:越界值(含负数)归一回 0(=默认),避免静默放大
+// 到危险值。AutoCompact 指针原样保留(nil=开)。
+func normalizeContext(c ContextSettings) ContextSettings {
+	if c.WindowTokens != 0 && (c.WindowTokens < 1_000 || c.WindowTokens > 2_000_000) {
+		c.WindowTokens = 0
+	}
+	if c.MaxOutputTokens != 0 && (c.MaxOutputTokens < 512 || c.MaxOutputTokens > 65_536) {
+		c.MaxOutputTokens = 0
+	}
+	if c.HistoryMessages != 0 && (c.HistoryMessages < 1 || c.HistoryMessages > 2_000) {
+		c.HistoryMessages = 0
+	}
+	if c.HistoryBytes != 0 && (c.HistoryBytes < 4<<10 || c.HistoryBytes > 4<<20) {
+		c.HistoryBytes = 0
+	}
+	halfWindow := c.WindowTokens / 2
+	if halfWindow == 0 {
+		halfWindow = DefaultContextWindowTokens / 2
+	}
+	if c.KeepRecentTokens != 0 && (c.KeepRecentTokens < 1_000 || c.KeepRecentTokens > halfWindow) {
+		c.KeepRecentTokens = 0
+	}
+	if c.BufferTokens < 0 || (c.WindowTokens != 0 && c.BufferTokens >= c.WindowTokens) {
+		c.BufferTokens = 0
+	}
+	return c
+}
+
+// Resolved 返回填好默认值的上下文声明(注入 opschat 策略时用;不影响落库形状)。
+func (c ContextSettings) Resolved() ContextSettings {
+	if c.WindowTokens <= 0 {
+		c.WindowTokens = DefaultContextWindowTokens
+	}
+	if c.MaxOutputTokens <= 0 {
+		c.MaxOutputTokens = DefaultMaxOutputTokens
+	}
+	if c.HistoryMessages <= 0 {
+		c.HistoryMessages = DefaultHistoryMessages
+	}
+	if c.HistoryBytes <= 0 {
+		c.HistoryBytes = DefaultHistoryBytes
+	}
+	if c.AutoCompact == nil {
+		on := true
+		c.AutoCompact = &on
+	}
+	if c.KeepRecentTokens <= 0 {
+		c.KeepRecentTokens = DefaultContextKeepRecentTokens
+	}
+	return c
 }
 
 // defaultBaseURL 返回 provider 的默认 baseUrl(后端兜底)。

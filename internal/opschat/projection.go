@@ -1,9 +1,55 @@
 package opschat
 
+import (
+	"context"
+	"time"
+)
+
 func (s *Service) publicSession(c Session) Session {
 	c.Title = s.scrub(c.Title, 320)
 	c.Draft = s.scrub(c.Draft, 8<<10)
 	return c
+}
+
+// sessionUsage 在**既有 queryer**(同事务/同连接;SQLite 下另开连接会锁死)
+// 上取会话最近一条带实测 usage 的 assistant 回复并折算占用(最多回看 5 条;
+// 无实测时返回 nil,前端隐藏占用条)。
+func (s *Service) sessionUsage(ctx context.Context, q querier, sessionID string) *ContextUsage {
+	queryCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	rows, err := q.QueryContext(queryCtx,
+		`SELECT body FROM ops_chat_entries WHERE session_id=? AND kind='assistant' AND context_allowed=1 ORDER BY seq DESC LIMIT 5`, sessionID)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	var usage *AgentUsage
+	for rows.Next() {
+		var b []byte
+		if rows.Scan(&b) != nil {
+			return nil
+		}
+		var body struct {
+			Usage *AgentUsage
+		}
+		if s.open(b, &body) != nil {
+			return nil
+		}
+		if body.Usage != nil && body.Usage.InputTokens > 0 {
+			usage = body.Usage
+			break
+		}
+	}
+	if usage == nil {
+		return nil
+	}
+	window := s.policy().WindowTokens
+	used := usage.InputTokens + usage.OutputTokens
+	percent := 0
+	if window > 0 {
+		percent = (used*100 + window - 1) / window
+	}
+	return &ContextUsage{UsedTokens: used, WindowTokens: window, Percent: percent}
 }
 
 func (s *Service) publicEntry(e Entry) Entry {

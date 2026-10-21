@@ -106,6 +106,8 @@ export default {
   refresh: 'Refresh',
   storageNearQuota:
     'Session storage is nearing the limit; consider starting a new session.',
+  checkpoint: '⇤ Earlier conversation compacted into a summary',
+  contextUsage: 'Context usage',
   unsaved: 'Draft not saved',
   discardBody: 'Unsaved content held in local memory may be lost. Discard it?',
   discard: 'Discard unsaved content',

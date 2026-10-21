@@ -105,6 +105,8 @@ export default {
   refresh: 'Actualiser',
   storageNearQuota:
     'Le stockage de la session approche la limite ; envisagez de créer une nouvelle session.',
+  checkpoint: '⇤ Conversation antérieure compactée en résumé',
+  contextUsage: 'Occupation du contexte',
   unsaved: 'Brouillon non enregistré',
   discardBody:
     'Le contenu non enregistré en mémoire locale peut être perdu. L’abandonner ?',

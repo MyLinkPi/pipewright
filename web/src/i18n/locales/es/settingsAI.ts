@@ -53,6 +53,27 @@ export default {
     'Pausa el diagnóstico con AI al superarlo (en blanco = sin límite; declarado en este ciclo, aplicado en el próximo Epic)',
   budgetPlaceholder: 'p. ej. 500000, en blanco = sin límite',
 
+  ctxTitle: 'Gestión de contexto',
+  ctxWindowHint:
+    'Presupuesto de contexto del agente de ops: cerca del límite de ventana el historial antiguo se compacta automáticamente en un resumen; ante desbordamiento se compacta y reintenta. Valores en tokens, vacío = valor por defecto.',
+  ctxWindowLabel: 'Ventana de contexto',
+  ctxWindowPlaceholder: 'Por defecto 200000',
+  ctxMaxOutputLabel: 'Salida máx. por llamada',
+  ctxMaxOutputPlaceholder: 'Por defecto 8192',
+  ctxKeepLabel: 'Conservar reciente al compactar',
+  ctxKeepPlaceholder: 'Por defecto 15000',
+  ctxAutoCompact: 'Compactar historial automáticamente cerca del límite',
+  ctxAdvanced: 'Avanzado',
+  ctxBufferLabel: 'Reserva de disparo',
+  ctxBufferPlaceholder: 'Automático (10 % de la ventana)',
+  ctxHistoryMessagesLabel: 'Límite de mensajes de historial',
+  ctxHistoryMessagesPlaceholder: 'Por defecto 100',
+  ctxHistoryBytesLabel: 'Límite de historial (KB)',
+  ctxHistoryBytesPlaceholder: 'Por defecto 256',
+  ctxNote:
+    'La compactación solo afecta al contexto enviado al modelo; la vista de sesión conserva el historial completo. Los resúmenes los genera el modelo configurado.',
+  errContextInvalid: 'Los valores de contexto deben ser enteros no negativos o vacíos',
+
   enableAi: 'Activar funciones de AI',
   enableAiDesc:
     'Cuando está desactivado, el diagnóstico con AI se omite silenciosamente y los pipelines de CI/CD principales no se ven afectados',

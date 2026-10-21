@@ -32,6 +32,7 @@ type Service struct {
 	masker      *mask.Masker
 	instance    string
 	runtime     RuntimeLimits
+	contextSrc  func() ContextPolicy
 	mu          sync.Mutex
 	root        context.Context
 	stop        context.CancelFunc
@@ -43,6 +44,17 @@ type Service struct {
 	slots       chan struct{}
 	serverSlots map[string]chan struct{}
 	leaseDone   chan struct{}
+	// compactFails 按 session 记录模型压缩连续失败次数(≥3 熔断为仅确定性裁剪;
+	// 内存态,重启重置可接受)。compactOK 清零。
+	compactFails map[string]int
+}
+
+// policy 返回当前上下文策略(带默认值兜底;装配层未注入时全默认)。
+func (s *Service) policy() ContextPolicy {
+	if s.contextSrc == nil {
+		return ContextPolicy{}.withDefaults()
+	}
+	return s.contextSrc().withDefaults()
 }
 
 func New(o Options) (*Service, error) {
@@ -53,7 +65,7 @@ func New(o Options) (*Service, error) {
 		o.Masker = mask.NewMasker()
 	}
 	runtime := o.Runtime.withDefaults()
-	s := &Service{db: o.DB, vault: o.Vault, executor: o.Executor, model: o.Model, audit: o.LocalRecorder, masker: o.Masker, instance: uuid.NewString(), runtime: runtime, jobs: map[string]*job{}, wake: map[string]map[chan struct{}]bool{}, slots: make(chan struct{}, runtime.SSHSlots), serverSlots: map[string]chan struct{}{}}
+	s := &Service{db: o.DB, vault: o.Vault, executor: o.Executor, model: o.Model, audit: o.LocalRecorder, masker: o.Masker, instance: uuid.NewString(), runtime: runtime, contextSrc: o.Context, jobs: map[string]*job{}, wake: map[string]map[chan struct{}]bool{}, slots: make(chan struct{}, runtime.SSHSlots), serverSlots: map[string]chan struct{}{}, compactFails: map[string]int{}}
 	check, err := s.seal("pipewright.opschat.keycheck.v1")
 	if err != nil {
 		return nil, err
@@ -93,7 +105,11 @@ func (s *Service) Capabilities() Capabilities {
 	s.mu.Lock()
 	available := s.started && !s.closing && !s.lost
 	s.mu.Unlock()
-	return Capabilities{Available: available, ModelAvailable: s.model != nil && validProvider(p), Provider: p, Limits: resourceLimits}
+	limits := resourceLimits
+	policy := s.policy()
+	limits.ContextBytes = policy.HistoryBytes
+	limits.ContextMessages = policy.HistoryMessages
+	return Capabilities{Available: available, ModelAvailable: s.model != nil && validProvider(p), Provider: p, Limits: limits}
 }
 func (s *Service) ready() error {
 	s.mu.Lock()
@@ -178,6 +194,7 @@ func (s *Service) Get(ctx context.Context, id string) (*Session, error) {
 	if err != nil {
 		return nil, err
 	}
+	r.View.ContextUsage = s.sessionUsage(ctx, s.db, id)
 	view := s.publicSession(r.View)
 	return &view, nil
 }

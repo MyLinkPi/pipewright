@@ -106,6 +106,8 @@ export default {
   refresh: '更新',
   storageNearQuota:
     'セッションのストレージが上限に近づいています。新しいセッションの作成を検討してください。',
+  checkpoint: '⇤ 以前の会話を要約に圧縮しました',
+  contextUsage: 'コンテキスト使用量',
   unsaved: '下書きは未保存',
   discardBody:
     'ローカルメモリ内の未保存内容は失われる可能性があります。破棄しますか？',
