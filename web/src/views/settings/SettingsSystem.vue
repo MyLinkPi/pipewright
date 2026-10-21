@@ -1450,7 +1450,7 @@ onMounted(() => {
 .mt-list { display: flex; flex-direction: column; gap: 10px; margin: 12px 0 4px; }
 .mt-row {
   display: flex; align-items: center; justify-content: space-between; gap: 16px;
-  padding: 10px 12px; border: 1px solid var(--color-border, #2a2f3a); border-radius: 8px;
+  padding: 10px 12px; border: 1px solid var(--color-border, #d1d5db); border-radius: 8px;
 }
 .mt-row-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .mt-row-actions { display: flex; align-items: center; gap: 12px; flex-shrink: 0; }
@@ -1458,11 +1458,13 @@ onMounted(() => {
 .mt-result--ok { color: var(--color-ok); }
 .mt-result--err { color: var(--color-danger, #e5484d); }
 .mt-detail { margin-top: 6px; font-size: 0.8rem; }
-.mt-detail summary { cursor: pointer; color: var(--color-text-dim, #9aa4b2); user-select: none; }
+.mt-detail summary { cursor: pointer; color: var(--color-text-dim); user-select: none; }
 .mt-steps { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 3px; }
+/* code 片样式与 ServiceOpsPanel 等处同款:--color-code-bg 随主题切换,文字继承主题色。 */
 .mt-steps code {
-  font-family: var(--font-mono, monospace); font-size: 0.76rem; word-break: break-all;
-  background: var(--color-bg-inset, #141821); padding: 1px 5px; border-radius: 4px;
+  padding: 0 4px; border-radius: 4px;
+  background: var(--color-code-bg, #f3f4f6);
+  font-size: 0.76rem; word-break: break-all;
 }
 .mt-steps li { display: flex; flex-wrap: wrap; gap: 6px; align-items: baseline; }
 .mt-machine { font-weight: 600; }
