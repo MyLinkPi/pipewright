@@ -309,20 +309,32 @@ func wrapUpPrompt(question string) string {
 // ─── 工具 schema 注入 ─────────────────────────────────────────────────────────
 
 var agentToolDescriptions = map[string]string{
-	"host_resources":    "Disk, memory and uptime facts of the target host",
-	"host_processes":    "Top processes by CPU on the target host",
-	"host_ports":        "Listening TCP/UDP ports on the target host",
-	"docker_containers": "List Docker containers on the target host",
-	"docker_stats":      "Live CPU/memory metrics of Docker containers",
-	"docker_images":     "List Docker images with sizes",
-	"docker_inspect":    "Inspect one Docker container (state, ports, mounts)",
-	"docker_logs":       "Tail logs of one Docker container",
-	"systemd_status":    "Show a systemd unit's active state",
-	"systemd_logs":      "Tail journal logs of a systemd unit",
-	"docker_action":     "start/stop/restart/pause/unpause a container (requires confirmation)",
-	"docker_exec":       "Run a literal-argv command inside a container (requires confirmation)",
-	"systemd_action":    "start/stop/restart a systemd unit (requires confirmation)",
-	"host_exec":         "Run a literal-argv command on the host itself (requires confirmation)",
+	"host_resources":    "Disk usage (df), memory (free) and uptime of the target host. Takes no arguments besides target.",
+	"host_processes":    "Processes with PID, command, CPU% and memory% sorted by CPU. Takes no arguments besides target.",
+	"host_ports":        "Listening TCP/UDP sockets of the target host (ss -lntu). Takes no arguments besides target.",
+	"docker_containers": "List all containers (including stopped) with ID, names, image, state and ports. Call this first to resolve exact container names and IDs.",
+	"docker_stats":      "One-shot CPU, memory, network and block I/O metrics per container. Takes no arguments besides target.",
+	"docker_images":     "List images with repository, tag and size. Takes no arguments besides target.",
+	"docker_inspect":    "Inspect one container: state, ports, mounts. container must be the exact name or ID reported by docker_containers.",
+	"docker_logs":       "Tail a container's logs with timestamps. container must be the exact name or ID reported by docker_containers; lines is 1-1000, default 200.",
+	"systemd_status":    "Show a systemd unit's active/load state and main PID. unit must be the exact unit name.",
+	"systemd_logs":      "Tail a systemd unit's journal. unit must be the exact unit name; lines is 1-1000, default 200.",
+	"docker_action":     "start/stop/restart/pause/unpause a container. Requires confirmation; must carry a concrete purpose and reason.",
+	"docker_exec":       "Run a command inside a container with literal argv tokens (no shell). container may be the exact name or the 64-hex ID from docker_containers; names are resolved and pinned to the container ID at execution time. Requires confirmation; must carry a concrete purpose and reason.",
+	"systemd_action":    "start/stop/restart a systemd unit. unit must be the exact unit name. Requires confirmation; must carry a concrete purpose and reason.",
+	"host_exec":         "Run a command on the host itself with literal argv tokens (no shell). Requires confirmation; must carry a concrete purpose and reason.",
+}
+
+// agentPropertyNotes 为参数补充自然语言说明:schema 里的类型/枚举约束
+// 表达不了语义(如 container 必须来自列表工具、docker_exec 只收容器 ID)。
+var agentPropertyNotes = map[string]string{
+	"container": "Exact container name or ID as reported by docker_containers. For docker_exec, a name is resolved to the container ID at execution time, so the command always runs on the container that was listed.",
+	"unit":      "Exact systemd unit name (e.g. nginx.service).",
+	"lines":     "Number of trailing log lines to return, 1-1000, default 200.",
+	"action":    "Operation to apply to the container or unit.",
+	"argv":      "Literal argv tokens, executed without a shell. argv[0] is the program path (no shell metacharacters); at most 61 tokens and 4096 bytes total, no control characters.",
+	"purpose":   "What this operation is meant to achieve for the user; required for mutating tools, up to 512 characters.",
+	"reason":    "Why this is warranted now, citing observed evidence; required for mutating tools, up to 512 characters.",
 }
 
 // agentSchema 注入 target(必填枚举);变更工具再注入 purpose/reason(必填)。
@@ -336,11 +348,24 @@ func agentSchema(t opschat.Tool, targets []string, mut bool) map[string]any {
 	if schema.Properties == nil {
 		schema.Properties = map[string]any{}
 	}
-	schema.Properties["target"] = map[string]any{"type": "string", "enum": targets}
+	for name, prop := range schema.Properties {
+		if note, ok := agentPropertyNotes[name]; ok {
+			if m, ok := prop.(map[string]any); ok {
+				if _, exists := m["description"]; !exists {
+					m["description"] = note
+				}
+			}
+		}
+	}
+	schema.Properties["target"] = map[string]any{
+		"type": "string",
+		"enum": targets,
+		"description": fmt.Sprintf("Alias of the server this call runs on. Every tool call MUST set target to one of the enum values (%s is the first selected server); omitting it is an error.", strings.Join(targets, ", ")),
+	}
 	schema.Required = append(schema.Required, "target")
 	if mut {
-		schema.Properties["purpose"] = map[string]any{"type": "string", "maxLength": 512}
-		schema.Properties["reason"] = map[string]any{"type": "string", "maxLength": 512}
+		schema.Properties["purpose"] = map[string]any{"type": "string", "maxLength": 512, "description": agentPropertyNotes["purpose"]}
+		schema.Properties["reason"] = map[string]any{"type": "string", "maxLength": 512, "description": agentPropertyNotes["reason"]}
 		schema.Required = append(schema.Required, "purpose", "reason")
 	}
 	return map[string]any{"type": schema.Type, "properties": schema.Properties, "required": schema.Required, "additionalProperties": false}

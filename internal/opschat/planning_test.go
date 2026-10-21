@@ -67,7 +67,7 @@ func TestPlanningFailureDiagnosticsNeverExecuteOrRetry(t *testing.T) {
 		{"missing-container", nil, AgentReply{Text: "Checking postgres.", ToolCalls: actionsToCalls([]Action{{ToolID: "docker_inspect", Args: json.RawMessage(`{}`), TargetIndexes: []int{0}}})}, "invalid_plan"},
 		{"bad-container", nil, AgentReply{Text: "Checking postgres.", ToolCalls: actionsToCalls([]Action{{ToolID: "docker_inspect", Args: json.RawMessage(`{"container":"postgres;id"}`), TargetIndexes: []int{0}}})}, "invalid_plan"},
 		{"out-of-range", nil, AgentReply{Text: "Checking postgres.", ToolCalls: actionsToCalls([]Action{{ToolID: "docker_inspect", Args: validAction.Args, TargetIndexes: []int{1}}})}, "invalid_plan"},
-		{"no-target", nil, AgentReply{Text: "Checking postgres.", ToolCalls: []AgentToolCall{{ID: "c1", ToolID: "docker_inspect", Target: "", Args: validAction.Args}}}, "invalid_plan"},
+		// no-target 单目标场景已改为默认 target_0,不再判定为 invalid_plan。
 		{"oversize-plan", nil, AgentReply{Text: strings.Repeat("x", 33<<10)}, "invalid_plan"},
 	}
 	tooMany := AgentReply{Text: "Checking postgres."}
@@ -139,8 +139,14 @@ func TestPlanningFailureDiagnosticsNeverExecuteOrRetry(t *testing.T) {
 				m.mu.Lock()
 				plans := len(m.rounds)
 				m.mu.Unlock()
-				if calls != 0 || plans != 1 {
-					t.Fatal("failure executed or retried", calls, plans)
+				expected := 1
+				if tc.code == "invalid_plan" && tc.failure == nil {
+					// 校验失败会回灌一次让模型自纠,fake 模型不改错,第二次仍失败;
+					// 模型自身错误(tc.failure != nil)不回灌,仍只调一次。
+					expected = 2
+				}
+				if calls != 0 || plans != expected {
+					t.Fatal("failure executed or unexpected model rounds", calls, plans)
 				}
 			})
 		}
