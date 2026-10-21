@@ -38,6 +38,14 @@ type Runtime struct {
 
 	// newDownloader 由装配层注入(测试可替换);nil = 禁用自动下载。
 	newDownloader func() *easytier.Downloader
+	// newSGClient 构造阿里云安全组客户端(测试注入 fake;默认 newSGClient)。
+	newSGClient func(ak, sk, region string) sgAPI
+	// sgIPFetch 取本机公网 IPv4(测试注入 fake;默认 fetchPublicIPv4)。
+	sgIPFetch func(ctx context.Context) (string, error)
+
+	// reconcileMu 串行化对账(安全组同步含公网 IP 探测/API 调用可达数十秒,防
+	// RestartNow 的并发对账双拉监督器)。
+	reconcileMu sync.Mutex
 
 	mu            sync.Mutex
 	supervisor    *easytier.Supervisor
@@ -60,6 +68,15 @@ type Runtime struct {
 	svc ServiceInfo
 	// logs 是进程内日志环(GUI「日志」尾部展示)。
 	logs *logRing
+	// 安全组同步状态(sgClients 按 region+AK 缓存客户端;sgApplied 是最近一次全部
+	// 成功的「配置+IP」指纹 —— IP 未变则不调阿里云;sgStatus 是逐组最近结果)。
+	sgClients   map[string]sgAPI
+	sgApplied   string
+	sgLastIP    string
+	sgLastRun   time.Time
+	sgLastErr   string
+	sgNextCheck time.Time
+	sgStatus    []SecGroupItemStatus
 }
 
 // proxySup 是一条多出口代理的运行态(key 变化即重建监督器;err 为启动期错误)。
@@ -72,7 +89,14 @@ type proxySup struct {
 
 // NewRuntime 构造运行时(dataDir 是配置/二进制/日志的根目录)。不启动;Start 拉起对账循环。
 func NewRuntime(store *Store, dataDir string) *Runtime {
-	return &Runtime{store: store, dataDir: dataDir, newDownloader: defaultDownloader(dataDir), logs: newLogRing(500)}
+	return &Runtime{
+		store:         store,
+		dataDir:       dataDir,
+		newDownloader: defaultDownloader(dataDir),
+		newSGClient:   func(ak, sk, region string) sgAPI { return newSGClient(ak, sk, region) },
+		sgIPFetch:     fetchPublicIPv4,
+		logs:          newLogRing(500),
+	}
 }
 
 // SetServiceInfo 注入服务进程信息(Snapshot 的 service 字段)。
@@ -134,6 +158,8 @@ func (rt *Runtime) hostname(cfg Config) string {
 // reconcile 对齐「配置期望」与「运行中的监督器」(照抄平台 meshRuntime 模式):
 // 未启用/未配置完整 → 停;指纹变化 → 重建;密钥轮换经密钥哈希纳入指纹。
 func (rt *Runtime) reconcile(ctx context.Context) {
+	rt.reconcileMu.Lock()
+	defer rt.reconcileMu.Unlock()
 	cfg, err := rt.store.Load()
 	if err != nil {
 		log.Printf("[pwclient] 读取配置失败,本轮不调整组网:%v", err)
@@ -183,6 +209,9 @@ func (rt *Runtime) reconcile(ctx context.Context) {
 	rt.mu.Lock()
 	unchanged := rt.supervisor != nil && rt.supervisorKey == key
 	rt.mu.Unlock()
+	// 连接前自动更新阿里云安全组:即将(重)连接时强制复查,稳态按节拍节流;
+	// best-effort,失败不阻断组网。放在监督器启动前 —— 安全组放行对端才可达。
+	rt.reconcileSecurityGroup(ctx, cfg, !unchanged)
 	if unchanged {
 		return
 	}
@@ -413,6 +442,8 @@ type StatusSnapshot struct {
 	EasyTier   *easytier.Status   `json:"easytier"`
 	Binaries   easytier.BinStatus `json:"binaries"`
 	Service    ServiceInfo        `json:"service"`
+	// SecurityGroup 是连接前自动更新的阿里云安全组同步状态(不含 AK/SK)。
+	SecurityGroup SecGroupStatus `json:"securityGroup"`
 }
 
 // Socks5Status 是本地 SOCKS5 服务的状态回显(Listening 由装配/doctor 侧探测补充,
@@ -470,6 +501,7 @@ func (rt *Runtime) Snapshot(ctx context.Context) StatusSnapshot {
 		}
 		snap.Proxies = append(snap.Proxies, ps)
 	}
+	snap.SecurityGroup = rt.sgSnapshot(cfg)
 	rt.mu.Lock()
 	for i := range snap.Proxies {
 		if ps, ok := rt.proxies[snap.Proxies[i].Port]; ok {

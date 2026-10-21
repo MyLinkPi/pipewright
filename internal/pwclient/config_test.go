@@ -222,3 +222,57 @@ func TestNormalizeProxies(t *testing.T) {
 		t.Fatalf("主代理停用时同端口不应报错:%v", err)
 	}
 }
+
+func TestNormalizeAliyun(t *testing.T) {
+	// 合法:trim、丢全空行、按 (regionId, sgId) 去重。
+	cfg, err := Normalize(Config{Aliyun: AliyunConfig{
+		AccessKeyID: " ak ", AccessKeySecret: " sk ",
+		Groups: []AliyunGroupConfig{
+			{RegionID: " cn-hangzhou ", SecurityGroupID: " sg-1 ", Description: " pw "},
+			{}, // 全空行丢弃
+			{RegionID: "cn-hangzhou", SecurityGroupID: "sg-1", Description: "dup"}, // 同组去重
+			{RegionID: "cn-shanghai", SecurityGroupID: "sg-2", Description: "pw"},
+		},
+	}})
+	if err != nil {
+		t.Fatalf("归一化失败:%v", err)
+	}
+	if !cfg.AliyunReady() {
+		t.Fatal("应视为已配置完整")
+	}
+	if cfg.Aliyun.AccessKeyID != "ak" || cfg.Aliyun.AccessKeySecret != "sk" {
+		t.Fatalf("AK 应去空白:%+v", cfg.Aliyun)
+	}
+	if len(cfg.Aliyun.Groups) != 2 || cfg.Aliyun.Groups[0].SecurityGroupID != "sg-1" || cfg.Aliyun.Groups[0].Description != "pw" {
+		t.Fatalf("groups = %+v", cfg.Aliyun.Groups)
+	}
+
+	cases := []struct {
+		name   string
+		aliyun AliyunConfig
+	}{
+		{"半行缺描述", AliyunConfig{AccessKeyID: "ak", AccessKeySecret: "sk",
+			Groups: []AliyunGroupConfig{{RegionID: "cn-hangzhou", SecurityGroupID: "sg-1"}}}},
+		{"配组缺 AK", AliyunConfig{AccessKeySecret: "sk",
+			Groups: []AliyunGroupConfig{{RegionID: "cn-hangzhou", SecurityGroupID: "sg-1", Description: "pw"}}}},
+		{"配组缺 SK", AliyunConfig{AccessKeyID: "ak",
+			Groups: []AliyunGroupConfig{{RegionID: "cn-hangzhou", SecurityGroupID: "sg-1", Description: "pw"}}}},
+	}
+	for _, tc := range cases {
+		if _, err := Normalize(Config{Aliyun: tc.aliyun}); err == nil {
+			t.Fatalf("%s 应报错", tc.name)
+		}
+	}
+
+	// 组为空时 AK 残留不拦(先填一半的场景);零值配置不 ready。
+	cfg, err = Normalize(Config{Aliyun: AliyunConfig{AccessKeyID: "ak"}})
+	if err != nil {
+		t.Fatalf("空组 + 半 AK 不应报错:%v", err)
+	}
+	if cfg.AliyunReady() {
+		t.Fatal("缺组/缺 SK 不应 ready")
+	}
+	if cfg, err := Normalize(Config{}); err != nil || cfg.AliyunReady() {
+		t.Fatalf("零值配置应通过且不 ready:%v", err)
+	}
+}

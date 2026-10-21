@@ -151,6 +151,45 @@ func TestIPCTokenAndEndpoints(t *testing.T) {
 		t.Fatalf("proxies should be cleared: %+v", cfg.Proxies)
 	}
 
+	// 阿里云安全组:AK + 多组保存 → 回显(AK 非机密明文、SK 只报存在性);SK 空串 =
+	// 保持;不完整的组行被归一化拦截;清空组保留 AK。
+	akID, akSK := "LTAI-test", "sk-test"
+	groups := []AliyunGroupConfig{
+		{RegionID: "cn-hangzhou", SecurityGroupID: "sg-1", Description: "pw"},
+		{RegionID: "cn-shanghai", SecurityGroupID: "sg-2", Description: "pw"},
+	}
+	view, err = cli.PutConfig(ctx, ConfigSetRequest{AliyunAccessKeyID: &akID,
+		AliyunAccessKeySecret: &akSK, AliyunGroups: &groups})
+	if err != nil {
+		t.Fatalf("aliyun put: %v", err)
+	}
+	if view.Aliyun.AccessKeyID != "LTAI-test" || !view.Aliyun.HasSecret || len(view.Aliyun.Groups) != 2 {
+		t.Fatalf("aliyun view: %+v", view.Aliyun)
+	}
+	raw, _ = getRaw(cli, "/api/config")
+	if strings.Contains(raw, "sk-test") {
+		t.Fatalf("config view leaks aliyun secret: %s", raw)
+	}
+	newAK, emptySK := "LTAI-2", ""
+	view, err = cli.PutConfig(ctx, ConfigSetRequest{AliyunAccessKeyID: &newAK, AliyunAccessKeySecret: &emptySK})
+	if err != nil || !view.Aliyun.HasSecret || view.Aliyun.AccessKeyID != "LTAI-2" {
+		t.Fatalf("空 SK 应保持已存: %+v err=%v", view.Aliyun, err)
+	}
+	if cfg, _ := rt.LoadConfig(); cfg.Aliyun.AccessKeySecret != "sk-test" {
+		t.Fatal("SK 被空串意外清除")
+	}
+	badGroups := []AliyunGroupConfig{{RegionID: "cn-hangzhou"}}
+	if _, err := cli.PutConfig(ctx, ConfigSetRequest{AliyunGroups: &badGroups}); err == nil {
+		t.Fatal("不完整的安全组行应报错")
+	}
+	emptyGroups := []AliyunGroupConfig{}
+	if _, err := cli.PutConfig(ctx, ConfigSetRequest{AliyunGroups: &emptyGroups}); err != nil {
+		t.Fatalf("清空安全组: %v", err)
+	}
+	if cfg, _ := rt.LoadConfig(); len(cfg.Aliyun.Groups) != 0 || cfg.Aliyun.AccessKeyID != "LTAI-2" {
+		t.Fatalf("组应被清空且 AK 保留: %+v", cfg.Aliyun)
+	}
+
 	// 日志环:写两条,尾部可见。
 	_, _ = rt.LogWriter().Write([]byte("line-1\nline-2\n"))
 	var logs map[string]any
