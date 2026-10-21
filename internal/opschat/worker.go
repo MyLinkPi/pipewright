@@ -337,6 +337,11 @@ func (s *Service) planningFailure(id, run, status string, reason error) {
 	text := strings.Replace(analysisFailureText(reason), "[analysis:", "[planning:", 1)
 	if errors.Is(reason, ErrInvalid) {
 		text = "[planning:invalid_plan]"
+		// 上游校验失败的具体原因直接透出给用户(已脱敏、限长)。
+		detail := s.scrub(strings.TrimPrefix(reason.Error(), ErrInvalid.Error()), 512)
+		if trimmed := strings.TrimSpace(strings.TrimPrefix(detail, ":")); trimmed != "" {
+			text += " " + trimmed
+		}
 	}
 	// 详细诊断:服务端日志 + 可见标记附带 HTTP 状态与 provider 错误原文
 	// (错误字符串形如 "ai: ops model rejected (HTTP 400): <provider detail>",已脱敏)。
