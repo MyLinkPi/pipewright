@@ -131,6 +131,38 @@ export default {
     downloadYaml: "Télécharger le fichier",
     yamlClose: "Fermer",
 
+    // Mappage DNS du cluster (pointer l'enregistrement A d'un domaine vers l'IP virtuelle de ce nœud)
+    dnsTitle: "Mappage DNS (domaine → IP virtuelle de ce nœud)",
+    dnsDesc:
+      "Pointe automatiquement l'enregistrement A du domaine choisi vers l'IP virtuelle de ce nœud (attribution DHCP incluse) : les changements d'IP sont suivis automatiquement, avec resynchronisation périodique de secours ; supprimer un mappage ne retire que l'entrée locale — l'enregistrement DNS chez le fournisseur est conservé.",
+    dnsFqdn: "Domaine",
+    dnsProvider: "Fournisseur DNS",
+    dnsStatus: "Statut",
+    dnsLastSync: "Dernière synchro",
+    dnsEnabled: "Activé",
+    dnsAdd: "Ajouter un mappage",
+    dnsSync: "Synchroniser maintenant",
+    dnsSyncedTo: "Synchronisé → {ip}",
+    dnsNeverSynced: "En attente de synchro",
+    dnsErrShort: "Échec de synchro",
+    dnsDisabled: "Désactivé",
+    dnsProviderGone: "Fournisseur supprimé",
+    dnsEmpty: "Aucun mappage ; choisissez un fournisseur et saisissez un domaine pour en ajouter un.",
+    dnsNoProviders: "Aucun fournisseur DNS configuré — configurez-en un d'abord.",
+    dnsGoProviders: "Aller aux paramètres des fournisseurs DNS →",
+    dnsZoneHint:
+      "Le domaine doit relever d'une zone du fournisseur (zones : {zones}).",
+    dnsWaitingIp:
+      "L'IP virtuelle de ce nœud n'est pas encore disponible (cluster désactivé ou EasyTier non prêt) ; réessayez plus tard.",
+    dnsNoEnabled: "Aucun mappage actif à synchroniser.",
+    dnsSyncDone: "{ok}/{total} enregistrements synchronisés.",
+    dnsSyncFailed: "{fail}/{total} échecs : {error}",
+    dnsDelete: "Retirer",
+    dnsDeleteTitle: "Supprimer le mappage DNS ?",
+    dnsDeleteBody:
+      "Seule l'entrée locale est supprimée ; l'enregistrement A chez le fournisseur DNS est conservé (nettoyez-le dans sa console si besoin). Retirer {fqdn} ?",
+    dnsDeleteConfirm: "Retirer",
+
     // Garde d'accès pare-feu (deux étapes : application temporaire, confirmation depuis local/mesh)
     fwTitle: "Garde pare-feu (deux étapes)",
     fwHint:

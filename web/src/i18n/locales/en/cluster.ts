@@ -129,6 +129,38 @@ export default {
     downloadYaml: "Download file",
     yamlClose: "Close",
 
+    // Cluster DNS mapping (auto-point a domain's A record at this node's virtual IP)
+    dnsTitle: "DNS Mapping (domain → this node's virtual IP)",
+    dnsDesc:
+      "Automatically points the chosen domain's A record at this node's virtual IP (DHCP-assigned included): IP changes are followed automatically with periodic re-sync as a safety net; deleting a mapping only removes the local entry — the cloud DNS record is kept.",
+    dnsFqdn: "Domain",
+    dnsProvider: "DNS provider",
+    dnsStatus: "Status",
+    dnsLastSync: "Last sync",
+    dnsEnabled: "Enabled",
+    dnsAdd: "Add mapping",
+    dnsSync: "Sync now",
+    dnsSyncedTo: "Synced → {ip}",
+    dnsNeverSynced: "Awaiting sync",
+    dnsErrShort: "Sync failed",
+    dnsDisabled: "Disabled",
+    dnsProviderGone: "Provider deleted",
+    dnsEmpty: "No mappings yet; pick a provider and enter a domain to add one.",
+    dnsNoProviders: "No DNS providers configured yet — configure one first.",
+    dnsGoProviders: "Go to DNS provider settings →",
+    dnsZoneHint:
+      "The domain must fall under one of the provider's zones (zones: {zones}).",
+    dnsWaitingIp:
+      "This node's virtual IP is not available yet (cluster disabled or EasyTier not ready); try again later.",
+    dnsNoEnabled: "No enabled mappings to sync.",
+    dnsSyncDone: "Synced {ok}/{total} records.",
+    dnsSyncFailed: "{fail}/{total} failed to sync: {error}",
+    dnsDelete: "Remove",
+    dnsDeleteTitle: "Delete DNS mapping?",
+    dnsDeleteBody:
+      "Only the local mapping entry is removed; the A record at the DNS provider is kept (clean it up in the provider console if needed). Remove {fqdn}?",
+    dnsDeleteConfirm: "Remove",
+
     // Firewall access guard (two-step: apply temporarily, confirm from local/mesh access)
     fwTitle: "Firewall access guard (two-step)",
     fwHint:

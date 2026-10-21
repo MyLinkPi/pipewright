@@ -1,11 +1,12 @@
 <!--
-  SettingsMesh.vue — 集群设置(本节点身份 / EasyTier 组网 / 三张授权单 / 节点注册表)。
+  SettingsMesh.vue — 集群设置(本节点身份 / EasyTier 组网 / 三张授权单 / 节点注册表 / DNS 映射)。
 
   对等无中心:这里配置的是**本节点**——
     · 身份:节点名(展示)与 node_id/公钥(只读;签名鉴权的锚点);
     · EasyTier:托管/外部模式、网络名 + 密钥(密文存储,回显只报已配置)、虚拟 IP、初始 peers;
     · 授权单(默认全拒绝):可见(服务器/项目/运行)、允许推送、允许触发 —— 均**对哪些节点开放**;
-    · 节点注册表:发现(auto)登记 + 手工补录(manual;发现兜底,可补对外访问地址)。
+    · 节点注册表:发现(auto)登记 + 手工补录(manual;发现兜底,可补对外访问地址);
+    · DNS 映射:指定域名的 A 记录自动指向本机虚拟 IP(选已配置的 DNS 提供商;IP 变化自动跟随)。
 -->
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from "vue";
@@ -27,7 +28,14 @@ import {
   deleteMeshPeer,
   type MeshSettings,
   type MeshPeer,
+  listMeshDnsRecords,
+  createMeshDnsRecord,
+  updateMeshDnsRecord,
+  deleteMeshDnsRecord,
+  syncMeshDnsRecords,
+  type MeshDnsRecord,
 } from "../../api/mesh";
+import { listDnsProviders, type DnsProvider } from "../../api/dnsProviders";
 import AppButton from "../../components/ui/AppButton.vue";
 import { useConfirm } from "../../composables/useConfirm";
 import {
@@ -583,13 +591,139 @@ const fwRemainMin = computed(() =>
   Math.max(1, Math.ceil((fw.value?.pendingExpiresInSec ?? 0) / 60)),
 );
 
+// ── 集群 DNS 映射:指定域名 A 记录自动指向本机虚拟 IP(后台自动跟随;此处增删/启停
+//    与手动「立即同步」)。提供商清单来自 DNS 提供商设置页,域名须落在其某个根区下。──
+const dnsRecords = ref<MeshDnsRecord[]>([]);
+const dnsProviders = ref<DnsProvider[]>([]);
+const dnsForm = ref({ providerId: "", fqdn: "" });
+const dnsSyncing = ref(false);
+const dnsMsg = ref(""); // 同步结果摘要(动作错误走 actionError 横幅)
+const dnsMsgErr = ref(false); // 摘要是失败(true → 红字)还是成功(绿字)
+
+/** 刷新映射列表(轻量;10s 状态轮询复用,展示后台自动同步的最新 lastIp/lastError)。 */
+async function refreshDnsRecords(): Promise<void> {
+  try {
+    dnsRecords.value = (await listMeshDnsRecords()).items ?? [];
+  } catch {
+    // 轮询噪音不弹横幅:保留上一次快照。
+  }
+}
+
+async function loadDns(): Promise<void> {
+  try {
+    const [recRes, provRes] = await Promise.all([
+      listMeshDnsRecords(),
+      listDnsProviders(),
+    ]);
+    dnsRecords.value = recRes.items ?? [];
+    dnsProviders.value = provRes ?? [];
+    if (!dnsForm.value.providerId && dnsProviders.value.length === 1) {
+      dnsForm.value.providerId = dnsProviders.value[0].id;
+    }
+  } catch (err) {
+    actionError.value = err instanceof Error ? err.message : String(err);
+  }
+}
+
+/** 所选提供商(添加表单的根区提示用)。 */
+const selectedDnsProvider = computed(
+  () => dnsProviders.value.find((p) => p.id === dnsForm.value.providerId) ?? null,
+);
+
+async function addDnsRecord(): Promise<void> {
+  const fqdn = dnsForm.value.fqdn.trim().toLowerCase();
+  if (!dnsForm.value.providerId || !fqdn) return;
+  try {
+    await createMeshDnsRecord({ providerId: dnsForm.value.providerId, fqdn });
+    dnsForm.value.fqdn = "";
+    dnsMsg.value = "";
+    await refreshDnsRecords();
+  } catch (err) {
+    actionError.value = err instanceof Error ? err.message : String(err);
+  }
+}
+
+async function toggleDnsRecord(rec: MeshDnsRecord): Promise<void> {
+  try {
+    await updateMeshDnsRecord(rec.id, { enabled: !rec.enabled });
+    await refreshDnsRecords();
+  } catch (err) {
+    actionError.value = err instanceof Error ? err.message : String(err);
+  }
+}
+
+async function removeDnsRecord(rec: MeshDnsRecord): Promise<void> {
+  const ok = await confirm.open({
+    title: t("cluster.settings.dnsDeleteTitle"),
+    body: t("cluster.settings.dnsDeleteBody", { fqdn: rec.fqdn }),
+    confirmLabel: t("cluster.settings.dnsDeleteConfirm"),
+    variant: "danger",
+  });
+  if (!ok) return;
+  try {
+    await deleteMeshDnsRecord(rec.id);
+    await refreshDnsRecords();
+  } catch (err) {
+    actionError.value = err instanceof Error ? err.message : String(err);
+  }
+}
+
+/** 手动「立即同步」:逐条把启用映射的 A 记录写为当前虚拟 IP,摘要展示成败。 */
+async function syncDnsNow(): Promise<void> {
+  dnsSyncing.value = true;
+  dnsMsg.value = "";
+  try {
+    const out = await syncMeshDnsRecords();
+    if (!out.ip) {
+      dnsMsgErr.value = true;
+      dnsMsg.value = t("cluster.settings.dnsWaitingIp");
+    } else if (out.results.length === 0) {
+      dnsMsgErr.value = true;
+      dnsMsg.value = t("cluster.settings.dnsNoEnabled");
+    } else {
+      const ok = out.results.filter((x) => x.ok).length;
+      const firstErr = out.results.find((x) => !x.ok)?.error ?? "";
+      dnsMsgErr.value = ok !== out.results.length;
+      dnsMsg.value =
+        ok === out.results.length
+          ? t("cluster.settings.dnsSyncDone", { ok, total: out.results.length })
+          : t("cluster.settings.dnsSyncFailed", {
+              fail: out.results.length - ok,
+              total: out.results.length,
+              error: firstErr,
+            });
+    }
+    await refreshDnsRecords();
+  } catch (err) {
+    actionError.value = err instanceof Error ? err.message : String(err);
+  } finally {
+    dnsSyncing.value = false;
+  }
+}
+
+/** 单条映射的状态徽标文本(提供商已删 > 失败 > 已停用 > 已同步 > 等待)。 */
+function dnsStatusLabel(rec: MeshDnsRecord): string {
+  if (rec.providerGone) return t("cluster.settings.dnsProviderGone");
+  if (!rec.enabled) return t("cluster.settings.dnsDisabled");
+  if (rec.lastError) return t("cluster.settings.dnsErrShort");
+  if (rec.lastSyncedAt)
+    return t("cluster.settings.dnsSyncedTo", { ip: rec.lastIp });
+  return t("cluster.settings.dnsNeverSynced");
+}
+
+function fmtTime(s: string): string {
+  return s ? new Date(s).toLocaleString() : "";
+}
+
 onMounted(() => {
   void load();
   void loadStatus();
   void loadFirewall();
+  void loadDns();
   statusTimer = window.setInterval(() => {
     void loadStatus();
     void loadFirewall();
+    void refreshDnsRecords();
   }, 10_000);
 });
 
@@ -854,6 +988,133 @@ onUnmounted(() => {
             t("cluster.settings.save")
           }}</AppButton>
         </div>
+      </section>
+
+      <!-- 集群 DNS 映射:指定域名 A 记录自动指向本机虚拟 IP(后台自动跟随 + 手动立即同步) -->
+      <section class="block">
+        <h2>{{ t("cluster.settings.dnsTitle") }}</h2>
+        <p class="hint">{{ t("cluster.settings.dnsDesc") }}</p>
+        <p v-if="dnsProviders.length === 0" class="hint">
+          {{ t("cluster.settings.dnsNoProviders") }}
+          <router-link to="/settings/dns-providers">{{
+            t("cluster.settings.dnsGoProviders")
+          }}</router-link>
+        </p>
+        <template v-else>
+          <table v-if="dnsRecords.length > 0" class="peer-list">
+            <thead>
+              <tr>
+                <th>{{ t("cluster.settings.dnsFqdn") }}</th>
+                <th>{{ t("cluster.settings.dnsProvider") }}</th>
+                <th>{{ t("cluster.settings.dnsStatus") }}</th>
+                <th>{{ t("cluster.settings.dnsLastSync") }}</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="rec in dnsRecords" :key="rec.id">
+                <td class="mono">{{ rec.fqdn }}</td>
+                <td>
+                  <template v-if="rec.providerGone">
+                    <span class="err">{{
+                      t("cluster.settings.dnsProviderGone")
+                    }}</span>
+                  </template>
+                  <template v-else>
+                    {{ rec.providerName }}
+                    <span class="muted">({{ rec.providerType }})</span>
+                  </template>
+                </td>
+                <td>
+                  <span
+                    class="badge"
+                    :class="{
+                      on:
+                        rec.enabled &&
+                        !rec.providerGone &&
+                        !rec.lastError &&
+                        !!rec.lastSyncedAt,
+                    }"
+                    >{{ dnsStatusLabel(rec) }}</span
+                  >
+                  <div v-if="rec.lastError" class="err err-sm">
+                    {{ rec.lastError }}
+                  </div>
+                </td>
+                <td class="mono">{{ fmtTime(rec.lastSyncedAt) || "—" }}</td>
+                <td>
+                  <label class="switch"
+                    ><input
+                      type="checkbox"
+                      :checked="rec.enabled"
+                      @change="toggleDnsRecord(rec)"
+                    />
+                    {{ t("cluster.settings.dnsEnabled") }}</label
+                  >
+                  <button
+                    class="link-btn"
+                    type="button"
+                    @click="removeDnsRecord(rec)"
+                  >
+                    {{ t("cluster.settings.dnsDelete") }}
+                  </button>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+          <p v-else class="hint">{{ t("cluster.settings.dnsEmpty") }}</p>
+          <div class="grid2">
+            <label class="fld"
+              ><span>{{ t("cluster.settings.dnsProvider") }}</span
+              ><select v-model="dnsForm.providerId" class="inp">
+                <option
+                  v-for="p in dnsProviders"
+                  :key="p.id"
+                  :value="p.id"
+                >
+                  {{ p.name }}({{ p.type }} ·
+                  {{ p.zones.map((z) => z.baseDomain).join(", ") }})
+                </option>
+              </select></label
+            >
+            <label class="fld"
+              ><span>{{ t("cluster.settings.dnsFqdn") }}</span
+              ><input
+                v-model="dnsForm.fqdn"
+                class="inp mono"
+                type="text"
+                placeholder="home.example.com"
+                @keyup.enter="addDnsRecord"
+            /></label>
+          </div>
+          <p v-if="selectedDnsProvider" class="hint">
+            {{
+              t("cluster.settings.dnsZoneHint", {
+                zones: selectedDnsProvider.zones
+                  .map((z) => z.baseDomain)
+                  .join("、"),
+              })
+            }}
+          </p>
+          <div class="row-end">
+            <span v-if="dnsMsg" :class="dnsMsgErr ? 'err' : 'ok-text'">{{
+              dnsMsg
+            }}</span>
+            <AppButton
+              v-if="dnsRecords.length > 0"
+              variant="default"
+              :loading="dnsSyncing"
+              @click="syncDnsNow"
+              >{{ t("cluster.settings.dnsSync") }}</AppButton
+            >
+            <AppButton
+              variant="default"
+              :disabled="!dnsForm.providerId || !dnsForm.fqdn.trim()"
+              @click="addDnsRecord"
+              >{{ t("cluster.settings.dnsAdd") }}</AppButton
+            >
+          </div>
+        </template>
       </section>
 
       <!-- 防火墙访问限制(两步生效):apply 临时生效 → 从本机/mesh 访问后 confirm 固化;
@@ -1349,6 +1610,11 @@ onUnmounted(() => {
 }
 .err {
   color: var(--color-amber);
+}
+.err-sm {
+  font-size: 12px;
+  margin-top: 2px;
+  word-break: break-all;
 }
 .muted {
   color: var(--color-text-muted);

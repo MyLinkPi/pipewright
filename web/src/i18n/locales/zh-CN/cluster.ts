@@ -126,6 +126,36 @@ export default {
     downloadYaml: "下载文件",
     yamlClose: "关闭",
 
+    // 集群 DNS 映射(指定域名 A 记录自动指向本机虚拟 IP)
+    dnsTitle: "DNS 映射(域名 → 本机虚拟 IP)",
+    dnsDesc:
+      "把指定域名的 A 记录自动指向本机虚拟 IP(含 DHCP 自动分配场景):IP 变化自动跟随,另有周期兜底重同步;删除映射只删本地条目,云端 DNS 记录保留。",
+    dnsFqdn: "域名",
+    dnsProvider: "DNS 提供商",
+    dnsStatus: "状态",
+    dnsLastSync: "上次同步",
+    dnsEnabled: "启用",
+    dnsAdd: "添加映射",
+    dnsSync: "立即同步",
+    dnsSyncedTo: "已同步 → {ip}",
+    dnsNeverSynced: "等待同步",
+    dnsErrShort: "同步失败",
+    dnsDisabled: "已停用",
+    dnsProviderGone: "提供商已删除",
+    dnsEmpty: "暂无映射;选择提供商并填写域名后添加。",
+    dnsNoProviders: "尚未配置任何 DNS 提供商,请先完成提供商配置。",
+    dnsGoProviders: "前往 DNS 提供商设置 →",
+    dnsZoneHint: "域名须落在所选提供商的某个根区下(根区:{zones})。",
+    dnsWaitingIp: "本机虚拟 IP 尚不可用(集群未启用或 EasyTier 未就绪),请稍后重试。",
+    dnsNoEnabled: "没有启用中的映射,无需同步。",
+    dnsSyncDone: "已同步 {ok}/{total} 条。",
+    dnsSyncFailed: "{fail}/{total} 条同步失败:{error}",
+    dnsDelete: "移除",
+    dnsDeleteTitle: "删除 DNS 映射?",
+    dnsDeleteBody:
+      "仅删除本地映射条目,云端 DNS 提供商上的 A 记录会保留(需要时请自行到提供商控制台清理)。确定移除 {fqdn} 吗?",
+    dnsDeleteConfirm: "移除",
+
     // 防火墙访问限制(两步生效:apply 临时 → 从本机/mesh 访问后 confirm 固化)
     fwTitle: "防火墙访问限制(两步生效)",
     fwHint:

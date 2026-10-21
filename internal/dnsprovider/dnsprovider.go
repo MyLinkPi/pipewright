@@ -159,6 +159,12 @@ type Service interface {
 	// 按最长后缀匹配选根区;幂等)。找不到覆盖根区 → ErrZoneNotFound。
 	DeleteSubdomainRecord(ctx context.Context, providerID, fqdn string) error
 
+	// EnsureSubdomainRecord 为该提供商**某个根区**下 fqdn 的 A 记录建/改指向 ip(集群 DNS
+	// 映射:域名 → 本机虚拟 IP;幂等 upsert)。按最长后缀匹配选根区;fqdn 须严格落在某
+	// 根区下(等于根区不算,与 AllocateFQDN 同规,防越权为任意域建记录)。找不到覆盖
+	// 根区 → ErrZoneNotFound;ip 非法 → ErrEnsureRecord。
+	EnsureSubdomainRecord(ctx context.Context, providerID, fqdn, ip string) error
+
 	// AllocateFQDN 为一个**指定的** FQDN(in.Subdomain,须落在该提供商某个根区下)建 A 记录指向
 	// hostIP(R4 E4.1 预览环境用)。Caddy 反代下线后本方法只管 DNS 记录,不再创建反代路由;
 	// 流量路由(预览域名 → 上游)由网关体系另行承接。in.Subdomain 缺省/不在任何根区下 → ErrAllocate。

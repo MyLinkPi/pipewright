@@ -51,6 +51,7 @@ import (
 	"github.com/huangchengsir/pipewright/internal/maintenance"
 	"github.com/huangchengsir/pipewright/internal/mesh"
 	"github.com/huangchengsir/pipewright/internal/mesh/easytier"
+	"github.com/huangchengsir/pipewright/internal/meshdns"
 	"github.com/huangchengsir/pipewright/internal/metrics"
 	"github.com/huangchengsir/pipewright/internal/mfa"
 	"github.com/huangchengsir/pipewright/internal/notify"
@@ -809,8 +810,27 @@ func main() {
 	// 指纹重启 easytier);②发现循环节拍收尾对账网关机 /32 路由 + ip_forward 保活。
 	meshRT.SetProxyNetworks(serviceRegSvc.GatewayProxyNetworks)
 	meshRT.SetAfterDiscover(serviceRegSvc.ReconcileForwardRoutes)
+	// 集群 DNS 映射:指定域名 A 记录自动指向本机虚拟 IP(同步循环随 ctx 启停;手动
+	// 「立即同步」经 /api/mesh/dns-records/sync)。虚拟 IP 运行态 SelfIP 优先(兼容 DHCP;
+	// 托管/外部模式皆可),EasyTier 未就绪时回退集群设置的手填值。
+	meshDNSSvc := meshdns.New(st.DB, dnsSvc)
+	meshDNSSyncer := meshdns.NewSyncer(meshDNSSvc, dnsSvc,
+		func(ctx context.Context) string {
+			if snap := meshRT.EasyTierStatus(ctx); snap != nil && snap.SelfIP != "" {
+				return snap.SelfIP
+			}
+			if mst, err := meshSvc.Settings(ctx); err == nil {
+				return mst.VirtualIP
+			}
+			return ""
+		},
+		func(ctx context.Context) bool {
+			mst, err := meshSvc.Settings(ctx)
+			return err == nil && mst.Enabled
+		},
+	)
 	meshAdminDeps := httpapi.NewMeshDeps(meshSvc, meshReceiver, meshClient, projectSvc, runSvc, pool, parameterSvc, targetSvc, pipelineSvc, auditRec, pushedStore, webhookReceiver, meshAdvertisePort).
-		WithRuntime(meshRT).WithServiceCatalog(serviceRegSvc).WithSharedBuild(sharedBuildSrv)
+		WithRuntime(meshRT).WithServiceCatalog(serviceRegSvc).WithSharedBuild(sharedBuildSrv).WithMeshDNS(meshDNSSvc, meshDNSSyncer)
 
 	// 集群防火墙访问限制(两步生效):apply 把平台本机端口(默认 80/443/8080/5000/5001,
 	// 8080 取实际监听口)临时限制为仅本机 + mesh 网段可访问;从本机/mesh 访问后 confirm
@@ -1022,6 +1042,9 @@ func main() {
 	// 集群运行时(设置监督 + 对等发现)随 ctx 启停;托管 easytier-core 时二进制定位结果
 	// 打一行日志便于排障(找不到时集群页会给出放置指引)。
 	meshRT.start(ctx)
+
+	// 集群 DNS 映射同步循环(虚拟 IP 变化自动跟随 + 周期兜底)随 ctx 启停。
+	go meshDNSSyncer.Run(ctx)
 	if meshCorePath != "" {
 		log.Printf("[mesh] 集群运行时已启动(easytier-core: %s)", meshCorePath)
 	} else {

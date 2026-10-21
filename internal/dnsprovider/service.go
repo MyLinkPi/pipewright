@@ -217,6 +217,34 @@ func (s *service) DeleteSubdomainRecord(ctx context.Context, providerID, fqdn st
 	return client.DeleteARecord(ctx, zone.BaseDomain, fqdn)
 }
 
+// EnsureSubdomainRecord 为某提供商根区下 fqdn 的 A 记录建/改指向 ip(集群 DNS 映射:
+// 域名 → 本机虚拟 IP)。根区按最长后缀匹配;fqdn 须**严格落在**某根区下(等于根区
+// 不算,与 AllocateFQDN 同规);幂等 upsert。providerID 不存在 → ErrNotFound;
+// 无覆盖根区 → ErrZoneNotFound;ip 非法 → ErrEnsureRecord。
+func (s *service) EnsureSubdomainRecord(ctx context.Context, providerID, fqdn, ip string) error {
+	p, err := s.store.get(ctx, providerID)
+	if err != nil {
+		return err
+	}
+	if !validIPv4(ip) {
+		return fmt.Errorf("%w:目标 IP 非法", ErrEnsureRecord)
+	}
+	domain := strings.ToLower(strings.TrimSpace(fqdn))
+	zones, err := s.store.listZonesByProvider(ctx, providerID)
+	if err != nil {
+		return err
+	}
+	zone := zoneCovering(zones, domain)
+	if domain == "" || zone == nil || domain == zone.BaseDomain {
+		return fmt.Errorf("%w:%s 须是该提供商某个根区下的子域名", ErrZoneNotFound, domain)
+	}
+	client, err := s.clientFor(p)
+	if err != nil {
+		return err
+	}
+	return client.EnsureARecord(ctx, zone.BaseDomain, domain, ip)
+}
+
 // ProviderType 返回某提供商类型(不取 Secret);不存在 → ok=false。
 func (s *service) ProviderType(ctx context.Context, providerID string) (string, bool, error) {
 	p, err := s.store.get(ctx, providerID)

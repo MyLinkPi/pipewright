@@ -129,6 +129,38 @@ export default {
     downloadYaml: "Descargar archivo",
     yamlClose: "Cerrar",
 
+    // Mapeo DNS del clúster (apuntar el registro A de un dominio a la IP virtual de este nodo)
+    dnsTitle: "Mapeo DNS (dominio → IP virtual de este nodo)",
+    dnsDesc:
+      "Apunta automáticamente el registro A del dominio elegido a la IP virtual de este nodo (incluye asignación por DHCP): los cambios de IP se siguen automáticamente, con resincronización periódica de respaldo; eliminar un mapeo solo quita la entrada local — el registro DNS en la nube se conserva.",
+    dnsFqdn: "Dominio",
+    dnsProvider: "Proveedor DNS",
+    dnsStatus: "Estado",
+    dnsLastSync: "Última sincronización",
+    dnsEnabled: "Activo",
+    dnsAdd: "Añadir mapeo",
+    dnsSync: "Sincronizar ahora",
+    dnsSyncedTo: "Sincronizado → {ip}",
+    dnsNeverSynced: "Esperando sincronización",
+    dnsErrShort: "Fallo de sincronización",
+    dnsDisabled: "Desactivado",
+    dnsProviderGone: "Proveedor eliminado",
+    dnsEmpty: "Aún no hay mapeos; elige un proveedor e introduce un dominio para añadir uno.",
+    dnsNoProviders: "Aún no hay proveedores DNS configurados: configura uno primero.",
+    dnsGoProviders: "Ir a ajustes de proveedores DNS →",
+    dnsZoneHint:
+      "El dominio debe estar bajo una zona del proveedor (zonas: {zones}).",
+    dnsWaitingIp:
+      "La IP virtual de este nodo aún no está disponible (clúster desactivado o EasyTier no listo); reintenta más tarde.",
+    dnsNoEnabled: "No hay mapeos activados que sincronizar.",
+    dnsSyncDone: "{ok}/{total} registros sincronizados.",
+    dnsSyncFailed: "{fail}/{total} fallaron al sincronizar: {error}",
+    dnsDelete: "Quitar",
+    dnsDeleteTitle: "¿Eliminar el mapeo DNS?",
+    dnsDeleteBody:
+      "Solo se elimina la entrada local; el registro A en el proveedor DNS se conserva (límpialo en su consola si hace falta). ¿Quitar {fqdn}?",
+    dnsDeleteConfirm: "Quitar",
+
     // Guardia de acceso por firewall (dos pasos: aplicar en temporal, confirmar desde local/mesh)
     fwTitle: "Guardia de firewall (dos pasos)",
     fwHint:

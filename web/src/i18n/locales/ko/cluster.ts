@@ -128,6 +128,38 @@ export default {
     downloadYaml: "파일 다운로드",
     yamlClose: "닫기",
 
+    // 클러스터 DNS 매핑(지정 도메인의 A 레코드를 이 노드의 가상 IP로 자동 연결)
+    dnsTitle: "DNS 매핑(도메인 → 이 노드의 가상 IP)",
+    dnsDesc:
+      "선택한 도메인의 A 레코드를 이 노드의 가상 IP(DHCP 자동 할당 포함)로 자동 연결합니다: IP가 바뀌면 자동으로 따라가고 주기적 재동기화도 수행합니다. 매핑 삭제는 로컬 항목만 삭제하며 클라우드 DNS 레코드는 유지됩니다.",
+    dnsFqdn: "도메인",
+    dnsProvider: "DNS 제공자",
+    dnsStatus: "상태",
+    dnsLastSync: "마지막 동기화",
+    dnsEnabled: "활성",
+    dnsAdd: "매핑 추가",
+    dnsSync: "지금 동기화",
+    dnsSyncedTo: "동기화됨 → {ip}",
+    dnsNeverSynced: "동기화 대기",
+    dnsErrShort: "동기화 실패",
+    dnsDisabled: "비활성",
+    dnsProviderGone: "제공자 삭제됨",
+    dnsEmpty: "매핑이 없습니다. 제공자를 선택하고 도메인을 입력해 추가하세요.",
+    dnsNoProviders: "아직 구성된 DNS 제공자가 없습니다. 먼저 구성해 주세요.",
+    dnsGoProviders: "DNS 제공자 설정으로 →",
+    dnsZoneHint:
+      "도메인은 선택한 제공자의 zone 하위여야 합니다(zone: {zones}).",
+    dnsWaitingIp:
+      "이 노드의 가상 IP를 아직 사용할 수 없습니다(클러스터 비활성 또는 EasyTier 미준비). 잠시 후 다시 시도하세요.",
+    dnsNoEnabled: "활성화된 매핑이 없어 동기화가 필요하지 않습니다.",
+    dnsSyncDone: "{ok}/{total}건 동기화됨.",
+    dnsSyncFailed: "{fail}/{total}건 동기화 실패: {error}",
+    dnsDelete: "제거",
+    dnsDeleteTitle: "DNS 매핑을 삭제할까요?",
+    dnsDeleteBody:
+      "로컬 매핑 항목만 삭제되며 DNS 제공자의 A 레코드는 유지됩니다(필요하면 제공자 콘솔에서 정리하세요). {fqdn}을(를) 제거할까요?",
+    dnsDeleteConfirm: "제거",
+
     // 방화벽 접근 제한(2단계: 임시 적용 → 로컬/mesh에서 접속 후 확정)
     fwTitle: "방화벽 접근 제한(2단계)",
     fwHint:

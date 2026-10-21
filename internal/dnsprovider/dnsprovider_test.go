@@ -329,6 +329,40 @@ func TestZoneCoveringAndDeleteRecord(t *testing.T) {
 
 // --- Cloudflare 客户端(mock transport)-------------------------------------
 
+func TestEnsureSubdomainRecord(t *testing.T) {
+	ctx := context.Background()
+	fc := &stubClient{}
+	dial := func(providerType, apiID, secret string) DNSClient { return fc }
+	svc := newTestService(t, stubVault{tokens: map[string]string{"cred-1": "tok"}}, dial)
+	p, _ := svc.Create(ctx, CreateInput{Type: "cloudflare", Name: "CF", CredentialID: "cred-1", BaseDomains: []string{"example.com", "preview.example.com"}})
+
+	// 最长后缀选根区 + 严格子域(等于根区不算)。
+	if err := svc.EnsureSubdomainRecord(ctx, p.ID, "Home.Example.com", "10.144.0.5"); err != nil {
+		t.Fatalf("EnsureSubdomainRecord: %v", err)
+	}
+	if len(fc.ensureZones) != 1 || fc.ensureZones[0] != "example.com" {
+		t.Fatalf("应选覆盖根区, got %v", fc.ensureZones)
+	}
+	// 不在任何根区下 / 等于根区本身 → ErrZoneNotFound。
+	if err := svc.EnsureSubdomainRecord(ctx, p.ID, "x.example.org", "10.144.0.5"); !errors.Is(err, ErrZoneNotFound) {
+		t.Fatalf("不覆盖应 ErrZoneNotFound, got %v", err)
+	}
+	if err := svc.EnsureSubdomainRecord(ctx, p.ID, "example.com", "10.144.0.5"); !errors.Is(err, ErrZoneNotFound) {
+		t.Fatalf("等于根区应 ErrZoneNotFound, got %v", err)
+	}
+	// 非法 IP → ErrEnsureRecord。
+	if err := svc.EnsureSubdomainRecord(ctx, p.ID, "a.example.com", "not-an-ip"); !errors.Is(err, ErrEnsureRecord) {
+		t.Fatalf("非法 IP 应 ErrEnsureRecord, got %v", err)
+	}
+	// 提供商不存在 → ErrNotFound。
+	if err := svc.EnsureSubdomainRecord(ctx, "no-such", "a.example.com", "10.144.0.5"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("提供商不存在应 ErrNotFound, got %v", err)
+	}
+	if len(fc.ensureZones) != 1 {
+		t.Fatalf("失败路径不应触达 DNS API, got %v", fc.ensureZones)
+	}
+}
+
 func TestCloudflareVerifyZoneSuccess(t *testing.T) {
 	rt := roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		if r.Header.Get("Authorization") != "Bearer cf-token" {
