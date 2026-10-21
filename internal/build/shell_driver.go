@@ -85,6 +85,15 @@ func (d *shellDriver) RunToolchain(ctx context.Context, image, hostDir, workdir 
 		args = append(args, "--network", net)
 		display = append(display, "--network", net)
 	}
+	// Playwright/Chromium 类工具链:--init 收尸 + --shm-size(默认 /dev/shm 64MB 会崩浏览器)。
+	if res.Init {
+		args = append(args, "--init")
+		display = append(display, "--init")
+	}
+	if shm := strings.TrimSpace(res.ShmSize); shm != "" {
+		args = append(args, "--shm-size", shm)
+		display = append(display, "--shm-size", shm)
+	}
 	for _, kv := range env {
 		args = append(args, "-e", kv)
 		display = append(display, "-e", maskKV(kv)) // 环境变量可能含 secret:回显只列 key

@@ -33,6 +33,9 @@ const (
 	EventApprovalRequired = "approval_required"
 	// EventAnomalyDetected 服务器指标异常(异常检测命中阈值规则;非 run 维度,projectID 空=全局路由)。
 	EventAnomalyDetected = "anomaly_detected"
+	// EventAIAcceptanceFailed AI 验收建议未过(specs/ai-test-node.md):ai_test 裁决一律
+	// advisory、run 整体可绿——建议项失败靠本事件做不阻塞的黄色提醒(先例:health_check_failed)。
+	EventAIAcceptanceFailed = "ai_acceptance_failed"
 )
 
 // 路由领域错误。
@@ -50,7 +53,7 @@ func validEvent(e string) bool {
 	switch e {
 	case EventBuildSucceeded, EventBuildFailed, EventDeploySucceeded,
 		EventDeployFailed, EventRollback, EventHealthCheckFailed, EventApprovalRequired,
-		EventAnomalyDetected:
+		EventAnomalyDetected, EventAIAcceptanceFailed:
 		return true
 	default:
 		return false
@@ -64,6 +67,7 @@ func Events() []string {
 		EventDeploySucceeded, EventDeployFailed,
 		EventRollback, EventHealthCheckFailed,
 		EventApprovalRequired, EventAnomalyDetected,
+		EventAIAcceptanceFailed,
 	}
 }
 
@@ -487,6 +491,8 @@ func eventLabel(event, lang string) string {
 		return i18n.T(lang, "需要审批")
 	case EventAnomalyDetected:
 		return i18n.T(lang, "异常检测")
+	case EventAIAcceptanceFailed:
+		return i18n.T(lang, "AI 验收建议未过")
 	default:
 		return event
 	}

@@ -47,8 +47,8 @@ import (
 	"github.com/huangchengsir/pipewright/internal/identity"
 	"github.com/huangchengsir/pipewright/internal/labels"
 	"github.com/huangchengsir/pipewright/internal/library"
-	"github.com/huangchengsir/pipewright/internal/mask"
 	"github.com/huangchengsir/pipewright/internal/maintenance"
+	"github.com/huangchengsir/pipewright/internal/mask"
 	"github.com/huangchengsir/pipewright/internal/mesh"
 	"github.com/huangchengsir/pipewright/internal/mesh/easytier"
 	"github.com/huangchengsir/pipewright/internal/meshdns"
@@ -586,7 +586,13 @@ func main() {
 		// 门行为不变;运行时可改)。
 		approvalNotifier := httpapi.NewApprovalNotifier(notifySvc, approvalSigner, publicURLResolver, runSvc)
 		dagOpts = append(dagOpts, dagrun.WithGate(httpapi.NewApprovalGate(runSvc, approvalCoord, approvalStore, approvalNotifier)))
-		builderOpts := []build.BuilderOption{build.WithArtifactStore(artStore), build.WithArtifactLister(runSvc.ListArtifacts), build.WithImageGC(os.Getenv("PIPEWRIGHT_NO_IMAGE_GC") != "1"), build.WithCommitRecorder(func(ctx context.Context, runID, commit string, commitAt time.Time) { _ = runSvc.SetCommit(ctx, runID, commit, commitAt) }), build.WithStageDeployer(deploySvc), build.WithStageNotifier(notifySvc), build.WithStageObjectUploader(objectStoreSvc), build.WithEcsPowerController(aliyunSvc), build.WithWaitCoordinator(waitCoord), clonerOpt, buildCacheOpt, builtinRegistryOpt, imageRotationOpt, imagePushCleanupOpt}
+		builderOpts := []build.BuilderOption{build.WithArtifactStore(artStore), build.WithArtifactLister(runSvc.ListArtifacts), build.WithImageGC(os.Getenv("PIPEWRIGHT_NO_IMAGE_GC") != "1"), build.WithCommitRecorder(func(ctx context.Context, runID, commit string, commitAt time.Time) {
+			_ = runSvc.SetCommit(ctx, runID, commit, commitAt)
+		}), build.WithStageDeployer(deploySvc), build.WithStageNotifier(notifySvc), build.WithStageObjectUploader(objectStoreSvc), build.WithEcsPowerController(aliyunSvc), build.WithAITester(aiSvc), build.WithAITestInfra(&aiTestInfraAdapter{svc: targetSvc}), build.WithWaitCoordinator(waitCoord), clonerOpt, buildCacheOpt, builtinRegistryOpt, imageRotationOpt, imagePushCleanupOpt}
+		// 浏览器动作集(P2):控制机有容器 CLI 才注入浏览器桥编排;瘦控制机降级为纯 HTTP 验收。
+		if aiCLI, aiCLIErr := build.DetectAITestContainerCLI(); aiCLIErr == nil {
+			builderOpts = append(builderOpts, build.WithAITestContainer(aiCLI))
+		}
 		builderOpts = append(builderOpts, meshOpts...)
 		b, berr := build.NewBuilder(projectSvc, pipelineSettingsSvc, credVault, builderOpts...)
 		if berr == nil {
@@ -1634,4 +1640,53 @@ func aiContextPolicy(svc ai.Service) opschat.ContextPolicy {
 		KeepRecentTokens: c.KeepRecentTokens,
 		BufferTokens:     c.BufferTokens,
 	}
+}
+
+// ─── AI 测试(ai_test)装配适配器 ─────────────────────────────────────────────
+
+// aiTestInfraAdapter 把 targetSvc 适配为 ai_test 的部署目标解析 + 被测机执行能力
+// (build.aiTestInfra):deployJob 的目标选择器(server:<id> 钉死形式)解析出被测机;
+// 内网抓取(vantage)经该机 SSH 执行 curl(argv 数组,不拼 shell)。
+type aiTestInfraAdapter struct{ svc target.Service }
+
+func aiTestCfgStr(cfg map[string]any, key string) string {
+	s, _ := cfg[key].(string)
+	return strings.TrimSpace(s)
+}
+
+func (a *aiTestInfraAdapter) AITestDeployTarget(ctx context.Context, deployJob pipeline.Job) (string, string, error) {
+	selector := aiTestCfgStr(deployJob.Config, "selector")
+	if selector == "" {
+		if sid := aiTestCfgStr(deployJob.Config, "serverId"); sid != "" {
+			selector = "server:" + sid
+		}
+	}
+	sid, ok := strings.CutPrefix(selector, "server:")
+	if !ok || sid == "" {
+		return "", "", fmt.Errorf("部署节点目标为标签选择器,无唯一目标机(%q)", selector)
+	}
+	srv, err := a.svc.Get(ctx, sid)
+	if err != nil {
+		return "", "", err
+	}
+	host := srv.Host
+	if srv.Port != 0 && srv.Port != 22 {
+		host = fmt.Sprintf("%s:%d", srv.Host, srv.Port)
+	}
+	return sid, host, nil
+}
+
+func (a *aiTestInfraAdapter) AITestRemoteExec(ctx context.Context, serverID string, argv []string) (string, error) {
+	out, err := a.svc.Exec(ctx, serverID, argv)
+	if err != nil {
+		return "", err
+	}
+	if out == nil || out.ExitCode != 0 {
+		code := -1
+		if out != nil {
+			code = out.ExitCode
+		}
+		return "", fmt.Errorf("远程执行退出码 %d", code)
+	}
+	return out.Stdout, nil
 }

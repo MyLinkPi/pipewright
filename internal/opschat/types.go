@@ -192,16 +192,16 @@ type Options struct {
 	Context func() ContextPolicy
 }
 type Session struct {
-	ID          string `json:"id"`
-	Revision    int64  `json:"revision"`
-	Title       string `json:"title"`
-	Draft       string `json:"draft"`
+	ID          string   `json:"id"`
+	Revision    int64    `json:"revision"`
+	Title       string   `json:"title"`
+	Draft       string   `json:"draft"`
 	ServerIDs   []string `json:"serverIds"`
-	ActiveRunID string `json:"activeRunId"`
-	Watermark   int64  `json:"watermark"`
+	ActiveRunID string   `json:"activeRunId"`
+	Watermark   int64    `json:"watermark"`
 	// StorageBytes is the tracked visible-entry byte counter, an approximation
 	// of the session storage quota basis; use it only for near-quota hints.
-	StorageBytes int64     `json:"storageBytes"`
+	StorageBytes int64 `json:"storageBytes"`
 	// ContextUsage 是最近一次模型请求的实测上下文占用(usage 缺失时为 nil;
 	// 仅展示用,预算判定在发送前全量估算)。
 	ContextUsage *ContextUsage `json:"contextUsage,omitempty"`
@@ -223,11 +223,11 @@ type PatchInput struct {
 	ServerIDs *[]string `json:"serverIds,omitempty"`
 }
 type TurnInput struct {
-	AnalyzeResults  bool            `json:"analyzeResults,omitempty"`
-	Provider        ProviderInfo    `json:"provider,omitempty"`
-	ClientRequestID string          `json:"clientRequestId"`
-	Revision        int64           `json:"revision"`
-	Text            string          `json:"text"`
+	AnalyzeResults  bool         `json:"analyzeResults,omitempty"`
+	Provider        ProviderInfo `json:"provider,omitempty"`
+	ClientRequestID string       `json:"clientRequestId"`
+	Revision        int64        `json:"revision"`
+	Text            string       `json:"text"`
 }
 type RetryInput struct {
 	ClientRequestID string   `json:"clientRequestId"`
@@ -275,7 +275,7 @@ type AgentRequest struct {
 	MaxRequestBytes int `json:"maxRequestBytes,omitempty"`
 }
 type AgentToolCall struct {
-	ID      string          `json:"id"`      // provider 侧调用 id(结果关联)
+	ID      string          `json:"id"` // provider 侧调用 id(结果关联)
 	ToolID  string          `json:"toolId"`
 	Target  string          `json:"target"` // target_N 别名
 	Purpose string          `json:"purpose,omitempty"`
@@ -283,15 +283,15 @@ type AgentToolCall struct {
 	Args    json.RawMessage `json:"args"`
 }
 type AgentToolResult struct {
-	CallID        string `json:"callId"`
-	Output        string `json:"output"`
-	Failed        bool   `json:"failed,omitempty"`
-	Truncated     bool   `json:"truncated,omitempty"`
-	Denied        bool   `json:"denied,omitempty"`
-	DenialReason  string `json:"denialReason,omitempty"`
+	CallID       string `json:"callId"`
+	Output       string `json:"output"`
+	Failed       bool   `json:"failed,omitempty"`
+	Truncated    bool   `json:"truncated,omitempty"`
+	Denied       bool   `json:"denied,omitempty"`
+	DenialReason string `json:"denialReason,omitempty"`
 }
 type AgentExchange struct {
-	Calls   []AgentToolCall  `json:"calls"`
+	Calls   []AgentToolCall   `json:"calls"`
 	Results []AgentToolResult `json:"results"`
 }
 type AgentReply struct {
@@ -306,6 +306,10 @@ type AgentReply struct {
 type AgentUsage struct {
 	InputTokens  int `json:"inputTokens"`
 	OutputTokens int `json:"outputTokens"`
+	// ConsumedAmount 是自定网关(new-api 系)自报的费用金额:流式末 chunk 的
+	// x_new_api_consumed_amount 字段或非流式 X-New-Api-Consumed-Amount 响应头。
+	// 0 = 网关未回报(直连 OpenAI/Claude/Ollama);原样记录,平台不做单位换算。
+	ConsumedAmount float64 `json:"consumedAmount,omitempty"`
 }
 type ContainerFact struct {
 	ID    string `json:"id"`
@@ -395,8 +399,8 @@ type Call struct {
 	ToolID      string         `json:"toolId"`
 	Args        ToolArgs       `json:"args"`
 	Object      string         `json:"object"`
-	Purpose     string    `json:"purpose,omitempty"`
-	Reason      string    `json:"reason,omitempty"`
+	Purpose     string         `json:"purpose,omitempty"`
+	Reason      string         `json:"reason,omitempty"`
 	Status      string         `json:"status"`
 	ArgsHash    string         `json:"argsHash"`
 	TargetHash  string         `json:"targetHash"`
@@ -444,6 +448,7 @@ type AnalysisInput struct {
 	Provider        ProviderInfo `json:"provider"`
 	Consent         bool         `json:"consent"`
 }
+
 // ContextUsage 是会话上下文占用展示模型:最近一次模型请求实测 usage / 窗口。
 type ContextUsage struct {
 	UsedTokens   int `json:"usedTokens"`
@@ -498,21 +503,21 @@ type sessionBody struct {
 	Named     bool
 }
 type runBody struct {
-	Provider            ProviderInfo
-	AnalysisAuthorized  bool
-	AnalysisStarted     bool
-	Question            string
-	SummarySaved        bool
-	ReadBytes           int
-	RetryActions        []Action
-	RetryCallIDs        []string
-	Turn                TurnInput
-	Targets             []target.ConnectionSnapshot
-	Analysis            *AnalysisPreview
-	ActiveMillis        int64
-	Rounds              int  // 已用轮次(persist-before-model 递增)
-	RoundBudget         int  // 已授予轮次(0 → 启动时取 runtime.MaxAgentRounds;继续 +20)
-	OutputBytes         int
+	Provider           ProviderInfo
+	AnalysisAuthorized bool
+	AnalysisStarted    bool
+	Question           string
+	SummarySaved       bool
+	ReadBytes          int
+	RetryActions       []Action
+	RetryCallIDs       []string
+	Turn               TurnInput
+	Targets            []target.ConnectionSnapshot
+	Analysis           *AnalysisPreview
+	ActiveMillis       int64
+	Rounds             int // 已用轮次(persist-before-model 递增)
+	RoundBudget        int // 已授予轮次(0 → 启动时取 runtime.MaxAgentRounds;继续 +20)
+	OutputBytes        int
 }
 type callBody struct {
 	ReadBytes     int

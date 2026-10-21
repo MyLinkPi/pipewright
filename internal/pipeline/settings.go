@@ -155,8 +155,10 @@ type PipelineStep struct {
 // Resource 是一条 script 步骤的容器资源规格(轻量,对齐云效 instanceType 思路)。
 //   - CPU:docker run --cpus 取值(如 "1" / "0.5"),空=不限。
 //   - Memory:docker run --memory 取值(如 "512m" / "2g"),空=不限。
+//   - Init:docker run --init(tini 收尸;Chromium/Playwright 类工具链必备,防僵尸进程堆积)。
+//   - ShmSize:docker run --shm-size(如 "1g";/dev/shm 默认 64MB,浏览器类负载会崩)。
 //
-// 远程 runner(SSH 投递 docker run)同样透传这两个 flag;若远程 docker 版本不支持则由其自身报错,
+// 远程 runner(SSH 投递 docker run)同样透传这些 flag;若远程 docker 版本不支持则由其自身报错,
 // 平台不强求生效(诚实边界)。值原样作为 docker flag 实参(array,不拼 shell;非法值由 docker 拒绝)。
 type Resource struct {
 	CPU    string `json:"cpu,omitempty"`
@@ -164,11 +166,16 @@ type Resource struct {
 	// Network 是容器加入的 docker 网络名:由执行器在「旁挂服务(services)」阶段运行时设置,
 	// 让脚本容器与服务容器同网、按服务名互访。**非用户配置项**(用户只配 cpu/memory),空=默认网络。
 	Network string `json:"network,omitempty"`
+	// Init/ShmSize 由 job.Config["init"]=true / ["shmSize"] 读取(specs/ai-test-node.md 的
+	// Resource 扩展:浏览器负载需要;不做任意 docker 参数透传,守命令数组化防注入基线)。
+	Init    bool   `json:"init,omitempty"`
+	ShmSize string `json:"shmSize,omitempty"`
 }
 
-// IsZero 判断资源规格是否为空(cpu/memory/network 都未配)。
+// IsZero 判断资源规格是否为空(cpu/memory/network/init/shmSize 都未配)。
 func (r Resource) IsZero() bool {
-	return strings.TrimSpace(r.CPU) == "" && strings.TrimSpace(r.Memory) == "" && strings.TrimSpace(r.Network) == ""
+	return strings.TrimSpace(r.CPU) == "" && strings.TrimSpace(r.Memory) == "" && strings.TrimSpace(r.Network) == "" &&
+		!r.Init && strings.TrimSpace(r.ShmSize) == ""
 }
 
 // Settings 是构建/部署配置领域模型(冻结 DTO 外层形状)。

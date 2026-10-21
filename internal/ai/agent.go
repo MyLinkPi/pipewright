@@ -15,6 +15,7 @@ import (
 	"log"
 	"mime"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -366,8 +367,8 @@ func agentSchema(t opschat.Tool, targets []string, mut bool) map[string]any {
 		}
 	}
 	schema.Properties["target"] = map[string]any{
-		"type": "string",
-		"enum": targets,
+		"type":        "string",
+		"enum":        targets,
 		"description": fmt.Sprintf("Alias of the server this call runs on. Every tool call MUST set target to one of the enum values (%s is the first selected server); omitting it is an error.", strings.Join(targets, ", ")),
 	}
 	schema.Required = append(schema.Required, "target")
@@ -651,13 +652,21 @@ func (a *agentStreamAccum) openaiFrame(data string) error {
 		Usage *struct {
 			PromptTokens     int `json:"prompt_tokens"`
 			CompletionTokens int `json:"completion_tokens"`
-		} `json:"usage"`
+		}
+		// 自定网关(new-api 系)在末 chunk 附实收费用:原样捕获,不换算。
+		XNewAPIConsumedAmount string `json:"x_new_api_consumed_amount"`
 	}
 	if err := json.Unmarshal([]byte(data), &event); err != nil {
 		return opsFailure("invalid_response", 0)
 	}
 	if event.Usage != nil && (event.Usage.PromptTokens != 0 || event.Usage.CompletionTokens != 0) {
 		a.usage = &opschat.AgentUsage{InputTokens: event.Usage.PromptTokens, OutputTokens: event.Usage.CompletionTokens}
+	}
+	if amt, perr := strconv.ParseFloat(strings.TrimSpace(event.XNewAPIConsumedAmount), 64); perr == nil && amt > 0 {
+		if a.usage == nil {
+			a.usage = &opschat.AgentUsage{}
+		}
+		a.usage.ConsumedAmount = amt
 	}
 	for _, choice := range event.Choices {
 		if choice.FinishReason != nil {

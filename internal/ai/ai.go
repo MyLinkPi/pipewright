@@ -144,6 +144,11 @@ type Service interface {
 	Save(ctx context.Context, in SaveInput) (*Config, error)
 	// Test 向 provider 发轻量探测(注入的 http.Client),回显 ok/延迟/错误(人读,绝无密钥)。
 	Test(ctx context.Context, in TestInput) (*TestResult, error)
+	// AgentTest 执行「AI 测试」节点(specs/ai-test-node.md):为每条仓库需求跑一个
+	// agent 会话(HTTP/浏览器动作集操作被测系统 → 结构化裁决)。裁决一律 advisory,
+	// 放行决策归人工审批门;用量与网关自报费用原样累计入结果。未配置 → ErrAINotConfigured
+	// (调用方按节点 onAiUnavailable 裁决)。
+	AgentTest(ctx context.Context, in AITestInput) (*AITestResult, error)
 	// Generate 据仓库分析 + 自然语言补充,构 prompt 调 LLM chat 生成结构化流水线提案(Story 2.5)。
 	// 未配置 / 未启用 → ErrAINotConfigured;调用 / 解析失败 → 人读错误(绝无密钥)。
 	Generate(ctx context.Context, in GenerateInput) (*Proposal, error)
@@ -611,7 +616,6 @@ func maskKey(key string) string {
 	}
 	return dots + string(r[len(r)-4:]) // 按 rune 取末 4,避免切坏多字节 UTF-8
 }
-
 
 // isConfigured 判定配置是否「已配置」:provider 非空 +(ollama 无需 key / 否则有 key)。
 func isConfigured(provider string, hasKey bool) bool {

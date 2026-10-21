@@ -635,6 +635,12 @@ func normalizeSpec(in Spec) (Spec, error) {
 		return Spec{}, err
 	}
 
+	// AI 测试节点(ai_test)配置形态校验:onAiUnavailable 枚举、timeout/maxSteps 范围、
+	// model/modelContextTokens 成对、deployJob 引用上游部署节点(见 ai_node.go)。
+	if err := validateAITest(out.Stages); err != nil {
+		return Spec{}, err
+	}
+
 	return out, nil
 }
 

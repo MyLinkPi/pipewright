@@ -41,6 +41,9 @@ const ICONS: Record<string, string> = {
   deploy_container:
     '<rect x="3" y="9" width="18" height="11" rx="1.6"/><path d="M7 9V6.5A1.5 1.5 0 0 1 8.5 5h2A1.5 1.5 0 0 1 12 6.5V9M12 9V6.5A1.5 1.5 0 0 1 13.5 5h2A1.5 1.5 0 0 1 17 6.5V9M7 13v3M12 13v3M17 13v3"/>',
   health_check: '<path d="M3 12h4l2-6 4 12 2-6h6"/>',
+  // AI 测试节点:对话气泡 + 对勾(AI 执行测试,裁决仅供参考)。
+  ai_test:
+    '<path d="M4 5.5h16v11H9l-4 3.5v-3.5H4z"/><path d="m8.5 10.5 2.4 2.4 4.6-4.8"/>',
   // 等待节点:时钟(暂停固定秒数,运行中可手动跳过)。
   wait:
     '<circle cx="12" cy="12" r="8.4"/><path d="M12 7.2V12l3 2.4"/>',
@@ -98,5 +101,6 @@ const inner = computed(() => props.size * 0.5)
 .type-icon--green   { background: var(--color-green-soft);   color: var(--color-green); }
 .type-icon--amber   { background: var(--color-amber-soft);   color: var(--color-amber); }
 .type-icon--red     { background: var(--color-red-soft);     color: var(--color-red); }
+.type-icon--violet  { background: var(--color-violet-soft, var(--color-inset)); color: var(--color-violet); }
 .type-icon--neutral { background: var(--color-inset);        color: var(--color-faint); }
 </style>

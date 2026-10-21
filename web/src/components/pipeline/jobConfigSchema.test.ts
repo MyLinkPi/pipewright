@@ -30,7 +30,7 @@ describe('jobConfigSchema', () => {
   })
 
   it('every spec has a valid accent and category', () => {
-    const accents = ['cyan', 'primary', 'green', 'amber', 'red', 'neutral']
+    const accents = ['cyan', 'primary', 'green', 'amber', 'red', 'violet', 'neutral']
     for (const spec of Object.values(JOB_TYPE_SPECS)) {
       expect(accents, `${spec.type} accent`).toContain(spec.accent)
       expect(typeof spec.category).toBe('string')
