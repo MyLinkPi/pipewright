@@ -131,6 +131,38 @@ export default {
     downloadYaml: "Datei herunterladen",
     yamlClose: "Schließen",
 
+    // Cluster-DNS-Mapping (A-Record einer Domain automatisch auf die virtuelle IP dieses Knotens zeigen)
+    dnsTitle: "DNS-Mapping (Domain → virtuelle IP dieses Knotens)",
+    dnsDesc:
+      "Zeigt den A-Record der gewaehlten Domain automatisch auf die virtuelle IP dieses Knotens (auch bei DHCP-Zuteilung): IP-Aenderungen werden automatisch nachgezogen, zusaetzlich periodische Re-Synchronisation; beim Loeschen wird nur der lokale Eintrag entfernt — der DNS-Record beim Anbieter bleibt erhalten.",
+    dnsFqdn: "Domain",
+    dnsProvider: "DNS-Anbieter",
+    dnsStatus: "Status",
+    dnsLastSync: "Letzte Synchronisierung",
+    dnsEnabled: "Aktiv",
+    dnsAdd: "Mapping hinzufuegen",
+    dnsSync: "Jetzt synchronisieren",
+    dnsSyncedTo: "Synchronisiert → {ip}",
+    dnsNeverSynced: "Warte auf Synchronisierung",
+    dnsErrShort: "Synchronisierung fehlgeschlagen",
+    dnsDisabled: "Deaktiviert",
+    dnsProviderGone: "Anbieter geloescht",
+    dnsEmpty: "Noch keine Mappings; Anbieter waehlen und Domain eingeben, um eins hinzuzufuegen.",
+    dnsNoProviders: "Noch kein DNS-Anbieter konfiguriert — bitte zuerst einrichten.",
+    dnsGoProviders: "Zu den DNS-Anbieter-Einstellungen →",
+    dnsZoneHint:
+      "Die Domain muss unter einer Zone des Anbieters liegen (Zonen: {zones}).",
+    dnsWaitingIp:
+      "Die virtuelle IP dieses Knotens ist noch nicht verfuegbar (Cluster deaktiviert oder EasyTier nicht bereit); spaeter erneut versuchen.",
+    dnsNoEnabled: "Keine aktivierten Mappings zu synchronisieren.",
+    dnsSyncDone: "{ok}/{total} Eintraege synchronisiert.",
+    dnsSyncFailed: "{fail}/{total} fehlgeschlagen: {error}",
+    dnsDelete: "Entfernen",
+    dnsDeleteTitle: "DNS-Mapping loeschen?",
+    dnsDeleteBody:
+      "Es wird nur der lokale Mapping-Eintrag entfernt; der A-Record beim DNS-Anbieter bleibt erhalten (bei Bedarf in der Anbieter-Konsole aufraeumen). {fqdn} entfernen?",
+    dnsDeleteConfirm: "Entfernen",
+
     // Firewall-Zugriffsschutz (zweistufig: temporaer anwenden, aus lokal/mesh bestaetigen)
     fwTitle: "Firewall-Zugriffsschutz (zweistufig)",
     fwHint:

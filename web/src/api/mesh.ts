@@ -253,6 +253,73 @@ export function listPushedRevisions(projectId: string): Promise<{ items: PushedR
   return http.get(`/api/projects/${encodeURIComponent(projectId)}/pushed-revisions`)
 }
 
+/**
+ * ── Cluster DNS mapping (A record of the specified domain → this machine's virtual IP; DDNS-style automatic following) ──
+ * GET    /api/mesh/dns-records        → { items: MeshDnsRecord[] }
+ * POST   /api/mesh/dns-records        → MeshDnsRecord             (CSRF)
+ * PUT    /api/mesh/dns-records/:id    → MeshDnsRecord             (CSRF)
+ * DELETE /api/mesh/dns-records/:id    → { ok }                    (CSRF; local only, cloud records are preserved)
+ * POST   /api/mesh/dns-records/sync   → MeshDnsSyncOutcome        (CSRF; sync now)
+ */
+export interface MeshDnsRecord {
+  id: string
+  providerId: string
+  fqdn: string
+  enabled: boolean
+  /** The virtual IP most recently successfully written to the A record (empty = never synced successfully). */
+  lastIp: string
+  lastSyncedAt: string
+  /** Human-readable reason for the most recent sync failure (empty = none). */
+  lastError: string
+  createdAt: string
+  updatedAt: string
+  /** Server-side joined echo: provider display name / type; providerGone = the provider has been deleted. */
+  providerName: string
+  providerType: string
+  providerGone: boolean
+}
+
+export interface MeshDnsSyncResult {
+  id: string
+  fqdn: string
+  ok: boolean
+  error: string
+}
+
+export interface MeshDnsSyncOutcome {
+  /** The machine's current virtual IP (empty = not yet available: cluster not enabled / EasyTier not ready). */
+  ip: string
+  results: MeshDnsSyncResult[]
+}
+
+export function listMeshDnsRecords(): Promise<{ items: MeshDnsRecord[] }> {
+  return http.get('/api/mesh/dns-records')
+}
+
+export function createMeshDnsRecord(body: {
+  providerId: string
+  fqdn: string
+  enabled?: boolean
+}): Promise<MeshDnsRecord> {
+  return http.post('/api/mesh/dns-records', body)
+}
+
+export function updateMeshDnsRecord(
+  id: string,
+  body: { fqdn?: string; enabled?: boolean },
+): Promise<MeshDnsRecord> {
+  return http.put(`/api/mesh/dns-records/${encodeURIComponent(id)}`, body)
+}
+
+export function deleteMeshDnsRecord(id: string): Promise<{ ok: boolean }> {
+  return http.delete(`/api/mesh/dns-records/${encodeURIComponent(id)}`)
+}
+
+/** Sync now: upsert the A records of all enabled mappings in one go as the current virtual IP (executed synchronously, returns results one by one). */
+export function syncMeshDnsRecords(): Promise<MeshDnsSyncOutcome> {
+  return http.post('/api/mesh/dns-records/sync')
+}
+
 /** 手动运行请求扩展:被推送源项目的修订/条目选择(部署时选择)。 */
 export function triggerManualRun(projectId: string, body: {
   branch?: string

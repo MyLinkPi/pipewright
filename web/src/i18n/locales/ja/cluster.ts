@@ -129,6 +129,38 @@ export default {
     downloadYaml: "ファイルをダウンロード",
     yamlClose: "閉じる",
 
+    // クラスタ DNS マッピング(指定ドメインの A レコードを自ノードの仮想 IP へ自動向付)
+    dnsTitle: "DNS マッピング(ドメイン → 自ノードの仮想 IP)",
+    dnsDesc:
+      "指定ドメインの A レコードを自ノードの仮想 IP(DHCP 自動割当を含む)へ自動向付します:IP 変化は自動追従し、周期再同期も実行します。マッピング削除はローカル項目のみで、クラウド側 DNS レコードは保持されます。",
+    dnsFqdn: "ドメイン",
+    dnsProvider: "DNS プロバイダ",
+    dnsStatus: "状態",
+    dnsLastSync: "前回同期",
+    dnsEnabled: "有効",
+    dnsAdd: "マッピング追加",
+    dnsSync: "今すぐ同期",
+    dnsSyncedTo: "同期済み → {ip}",
+    dnsNeverSynced: "同期待ち",
+    dnsErrShort: "同期失敗",
+    dnsDisabled: "無効",
+    dnsProviderGone: "プロバイダ削除済み",
+    dnsEmpty: "マッピングなし。プロバイダを選択しドメインを入力して追加してください。",
+    dnsNoProviders: "DNS プロバイダが未設定です。先に設定してください。",
+    dnsGoProviders: "DNS プロバイダ設定へ →",
+    dnsZoneHint:
+      "ドメインは選択プロバイダのいずれかのゾーン配下である必要があります(ゾーン:{zones})。",
+    dnsWaitingIp:
+      "自ノードの仮想 IP を取得できません(クラスタ無効または EasyTier 未起動)。後でお試しください。",
+    dnsNoEnabled: "有効なマッピングがないため同期不要です。",
+    dnsSyncDone: "{ok}/{total} 件を同期しました。",
+    dnsSyncFailed: "{fail}/{total} 件が同期失敗:{error}",
+    dnsDelete: "削除",
+    dnsDeleteTitle: "DNS マッピングを削除しますか?",
+    dnsDeleteBody:
+      "ローカルのマッピング項目のみ削除され、DNS プロバイダ上の A レコードは保持されます(必要ならプロバイダのコンソールで削除してください)。{fqdn} を削除しますか?",
+    dnsDeleteConfirm: "削除",
+
     // ファイアウォールアクセス制限(2段階:一時適用 → ローカル/mesh からアクセスして確定)
     fwTitle: "ファイアウォールアクセス制限(2段階)",
     fwHint:

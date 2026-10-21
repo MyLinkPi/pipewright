@@ -31,6 +31,9 @@ import (
 type meshAdminDeps struct {
 	meshDeps
 	runtime meshRuntimeView
+	// meshDNS 是集群 DNS 映射(域名 A 记录 → 本机虚拟 IP;nil = /api/mesh/dns-records*
+	// 端点 503 降级)。装配层经 WithMeshDNS 注入。
+	meshDNS *meshDNSDeps
 }
 
 // meshRuntimeView 是集群页运行时视图(由 cmd 装配的运行时循环实现;nil → 空态降级)。
@@ -122,6 +125,15 @@ func mountMeshAdmin(ar chi.Router, d meshAdminDeps) {
 	// 导出客户端加入配置(YAML 文件下载:网络名/密钥/peers/可路由网段,客户端导入即用;
 	// 含明文密钥,与 reveal-secret 同级敏感,每次导出留审计)。
 	ar.Get("/mesh/client-config", makeMeshClientConfigHandler(d))
+	// 集群 DNS 映射(域名 A 记录 → 本机虚拟 IP;自动跟随由运行时 Syncer 承担,
+	// sync 端点供设置页手动「立即同步」)。
+	if d.meshDNS != nil {
+		ar.Get("/mesh/dns-records", makeMeshDnsRecordsListHandler(d))
+		ar.Post("/mesh/dns-records", makeMeshDnsRecordsCreateHandler(d))
+		ar.Put("/mesh/dns-records/{id}", makeMeshDnsRecordsUpdateHandler(d))
+		ar.Delete("/mesh/dns-records/{id}", makeMeshDnsRecordsDeleteHandler(d))
+		ar.Post("/mesh/dns-records/sync", makeMeshDnsRecordsSyncHandler(d))
+	}
 }
 
 // clientJoinYAML / clientConfigExport 是导出文件的 YAML 结构(与 pwclient 客户端配置
