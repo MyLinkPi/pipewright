@@ -66,6 +66,13 @@ type trayApp struct {
 	exitCur    string
 	exitSynced bool
 
+	// routesSynced/proxySynced/aliyunSynced 是三个列表编辑框的首拍回填标志:回填条件
+	// 是「从未回填过」或「与已存内容一致」,而不是「为空」—— 用户主动清空(空列表是
+	// 合法配置)不能被 3s 轮询的自动回填覆盖。
+	routesSynced bool
+	proxySynced  bool
+	aliyunSynced bool
+
 	peerList       *walk.ListBox
 	autoStartCheck *walk.CheckBox
 
@@ -474,10 +481,12 @@ func (a *trayApp) apply(snap *pwclient.StatusSnapshot, err error, logs []string)
 		_ = a.availList.SetModel([]string{"(集群尚未通告任何网段)"})
 	}
 
-	// 首次(或配置重载后)填充 routes 编辑框:仅在编辑框为空或与已存 routes 一致时回填,
-	// 避免覆盖用户正在编辑的内容。
-	if text := a.routesEdit.Text(); text == "" || text == strings.Join(snap.Routes, "\r\n") || text == strings.Join(snap.Routes, "\n") {
-		a.routesEdit.SetText(strings.Join(snap.Routes, "\r\n"))
+	// 首次(或配置重载后)填充 routes 编辑框:仅首拍回填或与已存 routes 一致时回填,
+	// 不覆盖用户正在编辑/清空的内容(空列表 = 不路由任何网段,是合法配置)。
+	if stored := strings.Join(snap.Routes, "\r\n"); !a.routesSynced ||
+		a.routesEdit.Text() == stored || a.routesEdit.Text() == strings.Join(snap.Routes, "\n") {
+		a.routesSynced = true
+		a.routesEdit.SetText(stored)
 	}
 
 	// 对端地址只读回显(来自导入的配置;入口变更 → 平台重新导出粘贴)。
@@ -835,11 +844,12 @@ func proxyLinesText(proxies []pwclient.ProxyStatus) string {
 	return strings.Join(lines, "\r\n")
 }
 
-// syncProxyEdit 回显多出口代理:编辑框仅在为空或与已存内容一致时回填(不覆盖用户
-// 编辑中内容);状态行汇总各端口的运行/错误(来自快照的监督器状态)。
+// syncProxyEdit 回显多出口代理:编辑框仅在首拍或与已存内容一致时回填(不覆盖用户
+// 编辑中/已清空的内容 —— 空列表是合法配置);状态行汇总各端口的运行/错误。
 func (a *trayApp) syncProxyEdit(snap *pwclient.StatusSnapshot) {
-	if text := a.proxyEdit.Text(); text == "" || text == proxyLinesText(snap.Proxies) {
-		a.proxyEdit.SetText(proxyLinesText(snap.Proxies))
+	if stored := proxyLinesText(snap.Proxies); !a.proxySynced || a.proxyEdit.Text() == stored {
+		a.proxySynced = true
+		a.proxyEdit.SetText(stored)
 	}
 	if len(snap.Proxies) == 0 {
 		a.proxyStatus.SetText("")
@@ -932,15 +942,16 @@ func (a *trayApp) onApplyAliyun() {
 	a.refreshOnce()
 }
 
-// syncAliyun 回显安全组配置与同步状态:AK/列表仅在空或与已存一致时回填(不覆盖用户
-// 编辑中内容);Secret 永不回显;状态行汇总最近一次同步(时间/IP/逐组结果)。
+// syncAliyun 回显安全组配置与同步状态:AK/列表仅在首拍或与已存一致时回填(不覆盖用户
+// 编辑中/已清空的内容 —— 空列表是合法配置);Secret 永不回显;状态行汇总最近一次同步。
 func (a *trayApp) syncAliyun(snap *pwclient.StatusSnapshot) {
 	sg := snap.SecurityGroup
-	if text := a.aliyunAkEdit.Text(); text == "" || text == sg.AccessKeyID {
+	if text := a.aliyunAkEdit.Text(); !a.aliyunSynced || text == sg.AccessKeyID {
 		a.aliyunAkEdit.SetText(sg.AccessKeyID)
 	}
-	if text := a.aliyunGroupsEdit.Text(); text == "" || text == secGroupLinesText(sg.Groups) {
-		a.aliyunGroupsEdit.SetText(secGroupLinesText(sg.Groups))
+	if stored := secGroupLinesText(sg.Groups); !a.aliyunSynced || a.aliyunGroupsEdit.Text() == stored {
+		a.aliyunSynced = true
+		a.aliyunGroupsEdit.SetText(stored)
 	}
 	if !sg.Configured {
 		if len(sg.Groups) == 0 && sg.AccessKeyID == "" {
