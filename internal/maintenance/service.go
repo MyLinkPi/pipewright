@@ -105,15 +105,24 @@ type remoteExecer interface {
 	Exec(ctx context.Context, serverID string, cmd []string) (*target.ExecResult, error)
 }
 
+// localImageRotator 是控制机镜像清理的最小依赖面(*build.Builder.RotateImagesWithKeep 满足)。
+type localImageRotator func(ctx context.Context, prefix string, keep map[string]struct{}, onLine func(stream, line string)) ([]string, error)
+
+// localExtraClean 是控制机追加清理(BuildKit 缓存全清 + 停止容器回收;*build.Builder.ExtraImageClean 满足)。
+// 返回执行的命令回显(留痕)。
+type localExtraClean func(ctx context.Context) []string
+
 // Service 聚合四类清理依赖(均 nil 安全:未装配 = 该项跳过并如实说明)。
 type Service struct {
-	db        *sql.DB
-	retention *retention.Service // 读 cache_max_gb 等磁盘治理配置(每轮现读,设置页可调)
-	cache     *buildcache.Store  // nil = 构建缓存未启用(PIPEWRIGHT_NO_BUILD_CACHE)
-	repos     *repocache.Cache   // nil = 仓库镜像未启用(PIPEWRIGHT_NO_REPO_CACHE)
-	lister    serverLister       // 远程清扫的机器清单(nil = 跳过)
-	execer    remoteExecer       // 远程清扫的 SSH 通道(nil = 跳过)
-	tempDir   string             // 本机临时目录;空 = os.TempDir()
+	db          *sql.DB
+	retention   *retention.Service // 读 cache_max_gb 等磁盘治理配置(每轮现读,设置页可调)
+	cache       *buildcache.Store  // nil = 构建缓存未启用(PIPEWRIGHT_NO_BUILD_CACHE)
+	repos       *repocache.Cache   // nil = 仓库镜像未启用(PIPEWRIGHT_NO_REPO_CACHE)
+	lister      serverLister       // 远程清扫的机器清单(nil = 跳过)
+	execer      remoteExecer       // 远程清扫的 SSH 通道(nil = 跳过)
+	tempDir     string             // 本机临时目录;空 = os.TempDir()
+	localRotate localImageRotator  // 控制机镜像清理(nil = 瘦控制机/未装配,跳过)
+	localExtra  localExtraClean    // 控制机追加清理(BuildKit 缓存/停止容器;nil = 跳过)
 }
 
 // New 构造维护服务(db 用于读 retention 配置与项目 repo_url 反查)。
@@ -144,6 +153,18 @@ func (s *Service) WithTargets(t target.Service) *Service {
 // WithTempDir 覆盖本机临时目录(默认 os.TempDir;链式)。
 func (s *Service) WithTempDir(dir string) *Service {
 	s.tempDir = dir
+	return s
+}
+
+// WithLocalImageRotation 注入控制机镜像清理能力(main 装配 *build.Builder;nil = 跳过)。
+func (s *Service) WithLocalImageRotation(fn localImageRotator) *Service {
+	s.localRotate = fn
+	return s
+}
+
+// WithLocalExtraClean 注入控制机追加清理(*build.Builder.ExtraImageClean;nil = 跳过)。
+func (s *Service) WithLocalExtraClean(fn localExtraClean) *Service {
+	s.localExtra = fn
 	return s
 }
 
@@ -287,6 +308,153 @@ func (s *Service) SweepLocalTemp(ctx context.Context) Result {
 		res.Detail = err.Error()
 	}
 	return res
+}
+
+// CleanImages 清理产物镜像(磁盘大头):对控制机与**全部构建机**执行——每项目保留最近
+// image_keep_tags 个 commit tag,其余 pipewright/* 引用 rmi。保留集来自 DB(在途构建的
+// commit 已随克隆回写落库,天然在保留集内,不会误删进行中构建)。逐机串行(镜像枚举+rmi
+// 是多轮 SSH 往返,手动场景可接受);每台删了哪些引用进 Steps、命令摘要进 Machines。
+func (s *Service) CleanImages(ctx context.Context) Result {
+	res := Result{Target: "images", OK: true}
+	if s.db == nil {
+		res.OK = false
+		res.Detail = "数据库未装配"
+		return res
+	}
+	keepN := 0
+	if s.retention != nil {
+		if cfg, err := s.retention.GetConfig(ctx); err == nil {
+			keepN = cfg.ImageKeepTags
+		}
+	}
+	if keepN <= 0 {
+		res.Detail = "每项目镜像保留数为 0(不轮转);请先在「运行数据保留」里配置保留个数"
+		return res
+	}
+	keep, err := s.imageKeepSet(ctx, keepN)
+	if err != nil {
+		res.OK = false
+		res.Detail = "构建保留集失败:" + err.Error()
+		return res
+	}
+	const prefix = "pipewright/"
+	var steps []string
+	nop := func(string, string) {}
+
+	// 1) 控制机本机 daemon(瘦控制机未装配则跳过)。
+	if s.localRotate != nil {
+		removed, rerr := s.localRotate(ctx, prefix, keep, nop)
+		if rerr != nil {
+			steps = append(steps, "控制机:枚举镜像失败,"+rerr.Error())
+		} else {
+			res.Items += len(removed)
+			steps = appendSteps(steps, "控制机 删除", removed,
+				fmt.Sprintf("控制机:保留每项目最近 %d 个 commit tag,其余 pipewright/* 删除", keepN))
+		}
+	} else {
+		steps = append(steps, "控制机:未装配容器 CLI(瘦控制机),跳过")
+	}
+	// 追加清理(BuildKit 缓存全清 + 停止容器回收):BuildKit 缓存在独立缓存区,image prune
+	// 与 rmi 都清不到,不清就无限增长;这里是全量清(构建后的自动清理按 7 天窗口保留)。
+	if s.localExtra != nil {
+		steps = append(steps, s.localExtra(ctx)...)
+	}
+
+	// 2) 各构建机(同一保留集;与远程工作区清扫同口径筛选机器)。
+	if s.lister != nil && s.execer != nil {
+		if servers, lerr := s.lister.List(ctx); lerr != nil {
+			steps = append(steps, "获取服务器清单失败:"+lerr.Error())
+		} else {
+			for _, sv := range servers {
+				if sv == nil || sv.IsPVENode() || strings.TrimSpace(sv.Labels) == "" {
+					continue
+				}
+				mctx, cancel := context.WithTimeout(ctx, remoteSweepTimeout)
+				bin := build.DetectRemoteCLI(mctx, s.execer, sv.ID)
+				removed, rerr := build.RotateImages(mctx, build.NewRemoteDriver(s.execer, sv.ID, bin), prefix, keep, nop)
+				cancel()
+				m := MachineResult{ServerID: sv.ID, Name: sv.Name}
+				// 追加:BuildKit 缓存全清 + 停止容器回收(与控制机同款,失败不阻断)。
+				mctx2, cancel2 := context.WithTimeout(ctx, remoteSweepTimeout)
+				pruneCmds := [][]string{
+					{bin, "builder", "prune", "-f"},
+					{bin, "container", "prune", "-f"},
+				}
+				var extraEcho []string
+				for _, pc := range pruneCmds {
+					extraEcho = append(extraEcho, "$ "+strings.Join(pc, " "))
+					if _, perr := s.execer.Exec(mctx2, sv.ID, pc); perr != nil {
+						extraEcho[len(extraEcho)-1] += " 失败:" + perr.Error()
+					}
+				}
+				cancel2()
+				m.Command = fmt.Sprintf("$ %s images --format {{.Repository}}:{{.Tag}} → rmi ×%d", bin, len(removed)) +
+					"; " + strings.Join(extraEcho, "; ")
+				if rerr != nil {
+					m.Error = rerr.Error()
+				} else {
+					m.OK = true
+					res.Items += len(removed)
+					steps = appendSteps(steps, "构建机 "+sv.Name+" 删除", removed)
+					steps = append(steps, "构建机 "+sv.Name+" 追加清理:" + strings.Join(extraEcho, "; "))
+				}
+				res.Machines = append(res.Machines, m)
+			}
+		}
+	}
+	res.Steps = steps
+	return res
+}
+
+// imageKeepSet 按项目 × 最近 n 个 trigger_commit 重构全局保留集(pipewright/<slug>:<commit>)。
+// 在途构建的 commit 在 docker build 之前已落库(clone 后即回写),天然受保留集保护。
+func (s *Service) imageKeepSet(ctx context.Context, n int) (map[string]struct{}, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id, name FROM projects`)
+	if err != nil {
+		return nil, err
+	}
+	type proj struct{ id, name string }
+	var projs []proj
+	for rows.Next() {
+		var p proj
+		if err := rows.Scan(&p.id, &p.name); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		projs = append(projs, p)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	keep := make(map[string]struct{})
+	for _, p := range projs {
+		crows, err := s.db.QueryContext(ctx,
+			`SELECT trigger_commit FROM pipeline_runs
+			 WHERE project_id = ? AND trigger_commit IS NOT NULL AND TRIM(trigger_commit) != ''
+			 ORDER BY created_at DESC, id DESC`, p.id)
+		if err != nil {
+			return nil, err
+		}
+		seen := 0
+		dup := map[string]struct{}{}
+		prefix := "pipewright/" + build.Slugify(p.name) + ":"
+		for crows.Next() && seen < n {
+			var c string
+			if err := crows.Scan(&c); err != nil {
+				crows.Close()
+				return nil, err
+			}
+			if _, ok := dup[c]; ok {
+				continue
+			}
+			dup[c] = struct{}{}
+			keep[prefix+c] = struct{}{}
+			seen++
+		}
+		crows.Close()
+	}
+	return keep, nil
 }
 
 // projectRepoURLs 返回全部项目的去重仓库地址(镜像保留集;维护包自查而非走 project.Service

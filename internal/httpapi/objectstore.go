@@ -32,6 +32,7 @@ type objectStoreDTO struct {
 	Type                 string `json:"type"`
 	Name                 string `json:"name"`
 	Endpoint             string `json:"endpoint"`
+	UseSSL               bool   `json:"useSSL"`
 	Bucket               string `json:"bucket"`
 	PathPrefix           string `json:"pathPrefix"`
 	AccessKeyID          string `json:"accessKeyId"`
@@ -46,6 +47,7 @@ func toObjectStoreDTO(p objectstore.Provider) objectStoreDTO {
 		Type:                 p.Type,
 		Name:                 p.Name,
 		Endpoint:             p.Endpoint,
+		UseSSL:               p.UseSSL,
 		Bucket:               p.Bucket,
 		PathPrefix:           p.PathPrefix,
 		AccessKeyID:          p.AccessKeyID,
@@ -87,6 +89,8 @@ func writeObjectStoreError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusConflict, "object_store_duplicate", "该桶已在对象存储配置中")
 	case errors.Is(err, objectstore.ErrBucketCreateFailed):
 		writeError(w, http.StatusBadGateway, "object_store_bucket_create_failed", "建桶失败:桶名已被占用或凭据无建桶权限")
+	case errors.Is(err, objectstore.ErrListBucketsFailed):
+		writeError(w, http.StatusBadGateway, "object_store_list_buckets_failed", "获取桶列表失败:凭据无效或 Endpoint 不可达")
 	case errors.Is(err, context.DeadlineExceeded):
 		writeError(w, http.StatusBadGateway, "object_store_unreachable", "连接对象存储超时")
 	default:
@@ -130,6 +134,7 @@ func makeCreateObjectStoreHandler(svc objectstore.Service, v vault.Vault, rec au
 			Type        string `json:"type"`
 			Name        string `json:"name"`
 			Endpoint    string `json:"endpoint"`
+			UseSSL      *bool  `json:"useSSL"`
 			Bucket      string `json:"bucket"`
 			PathPrefix  string `json:"pathPrefix"`
 			AccessKeyID string `json:"accessKeyId"`
@@ -161,6 +166,7 @@ func makeCreateObjectStoreHandler(svc objectstore.Service, v vault.Vault, rec au
 			Type:         in.Type,
 			Name:         in.Name,
 			Endpoint:     in.Endpoint,
+			UseSSL:       in.UseSSL,
 			Bucket:       in.Bucket,
 			PathPrefix:   in.PathPrefix,
 			AccessKeyID:  in.AccessKeyID,
@@ -177,7 +183,7 @@ func makeCreateObjectStoreHandler(svc objectstore.Service, v vault.Vault, rec au
 			Action:     auditActionObjectStoreCreate,
 			TargetType: auditTargetObjectStore,
 			TargetID:   p.ID,
-			Detail:     map[string]any{"type": p.Type, "name": p.Name, "endpoint": p.Endpoint, "bucket": p.Bucket, "pathPrefix": p.PathPrefix, "accessKeyId": p.AccessKeyID}, // 绝无 AccessKeySecret
+			Detail:     map[string]any{"type": p.Type, "name": p.Name, "endpoint": p.Endpoint, "useSSL": p.UseSSL, "bucket": p.Bucket, "pathPrefix": p.PathPrefix, "accessKeyId": p.AccessKeyID}, // 绝无 AccessKeySecret
 			IP:         clientIP(r),
 		})
 		writeJSON(w, http.StatusCreated, toObjectStoreDTO(*p))
@@ -185,7 +191,7 @@ func makeCreateObjectStoreHandler(svc objectstore.Service, v vault.Vault, rec au
 }
 
 // makeUpdateObjectStoreHandler 返回 PUT /api/object-stores/{id}(认证 + CSRF)→ ObjectStore。
-// body: { name?, endpoint?, bucket?, pathPrefix?, accessKeyId?, secret? }(指针语义:缺省字段不修改;
+// body: { name?, endpoint?, useSSL?, bucket?, pathPrefix?, accessKeyId?, secret? }(指针语义:缺省字段不修改;
 // pathPrefix 传空串 = 清空前缀;secret 非空即原地轮换,credentialId 不变)。
 func makeUpdateObjectStoreHandler(svc objectstore.Service, v vault.Vault, rec audit.Recorder) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -198,6 +204,7 @@ func makeUpdateObjectStoreHandler(svc objectstore.Service, v vault.Vault, rec au
 		var in struct {
 			Name        *string `json:"name"`
 			Endpoint    *string `json:"endpoint"`
+			UseSSL      *bool   `json:"useSSL"`
 			Bucket      *string `json:"bucket"`
 			PathPrefix  *string `json:"pathPrefix"`
 			AccessKeyID *string `json:"accessKeyId"`
@@ -224,6 +231,7 @@ func makeUpdateObjectStoreHandler(svc objectstore.Service, v vault.Vault, rec au
 			Bucket:      in.Bucket,
 			PathPrefix:  in.PathPrefix,
 			AccessKeyID: in.AccessKeyID,
+			UseSSL:      in.UseSSL,
 		})
 		if err != nil {
 			writeObjectStoreError(w, err)
@@ -251,7 +259,7 @@ func makeUpdateObjectStoreHandler(svc objectstore.Service, v vault.Vault, rec au
 			Action:     auditActionObjectStoreUpdate,
 			TargetType: auditTargetObjectStore,
 			TargetID:   p.ID,
-			Detail:     map[string]any{"name": p.Name, "endpoint": p.Endpoint, "bucket": p.Bucket, "pathPrefix": p.PathPrefix, "accessKeyId": p.AccessKeyID, "secretRotated": rotated}, // 绝无 AccessKeySecret
+			Detail:     map[string]any{"name": p.Name, "endpoint": p.Endpoint, "useSSL": p.UseSSL, "bucket": p.Bucket, "pathPrefix": p.PathPrefix, "accessKeyId": p.AccessKeyID, "secretRotated": rotated}, // 绝无 AccessKeySecret
 			IP:         clientIP(r),
 		})
 		writeJSON(w, http.StatusOK, toObjectStoreDTO(*p))
@@ -419,5 +427,91 @@ func makeCreateBucketHandler(svc objectstore.Service, rec audit.Recorder) http.H
 			IP:         clientIP(r),
 		})
 		writeJSON(w, http.StatusCreated, toObjectStoreDTO(*p))
+	}
+}
+
+// bucketEntryDTO 是桶候选列表里的一个条目(设置页 Bucket 字段的下拉建议)。
+type bucketEntryDTO struct {
+	Name      string `json:"name"`
+	CreatedAt string `json:"createdAt"`
+}
+
+// bucketListDTO 是桶候选列表响应体(冻结契约):按名字排序,truncated=true 表示超出上限。
+type bucketListDTO struct {
+	Buckets   []bucketEntryDTO `json:"buckets"`
+	Truncated bool             `json:"truncated"`
+}
+
+// toBucketListDTO 把领域结果转为契约 DTO(时间统一 UTC RFC3339;零值时间为空串)。
+func toBucketListDTO(res *objectstore.BucketListResult) bucketListDTO {
+	out := bucketListDTO{Buckets: make([]bucketEntryDTO, 0, len(res.Buckets)), Truncated: res.Truncated}
+	for _, b := range res.Buckets {
+		created := ""
+		if !b.CreatedAt.IsZero() {
+			created = b.CreatedAt.UTC().Format(time.RFC3339)
+		}
+		out.Buckets = append(out.Buckets, bucketEntryDTO{Name: b.Name, CreatedAt: created})
+	}
+	return out
+}
+
+// makeListBucketsHandler 返回 GET /api/object-stores/{id}/buckets(认证,只读无审计)
+// → { buckets: [...], truncated }。取该配置凭据列举账户下的桶(设置页候选下拉)。
+// Secret 只在服务端流转,用完即弃,绝无明文外泄。
+func makeListBucketsHandler(svc objectstore.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if svc == nil {
+			writeError(w, http.StatusServiceUnavailable, "internal", "对象存储服务未初始化")
+			return
+		}
+		id := chi.URLParam(r, "id")
+		res, err := svc.ListBuckets(r.Context(), id)
+		if err != nil {
+			writeObjectStoreError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, toBucketListDTO(res))
+	}
+}
+
+// makeProbeBucketsHandler 返回 POST /api/object-stores/buckets/probe(认证 + CSRF)
+// → { buckets: [...], truncated }。body: { type, endpoint, useSSL?, accessKeyId, secret }。
+// 给添加弹窗用(配置尚未创建、无 id):明文凭据仅在内存态直连探测,不落库、不写 vault、
+// 不审计、不记日志,Secret 用完即弃,绝无外泄。
+func makeProbeBucketsHandler(svc objectstore.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if svc == nil {
+			writeError(w, http.StatusServiceUnavailable, "internal", "对象存储服务未初始化")
+			return
+		}
+		r.Body = http.MaxBytesReader(w, r.Body, 1<<14)
+		var in struct {
+			Type        string `json:"type"`
+			Endpoint    string `json:"endpoint"`
+			UseSSL      bool   `json:"useSSL"`
+			AccessKeyID string `json:"accessKeyId"`
+			Secret      string `json:"secret"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			writeError(w, http.StatusBadRequest, "bad_request", "请求体格式错误")
+			return
+		}
+		// 与 create 同规则:纯空白 secret 视为未填,拒绝且不触网。
+		if strings.TrimSpace(in.Secret) == "" {
+			writeError(w, http.StatusBadRequest, "invalid_object_store", "请填写 AccessKeySecret")
+			return
+		}
+		res, err := svc.ProbeListBuckets(r.Context(), objectstore.ProbeInput{
+			Type:        in.Type,
+			Endpoint:    in.Endpoint,
+			UseSSL:      in.UseSSL,
+			AccessKeyID: in.AccessKeyID,
+			Secret:      in.Secret,
+		})
+		if err != nil {
+			writeObjectStoreError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, toBucketListDTO(res))
 	}
 }

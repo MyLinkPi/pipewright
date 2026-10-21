@@ -1114,6 +1114,7 @@ func (b *Builder) runBuildImageJob(ctx context.Context, sink run.StepSink, rep d
 // image)直接登记。
 func (b *Builder) pushImageArtifact(ctx context.Context, sink run.StepSink, rep dagrun.StageReporter, jb pipeline.Job, stageName string, proj *project.Project, plan imagePushPlan, art *run.Artifact, localTag, commitTag string) error {
 	if art.Type == run.ArtifactImage && localTag != "" {
+		pushed := false
 		switch {
 		case len(plan.Specs) > 0:
 			for _, spec := range plan.Specs {
@@ -1143,6 +1144,7 @@ func (b *Builder) pushImageArtifact(ctx context.Context, sink run.StepSink, rep 
 				}
 				_ = rep.Log(ctx, streamStdout, "→ 已推送 "+remoteTag)
 			}
+			pushed = true
 		case plan.Referenced:
 			_ = rep.Log(ctx, streamStdout, "本节点镜像由「推送镜像」节点声明推送,但其目标仓库不可解析(节点 registry 为空且内置 registry 未启用);镜像留本地")
 		default:
@@ -1163,7 +1165,13 @@ func (b *Builder) pushImageArtifact(ctx context.Context, sink run.StepSink, rep 
 					}
 					art.Metadata["digest"] = digest
 				}
+				pushed = true
 			}
+		}
+		// 推送成功即回收构建机上的本机 tag(磁盘治理):镜像已在 registry,构建机无需留存。
+		// 仅实际推送过才回收;未推送(无 registry/目标不可解析)的本地镜像交给构建后轮转。
+		if pushed {
+			b.removeLocalTagAfterPush(ctx, rep, localTag)
 		}
 	}
 

@@ -13,7 +13,7 @@
 
 import { http } from './http'
 
-export type MaintenanceTarget = 'buildcache' | 'repocache' | 'remote-workspaces' | 'local-temp'
+export type MaintenanceTarget = 'buildcache' | 'repocache' | 'images' | 'remote-workspaces' | 'local-temp'
 
 export interface MachineSweepResult {
   serverId: string

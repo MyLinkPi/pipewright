@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/huangchengsir/pipewright/internal/dagrun"
 	"github.com/huangchengsir/pipewright/internal/project"
 )
 
@@ -79,6 +80,36 @@ type ImageRotationConfig struct {
 	RecentCommits func(ctx context.Context, projectID string, n int) ([]string, error)
 }
 
+// RotateImages 删除 driver 所指机器上、前缀 prefix 内且不在保留集 keep 里的产物镜像引用,
+// 返回被删除的引用清单。维护手动入口(设置页「构建产物镜像」)与构建后轮转共用:
+//   - prefix 取 "pipewright/"(全局清)或 "pipewright/<slug>:"(单项目轮转);
+//   - rmi 不带 -f(被容器占用即失败跳过),全程 best-effort。
+func RotateImages(ctx context.Context, driver Driver, prefix string, keep map[string]struct{}, onLine func(stream, line string)) ([]string, error) {
+	rot, ok := driver.(imageRotator)
+	if !ok {
+		return nil, nil // 桩驱动/瘦控制机(errDriver)无镜像枚举能力:跳过(不报错)
+	}
+	refs, err := rot.ListImageRefs(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var removed []string
+	for _, ref := range refs {
+		if !strings.HasPrefix(ref, prefix) {
+			continue // 只动产物镜像;基础镜像/工具链缓存绝不碰
+		}
+		if _, kept := keep[ref]; kept {
+			continue
+		}
+		if rerr := rot.RemoveImage(ctx, ref, onLine); rerr != nil {
+			onLine(streamError, "镜像清理:删除 "+ref+" 失败,忽略:"+rerr.Error())
+			continue
+		}
+		removed = append(removed, ref)
+	}
+	return removed, nil
+}
+
 // rotateBuildImages 轮转 b.driver 所指机器上本项目的前缀镜像:保留最近 keepN 个 commit tag
 // + 当前构建 tag,其余 rmi(best-effort,绝不影响构建结果)。
 func (b *Builder) rotateBuildImages(ctx context.Context, proj *project.Project, commitTag string, onLine func(stream, line string)) {
@@ -88,10 +119,6 @@ func (b *Builder) rotateBuildImages(ctx context.Context, proj *project.Project, 
 	keepN := b.imageRotation.KeepN(ctx)
 	if keepN <= 0 {
 		return // 未配置/关闭轮转(0=不限保留)
-	}
-	rot, ok := b.driver.(imageRotator)
-	if !ok {
-		return // 桩驱动/瘦控制机(errDriver)无镜像枚举能力:跳过(不报错)
 	}
 	commits, err := b.imageRotation.RecentCommits(ctx, proj.ID, keepN)
 	if err != nil {
@@ -107,20 +134,33 @@ func (b *Builder) rotateBuildImages(ctx context.Context, proj *project.Project, 
 		}
 		keep[prefix+c] = struct{}{}
 	}
-	refs, err := rot.ListImageRefs(ctx)
-	if err != nil {
+	if _, err := RotateImages(ctx, b.driver, prefix, keep, onLine); err != nil {
 		onLine(streamError, "镜像轮转:枚举镜像失败,忽略不影响构建:"+err.Error())
+	}
+}
+
+// RotateImagesWithKeep 按外部给定保留集清理控制机(b.driver)上的产物镜像(维护手动入口用;
+// prefix 传 "pipewright/" 即全项目)。瘦控制机(errDriver)返回空清单。
+func (b *Builder) RotateImagesWithKeep(ctx context.Context, prefix string, keep map[string]struct{}, onLine func(stream, line string)) ([]string, error) {
+	return RotateImages(ctx, b.driver, prefix, keep, onLine)
+}
+
+// removeLocalTagAfterPush 推送成功后回收构建机上的本机 tag(磁盘治理):镜像已在 registry,
+// 构建机无需留存。经 WithImagePushCleanup 可关——注意:现代 Docker(BuildKit)下保留本机
+// 副本对重建速度**没有**收益(构建缓存在 BuildKit 独立缓存区,与本机 tag 无关),仅老版
+// Docker 的传统构建器能用镜像层做缓存;关闭仅建议在老 docker 环境下。
+// best-effort:删除失败只记日志,绝不影响构建结果;清理回调 nil 视为开启(默认回收)。
+func (b *Builder) removeLocalTagAfterPush(ctx context.Context, rep dagrun.StageReporter, localTag string) {
+	if b.imageRemoveAfterPush != nil && !b.imageRemoveAfterPush(ctx) {
+		return // 设置里关闭了「推送后回收本机镜像」
+	}
+	rot, ok := b.driver.(imageRotator)
+	if !ok {
 		return
 	}
-	for _, ref := range refs {
-		if !strings.HasPrefix(ref, prefix) {
-			continue // 只动本项目产物镜像;其它项目/基础镜像不碰
-		}
-		if _, kept := keep[ref]; kept {
-			continue
-		}
-		if rerr := rot.RemoveImage(ctx, ref, onLine); rerr != nil {
-			onLine(streamError, "镜像轮转:删除 "+ref+" 失败,忽略:"+rerr.Error())
-		}
+	pctx := context.WithoutCancel(ctx)
+	_ = rep.Log(pctx, streamStdout, "→ 已推送,回收构建机本机镜像 "+localTag+"(设置可关闭)")
+	if err := rot.RemoveImage(pctx, localTag, func(stream, line string) { _ = rep.Log(pctx, stream, line) }); err != nil {
+		_ = rep.Log(pctx, streamError, "回收本机镜像失败(best-effort,忽略):"+err.Error())
 	}
 }

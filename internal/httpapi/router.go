@@ -1194,6 +1194,10 @@ func New(webFS fs.FS, authn auth.Authenticator, opts ...Option) http.Handler {
 		ar.Get("/object-stores", makeListObjectStoresHandler(obs))
 		// 浏览桶内目录(只读;marker 游标单页,桶可能对象巨多,绝不聚合全量)。
 		ar.Get("/object-stores/{id}/objects", makeBrowseObjectStoreHandler(obs))
+		// 列举账户下的桶(只读;设置页 Bucket 字段的候选下拉)。
+		ar.Get("/object-stores/{id}/buckets", makeListBucketsHandler(obs))
+		// 未落库直连探测列桶(添加弹窗配置尚未创建;明文凭据仅内存态,不审计/不落库)。
+		ar.Post("/object-stores/buckets/probe", makeProbeBucketsHandler(obs))
 		// 新建桶(浏览页「新建桶」):在既有配置的账户下建桶并自动登记新配置(写操作,过审计)。
 		ar.Post("/object-stores/{id}/buckets", makeCreateBucketHandler(obs, aud))
 		ar.Post("/object-stores", makeCreateObjectStoreHandler(obs, o.vault, aud))

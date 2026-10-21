@@ -10,6 +10,7 @@ const api = vi.hoisted(() => ({
     maxAgeDays: 0,
     cacheMaxGb: 10,
     imageKeepTags: 10,
+    imageRemoveAfterPush: true,
   },
   cleanup: {
     target: 'local-temp',
@@ -72,12 +73,14 @@ afterEach(() => {
 })
 
 describe('settings system disk governance', () => {
-  it('renders the disk cleanup card with four targets', async () => {
+  it('renders the disk cleanup card with five targets', async () => {
     const wrap = await mountPanel()
-    // 卡片标题 + 四个「立即清理」按钮。
+    // 卡片标题 + 五个「立即清理」按钮(缓存/镜像缓存/产物镜像/构建机残留/本机临时)。
     expect(wrap.text()).toContain('磁盘清理')
     const runButtons = wrap.findAll('button').filter((b) => b.text().includes('立即清理'))
-    expect(runButtons.length).toBe(4)
+    expect(runButtons.length).toBe(5)
+    // 产物镜像行存在且提示提到控制机与构建机。
+    expect(wrap.text()).toContain('构建产物镜像')
   })
 
   it('runs cleanup via the API and shows the reclaimed summary', async () => {
@@ -115,7 +118,7 @@ describe('settings system disk governance', () => {
     await save!.trigger('click')
     await flushPromises()
     expect(api.setRetention).toHaveBeenCalledWith(
-      expect.objectContaining({ cacheMaxGb: 20, imageKeepTags: 0, enabled: false }),
+      expect.objectContaining({ cacheMaxGb: 20, imageKeepTags: 0, enabled: false, imageRemoveAfterPush: true }),
     )
   })
 })

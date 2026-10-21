@@ -63,6 +63,8 @@ var (
 	ErrDuplicateBucket = errors.New("objectstore: bucket already registered")
 	// ErrBucketCreateFailed 表示服务端建桶失败(桶名被他人占用 / 凭据无建桶权限)。错误体绝不含密钥。
 	ErrBucketCreateFailed = errors.New("objectstore: bucket create failed")
+	// ErrListBucketsFailed 表示列举账户下桶失败(凭据无效 / API 不可达)。错误体绝不含密钥。
+	ErrListBucketsFailed = errors.New("objectstore: list buckets failed")
 )
 
 // Provider 是一条对象存储接入配置的领域模型。绝不含 AccessKeySecret 明文,只持 CredentialID 引用;
@@ -72,6 +74,7 @@ type Provider struct {
 	Type         string // aliyun_oss | rustfs
 	Name         string
 	Endpoint     string // 服务接入点(如 oss-cn-hangzhou.aliyuncs.com;不含 scheme)
+	UseSSL       bool   // 是否走 HTTPS(Endpoint 不存 scheme,是否 TLS 由本字段决定)
 	Bucket       string // 默认桶
 	PathPrefix   string // 可选:所有上传对象键统一附加的路径前缀(存储级默认;已归一化,无首尾斜杠)
 	AccessKeyID  string // 非机密:AccessKeyId,明文存储可回显
@@ -85,6 +88,7 @@ type CreateInput struct {
 	Type         string
 	Name         string
 	Endpoint     string
+	UseSSL       *bool // nil = 按类型补默认(defaultUseSSL);显式传值尊重调用方
 	Bucket       string
 	PathPrefix   string // 可选,归一化后落库
 	AccessKeyID  string
@@ -99,6 +103,7 @@ type UpdateInput struct {
 	Bucket      *string
 	PathPrefix  *string // 可改可清空(传非 nil 空串 = 清空前缀)
 	AccessKeyID *string
+	UseSSL      *bool // 是否走 HTTPS;nil = 不修改
 }
 
 // RegisterInput 是自动登记入参(应用商店部署 RustFS 的联动链路)。与 CreateInput 的差别:
@@ -107,6 +112,7 @@ type RegisterInput struct {
 	Type        string
 	Name        string
 	Endpoint    string // 如 192.168.1.10:9000
+	UseSSL      bool   // RustFS 部署形态为明文 host:port,调用方显式传 false
 	Bucket      string
 	AccessKeyID string
 	Secret      string
@@ -163,6 +169,14 @@ type ObjectClient interface {
 	PutObject(ctx context.Context, objectKey string, body io.Reader) error
 	// ListPage 单页列举一个目录(桶可能对象巨多,永远只返回一页,绝不全量聚合)。
 	ListPage(ctx context.Context, in ListPageInput) (ListPageResult, error)
+	// ListBuckets 列举该账户下的桶(候选列表;实现可分页拉全,截断在 service 层统一处理)。
+	ListBuckets(ctx context.Context) ([]BucketEntry, error)
+}
+
+// BucketEntry 是账户下一个桶的候选条目(设置页 Bucket 字段的下拉建议来源)。
+type BucketEntry struct {
+	Name      string
+	CreatedAt time.Time
 }
 
 // bucketEnsurer 是 ObjectClient 的可选能力:支持自动建桶的实现(自建 S3 兼容存储如 RustFS;
@@ -217,6 +231,38 @@ type Service interface {
 	// 展示名 name 为空时取桶名。桶名非法 → ErrInvalidBucket;同账户同桶已登记 → ErrDuplicateBucket;
 	// 服务端建桶失败(名被他人占用/无权限) → ErrBucketCreateFailed。Secret 用完即弃,绝不外泄。
 	CreateBucket(ctx context.Context, sourceID, bucket, name string) (*Provider, error)
+
+	// ListBuckets 取该配置凭据 → 列举账户下的桶(按名字排序,上限 maxBucketCandidates 条,
+	// 超出置 Truncated=true)。给设置页 Bucket 字段提供候选下拉。Secret 用完即弃,绝不外泄。
+	ListBuckets(ctx context.Context, id string) (*BucketListResult, error)
+
+	// ProbeListBuckets 用未落库的明文入参直连存储列举桶(添加弹窗配置尚未创建、无 id 可用)。
+	// 不落库、不写 vault、不审计;Secret 用完即弃,绝不外泄。入参非法 → 与 Create 同族校验错误。
+	ProbeListBuckets(ctx context.Context, in ProbeInput) (*BucketListResult, error)
+}
+
+// ProbeInput 是未落库的直连探测入参(添加弹窗「获取桶列表」)。凭据仅为内存态,任何路径不持久化。
+type ProbeInput struct {
+	Type        string
+	Endpoint    string
+	UseSSL      bool
+	AccessKeyID string
+	Secret      string
+}
+
+// BucketListResult 是账户下桶的候选列表(按名字排序;Truncated=true 表示超出上限被截断)。
+type BucketListResult struct {
+	Buckets    []BucketEntry
+	Truncated  bool
+}
+
+// maxBucketCandidates 是桶候选列表的硬上限(防巨账户撑爆响应;按名字排序后取前 N)。
+const maxBucketCandidates = 500
+
+// defaultUseSSL 返回类型的默认传输安全策略:公云 OSS 必走 HTTPS(明文上传 AK 签名的对象
+// 属安全隐患);RustFS 自建内网部署默认明文(可手动开启)。
+func defaultUseSSL(providerType string) bool {
+	return providerType == TypeAliyunOSS
 }
 
 // ValidType 报告提供商类型是否为受支持枚举。
@@ -244,11 +290,16 @@ func NormalizePathPrefix(s string) string {
 	return strings.Trim(strings.TrimSpace(s), "/")
 }
 
-// normalizeCreate 原地归一化登记入参(去空白 / 类型小写 / Endpoint 去 scheme / 前缀去首尾斜杠)。
+// normalizeCreate 原地归一化登记入参(去空白 / 类型小写 / Endpoint 去 scheme / 前缀去首尾斜杠 /
+// UseSSL 未显式指定时按类型补默认)。
 func normalizeCreate(in *CreateInput) {
 	in.Type = strings.ToLower(strings.TrimSpace(in.Type))
 	in.Name = strings.TrimSpace(in.Name)
 	in.Endpoint = normalizeEndpoint(in.Endpoint)
+	if in.UseSSL == nil {
+		v := defaultUseSSL(in.Type)
+		in.UseSSL = &v
+	}
 	in.Bucket = strings.TrimSpace(in.Bucket)
 	in.PathPrefix = NormalizePathPrefix(in.PathPrefix)
 	in.AccessKeyID = strings.TrimSpace(in.AccessKeyID)

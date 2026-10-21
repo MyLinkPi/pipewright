@@ -13,6 +13,8 @@
  * DELETE /api/object-stores/{id}                 → { ok: true }          (needs CSRF)
  * POST   /api/object-stores/{id}/test            → TestObjectStoreResult (needs CSRF)
  * GET    /api/object-stores/{id}/objects         → BrowseObjectStoreResult（marker 游标单页浏览）
+ * GET    /api/object-stores/{id}/buckets         → BucketListResult     （账户下桶候选下拉）
+ * POST   /api/object-stores/buckets/probe        → BucketListResult     (needs CSRF；未落库直连探测)
  *
  * 写操作走共享 `http` 封装（自动 CSRF + locale）。绝不返回 Secret。
  */
@@ -30,8 +32,10 @@ export interface ObjectStore {
   type: ObjectStoreType
   /** 人读展示名，如「生产 OSS」。 */
   name: string
-  /** 例如 `oss-cn-hangzhou.aliyuncs.com`。 */
+  /** 例如 `oss-cn-hangzhou.aliyuncs.com`（不带 scheme）。 */
   endpoint: string
+  /** 是否走 HTTPS 访问该接入点（endpoint 本身不带 scheme，协议由此开关决定）。 */
+  useSSL: boolean
   /** 默认桶名。 */
   bucket: string
   /** 可选：所有上传对象键统一附加的路径前缀（存储级默认；已归一化，无首尾斜杠）。 */
@@ -48,6 +52,8 @@ export interface CreateObjectStoreInput {
   type: ObjectStoreType
   name: string
   endpoint: string
+  /** 是否走 HTTPS；缺省按类型回填（aliyun_oss=true / rustfs=false）。 */
+  useSSL: boolean
   bucket: string
   /** 可选：对象键路径前缀（服务端归一化，去首尾斜杠）。 */
   pathPrefix: string
@@ -60,6 +66,8 @@ export interface CreateObjectStoreInput {
 export interface UpdateObjectStoreInput {
   name?: string
   endpoint?: string
+  /** 可选：切换是否走 HTTPS；缺省不变。 */
+  useSSL?: boolean
   bucket?: string
   /** 可选：路径前缀；传空串 = 清空前缀。 */
   pathPrefix?: string
@@ -160,4 +168,35 @@ export interface CreateBucketInput {
  */
 export async function createObjectStoreBucket(id: string, input: CreateBucketInput): Promise<ObjectStore> {
   return http.post<ObjectStore>(`/api/object-stores/${encodeURIComponent(id)}/buckets`, input)
+}
+
+/** 账户下一个桶的候选条目（设置页 Bucket 字段的下拉建议）。 */
+export interface ObjectStoreBucket {
+  name: string
+  createdAt: string
+}
+
+/** 桶候选列表：按名字排序；`truncated=true` 表示账户桶数超上限被截断。 */
+export interface BucketListResult {
+  buckets: ObjectStoreBucket[]
+  truncated: boolean
+}
+
+/** 列举既有配置账户下的桶（设置页编辑弹窗的候选下拉）。凭据在服务端解密，绝不回传。 */
+export async function listObjectStoreBuckets(id: string): Promise<BucketListResult> {
+  return http.get<BucketListResult>(`/api/object-stores/${encodeURIComponent(id)}/buckets`)
+}
+
+/** 未落库直连探测入参（添加弹窗配置尚未创建）。`secret` 只写，仅内存态参与探测。 */
+export interface ProbeBucketsInput {
+  type: ObjectStoreType
+  endpoint: string
+  useSSL: boolean
+  accessKeyId: string
+  secret: string
+}
+
+/** 用未落库的明文凭据直连存储列举桶（添加弹窗的候选下拉）。不产生任何持久化副作用。 */
+export async function probeObjectStoreBuckets(input: ProbeBucketsInput): Promise<BucketListResult> {
+  return http.post<BucketListResult>('/api/object-stores/buckets/probe', input)
 }

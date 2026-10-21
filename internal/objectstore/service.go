@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 	"time"
 
@@ -27,11 +28,12 @@ type vaultWriter interface {
 }
 
 // dialFactory 据提供商类型 + 接入参数造一个 ObjectClient(注入便于单测;生产用 prodDialFactory)。
-type dialFactory func(providerType, endpoint, accessKeyID, accessKeySecret, bucket string) (ObjectClient, error)
+// useSSL 决定传输层是否走 TLS(Endpoint 本身不含 scheme)。
+type dialFactory func(providerType, endpoint string, useSSL bool, accessKeyID, accessKeySecret, bucket string) (ObjectClient, error)
 
 // prodDialFactory 是生产工厂:真实 SDK 客户端(阿里云 OSS / RustFS)。
-func prodDialFactory(providerType, endpoint, accessKeyID, accessKeySecret, bucket string) (ObjectClient, error) {
-	return newObjectClient(providerType, endpoint, accessKeyID, accessKeySecret, bucket)
+func prodDialFactory(providerType, endpoint string, useSSL bool, accessKeyID, accessKeySecret, bucket string) (ObjectClient, error) {
+	return newObjectClient(providerType, endpoint, useSSL, accessKeyID, accessKeySecret, bucket)
 }
 
 // service 是 store + vault + dialFactory 支撑的 Service 实现。
@@ -117,7 +119,7 @@ func (s *service) Test(ctx context.Context, id string) (*TestResult, error) {
 	if err != nil {
 		return nil, mapVaultErr(err)
 	}
-	client, err := s.dial(p.Type, p.Endpoint, p.AccessKeyID, secret, p.Bucket)
+	client, err := s.dial(p.Type, p.Endpoint, p.UseSSL, p.AccessKeyID, secret, p.Bucket)
 	if err != nil {
 		return &TestResult{OK: false, Err: ErrTestFailed, Detail: describeClientError(err)}, nil
 	}
@@ -142,7 +144,7 @@ func (s *service) Upload(ctx context.Context, providerID, objectKey string, body
 	if err != nil {
 		return mapVaultErr(err)
 	}
-	client, err := s.dial(p.Type, p.Endpoint, p.AccessKeyID, secret, p.Bucket)
+	client, err := s.dial(p.Type, p.Endpoint, p.UseSSL, p.AccessKeyID, secret, p.Bucket)
 	if err != nil {
 		return fmt.Errorf("%w:%s", ErrUploadFailed, describeClientError(err))
 	}
@@ -179,7 +181,7 @@ func (s *service) Browse(ctx context.Context, id, prefix, marker string, maxKeys
 	if err != nil {
 		return nil, mapVaultErr(err)
 	}
-	client, err := s.dial(p.Type, p.Endpoint, p.AccessKeyID, secret, p.Bucket)
+	client, err := s.dial(p.Type, p.Endpoint, p.UseSSL, p.AccessKeyID, secret, p.Bucket)
 	if err != nil {
 		return nil, fmt.Errorf("%w:%s", ErrBrowseFailed, describeClientError(err))
 	}
@@ -193,6 +195,74 @@ func (s *service) Browse(ctx context.Context, id, prefix, marker string, maxKeys
 		return nil, fmt.Errorf("%w:%s", ErrBrowseFailed, describeClientError(err))
 	}
 	return &res, nil
+}
+
+// ListBuckets 取该配置凭据 → 列举账户下的桶(设置页 Bucket 字段的候选下拉)。
+// 按名字排序,上限 maxBucketCandidates 条(超出置 Truncated)。Secret 用完即弃,绝不外泄。
+func (s *service) ListBuckets(ctx context.Context, id string) (*BucketListResult, error) {
+	p, err := s.store.get(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if s.vault == nil {
+		return nil, ErrVaultUnconfigured
+	}
+	secret, err := s.vault.Reveal(p.CredentialID)
+	if err != nil {
+		return nil, mapVaultErr(err)
+	}
+	client, err := s.dial(p.Type, p.Endpoint, p.UseSSL, p.AccessKeyID, secret, p.Bucket)
+	if err != nil {
+		return nil, fmt.Errorf("%w:%s", ErrListBucketsFailed, describeClientError(err))
+	}
+	buckets, err := client.ListBuckets(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("%w:%s", ErrListBucketsFailed, describeClientError(err))
+	}
+	return capBucketList(buckets), nil
+}
+
+// ProbeListBuckets 用未落库的明文入参直连存储列举桶(添加弹窗配置尚未创建、无 id 可用)。
+// 不落库、不写 vault、不审计;Secret 仅在内存态参与 dial,用完即弃,绝不外泄。
+func (s *service) ProbeListBuckets(ctx context.Context, in ProbeInput) (*BucketListResult, error) {
+	in.Type = strings.ToLower(strings.TrimSpace(in.Type))
+	in.Endpoint = normalizeEndpoint(in.Endpoint)
+	in.AccessKeyID = strings.TrimSpace(in.AccessKeyID)
+	if !ValidType(in.Type) {
+		return nil, ErrInvalidType
+	}
+	if in.Endpoint == "" {
+		return nil, ErrEmptyEndpoint
+	}
+	if in.AccessKeyID == "" {
+		return nil, ErrEmptyAccessKeyID
+	}
+	// Secret 不 Trim(逐字节保真),只拒空。
+	if in.Secret == "" {
+		return nil, ErrEmptySecret
+	}
+	client, err := s.dial(in.Type, in.Endpoint, in.UseSSL, in.AccessKeyID, in.Secret, "")
+	if err != nil {
+		return nil, fmt.Errorf("%w:%s", ErrListBucketsFailed, describeClientError(err))
+	}
+	buckets, err := client.ListBuckets(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("%w:%s", ErrListBucketsFailed, describeClientError(err))
+	}
+	return capBucketList(buckets), nil
+}
+
+// capBucketList 把桶候选按名字排序并截断到上限(返回前 N 名 + Truncated 标记;
+// 空结果归一为空切片而非 nil,稳定 JSON 形态)。
+func capBucketList(buckets []BucketEntry) *BucketListResult {
+	sort.Slice(buckets, func(i, j int) bool { return buckets[i].Name < buckets[j].Name })
+	if len(buckets) > maxBucketCandidates {
+		return &BucketListResult{Buckets: buckets[:maxBucketCandidates], Truncated: true}
+	}
+	if buckets == nil {
+		buckets = []BucketEntry{}
+	}
+	return &BucketListResult{Buckets: buckets}
 }
 
 // CreateBucket 在 sourceID 配置的账户下新建 bucket 并登记为一份新配置(浏览页「新建桶」)。
@@ -225,7 +295,7 @@ func (s *service) CreateBucket(ctx context.Context, sourceID, bucket, name strin
 	if err != nil {
 		return nil, mapVaultErr(err)
 	}
-	client, err := s.dial(p.Type, p.Endpoint, p.AccessKeyID, secret, p.Bucket)
+	client, err := s.dial(p.Type, p.Endpoint, p.UseSSL, p.AccessKeyID, secret, p.Bucket)
 	if err != nil {
 		return nil, fmt.Errorf("%w:%s", ErrBucketCreateFailed, describeClientError(err))
 	}
@@ -238,7 +308,7 @@ func (s *service) CreateBucket(ctx context.Context, sourceID, bucket, name strin
 		if isBucketAlreadyOwned(cerr) {
 			// 服务端明示桶已存在且归当前账户 → 视为建桶成功(重试接续半程失败)。
 			cerr = nil
-		} else if vclient, derr := s.dial(p.Type, p.Endpoint, p.AccessKeyID, secret, bucket); derr == nil {
+		} else if vclient, derr := s.dial(p.Type, p.Endpoint, p.UseSSL, p.AccessKeyID, secret, bucket); derr == nil {
 			// 「桶已存在」也可能归当前账户所有(部分 S3 实现不区分归属):用新桶名绑一个客户端
 			// 校验访问权——校验通过视为成功(孤儿桶接续);无权限(名被他人占用)保留原错误。
 			if verr := vclient.VerifyBucket(ctx); verr == nil {
@@ -258,8 +328,9 @@ func (s *service) CreateBucket(ctx context.Context, sourceID, bucket, name strin
 	if err != nil {
 		return nil, mapVaultErr(err)
 	}
+	useSSL := p.UseSSL
 	np, err := s.Create(ctx, CreateInput{
-		Type: p.Type, Name: name, Endpoint: p.Endpoint, Bucket: bucket,
+		Type: p.Type, Name: name, Endpoint: p.Endpoint, UseSSL: &useSSL, Bucket: bucket,
 		AccessKeyID: p.AccessKeyID, CredentialID: cred.ID,
 	})
 	if err != nil {
@@ -308,7 +379,7 @@ func (s *service) Register(ctx context.Context, in RegisterInput) (*RegisterResu
 	// 尽力而为建桶:客户端实现 bucketEnsurer 才做(自建 S3 兼容存储);失败不阻断登记
 	//(配置如实反映部署结果,桶可稍后手动补建或重新部署)。
 	note := ""
-	client, err := s.dial(in.Type, in.Endpoint, in.AccessKeyID, in.Secret, in.Bucket)
+	client, err := s.dial(in.Type, in.Endpoint, in.UseSSL, in.AccessKeyID, in.Secret, in.Bucket)
 	if err != nil {
 		note = "跳过建桶:" + describeClientError(err)
 	} else if be, ok := client.(bucketEnsurer); ok {
@@ -341,8 +412,9 @@ func (s *service) Register(ctx context.Context, in RegisterInput) (*RegisterResu
 	if err != nil {
 		return nil, mapVaultErr(err)
 	}
+	useSSL := in.UseSSL
 	p, err := s.Create(ctx, CreateInput{
-		Type: in.Type, Name: in.Name, Endpoint: in.Endpoint, Bucket: in.Bucket,
+		Type: in.Type, Name: in.Name, Endpoint: in.Endpoint, UseSSL: &useSSL, Bucket: in.Bucket,
 		AccessKeyID: in.AccessKeyID, CredentialID: cred.ID,
 	})
 	if err != nil {
