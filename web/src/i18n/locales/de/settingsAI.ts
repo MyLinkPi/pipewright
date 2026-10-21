@@ -53,6 +53,27 @@ export default {
     'Pausiert die AI-Diagnose bei Überschreitung (leer = unbegrenzt; in diesem Zyklus nur deklariert, im nächsten Epic erzwungen)',
   budgetPlaceholder: 'z. B. 500000, leer = unbegrenzt',
 
+  ctxTitle: 'Kontextverwaltung',
+  ctxWindowHint:
+    'Kontextbudget des Ops-Agenten: Nahe am Fensterlimit wird der alte Verlauf automatisch zu einer Zusammenfassung komprimiert; bei Overflow wird automatisch komprimiert und erneut versucht. Einheit: Tokens, leer = Standardwert.',
+  ctxWindowLabel: 'Kontextfenster',
+  ctxWindowPlaceholder: 'Standard 200000',
+  ctxMaxOutputLabel: 'Max. Ausgabe pro Aufruf',
+  ctxMaxOutputPlaceholder: 'Standard 8192',
+  ctxKeepLabel: 'Beim Komprimieren behalten',
+  ctxKeepPlaceholder: 'Standard 15000',
+  ctxAutoCompact: 'Verlauf nahe am Limit automatisch komprimieren',
+  ctxAdvanced: 'Erweitert',
+  ctxBufferLabel: 'Auslöse-Reserve',
+  ctxBufferPlaceholder: 'Automatisch (10 % des Fensters)',
+  ctxHistoryMessagesLabel: 'Max. Verlaufsnachrichten',
+  ctxHistoryMessagesPlaceholder: 'Standard 100',
+  ctxHistoryBytesLabel: 'Max. Verlauf (KB)',
+  ctxHistoryBytesPlaceholder: 'Standard 256',
+  ctxNote:
+    'Die Komprimierung betrifft nur den an das Modell gesendeten Kontext; die Sitzungsansicht zeigt den vollständigen Verlauf. Zusammenfassungen werden vom aktuell konfigurierten Modell erzeugt.',
+  errContextInvalid: 'Kontextwerte müssen nicht-negative Ganzzahlen oder leer sein',
+
   enableAi: 'AI-Funktionen aktivieren',
   enableAiDesc:
     'Im ausgeschalteten Zustand wird die AI-Diagnose still übersprungen und die zentralen CI/CD-Pipelines bleiben unberührt',

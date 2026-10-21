@@ -18,6 +18,20 @@ export interface AIBudget {
   monthlyTokenLimit: number | null
 }
 
+/**
+ * Context-management declaration for the ops agent. 0 / null = use server
+ * defaults (window 200k tokens, auto-compact on, keep-recent 15k, …).
+ */
+export interface AIContext {
+  windowTokens: number
+  maxOutputTokens: number
+  historyMessages: number
+  historyBytes: number
+  autoCompact: boolean | null
+  keepRecentTokens: number
+  bufferTokens: number
+}
+
 /** GET /api/settings/ai response — never contains plaintext apiKey */
 export interface AISettings {
   configured: boolean
@@ -28,6 +42,7 @@ export interface AISettings {
   /** Server-computed mask, e.g. "sk-ant-••••a91f" — never plaintext. */
   apiKeyMasked: string
   budget: AIBudget
+  context: AIContext
   updatedAt: string | null
 }
 
@@ -42,6 +57,7 @@ export interface SaveAISettingsInput {
    */
   apiKey?: string
   budget: AIBudget
+  context: AIContext
   enabled: boolean
 }
 

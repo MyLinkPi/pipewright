@@ -522,6 +522,7 @@ func (s *Service) work(parent context.Context, id, run string) {
 		return
 	}
 	lastReplyText := ""
+	var lastReplyUsage *AgentUsage
 	if len(calls) == 0 {
 		var candidates []callRecord
 		if len(r.Body.RetryActions) > 0 {
@@ -544,6 +545,7 @@ func (s *Service) work(parent context.Context, id, run string) {
 			}
 			candidates = cand
 			lastReplyText = firstReply.Text
+			lastReplyUsage = firstReply.Usage
 		}
 		// Group only wholly read-only plans; mutation barriers retain their order.
 		readOnly := true
@@ -572,7 +574,7 @@ func (s *Service) work(parent context.Context, id, run string) {
 				return ErrConflict
 			}
 			if finalText && lastReplyText != "" {
-				if e = s.append(c, tx, Entry{SessionID: id, RunID: run, Kind: "assistant", Text: s.scrub(lastReplyText, 32<<10), Status: Succeeded}, true, true); e != nil {
+				if e = s.append(c, tx, Entry{SessionID: id, RunID: run, Kind: "assistant", Text: s.scrub(lastReplyText, 32<<10), Status: Succeeded, Usage: lastReplyUsage}, true, true); e != nil {
 					return e
 				}
 			}

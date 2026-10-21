@@ -108,6 +108,8 @@ export default {
   refresh: 'Aktualisieren',
   storageNearQuota:
     'Der Sitzungsspeicher nähert sich dem Limit; starten Sie eine neue Sitzung.',
+  checkpoint: '⇤ Früherer Verlauf zu einer Zusammenfassung komprimiert',
+  contextUsage: 'Kontextauslastung',
   unsaved: 'Entwurf nicht gespeichert',
   discardBody:
     'Ungespeicherter Inhalt im lokalen Speicher kann verloren gehen. Verwerfen?',

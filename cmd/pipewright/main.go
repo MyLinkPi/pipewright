@@ -338,7 +338,8 @@ func main() {
 	}
 	if limited, ok := targetSvc.(target.LimitedExecutor); ok {
 		chat, err := opschat.New(opschat.Options{DB: st.DB, Vault: credVault, Executor: limited,
-			Model: ai.NewOpsModel(aiSvc, opsMasker), Masker: opsMasker, LocalRecorder: audit.New(st.DB, opsMasker, nil), Runtime: opsRuntime})
+			Model: ai.NewOpsModel(aiSvc, opsMasker), Masker: opsMasker, LocalRecorder: audit.New(st.DB, opsMasker, nil), Runtime: opsRuntime,
+			Context: func() opschat.ContextPolicy { return aiContextPolicy(aiSvc) }})
 		if err == nil {
 			err = chat.Start(context.Background())
 		}
@@ -1613,4 +1614,24 @@ func (g reexecGuard) ActiveTasks() (int, int) {
 
 func (g reexecGuard) GracefulShutdown() {
 	g.mesh.StopMeshAndWait(10 * time.Second)
+}
+
+// aiContextPolicy 把 AI 设置里的上下文声明映射为 opschat 策略(每轮读取,
+// 设置保存后下轮生效;读取失败回退全默认,绝不阻塞对话)。
+func aiContextPolicy(svc ai.Service) opschat.ContextPolicy {
+	cfg, err := svc.Get(context.Background())
+	if err != nil || cfg == nil {
+		return opschat.ContextPolicy{}
+	}
+	c := cfg.Context.Resolved()
+	auto := c.AutoCompact == nil || *c.AutoCompact
+	return opschat.ContextPolicy{
+		WindowTokens:     c.WindowTokens,
+		MaxOutputTokens:  c.MaxOutputTokens,
+		HistoryMessages:  c.HistoryMessages,
+		HistoryBytes:     c.HistoryBytes,
+		AutoCompact:      &auto,
+		KeepRecentTokens: c.KeepRecentTokens,
+		BufferTokens:     c.BufferTokens,
+	}
 }

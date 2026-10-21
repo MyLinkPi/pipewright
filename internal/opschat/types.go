@@ -43,6 +43,10 @@ const (
 	AwaitingContinuation = "awaiting_continuation"
 	// 用户在确认卡上拒绝执行(终态;拒绝原因回流模型续轮)。
 	Rejected = "rejected"
+
+	// KindCheckpoint 是压缩摘要条目(kind 值):进模型上下文(以 user 角色 +
+	// conversation-checkpoint 包裹),前端渲染为「已压缩历史」分界条。
+	KindCheckpoint = "summary_checkpoint"
 )
 
 type Limits struct {
@@ -65,11 +69,11 @@ var resourceLimits = Limits{100, 2000, 8 << 20, 8 << 10, 8, 24, 64 << 10, 1000, 
 // RuntimeLimits tunes worker execution. Zero values fall back to defaults;
 // it is operational configuration, unlike the user-facing resource caps above.
 type RuntimeLimits struct {
-	SSHSlots      int           // global bounded SSH slots (default 4)
-	ApprovalTTL   time.Duration // confirmation validity window (default 15m)
-	WorkBudget    time.Duration // per granted round window (default 30m)
-	ModelTimeout  time.Duration // per agent round model request (default 2m)
-	MaxAgentRounds int          // rounds per grant (default 20; user may continue)
+	SSHSlots       int           // global bounded SSH slots (default 4)
+	ApprovalTTL    time.Duration // confirmation validity window (default 15m)
+	WorkBudget     time.Duration // per granted round window (default 30m)
+	ModelTimeout   time.Duration // per agent round model request (default 2m)
+	MaxAgentRounds int           // rounds per grant (default 20; user may continue)
 }
 
 func (l RuntimeLimits) withDefaults() RuntimeLimits {
@@ -89,6 +93,76 @@ func (l RuntimeLimits) withDefaults() RuntimeLimits {
 		l.MaxAgentRounds = 20
 	}
 	return l
+}
+
+// ContextPolicy 是注入的上下文管理策略(来自 AI 设置;opschat 不 import ai,
+// 由装配层把 ai.ContextSettings.Resolved 映射进来)。零值字段经 withDefaults
+// 取默认;全部语义按 tokens 计(估算器见 tokenest 包)。
+type ContextPolicy struct {
+	WindowTokens     int   // 模型上下文窗口(默认 200_000)
+	MaxOutputTokens  int   // 单请求输出上限(默认 8_192;每请求再按剩余窗口 clamp)
+	HistoryMessages  int   // 会话历史条数上限(默认 100;checkpoint 之后起算)
+	HistoryBytes     int   // 会话历史字节上限(默认 256KB)
+	AutoCompact      *bool // 接近上限时自动把旧历史压缩为摘要 checkpoint(nil = 开)
+	KeepRecentTokens int   // 压缩时原样保留的最近消息 tokens(默认 15_000)
+	BufferTokens     int   // 触发预留;0 = 自动 max(窗口10%, 窗口≥32K 时 16K)
+}
+
+func (p ContextPolicy) withDefaults() ContextPolicy {
+	if p.WindowTokens <= 0 {
+		p.WindowTokens = 200_000
+	}
+	if p.MaxOutputTokens <= 0 {
+		p.MaxOutputTokens = 8_192
+	}
+	if p.HistoryMessages <= 0 {
+		p.HistoryMessages = 100
+	}
+	if p.HistoryBytes <= 0 {
+		p.HistoryBytes = 256 << 10
+	}
+	if p.AutoCompact == nil {
+		on := true
+		p.AutoCompact = &on
+	}
+	if p.KeepRecentTokens <= 0 {
+		p.KeepRecentTokens = 15_000
+	}
+	if p.KeepRecentTokens > p.WindowTokens/2 {
+		p.KeepRecentTokens = p.WindowTokens / 2
+	}
+	return p
+}
+
+// ReserveTokens 是压缩触发前在窗口内预留的空间(输出 + buffer)。
+func (p ContextPolicy) ReserveTokens() int {
+	if p.BufferTokens > 0 {
+		return p.BufferTokens
+	}
+	reserve := p.WindowTokens / 10
+	if p.WindowTokens >= 32_000 && reserve < 16_000 {
+		reserve = 16_000
+	}
+	return reserve
+}
+
+// Ceiling 是自动压缩触发阈值:估算 tokens ≥ Ceiling 时压缩。
+func (p ContextPolicy) Ceiling() int {
+	c := p.WindowTokens - p.ReserveTokens()
+	if c < p.WindowTokens/2 {
+		c = p.WindowTokens / 2
+	}
+	return c
+}
+
+// MaxRequestBytes 是单次模型请求的绝对字节上限(窗口按 CJK 最坏 6 字节/token
+// 换算,下限 2MB 安全兜底)。
+func (p ContextPolicy) MaxRequestBytes() int {
+	cap := p.WindowTokens * 6
+	if cap < 2<<20 {
+		cap = 2 << 20
+	}
+	return cap
 }
 
 type ProviderInfo struct {
@@ -112,20 +186,27 @@ type Options struct {
 	LocalRecorder audit.Recorder
 	Masker        *mask.Masker
 	Runtime       RuntimeLimits
+	// Context supplies the live context-management policy (mapped from AI
+	// settings by the assembly layer; nil = defaults). Called per round so
+	// settings changes apply without restart.
+	Context func() ContextPolicy
 }
 type Session struct {
-	ID          string   `json:"id"`
-	Revision    int64    `json:"revision"`
-	Title       string   `json:"title"`
-	Draft       string   `json:"draft"`
+	ID          string `json:"id"`
+	Revision    int64  `json:"revision"`
+	Title       string `json:"title"`
+	Draft       string `json:"draft"`
 	ServerIDs   []string `json:"serverIds"`
-	ActiveRunID string   `json:"activeRunId"`
-	Watermark   int64    `json:"watermark"`
+	ActiveRunID string `json:"activeRunId"`
+	Watermark   int64  `json:"watermark"`
 	// StorageBytes is the tracked visible-entry byte counter, an approximation
 	// of the session storage quota basis; use it only for near-quota hints.
 	StorageBytes int64     `json:"storageBytes"`
-	CreatedAt    time.Time `json:"createdAt"`
-	UpdatedAt    time.Time `json:"updatedAt"`
+	// ContextUsage 是最近一次模型请求的实测上下文占用(usage 缺失时为 nil;
+	// 仅展示用,预算判定在发送前全量估算)。
+	ContextUsage *ContextUsage `json:"contextUsage,omitempty"`
+	CreatedAt    time.Time     `json:"createdAt"`
+	UpdatedAt    time.Time     `json:"updatedAt"`
 }
 type CreateInput struct {
 	Context   string   `json:"context,omitempty"`
@@ -188,6 +269,10 @@ type AgentRequest struct {
 	Rounds           []AgentExchange `json:"rounds,omitempty"`
 	MaxResponseBytes int             `json:"maxResponseBytes"`
 	WrapUp           bool            `json:"wrapUp,omitempty"` // 收尾轮:不带 tools,要求进展+建议
+	// MaxOutputTokens 是单请求输出上限(0 = 模型层默认);发送前按剩余窗口 clamp。
+	MaxOutputTokens int `json:"maxOutputTokens,omitempty"`
+	// MaxRequestBytes 是单请求编码后的字节上限(0 = 模型层默认兜底)。
+	MaxRequestBytes int `json:"maxRequestBytes,omitempty"`
 }
 type AgentToolCall struct {
 	ID      string          `json:"id"`      // provider 侧调用 id(结果关联)
@@ -212,6 +297,15 @@ type AgentExchange struct {
 type AgentReply struct {
 	Text      string          `json:"text"` // 终答/收尾文本(与 ToolCalls 互斥)
 	ToolCalls []AgentToolCall `json:"toolCalls,omitempty"`
+	// Usage 是该请求的 provider 实测 token 用量(解析不到时为 nil;仅用于
+	// 上下文占用展示与观测,不参与预算判定——判定走发送前全量估算)。
+	Usage *AgentUsage `json:"usage,omitempty"`
+}
+
+// AgentUsage 是 provider 返回的请求用量(input 含 cache 读写在内的完整 prompt)。
+type AgentUsage struct {
+	InputTokens  int `json:"inputTokens"`
+	OutputTokens int `json:"outputTokens"`
 }
 type ContainerFact struct {
 	ID    string `json:"id"`
@@ -250,6 +344,30 @@ type Model interface {
 	Info() ProviderInfo
 	AgentRound(context.Context, AgentRequest) (AgentReply, error)
 	Analyze(context.Context, AnalysisRequest) (string, error)
+}
+
+// Compacter is an optional model capability: generate a compaction summary of
+// older conversation via a tool-less single call. When the model does not
+// implement it, auto-compact degrades to deterministic trimming only.
+type Compacter interface {
+	Summarize(ctx context.Context, in SummarizeRequest) (string, error)
+}
+
+// SummarizeRequest is the compaction-summary call: flattened older transcript
+// in Prompt, no tools, bounded output.
+type SummarizeRequest struct {
+	Provider         ProviderInfo
+	System           string
+	Prompt           string
+	MaxOutputTokens  int
+	MaxResponseBytes int
+}
+
+// OverflowClassifier is an optional model capability: classify whether an
+// AgentRound error is a provider context-window overflow (request too long),
+// enabling overflow compaction + one retry.
+type OverflowClassifier interface {
+	IsContextOverflow(err error) bool
 }
 
 type StreamChunk struct {
@@ -326,6 +444,13 @@ type AnalysisInput struct {
 	Provider        ProviderInfo `json:"provider"`
 	Consent         bool         `json:"consent"`
 }
+// ContextUsage 是会话上下文占用展示模型:最近一次模型请求实测 usage / 窗口。
+type ContextUsage struct {
+	UsedTokens   int `json:"usedTokens"`
+	WindowTokens int `json:"windowTokens"`
+	Percent      int `json:"percent"` // 0-100(向上取整)
+}
+
 type Entry struct {
 	// TargetNames is reconstructed for local display, never persisted or sent to models.
 	TargetNames  map[string]string `json:"targetNames,omitempty"`
@@ -344,6 +469,7 @@ type Entry struct {
 	CallID       string            `json:"callId,omitempty"`
 	Text         string            `json:"text,omitempty"`
 	Status       string            `json:"status,omitempty"`
+	Usage        *AgentUsage       `json:"usage,omitempty"`
 	CreatedAt    time.Time         `json:"createdAt"`
 }
 type EntryPage struct {

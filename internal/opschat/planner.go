@@ -54,7 +54,12 @@ func (s *Service) requestRound(ctx context.Context, r runRecord, wrapUp bool) (A
 		MaxResponseBytes: 32 << 10,
 		WrapUp:           wrapUp,
 	}
-	if encoded, err := json.Marshal(req); err != nil || len(encoded) > 256<<10 {
+	policy := s.policy()
+	req.MaxRequestBytes = policy.MaxRequestBytes()
+	// 上下文预算:超阈值先压缩/裁剪,再按剩余窗口 clamp 输出上限。
+	s.maybeCompact(ctx, r.View.SessionID, &req, "auto")
+	req.MaxOutputTokens = s.clampOutputTokens(&req)
+	if encoded, err := json.Marshal(req); err != nil || len(encoded) > req.MaxRequestBytes {
 		return reply, nil, ErrQuota
 	}
 	budget := r.Body.RoundBudget
@@ -91,12 +96,26 @@ func (s *Service) requestRound(ctx context.Context, r runRecord, wrapUp bool) (A
 	modelCtx, stop := context.WithTimeout(ctx, s.runtime.ModelTimeout)
 	defer stop()
 	var candidates []callRecord
-	for attempt := 0; ; attempt++ {
+	overflowDone := false
+	attempt := 0
+	for {
 		reply, err = s.model.AgentRound(modelCtx, req)
 		if err == nil {
 			err = s.registerSecrets()
 		}
 		if err != nil {
+			// provider 判定上下文溢出:被动压缩(阈值×0.7)+ 确定性裁剪后重试一次。
+			if !overflowDone {
+				if cls, ok := s.model.(OverflowClassifier); ok && cls.IsContextOverflow(err) {
+					overflowDone = true
+					s.maybeCompact(ctx, r.View.SessionID, &req, "overflow")
+					req.MaxOutputTokens = s.clampOutputTokens(&req)
+					if encoded, e := json.Marshal(req); e == nil && len(encoded) <= req.MaxRequestBytes {
+						log.Printf("[opschat] context overflow, compacted and retrying session=%s run=%s", r.View.SessionID, r.View.ID)
+						continue
+					}
+				}
+			}
 			return reply, nil, err
 		}
 		candidates, err = s.agentCalls(r, reply)
@@ -106,14 +125,29 @@ func (s *Service) requestRound(ctx context.Context, r runRecord, wrapUp bool) (A
 		if !errors.Is(err, ErrInvalid) || attempt >= 1 {
 			return reply, nil, err
 		}
+		attempt++
 		// 校验失败不直接报给用户:把错误作为工具失败结果回灌,给模型一次自纠机会。
 		feedback := AgentExchange{Calls: reply.ToolCalls}
 		for _, c := range reply.ToolCalls {
 			feedback.Results = append(feedback.Results, AgentToolResult{CallID: c.ID, Failed: true, Output: s.scrub("rejected by validator: "+err.Error(), 2048)})
 		}
 		req.Rounds = append(req.Rounds, feedback)
-		log.Printf("[opschat] plan rejected, feeding back session=%s run=%s attempt=%d reason=%v", r.View.SessionID, r.View.ID, attempt+1, err)
+		log.Printf("[opschat] plan rejected, feeding back session=%s run=%s attempt=%d reason=%v", r.View.SessionID, r.View.ID, attempt, err)
 	}
+}
+
+// clampOutputTokens 按剩余窗口 clamp 单请求输出上限(下限 1024 防零)。
+func (s *Service) clampOutputTokens(req *AgentRequest) int {
+	policy := s.policy()
+	room := policy.WindowTokens - estimateRequestTokens(*req) - 1000
+	if room < 1024 {
+		room = 1024
+	}
+	out := policy.MaxOutputTokens
+	if out > room {
+		out = room
+	}
+	return out
 }
 
 // agentCalls 校验模型的工具批并展开为 callRecord:剥 target/purpose/reason、
@@ -330,7 +364,7 @@ func (s *Service) publishRound(ctx context.Context, r runRecord, reply AgentRepl
 		}
 		text := s.scrub(reply.Text, 32<<10)
 		if text != "" && len(candidates) == 0 {
-			if err = s.append(c, tx, Entry{SessionID: r.View.SessionID, RunID: r.View.ID, Kind: "assistant", Text: text, Status: Succeeded}, true, true); err != nil {
+			if err = s.append(c, tx, Entry{SessionID: r.View.SessionID, RunID: r.View.ID, Kind: "assistant", Text: text, Status: Succeeded, Usage: reply.Usage}, true, true); err != nil {
 				return err
 			}
 		}

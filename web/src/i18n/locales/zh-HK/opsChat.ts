@@ -94,6 +94,8 @@ export default {
   idle: '閒置',
   refresh: '重新整理',
   storageNearQuota: '會話儲存已接近上限，建議新增會話。',
+  checkpoint: '⇤ 更早的對話已壓縮為摘要',
+  contextUsage: '上下文佔用',
   unsaved: '草稿尚未儲存',
   discardBody: '本機記憶體中的未儲存內容可能遺失，確定放棄嗎？',
   discard: '放棄未儲存內容',

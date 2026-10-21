@@ -53,6 +53,27 @@ export default {
     '超過すると AI 診断を一時停止します（空欄=無制限。今回は宣言のみ、次の Epic で強制適用）',
   budgetPlaceholder: '例: 500000、空欄で無制限',
 
+  ctxTitle: 'コンテキスト管理',
+  ctxWindowHint:
+    'Ops エージェントのコンテキスト予算:ウィンドウ上限に近づくと古い会話を自動で要約に圧縮し、オーバーフロー時は圧縮して再試行します。単位はトークン、空欄で既定値。',
+  ctxWindowLabel: 'コンテキストウィンドウ',
+  ctxWindowPlaceholder: '既定 200000',
+  ctxMaxOutputLabel: '1 回あたりの出力上限',
+  ctxMaxOutputPlaceholder: '既定 8192',
+  ctxKeepLabel: '圧縮時に保持する直近',
+  ctxKeepPlaceholder: '既定 15000',
+  ctxAutoCompact: '上限付近で履歴を自動圧縮',
+  ctxAdvanced: '詳細設定',
+  ctxBufferLabel: '発動リザーブ',
+  ctxBufferPlaceholder: '自動(ウィンドウの 10%)',
+  ctxHistoryMessagesLabel: '履歴メッセージ上限',
+  ctxHistoryMessagesPlaceholder: '既定 100',
+  ctxHistoryBytesLabel: '履歴サイズ上限 (KB)',
+  ctxHistoryBytesPlaceholder: '既定 256',
+  ctxNote:
+    '圧縮はモデルへ送るコンテキストにのみ影響し、セッション画面は完全な履歴を保持します。要約は現在設定中のモデルが生成します。',
+  errContextInvalid: 'コンテキスト値は空欄または 0 以上の整数にしてください',
+
   enableAi: 'AI 機能を有効化',
   enableAiDesc:
     'オフの場合 AI 診断は静かにスキップされ、コアの CI/CD パイプラインには影響しません',

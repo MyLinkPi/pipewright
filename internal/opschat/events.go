@@ -44,6 +44,7 @@ func (s *Service) entryPage(ctx context.Context, q querier, id, cursor string, l
 	if err != nil {
 		return out, err
 	}
+	sr.View.ContextUsage = s.sessionUsage(ctx, q, id)
 	out.Watermark = sr.View.Watermark
 	seq, err := cursorSeq(id, cursor)
 	if err != nil {
@@ -106,6 +107,7 @@ func (s *Service) entryPage(ctx context.Context, q querier, id, cursor string, l
 			Summary     *RunSummary
 			RefSeq      int64
 			RevisionSeq int64
+			Usage       *AgentUsage
 		}
 		if err = s.open(b, &body); err != nil {
 			return out, err
@@ -114,6 +116,7 @@ func (s *Service) entryPage(ctx context.Context, q querier, id, cursor string, l
 		e.Summary = body.Summary
 		e.ReplaceSeq = body.RefSeq
 		e.RevisionSeq = body.RevisionSeq
+		e.Usage = body.Usage
 		if e.RevisionSeq == 0 {
 			e.RevisionSeq = e.Seq
 		}
@@ -307,6 +310,7 @@ func (s *Service) Snapshot(ctx context.Context, id string) (*Snapshot, error) {
 		if e != nil {
 			return e
 		}
+		sr.View.ContextUsage = s.sessionUsage(ctx, tx, id)
 		out.Session = s.publicSession(sr.View)
 		out.Watermark = sr.View.Watermark
 		out.Entries, e = s.entryPage(ctx, tx, id, "", 50, false)
@@ -467,7 +471,14 @@ func (s *Service) notify(id string) {
 	}
 }
 func (s *Service) contextMessages(ctx context.Context, id string) ([]Message, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT kind,body FROM ops_chat_entries WHERE session_id=? AND context_allowed=1 ORDER BY seq DESC LIMIT 20`, id)
+	policy := s.policy()
+	// 模型可见上下文从最新压缩 checkpoint 起读(OpenCode 模式):checkpoint 之前的
+	// 历史已被摘要取代,展示层仍保留完整记录。seq >= 让 checkpoint 自身入选。
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT kind,body FROM ops_chat_entries
+		 WHERE session_id=? AND context_allowed=1
+		   AND seq >= COALESCE((SELECT MAX(seq) FROM ops_chat_entries WHERE session_id=? AND kind='summary_checkpoint'), 0)
+		 ORDER BY seq DESC LIMIT ?`, id, id, policy.HistoryMessages)
 	if err != nil {
 		return nil, ErrStorage
 	}
@@ -488,7 +499,12 @@ func (s *Service) contextMessages(ctx context.Context, id string) ([]Message, er
 			return nil, err
 		}
 		text := s.scrub(body.Text, 8<<10)
-		if size+len(text) > 32<<10 {
+		if kind == KindCheckpoint {
+			// checkpoint 以 user 角色注入并加包裹说明:它是历史摘要,不是新指令。
+			kind = "user"
+			text = "<conversation-checkpoint>\n" + text + "\n</conversation-checkpoint>"
+		}
+		if size+len(text) > policy.HistoryBytes {
 			break
 		}
 		size += len(text)

@@ -1,119 +1,153 @@
-# AI 测试节点(ai_test)与仓库测试约定 — 设计
+# AI 测试节点(ai_test):AI 直接执行测试 — 设计
 
-> 状态:草案(未实现;前置项与分期见「落地顺序」)。相关:`internal/ai`(AI 服务,密钥仅存 vault)、`internal/build/dag_test_report.go`(JUnit/质量门禁)、`internal/build/shell_driver.go`(工具链容器启动参数)、`internal/build/ecs_power.go`(控制面节点执行器范本)、`internal/pipeline/ecs_power.go`(保存期校验范本)、`web/src/components/pipeline/jobConfigSchema.ts`(节点 schema)。
+> 状态:草案(未实现;本版纠正核心定位——AI 是**测试的执行者**,不是测试脚本的作者;早期"AI 生成脚本 + 确定性回放"方案已废弃)。相关:`internal/ai`(AI 服务、`AgentRound` 工具调用循环,密钥仅存 vault)、`internal/build/ecs_power.go`(控制面节点执行器范本)、`internal/build/shell_driver.go`(工具链容器启动参数)、`internal/build/dag_test_report.go`(测试报告落库/门禁)、`internal/notify/router.go`(事件路由)、`web/src/components/pipeline/jobConfigSchema.ts`(节点 schema)。
 
-## 目标与分层
+## 定位:AI 测试,不是 AI 写测试
 
-测试资产(测试需求 + 测试脚本)一律放代码库约定位置,与业务代码同 commit、同评审、随分支演进(与 `.pipewright.yml` pipeline-as-code 同构);流水线节点只做**薄执行器**——声明套件类型/过滤/环境映射,不内联任何测试内容。执行与判定分三层:
+**AI 读需求、亲手操作被测系统、下裁决**。人写的唯一东西是测试需求(`.md`,提交进仓库);run 中 ai_test 节点为每条需求启动一个 agent 会话:理解需求 → 驱动真实浏览器(前端)或发 HTTP 请求(接口)按需求操作系统 → 观察实际结果 → 输出结构化裁决。**仓库里没有也不需要 `.spec.ts` 之类的测试脚本**;Playwright 在本体系中的角色是 **agent 的「手」**——浏览器动作执行层,不是测试资产格式。
 
-- **确定性回归**(Playwright E2E / 接口套件):script 类任务在工具链容器执行,AI 不参与判定;
-- **AI 验收**(新节点 `ai_test`,分类 quality):自然语言需求 → LLM 结构化裁决,gate/advisory;
-- **AI 增强**(生成用例、失败诊断):只出现在「生成」与「分析」两端,中间执行路径不依赖任何 AI(NFR-10)。
+- 需求(`.md`,人写)定义**什么算对**;
+- AI agent 在运行时**直接执行验证**(理解 → 操作 → 观察 → 裁决);
+- 裁决 → 同构测试报告(TestReportPanel)+ 通知;**裁决一律仅供参考,放行决策永远是人**(审批门,见「结果呈现与通知」)。
 
-## 仓库约定(test-as-code)
+(可选共存:常规确定性测试套件仍可用既有 script 任务执行——零新代码、与本特性无关,不在此展开。)
+
+## 仓库约定
+
+需求是唯一入库的测试资产(与功能代码同 PR、同评审;平台不写仓库):
 
 ```
 .pipewright/
   tests/
-    requirements/        # 测试需求(*.md + frontmatter)——ai_test 节点输入
-      smoke/login.md
-      checkout.md
-    api/                 # 接口套件:suite.yaml 声明 runner(image + 入口命令),cases/ 放用例
-    reports/             # 统一 JUnit 输出 junit-<suite>.xml(运行产物,应 gitignore)
-e2e/ + playwright.config.ts   # 前端沿用 Playwright 标准布局(生态约定优先,不挪进来)
+    requirements/          # 测试需求(*.md)——ai_test 的输入,人写
+      web/                 #   按被测面分子目录(仅惯例,不强制)
+        checkout.md
+      api/
+        coupon.md
 ```
 
-- **统一报告路径**:无论何种 runner,JUnit 一律写 `.pipewright/tests/reports/junit-<suite>.xml` → 质量门禁的 reportPath 退化为常量(pytest `--junitxml`、Playwright `--reporter=junit` 均原生支持)。
-- **需求文件 = Markdown + YAML frontmatter**(只此一种格式,不做 .yaml 双轨):
+- **需求文件 = Markdown + YAML frontmatter**(整体可省,缺省 id=文件路径 slug、severity=blocker、target=继承节点):
 
 ```markdown
 ---
-id: checkout-flow        # 必填,仓库内唯一
-severity: blocker        # blocker = gate(缺省,fail-closed)/ suggest = advisory
-target: ${BASE_URL}      # 可选 HTTP URL;${VAR} 引用运行参数/构建变量;缺省继承节点 target
+id: checkout-flow
+severity: blocker        # 呈现权重(缺省 blocker):blocker 失败 = 红色高亮并置顶审批卡;suggest 失败 = 黄色参考
+target: ${BASE_URL}      # 可选;缺省继承节点 target;${VAR} 引用运行参数/构建变量/DEPLOY_HOST
 ---
-登录测试账号,加购任一商品并结算。期望:订单创建成功,金额与购物车一致。
+登录测试账号,加购任一商品并用优惠券结算。
+期望:有效券码应用后订单金额立减;无效券码提示「券码无效」且金额不变。
 ```
 
-- 目标解析顺序:**需求 frontmatter `target` > 节点 `target`**,两级皆空的需求 → 发现期判 fail(无被测对象,评审无从谈起)。有值时抓取响应文本(限长 + 脱敏后)作评审上下文;无 target 则纯需求文本评审(如评审上游产物)。抓取出发点:缺省控制面直接抓取;节点绑定 `deployJob` 时改**经 SSH 在被测机上执行**(curl,命令数组化),解决内网服务中控不可达的问题。
-- 冒烟/全量分层靠子目录 + 节点 glob 过滤实现,不另造标签机制。
+- 目标解析:**需求 frontmatter `target` > 节点 `target`**,两级皆空 → 发现期判 fail(无被测对象)。
+- 冒烟/全量分层:子目录 + 节点 glob 过滤,不另造标签机制。
+- **依赖与顺序**:生命周期成对的场景(创建→删除)**优先写成一条自包含需求**(创建→验证→删除→验证,测试数据生命周期自包含);确需拆分才用 frontmatter `needs`(如 `delete-resource.md` 声明 `needs: [create-resource]`);执行语义见「执行顺序与依赖」。前置动作(登录等)直接写进需求正文,由 agent 自理,不算依赖。
 
-## ai_test 节点语义
+## ai_test 节点:agent 执行模型
 
-控制面执行(同 ecs_power:不占 workspace,HTTPS 出网即可)。逐需求独立评审:
+分类 quality,控制面执行,逐需求一个独立 agent 会话:
 
-1. **发现即校验**:约定路径不存在 / frontmatter 解析失败 / id 重复 → fail fast(错误带文件名);发现 0 个需求 → 判 fail(防路径 typo 静默绿灯);日志首行回显「发现 N 个需求(blocker X / suggest Y)」。
-2. **评审**:每条需求一次 LLM 调用(temperature 0),严格 JSON 裁决 `{verdict: pass|fail, reason, evidence}`;解析失败重试一次,仍失败按 fail 处理(诚实边界,不做宽松解析)。prompt 中指令与数据围栏分离——需求正文与抓取内容是不可信数据(防提示注入)。
-3. **裁决**:任一 blocker fail → 节点失败(ErrBuildFailed,阻断下游);suggest fail 不阻塞,但进日志与运行摘要。结果经 `$PIPEWRIGHT_ENV` 输出(`ai_test_passed` 等)供下游节点消费。
-4. **脱敏**:发往 LLM 前过 run Masker;${VAR} 展开后日志只回显键名不回显值。
+1. **发现即校验**:约定路径不存在 / frontmatter 解析失败 / id 重复 → fail fast(错误带文件名);发现 0 个需求 → 判 fail(防路径 typo 静默绿灯);日志首行回显「发现 N 个需求(blocker X / suggest Y)+ 执行序」。
+2. **执行顺序与依赖**:发现后按 frontmatter `needs`(依赖的需求 id 列表)构图,**Kahn 拓扑排序**——复用 `internal/dag`,与流水线 job 的 `needs` 同款语义,零学习成本;**成环 → 发现期 fail fast**;无依赖需求按路径字典序。**同一浏览器上下文顺序执行**:cookie/localStorage 跨需求保留(第一条需求登录后,后续需求中 agent 观察到已登录即径直继续,重复前置动作的成本自动消失)。**依赖失败 → 依赖它的需求标 ⏭ skipped**(不算失败,报告注明级联原因;不隐藏级联,也不放大成失败——最终人判)。
+3. **agent 循环**:LLM 收到「需求正文 + 当前观察」→ 决定下一个动作 → 执行 → 新观察回传 → 循环直至产出裁决或预算耗尽。复用 `internal/ai` 的 AgentRound;temperature 0。**每会话累计 AI 用量与费用**(模型 / LLM 轮次 / 输入输出 token / 时长 / 实际步数 / 花费):provider 响应自带的 usage 优先,缺失时按字符量估算并如实标注「估算」;**费用取自定网关自报**——流式末 chunk 的 `x_new_api_consumed_amount` 字段或非流式 `X-New-Api-Consumed-Amount` 响应头,逐调用求和、原样记录不做换算;网关未回报(直连 OpenAI/Claude/Ollama)则费用栏缺省,退化为纯 token 展示,不编造。动作集:
+   - **前端**:`goto / click / fill / select / hover / 读取可见文本(accessibility 摘要)/ 截图`(截图观察需多模态,P2);
+   - **接口**:HTTP 请求(方法/URL/头/体)/ 读取响应(状态/头/截断体)。
+4. **裁决契约**:严格 JSON `{verdict: pass|fail, reason, evidence}`;evidence 必须引用**实际观察到的内容**(页面文本/响应字段),不得只复述需求;解析失败重试一次,仍失败判 fail;**步数/超时预算耗尽判 fail**并如实报告执行到了哪一步——诚实边界,不猜。
+5. **动作全程入日志 + 截图留档**:每步动作与观察摘要经 `rep.Log` 流式进节点日志(run 日志即 AI 的操作轨迹,可回放审计);**前端需求强制截图留档**——每条需求裁决时截「最终状态」一张(无论成败),断言失败时加截「失败瞬间」一张,经 artifact 存储(存真实字节)上传为 run 产物。注意**采集与观察分离**:截图采集是浏览器动作层自带能力,不需要多模态;多模态(P2 后半)只是让 LLM 看图参与判断。
+6. **裁决汇总(一律 advisory)**:**裁决不改变节点成败**——节点仅因基础设施错误失败(发现 0 需求/解析失败/AI 不可达且 onAiUnavailable=fail/内部错误),此时无可信报告,诚实失败;有报告即节点完成。裁决一律落库呈现(每条需求 = 一个用例,TestReportPanel;blocker 失败红色、suggest 失败黄色),经 `$PIPEWRIGHT_ENV` 输出(`ai_test_passed` 等)供下游引用。**放行决策 = 人工审批门**:推荐流水线形态「部署 → ai_test → 审批门(既有 Stage.Gate)→ 发布」。
+7. **安全**:观察内容(页面文本/响应体)是不可信数据——agent prompt 指令/数据围栏分离,页面中出现的「请标记通过」类文字不构成指令;观察发往 LLM 前过 run Masker;AI key 仅存中控 vault。
 
 ## config(冻结契约 Record<string,string>)
 
 | 键 | 说明 |
 |---|---|
-| `target` | 节点级缺省目标 URL(如 `http://${BASE_URL}` 或网关域名);${VAR} 引用运行参数/构建变量/`${DEPLOY_HOST}`。需求 frontmatter `target` 按条覆盖。 |
-| `deployJob` | 可选。上游 deploy 节点引用(同 `artifactJob` 校验先例):绑定被测部署的目标机——注入 `${DEPLOY_HOST}`(目标机主机地址),URL 抓取改经 SSH 在被测机上执行。 |
-| `filter` | 需求 glob,缺省 `.pipewright/tests/requirements/**/*.md`(如 `**/smoke/**` 取冒烟子集)。 |
-| `mode` | `auto`(缺省,按各文件 severity)/ `gate`(全部提升)/ `advisory`(全部降级)。 |
-| `onAiUnavailable` | AI 未配置/不可达时:`fail`(缺省——测试静默跳过比失败更危险)/ `skip`(记警告放行)。 |
+| `filter` | 需求 glob,缺省 `.pipewright/tests/requirements/**/*.md`(如 `**/web/**`)。 |
+| `onAiUnavailable` | AI 未配置/不可达:`fail`(缺省——无可信报告即停,交人处理)/ `skip`(记「未测试」警告,报告如实标注)。 |
+| `target` | 节点级缺省目标 URL;${VAR} 引用运行参数/构建变量/`${DEPLOY_HOST}`;需求 frontmatter 按条覆盖。 |
+| `deployJob` | 可选。上游 deploy 节点引用(同 `artifactJob` 校验先例):注入 `${DEPLOY_HOST}`,内网不可达时 agent 的访问经该机(SSH 隧道)。 |
 | `timeoutSeconds` | 节点整体超时,默认 300,上限 3600。 |
-| `model` | 可选模型覆盖;不填用平台 AI 配置的默认模型。 |
+| `maxSteps` | 单需求 agent 步数预算,默认 25,上限 100;耗尽判 fail(兼作成本护栏)。 |
+| `model` | 可选模型覆盖;不填用平台 AI 配置默认。 |
 
-保存期校验(`validateAITest`):mode/onAiUnavailable 枚举、timeout 范围、filter 非空可解析、`deployJob`(若有)必须引用上游 deploy 类节点;路径存在性与文件合法性由**运行时发现步骤**裁决(保存期校验只看 spec JSON,看不见仓库)。
-
-## 确定性回归(无需新节点,P1)
-
-- Playwright:script 任务 + `mcr.microsoft.com/playwright:v1.x` + `npx playwright test --reporter=junit`;测试目标 = 已部署环境(`BASE_URL` 用类型化运行参数传入)或 sidecar 服务(network alias 互访,远程构建机同样适用);镜像走内置 registry 的 pull-through 缓存(约 2GB,值得缓存)。
-- **Resource 扩展**(P1 唯一必改代码):`pipeline.Resource` 加 `Init bool`(Chromium 子进程收尸,无 init 会积僵尸)与 `ShmSize string`(/dev/shm 默认 64MB,复杂页面崩 Chrome),随 cpu/memory 同路流转:job 配置 → `shell_driver.go RunToolchain` → 远程透传(remote_stage_exec.go)。**不做任意 docker 参数透传**(守住命令数组化防注入基线)。
-- 出厂一个「Playwright E2E」自定义节点预设(library 机制,零代码),预填镜像/命令/JUnit 报告路径与 artifactPath(HTML 报告 + trace)。
-- 接口套件:runner 不在平台层锁定,只要能产 JUnit(pytest / hurl 均可),`api/suite.yaml` 自声明镜像与入口命令。
-
-## 结果呈现与通知
-
-**报告三层(全部复用现有管道,无新 UI)**:
-
-1. **数值与失败明细**:套件 job 配 `testReport=junit` + `reportPath=.pipewright/tests/reports/junit-<suite>.xml` → 现有质量门禁 + run 详情 TestReportPanel 直接展示(通过/失败数、失败明细、覆盖率)。已知约束:阶段级报告采集只取**第一个**声明 job(`dag_test_report.go reportSpecFromStage`)——e2e 与接口套件分阶段放,或按「落地顺序」P2 扩展为多声明合并采集。
-2. **富报告与取证**:script job 的 `artifactPath`(多行/glob/打包模式)上传 `playwright-report/` 与 `test-results/` 为 run 产物——运行详情与产物管理页可下载;trace.zip 本地 `npx playwright show-trace` 回放,HTML 报告自包含可直接打开。app 内在线预览不做(任意 HTML 注入面,首期下载为主)。
-3. **AI 验收结果**:ai_test 裁决**直接持久化为同构测试报告**(控制面直写 run 测试报告存储,不经工作区文件——远程构建机场景无本地 workspace 可写),TestReportPanel 与 JUnit 报告同屏呈现(每条需求 = 一个用例,reason 进失败明细);job Summary 一行结论;逐条 verdict 流式进节点日志。
-
-**通知(复用事件→通道路由与模板)**:
-
-1. **零改动基线**:blocker fail → 节点失败 → run 失败 → 现有 `build_failed` 事件照发。
-2. **新增两个节点级事件**(先例:`health_check_failed`):`test_gate_failed`(门禁/验收 gate 失败,默认路由随 build_failed 同渠道,便于区别于普通构建失败做定制路由)与 `ai_acceptance_failed`(advisory 失败——run 整体绿但建议项未过;这是**唯一必须新事件**的场景:run 不失败,现有事件不会触发)。
-3. **模板变量增量**:TemplateVars(冻结契约,**只增不改**)补 `{{testSummary}}`(N 通过/M 失败)、`{{failedTests}}`(失败用例/需求名,超长截断)、`{{reportUrl}}`(run 详情锚点);`RenderText` 已被流水线内 notify 节点复用,占位增量自动惠及内联通知模板。
+保存期校验(`validateAITest`):onAiUnavailable 枚举、timeout/maxSteps 范围、filter 可解析、`deployJob` 引用上游 deploy 类节点;路径存在性与文件合法性由**运行时发现步骤**裁决(保存期只看 spec JSON,看不见仓库)。
 
 ## 执行位置与密钥边界
 
-- ai_test 控制面执行;**远程构建机场景 workspace 在远程** → 需求目录(纯文本,KB 级)经 SSH 取回后再评审。
-- **AI key 永远留中控 vault,绝不下发构建容器**;构建容器内调 AI(如 Playwright 容器内做 AI 断言)留给 P4 的 run-scoped 代理端点(`/api/runner/ai/proxy` + 每-run 令牌与用量限额),首期不做。
+- **前端 agent 的浏览器跑在控制机的容器里**(Playwright 官方镜像;需 `--init`(Chromium 子进程收尸)与 `--shm-size`(/dev/shm 默认 64MB 崩 Chrome)→ **前置改动**:`pipeline.Resource` 加 `Init bool` + `ShmSize string`,随 cpu/memory 同路:job 配置 → `shell_driver.go RunToolchain` → 远程透传;不做任意 docker 参数透传(防注入基线))。LLM 循环在控制面,经本地有限动作接口(HTTP/WS)驱动 agent 容器——实现期二选一:chromedp 直驱容器内浏览器,或容器内 sidecar 暴露动作集。
+- **接口验收(P1)无需浏览器容器**:控制面直接发 HTTP 请求。
+- 远程构建机场景:需求目录(纯文本,KB 级)经 SSH 取回;被测系统可达性与部署路径一致(部署由中控发起),内网不可达走 `deployJob`。
+- **AI key 永远留中控 vault,绝不下发任何容器**;构建容器内直接调 AI 的 run-scoped 代理端点(`/api/runner/ai/proxy` + 每-run 限额)仍为后续可选。
+- **平台不做 git 编辑器**:不 push 分支、不开 PR;仓库只进人写的需求。
+
+## 结果呈现与通知
+
+- **报告**:ai_test 裁决直写 run 测试报告存储(同 `dag_test_report.go` 落库路径,不经工作区文件),TestReportPanel 与 JUnit 报告同屏(每条需求 = 一个用例,reason + evidence 进失败明细,**evidence 附截图缩略图、点击放大——图片即 artifact,复用现有存储,无需另建**;**每行带 AI 用量与费用**(模型/轮次/输入输出 token/时长/步数/花费,紧凑格式如 `9 轮 · 6.2k/0.8k tok · 花费 0.0221`),表下节点用量汇总一行);动作轨迹在节点日志(SSE 实时 + 历史回放);会话截图/动作序列为 run 产物可下载;**skipped(⏭)需求行注明「依赖 X 失败/未执行」**,级联可见。**通知卡片**在支持图片的渠道(飞书/企微富卡片)内嵌失败截图。
+- **放行 = 人工审批门(既有 Stage.Gate + approval_required 事件)**:推荐流水线「部署 → ai_test → 审批 → 发布」;审批通知卡片(飞书/企微富卡片,既有签名链接按钮)与审批页**内嵌测试摘要**——`{{testSummary}}` / `{{failedTests}}`(blocker 失败红色置顶、suggest 失败黄色)+ 失败截图 + `{{reportUrl}}`,人看证据放行/驳回;驳回 → run 失败 → 既有 `build_failed` 照发。TemplateVars(冻结契约,只增不改)补上述占位;`RenderText` 供流水线内 notify 节点复用。
+- **参考性通知**:新增 `ai_acceptance_failed`(先例:节点级事件如 health_check_failed)——**不设审批门**的流水线(夜间 cron 全量)里出现失败时的黄色提醒,不阻塞任何事。
+- job Summary 一行结论(N 通过/M 失败;总用量:R 轮 / 输入 X / 输出 Y tok / 花费 Z)。
+
+## 示例:日常工作流(以「下单支持优惠券」为例)
+
+1. **写需求(人唯一要"写"的东西)**:新建 `.pipewright/tests/requirements/web/checkout.md`,正文一段自然语言(如上例),与功能代码同一分支、同一 PR(frontmatter 可省)。
+2. **PR 触发 run**(运行参数 `BASE_URL`=staging):部署后 ai_test 逐条执行——agent 打开登录页、登录测试账号、加购、输入券码、读取金额……**每步动作流式进节点日志**;「有效券立减金额」pass(evidence:金额由 ¥95.00 变为 ¥89.00);「无效券提示」fail(evidence:提交 INVALID 后页面无任何反馈,未见「券码无效」文案)。
+3. **run 到审批门暂停**:审批卡片/审批页内嵌测试摘要——「✅ 有效券立减金额(¥95.00→¥89.00)」「⚠️ 无效券提示(未见文案)」+ 两张截图 + 用量;人点开证据,**确认放行或驳回**(驳回 → run 失败 → 修复重跑)。
+4. **发布日**同一条流水线,`BASE_URL`=prod + `filter` 冒烟子集,同样人工放行;夜间 cron 全量**不设审批门**,失败走 `ai_acceptance_failed` 黄色提醒,不阻塞。
+
+## 示例:测试报告
+
+TestReportPanel(ai-acceptance):
+
+| 需求 | severity | 裁决 | evidence(节选) | 截图 | 用量 |
+|---|---|---|---|---|---|
+| web/checkout › 有效券码立减金额 | blocker | ✅ pass | 应用券码 COUPON-1 后,订单合计由 ¥95.00 变为 ¥89.00,与券面立减 ¥6.00 一致 | 📷 checkout-pass.png(裁决时最终状态:合计 ¥89.00) | 9 轮 · 6.2k/0.8k tok · 花费 0.0221 |
+| web/checkout › 无效券码提示 | suggest | ❌ fail | 提交 INVALID 后页面无任何反馈,未见「券码无效」文案 | 📷 checkout-fail.png(失败瞬间:无任何提示的结算页) | 5 轮 · 4.1k/0.6k tok · 花费 0.0125 |
+
+节点用量汇总:14 轮 LLM 调用 · 输入 12.6k / 输出 1.9k tokens · 花费 0.0346(网关计价) · 模型 claude-sonnet-4 · 耗时 3m12s(步数预算 25,实际峰值 11)。
+
+节点日志(动作轨迹,节选):
+
+```
+[ai_test] 发现 1 个需求(blocker 1 / suggest 1)
+[agent] goto http://staging.example.com/login
+[agent] fill #username=tester → click「登录」
+[agent] goto /cart → click「加购」→ goto /checkout
+[agent] fill 优惠券=COUPON-1 → click「应用」→ observe: 合计 ¥89.00
+[agent] capture 📷 checkout-pass.png → verdict: pass (evidence: 95.00→89.00)
+[agent] fill 优惠券=INVALID → click「应用」→ observe: 无反馈
+[agent] capture 📷 checkout-fail.png → verdict: fail (evidence: 未出现「券码无效」)
+[ai_test] 用量: 14 轮 · 输入 12.6k / 输出 1.9k tok · 花费 0.0346 · claude-sonnet-4 · 3m12s
+```
+
+审批门卡片(approval_required 增强:内嵌测试摘要,人在通知里看证据放行/驳回):
+
+> ⏸ **等待审批 · 发布前测试验收** · shop-web #128
+> AI 验收:2 条 — blocker 1/1 通过;建议 1 失败 · 14 轮 · 12.6k/1.9k tok · 花费 0.0346
+> ✅ 有效券码立减金额 — ¥95.00→¥89.00
+> ⚠️ 无效券码提示 — 未见「券码无效」文案 📷
+> [查看报告] [✓ 放行发布] [✗ 驳回]
 
 ## 落地顺序
 
-1. **P1 确定性回归**:Resource init/shmSize + Playwright 在流水线跑通(用本仓库 `web/e2e-real` dogfood)+ 仓库约定文档化 + 预设节点;报告/取证即走 `testReport=junit` + `artifactPath`(见「结果呈现与通知」,零新代码)。
-2. **P2 ai_test 节点**:本 spec 核心;裁决同构落库(报告面板可见)+ `test_gate_failed`/`ai_acceptance_failed` 事件与模板变量增量;可选:阶段多报告合并采集(解除「一阶段一报告」限制)。`.pipewright.yml` 经 `config:` 透传即刻可用,专用语法糖块可选。
-3. **P3 失败诊断增强**:diagnoseHook 收集 `.pipewright/tests/reports/` 与 Playwright 失败产物喂 AI(mask-first 先行);截图裁决需给 `chatWithTokens` 增加多模态(图片)content 支持。
-4. **P4 生成与代理**:AI 生成需求/用例 → PR(目标路径即约定目录,人审后合入);run-scoped AI 代理端点。
+1. **P1 HTTP agent(接口验收)**:节点注册(后端校验/执行器/分发 + 前端 schema/图标/8 语言)、发现与校验、AgentRound 循环(纯 HTTP 动作集)、裁决同构落库 + TestReportPanel;`Resource` init/shmSize(为 P2 预置)。
+2. **P2 浏览器 agent(前端验收)**:agent 容器 + 动作桥(chromedp 或 sidecar,实现期定);DOM 文本观察先行,截图观察(多模态,`chatWithTokens` 图片 content)随后;**截图证据留档随浏览器动作层即可用**(采集与观察分离),报告缩略图同步落地。
+3. **P3 审批集成与通知**:审批卡片/审批页内嵌测试摘要与截图(approval_required 载荷增强)+ TemplateVars 增量 + `ai_acceptance_failed`;`deployJob` 绑定(SSH vantage)。
+4. **P4 增强**:run-scoped AI 代理端点;对话式迭代需求草稿(opschat,仍走人写文件入库);确定性套件共存注记文档化。
 
 ## 实现位置(预期)
 
-- `internal/pipeline/ai_node.go`:`JobTypeAITest = "ai_test"` 常量 + `validateAITest` 挂 normalizeSpec 末尾(仿 `internal/pipeline/ecs_power.go`)。
-- `internal/build/ai_node.go`:`isAITestJob` 谓词 + `runAITestJob`(窄接口 `stageAITester`,不直接依赖 internal/ai 包);`deployJob` 目标机解析与 SSH 抓取经窄接口注入(仿 `stageEcsPowerController` 模式);分发共四处:dag_stage_exec 三处(类型分桶/串行循环/job 级 DAG switch)+ remote_stage_exec 控制面桶。
-- `internal/ai`:新增 `JudgeRequirements`(复用 `chatWithTokens` 的流式消费/响应限长/SSRF 钉扎;temperature 0;严格 JSON + 单次重试);`ErrAINotConfigured` → 按 onAiUnavailable 裁决。
-- 注入:`build.WithAITester`(BuilderOption,nil-guard 仿 deployer;服务未注入 → 记「未注入,跳过」,同 ecs_power/oss_upload 向后兼容款)。
-- 报告落库:ai_test 裁决直写 `internal/run` 测试报告存储(同 `dag_test_report.go` 采集后的落库路径),不经工作区文件。
-- 通知:`internal/notify/router.go` 注册 `test_gate_failed` / `ai_acceptance_failed`;`template.go` TemplateVars 只增不改地补测试占位(`{{testSummary}}`/`{{failedTests}}`/`{{reportUrl}}`)。
-- 前端:`jobConfigSchema.ts` 注册 spec(category quality;可选新 FieldKind `aiModel` 下拉,数据源 `/api/settings/ai/models`)+ `JobTypeIcon.vue` 图标 + 8 语言 `pipelineJob.ts`(zh-CN 先定稿)。
-- 无 DB 迁移(spec 以 JSON 存储);自定义节点预设机制直接复用。
+- `internal/pipeline/ai_node.go`:`JobTypeAITest = "ai_test"` + `validateAITest` 挂 normalizeSpec 末尾(仿 `internal/pipeline/ecs_power.go`)。
+- `internal/build/ai_node.go`:`isAITestJob` 谓词 + `runAITestJob`(窄接口 `stageAITester`,不直接依赖 internal/ai 包;**needs 拓扑排序复用 `internal/dag`(Kahn)**);分发:dag_stage_exec 三处(类型分桶/串行循环/job 级 DAG switch)+ remote_stage_exec 控制面桶;`build.WithAITester` 注入(nil → 记「未注入,跳过」,同 ecs_power/oss_upload 兼容款)。
+- `internal/ai`:`AgentTest`(复用 AgentRound / chatWithTokens 的流式、限长、SSRF 钉扎;动作集接口化:HTTP 集 P1、浏览器集 P2;**chatWithTokens/AgentRound 透出 provider usage 与网关费用**——流式末 chunk `x_new_api_consumed_amount` / 非流式响应头 `X-New-Api-Consumed-Amount`,缺失时字符估算并标注);`ErrAINotConfigured` → 按 onAiUnavailable 裁决。
+- agent 容器编排:Playwright 镜像 + Resource 扩展(`shell_driver.go` + 远程透传)。
+- 报告:裁决直写 `internal/run` 测试报告存储(**记录含 AI 用量字段**,JSON 承载,无重迁移);通知:approval_required 载荷增强(测试摘要/截图)、`internal/notify/router.go` 注册 `ai_acceptance_failed`、`template.go` 占位增量。
+- 前端:`jobConfigSchema.ts`(category quality;可选 FieldKind `aiModel`,数据源 `/api/settings/ai/models`)+ `JobTypeIcon.vue` + 8 语言 `pipelineJob.ts`(zh-CN 先定稿);无 DB 迁移。
 
 ## 边界与取舍
 
-- **前端脚本不挪进 `.pipewright/`**:尊重 Playwright 标准布局,本地 `npx playwright test` 与 IDE 插件照常工作;平台只约定「发现规则」,不为测试工具重造目录。
-- **需求不内联在节点配置**:全部走仓库约定(既定约束);临时验证走运维终端的 AI 助手。
-- **AI 实时驱动浏览器(agent 探索模式)不做**:慢、贵、不稳定;基于截图/HTML 的 advisory 裁决(多模态)放 P3。
-- **裁决不确定性诚实暴露**:JSON 不可解析重试一次后判 fail;Ollama 等本地模型的格式可靠性按同一策略处理。
-- **0 需求/空套件即失败**;advisory 失败不阻塞但必须可见(日志 + 运行摘要)。
-- **`.pipewright/tests/reports/` 由用户 gitignore**(文档提示,不做 lint 强制)。
-- **HTML 报告不做 app 内在线预览**:任意 HTML 有注入面;产物下载 + 本地 `show-trace` 回放已够用,预览(iframe sandbox)留待真有诉求再评估。
-- **通知占位集只增不改**:TemplateVars 是冻结契约,新增占位不破坏既有模板;不做破坏性改名/删除。
-- **AI 配置保持平台级单 profile**:节点仅可覆盖模型名;多供应商/多 profile 是独立前置架构决策,本 spec 不裹挟。
-- **deployJob 多台目标机时 MVP 取第一台抓取**并日志明示;多机扇出对齐 health_check 的逐台语义留后续。被测机需有 curl(部署目标机均为 SSH 可达的 Linux,curl 基本普适,诚实边界)。
+- **机器不放行(设计原则)**:AI 裁决一律 advisory,不提供「AI 直接阻塞/放行」选项;流水线的闸门只有两种——人工审批门(推荐,放行 = 人点按钮,既有 Stage.Gate,零新闸门语义,全程审计)或不设闸(纯参考 + 通知)。裁决的非确定性因此不再传导为放行风险——**波动只影响人的注意力,最终由人消化,这正是「最终人判」的意义**(temperature 0 + 步数预算 + evidence 引用实际观察仍用于把噪声压到可读)。
+- **成本显式化**:每 run 每需求一次 agent 会话(多轮 LLM + 浏览器操作),分钟级;maxSteps/timeout 即成本护栏;推荐节奏:发布冒烟 + 夜间全量。
+- **会产生数据的操作**(下单/写库):agent 不自动清理——需求应自备测试数据并说明清理方式,平台不代清理(文档提示);只读操作优先。
+- **0 需求/空发现即失败**;advisory 失败不阻塞但必须可见(报告 + 通知)。
+- **AI 配置平台级单 profile**:节点仅可覆盖模型名;多供应商 profile 是独立前置决策。
+- **费用原样透传,不做换算**:平台不维护价格表;自定网关回报的费用(`x_new_api_consumed_amount` / `X-New-Api-Consumed-Amount`)逐调用求和、原样入报告,不换算单位、不造数;直连 provider 无此字段时退化为 token-only 展示。计价单位标签(USD/CNY 等)可作 AI 设置里的纯展示项;跨功能(诊断/生成等)的平台级费用统计复用同一采集管道,另行立项。
+- **不做跨需求数据传递**:`needs` 只管顺序与跳过;数据交接靠需求文本自描述(命名约定、「删除任一 X 资源」措辞)或合并为一条完整生命周期需求;并行执行(多浏览器上下文独立会话)留后续,首版顺序执行。
+- **平台不做 git 编辑器**:克隆凭据仅用于拉取;仓库变更只有人提交一条路。

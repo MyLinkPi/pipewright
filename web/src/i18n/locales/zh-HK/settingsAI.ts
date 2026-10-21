@@ -50,6 +50,27 @@ export default {
   budgetHint: '超出後暫停 AI 診斷(留空=不限制;本期僅宣告,下一 Epic 強制執行)',
   budgetPlaceholder: '如 500000,留空不限制',
 
+  ctxTitle: '上下文管理',
+  ctxWindowHint:
+    '運維對話 agent 的上下文預算:接近視窗上限時自動把舊對話壓縮為摘要,溢出時自動壓縮重試。單位均為 tokens,留空用預設值。',
+  ctxWindowLabel: '上下文視窗',
+  ctxWindowPlaceholder: '預設 200000',
+  ctxMaxOutputLabel: '單次輸出上限',
+  ctxMaxOutputPlaceholder: '預設 8192',
+  ctxKeepLabel: '壓縮保留最近',
+  ctxKeepPlaceholder: '預設 15000',
+  ctxAutoCompact: '接近上限時自動壓縮歷史',
+  ctxAdvanced: '進階設定',
+  ctxBufferLabel: '觸發預留',
+  ctxBufferPlaceholder: '自動(視窗 10%)',
+  ctxHistoryMessagesLabel: '歷史條數上限',
+  ctxHistoryMessagesPlaceholder: '預設 100',
+  ctxHistoryBytesLabel: '歷史位元組上限 (KB)',
+  ctxHistoryBytesPlaceholder: '預設 256',
+  ctxNote:
+    '壓縮只影響發給模型的上下文,會話界面仍保留完整歷史;壓縮摘要由目前配置的模型生成。',
+  errContextInvalid: '上下文配置須為非負整數或留空',
+
   enableAi: '啟用 AI 功能',
   enableAiDesc: '關閉時 AI 診斷靜默略過,核心 CI/CD 流水線不受影響',
 

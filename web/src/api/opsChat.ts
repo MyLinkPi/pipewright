@@ -24,6 +24,11 @@ export interface Capabilities {
   provider: Provider
   limits: Record<string, number>
 }
+export interface ContextUsage {
+  usedTokens: number
+  windowTokens: number
+  percent: number
+}
 export interface Session {
   id: string
   revision: number
@@ -33,6 +38,8 @@ export interface Session {
   activeRunId: string
   watermark: number
   storageBytes?: number
+  /** Latest measured context usage (absent until a round reports provider usage). */
+  contextUsage?: ContextUsage
   createdAt: string
   updatedAt: string
 }
@@ -138,6 +145,8 @@ export interface Entry {
   callId?: string
   text?: string
   status?: Status | 'partial'
+  /** Provider-measured usage of the round that produced this reply (if any). */
+  usage?: { inputTokens: number; outputTokens: number }
   createdAt: string
 }
 export interface Occupant { id: string; name: string; cpuPercent: number; memoryPercent?: number; memoryUsage?: string }

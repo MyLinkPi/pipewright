@@ -16,6 +16,54 @@ type aiBudgetDTO struct {
 	MonthlyTokenLimit *int64 `json:"monthlyTokenLimit"`
 }
 
+// aiContextDTO 是上下文管理声明(0/nil = 默认;与 ai.ContextSettings 同形)。
+type aiContextDTO struct {
+	WindowTokens     *int  `json:"windowTokens"`
+	MaxOutputTokens  *int  `json:"maxOutputTokens"`
+	HistoryMessages  *int  `json:"historyMessages"`
+	HistoryBytes     *int  `json:"historyBytes"`
+	AutoCompact      *bool `json:"autoCompact"`
+	KeepRecentTokens *int  `json:"keepRecentTokens"`
+	BufferTokens     *int  `json:"bufferTokens"`
+}
+
+func toAIContextDTO(c ai.ContextSettings) aiContextDTO {
+	return aiContextDTO{
+		WindowTokens:     &c.WindowTokens,
+		MaxOutputTokens:  &c.MaxOutputTokens,
+		HistoryMessages:  &c.HistoryMessages,
+		HistoryBytes:     &c.HistoryBytes,
+		AutoCompact:      c.AutoCompact,
+		KeepRecentTokens: &c.KeepRecentTokens,
+		BufferTokens:     &c.BufferTokens,
+	}
+}
+
+func fromAIContextDTO(d aiContextDTO) ai.ContextSettings {
+	out := ai.ContextSettings{
+		AutoCompact: d.AutoCompact,
+	}
+	if d.WindowTokens != nil {
+		out.WindowTokens = *d.WindowTokens
+	}
+	if d.MaxOutputTokens != nil {
+		out.MaxOutputTokens = *d.MaxOutputTokens
+	}
+	if d.HistoryMessages != nil {
+		out.HistoryMessages = *d.HistoryMessages
+	}
+	if d.HistoryBytes != nil {
+		out.HistoryBytes = *d.HistoryBytes
+	}
+	if d.KeepRecentTokens != nil {
+		out.KeepRecentTokens = *d.KeepRecentTokens
+	}
+	if d.BufferTokens != nil {
+		out.BufferTokens = *d.BufferTokens
+	}
+	return out
+}
+
 func makeAIModelsHandler(svc ai.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		lister, ok := svc.(ai.ModelLister)
@@ -47,14 +95,15 @@ func makeAIModelsHandler(svc ai.Service) http.HandlerFunc {
 
 // aiConfigDTO 是 GET/PUT 响应体(冻结契约;apiKey 只暴露掩码 apiKeyMasked,绝无明文)。
 type aiConfigDTO struct {
-	Configured   bool        `json:"configured"`
-	Enabled      bool        `json:"enabled"`
-	Provider     string      `json:"provider"`
-	BaseURL      string      `json:"baseUrl"`
-	Model        string      `json:"model"`
-	APIKeyMasked string      `json:"apiKeyMasked"`
-	Budget       aiBudgetDTO `json:"budget"`
-	UpdatedAt    *string     `json:"updatedAt"`
+	Configured   bool         `json:"configured"`
+	Enabled      bool         `json:"enabled"`
+	Provider     string       `json:"provider"`
+	BaseURL      string       `json:"baseUrl"`
+	Model        string       `json:"model"`
+	APIKeyMasked string       `json:"apiKeyMasked"`
+	Budget       aiBudgetDTO  `json:"budget"`
+	Context      aiContextDTO `json:"context"`
+	UpdatedAt    *string      `json:"updatedAt"`
 }
 
 // aiTestResultDTO 是 POST test 响应体(冻结契约:ok/latencyMs/detail/error)。
@@ -75,6 +124,7 @@ func toAIConfigDTO(c *ai.Config) aiConfigDTO {
 		Model:        c.Model,
 		APIKeyMasked: c.APIKeyMasked,
 		Budget:       aiBudgetDTO{MonthlyTokenLimit: c.Budget.MonthlyTokenLimit},
+		Context:      toAIContextDTO(c.Context),
 	}
 	if c.UpdatedAt != nil {
 		s := c.UpdatedAt.UTC().Format(time.RFC3339)
@@ -134,7 +184,8 @@ func makeSaveAISettingsHandler(svc ai.Service) http.HandlerFunc {
 			Budget struct {
 				MonthlyTokenLimit *int64 `json:"monthlyTokenLimit"`
 			} `json:"budget"`
-			Enabled bool `json:"enabled"`
+			Context aiContextDTO `json:"context"`
+			Enabled bool         `json:"enabled"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, "bad_request", "请求体格式错误")
@@ -147,6 +198,7 @@ func makeSaveAISettingsHandler(svc ai.Service) http.HandlerFunc {
 			Model:    req.Model,
 			APIKey:   req.APIKey,
 			Budget:   ai.Budget{MonthlyTokenLimit: req.Budget.MonthlyTokenLimit},
+			Context:  fromAIContextDTO(req.Context),
 			Enabled:  req.Enabled,
 		})
 		if err != nil {

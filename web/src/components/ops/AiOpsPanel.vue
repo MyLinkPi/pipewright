@@ -86,6 +86,11 @@ const storageNearQuota = computed(() => {
     used = session.value?.storageBytes
   return !!limit && !!used && used > 0.8 * limit
 })
+const contextUsage = computed(() => session.value?.contextUsage ?? null)
+function formatTokens(n: number): string {
+  if (n >= 1000) return Math.round(n / 1000) + 'k'
+  return String(n)
+}
 const waiting = computed(() => {
   if (
     busy.value &&
@@ -327,6 +332,26 @@ defineExpose({ close })
       </div>
     </div>
     <div
+      v-if="contextUsage"
+      class="ops-section ops-row ctx-usage"
+      role="status"
+      data-testid="ops-context-usage"
+    >
+      <span class="ctx-usage-label">{{ t('opsChat.contextUsage') }}</span>
+      <span class="ctx-usage-track" aria-hidden="true"
+        ><span
+          class="ctx-usage-fill"
+          :class="{ 'ctx-usage-fill--high': contextUsage.percent >= 80 }"
+          :style="{ width: Math.min(100, contextUsage.percent) + '%' }"
+      /></span>
+      <span class="ctx-usage-value"
+        >{{ contextUsage.percent }}% ·
+        {{ formatTokens(contextUsage.usedTokens) }}/{{
+          formatTokens(contextUsage.windowTokens)
+        }}</span
+      >
+    </div>
+    <div
       v-if="storageNearQuota"
       class="ops-section ops-row ops-feedback"
       role="status"
@@ -379,6 +404,38 @@ defineExpose({ close })
   max-height: 16%;
   min-height: 0;
   overflow: auto;
+}
+.ctx-usage {
+  flex: none;
+  gap: 8px;
+  align-items: center;
+  font-size: 12px;
+  color: var(--color-dim);
+}
+.ctx-usage-label {
+  flex: none;
+}
+.ctx-usage-track {
+  flex: 1;
+  display: inline-block;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--color-inset);
+  overflow: hidden;
+  min-width: 40px;
+}
+.ctx-usage-fill {
+  display: block;
+  height: 100%;
+  border-radius: 2px;
+  background: var(--color-primary);
+}
+.ctx-usage-fill--high {
+  background: var(--color-red, #e5484d);
+}
+.ctx-usage-value {
+  flex: none;
+  white-space: nowrap;
 }
 .ops-navigation {
   /* Reserve navigation chrome before sharing the panel's height between lists. */

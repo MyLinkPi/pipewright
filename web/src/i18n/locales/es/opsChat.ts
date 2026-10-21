@@ -107,6 +107,8 @@ export default {
   refresh: 'Actualizar',
   storageNearQuota:
     'El almacenamiento de la sesión se acerca al límite; considere crear una nueva sesión.',
+  checkpoint: '⇤ Conversación anterior compactada en un resumen',
+  contextUsage: 'Uso de contexto',
   unsaved: 'Borrador sin guardar',
   discardBody:
     'El contenido sin guardar en la memoria local puede perderse. ¿Descartarlo?',

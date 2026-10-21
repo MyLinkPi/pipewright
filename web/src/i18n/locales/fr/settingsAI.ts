@@ -53,6 +53,27 @@ export default {
     'Met en pause le diagnostic AI une fois dépassée (vide = illimité ; déclarée ce cycle, appliquée au prochain Epic)',
   budgetPlaceholder: 'par ex. 500000, vide = illimité',
 
+  ctxTitle: 'Gestion du contexte',
+  ctxWindowHint:
+    "Budget de contexte de l'agent ops : près de la limite de fenêtre, l'historique ancien est compacté automatiquement en résumé ; en cas de débordement, compactage puis nouvelle tentative. Valeurs en tokens, vide = valeur par défaut.",
+  ctxWindowLabel: 'Fenêtre de contexte',
+  ctxWindowPlaceholder: 'Par défaut 200000',
+  ctxMaxOutputLabel: 'Sortie max par appel',
+  ctxMaxOutputPlaceholder: 'Par défaut 8192',
+  ctxKeepLabel: 'À conserver lors du compactage',
+  ctxKeepPlaceholder: 'Par défaut 15000',
+  ctxAutoCompact: "Compacter l'historiel près de la limite",
+  ctxAdvanced: 'Avancé',
+  ctxBufferLabel: 'Réserve de déclenchement',
+  ctxBufferPlaceholder: 'Auto (10 % de la fenêtre)',
+  ctxHistoryMessagesLabel: 'Limite de messages',
+  ctxHistoryMessagesPlaceholder: 'Par défaut 100',
+  ctxHistoryBytesLabel: 'Limite de taille (Ko)',
+  ctxHistoryBytesPlaceholder: 'Par défaut 256',
+  ctxNote:
+    "Le compactage n'affecte que le contexte envoyé au modèle ; la vue de session conserve tout l'historique. Les résumés sont générés par le modèle configuré.",
+  errContextInvalid: 'Les valeurs de contexte doivent être des entiers non négatifs ou vides',
+
   enableAi: 'Activer les fonctions AI',
   enableAiDesc:
     'Désactivé, le diagnostic AI est ignoré silencieusement et les pipelines CI/CD principaux ne sont pas affectés',

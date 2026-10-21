@@ -42,6 +42,7 @@ import {
   type AIProvider,
   type AISettings,
   type AITestResult,
+  type SaveAISettingsInput,
 } from '../../api/aiSettings'
 
 // ─── types ───────────────────────────────────────────────────────────────────
@@ -148,6 +149,16 @@ const apiKey = ref('') // write-only: blank = keep existing; non-blank = rotate
 const monthlyTokenLimit = ref<string>('') // string for input binding; coerced on save
 const enabled = ref(false)
 
+// 上下文管理:字符串绑定,空 = 用服务端默认(保存时归 0)。窗口/输出/保留按 tokens。
+const ctxWindowTokens = ref<string>('')
+const ctxMaxOutputTokens = ref<string>('')
+const ctxAutoCompact = ref(true)
+const ctxKeepRecentTokens = ref<string>('')
+const ctxBufferTokens = ref<string>('')
+const ctxHistoryMessages = ref<string>('')
+const ctxHistoryBytesKB = ref<string>('') // KB 绑定,保存换算字节
+const ctxAdvancedOpen = ref(false)
+
 // field errors (422 mapping)
 const errors = ref({
   provider: '',
@@ -222,13 +233,27 @@ const isRotatingKey = computed(() => apiKey.value.length > 0)
 const isDirty = computed(() => {
   if (!savedSettings.value) return selectedProvider.value !== ''
   const s = savedSettings.value
+  const c = s.context
   return (
     selectedProvider.value !== s.provider ||
     baseUrl.value !== s.baseUrl ||
     model.value !== s.model ||
     apiKey.value !== '' ||
     String(s.budget.monthlyTokenLimit ?? '') !== String(monthlyTokenLimit.value ?? '') ||
-    enabled.value !== s.enabled
+    enabled.value !== s.enabled ||
+    ctxWindowTokens.value !== (c?.windowTokens ? String(c.windowTokens) : '') ||
+    ctxMaxOutputTokens.value !==
+      (c?.maxOutputTokens ? String(c.maxOutputTokens) : '') ||
+    ctxAutoCompact.value !== (c?.autoCompact == null ? true : c.autoCompact) ||
+    ctxKeepRecentTokens.value !==
+      (c?.keepRecentTokens ? String(c.keepRecentTokens) : '') ||
+    ctxBufferTokens.value !== (c?.bufferTokens ? String(c.bufferTokens) : '') ||
+    ctxHistoryMessages.value !==
+      (c?.historyMessages ? String(c.historyMessages) : '') ||
+    ctxHistoryBytesKB.value !==
+      (c?.historyBytes && c.historyBytes >= 1024
+        ? String(Math.round(c.historyBytes / 1024))
+        : '')
   )
 })
 
@@ -268,6 +293,23 @@ function applySettings(data: AISettings): void {
   monthlyTokenLimit.value =
     data.budget.monthlyTokenLimit != null
       ? String(data.budget.monthlyTokenLimit)
+      : ''
+  const ctx = data.context
+  ctxWindowTokens.value = ctx?.windowTokens ? String(ctx.windowTokens) : ''
+  ctxMaxOutputTokens.value = ctx?.maxOutputTokens
+    ? String(ctx.maxOutputTokens)
+    : ''
+  ctxAutoCompact.value = ctx?.autoCompact == null ? true : ctx.autoCompact
+  ctxKeepRecentTokens.value = ctx?.keepRecentTokens
+    ? String(ctx.keepRecentTokens)
+    : ''
+  ctxBufferTokens.value = ctx?.bufferTokens ? String(ctx.bufferTokens) : ''
+  ctxHistoryMessages.value = ctx?.historyMessages
+    ? String(ctx.historyMessages)
+    : ''
+  ctxHistoryBytesKB.value =
+    ctx?.historyBytes && ctx.historyBytes >= 1024
+      ? String(Math.round(ctx.historyBytes / 1024))
       : ''
   enabled.value = data.enabled
 }
@@ -354,12 +396,40 @@ async function handleSave(): Promise<void> {
       return
     }
 
+    // 上下文管理:空串归 0(=服务端默认);非法/负数整体拒绝。
+    const parseCtx = (raw: string): number | null => {
+      const v = String(raw ?? '').trim()
+      if (v === '') return 0
+      const n = Number(v)
+      return Number.isNaN(n) || n < 0 ? null : Math.floor(n)
+    }
+    const historyBytesKB = parseCtx(ctxHistoryBytesKB.value)
+    const ctxFields = {
+      windowTokens: parseCtx(ctxWindowTokens.value),
+      maxOutputTokens: parseCtx(ctxMaxOutputTokens.value),
+      keepRecentTokens: parseCtx(ctxKeepRecentTokens.value),
+      bufferTokens: parseCtx(ctxBufferTokens.value),
+      historyMessages: parseCtx(ctxHistoryMessages.value),
+      historyBytes: historyBytesKB == null ? null : historyBytesKB * 1024,
+    }
+    if (Object.values(ctxFields).some((v) => v == null)) {
+      saving.value = false
+      toast.error(t('settingsAI.toastSaveFailed'), {
+        detail: t('settingsAI.errContextInvalid'),
+      })
+      return
+    }
+
     const payload = {
       provider: selectedProvider.value,
       baseUrl: baseUrl.value.trim(),
       model: model.value.trim(),
       ...(apiKey.value ? { apiKey: apiKey.value } : {}),
       budget: { monthlyTokenLimit: parsed },
+      context: {
+        ...ctxFields,
+        autoCompact: ctxAutoCompact.value,
+      } as SaveAISettingsInput['context'],
       enabled: enabled.value,
     }
 
@@ -875,6 +945,159 @@ function relativeTime(iso: string | null): string {
                         :disabled="saving"
                       />
                     </div>
+                  </template>
+                </FormField>
+              </div>
+
+              <!-- Context management -->
+              <div class="config-row context-block">
+                <FormField
+                  :label="t('settingsAI.ctxTitle')"
+                  field-id="ai-ctx-window"
+                  :hint="t('settingsAI.ctxWindowHint')"
+                >
+                  <template #default="{ fieldId, ariaDescribedby }">
+                    <div class="ctx-grid">
+                      <div class="ctx-field">
+                        <label :for="fieldId" class="ctx-field-label">{{
+                          t('settingsAI.ctxWindowLabel')
+                        }}</label>
+                        <input
+                          :id="fieldId"
+                          v-model="ctxWindowTokens"
+                          type="number"
+                          min="0"
+                          class="field-input"
+                          :placeholder="t('settingsAI.ctxWindowPlaceholder')"
+                          :aria-describedby="ariaDescribedby"
+                          :disabled="saving"
+                        />
+                      </div>
+                      <div class="ctx-field">
+                        <label
+                          for="ai-ctx-max-output"
+                          class="ctx-field-label"
+                          >{{ t('settingsAI.ctxMaxOutputLabel') }}</label
+                        >
+                        <input
+                          id="ai-ctx-max-output"
+                          v-model="ctxMaxOutputTokens"
+                          type="number"
+                          min="0"
+                          class="field-input"
+                          :placeholder="t('settingsAI.ctxMaxOutputPlaceholder')"
+                          :disabled="saving"
+                        />
+                      </div>
+                      <div class="ctx-field">
+                        <label for="ai-ctx-keep" class="ctx-field-label">{{
+                          t('settingsAI.ctxKeepLabel')
+                        }}</label>
+                        <input
+                          id="ai-ctx-keep"
+                          v-model="ctxKeepRecentTokens"
+                          type="number"
+                          min="0"
+                          class="field-input"
+                          :placeholder="t('settingsAI.ctxKeepPlaceholder')"
+                          :disabled="saving"
+                        />
+                      </div>
+                    </div>
+
+                    <!-- Auto-compact switch -->
+                    <div class="ctx-compact-row">
+                      <button
+                        type="button"
+                        class="toggle-track toggle-track--sm"
+                        :class="{ 'toggle-track--on': ctxAutoCompact }"
+                        role="switch"
+                        :aria-checked="ctxAutoCompact"
+                        :aria-label="t('settingsAI.ctxAutoCompact')"
+                        :disabled="saving"
+                        @click="ctxAutoCompact = !ctxAutoCompact"
+                      >
+                        <span class="toggle-thumb" />
+                      </button>
+                      <span class="ctx-compact-label">{{
+                        t('settingsAI.ctxAutoCompact')
+                      }}</span>
+                    </div>
+
+                    <!-- Advanced (collapsed by default) -->
+                    <button
+                      type="button"
+                      class="ctx-advanced-toggle"
+                      :aria-expanded="ctxAdvancedOpen"
+                      @click="ctxAdvancedOpen = !ctxAdvancedOpen"
+                    >
+                      {{ t('settingsAI.ctxAdvanced') }}
+                      <svg
+                        width="12"
+                        height="12"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2.4"
+                        aria-hidden="true"
+                        :style="{
+                          transform: ctxAdvancedOpen ? 'rotate(180deg)' : 'none',
+                        }"
+                      >
+                        <path d="m6 9 6 6 6-6" />
+                      </svg>
+                    </button>
+                    <div v-show="ctxAdvancedOpen" class="ctx-grid">
+                      <div class="ctx-field">
+                        <label for="ai-ctx-buffer" class="ctx-field-label">{{
+                          t('settingsAI.ctxBufferLabel')
+                        }}</label>
+                        <input
+                          id="ai-ctx-buffer"
+                          v-model="ctxBufferTokens"
+                          type="number"
+                          min="0"
+                          class="field-input"
+                          :placeholder="t('settingsAI.ctxBufferPlaceholder')"
+                          :disabled="saving"
+                        />
+                      </div>
+                      <div class="ctx-field">
+                        <label
+                          for="ai-ctx-history-messages"
+                          class="ctx-field-label"
+                          >{{ t('settingsAI.ctxHistoryMessagesLabel') }}</label
+                        >
+                        <input
+                          id="ai-ctx-history-messages"
+                          v-model="ctxHistoryMessages"
+                          type="number"
+                          min="0"
+                          class="field-input"
+                          :placeholder="
+                            t('settingsAI.ctxHistoryMessagesPlaceholder')
+                          "
+                          :disabled="saving"
+                        />
+                      </div>
+                      <div class="ctx-field">
+                        <label
+                          for="ai-ctx-history-bytes"
+                          class="ctx-field-label"
+                          >{{ t('settingsAI.ctxHistoryBytesLabel') }}</label
+                        >
+                        <input
+                          id="ai-ctx-history-bytes"
+                          v-model="ctxHistoryBytesKB"
+                          type="number"
+                          min="0"
+                          class="field-input"
+                          :placeholder="t('settingsAI.ctxHistoryBytesPlaceholder')"
+                          :disabled="saving"
+                        />
+                      </div>
+                    </div>
+                    <p class="ctx-note">{{ t('settingsAI.ctxNote') }}</p>
                   </template>
                 </FormField>
               </div>
@@ -1483,6 +1706,71 @@ function relativeTime(iso: string | null): string {
 
 .budget-input {
   max-width: 220px;
+}
+
+/* ─── context management ──────────────────────────────────────────────────── */
+.ctx-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.ctx-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.ctx-field-label {
+  font-size: 11px;
+  color: var(--color-faint);
+}
+
+.ctx-compact-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.ctx-compact-label {
+  font-size: 12px;
+}
+
+.toggle-track--sm {
+  width: 30px;
+  height: 17px;
+}
+
+.toggle-track--sm .toggle-thumb {
+  width: 13px;
+  height: 13px;
+}
+
+.ctx-advanced-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: 12px;
+  color: var(--color-primary);
+  cursor: pointer;
+  margin-bottom: 8px;
+}
+
+.ctx-advanced-toggle:hover {
+  text-decoration: underline;
+}
+
+.ctx-note {
+  margin: 4px 0 0;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--color-faint);
 }
 
 /* ─── toggle ──────────────────────────────────────────────────────────────── */
