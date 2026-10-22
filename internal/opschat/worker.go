@@ -641,7 +641,7 @@ func (s *Service) work(parent context.Context, id, run string) {
 			if terminal(call.Body.View.Status) {
 				continue
 			}
-			if mutation(call.Body.View.ToolID) {
+			if needsApproval(call.Body.View) {
 				a, e := s.approval(ctx, s.db, id, run)
 				// call 级绑定:确认单消费后只放行其 BoundCall 列表内的调用。
 				// 续轮新提议的 mutation 不在列表内 → 重新挂起新确认卡,而非被旧单误放行。
@@ -1021,7 +1021,7 @@ func (s *Service) boundedInSlot(ctx context.Context, c *callRecord, argv []strin
 		}
 		// Only the action dispatch needs approval; read-only effect verification can
 		// finish after expiry. This check is after both SSH slot waits.
-		if mutation(c.Body.View.ToolID) && mutationCommand(argv) {
+		if needsApproval(c.Body.View) && mutationCommand(argv) {
 			if e = s.consumedApproval(cc, tx, c.Body.View); e != nil {
 				return e
 			}
@@ -1229,7 +1229,7 @@ func (s *Service) executeCall(ctx context.Context, c callRecord) error {
 		v.ArgsHash = digest(v.Args)
 	}
 	err := error(nil)
-	if mutation(v.ToolID) {
+	if needsApproval(*v) {
 		if s.audit == nil {
 			v.Status = Failed
 			v.Error = "local audit unavailable"
@@ -1275,7 +1275,7 @@ func (s *Service) executeCall(ctx context.Context, c callRecord) error {
 	}
 	v.Status = Succeeded
 	exec := s.bounded
-	if mutation(v.ToolID) {
+	if needsApproval(*v) {
 		release, slotErr := s.takeSlot(callCtx, v.ServerID)
 		if slotErr != nil {
 			v.Status = Interrupted
@@ -1319,9 +1319,9 @@ func (s *Service) executeCall(ctx context.Context, c callRecord) error {
 				continue
 			}
 			v.Status = Failed
-			if mutation(v.ToolID) && c.Body.Dispatched {
+			if needsApproval(*v) && c.Body.Dispatched {
 				v.Status = Unknown
-			} else if mutation(v.ToolID) {
+			} else if needsApproval(*v) {
 				v.Status = Interrupted
 			}
 			v.Error = "bounded execution failed"
@@ -1350,7 +1350,7 @@ func (s *Service) executeCall(ctx context.Context, c callRecord) error {
 		v.Truncated = b.truncated
 		if exit != 0 {
 			v.Status = Failed
-			if mutation(v.ToolID) && v.ToolID != "docker_exec" {
+			if needsApproval(*v) && v.ToolID != "docker_exec" {
 				v.Status = Unknown
 			}
 			v.Error = "remote command exited nonzero"
@@ -1385,7 +1385,7 @@ func (s *Service) executeCall(ctx context.Context, c callRecord) error {
 	}
 	v.Output = s.scrub(v.Output, 64<<10)
 	v.Truncated = v.Truncated || b.truncated || c.Body.ReadTruncated || len(v.Output) >= 64<<10
-	if callCtx.Err() != nil && mutation(v.ToolID) && c.Body.Dispatched {
+	if callCtx.Err() != nil && needsApproval(*v) && c.Body.Dispatched {
 		v.Status = Unknown
 	}
 	if v.CollectedAt == nil {

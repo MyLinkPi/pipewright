@@ -39,3 +39,34 @@ it('shows exact container argv as inert text and never offers command replay', a
   expect(wrapper.find('[aria-label="交给 AI 分析"]').exists()).toBe(true)
   wrapper.unmount()
 })
+
+it('shows host_exec argv like docker_exec', async () => {
+  const argv = ['du', '-sh', '/opt']
+  const call: Call = {
+    callId: 'host-exec',
+    runId: 'run',
+    sessionId: 'chat',
+    serverId: 'a',
+    serverName: 'Frozen A',
+    toolId: 'host_exec',
+    args: { argv },
+    object: 'du',
+    status: 'succeeded',
+    argsHash: 'args',
+    targetHash: 'target',
+    output: '32K\t/opt',
+    truncated: false,
+    exitCode: 0,
+  }
+  const wrapper = mount(AiOpsToolResult, {
+    props: { call, disabled: false, modelAvailable: true },
+  })
+  const details = wrapper.get('details')
+  ;(details.element as HTMLDetailsElement).open = true
+  await details.trigger('toggle')
+  expect(wrapper.get('.exec-argv').text()).toBe(JSON.stringify(argv))
+  expect(
+    wrapper.get('.exec-argv').attributes('aria-label'),
+  ).toBe('宿主机执行命令')
+  wrapper.unmount()
+})

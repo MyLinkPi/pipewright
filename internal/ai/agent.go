@@ -329,9 +329,9 @@ var agentToolDescriptions = map[string]string{
 	"systemd_status":    "Show a systemd unit's active/load state and main PID. unit must be the exact unit name.",
 	"systemd_logs":      "Tail a systemd unit's journal. unit must be the exact unit name; lines is 1-1000, default 200.",
 	"docker_action":     "start/stop/restart/pause/unpause a container. Requires confirmation; must carry a concrete purpose and reason.",
-	"docker_exec":       "Run a command inside a container with literal argv tokens (no shell). container may be the exact name or the 64-hex ID from docker_containers; names are resolved and pinned to the container ID at execution time. Requires confirmation; must carry a concrete purpose and reason.",
+	"docker_exec":       "Run a command inside a container with literal argv tokens (no shell). container may be the exact name or the 64-hex ID from docker_containers; names are resolved and pinned to the container ID at execution time. Simple read-only commands whose argv matches the allowlist in the argv note run without confirmation; anything else requires confirmation and must carry a concrete purpose and reason.",
 	"systemd_action":    "start/stop/restart a systemd unit. unit must be the exact unit name. Requires confirmation; must carry a concrete purpose and reason.",
-	"host_exec":         "Run a command on the host itself with literal argv tokens (no shell). Requires confirmation; must carry a concrete purpose and reason.",
+	"host_exec":         "Run a command on the host itself with literal argv tokens (no shell). Simple read-only commands whose argv matches the allowlist in the argv note run without confirmation; anything else requires confirmation and must carry a concrete purpose and reason.",
 }
 
 // agentPropertyNotes 为参数补充自然语言说明:schema 里的类型/枚举约束
@@ -341,7 +341,7 @@ var agentPropertyNotes = map[string]string{
 	"unit":      "Exact systemd unit name (e.g. nginx.service).",
 	"lines":     "Number of trailing log lines to return, 1-1000, default 200.",
 	"action":    "Operation to apply to the container or unit.",
-	"argv":      "Literal argv tokens, executed without a shell. argv[0] is the program path (no shell metacharacters); at most 61 tokens and 4096 bytes total, no control characters.",
+	"argv":      "Literal argv tokens, executed without a shell. argv[0] is the program path (no shell metacharacters); at most 61 tokens and 4096 bytes total, no control characters. Auto-approved without confirmation ONLY when all of the following hold: argv[0] is a bare name without any slash and comes from this read-only allowlist (cat, date, du, df, echo, file, findmnt, free, grep, head, id, ls, lscpu, lsblk, lsof, md5sum, nproc, ps, readlink, realpath, sha256sum, ss, stat, tail, uname, uptime, vmstat, w, wc, who, whoami), there are at most 16 tokens, and every token uses only plain characters (letters, digits, / . , : = + % @ * ? _ -). Anything else — absolute paths, shells or interpreters, wrappers like env/timeout/xargs, quotes, spaces, ; | & $ or any other metacharacter, command concatenation — falls back to manual confirmation.",
 	"purpose":   "What this operation is meant to achieve for the user; required for mutating tools, up to 512 characters.",
 	"reason":    "Why this is warranted now, citing observed evidence; required for mutating tools, up to 512 characters.",
 }
