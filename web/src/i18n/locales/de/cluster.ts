@@ -27,6 +27,11 @@ export default {
     p2p: "p2p direkt",
     relay: "Relay über {via}",
   },
+  routes: {
+    title: "Angekündigte Subnetze",
+    hint: "Knoten mit demselben Subnetz sichern sich gegenseitig ab: automatisches Umschalten beim Gateway-Ausfall (Sekunden)",
+    backupPrefix: "+{n} Backup: ",
+  },
   expand: "Ausklappen",
   collapse: "Einklappen",
   openPeer: "Öffnen",

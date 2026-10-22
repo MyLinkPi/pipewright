@@ -78,12 +78,30 @@ export interface EasyTierLink {
   relayVia: string
 }
 
+/** 某网段的一个通告网关(relay=true 时 relayVia 为到达该网关的中继节点)。 */
+export interface ProxyRouteVia {
+  ip: string
+  name: string
+  relay: boolean
+  relayVia: string
+}
+
+/** 网段→网关:多节点通告同一网段互为备份,vias 收录全部网关,viaIp/viaName 为主网关。 */
+export interface ProxyRoute {
+  cidr: string
+  viaIp: string
+  viaName: string
+  vias: ProxyRouteVia[]
+}
+
 export interface EasyTierStatus {
   ok: boolean
   err: string
   selfIp: string
   hostname: string
   version: string
+  proxyCidrs: string[]
+  proxyRoutes: ProxyRoute[]
 }
 
 export interface MeshSupervisorRuntime {

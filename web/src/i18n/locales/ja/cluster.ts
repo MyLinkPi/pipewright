@@ -27,6 +27,11 @@ export default {
     p2p: "P2P 直結",
     relay: "{via} 経由リレー",
   },
+  routes: {
+    title: "通告サブネット",
+    hint: "同一サブネットを通告する複数ノードは相互バックアップ:ゲートウェイ断絶時に自動切替(秒単位)",
+    backupPrefix: "+{n} 系: ",
+  },
   expand: "展開",
   collapse: "折りたたみ",
   openPeer: "開く",

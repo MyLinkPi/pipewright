@@ -27,6 +27,11 @@ export default {
     p2p: "p2p direct",
     relay: "relayed via {via}",
   },
+  routes: {
+    title: "Advertised subnets",
+    hint: "Nodes advertising the same subnet back each other up: automatic failover on gateway loss (seconds)",
+    backupPrefix: "+{n} backup: ",
+  },
   expand: "Expand",
   collapse: "Collapse",
   openPeer: "Open",

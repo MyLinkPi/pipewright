@@ -251,8 +251,9 @@ func TestStatusCanceledRefreshKeepsLastGood(t *testing.T) {
 	}
 }
 
-// TestStatusProxyRoutes 验证 网段→网关节点 映射:next_hop 优先(中继场景可达)、
-// 直连行回落 ipv4、peer 主机名补全 ViaName、本机通告行跳过。
+// TestStatusProxyRoutes 验证 网段→网关节点 映射:同网段多通告者全收(互为备份)、
+// 主网关按 直连优先→path_len 小→IP 字典序 确定性选取、peer 主机名补全 ViaName、
+// 本机通告行跳过。旧版中继行形态(ipv4 为被代理网段地址,next_hop 即通告者)亦覆盖。
 func TestStatusProxyRoutes(t *testing.T) {
 	fake := &fakeCLI{responses: map[string]string{
 		"node info": `{"hostname":"alpha","virtual_ipv4":{"addr":"10.126.126.1"}}`,
@@ -270,18 +271,23 @@ func TestStatusProxyRoutes(t *testing.T) {
 	st := p.collect(context.Background())
 
 	if len(st.ProxyRoutes) != 2 {
-		t.Fatalf("proxyRoutes = %+v, want 2 条(重复通告去重 + 本机通告跳过)", st.ProxyRoutes)
+		t.Fatalf("proxyRoutes = %+v, want 2 条(本机通告跳过)", st.ProxyRoutes)
 	}
 	got := map[string]ProxyRoute{}
 	for _, pr := range st.ProxyRoutes {
 		got[pr.CIDR] = pr
 	}
-	if pr := got["10.5.0.0/16"]; pr.ViaIP != "10.126.126.2" || pr.ViaName != "beta" {
-		t.Fatalf("10.5.0.0/16 → %+v, want beta/10.126.126.2", pr)
+	if pr := got["10.5.0.0/16"]; pr.ViaIP != "10.126.126.2" || pr.ViaName != "beta" || len(pr.Vias) != 1 {
+		t.Fatalf("10.5.0.0/16 → %+v, want beta/10.126.126.2 单网关", pr)
 	}
-	// 192.168.30.0/24 两节点重复通告:首见保留(beta 行在前)。
-	if pr := got["192.168.30.0/24"]; pr.ViaIP != "10.126.126.2" || pr.ViaName != "beta" {
-		t.Fatalf("192.168.30.0/24 → %+v, want beta/10.126.126.2(首见保留)", pr)
+	// 192.168.30.0/24 两节点重复通告:互为备份,Vias 全收;主网关确定性选取
+	//(两行均直连且无 path_len → IP 字典序,beta 在前)。
+	pr := got["192.168.30.0/24"]
+	if pr.ViaIP != "10.126.126.2" || pr.ViaName != "beta" {
+		t.Fatalf("192.168.30.0/24 主网关 → %+v, want beta/10.126.126.2", pr)
+	}
+	if len(pr.Vias) != 2 || pr.Vias[0].IP != "10.126.126.2" || pr.Vias[1].IP != "10.126.126.4" || pr.Vias[1].Name != "delta" {
+		t.Fatalf("192.168.30.0/24 Vias = %+v, want [beta, delta](备份网关全收)", pr.Vias)
 	}
 	// 本机(alpha)通告的 172.16.9.0/24 不进映射(客户端不给自己当网关)。
 	if pr, ok := got["172.16.9.0/24"]; ok {
@@ -289,6 +295,44 @@ func TestStatusProxyRoutes(t *testing.T) {
 	}
 	if st.ProxyRoutes[0].CIDR != "10.5.0.0/16" {
 		t.Fatalf("应按 CIDR 字典序:%+v", st.ProxyRoutes)
+	}
+}
+
+// TestStatusProxyRoutesFailoverShape 用实测 v2.6.4 双通告者形态(每通告节点一行,
+// 直连行 next_hop=DIRECT,中继行 next_hop=中继节点)验证:同网段多通告者全部收录,
+// 主网关 = 直连通告者,中继通告者标记 Relay/RelayVia;网关失联后 EasyTier 数据面
+// 自动切换到其余通告者(实测秒级),平台仅感知不干预。
+func TestStatusProxyRoutesFailoverShape(t *testing.T) {
+	fake := &fakeCLI{responses: map[string]string{
+		"node info": `{"peer_id":3,"ipv4_addr":"10.188.0.13/24","hostname":"obsC","version":"2.6.4-8428a89d"}`,
+		"peer list": `[
+			{"peer_id":1,"hostname":"advA","virtual_ipv4":"10.188.0.11"},
+			{"peer_id":2,"hostname":"advB","virtual_ipv4":"10.188.0.12"}
+		]`,
+		"route list": `[
+			{"ipv4":"10.188.0.13/24","hostname":"obsC","proxy_cidrs":"","next_hop_ipv4":"-","path_len":0},
+			{"ipv4":"10.188.0.11/24","hostname":"advA","proxy_cidrs":"198.18.30.0/24","next_hop_ipv4":"DIRECT","path_len":1},
+			{"ipv4":"10.188.0.12/24","hostname":"advB","proxy_cidrs":"198.18.30.0/24","next_hop_ipv4":"10.188.0.11/24","path_len":2}
+		]`,
+	}}
+	p := newStatusProviderForTest(fake.run)
+	st := p.collect(context.Background())
+
+	if len(st.ProxyRoutes) != 1 || st.ProxyRoutes[0].CIDR != "198.18.30.0/24" {
+		t.Fatalf("proxyRoutes = %+v, want 仅 198.18.30.0/24", st.ProxyRoutes)
+	}
+	pr := st.ProxyRoutes[0]
+	if pr.ViaIP != "10.188.0.11" || pr.ViaName != "advA" {
+		t.Fatalf("主网关 → %+v, want advA/10.188.0.11(直连优先)", pr)
+	}
+	if len(pr.Vias) != 2 {
+		t.Fatalf("Vias = %+v, want 2 个通告网关", pr.Vias)
+	}
+	if v := pr.Vias[0]; v.IP != "10.188.0.11" || v.Name != "advA" || v.Relay {
+		t.Fatalf("Vias[0] = %+v, want advA 直连", v)
+	}
+	if v := pr.Vias[1]; v.IP != "10.188.0.12" || v.Name != "advB" || !v.Relay || v.RelayVia != "10.188.0.11" {
+		t.Fatalf("Vias[1] = %+v, want advB 经 10.188.0.11 中继", v)
 	}
 }
 

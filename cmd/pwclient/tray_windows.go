@@ -603,7 +603,8 @@ func peerListItems(snap *pwclient.StatusSnapshot) []string {
 	return items
 }
 
-// routeListItems 组装通告网段列表行:有网关信息时显示 "cidr ← 节点名(ip)"。
+// routeListItems 组装通告网段列表行:有网关信息时显示 "cidr ← 节点名(ip)";同网段
+// 多通告者互为备份(主失联自动切换),行尾以 "(+N 备)" 提示;双击仍只取行首 CIDR。
 func (a *trayApp) routeListItems(snap *pwclient.StatusSnapshot) []string {
 	if snap == nil || snap.EasyTier == nil {
 		return nil
@@ -613,6 +614,9 @@ func (a *trayApp) routeListItems(snap *pwclient.StatusSnapshot) []string {
 		label := pr.ViaIP
 		if pr.ViaName != "" {
 			label = pr.ViaName + "(" + pr.ViaIP + ")"
+		}
+		if n := len(pr.Vias) - 1; n > 0 {
+			label += fmt.Sprintf(" (+%d 备)", n)
 		}
 		via[pr.CIDR] = label
 	}

@@ -27,6 +27,11 @@ export default {
     p2p: "p2p direct",
     relay: "relais via {via}",
   },
+  routes: {
+    title: "Sous-réseaux annoncés",
+    hint: "Les nœuds annonçant le même sous-réseau se secourent : basculement automatique en cas de perte de la passerelle (quelques secondes)",
+    backupPrefix: "+{n} secours : ",
+  },
   expand: "Déplier",
   collapse: "Replier",
   openPeer: "Ouvrir",

@@ -275,6 +275,12 @@ func (rt *meshRuntime) reconcile(ctx context.Context) {
 	// 手动项 = 管理员显式接受网段。本端通告(proxies,含本端网关 /32)只通告不路由
 	// —— 本端网段经局域网可达,进白名单会被装成 tun 路由吸走本端流量(v1.6.4 事故:
 	// 本端网关 SSH 断联)。空白名单 = 裸 --manual-routes,拒绝全部通告。
+	//
+	// 同网段多通告者互备:多节点可通告同一网段,EasyTier 数据面按跳数择优单一网关,
+	// 该网关失联后自动切换其余通告者(实测 2.6.4 秒级)。主备切换只变「网段→网关」
+	// 映射、不变 CIDR 集合,故不触发下方指纹、不重启。切勿把网关映射写进 supervisorKey
+	//—— 切换会引发全网 easytier 重启风暴;只有某网段**所有**通告者失联(CIDR 从
+	// lastSeenCIDRs 消失)才缩白名单重启,此时该网段确已不可达,属合理收敛。
 	if sp := rt.statusSnapshot(); sp != nil {
 		rt.lastSeenCIDRs = sp.ProxyCIDRs
 	}
