@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"sort"
 	"strings"
@@ -189,6 +190,7 @@ func (s *Service) leaseLoop() {
 	defer close(s.leaseDone)
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
+	fails := 0
 	for {
 		select {
 		case <-s.root.Done():
@@ -198,10 +200,22 @@ func (s *Service) leaseLoop() {
 			// Renewal persists no session data; skip the full storage scan.
 			err := s.transactionQuota(ctx, true, false, func(tx *sql.Tx) error {
 				_, e := tx.ExecContext(ctx, "UPDATE ops_chat_state SET lease_until=? WHERE id=1 AND lease_owner=?", time.Now().Add(leaseDuration).UnixMilli(), s.instance)
-				return databaseError(e)
+				if e != nil {
+					// 底层驱动错误(SQLite busy/IO 等)原样进日志,否则只剩静态
+					// ErrStorage 文案,线上无法定位;errors.Is 语义不受影响。
+					return fmt.Errorf("%w: %v", ErrStorage, e)
+				}
+				return nil
 			})
 			cancel()
-			if err != nil {
+			// 一次数据库抖动(锁竞争超 5s、IO 卡顿)不该把助手打死到进程重启:
+			// 连续失败满 3 次(≈15s,恰好租约到期)才判定丢失,期间任一成功即复位。
+			// 租约被其他实例接管(ErrLease)仍是终局。
+			if err == nil {
+				fails = 0
+				continue
+			}
+			if leaseLost(err, fails) {
 				log.Printf("[opschat] lease lost: %v", err)
 				s.mu.Lock()
 				s.lost = true
@@ -209,8 +223,17 @@ func (s *Service) leaseLoop() {
 				s.mu.Unlock()
 				return
 			}
+			fails++
+			log.Printf("[opschat] lease renewal failed (%d), retrying: %v", fails, err)
 		}
 	}
+}
+
+// leaseLost 判定一次续期失败是否应当终止服务。fails 是本次之前已连续失败的次数:
+// 纯存储错误(SQLite busy/IO 抖动)容忍 3 个续期周期(= leaseDuration,租约恰好
+// 到期)后终止;租约被其他实例接管(ErrLease)立即终止。
+func leaseLost(err error, fails int) bool {
+	return errors.Is(err, ErrLease) || fails >= 2
 }
 func (s *Service) Close(ctx context.Context) error {
 	s.mu.Lock()
