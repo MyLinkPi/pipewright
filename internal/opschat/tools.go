@@ -6,6 +6,7 @@ import (
 	"path"
 	"regexp"
 	"strconv"
+	"strings"
 	"unicode"
 	"unicode/utf8"
 )
@@ -43,6 +44,73 @@ func Tools() []Tool {
 }
 func mutation(id string) bool {
 	return id == "docker_action" || id == "systemd_action" || id == "docker_exec" || id == "host_exec"
+}
+
+// readOnlyPrograms 是可免确认自动放行的只读命令集合(按裸命令名匹配)。
+// 收录标准:该程序不存在任何写文件/改状态/再执行别的程序的能力。
+// 刻意排除:解释器与包装器(sh/bash/python/env/timeout/xargs/nohup/find 等,
+// 它们能把后续 token 当命令执行)、带写副作用的变体(journalctl --vacuum-*、
+// systemct、ip、dmesg -C、nvidia-smi -r、sort -o、tee、dd、hostname 改名)。
+var readOnlyPrograms = map[string]bool{
+	"cat": true, "date": true, "df": true, "du": true, "echo": true,
+	"file": true, "findmnt": true, "free": true, "grep": true, "head": true,
+	"id": true, "ls": true, "lscpu": true, "lsblk": true, "lsof": true,
+	"md5sum": true, "nproc": true, "ps": true, "readlink": true, "realpath": true,
+	"sha256sum": true, "ss": true, "stat": true, "tail": true, "uname": true,
+	"uptime": true, "vmstat": true, "w": true, "wc": true, "who": true, "whoami": true,
+}
+
+// readOnlyExecToken 限定白名单命令每个 token 的字符集。任何 shell 元字符
+// (; | & ` $ < > 引号、反斜杠、空白、控制字符)出现即整体 fail-closed 回退
+// 确认,防止"白名单程序 + 拼接元字符"绕过(执行层虽有单引号转义,这里仍不
+// 依赖它)。
+var readOnlyExecToken = regexp.MustCompile(`^[A-Za-z0-9_./,=+:%@*?-]+$`)
+
+// readOnlyExecArgv 判定 argv 是否为一条可自动放行的只读命令:
+//  1. 1..16 个 token,总字节数 ≤4096(与 validExecArgv 对齐);
+//  2. argv[0] 必须是不含 / 的裸命令名且在白名单内(拒绝 /tmp/evil/du 路径伪装,
+//     也拒绝 /usr/bin/du 绝对路径——一律走确认);
+//  3. 每个 token(含 argv[0])字符集受限;date 另拒绝 -s/--set(改系统时钟)。
+func readOnlyExecArgv(argv []string) bool {
+	if len(argv) < 1 || len(argv) > 16 {
+		return false
+	}
+	total := 0
+	for _, token := range argv {
+		if len(token) > 2048 || !readOnlyExecToken.MatchString(token) {
+			return false
+		}
+		total += len(token)
+	}
+	if total > 4096 {
+		return false
+	}
+	if strings.Contains(argv[0], "/") || !readOnlyPrograms[argv[0]] {
+		return false
+	}
+	if argv[0] == "date" {
+		for _, token := range argv[1:] {
+			// 拒绝一切含 s 的选项:GNU getopt 允许 -s@0、-us 等粘合短选项,
+			// 只有 set 时钟的选项带 s;误伤(如 --iso)只会回退确认。
+			if strings.HasPrefix(token, "-") && strings.Contains(token, "s") {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// needsApproval 报告一个调用是否仍需用户确认:变更类工具中,host_exec /
+// docker_exec 的 argv 命中只读白名单时免确认,其余(含一切非 exec 变更)
+// 照旧走确认卡。判定只依赖入库的 Args,各门控点重算保持一致。
+func needsApproval(v Call) bool {
+	if !mutation(v.ToolID) {
+		return false
+	}
+	if (v.ToolID == "host_exec" || v.ToolID == "docker_exec") && readOnlyExecArgv(v.Args.Argv) {
+		return false
+	}
+	return true
 }
 func parseArgs(id string, raw json.RawMessage) (ToolArgs, error) {
 	var a ToolArgs

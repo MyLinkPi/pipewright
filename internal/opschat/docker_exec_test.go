@@ -268,7 +268,8 @@ func TestDockerExecTamperedOrExpiredApprovalBlocked(t *testing.T) {
 			f := executor(id)
 			s, _, db := fixture(t, f, m)
 			c := chat(t, s, id)
-			r := submitToolPlan(t, s, m, c, "docker_exec", execArgsJSON("echo", "approved"))
+			// printf 不在只读白名单内,保证此测试始终走人工确认路径。
+			r := submitToolPlan(t, s, m, c, "docker_exec", execArgsJSON("printf", "approved"))
 			snap := waitRun(t, s, c.ID, r.ID, AwaitingConfirmation)
 			waitJobs(t, s)
 			a := snap.Confirmations[0]

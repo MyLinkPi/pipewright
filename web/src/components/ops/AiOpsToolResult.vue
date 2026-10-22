@@ -70,7 +70,7 @@ const bytes = (n: number): string =>
           : ''
       }}{{ call.object }}
     </p>
-    <pre v-if="call.toolId === 'docker_exec' && call.args.argv" class="ops-pre exec-argv" :aria-label="t('opsChat.tools.docker_exec')">{{ JSON.stringify(call.args.argv) }}</pre>
+    <pre v-if="(call.toolId === 'docker_exec' || call.toolId === 'host_exec') && call.args.argv" class="ops-pre exec-argv" :aria-label="t('opsChat.tools.' + call.toolId)">{{ JSON.stringify(call.args.argv) }}</pre>
     <div v-if="call.resources" class="metrics">
       <p v-if="call.resources.load">
         {{ t('opsChat.load') }}: {{ call.resources.load.one }} /
