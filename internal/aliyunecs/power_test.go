@@ -325,3 +325,114 @@ func itoaPad(n int) string {
 	}
 	return string(b)
 }
+
+// ─── PowerServer / LinkedPowerStatus(服务器状态页电源入口) ────────────────────
+
+func TestPowerServerStartSkipAndInvalid(t *testing.T) {
+	env := newEnv(t)
+	ctx := context.Background()
+	srv := mustServer(t, env, "云主机", "10.0.0.1", "")
+	mustLink(t, env, env.account.ID, "i-1", srv.ID)
+
+	// 未关联的机器 → ErrServerNotLinked。
+	other := mustServer(t, env, "物理机", "192.168.1.1", "")
+	if _, err := env.svc.PowerServer(ctx, other.ID, PowerActionStart); !errors.Is(err, ErrServerNotLinked) {
+		t.Fatalf("未关联 err = %v, want ErrServerNotLinked", err)
+	}
+	// 动作非法 → ErrPowerFailed。
+	if _, err := env.svc.PowerServer(ctx, srv.ID, "reboot"); !errors.Is(err, ErrPowerFailed) {
+		t.Fatalf("非法动作 err = %v, want ErrPowerFailed", err)
+	}
+
+	// Stopped → 发起开机;再查已 Running → 幂等跳过。
+	env.fake.statuses = map[string]string{"i-1": statusStopped}
+	res, err := env.svc.PowerServer(ctx, srv.ID, PowerActionStart)
+	if err != nil {
+		t.Fatalf("PowerServer: %v", err)
+	}
+	if res.Total != 1 || res.OK != 1 || res.Failed != 0 {
+		t.Fatalf("res = %+v", res)
+	}
+	if len(env.fake.started) != 1 || env.fake.started[0] != "i-1" {
+		t.Errorf("started = %v", env.fake.started)
+	}
+	if res.Items[0].ServerID != srv.ID {
+		t.Errorf("item 应带 ServerID: %+v", res.Items[0])
+	}
+
+	env.fake.statuses = map[string]string{"i-1": statusRunning}
+	res2, err := env.svc.PowerServer(ctx, srv.ID, PowerActionStop)
+	if err != nil {
+		t.Fatalf("PowerServer stop: %v", err)
+	}
+	if len(env.fake.stopped) != 1 || env.fake.stopped[0] != "i-1" {
+		t.Errorf("stopped = %v", env.fake.stopped)
+	}
+	_ = res2
+}
+
+func TestPowerServerPerAccountFaultTolerance(t *testing.T) {
+	env := newEnv(t)
+	ctx := context.Background()
+	srv := mustServer(t, env, "云主机", "10.0.0.1", "")
+	mustLink(t, env, env.account.ID, "i-1", srv.ID)
+	// 阿里云拒绝发起 → 逐台失败,不返回 error(200 + ok:false 语义)。
+	env.fake.statuses = map[string]string{"i-1": statusRunning}
+	env.fake.powerErr = map[string]error{"i-1": errors.New("aliyunecs: ecs power operation failed:操作被拒绝")}
+
+	res, err := env.svc.PowerServer(ctx, srv.ID, PowerActionStop)
+	if err != nil {
+		t.Fatalf("逐台失败不应整批 500: %v", err)
+	}
+	if res.OK != 0 || res.Failed != 1 || res.Items[0].Err == "" {
+		t.Fatalf("res = %+v, want 单台失败带 Err", res)
+	}
+}
+
+func TestLinkedPowerStatusAggregate(t *testing.T) {
+	env := newEnv(t)
+	ctx := context.Background()
+
+	// 双账户(不同 AK),按 AK 分发到不同 fake:正常账户 + 失败账户。
+	fakeOK := &fakeEcs{statuses: map[string]string{"i-ok": statusRunning}}
+	fakeBad := &fakeEcs{statusErr: errors.New("aliyunecs: list instances failed:凭据无效")}
+	env.svc.(*service).newClient = func(ak, _, _ string) ecsAPI {
+		if ak == "LTAI5tBadFake" {
+			return fakeBad
+		}
+		return fakeOK
+	}
+	bad, err := env.svc.(*service).CreateAccount(ctx, AccountCreateInput{
+		Name: "坏账户", AccessKeyID: "LTAI5tBadFake", Secret: "fake-secret-bad", Region: "cn-beijing",
+	})
+	if err != nil {
+		t.Fatalf("CreateAccount bad: %v", err)
+	}
+
+	// 两台机器分属两账户;第三台机器不关联(不应出现在结果里)。
+	s1 := mustServer(t, env, "正常机", "10.0.0.1", "")
+	s2 := mustServer(t, env, "坏账户外", "10.0.0.2", "")
+	mustServer(t, env, "非云机", "192.168.1.1", "")
+	mustLink(t, env, env.account.ID, "i-ok", s1.ID)
+	mustLink(t, env, bad.ID, "i-bad", s2.ID)
+
+	items, err := env.svc.LinkedPowerStatus(ctx)
+	if err != nil {
+		t.Fatalf("LinkedPowerStatus: %v", err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("items = %+v, want 2 条", items)
+	}
+	byServer := map[string]LinkedPowerItem{}
+	for _, it := range items {
+		byServer[it.ServerID] = it
+	}
+	okItem := byServer[s1.ID]
+	if okItem.InstanceID != "i-ok" || okItem.Status != statusRunning || okItem.Err != "" {
+		t.Errorf("正常条目 = %+v", okItem)
+	}
+	badItem := byServer[s2.ID]
+	if badItem.InstanceID != "i-bad" || badItem.Status != "" || badItem.Err == "" {
+		t.Errorf("失败账户条目应带 Err 且状态未知: %+v", badItem)
+	}
+}

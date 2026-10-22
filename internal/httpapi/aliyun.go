@@ -23,6 +23,7 @@ const (
 	auditActionAliyunAccountDelete = "aliyun.account.delete"
 	auditActionAliyunAccountTest   = "aliyun.account.test"
 	auditActionAliyunImport        = "aliyun.import"
+	auditActionAliyunPower         = "aliyun.power"
 	auditTargetAliyunAccount       = "aliyun_account"
 )
 
@@ -112,6 +113,10 @@ func writeAliyunError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadGateway, "aliyun_api_failed", "阿里云 ECS API 调用失败:凭据无效、Region 不存在、无权限或网络不可达")
 	case errors.Is(err, aliyunecs.ErrVerifyFailed):
 		writeError(w, http.StatusBadGateway, "aliyun_verify_failed", "阿里云账户校验失败:凭据无效、Region 不存在或无 ECS 权限")
+	case errors.Is(err, aliyunecs.ErrServerNotLinked):
+		writeError(w, http.StatusNotFound, "server_not_linked", "该服务器不是导入的阿里云 ECS,无法开关机")
+	case errors.Is(err, aliyunecs.ErrPowerFailed):
+		writeError(w, http.StatusBadGateway, "aliyun_power_failed", "阿里云 ECS 开关机失败:凭据无效、网络不可达或实例状态不允许")
 	case errors.Is(err, vault.ErrVaultUnconfigured):
 		writeError(w, http.StatusServiceUnavailable, "vault_unconfigured", "保险库未配置 master key,无法存取凭据")
 	case errors.Is(err, vault.ErrEmptySecret), errors.Is(err, vault.ErrEmptyName):
@@ -382,6 +387,118 @@ func makeAliyunImportHandler(svc aliyunecs.Service, rec audit.Recorder) http.Han
 			},
 			IP: clientIP(r),
 		})
+		writeJSON(w, http.StatusOK, map[string]any{
+			"items": items, "total": res.Total, "ok": res.OK, "failed": res.Failed,
+		})
+	}
+}
+
+// powerItemDTO 是单台实例开关机结果的对外响应体(与领域 PowerItemResult 对齐)。
+type powerItemDTO struct {
+	InstanceID string `json:"instanceId"`
+	ServerID   string `json:"serverId,omitempty"`
+	Skipped    bool   `json:"skipped"`
+	OK         bool   `json:"ok"`
+	Error      string `json:"error,omitempty"`
+}
+
+// makeAliyunPowerStatusHandler 返回 GET /api/aliyun/power/status → { items: [...] }(只读,无审计)。
+// 服务器状态页电源徽标数据源:全部「已导入 ECS ↔ servers」映射 + 实例实时电源状态
+// (Running/Stopped/...;逐账户独立容错,失败条目带 error)。ae 为 nil → 503。
+func makeAliyunPowerStatusHandler(svc aliyunecs.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if svc == nil {
+			writeError(w, http.StatusServiceUnavailable, "internal", "阿里云 ECS 服务未初始化")
+			return
+		}
+		items, err := svc.LinkedPowerStatus(r.Context())
+		if err != nil {
+			writeAliyunError(w, err)
+			return
+		}
+		type itemDTO struct {
+			ServerID   string `json:"serverId"`
+			AccountID  string `json:"accountId"`
+			InstanceID string `json:"instanceId"`
+			Status     string `json:"status"`
+			Error      string `json:"error,omitempty"`
+		}
+		out := make([]itemDTO, 0, len(items))
+		for _, it := range items {
+			out = append(out, itemDTO{
+				ServerID:   it.ServerID,
+				AccountID:  it.AccountID,
+				InstanceID: it.InstanceID,
+				Status:     it.Status,
+				Error:      it.Err,
+			})
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"items": out})
+	}
+}
+
+// makeAliyunPowerHandler 返回 POST /api/aliyun/power(认证 + CSRF + 审计)→ 逐台结果。
+// body: { serverId, action: "start" | "stop" }。对某登记服务器关联的 ECS 实例发起
+// 开机/关机(发起即返回,不等待到达目标态;幂等:已在目标态跳过)。逐台独立容错
+// (200 + ok:false,不 500);结构错误(动作非法/未关联)才 4xx/5xx。
+func makeAliyunPowerHandler(svc aliyunecs.Service, rec audit.Recorder) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if svc == nil {
+			writeError(w, http.StatusServiceUnavailable, "internal", "阿里云 ECS 服务未初始化")
+			return
+		}
+		r.Body = http.MaxBytesReader(w, r.Body, 1<<10)
+		var in struct {
+			ServerID string `json:"serverId"`
+			Action   string `json:"action"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			writeError(w, http.StatusBadRequest, "bad_request", "请求体格式错误")
+			return
+		}
+		if in.ServerID == "" {
+			writeError(w, http.StatusBadRequest, "bad_request", "请提供 serverId")
+			return
+		}
+		if in.Action != aliyunecs.PowerActionStart && in.Action != aliyunecs.PowerActionStop {
+			writeError(w, http.StatusBadRequest, "bad_request", "动作非法(仅 start|stop)")
+			return
+		}
+		res, err := svc.PowerServer(r.Context(), in.ServerID, in.Action)
+		// 开关机是高危操作:任何尝试(含失败)都留审计;detail 绝无凭据。
+		auditDetail := map[string]any{"action": in.Action, "serverId": in.ServerID}
+		if res != nil {
+			instances := make([]string, 0, len(res.Items))
+			for _, it := range res.Items {
+				instances = append(instances, it.InstanceID)
+			}
+			auditDetail["total"] = res.Total
+			auditDetail["ok"] = res.OK
+			auditDetail["failed"] = res.Failed
+			auditDetail["instances"] = instances
+		}
+		recordAudit(r.Context(), rec, audit.Entry{
+			Actor:      auditActor,
+			Action:     auditActionAliyunPower,
+			TargetType: audit.TargetServer,
+			TargetID:   in.ServerID,
+			Detail:     auditDetail,
+			IP:         clientIP(r),
+		})
+		if err != nil {
+			writeAliyunError(w, err)
+			return
+		}
+		items := make([]powerItemDTO, 0, len(res.Items))
+		for _, it := range res.Items {
+			items = append(items, powerItemDTO{
+				InstanceID: it.InstanceID,
+				ServerID:   it.ServerID,
+				Skipped:    it.Skipped,
+				OK:         it.OK,
+				Error:      it.Err,
+			})
+		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"items": items, "total": res.Total, "ok": res.OK, "failed": res.Failed,
 		})

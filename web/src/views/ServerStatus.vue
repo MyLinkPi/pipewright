@@ -6,6 +6,10 @@
     · 某台不可达 → 该卡灰显 + 人读错误,不连累其它台。
     · 某指标缺失(跨平台 best-effort,如 macOS 无 free)→ 该行「不可用」。
     · 「刷新」重取(指标实时、不落库)。
+    · 筛选:名称/host 搜索 × 可达性 × 资源紧张(阈值与卡片红色着色一致,见 lib/serverTight)。
+    · 终端:可达机器(含本机控制节点)新标签页打开主机 shell(复用 server-terminal 页)。
+    · ECS 电源:导入的阿里云 ECS 机器显示电源状态徽标 + 开/关机按钮(发起即返回,关机为
+      节省停机模式且需二次确认;电源状态独立 30s 轮询,未配置阿里云时整体隐藏)。
 
   这是一个**新增**的总览入口,不动 4-1 SettingsServers CRUD、6-2 日志入口。
 
@@ -16,14 +20,21 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Robot, Refresh } from '@vicons/tabler'
+import { useRouter } from 'vue-router'
+import { Robot, Refresh, Terminal, Power } from '@vicons/tabler'
 import {
   getAllServerMetrics,
   getLocalHostMetrics,
   listServers,
+  LOCAL_HOST_ID,
+  type Server,
   type ServerMetrics,
 } from '../api/servers'
 import { HttpError } from '../api/http'
+import { aliyunServerPower, getAliyunPowerStatus } from '../api/aliyunEcs'
+import { isServerTight } from '../lib/serverTight'
+import { useConfirm } from '../composables/useConfirm'
+import { useToast } from '../composables/useToast'
 import ServerMetricsCard from '../components/ops/ServerMetricsCard.vue'
 import BatchCommandModal from '../components/ops/BatchCommandModal.vue'
 import CommandHistoryDrawer, { type RerunPayload } from '../components/ops/CommandHistoryDrawer.vue'
@@ -36,6 +47,9 @@ import SkeletonBlock from '../components/ui/SkeletonBlock.vue'
 type LoadState = 'idle' | 'loading' | 'error'
 
 const { t } = useI18n()
+const router = useRouter()
+const toast = useToast()
+const confirm = useConfirm()
 const aiTargets = ref<string[] | null>(null)
 
 /** 卡片标签区需要的登记信息(纯展示,不含凭据引用)。 */
@@ -57,6 +71,8 @@ const metrics = ref<ServerMetrics[]>([])
 const localMetrics = ref<ServerMetrics | null>(null)
 /** serverId → 展示名(来自登记列表,用于卡片标题)。 */
 const nameById = ref<Map<string, string>>(new Map())
+/** serverId → 登记行(名称搜索要匹配 host,取自这里)。 */
+const serverById = ref<Map<string, Server>>(new Map())
 /** serverId → 构建池信息(卡片标签 chips 展示用)。 */
 const poolById = ref<Map<string, ServerPoolInfo>>(new Map())
 
@@ -65,6 +81,185 @@ const refreshing = ref(false)
 
 const reachableCount = computed(() => metrics.value.filter((m) => m.reachable).length)
 const totalCount = computed(() => metrics.value.length)
+
+// ─── 筛选(名称搜索 × 可达性 × 资源状态,仿容器页 controls-row) ────────────────
+
+type ReachFilter = 'all' | 'reachable' | 'unreachable'
+type TightFilter = 'all' | 'tight' | 'ok'
+
+const searchText = ref('')
+const reachFilter = ref<ReachFilter>('all')
+const tightFilter = ref<TightFilter>('all')
+
+const REACH_FILTERS: { key: ReachFilter; labelKey: string }[] = [
+  { key: 'all', labelKey: 'serverStatus.filterAll' },
+  { key: 'reachable', labelKey: 'serverStatus.filterReachable' },
+  { key: 'unreachable', labelKey: 'serverStatus.filterUnreachable' },
+]
+const TIGHT_FILTERS: { key: TightFilter; labelKey: string }[] = [
+  { key: 'all', labelKey: 'serverStatus.filterAll' },
+  { key: 'tight', labelKey: 'serverStatus.filterTight' },
+  { key: 'ok', labelKey: 'serverStatus.filterOk' },
+]
+
+/** 计数基于全量(不随其它筛选条件收缩,与容器页一致)。 */
+const reachCounts = computed(() => {
+  let reachable = 0
+  for (const m of metrics.value) {
+    if (m.reachable) reachable++
+  }
+  return { all: metrics.value.length, reachable, unreachable: metrics.value.length - reachable }
+})
+const tightCounts = computed(() => {
+  let tight = 0
+  for (const m of metrics.value) {
+    if (isServerTight(m)) tight++
+  }
+  return { all: metrics.value.length, tight, ok: metrics.value.length - tight }
+})
+
+/** 三维叠加过滤后的卡片列表(本机卡固定置首,不参与筛选)。 */
+const filteredMetrics = computed(() => {
+  const q = searchText.value.trim().toLowerCase()
+  return metrics.value.filter((m) => {
+    if (q) {
+      const name = (nameById.value.get(m.serverId) ?? '').toLowerCase()
+      const host = (serverById.value.get(m.serverId)?.host ?? '').toLowerCase()
+      if (!name.includes(q) && !host.includes(q)) return false
+    }
+    if (reachFilter.value === 'reachable' && !m.reachable) return false
+    if (reachFilter.value === 'unreachable' && m.reachable) return false
+    if (tightFilter.value === 'tight' && !isServerTight(m)) return false
+    if (tightFilter.value === 'ok' && isServerTight(m)) return false
+    return true
+  })
+})
+
+// ─── 终端(可达机器新标签页打开主机 shell;本机走本地 PTY) ─────────────────────
+
+function openTerminal(serverId: string): void {
+  const url = router.resolve({ name: 'server-terminal', params: { id: serverId } }).href
+  window.open(url, '_blank', 'noopener')
+}
+
+// ─── ECS 电源(仅导入的阿里云 ECS 机器;失败/未配置整体隐藏电源 UI) ────────────
+
+/** 一台已关联 ECS 的电源信息(状态空 = 未知,如账户凭据失效)。 */
+interface EcsInfo {
+  status: string
+  instanceId: string
+  error?: string
+}
+const ecsById = ref<Map<string, EcsInfo> | null>(null)
+/** 正在发起开关机的机器(防重复点击)。 */
+const powerBusy = ref<Set<string>>(new Set())
+
+async function loadPowerStatus(): Promise<void> {
+  if (loadPowerStatusInflight) return
+  loadPowerStatusInflight = true
+  try {
+    const items = await getAliyunPowerStatus()
+    const map = new Map<string, EcsInfo>()
+    for (const it of items) {
+      // 一台服务器多账户映射罕见;取第一条,不让后来者覆盖已正常解析的条目。
+      if (!map.has(it.serverId)) {
+        map.set(it.serverId, { status: it.status, instanceId: it.instanceId, error: it.error })
+      }
+    }
+    ecsById.value = map
+  } catch {
+    // 未配置阿里云服务(503)/网络失败 → 整体隐藏电源 UI,不打扰状态主流程。
+    ecsById.value = null
+    stopPowerPolling()
+  } finally {
+    loadPowerStatusInflight = false
+  }
+}
+let loadPowerStatusInflight = false
+
+/** 电源按钮渲染信息;null = 非 ECS 机器(不渲染按钮)。 */
+interface PowerButton {
+  key: 'start' | 'stop' | 'busy' | 'starting' | 'stopping' | 'unknown'
+  label: string
+  disabled: boolean
+  danger: boolean
+}
+function powerBtn(m: ServerMetrics): PowerButton | null {
+  const info = ecsById.value?.get(m.serverId)
+  if (!info) return null
+  if (powerBusy.value.has(m.serverId)) {
+    return { key: 'busy', label: t('serverStatus.powerBusy'), disabled: true, danger: false }
+  }
+  switch (info.status) {
+    case 'Running':
+      return { key: 'stop', label: t('serverStatus.powerStop'), disabled: false, danger: true }
+    case 'Stopped':
+      return { key: 'start', label: t('serverStatus.powerStart'), disabled: false, danger: false }
+    case 'Starting':
+      return { key: 'starting', label: t('serverStatus.ecsStarting'), disabled: true, danger: false }
+    case 'Stopping':
+      return { key: 'stopping', label: t('serverStatus.ecsStopping'), disabled: true, danger: false }
+    default:
+      return { key: 'unknown', label: t('serverStatus.powerUnknown'), disabled: true, danger: false }
+  }
+}
+
+async function powerServer(m: ServerMetrics): Promise<void> {
+  const btn = powerBtn(m)
+  if (!btn || btn.disabled || powerBusy.value.has(m.serverId)) return
+  const action = btn.key === 'stop' ? 'stop' : 'start'
+  const name = displayName(m)
+  if (action === 'stop') {
+    // 关机高危:中断构建/服务,二次确认。
+    const ok = await confirm.open({
+      title: t('serverStatus.powerConfirmTitle', { name }),
+      body: t('serverStatus.powerConfirmBody'),
+      confirmLabel: t('serverStatus.powerConfirmLabel'),
+      variant: 'danger',
+    })
+    if (!ok) return
+  }
+  const busy = new Set(powerBusy.value)
+  busy.add(m.serverId)
+  powerBusy.value = busy
+  try {
+    const res = await aliyunServerPower(m.serverId, action)
+    if (res.failed > 0) {
+      const firstErr = res.items.find((it) => !it.ok)?.error ?? ''
+      toast.error(t('serverStatus.powerFailedToast'), { detail: firstErr })
+    } else {
+      toast.success(
+        action === 'start' ? t('serverStatus.powerStartToast') : t('serverStatus.powerStopToast'),
+      )
+    }
+    // 发起后立即补一次(转换中),几秒后再补一次(接近目标态);可达性由 12s 指标轮询自然跟进。
+    void loadPowerStatus()
+    window.setTimeout(() => void loadPowerStatus(), 6000)
+  } catch (err) {
+    toast.error(t('serverStatus.powerFailedToast'), {
+      detail: err instanceof HttpError ? (err.apiError?.message ?? `${err.status}`) : undefined,
+    })
+  } finally {
+    const done = new Set(powerBusy.value)
+    done.delete(m.serverId)
+    powerBusy.value = done
+  }
+}
+
+// 电源状态轮询节奏:比指标慢(实例状态变化以十秒计,少打阿里云 API)。
+const POWER_REFRESH_MS = 30_000
+let powerTimer: ReturnType<typeof setInterval> | null = null
+
+function startPowerPolling(): void {
+  if (powerTimer !== null || ecsById.value === null) return
+  powerTimer = setInterval(() => void loadPowerStatus(), POWER_REFRESH_MS)
+}
+function stopPowerPolling(): void {
+  if (powerTimer !== null) {
+    clearInterval(powerTimer)
+    powerTimer = null
+  }
+}
 
 // ─── 批量执行命令(勾选 → 弹窗执行 → 历史回看) ─────────────────────────────
 
@@ -83,7 +278,8 @@ function toggleSelect(serverId: string): void {
 }
 
 function selectAll(): void {
-  selected.value = new Set(metrics.value.map((m) => m.serverId))
+  // 只选当前可见(筛选后)的机器,与直觉一致。
+  selected.value = new Set(filteredMetrics.value.map((m) => m.serverId))
 }
 
 function clearSelection(): void {
@@ -129,6 +325,7 @@ async function load(): Promise<void> {
       getLocalHostMetrics().catch(() => null),
     ])
     nameById.value = new Map(servers.map((s) => [s.id, s.name]))
+    serverById.value = new Map(servers.map((s) => [s.id, s]))
     poolById.value = new Map(
       servers.map((s) => [
         s.id,
@@ -177,20 +374,25 @@ function stopPolling(): void {
 function onVisibilityChange(): void {
   if (document.hidden) {
     stopPolling()
+    stopPowerPolling()
   } else {
     void load() // 回前台立即补一次,再恢复轮询
     startPolling()
+    void loadPowerStatus().then(() => startPowerPolling())
   }
 }
 
 onMounted(() => {
   void load()
   startPolling()
+  // 电源状态独立节流(实例状态变化以十秒计,不必与指标同频)。
+  void loadPowerStatus().then(() => startPowerPolling())
   document.addEventListener('visibilitychange', onVisibilityChange)
 })
 
 onUnmounted(() => {
   stopPolling()
+  stopPowerPolling()
   document.removeEventListener('visibilitychange', onVisibilityChange)
 })
 </script>
@@ -231,6 +433,51 @@ onUnmounted(() => {
         </AppButton>
       </div>
     </header>
+
+    <!-- 筛选条:可达性 / 资源状态 chips + 名称搜索(三维叠加;仿容器页 controls-row) -->
+    <div v-if="metrics.length > 0" class="controls-row">
+      <div class="filter-bar" role="group" :aria-label="t('serverStatus.filterAria')">
+        <button
+          v-for="f in REACH_FILTERS"
+          :key="f.key"
+          class="filter-chip"
+          :class="{ 'filter-chip--active': reachFilter === f.key }"
+          :aria-pressed="reachFilter === f.key"
+          @click="reachFilter = f.key"
+        >
+          {{ t(f.labelKey) }}
+          <span class="filter-chip__count">{{ reachCounts[f.key] }}</span>
+        </button>
+      </div>
+      <div class="filter-bar" role="group" :aria-label="t('serverStatus.resourceFilterAria')">
+        <button
+          v-for="f in TIGHT_FILTERS"
+          :key="f.key"
+          class="filter-chip"
+          :class="{ 'filter-chip--active': tightFilter === f.key }"
+          :aria-pressed="tightFilter === f.key"
+          @click="tightFilter = f.key"
+        >
+          {{ t(f.labelKey) }}
+          <span class="filter-chip__count">{{ tightCounts[f.key] }}</span>
+        </button>
+      </div>
+      <div class="search-box">
+        <input
+          v-model="searchText"
+          type="search"
+          class="search-box__input"
+          :placeholder="t('serverStatus.searchPlaceholder')"
+          :aria-label="t('serverStatus.searchAria')"
+        />
+        <button
+          v-if="searchText"
+          class="search-box__clear"
+          :title="t('serverStatus.searchClear')"
+          @click="searchText = ''"
+        >✕</button>
+      </div>
+    </div>
 
     <!-- 批量命令选择条:已选计数 + 全选/清空 -->
     <div v-if="metrics.length > 0" class="select-bar">
@@ -276,31 +523,67 @@ onUnmounted(() => {
     />
 
     <!-- Metrics grid: local (control-node) card first, then per-host cards -->
-    <div v-else class="metrics-grid" :aria-busy="refreshing || undefined">
-      <!-- 本机(控制节点)卡牌:固定置首,只读 —— 不参与批量命令勾选(它不是登记服务器)。 -->
+    <div v-else-if="filteredMetrics.length > 0 || localMetrics" class="metrics-grid" :aria-busy="refreshing || undefined">
+      <!-- 本机(控制节点)卡牌:固定置首,不参与筛选(它不是登记服务器,不参与批量命令勾选)。 -->
       <ServerMetricsCard
         v-if="localMetrics"
         :name="t('serverStatus.localName')"
         :metrics="localMetrics"
-      />
+      >
+        <template #actions>
+          <AppButton
+            variant="default"
+            :disabled="!localMetrics.reachable"
+            :title="localMetrics.reachable ? t('serverStatus.terminalTitle') : t('serverStatus.terminalUnavailable')"
+            @click="openTerminal(LOCAL_HOST_ID)"
+          >
+            <Terminal class="action-icon" aria-hidden="true" />{{ t('opsServer.card.terminal') }}
+          </AppButton>
+        </template>
+      </ServerMetricsCard>
       <ServerMetricsCard
-        v-for="m in metrics"
+        v-for="m in filteredMetrics"
         :key="m.serverId"
         :name="displayName(m)"
         :metrics="m"
         :pool="poolById.get(m.serverId)"
         :gpu="poolById.get(m.serverId)?.gpu ?? false"
+        :ecs="ecsById?.get(m.serverId)"
         selectable
         :selected="selected.has(m.serverId)"
         @toggle="toggleSelect(m.serverId)"
       >
         <template #actions>
+          <AppButton
+            variant="default"
+            :disabled="!m.reachable"
+            :title="m.reachable ? t('serverStatus.terminalTitle') : t('serverStatus.terminalUnavailable')"
+            @click="openTerminal(m.serverId)"
+          >
+            <Terminal class="action-icon" aria-hidden="true" />{{ t('opsServer.card.terminal') }}
+          </AppButton>
+          <!-- ECS 电源按钮:仅导入的阿里云 ECS 机器渲染;转换中/未知禁用 -->
+          <AppButton
+            v-if="powerBtn(m)"
+            :variant="powerBtn(m)!.danger ? 'danger' : 'default'"
+            :disabled="powerBtn(m)!.disabled"
+            :title="t('serverStatus.powerTitle')"
+            @click="powerServer(m)"
+          >
+            <Power class="action-icon" aria-hidden="true" />{{ powerBtn(m)!.label }}
+          </AppButton>
           <AppButton variant="ai" @click="aiTargets = [m.serverId]">
             <Robot class="action-icon" aria-hidden="true" />{{ t('opsChat.title') }}
           </AppButton>
         </template>
       </ServerMetricsCard>
     </div>
+    <!-- 筛选后一台不剩:提示调整条件(本机卡不参与筛选,仍会显示) -->
+    <EmptyState
+      v-else-if="metrics.length > 0"
+      :title="t('serverStatus.filteredEmptyTitle')"
+      :description="t('serverStatus.filteredEmptyDesc')"
+    />
     <!-- 批量执行命令弹窗(勾选机器 → 同步执行 → 逐机结果) -->
     <BatchCommandModal
       v-if="commandModal"
@@ -402,6 +685,98 @@ onUnmounted(() => {
 }
 .select-bar__btn:hover:not(:disabled) { color: var(--color-text); }
 .select-bar__btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* ——— 筛选条(可达性/资源 chips + 名称搜索;视觉与容器页一致) ——— */
+.controls-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.filter-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.filter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 13px;
+  font-size: var(--text-label);
+  font-weight: 600;
+  color: var(--color-dim);
+  background: var(--color-card);
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  cursor: pointer;
+  transition: color var(--duration-fast) var(--ease-out-expo), border-color var(--duration-fast) var(--ease-out-expo), background var(--duration-fast) var(--ease-out-expo);
+}
+.filter-chip:hover {
+  color: var(--color-text);
+  border-color: var(--color-border-strong);
+}
+.filter-chip--active {
+  color: #fff;
+  background: var(--color-primary);
+  border-color: var(--color-primary);
+}
+.filter-chip__count {
+  font-size: var(--text-micro);
+  font-variant-numeric: tabular-nums;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--color-inset);
+  color: var(--color-faint);
+}
+.filter-chip--active .filter-chip__count {
+  background: oklch(100% 0 0 / 0.22);
+  color: #fff;
+}
+.search-box {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  flex: 0 1 320px;
+  min-width: 200px;
+}
+.search-box__input {
+  width: 100%;
+  padding: 7px 30px 7px 13px;
+  font-size: var(--text-label);
+  color: var(--color-text);
+  background: var(--color-card);
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  transition: border-color var(--duration-fast) var(--ease-out-expo);
+}
+.search-box__input::placeholder {
+  color: var(--color-faint);
+}
+.search-box__input:focus {
+  outline: none;
+  border-color: var(--color-primary);
+}
+.search-box__clear {
+  position: absolute;
+  right: 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  font-size: 11px;
+  line-height: 1;
+  color: var(--color-faint);
+  background: transparent;
+  border: none;
+  border-radius: 50%;
+  cursor: pointer;
+}
+.search-box__clear:hover {
+  color: var(--color-text);
+}
 
 .metrics-grid {
   display: grid;

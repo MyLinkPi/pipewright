@@ -11,4 +11,41 @@ export default {
   errLoadRetry: "Échec du chargement de l'état des serveurs. Veuillez réessayer plus tard.",
   emptyTitle: 'Aucun serveur enregistré pour le moment',
   emptyDesc: 'Enregistrez des serveurs cibles dans « Paramètres › Serveurs » et leurs métriques de ressources apparaîtront ici.',
+
+  // ——— Filtres (recherche par nom × joignabilité × état des ressources) ———
+  filterAll: 'Tous',
+  filterReachable: 'Joignables',
+  filterUnreachable: 'Injoignables',
+  filterTight: 'Ressources tendues',
+  filterOk: 'Ressources saines',
+  filterAria: 'Filtrer par joignabilité',
+  resourceFilterAria: 'Filtrer par état des ressources',
+  searchPlaceholder: 'Rechercher nom ou adresse',
+  searchAria: 'Rechercher des serveurs',
+  searchClear: 'Effacer la recherche',
+  filteredEmptyTitle: 'Aucun serveur correspondant',
+  filteredEmptyDesc: 'Ajustez la recherche ou les filtres puis réessayez.',
+
+  // ——— Terminal hôte (hôtes joignables, nouvel onglet) ———
+  terminalTitle: 'Ouvrir le terminal hôte (nouvel onglet)',
+  terminalUnavailable: 'Serveur injoignable — terminal indisponible',
+
+  // ——— Alimentation Aliyun ECS (machines ECS importées uniquement) ———
+  ecsBadgeTitle: 'Instance Aliyun ECS {instance} · {status}',
+  ecsRunning: 'En cours',
+  ecsStopped: 'Arrêtée',
+  ecsStarting: 'Démarrage',
+  ecsStopping: 'Arrêt',
+  ecsUnknown: 'Inconnu',
+  powerTitle: 'Aliyun ECS marche/arrêt',
+  powerStart: 'Démarrer',
+  powerStop: 'Arrêter',
+  powerBusy: 'En cours…',
+  powerUnknown: 'État inconnu',
+  powerStartToast: "Commande de démarrage envoyée ; l'état sera actualisé sous peu",
+  powerStopToast: "Commande d'arrêt envoyée (mode économe)",
+  powerFailedToast: "Échec de l'opération d'alimentation ECS",
+  powerConfirmTitle: 'Arrêter : {name}',
+  powerConfirmBody: "Cette instance ECS sera arrêtée immédiatement (mode économe). Les builds, services et connexions en cours seront interrompus — vérifiez qu'aucune tâche importante n'est en cours.",
+  powerConfirmLabel: 'Arrêter',
 }

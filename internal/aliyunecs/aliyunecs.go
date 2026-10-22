@@ -69,6 +69,8 @@ var (
 	ErrPowerFailed = errors.New("aliyunecs: ecs power operation failed")
 	// ErrNoTagMatch 表示标签选择方式未匹配到任何可操作实例(0 命中即失败,防拼错静默空跑)。
 	ErrNoTagMatch = errors.New("aliyunecs: tag selector matched no instances")
+	// ErrServerNotLinked 表示目标服务器行未关联任何导入的 ECS 实例(不是经导入落库的机器)。
+	ErrServerNotLinked = errors.New("aliyunecs: server not linked to any imported ecs instance")
 )
 
 // 机器选择方式(ecs_power 节点)与标签来源枚举。
@@ -204,6 +206,12 @@ type Service interface {
 	// Power 对所选实例执行开机/关机(流水线 ecs_power 节点消费;关机固定节省停机模式,
 	// 选择支持实例直选 / 阿里云标签 / 平台服务器标签三种方式,详见 power.go)。
 	Power(ctx context.Context, in PowerInput) (*PowerResult, error)
+	// PowerServer 对某登记服务器关联的 ECS 实例发起开机/关机(服务器状态页电源按钮消费):
+	// 经导入映射反查实例、发起即返回不等待;无映射 → ErrServerNotLinked。详见 power.go。
+	PowerServer(ctx context.Context, serverID, action string) (*PowerResult, error)
+	// LinkedPowerStatus 返回全部「已导入 ECS ↔ servers 行」映射及其实时电源状态
+	// (服务器状态页电源徽标数据源;逐账户独立容错)。
+	LinkedPowerStatus(ctx context.Context) ([]LinkedPowerItem, error)
 }
 
 // service 是 store + vault + target 支撑的实现。newClient 供测试注入假 API 客户端。

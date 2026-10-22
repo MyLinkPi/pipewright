@@ -11,4 +11,41 @@ export default {
   errLoadRetry: 'Error al cargar el estado de los servidores. Inténtalo de nuevo más tarde.',
   emptyTitle: 'Aún no hay servidores registrados',
   emptyDesc: 'Registra servidores de destino en «Ajustes › Servidores» y sus métricas de recursos aparecerán aquí.',
+
+  // ——— Filtros (búsqueda por nombre × accesibilidad × estado de recursos) ———
+  filterAll: 'Todos',
+  filterReachable: 'Accesibles',
+  filterUnreachable: 'Inaccesibles',
+  filterTight: 'Recursos ajustados',
+  filterOk: 'Recursos normales',
+  filterAria: 'Filtrar por accesibilidad',
+  resourceFilterAria: 'Filtrar por estado de recursos',
+  searchPlaceholder: 'Buscar por nombre o dirección',
+  searchAria: 'Buscar servidores',
+  searchClear: 'Borrar búsqueda',
+  filteredEmptyTitle: 'Ningún servidor coincide',
+  filteredEmptyDesc: 'Ajusta el término de búsqueda o los filtros e inténtalo de nuevo.',
+
+  // ——— Terminal del host (hosts accesibles, pestaña nueva) ———
+  terminalTitle: 'Abrir terminal del host (pestaña nueva)',
+  terminalUnavailable: 'Servidor inaccesible: no se puede abrir el terminal',
+
+  // ——— Encendido/Apagado Aliyun ECS (solo máquinas ECS importadas) ———
+  ecsBadgeTitle: 'Instancia Aliyun ECS {instance} · {status}',
+  ecsRunning: 'En ejecución',
+  ecsStopped: 'Detenida',
+  ecsStarting: 'Iniciando',
+  ecsStopping: 'Deteniendo',
+  ecsUnknown: 'Desconocido',
+  powerTitle: 'Encender/Apagar Aliyun ECS',
+  powerStart: 'Encender',
+  powerStop: 'Apagar',
+  powerBusy: 'Ejecutando…',
+  powerUnknown: 'Estado desconocido',
+  powerStartToast: 'Orden de encendido enviada; el estado se actualizará en breve',
+  powerStopToast: 'Orden de apagado enviada (modo económico)',
+  powerFailedToast: 'Falló la operación de encendido/apagado de ECS',
+  powerConfirmTitle: 'Apagar: {name}',
+  powerConfirmBody: 'Esta instancia ECS se detendrá de inmediato (modo económico). Las compilaciones, servicios y conexiones en curso se interrumpirán; confirma que no haya tareas importantes en ejecución.',
+  powerConfirmLabel: 'Apagar',
 }

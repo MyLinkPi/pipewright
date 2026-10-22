@@ -1185,6 +1185,10 @@ func New(webFS fs.FS, authn auth.Authenticator, opts ...Option) http.Handler {
 		ar.Post("/aliyun/accounts/{id}/test", makeTestAliyunAccountHandler(ae, aud))
 		ar.Get("/aliyun/accounts/{id}/instances", makeListAliyunInstancesHandler(ae))
 		ar.Post("/aliyun/import", makeAliyunImportHandler(ae, aud))
+		// ECS 开关机(服务器状态页电源按钮):status 只读过 auth;power 为写方法,
+		// 过 auth + CSRF + 审计(aliyun.power)。发起即返回不等待;逐台独立容错。
+		ar.Get("/aliyun/power/status", makeAliyunPowerStatusHandler(ae))
+		ar.Post("/aliyun/power", makeAliyunPowerHandler(ae, aud))
 
 		// 对象存储集成层(流水线 OSS 上传节点配套):本期仅阿里云 OSS(凭据走 vault)。
 		// obs 为 nil → handler 返回 503。GET(列表)过 auth;POST/PUT/DELETE/test 为写方法,

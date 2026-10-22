@@ -11,4 +11,41 @@ export default {
   errLoadRetry: '加载服务器状态失败,请稍后重试',
   emptyTitle: '尚无已登记服务器',
   emptyDesc: '先在「设置 › 服务器」登记目标服务器,这里就会显示它们的资源指标。',
+
+  // ——— 筛选(名称搜索 × 可达性 × 资源状态) ———
+  filterAll: '全部',
+  filterReachable: '可达',
+  filterUnreachable: '不可达',
+  filterTight: '资源紧张',
+  filterOk: '资源正常',
+  filterAria: '按可达性筛选',
+  resourceFilterAria: '按资源状态筛选',
+  searchPlaceholder: '搜索名称或地址',
+  searchAria: '搜索服务器',
+  searchClear: '清空搜索',
+  filteredEmptyTitle: '没有匹配的服务器',
+  filteredEmptyDesc: '调整搜索词或筛选条件后再试。',
+
+  // ——— 主机终端(可达机器新标签页打开) ———
+  terminalTitle: '打开主机终端(新标签页)',
+  terminalUnavailable: '服务器不可达,无法打开终端',
+
+  // ——— 阿里云 ECS 电源(仅导入的 ECS 机器) ———
+  ecsBadgeTitle: '阿里云 ECS 实例 {instance} · {status}',
+  ecsRunning: '运行中',
+  ecsStopped: '已停机',
+  ecsStarting: '开机中',
+  ecsStopping: '关机中',
+  ecsUnknown: '状态未知',
+  powerTitle: '阿里云 ECS 开关机',
+  powerStart: '开机',
+  powerStop: '关机',
+  powerBusy: '执行中…',
+  powerUnknown: '电源未知',
+  powerStartToast: '开机指令已发出,状态稍后自动刷新',
+  powerStopToast: '关机指令已发出(节省停机模式)',
+  powerFailedToast: 'ECS 开关机失败',
+  powerConfirmTitle: '关机:{name}',
+  powerConfirmBody: '将立即停止该 ECS 实例(节省停机模式)。机器上正在运行的构建、服务与连接会被中断,请确认没有重要任务在运行。',
+  powerConfirmLabel: '确认关机',
 }

@@ -407,3 +407,170 @@ func summarizeStatuses(statuses map[string]string, pending []string) string {
 	}
 	return strings.Join(parts, ", ")
 }
+
+// ─── 服务器状态页电源入口(HTTP PowerServer / LinkedPowerStatus) ──────────────
+
+// serverLink 是一条「servers 行 → 账户实例」映射(aliyun_ecs_instance_links 一行)。
+type serverLink struct {
+	AccountID  string
+	InstanceID string
+	ServerID   string
+}
+
+// linksForServer 反查服务器行关联的全部映射(账户+实例稳定排序)。
+// 主键是 (account_id, instance_id),同一服务器行理论可挂多账户实例(逐个独立容错)。
+func (s *service) linksForServer(ctx context.Context, serverID string) ([]serverLink, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT account_id, instance_id FROM aliyun_ecs_instance_links WHERE server_id = ? ORDER BY account_id, instance_id`,
+		serverID)
+	if err != nil {
+		return nil, fmt.Errorf("aliyunecs: list links for server: %w", err)
+	}
+	defer rows.Close()
+	var out []serverLink
+	for rows.Next() {
+		var lk serverLink
+		if err := rows.Scan(&lk.AccountID, &lk.InstanceID); err != nil {
+			return nil, fmt.Errorf("aliyunecs: scan link: %w", err)
+		}
+		lk.ServerID = serverID
+		out = append(out, lk)
+	}
+	return out, rows.Err()
+}
+
+// PowerServer 对某登记服务器关联的 ECS 实例发起开机/关机(服务器状态页电源按钮消费)。
+// 反查导入映射后逐账户走 Power(直选实例、WaitSeconds=0 发起即返回、幂等跳过已达标);
+// 单账户失败折为该实例的逐台结果(不 500、不阻断其余账户)。结构错误(动作非法 / 无映射)
+// 才返回 error。关机沿用 Power 的固定策略:节省停机模式,不强断。
+func (s *service) PowerServer(ctx context.Context, serverID, action string) (*PowerResult, error) {
+	if _, _, ok := targetStatus(action); !ok {
+		return nil, fmt.Errorf("%w:非法动作 %q(仅 start|stop)", ErrPowerFailed, action)
+	}
+	links, err := s.linksForServer(ctx, serverID)
+	if err != nil {
+		return nil, err
+	}
+	if len(links) == 0 {
+		return nil, fmt.Errorf("%w:服务器 %s 未关联任何导入的阿里云 ECS 实例", ErrServerNotLinked, serverID)
+	}
+	merged := &PowerResult{Total: len(links), Items: make([]PowerItemResult, 0, len(links))}
+	for _, lk := range links {
+		res, err := s.Power(ctx, PowerInput{
+			AccountID:   lk.AccountID,
+			Selector:    SelectorInstances,
+			InstanceIDs: []string{lk.InstanceID},
+			Action:      action,
+			WaitSeconds: 0,
+		})
+		if err != nil {
+			// 账户级失败(凭据/网络/账户不存在)折为该实例的逐台失败,人话无凭据。
+			merged.Failed++
+			merged.Items = append(merged.Items, PowerItemResult{
+				InstanceID: lk.InstanceID,
+				ServerID:   lk.ServerID,
+				Err:        wrapPower(err, lk.InstanceID+" 开关机发起失败").Error(),
+			})
+			continue
+		}
+		merged.OK += res.OK
+		merged.Failed += res.Failed
+		for i := range res.Items {
+			res.Items[i].ServerID = lk.ServerID // 直选路径领域层不填,此处回填归属
+		}
+		merged.Items = append(merged.Items, res.Items...)
+	}
+	return merged, nil
+}
+
+// LinkedPowerItem 是一台已导入 ECS 关联服务器的实时电源状态(查询结果,无动作)。
+type LinkedPowerItem struct {
+	ServerID   string
+	AccountID  string
+	InstanceID string
+	Status     string // Running | Stopped | Starting | Stopping | ...(阿里云原值;空 = 未知)
+	Err        string // 该条查询失败的人读错误(账户解封失败 / API 失败);成功为空
+}
+
+// LinkedPowerStatus 返回全部「已导入 ECS ↔ servers 行」映射及其实时电源状态
+// (服务器状态页电源徽标数据源)。按账户分组批量 DescribeInstanceStatus,
+// 单账户失败不拖垮其余(该账户名下条目带 Err、Status 为空)。
+func (s *service) LinkedPowerStatus(ctx context.Context) ([]LinkedPowerItem, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT account_id, instance_id, server_id FROM aliyun_ecs_instance_links ORDER BY server_id, account_id, instance_id`)
+	if err != nil {
+		return nil, fmt.Errorf("aliyunecs: list links: %w", err)
+	}
+	var links []serverLink
+	for rows.Next() {
+		var lk serverLink
+		if err := rows.Scan(&lk.AccountID, &lk.InstanceID, &lk.ServerID); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("aliyunecs: scan link: %w", err)
+		}
+		links = append(links, lk)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, fmt.Errorf("aliyunecs: list links: %w", err)
+	}
+	rows.Close()
+
+	// 按账户分组,一组一次 API(同账户同 Region 的实例状态可批量查)。
+	byAccount := make(map[string][]serverLink)
+	for _, lk := range links {
+		byAccount[lk.AccountID] = append(byAccount[lk.AccountID], lk)
+	}
+	statusByLink := make(map[serverLink]string, len(links))
+	errByAccount := make(map[string]string, len(byAccount))
+	accIDs := make([]string, 0, len(byAccount))
+	for accID := range byAccount {
+		accIDs = append(accIDs, accID)
+	}
+	sort.Strings(accIDs)
+	for _, accID := range accIDs {
+		group := byAccount[accID]
+		ids := make([]string, 0, len(group))
+		for _, lk := range group {
+			ids = append(ids, lk.InstanceID)
+		}
+		cli, _, err := s.clientFor(ctx, accID)
+		if err != nil {
+			errByAccount[accID] = humanLinkErr(err)
+			continue
+		}
+		statuses, err := cli.InstanceStatuses(ctx, ids)
+		if err != nil {
+			errByAccount[accID] = wrapPower(err, "查询实例状态失败").Error()
+			continue
+		}
+		for _, lk := range group {
+			statusByLink[lk] = statuses[lk.InstanceID] // 缺失(实例已释放)→ 空串 = 未知
+		}
+	}
+
+	out := make([]LinkedPowerItem, 0, len(links))
+	for _, lk := range links {
+		item := LinkedPowerItem{
+			ServerID:   lk.ServerID,
+			AccountID:  lk.AccountID,
+			InstanceID: lk.InstanceID,
+			Status:     statusByLink[lk],
+			Err:        errByAccount[lk.AccountID],
+		}
+		out = append(out, item)
+	}
+	return out, nil
+}
+
+// humanLinkErr 把映射状态查询的账户级错误折为人读(绝无凭据)。
+func humanLinkErr(err error) string {
+	switch {
+	case errors.Is(err, ErrNotFound):
+		return "账户不存在(可能已删除)"
+	case errors.Is(err, ErrVaultUnconfigured):
+		return "保险库未配置,无法解封 AccessKeySecret"
+	default:
+		return wrapPower(err, "账户不可用").Error()
+	}
+}

@@ -28,6 +28,12 @@ type fakeAliyunSvc struct {
 	importErr  error
 	importRes  *aliyunecs.ImportResult
 	lastImport aliyunecs.ImportInput
+	// 电源端点(服务器状态页)。
+	powerServerErr  error
+	powerServerRes  *aliyunecs.PowerResult
+	lastPowerServer [2]string // serverID, action
+	linkedRes       []aliyunecs.LinkedPowerItem
+	linkedErr       error
 }
 
 func (f *fakeAliyunSvc) ListAccounts(context.Context) ([]aliyunecs.Account, error) {
@@ -89,9 +95,34 @@ func (f *fakeAliyunSvc) Import(_ context.Context, in aliyunecs.ImportInput) (*al
 	}}}, nil
 }
 
-// Power 桩:HTTP 面不暴露开关机端点(流水线执行器直连领域服务),此处仅满足接口。
+// Power 桩:流水线执行器直连领域服务,HTTP 面不经此方法。
 func (f *fakeAliyunSvc) Power(context.Context, aliyunecs.PowerInput) (*aliyunecs.PowerResult, error) {
 	return nil, aliyunecs.ErrPowerFailed
+}
+
+func (f *fakeAliyunSvc) PowerServer(_ context.Context, serverID, action string) (*aliyunecs.PowerResult, error) {
+	f.lastPowerServer = [2]string{serverID, action}
+	if f.powerServerErr != nil {
+		return nil, f.powerServerErr
+	}
+	if f.powerServerRes != nil {
+		return f.powerServerRes, nil
+	}
+	return &aliyunecs.PowerResult{Total: 1, OK: 1, Items: []aliyunecs.PowerItemResult{{
+		InstanceID: "i-1", ServerID: serverID, OK: true,
+	}}}, nil
+}
+
+func (f *fakeAliyunSvc) LinkedPowerStatus(context.Context) ([]aliyunecs.LinkedPowerItem, error) {
+	if f.linkedErr != nil {
+		return nil, f.linkedErr
+	}
+	if f.linkedRes != nil {
+		return f.linkedRes, nil
+	}
+	return []aliyunecs.LinkedPowerItem{{
+		ServerID: "srv-1", AccountID: "acc-1", InstanceID: "i-1", Status: "Running",
+	}}, nil
 }
 
 // setupAliyunAPI 构造挂了阿里云 ECS 端点的测试 server(admin/testpass)。
@@ -316,5 +347,103 @@ func TestAliyunImportHandlerValidationMapping(t *testing.T) {
 	}
 	if strings.Contains(string(raw), "secret leak") {
 		t.Errorf("500 信封不应回显内部错误: %s", raw)
+	}
+}
+
+func TestAliyunPowerStatusEndpoint(t *testing.T) {
+	fake := &fakeAliyunSvc{}
+	srv, client, csrf, _ := setupAliyunAPI(t, fake)
+
+	resp, raw := doAliyunJSON(t, client, http.MethodGet, srv.URL+"/api/aliyun/power/status", csrf, "")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status 应 200, got %d body=%s", resp.StatusCode, raw)
+	}
+	var out struct {
+		Items []struct {
+			ServerID   string `json:"serverId"`
+			InstanceID string `json:"instanceId"`
+			Status     string `json:"status"`
+			Error      string `json:"error"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(raw, &out); err != nil || len(out.Items) != 1 {
+		t.Fatalf("status decode err=%v body=%s", err, raw)
+	}
+	if out.Items[0].ServerID != "srv-1" || out.Items[0].InstanceID != "i-1" || out.Items[0].Status != "Running" {
+		t.Errorf("item = %+v", out.Items[0])
+	}
+
+	// 账户级失败折为条目 error,仍是 200(不拖垮整批)。
+	fake.linkedRes = []aliyunecs.LinkedPowerItem{{ServerID: "srv-2", AccountID: "acc-9", InstanceID: "i-2", Err: "凭据无效"}}
+	resp, raw = doAliyunJSON(t, client, http.MethodGet, srv.URL+"/api/aliyun/power/status", csrf, "")
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(raw), "凭据无效") {
+		t.Fatalf("失败条目 = %d %s", resp.StatusCode, raw)
+	}
+}
+
+func TestAliyunPowerEndpoint(t *testing.T) {
+	fake := &fakeAliyunSvc{}
+	srv, client, csrf, rec := setupAliyunAPI(t, fake)
+
+	// 发起开机:200 + 汇总 + 审计;入参透传领域层。
+	resp, raw := doAliyunJSON(t, client, http.MethodPost, srv.URL+"/api/aliyun/power", csrf,
+		`{"serverId":"srv-1","action":"start"}`)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("power 应 200, got %d body=%s", resp.StatusCode, raw)
+	}
+	var out struct {
+		Total  int `json:"total"`
+		OK     int `json:"ok"`
+		Failed int `json:"failed"`
+	}
+	if err := json.Unmarshal(raw, &out); err != nil || out.Total != 1 || out.OK != 1 || out.Failed != 0 {
+		t.Fatalf("out = %+v body=%s", out, raw)
+	}
+	if fake.lastPowerServer != [2]string{"srv-1", "start"} {
+		t.Errorf("domain 入参 = %v", fake.lastPowerServer)
+	}
+	auditRes, err := rec.List(context.Background(), audit.ListFilter{Action: auditActionAliyunPower})
+	if err != nil || len(auditRes.Entries) != 1 {
+		t.Fatalf("power 审计 = %d err=%v", len(auditRes.Entries), err)
+	}
+
+	// 结构错误:缺 serverId / 非法动作 → 400。
+	resp, raw = doAliyunJSON(t, client, http.MethodPost, srv.URL+"/api/aliyun/power", csrf, `{"action":"start"}`)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("缺 serverId 应 400, got %d body=%s", resp.StatusCode, raw)
+	}
+	resp, raw = doAliyunJSON(t, client, http.MethodPost, srv.URL+"/api/aliyun/power", csrf,
+		`{"serverId":"srv-1","action":"reboot"}`)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("非法动作应 400, got %d body=%s", resp.StatusCode, raw)
+	}
+
+	// 未关联 ECS → 404;失败尝试同样留审计。
+	fake.powerServerErr = aliyunecs.ErrServerNotLinked
+	resp, raw = doAliyunJSON(t, client, http.MethodPost, srv.URL+"/api/aliyun/power", csrf,
+		`{"serverId":"srv-9","action":"stop"}`)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("未关联应 404, got %d body=%s", resp.StatusCode, raw)
+	}
+	auditRes, err = rec.List(context.Background(), audit.ListFilter{Action: auditActionAliyunPower})
+	if err != nil || len(auditRes.Entries) != 2 {
+		t.Fatalf("失败尝试也应留审计: %d err=%v", len(auditRes.Entries), err)
+	}
+
+	// 阿里云侧失败 → 502;逐台失败(200 + ok:false)不在此列。
+	fake.powerServerErr = aliyunecs.ErrPowerFailed
+	resp, _ = doAliyunJSON(t, client, http.MethodPost, srv.URL+"/api/aliyun/power", csrf,
+		`{"serverId":"srv-1","action":"stop"}`)
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("PowerFailed 应 502, got %d", resp.StatusCode)
+	}
+	fake.powerServerErr = nil
+	fake.powerServerRes = &aliyunecs.PowerResult{Total: 1, Failed: 1, Items: []aliyunecs.PowerItemResult{{
+		InstanceID: "i-1", ServerID: "srv-1", Err: "操作被阿里云拒绝",
+	}}}
+	resp, raw = doAliyunJSON(t, client, http.MethodPost, srv.URL+"/api/aliyun/power", csrf,
+		`{"serverId":"srv-1","action":"stop"}`)
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(raw), "操作被阿里云拒绝") {
+		t.Fatalf("逐台失败应 200 带错误: %d %s", resp.StatusCode, raw)
 	}
 }
