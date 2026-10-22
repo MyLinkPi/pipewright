@@ -44,8 +44,14 @@ func opsHandler(s *opschat.Service, operation string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
 		if operation != "list" && operation != "entries" && operation != "preview" {
-			if err := opsQuery(r); err != nil {
-				opsError(w, err)
+			if operation == "tools" {
+				// tools 支持 ?scope=project 拉项目维度目录(缺省机器维度,向后兼容)。
+				if queryErr := opsQuery(r, "scope"); queryErr != nil {
+					opsError(w, queryErr)
+					return
+				}
+			} else if queryErr := opsQuery(r); queryErr != nil {
+				opsError(w, queryErr)
 				return
 			}
 		}
@@ -58,7 +64,12 @@ func opsHandler(s *opschat.Service, operation string) http.HandlerFunc {
 			return
 		}
 		if operation == "tools" {
-			writeJSON(w, 200, opschat.Tools())
+			scope := r.URL.Query().Get("scope")
+			if scope != opschat.ScopeServer && scope != opschat.ScopeProject {
+				opsError(w, opschat.ErrInvalid)
+				return
+			}
+			writeJSON(w, 200, opschat.Tools(scope))
 			return
 		}
 		if s == nil {

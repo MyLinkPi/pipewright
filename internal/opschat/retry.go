@@ -39,6 +39,11 @@ func retryable(c callRecord) error {
 	if c.Body.View.ToolID == "docker_exec" {
 		return ErrVerifyFirst
 	}
+	// 项目工具不走机器重试链路(目标快照/SSH 槽位语义不适用);失败由模型下一轮
+	// 重取或用户新提问覆盖。
+	if isProjectTool(c.Body.View.ToolID) {
+		return ErrConflict
+	}
 	switch c.Body.View.Status {
 	case Failed, PartialFailed:
 		return nil

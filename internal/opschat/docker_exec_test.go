@@ -71,7 +71,7 @@ func TestDockerExecStrictArgv(t *testing.T) {
 	if validExecArgv([]string{"echo", string([]byte{0xff})}) {
 		t.Fatal("invalid UTF-8 accepted by command guard")
 	}
-	for _, tool := range Tools() {
+	for _, tool := range Tools(ScopeServer) {
 		if tool.ID == "docker_exec" {
 			if !tool.Mutation {
 				t.Fatal("exec is not a mutation")

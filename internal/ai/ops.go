@@ -206,7 +206,7 @@ func opsArgs(id string, raw json.RawMessage) error {
 		Required   []string
 	}
 	found := false
-	for _, tool := range opschat.Tools() {
+	for _, tool := range opschat.Tools(opschat.ScopeServer) {
 		if tool.ID == id {
 			_ = json.Unmarshal(tool.Schema, &schema)
 			found = true

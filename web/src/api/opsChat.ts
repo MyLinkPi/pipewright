@@ -35,6 +35,9 @@ export interface Session {
   title: string
   draft: string
   serverIds: string[] | null
+  /** 会话维度:缺省=机器;"project"=项目(绑定 projectId,可选关联机器)。 */
+  scope?: string
+  projectId?: string
   activeRunId: string
   watermark: number
   storageBytes?: number
@@ -58,11 +61,23 @@ export interface ToolArgs {
   unit?: string
   lines?: number
   action?: string
+  path?: string
+  ref?: string
+  branch?: string
+  runId?: string
+  stepOrdinal?: number
+  status?: string
+  limit?: number
+  params?: Record<string, string>
 }
 export interface Tool {
   toolId: string
   mutation: boolean
   schema: unknown
+  /** 发给模型的工具说明(后端目录携带;调试/展示用)。 */
+  description?: string
+  /** target 参数是否适用(机器工具 true;项目工具 false)。 */
+  targeted?: boolean
 }
 export interface Resources {
   disks:
@@ -196,6 +211,8 @@ export interface Patch {
   title?: string
   draft?: string
   serverIds?: string[]
+  /** 项目维度会话切换绑定项目(机器维度会话忽略/拒绝)。 */
+  projectId?: string
 }
 export interface Retry {
   clientRequestId: string
@@ -228,10 +245,17 @@ export async function continueRun(sessionId: string, runId: string, input: Conti
 
 export const opsApi = {
   capabilities: () => http.get<Capabilities>(`${root}/capabilities`),
-  tools: () => http.get<Tool[]>(`${root}/tools`),
+  tools: (scope = '') =>
+    http.get<Tool[]>(`${root}/tools${scope ? '?scope=' + encodeURIComponent(scope) : ''}`),
   list: (context='') => http.get<SessionPage>(`${root}/sessions?limit=100${context?'&context='+encodeURIComponent(context):''}`),
-  create: (serverIds: string[],context='') =>
-    http.post<Session>(`${root}/sessions`, { title: '', serverIds,...(context?{context}:{}) }),
+  create: (serverIds: string[], context = '', scope = '', projectId = '') =>
+    http.post<Session>(`${root}/sessions`, {
+      title: '',
+      serverIds,
+      ...(scope ? { scope } : {}),
+      ...(projectId ? { projectId } : {}),
+      ...(context ? { context } : {}),
+    }),
   snapshot: (id: string) => http.get<Snapshot>(path(id)),
   patch: (id: string, input: Patch) => http.patch<Session>(path(id), input),
   activate: (id: string,context='') =>

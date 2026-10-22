@@ -38,6 +38,7 @@ import {
 import { listServers, type Server } from '../api/servers'
 import { matchServers } from '../lib/selectorMatch'
 import { HttpError } from '../api/http'
+import ContainerAiPanel from '../components/ops/ContainerAiPanel.vue'
 import DiagnosisPanel from '../components/run/DiagnosisPanel.vue'
 import SuccessFailDiff from '../components/run/SuccessFailDiff.vue'
 import RunTerminal from '../components/run/RunTerminal.vue'
@@ -62,6 +63,12 @@ type LoadState = 'loading' | 'idle' | 'error'
 const loadState = ref<LoadState>('loading')
 const loadError = ref('')
 const run = ref<RunDetail | null>(null)
+
+// 项目维度 AI 运维助手(绑定本运行所属项目)。
+const showAi = ref(false)
+const aiContext = computed(() =>
+  run.value?.projectId ? 'project:' + run.value.projectId : 'projects',
+)
 
 // 选中的步骤序号(点击步骤详情切换「单步日志」过滤);null = 全部步骤。
 const selectedStepOrdinal = ref<number | null>(null)
@@ -690,6 +697,14 @@ function goBack(): void {
               <span class="detail-id mono">#{{ shortId(run.id) }}</span>
             </h1>
           </div>
+
+          <!-- AI assistant (project dimension, bound to this run's project) -->
+          <button
+            class="btn-secondary"
+            @click="showAi = true"
+          >
+            {{ t('opsChat.projectAssistant') }}
+          </button>
 
           <!-- Cancel button (only when running/queued) -->
           <button
@@ -1361,6 +1376,14 @@ function goBack(): void {
 
     </template>
     <!-- END run detail -->
+
+    <ContainerAiPanel
+      v-if="showAi && run?.projectId"
+      dimension="project"
+      :context="aiContext"
+      :initial-project-id="run?.projectId ?? ''"
+      @close="showAi = false"
+    />
 
   </div>
 </template>

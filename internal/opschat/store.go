@@ -107,6 +107,7 @@ func (s *Service) session(ctx context.Context, q querier, id string) (sessionRec
 		return r, err
 	}
 	r.View.Title, r.View.Draft, r.View.ServerIDs = r.Body.Title, r.Body.Draft, r.Body.ServerIDs
+	r.View.Scope, r.View.ProjectID = r.Body.Scope, r.Body.ProjectID
 	r.View.StorageBytes = int64(r.Bytes)
 	r.View.CreatedAt, r.View.UpdatedAt = time.UnixMilli(created).UTC(), time.UnixMilli(updated).UTC()
 	return r, nil

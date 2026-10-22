@@ -550,7 +550,7 @@ func (s *Service) work(parent context.Context, id, run string) {
 		// Group only wholly read-only plans; mutation barriers retain their order.
 		readOnly := true
 		for _, c := range candidates {
-			readOnly = readOnly && !mutation(c.Body.View.ToolID)
+			readOnly = readOnly && !mutatesTool(c.Body.View.ToolID)
 		}
 		if readOnly {
 			order := map[string]int{}
@@ -1199,6 +1199,9 @@ func (s *Service) recordResult(c callRecord) error {
 	})
 }
 func (s *Service) executeCall(ctx context.Context, c callRecord) error {
+	if isProjectTool(c.Body.View.ToolID) {
+		return s.executeProjectCall(ctx, c)
+	}
 	v := &c.Body.View
 	b := remainingReadBudget(c)
 	callCtx, stop := context.WithTimeout(ctx, 30*time.Second)
@@ -1393,6 +1396,183 @@ func (s *Service) executeCall(ctx context.Context, c callRecord) error {
 		v.CollectedAt = &now
 	}
 	return s.recordResult(c)
+}
+
+// executeProjectCall 执行项目维度工具:本地后端调用(非 SSH,不占 SSH 槽位)。
+// 变更工具(run_trigger/run_cancel)与机器路径同强度:意图审计 → 确认单绑定
+// 复核 → 项目指纹闸门 → 派发检查点 → 效果校验(经 RunDetail)。
+func (s *Service) executeProjectCall(ctx context.Context, c callRecord) error {
+	v := &c.Body.View
+	if s.projects == nil {
+		v.Status = Failed
+		v.Error = "project backend unavailable"
+		return s.recordResult(c)
+	}
+	b := remainingReadBudget(c)
+	callCtx, stop := context.WithTimeout(ctx, 30*time.Second)
+	defer stop()
+	if err := s.beginCall(callCtx, &c); err != nil {
+		return err
+	}
+	r, budgetErr := s.run(callCtx, s.db, v.SessionID, v.RunID)
+	if budgetErr != nil {
+		return budgetErr
+	}
+	b.bytes = min(b.bytes, (512<<10)-r.Body.OutputBytes-1024)
+	if b.bytes < 1 {
+		v.Status = Failed
+		v.Truncated = true
+		v.Error = "run output budget exhausted"
+		return s.recordResult(c)
+	}
+	if needsApproval(*v) {
+		if s.audit == nil {
+			v.Status = Failed
+			v.Error = "local audit unavailable"
+			return s.recordResult(c)
+		}
+		// Outside DB transactions; the injected recorder only writes the local append-only log.
+		err := s.audit.Record(callCtx, audit.Entry{Actor: "admin", Action: "ops_chat_intent", TargetType: "ops_chat_call", TargetID: v.ID,
+			Detail: map[string]any{"sessionId": v.SessionID, "runId": v.RunID, "callId": v.ID, "projectId": v.ServerID, "toolId": v.ToolID, "argsHash": v.ArgsHash, "targetHash": v.TargetHash, "status": "intent"}})
+		if err != nil {
+			v.Status = Failed
+			v.Error = "local audit failed"
+			return s.recordResult(c)
+		}
+		// Audit can block; recheck cancellation, lease and approval immediately before dispatch.
+		err = s.persist(v.SessionID, func(cc context.Context, tx *sql.Tx) error {
+			rr, e := s.run(cc, tx, v.SessionID, v.RunID)
+			if e != nil {
+				return e
+			}
+			if rr.View.CancelRequested || callCtx.Err() != nil {
+				return context.Canceled
+			}
+			return s.consumedApproval(cc, tx, *v)
+		})
+		if err != nil {
+			if errors.Is(err, context.Canceled) || callCtx.Err() != nil {
+				v.Status = Interrupted
+				v.Error = "dispatch blocked: " + dispatchBlockReason(callCtx, err)
+				return s.recordResult(c)
+			}
+			v.Error = "dispatch blocked: " + dispatchBlockReason(callCtx, err)
+			return err
+		}
+	}
+	// 指纹闸门:项目配置在批准窗口内变化则拒绝派发(与机器目标同语义)。
+	snap, e := s.projects.Snapshot(callCtx, v.ServerID)
+	if e != nil || snap.ID != v.ServerID || snap.Fingerprint() != v.TargetHash {
+		v.Status = Failed
+		v.Error = "target configuration changed"
+		return s.recordResult(c)
+	}
+	// 派发检查点:先落 Dispatched 再执行;崩溃恢复按 Unknown 收敛。
+	if err := s.persist(v.SessionID, func(cc context.Context, tx *sql.Tx) error {
+		rr, e := s.run(cc, tx, v.SessionID, v.RunID)
+		if e != nil {
+			return e
+		}
+		if rr.View.CancelRequested || callCtx.Err() != nil || terminal(rr.View.Status) {
+			return ErrConflict
+		}
+		stored, e := s.call(cc, tx, v.SessionID, v.ID)
+		if e != nil {
+			return e
+		}
+		if stored.Body.View.Status != Running {
+			return ErrConflict
+		}
+		checkpoint := c
+		checkpoint.Body.Dispatched = true
+		return s.saveCall(cc, tx, checkpoint)
+	}); err != nil {
+		if errors.Is(err, context.Canceled) || callCtx.Err() != nil {
+			v.Status = Interrupted
+			v.Error = "dispatch blocked: " + dispatchBlockReason(callCtx, err)
+			return s.recordResult(c)
+		}
+		v.Error = "dispatch blocked: " + dispatchBlockReason(callCtx, err)
+		return err
+	}
+	c.Body.Dispatched = true
+	output, execErr := s.runProjectTool(callCtx, v)
+	now := time.Now().UTC()
+	v.CollectedAt = &now
+	exit := 0
+	v.ExitCode = &exit
+	if execErr != nil {
+		v.Status = Failed
+		v.Error = clip(execErr.Error(), 1024)
+		// 变更已派发但失败:效果不确定,标记 Unknown 强制下次先校验。
+		if c.Body.Dispatched && projectMutation(v.ToolID) {
+			v.Status = Unknown
+		}
+	} else {
+		v.Output = s.scrub(output, 64<<10)
+		v.Truncated = len(v.Output) >= 64<<10
+		v.Status = Succeeded
+		// Exec 成功只证明受理,不代表业务效果;经 RunDetail 校验(与机器 verify 同语义)。
+		if projectMutation(v.ToolID) && c.Body.Dispatched && callCtx.Err() == nil && !s.verifyProjectMutation(callCtx, v) {
+			v.Status = Unknown
+			v.Error = "remote effect not verified"
+		}
+	}
+	return s.recordResult(c)
+}
+
+// runProjectTool 把已校验的调用分发到项目后端;输出统一为有界文本。
+func (s *Service) runProjectTool(ctx context.Context, v *Call) (string, error) {
+	switch v.ToolID {
+	case "project_info":
+		return s.projects.Info(ctx, v.ServerID)
+	case "code_tree":
+		return s.projects.CodeTree(ctx, v.ServerID, v.Args.Ref, v.Args.Path)
+	case "code_read":
+		return s.projects.CodeRead(ctx, v.ServerID, v.Args.Ref, v.Args.Path, v.Args.Lines)
+	case "pipeline_config":
+		return s.projects.PipelineConfig(ctx, v.ServerID)
+	case "repo_pipeline_config":
+		return s.projects.RepoConfig(ctx, v.ServerID, v.Args.Branch)
+	case "project_runs":
+		return s.projects.Runs(ctx, v.ServerID, v.Args.Status, v.Args.Limit)
+	case "run_detail":
+		return s.projects.RunDetail(ctx, v.Args.RunID)
+	case "run_logs":
+		ordinal := -1
+		if v.Args.StepOrdinal != nil {
+			ordinal = *v.Args.StepOrdinal
+		}
+		return s.projects.RunLogs(ctx, v.Args.RunID, ordinal, v.Args.Lines)
+	case "run_trigger":
+		return s.projects.TriggerRun(ctx, v.ServerID, v.Args.Branch, v.Args.Params)
+	case "run_cancel":
+		return s.projects.CancelRun(ctx, v.Args.RunID)
+	}
+	return "", ErrInvalid
+}
+
+// verifyProjectMutation 校验项目变更的业务效果:trigger 要求新 run 已受理
+// (输出 JSON 契约含 runId;RunDetail 输出含 status);cancel 的同步受理本身
+// 即效果证明(queued 立即落终态,running 经 context 传播由 worker 异步收敛)。
+func (s *Service) verifyProjectMutation(ctx context.Context, v *Call) bool {
+	if v.ToolID == "run_cancel" {
+		return true
+	}
+	var created struct {
+		RunID string `json:"runId"`
+	}
+	if json.Unmarshal([]byte(v.Output), &created) != nil || !validID(created.RunID) {
+		return false
+	}
+	detail, err := s.projects.RunDetail(ctx, created.RunID)
+	if err != nil {
+		return false
+	}
+	var state struct {
+		Status string `json:"status"`
+	}
+	return json.Unmarshal([]byte(detail), &state) == nil && projectRunStatuses[state.Status]
 }
 func (s *Service) verifyMutation(ctx context.Context, c *callRecord, b *readBudget) bool {
 	v := c.Body.View

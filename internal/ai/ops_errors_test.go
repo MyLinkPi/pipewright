@@ -233,7 +233,7 @@ data: {"type":"message_stop"}
 		}
 		opsTestProvider = m.Info()
 		agentReq := opsRequest()
-		agentReq.Tools = opschat.Tools()
+		agentReq.Tools = opschat.Tools(opschat.ScopeServer)
 		reply, err := m.AgentRound(ctx(), agentReq)
 		if err != nil || reply.Text != "reply" {
 			t.Fatal(reply, err)

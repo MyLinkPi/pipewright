@@ -96,8 +96,13 @@ func (s *Service) secretArgs(a ToolArgs) bool {
 			return true
 		}
 	}
-	for _, value := range []string{a.Container, a.Unit, a.Action} {
+	for _, value := range []string{a.Container, a.Unit, a.Action, a.Path, a.Ref, a.Branch, a.RunID, a.Status} {
 		if s.scrub(value, 1024) != value {
+			return true
+		}
+	}
+	for key, value := range a.Params {
+		if s.scrub(key, 256) != key || s.scrub(value, 1024) != value {
 			return true
 		}
 	}
@@ -112,6 +117,18 @@ func (s *Service) publicCall(c Call) Call {
 	c.Args.Container = s.scrub(c.Args.Container, 1024)
 	c.Args.Unit = s.scrub(c.Args.Unit, 1024)
 	c.Args.Action = s.scrub(c.Args.Action, 1024)
+	c.Args.Path = s.scrub(c.Args.Path, 1024)
+	c.Args.Ref = s.scrub(c.Args.Ref, 1024)
+	c.Args.Branch = s.scrub(c.Args.Branch, 1024)
+	c.Args.RunID = s.scrub(c.Args.RunID, 1024)
+	c.Args.Status = s.scrub(c.Args.Status, 1024)
+	if c.Args.Params != nil {
+		params := map[string]string{}
+		for k, v := range c.Args.Params {
+			params[s.scrub(k, 256)] = s.scrub(v, 1024)
+		}
+		c.Args.Params = params
+	}
 	c.Object = s.scrub(c.Object, 1024)
 	c.ServerName = s.scrub(c.ServerName, 1024)
 	c.Output = s.scrub(c.Output, 64<<10)

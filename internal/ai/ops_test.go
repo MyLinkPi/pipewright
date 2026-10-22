@@ -88,7 +88,7 @@ func TestOpsProvidersPrivacyAndStrictPlan(t *testing.T) {
 			}
 			in := opsRequest()
 			in.Question = "list containers " + key
-			in.Tools = opschat.Tools()
+			in.Tools = opschat.Tools(opschat.ScopeServer)
 			reply, err := m.AgentRound(ctx(), in)
 			if err != nil || reply.Text != "[MASKED]" || len(reply.ToolCalls) != 1 || count.Load() != 1 {
 				t.Fatal(reply, err, count.Load())

@@ -12,6 +12,7 @@ import { onOpsAuthReset, opsAuthEpoch } from '../../utils/opsAuth'
 import CopyTextDialog from './CopyTextDialog.vue'
 import AiOpsSessionList from './AiOpsSessionList.vue'
 import AiOpsServerPicker from './AiOpsServerPicker.vue'
+import AiOpsProjectPicker from './AiOpsProjectPicker.vue'
 import AiOpsMessageList from './AiOpsMessageList.vue'
 import AiOpsComposer from './AiOpsComposer.vue'
 import AiOpsConfirmation from './AiOpsConfirmation.vue'
@@ -20,8 +21,17 @@ const props = withDefaults(
     active?: boolean
     initialServerIds?: string[]
     context?: string
+    /** 会话维度:'server'(默认)/'project'(绑定项目 + 可选关联机器)。 */
+    dimension?: 'server' | 'project'
+    initialProjectId?: string
   }>(),
-  { active: true, initialServerIds: () => [], context: 'containers' },
+  {
+    active: true,
+    initialServerIds: () => [],
+    context: 'containers',
+    dimension: 'server',
+    initialProjectId: '',
+  },
 )
 const emit = defineEmits<{ collapse: [] }>()
 const { t } = useI18n(),
@@ -32,6 +42,8 @@ const chat = useOpsChat({
   active: toRef(props, 'active'),
   initialServerIds: () => props.initialServerIds,
   context: () => props.context,
+  dimension: () => props.dimension,
+  initialProjectId: () => props.initialProjectId,
 })
 const {
   state,
@@ -45,6 +57,7 @@ const {
   error,
   pending,
   servers,
+  projects,
   confirmations,
   historyCursor,
 } = chat
@@ -80,6 +93,27 @@ onBeforeUnmount(() => {
 })
 const disabled = computed(
   () => busy.value || loading.value || !capabilities.value?.available,
+)
+// 项目维度:新建会话仍需一个已选项目(chosenProject 由选择器维护)。
+const createDisabled = computed(
+  () =>
+    disabled.value ||
+    (props.dimension === 'project' && !chat.chosenProject.value),
+)
+const projectMode = computed(() => props.dimension === 'project')
+const boundProjectId = computed(
+  () => session.value?.projectId ?? '',
+)
+// 项目维度 target_0 固定留给项目,机器目标上限 -1。
+const serverLimit = computed(() =>
+  projectMode.value
+    ? Math.max(0, (capabilities.value?.limits?.targets ?? 8) - 1)
+    : capabilities.value?.limits?.targets ?? 8,
+)
+const hasTargets = computed(() =>
+  projectMode.value
+    ? !!session.value?.projectId
+    : !!session.value?.serverIds?.length,
 )
 const storageNearQuota = computed(() => {
   const limit = capabilities.value?.limits?.sessionBytes,
@@ -245,7 +279,7 @@ defineExpose({ close })
         class="ops-btn ops-icon"
         :title="t('opsChat.newSession')"
         :aria-label="t('opsChat.newSession')"
-        :disabled="disabled"
+        :disabled="createDisabled"
         @click="chat.create"
       >
         <Plus />
@@ -277,10 +311,22 @@ defineExpose({ close })
       :class="{ 'ops-navigation--history': historyOpen }"
       data-testid="ops-navigation"
     >
+      <AiOpsProjectPicker
+        v-if="projectMode"
+        :projects="projects"
+        :project-id="boundProjectId || chat.chosenProject.value"
+        :servers="servers"
+        :selected-servers="session?.serverIds ?? []"
+        :server-limit="serverLimit"
+        :disabled="disabled || !!session?.activeRunId || !!pending"
+        @select="chat.selectProject"
+        @change-servers="chat.targets"
+      />
       <AiOpsServerPicker
+        v-else
         :servers="servers"
         :selected="session?.serverIds ?? []"
-        :limit="capabilities?.limits?.targets ?? 8"
+        :limit="serverLimit"
         :disabled="disabled || !!session?.activeRunId || !!pending"
         @change="chat.targets"
       />
@@ -366,7 +412,7 @@ defineExpose({ close })
       :disabled="disabled"
       :active="!!session?.activeRunId"
       :model-available="capabilities?.modelAvailable ?? false"
-      :has-targets="!!session?.serverIds?.length"
+      :has-targets="hasTargets"
       :pending="!!pending"
       @edit="chat.editDraft"
       @send="chat.send"

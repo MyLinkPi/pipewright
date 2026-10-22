@@ -143,11 +143,23 @@ func (s *Service) Confirm(ctx context.Context, id string, in ConfirmInput) (*Run
 		return nil, err
 	}
 	for _, c := range calls {
-		if c.Body.View.Status == AwaitingConfirmation {
-			snap, e := s.executor.Capture(ctx, c.Body.View.ServerID)
-			if e != nil || snap.Fingerprint() != c.Body.View.TargetHash {
+		if c.Body.View.Status != AwaitingConfirmation {
+			continue
+		}
+		if isProjectTool(c.Body.View.ToolID) {
+			// 项目调用:经项目快照指纹复核(与机器 Capture 闸门同语义)。
+			if s.projects == nil {
 				return nil, ErrApproval
 			}
+			psnap, e := s.projects.Snapshot(ctx, c.Body.View.ServerID)
+			if e != nil || psnap.Fingerprint() != c.Body.View.TargetHash {
+				return nil, ErrApproval
+			}
+			continue
+		}
+		snap, e := s.executor.Capture(ctx, c.Body.View.ServerID)
+		if e != nil || snap.Fingerprint() != c.Body.View.TargetHash {
+			return nil, ErrApproval
 		}
 	}
 	err = s.transaction(ctx, true, func(tx *sql.Tx) error {

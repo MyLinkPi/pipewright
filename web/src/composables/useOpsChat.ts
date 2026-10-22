@@ -24,6 +24,7 @@ import type {
   Capabilities,
 } from '../api/opsChat'
 import { listServers, type Server } from '../api/servers'
+import { listProjects, type Project } from '../api/projects'
 import { HttpError } from '../api/http'
 import { useOpsChatStore, type PendingSubmission } from '../stores/opsChat'
 import { onOpsAuthReset, opsAuthEpoch, resetOpsAuth } from '../utils/opsAuth'
@@ -43,11 +44,19 @@ export function useOpsChat(options: {
   active: Ref<boolean>
   initialServerIds: () => string[]
   context?: () => string
+  /** 会话维度:'server'(默认)/'project';项目维度会话绑定一个项目。 */
+  dimension?: () => 'server' | 'project'
+  /** 项目维度初始绑定的项目(会话创建用;运行详情页预选)。 */
+  initialProjectId?: () => string
 }) {
   const store = useOpsChatStore()
   const state = store.state
+  const dimension = () => options.dimension?.() ?? 'server'
   const capabilities = shallowRef<Capabilities | null>(null)
   const servers = shallowRef<Server[]>([])
+  const projects = shallowRef<Project[]>([])
+  // 项目维度尚无会话时暂存的选择;选择后据此创建会话。
+  const chosenProject = shallowRef(options.initialProjectId?.() ?? '')
   const tools = shallowRef<Tool[]>([])
   const draft = shallowRef('')
   const savedDraft = shallowRef('')
@@ -507,7 +516,21 @@ export function useOpsChat(options: {
     const t = token()
     busy.value = true
     try {
-      const value = await opsApi.create(options.initialServerIds().slice(0, capabilities.value?.limits.targets??8),entryContext)
+      const limit = capabilities.value?.limits.targets ?? 8
+      let scope = '',
+        projectId = ''
+      if (dimension() === 'project') {
+        // 项目维度:目标机上限少 1(target_0 固定留给项目)。
+        scope = 'project'
+        projectId = chosenProject.value || options.initialProjectId?.() || ''
+        if (!projectId) return false
+      }
+      const value = await opsApi.create(
+        options.initialServerIds().slice(0, dimension() === 'project' ? limit - 1 : limit),
+        entryContext,
+        scope,
+        projectId,
+      )
       if (!valid(t.g, t.auth)) return false
       state.sessions = [...state.sessions, value]
       return await select(value.id)
@@ -516,6 +539,24 @@ export function useOpsChat(options: {
       return false
     } finally {
       if (t.auth === opsAuthEpoch()) busy.value = false
+    }
+  }
+  // selectProject 选择/切换项目维度会话绑定的项目:无会话时创建,有会话时 PATCH。
+  async function selectProject(projectId: string): Promise<boolean> {
+    chosenProject.value = projectId
+    if (dimension() !== 'project' || !projectId) return false
+    if (!session.value) return create()
+    const t = token()
+    if (busy.value || pending.value || session.value.activeRunId) return false
+    busy.value = true
+    try {
+      if (!(await flush()) || !valid(t.g, t.auth)) return false
+      return !!(await patch({ projectId }))
+    } catch (e) {
+      if (valid(t.g, t.auth)) fail(e)
+      return false
+    } finally {
+      if (valid(t.g, t.auth)) busy.value = false
     }
   }
   async function restore(): Promise<void> {
@@ -530,13 +571,21 @@ export function useOpsChat(options: {
     try {
       const [cap, catalogue, registered] = await Promise.all([
         opsApi.capabilities(),
-        opsApi.tools(),
+        opsApi.tools(dimension() === 'project' ? 'project' : ''),
         listServers(),
       ])
       if (!valid(t.g, t.auth)) return
       capabilities.value = cap
       tools.value = catalogue
       servers.value = registered
+      if (dimension() === 'project') {
+        // 项目选择器候选;拉取失败不阻塞面板(选择时会再次校验)。
+        try {
+          projects.value = await listProjects()
+        } catch {
+          projects.value = []
+        }
+      }
       if (!cap.available) {
         error.value = 'ops_unavailable'
         return
@@ -549,7 +598,10 @@ export function useOpsChat(options: {
       const id = page.activeSessionId || (!entryContext?state.sessions[0]?.id:undefined)
       // Entry defaults only apply to a genuinely new session.
       if (id) await select(id)
-      else await create()
+      else if (dimension() === 'project' && !chosenProject.value) {
+        // 项目维度没有初始项目时等待用户选择,不创建空会话(后端要求 projectId)。
+        return
+      } else await create()
     } catch (e) {
       if (valid(t.g, t.auth)) fail(e)
     } finally {
@@ -649,10 +701,13 @@ export function useOpsChat(options: {
   }
   async function targets(ids: string[]): Promise<boolean> {
     const t = token()
+    const cap = capabilities.value?.limits.targets ?? 8
+    // 项目维度 target_0 固定留给项目,机器上限 -1。
+    const limit = dimension() === 'project' ? cap - 1 : cap
     if (
       busy.value ||
       pending.value ||
-      ids.length > (capabilities.value?.limits.targets??8) ||
+      ids.length > limit ||
       session.value?.activeRunId
     )
       return false
@@ -927,6 +982,9 @@ export function useOpsChat(options: {
     capabilities,
     tools,
     servers,
+    projects,
+    chosenProject,
+    dimension,
     draft,
     draftStatus,
     dirty,
@@ -943,6 +1001,7 @@ export function useOpsChat(options: {
     restore,
     select,
     create,
+    selectProject,
     editDraft,
     flush,
     resolveDraft,
