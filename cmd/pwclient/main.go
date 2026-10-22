@@ -31,6 +31,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/huangchengsir/pipewright/internal/mesh/easytier"
 	"github.com/huangchengsir/pipewright/internal/pwclient"
 	"github.com/huangchengsir/pipewright/internal/version"
 )
@@ -225,7 +226,12 @@ func printSnapshot(snap *pwclient.StatusSnapshot) {
 		if via == "" {
 			via = pr.ViaIP
 		}
-		fmt.Printf("  网段 %-18s 经 %s(%s) 转发\n", pr.CIDR, via, pr.ViaIP)
+		line := fmt.Sprintf("  网段 %-18s 经 %s(%s) 转发", pr.CIDR, via, pr.ViaIP)
+		// 同网段多通告者互为备份:主网关失联后 EasyTier 自动切到备用(秒级)。
+		if backups := viaLabels(pr.Vias[1:]); len(backups) > 0 {
+			line += "(备:" + strings.Join(backups, ", ") + ")"
+		}
+		fmt.Println(line)
 	}
 	if len(snap.Routes) > 0 {
 		fmt.Println("本机路由:  ", strings.Join(snap.Routes, ", "), "(仅这些网段)")
@@ -266,6 +272,19 @@ func linkKind(relay bool, relayVia, tunnel string) string {
 		tunnel = "?"
 	}
 	return "直连 " + tunnel
+}
+
+// viaLabels 组装通告网关标签 "name(ip)"(无名字时仅 ip),空列表返回 nil。
+func viaLabels(vias []easytier.ProxyRouteVia) []string {
+	var labels []string
+	for _, v := range vias {
+		if v.Name != "" {
+			labels = append(labels, v.Name+"("+v.IP+")")
+		} else {
+			labels = append(labels, v.IP)
+		}
+	}
+	return labels
 }
 
 func errSuffix(snap *pwclient.StatusSnapshot) string {

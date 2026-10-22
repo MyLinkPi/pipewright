@@ -20,6 +20,7 @@ import {
   type MeshOverview,
   type MeshPeerProject,
   type MeshProxyDegraded,
+  type ProxyRouteVia,
 } from '../api/mesh'
 import type { ServerMetrics } from '../api/servers'
 import AppButton from '../components/ui/AppButton.vue'
@@ -108,6 +109,14 @@ function peerName(id: string): string {
 const easyTierOk = computed(() => overview.value?.easytier?.ok ?? false)
 const supervisor = computed(() => overview.value?.supervisor)
 
+/** 通告网段列表(网段 → 主/备网关;多节点通告同一网段互为备份,主失联自动切换)。 */
+const proxyRoutes = computed(() => overview.value?.easytier?.proxyRoutes ?? [])
+
+function viaLabel(v: ProxyRouteVia): string {
+  const name = v.name || v.ip
+  return v.relay ? `${name}(${v.ip}) · ${t('cluster.link.relay', { via: v.relayVia || '?' })}` : `${name}(${v.ip})`
+}
+
 onMounted(() => {
   void load()
   timer = window.setInterval(() => void load(), 15_000)
@@ -165,6 +174,24 @@ onUnmounted(() => {
         </div>
         <p v-if="!overview.settings.enabled" class="et-hint">{{ t('cluster.et.disabledHint') }}</p>
         <p v-else-if="overview.easytier.err" class="et-hint warn-text">{{ overview.easytier.err }}</p>
+      </section>
+
+      <!-- 通告网段:网段 → 主/备网关(同网段多通告者互为备份,主失联自动切换) -->
+      <section v-if="proxyRoutes.length" class="et-card routes-card">
+        <div class="routes-head">
+          <h3>{{ t('cluster.routes.title') }}</h3>
+          <span class="routes-hint">{{ t('cluster.routes.hint') }}</span>
+        </div>
+        <div v-for="pr in proxyRoutes" :key="pr.cidr" class="route-row">
+          <span class="mono cidr">{{ pr.cidr }}</span>
+          <span class="via">
+            ← {{ viaLabel(pr.vias[0]) }}
+            <template v-if="pr.vias.length > 1">
+              {{ t('cluster.routes.backupPrefix', { n: pr.vias.length - 1 }) }}
+              <span v-for="(v, i) in pr.vias.slice(1)" :key="v.ip">{{ i > 0 ? ' / ' : '' }}{{ viaLabel(v) }}</span>
+            </template>
+          </span>
+        </div>
       </section>
 
       <!-- 节点表 -->
@@ -284,6 +311,14 @@ onUnmounted(() => {
 .et-label { font-size: var(--text-micro); color: var(--color-faint); letter-spacing: 0.03em; }
 .et-value { font-size: var(--text-body); font-weight: 600; color: var(--color-text); }
 .et-hint { margin: 10px 0 0; font-size: var(--text-label); color: var(--color-dim); }
+
+/* ——— 通告网段(主/备网关) ——— */
+.routes-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.routes-head h3 { margin: 0; font-size: var(--text-label); font-weight: 700; color: var(--color-text); }
+.routes-hint { font-size: var(--text-micro); color: var(--color-faint); }
+.route-row { display: flex; align-items: baseline; gap: 10px; margin-top: 8px; flex-wrap: wrap; }
+.route-row .cidr { color: var(--color-text); font-weight: 600; min-width: 150px; }
+.route-row .via { font-size: var(--text-label); color: var(--color-dim); }
 
 /* ——— 节点表 ——— */
 .peer-table {

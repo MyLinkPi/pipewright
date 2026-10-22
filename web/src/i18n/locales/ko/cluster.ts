@@ -26,6 +26,11 @@ export default {
     p2p: "P2P 직접",
     relay: "{via} 경유 릴레이",
   },
+  routes: {
+    title: "통지 서브넷",
+    hint: "같은 서브넷을 통지하는 여러 노드는 상호 백업: 게이트웨이 단절 시 자동 전환(수 초)",
+    backupPrefix: "+{n} 백업: ",
+  },
   expand: "펼치기",
   collapse: "접기",
   openPeer: "열기",

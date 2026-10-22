@@ -13,6 +13,9 @@
 // 绝不因单个字段形状变化整体失败。p2p/中继判定:
 //   - peer 表 tunnel/conn 字段直接给出 "p2p" 或 "relay(<节点>)";
 //   - route 表 next_hop 交叉验证(下一跳 ≠ 目标即经中继),两者取并集展示。
+//
+// 同网段多通告者(互为备份):route 表每个通告节点一行,ProxyRoutes 按网段收录全部
+// 网关;EasyTier 数据面对每网段择优单网关、失联秒级切换(实测 2.6.4),平台不干预。
 package easytier
 
 import (
@@ -43,12 +46,24 @@ type Link struct {
 	RelayVia  string  `json:"relayVia"` // 中继节点(虚拟 IP 或 peer 标识)
 }
 
-// ProxyRoute 是一条子网代理通告:该网段的流量经 ViaIP 对应的集群节点转发
-// (谁通告谁网关;ViaName 为该节点主机名,无 peer 信息时为空)。
+// ProxyRouteVia 是某网段的一个通告网关(谁通告谁网关)。Relay=true 表示本机到达该
+// 网关需经中继(RelayVia 为中继节点虚拟 IP;直连为空)。
+type ProxyRouteVia struct {
+	IP       string `json:"ip"`
+	Name     string `json:"name"`
+	Relay    bool   `json:"relay"`
+	RelayVia string `json:"relayVia"`
+}
+
+// ProxyRoute 是一条子网代理通告。多节点可通告同一网段互为备份:EasyTier 数据面对每
+// 网段择优单一网关(跳数最短优先),该网关失联后自动切换其余通告者(实测秒级,见
+// README 集群章节)。ViaIP/ViaName 为主网关 —— route 表不暴露本机真实择优结果,此处
+// 按 直连优先→path_len 小→IP 字典序 的确定性近似;Vias 为全部通告网关(含主,序同上)。
 type ProxyRoute struct {
-	CIDR    string `json:"cidr"`
-	ViaIP   string `json:"viaIp"`
-	ViaName string `json:"viaName"`
+	CIDR    string          `json:"cidr"`
+	ViaIP   string          `json:"viaIp"`
+	ViaName string          `json:"viaName"`
+	Vias    []ProxyRouteVia `json:"vias"`
 }
 
 // Status 是一次组网状态快照。
@@ -63,6 +78,7 @@ type Status struct {
 	// 客户端据此展示「可路由的远端网段」清单;平台侧集群页亦可展示。
 	ProxyCIDRs []string `json:"proxyCidrs"`
 	// ProxyRoutes 是 网段→网关节点 映射(客户端展示「路由到哪去」;无通告时为空数组)。
+	// 同网段多通告者(互为备份)时 Vias 收录全部网关,ViaIP/ViaName 为主网关。
 	ProxyRoutes []ProxyRoute `json:"proxyRoutes"`
 }
 
@@ -340,8 +356,14 @@ func (p *StatusProvider) collect(ctx context.Context) *Status {
 
 	nextHops := map[string]string{}
 	proxySeen := map[string]struct{}{}
-	// cidrVia:网段 → 通告节点虚拟 IP(经中继时 next_hop 为中继节点,取它即可达)。
-	cidrVia := map[string]string{}
+	// routeRow 是 route 表原始行的最小快照;通告者身份判别延迟到 peer 表解析后
+	//(需要 peer IP 集合区分两种行形态,见下方 cidrVias 组装)。
+	type routeRow struct {
+		ip, nh, hostname string
+		cidrs            []string
+		pathLen          float64
+	}
+	var rows []routeRow
 	if raw, err := p.runShaped(ctx, "route", routeShapes); err == nil {
 		var routes []obj
 		if json.Unmarshal(raw, &routes) == nil {
@@ -359,16 +381,16 @@ func (p *StatusProvider) collect(ctx context.Context) *Status {
 				if len(pickList(rt, "proxy_cidrs")) == 0 {
 					continue
 				}
-				via := nh
-				if via == "" {
-					via = ip // 直连行:ipv4 即通告节点自身
-				}
+				rows = append(rows, routeRow{
+					ip:       ip,
+					nh:       nh,
+					hostname: pickStr(rt, "hostname"),
+					cidrs:    pickList(rt, "proxy_cidrs"),
+					pathLen:  pickNum(rt, "path_len"),
+				})
 				for _, c := range pickList(rt, "proxy_cidrs") {
 					if c != "" {
 						proxySeen[c] = struct{}{}
-						if _, dup := cidrVia[c]; !dup && via != "" && via != st.SelfIP {
-							cidrVia[c] = via
-						}
 					}
 				}
 			}
@@ -402,17 +424,91 @@ func (p *StatusProvider) collect(ctx context.Context) *Status {
 			st.Links = append(st.Links, l)
 		}
 	}
-	// ProxyRoutes:网段→网关(用 peer 主机名补全展示名;无通告时空数组)。
+	// ProxyRoutes:网段→网关列表(用 peer 主机名补全展示名;无通告时空数组)。
 	nameByIP := make(map[string]string, len(st.Links))
+	peerIPs := make(map[string]struct{}, len(st.Links))
 	for _, l := range st.Links {
-		if l.VirtualIP != "" && l.Hostname != "" {
+		if l.VirtualIP == "" {
+			continue
+		}
+		peerIPs[l.VirtualIP] = struct{}{}
+		if l.Hostname != "" {
 			nameByIP[l.VirtualIP] = l.Hostname
 		}
 	}
-	for _, c := range st.ProxyCIDRs {
-		if via := cidrVia[c]; via != "" {
-			st.ProxyRoutes = append(st.ProxyRoutes, ProxyRoute{CIDR: c, ViaIP: via, ViaName: nameByIP[via]})
+	// cidrVias:网段 → 通告网关候选(同网段多通告者全收 —— 互为备份,EasyTier 数据面
+	// 择优单一网关、失联自动切换,此处不再首见丢弃)。
+	type viaCand struct {
+		ProxyRouteVia
+		pathLen float64
+	}
+	cidrVias := map[string][]viaCand{}
+	hostnameFallback := map[string]string{}
+	for _, row := range rows {
+		if row.ip == "" {
+			continue
 		}
+		// 通告者身份按行形态判别:ipv4 是 peer(新版目的节点行)→ 通告者 = ipv4,
+		// next_hop 非空则为到达它的中继;ipv4 非 peer(旧版行,ipv4 为被代理网段内
+		// 地址)→ 通告者 = next_hop。本机通告行跳过(客户端不给自己当网关)。
+		adv, relayVia := row.ip, ""
+		if row.nh != "" && row.nh != row.ip && row.nh != st.SelfIP {
+			if _, ok := peerIPs[row.ip]; !ok {
+				adv = row.nh
+			} else {
+				relayVia = row.nh
+			}
+		}
+		if adv == "" || adv == st.SelfIP {
+			continue
+		}
+		if row.hostname != "" {
+			hostnameFallback[adv] = row.hostname
+		}
+		for _, c := range row.cidrs {
+			if c == "" {
+				continue
+			}
+			cidrVias[c] = append(cidrVias[c], viaCand{
+				ProxyRouteVia: ProxyRouteVia{IP: adv, Relay: relayVia != "", RelayVia: relayVia},
+				pathLen:       row.pathLen,
+			})
+		}
+	}
+	for _, c := range st.ProxyCIDRs {
+		cands := cidrVias[c]
+		if len(cands) == 0 {
+			continue
+		}
+		// 主网关排序:直连优先 → path_len 小 → IP 字典序(route 表不暴露本机真实
+		// 择优结果,这是展示层的确定性近似);同一网关多行去重。
+		sort.SliceStable(cands, func(i, j int) bool {
+			if cands[i].Relay != cands[j].Relay {
+				return !cands[i].Relay
+			}
+			if cands[i].pathLen != cands[j].pathLen {
+				return cands[i].pathLen < cands[j].pathLen
+			}
+			return cands[i].IP < cands[j].IP
+		})
+		vias := make([]ProxyRouteVia, 0, len(cands))
+		seenIP := map[string]struct{}{}
+		for _, cd := range cands {
+			if _, dup := seenIP[cd.IP]; dup {
+				continue
+			}
+			seenIP[cd.IP] = struct{}{}
+			if cd.Name == "" {
+				cd.Name = nameByIP[cd.IP]
+			}
+			if cd.Name == "" {
+				cd.Name = hostnameFallback[cd.IP]
+			}
+			vias = append(vias, cd.ProxyRouteVia)
+		}
+		st.ProxyRoutes = append(st.ProxyRoutes, ProxyRoute{
+			CIDR: c, ViaIP: vias[0].IP, ViaName: vias[0].Name, Vias: vias,
+		})
 	}
 	if st.ProxyRoutes == nil {
 		st.ProxyRoutes = []ProxyRoute{}

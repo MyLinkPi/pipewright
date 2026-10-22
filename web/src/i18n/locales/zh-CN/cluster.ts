@@ -26,6 +26,11 @@ export default {
     p2p: "p2p 直连",
     relay: "经 {via} 中继",
   },
+  routes: {
+    title: "通告网段",
+    hint: "多节点通告同一网段互为备份:主网关失联后自动切换(秒级)",
+    backupPrefix: "+{n} 备:",
+  },
   expand: "展开",
   collapse: "收起",
   openPeer: "打开",

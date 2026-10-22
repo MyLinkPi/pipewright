@@ -198,7 +198,16 @@ built-in userspace NAT so **no return routes are needed inside those subnets**.
    service (one UAC prompt; auto-connects on boot without a login prompt) and importing the YAML.
 3. **Routes**: leave the route list empty to route **all** advertised subnets through the
    tunnel, or list specific CIDRs to pin exactly which subnets this machine routes.
-4. **Local SOCKS5 proxy (optional)**: enable it in the client (default port 1080) and point
+4. **Mutual backup for one subnet**: multiple nodes may advertise the **same** CIDR — e.g.
+   two environments that can both reach `192.168.30.0/24`. EasyTier picks a single gateway
+   per CIDR on each node (shortest path) and switches to the remaining advertisers
+   automatically when that gateway goes offline (measured in seconds on 2.6.4). Caveats:
+   no operator-controlled priority/metric for subnet proxies yet (upstream
+   [EasyTier#1933](https://github.com/EasyTier/EasyTier/issues/1933)), no load balancing
+   (single winner per CIDR), and a node never routes its own advertised CIDR through a
+   remote peer (upstream loop guard). The cluster page and `pwclient status` show the
+   primary and backup gateways per CIDR.
+5. **Local SOCKS5 proxy (optional)**: enable it in the client (default port 1080) and point
    any app's proxy at `socks5://127.0.0.1:1080` — that app then reaches the virtual network
    and advertised subnets through the tunnel without touching system routes. Note: no auth
    (local-machine only — the client adds a firewall rule blocking LAN access to the port),

@@ -27,6 +27,11 @@ export default {
     p2p: "p2p directo",
     relay: "relevo vía {via}",
   },
+  routes: {
+    title: "Subredes anunciadas",
+    hint: "Los nodos que anuncian la misma subred se respaldan mutuamente: conmutación automática si la puerta de enlace cae (segundos)",
+    backupPrefix: "+{n} respaldo: ",
+  },
   expand: "Expandir",
   collapse: "Contraer",
   openPeer: "Abrir",
