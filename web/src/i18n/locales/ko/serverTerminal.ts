@@ -54,4 +54,7 @@ export default {
   toastClipboardSecureCtx: 'https / localhost 보안 컨텍스트가 필요합니다',
   toastClipboardDenied: '클립보드 읽기가 거부되었습니다',
   toastClipboardAllow: '브라우저에서 클립보드 권한을 허용하세요',
+
+  // 终端 Shell 下拉:auto = 远端有 bash 用 bash,否则回退 sh。
+  shellAuto: '자동(bash 우선)',
 }

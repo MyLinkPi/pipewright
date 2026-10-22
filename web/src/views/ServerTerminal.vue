@@ -38,7 +38,8 @@ const route = useRoute()
 const router = useRouter()
 
 const serverId = computed(() => String(route.params.id ?? ''))
-const allowedShells: TerminalShell[] = ['/bin/sh', '/bin/bash', '/bin/ash', '/bin/zsh', 'sh', 'bash']
+// auto 置首且为默认:远端有 bash 用 bash、否则回退 sh(后端一次择壳,无额外往返)。
+const allowedShells: TerminalShell[] = ['auto', '/bin/sh', '/bin/bash', '/bin/ash', '/bin/zsh', 'sh', 'bash']
 
 // 容器目标:带 ?container=<名/ID> 时,终端直接 `docker exec -it` 进该容器;否则连主机 shell。
 // 从「容器」页点行内「终端」即带此参数过来。空串 = 主机 shell 模式。
@@ -55,7 +56,7 @@ const containerLabel = computed(() =>
 // 终端目标 = 服务器**主机 shell**(SSH 直起登录 shell),或 ?container= 指定的**容器内 shell**。
 const server = ref<Server | null>(null)
 const shell = ref<TerminalShell>(
-  allowedShells.includes(route.query.shell as TerminalShell) ? (route.query.shell as TerminalShell) : '/bin/sh',
+  allowedShells.includes(route.query.shell as TerminalShell) ? (route.query.shell as TerminalShell) : 'auto',
 )
 
 type ConnState = 'idle' | 'connecting' | 'connected' | 'closed' | 'error'
@@ -298,8 +299,11 @@ const TERM_FONT_FAMILY = '"JetBrains Mono", ui-monospace, "SF Mono", Menlo, Cons
 
 async function ensureTerm(): Promise<XTerm> {
   if (term.value) return term.value
-  const [{ Terminal }, { FitAddon }] = await Promise.all([import('@xterm/xterm'), import('@xterm/addon-fit')])
-  await import('@xterm/xterm/css/xterm.css')
+  const [{ Terminal }, { FitAddon }] = await Promise.all([
+    import('@xterm/xterm'),
+    import('@xterm/addon-fit'),
+    import('@xterm/xterm/css/xterm.css'),
+  ])
 
   const t = new Terminal({
     cursorBlink: true,
@@ -450,46 +454,66 @@ function promptInitScript(): string {
 async function connect(): Promise<void> {
   disconnect()
 
-  const t = await ensureTerm()
-  // reset() 而非 clear():clear 会保留当前 prompt 行,重连时新会话 prompt 接在旧
-  // 「sh-5.1# 」后面叠成「sh-5.1# sh-5.1# …」;reset 彻底清空缓冲区+光标归位。
-  t.reset()
-  t.focus()
+  // 连接与加载并行:WS(后端 SSH 握手)立即发起,与 xterm 动态加载/字体预热同时进行;
+  // 终端就绪前的 PTY 输出先进缓冲,就绪后一次性回放 —— 打开终端的等待从
+  // 「加载 + 拉服务器列表 + SSH 握手」串行叠加,收敛为三者中最慢一路。
+  let t: XTerm | null = null
+  const pending: string[] = []
+  const writeOrBuffer = (s: string): void => {
+    if (t) t.write(s)
+    else pending.push(s)
+  }
+
   connState.value = 'connecting'
   statusMsg.value = isContainer.value
     ? tg('serverTerminal.enteringContainer', { name: containerName.value, host: hostLabel.value })
     : tg('serverTerminal.connectingHost', { host: hostLabel.value })
   const startedAt = performance.now()
+  const termReady = ensureTerm()
 
   const handlers: TerminalHandlers = {
-      onOpen() {
-        connState.value = 'connected'
-        statusMsg.value = ''
-        latencyMs.value = Math.round(performance.now() - startedAt)
-        refit()
-        t.focus()
-        // 注入更易读的提示符:[user@host dir]$ 形式 + 主题青色,与命令/输出区分。
-        conn.value?.send(promptInitScript())
-      },
-      onData(chunk) {
-        t.write(decoder.decode(chunk, { stream: true }))
-      },
-      onClose(reason) {
-        if (connState.value === 'connecting') {
-          connState.value = 'error'
-          statusMsg.value = reason || tg('serverTerminal.connectFailedDetail')
-        } else {
-          connState.value = 'closed'
-          statusMsg.value = reason || tg('serverTerminal.sessionEnded')
-        }
-        t.write('\r\n\x1b[2m── ' + (statusMsg.value || tg('serverTerminal.sessionEndedShort')) + ' ──\x1b[0m\r\n')
-      },
+    onOpen() {
+      connState.value = 'connected'
+      statusMsg.value = ''
+      latencyMs.value = Math.round(performance.now() - startedAt)
+      // 注入更易读的提示符:[user@host dir]$ 形式 + 主题青色,与命令/输出区分。
+      conn.value?.send(promptInitScript())
+    },
+    onData(chunk) {
+      writeOrBuffer(decoder.decode(chunk, { stream: true }))
+    },
+    onClose(reason) {
+      if (connState.value === 'connecting') {
+        connState.value = 'error'
+        statusMsg.value = reason || tg('serverTerminal.connectFailedDetail')
+      } else {
+        connState.value = 'closed'
+        statusMsg.value = reason || tg('serverTerminal.sessionEnded')
+      }
+      writeOrBuffer('\r\n\x1b[2m── ' + (statusMsg.value || tg('serverTerminal.sessionEndedShort')) + ' ──\x1b[0m\r\n')
+    },
   }
 
   // 容器模式 → docker exec -it <容器> <shell>;否则主机登录 shell。
   conn.value = isContainer.value
     ? openContainerTerminal(serverId.value, containerName.value, handlers, shell.value)
     : openServerTerminal(serverId.value, handlers, shell.value)
+
+  // 终端就绪:回放缓冲(顺序与到达一致 —— 回放后才把 handlers 切到直写)并同步尺寸。
+  try {
+    t = await termReady
+  } catch {
+    connState.value = 'error'
+    statusMsg.value = tg('serverTerminal.connectFailedDetail')
+    return
+  }
+  // reset() 而非 clear():clear 会保留当前 prompt 行,重连时新会话 prompt 接在旧
+  // 「sh-5.1# 」后面叠成「sh-5.1# sh-5.1# …」;reset 彻底清空缓冲区+光标归位。
+  t.reset()
+  for (const s of pending) t.write(s)
+  pending.length = 0
+  t.focus()
+  refit()
 
   if (!resizeObserver && termHost.value) {
     resizeObserver = new ResizeObserver(() => refit())
@@ -608,17 +632,18 @@ function flashToast(kind: ToastKind, msg: string, sub = ''): void {
 }
 
 // ─── lifecycle ───────────────────────────────────────────────────────────────────
-onMounted(async () => {
-  // 取服务器信息(顶栏 host 显示);失败不致命(host 退化为 id)。
-  try {
-    const list = await listServers()
-    server.value = list.find((s) => s.id === serverId.value) ?? null
-  } catch {
-    /* 列表失败:host 退化为 id,终端仍可连 */
-  }
-  await ensureTerm()
+onMounted(() => {
+  // 服务器信息只喂顶栏 host 展示:后台拉取,不阻塞终端连接(失败仅降级为显示 id)。
+  void listServers()
+    .then((list) => {
+      const hit = list.find((s) => s.id === serverId.value)
+      if (hit) server.value = hit
+    })
+    .catch(() => {
+      /* 列表失败:host 退化为 id,终端仍可连 */
+    })
   document.addEventListener('click', closeCtxMenu)
-  // 主机 shell:打开即连。
+  // 主机 shell:打开即连(WS 与 xterm 加载在 connect 内并行,见其注释)。
   void connect()
 })
 
@@ -650,7 +675,9 @@ onBeforeUnmount(() => {
         <div class="cell">
           <span class="k">Shell</span>
           <select v-model="shell" class="seg-select" aria-label="Shell">
-            <option v-for="s in allowedShells" :key="s" :value="s">{{ s }}</option>
+            <option v-for="s in allowedShells" :key="s" :value="s">
+              {{ s === 'auto' ? tg('serverTerminal.shellAuto') : s }}
+            </option>
           </select>
         </div>
       </div>

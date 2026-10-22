@@ -114,6 +114,25 @@ export function useOpsChat(options: {
     auth: opsAuthEpoch(),
     id: state.currentId,
   })
+  // 初始化 GET 的兜底超时:fetch 无超时,代理/网络挂起会让面板永远停在
+  // 「暂无登记服务器」的空白初始态且没有任何报错;超时后走错误横幅(可刷新重试)。
+  const initTimeout = <T>(job: Promise<T>): Promise<T> =>
+    new Promise<T>((resolve, reject) => {
+      const timer = setTimeout(
+        () => reject(new HttpError(0, null, 'ops init timeout')),
+        15_000,
+      )
+      job.then(
+        (value) => {
+          clearTimeout(timer)
+          resolve(value)
+        },
+        (reason) => {
+          clearTimeout(timer)
+          reject(reason)
+        },
+      )
+    })
   function detach(): void {
     controller?.abort()
     controller = null
@@ -459,9 +478,9 @@ export function useOpsChat(options: {
     const t = token()
     try {
       const [cap, catalogue, registered] = await Promise.all([
-        opsApi.capabilities(),
-        opsApi.tools(),
-        listServers(),
+        initTimeout(opsApi.capabilities()),
+        initTimeout(opsApi.tools()),
+        initTimeout(listServers()),
       ])
       if (!valid(t.g, t.auth)) return false
       capabilities.value = cap
@@ -570,9 +589,9 @@ export function useOpsChat(options: {
     error.value = ''
     try {
       const [cap, catalogue, registered] = await Promise.all([
-        opsApi.capabilities(),
-        opsApi.tools(dimension() === 'project' ? 'project' : ''),
-        listServers(),
+        initTimeout(opsApi.capabilities()),
+        initTimeout(opsApi.tools(dimension() === 'project' ? 'project' : '')),
+        initTimeout(listServers()),
       ])
       if (!valid(t.g, t.auth)) return
       capabilities.value = cap

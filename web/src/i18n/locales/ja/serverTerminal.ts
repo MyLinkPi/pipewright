@@ -54,4 +54,7 @@ export default {
   toastClipboardSecureCtx: 'https / localhost のセキュアコンテキストが必要です',
   toastClipboardDenied: 'クリップボードの読み取りが拒否されました',
   toastClipboardAllow: 'ブラウザでクリップボードの権限を許可してください',
+
+  // 终端 Shell 下拉:auto = 远端有 bash 用 bash,否则回退 sh。
+  shellAuto: '自動(bash 優先)',
 }

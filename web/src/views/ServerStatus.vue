@@ -118,7 +118,7 @@ const tightCounts = computed(() => {
   return { all: metrics.value.length, tight, ok: metrics.value.length - tight }
 })
 
-/** 三维叠加过滤后的卡片列表(本机卡固定置首,不参与筛选)。 */
+/** 三维叠加过滤后的卡片列表。 */
 const filteredMetrics = computed(() => {
   const q = searchText.value.trim().toLowerCase()
   return metrics.value.filter((m) => {
@@ -133,6 +133,22 @@ const filteredMetrics = computed(() => {
     if (tightFilter.value === 'ok' && isServerTight(m)) return false
     return true
   })
+})
+
+/**
+ * 本机卡可见性:与登记服务器同一套筛选(搜索匹配本机展示名,如「本机/This host」;
+ * 可达性/资源紧张判定同服务器)。仍固定置首,但不再豁免筛选。
+ */
+const localVisible = computed(() => {
+  const m = localMetrics.value
+  if (!m) return false
+  const q = searchText.value.trim().toLowerCase()
+  if (q && !t('serverStatus.localName').toLowerCase().includes(q)) return false
+  if (reachFilter.value === 'reachable' && !m.reachable) return false
+  if (reachFilter.value === 'unreachable' && m.reachable) return false
+  if (tightFilter.value === 'tight' && !isServerTight(m)) return false
+  if (tightFilter.value === 'ok' && isServerTight(m)) return false
+  return true
 })
 
 // ─── 终端(可达机器新标签页打开主机 shell;本机走本地 PTY) ─────────────────────
@@ -523,10 +539,10 @@ onUnmounted(() => {
     />
 
     <!-- Metrics grid: local (control-node) card first, then per-host cards -->
-    <div v-else-if="filteredMetrics.length > 0 || localMetrics" class="metrics-grid" :aria-busy="refreshing || undefined">
-      <!-- 本机(控制节点)卡牌:固定置首,不参与筛选(它不是登记服务器,不参与批量命令勾选)。 -->
+    <div v-else-if="filteredMetrics.length > 0 || localVisible" class="metrics-grid" :aria-busy="refreshing || undefined">
+      <!-- 本机(控制节点)卡牌:固定置首,吃同一套筛选(见 localVisible);不参与批量命令勾选。 -->
       <ServerMetricsCard
-        v-if="localMetrics"
+        v-if="localVisible && localMetrics"
         :name="t('serverStatus.localName')"
         :metrics="localMetrics"
       >

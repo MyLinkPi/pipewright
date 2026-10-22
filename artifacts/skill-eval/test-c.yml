@@ -1,0 +1,83 @@
+version: 1
+stages:
+  - id: stg_src
+    name: 流水线源
+    kind: source
+    jobs:
+      - name: 拉取代码
+        type: git_source
+        summary: org/repo · main
+
+  - id: stg_build
+    name: 构建服务
+    kind: build
+    needs: [stg_src]
+    jobs:
+      - name: 构建
+        type: build_golang
+        script:
+          image: golang:1.23
+          commands:
+            - go vet ./...
+            - CGO_ENABLED=0 go build -o bin/app ./...
+        config:
+          artifactPath: bin/app
+          timeoutSeconds: "600"
+
+  - id: stg_deploy
+    name: 部署测试机
+    kind: deploy
+    needs: [stg_build]
+    jobs:
+      - name: 部署到测试机
+        type: deploy_ssh
+        config:
+          artifactJob: 构建
+          selector: env=test
+          deployPath: /opt/myapp
+          restartCommand: systemctl restart myapp
+          healthPath: /healthz
+          healthRetries: "10"
+          healthIntervalSeconds: "5"
+
+  - id: stg_aitest
+    name: AI 验收
+    kind: custom
+    needs: [stg_deploy]
+    jobs:
+      - name: AI 需求测试
+        type: ai_test
+        config:
+          target: "http://test-machine:8080"
+          deployJob: 部署到测试机
+          filter: ".pipewright/tests/requirements/**/*.md"
+          onAiUnavailable: fail
+          timeoutSeconds: "1800"
+
+  - id: stg_health
+    name: 健康检查
+    kind: custom
+    needs: [stg_aitest]
+    jobs:
+      - name: 服务健康检查
+        type: health_check
+        config:
+          selector: env=test
+          probeMode: http
+          url: "http://test-machine:8080/healthz"
+          retries: "5"
+          intervalSeconds: "10"
+
+  - id: stg_notify
+    name: 钉钉通知
+    kind: notify
+    needs: [stg_health]
+    allowFailure: true
+    jobs:
+      - name: 钉钉通知
+        type: notify
+        config:
+          channel: dingtalk
+          statusFrom: 服务健康检查
+          titleTemplate: "{{project}} {{branch}} 夜间自动验收 {{status}}"
+          bodyTemplate: "运行 {{runId}}(commit {{commit}})已完成:部署测试机 → AI 需求测试 → 健康检查,最终状态 {{status}}"

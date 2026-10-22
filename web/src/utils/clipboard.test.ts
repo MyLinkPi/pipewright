@@ -9,6 +9,8 @@ const terminalMocks = vi.hoisted(() => ({
   send: vi.fn(),
   close: vi.fn(),
   selection: 'terminal selected output',
+  /** 被测组件就绪信号:xterm 实例 open() 完成即终端可用(WS 与加载并行后的可靠同步点)。 */
+  opened: [] as unknown[],
 }))
 vi.mock('vue-router', () => ({
   useRoute: () => ({ params: { id: 'server-a' }, query: {} }),
@@ -34,7 +36,9 @@ vi.mock('@xterm/xterm', () => ({
     options = {}
     loadAddon() {}
     attachCustomKeyEventHandler() {}
-    open() {}
+    open() {
+      terminalMocks.opened.push(this)
+    }
     onData() {}
     reset() {}
     focus() {}
@@ -79,13 +83,15 @@ describe('ServerTerminal copy entry (mocked terminal, no SSH)', () => {
     localStorage.clear()
     terminalMocks.selection = 'terminal selected output'
     terminalMocks.send.mockClear()
+    terminalMocks.opened.length = 0
     vi.mocked(openServerTerminal).mockClear()
     terminal = mount(ServerTerminal, {
       attachTo: document.body,
       global: { stubs: { AiOpsPanel: true } },
     })
     await flushPromises()
-    await vi.waitFor(() => expect(openServerTerminal).toHaveBeenCalled())
+    // 等终端真正 open(而非仅 WS 发起):连接与加载并行后,这是组件可交互的可靠时点。
+    await vi.waitFor(() => expect(terminalMocks.opened.length).toBeGreaterThan(0))
     await flushPromises()
     return terminal
   }
