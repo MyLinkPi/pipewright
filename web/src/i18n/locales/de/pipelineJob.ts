@@ -528,4 +528,8 @@ export default {
   fieldEcsForceStopHint: 'Stopp wie Netzstecker ziehen, ungesicherte Daten können verloren gehen (standardmäßig graceful)',
   fieldEcsWaitLabel: 'Auf Zielzustand warten (Sekunden)',
   fieldEcsWaitHint: '0 = direkt nach dem Absenden erfolgreich; höchstens 3600 Sekunden',
+  fieldEcsWaitReachableLabel: 'Auf Netzwerk-Erreichbarkeit warten',
+  fieldEcsWaitReachableHint: 'Nach Erreichen von Running wird die TCP-Erreichbarkeit weiter geprüft (Adresse bevorzugt die Verbindungsadresse der importierten Maschine, Rückfall auf öffentliche/private IP); bei Timeout schlägt der Knoten fehl. Wartezeit erforderlich',
+  fieldEcsReachablePortLabel: 'Probe-Port',
+  fieldEcsReachablePortHint: 'TCP-Probe-Port, standardmäßig 22; importierte Maschinen bevorzugen den Port des Maschineneintrags',
 }

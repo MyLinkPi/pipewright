@@ -511,4 +511,8 @@ export default {
   fieldEcsForceStopHint: '전원 차단식 정지, 저장되지 않은 데이터 유실 가능(기본은 graceful)',
   fieldEcsWaitLabel: '목표 상태 대기(초)',
   fieldEcsWaitHint: '0 = 발행 후 즉시 성공; 최대 3600초',
+  fieldEcsWaitReachableLabel: '네트워크 도달 대기',
+  fieldEcsWaitReachableHint: 'Running 도달 후 TCP 도달성을 계속 확인(주소는 가져온 머신의 연결 주소 우선, 공인/사설 IP로 대체), 시간 초과 시 실패. 대기 시간(초) 설정 필요',
+  fieldEcsReachablePortLabel: 'Probe 포트',
+  fieldEcsReachablePortHint: 'TCP Probe 포트(기본 22). 가져온 머신은 머신 행 포트 우선',
 }

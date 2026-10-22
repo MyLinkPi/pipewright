@@ -326,6 +326,171 @@ func itoaPad(n int) string {
 	return string(b)
 }
 
+// ─── waitReachable(开机到达 Running 后继续等 TCP 可达) ─────────────────────────
+
+// stubProbe 注入探测桩:记录每次探测的地址,按 okSeq 序号决定成败(越界一律失败)。
+func stubProbe(env *testEnv, okSeq []bool) *[][2]any {
+	var calls [][2]any
+	env.svc.(*service).probeTCP = func(_ context.Context, host string, port int, _ time.Duration) bool {
+		calls = append(calls, [2]any{host, port})
+		i := len(calls) - 1
+		if i < len(okSeq) {
+			return okSeq[i]
+		}
+		return false
+	}
+	return &calls
+}
+
+func TestPowerWaitReachableProbesInstanceIP(t *testing.T) {
+	env := newEnv(t)
+	ctx := context.Background()
+	// 转换中 → 等到 Running;无导入映射 → 地址取阿里云公网 IP(公网优先),端口兜底 22。
+	env.fake.instances = []Instance{{InstanceID: "i-1", PrivateIPs: []string{"10.0.0.1"}, PublicIPs: []string{"1.2.3.4"}, Status: statusStarting}}
+	env.fake.statuses = map[string]string{"i-1": statusStarting}
+	env.fake.pollHook = func() { env.fake.statuses["i-1"] = statusRunning }
+	calls := stubProbe(env, []bool{true})
+
+	res, err := env.svc.Power(ctx, PowerInput{
+		AccountID: env.account.ID, InstanceIDs: []string{"i-1"},
+		Action: PowerActionStart, WaitSeconds: 30, WaitReachable: true,
+	})
+	if err != nil {
+		t.Fatalf("Power: %v", err)
+	}
+	if res.OK != 1 || res.Failed != 0 {
+		t.Fatalf("res = %+v", res)
+	}
+	if len(*calls) == 0 || (*calls)[0][0] != "1.2.3.4" || (*calls)[0][1] != 22 {
+		t.Fatalf("探测地址应取公网 IP:22, got %v", *calls)
+	}
+	if res.Items[0].Skipped {
+		t.Errorf("可达等待的台不应记跳过: %+v", res.Items[0])
+	}
+}
+
+func TestPowerWaitReachablePrefersServerRow(t *testing.T) {
+	env := newEnv(t)
+	ctx := context.Background()
+	// 已导入机器行(自定义端口):探测地址用行上 Host:Port(与 deploy_ssh 同源)。
+	srv, err := env.target.Create(ctx, target.CreateInput{
+		Name: "带端口", Host: "10.0.0.6", Port: 2222, User: "root",
+		CredentialID: env.newSSHCred(t, "c-port"), Labels: "env=staging",
+	})
+	if err != nil {
+		t.Fatalf("create server: %v", err)
+	}
+	mustLink(t, env, env.account.ID, "i-1", srv.ID)
+	env.fake.instances = []Instance{{InstanceID: "i-1", PublicIPs: []string{"1.2.3.4"}, Status: statusRunning}}
+	env.fake.statuses = map[string]string{"i-1": statusRunning}
+	calls := stubProbe(env, []bool{true})
+
+	res, err := env.svc.Power(ctx, PowerInput{
+		AccountID: env.account.ID, InstanceIDs: []string{"i-1"},
+		Action: PowerActionStart, WaitSeconds: 30, WaitReachable: true,
+	})
+	if err != nil {
+		t.Fatalf("Power: %v", err)
+	}
+	if res.OK != 1 || res.Failed != 0 {
+		t.Fatalf("res = %+v", res)
+	}
+	if len(*calls) == 0 || (*calls)[0][0] != "10.0.0.6" || (*calls)[0][1] != 2222 {
+		t.Fatalf("探测地址应取机器行 Host:Port, got %v", *calls)
+	}
+}
+
+func TestPowerWaitReachableCustomPortFallback(t *testing.T) {
+	env := newEnv(t)
+	ctx := context.Background()
+	// 无映射实例:reachablePort 兜底端口生效。
+	env.fake.instances = []Instance{{InstanceID: "i-1", PrivateIPs: []string{"10.0.0.1"}, Status: statusRunning}}
+	env.fake.statuses = map[string]string{"i-1": statusRunning}
+	calls := stubProbe(env, []bool{true})
+
+	_, err := env.svc.Power(ctx, PowerInput{
+		AccountID: env.account.ID, InstanceIDs: []string{"i-1"},
+		Action: PowerActionStart, WaitSeconds: 30, WaitReachable: true, ReachablePort: 8022,
+	})
+	if err != nil {
+		t.Fatalf("Power: %v", err)
+	}
+	if len(*calls) == 0 || (*calls)[0][1] != 8022 {
+		t.Fatalf("自定义端口应生效, got %v", *calls)
+	}
+}
+
+func TestPowerWaitReachableTimeout(t *testing.T) {
+	env := newEnv(t)
+	ctx := context.Background()
+	env.fake.instances = []Instance{{InstanceID: "i-1", PublicIPs: []string{"1.2.3.4"}, Status: statusRunning}}
+	env.fake.statuses = map[string]string{"i-1": statusRunning}
+	stubProbe(env, []bool{false})
+	start := time.Now()
+
+	res, err := env.svc.Power(ctx, PowerInput{
+		AccountID: env.account.ID, InstanceIDs: []string{"i-1"},
+		Action: PowerActionStart, WaitSeconds: 1, WaitReachable: true,
+	})
+	if err != nil {
+		t.Fatalf("Power: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Fatalf("超时收尾过慢: %v", elapsed)
+	}
+	if res.OK != 0 || res.Failed != 1 {
+		t.Fatalf("res = %+v", res)
+	}
+	if !strings.Contains(res.Items[0].Err, "不可达") || !strings.Contains(res.Items[0].Err, statusRunning) {
+		t.Errorf("err = %q, want 超时不可达 + Running", res.Items[0].Err)
+	}
+}
+
+func TestPowerWaitReachableNoAddr(t *testing.T) {
+	env := newEnv(t)
+	ctx := context.Background()
+	// 未导入且云上无 IP:无可探测地址,即时判失败(不空等超时)。
+	env.fake.instances = []Instance{{InstanceID: "i-1", Status: statusRunning}}
+	env.fake.statuses = map[string]string{"i-1": statusRunning}
+	calls := stubProbe(env, nil)
+
+	res, err := env.svc.Power(ctx, PowerInput{
+		AccountID: env.account.ID, InstanceIDs: []string{"i-1"},
+		Action: PowerActionStart, WaitSeconds: 1, WaitReachable: true,
+	})
+	if err != nil {
+		t.Fatalf("Power: %v", err)
+	}
+	if res.OK != 0 || res.Failed != 1 {
+		t.Fatalf("res = %+v", res)
+	}
+	if !strings.Contains(res.Items[0].Err, "无可探测地址") {
+		t.Errorf("err = %q", res.Items[0].Err)
+	}
+	if len(*calls) != 0 {
+		t.Errorf("无地址不应探测: %v", *calls)
+	}
+}
+
+func TestPowerWaitReachableValidation(t *testing.T) {
+	env := newEnv(t)
+	ctx := context.Background()
+
+	cases := []struct {
+		name string
+		in   PowerInput
+	}{
+		{"stop 不可等可达", PowerInput{AccountID: env.account.ID, InstanceIDs: []string{"i-1"}, Action: PowerActionStop, WaitSeconds: 30, WaitReachable: true}},
+		{"等可达须预算", PowerInput{AccountID: env.account.ID, InstanceIDs: []string{"i-1"}, Action: PowerActionStart, WaitReachable: true}},
+		{"端口超上限", PowerInput{AccountID: env.account.ID, InstanceIDs: []string{"i-1"}, Action: PowerActionStart, WaitSeconds: 30, WaitReachable: true, ReachablePort: 65536}},
+	}
+	for _, tc := range cases {
+		if _, err := env.svc.Power(ctx, tc.in); !errors.Is(err, ErrPowerFailed) {
+			t.Errorf("%s: err = %v, want ErrPowerFailed", tc.name, err)
+		}
+	}
+}
+
 // ─── PowerServer / LinkedPowerStatus(服务器状态页电源入口) ────────────────────
 
 func TestPowerServerStartSkipAndInvalid(t *testing.T) {

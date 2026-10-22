@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -16,15 +17,22 @@ import (
 // 保存期只校验形态(枚举/非空/规模/标签项格式),不触库不触网:账户存在性与实例有效性由
 // 运行时执行器裁决(账户可能后配,标签选择天然是运行时解析)。
 const (
-	ecsPowerType           = "ecs_power"
-	ecsPowerActionKey      = "action"
-	ecsPowerAccountIDKey   = "accountId"
-	ecsPowerSelectorKey    = "selector"
-	ecsPowerInstanceIDsKey = "instanceIds"
-	ecsPowerTagSourceKey   = "tagSource"
-	ecsPowerTagsKey        = "tags"
-	ecsPowerMaxInstances   = 100
-	ecsPowerMaxTagTerms    = 32
+	ecsPowerType             = "ecs_power"
+	ecsPowerActionKey        = "action"
+	ecsPowerAccountIDKey     = "accountId"
+	ecsPowerSelectorKey      = "selector"
+	ecsPowerInstanceIDsKey   = "instanceIds"
+	ecsPowerTagSourceKey     = "tagSource"
+	ecsPowerTagsKey          = "tags"
+	ecsPowerWaitSecondsKey   = "waitSeconds"
+	ecsPowerWaitReachableKey = "waitReachable"
+	ecsPowerReachablePortKey = "reachablePort"
+	ecsPowerMaxInstances     = 100
+	ecsPowerMaxTagTerms      = 32
+	// ecsPowerMaxWaitSeconds 与运行时护栏(powerMaxWaitSeconds)对齐的等待上限。
+	ecsPowerMaxWaitSeconds = 3600
+	// ecsPowerMaxPort 是 reachablePort 上限。
+	ecsPowerMaxPort = 65535
 )
 
 // validateEcsPower 校验全部 ecs_power 节点(错误归一为 ErrInvalidJob)。
@@ -121,6 +129,32 @@ func validateEcsPowerJob(n Job) error {
 		}
 	default:
 		return bad("selector must be \"instances\" or \"tags\"")
+	}
+
+	// waitReachable:可选 toggle(true=开机到达 Running 后继续等 TCP 网络可达;仅 start)。
+	rawReach, _ := cfgStr(ecsPowerWaitReachableKey)
+	switch strings.TrimSpace(rawReach) {
+	case "", "true", "false":
+	default:
+		return bad("waitReachable must be \"true\" or \"false\"")
+	}
+	if strings.TrimSpace(rawReach) == "true" {
+		if action != "start" {
+			return bad("waitReachable is only valid with action \"start\"")
+		}
+		// 等待可达共用 waitSeconds 预算,必须显式给正数。
+		rawWait, _ := cfgStr(ecsPowerWaitSecondsKey)
+		n, err := strconv.Atoi(strings.TrimSpace(rawWait))
+		if err != nil || n < 1 || n > ecsPowerMaxWaitSeconds {
+			return bad("waitReachable requires waitSeconds in 1..%d", ecsPowerMaxWaitSeconds)
+		}
+	}
+	// reachablePort:可选探活端口(1..65535;缺省 22,实例已关联机器行时优先行上端口)。
+	if rawPort, ok := cfgStr(ecsPowerReachablePortKey); ok && strings.TrimSpace(rawPort) != "" {
+		n, err := strconv.Atoi(strings.TrimSpace(rawPort))
+		if err != nil || n < 1 || n > ecsPowerMaxPort {
+			return bad("reachablePort must be an integer in 1..%d", ecsPowerMaxPort)
+		}
 	}
 	return nil
 }

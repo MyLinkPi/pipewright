@@ -4,11 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/huangchengsir/pipewright/internal/runner"
+	"github.com/huangchengsir/pipewright/internal/target"
 )
 
 // 开关机的轮询节奏与护栏。
@@ -16,6 +19,10 @@ const (
 	powerPollInterval = 5 * time.Second
 	// powerMaxWaitSeconds 是等待到达目标状态的最长时间(防节点挂死整个 stage)。
 	powerMaxWaitSeconds = 3600
+	// probeDialTimeout 是单次 TCP 探活的连接超时(每轮探测一台一次,不放大总等待)。
+	probeDialTimeout = 3 * time.Second
+	// defaultProbePort 是 waitReachable 的兜底探测端口(SSH)。
+	defaultProbePort = 22
 )
 
 // 目标状态:开机等 Running,关机等 Stopped。
@@ -44,6 +51,13 @@ type PowerInput struct {
 	ForceStop bool
 	// WaitSeconds 是等待到达目标状态的最长时间(0 = 发起即成功,不等待)。
 	WaitSeconds int
+	// WaitReachable 仅 Action=start 且 WaitSeconds>0 时生效:实例到达 Running 后继续
+	// 等待网络可达(TCP 探测 host:port),全部可达或超时才收尾;探测地址优先导入
+	// servers 行的连接地址(与 deploy_ssh 同源),兜底阿里云公网/私网 IP。
+	WaitReachable bool
+	// ReachablePort 是 TCP 探活端口(1..65535;0 = 22)。实例已关联 servers 行时
+	// 优先用行上端口。
+	ReachablePort int
 	// Log 可选流式日志回调(节点日志);nil 安全。绝不应写入凭据。
 	Log func(msg string)
 }
@@ -95,6 +109,145 @@ func (s *service) lookupInstanceByServer(ctx context.Context, accountID, serverI
 		return ""
 	}
 	return instanceID
+}
+
+// serverIDsByInstances 批量反查「实例 → servers 行」映射(经导入映射;仅返回命中的条目)。
+// 查询失败不致命:调用方兜底走阿里云 IP 解析。
+func (s *service) serverIDsByInstances(ctx context.Context, accountID string, instanceIDs []string) map[string]string {
+	out := make(map[string]string, len(instanceIDs))
+	if len(instanceIDs) == 0 {
+		return out
+	}
+	ph := make([]string, len(instanceIDs))
+	args := make([]any, 0, len(instanceIDs)+1)
+	args = append(args, accountID)
+	for i, id := range instanceIDs {
+		ph[i] = "?"
+		args = append(args, id)
+	}
+	q := `SELECT instance_id, server_id FROM aliyun_ecs_instance_links ` +
+		`WHERE account_id = ? AND instance_id IN (` + strings.Join(ph, ",") + `)`
+	rows, err := s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return out
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var instID, srvID string
+		if err := rows.Scan(&instID, &srvID); err == nil && srvID != "" {
+			out[instID] = srvID
+		}
+	}
+	return out
+}
+
+// probePlan 是一台待探活实例的探测地址(解析一次缓存复用;noAddr 为解析终态)。
+type probePlan struct {
+	host   string
+	port   int
+	noAddr bool // 无可探测地址(记原因判失败,不再等)
+	reason string
+}
+
+// resolveProbePlans 为待探活实例解析 TCP 探测地址(批量,一次)。
+// 优先级:导入 servers 行 Host:Port(导入时选定的连接地址,与后续 deploy_ssh 同源;
+// 带跳板的行控制机不可直连,忽略)→ 阿里云公网 IP → 私网 IP;端口兜底 fallbackPort
+// (<=0 归一 22),servers 行自带端口优先。返回仅含本轮能定论的台(含 noAddr);
+// 依赖查询失败(servers.List / ListInstances)的台不出现,留待下轮再解析、超时统一裁决。
+func (s *service) resolveProbePlans(ctx context.Context, cli ecsAPI, accountID string, ids []string, fallbackPort int) map[string]*probePlan {
+	port := fallbackPort
+	if port <= 0 {
+		port = defaultProbePort
+	}
+	plans := make(map[string]*probePlan, len(ids))
+	srvByInst := s.serverIDsByInstances(ctx, accountID, ids)
+	if len(srvByInst) > 0 {
+		srvRows := make(map[string]*target.Server)
+		if servers, err := s.servers.List(ctx); err == nil {
+			for _, srv := range servers {
+				srvRows[srv.ID] = srv
+			}
+			for instID, srvID := range srvByInst {
+				srv := srvRows[srvID]
+				if srv == nil || strings.TrimSpace(srv.Host) == "" || len(srv.Jumps) > 0 {
+					continue
+				}
+				p := port
+				if srv.Port > 0 {
+					p = srv.Port
+				}
+				plans[instID] = &probePlan{host: strings.TrimSpace(srv.Host), port: p}
+			}
+		}
+	}
+	var missing []string
+	for _, id := range ids {
+		if plans[id] == nil {
+			missing = append(missing, id)
+		}
+	}
+	if len(missing) > 0 {
+		instances, err := cli.ListInstances(ctx)
+		if err == nil {
+			byID := make(map[string]Instance, len(instances))
+			for _, inst := range instances {
+				byID[inst.InstanceID] = inst
+			}
+			for _, id := range missing {
+				inst, ok := byID[id]
+				if !ok {
+					plans[id] = &probePlan{noAddr: true, reason: "实例不在账户实例列表"}
+					continue
+				}
+				host := firstNonEmpty(inst.PublicIPs...)
+				if host == "" {
+					host = firstNonEmpty(inst.PrivateIPs...)
+				}
+				if host == "" {
+					plans[id] = &probePlan{noAddr: true, reason: "云上无公网/私网 IP"}
+				} else {
+					plans[id] = &probePlan{host: host, port: port}
+				}
+			}
+		}
+	}
+	return plans
+}
+
+// firstNonEmpty 返回第一个去空白后非空的串(都没有 → 空串)。
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if v = strings.TrimSpace(v); v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+// probeTCPDial 是生产 TCP 探活实现:单次连接尝试,连接建立即视为可达(立即关闭)。
+func probeTCPDial(ctx context.Context, host string, port int, timeout time.Duration) bool {
+	d := net.Dialer{Timeout: timeout}
+	conn, err := d.DialContext(ctx, "tcp", net.JoinHostPort(host, strconv.Itoa(port)))
+	if err != nil {
+		return false
+	}
+	_ = conn.Close()
+	return true
+}
+
+// failPowerItem 把已计入成功的逐台结果改判失败(条目必须在 Items 中且 OK=true)。
+func failPowerItem(res *PowerResult, instanceID, reason string) {
+	for i := range res.Items {
+		it := &res.Items[i]
+		if it.InstanceID != instanceID || !it.OK {
+			continue
+		}
+		it.OK = false
+		it.Err = reason
+		res.OK--
+		res.Failed++
+		return
+	}
 }
 
 // resolveTargets 把三种选择方式统一解析为目标实例清单(带可选 serverID 归属)。
@@ -228,14 +381,31 @@ func targetStatus(action string) (want, transitioning string, ok bool) {
 	return "", "", false
 }
 
-// Power 执行开关机(解析选择 → 查当前态跳过已达标 → 逐台发起 → 可选等待)。
-// 逐台独立容错:一台失败不阻断其它台;返回逐台结果(任一台失败由调用方裁决)。
+// Power 执行开关机(解析选择 → 查当前态跳过已达标 → 逐台发起 → 可选等待,开机可选等
+// 网络可达)。逐台独立容错:一台失败不阻断其它台;返回逐台结果(任一台失败由调用方裁决)。
 func (s *service) Power(ctx context.Context, in PowerInput) (*PowerResult, error) {
 	if _, _, ok := targetStatus(in.Action); !ok {
 		return nil, fmt.Errorf("%w:非法动作 %q(仅 start|stop)", ErrPowerFailed, in.Action)
 	}
 	if in.WaitSeconds < 0 || in.WaitSeconds > powerMaxWaitSeconds {
 		return nil, fmt.Errorf("%w:等待时间须为 0..%d 秒", ErrPowerFailed, powerMaxWaitSeconds)
+	}
+	if in.ReachablePort < 0 || in.ReachablePort > 65535 {
+		return nil, fmt.Errorf("%w:探测端口须为 0..65535(0=默认 %d)", ErrPowerFailed, defaultProbePort)
+	}
+	// 可达等待只在开机时成立:等待预算与状态等待共用 waitSeconds。
+	waitReach := in.WaitReachable
+	if waitReach {
+		if in.Action != PowerActionStart {
+			return nil, fmt.Errorf("%w:waitReachable 仅开机(start)可用", ErrPowerFailed)
+		}
+		if in.WaitSeconds <= 0 {
+			return nil, fmt.Errorf("%w:waitReachable 需 waitSeconds > 0 作为等待预算", ErrPowerFailed)
+		}
+	}
+	probe := s.probeTCP
+	if probe == nil {
+		probe = probeTCPDial
 	}
 	cli, acc, err := s.clientFor(ctx, in.AccountID)
 	if err != nil {
@@ -268,13 +438,22 @@ func (s *service) Power(ctx context.Context, in PowerInput) (*PowerResult, error
 	}
 	res := &PowerResult{Total: len(ids), Items: make([]PowerItemResult, 0, len(ids))}
 	pending := make([]string, 0, len(ids)) // 已发起或转换中,等待到达目标态
+	probing := make([]string, 0, len(ids)) // 已达目标态、待确认网络可达(仅 waitReach)
 	for _, id := range ids {
 		item := PowerItemResult{InstanceID: id, ServerID: targets[id]}
 		switch statuses[id] {
 		case want:
+			if !waitReach {
+				item.OK = true
+				item.Skipped = true
+				in.logf("%s 已是 %s,跳过", id, want)
+				break
+			}
+			// 可达等待:已在目标状态不发起动作,但可达性仍由探测裁决(防「Running 而
+			// 服务未起」被幂等跳过误判成功)。
 			item.OK = true
-			item.Skipped = true
-			in.logf("%s 已是 %s,跳过", id, want)
+			probing = append(probing, id)
+			in.logf("%s 已是 %s,继续确认网络可达", id, want)
 		case transitioning:
 			item.OK = true // 发起前置为成功;是否真达标由等待裁决
 			pending = append(pending, id)
@@ -298,13 +477,15 @@ func (s *service) Power(ctx context.Context, in PowerInput) (*PowerResult, error
 		res.Items = append(res.Items, item)
 	}
 
-	// 可选等待:轮询直到 pending 全部到达目标态或超时(超时台改判失败)。
-	if in.WaitSeconds > 0 && len(pending) > 0 {
+	// 可选等待:轮询直到 pending 全部到达目标态、probing 全部可达,或超时(超时台改判失败)。
+	if in.WaitSeconds > 0 && (len(pending) > 0 || len(probing) > 0) {
 		deadline := time.Now().Add(time.Duration(in.WaitSeconds) * time.Second)
-		for len(pending) > 0 {
+		resolved := make(map[string]*probePlan) // 探测地址缓存(懒解析,一次一台)
+		for len(pending) > 0 || len(probing) > 0 {
 			wait := powerPollInterval
 			if remain := time.Until(deadline); remain <= 0 {
 				s.finishPowerTimeout(res, statuses, pending, want)
+				finishProbeTimeout(res, probing, resolved, want)
 				break
 			} else if remain < wait {
 				wait = remain
@@ -313,31 +494,75 @@ func (s *service) Power(ctx context.Context, in PowerInput) (*PowerResult, error
 			case <-ctx.Done():
 				// 取消(流水线中止):未确认的台按取消时刻状态收尾,不判成功。
 				s.finishPowerTimeout(res, statuses, pending, want)
+				finishProbeTimeout(res, probing, resolved, want)
 				return res, nil
 			case <-time.After(wait):
 			}
-			cur, err := cli.InstanceStatuses(ctx, pending)
-			if err != nil {
-				// 轮询失败不立即放弃(可能是瞬时抖动);下次轮询再试,超时统一裁决。
-				in.logf("状态轮询失败(将在下轮重试):%v", err)
-				continue
-			}
-			for k, v := range cur {
-				statuses[k] = v
-			}
-			still := make([]string, 0, len(pending))
-			for _, id := range pending {
-				if statuses[id] == want {
-					in.logf("%s 已到达 %s", id, want)
+			if len(pending) > 0 {
+				cur, err := cli.InstanceStatuses(ctx, pending)
+				if err != nil {
+					// 轮询失败不立即放弃(可能是瞬时抖动);下次轮询再试,超时统一裁决。
+					in.logf("状态轮询失败(将在下轮重试):%v", err)
 				} else {
-					still = append(still, id)
+					for k, v := range cur {
+						statuses[k] = v
+					}
+					still := make([]string, 0, len(pending))
+					for _, id := range pending {
+						if statuses[id] == want {
+							if waitReach {
+								probing = append(probing, id)
+								in.logf("%s 已到达 %s,确认网络可达", id, want)
+							} else {
+								in.logf("%s 已到达 %s", id, want)
+							}
+						} else {
+							still = append(still, id)
+						}
+					}
+					pending = still
 				}
 			}
-			pending = still
-			if len(pending) == 0 {
+			if len(probing) > 0 {
+				var toResolve []string
+				for _, id := range probing {
+					if _, ok := resolved[id]; !ok {
+						toResolve = append(toResolve, id)
+					}
+				}
+				if len(toResolve) > 0 {
+					for id, pl := range s.resolveProbePlans(ctx, cli, acc.ID, toResolve, in.ReachablePort) {
+						resolved[id] = pl
+					}
+				}
+				still := make([]string, 0, len(probing))
+				for _, id := range probing {
+					pl := resolved[id]
+					if pl == nil {
+						still = append(still, id) // 地址解析依赖暂不可用,下轮再试
+						continue
+					}
+					if pl.noAddr {
+						failPowerItem(res, id, "已是 "+want+",但无可探测地址("+pl.reason+")")
+						continue
+					}
+					if probe(ctx, pl.host, pl.port, probeDialTimeout) {
+						in.logf("%s 网络可达 %s:%d", id, pl.host, pl.port)
+					} else {
+						still = append(still, id)
+					}
+				}
+				probing = still
+			}
+			if len(pending) == 0 && len(probing) == 0 {
 				break
 			}
-			in.logf("等待 %d 台到达 %s(当前 %s…)", len(pending), want, summarizeStatuses(statuses, pending))
+			if len(pending) > 0 {
+				in.logf("等待 %d 台到达 %s(当前 %s…)", len(pending), want, summarizeStatuses(statuses, pending))
+			}
+			if len(probing) > 0 {
+				in.logf("等待 %d 台网络可达(每 %s 重试)…", len(probing), powerPollInterval)
+			}
 		}
 	}
 	return res, nil
@@ -382,6 +607,19 @@ func (s *service) finishPowerTimeout(res *PowerResult, statuses map[string]strin
 			it.Err = "等待超时且状态未知"
 		} else {
 			it.Err = "等待超时(最后状态 " + last + ")"
+		}
+	}
+}
+
+// finishProbeTimeout 把已达目标状态但未确认可达的 probing 台按超时收尾(改判失败,
+// 带最后探测地址;地址未解析的用通用文案)。
+func finishProbeTimeout(res *PowerResult, probing []string, plans map[string]*probePlan, want string) {
+	for _, id := range probing {
+		pl := plans[id]
+		if pl != nil && !pl.noAddr {
+			failPowerItem(res, id, fmt.Sprintf("等待超时(%s,但 %s:%d 不可达)", want, pl.host, pl.port))
+		} else {
+			failPowerItem(res, id, "等待超时("+want+",网络可达未确认)")
 		}
 	}
 }

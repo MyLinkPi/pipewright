@@ -220,6 +220,8 @@ type service struct {
 	vault     vault.Vault
 	servers   target.Service
 	newClient func(ak, sk, region string) ecsAPI
+	// probeTCP 探测 TCP 可达(生产 net.Dial;测试注入避免触网)。nil → probeTCPDial。
+	probeTCP func(ctx context.Context, host string, port int, timeout time.Duration) bool
 }
 
 // New 构建阿里云 ECS 导入领域服务。servers 是机器登记域(target),导入的落库/更新经它

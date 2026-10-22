@@ -529,4 +529,8 @@ export default {
   fieldEcsForceStopHint: 'Arrêt type coupure d’alimentation, risque de perte de données non sauvegardées (graceful par défaut)',
   fieldEcsWaitLabel: 'Attendre l’état cible (secondes)',
   fieldEcsWaitHint: '0 = succès juste après l’émission ; 3600 secondes maximum',
+  fieldEcsWaitReachableLabel: 'Attendre l’accessibilité réseau',
+  fieldEcsWaitReachableHint: 'Après atteinte de Running, la sonde TCP d’accessibilité continue (l’adresse privilégie celle de connexion de la machine importée, sinon IP publique/privée) ; expiration = nœud en échec. Nécessite un délai d’attente',
+  fieldEcsReachablePortLabel: 'Port de sonde',
+  fieldEcsReachablePortHint: 'Port de sonde TCP, 22 par défaut ; les machines importées privilégient le port de leur fiche',
 }

@@ -515,4 +515,8 @@ export default {
   fieldEcsForceStopHint: 'Hard power-off style stop, may lose unsaved data (graceful by default)',
   fieldEcsWaitLabel: 'Wait for target state (seconds)',
   fieldEcsWaitHint: '0 = succeed right after issuing; at most 3600 seconds',
+  fieldEcsWaitReachableLabel: 'Wait for network reachability',
+  fieldEcsWaitReachableHint: 'After reaching Running, keep probing TCP reachability (address prefers the imported machine connection address, falls back to public/private IP); timeout fails the node. Requires a wait budget',
+  fieldEcsReachablePortLabel: 'Probe port',
+  fieldEcsReachablePortHint: 'TCP probe port, default 22; imported machines prefer their server-row port',
 }

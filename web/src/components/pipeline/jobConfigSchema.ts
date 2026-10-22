@@ -1054,6 +1054,21 @@ export const JOB_TYPE_SPECS: Record<string, JobTypeSpec> = {
         kind: 'number',
         get hint() { return t('pipelineJob.fieldEcsWaitHint') },
       },
+      {
+        key: 'waitReachable',
+        get label() { return t('pipelineJob.fieldEcsWaitReachableLabel') },
+        kind: 'toggle',
+        get hint() { return t('pipelineJob.fieldEcsWaitReachableHint') },
+        when: (c) => c.action === 'start',
+      },
+      {
+        key: 'reachablePort',
+        get label() { return t('pipelineJob.fieldEcsReachablePortLabel') },
+        kind: 'number',
+        placeholder: '22',
+        get hint() { return t('pipelineJob.fieldEcsReachablePortHint') },
+        when: (c) => c.action === 'start' && c.waitReachable === 'true',
+      },
     ],
   },
 
