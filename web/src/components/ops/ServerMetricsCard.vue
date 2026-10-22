@@ -33,6 +33,8 @@ const props = defineProps<{
   selectable?: boolean
   /** 父持有的选中态(按 serverId)。 */
   selected?: boolean
+  /** 该机是导入的阿里云 ECS(映射关联):非空时卡头加 ECS 电源状态徽标。 */
+  ecs?: { status: string; instanceId: string }
 }>()
 
 const emit = defineEmits<{
@@ -63,6 +65,37 @@ function pct(used: number, total: number): number | null {
   if (!total || total <= 0) return null
   return Math.min(100, Math.max(0, (used / total) * 100))
 }
+
+// ─── ECS 电源状态徽标(仅导入的阿里云 ECS 机器有) ───────────────────────────
+// 状态 → 徽标文案/着色。转换中(Starting/Stopping)黄色;停机灰色;未知(查询失败/
+// 状态缺失)中性灰。SSH 不可达时徽标仍显示(停机的 ECS 必然 SSH 不可达,靠它区分)。
+const ECS_STATUS_KEYS: Record<string, string> = {
+  Running: 'serverStatus.ecsRunning',
+  Stopped: 'serverStatus.ecsStopped',
+  Starting: 'serverStatus.ecsStarting',
+  Stopping: 'serverStatus.ecsStopping',
+}
+const ecsStatusLabel = computed(() =>
+  props.ecs ? (t(ECS_STATUS_KEYS[props.ecs.status] ?? 'serverStatus.ecsUnknown')) : '',
+)
+const ecsBadgeClass = computed(() => {
+  switch (props.ecs?.status) {
+    case 'Running':
+      return 'ecs-badge--running'
+    case 'Stopped':
+      return 'ecs-badge--stopped'
+    case 'Starting':
+    case 'Stopping':
+      return 'ecs-badge--transition'
+    default:
+      return 'ecs-badge--unknown'
+  }
+})
+const ecsTitle = computed(() =>
+  props.ecs
+    ? t('serverStatus.ecsBadgeTitle', { instance: props.ecs.instanceId, status: props.ecs.status || '?' })
+    : '',
+)
 
 /** 进度条着色:>90% 红、>75% 黄、否则默认。 */
 function usageVariant(percent: number | null): ProgressVariant {
@@ -229,13 +262,18 @@ function gpuMemBytesText(dev: GpuDeviceMetric): string {
         />
       </label>
       <h3 class="metrics-card__name" :title="name">{{ name }}</h3>
-      <span
-        class="reach-badge"
-        :class="metrics.reachable ? 'reach-badge--ok' : 'reach-badge--down'"
-        role="status"
-      >
-        <span class="reach-badge__dot" aria-hidden="true" />
-        {{ metrics.reachable ? t('opsServer.metrics.reachable') : t('opsServer.metrics.unreachable') }}
+      <span class="metrics-card__badges">
+        <span
+          class="reach-badge"
+          :class="metrics.reachable ? 'reach-badge--ok' : 'reach-badge--down'"
+          role="status"
+        >
+          <span class="reach-badge__dot" aria-hidden="true" />
+          {{ metrics.reachable ? t('opsServer.metrics.reachable') : t('opsServer.metrics.unreachable') }}
+        </span>
+        <span v-if="ecs" class="ecs-badge" :class="ecsBadgeClass" :title="ecsTitle">
+          ECS · {{ ecsStatusLabel }}
+        </span>
       </span>
     </header>
 
@@ -449,6 +487,12 @@ function gpuMemBytesText(dev: GpuDeviceMetric): string {
   justify-content: space-between;
   gap: 10px;
 }
+.metrics-card__badges {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
 .metrics-card__name {
   min-width: 0;
   margin: 0;
@@ -492,6 +536,36 @@ function gpuMemBytesText(dev: GpuDeviceMetric): string {
 }
 .reach-badge--down .reach-badge__dot {
   background: var(--color-red);
+}
+
+/* ——— ECS power badge (imported Aliyun ECS only; SSH-unreachable cards keep it) ——— */
+.ecs-badge {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  font-size: var(--text-label);
+  font-weight: 600;
+  line-height: 1;
+  padding: 3px 8px;
+  border-radius: var(--rounded-md);
+  color: var(--color-dim);
+  background: var(--color-inset);
+  border: 1px solid var(--color-line);
+  font-variant-numeric: tabular-nums;
+}
+.ecs-badge--running {
+  color: var(--color-green);
+  background: var(--color-green-soft);
+  border-color: transparent;
+}
+.ecs-badge--stopped {
+  color: var(--color-faint);
+  background: var(--color-inset);
+}
+.ecs-badge--transition {
+  color: var(--color-amber, #b45309);
+  background: var(--color-amber-soft, rgb(180 83 9 / 0.12));
+  border-color: transparent;
 }
 
 /* ——— build-pool label chips (registry data; tooltip reuses settingsServers.poolBadgeHint) ——— */

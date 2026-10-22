@@ -11,4 +11,41 @@ export default {
   errLoadRetry: '載入伺服器狀態失敗,請稍後重試',
   emptyTitle: '尚無已登記伺服器',
   emptyDesc: '先在「設定 › 伺服器」登記目標伺服器,這裡就會顯示它們的資源指標。',
+
+  // ——— 篩選(名稱搜尋 × 可達性 × 資源狀態) ———
+  filterAll: '全部',
+  filterReachable: '可達',
+  filterUnreachable: '不可達',
+  filterTight: '資源緊張',
+  filterOk: '資源正常',
+  filterAria: '按可達性篩選',
+  resourceFilterAria: '按資源狀態篩選',
+  searchPlaceholder: '搜尋名稱或地址',
+  searchAria: '搜尋伺服器',
+  searchClear: '清空搜尋',
+  filteredEmptyTitle: '沒有符合的伺服器',
+  filteredEmptyDesc: '調整搜尋詞或篩選條件後再試。',
+
+  // ——— 主機終端(可達機器新分頁開啟) ———
+  terminalTitle: '開啟主機終端(新分頁)',
+  terminalUnavailable: '伺服器不可達,無法開啟終端',
+
+  // ——— 阿里雲 ECS 電源(僅匯入的 ECS 機器) ———
+  ecsBadgeTitle: '阿里雲 ECS 實例 {instance} · {status}',
+  ecsRunning: '運行中',
+  ecsStopped: '已停機',
+  ecsStarting: '開機中',
+  ecsStopping: '關機中',
+  ecsUnknown: '狀態未知',
+  powerTitle: '阿里雲 ECS 開關機',
+  powerStart: '開機',
+  powerStop: '關機',
+  powerBusy: '執行中…',
+  powerUnknown: '電源未知',
+  powerStartToast: '開機指令已發出,狀態稍後自動重新整理',
+  powerStopToast: '關機指令已發出(節省停機模式)',
+  powerFailedToast: 'ECS 開關機失敗',
+  powerConfirmTitle: '關機:{name}',
+  powerConfirmBody: '將立即停止該 ECS 實例(節省停機模式)。機器上正在運行的構建、服務與連線會被中斷,請確認沒有重要任務在運行。',
+  powerConfirmLabel: '確認關機',
 }

@@ -11,4 +11,41 @@ export default {
   errLoadRetry: 'Failed to load server status. Please try again later.',
   emptyTitle: 'No registered servers yet',
   emptyDesc: 'Register target servers under "Settings › Servers" and their resource metrics will appear here.',
+
+  // ——— Filters (name search × reachability × resource state) ———
+  filterAll: 'All',
+  filterReachable: 'Reachable',
+  filterUnreachable: 'Unreachable',
+  filterTight: 'Tight resources',
+  filterOk: 'Healthy resources',
+  filterAria: 'Filter by reachability',
+  resourceFilterAria: 'Filter by resource state',
+  searchPlaceholder: 'Search name or address',
+  searchAria: 'Search servers',
+  searchClear: 'Clear search',
+  filteredEmptyTitle: 'No matching servers',
+  filteredEmptyDesc: 'Adjust the search term or filters and try again.',
+
+  // ——— Host terminal (reachable hosts, new tab) ———
+  terminalTitle: 'Open host terminal (new tab)',
+  terminalUnavailable: 'Server unreachable — terminal unavailable',
+
+  // ——— Aliyun ECS power (imported ECS machines only) ———
+  ecsBadgeTitle: 'Aliyun ECS instance {instance} · {status}',
+  ecsRunning: 'Running',
+  ecsStopped: 'Stopped',
+  ecsStarting: 'Starting',
+  ecsStopping: 'Stopping',
+  ecsUnknown: 'Unknown',
+  powerTitle: 'Aliyun ECS power on/off',
+  powerStart: 'Power on',
+  powerStop: 'Power off',
+  powerBusy: 'Working…',
+  powerUnknown: 'Power unknown',
+  powerStartToast: 'Start command issued; status refreshes shortly',
+  powerStopToast: 'Stop command issued (economy mode)',
+  powerFailedToast: 'ECS power operation failed',
+  powerConfirmTitle: 'Power off: {name}',
+  powerConfirmBody: 'This stops the ECS instance immediately (economy mode). Running builds, services and connections on it will be interrupted — make sure nothing important is running.',
+  powerConfirmLabel: 'Power off',
 }

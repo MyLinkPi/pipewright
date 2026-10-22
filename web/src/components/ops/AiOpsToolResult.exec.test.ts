@@ -57,6 +57,7 @@ it('shows host_exec argv like docker_exec', async () => {
     output: '32K\t/opt',
     truncated: false,
     exitCode: 0,
+    error: '',
   }
   const wrapper = mount(AiOpsToolResult, {
     props: { call, disabled: false, modelAvailable: true },

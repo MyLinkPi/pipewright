@@ -11,4 +11,41 @@ export default {
   errLoadRetry: 'サーバーの状態の読み込みに失敗しました。しばらくしてから再試行してください。',
   emptyTitle: '登録済みのサーバーがまだありません',
   emptyDesc: '「設定 › サーバー」で対象サーバーを登録すると、ここにリソース指標が表示されます。',
+
+  // ——— フィルター(名前検索 × 到達可否 × リソース状態) ———
+  filterAll: 'すべて',
+  filterReachable: '到達可能',
+  filterUnreachable: '到達不可',
+  filterTight: 'リソース逼迫',
+  filterOk: 'リソース正常',
+  filterAria: '到達可否で絞り込み',
+  resourceFilterAria: 'リソース状態で絞り込み',
+  searchPlaceholder: '名前またはアドレスを検索',
+  searchAria: 'サーバーを検索',
+  searchClear: '検索をクリア',
+  filteredEmptyTitle: '一致するサーバーがありません',
+  filteredEmptyDesc: '検索語や絞り込み条件を変更してもう一度お試しください。',
+
+  // ——— ホスト端末(到達可能なホストを新しいタブで開く) ———
+  terminalTitle: 'ホスト端末を開く(新しいタブ)',
+  terminalUnavailable: 'サーバーに到達できないため端末を開けません',
+
+  // ——— Aliyun ECS 電源(インポートした ECS のみ) ———
+  ecsBadgeTitle: 'Aliyun ECS インスタンス {instance} · {status}',
+  ecsRunning: '実行中',
+  ecsStopped: '停止済み',
+  ecsStarting: '起動中',
+  ecsStopping: '停止中',
+  ecsUnknown: '状態不明',
+  powerTitle: 'Aliyun ECS の電源操作',
+  powerStart: '起動',
+  powerStop: 'シャットダウン',
+  powerBusy: '実行中…',
+  powerUnknown: '電源状態不明',
+  powerStartToast: '起動指令を送信しました。状態はまもなく自動更新されます',
+  powerStopToast: '停止指令を送信しました(節約モード)',
+  powerFailedToast: 'ECS 電源操作に失敗しました',
+  powerConfirmTitle: 'シャットダウン:{name}',
+  powerConfirmBody: 'この ECS インスタンスを即時停止します(節約モード)。実行中のビルド・サービス・接続は中断されます。重要なタスクがないことを確認してください。',
+  powerConfirmLabel: 'シャットダウン',
 }

@@ -23,6 +23,8 @@
  * POST   /api/aliyun/accounts/{id}/test          → { ok: true }         (needs CSRF)
  * GET    /api/aliyun/accounts/{id}/instances     → { items: AliyunEcsInstance[] }
  * POST   /api/aliyun/import                      → AliyunImportResult   (needs CSRF)
+ * GET    /api/aliyun/power/status                → { items: AliyunEcsPowerItem[] }
+ * POST   /api/aliyun/power                       → AliyunPowerResult    (needs CSRF)
  */
 
 import { http } from './http'
@@ -195,4 +197,59 @@ export async function listAliyunInstances(accountId: string): Promise<AliyunEcsI
 /** Import / update the selected instances as servers. Returns per-instance results. */
 export async function importAliyunInstances(input: AliyunImportInput): Promise<AliyunImportResult> {
   return http.post<AliyunImportResult>('/api/aliyun/import', input)
+}
+
+// ─── ECS power (server-status page power buttons) ─────────────────────────────
+//
+// GET  /api/aliyun/power/status → { items } (read-only; live per-account status)
+// POST /api/aliyun/power        → per-instance results (needs CSRF + audit)
+//
+// Both operate on **registered servers** linked to imported ECS instances via
+// aliyun_ecs_instance_links. Fire-and-forget semantics: start/stop is issued,
+// never waited for; already-in-target instances are skipped idempotently.
+
+/** One linked server's live ECS power state (status empty + error set = unknown). */
+export interface AliyunEcsPowerItem {
+  serverId: string
+  accountId: string
+  instanceId: string
+  /** Aliyun raw status: Running | Stopped | Starting | Stopping | … */
+  status: string
+  /** Human-readable per-account query failure (credentials / network). */
+  error?: string
+}
+
+/** Per-instance power action outcome (independent — one failure doesn't fail the rest). */
+export interface AliyunPowerResultItem {
+  instanceId: string
+  serverId?: string
+  skipped: boolean
+  ok: boolean
+  error?: string
+}
+
+/** Whole power action summary. */
+export interface AliyunPowerResult {
+  items: AliyunPowerResultItem[]
+  total: number
+  ok: number
+  failed: number
+}
+
+/** Aliyun ECS power action. Stop uses economy mode (StopCharging), never force. */
+export type AliyunPowerAction = 'start' | 'stop'
+
+/**
+ * Live power status for every imported-ECS-linked server. Servers absent from the
+ * list are not ECS-linked (no power UI). Account-level failures surface as items
+ * with `error` set and empty `status` — they never fail the whole request.
+ */
+export async function getAliyunPowerStatus(): Promise<AliyunEcsPowerItem[]> {
+  const res = await http.get<{ items: AliyunEcsPowerItem[] }>('/api/aliyun/power/status')
+  return res.items ?? []
+}
+
+/** Issue start/stop for one registered server's linked ECS instances (no waiting). */
+export async function aliyunServerPower(serverId: string, action: AliyunPowerAction): Promise<AliyunPowerResult> {
+  return http.post<AliyunPowerResult>('/api/aliyun/power', { serverId, action })
 }

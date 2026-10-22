@@ -11,4 +11,41 @@ export default {
   errLoadRetry: 'Laden des Serverstatus fehlgeschlagen. Bitte versuche es später erneut.',
   emptyTitle: 'Noch keine registrierten Server',
   emptyDesc: 'Registriere Zielserver unter „Einstellungen › Server“, dann werden hier ihre Ressourcenmetriken angezeigt.',
+
+  // ——— Filter (Namenssuche × Erreichbarkeit × Ressourcenstatus) ———
+  filterAll: 'Alle',
+  filterReachable: 'Erreichbar',
+  filterUnreachable: 'Nicht erreichbar',
+  filterTight: 'Ressourcen knapp',
+  filterOk: 'Ressourcen normal',
+  filterAria: 'Nach Erreichbarkeit filtern',
+  resourceFilterAria: 'Nach Ressourcenstatus filtern',
+  searchPlaceholder: 'Name oder Adresse suchen',
+  searchAria: 'Server suchen',
+  searchClear: 'Suche löschen',
+  filteredEmptyTitle: 'Keine passenden Server',
+  filteredEmptyDesc: 'Passen Sie Suchbegriff oder Filter an und versuchen Sie es erneut.',
+
+  // ——— Host-Terminal (erreichbare Hosts, neuer Tab) ———
+  terminalTitle: 'Host-Terminal öffnen (neuer Tab)',
+  terminalUnavailable: 'Server nicht erreichbar — Terminal nicht verfügbar',
+
+  // ——— Aliyun-ECS-Strom (nur importierte ECS-Maschinen) ———
+  ecsBadgeTitle: 'Aliyun-ECS-Instanz {instance} · {status}',
+  ecsRunning: 'Läuft',
+  ecsStopped: 'Gestoppt',
+  ecsStarting: 'Startet',
+  ecsStopping: 'Stoppt',
+  ecsUnknown: 'Unbekannt',
+  powerTitle: 'Aliyun ECS ein-/ausschalten',
+  powerStart: 'Einschalten',
+  powerStop: 'Ausschalten',
+  powerBusy: 'Läuft…',
+  powerUnknown: 'Status unbekannt',
+  powerStartToast: 'Startbefehl gesendet; Status aktualisiert sich in Kürze',
+  powerStopToast: 'Stoppbefehl gesendet (Sparmodus)',
+  powerFailedToast: 'ECS-Stromaktion fehlgeschlagen',
+  powerConfirmTitle: 'Ausschalten: {name}',
+  powerConfirmBody: 'Diese ECS-Instanz wird sofort gestoppt (Sparmodus). Laufende Builds, Dienste und Verbindungen werden unterbrochen — stellen Sie sicher, dass nichts Wichtiges läuft.',
+  powerConfirmLabel: 'Ausschalten',
 }

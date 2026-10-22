@@ -11,4 +11,41 @@ export default {
   errLoadRetry: '서버 상태를 불러오지 못했습니다. 잠시 후 다시 시도하세요.',
   emptyTitle: '등록된 서버가 아직 없습니다',
   emptyDesc: '「설정 › 서버」에서 대상 서버를 등록하면 여기에 리소스 지표가 표시됩니다.',
+
+  // ——— 필터(이름 검색 × 접근 가능 여부 × 리소스 상태) ———
+  filterAll: '전체',
+  filterReachable: '접근 가능',
+  filterUnreachable: '접근 불가',
+  filterTight: '리소스 부족',
+  filterOk: '리소스 정상',
+  filterAria: '접근 가능 여부로 필터',
+  resourceFilterAria: '리소스 상태로 필터',
+  searchPlaceholder: '이름 또는 주소 검색',
+  searchAria: '서버 검색',
+  searchClear: '검색 지우기',
+  filteredEmptyTitle: '일치하는 서버가 없습니다',
+  filteredEmptyDesc: '검색어나 필터 조건을 조정한 후 다시 시도하세요.',
+
+  // ——— 호스트 터미널(접근 가능한 호스트를 새 탭에서 열기) ———
+  terminalTitle: '호스트 터미널 열기(새 탭)',
+  terminalUnavailable: '서버에 접근할 수 없어 터미널을 열 수 없습니다',
+
+  // ——— Aliyun ECS 전원(가져온 ECS 머신만) ———
+  ecsBadgeTitle: 'Aliyun ECS 인스턴스 {instance} · {status}',
+  ecsRunning: '실행 중',
+  ecsStopped: '중지됨',
+  ecsStarting: '부팅 중',
+  ecsStopping: '정지 중',
+  ecsUnknown: '상태 알 수 없음',
+  powerTitle: 'Aliyun ECS 전원 켜기/끄기',
+  powerStart: '전원 켜기',
+  powerStop: '전원 끄기',
+  powerBusy: '실행 중…',
+  powerUnknown: '전원 상태 알 수 없음',
+  powerStartToast: '시작 명령을 보냈습니다. 잠시 후 상태가 자동 갱신됩니다',
+  powerStopToast: '정지 명령을 보냈습니다(절약 모드)',
+  powerFailedToast: 'ECS 전원 작업 실패',
+  powerConfirmTitle: '전원 끄기: {name}',
+  powerConfirmBody: '이 ECS 인스턴스를 즉시 정지합니다(절약 모드). 실행 중인 빌드·서비스·연결이 중단됩니다. 중요한 작업이 없는지 확인하세요.',
+  powerConfirmLabel: '전원 끄기',
 }
