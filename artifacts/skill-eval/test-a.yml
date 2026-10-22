@@ -1,0 +1,69 @@
+version: 1
+stages:
+  - id: stg_src
+    name: 流水线源
+    kind: source
+    jobs:
+      - name: 拉取代码
+        type: git_source
+        summary: org/repo · main
+
+  - id: stg_build
+    name: 前后端并行构建
+    kind: build
+    needs: [stg_src]
+    jobs:
+      - name: 前端构建
+        type: build_nodejs
+        script:
+          image: node:20
+          commands:
+            - npm ci
+            - npm run build
+        config:
+          artifactPath: dist
+          cachePaths: node_modules
+
+      - name: 后端构建
+        type: build_golang
+        script:
+          image: golang:1.23
+          commands:
+            - go vet ./...
+            - CGO_ENABLED=0 go build -o bin/server ./...
+        config:
+          artifactPath: bin/server
+          timeoutSeconds: "600"
+
+  - id: stg_deploy
+    name: 生产部署
+    kind: deploy
+    needs: [stg_build]
+    gate: true                     # 进入本阶段前人工审批,拒绝则阶段失败
+    when:
+      branches: [main]             # 仅 main 分支
+      events: [webhook]            # 且仅 webhook 触发(两组为"与"关系)
+    jobs:
+      - name: 主机部署
+        type: deploy_ssh
+        summary: SSH 部署后端二进制到生产机器
+        config:
+          artifactJob: 后端构建     # 引用 job 的 name(不是 id!)
+          selector: env=prod       # 目标机选择器,需与平台已配标签一致
+          deployPath: /opt/myapp
+          restartCommand: systemctl restart myapp
+          healthPath: /healthz
+
+  - id: stg_notify
+    name: 部署通知
+    kind: notify
+    needs: [stg_deploy]
+    allowFailure: true             # 通知失败不阻塞流水线
+    jobs:
+      - name: 飞书通知
+        type: notify
+        config:
+          channel: feishu          # 需与平台设置里配置的通知渠道名一致
+          statusFrom: 主机部署      # {{status}} 渲染部署节点的状态
+          titleTemplate: "{{project}} {{branch}} 生产部署 {{status}}"
+          bodyTemplate: "运行 {{runId}} · 提交 {{commit}} · 结果:{{status}}"

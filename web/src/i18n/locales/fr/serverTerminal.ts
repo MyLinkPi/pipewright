@@ -54,4 +54,7 @@ export default {
   toastClipboardSecureCtx: 'Nécessite un contexte sécurisé https / localhost',
   toastClipboardDenied: 'Lecture du presse-papiers refusée',
   toastClipboardAllow: 'Veuillez autoriser l’accès au presse-papiers dans le navigateur',
+
+  // 终端 Shell 下拉:auto = 远端有 bash 用 bash,否则回退 sh。
+  shellAuto: 'Auto (bash prioritaire)',
 }

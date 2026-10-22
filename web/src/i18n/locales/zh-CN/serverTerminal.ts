@@ -54,4 +54,7 @@ export default {
   toastClipboardSecureCtx: '需 https / localhost 安全上下文',
   toastClipboardDenied: '剪贴板读取被拒',
   toastClipboardAllow: '请在浏览器允许剪贴板权限',
+
+  // 终端 Shell 下拉:auto = 远端有 bash 用 bash,否则回退 sh。
+  shellAuto: '自动 · 优先 bash',
 }

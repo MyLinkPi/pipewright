@@ -38,6 +38,13 @@ const (
 	ptyReadChunk = 32 * 1024
 	// termShellDefault 是未指定 shell 时的默认登录 shell。
 	termShellDefault = "/bin/sh"
+	// termShellAuto 是「自动择壳」元值:远端有 bash 用 bash、否则回退 sh。探测与切换
+	// 在目标机上一次完成(sh -c 一条命令),不增加额外 SSH 往返。
+	termShellAuto = "auto"
+	// autoShellScript 是 auto 的远端择壳脚本。command -v 仅探测不执行(失败即短路),
+	// 两段式保证 exec 失败不会让会话直接退出(POSIX:非交互 shell 的 exec 失败会退出,
+	// 故不用 `exec bash || exec sh` 连写)。sh/dash/busybox ash 通用。
+	autoShellScript = "command -v bash >/dev/null 2>&1 && exec bash; exec sh"
 )
 
 // reContainerID 校验 docker 容器名/ID:首字符强制 [\w](禁 `-` 开头防 flag 注入),
@@ -45,6 +52,7 @@ const (
 var reContainerID = regexp.MustCompile(`^[\w][\w.-]*$`)
 
 // allowedShells 是允许进入容器的交互 shell 白名单(绝对路径;防任意命令注入到 exec 参数)。
+// termShellAuto 是元值(远端自动择壳),非具体路径,一并放行。
 var allowedShells = map[string]struct{}{
 	"/bin/sh":       {},
 	"/bin/bash":     {},
@@ -55,6 +63,7 @@ var allowedShells = map[string]struct{}{
 	"/usr/bin/zsh":  {},
 	"sh":            {},
 	"bash":          {},
+	termShellAuto:   {},
 }
 
 // validateContainerTarget 校验容器 ID 与 shell,合法返回归一后的 shell。
@@ -78,9 +87,20 @@ func validateContainerTarget(containerID, shell string) (string, error) {
 }
 
 // buildContainerExecCmd 构造 `docker exec -it <containerID> <shell>` 命令 array(不拼 shell)。
-// 调用前须先过 validateContainerTarget。
+// 调用前须先过 validateContainerTarget。auto 经容器内 sh 完成择壳(同主机端语义)。
 func buildContainerExecCmd(containerID, shell string) []string {
+	if shell == termShellAuto {
+		return []string{"docker", "exec", "-it", containerID, "sh", "-c", autoShellScript}
+	}
 	return []string{"docker", "exec", "-it", containerID, shell}
+}
+
+// buildHostShellCmd 构造主机终端的启动命令(array,无拼接)。auto 经 sh 择壳。
+func buildHostShellCmd(shell string) []string {
+	if shell == termShellAuto {
+		return []string{"sh", "-c", autoShellScript}
+	}
+	return []string{shell}
 }
 
 // makeContainerTerminalHandler 返回 GET /api/servers/{id}/containers/{containerId}/terminal handler。
@@ -190,8 +210,8 @@ func makeServerTerminalHandler(svc target.Service, aud audit.Recorder) http.Hand
 		sessCtx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		// 主机 shell:cmd 仅为 [shell](array,无拼接)。
-		sess, err := svc.ExecInteractive(sessCtx, id, []string{shell})
+		// 主机 shell:cmd array 化(auto → sh -c 择壳脚本;无拼接)。
+		sess, err := svc.ExecInteractive(sessCtx, id, buildHostShellCmd(shell))
 		if err != nil {
 			_ = conn.Close(websocket.StatusInternalError, truncateWSReason(humanTerminalError(terminalLocale(r), err)))
 			return

@@ -529,8 +529,10 @@ export async function serviceAction(
 // credential is taken from the vault, used in-process, and never enters a WS
 // frame or a log. Opening a terminal is audited (append-only; detail scrubbed).
 
-/** Shells the backend allows entering a container with. */
+/** Shells the backend allows entering a container with. `auto` = prefer bash, fall back to sh
+ *  (resolved remotely in one shot: `sh -c 'command -v bash … && exec bash; exec sh'`). */
 export type TerminalShell =
+  | 'auto'
   | '/bin/sh'
   | '/bin/bash'
   | '/bin/ash'

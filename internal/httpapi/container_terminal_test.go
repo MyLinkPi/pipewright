@@ -68,6 +68,33 @@ func TestBuildContainerExecCmd(t *testing.T) {
 	}
 }
 
+// auto 择壳:主机端与容器端都翻译成「sh -c 择壳脚本」array,其余值原样单元素。
+func TestAutoShellCmd(t *testing.T) {
+	if got := buildHostShellCmd(termShellAuto); !equalStrSlice(got, []string{"sh", "-c", autoShellScript}) {
+		t.Fatalf("host auto cmd = %v", got)
+	}
+	if got := buildHostShellCmd("/bin/zsh"); !equalStrSlice(got, []string{"/bin/zsh"}) {
+		t.Fatalf("host plain cmd = %v", got)
+	}
+	if got := buildContainerExecCmd("c1", termShellAuto); !equalStrSlice(got, []string{"docker", "exec", "-it", "c1", "sh", "-c", autoShellScript}) {
+		t.Fatalf("container auto cmd = %v", got)
+	}
+	// 校验层:auto 放行(白名单元值);显式非法 shell 仍拒。
+	if sh, err := validateContainerTarget("app", termShellAuto); err != nil || sh != termShellAuto {
+		t.Fatalf("validate auto = %q, %v", sh, err)
+	}
+	if sh, err := validateHostShell(termShellAuto); err != nil || sh != termShellAuto {
+		t.Fatalf("validateHostShell auto = %q, %v", sh, err)
+	}
+	if _, err := validateHostShell("bash -c id"); err == nil {
+		t.Fatalf("带参数 shell 应拒")
+	}
+	// 择壳脚本必须两段式(exec 失败不退出)且以 bash 优先。
+	if !strings.Contains(autoShellScript, "command -v bash") || strings.Contains(autoShellScript, "exec bash ||") {
+		t.Fatalf("autoShellScript = %q", autoShellScript)
+	}
+}
+
 func TestParseResize(t *testing.T) {
 	cols, rows, ok := parseResize([]byte(`{"type":"resize","cols":120,"rows":40}`))
 	if !ok || cols != 120 || rows != 40 {

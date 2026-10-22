@@ -54,4 +54,7 @@ export default {
   toastClipboardSecureCtx: 'Erfordert einen sicheren https-/localhost-Kontext',
   toastClipboardDenied: 'Lesen der Zwischenablage verweigert',
   toastClipboardAllow: 'Bitte erlaube den Zugriff auf die Zwischenablage im Browser',
+
+  // 终端 Shell 下拉:auto = 远端有 bash 用 bash,否则回退 sh。
+  shellAuto: 'Auto (bash bevorzugt)',
 }

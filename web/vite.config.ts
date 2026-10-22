@@ -15,7 +15,13 @@ export default defineConfig({
   server: {
     proxy: {
       // 默认指向本机默认后端;多实例联调可用 PIPEWRIGHT_API_TARGET 覆盖(如 :8081)。
-      '/api': process.env.PIPEWRIGHT_API_TARGET ?? 'http://localhost:8080',
+      // ws: true 转发 WebSocket 升级(交互终端是平台唯一 WS 点;不加则升级挂死,终端页
+      // 永远停在「正在连接」)。勿加 changeOrigin:后端 WS 同源校验比对 Origin 与 Host
+      // 头,改写 Host 会被 403。
+      '/api': {
+        target: process.env.PIPEWRIGHT_API_TARGET ?? 'http://localhost:8080',
+        ws: true,
+      },
       '/healthz': process.env.PIPEWRIGHT_API_TARGET ?? 'http://localhost:8080',
     },
   },

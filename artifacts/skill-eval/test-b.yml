@@ -1,0 +1,54 @@
+version: 1
+stages:
+  - id: stg_src
+    name: 流水线源
+    kind: source
+    jobs:
+      - name: 拉取代码
+        type: git_source
+
+  - id: stg_test
+    name: Go 多版本单元测试
+    kind: build
+    needs: [stg_src]
+    matrix:
+      go: ["1.21", "1.22"]
+    services:
+      - name: testdb
+        image: postgres:16
+        env:
+          - POSTGRES_USER=postgres
+          - POSTGRES_PASSWORD=test
+          - POSTGRES_DB=app_test
+    jobs:
+      - name: 单元测试
+        type: script
+        script:
+          image: golang:${MATRIX_GO}
+          commands:
+            - go test ./...
+          env:
+            PGHOST: testdb
+            PGPORT: "5432"
+            PGUSER: postgres
+            PGPASSWORD: test
+            PGDATABASE: app_test
+
+  - id: stg_img
+    name: 构建并推送镜像
+    kind: build
+    needs: [stg_test]
+    jobs:
+      - id: job_img
+        name: 构建镜像
+        type: build_image
+        config:
+          buildModel: dockerfile
+          dockerfilePath: Dockerfile
+          context: .
+      - name: 推送镜像
+        type: push_image
+        needs: [job_img]
+        config:
+          artifactJob: 构建镜像
+          tag: "{{branch}}-{{date:yyyyMMddHHmmss}}"

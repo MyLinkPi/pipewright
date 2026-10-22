@@ -54,4 +54,7 @@ export default {
   toastClipboardSecureCtx: 'Requires an https / localhost secure context',
   toastClipboardDenied: 'Clipboard read denied',
   toastClipboardAllow: 'Please grant clipboard permission in the browser',
+
+  // 终端 Shell 下拉:auto = 远端有 bash 用 bash,否则回退 sh。
+  shellAuto: 'Auto · prefer bash',
 }
