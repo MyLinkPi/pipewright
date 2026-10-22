@@ -499,4 +499,8 @@ export default {
   fieldEcsForceStopHint: '强制断电式停机,可能丢失未落盘数据(默认优雅停机)',
   fieldEcsWaitLabel: '等待到达目标状态(秒)',
   fieldEcsWaitHint: '0 = 发起后不等待即成功;最长 3600 秒',
+  fieldEcsWaitReachableLabel: '等待网络可达',
+  fieldEcsWaitReachableHint: '开机到达 Running 后继续探测 TCP 可达(地址优先取导入机器的连接地址,兜底公网/私网 IP),超时判失败;需配置等待秒数',
+  fieldEcsReachablePortLabel: '探测端口',
+  fieldEcsReachablePortHint: 'TCP 探活端口,默认 22;已导入机器优先用机器行端口',
 }

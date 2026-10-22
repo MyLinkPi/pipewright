@@ -532,4 +532,8 @@ export default {
   fieldEcsForceStopHint: 'Apagado tipo corte de energía, puede perder datos sin guardar (graceful por defecto)',
   fieldEcsWaitLabel: 'Esperar estado objetivo (segundos)',
   fieldEcsWaitHint: '0 = éxito tras emitir; máximo 3600 segundos',
+  fieldEcsWaitReachableLabel: 'Esperar accesibilidad de red',
+  fieldEcsWaitReachableHint: 'Tras alcanzar Running se sigue sondeando la accesibilidad TCP (la dirección prioriza la de conexión de la máquina importada, con respaldo a IP pública/privada); el timeout falla el nodo. Requiere segundos de espera',
+  fieldEcsReachablePortLabel: 'Puerto de sondeo',
+  fieldEcsReachablePortHint: 'Puerto de sondeo TCP, por defecto 22; las máquinas importadas priorizan el puerto de su ficha',
 }

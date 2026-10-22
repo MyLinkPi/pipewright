@@ -615,8 +615,16 @@ export function useOpsChat(options: {
         b.updatedAt.localeCompare(a.updatedAt),
       )
       const id = page.activeSessionId || (!entryContext?state.sessions[0]?.id:undefined)
-      // Entry defaults only apply to a genuinely new session.
-      if (id) await select(id)
+      const initial = options.initialServerIds()
+      // 入口显式预选了机器(如机器卡上的「AI 运维助手」)且与绑定会话的目标不一致时,
+      // 新建会话带上预选,恢复「点哪台选哪台」;旧会话保留在历史,绝不覆盖其目标。
+      // 入口未预选或预选与当前目标一致时复用会话,保持连续性。
+      const bound = id ? state.sessions.find((s) => s.id === id) : undefined
+      const reuse =
+        !!id &&
+        (!initial.length ||
+          initial.every((x) => bound?.serverIds?.includes(x) ?? false))
+      if (reuse) await select(id)
       else if (dimension() === 'project' && !chosenProject.value) {
         // 项目维度没有初始项目时等待用户选择,不创建空会话(后端要求 projectId)。
         return

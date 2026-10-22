@@ -517,4 +517,8 @@ export default {
   fieldEcsForceStopHint: '電源断相当の停止、未保存データが失われる可能性(既定はグレースフル)',
   fieldEcsWaitLabel: '目標状態の待機(秒)',
   fieldEcsWaitHint: '0 = 発行後すぐ成功;最大 3600 秒',
+  fieldEcsWaitReachableLabel: 'ネットワーク到達を待機',
+  fieldEcsWaitReachableHint: 'Running 到達後も TCP 到達性を確認(アドレスはインポート機の接続アドレス優先、公網/私網 IP へフォールバック)、タイムアウトで失敗。待機秒数の設定が必要',
+  fieldEcsReachablePortLabel: 'Probe ポート',
+  fieldEcsReachablePortHint: 'TCP Probe ポート(既定 22)。インポート機は機器行のポートを優先',
 }

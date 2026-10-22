@@ -55,7 +55,8 @@ func TestRunEcsPowerDirectPassThrough(t *testing.T) {
 	rep := &fakeReporter{}
 	jb := ecsPowerJob(map[string]any{
 		"accountId": "acc-1", "selector": "instances", "instanceIds": "i-1, i-2",
-		"action": "stop", "forceStop": "true", "waitSeconds": "120",
+		"action": "start", "forceStop": "true", "waitSeconds": "120",
+		"waitReachable": "true", "reachablePort": "2222",
 	})
 
 	if err := b.runEcsPowerJob(context.Background(), rep, jb, ecsPowerTestRun()); err != nil {
@@ -71,8 +72,11 @@ func TestRunEcsPowerDirectPassThrough(t *testing.T) {
 	if len(in.InstanceIDs) != 2 || in.InstanceIDs[0] != "i-1" || in.InstanceIDs[1] != "i-2" {
 		t.Errorf("instanceIds = %v(应去空白)", in.InstanceIDs)
 	}
-	if in.Action != aliyunecs.PowerActionStop || !in.ForceStop || in.WaitSeconds != 120 {
+	if in.Action != aliyunecs.PowerActionStart || !in.ForceStop || in.WaitSeconds != 120 {
 		t.Errorf("action/force/wait = %s/%v/%d", in.Action, in.ForceStop, in.WaitSeconds)
+	}
+	if !in.WaitReachable || in.ReachablePort != 2222 {
+		t.Errorf("waitReachable/reachablePort = %v/%d", in.WaitReachable, in.ReachablePort)
 	}
 	if in.Log == nil {
 		t.Error("应注入流式日志回调")

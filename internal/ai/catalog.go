@@ -43,7 +43,7 @@ func BuiltinNodeCatalog() []NodeKind {
 		{Type: "oss_upload", Label: "OSS 上传", Category: "deploy",
 			Description: "把上游节点产出的文件类产物(jar/dist/归档)上传到已配置的对象存储(阿里云 OSS / S3 兼容的 RustFS)。config 必填 storageId(设置页里的对象存储配置)、artifactJob(产物来源节点 name);可选 prefix(对象路径前缀,支持 {{runId}}/{{branch}}/{{commit}}/{{project}}/{{date}} 与 {{date:格式}} 日期占位)、artifactName(产物名 glob,多件时消歧)。"},
 		{Type: "ecs_power", Label: "阿里云 ECS 开关机", Category: "deploy",
-			Description: "对一台或若干台阿里云 ECS 实例开机/关机(关机固定节省停机模式 StopCharging,停机不收费)。config 必填 accountId(设置→阿里云 ECS 的账户)、action(start 开机 / stop 关机);机器选择 selector 二选一:instances + instanceIds(逗号分隔实例 ID,配置时快照)或 tags + tagSource(aliyun=阿里云 ECS 标签 / platform=平台服务器标签)+ tags(逗号分隔 k=v,AND 匹配,运行时解析;platform 仅阿里云导入的机器可执行);可选 forceStop(stop 时强制断电式停机)、waitSeconds(等待到达 Running/Stopped,默认 300,0=不等待)。适合定时启停测试环境(cron 触发)或部署前预热扩容。"},
+			Description: "对一台或若干台阿里云 ECS 实例开机/关机(关机固定节省停机模式 StopCharging,停机不收费)。config 必填 accountId(设置→阿里云 ECS 的账户)、action(start 开机 / stop 关机);机器选择 selector 二选一:instances + instanceIds(逗号分隔实例 ID,配置时快照)或 tags + tagSource(aliyun=阿里云 ECS 标签 / platform=平台服务器标签)+ tags(逗号分隔 k=v,AND 匹配,运行时解析;platform 仅阿里云导入的机器可执行);可选 forceStop(stop 时强制断电式停机)、waitSeconds(等待到达 Running/Stopped,默认 300,0=不等待)、waitReachable(\"true\",仅 start:到达 Running 后继续等 TCP 网络可达,探测地址优先导入机器的 Host:Port、兜底公网/私网 IP,超时判失败,须配 waitSeconds 1..3600)、reachablePort(探活端口 1..65535,默认 22)。适合定时启停测试环境(cron 触发)或部署前预热扩容。"},
 		{Type: "mesh_push", Label: "推送到集群节点", Category: "deploy",
 			Description: "把本 run 产出的产物/镜像推送到集群里的对等节点(EasyTier 组网)。config 必填 node(目标节点 id);可选 items(产物名列表,逗号分隔,空=全部产物)、revisionLabel(对方修订标签,支持 {{runId}}/{{branch}}/{{commit}}/{{date}} 占位)。首次推送会在对方自动创建对应项目;镜像以 docker save 归档直传。适合「一处构建、多环境分发」。"},
 		{Type: "mesh_trigger", Label: "启动节点工作流", Category: "deploy",

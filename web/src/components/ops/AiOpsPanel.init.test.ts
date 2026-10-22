@@ -97,10 +97,10 @@ afterEach(() => {
   vi.useRealTimers()
 })
 
-async function mountPanel(): Promise<void> {
+async function mountPanel(initialServerIds: string[] = []): Promise<void> {
   wrapper = mount(AiOpsPanel, {
     attachTo: document.body,
-    props: { context: 'overview', initialServerIds: [] },
+    props: { context: 'overview', initialServerIds },
     global: {
       stubs: {
         AiOpsMessageList: true,
@@ -134,5 +134,46 @@ describe('AiOpsPanel initialization', () => {
     const alert = wrapper!.find('[role="alert"]')
     expect(alert.exists()).toBe(true)
     expect(alert.text()).toContain('网络请求失败')
+  })
+})
+
+describe('AiOpsPanel entry preselection', () => {
+  function bindSession(serverIds: string[]): void {
+    const s = session('ov', serverIds)
+    vi.mocked(opsApi.snapshot).mockImplementation(async (id) =>
+      snap(id === 'ov' ? s : session(id, serverIds)),
+    )
+    vi.mocked(opsApi.list).mockResolvedValue({
+      sessions: [s],
+      activeSessionId: 'ov',
+      cursor: '',
+    })
+  }
+
+  it('starts a new session with the card-clicked server when the reused session targets differ', async () => {
+    bindSession([])
+    vi.mocked(opsApi.create).mockImplementation(async (ids) => {
+      const s = session('new', ids as string[])
+      vi.mocked(opsApi.snapshot).mockResolvedValue(snap(s))
+      return s
+    })
+    await mountPanel(['srv-3'])
+    expect(opsApi.create).toHaveBeenCalledWith(['srv-3'], 'overview', '', '')
+    const text = wrapper!.text()
+    expect(text).toContain('已选 1 台 / 最多 8 台')
+    const checked = wrapper!
+      .findAll('.server-choice input')
+      .filter((c) => (c.element as HTMLInputElement).checked)
+    expect(checked).toHaveLength(1)
+    expect(
+      (checked[0]!.element as HTMLInputElement).closest('label')?.textContent,
+    ).toContain('strata03')
+  })
+
+  it('reuses the bound session without creating one when targets already match', async () => {
+    bindSession(['srv-3'])
+    await mountPanel(['srv-3'])
+    expect(opsApi.create).not.toHaveBeenCalled()
+    expect(wrapper!.text()).toContain('已选 1 台 / 最多 8 台')
   })
 })

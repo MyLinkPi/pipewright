@@ -88,7 +88,7 @@ let chat: ReturnType<typeof useOpsChat>, view: VueWrapper | undefined
 let db: Record<string, Snapshot>,
   active = 'chat'
 const events: ((event: StreamEvent) => void)[] = []
-async function open(initial = ['b'], context?:()=>string): Promise<void> {
+async function open(initial: string[] = [], context?:()=>string): Promise<void> {
   view = mount(
     defineComponent({
       setup() {
@@ -379,7 +379,7 @@ describe('local ops lifecycle and concurrency', () => {
     const context=shallowRef('containers'),contexts:Record<string,string>={containers:'chat',overview:'other'}
     vi.mocked(opsApi.list).mockImplementation(async(key='')=>({sessions:Object.values(db).map(s=>structuredClone(s.session)),activeSessionId:contexts[key]??'',cursor:''}))
     vi.mocked(opsApi.activate).mockImplementation(async(id,key='')=>{contexts[key]=id;return {ok:true}})
-    await open(['b'],()=>context.value)
+    await open(['a'],()=>context.value)
     chat.editDraft('container draft')
     context.value='overview';await flushPromises()
     expect(chat.session.value?.id).toBe('other')
@@ -787,12 +787,19 @@ describe('local ops lifecycle and concurrency', () => {
     await chat.history()
     expect(chat.historyCursor.value).toBe('')
   })
-  it('restores selected targets without overwriting with entry default, defaults only new sessions', async () => {
-    await open(['b'])
+  it('reuses the bound session when the entry preselect matches, otherwise starts a new session with it', async () => {
+    // 入口预选与绑定会话目标一致(会话 ['a'],预选 ['a'])→ 复用,目标不动。
+    await open(['a'])
+    expect(chat.session.value?.id).toBe('chat')
     expect(chat.session.value?.serverIds).toEqual(['a'])
-    await chat.create()
+    expect(opsApi.create).not.toHaveBeenCalled()
+    // 入口预选与会话目标不一致(会话 ['a'],预选 ['b'])→ 新建会话带上预选
+    //(机器卡「AI 运维助手」:点哪台选哪台),旧会话原样保留在列表。
+    await open(['b'])
     expect(opsApi.create).toHaveBeenCalledWith(['b'], '', '', '')
+    expect(chat.session.value?.id).toBe('new')
     expect(chat.session.value?.serverIds).toEqual(['b'])
+    expect(db.chat!.session.serverIds).toEqual(['a'])
   })
   it('saves at 500ms and awaits the final dirty draft before close without canceling', async () => {
     await open()

@@ -93,7 +93,7 @@ config **必填 `artifactJob`**:要推送的镜像来源节点 name,**必须是�
 config **必填 `storageId`**(平台设置页的对象存储配置)、**`artifactJob`**(上游产物节点 name)。可选:`prefix`(支持 `{{runId}}`/`{{branch}}`/`{{commit}}`/`{{project}}`/`{{date}}`/`{{date:格式}}` 占位)、`artifactName`(glob)。
 
 ### ecs_power — 阿里云 ECS 开关机
-config **必填 `accountId`**、`action`(`start`/`stop`)。机器选择二选一:`selector: instances` + `instanceIds`(逗号分隔,配置时快照)或 `selector: tags` + `tagSource`(`aliyun`/`platform`)+ `tags`(逗号分隔 `k=v`,AND)。可选 `forceStop`、`waitSeconds`(默认 `"300"`,`"0"` 不等待)。适合定时启停测试环境或部署前预热。
+config **必填 `accountId`**、`action`(`start`/`stop`)。机器选择二选一:`selector: instances` + `instanceIds`(逗号分隔,配置时快照)或 `selector: tags` + `tagSource`(`aliyun`/`platform`)+ `tags`(逗号分隔 `k=v`,AND)。可选 `forceStop`、`waitSeconds`(默认 `"300"`,`"0"` 不等待)、`waitReachable`(`"true"` 仅 start:到达 Running 后继续等 TCP 网络可达,地址优先导入机器的 Host:Port、兜底公网/私网 IP;须配 `waitSeconds: "1".."3600"`)、`reachablePort`(探活端口 1–65535,默认 `"22"`)。适合定时启停测试环境或部署前预热。
 
 ### mesh_push — 推送到集群对等节点
 把本 run 的产物/镜像推给集群(EasyTier)里的对端,首推自动在对端建对应项目。config **必填 `node`**(目标节点 id)。可选:`items`(逗号分隔产物名,空=全部)、`revisionLabel`(支持占位符)、`timeoutMinutes`。

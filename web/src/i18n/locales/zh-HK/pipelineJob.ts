@@ -499,4 +499,8 @@ export default {
   fieldEcsForceStopHint: '強制斷電式停機,可能遺失未落盤資料(預設優雅停機)',
   fieldEcsWaitLabel: '等待到達目標狀態(秒)',
   fieldEcsWaitHint: '0 = 發起後不等待即成功;最長 3600 秒',
+  fieldEcsWaitReachableLabel: '等待網絡可達',
+  fieldEcsWaitReachableHint: '開機到達 Running 後繼續探測 TCP 可達(地址優先取匯入機器的連線地址,後備公網/私網 IP),逾時判失敗;需設定等待秒數',
+  fieldEcsReachablePortLabel: '探測端口',
+  fieldEcsReachablePortHint: 'TCP 探活端口,預設 22;已匯入機器優先用機器行端口',
 }

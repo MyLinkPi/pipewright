@@ -60,8 +60,9 @@ func parseEcsTags(raw string) map[string]string {
 }
 
 // runEcsPowerJob 执行一个 ecs_power 节点:解析 config(accountId/selector/instanceIds/
-// tagSource/tags/action/forceStop/waitSeconds)→ 经注入的控制器发起开关机(等待状态由
-// WaitSeconds 控制)。逐台结果写节点日志;任一台失败 → ErrBuildFailed(阻断下游)。
+// tagSource/tags/action/forceStop/waitSeconds/waitReachable/reachablePort)→ 经注入的
+// 控制器发起开关机(等待状态由 WaitSeconds 控制;waitReachable=true 时开机到达 Running
+// 后继续等 TCP 可达)。逐台结果写节点日志;任一台失败 → ErrBuildFailed(阻断下游)。
 // 阿里云服务未注入(测试/未装配)→ 记日志跳过(向后兼容,与 objectUploader nil 同)。
 func (b *Builder) runEcsPowerJob(ctx context.Context, rep dagrun.StageReporter, jb pipeline.Job, r *run.Run) error {
 	if b.ecsPower == nil {
@@ -83,11 +84,13 @@ func (b *Builder) runEcsPowerJob(ctx context.Context, rep dagrun.StageReporter, 
 		selector = aliyunecs.SelectorInstances
 	}
 	in := aliyunecs.PowerInput{
-		AccountID:   accountID,
-		Selector:    selector,
-		Action:      action,
-		ForceStop:   cfgString(jb.Config, "forceStop") == "true",
-		WaitSeconds: cfgNonNegInt(jb.Config, "waitSeconds"),
+		AccountID:     accountID,
+		Selector:      selector,
+		Action:        action,
+		ForceStop:     cfgString(jb.Config, "forceStop") == "true",
+		WaitSeconds:   cfgNonNegInt(jb.Config, "waitSeconds"),
+		WaitReachable: cfgString(jb.Config, "waitReachable") == "true",
+		ReachablePort: cfgNonNegInt(jb.Config, "reachablePort"),
 		Log: func(msg string) {
 			_ = rep.Log(ctx, streamStdout, msg)
 		},
