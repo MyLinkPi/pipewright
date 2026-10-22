@@ -11,7 +11,17 @@ import (
 
 func (s *Service) validateContext(ctx context.Context, key string) error {
 	switch key {
-	case "", "containers", "overview", "servers":
+	case "", "containers", "overview", "servers", "projects":
+		return nil
+	}
+	if id, ok := strings.CutPrefix(key, "project:"); ok {
+		// 项目页上下文:项目必须存在(经项目后端校验)。
+		if s.projects == nil || !validID(id) {
+			return ErrInvalid
+		}
+		if _, err := s.projects.Snapshot(ctx, id); err != nil {
+			return ErrInvalid
+		}
 		return nil
 	}
 	if !strings.HasPrefix(key, "terminal:") {

@@ -24,6 +24,7 @@ import CredentialSelect from '../components/projects/CredentialSelect.vue'
 import { getParameters, validateParamValues, type ParamDef } from '../api/parameters'
 import { HttpError } from '../api/http'
 import { repoHost, classifyCredentialReject } from './projects.helpers'
+import ContainerAiPanel from '../components/ops/ContainerAiPanel.vue'
 
 // ─── i18n ─────────────────────────────────────────────────────────────────────
 
@@ -152,6 +153,9 @@ onMounted(async () => {
 // ─── new project modal ────────────────────────────────────────────────────────
 
 const createModalOpen = ref(false)
+
+// 项目维度 AI 运维助手抽屉。
+const showAi = ref(false)
 
 const createForm = ref({
   name: '',
@@ -717,16 +721,21 @@ const STATUS_CONFIG: Record<RunStatus, StatusConfig> = {
         <h1 class="page-title">{{ t('projects.title') }}</h1>
         <p class="page-sub">{{ t('projects.subtitle') }}</p>
       </div>
-      <button
-        class="btn-primary"
-        :disabled="loadState === 'loading'"
-        @click="openCreateModal"
-      >
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-hidden="true">
-          <path d="M12 5v14M5 12h14"/>
-        </svg>
-        {{ t('projects.newProject') }}
-      </button>
+      <div class="page-header-actions">
+        <button class="btn-secondary" @click="showAi = true">
+          {{ t('opsChat.projectAssistant') }}
+        </button>
+        <button
+          class="btn-primary"
+          :disabled="loadState === 'loading'"
+          @click="openCreateModal"
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-hidden="true">
+            <path d="M12 5v14M5 12h14"/>
+          </svg>
+          {{ t('projects.newProject') }}
+        </button>
+      </div>
     </header>
 
     <!-- ─── Load error banner ────────────────────────────────────────────── -->
@@ -1686,6 +1695,12 @@ const STATUS_CONFIG: Record<RunStatus, StatusConfig> = {
       </div>
     </div>
   </Teleport>
+  <ContainerAiPanel
+    v-if="showAi"
+    dimension="project"
+    context="projects"
+    @close="showAi = false"
+  />
 </template>
 
 <style scoped>
@@ -1701,6 +1716,13 @@ const STATUS_CONFIG: Record<RunStatus, StatusConfig> = {
   display: flex;
   align-items: flex-start;
   gap: 16px;
+}
+
+.page-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
 }
 
 .page-header-text {

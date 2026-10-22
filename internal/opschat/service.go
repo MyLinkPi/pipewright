@@ -28,6 +28,7 @@ type Service struct {
 	vault       vault.Vault
 	executor    target.LimitedExecutor
 	model       Model
+	projects    ProjectBackend
 	audit       audit.Recorder
 	masker      *mask.Masker
 	instance    string
@@ -65,7 +66,7 @@ func New(o Options) (*Service, error) {
 		o.Masker = mask.NewMasker()
 	}
 	runtime := o.Runtime.withDefaults()
-	s := &Service{db: o.DB, vault: o.Vault, executor: o.Executor, model: o.Model, audit: o.LocalRecorder, masker: o.Masker, instance: uuid.NewString(), runtime: runtime, contextSrc: o.Context, jobs: map[string]*job{}, wake: map[string]map[chan struct{}]bool{}, slots: make(chan struct{}, runtime.SSHSlots), serverSlots: map[string]chan struct{}{}, compactFails: map[string]int{}}
+	s := &Service{db: o.DB, vault: o.Vault, executor: o.Executor, model: o.Model, projects: o.Projects, audit: o.LocalRecorder, masker: o.Masker, instance: uuid.NewString(), runtime: runtime, contextSrc: o.Context, jobs: map[string]*job{}, wake: map[string]map[chan struct{}]bool{}, slots: make(chan struct{}, runtime.SSHSlots), serverSlots: map[string]chan struct{}{}, compactFails: map[string]int{}}
 	check, err := s.seal("pipewright.opschat.keycheck.v1")
 	if err != nil {
 		return nil, err
@@ -136,6 +137,14 @@ func validTargets(ids []string) bool {
 	}
 	return true
 }
+// validTargetsFor 按维度校验目标机集合:机器维度 ≤ Targets(8);项目维度
+// target_0 固定留给项目,目标机别名 target_1..7,故 ≤ Targets-1。
+func validTargetsFor(scope string, ids []string) bool {
+	if !validTargets(ids) {
+		return false
+	}
+	return scope != ScopeProject || len(ids) < resourceLimits.Targets
+}
 func (s *Service) Create(ctx context.Context, in CreateInput) (*Session, error) {
 	if err := s.ready(); err != nil {
 		return nil, err
@@ -143,7 +152,19 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (*Session, error) 
 	if err := s.validateContext(ctx, in.Context); err != nil {
 		return nil, err
 	}
-	if !validTargets(in.ServerIDs) || !utf8.ValidString(in.Title) || utf8.RuneCountInString(in.Title) > 80 {
+	if in.Scope != ScopeServer && in.Scope != ScopeProject {
+		return nil, ErrInvalid
+	}
+	if in.Scope == ScopeProject {
+		// 项目维度:后端必须注入,项目必须存在且可解析。
+		if s.projects == nil || !validID(in.ProjectID) {
+			return nil, ErrInvalid
+		}
+		if _, err := s.projects.Snapshot(ctx, in.ProjectID); err != nil {
+			return nil, ErrInvalid
+		}
+	}
+	if !validTargetsFor(in.Scope, in.ServerIDs) || !utf8.ValidString(in.Title) || utf8.RuneCountInString(in.Title) > 80 {
 		return nil, ErrInvalid
 	}
 	if err := s.registerSecrets(); err != nil {
@@ -154,7 +175,7 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (*Session, error) 
 	if title == "" {
 		title = "New session"
 	}
-	body := sessionBody{Title: title, ServerIDs: append([]string{}, in.ServerIDs...), Named: named}
+	body := sessionBody{Title: title, ServerIDs: append([]string{}, in.ServerIDs...), Named: named, Scope: in.Scope, ProjectID: in.ProjectID}
 	sealed, err := s.seal(body)
 	if err != nil {
 		return nil, err
@@ -208,13 +229,27 @@ func (s *Service) Patch(ctx context.Context, id string, in PatchInput) (*Session
 	if in.Draft != nil && (!utf8.ValidString(*in.Draft) || len(*in.Draft) > 8<<10) {
 		return nil, ErrInvalid
 	}
-	if in.ServerIDs != nil && !validTargets(*in.ServerIDs) {
+	// 预取会话做维度相关校验(项目 Snapshot 走后端自身连接,不得嵌套本包写事务)。
+	current, err := s.Get(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if in.ServerIDs != nil && !validTargetsFor(current.Scope, *in.ServerIDs) {
 		return nil, ErrInvalid
+	}
+	if in.ProjectID != nil {
+		// 切换绑定项目:仅项目维度会话;需后端在线且项目存在(维度本身不可切换)。
+		if current.Scope != ScopeProject || s.projects == nil || !validID(*in.ProjectID) {
+			return nil, ErrInvalid
+		}
+		if _, e := s.projects.Snapshot(ctx, *in.ProjectID); e != nil {
+			return nil, ErrInvalid
+		}
 	}
 	if err := s.registerSecrets(); err != nil {
 		return nil, err
 	}
-	err := s.transaction(ctx, true, func(tx *sql.Tx) error {
+	err = s.transaction(ctx, true, func(tx *sql.Tx) error {
 		r, e := s.session(ctx, tx, id)
 		if e != nil {
 			return e
@@ -222,7 +257,7 @@ func (s *Service) Patch(ctx context.Context, id string, in PatchInput) (*Session
 		if r.View.Revision != in.Revision {
 			return ErrConflict
 		}
-		if in.ServerIDs != nil && r.View.ActiveRunID != "" {
+		if r.View.ActiveRunID != "" && (in.ServerIDs != nil || in.ProjectID != nil) {
 			return ErrConflict
 		}
 		if in.Title != nil {
@@ -234,6 +269,9 @@ func (s *Service) Patch(ctx context.Context, id string, in PatchInput) (*Session
 		}
 		if in.ServerIDs != nil {
 			r.Body.ServerIDs = append([]string{}, (*in.ServerIDs)...)
+		}
+		if in.ProjectID != nil {
+			r.Body.ProjectID = *in.ProjectID
 		}
 		r.View.Revision++
 		if e = s.saveSession(ctx, tx, r); e != nil {
@@ -293,7 +331,19 @@ func (s *Service) Submit(ctx context.Context, id string, in TurnInput) (*Run, er
 	if chat.Revision != in.Revision {
 		return nil, ErrConflict
 	}
-	if len(chat.ServerIDs) == 0 {
+	// 项目维度:提交时冻结项目快照(必须存在);可以不关联机器(仅项目工具)。
+	// 机器维度:目标机必选(Agent 循环需要执行目标)。
+	var project *ProjectSnapshot
+	if chat.Scope == ScopeProject {
+		if s.projects == nil || !validID(chat.ProjectID) {
+			return nil, ErrInvalid
+		}
+		snap, e := s.projects.Snapshot(ctx, chat.ProjectID)
+		if e != nil {
+			return nil, ErrConflict
+		}
+		project = &snap
+	} else if len(chat.ServerIDs) == 0 {
 		return nil, ErrInvalid
 	}
 	snapshots := []target.ConnectionSnapshot{}
@@ -318,7 +368,7 @@ func (s *Service) Submit(ctx context.Context, id string, in TurnInput) (*Run, er
 	if !in.AnalyzeResults {
 		provider = s.model.Info()
 	}
-	return s.enqueue(ctx, id, in.ClientRequestID, hash, runBody{Turn: in, Targets: snapshots, Provider: provider, AnalysisAuthorized: in.AnalyzeResults, Question: in.Text}, in.Revision)
+	return s.enqueue(ctx, id, in.ClientRequestID, hash, runBody{Turn: in, Targets: snapshots, Project: project, Provider: provider, AnalysisAuthorized: in.AnalyzeResults, Question: in.Text}, in.Revision)
 }
 func (s *Service) enqueue(ctx context.Context, id, request, hash string, body runBody, revision int64) (*Run, error) {
 	for _, snap := range body.Targets {

@@ -316,38 +316,17 @@ func wrapUpPrompt(question string) string {
 }
 
 // ─── 工具 schema 注入 ─────────────────────────────────────────────────────────
+//
+// 工具描述与参数说明随 opschat.Tool 目录携带(Description/Notes);适配层只负责
+// 注入 target 枚举(Targeted 工具)与变更工具的 purpose/reason(必填)。
 
-var agentToolDescriptions = map[string]string{
-	"host_resources":    "Disk usage (df), memory (free) and uptime of the target host. Takes no arguments besides target.",
-	"host_processes":    "Processes with PID, command, CPU% and memory% sorted by CPU. Takes no arguments besides target.",
-	"host_ports":        "Listening TCP/UDP sockets of the target host (ss -lntu). Takes no arguments besides target.",
-	"docker_containers": "List all containers (including stopped) with ID, names, image, state and ports. Call this first to resolve exact container names and IDs.",
-	"docker_stats":      "One-shot CPU, memory, network and block I/O metrics per container. Takes no arguments besides target.",
-	"docker_images":     "List images with repository, tag and size. Takes no arguments besides target.",
-	"docker_inspect":    "Inspect one container: state, ports, mounts. container must be the exact name or ID reported by docker_containers.",
-	"docker_logs":       "Tail a container's logs with timestamps. container must be the exact name or ID reported by docker_containers; lines is 1-1000, default 200.",
-	"systemd_status":    "Show a systemd unit's active/load state and main PID. unit must be the exact unit name.",
-	"systemd_logs":      "Tail a systemd unit's journal. unit must be the exact unit name; lines is 1-1000, default 200.",
-	"docker_action":     "start/stop/restart/pause/unpause a container. Requires confirmation; must carry a concrete purpose and reason.",
-	"docker_exec":       "Run a command inside a container with literal argv tokens (no shell). container may be the exact name or the 64-hex ID from docker_containers; names are resolved and pinned to the container ID at execution time. Simple read-only commands whose argv matches the allowlist in the argv note run without confirmation; anything else requires confirmation and must carry a concrete purpose and reason.",
-	"systemd_action":    "start/stop/restart a systemd unit. unit must be the exact unit name. Requires confirmation; must carry a concrete purpose and reason.",
-	"host_exec":         "Run a command on the host itself with literal argv tokens (no shell). Simple read-only commands whose argv matches the allowlist in the argv note run without confirmation; anything else requires confirmation and must carry a concrete purpose and reason.",
-}
+// mutationNotePrefixes: purpose/reason 注入说明(变更工具必填项的语义)。
+const mutationPurposeNote = "What this operation is meant to achieve for the user; required for mutating tools, up to 512 characters."
+const mutationReasonNote = "Why this is warranted now, citing observed evidence; required for mutating tools, up to 512 characters."
 
-// agentPropertyNotes 为参数补充自然语言说明:schema 里的类型/枚举约束
-// 表达不了语义(如 container 必须来自列表工具、docker_exec 只收容器 ID)。
-var agentPropertyNotes = map[string]string{
-	"container": "Exact container name or ID as reported by docker_containers. For docker_exec, a name is resolved to the container ID at execution time, so the command always runs on the container that was listed.",
-	"unit":      "Exact systemd unit name (e.g. nginx.service).",
-	"lines":     "Number of trailing log lines to return, 1-1000, default 200.",
-	"action":    "Operation to apply to the container or unit.",
-	"argv":      "Literal argv tokens, executed without a shell. argv[0] is the program path (no shell metacharacters); at most 61 tokens and 4096 bytes total, no control characters. Auto-approved without confirmation ONLY when all of the following hold: argv[0] is a bare name without any slash and comes from this read-only allowlist (cat, date, du, df, echo, file, findmnt, free, grep, head, id, ls, lscpu, lsblk, lsof, md5sum, nproc, ps, readlink, realpath, sha256sum, ss, stat, tail, uname, uptime, vmstat, w, wc, who, whoami), there are at most 16 tokens, and every token uses only plain characters (letters, digits, / . , : = + % @ * ? _ -). Anything else — absolute paths, shells or interpreters, wrappers like env/timeout/xargs, quotes, spaces, ; | & $ or any other metacharacter, command concatenation — falls back to manual confirmation.",
-	"purpose":   "What this operation is meant to achieve for the user; required for mutating tools, up to 512 characters.",
-	"reason":    "Why this is warranted now, citing observed evidence; required for mutating tools, up to 512 characters.",
-}
-
-// agentSchema 注入 target(必填枚举);变更工具再注入 purpose/reason(必填)。
-func agentSchema(t opschat.Tool, targets []string, mut bool) map[string]any {
+// agentSchema 为 Targeted 工具注入 target(必填枚举,说明文案按维度来自
+// req.TargetNote);变更工具再注入 purpose/reason(必填)。
+func agentSchema(t opschat.Tool, req opschat.AgentRequest) map[string]any {
 	var schema struct {
 		Type       string         `json:"type"`
 		Properties map[string]any `json:"properties"`
@@ -358,7 +337,7 @@ func agentSchema(t opschat.Tool, targets []string, mut bool) map[string]any {
 		schema.Properties = map[string]any{}
 	}
 	for name, prop := range schema.Properties {
-		if note, ok := agentPropertyNotes[name]; ok {
+		if note, ok := t.Notes[name]; ok {
 			if m, ok := prop.(map[string]any); ok {
 				if _, exists := m["description"]; !exists {
 					m["description"] = note
@@ -366,22 +345,27 @@ func agentSchema(t opschat.Tool, targets []string, mut bool) map[string]any {
 			}
 		}
 	}
-	schema.Properties["target"] = map[string]any{
-		"type":        "string",
-		"enum":        targets,
-		"description": fmt.Sprintf("Alias of the server this call runs on. Every tool call MUST set target to one of the enum values (%s is the first selected server); omitting it is an error.", strings.Join(targets, ", ")),
+	if t.Targeted {
+		note := "Alias of the server this call runs on. Every tool call MUST set target to one of the enum values (%s is the first selected server); omitting it is an error."
+		if req.TargetNote != "" {
+			note = req.TargetNote
+		}
+		if len(req.Targets) > 0 && strings.Contains(note, "%s") {
+			note = fmt.Sprintf(note, req.Targets[0])
+		}
+		schema.Properties["target"] = map[string]any{
+			"type":        "string",
+			"enum":        req.Targets,
+			"description": note,
+		}
+		schema.Required = append(schema.Required, "target")
 	}
-	schema.Required = append(schema.Required, "target")
-	if mut {
-		schema.Properties["purpose"] = map[string]any{"type": "string", "maxLength": 512, "description": agentPropertyNotes["purpose"]}
-		schema.Properties["reason"] = map[string]any{"type": "string", "maxLength": 512, "description": agentPropertyNotes["reason"]}
+	if t.Mutation {
+		schema.Properties["purpose"] = map[string]any{"type": "string", "maxLength": 512, "description": mutationPurposeNote}
+		schema.Properties["reason"] = map[string]any{"type": "string", "maxLength": 512, "description": mutationReasonNote}
 		schema.Required = append(schema.Required, "purpose", "reason")
 	}
 	return map[string]any{"type": schema.Type, "properties": schema.Properties, "required": schema.Required, "additionalProperties": false}
-}
-
-func toolMutates(id string) bool {
-	return id == "docker_action" || id == "systemd_action" || id == "docker_exec" || id == "host_exec"
 }
 
 func openaiAgentTools(req opschat.AgentRequest) []map[string]any {
@@ -391,8 +375,8 @@ func openaiAgentTools(req opschat.AgentRequest) []map[string]any {
 			"type": "function",
 			"function": map[string]any{
 				"name":        t.ID,
-				"description": agentToolDescriptions[t.ID],
-				"parameters":  agentSchema(t, req.Targets, toolMutates(t.ID)),
+				"description": t.Description,
+				"parameters":  agentSchema(t, req),
 			},
 		})
 	}
@@ -404,8 +388,8 @@ func claudeAgentTools(req opschat.AgentRequest) []map[string]any {
 	for _, t := range req.Tools {
 		out = append(out, map[string]any{
 			"name":         t.ID,
-			"description":  agentToolDescriptions[t.ID],
-			"input_schema": agentSchema(t, req.Targets, toolMutates(t.ID)),
+			"description":  t.Description,
+			"input_schema": agentSchema(t, req),
 		})
 	}
 	return out

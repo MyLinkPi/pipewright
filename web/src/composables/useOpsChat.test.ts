@@ -791,7 +791,7 @@ describe('local ops lifecycle and concurrency', () => {
     await open(['b'])
     expect(chat.session.value?.serverIds).toEqual(['a'])
     await chat.create()
-    expect(opsApi.create).toHaveBeenCalledWith(['b'], '')
+    expect(opsApi.create).toHaveBeenCalledWith(['b'], '', '', '')
     expect(chat.session.value?.serverIds).toEqual(['b'])
   })
   it('saves at 500ms and awaits the final dirty draft before close without canceling', async () => {

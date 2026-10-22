@@ -15,35 +15,79 @@ type Tool struct {
 	ID       string          `json:"toolId"`
 	Mutation bool            `json:"mutation"`
 	Schema   json.RawMessage `json:"schema"`
+	// Description 是发给模型的工具说明(随目录携带;适配层不得再按 ID 硬编码)。
+	Description string `json:"description,omitempty"`
+	// Notes 为参数补充自然语言说明(schema 约束表达不了的语义)。
+	Notes map[string]string `json:"notes,omitempty"`
+	// Targeted 表示工具作用于目标机(需要 target 参数);项目工具隐含作用
+	// 于会话绑定的项目,不带 target。
+	Targeted bool `json:"targeted"`
+}
+
+func toolNoteContainer() string {
+	return "Exact container name or ID as reported by docker_containers. For docker_exec, a name is resolved to the container ID at execution time, so the command always runs on the container that was listed."
 }
 
 var tools = []Tool{
-	{"host_resources", false, json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false}`)},
-	{"host_processes", false, json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false}`)},
-	{"host_ports", false, json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false}`)},
-	{"docker_containers", false, json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false}`)},
-	{"docker_stats", false, json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false}`)},
-	{"docker_images", false, json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false}`)},
-	{"docker_inspect", false, json.RawMessage(`{"type":"object","properties":{"container":{"type":"string","maxLength":256}},"required":["container"],"additionalProperties":false}`)},
-	{"docker_logs", false, json.RawMessage(`{"type":"object","properties":{"container":{"type":"string","maxLength":256},"lines":{"type":"integer","minimum":1,"maximum":1000,"default":200}},"required":["container"],"additionalProperties":false}`)},
-	{"systemd_status", false, json.RawMessage(`{"type":"object","properties":{"unit":{"type":"string","maxLength":256}},"required":["unit"],"additionalProperties":false}`)},
-	{"systemd_logs", false, json.RawMessage(`{"type":"object","properties":{"unit":{"type":"string","maxLength":256},"lines":{"type":"integer","minimum":1,"maximum":1000,"default":200}},"required":["unit"],"additionalProperties":false}`)},
-	{"docker_action", true, json.RawMessage(`{"type":"object","properties":{"container":{"type":"string","maxLength":256},"action":{"type":"string","enum":["start","stop","restart","pause","unpause"]}},"required":["container","action"],"additionalProperties":false}`)},
-	{"host_exec", true, json.RawMessage(`{"type":"object","properties":{"argv":{"type":"array","minItems":1,"maxItems":61,"items":{"type":"string","maxLength":2048}}},"required":["argv"],"additionalProperties":false}`)},
-	{"docker_exec", true, json.RawMessage(`{"type":"object","properties":{"container":{"type":"string","maxLength":256},"argv":{"type":"array","minItems":1,"maxItems":61,"items":{"type":"string","maxLength":2048}}},"required":["container","argv"],"additionalProperties":false}`)},
-	{"systemd_action", true, json.RawMessage(`{"type":"object","properties":{"unit":{"type":"string","maxLength":256},"action":{"type":"string","enum":["start","stop","restart"]}},"required":["unit","action"],"additionalProperties":false}`)},
+	{"host_resources", false, json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false}`), "Disk usage (df), memory (free) and uptime of the target host. Takes no arguments besides target.", nil, true},
+	{"host_processes", false, json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false}`), "Processes with PID, command, CPU% and memory% sorted by CPU. Takes no arguments besides target.", nil, true},
+	{"host_ports", false, json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false}`), "Listening TCP/UDP sockets of the target host (ss -lntu). Takes no arguments besides target.", nil, true},
+	{"docker_containers", false, json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false}`), "List all containers (including stopped) with ID, names, image, state and ports. Call this first to resolve exact container names and IDs.", nil, true},
+	{"docker_stats", false, json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false}`), "One-shot CPU, memory, network and block I/O metrics per container. Takes no arguments besides target.", nil, true},
+	{"docker_images", false, json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false}`), "List images with repository, tag and size. Takes no arguments besides target.", nil, true},
+	{"docker_inspect", false, json.RawMessage(`{"type":"object","properties":{"container":{"type":"string","maxLength":256}},"required":["container"],"additionalProperties":false}`), "Inspect one container: state, ports, mounts. container must be the exact name or ID reported by docker_containers.", map[string]string{"container": toolNoteContainer()}, true},
+	{"docker_logs", false, json.RawMessage(`{"type":"object","properties":{"container":{"type":"string","maxLength":256},"lines":{"type":"integer","minimum":1,"maximum":1000,"default":200}},"required":["container"],"additionalProperties":false}`), "Tail a container's logs with timestamps. container must be the exact name or ID reported by docker_containers; lines is 1-1000, default 200.", map[string]string{"container": toolNoteContainer(), "lines": "Number of trailing log lines to return, 1-1000, default 200."}, true},
+	{"systemd_status", false, json.RawMessage(`{"type":"object","properties":{"unit":{"type":"string","maxLength":256}},"required":["unit"],"additionalProperties":false}`), "Show a systemd unit's active/load state and main PID. unit must be the exact unit name.", map[string]string{"unit": "Exact systemd unit name (e.g. nginx.service)."}, true},
+	{"systemd_logs", false, json.RawMessage(`{"type":"object","properties":{"unit":{"type":"string","maxLength":256},"lines":{"type":"integer","minimum":1,"maximum":1000,"default":200}},"required":["unit"],"additionalProperties":false}`), "Tail a systemd unit's journal. unit must be the exact unit name; lines is 1-1000, default 200.", map[string]string{"unit": "Exact systemd unit name (e.g. nginx.service).", "lines": "Number of trailing log lines to return, 1-1000, default 200."}, true},
+	{"docker_action", true, json.RawMessage(`{"type":"object","properties":{"container":{"type":"string","maxLength":256},"action":{"type":"string","enum":["start","stop","restart","pause","unpause"]}},"required":["container","action"],"additionalProperties":false}`), "start/stop/restart/pause/unpause a container. Requires confirmation; must carry a concrete purpose and reason.", map[string]string{"container": toolNoteContainer(), "action": "Operation to apply to the container or unit."}, true},
+	{"host_exec", true, json.RawMessage(`{"type":"object","properties":{"argv":{"type":"array","minItems":1,"maxItems":61,"items":{"type":"string","maxLength":2048}}},"required":["argv"],"additionalProperties":false}`), "Run a command on the host itself with literal argv tokens (no shell). Simple read-only commands whose argv matches the allowlist in the argv note run without confirmation; anything else requires confirmation and must carry a concrete purpose and reason.", map[string]string{"argv": "Literal argv tokens, executed without a shell. argv[0] is the program path (no shell metacharacters); at most 61 tokens and 4096 bytes total, no control characters. Auto-approved without confirmation ONLY when all of the following hold: argv[0] is a bare name without any slash and comes from this read-only allowlist (cat, date, du, df, echo, file, findmnt, free, grep, head, id, ls, lscpu, lsblk, lsof, md5sum, nproc, ps, readlink, realpath, sha256sum, ss, stat, tail, uname, uptime, vmstat, w, wc, who, whoami), there are at most 16 tokens, and every token uses only plain characters (letters, digits, / . , : = + % @ * ? _ -). Anything else — absolute paths, shells or interpreters, wrappers like env/timeout/xargs, quotes, spaces, ; | & $ or any other metacharacter, command concatenation — falls back to manual confirmation."}, true},
+	{"docker_exec", true, json.RawMessage(`{"type":"object","properties":{"container":{"type":"string","maxLength":256},"argv":{"type":"array","minItems":1,"maxItems":61,"items":{"type":"string","maxLength":2048}}},"required":["container","argv"],"additionalProperties":false}`), "Run a command inside a container with literal argv tokens (no shell). container may be the exact name or the 64-hex ID from docker_containers; names are resolved and pinned to the container ID at execution time. Simple read-only commands whose argv matches the allowlist in the argv note run without confirmation; anything else requires confirmation and must carry a concrete purpose and reason.", map[string]string{"container": toolNoteContainer(), "argv": "Literal argv tokens, executed without a shell. argv[0] is the program path (no shell metacharacters); at most 61 tokens and 4096 bytes total, no control characters. Auto-approved without confirmation ONLY when all of the following hold: argv[0] is a bare name without any slash and comes from this read-only allowlist (cat, date, du, df, echo, file, findmnt, free, grep, head, id, ls, lscpu, lsblk, lsof, md5sum, nproc, ps, readlink, realpath, sha256sum, ss, stat, tail, uname, uptime, vmstat, w, wc, who, whoami), there are at most 16 tokens, and every token uses only plain characters (letters, digits, / . , : = + % @ * ? _ -). Anything else — absolute paths, shells or interpreters, wrappers like env/timeout/xargs, quotes, spaces, ; | & $ or any other metacharacter, command concatenation — falls back to manual confirmation."}, true},
+	{"systemd_action", true, json.RawMessage(`{"type":"object","properties":{"unit":{"type":"string","maxLength":256},"action":{"type":"string","enum":["start","stop","restart"]}},"required":["unit","action"],"additionalProperties":false}`), "start/stop/restart a systemd unit. unit must be the exact unit name. Requires confirmation; must carry a concrete purpose and reason.", map[string]string{"unit": "Exact systemd unit name (e.g. nginx.service).", "action": "Operation to apply to the container or unit."}, true},
 }
 
-func Tools() []Tool {
-	out := make([]Tool, len(tools))
-	copy(out, tools)
+func cloneTools(in []Tool) []Tool {
+	out := make([]Tool, len(in))
+	copy(out, in)
 	for i := range out {
 		out[i].Schema = append(json.RawMessage(nil), out[i].Schema...)
+		notes := map[string]string{}
+		for k, v := range in[i].Notes {
+			notes[k] = v
+		}
+		out[i].Notes = notes
+	}
+	return out
+}
+
+// Tools 返回指定维度的工具目录:机器维度(默认)只有机器工具;项目维度 =
+// 项目工具 + 机器工具(目录层总是全集,单轮目录在 planner 按目标可用性过滤)。
+func Tools(scope string) []Tool {
+	out := cloneTools(tools)
+	if scope == ScopeProject {
+		out = append(projectTools(), out...)
+	}
+	return out
+}
+
+// toolsForRun 按运行目标组装单轮模型目录:项目维度未关联机器时剔除机器工具。
+func toolsForRun(r runRecord) []Tool {
+	if r.Body.Project == nil {
+		return Tools(ScopeServer)
+	}
+	out := projectTools()
+	if len(r.Body.Targets) > 0 {
+		out = append(out, cloneTools(tools)...)
 	}
 	return out
 }
 func mutation(id string) bool {
 	return id == "docker_action" || id == "systemd_action" || id == "docker_exec" || id == "host_exec"
+}
+
+// mutatesTool 是跨维度的变更判定(机器变更 + 项目变更);needsApproval、
+// 校验与确认屏障统一走它,机器专属路径(verifyMutation 等)仍用 mutation。
+func mutatesTool(id string) bool {
+	return mutation(id) || projectMutation(id)
 }
 
 // readOnlyPrograms 是可免确认自动放行的只读命令集合(按裸命令名匹配)。
@@ -104,7 +148,7 @@ func readOnlyExecArgv(argv []string) bool {
 // docker_exec 的 argv 命中只读白名单时免确认,其余(含一切非 exec 变更)
 // 照旧走确认卡。判定只依赖入库的 Args,各门控点重算保持一致。
 func needsApproval(v Call) bool {
-	if !mutation(v.ToolID) {
+	if !mutatesTool(v.ToolID) {
 		return false
 	}
 	if (v.ToolID == "host_exec" || v.ToolID == "docker_exec") && readOnlyExecArgv(v.Args.Argv) {

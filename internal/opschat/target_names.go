@@ -27,6 +27,18 @@ func (s *Service) entryTargetNames(ctx context.Context, q querier, session strin
 		if len(r.Body.Targets) > 8 {
 			return nil, nil
 		}
+		// 项目维度:target_0=项目,机器别名后移一位。
+		if r.Body.Project != nil {
+			if r.Body.Project.Name != "" {
+				names["target_0"] = s.scrub(r.Body.Project.Name, 1024)
+			}
+			for i, snap := range r.Body.Targets {
+				if snap.Server.ID != "" && snap.Server.Name != "" {
+					names["target_"+strconv.Itoa(i+1)] = s.scrub(snap.Server.Name, 1024)
+				}
+			}
+			return names, nil
+		}
 		for i, snap := range r.Body.Targets {
 			if snap.Server.ID != "" && snap.Server.Name != "" {
 				names["target_"+strconv.Itoa(i)] = s.scrub(snap.Server.Name, 1024)

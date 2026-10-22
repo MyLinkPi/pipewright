@@ -29,6 +29,13 @@ var (
 )
 
 const (
+	// ScopeServer 是机器维度(默认;历史会话密封体零值即它)。
+	ScopeServer = ""
+	// ScopeProject 是项目维度:会话绑定一个项目,可选关联目标机。
+	ScopeProject = "project"
+)
+
+const (
 	Queued                  = "queued"
 	Planning                = "planning"
 	Running                 = "running"
@@ -182,6 +189,8 @@ type Options struct {
 	Vault    vault.Vault
 	Executor target.LimitedExecutor
 	Model    Model
+	// Projects 是项目维度工具的后端;nil 表示项目维度未配置(创建项目会话报不可用)。
+	Projects ProjectBackend
 	// LocalRecorder must be audit.New(db, masker, nil), never the shared remote-sink recorder.
 	LocalRecorder audit.Recorder
 	Masker        *mask.Masker
@@ -192,13 +201,17 @@ type Options struct {
 	Context func() ContextPolicy
 }
 type Session struct {
-	ID          string   `json:"id"`
-	Revision    int64    `json:"revision"`
-	Title       string   `json:"title"`
-	Draft       string   `json:"draft"`
-	ServerIDs   []string `json:"serverIds"`
-	ActiveRunID string   `json:"activeRunId"`
-	Watermark   int64    `json:"watermark"`
+	ID        string `json:"id"`
+	Revision  int64  `json:"revision"`
+	Title     string `json:"title"`
+	Draft     string `json:"draft"`
+	ServerIDs []string `json:"serverIds"`
+	// Scope 是会话维度:""=机器(默认)/"project"=项目;项目会话必选关联机器可用机器工具。
+	Scope string `json:"scope,omitempty"`
+	// ProjectID 是项目维度会话绑定的项目;机器维度为空。
+	ProjectID    string `json:"projectId,omitempty"`
+	ActiveRunID  string `json:"activeRunId"`
+	Watermark    int64  `json:"watermark"`
 	// StorageBytes is the tracked visible-entry byte counter, an approximation
 	// of the session storage quota basis; use it only for near-quota hints.
 	StorageBytes int64 `json:"storageBytes"`
@@ -212,6 +225,8 @@ type CreateInput struct {
 	Context   string   `json:"context,omitempty"`
 	Title     string   `json:"title"`
 	ServerIDs []string `json:"serverIds"`
+	Scope     string   `json:"scope,omitempty"`
+	ProjectID string   `json:"projectId,omitempty"`
 }
 type ActivateInput struct {
 	Context string `json:"context,omitempty"`
@@ -221,6 +236,8 @@ type PatchInput struct {
 	Title     *string   `json:"title,omitempty"`
 	Draft     *string   `json:"draft,omitempty"`
 	ServerIDs *[]string `json:"serverIds,omitempty"`
+	// ProjectID 仅项目维度会话有效:切换绑定的项目。
+	ProjectID *string `json:"projectId,omitempty"`
 }
 type TurnInput struct {
 	AnalyzeResults  bool         `json:"analyzeResults,omitempty"`
@@ -249,6 +266,15 @@ type ToolArgs struct {
 	Unit      string   `json:"unit,omitempty"`
 	Lines     int      `json:"lines,omitempty"`
 	Action    string   `json:"action,omitempty"`
+	// 项目维度工具参数。
+	Path        string            `json:"path,omitempty"`
+	Ref         string            `json:"ref,omitempty"`
+	Branch      string            `json:"branch,omitempty"`
+	RunID       string            `json:"runId,omitempty"`
+	StepOrdinal *int              `json:"stepOrdinal,omitempty"`
+	Status      string            `json:"status,omitempty"`
+	Limit       int               `json:"limit,omitempty"`
+	Params      map[string]string `json:"params,omitempty"`
 }
 type Action struct {
 	ToolID        string          `json:"toolId"`
@@ -265,6 +291,9 @@ type AgentRequest struct {
 	System           string          `json:"system"`
 	History          []Message       `json:"messages"`
 	Targets          []string        `json:"targets"`
+	// TargetNote 是 target 枚举属性的自然语言说明(按维度生成:机器=服务器,
+	// 项目=关联服务器且 target_0 是项目本身、对机器工具不可用)。
+	TargetNote       string          `json:"targetNote,omitempty"`
 	Tools            []Tool          `json:"tools"` // 收尾轮为空
 	Rounds           []AgentExchange `json:"rounds,omitempty"`
 	MaxResponseBytes int             `json:"maxResponseBytes"`
@@ -348,6 +377,55 @@ type Model interface {
 	Info() ProviderInfo
 	AgentRound(context.Context, AgentRequest) (AgentReply, error)
 	Analyze(context.Context, AnalysisRequest) (string, error)
+}
+
+// ProjectSnapshot 是项目维度会话提交轮次时冻结的项目目标快照:存在性校验 +
+// 指纹闸门(运行中项目被改配置时拒绝再派发,与机器指纹同语义)。
+type ProjectSnapshot struct {
+	ID            string    `json:"id"`
+	Name          string    `json:"name"`
+	RepoURL       string    `json:"repoUrl"`
+	DefaultBranch string    `json:"defaultBranch"`
+	PacEnabled    bool      `json:"pacEnabled"`
+	UpdatedAt     time.Time `json:"updatedAt"`
+}
+
+// Fingerprint 摘要项目关键字段(摘要字段即派发闸门判定依据,不含时间戳)。
+func (p ProjectSnapshot) Fingerprint() string {
+	return digest(struct {
+		ID, Name, RepoURL, DefaultBranch string
+		PacEnabled                       bool
+	}{p.ID, p.Name, p.RepoURL, p.DefaultBranch, p.PacEnabled})
+}
+
+// ProjectBackend 是项目维度工具的端口:装配层注入实现(opschat 不 import
+// project/pipeline/run 适配包)。除 Snapshot 外各方法返回有界 JSON 文本,
+// worker 仍会按会话读预算二次裁剪并掩码。
+type ProjectBackend interface {
+	// Snapshot 校验项目存在并返回当前快照(创建会话/提交轮次/再派发闸门用)。
+	Snapshot(ctx context.Context, projectID string) (ProjectSnapshot, error)
+	// Info 返回项目基本信息(名称/仓库/默认分支/pac 等,有界 JSON)。
+	Info(ctx context.Context, projectID string) (string, error)
+	// CodeTree 列仓库目录直接子项;ref 空取默认分支,path 空 取仓库根。
+	CodeTree(ctx context.Context, projectID, ref, path string) (string, error)
+	// CodeRead 读仓库文本文件(自文件头起,行数钳制;二进制检测)。
+	CodeRead(ctx context.Context, projectID, ref, path string, lines int) (string, error)
+	// PipelineConfig 返回平台库存的流水线配置(YAML+阶段摘要+状态)。
+	PipelineConfig(ctx context.Context, projectID string) (string, error)
+	// RepoConfig 返回仓库分支上的 .pipewright.yml(pac 语义,含回退原因)。
+	RepoConfig(ctx context.Context, projectID, branch string) (string, error)
+	// Runs 列项目近期运行(status 空为全部;limit 已由工具参数钳制)。
+	Runs(ctx context.Context, projectID, status string, limit int) (string, error)
+	// RunDetail 返回单个运行详情(节点状态/spec 来源/失败日志)。JSON 必须含
+	// status 字段(变更效果校验依赖此契约)。
+	RunDetail(ctx context.Context, runID string) (string, error)
+	// RunLogs 返回运行(或 stepOrdinal 指定节点,-1 为运行级)日志尾部。
+	RunLogs(ctx context.Context, runID string, stepOrdinal, lines int) (string, error)
+	// TriggerRun 手动触发一次运行,返回新 run 概要(变更;经确认卡放行后调用)。
+	// JSON 必须含 runId 字段(变更效果校验依赖此契约)。
+	TriggerRun(ctx context.Context, projectID, branch string, params map[string]string) (string, error)
+	// CancelRun 取消一次运行,返回取消后的 run 概要(变更;经确认卡放行后调用)。
+	CancelRun(ctx context.Context, runID string) (string, error)
 }
 
 // Compacter is an optional model capability: generate a compaction summary of
@@ -501,6 +579,8 @@ type sessionBody struct {
 	Draft     string
 	ServerIDs []string
 	Named     bool
+	Scope     string
+	ProjectID string
 }
 type runBody struct {
 	Provider           ProviderInfo
@@ -513,11 +593,13 @@ type runBody struct {
 	RetryCallIDs       []string
 	Turn               TurnInput
 	Targets            []target.ConnectionSnapshot
-	Analysis           *AnalysisPreview
-	ActiveMillis       int64
-	Rounds             int // 已用轮次(persist-before-model 递增)
-	RoundBudget        int // 已授予轮次(0 → 启动时取 runtime.MaxAgentRounds;继续 +20)
-	OutputBytes        int
+	// Project 是项目维度会话提交时冻结的项目快照(机器维度为 nil)。
+	Project  *ProjectSnapshot
+	Analysis *AnalysisPreview
+	ActiveMillis   int64
+	Rounds         int // 已用轮次(persist-before-model 递增)
+	RoundBudget    int // 已授予轮次(0 → 启动时取 runtime.MaxAgentRounds;继续 +20)
+	OutputBytes    int
 }
 type callBody struct {
 	ReadBytes     int

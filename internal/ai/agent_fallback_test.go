@@ -34,7 +34,7 @@ func TestAgentRoundRejectsWhenProviderRejectsTools(t *testing.T) {
 		t.Fatal(err)
 	}
 	m := NewOpsModel(svc, mask.NewMasker())
-	req := opschat.AgentRequest{Question: "disk usage", Provider: m.Info(), System: "sys", Tools: opschat.Tools(), Targets: []string{"target_0"}, MaxResponseBytes: 32 << 10}
+	req := opschat.AgentRequest{Question: "disk usage", Provider: m.Info(), System: "sys", Tools: opschat.Tools(opschat.ScopeServer), Targets: []string{"target_0"}, MaxResponseBytes: 32 << 10}
 	reply, err := m.AgentRound(context.Background(), req)
 	if err == nil {
 		t.Fatal("rejection must propagate, got", reply)

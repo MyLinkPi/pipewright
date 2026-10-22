@@ -16,9 +16,26 @@ const emit = defineEmits<{
 }>()
 const { t } = useI18n()
 const expanded=shallowRef(false)
-const retryable = computed(() =>
-  props.call.toolId !== 'docker_exec' &&
-  ['failed', 'partial_failed'].includes(props.call.status),
+// 项目维度工具 ID(与后端 project_tools.go 对齐):无服务器终端可跳转,
+// 也不走机器重试链路(后端拒绝;失败由模型下一轮重取)。
+const projectToolIds = new Set([
+  'project_info',
+  'code_tree',
+  'code_read',
+  'pipeline_config',
+  'repo_pipeline_config',
+  'project_runs',
+  'run_detail',
+  'run_logs',
+  'run_trigger',
+  'run_cancel',
+])
+const projectTool = computed(() => projectToolIds.has(props.call.toolId))
+const retryable = computed(
+  () =>
+    props.call.toolId !== 'docker_exec' &&
+    !projectTool.value &&
+    ['failed', 'partial_failed'].includes(props.call.status),
 )
 const copyable = computed(
   () =>
@@ -146,6 +163,7 @@ const bytes = (n: number): string =>
         <Stars />
       </button>
       <button
+        v-if="!projectTool"
         class="ops-btn ops-icon"
         :title="t('opsChat.terminal')"
         :aria-label="t('opsChat.terminal')"

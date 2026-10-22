@@ -928,7 +928,7 @@ func TestStrictTools(t *testing.T) {
 			t.Fatalf("%s/%s: %v", in.id, in.args, e)
 		}
 	}
-	for _, tool := range Tools() {
+	for _, tool := range Tools(ScopeServer) {
 		raw := "{}"
 		if tool.ID == "docker_exec" {
 			raw = `{"container":"app","argv":["true"]}`
