@@ -3,7 +3,7 @@ package httpapi
 // 已部署实例聚合枚举(GET /api/servers/apps/instances)的契约测试。
 // 直接构造 makeAllAppInstancesHandler(fakes):不触真 SSH / DB,只验证枚举语义 ——
 // find 输出 → 栈名(白名单/去重/排序)、边车解析(损坏跳过)、模板 join(展示名/实例后缀/
-// 模板有更新/模板已删)、旧边车无部署时间不标更新、机器不可达单条诚实告知、PVE 节点排除。
+// 模板有更新/模板已删)、旧边车无部署时间恒标有更新、机器不可达单条诚实告知、PVE 节点排除。
 
 import (
 	"context"
@@ -186,8 +186,8 @@ func TestAllAppInstances(t *testing.T) {
 	}
 }
 
-// TestAllAppInstancesLegacyAndGone 验证:旧边车(无部署时间)不标更新且 deployedAt 为空;
-// 边车模板 ID 已不在模板库 → templateGone。
+// TestAllAppInstancesLegacyAndGone 验证:旧边车(无部署时间)恒标「有更新」且 deployedAt
+// 为空(升一次级即建立基准);边车模板 ID 已不在模板库 → templateGone。
 func TestAllAppInstancesLegacyAndGone(t *testing.T) {
 	now := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
 	gitea := appstore.Template{ID: "tpl-1", Name: "gitea", DisplayName: "Gitea", UpdatedAt: now}
@@ -204,8 +204,8 @@ func TestAllAppInstancesLegacyAndGone(t *testing.T) {
 	if len(items) != 2 {
 		t.Fatalf("items 数量 %d,期望 2: %+v", len(items), items)
 	}
-	if items[0].DeployedAt != "" || items[0].UpgradeAvailable {
-		t.Fatalf("旧边车无部署时间 → deployedAt 空且不标更新: %+v", items[0])
+	if items[0].DeployedAt != "" || !items[0].UpgradeAvailable {
+		t.Fatalf("旧边车无部署时间 → deployedAt 空但恒标有更新(升级一次建立基准): %+v", items[0])
 	}
 	if !items[1].TemplateGone || items[1].TemplateName != "" || items[1].DisplayName != "" {
 		t.Fatalf("模板已删应标 templateGone 且无展示名: %+v", items[1])

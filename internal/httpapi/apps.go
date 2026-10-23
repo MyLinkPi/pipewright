@@ -683,7 +683,7 @@ type appDeploySidecar struct {
 	CPUs       string            `json:"cpus,omitempty"`
 	Memory     string            `json:"memory,omitempty"`
 	// DeployedAt 是本次部署/升级时间(「模板有更新」标记的比较基准)。旧边车无此字段 →
-	// 零值 → 视为未知:不显示更新标记,升级按钮照常可用。
+	// 零值早于一切模板更新时间 → 一律标「有更新」:升一次级即建立基准,之后判定准确。
 	DeployedAt time.Time `json:"deployedAt,omitempty"`
 }
 
@@ -980,7 +980,7 @@ type appInstanceDTO struct {
 	Memory       string `json:"memory,omitempty"`
 	DeployedAt   string `json:"deployedAt,omitempty"`  // RFC3339;旧边车无部署时间 → 空(未知)
 	TemplateGone bool   `json:"templateGone,omitempty"`          // 边车模板 ID 已不在模板库
-	UpgradeAvailable bool `json:"upgradeAvailable,omitempty"`    // 模板 UpdatedAt 晚于边车部署时间
+	UpgradeAvailable bool `json:"upgradeAvailable,omitempty"`    // 模板 UpdatedAt 晚于边车部署时间(旧边车零值时间 → 恒真,升级一次后判定准确)
 }
 
 // makeAllAppInstancesHandler 返回 GET /api/servers/apps/instances(认证,只读;批量聚合):
@@ -1080,8 +1080,9 @@ func collectAppInstances(ctx context.Context, svc target.Service, srv *target.Se
 			if instance, found := strings.CutPrefix(name, tpl.Name+"-"); found {
 				dto.Instance = instance
 			}
-			// 模板在部署之后又改过 = 有可升级内容;旧边车无部署时间 → 未知,不标。
-			if !sc.DeployedAt.IsZero() && tpl.UpdatedAt.After(sc.DeployedAt) {
+			// 模板在部署之后又改过 = 有可升级内容。旧边车无部署时间 → 零值早于一切模板
+			// 更新时间,自然标「有更新」:升一次级即建立基准,之后判定准确。
+			if tpl.UpdatedAt.After(sc.DeployedAt) {
 				dto.UpgradeAvailable = true
 			}
 		} else {
