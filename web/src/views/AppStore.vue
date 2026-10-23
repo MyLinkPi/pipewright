@@ -276,6 +276,10 @@ async function enterUpgradeMode(): Promise<void> {
       vals[p.name] = ctx.params[p.name] ?? (ctx.secrets?.[p.name] ?? '')
     }
     paramValues.value = vals
+    // secret 默认明文:现值已预填在表单里,打码只是视觉障碍;需要遮挡再点「隐藏」。
+    const show: Record<string, boolean> = {}
+    for (const name of Object.keys(ctx.secrets ?? {})) show[name] = true
+    showSecret.value = show
     deployCpus.value = ctx.cpus
     deployMemory.value = ctx.memory
   } catch (err) {
