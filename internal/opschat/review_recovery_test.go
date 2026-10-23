@@ -55,8 +55,7 @@ func TestImmediateCrashRestartWaitsForOldLeaseWithoutReplay(t *testing.T) {
 		}
 	}
 	// Stop heartbeat without Close: retain the old owner's lease, as a crash does.
-	s.stop()
-	<-s.leaseDone
+	s.haltHeartbeat()
 	expires := time.Now().Add(250 * time.Millisecond).UnixMilli()
 	if _, err := db.Exec("UPDATE ops_chat_state SET lease_until=? WHERE id=1", expires); err != nil {
 		t.Fatal(err)
@@ -108,8 +107,7 @@ func TestCrashDuringDispatchRecoversUnknownWithoutReplay(t *testing.T) {
 	<-dispatches
 	// Stop the heartbeat without Close; the blocked worker never converges, as
 	// a crash. Drop the hung job so the fixture's Close does not wait on it.
-	s.stop()
-	<-s.leaseDone
+	s.haltHeartbeat()
 	s.mu.Lock()
 	delete(s.jobs, r.ID)
 	s.mu.Unlock()

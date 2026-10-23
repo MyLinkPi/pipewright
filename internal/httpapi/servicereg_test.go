@@ -397,11 +397,71 @@ func TestAppStoreDeployResourceLimits(t *testing.T) {
 	if len(ft.uploadBodies) == 0 {
 		t.Fatal("应有 compose 上传")
 	}
-	uploaded := ft.uploadBodies[len(ft.uploadBodies)-1]
+	// 部署成功后还会上传参数边车(.appstore-params.json),定位 compose 上传体而非取最后一个。
+	uploaded := ""
+	for _, b := range ft.uploadBodies {
+		if strings.Contains(b, "services:") {
+			uploaded = b
+		}
+	}
+	if uploaded == "" {
+		t.Fatalf("未找到 compose 上传体:%v", ft.uploadBodies)
+	}
 	for _, want := range []string{"limits:", "cpus", "1.0", "memory", "256m"} {
 		if !strings.Contains(uploaded, want) {
 			t.Fatalf("上传的 compose 缺 %q:\n%s", want, uploaded)
 		}
+	}
+}
+
+// TestServiceRegGatewayUpgradeImage:POST /api/servicereg/gateway/upgrade-image ——
+// 未配网关 → 400;配好网关 → 200 + 逐台结果(fake 全 exit 0、stdout 空:容器创建引用
+// 空串 ≠ 期望引用 → 判 changed,走 rm + apply 重建),断言期望镜像已 pull。
+func TestServiceRegGatewayUpgradeImage(t *testing.T) {
+	srv, _, ft := setupServiceRegServer(t)
+	client, csrf := loginSR(t, srv.URL)
+
+	resp := doJSON(t, client, http.MethodPost, srv.URL+"/api/servicereg/gateway/upgrade-image", csrf, `{}`)
+	if resp.StatusCode != http.StatusBadRequest {
+		resp.Body.Close()
+		t.Fatalf("未配网关应 400, got %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	resp = doJSON(t, client, http.MethodPut, srv.URL+"/api/servicereg/settings", csrf, `{"serverId":"srv1"}`)
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		t.Fatalf("配置网关失败:%d %s", resp.StatusCode, raw)
+	}
+	resp.Body.Close()
+
+	resp = doJSON(t, client, http.MethodPost, srv.URL+"/api/servicereg/gateway/upgrade-image", csrf, `{}`)
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		t.Fatalf("升级应 200, got %d body=%s", resp.StatusCode, raw)
+	}
+	var out servicereg.GatewayImageUpgradeResult
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatalf("解码:%v", err)
+	}
+	if out.Image == "" || len(out.Results) != 1 {
+		t.Fatalf("聚合结果不符:%s", raw)
+	}
+	if !out.Results[0].OK || !out.Results[0].Changed || out.Results[0].ServerID != "srv1" {
+		t.Fatalf("srv1 应升级成功且有变化:%s", raw)
+	}
+	pulled := false
+	for _, c := range ft.execCalls {
+		if strings.HasPrefix(strings.Join(c, " "), "docker pull "+out.Image) {
+			pulled = true
+		}
+	}
+	if !pulled {
+		t.Fatalf("应 pull 期望镜像 %s:%v", out.Image, ft.execCalls)
 	}
 }
 

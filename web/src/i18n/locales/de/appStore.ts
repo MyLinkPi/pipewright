@@ -65,4 +65,21 @@ export default {
     regHttps: "Diese Basisdomäne hat ein Zertifikat; sie wird per HTTPS ausgeliefert.",
     regGoServiceReg: "Zur Service-Registry",
   },
+
+  upgrade: {
+    switch: "Zum Upgrade dieser Instanz wechseln",
+    badge: "Upgrade-Modus",
+    hint: "Die vorhandene Instanz {name} auf dieser Maschine wird in-place aktualisiert (neuestes Template neu rendern + compose up -d; Datenvolumes bleiben erhalten).",
+    backToDeploy: "Zu neuem Deployment wechseln",
+    hasSecret: "Passwort gesetzt",
+    keepSecret: "Leer = aktuelles Passwort behalten",
+    flowHint: "Leer gelassene Parameter behalten ihren Wert; Passwörter werden bei leerem Feld nicht neu generiert. Das neueste Template wird neu gerendert, per SSH geschrieben und mit docker compose up -d gestartet.",
+    submit: "Aktualisieren",
+    ok: "Upgrade erfolgreich",
+    failTitle: "Upgrade fehlgeschlagen",
+    done: "{name} aktualisiert",
+    fail: "Upgrade fehlgeschlagen",
+    noContext: "Für diese Instanz existiert kein Datensatz der Deploy-Parameter (ältere Version oder kein App-Store-Stack); ein In-place-Upgrade ist nicht möglich. Fortfahren führt zu einem neuen Deployment.",
+    ctxFail: "Upgrade-Informationen konnten nicht geladen werden",
+  },
 }

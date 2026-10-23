@@ -320,9 +320,10 @@ func wrapUpPrompt(question string) string {
 // 工具描述与参数说明随 opschat.Tool 目录携带(Description/Notes);适配层只负责
 // 注入 target 枚举(Targeted 工具)与变更工具的 purpose/reason(必填)。
 
-// mutationNotePrefixes: purpose/reason 注入说明(变更工具必填项的语义)。
-const mutationPurposeNote = "What this operation is meant to achieve for the user; required for mutating tools, up to 512 characters."
-const mutationReasonNote = "Why this is warranted now, citing observed evidence; required for mutating tools, up to 512 characters."
+// mutationNotePrefixes: purpose/reason 注入说明(变更工具必填项的语义;文案会
+// 展示在人工确认卡上,明确告知受众以提升理由质量)。
+const mutationPurposeNote = "What this operation is meant to achieve for the user; shown to the human approver on the confirmation card. Required for mutating tools, up to 512 characters."
+const mutationReasonNote = "Why this is warranted now, citing observed evidence; shown to the human approver on the confirmation card. Required for mutating tools, up to 512 characters."
 
 // agentSchema 为 Targeted 工具注入 target(必填枚举,说明文案按维度来自
 // req.TargetNote);变更工具再注入 purpose/reason(必填)。
@@ -346,6 +347,8 @@ func agentSchema(t opschat.Tool, req opschat.AgentRequest) map[string]any {
 		}
 	}
 	if t.Targeted {
+		// fallback 仅为防御:planner 总是按维度设置 req.TargetNote,正常路径
+		// 不会用到这份与 opschat.machineTargetNote 相同的文案。
 		note := "Alias of the server this call runs on. Every tool call MUST set target to one of the enum values (%s is the first selected server); omitting it is an error."
 		if req.TargetNote != "" {
 			note = req.TargetNote

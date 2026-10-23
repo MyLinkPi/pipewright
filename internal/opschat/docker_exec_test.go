@@ -422,7 +422,7 @@ func TestDockerExecSecretArgsAndProjectionCopy(t *testing.T) {
 	}
 	for _, table := range []string{"ops_chat_runs", "ops_chat_calls", "ops_chat_approvals"} {
 		var count int
-		if err := db.QueryRow("SELECT COUNT(*) FROM "+table).Scan(&count); err != nil || count != 0 {
+		if err := db.QueryRow("SELECT COUNT(*) FROM " + table).Scan(&count); err != nil || count != 0 {
 			t.Fatal("hidden argument admitted before inspection/approval", table, count, err)
 		}
 	}

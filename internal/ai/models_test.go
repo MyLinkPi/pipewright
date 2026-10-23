@@ -196,7 +196,7 @@ func TestDeepSeekCatalogDNSAndTimeoutBoundaries(t *testing.T) {
 }
 
 func TestDraftModelsProtocolsAndInferenceNormalization(t *testing.T) {
-	for _, provider := range []string{ProviderOpenAI, ProviderClaude, } {
+	for _, provider := range []string{ProviderOpenAI, ProviderClaude} {
 		t.Run(provider, func(t *testing.T) {
 			pages, chats := 0, 0
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

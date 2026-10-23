@@ -27,6 +27,7 @@ import (
 	"github.com/huangchengsir/pipewright/internal/dag"
 	"github.com/huangchengsir/pipewright/internal/mask"
 	"github.com/huangchengsir/pipewright/internal/opschat"
+	"github.com/huangchengsir/pipewright/internal/tokenest"
 	"gopkg.in/yaml.v3"
 )
 
@@ -471,6 +472,9 @@ func (s *service) agentTestSession(
 	if target == "" {
 		target = strings.TrimSpace(in.DefaultTarget)
 	}
+	// question 恒定 = 需求正文 + 目标,每轮重发(与 opschat req.Question 跨轮恒定同款);
+	// 推进/纠正指令走 nudge 追加在最新位置,绝不覆盖 question——否则第 2 轮起模型
+	// 看不到「什么算对」,裁决失去依据。
 	question := fmt.Sprintf("Test requirement (id: %s):\n%s", r.ID, maskText(r.Body))
 	if target != "" {
 		question += fmt.Sprintf("\n\nSystem under test (base target): %s\nUse this as the base for relative URLs.", maskText(target))
@@ -485,6 +489,11 @@ func (s *service) agentTestSession(
 	history := []opschat.Message{}
 	exchanges := []opschat.AgentExchange{}
 	textRetries := 0
+	nudge := ""
+	systemNote := ""
+	droppedTotal := 0
+	overflowRetried := false
+	ceiling := aiTestContextCeiling(window)
 
 	for step := 0; step < maxSteps; step++ {
 		select {
@@ -492,7 +501,28 @@ func (s *service) agentTestSession(
 			return nil, rounds, inTok, outTok, amt
 		default:
 		}
-		reply, err := s.agentTestRound(ctx, m, cfg, key, model, window, tools, question, history, exchanges)
+		// 主动压缩:估算超阈值时从最旧轮整轮丢弃(opschat trimRounds 同款确定性
+		// 裁剪;ai_test 会话 run 内即弃、无 checkpoint 持久化,不做模型摘要压缩),
+		// 丢弃规模经 systemNote 持续告知模型。
+		if kept, dropped := aiTestTrimExchanges(question, history, exchanges, tools, ceiling); dropped > 0 {
+			exchanges = kept
+			droppedTotal += dropped
+			systemNote = aiTestContextNote(droppedTotal)
+			log(fmt.Sprintf("[agent] 上下文逼近窗口,省略最旧 %d 轮观察(累计 %d)", dropped, droppedTotal))
+		}
+		reply, err := s.agentTestRound(ctx, m, cfg, key, model, window, tools, question, history, exchanges, nudge, systemNote)
+		if err != nil && !overflowRetried && IsContextOverflow(err) {
+			// provider 判溢出:裁到阈值 70% 后重试一次(opschat overflow 兜底同款;
+			// 溢出请求被 provider 拒绝,未产生有效计费)。
+			overflowRetried = true
+			if kept, dropped := aiTestTrimExchanges(question, history, exchanges, tools, ceiling*7/10); dropped > 0 {
+				exchanges = kept
+				droppedTotal += dropped
+				systemNote = aiTestContextNote(droppedTotal)
+				log(fmt.Sprintf("[agent] 上下文溢出,省略最旧 %d 轮后重试一次(累计 %d)", dropped, droppedTotal))
+			}
+			reply, err = s.agentTestRound(ctx, m, cfg, key, model, window, tools, question, history, exchanges, nudge, systemNote)
+		}
 		if err != nil {
 			log(fmt.Sprintf("[agent] 第 %d 轮请求失败:%v", rounds+1, err))
 			return nil, rounds, inTok, outTok, amt
@@ -515,7 +545,7 @@ func (s *service) agentTestSession(
 			}
 			textRetries++
 			history = append(history, opschat.Message{Role: "assistant", Text: truncateAI(reply.Text, 8<<10)})
-			question = "You must call the " + AITestSubmitVerdictToolID + ` tool with {"verdict","reason","evidence"} to conclude. Do not answer in plain text. Continue testing or submit the verdict now.`
+			nudge = "You must call the " + AITestSubmitVerdictToolID + ` tool with {"verdict","reason","evidence"} to conclude. Do not answer in plain text. Continue testing or submit the verdict now.`
 			continue
 		}
 
@@ -523,6 +553,9 @@ func (s *service) agentTestSession(
 		ex := opschat.AgentExchange{Calls: reply.ToolCalls}
 		done := false
 		for _, call := range reply.ToolCalls {
+			if done {
+				break // 裁决已提交:同 reply 后续调用一律不执行(防裁决后写操作)
+			}
 			if call.ToolID == AITestSubmitVerdictToolID {
 				v, verr := parseAITestVerdictArgs(call.Args)
 				if verr != nil {
@@ -538,7 +571,7 @@ func (s *service) agentTestSession(
 				ex.Results = append(ex.Results, opschat.AgentToolResult{CallID: call.ID, Failed: true, Output: "该会话未接入动作执行器"})
 				continue
 			}
-			desc := fmt.Sprintf("[agent] %s %s", call.ToolID, truncateAI(string(call.Args), 300))
+			desc := fmt.Sprintf("[agent] %s %s", call.ToolID, truncateAI(maskText(string(call.Args)), 300))
 			if call.Purpose != "" {
 				desc += fmt.Sprintf("(purpose: %s)", truncateAI(call.Purpose, 200))
 			}
@@ -546,7 +579,7 @@ func (s *service) agentTestSession(
 			out, xerr := in.Executor.AITestExecute(ctx, call.ToolID, call.Args, log)
 			if xerr != nil {
 				log(fmt.Sprintf("[agent] %s 失败:%v", call.ToolID, xerr))
-				ex.Results = append(ex.Results, opschat.AgentToolResult{CallID: call.ID, Failed: true, Output: truncateAI(xerr.Error(), 2048)})
+				ex.Results = append(ex.Results, opschat.AgentToolResult{CallID: call.ID, Failed: true, Output: truncateAI(maskText(xerr.Error()), 2048)})
 				continue
 			}
 			obs := truncateAI(maskText(out), 16<<10)
@@ -556,16 +589,17 @@ func (s *service) agentTestSession(
 		if done {
 			return verdict, rounds, inTok, outTok, amt
 		}
-		// 下一轮问题:驱动继续(工具结果已在 rounds 上下文里,问题只需推进指令)。
-		question = "Continue with the requirement. Call tools to observe, then submit the verdict via " + AITestSubmitVerdictToolID + "."
+		// 下一轮推进指令:追加在最新消息位置(question 恒定在场,不覆盖)。
+		nudge = "Continue with the requirement. Call tools to observe, then submit the verdict via " + AITestSubmitVerdictToolID + "."
 	}
 
 	// 预算耗尽:wrapUp 收尾(不带工具),如实总结;裁决按 fail 呈现。
+	// question 恒定 = 需求正文,收尾轮引用的就是真实需求。
 	log(fmt.Sprintf("[agent] 步数预算耗尽(≥%d 轮),收尾总结", maxSteps))
 	reply, err := s.agentTestRound(ctx, m, cfg, key, model, window, nil,
 		"The tool round budget is exhausted. Regarding the requirement:\n"+question+
 			"\n\nSummarize honestly: completed progress, what remains unfinished, and the exact obstacle. Never fabricate completion.",
-		history, exchanges)
+		history, exchanges, "", systemNote)
 	if err == nil {
 		rounds++
 		if reply.Usage != nil {
@@ -593,6 +627,8 @@ func (s *service) agentTestRound(
 	question string,
 	history []opschat.Message,
 	exchanges []opschat.AgentExchange,
+	nudge string,
+	systemNote string,
 ) (opschat.AgentReply, error) {
 	base := cfg.BaseURL
 	if base == "" {
@@ -613,7 +649,7 @@ func (s *service) agentTestRound(
 			maxTokens = t
 		}
 	}
-	body := aiTestRequestBody(cfg.Provider, model, key, question, history, exchanges, tools, maxTokens)
+	body := aiTestRequestBody(cfg.Provider, model, key, question, history, exchanges, tools, maxTokens, nudge, systemNote)
 	raw, err := json.Marshal(body)
 	if err != nil || len(raw) > 2<<20 {
 		return opschat.AgentReply{}, opsFailure("invalid_response", 0)
@@ -706,14 +742,15 @@ func aiTestHeaders(provider, key string) map[string]string {
 	}
 }
 
-func aiTestRequestBody(provider, model, key, question string, history []opschat.Message, exchanges []opschat.AgentExchange, tools []opschat.Tool, maxTokens int) map[string]any {
+func aiTestRequestBody(provider, model, key, question string, history []opschat.Message, exchanges []opschat.AgentExchange, tools []opschat.Tool, maxTokens int, nudge, systemNote string) map[string]any {
+	system := aiTestSystemPrompt + systemNote
 	if provider == ProviderClaude {
 		body := map[string]any{
 			"model":      model,
 			"max_tokens": maxTokens,
 			"stream":     true,
-			"system":     aiTestSystemPrompt,
-			"messages":   aiTestClaudeMessages(question, history, exchanges),
+			"system":     system,
+			"messages":   aiTestClaudeMessages(question, history, exchanges, nudge),
 		}
 		if len(tools) > 0 {
 			body["tools"] = aiTestClaudeTools(tools)
@@ -724,7 +761,7 @@ func aiTestRequestBody(provider, model, key, question string, history []opschat.
 		"model":      model,
 		"max_tokens": maxTokens,
 		"stream":     true,
-		"messages":   aiTestOpenAIMessages(question, history, exchanges),
+		"messages":   aiTestOpenAIMessages(system, question, history, exchanges, nudge),
 	}
 	if len(tools) > 0 {
 		body["tools"] = aiTestOpenAITools(tools)
@@ -733,8 +770,8 @@ func aiTestRequestBody(provider, model, key, question string, history []opschat.
 	return body
 }
 
-func aiTestOpenAIMessages(question string, history []opschat.Message, exchanges []opschat.AgentExchange) []map[string]any {
-	msgs := []map[string]any{{"role": "system", "content": aiTestSystemPrompt}}
+func aiTestOpenAIMessages(system, question string, history []opschat.Message, exchanges []opschat.AgentExchange, nudge string) []map[string]any {
+	msgs := []map[string]any{{"role": "system", "content": system}}
 	for _, m := range history {
 		msgs = append(msgs, map[string]any{"role": m.Role, "content": m.Text})
 	}
@@ -758,10 +795,14 @@ func aiTestOpenAIMessages(question string, history []opschat.Message, exchanges 
 			msgs = append(msgs, map[string]any{"role": "tool", "tool_call_id": res.CallID, "content": agentResultText(res)})
 		}
 	}
+	// 推进/纠正指令在最新消息位置(question 恒定在前,不覆盖)。
+	if nudge != "" {
+		msgs = append(msgs, map[string]any{"role": "user", "content": nudge})
+	}
 	return msgs
 }
 
-func aiTestClaudeMessages(question string, history []opschat.Message, exchanges []opschat.AgentExchange) []map[string]any {
+func aiTestClaudeMessages(question string, history []opschat.Message, exchanges []opschat.AgentExchange, nudge string) []map[string]any {
 	merged := []opschat.Message{}
 	for _, m := range history {
 		if len(merged) == 0 {
@@ -804,6 +845,21 @@ func aiTestClaudeMessages(question string, history []opschat.Message, exchanges 
 		}
 		if len(results) > 0 {
 			msgs = append(msgs, map[string]any{"role": "user", "content": results})
+		}
+	}
+	// 推进/纠正指令并入最后一条 user 消息(Claude 角色交替硬约束,不追加孤立 user)。
+	if nudge != "" {
+		for i := len(msgs) - 1; i >= 0; i-- {
+			if msgs[i]["role"] != "user" {
+				continue
+			}
+			switch c := msgs[i]["content"].(type) {
+			case string:
+				msgs[i]["content"] = c + "\n\n" + nudge
+			case []map[string]any:
+				msgs[i]["content"] = append(c, map[string]any{"type": "text", "text": nudge})
+			}
+			break
 		}
 	}
 	return msgs
@@ -900,6 +956,66 @@ func aiTestClaudeTools(tools []opschat.Tool) []map[string]any {
 		})
 	}
 	return out
+}
+
+// ─── 上下文预算(确定性轮次裁剪;opschat trimRounds 同款语义) ─────────────────
+
+// aiTestContextCeiling 计算主动压缩触发阈值(与 opschat ContextPolicy.Ceiling 同语义:
+// 窗口 − 预留;预留 = max(窗口 10%, 窗口≥32K 时 16K);下限半窗)。window ≤ 0 返回 0(不裁剪)。
+func aiTestContextCeiling(window int) int {
+	if window <= 0 {
+		return 0
+	}
+	reserve := window / 10
+	if window >= 32_000 && reserve < 16_000 {
+		reserve = 16_000
+	}
+	c := window - reserve
+	if c < window/2 {
+		c = window / 2
+	}
+	return c
+}
+
+// aiTestEstimateTokens 估算一次会话请求的输入 tokens(system + question + history +
+// tools schema + 全部轮次回灌;与 opschat estimateRequestTokens 同口径)。
+func aiTestEstimateTokens(question string, history []opschat.Message, exchanges []opschat.AgentExchange, tools []opschat.Tool) int {
+	total := tokenest.Estimate(aiTestSystemPrompt) + tokenest.Estimate(question)
+	for _, m := range history {
+		total += tokenest.Estimate(m.Text) + 4
+	}
+	for _, t := range tools {
+		total += tokenest.Estimate(t.ID) + tokenest.Estimate(string(t.Schema)) + 8
+	}
+	for _, ex := range exchanges {
+		for _, c := range ex.Calls {
+			total += tokenest.Estimate(c.ToolID) + tokenest.Estimate(string(c.Args)) + 8
+		}
+		for _, r := range ex.Results {
+			total += tokenest.Estimate(r.Output) + 8
+		}
+	}
+	return total
+}
+
+// aiTestTrimExchanges 确定性裁剪:从最旧轮开始整轮丢弃,直到估算降到 target 以下
+// (或只剩最后一轮);返回保留段与被丢轮数(供 systemNote 呈现,模型知道「更早轮次
+// 存在但被省略」)。target ≤ 0 不裁剪。
+func aiTestTrimExchanges(question string, history []opschat.Message, exchanges []opschat.AgentExchange, tools []opschat.Tool, target int) ([]opschat.AgentExchange, int) {
+	if target <= 0 || len(exchanges) <= 1 {
+		return exchanges, 0
+	}
+	dropped := 0
+	for len(exchanges) > 1 && aiTestEstimateTokens(question, history, exchanges, tools) > target {
+		exchanges = exchanges[1:]
+		dropped++
+	}
+	return exchanges, dropped
+}
+
+// aiTestContextNote 生成注入 system 的裁剪说明(dropped 为累计丢弃轮数)。
+func aiTestContextNote(dropped int) string {
+	return fmt.Sprintf("\n\nContext budget note: %d earliest tool-call round(s) of this session were omitted to fit the context window; earlier conclusions still hold — do not redo settled work.", dropped)
 }
 
 // ─── 裁决解析(工具参数为主;自由文本兜底一次) ────────────────────────────────

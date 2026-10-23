@@ -11,6 +11,8 @@
  * PUT    /api/ops/apps/{id}               → AppTemplate          (CSRF;内置只读)
  * DELETE /api/ops/apps/{id}               → { ok }               (CSRF;内置只读)
  * POST   /api/servers/{id}/apps/deploy    → AppDeployResult      (CSRF)
+ * GET    /api/servers/{id}/apps/upgrade-context → AppUpgradeContext(升级预填;secret 只回名)
+ * POST   /api/servers/{id}/apps/upgrade   → AppDeployResult      (CSRF;原位升级,参数原位保留)
  */
 import { http } from './http'
 
@@ -95,6 +97,50 @@ export const deployApp = (
   instance?: string,
 ): Promise<AppDeployResult> =>
   http.post(`/api/servers/${encodeURIComponent(serverId)}/apps/deploy`, {
+    templateId,
+    params,
+    ...(instance?.trim() ? { instance: instance.trim() } : {}),
+    ...(limits?.cpus?.trim() ? { cpus: limits.cpus.trim() } : {}),
+    ...(limits?.memory?.trim() ? { memory: limits.memory.trim() } : {}),
+  })
+
+/** 升级上下文:既有实例的参数现值(found=false = 无参数记录,不可原位升级)。 */
+export interface AppUpgradeContext {
+  found: boolean
+  /** 生效栈名(模板名或 模板名-实例名)。 */
+  stackName: string
+  /** 非 secret 参数现值(升级表单预填用)。 */
+  params: Record<string, string>
+  /** 有现值的 secret 参数名(不回值;升级时留空 = 保持不变,绝不重新生成)。 */
+  secrets: string[]
+  /** 原部署的资源限制(升级沿用;本次显式给非空值才覆盖)。 */
+  cpus: string
+  memory: string
+}
+
+export const getAppUpgradeContext = (
+  serverId: string,
+  templateId: string,
+  instance?: string,
+): Promise<AppUpgradeContext> =>
+  http.get(
+    `/api/servers/${encodeURIComponent(serverId)}/apps/upgrade-context?templateId=${encodeURIComponent(templateId)}` +
+      (instance?.trim() ? `&instance=${encodeURIComponent(instance.trim())}` : ''),
+  )
+
+/**
+ * 原位升级已部署实例:重渲染最新模板 + 重走 Stacks 部署链路(compose up -d 只重建有变化的
+ * 服务,数据卷按项目名保持挂载)。显式给的非空参数覆盖现值,缺省/留空 = 保持不变
+ * (secret 留空不会被重新生成,既有口令不动)。
+ */
+export const upgradeApp = (
+  serverId: string,
+  templateId: string,
+  params: Record<string, string>,
+  limits?: AppDeployLimits,
+  instance?: string,
+): Promise<AppDeployResult> =>
+  http.post(`/api/servers/${encodeURIComponent(serverId)}/apps/upgrade`, {
     templateId,
     params,
     ...(instance?.trim() ? { instance: instance.trim() } : {}),

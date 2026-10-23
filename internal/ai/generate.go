@@ -104,7 +104,7 @@ func (s *service) Generate(ctx context.Context, in GenerateInput) (*Proposal, er
 
 	// apiKey:非 ollama 解密既有密钥进程内取用;ollama 无需 key。
 	apiKey := ""
-		if len(sealed) == 0 {
+	if len(sealed) == 0 {
 		return nil, ErrAINotConfigured
 	}
 	plain, oerr := s.openSecret(sealed)
@@ -417,7 +417,7 @@ needs 填「本阶段内它所依赖的其它 job 的 name」(数组)。**凡有
 - build_image:buildModel("dockerfile" 有 Dockerfile 否则 "toolchain")、dockerfilePath(检测到的 Dockerfile 路径,如 "backend/Dockerfile")、context(Dockerfile 所在目录,如 "backend")、artifactType("image")。
 - push_image:artifactJob(必填 = 要推送的镜像来源节点 name,必须是**同阶段**的 build_image 节点);registry(可选,目标仓库地址如 "registry.cn-hangzhou.aliyuncs.com",留空 = 用环境绑定的镜像仓库)、imageName(可选,远端镜像名如 "org/app",留空用产物名)、tag(可选,如 "{{commit}}",留空沿用产物 tag)、credentialId(可选,仓库登录凭据,留空给用户在画布选)。
 - deploy_ssh(文件产物 jar/dist):artifactJob(必填 = 产出该产物的构建节点 name)、deployPath、restartCommand、firstBatchSize/batchSize(多机分批,可选);serverId 留空(用户选目标机)。
-- deploy_container(镜像产物):artifactJob(必填 = build_image 节点 name)、containerName(据项目名取,如 "<proj>-app")、ports(如 "8080:8080");常用容器参数用结构化键 cpuLimit(如 "1.0")/memoryLimit(如 "512m")/restartPolicy(no/always/unless-stopped/on-failure)/envVars(每行一条 KEY=value)/volumes(每行一条挂载:有状态服务只写容器路径如 "/var/lib/mysql" 即自动生成持久卷,升级后数据保持;显式写法 "宿主目录:容器路径"),仅特殊 flag 才用 runArgs(可选);serverId 留空。
+- deploy_container(镜像产物):artifactJob(必填 = build_image 节点 name)、containerName(据项目名取,如 "<proj>-app")、ports(如 "8080:8080");常用容器参数用结构化键 cpuLimit(如 "1.0")/memoryLimit(如 "512m")/restartPolicy(no/always/unless-stopped/on-failure)/envVars(每行一条 KEY=value,# 开头为注释行)/volumes(每行一条挂载:有状态服务只写容器路径如 "/var/lib/mysql" 即自动生成持久卷,升级后数据保持;显式写法 "宿主目录:容器路径"),仅特殊 flag 才用 runArgs(可选);serverId 留空。
 - oss_upload(把文件产物上传到对象存储):artifactJob(必填 = 产出该产物的构建节点 name)、storageId(可选,留空给用户在画布选对象存储配置)、prefix(可选,如 "releases/{{project}}/{{branch}}",支持 {{runId}}/{{branch}}/{{commit}}/{{project}}/{{date}}/{{date:yyyyMMddHHmmss}} 占位,日期取 run 创建时间 UTC、默认 yyyy-MM-dd-HH-mm)、artifactName(可选,产物名 glob,如 "app-*.jar";存在多件同名产物时消歧);只上传文件类产物(jar/dist/归档),镜像产物请用 push_image。
 - ecs_power(阿里云 ECS 开关机;关机固定节省停机模式):action("start" 开机 / "stop" 关机)、selector("instances" 直选实例 或 "tags" 按标签)、instanceIds(仅 instances,逗号分隔实例 ID,留空给用户选)、tagSource(仅 tags:"aliyun" 阿里云 ECS 标签 / "platform" 平台服务器标签)、tags(仅 tags,逗号分隔 k=v,AND 匹配,如 "env=staging")、waitSeconds(可选,默认 "300",等待到达目标状态;"0" = 不等待);accountId 留空(用户在画布选阿里云账户)。
 - health_check:probeMode("http")、url(据服务端口/框架填,Spring Boot 用 "http://localhost:<宿主端口>/actuator/health",其它用 "/healthz")、retries("10")、intervalSeconds("3");可选 selector 圈选目标机(留空 = 平台本机 http 探测)。

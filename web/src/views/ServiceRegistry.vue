@@ -19,6 +19,7 @@ import {
   updateServiceRegSettings,
   getGateway,
   deployGateway,
+  upgradeGatewayImage,
   removeGateway,
   listDomains,
   createDomain,
@@ -184,6 +185,31 @@ async function doDeployGateway(): Promise<void> {
     toast.success(t('serviceReg.gatewayDeployed'))
   } catch (err) {
     toast.error(errMsg(err, t('serviceReg.gatewayDeployFail')))
+  } finally {
+    busy.value = false
+  }
+}
+
+/** 升级全部网关主机的 nginx 镜像:逐台 pull + 比对,有变化的台重建(配置/证书在具名卷,不丢)。 */
+async function doUpgradeGatewayImage(): Promise<void> {
+  busy.value = true
+  try {
+    const res = await upgradeGatewayImage()
+    gateway.value = await getGateway()
+    const failed = res.results.filter((r) => !r.ok)
+    const changed = res.results.filter((r) => r.changed)
+    if (failed.length) {
+      toast.error(t('serviceReg.gatewayUpgradeFailDetail', {
+        names: failed.map((r) => r.serverName || r.serverId).join('、'),
+        reason: failed[0]?.error ?? '',
+      }))
+    } else if (changed.length) {
+      toast.success(t('serviceReg.gatewayUpgradeDone', { n: changed.length, image: res.image }))
+    } else {
+      toast.success(t('serviceReg.gatewayUpgradeLatest', { image: res.image }))
+    }
+  } catch (err) {
+    toast.error(errMsg(err, t('serviceReg.gatewayUpgradeFail')))
   } finally {
     busy.value = false
   }
@@ -773,6 +799,9 @@ async function saveSvcEdit(s: RegisteredService): Promise<void> {
             <AppButton variant="default" @click="startEdit">{{ t('serviceReg.btn.edit') }}</AppButton>
             <AppButton variant="primary" :loading="busy" :disabled="!settings.serverIds?.length" @click="doDeployGateway">
               {{ t('serviceReg.gateway.deploy') }}
+            </AppButton>
+            <AppButton v-if="gateway?.servers?.some((s) => s.installed)" :loading="busy" @click="doUpgradeGatewayImage">
+              {{ t('serviceReg.gatewayUpgrade') }}
             </AppButton>
             <AppButton v-if="gateway?.servers?.some((s) => s.installed)" variant="danger" :loading="busy" @click="doRemoveGateway">
               {{ t('serviceReg.removeGateway') }}

@@ -253,7 +253,7 @@ func (b *OpsProjectBackend) Runs(ctx context.Context, projectID, status string, 
 	for _, r := range res.Items {
 		items = append(items, map[string]any{
 			"runId": r.ID, "status": r.Status,
-			"trigger": map[string]any{"type": r.Trigger.Type, "branch": r.Trigger.Branch, "commit": r.Trigger.Commit, "actor": r.Trigger.Actor},
+			"trigger":   map[string]any{"type": r.Trigger.Type, "branch": r.Trigger.Branch, "commit": r.Trigger.Commit, "actor": r.Trigger.Actor},
 			"createdAt": r.CreatedAt.UTC(), "startedAt": timePtrUTC(r.StartedAt), "finishedAt": timePtrUTC(r.FinishedAt),
 			"failureLog": clipText(r.FailureLog, 256),
 		})
@@ -281,10 +281,10 @@ func (b *OpsProjectBackend) RunDetail(ctx context.Context, runID string) (string
 	}
 	return opsProjectMarshal(map[string]any{
 		"runId": r.ID, "projectId": r.ProjectID, "projectName": r.ProjectName,
-		"status": r.Status,
-		"trigger": map[string]any{"type": r.Trigger.Type, "branch": r.Trigger.Branch, "commit": r.Trigger.Commit, "actor": r.Trigger.Actor},
-		"specSource":    map[string]any{"source": r.SpecSource.Source, "ref": r.SpecSource.Ref, "file": r.SpecSource.File, "fallback": r.SpecSource.Fallback},
-		"createdAt":     r.CreatedAt.UTC(), "startedAt": timePtrUTC(r.StartedAt), "finishedAt": timePtrUTC(r.FinishedAt),
+		"status":     r.Status,
+		"trigger":    map[string]any{"type": r.Trigger.Type, "branch": r.Trigger.Branch, "commit": r.Trigger.Commit, "actor": r.Trigger.Actor},
+		"specSource": map[string]any{"source": r.SpecSource.Source, "ref": r.SpecSource.Ref, "file": r.SpecSource.File, "fallback": r.SpecSource.Fallback},
+		"createdAt":  r.CreatedAt.UTC(), "startedAt": timePtrUTC(r.StartedAt), "finishedAt": timePtrUTC(r.FinishedAt),
 		"steps":         steps,
 		"failureLog":    clipText(r.FailureLog, opsProjectFailBytes),
 		"resumeOfRunId": r.ResumeOfRunID,

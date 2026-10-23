@@ -358,6 +358,9 @@ type Service interface {
 	DeployGateway(ctx context.Context) (*GatewayStatus, error)
 	// RemoveGateway 停止并删除网关容器(保留卷);幂等。
 	RemoveGateway(ctx context.Context) error
+	// UpgradeGatewayImage 升级全部网关主机的 nginx 镜像:逐台 pull 期望引用并按镜像 ID 比对,
+	// 有变化的台重建容器 + 全量收敛(配置/证书在具名卷,重建不丢);未变化的台不动容器。
+	UpgradeGatewayImage(ctx context.Context) (*GatewayImageUpgradeResult, error)
 	// Apply 手动全量收敛(渲染 → 校验 → 下发 → 热加载)。
 	Apply(ctx context.Context) error
 
@@ -971,6 +974,120 @@ func (s *service) RemoveGateway(ctx context.Context) error {
 		return fmt.Errorf("%w:%s", ErrApply, strings.Join(errs, "; "))
 	}
 	return nil
+}
+
+// GatewayImageUpgrade 是单台网关主机的镜像升级结果。
+type GatewayImageUpgrade struct {
+	ServerID   string `json:"serverId"`
+	ServerName string `json:"serverName"`
+	OK         bool   `json:"ok"`
+	Changed    bool   `json:"changed"` // 是否拉到新镜像/换了引用并重建了容器(false = 已是最新,未动容器)
+	Error      string `json:"error,omitempty"`
+}
+
+// GatewayImageUpgradeResult 是 UpgradeGatewayImage 的聚合结果(逐台独立成败)。
+type GatewayImageUpgradeResult struct {
+	Image   string                `json:"image"` // 当前期望镜像引用
+	Results []GatewayImageUpgrade `json:"results"`
+}
+
+// UpgradeGatewayImage 升级全部网关主机的 nginx 容器镜像。逐台:容器未部署 → ok:false(请改用
+// 「部署网关」),不阻断其余台;docker pull 期望引用 → 与容器实际镜像 ID 比对(另:容器创建
+// 引用与期望不符也算 changed,覆盖「改了镜像设置没重建」的场景)—— 无变化标 changed=false 收工;
+// 有变化的台先 rm 旧容器,再统一走 applyWith 声明式收敛(ensureNginx 按新镜像重建 + 全量下发
+// 配置/证书;配置/证书在具名卷,重建不丢)。未配置网关主机 → ErrNoGateway。
+func (s *service) UpgradeGatewayImage(ctx context.Context) (*GatewayImageUpgradeResult, error) {
+	st, err := s.store.getOrCreateSettings(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if len(st.ServerIDs) == 0 {
+		return nil, ErrNoGateway
+	}
+	image := nginxImageRef(st)
+	res := &GatewayImageUpgradeResult{Image: image}
+	// 阶段一:逐台 pull + 比对(不动容器)。
+	for _, sid := range st.ServerIDs {
+		item := GatewayImageUpgrade{ServerID: sid, OK: true}
+		if srv, gerr := s.tg.Get(ctx, sid); gerr == nil && srv != nil {
+			item.ServerName = srv.Name
+		}
+		chg, uerr := s.pullGatewayImageCheck(ctx, st, sid, image)
+		if uerr != nil {
+			item.OK = false
+			item.Error = uerr.Error()
+		} else {
+			item.Changed = chg
+		}
+		res.Results = append(res.Results, item)
+	}
+	// 阶段二:有变化的台 rm 旧容器(配置/证书在具名卷,不丢)。
+	needApply := false
+	for i := range res.Results {
+		item := &res.Results[i]
+		if !item.OK || !item.Changed {
+			continue
+		}
+		if rerr := removeNginx(ctx, s.tg, st, item.ServerID); rerr != nil {
+			item.OK = false
+			item.Changed = false
+			item.Error = "移除旧容器失败:" + rerr.Error()
+			continue
+		}
+		needApply = true
+	}
+	// 阶段三:统一全量收敛(被 rm 的台重建新容器,其余台幂等不动),逐台错误回填。
+	if needApply {
+		serverErrs := s.applyWith(ctx, st)
+		s.ReconcileForwardRoutes(ctx)
+		if len(serverErrs) > 0 {
+			_ = s.store.setApplyResult(ctx, time.Now().UTC(), aggregateApplyErrors(st.ServerIDs, serverErrs), serverErrs)
+		} else {
+			_ = s.store.setApplyResult(ctx, time.Now().UTC(), "", nil)
+		}
+		for i := range res.Results {
+			item := &res.Results[i]
+			if item.OK && item.Changed && serverErrs[item.ServerID] != "" {
+				item.OK = false
+				item.Error = "重建/收敛失败:" + serverErrs[item.ServerID]
+			}
+		}
+	}
+	return res, nil
+}
+
+// pullGatewayImageCheck 在单台网关主机上 pull 期望镜像并判定是否需要重建容器:
+// 容器未部署/pull 失败 → error;容器实际镜像 ID 与 pull 后本地镜像 ID 不同,或容器创建引用
+// 与期望引用不符 → changed=true。
+func (s *service) pullGatewayImageCheck(ctx context.Context, st *Settings, serverID, image string) (bool, error) {
+	// 容器当前实际镜像 ID(容器不存在 → inspect 非零退出)。
+	oldRes, err := s.tg.Exec(ctx, serverID, []string{"docker", "inspect", "-f", "{{.Image}}", st.ContainerName})
+	if err != nil {
+		return false, err
+	}
+	if oldRes.ExitCode != 0 {
+		return false, errors.New("该主机尚未部署网关容器,请先用「部署网关」")
+	}
+	oldID := strings.TrimSpace(oldRes.Stdout)
+	curRef, err := inspectContainerImageRef(ctx, s.tg, st, serverID)
+	if err != nil {
+		return false, err
+	}
+	pull, err := s.tg.Exec(ctx, serverID, []string{"docker", "pull", image})
+	if err != nil {
+		return false, err
+	}
+	if pull.ExitCode != 0 {
+		return false, fmt.Errorf("拉取镜像失败:%s", strings.TrimSpace(firstNonEmpty(pull.Stderr, pull.Stdout)))
+	}
+	newRes, err := s.tg.Exec(ctx, serverID, []string{"docker", "image", "inspect", "-f", "{{.Id}}", image})
+	if err != nil {
+		return false, err
+	}
+	if newRes.ExitCode != 0 {
+		return false, fmt.Errorf("读取本地镜像 ID 失败:%s", strings.TrimSpace(firstNonEmpty(newRes.Stderr, newRes.Stdout)))
+	}
+	return strings.TrimSpace(newRes.Stdout) != oldID || curRef != image, nil
 }
 
 func (s *service) Apply(ctx context.Context) error {

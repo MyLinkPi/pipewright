@@ -235,6 +235,26 @@ export const getGateway = (): Promise<Gateway> =>
 export const deployGateway = (): Promise<Gateway> =>
   http.post('/api/servicereg/gateway/deploy')
 
+/** 单台网关主机的镜像升级结果(changed=false = 已是最新,未动容器)。 */
+export interface GatewayImageUpgrade {
+  serverId: string
+  serverName: string
+  ok: boolean
+  changed: boolean
+  error?: string
+}
+
+/** 网关镜像升级聚合结果(逐台独立成败;有变化的台重建容器,配置/证书在具名卷不丢)。 */
+export interface GatewayImageUpgradeResult {
+  /** 当前期望镜像引用。 */
+  image: string
+  results: GatewayImageUpgrade[]
+}
+
+/** 升级全部网关主机的 nginx 镜像:逐台 pull + 比对,有变化的台重建并全量收敛。 */
+export const upgradeGatewayImage = (): Promise<GatewayImageUpgradeResult> =>
+  http.post('/api/servicereg/gateway/upgrade-image')
+
 export const removeGateway = (): Promise<{ ok: boolean }> =>
   http.delete('/api/servicereg/gateway')
 

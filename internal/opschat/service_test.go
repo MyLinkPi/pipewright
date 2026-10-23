@@ -1,11 +1,11 @@
 package opschat
 
 import (
-	"strconv"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -157,9 +157,8 @@ func TestCancelRequestedRunNeverFails(t *testing.T) {
 	waitRun(t, s, c.ID, r.ID, Interrupted)
 }
 
-// Lease renewals persist no session data and skip the full storage scan;
-// every other lease write keeps quota enforcement.
-func TestLeaseWriteWithoutQuotaSkipsEnforcement(t *testing.T) {
+// 一切会话写(lease=true)都在提交前做存储配额扫描;超限会话的写被拒绝。
+func TestLeaseWriteEnforcesQuota(t *testing.T) {
 	id := uuid.NewString()
 	s, _, db := fixture(t, executor(id), nil)
 	c := chat(t, s, id)
@@ -167,9 +166,6 @@ func TestLeaseWriteWithoutQuotaSkipsEnforcement(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := s.transaction(context.Background(), true, func(*sql.Tx) error { return nil }); err != ErrQuota {
-		t.Fatal(err)
-	}
-	if err := s.transactionQuota(context.Background(), true, false, func(*sql.Tx) error { return nil }); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -230,7 +226,7 @@ func TestConcurrencyFourGlobalOnePerServerAndDetachedHTTP(t *testing.T) {
 		c := chat(t, s, ids[i%len(ids)])
 		chats = append(chats, c)
 		m.mu.Lock()
-	m.reply = AgentReply{ToolCalls: actionsToCalls([]Action{{ToolID: "host_ports", Args: json.RawMessage("{}"), TargetIndexes: []int{0}}})}
+		m.reply = AgentReply{ToolCalls: actionsToCalls([]Action{{ToolID: "host_ports", Args: json.RawMessage("{}"), TargetIndexes: []int{0}}})}
 		m.mu.Unlock()
 		httpCtx, cancel := context.WithCancel(context.Background())
 		r, e := s.Submit(httpCtx, c.ID, TurnInput{ClientRequestID: uuid.NewString(), Revision: c.Revision, Text: "check ports"})
@@ -385,6 +381,13 @@ func TestSharedReadBudgetProjectionAndSecretOutput(t *testing.T) {
 func TestEventsWatermarkDroppedWakeupsAndReset(t *testing.T) {
 	s, _, db := fixture(t, executor(), nil)
 	c := chat(t, s)
+	// 单连接 SQLite 下,下面追加 4001 条的大事务在 -race 模式可独占连接约
+	// 90s,远超 15s 租约期限,提交前租约校验必然失败(与水位语义无关)。
+	// 停掉心跳并把租约推远,让本用例聚焦水位/重置语义而非租约时序。
+	s.haltHeartbeat()
+	if _, err := db.Exec("UPDATE ops_chat_state SET lease_until=? WHERE id=1", time.Now().Add(10*time.Minute).UnixMilli()); err != nil {
+		t.Fatal(err)
+	}
 	err := s.transaction(context.Background(), true, func(tx *sql.Tx) error {
 		for i := 0; i < 4001; i++ {
 			if e := s.append(context.Background(), tx, Entry{SessionID: c.ID, Kind: "event"}, false, false); e != nil {
@@ -617,6 +620,7 @@ func chat(t *testing.T, s *Service, ids ...string) *Session {
 	}
 	return c
 }
+
 // submitTool 提交一个文本 turn(模型计划由调用方预先配置)——工具只归 AI 调用后,
 // 这是测试中触发工具执行的统一入口。
 func submitTool(t *testing.T, s *Service, c *Session, id, args string) *Run {
@@ -1057,7 +1061,6 @@ func TestLeaseAndRecoveryNoReplay(t *testing.T) {
 	}
 }
 
-
 // continuationModel 按 steps 逐步返回 AgentReply(第 2 步起可注入阻塞/错误)。
 type continuationModel struct {
 	*fakeModel
@@ -1102,7 +1105,6 @@ func containerExecPlan() AgentReply {
 	return AgentReply{Text: "Review the exact container command before execution.", ToolCalls: []AgentToolCall{{ID: uuid.NewString(), ToolID: "docker_exec", Target: "target_0", Purpose: "inspect keyspace", Reason: "verify cache usage", Args: json.RawMessage(`{"container":"redis","argv":["redis-cli","INFO","keyspace"]}`)}}}
 }
 
-
 // actionsToCalls 测试助手:旧 []Action 字面量 → []AgentToolCall(单目标展开)。
 func actionsToCalls(actions []Action) []AgentToolCall {
 	calls := []AgentToolCall{}
@@ -1137,4 +1139,3 @@ func continuationExecutor(t *testing.T, id string) *fakeExecutor {
 	}
 	return f
 }
-

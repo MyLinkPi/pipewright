@@ -51,6 +51,43 @@ func TestValidateAITestRanges(t *testing.T) {
 	}
 }
 
+func TestValidateAITestStrictInts(t *testing.T) {
+	// 非法整数显式报错(不静默当未配置):Sscanf 时代的 "123abc" 前缀解析被拒。
+	for _, v := range []any{"123abc", "abc", 1.5, true} {
+		if err := validateAITest(aiTestStage(aiTestJobCfg(map[string]any{"timeoutSeconds": v}))); err == nil {
+			t.Fatalf("timeoutSeconds=%v 应被拒", v)
+		}
+	}
+	// 合法形态:整数字符串 / int / 整数值 float64。
+	for _, v := range []any{"300", 300, 300.0} {
+		if err := validateAITest(aiTestStage(aiTestJobCfg(map[string]any{"timeoutSeconds": v}))); err != nil {
+			t.Fatalf("timeoutSeconds=%v 应通过:%v", v, err)
+		}
+	}
+	// 空串 = 未配置。
+	if err := validateAITest(aiTestStage(aiTestJobCfg(map[string]any{"timeoutSeconds": "  "}))); err != nil {
+		t.Fatalf("空串应视为未配置:%v", err)
+	}
+	// filter:非字符串类型拒;数字字符串是合法 glob 不拒。
+	if err := validateAITest(aiTestStage(aiTestJobCfg(map[string]any{"filter": 123}))); err == nil {
+		t.Fatal("filter 数字类型应被拒")
+	}
+	if err := validateAITest(aiTestStage(aiTestJobCfg(map[string]any{"filter": "0"}))); err != nil {
+		t.Fatalf("数字字符串 filter 应通过:%v", err)
+	}
+	// model 非字符串 → 拒(无论是否配窗口)。
+	if err := validateAITest(aiTestStage(aiTestJobCfg(map[string]any{"model": 42}))); err == nil {
+		t.Fatal("model 非字符串应被拒")
+	}
+	if err := validateAITest(aiTestStage(aiTestJobCfg(map[string]any{"model": 42, "modelContextTokens": 128000}))); err == nil {
+		t.Fatal("model 非字符串(带窗口)应被拒")
+	}
+	// modelContextTokens 非法整数 → 拒(而非按「未成对」误导)。
+	if err := validateAITest(aiTestStage(aiTestJobCfg(map[string]any{"model": "gpt-x", "modelContextTokens": "abc"}))); err == nil {
+		t.Fatal("modelContextTokens 非法整数应被拒")
+	}
+}
+
 func TestValidateAITestModelContextPairing(t *testing.T) {
 	// 只有 model 无窗口 → 拒。
 	if err := validateAITest(aiTestStage(aiTestJobCfg(map[string]any{"model": "gpt-x"}))); err == nil {

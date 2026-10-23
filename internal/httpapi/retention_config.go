@@ -36,9 +36,9 @@ func makeGetRetentionConfigHandler(svc *retention.Service) http.HandlerFunc {
 			return
 		}
 		writeJSON(w, http.StatusOK, retentionConfigDTO{
-			Enabled:        cfg.Enabled,
-			KeepPerProject: cfg.KeepPerProject,
-			MaxAgeDays:     cfg.MaxAgeDays,
+			Enabled:              cfg.Enabled,
+			KeepPerProject:       cfg.KeepPerProject,
+			MaxAgeDays:           cfg.MaxAgeDays,
 			CacheMaxGB:           cfg.CacheMaxGB,
 			ImageKeepTags:        cfg.ImageKeepTags,
 			ImageRemoveAfterPush: cfg.ImageRemoveAfterPush,
@@ -59,9 +59,9 @@ func makeSetRetentionConfigHandler(svc *retention.Service) http.HandlerFunc {
 			return
 		}
 		cfg := retention.Config{
-			Enabled:        in.Enabled,
-			KeepPerProject: in.KeepPerProject,
-			MaxAgeDays:     in.MaxAgeDays,
+			Enabled:              in.Enabled,
+			KeepPerProject:       in.KeepPerProject,
+			MaxAgeDays:           in.MaxAgeDays,
 			CacheMaxGB:           in.CacheMaxGB,
 			ImageKeepTags:        in.ImageKeepTags,
 			ImageRemoveAfterPush: in.ImageRemoveAfterPush,
@@ -77,9 +77,9 @@ func makeSetRetentionConfigHandler(svc *retention.Service) http.HandlerFunc {
 			return
 		}
 		writeJSON(w, http.StatusOK, retentionConfigDTO{
-			Enabled:        saved.Enabled,
-			KeepPerProject: saved.KeepPerProject,
-			MaxAgeDays:     saved.MaxAgeDays,
+			Enabled:              saved.Enabled,
+			KeepPerProject:       saved.KeepPerProject,
+			MaxAgeDays:           saved.MaxAgeDays,
 			CacheMaxGB:           saved.CacheMaxGB,
 			ImageKeepTags:        saved.ImageKeepTags,
 			ImageRemoveAfterPush: saved.ImageRemoveAfterPush,

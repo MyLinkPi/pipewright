@@ -326,6 +326,100 @@ func TestPruneSharedDigestSkipped(t *testing.T) {
 	}
 }
 
+// upgradeRunner 返回按 UpgradeImage 调用序脚本化的 LocalRunner:
+// compose 探测 → 升级前镜像 ID → pull → 升级后镜像 ID → (变化时)compose 探测 → up。
+// beforeID/afterID 相同即「未变」场景;pullCode 非零模拟 pull 失败(后续步骤不消费)。
+func upgradeRunner(beforeID, afterID string, pullCode int) *scriptRunner {
+	composeVer := func(name string, args []string) bool {
+		return name == "docker" && len(args) >= 1 && args[0] == "compose" && argHas("version")(args)
+	}
+	inspect := func(name string, args []string) bool { return name == "docker" && argHas("inspect")(args) }
+	return &scriptRunner{steps: []scriptStep{
+		{match: composeVer, out: "v2"},
+		{match: inspect, out: beforeID},
+		{match: func(name string, args []string) bool { return name == "docker" && argHas("pull")(args) }, code: pullCode, out: "pull boom"},
+		{match: inspect, out: afterID},
+		{match: composeVer, out: "v2"},
+		{match: func(name string, args []string) bool { return argHas("up")(args) && argHas("-d")(args) }, out: "started"},
+	}}
+}
+
+func runnerRanUp(r *scriptRunner) bool {
+	for _, c := range r.commands {
+		if argHas("up")(c) && argHas("-d")(c) {
+			return true
+		}
+	}
+	return false
+}
+
+func TestUpgradeImageChangedRebuilds(t *testing.T) {
+	runner := upgradeRunner("sha256:111111111111aaaa", "sha256:222222222222bbbb", 0)
+	h := newTestHub(t, Options{BaseDir: t.TempDir(), Runner: runner})
+	if _, err := h.Save(context.Background(), SaveInput{Enabled: true, ExternalAddr: "ctrl"}); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	res, err := h.UpgradeImage(context.Background())
+	if err != nil {
+		t.Fatalf("upgrade: %v", err)
+	}
+	if !res.OK || !res.Changed || res.Error != "" {
+		t.Fatalf("镜像变了应重建成功: %+v", res)
+	}
+	if res.Before != "111111111111" || res.After != "222222222222" {
+		t.Fatalf("镜像 ID 应截短为 12 位: %+v", res)
+	}
+	if res.Image != registryImage {
+		t.Fatalf("镜像名不符: %s", res.Image)
+	}
+	if !runnerRanUp(runner) {
+		t.Fatalf("镜像变了应 compose up 重建")
+	}
+}
+
+func TestUpgradeImageUnchangedSkipsRebuild(t *testing.T) {
+	runner := upgradeRunner("sha256:111111111111aaaa", "sha256:111111111111aaaa", 0)
+	h := newTestHub(t, Options{BaseDir: t.TempDir(), Runner: runner})
+	if _, err := h.Save(context.Background(), SaveInput{Enabled: true, ExternalAddr: "ctrl"}); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	res, err := h.UpgradeImage(context.Background())
+	if err != nil {
+		t.Fatalf("upgrade: %v", err)
+	}
+	if !res.OK || res.Changed {
+		t.Fatalf("已是最新应 ok 且未变: %+v", res)
+	}
+	if runnerRanUp(runner) {
+		t.Fatalf("镜像未变不应重建容器")
+	}
+}
+
+func TestUpgradeImagePullFailsKeepsContainers(t *testing.T) {
+	runner := upgradeRunner("sha256:111111111111aaaa", "", 1)
+	h := newTestHub(t, Options{BaseDir: t.TempDir(), Runner: runner})
+	if _, err := h.Save(context.Background(), SaveInput{Enabled: true, ExternalAddr: "ctrl"}); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	res, err := h.UpgradeImage(context.Background())
+	if err != nil {
+		t.Fatalf("pull 失败应走结果而非错误: %v", err)
+	}
+	if res.OK || res.Changed || !strings.Contains(res.Error, "pull boom") {
+		t.Fatalf("pull 失败应 ok=false + 人读 error: %+v", res)
+	}
+	if runnerRanUp(runner) {
+		t.Fatalf("pull 失败不得触碰现有容器")
+	}
+}
+
+func TestUpgradeImageDisabled(t *testing.T) {
+	h := newTestHub(t, Options{BaseDir: t.TempDir(), Runner: &scriptRunner{}})
+	if _, err := h.UpgradeImage(context.Background()); err != ErrDisabled {
+		t.Fatalf("未启用应 ErrDisabled, got %v", err)
+	}
+}
+
 // deployRunner 是 compose 探测/up 均放行、记录全部命令的 LocalRunner。
 func deployRunner() *scriptRunner {
 	return &scriptRunner{steps: []scriptStep{

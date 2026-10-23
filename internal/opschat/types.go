@@ -203,17 +203,17 @@ type Options struct {
 	Context func() ContextPolicy
 }
 type Session struct {
-	ID        string `json:"id"`
-	Revision  int64  `json:"revision"`
-	Title     string `json:"title"`
-	Draft     string `json:"draft"`
+	ID        string   `json:"id"`
+	Revision  int64    `json:"revision"`
+	Title     string   `json:"title"`
+	Draft     string   `json:"draft"`
 	ServerIDs []string `json:"serverIds"`
 	// Scope 是会话维度:""=机器(默认)/"project"=项目;项目会话必选关联机器可用机器工具。
 	Scope string `json:"scope,omitempty"`
 	// ProjectID 是项目维度会话绑定的项目;机器维度为空。
-	ProjectID    string `json:"projectId,omitempty"`
-	ActiveRunID  string `json:"activeRunId"`
-	Watermark    int64  `json:"watermark"`
+	ProjectID   string `json:"projectId,omitempty"`
+	ActiveRunID string `json:"activeRunId"`
+	Watermark   int64  `json:"watermark"`
 	// StorageBytes is the tracked visible-entry byte counter, an approximation
 	// of the session storage quota basis; use it only for near-quota hints.
 	StorageBytes int64 `json:"storageBytes"`
@@ -292,11 +292,11 @@ type Message struct {
 	Text string `json:"text"`
 }
 type AgentRequest struct {
-	Question         string          `json:"question"`
-	Provider         ProviderInfo    `json:"provider"`
-	System           string          `json:"system"`
-	History          []Message       `json:"messages"`
-	Targets          []string        `json:"targets"`
+	Question string       `json:"question"`
+	Provider ProviderInfo `json:"provider"`
+	System   string       `json:"system"`
+	History  []Message    `json:"messages"`
+	Targets  []string     `json:"targets"`
 	// TargetNote 是 target 枚举属性的自然语言说明(按维度生成:机器=服务器,
 	// 项目=关联服务器且 target_0 是项目本身、对机器工具不可用)。
 	TargetNote       string          `json:"targetNote,omitempty"`
@@ -613,12 +613,12 @@ type runBody struct {
 	Turn               TurnInput
 	Targets            []target.ConnectionSnapshot
 	// Project 是项目维度会话提交时冻结的项目快照(机器维度为 nil)。
-	Project  *ProjectSnapshot
-	Analysis *AnalysisPreview
-	ActiveMillis   int64
-	Rounds         int // 已用轮次(persist-before-model 递增)
-	RoundBudget    int // 已授予轮次(0 → 启动时取 runtime.MaxAgentRounds;继续 +20)
-	OutputBytes    int
+	Project      *ProjectSnapshot
+	Analysis     *AnalysisPreview
+	ActiveMillis int64
+	Rounds       int // 已用轮次(persist-before-model 递增)
+	RoundBudget  int // 已授予轮次(0 → 启动时取 runtime.MaxAgentRounds;继续 +20)
+	OutputBytes  int
 }
 type callBody struct {
 	ReadBytes     int

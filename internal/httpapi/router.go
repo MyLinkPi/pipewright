@@ -83,76 +83,76 @@ const contextKeySession contextKey = 1
 type Option func(*options)
 
 type options struct {
-	opsChat           *opschat.Service
-	vault             vault.Vault
-	projects          project.Service
-	triggers          trigger.Service
-	cron              cron.Service
-	chain             chain.Service
-	concurrency       run.ConcurrencyService
-	parameters        run.ParameterService
-	pipelines         pipeline.Service
-	pipelineSettings  pipeline.SettingsService
-	runs              run.Service
-	runSub            runSubscriber
-	specLoader        dagrun.SpecLoader
-	feedback          run.FeedbackService
-	secretSource      *RunSecretSource
-	receiver          *trigger.Receiver
-	webhookForwarder  *WebhookForwarder
-	audit             audit.Recorder
-	account           accountService
-	identity          identity.Service
-	aiSettings        ai.Service
-	aiAnalyzer        ai.RepoAnalyzer
-	runDiffer         ai.RunDiffer
-	sourceReader      SourceReader
-	refsLister        RefsLister
-	runnerConfig      runner.Service
-	servers           target.Service
-	labels            labels.Service
-	notifications     notify.Service
-	deployer          deploy.Service
-	anomaly           anomaly.Service
-	anomalyInterval   int // 后台定时检测间隔(秒);0=已关闭。供前端显示节奏。
-	anomalyCooldown   int // 同条件告警去重冷却窗口(秒)。
-	metricsHistory    metrics.Service
-	ssar              ssar.Service
-	oauth             oauth.Service
-	approvalCoord     *approval.Coordinator
-	approvalStore     *approval.Store
-	approvalSigner    *approval.Signer
-	waitCoord         *waitnode.Coordinator
-	doraMetrics       run.MetricsService
-	templates         library.TemplateService
-	varGroups         library.VarGroupService
-	customNodes       library.CustomNodeService
-	artifactStore     *artifactstore.Store
-	retention         *retention.Service
-	maintenance       *maintenance.Service
+	opsChat              *opschat.Service
+	vault                vault.Vault
+	projects             project.Service
+	triggers             trigger.Service
+	cron                 cron.Service
+	chain                chain.Service
+	concurrency          run.ConcurrencyService
+	parameters           run.ParameterService
+	pipelines            pipeline.Service
+	pipelineSettings     pipeline.SettingsService
+	runs                 run.Service
+	runSub               runSubscriber
+	specLoader           dagrun.SpecLoader
+	feedback             run.FeedbackService
+	secretSource         *RunSecretSource
+	receiver             *trigger.Receiver
+	webhookForwarder     *WebhookForwarder
+	audit                audit.Recorder
+	account              accountService
+	identity             identity.Service
+	aiSettings           ai.Service
+	aiAnalyzer           ai.RepoAnalyzer
+	runDiffer            ai.RunDiffer
+	sourceReader         SourceReader
+	refsLister           RefsLister
+	runnerConfig         runner.Service
+	servers              target.Service
+	labels               labels.Service
+	notifications        notify.Service
+	deployer             deploy.Service
+	anomaly              anomaly.Service
+	anomalyInterval      int // 后台定时检测间隔(秒);0=已关闭。供前端显示节奏。
+	anomalyCooldown      int // 同条件告警去重冷却窗口(秒)。
+	metricsHistory       metrics.Service
+	ssar                 ssar.Service
+	oauth                oauth.Service
+	approvalCoord        *approval.Coordinator
+	approvalStore        *approval.Store
+	approvalSigner       *approval.Signer
+	waitCoord            *waitnode.Coordinator
+	doraMetrics          run.MetricsService
+	templates            library.TemplateService
+	varGroups            library.VarGroupService
+	customNodes          library.CustomNodeService
+	artifactStore        *artifactstore.Store
+	retention            *retention.Service
+	maintenance          *maintenance.Service
 	projectMirrorCleaner func(ctx context.Context, repoURL string)
-	certMgmt          certmgmt.Service
-	dnsProviders      dnsprovider.Service
-	aliyunEcs         aliyunecs.Service
-	objectStores      objectstore.Service
-	serviceReg        servicereg.Service
-	platformHTTPS     platformhttps.Service
-	firewallSvc       firewall.Service
-	systemConfig      systemcfg.Service
-	appStore          appstore.Service
-	dbAdmin           dbadmin.Service
-	redisAdmin        redisadmin.Service
-	pveAdmin          pveadmin.Service
-	diskAdmin         diskadmin.Service
-	fileAdmin         fileadmin.Service
-	serverCmds        *servercmd.Service
-	registryHub       registryHubService
-	reexecGuard       ReexecGuard
-	mesh              *meshAdminDeps
-	ceph              ceph.Service
-	mfa               *mfa.Service
-	artifactExporter  artifactImageExporter
-	artifactTransfers artifactTransferService
+	certMgmt             certmgmt.Service
+	dnsProviders         dnsprovider.Service
+	aliyunEcs            aliyunecs.Service
+	objectStores         objectstore.Service
+	serviceReg           servicereg.Service
+	platformHTTPS        platformhttps.Service
+	firewallSvc          firewall.Service
+	systemConfig         systemcfg.Service
+	appStore             appstore.Service
+	dbAdmin              dbadmin.Service
+	redisAdmin           redisadmin.Service
+	pveAdmin             pveadmin.Service
+	diskAdmin            diskadmin.Service
+	fileAdmin            fileadmin.Service
+	serverCmds           *servercmd.Service
+	registryHub          registryHubService
+	reexecGuard          ReexecGuard
+	mesh                 *meshAdminDeps
+	ceph                 ceph.Service
+	mfa                  *mfa.Service
+	artifactExporter     artifactImageExporter
+	artifactTransfers    artifactTransferService
 }
 
 // WithCeph 注入 Ceph 集群部署与管理服务(internal/ceph),在 admin 组挂载 /api/ceph/* 路由
@@ -974,6 +974,7 @@ func New(webFS fs.FS, authn auth.Authenticator, opts ...Option) http.Handler {
 		ar.Get("/settings/registry", makeGetRegistryHubHandler(rh))
 		ar.Put("/settings/registry", makeSaveRegistryHubHandler(rh))
 		ar.Post("/settings/registry/deploy", makeDeployRegistryHandler(rh, aud))
+		ar.Post("/settings/registry/upgrade-image", makeUpgradeRegistryImageHandler(rh, aud))
 		ar.Get("/settings/registry/status", makeRegistryStatusHandler(rh))
 		ar.Post("/settings/registry/prune", makeRegistryPruneHandler(rh, aud))
 		ar.Post("/registry/daemon-apply", makeDaemonApplyHandler(rh, aud))
@@ -1105,6 +1106,10 @@ func New(webFS fs.FS, authn auth.Authenticator, opts ...Option) http.Handler {
 		// RustFS 模板部署成功后联动自动登记对象存储;mysql/postgres 模板联动自动登记
 		// 数据库实例(均尽力而为,不影响部署结果)。
 		ar.Post("/servers/{id}/apps/deploy", makeDeployAppHandler(o.appStore, csv, aud, o.objectStores, o.dbAdmin, o.redisAdmin))
+		// 应用市场升级:读参数边车原位保留参数(空值键 = 保持不变,secret 不重新生成)→
+		// 重渲染 → 复用 Stacks 链路 up -d;upgrade-context 供升级表单预填(secret 只回有值标记)。
+		ar.Get("/servers/{id}/apps/upgrade-context", makeAppUpgradeContextHandler(o.appStore, csv))
+		ar.Post("/servers/{id}/apps/upgrade", makeUpgradeAppHandler(o.appStore, csv, aud))
 		// 容器 AI 诊断 / 看日志(AI moat):取容器日志 → ai.Diagnose 出根因+修复。复用 csv +
 		// o.aiSettings。出网前脱敏;AI 未配/失败 → 200 unavailable,绝不 500。比 {id} 多两段不被吞。
 		ar.Post("/servers/{id}/containers/{containerId}/diagnose", makeContainerDiagnoseHandler(csv, o.aiSettings))
@@ -1217,6 +1222,7 @@ func New(webFS fs.FS, authn auth.Authenticator, opts ...Option) http.Handler {
 		ar.Put("/servicereg/settings", makeUpdateServiceRegSettingsHandler(sr, aud))
 		ar.Get("/servicereg/gateway", makeGetServiceRegGatewayHandler(sr))
 		ar.Post("/servicereg/gateway/deploy", makeDeployServiceRegGatewayHandler(sr, aud))
+		ar.Post("/servicereg/gateway/upgrade-image", makeUpgradeServiceRegGatewayImageHandler(sr, aud))
 		ar.Delete("/servicereg/gateway", makeRemoveServiceRegGatewayHandler(sr, aud))
 		ar.Get("/servicereg/domains", makeListServiceRegDomainsHandler(sr))
 		ar.Post("/servicereg/domains", makeCreateServiceRegDomainHandler(sr, aud))

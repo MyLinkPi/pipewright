@@ -69,4 +69,21 @@ export default {
     regHttps: '该基域已配置证书,将通过 HTTPS 提供。',
     regGoServiceReg: '前往服务注册',
   },
+
+  upgrade: {
+    switch: '切换为升级该实例',
+    badge: '升级模式',
+    hint: '将对该机器上的既有实例 {name} 原位升级(重渲染最新模板 + compose up -d;数据卷保留)。',
+    backToDeploy: '改为全新部署',
+    hasSecret: '已有口令',
+    keepSecret: '留空 = 保持现有口令不变',
+    flowHint: '未填写的参数保持现值;口令留空不会被重新生成。重渲染最新模板后经 SSH 写入受管目录并 docker compose up -d。',
+    submit: '升级',
+    ok: '升级成功',
+    failTitle: '升级失败',
+    done: '{name} 已升级',
+    fail: '升级失败',
+    noContext: '该实例没有部署参数记录(旧版部署或非应用市场栈),无法原位升级;继续将按全新部署处理。',
+    ctxFail: '读取升级信息失败',
+  },
 }

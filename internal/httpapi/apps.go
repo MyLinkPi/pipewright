@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -31,6 +32,7 @@ const (
 	auditActionAppTemplateUpdate = "appstore.template.update"
 	auditActionAppTemplateDelete = "appstore.template.delete"
 	auditActionAppDeploy         = "appstore.deploy"
+	auditActionAppUpgrade        = "appstore.upgrade"
 	auditActionObjectStoreReg    = "objectstore.register"
 	auditTargetAppStore          = "app_template"
 )
@@ -543,6 +545,8 @@ func makeDeleteAppTemplateHandler(svc appstore.Service, aud audit.Recorder) http
 // redis → 自动登记 Redis 管理实例。
 // 可选 instance 支持同机多副本:栈目录与 compose 项目名用 <模板名>-<实例名>(留空即模板名,
 // 默认单实例);数据卷/网络按 compose 项目名前缀自动隔离。
+// 部署成功后在栈目录落参数边车(.appstore-params.json,含生效参数与资源限制)——「升级」
+// (POST .../apps/upgrade)靠它原位保留参数,避免 secret 重新生成改掉既有实例口令。
 func makeDeployAppHandler(apps appstore.Service, servers target.Service, aud audit.Recorder, objStores objectstore.Service, dbAdmins dbadmin.Service, redisAdmins redisadmin.Service) http.HandlerFunc {
 	type request struct {
 		TemplateID string            `json:"templateId"`
@@ -550,23 +554,6 @@ func makeDeployAppHandler(apps appstore.Service, servers target.Service, aud aud
 		Instance   string            `json:"instance,omitempty"` // 可选实例名:栈名后缀,同机多副本
 		CPUs       string            `json:"cpus,omitempty"`     // 可选,全服务 CPU 核数上限(如 "1.0")
 		Memory     string            `json:"memory,omitempty"`   // 可选,全服务内存硬上限(如 "512m")
-	}
-	type response struct {
-		ServerID string            `json:"serverId"`
-		Name     string            `json:"name"`
-		OK       bool              `json:"ok"`
-		Output   string            `json:"output"`
-		Error    string            `json:"error"`
-		Params   map[string]string `json:"params,omitempty"` // 生效参数(含生成的 secret,仅此一次)
-		// RustFS 联动登记结果(仅 rustfs 模板且部署成功时出现;尽力而为,失败不影响 OK)。
-		ObjectStoreRegistered bool   `json:"objectStoreRegistered,omitempty"`
-		ObjectStoreNote       string `json:"objectStoreNote,omitempty"`
-		// 数据库联动登记结果(仅 mysql/postgres 模板且部署成功时出现;尽力而为,失败不影响 OK)。
-		DBRegistered bool   `json:"dbRegistered,omitempty"`
-		DBNote       string `json:"dbNote,omitempty"`
-		// Redis 联动登记结果(仅 redis 模板且部署成功时出现;尽力而为,失败不影响 OK)。
-		RedisRegistered bool   `json:"redisRegistered,omitempty"`
-		RedisNote       string `json:"redisNote,omitempty"`
 	}
 	return func(w http.ResponseWriter, r *http.Request) {
 		if apps == nil {
@@ -588,21 +575,8 @@ func makeDeployAppHandler(apps appstore.Service, servers target.Service, aud aud
 			writeError(w, http.StatusBadRequest, "invalid_app_template", "templateId 必填")
 			return
 		}
-		// 资源限制复用容器创建的同一白名单校验(reCPUs/reMemory,防非法值进 compose)。
-		if req.CPUs != "" && !reCPUs.MatchString(req.CPUs) {
-			writeError(w, http.StatusBadRequest, "invalid_app_deploy", "非法 CPU 上限(正整数/小数,如 0.5、1、2.5)")
-			return
-		}
-		if req.Memory != "" && !reMemory.MatchString(req.Memory) {
-			writeError(w, http.StatusBadRequest, "invalid_app_deploy", "非法内存上限(正整数 + 单位 b/k/m/g,如 512m、1g)")
-			return
-		}
 		// 实例名与 Stacks 部署的项目名同规则(reDockerTgt,防 shell 元字符/路径注入);留空 = 默认单实例。
 		req.Instance = strings.TrimSpace(req.Instance)
-		if req.Instance != "" && !reDockerTgt.MatchString(req.Instance) {
-			writeError(w, http.StatusBadRequest, "invalid_app_deploy", "非法实例名(仅字母数字与 . _ -,不以 - 开头)")
-			return
-		}
 		tpl, err := apps.Get(r.Context(), req.TemplateID)
 		if err != nil {
 			writeAppStoreError(w, err)
@@ -613,9 +587,14 @@ func makeDeployAppHandler(apps appstore.Service, servers target.Service, aud aud
 			writeServerError(w, err)
 			return
 		}
+		// 资源限制复用容器创建的同一白名单校验(reCPUs/reMemory,防非法值进 compose);
 		// PVE 集群物理机不允许作为应用部署目标(0084:虚拟化宿主机不跑平台部署的栈)。
-		if srv.IsPVENode() {
-			writeError(w, http.StatusUnprocessableEntity, "pve_node_not_target", "PVE 集群物理机不允许作为应用部署目标")
+		if msg := validateAppDeployTarget(req.Instance, req.CPUs, req.Memory, srv); msg != "" {
+			if srv.IsPVENode() {
+				writeError(w, http.StatusUnprocessableEntity, "pve_node_not_target", msg)
+				return
+			}
+			writeError(w, http.StatusBadRequest, "invalid_app_deploy", msg)
 			return
 		}
 		// 宿主地址约定参数(advertise_host/ssh_domain,见 hostParamNames):未显式提供或
@@ -632,19 +611,24 @@ func makeDeployAppHandler(apps appstore.Service, servers target.Service, aud aud
 			return
 		}
 		// 生效栈名:实例名留空 = 模板名(兼容既有单实例部署);组合长度与 Stacks 项目名上限一致。
-		stackName := tpl.Name
-		if req.Instance != "" {
-			stackName = tpl.Name + "-" + req.Instance
-			if len(stackName) > 128 {
-				writeError(w, http.StatusBadRequest, "invalid_app_deploy", "实例名过长:组合栈名超过 128 字符")
-				return
-			}
+		stackName := appStackName(tpl.Name, req.Instance)
+		if len(stackName) > 128 {
+			writeError(w, http.StatusBadRequest, "invalid_app_deploy", "实例名过长:组合栈名超过 128 字符")
+			return
 		}
 
-		out := response{ServerID: serverID, Name: stackName, Params: rendered.Used}
+		out := appDeployResponse{ServerID: serverID, Name: stackName, Params: rendered.Used}
 		cctx, cancel := context.WithTimeout(r.Context(), stacksUpTimeout)
 		defer cancel()
 		out.OK, out.Output, out.Error = deployComposeToServer(cctx, servers, serverID, stackName, compose)
+		// 部署成功 → 落参数边车(后续「升级」原位保留参数的凭据;失败只警示不翻转结果)。
+		if out.OK {
+			if werr := writeAppSidecar(cctx, servers, serverID, stackName, appDeploySidecar{
+				TemplateID: req.TemplateID, Params: rendered.Used, CPUs: req.CPUs, Memory: req.Memory,
+			}); werr != nil {
+				out.Output = strings.TrimSpace(out.Output + "\n⚠ 参数记录写入失败(后续无法走「升级」原位保留参数):" + werr.Error())
+			}
+		}
 
 		// RustFS 联动:部署成功后自动登记为对象存储配置(尽力而为,独立超时,不影响部署结果)。
 		if out.OK && tpl.Name == appAutoRegisterObjectStoreTemplate {
@@ -676,6 +660,283 @@ func makeDeployAppHandler(apps appstore.Service, servers target.Service, aud aud
 			Actor: auditActor, Action: auditActionAppDeploy, TargetType: audit.TargetServer, TargetID: serverID,
 			Detail: detail, IP: clientIP(r),
 		})
+		writeJSON(w, http.StatusOK, out)
+	}
+}
+
+// ---------- 参数边车(升级的凭据) ----------
+
+// appParamsFileName 是应用市场部署的「生效参数边车文件」:部署/升级成功后写入受管栈目录
+// (/opt/pipewright/stacks/<name>/),记录模板 ID、生效参数(含 secret)与资源限制。
+// 升级靠它原位保留参数 —— 否则重新渲染时 secret 会重新生成,把既有实例的口令改掉。
+// 安全姿态与 compose 文件一致(同目录明文;Stacks 详情本就能看 compose 全文)。
+const appParamsFileName = ".appstore-params.json"
+
+// appDeploySidecar 是边车文件内容。
+type appDeploySidecar struct {
+	TemplateID string            `json:"templateId"`
+	Params     map[string]string `json:"params"`
+	CPUs       string            `json:"cpus,omitempty"`
+	Memory     string            `json:"memory,omitempty"`
+}
+
+// appSidecarMaxBytes 是边车文件尺寸上限(参数 ≤32 个、值 ≤256B,64KiB 绰绰有余)。
+const appSidecarMaxBytes = 64 << 10
+
+// cappedWriter 截断写入(超过 max 的字节静默丢弃;供边车读取限尺寸,防异常大文件撑爆内存)。
+type cappedWriter struct {
+	buf *bytes.Buffer
+	max int
+}
+
+func (w cappedWriter) Write(p []byte) (int, error) {
+	n := len(p)
+	if remain := w.max - w.buf.Len(); remain < len(p) {
+		p = p[:max(remain, 0)]
+	}
+	_, err := w.buf.Write(p)
+	return n, err
+}
+
+// writeAppSidecar 把生效参数写入目标机栈目录的边车文件(部署/升级成功后调用)。
+func writeAppSidecar(ctx context.Context, svc target.Service, serverID, stackName string, sc appDeploySidecar) error {
+	raw, err := json.Marshal(sc)
+	if err != nil {
+		return err
+	}
+	return svc.Upload(ctx, serverID, bytes.NewReader(raw), stacksBaseDir+"/"+stackName+"/"+appParamsFileName)
+}
+
+// readAppSidecar 读目标机栈目录的参数边车;文件不存在/读不到/损坏均返回 error(人读文案)。
+func readAppSidecar(ctx context.Context, svc target.Service, serverID, stackName string) (*appDeploySidecar, error) {
+	var buf bytes.Buffer
+	if _, err := svc.Download(ctx, serverID, stacksBaseDir+"/"+stackName+"/"+appParamsFileName, cappedWriter{buf: &buf, max: appSidecarMaxBytes}); err != nil {
+		return nil, fmt.Errorf("读取参数记录失败:%w", err)
+	}
+	var sc appDeploySidecar
+	if err := json.Unmarshal(buf.Bytes(), &sc); err != nil || sc.TemplateID == "" {
+		return nil, errors.New("参数记录损坏或为空")
+	}
+	return &sc, nil
+}
+
+// appDeployResponse 是部署/升级共用响应体(冻结契约;Params 含生成的 secret,仅此一次返回)。
+type appDeployResponse struct {
+	ServerID string            `json:"serverId"`
+	Name     string            `json:"name"`
+	OK       bool              `json:"ok"`
+	Output   string            `json:"output"`
+	Error    string            `json:"error"`
+	Params   map[string]string `json:"params,omitempty"` // 生效参数(含生成的 secret,仅此一次)
+	// RustFS 联动登记结果(仅 rustfs 模板且部署成功时出现;尽力而为,失败不影响 OK)。
+	ObjectStoreRegistered bool   `json:"objectStoreRegistered,omitempty"`
+	ObjectStoreNote       string `json:"objectStoreNote,omitempty"`
+	// 数据库联动登记结果(仅 mysql/postgres 模板且部署成功时出现;尽力而为,失败不影响 OK)。
+	DBRegistered bool   `json:"dbRegistered,omitempty"`
+	DBNote       string `json:"dbNote,omitempty"`
+	// Redis 联动登记结果(仅 redis 模板且部署成功时出现;尽力而为,失败不影响 OK)。
+	RedisRegistered bool   `json:"redisRegistered,omitempty"`
+	RedisNote       string `json:"redisNote,omitempty"`
+}
+
+// appStackName 推导生效栈名:实例名留空 = 模板名(兼容既有单实例);组合上限与 Stacks 一致。
+func appStackName(tplName, instance string) string {
+	if instance == "" {
+		return tplName
+	}
+	return tplName + "-" + instance
+}
+
+// validateAppDeployTarget 是部署/升级共用的入参校验(instance/cpus/memory 白名单 + PVE 宿主机拦截)。
+// 返回人读错误串("" = 通过)。
+func validateAppDeployTarget(instance, cpus, memory string, srv *target.Server) string {
+	if cpus != "" && !reCPUs.MatchString(cpus) {
+		return "非法 CPU 上限(正整数/小数,如 0.5、1、2.5)"
+	}
+	if memory != "" && !reMemory.MatchString(memory) {
+		return "非法内存上限(正整数 + 单位 b/k/m/g,如 512m、1g)"
+	}
+	if instance != "" && !reDockerTgt.MatchString(instance) {
+		return "非法实例名(仅字母数字与 . _ -,不以 - 开头)"
+	}
+	if srv.IsPVENode() {
+		return "PVE 集群物理机不允许作为应用部署目标"
+	}
+	return ""
+}
+
+// makeAppUpgradeContextHandler 返回 GET /api/servers/{id}/apps/upgrade-context?templateId=&instance=:
+// 读既有实例的参数边车供升级表单预填。secret 参数只回「有值」标记不回值(与部署一次性返回
+// 纪律一致;升级时留空 = 保持不变)。无边车(旧版部署/非应用市场栈)→ found:false。
+func makeAppUpgradeContextHandler(apps appstore.Service, servers target.Service) http.HandlerFunc {
+	type response struct {
+		Found     bool              `json:"found"`
+		StackName string            `json:"stackName"`
+		Params    map[string]string `json:"params"`  // 仅非 secret 参数的现值(预填用)
+		Secrets   []string          `json:"secrets"` // 有现值的 secret 参数名(不回值)
+		CPUs      string            `json:"cpus"`    // 原部署的资源限制(升级沿用)
+		Memory    string            `json:"memory"`
+	}
+	return func(w http.ResponseWriter, r *http.Request) {
+		if apps == nil || servers == nil {
+			writeError(w, http.StatusServiceUnavailable, "internal", "应用商店/服务器服务未初始化")
+			return
+		}
+		serverID := chi.URLParam(r, "id")
+		templateID := r.URL.Query().Get("templateId")
+		instance := strings.TrimSpace(r.URL.Query().Get("instance"))
+		if templateID == "" {
+			writeError(w, http.StatusBadRequest, "invalid_app_template", "templateId 必填")
+			return
+		}
+		if instance != "" && !reDockerTgt.MatchString(instance) {
+			writeError(w, http.StatusBadRequest, "invalid_app_deploy", "非法实例名(仅字母数字与 . _ -,不以 - 开头)")
+			return
+		}
+		tpl, err := apps.Get(r.Context(), templateID)
+		if err != nil {
+			writeAppStoreError(w, err)
+			return
+		}
+		if _, err := servers.Get(r.Context(), serverID); err != nil {
+			writeServerError(w, err)
+			return
+		}
+		stackName := appStackName(tpl.Name, instance)
+		out := response{StackName: stackName, Params: map[string]string{}, Secrets: []string{}}
+		sc, err := readAppSidecar(r.Context(), servers, serverID, stackName)
+		if err != nil {
+			writeJSON(w, http.StatusOK, out) // found:false —— 旧版部署/非应用市场栈,诚实告知
+			return
+		}
+		out.Found = true
+		out.CPUs, out.Memory = sc.CPUs, sc.Memory
+		secretNames := map[string]bool{}
+		for _, p := range tpl.Params {
+			if p.Type == appstore.ParamTypeSecret {
+				secretNames[p.Name] = true
+			}
+		}
+		for k, v := range sc.Params {
+			if secretNames[k] {
+				out.Secrets = append(out.Secrets, k)
+			} else {
+				out.Params[k] = v
+			}
+		}
+		writeJSON(w, http.StatusOK, out)
+	}
+}
+
+// makeUpgradeAppHandler 返回 POST /api/servers/{id}/apps/upgrade {templateId, instance?, params, cpus?, memory?}。
+// 升级 = 读参数边车 → 本次显式给的参数覆盖边车现值(键缺省/留空 = 保持不变,secret 绝不重新生成)
+// → 重新渲染 → 重走 Stacks 部署链路(compose up -d 只重建有变化的服务;数据卷按项目名保持挂载)。
+// 请求带非空 cpus/memory 时覆盖原资源限制;成功后边车重写为最新生效值。
+// 无边车(旧版部署/非应用市场栈)→ 200 + ok:false + 人读指引(诚实,不假装能升)。
+// 升级不重跑部署联动登记(对象存储/数据库/Redis 首次部署已登记,参数未变时原地轮换无意义)。
+func makeUpgradeAppHandler(apps appstore.Service, servers target.Service, aud audit.Recorder) http.HandlerFunc {
+	type request struct {
+		TemplateID string            `json:"templateId"`
+		Params     map[string]string `json:"params"`
+		Instance   string            `json:"instance,omitempty"`
+		CPUs       string            `json:"cpus,omitempty"`
+		Memory     string            `json:"memory,omitempty"`
+	}
+	return func(w http.ResponseWriter, r *http.Request) {
+		if apps == nil || servers == nil {
+			writeError(w, http.StatusServiceUnavailable, "internal", "应用商店/服务器服务未初始化")
+			return
+		}
+		serverID := chi.URLParam(r, "id")
+		r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
+		var req request
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "bad_request", "请求体格式错误")
+			return
+		}
+		if req.TemplateID == "" {
+			writeError(w, http.StatusBadRequest, "invalid_app_template", "templateId 必填")
+			return
+		}
+		req.Instance = strings.TrimSpace(req.Instance)
+		tpl, err := apps.Get(r.Context(), req.TemplateID)
+		if err != nil {
+			writeAppStoreError(w, err)
+			return
+		}
+		srv, err := servers.Get(r.Context(), serverID)
+		if err != nil {
+			writeServerError(w, err)
+			return
+		}
+		if msg := validateAppDeployTarget(req.Instance, req.CPUs, req.Memory, srv); msg != "" {
+			code := "invalid_app_deploy"
+			if srv.IsPVENode() {
+				writeError(w, http.StatusUnprocessableEntity, "pve_node_not_target", msg)
+				return
+			}
+			writeError(w, http.StatusBadRequest, code, msg)
+			return
+		}
+		stackName := appStackName(tpl.Name, req.Instance)
+		if len(stackName) > 128 {
+			writeError(w, http.StatusBadRequest, "invalid_app_deploy", "实例名过长:组合栈名超过 128 字符")
+			return
+		}
+		out := appDeployResponse{ServerID: serverID, Name: stackName}
+		auditOp := func() {
+			recordAudit(r.Context(), aud, audit.Entry{
+				Actor: auditActor, Action: auditActionAppUpgrade, TargetType: audit.TargetServer, TargetID: serverID,
+				Detail: map[string]any{"template": tpl.Name, "stack": stackName, "ok": out.OK}, IP: clientIP(r),
+			})
+		}
+		sc, err := readAppSidecar(r.Context(), servers, serverID, stackName)
+		if err != nil {
+			out.Error = "该实例没有部署参数记录(旧版部署或非应用市场栈),无法原位升级:可到 Stacks 用「更新」拉取同名可变镜像,或重新部署(会重新生成口令)"
+			auditOp()
+			writeJSON(w, http.StatusOK, out)
+			return
+		}
+		// 合并参数:仅模板 schema 声明的键(模板新版删掉的参数静默丢弃,防 ErrUnknownParam);
+		// 显式非空值覆盖边车现值,其余原位保留。
+		merged := map[string]string{}
+		for _, p := range tpl.Params {
+			if v, ok := req.Params[p.Name]; ok && strings.TrimSpace(v) != "" {
+				merged[p.Name] = strings.TrimSpace(v)
+			} else if old, ok := sc.Params[p.Name]; ok {
+				merged[p.Name] = old
+			}
+		}
+		rendered, err := apps.Render(r.Context(), req.TemplateID, merged)
+		if err != nil {
+			writeAppStoreError(w, err)
+			return
+		}
+		cpus, memory := sc.CPUs, sc.Memory
+		if req.CPUs != "" {
+			cpus = req.CPUs
+		}
+		if req.Memory != "" {
+			memory = req.Memory
+		}
+		compose := rendered.Compose
+		if compose, err = injectComposeLimits(compose, cpus, memory); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_app_deploy", "资源限制注入失败:"+err.Error())
+			return
+		}
+		out.Params = rendered.Used
+		cctx, cancel := context.WithTimeout(r.Context(), stacksUpTimeout)
+		defer cancel()
+		out.OK, out.Output, out.Error = deployComposeToServer(cctx, servers, serverID, stackName, compose)
+		// 升级成功 → 边车重写为最新生效参数/资源限制(下一轮升级的凭据;失败只警示不翻转结果)。
+		if out.OK {
+			if werr := writeAppSidecar(cctx, servers, serverID, stackName, appDeploySidecar{
+				TemplateID: req.TemplateID, Params: rendered.Used, CPUs: cpus, Memory: memory,
+			}); werr != nil {
+				out.Output = strings.TrimSpace(out.Output + "\n⚠ 参数记录写入失败(后续升级无法原位保留参数):" + werr.Error())
+			}
+		}
+		auditOp()
 		writeJSON(w, http.StatusOK, out)
 	}
 }

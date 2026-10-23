@@ -1,10 +1,10 @@
 // Package maintenance 是「磁盘维护」服务(磁盘治理,0094):把四类清理能力聚合成独立方法,
 // 自动调度(retention Sweeper 任务 / 独立 ticker)与设置页手动按钮共用同一套实现。
 //
-//	 CleanBuildcache        构建依赖缓存(cache/):总量上限 LRU 淘汰 + .save-* 残留清理
-//	 CleanRepocache         仓库镜像(repos/):删除无任何项目引用的镜像
-//	 SweepRemoteWorkspaces  构建机(/tmp/pipewright-remote|shared):删除 48h 前的残留工作区
-//	 SweepLocalTemp         本机 os.TempDir:删除 48h 前的构建孤儿临时文件
+//	CleanBuildcache        构建依赖缓存(cache/):总量上限 LRU 淘汰 + .save-* 残留清理
+//	CleanRepocache         仓库镜像(repos/):删除无任何项目引用的镜像
+//	SweepRemoteWorkspaces  构建机(/tmp/pipewright-remote|shared):删除 48h 前的残留工作区
+//	SweepLocalTemp         本机 os.TempDir:删除 48h 前的构建孤儿临时文件
 //
 // 纪律:全部 best-effort——依赖未装配(缓存关闭等)返回 OK+说明;单条/单机失败跳过并计入
 // Detail,绝不让清理动作本身报错中断;进行中的构建现场靠 mtime 年龄门天然不受影响。
@@ -41,7 +41,7 @@ var remoteSweepCmd = []string{"sh", "-c",
 	`find /tmp/pipewright-remote /tmp/pipewright-shared -mindepth 1 -maxdepth 1 -mtime +2 -exec rm -rf {} + 2>/dev/null || true`}
 
 // remoteSweepTimeout/remoteSweepConcurrency 是逐台远程清扫的单机超时与并发上限
-//(SSH 逐台执行,大机房也要有界完成)。
+// (SSH 逐台执行,大机房也要有界完成)。
 const (
 	remoteSweepTimeout     = 60 * time.Second
 	remoteSweepConcurrency = 8
@@ -51,8 +51,8 @@ const (
 type Result struct {
 	Target string `json:"target"`
 	OK     bool   `json:"ok"`
-	Items  int    `json:"items"` // 删除条数(缓存条目/镜像数/文件数;远程清扫=机器数)
-	Bytes  int64  `json:"bytes"` // 回收字节数(远程清扫恒 0——远端 find 不回报大小)
+	Items  int    `json:"items"`            // 删除条数(缓存条目/镜像数/文件数;远程清扫=机器数)
+	Bytes  int64  `json:"bytes"`            // 回收字节数(远程清扫恒 0——远端 find 不回报大小)
 	Detail string `json:"detail,omitempty"` // 人读说明/跳过原因
 	// Steps 是清理过程留痕:删了哪些文件/目录、本地执行了什么(上限 stepsMax 条,超出截断)。
 	// 纪律对齐 build 的「所有执行的命令可见」:手动清理点了什么、动了什么,必须可查。
@@ -396,7 +396,7 @@ func (s *Service) CleanImages(ctx context.Context) Result {
 					m.OK = true
 					res.Items += len(removed)
 					steps = appendSteps(steps, "构建机 "+sv.Name+" 删除", removed)
-					steps = append(steps, "构建机 "+sv.Name+" 追加清理:" + strings.Join(extraEcho, "; "))
+					steps = append(steps, "构建机 "+sv.Name+" 追加清理:"+strings.Join(extraEcho, "; "))
 				}
 				res.Machines = append(res.Machines, m)
 			}

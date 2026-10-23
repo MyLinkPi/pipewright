@@ -39,7 +39,6 @@ func TestNoTargetsRejectsOperationsBeforeModelRequest(t *testing.T) {
 	}
 }
 
-
 func (m *planningTestModel) AnalyzeStream(ctx context.Context, in AnalysisRequest, emit func(StreamChunk) error) (string, error) {
 	return m.Analyze(ctx, in)
 }
@@ -198,7 +197,6 @@ func TestPlanningValidPostgresPlanStillExecutesOnce(t *testing.T) {
 		t.Fatal(calls, plans)
 	}
 }
-
 
 func (m *planningTestModel) AgentRound(ctx context.Context, in AgentRequest) (AgentReply, error) {
 	reply, err := m.fakeModel.AgentRound(ctx, in)

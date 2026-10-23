@@ -138,7 +138,7 @@ func (s *service) Diagnose(ctx context.Context, in DiagnoseInput) (*Diagnosis, e
 
 	// apiKey:非 ollama 解密既有密钥进程内取用即弃;失败 → 降级(绝不泄漏)。
 	apiKey := ""
-		if len(sealed) == 0 {
+	if len(sealed) == 0 {
 		return unavailable("AI 未配置或未启用,无法生成诊断"), nil
 	}
 	plain, oerr := s.openSecret(sealed)

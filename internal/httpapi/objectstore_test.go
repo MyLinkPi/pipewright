@@ -376,4 +376,3 @@ func TestObjectStoreProbeBuckets(t *testing.T) {
 		t.Fatalf("错误体不应回显 Secret: %s", raw)
 	}
 }
-

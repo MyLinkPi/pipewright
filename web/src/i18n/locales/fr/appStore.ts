@@ -65,4 +65,21 @@ export default {
     regHttps: "Ce domaine de base possède un certificat ; il sera servi en HTTPS.",
     regGoServiceReg: "Aller au registre de services",
   },
+
+  upgrade: {
+    switch: "Passer à la mise à niveau de cette instance",
+    badge: "Mode mise à niveau",
+    hint: "L'instance existante {name} sur cette machine sera mise à niveau sur place (re-rendu du dernier modèle + compose up -d ; les volumes de données sont conservés).",
+    backToDeploy: "Revenir à un nouveau déploiement",
+    hasSecret: "Mot de passe défini",
+    keepSecret: "Vide = conserver le mot de passe actuel",
+    flowHint: "Les paramètres laissés vides conservent leur valeur ; les mots de passe vides ne sont pas régénérés. Le dernier modèle est re-rendu, écrit via SSH, puis docker compose up -d.",
+    submit: "Mettre à niveau",
+    ok: "Mise à niveau réussie",
+    failTitle: "Échec de la mise à niveau",
+    done: "{name} mis à niveau",
+    fail: "Échec de la mise à niveau",
+    noContext: "Cette instance n'a pas d'enregistrement des paramètres de déploiement (ancienne version ou stack hors app store) : mise à niveau sur place impossible. Continuer revient à un nouveau déploiement.",
+    ctxFail: "Échec du chargement des informations de mise à niveau",
+  },
 }

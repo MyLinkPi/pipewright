@@ -252,8 +252,8 @@ type ProbeInput struct {
 
 // BucketListResult 是账户下桶的候选列表(按名字排序;Truncated=true 表示超出上限被截断)。
 type BucketListResult struct {
-	Buckets    []BucketEntry
-	Truncated  bool
+	Buckets   []BucketEntry
+	Truncated bool
 }
 
 // maxBucketCandidates 是桶候选列表的硬上限(防巨账户撑爆响应;按名字排序后取前 N)。

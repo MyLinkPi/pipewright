@@ -278,6 +278,8 @@ func TestImageBaseRunArgs(t *testing.T) {
 		{"仅结构化键", map[string]string{"cpuLimit": "0.5", "memoryLimit": "1g"}, []string{"--cpus", "0.5", "--memory", "1g"}},
 		{"空白值忽略", map[string]string{"cpuLimit": "  ", "restartPolicy": ""}, nil},
 		{"envVars 裁空行", map[string]string{"envVars": "\n A=1 \n\nB=2\n"}, []string{"-e", "A=1", "-e", "B=2"}},
+		{"envVars 跳过 # 注释行", map[string]string{"envVars": "# LLM_API_KEY=\nPORT=3000\n  # 缩进注释\n# ===== 服务 =====\nLOG_LEVEL=info"},
+			[]string{"-e", "PORT=3000", "-e", "LOG_LEVEL=info"}},
 		{"仅 volumes:自动卷按容器名推导", map[string]string{"volumes": "/var/lib/mysql"},
 			[]string{"-v", "pw-shopapp__var-lib-mysql:/var/lib/mysql"}},
 		{"volumes:显式绑定 / 命名卷 / ro", map[string]string{"volumes": "/data/app:/app/data:ro\nappdata:/app/data"},

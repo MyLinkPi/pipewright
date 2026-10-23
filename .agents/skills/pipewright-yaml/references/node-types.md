@@ -87,7 +87,7 @@ config **必填 `artifactJob`**:要推送的镜像来源节点 name,**必须是�
 经 SSH 滚动部署 jar/dist 等:`releases/<runId>/` + 原子 `current` 软链 + 重启 + 健康门控 + 失败自动回滚。config **必填 `artifactJob`**(产物来源节点 name)。常用:`selector`(构建机/目标机选择器)、`selectorMode`(`all`/`any`)、`deployMode`(`artifact`/`command`)、`artifactName`(glob 消歧)、`deployPath`、`restartCommand`、`firstBatchSize`/`batchSize`(分批滚动)、`healthPath`/`healthPort`/`healthUrl`/`healthCommand`/`healthRetries`/`healthIntervalSeconds`、服务注册绑定 `regDomainId`/`regServiceName`/`regPath`/`regPort`/`regStripPath`/`regServiceId`。
 
 ### deploy_container — 容器部署(镜像产物)
-在目标机 pull + 重建容器。config **必填 `artifactJob`**(只能指向 `build_image`)、`containerName`。常用:`selector`/`selectorMode`、`ports`(如 `"8080, auto:9000, 8080:80"`)、`envVars`(每行 `KEY=value`)、`volumes`(每行 `/data` 或 `宿主:容器`)、`cpuLimit`/`memoryLimit`、`restartPolicy`(`no`/`always`/`unless-stopped`/`on-failure`)、`runArgs`(自由参数)、`autoPortRange`、`registryUrl`/`registryCredentialId`(目标机登录私有仓库)、`firstBatchSize`/`batchSize`/`maxTargets`、`health*` 系列、服务注册 `reg*` 系列。
+在目标机 pull + 重建容器。config **必填 `artifactJob`**(只能指向 `build_image`)、`containerName`。常用:`selector`/`selectorMode`、`ports`(如 `"8080, auto:9000, 8080:80"`)、`envVars`(每行 `KEY=value`,`#` 开头为注释行)、`volumes`(每行 `/data` 或 `宿主:容器`)、`cpuLimit`/`memoryLimit`、`restartPolicy`(`no`/`always`/`unless-stopped`/`on-failure`)、`runArgs`(自由参数)、`autoPortRange`、`registryUrl`/`registryCredentialId`(目标机登录私有仓库)、`firstBatchSize`/`batchSize`/`maxTargets`、`health*` 系列、服务注册 `reg*` 系列。
 
 ### oss_upload — 对象存储上传
 config **必填 `storageId`**(平台设置页的对象存储配置)、**`artifactJob`**(上游产物节点 name)。可选:`prefix`(支持 `{{runId}}`/`{{branch}}`/`{{commit}}`/`{{project}}`/`{{date}}`/`{{date:格式}}` 占位)、`artifactName`(glob)。

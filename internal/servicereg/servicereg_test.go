@@ -300,6 +300,7 @@ func TestNginxBootstrapMinConfValid(t *testing.T) {
 }
 
 // gwContainerUp 是「容器在且端口映射吻合」的 fake 探测结果,label 为自举版本标签输出。
+// .Config.Image 用完整 --format 串精确匹配(inspectNginx 的 Running|Image 合并查询不命中)。
 func gwContainerUp(label string) func([]string) *target.ExecResult {
 	return func(cmd []string) *target.ExecResult {
 		joined := strings.Join(cmd, " ")
@@ -308,6 +309,8 @@ func gwContainerUp(label string) func([]string) *target.ExecResult {
 			return &target.ExecResult{ExitCode: 0, Stdout: "80/tcp=80 443/tcp=443 "}
 		case strings.Contains(joined, "Config.Labels"):
 			return &target.ExecResult{ExitCode: 0, Stdout: label}
+		case strings.Contains(joined, "--format {{.Config.Image}}"):
+			return &target.ExecResult{ExitCode: 0, Stdout: defaultNginxImage}
 		}
 		return nil
 	}
@@ -364,6 +367,149 @@ func TestEnsureNginxKeepsContainerWhenPortAndLabelMatch(t *testing.T) {
 			if !hasCmd(ft, prefix...) {
 				t.Fatalf("缺命令 %v:\n%s", prefix, joinAllCmds(ft))
 			}
+		}
+	})
+}
+
+// TestEnsureNginxRecreatesOnImageDrift:端口/自举标签均吻合,但容器创建引用与期望镜像
+// 不符(改了镜像设置或环境变量)→ ensureNginx 应重建容器让新镜像生效。
+func TestEnsureNginxRecreatesOnImageDrift(t *testing.T) {
+	storetest.ForEachDialect(t, func(t *testing.T, st *store.Store) {
+		svc, ft := newTestService(t, st.DB)
+		ctx := context.Background()
+		if _, err := svc.UpdateSettings(ctx, SettingsUpdate{ServerID: strPtr("srv1")}); err != nil {
+			t.Fatal(err)
+		}
+		base := gwContainerUp(nginxBootstrapVer)
+		ft.resultFor = func(cmd []string) *target.ExecResult {
+			if strings.Contains(strings.Join(cmd, " "), "--format {{.Config.Image}}") {
+				return &target.ExecResult{ExitCode: 0, Stdout: "nginx:1.25-alpine"} // 旧引用
+			}
+			return base(cmd)
+		}
+		if err := svc.Apply(ctx); err != nil {
+			t.Fatalf("apply:%v", err)
+		}
+		if !hasCmd(ft, "docker", "rm", "-f", "pipewright-nginx") {
+			t.Fatalf("镜像引用漂移应重建容器:\n%s", joinAllCmds(ft))
+		}
+		if !hasCmd(ft, "docker", "run", "-d") {
+			t.Fatalf("漂移重建应重新起容器:\n%s", joinAllCmds(ft))
+		}
+	})
+}
+
+// gwUpgradeProbe 按主机脚本化 UpgradeGatewayImage 的探测响应:
+// srv1 容器镜像 ID 旧(sha256:old1)、pull 后本地新 ID(sha256:new1)→ changed;
+// srv2 两侧同 ID → 未变。srv1 的裸 inspect(rm 后/apply 时)报不存在,触发全新重建。
+func gwUpgradeProbe(sid string, cmd []string) *target.ExecResult {
+	joined := strings.Join(cmd, " ")
+	isIDQuery := strings.Contains(joined, "{{.Image}}")                  // 容器实际镜像 ID
+	isRefQuery := strings.Contains(joined, "--format {{.Config.Image}}") // 容器创建引用
+	isLocalQuery := strings.Contains(joined, "{{.Id}}")                  // 本地镜像 ID
+	isPlainInspect := strings.HasPrefix(joined, "docker inspect ") && !strings.Contains(joined, "{{")
+	switch sid {
+	case "srv1":
+		switch {
+		case isIDQuery:
+			return &target.ExecResult{ExitCode: 0, Stdout: "sha256:old1"}
+		case isRefQuery:
+			return &target.ExecResult{ExitCode: 0, Stdout: defaultNginxImage}
+		case isLocalQuery:
+			return &target.ExecResult{ExitCode: 0, Stdout: "sha256:new1"}
+		case isPlainInspect:
+			return &target.ExecResult{ExitCode: 1, Stderr: "No such container"}
+		}
+	case "srv2":
+		switch {
+		case isIDQuery, isLocalQuery:
+			return &target.ExecResult{ExitCode: 0, Stdout: "sha256:same2"}
+		case isRefQuery:
+			return &target.ExecResult{ExitCode: 0, Stdout: defaultNginxImage}
+		case isPlainInspect:
+			return &target.ExecResult{ExitCode: 0}
+		case strings.Contains(joined, "PortBindings"):
+			return &target.ExecResult{ExitCode: 0, Stdout: "80/tcp=80 443/tcp=443 "}
+		case strings.Contains(joined, "Config.Labels"):
+			return &target.ExecResult{ExitCode: 0, Stdout: nginxBootstrapVer}
+		}
+	}
+	return nil
+}
+
+// TestUpgradeGatewayImageFlow:双网关主机,一台镜像有更新(重建)、一台已是最新(不动)。
+func TestUpgradeGatewayImageFlow(t *testing.T) {
+	storetest.ForEachDialect(t, func(t *testing.T, st *store.Store) {
+		svc, ft := newTestServiceMulti(t, st.DB, "srv1", "srv2")
+		ft.resultForServer = gwUpgradeProbe
+		res, err := svc.UpgradeGatewayImage(context.Background())
+		if err != nil {
+			t.Fatalf("upgrade:%v", err)
+		}
+		if res.Image != defaultNginxImage || len(res.Results) != 2 {
+			t.Fatalf("聚合结果不符:%+v", res)
+		}
+		r1, r2 := res.Results[0], res.Results[1]
+		if !r1.OK || !r1.Changed {
+			t.Fatalf("srv1 应升级成功且有变化:%+v", r1)
+		}
+		if !r2.OK || r2.Changed {
+			t.Fatalf("srv2 应已是最新未动:%+v", r2)
+		}
+		// 两台都 pull 过;只有 srv1 被 rm + 重建。
+		for _, sid := range []string{"srv1", "srv2"} {
+			if !hasCmdOn(ft, sid, "docker", "pull", defaultNginxImage) {
+				t.Fatalf("%s 应 pull 期望镜像:\n%s", sid, joinAllCmds(ft))
+			}
+		}
+		if !hasCmdOn(ft, "srv1", "docker", "rm", "pipewright-nginx") {
+			t.Fatalf("srv1 有变化应先 rm 旧容器:\n%s", joinAllCmds(ft))
+		}
+		if hasCmdOn(ft, "srv2", "docker", "rm") {
+			t.Fatalf("srv2 未变不应 rm:\n%s", joinAllCmds(ft))
+		}
+		if !hasCmdOn(ft, "srv1", "docker", "run", "-d") {
+			t.Fatalf("srv1 应重建新容器:\n%s", joinAllCmds(ft))
+		}
+		if hasCmdOn(ft, "srv2", "docker", "run", "-d") {
+			t.Fatalf("srv2 未变不应重建:\n%s", joinAllCmds(ft))
+		}
+	})
+}
+
+// TestUpgradeGatewayImageNotDeployed:主机上没有网关容器 → 该台 ok:false + 人读指引,不阻断。
+func TestUpgradeGatewayImageNotDeployed(t *testing.T) {
+	storetest.ForEachDialect(t, func(t *testing.T, st *store.Store) {
+		svc, ft := newTestService(t, st.DB)
+		ctx := context.Background()
+		if _, err := svc.UpdateSettings(ctx, SettingsUpdate{ServerID: strPtr("srv1")}); err != nil {
+			t.Fatal(err)
+		}
+		ft.resultFor = func(cmd []string) *target.ExecResult {
+			if strings.Contains(strings.Join(cmd, " "), "{{.Image}}") {
+				return &target.ExecResult{ExitCode: 1, Stderr: "No such container"}
+			}
+			return nil
+		}
+		res, err := svc.UpgradeGatewayImage(ctx)
+		if err != nil {
+			t.Fatalf("upgrade:%v", err)
+		}
+		if len(res.Results) != 1 || res.Results[0].OK || !strings.Contains(res.Results[0].Error, "部署网关") {
+			t.Fatalf("未部署应 ok:false + 指引:%+v", res.Results)
+		}
+		if hasCmd(ft, "docker", "rm") || hasCmd(ft, "docker", "run") {
+			t.Fatalf("未部署不应触碰容器:\n%s", joinAllCmds(ft))
+		}
+	})
+}
+
+// TestUpgradeGatewayImageNoGateway:未配置网关主机 → ErrNoGateway。
+func TestUpgradeGatewayImageNoGateway(t *testing.T) {
+	storetest.ForEachDialect(t, func(t *testing.T, st *store.Store) {
+		svc, _ := newTestService(t, st.DB)
+		if _, err := svc.UpgradeGatewayImage(context.Background()); err != ErrNoGateway {
+			t.Fatalf("应 ErrNoGateway,得 %v", err)
 		}
 	})
 }

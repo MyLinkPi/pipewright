@@ -18,6 +18,8 @@ import {
   createAppTemplate,
   deleteAppTemplate,
   deployApp,
+  upgradeApp,
+  getAppUpgradeContext,
   type AppTemplate,
   type AppParamSpec,
   type AppDeployResult,
@@ -88,6 +90,11 @@ const deployCpus = ref('')
 const deployMemory = ref('')
 const deployBusy = ref(false)
 const deployResult = ref<AppDeployResult | null>(null)
+// 升级模式:栈名已被占用时可将对话框切换为「原位升级」——读参数边车预填非密现值,
+// secret 留空 = 保持不变(不重新生成);提交走 upgrade 端点而非 deploy。
+const deployMode = ref<'deploy' | 'upgrade'>('deploy')
+const upgradeSecrets = ref<string[]>([]) // 既有实例有值的 secret 参数名
+const upgradeCtxBusy = ref(false)
 
 // 选项第二行带容量摘要(容器数/负载/内存/磁盘),便于把应用放到还装得下的机器。
 const serverOptions = computed(() =>
@@ -127,6 +134,8 @@ async function loadStackNames(serverId: string): Promise<void> {
 }
 const missingRequired = computed(() => {
   if (!deploying.value) return false
+  // 升级模式:留空 = 保留边车现值,不按必填拦截(模板新增的必填项由后端渲染校验兜底)。
+  if (deployMode.value === 'upgrade') return false
   return deploying.value.params.some(
     (p) =>
       p.required &&
@@ -169,6 +178,8 @@ function openDeploy(tpl: AppTemplate): void {
   stackNames.value = null
   regDoneFqdn.value = ''
   sshDomainAuto.value = ''
+  deployMode.value = 'deploy'
+  upgradeSecrets.value = []
   deployServer.value = servers.value.length === 1 ? servers.value[0].id : ''
   const vals: Record<string, string> = {}
   for (const p of tpl.params) vals[p.name] = p.default ?? ''
@@ -179,29 +190,58 @@ function openDeploy(tpl: AppTemplate): void {
   }
 }
 
+// enterUpgradeMode 切换为升级模式:读参数边车预填非密现值与资源限制;无边车(旧版
+// 部署/非应用市场栈)→ 提示不可原位升级,停留部署模式。
+async function enterUpgradeMode(): Promise<void> {
+  if (!deploying.value || !deployServer.value || upgradeCtxBusy.value) return
+  upgradeCtxBusy.value = true
+  try {
+    const ctx = await getAppUpgradeContext(deployServer.value, deploying.value.id, deployInstance.value.trim())
+    if (!ctx.found) {
+      toast.error(t('appStore.upgrade.noContext'))
+      return
+    }
+    deployMode.value = 'upgrade'
+    upgradeSecrets.value = ctx.secrets
+    const vals: Record<string, string> = {}
+    for (const p of deploying.value.params) vals[p.name] = ctx.params[p.name] ?? ''
+    paramValues.value = vals
+    deployCpus.value = ctx.cpus
+    deployMemory.value = ctx.memory
+  } catch (err) {
+    toast.error(errMsg(err, t('appStore.upgrade.ctxFail')))
+  } finally {
+    upgradeCtxBusy.value = false
+  }
+}
+
+// exitUpgradeMode 回到全新部署:整体重置表单(参数回默认值)。
+function exitUpgradeMode(): void {
+  if (deploying.value) openDeploy(deploying.value)
+}
+
 async function submitDeploy(): Promise<void> {
   if (!deploying.value || !deployServer.value) return
   deployBusy.value = true
+  const upgrading = deployMode.value === 'upgrade'
   try {
-    const res = await deployApp(
-      deployServer.value,
-      deploying.value.id,
-      paramValues.value,
-      {
-        cpus: deployCpus.value,
-        memory: deployMemory.value,
-      },
-      deployInstance.value,
-    )
+    const limits = { cpus: deployCpus.value, memory: deployMemory.value }
+    const res = upgrading
+      ? await upgradeApp(deployServer.value, deploying.value.id, paramValues.value, limits, deployInstance.value.trim())
+      : await deployApp(deployServer.value, deploying.value.id, paramValues.value, limits, deployInstance.value)
     deployResult.value = res
     if (res.ok) {
-      toast.success(t('appStore.deployed', { name: deploying.value.displayName || deploying.value.name }))
-      void prepareReg()
+      toast.success(
+        upgrading
+          ? t('appStore.upgrade.done', { name: deploying.value.displayName || deploying.value.name })
+          : t('appStore.deployed', { name: deploying.value.displayName || deploying.value.name }),
+      )
+      if (!upgrading) void prepareReg() // 升级不动既有服务注册,不重跑联动
     } else {
-      toast.error(res.error || t('appStore.deployFail'))
+      toast.error(res.error || t(upgrading ? 'appStore.upgrade.fail' : 'appStore.deployFail'))
     }
   } catch (err) {
-    toast.error(errMsg(err, t('appStore.deployFail')))
+    toast.error(errMsg(err, t(upgrading ? 'appStore.upgrade.fail' : 'appStore.deployFail')))
   } finally {
     deployBusy.value = false
   }
@@ -491,6 +531,7 @@ async function removeCustom(tpl: AppTemplate): Promise<void> {
         <header class="apps__modal-head">
           <span class="apps__icon" aria-hidden="true">{{ deploying.icon || '📦' }}</span>
           <h3>{{ deploying.displayName || deploying.name }}</h3>
+          <span v-if="deployMode === 'upgrade'" class="apps__mode">{{ t('appStore.upgrade.badge') }}</span>
           <button class="apps__modal-close" :aria-label="t('serviceReg.btn.cancel')" @click="deploying = null">×</button>
         </header>
 
@@ -501,30 +542,42 @@ async function removeCustom(tpl: AppTemplate): Promise<void> {
               :model-value="deployServer"
               :options="serverOptions"
               :placeholder="t('appStore.deploy.pickTarget')"
+              :disabled="deployMode === 'upgrade'"
               @update:model-value="onDeployServer"
             />
           </label>
           <label class="field">
             <span class="field__lbl">{{ t('appStore.deploy.instance') }}</span>
-            <input v-model="deployInstance" class="field__in" type="text" placeholder="2" />
+            <input v-model="deployInstance" class="field__in" type="text" placeholder="2" :disabled="deployMode === 'upgrade'" />
             <span class="apps__hint">{{ t('appStore.deploy.instanceHint') }}</span>
           </label>
           <p v-if="instanceInvalid" class="apps__sr-warn">{{ t('appStore.deploy.instanceInvalid') }}</p>
+          <template v-else-if="deployMode === 'upgrade'">
+            <p class="apps__hint">
+              {{ t('appStore.upgrade.hint', { name: effectiveStackName }) }}
+              <button type="button" class="apps__sr-link" @click="exitUpgradeMode">{{ t('appStore.upgrade.backToDeploy') }}</button>
+            </p>
+          </template>
           <p v-else-if="stackNameTaken" class="apps__sr-warn">
             {{ t('appStore.deploy.stackTaken', { name: effectiveStackName }) }}
+            <button type="button" class="apps__sr-link" :disabled="upgradeCtxBusy" @click="enterUpgradeMode">
+              {{ upgradeCtxBusy ? '…' : t('appStore.upgrade.switch') }}
+            </button>
           </p>
           <label v-for="p in deploying.params" :key="p.name" class="field">
             <span class="field__lbl">
               {{ p.label || p.name }}
-              <span v-if="p.required" class="apps__req">*</span>
-              <span v-if="p.autoGenerate" class="apps__hint">· {{ t('appStore.deploy.autogen') }}</span>
+              <span v-if="p.required && deployMode === 'deploy'" class="apps__req">*</span>
+              <span v-if="p.autoGenerate && deployMode === 'deploy'" class="apps__hint">· {{ t('appStore.deploy.autogen') }}</span>
+              <span v-if="deployMode === 'upgrade' && upgradeSecrets.includes(p.name)" class="apps__hint">· {{ t('appStore.upgrade.hasSecret') }}</span>
             </span>
             <input
-              v-if="p.type !== 'secret' || !p.autoGenerate"
+              v-if="p.type !== 'secret' || !p.autoGenerate || deployMode === 'upgrade'"
               v-model="paramValues[p.name]"
               class="field__in"
               :type="p.type === 'secret' ? 'password' : p.type === 'int' ? 'number' : 'text'"
-              :required="p.required && !p.autoGenerate && !p.default"
+              :placeholder="deployMode === 'upgrade' && p.type === 'secret' ? t('appStore.upgrade.keepSecret') : undefined"
+              :required="deployMode === 'deploy' && p.required && !p.autoGenerate && !p.default"
             />
             <input v-else class="field__in" type="password" :value="t('appStore.deploy.autoValue')" disabled />
           </label>
@@ -539,7 +592,7 @@ async function removeCustom(tpl: AppTemplate): Promise<void> {
             </label>
           </div>
           <p class="apps__hint">{{ t('appStore.deploy.limitsHint') }}</p>
-          <p class="apps__hint">{{ t('appStore.deploy.hint') }}</p>
+          <p class="apps__hint">{{ deployMode === 'upgrade' ? t('appStore.upgrade.flowHint') : t('appStore.deploy.hint') }}</p>
           <div class="apps__form-actions">
             <AppButton
               variant="primary"
@@ -547,7 +600,7 @@ async function removeCustom(tpl: AppTemplate): Promise<void> {
               :loading="deployBusy"
               :disabled="!deployServer || missingRequired || instanceInvalid"
             >
-              <NIcon :size="14"><Rocket /></NIcon>&nbsp;{{ t('appStore.deploy.submit') }}
+              <NIcon :size="14"><Rocket /></NIcon>&nbsp;{{ deployMode === 'upgrade' ? t('appStore.upgrade.submit') : t('appStore.deploy.submit') }}
             </AppButton>
             <AppButton variant="default" @click="deploying = null">{{ t('serviceReg.btn.cancel') }}</AppButton>
           </div>
@@ -555,7 +608,9 @@ async function removeCustom(tpl: AppTemplate): Promise<void> {
 
         <div v-else class="apps__result">
           <p :class="deployResult.ok ? 'apps__ok' : 'apps__fail'">
-            {{ deployResult.ok ? t('appStore.deploy.ok') : t('appStore.deploy.fail') }}
+            {{ deployResult.ok
+              ? (deployMode === 'upgrade' ? t('appStore.upgrade.ok') : t('appStore.deploy.ok'))
+              : (deployMode === 'upgrade' ? t('appStore.upgrade.failTitle') : t('appStore.deploy.fail')) }}
           </p>
           <p v-if="deployResult.error" class="apps__fail-detail">{{ deployResult.error }}</p>
           <!-- RustFS 联动:部署成功后自动登记对象存储的结果(尽力而为,失败不影响部署) -->
@@ -583,8 +638,9 @@ async function removeCustom(tpl: AppTemplate): Promise<void> {
             <p class="apps__hint">{{ t('appStore.deploy.onceHint') }}</p>
           </div>
 
-          <!-- 一键服务注册:部署成功后把应用挂到网关子域名(幂等 ensure + 实例挂载自动收敛) -->
-          <div v-if="deployResult.ok && regDoneFqdn" class="apps__sr">
+          <!-- 一键服务注册:部署成功后把应用挂到网关子域名(幂等 ensure + 实例挂载自动收敛;
+               升级模式不展示——既有注册不动) -->
+          <div v-if="deployMode === 'deploy' && deployResult.ok && regDoneFqdn" class="apps__sr">
             <h4>{{ t('appStore.deploy.regDoneTitle') }}</h4>
             <p class="apps__sr-fqdn"><code>{{ regDoneFqdn }}</code></p>
             <p v-if="regDomain?.hasCert" class="apps__sr-ok">{{ t('appStore.deploy.regHttps') }}</p>
@@ -593,7 +649,7 @@ async function removeCustom(tpl: AppTemplate): Promise<void> {
               {{ t('appStore.deploy.regGoServiceReg') }} →
             </button>
           </div>
-          <div v-else-if="deployResult.ok" class="apps__sr">
+          <div v-else-if="deployMode === 'deploy' && deployResult.ok" class="apps__sr">
             <h4>{{ t('appStore.deploy.regTitle') }}</h4>
             <p class="apps__hint">{{ t('appStore.deploy.regHint') }}</p>
             <template v-if="regDomains.length">
@@ -804,6 +860,15 @@ async function removeCustom(tpl: AppTemplate): Promise<void> {
   margin: 0;
   flex: 1;
   font-size: 16px;
+}
+.apps__mode {
+  flex: none;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--color-primary, #1a66d4);
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  padding: 2px 8px;
 }
 .apps__modal-close {
   border: none;

@@ -47,10 +47,13 @@ func (s *Service) Start(root context.Context) error {
 		case <-time.After(100 * time.Millisecond):
 		}
 	}
+	s.base = root
 	s.root, s.stop = context.WithCancel(root)
+	s.leasedUntil = time.Now().Add(leaseDuration).UnixMilli()
 	s.started = true
 	s.leaseDone = make(chan struct{})
-	go s.leaseLoop()
+	s.loopDone = make(chan struct{})
+	go s.leaseLoop(s.loopDone)
 	log.Printf("[opschat] started instance=%s", s.instance)
 	return nil
 }
@@ -102,58 +105,70 @@ func (s *Service) acquireLease(root context.Context, seen *leaseObservation) err
 				return ErrStorage
 			}
 		}
-		rows, e := tx.QueryContext(root, `SELECT session_id,id FROM ops_chat_runs WHERE status IN ('queued','planning','running')`)
+		recovered, e := s.recoverActiveRunsTx(root, tx)
 		if e != nil {
-			return ErrStorage
+			return e
 		}
-		ids := [][2]string{}
-		for rows.Next() {
-			var pair [2]string
-			if rows.Scan(&pair[0], &pair[1]) != nil {
-				rows.Close()
-				return ErrStorage
-			}
-			ids = append(ids, pair)
-		}
-		e = rows.Err()
-		rows.Close()
-		if e != nil {
-			return ErrStorage
-		}
-		for _, pair := range ids {
-			r, e := s.run(root, tx, pair[0], pair[1])
-			if e != nil {
-				return e
-			}
-			calls, e := s.calls(root, tx, pair[0], pair[1])
-			if e != nil {
-				return e
-			}
-			status := Interrupted
-			for _, c := range calls {
-				if c.Body.View.Status == Unknown {
-					status = Unknown
-				}
-				if c.Body.View.Status == Running && c.Body.Dispatched {
-					c.Body.View.Status = Unknown
-					status = Unknown
-				} else if !terminal(c.Body.View.Status) {
-					c.Body.View.Status = Interrupted
-				}
-				if e = s.saveCall(root, tx, c); e != nil {
-					return e
-				}
-			}
-			if e = s.finishTx(root, tx, r, status); e != nil {
-				return e
-			}
-		}
-		if len(ids) > 0 {
-			log.Printf("[opschat] lease acquired: recovered %d interrupted/unknown run(s)", len(ids))
+		if recovered > 0 {
+			log.Printf("[opschat] lease acquired: recovered %d interrupted/unknown run(s)", recovered)
 		}
 		_, e = tx.ExecContext(root, "UPDATE ops_chat_state SET lease_owner=?,lease_until=? WHERE id=1", s.instance, time.Now().Add(leaseDuration).UnixMilli())
 		return databaseError(e)
 	})
+}
+
+// recoverActiveRunsTx 把仍处于活动态(queued/planning/running)的 run 收敛为
+// Interrupted/Unknown:已派发的调用效果不确定,标记 Unknown;未派发的标记
+// Interrupted。仅本地对账,绝不重放模型/SSH/已消费的变更。启动获取与运行期
+// 重取租约共用同一恢复语义。返回收敛的 run 数。
+func (s *Service) recoverActiveRunsTx(root context.Context, tx *sql.Tx) (int, error) {
+	rows, e := tx.QueryContext(root, `SELECT session_id,id FROM ops_chat_runs WHERE status IN ('queued','planning','running')`)
+	if e != nil {
+		return 0, ErrStorage
+	}
+	ids := [][2]string{}
+	for rows.Next() {
+		var pair [2]string
+		if rows.Scan(&pair[0], &pair[1]) != nil {
+			rows.Close()
+			return 0, ErrStorage
+		}
+		ids = append(ids, pair)
+	}
+	e = rows.Err()
+	rows.Close()
+	if e != nil {
+		return 0, ErrStorage
+	}
+	for _, pair := range ids {
+		r, e := s.run(root, tx, pair[0], pair[1])
+		if e != nil {
+			return 0, e
+		}
+		calls, e := s.calls(root, tx, pair[0], pair[1])
+		if e != nil {
+			return 0, e
+		}
+		status := Interrupted
+		for _, c := range calls {
+			if c.Body.View.Status == Unknown {
+				status = Unknown
+			}
+			if c.Body.View.Status == Running && c.Body.Dispatched {
+				c.Body.View.Status = Unknown
+				status = Unknown
+			} else if !terminal(c.Body.View.Status) {
+				c.Body.View.Status = Interrupted
+			}
+			if e = s.saveCall(root, tx, c); e != nil {
+				return 0, e
+			}
+		}
+		if e = s.finishTx(root, tx, r, status); e != nil {
+			return 0, e
+		}
+	}
+	return len(ids), nil
 }
 
 // beginCall commits the dispatch intent before even a read-only resolver reaches SSH.
@@ -186,58 +201,174 @@ func (s *Service) beginCall(ctx context.Context, c *callRecord) error {
 	})
 }
 
-func (s *Service) leaseLoop() {
+// leaseLoop 每秒维护一次执行器租约:持有时续期(renewLease),失去后在租约
+// 空窗期 CAS 重取(tryReacquire)。失租不再是终态——旧实现里续期被业务流量
+// 挤超时约 15s 后,自己的租约自然过期会被误判为"被其他实例接管"而永久自杀,
+// 只能重启进程;现在 fence 之后循环继续跑,空窗一到自动恢复服务。
+// 循环只在 Close(close loopDone)时退出。
+// loopDone 由 Start 以参数传入(Close 会把字段置 nil,循环内不得再读字段)。
+func (s *Service) leaseLoop(loopDone chan struct{}) {
 	defer close(s.leaseDone)
-	ticker := time.NewTicker(5 * time.Second)
+	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
-	fails := 0
 	for {
 		select {
-		case <-s.root.Done():
+		case <-loopDone:
 			return
 		case <-ticker.C:
-			ctx, cancel := context.WithTimeout(s.root, 5*time.Second)
-			// Renewal persists no session data; skip the full storage scan.
-			err := s.transactionQuota(ctx, true, false, func(tx *sql.Tx) error {
-				_, e := tx.ExecContext(ctx, "UPDATE ops_chat_state SET lease_until=? WHERE id=1 AND lease_owner=?", time.Now().Add(leaseDuration).UnixMilli(), s.instance)
-				if e != nil {
-					// 底层驱动错误(SQLite busy/IO 等)原样进日志,否则只剩静态
-					// ErrStorage 文案,线上无法定位;errors.Is 语义不受影响。
-					return fmt.Errorf("%w: %v", ErrStorage, e)
-				}
-				return nil
-			})
-			cancel()
-			// 一次数据库抖动(锁竞争超 5s、IO 卡顿)不该把助手打死到进程重启:
-			// 连续失败满 3 次(≈15s,恰好租约到期)才判定丢失,期间任一成功即复位。
-			// 租约被其他实例接管(ErrLease)仍是终局。
-			if err == nil {
-				fails = 0
-				continue
-			}
-			if leaseLost(err, fails) {
-				log.Printf("[opschat] lease lost: %v", err)
-				s.mu.Lock()
-				s.lost = true
-				s.stop()
-				s.mu.Unlock()
-				return
-			}
-			fails++
-			log.Printf("[opschat] lease renewal failed (%d), retrying: %v", fails, err)
+			s.maintainLease()
 		}
 	}
 }
 
-// leaseLost 判定一次续期失败是否应当终止服务。fails 是本次之前已连续失败的次数:
-// 纯存储错误(SQLite busy/IO 抖动)容忍 3 个续期周期(= leaseDuration,租约恰好
-// 到期)后终止;租约被其他实例接管(ErrLease)立即终止。
-func leaseLost(err error, fails int) bool {
-	return errors.Is(err, ErrLease) || fails >= 2
+func (s *Service) maintainLease() {
+	s.mu.Lock()
+	if s.closing || !s.started {
+		s.mu.Unlock()
+		return
+	}
+	lost := s.lost
+	s.mu.Unlock()
+	if lost {
+		s.tryReacquire()
+		return
+	}
+	s.renewLease()
+}
+
+// renewLease 单语句 CAS 续期(隐式事务,比旧的 6 步显式事务在 SQLite 唯一
+// 连接上的排队时间短得多):仅当租约仍归本实例且未过期才顺延。未生效则交给
+// auditLease 读租约行,区分瞬时存储失败、自己过期(续期被饿死)与被接管。
+func (s *Service) renewLease() {
+	now := time.Now().UnixMilli()
+	until := time.Now().Add(leaseDuration).UnixMilli()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	res, err := s.db.ExecContext(ctx, "UPDATE ops_chat_state SET lease_until=? WHERE id=1 AND lease_owner=? AND lease_until>?", until, s.instance, now)
+	cancel()
+	if err == nil {
+		if n, _ := res.RowsAffected(); n == 1 {
+			s.leasedUntil = until
+			s.leaseFails = 0
+			return
+		}
+	}
+	s.auditLease(err)
+}
+
+// auditLease 判定续期未生效后的态势:租约仍归本实例且未过期 → 瞬时存储失败,
+// 记录后继续按 tick 重试;自己过期(续期被饿死)或被其他实例接管 → fence。
+// 连租约行都读不出时,以内存中最后一次成功续期的 leasedUntil 兜底:过了那个
+// 点别的实例可能合法接管,必须按失租处理。
+func (s *Service) auditLease(renewErr error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	var owner string
+	var until int64
+	readErr := s.db.QueryRowContext(ctx, "SELECT lease_owner,lease_until FROM ops_chat_state WHERE id=1").Scan(&owner, &until)
+	cancel()
+	if readErr == nil {
+		now := time.Now().UnixMilli()
+		switch {
+		case owner == s.instance && until > now:
+			s.noteLeaseFailure(renewErr)
+		case owner == s.instance:
+			s.fence("own lease expired after renewal starvation")
+		default:
+			s.fence("lease taken over by another instance")
+		}
+		return
+	}
+	s.noteLeaseFailure(readErr)
+	if time.Now().UnixMilli() > s.leasedUntil {
+		s.fence("lease expired amid storage failure")
+	}
+}
+
+// noteLeaseFailure 记录续期/重取的连续失败并节流日志(前 3 次全打,之后每
+// 10 次一条)。底层驱动错误原样透出——旧实现除一处外全吞成裸 ErrStorage,
+// 线上只剩 "local persistence failed",无法定位。仅 leaseLoop 调用,计数无锁。
+// err 为 nil 表示 CAS 未生效(租约已不按预期持有),以 ErrLease 记入日志。
+func (s *Service) noteLeaseFailure(err error) {
+	if err == nil {
+		err = ErrLease
+	}
+	s.leaseFails++
+	if s.leaseFails <= 3 || s.leaseFails%10 == 0 {
+		log.Printf("[opschat] lease maintenance failed (%d): %v", s.leaseFails, err)
+	}
+}
+
+// fence 把服务切到失租不可用态(幂等、可恢复):取消在途 jobs 的工作上下文,
+// 后续写操作在事务预检处得到 ErrLease,capabilities 报 unavailable。leaseLoop
+// 会在租约空窗期自动重取并重建工作上下文恢复服务,无需进程重启。
+func (s *Service) fence(reason string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.lost || !s.started || s.closing {
+		return
+	}
+	s.lost = true
+	if s.stop != nil {
+		s.stop()
+		s.stop = nil
+		s.root = nil
+	}
+	log.Printf("[opschat] lease lost (%s); fenced until reacquired", reason)
+}
+
+// tryReacquire 失租态下尝试夺回租约:CAS 条件要求行内租约为空或已过期——
+// 别的实例持有且未过期时绝不去抢,等下个 tick。成功则在同一事务内把活动态
+// run 收敛为 Interrupted/Unknown(与启动恢复同语义,不重放远端动作),随后
+// 重建工作上下文恢复服务。
+func (s *Service) tryReacquire() {
+	now := time.Now().UnixMilli()
+	until := time.Now().Add(leaseDuration).UnixMilli()
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	acquired := false
+	recovered := 0
+	err := s.transaction(ctx, false, func(tx *sql.Tx) error {
+		res, e := tx.ExecContext(ctx, "UPDATE ops_chat_state SET lease_owner=?,lease_until=? WHERE id=1 AND (lease_owner='' OR lease_until<=?)", s.instance, until, now)
+		if e != nil {
+			// 底层驱动错误(SQLite busy/IO 等)原样进日志,否则只剩静态
+			// ErrStorage 文案,线上无法定位;errors.Is 语义不受影响。
+			return fmt.Errorf("%w: %v", ErrStorage, e)
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			return nil
+		}
+		acquired = true
+		recovered, e = s.recoverActiveRunsTx(ctx, tx)
+		return e
+	})
+	if err != nil {
+		s.noteLeaseFailure(err)
+		return
+	}
+	if !acquired {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closing || !s.started {
+		return
+	}
+	s.root, s.stop = context.WithCancel(s.base)
+	s.leasedUntil = until
+	s.lost = false
+	s.leaseFails = 0
+	if recovered > 0 {
+		log.Printf("[opschat] lease reacquired: service resumed, recovered %d interrupted/unknown run(s)", recovered)
+	} else {
+		log.Printf("[opschat] lease reacquired: service resumed")
+	}
 }
 func (s *Service) Close(ctx context.Context) error {
 	s.mu.Lock()
 	s.closing = true
+	if s.loopDone != nil {
+		close(s.loopDone)
+		s.loopDone = nil
+	}
 	if s.stop != nil {
 		s.stop()
 	}
@@ -327,12 +458,7 @@ func (s *Service) persistAttempts(id string, fn func(context.Context, *sql.Tx) e
 		}
 	}
 	if err == ErrLease {
-		s.mu.Lock()
-		s.lost = true
-		if s.stop != nil {
-			s.stop()
-		}
-		s.mu.Unlock()
+		s.fence("lease check rejected persist")
 	}
 	if err == nil {
 		s.notify(id)
@@ -426,14 +552,10 @@ func (s *Service) retryCalls(r runRecord) ([]callRecord, error) {
 	return candidates, nil
 }
 
+// fenceWorker 在 worker 持久化彻底失败时熔断本实例,等价于失租;leaseLoop
+// 会在租约空窗期自动重取恢复,不再是只能重启的终态。
 func (s *Service) fenceWorker() {
-	log.Printf("[opschat] worker fenced; instance giving up lease")
-	s.mu.Lock()
-	s.lost = true
-	if s.stop != nil {
-		s.stop()
-	}
-	s.mu.Unlock()
+	s.fence("worker persistence failed")
 }
 
 // Only reconcile local facts. Never retry model, SSH, or consumed mutations.
@@ -1700,7 +1822,6 @@ func (s *Service) verifyMutation(ctx context.Context, c *callRecord, b *readBudg
 	}
 	return state == "active"
 }
-
 
 // dispatchBlockReason 把派发闸门失败映射为人读原因(绝无密钥)。
 func dispatchBlockReason(ctx context.Context, err error) string {
