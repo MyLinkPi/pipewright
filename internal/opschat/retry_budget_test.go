@@ -106,7 +106,7 @@ func TestRetryRejectsUnknownDispatchInterruptedAndChangedTargets(t *testing.T) {
 	cid := snap.Calls[0].ID
 	update := func(status string, dispatched bool) {
 		t.Helper()
-		if e := s.transaction(context.Background(), true, func(tx *sql.Tx) error {
+		if e := s.transaction(context.Background(), c.ID, true, func(tx *sql.Tx) error {
 			rec, e := s.call(context.Background(), tx, c.ID, cid)
 			if e != nil {
 				return e

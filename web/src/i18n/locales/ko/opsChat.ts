@@ -85,6 +85,8 @@ export default {
   notCollected: '수집 전',
   exit: '종료 코드',
   truncated: '결과 잘림',
+
+  loadFullOutput: '전체 출력 불러오기',
   verifyFirst:
     '원격 영향이 확인되지 않았습니다. 읽기 전용으로 먼저 확인하세요. 중지는 변경을 되돌리지 않습니다.',
   older: '이전 메시지 불러오기',

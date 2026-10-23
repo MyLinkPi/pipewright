@@ -89,7 +89,7 @@ func (s *Service) ReissueConfirmation(ctx context.Context, id, run string) (*Con
 			}
 		}
 	}
-	err = s.transaction(ctx, true, func(tx *sql.Tx) error {
+	err = s.transaction(ctx, id, true, func(tx *sql.Tx) error {
 		r, e := s.run(ctx, tx, id, run)
 		if e != nil {
 			return e
@@ -162,7 +162,7 @@ func (s *Service) Confirm(ctx context.Context, id string, in ConfirmInput) (*Run
 			return nil, ErrApproval
 		}
 	}
-	err = s.transaction(ctx, true, func(tx *sql.Tx) error {
+	err = s.transaction(ctx, id, true, func(tx *sql.Tx) error {
 		r, e := s.run(ctx, tx, id, in.RunID)
 		if e != nil {
 			return e
@@ -244,7 +244,7 @@ func (s *Service) analysisPreview(ctx context.Context, id string, ids []string, 
 	size := 0
 	aliases := map[string]string{}
 	targetHashes := map[string]string{}
-	err := s.transaction(ctx, false, func(tx *sql.Tx) error {
+	err := s.transaction(ctx, id, false, func(tx *sql.Tx) error {
 		if _, e := s.session(ctx, tx, id); e != nil {
 			return e
 		}
@@ -409,7 +409,7 @@ func (s *Service) Reject(ctx context.Context, id string, in RejectInput) (*Run, 
 	if len(in.Calls) < 1 || !validID(in.Nonce) {
 		return nil, ErrApproval
 	}
-	err := s.transaction(ctx, true, func(tx *sql.Tx) error {
+	err := s.transaction(ctx, id, true, func(tx *sql.Tx) error {
 		r, e := s.run(ctx, tx, id, in.RunID)
 		if e != nil {
 			return e
@@ -477,7 +477,7 @@ func (s *Service) Continue(ctx context.Context, id, run string, in ContinueInput
 		return nil, ErrInvalid
 	}
 	advice := s.scrub(in.Advice, resourceLimits.MessageBytes)
-	err := s.transaction(ctx, true, func(tx *sql.Tx) error {
+	err := s.transaction(ctx, id, true, func(tx *sql.Tx) error {
 		r, e := s.run(ctx, tx, id, run)
 		if e != nil {
 			return e

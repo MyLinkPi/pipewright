@@ -291,6 +291,24 @@ func (s *Service) publicCall(c Call) Call {
 	return c
 }
 
+// snapshotOutputLimit 是快照/事件投影里 call 输出的展示预算:完整输出仍在
+// 库中,前端经 GET /sessions/{id}/calls/{callId} 按需展开。此前快照把每个
+// call 的完整 64KB 输出塞进响应,大会话(月级使用)单次快照可达 30+MB/秒级
+// 耗时,弱机上长时间独占唯一连接。
+const snapshotOutputLimit = 8 << 10
+
+// publicCallPreview 在快照/事件等批量投影中使用:输出超出展示预算时裁剪并
+// 标记 truncated(采集期截断的 call 本就带此标记,语义一致)。单 call GET
+// 端点(s.Call)不走这里,始终返回完整输出。
+func (s *Service) publicCallPreview(c Call) Call {
+	v := s.publicCall(c)
+	if len(v.Output) > snapshotOutputLimit {
+		v.Output = clip(v.Output, snapshotOutputLimit)
+		v.Truncated = true
+	}
+	return v
+}
+
 func (s *Service) publicConfirmation(c Confirmation) Confirmation {
 	c.Calls = append([]BoundCall(nil), c.Calls...)
 	for i := range c.Calls {

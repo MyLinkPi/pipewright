@@ -78,6 +78,8 @@ export default {
   notCollected: '尚未擷取',
   exit: '結束碼',
   truncated: '結果已截斷',
+
+  loadFullOutput: '取得完整輸出',
   verifyFirst: '遠端影響尚未確認，請先執行唯讀查詢；停止不代表復原。',
   older: '載入更早訊息',
   empty: '尚無訊息',

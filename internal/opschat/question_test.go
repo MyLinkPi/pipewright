@@ -220,7 +220,7 @@ func TestConfirmationQuestionBindingBoundaries(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			err := s.transaction(context.Background(), false, func(tx *sql.Tx) error {
+			err := s.transaction(context.Background(), c.ID, false, func(tx *sql.Tx) error {
 				got, err := s.turnQuestion(context.Background(), tx, c.ID, next)
 				if err == nil && got != want {
 					t.Errorf("got %q want %q", got, want)

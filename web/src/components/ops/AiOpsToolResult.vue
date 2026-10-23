@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, shallowRef } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Copy, Refresh, Stars, Terminal2 } from '@vicons/tabler'
+import { Copy, Download, Refresh, Stars, Terminal2 } from '@vicons/tabler'
 import type { Call } from '../../api/opsChat'
 const props = defineProps<{
   call: Call
@@ -13,6 +13,8 @@ const emit = defineEmits<{
   retry: [id: string]
   analyze: [id: string]
   terminal: [serverId: string]
+  /** 快照里的输出被展示预算裁剪:按需拉取完整输出(单 call 端点)。 */
+  loadFull: [id: string]
 }>()
 const { t } = useI18n()
 const expanded=shallowRef(false)
@@ -148,6 +150,16 @@ const bytes = (n: number): string =>
         @click="emit('copy', copyable)"
       >
         <Copy />
+      </button>
+      <button
+        v-if="call.truncated && call.output"
+        class="ops-btn ops-icon"
+        :disabled="disabled"
+        :title="t('opsChat.loadFullOutput')"
+        :aria-label="t('opsChat.loadFullOutput')"
+        @click="emit('loadFull', call.callId)"
+      >
+        <Download />
       </button>
       <button
         v-if="retryable"

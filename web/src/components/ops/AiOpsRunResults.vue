@@ -18,6 +18,7 @@ const emit = defineEmits<{
   analyze: [ids: string[]]
   analyzeRun: [runId: string]
   terminal: [id: string]
+  loadFull: [id: string]
 }>()
 const { t } = useI18n()
 const terminal = (status: string) =>
@@ -116,6 +117,7 @@ const bytes = (n: number) =>
         @retry="emit('retry', $event)"
         @analyze="emit('analyze', [$event])"
         @terminal="emit('terminal', $event)"
+        @load-full="emit('loadFull', $event)"
       />
     </section>
   </section>

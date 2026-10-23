@@ -96,6 +96,8 @@ export function useOpsChat(options: {
   let resetHistoryPending = false
   let projectionGap = 0
   const callWatermarks = new Map<string, number>()
+  // 已按需展开完整输出的 call:快照/事件再携带展示预算内的预览时不回退覆盖。
+  const fullCalls = new Set<string>()
   const pendingCallReads = new Set<string>()
   const callReads = new Map<string, Promise<boolean>>()
   const unfinishedCall = (status: string) =>
@@ -178,7 +180,7 @@ export function useOpsChat(options: {
     let changed = false
     for (const entry of entries) {
       if(entry.sessionId !== state.currentId) continue
-      if(entry.call && (watermark >= (state.snapshot?.watermark ?? 0) || !state.calls[entry.call.callId])) {
+      if(entry.call && !fullCalls.has(entry.call.callId) && (watermark >= (state.snapshot?.watermark ?? 0) || !state.calls[entry.call.callId])) {
         state.calls = {...state.calls,[entry.call.callId]:entry.call}
         callWatermarks.set(entry.call.callId, watermark)
       }
@@ -309,7 +311,9 @@ export function useOpsChat(options: {
     state.entries = keepEntries
     state.calls = {
       ...oldCalls,
-      ...Object.fromEntries((value.calls ?? []).map((c) => [c.callId, c])),
+      ...Object.fromEntries((value.calls ?? [])
+        .filter((c) => !fullCalls.has(c.callId))
+        .map((c) => [c.callId, c])),
     }
     for (const call of value.calls ?? []) callWatermarks.set(call.callId, value.watermark)
     mergeEntries(value.entries.entries ?? [])
@@ -318,6 +322,19 @@ export function useOpsChat(options: {
     applySession(value.session)
     remember()
     return true
+  }
+  // loadCall 按需拉取被展示预算裁剪的完整输出(单 call 端点),展开后粘滞。
+  async function loadCall(callId: string): Promise<void> {
+    const t = token()
+    if (!state.currentId) return
+    try {
+      const call = await opsApi.call(t.id, callId)
+      if (!valid(t.g, t.auth)) return
+      fullCalls.add(callId)
+      state.calls = { ...state.calls, [callId]: call }
+    } catch (e) {
+      if (valid(t.g, t.auth)) fail(e)
+    }
   }
   async function hydrateCall(id: string): Promise<boolean> {
     const existing = callReads.get(id)
@@ -1043,6 +1060,7 @@ export function useOpsChat(options: {
     confirmBatch,
     reissue,
     analyzePreview,
+    loadCall,
     analyze,
     history,
     remove,

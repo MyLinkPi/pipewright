@@ -88,6 +88,8 @@ export default {
   notCollected: 'Nicht erfasst',
   exit: 'Exit-Code',
   truncated: 'Ergebnis gekürzt',
+
+  loadFullOutput: 'Vollständige Ausgabe laden',
   verifyFirst:
     'Remote-Auswirkungen ungeprüft. Zuerst schreibgeschützt prüfen. Stoppen macht Änderungen nicht rückgängig.',
   older: 'Ältere Nachrichten laden',

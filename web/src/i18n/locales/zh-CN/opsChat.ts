@@ -78,6 +78,8 @@ export default {
   notCollected: '尚未采集',
   exit: '退出码',
   truncated: '结果已截断',
+
+  loadFullOutput: '获取完整输出',
   verifyFirst: '远端影响尚未核实，请先执行只读查询。停止不代表回滚。',
   older: '加载更早消息',
   empty: '暂无消息',

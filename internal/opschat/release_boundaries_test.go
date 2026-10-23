@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/huangchengsir/pipewright/internal/target"
@@ -133,21 +134,40 @@ func TestReleasePlan25KiBIsAcceptedWithAndWithoutStreaming(t *testing.T) {
 	}
 }
 
-func TestReleaseEscapedSSEUsesHintAndSnapshotPreservesFullOutput(t *testing.T) {
+func TestReleaseEscapedSSEBoundedPreviewAndFullOutput(t *testing.T) {
 	m := model()
 	id := uuid.NewString()
 	f := executor(id)
-	output := strings.Repeat("\x01", 64<<10)
+	output := strings.Repeat("", 64<<10)
 	f.run = func(context.Context, target.ConnectionSnapshot, []string, target.ExecutionLimits) (*target.LimitedResult, error) {
 		return &target.LimitedResult{Stdout: output}, nil
 	}
-	s, _, _ := fixture(t, f, m)
+	s, _, db := fixture(t, f, m)
 	c := chat(t, s, id)
 	r := submitToolPlan(t, s, m, c, "host_ports", "{}")
 	snap := waitRun(t, s, c.ID, r.ID, Succeeded)
 	waitJobs(t, s)
-	if len(snap.Calls) != 1 || snap.Calls[0].Output != output {
-		t.Fatal("snapshot lost output")
+	// 快照按展示预算裁剪(转义后不再撑爆帧);全量输出经单 call 端点取回。
+	if len(snap.Calls) != 1 || !snap.Calls[0].Truncated || len(snap.Calls[0].Output) > snapshotOutputLimit+64 {
+		t.Fatal("snapshot output not previewed")
+	}
+	full, err := s.Call(context.Background(), c.ID, snap.Calls[0].ID)
+	if err != nil || len(full.Output) != len(output) {
+		t.Fatal("per-call endpoint lost full output", err)
+	}
+	// 超预算条目(如历史遗留的巨文)仍走 snapshot_required 提示:直插一条超大
+	// 可见文本条目,确保 SSE 帧上限防线不被预览裁剪"顺便"消灭。
+	giant := strings.Repeat("", 200<<10)
+	big, err := s.seal(struct{ Text string }{giant})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.Exec(`INSERT INTO ops_chat_entries(session_id,seq,kind,context_allowed,visible,body,body_size,created_at) VALUES(?,?,?,1,1,?,?,?)`,
+		c.ID, snap.Watermark+1, "assistant", big, len(giant), time.Now().UnixMilli()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.Exec(`UPDATE ops_chat_sessions SET seq=?,visible_count=visible_count+1 WHERE id=?`, snap.Watermark+1, c.ID); err != nil {
+		t.Fatal(err)
 	}
 	page, err := s.Events(context.Background(), c.ID, "", 100)
 	if err != nil {
@@ -163,8 +183,8 @@ func TestReleaseEscapedSSEUsesHintAndSnapshotPreservesFullOutput(t *testing.T) {
 			hints++
 		}
 	}
-	if hints == 0 || page.Cursor != EventCursor(c.ID, snap.Watermark) {
-		t.Fatal("missing bounded replay hint", page.Cursor, hints)
+	if hints == 0 {
+		t.Fatal("missing bounded replay hint")
 	}
 }
 

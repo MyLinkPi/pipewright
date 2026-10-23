@@ -68,24 +68,34 @@ func TestBoundedStdoutStderrSecretsBeforeByteLineAndUTF8Clipping(t *testing.T) {
 			snap := waitRun(t, s, c.ID, r.ID, Succeeded)
 			waitJobs(t, s)
 			call := snap.Calls[0]
+			stored, err := s.Call(context.Background(), c.ID, call.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// 快照只带展示预算内的预览(超限标记 truncated);脱敏/裁剪断言打在
+			// 全量输出上(单 call 端点)。
+			if len(stored.Output) > snapshotOutputLimit {
+				if !call.Truncated || len(call.Output) > snapshotOutputLimit+64 {
+					t.Fatal("snapshot preview not trimmed", cutoff, len(call.Output))
+				}
+			} else if stored.Output != call.Output {
+				t.Fatal("small output should not be trimmed", cutoff)
+			}
 			for _, secret := range []string{providerKey, vaultKey, prefix, vaultPrefix} {
-				if strings.Contains(call.Output, secret) {
+				if strings.Contains(stored.Output, secret) {
 					t.Fatal("registered credential leaked", cutoff)
 				}
 			}
-			if strings.Contains(call.Output, "vault-first") || strings.Contains(call.Output, "vault-") || !strings.Contains(call.Output, mask.Placeholder) || !utf8.ValidString(call.Output) || len(call.Output) > 64<<10 {
-				t.Fatal("unsafe clipping or missing mask", cutoff, len(call.Output))
+			if strings.Contains(stored.Output, "vault-first") || strings.Contains(stored.Output, "vault-") || !strings.Contains(stored.Output, mask.Placeholder) || !utf8.ValidString(stored.Output) || len(stored.Output) > 64<<10 {
+				t.Fatal("unsafe clipping or missing mask", cutoff, len(stored.Output))
 			}
-			if cutoff != "full" && !call.Truncated {
+			if cutoff != "full" && !stored.Truncated {
 				t.Fatal("truncation not persisted")
 			}
-			stored, err := s.Call(context.Background(), c.ID, call.ID)
-			if err != nil || stored.Output != call.Output {
-				t.Fatal("persisted result differs", err)
-			}
 			// Small batches can be explicitly shared. Their previews and model inputs
-			// must contain only the already-sanitized persisted result.
-			if len(call.Output) < 16<<10 {
+			// must contain only the already-sanitized persisted result.按全量输出
+			// 判断(快照预览已被裁剪)。
+			if len(stored.Output) < 16<<10 {
 				preview, err := s.AnalysisPreview(context.Background(), c.ID, []string{call.ID})
 				if err != nil {
 					t.Fatal(err)

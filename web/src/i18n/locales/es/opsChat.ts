@@ -87,6 +87,8 @@ export default {
   notCollected: 'Sin recopilar',
   exit: 'Código de salida',
   truncated: 'Resultado truncado',
+
+  loadFullOutput: 'Cargar salida completa',
   verifyFirst:
     'Efectos remotos sin verificar. Compruebe en modo de solo lectura. Detener no revierte cambios.',
   older: 'Cargar mensajes anteriores',

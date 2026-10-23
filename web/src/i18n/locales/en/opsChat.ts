@@ -86,6 +86,8 @@ export default {
   notCollected: 'Not collected',
   exit: 'Exit code',
   truncated: 'Result truncated',
+
+  loadFullOutput: 'Load full output',
   verifyFirst:
     'Remote effects are unverified. Run a read-only check first. Stopping does not roll back changes.',
   older: 'Load earlier messages',

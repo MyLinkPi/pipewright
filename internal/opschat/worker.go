@@ -37,7 +37,7 @@ func (s *Service) Start(root context.Context) error {
 // 的活动态 run 由读取投影(projectRun/projectSessionActive)在 HTTP 边界惰性
 // 降级,Cancel/enqueue 按需用 recoverRunTx 持久收敛,这里不再做启动改写。
 func (s *Service) bootstrap(root context.Context) error {
-	return s.transaction(root, false, func(tx *sql.Tx) error {
+	return s.transaction(root, "", false, func(tx *sql.Tx) error {
 		// Validate every encrypted record before serving traffic.
 		for _, table := range []string{"ops_chat_sessions", "ops_chat_entries", "ops_chat_runs", "ops_chat_calls", "ops_chat_approvals"} {
 			rows, e := tx.QueryContext(root, "SELECT body FROM "+table)
@@ -166,7 +166,7 @@ func (s *Service) persistAttempts(id string, fn func(context.Context, *sql.Tx) e
 	defer cancel()
 	var err error
 	for attempt := 0; attempt < attempts; attempt++ {
-		err = s.transaction(ctx, true, func(tx *sql.Tx) error { return fn(ctx, tx) })
+		err = s.transaction(ctx, id, true, func(tx *sql.Tx) error { return fn(ctx, tx) })
 		if err != ErrStorage || ctx.Err() != nil || attempt == attempts-1 {
 			break
 		}

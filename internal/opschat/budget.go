@@ -3,6 +3,7 @@ package opschat
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"log"
 )
 
@@ -35,48 +36,39 @@ func (s *Service) runStorageBytes(ctx context.Context, q querier, id, run string
 	}
 	return size, nil
 }
-func (s *Service) enforceStorage(ctx context.Context, tx *sql.Tx) error {
-	rows, err := tx.QueryContext(ctx, "SELECT id,active_run,visible_count FROM ops_chat_sessions")
-	if err != nil {
-		return ErrStorage
+
+// enforceStorage 在写事务提交前校验 session 的存储配额(会话总量上限 +
+// 条目数上限 + 活动 run 的 4MB 保留额)。只校验本事务写入的会话:任一会话
+// 的体量只会在它自己的写事务里增长,校验别的会话是纯浪费的全库扫描。
+func (s *Service) enforceStorage(ctx context.Context, tx *sql.Tx, session string) error {
+	if session == "" || !validID(session) {
+		return nil
 	}
-	type pending struct {
-		id, run string
-		count   int
-	}
-	sessions := []pending{}
-	for rows.Next() {
-		var r pending
-		if rows.Scan(&r.id, &r.run, &r.count) != nil {
-			rows.Close()
-			return ErrStorage
+	var active string
+	var count int
+	if err := tx.QueryRowContext(ctx, "SELECT active_run,visible_count FROM ops_chat_sessions WHERE id=?", session).Scan(&active, &count); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil // 会话已在同一事务中删除(Delete),无配额可校验
 		}
-		sessions = append(sessions, r)
-	}
-	err = rows.Err()
-	rows.Close()
-	if err != nil {
 		return ErrStorage
 	}
-	for _, r := range sessions {
-		size, e := s.storageBytes(ctx, tx, r.id)
+	size, e := s.storageBytes(ctx, tx, session)
+	if e != nil {
+		return e
+	}
+	if size > int64(resourceLimits.SessionBytes) || count > resourceLimits.Entries {
+		log.Printf("[opschat] storage quota hit session=%s bytes=%d entries=%d", session, size, count)
+		return ErrQuota
+	}
+	if active != "" {
+		used, e := s.runStorageBytes(ctx, tx, session, active)
 		if e != nil {
 			return e
 		}
-		if size > int64(resourceLimits.SessionBytes) || r.count > resourceLimits.Entries {
-			log.Printf("[opschat] storage quota hit session=%s bytes=%d entries=%d", r.id, size, r.count)
+		// Only this run can spend its reserve. Draft/title edits count as historical storage.
+		if size+max(int64(0), runStorageReserve-used) > int64(resourceLimits.SessionBytes) {
+			log.Printf("[opschat] storage quota hit (run reserve) session=%s run=%s bytes=%d", session, active, size)
 			return ErrQuota
-		}
-		if r.run != "" {
-			used, e := s.runStorageBytes(ctx, tx, r.id, r.run)
-			if e != nil {
-				return e
-			}
-			// Only this run can spend its reserve. Draft/title edits count as historical storage.
-			if size+max(int64(0), runStorageReserve-used) > int64(resourceLimits.SessionBytes) {
-				log.Printf("[opschat] storage quota hit (run reserve) session=%s run=%s bytes=%d", r.id, r.run, size)
-				return ErrQuota
-			}
 		}
 	}
 	return nil
@@ -85,7 +77,7 @@ func (s *Service) enforceStorage(ctx context.Context, tx *sql.Tx) error {
 // StorageBytes is a pure, consistent read of actual encrypted serialized body sizes.
 func (s *Service) StorageBytes(ctx context.Context, id string) (int64, error) {
 	var size int64
-	err := s.transaction(ctx, false, func(tx *sql.Tx) error {
+	err := s.transaction(ctx, id, false, func(tx *sql.Tx) error {
 		if _, e := s.session(ctx, tx, id); e != nil {
 			return e
 		}

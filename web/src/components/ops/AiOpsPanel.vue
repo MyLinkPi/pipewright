@@ -362,6 +362,7 @@ defineExpose({ close })
           @analyze="chat.analyze"
           @analyze-run="(runId) => chat.analyze([], runId)"
           @terminal="terminal"
+          @load-full="(id) => chat.loadCall(id)"
           @history="preserveHistory(chat.history)"
         />
         <AiOpsConfirmation

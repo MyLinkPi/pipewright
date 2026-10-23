@@ -175,7 +175,7 @@ func assertNoPersistedTargetNames(t *testing.T, s *Service, db *sql.DB, session 
 func seedTargetNameRun(t *testing.T, s *Service, session string, body runBody, calls []Call) string {
 	t.Helper()
 	run := uuid.NewString()
-	err := s.transaction(context.Background(), false, func(tx *sql.Tx) error {
+	err := s.transaction(context.Background(), session, false, func(tx *sql.Tx) error {
 		raw, err := s.seal(body)
 		if err != nil {
 			return err
@@ -232,7 +232,7 @@ func TestTargetNamesOldEntriesAndStreamRevisionsCachePerKind(t *testing.T) {
 	c := chat(t, s)
 	s.masker.RegisterSecret("projectionsecret987")
 	run := seedTargetNameRun(t, s, c.ID, runBody{Targets: []target.ConnectionSnapshot{{Server: target.Server{ID: "frozen", Name: "planning-name"}}}}, []Call{{ServerID: "frozen", ServerName: "analysis-name projectionsecret987"}})
-	err := s.transaction(ctx, false, func(tx *sql.Tx) error {
+	err := s.transaction(ctx, c.ID, false, func(tx *sql.Tx) error {
 		for i := 0; i < 10; i++ {
 			for _, kind := range []string{"assistant", "analysis"} {
 				if err := s.append(ctx, tx, Entry{SessionID: c.ID, RunID: run, Kind: kind, Text: "target_A and target_0", TargetNames: map[string]string{"target_A": "never-persist-this"}}, true, kind == "assistant"); err != nil {
@@ -256,7 +256,7 @@ func TestTargetNamesOldEntriesAndStreamRevisionsCachePerKind(t *testing.T) {
 		var page EntryPage
 		var counter *targetNameQueryCounter
 		policy := s.policy()
-		err = s.transaction(ctx, false, func(tx *sql.Tx) error {
+		err = s.transaction(ctx, c.ID, false, func(tx *sql.Tx) error {
 			counter = &targetNameQueryCounter{querier: tx}
 			var err error
 			page, err = s.entryPage(ctx, counter, c.ID, "", 100, events, policy)

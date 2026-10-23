@@ -109,7 +109,9 @@ func clip(text string, n int) string {
 func (s *Service) scrub(text string, n int) string { return clip(s.masker.ScrubTruncated(text), n) }
 
 // Never call this with an open DB transaction: vault.List/Reveal use the same SQLite connection.
+// 入口守卫:违规调用直接 panic 并给出定位(见 txguard.go)。
 func (s *Service) registerSecrets() error {
+	s.txg.check("registerSecrets")
 	if registrar, ok := s.model.(SecretRegistrar); ok {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		err := registrar.RegisterSecrets(ctx)

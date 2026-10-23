@@ -2,6 +2,7 @@ package opschat
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -122,6 +123,8 @@ func TestLiveRunNotProjectedAndSelfHealsWithoutRestart(t *testing.T) {
 		select {} // 悬死:永不返回
 	}
 	r := submitToolPlan(t, s, m, c, "host_ports", `{}`)
+	// 执行器已被调用:派发检查点(Running+Dispatched)已先行落库,投影可判 Unknown。
+	<-started
 
 	// 等 worker 真正进入执行(running),活 run 必须原样呈现。
 	deadline := time.Now().Add(5 * time.Second)
@@ -212,7 +215,7 @@ func TestSnapshotSurvivesPoolReadingContextSource(t *testing.T) {
 	// 模拟 aiContextPolicy:闭包内部直接查库(经连接池)。
 	s.contextSrc = func() ContextPolicy {
 		var one int
-		_ = s.db.QueryRow("SELECT COUNT(*) FROM ops_chat_sessions").Scan(&one)
+		_ = s.db.QueryRowContext(context.Background(), "SELECT COUNT(*) FROM ops_chat_sessions").Scan(&one)
 		return ContextPolicy{}
 	}
 	// 播种带 usage 的 assistant 条目,使 sessionUsage 走到 policy() 那一行。
@@ -259,5 +262,54 @@ func TestSnapshotSurvivesPoolReadingContextSource(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("Events deadlocked: context source did pool IO inside the read transaction")
+	}
+}
+
+// P2 回归:快照/事件投影按展示预算裁剪 call 输出并标记 truncated;单 call
+// GET 端点始终返回完整输出(前端按需展开)。这是大会话快照 30+MB 响应的
+// 体积防线。
+func TestSnapshotTrimsCallOutputPreview(t *testing.T) {
+	id := uuid.NewString()
+	f := executor(id)
+	s, _, db := fixture(t, f, nil)
+	defer func() { _ = s.Close(context.Background()) }()
+	c := chat(t, s, id)
+	big := strings.Repeat("o", 60<<10)
+	cid := uuid.NewString()
+	run := uuid.NewString()
+	rb, _ := s.seal(runBody{Turn: TurnInput{Text: "q"}})
+	if _, err := db.Exec("INSERT INTO ops_chat_runs(id,session_id,request_id,payload_hash,status,body,created_at) VALUES(?,?,?,?,?,?,?)",
+		run, c.ID, uuid.NewString(), "h", Succeeded, rb, time.Now().Add(-time.Minute).UnixMilli()); err != nil {
+		t.Fatal(err)
+	}
+	cb, _ := s.seal(callBody{View: Call{ID: cid, SessionID: c.ID, RunID: run, ServerID: id, ToolID: "host_resources", Status: Succeeded, Output: big}})
+	if _, err := db.Exec("INSERT INTO ops_chat_calls(id,session_id,run_id,server_id,tool_id,status,args_hash,target_hash,body,created_at,ordinal) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+		cid, c.ID, run, id, "host_resources", Succeeded, "a", "t", cb, time.Now().Add(-time.Minute).UnixMilli(), 0); err != nil {
+		t.Fatal(err)
+	}
+	eb, _ := s.seal(struct{ Text string }{"done"})
+	if _, err := db.Exec("INSERT INTO ops_chat_entries(session_id,seq,kind,run_id,call_id,context_allowed,visible,body,body_size,created_at) VALUES(?,?,?,?,?,1,1,?,?,?)",
+		c.ID, 2, "tool_call", run, cid, eb, 4, time.Now().Add(-time.Minute).UnixMilli()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec("UPDATE ops_chat_sessions SET seq=2,visible_count=2 WHERE id=?", c.ID); err != nil {
+		t.Fatal(err)
+	}
+	snap, err := s.Snapshot(context.Background(), c.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snap.Calls) != 1 {
+		t.Fatalf("calls: %+v", snap.Calls)
+	}
+	if !snap.Calls[0].Truncated || len(snap.Calls[0].Output) > snapshotOutputLimit+64 {
+		t.Fatalf("snapshot output not trimmed: truncated=%v len=%d", snap.Calls[0].Truncated, len(snap.Calls[0].Output))
+	}
+	full, err := s.Call(context.Background(), c.ID, cid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(full.Output) != len(big) {
+		t.Fatalf("per-call endpoint lost full output: %d", len(full.Output))
 	}
 }

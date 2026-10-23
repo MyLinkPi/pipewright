@@ -167,7 +167,7 @@ func (s *Service) entryPage(ctx context.Context, q querier, id, cursor string, l
 			if err != nil {
 				return out, err
 			}
-			v := s.publicCall(c.Body.View)
+			v := s.publicCallPreview(c.Body.View)
 			e.Call = &v
 		}
 		if e.RunID != "" && (e.Kind == "run_status" || e.Kind == "user" || e.Kind == "confirmation_ready" || e.Kind == "cancel_requested") {
@@ -222,7 +222,7 @@ func (s *Service) Entries(ctx context.Context, id, before string, limit int) (En
 		return out, err
 	}
 	policy := s.policy()
-	err := s.transaction(ctx, false, func(tx *sql.Tx) error {
+	err := s.transaction(ctx, id, false, func(tx *sql.Tx) error {
 		var e error
 		out, e = s.entryPage(ctx, tx, id, before, limit, false, policy)
 		return e
@@ -235,7 +235,7 @@ func (s *Service) Events(ctx context.Context, id, after string, limit int) (Entr
 		return out, err
 	}
 	policy := s.policy()
-	err := s.transaction(ctx, false, func(tx *sql.Tx) error {
+	err := s.transaction(ctx, id, false, func(tx *sql.Tx) error {
 		var e error
 		out, e = s.entryPage(ctx, tx, id, after, limit, true, policy)
 		return e
@@ -257,7 +257,7 @@ func (s *Service) ListContext(ctx context.Context, before string, limit int, key
 	if err = s.registerSecrets(); err != nil {
 		return out, err
 	}
-	err = s.transaction(ctx, false, func(tx *sql.Tx) error {
+	err = s.transaction(ctx, "", false, func(tx *sql.Tx) error {
 		if key == "" {
 			if tx.QueryRowContext(ctx, "SELECT active_session FROM ops_chat_state WHERE id=1").Scan(&out.ActiveSessionID) != nil {
 				return ErrStorage
@@ -320,7 +320,7 @@ func (s *Service) Snapshot(ctx context.Context, id string) (*Snapshot, error) {
 	}
 	out := &Snapshot{Runs: []Run{}, Calls: []Call{}, Confirmations: []Confirmation{}}
 	policy := s.policy()
-	err := s.transaction(ctx, false, func(tx *sql.Tx) error {
+	err := s.transaction(ctx, id, false, func(tx *sql.Tx) error {
 		sr, e := s.session(ctx, tx, id)
 		if e != nil {
 			return e
@@ -381,7 +381,7 @@ func (s *Service) Snapshot(ctx context.Context, id string) (*Snapshot, error) {
 				// 幻影 run 的调用视图与 run 终态同步投影(派发未归档 → Unknown)。
 				calls = projectRunCalls(phantom, calls)
 				for _, c := range calls {
-					out.Calls = append(out.Calls, s.publicCall(c.Body.View))
+					out.Calls = append(out.Calls, s.publicCallPreview(c.Body.View))
 				}
 			}
 			a, e := s.approval(ctx, tx, id, rid)

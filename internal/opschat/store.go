@@ -46,21 +46,28 @@ func databaseError(err error) error {
 	return nil
 }
 
-// transaction 在单事务内运行 fn。write=true(一切会话写)在提交前做存储配额
-// 扫描;纯读传 false。单实例部署,无执行器租约:run 生命周期权威是内存 jobs,
-// 崩溃遗留的幻影 run 由读取投影惰性降级,Cancel/enqueue 按需 recoverRunTx
+// transaction 在单事务内运行 fn。write=true(一切会话写)在提交前对 session
+// (本事务写入的会话)做存储配额校验;纯读传 false。配额按会话设定,且任一
+// 会话的体量只会在它自己的写事务里增长——旧实现每次写提交都对全部会话做
+// SUM(LENGTH(body)) 全库聚合,会话渐多后连草稿自动保存都在全库扫描并独占
+// 唯一连接。单实例部署,无执行器租约:run 生命周期权威是内存 jobs,崩溃
+// 遗留的幻影 run 由读取投影惰性降级,Cancel/enqueue 按需 recoverRunTx
 // 持久收敛。
-func (s *Service) transaction(ctx context.Context, write bool, fn func(*sql.Tx) error) error {
-	tx, err := s.db.BeginTx(ctx, nil)
+func (s *Service) transaction(ctx context.Context, session string, write bool, fn func(*sql.Tx) error) error {
+	tx, err := s.raw.BeginTx(ctx, nil)
 	if err != nil {
 		return ErrStorage
 	}
 	defer tx.Rollback()
+	// 事务窗口内,同 goroutine 的任何池 IO 都是自死锁(SQLite 单连接):
+	// 守卫在此期间把它们变成带定位信息的 panic(见 txguard.go)。
+	s.txg.enter()
+	defer s.txg.exit()
 	if err = fn(tx); err != nil {
 		return err
 	}
 	if write {
-		if err = s.enforceStorage(ctx, tx); err != nil {
+		if err = s.enforceStorage(ctx, tx, session); err != nil {
 			return err
 		}
 	}
