@@ -13,6 +13,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/huangchengsir/pipewright/internal/audit"
 	"github.com/huangchengsir/pipewright/internal/mask"
+	"github.com/huangchengsir/pipewright/internal/store"
 	"github.com/huangchengsir/pipewright/internal/target"
 	"github.com/huangchengsir/pipewright/internal/vault"
 )
@@ -24,7 +25,12 @@ type job struct {
 	done    chan struct{}
 }
 type Service struct {
-	db          *sql.DB
+	// db 是运行期连接池句柄(SQLite 下为守卫包装,见 txguard.go);写路径
+	// 一律经 transaction() 的 *sql.Tx,不经此句柄。
+	db poolDB
+	// raw 仅供事务开启(BeginTx)、方言判定与构造期初始化使用。
+	raw         *sql.DB
+	txg         txGuard
 	vault       vault.Vault
 	executor    target.LimitedExecutor
 	model       Model
@@ -54,6 +60,7 @@ type Service struct {
 // (aiContextPolicy→ai.load),持事务调用会在单连接下自死锁。事务内需要
 // 策略时,先在事务外取好再传参(见 sessionUsage)。
 func (s *Service) policy() ContextPolicy {
+	s.txg.check("policy")
 	if s.contextSrc == nil {
 		return ContextPolicy{}.withDefaults()
 	}
@@ -68,24 +75,31 @@ func New(o Options) (*Service, error) {
 		o.Masker = mask.NewMasker()
 	}
 	runtime := o.Runtime.withDefaults()
-	s := &Service{db: o.DB, vault: o.Vault, executor: o.Executor, model: o.Model, projects: o.Projects, web: o.Web, audit: o.LocalRecorder, masker: o.Masker, instance: uuid.NewString(), runtime: runtime, contextSrc: o.Context, jobs: map[string]*job{}, wake: map[string]map[chan struct{}]bool{}, slots: make(chan struct{}, runtime.SSHSlots), serverSlots: map[string]chan struct{}{}, compactFails: map[string]int{}}
+	s := &Service{raw: o.DB, vault: o.Vault, executor: o.Executor, model: o.Model, projects: o.Projects, web: o.Web, audit: o.LocalRecorder, masker: o.Masker, instance: uuid.NewString(), runtime: runtime, contextSrc: o.Context, jobs: map[string]*job{}, wake: map[string]map[chan struct{}]bool{}, slots: make(chan struct{}, runtime.SSHSlots), serverSlots: map[string]chan struct{}{}, compactFails: map[string]int{}}
+	// SQLite 单连接:嵌套池 IO 即自死锁,装事务守卫;MySQL 多连接不致命,关闭。
+	if store.DialectOf(o.DB) == store.SQLite {
+		s.txg.active = true
+		s.db = guardedPool{inner: o.DB, g: &s.txg}
+	} else {
+		s.db = o.DB
+	}
 	check, err := s.seal("pipewright.opschat.keycheck.v1")
 	if err != nil {
 		return nil, err
 	}
 	var stored []byte
-	err = s.db.QueryRow("SELECT keycheck FROM ops_chat_state WHERE id=1").Scan(&stored)
+	err = s.raw.QueryRow("SELECT keycheck FROM ops_chat_state WHERE id=1").Scan(&stored)
 	if errors.Is(err, sql.ErrNoRows) {
 		var count int
-		if s.db.QueryRow("SELECT COUNT(*) FROM ops_chat_sessions").Scan(&count) != nil {
+		if s.raw.QueryRow("SELECT COUNT(*) FROM ops_chat_sessions").Scan(&count) != nil {
 			return nil, ErrStorage
 		}
 		if count != 0 {
 			return nil, ErrDecrypt
 		}
-		_, err = s.db.Exec("INSERT INTO ops_chat_state(id,keycheck) VALUES(1,?)", check)
+		_, err = s.raw.Exec("INSERT INTO ops_chat_state(id,keycheck) VALUES(1,?)", check)
 		if err != nil {
-			if s.db.QueryRow("SELECT keycheck FROM ops_chat_state WHERE id=1").Scan(&stored) != nil {
+			if s.raw.QueryRow("SELECT keycheck FROM ops_chat_state WHERE id=1").Scan(&stored) != nil {
 				return nil, ErrStorage
 			}
 		} else {
@@ -182,7 +196,7 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (*Session, error) 
 	}
 	id := uuid.NewString()
 	now := time.Now().UnixMilli()
-	err = s.transaction(ctx, true, func(tx *sql.Tx) error {
+	err = s.transaction(ctx, id, true, func(tx *sql.Tx) error {
 		var count int
 		if tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM ops_chat_sessions").Scan(&count) != nil {
 			return ErrStorage
@@ -249,7 +263,7 @@ func (s *Service) Patch(ctx context.Context, id string, in PatchInput) (*Session
 	if err := s.registerSecrets(); err != nil {
 		return nil, err
 	}
-	err = s.transaction(ctx, true, func(tx *sql.Tx) error {
+	err = s.transaction(ctx, id, true, func(tx *sql.Tx) error {
 		r, e := s.session(ctx, tx, id)
 		if e != nil {
 			return e
@@ -389,7 +403,7 @@ func (s *Service) enqueue(ctx context.Context, id, request, hash string, body ru
 	now := time.Now().UTC()
 	r := runRecord{View: Run{ID: runID, SessionID: id, ClientRequestID: request, Status: Queued, CreatedAt: now}, Body: body, Hash: hash}
 	var old *Run
-	err := s.transaction(ctx, true, func(tx *sql.Tx) error {
+	err := s.transaction(ctx, id, true, func(tx *sql.Tx) error {
 		var existing, chat, payload string
 		e := tx.QueryRowContext(ctx, "SELECT id,session_id,payload_hash FROM ops_chat_runs WHERE request_id=?", request).Scan(&existing, &chat, &payload)
 		if e == nil {
@@ -497,7 +511,7 @@ func (s *Service) Cancel(ctx context.Context, id, runID string) (*Run, error) {
 	if err := s.ready(); err != nil {
 		return nil, err
 	}
-	err := s.transaction(ctx, true, func(tx *sql.Tx) error {
+	err := s.transaction(ctx, id, true, func(tx *sql.Tx) error {
 		r, e := s.run(ctx, tx, id, runID)
 		if e != nil {
 			return e
@@ -578,7 +592,7 @@ func (s *Service) Delete(ctx context.Context, id string) error {
 		}
 	}
 	s.mu.Unlock()
-	err = s.transaction(ctx, true, func(tx *sql.Tx) error {
+	err = s.transaction(ctx, id, true, func(tx *sql.Tx) error {
 		r, e := s.session(ctx, tx, id)
 		if e != nil {
 			return e

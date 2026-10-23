@@ -166,8 +166,16 @@ func TestFourMiBReserveCannotBeSpentByDraftAndEscapedOutputFits(t *testing.T) {
 	close(release)
 	snap := waitRun(t, s, c.ID, r.ID, Succeeded)
 	waitJobs(t, s)
-	if len(snap.Calls[0].Output) != 64<<10 {
-		t.Fatal(len(snap.Calls[0].Output))
+	// 快照输出按展示预算裁剪;全量长度经单 call 端点断言。
+	full, err := s.Call(context.Background(), c.ID, snap.Calls[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(full.Output) != 64<<10 {
+		t.Fatal(len(full.Output))
+	}
+	if !snap.Calls[0].Truncated {
+		t.Fatal("snapshot preview should be marked truncated")
 	}
 	used, e := s.StorageBytes(context.Background(), c.ID)
 	if e != nil || used > 8<<20 || used < 4<<20 {

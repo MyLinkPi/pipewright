@@ -275,7 +275,7 @@ func TestDockerExecTamperedOrExpiredApprovalBlocked(t *testing.T) {
 			a := snap.Confirmations[0]
 			switch change {
 			case "argv", "argv-and-hash", "container":
-				err := s.transaction(context.Background(), true, func(tx *sql.Tx) error {
+				err := s.transaction(context.Background(), c.ID, true, func(tx *sql.Tx) error {
 					stored, err := s.call(context.Background(), tx, c.ID, snap.Calls[0].ID)
 					if err != nil {
 						return err

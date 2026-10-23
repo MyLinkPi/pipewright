@@ -26,6 +26,7 @@ const emit = defineEmits<{
   analyzeRun: [runId: string]
   terminal: [id: string]
   history: []
+  loadFull: [id: string]
 }>()
 const { t } = useI18n()
 // 压缩分界条:默认折叠,点开看摘要正文。
@@ -150,6 +151,7 @@ const visible = computed(() => {
         @analyze="emit('analyze', $event)"
         @analyze-run="emit('analyzeRun', $event)"
         @terminal="emit('terminal', $event)"
+        @load-full="emit('loadFull', $event)"
       />
       <div
         v-else-if="row.entry.kind === 'summary_checkpoint'"

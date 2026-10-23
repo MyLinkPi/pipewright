@@ -198,7 +198,7 @@ func TestHistoricalPublicFieldsRefreshRotatedSecretsWithoutChangingHistory(t *te
 			if _, err = s.Patch(ctx, c.ID, PatchInput{Revision: c.Revision, Draft: &text}); err != nil {
 				t.Fatal(err)
 			}
-			if err = s.transaction(ctx, true, func(tx *sql.Tx) error {
+			if err = s.transaction(ctx, c.ID, true, func(tx *sql.Tx) error {
 				for _, kind := range []string{"user", "assistant", "analysis"} {
 					if e := s.append(ctx, tx, Entry{SessionID: c.ID, Kind: kind, Text: text}, true, false); e != nil {
 						return e

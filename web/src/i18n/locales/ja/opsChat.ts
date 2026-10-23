@@ -86,6 +86,8 @@ export default {
   notCollected: '未収集',
   exit: '終了コード',
   truncated: '結果は切り詰められました',
+
+  loadFullOutput: '完全な出力を取得',
   verifyFirst:
     'リモートへの影響は未確認です。読み取り専用の確認を先に実行してください。停止は変更を取り消しません。',
   older: '以前のメッセージを読み込む',

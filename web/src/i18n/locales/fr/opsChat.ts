@@ -85,6 +85,8 @@ export default {
   notCollected: 'Non collecté',
   exit: 'Code de sortie',
   truncated: 'Résultat tronqué',
+
+  loadFullOutput: 'Charger la sortie complète',
   verifyFirst:
     'Effets distants non vérifiés. Vérifiez en lecture seule. Arrêter n’annule pas les modifications.',
   older: 'Charger les anciens messages',

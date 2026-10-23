@@ -156,7 +156,7 @@ func TestCancelRequestedRunNeverFails(t *testing.T) {
 	waitRun(t, s, c.ID, r.ID, Interrupted)
 }
 
-// 一切会话写(write=true)都在提交前做存储配额扫描;超限会话的写被拒绝。
+// 会话写(write=true)在提交前对本会话做存储配额校验;超限会话的写被拒绝。
 func TestWriteEnforcesQuota(t *testing.T) {
 	id := uuid.NewString()
 	s, _, db := fixture(t, executor(id), nil)
@@ -164,7 +164,7 @@ func TestWriteEnforcesQuota(t *testing.T) {
 	if _, err := db.Exec("UPDATE ops_chat_sessions SET visible_count=? WHERE id=?", resourceLimits.Entries+1, c.ID); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.transaction(context.Background(), true, func(*sql.Tx) error { return nil }); err != ErrQuota {
+	if err := s.transaction(context.Background(), c.ID, true, func(*sql.Tx) error { return nil }); err != ErrQuota {
 		t.Fatal(err)
 	}
 }
@@ -385,7 +385,7 @@ func TestSharedReadBudgetProjectionAndSecretOutput(t *testing.T) {
 func TestEventsWatermarkDroppedWakeupsAndReset(t *testing.T) {
 	s, _, db := fixture(t, executor(), nil)
 	c := chat(t, s)
-	err := s.transaction(context.Background(), true, func(tx *sql.Tx) error {
+	err := s.transaction(context.Background(), c.ID, true, func(tx *sql.Tx) error {
 		for range 4001 {
 			if e := s.append(context.Background(), tx, Entry{SessionID: c.ID, Kind: "event"}, false, false); e != nil {
 				return e

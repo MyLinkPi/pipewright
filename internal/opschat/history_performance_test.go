@@ -16,7 +16,7 @@ func TestSQLiteLargeHistorySnapshotBoundedAndPaged(t *testing.T) {
 	c := chat(t, s)
 	ctx := context.Background()
 	// A real migrated file-backed SQLite DB, encrypted bodies, within storage limits.
-	err := s.transaction(ctx, false, func(tx *sql.Tx) error {
+	err := s.transaction(ctx, c.ID, false, func(tx *sql.Tx) error {
 		for round := 0; round < 60; round++ {
 			rid := uuid.NewString()
 			rb, e := s.seal(runBody{})
@@ -46,7 +46,7 @@ func TestSQLiteLargeHistorySnapshotBoundedAndPaged(t *testing.T) {
 				return e
 			}
 		}
-		return s.enforceStorage(ctx, tx)
+		return s.enforceStorage(ctx, tx, c.ID)
 	})
 	if err != nil {
 		t.Fatal(err)
