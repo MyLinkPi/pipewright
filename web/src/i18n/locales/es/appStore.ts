@@ -74,6 +74,7 @@ export default {
     hasSecret: "Contraseña actual precargada",
     keepSecret: "Sin cambios = mantener; editar = sobrescribir",
     secretHint: "Editar solo reescribe la configuración compose; las contraseñas ya inicializadas en la base de datos/aplicación no se sincronizan automáticamente — verifica antes de cambiar.",
+    legacyKeep: "Vaciar = generar nueva; mantener = reutilizar la contraseña anterior",
     show: "Mostrar",
     hide: "Ocultar",
     flowHint: "Los parámetros vacíos conservan su valor actual; las contraseñas vacías no se regeneran. Se re-renderiza la plantilla más reciente, se escribe por SSH y se ejecuta docker compose up -d.",

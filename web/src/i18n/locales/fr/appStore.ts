@@ -74,6 +74,7 @@ export default {
     hasSecret: "Mot de passe actuel prérempli",
     keepSecret: "Inchangé = conserver ; modifier = écraser",
     secretHint: "Modifier ne réécrit que la configuration compose ; les mots de passe déjà initialisés dans la base/l'application ne sont pas synchronisés automatiquement — vérifiez avant de changer.",
+    legacyKeep: "Vider = régénérer ; conserver = réutiliser l'ancien mot de passe",
     show: "Afficher",
     hide: "Masquer",
     flowHint: "Les paramètres laissés vides conservent leur valeur ; les mots de passe vides ne sont pas régénérés. Le dernier modèle est re-rendu, écrit via SSH, puis docker compose up -d.",

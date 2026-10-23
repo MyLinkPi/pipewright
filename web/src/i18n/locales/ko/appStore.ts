@@ -74,6 +74,7 @@ export default {
     hasSecret: "현재 비밀번호 미리 채움",
     keepSecret: "변경 없음 = 유지, 수정 = 덮어쓰기",
     secretHint: "수정은 compose 설정만 다시 씁니다. 데이터베이스/앱 내부에서 이미 초기화된 비밀번호는 자동 동기화되지 않으니 변경 전에 확인하세요.",
+    legacyKeep: "비우기 = 새로 생성, 유지 = 기존 비밀번호 재사용",
     show: "표시",
     hide: "숨기기",
     flowHint: "입력하지 않은 파라미터는 현재 값을 유지하고, 비밀번호는 비워 두면 재생성되지 않습니다. 최신 템플릿을 재렌더링한 뒤 SSH로 쓰고 docker compose up -d를 실행합니다.",

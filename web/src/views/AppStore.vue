@@ -129,9 +129,9 @@ async function upgradeInstance(inst: AppInstance): Promise<void> {
   else await enterUpgradeMode()
 }
 
-// prefillLegacy 旧版部署「重新部署」预填:后端从栈目录旧 compose 按占位符锚文本反推非
-// secret 现值(尽力而为),反推到的预填、反推不到的回落模板默认值;ssh_domain 两头都
-// 没有再回落目标机地址(与正常部署同规则,反推值优先不被覆盖)。失败静默,不打断表单。
+// prefillLegacy 旧版部署「重新部署」预填:后端从栈目录旧 compose 按占位符锚文本反推
+// 现值(含 secret——保持原口令部署,不必重新生成),反推到的预填、反推不到的回落默认值;
+// ssh_domain 两头都没有再回落目标机地址。失败静默,不打断表单。
 async function prefillLegacy(): Promise<void> {
   if (!deploying.value || !deployServer.value) return
   try {
@@ -141,6 +141,12 @@ async function prefillLegacy(): Promise<void> {
         const v = ctx.params[p.name]
         if (v) paramValues.value[p.name] = v
       }
+      // 反推到的 secret 默认明文展示(与升级模式同姿态),可隐藏。
+      const show: Record<string, boolean> = {}
+      for (const p of deploying.value.params) {
+        if (p.type === 'secret' && ctx.params[p.name]) show[p.name] = true
+      }
+      showSecret.value = show
     }
   } catch {
     // 反推失败静默:参数保持默认值,用户手填兜底
@@ -696,14 +702,15 @@ async function removeCustom(tpl: AppTemplate): Promise<void> {
               <span v-if="p.autoGenerate && deployMode === 'deploy'" class="apps__hint">· {{ t('appStore.deploy.autogen') }}</span>
               <span v-if="deployMode === 'upgrade' && upgradeSecrets.includes(p.name)" class="apps__hint">· {{ t('appStore.upgrade.hasSecret') }}</span>
             </span>
-            <!-- 升级模式 secret:预填边车现值(可显示/修改;不动 = 保持,修改 = 覆盖) -->
-            <template v-if="deployMode === 'upgrade' && p.type === 'secret'">
+            <!-- secret:有预填现值(升级模式边车值 / 部署模式 legacy 反推值)→ 明文行可改;
+                 部署模式且无预填 → 自动生成占位 -->
+            <template v-if="p.type === 'secret' && (deployMode === 'upgrade' || paramValues[p.name])">
               <div class="apps__secret-row">
                 <input
                   v-model="paramValues[p.name]"
                   class="field__in"
                   :type="showSecret[p.name] ? 'text' : 'password'"
-                  :placeholder="t('appStore.upgrade.keepSecret')"
+                  :placeholder="deployMode === 'upgrade' ? t('appStore.upgrade.keepSecret') : t('appStore.upgrade.legacyKeep')"
                   autocomplete="off"
                 />
                 <button type="button" class="apps__sr-link" @click="toggleSecret(p.name)">
@@ -737,7 +744,7 @@ async function removeCustom(tpl: AppTemplate): Promise<void> {
             <AppButton
               variant="primary"
               type="submit"
-              :loading="deployBusy"
+              :loading="deployBusy || upgradeCtxBusy"
               :disabled="!deployServer || missingRequired || instanceInvalid"
             >
               <NIcon :size="14"><Rocket /></NIcon>&nbsp;{{ deployMode === 'upgrade' ? t('appStore.upgrade.submit') : t('appStore.deploy.submit') }}
