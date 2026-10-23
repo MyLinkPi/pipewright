@@ -773,16 +773,17 @@ func validateAppDeployTarget(instance, cpus, memory string, srv *target.Server) 
 }
 
 // makeAppUpgradeContextHandler 返回 GET /api/servers/{id}/apps/upgrade-context?templateId=&instance=:
-// 读既有实例的参数边车供升级表单预填。secret 参数只回「有值」标记不回值(与部署一次性返回
-// 纪律一致;升级时留空 = 保持不变)。无边车(旧版部署)→ found:false,但尝试读栈目录旧
-// compose 反推非 secret 现值(legacy:true)供「重新部署」预填;反推不出 → found:false 裸回。
+// 读既有实例的参数边车供升级表单预填。secret 现值一并回显(secrets: 名→现值)——安全姿态
+// 与边车/compose 同级(同目录明文,Stacks 详情本就能看 compose 全文);升级表单预填后,
+// 不动 = 保持、修改 = 覆盖,语义显式,不再是黑盒。无边车(旧版部署)→ found:false,但尝试
+// 读栈目录旧 compose 反推非 secret 现值(legacy:true)供「重新部署」预填;反推不出 → 裸回。
 func makeAppUpgradeContextHandler(apps appstore.Service, servers target.Service) http.HandlerFunc {
 	type response struct {
 		Found     bool              `json:"found"`
 		Legacy    bool              `json:"legacy,omitempty"` // 无边车但反推出旧配置(仅「重新部署」预填用,不可原位升级)
 		StackName string            `json:"stackName"`
-		Params    map[string]string `json:"params"`  // 边车现值 / legacy 反推值(均仅非 secret)
-		Secrets   []string          `json:"secrets"` // 有现值的 secret 参数名(不回值)
+		Params    map[string]string `json:"params"`  // 非 secret 参数现值 / legacy 反推值
+		Secrets   map[string]string `json:"secrets"` // secret 参数现值(名→值;与 compose 明文同级姿态)
 		CPUs      string            `json:"cpus"`    // 原部署的资源限制(升级沿用)
 		Memory    string            `json:"memory"`
 	}
@@ -812,7 +813,7 @@ func makeAppUpgradeContextHandler(apps appstore.Service, servers target.Service)
 			return
 		}
 		stackName := appStackName(tpl.Name, instance)
-		out := response{StackName: stackName, Params: map[string]string{}, Secrets: []string{}}
+		out := response{StackName: stackName, Params: map[string]string{}, Secrets: map[string]string{}}
 		sc, err := readAppSidecar(r.Context(), servers, serverID, stackName)
 		if err != nil {
 			// 无边车(旧版部署)→ 读栈目录旧 compose 尽力反推非 secret 现值。「重新部署」
@@ -836,7 +837,7 @@ func makeAppUpgradeContextHandler(apps appstore.Service, servers target.Service)
 		}
 		for k, v := range sc.Params {
 			if secretNames[k] {
-				out.Secrets = append(out.Secrets, k)
+				out.Secrets[k] = v
 			} else {
 				out.Params[k] = v
 			}

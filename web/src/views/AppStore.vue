@@ -246,6 +246,7 @@ function openDeploy(tpl: AppTemplate): void {
   sshDomainAuto.value = ''
   deployMode.value = 'deploy'
   upgradeSecrets.value = []
+  showSecret.value = {}
   deployServer.value = servers.value.length === 1 ? servers.value[0].id : ''
   const vals: Record<string, string> = {}
   for (const p of tpl.params) vals[p.name] = p.default ?? ''
@@ -256,8 +257,9 @@ function openDeploy(tpl: AppTemplate): void {
   }
 }
 
-// enterUpgradeMode 切换为升级模式:读参数边车预填非密现值与资源限制;无边车(旧版
-// 部署/非应用市场栈)→ 提示不可原位升级,停留部署模式。
+// enterUpgradeMode 切换为升级模式:读参数边车预填非密现值与资源限制;secret 现值也预填
+// (显示切换可查;不动 = 保持、修改 = 覆盖,后端按非空覆盖合并)。无边车(旧版部署/非应用
+// 市场栈)→ 提示不可原位升级,停留部署模式。
 async function enterUpgradeMode(): Promise<void> {
   if (!deploying.value || !deployServer.value || upgradeCtxBusy.value) return
   upgradeCtxBusy.value = true
@@ -268,9 +270,11 @@ async function enterUpgradeMode(): Promise<void> {
       return
     }
     deployMode.value = 'upgrade'
-    upgradeSecrets.value = ctx.secrets
+    upgradeSecrets.value = Object.keys(ctx.secrets ?? {})
     const vals: Record<string, string> = {}
-    for (const p of deploying.value.params) vals[p.name] = ctx.params[p.name] ?? ''
+    for (const p of deploying.value.params) {
+      vals[p.name] = ctx.params[p.name] ?? (ctx.secrets?.[p.name] ?? '')
+    }
     paramValues.value = vals
     deployCpus.value = ctx.cpus
     deployMemory.value = ctx.memory
@@ -279,6 +283,13 @@ async function enterUpgradeMode(): Promise<void> {
   } finally {
     upgradeCtxBusy.value = false
   }
+}
+
+// showSecret 升级模式 secret 输入框的明文显示切换(名→是否显示)。
+const showSecret = ref<Record<string, boolean>>({})
+
+function toggleSecret(name: string): void {
+  showSecret.value = { ...showSecret.value, [name]: !showSecret.value[name] }
 }
 
 // exitUpgradeMode 回到全新部署:整体重置表单(参数回默认值)。
@@ -681,12 +692,27 @@ async function removeCustom(tpl: AppTemplate): Promise<void> {
               <span v-if="p.autoGenerate && deployMode === 'deploy'" class="apps__hint">· {{ t('appStore.deploy.autogen') }}</span>
               <span v-if="deployMode === 'upgrade' && upgradeSecrets.includes(p.name)" class="apps__hint">· {{ t('appStore.upgrade.hasSecret') }}</span>
             </span>
+            <!-- 升级模式 secret:预填边车现值(可显示/修改;不动 = 保持,修改 = 覆盖) -->
+            <template v-if="deployMode === 'upgrade' && p.type === 'secret'">
+              <div class="apps__secret-row">
+                <input
+                  v-model="paramValues[p.name]"
+                  class="field__in"
+                  :type="showSecret[p.name] ? 'text' : 'password'"
+                  :placeholder="t('appStore.upgrade.keepSecret')"
+                  autocomplete="off"
+                />
+                <button type="button" class="apps__sr-link" @click="toggleSecret(p.name)">
+                  {{ showSecret[p.name] ? t('appStore.upgrade.hide') : t('appStore.upgrade.show') }}
+                </button>
+              </div>
+              <span v-if="upgradeSecrets.includes(p.name)" class="apps__hint">{{ t('appStore.upgrade.secretHint') }}</span>
+            </template>
             <input
-              v-if="p.type !== 'secret' || !p.autoGenerate || deployMode === 'upgrade'"
+              v-else-if="p.type !== 'secret' || !p.autoGenerate || deployMode === 'upgrade'"
               v-model="paramValues[p.name]"
               class="field__in"
               :type="p.type === 'secret' ? 'password' : p.type === 'int' ? 'number' : 'text'"
-              :placeholder="deployMode === 'upgrade' && p.type === 'secret' ? t('appStore.upgrade.keepSecret') : undefined"
               :required="deployMode === 'deploy' && p.required && !p.autoGenerate && !p.default"
             />
             <input v-else class="field__in" type="password" :value="t('appStore.deploy.autoValue')" disabled />
@@ -999,6 +1025,14 @@ async function removeCustom(tpl: AppTemplate): Promise<void> {
 .apps__hint {
   font-size: 11px;
   opacity: 0.6;
+}
+.apps__secret-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.apps__secret-row .field__in {
+  flex: 1;
 }
 .apps__req {
   color: #b3261e;

@@ -252,7 +252,7 @@ type appUpgradeContextDTO struct {
 	Found     bool              `json:"found"`
 	StackName string            `json:"stackName"`
 	Params    map[string]string `json:"params"`
-	Secrets   []string          `json:"secrets"`
+	Secrets   map[string]string `json:"secrets"`
 }
 
 func getUpgradeContext(t *testing.T, r *chi.Mux, query string) appUpgradeContextDTO {
@@ -337,10 +337,11 @@ func TestAppUpgradeKeepsSecretsAndMergesOverrides(t *testing.T) {
 		t.Fatalf("上下文应预填非密参数: %+v", ctx)
 	}
 	if _, leaked := ctx.Params["secret_key"]; leaked {
-		t.Fatalf("secret 值不得回传: %+v", ctx.Params)
+		t.Fatalf("secret 值不得混入 params: %+v", ctx.Params)
 	}
-	if len(ctx.Secrets) != 1 || ctx.Secrets[0] != "secret_key" {
-		t.Fatalf("secret 名应标记: %+v", ctx.Secrets)
+	// secret 现值随 secrets 回显(升级表单预填:不动 = 保持,改 = 覆盖;与 compose 明文同级姿态)。
+	if ctx.Secrets["secret_key"] == "" {
+		t.Fatalf("secret 现值应回显: %+v", ctx.Secrets)
 	}
 
 	// 升级:只改 api_port,secret_key 不动。

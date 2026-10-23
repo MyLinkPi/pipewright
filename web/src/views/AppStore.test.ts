@@ -378,7 +378,7 @@ describe('AppStore 已部署实例区', () => {
       found: true,
       stackName: 'gitea-2',
       params: { version: '28.2.0', port: '3000', ssh_port: '2222', ssh_domain: '10.0.0.2' },
-      secrets: [],
+      secrets: {},
       cpus: '1',
       memory: '512m',
     })
@@ -407,6 +407,39 @@ describe('AppStore 已部署实例区', () => {
     expect(args[1]).toBe('t1')
     expect(args[4]).toBe('2')
     expect(w.text()).toContain('升级成功')
+  })
+
+  it('升级模式 secret:现值预填 + 显示切换可查明文,placeholder 说明保持/覆盖语义', async () => {
+    h.listAppInstances.mockResolvedValue({
+      items: [mkInstance({ templateId: 't-sec', stackName: 'mysql', templateName: 'mysql', instance: '' })],
+    })
+    // gitea 模板无 secret 参数——借用升级上下文断言 secret 预填需模板带 secret;此处直接
+    // 给 giteaTpl 追加一个 secret 参数的副本模板。
+    const mysqlTpl = { ...giteaTpl, id: 't-sec', name: 'mysql', params: [...giteaTpl.params, { name: 'password', label: '数据库口令', type: 'secret' as const, required: true, autoGenerate: true }] }
+    h.listAppTemplates.mockResolvedValue({ items: [mysqlTpl] })
+    h.getAppUpgradeContext.mockResolvedValue({
+      found: true,
+      stackName: 'mysql',
+      params: {},
+      secrets: { password: '0ld-p4ss' },
+      cpus: '',
+      memory: '',
+    })
+    const w = mount(AppStore)
+    await flushPromises()
+    await w.findAll('button').find((b) => b.text().includes('升级'))!.trigger('click')
+    await flushPromises()
+
+    expect(w.text()).toContain('已预填当前口令')
+    const secLabel = w.findAll('label.field').find((l) => l.text().includes('数据库口令'))!
+    const secInput = secLabel.find('input')
+    // 密码框隐藏明文;placeholder 说明保持/覆盖语义;点「显示」后切为 text 且值可见。
+    expect((secInput.element as HTMLInputElement).placeholder).toContain('不动 = 保持现有口令')
+    expect((secInput.element as HTMLInputElement).type).toBe('password')
+    expect((secInput.element as HTMLInputElement).value).toBe('0ld-p4ss')
+    await secLabel.findAll('button').find((b) => b.text().includes('显示'))!.trigger('click')
+    await nextTick()
+    expect((secInput.element as HTMLInputElement).type).toBe('text')
   })
 
   it('旧版部署(legacy)行:显示「旧版部署」徽标与「重新部署」按钮,点击打开部署弹窗(非升级模式)', async () => {
