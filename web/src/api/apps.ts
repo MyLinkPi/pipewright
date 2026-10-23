@@ -114,8 +114,8 @@ export interface AppUpgradeContext {
   stackName: string
   /** 非 secret 参数现值(升级表单预填用;legacy 时为反推值)。 */
   params: Record<string, string>
-  /** 有现值的 secret 参数名(不回值;升级时留空 = 保持不变,绝不重新生成)。 */
-  secrets: string[]
+  /** secret 参数现值(名→值;与 compose 明文同级姿态,升级表单预填:不动 = 保持,改 = 覆盖)。 */
+  secrets: Record<string, string>
   /** 原部署的资源限制(升级沿用;本次显式给非空值才覆盖)。 */
   cpus: string
   memory: string
