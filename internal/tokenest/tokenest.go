@@ -29,11 +29,11 @@ func Estimate(s string) int {
 func isCJK(r rune) bool {
 	switch {
 	case r >= 0x4E00 && r <= 0x9FFF, // CJK 统一表意
-		r >= 0x3400 && r <= 0x4DBF, // 扩展 A
+		r >= 0x3400 && r <= 0x4DBF,   // 扩展 A
 		r >= 0x20000 && r <= 0x2A6DF, // 扩展 B
-		r >= 0x3040 && r <= 0x30FF, // 平假名/片假名
-		r >= 0xAC00 && r <= 0xD7AF, // 谚文音节
-		r >= 0x3000 && r <= 0x303F, // CJK 标点
+		r >= 0x3040 && r <= 0x30FF,   // 平假名/片假名
+		r >= 0xAC00 && r <= 0xD7AF,   // 谚文音节
+		r >= 0x3000 && r <= 0x303F,   // CJK 标点
 		unicode.Is(unicode.Han, r):
 		return true
 	}

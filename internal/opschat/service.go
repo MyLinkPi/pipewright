@@ -46,6 +46,15 @@ type Service struct {
 	slots       chan struct{}
 	serverSlots map[string]chan struct{}
 	leaseDone   chan struct{}
+	// base 是 Start 传入的根上下文:fence 停掉工作上下文后,重取租约时用它重建。
+	// loopDone 只由 Close 关闭,是 leaseLoop 的唯一出口(失租不再终止循环)。
+	base     context.Context
+	loopDone chan struct{}
+	// leasedUntil 是最后一次成功续期写入的截止毫秒,存储故障连租约行都读不出时
+	// 据此兜底判断自持租约是否已过期。leaseFails 是连续续期/重取失败计数(节流日志)。
+	// 两字段仅 leaseLoop 读写(Start 在启动循环前写入 leasedUntil),无锁。
+	leasedUntil int64
+	leaseFails  int
 	// compactFails 按 session 记录模型压缩连续失败次数(≥3 熔断为仅确定性裁剪;
 	// 内存态,重启重置可接受)。compactOK 清零。
 	compactFails map[string]int
@@ -138,6 +147,7 @@ func validTargets(ids []string) bool {
 	}
 	return true
 }
+
 // validTargetsFor 按维度校验目标机集合:机器维度 ≤ Targets(8);项目维度
 // target_0 固定留给项目,目标机别名 target_1..7,故 ≤ Targets-1。
 func validTargetsFor(scope string, ids []string) bool {

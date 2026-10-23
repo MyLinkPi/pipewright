@@ -2,6 +2,7 @@
 
 > 状态:**P1 已实现 + P2 核心已实现 + P3 大部已实现**(后端 `go test ./...` 与前端单测全绿;2026-10-21)。落点:`internal/pipeline/ai_node.go`(校验)、`internal/ai/agenttest.go`(AgentTest 领域服务:发现/needs 排序/agent 循环/submit_verdict 裁决契约/用量与网关费用)、`internal/build/ai_node.go`(执行器 + HTTP/浏览器动作集 + Playwright 容器桥)、`internal/notify`(ai_acceptance_failed 事件 + testSummary/failedTests/reportUrl 占位)、`internal/httpapi/notify_hook.go`(审批卡内嵌测试摘要)、`Resource` init/shmSize(`settings.go`+`shell_driver.go`+`workspace_copy.go`)、前端 `jobConfigSchema.ts`/`JobTypeIcon.vue`/8 语言。
 > 已知缺口(诚实边界):`ai_acceptance_failed` 已注册但无发射点(需 build 侧持路由器;接线点 = runAITestJob 汇总后);`{{failedTests}}` 暂无数据源(报告存储只有计数,扩用例明细属独立增量);截图**多模态观察**(P4)未做——截图留档已随浏览器动作集落地;run-scoped AI 代理端点(P4)未做;浏览器桥协议与工具面有单测,未经真实容器 e2e。
+> 2026-10-23 修复:需求正文跨轮次恒定在场(原实现第 2 轮起 question 被推进语覆盖,模型看不到需求);上下文管理接线(确定性轮次裁剪 + 溢出重试一次,`modelContextTokens` 生效);target 残留 `${}` 占位符 fail fast;保存期数值校验严格化(拒 `123abc`/非整数 float);裁决提交后同 reply 后续工具调用不再执行;工具失败输出与动作日志过 MaskerText;删除未使用的 remoteAITestSource。
 > 本版纠正核心定位——AI 是**测试的执行者**,不是测试脚本的作者;早期"AI 生成脚本 + 确定性回放"方案已废弃。相关:`internal/ai`(AI 服务、`AgentRound` 工具调用循环,密钥仅存 vault)、`internal/build/ecs_power.go`(控制面节点执行器范本)、`internal/build/shell_driver.go`(工具链容器启动参数)、`internal/build/dag_test_report.go`(测试报告落库/门禁)、`internal/notify/router.go`(事件路由)、`web/src/components/pipeline/jobConfigSchema.ts`(节点 schema)。
 
 ## 定位:AI 测试,不是 AI 写测试
@@ -40,7 +41,7 @@ target: ${BASE_URL}      # 可选;缺省继承节点 target;${VAR} 引用运行�
 期望:有效券码应用后订单金额立减;无效券码提示「券码无效」且金额不变。
 ```
 
-- 目标解析:**需求 frontmatter `target` > 节点 `target`**,两级皆空 → 发现期判 fail(无被测对象)。
+- 目标解析:**需求 frontmatter `target` > 节点 `target`**,两级皆空 → 发现期判 fail(无被测对象);`${VAR}` 展开后仍残留占位符(运行参数缺失 / deployJob 未绑定或解析失败)→ 同样发现期判 fail,不把字面量交给 agent。
 - 冒烟/全量分层:子目录 + 节点 glob 过滤,不另造标签机制。
 - **依赖与顺序**:生命周期成对的场景(创建→删除)**优先写成一条自包含需求**(创建→验证→删除→验证,测试数据生命周期自包含);确需拆分才用 frontmatter `needs`(如 `delete-resource.md` 声明 `needs: [create-resource]`);执行语义见「执行顺序与依赖」。前置动作(登录等)直接写进需求正文,由 agent 自理,不算依赖。
 
@@ -50,7 +51,7 @@ target: ${BASE_URL}      # 可选;缺省继承节点 target;${VAR} 引用运行�
 
 1. **发现即校验**:约定路径不存在 / frontmatter 解析失败 / id 重复 → fail fast(错误带文件名);发现 0 个需求 → 判 fail(防路径 typo 静默绿灯);日志首行回显「发现 N 个需求(blocker X / suggest Y)+ 执行序」。
 2. **执行顺序与依赖**:发现后按 frontmatter `needs`(依赖的需求 id 列表)构图,**Kahn 拓扑排序**——复用 `internal/dag`,与流水线 job 的 `needs` 同款语义,零学习成本;**成环 → 发现期 fail fast**;无依赖需求按路径字典序。**同一浏览器上下文顺序执行**:cookie/localStorage 跨需求保留(第一条需求登录后,后续需求中 agent 观察到已登录即径直继续,重复前置动作的成本自动消失)。**依赖失败 → 依赖它的需求标 ⏭ skipped**(不算失败,报告注明级联原因;不隐藏级联,也不放大成失败——最终人判)。
-3. **agent 循环**:LLM 收到「需求正文 + 当前观察」→ 决定下一个动作 → 执行 → 新观察回传 → 循环直至产出裁决或预算耗尽。复用 `internal/ai` 的 AgentRound;temperature 0。会话上下文沿用平台的**自动压缩与溢出兜底**(逼近窗口自动摘要压缩、`context_window_exceeded` 兜底重试),窗口大小取节点 `modelContextTokens`(缺省 = 平台默认窗口)。**每会话累计 AI 用量与费用**(模型 / LLM 轮次 / 输入输出 token / 时长 / 实际步数 / 花费):provider 响应自带的 usage 优先,缺失时按字符量估算并如实标注「估算」;**费用取自定网关自报**——流式末 chunk 的 `x_new_api_consumed_amount` 字段或非流式 `X-New-Api-Consumed-Amount` 响应头,逐调用求和、原样记录不做换算;网关未回报(直连 OpenAI/Claude/Ollama)则费用栏缺省,退化为纯 token 展示,不编造。动作集:
+3. **agent 循环**:LLM 收到「需求正文 + 当前观察」→ 决定下一个动作 → 执行 → 新观察回传 → 循环直至产出裁决或预算耗尽。复用 `internal/ai` 的 AgentRound;temperature 0。**需求正文(question)每轮恒定重发**(与 opschat `req.Question` 跨轮恒定同款),推进/纠正指令(nudge)追加在最新消息位置,绝不覆盖需求。会话上下文管理:**逼近窗口时从最旧轮整轮确定性裁剪**(opschat `trimRounds` 同款,丢弃规模注入 system 说明;ai_test 会话 run 内即弃、无 checkpoint 持久化,故不做模型摘要压缩),**provider 判 `context_window_exceeded` 时裁到阈值 70% 并重试一次**(opschat overflow 兜底同款);窗口大小取节点 `modelContextTokens`(缺省 = 平台默认窗口)。**每会话累计 AI 用量与费用**(模型 / LLM 轮次 / 输入输出 token / 时长 / 实际步数 / 花费):provider 响应自带的 usage 优先,缺失时按字符量估算并如实标注「估算」;**费用取自定网关自报**——流式末 chunk 的 `x_new_api_consumed_amount` 字段或非流式 `X-New-Api-Consumed-Amount` 响应头,逐调用求和、原样记录不做换算;网关未回报(直连 OpenAI/Claude/Ollama)则费用栏缺省,退化为纯 token 展示,不编造。动作集:
    - **前端**:`goto / click / fill / select / hover / 读取可见文本(accessibility 摘要)/ 截图`(截图观察需多模态,P2);
    - **接口**:HTTP 请求(方法/URL/头/体)/ 读取响应(状态/头/截断体)。
 4. **裁决契约**:严格 JSON `{verdict: pass|fail, reason, evidence}`;evidence 必须引用**实际观察到的内容**(页面文本/响应字段),不得只复述需求;解析失败重试一次,仍失败判 fail;**步数/超时预算耗尽判 fail**并如实报告执行到了哪一步——诚实边界,不猜。
@@ -69,7 +70,7 @@ target: ${BASE_URL}      # 可选;缺省继承节点 target;${VAR} 引用运行�
 | `timeoutSeconds` | 节点整体超时,默认 300,上限 3600。 |
 | `maxSteps` | 单需求 agent 步数预算,默认 25,上限 100;耗尽判 fail(兼作成本护栏)。 |
 | `model` | 可选模型覆盖;不填用平台 AI 配置默认。 |
-| `modelContextTokens` | 覆盖模型的上下文窗口 tokens,**与 `model` 成对**(有 `model` 必填;单独出现无意义,拒保存);范围 1,000–2,000,000(同 `internal/ai normalizeContext` 边界),越界**显式报错不静默回默认**(fail-fast)。运行时注入会话 `ContextSettings.WindowTokens` 驱动自动压缩时机;溢出兜底(overflow)仍为最后防线。未覆盖模型时用平台默认窗口(200k)。 |
+| `modelContextTokens` | 覆盖模型的上下文窗口 tokens,**与 `model` 成对**(有 `model` 必填;单独出现无意义,拒保存);范围 1,000–2,000,000(同 `internal/ai normalizeContext` 边界),越界**显式报错不静默回默认**(fail-fast)。运行时驱动会话的确定性轮次裁剪时机(阈值 = 窗口 − 预留,与 opschat `ContextPolicy.Ceiling` 同语义);provider 溢出兜底(裁剪至 70% 重试一次)为最后防线。未覆盖模型时用平台默认窗口(200k)。 |
 
 保存期校验(`validateAITest`):onAiUnavailable 枚举、timeout/maxSteps 范围、filter 可解析、`deployJob` 引用上游 deploy 类节点、`model`/`modelContextTokens` 成对且范围合法;路径存在性与文件合法性由**运行时发现步骤**裁决(保存期只看 spec JSON,看不见仓库)。
 

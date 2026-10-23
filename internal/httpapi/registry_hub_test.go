@@ -295,6 +295,78 @@ func (r *fakeComposeRunner) Run(_ context.Context, name string, args []string, _
 	}
 }
 
+// fakeUpgradeRunner 模拟镜像升级链:compose 探测/up 放行;第一次 image inspect 返回旧 ID,
+// pull 后第二次返回新 ID(changed → DeployStack 重建,upRan 记录)。
+type fakeUpgradeRunner struct {
+	inspects int
+	upRan    bool
+}
+
+func (r *fakeUpgradeRunner) Run(_ context.Context, name string, args []string, _ string) (string, string, int, error) {
+	joined := name + " " + strings.Join(args, " ")
+	switch {
+	case strings.Contains(joined, "compose version"):
+		return "v2", "", 0, nil
+	case strings.Contains(joined, "up -d"):
+		r.upRan = true
+		return "started", "", 0, nil
+	case strings.Contains(joined, "image inspect"):
+		r.inspects++
+		if r.inspects >= 2 {
+			return "sha256:222222222222bbbb", "", 0, nil
+		}
+		return "sha256:111111111111aaaa", "", 0, nil
+	case strings.Contains(joined, "docker pull"):
+		return "", "pulled", 0, nil
+	default:
+		return "", "", 0, nil
+	}
+}
+
+// TestRegistryHubUpgradeImage:POST /api/settings/registry/upgrade-image ——
+// 未启用 → 422;启用后镜像有更新 → 200 + ok/changed + 触发 compose up 重建。
+func TestRegistryHubUpgradeImage(t *testing.T) {
+	runner := &fakeUpgradeRunner{}
+	srv, client, csrf := setupRegistryHubServer(t, registryhub.Options{BaseDir: t.TempDir(), Runner: runner})
+
+	resp := doJSON(t, client, http.MethodPost, srv.URL+"/api/settings/registry/upgrade-image", csrf, `{}`)
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		resp.Body.Close()
+		t.Fatalf("未启用升级应 422, got %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	resp = doJSON(t, client, http.MethodPut, srv.URL+"/api/settings/registry", csrf,
+		`{"enabled":true,"externalAddr":"192.168.1.10"}`)
+	if resp.StatusCode != http.StatusOK {
+		resp.Body.Close()
+		t.Fatalf("保存失败")
+	}
+	resp.Body.Close()
+
+	resp = doJSON(t, client, http.MethodPost, srv.URL+"/api/settings/registry/upgrade-image", csrf, `{}`)
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		t.Fatalf("升级应 200, got %d body=%s", resp.StatusCode, raw)
+	}
+	var out registryhub.ImageUpgradeResult
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatalf("解码: %v", err)
+	}
+	if !out.OK || !out.Changed || out.Image != "registry:2" {
+		t.Fatalf("镜像变了应 ok+changed: %s", raw)
+	}
+	if out.Before != "111111111111" || out.After != "222222222222" {
+		t.Fatalf("前后镜像 ID 应截短回显: %s", raw)
+	}
+	if !runner.upRan {
+		t.Fatalf("镜像变了应 compose up 重建")
+	}
+}
+
 // fakeRegistryAPIHub 是 httpapi 测试用的 registry API fake(排序无关,TagInfo 无时间 → 全零值)。
 type fakeRegistryAPIHub struct {
 	repos   map[string][]registryhub.TagInfo

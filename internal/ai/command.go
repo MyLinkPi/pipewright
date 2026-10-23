@@ -368,7 +368,7 @@ func (s *service) resolveChatCreds(ctx context.Context) (provider, baseURL, apiK
 	if baseURL == "" {
 		return "", "", "", ErrAINotConfigured
 	}
-		if len(sealed) == 0 {
+	if len(sealed) == 0 {
 		return "", "", "", ErrAINotConfigured
 	}
 	plain, oerr := s.openSecret(sealed)

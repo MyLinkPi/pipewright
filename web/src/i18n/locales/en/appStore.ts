@@ -65,4 +65,21 @@ export default {
     regHttps: "This base domain has a certificate; it will be served over HTTPS.",
     regGoServiceReg: "Go to Service Registry",
   },
+
+  upgrade: {
+    switch: "Switch to upgrading this instance",
+    badge: "Upgrade mode",
+    hint: "The existing instance {name} on this machine will be upgraded in place (re-render the latest template + compose up -d; data volumes are kept).",
+    backToDeploy: "Switch to a fresh deploy",
+    hasSecret: "Password set",
+    keepSecret: "Leave empty = keep current password",
+    flowHint: "Parameters left empty keep their current values; secrets are never regenerated when left empty. The latest template is re-rendered, written over SSH, then docker compose up -d.",
+    submit: "Upgrade",
+    ok: "Upgrade succeeded",
+    failTitle: "Upgrade failed",
+    done: "{name} upgraded",
+    fail: "Upgrade failed",
+    noContext: "This instance has no recorded deploy params (deployed by an older version or not from the app store), so in-place upgrade is unavailable; continuing will deploy fresh.",
+    ctxFail: "Failed to load upgrade info",
+  },
 }

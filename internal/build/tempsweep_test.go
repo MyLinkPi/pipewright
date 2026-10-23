@@ -9,7 +9,7 @@ import (
 )
 
 // 造一个指定 mtime 的文件,并把从 base 起的每一层目录 mtime 也一并设旧
-//(SweepLocalOrphans 只看顶层条目的 mtime,目录必须显式设旧才代表"孤儿目录")。
+// (SweepLocalOrphans 只看顶层条目的 mtime,目录必须显式设旧才代表"孤儿目录")。
 func touchOld(t *testing.T, base, path string, age time.Duration) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {

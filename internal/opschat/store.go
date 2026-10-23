@@ -45,13 +45,11 @@ func databaseError(err error) error {
 	}
 	return nil
 }
+// transaction 在单事务内运行 fn。lease=true(一切会话写)以单行租约为序列化点,
+// 首尾校验租约仍归本实例且未过期,并在提交前做存储配额扫描;纯读传 false。
+// 后台续期不走这里——续期是单语句 CAS(见 leaseLoop/renewLease),与业务流量
+// 争夺唯一 SQLite 连接时的排队时间远小于此处的 6 步事务。
 func (s *Service) transaction(ctx context.Context, lease bool, fn func(*sql.Tx) error) error {
-	return s.transactionQuota(ctx, lease, true, fn)
-}
-
-// transactionQuota runs fn like transaction; quota=false skips the full
-// storage scan for lease writes that persist no session data (lease renewal).
-func (s *Service) transactionQuota(ctx context.Context, lease, quota bool, fn func(*sql.Tx) error) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return ErrStorage
@@ -75,10 +73,8 @@ func (s *Service) transactionQuota(ctx context.Context, lease, quota bool, fn fu
 		return err
 	}
 	if lease {
-		if quota {
-			if err = s.enforceStorage(ctx, tx); err != nil {
-				return err
-			}
+		if err = s.enforceStorage(ctx, tx); err != nil {
+			return err
 		}
 		var owner string
 		var until int64

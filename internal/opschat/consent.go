@@ -1,12 +1,12 @@
 package opschat
 
 import (
-	"unicode/utf8"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"log"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 )
@@ -385,7 +385,6 @@ func (s *Service) Analyze(ctx context.Context, id string, in AnalysisInput) (*Ru
 	preview.Items = nil // Only references and permission persist; result text has a single owner.
 	return s.enqueue(ctx, id, in.ClientRequestID, hash, runBody{Analysis: preview, Provider: preview.Provider, Question: question}, in.Revision)
 }
-
 
 type RejectInput struct {
 	RunID  string      `json:"runId"`

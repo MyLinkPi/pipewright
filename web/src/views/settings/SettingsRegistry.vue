@@ -18,6 +18,7 @@ import {
   getRegistryHubConfig,
   saveRegistryHubConfig,
   deployRegistryStack,
+  upgradeRegistryImage,
   getRegistryStatus,
   pruneRegistry,
   applyRegistryDaemon,
@@ -163,6 +164,33 @@ const deployError = ref('')
 const deployOutput = ref('')
 const pruning = ref(false)
 const pruneMsg = ref('')
+const upgrading = ref(false)
+const upgradeMsg = ref('')
+const upgradeError = ref(false)
+
+/** 升级栈镜像(registry:2):pull → 变了才重建双服务容器(数据在宿主卷,不丢)。 */
+async function upgradeImage(): Promise<void> {
+  upgrading.value = true
+  upgradeMsg.value = ''
+  upgradeError.value = false
+  try {
+    const res = await upgradeRegistryImage()
+    if (res.ok && res.changed) {
+      upgradeMsg.value = t('settingsRegistry.upgradeImageDone', { before: res.before || '—', after: res.after || '—' })
+    } else if (res.ok) {
+      upgradeMsg.value = t('settingsRegistry.upgradeImageLatest', { image: res.image })
+    } else {
+      upgradeMsg.value = res.error || t('settingsRegistry.upgradeImageFailed')
+      upgradeError.value = true
+    }
+    void loadStatus()
+  } catch (err) {
+    upgradeMsg.value = err instanceof HttpError ? (err.apiError?.message ?? t('settingsRegistry.upgradeImageFailed')) : t('settingsRegistry.upgradeImageFailed')
+    upgradeError.value = true
+  } finally {
+    upgrading.value = false
+  }
+}
 
 async function loadStatus(): Promise<void> {
   statusLoading.value = true
@@ -417,6 +445,9 @@ onMounted(() => {
           <AppButton variant="primary" :loading="deploying" :disabled="!cfg?.enabled" @click="deploy">
             {{ t('settingsRegistry.deploy') }}
           </AppButton>
+          <AppButton :loading="upgrading" :disabled="!cfg?.enabled || !status?.deployed" @click="upgradeImage">
+            {{ t('settingsRegistry.upgradeImage') }}
+          </AppButton>
           <AppButton :loading="pruning" :disabled="!cfg?.enabled" @click="prune">
             {{ t('settingsRegistry.prune') }}
           </AppButton>
@@ -426,6 +457,7 @@ onMounted(() => {
       <p v-if="!cfg?.enabled" class="reg-warn">{{ t('settingsRegistry.disabledHint') }}</p>
       <p v-if="deployError" class="reg-err" role="alert">{{ deployError }}</p>
       <p v-else-if="deployOutput" class="reg-ok">{{ t('settingsRegistry.deployDone') }}</p>
+      <p v-if="upgradeMsg" :class="upgradeError ? 'reg-err' : 'reg-muted'" :role="upgradeError ? 'alert' : 'status'">{{ upgradeMsg }}</p>
       <p v-if="pruneMsg" class="reg-muted">{{ pruneMsg }}</p>
 
       <dl v-if="status" class="reg-status">

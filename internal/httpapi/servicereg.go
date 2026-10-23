@@ -19,6 +19,7 @@ const (
 	auditActionSRSettingsUpdate = "servicereg.settings.update"
 	auditActionSRGatewayDeploy  = "servicereg.gateway.deploy"
 	auditActionSRGatewayRemove  = "servicereg.gateway.remove"
+	auditActionSRGatewayUpgrade = "servicereg.gateway.upgrade_image"
 	auditActionSRDomainCreate   = "servicereg.domain.create"
 	auditActionSRDomainDelete   = "servicereg.domain.delete"
 	auditActionSRServiceCreate  = "servicereg.service.create"
@@ -375,6 +376,39 @@ func makeRemoveServiceRegGatewayHandler(svc servicereg.Service, aud audit.Record
 			TargetID: "gateway", Detail: map[string]any{"ok": true}, IP: clientIP(r),
 		})
 		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+	}
+}
+
+// makeUpgradeServiceRegGatewayImageHandler 返回 POST /api/servicereg/gateway/upgrade-image。
+// 逐台 pull 期望镜像并按镜像 ID 比对,有变化的台重建容器 + 全量收敛(配置/证书在具名卷,
+// 重建不丢);未变化的台不动容器。逐台独立成败,聚合写一条审计。
+func makeUpgradeServiceRegGatewayImageHandler(svc servicereg.Service, aud audit.Recorder) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if svc == nil {
+			writeError(w, http.StatusServiceUnavailable, "internal", "服务注册未初始化")
+			return
+		}
+		res, err := svc.UpgradeGatewayImage(r.Context())
+		if err != nil {
+			writeServiceRegError(w, err)
+			return
+		}
+		okCount, changedCount := 0, 0
+		for _, item := range res.Results {
+			if item.OK {
+				okCount++
+			}
+			if item.Changed {
+				changedCount++
+			}
+		}
+		recordAudit(r.Context(), aud, audit.Entry{
+			Actor: auditActor, Action: auditActionSRGatewayUpgrade, TargetType: auditTargetServiceReg,
+			TargetID: "gateway",
+			Detail:   map[string]any{"image": res.Image, "total": len(res.Results), "ok": okCount, "changed": changedCount},
+			IP:       clientIP(r),
+		})
+		writeJSON(w, http.StatusOK, res)
 	}
 }
 

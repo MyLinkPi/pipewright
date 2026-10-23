@@ -4,6 +4,7 @@
  * GET  /api/settings/registry           → RegistryHubConfig
  * PUT  /api/settings/registry           → RegistryHubConfig   (needs CSRF;只写库,不触碰机器)
  * POST /api/settings/registry/deploy    → RegistryDeployResult(needs CSRF;部署/更新控制机栈)
+ * POST /api/settings/registry/upgrade-image → RegistryImageUpgradeResult(needs CSRF;pull 升级栈镜像)
  * GET  /api/settings/registry/status    → RegistryStatus
  * POST /api/settings/registry/prune     → RegistryPruneResult (needs CSRF;按保留策略清理)
  * POST /api/registry/daemon-apply       → RegistryDaemonApplyResponse(needs CSRF;仅显式勾选目标)
@@ -53,6 +54,18 @@ export interface SaveRegistryHubInput {
 
 export interface RegistryDeployResult {
   ok: boolean
+  output: string
+  error: string
+}
+
+/** 栈镜像升级结果(changed=false = 已是最新,未动容器;数据在宿主卷,重建不丢)。 */
+export interface RegistryImageUpgradeResult {
+  ok: boolean
+  changed: boolean
+  image: string
+  /** 升级前/后本地镜像 ID(截短 sha;首次/本地无镜像时 before 为空)。 */
+  before: string
+  after: string
   output: string
   error: string
 }
@@ -111,6 +124,11 @@ export async function saveRegistryHubConfig(input: SaveRegistryHubInput): Promis
 
 export async function deployRegistryStack(): Promise<RegistryDeployResult> {
   return http.post<RegistryDeployResult>('/api/settings/registry/deploy', {})
+}
+
+/** 升级栈镜像(registry:2):pull 后按镜像 ID 比对,变了才重建双服务容器。 */
+export async function upgradeRegistryImage(): Promise<RegistryImageUpgradeResult> {
+  return http.post<RegistryImageUpgradeResult>('/api/settings/registry/upgrade-image', {})
 }
 
 export async function getRegistryStatus(): Promise<RegistryStatus> {

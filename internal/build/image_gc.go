@@ -62,7 +62,7 @@ func (d *shellDriver) PruneBuilderCache(ctx context.Context, keep time.Duration,
 }
 
 // ExtraImageClean 维护手动入口的追加清理:BuildKit 构建缓存全清 + 停止容器回收
-//(crash 残留的 `docker run --rm` 尸体)。返回执行的命令回显(留痕用)。仅动缓存与
+// (crash 残留的 `docker run --rm` 尸体)。返回执行的命令回显(留痕用)。仅动缓存与
 // **已停止**容器,运行中容器绝不碰。瘦控制机返回空。
 func (b *Builder) ExtraImageClean(ctx context.Context) []string {
 	d, ok := b.driver.(*shellDriver)

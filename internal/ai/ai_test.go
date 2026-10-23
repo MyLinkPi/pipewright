@@ -243,9 +243,9 @@ func TestBudgetPersisted(t *testing.T) {
 func TestProbeClaudeOK(t *testing.T) {
 	var gotPath, gotMethod, gotKey, gotVer string
 	var gotBody struct {
-		Model      string `json:"model"`
-		MaxTokens  int    `json:"max_tokens"`
-		Messages   []struct {
+		Model     string `json:"model"`
+		MaxTokens int    `json:"max_tokens"`
+		Messages  []struct {
 			Role    string `json:"role"`
 			Content string `json:"content"`
 		} `json:"messages"`

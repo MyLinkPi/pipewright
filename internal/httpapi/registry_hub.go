@@ -25,6 +25,8 @@ type registryHubService interface {
 	Get(ctx context.Context) (*registryhub.Config, error)
 	Save(ctx context.Context, in registryhub.SaveInput) (*registryhub.Config, error)
 	DeployStack(ctx context.Context) (*registryhub.DeployResult, error)
+	// UpgradeImage 拉取并升级栈镜像(registry:2):变了才重建双服务容器,未变不动容器。
+	UpgradeImage(ctx context.Context) (*registryhub.ImageUpgradeResult, error)
 	Status(ctx context.Context) (*registryhub.Status, error)
 	Prune(ctx context.Context, now time.Time) (*registryhub.PruneResult, error)
 	ApplyDaemon(ctx context.Context, serverIDs []string, includeLocal bool) ([]registryhub.DaemonApplyResult, error)
@@ -194,6 +196,33 @@ func makeDeployRegistryHandler(svc registryHubService, aud audit.Recorder) http.
 			TargetType: audit.TargetRegistryHub,
 			TargetID:   "stack",
 			Detail:     map[string]any{"ok": res.OK, "error": truncateLog(res.Error, 512)},
+			IP:         clientIP(r),
+		})
+		writeJSON(w, http.StatusOK, res)
+	}
+}
+
+// makeUpgradeRegistryImageHandler 返回 POST /api/settings/registry/upgrade-image handler(认证 + CSRF)。
+// 升级栈镜像(registry:2):pull → 比对本地镜像 ID,变了才 DeployStack 重建双服务容器
+// (数据在宿主卷,重建不丢);未变 → ok:true changed:false(不动容器)。机器层失败 → 200 +
+// ok:false + 人读 error,不 500;成功/失败均写审计。
+func makeUpgradeRegistryImageHandler(svc registryHubService, aud audit.Recorder) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if svc == nil {
+			writeError(w, http.StatusServiceUnavailable, "internal", "内置 registry 服务未初始化")
+			return
+		}
+		res, err := svc.UpgradeImage(r.Context())
+		if err != nil {
+			writeRegistryHubError(w, err)
+			return
+		}
+		recordAudit(r.Context(), aud, audit.Entry{
+			Actor:      auditActor,
+			Action:     audit.ActionRegistryUpgradeImage,
+			TargetType: audit.TargetRegistryHub,
+			TargetID:   "image",
+			Detail:     map[string]any{"ok": res.OK, "changed": res.Changed, "image": res.Image, "error": truncateLog(res.Error, 512)},
 			IP:         clientIP(r),
 		})
 		writeJSON(w, http.StatusOK, res)

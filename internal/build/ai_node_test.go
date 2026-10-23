@@ -203,6 +203,35 @@ func TestRunAITestJobTargetTwoLevelResolution(t *testing.T) {
 	}
 }
 
+func TestRunAITestJobUnresolvedPlaceholderFails(t *testing.T) {
+	// ${VAR} 未解析(运行参数缺失/deployJob 未绑定)时字面量不该交给 agent——fail fast。
+	b := newDAGTestBuilder(&recordingDriver{}, &markerCloner{})
+	tester := &fakeAITester{result: &ai.AITestResult{}}
+	b.aiTester = tester
+	root := aiTestSourceDir(t, map[string]string{
+		".pipewright/tests/requirements/a.md": "正文",
+	})
+	job := aiTestJobWith(map[string]any{"target": "http://${MISSING_VAR}/api"})
+	rep := &fakeReporter{}
+	if err := b.runAITestJob(context.Background(), rep, job, aiTestRun(), scriptStage(job), localAITestSource{root: root}, nil); !errors.Is(err, ErrBuildFailed) {
+		t.Fatalf("未解析占位符应 fail fast,得到:%v", err)
+	}
+	if !containsLog(rep, "未解析占位符") {
+		t.Fatalf("应日志「未解析占位符」:%v", rep.logs)
+	}
+	// 已解析的占位符照常放行(aiTestRun 提供 BASE_URL)。
+	b2 := newDAGTestBuilder(&recordingDriver{}, &markerCloner{})
+	tester2 := &fakeAITester{result: &ai.AITestResult{}}
+	b2.aiTester = tester2
+	job2 := aiTestJobWith(map[string]any{"target": "http://${BASE_URL}/api"})
+	if err := b2.runAITestJob(context.Background(), &fakeReporter{}, job2, aiTestRun(), scriptStage(job2), localAITestSource{root: root}, nil); err != nil {
+		t.Fatalf("已解析占位符应放行:%v", err)
+	}
+	if tester2.gotIn.Requirements[0].Target != "http://staging.example.com/api" {
+		t.Fatalf("占位符应展开:%q", tester2.gotIn.Requirements[0].Target)
+	}
+}
+
 // fakeBridgeCLI 回放 docker port 输出序列(前 N 次空,之后给端口行)。
 type fakeBridgeCLI struct {
 	calls  int

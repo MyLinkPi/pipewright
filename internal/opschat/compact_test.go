@@ -113,8 +113,8 @@ func TestSplitKeepRecent(t *testing.T) {
 func TestTrimRounds(t *testing.T) {
 	policy := ContextPolicy{WindowTokens: 2_000, KeepRecentTokens: 100, BufferTokens: 0}.withDefaults()
 	req := &AgentRequest{
-		System:  "sys",
-		Rounds:  []AgentExchange{},
+		System: "sys",
+		Rounds: []AgentExchange{},
 	}
 	for i := 0; i < 6; i++ {
 		req.Rounds = append(req.Rounds, AgentExchange{

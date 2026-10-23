@@ -621,6 +621,9 @@ func nginxVarName(name string) string {
 // 创建时固定,故既有容器缺端口(或 80/443 宿主端口设置变更)时,带「既有映射 ∪ 期望映射」重建。
 // 另:容器自举脚本烧死在 docker run 参数里,版本标签与当前不符(旧版创建)时也重建,让新
 // 自举脚本生效(配置/证书在具名卷,重建不丢;重建后 applyCaddyfile→applyNginxConf 同轮覆盖)。
+// 镜像引用漂移(设置/环境变量换了镜像)同样重建:容器记录的 .Config.Image 与当前期望引用不符
+// 时带新引用重建(run 内 best-effort pull 取新);同名可变 tag 的上游更新走 UpgradeGatewayImage
+// (pull 后按镜像 ID 比对决定重建)。
 func ensureNginx(ctx context.Context, tg target.Service, st *Settings, serverID string, tcpPorts []int) error {
 	// 1) 共享网络(存在即跳过)。
 	netInsp, err := tg.Exec(ctx, serverID, []string{"docker", "network", "inspect", st.Network})
@@ -639,7 +642,7 @@ func ensureNginx(ctx context.Context, tg target.Service, st *Settings, serverID 
 
 	want := desiredPortMap(st, tcpPorts)
 
-	// 2) 容器存在:校验端口映射是否与期望一致(容器端口 + 宿主端口都要对);不一致 → 重建。
+	// 2) 容器存在:校验端口映射/自举版本/镜像引用是否与期望一致;任一不符 → 重建。
 	insp, err := tg.Exec(ctx, serverID, []string{"docker", "inspect", st.ContainerName})
 	if err != nil {
 		return err
@@ -653,7 +656,11 @@ func ensureNginx(ctx context.Context, tg target.Service, st *Settings, serverID 
 		if verr != nil {
 			return verr
 		}
-		if portsMatch(cur, want) && ver == nginxBootstrapVer {
+		img, ierr := inspectContainerImageRef(ctx, tg, st, serverID)
+		if ierr != nil {
+			return ierr
+		}
+		if portsMatch(cur, want) && ver == nginxBootstrapVer && img == nginxImageRef(st) {
 			return nil
 		}
 		if rmRes, rmErr := tg.Exec(ctx, serverID, []string{"docker", "rm", "-f", st.ContainerName}); rmErr != nil {
@@ -756,6 +763,21 @@ func inspectBootstrapVer(ctx context.Context, tg target.Service, st *Settings, s
 	res, err := tg.Exec(ctx, serverID, []string{
 		"docker", "inspect", st.ContainerName,
 		"--format", `{{index .Config.Labels "` + nginxBootstrapLabel + `"}}`,
+	})
+	if err != nil {
+		return "", err
+	}
+	if res.ExitCode != 0 {
+		return "", fmt.Errorf("%w:%s", ErrNginxStart, strings.TrimSpace(firstNonEmpty(res.Stderr, res.Stdout)))
+	}
+	return strings.TrimSpace(res.Stdout), nil
+}
+
+// inspectContainerImageRef 读网关容器创建时的镜像引用(.Config.Image;供镜像漂移重建判定)。
+func inspectContainerImageRef(ctx context.Context, tg target.Service, st *Settings, serverID string) (string, error) {
+	res, err := tg.Exec(ctx, serverID, []string{
+		"docker", "inspect", st.ContainerName,
+		"--format", "{{.Config.Image}}",
 	})
 	if err != nil {
 		return "", err

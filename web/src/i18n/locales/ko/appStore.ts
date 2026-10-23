@@ -65,4 +65,21 @@ export default {
     regHttps: "이 베이스 도메인에는 인증서가 있어 HTTPS로 제공됩니다.",
     regGoServiceReg: "서비스 등록으로 이동",
   },
+
+  upgrade: {
+    switch: "이 인스턴스 업그레이드로 전환",
+    badge: "업그레이드 모드",
+    hint: "이 머신의 기존 인스턴스 {name}을(를) 제자리에서 업그레이드합니다(최신 템플릿 재렌더링 + compose up -d; 데이터 볼륨 유지).",
+    backToDeploy: "새 배포로 전환",
+    hasSecret: "비밀번호 설정됨",
+    keepSecret: "비워 두면 = 현재 비밀번호 유지",
+    flowHint: "입력하지 않은 파라미터는 현재 값을 유지하고, 비밀번호는 비워 두면 재생성되지 않습니다. 최신 템플릿을 재렌더링한 뒤 SSH로 쓰고 docker compose up -d를 실행합니다.",
+    submit: "업그레이드",
+    ok: "업그레이드 성공",
+    failTitle: "업그레이드 실패",
+    done: "{name} 업그레이드 완료",
+    fail: "업그레이드 실패",
+    noContext: "이 인스턴스에는 배포 파라미터 기록이 없습니다(이전 버전 배포 또는 앱 스토어 외 스택). 제자리 업그레이드가 불가하며, 계속하면 새 배포로 처리됩니다.",
+    ctxFail: "업그레이드 정보를 불러오지 못했습니다",
+  },
 }

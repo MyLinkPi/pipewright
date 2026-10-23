@@ -10,11 +10,11 @@ func TestEstimate(t *testing.T) {
 		max  int
 	}{
 		{"empty", "", 0, 0},
-		{"ascii", "hello world", 2, 4},         // 11 bytes → ~3
-		{"cjk", "你好世界", 4, 4},                // 4 字 → 4 token
+		{"ascii", "hello world", 2, 4},   // 11 bytes → ~3
+		{"cjk", "你好世界", 4, 4},            // 4 字 → 4 token
 		{"mixed", "disk usage 你好", 5, 7}, // ascii 11B→3 + cjk 2 字→2 = 5
-		{"digits", "12345678", 2, 2},           // 8 bytes → 2
-		{"kana", "こんにちは", 5, 5},             // 5 字 → 5
+		{"digits", "12345678", 2, 2},     // 8 bytes → 2
+		{"kana", "こんにちは", 5, 5},          // 5 字 → 5
 	}
 	for _, c := range cases {
 		got := Estimate(c.in)

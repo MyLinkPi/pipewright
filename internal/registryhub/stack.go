@@ -188,6 +188,87 @@ services:
 		registryImage, cacheCont, cfg.CachePort, cfg.UpstreamURL, tlsEnv, cacheDir, tlsVol)
 }
 
+// ImageUpgradeResult 是 UpgradeImage 的结果(ok=false 时 error 人读)。
+type ImageUpgradeResult struct {
+	OK      bool   `json:"ok"`
+	Changed bool   `json:"changed"` // 是否拉到了新镜像并重建容器(false = 已是最新,未动容器)
+	Image   string `json:"image"`
+	Before  string `json:"before"` // 升级前本地镜像 ID(截短 sha;首次/本地无镜像 = "")
+	After   string `json:"after"`  // 升级后本地镜像 ID(截短 sha)
+	Output  string `json:"output"` // pull/compose 输出尾部(人读;截断)
+	Error   string `json:"error"`
+}
+
+// localImageID 返回本机指定镜像的 ID(`docker image inspect -f {{.Id}}`;本地无此镜像 → "")。
+func (h *Hub) localImageID(ctx context.Context, image string) string {
+	out, _, code, err := h.opts.Runner.Run(ctx, "docker", []string{"image", "inspect", "-f", "{{.Id}}", image}, "")
+	if err != nil || code != 0 {
+		return ""
+	}
+	return strings.TrimSpace(out)
+}
+
+// shortImageID 把镜像 ID 截短成展示形态(去 sha256: 前缀,留 12 位)。
+func shortImageID(id string) string {
+	id = strings.TrimPrefix(strings.TrimSpace(id), "sha256:")
+	if len(id) > 12 {
+		return id[:12]
+	}
+	return id
+}
+
+// UpgradeImage 升级栈镜像(registry:2,双服务共用):docker pull → 比对本地镜像 ID ——
+// 变了才走 DeployStack 重建双服务容器(compose 声明式收敛;制品/缓存数据在宿主卷,重建不丢),
+// 未变直接收工(不打扰运行中的容器)。未启用 → ErrDisabled;本机无 docker/compose →
+// ErrNoLocalDocker;pull 失败 → ok:false + 人读 error(不触碰现有容器)。
+func (h *Hub) UpgradeImage(ctx context.Context) (*ImageUpgradeResult, error) {
+	cfg, err := h.Get(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if !cfg.Enabled {
+		return nil, ErrDisabled
+	}
+	if _, err := h.composeBin(ctx); err != nil {
+		return nil, err
+	}
+	res := &ImageUpgradeResult{Image: registryImage, Before: shortImageID(h.localImageID(ctx, registryImage))}
+	pullCtx, cancel := context.WithTimeout(ctx, 8*time.Minute)
+	_, stderr, code, err := h.opts.Runner.Run(pullCtx, "docker", []string{"pull", registryImage}, "")
+	cancel()
+	if err != nil || code != 0 {
+		res.Error = tail(strings.TrimSpace(firstNonEmptyStr(stderr, "docker pull 以非零状态退出")), 1024)
+		return res, nil
+	}
+	res.Output = tail(strings.TrimSpace(stderr), 2048) // docker pull 进度走 stderr
+	res.After = shortImageID(h.localImageID(ctx, registryImage))
+	res.Changed = res.After != res.Before
+	if !res.Changed {
+		res.OK = true
+		return res, nil
+	}
+	dep, derr := h.DeployStack(ctx)
+	if derr != nil {
+		return res, derr
+	}
+	res.OK = dep.OK
+	res.Error = dep.Error
+	if dep.Output != "" {
+		res.Output = tail(res.Output+"\n"+dep.Output, 4096)
+	}
+	return res, nil
+}
+
+// firstNonEmptyStr 返回首个非空白字符串(本包局部小工具)。
+func firstNonEmptyStr(ss ...string) string {
+	for _, s := range ss {
+		if strings.TrimSpace(s) != "" {
+			return s
+		}
+	}
+	return ""
+}
+
 // DeployStack 在控制机本机部署/更新 registry 栈:渲染 compose → 落盘 → compose up -d
 // (声明式:端口/上游变更后重跑即收敛,compose 只重建配置变化的服务)。
 // 存储目录变更在此收敛(以已落盘 compose 记录的上一部署为准):制品目录变更 → 停制品容器

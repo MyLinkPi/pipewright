@@ -2,6 +2,8 @@ package pipeline
 
 import (
 	"fmt"
+	"math"
+	"strconv"
 	"strings"
 )
 
@@ -73,15 +75,24 @@ func validateAITestJob(n Job, byName map[string]Job, stages []Stage) error {
 		}
 		return ""
 	}
+	// cfgInt 严格解析整数:字符串必须整体可解析(Sscanf 会容忍 "123abc" 前缀,
+	// 故用 strconv.Atoi);float64 仅接受 int32 范围内的整数值(1.5 拒绝,不静默截断)。
 	cfgInt := func(key string) (int, bool) {
 		switch v := n.Config[key].(type) {
 		case string:
-			var out int
-			if _, err := fmt.Sscanf(strings.TrimSpace(v), "%d", &out); err == nil {
-				return out, true
+			s := strings.TrimSpace(v)
+			if s == "" {
+				return 0, false
 			}
-			return 0, false
+			out, err := strconv.Atoi(s)
+			if err != nil {
+				return 0, false
+			}
+			return out, true
 		case float64:
+			if v != math.Trunc(v) || v > math.MaxInt32 || v < math.MinInt32 {
+				return 0, false
+			}
 			return int(v), true
 		case int:
 			return v, true
@@ -91,12 +102,35 @@ func validateAITestJob(n Job, byName map[string]Job, stages []Stage) error {
 	bad := func(format string, args ...any) error {
 		return fmt.Errorf("%w: ai_test job %q: "+format, append([]any{ErrInvalidJob, n.Name}, args...)...)
 	}
-
-	if f := cfgStr(aiTestFilterKey); f != "" && strings.Contains(f, "\x00") {
-		return bad("filter 含非法字符")
+	// checkIntRange 校验数值键:键存在(非空串)但不可解析为整数 → 显式报错
+	// (不静默当未配置);可解析则须落在 [min,max]。
+	checkIntRange := func(key string, min, max int) error {
+		raw, exists := n.Config[key]
+		if !exists || raw == nil {
+			return nil
+		}
+		if s, isStr := raw.(string); isStr && strings.TrimSpace(s) == "" {
+			return nil
+		}
+		v, ok := cfgInt(key)
+		if !ok {
+			return bad("%s 应为整数", key)
+		}
+		if v < min || v > max {
+			return bad("%s 范围 %d–%d", key, min, max)
+		}
+		return nil
 	}
-	if v, ok := cfgInt(aiTestFilterKey); ok && v != 0 {
-		return bad("filter 应为 glob 字符串")
+
+	// filter 必须是字符串(数字字符串是合法 glob,不拒;非字符串类型报错)。
+	if raw, ok := n.Config[aiTestFilterKey]; ok && raw != nil {
+		s, isStr := raw.(string)
+		if !isStr {
+			return bad("filter 应为 glob 字符串")
+		}
+		if strings.Contains(s, "\x00") {
+			return bad("filter 含非法字符")
+		}
 	}
 
 	switch u := cfgStr(aiTestOnUnavailableKey); u {
@@ -105,17 +139,27 @@ func validateAITestJob(n Job, byName map[string]Job, stages []Stage) error {
 		return bad("onAiUnavailable 仅允许 fail/skip(得到 %q)", u)
 	}
 
-	if t, ok := cfgInt(aiTestTimeoutKey); ok && (t < 0 || t > aiTestMaxTimeout) {
-		return bad("timeoutSeconds 范围 0–%d", aiTestMaxTimeout)
+	if err := checkIntRange(aiTestTimeoutKey, 0, aiTestMaxTimeout); err != nil {
+		return err
 	}
-	if s, ok := cfgInt(aiTestMaxStepsKey); ok && (s < 0 || s > aiTestMaxSteps) {
-		return bad("maxSteps 范围 0–%d", aiTestMaxSteps)
+	if err := checkIntRange(aiTestMaxStepsKey, 0, aiTestMaxSteps); err != nil {
+		return err
 	}
 
 	// model / modelContextTokens 成对:覆盖模型必须同时声明其上下文窗口
 	// (压缩时机依赖;与 internal/ai normalizeContext 同边界,但显式报错不静默回默认)。
 	model, hasModel := n.Config[aiTestModelKey]
+	if hasModel && model != nil {
+		if _, isStr := model.(string); !isStr {
+			return bad("model 应为字符串")
+		}
+	}
 	modelCtx, hasCtx := cfgInt(aiTestModelCtxKey)
+	if raw, exists := n.Config[aiTestModelCtxKey]; exists && raw != nil && !hasCtx {
+		if s, isStr := raw.(string); !isStr || strings.TrimSpace(s) != "" {
+			return bad("modelContextTokens 应为整数")
+		}
+	}
 	modelStr := ""
 	if raw, ok := model.(string); ok {
 		modelStr = strings.TrimSpace(raw)
@@ -125,9 +169,6 @@ func validateAITestJob(n Job, byName map[string]Job, stages []Stage) error {
 			return bad("modelContextTokens 需与 model 成对出现(未覆盖模型)")
 		}
 	} else {
-		if _, ok := model.(string); !ok || !hasModel {
-			return bad("model 应为字符串")
-		}
 		if !hasCtx {
 			return bad("覆盖 model 时必须同时提供 modelContextTokens(该模型的上下文窗口 tokens)")
 		}

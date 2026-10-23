@@ -69,7 +69,8 @@ func imagePortSpecs(cfg map[string]string) ([]portSpec, error) {
 //   - cpuLimit      → --cpus <v>      (CPU 核数上限,如 "1.5")
 //   - memoryLimit   → --memory <v>    (内存硬上限,如 "512m";超限 OOM kill)
 //   - restartPolicy → --restart <v>   (no/always/unless-stopped/on-failure)
-//   - envVars       → 每行一条 KEY=value 各成一个 -e(整行作单值,值含空格不被拆)
+//   - envVars       → 每行一条 KEY=value 各成一个 -e(整行作单值,值含空格不被拆);
+//     空行与 # 开头的注释行跳过
 //   - volumes       → 每行一条挂载各成一个 -v(见 parseVolumeMounts;自动命名卷升级保持)
 //
 // 注意:凭据绝不经此进命令(registry 凭据沿用既有 docker login 模式);此处仅承载运行参数。
@@ -88,7 +89,7 @@ func imageBaseRunArgs(cfg map[string]string, containerName string) ([]string, []
 		out = append(out, "--restart", v)
 	}
 	for _, line := range strings.Split(cfg["envVars"], "\n") {
-		if kv := strings.TrimSpace(line); kv != "" {
+		if kv := strings.TrimSpace(line); kv != "" && !strings.HasPrefix(kv, "#") {
 			out = append(out, "-e", kv)
 		}
 	}
@@ -350,6 +351,7 @@ func (s *service) activateImageOne(ctx context.Context, srv *target.Server, a ru
 //   - dangling(<none>)一律不动——同 tag 重拉时旧镜像退化为 dangling,那正是回滚目标的
 //     形态,留给人工经服务器页「一键清理」处置;
 //   - rmi 不带 -f:被任何容器(含停止的)占用的镜像删不动,天然兜底。
+//
 // best-effort:任何失败静默放弃(列不出镜像/单条 rmi 失败都不影响部署结果)。
 func (s *service) cleanupTargetImages(ctx context.Context, serverID, newRef, prevImageDigest string) {
 	repo := imageRepoOfRef(newRef)
@@ -392,7 +394,7 @@ func (s *service) cleanupTargetImages(ctx context.Context, serverID, newRef, pre
 }
 
 // imageRepoOfRef 取镜像 ref 的仓库部分(repo:tag → repo;无 tag 时原样)。registry 含端口
-//(registry:5000/org/app)时最后一个 ':' 在 '/' 之后才是 tag 分隔。
+// (registry:5000/org/app)时最后一个 ':' 在 '/' 之后才是 tag 分隔。
 func imageRepoOfRef(ref string) string {
 	ref = strings.TrimSpace(ref)
 	if ref == "" {

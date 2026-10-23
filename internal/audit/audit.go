@@ -64,10 +64,11 @@ const (
 	ActionCustomNodeCreate = "custom_node_create"
 	ActionCustomNodeUpdate = "custom_node_update"
 	ActionCustomNodeDelete = "custom_node_delete"
-	// 内置本地 registry(registryhub):栈部署/更新、daemon.json 手动勾选下发、镜像保留清理。
-	ActionRegistryDeploy      = "registry_deploy"
-	ActionRegistryDaemonApply = "registry_daemon_apply"
-	ActionRegistryPrune       = "registry_prune"
+	// 内置本地 registry(registryhub):栈部署/更新、daemon.json 手动勾选下发、镜像保留清理、镜像升级。
+	ActionRegistryDeploy       = "registry_deploy"
+	ActionRegistryDaemonApply  = "registry_daemon_apply"
+	ActionRegistryPrune        = "registry_prune"
+	ActionRegistryUpgradeImage = "registry_upgrade_image"
 	// 用户体系:邀请生成/撤销、普通用户注册、项目成员增删。
 	ActionInvitationCreate    = "invitation_create"
 	ActionInvitationRevoke    = "invitation_revoke"

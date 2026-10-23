@@ -187,7 +187,7 @@ func (s *service) AnnotateRisks(ctx context.Context, in AnnotateRisksInput) (*Ri
 	}
 
 	apiKey := ""
-		if len(sealed) == 0 {
+	if len(sealed) == 0 {
 		report.AIReason = "AI 未配置或未启用,仅展示确定性规则结果"
 		return report, nil
 	}

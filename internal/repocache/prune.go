@@ -37,7 +37,7 @@ func (c *Cache) Remove(repoURL string) error {
 }
 
 // Prune 删除 root 下不在 keepURLs 内的镜像(裸 *.git 目录),返回被删除镜像的路径清单
-//(供清理留痕展示)与回收字节数。
+// (供清理留痕展示)与回收字节数。
 func (c *Cache) Prune(keepURLs []string) ([]string, int64, error) {
 	keep := make(map[string]struct{}, len(keepURLs))
 	for _, u := range keepURLs {

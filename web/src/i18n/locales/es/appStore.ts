@@ -65,4 +65,21 @@ export default {
     regHttps: "Este dominio base tiene certificado; se servirá por HTTPS.",
     regGoServiceReg: "Ir al registro de servicios",
   },
+
+  upgrade: {
+    switch: "Cambiar a actualizar esta instancia",
+    badge: "Modo actualización",
+    hint: "Se actualizará in situ la instancia existente {name} en esta máquina (re-render de la plantilla más reciente + compose up -d; los volúmenes de datos se conservan).",
+    backToDeploy: "Cambiar a despliegue nuevo",
+    hasSecret: "Contraseña definida",
+    keepSecret: "Vacío = mantener la contraseña actual",
+    flowHint: "Los parámetros vacíos conservan su valor actual; las contraseñas vacías no se regeneran. Se re-renderiza la plantilla más reciente, se escribe por SSH y se ejecuta docker compose up -d.",
+    submit: "Actualizar",
+    ok: "Actualización correcta",
+    failTitle: "Actualización fallida",
+    done: "{name} actualizado",
+    fail: "Error al actualizar",
+    noContext: "Esta instancia no tiene registro de parámetros de despliegue (desplegada con una versión antigua o fuera de la tienda); no se puede actualizar in situ. Si continúas, se desplegará como nueva.",
+    ctxFail: "No se pudo cargar la información de actualización",
+  },
 }

@@ -126,16 +126,6 @@ func (s localAITestSource) Read(rel string) ([]byte, error) {
 	return os.ReadFile(p)
 }
 
-type remoteAITestSource struct {
-	listFn func() ([]string, error)
-	readFn func(rel string) ([]byte, error)
-}
-
-func (s remoteAITestSource) List() ([]string, error) { return s.listFn() }
-func (s remoteAITestSource) Read(rel string) ([]byte, error) {
-	return s.readFn(rel)
-}
-
 // aiTestGlobMatcher 把 filter glob(** 跨段、* 单段内、? 单字符)编译为相对
 // requirements 根的匹配器;filter 给全路径(.pipewright/tests/requirements/ 前缀)时剥前缀。
 func aiTestGlobMatcher(filter string) (*regexp.Regexp, error) {
@@ -268,8 +258,14 @@ func (b *Builder) runAITestJob(ctx context.Context, rep dagrun.StageReporter, jb
 		}
 	}
 	for _, rq := range reqs {
-		if strings.TrimSpace(rq.Target) == "" {
+		t := strings.TrimSpace(rq.Target)
+		if t == "" {
 			return fail("需求 %s 无被测对象(需求与节点的 target 两级皆空)", rq.Path)
+		}
+		// 展开后仍含 ${ → 有占位符未解析(运行参数缺失 / deployJob 未绑定或解析失败),
+		// 把字面量交给 agent 只会产出垃圾请求——fail fast 诚实报错。
+		if strings.Contains(t, "${") {
+			return fail("需求 %s 的 target 含未解析占位符(%s)——检查运行参数是否提供,或 deployJob 绑定是否解析出被测机", rq.Path, t)
 		}
 	}
 	ordered, oerr := ai.OrderAITestRequirements(reqs)

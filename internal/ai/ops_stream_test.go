@@ -90,7 +90,7 @@ func TestOpsRealBoundedStreamsNaturalPlanAndAnalysis(t *testing.T) {
 					t.Fatal(err)
 				}
 				model := NewOpsModel(svc, mask.NewMasker())
-	opsTestProvider = model.Info()
+				opsTestProvider = model.Info()
 				stream := model.(opschat.StreamModel)
 				info := model.Info()
 				completed := make(chan error, 1)
@@ -180,7 +180,7 @@ func TestOpsStreamEOFErrorCancellationAndFallbackNoRetry(t *testing.T) {
 			key := "secret-key"
 			svc.Save(ctx(), SaveInput{Provider: ProviderOpenAI, BaseURL: server.URL, Model: "m", APIKey: &key, Enabled: true})
 			m := NewOpsModel(svc, mask.NewMasker())
-	opsTestProvider = m.Info()
+			opsTestProvider = m.Info()
 			c, cancel := context.WithCancel(ctx())
 			defer cancel()
 			out := ""
