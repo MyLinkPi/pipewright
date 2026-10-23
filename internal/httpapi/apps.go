@@ -951,10 +951,12 @@ func makeUpgradeAppHandler(apps appstore.Service, servers target.Service, aud au
 
 // ---------- 已部署实例枚举(「升级」直达入口的数据底座) ----------
 
-// cmdFindAppSidecars 是定值 find 命令(array 化,无 shell、无用户输入;AC-SEC-02):列受管栈
-// 目录下的参数边车。目录不存在时 find 非零退出 + stderr 噪声,但 stdout 为空 → 调用方忽略
-// ExitCode,只解析 stdout(与 cmdDiscoverComposeFiles 同纪律)。
-var cmdFindAppSidecars = []string{"find", stacksBaseDir, "-maxdepth", "2", "-name", appParamsFileName}
+// cmdFindAppStacks 是定值 find 命令(array 化,无 shell、无用户输入;AC-SEC-02):列受管栈
+// 目录下的 compose 文件与参数边车。有 compose = 受管栈;边车在则可原位升级,不在则按
+// 栈名反推模板作「旧版部署」列出。目录不存在时 find 非零退出 + stderr 噪声,但 stdout
+// 为空 → 调用方忽略 ExitCode,只解析 stdout(与 cmdDiscoverComposeFiles 同纪律)。
+var cmdFindAppStacks = []string{"find", stacksBaseDir, "-maxdepth", "2",
+	"(", "-name", composeFileName, "-o", "-name", appParamsFileName, ")"}
 
 // appsInstancesConcurrency / appsInstancesTimeout 是逐台枚举的有界并发与单机窗口
 // (find + 逐边车 cat,量级远小于 compose up)。
@@ -981,6 +983,9 @@ type appInstanceDTO struct {
 	DeployedAt   string `json:"deployedAt,omitempty"`  // RFC3339;旧边车无部署时间 → 空(未知)
 	TemplateGone bool   `json:"templateGone,omitempty"`          // 边车模板 ID 已不在模板库
 	UpgradeAvailable bool `json:"upgradeAvailable,omitempty"`    // 模板 UpdatedAt 晚于边车部署时间(旧边车零值时间 → 恒真,升级一次后判定准确)
+	// Legacy = 旧版部署无边车:不可原位升级(无参数现值,重渲染会重生成口令),前端引导
+	// 「重新部署」纳入(落边车,数据卷按项目名保留)。
+	Legacy bool `json:"legacy,omitempty"`
 }
 
 // makeAllAppInstancesHandler 返回 GET /api/servers/apps/instances(认证,只读;批量聚合):
@@ -1035,62 +1040,106 @@ func makeAllAppInstancesHandler(apps appstore.Service, servers target.Service) h
 	}
 }
 
-// collectAppInstances 枚举一台机器上的应用商店实例:find 边车 → 栈名 = 边车父目录 basename
-// (受 reDockerTgt 白名单约束,越界目录名必非本平台部署)→ 逐个读边车。边车缺失/损坏 → 静默
-// 跳过(该栈不可原位升级,但升级端点会诚实报错,列表不臆造)。机器不可达 → 单条 reachable:false。
+// collectAppInstances 枚举一台机器上的应用商店实例:find 受管栈目录 → 按栈目录聚合
+// (有 compose = 受管栈;栈名受 reDockerTgt 白名单约束)→ 有边车读边车(join 模板补
+// 展示名/更新标记),无/坏边车按栈名反推模板作「旧版部署」条目(反推不到 → 大概率是
+// Stacks 页手动部署的栈,不列)。机器不可达 → 单条 reachable:false。
 func collectAppInstances(ctx context.Context, svc target.Service, srv *target.Server, tpls map[string]appstore.Template) []appInstanceDTO {
 	cctx, cancel := context.WithTimeout(ctx, appsInstancesTimeout)
 	defer cancel()
-	res, err := svc.Exec(cctx, srv.ID, cmdFindAppSidecars)
+	res, err := svc.Exec(cctx, srv.ID, cmdFindAppStacks)
 	if err != nil { // 传输层失败(SSH 不通)= 机器不可达;find 非零退出仍可能有 stdout,不在此列
 		return []appInstanceDTO{{ServerID: srv.ID, ServerName: srv.Name, Error: err.Error()}}
 	}
-	names := make([]string, 0, 8)
-	seen := make(map[string]bool, 8)
+	type stackDir struct{ hasCompose, hasSidecar bool }
+	dirs := make(map[string]*stackDir, 8)
 	for _, line := range strings.Split(res.Stdout, "\n") {
 		p := strings.TrimSpace(line)
 		if p == "" || !strings.HasPrefix(p, "/") || strings.ContainsAny(p, "\r\x00") {
 			continue
 		}
 		name := path.Base(path.Dir(p))
-		if name == "" || name == "." || name == "/" || seen[name] || !reDockerTgt.MatchString(name) {
+		if name == "" || name == "." || name == "/" || !reDockerTgt.MatchString(name) {
 			continue
 		}
-		seen[name] = true
-		names = append(names, name)
+		d := dirs[name]
+		if d == nil {
+			d = &stackDir{}
+			dirs[name] = d
+		}
+		if path.Base(p) == appParamsFileName {
+			d.hasSidecar = true
+		} else {
+			d.hasCompose = true
+		}
+	}
+	names := make([]string, 0, len(dirs))
+	for name, d := range dirs {
+		if d.hasCompose {
+			names = append(names, name)
+		}
 	}
 	sort.Strings(names)
 	out := make([]appInstanceDTO, 0, len(names))
 	for _, name := range names {
-		sc, err := readAppSidecar(cctx, svc, srv.ID, name)
-		if err != nil {
-			continue
+		if dirs[name].hasSidecar {
+			sc, err := readAppSidecar(cctx, svc, srv.ID, name)
+			if err == nil {
+				dto := appInstanceDTO{
+					ServerID: srv.ID, ServerName: srv.Name, Reachable: true,
+					StackName: name, TemplateID: sc.TemplateID, CPUs: sc.CPUs, Memory: sc.Memory,
+				}
+				if !sc.DeployedAt.IsZero() {
+					dto.DeployedAt = sc.DeployedAt.UTC().Format(time.RFC3339)
+				}
+				if tpl, ok := tpls[sc.TemplateID]; ok {
+					dto.TemplateName = tpl.Name
+					dto.DisplayName = tpl.DisplayName
+					dto.Icon = tpl.Icon
+					if instance, found := strings.CutPrefix(name, tpl.Name+"-"); found {
+						dto.Instance = instance
+					}
+					// 模板在部署之后又改过 = 有可升级内容。旧边车无部署时间 → 零值早于一切模板
+					// 更新时间,自然标「有更新」:升一次级即建立基准,之后判定准确。
+					if tpl.UpdatedAt.After(sc.DeployedAt) {
+						dto.UpgradeAvailable = true
+					}
+				} else {
+					dto.TemplateGone = true
+				}
+				out = append(out, dto)
+				continue
+			}
+			// 边车读不出(损坏)→ 与无边车等价,降级为 legacy 条目
 		}
-		dto := appInstanceDTO{
-			ServerID: srv.ID, ServerName: srv.Name, Reachable: true,
-			StackName: name, TemplateID: sc.TemplateID, CPUs: sc.CPUs, Memory: sc.Memory,
-		}
-		if !sc.DeployedAt.IsZero() {
-			dto.DeployedAt = sc.DeployedAt.UTC().Format(time.RFC3339)
-		}
-		if tpl, ok := tpls[sc.TemplateID]; ok {
-			dto.TemplateName = tpl.Name
-			dto.DisplayName = tpl.DisplayName
-			dto.Icon = tpl.Icon
+		if tpl := matchLegacyTemplate(name, tpls); tpl != nil {
+			dto := appInstanceDTO{
+				ServerID: srv.ID, ServerName: srv.Name, Reachable: true, Legacy: true,
+				StackName: name, TemplateID: tpl.ID, TemplateName: tpl.Name,
+				DisplayName: tpl.DisplayName, Icon: tpl.Icon,
+			}
 			if instance, found := strings.CutPrefix(name, tpl.Name+"-"); found {
 				dto.Instance = instance
 			}
-			// 模板在部署之后又改过 = 有可升级内容。旧边车无部署时间 → 零值早于一切模板
-			// 更新时间,自然标「有更新」:升一次级即建立基准,之后判定准确。
-			if tpl.UpdatedAt.After(sc.DeployedAt) {
-				dto.UpgradeAvailable = true
-			}
-		} else {
-			dto.TemplateGone = true
+			out = append(out, dto)
 		}
-		out = append(out, dto)
 	}
 	return out
+}
+
+// matchLegacyTemplate 按栈名反推模板:栈名 == 模板名,或以「模板名-」开头(应用商店
+// 的栈名规则)。多模板名互为前缀时取最长者(更精确)。无匹配 → nil。
+func matchLegacyTemplate(stackName string, tpls map[string]appstore.Template) *appstore.Template {
+	var best *appstore.Template
+	for _, tpl := range tpls {
+		if stackName == tpl.Name || strings.HasPrefix(stackName, tpl.Name+"-") {
+			t := tpl
+			if best == nil || len(t.Name) > len(best.Name) {
+				best = &t
+			}
+		}
+	}
+	return best
 }
 
 // toParamSpecs 把 DTO 参数定义转领域对象。

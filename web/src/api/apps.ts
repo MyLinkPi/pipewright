@@ -171,6 +171,8 @@ export interface AppInstance {
   templateGone: boolean
   /** 模板在部署之后又改过 = 有可升级内容。 */
   upgradeAvailable: boolean
+  /** 旧版部署无边车:不可原位升级,走「重新部署」纳入管理(口令会重新生成,数据卷保留)。 */
+  legacy: boolean
 }
 
 export const listAppInstances = (): Promise<{ items: AppInstance[] }> =>

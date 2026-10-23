@@ -85,11 +85,14 @@ export default {
 
   instances: {
     section: "已部署實例",
-    empty: "暫無實例;從上方模板部署後會出現在這裡。舊版本部署的棧沒有參數記錄,重新部署一次即可納入管理。",
+    empty: "暫無實例;從上方模板部署後會出現在這裡。",
     loadFail: "已部署實例載入失敗",
     updates: "模板有更新",
     tplGone: "模板已刪除",
     deployedAt: "部署於",
     unreachable: "{name} 不可達,實例列表暫缺",
+    legacy: "舊版部署",
+    legacyHint: "該實例無參數記錄(舊版部署),不可原位升級;重新部署將納入升級管理(口令會重新生成,數據卷保留)",
+    redeploy: "重新部署",
   },
 }

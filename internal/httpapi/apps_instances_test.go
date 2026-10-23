@@ -2,8 +2,9 @@ package httpapi
 
 // 已部署实例聚合枚举(GET /api/servers/apps/instances)的契约测试。
 // 直接构造 makeAllAppInstancesHandler(fakes):不触真 SSH / DB,只验证枚举语义 ——
-// find 输出 → 栈名(白名单/去重/排序)、边车解析(损坏跳过)、模板 join(展示名/实例后缀/
-// 模板有更新/模板已删)、旧边车无部署时间恒标有更新、机器不可达单条诚实告知、PVE 节点排除。
+// find 输出 → 栈目录聚合(白名单/排序)、边车解析(损坏降级 legacy)、模板 join(展示名/
+// 实例后缀/模板有更新/模板已删)、旧边车无部署时间恒标有更新、无边车旧栈按栈名反推模板
+// 作 legacy(反推不到不列)、机器不可达单条诚实告知、PVE 节点排除。
 
 import (
 	"context"
@@ -136,12 +137,14 @@ func TestAllAppInstances(t *testing.T) {
 	gitea := appstore.Template{ID: "tpl-1", Name: "gitea", DisplayName: "Gitea", Icon: "🐙", UpdatedAt: t1}
 
 	build1 := &instMachine{
-		srv:     &target.Server{ID: "srv-1", Name: "build-1", Host: "192.168.1.10"},
-		findOut: "/opt/pipewright/stacks/gitea-x/.appstore-params.json\n/opt/pipewright/stacks/gitea/.appstore-params.json\n/opt/pipewright/stacks/gitea-2/.appstore-params.json\n",
+		srv: &target.Server{ID: "srv-1", Name: "build-1", Host: "192.168.1.10"},
+		findOut: "/opt/pipewright/stacks/gitea-x/.appstore-params.json\n/opt/pipewright/stacks/gitea-x/docker-compose.yml\n" +
+			"/opt/pipewright/stacks/gitea/.appstore-params.json\n/opt/pipewright/stacks/gitea/docker-compose.yml\n" +
+			"/opt/pipewright/stacks/gitea-2/.appstore-params.json\n/opt/pipewright/stacks/gitea-2/docker-compose.yml\n",
 		sidecars: map[string]string{
 			"gitea":   mustSidecar(t, appDeploySidecar{TemplateID: "tpl-1", Params: map[string]string{"host": "git.a"}, DeployedAt: t0}),
 			"gitea-2": mustSidecar(t, appDeploySidecar{TemplateID: "tpl-1", Params: map[string]string{"host": "git.b"}, DeployedAt: t2}),
-			"gitea-x": "{not json", // 损坏边车 → 跳过
+			"gitea-x": "{not json", // 损坏边车 → 降级 legacy
 		},
 	}
 	build2 := &instMachine{
@@ -158,13 +161,13 @@ func TestAllAppInstances(t *testing.T) {
 	if pve.touched {
 		t.Fatal("PVE 节点不应被枚举")
 	}
-	if len(items) != 3 {
-		t.Fatalf("items 数量 %d,期望 3(gitea/gitea-2/不可达): %+v", len(items), items)
+	if len(items) != 4 {
+		t.Fatalf("items 数量 %d,期望 4(gitea/gitea-2/gitea-x legacy/不可达): %+v", len(items), items)
 	}
-	// 同机内栈名升序:gitea 在 gitea-2 前;不可达机器垫后(靠 List 顺序)。
-	a, b, c := items[0], items[1], items[2]
-	if a.StackName != "gitea" || b.StackName != "gitea-2" {
-		t.Fatalf("栈名或排序不符: %+v %+v", a, b)
+	// 同机内栈名升序:gitea < gitea-2 < gitea-x;不可达机器垫后(靠 List 顺序)。
+	a, b, c, d := items[0], items[1], items[2], items[3]
+	if a.StackName != "gitea" || b.StackName != "gitea-2" || c.StackName != "gitea-x" {
+		t.Fatalf("栈名或排序不符: %+v %+v %+v", a, b, c)
 	}
 	if a.ServerID != "srv-1" || a.ServerName != "build-1" || !a.Reachable {
 		t.Fatalf("gitea 条目机器信息不符: %+v", a)
@@ -172,17 +175,21 @@ func TestAllAppInstances(t *testing.T) {
 	if a.TemplateName != "gitea" || a.DisplayName != "Gitea" || a.Icon != "🐙" || a.TemplateID != "tpl-1" {
 		t.Fatalf("gitea 条目模板 join 不符: %+v", a)
 	}
-	if a.Instance != "" || a.UpgradeAvailable != true {
-		t.Fatalf("gitea(部署早于模板更新)应标 upgradeAvailable 且无实例后缀: %+v", a)
+	if a.Instance != "" || a.UpgradeAvailable != true || a.Legacy {
+		t.Fatalf("gitea(部署早于模板更新)应标 upgradeAvailable 且非 legacy: %+v", a)
 	}
 	if a.DeployedAt != t0.Format(time.RFC3339) {
 		t.Fatalf("deployedAt 应为 RFC3339 的 %s,实得 %q", t0.Format(time.RFC3339), a.DeployedAt)
 	}
-	if b.Instance != "2" || b.UpgradeAvailable {
+	if b.Instance != "2" || b.UpgradeAvailable || b.Legacy {
 		t.Fatalf("gitea-2 应剥出实例后缀 2 且部署晚于模板更新不标 upgrade: %+v", b)
 	}
-	if c.Reachable || c.StackName != "" || c.Error == "" || c.ServerID != "srv-2" {
-		t.Fatalf("不可达机器应单条 reachable:false 且带 error: %+v", c)
+	// gitea-x:边车损坏 → 降级 legacy(按栈名反推模板),仍可重新部署纳入。
+	if !c.Legacy || c.TemplateID != "tpl-1" || c.Instance != "x" || c.UpgradeAvailable || c.DeployedAt != "" {
+		t.Fatalf("损坏边车应降级 legacy 且剥出实例后缀: %+v", c)
+	}
+	if d.Reachable || d.StackName != "" || d.Error == "" || d.ServerID != "srv-2" {
+		t.Fatalf("不可达机器应单条 reachable:false 且带 error: %+v", d)
 	}
 }
 
@@ -193,8 +200,8 @@ func TestAllAppInstancesLegacyAndGone(t *testing.T) {
 	gitea := appstore.Template{ID: "tpl-1", Name: "gitea", DisplayName: "Gitea", UpdatedAt: now}
 	m := &instMachine{
 		srv: &target.Server{ID: "srv-1", Name: "build-1"},
-		findOut: "/opt/pipewright/stacks/gitea/.appstore-params.json\n" +
-			"/opt/pipewright/stacks/old-app/.appstore-params.json\n",
+		findOut: "/opt/pipewright/stacks/gitea/.appstore-params.json\n/opt/pipewright/stacks/gitea/docker-compose.yml\n" +
+			"/opt/pipewright/stacks/old-app/.appstore-params.json\n/opt/pipewright/stacks/old-app/docker-compose.yml\n",
 		sidecars: map[string]string{
 			"gitea":   mustSidecar(t, appDeploySidecar{TemplateID: "tpl-1", Params: map[string]string{}}), // 旧边车:无 deployedAt
 			"old-app": mustSidecar(t, appDeploySidecar{TemplateID: "tpl-gone", Params: map[string]string{}}),
@@ -218,5 +225,31 @@ func TestAllAppInstancesEmpty(t *testing.T) {
 	items := runInstances(t, &instAppFake{}, &instTargetFake{machines: []*instMachine{m}})
 	if len(items) != 0 {
 		t.Fatalf("空 find 输出应零条目: %+v", items)
+	}
+}
+
+// TestAllAppInstancesLegacyNoSidecar 验证:无边车的旧版部署栈(只有 compose)按栈名反推
+// 模板列出为 legacy;反推不到模板的栈(大概率 Stacks 手动部署)不列。
+func TestAllAppInstancesLegacyNoSidecar(t *testing.T) {
+	gitea := appstore.Template{ID: "tpl-1", Name: "gitea", DisplayName: "Gitea", UpdatedAt: time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)}
+	m := &instMachine{
+		srv: &target.Server{ID: "srv-1", Name: "build-1"},
+		findOut: "/opt/pipewright/stacks/gitea/docker-compose.yml\n" +
+			"/opt/pipewright/stacks/gitea-old/docker-compose.yml\n" +
+			"/opt/pipewright/stacks/manual-stack/docker-compose.yml\n",
+		sidecars: map[string]string{}, // 全部无边车
+	}
+	items := runInstances(t, &instAppFake{tpls: []appstore.Template{gitea}}, &instTargetFake{machines: []*instMachine{m}})
+	if len(items) != 2 {
+		t.Fatalf("items 数量 %d,期望 2(gitea/gitea-old legacy;manual-stack 不列): %+v", len(items), items)
+	}
+	if !items[0].Legacy || items[0].StackName != "gitea" || items[0].Instance != "" || items[0].TemplateID != "tpl-1" {
+		t.Fatalf("gitea 应为 legacy 且无实例后缀: %+v", items[0])
+	}
+	if items[0].DisplayName != "Gitea" || items[0].UpgradeAvailable || items[0].DeployedAt != "" {
+		t.Fatalf("legacy 条目应带模板展示名且不标更新/时间: %+v", items[0])
+	}
+	if !items[1].Legacy || items[1].StackName != "gitea-old" || items[1].Instance != "old" {
+		t.Fatalf("gitea-old 应为 legacy 且剥出实例后缀 old: %+v", items[1])
 	}
 }

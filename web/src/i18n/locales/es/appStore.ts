@@ -85,11 +85,14 @@ export default {
 
   instances: {
     section: "Instancias desplegadas",
-    empty: "Aún no hay instancias; despliega desde las plantillas de arriba y aparecerán aquí. Los stacks desplegados con versiones antiguas no tienen registro de parámetros: vuelve a desplegar una vez para gestionarlos.",
+    empty: "Aún no hay instancias; despliega desde las plantillas de arriba y aparecerán aquí.",
     loadFail: "No se pudieron cargar las instancias desplegadas",
     updates: "Plantilla actualizada",
     tplGone: "Plantilla eliminada",
     deployedAt: "Desplegado",
     unreachable: "{name} inaccesible; falta la lista de instancias",
+    legacy: "Despliegue antiguo",
+    legacyHint: "Sin registro de parámetros (versión antigua); no se puede actualizar in situ. Vuelve a desplegar para incorporarla a la gestión de actualizaciones (las contraseñas se regeneran, los volúmenes se conservan)",
+    redeploy: "Volver a desplegar",
   },
 }
