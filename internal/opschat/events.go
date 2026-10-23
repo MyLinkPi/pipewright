@@ -34,7 +34,10 @@ func cursorSeq(id, cursor string) (int64, error) {
 	}
 	return n, nil
 }
-func (s *Service) entryPage(ctx context.Context, q querier, id, cursor string, limit int, events bool) (EntryPage, error) {
+
+// entryPage 的 policy 由调用方在事务外获取(s.policy() 可能同步读库,持事务
+// 调用会自死锁,见 sessionUsage)。
+func (s *Service) entryPage(ctx context.Context, q querier, id, cursor string, limit int, events bool, policy ContextPolicy) (EntryPage, error) {
 	out := EntryPage{Entries: []Entry{}}
 	limit, err := pageLimit(limit)
 	if err != nil {
@@ -44,7 +47,7 @@ func (s *Service) entryPage(ctx context.Context, q querier, id, cursor string, l
 	if err != nil {
 		return out, err
 	}
-	sr.View.ContextUsage = s.sessionUsage(ctx, q, id)
+	sr.View.ContextUsage = s.sessionUsage(ctx, q, id, policy)
 	out.Watermark = sr.View.Watermark
 	seq, err := cursorSeq(id, cursor)
 	if err != nil {
@@ -218,7 +221,12 @@ func (s *Service) Entries(ctx context.Context, id, before string, limit int) (En
 	if err := s.registerSecrets(); err != nil {
 		return out, err
 	}
-	err := s.transaction(ctx, false, func(tx *sql.Tx) error { var e error; out, e = s.entryPage(ctx, tx, id, before, limit, false); return e })
+	policy := s.policy()
+	err := s.transaction(ctx, false, func(tx *sql.Tx) error {
+		var e error
+		out, e = s.entryPage(ctx, tx, id, before, limit, false, policy)
+		return e
+	})
 	return out, err
 }
 func (s *Service) Events(ctx context.Context, id, after string, limit int) (EntryPage, error) {
@@ -226,7 +234,12 @@ func (s *Service) Events(ctx context.Context, id, after string, limit int) (Entr
 	if err := s.registerSecrets(); err != nil {
 		return out, err
 	}
-	err := s.transaction(ctx, false, func(tx *sql.Tx) error { var e error; out, e = s.entryPage(ctx, tx, id, after, limit, true); return e })
+	policy := s.policy()
+	err := s.transaction(ctx, false, func(tx *sql.Tx) error {
+		var e error
+		out, e = s.entryPage(ctx, tx, id, after, limit, true, policy)
+		return e
+	})
 	return out, err
 }
 func (s *Service) List(ctx context.Context, before string, limit int) (SessionPage, error) {
@@ -306,15 +319,16 @@ func (s *Service) Snapshot(ctx context.Context, id string) (*Snapshot, error) {
 		return nil, err
 	}
 	out := &Snapshot{Runs: []Run{}, Calls: []Call{}, Confirmations: []Confirmation{}}
+	policy := s.policy()
 	err := s.transaction(ctx, false, func(tx *sql.Tx) error {
 		sr, e := s.session(ctx, tx, id)
 		if e != nil {
 			return e
 		}
-		sr.View.ContextUsage = s.sessionUsage(ctx, tx, id)
+		sr.View.ContextUsage = s.sessionUsage(ctx, tx, id, policy)
 		out.Session = s.projectSessionActive(ctx, tx, sr)
 		out.Watermark = sr.View.Watermark
-		out.Entries, e = s.entryPage(ctx, tx, id, "", 50, false)
+		out.Entries, e = s.entryPage(ctx, tx, id, "", 50, false, policy)
 		if e != nil {
 			return e
 		}
