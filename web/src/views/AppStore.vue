@@ -124,7 +124,7 @@ async function upgradeInstance(inst: AppInstance): Promise<void> {
   }
   openDeploy(tpl)
   deployServer.value = inst.serverId
-  deployInstance.value = inst.instance
+  deployInstance.value = inst.instance ?? '' // 单实例部署时后端 omitempty 省略该键
   if (!inst.legacy) await enterUpgradeMode()
 }
 

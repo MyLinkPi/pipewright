@@ -158,21 +158,21 @@ export interface AppInstance {
   error?: string
   stackName: string
   templateId: string
-  templateName: string
-  displayName: string
-  icon: string
-  /** 实例名后缀(栈名去掉「模板名-」前缀;单实例部署为空)。 */
-  instance: string
-  cpus: string
-  memory: string
+  templateName?: string
+  displayName?: string
+  icon?: string
+  /** 实例名后缀(栈名去掉「模板名-」前缀;单实例部署 → 后端 omitempty 省略 = undefined)。 */
+  instance?: string
+  cpus?: string
+  memory?: string
   /** RFC3339 部署/最近升级时间;旧边车无记录 → 空。 */
-  deployedAt: string
+  deployedAt?: string
   /** 边车模板 ID 已不在模板库(不可升级)。 */
-  templateGone: boolean
+  templateGone?: boolean
   /** 模板在部署之后又改过 = 有可升级内容。 */
-  upgradeAvailable: boolean
+  upgradeAvailable?: boolean
   /** 旧版部署无边车:不可原位升级,走「重新部署」纳入管理(口令会重新生成,数据卷保留)。 */
-  legacy: boolean
+  legacy?: boolean
 }
 
 export const listAppInstances = (): Promise<{ items: AppInstance[] }> =>
