@@ -1,12 +1,14 @@
 package opschat
 
 import (
+	"context"
 	"encoding/json"
 	"github.com/huangchengsir/pipewright/internal/target"
 	"path"
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 	"unicode"
 	"unicode/utf8"
 )
@@ -61,24 +63,42 @@ func cloneTools(in []Tool) []Tool {
 
 // Tools 返回指定维度的工具目录:机器维度(默认)只有机器工具;项目维度 =
 // 项目工具 + 机器工具(目录层总是全集,单轮目录在 planner 按目标可用性过滤)。
+// 网页工具属目录全集(两维度附加);单轮是否可见由 toolsForRun 按 WebBackend
+// 可用性过滤。
 func Tools(scope string) []Tool {
 	out := cloneTools(tools)
 	if scope == ScopeProject {
 		out = append(projectTools(), out...)
 	}
+	return append(out, webTools()...)
+}
+
+// toolsForRun 按运行目标组装单轮模型目录:项目维度未关联机器时剔除机器工具;
+// 网页工具在 WebBackend 可用时两维度均附加(每轮现查,设置变更下轮生效)。
+func (s *Service) toolsForRun(r runRecord) []Tool {
+	var out []Tool
+	if r.Body.Project == nil {
+		out = cloneTools(tools)
+	} else {
+		out = projectTools()
+		if len(r.Body.Targets) > 0 {
+			out = append(out, cloneTools(tools)...)
+		}
+	}
+	if s.webAvailable() {
+		out = append(out, webTools()...)
+	}
 	return out
 }
 
-// toolsForRun 按运行目标组装单轮模型目录:项目维度未关联机器时剔除机器工具。
-func toolsForRun(r runRecord) []Tool {
-	if r.Body.Project == nil {
-		return Tools(ScopeServer)
+// webAvailable 是网页工具的单轮可见性判定(轻量本地读;后端未装配即不可见)。
+func (s *Service) webAvailable() bool {
+	if s.web == nil {
+		return false
 	}
-	out := projectTools()
-	if len(r.Body.Targets) > 0 {
-		out = append(out, cloneTools(tools)...)
-	}
-	return out
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	return s.web.Available(ctx)
 }
 func mutation(id string) bool {
 	return id == "docker_action" || id == "systemd_action" || id == "docker_exec" || id == "host_exec"

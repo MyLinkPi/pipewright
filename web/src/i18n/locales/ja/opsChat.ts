@@ -157,6 +157,8 @@ export default {
     systemd_logs: 'サービスログ',
     docker_action: 'コンテナ操作',
     systemd_action: 'サービス操作',
+    web_search: 'ウェブ検索',
+    web_fetch: 'ウェブ取得',
     project_info: 'プロジェクト情報',
     code_tree: 'コードディレクトリ',
     code_read: 'ファイル読み取り',

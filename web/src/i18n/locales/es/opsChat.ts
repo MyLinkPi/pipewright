@@ -158,6 +158,8 @@ export default {
     systemd_logs: 'Registros del servicio',
     docker_action: 'Operación de contenedor',
     systemd_action: 'Operación de servicio',
+    web_search: 'Búsqueda web',
+    web_fetch: 'Captura web',
     project_info: 'Info del proyecto',
     code_tree: 'Directorio de código',
     code_read: 'Leer archivo',

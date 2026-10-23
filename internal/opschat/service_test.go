@@ -948,6 +948,18 @@ func TestStrictTools(t *testing.T) {
 				raw = `{"unit":"nginx.service","action":"start"}`
 			}
 		}
+		if tool.ID == "web_search" {
+			raw = `{"query":"nginx upstream error","count":5}`
+		}
+		if tool.ID == "web_fetch" {
+			raw = `{"url":"https://example.com/docs"}`
+		}
+		if isWebTool(tool.ID) {
+			if _, e := parseWebArgs(tool.ID, json.RawMessage(raw)); e != nil {
+				t.Fatal(tool.ID, e)
+			}
+			continue
+		}
 		if _, e := parseArgs(tool.ID, json.RawMessage(raw)); e != nil {
 			t.Fatal(tool.ID, e)
 		}

@@ -89,7 +89,8 @@ func TestOpsToolsScopeEndpoint(t *testing.T) {
 	var server, project []opschat.Tool
 	json.Unmarshal(opsHTTP(t, h, "GET", "/api/ai/ops/tools", "", 200).Body.Bytes(), &server)
 	json.Unmarshal(opsHTTP(t, h, "GET", "/api/ai/ops/tools?scope=project", "", 200).Body.Bytes(), &project)
-	if len(server) != 14 || len(project) != 24 {
+	// 16/26:机器/项目目录 + 网页工具 2 条(web 目录层全集,单轮按可用性过滤)。
+	if len(server) != 16 || len(project) != 26 {
 		t.Fatalf("catalog sizes: server=%d project=%d", len(server), len(project))
 	}
 	opsHTTP(t, h, "GET", "/api/ai/ops/tools?scope=bogus", "", 422)

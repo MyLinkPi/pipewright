@@ -155,6 +155,8 @@ export default {
     systemd_logs: '서비스 로그',
     docker_action: '컨테이너 작업',
     systemd_action: '서비스 작업',
+    web_search: '웹 검색',
+    web_fetch: '웹 가져오기',
     project_info: '프로젝트 정보',
     code_tree: '코드 디렉터리',
     code_read: '파일 읽기',

@@ -142,6 +142,8 @@ export default {
     systemd_logs: '服务日志',
     docker_action: '容器操作',
     systemd_action: '服务操作',
+    web_search: '网页搜索',
+    web_fetch: '网页抓取',
     project_info: '项目信息',
     code_tree: '代码目录',
     code_read: '读取文件',

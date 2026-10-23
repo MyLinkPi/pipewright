@@ -32,6 +32,24 @@ export interface AIContext {
   bufferTokens: number
 }
 
+/** Web search/fetch tools provider ('' = follow the LLM provider config). */
+export type AIWebProvider = 'deepseek' | ''
+
+/**
+ * Web search/fetch tools config. provider '' falls back to the LLM config
+ * (usable only when the LLM destination is official DeepSeek). available/reason
+ * reflect the resolved destination while the toggle is on.
+ */
+export interface AIWebSettings {
+  enabled: boolean
+  provider: AIWebProvider
+  baseUrl: string
+  /** Server-computed mask, e.g. "••••a91f" — never plaintext. */
+  apiKeyMasked: string
+  available: boolean
+  reason: string
+}
+
 /** GET /api/settings/ai response — never contains plaintext apiKey */
 export interface AISettings {
   configured: boolean
@@ -43,6 +61,7 @@ export interface AISettings {
   apiKeyMasked: string
   budget: AIBudget
   context: AIContext
+  web: AIWebSettings
   updatedAt: string | null
 }
 
@@ -59,6 +78,13 @@ export interface SaveAISettingsInput {
   budget: AIBudget
   context: AIContext
   enabled: boolean
+  /** Web search/fetch tools sub-config; apiKey has the same write-only semantics. */
+  web: {
+    enabled: boolean
+    provider: AIWebProvider
+    baseUrl: string
+    apiKey?: string
+  }
 }
 
 /** POST /api/settings/ai/test response */
@@ -92,6 +118,24 @@ export async function testAIConnection(
   draft?: TestAIConnectionInput,
 ): Promise<AITestResult> {
   return http.post<AITestResult>('/api/settings/ai/test', draft ?? {})
+}
+
+/** POST /api/settings/ai/web/test request body (all optional — falls back to saved web config) */
+export interface TestWebToolsInput {
+  provider?: AIWebProvider
+  baseUrl?: string
+  /** Write-only draft key for testing before saving. */
+  apiKey?: string
+}
+
+/**
+ * Fires one real count=1 search against the resolved web tools destination
+ * (billed only on success, per DeepSeek pricing).
+ */
+export async function testWebTools(
+  draft?: TestWebToolsInput,
+): Promise<AITestResult> {
+  return http.post<AITestResult>('/api/settings/ai/web/test', draft ?? {})
 }
 
 export interface AIModelsResult {

@@ -39,10 +39,12 @@ import {
   getAISettings,
   saveAISettings,
   testAIConnection,
+  testWebTools,
   type AIProvider,
   type AISettings,
   type AITestResult,
   type SaveAISettingsInput,
+  type TestWebToolsInput,
 } from '../../api/aiSettings'
 
 // ─── types ───────────────────────────────────────────────────────────────────
@@ -149,6 +151,16 @@ const apiKey = ref('') // write-only: blank = keep existing; non-blank = rotate
 const monthlyTokenLimit = ref<string>('') // string for input binding; coerced on save
 const enabled = ref(false)
 
+// 网页搜索/抓取子配置:provider '' = 跟随 LLM(仅当 LLM 目的地为 DeepSeek 官方
+// 时可用);显式选择供应商后可单独填地址/密钥(密钥与 LLM 同为只写语义)。
+const DEFAULT_WEB_BASE_URLS: Record<string, string> = {
+  deepseek: 'https://api.deepseek.com/v1',
+}
+const webEnabled = ref(false)
+const webProvider = ref<'' | 'deepseek'>('')
+const webBaseUrl = ref('')
+const webApiKey = ref('') // write-only: blank = keep existing; non-blank = rotate
+
 // 上下文管理:字符串绑定,空 = 用服务端默认(保存时归 0)。窗口/输出/保留按 tokens。
 const ctxWindowTokens = ref<string>('')
 const ctxMaxOutputTokens = ref<string>('')
@@ -184,6 +196,48 @@ watch([selectedProvider, baseUrl, apiKey], invalidateModels, { flush: 'sync' })
 onBeforeUnmount(() => {
   disposed = true
   invalidateModels()
+  invalidateWebTest()
+})
+
+// ─── web tools test state ────────────────────────────────────────────────────
+
+const webTestState = ref<TestState>('idle')
+const webTestResult = ref<AITestResult | null>(null)
+let webTestGeneration = 0
+function invalidateWebTest(): void {
+  webTestGeneration++
+  webTestState.value = 'idle'
+  webTestResult.value = null
+}
+watch(
+  [webEnabled, webProvider, webBaseUrl, webApiKey],
+  invalidateWebTest,
+  { flush: 'sync' },
+)
+
+const webProviderOptions = computed(() => [
+  { value: '', label: t('settingsAI.webFollowLLM') },
+  { value: 'deepseek', label: 'DeepSeek' },
+])
+
+/** 已存独立 web 密钥(同目的地未轮换时展示掩码) */
+const hasExistingWebKey = computed(
+  () =>
+    !!savedSettings.value?.web.apiKeyMasked &&
+    savedSettings.value.web.provider === webProvider.value &&
+    normalizedBase(savedSettings.value.web.baseUrl || DEFAULT_WEB_BASE_URLS[webProvider.value] || '') ===
+      normalizedBase(
+        webBaseUrl.value || DEFAULT_WEB_BASE_URLS[webProvider.value] || '',
+      ),
+)
+
+/** 服务端解析的有效可用性提示(表单未改时的权威状态) */
+const webSavedHint = computed(() => {
+  const web = savedSettings.value?.web
+  if (!web || !web.enabled) return null
+  return web.available
+    ? { ok: true, text: t('settingsAI.webAvailable') }
+    : { ok: false, text: web.reason || t('settingsAI.webUnavailable') }
 })
 
 // ─── derived ──────────────────────────────────────────────────────────────────
@@ -241,6 +295,10 @@ const isDirty = computed(() => {
     apiKey.value !== '' ||
     String(s.budget.monthlyTokenLimit ?? '') !== String(monthlyTokenLimit.value ?? '') ||
     enabled.value !== s.enabled ||
+    webEnabled.value !== (s.web?.enabled ?? false) ||
+    webProvider.value !== (s.web?.provider ?? '') ||
+    webBaseUrl.value !== (s.web?.baseUrl ?? '') ||
+    webApiKey.value !== '' ||
     ctxWindowTokens.value !== (c?.windowTokens ? String(c.windowTokens) : '') ||
     ctxMaxOutputTokens.value !==
       (c?.maxOutputTokens ? String(c.maxOutputTokens) : '') ||
@@ -312,6 +370,10 @@ function applySettings(data: AISettings): void {
       ? String(Math.round(ctx.historyBytes / 1024))
       : ''
   enabled.value = data.enabled
+  webEnabled.value = data.web?.enabled ?? false
+  webProvider.value = data.web?.provider ?? ''
+  webBaseUrl.value = data.web?.baseUrl ?? ''
+  webApiKey.value = '' // never pre-fill
 }
 
 onMounted(loadSettings)
@@ -431,6 +493,15 @@ async function handleSave(): Promise<void> {
         autoCompact: ctxAutoCompact.value,
       } as SaveAISettingsInput['context'],
       enabled: enabled.value,
+      web: {
+        enabled: webEnabled.value,
+        // 跟随 LLM(provider '')时地址/密钥必须缺省(后端拒绝字段搭配)。
+        provider: webProvider.value,
+        baseUrl: webProvider.value === '' ? '' : webBaseUrl.value.trim(),
+        ...(webProvider.value !== '' && webApiKey.value
+          ? { apiKey: webApiKey.value }
+          : {}),
+      },
     }
 
     const updated = await saveAISettings(payload)
@@ -472,6 +543,39 @@ async function handleSave(): Promise<void> {
   }
 }
 
+// ─── web tools test ──────────────────────────────────────────────────────────
+
+async function handleWebTest(): Promise<void> {
+  const generation = ++webTestGeneration
+  webTestState.value = 'running'
+  webTestResult.value = null
+  try {
+    const draft: TestWebToolsInput = {}
+    if (webProvider.value) draft.provider = webProvider.value
+    if (webProvider.value && webBaseUrl.value) draft.baseUrl = webBaseUrl.value
+    if (webProvider.value && webApiKey.value) draft.apiKey = webApiKey.value
+    const result = await testWebTools(draft)
+    if (disposed || generation !== webTestGeneration) return
+    webTestResult.value = result
+    webTestState.value = result.ok ? 'ok' : 'fail'
+  } catch (err) {
+    if (disposed || generation !== webTestGeneration) return
+    webTestState.value = 'fail'
+    webTestResult.value = {
+      ok: false,
+      latencyMs: 0,
+      detail: '',
+      error:
+        err instanceof HttpError
+          ? (err.apiError?.message ??
+            t('settingsAI.errRequestFailed', { status: err.status }))
+          : err instanceof Error
+            ? err.message
+            : t('settingsAI.errUnknown'),
+    }
+  }
+}
+
 // ─── discard ─────────────────────────────────────────────────────────────────
 
 function handleDiscard(): void {
@@ -481,6 +585,7 @@ function handleDiscard(): void {
   clearErrors()
   testState.value = 'idle'
   testResult.value = null
+  invalidateWebTest()
 }
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
@@ -1126,6 +1231,176 @@ function relativeTime(iso: string | null): string {
         </div>
       </Transition>
 
+      <!-- Web search/fetch tools panel (independent toggle, falls back to LLM config) -->
+      <div class="panel panel--anim panel--web">
+        <div class="panel-head">
+          <svg
+            width="14"
+            height="14"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            aria-hidden="true"
+          >
+            <circle cx="12" cy="12" r="10" />
+            <path d="M2.5 12h19M12 2.5c3 3.2 3 15.8 0 19M12 2.5c-3 3.2-3 15.8 0 19" />
+          </svg>
+          {{ t('settingsAI.webTitle') }}
+        </div>
+        <div class="panel-body">
+          <form class="config-form" novalidate @submit.prevent="handleSave">
+            <!-- Enabled toggle -->
+            <div class="toggle-row">
+              <button
+                type="button"
+                class="toggle-track"
+                :class="{ 'toggle-track--on': webEnabled }"
+                role="switch"
+                :aria-checked="webEnabled"
+                :aria-label="t('settingsAI.webEnable')"
+                :disabled="saving"
+                @click="webEnabled = !webEnabled"
+              >
+                <span class="toggle-thumb" />
+              </button>
+              <div class="toggle-label">
+                <strong>{{ t('settingsAI.webEnable') }}</strong>
+                <span>{{ t('settingsAI.webEnableDesc') }}</span>
+              </div>
+            </div>
+
+            <!-- Availability hint from the saved resolution -->
+            <p
+              v-if="webSavedHint"
+              class="web-hint"
+              :class="webSavedHint.ok ? 'web-hint--ok' : 'web-hint--warn'"
+              role="status"
+            >
+              {{ webSavedHint.text }}
+            </p>
+
+            <!-- Provider: '' = follow the LLM config -->
+            <div class="config-row">
+              <FormField
+                :label="t('settingsAI.webProviderLabel')"
+                field-id="ai-web-provider"
+                :hint="t('settingsAI.webProviderHint')"
+              >
+                <AppSelect
+                  input-id="ai-web-provider"
+                  v-model="webProvider"
+                  :options="webProviderOptions"
+                  portal
+                  :aria-label="t('settingsAI.webProviderLabel')"
+                  :disabled="saving"
+                />
+              </FormField>
+            </div>
+
+            <template v-if="webProvider !== ''">
+              <!-- Base URL (blank = provider official default) -->
+              <div class="config-row">
+                <FormField
+                  :label="t('settingsAI.webBaseUrlLabel')"
+                  field-id="ai-web-baseurl"
+                  :hint="
+                    t('settingsAI.webBaseUrlHint', {
+                      url: DEFAULT_WEB_BASE_URLS[webProvider] ?? '',
+                    })
+                  "
+                >
+                  <template #default="{ fieldId, ariaDescribedby }">
+                    <input
+                      :id="fieldId"
+                      v-model="webBaseUrl"
+                      type="url"
+                      class="field-input field-input--mono"
+                      :placeholder="DEFAULT_WEB_BASE_URLS[webProvider] ?? 'https://'"
+                      autocomplete="off"
+                      :aria-describedby="ariaDescribedby"
+                      :disabled="saving"
+                    />
+                  </template>
+                </FormField>
+              </div>
+
+              <!-- API Key (write-only) -->
+              <div class="config-row">
+                <FormField
+                  label="API Key"
+                  field-id="ai-web-apikey"
+                  :hint="t('settingsAI.webApiKeyHint')"
+                >
+                  <template #default="{ fieldId, ariaDescribedby }">
+                    <div class="key-row">
+                      <input
+                        :id="fieldId"
+                        v-model="webApiKey"
+                        type="password"
+                        class="field-input field-input--mono"
+                        :placeholder="
+                          hasExistingWebKey
+                            ? t('settingsAI.apiKeyConfigured')
+                            : t('settingsAI.apiKeyPaste')
+                        "
+                        autocomplete="new-password"
+                        :aria-describedby="ariaDescribedby"
+                        :disabled="saving"
+                      />
+                      <span
+                        v-if="hasExistingWebKey && !webApiKey"
+                        class="key-masked"
+                      >
+                        <span class="mono dim">{{
+                          savedSettings?.web.apiKeyMasked
+                        }}</span>
+                      </span>
+                    </div>
+                  </template>
+                </FormField>
+              </div>
+            </template>
+
+            <!-- Test (one real count=1 search, billed only on success) -->
+            <div class="test-row">
+              <AppButton
+                variant="ai"
+                type="button"
+                :loading="webTestState === 'running'"
+                :disabled="saving"
+                @click="handleWebTest"
+              >
+                {{ t('settingsAI.webTest') }}
+              </AppButton>
+              <Transition name="fade">
+                <div
+                  v-if="webTestState === 'ok' && webTestResult"
+                  class="test-result test-result--ok"
+                  role="status"
+                >
+                  {{
+                    t('settingsAI.testOk', { ms: webTestResult.latencyMs })
+                  }}
+                  <span v-if="webTestResult.detail" class="test-detail"
+                    >· {{ webTestResult.detail }}</span
+                  >
+                </div>
+                <div
+                  v-else-if="webTestState === 'fail' && webTestResult"
+                  class="test-result test-result--fail"
+                  role="alert"
+                >
+                  {{ webTestResult.error ?? t('settingsAI.testFail') }}
+                </div>
+              </Transition>
+            </div>
+
+            <p class="web-note">{{ t('settingsAI.webNote') }}</p>
+          </form>
+        </div>
+      </div>
+
       <!-- Save bar (shown when dirty or provider selected) -->
       <Transition name="fade">
         <div v-if="isDirty || selectedProvider !== ''" class="save-bar">
@@ -1163,6 +1438,24 @@ function relativeTime(iso: string | null): string {
 </template>
 
 <style scoped>
+/* ─── web tools section ───────────────────────────────────────────────────── */
+.web-hint {
+  margin: 2px 0 10px;
+  font-size: 0.78rem;
+  line-height: 1.5;
+}
+.web-hint--ok {
+  color: var(--color-green, oklch(60% 0.13 150));
+}
+.web-hint--warn {
+  color: var(--color-warn, #b45309);
+}
+.web-note {
+  margin: 6px 0 0;
+  font-size: 0.74rem;
+  color: var(--color-faint);
+  line-height: 1.5;
+}
 .panel.panel--protocol {
   overflow: visible;
   container-type: inline-size;

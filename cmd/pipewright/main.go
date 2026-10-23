@@ -341,7 +341,7 @@ func main() {
 		//(SourceReader 无状态,这里独立构造;main.go:964 的 web 端实例互不影响)。
 		opsProjects := httpapi.NewOpsProjectBackend(projectSvc, pipelineSvc, runSvc, credVault, httpapi.NewSourceReader())
 		chat, err := opschat.New(opschat.Options{DB: st.DB, Vault: credVault, Executor: limited,
-			Model: ai.NewOpsModel(aiSvc, opsMasker), Projects: opsProjects, Masker: opsMasker, LocalRecorder: audit.New(st.DB, opsMasker, nil), Runtime: opsRuntime,
+			Model: ai.NewOpsModel(aiSvc, opsMasker), Projects: opsProjects, Web: ai.NewWebTools(aiSvc, opsMasker), Masker: opsMasker, LocalRecorder: audit.New(st.DB, opsMasker, nil), Runtime: opsRuntime,
 			Context: func() opschat.ContextPolicy { return aiContextPolicy(aiSvc) }})
 		if err == nil {
 			err = chat.Start(context.Background())

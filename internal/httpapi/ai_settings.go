@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -93,17 +94,29 @@ func makeAIModelsHandler(svc ai.Service) http.HandlerFunc {
 	}
 }
 
+// aiWebConfigDTO 是网页搜索/抓取工具配置(冻结契约;apiKey 仅掩码,绝无明文;
+// available/reason 为打开开关后的有效配置解析结果)。
+type aiWebConfigDTO struct {
+	Enabled      bool   `json:"enabled"`
+	Provider     string `json:"provider"`
+	BaseURL      string `json:"baseUrl"`
+	APIKeyMasked string `json:"apiKeyMasked"`
+	Available    bool   `json:"available"`
+	Reason       string `json:"reason"`
+}
+
 // aiConfigDTO 是 GET/PUT 响应体(冻结契约;apiKey 只暴露掩码 apiKeyMasked,绝无明文)。
 type aiConfigDTO struct {
-	Configured   bool         `json:"configured"`
-	Enabled      bool         `json:"enabled"`
-	Provider     string       `json:"provider"`
-	BaseURL      string       `json:"baseUrl"`
-	Model        string       `json:"model"`
-	APIKeyMasked string       `json:"apiKeyMasked"`
-	Budget       aiBudgetDTO  `json:"budget"`
-	Context      aiContextDTO `json:"context"`
-	UpdatedAt    *string      `json:"updatedAt"`
+	Configured   bool           `json:"configured"`
+	Enabled      bool           `json:"enabled"`
+	Provider     string         `json:"provider"`
+	BaseURL      string         `json:"baseUrl"`
+	Model        string         `json:"model"`
+	APIKeyMasked string         `json:"apiKeyMasked"`
+	Budget       aiBudgetDTO    `json:"budget"`
+	Context      aiContextDTO   `json:"context"`
+	Web          aiWebConfigDTO `json:"web"`
+	UpdatedAt    *string        `json:"updatedAt"`
 }
 
 // aiTestResultDTO 是 POST test 响应体(冻结契约:ok/latencyMs/detail/error)。
@@ -125,6 +138,14 @@ func toAIConfigDTO(c *ai.Config) aiConfigDTO {
 		APIKeyMasked: c.APIKeyMasked,
 		Budget:       aiBudgetDTO{MonthlyTokenLimit: c.Budget.MonthlyTokenLimit},
 		Context:      toAIContextDTO(c.Context),
+		Web: aiWebConfigDTO{
+			Enabled:      c.Web.Enabled,
+			Provider:     c.Web.Provider,
+			BaseURL:      c.Web.BaseURL,
+			APIKeyMasked: c.Web.APIKeyMasked,
+			Available:    c.Web.Available,
+			Reason:       c.Web.Reason,
+		},
 	}
 	if c.UpdatedAt != nil {
 		s := c.UpdatedAt.UTC().Format(time.RFC3339)
@@ -144,6 +165,8 @@ func writeAIError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusUnprocessableEntity, "api_key_required", "该 provider 需要配置 API 密钥")
 	case errors.Is(err, ai.ErrVaultUnconfigured):
 		writeError(w, http.StatusServiceUnavailable, "vault_unconfigured", "保险库未配置 master key,无法加密或读取 API 密钥")
+	case errors.Is(err, ai.ErrInvalidWebConfig):
+		writeError(w, http.StatusUnprocessableEntity, "invalid_web_config", "网页工具配置非法:供应商、接入地址或字段搭配不正确")
 	default:
 		writeError(w, http.StatusInternalServerError, "internal", "服务器内部错误")
 	}
@@ -186,6 +209,13 @@ func makeSaveAISettingsHandler(svc ai.Service) http.HandlerFunc {
 			} `json:"budget"`
 			Context aiContextDTO `json:"context"`
 			Enabled bool         `json:"enabled"`
+			// Web 是网页搜索/抓取子配置;APIKey 同只写语义,nil/空 = 保留既有。
+			Web struct {
+				Enabled  bool    `json:"enabled"`
+				Provider string  `json:"provider"`
+				BaseURL  string  `json:"baseUrl"`
+				APIKey   *string `json:"apiKey"`
+			} `json:"web"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, "bad_request", "请求体格式错误")
@@ -193,13 +223,17 @@ func makeSaveAISettingsHandler(svc ai.Service) http.HandlerFunc {
 		}
 
 		cfg, err := svc.Save(r.Context(), ai.SaveInput{
-			Provider: req.Provider,
-			BaseURL:  req.BaseURL,
-			Model:    req.Model,
-			APIKey:   req.APIKey,
-			Budget:   ai.Budget{MonthlyTokenLimit: req.Budget.MonthlyTokenLimit},
-			Context:  fromAIContextDTO(req.Context),
-			Enabled:  req.Enabled,
+			Provider:   req.Provider,
+			BaseURL:    req.BaseURL,
+			Model:      req.Model,
+			APIKey:     req.APIKey,
+			Budget:     ai.Budget{MonthlyTokenLimit: req.Budget.MonthlyTokenLimit},
+			Context:    fromAIContextDTO(req.Context),
+			Enabled:    req.Enabled,
+			WebEnabled: req.Web.Enabled,
+			WebProvider: req.Web.Provider,
+			WebBaseURL:  req.Web.BaseURL,
+			WebAPIKey:   req.Web.APIKey,
 		})
 		if err != nil {
 			writeAIError(w, err)
@@ -238,6 +272,52 @@ func makeTestAISettingsHandler(svc ai.Service) http.HandlerFunc {
 			Provider: req.Provider,
 			BaseURL:  req.BaseURL,
 			Model:    req.Model,
+			APIKey:   req.APIKey,
+		})
+		if err != nil {
+			writeAIError(w, err)
+			return
+		}
+		dto := aiTestResultDTO{OK: res.OK, LatencyMs: res.LatencyMs, Detail: res.Detail}
+		if res.Error != "" {
+			dto.Error = &res.Error
+		}
+		writeJSON(w, http.StatusOK, dto)
+	}
+}
+
+// makeWebTestAISettingsHandler 返回 POST /api/settings/ai/web/test handler。
+// 收可选 draft(省略字段回退已存 web 配置;apiKey 省略=用已存密钥或同目的地
+// LLM 密钥),向解析出的网页工具目的地发一次 count=1 真实搜索探测(成功才计费)。
+// 200 回 {ok,latencyMs,detail,error};error 为人读(绝无密钥)。
+func makeWebTestAISettingsHandler(svc ai.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if svc == nil {
+			writeError(w, http.StatusServiceUnavailable, "internal", "AI 配置服务未初始化")
+			return
+		}
+		tester, ok := svc.(interface {
+			WebTest(context.Context, ai.WebTestInput) (*ai.TestResult, error)
+		})
+		if !ok {
+			writeError(w, http.StatusServiceUnavailable, "internal", "网页工具探测不可用")
+			return
+		}
+		r.Body = http.MaxBytesReader(w, r.Body, 1<<16)
+		var req struct {
+			Provider *string `json:"provider"`
+			BaseURL  *string `json:"baseUrl"`
+			APIKey   *string `json:"apiKey"`
+		}
+		if r.ContentLength != 0 {
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				writeError(w, http.StatusBadRequest, "bad_request", "请求体格式错误")
+				return
+			}
+		}
+		res, err := tester.WebTest(r.Context(), ai.WebTestInput{
+			Provider: req.Provider,
+			BaseURL:  req.BaseURL,
 			APIKey:   req.APIKey,
 		})
 		if err != nil {

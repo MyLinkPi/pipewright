@@ -156,6 +156,8 @@ export default {
     systemd_logs: 'Service logs',
     docker_action: 'Container operation',
     systemd_action: 'Service operation',
+    web_search: 'Web search',
+    web_fetch: 'Web fetch',
     project_info: 'Project info',
     code_tree: 'Code directory',
     code_read: 'Read file',

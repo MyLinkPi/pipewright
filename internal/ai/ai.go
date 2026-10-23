@@ -44,6 +44,15 @@ const (
 	defaultBaseURLOpenAI = "https://api.openai.com/v1"
 )
 
+// 网页搜索/抓取工具供应商(与 LLM provider 枚举独立;首期仅 DeepSeek)。
+const (
+	// ProviderWebDeepSeek 表示 DeepSeek 网页搜索/抓取(/v1/tools/search|fetch,
+	// 与 DeepSeek LLM 共用平台 API Key)。
+	ProviderWebDeepSeek = "deepseek"
+	// defaultWebBaseURLDeepSeek 是 DeepSeek 网页工具的官方前缀。
+	defaultWebBaseURLDeepSeek = "https://api.deepseek.com/v1"
+)
+
 // 领域错误。错误体永不含 apiKey 明文/密文/master key。
 var (
 	// ErrInvalidProvider 表示 provider 枚举非法(非 claude|openai|ollama 且非空)。
@@ -56,6 +65,10 @@ var (
 	ErrVaultUnconfigured = errors.New("ai: vault unconfigured")
 	// ErrAINotConfigured 表示 AI 提供商未配置 / 未启用,生成不可用(优雅降级,不致命)。
 	ErrAINotConfigured = errors.New("ai: provider not configured or disabled")
+	// ErrInvalidWebConfig 表示网页工具配置非法(供应商枚举/地址形态/字段搭配)。
+	ErrInvalidWebConfig = errors.New("ai: invalid web tools config")
+	// ErrWebNotConfigured 表示网页工具未启用或有效配置不可解析(优雅降级,不致命)。
+	ErrWebNotConfigured = errors.New("ai: web tools not configured or disabled")
 	// ErrGenerateFailed 表示 LLM 调用 / 响应解析失败(人读错误,绝无密钥)。
 	ErrGenerateFailed = errors.New("ai: generate failed")
 )
@@ -102,19 +115,42 @@ type Config struct {
 	APIKeyMasked string
 	Budget       Budget
 	Context      ContextSettings
-	UpdatedAt    *time.Time
+	// Web 是网页搜索/抓取工具的配置声明(独立开关+可选独立目的地,回退 LLM 配置)。
+	Web       WebConfig
+	UpdatedAt *time.Time
+	// webSealed 是网页工具独立密钥的密文(仅包内取用,绝不序列化/外泄)。
+	webSealed []byte
+}
+
+// WebConfig 是网页搜索/抓取工具配置。Provider 空串 = 跟随 LLM 配置回退
+// (仅当 LLM 目的地为 DeepSeek 官方时可用);BaseURL 为存储值,空 = provider
+// 官方默认。Available/Reason 是开关打开时的有效配置解析结果:不可用时 Reason
+// 给人读原因(关闭态 Available=false 且 Reason 为空,是常态非故障)。
+type WebConfig struct {
+	Enabled      bool
+	Provider     string
+	BaseURL      string
+	APIKeyMasked string
+	Available    bool
+	Reason       string
 }
 
 // SaveInput 是保存配置的入参。
 // APIKey 为**只写**指针:nil/空串 = 保留既有密钥(不清空);非空 = 轮换为新密钥。
+// Web 子配置同语义:WebAPIKey 只写;WebProvider/WebBaseURL 变更目的地时既有
+// web 密钥按同目的地规则处置(见 saveWebSealed)。
 type SaveInput struct {
-	Provider string
-	BaseURL  string
-	Model    string
-	APIKey   *string
-	Budget   Budget
-	Context  ContextSettings
-	Enabled  bool
+	Provider    string
+	BaseURL     string
+	Model       string
+	APIKey      *string
+	Budget      Budget
+	Context     ContextSettings
+	Enabled     bool
+	WebEnabled  bool
+	WebProvider string
+	WebBaseURL  string
+	WebAPIKey   *string
 }
 
 // TestInput 是探测连接的入参(draft;省略字段回退已保存配置)。
@@ -252,6 +288,30 @@ func (s *service) Save(ctx context.Context, in SaveInput) (*Config, error) {
 		return nil, ErrAPIKeyRequired
 	}
 
+	// 网页工具子配置:供应商枚举 + 地址形态 + 密钥保留/轮换(目的地变更时清空)。
+	webProvider, err := normalizeWebProvider(in.WebProvider)
+	if err != nil {
+		return nil, err
+	}
+	webBaseURL := strings.TrimSpace(in.WebBaseURL)
+	if webProvider == "" {
+		// 跟随 LLM 回退模式:独立地址/密钥无意义,显式提供即拒绝(不静默丢弃)。
+		if webBaseURL != "" || (in.WebAPIKey != nil && *in.WebAPIKey != "") {
+			return nil, ErrInvalidWebConfig
+		}
+	} else {
+		if webBaseURL == "" {
+			webBaseURL = defaultWebBaseURL(webProvider)
+		}
+		if !validWebBaseURL(webBaseURL) {
+			return nil, ErrInvalidWebConfig
+		}
+	}
+	webSealed, err := s.saveWebSealed(webProvider, webBaseURL, in.WebAPIKey, existing)
+	if err != nil {
+		return nil, err
+	}
+
 	budgetJSON, err := json.Marshal(normalizeBudget(in.Budget))
 	if err != nil {
 		return nil, fmt.Errorf("ai: marshal budget: %w", err)
@@ -265,16 +325,23 @@ func (s *service) Save(ctx context.Context, in SaveInput) (*Config, error) {
 	if in.Enabled {
 		enabled = 1
 	}
+	webEnabled := 0
+	if in.WebEnabled {
+		webEnabled = 1
+	}
 
 	nowStr := time.Now().UTC().Format(time.RFC3339)
 	// 单例 upsert:首存 INSERT(id=1),已存 ON CONFLICT 更新各列(created_at 保留)。
 	_, err = s.db.ExecContext(ctx,
 		`INSERT INTO ai_config
-		   (id, provider, base_url, model, api_key_ciphertext, budget_json, context_json, enabled, created_at, updated_at)
-		 VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?) `+
+		   (id, provider, base_url, model, api_key_ciphertext, budget_json, context_json, enabled, created_at, updated_at,
+		    web_enabled, web_provider, web_base_url, web_api_key_ciphertext)
+		 VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) `+
 			store.UpsertSuffix(store.DialectOf(s.db), []string{"id"},
-				[]string{"provider", "base_url", "model", "api_key_ciphertext", "budget_json", "context_json", "enabled", "updated_at"}),
+				[]string{"provider", "base_url", "model", "api_key_ciphertext", "budget_json", "context_json", "enabled", "updated_at",
+					"web_enabled", "web_provider", "web_base_url", "web_api_key_ciphertext"}),
 		provider, baseURL, strings.TrimSpace(in.Model), sealed, string(budgetJSON), string(contextJSON), enabled, nowStr, nowStr,
+		webEnabled, webProvider, webBaseURL, webSealed,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("ai: upsert config: %w", err)
@@ -491,20 +558,26 @@ func mapTransportError(err error) string {
 // 无行 → 返回惰性空默认 Config(configured/enabled false),nil 密文,无错误。
 func (s *service) load(ctx context.Context) (*Config, []byte, error) {
 	var (
-		provider    string
-		baseURL     string
-		model       string
-		sealed      []byte
-		budgetJSON  string
-		contextJSON string
-		enabledInt  int
-		createdStr  string
-		updatedStr  string
+		provider      string
+		baseURL       string
+		model         string
+		sealed        []byte
+		budgetJSON    string
+		contextJSON   string
+		enabledInt    int
+		createdStr    string
+		updatedStr    string
+		webEnabledInt int
+		webProvider   string
+		webBaseURL    string
+		webSealed     []byte
 	)
 	err := s.db.QueryRowContext(ctx,
-		`SELECT provider, base_url, model, api_key_ciphertext, budget_json, context_json, enabled, created_at, updated_at
+		`SELECT provider, base_url, model, api_key_ciphertext, budget_json, context_json, enabled, created_at, updated_at,
+		        web_enabled, web_provider, web_base_url, web_api_key_ciphertext
 		 FROM ai_config WHERE id = 1`,
-	).Scan(&provider, &baseURL, &model, &sealed, &budgetJSON, &contextJSON, &enabledInt, &createdStr, &updatedStr)
+	).Scan(&provider, &baseURL, &model, &sealed, &budgetJSON, &contextJSON, &enabledInt, &createdStr, &updatedStr,
+		&webEnabledInt, &webProvider, &webBaseURL, &webSealed)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			// 惰性空默认:从未配置。
@@ -563,6 +636,18 @@ func (s *service) load(ctx context.Context) (*Config, []byte, error) {
 	}
 
 	cfg.Configured = isConfigured(provider, len(sealed) > 0)
+
+	// 网页工具子配置:掩码与可用性(密钥明文不解;可用性只判存在性)。
+	cfg.webSealed = webSealed
+	cfg.Web = WebConfig{Enabled: webEnabledInt != 0, Provider: webProvider, BaseURL: webBaseURL}
+	if len(webSealed) > 0 {
+		masked, merr := s.maskSealed(webSealed)
+		if merr != nil {
+			masked = "••••" // 占位:有密钥但当前不可读(与主密钥同降级语义)
+		}
+		cfg.Web.APIKeyMasked = masked
+	}
+	cfg.Web.Available, cfg.Web.Reason = webAvailability(cfg, sealed)
 
 	if updated, perr := time.Parse(time.RFC3339, updatedStr); perr == nil {
 		cfg.UpdatedAt = &updated
