@@ -198,3 +198,66 @@ func TestCancelAwaitingContinuationConverges(t *testing.T) {
 	}
 	_ = v
 }
+
+// 回归(线上后端整体冻结的根因):注入的 Context 策略闭包会同步读库
+// (aiContextPolicy→ai.load 走连接池),而只读事务持有唯一连接——若在事务
+// 内调用 policy(),会等待被自己占用的连接,自死锁并冻结整个进程。会话需
+// 有带 token usage 的 assistant 条目(usage==nil 时提前返回,不触发 policy)。
+func TestSnapshotSurvivesPoolReadingContextSource(t *testing.T) {
+	id := uuid.NewString()
+	f := executor(id)
+	s, _, db := fixture(t, f, nil)
+	defer func() { _ = s.Close(context.Background()) }()
+	c := chat(t, s, id)
+	// 模拟 aiContextPolicy:闭包内部直接查库(经连接池)。
+	s.contextSrc = func() ContextPolicy {
+		var one int
+		_ = s.db.QueryRow("SELECT COUNT(*) FROM ops_chat_sessions").Scan(&one)
+		return ContextPolicy{}
+	}
+	// 播种带 usage 的 assistant 条目,使 sessionUsage 走到 policy() 那一行。
+	body, err := s.seal(struct {
+		Text  string
+		Usage *AgentUsage
+	}{"answer", &AgentUsage{InputTokens: 100, OutputTokens: 50}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.Exec(`INSERT INTO ops_chat_entries(session_id,seq,kind,run_id,call_id,context_allowed,visible,body,body_size,created_at) VALUES(?,?,?,?,?,1,1,?,?,?)`,
+		c.ID, 2, "assistant", "", "", body, 6, time.Now().UnixMilli()-1000); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.Exec(`UPDATE ops_chat_sessions SET seq=2,visible_count=2 WHERE id=?`, c.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	// 看门狗:修复前 Snapshot 在事务内调 contextSrc → 死锁 → 超时失败。
+	done := make(chan error, 1)
+	go func() {
+		_, err := s.Snapshot(context.Background(), c.ID)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Snapshot deadlocked: context source did pool IO inside the read transaction")
+	}
+
+	// Events(SSE 路径)同样不得死锁。
+	evDone := make(chan error, 1)
+	go func() {
+		_, err := s.Events(context.Background(), c.ID, c.ID+":0", 10)
+		evDone <- err
+	}()
+	select {
+	case err := <-evDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Events deadlocked: context source did pool IO inside the read transaction")
+	}
+}

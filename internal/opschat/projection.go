@@ -157,7 +157,10 @@ func (s *Service) recoverRunTx(ctx context.Context, tx *sql.Tx, r runRecord) err
 // sessionUsage 在**既有 queryer**(同事务/同连接;SQLite 下另开连接会锁死)
 // 上取会话最近一条带实测 usage 的 assistant 回复并折算占用(最多回看 5 条;
 // 无实测时返回 nil,前端隐藏占用条)。
-func (s *Service) sessionUsage(ctx context.Context, q querier, sessionID string) *ContextUsage {
+// sessionUsage 的 policy 必须由调用方在**事务外**获取后传入:contextSrc 可能
+// 同步读库(如 aiContextPolicy→ai.load 走连接池),在持有只读事务时调用会等
+// 待被自己占用的唯一连接,自死锁并冻结整个后端(单连接 SQLite)。
+func (s *Service) sessionUsage(ctx context.Context, q querier, sessionID string, policy ContextPolicy) *ContextUsage {
 	queryCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 	rows, err := q.QueryContext(queryCtx,
@@ -186,7 +189,7 @@ func (s *Service) sessionUsage(ctx context.Context, q querier, sessionID string)
 	if usage == nil {
 		return nil
 	}
-	window := s.policy().WindowTokens
+	window := policy.WindowTokens
 	used := usage.InputTokens + usage.OutputTokens
 	percent := 0
 	if window > 0 {

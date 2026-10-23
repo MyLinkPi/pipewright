@@ -255,10 +255,11 @@ func TestTargetNamesOldEntriesAndStreamRevisionsCachePerKind(t *testing.T) {
 	for _, events := range []bool{false, true} {
 		var page EntryPage
 		var counter *targetNameQueryCounter
+		policy := s.policy()
 		err = s.transaction(ctx, false, func(tx *sql.Tx) error {
 			counter = &targetNameQueryCounter{querier: tx}
 			var err error
-			page, err = s.entryPage(ctx, counter, c.ID, "", 100, events)
+			page, err = s.entryPage(ctx, counter, c.ID, "", 100, events, policy)
 			return err
 		})
 		if err != nil {

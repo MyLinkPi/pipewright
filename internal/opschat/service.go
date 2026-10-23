@@ -50,6 +50,9 @@ type Service struct {
 }
 
 // policy 返回当前上下文策略(带默认值兜底;装配层未注入时全默认)。
+// ⚠ 只能在**未持有 opschat 事务**时调用:注入的 contextSrc 可能同步读库
+// (aiContextPolicy→ai.load),持事务调用会在单连接下自死锁。事务内需要
+// 策略时,先在事务外取好再传参(见 sessionUsage)。
 func (s *Service) policy() ContextPolicy {
 	if s.contextSrc == nil {
 		return ContextPolicy{}.withDefaults()
@@ -212,7 +215,7 @@ func (s *Service) Get(ctx context.Context, id string) (*Session, error) {
 	if err != nil {
 		return nil, err
 	}
-	r.View.ContextUsage = s.sessionUsage(ctx, s.db, id)
+	r.View.ContextUsage = s.sessionUsage(ctx, s.db, id, s.policy())
 	view := s.projectSessionActive(ctx, s.db, r)
 	return &view, nil
 }
