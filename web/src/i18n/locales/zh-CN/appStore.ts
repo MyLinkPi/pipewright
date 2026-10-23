@@ -78,6 +78,7 @@ export default {
     hasSecret: '已预填当前口令',
     keepSecret: '不动 = 保持现有口令;修改 = 以新值覆盖',
     secretHint: '修改口令仅改写 compose 配置;已初始化的数据库/应用内部口令不会自动同步,改前请确认。',
+    legacyKeep: '清空 = 重新生成新口令;保持 = 沿用旧口令',
     show: '显示',
     hide: '隐藏',
     flowHint: '未填写的参数保持现值;口令留空不会被重新生成。重渲染最新模板后经 SSH 写入受管目录并 docker compose up -d。',

@@ -74,6 +74,7 @@ export default {
     hasSecret: "Current password pre-filled",
     keepSecret: "Leave unchanged = keep; edit = overwrite",
     secretHint: "Editing only rewrites the compose config; passwords already initialized inside a database/app are not synced automatically — make sure before changing.",
+    legacyKeep: "Clear = generate new; keep = reuse the old password",
     show: "Show",
     hide: "Hide",
     flowHint: "Parameters left empty keep their current values; secrets are never regenerated when left empty. The latest template is re-rendered, written over SSH, then docker compose up -d.",

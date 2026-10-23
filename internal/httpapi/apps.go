@@ -817,8 +817,11 @@ func makeAppUpgradeContextHandler(apps appstore.Service, servers target.Service)
 		sc, err := readAppSidecar(r.Context(), servers, serverID, stackName)
 		if err != nil {
 			// 无边车(旧版部署)→ 读栈目录旧 compose 尽力反推非 secret 现值。「重新部署」
-			// 预填用;found 仍 false(诚实:不可原位升级)。
-			if old := readStackCompose(r.Context(), servers, serverID, stackName); old != "" {
+			// 预填用;found 仍 false(诚实:不可原位升级)。读 compose 独立超时,SSH 挂起不卡请求。
+			lctx, lcancel := context.WithTimeout(r.Context(), appsInstancesTimeout)
+			old := readStackCompose(lctx, servers, serverID, stackName)
+			lcancel()
+			if old != "" {
 				if got := extractLegacyParams(tpl.ComposeYAML, old, tpl.Params); len(got) > 0 {
 					out.Legacy = true
 					out.Params = got
@@ -861,17 +864,14 @@ const legacyAnchorMax = 32
 // legacyValueMax 是反推参数值的上限(与 appstore 参数值校验上限一致)。
 const legacyValueMax = 256
 
-// extractLegacyParams 从旧 compose(渲染产物)尽力反推非 secret 参数现值:模板 compose 里
-// 每处 {{name}} 取紧邻锚文本(前后各 ≤32B,遇 {{ }} 或换行截断),在旧 compose 里按
-// 前锚(+后锚/行尾)定位提取中间值;全部出现处一致才采纳,任何可疑(前锚缺失/定位不到/
-// 值空、含换行、超长)一律跳过,该参数回落表单默认值。secret 绝不反推、绝不回显
-//(重新部署时重新生成)。
+// extractLegacyParams 从旧 compose(渲染产物)尽力反推参数现值(含 secret:旧 compose
+// 本就明文,反推预填后重新部署可保持原口令,不必重新生成):模板 compose 里每处 {{name}}
+// 取紧邻锚文本(前后各 ≤32B,遇 {{ }} 或换行截断),在旧 compose 里按前锚(+后锚/行尾)
+// 定位提取中间值;全部出现处一致才采纳,任何可疑(前锚缺失/定位不到/值空、含换行、超长)
+// 一律跳过,该参数回落表单默认值(secret 空缺由部署端自动生成)。
 func extractLegacyParams(tplCompose, oldCompose string, specs []appstore.ParamSpec) map[string]string {
 	out := map[string]string{}
 	for _, p := range specs {
-		if p.Type == appstore.ParamTypeSecret {
-			continue
-		}
 		ph := "{{" + p.Name + "}}"
 		var vals []string
 		start := 0

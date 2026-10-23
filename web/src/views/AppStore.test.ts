@@ -474,15 +474,19 @@ describe('AppStore 已部署实例区', () => {
     expect(instanceInput(w).value()).toBe('')
   })
 
-  it('legacy 重新部署:旧 compose 反推值预填参数;反推不到的 ssh_domain 回落目标机地址', async () => {
+  it('legacy 重新部署:旧 compose 反推值预填参数(含 secret 明文);反推不到的 ssh_domain 回落目标机地址', async () => {
     h.listAppInstances.mockResolvedValue({ items: [mkInstance({ legacy: true, deployedAt: '' })] })
-    // 反推上下文:version 反推出 28.2.0;ssh_domain 未反推出(留空)。
+    // 模板带 secret 参数(legacy 反推保持原口令的场景)。
+    h.listAppTemplates.mockResolvedValue({
+      items: [{ ...giteaTpl, params: [...giteaTpl.params, { name: 'password', label: '数据库口令', type: 'secret' as const, required: true, autoGenerate: true }] }],
+    })
+    // 反推上下文:version 反推出 28.2.0;ssh_domain 未反推出(留空);password 反推出旧口令。
     h.getAppUpgradeContext.mockResolvedValue({
       found: false,
       legacy: true,
       stackName: 'gitea-2',
-      params: { version: '28.2.0' },
-      secrets: [],
+      params: { version: '28.2.0', password: '0ld-p4ss' },
+      secrets: {},
       cpus: '',
       memory: '',
     })
@@ -495,5 +499,13 @@ describe('AppStore 已部署实例区', () => {
     const verLabel = w.findAll('label.field').find((l) => l.text().includes('镜像版本'))!
     expect((verLabel.find('input').element as HTMLInputElement).value).toBe('28.2.0')
     expect(sshDomainInput(w).value()).toBe('10.0.0.2')
+    // secret 反推值明文预填(重新部署保持原口令,不必重新生成),可隐藏。
+    const secLabel = w.findAll('label.field').find((l) => l.text().includes('数据库口令'))!
+    const secInput = secLabel.find('input')
+    expect((secInput.element as HTMLInputElement).type).toBe('text')
+    expect((secInput.element as HTMLInputElement).value).toBe('0ld-p4ss')
+    await secLabel.findAll('button').find((b) => b.text().includes('隐藏'))!.trigger('click')
+    await nextTick()
+    expect((secInput.element as HTMLInputElement).type).toBe('password')
   })
 })

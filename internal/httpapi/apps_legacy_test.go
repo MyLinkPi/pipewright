@@ -42,15 +42,15 @@ func TestExtractLegacyParams(t *testing.T) {
 	}
 
 	got := extractLegacyParams(tplCompose, oldCompose, specs)
-	// ssh_domain 两处出现一致 → 采纳;port/keep 正常提取;secret 绝不反推。
+	// ssh_domain 两处出现一致 → 采纳;port/keep 正常提取;secret 也反推(保持原口令部署)。
 	if got["ssh_domain"] != "git.example.com" {
 		t.Fatalf("ssh_domain 反推失败: %+v", got)
 	}
 	if got["port"] != "13000" || got["keep"] != "true" {
 		t.Fatalf("port/keep 反推失败: %+v", got)
 	}
-	if _, ok := got["password"]; ok {
-		t.Fatalf("secret 不应被反推: %+v", got)
+	if got["password"] != "s3cr3t!" {
+		t.Fatalf("secret 应反推以保持原口令: %+v", got)
 	}
 
 	// 两处出现值不一致 → 整个参数跳过(不可靠)。
