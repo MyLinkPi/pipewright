@@ -5,6 +5,7 @@ export default {
   loadFail: '加载失败:',
   noMachines: '尚无共享构建机。到「服务器」页为构建机打开「集群共享构建机」开关。',
   noJobs: '当前没有跨环境共享构建任务。',
+  jobsUnavailable: '任务列表不可用:本端未启用共享构建运行时(legacy 执行器)或服务端版本过旧。',
   jobsTitle: '共享构建任务',
   jobsHint: '集群对端环境提交的构建任务(进程内存态,本端重启后清空;排队/运行中可强制取消)。',
   colPeer: '来源环境',

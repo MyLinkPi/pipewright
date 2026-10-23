@@ -5,6 +5,7 @@ export default {
   loadFail: 'Laden fehlgeschlagen:',
   noMachines: 'Noch keine geteilten Build-Rechner. Schalte „Cluster-geteilter Build-Rechner“ auf der Server-Seite ein.',
   noJobs: 'Derzeit keine cluster-übergreifenden Shared-Build-Jobs.',
+  jobsUnavailable: 'Job-Liste nicht verfügbar: Shared-Build-Runtime auf diesem Knoten nicht aktiviert (Legacy-Runner) oder Serverversion zu alt.',
   jobsTitle: 'Shared-Build-Jobs',
   jobsHint: 'Von Peer-Umgebungen eingereichte Build-Jobs (im Speicher; nach Neustart leer; laufende können abgebrochen werden).',
   colPeer: 'Peer',

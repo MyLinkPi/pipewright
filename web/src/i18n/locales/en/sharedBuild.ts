@@ -5,6 +5,7 @@ export default {
   loadFail: 'Failed to load:',
   noMachines: 'No shared build machines yet. Toggle “Cluster-shared build machine” on a server in the Servers page.',
   noJobs: 'No cross-environment shared build jobs right now.',
+  jobsUnavailable: 'Jobs list unavailable: shared build runtime is not enabled on this node (legacy runner) or the server version is too old.',
   jobsTitle: 'Shared build jobs',
   jobsHint: 'Build jobs submitted by peer environments (in-memory; cleared on restart; queued/running jobs can be force-cancelled).',
   colPeer: 'Peer',

@@ -218,7 +218,7 @@ type RegisteredService struct {
 }
 
 // GatewayStatus 是网关容器探测快照(前端展示 + 部署前知情)。多机:每台一项 Servers;
-// 旧平铺字段(ServerID/ServerName/Installed/Running/Image/Ports)填第一台,兼容旧前端。
+// 旧平铺字段(ServerID/ServerName/Installed/Running/Image/Ports/Version)填第一台,兼容旧前端。
 type GatewayStatus struct {
 	Configured      bool // 是否已配置网关主机
 	ServerID        string
@@ -227,6 +227,7 @@ type GatewayStatus struct {
 	Running         bool   //
 	Image           string //
 	Ports           string // 发布端口摘要,如 "80,443,3306"
+	Version         string // 容器内 nginx 二进制版本,如 "1.27.4"(探测失败为空)
 	Servers         []GatewayServerStatus
 	LastApplyAt     time.Time
 	LastApplyError  string
@@ -243,6 +244,7 @@ type GatewayServerStatus struct {
 	Running    bool
 	Image      string
 	Ports      string
+	Version    string
 }
 
 // SettingsUpdate 是更新网关设置的入参(指针字段,nil = 保持不变)。
@@ -931,6 +933,7 @@ func (s *service) GatewayStatus(ctx context.Context) (*GatewayStatus, error) {
 			gs.Running = inst.Running
 			gs.Image = inst.Image
 			gs.Ports = inst.Ports
+			gs.Version = inst.Version
 		}
 		g.Servers = append(g.Servers, gs)
 	}
@@ -942,6 +945,7 @@ func (s *service) GatewayStatus(ctx context.Context) (*GatewayStatus, error) {
 		g.Running = g.Servers[0].Running
 		g.Image = g.Servers[0].Image
 		g.Ports = g.Servers[0].Ports
+		g.Version = g.Servers[0].Version
 	}
 	fwd := s.forwardStatusSnapshot()
 	g.Forward = &fwd

@@ -3,6 +3,7 @@
 // 待回拉),支持强制取消。任务表是后端进程内存态(重启即清),与构建调度语义一致。
 import { onMounted, onUnmounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { HttpError } from '../../api/http'
 import { listServers, type Server } from '../../api/servers'
 import { cancelSharedBuildJob, listSharedBuildJobs, type SharedBuildJob, type SharedBuildJobState } from '../../api/sharedBuild'
 
@@ -12,6 +13,10 @@ const state = ref<'loading' | 'ready' | 'error'>('loading')
 const errorMsg = ref('')
 const machines = ref<Server[]>([])
 const jobs = ref<SharedBuildJob[]>([])
+// 任务端点与机器列表解耦:服务端运行时未装配(legacy 执行器/旧版本)时
+// /api/build/shared/jobs 整体缺席(404)——机器总览照常,任务区降级提示,轮询自动恢复。
+const jobsUnavailable = ref(false)
+const jobsError = ref('')
 const actionError = ref('')
 const cancelTarget = ref('')
 let pollTimer: ReturnType<typeof setInterval> | null = null
@@ -41,14 +46,28 @@ function stateClass(s: SharedBuildJobState): string {
 }
 
 async function load(): Promise<void> {
-  try {
-    const [svrs, js] = await Promise.all([listServers(), listSharedBuildJobs()])
-    machines.value = svrs.filter((s) => s.sharedBuild)
-    jobs.value = js
-    state.value = 'ready'
-  } catch (err) {
+  // 机器列表失败才算整页错误;任务列表的失败只影响任务区(404 = 端点缺席,其余错误内联展示)。
+  const [svrsRes, jobsRes] = await Promise.allSettled([listServers(), listSharedBuildJobs()])
+  if (svrsRes.status === 'rejected') {
+    const err = svrsRes.reason
     errorMsg.value = err instanceof Error ? err.message : String(err)
     state.value = 'error'
+    return
+  }
+  machines.value = svrsRes.value.filter((s) => s.sharedBuild)
+  state.value = 'ready'
+  jobsUnavailable.value = false
+  jobsError.value = ''
+  if (jobsRes.status === 'fulfilled') {
+    jobs.value = jobsRes.value
+    return
+  }
+  jobs.value = []
+  const err = jobsRes.reason
+  if (err instanceof HttpError && err.status === 404) {
+    jobsUnavailable.value = true
+  } else {
+    jobsError.value = err instanceof Error ? err.message : String(err)
   }
 }
 
@@ -99,7 +118,9 @@ onUnmounted(() => {
       <h2>{{ t('sharedBuild.jobsTitle') }}</h2>
       <p class="hint">{{ t('sharedBuild.jobsHint') }}</p>
       <p v-if="actionError" class="err">{{ actionError }}</p>
-      <div v-if="state === 'ready' && jobs.length === 0" class="muted">{{ t('sharedBuild.noJobs') }}</div>
+      <p v-if="state === 'ready' && jobsUnavailable" class="muted">{{ t('sharedBuild.jobsUnavailable') }}</p>
+      <div v-else-if="state === 'ready' && jobsError" class="err">{{ t('sharedBuild.loadFail') }} {{ jobsError }}</div>
+      <div v-else-if="state === 'ready' && jobs.length === 0" class="muted">{{ t('sharedBuild.noJobs') }}</div>
       <table v-else-if="state === 'ready'" class="jobs-table">
         <thead>
           <tr>

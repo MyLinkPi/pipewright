@@ -43,6 +43,9 @@ const (
 // nginxImageRefRe 防注入:镜像引用字符集(首字符字母数字,防经 env 注入 docker flag)。
 var nginxImageRefRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/:@-]*$`)
 
+// nginxVersionRe 从 nginx -v 输出提取版本号(输出形如 "nginx version: nginx/1.27.4")。
+var nginxVersionRe = regexp.MustCompile(`nginx/(\S+)`)
+
 // nginxBootstrapMinConf 是最小合法自举配置(80 兜底 404):return 必须落在 server 上下文。
 const nginxBootstrapMinConf = "events { worker_connections 64; }\nhttp { server { return 404; } }\n"
 
@@ -819,6 +822,7 @@ type nginxContainerStatus struct {
 	Running   bool
 	Image     string
 	Ports     string
+	Version   string
 }
 
 // inspectNginx 经 docker inspect 探测网关容器:不存在 → Installed:false(非错误);
@@ -842,7 +846,21 @@ func inspectNginx(ctx context.Context, tg target.Service, st *Settings, serverID
 		out.Image = strings.TrimSpace(line[i+1:])
 	}
 	out.Ports = inspectNginxPorts(ctx, tg, st, serverID)
+	out.Version = inspectNginxVersion(ctx, tg, st, serverID)
 	return out, nil
+}
+
+// inspectNginxVersion best-effort 读容器内 nginx 二进制版本(如 "1.27.4";失败给 "")。
+// nginx -v 把版本打到 stderr;容器未运行/无 nginx 二进制时 exec 非零,静默降级。
+func inspectNginxVersion(ctx context.Context, tg target.Service, st *Settings, serverID string) string {
+	res, err := tg.Exec(ctx, serverID, []string{"docker", "exec", st.ContainerName, "nginx", "-v"})
+	if err != nil || res.ExitCode != 0 {
+		return ""
+	}
+	if m := nginxVersionRe.FindStringSubmatch(res.Stderr + res.Stdout); m != nil {
+		return m[1]
+	}
+	return ""
 }
 
 // inspectNginxPorts best-effort 读网关容器发布端口摘要(如 "80,443,3306")。

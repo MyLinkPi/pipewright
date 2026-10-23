@@ -138,6 +138,8 @@ export interface GatewayServer {
   running: boolean
   image: string
   ports: string
+  /** 容器内 nginx 二进制版本(如 "1.27.4";探测失败为空)。 */
+  version: string
 }
 
 export interface Gateway {
@@ -149,6 +151,7 @@ export interface Gateway {
   running: boolean
   image: string
   ports: string
+  version: string
   servers: GatewayServer[]
   lastApplyAt: string
   lastApplyError: string

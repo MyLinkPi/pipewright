@@ -5,6 +5,7 @@ export default {
   loadFail: '載入失敗:',
   noMachines: '尚無共享構建機。到「伺服器」頁為構建機開啟「集群共享構建機」開關。',
   noJobs: '目前沒有跨環境共享構建任務。',
+  jobsUnavailable: '任務列表不可用:本端未啟用共享構建運行時(legacy 執行器)或伺服器版本過舊。',
   jobsTitle: '共享構建任務',
   jobsHint: '集群對端環境提交的構建任務(行程記憶體態,本端重啟後清空;排隊/執行中可強制取消)。',
   colPeer: '來源環境',

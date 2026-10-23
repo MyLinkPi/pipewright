@@ -5,6 +5,7 @@ export default {
   loadFail: 'Error al cargar:',
   noMachines: 'Aún no hay máquinas compartidas. Activa el interruptor en la página de servidores.',
   noJobs: 'No hay trabajos de compilación compartidos ahora mismo.',
+  jobsUnavailable: 'Lista de trabajos no disponible: el runtime de compilación compartida no está activado en este nodo (runner heredado) o la versión del servidor es demasiado antigua.',
   jobsTitle: 'Trabajos de compilación compartidos',
   jobsHint: 'Trabajos enviados por entornos remotos (en memoria; se vacían al reiniciar; se pueden cancelar).',
   colPeer: 'Origen',
