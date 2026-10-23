@@ -85,11 +85,14 @@ export default {
 
   instances: {
     section: "Bereitgestellte Instanzen",
-    empty: "Noch keine Instanzen; nach dem Deployment über die Templates oben erscheinen sie hier. Ältere Stacks haben keine Parameteraufzeichnung — einmal neu bereitstellen, um sie zu verwalten.",
+    empty: "Noch keine Instanzen; nach dem Deployment über die Templates oben erscheinen sie hier.",
     loadFail: "Bereitgestellte Instanzen konnten nicht geladen werden",
     updates: "Template aktualisiert",
     tplGone: "Template gelöscht",
     deployedAt: "Bereitgestellt am",
     unreachable: "{name} nicht erreichbar, Instanzliste fehlt",
+    legacy: "Ältere Version",
+    legacyHint: "Keine Parameteraufzeichnung (ältere Version); In-place-Upgrade nicht möglich. Neu bereitstellen, um die Upgrade-Verwaltung zu aktivieren (Passwörter werden neu generiert, Datenvolumes bleiben)",
+    redeploy: "Neu bereitstellen",
   },
 }

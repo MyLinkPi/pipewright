@@ -113,8 +113,9 @@ function instanceMeta(inst: AppInstance): string {
   return parts.join(' · ')
 }
 
-// upgradeInstance 直达升级:按实例记录打开部署弹窗并直接切到升级模式;无边车(旧版部署)
-// 由 enterUpgradeMode 兜底提示。模板已删 → 无法重渲染,按钮本就禁用,此处双保险。
+// upgradeInstance 行按钮:正常实例直达升级(打开弹窗直接进升级模式);旧版部署
+// (legacy,无边车)→ 打开弹窗按全新部署预填机器/实例名,重名提醒自然出现,部署即落
+// 边车纳入管理。无边车异常由 enterUpgradeMode 兜底提示;模板已删双保险拦截。
 async function upgradeInstance(inst: AppInstance): Promise<void> {
   const tpl = templates.value.find((x) => x.id === inst.templateId)
   if (!tpl) {
@@ -124,7 +125,7 @@ async function upgradeInstance(inst: AppInstance): Promise<void> {
   openDeploy(tpl)
   deployServer.value = inst.serverId
   deployInstance.value = inst.instance
-  await enterUpgradeMode()
+  if (!inst.legacy) await enterUpgradeMode()
 }
 
 // ─── 部署对话框 ───────────────────────────────────────────────────────────────
@@ -514,12 +515,18 @@ async function removeCustom(tpl: AppTemplate): Promise<void> {
                   <strong>{{ inst.displayName || inst.templateName || inst.stackName }}</strong>
                   <code class="apps__inst-stack">{{ inst.stackName }}</code>
                   <span v-if="inst.upgradeAvailable" class="apps__badge">{{ t('appStore.instances.updates') }}</span>
+                  <span v-else-if="inst.legacy" class="apps__badge apps__badge--muted">{{ t('appStore.instances.legacy') }}</span>
                   <span v-else-if="inst.templateGone" class="apps__badge apps__badge--muted">{{ t('appStore.instances.tplGone') }}</span>
                 </div>
                 <p class="apps__inst-meta">{{ instanceMeta(inst) }}</p>
               </div>
-              <AppButton variant="primary" :disabled="inst.templateGone" @click="upgradeInstance(inst)">
-                <NIcon :size="14"><Rocket /></NIcon>&nbsp;{{ t('appStore.upgrade.submit') }}
+              <AppButton
+                variant="primary"
+                :disabled="inst.templateGone"
+                :title="inst.legacy ? t('appStore.instances.legacyHint') : undefined"
+                @click="upgradeInstance(inst)"
+              >
+                <NIcon :size="14"><Rocket /></NIcon>&nbsp;{{ inst.legacy ? t('appStore.instances.redeploy') : t('appStore.upgrade.submit') }}
               </AppButton>
             </template>
             <p v-else class="apps__inst-warn">{{ t('appStore.instances.unreachable', { name: inst.serverName }) }}</p>

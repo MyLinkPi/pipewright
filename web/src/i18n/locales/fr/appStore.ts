@@ -85,11 +85,14 @@ export default {
 
   instances: {
     section: "Instances déployées",
-    empty: "Aucune instance pour l'instant ; déployez depuis les modèles ci-dessus et elles apparaîtront ici. Les stacks déployés par d'anciennes versions n'ont pas d'enregistrement de paramètres — redéployez une fois pour les gérer.",
+    empty: "Aucune instance pour l'instant ; déployez depuis les modèles ci-dessus et elles apparaîtront ici.",
     loadFail: "Échec du chargement des instances déployées",
     updates: "Modèle mis à jour",
     tplGone: "Modèle supprimé",
     deployedAt: "Déployé le",
     unreachable: "{name} inaccessible ; liste des instances manquante",
+    legacy: "Ancien déploiement",
+    legacyHint: "Aucun enregistrement de paramètres (ancienne version) ; mise à niveau sur place impossible. Redéployez pour l'intégrer à la gestion des mises à niveau (les mots de passe sont régénérés, les volumes conservés)",
+    redeploy: "Redéployer",
   },
 }

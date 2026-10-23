@@ -168,6 +168,7 @@ function mkInstance(over: Partial<AppInstance> = {}): AppInstance {
     deployedAt: '2026-01-01T00:00:00Z',
     templateGone: false,
     upgradeAvailable: false,
+    legacy: false,
     ...over,
   }
 }
@@ -406,5 +407,23 @@ describe('AppStore 已部署实例区', () => {
     expect(args[1]).toBe('t1')
     expect(args[4]).toBe('2')
     expect(w.text()).toContain('升级成功')
+  })
+
+  it('旧版部署(legacy)行:显示「旧版部署」徽标与「重新部署」按钮,点击打开部署弹窗(非升级模式)', async () => {
+    h.listAppInstances.mockResolvedValue({ items: [mkInstance({ legacy: true, deployedAt: '', upgradeAvailable: false })] })
+    const w = mount(AppStore)
+    await flushPromises()
+
+    expect(w.text()).toContain('旧版部署')
+    const rowBtn = w.findAll('button').find((b) => b.text().includes('重新部署'))!
+    expect(rowBtn).toBeTruthy()
+    await rowBtn.trigger('click')
+    await flushPromises()
+
+    // 打开的是全新部署弹窗:无升级模式徽标,提交按钮为「部署」,实例名按记录预填。
+    expect(w.text()).not.toContain('升级模式')
+    expect(w.find('form').findAll('button').some((b) => b.text().includes('部署'))).toBe(true)
+    expect(instanceInput(w).value()).toBe('2')
+    expect(h.getAppUpgradeContext).not.toHaveBeenCalled()
   })
 })

@@ -85,11 +85,14 @@ export default {
 
   instances: {
     section: "Deployed instances",
-    empty: "No instances yet; deploy from the templates above and they will appear here. Stacks deployed by older versions have no param record — redeploy once to bring them under management.",
+    empty: "No instances yet; deploy from the templates above and they will appear here.",
     loadFail: "Failed to load deployed instances",
     updates: "Template updated",
     tplGone: "Template deleted",
     deployedAt: "Deployed",
     unreachable: "{name} unreachable; instance list unavailable",
+    legacy: "Legacy deploy",
+    legacyHint: "No param record (deployed by an older version); in-place upgrade unavailable. Redeploy to bring it under upgrade management (secrets regenerate, data volumes kept)",
+    redeploy: "Redeploy",
   },
 }
