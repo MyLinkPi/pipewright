@@ -151,15 +151,20 @@ const apiKey = ref('') // write-only: blank = keep existing; non-blank = rotate
 const monthlyTokenLimit = ref<string>('') // string for input binding; coerced on save
 const enabled = ref(false)
 
-// 网页搜索/抓取子配置:provider '' = 跟随 LLM(仅当 LLM 目的地为 DeepSeek 官方
-// 时可用);显式选择供应商后可单独填地址/密钥(密钥与 LLM 同为只写语义)。
+// 网页搜索/抓取子配置:供应商类型与地址/密钥三者独立——类型决定接口方言与
+// 官方默认地址(新供应商 = 加枚举项);地址/密钥留空 = 运行时复用 LLM 配置
+//(密钥与 LLM 同为只写语义)。
 const DEFAULT_WEB_BASE_URLS: Record<string, string> = {
   deepseek: 'https://api.deepseek.com/v1',
+  tavily: 'https://api.tavily.com',
+  bocha: 'https://api.bochaai.com/v1',
+  ollama: 'https://ollama.com',
+  glm: 'https://open.bigmodel.cn/api/paas/v4',
 }
 const webEnabled = ref(false)
-const webProvider = ref<'' | 'deepseek'>('')
+const webProvider = ref<'deepseek' | 'tavily' | 'bocha' | 'ollama' | 'glm'>('deepseek')
 const webBaseUrl = ref('')
-const webApiKey = ref('') // write-only: blank = keep existing; non-blank = rotate
+const webApiKey = ref('') // write-only: blank = keep existing / reuse LLM key
 
 // 上下文管理:字符串绑定,空 = 用服务端默认(保存时归 0)。窗口/输出/保留按 tokens。
 const ctxWindowTokens = ref<string>('')
@@ -216,14 +221,28 @@ watch(
 )
 
 const webProviderOptions = computed(() => [
-  { value: '', label: t('settingsAI.webFollowLLM') },
   { value: 'deepseek', label: 'DeepSeek' },
+  { value: 'tavily', label: 'Tavily' },
+  { value: 'bocha', label: '博查 Bocha' },
+  { value: 'ollama', label: 'Ollama' },
+  { value: 'glm', label: 'GLM' },
 ])
+
+/** 地址留空语义随供应商:DeepSeek/GLM 复用 LLM 地址,其余用官方默认 */
+const webBaseUrlHintText = computed(() =>
+  webProvider.value === 'deepseek' || webProvider.value === 'glm'
+    ? t('settingsAI.webBaseUrlHint', {
+        url: DEFAULT_WEB_BASE_URLS[webProvider.value] ?? '',
+      })
+    : t('settingsAI.webBaseUrlDefaultHint', {
+        url: DEFAULT_WEB_BASE_URLS[webProvider.value] ?? '',
+      }),
+)
 
 /** 已存独立 web 密钥(同目的地未轮换时展示掩码) */
 const hasExistingWebKey = computed(
   () =>
-    !!savedSettings.value?.web.apiKeyMasked &&
+    !!savedSettings.value?.web?.apiKeyMasked &&
     savedSettings.value.web.provider === webProvider.value &&
     normalizedBase(savedSettings.value.web.baseUrl || DEFAULT_WEB_BASE_URLS[webProvider.value] || '') ===
       normalizedBase(
@@ -296,7 +315,7 @@ const isDirty = computed(() => {
     String(s.budget.monthlyTokenLimit ?? '') !== String(monthlyTokenLimit.value ?? '') ||
     enabled.value !== s.enabled ||
     webEnabled.value !== (s.web?.enabled ?? false) ||
-    webProvider.value !== (s.web?.provider ?? '') ||
+    webProvider.value !== (s.web?.provider || 'deepseek') ||
     webBaseUrl.value !== (s.web?.baseUrl ?? '') ||
     webApiKey.value !== '' ||
     ctxWindowTokens.value !== (c?.windowTokens ? String(c.windowTokens) : '') ||
@@ -371,7 +390,15 @@ function applySettings(data: AISettings): void {
       : ''
   enabled.value = data.enabled
   webEnabled.value = data.web?.enabled ?? false
-  webProvider.value = data.web?.provider ?? ''
+  const saved = data.web?.provider
+  webProvider.value =
+    saved === 'tavily' ||
+        saved === 'bocha' ||
+        saved === 'ollama' ||
+        saved === 'glm' ||
+        saved === 'deepseek'
+      ? saved
+      : 'deepseek'
   webBaseUrl.value = data.web?.baseUrl ?? ''
   webApiKey.value = '' // never pre-fill
 }
@@ -495,12 +522,9 @@ async function handleSave(): Promise<void> {
       enabled: enabled.value,
       web: {
         enabled: webEnabled.value,
-        // 跟随 LLM(provider '')时地址/密钥必须缺省(后端拒绝字段搭配)。
         provider: webProvider.value,
-        baseUrl: webProvider.value === '' ? '' : webBaseUrl.value.trim(),
-        ...(webProvider.value !== '' && webApiKey.value
-          ? { apiKey: webApiKey.value }
-          : {}),
+        baseUrl: webBaseUrl.value.trim(),
+        ...(webApiKey.value ? { apiKey: webApiKey.value } : {}),
       },
     }
 
@@ -551,9 +575,9 @@ async function handleWebTest(): Promise<void> {
   webTestResult.value = null
   try {
     const draft: TestWebToolsInput = {}
-    if (webProvider.value) draft.provider = webProvider.value
-    if (webProvider.value && webBaseUrl.value) draft.baseUrl = webBaseUrl.value
-    if (webProvider.value && webApiKey.value) draft.apiKey = webApiKey.value
+    draft.provider = webProvider.value
+    if (webBaseUrl.value) draft.baseUrl = webBaseUrl.value
+    if (webApiKey.value) draft.apiKey = webApiKey.value
     const result = await testWebTools(draft)
     if (disposed || generation !== webTestGeneration) return
     webTestResult.value = result
@@ -1298,17 +1322,12 @@ function relativeTime(iso: string | null): string {
               </FormField>
             </div>
 
-            <template v-if="webProvider !== ''">
-              <!-- Base URL (blank = provider official default) -->
-              <div class="config-row">
+            <!-- Base URL (blank = reuse the LLM base URL) -->
+            <div class="config-row">
                 <FormField
                   :label="t('settingsAI.webBaseUrlLabel')"
                   field-id="ai-web-baseurl"
-                  :hint="
-                    t('settingsAI.webBaseUrlHint', {
-                      url: DEFAULT_WEB_BASE_URLS[webProvider] ?? '',
-                    })
-                  "
+                  :hint="webBaseUrlHintText"
                 >
                   <template #default="{ fieldId, ariaDescribedby }">
                     <input
@@ -1360,7 +1379,6 @@ function relativeTime(iso: string | null): string {
                   </template>
                 </FormField>
               </div>
-            </template>
 
             <!-- Test (one real count=1 search, billed only on success) -->
             <div class="test-row">

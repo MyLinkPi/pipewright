@@ -44,13 +44,28 @@ const (
 	defaultBaseURLOpenAI = "https://api.openai.com/v1"
 )
 
-// 网页搜索/抓取工具供应商(与 LLM provider 枚举独立;首期仅 DeepSeek)。
+// 网页搜索/抓取工具供应商(与 LLM provider 枚举独立;按供应商各自协议适配,
+// 见 webtools.go 的 webProviderAdapter)。
 const (
 	// ProviderWebDeepSeek 表示 DeepSeek 网页搜索/抓取(/v1/tools/search|fetch,
 	// 与 DeepSeek LLM 共用平台 API Key)。
 	ProviderWebDeepSeek = "deepseek"
-	// defaultWebBaseURLDeepSeek 是 DeepSeek 网页工具的官方前缀。
+	// ProviderWebTavily 表示 Tavily 搜索/抽取(api.tavily.com,search+extract)。
+	ProviderWebTavily = "tavily"
+	// ProviderWebBocha 表示博查 Web Search(api.bochaai.com,仅搜索无抓取)。
+	ProviderWebBocha = "bocha"
+	// ProviderWebOllama 表示 Ollama 网页搜索/抓取(ollama.com/api,需 ollama.com
+	// 账号的 API Key,与本地 Ollama 运行时无关)。
+	ProviderWebOllama = "ollama"
+	// ProviderWebGLM 表示智谱 GLM 网络搜索/网页阅读(open.bigmodel.cn,与 GLM
+	// LLM 同 base 同 Key,支持「复用 LLM 配置」)。
+	ProviderWebGLM = "glm"
+	// 各供应商官方默认前缀(baseUrl 留空时回退)。
 	defaultWebBaseURLDeepSeek = "https://api.deepseek.com/v1"
+	defaultWebBaseURLTavily   = "https://api.tavily.com"
+	defaultWebBaseURLBocha    = "https://api.bochaai.com/v1"
+	defaultWebBaseURLOllama   = "https://ollama.com"
+	defaultWebBaseURLGLM      = "https://open.bigmodel.cn/api/paas/v4"
 )
 
 // 领域错误。错误体永不含 apiKey 明文/密文/master key。
@@ -288,24 +303,15 @@ func (s *service) Save(ctx context.Context, in SaveInput) (*Config, error) {
 		return nil, ErrAPIKeyRequired
 	}
 
-	// 网页工具子配置:供应商枚举 + 地址形态 + 密钥保留/轮换(目的地变更时清空)。
+	// 网页工具子配置:供应商类型、接入地址、密钥三者独立(类型决定接口方言,
+	// 地址/密钥留空 = 运行时按 webDestination 复用 LLM 配置)。
 	webProvider, err := normalizeWebProvider(in.WebProvider)
 	if err != nil {
 		return nil, err
 	}
 	webBaseURL := strings.TrimSpace(in.WebBaseURL)
-	if webProvider == "" {
-		// 跟随 LLM 回退模式:独立地址/密钥无意义,显式提供即拒绝(不静默丢弃)。
-		if webBaseURL != "" || (in.WebAPIKey != nil && *in.WebAPIKey != "") {
-			return nil, ErrInvalidWebConfig
-		}
-	} else {
-		if webBaseURL == "" {
-			webBaseURL = defaultWebBaseURL(webProvider)
-		}
-		if !validWebBaseURL(webBaseURL) {
-			return nil, ErrInvalidWebConfig
-		}
+	if webBaseURL != "" && !validWebBaseURL(webBaseURL) {
+		return nil, ErrInvalidWebConfig
 	}
 	webSealed, err := s.saveWebSealed(webProvider, webBaseURL, in.WebAPIKey, existing)
 	if err != nil {
