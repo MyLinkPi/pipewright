@@ -5,8 +5,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
-	"strconv"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -281,6 +281,11 @@ func TestRecoveryQueuedPlanningAndDispatchUnknown(t *testing.T) {
 				t.Fatal(e)
 			}
 		}
+	}
+	// queued 播种回拨创建时间,越过 enqueue→launch 注册窗口(5s):读取投影
+	// (而非启动改写)把它降级为 Interrupted,DB 行保持原状。
+	if _, e := db.Exec("UPDATE ops_chat_runs SET created_at=? WHERE id=?", time.Now().Add(-6*time.Second).UnixMilli(), runIDs[0]); e != nil {
+		t.Fatal(e)
 	}
 	if e := s.Close(context.Background()); e != nil {
 		t.Fatal(e)

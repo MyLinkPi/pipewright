@@ -213,7 +213,7 @@ func (s *Service) Get(ctx context.Context, id string) (*Session, error) {
 		return nil, err
 	}
 	r.View.ContextUsage = s.sessionUsage(ctx, s.db, id)
-	view := s.publicSession(r.View)
+	view := s.projectSessionActive(ctx, s.db, r)
 	return &view, nil
 }
 func (s *Service) Patch(ctx context.Context, id string, in PatchInput) (*Session, error) {
@@ -254,8 +254,15 @@ func (s *Service) Patch(ctx context.Context, id string, in PatchInput) (*Session
 		if r.View.Revision != in.Revision {
 			return ErrConflict
 		}
-		if r.View.ActiveRunID != "" && (in.ServerIDs != nil || in.ProjectID != nil) {
-			return ErrConflict
+		if in.ServerIDs != nil || in.ProjectID != nil {
+			// 目标/项目仅在会话无进行中的轮时可改(活 job 或合法挂起;幻影不算)。
+			busy, e := s.sessionBusy(ctx, tx, r)
+			if e != nil {
+				return e
+			}
+			if busy {
+				return ErrConflict
+			}
 		}
 		if in.Title != nil {
 			r.Body.Title = s.scrub(*in.Title, 320)
@@ -301,6 +308,7 @@ func (s *Service) duplicate(ctx context.Context, session, request, hash string) 
 	if err != nil {
 		return nil, err
 	}
+	r, _ = s.projectRun(ctx, s.db, r)
 	return &r.View, nil
 }
 func (s *Service) Submit(ctx context.Context, id string, in TurnInput) (*Run, error) {
@@ -389,6 +397,7 @@ func (s *Service) enqueue(ctx context.Context, id, request, hash string, body ru
 			if e != nil {
 				return e
 			}
+			rr, _ = s.projectRun(ctx, tx, rr)
 			old = &rr.View
 			return nil
 		}
@@ -399,8 +408,26 @@ func (s *Service) enqueue(ctx context.Context, id, request, hash string, body ru
 		if e != nil {
 			return e
 		}
-		if sr.View.Revision != revision || sr.View.ActiveRunID != "" {
+		if sr.View.Revision != revision {
 			return ErrConflict
+		}
+		busy, e := s.sessionBusy(ctx, tx, sr)
+		if e != nil {
+			return e
+		}
+		if busy {
+			return ErrConflict
+		}
+		if sr.View.ActiveRunID != "" {
+			// 幻影 run 占着指针:同事务内持久收敛再接管(sessionBusy 已确认无
+			// 活 worker/合法挂起;finishTx 发出终态事件并清空指针)。
+			old, e := s.run(ctx, tx, id, sr.View.ActiveRunID)
+			if e != nil {
+				return e
+			}
+			if e = s.recoverRunTx(ctx, tx, old); e != nil {
+				return e
+			}
 		}
 		if !activeBudget(sr) {
 			return ErrQuota
@@ -423,7 +450,8 @@ func (s *Service) enqueue(ctx context.Context, id, request, hash string, body ru
 		if e != nil {
 			return ErrStorage
 		}
-		if _, e = tx.ExecContext(ctx, "UPDATE ops_chat_sessions SET active_run=? WHERE id=? AND active_run=''", runID, id); e != nil {
+		// 无条件覆盖:幻影指针已在上面同事务收敛,合法占用已被 sessionBusy 拒绝。
+		if _, e = tx.ExecContext(ctx, "UPDATE ops_chat_sessions SET active_run=? WHERE id=?", runID, id); e != nil {
 			return ErrStorage
 		}
 		if body.Analysis == nil {
@@ -478,7 +506,9 @@ func (s *Service) Cancel(ctx context.Context, id, runID string) (*Run, error) {
 		if e = s.saveRun(ctx, tx, r); e != nil {
 			return e
 		}
-		if r.View.Status == AwaitingConfirmation || r.View.Status == AwaitingAnalysisConsent {
+		switch r.View.Status {
+		case AwaitingConfirmation, AwaitingAnalysisConsent, AwaitingContinuation:
+			// 挂起轮(worker 已按设计退出):不等任何 worker,直接收敛终态。
 			calls, e := s.calls(ctx, tx, id, runID)
 			if e != nil {
 				return e
@@ -492,8 +522,17 @@ func (s *Service) Cancel(ctx context.Context, id, runID string) (*Run, error) {
 				}
 			}
 			return s.finishTx(ctx, tx, r, Interrupted)
+		case Queued, Planning, Running:
+			if phantomRun(r, s.jobLive(runID)) {
+				// 幻影:没有会响应插旗的 worker,就地持久收敛
+				//(已派发调用 → Unknown,与启动恢复同语义)。
+				return s.recoverRunTx(ctx, tx, r)
+			}
+			// 活 worker(或正在 launch 注册窗口的新轮):插旗 + 记条目,
+			// worker 在各落库点复核后自行收敛,Cancel 返回后再取消其上下文。
+			return s.append(ctx, tx, Entry{SessionID: id, RunID: runID, Kind: "cancel_requested"}, false, false)
 		}
-		return s.append(ctx, tx, Entry{SessionID: id, RunID: runID, Kind: "cancel_requested"}, false, false)
+		return ErrConflict
 	})
 	if err != nil {
 		return nil, err
@@ -508,6 +547,7 @@ func (s *Service) Cancel(ctx context.Context, id, runID string) (*Run, error) {
 	if err != nil {
 		return nil, err
 	}
+	r, _ = s.projectRun(ctx, s.db, r)
 	return &r.View, nil
 }
 func (s *Service) Delete(ctx context.Context, id string) error {
@@ -540,7 +580,11 @@ func (s *Service) Delete(ctx context.Context, id string) error {
 		if e != nil {
 			return e
 		}
-		if r.View.ActiveRunID != "" {
+		busy, e := s.sessionBusy(ctx, tx, r)
+		if e != nil {
+			return e
+		}
+		if busy {
 			return ErrConflict
 		}
 		if _, e = tx.ExecContext(ctx, "UPDATE ops_chat_state SET active_session='' WHERE id=1 AND active_session=?", id); e != nil {
