@@ -85,6 +85,8 @@ export default {
 
   instances: {
     section: "Bereitgestellte Instanzen",
+    empty: "Noch keine Instanzen; nach dem Deployment über die Templates oben erscheinen sie hier. Ältere Stacks haben keine Parameteraufzeichnung — einmal neu bereitstellen, um sie zu verwalten.",
+    loadFail: "Bereitgestellte Instanzen konnten nicht geladen werden",
     updates: "Template aktualisiert",
     tplGone: "Template gelöscht",
     deployedAt: "Bereitgestellt am",

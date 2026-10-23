@@ -89,6 +89,8 @@ export default {
 
   instances: {
     section: '已部署实例',
+    empty: '暂无实例;从上方模板部署后会出现在这里。旧版本部署的栈没有参数记录,重新部署一次即可纳入管理。',
+    loadFail: '已部署实例加载失败',
     updates: '模板有更新',
     tplGone: '模板已删除',
     deployedAt: '部署于',

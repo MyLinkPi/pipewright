@@ -85,6 +85,8 @@ export default {
 
   instances: {
     section: "Instancias desplegadas",
+    empty: "Aún no hay instancias; despliega desde las plantillas de arriba y aparecerán aquí. Los stacks desplegados con versiones antiguas no tienen registro de parámetros: vuelve a desplegar una vez para gestionarlos.",
+    loadFail: "No se pudieron cargar las instancias desplegadas",
     updates: "Plantilla actualizada",
     tplGone: "Plantilla eliminada",
     deployedAt: "Desplegado",
