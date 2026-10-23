@@ -141,6 +141,7 @@ type serviceRegGatewayDTO struct {
 	Running         bool                         `json:"running"`
 	Image           string                       `json:"image"`
 	Ports           string                       `json:"ports"`
+	Version         string                       `json:"version"`
 	Servers         []serviceRegGatewayServerDTO `json:"servers"`
 	LastApplyAt     string                       `json:"lastApplyAt"`
 	LastApplyError  string                       `json:"lastApplyError"`
@@ -165,6 +166,7 @@ type serviceRegGatewayServerDTO struct {
 	Running    bool   `json:"running"`
 	Image      string `json:"image"`
 	Ports      string `json:"ports"`
+	Version    string `json:"version"`
 }
 
 func toServiceRegGatewayDTO(g *servicereg.GatewayStatus) serviceRegGatewayDTO {
@@ -177,13 +179,15 @@ func toServiceRegGatewayDTO(g *servicereg.GatewayStatus) serviceRegGatewayDTO {
 		servers = append(servers, serviceRegGatewayServerDTO{
 			ServerID: s.ServerID, ServerName: s.ServerName,
 			Installed: s.Installed, Running: s.Running, Image: s.Image, Ports: s.Ports,
+			Version: s.Version,
 		})
 	}
 	dto := serviceRegGatewayDTO{
 		Configured: g.Configured, ServerID: g.ServerID, ServerName: g.ServerName,
 		Installed: g.Installed, Running: g.Running, Image: g.Image, Ports: g.Ports,
-		Servers:     servers,
-		LastApplyAt: last, LastApplyError: g.LastApplyError, LastApplyErrors: g.LastApplyErrors,
+		Version:      g.Version,
+		Servers:      servers,
+		LastApplyAt:  last, LastApplyError: g.LastApplyError, LastApplyErrors: g.LastApplyErrors,
 	}
 	if g.Forward != nil {
 		dto.Forward = &serviceRegForwardDTO{

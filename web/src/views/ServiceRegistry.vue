@@ -691,7 +691,7 @@ async function saveSvcEdit(s: RegisteredService): Promise<void> {
               <template v-if="gateway?.servers?.length">
                 <span v-for="s in gateway.servers" :key="s.serverId" class="sreg__host">
                   <span class="sreg__dot" :class="s.running ? 'sreg__dot--ok' : 'sreg__dot--bad'" />
-                  {{ s.serverName || s.serverId }}<template v-if="s.ports">&nbsp;· {{ s.ports }}</template>
+                  {{ s.serverName || s.serverId }}<template v-if="s.version">&nbsp;· nginx/{{ s.version }}</template><template v-if="s.ports">&nbsp;· {{ s.ports }}</template>
                 </span>
               </template>
               <template v-else>—</template>

@@ -5,6 +5,7 @@ export default {
   loadFail: 'Échec du chargement :',
   noMachines: 'Aucune machine partagée pour l’instant. Activez l’option sur la page Serveurs.',
   noJobs: 'Aucune tâche de build partagée actuellement.',
+  jobsUnavailable: 'Liste des tâches indisponible : runtime de build partagée non activé sur ce nœud (runner historique) ou version du serveur trop ancienne.',
   jobsTitle: 'Tâches de build partagées',
   jobsHint: 'Tâches soumises par des environnements pairs (en mémoire ; vidées au redémarrage ; annulables).',
   colPeer: 'Pair',
