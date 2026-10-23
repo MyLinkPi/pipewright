@@ -424,7 +424,6 @@ describe('AppStore 已部署实例区', () => {
     expect(w.text()).not.toContain('升级模式')
     expect(w.find('form').findAll('button').some((b) => b.text().includes('部署'))).toBe(true)
     expect(instanceInput(w).value()).toBe('2')
-    expect(h.getAppUpgradeContext).not.toHaveBeenCalled()
   })
 
   it('单实例 legacy 行(instance 键被 omitempty 省略):点击重新部署不报错,实例名为空', async () => {
@@ -439,5 +438,28 @@ describe('AppStore 已部署实例区', () => {
     await flushPromises()
     expect(w.text()).not.toContain('升级模式')
     expect(instanceInput(w).value()).toBe('')
+  })
+
+  it('legacy 重新部署:旧 compose 反推值预填参数;反推不到的 ssh_domain 回落目标机地址', async () => {
+    h.listAppInstances.mockResolvedValue({ items: [mkInstance({ legacy: true, deployedAt: '' })] })
+    // 反推上下文:version 反推出 28.2.0;ssh_domain 未反推出(留空)。
+    h.getAppUpgradeContext.mockResolvedValue({
+      found: false,
+      legacy: true,
+      stackName: 'gitea-2',
+      params: { version: '28.2.0' },
+      secrets: [],
+      cpus: '',
+      memory: '',
+    })
+    const w = mount(AppStore)
+    await flushPromises()
+    await w.findAll('button').find((b) => b.text().includes('重新部署'))!.trigger('click')
+    await flushPromises()
+
+    // 反推值优先;ssh_domain 两头都没有 → prefillHostParams 回落目标机(机器B 10.0.0.2)。
+    const verLabel = w.findAll('label.field').find((l) => l.text().includes('镜像版本'))!
+    expect((verLabel.find('input').element as HTMLInputElement).value).toBe('28.2.0')
+    expect(sshDomainInput(w).value()).toBe('10.0.0.2')
   })
 })

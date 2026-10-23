@@ -114,8 +114,8 @@ function instanceMeta(inst: AppInstance): string {
 }
 
 // upgradeInstance 行按钮:正常实例直达升级(打开弹窗直接进升级模式);旧版部署
-// (legacy,无边车)→ 打开弹窗按全新部署预填机器/实例名,重名提醒自然出现,部署即落
-// 边车纳入管理。无边车异常由 enterUpgradeMode 兜底提示;模板已删双保险拦截。
+// (legacy,无边车)→ 打开弹窗按全新部署预填机器/实例名,并从旧 compose 反推参数现值
+// 预填(prefillLegacy),部署即落边车纳入管理。模板已删双保险拦截。
 async function upgradeInstance(inst: AppInstance): Promise<void> {
   const tpl = templates.value.find((x) => x.id === inst.templateId)
   if (!tpl) {
@@ -125,7 +125,27 @@ async function upgradeInstance(inst: AppInstance): Promise<void> {
   openDeploy(tpl)
   deployServer.value = inst.serverId
   deployInstance.value = inst.instance ?? '' // 单实例部署时后端 omitempty 省略该键
-  if (!inst.legacy) await enterUpgradeMode()
+  if (inst.legacy) await prefillLegacy()
+  else await enterUpgradeMode()
+}
+
+// prefillLegacy 旧版部署「重新部署」预填:后端从栈目录旧 compose 按占位符锚文本反推非
+// secret 现值(尽力而为),反推到的预填、反推不到的回落模板默认值;ssh_domain 两头都
+// 没有再回落目标机地址(与正常部署同规则,反推值优先不被覆盖)。失败静默,不打断表单。
+async function prefillLegacy(): Promise<void> {
+  if (!deploying.value || !deployServer.value) return
+  try {
+    const ctx = await getAppUpgradeContext(deployServer.value, deploying.value.id, deployInstance.value.trim())
+    if (ctx.legacy) {
+      for (const p of deploying.value.params) {
+        const v = ctx.params[p.name]
+        if (v) paramValues.value[p.name] = v
+      }
+    }
+  } catch {
+    // 反推失败静默:参数保持默认值,用户手填兜底
+  }
+  prefillHostParams(deploying.value, deployServer.value)
 }
 
 // ─── 部署对话框 ───────────────────────────────────────────────────────────────

@@ -108,9 +108,11 @@ export const deployApp = (
 /** 升级上下文:既有实例的参数现值(found=false = 无参数记录,不可原位升级)。 */
 export interface AppUpgradeContext {
   found: boolean
+  /** 无边车但从旧 compose 反推出非 secret 现值(legacy=true):仅供「重新部署」预填。 */
+  legacy?: boolean
   /** 生效栈名(模板名或 模板名-实例名)。 */
   stackName: string
-  /** 非 secret 参数现值(升级表单预填用)。 */
+  /** 非 secret 参数现值(升级表单预填用;legacy 时为反推值)。 */
   params: Record<string, string>
   /** 有现值的 secret 参数名(不回值;升级时留空 = 保持不变,绝不重新生成)。 */
   secrets: string[]

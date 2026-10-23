@@ -774,12 +774,14 @@ func validateAppDeployTarget(instance, cpus, memory string, srv *target.Server) 
 
 // makeAppUpgradeContextHandler 返回 GET /api/servers/{id}/apps/upgrade-context?templateId=&instance=:
 // 读既有实例的参数边车供升级表单预填。secret 参数只回「有值」标记不回值(与部署一次性返回
-// 纪律一致;升级时留空 = 保持不变)。无边车(旧版部署/非应用市场栈)→ found:false。
+// 纪律一致;升级时留空 = 保持不变)。无边车(旧版部署)→ found:false,但尝试读栈目录旧
+// compose 反推非 secret 现值(legacy:true)供「重新部署」预填;反推不出 → found:false 裸回。
 func makeAppUpgradeContextHandler(apps appstore.Service, servers target.Service) http.HandlerFunc {
 	type response struct {
 		Found     bool              `json:"found"`
+		Legacy    bool              `json:"legacy,omitempty"` // 无边车但反推出旧配置(仅「重新部署」预填用,不可原位升级)
 		StackName string            `json:"stackName"`
-		Params    map[string]string `json:"params"`  // 仅非 secret 参数的现值(预填用)
+		Params    map[string]string `json:"params"`  // 边车现值 / legacy 反推值(均仅非 secret)
 		Secrets   []string          `json:"secrets"` // 有现值的 secret 参数名(不回值)
 		CPUs      string            `json:"cpus"`    // 原部署的资源限制(升级沿用)
 		Memory    string            `json:"memory"`
@@ -813,7 +815,15 @@ func makeAppUpgradeContextHandler(apps appstore.Service, servers target.Service)
 		out := response{StackName: stackName, Params: map[string]string{}, Secrets: []string{}}
 		sc, err := readAppSidecar(r.Context(), servers, serverID, stackName)
 		if err != nil {
-			writeJSON(w, http.StatusOK, out) // found:false —— 旧版部署/非应用市场栈,诚实告知
+			// 无边车(旧版部署)→ 读栈目录旧 compose 尽力反推非 secret 现值。「重新部署」
+			// 预填用;found 仍 false(诚实:不可原位升级)。
+			if old := readStackCompose(r.Context(), servers, serverID, stackName); old != "" {
+				if got := extractLegacyParams(tpl.ComposeYAML, old, tpl.Params); len(got) > 0 {
+					out.Legacy = true
+					out.Params = got
+				}
+			}
+			writeJSON(w, http.StatusOK, out)
 			return
 		}
 		out.Found = true
@@ -833,6 +843,120 @@ func makeAppUpgradeContextHandler(apps appstore.Service, servers target.Service)
 		}
 		writeJSON(w, http.StatusOK, out)
 	}
+}
+
+// readStackCompose 读受管栈目录里的 compose 文件(「重新部署」的旧配置反推源);读不到/为空 → ""。
+func readStackCompose(ctx context.Context, svc target.Service, serverID, stackName string) string {
+	var buf bytes.Buffer
+	if _, err := svc.Download(ctx, serverID, stacksBaseDir+"/"+stackName+"/"+composeFileName, cappedWriter{buf: &buf, max: composeMaxBytes}); err != nil {
+		return ""
+	}
+	return buf.String()
+}
+
+// legacyAnchorMax 是反推锚文本的最大字节数:锚只取占位符紧邻字面量(不跨占位符/换行)。
+const legacyAnchorMax = 32
+
+// legacyValueMax 是反推参数值的上限(与 appstore 参数值校验上限一致)。
+const legacyValueMax = 256
+
+// extractLegacyParams 从旧 compose(渲染产物)尽力反推非 secret 参数现值:模板 compose 里
+// 每处 {{name}} 取紧邻锚文本(前后各 ≤32B,遇 {{ }} 或换行截断),在旧 compose 里按
+// 前锚(+后锚/行尾)定位提取中间值;全部出现处一致才采纳,任何可疑(前锚缺失/定位不到/
+// 值空、含换行、超长)一律跳过,该参数回落表单默认值。secret 绝不反推、绝不回显
+//(重新部署时重新生成)。
+func extractLegacyParams(tplCompose, oldCompose string, specs []appstore.ParamSpec) map[string]string {
+	out := map[string]string{}
+	for _, p := range specs {
+		if p.Type == appstore.ParamTypeSecret {
+			continue
+		}
+		ph := "{{" + p.Name + "}}"
+		var vals []string
+		start := 0
+		for {
+			i := strings.Index(tplCompose[start:], ph)
+			if i < 0 {
+				break
+			}
+			i += start
+			if prefix := anchorBefore(tplCompose, i); prefix != "" {
+				if v, ok := extractAnchored(oldCompose, prefix, anchorAfter(tplCompose, i+len(ph))); ok {
+					vals = append(vals, v)
+				}
+			}
+			start = i + len(ph)
+		}
+		if len(vals) == 0 {
+			continue
+		}
+		same := true
+		for _, v := range vals[1:] {
+			if v != vals[0] {
+				same = false
+				break
+			}
+		}
+		if same {
+			out[p.Name] = vals[0]
+		}
+	}
+	return out
+}
+
+// anchorBefore 取 s[:i] 紧邻 i 的锚文本(≤32B,遇 {{ / }} / 换行停)。
+func anchorBefore(s string, i int) string {
+	j := i
+	for i-j < legacyAnchorMax && j > 0 {
+		if s[j-1] == '\n' || (j >= 2 && (s[j-2:j] == "{{" || s[j-2:j] == "}}")) {
+			break
+		}
+		j--
+	}
+	return s[j:i]
+}
+
+// anchorAfter 取 s[i:] 紧邻 i 的锚文本(≤32B,遇 {{ / }} / 换行停)。
+func anchorAfter(s string, i int) string {
+	j := i
+	for j-i < legacyAnchorMax && j < len(s) {
+		if s[j] == '\n' || (j+2 <= len(s) && (s[j:j+2] == "{{" || s[j:j+2] == "}}")) {
+			break
+		}
+		j++
+	}
+	return s[i:j]
+}
+
+// extractAnchored 在旧文本里按「前锚(+后锚或行尾)」提取参数值;可疑 → ok=false。
+func extractAnchored(old, prefix, suffix string) (string, bool) {
+	idx := strings.Index(old, prefix)
+	if idx < 0 {
+		return "", false
+	}
+	start := idx + len(prefix)
+	var end int
+	if suffix != "" {
+		j := strings.Index(old[start:], suffix)
+		if j < 0 || j > legacyValueMax {
+			return "", false
+		}
+		end = start + j
+	} else {
+		j := strings.IndexByte(old[start:], '\n')
+		if j < 0 {
+			j = len(old[start:])
+		}
+		if j > legacyValueMax {
+			return "", false
+		}
+		end = start + j
+	}
+	v := strings.TrimSpace(old[start:end])
+	if v == "" || strings.ContainsAny(v, "\n\r") || len(v) > legacyValueMax {
+		return "", false
+	}
+	return v, true
 }
 
 // makeUpgradeAppHandler 返回 POST /api/servers/{id}/apps/upgrade {templateId, instance?, params, cpus?, memory?}。
