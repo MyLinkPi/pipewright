@@ -359,10 +359,16 @@ describe('AppStore 已部署实例区', () => {
     expect(enabled[0]!.text()).toContain('升级')
   })
 
-  it('实例区为空时隐藏,不占版面', async () => {
+  it('实例区常显:空列表显示空态提示而非隐藏;加载失败显示错误与刷新入口', async () => {
     const w = mount(AppStore)
     await flushPromises()
-    expect(w.text()).not.toContain('已部署实例')
+    expect(w.text()).toContain('已部署实例')
+    expect(w.text()).toContain('暂无实例')
+
+    h.listAppInstances.mockRejectedValue(new Error('down'))
+    await w.findAll('button').find((b) => b.text().includes('刷新'))!.trigger('click')
+    await flushPromises()
+    expect(w.text()).toContain('已部署实例加载失败')
   })
 
   it('点「升级」→ 打开弹窗直接进入升级模式:预填边车参数与实例名,提交走 upgrade 端点', async () => {

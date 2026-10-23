@@ -89,15 +89,18 @@ const customTemplates = computed(() => templates.value.filter((x) => !x.builtin)
 
 // ─── 已部署实例(「升级」直达入口)─────────────────────────────────────────────
 // 全机带参数边车的栈 = 应用商店部署的实例;每行直达「升级」,不再依赖部署弹窗的重名
-// 提醒(选对机器/填对实例名/重名检测三个条件全部消失)。null = 未加载/失败 → 区域隐藏。
-const instances = ref<AppInstance[] | null>(null)
+// 提醒(选对机器/填对实例名/重名检测三个条件全部消失)。区域常显:空/失败均有文案,
+// 绝不静默消失(否则无法区分「没有实例」与「功能没生效」)。
+const instances = ref<AppInstance[]>([])
+const instState = ref<'loading' | 'loaded' | 'error'>('loading')
 
 async function loadInstances(): Promise<void> {
   try {
     const res = await listAppInstances()
     instances.value = res.items
+    instState.value = 'loaded'
   } catch {
-    instances.value = null
+    instState.value = 'error' // 已有旧数据时保留展示,仅无数据时显示错误行
   }
 }
 
@@ -487,12 +490,18 @@ async function removeCustom(tpl: AppTemplate): Promise<void> {
     <ErrorState v-else-if="loadState === 'error'" :title="t('appStore.errTitle')" :description="loadError" @retry="load" />
 
     <template v-else>
-      <!-- 已部署实例(升级直达入口):全部机器上带参数边车的栈;空态隐藏 -->
-      <section v-if="instances && instances.length > 0">
+      <!-- 已部署实例(升级直达入口):全部机器上带参数边车的栈;常显,空/失败均有文案 -->
+      <section>
         <h2 class="apps__section">
-          {{ t('appStore.instances.section') }}<span class="apps__count">{{ instances.length }}</span>
+          {{ t('appStore.instances.section') }}<span v-if="instances.length > 0" class="apps__count">{{ instances.length }}</span>
         </h2>
         <div class="apps__inst">
+          <p v-if="instState === 'loading'" class="apps__inst-meta">{{ t('appStore.loading') }}</p>
+          <p v-else-if="instState === 'error' && instances.length === 0" class="apps__inst-warn">
+            {{ t('appStore.instances.loadFail') }}
+            <button type="button" class="apps__sr-link" @click="loadInstances">{{ t('common.refresh') }}</button>
+          </p>
+          <p v-else-if="instances.length === 0" class="apps__inst-meta">{{ t('appStore.instances.empty') }}</p>
           <div
             v-for="inst in instances"
             :key="`${inst.serverId}/${inst.stackName || inst.error}`"

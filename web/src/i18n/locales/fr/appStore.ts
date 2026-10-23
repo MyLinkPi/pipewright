@@ -85,6 +85,8 @@ export default {
 
   instances: {
     section: "Instances déployées",
+    empty: "Aucune instance pour l'instant ; déployez depuis les modèles ci-dessus et elles apparaîtront ici. Les stacks déployés par d'anciennes versions n'ont pas d'enregistrement de paramètres — redéployez une fois pour les gérer.",
+    loadFail: "Échec du chargement des instances déployées",
     updates: "Modèle mis à jour",
     tplGone: "Modèle supprimé",
     deployedAt: "Déployé le",

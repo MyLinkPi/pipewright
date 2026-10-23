@@ -85,6 +85,8 @@ export default {
 
   instances: {
     section: "Deployed instances",
+    empty: "No instances yet; deploy from the templates above and they will appear here. Stacks deployed by older versions have no param record — redeploy once to bring them under management.",
+    loadFail: "Failed to load deployed instances",
     updates: "Template updated",
     tplGone: "Template deleted",
     deployedAt: "Deployed",
