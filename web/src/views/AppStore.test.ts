@@ -433,13 +433,14 @@ describe('AppStore 已部署实例区', () => {
     expect(w.text()).toContain('已预填当前口令')
     const secLabel = w.findAll('label.field').find((l) => l.text().includes('数据库口令'))!
     const secInput = secLabel.find('input')
-    // 密码框隐藏明文;placeholder 说明保持/覆盖语义;点「显示」后切为 text 且值可见。
+    // 现值默认明文(值已预填在表单,打码只是视觉障碍);placeholder 说明保持/覆盖语义;
+    // 点「隐藏」后切回 password。
     expect((secInput.element as HTMLInputElement).placeholder).toContain('不动 = 保持现有口令')
-    expect((secInput.element as HTMLInputElement).type).toBe('password')
-    expect((secInput.element as HTMLInputElement).value).toBe('0ld-p4ss')
-    await secLabel.findAll('button').find((b) => b.text().includes('显示'))!.trigger('click')
-    await nextTick()
     expect((secInput.element as HTMLInputElement).type).toBe('text')
+    expect((secInput.element as HTMLInputElement).value).toBe('0ld-p4ss')
+    await secLabel.findAll('button').find((b) => b.text().includes('隐藏'))!.trigger('click')
+    await nextTick()
+    expect((secInput.element as HTMLInputElement).type).toBe('password')
   })
 
   it('旧版部署(legacy)行:显示「旧版部署」徽标与「重新部署」按钮,点击打开部署弹窗(非升级模式)', async () => {
