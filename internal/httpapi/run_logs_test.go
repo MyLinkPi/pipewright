@@ -188,6 +188,7 @@ func TestSSEReplaysHistoryLogEvents(t *testing.T) {
 	sc := bufio.NewScanner(resp.Body)
 	sawLog := false
 	leak := false
+	var scanErr error
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -204,10 +205,14 @@ func TestSSEReplaysHistoryLogEvents(t *testing.T) {
 				return
 			}
 		}
+		scanErr = sc.Err()
 	}()
 	select {
 	case <-done:
 	case <-time.After(3 * time.Second):
+	}
+	if scanErr != nil {
+		t.Fatalf("SSE scan: %v", scanErr)
 	}
 	if !sawLog {
 		t.Fatal("SSE 建连应回放历史 log 事件")

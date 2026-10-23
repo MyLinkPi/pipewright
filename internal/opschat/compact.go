@@ -50,7 +50,7 @@ func (s *Service) maybeCompact(ctx context.Context, sessionID string, req *Agent
 	}
 	checkpointed := false
 	if (policy.AutoCompact == nil || *policy.AutoCompact) && len(req.History) > 2 {
-		if s.compactHistory(ctx, sessionID, req, compactTarget(policy, reason)) {
+		if s.compactHistory(ctx, sessionID, req) {
 			checkpointed = true
 			// 压缩后仍超(主要来自本轮 rounds):继续走确定性裁剪。
 		}
@@ -72,7 +72,7 @@ func compactTarget(policy ContextPolicy, reason string) int {
 // compactHistory 把 req.History 分割为「保留最近 KeepRecentTokens」与「待摘要
 // older」,用模型把 older 压成结构化摘要并落库 checkpoint;成功后改写
 // req.History = [checkpoint] + recent。req.History 以既有 checkpoint 开头时走合并模式。
-func (s *Service) compactHistory(ctx context.Context, sessionID string, req *AgentRequest, target int) bool {
+func (s *Service) compactHistory(ctx context.Context, sessionID string, req *AgentRequest) bool {
 	compacter, ok := s.model.(Compacter)
 	if !ok || s.compactBroken(sessionID) {
 		return false

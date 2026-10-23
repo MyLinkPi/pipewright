@@ -212,7 +212,7 @@ func opsError(w http.ResponseWriter, err error) {
 		status, code = 409, "ops_conflict"
 	case errors.Is(err, opschat.ErrQuota):
 		status, code = 429, "ops_quota"
-	case errors.Is(err, opschat.ErrUnavailable), errors.Is(err, opschat.ErrDecrypt), errors.Is(err, opschat.ErrLease):
+	case errors.Is(err, opschat.ErrUnavailable), errors.Is(err, opschat.ErrDecrypt):
 		status, code = 503, "ops_unavailable"
 	case errors.Is(err, opschat.ErrReset):
 		status, code = 409, "ops_reset"

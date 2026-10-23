@@ -609,7 +609,8 @@ func TestServiceRegEnsureService(t *testing.T) {
 func srJoinCmds(ft *fakeSRTarget) string {
 	var b strings.Builder
 	for _, c := range ft.execCalls {
-		b.WriteString(strings.Join(c, " ") + "\n")
+		b.WriteString(strings.Join(c, " "))
+		b.WriteString("\n")
 	}
 	return b.String()
 }

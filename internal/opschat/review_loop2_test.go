@@ -2,7 +2,6 @@ package opschat
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -15,40 +14,6 @@ import (
 	"github.com/huangchengsir/pipewright/internal/target"
 	"github.com/huangchengsir/pipewright/internal/vault"
 )
-
-// Force a timestamp collision and reverse lexical UUID order after saving the plan.
-func reversePlanUUIDs(t *testing.T, s *Service, id, run string) Confirmation {
-	t.Helper()
-	err := s.transaction(context.Background(), true, func(tx *sql.Tx) error {
-		cs, err := s.calls(context.Background(), tx, id, run)
-		if err != nil || len(cs) != 2 {
-			t.Fatalf("calls: %v %v", cs, err)
-		}
-		for i := range cs {
-			old := cs[i].Body.View.ID
-			cs[i].Body.View.ID = []string{"ffffffff-ffff-4fff-8fff-ffffffffffff", "00000000-0000-4000-8000-000000000001"}[i]
-			body, err := s.seal(cs[i].Body)
-			if err != nil {
-				return err
-			}
-			if _, err = tx.Exec("UPDATE ops_chat_calls SET id=?,body=?,created_at=1 WHERE id=?", cs[i].Body.View.ID, body, old); err != nil {
-				return err
-			}
-			if _, err = tx.Exec("UPDATE ops_chat_entries SET call_id=? WHERE call_id=?", cs[i].Body.View.ID, old); err != nil {
-				return err
-			}
-		}
-		return s.issueApproval(context.Background(), tx, id, run, cs)
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	a, err := s.approval(context.Background(), s.db, id, run)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return a.View
-}
 
 func TestPlanOrdinalSurvivesSaveConfirmAndReversedRetrySelection(t *testing.T) {
 	for _, retry := range []bool{false} {

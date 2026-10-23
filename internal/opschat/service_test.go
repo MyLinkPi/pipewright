@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"strconv"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -86,10 +87,8 @@ func TestConfirmReplayPublishesRunning(t *testing.T) {
 			}
 		}
 		if len(argv) > 1 && argv[0] == "docker" && argv[1] == "inspect" {
-			for _, a := range argv {
-				if a == "{{.Id}}" {
-					return &target.LimitedResult{Stdout: strings.Repeat("a", 64) + "\n"}, nil
-				}
+			if slices.Contains(argv, "{{.Id}}") {
+				return &target.LimitedResult{Stdout: strings.Repeat("a", 64) + "\n"}, nil
 			}
 			return &target.LimitedResult{Stdout: `{"Running":true,"Paused":false}`}, nil
 		}
@@ -157,8 +156,8 @@ func TestCancelRequestedRunNeverFails(t *testing.T) {
 	waitRun(t, s, c.ID, r.ID, Interrupted)
 }
 
-// 一切会话写(lease=true)都在提交前做存储配额扫描;超限会话的写被拒绝。
-func TestLeaseWriteEnforcesQuota(t *testing.T) {
+// 一切会话写(write=true)都在提交前做存储配额扫描;超限会话的写被拒绝。
+func TestWriteEnforcesQuota(t *testing.T) {
 	id := uuid.NewString()
 	s, _, db := fixture(t, executor(id), nil)
 	c := chat(t, s, id)
@@ -222,7 +221,7 @@ func TestConcurrencyFourGlobalOnePerServerAndDetachedHTTP(t *testing.T) {
 	s, _, _ := fixture(t, f, m)
 	runs := []*Run{}
 	chats := []*Session{}
-	for i := 0; i < 6; i++ {
+	for i := range 6 {
 		c := chat(t, s, ids[i%len(ids)])
 		chats = append(chats, c)
 		m.mu.Lock()
@@ -236,7 +235,7 @@ func TestConcurrencyFourGlobalOnePerServerAndDetachedHTTP(t *testing.T) {
 		}
 		runs = append(runs, r)
 	}
-	for i := 0; i < 4; i++ {
+	for range 4 {
 		select {
 		case <-entered:
 		case <-time.After(5 * time.Second):
@@ -381,15 +380,8 @@ func TestSharedReadBudgetProjectionAndSecretOutput(t *testing.T) {
 func TestEventsWatermarkDroppedWakeupsAndReset(t *testing.T) {
 	s, _, db := fixture(t, executor(), nil)
 	c := chat(t, s)
-	// 单连接 SQLite 下,下面追加 4001 条的大事务在 -race 模式可独占连接约
-	// 90s,远超 15s 租约期限,提交前租约校验必然失败(与水位语义无关)。
-	// 停掉心跳并把租约推远,让本用例聚焦水位/重置语义而非租约时序。
-	s.haltHeartbeat()
-	if _, err := db.Exec("UPDATE ops_chat_state SET lease_until=? WHERE id=1", time.Now().Add(10*time.Minute).UnixMilli()); err != nil {
-		t.Fatal(err)
-	}
 	err := s.transaction(context.Background(), true, func(tx *sql.Tx) error {
-		for i := 0; i < 4001; i++ {
+		for range 4001 {
 			if e := s.append(context.Background(), tx, Entry{SessionID: c.ID, Kind: "event"}, false, false); e != nil {
 				return e
 			}
@@ -502,10 +494,8 @@ func (f *fakeExecutor) ExecLimited(ctx context.Context, snap target.ConnectionSn
 		return run(ctx, snap, argv, l)
 	}
 	if len(argv) > 1 && argv[0] == "docker" && argv[1] == "inspect" {
-		for _, a := range argv {
-			if a == "{{.Id}}" {
-				return &target.LimitedResult{Stdout: strings.Repeat("a", 64) + "\n"}, nil
-			}
+		if slices.Contains(argv, "{{.Id}}") {
+			return &target.LimitedResult{Stdout: strings.Repeat("a", 64) + "\n"}, nil
 		}
 		return &target.LimitedResult{Stdout: `{"Running":true,"Paused":false}`}, nil
 	}
@@ -623,7 +613,7 @@ func chat(t *testing.T, s *Service, ids ...string) *Session {
 
 // submitTool 提交一个文本 turn(模型计划由调用方预先配置)——工具只归 AI 调用后,
 // 这是测试中触发工具执行的统一入口。
-func submitTool(t *testing.T, s *Service, c *Session, id, args string) *Run {
+func submitTool(t *testing.T, s *Service, c *Session, id string) *Run {
 	t.Helper()
 	r, e := s.Submit(context.Background(), c.ID, TurnInput{ClientRequestID: uuid.NewString(), Revision: c.Revision, Text: "run " + id})
 	if e != nil {
@@ -663,12 +653,8 @@ func waitRun(t *testing.T, s *Service, id, run string, statuses ...string) *Snap
 			t.Fatal(err)
 		}
 		for _, r := range snap.Runs {
-			if r.ID == run {
-				for _, status := range statuses {
-					if r.Status == status {
-						return snap
-					}
-				}
+			if r.ID == run && slices.Contains(statuses, r.Status) {
+				return snap
 			}
 		}
 		time.Sleep(5 * time.Millisecond)
@@ -1014,24 +1000,17 @@ drained:
 		t.Fatal("Close returned with workers")
 	}
 }
-func TestLeaseAndRecoveryNoReplay(t *testing.T) {
+func TestRestartRecoveryNoReplay(t *testing.T) {
 	m := model()
 	id := uuid.NewString()
 	f := executor(id)
 	s, v, db := fixture(t, f, m)
 	c := chat(t, s, id)
-	other, e := New(Options{DB: db, Vault: v, Executor: f})
-	if e != nil {
-		t.Fatal(e)
-	}
-	if e = other.Start(context.Background()); e != ErrLease {
-		t.Fatal(e)
-	}
 	r := submitToolPlan(t, s, m, c, "docker_action", `{"container":"app","action":"restart"}`)
 	snap := waitRun(t, s, c.ID, r.ID, AwaitingConfirmation)
 	waitJobs(t, s)
 	old := snap.Confirmations[0]
-	if e = s.Close(context.Background()); e != nil {
+	if e := s.Close(context.Background()); e != nil {
 		t.Fatal(e)
 	}
 	next, e := New(Options{DB: db, Vault: v, Executor: f, LocalRecorder: audit.New(db, mask.NewMasker(), nil)})

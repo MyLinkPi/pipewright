@@ -50,42 +50,6 @@ func opsRecordedStream(t *testing.T, h http.Handler, path string) (*opsFlushReco
 	return w, cancel, done
 }
 
-func TestOpsSSELeaseLossClosesActiveAndRejectsReconnectWithoutReady(t *testing.T) {
-	s, db, e, a, _ := opsFixture(t)
-	c := opsSession(t, s, e.id)
-	h := New(nil, a, WithOpsChat(s))
-	path := "/api/ai/ops/sessions/" + c.ID + "/events?after=" + opschat.EventCursor(c.ID, c.Watermark)
-	w, _, done := opsRecordedStream(t, h, path)
-	e.entered, e.release = make(chan struct{}, 1), make(chan struct{})
-	if _, err := s.Submit(context.Background(), c.ID, opschat.TurnInput{ClientRequestID: uuid.NewString(), Revision: c.Revision, Text: "check ports"}); err != nil {
-		t.Fatal(err)
-	}
-	select {
-	case <-e.entered:
-	case <-time.After(time.Second):
-		t.Fatal("worker did not dispatch")
-	}
-	if _, err := db.Exec("UPDATE ops_chat_state SET lease_owner=?,lease_until=? WHERE id=1", uuid.NewString(), time.Now().Add(time.Minute).UnixMilli()); err != nil {
-		t.Fatal(err)
-	}
-	close(e.release)
-	select {
-	case <-done:
-	case <-time.After(time.Second):
-		t.Fatal("active stream did not close on lease loss")
-	}
-	body := w.Body.String()
-	if strings.Count(body, "event: ready\n") != 1 || !strings.Contains(body, "event: unavailable\n") {
-		t.Fatal("stream closed without terminal unavailability", body)
-	}
-	for i := 0; i < 3; i++ {
-		response := opsHTTP(t, h, "GET", path, "", 503)
-		if strings.Contains(response.Body.String(), "event: ready") || !strings.Contains(response.Body.String(), "ops_unavailable") {
-			t.Fatal("lost executor sent ready on reconnect", response.Body.String())
-		}
-	}
-}
-
 func TestOpsHistoricalRotationProjectsHTTPAndSSEWithoutInference(t *testing.T) {
 	s, db, e, a, m := opsFixture(t)
 	v := vault.New(db, &[32]byte{1})

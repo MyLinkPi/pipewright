@@ -20,7 +20,6 @@ var (
 	ErrQuota       = errors.New("opschat: resource limit reached")
 	ErrUnavailable = errors.New("opschat: service not configured")
 	ErrDecrypt     = errors.New("opschat: content cannot be decrypted")
-	ErrLease       = errors.New("opschat: executor lease unavailable")
 	ErrApproval    = errors.New("opschat: confirmation invalid or expired")
 	ErrConsent     = errors.New("opschat: analysis consent changed")
 	ErrReset       = errors.New("opschat: replay requires snapshot")

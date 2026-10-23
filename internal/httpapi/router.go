@@ -895,8 +895,8 @@ func New(webFS fs.FS, authn auth.Authenticator, opts ...Option) http.Handler {
 		ar.Post("/runs/{id}/resume", makeResumeRunHandler(rs, o.specLoader, o.approvalStore, aud))
 		// 人工审批门(Story 8-4):批准/拒绝某运行的审批门阶段 + 列审批记录。
 		// approve/reject 为写方法,过 auth + CSRF;coord/store 为 nil → 503。
-		ar.Post("/runs/{id}/approve", makeApprovalDecisionHandler(o.approvalCoord, o.approvalStore, aud, true))
-		ar.Post("/runs/{id}/reject", makeApprovalDecisionHandler(o.approvalCoord, o.approvalStore, aud, false))
+		ar.Post("/runs/{id}/approve", makeApprovalDecisionHandler(o.approvalCoord, aud, true))
+		ar.Post("/runs/{id}/reject", makeApprovalDecisionHandler(o.approvalCoord, aud, false))
 		ar.Get("/runs/{id}/approvals", makeListApprovalsHandler(o.approvalStore))
 		// 等待节点(wait)运行中查询 + 手动跳过:GET 为只读;skip-wait 为写方法,过 auth + CSRF。
 		// coord 为 nil → 503(等待节点照常执行,只是不可查询/跳过)。

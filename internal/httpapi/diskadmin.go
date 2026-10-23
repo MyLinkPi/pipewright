@@ -112,7 +112,6 @@ func decodeDiskBody(w http.ResponseWriter, r *http.Request, into any) bool {
 
 // diskOpDeps 是写操作 handler 的公共依赖。
 type diskOpDeps struct {
-	svc      diskadmin.Service
 	rec      audit.Recorder
 	serverID string
 }
@@ -184,7 +183,7 @@ func makeDiskPartitionCreateHandler(svc diskadmin.Service, rec audit.Recorder) h
 			writeError(w, http.StatusServiceUnavailable, "internal", "磁盘管理服务未初始化")
 			return
 		}
-		d := diskOpDeps{svc: svc, rec: rec, serverID: chi.URLParam(r, "id")}
+		d := diskOpDeps{rec: rec, serverID: chi.URLParam(r, "id")}
 		var in struct {
 			Device    string `json:"device"`
 			SizeSpec  string `json:"sizeSpec"`
@@ -217,7 +216,7 @@ func makeDiskPartitionDeleteHandler(svc diskadmin.Service, rec audit.Recorder) h
 			writeError(w, http.StatusServiceUnavailable, "internal", "磁盘管理服务未初始化")
 			return
 		}
-		d := diskOpDeps{svc: svc, rec: rec, serverID: chi.URLParam(r, "id")}
+		d := diskOpDeps{rec: rec, serverID: chi.URLParam(r, "id")}
 		var in struct {
 			Partition string `json:"partition"`
 			Confirm   string `json:"confirm"`
@@ -249,7 +248,7 @@ func makeDiskPartitionGrowHandler(svc diskadmin.Service, rec audit.Recorder) htt
 			writeError(w, http.StatusServiceUnavailable, "internal", "磁盘管理服务未初始化")
 			return
 		}
-		d := diskOpDeps{svc: svc, rec: rec, serverID: chi.URLParam(r, "id")}
+		d := diskOpDeps{rec: rec, serverID: chi.URLParam(r, "id")}
 		var in struct {
 			Target string `json:"target"`
 		}
@@ -278,7 +277,7 @@ func makeDiskShrinkHandler(svc diskadmin.Service, rec audit.Recorder) http.Handl
 			writeError(w, http.StatusServiceUnavailable, "internal", "磁盘管理服务未初始化")
 			return
 		}
-		d := diskOpDeps{svc: svc, rec: rec, serverID: chi.URLParam(r, "id")}
+		d := diskOpDeps{rec: rec, serverID: chi.URLParam(r, "id")}
 		var in struct {
 			Target    string `json:"target"`
 			TargetGiB int    `json:"targetGiB"`
@@ -312,7 +311,7 @@ func makeDiskFormatHandler(svc diskadmin.Service, rec audit.Recorder) http.Handl
 			writeError(w, http.StatusServiceUnavailable, "internal", "磁盘管理服务未初始化")
 			return
 		}
-		d := diskOpDeps{svc: svc, rec: rec, serverID: chi.URLParam(r, "id")}
+		d := diskOpDeps{rec: rec, serverID: chi.URLParam(r, "id")}
 		var in struct {
 			Target  string `json:"target"`
 			FSType  string `json:"fstype"`
@@ -345,7 +344,7 @@ func makeDiskMountHandler(svc diskadmin.Service, rec audit.Recorder) http.Handle
 			writeError(w, http.StatusServiceUnavailable, "internal", "磁盘管理服务未初始化")
 			return
 		}
-		d := diskOpDeps{svc: svc, rec: rec, serverID: chi.URLParam(r, "id")}
+		d := diskOpDeps{rec: rec, serverID: chi.URLParam(r, "id")}
 		var in struct {
 			Target     string `json:"target"`
 			Mountpoint string `json:"mountpoint"`
@@ -377,7 +376,7 @@ func makeDiskUmountHandler(svc diskadmin.Service, rec audit.Recorder) http.Handl
 			writeError(w, http.StatusServiceUnavailable, "internal", "磁盘管理服务未初始化")
 			return
 		}
-		d := diskOpDeps{svc: svc, rec: rec, serverID: chi.URLParam(r, "id")}
+		d := diskOpDeps{rec: rec, serverID: chi.URLParam(r, "id")}
 		var in struct {
 			Mountpoint string `json:"mountpoint"`
 			RemoveDir  bool   `json:"removeDir"`
@@ -410,7 +409,7 @@ func makeDiskPVHandler(svc diskadmin.Service, rec audit.Recorder) http.HandlerFu
 			writeError(w, http.StatusServiceUnavailable, "internal", "磁盘管理服务未初始化")
 			return
 		}
-		d := diskOpDeps{svc: svc, rec: rec, serverID: chi.URLParam(r, "id")}
+		d := diskOpDeps{rec: rec, serverID: chi.URLParam(r, "id")}
 		var in struct {
 			Action  string `json:"action"`
 			Device  string `json:"device"`
@@ -451,7 +450,7 @@ func makeDiskVGHandler(svc diskadmin.Service, rec audit.Recorder) http.HandlerFu
 			writeError(w, http.StatusServiceUnavailable, "internal", "磁盘管理服务未初始化")
 			return
 		}
-		d := diskOpDeps{svc: svc, rec: rec, serverID: chi.URLParam(r, "id")}
+		d := diskOpDeps{rec: rec, serverID: chi.URLParam(r, "id")}
 		var in struct {
 			Action  string   `json:"action"`
 			Name    string   `json:"name"`
@@ -502,7 +501,7 @@ func makeDiskLVHandler(svc diskadmin.Service, rec audit.Recorder) http.HandlerFu
 			writeError(w, http.StatusServiceUnavailable, "internal", "磁盘管理服务未初始化")
 			return
 		}
-		d := diskOpDeps{svc: svc, rec: rec, serverID: chi.URLParam(r, "id")}
+		d := diskOpDeps{rec: rec, serverID: chi.URLParam(r, "id")}
 		var in struct {
 			Action     string `json:"action"`
 			VG         string `json:"vg"`

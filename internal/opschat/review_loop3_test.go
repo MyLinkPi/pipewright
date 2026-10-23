@@ -134,14 +134,15 @@ func TestMixedPlanPreparationFailureAndCancelConvergeQueuedCalls(t *testing.T) {
 				t.Fatal(err)
 			}
 			status := Failed
-			if mode == "cancel" {
-				waitRun(t, s, c.ID, r.ID, AwaitingConfirmation)
-				waitJobs(t, s)
-				if _, err = s.Cancel(context.Background(), c.ID, r.ID); err != nil {
-					t.Fatal(err)
-				}
-				status = Interrupted
-			} else if mode == "partial" {
+		switch mode {
+		case "cancel":
+			waitRun(t, s, c.ID, r.ID, AwaitingConfirmation)
+			waitJobs(t, s)
+			if _, err = s.Cancel(context.Background(), c.ID, r.ID); err != nil {
+				t.Fatal(err)
+			}
+			status = Interrupted
+		case "partial":
 				pending := waitRun(t, s, c.ID, r.ID, AwaitingConfirmation)
 				waitJobs(t, s)
 				if len(pending.Confirmations[0].Calls) != 1 {
@@ -198,20 +199,20 @@ func TestHistoricalPublicFieldsRefreshRotatedSecretsWithoutChangingHistory(t *te
 				t.Fatal(err)
 			}
 			if err = s.transaction(ctx, true, func(tx *sql.Tx) error {
-				for _, kind := range []string{"user", "assistant", "analysis"} {
-					if err := s.append(ctx, tx, Entry{SessionID: c.ID, Kind: kind, Text: text}, true, false); err != nil {
-						return err
-					}
+			for _, kind := range []string{"user", "assistant", "analysis"} {
+				if e := s.append(ctx, tx, Entry{SessionID: c.ID, Kind: kind, Text: text}, true, false); e != nil {
+					return e
 				}
-				return nil
-			}); err != nil {
+			}
+			return nil
+		}); err != nil {
 				t.Fatal(err)
 			}
 			ciphertexts := func() []string {
-				rows, err := db.QueryContext(ctx, "SELECT body FROM ops_chat_sessions WHERE id=? UNION ALL SELECT body FROM ops_chat_entries WHERE session_id=? ORDER BY body", c.ID, c.ID)
-				if err != nil {
-					t.Fatal(err)
-				}
+				rows, e := db.QueryContext(ctx, "SELECT body FROM ops_chat_sessions WHERE id=? UNION ALL SELECT body FROM ops_chat_entries WHERE session_id=? ORDER BY body", c.ID, c.ID)
+			if e != nil {
+				t.Fatal(e)
+			}
 				defer rows.Close()
 				out := []string{}
 				for rows.Next() {
@@ -265,42 +266,41 @@ func TestHistoricalPublicFieldsRefreshRotatedSecretsWithoutChangingHistory(t *te
 	}
 }
 
-func TestSubscriptionsRejectLostUnstartedClosingAndCloseActive(t *testing.T) {
-	s, _, _ := fixture(t, executor(), nil)
+func TestSubscriptionsRejectUnstartedClosingAndCloseOnClose(t *testing.T) {
+	s, v, db := fixture(t, executor(), nil)
 	c := chat(t, s)
 	wake, unsubscribe, err := s.Subscribe(context.Background(), c.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	s.fenceWorker()
+	// Close 关闭全部活动订阅。
+	if err = s.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
 	select {
 	case _, ok := <-wake:
 		if ok {
-			t.Fatal("lost executor subscription remained active")
+			t.Fatal("subscription remained active after close")
 		}
 	case <-time.After(time.Second):
-		t.Fatal("active subscription did not close on lease loss")
+		t.Fatal("active subscription did not close on Close")
 	}
 	unsubscribe()
-	unsubscribe()
-	for i := 0; i < 3; i++ {
-		ch, stop, err := s.Subscribe(context.Background(), c.ID)
-		if err != ErrLease || ch != nil || stop != nil {
-			t.Fatal("lease loss allowed ready/EOF churn", ch, err)
+	unsubscribe() // 幂等
+	// closing 态拒绝新订阅。
+	for range 3 {
+		ch, stop, e := s.Subscribe(context.Background(), c.ID)
+		if e != ErrUnavailable || ch != nil || stop != nil {
+			t.Fatal("closing service accepted subscription", ch, e)
 		}
 	}
-	s.mu.Lock()
-	s.started = false
-	s.mu.Unlock()
-	if _, _, err = s.Subscribe(context.Background(), c.ID); err != ErrUnavailable {
-		t.Fatal("unstarted service accepted subscription", err)
+	// 未 Start 的服务拒绝订阅。
+	other, err := New(Options{DB: db, Vault: v})
+	if err != nil {
+		t.Fatal(err)
 	}
-	s.mu.Lock()
-	s.started = true
-	s.closing = true
-	s.mu.Unlock()
-	if _, _, err = s.Subscribe(context.Background(), c.ID); err != ErrUnavailable {
-		t.Fatal("closing service accepted subscription", err)
+	if _, _, err = other.Subscribe(context.Background(), c.ID); err != ErrUnavailable {
+		t.Fatal("unstarted service accepted subscription", err)
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()

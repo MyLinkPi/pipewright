@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -417,24 +416,3 @@ func makeVerifyDNSProviderHandler(svc dnsprovider.Service, rec audit.Recorder) h
 	}
 }
 
-// resolveHostIPv4 把 host(IP 或域名)解析为一个公网 IPv4 字符串(A 记录指向它)。
-// host 本身是 IPv4 → 直接返回;是域名 → DNS 解析取首个 IPv4。无 IPv4 → 错误。
-func resolveHostIPv4(ctx context.Context, host string) (string, error) {
-	host = strings.TrimSpace(host)
-	if ip := net.ParseIP(host); ip != nil {
-		if v4 := ip.To4(); v4 != nil {
-			return v4.String(), nil
-		}
-		return "", errors.New("host is not IPv4")
-	}
-	addrs, err := net.DefaultResolver.LookupHost(ctx, host)
-	if err != nil {
-		return "", err
-	}
-	for _, a := range addrs {
-		if ip := net.ParseIP(a); ip != nil && ip.To4() != nil {
-			return ip.To4().String(), nil
-		}
-	}
-	return "", errors.New("no IPv4 for host")
-}

@@ -64,7 +64,7 @@ func TestBoundedStdoutStderrSecretsBeforeByteLineAndUTF8Clipping(t *testing.T) {
 			m.mu.Lock()
 			m.reply = AgentReply{ToolCalls: actionsToCalls([]Action{{ToolID: tool, Args: json.RawMessage("{}"), TargetIndexes: []int{0}}})}
 			m.mu.Unlock()
-			r := submitTool(t, s, c, tool, "{}")
+			r := submitTool(t, s, c, tool)
 			snap := waitRun(t, s, c.ID, r.ID, Succeeded)
 			waitJobs(t, s)
 			call := snap.Calls[0]
