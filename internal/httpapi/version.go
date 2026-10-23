@@ -149,7 +149,7 @@ func makeSelfUpdateHandler(checker *version.Checker, src *srcupdate.Service, inf
 		go func() {
 			time.Sleep(700 * time.Millisecond) // 让响应抵达客户端
 			if guard != nil {
-				guard.GracefulShutdown() // 同步停 mesh 等托管子进程并等退出,再 exec
+				guard.GracefulShutdown() // 托管子进程清理钩子(mesh 已改为收养机制,不再随 re-exec 停止)
 			}
 			if err := version.Reexec(); err != nil {
 				log.Printf("[update] re-exec 失败(新版已就位,请手动重启): %v", err)
@@ -209,8 +209,9 @@ func makeUpdateStatusHandler(src *srcupdate.Service) http.HandlerFunc {
 
 // ReexecGuard 是自更新 re-exec 前的门槛与清理钩子(main 装配;nil = 无门槛直启,
 // 兼容最小部署)。ActiveTasks 返回非终态本地运行数与跨环境共享构建任务数;
-// GracefulShutdown 同步停掉托管子进程(mesh 监督器等)并等待退出 —— syscall.Exec
-// 不执行清理,不等退出会留孤儿占端口(v1.6.4 事故)。
+// GracefulShutdown 供托管子进程在 exec 前做同步清理 —— mesh 的 easytier-core
+// 已改为收养机制(新进程按参数比对沿用遗留进程,升级零断网),不再需要停止,
+// 现仅作为扩展点保留。
 type ReexecGuard interface {
 	ActiveTasks() (runs int, sharedJobs int)
 	GracefulShutdown()

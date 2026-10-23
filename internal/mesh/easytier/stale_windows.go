@@ -7,8 +7,37 @@ package easytier
 import (
 	"log"
 	"os/exec"
+	"strconv"
 	"strings"
 )
+
+// FindStaleByRPCPortal 查询(不杀)命令行同时含 easytier-core 与指定 rpc-portal
+// 的进程,供收养比对;查询失败安静返回空。输出行 pid + tab + 完整命令行。
+func FindStaleByRPCPortal(rpcAddr string) []StaleProcess {
+	if rpcAddr == "" {
+		return nil
+	}
+	script := `Get-CimInstance Win32_Process -Filter "Name='easytier-core.exe'" |` +
+		` Where-Object { $_.CommandLine -like '*easytier-core*' -and $_.CommandLine -like '*` + rpcAddr + `*' } |` +
+		` ForEach-Object { Write-Output ($_.ProcessId.ToString() + [char]9 + $_.CommandLine) }`
+	out, err := exec.Command("powershell", "-NoProfile", "-Command", script).Output()
+	if err != nil && len(out) == 0 {
+		return nil
+	}
+	var found []StaleProcess
+	for _, line := range strings.Split(string(out), "\n") {
+		parts := strings.SplitN(strings.TrimSpace(line), "\t", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		pid, err := strconv.Atoi(parts[0])
+		if err != nil {
+			continue
+		}
+		found = append(found, StaleProcess{PID: pid, Args: splitCmdline(parts[1])})
+	}
+	return found
+}
 
 // KillStaleByRPCPortal 终止命令行同时含 easytier-core 与指定 rpc-portal 的进程。
 // 返回清理数量;查询失败安静返回(不阻塞拉起流程)。

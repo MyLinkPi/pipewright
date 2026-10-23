@@ -106,12 +106,18 @@ type Config struct {
 	CliPath    string // 已定位的 easytier-cli
 }
 
-// Supervisor 是托管模式子进程监督器。零值不可用,经 New 构造;线程安全。
+// Supervisor 是托管模式子进程监督器。零值不可用,经 New / NewAdopted 构造;线程安全。
 type Supervisor struct {
 	cfg Config
-	// done 在监督循环退出(子进程已收尸)时关闭;StopAndWait 等待用。
+	// done 在监督循环退出(子进程已收尸)时关闭。
 	done     chan struct{}
 	doneOnce sync.Once
+
+	// adoptedPID 非 0 = 收养态:沿用宿主升级/重启遗留的外部 easytier-core(参数
+	// 与期望完全一致,见 adopt.go),不拉子进程、无监督循环;失联回收由上层对账
+	// 节拍探 rpc-portal 负责(supervise 的退避重启只作用于自己拉起的子进程)。
+	adoptedPID int
+	adoptedAt  time.Time
 
 	mu        sync.Mutex
 	cmd       *exec.Cmd
@@ -129,10 +135,24 @@ func New(cfg Config) *Supervisor {
 	return &Supervisor{cfg: cfg, done: make(chan struct{})}
 }
 
+// NewAdopted 构造收养态监督器:沿用既有 easytier-core(升级/服务重启遗留的孤儿,
+// 参数已经 SameArgs 比对一致),不拉子进程。状态查询本就经 rpc-portal 走 cli,
+// 与父子关系无关,收养期间一切观测照常。
+func NewAdopted(cfg Config, pid int) *Supervisor {
+	if cfg.RPCAddr == "" {
+		cfg.RPCAddr = "127.0.0.1:15888"
+	}
+	return &Supervisor{cfg: cfg, done: make(chan struct{}), adoptedPID: pid, adoptedAt: time.Now()}
+}
+
 // args 生成 easytier-core 参数(固定 RPC portal 端口便于本机状态查询)。
 func (c Config) args() []string {
 	return buildArgs(c, probeHelp(c.CorePath))
 }
+
+// Args 导出该配置将生成的 easytier-core 参数(收养比对:与孤儿进程命令行逐旗子
+// 比对,一致则沿用不重启;见 adopt.go)。
+func (c Config) Args() []string { return c.args() }
 
 // buildArgs 是 args 的纯函数形态(flags 为 --help 探测出的旗子集合;单测直接构造,
 // 不触真机二进制)。
@@ -273,6 +293,9 @@ func (s *Supervisor) Start(ctx context.Context) error {
 	if s.cfg.Mode != "managed" {
 		return fmt.Errorf("easytier: supervisor only manages managed mode")
 	}
+	if s.adoptedPID != 0 {
+		return fmt.Errorf("easytier: adopted supervisor cannot start a child process")
+	}
 	if s.cfg.CorePath == "" {
 		return fmt.Errorf("easytier: easytier-core binary not found (set PIPEWRIGHT_EASYTIER_BIN or place %s under <data>/bin)", CoreBinary())
 	}
@@ -352,32 +375,20 @@ func (s *Supervisor) supervise(ctx context.Context) {
 	}
 }
 
-// StopAndWait 停止子进程并**等待进程真正退出**(优雅窗口内未退则强杀再等)。
-// re-exec 自更新前必须走这里:syscall.Exec 不执行清理,不等退出会把子进程
-// 留成孤儿,占着监听/rpc-portal 端口让新进程起不来(v1.6.4 事故)。
-func (s *Supervisor) StopAndWait(grace time.Duration) {
-	s.Stop()
-	select {
-	case <-s.done:
-		return
-	case <-time.After(grace):
-	}
-	s.mu.Lock()
-	if s.cmd != nil && s.cmd.Process != nil {
-		_ = s.cmd.Process.Kill()
-	}
-	s.mu.Unlock()
-	select {
-	case <-s.done:
-	case <-time.After(5 * time.Second): // 理论不可达:SIGKILL 后 cmd.Run 必返回
-	}
-}
-
-// Stop 停止子进程并不再拉起(配置变更后由装配层重建监督器)。
+// Stop 停止托管对象并不再拉起(配置变更后由装配层重建监督器)。
 func (s *Supervisor) Stop() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.stopped = true
+	if s.adoptedPID != 0 {
+		// 收养对象非子进程:无法 SIGINT 优雅退出,直接终止。调用场景(设置停用/
+		// 参数变更/失联回收)均以停止为目的;实例身份已持久化于 network-directory,
+		// 需要时重拉即恢复原虚拟 IP。找不到(已死)视为已完成。
+		if p, err := os.FindProcess(s.adoptedPID); err == nil {
+			_ = p.Kill()
+		}
+		return
+	}
 	if s.cmd != nil && s.cmd.Process != nil {
 		_ = s.cmd.Process.Signal(os.Interrupt)
 		// 优雅退出窗口;超时强杀。
@@ -394,16 +405,25 @@ type Runtime struct {
 	LastErr   string    `json:"lastErr"`
 	Restarts  int       `json:"restarts"`
 	StartedAt time.Time `json:"startedAt"`
+	// Adopted 表示当前沿用的是宿主升级/重启遗留的外部进程(零中断收养),非本
+	// 进程拉起的子进程;失联由对账节拍回收重拉。
+	Adopted bool `json:"adopted"`
 }
 
-// Snapshot 返回监督器运行快照(不触碰子进程)。
+// Snapshot 返回监督器运行快照(不触碰子进程;收养态 Running 按收养关系报告,
+// 存活探测由上层对账节拍经 rpc-portal 负责)。
 func (s *Supervisor) Snapshot() Runtime {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	startedAt := s.startedAt
+	if s.adoptedPID != 0 {
+		startedAt = s.adoptedAt
+	}
 	return Runtime{
-		Running:   s.cmd != nil,
+		Running:   s.cmd != nil || s.adoptedPID != 0,
 		LastErr:   s.lastErr,
 		Restarts:  s.restarts,
-		StartedAt: s.startedAt,
+		StartedAt: startedAt,
+		Adopted:   s.adoptedPID != 0,
 	}
 }

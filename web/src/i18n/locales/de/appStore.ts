@@ -82,4 +82,12 @@ export default {
     noContext: "Für diese Instanz existiert kein Datensatz der Deploy-Parameter (ältere Version oder kein App-Store-Stack); ein In-place-Upgrade ist nicht möglich. Fortfahren führt zu einem neuen Deployment.",
     ctxFail: "Upgrade-Informationen konnten nicht geladen werden",
   },
+
+  instances: {
+    section: "Bereitgestellte Instanzen",
+    updates: "Template aktualisiert",
+    tplGone: "Template gelöscht",
+    deployedAt: "Bereitgestellt am",
+    unreachable: "{name} nicht erreichbar, Instanzliste fehlt",
+  },
 }

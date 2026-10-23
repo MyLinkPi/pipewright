@@ -82,4 +82,12 @@ export default {
     noContext: "This instance has no recorded deploy params (deployed by an older version or not from the app store), so in-place upgrade is unavailable; continuing will deploy fresh.",
     ctxFail: "Failed to load upgrade info",
   },
+
+  instances: {
+    section: "Deployed instances",
+    updates: "Template updated",
+    tplGone: "Template deleted",
+    deployedAt: "Deployed",
+    unreachable: "{name} unreachable; instance list unavailable",
+  },
 }

@@ -13,6 +13,7 @@
  * POST   /api/servers/{id}/apps/deploy    → AppDeployResult      (CSRF)
  * GET    /api/servers/{id}/apps/upgrade-context → AppUpgradeContext(升级预填;secret 只回名)
  * POST   /api/servers/{id}/apps/upgrade   → AppDeployResult      (CSRF;原位升级,参数原位保留)
+ * GET    /api/servers/apps/instances      → { items: AppInstance[] }(全机已部署实例枚举)
  */
 import { http } from './http'
 
@@ -147,3 +148,30 @@ export const upgradeApp = (
     ...(limits?.cpus?.trim() ? { cpus: limits.cpus.trim() } : {}),
     ...(limits?.memory?.trim() ? { memory: limits.memory.trim() } : {}),
   })
+
+/** 已部署实例:某台机器上带参数边车的栈 = 应用商店部署的实例(「升级」直达入口的数据)。 */
+export interface AppInstance {
+  serverId: string
+  serverName: string
+  /** false = 该机器不可达(单条占位,无栈信息)。 */
+  reachable: boolean
+  error?: string
+  stackName: string
+  templateId: string
+  templateName: string
+  displayName: string
+  icon: string
+  /** 实例名后缀(栈名去掉「模板名-」前缀;单实例部署为空)。 */
+  instance: string
+  cpus: string
+  memory: string
+  /** RFC3339 部署/最近升级时间;旧边车无记录 → 空。 */
+  deployedAt: string
+  /** 边车模板 ID 已不在模板库(不可升级)。 */
+  templateGone: boolean
+  /** 模板在部署之后又改过 = 有可升级内容。 */
+  upgradeAvailable: boolean
+}
+
+export const listAppInstances = (): Promise<{ items: AppInstance[] }> =>
+  http.get('/api/servers/apps/instances')

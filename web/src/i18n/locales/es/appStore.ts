@@ -82,4 +82,12 @@ export default {
     noContext: "Esta instancia no tiene registro de parámetros de despliegue (desplegada con una versión antigua o fuera de la tienda); no se puede actualizar in situ. Si continúas, se desplegará como nueva.",
     ctxFail: "No se pudo cargar la información de actualización",
   },
+
+  instances: {
+    section: "Instancias desplegadas",
+    updates: "Plantilla actualizada",
+    tplGone: "Plantilla eliminada",
+    deployedAt: "Desplegado",
+    unreachable: "{name} inaccesible; falta la lista de instancias",
+  },
 }

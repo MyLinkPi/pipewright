@@ -3,7 +3,8 @@
  *
  * 覆盖:Gitea 部署对话框的 ssh_domain 宿主地址预填联动(单机自动选中即预填、切机跟随、
  * 手改不覆盖、清空恢复);实例名维度(重名提醒出现/消失、默认名已存在也提醒、拉取失败
- * 静默、非法实例名禁用提交、实例随部署提交)。
+ * 静默、非法实例名禁用提交、实例随部署提交);已部署实例区(行渲染/徽标/不可达占位、
+ * 点「升级」直达升级模式并按实例记录提交 upgrade)。
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
@@ -14,6 +15,9 @@ const h = vi.hoisted(() => ({
   createAppTemplate: vi.fn(),
   deleteAppTemplate: vi.fn(),
   deployApp: vi.fn(),
+  upgradeApp: vi.fn(),
+  getAppUpgradeContext: vi.fn(),
+  listAppInstances: vi.fn(),
   listServers: vi.fn(),
   getAllContainers: vi.fn(),
   getAllServerMetrics: vi.fn(),
@@ -34,6 +38,9 @@ vi.mock('../api/apps', () => ({
   createAppTemplate: (...a: unknown[]) => h.createAppTemplate(...a),
   deleteAppTemplate: (...a: unknown[]) => h.deleteAppTemplate(...a),
   deployApp: (...a: unknown[]) => h.deployApp(...a),
+  upgradeApp: (...a: unknown[]) => h.upgradeApp(...a),
+  getAppUpgradeContext: (...a: unknown[]) => h.getAppUpgradeContext(...a),
+  listAppInstances: (...a: unknown[]) => h.listAppInstances(...a),
 }))
 vi.mock('../api/servers', () => ({
   listServers: (...a: unknown[]) => h.listServers(...a),
@@ -61,7 +68,7 @@ vi.mock('../composables/useConfirm', () => ({
 
 import AppStore from './AppStore.vue'
 import AppSelect from '../components/ui/AppSelect.vue'
-import type { AppTemplate } from '../api/apps'
+import type { AppTemplate, AppInstance } from '../api/apps'
 import type { Server } from '../api/servers'
 
 const giteaTpl: AppTemplate = {
@@ -96,6 +103,8 @@ beforeEach(() => {
   h.listDomains.mockResolvedValue({ items: [] })
   h.getGateway.mockResolvedValue({ configured: false, servers: [] })
   h.getServerStacks.mockResolvedValue(mkStacks([]))
+  // 已部署实例区默认为空(隐藏),不影响既有断言。
+  h.listAppInstances.mockResolvedValue({ items: [] })
 })
 
 // mkStacks 构造 getServerStacks 的响应(给定栈名列表)。
@@ -139,6 +148,28 @@ async function selectServer(w: ReturnType<typeof mount>, id: string) {
   const sel = w.findAllComponents(AppSelect)[0]
   ;(sel.vm as unknown as { $emit: (e: string, v: string) => void }).$emit('update:modelValue', id)
   await nextTick()
+}
+
+// mkInstance 构造「已部署实例」条目(默认 = 机器B 上的 gitea-2,模板完好)。
+function mkInstance(over: Partial<AppInstance> = {}): AppInstance {
+  return {
+    serverId: 's2',
+    serverName: '机器B',
+    reachable: true,
+    error: '',
+    stackName: 'gitea-2',
+    templateId: 't1',
+    templateName: 'gitea',
+    displayName: 'Gitea',
+    icon: '🍵',
+    instance: '2',
+    cpus: '1',
+    memory: '512m',
+    deployedAt: '2026-01-01T00:00:00Z',
+    templateGone: false,
+    upgradeAvailable: false,
+    ...over,
+  }
 }
 
 describe('AppStore ssh_domain 预填联动', () => {
@@ -290,5 +321,84 @@ describe('AppStore 实例名与重名提醒', () => {
     expect(await deployRound({ kafka_port: '9092', schema_port: '8081', console_port: '8080' })).toBe('8080')
     expect(await deployRound({ api_port: '9000', console_port: '9001' })).toBe('9000')
     expect(await deployRound({ port: '3000', ssh_port: '2222' })).toBe('3000')
+  })
+})
+
+describe('AppStore 已部署实例区', () => {
+  it('渲染实例行:栈名/机器/「模板有更新」徽标;模板已删禁用升级按钮;不可达机器占位提示', async () => {
+    h.listAppInstances.mockResolvedValue({
+      items: [
+        mkInstance({ upgradeAvailable: true }),
+        mkInstance({
+          serverId: 's1', serverName: '机器A', stackName: 'old-app', templateId: 'gone',
+          templateName: '', displayName: '', icon: '', instance: '', cpus: '', memory: '',
+          deployedAt: '', templateGone: true,
+        }),
+        mkInstance({
+          serverId: 's3', serverName: '机器C', reachable: false, stackName: '', templateId: '',
+          templateName: '', displayName: '', icon: '', instance: '', cpus: '', memory: '',
+          deployedAt: '',
+        }),
+      ],
+    })
+    const w = mount(AppStore)
+    await flushPromises()
+
+    expect(w.text()).toContain('已部署实例')
+    expect(w.text()).toContain('gitea-2')
+    expect(w.text()).toContain('机器B')
+    expect(w.text()).toContain('模板有更新')
+    expect(w.text()).toContain('模板已删除')
+    expect(w.text()).toContain('机器C 不可达')
+
+    // 模板完好的行:升级按钮可点;模板已删的行:按钮渲染但禁用。
+    const btns = w.findAll('.apps__inst button')
+    expect(btns.length).toBe(2)
+    const enabled = btns.filter((b) => !(b.element as HTMLButtonElement).disabled)
+    expect(enabled.length).toBe(1)
+    expect(enabled[0]!.text()).toContain('升级')
+  })
+
+  it('实例区为空时隐藏,不占版面', async () => {
+    const w = mount(AppStore)
+    await flushPromises()
+    expect(w.text()).not.toContain('已部署实例')
+  })
+
+  it('点「升级」→ 打开弹窗直接进入升级模式:预填边车参数与实例名,提交走 upgrade 端点', async () => {
+    h.listAppInstances.mockResolvedValue({ items: [mkInstance()] })
+    h.getAppUpgradeContext.mockResolvedValue({
+      found: true,
+      stackName: 'gitea-2',
+      params: { version: '28.2.0', port: '3000', ssh_port: '2222', ssh_domain: '10.0.0.2' },
+      secrets: [],
+      cpus: '1',
+      memory: '512m',
+    })
+    h.upgradeApp.mockResolvedValue({ serverId: 's2', name: 'gitea-2', ok: true, output: '', error: '' })
+
+    const w = mount(AppStore)
+    await flushPromises()
+    const rowBtn = w.findAll('button').find((b) => b.text().includes('升级'))!
+    await rowBtn.trigger('click')
+    await flushPromises()
+
+    // 弹窗打开且处于升级模式(徽标 + 升级提示),实例名已按实例记录填入并被禁用。
+    expect(w.text()).toContain('升级模式')
+    expect(w.text()).toContain('gitea-2')
+    expect(instanceInput(w).value()).toBe('2')
+    // 参数预填来自 upgrade-context(28.2.0)而非模板默认值(28.1.0)。
+    const verLabel = w.findAll('label.field').find((l) => l.text().includes('镜像版本'))!
+    expect((verLabel.find('input').element as HTMLInputElement).value).toBe('28.2.0')
+
+    // 提交走 upgrade 端点,机器与实例名取自实例记录。
+    await w.find('form').trigger('submit')
+    await flushPromises()
+    expect(h.upgradeApp).toHaveBeenCalledTimes(1)
+    const args = h.upgradeApp.mock.calls[0]
+    expect(args[0]).toBe('s2')
+    expect(args[1]).toBe('t1')
+    expect(args[4]).toBe('2')
+    expect(w.text()).toContain('升级成功')
   })
 })

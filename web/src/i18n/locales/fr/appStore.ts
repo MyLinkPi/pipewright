@@ -82,4 +82,12 @@ export default {
     noContext: "Cette instance n'a pas d'enregistrement des paramètres de déploiement (ancienne version ou stack hors app store) : mise à niveau sur place impossible. Continuer revient à un nouveau déploiement.",
     ctxFail: "Échec du chargement des informations de mise à niveau",
   },
+
+  instances: {
+    section: "Instances déployées",
+    updates: "Modèle mis à jour",
+    tplGone: "Modèle supprimé",
+    deployedAt: "Déployé le",
+    unreachable: "{name} inaccessible ; liste des instances manquante",
+  },
 }
