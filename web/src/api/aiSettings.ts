@@ -32,8 +32,8 @@ export interface AIContext {
   bufferTokens: number
 }
 
-/** Web search/fetch tools provider ('' = follow the LLM provider config). */
-export type AIWebProvider = 'deepseek' | ''
+/** Web search/fetch tools provider ('' = implicit DeepSeek, kept for legacy rows). */
+export type AIWebProvider = 'deepseek' | 'tavily' | 'bocha' | 'ollama' | 'glm' | ''
 
 /**
  * Web search/fetch tools config. provider '' falls back to the LLM config
