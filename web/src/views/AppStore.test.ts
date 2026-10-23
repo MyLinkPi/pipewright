@@ -426,4 +426,18 @@ describe('AppStore 已部署实例区', () => {
     expect(instanceInput(w).value()).toBe('2')
     expect(h.getAppUpgradeContext).not.toHaveBeenCalled()
   })
+
+  it('单实例 legacy 行(instance 键被 omitempty 省略):点击重新部署不报错,实例名为空', async () => {
+    // 后端对空实例名省略 instance 键(undefined),不能让 .trim() 崩掉栈名 computed。
+    h.listAppInstances.mockResolvedValue({
+      items: [mkInstance({ legacy: true, instance: undefined, stackName: 'gitea', deployedAt: '' })],
+    })
+    const w = mount(AppStore)
+    await flushPromises()
+    const rowBtn = w.findAll('button').find((b) => b.text().includes('重新部署'))!
+    await rowBtn.trigger('click')
+    await flushPromises()
+    expect(w.text()).not.toContain('升级模式')
+    expect(instanceInput(w).value()).toBe('')
+  })
 })
