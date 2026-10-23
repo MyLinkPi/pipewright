@@ -99,17 +99,6 @@ func putSettings(t *testing.T, env validationTestEnv, body string) {
 	}
 }
 
-func putTrigger(t *testing.T, env validationTestEnv, body string) {
-	t.Helper()
-	resp := doJSON(t, env.client, http.MethodPut,
-		env.srv.URL+"/api/projects/"+env.projID+"/trigger", env.csrf, body)
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		raw, _ := io.ReadAll(resp.Body)
-		t.Fatalf("PUT trigger status = %d, body=%s", resp.StatusCode, raw)
-	}
-}
-
 // TestValidationRequiresAuth 未认证 → 401。
 func TestValidationRequiresAuth(t *testing.T) {
 	env := setupValidationServer(t)

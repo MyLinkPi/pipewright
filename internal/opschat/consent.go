@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"log"
+	"slices"
 	"time"
 	"unicode/utf8"
 
@@ -37,10 +38,8 @@ func (s *Service) consumedApproval(ctx context.Context, tx *sql.Tx, call Call) e
 	if a.Status != "consumed" || a.Instance != s.instance || !a.View.ExpiresAt.After(time.Now()) || call.ArgsHash != digest(call.Args) {
 		return ErrApproval
 	}
-	for _, binding := range a.Body.Calls {
-		if binding == bound(call) {
-			return nil
-		}
+	if slices.Contains(a.Body.Calls, bound(call)) {
+		return nil
 	}
 	return ErrApproval
 }
@@ -60,9 +59,10 @@ func (s *Service) issueApproval(ctx context.Context, tx *sql.Tx, id, run string,
 	}
 	var existing string
 	err = tx.QueryRowContext(ctx, "SELECT id FROM ops_chat_approvals WHERE run_id=?", run).Scan(&existing)
-	if err == sql.ErrNoRows {
+	switch err {
+	case sql.ErrNoRows:
 		_, err = tx.ExecContext(ctx, `INSERT INTO ops_chat_approvals(id,session_id,run_id,status,instance_id,expires_at,body) VALUES(?,?,?,'pending',?,?,?)`, uuid.NewString(), id, run, s.instance, time.Now().Add(s.runtime.ApprovalTTL).UnixMilli(), b)
-	} else if err == nil {
+	case nil:
 		_, err = tx.ExecContext(ctx, "UPDATE ops_chat_approvals SET status='pending',instance_id=?,expires_at=?,body=? WHERE id=?", s.instance, time.Now().Add(s.runtime.ApprovalTTL).UnixMilli(), b, existing)
 	}
 	return databaseError(err)

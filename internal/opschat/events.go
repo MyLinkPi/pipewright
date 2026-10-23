@@ -411,10 +411,6 @@ func (s *Service) Subscribe(ctx context.Context, id string) (<-chan struct{}, fu
 		s.mu.Unlock()
 		return nil, nil, ErrUnavailable
 	}
-	if s.lost || s.root.Err() != nil {
-		s.mu.Unlock()
-		return nil, nil, ErrLease
-	}
 	count := 0
 	for _, subs := range s.wake {
 		count += len(subs)

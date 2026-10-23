@@ -235,41 +235,6 @@ func TestMutationReadBudgetPersistsAcrossRenewalAndConfirmation(t *testing.T) {
 		})
 	}
 }
-func TestLeaseLossBlocksSubmissionsAndNextDispatch(t *testing.T) {
-	m := model()
-	id := uuid.NewString()
-	f := executor(id)
-	s, _, db := fixture(t, f, m)
-	c := chat(t, s, id)
-	count := 0
-	f.run = func(_ context.Context, _ target.ConnectionSnapshot, argv []string, _ target.ExecutionLimits) (*target.LimitedResult, error) {
-		count++
-		if _, e := db.Exec("UPDATE ops_chat_state SET lease_owner=?,lease_until=? WHERE id=1", uuid.NewString(), time.Now().Add(time.Minute).UnixMilli()); e != nil {
-			t.Error(e)
-		}
-		return &target.LimitedResult{Stdout: validDF}, nil
-	}
-	r := submitToolPlan(t, s, m, c, "host_resources", "{}")
-	waitJobs(t, s)
-	if count != 1 {
-		t.Fatal("dispatched after lease loss", count)
-	}
-	if _, e := s.Submit(context.Background(), c.ID, TurnInput{ClientRequestID: uuid.NewString(), Revision: c.Revision, Text: "check ports"}); e != ErrLease {
-		t.Fatal(e)
-	}
-	got, e := s.Call(context.Background(), c.ID, func() string {
-		calls, e := s.calls(context.Background(), db, c.ID, r.ID)
-		if e != nil || len(calls) != 1 {
-			t.Fatal(calls, e)
-		}
-		return calls[0].Body.View.ID
-	}())
-	if e != nil || got.Status != Running {
-		t.Fatal(got, e)
-	}
-	// The new consumer will recover the retained dispatch intent as unknown, never replay it.
-}
-
 func TestUndispatchedMutationRetryRequiresFreshConfirmation(t *testing.T) {
 	m := model()
 	id := uuid.NewString()

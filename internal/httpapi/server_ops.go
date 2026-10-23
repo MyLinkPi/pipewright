@@ -26,12 +26,8 @@ import (
 // **不 500**。操作成功(命令成功投递,无论退出码)后写 append-only 审计(detail 脱敏)。
 
 // 复用 6-2(server_logs.go)的校验风格:首字符 [\w] 防 flag 注入;正则本身排除所有 shell 元字符。
-//   - systemd unit:`^[\w][\w.@-]*$`(如 nginx、nginx.service、ssh@1.service)。
-//   - docker 容器名/ID:`^[\w][\w.-]*$`。
-var (
-	reSystemdUnit = regexp.MustCompile(`^[\w][\w.@-]*$`)
-	reDockerTgt   = regexp.MustCompile(`^[\w][\w.-]*$`)
-)
+// systemd unit / action 白名单的校验在 target.ValidateServiceParams(与 SSH 执行同层)。
+var reDockerTgt = regexp.MustCompile(`^[\w][\w.-]*$`)
 
 // serviceActionRequest 是 POST /api/servers/{id}/service/action 请求体(冻结契约)。
 type serviceActionRequest struct {
@@ -50,19 +46,6 @@ type serviceActionDTO struct {
 	Output   string `json:"output"`
 	Error    string `json:"error"`
 }
-
-// systemdActions / dockerActions 是按 type 区分的 action 白名单(枚举)。
-//   - systemd:仅 restart/stop/start(单元生命周期)。
-//   - docker:容器生命周期更全 —— 起停重启 + 暂停/恢复 + kill + 删除(Portainer 式)。
-//     全部恰好是 `docker <action> <name>` 的合法子命令,无需特判;`rm` 不带 `-f`(运行中容器
-//     删除会失败 → ok:false,迫使先停再删,安全且留痕)。
-var (
-	systemdActions = map[string]bool{"restart": true, "stop": true, "start": true}
-	dockerActions  = map[string]bool{
-		"restart": true, "stop": true, "start": true,
-		"pause": true, "unpause": true, "kill": true, "rm": true,
-	}
-)
 
 // validateServiceParams 据 type 严格校验 target 与 action 枚举,合法返回 nil。
 // AC-SEC-02 要害:绝不放过可能被远端当 flag / shell 解释的危险输入。action 白名单按 type 区分。

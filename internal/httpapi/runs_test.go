@@ -276,6 +276,7 @@ func TestSSEReadsStatusEvent(t *testing.T) {
 	// 读若干帧,直到见到一个 status 事件(初始快照即为 status)。
 	sc := bufio.NewScanner(resp.Body)
 	sawStatus := false
+	var scanErr error
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -286,11 +287,15 @@ func TestSSEReadsStatusEvent(t *testing.T) {
 				return
 			}
 		}
+		scanErr = sc.Err()
 	}()
 	select {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("未在期限内读到 status 事件")
+	}
+	if scanErr != nil {
+		t.Fatalf("SSE scan: %v", scanErr)
 	}
 	if !sawStatus {
 		t.Fatal("应读到至少一个 status 事件")

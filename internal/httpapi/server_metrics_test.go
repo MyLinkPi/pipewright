@@ -530,7 +530,9 @@ var gpuFakeHost = func() fakeMetricsHost {
 func fakeMetricsStdout(script string, h fakeMetricsHost) string {
 	var b strings.Builder
 	sec := func(name, content string) {
-		b.WriteString(metricMarker + name + "\n")
+		b.WriteString(metricMarker)
+		b.WriteString(name)
+		b.WriteString("\n")
 		b.WriteString(content)
 	}
 	sec(secLoadavg, h.loadavg)

@@ -593,7 +593,7 @@ func TestOpsErrorMappingDoesNotLeakCause(t *testing.T) {
 		code   string
 	}{
 		{opschat.ErrNotFound, 404, "ops_not_found"}, {opschat.ErrInvalid, 422, "ops_invalid"}, {opschat.ErrVerifyFirst, 409, "ops_verify_first"},
-		{opschat.ErrQuota, 429, "ops_quota"}, {opschat.ErrDecrypt, 503, "ops_unavailable"}, {opschat.ErrLease, 503, "ops_unavailable"},
+		{opschat.ErrQuota, 429, "ops_quota"}, {opschat.ErrDecrypt, 503, "ops_unavailable"},
 		{opschat.ErrApproval, 409, "ops_confirmation_changed"}, {opschat.ErrConsent, 409, "ops_consent_changed"},
 		{errors.New("secret and remote response"), 500, "ops_storage_failed"},
 	} {

@@ -45,44 +45,21 @@ func databaseError(err error) error {
 	}
 	return nil
 }
-// transaction 在单事务内运行 fn。lease=true(一切会话写)以单行租约为序列化点,
-// 首尾校验租约仍归本实例且未过期,并在提交前做存储配额扫描;纯读传 false。
-// 后台续期不走这里——续期是单语句 CAS(见 leaseLoop/renewLease),与业务流量
-// 争夺唯一 SQLite 连接时的排队时间远小于此处的 6 步事务。
-func (s *Service) transaction(ctx context.Context, lease bool, fn func(*sql.Tx) error) error {
+// transaction 在单事务内运行 fn。write=true(一切会话写)在提交前做存储配额
+// 扫描;纯读传 false。单实例部署,无执行器租约:崩溃后的中断 run 由 Start
+// 的 bootstrap 对账收敛。
+func (s *Service) transaction(ctx context.Context, write bool, fn func(*sql.Tx) error) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return ErrStorage
 	}
 	defer tx.Rollback()
-	if lease {
-		// Writes serialize on the singleton. Pure reads never update records.
-		if _, err = tx.ExecContext(ctx, "UPDATE ops_chat_state SET lease_until=lease_until WHERE id=1"); err != nil {
-			return ErrStorage
-		}
-		var owner string
-		var until int64
-		if err = tx.QueryRowContext(ctx, "SELECT lease_owner,lease_until FROM ops_chat_state WHERE id=1").Scan(&owner, &until); err != nil {
-			return ErrStorage
-		}
-		if owner != s.instance || until <= time.Now().UnixMilli() {
-			return ErrLease
-		}
-	}
 	if err = fn(tx); err != nil {
 		return err
 	}
-	if lease {
+	if write {
 		if err = s.enforceStorage(ctx, tx); err != nil {
 			return err
-		}
-		var owner string
-		var until int64
-		if tx.QueryRowContext(ctx, "SELECT lease_owner,lease_until FROM ops_chat_state WHERE id=1").Scan(&owner, &until) != nil {
-			return ErrStorage
-		}
-		if owner != s.instance || until <= time.Now().UnixMilli() {
-			return ErrLease
 		}
 	}
 	if err = tx.Commit(); err != nil {

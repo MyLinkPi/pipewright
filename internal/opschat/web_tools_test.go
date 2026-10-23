@@ -154,7 +154,7 @@ func TestWebToolRoundTrip(t *testing.T) {
 	m.mu.Lock()
 	m.queue = append(m.queue, AgentReply{ToolCalls: []AgentToolCall{{ID: "w1", ToolID: "web_search", Args: json.RawMessage(`{"query":"pipewright docs","count":3}`)}}})
 	m.mu.Unlock()
-	r := submitTool(t, s, c, "web_search", `{"query":"pipewright docs","count":3}`)
+	r := submitTool(t, s, c, "web_search")
 	snap := waitRun(t, s, c.ID, r.ID, Succeeded)
 	if len(snap.Calls) != 1 || snap.Calls[0].ToolID != "web_search" {
 		t.Fatalf("calls: %+v", snap.Calls)
@@ -175,7 +175,7 @@ func TestWebToolRoundTrip(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	r2 := submitTool(t, s, c2, "web_fetch", `{"url":"https://example.com/intro"}`)
+	r2 := submitTool(t, s, c2, "web_fetch")
 	snap2 := waitRun(t, s, c.ID, r2.ID, Succeeded)
 	var fetch *Call
 	for i := range snap2.Calls {
@@ -206,7 +206,7 @@ func (d *driftModel) AgentRound(ctx context.Context, in AgentRequest) (AgentRepl
 	return reply, err
 }
 
-func waitCall(t *testing.T, s *Service, session, run, callID string) Call {
+func waitCall(t *testing.T, s *Service, session, callID string) Call {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
@@ -236,9 +236,9 @@ func TestWebToolExecutionGuards(t *testing.T) {
 	m1.mu.Lock()
 	m1.queue = append(m1.queue, AgentReply{ToolCalls: []AgentToolCall{{ID: "g1", ToolID: "web_fetch", Args: json.RawMessage(`{"url":"https://example.com/x"}`)}}})
 	m1.mu.Unlock()
-	r1 := submitTool(t, s1, c1, "web_fetch", `{"url":"https://example.com/x"}`)
+	r1 := submitTool(t, s1, c1, "web_fetch")
 	waitRun(t, s1, c1.ID, r1.ID, Succeeded, Failed)
-	call := waitCall(t, s1, c1.ID, r1.ID, "g1")
+	call := waitCall(t, s1, c1.ID, "g1")
 	if call.Status != Failed || !strings.Contains(call.Error, "web tools backend unavailable") {
 		t.Fatalf("nil backend call: %+v", call)
 	}
@@ -253,9 +253,9 @@ func TestWebToolExecutionGuards(t *testing.T) {
 	m2.mu.Lock()
 	m2.queue = append(m2.queue, AgentReply{ToolCalls: []AgentToolCall{{ID: "g2", ToolID: "web_search", Args: json.RawMessage(`{"query":"q"}`)}}})
 	m2.mu.Unlock()
-	r2 := submitTool(t, s2, c2, "web_search", `{"query":"q"}`)
+	r2 := submitTool(t, s2, c2, "web_search")
 	waitRun(t, s2, c2.ID, r2.ID, Succeeded, Failed)
-	call2 := waitCall(t, s2, c2.ID, r2.ID, "g2")
+	call2 := waitCall(t, s2, c2.ID, "g2")
 	if call2.Status != Failed || !strings.Contains(call2.Error, "target configuration changed") {
 		t.Fatalf("drifted config call: %+v", call2)
 	}

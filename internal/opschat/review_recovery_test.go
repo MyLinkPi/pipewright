@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -30,7 +29,7 @@ func seedReviewRun(t *testing.T, s *Service, db *sql.DB, c *Session, status stri
 	return id
 }
 
-func TestImmediateCrashRestartWaitsForOldLeaseWithoutReplay(t *testing.T) {
+func TestImmediateRestartRecoversInterruptedRunsWithoutReplay(t *testing.T) {
 	id := uuid.NewString()
 	f := executor(id)
 	m := model()
@@ -54,10 +53,8 @@ func TestImmediateCrashRestartWaitsForOldLeaseWithoutReplay(t *testing.T) {
 			}
 		}
 	}
-	// Stop heartbeat without Close: retain the old owner's lease, as a crash does.
-	s.haltHeartbeat()
-	expires := time.Now().Add(250 * time.Millisecond).UnixMilli()
-	if _, err := db.Exec("UPDATE ops_chat_state SET lease_until=? WHERE id=1", expires); err != nil {
+	// 播种的 run 没有 worker,Close 不会收敛它们——保留崩溃现场供下一实例对账。
+	if err := s.Close(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	next, err := New(Options{DB: db, Vault: v, Executor: f, Model: m})
@@ -68,8 +65,8 @@ func TestImmediateCrashRestartWaitsForOldLeaseWithoutReplay(t *testing.T) {
 		t.Fatal("immediate restart discarded service", err)
 	}
 	t.Cleanup(func() { _ = next.Close(context.Background()) })
-	if time.Now().UnixMilli() < expires || !next.Capabilities().Available {
-		t.Fatal("started before old lease expired")
+	if !next.Capabilities().Available {
+		t.Fatal("restarted service not available")
 	}
 	for i, c := range chats {
 		want := Interrupted
@@ -105,13 +102,12 @@ func TestCrashDuringDispatchRecoversUnknownWithoutReplay(t *testing.T) {
 	c := chat(t, s, id)
 	r := submitToolPlan(t, s, m, c, "host_ports", `{}`)
 	<-dispatches
-	// Stop the heartbeat without Close; the blocked worker never converges, as
-	// a crash. Drop the hung job so the fixture's Close does not wait on it.
-	s.haltHeartbeat()
+	// worker 永远阻塞在 executor 内(进程死亡),不会收敛 run。把挂死 job
+	// 从 jobs 摘除,使 Close 不等它,保留崩溃现场供下一实例对账。
 	s.mu.Lock()
 	delete(s.jobs, r.ID)
 	s.mu.Unlock()
-	if _, err := db.Exec("UPDATE ops_chat_state SET lease_until=? WHERE id=1", time.Now().Add(200*time.Millisecond).UnixMilli()); err != nil {
+	if err := s.Close(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	next, err := New(Options{DB: db, Vault: v, Executor: f})
@@ -128,35 +124,6 @@ func TestCrashDuringDispatchRecoversUnknownWithoutReplay(t *testing.T) {
 	}
 	if len(dispatches) != 0 {
 		t.Fatal("recovery replayed remote work")
-	}
-}
-
-func TestStartupLeaseWaitHonorsRootAndRejectsRenewedConsumer(t *testing.T) {
-	s, v, db := fixture(t, executor(), nil)
-	other, err := New(Options{DB: db, Vault: v})
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Millisecond)
-	defer cancel()
-	if err = other.Start(ctx); !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatal(err)
-	}
-	// A shortened fake heartbeat proves that renewal, rather than expiration,
-	// rejects a live second consumer without waiting the full production lease.
-	finished := make(chan error, 1)
-	go func() { finished <- other.Start(context.Background()) }()
-	time.Sleep(150 * time.Millisecond)
-	if _, err = db.Exec("UPDATE ops_chat_state SET lease_until=lease_until+1000 WHERE id=1"); err != nil {
-		t.Fatal(err)
-	}
-	select {
-	case err = <-finished:
-		if err != ErrLease || other.Capabilities().Available || !s.Capabilities().Available {
-			t.Fatal(err)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("live consumer not rejected on renewal")
 	}
 }
 

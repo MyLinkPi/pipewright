@@ -85,7 +85,7 @@ func NewApprovalGate(runs run.Service, coord *approval.Coordinator, store *appro
 
 // makeApprovalDecisionHandler 返回 approve(approve=true)/reject(false)端点 handler。
 // body {stageId};经协调器投递决定。该阶段当前不在等待 → 409。
-func makeApprovalDecisionHandler(coord *approval.Coordinator, store *approval.Store, rec audit.Recorder, approve bool) http.HandlerFunc {
+func makeApprovalDecisionHandler(coord *approval.Coordinator, rec audit.Recorder, approve bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if coord == nil {
 			writeError(w, http.StatusServiceUnavailable, "internal", "审批门服务未初始化")

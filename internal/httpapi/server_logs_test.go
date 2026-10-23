@@ -251,6 +251,9 @@ func TestServerLogsStreamSSE(t *testing.T) {
 			break
 		}
 	}
+	if err := scanner.Err(); err != nil {
+		t.Fatalf("stream scan: %v", err)
+	}
 	if len(got) != 3 || got[0] != "rt-1" || got[2] != "rt-3" {
 		t.Fatalf("stream lines = %v, want [rt-1 rt-2 rt-3]", got)
 	}

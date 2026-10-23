@@ -14,25 +14,6 @@ import (
 	"github.com/huangchengsir/pipewright/internal/maintenance"
 )
 
-// setupMaintenanceServer 装配带维护服务的测试服务(admin/testpass),返回已登录的 client+csrf。
-func setupMaintenanceServer(t *testing.T, svc *maintenance.Service) (*httptest.Server, *http.Client, string) {
-	t.Helper()
-	st := testStoreAuth(t)
-	authSvc := auth.NewService(st.DB, nil)
-	if err := authSvc.Bootstrap("admin", "testpass", ""); err != nil {
-		t.Fatalf("bootstrap: %v", err)
-	}
-	opts := []Option{WithMaintenance(svc)}
-	if svc == nil {
-		opts = []Option{}
-	}
-	srv := httptest.NewServer(New(testWebFSAuth(), authSvc, opts...))
-	t.Cleanup(srv.Close)
-	c := newTestClient(t)
-	csrf := loginWithClient(t, c, srv.URL)
-	return srv, c, csrf
-}
-
 // POST /api/maintenance/cleanup:白名单外 target → 400;合法 target → 200 + 结果 JSON;
 // 未注入维护服务 → 503。
 func TestMaintenanceCleanupWhitelistAndRun(t *testing.T) {
