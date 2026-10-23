@@ -1222,6 +1222,9 @@ func (s *Service) recordResult(c callRecord) error {
 	})
 }
 func (s *Service) executeCall(ctx context.Context, c callRecord) error {
+	if isWebTool(c.Body.View.ToolID) {
+		return s.executeWebCall(ctx, c)
+	}
 	if isProjectTool(c.Body.View.ToolID) {
 		return s.executeProjectCall(ctx, c)
 	}
@@ -1541,6 +1544,65 @@ func (s *Service) executeProjectCall(ctx context.Context, c callRecord) error {
 			v.Error = "remote effect not verified"
 		}
 	}
+	return s.recordResult(c)
+}
+
+// executeWebCall 执行网页搜索/抓取工具:本地后端调用(非 SSH、不占 SSH 槽位、
+// 只读不走确认卡)。TargetHash 落轮次提供方指纹,执行前复核当前模型指纹一致,
+// 配置漂移即 fail-closed(与机器/项目指纹闸门同语义)。
+func (s *Service) executeWebCall(ctx context.Context, c callRecord) error {
+	v := &c.Body.View
+	if s.web == nil {
+		v.Status = Failed
+		v.Error = "web tools backend unavailable"
+		return s.recordResult(c)
+	}
+	b := remainingReadBudget(c)
+	callCtx, stop := context.WithTimeout(ctx, 30*time.Second)
+	defer stop()
+	if err := s.beginCall(callCtx, &c); err != nil {
+		return err
+	}
+	r, budgetErr := s.run(callCtx, s.db, v.SessionID, v.RunID)
+	if budgetErr != nil {
+		return budgetErr
+	}
+	b.bytes = min(b.bytes, (512<<10)-r.Body.OutputBytes-1024)
+	if b.bytes < 1 {
+		v.Status = Failed
+		v.Truncated = true
+		v.Error = "run output budget exhausted"
+		return s.recordResult(c)
+	}
+	// 配置漂移闸门:网页目的地复用 AI 配置,轮次开始时的提供方指纹与当前不一致
+	//(密钥轮换/换供应商/改开关)则拒绝派发。
+	if s.model == nil || s.model.Info().ConfigHash != v.TargetHash {
+		v.Status = Failed
+		v.Error = "target configuration changed"
+		return s.recordResult(c)
+	}
+	var output string
+	var execErr error
+	switch v.ToolID {
+	case "web_search":
+		output, execErr = s.web.Search(callCtx, v.Args.Query, v.Args.Count)
+	case "web_fetch":
+		output, execErr = s.web.Fetch(callCtx, v.Args.URL)
+	default:
+		execErr = ErrInvalid
+	}
+	now := time.Now().UTC()
+	v.CollectedAt = &now
+	if execErr != nil {
+		v.Status = Failed
+		v.Error = clip(execErr.Error(), 1024)
+		return s.recordResult(c)
+	}
+	exit := 0
+	v.ExitCode = &exit
+	v.Output = s.scrub(output, 64<<10)
+	v.Truncated = len(v.Output) >= 64<<10
+	v.Status = Succeeded
 	return s.recordResult(c)
 }
 

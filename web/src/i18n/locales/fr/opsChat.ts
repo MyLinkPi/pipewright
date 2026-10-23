@@ -156,6 +156,8 @@ export default {
     systemd_logs: 'Journaux service',
     docker_action: 'Opération conteneur',
     systemd_action: 'Opération service',
+    web_search: 'Recherche web',
+    web_fetch: 'Lecture web',
     project_info: 'Infos du projet',
     code_tree: 'Répertoire de code',
     code_read: 'Lire un fichier',

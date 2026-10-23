@@ -191,6 +191,8 @@ type Options struct {
 	Model    Model
 	// Projects 是项目维度工具的后端;nil 表示项目维度未配置(创建项目会话报不可用)。
 	Projects ProjectBackend
+	// Web 是网页搜索/抓取工具的后端;nil 表示网页工具未装配(目录与执行均不可用)。
+	Web WebBackend
 	// LocalRecorder must be audit.New(db, masker, nil), never the shared remote-sink recorder.
 	LocalRecorder audit.Recorder
 	Masker        *mask.Masker
@@ -275,6 +277,10 @@ type ToolArgs struct {
 	Status      string            `json:"status,omitempty"`
 	Limit       int               `json:"limit,omitempty"`
 	Params      map[string]string `json:"params,omitempty"`
+	// 网页搜索/抓取工具参数。
+	Query string `json:"query,omitempty"`
+	URL   string `json:"url,omitempty"`
+	Count int    `json:"count,omitempty"`
 }
 type Action struct {
 	ToolID        string          `json:"toolId"`
@@ -426,6 +432,19 @@ type ProjectBackend interface {
 	TriggerRun(ctx context.Context, projectID, branch string, params map[string]string) (string, error)
 	// CancelRun 取消一次运行,返回取消后的 run 概要(变更;经确认卡放行后调用)。
 	CancelRun(ctx context.Context, runID string) (string, error)
+}
+
+// WebBackend 是网页搜索/抓取工具的端口:装配层注入实现(opschat 不 import ai)。
+// Search 返回有界 JSON 文本、Fetch 返回有界 Markdown 文本,worker 仍按会话读
+// 预算二次裁剪并掩码。网页内容一律按 untrusted data 处理。
+type WebBackend interface {
+	// Available 报告网页工具当前是否可用(轻量本地读:开关+有效配置解析,
+	// 不发网络请求)。单轮目录按它过滤,设置变更下轮生效。
+	Available(ctx context.Context) bool
+	// Search 按关键词搜索公网,返回有界结果 JSON(query 已由 parseWebArgs 校验)。
+	Search(ctx context.Context, query string, count int) (string, error)
+	// Fetch 抓取一个公网页面,返回有界 Markdown(rawURL 已由 parseWebArgs 校验)。
+	Fetch(ctx context.Context, rawURL string) (string, error)
 }
 
 // Compacter is an optional model capability: generate a compaction summary of

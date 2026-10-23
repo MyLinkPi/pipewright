@@ -44,6 +44,10 @@ func retryable(c callRecord) error {
 	if isProjectTool(c.Body.View.ToolID) {
 		return ErrConflict
 	}
+	// 网页工具同理:无目标机语义;失败由模型下一轮重查或用户新提问覆盖。
+	if isWebTool(c.Body.View.ToolID) {
+		return ErrConflict
+	}
 	switch c.Body.View.Status {
 	case Failed, PartialFailed:
 		return nil

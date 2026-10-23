@@ -142,6 +142,8 @@ export default {
     systemd_logs: '服務日誌',
     docker_action: '容器操作',
     systemd_action: '服務操作',
+    web_search: '網頁搜尋',
+    web_fetch: '網頁擷取',
     project_info: '專案資訊',
     code_tree: '程式碼目錄',
     code_read: '讀取檔案',

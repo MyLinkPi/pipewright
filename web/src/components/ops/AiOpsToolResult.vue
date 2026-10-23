@@ -30,11 +30,16 @@ const projectToolIds = new Set([
   'run_trigger',
   'run_cancel',
 ])
+// 网页工具 ID(与后端 web_tools.go 对齐):不绑定服务器/项目,无终端可跳转,
+// 也不走机器重试链路(失败由模型下一轮重查)。
+const webToolIds = new Set(['web_search', 'web_fetch'])
 const projectTool = computed(() => projectToolIds.has(props.call.toolId))
+const webTool = computed(() => webToolIds.has(props.call.toolId))
 const retryable = computed(
   () =>
     props.call.toolId !== 'docker_exec' &&
     !projectTool.value &&
+    !webTool.value &&
     ['failed', 'partial_failed'].includes(props.call.status),
 )
 const copyable = computed(
@@ -64,9 +69,10 @@ const bytes = (n: number): string =>
     <summary class="ops-row result-summary"><span class="ops-grow ops-wrap">{{t('opsChat.tools.'+call.toolId)}}</span><span class="result-status">{{t('opsChat.status.'+call.status)}}</span><span v-if="call.truncated" class="ops-muted">{{t('opsChat.truncated')}}</span></summary>
     <template v-if="expanded">
     <header class="ops-row">
-      <strong class="ops-grow ops-wrap">{{
+      <strong v-if="!webTool" class="ops-grow ops-wrap">{{
         call.serverName || call.serverId
       }}</strong>
+      <span v-else class="ops-grow" />
       <span
         class="result-status"
         :class="{
@@ -77,7 +83,7 @@ const bytes = (n: number): string =>
         >{{ t('opsChat.status.' + call.status) }}</span
       >
     </header>
-    <p class="ops-muted ops-wrap">
+    <p v-if="!webTool" class="ops-muted ops-wrap">
       {{ t('opsChat.tools.' + call.toolId) }} · {{ call.serverId }}
     </p>
     <p v-if="call.object" class="ops-muted ops-wrap">
@@ -163,7 +169,7 @@ const bytes = (n: number): string =>
         <Stars />
       </button>
       <button
-        v-if="!projectTool"
+        v-if="!projectTool && !webTool"
         class="ops-btn ops-icon"
         :title="t('opsChat.terminal')"
         :aria-label="t('opsChat.terminal')"

@@ -139,10 +139,13 @@ func projectPlan(m *fakeModel, toolID, args string) {
 
 func TestProjectCatalogScoping(t *testing.T) {
 	server := Tools(ScopeServer)
-	if len(server) != 14 {
+	if len(server) != 16 {
 		t.Fatalf("server catalog changed: %d", len(server))
 	}
 	for _, tool := range server {
+		if isWebTool(tool.ID) {
+			continue
+		}
 		if !tool.Targeted || tool.Description == "" {
 			t.Fatalf("machine tool missing targeting metadata: %+v", tool)
 		}
@@ -151,11 +154,13 @@ func TestProjectCatalogScoping(t *testing.T) {
 		}
 	}
 	project := Tools(ScopeProject)
-	if len(project) != 24 {
+	if len(project) != 26 {
 		t.Fatalf("project catalog size: %d", len(project))
 	}
+	// toolsForRun 是 Service 方法(web 可用性注入);无 web 后端 = 目录不含网页工具。
+	svc := &Service{}
 	// 无关联机器:只给项目工具(机器工具全部剔除)。
-	bare := toolsForRun(runRecord{Body: runBody{Project: &ProjectSnapshot{ID: uuid.NewString()}}})
+	bare := svc.toolsForRun(runRecord{Body: runBody{Project: &ProjectSnapshot{ID: uuid.NewString()}}})
 	if len(bare) != 10 {
 		t.Fatalf("bare project run catalog size: %d", len(bare))
 	}
@@ -165,7 +170,7 @@ func TestProjectCatalogScoping(t *testing.T) {
 		}
 	}
 	// 关联机器:项目工具 + 机器工具。
-	attached := toolsForRun(runRecord{Body: runBody{Project: &ProjectSnapshot{ID: uuid.NewString()}, Targets: []target.ConnectionSnapshot{{Server: target.Server{ID: uuid.NewString(), Name: "node"}}}}})
+	attached := svc.toolsForRun(runRecord{Body: runBody{Project: &ProjectSnapshot{ID: uuid.NewString()}, Targets: []target.ConnectionSnapshot{{Server: target.Server{ID: uuid.NewString(), Name: "node"}}}}})
 	if len(attached) != 24 {
 		t.Fatalf("attached project run catalog size: %d", len(attached))
 	}

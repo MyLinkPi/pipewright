@@ -29,6 +29,7 @@ type Service struct {
 	executor    target.LimitedExecutor
 	model       Model
 	projects    ProjectBackend
+	web         WebBackend
 	audit       audit.Recorder
 	masker      *mask.Masker
 	instance    string
@@ -66,7 +67,7 @@ func New(o Options) (*Service, error) {
 		o.Masker = mask.NewMasker()
 	}
 	runtime := o.Runtime.withDefaults()
-	s := &Service{db: o.DB, vault: o.Vault, executor: o.Executor, model: o.Model, projects: o.Projects, audit: o.LocalRecorder, masker: o.Masker, instance: uuid.NewString(), runtime: runtime, contextSrc: o.Context, jobs: map[string]*job{}, wake: map[string]map[chan struct{}]bool{}, slots: make(chan struct{}, runtime.SSHSlots), serverSlots: map[string]chan struct{}{}, compactFails: map[string]int{}}
+	s := &Service{db: o.DB, vault: o.Vault, executor: o.Executor, model: o.Model, projects: o.Projects, web: o.Web, audit: o.LocalRecorder, masker: o.Masker, instance: uuid.NewString(), runtime: runtime, contextSrc: o.Context, jobs: map[string]*job{}, wake: map[string]map[chan struct{}]bool{}, slots: make(chan struct{}, runtime.SSHSlots), serverSlots: map[string]chan struct{}{}, compactFails: map[string]int{}}
 	check, err := s.seal("pipewright.opschat.keycheck.v1")
 	if err != nil {
 		return nil, err
