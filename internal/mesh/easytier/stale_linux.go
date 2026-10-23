@@ -17,6 +17,38 @@ import (
 	"syscall"
 )
 
+// FindStaleByRPCPortal 查询(不杀)命令行同时含 easytier-core 与指定 rpc-portal
+// 的进程(不含自身),供收养比对;argv 从 /proc/<pid>/cmdline 按 \0 精确拆分
+// (含空格的值不损)。无匹配/读不了 /proc 一律安静返回。
+func FindStaleByRPCPortal(rpcAddr string) []StaleProcess {
+	if rpcAddr == "" {
+		return nil
+	}
+	self := os.Getpid()
+	var found []StaleProcess
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return nil
+	}
+	for _, e := range entries {
+		pid, err := strconv.Atoi(e.Name())
+		if err != nil || pid == self {
+			continue
+		}
+		raw, err := os.ReadFile("/proc/" + e.Name() + "/cmdline")
+		if err != nil {
+			continue
+		}
+		argv := strings.Split(strings.TrimRight(string(raw), "\x00"), "\x00")
+		joined := strings.Join(argv, " ")
+		if !strings.Contains(joined, "easytier-core") || !strings.Contains(joined, rpcAddr) {
+			continue
+		}
+		found = append(found, StaleProcess{PID: pid, Args: argv})
+	}
+	return found
+}
+
 // KillStaleByRPCPortal 终止命令行同时含 easytier-core 与指定 rpc-portal 的进程
 // (不含自身)。返回清理数量;无匹配/读不了 /proc 一律安静返回。
 func KillStaleByRPCPortal(rpcAddr string) int {

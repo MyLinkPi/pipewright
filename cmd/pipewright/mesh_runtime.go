@@ -1,6 +1,8 @@
 // mesh_runtime.go 是集群运行时(main 装配的伴随协程):
 //   - 监督循环:随 mesh 设置变化(重新)拉起/停掉托管的 easytier-core 子进程
 //     (设置指纹变化才重启,避免无谓抖动;external 模式只读状态不托管);
+//     宿主升级/重启遗留的孤儿若参数与期望一致则收养沿用(虚拟网零中断,见
+//     internal/mesh/easytier/adopt.go),参数变化才杀旧拉新;
 //   - 发现循环:周期读 EasyTier 链路表,对每个虚拟 IP 探测 /api/mesh/hello,
 //     TOFU 登记/刷新 mesh_peers(公钥变更拒绝并告警)。
 package main
@@ -11,6 +13,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -57,6 +60,9 @@ type meshRuntime struct {
 	// 仅 superviseLoop 单协程读写)。快照瞬时不可用(core 重启窗口)时沿用上轮值:
 	// 清零会让白名单缩水 → 指纹翻转 → 刚拉起的核心又被重启,失败窗口级联放大。
 	lastSeenCIDRs []string
+	// adoptFails 是收养态下连续失败的 rpc 快照拍数(仅 superviseLoop 单协程读写);
+	// 收养进程非子进程、无监督循环自愈,连续失联达到阈值即废弃收养重新拉起。
+	adoptFails int
 }
 
 // SetProxyNetworks 注入「本端子网代理通告列表」提供器(跨环境转发数据面:
@@ -90,20 +96,6 @@ func (rt *meshRuntime) statusSnapshot() *easytier.Status {
 		return nil
 	}
 	return st
-}
-
-// StopMeshAndWait 同步停止托管 easytier 并等待进程退出(re-exec 前置清理:不等退出
-// 会留孤儿占端口,v1.6.4 事故)。停后到 exec 之间若撞上对账节拍会重拉一次,
-// 无害(新进程启动时有孤儿清理兜底)。
-func (rt *meshRuntime) StopMeshAndWait(grace time.Duration) {
-	rt.mu.Lock()
-	sp := rt.supervisor
-	rt.supervisor = nil
-	rt.supervisorKey = ""
-	rt.mu.Unlock()
-	if sp != nil {
-		sp.StopAndWait(grace)
-	}
 }
 
 // SupervisorSnapshot 实现 httpapi.meshRuntimeView。
@@ -214,11 +206,10 @@ func (rt *meshRuntime) superviseLoop(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
-			rt.mu.Lock()
-			if rt.supervisor != nil {
-				rt.supervisor.Stop()
-			}
-			rt.mu.Unlock()
+			// 停机不杀托管 easytier-core:宿主退出/重启(升级、服务重启)后它成为
+			// 孤儿继续服务,下次启动参数一致即收养(虚拟网零中断);v1.6.4 的孤儿
+			// 事故已由收养机制反转(参数不一致仍会被清理)。彻底停机请禁用 mesh
+			// 设置(st.Enabled=false 走停用分支)。
 			return
 		case <-ticker.C:
 			rt.reconcile(ctx)
@@ -299,8 +290,27 @@ func (rt *meshRuntime) reconcile(ctx context.Context) {
 	}
 	rt.mu.Lock()
 	unchanged := rt.supervisor != nil && rt.supervisorKey == key
+	adopted := unchanged && rt.supervisor.Snapshot().Adopted
 	rt.mu.Unlock()
 	if unchanged {
+		if adopted {
+			// 收养进程失联回收:非子进程、无监督循环自愈,连续 3 拍 rpc 快照失败
+			// (进程死亡/僵死)即废弃收养,下拍按无孤儿路径重新拉起。
+			if rt.statusSnapshot() == nil {
+				rt.adoptFails++
+				if rt.adoptFails >= 3 {
+					log.Printf("[mesh] 收养的 EasyTier 进程连续 %d 拍失联,废弃收养并重新拉起", rt.adoptFails)
+					rt.mu.Lock()
+					rt.supervisor.Stop()
+					rt.supervisor = nil
+					rt.supervisorKey = ""
+					rt.mu.Unlock()
+					rt.adoptFails = 0
+				}
+			} else {
+				rt.adoptFails = 0
+			}
+		}
 		return
 	}
 	secret, serr := rt.svc.NetworkSecret(ctx)
@@ -316,11 +326,7 @@ func (rt *meshRuntime) reconcile(ctx context.Context) {
 		rt.maybeAutoDownload()
 		return
 	}
-	// 先清理孤儿 easytier(re-exec/崩溃遗留,占着监听与 rpc-portal 端口会让新进程
-	// 起不来,孤儿以旧参数持续服务 —— v1.6.4 事故链)。
-	easytier.KillStaleByRPCPortal(st.EasyTierRPC)
-
-	sup := easytier.New(easytier.Config{
+	cfg := easytier.Config{
 		Mode:          mesh.ModeManaged,
 		RPCAddr:       st.EasyTierRPC,
 		NetworkName:   st.NetworkName,
@@ -335,10 +341,38 @@ func (rt *meshRuntime) reconcile(ctx context.Context) {
 		StrictManualRoutes: true,
 		// 出口节点:平台节点可显式允许充当客户端出口(foreign network NAT)。
 		EnableExitNode: st.EnableExitNode,
-		DataDir:        rt.dataDir,
-		CorePath:       rt.corePath,
-		CliPath:        rt.cliPath,
-	})
+		// 实例身份固定目录:EasyTier 把实例身份/密钥存于 --network-directory,DHCP
+		// 虚拟 IP 按身份分配 —— 固定目录后重启 IP 稳定不漂移(此前未固定,每次重启
+		// 身份可能重建导致换 IP)。首次部署会在本拍杀旧拉新(旧孤儿无此参数)。
+		NetworkDir: filepath.Join(rt.dataDir, "easytier"),
+		DataDir:    rt.dataDir,
+		CorePath:   rt.corePath,
+		CliPath:    rt.cliPath,
+	}
+	// 升级/服务重启遗留的孤儿优先收养:参数与期望完全一致 → 直接沿用,虚拟网零
+	// 中断(宿主重启不再断网);参数变化才杀旧拉新(重启生效本就是必须的)。
+	for _, p := range easytier.FindStaleByRPCPortal(st.EasyTierRPC) {
+		if !easytier.SameArgs(p.Args, cfg.Args()) {
+			continue
+		}
+		sup := easytier.NewAdopted(cfg, p.PID)
+		rt.mu.Lock()
+		if rt.supervisor != nil {
+			rt.supervisor.Stop()
+		}
+		rt.supervisor = sup
+		rt.supervisorKey = key
+		rt.mu.Unlock()
+		rt.failedKey = ""
+		rt.adoptFails = 0
+		log.Printf("[mesh] EasyTier 沿用既有进程 pid=%d(参数一致,零中断收养)", p.PID)
+		return
+	}
+	// 无可收养孤儿(无遗留/参数不一致):清理占位者后按当前参数拉起。
+	// 孤儿以旧参数持续服务才是要清理的对象(v1.6.4 事故链);参数一致的已在上方收养。
+	easytier.KillStaleByRPCPortal(st.EasyTierRPC)
+
+	sup := easytier.New(cfg)
 	if err := sup.Start(context.WithoutCancel(ctx)); err != nil {
 		// 同一指纹的启动失败不逐拍刷屏(探测类失败每进程只发生一次,配置修复后指纹变化即重试)。
 		if rt.failedKey != key {

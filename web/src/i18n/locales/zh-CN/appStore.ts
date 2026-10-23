@@ -86,4 +86,12 @@ export default {
     noContext: '该实例没有部署参数记录(旧版部署或非应用市场栈),无法原位升级;继续将按全新部署处理。',
     ctxFail: '读取升级信息失败',
   },
+
+  instances: {
+    section: '已部署实例',
+    updates: '模板有更新',
+    tplGone: '模板已删除',
+    deployedAt: '部署于',
+    unreachable: '{name} 不可达,实例列表暂缺',
+  },
 }

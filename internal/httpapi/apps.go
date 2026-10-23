@@ -8,8 +8,11 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"path"
+	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -625,6 +628,7 @@ func makeDeployAppHandler(apps appstore.Service, servers target.Service, aud aud
 		if out.OK {
 			if werr := writeAppSidecar(cctx, servers, serverID, stackName, appDeploySidecar{
 				TemplateID: req.TemplateID, Params: rendered.Used, CPUs: req.CPUs, Memory: req.Memory,
+				DeployedAt: time.Now().UTC(),
 			}); werr != nil {
 				out.Output = strings.TrimSpace(out.Output + "\n⚠ 参数记录写入失败(后续无法走「升级」原位保留参数):" + werr.Error())
 			}
@@ -678,6 +682,9 @@ type appDeploySidecar struct {
 	Params     map[string]string `json:"params"`
 	CPUs       string            `json:"cpus,omitempty"`
 	Memory     string            `json:"memory,omitempty"`
+	// DeployedAt 是本次部署/升级时间(「模板有更新」标记的比较基准)。旧边车无此字段 →
+	// 零值 → 视为未知:不显示更新标记,升级按钮照常可用。
+	DeployedAt time.Time `json:"deployedAt,omitempty"`
 }
 
 // appSidecarMaxBytes 是边车文件尺寸上限(参数 ≤32 个、值 ≤256B,64KiB 绰绰有余)。
@@ -932,6 +939,7 @@ func makeUpgradeAppHandler(apps appstore.Service, servers target.Service, aud au
 		if out.OK {
 			if werr := writeAppSidecar(cctx, servers, serverID, stackName, appDeploySidecar{
 				TemplateID: req.TemplateID, Params: rendered.Used, CPUs: cpus, Memory: memory,
+				DeployedAt: time.Now().UTC(),
 			}); werr != nil {
 				out.Output = strings.TrimSpace(out.Output + "\n⚠ 参数记录写入失败(后续升级无法原位保留参数):" + werr.Error())
 			}
@@ -939,6 +947,149 @@ func makeUpgradeAppHandler(apps appstore.Service, servers target.Service, aud au
 		auditOp()
 		writeJSON(w, http.StatusOK, out)
 	}
+}
+
+// ---------- 已部署实例枚举(「升级」直达入口的数据底座) ----------
+
+// cmdFindAppSidecars 是定值 find 命令(array 化,无 shell、无用户输入;AC-SEC-02):列受管栈
+// 目录下的参数边车。目录不存在时 find 非零退出 + stderr 噪声,但 stdout 为空 → 调用方忽略
+// ExitCode,只解析 stdout(与 cmdDiscoverComposeFiles 同纪律)。
+var cmdFindAppSidecars = []string{"find", stacksBaseDir, "-maxdepth", "2", "-name", appParamsFileName}
+
+// appsInstancesConcurrency / appsInstancesTimeout 是逐台枚举的有界并发与单机窗口
+// (find + 逐边车 cat,量级远小于 compose up)。
+const (
+	appsInstancesConcurrency = 6
+	appsInstancesTimeout     = 30 * time.Second
+)
+
+// appInstanceDTO 是「已部署实例」的单条 DTO(冻结契约):应用商店部署在某台机器上的一个栈,
+// 供前端渲染直达的「升级」入口。机器不可达也单独成条(reachable:false)——诚实告知,不静默吞机器。
+type appInstanceDTO struct {
+	ServerID   string `json:"serverId"`
+	ServerName string `json:"serverName"`
+	Reachable  bool   `json:"reachable"`
+	Error      string `json:"error,omitempty"`
+	StackName  string `json:"stackName,omitempty"`    // 生效栈名(= 受管目录名)
+	TemplateID string `json:"templateId,omitempty"`   // 边车记录的模板 ID(未删模板时可靠)
+	TemplateName string `json:"templateName,omitempty"`
+	DisplayName  string `json:"displayName,omitempty"`
+	Icon         string `json:"icon,omitempty"`
+	Instance     string `json:"instance,omitempty"`    // 实例名后缀(stackName 去掉「模板名-」前缀)
+	CPUs         string `json:"cpus,omitempty"`
+	Memory       string `json:"memory,omitempty"`
+	DeployedAt   string `json:"deployedAt,omitempty"`  // RFC3339;旧边车无部署时间 → 空(未知)
+	TemplateGone bool   `json:"templateGone,omitempty"`          // 边车模板 ID 已不在模板库
+	UpgradeAvailable bool `json:"upgradeAvailable,omitempty"`    // 模板 UpdatedAt 晚于边车部署时间
+}
+
+// makeAllAppInstancesHandler 返回 GET /api/servers/apps/instances(认证,只读;批量聚合):
+// 全部机器(排除 PVE 节点)上带参数边车的栈 = 应用商店部署的实例。逐台并行有界、各自独立
+// (仿 makeAllServerContainersHandler);join 模板库补展示名/图标并判定「模板有更新」。
+func makeAllAppInstancesHandler(apps appstore.Service, servers target.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if apps == nil || servers == nil {
+			writeError(w, http.StatusServiceUnavailable, "internal", "应用商店/服务器服务未初始化")
+			return
+		}
+		all, err := servers.List(r.Context())
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "internal", "服务器内部错误")
+			return
+		}
+		tpls, err := apps.List(r.Context())
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "internal", "服务器内部错误")
+			return
+		}
+		byID := make(map[string]appstore.Template, len(tpls))
+		for _, t := range tpls {
+			byID[t.ID] = t
+		}
+
+		targets := make([]*target.Server, 0, len(all))
+		for _, srv := range all {
+			if srv.IsPVENode() {
+				continue // PVE 节点不是部署目标(见 validateAppDeployTarget),必无边车
+			}
+			targets = append(targets, srv)
+		}
+		rows := make([][]appInstanceDTO, len(targets))
+		sem := make(chan struct{}, appsInstancesConcurrency)
+		var wg sync.WaitGroup
+		for i, srv := range targets {
+			wg.Add(1)
+			go func(i int, srv *target.Server) {
+				defer wg.Done()
+				sem <- struct{}{}
+				defer func() { <-sem }()
+				rows[i] = collectAppInstances(r.Context(), servers, srv, byID)
+			}(i, srv)
+		}
+		wg.Wait()
+		items := make([]appInstanceDTO, 0, len(rows))
+		for _, rs := range rows {
+			items = append(items, rs...)
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"items": items})
+	}
+}
+
+// collectAppInstances 枚举一台机器上的应用商店实例:find 边车 → 栈名 = 边车父目录 basename
+// (受 reDockerTgt 白名单约束,越界目录名必非本平台部署)→ 逐个读边车。边车缺失/损坏 → 静默
+// 跳过(该栈不可原位升级,但升级端点会诚实报错,列表不臆造)。机器不可达 → 单条 reachable:false。
+func collectAppInstances(ctx context.Context, svc target.Service, srv *target.Server, tpls map[string]appstore.Template) []appInstanceDTO {
+	cctx, cancel := context.WithTimeout(ctx, appsInstancesTimeout)
+	defer cancel()
+	res, err := svc.Exec(cctx, srv.ID, cmdFindAppSidecars)
+	if err != nil { // 传输层失败(SSH 不通)= 机器不可达;find 非零退出仍可能有 stdout,不在此列
+		return []appInstanceDTO{{ServerID: srv.ID, ServerName: srv.Name, Error: err.Error()}}
+	}
+	names := make([]string, 0, 8)
+	seen := make(map[string]bool, 8)
+	for _, line := range strings.Split(res.Stdout, "\n") {
+		p := strings.TrimSpace(line)
+		if p == "" || !strings.HasPrefix(p, "/") || strings.ContainsAny(p, "\r\x00") {
+			continue
+		}
+		name := path.Base(path.Dir(p))
+		if name == "" || name == "." || name == "/" || seen[name] || !reDockerTgt.MatchString(name) {
+			continue
+		}
+		seen[name] = true
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	out := make([]appInstanceDTO, 0, len(names))
+	for _, name := range names {
+		sc, err := readAppSidecar(cctx, svc, srv.ID, name)
+		if err != nil {
+			continue
+		}
+		dto := appInstanceDTO{
+			ServerID: srv.ID, ServerName: srv.Name, Reachable: true,
+			StackName: name, TemplateID: sc.TemplateID, CPUs: sc.CPUs, Memory: sc.Memory,
+		}
+		if !sc.DeployedAt.IsZero() {
+			dto.DeployedAt = sc.DeployedAt.UTC().Format(time.RFC3339)
+		}
+		if tpl, ok := tpls[sc.TemplateID]; ok {
+			dto.TemplateName = tpl.Name
+			dto.DisplayName = tpl.DisplayName
+			dto.Icon = tpl.Icon
+			if instance, found := strings.CutPrefix(name, tpl.Name+"-"); found {
+				dto.Instance = instance
+			}
+			// 模板在部署之后又改过 = 有可升级内容;旧边车无部署时间 → 未知,不标。
+			if !sc.DeployedAt.IsZero() && tpl.UpdatedAt.After(sc.DeployedAt) {
+				dto.UpgradeAvailable = true
+			}
+		} else {
+			dto.TemplateGone = true
+		}
+		out = append(out, dto)
+	}
+	return out
 }
 
 // toParamSpecs 把 DTO 参数定义转领域对象。

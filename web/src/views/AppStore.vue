@@ -5,6 +5,8 @@
   模板卡片网格(内置 + 自定义)→ 点开参数表单(按 params schema 渲染;secret 自动生成)
   → 选目标主机部署 → 展示部署结果与一次性返回的生成口令。部署复用 Stacks 受管链路,
   部署完可在「容器」页对应主机的 Stacks 标签页管理。
+  「已部署实例」区:全机带参数边车的栈,每行直达「升级」(打开弹窗直接进升级模式,
+  不依赖部署弹窗的重名提醒)。
   部署成功后结果卡内置「一键服务注册」:选基域 + 服务名/端口(自动预填)→ 幂等注册
   网关子域名并挂载本机实例,nginx 自动收敛,完成态展示 FQDN。
 */
@@ -20,9 +22,11 @@ import {
   deployApp,
   upgradeApp,
   getAppUpgradeContext,
+  listAppInstances,
   type AppTemplate,
   type AppParamSpec,
   type AppDeployResult,
+  type AppInstance,
 } from '../api/apps'
 import { listServers, type Server } from '../api/servers'
 import { getServerStacks } from '../api/containers'
@@ -61,6 +65,7 @@ const loadError = ref('')
 async function load(): Promise<void> {
   loadState.value = templates.value.length === 0 ? 'loading' : 'loaded'
   loadError.value = ''
+  void loadInstances() // 次级数据(「已部署实例」区),独立失败不阻塞模板区
   try {
     const [tpl, sv] = await Promise.all([listAppTemplates(), listServers()])
     templates.value = tpl.items
@@ -81,6 +86,43 @@ onMounted(() => void capacity.load())
 
 const builtinTemplates = computed(() => templates.value.filter((x) => x.builtin))
 const customTemplates = computed(() => templates.value.filter((x) => !x.builtin))
+
+// ─── 已部署实例(「升级」直达入口)─────────────────────────────────────────────
+// 全机带参数边车的栈 = 应用商店部署的实例;每行直达「升级」,不再依赖部署弹窗的重名
+// 提醒(选对机器/填对实例名/重名检测三个条件全部消失)。null = 未加载/失败 → 区域隐藏。
+const instances = ref<AppInstance[] | null>(null)
+
+async function loadInstances(): Promise<void> {
+  try {
+    const res = await listAppInstances()
+    instances.value = res.items
+  } catch {
+    instances.value = null
+  }
+}
+
+// instanceMeta 拼装行内次要信息(机器/实例名/资源限制/部署时间)。
+function instanceMeta(inst: AppInstance): string {
+  const parts = [inst.serverName]
+  if (inst.instance) parts.push(`${t('appStore.deploy.instance')}: ${inst.instance}`)
+  if (inst.cpus || inst.memory) parts.push([inst.cpus && `${inst.cpus} CPU`, inst.memory].filter(Boolean).join(' / '))
+  if (inst.deployedAt) parts.push(`${t('appStore.instances.deployedAt')} ${new Date(inst.deployedAt).toLocaleString()}`)
+  return parts.join(' · ')
+}
+
+// upgradeInstance 直达升级:按实例记录打开部署弹窗并直接切到升级模式;无边车(旧版部署)
+// 由 enterUpgradeMode 兜底提示。模板已删 → 无法重渲染,按钮本就禁用,此处双保险。
+async function upgradeInstance(inst: AppInstance): Promise<void> {
+  const tpl = templates.value.find((x) => x.id === inst.templateId)
+  if (!tpl) {
+    toast.error(t('appStore.instances.tplGone'))
+    return
+  }
+  openDeploy(tpl)
+  deployServer.value = inst.serverId
+  deployInstance.value = inst.instance
+  await enterUpgradeMode()
+}
 
 // ─── 部署对话框 ───────────────────────────────────────────────────────────────
 const deploying = ref<AppTemplate | null>(null)
@@ -236,6 +278,7 @@ async function submitDeploy(): Promise<void> {
           ? t('appStore.upgrade.done', { name: deploying.value.displayName || deploying.value.name })
           : t('appStore.deployed', { name: deploying.value.displayName || deploying.value.name }),
       )
+      void loadInstances() // 部署/升级落地 → 刷新「已部署实例」区
       if (!upgrading) void prepareReg() // 升级不动既有服务注册,不重跑联动
     } else {
       toast.error(res.error || t(upgrading ? 'appStore.upgrade.fail' : 'appStore.deployFail'))
@@ -444,6 +487,37 @@ async function removeCustom(tpl: AppTemplate): Promise<void> {
     <ErrorState v-else-if="loadState === 'error'" :title="t('appStore.errTitle')" :description="loadError" @retry="load" />
 
     <template v-else>
+      <!-- 已部署实例(升级直达入口):全部机器上带参数边车的栈;空态隐藏 -->
+      <section v-if="instances && instances.length > 0">
+        <h2 class="apps__section">
+          {{ t('appStore.instances.section') }}<span class="apps__count">{{ instances.length }}</span>
+        </h2>
+        <div class="apps__inst">
+          <div
+            v-for="inst in instances"
+            :key="`${inst.serverId}/${inst.stackName || inst.error}`"
+            class="apps__inst-row"
+          >
+            <template v-if="inst.reachable">
+              <span class="apps__inst-icon" aria-hidden="true">{{ inst.icon || '📦' }}</span>
+              <div class="apps__inst-main">
+                <div class="apps__inst-title">
+                  <strong>{{ inst.displayName || inst.templateName || inst.stackName }}</strong>
+                  <code class="apps__inst-stack">{{ inst.stackName }}</code>
+                  <span v-if="inst.upgradeAvailable" class="apps__badge">{{ t('appStore.instances.updates') }}</span>
+                  <span v-else-if="inst.templateGone" class="apps__badge apps__badge--muted">{{ t('appStore.instances.tplGone') }}</span>
+                </div>
+                <p class="apps__inst-meta">{{ instanceMeta(inst) }}</p>
+              </div>
+              <AppButton variant="primary" :disabled="inst.templateGone" @click="upgradeInstance(inst)">
+                <NIcon :size="14"><Rocket /></NIcon>&nbsp;{{ t('appStore.upgrade.submit') }}
+              </AppButton>
+            </template>
+            <p v-else class="apps__inst-warn">{{ t('appStore.instances.unreachable', { name: inst.serverName }) }}</p>
+          </div>
+        </div>
+      </section>
+
       <!-- 内置模板 -->
       <section v-if="builtinTemplates.length > 0">
         <h2 class="apps__section">{{ t('appStore.builtinSection') }}</h2>
@@ -744,6 +818,73 @@ async function removeCustom(tpl: AppTemplate): Promise<void> {
 .apps__section {
   font-size: 15px;
   margin: 8px 0 0;
+}
+.apps__count {
+  margin-left: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  opacity: 0.6;
+}
+.apps__inst {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 10px;
+}
+.apps__inst-row {
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  padding: 10px 14px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.apps__inst-icon {
+  font-size: 20px;
+  line-height: 1;
+}
+.apps__inst-main {
+  flex: 1;
+  min-width: 0;
+}
+.apps__inst-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 14px;
+}
+.apps__inst-stack {
+  font-size: 11px;
+  opacity: 0.75;
+  background: var(--color-inset);
+  border-radius: 5px;
+  padding: 1px 6px;
+}
+.apps__inst-meta {
+  margin: 3px 0 0;
+  font-size: 12px;
+  opacity: 0.65;
+}
+.apps__badge {
+  flex: none;
+  font-size: 11px;
+  font-weight: 600;
+  color: #9a6700;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  padding: 1px 8px;
+}
+.apps__badge--muted {
+  color: inherit;
+  opacity: 0.6;
+  font-weight: 500;
+}
+.apps__inst-warn {
+  margin: 0;
+  font-size: 13px;
+  color: #9a6700;
 }
 .apps__grid {
   display: grid;

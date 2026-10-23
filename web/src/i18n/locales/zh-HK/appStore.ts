@@ -82,4 +82,12 @@ export default {
     noContext: "該實例沒有部署參數記錄(舊版部署或非應用市場棧),無法原位升級;繼續將按全新部署處理。",
     ctxFail: "讀取升級資訊失敗",
   },
+
+  instances: {
+    section: "已部署實例",
+    updates: "模板有更新",
+    tplGone: "模板已刪除",
+    deployedAt: "部署於",
+    unreachable: "{name} 不可達,實例列表暫缺",
+  },
 }

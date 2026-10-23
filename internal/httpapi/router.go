@@ -189,7 +189,7 @@ func WithPVEAdmin(s pveadmin.Service) Option {
 	return func(o *options) { o.pveAdmin = s }
 }
 
-// WithReexecGuard 注入自更新 re-exec 门槛(活跃任务判定 + 托管子进程同步停机;
+// WithReexecGuard 注入自更新 re-exec 门槛(活跃任务判定 + 托管子进程清理钩子;
 // 不传 = 无门槛,更新后直接重启)。
 func WithReexecGuard(g ReexecGuard) Option {
 	return func(o *options) { o.reexecGuard = g }
@@ -1110,6 +1110,10 @@ func New(webFS fs.FS, authn auth.Authenticator, opts ...Option) http.Handler {
 		// 重渲染 → 复用 Stacks 链路 up -d;upgrade-context 供升级表单预填(secret 只回有值标记)。
 		ar.Get("/servers/{id}/apps/upgrade-context", makeAppUpgradeContextHandler(o.appStore, csv))
 		ar.Post("/servers/{id}/apps/upgrade", makeUpgradeAppHandler(o.appStore, csv, aud))
+		// 已部署实例聚合枚举(「升级」直达入口的数据底座):全部机器上带参数边车的栈。
+		// GET 只读 → 过 auth、豁免 CSRF;find 命令纯静态 array(AC-SEC-02);某台不可达仅该台
+		// reachable:false,不 500。chi 字面段 /servers/apps 优先于 {id},不会被吞。
+		ar.Get("/servers/apps/instances", makeAllAppInstancesHandler(o.appStore, csv))
 		// 容器 AI 诊断 / 看日志(AI moat):取容器日志 → ai.Diagnose 出根因+修复。复用 csv +
 		// o.aiSettings。出网前脱敏;AI 未配/失败 → 200 unavailable,绝不 500。比 {id} 多两段不被吞。
 		ar.Post("/servers/{id}/containers/{containerId}/diagnose", makeContainerDiagnoseHandler(csv, o.aiSettings))

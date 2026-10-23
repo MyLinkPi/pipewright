@@ -82,4 +82,12 @@ export default {
     noContext: "이 인스턴스에는 배포 파라미터 기록이 없습니다(이전 버전 배포 또는 앱 스토어 외 스택). 제자리 업그레이드가 불가하며, 계속하면 새 배포로 처리됩니다.",
     ctxFail: "업그레이드 정보를 불러오지 못했습니다",
   },
+
+  instances: {
+    section: "배포된 인스턴스",
+    updates: "템플릿 업데이트 있음",
+    tplGone: "템플릿 삭제됨",
+    deployedAt: "배포 시각",
+    unreachable: "{name}에 연결할 수 없어 인스턴스 목록을 불러올 수 없습니다",
+  },
 }
