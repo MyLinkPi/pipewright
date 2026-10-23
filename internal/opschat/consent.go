@@ -216,6 +216,7 @@ func (s *Service) Confirm(ctx context.Context, id string, in ConfirmInput) (*Run
 	if err != nil {
 		return nil, err
 	}
+	r, _ = s.projectRun(ctx, s.db, r)
 	return &r.View, nil
 }
 func validProvider(p ProviderInfo) bool {
@@ -268,6 +269,7 @@ func (s *Service) analysisPreview(ctx context.Context, id string, ids []string, 
 			if e != nil {
 				return e
 			}
+			r, _ = s.projectRun(ctx, tx, r)
 			if !terminal(r.View.Status) && (ownRun != r.View.ID || !r.Body.AnalysisStarted || r.View.Status != Running) {
 				return ErrConflict
 			}
@@ -337,6 +339,7 @@ func (s *Service) Analyze(ctx context.Context, id string, in AnalysisInput) (*Ru
 		if err != nil {
 			return nil, err
 		}
+		r, _ = s.projectRun(ctx, s.db, r)
 		if !terminal(r.View.Status) {
 			return nil, ErrConflict
 		}
@@ -456,6 +459,7 @@ func (s *Service) Reject(ctx context.Context, id string, in RejectInput) (*Run, 
 	if err != nil {
 		return nil, err
 	}
+	r, _ = s.projectRun(ctx, s.db, r)
 	return &r.View, nil
 }
 
@@ -504,5 +508,6 @@ func (s *Service) Continue(ctx context.Context, id, run string, in ContinueInput
 	if err != nil {
 		return nil, err
 	}
+	r, _ = s.projectRun(ctx, s.db, r)
 	return &r.View, nil
 }

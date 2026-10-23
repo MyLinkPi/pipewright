@@ -53,7 +53,12 @@ func TestImmediateRestartRecoversInterruptedRunsWithoutReplay(t *testing.T) {
 			}
 		}
 	}
-	// 播种的 run 没有 worker,Close 不会收敛它们——保留崩溃现场供下一实例对账。
+	// queued 播种回拨创建时间,越过 enqueue→launch 注册窗口(5s),确定性
+	// 呈现为幻影。播种的 run 没有 worker,Close 不会收敛它们——保留崩溃
+	// 现场;重启后由读取投影(而非启动改写)呈现为 Interrupted/Unknown。
+	if _, err := db.Exec("UPDATE ops_chat_runs SET created_at=? WHERE id=?", time.Now().Add(-6*time.Second).UnixMilli(), runs[0]); err != nil {
+		t.Fatal(err)
+	}
 	if err := s.Close(context.Background()); err != nil {
 		t.Fatal(err)
 	}

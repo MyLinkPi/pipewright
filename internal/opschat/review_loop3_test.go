@@ -134,15 +134,15 @@ func TestMixedPlanPreparationFailureAndCancelConvergeQueuedCalls(t *testing.T) {
 				t.Fatal(err)
 			}
 			status := Failed
-		switch mode {
-		case "cancel":
-			waitRun(t, s, c.ID, r.ID, AwaitingConfirmation)
-			waitJobs(t, s)
-			if _, err = s.Cancel(context.Background(), c.ID, r.ID); err != nil {
-				t.Fatal(err)
-			}
-			status = Interrupted
-		case "partial":
+			switch mode {
+			case "cancel":
+				waitRun(t, s, c.ID, r.ID, AwaitingConfirmation)
+				waitJobs(t, s)
+				if _, err = s.Cancel(context.Background(), c.ID, r.ID); err != nil {
+					t.Fatal(err)
+				}
+				status = Interrupted
+			case "partial":
 				pending := waitRun(t, s, c.ID, r.ID, AwaitingConfirmation)
 				waitJobs(t, s)
 				if len(pending.Confirmations[0].Calls) != 1 {
@@ -199,20 +199,20 @@ func TestHistoricalPublicFieldsRefreshRotatedSecretsWithoutChangingHistory(t *te
 				t.Fatal(err)
 			}
 			if err = s.transaction(ctx, true, func(tx *sql.Tx) error {
-			for _, kind := range []string{"user", "assistant", "analysis"} {
-				if e := s.append(ctx, tx, Entry{SessionID: c.ID, Kind: kind, Text: text}, true, false); e != nil {
-					return e
+				for _, kind := range []string{"user", "assistant", "analysis"} {
+					if e := s.append(ctx, tx, Entry{SessionID: c.ID, Kind: kind, Text: text}, true, false); e != nil {
+						return e
+					}
 				}
-			}
-			return nil
-		}); err != nil {
+				return nil
+			}); err != nil {
 				t.Fatal(err)
 			}
 			ciphertexts := func() []string {
 				rows, e := db.QueryContext(ctx, "SELECT body FROM ops_chat_sessions WHERE id=? UNION ALL SELECT body FROM ops_chat_entries WHERE session_id=? ORDER BY body", c.ID, c.ID)
-			if e != nil {
-				t.Fatal(e)
-			}
+				if e != nil {
+					t.Fatal(e)
+				}
 				defer rows.Close()
 				out := []string{}
 				for rows.Next() {

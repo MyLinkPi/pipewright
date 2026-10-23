@@ -45,9 +45,11 @@ func databaseError(err error) error {
 	}
 	return nil
 }
+
 // transaction 在单事务内运行 fn。write=true(一切会话写)在提交前做存储配额
-// 扫描;纯读传 false。单实例部署,无执行器租约:崩溃后的中断 run 由 Start
-// 的 bootstrap 对账收敛。
+// 扫描;纯读传 false。单实例部署,无执行器租约:run 生命周期权威是内存 jobs,
+// 崩溃遗留的幻影 run 由读取投影惰性降级,Cancel/enqueue 按需 recoverRunTx
+// 持久收敛。
 func (s *Service) transaction(ctx context.Context, write bool, fn func(*sql.Tx) error) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {

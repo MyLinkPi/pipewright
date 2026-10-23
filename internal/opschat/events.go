@@ -172,11 +172,12 @@ func (s *Service) entryPage(ctx context.Context, q querier, id, cursor string, l
 			if err != nil {
 				return out, err
 			}
+			r, _ = s.projectRun(ctx, q, r)
 			e.Run = &r.View
 			e.RequestID = r.View.ClientRequestID
 		}
 		if e.Kind == "run_status" || e.Kind == "session_updated" || e.Kind == "cancel_requested" {
-			view := s.publicSession(sr.View)
+			view := s.projectSessionActive(ctx, q, sr)
 			e.Session = &view
 		}
 		if e.Kind == "confirmation_ready" {
@@ -294,7 +295,7 @@ func (s *Service) ListContext(ctx context.Context, before string, limit int, key
 			if e != nil {
 				return e
 			}
-			out.Sessions = append(out.Sessions, s.publicSession(r.View))
+			out.Sessions = append(out.Sessions, s.projectSessionActive(ctx, tx, r))
 		}
 		return nil
 	})
@@ -311,7 +312,7 @@ func (s *Service) Snapshot(ctx context.Context, id string) (*Snapshot, error) {
 			return e
 		}
 		sr.View.ContextUsage = s.sessionUsage(ctx, tx, id)
-		out.Session = s.publicSession(sr.View)
+		out.Session = s.projectSessionActive(ctx, tx, sr)
 		out.Watermark = sr.View.Watermark
 		out.Entries, e = s.entryPage(ctx, tx, id, "", 50, false)
 		if e != nil {
@@ -356,12 +357,15 @@ func (s *Service) Snapshot(ctx context.Context, id string) (*Snapshot, error) {
 			if e != nil {
 				return e
 			}
+			r, phantom := s.projectRun(ctx, tx, r)
 			out.Runs = append(out.Runs, r.View)
 			if visibleRuns[rid] {
 				calls, e := s.calls(ctx, tx, id, rid)
 				if e != nil {
 					return e
 				}
+				// 幻影 run 的调用视图与 run 终态同步投影(派发未归档 → Unknown)。
+				calls = projectRunCalls(phantom, calls)
 				for _, c := range calls {
 					out.Calls = append(out.Calls, s.publicCall(c.Body.View))
 				}

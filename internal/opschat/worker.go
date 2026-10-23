@@ -32,12 +32,13 @@ func (s *Service) Start(root context.Context) error {
 	return nil
 }
 
-// bootstrap 启动对账(单事务):先校验全部加密记录能被当前实例密钥解开
-// (密钥错误/轮换 → ErrDecrypt,拒绝启动),再把上次进程退出遗留的活动态
-// run 收敛为 Interrupted/Unknown。仅本地对账,绝不重放模型/SSH/已消费变更。
+// bootstrap 启动校验(单事务):校验全部加密记录能被当前实例密钥解开(密钥
+// 错误/轮换 → ErrDecrypt,拒绝启动)。run 生命周期权威是内存 jobs:崩溃遗留
+// 的活动态 run 由读取投影(projectRun/projectSessionActive)在 HTTP 边界惰性
+// 降级,Cancel/enqueue 按需用 recoverRunTx 持久收敛,这里不再做启动改写。
 func (s *Service) bootstrap(root context.Context) error {
 	return s.transaction(root, false, func(tx *sql.Tx) error {
-		// Validate every encrypted record before modifying recovery state.
+		// Validate every encrypted record before serving traffic.
 		for _, table := range []string{"ops_chat_sessions", "ops_chat_entries", "ops_chat_runs", "ops_chat_calls", "ops_chat_approvals"} {
 			rows, e := tx.QueryContext(root, "SELECT body FROM "+table)
 			if e != nil {
@@ -61,69 +62,8 @@ func (s *Service) bootstrap(root context.Context) error {
 				return ErrStorage
 			}
 		}
-		recovered, e := s.recoverActiveRunsTx(root, tx)
-		if e != nil {
-			return e
-		}
-		if recovered > 0 {
-			log.Printf("[opschat] started: recovered %d interrupted/unknown run(s)", recovered)
-		}
 		return nil
 	})
-}
-
-// recoverActiveRunsTx 把仍处于活动态(queued/planning/running)的 run 收敛为
-// Interrupted/Unknown:已派发的调用效果不确定,标记 Unknown;未派发的标记
-// Interrupted。仅本地对账,绝不重放模型/SSH/已消费的变更。仅在启动对账时
-// 调用。返回收敛的 run 数。
-func (s *Service) recoverActiveRunsTx(root context.Context, tx *sql.Tx) (int, error) {
-	rows, e := tx.QueryContext(root, `SELECT session_id,id FROM ops_chat_runs WHERE status IN ('queued','planning','running')`)
-	if e != nil {
-		return 0, ErrStorage
-	}
-	ids := [][2]string{}
-	for rows.Next() {
-		var pair [2]string
-		if rows.Scan(&pair[0], &pair[1]) != nil {
-			rows.Close()
-			return 0, ErrStorage
-		}
-		ids = append(ids, pair)
-	}
-	e = rows.Err()
-	rows.Close()
-	if e != nil {
-		return 0, ErrStorage
-	}
-	for _, pair := range ids {
-		r, e := s.run(root, tx, pair[0], pair[1])
-		if e != nil {
-			return 0, e
-		}
-		calls, e := s.calls(root, tx, pair[0], pair[1])
-		if e != nil {
-			return 0, e
-		}
-		status := Interrupted
-		for _, c := range calls {
-			if c.Body.View.Status == Unknown {
-				status = Unknown
-			}
-			if c.Body.View.Status == Running && c.Body.Dispatched {
-				c.Body.View.Status = Unknown
-				status = Unknown
-			} else if !terminal(c.Body.View.Status) {
-				c.Body.View.Status = Interrupted
-			}
-			if e = s.saveCall(root, tx, c); e != nil {
-				return 0, e
-			}
-		}
-		if e = s.finishTx(root, tx, r, status); e != nil {
-			return 0, e
-		}
-	}
-	return len(ids), nil
 }
 
 // beginCall commits the dispatch intent before even a read-only resolver reaches SSH.
