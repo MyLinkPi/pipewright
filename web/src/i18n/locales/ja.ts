@@ -76,6 +76,7 @@ const ja: typeof zhCN = {
     cluster: 'クラスタ',
     ceph: 'Ceph',
     containers: 'コンテナ',
+    pm2: 'PM2',
     serviceReg: 'サービス登録',
     appStore: 'アプリストア',
     databases: 'データベース',

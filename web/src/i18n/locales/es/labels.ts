@@ -25,6 +25,8 @@ export default {
   hintUnpause: 'Reanudar: descongela un contenedor en pausa (docker unpause); el mismo proceso continúa desde donde se detuvo.',
   hintKill: 'Kill forzado: envía SIGKILL para terminar de inmediato sin oportunidad de limpieza (docker kill); pueden perderse datos no volcados. Úsalo solo cuando "Detener" se bloquea.',
   hintRm: 'Elimina el contenedor (docker rm); si está en ejecución, primero debe detenerse. La configuración del contenedor se elimina, pero los volúmenes de datos montados no se ven afectados.',
+  hintReload: 'Recargar (pm2 reload): en modo cluster, recarga en caliente instancia por instancia sin cortar conexiones; en modo fork equivale a reiniciar.',
+  hintDelete: 'Quita este proceso de la lista gestionada por pm2 (pm2 delete); se eliminan todas las instancias con el mismo nombre. No borra archivos del disco.',
 
   // ─── Confirmación de acciones destructivas ───
   dangerRestartTitle: '¿Reiniciar el contenedor {n}?',

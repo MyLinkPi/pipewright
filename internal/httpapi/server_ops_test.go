@@ -31,6 +31,11 @@ func TestValidateServiceParams(t *testing.T) {
 		{"systemd @ 实例 unit", "systemd", "ssh@1.service", "start", false},
 		{"docker stop 合法", "docker", "my-app_1", "stop", false},
 		{"docker start 合法", "docker", "web.1", "start", false},
+		{"pm2 reload 合法", "pm2", "my-app_1", "reload", false},
+		{"pm2 delete 合法", "pm2", "web", "delete", false},
+		{"pm2 rm 不在白名单拒", "pm2", "web", "rm", true},
+		{"pm2 含分号拒", "pm2", "app;reboot", "restart", true},
+		{"pm2 首字符 - 拒", "pm2", "-f", "stop", true},
 		// 注入 / flag 注入(AC-SEC-02):一律拒。
 		{"分号命令注入拒", "systemd", "nginx;rm -rf /", "restart", true},
 		{"管道注入拒", "docker", "app|sh", "restart", true},
@@ -73,6 +78,11 @@ func TestBuildServiceCmd(t *testing.T) {
 	want = []string{"docker", "stop", "my-app"}
 	if !equalStrSlice(got, want) {
 		t.Fatalf("docker cmd = %v, want %v", got, want)
+	}
+	got = buildServiceCmd("pm2", "reload", "my-app")
+	want = []string{"pm2", "reload", "my-app"}
+	if !equalStrSlice(got, want) {
+		t.Fatalf("pm2 cmd = %v, want %v", got, want)
 	}
 }
 

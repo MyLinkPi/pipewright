@@ -184,7 +184,7 @@ export async function testServer(id: string): Promise<ServerTestResult> {
 // return 200 + a human `error` field instead of 500 — never the secret.
 
 /** Log source kind. */
-export type LogSource = 'journald' | 'file' | 'docker'
+export type LogSource = 'journald' | 'file' | 'docker' | 'pm2'
 
 /** One log line. `ts` is always null in this contract (no per-line timestamp). */
 export interface ServerLogLine {
@@ -466,14 +466,15 @@ export async function getLocalHostMetrics(): Promise<ServerMetrics> {
 // secret. Success is audited (append-only; detail scrubbed).
 
 /** Service kind the operation targets. */
-export type ServiceType = 'systemd' | 'docker'
+export type ServiceType = 'systemd' | 'docker' | 'pm2'
 
 /**
- * Lifecycle operation. Destructive (restart/stop/kill/rm) — UI should confirm.
+ * Lifecycle operation. Destructive (restart/stop/kill/rm/delete) — UI should confirm.
  *
  * systemd accepts only restart/stop/start; docker additionally accepts
- * pause/unpause/kill/rm (container management). The server enforces the
- * per-type whitelist — this widened union is shared by both kinds.
+ * pause/unpause/kill/rm (container management); pm2 accepts start/stop/restart/
+ * reload/delete (PM2 management). The server enforces the per-type whitelist —
+ * this widened union is shared by all kinds.
  */
 export type ServiceAction =
   | 'restart'
@@ -483,6 +484,8 @@ export type ServiceAction =
   | 'unpause'
   | 'kill'
   | 'rm'
+  | 'reload'
+  | 'delete'
 
 export interface ServiceActionInput {
   type: ServiceType

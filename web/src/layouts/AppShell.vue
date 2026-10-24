@@ -31,6 +31,7 @@ import {
   LayoutGrid,
   Activity,
   ReportAnalytics,
+  Cpu,
 } from '@vicons/tabler'
 import { NIcon } from 'naive-ui'
 import ThemeToggle from '../components/ThemeToggle.vue'
@@ -114,6 +115,8 @@ const adminNavGroups: NavGroup[] = [
       { name: 'pve', to: '/pve', icon: Server, labelKey: 'nav.pve', ariaKey: 'nav.pve' },
       // 容器管理:跨服务器聚合容器总览 + 行内生命周期操作(docker over SSH)。
       { name: 'containers', to: '/containers', icon: Box, labelKey: 'nav.containers', ariaKey: 'nav.containers' },
+      // PM2 管理:跨服务器聚合 pm2 进程总览 + 行内生命周期操作(pm2 over SSH)。
+      { name: 'pm2', to: '/pm2', icon: Cpu, labelKey: 'nav.pm2', ariaKey: 'nav.pm2' },
     ],
   },
   {

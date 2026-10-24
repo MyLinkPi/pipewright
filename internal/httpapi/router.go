@@ -1082,6 +1082,14 @@ func New(webFS fs.FS, authn auth.Authenticator, opts ...Option) http.Handler {
 		// (type=docker)。chi 字面段 /servers/containers 优先于 {id},不会被吞。
 		ar.Get("/servers/containers", makeAllServerContainersHandler(sv))
 		ar.Get("/servers/{id}/containers", makeServerContainersHandler(csv))
+		// PM2 管理 —— 进程清单/聚合(server_pm2.go,`pm2 jlist` over SSH,零侵入)。
+		// 复用 sv/csv,无新服务。GET 只读 → 过 auth、豁免 CSRF;命令纯静态 array
+		// (AC-SEC-02);某台不可达/未装 pm2 → reachable:false / runtime:"",不 500。
+		// 进程**生命周期**写操作复用上面的 /service/action(type=pm2)。chi 字面段
+		// /servers/pm2 优先于 {id},不会被吞;批量用 sv(不含本机),本机由前端单独拉
+		// getServerPm2(__local__)(csv 单台端点支持)。
+		ar.Get("/servers/pm2", makeAllServerPM2Handler(sv))
+		ar.Get("/servers/{id}/pm2", makeServerPM2Handler(csv))
 		// 容器实时资源 stats(docker stats --no-stream)。字面段 stats 不与 {id}/containers 冲突。
 		ar.Get("/servers/{id}/containers/stats", makeServerContainerStatsHandler(csv))
 		// 容器详情 inspect(docker inspect → 精选字段)。

@@ -25,6 +25,8 @@ export default {
   hintUnpause: 'Fortsetzen: taut einen pausierten Container auf (docker unpause); derselbe Prozess macht an der unterbrochenen Stelle weiter.',
   hintKill: 'Erzwungenes Kill: sendet direkt SIGKILL, um sofort und ohne Gelegenheit zum Aufräumen zu beenden (docker kill); nicht geschriebene Daten können verloren gehen. Nur verwenden, wenn „Stoppen“ hängt.',
   hintRm: 'Löscht den Container (docker rm); ein laufender muss zuerst gestoppt werden. Die Container-Konfiguration wird entfernt, eingehängte Datenvolumes bleiben jedoch unberührt.',
+  hintReload: 'Neu laden (pm2 reload): im Cluster-Modus instanzweise Zero-Downtime-Hot-Reload ohne Verbindungsabbruch; im Fork-Modus wie ein Neustart.',
+  hintDelete: 'Entfernt diesen Prozess aus der pm2-Verwaltungsliste (pm2 delete); alle Instanzen mit demselben Namen werden entfernt. Dateien auf der Festplatte werden nicht gelöscht.',
 
   // ─── Bestätigung destruktiver Aktionen ───
   dangerRestartTitle: 'Container {n} neu starten?',

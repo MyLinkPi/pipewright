@@ -75,6 +75,7 @@ const zhHK: typeof zhCN = {
     cluster: '集群',
     ceph: 'Ceph 儲存',
     containers: '容器',
+    pm2: 'PM2',
     serviceReg: '服務註冊',
     appStore: '應用商店',
     databases: '資料庫',
