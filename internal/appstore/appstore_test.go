@@ -125,6 +125,29 @@ func TestRenderParams(t *testing.T) {
 		if err != nil || !strings.Contains(res.Compose, "13000:3000") || !strings.Contains(res.Compose, `SSH_DOMAIN: "10.0.0.8"`) {
 			t.Fatalf("gitea 显式参数未生效:%v\n%s", err, res.Compose)
 		}
+
+		// 5) openvas:密码 secret 自动生成;Web 端口默认 9392;用户名默认 admin。
+		var openvas *Template
+		for i := range list {
+			if list[i].Name == "openvas" {
+				openvas = &list[i]
+			}
+		}
+		if openvas == nil {
+			t.Fatal("缺 openvas 内置模板")
+		}
+		res, err = svc.Render(ctx, openvas.ID, map[string]string{})
+		if err != nil {
+			t.Fatalf("openvas 默认渲染:%v", err)
+		}
+		pw = res.Used["password"]
+		if len(pw) < 16 || !strings.Contains(res.Compose, pw) {
+			t.Fatalf("openvas 密码应自动生成并替换:%q\n%s", pw, res.Compose)
+		}
+		if !strings.Contains(res.Compose, "9392:9392") || !strings.Contains(res.Compose, "USERNAME: admin") ||
+			!strings.Contains(res.Compose, "openvas-data:/var/lib/openvas") {
+			t.Fatalf("openvas 默认值未生效:\n%s", res.Compose)
+		}
 	})
 }
 
