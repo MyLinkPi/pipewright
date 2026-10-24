@@ -282,6 +282,37 @@ volumes:
 		},
 		Builtin: true,
 	},
+	{
+		Name:        "openvas",
+		DisplayName: "OpenVAS",
+		Description: "开源漏洞扫描平台(GVM:扫描器 + Web 控制台单容器);Web 界面走 https://<宿主IP>:<端口>(自签证书,浏览器需手动信任);镜像体积大,首启同步 NVT 特征库可达数十分钟,就绪前 Web 不可访问;数据库与特征库落具名卷 openvas-data。",
+		Icon:        "🛡️",
+		// immauss/openvas 是社区维护的单容器 GVM 全栈(gsad/gvmd/ospd-openvas + 内置
+		// postgres/redis),免多容器拼装;USERNAME/PASSWORD 即 Web 登录凭据(PASSWORD
+		// 空缺会回落镜像默认 admin,故必填并自动生成);数据与已同步特征库全在
+		// /var/lib/openvas,重建容器不重拉特征库。
+		ComposeYAML: `services:
+  openvas:
+    image: immauss/openvas:{{version}}
+    restart: unless-stopped
+    environment:
+      USERNAME: {{username}}
+      PASSWORD: {{password}}
+    ports:
+      - "{{port}}:9392"
+    volumes:
+      - openvas-data:/var/lib/openvas
+volumes:
+  openvas-data:
+`,
+		Params: []ParamSpec{
+			{Name: "version", Label: "镜像版本", Type: ParamTypeString, Default: "latest"},
+			{Name: "username", Label: "Web 登录用户名", Type: ParamTypeString, Default: "admin"},
+			{Name: "password", Label: "Web 登录密码", Type: ParamTypeSecret, Required: true, AutoGenerate: true},
+			{Name: "port", Label: "Web 端口(宿主)", Type: ParamTypeInt, Default: "9392"},
+		},
+		Builtin: true,
+	},
 }
 
 // retiredBuiltins 是已从商店下架的内置模板名:EnsureBuiltins 时对库中的内置行删除,
