@@ -250,7 +250,9 @@ func writeServiceRegError(w http.ResponseWriter, err error) {
 	case errors.Is(err, servicereg.ErrUpstreamConnect):
 		writeError(w, http.StatusBadGateway, "upstream_connect_failed", "上游容器接入网关网络失败,请确认容器名正确且正在运行")
 	case errors.Is(err, servicereg.ErrApply):
-		writeError(w, http.StatusBadGateway, "apply_failed", "下发网关配置失败(详情见错误信息)")
+		// 领域层恒以 ErrApply:逐台详情 包装(见 applyFull/removeNginx 等);拼进响应,
+		// 否则前端只有「详情见错误信息」却无处可看。
+		writeError(w, http.StatusBadGateway, "apply_failed", "下发网关配置失败:"+strings.TrimPrefix(err.Error(), servicereg.ErrApply.Error()+":"))
 	// target(SSH)层错误:复用语义映射。
 	case errors.Is(err, target.ErrVaultUnconfigured):
 		writeError(w, http.StatusServiceUnavailable, "vault_unconfigured", "保险库未配置 master key,无法加密证书或取 SSH 凭据")
