@@ -313,6 +313,39 @@ volumes:
 		},
 		Builtin: true,
 	},
+	{
+		Name:        "trivy-server",
+		DisplayName: "Trivy Server",
+		Description: "安全中心的中心漏洞库服务:各目标机 Trivy 扫描的漏洞匹配都走这台,免每台机器各自下载漏洞库。部署成功后自动登记到「安全中心」;访问令牌默认自动生成,也可手动指定。漏洞库缓存落具名卷 trivy-cache(首启下载数百 MB,视带宽数分钟就绪)。",
+		Icon:        "🔍",
+		// trivy server 是 Trivy 的 server 模式:启动即拉/更新漏洞库,客户端经
+		// --server 复用;--token 开启访问鉴权(默认自动生成,自动登记时经 vault 密封,
+		// 目标机扫描命令由安全中心代填同值)。command 列表项无占位符空缺问题:token
+		// secret 必填 + 自动生成,渲染后恒非空。
+		ComposeYAML: `services:
+  trivy-server:
+    image: aquasec/trivy:{{version}}
+    restart: unless-stopped
+    command:
+      - server
+      - --listen
+      - 0.0.0.0:{{port}}
+      - --token
+      - {{token}}
+    ports:
+      - "{{port}}:{{port}}"
+    volumes:
+      - trivy-cache:/root/.cache/trivy
+volumes:
+  trivy-cache:
+`,
+		Params: []ParamSpec{
+			{Name: "version", Label: "镜像版本", Type: ParamTypeString, Default: "latest"},
+			{Name: "port", Label: "服务端口(宿主=容器)", Type: ParamTypeInt, Default: "4954"},
+			{Name: "token", Label: "访问令牌", Type: ParamTypeSecret, Required: true, AutoGenerate: true},
+		},
+		Builtin: true,
+	},
 }
 
 // retiredBuiltins 是已从商店下架的内置模板名:EnsureBuiltins 时对库中的内置行删除,

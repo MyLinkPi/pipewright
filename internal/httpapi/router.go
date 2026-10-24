@@ -55,6 +55,7 @@ import (
 	"github.com/huangchengsir/pipewright/internal/retention"
 	"github.com/huangchengsir/pipewright/internal/run"
 	"github.com/huangchengsir/pipewright/internal/runner"
+	"github.com/huangchengsir/pipewright/internal/secscan"
 	"github.com/huangchengsir/pipewright/internal/servercmd"
 	"github.com/huangchengsir/pipewright/internal/servicereg"
 	"github.com/huangchengsir/pipewright/internal/srcupdate"
@@ -145,6 +146,7 @@ type options struct {
 	appStore             appstore.Service
 	dbAdmin              dbadmin.Service
 	redisAdmin           redisadmin.Service
+	secScan              secscan.Service
 	pveAdmin             pveadmin.Service
 	diskAdmin            diskadmin.Service
 	fileAdmin            fileadmin.Service
@@ -611,6 +613,14 @@ func WithRedisAdmin(s redisadmin.Service) Option {
 	return func(o *options) { o.redisAdmin = s }
 }
 
+// WithSecScan 注入「安全中心」服务(internal/secscan),挂载 /api/security/* 路由
+// (admin 组:auth + CSRF + 审计;trivy-server 扫描器登记 + 单机/全量扫描 + 定时规则 +
+// HTML 审计报告)。扫描令牌经 vault 密文;应用市场部署 trivy-server 模板成功后经此服务
+// 联动自动登记。不传则安全中心端点不挂载(503 语义由前端提示)。
+func WithSecScan(s secscan.Service) Option {
+	return func(o *options) { o.secScan = s }
+}
+
 // WithAnomaly 注入可配置异常检测服务(Story 6.5;FR-23),挂载 /api/anomaly/* 路由
 // (GET rules/alerts auth;POST rules/check + DELETE rules/{id} auth + CSRF)。检测复用 6-1
 // 指标采集(metricsCollector 适配 collectServerMetrics);不可达/指标 null 的服务器跳过(不误报)。
@@ -813,6 +823,11 @@ func New(webFS fs.FS, authn auth.Authenticator, opts ...Option) http.Handler {
 			// Redis 管理面(管理员):实例注册 + SCAN 分页键浏览 + 删键/改 TTL。
 			if o.redisAdmin != nil {
 				mountRedisAdmin(ar, o.redisAdmin, aud)
+			}
+			// 安全中心(管理员):trivy-server 扫描器登记 + Trivy/Nuclei 扫描 +
+			// 定时规则 + HTML 审计报告。
+			if o.secScan != nil {
+				mountSecurity(ar, o.secScan, aud)
 			}
 			// Ceph 管理面(管理员):集群登记/cephadm 部署管线/状态 + 主机/OSD/池/RBD/CephFS 管理。
 			if o.pveAdmin != nil {
@@ -1137,7 +1152,7 @@ func New(webFS fs.FS, authn auth.Authenticator, opts ...Option) http.Handler {
 		// 生成的 secret 仅部署响应一次性返回;审计只记模板名,不记参数值。
 		// RustFS 模板部署成功后联动自动登记对象存储;mysql/postgres 模板联动自动登记
 		// 数据库实例(均尽力而为,不影响部署结果)。
-		ar.Post("/servers/{id}/apps/deploy", makeDeployAppHandler(o.appStore, csv, aud, o.objectStores, o.dbAdmin, o.redisAdmin))
+		ar.Post("/servers/{id}/apps/deploy", makeDeployAppHandler(o.appStore, csv, aud, o.objectStores, o.dbAdmin, o.redisAdmin, o.secScan))
 		// 应用市场升级:读参数边车原位保留参数(空值键 = 保持不变,secret 不重新生成)→
 		// 重渲染 → 复用 Stacks 链路 up -d;upgrade-context 供升级表单预填(secret 只回有值标记)。
 		ar.Get("/servers/{id}/apps/upgrade-context", makeAppUpgradeContextHandler(o.appStore, csv))

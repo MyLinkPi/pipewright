@@ -88,6 +88,7 @@ const ja: typeof zhCN = {
     certificates: '証明書管理',
     anomaly: '異常検知',
     ssarMonitor: 'マシン監視',
+    security: 'セキュリティ',
     notifications: '通知',
     settings: '設定',
     users: 'ユーザー管理',

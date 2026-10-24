@@ -72,6 +72,7 @@ import (
 	"github.com/huangchengsir/pipewright/internal/retention"
 	"github.com/huangchengsir/pipewright/internal/run"
 	"github.com/huangchengsir/pipewright/internal/runner"
+	"github.com/huangchengsir/pipewright/internal/secscan"
 	"github.com/huangchengsir/pipewright/internal/servercmd"
 	"github.com/huangchengsir/pipewright/internal/servicereg"
 	"github.com/huangchengsir/pipewright/internal/ssar"
@@ -546,6 +547,19 @@ func main() {
 	// 实例默认只读;应用市场部署 redis 模板成功后经此服务联动自动登记。
 	redisAdminSvc := redisadmin.New(st.DB, credVault)
 
+	// 安全中心(trivy-server 扫描器登记 + Trivy/Nuclei 扫描 + 定时规则 + HTML 审计报告):
+	// 扫描经 target 层 SSH 在目标机 docker run 扫描器容器(无主动超时;重启后由
+	// MarkStaleRuns 诚实标记中断);令牌走 vault 密文;完整报告 JSON 落制品库。应用市场
+	// 部署 trivy-server 模板成功后经此服务联动自动登记。
+	secScanOpts := []secscan.Option{secscan.WithVault(credVault), secscan.WithRunner(secscan.SSHRunner{Svc: targetSvc})}
+	if artStore != nil {
+		secScanOpts = append(secScanOpts, secscan.WithArtifacts(artStore))
+	}
+	secScanSvc := secscan.New(st.DB, secScanOpts...)
+	if err := secScanSvc.MarkStaleRuns(context.Background()); err != nil {
+		log.Printf("[security] 遗留扫描标记失败:%v", err)
+	}
+
 	// PVE 集群纳管与管理(服务器池 0084):PVE 物理机登记时探测自动建池;API Token 走
 	// vault 密文;电源操作默认只读。需要 target 层(SSH 探测)与 vault。
 	pveAdminSvc := pveadmin.New(st.DB, credVault, targetSvc)
@@ -939,6 +953,13 @@ func main() {
 		WithTask("repocache-prune", func(ctx context.Context) error {
 			maintenance.LogResult(maintSvc.CleanRepocache(ctx))
 			return nil
+		}).
+		WithTask("security-scan-retention", func(ctx context.Context) error {
+			// 安全扫描历史保留 30 天(明细 artifact 文件不回收,属可接受占用)。
+			if n, err := secScanSvc.Sweep(ctx, time.Now().Add(-30*24*time.Hour)); err == nil && n > 0 {
+				log.Printf("[security] 已清理 %d 条过期扫描记录", n)
+			}
+			return nil
 		})
 	retentionSweeper.Start(context.Background())
 	log.Printf("[retention] 保留清理器已启动(每小时一扫;策略默认关,需在设置开启;磁盘治理任务除外——缓存/镜像回收默认生效)")
@@ -1056,7 +1077,7 @@ func main() {
 
 	srv := &http.Server{
 		Addr:              cfg.Addr,
-		Handler:           httpapi.New(webFS, authSvc, httpapi.WithVault(credVault), httpapi.WithProjects(projectSvc), httpapi.WithTriggers(triggerSvc), httpapi.WithPipelines(pipelineSvc), httpapi.WithPipelineSettings(pipelineSettingsSvc), httpapi.WithRuns(runSvc, pool), httpapi.WithWebhooks(webhookReceiver), httpapi.WithWebhookForwarder(webhookForwarder), httpapi.WithAudit(auditRec), httpapi.WithAccount(authSvc), httpapi.WithIdentity(identitySvc), httpapi.WithAISettings(aiSvc), httpapi.WithAIGenerate(repoAnalyzer), httpapi.WithRunDiff(runDiffer), httpapi.WithSource(sourceReader), httpapi.WithRefs(refsLister), httpapi.WithArtifactStore(artStore), httpapi.WithArtifactImageTransfer(meshImages), httpapi.WithArtifactTransfer(artifactTransfers), httpapi.WithServers(targetSvc), httpapi.WithLabels(labelsSvc), httpapi.WithServerCommands(serverCmdSvc), httpapi.WithSSHTunnels(sshtunnelSvc), httpapi.WithRegistryHub(registryHubSvc), httpapi.WithRunnerConfig(runnerSvc), httpapi.WithDeploy(deploySvc), httpapi.WithSpecLoader(resumeSpecLoader), httpapi.WithNotifications(notifySvc), httpapi.WithRetention(retentionSvc), httpapi.WithDNSProviders(dnsSvc), httpapi.WithAliyunEcs(aliyunSvc), httpapi.WithObjectStores(objectStoreSvc), httpapi.WithCertMgmt(certSvc), httpapi.WithCertDeploys(certDeploySvc), httpapi.WithPlatformHTTPS(platformHTTPSSvc), httpapi.WithFirewall(firewallSvc), httpapi.WithSystemConfig(sysCfgSvc), httpapi.WithMFA(mfaSvc), httpapi.WithServiceReg(serviceRegSvc), httpapi.WithAppStore(appStoreSvc), httpapi.WithDBAdmin(dbAdminSvc), httpapi.WithRedisAdmin(redisAdminSvc), httpapi.WithPVEAdmin(pveAdminSvc), httpapi.WithDiagnosisFeedback(feedbackSvc), httpapi.WithAnomaly(anomalySvc), httpapi.WithAnomalyConfig(int(anomalyInterval.Seconds()), int(anomalyCooldown.Seconds())), httpapi.WithMetricsHistory(metricsHist), httpapi.WithSsar(ssarSvc), httpapi.WithSecretSource(secretSrc), httpapi.WithOAuth(oauthSvc), httpapi.WithCron(cronSvc), httpapi.WithChain(chainSvc), httpapi.WithApprovals(approvalCoord, approvalStore), httpapi.WithApprovalLinks(approvalSigner), httpapi.WithWaitNode(waitCoord), httpapi.WithConcurrency(concurrencySvc), httpapi.WithParameters(parameterSvc), httpapi.WithDoraMetrics(doraMetricsSvc), httpapi.WithTemplates(templateSvc), httpapi.WithVariableGroups(varGroupSvc), httpapi.WithCustomNodes(customNodeSvc), httpapi.WithOpsChat(opsChatSvc), httpapi.WithMesh(meshAdminDeps), httpapi.WithCeph(cephSvc), httpapi.WithDiskAdmin(diskAdminSvc), httpapi.WithFileAdmin(fileAdminSvc), httpapi.WithMaintenance(maintSvc), httpapi.WithProjectMirrorCleaner(projectMirrorCleaner), httpapi.WithReexecGuard(reexecGuard{runs: runSvc, shared: sharedBuildSrv})),
+		Handler:           httpapi.New(webFS, authSvc, httpapi.WithVault(credVault), httpapi.WithProjects(projectSvc), httpapi.WithTriggers(triggerSvc), httpapi.WithPipelines(pipelineSvc), httpapi.WithPipelineSettings(pipelineSettingsSvc), httpapi.WithRuns(runSvc, pool), httpapi.WithWebhooks(webhookReceiver), httpapi.WithWebhookForwarder(webhookForwarder), httpapi.WithAudit(auditRec), httpapi.WithAccount(authSvc), httpapi.WithIdentity(identitySvc), httpapi.WithAISettings(aiSvc), httpapi.WithAIGenerate(repoAnalyzer), httpapi.WithRunDiff(runDiffer), httpapi.WithSource(sourceReader), httpapi.WithRefs(refsLister), httpapi.WithArtifactStore(artStore), httpapi.WithArtifactImageTransfer(meshImages), httpapi.WithArtifactTransfer(artifactTransfers), httpapi.WithServers(targetSvc), httpapi.WithLabels(labelsSvc), httpapi.WithServerCommands(serverCmdSvc), httpapi.WithSSHTunnels(sshtunnelSvc), httpapi.WithRegistryHub(registryHubSvc), httpapi.WithRunnerConfig(runnerSvc), httpapi.WithDeploy(deploySvc), httpapi.WithSpecLoader(resumeSpecLoader), httpapi.WithNotifications(notifySvc), httpapi.WithRetention(retentionSvc), httpapi.WithDNSProviders(dnsSvc), httpapi.WithAliyunEcs(aliyunSvc), httpapi.WithObjectStores(objectStoreSvc), httpapi.WithCertMgmt(certSvc), httpapi.WithCertDeploys(certDeploySvc), httpapi.WithPlatformHTTPS(platformHTTPSSvc), httpapi.WithFirewall(firewallSvc), httpapi.WithSystemConfig(sysCfgSvc), httpapi.WithMFA(mfaSvc), httpapi.WithServiceReg(serviceRegSvc), httpapi.WithAppStore(appStoreSvc), httpapi.WithDBAdmin(dbAdminSvc), httpapi.WithRedisAdmin(redisAdminSvc), httpapi.WithSecScan(secScanSvc), httpapi.WithPVEAdmin(pveAdminSvc), httpapi.WithDiagnosisFeedback(feedbackSvc), httpapi.WithAnomaly(anomalySvc), httpapi.WithAnomalyConfig(int(anomalyInterval.Seconds()), int(anomalyCooldown.Seconds())), httpapi.WithMetricsHistory(metricsHist), httpapi.WithSsar(ssarSvc), httpapi.WithSecretSource(secretSrc), httpapi.WithOAuth(oauthSvc), httpapi.WithCron(cronSvc), httpapi.WithChain(chainSvc), httpapi.WithApprovals(approvalCoord, approvalStore), httpapi.WithApprovalLinks(approvalSigner), httpapi.WithWaitNode(waitCoord), httpapi.WithConcurrency(concurrencySvc), httpapi.WithParameters(parameterSvc), httpapi.WithDoraMetrics(doraMetricsSvc), httpapi.WithTemplates(templateSvc), httpapi.WithVariableGroups(varGroupSvc), httpapi.WithCustomNodes(customNodeSvc), httpapi.WithOpsChat(opsChatSvc), httpapi.WithMesh(meshAdminDeps), httpapi.WithCeph(cephSvc), httpapi.WithDiskAdmin(diskAdminSvc), httpapi.WithFileAdmin(fileAdminSvc), httpapi.WithMaintenance(maintSvc), httpapi.WithProjectMirrorCleaner(projectMirrorCleaner), httpapi.WithReexecGuard(reexecGuard{runs: runSvc, shared: sharedBuildSrv})),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		// WriteTimeout 置 0:SSE 长连接(/api/runs/{id}/events)不可被写超时切断;
@@ -1200,6 +1221,44 @@ func main() {
 			}
 		}()
 	}
+
+	// 安全中心定时扫描器:分钟对齐(与项目 cron 调度器同纪律),规则在前端配置
+	// (security_schedule 单行:enabled + 5 段 cron + 扫描类型)。到点对全部纳管服务器
+	// (排除 PVE 节点)发起所选类型扫描(trigger=scheduled),同分钟去重;未启用空转。
+	go func() {
+		ticker := time.NewTicker(time.Minute)
+		defer ticker.Stop()
+		lastMinute := ""
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case t := <-ticker.C:
+				sch, err := secScanSvc.GetSchedule(ctx)
+				if err != nil || !sch.Enabled {
+					continue
+				}
+				sched, err := cron.Parse(sch.Expression)
+				if err != nil {
+					continue // 表达式非法(保存端已校验,防御旧脏数据)
+				}
+				minute := t.UTC().Truncate(time.Minute).Format(time.RFC3339)
+				if minute == lastMinute || !sched.Matches(t) {
+					continue
+				}
+				lastMinute = minute
+				runs, err := secScanSvc.StartFleetScan(ctx, sch.ScanTypes, secscan.TriggerScheduled)
+				if err != nil {
+					if ctx.Err() == nil {
+						log.Printf("[security] 定时扫描触发失败:%v", err)
+					}
+					continue
+				}
+				_ = secScanSvc.TouchScheduleLastRun(ctx, t)
+				log.Printf("[security] 定时扫描已触发:%d 个扫描任务(%v)", len(runs), sch.ScanTypes)
+			}
+		}
+	}()
 
 	go func() {
 		log.Printf("pipewright listening on %s", cfg.Addr)
