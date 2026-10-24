@@ -119,4 +119,13 @@ export default {
   revealFailed: 'Failed to reveal secret',
   fieldSecretNew: 'New secret',
   secretOptionalEdit: '(leave blank to keep current)',
+
+  sshKeygenAlgorithm: 'Key algorithm',
+  sshKeygenGenerate: 'Generate new key pair',
+  sshKeygenGenerating: 'Generating…',
+  sshKeygenPublicKey: 'Public key (deploy to target)',
+  sshKeygenCopyPublic: 'Copy public key',
+  sshKeygenCopied: 'Public key copied',
+  sshKeygenFailed: 'Failed to generate key pair',
+  sshKeygenHint: 'Add the public key to the target server\u2019s ~/.ssh/authorized_keys, or to the SSH keys of your Git platform account. The private key will be stored encrypted as the credential.',
 }

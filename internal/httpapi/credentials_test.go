@@ -80,6 +80,30 @@ func TestRegistryCreateExplicitEmptyUsernameDoesNotExposeTokenPrefix(t *testing.
 	}
 }
 
+func TestGenerateSSHKeyPairEndpoint(t *testing.T) {
+	srv, client, csrf := setupVaultServer(t)
+	for _, body := range []string{`{"algorithm":"ed25519"}`, `{"algorithm":"rsa2048"}`, `{}`} {
+		resp := doJSON(t, client, "POST", srv.URL+"/api/credentials/ssh-keypair", csrf, body)
+		raw, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		var out struct {
+			PrivateKey string `json:"privateKey"`
+			PublicKey  string `json:"publicKey"`
+		}
+		if resp.StatusCode != 200 || json.Unmarshal(raw, &out) != nil ||
+			!strings.HasPrefix(out.PrivateKey, "-----BEGIN OPENSSH PRIVATE KEY-----") ||
+			!strings.HasPrefix(out.PublicKey, "ssh-") {
+			t.Fatal(body, resp.StatusCode, string(raw))
+		}
+	}
+	resp := doJSON(t, client, "POST", srv.URL+"/api/credentials/ssh-keypair", csrf, `{"algorithm":"dsa"}`)
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != 400 || !strings.Contains(string(raw), "invalid_algorithm") {
+		t.Fatal(resp.StatusCode, string(raw))
+	}
+}
+
 // setupVaultServer 构造带认证 + 凭据保险库的测试 server。
 func setupVaultServer(t *testing.T) (*httptest.Server, *http.Client, string) {
 	t.Helper()

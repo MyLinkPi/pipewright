@@ -119,4 +119,13 @@ export default {
   revealFailed: '평문 보기에 실패했습니다',
   fieldSecretNew: '새 시크릿 내용',
   secretOptionalEdit: '(비워 두면 교체하지 않음)',
+
+  sshKeygenAlgorithm: '키 알고리즘',
+  sshKeygenGenerate: '새 키 쌍 생성',
+  sshKeygenGenerating: '생성 중…',
+  sshKeygenPublicKey: '공개 키(대상에 배포)',
+  sshKeygenCopyPublic: '공개 키 복사',
+  sshKeygenCopied: '공개 키가 복사되었습니다',
+  sshKeygenFailed: '키 쌍 생성 실패',
+  sshKeygenHint: '공개 키를 대상 서버의 ~/.ssh/authorized_keys 또는 Git 플랫폼 계정의 SSH 키 설정에 추가하세요. 개인 키는 자격 증명으로 암호화되어 저장됩니다.',
 }

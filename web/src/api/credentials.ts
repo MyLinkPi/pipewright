@@ -6,6 +6,7 @@
  * PATCH  /api/credentials/:id        → Credential  (needs CSRF)
  * DELETE /api/credentials/:id        → 204          (needs CSRF)
  * POST   /api/credentials/:id/reveal → { secret }   (needs CSRF; audited; no UI caller)
+ * POST   /api/credentials/ssh-keypair → { privateKey, publicKey } (needs CSRF; stateless, nothing persisted)
  *
  * List/get never return plaintext — only maskedValue is exposed. The reveal endpoint
  * remains part of the contract (auth + CSRF + `credential_reveal` audit), but the UI
@@ -76,6 +77,33 @@ export async function updateCredential(
 
 export async function deleteCredential(id: string): Promise<void> {
   return http.delete<void>(`/api/credentials/${id}`)
+}
+
+/** SSH key algorithms the backend keypair generator accepts ("ed25519" is the default). */
+export type SshKeyAlgorithm =
+  | 'ed25519'
+  | 'rsa2048'
+  | 'rsa3072'
+  | 'rsa4096'
+  | 'ecdsa256'
+  | 'ecdsa384'
+  | 'ecdsa521'
+
+export interface SshKeyPair {
+  /** OpenSSH PEM private key (no passphrase) — fill into the secret field once, never stored by the server. */
+  privateKey: string
+  /** Single-line authorized_keys public key (e.g. "ssh-ed25519 AAAA…"). */
+  publicKey: string
+}
+
+/**
+ * Ask the server to generate a fresh SSH key pair (POST + CSRF; stateless crypto —
+ * nothing is persisted, the private key is returned exactly once). The user deploys
+ * the public key to the target host / Git platform, the private key goes into the
+ * credential form and is sealed on create like any pasted key.
+ */
+export async function generateSshKeyPair(algorithm: SshKeyAlgorithm): Promise<SshKeyPair> {
+  return http.post<SshKeyPair>('/api/credentials/ssh-keypair', { algorithm })
 }
 
 /**

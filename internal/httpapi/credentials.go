@@ -3,6 +3,7 @@ package httpapi
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"time"
 
@@ -61,6 +62,8 @@ func writeVaultError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadRequest, "invalid_credential", "name 不能为空")
 	case errors.Is(err, vault.ErrInvalidUsername):
 		writeError(w, http.StatusBadRequest, "invalid_credential", "Registry username cannot contain colons or control characters.")
+	case errors.Is(err, vault.ErrInvalidSSHKeyAlgorithm):
+		writeError(w, http.StatusBadRequest, "invalid_algorithm", "密钥算法不支持")
 	default:
 		// 包含 ErrDecrypt 等内部错误:不泄漏细节。
 		writeError(w, http.StatusInternalServerError, "internal", "服务器内部错误")
@@ -132,6 +135,30 @@ func makeCreateCredentialHandler(v vault.Vault, aud audit.Recorder) http.Handler
 			IP:         clientIP(r),
 		})
 		writeJSON(w, http.StatusCreated, toDTO(cred))
+	}
+}
+
+// makeGenerateSSHKeyPairHandler 返回 POST /api/credentials/ssh-keypair handler。
+// 按可选算法生成一对新 SSH 密钥:私钥(OpenSSH PEM)回填表单 textarea,公钥
+// (authorized_keys 单行)交用户部署到目标服务器/Git 平台。纯无状态加密运算,
+// 不落库、不触及既有凭据,故无需 vault 实例、不写审计;新生成的私钥仅在本次
+// 响应中一次性返回(POST + CSRF,不做可预取的 GET,与 reveal 同一安全姿态)。
+func makeGenerateSSHKeyPairHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		r.Body = http.MaxBytesReader(w, r.Body, 4<<10)
+		var req struct {
+			Algorithm string `json:"algorithm"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+			writeError(w, http.StatusBadRequest, "bad_request", "请求体格式错误")
+			return
+		}
+		privateKey, publicKey, err := vault.GenerateSSHKeyPair(req.Algorithm)
+		if err != nil {
+			writeVaultError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"privateKey": privateKey, "publicKey": publicKey})
 	}
 }
 

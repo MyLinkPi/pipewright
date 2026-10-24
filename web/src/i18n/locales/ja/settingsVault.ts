@@ -119,4 +119,13 @@ export default {
   revealFailed: '平文の表示に失敗しました',
   fieldSecretNew: '新しいシークレットの内容',
   secretOptionalEdit: '（空欄ならローテーションしません）',
+
+  sshKeygenAlgorithm: '鍵アルゴリズム',
+  sshKeygenGenerate: '新しい鍵ペアを生成',
+  sshKeygenGenerating: '生成中…',
+  sshKeygenPublicKey: '公開鍵(対象に配置)',
+  sshKeygenCopyPublic: '公開鍵をコピー',
+  sshKeygenCopied: '公開鍵をコピーしました',
+  sshKeygenFailed: '鍵ペアの生成に失敗しました',
+  sshKeygenHint: '公開鍵を対象サーバーの ~/.ssh/authorized_keys または Git プラットフォームアカウントの SSH キー設定に追加してください。秘密鍵は資格情報として暗号化保存されます。',
 }
