@@ -6,6 +6,7 @@
 */
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { useRouter } from 'vue-router'
 import { getAllPm2, getServerPm2, type ServerPm2, type Pm2Process } from '../api/pm2'
 import { listServers, serviceAction, LOCAL_HOST_ID, type Server, type ServiceAction } from '../api/servers'
 import { HttpError } from '../api/http'
@@ -192,6 +193,14 @@ function openDetail(serverId: string, p: Pm2Process): void {
   detailTarget.value = { serverId, process: p }
 }
 
+// ─── 主机终端(卡片头部「终端」按钮) ────────────────────────────────────────────
+// 新标签页打开全屏运维终端页(复用 server-terminal;本机 __local__ 走本地 PTY)。
+const router = useRouter()
+function openTerminal(serverId: string): void {
+  const url = router.resolve({ name: 'server-terminal', params: { id: serverId } }).href
+  window.open(url, '_blank', 'noopener')
+}
+
 // ─── 加载 ─────────────────────────────────────────────────────────────────────
 async function load(): Promise<void> {
   const firstLoad = groups.value.length === 0
@@ -369,6 +378,7 @@ onUnmounted(() => {
           @changed="load"
           @logs="(p) => openLogs(g.serverId, p)"
           @detail="(p) => openDetail(g.serverId, p)"
+          @terminal="openTerminal(g.serverId)"
         />
       </section>
     </template>
