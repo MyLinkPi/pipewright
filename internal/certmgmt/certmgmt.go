@@ -253,13 +253,14 @@ type Service interface {
 
 // service 是 store + target + vault (+ resolver/gateway/sink/phttps 注入) 支撑的 Service 实现。
 type service struct {
-	store  *Store
-	tg     target.Service
-	vault  SecretSealer
-	dns    CredentialsResolver
-	sink   CertSink
-	home   string // 本地 acme home(空 → homeDir() 兜底:env / "acme")
-	phttps PlatformHTTPS
+	store   *Store
+	tg      target.Service
+	vault   SecretSealer
+	dns     CredentialsResolver
+	sink    CertSink
+	home    string // 本地 acme home(空 → homeDir() 兜底:env / "acme")
+	phttps  PlatformHTTPS
+	certdep PlatformHTTPS // 证书部署目标联动器(certdeploy.Service;nil = 无部署目标能力)
 
 	mu       sync.Mutex
 	inflight map[string]struct{} // 正在签发/续期的证书 id(防重入)
@@ -291,6 +292,10 @@ func (s *service) SetCertSink(cs CertSink) { s.sink = cs }
 
 // SetPlatformHTTPS 注入平台 HTTPS(宿主 nginx)联动器(nil = 联动能力降级,证书本体不受影响)。
 func (s *service) SetPlatformHTTPS(p PlatformHTTPS) { s.phttps = p }
+
+// SetCertDeploys 注入证书部署目标联动器(nil = 无部署目标能力;签发/导入/续期后联动
+// 重新部署、删除证书前占用拦截,均为 best-effort,不影响证书本体)。
+func (s *service) SetCertDeploys(p PlatformHTTPS) { s.certdep = p }
 
 func (s *service) logf(format string, args ...any) {
 	log.Printf(format, args...)
@@ -395,6 +400,10 @@ func (s *service) Import(ctx context.Context, in ImportInput) (*Certificate, err
 	if hint := s.syncPlatformHTTPS(ctx, c.ID); hint != "" {
 		_ = s.store.appendStatusDetail(ctx, c.ID, hint)
 	}
+	// 证书部署目标(远程机器)联动下发,同样 best-effort。
+	if hint := s.syncCertDeploys(ctx, c.ID); hint != "" {
+		_ = s.store.appendStatusDetail(ctx, c.ID, hint)
+	}
 	return s.store.get(ctx, c.ID)
 }
 
@@ -412,6 +421,10 @@ func (s *service) Renew(ctx context.Context, id string) (*Certificate, error) {
 			return nil, fmt.Errorf("%w:%s", ErrIssue, hint)
 		}
 		if hint := s.syncPlatformHTTPS(ctx, id); hint != "" {
+			_ = s.store.appendStatusDetail(ctx, id, hint)
+			return nil, fmt.Errorf("%w:%s", ErrIssue, hint)
+		}
+		if hint := s.syncCertDeploys(ctx, id); hint != "" {
 			_ = s.store.appendStatusDetail(ctx, id, hint)
 			return nil, fmt.Errorf("%w:%s", ErrIssue, hint)
 		}
@@ -444,6 +457,12 @@ func (s *service) Delete(ctx context.Context, id string) error {
 	if s.phttps != nil {
 		if used, uerr := s.phttps.UsesCert(ctx, id); uerr == nil && used {
 			return fmt.Errorf("%w:平台 HTTPS 正在使用该证书,请先在「设置 → HTTPS 访问」中更换或关闭", ErrCertInUse)
+		}
+	}
+	// 存在证书部署目标(远程机器)→ 拦截删除(避免悬挂部署物)。
+	if s.certdep != nil {
+		if used, uerr := s.certdep.UsesCert(ctx, id); uerr == nil && used {
+			return fmt.Errorf("%w:该证书已配置部署目标,请先在「证书管理 → 部署」中删除对应部署目标", ErrCertInUse)
 		}
 	}
 	// acme 证书:best-effort 从 acme.sh 续期清单移除(不向 CA revoke,避免误删不可逆)。
@@ -581,6 +600,10 @@ func (s *service) issueCert(ctx context.Context, id string) error {
 	if hint := s.syncPlatformHTTPS(ctx, id); hint != "" {
 		_ = s.store.appendStatusDetail(ctx, id, hint)
 	}
+	// 证书部署目标(远程机器)联动下发,同样 best-effort(续期后自动部署的核心路径)。
+	if hint := s.syncCertDeploys(ctx, id); hint != "" {
+		_ = s.store.appendStatusDetail(ctx, id, hint)
+	}
 	return nil
 }
 
@@ -657,6 +680,18 @@ func (s *service) syncPlatformHTTPS(ctx context.Context, id string) string {
 	}
 	if err := s.phttps.RedeployCert(ctx, id); err != nil {
 		return "下发提示:平台 HTTPS 证书同步失败 → " + truncate(err.Error(), 300)
+	}
+	return ""
+}
+
+// syncCertDeploys 把证书联动重新部署到全部部署目标(远程机器):未接入/无启用目标时
+// no-op。返回非空串 = 人话提示(部分目标失败;各目标明细已落 cert_deploys.status_detail)。
+func (s *service) syncCertDeploys(ctx context.Context, id string) string {
+	if s.certdep == nil {
+		return ""
+	}
+	if err := s.certdep.RedeployCert(ctx, id); err != nil {
+		return "下发提示:证书部署目标同步失败 → " + truncate(err.Error(), 300)
 	}
 	return ""
 }
@@ -799,6 +834,11 @@ func (s *service) cleanupBackfillCopies(ctx context.Context) {
 		}
 		if s.phttps != nil {
 			if used, uerr := s.phttps.UsesCert(ctx, cp.ID); uerr == nil && used {
+				continue
+			}
+		}
+		if s.certdep != nil {
+			if used, uerr := s.certdep.UsesCert(ctx, cp.ID); uerr == nil && used {
 				continue
 			}
 		}

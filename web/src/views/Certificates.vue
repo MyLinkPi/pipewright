@@ -14,7 +14,7 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { NIcon } from 'naive-ui'
-import { Certificate as CertIcon, Lock, LockOpen, AlertTriangle, Refresh, Plus, Download, Trash, Rotate, Rocket } from '@vicons/tabler'
+import { Certificate as CertIcon, Lock, LockOpen, AlertTriangle, Refresh, Plus, Download, Trash, Rotate, Rocket, Server } from '@vicons/tabler'
 import {
   listCerts,
   createCert,
@@ -38,6 +38,7 @@ import ErrorState from '../components/ui/ErrorState.vue'
 import SkeletonBlock from '../components/ui/SkeletonBlock.vue'
 import AppButton from '../components/ui/AppButton.vue'
 import AppSelect from '../components/ui/AppSelect.vue'
+import CertDeployModal from '../components/certs/CertDeployModal.vue'
 
 const { t } = useI18n()
 const toast = useToast()
@@ -224,6 +225,12 @@ async function deleteRow(r: Row): Promise<void> {
   } catch (err) {
     toast.error(errMsg(err, t('certMgmt.deleteFail')))
   }
+}
+
+// ─── 部署目标:管理某张证书的远程部署(签发/导入/续期后自动联动) ────────────────
+const deployFor = ref<Cert | null>(null)
+function openDeploy(r: Row): void {
+  deployFor.value = r.cert
 }
 
 // ─── 引擎卡 ────────────────────────────────────────────────────────────────────
@@ -514,6 +521,14 @@ async function submitImport(): Promise<void> {
                 <button
                   class="rowbtn"
                   :disabled="isBusy(r.cert.id) || r.cert.status === 'pending'"
+                  :title="t('certMgmt.deploy.title')"
+                  @click="openDeploy(r)"
+                >
+                  <NIcon :size="14"><Server /></NIcon>
+                </button>
+                <button
+                  class="rowbtn"
+                  :disabled="isBusy(r.cert.id) || r.cert.status === 'pending'"
                   :title="r.cert.source === 'acme' ? t('certMgmt.renewTitle') : t('certMgmt.redeployTitle')"
                   @click="renewRow(r)"
                 >
@@ -608,6 +623,8 @@ async function submitImport(): Promise<void> {
         </footer>
       </div>
     </div>
+    <!-- 证书部署目标管理(签发/导入/续期后自动联动部署) -->
+    <CertDeployModal v-if="deployFor" :cert="deployFor" @close="deployFor = null" />
   </div>
 </template>
 

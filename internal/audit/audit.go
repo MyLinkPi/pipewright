@@ -90,6 +90,11 @@ const (
 	ActionTunnelUpdate = "tunnel_update"
 	ActionTunnelDelete = "tunnel_delete"
 	ActionTunnelOp     = "tunnel_op"
+	// 证书部署目标(0100):配置增删改与手动触发部署(敏感:向目标机写证书并执行命令)。
+	ActionCertDeployCreate = "cert_deploy_create"
+	ActionCertDeployUpdate = "cert_deploy_update"
+	ActionCertDeployDelete = "cert_deploy_delete"
+	ActionCertDeployRun    = "cert_deploy_run"
 )
 
 // 目标类型枚举(供 TargetType 填值;非强制白名单,便于后续 story 扩展)。
@@ -109,6 +114,7 @@ const (
 	TargetInvitation  = "invitation"
 	TargetSsar        = "ssar"
 	TargetTunnel      = "tunnel"
+	TargetCertDeploy  = "cert_deploy"
 )
 
 // Entry 是一条审计写入入参(冻结契约)。Detail 写库前过 Masker,绝不含明文 secret。
