@@ -100,7 +100,7 @@ func (f *deployObjStoreFake) Register(ctx context.Context, in objectstore.Regist
 func runDeployRaw(t *testing.T, apps appstore.Service, servers target.Service, objStores objectstore.Service, body string) (int, string) {
 	t.Helper()
 	r := chi.NewRouter()
-	r.Post("/servers/{id}/apps/deploy", makeDeployAppHandler(apps, servers, nil, objStores, nil, nil))
+	r.Post("/servers/{id}/apps/deploy", makeDeployAppHandler(apps, servers, nil, objStores, nil, nil, nil))
 	req := httptest.NewRequest(http.MethodPost, "/servers/srv-1/apps/deploy", strings.NewReader(body))
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
@@ -241,7 +241,7 @@ func upgradeFakes() (*deployAppFake, *deployTargetFake) {
 // upgradeRouter 挂部署 + 升级上下文 + 升级三个端点(直构造 handler,不触真 SSH/DB)。
 func upgradeRouter(apps appstore.Service, servers target.Service) *chi.Mux {
 	r := chi.NewRouter()
-	r.Post("/servers/{id}/apps/deploy", makeDeployAppHandler(apps, servers, nil, nil, nil, nil))
+	r.Post("/servers/{id}/apps/deploy", makeDeployAppHandler(apps, servers, nil, nil, nil, nil, nil))
 	r.Get("/servers/{id}/apps/upgrade-context", makeAppUpgradeContextHandler(apps, servers))
 	r.Post("/servers/{id}/apps/upgrade", makeUpgradeAppHandler(apps, servers, nil))
 	return r

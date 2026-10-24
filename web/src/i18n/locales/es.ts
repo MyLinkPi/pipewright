@@ -88,6 +88,7 @@ const es: typeof zhCN = {
     certificates: 'Certificados',
     anomaly: 'Detección de anomalías',
     ssarMonitor: 'Monitorización de máquinas',
+    security: 'Seguridad',
     notifications: 'Notificaciones',
     settings: 'Ajustes',
     users: 'Gestión de usuarios',

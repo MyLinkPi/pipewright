@@ -87,6 +87,7 @@ export default {
     certificates: '证书管理',
     anomaly: '异常检测',
     ssarMonitor: '机器监控',
+    security: '安全中心',
     notifications: '通知',
     settings: '设置',
     users: '用户管理',

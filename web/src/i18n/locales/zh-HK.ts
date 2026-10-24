@@ -87,6 +87,7 @@ const zhHK: typeof zhCN = {
     certificates: '憑證管理',
     anomaly: '異常偵測',
     ssarMonitor: '機器監控',
+    security: '安全中心',
     notifications: '通知',
     settings: '設定',
     users: '使用者管理',

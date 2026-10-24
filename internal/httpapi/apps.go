@@ -21,6 +21,7 @@ import (
 	"github.com/huangchengsir/pipewright/internal/dbadmin"
 	"github.com/huangchengsir/pipewright/internal/objectstore"
 	"github.com/huangchengsir/pipewright/internal/redisadmin"
+	"github.com/huangchengsir/pipewright/internal/secscan"
 	"github.com/huangchengsir/pipewright/internal/target"
 	"gopkg.in/yaml.v3"
 )
@@ -42,9 +43,11 @@ const (
 )
 
 // appAutoRegisterTemplates 是「部署成功后联动自动登记」的内置模板名集合:
-// rustfs → 登记为对象存储配置;mysql / postgres → 登记为数据库管理实例;redis → 登记为 Redis 管理实例。
+// rustfs → 登记为对象存储配置;mysql / postgres → 登记为数据库管理实例;redis → 登记为
+// Redis 管理实例;trivy-server → 登记为安全中心扫描器。
 const appAutoRegisterObjectStoreTemplate = "rustfs"
 const appAutoRegisterRedisTemplate = "redis"
+const appAutoRegisterScannerTemplate = "trivy-server"
 
 var appAutoRegisterDBTemplates = map[string]bool{
 	"mysql":    true,
@@ -229,6 +232,63 @@ func registerRedisInstance(ctx context.Context, redisAdmins redisadmin.Service, 
 	recordAudit(r.Context(), aud, audit.Entry{
 		Actor: auditActor, Action: auditActionRedisInstanceRegister, TargetType: auditTargetAppStore,
 		TargetID: res.Instance.ID,
+		Detail:   map[string]any{"host": srv.Host, "port": port, "source": "appstore", "ok": true, "updated": res.Updated}, IP: clientIP(r),
+	})
+	return true, note
+}
+
+// registerScannerInstance 是应用商店部署 trivy-server 成功后的联动登记(尽力而为,
+// 绝不影响部署结果):从渲染后的生效参数取端口与可选令牌,交给 secscan.Register 完成
+// 幂等登记(同地址原地轮换令牌)。令牌经 vault 密封,审计只记接入参数,绝不含令牌。
+// 不做连接测试——trivy-server 首启要拉漏洞库(可达分钟级),连通性由「安全中心」
+// 扫描器的测试按钮兜底。返回 (是否已登记, 人话备注)。
+func registerScannerInstance(ctx context.Context, secScans secscan.Service, aud audit.Recorder, r *http.Request, srv target.Server, stackName string, used map[string]string, instance string) (bool, string) {
+	if secScans == nil {
+		return false, "" // 服务未注入(如裁剪装配)→ 静默跳过,部署不受影响
+	}
+	portParam := used["port"]
+	if portParam == "" {
+		return false, "生效参数缺少 port,未自动登记安全中心扫描器"
+	}
+	port, err := strconv.Atoi(strings.TrimSpace(portParam))
+	if err != nil || port < 1 || port > 65535 {
+		return false, "生效端口参数非法,未自动登记安全中心扫描器"
+	}
+	name := "Trivy Server · " + srv.Name
+	if strings.TrimSpace(name) == "Trivy Server ·" {
+		name = "Trivy Server · " + srv.Host
+	}
+	if instance != "" {
+		name += " · " + instance
+	}
+	res, err := secScans.Register(ctx, secscan.RegisterInput{
+		Name: name, Host: srv.Host, Port: port, Token: used["token"],
+		ServerID: srv.ID, StackName: stackName,
+	})
+	if err != nil {
+		msg := "自动登记安全中心扫描器失败"
+		if errors.Is(err, secscan.ErrVaultUnconfigured) {
+			msg += ":保险库未配置 master key"
+		} else {
+			msg += ":" + err.Error()
+		}
+		recordAudit(r.Context(), aud, audit.Entry{
+			Actor: auditActor, Action: auditActionSecScannerReg, TargetType: auditTargetSecurity,
+			Detail: map[string]any{"host": srv.Host, "port": port, "source": "appstore", "ok": false, "error": msg}, IP: clientIP(r),
+		})
+		return false, msg
+	}
+	note := "已自动登记到「安全中心」,可作为 Trivy 扫描的中心漏洞库服务"
+	if res.Updated {
+		note = "已更新既有扫描器登记的令牌(同地址原地轮换)"
+	}
+	targetID := ""
+	if res.Instance != nil {
+		targetID = res.Instance.ID
+	}
+	recordAudit(r.Context(), aud, audit.Entry{
+		Actor: auditActor, Action: auditActionSecScannerReg, TargetType: auditTargetSecurity,
+		TargetID: targetID,
 		Detail:   map[string]any{"host": srv.Host, "port": port, "source": "appstore", "ok": true, "updated": res.Updated}, IP: clientIP(r),
 	})
 	return true, note
@@ -555,7 +615,7 @@ func makeDeleteAppTemplateHandler(svc appstore.Service, aud audit.Recorder) http
 // 默认单实例);数据卷/网络按 compose 项目名前缀自动隔离。
 // 部署成功后在栈目录落参数边车(.appstore-params.json,含生效参数与资源限制)——「升级」
 // (POST .../apps/upgrade)靠它原位保留参数,避免 secret 重新生成改掉既有实例口令。
-func makeDeployAppHandler(apps appstore.Service, servers target.Service, aud audit.Recorder, objStores objectstore.Service, dbAdmins dbadmin.Service, redisAdmins redisadmin.Service) http.HandlerFunc {
+func makeDeployAppHandler(apps appstore.Service, servers target.Service, aud audit.Recorder, objStores objectstore.Service, dbAdmins dbadmin.Service, redisAdmins redisadmin.Service, secScans secscan.Service) http.HandlerFunc {
 	type request struct {
 		TemplateID string            `json:"templateId"`
 		Params     map[string]string `json:"params"`
@@ -659,6 +719,13 @@ func makeDeployAppHandler(apps appstore.Service, servers target.Service, aud aud
 			out.RedisRegistered, out.RedisNote = registerRedisInstance(rctx, redisAdmins, aud, r, *srv, stackName, rendered.Used, req.Instance)
 			rcancel()
 		}
+		// trivy-server 联动:部署成功后自动登记为安全中心扫描器(尽力而为,独立超时;
+		// 连通性由「安全中心」扫描器的测试按钮兜底)。
+		if out.OK && tpl.Name == appAutoRegisterScannerTemplate {
+			rctx, rcancel := context.WithTimeout(r.Context(), appRegisterTimeout)
+			out.ScannerRegistered, out.ScannerNote = registerScannerInstance(rctx, secScans, aud, r, *srv, stackName, rendered.Used, req.Instance)
+			rcancel()
+		}
 
 		detail := map[string]any{"template": tpl.Name, "ok": out.OK}
 		if req.Instance != "" {
@@ -749,6 +816,9 @@ type appDeployResponse struct {
 	// Redis 联动登记结果(仅 redis 模板且部署成功时出现;尽力而为,失败不影响 OK)。
 	RedisRegistered bool   `json:"redisRegistered,omitempty"`
 	RedisNote       string `json:"redisNote,omitempty"`
+	// 扫描器联动登记结果(仅 trivy-server 模板且部署成功时出现;尽力而为,失败不影响 OK)。
+	ScannerRegistered bool   `json:"scannerRegistered,omitempty"`
+	ScannerNote       string `json:"scannerNote,omitempty"`
 }
 
 // appStackName 推导生效栈名:实例名留空 = 模板名(兼容既有单实例);组合上限与 Stacks 一致。

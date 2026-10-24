@@ -148,6 +148,29 @@ func TestRenderParams(t *testing.T) {
 			!strings.Contains(res.Compose, "openvas-data:/var/lib/openvas") {
 			t.Fatalf("openvas 默认值未生效:\n%s", res.Compose)
 		}
+
+		// 6) trivy-server:令牌 secret 自动生成;--token 恒在 command 里;端口 4954。
+		var trivySrv *Template
+		for i := range list {
+			if list[i].Name == "trivy-server" {
+				trivySrv = &list[i]
+			}
+		}
+		if trivySrv == nil {
+			t.Fatal("缺 trivy-server 内置模板")
+		}
+		res, err = svc.Render(ctx, trivySrv.ID, map[string]string{})
+		if err != nil {
+			t.Fatalf("trivy-server 默认渲染:%v", err)
+		}
+		tok := res.Used["token"]
+		if len(tok) < 16 || !strings.Contains(res.Compose, tok) || strings.Contains(res.Compose, "{{") {
+			t.Fatalf("trivy-server 令牌应自动生成并替换:%q\n%s", tok, res.Compose)
+		}
+		if !strings.Contains(res.Compose, "4954:4954") || !strings.Contains(res.Compose, "--token") ||
+			!strings.Contains(res.Compose, "trivy-cache:/root/.cache/trivy") {
+			t.Fatalf("trivy-server 默认渲染不符:\n%s", res.Compose)
+		}
 	})
 }
 
