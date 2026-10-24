@@ -1142,6 +1142,8 @@ func New(webFS fs.FS, authn auth.Authenticator, opts ...Option) http.Handler {
 		// 重渲染 → 复用 Stacks 链路 up -d;upgrade-context 供升级表单预填(secret 只回有值标记)。
 		ar.Get("/servers/{id}/apps/upgrade-context", makeAppUpgradeContextHandler(o.appStore, csv))
 		ar.Post("/servers/{id}/apps/upgrade", makeUpgradeAppHandler(o.appStore, csv, aud))
+		// 应用市场卸载:按项目标签删容器(可选连删具名卷)→ 清受管目录(实例从列表消失)。
+		ar.Post("/servers/{id}/apps/uninstall", makeAppUninstallHandler(csv, aud))
 		// 已部署实例聚合枚举(「升级」直达入口的数据底座):全部机器上带参数边车的栈。
 		// GET 只读 → 过 auth、豁免 CSRF;find 命令纯静态 array(AC-SEC-02);某台不可达仅该台
 		// reachable:false,不 500。chi 字面段 /servers/apps 优先于 {id},不会被吞。

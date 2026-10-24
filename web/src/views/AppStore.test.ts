@@ -16,6 +16,7 @@ const h = vi.hoisted(() => ({
   deleteAppTemplate: vi.fn(),
   deployApp: vi.fn(),
   upgradeApp: vi.fn(),
+  uninstallApp: vi.fn(),
   getAppUpgradeContext: vi.fn(),
   listAppInstances: vi.fn(),
   listServers: vi.fn(),
@@ -39,6 +40,7 @@ vi.mock('../api/apps', () => ({
   deleteAppTemplate: (...a: unknown[]) => h.deleteAppTemplate(...a),
   deployApp: (...a: unknown[]) => h.deployApp(...a),
   upgradeApp: (...a: unknown[]) => h.upgradeApp(...a),
+  uninstallApp: (...a: unknown[]) => h.uninstallApp(...a),
   getAppUpgradeContext: (...a: unknown[]) => h.getAppUpgradeContext(...a),
   listAppInstances: (...a: unknown[]) => h.listAppInstances(...a),
 }))
@@ -352,12 +354,13 @@ describe('AppStore 已部署实例区', () => {
     expect(w.text()).toContain('模板已删除')
     expect(w.text()).toContain('机器C 不可达')
 
-    // 模板完好的行:升级按钮可点;模板已删的行:按钮渲染但禁用。
+    // 模板完好的行:升级/卸载按钮都可点;模板已删的行:升级禁用、卸载仍可用(卸载不依赖模板)。
     const btns = w.findAll('.apps__inst button')
-    expect(btns.length).toBe(2)
-    const enabled = btns.filter((b) => !(b.element as HTMLButtonElement).disabled)
-    expect(enabled.length).toBe(1)
-    expect(enabled[0]!.text()).toContain('升级')
+    expect(btns.length).toBe(4)
+    const upEnabled = btns.filter((b) => b.text().includes('升级') && !(b.element as HTMLButtonElement).disabled)
+    expect(upEnabled.length).toBe(1)
+    const unEnabled = btns.filter((b) => b.text().includes('卸载') && !(b.element as HTMLButtonElement).disabled)
+    expect(unEnabled.length).toBe(2)
   })
 
   it('实例区常显:空列表显示空态提示而非隐藏;加载失败显示错误与刷新入口', async () => {
@@ -507,5 +510,56 @@ describe('AppStore 已部署实例区', () => {
     await secLabel.findAll('button').find((b) => b.text().includes('隐藏'))!.trigger('click')
     await nextTick()
     expect((secInput.element as HTMLInputElement).type).toBe('password')
+  })
+})
+
+describe('AppStore 卸载', () => {
+  it('点「卸载」→ 弹窗默认保留数据卷;勾选删卷出现警示,提交带 stackName 与 deleteVolumes,成功后刷新实例区', async () => {
+    h.listAppInstances.mockResolvedValue({ items: [mkInstance()] })
+    h.uninstallApp.mockResolvedValue({
+      serverId: 's2', name: 'gitea-2', ok: true, output: '已删除容器 1 个;已清理受管目录', error: '',
+    })
+    const w = mount(AppStore)
+    await flushPromises()
+
+    await w.findAll('button').find((b) => b.text().includes('卸载'))!.trigger('click')
+    await nextTick()
+
+    // 弹窗打开:栈名/机器名可见;删卷默认不勾选 → 不可恢复警示不出现。
+    expect(w.text()).toContain('gitea-2')
+    expect(w.text()).toContain('机器B')
+    const cb = w.find('input[type="checkbox"]')
+    expect((cb.element as HTMLInputElement).checked).toBe(false)
+    expect(w.text()).not.toContain('不可恢复')
+
+    // 勾选删卷 → 警示出现;提交走 uninstall(serverId, stackName, true)。
+    await cb.setValue(true)
+    await nextTick()
+    expect(w.text()).toContain('不可恢复')
+    await w.find('form').trigger('submit')
+    await flushPromises()
+
+    expect(h.uninstallApp).toHaveBeenCalledTimes(1)
+    expect(h.uninstallApp.mock.calls[0]).toEqual(['s2', 'gitea-2', true])
+    expect(h.toast.success).toHaveBeenCalledWith('已卸载')
+    // 成功 → 弹窗关闭 + 实例区刷新(再次拉取)。
+    expect(w.text()).not.toContain('确认卸载')
+    expect(h.listAppInstances).toHaveBeenCalledTimes(2)
+  })
+
+  it('卸载失败 → 弹窗保留并 toast 后端人读原因', async () => {
+    h.listAppInstances.mockResolvedValue({ items: [mkInstance()] })
+    h.uninstallApp.mockResolvedValue({
+      serverId: 's2', name: 'gitea-2', ok: false, output: '', error: '删除容器失败:no such container',
+    })
+    const w = mount(AppStore)
+    await flushPromises()
+    await w.findAll('button').find((b) => b.text().includes('卸载'))!.trigger('click')
+    await nextTick()
+    await w.find('form').trigger('submit')
+    await flushPromises()
+
+    expect(h.toast.error).toHaveBeenCalledWith('删除容器失败:no such container')
+    expect(w.text()).toContain('确认卸载') // 弹窗仍在,可重试
   })
 })

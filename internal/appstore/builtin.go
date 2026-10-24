@@ -285,7 +285,7 @@ volumes:
 	{
 		Name:        "openvas",
 		DisplayName: "OpenVAS",
-		Description: "开源漏洞扫描平台(GVM:扫描器 + Web 控制台单容器);Web 界面走 https://<宿主IP>:<端口>(自签证书,浏览器需手动信任);镜像体积大,首启同步 NVT 特征库可达数十分钟,就绪前 Web 不可访问;数据库与特征库落具名卷 openvas-data。",
+		Description: "开源漏洞扫描平台(GVM:扫描器 + Web 控制台单容器);Web 界面走 https://<宿主IP>:<端口>(自签证书,浏览器需手动信任)。宿主机需先执行 sysctl vm.overcommit_memory=1(vm.* 非命名空间化,容器内改不了)并预留 ≥4GB 空闲内存:首启同步 NVT 特征库内存峰值高、可达数十分钟,内存不足会被 OOM 杀成启动循环,期间勿反复重启容器;数据库与特征库落具名卷 openvas-data。",
 		Icon:        "🛡️",
 		// immauss/openvas 是社区维护的单容器 GVM 全栈(gsad/gvmd/ospd-openvas + 内置
 		// postgres/redis),免多容器拼装;USERNAME/PASSWORD 即 Web 登录凭据(PASSWORD

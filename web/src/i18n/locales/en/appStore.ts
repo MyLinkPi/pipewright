@@ -99,4 +99,15 @@ export default {
     legacyHint: "No param record (deployed by an older version); in-place upgrade unavailable. Redeploy to bring it under upgrade management (secrets regenerate, data volumes kept)",
     redeploy: "Redeploy",
   },
+  uninstall: {
+    btn: "Uninstall",
+    title: "Uninstall {name}?",
+    hint: "Removes all containers of stack {stack} on {server} and deletes the managed directory (compose + param record); the instance disappears from the list.",
+    deleteVolumes: "Also delete data volumes",
+    volumeWarn: "Data inside the volumes (databases, feeds, ...) will be deleted and cannot be recovered. Leave unchecked to keep them for a future redeploy.",
+    submit: "Uninstall",
+    cancel: "Cancel",
+    done: "Uninstalled",
+    fail: "Uninstall failed",
+  },
 }

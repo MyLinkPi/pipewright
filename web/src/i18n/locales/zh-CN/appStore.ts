@@ -103,4 +103,15 @@ export default {
     legacyHint: '该实例无参数记录(旧版部署),不可原位升级;重新部署将纳入升级管理(口令会重新生成,数据卷保留)',
     redeploy: '重新部署',
   },
+  uninstall: {
+    btn: '卸载',
+    title: '卸载 {name}?',
+    hint: '将删除 {server} 上栈 {stack} 的全部容器并清理受管目录(compose 与参数记录);该实例从列表消失。',
+    deleteVolumes: '同时删除数据卷',
+    volumeWarn: '数据卷内的数据(数据库/特征库等)将一并删除,不可恢复;不勾选则保留,供重新部署后继续使用。',
+    submit: '确认卸载',
+    cancel: '取消',
+    done: '已卸载',
+    fail: '卸载失败',
+  },
 }

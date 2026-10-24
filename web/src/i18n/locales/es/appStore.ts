@@ -99,4 +99,15 @@ export default {
     legacyHint: "Sin registro de parámetros (versión antigua); no se puede actualizar in situ. Vuelve a desplegar para incorporarla a la gestión de actualizaciones (las contraseñas se regeneran, los volúmenes se conservan)",
     redeploy: "Volver a desplegar",
   },
+  uninstall: {
+    btn: "Desinstalar",
+    title: "¿Desinstalar {name}?",
+    hint: "Elimina todos los contenedores del stack {stack} en {server} y borra el directorio gestionado (compose y registro de parámetros); la instancia desaparece de la lista.",
+    deleteVolumes: "Eliminar también los volúmenes de datos",
+    volumeWarn: "Los datos de los volúmenes (bases de datos, feeds, ...) se borrarán sin posibilidad de recuperación. Deja la casilla sin marcar para conservarlos para un nuevo despliegue.",
+    submit: "Desinstalar",
+    cancel: "Cancelar",
+    done: "Desinstalado",
+    fail: "Error al desinstalar",
+  },
 }
