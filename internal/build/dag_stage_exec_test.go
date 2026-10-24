@@ -71,7 +71,7 @@ func (d *recordingDriver) RunToolchain(_ context.Context, image, _, workdir stri
 	}
 	return d.code, nil
 }
-func (d *recordingDriver) Build(context.Context, string, string, string, []string, []string, func(string, string)) (int, error) {
+func (d *recordingDriver) Build(context.Context, string, string, string, string, []string, []string, func(string, string)) (int, error) {
 	panic("Build not expected")
 }
 func (d *recordingDriver) Tag(context.Context, string, string, func(string, string)) (int, error) {
@@ -92,11 +92,13 @@ func (d *recordingDriver) InspectImage(context.Context, string) (string, int64, 
 type buildRecordingDriver struct {
 	recordingDriver
 	gotTag        string
+	gotTarget     string
 	gotBuildArgs  []string
 	gotSecretArgs []string
 }
 
-func (d *buildRecordingDriver) Build(_ context.Context, _, _, tag string, buildArgs, secretArgs []string, _ func(string, string)) (int, error) {
+func (d *buildRecordingDriver) Build(_ context.Context, _, _, target, tag string, buildArgs, secretArgs []string, _ func(string, string)) (int, error) {
+	d.gotTarget = target
 	d.gotTag = tag
 	d.gotBuildArgs = buildArgs
 	d.gotSecretArgs = secretArgs
@@ -248,6 +250,38 @@ func TestBuildImageJobInjectsPipelineVars(t *testing.T) {
 	}
 }
 
+// TestBuildImageJobPassesBuildTarget 验证 build_image 节点的 buildTarget config 键(多阶段
+// Dockerfile 目标 stage)透传到 driver:非空 → 原样传递;未配置 → 空(构建最后一个 stage)。
+func TestBuildImageJobPassesBuildTarget(t *testing.T) {
+	drv := &buildRecordingDriver{}
+	b := newDAGTestBuilder(drv, &markerCloner{})
+
+	rep := &fakeReporter{}
+	proj := &project.Project{ID: "p1", Name: "app", RepoURL: "https://example.com/r.git"}
+	job := pipeline.Job{ID: "j-img", Name: "构建backend镜像", Type: "build_image",
+		Config: map[string]any{"dockerfilePath": "Dockerfile", "artifactType": "image", "buildTarget": "backend"}}
+	err := b.runBuildImageJob(context.Background(), &reporterSink{rep: rep}, rep,
+		job, "构建", proj, nil, t.TempDir(), "abc1234", imagePushPlan{})
+	if err != nil {
+		t.Fatalf("runBuildImageJob: %v", err)
+	}
+	if drv.gotTarget != "backend" {
+		t.Errorf("target = %q, want backend", drv.gotTarget)
+	}
+
+	// 未配置 buildTarget 的节点(既有存量配置)→ 空 target,不改变历史行为。
+	drv2 := &buildRecordingDriver{}
+	b2 := newDAGTestBuilder(drv2, &markerCloner{})
+	err = b2.runBuildImageJob(context.Background(), &reporterSink{rep: rep}, rep,
+		buildImageJob("build"), "构建", proj, nil, t.TempDir(), "abc1234", imagePushPlan{})
+	if err != nil {
+		t.Fatalf("runBuildImageJob: %v", err)
+	}
+	if drv2.gotTarget != "" {
+		t.Errorf("未配置 buildTarget 时 target 应为空, got %q", drv2.gotTarget)
+	}
+}
+
 // scriptJobWithConfig 构造一条带额外 config 键的 script job(timeout/retry/cpu/memory 等)。
 func scriptJobWithConfig(name, image, commands string, extra map[string]any) pipeline.Job {
 	cfg := map[string]any{"image": image, "commands": commands}
@@ -293,7 +327,7 @@ func (d *flakyDriver) RunToolchain(ctx context.Context, _, _, _ string, _ []stri
 	}
 	return 0, nil
 }
-func (d *flakyDriver) Build(context.Context, string, string, string, []string, []string, func(string, string)) (int, error) {
+func (d *flakyDriver) Build(context.Context, string, string, string, string, []string, []string, func(string, string)) (int, error) {
 	panic("Build not expected")
 }
 func (d *flakyDriver) Tag(context.Context, string, string, func(string, string)) (int, error) {
@@ -389,7 +423,7 @@ func (d *imgDriver) Binary() string { return "fake" }
 func (d *imgDriver) RunToolchain(context.Context, string, string, string, []string, []string, pipeline.Resource, func(string, string)) (int, error) {
 	return 0, nil
 }
-func (d *imgDriver) Build(_ context.Context, contextDir, dockerfile, _ string, _, _ []string, _ func(string, string)) (int, error) {
+func (d *imgDriver) Build(_ context.Context, contextDir, dockerfile, _, _ string, _, _ []string, _ func(string, string)) (int, error) {
 	d.buildCalls++
 	d.gotContextDir = contextDir
 	d.gotDockerfile = dockerfile
@@ -756,7 +790,7 @@ func (d *orderDriver) RunToolchain(ctx context.Context, image, _, _ string, _ []
 	d.mu.Unlock()
 	return code, nil
 }
-func (d *orderDriver) Build(context.Context, string, string, string, []string, []string, func(string, string)) (int, error) {
+func (d *orderDriver) Build(context.Context, string, string, string, string, []string, []string, func(string, string)) (int, error) {
 	panic("Build not expected")
 }
 func (d *orderDriver) Tag(context.Context, string, string, func(string, string)) (int, error) {

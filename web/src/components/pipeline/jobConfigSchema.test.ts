@@ -100,6 +100,7 @@ describe('jobConfigSchema', () => {
       const keys = visible({})
       expect(keys).toContain('dockerfilePath')
       expect(keys).toContain('context')
+      expect(keys).toContain('buildTarget')
       expect(keys).not.toContain('toolchainLanguage')
     })
 
@@ -108,6 +109,7 @@ describe('jobConfigSchema', () => {
       expect(keys).toContain('toolchainLanguage')
       expect(keys).toContain('buildCommand')
       expect(keys).not.toContain('dockerfilePath')
+      expect(keys).not.toContain('buildTarget')
     })
   })
 

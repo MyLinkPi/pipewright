@@ -1091,6 +1091,7 @@ func (b *Builder) runBuildImageJob(ctx context.Context, sink run.StepSink, rep d
 		Model:          cfgString(jb.Config, "buildModel"),
 		DockerfilePath: cfgString(jb.Config, "dockerfilePath"),
 		Context:        cfgString(jb.Config, "context"),
+		Target:         cfgString(jb.Config, "buildTarget"),
 		Toolchain:      pipeline.Toolchain{Language: cfgString(jb.Config, "toolchainLanguage"), Version: cfgString(jb.Config, "toolchainVersion")},
 		ArtifactType:   cfgString(jb.Config, "artifactType"),
 	}

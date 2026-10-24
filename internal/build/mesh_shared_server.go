@@ -428,6 +428,7 @@ func (s *SharedBuildServer) execSharedBuildImage(ctx context.Context, job *share
 		Model:          is.BuildModel,
 		DockerfilePath: is.DockerfilePath,
 		Context:        is.Context,
+		Target:         is.BuildTarget,
 		Toolchain:      pipeline.Toolchain{Language: is.ToolchainLanguage, Version: is.ToolchainVersion},
 		ArtifactType:   pipeline.ArtifactImage,
 		Vars:           plainBuildVars(is.Vars),

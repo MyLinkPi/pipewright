@@ -533,7 +533,7 @@ func (b *Builder) resolveRegistry(ctx context.Context) *pipeline.ImageRegistry {
 
 // build 执行构建步骤,逐行喂日志。返回 local-tag(image 产物)+ 待 emit 的产物。
 //
-//   - 模型 A(dockerfile)或产物=image:docker build -f <DockerfilePath> -t <local-tag> .
+//   - 模型 A(dockerfile)或产物=image:docker build -f <DockerfilePath> [--target <t>] -t <local-tag> .
 //   - 模型 B(toolchain)产 jar/dist:docker run --rm -v ws:/src -w /src <toolchain:ver> <build-cmd>;
 //     对 image 产物退化为要求 Dockerfile(走模型 A 路径)。
 func (b *Builder) build(ctx context.Context, sink run.StepSink, ordinal int, proj *project.Project, cfg pipeline.BuildConfig, workspace, commitTag string) (string, *run.Artifact, error) {
@@ -562,7 +562,7 @@ func (b *Builder) build(ctx context.Context, sink run.StepSink, ordinal int, pro
 			}
 		}
 		localTag := localTagPrefix + "/" + slug + ":" + commitTag
-		code, err := b.driver.Build(ctx, contextDir, dockerfile, localTag, buildArgs, secretArgs, onLine)
+		code, err := b.driver.Build(ctx, contextDir, dockerfile, strings.TrimSpace(cfg.Target), localTag, buildArgs, secretArgs, onLine)
 		if err != nil && code < 0 {
 			return "", nil, fmt.Errorf("构建器无法启动")
 		}

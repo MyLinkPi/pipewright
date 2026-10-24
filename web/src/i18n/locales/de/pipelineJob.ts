@@ -112,6 +112,8 @@ export default {
   fieldDockerfilePathLabel: "Dockerfile-Pfad",
   fieldContextLabel: "Build-Kontext",
   fieldContextHint: "Build-Kontextverzeichnis relativ zur Repository-Wurzel",
+  fieldBuildTargetLabel: "Build-Ziel-Stage",
+  fieldBuildTargetHint: "Ziel-Stage eines mehrstufigen Dockerfiles (docker build --target); leer baut die letzte Stage. Mehrere build_image-Knoten mit unterschiedlichen Targets erzeugen mehrere Images aus einem Dockerfile",
   fieldToolchainLanguageLabel: "Toolchain-Sprache",
   fieldToolchainVersionLabel: "Toolchain-Version",
   fieldBuildCommandLabel: "Build-Befehl",

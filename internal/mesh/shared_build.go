@@ -94,6 +94,7 @@ type SharedImageSpec struct {
 	BuildModel        string `json:"buildModel,omitempty"` // dockerfile | toolchain
 	DockerfilePath    string `json:"dockerfilePath,omitempty"`
 	Context           string `json:"context,omitempty"`
+	BuildTarget       string `json:"buildTarget,omitempty"` // 多阶段 Dockerfile 目标 stage(空 = 最后一个)
 	ToolchainLanguage string `json:"toolchainLanguage,omitempty"`
 	ToolchainVersion  string `json:"toolchainVersion,omitempty"`
 	// ProjectName / CommitTag 参与镜像本地命名(与发起方本地构建同构,load 后同名)。

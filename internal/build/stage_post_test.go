@@ -25,7 +25,7 @@ func (d *postRecDriver) RunToolchain(_ context.Context, image, _, _ string, env 
 	}
 	return 0, nil
 }
-func (d *postRecDriver) Build(context.Context, string, string, string, []string, []string, func(string, string)) (int, error) {
+func (d *postRecDriver) Build(context.Context, string, string, string, string, []string, []string, func(string, string)) (int, error) {
 	panic("Build not expected")
 }
 func (d *postRecDriver) Tag(context.Context, string, string, func(string, string)) (int, error) {

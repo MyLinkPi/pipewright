@@ -129,10 +129,11 @@ func exitCodeOf(err error) int {
 type Driver interface {
 	// Binary 返回选中的容器 CLI 名(docker/nerdctl/podman),供日志展示(不含路径)。
 	Binary() string
-	// Build 在 contextDir 下用 dockerfile 构建并打 localTag(模型 A)。buildArgs 为非 secret
-	// 构建变量(K=V);secretArgs 为 secret 构建变量(K=V,经 --build-arg 注入但**绝不**回显到
-	// 可见日志,命令回显里只列 key)。逐行日志经 onLine 回调。返回退出码。
-	Build(ctx context.Context, contextDir, dockerfile, localTag string, buildArgs, secretArgs []string, onLine func(stream, line string)) (int, error)
+	// Build 在 contextDir 下用 dockerfile 构建并打 localTag(模型 A)。target 是多阶段
+	// Dockerfile 的目标 stage(空 = 最后一个 stage,历史行为;非空 → --target)。
+	// buildArgs 为非 secret 构建变量(K=V);secretArgs 为 secret 构建变量(K=V,经 --build-arg
+	// 注入但**绝不**回显到可见日志,命令回显里只列 key)。逐行日志经 onLine 回调。返回退出码。
+	Build(ctx context.Context, contextDir, dockerfile, target, localTag string, buildArgs, secretArgs []string, onLine func(stream, line string)) (int, error)
 	// RunToolchain 模型 B:用工具链镜像挂载工作区跑构建命令产 jar/dist。
 	// image=工具链镜像:版本;workdir=容器内挂载点;hostDir=宿主工作区;cmd=构建命令 array。
 	// res 为可选容器资源规格(cpu/memory → docker run --cpus/--memory);零值=不限(向后兼容)。
@@ -182,7 +183,7 @@ type errDriver struct{}
 
 func (errDriver) Binary() string { return "none" }
 
-func (errDriver) Build(context.Context, string, string, string, []string, []string, func(string, string)) (int, error) {
+func (errDriver) Build(context.Context, string, string, string, string, []string, []string, func(string, string)) (int, error) {
 	return -1, ErrNoContainerCLI
 }
 

@@ -730,6 +730,15 @@ export const JOB_TYPE_SPECS: Record<string, JobTypeSpec> = {
         when: modelIs('dockerfile'),
       },
       {
+        key: 'buildTarget',
+        get label() { return t('pipelineJob.fieldBuildTargetLabel') },
+        kind: 'text',
+        monospace: true,
+        placeholder: 'backend',
+        get hint() { return t('pipelineJob.fieldBuildTargetHint') },
+        when: modelIs('dockerfile'),
+      },
+      {
         key: 'toolchainLanguage',
         get label() { return t('pipelineJob.fieldToolchainLanguageLabel') },
         kind: 'select',
