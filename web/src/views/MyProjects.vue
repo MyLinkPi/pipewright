@@ -28,6 +28,19 @@ function runStatusLabel(s: RunStatus): string {
   return t(`runStatus.${s}`)
 }
 
+// 相对时间(与 Projects.vue 卡片同一文案:刚刚 / N 分钟前 / N 小时前 / N 天前)。
+function relativeTime(isoStr: string): string {
+  const diff = Date.now() - new Date(isoStr).getTime()
+  const s = Math.floor(diff / 1000)
+  if (s < 60) return t('time.justNow')
+  const m = Math.floor(s / 60)
+  if (m < 60) return t('time.minAgo', { n: m })
+  const h = Math.floor(m / 60)
+  if (h < 24) return t('time.hourAgo', { n: h })
+  const d = Math.floor(h / 24)
+  return t('time.dayAgo', { n: d })
+}
+
 const isEmpty = computed(() => loadState.value === 'idle' && projects.value.length === 0)
 
 async function load(): Promise<void> {
@@ -102,7 +115,10 @@ onMounted(load)
                 role="img"
                 :aria-label="t('projects.runStatusAria', { status: runStatusLabel(p.lastRunStatus) })"
               >{{ runStatusLabel(p.lastRunStatus) }}</span>
-              <span v-else class="status status--none">{{ t('myProjects.lastRunNone') }}</span>
+              <span v-if="p.lastRunStatus && p.lastRunAt" class="cell-time" :title="p.lastRunAt">
+                {{ relativeTime(p.lastRunAt) }}
+              </span>
+              <span v-if="!p.lastRunStatus" class="status status--none">{{ t('myProjects.lastRunNone') }}</span>
             </td>
             <td class="col-act">
               <AppButton variant="primary" @click="goRun(p.id)">{{ t('myProjects.runBtn') }}</AppButton>
@@ -216,6 +232,12 @@ onMounted(load)
   background: var(--color-card-2);
   border: 1px solid var(--color-border-strong);
   color: var(--color-dim);
+}
+.cell-time {
+  margin-left: 8px;
+  font-size: 0.76rem;
+  color: var(--color-faint);
+  white-space: nowrap;
 }
 .sr-only {
   position: absolute;

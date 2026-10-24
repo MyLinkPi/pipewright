@@ -39,9 +39,9 @@ type Service interface {
 	Get(ctx context.Context, id string) (*Run, error)
 	// List 按筛选/分页返回运行(列表行精简,不含步骤)。
 	List(ctx context.Context, f ListFilter) (*ListResult, error)
-	// LatestStatusByProject 批量返回每个项目最近一次运行的状态(项目列表卡片「上次运行」
-	// 数据源;无运行的项目不出现在结果 map)。排序语义与 List 一致:created_at DESC, id DESC。
-	LatestStatusByProject(ctx context.Context, projectIDs []string) (map[string]string, error)
+	// LatestByProject 批量返回每个项目最近一次运行的摘要(状态+创建时间;项目列表卡片
+	// 「上次运行」数据源;无运行的项目不出现在结果 map)。排序语义与 List 一致:created_at DESC, id DESC。
+	LatestByProject(ctx context.Context, projectIDs []string) (map[string]LatestRun, error)
 	// Cancel 取消进行中(queued/running)运行:经 context 传播到 Runner;终态 → ErrNotCancelable。
 	Cancel(ctx context.Context, id string) (*Run, error)
 
@@ -622,11 +622,17 @@ func (s *service) List(ctx context.Context, f ListFilter) (*ListResult, error) {
 	return &ListResult{Items: items, Page: page, Total: total}, nil
 }
 
-// LatestStatusByProject 批量返回每个项目最近一次运行的状态。关联子查询取每项目按
-// created_at DESC, id DESC 的第一行(project_id 有索引;写法在 SQLite/MySQL 均可移植);
-// projectIDs 为空返回空 map,无运行的项目不出现在结果中。
-func (s *service) LatestStatusByProject(ctx context.Context, projectIDs []string) (map[string]string, error) {
-	out := make(map[string]string, len(projectIDs))
+// LatestRun 是项目最近一次运行的展示摘要(卡片「上次运行」:状态 + 时间)。
+type LatestRun struct {
+	Status    string
+	CreatedAt time.Time
+}
+
+// LatestByProject 批量返回每个项目最近一次运行的摘要(状态 + 创建时间)。关联子查询取
+// 每项目按 created_at DESC, id DESC 的第一行(project_id 有索引;写法在 SQLite/MySQL
+// 均可移植);projectIDs 为空返回空 map,无运行的项目不出现在结果中。
+func (s *service) LatestByProject(ctx context.Context, projectIDs []string) (map[string]LatestRun, error) {
+	out := make(map[string]LatestRun, len(projectIDs))
 	if len(projectIDs) == 0 {
 		return out, nil
 	}
@@ -637,7 +643,7 @@ func (s *service) LatestStatusByProject(ctx context.Context, projectIDs []string
 		args[i] = pid
 	}
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT pr.project_id, pr.status
+		`SELECT pr.project_id, pr.status, pr.created_at
 		 FROM pipeline_runs pr
 		 WHERE pr.project_id IN (`+strings.Join(placeholders, ", ")+`)
 		   AND pr.id = (SELECT p2.id FROM pipeline_runs p2
@@ -645,18 +651,25 @@ func (s *service) LatestStatusByProject(ctx context.Context, projectIDs []string
 		                ORDER BY p2.created_at DESC, p2.id DESC
 		                LIMIT 1)`, args...)
 	if err != nil {
-		return nil, fmt.Errorf("run: latest status by project: %w", err)
+		return nil, fmt.Errorf("run: latest by project: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
 	for rows.Next() {
-		var pid, status string
-		if err := rows.Scan(&pid, &status); err != nil {
-			return nil, fmt.Errorf("run: scan latest status: %w", err)
+		var (
+			pid        string
+			lr         LatestRun
+			createdStr string
+		)
+		if err := rows.Scan(&pid, &lr.Status, &createdStr); err != nil {
+			return nil, fmt.Errorf("run: scan latest: %w", err)
 		}
-		out[pid] = status
+		if lr.CreatedAt, err = time.Parse(time.RFC3339, createdStr); err != nil {
+			return nil, fmt.Errorf("run: parse latest created_at: %w", err)
+		}
+		out[pid] = lr
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("run: iterate latest status: %w", err)
+		return nil, fmt.Errorf("run: iterate latest: %w", err)
 	}
 	return out, nil
 }

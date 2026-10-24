@@ -44,6 +44,7 @@ function project(id: string, name: string): Project {
     pacEnabled: false,
     prStatusEnabled: false,
     lastRunStatus: null,
+    lastRunAt: null,
     serviceRegs: [],
     createdAt: '2026-01-01T00:00:00Z',
     updatedAt: '2026-01-01T00:00:00Z',

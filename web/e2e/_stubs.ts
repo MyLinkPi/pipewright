@@ -66,6 +66,7 @@ export function projectFixture(over: Record<string, unknown> = {}): Record<strin
     credentialId: 'c-git',
     credentialName: 'gitee-token · ghp_••••a91f',
     lastRunStatus: 'success',
+    lastRunAt: '2026-05-28T08:00:00Z',
     // No registered services by default; specs override with ProjectServiceReg[] entries.
     serviceRegs: [],
     createdAt: '2026-05-01T08:00:00Z',

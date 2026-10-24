@@ -104,8 +104,9 @@ func (b *OpsProjectBackend) Info(ctx context.Context, projectID string) (string,
 		out["credentialName"] = p.CredentialName
 	}
 	if b.runs != nil {
-		if latest, e := b.runs.LatestStatusByProject(ctx, []string{p.ID}); e == nil && latest[p.ID] != "" {
-			out["lastRunStatus"] = latest[p.ID]
+		if latest, e := b.runs.LatestByProject(ctx, []string{p.ID}); e == nil && latest[p.ID].Status != "" {
+			out["lastRunStatus"] = latest[p.ID].Status
+			out["lastRunAt"] = latest[p.ID].CreatedAt.UTC()
 		}
 	}
 	return opsProjectMarshal(out)
