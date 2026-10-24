@@ -19,9 +19,12 @@ type certDeployDTO struct {
 	CertID         string `json:"certId"`
 	ServerID       string `json:"serverId"`
 	Name           string `json:"name"`
-	CertPath       string `json:"certPath"`
-	KeyPath        string `json:"keyPath"`
-	PostCommand    string `json:"postCommand"`
+	Kind           string `json:"kind"`           // ssh | safeline
+	WafInstanceID  string `json:"wafInstanceId"`  // safeline:安全中心 WAF 实例
+	CertName       string `json:"certName"`       // safeline:雷池侧证书名
+	CertPath       string `json:"certPath"`       // ssh
+	KeyPath        string `json:"keyPath"`        // ssh
+	PostCommand    string `json:"postCommand"`    // ssh
 	Enabled        bool   `json:"enabled"`
 	Status         string `json:"status"` // ''|running|success|failed
 	StatusDetail   string `json:"statusDetail"`
@@ -40,6 +43,7 @@ func toCertDeployDTO(d *certdeploy.Target) certDeployDTO {
 	}
 	return certDeployDTO{
 		ID: d.ID, CertID: d.CertID, ServerID: d.ServerID, Name: d.Name,
+		Kind: d.Kind, WafInstanceID: d.WafInstanceID, CertName: d.CertName,
 		CertPath: d.CertPath, KeyPath: d.KeyPath, PostCommand: d.PostCommand,
 		Enabled: d.Enabled, Status: d.Status, StatusDetail: d.StatusDetail,
 		LastDeployedAt: last,
@@ -75,13 +79,16 @@ func toCertDeployRunDTO(r *certdeploy.Run) certDeployRunDTO {
 
 // certDeployCreateDTO 创建请求体(certId/serverId/路径必填;无凭据明文)。
 type certDeployCreateDTO struct {
-	CertID      string `json:"certId"`
-	ServerID    string `json:"serverId"`
-	Name        string `json:"name"`
-	CertPath    string `json:"certPath"`
-	KeyPath     string `json:"keyPath"`
-	PostCommand string `json:"postCommand"`
-	Enabled     *bool  `json:"enabled"`
+	Kind          string `json:"kind"`
+	CertID        string `json:"certId"`
+	ServerID      string `json:"serverId"`
+	Name          string `json:"name"`
+	CertPath      string `json:"certPath"`
+	KeyPath       string `json:"keyPath"`
+	PostCommand   string `json:"postCommand"`
+	WafInstanceID string `json:"wafInstanceId"`
+	CertName      string `json:"certName"`
+	Enabled       *bool  `json:"enabled"`
 }
 
 // certDeployUpdateDTO 更新请求体(指针字段 nil = 不改;certId/serverId 不可改)。
@@ -90,6 +97,7 @@ type certDeployUpdateDTO struct {
 	CertPath    *string `json:"certPath"`
 	KeyPath     *string `json:"keyPath"`
 	PostCommand *string `json:"postCommand"`
+	CertName    *string `json:"certName"` // safeline:雷池侧证书名
 	Enabled     *bool   `json:"enabled"`
 }
 
@@ -156,9 +164,10 @@ func makeCreateCertDeployHandler(svc *certdeploy.Service, aud audit.Recorder) ht
 			return
 		}
 		d, err := svc.Create(r.Context(), certdeploy.CreateInput{
-			CertID: req.CertID, ServerID: req.ServerID, Name: req.Name,
+			Kind: req.Kind, CertID: req.CertID, ServerID: req.ServerID, Name: req.Name,
 			CertPath: req.CertPath, KeyPath: req.KeyPath,
 			PostCommand: req.PostCommand, Enabled: req.Enabled,
+			WafInstanceID: req.WafInstanceID, CertName: req.CertName,
 		})
 		if err != nil {
 			writeCertDeployError(w, err)
@@ -184,7 +193,7 @@ func makeUpdateCertDeployHandler(svc *certdeploy.Service, aud audit.Recorder) ht
 		}
 		d, err := svc.Update(r.Context(), chi.URLParam(r, "id"), certdeploy.UpdateInput{
 			Name: req.Name, CertPath: req.CertPath, KeyPath: req.KeyPath,
-			PostCommand: req.PostCommand, Enabled: req.Enabled,
+			PostCommand: req.PostCommand, CertName: req.CertName, Enabled: req.Enabled,
 		})
 		if err != nil {
 			writeCertDeployError(w, err)

@@ -375,6 +375,149 @@ volumes:
 		},
 		Builtin: true,
 	},
+	{
+		Name:        "safeline",
+		DisplayName: "SafeLine WAF",
+		Description: "雷池社区版 WAF(语义分析引擎,低误报):部署成功后自动登记到「安全中心」,在雷池控制台生成 API Token 并补填到实例后,即可在安全中心看到拦截态势;证书在「证书 → 部署目标」新建 SafeLine 类型目标即可自动同步(续期自动重推)。注意:tengine 独占宿主 80/443(network_mode host),须用独立边缘机;反代站点在雷池控制台手动接入(上游指向平台网关或后端),灰度切流用 DNS 控制。数据全落具名卷。",
+		Icon:        "🛡",
+		// 官方 compose 的参数化转写(chaitin/safeline 仓库 compose.yaml):SUBNET_PREFIX
+		// 固定 172.22.34(内部 mgt/detector/tengine 按固定 IP 互联);SAFELINE_DIR 的
+		// bind 目录改为具名卷;POSTGRES_PASSWORD 自动生成;管理台端口参数化(容器内
+		// 恒 1443)。tengine host 网络直接监听宿主 80/443(WAF 必须是流量入口)。
+		ComposeYAML: `services:
+  safeline-pg:
+    image: chaitin/safeline-postgres:{{pg_version}}
+    restart: always
+    environment:
+      POSTGRES_USER: safeline-ce
+      POSTGRES_PASSWORD: "{{db_password}}"
+    volumes:
+      - safeline-pg:/var/lib/postgresql/data
+      - /etc/localtime:/etc/localtime:ro
+    networks:
+      safeline-ce:
+        ipv4_address: 172.22.34.2
+
+  safeline-mgt:
+    image: chaitin/safeline-mgt:latest
+    restart: always
+    depends_on:
+      - safeline-pg
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - safeline-mgt:/app/data
+      - safeline-logs-nginx:/app/log/nginx
+      - safeline-sock:/app/sock
+      - /var/run:/app/run
+    environment:
+      MGT_PG: postgres://safeline-ce:{{db_password}}@safeline-pg/safeline-ce?sslmode=disable
+    ports:
+      - "{{port}}:1443"
+    networks:
+      safeline-ce:
+        ipv4_address: 172.22.34.4
+
+  safeline-detector:
+    image: chaitin/safeline-detector:latest
+    restart: always
+    environment:
+      LOG_DIR: /logs/detector
+    volumes:
+      - safeline-detector:/resources/detector
+      - safeline-logs-detector:/logs/detector
+      - /etc/localtime:/etc/localtime:ro
+    networks:
+      safeline-ce:
+        ipv4_address: 172.22.34.5
+
+  safeline-tengine:
+    image: chaitin/safeline-tengine:latest
+    restart: always
+    ulimits:
+      nofile:
+        soft: 131072
+        hard: 131072
+    network_mode: host
+    environment:
+      TCD_MGT_API: https://172.22.34.4:1443/api/open/publish/server
+      TCD_SNSERVER: 172.22.34.5:8000
+      CHAOS_ADDR: 172.22.34.10
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/resolv.conf:/etc/resolv.conf:ro
+      - safeline-nginx:/etc/nginx
+      - safeline-detector:/resources/detector
+      - safeline-logs-nginx:/var/log/nginx
+      - safeline-cache:/usr/local/nginx/cache
+      - safeline-sock:/app/sock
+    depends_on:
+      - safeline-detector
+
+  safeline-luigi:
+    image: chaitin/safeline-luigi:latest
+    restart: always
+    depends_on:
+      - safeline-detector
+      - safeline-mgt
+    environment:
+      MGT_IP: 172.22.34.4
+      LUIGI_PG: postgres://safeline-ce:{{db_password}}@safeline-pg/safeline-ce?sslmode=disable
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - safeline-luigi:/app/data
+    networks:
+      safeline-ce:
+        ipv4_address: 172.22.34.7
+
+  safeline-fvm:
+    image: chaitin/safeline-fvm:latest
+    restart: always
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+    networks:
+      safeline-ce:
+        ipv4_address: 172.22.34.8
+
+  safeline-chaos:
+    image: chaitin/safeline-chaos:latest
+    restart: always
+    environment:
+      DB_ADDR: postgres://safeline-ce:{{db_password}}@safeline-pg/safeline-ce?sslmode=disable
+    volumes:
+      - safeline-sock:/app/sock
+      - safeline-chaos:/app/chaos
+    networks:
+      safeline-ce:
+        ipv4_address: 172.22.34.10
+
+volumes:
+  safeline-pg:
+  safeline-mgt:
+  safeline-detector:
+  safeline-nginx:
+  safeline-cache:
+  safeline-sock:
+  safeline-luigi:
+  safeline-chaos:
+  safeline-logs-nginx:
+  safeline-logs-detector:
+
+networks:
+  safeline-ce:
+    name: safeline-ce
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.22.34.0/24
+          gateway: 172.22.34.1
+`,
+		Params: []ParamSpec{
+			{Name: "port", Label: "管理台端口(宿主)", Type: ParamTypeInt, Default: "9443"},
+			{Name: "db_password", Label: "数据库密码", Type: ParamTypeSecret, Required: true, AutoGenerate: true},
+			{Name: "pg_version", Label: "Postgres 镜像版本", Type: ParamTypeString, Default: "15.2"},
+		},
+		Builtin: true,
+	},
 }
 
 // retiredBuiltins 是已从商店下架的内置模板名:EnsureBuiltins 时对库中的内置行删除,

@@ -184,6 +184,7 @@ func mountSecurity(ar chi.Router, svc secscan.Service, aud audit.Recorder, expla
 	ar.Put("/security/schedule", makeSaveScheduleHandler(svc, aud))
 	ar.Get("/security/report", makeSecurityReportHandler(svc, aud))
 	ar.Post("/security/findings/explain", makeExplainFindingHandler(explainer, aud))
+	ar.Get("/security/waf", makeWafOverviewHandler(svc))
 }
 
 // makeSecurityOverviewHandler 返回 GET /api/security/overview。
@@ -631,5 +632,21 @@ func makeExplainFindingHandler(explainer ai.FindingExplainer, aud audit.Recorder
 			Detail: map[string]any{"findingId": in.VulnID, "scanType": in.ScanType}, IP: clientIP(r),
 		})
 		writeJSON(w, http.StatusOK, map[string]string{"text": text})
+	}
+}
+
+// makeWafOverviewHandler 返回 GET /api/security/waf:SafeLine WAF 实例的防护态势
+// (在线/延迟/今日与近7日拦截;未配置 Token → 明确提示)。只读,不审计。
+func makeWafOverviewHandler(svc secscan.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		items, err := svc.WafOverview(r.Context())
+		if err != nil {
+			writeSecurityError(w, err)
+			return
+		}
+		if items == nil {
+			items = []secscan.WafInstanceStatus{}
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"items": items})
 	}
 }

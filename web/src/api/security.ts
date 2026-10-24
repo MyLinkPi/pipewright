@@ -190,6 +190,23 @@ export const getSchedule = (): Promise<Schedule> =>
 export const saveSchedule = (body: { enabled: boolean; expression: string; scanTypes: ScanType[] }): Promise<Schedule> =>
   http.put('/api/security/schedule', body)
 
+// ---------- WAF 防护态势 ----------
+
+export interface WafInstanceStatus {
+  instanceId: string
+  name: string
+  endpoint: string
+  tokenConfigured: boolean
+  ok: boolean
+  detail?: string
+  latencyMs?: number
+  stats?: { blockedToday: number; blocked7d: number }
+}
+
+/** getWafOverview:SafeLine 实例的连通与拦截态势(未配置 Token/不可达在 detail 里)。 */
+export const getWafOverview = (): Promise<{ items: WafInstanceStatus[] }> =>
+  http.get('/api/security/waf')
+
 // ---------- AI 解读 ----------
 
 /** explainFinding 把一条明细交 AI 生成人读解读(Markdown 文本;同 key 结果前端缓存)。 */

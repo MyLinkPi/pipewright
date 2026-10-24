@@ -757,7 +757,8 @@ func main() {
 	// 证书部署目标(远程机器指定路径 + 部署后命令):证书签发/导入/续期后自动联动重新
 	// 部署,删除被引用证书时占用拦截。执行面复用 target.Service(SSH Exec/Upload),
 	// 证书 PEM 经 platformCertSource 进程内解密(同一适配器,晚绑 certSvc)。
-	certDeploySvc := certdeploy.New(st.DB, targetSvc, &platformCertSource{cm: certSvc}).WithLogger(log.Printf)
+	// safeline 类型目标经安全中心的 WAF 实例解析接入面(见 secscan.safeline.go)。
+	certDeploySvc := certdeploy.New(st.DB, targetSvc, &platformCertSource{cm: certSvc}).WithLogger(log.Printf).WithWafGateway(secScanSvc)
 	if cfg3, ok := certSvc.(interface{ SetCertDeploys(certmgmt.PlatformHTTPS) }); ok {
 		cfg3.SetCertDeploys(certDeploySvc)
 	}

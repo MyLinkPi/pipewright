@@ -21,7 +21,12 @@ type vaultService interface {
 }
 
 // validKind 报告扫描器类型枚举是否受支持。
-func validKind(k string) bool { return k == KindTrivyServer || k == KindNucleiRunner }
+func validKind(k string) bool {
+	return k == KindTrivyServer || k == KindNucleiRunner || k == KindSafeline
+}
+
+// insecureTLS 是内网自签服务的统一 TLS 配置(与 Stacks 明文/自签接入同姿态)。
+func insecureTLS() *tls.Config { return &tls.Config{InsecureSkipVerify: true} }
 
 // sealToken 密封可选 token;空 token → 空 BLOB(nil)。保险库未配置且 token 非空 → 报错。
 func (s *service) sealToken(token string) ([]byte, error) {
@@ -239,7 +244,7 @@ func (s *service) Register(ctx context.Context, in RegisterInput) (*RegisterResu
 	}
 	if in.Kind == KindNucleiRunner {
 		in.Port = 0
-	}
+	} // safeline 与 trivy-server 同为 host:port 服务形态,走下方端口校验
 	if in.Host == "" || strings.TrimSpace(in.Name) == "" ||
 		(in.Kind == KindTrivyServer && (in.Port < 1 || in.Port > 65535)) {
 		return nil, fmt.Errorf("%w: register fields", ErrInvalidInput)
@@ -308,6 +313,17 @@ func (s *service) TestScanner(ctx context.Context, id string) (*TestResult, erro
 	// nuclei-runner 不是网络服务:探活 = 到所在主机 docker ps 找执行容器。
 	if inst.Kind == KindNucleiRunner {
 		return s.probeNucleiRunner(ctx, inst), nil
+	}
+	// safeline:管理面 OpenAPI 探活(未配 Token → 明确提示,不算故障)。
+	if inst.Kind == KindSafeline {
+		if !inst.TokenConfigured {
+			return &TestResult{Detail: "待配置 API Token:在 SafeLine 控制台生成后补填"}, nil
+		}
+		ep, eerr := s.wafEndpoint(ctx, inst.ID)
+		if eerr != nil {
+			return &TestResult{Detail: "接入点解析失败:" + eerr.Error()}, nil
+		}
+		return s.waf.Ping(ctx, ep), nil
 	}
 	return probeTrivyServer(ctx, inst.Host, inst.Port, token), nil
 }

@@ -24,6 +24,7 @@ const h = vi.hoisted(() => ({
   getFindings: vi.fn(),
   downloadSecurityReport: vi.fn(),
   explainFinding: vi.fn(),
+  getWafOverview: vi.fn(),
   toast: { success: vi.fn(), error: vi.fn(), info: vi.fn(), warn: vi.fn() },
   confirmOpen: vi.fn(),
 }))
@@ -43,6 +44,7 @@ vi.mock('../api/security', () => ({
   getFindings: (...a: unknown[]) => h.getFindings(...a),
   downloadSecurityReport: (...a: unknown[]) => h.downloadSecurityReport(...a),
   explainFinding: (...a: unknown[]) => h.explainFinding(...a),
+  getWafOverview: (...a: unknown[]) => h.getWafOverview(...a),
 }))
 vi.mock('../composables/useToast', () => ({
   useToast: () => ({ ...h.toast, toasts: { value: [] }, dismiss: vi.fn(), clear: vi.fn() }),
@@ -81,6 +83,7 @@ beforeEach(() => {
   h.listRuns.mockResolvedValue({ items: [] as SecRun[] })
   h.getSchedule.mockResolvedValue({ enabled: false, expression: '0 3 * * *', scanTypes: ['trivy'], updatedAt: '' })
   h.listScanners.mockResolvedValue({ items: [] })
+  h.getWafOverview.mockResolvedValue({ items: [] })
 })
 
 const overview2 = mkOverview()
@@ -256,5 +259,29 @@ describe('Security AI 解读', () => {
 
     expect(h.toast.error).toHaveBeenCalled()
     expect(w.text()).not.toContain('解读中')
+  })
+})
+
+describe('Security WAF 防护态势', () => {
+  it('渲染 SafeLine 实例:在线统计与待配置 Token 提示', async () => {
+    h.getWafOverview.mockResolvedValue({
+      items: [
+        { instanceId: 'w1', name: 'WAF A', endpoint: '10.0.0.1:9443', tokenConfigured: true, ok: true, stats: { blockedToday: 3, blocked7d: 21 } },
+        { instanceId: 'w2', name: 'WAF B', endpoint: '10.0.0.2:9443', tokenConfigured: false, ok: false },
+      ],
+    })
+    const w = mount(Security)
+    await flushPromises()
+    expect(w.text()).toContain('防护态势')
+    expect(w.text()).toContain('WAF A')
+    expect(w.text()).toContain('今日拦截')
+    expect(w.text()).toContain('待配置 Token')
+  })
+
+  it('无 WAF 实例时隐藏防护态势卡', async () => {
+    h.getWafOverview.mockResolvedValue({ items: [] })
+    const w = mount(Security)
+    await flushPromises()
+    expect(w.text()).not.toContain('防护态势')
   })
 })

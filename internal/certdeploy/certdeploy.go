@@ -34,6 +34,22 @@ const (
 	SourceRenew  = "renew"  // 证书签发/导入/续期联动
 )
 
+// 部署目标类型。ssh = 原有「SSH 落盘 + 部署后命令」形态(存量行默认);safeline =
+// 经雷池 SafeLine WAF OpenAPI 原位同步证书(同名更新,站点绑定不变,续期即生效)。
+const (
+	KindSSH      = "ssh"
+	KindSafeline = "safeline"
+)
+
+// WafGateway 是 safeline 目标的执行面(由 secscan 服务适配注入,避免包环):
+// 推证书 + 实例归属解析(SafeLine 实例登记在安全中心,管理地址/Token 一处配置)。
+type WafGateway interface {
+	// UpsertCert 按安全中心实例 ID 原位同步证书(name 为雷池侧证书名)。
+	UpsertCert(ctx context.Context, instanceID, name, certPEM, keyPEM string) error
+	// WafInstanceServerID 返回实例登记的部署宿主 serverID(可空;展示/归属用)。
+	WafInstanceServerID(ctx context.Context, instanceID string) (string, error)
+}
+
 // HistoryKeep 是每个部署目标保留的历史条数;插入后裁掉更早的(防 detail 无限膨胀)。
 const HistoryKeep = 50
 
@@ -57,15 +73,19 @@ var (
 	ErrDeployFailed = errors.New("certdeploy: 部署失败")
 )
 
-// Target 是一个证书部署目标:证书 → 指定服务器上的指定路径 + 部署后命令。
+// Target 是一个证书部署目标:ssh = 证书 → 指定服务器上的指定路径 + 部署后命令;
+// safeline = 证书 → SafeLine 实例(经 OpenAPI 原位同步)。
 type Target struct {
 	ID             string
 	CertID         string
-	ServerID       string
+	ServerID       string // safeline:实例登记的部署宿主(自动填充;执行不走 SSH)
 	Name           string // 备注名(展示用;空则回退「服务器名」)
-	CertPath       string // 远端证书(fullchain)绝对路径,落位后 chmod 644
-	KeyPath        string // 远端私钥绝对路径,落位后 chmod 600
-	PostCommand    string
+	Kind           string // ssh | safeline
+	WafInstanceID  string // safeline:安全中心 scanner 实例 ID
+	CertName       string // safeline:雷池侧证书名(同名原位更新)
+	CertPath       string // ssh:远端证书(fullchain)绝对路径,落位后 chmod 644
+	KeyPath        string // ssh:远端私钥绝对路径,落位后 chmod 600
+	PostCommand    string // ssh:部署后命令
 	Enabled        bool
 	Status         string // '' | running | success | failed(最近一次)
 	StatusDetail   string
@@ -103,23 +123,29 @@ type Executor interface {
 	Get(ctx context.Context, id string) (*target.Server, error)
 }
 
-// CreateInput 创建入参。
+// CreateInput 创建入参(kind 留空 = ssh 兼容旧调用;safeline 时 ServerID 由实例解析,
+// CertPath/KeyPath/PostCommand 忽略)。
 type CreateInput struct {
-	CertID      string
-	ServerID    string
-	Name        string
-	CertPath    string
-	KeyPath     string
-	PostCommand string
-	Enabled     *bool
+	Kind          string
+	CertID        string
+	ServerID      string // ssh 必填;safeline 由实例解析自动填充
+	Name          string
+	CertPath      string
+	KeyPath       string
+	PostCommand   string
+	WafInstanceID string // safeline 必填
+	CertName      string // safeline 必填
+	Enabled       *bool
 }
 
-// UpdateInput 更新入参(指针字段 nil = 不改)。
+// UpdateInput 更新入参(指针字段 nil = 不改;kind/cert_id/server_id/waf_instance_id
+// 不可改 —— 换目标 = 新建)。
 type UpdateInput struct {
 	Name        *string
 	CertPath    *string
 	KeyPath     *string
 	PostCommand *string
+	CertName    *string // safeline:雷池侧证书名
 	Enabled     *bool
 }
 
@@ -128,6 +154,7 @@ type Service struct {
 	db    *sql.DB
 	exec  Executor
 	certs CertSource
+	waf   WafGateway
 	logf  func(format string, args ...any)
 
 	mu   sync.Mutex
@@ -155,6 +182,12 @@ func (s *Service) WithLogger(fn func(format string, args ...any)) *Service {
 	if fn != nil {
 		s.logf = fn
 	}
+	return s
+}
+
+// WithWafGateway 注入 safeline 目标的执行面(未注入时 safeline 目标部署报人话错误)。
+func (s *Service) WithWafGateway(g WafGateway) *Service {
+	s.waf = g
 	return s
 }
 
@@ -194,7 +227,8 @@ func (s *Service) List(ctx context.Context, certID string) ([]*Target, error) {
 	q := `SELECT d.id, d.cert_id, d.server_id, d.name, d.cert_path, d.key_path,
 	             d.post_command, d.enabled, d.status, d.status_detail, d.last_deployed_at,
 	             d.created_at, d.updated_at,
-	             COALESCE(sv.name, ''), COALESCE(c.primary_domain, '')
+	             COALESCE(sv.name, ''), COALESCE(c.primary_domain, ''),
+	             d.kind, d.waf_instance_id, d.cert_name
 	      FROM cert_deploys d
 	      LEFT JOIN servers sv ON sv.id = d.server_id
 	      LEFT JOIN certificates c ON c.id = d.cert_id`
@@ -228,8 +262,12 @@ func scanTarget(row interface{ Scan(dest ...any) error }) (*Target, error) {
 	var lastDeployed, created, updated string
 	if err := row.Scan(&d.ID, &d.CertID, &d.ServerID, &d.Name, &d.CertPath, &d.KeyPath,
 		&d.PostCommand, &enabled, &d.Status, &d.StatusDetail, &lastDeployed,
-		&created, &updated, &d.ServerName, &d.CertPrimaryDomain); err != nil {
+		&created, &updated, &d.ServerName, &d.CertPrimaryDomain,
+		&d.Kind, &d.WafInstanceID, &d.CertName); err != nil {
 		return nil, fmt.Errorf("certdeploy: scan: %w", err)
+	}
+	if d.Kind == "" {
+		d.Kind = KindSSH // 迁移前存量行默认值兜底(列默认已保证,双保险)
 	}
 	d.Enabled = enabled != 0
 	d.LastDeployedAt = parseTime(lastDeployed)
@@ -244,7 +282,8 @@ func (s *Service) Get(ctx context.Context, id string) (*Target, error) {
 		`SELECT d.id, d.cert_id, d.server_id, d.name, d.cert_path, d.key_path,
 		        d.post_command, d.enabled, d.status, d.status_detail, d.last_deployed_at,
 		        d.created_at, d.updated_at,
-		        COALESCE(sv.name, ''), COALESCE(c.primary_domain, '')
+		        COALESCE(sv.name, ''), COALESCE(c.primary_domain, ''),
+		        d.kind, d.waf_instance_id, d.cert_name
 		 FROM cert_deploys d
 		 LEFT JOIN servers sv ON sv.id = d.server_id
 		 LEFT JOIN certificates c ON c.id = d.cert_id
@@ -258,14 +297,43 @@ func (s *Service) Get(ctx context.Context, id string) (*Target, error) {
 
 // Create 登记部署目标(校验证书/服务器存在、路径合法)。
 func (s *Service) Create(ctx context.Context, in CreateInput) (*Target, error) {
-	if in.CertID == "" || in.ServerID == "" {
-		return nil, fmt.Errorf("%w:certId/serverId 不能为空", ErrInvalidInput)
+	if in.Kind == "" {
+		in.Kind = KindSSH
 	}
-	if err := validatePaths(in.CertPath, in.KeyPath); err != nil {
-		return nil, err
+	if in.Kind != KindSSH && in.Kind != KindSafeline {
+		return nil, fmt.Errorf("%w:未知目标类型 %s", ErrInvalidInput, in.Kind)
 	}
-	if len(in.PostCommand) > maxCommandLen {
-		return nil, fmt.Errorf("%w:部署后命令过长(上限 %d 字符)", ErrInvalidInput, maxCommandLen)
+	if in.CertID == "" {
+		return nil, fmt.Errorf("%w:certId 不能为空", ErrInvalidInput)
+	}
+	in.CertName = strings.TrimSpace(in.CertName)
+	if in.Kind == KindSafeline {
+		// safeline:证书名 + 实例必填;ServerID 由实例登记的部署宿主解析(归属/展示)。
+		if in.WafInstanceID == "" || in.CertName == "" {
+			return nil, fmt.Errorf("%w:safeline 目标须指定 WAF 实例与证书名", ErrInvalidInput)
+		}
+		if s.waf == nil {
+			return nil, fmt.Errorf("%w:WAF 集成未装配(secscan 服务缺席)", ErrInvalidInput)
+		}
+		sid, err := s.waf.WafInstanceServerID(ctx, in.WafInstanceID)
+		if err != nil {
+			return nil, fmt.Errorf("%w:WAF 实例不可用: %v", ErrInvalidInput, err)
+		}
+		if sid == "" {
+			return nil, fmt.Errorf("%w:该 WAF 实例未登记部署宿主(应用市场部署的实例自动带;手工登记请补 serverId)", ErrInvalidInput)
+		}
+		in.ServerID = sid
+		in.CertPath, in.KeyPath, in.PostCommand = "", "", ""
+	} else {
+		if in.ServerID == "" {
+			return nil, fmt.Errorf("%w:serverId 不能为空", ErrInvalidInput)
+		}
+		if err := validatePaths(in.CertPath, in.KeyPath); err != nil {
+			return nil, err
+		}
+		if len(in.PostCommand) > maxCommandLen {
+			return nil, fmt.Errorf("%w:部署后命令过长(上限 %d 字符)", ErrInvalidInput, maxCommandLen)
+		}
 	}
 	// 证书/服务器存在性(FK 只护 server_id;cert_id 逻辑引用须显式校验)。
 	var one string
@@ -286,24 +354,29 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (*Target, error) {
 	}
 	now := time.Now().UTC()
 	d := &Target{
-		ID:          newID(),
-		CertID:      in.CertID,
-		ServerID:    in.ServerID,
-		Name:        strings.TrimSpace(in.Name),
-		CertPath:    in.CertPath,
-		KeyPath:     in.KeyPath,
-		PostCommand: in.PostCommand,
-		Enabled:     enabled,
-		CreatedAt:   now,
-		UpdatedAt:   now,
+		ID:            newID(),
+		CertID:        in.CertID,
+		ServerID:      in.ServerID,
+		Kind:          in.Kind,
+		WafInstanceID: in.WafInstanceID,
+		CertName:      in.CertName,
+		Name:          strings.TrimSpace(in.Name),
+		CertPath:      in.CertPath,
+		KeyPath:       in.KeyPath,
+		PostCommand:   in.PostCommand,
+		Enabled:       enabled,
+		CreatedAt:     now,
+		UpdatedAt:     now,
 	}
 	if _, err := s.db.ExecContext(ctx,
 		`INSERT INTO cert_deploys
 		 (id, cert_id, server_id, name, cert_path, key_path, post_command, enabled,
-		  status, status_detail, last_deployed_at, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, '', '', '', ?, ?)`,
+		  status, status_detail, last_deployed_at, created_at, updated_at,
+		  kind, waf_instance_id, cert_name)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, '', '', '', ?, ?, ?, ?, ?)`,
 		d.ID, d.CertID, d.ServerID, d.Name, d.CertPath, d.KeyPath, d.PostCommand,
-		boolToInt(d.Enabled), formatTime(d.CreatedAt), formatTime(d.UpdatedAt)); err != nil {
+		boolToInt(d.Enabled), formatTime(d.CreatedAt), formatTime(d.UpdatedAt),
+		d.Kind, d.WafInstanceID, d.CertName); err != nil {
 		return nil, fmt.Errorf("certdeploy: insert: %w", err)
 	}
 	return s.Get(ctx, d.ID)
@@ -322,8 +395,10 @@ func (s *Service) Update(ctx context.Context, id string, in UpdateInput) (*Targe
 	if in.KeyPath != nil {
 		keyPath = *in.KeyPath
 	}
-	if err := validatePaths(certPath, keyPath); err != nil {
-		return nil, err
+	if d.Kind != KindSafeline { // safeline 不落盘,路径无意义
+		if err := validatePaths(certPath, keyPath); err != nil {
+			return nil, err
+		}
 	}
 	postCommand := d.PostCommand
 	if in.PostCommand != nil {
@@ -334,6 +409,14 @@ func (s *Service) Update(ctx context.Context, id string, in UpdateInput) (*Targe
 	}
 	sets := []string{"cert_path = ?", "key_path = ?", "post_command = ?", "updated_at = ?"}
 	args := []any{certPath, keyPath, postCommand, formatTime(time.Now().UTC())}
+	if in.CertName != nil && d.Kind == KindSafeline {
+		name := strings.TrimSpace(*in.CertName)
+		if name == "" {
+			return nil, fmt.Errorf("%w:证书名不能为空", ErrInvalidInput)
+		}
+		sets = append(sets, "cert_name = ?")
+		args = append(args, name)
+	}
 	if in.Name != nil {
 		sets = append(sets, "name = ?")
 		args = append(args, strings.TrimSpace(*in.Name))
@@ -522,6 +605,9 @@ func (s *Service) deployOne(ctx context.Context, d *Target, source string) error
 
 // doDeploy 是单目标部署的执行序列:解密 → 上传临时文件 → 落位 → 部署后命令。
 func (s *Service) doDeploy(ctx context.Context, d *Target) error {
+	if d.Kind == KindSafeline {
+		return s.doDeploySafeline(ctx, d)
+	}
 	sv, err := s.exec.Get(ctx, d.ServerID)
 	if err != nil {
 		return fmt.Errorf("服务器不可用:%v", err)
@@ -555,6 +641,22 @@ func (s *Service) doDeploy(ctx context.Context, d *Target) error {
 		if err := s.execWithPrefixChecked(ctx, d.ServerID, prefix, "部署后命令", []string{"sh", "-c", d.PostCommand}); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+// doDeploySafeline 经 SafeLine OpenAPI 原位同步证书:同名存在 → 原地更新(站点绑定
+// 不变,续期即生效);不存在 → 新建。PEM 进程内即取即用,绝不过 SSH/落日志。
+func (s *Service) doDeploySafeline(ctx context.Context, d *Target) error {
+	if s.waf == nil {
+		return fmt.Errorf("WAF 集成未装配(secscan 服务缺席),无法部署")
+	}
+	certPEM, keyPEM, err := s.certs.OpenCertPEM(ctx, d.CertID)
+	if err != nil {
+		return fmt.Errorf("证书未就绪(未签发/未导入或解密失败):%v", err)
+	}
+	if err := s.waf.UpsertCert(ctx, d.WafInstanceID, d.CertName, certPEM, keyPEM); err != nil {
+		return fmt.Errorf("同步到 SafeLine 失败:%v", err)
 	}
 	return nil
 }

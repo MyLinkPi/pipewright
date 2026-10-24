@@ -18,6 +18,7 @@ import {
   getOverview, getSchedule, saveSchedule,
   listScanners, createScanner, deleteScanner, testScanner, testScannerDirect,
   startScan, startFleetScan, listRuns, getFindings, downloadSecurityReport, explainFinding,
+  getWafOverview, type WafInstanceStatus,
   type SecurityOverview, type Schedule, type ScannerInstance, type SecRun,
   type FindingsPage, type ScanType, type Finding,
 } from '../api/security'
@@ -44,14 +45,16 @@ const errMsg = (e: unknown, fallback: string): string =>
 const loadState = ref<LoadState>('idle')
 const overview = ref<SecurityOverview | null>(null)
 const runs = ref<SecRun[]>([])
+const wafItems = ref<WafInstanceStatus[]>([])
 const POLL_MS = 8000
 let pollTimer: ReturnType<typeof setInterval> | null = null
 
 async function loadAll(): Promise<void> {
   try {
-    const [ov, hist] = await Promise.all([getOverview(), listRuns({ limit: 20 })])
+    const [ov, hist, waf] = await Promise.all([getOverview(), listRuns({ limit: 20 }), getWafOverview().catch(() => ({ items: [] as WafInstanceStatus[] }))])
     overview.value = ov
     runs.value = hist.items ?? []
+    wafItems.value = waf.items ?? []
     loadState.value = loadState.value === 'error' ? 'idle' : loadState.value
   } catch (e) {
     if (loadState.value !== 'loading') return // 已有数据时静默
@@ -433,6 +436,44 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
       <p v-if="hasRunning" class="hint">{{ t('securityCenter.runningHint') }}</p>
     </section>
 
+    <!-- WAF 防护态势(SafeLine) -->
+    <section v-if="wafItems.length" class="panel" aria-labelledby="sec-waf-heading">
+      <h2 id="sec-waf-heading" class="panel-title">{{ t('securityCenter.wafTitle') }}</h2>
+      <div class="table-wrap">
+        <table class="table">
+          <thead>
+            <tr>
+              <th scope="col">{{ t('securityCenter.colServer') }}</th>
+              <th scope="col">{{ t('securityCenter.colStatus') }}</th>
+              <th scope="col">{{ t('securityCenter.wafBlockedToday') }}</th>
+              <th scope="col">{{ t('securityCenter.wafBlocked7d') }}</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="w in wafItems" :key="w.instanceId">
+              <td>
+                <div class="srv-name">{{ w.name }}</div>
+                <div class="hint">{{ w.endpoint }}</div>
+              </td>
+              <td>
+                <template v-if="!w.tokenConfigured">
+                  <span class="badge badge--failed">{{ t('securityCenter.wafNoToken') }}</span>
+                  <div class="hint">{{ t('securityCenter.wafNoTokenHint') }}</div>
+                </template>
+                <template v-else-if="!w.ok">
+                  <span class="badge badge--failed">{{ t('securityCenter.wafUnreachable') }}</span>
+                  <div class="hint">{{ w.detail }}</div>
+                </template>
+                <span v-else class="badge badge--ok">{{ t('securityCenter.wafOnline') }}</span>
+              </td>
+              <td><template v-if="w.stats">{{ w.stats.blockedToday }}</template><span v-else class="hint">{{ t('securityCenter.wafStatsNA') }}</span></td>
+              <td><template v-if="w.stats">{{ w.stats.blocked7d }}</template><span v-else class="hint">{{ t('securityCenter.wafStatsNA') }}</span></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
     <!-- 定时扫描 -->
     <section class="panel" aria-labelledby="sec-sched-heading">
       <h2 id="sec-sched-heading" class="panel-title">{{ t('securityCenter.schedTitle') }}</h2>
@@ -765,6 +806,7 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
 
 .badge { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 12px; color: #fff; white-space: nowrap; }
 .badge--running { background: #2f6fab; }
+.badge--ok { background: #1b7f4d; }
 .badge--failed { background: #b3261e; }
 .badge--pulse { animation: sec-pulse 1.6s ease-in-out infinite; }
 @keyframes sec-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.55; } }

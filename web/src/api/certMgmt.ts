@@ -112,6 +112,9 @@ export interface CertDeploy {
   certId: string
   serverId: string
   name: string
+  kind: 'ssh' | 'safeline' | ''
+  wafInstanceId: string
+  certName: string
   certPath: string
   keyPath: string
   postCommand: string
@@ -137,14 +140,17 @@ export interface CertDeployRun {
   durationMs: number
 }
 
-/** 创建部署目标入参。 */
+/** 创建部署目标入参(kind 留空 = ssh;safeline 时仅 certId/wafInstanceId/certName 必填)。 */
 export interface CertDeployInput {
   certId: string
-  serverId: string
+  kind?: 'ssh' | 'safeline'
+  serverId?: string
   name?: string
-  certPath: string
-  keyPath: string
+  certPath?: string
+  keyPath?: string
   postCommand?: string
+  wafInstanceId?: string
+  certName?: string
   enabled?: boolean
 }
 
@@ -154,6 +160,7 @@ export interface CertDeployUpdateInput {
   certPath?: string
   keyPath?: string
   postCommand?: string
+  certName?: string
   enabled?: boolean
 }
 

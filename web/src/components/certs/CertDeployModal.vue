@@ -22,6 +22,7 @@ import {
   type CertDeployRun,
 } from '../../api/certMgmt'
 import { listServers, type Server } from '../../api/servers'
+import { listScanners, type ScannerInstance } from '../../api/security'
 import { HttpError } from '../../api/http'
 import { useToast } from '../../composables/useToast'
 import { useConfirm } from '../../composables/useConfirm'
@@ -41,6 +42,7 @@ type View = 'list' | 'form' | 'history'
 const view = ref<View>('list')
 const deploys = ref<CertDeploy[]>([])
 const servers = ref<Server[]>([])
+const wafInstances = ref<ScannerInstance[]>([])
 const loadError = ref('')
 const loading = ref(false)
 
@@ -99,46 +101,79 @@ function fmtTime(s: string): string {
 // ─── 新增 / 编辑表单 ──────────────────────────────────────────────────────────
 interface FormState {
   id: string // 空 = 新增
+  kind: 'ssh' | 'safeline'
   name: string
   serverId: string
   certPath: string
   keyPath: string
   postCommand: string
+  wafInstanceId: string
+  certName: string
   enabled: boolean
 }
 const form = ref<FormState | null>(null)
 const saving = ref(false)
 
+async function loadWafInstances(): Promise<void> {
+  try {
+    const res = await listScanners()
+    wafInstances.value = (res.items ?? []).filter((sc) => sc.kind === 'safeline')
+  } catch {
+    wafInstances.value = [] // 静默:提交时后端校验兜底
+  }
+}
+
+const wafOptions = computed(() =>
+  wafInstances.value.map((w) => ({ value: w.id, label: `${w.name}(${w.host})` })),
+)
+
+const kindOptions = computed(() => [
+  { value: 'ssh', label: t('certMgmt.deploy.kindSsh') },
+  { value: 'safeline', label: t('certMgmt.deploy.kindSafeline') },
+])
+
 function openCreate(): void {
   form.value = {
     id: '',
+    kind: 'ssh',
     name: '',
     serverId: servers.value[0]?.id ?? '',
     certPath: '',
     keyPath: '',
     postCommand: '',
+    wafInstanceId: '',
+    certName: props.cert.primaryDomain || props.cert.id,
     enabled: true,
   }
   if (servers.value.length === 0) void loadServerList()
+  void loadWafInstances()
   view.value = 'form'
 }
 
 function openEdit(d: CertDeploy): void {
   form.value = {
     id: d.id,
+    kind: d.kind === 'safeline' ? 'safeline' : 'ssh',
     name: d.name,
     serverId: d.serverId,
     certPath: d.certPath,
     keyPath: d.keyPath,
     postCommand: d.postCommand,
+    wafInstanceId: d.wafInstanceId ?? '',
+    certName: d.certName ?? '',
     enabled: d.enabled,
   }
+  void loadWafInstances()
   view.value = 'form'
 }
 
 const formValid = computed(() => {
   const f = form.value
-  return !!f && f.serverId && f.certPath.trim().startsWith('/') && f.keyPath.trim().startsWith('/') && f.certPath.trim() !== f.keyPath.trim()
+  if (!f) return false
+  if (f.kind === 'safeline') {
+    return !!f.wafInstanceId && !!f.certName.trim()
+  }
+  return !!f.serverId && f.certPath.trim().startsWith('/') && f.keyPath.trim().startsWith('/') && f.certPath.trim() !== f.keyPath.trim()
 })
 
 async function submitForm(): Promise<void> {
@@ -149,15 +184,27 @@ async function submitForm(): Promise<void> {
     if (f.id) {
       await updateCertDeploy(f.id, {
         name: f.name,
-        certPath: f.certPath.trim(),
-        keyPath: f.keyPath.trim(),
+        certPath: f.kind === 'ssh' ? f.certPath.trim() : '',
+        keyPath: f.kind === 'ssh' ? f.keyPath.trim() : '',
         postCommand: f.postCommand,
+        certName: f.kind === 'safeline' ? f.certName.trim() : undefined,
         enabled: f.enabled,
       })
       toast.success(t('certMgmt.deploy.updated'))
+    } else if (f.kind === 'safeline') {
+      await createCertDeploy({
+        certId: props.cert.id,
+        kind: 'safeline',
+        wafInstanceId: f.wafInstanceId,
+        certName: f.certName.trim(),
+        name: f.name,
+        enabled: f.enabled,
+      })
+      toast.success(t('certMgmt.deploy.created'))
     } else {
       await createCertDeploy({
         certId: props.cert.id,
+        kind: 'ssh',
         serverId: f.serverId,
         name: f.name,
         certPath: f.certPath.trim(),
@@ -368,13 +415,13 @@ async function openHistory(d: CertDeploy): Promise<void> {
         </label>
         <label class="field">
           <span class="field__lbl">{{ t('certMgmt.deploy.certPath') }}</span>
-          <input v-model="form.certPath" class="field__in mono" type="text" :placeholder="t('certMgmt.deploy.certPathPh')" />
+          <input v-if="form.kind === 'ssh'" v-model="form.certPath" class="field__in mono" type="text" :placeholder="t('certMgmt.deploy.certPathPh')" />
         </label>
-        <label class="field">
+        <label v-if="form.kind === 'ssh'" class="field">
           <span class="field__lbl">{{ t('certMgmt.deploy.keyPath') }}</span>
           <input v-model="form.keyPath" class="field__in mono" type="text" :placeholder="t('certMgmt.deploy.keyPathPh')" />
         </label>
-        <label class="field">
+        <label v-if="form.kind === 'ssh'" class="field">
           <span class="field__lbl">{{ t('certMgmt.deploy.postCommand') }}</span>
           <input v-model="form.postCommand" class="field__in mono" type="text" placeholder="nginx -s reload" />
         </label>
