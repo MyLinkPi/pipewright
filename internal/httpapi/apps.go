@@ -50,6 +50,7 @@ const appAutoRegisterObjectStoreTemplate = "rustfs"
 const appAutoRegisterRedisTemplate = "redis"
 const appAutoRegisterScannerTemplate = "trivy-server"
 const appAutoRegisterNucleiRunnerTemplate = "nuclei-runner"
+const appAutoRegisterSafelineTemplate = "safeline"
 
 var appAutoRegisterDBTemplates = map[string]bool{
 	"mysql":    true,
@@ -334,6 +335,56 @@ func registerNucleiRunnerInstance(ctx context.Context, secScans secscan.Service,
 		Actor: auditActor, Action: auditActionSecScannerReg, TargetType: auditTargetSecurity,
 		TargetID: targetID,
 		Detail:   map[string]any{"kind": secscan.KindNucleiRunner, "host": srv.Host, "source": "appstore", "ok": true, "updated": res.Updated}, IP: clientIP(r),
+	})
+	return true, note
+}
+
+// registerSafelineInstance 是应用商店部署 safeline 成功后的联动登记(尽力而为,
+// 绝不影响部署结果):登记 kind=safeline 的 WAF 实例(管理台地址 = 宿主:管理端口;
+// API Token 留空,note 指引到雷池控制台生成后补填)。幂等语义同 registerScannerInstance。
+func registerSafelineInstance(ctx context.Context, secScans secscan.Service, aud audit.Recorder, r *http.Request, srv target.Server, stackName string, used map[string]string, instance string) (bool, string) {
+	if secScans == nil {
+		return false, ""
+	}
+	portParam := used["port"]
+	if portParam == "" {
+		return false, "生效参数缺少 port,未自动登记 WAF 实例"
+	}
+	port, err := strconv.Atoi(strings.TrimSpace(portParam))
+	if err != nil || port < 1 || port > 65535 {
+		return false, "生效端口参数非法,未自动登记 WAF 实例"
+	}
+	name := "SafeLine WAF · " + srv.Name
+	if strings.TrimSpace(name) == "SafeLine WAF ·" {
+		name = "SafeLine WAF · " + srv.Host
+	}
+	if instance != "" {
+		name += " · " + instance
+	}
+	res, err := secScans.Register(ctx, secscan.RegisterInput{
+		Kind: secscan.KindSafeline, Name: name, Host: srv.Host, Port: port,
+		ServerID: srv.ID, StackName: stackName,
+	})
+	if err != nil {
+		msg := "自动登记 WAF 实例失败:" + err.Error()
+		recordAudit(r.Context(), aud, audit.Entry{
+			Actor: auditActor, Action: auditActionSecScannerReg, TargetType: auditTargetSecurity,
+			Detail: map[string]any{"kind": secscan.KindSafeline, "host": srv.Host, "port": port, "source": "appstore", "ok": false, "error": msg}, IP: clientIP(r),
+		})
+		return false, msg
+	}
+	note := "已自动登记到「安全中心」;下一步:在雷池控制台生成 API Token,到安全中心扫描器实例中补填,即可看到拦截态势"
+	if res.Updated {
+		note = "已更新既有 WAF 实例登记(同地址原地刷新)"
+	}
+	targetID := ""
+	if res.Instance != nil {
+		targetID = res.Instance.ID
+	}
+	recordAudit(r.Context(), aud, audit.Entry{
+		Actor: auditActor, Action: auditActionSecScannerReg, TargetType: auditTargetSecurity,
+		TargetID: targetID,
+		Detail:   map[string]any{"kind": secscan.KindSafeline, "host": srv.Host, "port": port, "source": "appstore", "ok": true, "updated": res.Updated}, IP: clientIP(r),
 	})
 	return true, note
 }
@@ -775,6 +826,13 @@ func makeDeployAppHandler(apps appstore.Service, servers target.Service, aud aud
 		if out.OK && tpl.Name == appAutoRegisterNucleiRunnerTemplate {
 			rctx, rcancel := context.WithTimeout(r.Context(), appRegisterTimeout)
 			out.ScannerRegistered, out.ScannerNote = registerNucleiRunnerInstance(rctx, secScans, aud, r, *srv, stackName, req.Instance)
+			rcancel()
+		}
+		// safeline 联动:部署成功后自动登记为安全中心 WAF 实例(尽力而为;API Token
+		// 留空,由用户在雷池控制台生成后到安全中心补填)。
+		if out.OK && tpl.Name == appAutoRegisterSafelineTemplate {
+			rctx, rcancel := context.WithTimeout(r.Context(), appRegisterTimeout)
+			out.ScannerRegistered, out.ScannerNote = registerSafelineInstance(rctx, secScans, aud, r, *srv, stackName, rendered.Used, req.Instance)
 			rcancel()
 		}
 

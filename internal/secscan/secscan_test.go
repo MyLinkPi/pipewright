@@ -508,3 +508,83 @@ func TestNucleiViaRunner(t *testing.T) {
 		}
 	})
 }
+
+// ---- SafeLine WAF:登记/探活/态势 ----
+
+// fakeWafClient 按实例 Token 区分行为(空 Token 场景由 Service 层拦截,不会到这)。
+type fakeWafClient struct {
+	pings   int
+	stats   map[string]*WafStats
+	pingErr map[string]bool
+}
+
+func (f *fakeWafClient) Ping(ctx context.Context, ep WafEndpoint) *TestResult {
+	f.pings++
+	if f.pingErr[ep.BaseURL] {
+		return &TestResult{Err: errors.New("refused"), Detail: "SafeLine 探活失败:连接被拒绝"}
+	}
+	return &TestResult{OK: true, Detail: "ok"}
+}
+
+func (f *fakeWafClient) Stats(ctx context.Context, ep WafEndpoint) (*WafStats, error) {
+	if st, ok := f.stats[ep.BaseURL]; ok {
+		return st, nil
+	}
+	return nil, errors.New("stats unavailable")
+}
+
+func (f *fakeWafClient) UpsertCert(ctx context.Context, ep WafEndpoint, name, crt, key string) error {
+	return nil
+}
+
+func TestSafelineWafOverview(t *testing.T) {
+	storetest.ForEachDialect(t, func(t *testing.T, st *store.Store) {
+		runner := &fakeRunner{servers: []ServerInfo{{ID: "s1", Name: "边缘机", Host: "10.0.0.1"}}}
+		waf := &fakeWafClient{
+			stats:   map[string]*WafStats{"https://10.0.0.1:9443": {BlockedToday: 3, Blocked7d: 21}},
+			pingErr: map[string]bool{},
+		}
+		svc := New(st.DB, WithVault(fakeVault{}), WithRunner(runner), WithArtifacts(newFakeArtifacts()), WithWafClient(waf))
+		ctx := context.Background()
+
+		// 登记两台:一台带 Token,一台不带(应用市场联动形态)。
+		withTok, err := svc.Register(ctx, RegisterInput{Kind: KindSafeline, Name: "WAF A", Host: "10.0.0.1", Port: 9443, Token: "tk", ServerID: "s1", StackName: "safeline"})
+		if err != nil || withTok.Instance.TokenConfigured != true {
+			t.Fatalf("登记带 Token 实例:%v", err)
+		}
+		noTok, err := svc.Register(ctx, RegisterInput{Kind: KindSafeline, Name: "WAF B", Host: "10.0.0.2", Port: 9443, ServerID: "s1", StackName: "safeline-2"})
+		if err != nil || noTok.Instance.TokenConfigured {
+			t.Fatalf("登记无 Token 实例:%v", err)
+		}
+
+		items, err := svc.WafOverview(ctx)
+		if err != nil || len(items) != 2 {
+			t.Fatalf("WafOverview:%v %+v", err, items)
+		}
+		byName := map[string]WafInstanceStatus{}
+		for _, it := range items {
+			byName[it.Name] = it
+		}
+		a := byName["WAF A"]
+		if !a.OK || a.Stats == nil || a.Stats.BlockedToday != 3 || a.Stats.Blocked7d != 21 {
+			t.Fatalf("WAF A 态势不符:%+v", a)
+		}
+		b := byName["WAF B"]
+		if b.OK || !strings.Contains(b.Detail, "API Token") {
+			t.Fatalf("WAF B 应提示待配置 Token:%+v", b)
+		}
+
+		// 推证书适配:无 Token 实例 → 人话错误;带 Token 实例成功(fake)。
+		if err := svc.UpsertCert(ctx, noTok.Instance.ID, "a.com", "CRT", "KEY"); err == nil || !strings.Contains(err.Error(), "API Token") {
+			t.Fatalf("无 Token 推证书应报错,得 %v", err)
+		}
+		if err := svc.UpsertCert(ctx, withTok.Instance.ID, "a.com", "CRT", "KEY"); err != nil {
+			t.Fatalf("推证书:%v", err)
+		}
+		// 归属解析。
+		sid, err := svc.WafInstanceServerID(ctx, withTok.Instance.ID)
+		if err != nil || sid != "s1" {
+			t.Fatalf("归属解析:%v %s", err, sid)
+		}
+	})
+}

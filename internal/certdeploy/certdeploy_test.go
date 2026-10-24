@@ -2,6 +2,7 @@ package certdeploy
 
 import (
 	"context"
+	"errors"
 	"database/sql"
 	"fmt"
 	"io"
@@ -430,3 +431,97 @@ func TestPruneHistory(t *testing.T) {
 }
 
 func strPtr(s string) *string { return &s }
+
+
+// ---------- safeline 目标(经 WAF API 推证书) ----------
+
+// fakeWafGateway 记录推送参数;可切换失败与宿主解析。
+type fakeWafGateway struct {
+	pushes   []string // instanceID|certName
+	failWith error
+	serverID string // WafInstanceServerID 返回值
+}
+
+func (f *fakeWafGateway) UpsertCert(ctx context.Context, instanceID, name, certPEM, keyPEM string) error {
+	if f.failWith != nil {
+		return f.failWith
+	}
+	f.pushes = append(f.pushes, instanceID+"|"+name)
+	return nil
+}
+
+func (f *fakeWafGateway) WafInstanceServerID(ctx context.Context, instanceID string) (string, error) {
+	if f.serverID == "" {
+		return "", nil
+	}
+	return f.serverID, nil
+}
+
+func TestSafelineTargetLifecycle(t *testing.T) {
+	storetest.ForEachDialect(t, func(t *testing.T, st *store.Store) {
+		ctx := context.Background()
+		seedCert(t, st.DB, "cert-1")
+		seedServer(t, st.DB, "srv-1")
+		svc, fe := newTestService(t, st.DB, "root")
+		waf := &fakeWafGateway{serverID: "srv-1"}
+		svc.WithWafGateway(waf)
+
+		// 未注入 gateway → 创建 safeline 目标被拒(人话)。
+		svcNoWaf, _ := newTestService(t, st.DB, "root")
+		if _, err := svcNoWaf.Create(ctx, CreateInput{Kind: KindSafeline, CertID: "cert-1", WafInstanceID: "w1", CertName: "a.com"}); err == nil || !strings.Contains(err.Error(), "未装配") {
+			t.Fatalf("未装配应报错,得 %v", err)
+		}
+
+		// 创建:serverID 由实例解析;路径/命令字段被清空;ssh 校验不适用。
+		d, err := svc.Create(ctx, CreateInput{
+			Kind: KindSafeline, CertID: "cert-1", WafInstanceID: "w1", CertName: " a.com ",
+			CertPath: "/tmp/should-be-ignored", Name: "雷池",
+		})
+		if err != nil {
+			t.Fatalf("create safeline: %v", err)
+		}
+		if d.Kind != KindSafeline || d.WafInstanceID != "w1" || d.CertName != "a.com" || d.ServerID != "srv-1" || d.CertPath != "" {
+			t.Fatalf("safeline 目标不符:%+v", d)
+		}
+		// 实例未登记宿主 → 人话拒绝。
+		wafNoHost := &fakeWafGateway{serverID: ""}
+		svc.WithWafGateway(wafNoHost)
+		if _, err := svc.Create(ctx, CreateInput{Kind: KindSafeline, CertID: "cert-1", WafInstanceID: "w2", CertName: "b.com"}); err == nil || !strings.Contains(err.Error(), "部署宿主") {
+			t.Fatalf("缺宿主应报错,得 %v", err)
+		}
+		svc.WithWafGateway(waf)
+
+		// 部署:走 WAF API(无 SSH 执行),证书名随目标;失败人话落状态。
+		svc.WithWafGateway(waf)
+		if _, err := svc.DeployOne(ctx, d.ID); err != nil {
+			t.Fatalf("deploy: %v", err)
+		}
+		got, _ := svc.Get(ctx, d.ID)
+		if got.Status != StatusSuccess || len(waf.pushes) != 1 || waf.pushes[0] != "w1|a.com" {
+			t.Fatalf("部署结果不符:%s %+v", got.Status, waf.pushes)
+		}
+		if n := len(fe.execs); n != 0 {
+			t.Fatalf("safeline 部署不应产生 SSH 执行:%d", n)
+		}
+		waf.failWith = errors.New("boom token")
+		if _, err := svc.DeployOne(ctx, d.ID); err == nil || !strings.Contains(err.Error(), "SafeLine") {
+			t.Fatalf("失败路径应返回人话错误,得 %v", err)
+		}
+		got, _ = svc.Get(ctx, d.ID)
+		if got.Status != StatusFailed || !strings.Contains(got.StatusDetail, "SafeLine") {
+			t.Fatalf("失败状态不符:%+v", got)
+		}
+		waf.failWith = nil
+
+		// 更新:certName 可改,空名拒绝;路径字段对 safeline 不校验。
+		name := "new.com"
+		d2, err := svc.Update(ctx, d.ID, UpdateInput{CertName: &name, CertPath: strPtr("")})
+		if err != nil || d2.CertName != "new.com" {
+			t.Fatalf("更新证书名:%v %+v", err, d2)
+		}
+		empty := ""
+		if _, err := svc.Update(ctx, d.ID, UpdateInput{CertName: &empty}); err == nil {
+			t.Fatal("空证书名应拒绝")
+		}
+	})
+}

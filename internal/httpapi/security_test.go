@@ -330,3 +330,28 @@ func TestSecurityExplainFinding(t *testing.T) {
 		}
 	})
 }
+
+func TestSecurityWafOverviewEndpoint(t *testing.T) {
+	storetest.ForEachDialect(t, func(t *testing.T, st *store.Store) {
+		r, svc, _ := newSecurityTestRouter(t, st, &secRunnerFake{})
+		ctx := context.Background()
+
+		// 无实例 → 空列表。
+		req := httptest.NewRequest(http.MethodGet, "/security/waf", nil)
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, req)
+		if rec.Code != 200 || !strings.Contains(rec.Body.String(), `"items":[]`) {
+			t.Fatalf("空 WAF 态势不符:%d %s", rec.Code, rec.Body.String())
+		}
+		// 登记 safeline 实例(无 Token)→ 态势含待配置提示(零网络)。
+		if _, err := svc.Register(ctx, secscan.RegisterInput{Kind: secscan.KindSafeline, Name: "WAF", Host: "10.0.0.1", Port: 9443, ServerID: "s1", StackName: "safeline"}); err != nil {
+			t.Fatal(err)
+		}
+		req = httptest.NewRequest(http.MethodGet, "/security/waf", nil)
+		rec = httptest.NewRecorder()
+		r.ServeHTTP(rec, req)
+		if rec.Code != 200 || !strings.Contains(rec.Body.String(), "API Token") || !strings.Contains(rec.Body.String(), "10.0.0.1:9443") {
+			t.Fatalf("WAF 态势不符:%d %s", rec.Code, rec.Body.String())
+		}
+	})
+}

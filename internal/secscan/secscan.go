@@ -27,6 +27,9 @@ const (
 	// KindNucleiRunner 是常驻 Nuclei 执行容器(部署在任一有 docker 的机器;面板经
 	// docker exec 在容器内执行扫描,目标机无需 docker,只要网络可达)。
 	KindNucleiRunner = "nuclei-runner"
+	// KindSafeline 是雷池 SafeLine WAF 管理面(host:port + API Token;防护态势与
+	// 证书自动同步的接入点,见 safeline.go)。
+	KindSafeline = "safeline"
 )
 
 // 扫描类型枚举。
@@ -374,6 +377,12 @@ type Service interface {
 	RunFindings(ctx context.Context, id string, f FindingFilter) (*FindingsPage, error)
 	// Overview 聚合全员最新状态(含从未扫描的服务器占位)。
 	Overview(ctx context.Context) (*Overview, error)
+	// WafOverview 汇总 SafeLine WAF 实例的连通与拦截态势(防护态势卡)。
+	WafOverview(ctx context.Context) ([]WafInstanceStatus, error)
+	// UpsertCert 经 SafeLine OpenAPI 原位同步证书(certdeploy.WafGateway 适配面)。
+	UpsertCert(ctx context.Context, instanceID, name, certPEM, keyPEM string) error
+	// WafInstanceServerID 返回 WAF 实例登记的部署宿主(certdeploy 归属用)。
+	WafInstanceServerID(ctx context.Context, instanceID string) (string, error)
 	// CollectReport 组装 HTML 审计报告数据(serverIDs 空 = 全员;取各机最新 done 结果。
 	// 指定清单中的未知服务器跳过——报告是快照,个别机器中途被删不应让整份导出失败)。
 	CollectReport(ctx context.Context, serverIDs []string) ([]ServerReport, error)
@@ -395,7 +404,8 @@ type service struct {
 	sem         chan struct{}   // fleet 并发闸(单机扫描也过闸,防连环触发压垮目标机)
 	trivyImage  string
 	nucleiImage string
-	trivyDBRepo string // 客户端本地模式的漏洞库仓库(镜像源;空 = trivy 默认 ghcr.io)
+	trivyDBRepo string    // 客户端本地模式的漏洞库仓库(镜像源;空 = trivy 默认 ghcr.io)
+	waf         WafClient // SafeLine OpenAPI 客户端(测试注入 fake)
 }
 
 // Option 装配选项(New 消费)。
@@ -415,6 +425,15 @@ func WithBaseContext(ctx context.Context) Option {
 	return func(s *service) {
 		if ctx != nil {
 			s.baseCtx = ctx
+		}
+	}
+}
+
+// WithWafClient 注入 SafeLine OpenAPI 客户端(缺省 = 内置 HTTP 实现)。
+func WithWafClient(c WafClient) Option {
+	return func(s *service) {
+		if c != nil {
+			s.waf = c
 		}
 	}
 }
@@ -453,6 +472,7 @@ func New(db *sql.DB, opts ...Option) Service {
 		sem:         make(chan struct{}, fleetConcurrency),
 		trivyImage:  "aquasec/trivy:latest",
 		nucleiImage: "projectdiscovery/nuclei:latest",
+		waf:         httpWafClient{},
 	}
 	for _, o := range opts {
 		o(s)
