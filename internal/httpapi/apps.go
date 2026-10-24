@@ -255,6 +255,10 @@ func deployComposeToServer(ctx context.Context, svc target.Service, serverID, na
 	upCmd := append(append([]string{}, bin...), "-p", name, "-f", composePath, "up", "-d")
 	res, err := svc.Exec(ctx, serverID, upCmd)
 	if err != nil {
+		// 请求上下文已取消(页面关闭/连接断开):up 被中断,但已下载的镜像分层保留,重试续传。
+		if ctx.Err() != nil {
+			return false, "", "部署被中断(页面关闭或连接断开):已下载的镜像分层会保留,重试部署将断点续传"
+		}
 		return false, "", humanServiceError(err)
 	}
 	// compose up 已投递(容器集合大概率已变)→ 丢弃该台容器清单缓存。
@@ -621,12 +625,12 @@ func makeDeployAppHandler(apps appstore.Service, servers target.Service, aud aud
 		}
 
 		out := appDeployResponse{ServerID: serverID, Name: stackName, Params: rendered.Used}
-		cctx, cancel := context.WithTimeout(r.Context(), stacksUpTimeout)
-		defer cancel()
-		out.OK, out.Output, out.Error = deployComposeToServer(cctx, servers, serverID, stackName, compose)
+		// compose up 含镜像拉取,不设主动超时:大镜像(数 GB)时长取决于带宽,人为截断只会杀掉
+		// 进行中的分层下载;拉取失败 docker 自身会报错。客户端断开经 r.Context() 取消兜底。
+		out.OK, out.Output, out.Error = deployComposeToServer(r.Context(), servers, serverID, stackName, compose)
 		// 部署成功 → 落参数边车(后续「升级」原位保留参数的凭据;失败只警示不翻转结果)。
 		if out.OK {
-			if werr := writeAppSidecar(cctx, servers, serverID, stackName, appDeploySidecar{
+			if werr := writeAppSidecar(r.Context(), servers, serverID, stackName, appDeploySidecar{
 				TemplateID: req.TemplateID, Params: rendered.Used, CPUs: req.CPUs, Memory: req.Memory,
 				DeployedAt: time.Now().UTC(),
 			}); werr != nil {
@@ -1057,12 +1061,11 @@ func makeUpgradeAppHandler(apps appstore.Service, servers target.Service, aud au
 			return
 		}
 		out.Params = rendered.Used
-		cctx, cancel := context.WithTimeout(r.Context(), stacksUpTimeout)
-		defer cancel()
-		out.OK, out.Output, out.Error = deployComposeToServer(cctx, servers, serverID, stackName, compose)
+		// 同部署:up 含镜像拉取,不设主动超时(拉取失败 docker 自报错,客户端断开兜底取消)。
+		out.OK, out.Output, out.Error = deployComposeToServer(r.Context(), servers, serverID, stackName, compose)
 		// 升级成功 → 边车重写为最新生效参数/资源限制(下一轮升级的凭据;失败只警示不翻转结果)。
 		if out.OK {
-			if werr := writeAppSidecar(cctx, servers, serverID, stackName, appDeploySidecar{
+			if werr := writeAppSidecar(r.Context(), servers, serverID, stackName, appDeploySidecar{
 				TemplateID: req.TemplateID, Params: rendered.Used, CPUs: cpus, Memory: memory,
 				DeployedAt: time.Now().UTC(),
 			}); werr != nil {

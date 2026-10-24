@@ -24,7 +24,6 @@ import (
 
 const (
 	stacksCmdTimeout = 20 * time.Second
-	stacksUpTimeout  = 8 * time.Minute // up 可能拉镜像 + 构建,给充裕超时
 	// stacksBaseDir 是受管 compose 目录基址。部署时在其下按项目名建子目录存 docker-compose.yml,
 	// 使 `compose ls` 可见、后续可重新 up。需运行 SSH 用户对该目录可写(root 默认可)。
 	stacksBaseDir   = "/opt/pipewright/stacks"
@@ -476,8 +475,9 @@ func makeStackSaveHandler(svc target.Service, aud audit.Recorder) http.HandlerFu
 			})
 		}
 
-		cctx, cancel := context.WithTimeout(r.Context(), stacksUpTimeout)
-		defer cancel()
+		// up 含镜像拉取,不设主动超时:大镜像时长取决于带宽,人为截断只会杀掉进行中的分层
+		// 下载;拉取失败 docker 自身会报错。客户端断开经 r.Context() 取消兜底。
+		cctx := r.Context()
 
 		bin := detectComposeBin(cctx, svc, id)
 		if bin == nil {
@@ -627,12 +627,14 @@ func makeStackActionHandler(svc target.Service, aud audit.Recorder) http.Handler
 				Detail: map[string]any{"name": req.Name, "action": req.Action, "ok": ok}, IP: clientIP(r),
 			})
 		}
-		timeout := stacksCmdTimeout
-		if req.Action == "update" {
-			timeout = stacksUpTimeout
+		// update(拉新镜像 + up)不设主动超时:大镜像时长取决于带宽,人为截断只会杀掉进行中的
+		// 分层下载,拉取失败 docker 自身会报错;start/stop/restart/down 维持短窗口。
+		cctx := r.Context()
+		if req.Action != "update" {
+			var cancel context.CancelFunc
+			cctx, cancel = context.WithTimeout(r.Context(), stacksCmdTimeout)
+			defer cancel()
 		}
-		cctx, cancel := context.WithTimeout(r.Context(), timeout)
-		defer cancel()
 
 		// 构造命令:
 		var cmd []string
@@ -782,12 +784,10 @@ func makeStackDeployHandler(svc target.Service, aud audit.Recorder) http.Handler
 			})
 		}
 
-		cctx, cancel := context.WithTimeout(r.Context(), stacksUpTimeout)
-		defer cancel()
-
+		// up 含镜像拉取,不设主动超时(拉取失败 docker 自报错;客户端断开经 r.Context() 兜底)。
 		// 受管目录基址 + 项目名(name 正则已排除 `/` 与前导 `.`,无路径穿越);
 		// 建目录 → Upload compose → 探测 compose CLI → up -d(与应用商店部署同一条链路)。
-		ok, output, errMsg := deployComposeToServer(cctx, svc, id, req.Name, compose)
+		ok, output, errMsg := deployComposeToServer(r.Context(), svc, id, req.Name, compose)
 		out.OK = ok
 		out.Output = output
 		out.Error = errMsg
