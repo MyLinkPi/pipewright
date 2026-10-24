@@ -2,7 +2,8 @@
  * Pm2.local.test.ts — /pm2 页面「本机(控制节点)」卡牌的回归测试(仿 Containers.local.test.ts)。
  *
  * 覆盖:本机 pm2 分组置首且与登记服务器卡并存;本机请求失败只隐藏本机卡(不拖垮服务器卡);
- * 只有本机数据时不显示空态;本机卡的标题/主机文案走 i18n(localName/localHost)。
+ * 只有本机数据时不显示空态;本机卡的标题/主机文案走 i18n(localName/localHost);
+ * 卡片头部「终端」按钮按机器 id 新标签页打开 server-terminal,不可达机器禁用。
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { mount, flushPromises, type VueWrapper } from '@vue/test-utils'
@@ -10,6 +11,11 @@ import { mount, flushPromises, type VueWrapper } from '@vue/test-utils'
 const listServersMock = vi.fn()
 const getAllPm2Mock = vi.fn()
 const getServerPm2Mock = vi.fn()
+const mockRouterResolve = vi.fn((_loc: unknown) => ({ href: '/servers/x/terminal' }))
+
+vi.mock('vue-router', () => ({
+  useRouter: () => ({ resolve: (loc: unknown) => mockRouterResolve(loc) }),
+}))
 
 vi.mock('../api/servers', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../api/servers')>()
@@ -163,6 +169,34 @@ describe('Pm2 · 本机(控制节点)卡牌', () => {
     expect(kpis[1]).toBe('1')
     expect(kpis[2]).toBe('1')
     expect(kpis[3]).toBe('1')
+    w.unmount()
+  })
+})
+
+describe('Pm2 · 卡片头部「终端」按钮', () => {
+  it('可达机器:点击按该机 id 解析 server-terminal 并新标签页打开', async () => {
+    const openMock = vi.spyOn(window, 'open').mockImplementation(() => null)
+    const w = await mountView()
+    // 卡序:本机置首、web-1 第二;点 web-1 的终端按钮。
+    const btns = w.findAll('.term-btn')
+    expect(btns.length).toBe(2)
+    await btns[1].trigger('click')
+    expect(mockRouterResolve).toHaveBeenCalledWith({
+      name: 'server-terminal',
+      params: { id: 's1' },
+    })
+    expect(openMock).toHaveBeenCalledWith('/servers/x/terminal', '_blank', 'noopener')
+    openMock.mockRestore()
+    w.unmount()
+  })
+
+  it('不可达机器:终端按钮禁用', async () => {
+    getAllPm2Mock.mockResolvedValue([
+      group('s1', { reachable: false, runtime: '', processes: [], online: 0, total: 0, error: 'ssh: connect refused' }),
+    ])
+    const w = await mountView()
+    const btn = w.findAll('.term-btn')[1]
+    expect(btn.attributes('disabled')).toBeDefined()
     w.unmount()
   })
 })
