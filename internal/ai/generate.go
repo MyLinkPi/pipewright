@@ -414,7 +414,7 @@ needs 填「本阶段内它所依赖的其它 job 的 name」(数组)。**凡有
 ## 每个节点的 config(关键!尽量据仓库分析填满,让流水线直接可用)
 为每个 job 填 "config" 对象,**凡能从仓库分析推断的都填**;只有环境相关项(serverId/channel/credentialId)留空给用户选。各类型 config 字段:
 - build_nodejs/build_java/build_golang/build_python/script:image(运行镜像,据语言/版本选,如 node:20、maven:3.9-eclipse-temurin-21、golang:1.22、python:3.12)、commands(多行命令,据构建工具写)、artifactPath(产物路径,如 "backend/target/*.jar"、"frontend/dist"、"bin/app")。命令里的子目录要用分析里检测到的真实路径(如 backend/、frontend/)。
-- build_image:buildModel("dockerfile" 有 Dockerfile 否则 "toolchain")、dockerfilePath(检测到的 Dockerfile 路径,如 "backend/Dockerfile")、context(Dockerfile 所在目录,如 "backend")、artifactType("image")。
+- build_image:buildModel("dockerfile" 有 Dockerfile 否则 "toolchain")、dockerfilePath(检测到的 Dockerfile 路径,如 "backend/Dockerfile")、context(Dockerfile 所在目录,如 "backend")、buildTarget(多阶段 Dockerfile 的目标 stage,即 "FROM ... AS <名字>" 的名字;空 = 构建最后一个 stage。检测到多个 target 时建多个 build_image 节点、各配不同 buildTarget,并用 needs 串行)、artifactType("image")。
 - push_image:artifactJob(必填 = 要推送的镜像来源节点 name,必须是**同阶段**的 build_image 节点);registry(可选,目标仓库地址如 "registry.cn-hangzhou.aliyuncs.com",留空 = 用环境绑定的镜像仓库)、imageName(可选,远端镜像名如 "org/app",留空用产物名)、tag(可选,如 "{{commit}}",留空沿用产物 tag)、credentialId(可选,仓库登录凭据,留空给用户在画布选)。
 - deploy_ssh(文件产物 jar/dist):artifactJob(必填 = 产出该产物的构建节点 name)、deployPath、restartCommand、firstBatchSize/batchSize(多机分批,可选);serverId 留空(用户选目标机)。
 - deploy_container(镜像产物):artifactJob(必填 = build_image 节点 name)、containerName(据项目名取,如 "<proj>-app")、ports(如 "8080:8080");常用容器参数用结构化键 cpuLimit(如 "1.0")/memoryLimit(如 "512m")/restartPolicy(no/always/unless-stopped/on-failure)/envVars(每行一条 KEY=value,# 开头为注释行)/volumes(每行一条挂载:有状态服务只写容器路径如 "/var/lib/mysql" 即自动生成持久卷,升级后数据保持;显式写法 "宿主目录:容器路径"),仅特殊 flag 才用 runArgs(可选);serverId 留空。

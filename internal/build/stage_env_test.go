@@ -65,7 +65,7 @@ func (d *envEmitDriver) RunToolchain(_ context.Context, _, hostDir, _ string, en
 	}
 	return 0, nil
 }
-func (d *envEmitDriver) Build(context.Context, string, string, string, []string, []string, func(string, string)) (int, error) {
+func (d *envEmitDriver) Build(context.Context, string, string, string, string, []string, []string, func(string, string)) (int, error) {
 	panic("Build not expected")
 }
 func (d *envEmitDriver) Tag(context.Context, string, string, func(string, string)) (int, error) {

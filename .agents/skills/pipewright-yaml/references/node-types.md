@@ -58,7 +58,9 @@
 ## build(镜像类)
 
 ### build_image — 构建 Docker 镜像
-有 Dockerfile 走 dockerfile 模式;没有就用工具链模式。config:`artifactType`(`image`/`jar`/`dist`)、`buildModel`(`dockerfile`/`toolchain`)、`dockerfilePath`、`context`、`toolchainLanguage`(`node`/`java`/`go`/`python`/`custom`)、`toolchainVersion`、`buildCommand`。
+有 Dockerfile 走 dockerfile 模式;没有就用工具链模式。config:`artifactType`(`image`/`jar`/`dist`)、`buildModel`(`dockerfile`/`toolchain`)、`dockerfilePath`、`context`、`buildTarget`(多阶段 Dockerfile 的目标 stage,即 `FROM … AS <名字>` 的名字,docker build `--target`;空 = 构建最后一个 stage)、`toolchainLanguage`(`node`/`java`/`go`/`python`/`custom`)、`toolchainVersion`、`buildCommand`。
+
+一个 Dockerfile 出多个镜像:同阶段放多个 build_image 节点、各配不同 `buildTarget`(相同 `dockerfilePath`/`context`)。**注意**:同项目多个 build_image 共用同一本地 tag(`pipewright/<项目slug>:<commit>`),必须用 job 级 `needs` 把它们**串行**,否则并行构建互相覆盖本地 tag 会推错镜像;对应 push_image 也要各配 `imageName` 区分远端名。
 
 ### push_image — 推送镜像
 config **必填 `artifactJob`**:要推送的镜像来源节点 name,**必须是同阶段的 `build_image`**。可选:`registry`(留空回退环境绑定仓库)、`imageName`、`tag`(支持 `{{runId}}`/`{{branch}}`/`{{commit}}`/`{{project}}`/`{{date}}`/`{{date:yyyyMMddHHmmss}}` 占位)、`credentialId`。通常紧随 build_image。

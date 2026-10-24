@@ -112,6 +112,10 @@ type BuildConfig struct {
 	// Dockerfile(如 backend/Dockerfile 内 `COPY target/x.jar`,相对 backend/)必须把 context
 	// 设为该子目录,否则 docker 在仓库根找不到 COPY 源。空时与历史一致(context=仓库根)。
 	Context      string     `json:"context"`
+	// Target 是多阶段 Dockerfile 的目标构建 stage(docker build --target)。空 = 构建最后一个
+	// stage(历史行为);非空时只构建到该 stage 为止 —— 同一 Dockerfile 配多个 build_image 节点
+	// (各配不同 target)即可一条流水线产出多个镜像。仅 dockerfile 模式(image 产物)生效。
+	Target       string     `json:"buildTarget"`
 	Toolchain    Toolchain  `json:"toolchain"`
 	ArtifactType string     `json:"artifactType"`
 	Vars         []BuildVar `json:"vars"`

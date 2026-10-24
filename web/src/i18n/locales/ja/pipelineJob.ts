@@ -110,6 +110,9 @@ export default {
   fieldContextLabel: "ビルドコンテキスト",
   fieldContextHint:
     "リポジトリのルートからの相対のビルドコンテキストディレクトリ",
+  fieldBuildTargetLabel: "ビルドターゲットステージ",
+  fieldBuildTargetHint:
+    "マルチステージ Dockerfile のターゲットステージ(docker build --target)。空なら最後のステージをビルド。複数の build_image ノードに別々の target を指定すれば 1 つの Dockerfile から複数イメージを生成",
   fieldToolchainLanguageLabel: "ツールチェーン言語",
   fieldToolchainVersionLabel: "ツールチェーンバージョン",
   fieldBuildCommandLabel: "ビルドコマンド",

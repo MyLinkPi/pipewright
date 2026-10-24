@@ -24,7 +24,7 @@ func (d *svcDriver) RunToolchain(_ context.Context, _, _, _ string, _ []string, 
 	d.scriptNetwork = res.Network
 	return 0, nil
 }
-func (d *svcDriver) Build(context.Context, string, string, string, []string, []string, func(string, string)) (int, error) {
+func (d *svcDriver) Build(context.Context, string, string, string, string, []string, []string, func(string, string)) (int, error) {
 	return 0, nil
 }
 func (d *svcDriver) Tag(context.Context, string, string, func(string, string)) (int, error) {

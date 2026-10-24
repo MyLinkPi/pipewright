@@ -276,6 +276,7 @@ func (b *Builder) buildSharedJobSpec(r *run.Run, stage pipeline.Stage, jb pipeli
 			BuildModel:        cfgString(jb.Config, "buildModel"),
 			DockerfilePath:    cfgString(jb.Config, "dockerfilePath"),
 			Context:           cfgString(jb.Config, "context"),
+			BuildTarget:       cfgString(jb.Config, "buildTarget"),
 			ToolchainLanguage: cfgString(jb.Config, "toolchainLanguage"),
 			ToolchainVersion:  cfgString(jb.Config, "toolchainVersion"),
 			ProjectName:       proj.Name,

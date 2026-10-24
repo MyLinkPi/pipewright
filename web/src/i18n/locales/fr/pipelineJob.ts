@@ -114,6 +114,9 @@ export default {
   fieldContextLabel: "Contexte de build",
   fieldContextHint:
     "Répertoire de contexte de build relatif à la racine du dépôt",
+  fieldBuildTargetLabel: "Étape cible de build",
+  fieldBuildTargetHint:
+    "Étape cible d'un Dockerfile multi-étapes (docker build --target); vide construit la dernière étape. Plusieurs nœuds build_image avec des cibles différentes produisent plusieurs images depuis un même Dockerfile",
   fieldToolchainLanguageLabel: "Langage de la chaîne d’outils",
   fieldToolchainVersionLabel: "Version de la chaîne d’outils",
   fieldBuildCommandLabel: "Commande de build",

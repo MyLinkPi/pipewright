@@ -277,7 +277,7 @@ func TestWithRemoteOnlyDriver(t *testing.T) {
 	if got := b.DriverBinary(); got != "none" {
 		t.Fatalf("Binary = %q, want none", got)
 	}
-	if _, err := b.driver.Build(context.Background(), ".", "Dockerfile", "t", nil, nil, nil); !errors.Is(err, ErrNoContainerCLI) {
+	if _, err := b.driver.Build(context.Background(), ".", "Dockerfile", "", "t", nil, nil, nil); !errors.Is(err, ErrNoContainerCLI) {
 		t.Fatalf("本地构建应诚实报 ErrNoContainerCLI: %v", err)
 	}
 	if _, err := b.driver.RunToolchain(context.Background(), "img", "/ws", "/src", nil, nil, pipeline.Resource{}, nil); !errors.Is(err, ErrNoContainerCLI) {
@@ -348,6 +348,30 @@ func TestBuildImageSuccessEmitsArtifact(t *testing.T) {
 	}
 	if sink.done[0] != run.StepSuccess || sink.done[1] != run.StepSuccess {
 		t.Fatalf("expected both steps success, got %v", sink.done)
+	}
+}
+
+// TestBuildTargetFlagInDockerBuildArgv 验证 BuildConfig.Target(多阶段 Dockerfile 目标 stage)
+// 真实落进 docker build argv:非空 → `--target <t>`(回显一致);空 → 不出现 --target(历史行为)。
+func TestBuildTargetFlagInDockerBuildArgv(t *testing.T) {
+	runBuild := func(target string) string {
+		cmdr := newFakeCommander()
+		cmdr.script("build", fakeCmd{stdoutLines: []string{"Successfully built abc"}, exitCode: 0})
+		cmdr.script("inspect", fakeCmd{stdoutLines: []string{`{"Id":"sha256:abc","Size":10}`}, exitCode: 0})
+		st := imageSettings()
+		st.Build.Target = target
+		b := newTestBuilder(t, cmdr, &project.Project{ID: "p1", Name: "app", RepoURL: "https://example.com/r.git"}, st, nil)
+		b.cloner = newSuccessCloner("abc1234")
+		if err := b.Run(context.Background(), &run.Run{ID: "run1", ProjectID: "p1", Trigger: run.Trigger{Commit: "abc1234x"}}, newFakeSink()); err != nil {
+			t.Fatalf("Run failed: %v", err)
+		}
+		return cmdr.allArgsText()
+	}
+	if got := runBuild("backend"); !strings.Contains(got, "--target backend ") {
+		t.Fatalf("docker build argv 应含 --target backend, got:\n%s", got)
+	}
+	if got := runBuild(""); strings.Contains(got, "--target") {
+		t.Fatalf("未配置 target 时不应出现 --target, got:\n%s", got)
 	}
 }
 

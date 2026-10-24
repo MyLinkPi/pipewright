@@ -102,6 +102,8 @@ export default {
   fieldDockerfilePathLabel: "Dockerfile 路徑",
   fieldContextLabel: "構建上下文",
   fieldContextHint: "相對倉庫根的構建上下文目錄",
+  fieldBuildTargetLabel: "目標構建階段",
+  fieldBuildTargetHint: "多階段 Dockerfile 的目標 stage(相當於 --target);留空構建最後一個階段,同一 Dockerfile 配多個節點各指不同 target 可產出多個鏡像",
   fieldToolchainLanguageLabel: "工具鏈語言",
   fieldToolchainVersionLabel: "工具鏈版本",
   fieldBuildCommandLabel: "構建命令",
