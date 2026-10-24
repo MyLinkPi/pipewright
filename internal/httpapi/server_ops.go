@@ -106,7 +106,6 @@ func makeServiceActionHandler(svc target.Service, aud audit.Recorder) http.Handl
 
 		cmd := buildServiceCmd(req.Type, req.Action, req.Target)
 		out := serviceActionDTO{ServerID: id, Type: req.Type, Target: req.Target, Action: req.Action}
-
 		// 审计 helper(code-review P5):写操作的**任何尝试**都留痕(NFR-8 取证),
 		// 不只成功投递。connect/auth/凭据失败等也是需取证的安全事件(谁反复戳哪台机)。
 		// detail 仅白名单结构化字段(无自由输出/凭据);Recorder 再过 Masker。
@@ -121,7 +120,15 @@ func makeServiceActionHandler(svc target.Service, aud audit.Recorder) http.Handl
 			})
 		}
 
-		res, err := svc.Exec(r.Context(), id, cmd)
+		// pm2 经 npm/nvm 安装时常不在非交互 SSH PATH:127 时回退登录 shell(server_pm2.go
+		// execPM2,内层串仅白名单值)。其余类型直接投递构造好的命令 array。
+		var res *target.ExecResult
+		var err error
+		if req.Type == "pm2" {
+			res, err = execPM2(r.Context(), svc, id, req.Action, req.Target)
+		} else {
+			res, err = svc.Exec(r.Context(), id, cmd)
+		}
 		if err != nil {
 			// 定位类错误(服务器/凭据不存在、保险库未配)→ 走标准映射(404/422/503)。
 			// 服务器不存在无可审计目标;凭据/vault 错误是对真实服务器的写尝试 → 留痕。
@@ -147,6 +154,10 @@ func makeServiceActionHandler(svc target.Service, aud audit.Recorder) http.Handl
 		// (systemd 不涉及 docker ps 清单变化,无需失效)。
 		if req.Type == "docker" {
 			serverContainersCache.invalidate(id)
+		}
+		// pm2 生命周期命令已投递 → 同理丢弃该台 pm2 清单缓存。
+		if req.Type == "pm2" {
+			serverPM2Cache.invalidate(id)
 		}
 
 		// 命令已投递。退出码非零(无该 unit/无该容器/docker 未装)→ ok:false + stderr 人读,不 500。

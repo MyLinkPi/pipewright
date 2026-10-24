@@ -8,6 +8,7 @@ import (
 var (
 	systemdUnitPattern  = regexp.MustCompile(`^[\w][\w.@-]*$`)
 	dockerTargetPattern = regexp.MustCompile(`^[\w][\w.-]*$`)
+	pm2NamePattern      = regexp.MustCompile(`^[\w][\w.-]*$`)
 )
 
 // ValidateServiceParams preserves the existing manual HTTP contract, not opschat permissions.
@@ -35,8 +36,17 @@ func ValidateServiceParams(typ, tgt, action string) error {
 		if !dockerTargetPattern.MatchString(tgt) {
 			return errors.New("非法 docker 容器名")
 		}
+	case "pm2":
+		switch action {
+		case "restart", "stop", "start", "reload", "delete":
+		default:
+			return errors.New("非法 action(pm2 仅支持 restart/stop/start/reload/delete)")
+		}
+		if !pm2NamePattern.MatchString(tgt) {
+			return errors.New("非法 pm2 进程名")
+		}
 	default:
-		return errors.New("非法 type(仅支持 systemd/docker)")
+		return errors.New("非法 type(仅支持 systemd/docker/pm2)")
 	}
 	return nil
 }
@@ -61,6 +71,8 @@ func BuildServiceCmd(typ, action, tgt string) []string {
 		return []string{"systemctl", action, tgt}
 	case "docker":
 		return []string{"docker", action, tgt}
+	case "pm2":
+		return []string{"pm2", action, tgt}
 	}
 	return nil
 }

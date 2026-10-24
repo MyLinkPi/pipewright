@@ -25,6 +25,8 @@ export default {
   hintUnpause: 'Resume: unfreeze a paused container (docker unpause); the same process continues from where it stopped.',
   hintKill: 'Force Kill: send SIGKILL to terminate immediately with no chance to clean up (docker kill); unflushed data may be lost. Use only when "Stop" is stuck.',
   hintRm: 'Remove the container (docker rm); a running one must be stopped first. The container config is removed, but mounted data volumes are unaffected.',
+  hintReload: 'Reload (pm2 reload): zero-second hot reload instance by instance in cluster mode with no dropped connections; equivalent to restart in fork mode.',
+  hintDelete: 'Remove this process from the pm2 managed list (pm2 delete); all instances sharing the name are removed. Nothing on disk is deleted.',
 
   // ─── Destructive action confirmation ───
   dangerRestartTitle: 'Restart container {n}?',

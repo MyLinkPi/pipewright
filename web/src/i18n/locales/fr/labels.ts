@@ -25,6 +25,8 @@ export default {
   hintUnpause: 'Reprendre : dégèle un conteneur en pause (docker unpause) ; le même processus reprend là où il s’était arrêté.',
   hintKill: 'Kill forcé : envoie directement SIGKILL pour terminer immédiatement sans possibilité de nettoyage (docker kill) ; des données non écrites peuvent être perdues. À n’utiliser que lorsque « Arrêter » est bloqué.',
   hintRm: 'Supprime le conteneur (docker rm) ; un conteneur en cours doit d’abord être arrêté. La configuration du conteneur est supprimée, mais les volumes de données montés ne sont pas affectés.',
+  hintReload: 'Recharger (pm2 reload) : en mode cluster, rechargement à chaud instance par instance sans coupure ; en mode fork, équivaut à un redémarrage.',
+  hintDelete: 'Retire ce processus de la liste gérée par pm2 (pm2 delete) ; toutes les instances portant le même nom sont retirées. Aucun fichier sur disque n’est supprimé.',
 
   // ─── Confirmation des actions destructrices ───
   dangerRestartTitle: 'Redémarrer le conteneur {n} ?',

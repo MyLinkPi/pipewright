@@ -76,6 +76,7 @@ const de: typeof zhCN = {
     cluster: 'Cluster',
     ceph: 'Ceph',
     containers: 'Container',
+    pm2: 'PM2',
     serviceReg: 'Serviceregistrierung',
     appStore: 'App-Store',
     databases: 'Datenbanken',

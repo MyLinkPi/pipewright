@@ -25,6 +25,8 @@ export default {
   hintUnpause: '恢复:解冻已暂停的容器(docker unpause),同一进程从断点继续。',
   hintKill: '强制 Kill:直接发 SIGKILL 立即终止,不给清理机会(docker kill),可能丢未落盘数据。仅在「停止」卡住时用。',
   hintRm: '删除容器(docker rm),运行中的需先停止。容器配置移除,挂载的数据卷不受影响。',
+  hintReload: '重载(pm2 reload):cluster 模式逐实例 0 秒热重载不断流;fork 模式等同重启。',
+  hintDelete: '从 pm2 托管列表移除该进程(pm2 delete);同名全部实例一并移除,不删磁盘文件。',
 
   // ─── 破坏性操作二次确认 ───
   dangerRestartTitle: '重启容器 {n}?',

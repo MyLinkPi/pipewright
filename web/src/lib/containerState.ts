@@ -100,6 +100,13 @@ export const ACTION_HINTS: Record<ServiceAction, string> = {
   get rm() {
     return t('labels.hintRm')
   },
+  // reload/delete 是 pm2 生命周期专用(容器域不出现),补全穷举 Record。
+  get reload() {
+    return t('labels.hintReload')
+  },
+  get delete() {
+    return t('labels.hintDelete')
+  },
 }
 
 /**

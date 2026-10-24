@@ -75,6 +75,7 @@ export default {
     cluster: '集群',
     ceph: 'Ceph 存储',
     containers: '容器',
+    pm2: 'PM2',
     serviceReg: '服务注册',
     appStore: '应用商店',
     databases: '数据库',

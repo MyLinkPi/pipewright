@@ -39,6 +39,9 @@ func TestValidateLogTarget(t *testing.T) {
 		{"docker 合法名", "docker", "my-app_1", false},
 		{"docker 含分号拒", "docker", "app;reboot", true},
 		{"docker 含斜杠拒", "docker", "a/b", true},
+		{"pm2 合法名", "pm2", "my-app_1", false},
+		{"pm2 含分号拒", "pm2", "app;reboot", true},
+		{"pm2 首字符 - 拒", "pm2", "--lines", true},
 		{"未知 source 拒", "syslog", "x", true},
 		{"空 source 拒", "", "/var/log/a", true},
 	}
@@ -69,6 +72,8 @@ func TestBuildLogCmd(t *testing.T) {
 		{"journald 实时", "journald", "nginx.service", 100, true, []string{"journalctl", "-u", "nginx.service", "-n", "100", "--no-pager", "-f"}},
 		{"docker 历史", "docker", "web", 30, false, []string{"docker", "logs", "--tail", "30", "web"}},
 		{"docker 实时", "docker", "web", 30, true, []string{"docker", "logs", "--tail", "30", "-f", "web"}},
+		{"pm2 历史", "pm2", "web", 30, false, []string{"pm2", "logs", "web", "--lines", "30", "--nostream"}},
+		{"pm2 实时", "pm2", "web", 30, true, []string{"pm2", "logs", "web", "--lines", "0"}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

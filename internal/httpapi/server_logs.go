@@ -16,7 +16,7 @@ import (
 
 // Story 6.2(FR-16):服务日志查看(历史 + 实时 tail,经 SSH)。
 //
-// AC-SEC-02 核心:source ∈ {journald|file|docker} 白名单;target 经严格正则校验;
+// AC-SEC-02 核心:source ∈ {journald|file|docker|pm2} 白名单;target 经严格正则校验;
 // 命令按 source 构造为 cmd []string,经 target.Exec/ExecStream 各参数 shell 转义后执行,
 // **绝不让任意 shell 注入**。校验不过 → 400 invalid_log_target。
 // SSH/命令失败 → 200 + 空 lines + error 字段(人读),**不 500**。
@@ -82,6 +82,10 @@ func validateLogTarget(source, tgt string) error {
 		if !reDockerName.MatchString(tgt) {
 			return errors.New("非法 docker 容器名")
 		}
+	case "pm2":
+		if !reDockerName.MatchString(tgt) {
+			return errors.New("非法 pm2 进程名")
+		}
 	case "file":
 		if !strings.HasPrefix(tgt, "/") {
 			return errors.New("文件路径须为绝对路径")
@@ -120,6 +124,13 @@ func buildLogCmd(source, tgt string, lines int, follow bool) []string {
 			args = append(args, "-f")
 		}
 		return append(args, tgt)
+	case "pm2":
+		// pm2 logs 合并 stdout+stderr(带 pm2 时间戳前缀)。--nostream 打印最近 N 行即退出;
+		// follow 时不加 --nostream、--lines 0 = 从当下开始跟随,客户端断开即杀进程。
+		if follow {
+			return []string{"pm2", "logs", tgt, "--lines", "0"}
+		}
+		return []string{"pm2", "logs", tgt, "--lines", strconv.Itoa(lines), "--nostream"}
 	default:
 		return nil
 	}

@@ -23,6 +23,8 @@ const DoraDashboard = () => import('../views/DoraDashboard.vue')
 const ServerStatus = () => import('../views/ServerStatus.vue')
 // 容器管理:跨所有已登记服务器聚合容器(docker ps over SSH)+ 行内生命周期操作
 const Containers = () => import('../views/Containers.vue')
+// PM2 管理:跨所有已登记服务器聚合 pm2 进程(pm2 jlist over SSH)+ 行内生命周期操作
+const Pm2 = () => import('../views/Pm2.vue')
 // R2 / E2.4: 证书总览大盘(跨主机跨域名一张表 + 到期高亮;只读聚合)
 const Certificates = () => import('../views/Certificates.vue')
 // 服务注册网关(nginx):基域/泛域名证书/子域名服务(DPanel 式容器面板的配套入口)。
@@ -189,6 +191,8 @@ const router = createRouter({
         { path: 'ceph/:id', name: 'ceph-cluster-detail', component: CephClusterDetail, meta: { title: 'Ceph 集群', roles: ['admin'] } },
 
         { path: 'containers', name: 'containers', component: Containers, meta: { title: '容器' } },
+        // PM2 管理:跨服务器聚合 pm2 进程 + 行内生命周期操作(pm2 over SSH)。
+        { path: 'pm2', name: 'pm2', component: Pm2, meta: { title: 'PM2' } },
         // 服务注册网关(nginx):abc.efg.com 子域名反代 + TCP 透传 + 泛域名证书上传。
         { path: 'service-reg', name: 'service-registry', component: ServiceRegistry, meta: { title: '服务注册' } },
         // 应用商店:MySQL/Redis 等模板参数一键部署。
