@@ -357,15 +357,19 @@ func TestCollectReport(t *testing.T) {
 		}
 		waitRunDone(t, svc, run.ID)
 
-		reps, err := svc.CollectReport(ctx, "")
+		reps, err := svc.CollectReport(ctx, nil)
 		if err != nil || len(reps) != 1 || reps[0].Trivy == nil {
 			t.Fatalf("报告数据不符:%v %+v", err, reps)
 		}
 		if reps[0].Trivy.Doc == nil || len(reps[0].Trivy.Doc.Findings) != 3 {
 			t.Fatalf("报告明细缺失:%+v", reps[0].Trivy)
 		}
-		if reps, _ = svc.CollectReport(ctx, "s1"); len(reps) != 1 || reps[0].ServerName != "机器A" {
+		if reps, _ = svc.CollectReport(ctx, []string{"s1"}); len(reps) != 1 || reps[0].ServerName != "机器A" {
 			t.Fatalf("单机报告不符:%+v", reps)
+		}
+		// 多选 + 未知机器跳过(不炸整份报告)。
+		if reps, _ = svc.CollectReport(ctx, []string{"s1", "gone", "s1"}); len(reps) != 1 {
+			t.Fatalf("多选报告应去重且跳过未知机器:%+v", reps)
 		}
 	})
 }

@@ -374,8 +374,9 @@ type Service interface {
 	RunFindings(ctx context.Context, id string, f FindingFilter) (*FindingsPage, error)
 	// Overview 聚合全员最新状态(含从未扫描的服务器占位)。
 	Overview(ctx context.Context) (*Overview, error)
-	// CollectReport 组装 HTML 审计报告数据(serverID 空 = 全员;取各机最新 done 结果)。
-	CollectReport(ctx context.Context, serverID string) ([]ServerReport, error)
+	// CollectReport 组装 HTML 审计报告数据(serverIDs 空 = 全员;取各机最新 done 结果。
+	// 指定清单中的未知服务器跳过——报告是快照,个别机器中途被删不应让整份导出失败)。
+	CollectReport(ctx context.Context, serverIDs []string) ([]ServerReport, error)
 
 	// ---- 运维 ----
 	// Sweep 清掉 before 之前的 run 行(保留策略;artifact 文件不回收)。

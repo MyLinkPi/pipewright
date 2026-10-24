@@ -209,12 +209,12 @@ export const explainFinding = (body: {
 // ---------- 报告 ----------
 
 /**
- * downloadSecurityReport 拉取 HTML 审计报告并以浏览器下载落盘。
+ * downloadSecurityReport 拉取 HTML 审计报告并以浏览器下载落盘(serverIds 空 = 全部服务器)。
  * 仿 dbAdmin.downloadDBExport:同源 cookie 鉴权(GET 免 CSRF),错误信封解析,
  * Content-Disposition 文件名,URL.createObjectURL + 临时 <a download> 触发下载。
  */
-export async function downloadSecurityReport(serverId?: string): Promise<string> {
-  const q = serverId ? `?serverId=${encodeURIComponent(serverId)}` : ''
+export async function downloadSecurityReport(serverIds?: string[]): Promise<string> {
+  const q = serverIds?.length ? `?serverIds=${serverIds.map(encodeURIComponent).join(',')}` : ''
   const resp = await fetch(`/api/security/report${q}`, { credentials: 'same-origin' })
   if (!resp.ok) {
     let message = `HTTP ${resp.status}`

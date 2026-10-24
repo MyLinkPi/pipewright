@@ -330,14 +330,56 @@ async function askExplain(f: Finding): Promise<void> {
   }
 }
 
-// ─── 报告导出 ────────────────────────────────────────────────────────────────
+// ─── 报告导出(范围弹窗:全量 / 自选 + 搜索筛选)───────────────────────────────
 const exporting = ref(false)
+const showExportModal = ref(false)
+const exportScope = ref<'all' | 'custom'>('all')
+const exportSearch = ref('')
+const exportSelected = ref(new Set<string>())
+
+// 按名称/地址筛选候选列表(不区分大小写)。
+const exportCandidates = computed(() => {
+  const q = exportSearch.value.trim().toLowerCase()
+  return (overview.value?.servers ?? []).filter(
+    (srv) => !q || srv.serverName.toLowerCase().includes(q) || srv.host.toLowerCase().includes(q),
+  )
+})
+
+function toggleExportServer(id: string): void {
+  const next = new Set(exportSelected.value)
+  if (next.has(id)) next.delete(id)
+  else next.add(id)
+  exportSelected.value = next
+}
+
+function selectAllCandidates(): void {
+  const next = new Set(exportSelected.value)
+  for (const srv of exportCandidates.value) next.add(srv.serverId)
+  exportSelected.value = next
+}
+
+function clearExportSelection(): void {
+  exportSelected.value = new Set()
+}
+
+function openExportModal(): void {
+  exportScope.value = 'all'
+  exportSearch.value = ''
+  exportSelected.value = new Set()
+  showExportModal.value = true
+}
 
 async function exportReport(): Promise<void> {
+  if (exportScope.value === 'custom' && exportSelected.value.size === 0) {
+    toast.warn(t('securityCenter.exportNeedSelect'))
+    return
+  }
   exporting.value = true
   try {
-    const name = await downloadSecurityReport()
+    const ids = exportScope.value === 'custom' ? [...exportSelected.value] : undefined
+    const name = await downloadSecurityReport(ids)
     toast.success(t('securityCenter.reportDownloaded', { name }))
+    showExportModal.value = false
   } catch (e) {
     toast.error(t('securityCenter.errReport'), { detail: errMsg(e, t('securityCenter.errNetwork')) })
   } finally {
@@ -369,7 +411,7 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
     <div class="view-header__actions">
       <AppButton variant="default" :loading="false" @click="refresh()">{{ t('securityCenter.refresh') }}</AppButton>
       <AppButton variant="default" :loading="fleetScanning" @click="scanFleet()">{{ t('securityCenter.fleetScan') }}</AppButton>
-      <AppButton variant="primary" :loading="exporting" @click="exportReport()">{{ t('securityCenter.exportReport') }}</AppButton>
+      <AppButton variant="primary" @click="openExportModal()">{{ t('securityCenter.exportReport') }}</AppButton>
     </div>
   </header>
 
@@ -578,6 +620,43 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
       </div>
     </section>
 
+    <!-- 导出范围弹窗 -->
+    <div v-if="showExportModal" class="modal-overlay" @click.self="showExportModal = false">
+      <div class="modal modal--export" role="dialog" aria-modal="true">
+        <div class="modal__head">
+          <h3>{{ t('securityCenter.exportReport') }}</h3>
+          <AppButton variant="default" @click="showExportModal = false">{{ t('securityCenter.findingsClose') }}</AppButton>
+        </div>
+        <div class="export-scope">
+          <label class="field field--inline"><input v-model="exportScope" value="all" type="radio" name="sec-export-scope" /><span>{{ t('securityCenter.scopeAll') }}</span></label>
+          <label class="field field--inline"><input v-model="exportScope" value="custom" type="radio" name="sec-export-scope" /><span>{{ t('securityCenter.scopeCustom') }}</span></label>
+        </div>
+        <template v-if="exportScope === 'custom'">
+          <div class="export-toolbar">
+            <input v-model="exportSearch" type="search" :placeholder="t('securityCenter.exportSearchPh')" />
+            <AppButton variant="default" @click="selectAllCandidates()">{{ t('securityCenter.exportSelectAll') }}</AppButton>
+            <AppButton variant="default" @click="clearExportSelection()">{{ t('securityCenter.exportClearSel') }}</AppButton>
+            <span class="hint">{{ t('securityCenter.exportSelected', { n: exportSelected.size }) }}</span>
+          </div>
+          <div class="export-list">
+            <label v-for="srv in exportCandidates" :key="srv.serverId" class="export-item">
+              <input
+                type="checkbox"
+                :checked="exportSelected.has(srv.serverId)"
+                @change="toggleExportServer(srv.serverId)"
+              />
+              <span class="srv-name">{{ srv.serverName }}</span>
+              <span class="hint">{{ srv.host }}</span>
+            </label>
+            <div v-if="!exportCandidates.length" class="empty-hint">{{ t('securityCenter.exportNoMatch') }}</div>
+          </div>
+        </template>
+        <div class="modal__pager">
+          <AppButton variant="primary" :loading="exporting" @click="exportReport()">{{ t('securityCenter.exportConfirmBtn') }}</AppButton>
+        </div>
+      </div>
+    </div>
+
     <!-- 漏洞明细弹窗 -->
     <div v-if="findingsRun" class="modal-overlay" @click.self="findingsRun = null">
       <div class="modal" role="dialog" aria-modal="true">
@@ -712,4 +791,11 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
 .modal__table { max-height: 52vh; overflow: auto; }
 .modal__pager { display: flex; align-items: center; gap: 12px; justify-content: flex-end; }
 .explain-row > td { background: var(--pw-bg-subtle, #f6f7fa); }
+.modal--export { max-width: 560px; }
+.export-scope { display: flex; gap: 18px; }
+.export-toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.export-toolbar input[type='search'] { flex: 1; min-width: 160px; padding: 7px 9px; border: 1px solid var(--pw-line, #d9dee8); border-radius: 6px; font-size: 13px; }
+.export-list { max-height: 320px; overflow-y: auto; border: 1px solid var(--pw-line, #d9dee8); border-radius: 8px; padding: 4px 0; }
+.export-item { display: flex; align-items: center; gap: 10px; padding: 7px 12px; cursor: pointer; font-size: 13px; }
+.export-item:hover { background: var(--pw-bg-subtle, #f6f7fa); }
 </style>

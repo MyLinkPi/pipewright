@@ -15,7 +15,7 @@ import (
 // securityReportModel 是报告模板的数据模型。
 type securityReportModel struct {
 	GeneratedAt time.Time
-	Scope       string // fleet | server
+	Scope       string // fleet = 全部纳管 | server = 单台 | custom = 自选多台
 	Servers     []secscan.ServerReport
 	Totals      secscan.Summary
 	HasAnyData  bool // 任一服务器有 done 结果 → 明细区渲染
@@ -129,7 +129,7 @@ var securityReportTmpl = template.Must(template.New("report").Funcs(securityRepo
 <body>
 <div class="page">
   <h1>Pipewright 安全审计报告</h1>
-  <div class="sub">生成时间:{{fmtTime .GeneratedAt}} · 范围:{{if eq .Scope "fleet"}}全部纳管服务器{{else}}单台服务器{{end}} · 数据源:最近一次成功扫描(Trivy CVE / Nuclei 暴露面)</div>
+  <div class="sub">生成时间:{{fmtTime .GeneratedAt}} · 范围:{{if eq .Scope "fleet"}}全部纳管服务器{{else if eq .Scope "custom"}}自选 {{len .Servers}} 台服务器{{else}}单台服务器{{end}} · 数据源:最近一次成功扫描(Trivy CVE / Nuclei 暴露面)</div>
 
   <div class="cover">
     <div class="sub">覆盖服务器:{{len .Servers}} 台{{if .HasAnyData}} · 汇总下列「最近一次成功结果」的合计{{else}} · 暂无任何已完成扫描{{end}}</div>
@@ -209,9 +209,9 @@ var securityReportTmpl = template.Must(template.New("report").Funcs(securityRepo
 </html>
 `))
 
-// renderSecurityReport 把报告流式渲染到 w。
-func renderSecurityReport(w io.Writer, reports []secscan.ServerReport, now time.Time) error {
-	m := securityReportModel{GeneratedAt: now, Servers: reports, Scope: "fleet"}
+// renderSecurityReport 把报告流式渲染到 w(scope 由 handler 依据选择范围给定)。
+func renderSecurityReport(w io.Writer, reports []secscan.ServerReport, now time.Time, scope string) error {
+	m := securityReportModel{GeneratedAt: now, Servers: reports, Scope: scope}
 	for _, rep := range reports {
 		if rep.Trivy != nil || rep.Nuclei != nil {
 			m.HasAnyData = true
@@ -222,9 +222,6 @@ func renderSecurityReport(w io.Writer, reports []secscan.ServerReport, now time.
 		if rep.Nuclei != nil {
 			m.Totals.Add(rep.Nuclei.Summary)
 		}
-	}
-	if len(reports) == 1 {
-		m.Scope = "server"
 	}
 	return securityReportTmpl.Execute(w, m)
 }

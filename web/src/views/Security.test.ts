@@ -160,14 +160,40 @@ describe('Security 安全面板', () => {
     expect(h.toast.error).toHaveBeenCalled()
   })
 
-  it('「导出报告」调用 downloadSecurityReport', async () => {
+  it('导出报告:默认全量一键导出', async () => {
     h.downloadSecurityReport.mockResolvedValue('pipewright-security-report-x.html')
     const w = mount(Security)
     await flushPromises()
+    // 头部按钮打开范围弹窗;默认「全部服务器」,点弹窗内导出 → 不带 serverIds。
     await w.findAll('button').find((b) => b.text().includes('导出报告'))!.trigger('click')
+    await nextTick()
+    expect(w.text()).toContain('全部服务器')
+    await w.findAll('button').filter((b) => b.text().trim() === '导出').at(-1)!.trigger('click')
     await flushPromises()
-    expect(h.downloadSecurityReport).toHaveBeenCalledTimes(1)
-    expect(h.toast.success).toHaveBeenCalled()
+    expect(h.downloadSecurityReport).toHaveBeenCalledWith(undefined)
+    expect(w.text()).not.toContain('已选') // 弹窗关闭
+  })
+
+  it('导出报告:自选范围,搜索筛选 + 勾选后导出所选', async () => {
+    h.downloadSecurityReport.mockResolvedValue('pipewright-security-report-y.html')
+    const w = mount(Security)
+    await flushPromises()
+    await w.findAll('button').find((b) => b.text().includes('导出报告'))!.trigger('click')
+    await nextTick()
+    // 切自选 → 搜索「机器B」过滤出一条 → 勾选 → 导出携带该 serverId。
+    const customRadio = w.find('.export-scope input[type="radio"][value="custom"]')!
+    await customRadio.setValue(true)
+    await nextTick()
+    const search = w.find('.export-toolbar input[type="search"]')
+    await search.setValue('10.0.0.2')
+    await nextTick()
+    const box = w.find('.export-list input[type="checkbox"]')
+    await box.setValue(true)
+    await nextTick()
+    expect(w.text()).toContain('已选 1 台')
+    await w.findAll('button').filter((b) => b.text().trim() === '导出').at(-1)!.trigger('click')
+    await flushPromises()
+    expect(h.downloadSecurityReport).toHaveBeenCalledWith(['s2'])
   })
 
   it('查看明细 → 弹窗打开,getFindings 随严重度过滤联动', async () => {
