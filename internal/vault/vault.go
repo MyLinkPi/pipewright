@@ -481,6 +481,13 @@ func (s *service) Delete(id string) error {
 	).Scan(&refCount); err == nil && refCount > 0 {
 		return ErrCredentialInUse
 	}
+	// ssh_tunnels.credential_id(0099 SSH 隧道直连模式)有外键(RESTRICT),同样显式
+	// 预检查:被隧道引用的凭据不可删,防悬挂引用(删了隧道再不可连)。
+	if err := s.db.QueryRow(
+		`SELECT COUNT(*) FROM ssh_tunnels WHERE credential_id = ?`, id,
+	).Scan(&refCount); err == nil && refCount > 0 {
+		return ErrCredentialInUse
+	}
 	res, err := s.db.Exec(`DELETE FROM credentials WHERE id = ?`, id)
 	if err != nil {
 		// projects.credential_id 等外键(ON DELETE RESTRICT)引用 → 约束错误,映射为在用。

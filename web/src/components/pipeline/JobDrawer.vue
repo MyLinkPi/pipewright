@@ -12,6 +12,7 @@ import {
   splitConfig,
   jobTypeLabel,
   isScriptClassType,
+  supportsRunnerField,
   type JobField,
 } from './jobConfigSchema'
 import { configUsesTemplate } from './stepCompile'
@@ -334,8 +335,9 @@ function producerLabel(o: ProducerOption): string {
 
 type RunnerMode = 'inherit' | 'label' | 'pinned'
 
-/** 构建机选择适用范围:脚本类节点 + build_image(镜像构建)——两类真实「构建」节点。 */
-const supportsRunner = computed<boolean>(() => isScriptClassType(localType.value) || localType.value === 'build_image')
+/** 构建机选择适用范围:脚本类节点 + build_image(镜像构建)——两类真实「构建」节点。
+ * 谓词与 schemaKeys 的 runner 键归属同源(jobConfigSchema.supportsRunnerField),永不脱钩。 */
+const supportsRunner = computed<boolean>(() => supportsRunnerField(localType.value))
 
 const runnerMode = ref<RunnerMode>('inherit')
 const runnerSelectorText = ref('')

@@ -74,6 +74,7 @@ export default {
   importNote: 'La importación se ejecuta como una sola pasada multi-sentencia; los errores de la base se muestran. Haga copia de seguridad de datos importantes antes.',
   unlockTitle: 'Desbloquear modo escritura',
   unlockBody: 'Tras desbloquear podrá escribir: edición de filas, DDL, importaciones, gestión de cuentas y SQL de escritura. Todas las acciones se auditan.',
+  unlockPendingHint: 'La instancia está en modo solo lectura; tras desbloquear continuará con: {action}',
   unlockConfirm: 'Entiendo el riesgo — desbloquear',
   unlock: 'Desbloquear escritura',
   relock: 'Volver a solo lectura',

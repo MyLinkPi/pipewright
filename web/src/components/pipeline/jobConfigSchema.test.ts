@@ -9,6 +9,7 @@ import {
   jobTypeAccent,
   groupedJobTypes,
   isScriptClassType,
+  supportsRunnerField,
   schemaKeys,
   splitConfig,
 } from './jobConfigSchema'
@@ -159,11 +160,75 @@ describe('jobConfigSchema', () => {
       expect(extras.length).toBe(0)
     })
 
+    it('build_image(镜像构建)owns runner:字段清单未声明,靠 supportsRunnerField 兜底', () => {
+      // build_image 走镜像构建路径、不是脚本类,但同样由构建机执行 —— 抽屉有「构建机」区块,
+      // 键归属必须跟上,否则 config.runner 落 extras、区块回显弹回「跟随项目默认」。
+      expect(JOB_TYPE_SPECS.build_image.fields.some((f) => f.key === RUNNER_FIELD_KEY)).toBe(false)
+      expect(schemaKeys('build_image').has(RUNNER_FIELD_KEY)).toBe(true)
+      const { extras } = splitConfig('build_image', {
+        dockerfilePath: 'Dockerfile',
+        runner: 'server:srv-1',
+      })
+      expect(extras.map(([k]) => k)).not.toContain('runner')
+    })
+
+    it('supportsRunnerField: 脚本类 + build_image 为真,其余类型为假', () => {
+      expect(supportsRunnerField('script')).toBe(true)
+      expect(supportsRunnerField('build_nodejs')).toBe(true)
+      expect(supportsRunnerField('templated')).toBe(true)
+      expect(supportsRunnerField('build_image')).toBe(true)
+      expect(supportsRunnerField('deploy_ssh')).toBe(false)
+      expect(supportsRunnerField('deploy_static')).toBe(false)
+      expect(supportsRunnerField('git_source')).toBe(false)
+    })
+
     it('non-script types do not own runner', () => {
       expect(schemaKeys('deploy_ssh').has(RUNNER_FIELD_KEY)).toBe(false)
       expect(schemaKeys('git_source').has(RUNNER_FIELD_KEY)).toBe(false)
       const { extras } = splitConfig('deploy_ssh', { runner: 'server:srv-1' })
       expect(extras.map(([k]) => k)).toContain('runner')
+    })
+  })
+
+  describe('部署 strategy 隐藏键(统一滚动部署后无用户语义)', () => {
+    const DEPLOY_TYPES = ['deploy_ssh', 'deploy_frontend', 'deploy_container', 'deploy_static']
+
+    it('部署类类型 owns strategy:存量节点 / YAML 携带的值不落「原始参数」extras', () => {
+      for (const t of DEPLOY_TYPES) {
+        expect(schemaKeys(t).has('strategy'), `${t} owns strategy`).toBe(true)
+        const { extras } = splitConfig(t, { strategy: 'rolling' })
+        expect(extras.map(([k]) => k), `${t} keeps strategy out of extras`).not.toContain('strategy')
+      }
+    })
+
+    it('strategy 对所有部署类类型都是隐藏字段(when:false,不进常规字段循环)', () => {
+      for (const t of DEPLOY_TYPES) {
+        const f = JOB_TYPE_SPECS[t].fields.find((x) => x.key === 'strategy')
+        expect(f, `${t} declares strategy hidden`).toBeTruthy()
+        expect(f!.when!({ strategy: 'rolling' })).toBe(false)
+      }
+    })
+
+    it('模板 defaultConfig 不再预填 strategy(新建节点不带死键)', () => {
+      expect(JOB_TYPE_SPECS.deploy_static.defaultConfig?.strategy).toBeUndefined()
+      expect(JOB_TYPE_SPECS.deploy_frontend.defaultConfig?.strategy).toBeUndefined()
+    })
+
+    it('非部署类型不 owns strategy(schema 未声明的键照旧进 extras 兜底)', () => {
+      expect(schemaKeys('script').has('strategy')).toBe(false)
+    })
+  })
+
+  describe('defaultConfig 键归属防护(模板预填键不得漏进「原始参数」高级区)', () => {
+    it('every type: defaultConfig 的每个键都被 schemaKeys 拥有', () => {
+      // 回归背景:deploy_static 曾预填 strategy 而 fields 未声明,新建节点即出现
+      // 「高级 · 原始参数」噪音行。此断言把同类问题永久挡在测试层。
+      for (const spec of Object.values(JOB_TYPE_SPECS)) {
+        const owned = schemaKeys(spec.type)
+        for (const [k] of Object.entries(spec.defaultConfig ?? {})) {
+          expect(owned.has(k), `${spec.type} defaultConfig key "${k}" must be schema-owned`).toBe(true)
+        }
+      }
     })
   })
 

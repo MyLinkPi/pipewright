@@ -25,6 +25,8 @@ const ServerStatus = () => import('../views/ServerStatus.vue')
 const Containers = () => import('../views/Containers.vue')
 // PM2 管理:跨所有已登记服务器聚合 pm2 进程(pm2 jlist over SSH)+ 行内生命周期操作
 const Pm2 = () => import('../views/Pm2.vue')
+// SSH 隧道管理:local -L / remote -R / dynamic -D 配置 CRUD + 独立 helper 进程运行态监控。
+const Tunnels = () => import('../views/Tunnels.vue')
 // R2 / E2.4: 证书总览大盘(跨主机跨域名一张表 + 到期高亮;只读聚合)
 const Certificates = () => import('../views/Certificates.vue')
 // 服务注册网关(nginx):基域/泛域名证书/子域名服务(DPanel 式容器面板的配套入口)。
@@ -193,6 +195,8 @@ const router = createRouter({
         { path: 'containers', name: 'containers', component: Containers, meta: { title: '容器' } },
         // PM2 管理:跨服务器聚合 pm2 进程 + 行内生命周期操作(pm2 over SSH)。
         { path: 'pm2', name: 'pm2', component: Pm2, meta: { title: 'PM2' } },
+        // SSH 隧道:配置 CRUD + 运行态监控(独立 helper 进程,重启平台不影响隧道)。
+        { path: 'tunnels', name: 'tunnels', component: Tunnels, meta: { title: 'SSH 隧道' } },
         // 服务注册网关(nginx):abc.efg.com 子域名反代 + TCP 透传 + 泛域名证书上传。
         { path: 'service-reg', name: 'service-registry', component: ServiceRegistry, meta: { title: '服务注册' } },
         // 应用商店:MySQL/Redis 等模板参数一键部署。

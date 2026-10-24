@@ -85,6 +85,11 @@ const (
 	// 机器监控(ssar):安装包下载触发 / 部署到目标机(敏感:向目标机装包并启动服务)。
 	ActionSsarDownload = "ssar_download"
 	ActionSsarInstall  = "ssar_install"
+	// SSH 隧道(0099):配置增删改与启停/重启操作(敏感:启停改本机监听端口与转发面)。
+	ActionTunnelCreate = "tunnel_create"
+	ActionTunnelUpdate = "tunnel_update"
+	ActionTunnelDelete = "tunnel_delete"
+	ActionTunnelOp     = "tunnel_op"
 )
 
 // 目标类型枚举(供 TargetType 填值;非强制白名单,便于后续 story 扩展)。
@@ -103,6 +108,7 @@ const (
 	TargetUser        = "user"
 	TargetInvitation  = "invitation"
 	TargetSsar        = "ssar"
+	TargetTunnel      = "tunnel"
 )
 
 // Entry 是一条审计写入入参(冻结契约)。Detail 写库前过 Masker,绝不含明文 secret。

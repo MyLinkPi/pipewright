@@ -77,6 +77,7 @@ const de: typeof zhCN = {
     ceph: 'Ceph',
     containers: 'Container',
     pm2: 'PM2',
+    tunnels: 'SSH-Tunnel',
     serviceReg: 'Serviceregistrierung',
     appStore: 'App-Store',
     databases: 'Datenbanken',

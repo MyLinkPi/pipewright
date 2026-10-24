@@ -77,6 +77,7 @@ const ko: typeof zhCN = {
     ceph: 'Ceph',
     containers: '컨테이너',
     pm2: 'PM2',
+    tunnels: 'SSH 터널',
     serviceReg: '서비스 등록',
     appStore: '앱 스토어',
     databases: '데이터베이스',

@@ -74,6 +74,7 @@ export default {
   importNote: 'The import runs as one multi-statement execution; database errors are surfaced. Back up important data first.',
   unlockTitle: 'Unlock write mode',
   unlockBody: 'After unlocking you can write: row editing, DDL, imports, user management and write SQL. All actions are audited.',
+  unlockPendingHint: 'Instance is read-only; after unlocking it will continue with: {action}',
   unlockConfirm: 'I understand the risk — unlock',
   unlock: 'Unlock write mode',
   relock: 'Re-lock read-only',

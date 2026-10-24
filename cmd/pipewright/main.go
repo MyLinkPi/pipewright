@@ -74,6 +74,7 @@ import (
 	"github.com/huangchengsir/pipewright/internal/servercmd"
 	"github.com/huangchengsir/pipewright/internal/servicereg"
 	"github.com/huangchengsir/pipewright/internal/ssar"
+	"github.com/huangchengsir/pipewright/internal/sshtunnel"
 	"github.com/huangchengsir/pipewright/internal/store"
 	"github.com/huangchengsir/pipewright/internal/systemcfg"
 	"github.com/huangchengsir/pipewright/internal/target"
@@ -90,6 +91,17 @@ func main() {
 			fmt.Println(version.String()) // 走 stdout(惯例),便于脚本捕获
 			return
 		}
+	}
+
+	// --tunnel-helper:SSH 隧道 helper 子进程模式(0099)。主进程为每条启用的隧道以
+	// 本二进制 re-exec 自己拉起一个独立 helper(与主进程解耦:宿主停机/自升级不杀它,
+	// 心跳新鲜即收养 → 重启 pipewright 隧道零中断)。argv 只有隧道 id,凭据由 helper
+	// 经继承的 env 自行解析,明文仅在 helper 进程内即用即弃。在任何正常装配前分派。
+	if len(os.Args) > 1 && os.Args[1] == sshtunnel.HelperFlag {
+		if err := sshtunnel.RunHelperMain(os.Args[2:]); err != nil {
+			log.Fatalf("[sshtunnel] helper 退出:%v", err)
+		}
+		return
 	}
 
 	cfg := config.Load()
@@ -312,6 +324,9 @@ func main() {
 	// 批量执行命令(服务器状态页 → 勾选多机 → 同步执行 + 历史回看):复用 targetSvc 的
 	// SSH 执行层逐机并发跑 sh -c,结果落本地库保最近 200 次;每次尝试写审计。
 	serverCmdSvc := servercmd.New(st.DB, targetSvc)
+	// SSH 隧道(0099;local -L / remote -R / dynamic -D):配置 CRUD + 独立 helper 子进程
+	// 运行时。helper 与主进程解耦(重启互不影响),对账循环按心跳收养/重拉/重启。
+	sshtunnelSvc := sshtunnel.New(st.DB, targetSvc, filepath.Dir(cfg.DBPath))
 	// Assistant sessions use a separate, local-only recorder and masker.
 	opsMasker := mask.NewMasker()
 	if masterKey != nil {
@@ -1032,7 +1047,7 @@ func main() {
 
 	srv := &http.Server{
 		Addr:              cfg.Addr,
-		Handler:           httpapi.New(webFS, authSvc, httpapi.WithVault(credVault), httpapi.WithProjects(projectSvc), httpapi.WithTriggers(triggerSvc), httpapi.WithPipelines(pipelineSvc), httpapi.WithPipelineSettings(pipelineSettingsSvc), httpapi.WithRuns(runSvc, pool), httpapi.WithWebhooks(webhookReceiver), httpapi.WithWebhookForwarder(webhookForwarder), httpapi.WithAudit(auditRec), httpapi.WithAccount(authSvc), httpapi.WithIdentity(identitySvc), httpapi.WithAISettings(aiSvc), httpapi.WithAIGenerate(repoAnalyzer), httpapi.WithRunDiff(runDiffer), httpapi.WithSource(sourceReader), httpapi.WithRefs(refsLister), httpapi.WithArtifactStore(artStore), httpapi.WithArtifactImageTransfer(meshImages), httpapi.WithArtifactTransfer(artifactTransfers), httpapi.WithServers(targetSvc), httpapi.WithLabels(labelsSvc), httpapi.WithServerCommands(serverCmdSvc), httpapi.WithRegistryHub(registryHubSvc), httpapi.WithRunnerConfig(runnerSvc), httpapi.WithDeploy(deploySvc), httpapi.WithSpecLoader(resumeSpecLoader), httpapi.WithNotifications(notifySvc), httpapi.WithRetention(retentionSvc), httpapi.WithDNSProviders(dnsSvc), httpapi.WithAliyunEcs(aliyunSvc), httpapi.WithObjectStores(objectStoreSvc), httpapi.WithCertMgmt(certSvc), httpapi.WithPlatformHTTPS(platformHTTPSSvc), httpapi.WithFirewall(firewallSvc), httpapi.WithSystemConfig(sysCfgSvc), httpapi.WithMFA(mfaSvc), httpapi.WithServiceReg(serviceRegSvc), httpapi.WithAppStore(appStoreSvc), httpapi.WithDBAdmin(dbAdminSvc), httpapi.WithRedisAdmin(redisAdminSvc), httpapi.WithPVEAdmin(pveAdminSvc), httpapi.WithDiagnosisFeedback(feedbackSvc), httpapi.WithAnomaly(anomalySvc), httpapi.WithAnomalyConfig(int(anomalyInterval.Seconds()), int(anomalyCooldown.Seconds())), httpapi.WithMetricsHistory(metricsHist), httpapi.WithSsar(ssarSvc), httpapi.WithSecretSource(secretSrc), httpapi.WithOAuth(oauthSvc), httpapi.WithCron(cronSvc), httpapi.WithChain(chainSvc), httpapi.WithApprovals(approvalCoord, approvalStore), httpapi.WithApprovalLinks(approvalSigner), httpapi.WithWaitNode(waitCoord), httpapi.WithConcurrency(concurrencySvc), httpapi.WithParameters(parameterSvc), httpapi.WithDoraMetrics(doraMetricsSvc), httpapi.WithTemplates(templateSvc), httpapi.WithVariableGroups(varGroupSvc), httpapi.WithCustomNodes(customNodeSvc), httpapi.WithOpsChat(opsChatSvc), httpapi.WithMesh(meshAdminDeps), httpapi.WithCeph(cephSvc), httpapi.WithDiskAdmin(diskAdminSvc), httpapi.WithFileAdmin(fileAdminSvc), httpapi.WithMaintenance(maintSvc), httpapi.WithProjectMirrorCleaner(projectMirrorCleaner), httpapi.WithReexecGuard(reexecGuard{runs: runSvc, shared: sharedBuildSrv})),
+		Handler:           httpapi.New(webFS, authSvc, httpapi.WithVault(credVault), httpapi.WithProjects(projectSvc), httpapi.WithTriggers(triggerSvc), httpapi.WithPipelines(pipelineSvc), httpapi.WithPipelineSettings(pipelineSettingsSvc), httpapi.WithRuns(runSvc, pool), httpapi.WithWebhooks(webhookReceiver), httpapi.WithWebhookForwarder(webhookForwarder), httpapi.WithAudit(auditRec), httpapi.WithAccount(authSvc), httpapi.WithIdentity(identitySvc), httpapi.WithAISettings(aiSvc), httpapi.WithAIGenerate(repoAnalyzer), httpapi.WithRunDiff(runDiffer), httpapi.WithSource(sourceReader), httpapi.WithRefs(refsLister), httpapi.WithArtifactStore(artStore), httpapi.WithArtifactImageTransfer(meshImages), httpapi.WithArtifactTransfer(artifactTransfers), httpapi.WithServers(targetSvc), httpapi.WithLabels(labelsSvc), httpapi.WithServerCommands(serverCmdSvc), httpapi.WithSSHTunnels(sshtunnelSvc), httpapi.WithRegistryHub(registryHubSvc), httpapi.WithRunnerConfig(runnerSvc), httpapi.WithDeploy(deploySvc), httpapi.WithSpecLoader(resumeSpecLoader), httpapi.WithNotifications(notifySvc), httpapi.WithRetention(retentionSvc), httpapi.WithDNSProviders(dnsSvc), httpapi.WithAliyunEcs(aliyunSvc), httpapi.WithObjectStores(objectStoreSvc), httpapi.WithCertMgmt(certSvc), httpapi.WithPlatformHTTPS(platformHTTPSSvc), httpapi.WithFirewall(firewallSvc), httpapi.WithSystemConfig(sysCfgSvc), httpapi.WithMFA(mfaSvc), httpapi.WithServiceReg(serviceRegSvc), httpapi.WithAppStore(appStoreSvc), httpapi.WithDBAdmin(dbAdminSvc), httpapi.WithRedisAdmin(redisAdminSvc), httpapi.WithPVEAdmin(pveAdminSvc), httpapi.WithDiagnosisFeedback(feedbackSvc), httpapi.WithAnomaly(anomalySvc), httpapi.WithAnomalyConfig(int(anomalyInterval.Seconds()), int(anomalyCooldown.Seconds())), httpapi.WithMetricsHistory(metricsHist), httpapi.WithSsar(ssarSvc), httpapi.WithSecretSource(secretSrc), httpapi.WithOAuth(oauthSvc), httpapi.WithCron(cronSvc), httpapi.WithChain(chainSvc), httpapi.WithApprovals(approvalCoord, approvalStore), httpapi.WithApprovalLinks(approvalSigner), httpapi.WithWaitNode(waitCoord), httpapi.WithConcurrency(concurrencySvc), httpapi.WithParameters(parameterSvc), httpapi.WithDoraMetrics(doraMetricsSvc), httpapi.WithTemplates(templateSvc), httpapi.WithVariableGroups(varGroupSvc), httpapi.WithCustomNodes(customNodeSvc), httpapi.WithOpsChat(opsChatSvc), httpapi.WithMesh(meshAdminDeps), httpapi.WithCeph(cephSvc), httpapi.WithDiskAdmin(diskAdminSvc), httpapi.WithFileAdmin(fileAdminSvc), httpapi.WithMaintenance(maintSvc), httpapi.WithProjectMirrorCleaner(projectMirrorCleaner), httpapi.WithReexecGuard(reexecGuard{runs: runSvc, shared: sharedBuildSrv})),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		// WriteTimeout 置 0:SSE 长连接(/api/runs/{id}/events)不可被写超时切断;
@@ -1052,6 +1067,11 @@ func main() {
 	// 集群运行时(设置监督 + 对等发现)随 ctx 启停;托管 easytier-core 时二进制定位结果
 	// 打一行日志便于排障(找不到时集群页会给出放置指引)。
 	meshRT.start(ctx)
+
+	// SSH 隧道对账循环(0099):启用的隧道拉起 helper、停用的停进程、配置变更重启;
+	// 与 mesh 同款停机语义 —— ctx 取消直接返回,**不杀**任何 helper(孤儿继续服务,
+	// 下次启动心跳新鲜即零中断收养)。
+	go sshtunnelSvc.StartLoop(ctx)
 
 	// 集群 DNS 映射同步循环(虚拟 IP 变化自动跟随 + 周期兜底)随 ctx 启停。
 	go meshDNSSyncer.Run(ctx)
