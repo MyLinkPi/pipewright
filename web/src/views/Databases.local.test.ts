@@ -5,6 +5,7 @@
  * 403「实例处于只读模式,请先解锁写模式」。现在写入口统一走 guardWrite:
  * 只读 → 立刻弹解锁确认框(注明解锁后将继续的动作),确认解锁后自动继续原操作;
  * 取消则什么都不发生。SQL 控制台不受影响(SELECT 在只读下仍可执行)。
+ * 另覆盖 MySQL 授权/回收操作区(与 PG 对齐):库下拉、只读守卫与调用参数。
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { mount, flushPromises, type VueWrapper } from '@vue/test-utils'
@@ -14,6 +15,8 @@ const getServerInfoMock = vi.fn()
 const listDatabasesMock = vi.fn()
 const setReadonlyMock = vi.fn()
 const listUsersMock = vi.fn()
+const getDBUserGrantsMock = vi.fn()
+const grantDBUserMock = vi.fn()
 
 vi.mock('vue-router', () => ({
   useRoute: () => ({ query: {} }),
@@ -29,6 +32,8 @@ vi.mock('../api/dbAdmin', async (importOriginal) => {
     listDBDatabases: (...a: unknown[]) => listDatabasesMock(...a),
     setDBInstanceReadonly: (...a: unknown[]) => setReadonlyMock(...a),
     listDBUsers: (...a: unknown[]) => listUsersMock(...a),
+    getDBUserGrants: (...a: unknown[]) => getDBUserGrantsMock(...a),
+    grantDBUser: (...a: unknown[]) => grantDBUserMock(...a),
   }
 })
 
@@ -153,6 +158,69 @@ describe('Databases · 只读写入口守卫', () => {
     await textarea.setValue('SELECT 1')
     const run = w.find('.sql-actions .btn-primary')
     expect((run.element as HTMLButtonElement).disabled).toBe(false)
+    w.unmount()
+  })
+})
+
+describe('Databases · MySQL 授权/回收', () => {
+  /** 进入用户页签并选中账号 app@'%(触发 SHOW GRANTS 加载与目标库默认值)。 */
+  async function selectAppUser(w: VueWrapper): Promise<void> {
+    const usersTab = w.findAll('.dba-tab').find((b) => b.text().includes('用户'))
+    await usersTab!.trigger('click')
+    await flushPromises()
+    const row = w.findAll('tr.row-click').find((r) => r.text().includes('app'))
+    await row!.trigger('click')
+    await flushPromises()
+  }
+
+  beforeEach(() => {
+    listUsersMock.mockResolvedValue({ items: [{ name: 'app', host: '%' }] })
+    getDBUserGrantsMock.mockResolvedValue({ engine: 'mysql', lines: ["GRANT SELECT ON `app`.* TO 'app'@'%'"] })
+    grantDBUserMock.mockResolvedValue({ ok: true })
+  })
+
+  it('授权面板:SHOW GRANTS 原文 + 库下拉(来自库列表,默认选中)+ 模板 + 授权/回收按钮', async () => {
+    const w = await mountView()
+    await selectAppUser(w)
+
+    const panel = w.find('.grants-panel')
+    expect(panel.text()).toContain('GRANT SELECT')
+    const [dbSelect, templateSelect] = panel.findAll('select')
+    expect(dbSelect.findAll('option').map((o) => o.text())).toEqual(['app'])
+    expect((dbSelect.element as HTMLSelectElement).value).toBe('app')
+    expect(templateSelect.findAll('option').map((o) => o.text())).toEqual(['全部权限', '只读', '增删改查'])
+    const texts = panel.findAll('button').map((b) => b.text())
+    expect(texts).toContain('授权')
+    expect(texts).toContain('回收')
+    w.unmount()
+  })
+
+  it('只读时点授权:立刻弹解锁框(注明将继续:授权),不调授权接口', async () => {
+    const w = await mountView()
+    await selectAppUser(w)
+
+    const grant = w.findAll('button').find((b) => b.text() === '授权')
+    await grant!.trigger('click')
+
+    expect(bodyText()).toContain('解锁写模式')
+    expect(bodyText()).toContain('解锁后将直接继续:授权')
+    expect(grantDBUserMock).not.toHaveBeenCalled()
+    expect(setReadonlyMock).not.toHaveBeenCalled()
+    w.unmount()
+  })
+
+  it('写模式下点授权:带 账号/host/库/模板 调用 grantDBUser', async () => {
+    listInstancesMock.mockResolvedValue({ items: [instance({ readonly: false })] })
+    const w = await mountView()
+    await selectAppUser(w)
+
+    const grant = w.findAll('button').find((b) => b.text() === '授权')
+    await grant!.trigger('click')
+    await flushPromises()
+
+    expect(grantDBUserMock).toHaveBeenCalledWith('db-1', {
+      name: 'app', host: '%', database: 'app', template: 'read',
+    })
     w.unmount()
   })
 })
