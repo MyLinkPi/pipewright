@@ -25,6 +25,7 @@ import (
 	"github.com/huangchengsir/pipewright/internal/audit"
 	"github.com/huangchengsir/pipewright/internal/auth"
 	"github.com/huangchengsir/pipewright/internal/ceph"
+	"github.com/huangchengsir/pipewright/internal/certdeploy"
 	"github.com/huangchengsir/pipewright/internal/certmgmt"
 	"github.com/huangchengsir/pipewright/internal/chain"
 	"github.com/huangchengsir/pipewright/internal/cron"
@@ -55,10 +56,10 @@ import (
 	"github.com/huangchengsir/pipewright/internal/run"
 	"github.com/huangchengsir/pipewright/internal/runner"
 	"github.com/huangchengsir/pipewright/internal/servercmd"
-	"github.com/huangchengsir/pipewright/internal/sshtunnel"
 	"github.com/huangchengsir/pipewright/internal/servicereg"
 	"github.com/huangchengsir/pipewright/internal/srcupdate"
 	"github.com/huangchengsir/pipewright/internal/ssar"
+	"github.com/huangchengsir/pipewright/internal/sshtunnel"
 	"github.com/huangchengsir/pipewright/internal/systemcfg"
 	"github.com/huangchengsir/pipewright/internal/target"
 	"github.com/huangchengsir/pipewright/internal/trigger"
@@ -133,6 +134,7 @@ type options struct {
 	maintenance          *maintenance.Service
 	projectMirrorCleaner func(ctx context.Context, repoURL string)
 	certMgmt             certmgmt.Service
+	certDeploys          *certdeploy.Service
 	dnsProviders         dnsprovider.Service
 	aliyunEcs            aliyunecs.Service
 	objectStores         objectstore.Service
@@ -513,6 +515,13 @@ func WithProjectMirrorCleaner(fn func(ctx context.Context, repoURL string)) Opti
 // 不传则相关端点返回 503(服务未初始化)。
 func WithCertMgmt(s certmgmt.Service) Option {
 	return func(o *options) { o.certMgmt = s }
+}
+
+// WithCertDeploys 注入证书部署目标服务(internal/certdeploy;0100),挂载 /api/cert-deploys*
+// 路由(GET auth;写方法 auth + CSRF + 审计;deploy 为同步执行,总预算 2 分钟)。
+// 证书 PEM 进程内解密直传 SSH,绝不回显;不传则相关端点返回 503。
+func WithCertDeploys(s *certdeploy.Service) Option {
+	return func(o *options) { o.certDeploys = s }
 }
 
 // WithDNSProviders 注入 DNS 提供商集成层服务(R3 E3.1–E3.4),挂载 /api/dns/providers* 路由
@@ -1299,6 +1308,16 @@ func New(webFS fs.FS, authn auth.Authenticator, opts ...Option) http.Handler {
 		// 签发引擎(acme.sh 宿主机脚本):GET 探测状态(auth);POST 显式部署/更新(auth + CSRF + 审计)。
 		ar.Get("/certmgmt/engine", makeGetCertEngineHandler(cm))
 		ar.Post("/certmgmt/engine/deploy", makeDeployCertEngineHandler(cm, aud))
+
+		// 证书部署目标(0100):证书/私钥下发到远程机器指定路径 + 部署后命令;证书签发/
+		// 导入/续期后自动联动。cd 为 nil → handler 返回 503。GET 过 auth;写方法过 auth + CSRF + 审计。
+		cd := o.certDeploys
+		ar.Get("/cert-deploys", makeListCertDeploysHandler(cd))
+		ar.Post("/cert-deploys", makeCreateCertDeployHandler(cd, aud))
+		ar.Put("/cert-deploys/{id}", makeUpdateCertDeployHandler(cd, aud))
+		ar.Delete("/cert-deploys/{id}", makeDeleteCertDeployHandler(cd, aud))
+		ar.Post("/cert-deploys/{id}/deploy", makeDeployCertDeployHandler(cd, aud))
+		ar.Get("/cert-deploys/{id}/runs", makeListCertDeployRunsHandler(cd))
 
 		// 平台 HTTPS 访问(宿主 nginx):平台自身 Web 页面发布为 HTTPS(证书复用证书管理)。
 		// ph 为 nil → handler 返回 503。GET 过 auth;写方法过 auth + CSRF + 审计。

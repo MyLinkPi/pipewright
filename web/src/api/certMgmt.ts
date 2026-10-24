@@ -14,6 +14,14 @@
  * DELETE /api/certmgmt/certs/{id}            → { ok }             (CSRF)
  * GET    /api/certmgmt/engine                → CertEngine
  * POST   /api/certmgmt/engine/deploy         → CertEngine         (CSRF)
+ *
+ * 证书部署目标(certdeploy;证书签发/导入/续期后自动联动重新部署):
+ * GET    /api/cert-deploys?certId=           → { items: CertDeploy[] }
+ * POST   /api/cert-deploys                   → CertDeploy         (CSRF)
+ * PUT    /api/cert-deploys/{id}              → CertDeploy         (CSRF)
+ * DELETE /api/cert-deploys/{id}              → { ok }             (CSRF)
+ * POST   /api/cert-deploys/{id}/deploy       → CertDeploy         (CSRF;同步执行,失败也在行内 statusDetail)
+ * GET    /api/cert-deploys/{id}/runs         → { items: CertDeployRun[] }
  */
 import { http } from './http'
 
@@ -94,3 +102,76 @@ export const getCertEngine = (): Promise<CertEngine> =>
 
 export const deployCertEngine = (): Promise<CertEngine> =>
   http.post('/api/certmgmt/engine/deploy')
+
+/** 部署目标状态:空串 = 从未部署。 */
+export type CertDeployStatus = '' | 'running' | 'success' | 'failed'
+
+/** 一个证书部署目标(证书 → 指定服务器上的指定路径 + 部署后命令)。 */
+export interface CertDeploy {
+  id: string
+  certId: string
+  serverId: string
+  name: string
+  certPath: string
+  keyPath: string
+  postCommand: string
+  enabled: boolean
+  status: CertDeployStatus
+  statusDetail: string
+  lastDeployedAt: string
+  createdAt: string
+  updatedAt: string
+  /** 冗余展示(list join 填充)。 */
+  serverName: string
+  certPrimaryDomain: string
+}
+
+/** 一次部署的历史记录(source: manual = 手动 / renew = 证书续期联动)。 */
+export interface CertDeployRun {
+  id: string
+  source: 'manual' | 'renew'
+  status: 'success' | 'failed'
+  detail: string
+  startedAt: string
+  finishedAt: string
+  durationMs: number
+}
+
+/** 创建部署目标入参。 */
+export interface CertDeployInput {
+  certId: string
+  serverId: string
+  name?: string
+  certPath: string
+  keyPath: string
+  postCommand?: string
+  enabled?: boolean
+}
+
+/** 更新部署目标入参(undefined = 不改;certId/serverId 不可改)。 */
+export interface CertDeployUpdateInput {
+  name?: string
+  certPath?: string
+  keyPath?: string
+  postCommand?: string
+  enabled?: boolean
+}
+
+export const listCertDeploys = (certId?: string): Promise<{ items: CertDeploy[] }> =>
+  http.get(`/api/cert-deploys${certId ? `?certId=${encodeURIComponent(certId)}` : ''}`)
+
+export const createCertDeploy = (input: CertDeployInput): Promise<CertDeploy> =>
+  http.post('/api/cert-deploys', input)
+
+export const updateCertDeploy = (id: string, input: CertDeployUpdateInput): Promise<CertDeploy> =>
+  http.put(`/api/cert-deploys/${encodeURIComponent(id)}`, input)
+
+export const deleteCertDeploy = (id: string): Promise<{ ok: boolean }> =>
+  http.delete(`/api/cert-deploys/${encodeURIComponent(id)}`)
+
+/** 立即部署(同步):执行失败也返回行(status=failed + statusDetail 人话原因)。 */
+export const deployCertDeployNow = (id: string): Promise<CertDeploy> =>
+  http.post(`/api/cert-deploys/${encodeURIComponent(id)}/deploy`)
+
+export const listCertDeployRuns = (id: string): Promise<{ items: CertDeployRun[] }> =>
+  http.get(`/api/cert-deploys/${encodeURIComponent(id)}/runs`)
