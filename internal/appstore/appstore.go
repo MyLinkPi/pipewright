@@ -1,7 +1,7 @@
 // Package appstore 是「应用商店模板」的领域层(DPanel 式一键部署)。
 //
 // 模板 = docker-compose YAML + 参数 schema:预置内置模板(MySQL/Redis/Postgres/Nginx/
-// RustFS/RabbitMQ/Gitea/Redpanda/NFS/OpenVAS/Trivy Server,启动幂等 seed,builtin=1
+// RustFS/RabbitMQ/Gitea/Redpanda/NFS/OpenVAS/Trivy Server/Nuclei Runner,启动幂等 seed,builtin=1
 // 不可改删;已下架内置名见
 // retiredBuiltins,seed 时顺带清掉老库遗留的内置行),用户可建自定义模板。部署本身不在本包 ——
 // httpapi 侧复用 Stacks 受管链路(Upload 到 /opt/pipewright/stacks/<name> → docker compose up -d),

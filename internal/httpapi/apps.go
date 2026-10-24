@@ -44,10 +44,12 @@ const (
 
 // appAutoRegisterTemplates 是「部署成功后联动自动登记」的内置模板名集合:
 // rustfs → 登记为对象存储配置;mysql / postgres → 登记为数据库管理实例;redis → 登记为
-// Redis 管理实例;trivy-server → 登记为安全中心扫描器。
+// Redis 管理实例;trivy-server → 登记为安全中心扫描器;nuclei-runner → 登记为安全中心
+// 常驻执行容器(Nuclei 扫描经它执行,目标机无需 docker)。
 const appAutoRegisterObjectStoreTemplate = "rustfs"
 const appAutoRegisterRedisTemplate = "redis"
 const appAutoRegisterScannerTemplate = "trivy-server"
+const appAutoRegisterNucleiRunnerTemplate = "nuclei-runner"
 
 var appAutoRegisterDBTemplates = map[string]bool{
 	"mysql":    true,
@@ -262,7 +264,7 @@ func registerScannerInstance(ctx context.Context, secScans secscan.Service, aud 
 		name += " · " + instance
 	}
 	res, err := secScans.Register(ctx, secscan.RegisterInput{
-		Name: name, Host: srv.Host, Port: port, Token: used["token"],
+		Kind: secscan.KindTrivyServer, Name: name, Host: srv.Host, Port: port, Token: used["token"],
 		ServerID: srv.ID, StackName: stackName,
 	})
 	if err != nil {
@@ -290,6 +292,48 @@ func registerScannerInstance(ctx context.Context, secScans secscan.Service, aud 
 		Actor: auditActor, Action: auditActionSecScannerReg, TargetType: auditTargetSecurity,
 		TargetID: targetID,
 		Detail:   map[string]any{"host": srv.Host, "port": port, "source": "appstore", "ok": true, "updated": res.Updated}, IP: clientIP(r),
+	})
+	return true, note
+}
+
+// registerNucleiRunnerInstance 是应用商店部署 nuclei-runner 成功后的联动登记(尽力而为,
+// 绝不影响部署结果):登记 kind=nuclei-runner(无服务端口,按部署宿主 + 栈名定位执行
+// 容器),幂等语义同 registerScannerInstance。
+func registerNucleiRunnerInstance(ctx context.Context, secScans secscan.Service, aud audit.Recorder, r *http.Request, srv target.Server, stackName, instance string) (bool, string) {
+	if secScans == nil {
+		return false, ""
+	}
+	name := "Nuclei Runner · " + srv.Name
+	if strings.TrimSpace(name) == "Nuclei Runner ·" {
+		name = "Nuclei Runner · " + srv.Host
+	}
+	if instance != "" {
+		name += " · " + instance
+	}
+	res, err := secScans.Register(ctx, secscan.RegisterInput{
+		Kind: secscan.KindNucleiRunner, Name: name, Host: srv.Host,
+		ServerID: srv.ID, StackName: stackName,
+	})
+	if err != nil {
+		msg := "自动登记 Nuclei Runner 失败:" + err.Error()
+		recordAudit(r.Context(), aud, audit.Entry{
+			Actor: auditActor, Action: auditActionSecScannerReg, TargetType: auditTargetSecurity,
+			Detail: map[string]any{"kind": secscan.KindNucleiRunner, "host": srv.Host, "source": "appstore", "ok": false, "error": msg}, IP: clientIP(r),
+		})
+		return false, msg
+	}
+	note := "已自动登记到「安全中心」,Nuclei 扫描将经此执行(目标机无需 docker)"
+	if res.Updated {
+		note = "已更新既有 Nuclei Runner 登记(同主机原地刷新)"
+	}
+	targetID := ""
+	if res.Instance != nil {
+		targetID = res.Instance.ID
+	}
+	recordAudit(r.Context(), aud, audit.Entry{
+		Actor: auditActor, Action: auditActionSecScannerReg, TargetType: auditTargetSecurity,
+		TargetID: targetID,
+		Detail:   map[string]any{"kind": secscan.KindNucleiRunner, "host": srv.Host, "source": "appstore", "ok": true, "updated": res.Updated}, IP: clientIP(r),
 	})
 	return true, note
 }
@@ -724,6 +768,13 @@ func makeDeployAppHandler(apps appstore.Service, servers target.Service, aud aud
 		if out.OK && tpl.Name == appAutoRegisterScannerTemplate {
 			rctx, rcancel := context.WithTimeout(r.Context(), appRegisterTimeout)
 			out.ScannerRegistered, out.ScannerNote = registerScannerInstance(rctx, secScans, aud, r, *srv, stackName, rendered.Used, req.Instance)
+			rcancel()
+		}
+		// nuclei-runner 联动:部署成功后自动登记为安全中心常驻执行容器(尽力而为,
+		// 独立超时;容器在跑由「安全中心」的测试按钮兜底)。
+		if out.OK && tpl.Name == appAutoRegisterNucleiRunnerTemplate {
+			rctx, rcancel := context.WithTimeout(r.Context(), appRegisterTimeout)
+			out.ScannerRegistered, out.ScannerNote = registerNucleiRunnerInstance(rctx, secScans, aud, r, *srv, stackName, req.Instance)
 			rcancel()
 		}
 

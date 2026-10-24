@@ -20,8 +20,8 @@ type vaultService interface {
 	OpenSecret(sealed []byte) ([]byte, error)
 }
 
-// validKind 报告扫描器类型枚举是否受支持(v1 仅 trivy-server)。
-func validKind(k string) bool { return k == KindTrivyServer }
+// validKind 报告扫描器类型枚举是否受支持。
+func validKind(k string) bool { return k == KindTrivyServer || k == KindNucleiRunner }
 
 // sealToken 密封可选 token;空 token → 空 BLOB(nil)。保险库未配置且 token 非空 → 报错。
 func (s *service) sealToken(token string) ([]byte, error) {
@@ -230,10 +230,18 @@ func (s *service) DeleteScanner(ctx context.Context, id string) error {
 }
 
 // Register 应用市场联动登记:同 kind+host+port 已有条目 → 原地轮换 token(未提供则清除),
-// 否则新建 source=appstore 条目。
+// 否则新建 source=appstore 条目。trivy-server 须带服务端口;nuclei-runner 无服务端口
+//(Port 固定 0,按 kind+host 唯一)。
 func (s *service) Register(ctx context.Context, in RegisterInput) (*RegisterResult, error) {
 	in.Host = strings.TrimSpace(in.Host)
-	if in.Host == "" || in.Port < 1 || in.Port > 65535 || strings.TrimSpace(in.Name) == "" {
+	if !validKind(in.Kind) {
+		return nil, ErrInvalidKind
+	}
+	if in.Kind == KindNucleiRunner {
+		in.Port = 0
+	}
+	if in.Host == "" || strings.TrimSpace(in.Name) == "" ||
+		(in.Kind == KindTrivyServer && (in.Port < 1 || in.Port > 65535)) {
 		return nil, fmt.Errorf("%w: register fields", ErrInvalidInput)
 	}
 	sealed, err := s.sealToken(in.Token)
@@ -243,7 +251,7 @@ func (s *service) Register(ctx context.Context, in RegisterInput) (*RegisterResu
 	var existingID string
 	err = s.db.QueryRowContext(ctx,
 		`SELECT id FROM scanner_instances WHERE kind = ? AND host = ? AND port = ?`,
-		KindTrivyServer, in.Host, in.Port,
+		in.Kind, in.Host, in.Port,
 	).Scan(&existingID)
 	now := time.Now().UTC().Format(time.RFC3339)
 	if err == nil {
@@ -264,7 +272,7 @@ func (s *service) Register(ctx context.Context, in RegisterInput) (*RegisterResu
 	id := uuid.NewString()
 	nowT := time.Now().UTC()
 	inst := &Instance{
-		ID: id, Kind: KindTrivyServer, Name: strings.TrimSpace(in.Name), Host: in.Host, Port: in.Port,
+		ID: id, Kind: in.Kind, Name: strings.TrimSpace(in.Name), Host: in.Host, Port: in.Port,
 		TokenConfigured: in.Token != "", Source: SourceAppStore,
 		ServerID: in.ServerID, StackName: in.StackName, CreatedAt: nowT, UpdatedAt: nowT,
 	}
@@ -297,7 +305,33 @@ func (s *service) TestScanner(ctx context.Context, id string) (*TestResult, erro
 	if err != nil {
 		return nil, err
 	}
+	// nuclei-runner 不是网络服务:探活 = 到所在主机 docker ps 找执行容器。
+	if inst.Kind == KindNucleiRunner {
+		return s.probeNucleiRunner(ctx, inst), nil
+	}
 	return probeTrivyServer(ctx, inst.Host, inst.Port, token), nil
+}
+
+// probeNucleiRunner 验证 runner 执行容器在所在主机上运行(docker ps 按栈名过滤)。
+func (s *service) probeNucleiRunner(ctx context.Context, inst *Instance) *TestResult {
+	if s.runner == nil {
+		return &TestResult{Err: ErrRunnerUnavailable, Detail: "扫描执行器未装配,无法验证 runner"}
+	}
+	res, err := s.runner.Exec(ctx, inst.ServerID, nucleiRunnerPSCmd(inst.StackName))
+	if err != nil {
+		return &TestResult{Err: err, Detail: "无法连接 runner 所在主机:" + humanProbeError(err)}
+	}
+	if res.ExitCode != 0 {
+		return &TestResult{Detail: "目标机 docker 不可用,无法验证 runner"}
+	}
+	if strings.TrimSpace(res.Stdout) == "" {
+		return &TestResult{Detail: "runner 容器未在运行(可能未部署或已停止)"}
+	}
+	first := res.Stdout
+	if i := strings.IndexByte(res.Stdout, '\n'); i >= 0 {
+		first = res.Stdout[:i]
+	}
+	return &TestResult{OK: true, LatencyMs: 0, Detail: "Nuclei Runner 容器运行中:" + strings.TrimSpace(first)}
 }
 
 // TestScannerDirect 用未保存接入点直连测试(token 用完即弃)。

@@ -468,7 +468,7 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
           <tbody>
             <tr v-for="sc in scanners" :key="sc.id">
               <td>{{ sc.name }}</td>
-              <td>{{ sc.host }}:{{ sc.port }}</td>
+              <td>{{ sc.host }}{{ sc.port ? ':' + sc.port : '' }}</td>
               <td>{{ sc.tokenConfigured ? t('securityCenter.scannerTokenConfigured') : t('securityCenter.scannerTokenNone') }}</td>
               <td>{{ sc.source === 'appstore' ? t('securityCenter.scannerSourceAppstore') : t('securityCenter.scannerSourceManual') }}</td>
               <td class="row-actions">

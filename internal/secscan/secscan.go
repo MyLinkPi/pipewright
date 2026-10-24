@@ -24,6 +24,9 @@ import (
 const (
 	// KindTrivyServer 是中心 Trivy 服务(漏洞库缓存,目标机扫描时免各自下库)。
 	KindTrivyServer = "trivy-server"
+	// KindNucleiRunner 是常驻 Nuclei 执行容器(部署在任一有 docker 的机器;面板经
+	// docker exec 在容器内执行扫描,目标机无需 docker,只要网络可达)。
+	KindNucleiRunner = "nuclei-runner"
 )
 
 // 扫描类型枚举。
@@ -136,7 +139,10 @@ type ConnectInput struct {
 }
 
 // RegisterInput 是应用市场部署联动登记的入参(镜像 dbadmin.RegisterInput)。
+// Kind 决定形态:trivy-server 需 host:port 服务;nuclei-runner 无服务端口(Port=0,
+// 由 ServerID 定位执行容器)。
 type RegisterInput struct {
+	Kind      string
 	Name      string
 	Host      string
 	Port      int
@@ -388,6 +394,7 @@ type service struct {
 	sem         chan struct{}   // fleet 并发闸(单机扫描也过闸,防连环触发压垮目标机)
 	trivyImage  string
 	nucleiImage string
+	trivyDBRepo string // 客户端本地模式的漏洞库仓库(镜像源;空 = trivy 默认 ghcr.io)
 }
 
 // Option 装配选项(New 消费)。
@@ -407,6 +414,17 @@ func WithBaseContext(ctx context.Context) Option {
 	return func(s *service) {
 		if ctx != nil {
 			s.baseCtx = ctx
+		}
+	}
+}
+
+// WithTrivyDBRepository 设置客户端本地模式(未登记 trivy-server 时)的漏洞库仓库。
+// 典型场景:目标机到不了 ghcr.io,换镜像源(如 ghcr.nju.edu.cn/aquasecurity/trivy-db,
+// 逗号分隔多个逐个回退)。已走 --server 的扫描不受影响(DB 在服务端)。
+func WithTrivyDBRepository(repo string) Option {
+	return func(s *service) {
+		if repo != "" {
+			s.trivyDBRepo = repo
 		}
 	}
 }

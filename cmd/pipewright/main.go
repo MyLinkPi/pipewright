@@ -555,6 +555,12 @@ func main() {
 	if artStore != nil {
 		secScanOpts = append(secScanOpts, secscan.WithArtifacts(artStore))
 	}
+	// 目标机到不了 ghcr.io 时(典型:国内网络,本地缓存卷模式下载漏洞库失败),给全部
+	// trivy 客户端注入镜像仓库;值如 ghcr.nju.edu.cn/aquasecurity/trivy-db(逗号分隔回退)。
+	if dbRepo := os.Getenv("PIPEWRIGHT_TRIVY_DB_REPOSITORY"); dbRepo != "" {
+		secScanOpts = append(secScanOpts, secscan.WithTrivyDBRepository(dbRepo))
+		log.Printf("[security] Trivy 漏洞库仓库(客户端本地模式):%s", dbRepo)
+	}
 	secScanSvc := secscan.New(st.DB, secScanOpts...)
 	if err := secScanSvc.MarkStaleRuns(context.Background()); err != nil {
 		log.Printf("[security] 遗留扫描标记失败:%v", err)

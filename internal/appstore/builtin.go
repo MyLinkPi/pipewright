@@ -352,6 +352,29 @@ volumes:
 		},
 		Builtin: true,
 	},
+	{
+		Name:        "nuclei-runner",
+		DisplayName: "Nuclei Runner",
+		Description: "安全中心的常驻 Nuclei 执行容器:部署在任意有 docker 且与目标服务器网络互通的机器上,部署成功后自动登记到「安全中心」;此后所有 Nuclei 暴露面扫描都经它执行,目标机无需安装 docker。特征模板落具名卷 nuclei-templates(首次扫描自动下载,之后复用)。无对外端口,面板经 docker exec 驱动。",
+		Icon:        "🎯",
+		// nuclei 无 server 模式(纯 CLI),常驻形态 = 睡眠容器承载二进制与模板缓存:
+		// entrypoint 覆写为 sleep infinity 保活,面板经 SSH 在该主机 docker exec 容器内
+		// 跑 nuclei;特征模板在卷里跨扫描复用,目标机零依赖。
+		ComposeYAML: `services:
+  nuclei-runner:
+    image: projectdiscovery/nuclei:{{version}}
+    restart: unless-stopped
+    entrypoint: ["sleep", "infinity"]
+    volumes:
+      - nuclei-templates:/root/nuclei-templates
+volumes:
+  nuclei-templates:
+`,
+		Params: []ParamSpec{
+			{Name: "version", Label: "镜像版本", Type: ParamTypeString, Default: "latest"},
+		},
+		Builtin: true,
+	},
 }
 
 // retiredBuiltins 是已从商店下架的内置模板名:EnsureBuiltins 时对库中的内置行删除,

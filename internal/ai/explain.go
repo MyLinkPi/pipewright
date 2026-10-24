@@ -13,10 +13,20 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
+
+	"github.com/huangchengsir/pipewright/internal/opschat"
 )
 
 // explainFindingMaxTokens 是解读 chat 的 token 预算(300 字内中文 + Markdown 足够)。
 const explainFindingMaxTokens = 800
+
+// 解读流式预算(镜像 diagnose 的语义):总上限兜底 + 空闲判超——慢模型/慢网关下解读
+// 可能超过旧共享原语固定的 60s,只要持续出 token 就继续等;毫无输出才判超。
+const (
+	explainStreamTotal = 4 * time.Minute
+	explainStreamIdle  = 60 * time.Second
+)
 
 // FindingExplainer 是安全中心的窄依赖接口(仿 RepoAnalyzer:httpapi 不依赖 ai.Service
 // 全集,测试注入 fake 零成本)。
@@ -56,7 +66,8 @@ func (s *service) ExplainFinding(ctx context.Context, in ExplainFindingInput) (s
 	if baseURL == "" {
 		return "", ErrAINotConfigured
 	}
-	// 密钥进程内取用即弃(非流式短回包;与 Generate 同原语,失败不泄漏细节)。
+	// 密钥进程内取用即弃;流式预算 = 总上限兜底 + 空闲判超(与诊断同语义:慢模型只要
+	// 持续出 token 就不会被掐断;旧共享原语的固定 60s 在慢模型/慢网关下不够)。
 	if len(sealed) == 0 {
 		return "", ErrAINotConfigured
 	}
@@ -64,7 +75,11 @@ func (s *service) ExplainFinding(ctx context.Context, in ExplainFindingInput) (s
 	if oerr != nil {
 		return "", errors.New("AI 密钥不可用(保险库未配置)")
 	}
-	out, cerr := s.chatWithTokens(ctx, cfg.Provider, baseURL, cfg.Model, apiKey, buildFindingExplainPrompt(in), explainFindingMaxTokens)
+	out, cerr := (&opsModel{service: s}).chatStreamBudget(ctx,
+		&Config{Provider: cfg.Provider, BaseURL: baseURL, Model: cfg.Model},
+		apiKey, buildFindingExplainPrompt(in), explainFindingMaxTokens, false,
+		explainStreamTotal, explainStreamIdle,
+		func(opschat.StreamChunk) error { return nil })
 	if cerr != nil {
 		return "", fmt.Errorf("AI 解读失败:%w", cerr)
 	}
