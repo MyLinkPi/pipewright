@@ -436,11 +436,14 @@ func (b *Builder) loadAndPushSharedImage(ctx context.Context, r *run.Run, stage 
 		return ErrBuildFailed
 	}
 	slug := slugify(proj.Name)
-	localTag := localTagPrefix + "/" + slug + ":" + spec.ImageSpec.CommitTag
+	// 与共享机构建侧同构的镜像名(含 target 后缀,见 imageArtName):load 进来的镜像带的就是
+	// 这个 tag,按它 inspect/推送。
+	artName := imageArtName(slug, spec.ImageSpec.BuildTarget)
+	localTag := localTagPrefix + "/" + artName + ":" + spec.ImageSpec.CommitTag
 	digest, size, _ := b.driver.InspectImage(ctx, localTag)
 	art := &run.Artifact{
 		Type:      run.ArtifactImage,
-		Name:      slug,
+		Name:      artName,
 		Reference: localTag,
 		SizeBytes: size,
 		Metadata:  map[string]any{"builder": b.driver.Binary(), "builtOn": "shared:" + spec.ImageSpec.ProjectName},
@@ -457,6 +460,6 @@ func (b *Builder) loadAndPushSharedImage(ctx context.Context, r *run.Run, stage 
 	perr := b.pushImageArtifact(ctx, sink, jrep, jb, stage.Name, proj, plan, art, localTag, spec.ImageSpec.CommitTag)
 	// 发起方本端也轮转(load 进来的镜像副本):保留集来自本端 DB,与本地构建同语义
 	// (共享机上不轮转,见 image_rotate.go)。best-effort,绝不影响构建结果。
-	b.rotateBuildImages(context.WithoutCancel(ctx), proj, spec.ImageSpec.CommitTag, logf)
+	b.rotateBuildImages(context.WithoutCancel(ctx), proj, spec.ImageSpec.BuildTarget, spec.ImageSpec.CommitTag, logf)
 	return perr
 }

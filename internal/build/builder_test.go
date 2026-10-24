@@ -352,9 +352,10 @@ func TestBuildImageSuccessEmitsArtifact(t *testing.T) {
 }
 
 // TestBuildTargetFlagInDockerBuildArgv 验证 BuildConfig.Target(多阶段 Dockerfile 目标 stage)
-// 真实落进 docker build argv:非空 → `--target <t>`(回显一致);空 → 不出现 --target(历史行为)。
+// 的三重效果:① docker build argv 带 --target;② 本地 tag 的镜像名并入 -<target> 后缀
+// (同项目多 target 互不冲突,可并行);③ 产物名同步后缀(push_image 的远端默认名随之区分)。
 func TestBuildTargetFlagInDockerBuildArgv(t *testing.T) {
-	runBuild := func(target string) string {
+	runBuild := func(target string) (string, *fakeSink) {
 		cmdr := newFakeCommander()
 		cmdr.script("build", fakeCmd{stdoutLines: []string{"Successfully built abc"}, exitCode: 0})
 		cmdr.script("inspect", fakeCmd{stdoutLines: []string{`{"Id":"sha256:abc","Size":10}`}, exitCode: 0})
@@ -362,16 +363,36 @@ func TestBuildTargetFlagInDockerBuildArgv(t *testing.T) {
 		st.Build.Target = target
 		b := newTestBuilder(t, cmdr, &project.Project{ID: "p1", Name: "app", RepoURL: "https://example.com/r.git"}, st, nil)
 		b.cloner = newSuccessCloner("abc1234")
-		if err := b.Run(context.Background(), &run.Run{ID: "run1", ProjectID: "p1", Trigger: run.Trigger{Commit: "abc1234x"}}, newFakeSink()); err != nil {
+		sink := newFakeSink()
+		if err := b.Run(context.Background(), &run.Run{ID: "run1", ProjectID: "p1", Trigger: run.Trigger{Commit: "abc1234x"}}, sink); err != nil {
 			t.Fatalf("Run failed: %v", err)
 		}
-		return cmdr.allArgsText()
+		return cmdr.allArgsText(), sink
 	}
-	if got := runBuild("backend"); !strings.Contains(got, "--target backend ") {
-		t.Fatalf("docker build argv 应含 --target backend, got:\n%s", got)
+
+	args, sink := runBuild("backend")
+	if !strings.Contains(args, "--target backend ") {
+		t.Fatalf("docker build argv 应含 --target backend, got:\n%s", args)
 	}
-	if got := runBuild(""); strings.Contains(got, "--target") {
-		t.Fatalf("未配置 target 时不应出现 --target, got:\n%s", got)
+	if !strings.Contains(args, "pipewright/app-backend:abc1234") {
+		t.Fatalf("本地 tag 应为 pipewright/app-backend:<commit>, got:\n%s", args)
+	}
+	if len(sink.artifacts) != 1 || sink.artifacts[0].Name != "app-backend" {
+		t.Fatalf("产物名应为 app-backend, got %+v", sink.artifacts)
+	}
+	if sink.artifacts[0].Reference != "pipewright/app-backend:abc1234" {
+		t.Fatalf("产物引用 = %q", sink.artifacts[0].Reference)
+	}
+
+	args, sink = runBuild("")
+	if strings.Contains(args, "--target") {
+		t.Fatalf("未配置 target 时不应出现 --target, got:\n%s", args)
+	}
+	if len(sink.artifacts) != 1 || sink.artifacts[0].Name != "app" {
+		t.Fatalf("未配置 target 时产物名应为裸 slug, got %+v", sink.artifacts)
+	}
+	if sink.artifacts[0].Reference != "pipewright/app:abc1234" {
+		t.Fatalf("产物引用 = %q", sink.artifacts[0].Reference)
 	}
 }
 

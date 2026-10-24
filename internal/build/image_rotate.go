@@ -1,8 +1,8 @@
 package build
 
 // image_rotate.go 是「产物镜像轮转」(磁盘治理):build_image 每次构建都产出带 tag 的本地镜像
-// pipewright/<slug>:<commit>,推送后留在构建机 daemon 上且历史版本无人回收,长期单调增长。
-// 本文件在构建/推送完成后按「每项目保留最近 N 个 commit tag」轮转:枚举 daemon 上本项目
+// pipewright/<slug>[-<target>]:<commit>,推送后留在构建机 daemon 上且历史版本无人回收,长期单调
+// 增长。本文件在构建/推送完成后按「每项目保留最近 N 个 commit tag」轮转:枚举 daemon 上本项目
 // 前缀的镜像,删除不在保留集内的旧 tag。
 //
 // 安全边界(与 image_gc.go 的 dangling 清理互补,本文件动的是**有 tag** 镜像):
@@ -101,6 +101,9 @@ func RotateImages(ctx context.Context, driver Driver, prefix string, keep map[st
 		if _, kept := keep[ref]; kept {
 			continue
 		}
+		if keptByFamilyVariant(keep, ref) {
+			continue
+		}
 		if rerr := rot.RemoveImage(ctx, ref, onLine); rerr != nil {
 			onLine(streamError, "镜像清理:删除 "+ref+" 失败,忽略:"+rerr.Error())
 			continue
@@ -110,9 +113,32 @@ func RotateImages(ctx context.Context, driver Driver, prefix string, keep map[st
 	return removed, nil
 }
 
+// keptByFamilyVariant 判断引用 repo:tag 是否被保留集里「去掉 '-<变体>' 段的族键 + 同 tag」
+// 保护:多阶段 target 镜像的 repo 是 pipewright/<slug>-<target>,而全局清理的保留集只按项目
+// 构造 pipewright/<slug>:<commit> —— 同 commit 下的 target 变体镜像须一并保留(方向安全:
+// 只多保不误删)。例:键 pipewright/my-app:aaa1111 同时保护 pipewright/my-app-backend:aaa1111。
+func keptByFamilyVariant(keep map[string]struct{}, ref string) bool {
+	i := strings.LastIndex(ref, ":")
+	if i < 0 {
+		return false
+	}
+	repo, tag := ref[:i], ref[i+1:]
+	for {
+		j := strings.LastIndex(repo, "-")
+		if j < 0 {
+			return false
+		}
+		repo = repo[:j]
+		if _, ok := keep[repo+":"+tag]; ok {
+			return true
+		}
+	}
+}
+
 // rotateBuildImages 轮转 b.driver 所指机器上本项目的前缀镜像:保留最近 keepN 个 commit tag
-// + 当前构建 tag,其余 rmi(best-effort,绝不影响构建结果)。
-func (b *Builder) rotateBuildImages(ctx context.Context, proj *project.Project, commitTag string, onLine func(stream, line string)) {
+// + 当前构建 tag,其余 rmi(best-effort,绝不影响构建结果)。target 是该 build_image 节点的
+// 多阶段目标 stage(非空时镜像族为 pipewright/<slug>-<target>,见 builder.go artName)。
+func (b *Builder) rotateBuildImages(ctx context.Context, proj *project.Project, target, commitTag string, onLine func(stream, line string)) {
 	if b.imageRotation.KeepN == nil || b.imageRotation.RecentCommits == nil || proj == nil {
 		return
 	}
@@ -125,7 +151,7 @@ func (b *Builder) rotateBuildImages(ctx context.Context, proj *project.Project, 
 		onLine(streamError, "镜像轮转:查询最近提交失败,忽略不影响构建:"+err.Error())
 		return
 	}
-	prefix := localTagPrefix + "/" + slugify(proj.Name) + ":"
+	prefix := localTagPrefix + "/" + imageArtName(slugify(proj.Name), target) + ":"
 	keep := make(map[string]struct{}, len(commits)+1)
 	keep[prefix+commitTag] = struct{}{} // 当前构建必保留(被推送源的修订 label 非 trigger_commit)
 	for _, c := range commits {

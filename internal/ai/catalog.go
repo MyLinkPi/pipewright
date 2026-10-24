@@ -31,7 +31,7 @@ func BuiltinNodeCatalog() []NodeKind {
 		{Type: "build_python", Label: "Python 构建", Category: "build",
 			Description: "python 容器内装依赖并构建,产出 wheel/sdist。默认 image=python:3.12、pip install -r requirements.txt && python -m build。"},
 		{Type: "build_image", Label: "构建镜像", Category: "build",
-			Description: "用 Dockerfile 或工具链构建 Docker 镜像(产物=image)。有 Dockerfile 时优先用它。多阶段 Dockerfile 可配 buildTarget(目标 stage,docker build --target;空 = 构建最后一个 stage)——同一 Dockerfile 配多个 build_image 节点、各指不同 buildTarget,即可一条流水线产出多个镜像(注意:同项目多个 build_image 的本地 tag 相同,须用 job 级 needs 串行执行)。"},
+			Description: "用 Dockerfile 或工具链构建 Docker 镜像(产物=image)。有 Dockerfile 时优先用它。多阶段 Dockerfile 可配 buildTarget(目标 stage,docker build --target;空 = 构建最后一个 stage)——同一 Dockerfile 配多个 build_image 节点、各指不同 buildTarget,即可一条流水线产出多个镜像;target 非空时镜像名自动并入 -<target> 后缀(本地 tag 与 push_image 的远端默认名互不冲突,节点可并行、无需逐个手配 imageName)。"},
 		{Type: "push_image", Label: "推送镜像", Category: "build",
 			Description: "把构建出的镜像推送到镜像仓库。config 必填 artifactJob(要推送的镜像来源节点名,必须是**同阶段**的 build_image);可选 registry(目标仓库地址,留空回退环境绑定的仓库)、imageName(远端镜像名,默认沿用产物名)、tag(远端 tag,默认沿用产物 tag;支持 {{runId}}/{{branch}}/{{commit}}/{{project}}/{{date}}/{{date:yyyyMMddHHmmss}} 占位,日期取 run 创建时间 UTC、默认格式 yyyy-MM-dd-HH-mm)、credentialId(仓库登录凭据)。通常紧随 build_image,部署 image 产物前需要。"},
 		{Type: "script", Label: "自定义脚本", Category: "build",

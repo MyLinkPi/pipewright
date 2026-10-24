@@ -119,7 +119,7 @@ export default {
     "Directorio de contexto de build relativo a la raíz del repositorio",
   fieldBuildTargetLabel: "Etapa objetivo de build",
   fieldBuildTargetHint:
-    "Etapa objetivo de un Dockerfile multi-etapa (docker build --target); vacío construye la última etapa. Varios nodos build_image con distintos targets producen varias imágenes de un mismo Dockerfile",
+    "Etapa objetivo de un Dockerfile multi-etapa (docker build --target); vacío construye la última etapa. Al configurarlo, el nombre de la imagen recibe automáticamente un sufijo -target, y varios nodos con distintos targets producen imágenes propias sin conflictos",
   fieldToolchainLanguageLabel: "Lenguaje de la cadena de herramientas",
   fieldToolchainVersionLabel: "Versión de la cadena de herramientas",
   fieldBuildCommandLabel: "Comando de build",

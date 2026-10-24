@@ -116,7 +116,7 @@ export default {
     "Répertoire de contexte de build relatif à la racine du dépôt",
   fieldBuildTargetLabel: "Étape cible de build",
   fieldBuildTargetHint:
-    "Étape cible d'un Dockerfile multi-étapes (docker build --target); vide construit la dernière étape. Plusieurs nœuds build_image avec des cibles différentes produisent plusieurs images depuis un même Dockerfile",
+    "Étape cible d'un Dockerfile multi-étapes (docker build --target); vide construit la dernière étape. Une fois définie, le nom de l'image reçoit automatiquement un suffixe -target, et plusieurs nœuds avec des cibles différentes produisent leurs images sans conflit",
   fieldToolchainLanguageLabel: "Langage de la chaîne d’outils",
   fieldToolchainVersionLabel: "Version de la chaîne d’outils",
   fieldBuildCommandLabel: "Commande de build",
