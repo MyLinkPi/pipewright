@@ -77,6 +77,7 @@ const ja: typeof zhCN = {
     ceph: 'Ceph',
     containers: 'コンテナ',
     pm2: 'PM2',
+    tunnels: 'SSH トンネル',
     serviceReg: 'サービス登録',
     appStore: 'アプリストア',
     databases: 'データベース',

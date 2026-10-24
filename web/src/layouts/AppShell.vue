@@ -32,6 +32,7 @@ import {
   Activity,
   ReportAnalytics,
   Cpu,
+  SwitchHorizontal,
 } from '@vicons/tabler'
 import { NIcon } from 'naive-ui'
 import ThemeToggle from '../components/ThemeToggle.vue'
@@ -117,6 +118,8 @@ const adminNavGroups: NavGroup[] = [
       { name: 'containers', to: '/containers', icon: Box, labelKey: 'nav.containers', ariaKey: 'nav.containers' },
       // PM2 管理:跨服务器聚合 pm2 进程总览 + 行内生命周期操作(pm2 over SSH)。
       { name: 'pm2', to: '/pm2', icon: Cpu, labelKey: 'nav.pm2', ariaKey: 'nav.pm2' },
+      // SSH 隧道:local -L / remote -R / dynamic -D 配置与运行态(独立 helper,重启平台不断)。
+      { name: 'tunnels', to: '/tunnels', icon: SwitchHorizontal, labelKey: 'nav.tunnels', ariaKey: 'nav.tunnels' },
     ],
   },
   {

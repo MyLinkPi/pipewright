@@ -74,6 +74,7 @@ export default {
   importNote: 'Der Import läuft als eine Mehrfach-Anweisung; Datenbankfehler werden angezeigt. Wichtige Daten vorher sichern.',
   unlockTitle: 'Schreibmodus entsperren',
   unlockBody: 'Nach dem Entsperren sind Schreibzugriffe möglich: Zeilenbearbeitung, DDL, Import, Benutzerverwaltung und Schreib-SQL. Alles wird auditiert.',
+  unlockPendingHint: 'Instanz im Nur-Lese-Modus; nach dem Entsperren wird fortgesetzt: {action}',
   unlockConfirm: 'Risiko verstanden — entsperren',
   unlock: 'Schreibmodus entsperren',
   relock: 'Wieder nur lesen',

@@ -74,6 +74,7 @@ export default {
   importNote: '匯入以多語句一次性執行,失敗會透出資料庫錯誤;重要資料請先匯出備份。',
   unlockTitle: '解鎖寫入模式',
   unlockBody: '解鎖後即可執行寫入:行編輯、DDL、匯入、帳號管理與寫入 SQL;全部操作留稽核。',
+  unlockPendingHint: '實例處於唯讀模式,解鎖後將直接繼續:{action}',
   unlockConfirm: '我已了解風險,解鎖',
   unlock: '解鎖寫入模式',
   relock: '恢復唯讀',

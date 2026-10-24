@@ -179,6 +179,14 @@ const REG_BINDING_FIELDS: JobField[] = [
   { key: 'regServiceId', label: 'regServiceId', kind: 'text', when: () => false },
 ]
 
+// 部署策略(strategy):历史键(FR-8-8 曾有 rolling/canary/blue_green),统一滚动部署重构后
+// 后端 NormalizeStrategy 一律归一为 rolling(deploy 层忽略此值),已无用户可配置语义。
+// 登记(when:false 不进常规字段循环)只为声明键归属:存量节点 / YAML 导入携带的 strategy
+// 不再漏进「原始参数」高级区;defaultConfig 也不再预填(见 deploy_static / deploy_frontend)。
+const DEPLOY_STRATEGY_FIELD: JobField = {
+  key: 'strategy', label: 'strategy', kind: 'text', when: () => false,
+}
+
 // ─── Per-type specs ──────────────────────────────────────────────────────────────
 
 // 任务级执行选项(P0 引擎能力):超时 / 重试 / 资源规格。脚本类节点共用。
@@ -432,6 +440,7 @@ const DEPLOY_SSH_FIELDS: JobField[] = [
     get hint() { return t('pipelineJob.fieldRestartCommandHint') },
   },
   ...REG_BINDING_FIELDS,
+  DEPLOY_STRATEGY_FIELD,
 ]
 
 // 网关静态发布节点字段(deploy_static):产物 = dist,不选机器 —— 目标 = 全部网关主机
@@ -454,6 +463,7 @@ const DEPLOY_STATIC_FIELDS: JobField[] = [
     when: (c) => !!(c.artifactJob || '').trim(),
   },
   ...REG_BINDING_FIELDS,
+  DEPLOY_STRATEGY_FIELD,
 ]
 
 // 容器部署节点字段(deploy_container):固定部署 image 产物。
@@ -654,6 +664,7 @@ const DEPLOY_CONTAINER_FIELDS: JobField[] = [
     get hint() { return t('pipelineJob.fieldRegistryCredentialHint') },
   },
   ...REG_BINDING_FIELDS,
+  DEPLOY_STRATEGY_FIELD,
 ]
 
 export const JOB_TYPE_SPECS: Record<string, JobTypeSpec> = {
@@ -1351,7 +1362,7 @@ export const JOB_TYPE_SPECS: Record<string, JobTypeSpec> = {
     accent: 'green',
     category: 'deploy',
     fields: DEPLOY_SSH_FIELDS,
-    defaultConfig: { strategy: 'rolling', restartCommand: 'nginx -s reload' },
+    defaultConfig: { restartCommand: 'nginx -s reload' },
   },
 
   deploy_static: {
@@ -1361,7 +1372,6 @@ export const JOB_TYPE_SPECS: Record<string, JobTypeSpec> = {
     accent: 'green',
     category: 'deploy',
     fields: DEPLOY_STATIC_FIELDS,
-    defaultConfig: { strategy: 'rolling' },
   },
 
   templated: {
@@ -1528,10 +1538,11 @@ export function schemaKeys(type: string): Set<string> {
   const spec = JOB_TYPE_SPECS[type]
   const keys = new Set(spec ? spec.fields.map((f) => f.key) : [])
   // runner(构建机)由 JobDrawer 的独立「构建机」区块渲染、不依赖字段清单渲染;
-  // 若某脚本类类型(如 templated 的内联字段数组)漏配 RUNNER_FIELD,runner 会落进
-  // 「原始参数」extras:回显丢失,切「跟随」时旧值也清不掉。这里对所有脚本类类型
-  // 强制登记 runner 为 schema 所有,与 JobDrawer 的渲染条件对齐,防今后新增类型再踩坑。
-  if (isScriptClassType(type)) keys.add(RUNNER_FIELD_KEY)
+  // 若某支持 runner 的类型(如 templated 的内联字段数组、build_image 的自有清单)
+  // 漏配 RUNNER_FIELD,runner 会落进「原始参数」extras:回显丢失,切「跟随」时旧值
+  // 也清不掉。这里按 supportsRunnerField(与 JobDrawer 渲染区块同一谓词)强制登记
+  // runner 为 schema 所有,两处条件永不脱钩,防今后新增类型再踩坑。
+  if (supportsRunnerField(type)) keys.add(RUNNER_FIELD_KEY)
   return keys
 }
 
@@ -1567,4 +1578,13 @@ const SCRIPT_CLASS_TYPES = new Set<string>([
 
 export function isScriptClassType(type: string): boolean {
   return SCRIPT_CLASS_TYPES.has(type.trim())
+}
+
+/**
+ * 支持「构建机(RUNNER)」区块的类型:脚本类 + 镜像构建(build_image 也由构建机执行,
+ * 但不是脚本类 —— 后端按镜像构建路径跑)。JobDrawer 用它决定是否渲染区块,schemaKeys
+ * 用它决定 runner 键归属 —— 同一谓词,两处永不脱钩。
+ */
+export function supportsRunnerField(type: string): boolean {
+  return isScriptClassType(type) || type.trim() === 'build_image'
 }

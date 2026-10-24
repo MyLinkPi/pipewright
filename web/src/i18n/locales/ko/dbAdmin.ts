@@ -74,6 +74,7 @@ export default {
   importNote: '가져오기는 여러 문을 한 번에 실행하며 실패 시 DB 오류가 표시됩니다. 중요한 데이터는 먼저 백업하세요.',
   unlockTitle: '쓰기 모드 잠금 해제',
   unlockBody: '해제하면 행 편집, DDL, 가져오기, 계정 관리, 쓰기 SQL이 가능합니다. 모든 작업은 감사됩니다.',
+  unlockPendingHint: '인스턴스가 읽기 전용입니다. 잠금 해제 후 계속 진행합니다: {action}',
   unlockConfirm: '위험을 이해했으며 잠금을 해제합니다',
   unlock: '쓰기 모드 잠금 해제',
   relock: '읽기 전용으로 복원',

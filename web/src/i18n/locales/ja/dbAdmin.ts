@@ -74,6 +74,7 @@ export default {
   importNote: 'インポートは複数ステートメントを一括実行します。失敗時は DB エラーが表示されます。重要なデータは事前にバックアップしてください。',
   unlockTitle: '書き込みモードへの解除',
   unlockBody: '解除すると行編集、DDL、インポート、アカウント管理、書き込み SQL が可能になります。操作はすべて監査されます。',
+  unlockPendingHint: 'インスタンスは読み取り専用です。解除後に続行します:{action}',
   unlockConfirm: 'リスクを理解して解除',
   unlock: '書き込みモードを解除',
   relock: '読み取り専用に戻す',

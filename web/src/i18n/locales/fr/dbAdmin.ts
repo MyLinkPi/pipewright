@@ -74,6 +74,7 @@ export default {
   importNote: 'L’import s’exécute en une passe multi-instructions ; les erreurs de la base sont affichées. Sauvegardez les données importantes avant.',
   unlockTitle: 'Déverrouiller le mode écriture',
   unlockBody: 'Après déverrouillage : édition de lignes, DDL, import, gestion des comptes et SQL d’écriture. Toutes les actions sont auditées.',
+  unlockPendingHint: 'Instance en lecture seule ; après déverrouillage, l’action se poursuivra : {action}',
   unlockConfirm: 'Risque compris — déverrouiller',
   unlock: 'Déverrouiller l’écriture',
   relock: 'Remettre en lecture seule',

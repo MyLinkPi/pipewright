@@ -22,6 +22,14 @@ type fakeTarget struct {
 // DockerLogin 满足 target.Service 接口(部署私有仓库登录追加);测试桩不触网,直接成功。
 func (f *fakeTarget) DockerLogin(context.Context, string, string, string) error { return nil }
 
+// Dial / DialDirect 满足 target.Service 接口(0099 SSH 隧道追加);测试桩不建连。
+func (f *fakeTarget) Dial(context.Context, string) (target.SSHClient, error) {
+	return nil, nil
+}
+func (f *fakeTarget) DialDirect(context.Context, string, int, string, string) (target.SSHClient, error) {
+	return nil, nil
+}
+
 // SetPlacement / ListPools 满足 target.Service 接口(0084 服务器池追加);测试桩不落库。
 func (f *fakeTarget) SetPlacement(context.Context, string, string, string) error { return nil }
 func (f *fakeTarget) ListPools(context.Context) ([]*target.ServerPool, error)    { return nil, nil }

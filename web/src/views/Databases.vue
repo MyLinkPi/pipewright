@@ -8,6 +8,8 @@
     - users:数据库账号管理(建号/改密/授权/回收/删除)
     - import:.sql 多语句导入(须已解锁)
   实例默认只读;解锁写模式是显式确认动作(服务端强校验 + 审计)。
+  只读时写操作入口统一走 guardWrite:点击立刻弹解锁框(不让用户填完表单才被拒),
+  解锁成功后自动继续原操作。
   导出(表/整库 × SQL/CSV)走流式附件下载。
 */
 import { ref, computed, watch, onMounted } from 'vue'
@@ -95,9 +97,30 @@ function formatBytes(n: number): string {
 // ─── 解锁/上锁写模式 ───────────────────────────────────────────────────────────
 const unlockOpen = ref(false)
 const readonlyBusy = ref(false)
+// 只读时被拦下的写操作:解锁确认后自动继续,不让用户白点/白填。
+const pendingWrite = ref<(() => void) | null>(null)
+const pendingWriteLabel = ref('')
 
 function askUnlock(): void {
   unlockOpen.value = true
+}
+
+// 写操作入口统一守卫:只读 → 立刻弹解锁框(而非放行后提交时才 403)。
+function guardWrite(action: () => void, label: string): void {
+  if (!current.value) return
+  if (current.value.readonly) {
+    pendingWrite.value = action
+    pendingWriteLabel.value = label
+    unlockOpen.value = true
+    return
+  }
+  action()
+}
+
+function cancelUnlock(): void {
+  unlockOpen.value = false
+  pendingWrite.value = null
+  pendingWriteLabel.value = ''
 }
 
 async function confirmUnlock(): Promise<void> {
@@ -108,7 +131,11 @@ async function confirmUnlock(): Promise<void> {
     const idx = instances.value.findIndex((i) => i.id === updated.id)
     if (idx >= 0) instances.value[idx] = updated
     unlockOpen.value = false
+    const next = pendingWrite.value
+    pendingWrite.value = null
+    pendingWriteLabel.value = ''
     toast.success(t('dbAdmin.unlocked'))
+    if (next) next()
   } catch (err) {
     toast.error(t('dbAdmin.unlockFail'), { detail: errMsg(err, t('dbAdmin.errNetwork')) })
   } finally {
@@ -669,6 +696,8 @@ watch(currentId, async (id) => {
   selectedUser.value = null
   grantsView.value = null
   sqlResult.value = null
+  pendingWrite.value = null
+  pendingWriteLabel.value = ''
   if (!id) return
   try {
     info.value = await getDBServerInfo(id)
@@ -738,7 +767,7 @@ watch(currentDb, (db) => {
         <aside class="db-sidebar">
           <div class="sidebar-head">
             <span>{{ t('dbAdmin.databases') }}</span>
-            <button class="icon-btn" :title="t('dbAdmin.createDb')" @click="createDbOpen = true">
+            <button class="icon-btn" :title="t('dbAdmin.createDb')" @click="guardWrite(() => { createDbOpen = true }, t('dbAdmin.createDb'))">
               <NIcon :size="14"><Plus /></NIcon>
             </button>
           </div>
@@ -759,7 +788,7 @@ watch(currentDb, (db) => {
                 v-if="d.name === currentDb"
                 class="icon-btn icon-btn--danger"
                 :title="t('dbAdmin.dropDb')"
-                @click="dropDbTarget = d"
+                @click="guardWrite(() => { dropDbTarget = d }, t('dbAdmin.dropDb'))"
               >
                 <NIcon :size="12"><Trash /></NIcon>
               </button>
@@ -836,13 +865,13 @@ watch(currentDb, (db) => {
                     <button class="subtab" :class="{ 'subtab--active': tableTab === 'structure' }" @click="tableTab = 'structure'">{{ t('dbAdmin.subStructure') }}</button>
                   </nav>
                   <span class="detail-actions">
-                    <button class="btn-secondary btn-sm" @click="openInsert">
+                    <button class="btn-secondary btn-sm" @click="guardWrite(openInsert, t('dbAdmin.insertRow'))">
                       <NIcon :size="13"><Plus /></NIcon>{{ t('dbAdmin.insertRow') }}
                     </button>
                     <button class="btn-secondary btn-sm" :disabled="exporting" @click="doExport('sql', currentTable)">SQL</button>
                     <button class="btn-secondary btn-sm" :disabled="exporting" @click="doExport('csv', currentTable)">CSV</button>
-                    <button class="btn-secondary btn-sm btn-danger-ghost" @click="tableAction = 'truncate'">{{ t('dbAdmin.truncate') }}</button>
-                    <button class="btn-secondary btn-sm btn-danger-ghost" @click="tableAction = 'drop'">{{ t('dbAdmin.dropTable') }}</button>
+                    <button class="btn-secondary btn-sm btn-danger-ghost" @click="guardWrite(() => { tableAction = 'truncate' }, t('dbAdmin.truncate'))">{{ t('dbAdmin.truncate') }}</button>
+                    <button class="btn-secondary btn-sm btn-danger-ghost" @click="guardWrite(() => { tableAction = 'drop' }, t('dbAdmin.dropTable'))">{{ t('dbAdmin.dropTable') }}</button>
                   </span>
                 </div>
 
@@ -891,7 +920,7 @@ watch(currentDb, (db) => {
                               v-if="structure && structure.primaryKeys.length > 0"
                               class="icon-btn"
                               :title="t('dbAdmin.editRow')"
-                              @click.stop="openEdit(row)"
+                              @click.stop="guardWrite(() => openEdit(row), t('dbAdmin.editRow'))"
                             >
                               <NIcon :size="13"><Pencil /></NIcon>
                             </button>
@@ -899,7 +928,7 @@ watch(currentDb, (db) => {
                               v-if="structure && structure.primaryKeys.length > 0"
                               class="icon-btn icon-btn--danger"
                               :title="t('dbAdmin.deleteRow')"
-                              @click.stop="deleteRowTarget = rowKeyFor(row)"
+                              @click.stop="guardWrite(() => { deleteRowTarget = rowKeyFor(row) }, t('dbAdmin.deleteRow'))"
                             >
                               <NIcon :size="13"><Trash /></NIcon>
                             </button>
@@ -1023,7 +1052,7 @@ watch(currentDb, (db) => {
           <div v-else-if="tab === 'users'" class="tab-body">
             <div class="tables-toolbar">
               <span class="hint-inline">{{ engine === 'mysql' ? t('dbAdmin.usersHintMysql') : t('dbAdmin.usersHintPg') }}</span>
-              <button class="btn-primary btn-sm" @click="openUserModal('create')">
+              <button class="btn-primary btn-sm" @click="guardWrite(() => openUserModal('create'), t('dbAdmin.createUser'))">
                 <NIcon :size="13"><Plus /></NIcon>{{ t('dbAdmin.createUser') }}
               </button>
             </div>
@@ -1057,8 +1086,8 @@ watch(currentDb, (db) => {
                 <div class="grants-head">
                   <strong class="mono">{{ selectedUser.name }}{{ selectedUser.host ? '@' + selectedUser.host : '' }}</strong>
                   <span class="detail-actions">
-                    <button class="btn-secondary btn-sm" @click="openUserModal('password', selectedUser)">{{ t('dbAdmin.setPassword') }}</button>
-                    <button class="btn-secondary btn-sm btn-danger-ghost" @click="dropUserTarget = selectedUser">{{ t('dbAdmin.dropUser') }}</button>
+                    <button class="btn-secondary btn-sm" @click="guardWrite(() => openUserModal('password', selectedUser ?? undefined), t('dbAdmin.setPassword'))">{{ t('dbAdmin.setPassword') }}</button>
+                    <button class="btn-secondary btn-sm btn-danger-ghost" @click="guardWrite(() => { dropUserTarget = selectedUser }, t('dbAdmin.dropUser'))">{{ t('dbAdmin.dropUser') }}</button>
                   </span>
                 </div>
                 <div v-if="!grantsView" class="tab-empty">{{ t('common.refresh') }}…</div>
@@ -1085,8 +1114,8 @@ watch(currentDb, (db) => {
                       <option value="read">{{ t('dbAdmin.grantRead') }}</option>
                       <option value="crud">{{ t('dbAdmin.grantCrud') }}</option>
                     </select>
-                    <button class="btn-secondary btn-sm" :disabled="!grantsDb || grantBusy" @click="doGrant(grantTemplate)">{{ t('dbAdmin.grant') }}</button>
-                    <button class="btn-secondary btn-sm btn-danger-ghost" :disabled="!grantsDb || grantBusy" @click="doRevoke()">{{ t('dbAdmin.revoke') }}</button>
+                    <button class="btn-secondary btn-sm" :disabled="!grantsDb || grantBusy" @click="guardWrite(() => doGrant(grantTemplate), t('dbAdmin.grant'))">{{ t('dbAdmin.grant') }}</button>
+                    <button class="btn-secondary btn-sm btn-danger-ghost" :disabled="!grantsDb || grantBusy" @click="guardWrite(() => doRevoke(), t('dbAdmin.revoke'))">{{ t('dbAdmin.revoke') }}</button>
                   </div>
                 </template>
                 <p class="hint-line">{{ t('dbAdmin.grantNote') }}</p>
@@ -1111,7 +1140,7 @@ watch(currentDb, (db) => {
               spellcheck="false"
             />
             <div class="sql-actions">
-              <button class="btn-primary" :disabled="!importDb || !importText.trim() || importRunning" @click="runImport">
+              <button class="btn-primary" :disabled="!importDb || !importText.trim() || importRunning" @click="guardWrite(runImport, t('dbAdmin.runImport'))">
                 <span v-if="importRunning" class="spinner" aria-hidden="true" />
                 {{ importRunning ? t('dbAdmin.running') : t('dbAdmin.runImport') }}
               </button>
@@ -1127,20 +1156,21 @@ watch(currentDb, (db) => {
 
   <!-- 解锁确认 -->
   <Teleport to="body">
-    <div v-if="unlockOpen && current" class="modal-scrim" role="dialog" :aria-label="t('dbAdmin.unlock')" aria-modal="true" @keydown.esc="unlockOpen = false">
+    <div v-if="unlockOpen && current" class="modal-scrim" role="dialog" :aria-label="t('dbAdmin.unlock')" aria-modal="true" @keydown.esc="cancelUnlock">
       <div class="modal modal--sm">
         <div class="modal-head">
           <div class="modal-icon modal-icon--danger"><NIcon :size="18"><LockOpen /></NIcon></div>
           <div>
             <h3 class="modal-title">{{ t('dbAdmin.unlockTitle') }}</h3>
             <p class="modal-sub">{{ t('dbAdmin.unlockBody') }}</p>
+            <p v-if="pendingWriteLabel" class="modal-sub modal-sub--warn">{{ t('dbAdmin.unlockPendingHint', { action: pendingWriteLabel }) }}</p>
           </div>
         </div>
         <div class="modal-body">
           <p class="delete-text mono">{{ current.name }} · {{ current.host }}:{{ current.port }}</p>
         </div>
         <div class="modal-footer modal-footer--standalone">
-          <button class="btn-secondary" :disabled="readonlyBusy" @click="unlockOpen = false">{{ t('dbAdmin.cancel') }}</button>
+          <button class="btn-secondary" :disabled="readonlyBusy" @click="cancelUnlock">{{ t('dbAdmin.cancel') }}</button>
           <button class="btn-danger" :disabled="readonlyBusy" @click="confirmUnlock">{{ t('dbAdmin.unlockConfirm') }}</button>
         </div>
       </div>
@@ -2012,6 +2042,9 @@ watch(currentDb, (db) => {
   color: var(--color-faint);
   margin-top: 3px;
   line-height: 1.45;
+}
+.modal-sub--warn {
+  color: var(--color-amber);
 }
 .modal-body {
   padding: 18px 20px;

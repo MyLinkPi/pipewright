@@ -74,6 +74,7 @@ export default {
   importNote: '导入以多语句一次性执行,失败会透出数据库错误;重要数据请先导出备份。',
   unlockTitle: '解锁写模式',
   unlockBody: '解锁后即可执行写入:行编辑、DDL、导入、账号管理与写 SQL;全部操作留审计。',
+  unlockPendingHint: '实例处于只读模式,解锁后将直接继续:{action}',
   unlockConfirm: '我已了解风险,解锁',
   unlock: '解锁写模式',
   relock: '恢复只读',

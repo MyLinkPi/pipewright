@@ -146,6 +146,14 @@ func (f *fakeTarget) ExecWithStdin(ctx context.Context, id string, cmd []string,
 func (f *fakeTarget) DockerLogin(context.Context, string, string, string) error { return nil }
 func (f *fakeTarget) ListPools(context.Context) ([]*target.ServerPool, error)   { return nil, nil }
 
+// Dial / DialDirect 满足 target.Service 接口(0099 SSH 隧道追加);测试桩不建连。
+func (f *fakeTarget) Dial(context.Context, string) (target.SSHClient, error) {
+	return nil, nil
+}
+func (f *fakeTarget) DialDirect(context.Context, string, int, string, string) (target.SSHClient, error) {
+	return nil, nil
+}
+
 // fakeRunner 是探测链第 3/4 步(cat corosync.conf / pvecm nodes)的假件:按 cmd 路由。
 type fakeRunner struct {
 	mu       sync.Mutex

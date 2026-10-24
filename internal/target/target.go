@@ -270,6 +270,13 @@ type Service interface {
 	// user 空)。registryURL 空 = 登录默认仓库(Docker Hub)。供部署层在 pull 私有镜像前登录;
 	// 明文仅进程内即用即弃,绝不回传/落日志。
 	DockerLogin(ctx context.Context, serverID, registryURL, credentialID string) error
+	// Dial 建立到已登记 serverID 的长连接 SSH client(含跳板链),返回 SSH 隧道转发面
+	// 所需的最小抽象(Dial/Listen/Close;0099 追加,按 ExecStream/Upload 先例)。
+	// 凭据明文即用即弃;调用方用完必须 Close(释放整条连接链)。
+	Dial(ctx context.Context, serverID string) (SSHClient, error)
+	// DialDirect 以直连参数建立长连接 SSH client(0099 追加):供隧道的直连模式,
+	// 目标机不在 servers 表;无跳板链(需要跳板请登记为服务器)。凭据经 vault 即用即弃。
+	DialDirect(ctx context.Context, host string, port int, user, credentialID string) (SSHClient, error)
 }
 
 // Session 是一个双向交互式 SSH/PTY 会话(Story 6.4;FR-18)。

@@ -55,6 +55,7 @@ import (
 	"github.com/huangchengsir/pipewright/internal/run"
 	"github.com/huangchengsir/pipewright/internal/runner"
 	"github.com/huangchengsir/pipewright/internal/servercmd"
+	"github.com/huangchengsir/pipewright/internal/sshtunnel"
 	"github.com/huangchengsir/pipewright/internal/servicereg"
 	"github.com/huangchengsir/pipewright/internal/srcupdate"
 	"github.com/huangchengsir/pipewright/internal/ssar"
@@ -153,6 +154,7 @@ type options struct {
 	mfa                  *mfa.Service
 	artifactExporter     artifactImageExporter
 	artifactTransfers    artifactTransferService
+	sshTunnels           *sshtunnel.Service
 }
 
 // WithCeph 注入 Ceph 集群部署与管理服务(internal/ceph),在 admin 组挂载 /api/ceph/* 路由
@@ -160,6 +162,14 @@ type options struct {
 // auth + CSRF + 审计)。不传则 Ceph 功能整体不可用(端点 503)。
 func WithCeph(s ceph.Service) Option {
 	return func(o *options) { o.ceph = s }
+}
+
+// WithSSHTunnels 注入 SSH 隧道服务(internal/sshtunnel;0099),挂载 /api/tunnels* 路由
+// (local -L / remote -R / dynamic -D 隧道的配置 CRUD、启停/重启/测试与 helper 日志;
+// GET 过 auth,写方法过 auth + CSRF + 审计)。隧道以独立 helper 子进程运行,宿主重启
+// 不杀(心跳收养)。不传则隧道功能整体不可用(端点 503)。
+func WithSSHTunnels(s *sshtunnel.Service) Option {
+	return func(o *options) { o.sshTunnels = s }
 }
 
 // WithDiskAdmin 注入「服务器磁盘管理」服务(internal/diskadmin),在 admin 组挂载
@@ -671,6 +681,9 @@ func New(webFS fs.FS, authn auth.Authenticator, opts ...Option) http.Handler {
 	// 解析请求 locale 并包装 writer,使 writeError 能按 UI 语言本地化错误消息
 	// (包装器转发 Flush/Hijack/Unwrap,不影响 SSE 日志流与 WS 终端)。
 	r.Use(localeMiddleware)
+	// /api/* 访问日志(一行:method path status duration remote;>1s 标 SLOW)。
+	// 排障第一证据链:出现在日志 = 请求已到达本进程;故障时缺失 = 卡在反代/隧道/浏览器层。
+	r.Use(accessLog)
 
 	r.Get("/healthz", handleHealthz)
 	// /version 已移入受保护 /api 组(版本元数据会帮助攻击者匹配已知漏洞版本;
@@ -1165,6 +1178,21 @@ func New(webFS fs.FS, authn auth.Authenticator, opts ...Option) http.Handler {
 		ar.Post("/servers/commands/batch", makeBatchCommandHandler(scmd, aud))
 		ar.Get("/servers/commands/runs", makeListCommandRunsHandler(scmd))
 		ar.Get("/servers/commands/runs/{runId}", makeGetCommandRunHandler(scmd))
+		// SSH 隧道(0099;local -L / remote -R / dynamic -D)。隧道配置 CRUD + 启停/
+		// 重启/测试 + helper 日志尾部;运行态(心跳文件)合并在 GET 列表里。隧道以独立
+		// helper 子进程运行(同二进制 --tunnel-helper),宿主重启不杀、心跳新鲜即收养。
+		// GET(列表/日志)过 auth;POST/PUT/DELETE 为写方法,过 auth + CSRF + 审计
+		//(启停改本机监听端口与转发面,敏感)。ts 为 nil 时端点 503。
+		ts := o.sshTunnels
+		ar.Get("/tunnels", makeListTunnelsHandler(ts))
+		ar.Post("/tunnels", makeCreateTunnelHandler(ts, aud))
+		ar.Put("/tunnels/{id}", makeUpdateTunnelHandler(ts, aud))
+		ar.Delete("/tunnels/{id}", makeDeleteTunnelHandler(ts, aud))
+		ar.Post("/tunnels/{id}/start", makeTunnelStartHandler(ts, aud))
+		ar.Post("/tunnels/{id}/stop", makeTunnelStopHandler(ts, aud))
+		ar.Post("/tunnels/{id}/restart", makeTunnelRestartHandler(ts, aud))
+		ar.Post("/tunnels/{id}/test", makeTunnelTestHandler(ts))
+		ar.Get("/tunnels/{id}/logs", makeTunnelLogsHandler(ts))
 		// 通知渠道(Story 5.1;FR-19)。nf 为 nil 时 handler 返回 503。
 		// GET(列表/详情)过 auth;POST/PUT/DELETE/test 为写方法,过 auth + CSRF。
 		// 敏感字段(SMTP 密码)加密入库、响应仅 hasPassword。test 须在 {id} 路由内单独注册。
