@@ -184,7 +184,13 @@ async function doDeployGateway(): Promise<void> {
     gateway.value = await deployGateway()
     toast.success(t('serviceReg.gatewayDeployed'))
   } catch (err) {
-    toast.error(errMsg(err, t('serviceReg.gatewayDeployFail')))
+    toast.error(fmtApplyErr(errMsg(err, t('serviceReg.gatewayDeployFail'))))
+    // 失败详情由后端记入 settings.lastApplyError,刷新以在「上次下发」行展示。
+    try {
+      ;[settings.value, gateway.value] = await Promise.all([getServiceRegSettings(), getGateway()])
+    } catch {
+      /* 刷新失败不影响错误提示 */
+    }
   } finally {
     busy.value = false
   }
@@ -242,7 +248,7 @@ async function doApply(): Promise<void> {
     settings.value = await getServiceRegSettings()
     toast.success(t('serviceReg.applied'))
   } catch (err) {
-    toast.error(errMsg(err, t('serviceReg.applyFail')))
+    toast.error(fmtApplyErr(errMsg(err, t('serviceReg.applyFail'))))
     settings.value = await getServiceRegSettings()
   } finally {
     busy.value = false
