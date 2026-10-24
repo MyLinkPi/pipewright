@@ -515,22 +515,41 @@ func decodeJSON(r *http.Request, v any) error {
 
 // ---------- 报告(HTML;独立文件 security_report.go 承载模板与渲染) ----------
 
-// makeSecurityReportHandler 返回 GET /api/security/report?serverId=&format=html。
+// makeSecurityReportHandler 返回 GET /api/security/report?serverIds=a,b,c&format=html
+// (serverIds 空 = 全部纳管服务器;兼容旧单机参数 serverId)。GET 免 CSRF(cookie 鉴权)。
 func makeSecurityReportHandler(svc secscan.Service, aud audit.Recorder) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if f := strings.ToLower(r.URL.Query().Get("format")); f != "" && f != "html" {
 			writeError(w, http.StatusBadRequest, "invalid_report_format", "暂仅支持 HTML 报告")
 			return
 		}
-		serverID := r.URL.Query().Get("serverId")
-		reports, err := svc.CollectReport(r.Context(), serverID)
+		// 机器范围:serverIds 逗号分隔多选;单值 serverId 兼容;都空 = 全员。
+		// 去重去空、上限 100(防超长 query;机器再多也该分批导出)。
+		seen := map[string]bool{}
+		var serverIDs []string
+		addIDs := func(raw string) {
+			for _, id := range strings.Split(raw, ",") {
+				id = strings.TrimSpace(id)
+				if id == "" || seen[id] || len(serverIDs) >= 100 {
+					continue
+				}
+				seen[id] = true
+				serverIDs = append(serverIDs, id)
+			}
+		}
+		addIDs(r.URL.Query().Get("serverIds"))
+		addIDs(r.URL.Query().Get("serverId"))
+		reports, err := svc.CollectReport(r.Context(), serverIDs)
 		if err != nil {
 			writeSecurityError(w, err)
 			return
 		}
 		scope := "fleet"
-		if serverID != "" {
+		switch {
+		case len(serverIDs) == 1:
 			scope = "server"
+		case len(serverIDs) > 1:
+			scope = "custom"
 		}
 		recordAudit(r.Context(), aud, audit.Entry{
 			Actor: auditActor, Action: auditActionSecReportExport, TargetType: auditTargetSecurity,
@@ -540,7 +559,7 @@ func makeSecurityReportHandler(svc secscan.Service, aud audit.Recorder) http.Han
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		name := fmt.Sprintf("pipewright-security-report-%s.html", time.Now().UTC().Format("20060102-150405"))
 		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, name))
-		if err := renderSecurityReport(w, reports, time.Now().UTC()); err != nil {
+		if err := renderSecurityReport(w, reports, time.Now().UTC(), scope); err != nil {
 			// 头已写,无法再改状态码;记录到响应尾即可(报告为流式渲染,极小概率发生)。
 			_, _ = w.Write([]byte("\n<!-- render error: " + err.Error() + " -->"))
 		}

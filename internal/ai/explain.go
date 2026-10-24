@@ -15,11 +15,14 @@ import (
 	"strings"
 	"time"
 
+	"github.com/huangchengsir/pipewright/internal/mask"
 	"github.com/huangchengsir/pipewright/internal/opschat"
 )
 
-// explainFindingMaxTokens 是解读 chat 的 token 预算(300 字内中文 + Markdown 足够)。
-const explainFindingMaxTokens = 800
+// explainStreamLimit 是解读的响应字节上限(流式预算原语的 limit 参数语义 = 输出字节
+// 封顶,非 token 数;中文 Markdown 300 字 ≈ 1KB,32KB 绰绰有余;请求侧 max_tokens 由
+// 原语内部固定 4096)。
+const explainStreamLimit = 32 << 10
 
 // 解读流式预算(镜像 diagnose 的语义):总上限兜底 + 空闲判超——慢模型/慢网关下解读
 // 可能超过旧共享原语固定的 60s,只要持续出 token 就继续等;毫无输出才判超。
@@ -50,7 +53,13 @@ type ExplainFindingInput struct {
 	ServerName       string // 显示名(措辞上下文;不含地址)
 }
 
-// ExplainFinding 实现 FindingExplainer:构 prompt → chat → 原文返回(Markdown)。
+// explainSearchCtxLimit 是注入 prompt 的搜索参考资料字符上限(搜索原语自身输出已有界,
+// 再收口控 prompt 体积;远小于流式原语的 32KB prompt 上限)。
+const explainSearchCtxLimit = 3000
+
+// ExplainFinding 实现 FindingExplainer:可选实时搜索增强 → 构 prompt → chat → 原文
+// 返回(Markdown)。搜索增强仅在「设置 → AI → 网页工具」开启且可用时生效,按漏洞编号
+// 检索公开通告注入 prompt(尽力而为:失败/未配置 = 不带资料照常解读,绝不报错)。
 func (s *service) ExplainFinding(ctx context.Context, in ExplainFindingInput) (string, error) {
 	cfg, sealed, err := s.load(ctx)
 	if err != nil {
@@ -77,7 +86,8 @@ func (s *service) ExplainFinding(ctx context.Context, in ExplainFindingInput) (s
 	}
 	out, cerr := (&opsModel{service: s}).chatStreamBudget(ctx,
 		&Config{Provider: cfg.Provider, BaseURL: baseURL, Model: cfg.Model},
-		apiKey, buildFindingExplainPrompt(in), explainFindingMaxTokens, false,
+		apiKey, buildFindingExplainPrompt(in, s.searchContext(ctx, cfg, sealed, in.VulnID)),
+		explainStreamLimit, false,
 		explainStreamTotal, explainStreamIdle,
 		func(opschat.StreamChunk) error { return nil })
 	if cerr != nil {
@@ -90,8 +100,27 @@ func (s *service) ExplainFinding(ctx context.Context, in ExplainFindingInput) (s
 	return out, nil
 }
 
-// buildFindingExplainPrompt 构中文解读 prompt(字段空白自然省略对应行)。
-func buildFindingExplainPrompt(in ExplainFindingInput) string {
+// searchContext 用网页工具按编号实时检索公开通告(尽力而为):未开启/不可用/失败 →
+// 空串(解读照常,不增强也不报错)。输出经截断收口。
+func (s *service) searchContext(ctx context.Context, cfg *Config, mainSealed []byte, vulnID string) string {
+	if strings.TrimSpace(vulnID) == "" {
+		return ""
+	}
+	if avail, _ := webAvailability(cfg, mainSealed); !avail {
+		return ""
+	}
+	w := &webTools{service: s, masker: mask.NewMasker(), pin: opsModel{service: s, masker: mask.NewMasker()}}
+	// 查询词只用编号本身:CVE 编号/模板 ID 语言无关,引擎自会带出厂商通告与利用分析。
+	raw, err := w.search(ctx, cfg, mainSealed, vulnID, 5)
+	if err != nil || strings.TrimSpace(raw) == "" {
+		return ""
+	}
+	return truncateForFindingPrompt(raw, explainSearchCtxLimit)
+}
+
+// buildFindingExplainPrompt 构中文解读 prompt(字段空白自然省略对应行;searchCtx
+// 非空 = 网页工具检索到的公开通告摘要,注明仅供参考、与扫描字段冲突时以后者为准)。
+func buildFindingExplainPrompt(in ExplainFindingInput, searchCtx string) string {
 	var b strings.Builder
 	b.WriteString("你是资深安全工程师,为服务器运维人员解读一条漏洞扫描结果。用简体中文,通俗易懂、具体可执行,不要泛泛而谈;总长度 300 字以内;用 Markdown 按四个小节组织:\n")
 	b.WriteString("**是什么**:漏洞/发现的通俗解释(影响什么组件、成因类型)。\n")
@@ -127,6 +156,11 @@ func buildFindingExplainPrompt(in ExplainFindingInput) string {
 	}
 	if in.URL != "" {
 		fmt.Fprintf(&b, "- 参考链接:%s\n", truncateForFindingPrompt(in.URL, 200))
+	}
+	if searchCtx != "" {
+		b.WriteString("\n实时检索参考资料(来自网页搜索,可能有噪声或过时,仅供参考;与上述扫描字段冲突时,以上述扫描字段为准):\n")
+		b.WriteString(searchCtx)
+		b.WriteString("\n")
 	}
 	b.WriteString("\n只输出解读内容本身,不要额外寒暄。")
 	return b.String()

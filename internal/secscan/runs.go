@@ -264,17 +264,27 @@ func toRunLite(r *Run) *RunLite {
 
 // CollectReport 组装 HTML 审计报告数据:每台(或指定一台)服务器最近一次 done 的
 // trivy 与 nuclei 完整报告;从未扫过 → 对应章节为 nil(模板渲染「未扫描」)。
-func (s *service) CollectReport(ctx context.Context, serverID string) ([]ServerReport, error) {
+func (s *service) CollectReport(ctx context.Context, serverIDs []string) ([]ServerReport, error) {
 	if s.runner == nil {
 		return nil, ErrRunnerUnavailable
 	}
 	var targets []ServerInfo
-	if serverID != "" {
-		srv, err := s.runner.Server(ctx, serverID)
-		if err != nil {
-			return nil, err
+	if len(serverIDs) > 0 {
+		seen := map[string]bool{}
+		for _, id := range serverIDs {
+			if seen[id] {
+				continue // Service 是公开接口:直接调用方也要拿到去重语义(handler 已去重)
+			}
+			seen[id] = true
+			srv, err := s.runner.Server(ctx, id)
+			if errors.Is(err, ErrServerNotFound) {
+				continue // 中途被删的机器跳过,不炸整份报告
+			}
+			if err != nil {
+				return nil, err
+			}
+			targets = append(targets, srv)
 		}
-		targets = []ServerInfo{srv}
 	} else {
 		all, err := s.runner.Servers(ctx)
 		if err != nil {
