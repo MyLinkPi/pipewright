@@ -99,4 +99,15 @@ export default {
     legacyHint: "該實例無參數記錄(舊版部署),不可原位升級;重新部署將納入升級管理(口令會重新生成,數據卷保留)",
     redeploy: "重新部署",
   },
+  uninstall: {
+    btn: "解除安裝",
+    title: "解除安裝 {name}?",
+    hint: "將刪除 {server} 上棧 {stack} 的全部容器並清理受管目錄(compose 與參數記錄);該實例從列表消失。",
+    deleteVolumes: "同時刪除數據卷",
+    volumeWarn: "數據卷內的數據(資料庫/特徵庫等)將一併刪除,不可恢復;不勾選則保留,供重新部署後繼續使用。",
+    submit: "確認解除安裝",
+    cancel: "取消",
+    done: "已解除安裝",
+    fail: "解除安裝失敗",
+  },
 }

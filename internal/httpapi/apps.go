@@ -36,6 +36,7 @@ const (
 	auditActionAppTemplateDelete = "appstore.template.delete"
 	auditActionAppDeploy         = "appstore.deploy"
 	auditActionAppUpgrade        = "appstore.upgrade"
+	auditActionAppUninstall      = "appstore.uninstall"
 	auditActionObjectStoreReg    = "objectstore.register"
 	auditTargetAppStore          = "app_template"
 )
@@ -1075,6 +1076,152 @@ func makeUpgradeAppHandler(apps appstore.Service, servers target.Service, aud au
 		auditOp()
 		writeJSON(w, http.StatusOK, out)
 	}
+}
+
+// ---------- 卸载(实例行的反向动作) ----------
+
+// makeAppUninstallHandler 返回 POST /api/servers/{id}/apps/uninstall {stackName, deleteVolumes?}。
+// 卸载 = 按项目标签删容器(可选连删该项目具名卷)→ 删受管目录(compose + 参数边车)→
+// 「已部署实例」列表随之消失。与 Stacks「销毁」同纪律的纯 docker 标签操作,不依赖 compose
+// CLI:容器/卷均按 com.docker.compose.project 标签定位,名字过 reDockerTgt 白名单(无 / 与
+// 前导 -,rm 受管目录的路径段同受约束,无穿越),命令 array 化不拼 shell。任一步失败即停并
+// 保留受管目录(实例仍列出,可重试;各步幂等:无容器/无卷/无目录都算该步成功)。
+// 审计 action:appstore.uninstall;detail 只记栈名与是否删卷,不含 compose 内容。
+func makeAppUninstallHandler(servers target.Service, aud audit.Recorder) http.HandlerFunc {
+	type request struct {
+		StackName     string `json:"stackName"`
+		DeleteVolumes bool   `json:"deleteVolumes,omitempty"` // true = 连删该项目具名卷(数据不可恢复)
+	}
+	type response struct {
+		ServerID string `json:"serverId"`
+		Name     string `json:"name"`
+		OK       bool   `json:"ok"`
+		Output   string `json:"output"`
+		Error    string `json:"error"`
+	}
+	return func(w http.ResponseWriter, r *http.Request) {
+		if servers == nil {
+			writeError(w, http.StatusServiceUnavailable, "internal", "服务器服务未初始化")
+			return
+		}
+		serverID := chi.URLParam(r, "id")
+		r.Body = http.MaxBytesReader(w, r.Body, 16<<10)
+		var req request
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "bad_request", "请求体格式错误")
+			return
+		}
+		name := strings.TrimSpace(req.StackName)
+		if !reDockerTgt.MatchString(name) || len(name) > 128 {
+			writeError(w, http.StatusBadRequest, "invalid_app_deploy", "栈名非法(仅字母数字与 . _ -,不以 - 开头)")
+			return
+		}
+		if _, err := servers.Get(r.Context(), serverID); err != nil {
+			writeServerError(w, err)
+			return
+		}
+		out := response{ServerID: serverID, Name: name}
+		auditOp := func() {
+			recordAudit(r.Context(), aud, audit.Entry{
+				Actor: auditActor, Action: auditActionAppUninstall, TargetType: audit.TargetServer, TargetID: serverID,
+				Detail: map[string]any{"stack": name, "volumes": req.DeleteVolumes, "ok": out.OK}, IP: clientIP(r),
+			})
+		}
+		// 卸载各步通常秒级,与 Stacks 动作同款窗口;失败重试幂等(已删的容器/卷/目录跳过)。
+		cctx, cancel := context.WithTimeout(r.Context(), stacksCmdTimeout)
+		defer cancel()
+
+		// 1) 删该项目全部容器(标签定位,无容器 = 幂等通过)。
+		ids, err := projectContainerIDs(cctx, servers, serverID, name)
+		if err != nil {
+			if errors.Is(err, target.ErrNotFound) {
+				writeServerError(w, err)
+				return
+			}
+			if errors.Is(err, target.ErrCredentialNotFound) || errors.Is(err, target.ErrVaultUnconfigured) {
+				auditOp()
+				writeServerError(w, err)
+				return
+			}
+			out.Error = humanServiceError(err)
+			auditOp()
+			writeJSON(w, http.StatusOK, out)
+			return
+		}
+		notes := []string{}
+		if len(ids) > 0 {
+			if msg, ok := uninstallStep(cctx, servers, serverID, append([]string{"docker", "rm", "-f"}, ids...)); !ok {
+				out.Error = "删除容器失败:" + msg
+				auditOp()
+				writeJSON(w, http.StatusOK, out)
+				return
+			}
+			serverContainersCache.invalidate(serverID) // 容器集合已变 → 丢弃该台清单缓存
+			notes = append(notes, fmt.Sprintf("已删除容器 %d 个", len(ids)))
+		}
+		// 2) 可选删该项目具名卷(compose 建的卷带项目标签;无卷 = 幂等通过)。
+		if req.DeleteVolumes {
+			vols, verr := projectVolumeNames(cctx, servers, serverID, name)
+			if verr != nil {
+				out.Error = "枚举数据卷失败:" + humanServiceError(verr)
+				auditOp()
+				writeJSON(w, http.StatusOK, out)
+				return
+			}
+			if len(vols) > 0 {
+				if msg, ok := uninstallStep(cctx, servers, serverID, append([]string{"docker", "volume", "rm"}, vols...)); !ok {
+					out.Error = "删除数据卷失败:" + msg + "(容器已删;可重试卸载,或到「容器 → 数据卷」手动清理)"
+					auditOp()
+					writeJSON(w, http.StatusOK, out)
+					return
+				}
+				notes = append(notes, "已删除数据卷:"+strings.Join(vols, ", "))
+			}
+		}
+		// 3) 删受管目录(compose + 参数边车;目录不在 = 幂等通过)。目录删除放最后:前面失败时
+		// 保留目录 = 实例仍列出,重试卸载有抓手。
+		if msg, ok := uninstallStep(cctx, servers, serverID, []string{"rm", "-rf", stacksBaseDir + "/" + name}); !ok {
+			out.Error = "清理受管目录失败:" + msg + "(容器已停删;可重试卸载)"
+			auditOp()
+			writeJSON(w, http.StatusOK, out)
+			return
+		}
+		notes = append(notes, "已清理受管目录")
+		out.OK, out.Output = true, strings.Join(notes, ";")
+		auditOp()
+		writeJSON(w, http.StatusOK, out)
+	}
+}
+
+// uninstallStep 执行卸载的一步命令,返回 (人读错误摘要, 是否成功)。
+func uninstallStep(ctx context.Context, svc target.Service, serverID string, cmd []string) (string, bool) {
+	res, err := svc.Exec(ctx, serverID, cmd)
+	if err != nil {
+		return humanServiceError(err), false
+	}
+	if res.ExitCode != 0 {
+		msg := strings.TrimSpace(res.Stderr)
+		if msg == "" {
+			msg = "命令以非零状态退出"
+		}
+		return truncateLog(msg, 1024), false
+	}
+	return "", true
+}
+
+// projectVolumeNames 取某 compose 项目(按标签)的具名卷名(过 reDockerTgt 白名单,防异常输出注入)。
+func projectVolumeNames(ctx context.Context, svc target.Service, serverID, project string) ([]string, error) {
+	res, err := svc.Exec(ctx, serverID, []string{"docker", "volume", "ls", "-q", "--filter", "label=com.docker.compose.project=" + project})
+	if err != nil {
+		return nil, err
+	}
+	names := []string{}
+	for _, ln := range strings.Fields(res.Stdout) {
+		if reDockerTgt.MatchString(ln) && len(ln) <= 128 {
+			names = append(names, ln)
+		}
+	}
+	return names, nil
 }
 
 // ---------- 已部署实例枚举(「升级」直达入口的数据底座) ----------

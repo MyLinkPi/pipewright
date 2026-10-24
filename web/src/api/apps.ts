@@ -151,6 +151,29 @@ export const upgradeApp = (
     ...(limits?.memory?.trim() ? { memory: limits.memory.trim() } : {}),
   })
 
+/** 卸载结果:各步人读摘要或失败原因(失败时受管目录保留,可重试卸载)。 */
+export interface AppUninstallResult {
+  serverId: string
+  name: string
+  ok: boolean
+  output: string
+  error: string
+}
+
+/**
+ * 卸载已部署实例:按栈名(compose 项目名)删该栈全部容器,可选连删项目具名卷
+ * (deleteVolumes,数据不可恢复),并清理受管目录;「已部署实例」列表随之消失。
+ */
+export const uninstallApp = (
+  serverId: string,
+  stackName: string,
+  deleteVolumes = false,
+): Promise<AppUninstallResult> =>
+  http.post(`/api/servers/${encodeURIComponent(serverId)}/apps/uninstall`, {
+    stackName,
+    deleteVolumes,
+  })
+
 /** 已部署实例:某台机器上带参数边车的栈 = 应用商店部署的实例(「升级」直达入口的数据)。 */
 export interface AppInstance {
   serverId: string

@@ -99,4 +99,15 @@ export default {
     legacyHint: "Aucun enregistrement de paramètres (ancienne version) ; mise à niveau sur place impossible. Redéployez pour l'intégrer à la gestion des mises à niveau (les mots de passe sont régénérés, les volumes conservés)",
     redeploy: "Redéployer",
   },
+  uninstall: {
+    btn: "Désinstaller",
+    title: "Désinstaller {name} ?",
+    hint: "Supprime tous les conteneurs du stack {stack} sur {server} et efface le répertoire géré (compose + enregistrement des paramètres) ; l'instance disparaît de la liste.",
+    deleteVolumes: "Supprimer aussi les volumes de données",
+    volumeWarn: "Les données des volumes (bases, flux, ...) seront supprimées définitivement. Laissez la case décochée pour les conserver en vue d'un redéploiement.",
+    submit: "Désinstaller",
+    cancel: "Annuler",
+    done: "Désinstallé",
+    fail: "Échec de la désinstallation",
+  },
 }

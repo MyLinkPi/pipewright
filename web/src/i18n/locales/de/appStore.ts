@@ -99,4 +99,15 @@ export default {
     legacyHint: "Keine Parameteraufzeichnung (ältere Version); In-place-Upgrade nicht möglich. Neu bereitstellen, um die Upgrade-Verwaltung zu aktivieren (Passwörter werden neu generiert, Datenvolumes bleiben)",
     redeploy: "Neu bereitstellen",
   },
+  uninstall: {
+    btn: "Deinstallieren",
+    title: "{name} deinstallieren?",
+    hint: "Entfernt alle Container des Stacks {stack} auf {server} und löscht das verwaltete Verzeichnis (Compose + Parameteraufzeichnung); die Instanz verschwindet aus der Liste.",
+    deleteVolumes: "Datenvolumes ebenfalls löschen",
+    volumeWarn: "Daten in den Volumes (Datenbanken, Feeds, ...) werden unwiderruflich gelöscht. Unmarkiert lassen, um sie für eine erneute Bereitstellung zu behalten.",
+    submit: "Deinstallieren",
+    cancel: "Abbrechen",
+    done: "Deinstalliert",
+    fail: "Deinstallation fehlgeschlagen",
+  },
 }

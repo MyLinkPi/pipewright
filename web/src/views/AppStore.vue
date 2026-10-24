@@ -21,6 +21,7 @@ import {
   deleteAppTemplate,
   deployApp,
   upgradeApp,
+  uninstallApp,
   getAppUpgradeContext,
   listAppInstances,
   type AppTemplate,
@@ -152,6 +153,39 @@ async function prefillLegacy(): Promise<void> {
     // 反推失败静默:参数保持默认值,用户手填兜底
   }
   prefillHostParams(deploying.value, deployServer.value)
+}
+
+// ─── 卸载(实例行的反向动作)──────────────────────────────────────────────────
+// 卸载 = 删该栈容器(可选连删项目具名卷)→ 清受管目录(实例从列表消失)。删卷带确认弹窗
+// 内的显式勾选(默认不勾:数据卷常承载库数据,误删不可恢复)。
+const uninstalling = ref<AppInstance | null>(null)
+const uninstallVolumes = ref(false)
+const uninstallBusy = ref(false)
+
+function openUninstall(inst: AppInstance): void {
+  uninstalling.value = inst
+  uninstallVolumes.value = false
+}
+
+// submitUninstall 提交卸载:成功关弹窗并刷新实例区;失败保留弹窗展示人读原因(后端任一步
+// 失败即保留受管目录,实例仍列出,可直接重试)。
+async function submitUninstall(): Promise<void> {
+  if (!uninstalling.value || uninstallBusy.value) return
+  uninstallBusy.value = true
+  try {
+    const res = await uninstallApp(uninstalling.value.serverId, uninstalling.value.stackName, uninstallVolumes.value)
+    if (res.ok) {
+      uninstalling.value = null
+      toast.success(t('appStore.uninstall.done'))
+      void loadInstances()
+    } else {
+      toast.error(res.error || t('appStore.uninstall.fail'))
+    }
+  } catch (err) {
+    toast.error(errMsg(err, t('appStore.uninstall.fail')))
+  } finally {
+    uninstallBusy.value = false
+  }
 }
 
 // ─── 部署对话框 ───────────────────────────────────────────────────────────────
@@ -569,6 +603,13 @@ async function removeCustom(tpl: AppTemplate): Promise<void> {
               >
                 <NIcon :size="14"><Rocket /></NIcon>&nbsp;{{ inst.legacy ? t('appStore.instances.redeploy') : t('appStore.upgrade.submit') }}
               </AppButton>
+              <AppButton
+                variant="danger"
+                :title="t('appStore.uninstall.btn')"
+                @click="openUninstall(inst)"
+              >
+                <NIcon :size="14"><Trash /></NIcon>&nbsp;{{ t('appStore.uninstall.btn') }}
+              </AppButton>
             </template>
             <p v-else class="apps__inst-warn">{{ t('appStore.instances.unreachable', { name: inst.serverName }) }}</p>
           </div>
@@ -848,6 +889,35 @@ async function removeCustom(tpl: AppTemplate): Promise<void> {
             <AppButton variant="default" @click="deploying = null">{{ t('appStore.deploy.close') }}</AppButton>
           </div>
         </div>
+      </div>
+    </div>
+
+    <!-- 卸载对话框(删卷须显式勾选,默认保留) -->
+    <div v-if="uninstalling" class="apps__modal" role="dialog" aria-modal="true">
+      <div class="apps__modal-card">
+        <header class="apps__modal-head">
+          <span class="apps__icon" aria-hidden="true">{{ uninstalling.icon || '📦' }}</span>
+          <h3>{{ t('appStore.uninstall.title', { name: uninstalling.displayName || uninstalling.stackName }) }}</h3>
+          <button class="apps__modal-close" :aria-label="t('appStore.deploy.close')" @click="uninstalling = null">×</button>
+        </header>
+        <form class="apps__form" @submit.prevent="submitUninstall">
+          <p class="apps__hint">
+            {{ t('appStore.uninstall.hint', { stack: uninstalling.stackName, server: uninstalling.serverName }) }}
+          </p>
+          <label class="field apps__check">
+            <input v-model="uninstallVolumes" type="checkbox" />
+            <span>{{ t('appStore.uninstall.deleteVolumes') }}</span>
+          </label>
+          <p v-if="uninstallVolumes" class="apps__sr-warn">{{ t('appStore.uninstall.volumeWarn') }}</p>
+          <div class="apps__form-actions">
+            <AppButton variant="danger" type="submit" :loading="uninstallBusy">
+              <NIcon :size="14"><Trash /></NIcon>&nbsp;{{ t('appStore.uninstall.submit') }}
+            </AppButton>
+            <AppButton variant="default" type="button" :disabled="uninstallBusy" @click="uninstalling = null">
+              {{ t('appStore.uninstall.cancel') }}
+            </AppButton>
+          </div>
+        </form>
       </div>
     </div>
   </div>
@@ -1175,6 +1245,12 @@ async function removeCustom(tpl: AppTemplate): Promise<void> {
   font-size: 12px;
   color: #9a6700;
   margin: 0;
+}
+.apps__check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
 }
 .apps__sr-link {
   align-self: flex-start;
