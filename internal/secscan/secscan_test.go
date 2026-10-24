@@ -30,9 +30,10 @@ func (fakeVault) OpenSecret(s []byte) ([]byte, error) {
 
 // fakeRunner 按命令回调返回固定结果;记录全部命令供断言。
 type fakeRunner struct {
-	servers []ServerInfo
-	execs   [][]string
-	fn      func(cmd []string) (*target.ExecResult, error)
+	servers     []ServerInfo
+	execs       [][]string
+	execServers []string
+	fn          func(cmd []string) (*target.ExecResult, error)
 }
 
 func (r *fakeRunner) Servers(context.Context) ([]ServerInfo, error) { return r.servers, nil }
@@ -44,8 +45,9 @@ func (r *fakeRunner) Server(_ context.Context, id string) (ServerInfo, error) {
 	}
 	return ServerInfo{}, ErrServerNotFound
 }
-func (r *fakeRunner) Exec(_ context.Context, _ string, cmd []string) (*target.ExecResult, error) {
+func (r *fakeRunner) Exec(_ context.Context, serverID string, cmd []string) (*target.ExecResult, error) {
 	r.execs = append(r.execs, append([]string{}, cmd...))
+	r.execServers = append(r.execServers, serverID)
 	return r.fn(cmd)
 }
 
@@ -115,11 +117,11 @@ func TestScannerCreateRegister(t *testing.T) {
 		}
 
 		// 应用市场 Register:同地址 → 原地轮换令牌(Updated=true);新地址 → appstore 条目。
-		res, err := svc.Register(ctx, RegisterInput{Name: "Trivy Server · 机器A", Host: "10.0.0.8", Port: 4954, Token: "tok2", ServerID: "s1", StackName: "trivy-server"})
+		res, err := svc.Register(ctx, RegisterInput{Kind: KindTrivyServer, Name: "Trivy Server · 机器A", Host: "10.0.0.8", Port: 4954, Token: "tok2", ServerID: "s1", StackName: "trivy-server"})
 		if err != nil || !res.Updated || res.Instance.ID != inst.ID {
 			t.Fatalf("register 应原地轮换:%v %+v", err, res)
 		}
-		res, err = svc.Register(ctx, RegisterInput{Name: "Trivy Server · 机器B", Host: "10.0.0.9", Port: 4954, Token: "tok3", ServerID: "s2", StackName: "trivy-server"})
+		res, err = svc.Register(ctx, RegisterInput{Kind: KindTrivyServer, Name: "Trivy Server · 机器B", Host: "10.0.0.9", Port: 4954, Token: "tok3", ServerID: "s2", StackName: "trivy-server"})
 		if err != nil || res.Updated || res.Instance.Source != SourceAppStore {
 			t.Fatalf("register 新条目:%v %+v", err, res)
 		}
@@ -364,6 +366,141 @@ func TestCollectReport(t *testing.T) {
 		}
 		if reps, _ = svc.CollectReport(ctx, "s1"); len(reps) != 1 || reps[0].ServerName != "机器A" {
 			t.Fatalf("单机报告不符:%+v", reps)
+		}
+	})
+}
+
+// ---- 客户端本地模式:DB 镜像仓库注入 + 失败备注取 stderr 末尾 ----
+
+func TestTrivyDBRepositoryInjection(t *testing.T) {
+	storetest.ForEachDialect(t, func(t *testing.T, st *store.Store) {
+		runner := &fakeRunner{
+			servers: []ServerInfo{{ID: "s1", Name: "机器A", Host: "10.0.0.1"}},
+			fn: func(cmd []string) (*target.ExecResult, error) {
+				// 主机扫描失败:stderr 前半是拉镜像进度,末尾才是 FATAL(真实场景样本)。
+				if strings.Contains(strings.Join(cmd, " "), " rootfs ") {
+					progress := strings.Repeat("Pulling fs layer progress ... ", 20)
+					return &target.ExecResult{ExitCode: 1, Stderr: progress + "FATAL Fatal error: init error: DB error: failed to download vulnerability DB"}, nil
+				}
+				return &target.ExecResult{ExitCode: 0, Stdout: "{}"}, nil
+			},
+		}
+		svc := New(st.DB, WithVault(fakeVault{}), WithRunner(runner), WithArtifacts(newFakeArtifacts()),
+			WithTrivyDBRepository("ghcr.nju.edu.cn/aquasecurity/trivy-db"))
+		run, err := svc.StartScan(context.Background(), ScanInput{ServerID: "s1", ScanType: ScanTypeTrivy})
+		if err != nil {
+			t.Fatal(err)
+		}
+		done := waitRunDone(t, svc, run.ID)
+		// 镜像扫描在桩里成功 → 整体 done + 部分失败备注;备注含 FATAL 真因(取尾部),
+		// 不被拉取进度截断。
+		if done.Status != StatusDone || done.Error == "" {
+			t.Fatalf("应 done 带部分失败备注:%+v", done)
+		}
+		if !strings.Contains(done.Error, "FATAL") || !strings.Contains(done.Error, "failed to download vulnerability DB") {
+			t.Fatalf("失败备注应含末尾 FATAL 行:%s", done.Error)
+		}
+		// 客户端命令注入了 DB 镜像仓库 env(本地模式免 ghcr.io)。
+		injected := false
+		for _, cmd := range runner.execs {
+			for i, c := range cmd {
+				if c == "TRIVY_DB_REPOSITORY=ghcr.nju.edu.cn/aquasecurity/trivy-db" && i > 0 && cmd[i-1] == "-e" {
+					injected = true
+				}
+			}
+		}
+		if !injected {
+			t.Fatalf("trivy 命令应注入 -e TRIVY_DB_REPOSITORY:%v", runner.execs[0])
+		}
+		// 未配置时不注入(默认命令形状不变)。
+		plain := &fakeRunner{
+			servers: runner.servers,
+			fn:      func(cmd []string) (*target.ExecResult, error) { return &target.ExecResult{ExitCode: 0, Stdout: "{}"}, nil },
+		}
+		svc2 := New(st.DB, WithVault(fakeVault{}), WithRunner(plain), WithArtifacts(newFakeArtifacts()))
+		if _, err := svc2.StartScan(context.Background(), ScanInput{ServerID: "s1", ScanType: ScanTypeTrivy}); err != nil {
+			t.Fatal(err)
+		}
+		for _, cmd := range plain.execs {
+			for _, c := range cmd {
+				if strings.HasPrefix(c, "TRIVY_DB_REPOSITORY=") {
+					t.Fatalf("未配置不应注入 env:%v", c)
+				}
+			}
+		}
+	})
+}
+
+// ---- Nuclei 经常驻 runner 执行(目标机无需 docker)----
+
+func TestNucleiViaRunner(t *testing.T) {
+	storetest.ForEachDialect(t, func(t *testing.T, st *store.Store) {
+		runner := &fakeRunner{
+			servers: []ServerInfo{
+				{ID: "s1", Name: "目标机", Host: "10.0.0.1"},
+				{ID: "s2", Name: "Runner机", Host: "10.0.0.2"},
+			},
+			fn: func(cmd []string) (*target.ExecResult, error) {
+				joined := strings.Join(cmd, " ")
+				switch {
+				case strings.HasPrefix(joined, "docker ps --filter name=nuclei-runner"):
+					return &target.ExecResult{ExitCode: 0, Stdout: "nuclei-runner-nuclei-runner-1\nnuclei-runner-nuclei-runner-1-2"}, nil
+				case strings.HasPrefix(joined, "docker exec nuclei-runner-nuclei-runner-1 "):
+					return &target.ExecResult{ExitCode: 0, Stdout: nucleiSample}, nil
+				default:
+					return &target.ExecResult{ExitCode: 127, Stderr: "docker: not found"}, nil
+				}
+			},
+		}
+		svc, _ := newTestService(t, st, runner)
+		ctx := context.Background()
+
+		// 登记常驻 runner(应用市场部署联动语义):kind 校验 + port 归零 + 唯一。
+		res, err := svc.Register(ctx, RegisterInput{
+			Kind: KindNucleiRunner, Name: "Nuclei Runner · Runner机",
+			Host: "10.0.0.2", ServerID: "s2", StackName: "nuclei-runner",
+		})
+		if err != nil || res.Instance.Port != 0 || res.Instance.Source != SourceAppStore {
+			t.Fatalf("runner 登记不符:%v %+v", err, res.Instance)
+		}
+		if _, err := svc.Register(ctx, RegisterInput{
+			Kind: KindTrivyServer, Name: "x", Host: "10.0.0.9",
+		}); err != ErrInvalidPort && err == nil {
+			t.Fatalf("trivy-server 缺端口应报错,得 %v", err)
+		}
+
+		// 目标机无 docker(default 分支返回 127)仍应扫描成功:执行全走 runner 主机。
+		run, err := svc.StartScan(ctx, ScanInput{ServerID: "s1", ScanType: ScanTypeNuclei})
+		if err != nil {
+			t.Fatal(err)
+		}
+		done := waitRunDone(t, svc, run.ID)
+		if done.Status != StatusDone || done.Summary.Info != 2 {
+			t.Fatalf("经 runner 扫描不符:%+v", done)
+		}
+		if done.ScannerID != res.Instance.ID {
+			t.Fatalf("run 应记录 runner 实例:%s", done.ScannerID)
+		}
+		for i, cmd := range runner.execs {
+			if len(cmd) > 0 && (cmd[0] == "docker") && runner.execServers[i] != "s2" {
+				t.Fatalf("docker 命令应发往 runner 主机 s2,发往了 %s:%v", runner.execServers[i], cmd)
+			}
+		}
+
+		// runner 容器不在 → 人话失败。
+		runner.fn = func(cmd []string) (*target.ExecResult, error) {
+			if strings.HasPrefix(strings.Join(cmd, " "), "docker ps --filter name=nuclei-runner") {
+				return &target.ExecResult{ExitCode: 0, Stdout: ""}, nil
+			}
+			return &target.ExecResult{ExitCode: 1, Stderr: "x"}, nil
+		}
+		run, err = svc.StartScan(ctx, ScanInput{ServerID: "s1", ScanType: ScanTypeNuclei})
+		if err != nil {
+			t.Fatal(err)
+		}
+		done = waitRunDone(t, svc, run.ID)
+		if done.Status != StatusFailed || !strings.Contains(done.Error, "runner 容器未在运行") {
+			t.Fatalf("runner 缺席应人话失败:%+v", done)
 		}
 	})
 }

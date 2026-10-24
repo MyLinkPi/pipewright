@@ -120,8 +120,13 @@ func (s *service) StartScan(ctx context.Context, in ScanInput) (*Run, error) {
 		StartedAt: time.Now().UTC(),
 	}
 	// trivy 优先走最近登记的中心服务(免目标机自下漏洞库);无登记 → 本地缓存卷模式。
+	// nuclei 优先走登记的常驻 runner(目标机无需 docker);无登记 → 目标机本地 docker。
 	if in.ScanType == ScanTypeTrivy {
 		if inst := s.pickTrivyServer(ctx); inst != nil {
+			run.ScannerID = inst.ID
+		}
+	} else if in.ScanType == ScanTypeNuclei {
+		if inst := s.pickScanner(ctx, KindNucleiRunner); inst != nil {
 			run.ScannerID = inst.ID
 		}
 	}
@@ -164,14 +169,32 @@ func (s *service) StartFleetScan(ctx context.Context, scanTypes []string, trigge
 	return runs, nil
 }
 
-// pickTrivyServer 选最近登记的 trivy-server 作为中心服务(无 → nil = 本地缓存卷模式)。
-func (s *service) pickTrivyServer(ctx context.Context) *Instance {
+// pickScanner 选最近登记的指定类型扫描器(无 → nil)。ListScanners 已按创建时间倒序。
+func (s *service) pickScanner(ctx context.Context, kind string) *Instance {
 	list, err := s.ListScanners(ctx)
-	if err != nil || len(list) == 0 {
+	if err != nil {
 		return nil
 	}
-	return &list[0] // ListScanners 已按创建时间倒序
+	for i := range list {
+		if list[i].Kind == kind {
+			return &list[i]
+		}
+	}
+	return nil
 }
+
+// pickTrivyServer 选最近登记的 trivy-server(无 → nil = 客户端本地缓存卷模式)。
+func (s *service) pickTrivyServer(ctx context.Context) *Instance {
+	return s.pickScanner(ctx, KindTrivyServer)
+}
+
+// nucleiRunnerPSCmd 构造「在 runner 主机上按栈名找执行容器」的 docker ps 命令。
+func nucleiRunnerPSCmd(stackName string) []string {
+	return []string{"docker", "ps", "--filter", "name=" + stackName + "-nuclei-runner", "--format", "{{.Names}}"}
+}
+
+// nucleiNoDockerMsg 是目标机无 docker 且未登记 runner 时的人话指引。
+const nucleiNoDockerMsg = "目标机 docker 不可用且未登记 Nuclei Runner:在应用市场部署「Nuclei Runner」(任意有 docker 且与目标网络互通的机器)后,目标机无需 docker 即可扫描"
 
 // executeAsync 是扫描 goroutine 主体:过并发闸 → 执行 → 存报告 → 落终态。
 func (s *service) executeAsync(run *Run, host string, nucleiTargets []string) {
@@ -221,6 +244,27 @@ func (s *service) executeScan(ctx context.Context, run *Run, host string, nuclei
 	}
 }
 
+// trivyCmd 构造一条目标机 trivy 容器命令(卷挂载 + 可选 DB 镜像仓库 env + 子命令)。
+func (s *service) trivyCmd(extraVolume string, args ...string) []string {
+	cmd := []string{"docker", "run", "--rm"}
+	if s.trivyDBRepo != "" {
+		cmd = append(cmd, "-e", "TRIVY_DB_REPOSITORY="+s.trivyDBRepo)
+	}
+	cmd = append(cmd, "-v", extraVolume, "-v", trivyCacheVolume, s.trivyImage)
+	return append(cmd, args...)
+}
+
+// tailClip 取文本末尾 n 个字符(失败原因通常在输出末尾,如 trivy 的 FATAL 行;
+// 开头是拉镜像进度,从头截会把真原因截掉)。前缀 … 标记截断。
+func tailClip(txt string, n int) string {
+	txt = strings.TrimSpace(txt)
+	r := []rune(txt)
+	if len(r) <= n {
+		return txt
+	}
+	return "…" + string(r[len(r)-n:])
+}
+
 // dockerUnavailable 判定目标机 docker 不可用(未安装/守护进程未运行/无权限)。
 func dockerUnavailable(res *target.ExecResult, err error) bool {
 	if res == nil {
@@ -259,9 +303,9 @@ func (s *service) runTrivy(ctx context.Context, run *Run, host string) (*ReportD
 	succeeded := 0
 	imageCount := 0
 
-	// ① 主机包扫描。
-	hostCmd := []string{"docker", "run", "--rm", "-v", hostRootsVolume, "-v", trivyCacheVolume,
-		s.trivyImage, "rootfs", "-q", "--scanners", "vuln", "--format", "json"}
+	// ① 主机包扫描。本地缓存卷模式下客户端要自下漏洞库:配置了镜像仓库(如
+	// ghcr.nju.edu.cn)就注入 TRIVY_DB_REPOSITORY,免目标机直连 ghcr.io。
+	hostCmd := s.trivyCmd(hostRootsVolume, "rootfs", "-q", "--scanners", "vuln", "--format", "json")
 	hostCmd = append(hostCmd, serverArgs...)
 	hostCmd = append(hostCmd, "/rootfs")
 	res, err := s.runner.Exec(ctx, run.ServerID, hostCmd)
@@ -271,7 +315,7 @@ func (s *service) runTrivy(ctx context.Context, run *Run, host string) (*ReportD
 	case dockerUnavailable(res, nil):
 		return nil, dockerUnavailableMsg
 	case res.ExitCode != 0:
-		notes = append(notes, "主机包扫描失败:"+truncateRunes(strings.TrimSpace(res.Stderr), 200))
+		notes = append(notes, "主机包扫描失败:"+tailClip(res.Stderr, 240))
 	default:
 		if fs, perr := TrivyFindings([]byte(res.Stdout), "host"); perr == nil {
 			findings = append(findings, fs...)
@@ -299,8 +343,7 @@ func (s *service) runTrivy(ctx context.Context, run *Run, host string) (*ReportD
 			}
 		}
 		for _, img := range images {
-			cmd := []string{"docker", "run", "--rm", "-v", dockerSockVolume, "-v", trivyCacheVolume,
-				s.trivyImage, "image", "-q", "--format", "json"}
+			cmd := s.trivyCmd(dockerSockVolume, "image", "-q", "--format", "json")
 			cmd = append(cmd, serverArgs...)
 			cmd = append(cmd, img)
 			ires, ierr := s.runner.Exec(ctx, run.ServerID, cmd)
@@ -311,7 +354,7 @@ func (s *service) runTrivy(ctx context.Context, run *Run, host string) (*ReportD
 				} else {
 					stderr = ierr.Error()
 				}
-				notes = append(notes, "镜像 "+img+" 扫描失败:"+truncateRunes(strings.TrimSpace(stderr), 160))
+				notes = append(notes, "镜像 "+img+" 扫描失败:"+tailClip(stderr, 200))
 				continue
 			}
 			if fs, perr := TrivyFindings([]byte(ires.Stdout), "image:"+img); perr == nil {
@@ -343,11 +386,16 @@ func (s *service) runTrivy(ctx context.Context, run *Run, host string) (*ReportD
 	return doc, ""
 }
 
-// runNuclei 在目标机上按需运行 nuclei(无常驻;特征模板落具名卷,首扫现下、
-// 之后复用)。目标为空时默认探测宿主的 80/443。退出非零但已有结果 → 视为部分成功。
+// runNuclei 执行 Nuclei 扫描:登记了常驻 runner → 经 runner 主机 docker exec 在容器内
+// 跑(目标机无需 docker;扫描视角 = runner 所在网络);否则回落目标机本地 docker run
+//(无常驻,特征模板落具名卷复用)。目标为空时默认探测宿主的 80/443。退出非零但已有
+// 结果 → 视为部分成功。
 func (s *service) runNuclei(ctx context.Context, run *Run, host string, targets []string) (*ReportDoc, string) {
 	if len(targets) == 0 {
 		targets = []string{"http://" + host, "https://" + host}
+	}
+	if inst := s.pickScanner(ctx, KindNucleiRunner); inst != nil && inst.ServerID != "" && run.ScannerID == inst.ID {
+		return s.runNucleiViaRunner(ctx, run, inst, targets)
 	}
 	cmd := []string{"docker", "run", "--rm", "-v", nucleiTmplVolume, s.nucleiImage,
 		"-j", "-silent", "-nc"}
@@ -359,7 +407,7 @@ func (s *service) runNuclei(ctx context.Context, run *Run, host string, targets 
 		return nil, "SSH 执行失败:" + truncateRunes(err.Error(), 256)
 	}
 	if dockerUnavailable(res, nil) {
-		return nil, dockerUnavailableMsg
+		return nil, nucleiNoDockerMsg
 	}
 	findings, _ := NucleiFindings([]byte(res.Stdout))
 	if res.ExitCode != 0 && len(findings) == 0 {
@@ -376,6 +424,58 @@ func (s *service) runNuclei(ctx context.Context, run *Run, host string, targets 
 	}
 	if res.ExitCode != 0 {
 		doc.Notes = []string{"nuclei 退出码非零,以下为已取得的检测结果(可能不完整):" + truncateRunes(strings.TrimSpace(res.Stderr), 200)}
+		return doc, "nuclei 退出码非零,结果可能不完整"
+	}
+	return doc, ""
+}
+
+// runNucleiViaRunner 经常驻 runner 执行:① docker ps 定位执行容器(按栈名前缀);
+// ② docker exec 容器内跑 nuclei(特征模板在 runner 容器卷里,跨扫描复用)。
+func (s *service) runNucleiViaRunner(ctx context.Context, run *Run, inst *Instance, targets []string) (*ReportDoc, string) {
+	psRes, err := s.runner.Exec(ctx, inst.ServerID, nucleiRunnerPSCmd(inst.StackName))
+	if err != nil {
+		return nil, "连接 runner 所在主机失败:" + truncateRunes(err.Error(), 256)
+	}
+	if psRes.ExitCode != 0 || dockerUnavailable(psRes, nil) {
+		return nil, "runner 所在主机 docker 不可用:" + tailClip(psRes.Stderr, 200)
+	}
+	container := ""
+	for _, line := range strings.Split(psRes.Stdout, "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			container = line
+			break
+		}
+	}
+	if container == "" {
+		return nil, "runner 容器未在运行(栈 " + inst.StackName + "):可在应用市场重新部署 Nuclei Runner"
+	}
+	cmd := []string{"docker", "exec", container, "nuclei", "-j", "-silent", "-nc"}
+	for _, t := range targets {
+		cmd = append(cmd, "-u", t)
+	}
+	res, err := s.runner.Exec(ctx, inst.ServerID, cmd)
+	if err != nil {
+		return nil, "经 runner 执行失败:" + truncateRunes(err.Error(), 256)
+	}
+	if dockerUnavailable(res, nil) {
+		return nil, nucleiNoDockerMsg
+	}
+	findings, _ := NucleiFindings([]byte(res.Stdout))
+	if res.ExitCode != 0 && len(findings) == 0 {
+		msg := strings.TrimSpace(res.Stderr)
+		if msg == "" {
+			msg = fmt.Sprintf("nuclei 以状态码 %d 退出且无结果", res.ExitCode)
+		}
+		return nil, "nuclei 扫描失败:" + tailClip(msg, 400)
+	}
+	SortFindings(findings)
+	doc := &ReportDoc{
+		ScanType: ScanTypeNuclei, GeneratedAt: time.Now().UTC().Format(time.RFC3339),
+		Host: "", ServerName: run.ServerName, Findings: findings,
+	}
+	if res.ExitCode != 0 {
+		doc.Notes = []string{"nuclei 退出码非零,以下为已取得的检测结果(可能不完整):" + tailClip(res.Stderr, 200)}
 		return doc, "nuclei 退出码非零,结果可能不完整"
 	}
 	return doc, ""
