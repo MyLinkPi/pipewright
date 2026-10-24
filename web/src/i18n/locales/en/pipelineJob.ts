@@ -112,7 +112,7 @@ export default {
   fieldContextLabel: "Build context",
   fieldContextHint: "Build context directory relative to the repo root",
   fieldBuildTargetLabel: "Build target stage",
-  fieldBuildTargetHint: "Target stage of a multi-stage Dockerfile (docker build --target); empty builds the last stage. Point several build_image nodes at different targets to produce multiple images from one Dockerfile",
+  fieldBuildTargetHint: "Target stage of a multi-stage Dockerfile (docker build --target); empty builds the last stage. When set, the image name automatically gets a -target suffix, so several nodes with different targets produce distinct images without conflicts",
   fieldToolchainLanguageLabel: "Toolchain language",
   fieldToolchainVersionLabel: "Toolchain version",
   fieldBuildCommandLabel: "Build command",

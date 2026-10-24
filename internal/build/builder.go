@@ -39,7 +39,8 @@ const (
 	streamError  = "error"
 )
 
-// localTagPrefix 是本地镜像 tag 前缀(local-tag = pipewright/<project-slug>:<commit7>)。
+// localTagPrefix 是本地镜像 tag 前缀(local-tag = pipewright/<project-slug>[-<target>]:<commit7>;
+// target 非空时并入镜像名 —— 同项目多个 build_image 各指不同多阶段 target 时本地 tag 互不冲突)。
 const localTagPrefix = "pipewright"
 
 // Builder 实现 run.Runner:真实隔离构建 + 镜像推送(Story 3-3/3-5)。
@@ -495,7 +496,7 @@ func (b *Builder) Run(ctx context.Context, r *run.Run, sink run.StepSink) error 
 	// best-effort、只清 dangling、绝不影响构建结果(已 success);经构建步骤序号喂日志。
 	b.pruneImagesBestEffort(ctx, b.lineSink(sink, len(steps)-1))
 	// 产物镜像轮转(磁盘治理:每项目保留最近 N 个本地 tag;与 DAG 路径同口径):best-effort。
-	b.rotateBuildImages(context.WithoutCancel(ctx), proj, commitTag, b.lineSink(sink, len(steps)-1))
+	b.rotateBuildImages(context.WithoutCancel(ctx), proj, settings.Build.Target, commitTag, b.lineSink(sink, len(steps)-1))
 	return nil
 }
 
@@ -561,7 +562,11 @@ func (b *Builder) build(ctx context.Context, sink run.StepSink, ordinal int, pro
 				dockerfile = filepath.Join(workspace, dockerfile)
 			}
 		}
-		localTag := localTagPrefix + "/" + slug + ":" + commitTag
+		// 镜像逻辑名:项目 slug;多阶段 target 非空时并入(-<target> 后缀)。这让同项目多个
+		// build_image 各指不同 target 时:本地 tag 互不冲突(可并行构建)、产物名即 push_image
+		// 的远端默认镜像名也互不冲突(无需逐节点手配 imageName)。
+		artName := imageArtName(slug, cfg.Target)
+		localTag := localTagPrefix + "/" + artName + ":" + commitTag
 		code, err := b.driver.Build(ctx, contextDir, dockerfile, strings.TrimSpace(cfg.Target), localTag, buildArgs, secretArgs, onLine)
 		if err != nil && code < 0 {
 			return "", nil, fmt.Errorf("构建器无法启动")
@@ -574,7 +579,7 @@ func (b *Builder) build(ctx context.Context, sink run.StepSink, ordinal int, pro
 		digest, size, _ := b.driver.InspectImage(ctx, localTag)
 		art := &run.Artifact{
 			Type:      run.ArtifactImage,
-			Name:      slug,
+			Name:      artName,
 			Reference: localTag,
 			SizeBytes: size,
 			Metadata: map[string]any{
@@ -850,6 +855,15 @@ func stripScheme(u string) string {
 	u = strings.TrimPrefix(u, "https://")
 	u = strings.TrimPrefix(u, "http://")
 	return u
+}
+
+// imageArtName 是镜像产物的逻辑名:项目 slug + 多阶段 target 后缀(本地/共享机/回收侧同构,
+// 见 build() artName 注释)。target 空时即裸 slug(历史行为)。
+func imageArtName(slug, target string) string {
+	if t := strings.TrimSpace(target); t != "" {
+		return slug + "-" + slugify(t)
+	}
+	return slug
 }
 
 // Slugify 是 slugify 的导出版(维护手动清理按项目名重构镜像保留集时用)。

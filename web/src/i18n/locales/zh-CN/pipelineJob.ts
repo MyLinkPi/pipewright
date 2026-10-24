@@ -103,7 +103,7 @@ export default {
   fieldContextLabel: "构建上下文",
   fieldContextHint: "相对仓库根的构建上下文目录",
   fieldBuildTargetLabel: "目标构建阶段",
-  fieldBuildTargetHint: "多阶段 Dockerfile 的目标 stage(相当于 --target);留空构建最后一个阶段,同一 Dockerfile 配多个节点各指不同 target 可产出多个镜像",
+  fieldBuildTargetHint: "多阶段 Dockerfile 的目标 stage(相当于 --target);留空构建最后一个阶段。配了 target 时镜像名自动加 -target 后缀,多个节点各指不同 target 即可产出多个镜像、互不冲突",
   fieldToolchainLanguageLabel: "工具链语言",
   fieldToolchainVersionLabel: "工具链版本",
   fieldBuildCommandLabel: "构建命令",

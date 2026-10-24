@@ -107,7 +107,7 @@ export default {
   fieldContextLabel: "빌드 컨텍스트",
   fieldContextHint: "저장소 루트 기준 상대 빌드 컨텍스트 디렉터리",
   fieldBuildTargetLabel: "빌드 타깃 스테이지",
-  fieldBuildTargetHint: "다단계 Dockerfile의 대상 스테이지(docker build --target). 비우면 마지막 스테이지를 빌드. build_image 노드 여러 개에 서로 다른 target을 지정하면 하나의 Dockerfile에서 여러 이미지 생성",
+  fieldBuildTargetHint: "다단계 Dockerfile의 대상 스테이지(docker build --target). 비우면 마지막 스테이지를 빌드. 지정하면 이미지 이름에 -target 접미사가 자동으로 붙어, 서로 다른 target의 노드들이 충돌 없이 각자 이미지를 생성",
   fieldToolchainLanguageLabel: "툴체인 언어",
   fieldToolchainVersionLabel: "툴체인 버전",
   fieldBuildCommandLabel: "빌드 명령",
