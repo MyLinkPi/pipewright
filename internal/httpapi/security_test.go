@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/huangchengsir/pipewright/internal/ai"
 	"github.com/huangchengsir/pipewright/internal/secscan"
 	"github.com/huangchengsir/pipewright/internal/store"
 	"github.com/huangchengsir/pipewright/internal/storetest"
@@ -83,16 +84,32 @@ func (a *secArtFake) Open(k string) (io.ReadCloser, error) {
 	return nil, io.ErrUnexpectedEOF
 }
 
-func newSecurityTestRouter(t *testing.T, st *store.Store, runner secscan.Runner) (chi.Router, secscan.Service) {
+// explainFake:记录最近一次入参;可切换未配置错误。
+type explainFake struct {
+	ai.FindingExplainer
+	last ai.ExplainFindingInput
+	err  error
+}
+
+func (f *explainFake) ExplainFinding(_ context.Context, in ai.ExplainFindingInput) (string, error) {
+	f.last = in
+	if f.err != nil {
+		return "", f.err
+	}
+	return "**是什么** 测试解读 " + in.VulnID, nil
+}
+
+func newSecurityTestRouter(t *testing.T, st *store.Store, runner secscan.Runner) (chi.Router, secscan.Service, *explainFake) {
 	t.Helper()
 	svc := secscan.New(st.DB,
 		secscan.WithVault(secVaultFake{}),
 		secscan.WithRunner(runner),
 		secscan.WithArtifacts(&secArtFake{m: map[string][]byte{}}),
 	)
+	expl := &explainFake{}
 	r := chi.NewRouter()
-	mountSecurity(r, svc, nil)
-	return r, svc
+	mountSecurity(r, svc, nil, expl)
+	return r, svc, expl
 }
 
 // waitStatus 轮询 GET /api/security/scans?serverId= 直到出现非 running(或超时)。
@@ -114,7 +131,7 @@ func waitScanDone(t *testing.T, r chi.Router) {
 func TestSecurityScanEndpoints(t *testing.T) {
 	storetest.ForEachDialect(t, func(t *testing.T, st *store.Store) {
 		runner := &secRunnerFake{servers: []secscan.ServerInfo{{ID: "s1", Name: "机器A", Host: "10.0.0.1"}}}
-		r, _ := newSecurityTestRouter(t, st, runner)
+		r, _, _ := newSecurityTestRouter(t, st, runner)
 
 		// 发起 trivy 扫描 → 202 + running run。
 		req := httptest.NewRequest(http.MethodPost, "/security/scans",
@@ -166,7 +183,7 @@ func TestSecurityScanEndpoints(t *testing.T) {
 
 func TestSecurityScheduleAndScanners(t *testing.T) {
 	storetest.ForEachDialect(t, func(t *testing.T, st *store.Store) {
-		r, _ := newSecurityTestRouter(t, st, &secRunnerFake{})
+		r, _, _ := newSecurityTestRouter(t, st, &secRunnerFake{})
 
 		// 默认规则。
 		req := httptest.NewRequest(http.MethodGet, "/security/schedule", nil)
@@ -220,7 +237,7 @@ func TestSecurityScheduleAndScanners(t *testing.T) {
 func TestSecurityReportHTML(t *testing.T) {
 	storetest.ForEachDialect(t, func(t *testing.T, st *store.Store) {
 		runner := &secRunnerFake{servers: []secscan.ServerInfo{{ID: "s1", Name: "报表机", Host: "10.0.0.1"}}}
-		r, _ := newSecurityTestRouter(t, st, runner)
+		r, _, _ := newSecurityTestRouter(t, st, runner)
 
 		req := httptest.NewRequest(http.MethodPost, "/security/scans",
 			strings.NewReader(`{"serverId":"s1","scanType":"trivy"}`))
@@ -261,4 +278,55 @@ func extractJSONStringField(t *testing.T, body, field string) string {
 	}
 	t.Fatal("字段值未闭合")
 	return ""
+}
+
+func TestSecurityExplainFinding(t *testing.T) {
+	storetest.ForEachDialect(t, func(t *testing.T, st *store.Store) {
+		r, _, expl := newSecurityTestRouter(t, st, &secRunnerFake{})
+
+		// 正常:AI 返回 Markdown;审计入参已封顶清洗(此处断业务往返)。
+		req := httptest.NewRequest(http.MethodPost, "/security/findings/explain",
+			strings.NewReader(`{"scanType":"trivy","source":"host","severity":"high","id":"CVE-1","target":"openssl","installedVersion":"1.1","fixedVersion":"1.2","serverName":"机器A"}`))
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, req)
+		if rec.Code != 200 || !strings.Contains(rec.Body.String(), "测试解读 CVE-1") {
+			t.Fatalf("解读不符:%d %s", rec.Code, rec.Body.String())
+		}
+		if expl.last.VulnID != "CVE-1" || expl.last.ServerName != "机器A" {
+			t.Fatalf("解读入参不符:%+v", expl.last)
+		}
+		// 镜像来源只保留最后一段(内部 registry 地址不出网)。
+		req = httptest.NewRequest(http.MethodPost, "/security/findings/explain",
+			strings.NewReader(`{"scanType":"trivy","source":"image:registry.internal:5000/team/app:2.0","id":"CVE-2"}`))
+		rec = httptest.NewRecorder()
+		r.ServeHTTP(rec, req)
+		if rec.Code != 200 || !strings.Contains(rec.Body.String(), "CVE-2") {
+			t.Fatalf("镜像来源解读不符:%d %s", rec.Code, rec.Body.String())
+		}
+		// 缺编号 → 400。
+		req = httptest.NewRequest(http.MethodPost, "/security/findings/explain", strings.NewReader(`{"id":""}`))
+		rec = httptest.NewRecorder()
+		r.ServeHTTP(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("缺编号应 400:%d", rec.Code)
+		}
+		// AI 未配置 → 503 ai_not_configured(前端引导设置)。
+		expl.err = ai.ErrAINotConfigured
+		req = httptest.NewRequest(http.MethodPost, "/security/findings/explain",
+			strings.NewReader(`{"id":"CVE-3"}`))
+		rec = httptest.NewRecorder()
+		r.ServeHTTP(rec, req)
+		if rec.Code != http.StatusServiceUnavailable || !strings.Contains(rec.Body.String(), "ai_not_configured") {
+			t.Fatalf("未配置应 503:%d %s", rec.Code, rec.Body.String())
+		}
+		// explainer 未装配(nil)→ 503。
+		r2 := chi.NewRouter()
+		mountSecurity(r2, nil, nil, nil)
+		req = httptest.NewRequest(http.MethodPost, "/security/findings/explain", strings.NewReader(`{"id":"CVE-4"}`))
+		rec = httptest.NewRecorder()
+		r2.ServeHTTP(rec, req)
+		if rec.Code != http.StatusServiceUnavailable {
+			t.Fatalf("未装配应 503:%d", rec.Code)
+		}
+	})
 }

@@ -316,12 +316,13 @@ volumes:
 	{
 		Name:        "trivy-server",
 		DisplayName: "Trivy Server",
-		Description: "安全中心的中心漏洞库服务:各目标机 Trivy 扫描的漏洞匹配都走这台,免每台机器各自下载漏洞库。部署成功后自动登记到「安全中心」;访问令牌默认自动生成,也可手动指定。漏洞库缓存落具名卷 trivy-cache(首启下载数百 MB,视带宽数分钟就绪)。",
+		Description: "安全中心的中心漏洞库服务:各目标机 Trivy 扫描的漏洞匹配都走这台,免每台机器各自下载漏洞库。部署成功后自动登记到「安全中心」;访问令牌默认自动生成,也可手动指定。注意:首启需先下载漏洞库(数百 MB)才开始监听端口,期间连接被拒绝属预期;漏洞库默认仓库 ghcr.io 在部分网络不可达时,可把「漏洞库仓库」换成镜像地址或填出网代理。漏洞库缓存落具名卷 trivy-cache,重建容器不重下。",
 		Icon:        "🔍",
-		// trivy server 是 Trivy 的 server 模式:启动即拉/更新漏洞库,客户端经
-		// --server 复用;--token 开启访问鉴权(默认自动生成,自动登记时经 vault 密封,
-		// 目标机扫描命令由安全中心代填同值)。command 列表项无占位符空缺问题:token
-		// secret 必填 + 自动生成,渲染后恒非空。
+		// trivy server 是 Trivy 的 server 模式:启动先下载/更新漏洞库,完成后才开始监听
+		// (首启期间端口连接被拒绝是预期,连接测试兜底);客户端经 --server 复用;--token
+		// 开启访问鉴权(默认自动生成,自动登记时经 vault 密封)。TRIVY_DB_REPOSITORY 支持
+		// 逗号分隔多仓库逐个回退,默认官方仓库,国内可换镜像;HTTPS_PROXY 留空 = 不走代理
+		// (Go 语义:空串等价未设置)。
 		ComposeYAML: `services:
   trivy-server:
     image: aquasec/trivy:{{version}}
@@ -332,6 +333,9 @@ volumes:
       - 0.0.0.0:{{port}}
       - --token
       - {{token}}
+    environment:
+      TRIVY_DB_REPOSITORY: "{{db_repository}}"
+      HTTPS_PROXY: "{{https_proxy}}"
     ports:
       - "{{port}}:{{port}}"
     volumes:
@@ -343,6 +347,8 @@ volumes:
 			{Name: "version", Label: "镜像版本", Type: ParamTypeString, Default: "latest"},
 			{Name: "port", Label: "服务端口(宿主=容器)", Type: ParamTypeInt, Default: "4954"},
 			{Name: "token", Label: "访问令牌", Type: ParamTypeSecret, Required: true, AutoGenerate: true},
+			{Name: "db_repository", Label: "漏洞库仓库(默认官方;可换镜像,逗号分隔逐个回退)", Type: ParamTypeString, Default: "ghcr.io/aquasecurity/trivy-db"},
+			{Name: "https_proxy", Label: "出网代理(可选,如 http://proxy:7890;留空不走代理)", Type: ParamTypeString, Default: ""},
 		},
 		Builtin: true,
 	},

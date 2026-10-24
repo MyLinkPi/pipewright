@@ -171,6 +171,10 @@ func TestRenderParams(t *testing.T) {
 			!strings.Contains(res.Compose, "trivy-cache:/root/.cache/trivy") {
 			t.Fatalf("trivy-server 默认渲染不符:\n%s", res.Compose)
 		}
+		if !strings.Contains(res.Compose, `TRIVY_DB_REPOSITORY: "ghcr.io/aquasecurity/trivy-db"`) ||
+			!strings.Contains(res.Compose, `HTTPS_PROXY: ""`) {
+			t.Fatalf("trivy-server 镜像仓库/代理默认值不符:\n%s", res.Compose)
+		}
 	})
 }
 

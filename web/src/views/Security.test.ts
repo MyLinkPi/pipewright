@@ -23,6 +23,7 @@ const h = vi.hoisted(() => ({
   listRuns: vi.fn(),
   getFindings: vi.fn(),
   downloadSecurityReport: vi.fn(),
+  explainFinding: vi.fn(),
   toast: { success: vi.fn(), error: vi.fn(), info: vi.fn(), warn: vi.fn() },
   confirmOpen: vi.fn(),
 }))
@@ -41,6 +42,7 @@ vi.mock('../api/security', () => ({
   listRuns: (...a: unknown[]) => h.listRuns(...a),
   getFindings: (...a: unknown[]) => h.getFindings(...a),
   downloadSecurityReport: (...a: unknown[]) => h.downloadSecurityReport(...a),
+  explainFinding: (...a: unknown[]) => h.explainFinding(...a),
 }))
 vi.mock('../composables/useToast', () => ({
   useToast: () => ({ ...h.toast, toasts: { value: [] }, dismiss: vi.fn(), clear: vi.fn() }),
@@ -81,19 +83,39 @@ beforeEach(() => {
   h.listScanners.mockResolvedValue({ items: [] })
 })
 
+const overview2 = mkOverview()
+const mkOverviewWithFailure = (): SecurityOverview => ({
+  ...overview2,
+  servers: [
+    overview2.servers[0]!,
+    {
+      serverId: 's2', serverName: '机器B', host: '10.0.0.2',
+      trivy: { runId: 'r9', scanType: 'trivy', status: 'failed', summary: summary({ total: 0, critical: 0, high: 0, medium: 0, low: 0 }), error: '目标机 docker 不可用(未安装)' },
+    },
+  ],
+})
+
 describe('Security 安全面板', () => {
   it('渲染 KPI 与服务器表:严重度计数、扫描中徽标、未扫描占位', async () => {
+    h.getOverview.mockResolvedValue(mkOverviewWithFailure())
     const w = mount(Security)
     await flushPromises()
 
     expect(w.text()).toContain('安全中心')
-    expect(w.text()).toContain('C 1 · H 2 · M 3 · L 4')
+
+    expect(w.text()).toContain('安全中心')
+    // 严重度徽章:非零逐个展示(标签+计数);running 徽标呼吸提示。
+    expect(w.text()).toContain('严重 1')
+    expect(w.text()).toContain('高危 2')
+    expect(w.text()).toContain('低危 4')
     expect(w.text()).toContain('机器A')
     expect(w.text()).toContain('机器B')
     expect(w.text()).toContain('扫描中')
     expect(w.text()).toContain('未扫描')
     // 有 running 任务 → 提示自动刷新。
     expect(w.text()).toContain('自动刷新')
+    // 失败原因直接可见(不再只有悬停 title)。
+    expect(w.text()).toContain('目标机 docker 不可用(未安装)')
   })
 
   it('点「Trivy 扫描」→ startScan 携带 serverId/scanType,成功提示', async () => {
@@ -164,5 +186,49 @@ describe('Security 安全面板', () => {
     await nextTick()
     await flushPromises()
     expect(h.getFindings).toHaveBeenLastCalledWith('r1', expect.objectContaining({ severity: 'high', offset: 0 }))
+  })
+})
+
+describe('Security AI 解读', () => {
+  it('明细行点「AI 解读」→ 请求携带 finding 字段,展开渲染解读;再次点击收起', async () => {
+    h.getFindings.mockResolvedValue({ total: 1, items: [{ severity: 'high', source: 'host', target: 'openssl', id: 'CVE-1', installedVersion: '1.1', fixedVersion: '1.2', url: 'https://x' }], summary: summary() })
+    h.explainFinding.mockResolvedValue({ text: '**是什么** 测试解读 CVE-1' })
+    const w = mount(Security)
+    await flushPromises()
+
+    await w.findAll('button').find((b) => b.text().includes('查看明细'))!.trigger('click')
+    await flushPromises()
+
+    const btn = w.findAll('button').find((b) => b.text().includes('AI 解读'))!
+    await btn.trigger('click')
+    await flushPromises()
+
+    expect(h.explainFinding).toHaveBeenCalledWith(expect.objectContaining({ id: 'CVE-1', target: 'openssl', installedVersion: '1.1' }))
+    expect(w.text()).toContain('测试解读 CVE-1')
+
+    // 收起
+    await w.findAll('button').find((b) => b.text().includes('AI 解读'))!.trigger('click')
+    await flushPromises()
+    expect(w.text()).not.toContain('测试解读 CVE-1')
+
+    // 再次展开走会话缓存(不重复请求)。
+    await w.findAll('button').find((b) => b.text().includes('AI 解读'))!.trigger('click')
+    await flushPromises()
+    expect(h.explainFinding).toHaveBeenCalledTimes(1)
+    expect(w.text()).toContain('测试解读 CVE-1')
+  })
+
+  it('AI 未配置 → toast 错误且不展开', async () => {
+    h.getFindings.mockResolvedValue({ total: 1, items: [{ severity: 'high', source: 'host', target: 'openssl', id: 'CVE-2' }], summary: summary() })
+    h.explainFinding.mockRejectedValue(new Error('AI 未配置或未启用'))
+    const w = mount(Security)
+    await flushPromises()
+    await w.findAll('button').find((b) => b.text().includes('查看明细'))!.trigger('click')
+    await flushPromises()
+    await w.findAll('button').find((b) => b.text().includes('AI 解读'))!.trigger('click')
+    await flushPromises()
+
+    expect(h.toast.error).toHaveBeenCalled()
+    expect(w.text()).not.toContain('解读中')
   })
 })

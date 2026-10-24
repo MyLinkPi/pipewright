@@ -327,6 +327,13 @@ func (s *service) Render(ctx context.Context, id string, params map[string]strin
 	for name, v := range used {
 		compose = strings.ReplaceAll(compose, "{{"+name+"}}", v)
 	}
+	// 声明过但留空的可选参数:占位符替换为空串(否则 {{x}} 残留进 compose 成为非法值,
+	// 如空代理参数变成字面量 "{{https_proxy}}")。未声明进 schema 的文本不受影响。
+	for _, p := range tpl.Params {
+		if _, ok := used[p.Name]; !ok {
+			compose = strings.ReplaceAll(compose, "{{"+p.Name+"}}", "")
+		}
+	}
 	return &RenderResult{Compose: compose, Used: used}, nil
 }
 
