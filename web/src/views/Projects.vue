@@ -935,7 +935,7 @@ const STATUS_CONFIG: Record<RunStatus, StatusConfig> = {
           <!-- Divider -->
           <div class="card-divider" aria-hidden="true" />
 
-          <!-- Last run: empty placeholder or status -->
+          <!-- Last run: empty placeholder or status + time -->
           <div class="card-meta-row">
             <span class="meta-label">{{ t('projects.lastRun') }}</span>
             <span
@@ -945,8 +945,9 @@ const STATUS_CONFIG: Record<RunStatus, StatusConfig> = {
             <span
               v-else
               class="meta-value"
+              :title="project.lastRunAt || undefined"
               :style="{ color: STATUS_CONFIG[project.lastRunStatus].text }"
-            >{{ runStatusLabel(project.lastRunStatus) }}</span>
+            >{{ runStatusLabel(project.lastRunStatus) }}<template v-if="project.lastRunAt"> · {{ relativeTime(project.lastRunAt) }}</template></span>
           </div>
 
           <!-- Credential reference: display name + masked, never plaintext -->

@@ -12,6 +12,7 @@ import (
 	"github.com/huangchengsir/pipewright/internal/audit"
 	"github.com/huangchengsir/pipewright/internal/identity"
 	"github.com/huangchengsir/pipewright/internal/project"
+	"github.com/huangchengsir/pipewright/internal/run"
 	"github.com/huangchengsir/pipewright/internal/servicereg"
 )
 
@@ -36,14 +37,14 @@ type serviceRegLister interface {
 	ListServices(ctx context.Context) ([]servicereg.ServiceWithDomain, error)
 }
 
-// projectLastRunReader 批量读取项目最近一次运行状态(窄接口:run.Service 的只读一面)。
+// projectLastRunReader 批量读取项目最近一次运行摘要(窄接口:run.Service 的只读一面)。
 type projectLastRunReader interface {
-	LatestStatusByProject(ctx context.Context, projectIDs []string) (map[string]string, error)
+	LatestByProject(ctx context.Context, projectIDs []string) (map[string]run.LatestRun, error)
 }
 
 // projectDTO 是项目对外响应体(冻结契约;camelCase;无明文/无密文)。
-// lastRunStatus 按最近一次运行实时回填(无运行 → null);状态词表与 /api/runs 一致
-// (queued/running/waiting_approval/success/failed/rejected/partial_failed/rolled_back)。
+// lastRunStatus/lastRunAt 按最近一次运行实时回填(无运行 → null);状态词表与 /api/runs
+// 一致(queued/running/waiting_approval/success/failed/rejected/partial_failed/rolled_back)。
 // serviceRegs 为项目已绑定的「服务注册」条目(卡片展示子集),按流水线部署节点 job.config
 // 的 regServiceId(legacy gatewayService 按服务名兜底)实时解析;无绑定/无流水线 → []。
 type projectDTO struct {
@@ -56,6 +57,7 @@ type projectDTO struct {
 	PacEnabled      bool                   `json:"pacEnabled"`
 	PRStatusEnabled bool                   `json:"prStatusEnabled"`
 	LastRunStatus   *string                `json:"lastRunStatus"`
+	LastRunAt       *string                `json:"lastRunAt"`
 	ServiceRegs     []projectServiceRegDTO `json:"serviceRegs"`
 	CreatedAt       string                 `json:"createdAt"`
 	UpdatedAt       string                 `json:"updatedAt"`
@@ -79,10 +81,12 @@ func toProjectDTO(p *project.Project) projectDTO {
 	}
 }
 
-// withLastRunStatus 把最近一次运行状态写入 DTO(空状态 → nil,JSON 输出 null)。
-func withLastRunStatus(dto projectDTO, status string) projectDTO {
-	if status != "" {
-		dto.LastRunStatus = &status
+// withLastRun 把最近一次运行的摘要写入 DTO(空摘要 → nil,JSON 输出 null)。
+func withLastRun(dto projectDTO, lr run.LatestRun) projectDTO {
+	if lr.Status != "" {
+		dto.LastRunStatus = &lr.Status
+		at := lr.CreatedAt.UTC().Format(time.RFC3339)
+		dto.LastRunAt = &at
 	}
 	return dto
 }
@@ -130,16 +134,16 @@ func resolveProjectServiceRegs(
 	return resolveProjectsServiceRegs(ctx, pipe, sr, []string{projectID})[projectID]
 }
 
-// resolveProjectsLastRunStatus 批量解析各项目最近一次运行状态。与 serviceRegs 同语义:
+// resolveProjectsLastRun 批量解析各项目最近一次运行摘要(状态+时间)。与 serviceRegs 同语义:
 // 附加展示,读取失败时降级为「无状态」(不阻断项目列表)。
-func resolveProjectsLastRunStatus(
+func resolveProjectsLastRun(
 	ctx context.Context, runs projectLastRunReader, projectIDs []string,
-) map[string]string {
-	out := make(map[string]string, len(projectIDs))
+) map[string]run.LatestRun {
+	out := make(map[string]run.LatestRun, len(projectIDs))
 	if runs == nil {
 		return out
 	}
-	if m, err := runs.LatestStatusByProject(ctx, projectIDs); err == nil {
+	if m, err := runs.LatestByProject(ctx, projectIDs); err == nil {
 		out = m
 	}
 	return out
@@ -259,11 +263,11 @@ func makeListProjectsHandler(svc project.Service, id identity.Service, pipe proj
 			ids = append(ids, res.Items[i].ID)
 		}
 		regsByProject := resolveProjectsServiceRegs(r.Context(), pipe, sr, ids)
-		lastRunByProject := resolveProjectsLastRunStatus(r.Context(), runs, ids)
+		lastRunByProject := resolveProjectsLastRun(r.Context(), runs, ids)
 		out := make([]projectDTO, 0, len(res.Items))
 		for i := range res.Items {
 			dto := withServiceRegs(toProjectDTO(&res.Items[i]), regsByProject[res.Items[i].ID])
-			out = append(out, withLastRunStatus(dto, lastRunByProject[res.Items[i].ID]))
+			out = append(out, withLastRun(dto, lastRunByProject[res.Items[i].ID]))
 		}
 		// 分页元信息经响应头暴露(不破坏数组契约;前端可选读取)。
 		w.Header().Set("X-Total-Count", strconv.Itoa(res.Total))
@@ -356,7 +360,7 @@ func makeUpdateProjectHandler(svc project.Service, aud audit.Recorder, pipe proj
 			IP:         clientIP(r),
 		})
 		dto := withServiceRegs(toProjectDTO(p), resolveProjectServiceRegs(r.Context(), pipe, sr, p.ID))
-		writeJSON(w, http.StatusOK, withLastRunStatus(dto, resolveProjectsLastRunStatus(r.Context(), runs, []string{p.ID})[p.ID]))
+		writeJSON(w, http.StatusOK, withLastRun(dto, resolveProjectsLastRun(r.Context(), runs, []string{p.ID})[p.ID]))
 	}
 }
 

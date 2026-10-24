@@ -66,6 +66,8 @@ export interface Project {
   prStatusEnabled: boolean
   /** null until the project has a run. */
   lastRunStatus: RunStatus | null
+  /** RFC3339 created_at of the most recent run; null until the project has a run. */
+  lastRunAt: string | null
   /**
    * Services registered in the service-registry gateway, resolved from the pipeline's
    * deploy-node bindings (regServiceId; legacy gatewayService by service name).
