@@ -352,7 +352,6 @@ function toggleExpanded(): void {
      超长内容只在各自容器内(终端横向滚动)处理,布局自适应窗口。 */
   grid-template-columns: var(--rail-width) minmax(0, 1fr);
   min-height: 100vh;
-  position: relative; /* 作为边缘切换按钮的定位上下文 */
   transition: grid-template-columns var(--duration-normal) var(--ease-out-expo, ease);
 }
 /* 展开态:覆盖 --rail-width,grid 主区与 active 指示条偏移随之自适应。 */
@@ -643,9 +642,12 @@ function toggleExpanded(): void {
   color: var(--color-primary);
 }
 
-/* 边缘切换:骑在侧栏右缘、与品牌行齐平的圆形按钮。随 --rail-width 平移(展开/收起都跟手)。 */
+/* 边缘切换:骑在侧栏右缘、与品牌行齐平的圆形按钮。随 --rail-width 平移(展开/收起都跟手)。
+   fixed 而非 absolute:定位上下文是 .app-shell(整页高)时按钮会随窗口滚动跑掉,
+   而侧栏本体是 sticky 的;fixed 相对视口,才能始终与品牌行齐平。--rail-width 仍从
+   .app-shell 继承,展开/收起的平移动画不受影响。 */
 .rail-edge-toggle {
-  position: absolute;
+  position: fixed;
   top: 23px; /* 与顶部品牌 mark 垂直居中对齐 */
   left: calc(var(--rail-width) - 13px); /* 圆心落在 rail 右缘分割线上 */
   width: 26px;
