@@ -190,6 +190,22 @@ export const getSchedule = (): Promise<Schedule> =>
 export const saveSchedule = (body: { enabled: boolean; expression: string; scanTypes: ScanType[] }): Promise<Schedule> =>
   http.put('/api/security/schedule', body)
 
+// ---------- AI 解读 ----------
+
+/** explainFinding 把一条明细交 AI 生成人读解读(Markdown 文本;同 key 结果前端缓存)。 */
+export const explainFinding = (body: {
+  scanType: ScanType
+  source: string
+  severity: string
+  id: string
+  title?: string
+  target: string
+  installedVersion?: string
+  fixedVersion?: string
+  url?: string
+  serverName: string
+}): Promise<{ text: string }> => http.post('/api/security/findings/explain', body)
+
 // ---------- 报告 ----------
 
 /**

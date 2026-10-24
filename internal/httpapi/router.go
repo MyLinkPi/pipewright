@@ -825,9 +825,15 @@ func New(webFS fs.FS, authn auth.Authenticator, opts ...Option) http.Handler {
 				mountRedisAdmin(ar, o.redisAdmin, aud)
 			}
 			// 安全中心(管理员):trivy-server 扫描器登记 + Trivy/Nuclei 扫描 +
-			// 定时规则 + HTML 审计报告。
+			// 定时规则 + HTML 审计报告 + 漏洞 AI 解读(窄接口断言注入,未配置 → 端点 503)。
 			if o.secScan != nil {
-				mountSecurity(ar, o.secScan, aud)
+				var secExplainer ai.FindingExplainer
+				if o.aiSettings != nil {
+					if e, ok := o.aiSettings.(ai.FindingExplainer); ok {
+						secExplainer = e
+					}
+				}
+				mountSecurity(ar, o.secScan, aud, secExplainer)
 			}
 			// Ceph 管理面(管理员):集群登记/cephadm 部署管线/状态 + 主机/OSD/池/RBD/CephFS 管理。
 			if o.pveAdmin != nil {

@@ -17,15 +17,17 @@ import { useI18n } from 'vue-i18n'
 import {
   getOverview, getSchedule, saveSchedule,
   listScanners, createScanner, deleteScanner, testScanner, testScannerDirect,
-  startScan, startFleetScan, listRuns, getFindings, downloadSecurityReport,
+  startScan, startFleetScan, listRuns, getFindings, downloadSecurityReport, explainFinding,
   type SecurityOverview, type Schedule, type ScannerInstance, type SecRun,
-  type FindingsPage, type ScanType,
+  type FindingsPage, type ScanType, type Finding,
 } from '../api/security'
 import { HttpError } from '../api/http'
 import { useToast } from '../composables/useToast'
 import { useConfirm } from '../composables/useConfirm'
 import AppButton from '../components/ui/AppButton.vue'
 import AppSelect from '../components/ui/AppSelect.vue'
+import SevChips from '../components/security/SevChips.vue'
+import AiOpsMarkdown from '../components/ops/AiOpsMarkdown.vue'
 import ErrorState from '../components/ui/ErrorState.vue'
 import SkeletonBlock from '../components/ui/SkeletonBlock.vue'
 
@@ -295,6 +297,39 @@ function findingsPageMove(delta: number): void {
   void loadFindings()
 }
 
+// ─── AI 解读(会话内缓存:同 run 同 finding 不重复请求)────────────────────────
+const explainCache = new Map<string, string>()
+const explainBusy = ref('')
+const explainShown = ref('')
+
+const explainKey = (f: Finding): string => `${f.id}|${f.target}|${f.installedVersion ?? ''}`
+
+async function askExplain(f: Finding): Promise<void> {
+  const key = explainKey(f)
+  if (explainShown.value === key) {
+    explainShown.value = '' // 再点收起
+    return
+  }
+  explainShown.value = key
+  if (explainCache.has(key)) return
+  explainBusy.value = key
+  try {
+    const res = await explainFinding({
+      scanType: findingsRun.value?.scanType ?? 'trivy',
+      source: f.source, severity: f.severity, id: f.id,
+      title: f.title, target: f.target,
+      installedVersion: f.installedVersion, fixedVersion: f.fixedVersion, url: f.url,
+      serverName: findingsRun.value?.serverName ?? '',
+    })
+    explainCache.set(key, res.text)
+  } catch (e) {
+    explainShown.value = ''
+    toast.error(t('securityCenter.aiExplainFailed'), { detail: errMsg(e, t('securityCenter.errNetwork')) })
+  } finally {
+    explainBusy.value = ''
+  }
+}
+
 // ─── 报告导出 ────────────────────────────────────────────────────────────────
 const exporting = ref(false)
 
@@ -317,10 +352,6 @@ const triggerLabel = (r: SecRun): string =>
   r.trigger === 'scheduled' ? t('securityCenter.triggerScheduled') : r.trigger === 'fleet' ? t('securityCenter.triggerFleet') : t('securityCenter.triggerManual')
 
 const typeLabel = (ty: string): string => (ty === 'nuclei' ? 'Nuclei' : 'Trivy')
-
-function sevCounts(s: { critical: number; high: number; medium: number; low: number }): string {
-  return `C ${s.critical} · H ${s.high} · M ${s.medium} · L ${s.low}`
-}
 
 onMounted(() => {
   void refresh()
@@ -472,17 +503,29 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
               </td>
               <td>
                 <template v-if="srv.trivy">
-                  <span v-if="srv.trivy.status === 'running'" class="badge badge--running">{{ t('securityCenter.statusRunning') }}</span>
-                  <span v-else-if="srv.trivy.status === 'failed'" class="badge badge--failed" :title="srv.trivy.error">{{ t('securityCenter.statusFailed') }}</span>
-                  <template v-else><div class="sev-line">{{ sevCounts(srv.trivy.summary) }}</div><AppButton variant="default" @click="openFindings({ id: srv.trivy!.runId, serverName: srv.serverName, scanType: srv.trivy!.scanType })">{{ t('securityCenter.viewFindings') }}</AppButton></template>
+                  <div v-if="srv.trivy.status === 'running'" class="cell-line"><span class="badge badge--running badge--pulse">{{ t('securityCenter.statusRunning') }}</span></div>
+                  <template v-else-if="srv.trivy.status === 'failed'">
+                    <div class="cell-line"><span class="badge badge--failed">{{ t('securityCenter.statusFailed') }}</span></div>
+                    <div v-if="srv.trivy.error" class="err-line" :title="srv.trivy.error">{{ srv.trivy.error }}</div>
+                  </template>
+                  <template v-else>
+                    <div class="cell-line"><SevChips :summary="srv.trivy.summary" /></div>
+                    <div class="cell-line"><AppButton variant="default" @click="openFindings({ id: srv.trivy!.runId, serverName: srv.serverName, scanType: srv.trivy!.scanType })">{{ t('securityCenter.viewFindings') }}</AppButton></div>
+                  </template>
                 </template>
                 <span v-else class="hint">{{ t('securityCenter.neverScanned') }}</span>
               </td>
               <td>
                 <template v-if="srv.nuclei">
-                  <span v-if="srv.nuclei.status === 'running'" class="badge badge--running">{{ t('securityCenter.statusRunning') }}</span>
-                  <span v-else-if="srv.nuclei.status === 'failed'" class="badge badge--failed" :title="srv.nuclei.error">{{ t('securityCenter.statusFailed') }}</span>
-                  <template v-else><div class="sev-line">{{ sevCounts(srv.nuclei.summary) }}</div><AppButton variant="default" @click="openFindings({ id: srv.nuclei!.runId, serverName: srv.serverName, scanType: srv.nuclei!.scanType })">{{ t('securityCenter.viewFindings') }}</AppButton></template>
+                  <div v-if="srv.nuclei.status === 'running'" class="cell-line"><span class="badge badge--running badge--pulse">{{ t('securityCenter.statusRunning') }}</span></div>
+                  <template v-else-if="srv.nuclei.status === 'failed'">
+                    <div class="cell-line"><span class="badge badge--failed">{{ t('securityCenter.statusFailed') }}</span></div>
+                    <div v-if="srv.nuclei.error" class="err-line" :title="srv.nuclei.error">{{ srv.nuclei.error }}</div>
+                  </template>
+                  <template v-else>
+                    <div class="cell-line"><SevChips :summary="srv.nuclei.summary" /></div>
+                    <div class="cell-line"><AppButton variant="default" @click="openFindings({ id: srv.nuclei!.runId, serverName: srv.serverName, scanType: srv.nuclei!.scanType })">{{ t('securityCenter.viewFindings') }}</AppButton></div>
+                  </template>
                 </template>
                 <span v-else class="hint">{{ t('securityCenter.neverScanned') }}</span>
               </td>
@@ -518,9 +561,12 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
               <td>{{ r.serverName }}</td>
               <td>{{ typeLabel(r.scanType) }}</td>
               <td>
-                <span v-if="r.status === 'running'" class="badge badge--running">{{ t('securityCenter.statusRunning') }}</span>
-                <span v-else-if="r.status === 'failed'" class="badge badge--failed" :title="r.error">{{ t('securityCenter.statusFailed') }}</span>
-                <template v-else>{{ sevCounts(r.summary) }}</template>
+                <div v-if="r.status === 'running'" class="cell-line"><span class="badge badge--running badge--pulse">{{ t('securityCenter.statusRunning') }}</span></div>
+                <template v-else-if="r.status === 'failed'">
+                  <div class="cell-line"><span class="badge badge--failed">{{ t('securityCenter.statusFailed') }}</span></div>
+                  <div v-if="r.error" class="err-line" :title="r.error">{{ r.error }}</div>
+                </template>
+                <SevChips v-else :summary="r.summary" />
               </td>
               <td>{{ triggerLabel(r) }}</td>
               <td>
@@ -545,8 +591,7 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
           <input v-model="findingsFilter.q" type="search" :placeholder="t('securityCenter.findingsSearch')" @change="findingsFilterChanged()" />
         </div>
         <div v-if="findings" class="modal__meta hint">
-          {{ t('securityCenter.findingsTotal', { n: findings.total }) }}
-          <template v-if="findings.summary.total"> · {{ sevCounts(findings.summary) }}</template>
+          {{ t('securityCenter.findingsTotal', { n: findings.total }) }} · <SevChips :summary="findings.summary" />
         </div>
         <SkeletonBlock v-if="findingsLoading" />
         <div v-else-if="!findings || !findings.items.length" class="empty-hint">{{ t('securityCenter.findingsEmpty') }}</div>
@@ -559,10 +604,12 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
                 <th scope="col">{{ t('securityCenter.colTarget') }}</th>
                 <th scope="col">{{ t('securityCenter.colInstalled') }}</th>
                 <th scope="col">{{ t('securityCenter.colFixed') }}</th>
+                <th scope="col">{{ t('securityCenter.aiExplain') }}</th>
               </tr>
             </thead>
             <tbody>
-              <tr v-for="(f, i) in findings.items" :key="`${f.id}-${f.target}-${i}`">
+              <template v-for="(f, i) in findings.items" :key="`${f.id}-${f.target}-${i}`">
+              <tr>
                 <td><span class="sev" :class="`sev--${f.severity}`">{{ f.severity }}</span></td>
                 <td><a v-if="f.url" :href="f.url" target="_blank" rel="noopener noreferrer">{{ f.id }}</a><template v-else>{{ f.id }}</template></td>
                 <td>
@@ -571,7 +618,21 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
                 </td>
                 <td>{{ f.installedVersion }}</td>
                 <td>{{ f.fixedVersion }}</td>
+                <td>
+                  <AppButton
+                    variant="default"
+                    :loading="explainBusy === explainKey(f)"
+                    @click="askExplain(f)"
+                  >{{ t('securityCenter.aiExplain') }}</AppButton>
+                </td>
               </tr>
+              <tr v-if="explainShown === explainKey(f)" class="explain-row">
+                <td :colspan="6">
+                  <AiOpsMarkdown v-if="explainCache.get(explainKey(f))" :text="explainCache.get(explainKey(f))!" />
+                  <span v-else class="hint">{{ t('securityCenter.aiExplainLoading') }}</span>
+                </td>
+              </tr>
+              </template>
             </tbody>
           </table>
         </div>
@@ -626,7 +687,14 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
 .badge { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 12px; color: #fff; white-space: nowrap; }
 .badge--running { background: #2f6fab; }
 .badge--failed { background: #b3261e; }
-.sev-line { font-variant-numeric: tabular-nums; margin-bottom: 4px; white-space: nowrap; }
+.badge--pulse { animation: sec-pulse 1.6s ease-in-out infinite; }
+@keyframes sec-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.55; } }
+.cell-line { margin-bottom: 4px; }
+.cell-line:last-child { margin-bottom: 0; }
+.err-line {
+  margin-top: 4px; max-width: 360px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: #b3261e; font-size: 12px; cursor: help;
+}
 .sev { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 12px; color: #fff; text-transform: uppercase; }
 .sev--critical { background: #b3261e; }
 .sev--high { background: #e8590c; }
@@ -643,4 +711,5 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
 .modal__filters input[type='search'] { flex: 1; min-width: 180px; padding: 7px 9px; border: 1px solid var(--pw-line, #d9dee8); border-radius: 6px; font-size: 13px; }
 .modal__table { max-height: 52vh; overflow: auto; }
 .modal__pager { display: flex; align-items: center; gap: 12px; justify-content: flex-end; }
+.explain-row > td { background: var(--pw-bg-subtle, #f6f7fa); }
 </style>

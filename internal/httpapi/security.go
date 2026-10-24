@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/huangchengsir/pipewright/internal/ai"
 	"github.com/huangchengsir/pipewright/internal/audit"
 	"github.com/huangchengsir/pipewright/internal/secscan"
 )
@@ -30,6 +31,7 @@ const (
 	auditActionSecScanFleet     = "security.scan.fleet"
 	auditActionSecScheduleSave  = "security.schedule.update"
 	auditActionSecReportExport  = "security.report.export"
+	auditActionSecExplain       = "security.finding.explain"
 	auditTargetSecurity         = "security"
 )
 
@@ -162,7 +164,11 @@ type secScheduleDTO struct {
 }
 
 // mountSecurity 挂载 /api/security/*(admin 组)。
-func mountSecurity(ar chi.Router, svc secscan.Service, aud audit.Recorder) {
+// securityExplainer 是漏洞 AI 解读的窄依赖(ai.FindingExplainer;未装配 → 端点 503 引导配置)。
+type securityExplainer = ai.FindingExplainer
+
+// mountSecurity 挂载 /api/security/*(admin 组)。explainer 可为 nil(AI 未注入 → 解读端点 503)。
+func mountSecurity(ar chi.Router, svc secscan.Service, aud audit.Recorder, explainer securityExplainer) {
 	ar.Get("/security/overview", makeSecurityOverviewHandler(svc))
 	ar.Get("/security/scanners", makeListSecScannersHandler(svc))
 	ar.Post("/security/scanners", makeCreateSecScannerHandler(svc, aud))
@@ -177,6 +183,7 @@ func mountSecurity(ar chi.Router, svc secscan.Service, aud audit.Recorder) {
 	ar.Get("/security/schedule", makeGetScheduleHandler(svc))
 	ar.Put("/security/schedule", makeSaveScheduleHandler(svc, aud))
 	ar.Get("/security/report", makeSecurityReportHandler(svc, aud))
+	ar.Post("/security/findings/explain", makeExplainFindingHandler(explainer, aud))
 }
 
 // makeSecurityOverviewHandler 返回 GET /api/security/overview。
@@ -537,5 +544,73 @@ func makeSecurityReportHandler(svc secscan.Service, aud audit.Recorder) http.Han
 			// 头已写,无法再改状态码;记录到响应尾即可(报告为流式渲染,极小概率发生)。
 			_, _ = w.Write([]byte("\n<!-- render error: " + err.Error() + " -->"))
 		}
+	}
+}
+
+// makeExplainFindingHandler 返回 POST /api/security/findings/explain:把一条扫描发现交
+// AI 生成人读解读(Markdown)。入参就是前端明细行持有的公开语义字段(不回查 run,避免
+// 后端再解析 artifact);主机地址绝不入 prompt(领域层出网纪律)。AI 未配置/未注入 →
+// 503 引导到「设置 → AI」;审计只记漏洞编号。
+func makeExplainFindingHandler(explainer ai.FindingExplainer, aud audit.Recorder) http.HandlerFunc {
+	type request struct {
+		ScanType         string `json:"scanType"`
+		Source           string `json:"source"`
+		Severity         string `json:"severity"`
+		ID               string `json:"id"`
+		Title            string `json:"title"`
+		Target           string `json:"target"`
+		InstalledVersion string `json:"installedVersion"`
+		FixedVersion     string `json:"fixedVersion"`
+		URL              string `json:"url"`
+		ServerName       string `json:"serverName"`
+	}
+	return func(w http.ResponseWriter, r *http.Request) {
+		if explainer == nil {
+			writeError(w, http.StatusServiceUnavailable, "ai_explain_unavailable", "AI 服务未装配,解读不可用")
+			return
+		}
+		r.Body = http.MaxBytesReader(w, r.Body, 16<<10)
+		var req request
+		if err := decodeJSON(r, &req); err != nil {
+			writeError(w, http.StatusBadRequest, "bad_request", "请求体格式错误")
+			return
+		}
+		// 字段封顶(防异常长字段进 prompt);控制字符清洗为空格。
+		clamp := func(v string, n int) string {
+			v = strings.Map(func(rr rune) rune {
+				if rr == '\n' || rr == '\r' || rr == '\t' {
+					return ' '
+				}
+				return rr
+			}, v)
+			if len([]rune(v)) > n {
+				return string([]rune(v)[:n])
+			}
+			return v
+		}
+		if strings.TrimSpace(req.ID) == "" {
+			writeError(w, http.StatusBadRequest, "invalid_security_input", "缺少漏洞编号")
+			return
+		}
+		in := ai.ExplainFindingInput{
+			ScanType: clamp(req.ScanType, 16), Source: clamp(req.Source, 256), Severity: clamp(req.Severity, 16),
+			VulnID: clamp(req.ID, 128), Title: clamp(req.Title, 512), Target: clamp(req.Target, 256),
+			InstalledVersion: clamp(req.InstalledVersion, 128), FixedVersion: clamp(req.FixedVersion, 128),
+			URL: clamp(req.URL, 512), ServerName: clamp(req.ServerName, 128),
+		}
+		text, err := explainer.ExplainFinding(r.Context(), in)
+		if err != nil {
+			if errors.Is(err, ai.ErrAINotConfigured) {
+				writeError(w, http.StatusServiceUnavailable, "ai_not_configured", "AI 未配置或未启用:请到「设置 → AI」完成配置后使用解读")
+				return
+			}
+			writeError(w, http.StatusBadGateway, "ai_explain_failed", err.Error())
+			return
+		}
+		recordAudit(r.Context(), aud, audit.Entry{
+			Actor: auditActor, Action: auditActionSecExplain, TargetType: auditTargetSecurity,
+			Detail: map[string]any{"findingId": in.VulnID, "scanType": in.ScanType}, IP: clientIP(r),
+		})
+		writeJSON(w, http.StatusOK, map[string]string{"text": text})
 	}
 }
