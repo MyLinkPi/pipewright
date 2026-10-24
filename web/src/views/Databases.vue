@@ -529,6 +529,10 @@ async function selectUser(u: DBUser): Promise<void> {
   selectedUser.value = u
   grantsView.value = null
   if (!current.value) return
+  // MySQL 无矩阵行可点,授权目标库默认跟随当前选中库,其次第一个库。
+  if (engine.value === 'mysql' && !grantsDb.value) {
+    grantsDb.value = currentDb.value || databases.value[0]?.name || ''
+  }
   try {
     grantsView.value = await getDBUserGrants(current.value.id, u.name, u.host)
     if (engine.value === 'postgres' && grantsView.value.rows?.length && !grantsDb.value) {
@@ -695,6 +699,7 @@ watch(currentId, async (id) => {
   users.value = []
   selectedUser.value = null
   grantsView.value = null
+  grantsDb.value = ''
   sqlResult.value = null
   pendingWrite.value = null
   pendingWriteLabel.value = ''
@@ -1091,33 +1096,32 @@ watch(currentDb, (db) => {
                   </span>
                 </div>
                 <div v-if="!grantsView" class="tab-empty">{{ t('common.refresh') }}…</div>
-                <template v-else-if="engine === 'mysql'">
-                  <ul class="grant-lines mono">
-                    <li v-for="(line, li) in grantsView.lines" :key="li">{{ line }};</li>
-                  </ul>
-                </template>
-                <template v-else>
-                  <table class="data-table">
-                    <thead>
-                      <tr><th>{{ t('dbAdmin.colDatabase') }}</th><th>CONNECT</th></tr>
-                    </thead>
-                    <tbody>
-                      <tr v-for="g in grantsView.rows" :key="g.database" :class="{ 'row-selected': g.database === grantsDb }" class="row-click" @click="grantsDb = g.database">
-                        <td class="mono">{{ g.database }}</td>
-                        <td>{{ g.connect ? '✔' : '—' }}</td>
-                      </tr>
-                    </tbody>
-                  </table>
-                  <div class="grant-actions">
-                    <select v-model="grantTemplate" class="page-size">
-                      <option value="all">{{ t('dbAdmin.grantAll') }}</option>
-                      <option value="read">{{ t('dbAdmin.grantRead') }}</option>
-                      <option value="crud">{{ t('dbAdmin.grantCrud') }}</option>
-                    </select>
-                    <button class="btn-secondary btn-sm" :disabled="!grantsDb || grantBusy" @click="guardWrite(() => doGrant(grantTemplate), t('dbAdmin.grant'))">{{ t('dbAdmin.grant') }}</button>
-                    <button class="btn-secondary btn-sm btn-danger-ghost" :disabled="!grantsDb || grantBusy" @click="guardWrite(() => doRevoke(), t('dbAdmin.revoke'))">{{ t('dbAdmin.revoke') }}</button>
-                  </div>
-                </template>
+                <ul v-else-if="engine === 'mysql'" class="grant-lines mono">
+                  <li v-for="(line, li) in grantsView.lines" :key="li">{{ line }};</li>
+                </ul>
+                <table v-else class="data-table">
+                  <thead>
+                    <tr><th>{{ t('dbAdmin.colDatabase') }}</th><th>CONNECT</th></tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="g in grantsView.rows" :key="g.database" :class="{ 'row-selected': g.database === grantsDb }" class="row-click" @click="grantsDb = g.database">
+                      <td class="mono">{{ g.database }}</td>
+                      <td>{{ g.connect ? '✔' : '—' }}</td>
+                    </tr>
+                  </tbody>
+                </table>
+                <div class="grant-actions">
+                  <select v-if="engine === 'mysql'" v-model="grantsDb" class="page-size">
+                    <option v-for="d in databases" :key="d.name" :value="d.name">{{ d.name }}</option>
+                  </select>
+                  <select v-model="grantTemplate" class="page-size">
+                    <option value="all">{{ t('dbAdmin.grantAll') }}</option>
+                    <option value="read">{{ t('dbAdmin.grantRead') }}</option>
+                    <option value="crud">{{ t('dbAdmin.grantCrud') }}</option>
+                  </select>
+                  <button class="btn-secondary btn-sm" :disabled="!grantsDb || grantBusy" @click="guardWrite(() => doGrant(grantTemplate), t('dbAdmin.grant'))">{{ t('dbAdmin.grant') }}</button>
+                  <button class="btn-secondary btn-sm btn-danger-ghost" :disabled="!grantsDb || grantBusy" @click="guardWrite(() => doRevoke(), t('dbAdmin.revoke'))">{{ t('dbAdmin.revoke') }}</button>
+                </div>
                 <p class="hint-line">{{ t('dbAdmin.grantNote') }}</p>
               </div>
             </div>
