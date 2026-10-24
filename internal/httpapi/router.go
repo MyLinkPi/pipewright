@@ -746,6 +746,8 @@ func New(webFS fs.FS, authn auth.Authenticator, opts ...Option) http.Handler {
 		v := o.vault
 		ar.Get("/credentials", makeListCredentialsHandler(v))
 		ar.Post("/credentials", makeCreateCredentialHandler(v, aud))
+		// 生成 SSH 密钥对(可选算法):无状态加密运算,不落库/不留审计;私钥仅在响应中一次性返回。
+		ar.Post("/credentials/ssh-keypair", makeGenerateSSHKeyPairHandler())
 		ar.Patch("/credentials/{id}", makeUpdateCredentialHandler(v, aud))
 		ar.Delete("/credentials/{id}", makeDeleteCredentialHandler(v, aud))
 		// 查看明文(POST + auth + CSRF;每次留 credential_reveal 审计)。

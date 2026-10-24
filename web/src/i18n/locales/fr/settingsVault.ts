@@ -119,4 +119,13 @@ export default {
   revealFailed: 'Échec de l’affichage du secret',
   fieldSecretNew: 'Contenu du nouveau secret',
   secretOptionalEdit: '(laisser vide pour ne pas faire pivoter)',
+
+  sshKeygenAlgorithm: 'Algorithme de clé',
+  sshKeygenGenerate: 'Générer une nouvelle paire de clés',
+  sshKeygenGenerating: 'Génération…',
+  sshKeygenPublicKey: 'Clé publique (à déployer sur la cible)',
+  sshKeygenCopyPublic: 'Copier la clé publique',
+  sshKeygenCopied: 'Clé publique copiée',
+  sshKeygenFailed: 'Échec de la génération de la paire de clés',
+  sshKeygenHint: 'Ajoutez la clé publique au ~/.ssh/authorized_keys du serveur cible, ou aux clés SSH de votre compte sur la plateforme Git. La clé privée sera stockée chiffrée en tant qu’identifiant.',
 }

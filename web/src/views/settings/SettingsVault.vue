@@ -7,8 +7,16 @@ import {
   deleteCredential,
   isSystemManagedType,
   revealCredential,
+  generateSshKeyPair,
 } from '../../api/credentials'
-import type { Credential, CredentialType, CreateCredentialInput, UpdateCredentialInput } from '../../api/credentials'
+import type {
+  Credential,
+  CredentialType,
+  CreateCredentialInput,
+  UpdateCredentialInput,
+  SshKeyAlgorithm,
+} from '../../api/credentials'
+import { copyText } from '../../utils/clipboard'
 import { HttpError } from '../../api/http'
 import AuditTimeline from '../../components/AuditTimeline.vue'
 import { useRoute, useRouter } from 'vue-router'
@@ -66,6 +74,23 @@ const deleteBanner = ref('')
 // Current plaintext while shown in the edit modal; null = hidden. Cleared on close.
 const editRevealed = ref<string | null>(null)
 const editRevealing = ref(false)
+
+// ─── SSH keypair generation (ssh_key secret field, add + rotate) ──────────────
+
+// 选项文字(Ed25519 / RSA 2048…)是跨语言通用的技术名称,不进 i18n。
+const SSH_KEY_ALGOS: ReadonlyArray<{ value: SshKeyAlgorithm; label: string }> = [
+  { value: 'ed25519', label: 'Ed25519' },
+  { value: 'rsa2048', label: 'RSA 2048' },
+  { value: 'rsa3072', label: 'RSA 3072' },
+  { value: 'rsa4096', label: 'RSA 4096' },
+  { value: 'ecdsa256', label: 'ECDSA P-256' },
+  { value: 'ecdsa384', label: 'ECDSA P-384' },
+  { value: 'ecdsa521', label: 'ECDSA P-521' },
+]
+const sshAlgo = ref<SshKeyAlgorithm>('ed25519')
+const sshGenerating = ref(false)
+// 上一次生成密钥对的公钥(authorized_keys 单行);空串 = 未展示。切类型/关弹窗即清空。
+const generatedPublicKey = ref('')
 
 // ─── OAuth connect (enabled providers only) ──────────────────────────────────
 
@@ -236,6 +261,7 @@ function openAddModal(): void {
   form.value = { name: '', type: 'git_token', scope: '', username: '', secret: '' }
   clearFormErrors()
   formBanner.value = ''
+  generatedPublicKey.value = ''
   modalOpen.value = true
   formSnapshot.value = JSON.stringify(form.value)
 }
@@ -248,6 +274,7 @@ function openEditModal(c: Credential): void {
   editRevealed.value = null
   clearFormErrors()
   formBanner.value = ''
+  generatedPublicKey.value = ''
   modalOpen.value = true
   formSnapshot.value = JSON.stringify(form.value)
 }
@@ -258,6 +285,7 @@ function closeModal(): void {
   // Clear secret + any revealed plaintext immediately when modal closes
   form.value.secret = ''
   editRevealed.value = null
+  generatedPublicKey.value = ''
 }
 
 /** Shared close path for ✕ / 取消 / ESC: confirm before discarding a dirty form. */
@@ -348,6 +376,40 @@ async function handleFormSubmit(): Promise<void> {
   } finally {
     formSubmitting.value = false
   }
+}
+
+// ─── SSH keypair generation (add + rotate) ────────────────────────────────────
+
+/** Ask the backend for a fresh keypair: private key fills the textarea, public key is shown for deployment. */
+async function generateKeypair(): Promise<void> {
+  if (sshGenerating.value) return
+  sshGenerating.value = true
+  try {
+    const pair = await generateSshKeyPair(sshAlgo.value)
+    // 生成是显式按钮操作,直接覆盖 textarea 中已粘贴的内容;成功后清除必填报错。
+    form.value.secret = pair.privateKey
+    formErrors.value.secret = ''
+    generatedPublicKey.value = pair.publicKey
+  } catch {
+    // 私钥/已粘贴内容保持不动,仅提示失败(算法非法/网络错误等)。
+    toast.error(t('settingsVault.sshKeygenFailed'))
+  } finally {
+    sshGenerating.value = false
+  }
+}
+
+async function copyPublicKey(): Promise<void> {
+  if (!generatedPublicKey.value) return
+  if (await copyText(generatedPublicKey.value)) {
+    toast.success(t('settingsVault.sshKeygenCopied'))
+  }
+}
+
+/** Type switch via the segmented control: also drops the stale generated public key. */
+function selectType(opt: CredentialType): void {
+  form.value.type = opt
+  formErrors.value.type = ''
+  generatedPublicKey.value = ''
 }
 
 // ─── delete ──────────────────────────────────────────────────────────────────
@@ -710,7 +772,7 @@ async function toggleEditReveal(): Promise<void> {
                 class="seg-item"
                 :class="{ 'seg-item--active': form.type === opt }"
                 :disabled="formSubmitting"
-                @click="form.type = opt; formErrors.type = ''"
+                @click="selectType(opt)"
                 >{{ typeLabels[opt] }}</button>
             </div>
             <span class="field-hint">{{ typeDescriptions[form.type] }}</span>
@@ -816,6 +878,42 @@ async function toggleEditReveal(): Promise<void> {
             <span v-else-if="form.type === 'sudo_password'" class="field-hint">{{ t('settingsVault.hintSudoPassword') }}</span>
             <span v-else-if="form.type === 'git_http'" class="field-hint">{{ t('settingsVault.hintGitHttp') }}</span>
             <span v-else class="field-hint">{{ t('settingsVault.hintSecret') }}</span>
+
+            <!-- SSH 密钥对生成(新增 + 编辑轮换均可用):私钥回填上方 textarea,
+                 公钥交用户部署到目标端。服务端无状态生成,不落库、不留审计。 -->
+            <template v-if="form.type === 'ssh_key'">
+              <div class="ssh-keygen-row">
+                <label class="field-label ssh-keygen-label" for="cred-ssh-algo">{{ t('settingsVault.sshKeygenAlgorithm') }}</label>
+                <select
+                  id="cred-ssh-algo"
+                  v-model="sshAlgo"
+                  class="field-input ssh-keygen-select"
+                  :disabled="sshGenerating || formSubmitting"
+                >
+                  <option v-for="a in SSH_KEY_ALGOS" :key="a.value" :value="a.value">{{ a.label }}</option>
+                </select>
+                <button
+                  type="button"
+                  class="btn-secondary ssh-keygen-btn"
+                  :disabled="sshGenerating || formSubmitting"
+                  :aria-busy="sshGenerating"
+                  @click="generateKeypair"
+                >
+                  <span v-if="sshGenerating" class="spinner" aria-hidden="true" />
+                  {{ sshGenerating ? t('settingsVault.sshKeygenGenerating') : t('settingsVault.sshKeygenGenerate') }}
+                </button>
+              </div>
+              <div v-if="generatedPublicKey" class="ssh-pubkey">
+                <div class="field-label-row">
+                  <span class="field-label">{{ t('settingsVault.sshKeygenPublicKey') }}</span>
+                  <button type="button" class="ssh-pubkey-copy" @click="copyPublicKey">
+                    {{ t('settingsVault.sshKeygenCopyPublic') }}
+                  </button>
+                </div>
+                <div class="ssh-pubkey-box mono" data-testid="ssh-public-key">{{ generatedPublicKey }}</div>
+                <span class="field-hint">{{ t('settingsVault.sshKeygenHint') }}</span>
+              </div>
+            </template>
           </div>
 
           <!-- Footer -->
@@ -1728,6 +1826,74 @@ async function toggleEditReveal(): Promise<void> {
   font-size: 0.74rem;
   color: var(--color-faint);
   line-height: 1.4;
+}
+
+/* ─── SSH keypair generation (algorithm select + generate, public key box) ─── */
+.ssh-keygen-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.ssh-keygen-label {
+  white-space: nowrap;
+}
+
+.ssh-keygen-select {
+  width: auto;
+  flex: 0 0 auto;
+  min-width: 150px;
+}
+
+.ssh-keygen-btn {
+  flex: 0 0 auto;
+}
+
+.ssh-pubkey {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.ssh-pubkey .field-label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.ssh-pubkey-copy {
+  height: 26px;
+  padding: 0 10px;
+  background: var(--color-card-2);
+  color: var(--color-dim);
+  border: 1px solid var(--color-border);
+  border-radius: var(--rounded);
+  font-family: var(--font-sans);
+  font-size: 0.74rem;
+  cursor: pointer;
+  transition:
+    border-color var(--duration-fast),
+    color var(--duration-fast);
+}
+
+.ssh-pubkey-copy:hover {
+  color: var(--color-text);
+  border-color: var(--color-border-strong);
+}
+
+.ssh-pubkey-box {
+  padding: 8px 10px;
+  background: var(--color-inset);
+  border: 1px solid var(--color-border);
+  border-radius: var(--rounded);
+  font-size: 0.74rem;
+  color: var(--color-dim);
+  word-break: break-all;
+  line-height: 1.5;
+  /* 单击即整段选中公钥,便于手动复制 */
+  user-select: all;
 }
 
 /* ─── segmented control (type selector) ───────────────────────────────────── */

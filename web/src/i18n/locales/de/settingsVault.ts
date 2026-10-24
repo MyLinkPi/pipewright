@@ -119,4 +119,13 @@ export default {
   revealFailed: 'Geheimnis konnte nicht angezeigt werden',
   fieldSecretNew: 'Neuer Geheimnis-Inhalt',
   secretOptionalEdit: '(leer lassen, um nicht zu rotieren)',
+
+  sshKeygenAlgorithm: 'Schlüsselalgorithmus',
+  sshKeygenGenerate: 'Neues Schlüsselpaar generieren',
+  sshKeygenGenerating: 'Wird generiert…',
+  sshKeygenPublicKey: 'Öffentlicher Schlüssel (auf Ziel bereitstellen)',
+  sshKeygenCopyPublic: 'Öffentlichen Schlüssel kopieren',
+  sshKeygenCopied: 'Öffentlicher Schlüssel kopiert',
+  sshKeygenFailed: 'Schlüsselpaar konnte nicht generiert werden',
+  sshKeygenHint: 'Fügen Sie den öffentlichen Schlüssel zur Datei ~/.ssh/authorized_keys des Zielservers hinzu oder zu den SSH-Keys Ihres Git-Plattformkontos. Der private Schlüssel wird verschlüsselt als Zugangsdaten gespeichert.',
 }

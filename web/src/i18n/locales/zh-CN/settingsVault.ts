@@ -119,4 +119,13 @@ export default {
   revealFailed: '查看明文失败',
   fieldSecretNew: '新密钥内容',
   secretOptionalEdit: '（留空则不轮换）',
+
+  sshKeygenAlgorithm: '密钥算法',
+  sshKeygenGenerate: '生成新密钥对',
+  sshKeygenGenerating: '生成中…',
+  sshKeygenPublicKey: '公钥(需部署到目标端)',
+  sshKeygenCopyPublic: '复制公钥',
+  sshKeygenCopied: '公钥已复制',
+  sshKeygenFailed: '生成密钥对失败',
+  sshKeygenHint: '请将公钥添加到目标服务器的 ~/.ssh/authorized_keys,或 Git 平台账号的 SSH Keys 设置;私钥将作为凭据加密保存。',
 }
