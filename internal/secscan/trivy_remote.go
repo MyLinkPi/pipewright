@@ -23,12 +23,34 @@ import (
 // 最小集合;各发行版按需命中,ls -d 探测后不存在的直接跳过)。
 var trivyRemoteMetaPaths = []string{
 	"/etc/os-release", "/usr/lib/os-release", // OS 识别
+	"/etc/lsb-release",                                                  // trivy 识别 Ubuntu 的唯一依据(实测 0.76;新版 Ubuntu 缺失,容器内补写)
 	"/etc/redhat-release", "/etc/debian_version", "/etc/alpine-release", // 老版本兜底
 	"/var/lib/dpkg/status", "/var/lib/dpkg/status.d", // Debian/Ubuntu
 	"/lib/apk/db/installed",                 // Alpine
 	"/var/lib/rpm", "/usr/lib/sysimage/rpm", // RHEL 系(Fedora 36+ 在 sysimage)
 	"/var/lib/pacman/local", // Arch
 }
+
+// trivyRemoteScanScript 是代扫容器内执行的复合脚本(常量;目标机数据只走 stdin,绝不
+// 拼进脚本):
+//  1. 解包元数据到 /scan,并把清单打到 stderr(零结果时日志可见元数据是否进容器);
+//  2. trivy 只认 /etc/lsb-release 识别 Ubuntu(实测 0.76:os-release 不参与 debian 家族
+//     判定,只有 /etc/debian_version → 新版 Ubuntu 被误判 debian forky/sid,漏洞库无数据
+//     → 零漏洞)。新版 Ubuntu 不带该文件,从 os-release 用 sed 提取 ID/VERSION_ID 补写
+//     (不 source 目标机文件,防把目标机数据当代码执行);
+//  3. trivy rootfs 扫描,漏洞匹配走 --server(经 TRIVY_SERVER/TRIVY_TOKEN 环境变量注入)。
+const trivyRemoteScanScript = `set -e
+mkdir -p /scan
+tar -xf - -C /scan
+ls -laR /scan >&2
+if [ ! -f /scan/etc/lsb-release ] && [ -f /scan/etc/os-release ]; then
+  id=$(sed -n 's/^ID=//p' /scan/etc/os-release | head -n1 | tr -d '"')
+  ver=$(sed -n 's/^VERSION_ID=//p' /scan/etc/os-release | head -n1 | tr -d '" ')
+  if [ "$id" = ubuntu ] && [ -n "$ver" ]; then
+    printf 'DISTRIB_ID=Ubuntu\nDISTRIB_RELEASE=%s\n' "$ver" > /scan/etc/lsb-release
+  fi
+fi
+trivy rootfs -q --scanners vuln --format json /scan`
 
 // countingReader 统计经面板中继的字节数(诊断「容器扫了空目录」类问题)。
 type countingReader struct {
@@ -82,16 +104,14 @@ func (s *service) runTrivyViaServerHost(ctx context.Context, run *Run, host, ser
 	defer func() { _ = tarc.Close() }()
 	relay := &countingReader{r: tarc}
 
-	// ③ 容器内解包到 /scan 后 trivy rootfs(脚本为常量,数据只走 stdin)。trivy 镜像的
-	// ENTRYPOINT 是 trivy 本体,须经 --entrypoint sh 才能跑解包+扫描的复合脚本(本地
-	// 路径不受影响:args 直接落在 entrypoint 后面,恰好就是 trivy 子命令)。解包后先
-	// 把 /scan 清单打到 stderr:零结果时日志里能直接看出元数据到底进没进容器。
-	script := "mkdir -p /scan && tar -xf - -C /scan && ls -laR /scan >&2 && trivy rootfs -q --scanners vuln --format json /scan"
+	// ③ 容器内解包到 /scan 后 trivy rootfs。trivy 镜像的 ENTRYPOINT 是 trivy 本体,须经
+	// --entrypoint sh 才能跑复合脚本(本地路径不受影响:args 直接落在 entrypoint 后面,
+	// 恰好就是 trivy 子命令)。
 	scanCmd := []string{"docker", "run", "--rm", "-i", "--entrypoint", "sh", "-e", "TRIVY_SERVER=" + serverURL}
 	if token != "" {
 		scanCmd = append(scanCmd, "-e", "TRIVY_TOKEN="+token)
 	}
-	scanCmd = append(scanCmd, s.trivyImage, "-c", script)
+	scanCmd = append(scanCmd, s.trivyImage, "-c", trivyRemoteScanScript)
 	res, rerr := s.runner.ExecWithStdin(ctx, inst.ServerID, scanCmd, relay)
 	logs = append(logs, StepLog{Step: "元数据 tar 中继(目标机 → 面板 → Server 宿主机)", ExitCode: 0,
 		Stdout: fmt.Sprintf("共中继 %d 字节", relay.n)})
