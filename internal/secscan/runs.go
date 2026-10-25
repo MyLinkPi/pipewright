@@ -233,7 +233,11 @@ func (s *service) RunLogs(ctx context.Context, id string) (*RunLogView, error) {
 	if err := json.Unmarshal(raw, &doc); err != nil {
 		return nil, fmt.Errorf("secscan: parse report artifact: %w", err)
 	}
-	view.Logs = doc.Logs
+	// 旧产物(执行日志功能之前落的)没有 logs 键,解析出 nil——保留初始化的空切片,
+	// 绝不回 null(前端模板直接访问 logs.length,null 会让渲染崩成白屏)。
+	if doc.Logs != nil {
+		view.Logs = doc.Logs
+	}
 	return view, nil
 }
 

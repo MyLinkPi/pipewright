@@ -851,7 +851,7 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
           <AppButton variant="default" @click="logsRun = null">{{ t('securityCenter.findingsClose') }}</AppButton>
         </div>
         <SkeletonBlock v-if="logsLoading" />
-        <div v-else-if="!logsView || !logsView.logs.length" class="empty-hint">{{ t('securityCenter.logsEmpty') }}</div>
+        <div v-else-if="!logsView || !logsView.logs?.length" class="empty-hint">{{ t('securityCenter.logsEmpty') }}</div>
         <div v-else class="logs-list">
           <details v-for="(l, i) in logsView.logs" :key="i" class="log-step" open>
             <summary class="log-step__head">
