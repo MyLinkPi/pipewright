@@ -189,7 +189,9 @@ volumes:
   gitea-data:
 `,
 		Params: []ParamSpec{
-			{Name: "version", Label: "镜像版本", Type: ParamTypeString, Default: "28.1.0"},
+			// 默认 latest:Gitea 升级自动跑单向迁移,回退本就只能靠升级前备份,钉旧版
+			// 攒下的安全漏洞比迁移风险更致命;要控制升级节奏仍可显式改版本号。
+			{Name: "version", Label: "镜像版本", Type: ParamTypeString, Default: "latest"},
 			// port 命名沿用其他模板约定:一键服务注册的端口启发式优先取键 port(Web 才是反代目标)。
 			{Name: "port", Label: "Web 端口(宿主)", Type: ParamTypeInt, Default: "3000"},
 			{Name: "ssh_port", Label: "SSH 克隆端口(宿主)", Type: ParamTypeInt, Default: "2222"},

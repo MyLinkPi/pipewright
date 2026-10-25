@@ -29,10 +29,10 @@ import (
 
 // RestoreOptions 是恢复的落点参数(由调用方按部署形态给出)。
 type RestoreOptions struct {
-	Driver    string // sqlite|mysql
-	DataDir   string
-	DBPath    string // sqlite 库文件路径
-	MySQLDSN  string // mysql 模式回放/安全备份用
+	Driver     string // sqlite|mysql
+	DataDir    string
+	DBPath     string // sqlite 库文件路径
+	MySQLDSN   string // mysql 模式回放/安全备份用
 	Passphrase string
 }
 
@@ -318,11 +318,11 @@ func mergeDir(src, dst string) error {
 //(argon2id, t=1, m=64MB, p=4);口令错误在 open 时经 secretbox 认证失败暴露。
 
 const (
-	mkSaltLen   = 16
-	mkNonceLen  = 24
-	mkPrefix    = "pw1"
-	argonTime   = 1
-	argonMemory = 64 * 1024 // KiB
+	mkSaltLen    = 16
+	mkNonceLen   = 24
+	mkPrefix     = "pw1"
+	argonTime    = 1
+	argonMemory  = 64 * 1024 // KiB
 	argonThreads = 4
 )
 
@@ -387,9 +387,9 @@ const (
 
 // PendingRestore 是延迟恢复标记。
 type PendingRestore struct {
-	Archive   string `json:"archive"`             // 相对数据目录的归档路径
+	Archive    string `json:"archive"`              // 相对数据目录的归档路径
 	PassSealed []byte `json:"passSealed,omitempty"` // 口令密文(当前 master key 密封)
-	CreatedAt string `json:"createdAt"`
+	CreatedAt  string `json:"createdAt"`
 }
 
 // StagingDir 返回暂存目录路径。

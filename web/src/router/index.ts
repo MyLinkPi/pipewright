@@ -33,7 +33,6 @@ const Certificates = () => import('../views/Certificates.vue')
 const ServiceRegistry = () => import('../views/ServiceRegistry.vue')
 // 应用商店:模板参数一键部署(复用 Stacks 链路)。
 const AppStore = () => import('../views/AppStore.vue')
-const DBaaS = () => import('../views/DBaaS.vue')
 // 安全中心(Trivy/Nuclei):统一安全面板(概览/定时扫描/扫描器/明细/HTML 报告)。
 const Security = () => import('../views/Security.vue')
 // 数据库在线管理(phpMyAdmin 式):实例在 设置 → 数据库 注册,此处浏览/查询/管理。
@@ -205,8 +204,6 @@ const router = createRouter({
         { path: 'service-reg', name: 'service-registry', component: ServiceRegistry, meta: { title: '服务注册' } },
         // 应用商店:MySQL/Redis 等模板参数一键部署。
         { path: 'app-store', name: 'app-store', component: AppStore, meta: { title: '应用商店' } },
-        // 数据库即服务:MySQL/PostgreSQL/Redis 实例按需创建 + 生命周期 + 备份恢复(仅管理员)。
-        { path: 'dbaas', name: 'dbaas', component: DBaaS, meta: { title: '数据库实例', roles: ['admin'] } },
         // 安全中心:Trivy(主机+镜像 CVE)/ Nuclei(暴露面)扫描 + 定时规则 + HTML 审计报告(仅管理员)。
         { path: 'security', name: 'security', component: Security, meta: { title: '安全中心', roles: ['admin'] } },
         // 数据库在线管理(phpMyAdmin 式):库/表浏览、SQL 控制台、导入导出、账号管理(仅管理员)。

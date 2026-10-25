@@ -30,11 +30,11 @@ import (
 
 // 归档内固定路径(正斜杠,与 tar 头一致)。
 const (
-	manifestPath = "manifest.json"
-	dbSQLitePath = "data/db.sqlite"
-	dbMySQLPath  = "data/db.sql"
-	acmeDir      = "acme"
-	artifactsDir = "artifacts"
+	manifestPath  = "manifest.json"
+	dbSQLitePath  = "data/db.sqlite"
+	dbMySQLPath   = "data/db.sql"
+	acmeDir       = "acme"
+	artifactsDir  = "artifacts"
 	masterKeyPath = "master.key"
 )
 
@@ -52,18 +52,18 @@ type Contains struct {
 
 // Manifest 是归档根部的清单:校验和 + 内容声明,恢复前据此验证。
 type Manifest struct {
-	Format          int      `json:"format"`
-	CreatedAt       string   `json:"createdAt"`
-	PlatformVersion string   `json:"platformVersion"`
-	DBDriver        string   `json:"dbDriver"` // sqlite|mysql
+	Format          int         `json:"format"`
+	CreatedAt       string      `json:"createdAt"`
+	PlatformVersion string      `json:"platformVersion"`
+	DBDriver        string      `json:"dbDriver"` // sqlite|mysql
 	Files           []FileEntry `json:"files"`
-	Contains        Contains `json:"contains"`
+	Contains        Contains    `json:"contains"`
 }
 
 // FileEntry 是归档内一个文件的元信息(Name 为归档内正斜杠路径)。
 type FileEntry struct {
-	Name  string `json:"name"`
-	Size  int64  `json:"size"`
+	Name   string `json:"name"`
+	Size   int64  `json:"size"`
 	Sha256 string `json:"sha256"`
 }
 

@@ -80,7 +80,6 @@ const ko: typeof zhCN = {
     tunnels: 'SSH 터널',
     serviceReg: '서비스 등록',
     appStore: '앱 스토어',
-    dbaas: '데이터베이스 인스턴스',
     databases: '데이터베이스',
     objectStorage: '오브젝트 스토리지',
     redis: 'Redis',

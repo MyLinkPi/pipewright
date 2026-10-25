@@ -22,13 +22,13 @@ import (
 
 // Config 是平台备份策略(单行 platform_backup_config)。
 type Config struct {
-	Enabled                 bool
-	IntervalHours           int
-	RetentionCount          int
-	IncludeArtifacts        bool
-	IncludeMasterKey        bool
-	ObjectstoreProviderID   string
-	LastRunAt               string
+	Enabled               bool
+	IntervalHours         int
+	RetentionCount        int
+	IncludeArtifacts      bool
+	IncludeMasterKey      bool
+	ObjectstoreProviderID string
+	LastRunAt             string
 }
 
 // Record 是一次备份的运行记录。
@@ -61,14 +61,14 @@ type Uploader interface {
 }
 
 // Options 装配参数。DataDir 为数据目录(DB 同级);DBPath 为 SQLite 库文件路径
-//(仅 sqlite 模式使用);MySQLDSN 供恢复回放/安全备份时另开多语句连接。
+// (仅 sqlite 模式使用);MySQLDSN 供恢复回放/安全备份时另开多语句连接。
 type Options struct {
-	Driver    string // sqlite|mysql
-	DataDir   string
-	DBPath    string
-	MySQLDSN  string
-	Uploader  Uploader
-	Logf      func(format string, args ...any)
+	Driver   string // sqlite|mysql
+	DataDir  string
+	DBPath   string
+	MySQLDSN string
+	Uploader Uploader
+	Logf     func(format string, args ...any)
 }
 
 // Service 是备份领域服务。

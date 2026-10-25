@@ -113,7 +113,7 @@ func TestRenderParams(t *testing.T) {
 			t.Fatalf("缺 ssh_domain 应 ErrMissingParam,得 %v", err)
 		}
 		res, err = svc.Render(ctx, gitea.ID, map[string]string{"ssh_domain": "git.example.com"})
-		if err != nil || !strings.Contains(res.Compose, "gitea/gitea:28.1.0") {
+		if err != nil || !strings.Contains(res.Compose, "gitea/gitea:latest") {
 			t.Fatalf("gitea 默认渲染:%v\n%s", err, res.Compose)
 		}
 		if !strings.Contains(res.Compose, "3000:3000") || !strings.Contains(res.Compose, "2222:22") ||

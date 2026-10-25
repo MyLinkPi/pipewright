@@ -562,8 +562,7 @@ func composeFileArgs(configFile string) ([]string, error) {
 	return args, nil
 }
 
-
-// detectComposeBin 探测可用的 compose CLI(实现在 internal/composeops,与 DBaaS 共享)。
+// detectComposeBin 探测可用的 compose CLI(实现在 internal/composeops)。
 func detectComposeBin(ctx context.Context, svc target.Service, id string) []string {
 	return composeops.DetectComposeBin(ctx, svc, id)
 }

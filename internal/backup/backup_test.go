@@ -118,9 +118,9 @@ func TestBackupRoundtripAndRestore(t *testing.T) {
 		t.Fatal(err)
 	}
 	rep, err := ApplyRestore(filepath.Join(restoreDir, filepath.Base(archive)), RestoreOptions{
-		Driver: "sqlite",
+		Driver:  "sqlite",
 		DataDir: restoreDir,
-		DBPath: filepath.Join(restoreDir, "pipewright.db"),
+		DBPath:  filepath.Join(restoreDir, "pipewright.db"),
 	})
 	if err != nil {
 		t.Fatalf("apply restore: %v", err)
@@ -244,9 +244,9 @@ func TestPendingRestoreMarker(t *testing.T) {
 
 func TestFormatMySQLValue(t *testing.T) {
 	cases := []struct {
-		in     any
-		bin    bool
-		want   string
+		in   any
+		bin  bool
+		want string
 	}{
 		{nil, false, "NULL"},
 		{int64(42), false, "42"},

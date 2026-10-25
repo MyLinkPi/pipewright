@@ -79,7 +79,6 @@ export default {
     tunnels: 'SSH 隧道',
     serviceReg: '服务注册',
     appStore: '应用商店',
-    dbaas: '数据库实例',
     databases: '数据库',
     objectStorage: '对象存储',
     redis: 'Redis',

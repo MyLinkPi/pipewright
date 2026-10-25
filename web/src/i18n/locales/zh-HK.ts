@@ -79,7 +79,6 @@ const zhHK: typeof zhCN = {
     tunnels: 'SSH 隧道',
     serviceReg: '服務註冊',
     appStore: '應用商店',
-    dbaas: '資料庫實例',
     databases: '資料庫',
     objectStorage: '物件儲存',
     redis: 'Redis',

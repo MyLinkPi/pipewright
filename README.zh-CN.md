@@ -5,7 +5,7 @@
 **一个轻量、自托管的 DevOps 与基础设施一体化平台。**
 单个 Go 静态二进制(内嵌前端,运行时零依赖),
 从 CI/CD、多机部署、容器运维,到镜像仓库、网关与证书、
-应用市场、数据库即服务、平台备份恢复、Redis / 对象存储 / PVE / Ceph 纳管,装进同一个二进制。
+应用市场、平台备份恢复、Redis / 对象存储 / PVE / Ceph 纳管,装进同一个二进制。
 
 [![Release](https://img.shields.io/github/v/release/MyLinkPi/pipewright)](https://github.com/MyLinkPi/pipewright/releases)
 [![CI](https://github.com/MyLinkPi/pipewright/actions/workflows/ci.yml/badge.svg)](https://github.com/MyLinkPi/pipewright/actions/workflows/ci.yml)
@@ -71,12 +71,11 @@ Pipewright 把「持续集成、多服务器部署、服务器/容器运维」�
   ⚠️ **已知问题**:Docker 部署下,容器重启会终止容器内全部进程(含隧道 helper),经隧道的转发随之中断(容器恢复后由平台自动重建,但存在中断窗口)——**依赖隧道常驻请用二进制 / 源码部署**,见「安装 / 部署」。
 - **📊 机器监控(ssar)** —— 基于 [ssar](https://github.com/MyLinkPi/ssar)(Anolis ssar 自维护 fork)的深度服务器指标:安装包(rpm/deb)从其 GitHub Release 自动下载(镜像感知、sha256 校验),经 SSH 分发到 Linux 目标机(root 或免密 sudo;包内 sresar 采集器以 systemd 服务常驻,机器本地保留 7 天 60s/5s 粒度历史)。平台侧周期采样入库做总览图表(CPU 分项、内存、5s 级负载、TCP 重传),细查面板按需直查机器本地高粒度历史(白名单视图:cpu/mem/tcp/retran/softirq/load5s…);不改动既有状态页/异常检测体系。
 - **🛒 应用市场与中间件纳管** —— 应用商店模板一键参数化部署(内置 MySQL / Redis / Postgres / Nginx / RustFS / RabbitMQ / Gitea / Redpanda,亦可自建模板;参数白名单校验防注入,secret 自动生成且仅部署响应一次性返回;已部署实例一键原位升级:重渲染最新模板 + compose up -d,未填参数与口令保持现值,数据卷保留)· 数据库管理(MySQL / PostgreSQL 实例注册 + 在线库表数据管理,默认只读、写操作需显式解锁并留审计)· Redis 管理(实例注册 + SCAN 游标分页键浏览/删改/改 TTL,值按类型截断预览;应用市场部署 Redis 自动登记为实例)· 对象存储集成(阿里云 OSS / S3 兼容 RustFS 多账户接入,桶浏览、新建桶自动登记为配置,流水线 `oss_upload` 节点直传)。
-- **🗄 数据库即服务(DBaaS)** —— 按需创建 **MySQL / PostgreSQL / Redis** 实例:选服务器 + 版本(白名单)→ 端口自动分配(33000-40000,SSH 探测 + docker 仲裁)→ 受管 compose 部署(健康检查、资源限额、具名卷持久化)→ 管理员口令 vault 密文落库(创建响应一次性展示,详情页可审计揭示)· 全生命周期:启动/停止/重启、容器实时状态、删除(可选保留数据卷,级联注销在线管理登记与备份记录)· 连接信息卡(host:port/用户/DSN)一键跳转「数据库/Redis 在线管理」· **备份恢复**:引擎原生 dump(mysqldump --single-transaction / pg_dumpall / redis BGSAVE RDB)流式经 SSH 中转落控制机,sha256 校验、按实例保留份数裁剪、可上传对象存储异地容灾;恢复自动先做「恢复前」安全备份,Redis 恢复采用 RDB 替换(清 AOF 后重建)· 每实例独立定时备份计划(间隔 + 保留数)。
 - **🧊 PVE 与 Ceph 纳管** —— PVE 物理机登记即经 SSH 自动发现集群并入服务器池(API Token 密文入保险库;物理机禁止作为构建/部署目标,电源操作默认只读、解锁留审计)· Ceph 集群 cephadm 引导部署(后台任务 + 步骤/日志轮询)+ 主机/OSD/存储池/RBD/CephFS 一站管理(dashboard 密码只入保险库)。
 - **🤖 AI 辅助(可选,完全可降级)** —— 自带 Claude / OpenAI / Ollama 端点(apiKey 密文入保险库)。构建/部署失败自动根因诊断 + 👍/👎 反馈飞轮与准确率统计 · 仓库分析 → 生成流水线草案 · 成功/失败提交差异 · 脚本风险标注 · 运维终端的自然语言→shell 助手与容器诊断。核心 CI/CD 路径完全不依赖它(NFR-10)。
 - **📈 度量** —— DORA 四指标(部署频率/变更前置时长/变更失败率/平均恢复时长)开箱即用,并给 Elite/High/Medium/Low 绩效分档。
 - **🧹 数据与平台** —— 运行数据保留清理器(默认关;绝不动在跑的运行)· SQLite(纯 Go)或 MySQL · 8 种界面语言(简中 / 繁中 / 英 / 日 / 韩 / 德 / 法 / 西),API 错误信息亦服务端本地化。
-- **💾 平台备份恢复** —— 设置→备份 把平台自身数据打包为单文件归档 `.pwb`:SQLite 用 `VACUUM INTO` 在线一致快照(含表/触发器/数据),MySQL 模式纯 Go SQL dump(无外部二进制依赖);可选带上 acme/ 证书账号与制品库;vault master key 可随包携带(argon2id 口令派生 + secretbox 密封,包内绝无明文)。支持定时备份(间隔 + 本地保留份数)、下载、校验(逐文件 sha256)与自动上传对象存储异地容灾。恢复双入口共用同一核心:CLI `pipewright restore <archive.pwb>` 离线恢复(停服执行,现库自动转存 restore-safety/,master key 写 0600 文件并提示配置)与 **UI 在线恢复**(本地上传或**从对象存储直拉** `.pwb` → 校验 → 暂存 → 等运行空闲后自重启应用,复用自更新的 reexec 机制;口令经当前 master key 密封进待恢复标记,不落明文);DBaaS 备份同样支持从对象存储直拉恢复(服务端先做恢复前安全备份)。
+- **💾 平台备份恢复** —— 设置→备份 把平台自身数据打包为单文件归档 `.pwb`:SQLite 用 `VACUUM INTO` 在线一致快照(含表/触发器/数据),MySQL 模式纯 Go SQL dump(无外部二进制依赖);可选带上 acme/ 证书账号与制品库;vault master key 可随包携带(argon2id 口令派生 + secretbox 密封,包内绝无明文)。支持定时备份(间隔 + 本地保留份数)、下载、校验(逐文件 sha256)与自动上传对象存储异地容灾。恢复双入口共用同一核心:CLI `pipewright restore <archive.pwb>` 离线恢复(停服执行,现库自动转存 restore-safety/,master key 写 0600 文件并提示配置)与 **UI 在线恢复**(本地上传或**从对象存储直拉** `.pwb` → 校验 → 暂存 → 等运行空闲后自重启应用,复用自更新的 reexec 机制;口令经当前 master key 密封进待恢复标记,不落明文).
 - **🔄 检查 + 一键自更新** —— 设置→系统 一键查 GitHub 最新发布并语义比对;二进制部署可页面**一键自动更新**(下载 + 校验和核验 + 原子替换 + 自重启),Docker 部署给出精确升级命令。
 
 > 安全不可妥协:凭据仅以密文存储、命令 array 化防注入、出网 SSRF 收口、日志脱敏。
