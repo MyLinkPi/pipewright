@@ -64,12 +64,14 @@ func (s *service) runTrivyViaServerHost(ctx context.Context, run *Run, host, ser
 	defer func() { _ = tarc.Close() }()
 
 	// ③ 容器内解包到 /scan 后 trivy rootfs(脚本为常量,数据只走 stdin)。
+	// 镜像 ENTRYPOINT 恒为 trivy(常规路径的 `docker run … trivy镜像 rootfs` 即依赖此),
+	// 跑 shell 必须显式 --entrypoint sh,否则 sh 会作为 trivy 子命令报 unknown command。
 	script := "mkdir -p /scan && tar -xf - -C /scan && trivy rootfs -q --scanners vuln --format json /scan"
-	scanCmd := []string{"docker", "run", "--rm", "-i", "-e", "TRIVY_SERVER=" + serverURL}
+	scanCmd := []string{"docker", "run", "--rm", "-i", "--entrypoint", "sh", "-e", "TRIVY_SERVER=" + serverURL}
 	if token != "" {
 		scanCmd = append(scanCmd, "-e", "TRIVY_TOKEN="+token)
 	}
-	scanCmd = append(scanCmd, s.trivyImage, "sh", "-c", script)
+	scanCmd = append(scanCmd, s.trivyImage, "-c", script)
 	res, rerr := s.runner.ExecWithStdin(ctx, inst.ServerID, scanCmd, tarc)
 	if rerr != nil {
 		return nil, "经 Trivy Server 宿主机(" + inst.Name + ")代跑失败:" + truncateRunes(rerr.Error(), 256)

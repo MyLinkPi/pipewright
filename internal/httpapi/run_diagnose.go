@@ -167,8 +167,10 @@ func NewDiagnoseHook(runs run.Service, aiSvc ai.Service, secretSrc *RunSecretSou
 		if runs == nil {
 			return
 		}
-		// best-effort:自带超时;父 ctx 取消(停机)时一并取消。
-		hookCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	// best-effort:自带超时;父 ctx 取消(停机)时一并取消。诊断现为多轮联网
+	// agent 循环(整体预算 8min,见 ai 包 diagnose_agent.go),钩子预算与之对齐
+	// 上调(原 30s 连单轮流式都会掐断);后台 goroutine 不占请求窗,无 UI 等待。
+	hookCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
 		defer cancel()
 		// 自动诊断:仅持久化 ready 结果(persistUnavailable=false),不污染未诊断干净态。
 		if _, err := diagnoseRun(hookCtx, runs, aiSvc, secretSrc, runID, false); err != nil {

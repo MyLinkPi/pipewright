@@ -29,6 +29,18 @@ func isWebTool(id string) bool {
 	return id == "web_search" || id == "web_fetch"
 }
 
+// WebToolCatalog 返回网页工具目录副本(与 Tools(scopes) 附加的目录同源),
+// 供 opschat 之外的 agent 循环(AI 失败诊断)复用同一份 schema 与描述。
+func WebToolCatalog() []Tool {
+	return cloneTools(webTools())
+}
+
+// ParseWebCall 校验并解析一次网页工具调用参数(与 worker 执行路径同一套校验,
+// id 仅 web_search/web_fetch;其他 id 一律 ErrInvalid)。
+func ParseWebCall(id string, raw json.RawMessage) (ToolArgs, error) {
+	return parseWebArgs(id, raw)
+}
+
 // validWebQuery 限定搜索词:1-128 个 Unicode 字符、非全空白、无控制字符
 // (对齐 DeepSeek Search API 的 query 约束)。
 func validWebQuery(q string) bool {
