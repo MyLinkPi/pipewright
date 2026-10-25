@@ -2,9 +2,12 @@ package sshtunnel
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"database/sql"
+	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -24,6 +27,8 @@ type fakeTargets struct {
 	servers   map[string]*target.Server
 	dialErr   error
 	dialCalls []string
+	// ssh 非 nil 时 Dial/DialDirect 返回它(便于预置 tun 拒绝等行为)。
+	ssh *fakeSSHClient
 }
 
 func (f *fakeTargets) Get(_ context.Context, id string) (*target.Server, error) {
@@ -38,6 +43,9 @@ func (f *fakeTargets) Dial(_ context.Context, id string) (target.SSHClient, erro
 		return nil, f.dialErr
 	}
 	f.dialCalls = append(f.dialCalls, "server:"+id)
+	if f.ssh != nil {
+		return f.ssh, nil
+	}
 	return &fakeSSHClient{}, nil
 }
 
@@ -46,12 +54,18 @@ func (f *fakeTargets) DialDirect(_ context.Context, host string, port int, user,
 		return nil, f.dialErr
 	}
 	f.dialCalls = append(f.dialCalls, fmt.Sprintf("direct:%s@%s:%d/%s", user, host, port, credID))
+	if f.ssh != nil {
+		return f.ssh, nil
+	}
 	return &fakeSSHClient{}, nil
 }
 
 // fakeSSHClient 把 Dial 转成本机 TCP 直连(测试里指向本地 echo 服务),模拟
 // 「经 sshd 到达目标」的数据面;Listen 开本机监听模拟远端 sshd 侧。
-type fakeSSHClient struct{}
+type fakeSSHClient struct {
+	tunRejected error // OpenTunChannel 预置失败(模拟 PermitTunnel 关闭)
+	tunRequests [][2]int
+}
 
 func (c *fakeSSHClient) Dial(network, addr string) (net.Conn, error) { return net.Dial(network, addr) }
 func (c *fakeSSHClient) Listen(network, addr string) (net.Listener, error) {
@@ -59,6 +73,23 @@ func (c *fakeSSHClient) Listen(network, addr string) (net.Listener, error) {
 }
 func (c *fakeSSHClient) Ping(time.Duration) error { return nil }
 func (c *fakeSSHClient) Close() error             { return nil }
+func (c *fakeSSHClient) Exec(cmd string) (string, error) {
+	if strings.Contains(cmd, "fail") {
+		return "", errors.New("exec failed")
+	}
+	return "", nil
+}
+
+// OpenTunChannel 记录请求并返回一条 net.Pipe(读侧由调用方持有);预置失败时拒绝。
+func (c *fakeSSHClient) OpenTunChannel(localIdx, remoteIdx int) (io.ReadWriteCloser, error) {
+	c.tunRequests = append(c.tunRequests, [2]int{localIdx, remoteIdx})
+	if c.tunRejected != nil {
+		return nil, c.tunRejected
+	}
+	a, b := net.Pipe()
+	go func() { _ = a.Close() }() // 对端无人写:读侧遇 EOF/关闭即断
+	return b, nil
+}
 
 // seedCredential 直接落一条 ssh_key 凭据(测试库不需要可解密,密文列只占位)。
 func seedCredential(t *testing.T, db *sql.DB, id, typ string) {
@@ -139,6 +170,26 @@ func TestValidateTunnelInput(t *testing.T) {
 		{"合法绑定服务器 local(自动端口)", func() Input {
 			return Input{Name: "t2", ServerID: "srv-1", Mode: ModeLocal, BindPort: 0, DestHost: "db", DestPort: 5432}
 		}(), nil},
+		{"合法 vpn(同 /30)", func() Input {
+			in := directInput(); in.Mode = ModeVPN; in.BindHost = "10.255.0.2"; in.DestHost = "10.255.0.1"; in.BindPort = 0; in.DestPort = 1
+			return in
+		}(), nil},
+		{"vpn 缺远端 IP", func() Input {
+			in := directInput(); in.Mode = ModeVPN; in.BindHost = "10.255.0.2"; in.DestHost = ""; in.DestPort = 0
+			return in
+		}(), ErrInvalidInput},
+		{"vpn 跨网段", func() Input {
+			in := directInput(); in.Mode = ModeVPN; in.BindHost = "10.255.0.2"; in.DestHost = "10.255.0.5"; in.DestPort = 0
+			return in
+		}(), ErrInvalidInput},
+		{"vpn IPv6 不支持", func() Input {
+			in := directInput(); in.Mode = ModeVPN; in.BindHost = "fd00::2"; in.DestHost = "fd00::1"; in.DestPort = 0
+			return in
+		}(), ErrInvalidInput},
+		{"vpn tun 序号越界", func() Input {
+			in := directInput(); in.Mode = ModeVPN; in.BindHost = "10.255.0.2"; in.DestHost = "10.255.0.1"; in.DestPort = 256
+			return in
+		}(), ErrInvalidInput},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -696,4 +747,107 @@ func TestRunHelperLifecycle(t *testing.T) {
 	}
 	// 注:日志文件内容在真实 spawn(主进程重定向 stdio)时产生;直连调用只写 stderr,
 	// 故此处不断言日志文件(其读取行为由 TestTailLog 覆盖)。
+}
+
+// TestVPNPumpFraming 入站包泵(通道 → tun)线上帧格式:4 字节大端地址族 + IP 包
+//(包长自 IPv4 total-length 解析);未知地址族上报 dead 触发重连。
+func TestVPNPumpFraming(t *testing.T) {
+	pkt := make([]byte, 24)
+	pkt[0] = 0x45 // IPv4 头
+	for i := range pkt {
+		pkt[i] = byte(i)
+	}
+	binary.BigEndian.PutUint16(pkt[2:4], 24) // total length(填充后设置,防被覆盖)
+	buf := &bytes.Buffer{}
+	f := &forward{dead: make(chan error, 1)}
+	chA, chB := net.Pipe()
+	defer func() { _ = chB.Close() }()
+	go pumpChannelToTun(chA, buf, f)
+	if _, err := chB.Write(append([]byte{0, 0, 0, 2}, pkt...)); err != nil {
+		t.Fatalf("写通道:%v", err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for buf.Len() < len(pkt) && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !bytes.Equal(buf.Bytes(), pkt) {
+		t.Fatalf("tun 侧包不一致:% x", buf.Bytes())
+	}
+	// 未知地址族 → fail(dead 收到错误)。
+	if _, err := chB.Write([]byte{0, 0, 0, 99}); err != nil {
+		t.Fatalf("写未知地址族:%v", err)
+	}
+	select {
+	case err := <-f.dead:
+		if err == nil {
+			t.Fatal("dead 应携带错误")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("未知地址族应触发 dead")
+	}
+}
+
+// TestVPNPumpOutbound 出站包泵(tun → 通道)按 IP 版本补 4 字节地址族头。
+func TestVPNPumpOutbound(t *testing.T) {
+	pkt := make([]byte, 20)
+	pkt[0] = 0x46 // IPv4
+	binary.BigEndian.PutUint16(pkt[2:4], 20)
+	f := &forward{dead: make(chan error, 1)}
+	chA, chB := net.Pipe()
+	defer func() { _ = chB.Close() }()
+	go pumpTunToChannel(bytes.NewReader(pkt), chA, f)
+	hdr := make([]byte, 4)
+	if _, err := io.ReadFull(chB, hdr); err != nil {
+		t.Fatalf("读地址族头:%v", err)
+	}
+	if binary.BigEndian.Uint32(hdr) != wireAFInet {
+		t.Fatalf("地址族头异常:% x", hdr)
+	}
+	got := make([]byte, len(pkt))
+	if _, err := io.ReadFull(chB, got); err != nil {
+		t.Fatalf("读包体:%v", err)
+	}
+	if !bytes.Equal(got, pkt) {
+		t.Fatalf("通道侧包不一致:% x", got)
+	}
+}
+
+// TestVPNTestBranch vpn 模式连通测试:远端接受 tun 请求 → ok;拒绝 → PermitTunnel 提示。
+func TestVPNTestBranch(t *testing.T) {
+	s, ft := newTestService(t)
+	seedCredential(t, s.db, "cred-1", "ssh_key")
+	ft.ssh = &fakeSSHClient{}
+	ctx := context.Background()
+	in := directInput()
+	in.Mode = ModeVPN
+	in.BindHost = "10.255.0.2"
+	in.DestHost = "10.255.0.1"
+	in.BindPort = 0
+	in.DestPort = 1
+	created, err := s.Create(ctx, in)
+	if err != nil {
+		t.Fatalf("create vpn: %v", err)
+	}
+
+	// 接受:fake 记录请求且成功。
+	res, err := s.Test(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("test: %v", err)
+	}
+	if !res.OK || res.Err != "" {
+		t.Fatalf("期望测试通过,得到 %+v", res)
+	}
+	if len(ft.ssh.tunRequests) != 1 || ft.ssh.tunRequests[0] != [2]int{0, 1} {
+		t.Fatalf("tun 请求参数异常:%v", ft.ssh.tunRequests)
+	}
+
+	// 拒绝:sshd PermitTunnel no → 错误文案带 PermitTunnel 指引。
+	ft.ssh.tunRejected = errors.New("administratively prohibited: PermitTunnel no")
+	res, err = s.Test(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("test rejected: %v", err)
+	}
+	if res.OK || res.Err == "" || !strings.Contains(res.Err, "PermitTunnel") {
+		t.Fatalf("拒绝场景期望 PermitTunnel 提示,得到 %+v", res)
+	}
 }

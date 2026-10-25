@@ -80,6 +80,7 @@ const ja: typeof zhCN = {
     tunnels: 'SSH トンネル',
     serviceReg: 'サービス登録',
     appStore: 'アプリストア',
+    dbaas: 'データベース インスタンス',
     databases: 'データベース',
     objectStorage: 'オブジェクトストレージ',
     redis: 'Redis',

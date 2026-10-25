@@ -234,9 +234,9 @@ describe('Tunnels · 新建/编辑表单', () => {
     await inputs[3].setValue('ops')
     await inputs[5].setValue('1080')
     await w.find('select.field-input').setValue('c1')
-    // 模式 = dynamic(最后一个 radio-pill;前两个是连接方式)。
+    // 模式 = dynamic(胶囊序:连接方式×2 → local/remote/dynamic/vpn)。
     const pills = w.findAll('.radio-pill')
-    await pills[pills.length - 1].find('input').setValue('dynamic')
+    await pills[4].find('input').setValue('dynamic')
     await w.find('form.tunnel-form').trigger('submit.prevent')
     await flushPromises()
     expect(createTunnelMock).toHaveBeenCalledWith(
@@ -280,6 +280,68 @@ describe('Tunnels · 新建/编辑表单', () => {
         bindHost: '127.0.0.1', bindPort: 8080, destHost: 'db.internal', destPort: 3306,
       }),
     )
+    w.unmount()
+  })
+
+  it('VPN 模式:不推荐警示 + 字段换轨 + 载荷换轨', async () => {
+    createTunnelMock.mockResolvedValue(tunnel({ mode: 'vpn' }))
+    const w = await mountView()
+    await w.findAll('.header-actions button')[0].trigger('click')
+    // 直连模式 input 序:name / host / port / user / bindHost / bindPort / destHost / destPort。
+    const inputs = w.findAll('input.field-input')
+    await inputs[0].setValue('via-tun')
+    await inputs[1].setValue('198.51.100.7')
+    await inputs[3].setValue('ops')
+    await w.find('select.field-input').setValue('c1')
+    // 模式切 VPN(最后一个 radio-pill)→ 出现不推荐警示。
+    const pills = w.findAll('.radio-pill')
+    await pills[pills.length - 1].find('input').setValue('vpn')
+    await flushPromises()
+    expect(w.text()).toContain('不推荐')
+    expect(w.text()).toContain('集群自组网')
+    expect(w.text()).toContain('本端隧道 IP')
+    await inputs[4].setValue('10.255.0.2') // 本端隧道 IP
+    await inputs[5].setValue('0') // 本端 tun 序号
+    await inputs[6].setValue('10.255.0.1') // 远端隧道 IP
+    await inputs[7].setValue('1') // 远端 tun 序号
+    await w.find('form.tunnel-form').trigger('submit.prevent')
+    await flushPromises()
+    expect(createTunnelMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: 'via-tun',
+        mode: 'vpn',
+        host: '198.51.100.7',
+        user: 'ops',
+        credentialId: 'c1',
+        bindHost: '10.255.0.2',
+        bindPort: 0,
+        destHost: '10.255.0.1',
+        destPort: 1,
+      }),
+    )
+    w.unmount()
+  })
+
+  it('VPN 模式跨网段 IP 被拦截', async () => {
+    const w = await mountView()
+    await w.findAll('.header-actions button')[0].trigger('click')
+    const inputs = w.findAll('input.field-input')
+    await inputs[0].setValue('bad-tun')
+    await inputs[1].setValue('198.51.100.7')
+    await inputs[3].setValue('ops')
+    await w.find('select.field-input').setValue('c1')
+    const pills = w.findAll('.radio-pill')
+    await pills[pills.length - 1].find('input').setValue('vpn')
+    await flushPromises()
+    const cur = w.findAll('input.field-input')
+    await cur[4].setValue('10.255.0.2')
+    await cur[5].setValue('0')
+    await cur[6].setValue('10.255.0.5') // 不在同一 /30
+    await cur[7].setValue('1')
+    await w.find('form.tunnel-form').trigger('submit.prevent')
+    await flushPromises()
+    expect(w.text()).toContain('两端 IP 须在同一 /30 网段')
+    expect(createTunnelMock).not.toHaveBeenCalled()
     w.unmount()
   })
 

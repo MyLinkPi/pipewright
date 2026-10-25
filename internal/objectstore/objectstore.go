@@ -55,6 +55,10 @@ var (
 	ErrTestFailed = errors.New("objectstore: connection test failed")
 	// ErrUploadFailed 表示上传失败。
 	ErrUploadFailed = errors.New("objectstore: upload failed")
+	// ErrDownloadFailed 表示下载失败(凭据无效 / API 不可达 / IO 中断)。
+	ErrDownloadFailed = errors.New("objectstore: download failed")
+	// ErrObjectNotFound 表示要下载的对象不存在。
+	ErrObjectNotFound = errors.New("objectstore: object not found")
 	// ErrBrowseFailed 表示列举(浏览)失败。
 	ErrBrowseFailed = errors.New("objectstore: browse failed")
 	// ErrInvalidBucket 表示新建桶名非法(3-63 位小写字母/数字/连字符,两端为字母或数字)。
@@ -161,12 +165,15 @@ type ListPageResult struct {
 	NextMarker string
 }
 
-// ObjectClient 抽象一个对象存储账户的写/校验/列举能力(注入便于单测,不触真网络)。
+// ObjectClient 抽象一个对象存储账户的写/读/校验/列举能力(注入便于单测,不触真网络)。
 type ObjectClient interface {
 	// VerifyBucket 校验凭据可访问目标桶(连通性 + 桶存在),失败返回人话错误(绝不含密钥)。
 	VerifyBucket(ctx context.Context) error
 	// PutObject 上传一个对象(objectKey 为对象键,body 为内容流)。
 	PutObject(ctx context.Context, objectKey string, body io.Reader) error
+	// GetObject 下载一个对象(objectKey 为对象键),流式写入 w;对象不存在时返回
+	// errors.Is(err, ErrObjectNotFound) 成立的错误。
+	GetObject(ctx context.Context, objectKey string, w io.Writer) error
 	// ListPage 单页列举一个目录(桶可能对象巨多,永远只返回一页,绝不全量聚合)。
 	ListPage(ctx context.Context, in ListPageInput) (ListPageResult, error)
 	// ListBuckets 列举该账户下的桶(候选列表;实现可分页拉全,截断在 service 层统一处理)。
@@ -220,6 +227,11 @@ type Service interface {
 	// objectKey 前会自动附加配置的 PathPrefix(存储级默认前缀;节点级前缀拼在其后)。
 	// Secret 用完即弃,绝不外泄。
 	Upload(ctx context.Context, providerID, objectKey string, body io.Reader) error
+
+	// Download 取该配置凭据 → 把 objectKey 对象流式下载写入 w(备份从云端恢复用)。
+	// 与 Upload 对称:objectKey 相对 PathPrefix 的逻辑键。对象不存在 → ErrObjectNotFound。
+	// Secret 用完即弃,绝不外泄。
+	Download(ctx context.Context, providerID, objectKey string, w io.Writer) error
 
 	// Browse 取该配置凭据 → 单页列举 prefix 目录(delimiter="/",marker 游标分页)。
 	// prefix 相对 PathPrefix(浏览根锚定在配置前缀之下,与 Upload 写入位置一致);空 = 前缀根。

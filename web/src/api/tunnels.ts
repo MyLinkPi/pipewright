@@ -19,8 +19,8 @@
 
 import { http } from './http'
 
-/** Tunnel mode — the ssh flag it mirrors. */
-export type TunnelMode = 'local' | 'remote' | 'dynamic'
+/** Tunnel mode — the ssh flag it mirrors. `vpn` is ssh -w (see the not-recommended hint in the UI). */
+export type TunnelMode = 'local' | 'remote' | 'dynamic' | 'vpn'
 
 /** Merged runtime status (config.enabled + helper heartbeat). */
 export type TunnelStatus = 'disabled' | 'stopped' | 'connecting' | 'active' | 'retrying'

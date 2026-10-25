@@ -513,6 +513,55 @@ describe('AppStore 已部署实例区', () => {
   })
 })
 
+describe('AppStore 分类展示', () => {
+  const mkTpl = (over: Partial<AppTemplate>): AppTemplate => ({ ...giteaTpl, ...over })
+
+  it('内置模板按类别分组展示,自定义模板归入自定义组,chips 带计数', async () => {
+    h.listAppTemplates.mockResolvedValue({
+      items: [
+        mkTpl({ id: 'a', name: 'mysql', displayName: 'MySQL', description: '' }),
+        mkTpl({ id: 'b', name: 'redis', displayName: 'Redis', description: '' }),
+        mkTpl({ id: 'c', name: 'safeline', displayName: 'SafeLine WAF', description: '' }),
+        mkTpl({ id: 'd', name: 'my-app', displayName: 'MyApp', description: '', builtin: false }),
+      ],
+    })
+    const w = mount(AppStore)
+    await flushPromises()
+
+    // 分组标题出现,模板落在各自分组下。
+    expect(w.text()).toContain('数据库与缓存')
+    expect(w.text()).toContain('安全')
+    expect(w.text()).toContain('MySQL')
+    expect(w.text()).toContain('SafeLine WAF')
+    expect(w.text()).toContain('MyApp')
+    // chips:每个分类一个,带数量。
+    const chips = w.findAll('.apps__chip').map((c) => c.text())
+    expect(chips.some((x) => x.includes('数据库与缓存') && x.includes('2'))).toBe(true)
+    expect(chips.some((x) => x.includes('安全') && x.includes('1'))).toBe(true)
+    expect(chips.some((x) => x.includes('自定义模板') && x.includes('1'))).toBe(true)
+  })
+
+  it('点具体分类 chip 只显示该组模板;回「全部」恢复分组展示', async () => {
+    h.listAppTemplates.mockResolvedValue({
+      items: [
+        mkTpl({ id: 'a', name: 'mysql', displayName: 'MySQL', description: '' }),
+        mkTpl({ id: 'c', name: 'safeline', displayName: 'SafeLine WAF', description: '' }),
+      ],
+    })
+    const w = mount(AppStore)
+    await flushPromises()
+
+    await w.findAll('.apps__chip').find((c) => c.text().includes('安全'))!.trigger('click')
+    await nextTick()
+    expect(w.text()).toContain('SafeLine WAF')
+    expect(w.text()).not.toContain('MySQL')
+
+    await w.findAll('.apps__chip').find((c) => c.text().includes('全部'))!.trigger('click')
+    await nextTick()
+    expect(w.text()).toContain('MySQL')
+  })
+})
+
 describe('AppStore 卸载', () => {
   it('点「卸载」→ 弹窗默认保留数据卷;勾选删卷出现警示,提交带 stackName 与 deleteVolumes,成功后刷新实例区', async () => {
     h.listAppInstances.mockResolvedValue({ items: [mkInstance()] })

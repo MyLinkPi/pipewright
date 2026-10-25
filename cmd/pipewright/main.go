@@ -29,6 +29,7 @@ import (
 	"github.com/huangchengsir/pipewright/internal/artifactstore"
 	"github.com/huangchengsir/pipewright/internal/audit"
 	"github.com/huangchengsir/pipewright/internal/auth"
+	"github.com/huangchengsir/pipewright/internal/backup"
 	"github.com/huangchengsir/pipewright/internal/build"
 	"github.com/huangchengsir/pipewright/internal/buildcache"
 	"github.com/huangchengsir/pipewright/internal/ceph"
@@ -38,6 +39,7 @@ import (
 	"github.com/huangchengsir/pipewright/internal/config"
 	"github.com/huangchengsir/pipewright/internal/cron"
 	"github.com/huangchengsir/pipewright/internal/dagrun"
+	"github.com/huangchengsir/pipewright/internal/dbaas"
 	"github.com/huangchengsir/pipewright/internal/dbadmin"
 	"github.com/huangchengsir/pipewright/internal/deploy"
 	"github.com/huangchengsir/pipewright/internal/diskadmin"
@@ -112,6 +114,25 @@ func main() {
 	if err != nil {
 		log.Fatalf("config: %v", err)
 	}
+
+	// restore 子命令:CLI 离线恢复(在打开存储之前分派——此时不持有任何数据库
+	// 句柄,可安全替换 SQLite 文件/回放 MySQL dump;详见 restore_cli.go)。
+	if len(os.Args) > 1 && os.Args[1] == "restore" {
+		os.Exit(runRestoreCLI(cfg, os.Args[2:]))
+	}
+
+	// UI 在线恢复的启动期应用:上一进程退出前上传并暂存了备份(pending-restore.json),
+	// 此刻(存储打开之前)应用它并清除标记。失败属致命(半恢复状态不可静默带病启动)。
+	if rep, berr := backup.ApplyPendingRestore(backupRestoreOptions(dbDriver, dbDSN)); berr != nil {
+		log.Fatalf("[backup] 应用待恢复备份失败:%v(现库已转存 restore-safety/,请人工介入)", berr)
+	} else if rep != nil {
+		log.Printf("[backup] 已应用在线恢复:数据库=%v acme=%v artifacts=%v masterKey=%s",
+			rep.AppliedDB, rep.AppliedAcme, rep.AppliedArtifacts, rep.MasterKeyAction)
+		for _, w := range rep.Warnings {
+			log.Printf("[backup] 恢复告警:%s", w)
+		}
+	}
+
 	st, err := store.OpenWithConfig(store.OpenConfig{Driver: dbDriver, DSN: dbDSN})
 	if err != nil {
 		log.Fatalf("store: %v", err)
@@ -532,6 +553,18 @@ func main() {
 	// 提前到 dag 装配前构造,供 oss_upload 流水线节点注入;同时供设置页 /api/object-stores 消费。
 	objectStoreSvc := objectstore.New(st.DB, credVault)
 
+	// 平台自身备份恢复(internal/backup):数据目录锚定 DB 同级(sqlite)/工作目录(mysql);
+	// 对象存储上传复用 objectStoreSvc(定时备份配了 provider 才会自动上云)。CLI/在线恢复的
+	// 启动期分派见 main 开头。定时备份 sweeper 在 ctx 就绪后启动(见下方)。
+	backupOpts := backupRestoreOptions(dbDriver, dbDSN)
+	backupSvc := backup.New(st.DB, backup.Options{
+		Driver:   backupOpts.Driver,
+		DataDir:  backupOpts.DataDir,
+		DBPath:   backupOpts.DBPath,
+		MySQLDSN: backupOpts.MySQLDSN,
+		Uploader: objectStoreSvc,
+	})
+
 	// 阿里云 ECS 批量导入 + 开关机(设置→阿里云 ECS / 流水线 ecs_power 节点):多套账户配置
 	// (AK/SK)+ 手选范围批量导入/更新 servers 行 + 流水线开关机(关机固定节省停机模式)。
 	// ECS OpenAPI 客户端为包内手写(net/http + ACS3-HMAC-SHA256,无 SDK);落库/更新复用
@@ -546,6 +579,15 @@ func main() {
 	// Redis 管理(实例注册 + SCAN 游标分页键浏览 + 删键/改 TTL):连接密码走 vault 密文,
 	// 实例默认只读;应用市场部署 redis 模板成功后经此服务联动自动登记。
 	redisAdminSvc := redisadmin.New(st.DB, credVault)
+
+	// 数据库即服务(DBaaS):按需创建 MySQL/PostgreSQL/Redis 实例(受管 compose 部署 +
+	// 端口自动分配 + 口令密封 + 生命周期 + 备份恢复 + 定时备份)。部署复用应用商店
+	// compose 链路(internal/composeops);创建成功联动登记进 dbadmin/redisadmin。
+	// 定时备份 sweeper 在 ctx 就绪后启动(见下方)。
+	dbaasSvc := dbaas.New(st.DB, targetSvc, dbAdminSvc, redisAdminSvc, credVault, dbaas.Options{
+		DataDir:  backupOpts.DataDir,
+		Uploader: objectStoreSvc,
+	})
 
 	// 安全中心(trivy-server 扫描器登记 + Trivy/Nuclei 扫描 + 定时规则 + HTML 审计报告):
 	// 扫描经 target 层 SSH 在目标机 docker run 扫描器容器(无主动超时;重启后由
@@ -1084,7 +1126,7 @@ func main() {
 
 	srv := &http.Server{
 		Addr:              cfg.Addr,
-		Handler:           httpapi.New(webFS, authSvc, httpapi.WithVault(credVault), httpapi.WithProjects(projectSvc), httpapi.WithTriggers(triggerSvc), httpapi.WithPipelines(pipelineSvc), httpapi.WithPipelineSettings(pipelineSettingsSvc), httpapi.WithRuns(runSvc, pool), httpapi.WithWebhooks(webhookReceiver), httpapi.WithWebhookForwarder(webhookForwarder), httpapi.WithAudit(auditRec), httpapi.WithAccount(authSvc), httpapi.WithIdentity(identitySvc), httpapi.WithAISettings(aiSvc), httpapi.WithAIGenerate(repoAnalyzer), httpapi.WithRunDiff(runDiffer), httpapi.WithSource(sourceReader), httpapi.WithRefs(refsLister), httpapi.WithArtifactStore(artStore), httpapi.WithArtifactImageTransfer(meshImages), httpapi.WithArtifactTransfer(artifactTransfers), httpapi.WithServers(targetSvc), httpapi.WithLabels(labelsSvc), httpapi.WithServerCommands(serverCmdSvc), httpapi.WithSSHTunnels(sshtunnelSvc), httpapi.WithRegistryHub(registryHubSvc), httpapi.WithRunnerConfig(runnerSvc), httpapi.WithDeploy(deploySvc), httpapi.WithSpecLoader(resumeSpecLoader), httpapi.WithNotifications(notifySvc), httpapi.WithRetention(retentionSvc), httpapi.WithDNSProviders(dnsSvc), httpapi.WithAliyunEcs(aliyunSvc), httpapi.WithObjectStores(objectStoreSvc), httpapi.WithCertMgmt(certSvc), httpapi.WithCertDeploys(certDeploySvc), httpapi.WithPlatformHTTPS(platformHTTPSSvc), httpapi.WithFirewall(firewallSvc), httpapi.WithSystemConfig(sysCfgSvc), httpapi.WithMFA(mfaSvc), httpapi.WithServiceReg(serviceRegSvc), httpapi.WithAppStore(appStoreSvc), httpapi.WithDBAdmin(dbAdminSvc), httpapi.WithRedisAdmin(redisAdminSvc), httpapi.WithSecScan(secScanSvc), httpapi.WithPVEAdmin(pveAdminSvc), httpapi.WithDiagnosisFeedback(feedbackSvc), httpapi.WithAnomaly(anomalySvc), httpapi.WithAnomalyConfig(int(anomalyInterval.Seconds()), int(anomalyCooldown.Seconds())), httpapi.WithMetricsHistory(metricsHist), httpapi.WithSsar(ssarSvc), httpapi.WithSecretSource(secretSrc), httpapi.WithOAuth(oauthSvc), httpapi.WithCron(cronSvc), httpapi.WithChain(chainSvc), httpapi.WithApprovals(approvalCoord, approvalStore), httpapi.WithApprovalLinks(approvalSigner), httpapi.WithWaitNode(waitCoord), httpapi.WithConcurrency(concurrencySvc), httpapi.WithParameters(parameterSvc), httpapi.WithDoraMetrics(doraMetricsSvc), httpapi.WithTemplates(templateSvc), httpapi.WithVariableGroups(varGroupSvc), httpapi.WithCustomNodes(customNodeSvc), httpapi.WithOpsChat(opsChatSvc), httpapi.WithMesh(meshAdminDeps), httpapi.WithCeph(cephSvc), httpapi.WithDiskAdmin(diskAdminSvc), httpapi.WithFileAdmin(fileAdminSvc), httpapi.WithMaintenance(maintSvc), httpapi.WithProjectMirrorCleaner(projectMirrorCleaner), httpapi.WithReexecGuard(reexecGuard{runs: runSvc, shared: sharedBuildSrv})),
+		Handler:           httpapi.New(webFS, authSvc, httpapi.WithVault(credVault), httpapi.WithProjects(projectSvc), httpapi.WithTriggers(triggerSvc), httpapi.WithPipelines(pipelineSvc), httpapi.WithPipelineSettings(pipelineSettingsSvc), httpapi.WithRuns(runSvc, pool), httpapi.WithWebhooks(webhookReceiver), httpapi.WithWebhookForwarder(webhookForwarder), httpapi.WithAudit(auditRec), httpapi.WithAccount(authSvc), httpapi.WithIdentity(identitySvc), httpapi.WithAISettings(aiSvc), httpapi.WithAIGenerate(repoAnalyzer), httpapi.WithRunDiff(runDiffer), httpapi.WithSource(sourceReader), httpapi.WithRefs(refsLister), httpapi.WithArtifactStore(artStore), httpapi.WithArtifactImageTransfer(meshImages), httpapi.WithArtifactTransfer(artifactTransfers), httpapi.WithServers(targetSvc), httpapi.WithLabels(labelsSvc), httpapi.WithServerCommands(serverCmdSvc), httpapi.WithSSHTunnels(sshtunnelSvc), httpapi.WithRegistryHub(registryHubSvc), httpapi.WithRunnerConfig(runnerSvc), httpapi.WithDeploy(deploySvc), httpapi.WithSpecLoader(resumeSpecLoader), httpapi.WithNotifications(notifySvc), httpapi.WithRetention(retentionSvc), httpapi.WithDNSProviders(dnsSvc), httpapi.WithAliyunEcs(aliyunSvc), httpapi.WithObjectStores(objectStoreSvc), httpapi.WithBackup(backupSvc), httpapi.WithDBaaS(dbaasSvc), httpapi.WithCertMgmt(certSvc), httpapi.WithCertDeploys(certDeploySvc), httpapi.WithPlatformHTTPS(platformHTTPSSvc), httpapi.WithFirewall(firewallSvc), httpapi.WithSystemConfig(sysCfgSvc), httpapi.WithMFA(mfaSvc), httpapi.WithServiceReg(serviceRegSvc), httpapi.WithAppStore(appStoreSvc), httpapi.WithDBAdmin(dbAdminSvc), httpapi.WithRedisAdmin(redisAdminSvc), httpapi.WithSecScan(secScanSvc), httpapi.WithPVEAdmin(pveAdminSvc), httpapi.WithDiagnosisFeedback(feedbackSvc), httpapi.WithAnomaly(anomalySvc), httpapi.WithAnomalyConfig(int(anomalyInterval.Seconds()), int(anomalyCooldown.Seconds())), httpapi.WithMetricsHistory(metricsHist), httpapi.WithSsar(ssarSvc), httpapi.WithSecretSource(secretSrc), httpapi.WithOAuth(oauthSvc), httpapi.WithCron(cronSvc), httpapi.WithChain(chainSvc), httpapi.WithApprovals(approvalCoord, approvalStore), httpapi.WithApprovalLinks(approvalSigner), httpapi.WithWaitNode(waitCoord), httpapi.WithConcurrency(concurrencySvc), httpapi.WithParameters(parameterSvc), httpapi.WithDoraMetrics(doraMetricsSvc), httpapi.WithTemplates(templateSvc), httpapi.WithVariableGroups(varGroupSvc), httpapi.WithCustomNodes(customNodeSvc), httpapi.WithOpsChat(opsChatSvc), httpapi.WithMesh(meshAdminDeps), httpapi.WithCeph(cephSvc), httpapi.WithDiskAdmin(diskAdminSvc), httpapi.WithFileAdmin(fileAdminSvc), httpapi.WithMaintenance(maintSvc), httpapi.WithProjectMirrorCleaner(projectMirrorCleaner), httpapi.WithReexecGuard(reexecGuard{runs: runSvc, shared: sharedBuildSrv})),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		// WriteTimeout 置 0:SSE 长连接(/api/runs/{id}/events)不可被写超时切断;
@@ -1109,6 +1151,14 @@ func main() {
 	// 与 mesh 同款停机语义 —— ctx 取消直接返回,**不杀**任何 helper(孤儿继续服务,
 	// 下次启动心跳新鲜即零中断收养)。
 	go sshtunnelSvc.StartLoop(ctx)
+
+	// 平台定时备份调度器:按备份策略(设置→备份)间隔触发 scheduled 备份。随 ctx 停机退出。
+	go backup.NewSweeper(backupSvc, 10*time.Minute).Start(ctx)
+	log.Printf("[backup] 定时备份调度器已启动(每 10 分钟检查到点与否;策略默认关,需在设置开启)")
+
+	// DBaaS 定时备份调度器:按各实例备份计划(backup_interval_hours)触发 scheduled 备份。
+	go dbaas.NewSweeper(dbaasSvc, 10*time.Minute).Start(ctx)
+	log.Printf("[dbaas] 定时备份调度器已启动(每 10 分钟扫描实例计划)")
 
 	// 集群 DNS 映射同步循环(虚拟 IP 变化自动跟随 + 周期兜底)随 ctx 启停。
 	go meshDNSSyncer.Run(ctx)

@@ -6,12 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"regexp"
 	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/huangchengsir/pipewright/internal/audit"
+	"github.com/huangchengsir/pipewright/internal/composeops"
 	"github.com/huangchengsir/pipewright/internal/target"
 )
 
@@ -562,33 +562,15 @@ func composeFileArgs(configFile string) ([]string, error) {
 	return args, nil
 }
 
-var reContainerHexID = regexp.MustCompile(`^[a-f0-9]{6,64}$`)
 
-// detectComposeBin 探测可用的 compose CLI:v2 `docker compose` 优先,回退 v1 `docker-compose`。
-// 返回基础命令(如 ["docker","compose"] / ["docker-compose"]);都没有返回 nil。
+// detectComposeBin 探测可用的 compose CLI(实现在 internal/composeops,与 DBaaS 共享)。
 func detectComposeBin(ctx context.Context, svc target.Service, id string) []string {
-	if res, err := svc.Exec(ctx, id, []string{"docker", "compose", "version"}); err == nil && res.ExitCode == 0 {
-		return []string{"docker", "compose"}
-	}
-	if res, err := svc.Exec(ctx, id, []string{"docker-compose", "version"}); err == nil && res.ExitCode == 0 {
-		return []string{"docker-compose"}
-	}
-	return nil
+	return composeops.DetectComposeBin(ctx, svc, id)
 }
 
-// projectContainerIDs 取某 compose 项目(按标签)的所有容器 ID(校验为纯十六进制,防注入)。
+// projectContainerIDs 取某 compose 项目(按标签)的所有容器 ID(实现在 internal/composeops)。
 func projectContainerIDs(ctx context.Context, svc target.Service, id, project string) ([]string, error) {
-	res, err := svc.Exec(ctx, id, []string{"docker", "ps", "-aq", "--filter", "label=com.docker.compose.project=" + project})
-	if err != nil {
-		return nil, err
-	}
-	ids := []string{}
-	for _, ln := range strings.Fields(res.Stdout) {
-		if reContainerHexID.MatchString(ln) {
-			ids = append(ids, ln)
-		}
-	}
-	return ids, nil
+	return composeops.ProjectContainerIDs(ctx, svc, id, project)
 }
 
 // makeStackActionHandler 返回 POST /api/servers/{id}/stacks/action(认证 + CSRF;写)。

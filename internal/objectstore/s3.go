@@ -2,6 +2,7 @@ package objectstore
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"strings"
 
@@ -48,6 +49,27 @@ func (c *rustfsObjectClient) VerifyBucket(ctx context.Context) error {
 func (c *rustfsObjectClient) PutObject(ctx context.Context, objectKey string, body io.Reader) error {
 	_, err := c.client.PutObject(ctx, c.bucketName, objectKey, body, -1, minio.PutObjectOptions{})
 	return err
+}
+
+// GetObject 下载一个对象流式写入 w。minio-go 的 GetObject 返回惰性 *minio.Object,
+// 首次读取才触网,故连接错误与读错误都在 io.Copy 处暴露;NoSuchKey 映射为
+// ErrObjectNotFound(调用方按语义转 404)。
+func (c *rustfsObjectClient) GetObject(ctx context.Context, objectKey string, w io.Writer) error {
+	obj, err := c.client.GetObject(ctx, c.bucketName, objectKey, minio.GetObjectOptions{})
+	if err != nil {
+		if resp, ok := err.(minio.ErrorResponse); ok && resp.Code == "NoSuchKey" {
+			return fmt.Errorf("%w:%s", ErrObjectNotFound, objectKey)
+		}
+		return err
+	}
+	defer func() { _ = obj.Close() }()
+	if _, err := io.Copy(w, obj); err != nil {
+		if resp, ok := err.(minio.ErrorResponse); ok && resp.Code == "NoSuchKey" {
+			return fmt.Errorf("%w:%s", ErrObjectNotFound, objectKey)
+		}
+		return err
+	}
+	return nil
 }
 
 // CreateBucket 显式新建一个桶(浏览页「新建桶」入口)。桶已存在时由服务端返回错误,

@@ -14,7 +14,7 @@ import {
 import { listServers } from '../api/servers'
 import { listCredentials } from '../api/credentials'
 import { HttpError } from '../api/http'
-import { tunnelBucket, tunnelStateMeta, tunnelModeMeta, tunnelActionsFor, tunnelBindLabel, tunnelTargetLabel, tunnelUptimeLabel, type TunnelBucket } from '../lib/tunnelState'
+import { tunnelBucket, tunnelStateMeta, tunnelModeMeta, tunnelActionsFor, tunnelBindLabel, tunnelDestLabel, tunnelTargetLabel, tunnelUptimeLabel, type TunnelBucket } from '../lib/tunnelState'
 import { useToast } from '../composables/useToast'
 import { useConfirm } from '../composables/useConfirm'
 import { useDirtyGuard } from '../composables/useDirtyGuard'
@@ -271,6 +271,25 @@ async function closeModal(): Promise<void> {
   modalOpen.value = false
 }
 
+// ─── VPN(-w)字段标签换轨:vpn 模式下 bind/dest 字段承载隧道地址与 tun 序号 ────
+const bindHostLabel = computed(() => (form.value.mode === 'vpn' ? t('tunnels.fieldLocalIP') : t('tunnels.fieldBindHost')))
+const bindPortLabel = computed(() => (form.value.mode === 'vpn' ? t('tunnels.fieldLocalTun') : t('tunnels.fieldBindPort')))
+const bindHintText = computed(() => (form.value.mode === 'vpn' ? t('tunnels.vpnBindHint') : t('tunnels.bindHint')))
+const destHostLabel = computed(() => (form.value.mode === 'vpn' ? t('tunnels.fieldRemoteIP') : t('tunnels.fieldDestHost')))
+const destPortLabel = computed(() => (form.value.mode === 'vpn' ? t('tunnels.fieldRemoteTun') : t('tunnels.fieldDestPort')))
+
+function isIPv4(s: string): boolean {
+  const parts = s.split('.')
+  if (parts.length !== 4) return false
+  return parts.every((p) => /^\d{1,3}$/.test(p) && Number(p) >= 0 && Number(p) <= 255)
+}
+
+/** 两地址是否同一 /30(点对点网段)。 */
+function sameSubnet30(a: string, b: string): boolean {
+  const toInt = (ip: string) => ip.split('.').reduce((acc, o) => acc * 256 + Number(o), 0)
+  return (toInt(a) & ~3) === (toInt(b) & ~3)
+}
+
 function validateForm(): boolean {
   const errs: Record<string, string> = {}
   const f = form.value
@@ -283,11 +302,20 @@ function validateForm(): boolean {
     if (!f.credentialId) errs.credentialId = t('tunnels.errCredential')
     if (f.port === null || f.port < 1 || f.port > 65535) errs.port = t('tunnels.errPortRange')
   }
-  if (f.bindHost.trim() === '') errs.bindHost = t('tunnels.errBindHost')
-  if (f.bindPort === null || f.bindPort < 0 || f.bindPort > 65535) errs.bindPort = t('tunnels.errBindPort')
-  if (f.mode !== 'dynamic') {
-    if (!f.destHost.trim()) errs.destHost = t('tunnels.errDestHost')
-    if (f.destPort === null || f.destPort < 1 || f.destPort > 65535) errs.destPort = t('tunnels.errPortRange')
+  if (f.mode === 'vpn') {
+    // vpn:两端隧道 IP(同 /30)+ tun 序号 0-255。
+    if (!isIPv4(f.bindHost.trim())) errs.bindHost = t('tunnels.errVpnIP')
+    if (f.bindPort === null || f.bindPort < 0 || f.bindPort > 255) errs.bindPort = t('tunnels.errVpnTunIdx')
+    if (!isIPv4(f.destHost.trim())) errs.destHost = t('tunnels.errVpnIP')
+    else if (isIPv4(f.bindHost.trim()) && !sameSubnet30(f.bindHost.trim(), f.destHost.trim())) errs.destHost = t('tunnels.errVpnSameSubnet')
+    if (f.destPort === null || f.destPort < 0 || f.destPort > 255) errs.destPort = t('tunnels.errVpnTunIdx')
+  } else {
+    if (f.bindHost.trim() === '') errs.bindHost = t('tunnels.errBindHost')
+    if (f.bindPort === null || f.bindPort < 0 || f.bindPort > 65535) errs.bindPort = t('tunnels.errBindPort')
+    if (f.mode !== 'dynamic') {
+      if (!f.destHost.trim()) errs.destHost = t('tunnels.errDestHost')
+      if (f.destPort === null || f.destPort < 1 || f.destPort > 65535) errs.destPort = t('tunnels.errPortRange')
+    }
   }
   formErrors.value = errs
   return Object.keys(errs).length === 0
@@ -496,8 +524,8 @@ async function openLogs(tn: SshTunnel): Promise<void> {
               </template>
               <span class="mapping-addr">{{ tunnelBindLabel(tn) }}</span>
               <template v-if="tn.mode !== 'dynamic'">
-                <span class="mapping-arrow">→</span>
-                <span class="mapping-addr">{{ tn.destHost }}:{{ tn.destPort }}</span>
+                <span class="mapping-arrow">{{ tn.mode === 'vpn' ? '⇄' : '→' }}</span>
+                <span class="mapping-addr">{{ tunnelDestLabel(tn) }}</span>
               </template>
               <span v-else class="mapping-socks">SOCKS5</span>
             </div>
@@ -603,12 +631,12 @@ async function openLogs(tn: SshTunnel): Promise<void> {
               </label>
             </template>
 
-            <!-- 模式:本地 local(-L)/ 远程 remote(-R)/ 动态 dynamic(-D) -->
+            <!-- 模式:本地 local(-L)/ 远程 remote(-R)/ 动态 dynamic(-D)/ VPN vpn(-w) -->
             <div class="field">
               <span class="field-label">{{ t('tunnels.fieldMode') }}</span>
               <div class="radio-row" role="radiogroup" :aria-label="t('tunnels.fieldMode')">
                 <label
-                  v-for="m in (['local', 'remote', 'dynamic'] as const)"
+                  v-for="m in (['local', 'remote', 'dynamic', 'vpn'] as const)"
                   :key="m"
                   class="radio-pill"
                   :class="{ 'radio-pill--active': form.mode === m }"
@@ -620,29 +648,34 @@ async function openLogs(tn: SshTunnel): Promise<void> {
               <span class="field-hint">{{ t(`tunnels.modeHint_${form.mode}` as 'tunnels.modeHint_local') }}</span>
             </div>
 
+            <!-- VPN(-w)不推荐警示:引导改用集群自组网 -->
+            <div v-if="form.mode === 'vpn'" class="banner banner--warn" role="alert">
+              <span>{{ t('tunnels.vpnWarn') }}</span>
+            </div>
+
             <div class="field-row">
               <label class="field field-grow">
-                <span class="field-label">{{ t('tunnels.fieldBindHost') }}</span>
-                <input v-model="form.bindHost" class="field-input" type="text" placeholder="127.0.0.1" autocomplete="off" />
+                <span class="field-label">{{ bindHostLabel }}</span>
+                <input v-model="form.bindHost" class="field-input" type="text" :placeholder="form.mode === 'vpn' ? '10.255.0.2' : '127.0.0.1'" autocomplete="off" />
                 <span v-if="formErrors.bindHost" class="field-error">{{ formErrors.bindHost }}</span>
               </label>
               <label class="field field-port">
-                <span class="field-label">{{ t('tunnels.fieldBindPort') }}</span>
-                <input v-model.number="form.bindPort" class="field-input" type="number" min="0" max="65535" placeholder="0" />
+                <span class="field-label">{{ bindPortLabel }}</span>
+                <input v-model.number="form.bindPort" class="field-input" type="number" min="0" :max="form.mode === 'vpn' ? 255 : 65535" placeholder="0" />
                 <span v-if="formErrors.bindPort" class="field-error">{{ formErrors.bindPort }}</span>
               </label>
             </div>
-            <span class="field-hint field-hint--block">{{ t('tunnels.bindHint') }}</span>
+            <span class="field-hint field-hint--block">{{ bindHintText }}</span>
 
             <div v-if="form.mode !== 'dynamic'" class="field-row">
               <label class="field field-grow">
-                <span class="field-label">{{ t('tunnels.fieldDestHost') }}</span>
-                <input v-model="form.destHost" class="field-input" type="text" placeholder="10.0.0.5" autocomplete="off" />
+                <span class="field-label">{{ destHostLabel }}</span>
+                <input v-model="form.destHost" class="field-input" type="text" :placeholder="form.mode === 'vpn' ? '10.255.0.1' : '10.0.0.5'" autocomplete="off" />
                 <span v-if="formErrors.destHost" class="field-error">{{ formErrors.destHost }}</span>
               </label>
               <label class="field field-port">
-                <span class="field-label">{{ t('tunnels.fieldDestPort') }}</span>
-                <input v-model.number="form.destPort" class="field-input" type="number" min="1" max="65535" />
+                <span class="field-label">{{ destPortLabel }}</span>
+                <input v-model.number="form.destPort" class="field-input" type="number" min="1" :max="form.mode === 'vpn' ? 255 : 65535" />
                 <span v-if="formErrors.destPort" class="field-error">{{ formErrors.destPort }}</span>
               </label>
             </div>
@@ -1238,6 +1271,10 @@ async function openLogs(tn: SshTunnel): Promise<void> {
 .banner--error {
   color: var(--color-danger, #d4503e);
   background: color-mix(in oklch, var(--color-danger, #d4503e) 10%, transparent);
+}
+.banner--warn {
+  color: var(--color-warn, #b88600);
+  background: color-mix(in oklch, var(--color-warn, #b88600) 12%, transparent);
 }
 
 /* 日志弹窗 */

@@ -18,12 +18,12 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/huangchengsir/pipewright/internal/appstore"
 	"github.com/huangchengsir/pipewright/internal/audit"
+	"github.com/huangchengsir/pipewright/internal/composeops"
 	"github.com/huangchengsir/pipewright/internal/dbadmin"
 	"github.com/huangchengsir/pipewright/internal/objectstore"
 	"github.com/huangchengsir/pipewright/internal/redisadmin"
 	"github.com/huangchengsir/pipewright/internal/secscan"
 	"github.com/huangchengsir/pipewright/internal/target"
-	"gopkg.in/yaml.v3"
 )
 
 // 应用商店(DPanel 式一键部署)。模板 CRUD + 参数渲染部署;部署复用 Stacks 受管链路
@@ -391,42 +391,15 @@ func registerSafelineInstance(ctx context.Context, secScans secscan.Service, aud
 
 // deployComposeToServer 把一段 compose 内容部署为受管 Stacks 项目(与 Stacks 部署同一条链路):
 // 建受管目录 → Upload compose 文件(字节流)→ 探测 compose CLI → `compose -p <name> up -d`。
-// 返回 (ok, 输出摘要, 人读错误);SSH 层错误经 humanServiceError 转人话。
+// 实现在 internal/composeops(与 DBaaS 共享);此处仅叠加本端容器清单缓存失效。
+// 返回 (ok, 输出摘要, 人读错误)。
 func deployComposeToServer(ctx context.Context, svc target.Service, serverID, name, compose string) (bool, string, string) {
-	dir := stacksBaseDir + "/" + name
-	composePath := dir + "/" + composeFileName
-
-	if res, err := svc.Exec(ctx, serverID, []string{"mkdir", "-p", dir}); err != nil {
-		return false, "", humanServiceError(err)
-	} else if res.ExitCode != 0 {
-		return false, "", "创建受管目录失败:" + truncateLog(strings.TrimSpace(res.Stderr), 256)
+	res := composeops.Deploy(ctx, svc, serverID, name, compose)
+	if res.Dispatched {
+		// compose up 已投递(容器集合大概率已变)→ 丢弃该台容器清单缓存。
+		serverContainersCache.invalidate(serverID)
 	}
-	if err := svc.Upload(ctx, serverID, strings.NewReader(compose), composePath); err != nil {
-		return false, "", "写入 compose 文件失败:" + humanServiceError(err)
-	}
-	bin := detectComposeBin(ctx, svc, serverID)
-	if bin == nil {
-		return false, "", "该主机未检测到 docker compose / docker-compose,无法部署"
-	}
-	upCmd := append(append([]string{}, bin...), "-p", name, "-f", composePath, "up", "-d")
-	res, err := svc.Exec(ctx, serverID, upCmd)
-	if err != nil {
-		// 请求上下文已取消(页面关闭/连接断开):up 被中断,但已下载的镜像分层保留,重试续传。
-		if ctx.Err() != nil {
-			return false, "", "部署被中断(页面关闭或连接断开):已下载的镜像分层会保留,重试部署将断点续传"
-		}
-		return false, "", humanServiceError(err)
-	}
-	// compose up 已投递(容器集合大概率已变)→ 丢弃该台容器清单缓存。
-	serverContainersCache.invalidate(serverID)
-	if res.ExitCode != 0 {
-		msg := strings.TrimSpace(res.Stderr)
-		if msg == "" {
-			msg = "docker compose up 以非零状态退出"
-		}
-		return false, "", truncateLog(msg, 1024)
-	}
-	return true, truncateLog(strings.TrimSpace(res.Stdout)+"\n"+strings.TrimSpace(res.Stderr), 2048), ""
+	return res.OK, res.Out, res.Err
 }
 
 // hostParamNames 是「部署宿主地址」约定参数:模板声明了这些参数且用户未显式提供
@@ -456,49 +429,9 @@ func injectHostParams(params map[string]string, tpl *appstore.Template, host str
 }
 
 // injectComposeLimits 把 CPU/内存上限注入 compose 每个 service 的 deploy.resources.limits
-// (docker compose v2 非 swarm 模式同样生效;模板已写同名键时被本次部署选择覆盖)。
-// 两者皆空 → 原样返回(零开销);模板产出非法 YAML → 错误,不部署。
+// (实现在 internal/composeops,与 DBaaS 共享)。
 func injectComposeLimits(compose, cpus, memory string) (string, error) {
-	if cpus == "" && memory == "" {
-		return compose, nil
-	}
-	var doc map[string]any
-	if err := yaml.Unmarshal([]byte(compose), &doc); err != nil {
-		return "", fmt.Errorf("解析 compose YAML: %w", err)
-	}
-	services, _ := doc["services"].(map[string]any)
-	for _, raw := range services {
-		svcMap, ok := raw.(map[string]any)
-		if !ok {
-			continue
-		}
-		deploy, _ := svcMap["deploy"].(map[string]any)
-		if deploy == nil {
-			deploy = map[string]any{}
-		}
-		resources, _ := deploy["resources"].(map[string]any)
-		if resources == nil {
-			resources = map[string]any{}
-		}
-		limits, _ := resources["limits"].(map[string]any)
-		if limits == nil {
-			limits = map[string]any{}
-		}
-		if cpus != "" {
-			limits["cpus"] = cpus
-		}
-		if memory != "" {
-			limits["memory"] = memory
-		}
-		resources["limits"] = limits
-		deploy["resources"] = resources
-		svcMap["deploy"] = deploy
-	}
-	out, err := yaml.Marshal(doc)
-	if err != nil {
-		return "", fmt.Errorf("重编码 compose YAML: %w", err)
-	}
-	return string(out), nil
+	return composeops.InjectLimits(compose, cpus, memory)
 }
 
 // writeAppStoreError 把应用商店领域错误映射为契约错误码/状态码。
@@ -1388,19 +1321,9 @@ func uninstallStep(ctx context.Context, svc target.Service, serverID string, cmd
 	return "", true
 }
 
-// projectVolumeNames 取某 compose 项目(按标签)的具名卷名(过 reDockerTgt 白名单,防异常输出注入)。
+// projectVolumeNames 取某 compose 项目(按标签)的具名卷名(实现在 internal/composeops)。
 func projectVolumeNames(ctx context.Context, svc target.Service, serverID, project string) ([]string, error) {
-	res, err := svc.Exec(ctx, serverID, []string{"docker", "volume", "ls", "-q", "--filter", "label=com.docker.compose.project=" + project})
-	if err != nil {
-		return nil, err
-	}
-	names := []string{}
-	for _, ln := range strings.Fields(res.Stdout) {
-		if reDockerTgt.MatchString(ln) && len(ln) <= 128 {
-			names = append(names, ln)
-		}
-	}
-	return names, nil
+	return composeops.ProjectVolumeNames(ctx, svc, serverID, project)
 }
 
 // ---------- 已部署实例枚举(「升级」直达入口的数据底座) ----------

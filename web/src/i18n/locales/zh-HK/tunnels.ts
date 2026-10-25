@@ -124,6 +124,19 @@ export default {
   deleteDone: '隧道 {name} 已刪除',
   errDelete: '刪除失敗,請稍後重試',
 
+  // ─── VPN(-w)───
+  modeVpn: 'VPN',
+  vpnWarn: '不推薦:VPN(-w)隧道要求控制節點為 Linux 且需 root/CAP_NET_ADMIN,目標機 sshd 必須開啟 PermitTunnel(預設關閉),地址還需手動規劃;容器部署下重啟即中斷。強烈建議改用叢集自組網:設定 → 叢集(EasyTier,免 root、自動分配虛擬 IP、支援子網路由與故障切換)。',
+  modeHint_vpn: 'VPN 隧道(-w):與目標機建立點對點 L3 隧道(tun 裝置,兩端同一 /30)。不推薦 —— 建議使用叢集自組網(設定 → 叢集)。',
+  fieldLocalIP: '本端隧道 IP',
+  fieldRemoteIP: '遠端隧道 IP',
+  fieldLocalTun: '本端 tun 序號',
+  fieldRemoteTun: '遠端 tun 序號',
+  vpnBindHint: '兩端 IP 須在同一 /30 網段(如 10.255.0.1 與 10.255.0.2),tun 序號 0-255;兩端配置 IP 通常需 root。',
+  errVpnIP: '須為合法 IPv4 位址',
+  errVpnSameSubnet: '兩端 IP 須在同一 /30 網段',
+  errVpnTunIdx: 'tun 序號須為 0-255',
+
   // ─── 日誌 ───
   logsTitle: '隧道日誌 · {name}',
   close: '關閉',

@@ -81,7 +81,10 @@ type fakeClient struct {
 	verifyErr error
 	putErr    error
 	puts      map[string]string
-	listErr   error
+	// getErr 非空时 GetObject 原样返回(模拟网络/凭据失败);否则从 puts 取值,
+	// 未命中返回 ErrObjectNotFound(与真实客户端语义一致)。
+	getErr error
+	listErr error
 	// listPages 按 "prefix|marker" 键返回预设页(未命中返回空页)。
 	listPages map[string]ListPageResult
 	listCalls []ListPageInput
@@ -108,6 +111,18 @@ func (c *fakeClient) PutObject(ctx context.Context, objectKey string, body io.Re
 	}
 	c.puts[objectKey] = string(b)
 	return nil
+}
+
+func (c *fakeClient) GetObject(ctx context.Context, objectKey string, w io.Writer) error {
+	if c.getErr != nil {
+		return c.getErr
+	}
+	v, ok := c.puts[objectKey]
+	if !ok {
+		return fmt.Errorf("%w:%s", ErrObjectNotFound, objectKey)
+	}
+	_, err := io.WriteString(w, v)
+	return err
 }
 
 func (c *fakeClient) ListPage(ctx context.Context, in ListPageInput) (ListPageResult, error) {
@@ -436,6 +451,56 @@ func TestUploadFailed(t *testing.T) {
 	err := svc.Upload(ctx, p.ID, "k", strings.NewReader("x"))
 	if !errors.Is(err, ErrUploadFailed) {
 		t.Fatalf("上传失败应 ErrUploadFailed, got %v", err)
+	}
+}
+
+func TestDownloadRoundtrip(t *testing.T) {
+	ctx := context.Background()
+	fv := &fakeVault{configured: true, secrets: map[string]string{"cred-1": "secret-value"}}
+	fc := &fakeClient{}
+	svc := newTestService(t, fv, fc)
+	p, _ := svc.Create(ctx, sampleInput())
+
+	if err := svc.Upload(ctx, p.ID, "platform-backups/a.pwb", strings.NewReader("archive-bytes")); err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+	var sb strings.Builder
+	if err := svc.Download(ctx, p.ID, "platform-backups/a.pwb", &sb); err != nil {
+		t.Fatalf("Download: %v", err)
+	}
+	if sb.String() != "archive-bytes" {
+		t.Fatalf("下载内容不符: %q", sb.String())
+	}
+	// 对象不存在 → 语义化 ErrObjectNotFound(供 httpapi 转 404)。
+	if err := svc.Download(ctx, p.ID, "missing.pwb", &sb); !errors.Is(err, ErrObjectNotFound) {
+		t.Fatalf("缺失对象应 ErrObjectNotFound, got %v", err)
+	}
+	// 其余错误统一裹 ErrDownloadFailed。
+	fc.getErr = errors.New("AccessDenied")
+	if err := svc.Download(ctx, p.ID, "platform-backups/a.pwb", &sb); !errors.Is(err, ErrDownloadFailed) {
+		t.Fatalf("下载失败应 ErrDownloadFailed, got %v", err)
+	}
+}
+
+func TestDownloadRespectsPathPrefix(t *testing.T) {
+	ctx := context.Background()
+	fv := &fakeVault{configured: true, secrets: map[string]string{"cred-1": "secret-value"}}
+	fc := &fakeClient{}
+	svc := newTestService(t, fv, fc)
+	in := sampleInput()
+	in.PathPrefix = "team-a"
+	p, _ := svc.Create(ctx, in)
+
+	if err := svc.Upload(ctx, p.ID, "backups/a.pwb", strings.NewReader("x")); err != nil {
+		t.Fatal(err)
+	}
+	// 逻辑键(相对 PathPrefix)下载应命中同一条物理键 —— 与 Upload 对称。
+	var sb strings.Builder
+	if err := svc.Download(ctx, p.ID, "backups/a.pwb", &sb); err != nil {
+		t.Fatalf("Download: %v", err)
+	}
+	if sb.String() != "x" || fc.puts["team-a/backups/a.pwb"] != "x" {
+		t.Fatalf("PathPrefix 对称性不符: puts=%+v got=%q", fc.puts, sb.String())
 	}
 }
 

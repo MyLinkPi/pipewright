@@ -44,6 +44,12 @@ const (
 	ModeLocal   = "local"   // ssh -L
 	ModeRemote  = "remote"  // ssh -R
 	ModeDynamic = "dynamic" // ssh -D
+	// ModeVPN 是 ssh -w 的点对点 tun 隧道(L3 VPN)。不推荐:仅 Linux 控制节点
+	// (需 root/CAP_NET_ADMIN),目标机 sshd 须开启 PermitTunnel(默认 no),地址
+	// 需手工规划 —— 一般场景请用平台内置的集群自组网(EasyTier)。字段语义换轨:
+	//   bind_host = 本端隧道 IP、dest_host = 远端隧道 IP(须同一 /30);
+	//   bind_port = 本端 tun 序号、dest_port = 远端 tun 序号(0-255)。
+	ModeVPN = "vpn"
 )
 
 // 心跳/对账参数(helper 与主进程共享的协议常量)。
@@ -79,13 +85,15 @@ type Tunnel struct {
 	Host         string
 	User         string
 	CredentialID string
-	// Mode 是隧道模式(ModeLocal | ModeRemote | ModeDynamic)。
+	// Mode 是隧道模式(ModeLocal | ModeRemote | ModeDynamic | ModeVPN)。
 	Mode string
 	// BindHost/BindPort 是监听地址(local/dynamic = 本机;remote = 远端 sshd 侧);
-	// BindPort 0 = 自动分配,实际端口经心跳文件回显。
+	// BindPort 0 = 自动分配,实际端口经心跳文件回显。vpn 模式下语义换轨:
+	// bind_host = 本端隧道 IP、bind_port = 本端 tun 序号(见 ModeVPN)。
 	BindHost string
 	BindPort int
-	// DestHost/DestPort 是转发目标(local = 远端侧可达;remote = 本机侧可达;dynamic 留空)。
+	// DestHost/DestPort 是转发目标(local = 远端侧可达;remote = 本机侧可达;
+	// dynamic 留空;vpn = 远端隧道 IP / 远端 tun 序号)。
 	DestHost string
 	DestPort int
 	// Enabled 兼作 autostart 与期望状态:false = 停用并停进程。
@@ -362,6 +370,19 @@ func (s *Service) Test(ctx context.Context, id string) (*TestResult, error) {
 	defer client.Close()
 	res.LatencyMs = time.Since(start).Milliseconds()
 
+	// vpn(-w):只验证远端接受 tun@openssh.com 请求(PermitTunnel + 序号可用)即关;
+	// 本机 tun 建立需 root,不在此触碰。
+	if t.Mode == ModeVPN {
+		ch, terr := client.OpenTunChannel(t.BindPort, t.DestPort)
+		if terr != nil {
+			res.Err = humanListenError(terr)
+			return res, nil
+		}
+		_ = ch.Close()
+		res.OK = true
+		return res, nil
+	}
+
 	// 转发面可用性:remote 试远端监听即关;local/dynamic 试本机监听即关
 	//(bind_port=0 时由内核临时分配,仅验证可监听)。
 	ln, lerr := listenForwardSide(client, t)
@@ -469,7 +490,7 @@ func (s *Service) normalizeAndValidate(ctx context.Context, in Input, excludeID 
 		return nil, ErrInvalidInput
 	}
 	switch t.Mode {
-	case ModeLocal, ModeRemote, ModeDynamic:
+	case ModeLocal, ModeRemote, ModeDynamic, ModeVPN:
 	default:
 		return nil, ErrInvalidInput
 	}
@@ -498,8 +519,8 @@ func (s *Service) normalizeAndValidate(ctx context.Context, in Input, excludeID 
 			return nil, err
 		}
 	}
-	if t.BindHost == "" {
-		t.BindHost = "127.0.0.1" // 安全默认:本机回环(防 -D 代理裸奔)
+	if t.BindHost == "" && t.Mode != ModeVPN {
+		t.BindHost = "127.0.0.1" // 安全默认:本机回环(防 -D 代理裸奔;vpn 模式必须显式给本端隧道 IP)
 	}
 	if t.BindPort < 0 || t.BindPort > 65535 {
 		return nil, ErrInvalidInput
@@ -507,6 +528,20 @@ func (s *Service) normalizeAndValidate(ctx context.Context, in Input, excludeID 
 	switch t.Mode {
 	case ModeDynamic:
 		if t.DestHost != "" || t.DestPort != 0 {
+			return nil, ErrInvalidInput
+		}
+	case ModeVPN:
+		// vpn(-w):两端隧道 IP 须为合法 IPv4 且同一 /30;tun 序号 0-255。
+		localIP := net.ParseIP(t.BindHost)
+		remoteIP := net.ParseIP(t.DestHost)
+		if localIP == nil || localIP.To4() == nil || remoteIP == nil || remoteIP.To4() == nil {
+			return nil, ErrInvalidInput
+		}
+		mask := net.CIDRMask(30, 32)
+		if !localIP.To4().Mask(mask).Equal(remoteIP.To4().Mask(mask)) {
+			return nil, ErrInvalidInput
+		}
+		if t.BindPort < 0 || t.BindPort > 255 || t.DestPort < 0 || t.DestPort > 255 {
 			return nil, ErrInvalidInput
 		}
 	default: // local | remote
@@ -686,9 +721,13 @@ func humanError(err error) string {
 	}
 }
 
-// humanListenError 把监听失败映射为人读文案(含 remote 模式的 GatewayPorts 提示)。
+// humanListenError 把监听失败映射为人读文案(含 remote 模式的 GatewayPorts、
+// vpn 模式的 PermitTunnel 提示)。
 func humanListenError(err error) string {
 	msg := err.Error()
+	if strings.Contains(msg, "PermitTunnel") {
+		return "远端拒绝 tun 转发:需在目标机 sshd 配置 PermitTunnel yes(且该 tun 序号未被占用)"
+	}
 	if strings.Contains(msg, "GatewayPorts") || strings.Contains(msg, " administratively prohibited") {
 		return "远端监听被拒绝:绑定 0.0.0.0 需在目标机 sshd 开启 GatewayPorts"
 	}

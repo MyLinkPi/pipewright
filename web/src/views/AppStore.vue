@@ -2,7 +2,8 @@
 /*
   AppStore.vue — 应用商店(DPanel 式一键部署)。
 
-  模板卡片网格(内置 + 自定义)→ 点开参数表单(按 params schema 渲染;secret 自动生成)
+  模板卡片按类别分组展示(数据库与缓存/消息队列/存储/Web 与工具/安全/自定义),顶部
+  chips 可筛选;点开卡片参数表单(按 params schema 渲染;secret 自动生成)
   → 选目标主机部署 → 展示部署结果与一次性返回的生成口令。部署复用 Stacks 受管链路,
   部署完可在「容器」页对应主机的 Stacks 标签页管理。
   「已部署实例」区:全机带参数边车的栈,每行直达「升级」(打开弹窗直接进升级模式,
@@ -85,8 +86,63 @@ onMounted(load)
 const capacity = useServerCapacity()
 onMounted(() => void capacity.load())
 
-const builtinTemplates = computed(() => templates.value.filter((x) => x.builtin))
-const customTemplates = computed(() => templates.value.filter((x) => !x.builtin))
+// ─── 模板分类展示 ─────────────────────────────────────────────────────────────
+// 内置模板清单稳定,按 name 映射分类键(新增内置模板记得归组,未归组回落 web);
+// 自定义模板统一归「自定义」组。仅前端映射,不动后端 schema。
+const builtinCategory: Record<string, string> = {
+  mysql: 'db',
+  postgres: 'db',
+  redis: 'db',
+  rabbitmq: 'mq',
+  redpanda: 'mq',
+  rustfs: 'storage',
+  nfs: 'storage',
+  'nginx-web': 'web',
+  gitea: 'web',
+  openvas: 'security',
+  'trivy-server': 'security',
+  'nuclei-runner': 'security',
+  safeline: 'security',
+}
+const categoryOrder = ['db', 'mq', 'storage', 'web', 'security', 'custom'] as const
+type CategoryKey = (typeof categoryOrder)[number]
+
+interface TemplateGroup {
+  key: CategoryKey
+  items: AppTemplate[]
+}
+
+// templateGroups 按类别分组(自定义组常显:空态提示与新建表单入口都挂在该组);
+// 内置组只在有模板时出现。
+const templateGroups = computed<TemplateGroup[]>(() => {
+  const byKey = new Map<CategoryKey, TemplateGroup>()
+  const ensure = (key: CategoryKey): TemplateGroup => {
+    let g = byKey.get(key)
+    if (!g) {
+      g = { key, items: [] }
+      byKey.set(key, g)
+    }
+    return g
+  }
+  for (const tpl of templates.value) {
+    const key = (tpl.builtin ? (builtinCategory[tpl.name] ?? 'web') : 'custom') as CategoryKey
+    ensure(key).items.push(tpl)
+  }
+  ensure('custom')
+  return [...byKey.values()].sort((a, b) => categoryOrder.indexOf(a.key) - categoryOrder.indexOf(b.key))
+})
+
+// 分类筛选:「全部」= 依组展示;选具体分类只看该组。
+const activeCategory = ref<'all' | CategoryKey>('all')
+const visibleGroups = computed(() =>
+  activeCategory.value === 'all'
+    ? templateGroups.value
+    : templateGroups.value.filter((g) => g.key === activeCategory.value),
+)
+
+function groupLabel(key: CategoryKey): string {
+  return key === 'custom' ? t('appStore.customSection') : t(`appStore.cat.${key}`)
+}
 
 // ─── 已部署实例(「升级」直达入口)─────────────────────────────────────────────
 // 全机带参数边车的栈 = 应用商店部署的实例;每行直达「升级」,不再依赖部署弹窗的重名
@@ -616,31 +672,37 @@ async function removeCustom(tpl: AppTemplate): Promise<void> {
         </div>
       </section>
 
-      <!-- 内置模板 -->
-      <section v-if="builtinTemplates.length > 0">
-        <h2 class="apps__section">{{ t('appStore.builtinSection') }}</h2>
-        <div class="apps__grid">
-          <article v-for="tpl in builtinTemplates" :key="tpl.id" class="apps__card">
-            <span class="apps__icon" aria-hidden="true">{{ tpl.icon || '📦' }}</span>
-            <div class="apps__card-body">
-              <h3 class="apps__card-title">{{ tpl.displayName || tpl.name }}</h3>
-              <p class="apps__card-desc">{{ tpl.description }}</p>
-            </div>
-            <AppButton variant="primary" :disabled="servers.length === 0" @click="openDeploy(tpl)">
-              <NIcon :size="14"><Rocket /></NIcon>&nbsp;{{ t('appStore.deployBtn') }}
-            </AppButton>
-          </article>
-        </div>
-      </section>
+      <!-- 模板分类:筛选 chips + 分组展示(内置按类别分组,自定义组殿后) -->
+      <div class="apps__chips">
+        <button
+          type="button"
+          class="apps__chip"
+          :class="{ 'apps__chip--on': activeCategory === 'all' }"
+          @click="activeCategory = 'all'"
+        >
+          {{ t('appStore.cat.all') }}
+        </button>
+        <button
+          v-for="g in templateGroups"
+          :key="g.key"
+          type="button"
+          class="apps__chip"
+          :class="{ 'apps__chip--on': activeCategory === g.key }"
+          @click="activeCategory = g.key"
+        >
+          {{ groupLabel(g.key) }}<span class="apps__chip-count">{{ g.items.length }}</span>
+        </button>
+      </div>
 
-      <!-- 自定义模板 -->
-      <section>
-        <h2 class="apps__section">{{ t('appStore.customSection') }}</h2>
-        <div v-if="customTemplates.length === 0" class="apps__empty-custom">
+      <section v-for="g in visibleGroups" :key="g.key">
+        <h2 class="apps__section">
+          {{ groupLabel(g.key) }}<span class="apps__count">{{ g.items.length }}</span>
+        </h2>
+        <div v-if="g.key === 'custom' && g.items.length === 0" class="apps__empty-custom">
           {{ t('appStore.customEmpty') }}
         </div>
         <div v-else class="apps__grid">
-          <article v-for="tpl in customTemplates" :key="tpl.id" class="apps__card">
+          <article v-for="tpl in g.items" :key="tpl.id" class="apps__card">
             <span class="apps__icon" aria-hidden="true">{{ tpl.icon || '📦' }}</span>
             <div class="apps__card-body">
               <h3 class="apps__card-title">{{ tpl.displayName || tpl.name }}</h3>
@@ -650,13 +712,15 @@ async function removeCustom(tpl: AppTemplate): Promise<void> {
               <AppButton variant="primary" :disabled="servers.length === 0" @click="openDeploy(tpl)">
                 <NIcon :size="14"><Rocket /></NIcon>&nbsp;{{ t('appStore.deployBtn') }}
               </AppButton>
-              <AppButton variant="danger" @click="removeCustom(tpl)"><NIcon :size="13"><Trash /></NIcon></AppButton>
+              <AppButton v-if="!tpl.builtin" variant="danger" @click="removeCustom(tpl)">
+                <NIcon :size="13"><Trash /></NIcon>
+              </AppButton>
             </div>
           </article>
         </div>
 
-        <!-- 新建自定义模板 -->
-        <form v-if="showCustomForm" class="apps__form" @submit.prevent="submitCustom">
+        <!-- 新建自定义模板(挂在自定义组) -->
+        <form v-if="g.key === 'custom' && showCustomForm" class="apps__form" @submit.prevent="submitCustom">
           <div class="apps__grid2">
             <label class="field">
               <span class="field__lbl">{{ t('appStore.form.name') }}</span>
@@ -1028,6 +1092,32 @@ async function removeCustom(tpl: AppTemplate): Promise<void> {
   margin: 0;
   font-size: 13px;
   color: #9a6700;
+}
+.apps__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.apps__chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid var(--color-border);
+  background: none;
+  color: inherit;
+  border-radius: 999px;
+  padding: 3px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.apps__chip--on {
+  border-color: var(--color-primary, #1a66d4);
+  color: var(--color-primary, #1a66d4);
+  font-weight: 600;
+}
+.apps__chip-count {
+  font-size: 11px;
+  opacity: 0.6;
 }
 .apps__grid {
   display: grid;

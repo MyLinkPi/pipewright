@@ -588,3 +588,79 @@ func TestSafelineWafOverview(t *testing.T) {
 		}
 	})
 }
+
+// ---- 规则库状态与手动更新 ----
+
+func TestScannerLib(t *testing.T) {
+	storetest.ForEachDialect(t, func(t *testing.T, st *store.Store) {
+		runner := &fakeRunner{
+			servers: []ServerInfo{{ID: "s1", Name: "机A", Host: "10.0.0.1"}},
+			fn: func(cmd []string) (*target.ExecResult, error) {
+				joined := strings.Join(cmd, " ")
+				switch {
+				case strings.HasPrefix(joined, "docker ps --filter name="):
+					if strings.Contains(joined, "trivy-server") {
+						return &target.ExecResult{ExitCode: 0, Stdout: "trivy-server-trivy-server-1"}, nil
+					}
+					return &target.ExecResult{ExitCode: 0, Stdout: "nuclei-runner-nuclei-runner-1"}, nil
+				case strings.HasPrefix(joined, "docker inspect --format {{.State.StartedAt}}"):
+					return &target.ExecResult{ExitCode: 0, Stdout: "2026-10-24T10:00:00.123456789Z"}, nil
+				case strings.HasPrefix(joined, "docker restart"):
+					return &target.ExecResult{ExitCode: 0, Stdout: "trivy-server-trivy-server-1"}, nil
+				case strings.Contains(joined, "stat -c %Y /root/nuclei-templates"):
+					return &target.ExecResult{ExitCode: 0, Stdout: "1774000000"}, nil
+				case strings.Contains(joined, "nuclei -update-templates"):
+					return &target.ExecResult{ExitCode: 0, Stdout: "[INF] Templates updated to latest"}, nil
+				default:
+					return &target.ExecResult{ExitCode: 1, Stderr: "unexpected"}, nil
+				}
+			},
+		}
+		svc, _ := newTestService(t, st, runner)
+		ctx := context.Background()
+
+		trivyInst, err := svc.Register(ctx, RegisterInput{Kind: KindTrivyServer, Name: "TS", Host: "10.0.0.1", Port: 4954, Token: "t", ServerID: "s1", StackName: "trivy-server"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		runnerInst, err := svc.Register(ctx, RegisterInput{Kind: KindNucleiRunner, Name: "NR", Host: "10.0.0.1", ServerID: "s1", StackName: "nuclei-runner"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		safeInst, err := svc.Register(ctx, RegisterInput{Kind: KindSafeline, Name: "WAF", Host: "10.0.0.1", Port: 9443, ServerID: "s1", StackName: "safeline"})
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		// trivy:info = 容器启动时间(归一 RFC3339);update = docker restart + note。
+		info, err := svc.ScannerLibInfo(ctx, trivyInst.Instance.ID)
+		if err != nil || info.UpdatedAt != "2026-10-24T10:00:00Z" {
+			t.Fatalf("trivy lib info:%v %+v", err, info)
+		}
+		info, err = svc.ScannerLibUpdate(ctx, trivyInst.Instance.ID)
+		if err != nil || !strings.Contains(info.Note, "最新漏洞库") {
+			t.Fatalf("trivy lib update:%v %+v", err, info)
+		}
+
+		// nuclei:info = 模板目录 mtime(epoch→RFC3339);update 带输出尾部 note。
+		info, err = svc.ScannerLibInfo(ctx, runnerInst.Instance.ID)
+		if err != nil || !strings.HasPrefix(info.UpdatedAt, "2026-") {
+			t.Fatalf("nuclei lib info:%v %+v", err, info)
+		}
+		info, err = svc.ScannerLibUpdate(ctx, runnerInst.Instance.ID)
+		if err != nil || !strings.Contains(info.Note, "已更新") {
+			t.Fatalf("nuclei lib update:%v %+v", err, info)
+		}
+
+		// safeline:拒绝(控制台自管理)。
+		if _, err := svc.ScannerLibInfo(ctx, safeInst.Instance.ID); err == nil || !strings.Contains(err.Error(), "控制台") {
+			t.Fatalf("safeline 应拒绝:%v", err)
+		}
+
+		// 无宿主信息的外部实例:拒绝并提示自维护。
+		ext, _ := svc.CreateScanner(ctx, CreateInput{Name: "外部", Host: "10.0.0.9", Port: 4954, Token: "x"})
+		if _, err := svc.ScannerLibUpdate(ctx, ext.ID); err == nil || !strings.Contains(err.Error(), "自维护") {
+			t.Fatalf("外部实例应拒绝:%v", err)
+		}
+	})
+}

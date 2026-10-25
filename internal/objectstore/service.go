@@ -154,6 +154,34 @@ func (s *service) Upload(ctx context.Context, providerID, objectKey string, body
 	return nil
 }
 
+// Download 取该配置凭据 → 把 objectKey 对象流式下载写入 w(与 Upload 对称:objectKey
+// 相对 PathPrefix 的逻辑键;备份从云端恢复用)。对象不存在原样透出 ErrObjectNotFound,
+// 其余错误统一裹 ErrDownloadFailed。Secret 用完即弃,绝不外泄。
+func (s *service) Download(ctx context.Context, providerID, objectKey string, w io.Writer) error {
+	p, err := s.store.get(ctx, providerID)
+	if err != nil {
+		return err
+	}
+	if s.vault == nil {
+		return ErrVaultUnconfigured
+	}
+	secret, err := s.vault.Reveal(p.CredentialID)
+	if err != nil {
+		return mapVaultErr(err)
+	}
+	client, err := s.dial(p.Type, p.Endpoint, p.UseSSL, p.AccessKeyID, secret, p.Bucket)
+	if err != nil {
+		return fmt.Errorf("%w:%s", ErrDownloadFailed, describeClientError(err))
+	}
+	if err := client.GetObject(ctx, joinPrefixKey(p.PathPrefix, objectKey), w); err != nil {
+		if errors.Is(err, ErrObjectNotFound) {
+			return err
+		}
+		return fmt.Errorf("%w:%s", ErrDownloadFailed, describeClientError(err))
+	}
+	return nil
+}
+
 // 浏览分页大小契约:默认 100,上限 1000(桶可能对象巨多,单页绝不大口吞)。
 const (
 	DefaultBrowsePageSize = 100

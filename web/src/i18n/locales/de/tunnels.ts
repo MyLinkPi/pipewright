@@ -124,6 +124,19 @@ export default {
   deleteDone: 'Tunnel {name} gelöscht',
   errDelete: 'Löschen fehlgeschlagen, bitte später erneut versuchen',
 
+  // ─── VPN (-w) ───
+  modeVpn: 'VPN',
+  vpnWarn: 'Nicht empfohlen: VPN-Tunnel (-w) erfordern einen Linux-Kontrollknoten mit root/CAP_NET_ADMIN, aktiviertes PermitTunnel im Ziel-sshd (standardmäßig aus) und manuell geplante Punkt-zu-Punkt-Adressen; bei Container-Neustarts brechen sie ab. Ziehen Sie stattdessen das Cluster-Mesh vor: Einstellungen → Cluster (EasyTier — ohne root, automatische virtuelle IPs, Subnetz-Routing und Failover).',
+  modeHint_vpn: 'VPN-Tunnel (-w): Point-to-Point-L3-Tunnel zum Zielhost (tun-Geräte, beide Enden im selben /30). Nicht empfohlen — Cluster-Mesh (Einstellungen → Cluster) bevorzugen.',
+  fieldLocalIP: 'Lokale Tunnel-IP',
+  fieldRemoteIP: 'Remote-Tunnel-IP',
+  fieldLocalTun: 'Lokaler tun-Index',
+  fieldRemoteTun: 'Remote-tun-Index',
+  vpnBindHint: 'Beide IPs müssen im selben /30 liegen (z. B. 10.255.0.1 und 10.255.0.2); tun-Indizes 0-255; die IP-Konfiguration braucht meist root auf beiden Seiten.',
+  errVpnIP: 'Muss eine gültige IPv4-Adresse sein',
+  errVpnSameSubnet: 'Beide IPs müssen im selben /30-Subnetz liegen',
+  errVpnTunIdx: 'tun-Index muss 0-255 sein',
+
   // ─── Logs ───
   logsTitle: 'Tunnel-Logs · {name}',
   close: 'Schließen',
