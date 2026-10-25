@@ -55,6 +55,7 @@ func (r *fakeRunner) Exec(_ context.Context, serverID string, cmd []string) (*ta
 	r.execServers = append(r.execServers, serverID)
 	return r.fn(cmd)
 }
+
 func (r *fakeRunner) ExecStream(_ context.Context, _ string, cmd []string) (io.ReadCloser, error) {
 	r.streams = append(r.streams, append([]string{}, cmd...))
 	if r.streamFn == nil {
@@ -781,6 +782,72 @@ func TestScannerLib(t *testing.T) {
 		ext, _ := svc.CreateScanner(ctx, CreateInput{Name: "外部", Host: "10.0.0.9", Port: 4954, Token: "x"})
 		if _, err := svc.ScannerLibUpdate(ctx, ext.ID); err == nil || !strings.Contains(err.Error(), "自维护") {
 			t.Fatalf("外部实例应拒绝:%v", err)
+		}
+	})
+}
+
+// ---- 代扫路径:命令形状回归(镜像 ENTRYPOINT 恒为 trivy,跑 shell 须显式覆盖) ----
+
+// runnerExecForRemote 是代扫测试的命令分发(Exec 与 ExecWithStdin 共用)。
+func runnerExecForRemote(cmd []string) (*target.ExecResult, error) {
+	joined := strings.Join(cmd, " ")
+	switch {
+	case strings.HasPrefix(joined, "docker run --rm -i --entrypoint sh"):
+		if !strings.Contains(joined, "aquasec/trivy") || !strings.Contains(joined, "-c mkdir -p /scan") {
+			return nil, fmt.Errorf("代扫命令形状不符:%s", joined)
+		}
+		return &target.ExecResult{ExitCode: 0, Stdout: trivySample}, nil
+	default:
+		return &target.ExecResult{ExitCode: 127, Stderr: "docker: not found"}, nil
+	}
+}
+
+func TestTrivyRemoteScanCommandShape(t *testing.T) {
+	storetest.ForEachDialect(t, func(t *testing.T, st *store.Store) {
+		// 目标机无 docker;Runner 宿主机有 docker 且镜像能产出 trivy JSON。
+		runner := &fakeRunner{
+			servers: []ServerInfo{
+				{ID: "s1", Name: "无docker机", Host: "10.0.0.1"},
+				{ID: "s2", Name: "Server宿主", Host: "10.0.0.2"},
+			},
+			streamFn: func(cmd []string) (io.ReadCloser, error) {
+				return io.NopCloser(strings.NewReader("tar-bytes")), nil
+			},
+			stdinFn: func(cmd []string, _ io.Reader) (*target.ExecResult, error) {
+				return runnerExecForRemote(cmd)
+			},
+			fn: func(cmd []string) (*target.ExecResult, error) {
+				joined := strings.Join(cmd, " ")
+				switch {
+				case strings.HasPrefix(joined, "ls -d /etc/os-release"):
+					return &target.ExecResult{ExitCode: 1, Stdout: "/etc/os-release\n/var/lib/dpkg/status\n"}, nil
+				case strings.HasPrefix(joined, "docker run --rm -i --entrypoint sh"):
+					if !strings.Contains(joined, "aquasec/trivy") || !strings.Contains(joined, "-c mkdir -p /scan") {
+						t.Fatalf("代扫命令形状不符:%s", joined)
+					}
+					return &target.ExecResult{ExitCode: 0, Stdout: trivySample}, nil
+				default:
+					return &target.ExecResult{ExitCode: 127, Stderr: "docker: not found"}, nil
+				}
+			},
+		}
+		svc, _ := newTestService(t, st, runner)
+		ctx := context.Background()
+
+		// 登记带宿主的 trivy-server(代扫执行机 = ServerID)。
+		if _, err := svc.Register(ctx, RegisterInput{
+			Kind: KindTrivyServer, Name: "TS", Host: "10.0.0.2", Port: 4954, Token: "tk",
+			ServerID: "s2", StackName: "trivy-server",
+		}); err != nil {
+			t.Fatal(err)
+		}
+		run, err := svc.StartScan(ctx, ScanInput{ServerID: "s1", ScanType: ScanTypeTrivy})
+		if err != nil {
+			t.Fatal(err)
+		}
+		done := waitRunDone(t, svc, run.ID)
+		if done.Status != StatusDone || done.Summary.Critical != 1 {
+			t.Fatalf("代扫结果不符:%+v", done)
 		}
 	})
 }
