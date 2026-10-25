@@ -253,6 +253,8 @@ func writeServiceRegError(w http.ResponseWriter, err error) {
 		// 领域层恒以 ErrApply:逐台详情 包装(见 applyFull/removeNginx 等);拼进响应,
 		// 否则前端只有「详情见错误信息」却无处可看。
 		writeError(w, http.StatusBadGateway, "apply_failed", "下发网关配置失败:"+strings.TrimPrefix(err.Error(), servicereg.ErrApply.Error()+":"))
+	case errors.Is(err, servicereg.ErrConfRead):
+		writeError(w, http.StatusBadGateway, "gateway_conf_read_failed", "读取网关配置失败:"+strings.TrimPrefix(err.Error(), servicereg.ErrConfRead.Error()+": "))
 	// target(SSH)层错误:复用语义映射。
 	case errors.Is(err, target.ErrVaultUnconfigured):
 		writeError(w, http.StatusServiceUnavailable, "vault_unconfigured", "保险库未配置 master key,无法加密证书或取 SSH 凭据")
@@ -343,6 +345,28 @@ func makeGetServiceRegGatewayHandler(svc servicereg.Service) http.HandlerFunc {
 			return
 		}
 		writeJSON(w, http.StatusOK, toServiceRegGatewayDTO(g))
+	}
+}
+
+// makeGetServiceRegGatewayConfigHandler 返回 GET /api/servicereg/gateway/config。
+// 查询参数 serverId 必填(多台网关主机逐台查看)。
+func makeGetServiceRegGatewayConfigHandler(svc servicereg.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if svc == nil {
+			writeError(w, http.StatusServiceUnavailable, "internal", "服务注册未初始化")
+			return
+		}
+		serverID := strings.TrimSpace(r.URL.Query().Get("serverId"))
+		if serverID == "" {
+			writeError(w, http.StatusBadRequest, "invalid_service_reg", "缺少 serverId 查询参数")
+			return
+		}
+		files, err := svc.GetGatewayConfig(r.Context(), serverID)
+		if err != nil {
+			writeServiceRegError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"serverId": serverID, "files": files})
 	}
 }
 

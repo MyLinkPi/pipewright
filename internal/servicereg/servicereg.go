@@ -112,6 +112,8 @@ var (
 	ErrUpstreamConnect = errors.New("servicereg: 上游容器接入网关网络失败")
 	// ErrApply 表示渲染/校验/下发/热加载 nginx 配置失败。
 	ErrApply = errors.New("servicereg: 应用网关配置失败")
+	// ErrConfRead 表示读取网关容器内 nginx 配置文件失败(容器未部署/文件缺失/传输失败)。
+	ErrConfRead = errors.New("servicereg: 读取网关配置失败")
 	// ErrInvalidSetting 表示网关设置项非法(镜像/网络/容器名/卷名/端口)。
 	ErrInvalidSetting = errors.New("servicereg: invalid gateway setting")
 )
@@ -356,6 +358,9 @@ type Service interface {
 
 	// GatewayStatus 探测网关容器状态(容器不存在不算错误)。
 	GatewayStatus(ctx context.Context) (*GatewayStatus, error)
+	// GetGatewayConfig 读取某台网关主机容器内实际生效的 nginx.conf 及其引用文件(证书等)。
+	// serverID 必须在网关主机列表内;主配置读取失败返回错误(容器未部署等)。
+	GetGatewayConfig(ctx context.Context, serverID string) ([]NginxConfFile, error)
 	// DeployGateway 显式部署/重建网关容器 + 全量 apply。
 	DeployGateway(ctx context.Context) (*GatewayStatus, error)
 	// RemoveGateway 停止并删除网关容器(保留卷);幂等。
@@ -950,6 +955,29 @@ func (s *service) GatewayStatus(ctx context.Context) (*GatewayStatus, error) {
 	fwd := s.forwardStatusSnapshot()
 	g.Forward = &fwd
 	return g, nil
+}
+
+// GetGatewayConfig 读取某台网关主机容器内实际生效的 nginx.conf 及其引用文件。
+// serverID 必须在网关主机列表内(防止借查看接口对任意服务器执行命令)。
+func (s *service) GetGatewayConfig(ctx context.Context, serverID string) ([]NginxConfFile, error) {
+	st, err := s.store.getOrCreateSettings(ctx)
+	if err != nil {
+		return nil, err
+	}
+	ok := false
+	for _, sid := range st.ServerIDs {
+		if sid == serverID {
+			ok = true
+			break
+		}
+	}
+	if !ok {
+		if len(st.ServerIDs) == 0 {
+			return nil, ErrNoGateway
+		}
+		return nil, fmt.Errorf("%w: server %s 不在网关主机列表内", ErrNotFound, serverID)
+	}
+	return readNginxConfFiles(ctx, s.tg, st, serverID)
 }
 
 func (s *service) DeployGateway(ctx context.Context) (*GatewayStatus, error) {

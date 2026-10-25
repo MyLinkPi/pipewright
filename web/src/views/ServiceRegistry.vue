@@ -18,6 +18,8 @@ import {
   getServiceRegSettings,
   updateServiceRegSettings,
   getGateway,
+  getGatewayConfig,
+  type NginxConfFile,
   deployGateway,
   upgradeGatewayImage,
   removeGateway,
@@ -238,6 +240,52 @@ async function doRemoveGateway(): Promise<void> {
     toast.error(errMsg(err, t('serviceReg.errOp')))
   } finally {
     busy.value = false
+  }
+}
+
+// ─── 查看当前网关配置 ────────────────────────────────────────────────────────
+// 读容器内实际生效的 nginx.conf 及其引用文件(证书等),多台网关主机逐台查看。
+const confOpen = ref(false)
+const confLoading = ref(false)
+const confError = ref('')
+const confServerId = ref('')
+const confFiles = ref<NginxConfFile[]>([])
+const confActiveIdx = ref(0)
+
+const confServerOptions = computed(() =>
+  (gateway.value?.servers ?? []).map((s) => ({ value: s.serverId, label: s.serverName || s.serverId })),
+)
+const confActiveFile = computed(() => confFiles.value[confActiveIdx.value] ?? null)
+
+function openConfDialog(): void {
+  confServerId.value = gateway.value?.servers?.[0]?.serverId ?? settings.value?.serverIds?.[0] ?? ''
+  confOpen.value = true
+  void loadConf()
+}
+
+async function loadConf(): Promise<void> {
+  if (!confServerId.value) return
+  confLoading.value = true
+  confError.value = ''
+  confFiles.value = []
+  confActiveIdx.value = 0
+  try {
+    confFiles.value = (await getGatewayConfig(confServerId.value)).files
+  } catch (err) {
+    confError.value = errMsg(err, t('serviceReg.gateway.confLoadFailed'))
+  } finally {
+    confLoading.value = false
+  }
+}
+
+async function copyConf(): Promise<void> {
+  const f = confActiveFile.value
+  if (!f || f.error) return
+  try {
+    await navigator.clipboard.writeText(f.content)
+    toast.success(t('serviceReg.gateway.confCopied'))
+  } catch {
+    toast.error(t('serviceReg.gateway.confCopyFailed'))
   }
 }
 
@@ -809,6 +857,9 @@ async function saveSvcEdit(s: RegisteredService): Promise<void> {
             <AppButton v-if="gateway?.servers?.some((s) => s.installed)" :loading="busy" @click="doUpgradeGatewayImage">
               {{ t('serviceReg.gatewayUpgrade') }}
             </AppButton>
+            <AppButton v-if="gateway?.servers?.some((s) => s.installed)" variant="default" @click="openConfDialog">
+              {{ t('serviceReg.gateway.viewConf') }}
+            </AppButton>
             <AppButton v-if="gateway?.servers?.some((s) => s.installed)" variant="danger" :loading="busy" @click="doRemoveGateway">
               {{ t('serviceReg.removeGateway') }}
             </AppButton>
@@ -1216,6 +1267,71 @@ async function saveSvcEdit(s: RegisteredService): Promise<void> {
         </ul>
       </section>
     </template>
+
+    <!-- ─── 查看当前网关配置弹窗 ──────────────────────────────────────────── -->
+    <Teleport to="body">
+      <div
+        v-if="confOpen"
+        class="sreg-dlg-mask"
+        role="dialog"
+        :aria-label="t('serviceReg.gateway.confTitle')"
+        aria-modal="true"
+        @keydown.esc="confOpen = false"
+        @click.self="confOpen = false"
+      >
+        <div class="sreg-dlg">
+          <div class="sreg-dlg__head">
+            <div class="sreg-dlg__head-text">
+              <h3 class="sreg-dlg__title">{{ t('serviceReg.gateway.confTitle') }}</h3>
+              <span class="sreg-dlg__sub mono">{{ confServerOptions.find((o) => o.value === confServerId)?.label ?? confServerId }}</span>
+            </div>
+            <button class="sreg-dlg__close" :aria-label="t('serviceReg.gateway.confClose')" @click="confOpen = false">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M18 6 6 18M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
+
+          <div class="sreg-dlg__body">
+            <div v-if="confServerOptions.length > 1" class="sreg-dlg__bar">
+              <AppSelect
+                :model-value="confServerId"
+                :options="confServerOptions"
+                @update:model-value="((v: string) => { confServerId = v; void loadConf() })"
+              />
+            </div>
+
+            <div v-if="confLoading" class="sreg-dlg__state">{{ t('serviceReg.gateway.confLoading') }}</div>
+            <div v-else-if="confError" class="sreg-dlg__state sreg-dlg__state--err">{{ confError }}</div>
+            <template v-else-if="confFiles.length">
+              <div class="sreg-dlg__bar sreg-dlg__bar--tabs">
+                <div class="sreg-dlg__tabs" role="tablist">
+                  <button
+                    v-for="(f, i) in confFiles"
+                    :key="f.path"
+                    type="button"
+                    role="tab"
+                    class="sreg-dlg__tab mono"
+                    :class="{ 'sreg-dlg__tab--active': i === confActiveIdx, 'sreg-dlg__tab--err': !!f.error }"
+                    :aria-selected="i === confActiveIdx"
+                    @click="confActiveIdx = i"
+                  >
+                    {{ f.path }}
+                  </button>
+                </div>
+                <AppButton variant="default" :disabled="!confActiveFile || !!confActiveFile.error" @click="copyConf">
+                  {{ t('serviceReg.gateway.confCopy') }}
+                </AppButton>
+              </div>
+              <div v-if="confActiveFile?.error" class="sreg-dlg__state sreg-dlg__state--err">
+                {{ t('serviceReg.gateway.confFileFailed') }}: {{ confActiveFile.error }}
+              </div>
+              <pre v-else-if="confActiveFile" class="sreg-dlg__pre mono">{{ confActiveFile.content }}</pre>
+            </template>
+          </div>
+        </div>
+      </div>
+    </Teleport>
   </div>
 </template>
 
@@ -1547,5 +1663,138 @@ async function saveSvcEdit(s: RegisteredService): Promise<void> {
   align-items: center;
   gap: 4px;
   opacity: 0.8;
+}
+
+/* ─── 查看当前网关配置弹窗 ─────────────────────────────────────────────────── */
+.sreg-dlg-mask {
+  position: fixed;
+  inset: 0;
+  background: oklch(0% 0 0 / 0.62);
+  display: grid;
+  place-items: center;
+  z-index: 100;
+  padding: 24px;
+}
+.sreg-dlg {
+  width: 100%;
+  max-width: 860px;
+  max-height: min(84vh, 780px);
+  display: flex;
+  flex-direction: column;
+  background: var(--color-card);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--rounded-xl);
+  box-shadow: var(--shadow-modal);
+  overflow: hidden;
+}
+.sreg-dlg__head {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 16px 20px 12px;
+  border-bottom: 1px solid var(--color-border);
+}
+.sreg-dlg__head-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.sreg-dlg__title {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--color-text);
+}
+.sreg-dlg__sub {
+  font-size: 0.76rem;
+  color: var(--color-dim);
+}
+.sreg-dlg__close {
+  flex-shrink: 0;
+  width: 30px;
+  height: 30px;
+  border-radius: var(--rounded-md);
+  border: none;
+  background: transparent;
+  color: var(--color-faint);
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+}
+.sreg-dlg__close:hover {
+  color: var(--color-text);
+  background: var(--color-inset);
+}
+.sreg-dlg__body {
+  padding: 14px 20px 18px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 120px;
+}
+.sreg-dlg__bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.sreg-dlg__bar--tabs {
+  align-items: flex-start;
+  justify-content: space-between;
+}
+.sreg-dlg__bar > .sreg-dlg__tabs {
+  flex: 1;
+  min-width: 0;
+}
+.sreg-dlg__tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.sreg-dlg__tab {
+  max-width: 420px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  border: 1px solid var(--color-border);
+  background: transparent;
+  color: var(--color-dim);
+  cursor: pointer;
+}
+.sreg-dlg__tab:hover {
+  color: var(--color-text);
+}
+.sreg-dlg__tab--active {
+  color: var(--color-text);
+  border-color: var(--color-primary);
+  background: var(--color-inset);
+}
+.sreg-dlg__tab--err {
+  border-color: #b3261e88;
+}
+.sreg-dlg__state {
+  font-size: 13px;
+  color: var(--color-dim);
+  padding: 18px 0;
+}
+.sreg-dlg__state--err {
+  color: #b3261e;
+}
+.sreg-dlg__pre {
+  margin: 0;
+  padding: 12px;
+  background: var(--color-inset);
+  border: 1px solid var(--color-border);
+  border-radius: var(--rounded-md);
+  font-size: 12px;
+  line-height: 1.5;
+  overflow: auto;
+  white-space: pre;
+  color: var(--color-text);
 }
 </style>
