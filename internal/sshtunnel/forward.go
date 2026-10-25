@@ -73,7 +73,7 @@ func startLocalForward(client target.SSHClient, t *Tunnel) (*forward, error) {
 }
 
 // startRemoteForward(-R):请求远端 sshd 监听 bind,远端连接回传后在本机连 dest
-//(本机侧可达)。绑定 0.0.0.0 需目标机 sshd 开启 GatewayPorts,否则被降级/拒绝。
+// (本机侧可达)。绑定 0.0.0.0 需目标机 sshd 开启 GatewayPorts,否则被降级/拒绝。
 func startRemoteForward(client target.SSHClient, t *Tunnel) (*forward, error) {
 	ln, err := client.Listen("tcp", bindAddr(t))
 	if err != nil {

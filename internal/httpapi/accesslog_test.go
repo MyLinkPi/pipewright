@@ -65,8 +65,8 @@ func TestAccessLogDefaultsTo500OnUnwrittenPanic(t *testing.T) {
 func TestStatusWriterForwardsInterfaces(t *testing.T) {
 	rec := httptest.NewRecorder()
 	sw := &statusWriter{ResponseWriter: rec, status: http.StatusOK}
-	var _ http.Flusher = sw   // SSE 流依赖
-	var _ http.Hijacker = sw  // WS 终端依赖
+	var _ http.Flusher = sw                              // SSE 流依赖
+	var _ http.Hijacker = sw                             // WS 终端依赖
 	var _ interface{ Unwrap() http.ResponseWriter } = sw // http.ResponseController 依赖
 	sw.WriteHeader(http.StatusBadRequest)
 	if sw.finalStatus() != http.StatusBadRequest {

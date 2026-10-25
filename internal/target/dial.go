@@ -80,7 +80,7 @@ func (c *sshClientWrap) OpenTunChannel(localIdx, remoteIdx int) (io.ReadWriteClo
 
 // Exec 在远端跑一条 shell 命令(vpn 模式配置远端 tun IP 用),返回合并输出;
 // 非零退出时错误附带输出(通常已由调用方拼好人读上下文)。命令由调用方构造
-//(隧道域只传 IP/设备名等已校验字符串,且经 POSIX 转义后拼装)。
+// (隧道域只传 IP/设备名等已校验字符串,且经 POSIX 转义后拼装)。
 func (c *sshClientWrap) Exec(cmd string) (string, error) {
 	sess, err := c.client.NewSession()
 	if err != nil {
@@ -101,7 +101,7 @@ func (c *sshClientWrap) Exec(cmd string) (string, error) {
 }
 
 // Ping 经 keepalive 全局请求探活;SendRequest 无超时参数,超时经 select 兜底
-//(死连接上它可能永久阻塞)。
+// (死连接上它可能永久阻塞)。
 func (c *sshClientWrap) Ping(timeout time.Duration) error {
 	done := make(chan error, 1)
 	go func() {

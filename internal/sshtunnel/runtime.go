@@ -20,7 +20,7 @@ import (
 const (
 	// HelperFlag 是 helper 模式的 argv 首参(cmd/pipewright/main.go 据此在正常装配前
 	// 分派到 sshtunnel.RunHelperMain)。
-	HelperFlag = "--tunnel-helper"
+	HelperFlag  = "--tunnel-helper"
 	stateSuffix = ".json"
 	stopSuffix  = ".stop"
 	logSuffix   = ".log"
@@ -74,18 +74,18 @@ func (s *StateFile) StartedAtTime() time.Time {
 // TunnelView 是配置 + 运行态的合并视图(HTTP 层转 DTO)。
 type TunnelView struct {
 	Tunnel
-	Status        string `json:"status"`
-	RuntimeStatus string `json:"-"`
-	PID           int    `json:"pid"`
-	LastError     string `json:"lastError"`
-	Restarts      int    `json:"restarts"`
-	ActualPort    int    `json:"actualPort"`
-	Endpoint      string `json:"endpoint"`
+	Status        string    `json:"status"`
+	RuntimeStatus string    `json:"-"`
+	PID           int       `json:"pid"`
+	LastError     string    `json:"lastError"`
+	Restarts      int       `json:"restarts"`
+	ActualPort    int       `json:"actualPort"`
+	Endpoint      string    `json:"endpoint"`
 	StartedAt     time.Time `json:"startedAt"`
 }
 
 // Runtime 是 helper 子进程运行时(拉起/停止/状态读取)。宿主停机**不杀** helper
-//(mesh easytier 同款:停机即孤儿,下次启动心跳新鲜即零中断收养),因此这里没有
+// (mesh easytier 同款:停机即孤儿,下次启动心跳新鲜即零中断收养),因此这里没有
 // 「随 ctx 关停」的路径——Stop 仅由停用/删除/配置变更/重启显式调用。
 type Runtime struct {
 	stateDir string
@@ -152,7 +152,7 @@ func (r *Runtime) WriteState(id string, st *StateFile) error {
 
 // spawnProcess 拉起 helper 子进程(argv 仅隧道 id,绝无密钥;env 继承主进程,含
 // master key / DB 配置,helper 自行解析)。stdio 重定向到该隧道的日志文件
-//(截断重开,上限 1MB);立即返回,连接与重连由 helper 自治。
+// (截断重开,上限 1MB);立即返回,连接与重连由 helper 自治。
 func (r *Runtime) spawnProcess(id string) error {
 	exe, err := os.Executable()
 	if err != nil {
@@ -183,7 +183,7 @@ func (r *Runtime) spawnProcess(id string) error {
 }
 
 // ShouldLogSpawnFail 对账循环的失败去重:同一 id 错误文本不变时只记一次
-//(mesh failedKey 先例),变化(如二进制修复)再记。
+// (mesh failedKey 先例),变化(如二进制修复)再记。
 func (r *Runtime) ShouldLogSpawnFail(id, msg string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -203,7 +203,7 @@ func (r *Runtime) clearSpawnFail(id string) {
 
 // stopProcess 停止 helper:先立停止旗标(挡住一切形态的 helper —— 已跑的守望循环
 // ≤1s 看到;刚拉起尚未写首拍心跳的,启动检查也会看到即退),再等状态文件消失
-//(= helper 已优雅退出并自清两文件);超时按心跳 pid 强杀并清残留。
+// (= helper 已优雅退出并自清两文件);超时按心跳 pid 强杀并清残留。
 func (r *Runtime) stopProcess(id string) {
 	// 1) 先立旗标再判定:防「helper 刚 spawn、心跳还没落地」的竞争窗口。
 	if err := os.WriteFile(r.stopPath(id), []byte{}, 0o600); err != nil {

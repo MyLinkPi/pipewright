@@ -103,16 +103,15 @@ func (s *service) GetScanner(ctx context.Context, id string) (*Instance, error) 
 // scanner 抽象 *sql.Row 与 *sql.Rows 的 Scan。
 type scanner interface {
 	Scan(dest ...any) error
-
 }
 
 // scanInstance 把一行扫描为 Instance(token 只读密文长度,绝不解封)。
 func scanInstance(sc scanner) (*Instance, error) {
 	var (
-		inst          Instance
-		tokenLen      int
-		createdAtRaw  string
-		updatedAtRaw  string
+		inst         Instance
+		tokenLen     int
+		createdAtRaw string
+		updatedAtRaw string
 	)
 	if err := sc.Scan(&inst.ID, &inst.Kind, &inst.Name, &inst.Host, &inst.Port, &inst.Source,
 		&inst.ServerID, &inst.StackName, &createdAtRaw, &updatedAtRaw, &tokenLen); err != nil {
@@ -236,7 +235,7 @@ func (s *service) DeleteScanner(ctx context.Context, id string) error {
 
 // Register 应用市场联动登记:同 kind+host+port 已有条目 → 原地轮换 token(未提供则清除),
 // 否则新建 source=appstore 条目。trivy-server 须带服务端口;nuclei-runner 无服务端口
-//(Port 固定 0,按 kind+host 唯一)。
+// (Port 固定 0,按 kind+host 唯一)。
 func (s *service) Register(ctx context.Context, in RegisterInput) (*RegisterResult, error) {
 	in.Host = strings.TrimSpace(in.Host)
 	if !validKind(in.Kind) {

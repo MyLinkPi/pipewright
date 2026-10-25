@@ -20,28 +20,28 @@ type tunnelDTO struct {
 	Name string `json:"name"`
 	// 连接方式:serverId 非空 = 绑定已登记服务器(沿用其凭据/跳板链);
 	// 空 = 直连模式(host/user/credentialId 字段生效)。
-	ServerID        string `json:"serverId"`
-	ServerName      string `json:"serverName"`
-	Host            string `json:"host"`
-	Port            int    `json:"port"`
-	User            string `json:"user"`
-	CredentialID    string `json:"credentialId"`
-	CredentialName  string `json:"credentialName"`
-	Mode            string `json:"mode"` // local | remote | dynamic
-	BindHost        string `json:"bindHost"`
-	BindPort        int    `json:"bindPort"`
-	DestHost        string `json:"destHost"`
-	DestPort        int    `json:"destPort"`
-	Enabled         bool   `json:"enabled"`
-	CreatedAt       string `json:"createdAt"`
-	UpdatedAt       string `json:"updatedAt"`
-	Status          string `json:"status"` // disabled|stopped|connecting|active|retrying
-	PID             int    `json:"pid"`
-	LastError       string `json:"lastError"`
-	Restarts        int    `json:"restarts"`
-	ActualPort      int    `json:"actualPort"`
-	Endpoint        string `json:"endpoint"`
-	StartedAt       string `json:"startedAt"`
+	ServerID       string `json:"serverId"`
+	ServerName     string `json:"serverName"`
+	Host           string `json:"host"`
+	Port           int    `json:"port"`
+	User           string `json:"user"`
+	CredentialID   string `json:"credentialId"`
+	CredentialName string `json:"credentialName"`
+	Mode           string `json:"mode"` // local | remote | dynamic
+	BindHost       string `json:"bindHost"`
+	BindPort       int    `json:"bindPort"`
+	DestHost       string `json:"destHost"`
+	DestPort       int    `json:"destPort"`
+	Enabled        bool   `json:"enabled"`
+	CreatedAt      string `json:"createdAt"`
+	UpdatedAt      string `json:"updatedAt"`
+	Status         string `json:"status"` // disabled|stopped|connecting|active|retrying
+	PID            int    `json:"pid"`
+	LastError      string `json:"lastError"`
+	Restarts       int    `json:"restarts"`
+	ActualPort     int    `json:"actualPort"`
+	Endpoint       string `json:"endpoint"`
+	StartedAt      string `json:"startedAt"`
 }
 
 func toTunnelDTO(v sshtunnel.TunnelView) tunnelDTO {
@@ -59,7 +59,7 @@ func toTunnelDTO(v sshtunnel.TunnelView) tunnelDTO {
 		Enabled:   v.Enabled,
 		CreatedAt: v.CreatedAt.UTC().Format(time.RFC3339),
 		UpdatedAt: v.UpdatedAt.UTC().Format(time.RFC3339),
-		Status: v.Status, PID: v.PID, LastError: v.LastError,
+		Status:    v.Status, PID: v.PID, LastError: v.LastError,
 		Restarts: v.Restarts, ActualPort: v.ActualPort, Endpoint: v.Endpoint,
 		StartedAt: startedAt,
 	}

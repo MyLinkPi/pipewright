@@ -160,10 +160,16 @@ func TestValidateTunnelInput(t *testing.T) {
 		}(), target.ErrNotFound},
 		{"dynamic 禁填目标", func() Input { in := directInput(); in.DestHost = "x"; in.DestPort = 80; return in }(), ErrInvalidInput},
 		{"local 缺目标", func() Input {
-			in := directInput(); in.Mode = ModeLocal; return in
+			in := directInput()
+			in.Mode = ModeLocal
+			return in
 		}(), ErrInvalidInput},
 		{"local 目标端口越界", func() Input {
-			in := directInput(); in.Mode = ModeLocal; in.DestHost = "db"; in.DestPort = 70000; return in
+			in := directInput()
+			in.Mode = ModeLocal
+			in.DestHost = "db"
+			in.DestPort = 70000
+			return in
 		}(), ErrInvalidInput},
 		{"监听端口越界", func() Input { in := directInput(); in.BindPort = 65536; return in }(), ErrInvalidInput},
 		{"合法直连 dynamic", directInput(), nil},
@@ -171,23 +177,44 @@ func TestValidateTunnelInput(t *testing.T) {
 			return Input{Name: "t2", ServerID: "srv-1", Mode: ModeLocal, BindPort: 0, DestHost: "db", DestPort: 5432}
 		}(), nil},
 		{"合法 vpn(同 /30)", func() Input {
-			in := directInput(); in.Mode = ModeVPN; in.BindHost = "10.255.0.2"; in.DestHost = "10.255.0.1"; in.BindPort = 0; in.DestPort = 1
+			in := directInput()
+			in.Mode = ModeVPN
+			in.BindHost = "10.255.0.2"
+			in.DestHost = "10.255.0.1"
+			in.BindPort = 0
+			in.DestPort = 1
 			return in
 		}(), nil},
 		{"vpn 缺远端 IP", func() Input {
-			in := directInput(); in.Mode = ModeVPN; in.BindHost = "10.255.0.2"; in.DestHost = ""; in.DestPort = 0
+			in := directInput()
+			in.Mode = ModeVPN
+			in.BindHost = "10.255.0.2"
+			in.DestHost = ""
+			in.DestPort = 0
 			return in
 		}(), ErrInvalidInput},
 		{"vpn 跨网段", func() Input {
-			in := directInput(); in.Mode = ModeVPN; in.BindHost = "10.255.0.2"; in.DestHost = "10.255.0.5"; in.DestPort = 0
+			in := directInput()
+			in.Mode = ModeVPN
+			in.BindHost = "10.255.0.2"
+			in.DestHost = "10.255.0.5"
+			in.DestPort = 0
 			return in
 		}(), ErrInvalidInput},
 		{"vpn IPv6 不支持", func() Input {
-			in := directInput(); in.Mode = ModeVPN; in.BindHost = "fd00::2"; in.DestHost = "fd00::1"; in.DestPort = 0
+			in := directInput()
+			in.Mode = ModeVPN
+			in.BindHost = "fd00::2"
+			in.DestHost = "fd00::1"
+			in.DestPort = 0
 			return in
 		}(), ErrInvalidInput},
 		{"vpn tun 序号越界", func() Input {
-			in := directInput(); in.Mode = ModeVPN; in.BindHost = "10.255.0.2"; in.DestHost = "10.255.0.1"; in.DestPort = 256
+			in := directInput()
+			in.Mode = ModeVPN
+			in.BindHost = "10.255.0.2"
+			in.DestHost = "10.255.0.1"
+			in.DestPort = 256
 			return in
 		}(), ErrInvalidInput},
 	}
@@ -750,7 +777,7 @@ func TestRunHelperLifecycle(t *testing.T) {
 }
 
 // TestVPNPumpFraming 入站包泵(通道 → tun)线上帧格式:4 字节大端地址族 + IP 包
-//(包长自 IPv4 total-length 解析);未知地址族上报 dead 触发重连。
+// (包长自 IPv4 total-length 解析);未知地址族上报 dead 触发重连。
 func TestVPNPumpFraming(t *testing.T) {
 	pkt := make([]byte, 24)
 	pkt[0] = 0x45 // IPv4 头

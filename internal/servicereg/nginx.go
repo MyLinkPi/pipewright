@@ -906,7 +906,7 @@ func inspectNginxPorts(ctx context.Context, tg target.Service, st *Settings, ser
 
 // NginxConfFile 是网关容器内的一份配置文件内容(主配置或其引用文件)。
 type NginxConfFile struct {
-	Path    string `json:"path"`            // 容器内绝对路径
+	Path    string `json:"path"` // 容器内绝对路径
 	Content string `json:"content"`
 	Error   string `json:"error,omitempty"` // 单文件读取失败原因(best-effort,不阻断其余文件)
 }

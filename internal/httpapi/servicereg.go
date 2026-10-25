@@ -185,9 +185,9 @@ func toServiceRegGatewayDTO(g *servicereg.GatewayStatus) serviceRegGatewayDTO {
 	dto := serviceRegGatewayDTO{
 		Configured: g.Configured, ServerID: g.ServerID, ServerName: g.ServerName,
 		Installed: g.Installed, Running: g.Running, Image: g.Image, Ports: g.Ports,
-		Version:      g.Version,
-		Servers:      servers,
-		LastApplyAt:  last, LastApplyError: g.LastApplyError, LastApplyErrors: g.LastApplyErrors,
+		Version:     g.Version,
+		Servers:     servers,
+		LastApplyAt: last, LastApplyError: g.LastApplyError, LastApplyErrors: g.LastApplyErrors,
 	}
 	if g.Forward != nil {
 		dto.Forward = &serviceRegForwardDTO{

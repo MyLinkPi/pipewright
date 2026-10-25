@@ -76,7 +76,7 @@ func newUninstallStub() *uninstallStubTarget {
 	return &uninstallStubTarget{
 		server: &target.Server{ID: "s1", Name: "机器A", Host: "10.0.0.1"},
 		responses: map[string]uninstallStubResp{
-			"docker ps -aq --filter label=com.docker.compose.project=gitea-2": {stdout: "abc123def456"},
+			"docker ps -aq --filter label=com.docker.compose.project=gitea-2":       {stdout: "abc123def456"},
 			"docker volume ls -q --filter label=com.docker.compose.project=gitea-2": {stdout: "gitea-2_gitea-data"},
 		},
 	}

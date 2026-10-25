@@ -29,7 +29,7 @@ type tunReq struct {
 
 // createTunDevice 创建(或接管)本机 tun<idx> 设备:打开 /dev/net/tun 并
 // TUNSETIFF 绑定指定设备名。需要 root 或 CAP_NET_ADMIN;设备名已被占用
-//(其它隧道/进程)时报 EBUSY。返回的 *os.File 关闭即销毁设备。
+// (其它隧道/进程)时报 EBUSY。返回的 *os.File 关闭即销毁设备。
 func createTunDevice(idx int) (*os.File, string, error) {
 	name := fmt.Sprintf("tun%d", idx)
 	fd, err := unix.Open("/dev/net/tun", unix.O_RDWR, 0)

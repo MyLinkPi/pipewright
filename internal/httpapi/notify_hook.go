@@ -139,10 +139,10 @@ func NewApprovalNotifier(notifySvc notify.Service, signer *approval.Signer, publ
 					}
 					fmt.Fprintf(&b, "%s:%d 通过/%d 失败/%d 跳过", tr.StageName, tr.Passed, tr.Failed, tr.Skipped)
 					if tr.GateReason != "" {
-					b.WriteString("(")
-					b.WriteString(tr.GateReason)
-					b.WriteString(")")
-				}
+						b.WriteString("(")
+						b.WriteString(tr.GateReason)
+						b.WriteString(")")
+					}
 				}
 				if b.Len() > 0 {
 					vars.TestSummary = b.String()
