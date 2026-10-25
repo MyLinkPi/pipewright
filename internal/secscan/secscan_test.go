@@ -468,7 +468,9 @@ func TestTrivyDBRepositoryInjection(t *testing.T) {
 		if !skipOK {
 			t.Fatalf("主机 rootfs 扫描应 --skip-dirs 容器存储与伪文件系统:%v", runner.execs[0])
 		}
-		// 未配置时不注入(默认命令形状不变);skip-dirs 与仓库配置无关,照常携带。
+		// 未显式配置 → 注入缺省镜像源(ghcr.nju.edu.cn 排前、官方仓库排后回退),不依赖
+		// 部署侧配 env(官方仓库不可达的网络上首扫会卡死在下载超时);skip-dirs 与仓库
+		// 配置无关,照常携带。
 		plain := &fakeRunner{
 			servers: runner.servers,
 			fn: func(cmd []string) (*target.ExecResult, error) {
@@ -481,19 +483,27 @@ func TestTrivyDBRepositoryInjection(t *testing.T) {
 			t.Fatal(err)
 		}
 		waitRunDone(t, svc2, run2.ID)
-		plainSkipOK := false
+		plainDB, plainJava, plainSkipOK := false, false, false
 		for _, cmd := range plain.execs {
-			for _, c := range cmd {
-				if strings.HasPrefix(c, "TRIVY_DB_REPOSITORY=") || strings.HasPrefix(c, "TRIVY_JAVA_DB_REPOSITORY=") {
-					t.Fatalf("未配置不应注入 env:%v", c)
+			joined := strings.Join(cmd, " ")
+			for i, c := range cmd {
+				if i == 0 || cmd[i-1] != "-e" {
+					continue
+				}
+				if c == "TRIVY_DB_REPOSITORY="+defaultTrivyDBRepo {
+					plainDB = true
+				}
+				if c == "TRIVY_JAVA_DB_REPOSITORY="+defaultTrivyJavaDBRepo {
+					plainJava = true
 				}
 			}
-			if strings.Contains(strings.Join(cmd, " "), " rootfs ") && strings.Contains(strings.Join(cmd, " "), "--skip-dirs") {
+			if strings.Contains(joined, " rootfs ") && strings.Contains(joined, "--skip-dirs") {
 				plainSkipOK = true
 			}
 		}
-		if !plainSkipOK {
-			t.Fatalf("未配置仓库时主机 rootfs 扫描仍应带 --skip-dirs:%v", plain.execs[0])
+		if !plainDB || !plainJava || !plainSkipOK {
+			t.Fatalf("未配置应注入缺省 DB 镜像源且 rootfs 带 --skip-dirs(db=%v java=%v skip=%v):%v",
+				plainDB, plainJava, plainSkipOK, plain.execs[0])
 		}
 	})
 }

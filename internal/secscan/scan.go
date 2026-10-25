@@ -395,8 +395,8 @@ func (s *service) runTrivy(ctx context.Context, run *Run, host string) (*ReportD
 	succeeded := 0
 	imageCount := 0
 
-	// ① 主机包扫描。本地缓存卷模式下客户端要自下漏洞库:配置了镜像仓库(如
-	// ghcr.nju.edu.cn)就注入 TRIVY_DB_REPOSITORY,免目标机直连 ghcr.io。
+	// ① 主机包扫描。本地缓存卷模式下客户端要自下漏洞库:DB 仓库默认注入可达镜像源
+	// (ghcr.nju.edu.cn,可经 PIPEWRIGHT_TRIVY_DB_REPOSITORY 覆盖),免目标机直连 ghcr.io。
 	hostCmd := s.trivyCmd(hostRootsVolume, "rootfs", "-q", "--scanners", "vuln",
 		"--skip-dirs", hostScanSkipDirs, "--format", "json")
 	hostCmd = append(hostCmd, serverArgs...)

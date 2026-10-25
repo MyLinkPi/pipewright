@@ -434,7 +434,7 @@ type service struct {
 	sem             chan struct{}   // fleet 并发闸(单机扫描也过闸,防连环触发压垮目标机)
 	trivyImage      string
 	nucleiImage     string
-	trivyDBRepo     string    // 客户端本地模式的漏洞库仓库(镜像源;空 = trivy 默认 ghcr.io)
+	trivyDBRepo     string    // 客户端本地模式的漏洞库仓库(镜像源;New 缺省注入 ghcr.nju.edu.cn 镜像)
 	trivyJavaDBRepo string    // 客户端 Java DB 仓库(镜像源;空 = 按漏洞库仓库推导)
 	waf             WafClient // SafeLine OpenAPI 客户端(测试注入 fake)
 }
@@ -503,6 +503,15 @@ func WithImages(trivy, nuclei string) Option {
 	}
 }
 
+// defaultTrivyDBRepo / defaultTrivyJavaDBRepo 是客户端 DB 仓库的缺省值:官方仓库
+// (mirror.gcr.io / ghcr.io)在本平台典型部署网络普遍不可达,首次扫描会卡在下载超时;
+// ghcr.nju.edu.cn 镜像排前(镜像的是 ghcr.io 原路径,境内快、境外也可公网访问),
+// 官方仓库排后逐个回退,镜像单点故障时不至于无库可用。
+const (
+	defaultTrivyDBRepo     = "ghcr.nju.edu.cn/aquasecurity/trivy-db,ghcr.io/aquasecurity/trivy-db"
+	defaultTrivyJavaDBRepo = "ghcr.nju.edu.cn/aquasecurity/trivy-java-db,ghcr.io/aquasecurity/trivy-java-db"
+)
+
 // fleetConcurrency 是同时在跑的扫描数上限(单机 + fleet 合计)。
 const fleetConcurrency = 3
 
@@ -519,17 +528,26 @@ func New(db *sql.DB, opts ...Option) Service {
 	for _, o := range opts {
 		o(s)
 	}
-	// Java DB 仓库未显式配置时按漏洞库仓库推导:镜像源普遍同时镜像两个库且同名
-	// (…/trivy-db → …/trivy-java-db);推导不出的条目(自建仓库名)跳过,Java DB
-	// 回落 trivy 默认仓库。
-	if s.trivyJavaDBRepo == "" && s.trivyDBRepo != "" {
+	// 漏洞库仓库未显式配置时用缺省镜像源(免部署侧配 env;显式配置则完全以配置为准)。
+	if s.trivyDBRepo == "" {
+		s.trivyDBRepo = defaultTrivyDBRepo
+	}
+	// Java DB(镜像内 JAR 的检测索引)始终由客户端下载——即使配了 --server 也在客户端
+	// (trivy 的分析阶段不在服务端)。未显式配置时按漏洞库仓库逐条推导:镜像源普遍同时
+	// 镜像两个库且同名(…/trivy-db → …/trivy-java-db);一条都推导不出(自建仓库名)
+	// 才回落缺省值。
+	if s.trivyJavaDBRepo == "" {
 		derived := make([]string, 0, 2)
 		for _, repo := range strings.Split(s.trivyDBRepo, ",") {
 			if repo = strings.TrimSpace(repo); strings.Contains(repo, "trivy-db") {
 				derived = append(derived, strings.Replace(repo, "trivy-db", "trivy-java-db", 1))
 			}
 		}
-		s.trivyJavaDBRepo = strings.Join(derived, ",")
+		if len(derived) == 0 {
+			s.trivyJavaDBRepo = defaultTrivyJavaDBRepo
+		} else {
+			s.trivyJavaDBRepo = strings.Join(derived, ",")
+		}
 	}
 	return s
 }

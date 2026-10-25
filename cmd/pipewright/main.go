@@ -596,15 +596,14 @@ func main() {
 	if artStore != nil {
 		secScanOpts = append(secScanOpts, secscan.WithArtifacts(artStore))
 	}
-	// 目标机到不了 ghcr.io 时(典型:国内网络,本地缓存卷模式下载漏洞库失败),给全部
-	// trivy 客户端注入镜像仓库;值如 ghcr.nju.edu.cn/aquasecurity/trivy-db(逗号分隔回退)。
+	// trivy 客户端的漏洞库/Java DB 仓库默认注入 ghcr.nju.edu.cn 镜像(官方仓库在国内
+	// 普遍不可达,首扫会卡死在下载超时);这两个变量用于显式覆盖(逗号分隔逐个回退)。
 	if dbRepo := os.Getenv("PIPEWRIGHT_TRIVY_DB_REPOSITORY"); dbRepo != "" {
 		secScanOpts = append(secScanOpts, secscan.WithTrivyDBRepository(dbRepo))
 		log.Printf("[security] Trivy 漏洞库仓库(客户端本地模式):%s", dbRepo)
 	}
-	// Java DB(镜像内 JAR 的检测索引)始终由客户端下载(即使走 --server),默认仓库
-	// mirror.gcr.io 不可达时镜像扫到 JAR 即 FATAL;缺省按漏洞库仓库自动推导
-	// (…/trivy-db → …/trivy-java-db),镜像源命名不标准时用此变量显式指定。
+	// Java DB(镜像内 JAR 的检测索引)始终由客户端下载(即使走 --server),缺省按漏洞
+	// 库仓库自动推导(…/trivy-db → …/trivy-java-db);镜像源命名不标准时用此变量指定。
 	if javaRepo := os.Getenv("PIPEWRIGHT_TRIVY_JAVA_DB_REPOSITORY"); javaRepo != "" {
 		secScanOpts = append(secScanOpts, secscan.WithTrivyJavaDBRepository(javaRepo))
 		log.Printf("[security] Trivy Java DB 仓库(客户端):%s", javaRepo)
