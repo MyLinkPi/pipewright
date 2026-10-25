@@ -164,6 +164,8 @@ async function loadInstances(): Promise<void> {
 // instanceMeta 拼装行内次要信息(机器/实例名/资源限制/部署时间)。
 function instanceMeta(inst: AppInstance): string {
   const parts = [inst.serverName]
+  // 运行镜像版本(best-effort:docker ps 按栈取 tag;"latest" 也有信息量,照常显示)。
+  if (inst.version) parts.push(`v${inst.version}`)
   if (inst.instance) parts.push(`${t('appStore.deploy.instance')}: ${inst.instance}`)
   if (inst.cpus || inst.memory) parts.push([inst.cpus && `${inst.cpus} CPU`, inst.memory].filter(Boolean).join(' / '))
   if (inst.deployedAt) parts.push(`${t('appStore.instances.deployedAt')} ${new Date(inst.deployedAt).toLocaleString()}`)

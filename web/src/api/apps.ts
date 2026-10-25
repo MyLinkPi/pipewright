@@ -188,6 +188,7 @@ export interface AppInstance {
   icon?: string
   /** 实例名后缀(栈名去掉「模板名-」前缀;单实例部署 → 后端 omitempty 省略 = undefined)。 */
   instance?: string
+  version?: string
   cpus?: string
   memory?: string
   /** RFC3339 部署/最近升级时间;旧边车无记录 → 空。 */

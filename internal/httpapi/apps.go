@@ -1335,6 +1335,38 @@ func projectVolumeNames(ctx context.Context, svc target.Service, serverID, proje
 var cmdFindAppStacks = []string{"find", stacksBaseDir, "-maxdepth", "2",
 	"(", "-name", composeFileName, "-o", "-name", appParamsFileName, ")"}
 
+// cmdImagesByProject 列出该机全部运行容器的「compose 项目名|||镜像引用」(一次往返,
+// 供实例版本展示;`docker ps --format` 的 Label 取法与 cmdComposeLabels 同纪律)。
+var cmdImagesByProject = []string{"docker", "ps", "--format",
+	`{{.Label "com.docker.compose.project"}}|||{{.Config.Image}}`}
+
+// imagesByProject 解析 docker ps 输出为 项目名 → 镜像引用(去重,多容器栈取首见)。
+func imagesByProject(out string) map[string]string {
+	m := map[string]string{}
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		parts := strings.SplitN(line, "|||", 2)
+		if len(parts) != 2 || parts[0] == "" {
+			continue
+		}
+		if _, dup := m[parts[0]]; !dup {
+			m[parts[0]] = strings.TrimSpace(parts[1])
+		}
+	}
+	return m
+}
+
+// imageVersionTag 从镜像引用提取 tag("repo/name:tag" → tag;无 tag → "")。
+func imageVersionTag(imageRef string) string {
+	if i := strings.LastIndex(imageRef, ":"); i >= 0 && !strings.Contains(imageRef[i:], "/") {
+		return imageRef[i+1:]
+	}
+	return ""
+}
+
 // appsInstancesConcurrency / appsInstancesTimeout 是逐台枚举的有界并发与单机窗口
 // (find + 逐边车 cat,量级远小于 compose up)。
 const (
@@ -1355,6 +1387,7 @@ type appInstanceDTO struct {
 	DisplayName  string `json:"displayName,omitempty"`
 	Icon         string `json:"icon,omitempty"`
 	Instance     string `json:"instance,omitempty"`    // 实例名后缀(stackName 去掉「模板名-」前缀)
+	Version      string `json:"version,omitempty"`     // 运行镜像 tag(best-effort;如 "8.4"、"latest")
 	CPUs         string `json:"cpus,omitempty"`
 	Memory       string `json:"memory,omitempty"`
 	DeployedAt   string `json:"deployedAt,omitempty"`  // RFC3339;旧边车无部署时间 → 空(未知)
@@ -1450,6 +1483,11 @@ func collectAppInstances(ctx context.Context, svc target.Service, srv *target.Se
 			d.hasCompose = true
 		}
 	}
+	// 运行镜像映射(版本展示):一次 docker ps;失败/为空不影响实例列表(版本留空)。
+	imgs := map[string]string{}
+	if res2, err := svc.Exec(cctx, srv.ID, cmdImagesByProject); err == nil && res2.ExitCode == 0 {
+		imgs = imagesByProject(res2.Stdout)
+	}
 	names := make([]string, 0, len(dirs))
 	for name, d := range dirs {
 		if d.hasCompose {
@@ -1465,6 +1503,7 @@ func collectAppInstances(ctx context.Context, svc target.Service, srv *target.Se
 				dto := appInstanceDTO{
 					ServerID: srv.ID, ServerName: srv.Name, Reachable: true,
 					StackName: name, TemplateID: sc.TemplateID, CPUs: sc.CPUs, Memory: sc.Memory,
+					Version: imageVersionTag(imgs[name]),
 				}
 				if !sc.DeployedAt.IsZero() {
 					dto.DeployedAt = sc.DeployedAt.UTC().Format(time.RFC3339)
@@ -1494,6 +1533,7 @@ func collectAppInstances(ctx context.Context, svc target.Service, srv *target.Se
 				ServerID: srv.ID, ServerName: srv.Name, Reachable: true, Legacy: true,
 				StackName: name, TemplateID: tpl.ID, TemplateName: tpl.Name,
 				DisplayName: tpl.DisplayName, Icon: tpl.Icon,
+				Version: imageVersionTag(imgs[name]),
 			}
 			if instance, found := strings.CutPrefix(name, tpl.Name+"-"); found {
 				dto.Instance = instance
