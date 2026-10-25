@@ -16,6 +16,7 @@
  * POST   /api/security/scans/fleet                 → { items: SecRun[] }   (CSRF;全量)
  * GET    /api/security/scans?serverId&scanType&limit → { items: SecRun[] }
  * GET    /api/security/scans/{id}/findings?severity&source&q&offset&limit → FindingsPage
+ * GET    /api/security/scans/{id}/logs              → RunLogView           (执行日志)
  * GET    /api/security/schedule                    → Schedule
  * PUT    /api/security/schedule                    → Schedule              (CSRF)
  * GET    /api/security/report?serverId&format=html → HTML 文件下载
@@ -192,6 +193,25 @@ export const getFindings = (
   const qs = q.toString()
   return http.get(`/api/security/scans/${runId}/findings${qs ? `?${qs}` : ''}`)
 }
+
+/** StepLog 是一次扫描中单个执行步骤的原始输出(超长截头)。 */
+export interface StepLog {
+  step: string
+  exitCode: number
+  stdout?: string
+  stderr?: string
+}
+
+export interface RunLogView {
+  runId: string
+  scanType: ScanType
+  status: RunStatus
+  logs: StepLog[]
+}
+
+/** getRunLogs:某次扫描各执行步骤的原始 stdout/stderr(诊断「扫不出结果」类问题)。 */
+export const getRunLogs = (runId: string): Promise<RunLogView> =>
+  http.get(`/api/security/scans/${runId}/logs`)
 
 // ---------- 概览与定时 ----------
 

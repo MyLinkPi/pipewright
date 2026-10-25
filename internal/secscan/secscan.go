@@ -172,14 +172,14 @@ type TestResult struct {
 
 // Summary 是一次扫描的计数聚合(存 run 行的 JSON)。
 type Summary struct {
-	Critical   int `json:"critical"`
-	High       int `json:"high"`
-	Medium     int `json:"medium"`
-	Low        int `json:"low"`
-	Info       int `json:"info"`
-	Unknown    int `json:"unknown"`
-	Total      int `json:"total"`
-	ImageCount int `json:"imageCount,omitempty"` // trivy:扫描的容器镜像数
+	Critical    int `json:"critical"`
+	High        int `json:"high"`
+	Medium      int `json:"medium"`
+	Low         int `json:"low"`
+	Info        int `json:"info"`
+	Unknown     int `json:"unknown"`
+	Total       int `json:"total"`
+	ImageCount  int `json:"imageCount,omitempty"`  // trivy:扫描的容器镜像数
 	TargetCount int `json:"targetCount,omitempty"` // nuclei:探测的目标数
 }
 
@@ -231,13 +231,30 @@ type Run struct {
 // Finding 是统一漏洞/暴露面条目(trivy 与 nuclei 解析归一的产物,报告 JSON 的明细单位)。
 type Finding struct {
 	Severity         string `json:"severity"`
-	Source           string `json:"source"`                 // host | image:<ref> | nuclei
-	Target           string `json:"target"`                 // 包名 / 镜像探测点(matched-at)
-	ID               string `json:"id"`                     // CVE 编号 / 模板 ID
+	Source           string `json:"source"` // host | image:<ref> | nuclei
+	Target           string `json:"target"` // 包名 / 镜像探测点(matched-at)
+	ID               string `json:"id"`     // CVE 编号 / 模板 ID
 	Title            string `json:"title,omitempty"`
 	InstalledVersion string `json:"installedVersion,omitempty"` // trivy 包当前版本
 	FixedVersion     string `json:"fixedVersion,omitempty"`     // trivy 修复版本;nuclei 空
 	URL              string `json:"url,omitempty"`              // CVE/详情外链
+}
+
+// StepLog 是一次扫描中单个执行步骤的原始输出(stdout/stderr 截断保留),供「查看日志」
+// 诊断「扫不出结果」类问题。绝不记录命令行本身(本地模式 argv 带明文 token)。
+type StepLog struct {
+	Step     string `json:"step"`             // 步骤名(如「主机包扫描(trivy rootfs)」)
+	ExitCode int    `json:"exitCode"`         // 远端命令退出码;SSH 失败为 -1
+	Stdout   string `json:"stdout,omitempty"` // 原始标准输出(超长截头)
+	Stderr   string `json:"stderr,omitempty"` // 原始标准错误(超长截头)
+}
+
+// RunLogView 是某次扫描的原始输出日志视图(HTTP 层 DTO 的数据源)。
+type RunLogView struct {
+	RunID    string    `json:"runId"`
+	ScanType string    `json:"scanType"`
+	Status   string    `json:"status"`
+	Logs     []StepLog `json:"logs"`
 }
 
 // ReportDoc 是一次扫描的完整报告(artifact store 里的 JSON 结构;明细按需读取)。
@@ -248,10 +265,14 @@ type ReportDoc struct {
 	ServerName  string    `json:"serverName"`
 	Findings    []Finding `json:"findings"`
 	Notes       []string  `json:"notes,omitempty"` // 部分失败/降级说明(如个别镜像扫描失败)
+	Logs        []StepLog `json:"logs,omitempty"`  // 各执行步骤的原始输出(诊断用)
 
 	// imageCount 是 trivy 成功扫描的容器镜像数(不序列化为独立字段;由 executor
 	// 汇入 Summary.ImageCount)。
 	imageCount int `json:"-"`
+	// failed 标记整体失败(区别于带 notes 的部分成功);不序列化,executeAsync 据此
+	// 置 failed 终态,同时把携带执行日志的 doc 存进 artifact 供「查看日志」。
+	failed bool `json:"-"`
 }
 
 // Schedule 是定时扫描规则(全局单行)。
@@ -272,10 +293,10 @@ type ScheduleInput struct {
 
 // ScanInput 是发起一次扫描的入参。
 type ScanInput struct {
-	ServerID  string
-	ScanType  string   // trivy | nuclei
-	Targets   []string // 仅 nuclei:探测目标 URL;空 = 默认 http(s)://<宿主地址>
-	Trigger   string   // manual | fleet | scheduled(留空 = manual)
+	ServerID string
+	ScanType string   // trivy | nuclei
+	Targets  []string // 仅 nuclei:探测目标 URL;空 = 默认 http(s)://<宿主地址>
+	Trigger  string   // manual | fleet | scheduled(留空 = manual)
 }
 
 // RunFilter 是扫描历史的查询条件。
@@ -296,9 +317,9 @@ type FindingFilter struct {
 
 // FindingsPage 是过滤后的明细页。
 type FindingsPage struct {
-	Total    int       `json:"total"`
-	Items    []Finding `json:"items"`
-	Summary  Summary   `json:"summary"` // 过滤前的全量计数(供徽标)
+	Total   int       `json:"total"`
+	Items   []Finding `json:"items"`
+	Summary Summary   `json:"summary"` // 过滤前的全量计数(供徽标)
 }
 
 // OverviewServer 是概览里一台服务器的聚合视图。
@@ -381,6 +402,8 @@ type Service interface {
 	GetRun(ctx context.Context, id string) (*Run, error)
 	// RunFindings 读某次扫描的明细(artifact JSON → 内存过滤分页)。
 	RunFindings(ctx context.Context, id string, f FindingFilter) (*FindingsPage, error)
+	// RunLogs 读某次扫描的原始命令输出(running/旧数据无 artifact → 空日志)。
+	RunLogs(ctx context.Context, id string) (*RunLogView, error)
 	// Overview 聚合全员最新状态(含从未扫描的服务器占位)。
 	Overview(ctx context.Context) (*Overview, error)
 	// WafOverview 汇总 SafeLine WAF 实例的连通与拦截态势(防护态势卡)。

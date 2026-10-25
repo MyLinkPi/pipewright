@@ -8,6 +8,7 @@ import (
 	"io"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/huangchengsir/pipewright/internal/target"
@@ -21,9 +22,9 @@ import (
 
 // ServerInfo 是执行器视角的目标服务器(target.Server 的最小投影)。
 type ServerInfo struct {
-	ID   string
-	Name string
-	Host string
+	ID    string
+	Name  string
+	Host  string
 	IsPVE bool
 }
 
@@ -86,10 +87,10 @@ type ArtifactStore interface {
 
 // 扫描命令的固定构件(具名卷跨扫描复用:trivy 漏洞库缓存 / nuclei 特征模板)。
 const (
-	trivyCacheVolume  = "pipewright-trivy-cache:/root/.cache/trivy"
-	nucleiTmplVolume  = "pipewright-nuclei-templates:/root/nuclei-templates"
-	dockerSockVolume  = "/var/run/docker.sock:/var/run/docker.sock"
-	hostRootsVolume   = "/:/rootfs:ro"
+	trivyCacheVolume = "pipewright-trivy-cache:/root/.cache/trivy"
+	nucleiTmplVolume = "pipewright-nuclei-templates:/root/nuclei-templates"
+	dockerSockVolume = "/var/run/docker.sock:/var/run/docker.sock"
+	hostRootsVolume  = "/:/rootfs:ro"
 	// maxImagesPerScan 是单次扫描的镜像数上限(docker ps 顺序取前 N 个,防巨型机拖垮)。
 	maxImagesPerScan = 20
 	// maxNucleiTargets 是单次 nuclei 扫描的目标 URL 上限。
@@ -231,7 +232,8 @@ func (s *service) executeAsync(run *Run, host string, nucleiTargets []string) {
 		}
 	}
 	status := StatusDone
-	if doc == nil && errMsg != "" {
+	if (doc == nil && errMsg != "") || (doc != nil && doc.failed) {
+		// doc.failed:整体失败但已携带执行日志 → failed 终态 + artifact 存日志。
 		status = StatusFailed
 	}
 	// 终态落库用独立短超时(扫描 ctx 可能已取消,终态必须写回)。
@@ -278,6 +280,43 @@ func tailClip(txt string, n int) string {
 		return txt
 	}
 	return "…" + string(r[len(r)-n:])
+}
+
+// logMaxStreamBytes 是单条步骤日志保留的字节数(超出截头,尾注省略说明)。
+const logMaxStreamBytes = 1 << 20
+
+// clipLog 把日志流截到 logMaxStreamBytes(保留头部,按 UTF-8 边界回退),超限追加
+// 省略标注。日志是给人诊断看的,流内容本身已有 findings 全量承担。
+func clipLog(txt string) string {
+	if len(txt) <= logMaxStreamBytes {
+		return txt
+	}
+	cut := txt[:logMaxStreamBytes]
+	for len(cut) > 0 && !utf8.ValidString(cut) {
+		cut = cut[:len(cut)-1]
+	}
+	return cut + fmt.Sprintf("\n…(超长截断,原始输出共 %d 字节)", len(txt))
+}
+
+// stepLog 把一次 Exec 结果折成步骤日志(err 非 nil = SSH 层失败,退出码记 -1)。
+// 只记输出不记命令行:本地模式 argv 里有明文 token,绝不进日志。
+func stepLog(step string, res *target.ExecResult, err error) StepLog {
+	if err != nil {
+		return StepLog{Step: step, ExitCode: -1, Stderr: truncateRunes(err.Error(), 2048)}
+	}
+	if res == nil {
+		return StepLog{Step: step, ExitCode: -1}
+	}
+	return StepLog{Step: step, ExitCode: res.ExitCode, Stdout: clipLog(res.Stdout), Stderr: clipLog(res.Stderr)}
+}
+
+// failDoc 构造零结果、携带执行日志的失败报告:终态 failed,但日志随 artifact 存档。
+func failDoc(run *Run, host, scanType string, logs []StepLog) *ReportDoc {
+	return &ReportDoc{
+		ScanType: scanType, GeneratedAt: time.Now().UTC().Format(time.RFC3339),
+		Host: host, ServerName: run.ServerName, Findings: []Finding{},
+		Logs: logs, failed: true,
+	}
 }
 
 // dockerUnavailable 判定目标机 docker 不可用(未安装/守护进程未运行/无权限)。
@@ -338,6 +377,7 @@ func (s *service) runTrivy(ctx context.Context, run *Run, host string) (*ReportD
 	serverArgs := trivyServerArgs(serverURL, token)
 	notes := make([]string, 0)
 	findings := make([]Finding, 0)
+	logs := make([]StepLog, 0, 4)
 	succeeded := 0
 	imageCount := 0
 
@@ -347,11 +387,14 @@ func (s *service) runTrivy(ctx context.Context, run *Run, host string) (*ReportD
 	hostCmd = append(hostCmd, serverArgs...)
 	hostCmd = append(hostCmd, "/rootfs")
 	res, err := s.runner.Exec(ctx, run.ServerID, hostCmd)
+	logs = append(logs, stepLog("主机包扫描(trivy rootfs,目标机容器)", res, err))
 	switch {
 	case err != nil:
-		return nil, "SSH 执行失败:" + truncateRunes(err.Error(), 256)
+		return failDoc(run, host, ScanTypeTrivy, logs), "SSH 执行失败:" + truncateRunes(err.Error(), 256)
 	case dockerUnavailable(res, nil):
-		return s.runTrivyViaServerHost(ctx, run, host, serverURL, token)
+		rdoc, rmsg := s.runTrivyViaServerHost(ctx, run, host, serverURL, token)
+		rdoc.Logs = append(logs, rdoc.Logs...)
+		return rdoc, rmsg
 	case res.ExitCode != 0:
 		notes = append(notes, "主机包扫描失败:"+tailClip(res.Stderr, 240))
 	default:
@@ -365,6 +408,7 @@ func (s *service) runTrivy(ctx context.Context, run *Run, host string) (*ReportD
 
 	// ② 运行中镜像扫描。
 	psRes, err := s.runner.Exec(ctx, run.ServerID, []string{"docker", "ps", "--format", "{{.Image}}"})
+	logs = append(logs, stepLog("枚举运行镜像(docker ps)", psRes, err))
 	if err == nil && psRes.ExitCode == 0 {
 		seen := map[string]bool{}
 		images := make([]string, 0)
@@ -385,6 +429,7 @@ func (s *service) runTrivy(ctx context.Context, run *Run, host string) (*ReportD
 			cmd = append(cmd, serverArgs...)
 			cmd = append(cmd, img)
 			ires, ierr := s.runner.Exec(ctx, run.ServerID, cmd)
+			logs = append(logs, stepLog("镜像 "+img+" 扫描", ires, ierr))
 			if ierr != nil || ires.ExitCode != 0 {
 				stderr := ""
 				if ires != nil {
@@ -410,13 +455,13 @@ func (s *service) runTrivy(ctx context.Context, run *Run, host string) (*ReportD
 		if msg == "" {
 			msg = "trivy 扫描未产生任何结果"
 		}
-		return nil, truncateRunes(msg, 512)
+		return failDoc(run, host, ScanTypeTrivy, logs), truncateRunes(msg, 512)
 	}
 	SortFindings(findings)
 	doc := &ReportDoc{
 		ScanType: ScanTypeTrivy, GeneratedAt: time.Now().UTC().Format(time.RFC3339),
 		Host: host, ServerName: run.ServerName, Findings: findings, Notes: notes,
-		imageCount: imageCount,
+		Logs: logs, imageCount: imageCount,
 	}
 	if len(notes) > 0 {
 		return doc, "扫描完成,但部分对象失败:" + strings.Join(notes, ";")
@@ -426,7 +471,7 @@ func (s *service) runTrivy(ctx context.Context, run *Run, host string) (*ReportD
 
 // runNuclei 执行 Nuclei 扫描:登记了常驻 runner → 经 runner 主机 docker exec 在容器内
 // 跑(目标机无需 docker;扫描视角 = runner 所在网络);否则回落目标机本地 docker run
-//(无常驻,特征模板落具名卷复用)。目标为空时默认探测宿主的 80/443。退出非零但已有
+// (无常驻,特征模板落具名卷复用)。目标为空时默认探测宿主的 80/443。退出非零但已有
 // 结果 → 视为部分成功。
 func (s *service) runNuclei(ctx context.Context, run *Run, host string, targets []string) (*ReportDoc, string) {
 	if len(targets) == 0 {
@@ -441,11 +486,12 @@ func (s *service) runNuclei(ctx context.Context, run *Run, host string, targets 
 		cmd = append(cmd, "-u", t)
 	}
 	res, err := s.runner.Exec(ctx, run.ServerID, cmd)
+	logs := []StepLog{stepLog("nuclei 扫描(目标机 docker run)", res, err)}
 	if err != nil {
-		return nil, "SSH 执行失败:" + truncateRunes(err.Error(), 256)
+		return failDoc(run, host, ScanTypeNuclei, logs), "SSH 执行失败:" + truncateRunes(err.Error(), 256)
 	}
 	if dockerUnavailable(res, nil) {
-		return nil, nucleiNoDockerMsg
+		return failDoc(run, host, ScanTypeNuclei, logs), nucleiNoDockerMsg
 	}
 	findings, _ := NucleiFindings([]byte(res.Stdout))
 	if res.ExitCode != 0 && len(findings) == 0 {
@@ -453,12 +499,12 @@ func (s *service) runNuclei(ctx context.Context, run *Run, host string, targets 
 		if msg == "" {
 			msg = fmt.Sprintf("nuclei 以状态码 %d 退出且无结果", res.ExitCode)
 		}
-		return nil, "nuclei 扫描失败:" + truncateRunes(msg, 400)
+		return failDoc(run, host, ScanTypeNuclei, logs), "nuclei 扫描失败:" + truncateRunes(msg, 400)
 	}
 	SortFindings(findings)
 	doc := &ReportDoc{
 		ScanType: ScanTypeNuclei, GeneratedAt: time.Now().UTC().Format(time.RFC3339),
-		Host: host, ServerName: run.ServerName, Findings: findings,
+		Host: host, ServerName: run.ServerName, Findings: findings, Logs: logs,
 	}
 	if res.ExitCode != 0 {
 		doc.Notes = []string{"nuclei 退出码非零,以下为已取得的检测结果(可能不完整):" + truncateRunes(strings.TrimSpace(res.Stderr), 200)}
@@ -471,11 +517,12 @@ func (s *service) runNuclei(ctx context.Context, run *Run, host string, targets 
 // ② docker exec 容器内跑 nuclei(特征模板在 runner 容器卷里,跨扫描复用)。
 func (s *service) runNucleiViaRunner(ctx context.Context, run *Run, inst *Instance, targets []string) (*ReportDoc, string) {
 	psRes, err := s.runner.Exec(ctx, inst.ServerID, nucleiRunnerPSCmd(inst.StackName))
+	logs := []StepLog{stepLog("定位 runner 容器(docker ps)", psRes, err)}
 	if err != nil {
-		return nil, "连接 runner 所在主机失败:" + truncateRunes(err.Error(), 256)
+		return failDoc(run, "", ScanTypeNuclei, logs), "连接 runner 所在主机失败:" + truncateRunes(err.Error(), 256)
 	}
 	if psRes.ExitCode != 0 || dockerUnavailable(psRes, nil) {
-		return nil, "runner 所在主机 docker 不可用:" + tailClip(psRes.Stderr, 200)
+		return failDoc(run, "", ScanTypeNuclei, logs), "runner 所在主机 docker 不可用:" + tailClip(psRes.Stderr, 200)
 	}
 	container := ""
 	for _, line := range strings.Split(psRes.Stdout, "\n") {
@@ -486,18 +533,19 @@ func (s *service) runNucleiViaRunner(ctx context.Context, run *Run, inst *Instan
 		}
 	}
 	if container == "" {
-		return nil, "runner 容器未在运行(栈 " + inst.StackName + "):可在应用市场重新部署 Nuclei Runner"
+		return failDoc(run, "", ScanTypeNuclei, logs), "runner 容器未在运行(栈 " + inst.StackName + "):可在应用市场重新部署 Nuclei Runner"
 	}
 	cmd := []string{"docker", "exec", container, "nuclei", "-j", "-silent", "-nc"}
 	for _, t := range targets {
 		cmd = append(cmd, "-u", t)
 	}
 	res, err := s.runner.Exec(ctx, inst.ServerID, cmd)
+	logs = append(logs, stepLog("nuclei(runner 容器内执行)", res, err))
 	if err != nil {
-		return nil, "经 runner 执行失败:" + truncateRunes(err.Error(), 256)
+		return failDoc(run, "", ScanTypeNuclei, logs), "经 runner 执行失败:" + truncateRunes(err.Error(), 256)
 	}
 	if dockerUnavailable(res, nil) {
-		return nil, nucleiNoDockerMsg
+		return failDoc(run, "", ScanTypeNuclei, logs), nucleiNoDockerMsg
 	}
 	findings, _ := NucleiFindings([]byte(res.Stdout))
 	if res.ExitCode != 0 && len(findings) == 0 {
@@ -505,12 +553,12 @@ func (s *service) runNucleiViaRunner(ctx context.Context, run *Run, inst *Instan
 		if msg == "" {
 			msg = fmt.Sprintf("nuclei 以状态码 %d 退出且无结果", res.ExitCode)
 		}
-		return nil, "nuclei 扫描失败:" + tailClip(msg, 400)
+		return failDoc(run, "", ScanTypeNuclei, logs), "nuclei 扫描失败:" + tailClip(msg, 400)
 	}
 	SortFindings(findings)
 	doc := &ReportDoc{
 		ScanType: ScanTypeNuclei, GeneratedAt: time.Now().UTC().Format(time.RFC3339),
-		Host: "", ServerName: run.ServerName, Findings: findings,
+		Host: "", ServerName: run.ServerName, Findings: findings, Logs: logs,
 	}
 	if res.ExitCode != 0 {
 		doc.Notes = []string{"nuclei 退出码非零,以下为已取得的检测结果(可能不完整):" + tailClip(res.Stderr, 200)}

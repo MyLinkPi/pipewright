@@ -98,6 +98,7 @@ type secRunDTO struct {
 	StartedAt   string          `json:"startedAt"`
 	FinishedAt  string          `json:"finishedAt,omitempty"`
 	FindingsURL string          `json:"findingsUrl,omitempty"` // 明细抽屉数据源(GET .../findings)
+	LogsURL     string          `json:"logsUrl,omitempty"`     // 执行日志数据源(GET .../logs)
 }
 
 func toSecRunDTO(r secscan.Run) secRunDTO {
@@ -110,6 +111,7 @@ func toSecRunDTO(r secscan.Run) secRunDTO {
 	if !r.FinishedAt.IsZero() {
 		dto.FinishedAt = r.FinishedAt.UTC().Format(time.RFC3339)
 		dto.FindingsURL = "/api/security/scans/" + r.ID + "/findings"
+		dto.LogsURL = "/api/security/scans/" + r.ID + "/logs"
 	}
 	return dto
 }
@@ -125,12 +127,12 @@ type secOverviewDTO struct {
 }
 
 type secOverviewServerDTO struct {
-	ServerID   string            `json:"serverId"`
-	ServerName string            `json:"serverName"`
-	Host       string            `json:"host"`
-	Trivy      *secRunLiteDTO    `json:"trivy,omitempty"`
-	Nuclei     *secRunLiteDTO    `json:"nuclei,omitempty"`
-	Totals     *secscan.Summary  `json:"totals,omitempty"` // 该机最新 done 结果合计(徽标用)
+	ServerID   string           `json:"serverId"`
+	ServerName string           `json:"serverName"`
+	Host       string           `json:"host"`
+	Trivy      *secRunLiteDTO   `json:"trivy,omitempty"`
+	Nuclei     *secRunLiteDTO   `json:"nuclei,omitempty"`
+	Totals     *secscan.Summary `json:"totals,omitempty"` // 该机最新 done 结果合计(徽标用)
 }
 
 type secRunLiteDTO struct {
@@ -157,11 +159,11 @@ func toSecRunLiteDTO(r *secscan.RunLite) *secRunLiteDTO {
 
 // secScheduleDTO 是定时规则响应体。
 type secScheduleDTO struct {
-	Enabled   bool     `json:"enabled"`
-	Expression string  `json:"expression"`
-	ScanTypes []string `json:"scanTypes"`
-	LastRunAt string   `json:"lastRunAt,omitempty"`
-	UpdatedAt string   `json:"updatedAt"`
+	Enabled    bool     `json:"enabled"`
+	Expression string   `json:"expression"`
+	ScanTypes  []string `json:"scanTypes"`
+	LastRunAt  string   `json:"lastRunAt,omitempty"`
+	UpdatedAt  string   `json:"updatedAt"`
 }
 
 // mountSecurity 挂载 /api/security/*(admin 组)。
@@ -183,6 +185,7 @@ func mountSecurity(ar chi.Router, svc secscan.Service, aud audit.Recorder, expla
 	ar.Post("/security/scans/fleet", makeStartFleetScanHandler(svc, aud))
 	ar.Get("/security/scans", makeListSecRunsHandler(svc))
 	ar.Get("/security/scans/{id}/findings", makeRunFindingsHandler(svc))
+	ar.Get("/security/scans/{id}/logs", makeSecRunLogsHandler(svc))
 	ar.Get("/security/schedule", makeGetScheduleHandler(svc))
 	ar.Put("/security/schedule", makeSaveScheduleHandler(svc, aud))
 	ar.Get("/security/report", makeSecurityReportHandler(svc, aud))
@@ -456,6 +459,19 @@ func makeRunFindingsHandler(svc secscan.Service) http.HandlerFunc {
 			return
 		}
 		writeJSON(w, http.StatusOK, page)
+	}
+}
+
+// makeRunLogsHandler 返回 GET /api/security/scans/{id}/logs:该次扫描各执行步骤的
+// 原始 stdout/stderr(running/旧数据 → 空日志)。
+func makeSecRunLogsHandler(svc secscan.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		view, err := svc.RunLogs(r.Context(), chi.URLParam(r, "id"))
+		if err != nil {
+			writeSecurityError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, view)
 	}
 }
 

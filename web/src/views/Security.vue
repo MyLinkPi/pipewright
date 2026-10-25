@@ -18,10 +18,10 @@ import {
   getOverview, getSchedule, saveSchedule,
   listScanners, createScanner, deleteScanner, testScanner, testScannerDirect,
   getScannerLib, updateScannerLib, type ScannerLibInfo,
-  startScan, startFleetScan, listRuns, getFindings, downloadSecurityReport, explainFinding,
+  startScan, startFleetScan, listRuns, getFindings, getRunLogs, downloadSecurityReport, explainFinding,
   getWafOverview, type WafInstanceStatus,
   type SecurityOverview, type Schedule, type ScannerInstance, type SecRun,
-  type FindingsPage, type ScanType, type Finding,
+  type FindingsPage, type ScanType, type Finding, type RunLogView,
 } from '../api/security'
 import { HttpError } from '../api/http'
 import { useToast } from '../composables/useToast'
@@ -333,6 +333,31 @@ function findingsPageMove(delta: number): void {
   void loadFindings()
 }
 
+// ─── 执行日志弹窗(各步骤原始 stdout/stderr,诊断「扫不出结果」类问题)──────────
+const logsRun = ref<SecRun | null>(null)
+const logsView = ref<RunLogView | null>(null)
+const logsLoading = ref(false)
+
+async function loadLogs(): Promise<void> {
+  if (!logsRun.value) return
+  logsLoading.value = true
+  try {
+    logsView.value = await getRunLogs(logsRun.value.id)
+  } catch (e) {
+    toast.error(t('securityCenter.errLoad'), { detail: errMsg(e, t('securityCenter.errNetwork')) })
+    logsView.value = null
+  } finally {
+    logsLoading.value = false
+  }
+}
+
+// openLogs 接受 SecRun(历史行)或概览行(runId)的最小交集;失败态 run 也带日志。
+function openLogs(run: { id: string; serverName: string; scanType: ScanType }): void {
+  logsRun.value = { id: run.id, serverId: '', serverName: run.serverName, scanType: run.scanType, status: 'done', summary: { critical: 0, high: 0, medium: 0, low: 0, info: 0, unknown: 0, total: 0 }, startedAt: '' }
+  logsView.value = null
+  void loadLogs()
+}
+
 // ─── AI 解读(会话内缓存:同 run 同 finding 不重复请求)────────────────────────
 const explainCache = new Map<string, string>()
 const explainBusy = ref('')
@@ -633,10 +658,14 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
                   <template v-else-if="srv.trivy.status === 'failed'">
                     <div class="cell-line"><span class="badge badge--failed">{{ t('securityCenter.statusFailed') }}</span></div>
                     <div v-if="srv.trivy.error" class="err-line" :title="srv.trivy.error">{{ srv.trivy.error }}</div>
+                    <div class="cell-line"><AppButton variant="default" @click="openLogs({ id: srv.trivy!.runId, serverName: srv.serverName, scanType: srv.trivy!.scanType })">{{ t('securityCenter.viewLogs') }}</AppButton></div>
                   </template>
                   <template v-else>
                     <div class="cell-line"><SevChips :summary="srv.trivy.summary" /></div>
-                    <div class="cell-line"><AppButton variant="default" @click="openFindings({ id: srv.trivy!.runId, serverName: srv.serverName, scanType: srv.trivy!.scanType })">{{ t('securityCenter.viewFindings') }}</AppButton></div>
+                    <div class="cell-line">
+                      <AppButton variant="default" @click="openFindings({ id: srv.trivy!.runId, serverName: srv.serverName, scanType: srv.trivy!.scanType })">{{ t('securityCenter.viewFindings') }}</AppButton>
+                      <AppButton variant="default" @click="openLogs({ id: srv.trivy!.runId, serverName: srv.serverName, scanType: srv.trivy!.scanType })">{{ t('securityCenter.viewLogs') }}</AppButton>
+                    </div>
                   </template>
                 </template>
                 <span v-else class="hint">{{ t('securityCenter.neverScanned') }}</span>
@@ -647,10 +676,14 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
                   <template v-else-if="srv.nuclei.status === 'failed'">
                     <div class="cell-line"><span class="badge badge--failed">{{ t('securityCenter.statusFailed') }}</span></div>
                     <div v-if="srv.nuclei.error" class="err-line" :title="srv.nuclei.error">{{ srv.nuclei.error }}</div>
+                    <div class="cell-line"><AppButton variant="default" @click="openLogs({ id: srv.nuclei!.runId, serverName: srv.serverName, scanType: srv.nuclei!.scanType })">{{ t('securityCenter.viewLogs') }}</AppButton></div>
                   </template>
                   <template v-else>
                     <div class="cell-line"><SevChips :summary="srv.nuclei.summary" /></div>
-                    <div class="cell-line"><AppButton variant="default" @click="openFindings({ id: srv.nuclei!.runId, serverName: srv.serverName, scanType: srv.nuclei!.scanType })">{{ t('securityCenter.viewFindings') }}</AppButton></div>
+                    <div class="cell-line">
+                      <AppButton variant="default" @click="openFindings({ id: srv.nuclei!.runId, serverName: srv.serverName, scanType: srv.nuclei!.scanType })">{{ t('securityCenter.viewFindings') }}</AppButton>
+                      <AppButton variant="default" @click="openLogs({ id: srv.nuclei!.runId, serverName: srv.serverName, scanType: srv.nuclei!.scanType })">{{ t('securityCenter.viewLogs') }}</AppButton>
+                    </div>
                   </template>
                 </template>
                 <span v-else class="hint">{{ t('securityCenter.neverScanned') }}</span>
@@ -696,7 +729,10 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
               </td>
               <td>{{ triggerLabel(r) }}</td>
               <td>
-                <AppButton v-if="r.status === 'done'" variant="default" @click="openFindings(r)">{{ t('securityCenter.viewFindings') }}</AppButton>
+                <div class="cell-line">
+                  <AppButton v-if="r.status === 'done'" variant="default" @click="openFindings(r)">{{ t('securityCenter.viewFindings') }}</AppButton>
+                  <AppButton v-if="r.status !== 'running'" variant="default" @click="openLogs(r)">{{ t('securityCenter.viewLogs') }}</AppButton>
+                </div>
               </td>
             </tr>
           </tbody>
@@ -806,6 +842,34 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
         </div>
       </div>
     </div>
+
+    <!-- 执行日志弹窗 -->
+    <div v-if="logsRun" class="modal-overlay" @click.self="logsRun = null">
+      <div class="modal modal--logs" role="dialog" aria-modal="true">
+        <div class="modal__head">
+          <h3>{{ logsRun.serverName }} · {{ typeLabel(logsRun.scanType) }} · {{ t('securityCenter.logsTitle') }}</h3>
+          <AppButton variant="default" @click="logsRun = null">{{ t('securityCenter.findingsClose') }}</AppButton>
+        </div>
+        <SkeletonBlock v-if="logsLoading" />
+        <div v-else-if="!logsView || !logsView.logs.length" class="empty-hint">{{ t('securityCenter.logsEmpty') }}</div>
+        <div v-else class="logs-list">
+          <details v-for="(l, i) in logsView.logs" :key="i" class="log-step" open>
+            <summary class="log-step__head">
+              <span class="log-step__name">{{ l.step }}</span>
+              <span class="badge" :class="l.exitCode === 0 ? 'badge--ok' : 'badge--failed'">exit {{ l.exitCode }}</span>
+            </summary>
+            <template v-if="l.stdout">
+              <div class="hint">{{ t('securityCenter.logsStdout') }}</div>
+              <pre class="log-pre">{{ l.stdout }}</pre>
+            </template>
+            <template v-if="l.stderr">
+              <div class="hint">{{ t('securityCenter.logsStderr') }}</div>
+              <pre class="log-pre log-pre--err">{{ l.stderr }}</pre>
+            </template>
+          </details>
+        </div>
+      </div>
+    </div>
   </template>
 </template>
 
@@ -877,6 +941,14 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
 .modal__pager { display: flex; align-items: center; gap: 12px; justify-content: flex-end; }
 .explain-row > td { background: var(--pw-bg-subtle, #f6f7fa); }
 .modal--export { max-width: 560px; }
+
+/* 执行日志弹窗:按步骤折叠,stdout/stderr 等宽字体块。 */
+.logs-list { display: flex; flex-direction: column; gap: 10px; overflow: auto; max-height: 62vh; }
+.log-step { border: 1px solid var(--pw-line, #d9dee8); border-radius: 8px; padding: 8px 12px; }
+.log-step__head { display: flex; align-items: center; justify-content: space-between; gap: 10px; cursor: pointer; }
+.log-step__name { font-size: 13px; font-weight: 600; }
+.log-pre { margin: 4px 0 8px; padding: 8px 10px; background: var(--pw-code-bg, #f5f6f8); border-radius: 6px; font-size: 12px; line-height: 1.5; white-space: pre-wrap; word-break: break-all; max-height: 320px; overflow: auto; }
+.log-pre--err { background: var(--pw-code-bg-err, #fdf2f2); }
 .export-scope { display: flex; gap: 18px; }
 .export-toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .export-toolbar input[type='search'] { flex: 1; min-width: 160px; padding: 7px 9px; border: 1px solid var(--pw-line, #d9dee8); border-radius: 6px; font-size: 13px; }

@@ -76,10 +76,10 @@ type runScanner interface {
 // scanRun 把一行 scan_runs 扫描为 Run。
 func scanRun(sc runScanner) (*Run, error) {
 	var (
-		run          Run
-		summaryRaw   string
-		startedRaw   string
-		finishedRaw  sql.NullString
+		run         Run
+		summaryRaw  string
+		startedRaw  string
+		finishedRaw sql.NullString
 	)
 	if err := sc.Scan(&run.ID, &run.ServerID, &run.ServerName, &run.ScanType, &run.Status,
 		&run.Trigger, &summaryRaw, &run.ArtifactKey, &run.Error, &run.ScannerID,
@@ -179,7 +179,7 @@ func joinAnd(parts []string) string {
 }
 
 // RunFindings 读某次扫描的明细(artifact JSON → 内存过滤分页);run 无 artifact
-//(running/failed/旧数据)→ 空页。全量计数随页返回供徽标渲染。
+// (running/failed/旧数据)→ 空页。全量计数随页返回供徽标渲染。
 func (s *service) RunFindings(ctx context.Context, id string, f FindingFilter) (*FindingsPage, error) {
 	run, err := s.GetRun(ctx, id)
 	if err != nil {
@@ -207,6 +207,34 @@ func (s *service) RunFindings(ctx context.Context, id string, f FindingFilter) (
 	page.Total = total
 	page.Items = items
 	return page, nil
+}
+
+// RunLogs 读某次扫描的原始命令输出(artifact JSON 的 logs;running/旧数据无 artifact
+// → 空日志,前端按空态提示)。日志随 doc 落 artifact,done/failed 均可读。
+func (s *service) RunLogs(ctx context.Context, id string) (*RunLogView, error) {
+	run, err := s.GetRun(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	view := &RunLogView{RunID: run.ID, ScanType: run.ScanType, Status: run.Status, Logs: []StepLog{}}
+	if s.artifacts == nil || run.ArtifactKey == "" {
+		return view, nil
+	}
+	rc, err := s.artifacts.Open(run.ArtifactKey)
+	if err != nil {
+		return nil, fmt.Errorf("secscan: open report artifact: %w", err)
+	}
+	defer func() { _ = rc.Close() }()
+	raw, err := io.ReadAll(io.LimitReader(rc, artifactMaxBytes))
+	if err != nil {
+		return nil, fmt.Errorf("secscan: read report artifact: %w", err)
+	}
+	var doc ReportDoc
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		return nil, fmt.Errorf("secscan: parse report artifact: %w", err)
+	}
+	view.Logs = doc.Logs
+	return view, nil
 }
 
 // Overview 聚合全员:每机每类型最新一次(任意状态,含 running)+ 各机最新 done 的
