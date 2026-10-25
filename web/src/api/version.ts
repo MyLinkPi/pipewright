@@ -46,9 +46,9 @@ export interface UpdateResult {
   command?: string
 }
 
-/** 源码升级后台管线的进度快照(GET /api/version/update/status)。 */
+/** 升级进行态快照(GET /api/version/update/status)。source 为后台管线进度;binary 在更新进行中报 running。 */
 export interface UpdateJobStatus {
-  /** false = 非源码部署,无后台任务可轮询。 */
+  /** false = 当前无可轮询的进行态(非源码部署且 binary 无更新进行中 / docker)。 */
   supported: boolean
   running: boolean
   /** pull | build | install | restart */

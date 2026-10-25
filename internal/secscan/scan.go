@@ -32,6 +32,10 @@ type Runner interface {
 	Servers(ctx context.Context) ([]ServerInfo, error)
 	Server(ctx context.Context, id string) (ServerInfo, error)
 	Exec(ctx context.Context, serverID string, cmd []string) (*target.ExecResult, error)
+	// ExecStream 流式读远端命令 stdout(目标机 → 面板单向大流量,如代扫的元数据 tar)。
+	ExecStream(ctx context.Context, serverID string, cmd []string) (io.ReadCloser, error)
+	// ExecWithStdin 把 stdin 接到远端命令标准输入(面板 → 目标机大流量,如喂 tar 给代扫容器)。
+	ExecWithStdin(ctx context.Context, serverID string, cmd []string, stdin io.Reader) (*target.ExecResult, error)
 }
 
 // SSHRunner 把 target.Service 适配为 Runner。
@@ -62,6 +66,16 @@ func (r SSHRunner) Server(ctx context.Context, id string) (ServerInfo, error) {
 // Exec 在目标机执行命令。
 func (r SSHRunner) Exec(ctx context.Context, serverID string, cmd []string) (*target.ExecResult, error) {
 	return r.Svc.Exec(ctx, serverID, cmd)
+}
+
+// ExecStream 流式读目标机命令 stdout。
+func (r SSHRunner) ExecStream(ctx context.Context, serverID string, cmd []string) (io.ReadCloser, error) {
+	return r.Svc.ExecStream(ctx, serverID, cmd)
+}
+
+// ExecWithStdin 在目标机执行命令并接入 stdin。
+func (r SSHRunner) ExecWithStdin(ctx context.Context, serverID string, cmd []string, stdin io.Reader) (*target.ExecResult, error) {
+	return r.Svc.ExecWithStdin(ctx, serverID, cmd, stdin)
 }
 
 // ArtifactStore 是报告存储抽象(artifactstore.Store 满足)。
@@ -119,7 +133,8 @@ func (s *service) StartScan(ctx context.Context, in ScanInput) (*Run, error) {
 		ScanType: in.ScanType, Status: StatusRunning, Trigger: trigger,
 		StartedAt: time.Now().UTC(),
 	}
-	// trivy 优先走最近登记的中心服务(免目标机自下漏洞库);无登记 → 本地缓存卷模式。
+	// trivy 优先走最近登记的中心服务(免目标机自下漏洞库;目标机无 docker 时还可由其
+	// 宿主机代跑主机包扫描);无登记 → 本地缓存卷模式。
 	// nuclei 优先走登记的常驻 runner(目标机无需 docker);无登记 → 目标机本地 docker。
 	if in.ScanType == ScanTypeTrivy {
 		if inst := s.pickTrivyServer(ctx); inst != nil {
@@ -280,24 +295,47 @@ func dockerUnavailable(res *target.ExecResult, err error) bool {
 		strings.Contains(stderr, "permission denied while trying to connect")
 }
 
-const dockerUnavailableMsg = "目标机 docker 不可用(未安装、守护进程未运行或当前 SSH 用户无权访问);安全扫描依赖目标机 docker 运行扫描器容器"
+const dockerUnavailableMsg = "目标机 docker 不可用(未安装、守护进程未运行或当前 SSH 用户无权访问);在应用市场部署 Trivy Server(主机包扫描代跑)或 Nuclei Runner 后,目标机免 docker 也可扫描"
+
+// dockerUnavailableManualServerMsg 是已接入 Trivy Server 但为手工登记(面板不知道其宿主机)、
+// 无法代跑时的人话指引。
+const dockerUnavailableManualServerMsg = "目标机 docker 不可用(未安装、守护进程未运行或当前 SSH 用户无权访问);已登记的 Trivy Server 为手工接入,面板不知道其宿主机,无法代跑扫描。可改为在应用市场部署 Trivy Server(自动登记宿主机),或为当前 SSH 用户开通目标机 docker 访问权限"
+
+// trivyServerConn 读取 run 关联的中心 trivy-server 接入点(地址 + 已解封令牌;无 → 零值)。
+func (s *service) trivyServerConn(ctx context.Context, run *Run) (serverURL, token string) {
+	if run.ScannerID == "" {
+		return "", ""
+	}
+	inst, err := s.GetScanner(ctx, run.ScannerID)
+	if err != nil {
+		return "", ""
+	}
+	var sealed []byte
+	_ = s.db.QueryRowContext(ctx,
+		`SELECT token_sealed FROM scanner_instances WHERE id = ?`, inst.ID).Scan(&sealed)
+	token, _ = s.openToken(sealed) // 解封失败按无令牌处理(服务端未开鉴权仍可用)
+	return "http://" + inst.Host + ":" + fmt.Sprint(inst.Port), token
+}
+
+// trivyServerArgs 把中心服务接入点组装为 trivy 客户端命令行参数(无服务 → 空切片)。
+func trivyServerArgs(serverURL, token string) []string {
+	if serverURL == "" {
+		return nil
+	}
+	args := []string{"--server", serverURL}
+	if token != "" {
+		args = append(args, "--token", token)
+	}
+	return args
+}
 
 // runTrivy 执行 trivy 扫描:① 主机 rootfs(已装系统包 CVE);② 运行中容器镜像
 // (docker ps 枚举,逐镜像)。部分失败不整体报废(notes 记录);全部失败 → failed。
+// 目标机 docker 不可用 → 已接入应用市场部署的 Trivy Server 时改由其宿主机代跑(见
+// runTrivyViaServerHost),否则 failed + 人话指引。
 func (s *service) runTrivy(ctx context.Context, run *Run, host string) (*ReportDoc, string) {
-	serverArgs := []string{}
-	if run.ScannerID != "" {
-		if inst, err := s.GetScanner(ctx, run.ScannerID); err == nil {
-			var sealed []byte
-			_ = s.db.QueryRowContext(ctx,
-				`SELECT token_sealed FROM scanner_instances WHERE id = ?`, inst.ID).Scan(&sealed)
-			if token, terr := s.openToken(sealed); terr == nil && token != "" {
-				serverArgs = []string{"--server", "http://" + inst.Host + ":" + fmt.Sprint(inst.Port), "--token", token}
-			} else if terr == nil {
-				serverArgs = []string{"--server", "http://" + inst.Host + ":" + fmt.Sprint(inst.Port)}
-			}
-		}
-	}
+	serverURL, token := s.trivyServerConn(ctx, run)
+	serverArgs := trivyServerArgs(serverURL, token)
 	notes := make([]string, 0)
 	findings := make([]Finding, 0)
 	succeeded := 0
@@ -313,7 +351,7 @@ func (s *service) runTrivy(ctx context.Context, run *Run, host string) (*ReportD
 	case err != nil:
 		return nil, "SSH 执行失败:" + truncateRunes(err.Error(), 256)
 	case dockerUnavailable(res, nil):
-		return nil, dockerUnavailableMsg
+		return s.runTrivyViaServerHost(ctx, run, host, serverURL, token)
 	case res.ExitCode != 0:
 		notes = append(notes, "主机包扫描失败:"+tailClip(res.Stderr, 240))
 	default:

@@ -6,6 +6,8 @@
  * - 「检查更新」按钮调 GET /api/version/check(查 GitHub 最新发布并比对):
  *     状态收敛到 hero 右上的状态药丸;仅当有新版时,下方展开强调升级卡(CTA + 可折叠更新说明)。
  * - 开发态(version=dev)永不误报更新,药丸显示「开发构建」。
+ * - 升级任务跑在后端进程里(刷新页面不中断):挂载时查一次任务快照(GET /api/version/update/status),
+ *   有进行中/待重启的任务就恢复升级进度区并接上轮询,避免刷新后进度区域消失、用户误以为升级停了。
  */
 
 import { ref, computed, onMounted, onUnmounted } from 'vue'
@@ -129,6 +131,9 @@ function pollSourceJob(from: string): void {
 onUnmounted(stopSrcPoll)
 
 const hasUpdate = computed(() => checkState.value === 'done' && !!update.value?.updateAvailable)
+
+// 升级卡显示条件:有新版,或本会话/后端仍有升级进行态(刷新后 update 置空,靠后者保住进度区)。
+const showUpgrade = computed(() => hasUpdate.value || srcPhase.value !== 'idle' || updatePhase.value === 'restarting')
 
 /** hero 右上状态药丸:label + 色调(随检查状态变化)。 */
 type Tone = 'neutral' | 'checking' | 'ok' | 'update' | 'dev' | 'err'
@@ -269,6 +274,46 @@ function pollUntilRestarted(from: string): void {
       srcMessage.value = t('settingsSystem.restartTimeout')
     }
   }, 1500)
+}
+
+// 挂载时恢复升级进行态:任务快照在后端进程内存里,刷新页面不中断任务;查一次快照,
+// 有进行中/待重启的任务就恢复进度区并接上轮询。from 取当前版本 —— 升级期间进程仍是旧版,
+// 版本号变化即代表新进程已就位。
+async function resumeUpgrade(): Promise<void> {
+  const from = version.value?.version ?? ''
+  if (!from) return // 版本未知时无法判定“版本已切换”,恢复没有意义
+  let st: UpdateJobStatus
+  try {
+    st = await updateJobStatus()
+  } catch {
+    return // 非源码部署的旧后端 / 网络失败:静默,不阻断页面其余部分
+  }
+  if (!st || !st.supported) return
+  if (st.error) {
+    srcPhase.value = 'error'
+    srcMessage.value = st.error
+  } else if (st.done) {
+    srcPhase.value = 'restarting'
+    pollUntilRestarted(from)
+  } else if (st.running) {
+    if (isSource.value) {
+      srcStep.value = st.step
+      srcMessage.value = st.message ?? ''
+      srcLog.value = st.log ?? []
+      showSrcLog.value = false
+      srcPhase.value = 'building'
+      pollSourceJob(from)
+    } else {
+      // binary:下载/替换二进制期间 status 报 running → 恢复“重启中”并等版本切换整页刷新。
+      updatePhase.value = 'restarting'
+      updateMsg.value = st.message ?? ''
+      pollUntilRestarted(from)
+    }
+  } else {
+    return
+  }
+  // 顺带补一次检查,填回版本跳变(current → latest)与重试 CTA;失败不影响已恢复的进度区。
+  void runCheck()
 }
 
 async function copyCommand(): Promise<void> {
@@ -469,7 +514,11 @@ const umEffectiveOrigin = computed(() => {
 })
 
 onMounted(() => {
-  void loadVersion()
+  void (async () => {
+    await loadVersion()
+    // 版本就位后才能恢复升级态(resumeUpgrade 需要 from 版本与 runtime 形态)。
+    await resumeUpgrade()
+  })()
   void loadRetention()
   void loadUpdateSource()
   void loadPasskeyConfig()
@@ -528,27 +577,27 @@ onMounted(() => {
       </dl>
     </article>
 
-    <!-- 仅当有新版时:强调升级卡 -->
+    <!-- 有新版或升级进行中:强调升级卡(刷新后 update 置空,升级进行态仍保住进度区) -->
     <transition name="sys-rise">
-      <article v-if="hasUpdate" class="sys-upgrade">
+      <article v-if="showUpgrade" class="sys-upgrade">
         <div class="sys-upgrade-head">
           <span class="sys-upgrade-icon" aria-hidden="true">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7" /></svg>
           </span>
           <div class="sys-upgrade-meta">
             <h3 class="sys-upgrade-title">{{ t('settingsSystem.upgradeTitle') }}</h3>
-            <div class="sys-vjump">
-              <span class="sys-vtag sys-vtag--cur">{{ update?.current }}</span>
+            <div v-if="update" class="sys-vjump">
+              <span class="sys-vtag sys-vtag--cur">{{ update.current }}</span>
               <span class="sys-varrow" aria-hidden="true">→</span>
-              <span class="sys-vtag sys-vtag--new">{{ update?.latest }}</span>
-              <span v-if="update?.publishedAt" class="sys-pubdate">{{ t('settingsSystem.publishedAt', { date: fmtDate(update.publishedAt) }) }}</span>
+              <span class="sys-vtag sys-vtag--new">{{ update.latest }}</span>
+              <span v-if="update.publishedAt" class="sys-pubdate">{{ t('settingsSystem.publishedAt', { date: fmtDate(update.publishedAt) }) }}</span>
             </div>
           </div>
-          <div class="sys-upgrade-actions">
+          <div v-if="update" class="sys-upgrade-actions">
             <AppButton
               variant="primary"
-              :loading="updatePhase === 'applying' || updatePhase === 'restarting'"
-              :disabled="updatePhase === 'restarting'"
+              :loading="updatePhase === 'applying' || updatePhase === 'restarting' || (isSource && srcPhase === 'building')"
+              :disabled="updatePhase === 'restarting' || (isSource && (srcPhase === 'building' || srcPhase === 'restarting'))"
               @click="runUpdate()"
             >
               {{ updatePhase === 'applying' ? t('settingsSystem.preparing') : updatePhase === 'restarting' ? t('settingsSystem.restarting') : updatePhase === 'deferred' ? t('settingsSystem.updateForce') : t('settingsSystem.updateNow') }}

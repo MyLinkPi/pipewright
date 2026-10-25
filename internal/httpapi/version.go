@@ -186,12 +186,35 @@ func (g *updateGate) release() {
 	}
 }
 
-// makeUpdateStatusHandler 处理 GET /api/version/update/status:源码升级后台任务的进度快照
-// (步骤 / 日志 / 完成 / 失败)。非源码部署返回 supported=false,前端不启用轮询。
-func makeUpdateStatusHandler(src *srcupdate.Service) http.HandlerFunc {
+// busy 非消耗地报告闸门是否被持有(binary 下载/替换二进制期间持有;true = 有更新进行中)。
+func (g *updateGate) busy() bool {
+	select {
+	case <-g.ch:
+		g.ch <- struct{}{}
+		return false
+	default:
+		return true
+	}
+}
+
+// makeUpdateStatusHandler 处理 GET /api/version/update/status:升级进行态快照,供前端在
+// 页面刷新后恢复升级进度区(任务在后端进程里继续跑,刷新不中断)。
+//   - source:后台管线进度快照(步骤 / 日志 / 完成 / 失败);
+//   - binary:下载/替换二进制期间持有更新闸门 → 报告 running,前端恢复“重启中”提示;
+//   - docker:无进行态,返回 supported=false,前端不启用轮询。
+func makeUpdateStatusHandler(src *srcupdate.Service, inflight *updateGate) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if src == nil {
-			writeJSON(w, http.StatusOK, map[string]any{"supported": false})
+			if version.Mode() == version.ModeDocker || inflight == nil || !inflight.busy() {
+				writeJSON(w, http.StatusOK, map[string]any{"supported": false})
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{
+				"supported": true,
+				"running":   true,
+				"step":      "restart",
+				"message":   "新版本更新进行中,正在准备重启",
+			})
 			return
 		}
 		st := src.Status()

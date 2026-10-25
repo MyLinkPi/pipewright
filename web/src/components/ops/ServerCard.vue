@@ -42,7 +42,7 @@ import { HttpError } from '../../api/http'
 import { useToast } from '../../composables/useToast'
 import { useConfirm } from '../../composables/useConfirm'
 import { NIcon } from 'naive-ui'
-import { BrandDocker, AlertTriangle } from '@vicons/tabler'
+import { BrandDocker, AlertTriangle, Terminal } from '@vicons/tabler'
 import {
   stateBucket,
   stateMeta,
@@ -74,6 +74,7 @@ const emit = defineEmits<{
   (e: 'diagnose', c: ContainerInfo): void
   (e: 'inspect', c: ContainerInfo): void
   (e: 'toggle-select', name: string): void
+  (e: 'host-terminal'): void
 }>()
 
 const toast = useToast()
@@ -693,6 +694,18 @@ async function doRemoveImage(img: ImageInfo): Promise<void> {
         <span class="panel__host mono">{{ host }}</span>
       </div>
       <div class="panel__meta">
+        <!-- 终端:新标签页打开宿主机 shell(复用 server-terminal 页;父级处理跳转)。
+             不可达时禁用 —— SSH 都握不上手,终端必然连不上。 -->
+        <button
+          class="term-btn"
+          type="button"
+          :disabled="!group.reachable"
+          :title="group.reachable ? t('serverStatus.terminalTitle') : t('serverStatus.terminalUnavailable')"
+          @click="emit('host-terminal')"
+        >
+          <NIcon :size="14" class="term-btn__icon"><Terminal /></NIcon>
+          {{ t('opsServer.card.terminal') }}
+        </button>
         <span
           class="rt-badge"
           :class="{
@@ -1099,6 +1112,33 @@ async function doRemoveImage(img: ImageInfo): Promise<void> {
 }
 .rt-badge__icon {
   display: inline-flex;
+}
+/* 头部「终端」按钮:与容器行 op 同源的小号 ghost 风格 */
+.term-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: var(--text-micro);
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: var(--rounded-sm);
+  border: 1px solid var(--color-border-strong);
+  background: transparent;
+  color: var(--color-dim);
+  white-space: nowrap;
+  cursor: pointer;
+  transition: all var(--duration-fast) var(--ease-out-expo);
+}
+.term-btn__icon {
+  display: inline-flex;
+}
+.term-btn:hover:not(:disabled) {
+  color: var(--color-text);
+  border-color: var(--color-text);
+}
+.term-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 .rt-badge--ok {
   color: var(--color-green);

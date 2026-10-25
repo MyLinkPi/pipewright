@@ -212,6 +212,12 @@ function openTerminal(serverId: string, c: ContainerInfo): void {
   window.open(url, '_blank', 'noopener')
 }
 
+// 宿主机终端(卡片头部「终端」按钮,仿 PM2 页):不带 container 参数即宿主机 shell。
+function openHostTerminal(serverId: string): void {
+  const url = router.resolve({ name: 'server-terminal', params: { id: serverId } }).href
+  window.open(url, '_blank', 'noopener')
+}
+
 // AI 助手抽屉。
 const showAi = ref(false)
 
@@ -410,6 +416,7 @@ onUnmounted(() => {
           @changed="load"
           @logs="(c) => openLogs(g.serverId, c)"
           @terminal="(c) => openTerminal(g.serverId, c)"
+          @host-terminal="openHostTerminal(g.serverId)"
           @diagnose="(c) => openDiagnose(g.serverId, c)"
           @inspect="(c) => openInspect(g.serverId, c)"
         />

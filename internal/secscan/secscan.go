@@ -5,13 +5,15 @@
 //     应用市场部署 trivy-server 模板后自动登记,也可在安全中心手动登记外部实例)。
 //   - 扫描执行:经 SSH 在目标机上 docker run --rm 跑 trivy(rootfs + 运行中镜像)或
 //     nuclei(按需,特征模板落具名卷复用);run 行先落 running,goroutine 异步执行,
-//     完整报告 JSON 存 artifact store(内容寻址),run 行只存 summary 计数。
+//     完整报告 JSON 存 artifact store(内容寻址),run 行只存 summary 计数。目标机无
+//     docker 时的代跑:Nuclei 走登记的常驻 runner 容器,trivy 主机包扫描由已登记
+//     Trivy Server 的宿主机代跑(包管理元数据经面板中继,见 trivy_remote.go)。
 //   - 聚合与调度:每机每类型最新结果聚合(Overview)、前端可配的定时规则
 //     (5 段 cron,复用 internal/cron 校验)、HTML 审计报告数据组装。
 //
 // 纪律:token 绝不明文入库/出响应/进审计(仅 vault 密文 BLOB);扫描命令 argv 数组化
 // 不拼 shell(AC-SEC-02);扫描不设主动超时(时长取决于镜像/模板下载,中断由服务
-// 关停上下文兜底);目标机无 docker → run 置 failed 并给人话原因。
+// 关停上下文兜底);目标机无 docker 且无可用代跑路径 → run 置 failed 并给人话原因。
 package secscan
 
 import (

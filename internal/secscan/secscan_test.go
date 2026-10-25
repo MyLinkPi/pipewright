@@ -34,6 +34,11 @@ type fakeRunner struct {
 	execs       [][]string
 	execServers []string
 	fn          func(cmd []string) (*target.ExecResult, error)
+	// streamFn/stdinFn 是流式注入点(缺省 = 调用即报错,防测试路径静默走偏)。
+	streamFn func(cmd []string) (io.ReadCloser, error)
+	stdinFn  func(cmd []string, stdin io.Reader) (*target.ExecResult, error)
+	streams  [][]string
+	stdinCmd [][]string
 }
 
 func (r *fakeRunner) Servers(context.Context) ([]ServerInfo, error) { return r.servers, nil }
@@ -49,6 +54,20 @@ func (r *fakeRunner) Exec(_ context.Context, serverID string, cmd []string) (*ta
 	r.execs = append(r.execs, append([]string{}, cmd...))
 	r.execServers = append(r.execServers, serverID)
 	return r.fn(cmd)
+}
+func (r *fakeRunner) ExecStream(_ context.Context, _ string, cmd []string) (io.ReadCloser, error) {
+	r.streams = append(r.streams, append([]string{}, cmd...))
+	if r.streamFn == nil {
+		return nil, errors.New("fakeRunner: ExecStream 未配置")
+	}
+	return r.streamFn(cmd)
+}
+func (r *fakeRunner) ExecWithStdin(_ context.Context, _ string, cmd []string, stdin io.Reader) (*target.ExecResult, error) {
+	r.stdinCmd = append(r.stdinCmd, append([]string{}, cmd...))
+	if r.stdinFn == nil {
+		return nil, errors.New("fakeRunner: ExecWithStdin 未配置")
+	}
+	return r.stdinFn(cmd, stdin)
 }
 
 // fakeArtifacts 是内存 artifact store。
@@ -431,6 +450,107 @@ func TestTrivyDBRepositoryInjection(t *testing.T) {
 					t.Fatalf("未配置不应注入 env:%v", c)
 				}
 			}
+		}
+	})
+}
+
+// ---- trivy 主机包代扫(目标机无 docker,经 Trivy Server 宿主机) ----
+
+func TestTrivyWithoutDockerViaServerHost(t *testing.T) {
+	storetest.ForEachDialect(t, func(t *testing.T, st *store.Store) {
+		runner := &fakeRunner{
+			servers: []ServerInfo{{ID: "s1", Name: "边缘机", Host: "10.0.0.1"}, {ID: "s2", Name: "中心机", Host: "10.0.0.2"}},
+			fn: func(cmd []string) (*target.ExecResult, error) {
+				joined := strings.Join(cmd, " ")
+				switch {
+				case cmd[0] == "ls":
+					return &target.ExecResult{ExitCode: 2, Stdout: "/etc/os-release\n/var/lib/dpkg/status\n"}, nil
+				case strings.Contains(joined, " rootfs ") || strings.HasPrefix(joined, "docker ps"):
+					return &target.ExecResult{ExitCode: 127, Stderr: "bash: docker: command not found"}, nil
+				default:
+					return &target.ExecResult{ExitCode: 0, Stdout: "{}"}, nil
+				}
+			},
+			streamFn: func(cmd []string) (io.ReadCloser, error) {
+				return io.NopCloser(strings.NewReader("TARBITS")), nil
+			},
+			stdinFn: func(cmd []string, stdin io.Reader) (*target.ExecResult, error) {
+				// 中继通道必须通:目标机 tar 流要真能喂进代扫容器 stdin。
+				if _, err := io.ReadAll(stdin); err != nil {
+					return nil, err
+				}
+				return &target.ExecResult{ExitCode: 0, Stdout: trivySample}, nil
+			},
+		}
+		svc, _ := newTestService(t, st, runner)
+		ctx := context.Background()
+		if _, err := svc.Register(ctx, RegisterInput{Kind: KindTrivyServer, Name: "中心 Trivy", Host: "10.0.0.2", Port: 4954, Token: "tok", ServerID: "s2", StackName: "trivy-server"}); err != nil {
+			t.Fatal(err)
+		}
+
+		run, err := svc.StartScan(ctx, ScanInput{ServerID: "s1", ScanType: ScanTypeTrivy})
+		if err != nil {
+			t.Fatal(err)
+		}
+		done := waitRunDone(t, svc, run.ID)
+		if done.Status != StatusDone {
+			t.Fatalf("目标机无 docker 应经 Server 宿主机代跑成功,得:%+v", done)
+		}
+		if done.Summary.Total != 3 {
+			t.Fatalf("代扫 summary 不符:%+v", done.Summary)
+		}
+		// 代扫命令落在 Server 宿主机侧,经环境变量注入接入点与令牌。
+		if len(runner.stdinCmd) == 0 {
+			t.Fatalf("应经 ExecWithStdin 代扫:%v", runner.stdinCmd)
+		}
+		joined := strings.Join(runner.stdinCmd[0], " ")
+		if !strings.Contains(joined, "TRIVY_SERVER=http://10.0.0.2:4954") ||
+			!strings.Contains(joined, "TRIVY_TOKEN=tok") ||
+			!strings.Contains(joined, "trivy rootfs") {
+			t.Fatalf("代扫命令形状不符:%v", runner.stdinCmd[0])
+		}
+		if len(runner.streams) == 0 || runner.streams[0][0] != "tar" {
+			t.Fatalf("应先从目标机流式打包元数据:%v", runner.streams)
+		}
+		// 报告注明代跑与镜像扫描跳过。
+		page, err := svc.RunFindings(ctx, run.ID, FindingFilter{})
+		if err != nil || page.Total != 3 {
+			t.Fatalf("代扫明细不符:%v %+v", err, page)
+		}
+	})
+}
+
+func TestTrivyWithoutDockerNoServerHost(t *testing.T) {
+	storetest.ForEachDialect(t, func(t *testing.T, st *store.Store) {
+		ctx := context.Background()
+		dockerDown := func(cmd []string) (*target.ExecResult, error) {
+			return &target.ExecResult{ExitCode: 127, Stderr: "bash: docker: command not found"}, nil
+		}
+		// 未接入 Trivy Server → 原 docker 指引。
+		runner := &fakeRunner{servers: []ServerInfo{{ID: "s1", Name: "边缘机", Host: "10.0.0.1"}}, fn: dockerDown}
+		svc, _ := newTestService(t, st, runner)
+		run, err := svc.StartScan(ctx, ScanInput{ServerID: "s1", ScanType: ScanTypeTrivy})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if done := waitRunDone(t, svc, run.ID); done.Status != StatusFailed ||
+			!strings.Contains(done.Error, "应用市场部署 Trivy Server") {
+			t.Fatalf("未接入 Trivy Server 应给人话指引:%+v", done)
+		}
+
+		// 手工登记(无宿主机 ServerID)→ 无法代跑的专门指引。
+		manual := &fakeRunner{servers: runner.servers, fn: dockerDown}
+		svc2, _ := newTestService(t, st, manual)
+		if _, err := svc2.CreateScanner(ctx, CreateInput{Name: "外部 Trivy", Host: "10.9.9.9", Port: 4954}); err != nil {
+			t.Fatal(err)
+		}
+		run, err = svc2.StartScan(ctx, ScanInput{ServerID: "s1", ScanType: ScanTypeTrivy})
+		if err != nil {
+			t.Fatal(err)
+		}
+		done := waitRunDone(t, svc2, run.ID)
+		if done.Status != StatusFailed || !strings.Contains(done.Error, "手工接入") {
+			t.Fatalf("手工登记 Trivy Server 无法代跑应给人话指引:%+v", done)
 		}
 	})
 }
