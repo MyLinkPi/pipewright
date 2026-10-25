@@ -1345,6 +1345,8 @@ func New(webFS fs.FS, authn auth.Authenticator, opts ...Option) http.Handler {
 		ar.Get("/servicereg/settings", makeGetServiceRegSettingsHandler(sr))
 		ar.Put("/servicereg/settings", makeUpdateServiceRegSettingsHandler(sr, aud))
 		ar.Get("/servicereg/gateway", makeGetServiceRegGatewayHandler(sr))
+		// 查看某台网关主机容器内实际生效的 nginx.conf 及其引用文件(证书等)。
+		ar.Get("/servicereg/gateway/config", makeGetServiceRegGatewayConfigHandler(sr))
 		ar.Post("/servicereg/gateway/deploy", makeDeployServiceRegGatewayHandler(sr, aud))
 		ar.Post("/servicereg/gateway/upgrade-image", makeUpgradeServiceRegGatewayImageHandler(sr, aud))
 		ar.Delete("/servicereg/gateway", makeRemoveServiceRegGatewayHandler(sr, aud))

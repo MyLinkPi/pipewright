@@ -904,6 +904,62 @@ func inspectNginxPorts(ctx context.Context, tg target.Service, st *Settings, ser
 	return strings.Join(parts, ",")
 }
 
+// NginxConfFile 是网关容器内的一份配置文件内容(主配置或其引用文件)。
+type NginxConfFile struct {
+	Path    string `json:"path"`            // 容器内绝对路径
+	Content string `json:"content"`
+	Error   string `json:"error,omitempty"` // 单文件读取失败原因(best-effort,不阻断其余文件)
+}
+
+// nginxConfRefRe 从 nginx.conf 文本提取引用文件路径的指令:include / ssl_certificate /
+// ssl_certificate_key。含 glob 通配符的 include(如 conf.d/*.conf)无法 cat,由调用方跳过。
+var nginxConfRefRe = regexp.MustCompile(`(?m)\b(?:include|ssl_certificate|ssl_certificate_key)\s+([^;]+);`)
+
+// readNginxConfFiles 读取网关容器内实际生效的 nginx.conf 及其引用文件。主配置读取失败
+// (容器未部署/配置缺失)整体报错;引用文件逐个 best-effort,单个失败只记 Error 字段。
+func readNginxConfFiles(ctx context.Context, tg target.Service, st *Settings, serverID string) ([]NginxConfFile, error) {
+	main, err := execCatFile(ctx, tg, st, serverID, nginxConfPath)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %s", ErrConfRead, err)
+	}
+	files := []NginxConfFile{{Path: nginxConfPath, Content: main}}
+	seen := map[string]struct{}{nginxConfPath: {}}
+	for _, m := range nginxConfRefRe.FindAllStringSubmatch(main, -1) {
+		p := strings.TrimSpace(m[1])
+		if p == "" || strings.ContainsAny(p, "*?[") {
+			continue
+		}
+		if _, dup := seen[p]; dup {
+			continue
+		}
+		seen[p] = struct{}{}
+		f := NginxConfFile{Path: p}
+		if content, cerr := execCatFile(ctx, tg, st, serverID, p); cerr != nil {
+			f.Error = cerr.Error()
+		} else {
+			f.Content = content
+		}
+		files = append(files, f)
+	}
+	return files, nil
+}
+
+// execCatFile 经 docker exec cat 读容器内单个文件。传输失败或 cat 非零(不存在/权限)都转为人读错误。
+func execCatFile(ctx context.Context, tg target.Service, st *Settings, serverID, path string) (string, error) {
+	res, err := tg.Exec(ctx, serverID, []string{"docker", "exec", st.ContainerName, "cat", path})
+	if err != nil {
+		return "", err
+	}
+	if res.ExitCode != 0 {
+		msg := strings.TrimSpace(firstNonEmpty(res.Stderr, res.Stdout))
+		if msg == "" {
+			msg = "cat 退出码 " + strconv.Itoa(res.ExitCode)
+		}
+		return "", fmt.Errorf("%s", msg)
+	}
+	return res.Stdout, nil
+}
+
 // removeNginx 停止并删除网关容器(保留具名卷:证书/配置持久)。幂等:容器已不存在视为成功。
 func removeNginx(ctx context.Context, tg target.Service, st *Settings, serverID string) error {
 	if _, err := tg.Exec(ctx, serverID, []string{"docker", "stop", st.ContainerName}); err != nil {

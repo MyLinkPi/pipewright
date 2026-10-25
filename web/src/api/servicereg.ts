@@ -8,6 +8,7 @@
  * GET    /api/servicereg/settings              → Settings
  * PUT    /api/servicereg/settings              → Settings          (CSRF)
  * GET    /api/servicereg/gateway               → Gateway
+ * GET    /api/servicereg/gateway/config        → { serverId, files }  (?serverId=)
  * POST   /api/servicereg/gateway/deploy        → Gateway           (CSRF)
  * DELETE /api/servicereg/gateway               → { ok }            (CSRF)
  * GET    /api/servicereg/domains               → { items: Domain[] }
@@ -234,6 +235,17 @@ export const updateServiceRegSettings = (u: SettingsUpdate): Promise<Settings> =
 
 export const getGateway = (): Promise<Gateway> =>
   http.get('/api/servicereg/gateway')
+
+/** 网关容器内的一份配置文件(主配置或其引用文件;error 非空表示该文件读取失败)。 */
+export interface NginxConfFile {
+  path: string
+  content: string
+  error?: string
+}
+
+/** 查看某台网关主机容器内实际生效的 nginx.conf 及其引用文件(证书等)。 */
+export const getGatewayConfig = (serverId: string): Promise<{ serverId: string; files: NginxConfFile[] }> =>
+  http.get(`/api/servicereg/gateway/config?serverId=${encodeURIComponent(serverId)}`)
 
 export const deployGateway = (): Promise<Gateway> =>
   http.post('/api/servicereg/gateway/deploy')
