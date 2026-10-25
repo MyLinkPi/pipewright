@@ -500,15 +500,30 @@ func TestTrivyWithoutDockerViaServerHost(t *testing.T) {
 		if done.Summary.Total != 3 {
 			t.Fatalf("代扫 summary 不符:%+v", done.Summary)
 		}
-		// 代扫命令落在 Server 宿主机侧,经环境变量注入接入点与令牌。
+		// 代扫命令落在 Server 宿主机侧,经环境变量注入接入点与令牌;镜像 ENTRYPOINT 是
+		// trivy 本体,必须 --entrypoint sh 才能跑「解包+扫描」脚本(sh 若出现在镜像名后面
+		// 会被当成 trivy 子命令秒退——零结果事故的回归防线)。
 		if len(runner.stdinCmd) == 0 {
 			t.Fatalf("应经 ExecWithStdin 代扫:%v", runner.stdinCmd)
 		}
-		joined := strings.Join(runner.stdinCmd[0], " ")
+		cmd := runner.stdinCmd[0]
+		epIdx, imgIdx := -1, -1
+		for i, c := range cmd {
+			switch {
+			case c == "--entrypoint":
+				epIdx = i
+			case strings.HasPrefix(c, "aquasec/trivy"):
+				imgIdx = i
+			}
+		}
+		if epIdx < 0 || imgIdx <= 0 || cmd[epIdx+1] != "sh" || cmd[imgIdx+1] != "-c" {
+			t.Fatalf("代扫命令形状不符(须 --entrypoint sh … <镜像> -c <脚本>):%v", cmd)
+		}
+		joined := strings.Join(cmd, " ")
 		if !strings.Contains(joined, "TRIVY_SERVER=http://10.0.0.2:4954") ||
 			!strings.Contains(joined, "TRIVY_TOKEN=tok") ||
-			!strings.Contains(joined, "trivy rootfs") {
-			t.Fatalf("代扫命令形状不符:%v", runner.stdinCmd[0])
+			!strings.Contains(joined, "tar -xf - -C /scan && trivy rootfs") {
+			t.Fatalf("代扫命令内容不符:%v", cmd)
 		}
 		if len(runner.streams) == 0 || runner.streams[0][0] != "tar" {
 			t.Fatalf("应先从目标机流式打包元数据:%v", runner.streams)
