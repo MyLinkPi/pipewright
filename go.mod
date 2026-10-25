@@ -1,6 +1,6 @@
 module github.com/huangchengsir/pipewright
 
-go 1.26.3
+go 1.27.3
 
 require (
 	github.com/aliyun/aliyun-oss-go-sdk v3.0.2+incompatible
