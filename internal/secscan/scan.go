@@ -91,6 +91,14 @@ const (
 	nucleiTmplVolume = "pipewright-nuclei-templates:/root/nuclei-templates"
 	dockerSockVolume = "/var/run/docker.sock:/var/run/docker.sock"
 	hostRootsVolume  = "/:/rootfs:ro"
+	// hostScanSkipDirs 是主机 rootfs 扫描跳过的目录(逗号分隔;trivy 按容器内遍历路径
+	// 匹配,须带 /rootfs 挂载前缀)。/var/lib/docker、containerd、containers 是容器存储:
+	// 里面是运行容器的 overlay 根(经共享传播挂进来),活的 /proc/<pid>/fdinfo 等瞬态
+	// 文件在 readdir 与 lstat 之间即消失,整个扫描会 FATAL(no such file or
+	// directory);其中的软件包本就该由镜像扫描覆盖,不计入主机包。proc/sys/dev/run 是
+	// 伪文件系统挂载点:包扫描无意义,共享传播时同样是活挂载,一并跳过。
+	hostScanSkipDirs = "/rootfs/var/lib/docker,/rootfs/var/lib/containerd,/rootfs/var/lib/containers," +
+		"/rootfs/proc,/rootfs/sys,/rootfs/dev,/rootfs/run"
 	// maxImagesPerScan 是单次扫描的镜像数上限(docker ps 顺序取前 N 个,防巨型机拖垮)。
 	maxImagesPerScan = 20
 	// maxNucleiTargets 是单次 nuclei 扫描的目标 URL 上限。
@@ -267,6 +275,12 @@ func (s *service) trivyCmd(extraVolume string, args ...string) []string {
 	if s.trivyDBRepo != "" {
 		cmd = append(cmd, "-e", "TRIVY_DB_REPOSITORY="+s.trivyDBRepo)
 	}
+	// Java DB(镜像内 JAR 的检测索引)始终由客户端下载——即使走 --server 也在客户端
+	// (trivy 的分析阶段不在服务端),默认仓库 mirror.gcr.io 不可达时镜像扫到 JAR 即
+	// FATAL,故与漏洞库同样注入镜像源。
+	if s.trivyJavaDBRepo != "" {
+		cmd = append(cmd, "-e", "TRIVY_JAVA_DB_REPOSITORY="+s.trivyJavaDBRepo)
+	}
 	cmd = append(cmd, "-v", extraVolume, "-v", trivyCacheVolume, s.trivyImage)
 	return append(cmd, args...)
 }
@@ -383,7 +397,8 @@ func (s *service) runTrivy(ctx context.Context, run *Run, host string) (*ReportD
 
 	// ① 主机包扫描。本地缓存卷模式下客户端要自下漏洞库:配置了镜像仓库(如
 	// ghcr.nju.edu.cn)就注入 TRIVY_DB_REPOSITORY,免目标机直连 ghcr.io。
-	hostCmd := s.trivyCmd(hostRootsVolume, "rootfs", "-q", "--scanners", "vuln", "--format", "json")
+	hostCmd := s.trivyCmd(hostRootsVolume, "rootfs", "-q", "--scanners", "vuln",
+		"--skip-dirs", hostScanSkipDirs, "--format", "json")
 	hostCmd = append(hostCmd, serverArgs...)
 	hostCmd = append(hostCmd, "/rootfs")
 	res, err := s.runner.Exec(ctx, run.ServerID, hostCmd)

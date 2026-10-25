@@ -167,6 +167,13 @@ type Service interface {
 	// (重新部署会重新生成密码),否则新建(source=appstore)。尽力而为语义由调用方负责。
 	Register(ctx context.Context, in RegisterInput) (*RegisterResult, error)
 
+	// ---- 备份恢复受控出口(internal/dbbackup 消费;密码纪律见 backup_export.go) ----
+	// ConnectBackup 开备份/回放专用连接(multiStatements、宽超时;database 空 = MySQL
+	// 服务器级连接)。调用方负责 Close。
+	ConnectBackup(ctx context.Context, id, database string) (*sql.DB, error)
+	// RevealPassword 解密连接密码,仅供服务端备份链路构造 SSH 执行环境;绝不进响应/日志。
+	RevealPassword(ctx context.Context, id string) (string, error)
+
 	// ---- 管理操作(phpMyAdmin 式;全部按实例开短连接) ----
 	ServerInfo(ctx context.Context, id string) (*ServerInfo, error)
 	ListDatabases(ctx context.Context, id string) ([]DatabaseInfo, error)

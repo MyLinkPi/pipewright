@@ -260,7 +260,12 @@ func safetyBackupMySQL(opt RestoreOptions, tmpDir string) (string, error) {
 		return "", err
 	}
 	d := &mysqlDumper{db: db, w: f}
-	err = d.dump(context.Background())
+	schema, serr := d.currentSchema(context.Background())
+	if serr != nil {
+		_ = f.Close()
+		return "", serr
+	}
+	err = d.dumpWhole(context.Background(), schema)
 	_ = f.Close()
 	if err != nil {
 		return "", fmt.Errorf("backup: safety dump: %w", err)

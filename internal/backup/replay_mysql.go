@@ -7,6 +7,7 @@ import (
 	"bufio"
 	"database/sql"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 
@@ -44,7 +45,7 @@ func replayMySQLDump(dsn, dumpPath string) error {
 		return err
 	}
 	defer func() { _ = f.Close() }()
-	return execChunked(db, f)
+	return ReplayChunkedSQL(db, f)
 }
 
 // dropAllObjects 删除当前库的全部触发器/视图/基表(外键约束关闭下任意顺序)。
@@ -119,8 +120,10 @@ func dropAllObjects(db *sql.DB) error {
 	return nil
 }
 
-// execChunked 逐行读 dump,在语句边界(非 ATOM 区内行尾分号)切块 Exec。
-func execChunked(db *sql.DB, r *os.File) error {
+// ReplayChunkedSQL 逐行读 SQL dump,在语句边界(非 ATOM 区内行尾分号)切块 Exec,
+// 供平台 MySQL 恢复与实例级回放(internal/dbbackup;PG 子集 dump 同用此约定)复用。
+// 连接须 multiStatements(MySQL)/simple_protocol(PG)。单块上限见 replayChunkMax。
+func ReplayChunkedSQL(db *sql.DB, r io.Reader) error {
 	scanner := bufio.NewScanner(r)
 	// 单行上限:一条 INSERT 批次可能上百 MB?批 200 行 × 单行值上限 64KB ≈ 12.5MB,
 	// 取 64MB 缓冲绰绰有余;超出则属异常数据,宁可报错不可静默截断。

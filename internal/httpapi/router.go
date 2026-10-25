@@ -32,6 +32,7 @@ import (
 	"github.com/huangchengsir/pipewright/internal/cron"
 	"github.com/huangchengsir/pipewright/internal/dagrun"
 	"github.com/huangchengsir/pipewright/internal/dbadmin"
+	"github.com/huangchengsir/pipewright/internal/dbbackup"
 	"github.com/huangchengsir/pipewright/internal/deploy"
 	"github.com/huangchengsir/pipewright/internal/diskadmin"
 	"github.com/huangchengsir/pipewright/internal/dnsprovider"
@@ -134,6 +135,7 @@ type options struct {
 	artifactStore        *artifactstore.Store
 	retention            *retention.Service
 	backupSvc            *backup.Service
+	dbBackupSvc          *dbbackup.Service
 	maintenance          *maintenance.Service
 	projectMirrorCleaner func(ctx context.Context, repoURL string)
 	certMgmt             certmgmt.Service
@@ -507,6 +509,13 @@ func WithBackup(s *backup.Service) Option {
 	return func(o *options) { o.backupSvc = s }
 }
 
+// WithDBBackup 注入已登记实例的备份恢复服务(internal/dbbackup),挂载
+// /api/{db|redis}-instances/{id}/backup-config|backups|restore 与 /api/db-backups/*。
+// 不传则端点 503,实例删除不做备份级联清理。
+func WithDBBackup(s *dbbackup.Service) Option {
+	return func(o *options) { o.dbBackupSvc = s }
+}
+
 // WithMaintenance 注入磁盘维护服务,挂载 POST /api/maintenance/cleanup(auth + CSRF + 审计;
 // target 枚举白名单)。与后台定时任务共用同一套清理实现。不传则端点返回 503。
 func WithMaintenance(s *maintenance.Service) Option {
@@ -828,12 +837,14 @@ func New(webFS fs.FS, authn auth.Authenticator, opts ...Option) http.Handler {
 			}
 			// 数据库管理面(管理员):MySQL/PostgreSQL 实例注册 + phpMyAdmin 式在线管理。
 			if o.dbAdmin != nil {
-				mountDBAdmin(ar, o.dbAdmin, aud)
+				mountDBAdmin(ar, o.dbAdmin, o.dbBackupSvc, aud)
 			}
 			// Redis 管理面(管理员):实例注册 + SCAN 分页键浏览 + 删键/改 TTL。
 			if o.redisAdmin != nil {
-				mountRedisAdmin(ar, o.redisAdmin, aud)
+				mountRedisAdmin(ar, o.redisAdmin, o.dbBackupSvc, aud)
 			}
+			// 已登记实例备份恢复(管理员):挂在上面两组实例资源树下 + 共用 /api/db-backups/*。
+			mountDBBackup(ar, o.dbBackupSvc, o.dbAdmin, o.redisAdmin, o.objectStores, aud)
 			// 安全中心(管理员):trivy-server 扫描器登记 + Trivy/Nuclei 扫描 +
 			// 定时规则 + HTML 审计报告 + 漏洞 AI 解读(窄接口断言注入,未配置 → 端点 503)。
 			if o.secScan != nil {

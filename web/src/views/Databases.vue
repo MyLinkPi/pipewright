@@ -31,6 +31,8 @@ import {
   type BrowseResult, type RowKey, type QueryResult, type DBUser, type GrantsView, type GrantTemplate,
 } from '../api/dbAdmin'
 import { HttpError } from '../api/http'
+import { listObjectStores, type ObjectStore } from '../api/objectStores'
+import BackupPanel from '../components/dbbackup/BackupPanel.vue'
 import { useToast } from '../composables/useToast'
 
 const { t } = useI18n()
@@ -159,7 +161,15 @@ async function relock(): Promise<void> {
 }
 
 // ─── 库列表 ────────────────────────────────────────────────────────────────────
-const tab = ref<'schema' | 'sql' | 'users' | 'import'>('schema')
+const tab = ref<'schema' | 'sql' | 'users' | 'import' | 'backup'>('schema')
+
+// 对象存储配置(备份面板「自动上云/从云端恢复」下拉;加载失败静默降级为不显示)。
+const objectProviders = ref<ObjectStore[]>([])
+
+// 备份面板的恢复门禁:与全页写操作同纪律(只读 → 解锁框)。
+function restoreGate(action: () => void): void {
+  guardWrite(action, t('dbBackup.restoreGo'))
+}
 const databases = ref<DatabaseInfo[]>([])
 const currentDb = ref('')
 const loadingDbs = ref(false)
@@ -687,6 +697,11 @@ async function runImport(): Promise<void> {
 // ─── 生命周期与联动 ────────────────────────────────────────────────────────────
 onMounted(async () => {
   await loadInstances()
+  try {
+    objectProviders.value = (await listObjectStores()) ?? []
+  } catch {
+    objectProviders.value = []
+  }
 })
 
 watch(currentId, async (id) => {
@@ -815,6 +830,9 @@ watch(currentDb, (db) => {
             </button>
             <button class="dba-tab" :class="{ 'dba-tab--active': tab === 'import' }" @click="tab = 'import'">
               <NIcon :size="14"><FileImport /></NIcon>{{ t('dbAdmin.tabImport') }}
+            </button>
+            <button class="dba-tab" :class="{ 'dba-tab--active': tab === 'backup' }" @click="tab = 'backup'">
+              <NIcon :size="14"><Database /></NIcon>{{ t('dbBackup.tab') }}
             </button>
           </nav>
 
@@ -1152,6 +1170,18 @@ watch(currentDb, (db) => {
             </div>
             <p v-if="importMessage" class="affected-line mono">{{ importMessage }}</p>
             <p class="hint-line">{{ t('dbAdmin.importNote') }}</p>
+          </div>
+
+          <!-- 备份恢复(实例级;恢复走 guardWrite 解锁门禁) -->
+          <div v-else-if="tab === 'backup'" class="tab-body">
+            <BackupPanel
+              :key="current.id"
+              :kind="current.engine"
+              :instance-id="current.id"
+              :instance-name="current.name"
+              :providers="objectProviders"
+              :restore-gate="restoreGate"
+            />
           </div>
         </section>
       </div>

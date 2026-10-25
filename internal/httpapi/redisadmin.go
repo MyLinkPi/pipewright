@@ -11,12 +11,14 @@ package httpapi
 import (
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"strconv"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/huangchengsir/pipewright/internal/audit"
+	"github.com/huangchengsir/pipewright/internal/dbbackup"
 	"github.com/huangchengsir/pipewright/internal/redisadmin"
 )
 
@@ -35,13 +37,13 @@ const (
 )
 
 // mountRedisAdmin 把 Redis 管理端点挂进 admin 子组(路径前缀 /redis-instances)。
-func mountRedisAdmin(ar chi.Router, svc redisadmin.Service, aud audit.Recorder) {
+func mountRedisAdmin(ar chi.Router, svc redisadmin.Service, backups *dbbackup.Service, aud audit.Recorder) {
 	// 实例注册(设置 → Redis)。
 	ar.Get("/redis-instances", makeRedisInstanceListHandler(svc))
 	ar.Post("/redis-instances", makeRedisInstanceCreateHandler(svc, aud))
 	ar.Post("/redis-instances/test", makeRedisDirectTestHandler(svc))
 	ar.Put("/redis-instances/{id}", makeRedisInstanceUpdateHandler(svc, aud))
-	ar.Delete("/redis-instances/{id}", makeRedisInstanceDeleteHandler(svc, aud))
+	ar.Delete("/redis-instances/{id}", makeRedisInstanceDeleteHandler(svc, backups, aud))
 	ar.Post("/redis-instances/{id}/test", makeRedisInstanceTestHandler(svc, aud))
 	ar.Put("/redis-instances/{id}/readonly", makeRedisInstanceReadonlyHandler(svc, aud))
 
@@ -243,7 +245,7 @@ func makeRedisInstanceUpdateHandler(svc redisadmin.Service, rec audit.Recorder) 
 }
 
 // makeRedisInstanceDeleteHandler 返回 DELETE /api/redis-instances/{id}(认证 + CSRF)→ { ok: true }。
-func makeRedisInstanceDeleteHandler(svc redisadmin.Service, rec audit.Recorder) http.HandlerFunc {
+func makeRedisInstanceDeleteHandler(svc redisadmin.Service, backups *dbbackup.Service, rec audit.Recorder) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if svc == nil {
 			writeError(w, http.StatusServiceUnavailable, "internal", "Redis 管理服务未初始化")
@@ -253,6 +255,12 @@ func makeRedisInstanceDeleteHandler(svc redisadmin.Service, rec audit.Recorder) 
 		if err := svc.Delete(r.Context(), id); err != nil {
 			writeRedisAdminError(w, err)
 			return
+		}
+		// 级联清理实例备份(记录 + 磁盘文件;best-effort,失败不阻断删除)。
+		if backups != nil {
+			if err := backups.DeleteForInstance(r.Context(), dbbackup.KindRedis, id); err != nil {
+				log.Printf("[dbbackup] 实例删除级联清理备份失败(%s):%v", id, err)
+			}
 		}
 		recordAudit(r.Context(), rec, audit.Entry{
 			Actor: auditActor, Action: auditActionRedisInstanceDelete, TargetType: auditTargetRedisInstance,
