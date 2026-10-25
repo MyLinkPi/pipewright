@@ -80,7 +80,6 @@ const es: typeof zhCN = {
     tunnels: 'Túneles SSH',
     serviceReg: 'Registro de servicios',
     appStore: 'Tienda de apps',
-    dbaas: 'Instancias de BD',
     databases: 'Bases de datos',
     objectStorage: 'Almacenamiento de objetos',
     redis: 'Redis',

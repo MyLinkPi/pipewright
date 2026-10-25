@@ -37,7 +37,9 @@ func (f *instAppFake) List(ctx context.Context) ([]appstore.Template, error) {
 type instMachine struct {
 	srv         *target.Server
 	findOut     string
-	psOut       string            // docker ps(版本枚举)stdout;空 = 命令未配置
+	psOut       string            // docker ps(镜像枚举)stdout;空 = 命令未配置
+	filterOut   string            // docker ps --filter(按项目找容器名)stdout
+	execOut     string            // docker exec(版本探测)stdout
 	sidecars    map[string]string // 栈名 → 边车 JSON 原文;无记录 = 读不到(缺失/损坏路径)
 	unreachable bool
 	touched     bool
@@ -80,7 +82,13 @@ func (f *instTargetFake) Exec(ctx context.Context, serverID string, cmd []string
 		return nil, errors.New("ssh: dial tcp: connection refused")
 	}
 	if len(cmd) > 0 && cmd[0] == "docker" && cmd[1] == "ps" {
+		if len(cmd) > 3 && cmd[3] == "--filter" {
+			return &target.ExecResult{ExitCode: 0, Stdout: m.filterOut}, nil
+		}
 		return &target.ExecResult{ExitCode: 0, Stdout: m.psOut}, nil
+	}
+	if len(cmd) > 0 && cmd[0] == "docker" && cmd[1] == "exec" {
+		return &target.ExecResult{ExitCode: 0, Stdout: m.execOut}, nil
 	}
 	return &target.ExecResult{ExitCode: 0, Stdout: m.findOut}, nil
 }

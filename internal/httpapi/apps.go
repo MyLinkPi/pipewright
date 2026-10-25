@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"path"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -391,7 +392,7 @@ func registerSafelineInstance(ctx context.Context, secScans secscan.Service, aud
 
 // deployComposeToServer 把一段 compose 内容部署为受管 Stacks 项目(与 Stacks 部署同一条链路):
 // 建受管目录 → Upload compose 文件(字节流)→ 探测 compose CLI → `compose -p <name> up -d`。
-// 实现在 internal/composeops(与 DBaaS 共享);此处仅叠加本端容器清单缓存失效。
+// 实现在 internal/composeops;此处仅叠加本端容器清单缓存失效。
 // 返回 (ok, 输出摘要, 人读错误)。
 func deployComposeToServer(ctx context.Context, svc target.Service, serverID, name, compose string) (bool, string, string) {
 	res := composeops.Deploy(ctx, svc, serverID, name, compose)
@@ -429,7 +430,7 @@ func injectHostParams(params map[string]string, tpl *appstore.Template, host str
 }
 
 // injectComposeLimits 把 CPU/内存上限注入 compose 每个 service 的 deploy.resources.limits
-// (实现在 internal/composeops,与 DBaaS 共享)。
+// (实现在 internal/composeops)。
 func injectComposeLimits(compose, cpus, memory string) (string, error) {
 	return composeops.InjectLimits(compose, cpus, memory)
 }
@@ -1338,7 +1339,51 @@ var cmdFindAppStacks = []string{"find", stacksBaseDir, "-maxdepth", "2",
 // cmdImagesByProject 列出该机全部运行容器的「compose 项目名|||镜像引用」(一次往返,
 // 供实例版本展示;`docker ps --format` 的 Label 取法与 cmdComposeLabels 同纪律)。
 var cmdImagesByProject = []string{"docker", "ps", "--format",
-	`{{.Label "com.docker.compose.project"}}|||{{.Config.Image}}`}
+	`{{.Label "com.docker.compose.project"}}|||{{.Image}}`}
+
+// appVersionProbes 是「容器内实测运行版本」的探测命令(镜像官方二进制自报版本;
+// 与服务注册网关的 inspectNginxVersion 同一思路)。键 = 内置模板名;未列出的模板
+// 回落镜像 tag。命令为代码内常量(无用户输入),经 docker exec sh -c 执行。
+var appVersionProbes = map[string]string{
+	"mysql":         "mysqld --version",
+	"redis":         "redis-server --version",
+	"postgres":      "postgres --version",
+	"gitea":         "/app/gitea --version",
+	"trivy-server":  "trivy --version",
+	"nuclei-runner": "nuclei --version",
+	"nginx-web":     "nginx -v",
+	"redpanda":      "rpk version",
+	"rabbitmq":      "rabbitmqctl version",
+}
+
+// appVersionRe 从探测输出提取首个语义化版本号(8.4.0 / 28.1.0 / 1.22.1 …)。
+var appVersionRe = regexp.MustCompile(`\d+(\.\d+)+`)
+
+// probeStackVersion 实测某栈的运行版本:定位该 compose 项目的首个运行容器 →
+// docker exec 探测命令 → 提取版本号。任何一步失败 → 空串(由调用方回落 tag)。
+func probeStackVersion(ctx context.Context, svc target.Service, serverID, stack, probe string) string {
+	res, err := svc.Exec(ctx, serverID, []string{
+		"docker", "ps", "--filter", "label=com.docker.compose.project=" + stack,
+		"--format", "{{.Names}}"})
+	if err != nil || res.ExitCode != 0 {
+		return ""
+	}
+	container := ""
+	for _, line := range strings.Split(res.Stdout, "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			container = line
+			break
+		}
+	}
+	if container == "" {
+		return ""
+	}
+	res2, err := svc.Exec(ctx, serverID, []string{"docker", "exec", container, "sh", "-c", probe})
+	if err != nil || res2 == nil || res2.ExitCode != 0 {
+		return ""
+	}
+	return appVersionRe.FindString(res2.Stdout + res2.Stderr)
+}
 
 // imagesByProject 解析 docker ps 输出为 项目名 → 镜像引用(去重,多容器栈取首见)。
 func imagesByProject(out string) map[string]string {
@@ -1377,22 +1422,22 @@ const (
 // appInstanceDTO 是「已部署实例」的单条 DTO(冻结契约):应用商店部署在某台机器上的一个栈,
 // 供前端渲染直达的「升级」入口。机器不可达也单独成条(reachable:false)——诚实告知,不静默吞机器。
 type appInstanceDTO struct {
-	ServerID   string `json:"serverId"`
-	ServerName string `json:"serverName"`
-	Reachable  bool   `json:"reachable"`
-	Error      string `json:"error,omitempty"`
-	StackName  string `json:"stackName,omitempty"`    // 生效栈名(= 受管目录名)
-	TemplateID string `json:"templateId,omitempty"`   // 边车记录的模板 ID(未删模板时可靠)
-	TemplateName string `json:"templateName,omitempty"`
-	DisplayName  string `json:"displayName,omitempty"`
-	Icon         string `json:"icon,omitempty"`
-	Instance     string `json:"instance,omitempty"`    // 实例名后缀(stackName 去掉「模板名-」前缀)
-	Version      string `json:"version,omitempty"`     // 运行镜像 tag(best-effort;如 "8.4"、"latest")
-	CPUs         string `json:"cpus,omitempty"`
-	Memory       string `json:"memory,omitempty"`
-	DeployedAt   string `json:"deployedAt,omitempty"`  // RFC3339;旧边车无部署时间 → 空(未知)
-	TemplateGone bool   `json:"templateGone,omitempty"`          // 边车模板 ID 已不在模板库
-	UpgradeAvailable bool `json:"upgradeAvailable,omitempty"`    // 模板 UpdatedAt 晚于边车部署时间(旧边车零值时间 → 恒真,升级一次后判定准确)
+	ServerID         string `json:"serverId"`
+	ServerName       string `json:"serverName"`
+	Reachable        bool   `json:"reachable"`
+	Error            string `json:"error,omitempty"`
+	StackName        string `json:"stackName,omitempty"`  // 生效栈名(= 受管目录名)
+	TemplateID       string `json:"templateId,omitempty"` // 边车记录的模板 ID(未删模板时可靠)
+	TemplateName     string `json:"templateName,omitempty"`
+	DisplayName      string `json:"displayName,omitempty"`
+	Icon             string `json:"icon,omitempty"`
+	Instance         string `json:"instance,omitempty"` // 实例名后缀(stackName 去掉「模板名-」前缀)
+	Version          string `json:"version,omitempty"`  // 实际运行版本(容器内探测;探测不可用回落镜像 tag)
+	CPUs             string `json:"cpus,omitempty"`
+	Memory           string `json:"memory,omitempty"`
+	DeployedAt       string `json:"deployedAt,omitempty"`       // RFC3339;旧边车无部署时间 → 空(未知)
+	TemplateGone     bool   `json:"templateGone,omitempty"`     // 边车模板 ID 已不在模板库
+	UpgradeAvailable bool   `json:"upgradeAvailable,omitempty"` // 模板 UpdatedAt 晚于边车部署时间(旧边车零值时间 → 恒真,升级一次后判定准确)
 	// Legacy = 旧版部署无边车:不可原位升级(无参数现值,重渲染会重生成口令),前端引导
 	// 「重新部署」纳入(落边车,数据卷按项目名保留)。
 	Legacy bool `json:"legacy,omitempty"`
@@ -1505,6 +1550,13 @@ func collectAppInstances(ctx context.Context, svc target.Service, srv *target.Se
 					StackName: name, TemplateID: sc.TemplateID, CPUs: sc.CPUs, Memory: sc.Memory,
 					Version: imageVersionTag(imgs[name]),
 				}
+				if tpl, ok := tpls[sc.TemplateID]; ok {
+					if probe := appVersionProbes[tpl.Name]; probe != "" {
+						if v := probeStackVersion(cctx, svc, srv.ID, name, probe); v != "" {
+							dto.Version = v
+						}
+					}
+				}
 				if !sc.DeployedAt.IsZero() {
 					dto.DeployedAt = sc.DeployedAt.UTC().Format(time.RFC3339)
 				}
@@ -1534,6 +1586,11 @@ func collectAppInstances(ctx context.Context, svc target.Service, srv *target.Se
 				StackName: name, TemplateID: tpl.ID, TemplateName: tpl.Name,
 				DisplayName: tpl.DisplayName, Icon: tpl.Icon,
 				Version: imageVersionTag(imgs[name]),
+			}
+			if probe := appVersionProbes[tpl.Name]; probe != "" {
+				if v := probeStackVersion(cctx, svc, srv.ID, name, probe); v != "" {
+					dto.Version = v
+				}
 			}
 			if instance, found := strings.CutPrefix(name, tpl.Name+"-"); found {
 				dto.Instance = instance

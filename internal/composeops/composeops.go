@@ -1,7 +1,7 @@
-// Package composeops 提供「把一段 docker compose 内容按受管 Stacks 语义部署/
-// 拆除到目标服务器」的共享操作,供应用商店(httpapi/apps.go)与数据库即服务
-// (internal/dbaas)复用。全部经 target.Service 的 array 化 SSH 命令执行
-//(不拼 shell,AC-SEC-02);远端受管目录与 Stacks 部署共用同一布局。
+// Package composeops 提供「把一段 docker compose 内容按受管 Stacks 语义部署到
+// 目标服务器」的共享操作,供应用商店与 Stacks(httpapi)复用。全部经 target.Service
+// 的 array 化 SSH 命令执行(不拼 shell,AC-SEC-02);远端受管目录与 Stacks 部署共用
+// 同一布局。
 package composeops
 
 import (
@@ -110,8 +110,8 @@ func Deploy(ctx context.Context, svc target.Service, serverID, name, compose str
 		return Result{Err: truncate(msg, 1024), Dispatched: true}
 	}
 	return Result{
-		OK: true,
-		Out: truncate(strings.TrimSpace(res.Stdout)+"\n"+strings.TrimSpace(res.Stderr), 2048),
+		OK:         true,
+		Out:        truncate(strings.TrimSpace(res.Stdout)+"\n"+strings.TrimSpace(res.Stderr), 2048),
 		Dispatched: true,
 	}
 }
@@ -190,38 +190,4 @@ func ProjectVolumeNames(ctx context.Context, svc target.Service, serverID, proje
 		}
 	}
 	return names, nil
-}
-
-// Teardown 拆除一个受管项目:rm -f 全部容器 → 可选删全部具名卷 → 删受管目录。
-// 各步幂等(容器/卷不存在时 docker 静默通过;目录不存在时 rm -rf 静默通过)。
-func Teardown(ctx context.Context, svc target.Service, serverID, project string, removeVolumes bool) Result {
-	ids, err := ProjectContainerIDs(ctx, svc, serverID, project)
-	if err != nil {
-		return Result{Err: humanSSHError(err)}
-	}
-	if len(ids) > 0 {
-		rmCmd := append([]string{"docker", "rm", "-f"}, ids...)
-		if res, rerr := svc.Exec(ctx, serverID, rmCmd); rerr != nil {
-			return Result{Err: humanSSHError(rerr), Dispatched: true}
-		} else if res.ExitCode != 0 {
-			return Result{Err: truncate(strings.TrimSpace(res.Stderr), 1024), Dispatched: true}
-		}
-	}
-	if removeVolumes {
-		vols, verr := ProjectVolumeNames(ctx, svc, serverID, project)
-		if verr == nil && len(vols) > 0 {
-			rvCmd := append([]string{"docker", "volume", "rm", "-f"}, vols...)
-			if res, rerr := svc.Exec(ctx, serverID, rvCmd); rerr != nil {
-				return Result{Err: humanSSHError(rerr), Dispatched: true}
-			} else if res.ExitCode != 0 {
-				return Result{Err: truncate(strings.TrimSpace(res.Stderr), 1024), Dispatched: true}
-			}
-		}
-	}
-	if res, rerr := svc.Exec(ctx, serverID, []string{"rm", "-rf", BaseDir + "/" + project}); rerr != nil {
-		return Result{Err: humanSSHError(rerr), Dispatched: true}
-	} else if res.ExitCode != 0 {
-		return Result{Err: "删除受管目录失败:" + truncate(strings.TrimSpace(res.Stderr), 256), Dispatched: true}
-	}
-	return Result{OK: true, Dispatched: len(ids) > 0}
 }

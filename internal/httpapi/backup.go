@@ -417,7 +417,7 @@ func makeBackupRestoreHandler(svc *backup.Service, stores objectstore.Service, g
 		if guard != nil {
 			if runs, shared := guard.ActiveTasks(); runs+shared > 0 && !force {
 				writeJSON(w, http.StatusOK, map[string]any{
-					"status": "deferred",
+					"status":  "deferred",
 					"message": fmt.Sprintf("恢复已就绪:当前有 %d 个运行、%d 个共享构建任务进行中,全部结束后自动重启应用", runs, shared),
 				})
 				scheduleDeferredReexec(guard)

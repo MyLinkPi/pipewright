@@ -83,7 +83,7 @@ type fakeClient struct {
 	puts      map[string]string
 	// getErr 非空时 GetObject 原样返回(模拟网络/凭据失败);否则从 puts 取值,
 	// 未命中返回 ErrObjectNotFound(与真实客户端语义一致)。
-	getErr error
+	getErr  error
 	listErr error
 	// listPages 按 "prefix|marker" 键返回预设页(未命中返回空页)。
 	listPages map[string]ListPageResult

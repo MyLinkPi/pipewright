@@ -23,9 +23,8 @@ import (
 	"github.com/huangchengsir/pipewright/internal/appstore"
 	"github.com/huangchengsir/pipewright/internal/artifactstore"
 	"github.com/huangchengsir/pipewright/internal/audit"
-	"github.com/huangchengsir/pipewright/internal/backup"
-	"github.com/huangchengsir/pipewright/internal/dbaas"
 	"github.com/huangchengsir/pipewright/internal/auth"
+	"github.com/huangchengsir/pipewright/internal/backup"
 	"github.com/huangchengsir/pipewright/internal/ceph"
 	"github.com/huangchengsir/pipewright/internal/certdeploy"
 	"github.com/huangchengsir/pipewright/internal/certmgmt"
@@ -135,7 +134,6 @@ type options struct {
 	artifactStore        *artifactstore.Store
 	retention            *retention.Service
 	backupSvc            *backup.Service
-	dbaasSvc             *dbaas.Service
 	maintenance          *maintenance.Service
 	projectMirrorCleaner func(ctx context.Context, repoURL string)
 	certMgmt             certmgmt.Service
@@ -507,12 +505,6 @@ func WithRetention(s *retention.Service) Option {
 // 不传则端点 503。
 func WithBackup(s *backup.Service) Option {
 	return func(o *options) { o.backupSvc = s }
-}
-
-// WithDBaaS 注入数据库即服务(internal/dbaas),挂载 /api/dbaas/* 路由(实例创建/
-// 启停/删除/口令揭示/备份恢复;写方法过 auth + CSRF + 审计)。不传则端点 503。
-func WithDBaaS(s *dbaas.Service) Option {
-	return func(o *options) { o.dbaasSvc = s }
 }
 
 // WithMaintenance 注入磁盘维护服务,挂载 POST /api/maintenance/cleanup(auth + CSRF + 审计;
@@ -1251,41 +1243,23 @@ func New(webFS fs.FS, authn auth.Authenticator, opts ...Option) http.Handler {
 		ar.Get("/notifications/config", makeGetNotifyConfigHandler(nf))
 		ar.Put("/notifications/config", makeSetNotifyConfigHandler(nf))
 
-	// 运行数据保留策略(全局)。GET 过 auth;PUT 写方法过 auth + CSRF。
-	ar.Get("/retention/config", makeGetRetentionConfigHandler(o.retention))
-	ar.Put("/retention/config", makeSetRetentionConfigHandler(o.retention))
+		// 运行数据保留策略(全局)。GET 过 auth;PUT 写方法过 auth + CSRF。
+		ar.Get("/retention/config", makeGetRetentionConfigHandler(o.retention))
+		ar.Put("/retention/config", makeSetRetentionConfigHandler(o.retention))
 
-	// 平台自身备份恢复(管理员):策略/立即备份/列表/下载/删除/传对象存储/在线恢复。
-	// GET 过 auth;写方法过 auth + CSRF(写方法均留 backup.* 审计)。
-	// /restore 与 /restore/pending 须在 /{id} 通配路由前注册,避免被吞。
-	ar.Get("/backup/config", makeGetBackupConfigHandler(o.backupSvc))
-	ar.Put("/backup/config", makeSetBackupConfigHandler(o.backupSvc))
-	ar.Post("/backup/run", makeRunBackupHandler(o.backupSvc, aud))
-	ar.Get("/backup/list", makeListBackupsHandler(o.backupSvc))
-	ar.Post("/backup/restore", makeBackupRestoreHandler(o.backupSvc, o.objectStores, o.reexecGuard, aud))
-	ar.Get("/backup/restore/pending", makeBackupRestorePendingHandler(o.backupSvc))
-	ar.Delete("/backup/restore/pending", makeBackupRestoreCancelHandler(o.backupSvc, aud))
-	ar.Get("/backup/{id}/download", makeBackupDownloadHandler(o.backupSvc))
-	ar.Post("/backup/{id}/upload-objectstore", makeBackupUploadObjectStoreHandler(o.backupSvc, aud))
-	ar.Delete("/backup/{id}", makeDeleteBackupHandler(o.backupSvc, aud))
-
-	// 数据库即服务(管理员):实例生命周期 + 备份恢复。GET 过 auth;写方法过 auth + CSRF
-	// (写方法均留 dbaas.* 审计;/backups/{bid} 组在 /{id} 通配前注册避免被吞)。
-	ar.Post("/dbaas/instances", makeDBaaSCreateHandler(o.dbaasSvc))
-	ar.Get("/dbaas/instances", makeDBaaSListHandler(o.dbaasSvc))
-	ar.Get("/dbaas/backups/{bid}/download", makeDBaaSBackupDownloadHandler(o.dbaasSvc))
-	ar.Post("/dbaas/backups/{bid}/upload-objectstore", makeDBaaSBackupUploadHandler(o.dbaasSvc, aud))
-	ar.Delete("/dbaas/backups/{bid}", makeDBaaSBackupDeleteHandler(o.dbaasSvc, aud))
-	ar.Get("/dbaas/instances/{id}", makeDBaaSGetHandler(o.dbaasSvc))
-	ar.Post("/dbaas/instances/{id}/start", makeDBaaSActionHandler(o.dbaasSvc, aud, "start"))
-	ar.Post("/dbaas/instances/{id}/stop", makeDBaaSActionHandler(o.dbaasSvc, aud, "stop"))
-	ar.Post("/dbaas/instances/{id}/restart", makeDBaaSActionHandler(o.dbaasSvc, aud, "restart"))
-	ar.Delete("/dbaas/instances/{id}", makeDBaaSDeleteHandler(o.dbaasSvc, aud))
-	ar.Post("/dbaas/instances/{id}/credentials", makeDBaaSCredentialsHandler(o.dbaasSvc, aud))
-	ar.Put("/dbaas/instances/{id}/schedule", makeDBaaSScheduleHandler(o.dbaasSvc, aud))
-	ar.Post("/dbaas/instances/{id}/backups", makeDBaaSBackupRunHandler(o.dbaasSvc, aud))
-	ar.Get("/dbaas/instances/{id}/backups", makeDBaaSBackupListHandler(o.dbaasSvc))
-	ar.Post("/dbaas/instances/{id}/restore", makeDBaaSRestoreHandler(o.dbaasSvc, o.objectStores, aud))
+		// 平台自身备份恢复(管理员):策略/立即备份/列表/下载/删除/传对象存储/在线恢复。
+		// GET 过 auth;写方法过 auth + CSRF(写方法均留 backup.* 审计)。
+		// /restore 与 /restore/pending 须在 /{id} 通配路由前注册,避免被吞。
+		ar.Get("/backup/config", makeGetBackupConfigHandler(o.backupSvc))
+		ar.Put("/backup/config", makeSetBackupConfigHandler(o.backupSvc))
+		ar.Post("/backup/run", makeRunBackupHandler(o.backupSvc, aud))
+		ar.Get("/backup/list", makeListBackupsHandler(o.backupSvc))
+		ar.Post("/backup/restore", makeBackupRestoreHandler(o.backupSvc, o.objectStores, o.reexecGuard, aud))
+		ar.Get("/backup/restore/pending", makeBackupRestorePendingHandler(o.backupSvc))
+		ar.Delete("/backup/restore/pending", makeBackupRestoreCancelHandler(o.backupSvc, aud))
+		ar.Get("/backup/{id}/download", makeBackupDownloadHandler(o.backupSvc))
+		ar.Post("/backup/{id}/upload-objectstore", makeBackupUploadObjectStoreHandler(o.backupSvc, aud))
+		ar.Delete("/backup/{id}", makeDeleteBackupHandler(o.backupSvc, aud))
 
 		// 磁盘清理手动触发(设置页「立即清理」;target 枚举白名单)。写方法过 auth + CSRF + 审计。
 		ar.Post("/maintenance/cleanup", makeMaintenanceCleanupHandler(o.maintenance, aud))

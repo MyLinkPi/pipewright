@@ -94,7 +94,7 @@ const (
 )
 
 // dumpTable 输出单表:DROP + CREATE + 数据 INSERT。DDL 用 PWSTMT-ATOM 标记包裹
-//(回放器据此切分语句块:服务端生成的 DDL 内部可能含分号,不能按行尾分号切)。
+// (回放器据此切分语句块:服务端生成的 DDL 内部可能含分号,不能按行尾分号切)。
 func (d *mysqlDumper) dumpTable(ctx context.Context, table string) error {
 	ref := quoteMySQLIdent(table)
 	var name, ddl string
