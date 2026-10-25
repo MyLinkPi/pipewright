@@ -524,7 +524,10 @@ func TestTrivyWithoutDockerViaServerHost(t *testing.T) {
 		joined := strings.Join(cmd, " ")
 		if !strings.Contains(joined, "TRIVY_SERVER=http://10.0.0.2:4954") ||
 			!strings.Contains(joined, "TRIVY_TOKEN=tok") ||
-			!strings.Contains(joined, "tar -xf - -C /scan && ls -laR /scan >&2 && trivy rootfs") {
+			!strings.Contains(joined, "tar -xf - -C /scan") ||
+			!strings.Contains(joined, "trivy rootfs") ||
+			// trivy 只认 /etc/lsb-release 识别 Ubuntu;缺它新版 Ubuntu 被误判 debian/sid 零漏洞。
+			!strings.Contains(joined, "/scan/etc/lsb-release") {
 			t.Fatalf("代扫命令内容不符:%v", cmd)
 		}
 		if len(runner.streams) == 0 || runner.streams[0][0] != "tar" {
@@ -826,7 +829,9 @@ func runnerExecForRemote(cmd []string) (*target.ExecResult, error) {
 	joined := strings.Join(cmd, " ")
 	switch {
 	case strings.HasPrefix(joined, "docker run --rm -i --entrypoint sh"):
-		if !strings.Contains(joined, "aquasec/trivy") || !strings.Contains(joined, "-c mkdir -p /scan") {
+		if !strings.Contains(joined, "aquasec/trivy") || !strings.Contains(joined, "-c set -e") ||
+			!strings.Contains(joined, "tar -xf - -C /scan") || !strings.Contains(joined, "trivy rootfs") ||
+			!strings.Contains(joined, "/scan/etc/lsb-release") {
 			return nil, fmt.Errorf("代扫命令形状不符:%s", joined)
 		}
 		return &target.ExecResult{ExitCode: 0, Stdout: trivySample}, nil
@@ -855,7 +860,9 @@ func TestTrivyRemoteScanCommandShape(t *testing.T) {
 				case strings.HasPrefix(joined, "ls -d /etc/os-release"):
 					return &target.ExecResult{ExitCode: 1, Stdout: "/etc/os-release\n/var/lib/dpkg/status\n"}, nil
 				case strings.HasPrefix(joined, "docker run --rm -i --entrypoint sh"):
-					if !strings.Contains(joined, "aquasec/trivy") || !strings.Contains(joined, "-c mkdir -p /scan") {
+					if !strings.Contains(joined, "aquasec/trivy") || !strings.Contains(joined, "-c set -e") ||
+						!strings.Contains(joined, "tar -xf - -C /scan") || !strings.Contains(joined, "trivy rootfs") ||
+						!strings.Contains(joined, "/scan/etc/lsb-release") {
 						t.Fatalf("代扫命令形状不符:%s", joined)
 					}
 					return &target.ExecResult{ExitCode: 0, Stdout: trivySample}, nil
