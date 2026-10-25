@@ -37,6 +37,7 @@ func (f *instAppFake) List(ctx context.Context) ([]appstore.Template, error) {
 type instMachine struct {
 	srv         *target.Server
 	findOut     string
+	psOut       string            // docker ps(版本枚举)stdout;空 = 命令未配置
 	sidecars    map[string]string // 栈名 → 边车 JSON 原文;无记录 = 读不到(缺失/损坏路径)
 	unreachable bool
 	touched     bool
@@ -77,6 +78,9 @@ func (f *instTargetFake) Exec(ctx context.Context, serverID string, cmd []string
 	m.touched = true
 	if m.unreachable {
 		return nil, errors.New("ssh: dial tcp: connection refused")
+	}
+	if len(cmd) > 0 && cmd[0] == "docker" && cmd[1] == "ps" {
+		return &target.ExecResult{ExitCode: 0, Stdout: m.psOut}, nil
 	}
 	return &target.ExecResult{ExitCode: 0, Stdout: m.findOut}, nil
 }
@@ -251,5 +255,36 @@ func TestAllAppInstancesLegacyNoSidecar(t *testing.T) {
 	}
 	if !items[1].Legacy || items[1].StackName != "gitea-old" || items[1].Instance != "old" {
 		t.Fatalf("gitea-old 应为 legacy 且剥出实例后缀 old: %+v", items[1])
+	}
+}
+
+
+// ---- 实例版本显示(运行镜像 tag) ----
+
+func TestImagesByProjectAndTag(t *testing.T) {
+	m := imagesByProject("mysql|||mysql:8.4\nredis|||redis:7-alpine\nmysql|||mysql:8.4\n|||noise:1\nsolo|||nginx\n")
+	if m["mysql"] != "mysql:8.4" || m["redis"] != "redis:7-alpine" || m["solo"] != "nginx" || len(m) != 3 {
+		t.Fatalf("imagesByProject:%+v", m)
+	}
+	if imageVersionTag("mysql:8.4") != "8.4" || imageVersionTag("reg.io/team/app:2.0") != "2.0" ||
+		imageVersionTag("nginx") != "" || imageVersionTag("reg.io:5000/app") != "" {
+		t.Fatal("imageVersionTag 提取不符")
+	}
+}
+
+func TestCollectAppInstancesVersion(t *testing.T) {
+	tpl := appstore.Template{ID: "t-mysql", Name: "mysql", DisplayName: "MySQL"}
+	tf := &instTargetFake{machines: []*instMachine{{
+		srv:     &target.Server{ID: "s1", Name: "机A"},
+		findOut: "/opt/pipewright/stacks/mysql/docker-compose.yml\n/opt/pipewright/stacks/mysql/.appstore-params.json\n",
+		psOut:   "mysql|||mysql:8.4\ngitea|||gitea/gitea:28.1.0\n",
+		sidecars: map[string]string{"mysql": mustSidecar(t, appDeploySidecar{TemplateID: "t-mysql"})},
+	}}}
+	af := &instAppFake{tpls: []appstore.Template{tpl}}
+	items := collectAppInstances(context.Background(), tf, tf.machines[0].srv,
+		map[string]appstore.Template{tpl.ID: tpl})
+	_ = af
+	if len(items) != 1 || items[0].Version != "8.4" {
+		t.Fatalf("实例版本不符:%+v", items)
 	}
 }
