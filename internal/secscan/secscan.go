@@ -19,6 +19,7 @@ package secscan
 import (
 	"context"
 	"database/sql"
+	"strings"
 	"time"
 )
 
@@ -425,16 +426,17 @@ type Service interface {
 
 // service 是 db + vault + runner 支撑的 Service 实现。
 type service struct {
-	db          *sql.DB
-	vault       vaultService
-	runner      Runner
-	artifacts   ArtifactStore
-	baseCtx     context.Context // 扫描 goroutine 的父上下文(服务关停取消在途扫描)
-	sem         chan struct{}   // fleet 并发闸(单机扫描也过闸,防连环触发压垮目标机)
-	trivyImage  string
-	nucleiImage string
-	trivyDBRepo string    // 客户端本地模式的漏洞库仓库(镜像源;空 = trivy 默认 ghcr.io)
-	waf         WafClient // SafeLine OpenAPI 客户端(测试注入 fake)
+	db              *sql.DB
+	vault           vaultService
+	runner          Runner
+	artifacts       ArtifactStore
+	baseCtx         context.Context // 扫描 goroutine 的父上下文(服务关停取消在途扫描)
+	sem             chan struct{}   // fleet 并发闸(单机扫描也过闸,防连环触发压垮目标机)
+	trivyImage      string
+	nucleiImage     string
+	trivyDBRepo     string    // 客户端本地模式的漏洞库仓库(镜像源;空 = trivy 默认 ghcr.io)
+	trivyJavaDBRepo string    // 客户端 Java DB 仓库(镜像源;空 = 按漏洞库仓库推导)
+	waf             WafClient // SafeLine OpenAPI 客户端(测试注入 fake)
 }
 
 // Option 装配选项(New 消费)。
@@ -478,6 +480,17 @@ func WithTrivyDBRepository(repo string) Option {
 	}
 }
 
+// WithTrivyJavaDBRepository 设置客户端 Java DB 仓库。镜像内检测到 JAR 时客户端要下载
+// trivy-java-db——即使配了 --server 也在客户端(trivy 的分析阶段不在服务端),默认仓库
+// mirror.gcr.io 不可达会让镜像扫描整体 FATAL。缺省时按漏洞库仓库自动推导。
+func WithTrivyJavaDBRepository(repo string) Option {
+	return func(s *service) {
+		if repo != "" {
+			s.trivyJavaDBRepo = repo
+		}
+	}
+}
+
 // WithImages 覆盖扫描器镜像(默认 aquasec/trivy:latest 与 projectdiscovery/nuclei:latest)。
 func WithImages(trivy, nuclei string) Option {
 	return func(s *service) {
@@ -505,6 +518,18 @@ func New(db *sql.DB, opts ...Option) Service {
 	}
 	for _, o := range opts {
 		o(s)
+	}
+	// Java DB 仓库未显式配置时按漏洞库仓库推导:镜像源普遍同时镜像两个库且同名
+	// (…/trivy-db → …/trivy-java-db);推导不出的条目(自建仓库名)跳过,Java DB
+	// 回落 trivy 默认仓库。
+	if s.trivyJavaDBRepo == "" && s.trivyDBRepo != "" {
+		derived := make([]string, 0, 2)
+		for _, repo := range strings.Split(s.trivyDBRepo, ",") {
+			if repo = strings.TrimSpace(repo); strings.Contains(repo, "trivy-db") {
+				derived = append(derived, strings.Replace(repo, "trivy-db", "trivy-java-db", 1))
+			}
+		}
+		s.trivyJavaDBRepo = strings.Join(derived, ",")
 	}
 	return s
 }

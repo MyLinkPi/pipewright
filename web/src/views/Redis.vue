@@ -26,6 +26,8 @@ import {
 import { HttpError } from '../api/http'
 import { useToast } from '../composables/useToast'
 import { useConfirm } from '../composables/useConfirm'
+import { listObjectStores, type ObjectStore } from '../api/objectStores'
+import BackupPanel from '../components/dbbackup/BackupPanel.vue'
 
 const { t } = useI18n()
 const toast = useToast()
@@ -94,6 +96,18 @@ async function runTest(): Promise<void> {
 
 // ─── 解锁/上锁写模式 ───────────────────────────────────────────────────────────
 const readonlyBusy = ref(false)
+
+// 备份折叠区(实例级;恢复门禁沿用本页纪律:只读时给出提示而非放行)。
+const backupOpen = ref(false)
+const objectProviders = ref<ObjectStore[]>([])
+
+function restoreGate(action: () => void): void {
+  if (current.value?.readonly) {
+    toast.error(t('redisAdmin.readonlyHint'))
+    return
+  }
+  action()
+}
 
 async function askUnlock(): Promise<void> {
   if (!current.value) return
@@ -302,7 +316,14 @@ watch(currentId, () => {
   }
 })
 
-onMounted(loadInstances)
+onMounted(async () => {
+  await loadInstances()
+  try {
+    objectProviders.value = (await listObjectStores()) ?? []
+  } catch {
+    objectProviders.value = []
+  }
+})
 </script>
 
 <template>
@@ -520,11 +541,35 @@ onMounted(loadInstances)
           <NIcon :size="13"><ChevronRight /></NIcon>
         </button>
       </div>
+
+      <!-- 备份恢复(实例级;默认折叠,展开即本实例的备份面板) -->
+      <section v-if="current" class="backup-section" :aria-label="t('dbBackup.section')">
+        <button class="backup-toggle" :aria-expanded="backupOpen" @click="backupOpen = !backupOpen">
+          <NIcon :size="14" :class="{ 'backup-chevron--open': backupOpen }"><ChevronRight /></NIcon>
+          {{ t('dbBackup.section') }}
+        </button>
+        <div v-if="backupOpen" class="backup-body">
+          <BackupPanel
+            :key="current.id"
+            kind="redis"
+            :instance-id="current.id"
+            :instance-name="current.name"
+            :providers="objectProviders"
+            :restore-gate="restoreGate"
+          />
+        </div>
+      </section>
     </template>
   </div>
 </template>
 
 <style scoped>
+/* 备份折叠区 */
+.backup-section { border: 1px solid var(--color-border); border-radius: 10px; margin-top: 18px; overflow: hidden; }
+.backup-toggle { display: flex; align-items: center; gap: 8px; width: 100%; padding: 11px 14px; background: transparent; border: none; color: inherit; font-size: 13px; font-weight: 600; cursor: pointer; }
+.backup-toggle :deep(svg) { transition: transform .15s ease; }
+.backup-chevron--open { transform: rotate(90deg); }
+.backup-body { padding: 14px; border-top: 1px solid var(--color-border); }
 .redis-view {
   display: flex;
   flex-direction: column;

@@ -13,6 +13,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -22,6 +23,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/huangchengsir/pipewright/internal/audit"
 	"github.com/huangchengsir/pipewright/internal/dbadmin"
+	"github.com/huangchengsir/pipewright/internal/dbbackup"
 )
 
 // 审计 action(前缀 dbadmin.*);detail 绝无密码与 SQL 文本。
@@ -48,13 +50,13 @@ const (
 const dbImportLimit = 32 << 20
 
 // mountDBAdmin 把数据库管理端点挂进 admin 子组(路径前缀 /db-instances)。
-func mountDBAdmin(ar chi.Router, svc dbadmin.Service, aud audit.Recorder) {
+func mountDBAdmin(ar chi.Router, svc dbadmin.Service, backups *dbbackup.Service, aud audit.Recorder) {
 	// 实例注册(设置 → 数据库)。
 	ar.Get("/db-instances", makeDBInstanceListHandler(svc))
 	ar.Post("/db-instances", makeDBInstanceCreateHandler(svc, aud))
 	ar.Post("/db-instances/test", makeDBDirectTestHandler(svc))
 	ar.Put("/db-instances/{id}", makeDBInstanceUpdateHandler(svc, aud))
-	ar.Delete("/db-instances/{id}", makeDBInstanceDeleteHandler(svc, aud))
+	ar.Delete("/db-instances/{id}", makeDBInstanceDeleteHandler(svc, backups, aud))
 	ar.Post("/db-instances/{id}/test", makeDBInstanceTestHandler(svc, aud))
 	ar.Put("/db-instances/{id}/readonly", makeDBInstanceReadonlyHandler(svc, aud))
 
@@ -250,7 +252,7 @@ func makeDBInstanceUpdateHandler(svc dbadmin.Service, aud audit.Recorder) http.H
 	}
 }
 
-func makeDBInstanceDeleteHandler(svc dbadmin.Service, aud audit.Recorder) http.HandlerFunc {
+func makeDBInstanceDeleteHandler(svc dbadmin.Service, backups *dbbackup.Service, aud audit.Recorder) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id := chi.URLParam(r, "id")
 		inst, err := svc.Get(r.Context(), id)
@@ -261,6 +263,12 @@ func makeDBInstanceDeleteHandler(svc dbadmin.Service, aud audit.Recorder) http.H
 		if err := svc.Delete(r.Context(), id); err != nil {
 			writeDBAdminError(w, err)
 			return
+		}
+		// 级联清理实例备份(记录 + 磁盘文件;best-effort,失败不阻断删除)。
+		if backups != nil {
+			if err := backups.DeleteForInstance(r.Context(), inst.Engine, id); err != nil {
+				log.Printf("[dbbackup] 实例删除级联清理备份失败(%s):%v", id, err)
+			}
 		}
 		recordAudit(r.Context(), aud, audit.Entry{
 			Actor: auditActor, Action: auditActionDBInstanceDelete, TargetType: auditTargetDBInstance,

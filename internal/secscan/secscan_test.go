@@ -436,7 +436,39 @@ func TestTrivyDBRepositoryInjection(t *testing.T) {
 		if !injected {
 			t.Fatalf("trivy 命令应注入 -e TRIVY_DB_REPOSITORY:%v", runner.execs[0])
 		}
-		// 未配置时不注入(默认命令形状不变)。
+		// Java DB 仓库未显式配置 → 按漏洞库仓库自动推导注入(镜像扫到 JAR 时客户端要下
+		// trivy-java-db,默认 mirror.gcr.io 不可达会让扫描 FATAL;即使走 --server 也在
+		// 客户端下载)。
+		javaInjected := false
+		for _, cmd := range runner.execs {
+			for i, c := range cmd {
+				if c == "TRIVY_JAVA_DB_REPOSITORY=ghcr.nju.edu.cn/aquasecurity/trivy-java-db" && i > 0 && cmd[i-1] == "-e" {
+					javaInjected = true
+				}
+			}
+		}
+		if !javaInjected {
+			t.Fatalf("trivy 命令应注入 -e TRIVY_JAVA_DB_REPOSITORY(按漏洞库仓库推导):%v", runner.execs[0])
+		}
+		// 主机 rootfs 扫描跳过容器存储与伪文件系统(容器存储里有运行容器的活 /proc,
+		// 瞬态文件让 lstat 竞态直接 FATAL);路径须带 /rootfs 挂载前缀(trivy 按容器内
+		// 遍历路径匹配)。
+		skipOK := false
+		for _, cmd := range runner.execs {
+			if !strings.Contains(strings.Join(cmd, " "), " rootfs ") {
+				continue
+			}
+			for i, c := range cmd {
+				if c == "--skip-dirs" && i+1 < len(cmd) &&
+					strings.Contains(cmd[i+1], "/rootfs/var/lib/docker") && strings.Contains(cmd[i+1], "/rootfs/proc") {
+					skipOK = true
+				}
+			}
+		}
+		if !skipOK {
+			t.Fatalf("主机 rootfs 扫描应 --skip-dirs 容器存储与伪文件系统:%v", runner.execs[0])
+		}
+		// 未配置时不注入(默认命令形状不变);skip-dirs 与仓库配置无关,照常携带。
 		plain := &fakeRunner{
 			servers: runner.servers,
 			fn: func(cmd []string) (*target.ExecResult, error) {
@@ -444,15 +476,24 @@ func TestTrivyDBRepositoryInjection(t *testing.T) {
 			},
 		}
 		svc2 := New(st.DB, WithVault(fakeVault{}), WithRunner(plain), WithArtifacts(newFakeArtifacts()))
-		if _, err := svc2.StartScan(context.Background(), ScanInput{ServerID: "s1", ScanType: ScanTypeTrivy}); err != nil {
+		run2, err := svc2.StartScan(context.Background(), ScanInput{ServerID: "s1", ScanType: ScanTypeTrivy})
+		if err != nil {
 			t.Fatal(err)
 		}
+		waitRunDone(t, svc2, run2.ID)
+		plainSkipOK := false
 		for _, cmd := range plain.execs {
 			for _, c := range cmd {
-				if strings.HasPrefix(c, "TRIVY_DB_REPOSITORY=") {
+				if strings.HasPrefix(c, "TRIVY_DB_REPOSITORY=") || strings.HasPrefix(c, "TRIVY_JAVA_DB_REPOSITORY=") {
 					t.Fatalf("未配置不应注入 env:%v", c)
 				}
 			}
+			if strings.Contains(strings.Join(cmd, " "), " rootfs ") && strings.Contains(strings.Join(cmd, " "), "--skip-dirs") {
+				plainSkipOK = true
+			}
+		}
+		if !plainSkipOK {
+			t.Fatalf("未配置仓库时主机 rootfs 扫描仍应带 --skip-dirs:%v", plain.execs[0])
 		}
 	})
 }

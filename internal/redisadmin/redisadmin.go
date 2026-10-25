@@ -147,6 +147,11 @@ type Service interface {
 	// (重新部署会重新生成密码),否则新建(source=appstore)。尽力而为语义由调用方负责。
 	Register(ctx context.Context, in RegisterInput) (*RegisterResult, error)
 
+	// ---- 备份恢复受控出口(internal/dbbackup 消费) ----
+	// RevealPassword 解密实例密码(无密码实例返回空串),仅供服务端备份链路构造
+	// SSH 执行环境(容器内 redis-cli 认证);绝不进响应/日志/审计。
+	RevealPassword(ctx context.Context, id string) (string, error)
+
 	// ---- 管理操作(每操作即建即弃短连接;dbNum 为本次操作的目标逻辑库)----
 	// Info 服务端概览:版本/uptime/内存/连接数 + 各逻辑库键数(keyspace)与当前库 DBSIZE。
 	Info(ctx context.Context, id string, dbNum int) (*ServerInfo, error)
