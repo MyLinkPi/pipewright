@@ -19,5 +19,6 @@ export default {
 
   navRegistry: '镜像仓库',
   navDiagnosisStats: '诊断反馈',
-  navSystem: '系统',
+
+  navBackup: '备份恢复',  navSystem: '系统',
 }

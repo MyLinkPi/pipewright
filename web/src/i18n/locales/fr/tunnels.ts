@@ -124,6 +124,19 @@ export default {
   deleteDone: 'Tunnel {name} supprimé',
   errDelete: 'Échec de la suppression, réessayez plus tard',
 
+  // ─── VPN (-w) ───
+  modeVpn: 'VPN',
+  vpnWarn: 'Non recommandé : les tunnels VPN (-w) exigent un nœud de contrôle Linux avec root/CAP_NET_ADMIN, PermitTunnel activé sur le sshd cible (désactivé par défaut) et un adressage point à point planifié manuellement ; ils sont aussi coupés au redémarrage du conteneur. Préférez le maillage de cluster : Paramètres → Cluster (EasyTier — sans root, IP virtuelles automatiques, routage de sous-réseaux et basculement).',
+  modeHint_vpn: 'Tunnel VPN (-w) : un tunnel L3 point à point vers l’hôte cible (périphériques tun, deux extrémités dans le même /30). Non recommandé — préférez le maillage de cluster (Paramètres → Cluster).',
+  fieldLocalIP: 'IP locale du tunnel',
+  fieldRemoteIP: 'IP distante du tunnel',
+  fieldLocalTun: 'Index tun local',
+  fieldRemoteTun: 'Index tun distant',
+  vpnBindHint: 'Les deux IP doivent partager un /30 (p. ex. 10.255.0.1 et 10.255.0.2) ; index tun 0-255 ; la configuration des IP requiert généralement root des deux côtés.',
+  errVpnIP: 'Doit être une adresse IPv4 valide',
+  errVpnSameSubnet: 'Les deux IP doivent partager le sous-réseau /30',
+  errVpnTunIdx: 'L’index tun doit être 0-255',
+
   // ─── Journaux ───
   logsTitle: 'Journaux du tunnel · {name}',
   close: 'Fermer',

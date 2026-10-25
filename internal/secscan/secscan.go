@@ -357,6 +357,10 @@ type Service interface {
 	// Register 应用市场部署联动登记:同 kind+host+port 已有条目 → 原地轮换令牌,
 	// 否则新建(source=appstore)。尽力而为语义由调用方负责。
 	Register(ctx context.Context, in RegisterInput) (*RegisterResult, error)
+	// ScannerLibInfo 查询实例规则库状态(漏洞库/特征模板;见 lib.go)。
+	ScannerLibInfo(ctx context.Context, instanceID string) (*ScannerLibInfo, error)
+	// ScannerLibUpdate 手动触发规则库更新(trivy 重启容器 / nuclei 更新模板;safeline 拒绝)。
+	ScannerLibUpdate(ctx context.Context, instanceID string) (*ScannerLibInfo, error)
 
 	// ---- 定时规则 ----
 	GetSchedule(ctx context.Context) (*Schedule, error)

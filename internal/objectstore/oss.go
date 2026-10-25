@@ -3,6 +3,7 @@ package objectstore
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"strings"
 
@@ -60,6 +61,22 @@ func (c *aliyunObjectClient) VerifyBucket(ctx context.Context) error {
 // PutObject 上传一个对象。
 func (c *aliyunObjectClient) PutObject(ctx context.Context, objectKey string, body io.Reader) error {
 	return c.bucket.PutObject(objectKey, body)
+}
+
+// GetObject 下载一个对象流式写入 w。SDK 的 GetObject 返回 io.ReadCloser(即建连即
+// 首字节);404(ServiceError Code=NoSuchKey)映射为 ErrObjectNotFound。
+func (c *aliyunObjectClient) GetObject(ctx context.Context, objectKey string, w io.Writer) error {
+	body, err := c.bucket.GetObject(objectKey)
+	if err != nil {
+		var svcErr oss.ServiceError
+		if errors.As(err, &svcErr) && svcErr.Code == "NoSuchKey" {
+			return fmt.Errorf("%w:%s", ErrObjectNotFound, objectKey)
+		}
+		return err
+	}
+	defer func() { _ = body.Close() }()
+	_, err = io.Copy(w, body)
+	return err
 }
 
 // CreateBucket 显式新建一个桶(浏览页「新建桶」入口;默认私有 ACL,区域跟随 Endpoint)。

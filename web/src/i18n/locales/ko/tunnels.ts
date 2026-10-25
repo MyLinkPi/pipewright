@@ -124,6 +124,19 @@ export default {
   deleteDone: '터널 {name} 삭제됨',
   errDelete: '삭제에 실패했습니다. 잠시 후 재시도하세요',
 
+  // ─── VPN(-w)───
+  modeVpn: 'VPN',
+  vpnWarn: '권장하지 않음: VPN(-w) 터널은 Linux 컨트롤 노드(root/CAP_NET_ADMIN 필요), 대상 호스트 sshd의 PermitTunnel 활성화(기본값 꺼짐), 수동 주소 설계가 필요하고 컨테이너 재시작 시 끊깁니다. 클러스터 메시(설정 → 클러스터, EasyTier: root 불필요·가상 IP 자동 할당·서브넷 라우팅과 페일오버 지원) 사용을 강력히 권장합니다.',
+  modeHint_vpn: 'VPN 터널(-w): 대상 호스트와 포인트투포인트 L3 터널(tun 장치, 양단 같은 /30)을 구성합니다. 권장하지 않음 — 클러스터 메시(설정 → 클러스터)를 권장합니다.',
+  fieldLocalIP: '로컬 터널 IP',
+  fieldRemoteIP: '원격 터널 IP',
+  fieldLocalTun: '로컬 tun 번호',
+  fieldRemoteTun: '원격 tun 번호',
+  vpnBindHint: '양단 IP는 같은 /30(예: 10.255.0.1과 10.255.0.2)이어야 하며 tun 번호는 0-255. IP 설정에는 보통 양단 모두 root가 필요합니다.',
+  errVpnIP: '올바른 IPv4 주소여야 합니다',
+  errVpnSameSubnet: '양단 IP는 같은 /30 서브넷이어야 합니다',
+  errVpnTunIdx: 'tun 번호는 0-255여야 합니다',
+
   // ─── 로그 ───
   logsTitle: '터널 로그 · {name}',
   close: '닫기',

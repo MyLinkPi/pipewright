@@ -7,7 +7,14 @@ export default {
   errLoad: '无法加载应用模板',
   errOp: '操作失败,请重试',
 
-  builtinSection: '内置模板',
+  cat: {
+    all: '全部',
+    db: '数据库与缓存',
+    mq: '消息队列',
+    storage: '存储',
+    web: 'Web 与工具',
+    security: '安全',
+  },
   customSection: '自定义模板',
   customEmpty: '还没有自定义模板;用「新建模板」把你的 compose 沉淀为可复用部署单元。',
   newTemplate: '新建模板',

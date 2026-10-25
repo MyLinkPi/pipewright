@@ -16,6 +16,9 @@ type forward struct {
 	endpoint   string // 实际监听 host:port(bind_port=0 时为内核/远端分配的端口)
 	actualPort int
 	closers    []io.Closer
+	// dead 非 nil 时,转发面内部死亡(vpn 包泵故障等)向其发送错误并等待外层
+	// 重连 —— 端口转发无此通道:按连接粒度死亡,不影响 ssh 连接活性。
+	dead chan error
 }
 
 func (f *forward) close() {
@@ -24,8 +27,18 @@ func (f *forward) close() {
 	}
 }
 
+// fail 上报转发面内部故障(非阻塞;守望循环收到后走重连)。
+func (f *forward) fail(err error) {
+	if f.dead != nil {
+		select {
+		case f.dead <- err:
+		default:
+		}
+	}
+}
+
 // startForward 按模式建立转发面(local:本机 listen + 远端 Dial;remote:远端
-// Listen + 本机 Dial;dynamic:本机 listen 充 SOCKS5)。失败返回人读错误。
+// Listen + 本机 Dial;dynamic:本机 listen 充 SOCKS5;vpn:点对点 tun)。
 func startForward(client target.SSHClient, t *Tunnel) (*forward, error) {
 	switch t.Mode {
 	case ModeLocal:
@@ -34,6 +47,8 @@ func startForward(client target.SSHClient, t *Tunnel) (*forward, error) {
 		return startRemoteForward(client, t)
 	case ModeDynamic:
 		return startDynamicForward(client, t)
+	case ModeVPN:
+		return startVPNForward(client, t)
 	default:
 		return nil, fmt.Errorf("未知隧道模式 %q", t.Mode)
 	}

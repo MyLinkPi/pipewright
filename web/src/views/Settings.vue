@@ -30,6 +30,7 @@ const { t } = useI18n()
       <router-link to="/settings/mesh" class="settings-nav-item">{{ t('settingsHub.navMesh') }}</router-link>
       <router-link to="/settings/shared-build" class="settings-nav-item">{{ t('settingsHub.navSharedBuild') }}</router-link>
       <router-link to="/settings/registry" class="settings-nav-item">{{ t('settingsHub.navRegistry') }}</router-link>
+      <router-link to="/settings/backup" class="settings-nav-item">{{ t('settingsHub.navBackup') }}</router-link>
       <router-link to="/settings/diagnosis-stats" class="settings-nav-item">{{ t('settingsHub.navDiagnosisStats') }}</router-link>
       <router-link to="/settings/system" class="settings-nav-item">{{ t('settingsHub.navSystem') }}</router-link>
     </nav>

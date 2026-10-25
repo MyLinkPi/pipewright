@@ -44,6 +44,7 @@ const MODE_VISUAL: Record<TunnelMode, { labelKey: string; flag: string }> = {
   local: { labelKey: 'tunnels.modeLocal', flag: '-L' },
   remote: { labelKey: 'tunnels.modeRemote', flag: '-R' },
   dynamic: { labelKey: 'tunnels.modeDynamic', flag: '-D' },
+  vpn: { labelKey: 'tunnels.modeVpn', flag: '-w' },
 }
 
 export function tunnelModeMeta(m: TunnelMode): TunnelModeMeta {
@@ -51,11 +52,18 @@ export function tunnelModeMeta(m: TunnelMode): TunnelModeMeta {
   return { label: t(v.labelKey), flag: v.flag }
 }
 
-/** 监听端点文案:bind_port=0 时展示 helper 汇报的实际端口。 */
-export function tunnelBindLabel(tn: Pick<SshTunnel, 'bindHost' | 'bindPort' | 'actualPort'>): string {
+/** 监听端点文案:bind_port=0 时展示 helper 汇报的实际端口;vpn 展示本端 IP + tun 序号。 */
+export function tunnelBindLabel(tn: Pick<SshTunnel, 'mode' | 'bindHost' | 'bindPort' | 'actualPort'>): string {
+  if (tn.mode === 'vpn') return `${tn.bindHost}(tun${tn.bindPort})`
   const port = tn.bindPort > 0 ? tn.bindPort : tn.actualPort
   if (port > 0 && tn.bindPort === 0) return `${tn.bindHost}:${port}`
   return `${tn.bindHost}:${tn.bindPort}`
+}
+
+/** 目标端文案:dynamic 无目标;vpn 展示远端 IP + tun 序号;其余 host:port。 */
+export function tunnelDestLabel(tn: Pick<SshTunnel, 'mode' | 'destHost' | 'destPort'>): string {
+  if (tn.mode === 'vpn') return `${tn.destHost}(tun${tn.destPort})`
+  return `${tn.destHost}:${tn.destPort}`
 }
 
 /** 目标端点文案:dynamic 无目标;连接方式展示服务器名或直连 host@user。 */

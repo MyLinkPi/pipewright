@@ -145,6 +145,8 @@ const adminNavGroups: NavGroup[] = [
     items: [
       // 应用商店:MySQL/Redis 等模板参数一键部署(DPanel 式)。
       { name: 'app-store', to: '/app-store', icon: Apps, labelKey: 'nav.appStore', ariaKey: 'nav.appStore' },
+      // 数据库即服务:MySQL/PostgreSQL/Redis 按需创建 + 备份恢复(仅管理员)。
+      { name: 'dbaas', to: '/dbaas', icon: Database, labelKey: 'nav.dbaas', ariaKey: 'nav.dbaas' },
       // 数据库在线管理(phpMyAdmin 式):实例在 设置 → 数据库 注册;应用市场部署 mysql/postgres 自动登记。
       { name: 'databases', to: '/databases', icon: Database, labelKey: 'nav.databases', ariaKey: 'nav.databases' },
       // Redis 在线管理:实例在 设置 → Redis 注册;应用市场部署 redis 自动登记;SCAN 分页键浏览。

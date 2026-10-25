@@ -1,19 +1,26 @@
 package target
 
 import (
+	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"net"
+	"strings"
 	"time"
 
 	"golang.org/x/crypto/ssh"
 )
 
 // SSHClient 是长连接 SSH 客户端的最小抽象(0099 SSH 隧道转发面;按 Dial/ExecStream
-// 先例追加的只读扩展)。四个方法覆盖隧道数据面与活性探测:
+// 先例追加的只读扩展)。六个方法覆盖隧道数据面、活性探测与 vpn 模式控制面:
 //   - Dial:经远端 sshd 发起 direct-tcpip 连接(ssh -L / -D 的数据面);
 //   - Listen:请求远端 sshd 监听端口(tcpip-forward,ssh -R 的数据面);
+//   - OpenTunChannel:发 tun@openssh.com 请求建立点对点 tun 转发(ssh -w 数据面,
+//     目标机 sshd 需 PermitTunnel);
+//   - Exec:在远端跑一条 shell 命令(vpn 模式配置远端 tun IP 用);
 //   - Ping:keepalive 全局请求探活(检测 TCP 半开死连接;超时/失败 = 连接已死);
 //   - Close:关闭整条连接链(含跳板链全部中间跳,防泄漏)。
 //
@@ -21,6 +28,8 @@ import (
 type SSHClient interface {
 	Dial(network, addr string) (net.Conn, error)
 	Listen(network, addr string) (net.Listener, error)
+	OpenTunChannel(localIdx, remoteIdx int) (io.ReadWriteCloser, error)
+	Exec(cmd string) (string, error)
 	Ping(timeout time.Duration) error
 	Close() error
 }
@@ -38,6 +47,57 @@ func (c *sshClientWrap) Dial(network, addr string) (net.Conn, error) {
 
 func (c *sshClientWrap) Listen(network, addr string) (net.Listener, error) {
 	return c.client.Listen(network, addr)
+}
+
+// OpenTunChannel 发起 OpenSSH 的 tun@openssh.com 通道请求(ssh -w 数据面):在一条
+// session 类型通道上请求点对点(SSH_TUNMODE_POINTTOPOINT=1)tun 转发,载荷为三个
+// uint32(mode、本端 tun 序号、远端 tun 序号)。成功后该通道即包管道 —— 每个包以
+// 4 字节大端地址族头开头(OpenSSH 以 OpenBSD tun(4) 的 AF 值为线上规范:2=IPv4、
+// 24=IPv6;Linux 侧由 sshd 归一化),消息边界 = 包边界。目标机 sshd 需开启
+// PermitTunnel(默认 no)且该序号可用。协议参见 OpenSSH 源码 session.c/tun.c。
+func (c *sshClientWrap) OpenTunChannel(localIdx, remoteIdx int) (io.ReadWriteCloser, error) {
+	if localIdx < 0 || localIdx > 255 || remoteIdx < 0 || remoteIdx > 255 {
+		return nil, errors.New("tun 序号须为 0..255")
+	}
+	var payload [12]byte
+	binary.BigEndian.PutUint32(payload[0:4], 1) // SSH_TUNMODE_POINTTOPOINT
+	binary.BigEndian.PutUint32(payload[4:8], uint32(localIdx))
+	binary.BigEndian.PutUint32(payload[8:12], uint32(remoteIdx))
+	ch, _, err := c.client.OpenChannel("session", nil)
+	if err != nil {
+		return nil, fmt.Errorf("打开 session 通道失败:%w", err)
+	}
+	ok, err := ch.SendRequest("tun@openssh.com", true, payload[:])
+	if err != nil || !ok {
+		_ = ch.Close()
+		if err != nil {
+			return nil, fmt.Errorf("远端拒绝 tun 转发(需 sshd 开启 PermitTunnel):%v", err)
+		}
+		return nil, errors.New("远端拒绝 tun 转发(需 sshd 开启 PermitTunnel 且 tun 序号未被占用)")
+	}
+	return ch, nil
+}
+
+// Exec 在远端跑一条 shell 命令(vpn 模式配置远端 tun IP 用),返回合并输出;
+// 非零退出时错误附带输出(通常已由调用方拼好人读上下文)。命令由调用方构造
+//(隧道域只传 IP/设备名等已校验字符串,且经 POSIX 转义后拼装)。
+func (c *sshClientWrap) Exec(cmd string) (string, error) {
+	sess, err := c.client.NewSession()
+	if err != nil {
+		return "", fmt.Errorf("ssh: session: %w", err)
+	}
+	defer func() { _ = sess.Close() }()
+	var out bytes.Buffer
+	sess.Stdout = &out
+	sess.Stderr = &out
+	if err := sess.Run(cmd); err != nil {
+		text := strings.TrimSpace(out.String())
+		if text != "" {
+			return text, fmt.Errorf("%v: %s", err, text)
+		}
+		return "", err
+	}
+	return out.String(), nil
 }
 
 // Ping 经 keepalive 全局请求探活;SendRequest 无超时参数,超时经 select 兜底

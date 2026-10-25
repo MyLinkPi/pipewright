@@ -192,6 +192,12 @@ func superviseActive(rt *Runtime, id string, client target.SSHClient, fw *forwar
 				_ = client.Close()
 				return true
 			}
+		case err := <-fw.dead:
+			// 转发面内部故障(vpn 包泵等):关转发面后重连。
+			logger.Printf("[tunnel] 转发面故障:%v", err)
+			fw.close()
+			_ = client.Close()
+			return true
 		}
 	}
 }

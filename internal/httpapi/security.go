@@ -27,6 +27,7 @@ const (
 	auditActionSecScannerDelete = "security.scanner.delete"
 	auditActionSecScannerTest   = "security.scanner.test"
 	auditActionSecScannerReg    = "security.scanner.register" // 应用市场部署联动(apps.go 调)
+	auditActionSecLibUpdate     = "security.scanner.libupdate"
 	auditActionSecScanRun       = "security.scan.run"
 	auditActionSecScanFleet     = "security.scan.fleet"
 	auditActionSecScheduleSave  = "security.schedule.update"
@@ -176,6 +177,8 @@ func mountSecurity(ar chi.Router, svc secscan.Service, aud audit.Recorder, expla
 	ar.Put("/security/scanners/{id}", makeUpdateSecScannerHandler(svc, aud))
 	ar.Delete("/security/scanners/{id}", makeDeleteSecScannerHandler(svc, aud))
 	ar.Post("/security/scanners/{id}/test", makeTestSecScannerHandler(svc, aud))
+	ar.Get("/security/scanners/{id}/lib", makeScannerLibInfoHandler(svc))
+	ar.Post("/security/scanners/{id}/lib/update", makeScannerLibUpdateHandler(svc, aud))
 	ar.Post("/security/scans", makeStartScanHandler(svc, aud))
 	ar.Post("/security/scans/fleet", makeStartFleetScanHandler(svc, aud))
 	ar.Get("/security/scans", makeListSecRunsHandler(svc))
@@ -648,5 +651,35 @@ func makeWafOverviewHandler(svc secscan.Service) http.HandlerFunc {
 			items = []secscan.WafInstanceStatus{}
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"items": items})
+	}
+}
+
+// makeScannerLibInfoHandler 返回 GET /api/security/scanners/{id}/lib(规则库状态,只读)。
+func makeScannerLibInfoHandler(svc secscan.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		info, err := svc.ScannerLibInfo(r.Context(), chi.URLParam(r, "id"))
+		if err != nil {
+			writeSecurityError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, info)
+	}
+}
+
+// makeScannerLibUpdateHandler 返回 POST /api/security/scanners/{id}/lib/update(手动更新:
+// trivy-server 重启容器拉最新库;nuclei-runner 容器内更新模板;safeline 由其控制台自管理)。
+func makeScannerLibUpdateHandler(svc secscan.Service, aud audit.Recorder) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id := chi.URLParam(r, "id")
+		info, err := svc.ScannerLibUpdate(r.Context(), id)
+		if err != nil {
+			writeSecurityError(w, err)
+			return
+		}
+		recordAudit(r.Context(), aud, audit.Entry{
+			Actor: auditActor, Action: auditActionSecLibUpdate, TargetType: auditTargetSecurity,
+			TargetID: id, Detail: map[string]any{"kind": info.Kind, "ok": true}, IP: clientIP(r),
+		})
+		writeJSON(w, http.StatusOK, info)
 	}
 }

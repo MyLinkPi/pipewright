@@ -148,6 +148,20 @@ export const testScanner = (id: string): Promise<ScannerTestResult> =>
 export const testScannerDirect = (body: { host: string; port: number; token?: string }): Promise<ScannerTestResult> =>
   http.post('/api/security/scanners/test', body)
 
+export interface ScannerLibInfo {
+  kind: string
+  updatedAt?: string
+  note?: string
+}
+
+/** getScannerLib:规则库状态(漏洞库/特征模板更新时间)。 */
+export const getScannerLib = (id: string): Promise<ScannerLibInfo> =>
+  http.get(`/api/security/scanners/${encodeURIComponent(id)}/lib`)
+
+/** updateScannerLib:手动更新规则库(trivy 重启拉库 / nuclei 更新模板)。 */
+export const updateScannerLib = (id: string): Promise<ScannerLibInfo> =>
+  http.post(`/api/security/scanners/${encodeURIComponent(id)}/lib/update`, {})
+
 // ---------- 扫描 ----------
 
 export const startScan = (input: StartScanInput): Promise<SecRun> =>

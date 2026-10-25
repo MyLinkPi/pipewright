@@ -17,6 +17,7 @@ import { useI18n } from 'vue-i18n'
 import {
   getOverview, getSchedule, saveSchedule,
   listScanners, createScanner, deleteScanner, testScanner, testScannerDirect,
+  getScannerLib, updateScannerLib, type ScannerLibInfo,
   startScan, startFleetScan, listRuns, getFindings, downloadSecurityReport, explainFinding,
   getWafOverview, type WafInstanceStatus,
   type SecurityOverview, type Schedule, type ScannerInstance, type SecRun,
@@ -146,10 +147,42 @@ const scannerTesting = ref(false)
 const testingId = ref('')
 const showAddScanner = ref(false)
 
+// ── 规则库状态(漏洞库/特征模板更新时间 + 手动更新)──
+const libInfo = ref<Record<string, ScannerLibInfo>>({})
+const libLoading = ref('')
+const libUpdating = ref('')
+
+async function loadLibInfo(sc: ScannerInstance): Promise<void> {
+  if (sc.kind === 'safeline') return // 雷池控制台自管理,不查
+  libLoading.value = sc.id
+  try {
+    libInfo.value[sc.id] = await getScannerLib(sc.id)
+  } catch {
+    /* 查询失败不打扰:单元格显示 — */
+  } finally {
+    libLoading.value = ''
+  }
+}
+
+async function libUpdate(sc: ScannerInstance): Promise<void> {
+  libUpdating.value = sc.id
+  try {
+    const info = await updateScannerLib(sc.id)
+    libInfo.value[sc.id] = info
+    toast.success(info.note || t('securityCenter.libNucleiUpdatedNote'))
+    void loadLibInfo(sc) // 更新后刷新时间
+  } catch (e) {
+    toast.error(t('securityCenter.libInfoFail'), { detail: errMsg(e, t('securityCenter.errNetwork')) })
+  } finally {
+    libUpdating.value = ''
+  }
+}
+
 async function loadScanners(): Promise<void> {
   try {
     const res = await listScanners()
     scanners.value = res.items ?? []
+    for (const sc of scanners.value) void loadLibInfo(sc)
   } catch {
     /* 静默:概览错误态已兜底 */
   }
@@ -545,6 +578,7 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
               <th scope="col">{{ t('securityCenter.scannerEndpoint') }}</th>
               <th scope="col">{{ t('securityCenter.scannerTokenLabel') }}</th>
               <th scope="col">{{ t('securityCenter.scannerSource') }}</th>
+              <th scope="col">{{ t('securityCenter.colLib') }}</th>
               <th scope="col">{{ t('securityCenter.colActions') }}</th>
             </tr>
           </thead>
@@ -554,7 +588,16 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
               <td>{{ sc.host }}{{ sc.port ? ':' + sc.port : '' }}</td>
               <td>{{ sc.tokenConfigured ? t('securityCenter.scannerTokenConfigured') : t('securityCenter.scannerTokenNone') }}</td>
               <td>{{ sc.source === 'appstore' ? t('securityCenter.scannerSourceAppstore') : t('securityCenter.scannerSourceManual') }}</td>
+              <td>
+                <template v-if="sc.kind === 'safeline'">
+                  <span class="hint">{{ t('securityCenter.libConsoleManaged') }}</span>
+                </template>
+                <template v-else>
+                  <div class="hint" :title="libInfo[sc.id]?.note">{{ libInfo[sc.id]?.updatedAt ? fmtTime(libInfo[sc.id]!.updatedAt) : '—' }}</div>
+                </template>
+              </td>
               <td class="row-actions">
+                <AppButton v-if="sc.kind !== 'safeline'" variant="default" :loading="libUpdating === sc.id" @click="libUpdate(sc)">{{ t('securityCenter.libUpdateBtn') }}</AppButton>
                 <AppButton variant="default" :loading="testingId === sc.id" @click="testOne(sc.id)">{{ t('securityCenter.scannerTest') }}</AppButton>
                 <AppButton variant="danger" @click="removeScanner(sc)">{{ t('securityCenter.scannerDelete') }}</AppButton>
               </td>

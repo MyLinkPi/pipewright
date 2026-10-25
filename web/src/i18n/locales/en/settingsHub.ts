@@ -19,5 +19,6 @@ export default {
 
   navRegistry: 'Registry',
   navDiagnosisStats: 'Diagnosis Feedback',
-  navSystem: 'System',
+
+  navBackup: 'Backup & Restore',  navSystem: 'System',
 }

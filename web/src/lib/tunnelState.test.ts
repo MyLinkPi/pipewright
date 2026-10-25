@@ -7,6 +7,7 @@ import {
   tunnelStateMeta,
   tunnelModeMeta,
   tunnelBindLabel,
+  tunnelDestLabel,
   tunnelTargetLabel,
   tunnelUptimeLabel,
   tunnelActionsFor,
@@ -34,19 +35,26 @@ describe('tunnelStateMeta', () => {
 })
 
 describe('tunnelModeMeta', () => {
-  it('三模式映射 ssh 旗子', () => {
+  it('四模式映射 ssh 旗子', () => {
     expect(tunnelModeMeta('local').flag).toBe('-L')
     expect(tunnelModeMeta('remote').flag).toBe('-R')
     expect(tunnelModeMeta('dynamic').flag).toBe('-D')
+    expect(tunnelModeMeta('vpn').flag).toBe('-w')
     expect(tunnelModeMeta('dynamic').label).toBe('动态')
+    expect(tunnelModeMeta('vpn').label).toBe('VPN')
   })
 })
 
-describe('tunnelBindLabel', () => {
+describe('tunnelBindLabel / tunnelDestLabel', () => {
   it('bind_port>0 原样;0 用实际分配端口', () => {
-    expect(tunnelBindLabel({ bindHost: '127.0.0.1', bindPort: 8080, actualPort: 0 })).toBe('127.0.0.1:8080')
-    expect(tunnelBindLabel({ bindHost: '127.0.0.1', bindPort: 0, actualPort: 54321 })).toBe('127.0.0.1:54321')
-    expect(tunnelBindLabel({ bindHost: '0.0.0.0', bindPort: 0, actualPort: 0 })).toBe('0.0.0.0:0')
+    expect(tunnelBindLabel({ mode: 'local', bindHost: '127.0.0.1', bindPort: 8080, actualPort: 0 })).toBe('127.0.0.1:8080')
+    expect(tunnelBindLabel({ mode: 'local', bindHost: '127.0.0.1', bindPort: 0, actualPort: 54321 })).toBe('127.0.0.1:54321')
+    expect(tunnelBindLabel({ mode: 'local', bindHost: '0.0.0.0', bindPort: 0, actualPort: 0 })).toBe('0.0.0.0:0')
+  })
+  it('vpn 模式展示 IP + tun 序号', () => {
+    expect(tunnelBindLabel({ mode: 'vpn', bindHost: '10.255.0.2', bindPort: 0, actualPort: 0 })).toBe('10.255.0.2(tun0)')
+    expect(tunnelDestLabel({ mode: 'vpn', destHost: '10.255.0.1', destPort: 1 })).toBe('10.255.0.1(tun1)')
+    expect(tunnelDestLabel({ mode: 'local', destHost: 'db', destPort: 5432 })).toBe('db:5432')
   })
 })
 

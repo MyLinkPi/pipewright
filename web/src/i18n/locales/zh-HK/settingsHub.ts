@@ -19,5 +19,6 @@ export default {
 
   navRegistry: '鏡像倉庫',
   navDiagnosisStats: '診斷回饋',
-  navSystem: '系統',
+
+  navBackup: '備份復原',  navSystem: '系統',
 }

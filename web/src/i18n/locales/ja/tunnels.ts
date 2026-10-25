@@ -124,6 +124,19 @@ export default {
   deleteDone: 'トンネル {name} を削除しました',
   errDelete: '削除に失敗しました。後でお試しください',
 
+  // ─── VPN(-w)───
+  modeVpn: 'VPN',
+  vpnWarn: '非推奨:VPN(-w)トンネルは Linux コントロールノード(root/CAP_NET_ADMIN 必須)、対象ホスト sshd の PermitTunnel 有効化(既定は無効)、手動のアドレス設計が必要で、コンテナ再起動で切断されます。クラスタメッシュ(設定 → クラスタ、EasyTier:root 不要・仮想 IP 自動割当・サブネット経路とフェイルオーバー対応)の利用を強く推奨します。',
+  modeHint_vpn: 'VPN トンネル(-w):対象ホストとポイントツーポイントの L3 トンネル(tun デバイス、両端同じ /30)を張ります。非推奨 —— クラスタメッシュ(設定 → クラスタ)を推奨。',
+  fieldLocalIP: 'ローカル側トンネル IP',
+  fieldRemoteIP: 'リモート側トンネル IP',
+  fieldLocalTun: 'ローカル tun 番号',
+  fieldRemoteTun: 'リモート tun 番号',
+  vpnBindHint: '両端の IP は同じ /30(例:10.255.0.1 と 10.255.0.2)、tun 番号 0-255。IP 設定には通常両端で root が必要です。',
+  errVpnIP: '有効な IPv4 アドレスを指定してください',
+  errVpnSameSubnet: '両端の IP は同じ /30 サブネットである必要があります',
+  errVpnTunIdx: 'tun 番号は 0-255 で指定してください',
+
   // ─── ログ ───
   logsTitle: 'トンネルログ · {name}',
   close: '閉じる',

@@ -25,6 +25,8 @@ const h = vi.hoisted(() => ({
   downloadSecurityReport: vi.fn(),
   explainFinding: vi.fn(),
   getWafOverview: vi.fn(),
+  getScannerLib: vi.fn(),
+  updateScannerLib: vi.fn(),
   toast: { success: vi.fn(), error: vi.fn(), info: vi.fn(), warn: vi.fn() },
   confirmOpen: vi.fn(),
 }))
@@ -45,6 +47,8 @@ vi.mock('../api/security', () => ({
   downloadSecurityReport: (...a: unknown[]) => h.downloadSecurityReport(...a),
   explainFinding: (...a: unknown[]) => h.explainFinding(...a),
   getWafOverview: (...a: unknown[]) => h.getWafOverview(...a),
+  getScannerLib: (...a: unknown[]) => h.getScannerLib(...a),
+  updateScannerLib: (...a: unknown[]) => h.updateScannerLib(...a),
 }))
 vi.mock('../composables/useToast', () => ({
   useToast: () => ({ ...h.toast, toasts: { value: [] }, dismiss: vi.fn(), clear: vi.fn() }),
@@ -84,6 +88,8 @@ beforeEach(() => {
   h.getSchedule.mockResolvedValue({ enabled: false, expression: '0 3 * * *', scanTypes: ['trivy'], updatedAt: '' })
   h.listScanners.mockResolvedValue({ items: [] })
   h.getWafOverview.mockResolvedValue({ items: [] })
+  h.getScannerLib.mockResolvedValue({ kind: 'trivy-server', updatedAt: '2026-10-24T10:00:00Z', note: 'x' })
+  h.updateScannerLib.mockResolvedValue({ kind: 'trivy-server', note: '已重启容器' })
 })
 
 const overview2 = mkOverview()
@@ -280,8 +286,33 @@ describe('Security WAF 防护态势', () => {
 
   it('无 WAF 实例时隐藏防护态势卡', async () => {
     h.getWafOverview.mockResolvedValue({ items: [] })
+  h.getScannerLib.mockResolvedValue({ kind: 'trivy-server', updatedAt: '2026-10-24T10:00:00Z', note: 'x' })
+  h.updateScannerLib.mockResolvedValue({ kind: 'trivy-server', note: '已重启容器' })
     const w = mount(Security)
     await flushPromises()
     expect(w.text()).not.toContain('防护态势')
+  })
+})
+
+describe('Security 扫描器面板', () => {
+  it('标题不带 Trivy Server 后缀;规则库时间与更新按钮随实例渲染;safeline 显示控制台管理', async () => {
+    h.listScanners.mockResolvedValue({
+      items: [
+        { id: 'sc1', kind: 'trivy-server', name: 'TS', host: '10.0.0.1', port: 4954, tokenConfigured: true, source: 'appstore', createdAt: '', updatedAt: '' },
+        { id: 'sc2', kind: 'safeline', name: 'WAF', host: '10.0.0.2', port: 9443, tokenConfigured: false, source: 'appstore', createdAt: '', updatedAt: '' },
+      ],
+    })
+    const w = mount(Security)
+    await flushPromises()
+
+    expect(w.text()).toContain('扫描器与安全服务')
+    expect(w.text()).not.toContain('Trivy Server)')
+    expect(w.text()).toContain('规则库')
+    expect(w.text()).toContain('由控制台自管理')
+
+    await w.findAll('button').find((b) => b.text().includes('更新'))!.trigger('click')
+    await flushPromises()
+    expect(h.updateScannerLib).toHaveBeenCalledWith('sc1')
+    expect(h.toast.success).toHaveBeenCalled()
   })
 })

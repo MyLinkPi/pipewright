@@ -124,6 +124,19 @@ export default {
   deleteDone: 'Túnel {name} eliminado',
   errDelete: 'Eliminación fallida; reintente más tarde',
 
+  // ─── VPN (-w) ───
+  modeVpn: 'VPN',
+  vpnWarn: 'No recomendado: los túneles VPN (-w) requieren un nodo de control Linux con root/CAP_NET_ADMIN, PermitTunnel activado en el sshd de destino (desactivado por omisión) y direccionamiento punto a punto planificado a mano; también se cortan al reiniciar el contenedor. Prefiera la malla de clúster: Ajustes → Clúster (EasyTier: sin root, IP virtuales automáticas, enrutamiento de subred y conmutación por error).',
+  modeHint_vpn: 'Túnel VPN (-w): un túnel L3 punto a punto hacia el host de destino (dispositivos tun, ambos extremos en el mismo /30). No recomendado — prefiera la malla de clúster (Ajustes → Clúster).',
+  fieldLocalIP: 'IP local del túnel',
+  fieldRemoteIP: 'IP remota del túnel',
+  fieldLocalTun: 'Índice tun local',
+  fieldRemoteTun: 'Índice tun remoto',
+  vpnBindHint: 'Ambas IP deben compartir un /30 (p. ej. 10.255.0.1 y 10.255.0.2); índices tun 0-255; configurar las IP normalmente requiere root en ambos extremos.',
+  errVpnIP: 'Debe ser una dirección IPv4 válida',
+  errVpnSameSubnet: 'Ambas IP deben compartir la subred /30',
+  errVpnTunIdx: 'El índice tun debe ser 0-255',
+
   // ─── Logs ───
   logsTitle: 'Logs del túnel · {name}',
   close: 'Cerrar',
