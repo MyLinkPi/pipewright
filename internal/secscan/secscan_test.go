@@ -500,6 +500,40 @@ func TestTrivyDBRepositoryInjection(t *testing.T) {
 
 // ---- trivy 主机包代扫(目标机无 docker,经 Trivy Server 宿主机) ----
 
+// TestRunLogsLegacyArtifact:执行日志功能之前落的 artifact 没有 logs 键;RunLogs 若把
+// 解析出的 nil 原样覆盖,响应会是 "logs":null——前端模板直接访问 logs.length,
+// 渲染直接崩成白屏。旧数据必须回空日志。
+func TestRunLogsLegacyArtifact(t *testing.T) {
+	storetest.ForEachDialect(t, func(t *testing.T, st *store.Store) {
+		runner := &fakeRunner{
+			servers: []ServerInfo{{ID: "s1", Name: "机器A", Host: "10.0.0.1"}},
+			fn: func(cmd []string) (*target.ExecResult, error) {
+				return &target.ExecResult{ExitCode: 0, Stdout: "{}"}, nil
+			},
+		}
+		arts := newFakeArtifacts()
+		svc := New(st.DB, WithVault(fakeVault{}), WithRunner(runner), WithArtifacts(arts))
+		ctx := context.Background()
+		run, err := svc.StartScan(ctx, ScanInput{ServerID: "s1", ScanType: ScanTypeTrivy})
+		if err != nil {
+			t.Fatal(err)
+		}
+		done := waitRunDone(t, svc, run.ID)
+		if done.ArtifactKey == "" {
+			t.Fatalf("应有 artifact:%+v", done)
+		}
+		// 用旧版产物(无 logs 键)原位覆盖:模拟执行日志功能上线前落的历史报告。
+		arts.m[done.ArtifactKey] = []byte(`{"scanType":"trivy","generatedAt":"2026-01-01T00:00:00Z","host":"10.0.0.1","serverName":"机器A","findings":[]}`)
+		view, err := svc.RunLogs(ctx, run.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if view.Logs == nil || len(view.Logs) != 0 {
+			t.Fatalf("旧产物应回空日志而非 null(前端白屏防线):%+v", view.Logs)
+		}
+	})
+}
+
 func TestTrivyWithoutDockerViaServerHost(t *testing.T) {
 	storetest.ForEachDialect(t, func(t *testing.T, st *store.Store) {
 		runner := &fakeRunner{
