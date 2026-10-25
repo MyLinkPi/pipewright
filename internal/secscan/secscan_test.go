@@ -439,7 +439,9 @@ func TestTrivyDBRepositoryInjection(t *testing.T) {
 		// 未配置时不注入(默认命令形状不变)。
 		plain := &fakeRunner{
 			servers: runner.servers,
-			fn:      func(cmd []string) (*target.ExecResult, error) { return &target.ExecResult{ExitCode: 0, Stdout: "{}"}, nil },
+			fn: func(cmd []string) (*target.ExecResult, error) {
+				return &target.ExecResult{ExitCode: 0, Stdout: "{}"}, nil
+			},
 		}
 		svc2 := New(st.DB, WithVault(fakeVault{}), WithRunner(plain), WithArtifacts(newFakeArtifacts()))
 		if _, err := svc2.StartScan(context.Background(), ScanInput{ServerID: "s1", ScanType: ScanTypeTrivy}); err != nil {
@@ -522,7 +524,7 @@ func TestTrivyWithoutDockerViaServerHost(t *testing.T) {
 		joined := strings.Join(cmd, " ")
 		if !strings.Contains(joined, "TRIVY_SERVER=http://10.0.0.2:4954") ||
 			!strings.Contains(joined, "TRIVY_TOKEN=tok") ||
-			!strings.Contains(joined, "tar -xf - -C /scan && trivy rootfs") {
+			!strings.Contains(joined, "tar -xf - -C /scan && ls -laR /scan >&2 && trivy rootfs") {
 			t.Fatalf("代扫命令内容不符:%v", cmd)
 		}
 		if len(runner.streams) == 0 || runner.streams[0][0] != "tar" {
@@ -532,6 +534,22 @@ func TestTrivyWithoutDockerViaServerHost(t *testing.T) {
 		page, err := svc.RunFindings(ctx, run.ID, FindingFilter{})
 		if err != nil || page.Total != 3 {
 			t.Fatalf("代扫明细不符:%v %+v", err, page)
+		}
+		// 执行日志落 artifact:本地尝试 + 探测/中继/代扫都可见,查看日志可诊断。
+		logsView, err := svc.RunLogs(ctx, run.ID)
+		if err != nil || len(logsView.Logs) < 4 {
+			t.Fatalf("代扫日志不符:%v %+v", err, logsView)
+		}
+		steps := make(map[string]StepLog, len(logsView.Logs))
+		for _, l := range logsView.Logs {
+			steps[l.Step] = l
+		}
+		relay, ok := steps["元数据 tar 中继(目标机 → 面板 → Server 宿主机)"]
+		if !ok || relay.Stdout != "共中继 7 字节" {
+			t.Fatalf("中继日志不符:%+v", relay)
+		}
+		if _, ok := steps["代扫容器(解包 + trivy rootfs /scan)"]; !ok {
+			t.Fatalf("缺代扫容器日志:%+v", logsView.Logs)
 		}
 	})
 }
