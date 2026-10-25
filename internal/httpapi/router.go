@@ -785,8 +785,9 @@ func New(webFS fs.FS, authn auth.Authenticator, opts ...Option) http.Handler {
 		ar.Get("/version/check", makeCheckUpdateHandler(updateChecker, srcUpdater))
 		// 一键自动更新:鉴权 + CSRF(写操作);source 后台重建管线,binary 自替换+重启,docker 返回升级命令。
 		ar.Post("/version/update", makeSelfUpdateHandler(updateChecker, srcUpdater, updateInflight, o.reexecGuard))
-		// 源码升级进度轮询(鉴权只读):后台管线步骤/日志/完成态。
-		ar.Get("/version/update/status", makeUpdateStatusHandler(srcUpdater))
+		// 升级进度轮询(鉴权只读):source 后台管线步骤/日志/完成态;binary 更新进行中报告 running,
+		// 供页面刷新后恢复升级进度区。
+		ar.Get("/version/update/status", makeUpdateStatusHandler(srcUpdater, updateInflight))
 
 		// 审计查询(Story 1.4):只读 + 认证保护 + 分页 + 过滤。
 		ar.Get("/audit", makeListAuditHandler(aud))

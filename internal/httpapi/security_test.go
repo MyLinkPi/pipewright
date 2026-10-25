@@ -53,6 +53,14 @@ func (r *secRunnerFake) Exec(ctx context.Context, serverID string, cmd []string)
 	}
 }
 
+func (r *secRunnerFake) ExecStream(context.Context, string, []string) (io.ReadCloser, error) {
+	return nil, io.EOF
+}
+
+func (r *secRunnerFake) ExecWithStdin(context.Context, string, []string, io.Reader) (*target.ExecResult, error) {
+	return nil, io.EOF
+}
+
 // secVaultFake:可逆假密封。
 type secVaultFake struct{}
 
