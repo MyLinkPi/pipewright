@@ -2,8 +2,8 @@ package certdeploy
 
 import (
 	"context"
-	"errors"
 	"database/sql"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -431,7 +431,6 @@ func TestPruneHistory(t *testing.T) {
 }
 
 func strPtr(s string) *string { return &s }
-
 
 // ---------- safeline 目标(经 WAF API 推证书) ----------
 

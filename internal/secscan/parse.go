@@ -98,7 +98,7 @@ type trivyReport struct {
 }
 
 // TrivyFindings 解析一次 trivy 扫描的 JSON 输出;source 是这批 finding 的来源标记
-//("host" 或 "image:<镜像引用>")。
+// ("host" 或 "image:<镜像引用>")。
 func TrivyFindings(report []byte, source string) ([]Finding, error) {
 	var tr trivyReport
 	if err := json.Unmarshal(report, &tr); err != nil {

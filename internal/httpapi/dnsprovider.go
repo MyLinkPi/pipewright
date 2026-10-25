@@ -415,4 +415,3 @@ func makeVerifyDNSProviderHandler(svc dnsprovider.Service, rec audit.Recorder) h
 		writeJSON(w, http.StatusOK, map[string]any{"ok": allOK, "zones": out})
 	}
 }
-

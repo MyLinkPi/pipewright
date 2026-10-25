@@ -19,12 +19,12 @@ type certDeployDTO struct {
 	CertID         string `json:"certId"`
 	ServerID       string `json:"serverId"`
 	Name           string `json:"name"`
-	Kind           string `json:"kind"`           // ssh | safeline
-	WafInstanceID  string `json:"wafInstanceId"`  // safeline:安全中心 WAF 实例
-	CertName       string `json:"certName"`       // safeline:雷池侧证书名
-	CertPath       string `json:"certPath"`       // ssh
-	KeyPath        string `json:"keyPath"`        // ssh
-	PostCommand    string `json:"postCommand"`    // ssh
+	Kind           string `json:"kind"`          // ssh | safeline
+	WafInstanceID  string `json:"wafInstanceId"` // safeline:安全中心 WAF 实例
+	CertName       string `json:"certName"`      // safeline:雷池侧证书名
+	CertPath       string `json:"certPath"`      // ssh
+	KeyPath        string `json:"keyPath"`       // ssh
+	PostCommand    string `json:"postCommand"`   // ssh
 	Enabled        bool   `json:"enabled"`
 	Status         string `json:"status"` // ''|running|success|failed
 	StatusDetail   string `json:"statusDetail"`

@@ -3,9 +3,9 @@
 // 三种隧道语义(单隧道单转发,等价 ssh -N 单参数):
 //   - local(-L)  :本机监听 bind,连接经远端 sshd 转发到 dest(远端侧可达地址);
 //   - remote(-R) :远端 sshd 监听 bind(需 GatewayPorts 才能 0.0.0.0),连接回传后
-//                  在本机连 dest(本机侧可达地址);
+//     在本机连 dest(本机侧可达地址);
 //   - dynamic(-D):本机监听 bind 充当 SOCKS5 入口(无认证、仅 CONNECT),目标地址
-//                  经远端 sshd 解析并连接(域名由远端解析,同 ssh -D)。
+//     经远端 sshd 解析并连接(域名由远端解析,同 ssh -D)。
 //
 // SSH 目标二选一:绑定已登记服务器(server_id,沿用其跳板链)或直连任意主机
 // (host/port/user + vault 凭据引用,支持不在 servers 表里的机器)。
@@ -427,7 +427,7 @@ func (s *Service) StartLoop(ctx context.Context) {
 }
 
 // reconcile 对齐「配置期望」与「运行中的 helper」:停用即停;启用无活 helper 即拉
-//(含陈旧状态文件清理);运行中指纹变化即重启。单拍内逐隧道决策,互不阻断。
+// (含陈旧状态文件清理);运行中指纹变化即重启。单拍内逐隧道决策,互不阻断。
 func (s *Service) reconcile(ctx context.Context) {
 	tunnels, err := s.list(ctx)
 	if err != nil {

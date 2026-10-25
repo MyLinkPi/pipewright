@@ -223,14 +223,14 @@ func makeSaveAISettingsHandler(svc ai.Service) http.HandlerFunc {
 		}
 
 		cfg, err := svc.Save(r.Context(), ai.SaveInput{
-			Provider:   req.Provider,
-			BaseURL:    req.BaseURL,
-			Model:      req.Model,
-			APIKey:     req.APIKey,
-			Budget:     ai.Budget{MonthlyTokenLimit: req.Budget.MonthlyTokenLimit},
-			Context:    fromAIContextDTO(req.Context),
-			Enabled:    req.Enabled,
-			WebEnabled: req.Web.Enabled,
+			Provider:    req.Provider,
+			BaseURL:     req.BaseURL,
+			Model:       req.Model,
+			APIKey:      req.APIKey,
+			Budget:      ai.Budget{MonthlyTokenLimit: req.Budget.MonthlyTokenLimit},
+			Context:     fromAIContextDTO(req.Context),
+			Enabled:     req.Enabled,
+			WebEnabled:  req.Web.Enabled,
 			WebProvider: req.Web.Provider,
 			WebBaseURL:  req.Web.BaseURL,
 			WebAPIKey:   req.Web.APIKey,

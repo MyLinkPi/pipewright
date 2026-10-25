@@ -266,7 +266,6 @@ func TestAllAppInstancesLegacyNoSidecar(t *testing.T) {
 	}
 }
 
-
 // ---- 实例版本显示(运行镜像 tag) ----
 
 func TestImagesByProjectAndTag(t *testing.T) {
@@ -283,9 +282,9 @@ func TestImagesByProjectAndTag(t *testing.T) {
 func TestCollectAppInstancesVersion(t *testing.T) {
 	tpl := appstore.Template{ID: "t-mysql", Name: "mysql", DisplayName: "MySQL"}
 	tf := &instTargetFake{machines: []*instMachine{{
-		srv:     &target.Server{ID: "s1", Name: "机A"},
-		findOut: "/opt/pipewright/stacks/mysql/docker-compose.yml\n/opt/pipewright/stacks/mysql/.appstore-params.json\n",
-		psOut:   "mysql|||mysql:8.4\ngitea|||gitea/gitea:28.1.0\n",
+		srv:      &target.Server{ID: "s1", Name: "机A"},
+		findOut:  "/opt/pipewright/stacks/mysql/docker-compose.yml\n/opt/pipewright/stacks/mysql/.appstore-params.json\n",
+		psOut:    "mysql|||mysql:8.4\ngitea|||gitea/gitea:28.1.0\n",
 		sidecars: map[string]string{"mysql": mustSidecar(t, appDeploySidecar{TemplateID: "t-mysql"})},
 	}}}
 	af := &instAppFake{tpls: []appstore.Template{tpl}}
