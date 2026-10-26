@@ -56,9 +56,29 @@ type pipelineStepDTO struct {
 }
 
 type settingsDTO struct {
-	Build     buildConfigDTO    `json:"build"`
-	Steps     []pipelineStepDTO `json:"steps"`
-	UpdatedAt string            `json:"updatedAt"`
+	Build buildConfigDTO    `json:"build"`
+	Steps []pipelineStepDTO `json:"steps"`
+	// PacVars 是「流水线即代码」变量:仓库 YAML 声明(defs,只读,由预览拉取校验同步)+
+	// 平台侧填写值(values,secret 项仅 credentialId + maskedValue)。
+	PacVars   *pacVarsDTO `json:"pacVars,omitempty"`
+	UpdatedAt string      `json:"updatedAt"`
+}
+
+// pacVarDefDTO 是一条仓库声明的变量定义(纯元信息,无值)。
+type pacVarDefDTO struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Required    bool   `json:"required"`
+	Secret      bool   `json:"secret"`
+	Default     string `json:"default"`
+}
+
+type pacVarsDTO struct {
+	Defs     []pacVarDefDTO `json:"defs"`
+	Values   []buildVarDTO  `json:"values"`
+	Ref      string         `json:"ref,omitempty"`
+	File     string         `json:"file,omitempty"`
+	SyncedAt string         `json:"syncedAt,omitempty"`
 }
 
 // toBuildVarDTOs 把领域变量转 DTO(secret 项只暴露 credentialId + maskedValue,绝无明文)。
@@ -110,9 +130,23 @@ func toSettingsDTO(st *pipeline.Settings) settingsDTO {
 		})
 	}
 
+	pv := &pacVarsDTO{Defs: make([]pacVarDefDTO, 0, len(st.PacVars.Defs)), Values: toBuildVarDTOs(st.PacVars.Values)}
+	for _, d := range st.PacVars.Defs {
+		pv.Defs = append(pv.Defs, pacVarDefDTO{
+			Name: d.Name, Description: d.Description,
+			Required: d.Required, Secret: d.Secret, Default: d.Default,
+		})
+	}
+	pv.Ref = st.PacVars.Ref
+	pv.File = st.PacVars.File
+	if !st.PacVars.SyncedAt.IsZero() {
+		pv.SyncedAt = st.PacVars.SyncedAt.UTC().Format(time.RFC3339)
+	}
+
 	return settingsDTO{
 		Build:     build,
 		Steps:     steps,
+		PacVars:   pv,
 		UpdatedAt: st.UpdatedAt.UTC().Format(time.RFC3339),
 	}
 }
@@ -156,7 +190,8 @@ func makeGetPipelineSettingsHandler(svc pipeline.SettingsService) http.HandlerFu
 }
 
 // makeSavePipelineSettingsHandler 返回 PUT /api/projects/{id}/pipeline/settings handler。
-// 收 {build, steps};secret 项只传 {key,secret:true,credentialId}(不传明文/掩码)。
+// 收 {build, steps, pacVars?};secret 项只传 {key,secret:true,credentialId}(不传明文/掩码)。
+// pacVars 缺省 = 保留现值(兼容不带该字段的旧客户端);显式传时只收 values,defs 由仓库同步维护。
 // 服务端规范化 → 校验 → 持久化(只存引用,绝无明文 secret)→ 回读返回(secret 回掩码)。
 // 校验失败 → 422 定位到项;请求体限 256KB。
 func makeSavePipelineSettingsHandler(svc pipeline.SettingsService) http.HandlerFunc {
@@ -194,6 +229,10 @@ func makeSavePipelineSettingsHandler(svc pipeline.SettingsService) http.HandlerF
 				Env      []reqVar `json:"env"`
 				WorkDir  string   `json:"workDir"`
 			} `json:"steps"`
+			// PacVars 缺省(nil)= 保留现值;显式传 {values:[...]} 才覆盖(只收值,声明只读)。
+			PacVars *struct {
+				Values []reqVar `json:"values"`
+			} `json:"pacVars"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, "bad_request", "请求体格式错误")
@@ -226,7 +265,12 @@ func makeSavePipelineSettingsHandler(svc pipeline.SettingsService) http.HandlerF
 			})
 		}
 
-		st, err := svc.Save(r.Context(), id, pipeline.SettingsInput{Build: build, Steps: steps})
+		var pacVars *pipeline.PacVarsInput
+		if req.PacVars != nil {
+			pacVars = &pipeline.PacVarsInput{Values: toDomainVars(req.PacVars.Values)}
+		}
+
+		st, err := svc.Save(r.Context(), id, pipeline.SettingsInput{Build: build, Steps: steps, PacVars: pacVars})
 		if err != nil {
 			writeSettingsError(w, err)
 			return

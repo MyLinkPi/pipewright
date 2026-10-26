@@ -1374,7 +1374,8 @@ func envDurationSeconds(name string, def time.Duration) time.Duration {
 // ── 「流水线即代码」运行时覆盖适配器(FR-8-12)──────────────────────────────────
 // 把既有领域服务桥接到 pacloader 的小接口,使 pacloader 不反向 import project/vault/httpapi。
 
-// pacProjectLookup 把 project.Service 适配为 pacloader.ProjectLookup(取仓库/凭据/默认分支)。
+// pacProjectLookup 把 project.Service 适配为 pacloader.ProjectLookup(取仓库/凭据/默认分支/
+// pac_file 指定的流水线文件路径)。
 type pacProjectLookup struct{ svc project.Service }
 
 func (p pacProjectLookup) Lookup(ctx context.Context, projectID string) (pacloader.ProjectInfo, error) {
@@ -1387,6 +1388,7 @@ func (p pacProjectLookup) Lookup(ctx context.Context, projectID string) (pacload
 		CredentialID:  proj.CredentialID,
 		DefaultBranch: proj.DefaultBranch,
 		PacEnabled:    proj.PacEnabled,
+		PacFile:       proj.PacFile,
 	}, nil
 }
 

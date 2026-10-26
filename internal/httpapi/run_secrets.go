@@ -101,6 +101,13 @@ func (s *RunSecretSource) registerProjectSecrets(ctx context.Context, m *mask.Ma
 					}
 				}
 			}
+			// ④ 流水线即代码变量(仓库 YAML 声明):secret 值在执行瞬间被替换进 job config
+			// (${NAME} 占位符),明文可能随配置回显进日志——必须登记脱敏。
+			for _, v := range st.PacVars.Values {
+				if v.Secret {
+					reveal(v.CredentialID)
+				}
+			}
 		}
 	}
 }

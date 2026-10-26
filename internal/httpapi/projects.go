@@ -48,13 +48,15 @@ type projectLastRunReader interface {
 // serviceRegs 为项目已绑定的「服务注册」条目(卡片展示子集),按流水线部署节点 job.config
 // 的 regServiceId(legacy gatewayService 按服务名兜底)实时解析;无绑定/无流水线 → []。
 type projectDTO struct {
-	ID              string                 `json:"id"`
-	Name            string                 `json:"name"`
-	RepoURL         string                 `json:"repoUrl"`
-	DefaultBranch   string                 `json:"defaultBranch"`
-	CredentialID    string                 `json:"credentialId"`
-	CredentialName  string                 `json:"credentialName"`
-	PacEnabled      bool                   `json:"pacEnabled"`
+	ID             string `json:"id"`
+	Name           string `json:"name"`
+	RepoURL        string `json:"repoUrl"`
+	DefaultBranch  string `json:"defaultBranch"`
+	CredentialID   string `json:"credentialId"`
+	CredentialName string `json:"credentialName"`
+	PacEnabled     bool   `json:"pacEnabled"`
+	// PacFile 是「流水线即代码」文件路径(空 = 默认 .pipewright.yml)。
+	PacFile         string                 `json:"pacFile"`
 	PRStatusEnabled bool                   `json:"prStatusEnabled"`
 	LastRunStatus   *string                `json:"lastRunStatus"`
 	LastRunAt       *string                `json:"lastRunAt"`
@@ -74,6 +76,7 @@ func toProjectDTO(p *project.Project) projectDTO {
 		CredentialID:    p.CredentialID,
 		CredentialName:  p.CredentialName,
 		PacEnabled:      p.PacEnabled,
+		PacFile:         p.PacFile,
 		PRStatusEnabled: p.PRStatusEnabled,
 		ServiceRegs:     []projectServiceRegDTO{}, // 默认空;由调用方按绑定实时覆盖
 		CreatedAt:       p.CreatedAt.UTC().Format(time.RFC3339),
@@ -206,6 +209,8 @@ func writeProjectError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadRequest, "invalid_project", "仓库地址不能为空")
 	case errors.Is(err, project.ErrEmptyCredentialID):
 		writeError(w, http.StatusBadRequest, "invalid_project", "请选择仓库凭据")
+	case errors.Is(err, project.ErrInvalidPacFile):
+		writeError(w, http.StatusUnprocessableEntity, "invalid_pac_file", err.Error())
 	default:
 		// 内部错误:不泄漏细节。
 		writeError(w, http.StatusInternalServerError, "internal", "服务器内部错误")
@@ -334,6 +339,7 @@ func makeUpdateProjectHandler(svc project.Service, aud audit.Recorder, pipe proj
 			DefaultBranch   *string `json:"defaultBranch"`
 			CredentialID    *string `json:"credentialId"`
 			PacEnabled      *bool   `json:"pacEnabled"`
+			PacFile         *string `json:"pacFile"`
 			PRStatusEnabled *bool   `json:"prStatusEnabled"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -345,6 +351,7 @@ func makeUpdateProjectHandler(svc project.Service, aud audit.Recorder, pipe proj
 			DefaultBranch:   req.DefaultBranch,
 			CredentialID:    req.CredentialID,
 			PacEnabled:      req.PacEnabled,
+			PacFile:         req.PacFile,
 			PRStatusEnabled: req.PRStatusEnabled,
 		})
 		if err != nil {

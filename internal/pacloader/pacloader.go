@@ -26,11 +26,13 @@ import (
 
 	"github.com/huangchengsir/pipewright/internal/pipeline"
 	"github.com/huangchengsir/pipewright/internal/pipelineyaml"
+	"github.com/huangchengsir/pipewright/internal/project"
 	"github.com/huangchengsir/pipewright/internal/vault"
 )
 
-// DefaultFile 是仓库根「流水线即代码」文件名。
-const DefaultFile = ".pipewright.yml"
+// DefaultFile 是仓库根「流水线即代码」默认文件名(与 project.DefaultPacFile 同源;
+// 保留导出别名兼容既有引用)。项目经 projects.pac_file 可指定其它仓库内相对路径。
+const DefaultFile = project.DefaultPacFile
 
 // 回退原因枚举(配置来源可见性 · Slice 2):tryOverride 未命中覆盖时,据此分类「为何回退库内配置」。
 const (
@@ -56,7 +58,7 @@ type SpecSource struct {
 	FallbackReason string
 }
 
-// ProjectInfo 是覆盖装饰器拉取 `.pipewright.yml` 所需的项目最小视图。
+// ProjectInfo 是覆盖装饰器拉取流水线文件所需的项目最小视图。
 type ProjectInfo struct {
 	RepoURL       string
 	CredentialID  string
@@ -64,6 +66,9 @@ type ProjectInfo struct {
 	// PacEnabled 是该项目的「流水线即代码」开关:false 时装饰器不尝试覆盖,直接回退库内配置
 	// (除非构造时 globalOverride=true 全局强开,见 New)。
 	PacEnabled bool
+	// PacFile 是该项目指定的「流水线即代码」文件路径(可指定文件,不写死 .pipewright.yml):
+	// 空 = 默认 DefaultFile;非空 = 从该仓库内相对路径拉取(入口已经 project.NormalizePacFile 校验)。
+	PacFile string
 }
 
 // ProjectLookup 按 projectID 取仓库地址/凭据/默认分支(由 project.Service 适配)。
@@ -100,37 +105,40 @@ func New(inner SpecLoader, projects ProjectLookup, tokens GitAuthRevealer, blobs
 	return &Loader{inner: inner, projects: projects, tokens: tokens, blobs: blobs, globalOverride: globalOverride}
 }
 
-// Get 实现 dagrun.SpecLoader:尝试用**运行分支**的 `.pipewright.yml` 覆盖(分支为空时退化为
-// 默认分支);任何问题都回退到 inner(库内配置)。绝不把 YAML 问题冒泡给调用方。
+// Get 实现 dagrun.SpecLoader:尝试用**运行分支**的仓库流水线文件覆盖(分支为空时退化为
+// 默认分支;文件取项目 pac_file 指定路径,空则默认 .pipewright.yml);任何问题都回退到
+// inner(库内配置)。绝不把 YAML 问题冒泡给调用方。
 func (l *Loader) Get(ctx context.Context, projectID, branch string) (*pipeline.Config, SpecSource, error) {
-	cfg, refOrReason, ok := l.tryOverride(ctx, projectID, branch)
+	cfg, ref, file, reason, ok := l.tryOverride(ctx, projectID, branch)
 	if ok {
-		return cfg, SpecSource{FromRepo: true, Ref: refOrReason, File: DefaultFile}, nil
+		return cfg, SpecSource{FromRepo: true, Ref: ref, File: file}, nil
 	}
 	inner, err := l.inner.Get(ctx, projectID)
-	return inner, SpecSource{FromRepo: false, FallbackReason: refOrReason}, err
+	return inner, SpecSource{FromRepo: false, FallbackReason: reason}, err
 }
 
-// tryOverride 尝试从运行分支(空则默认分支)拉取并解析 `.pipewright.yml`;成功返回 (cfg,ref,true)。
-// 任何环节失败返回 (nil,reason,false):reason 为回退原因枚举(配置来源可见性 · Slice 2),
-// 调用方据此填 SpecSource.FallbackReason。失败只记 debug 原因(无密钥)。
-func (l *Loader) tryOverride(ctx context.Context, projectID, branch string) (cfg *pipeline.Config, refOrReason string, ok bool) {
+// tryOverride 尝试从运行分支(空则默认分支)拉取并解析项目指定的流水线文件;成功返回
+// (cfg, ref, file, "", true)。任何环节失败返回 (nil, "", "", reason, false):reason 为回退
+// 原因枚举(配置来源可见性 · Slice 2),调用方据此填 SpecSource.FallbackReason。失败只记
+// debug 原因(无密钥)。
+func (l *Loader) tryOverride(ctx context.Context, projectID, branch string) (cfg *pipeline.Config, ref, file, reason string, ok bool) {
 	if l.projects == nil || l.blobs == nil {
-		return nil, fallbackLookup, false
+		return nil, "", "", fallbackLookup, false
 	}
 
 	info, err := l.projects.Lookup(ctx, projectID)
 	if err != nil {
 		debugf("项目 %s 查询失败,回退库内配置", projectID)
-		return nil, fallbackLookup, false
+		return nil, "", "", fallbackLookup, false
 	}
 	// 每项目开关:未开启「流水线即代码」且非全局强开 → 不覆盖,用库内配置。
 	if !info.PacEnabled && !l.globalOverride {
-		return nil, fallbackDisabled, false
+		return nil, "", "", fallbackDisabled, false
 	}
 	if strings.TrimSpace(info.RepoURL) == "" {
-		return nil, fallbackLookup, false
+		return nil, "", "", fallbackLookup, false
 	}
+	file = project.EffectivePacFile(info.PacFile)
 
 	// 取仓库凭据(进程内取用即弃;取不到不致命 → 空凭据尝试公开仓库)。
 	cred := vault.GitAuth{}
@@ -141,33 +149,33 @@ func (l *Loader) tryOverride(ctx context.Context, projectID, branch string) (cfg
 	}
 
 	// 优先用本次运行分支取 YAML(feature 分支改 YAML 即对该分支生效);分支为空退化为默认分支。
-	ref := strings.TrimSpace(branch)
+	ref = strings.TrimSpace(branch)
 	if ref == "" {
 		ref = info.DefaultBranch
 	}
 
-	content, degraded, ferr := l.blobs.FetchBlob(ctx, info.RepoURL, cred, ref, DefaultFile)
+	content, degraded, ferr := l.blobs.FetchBlob(ctx, info.RepoURL, cred, ref, file)
 	if ferr != nil {
-		// 文件不存在 / 克隆失败 → 回退(正常路径:多数项目没有 .pipewright.yml)。
-		debugf("项目 %s 未读到 %s(回退库内配置)", projectID, DefaultFile)
-		return nil, fallbackNoFile, false
+		// 文件不存在 / 克隆失败 → 回退(正常路径:多数项目没有流水线文件)。
+		debugf("项目 %s 未读到 %s(回退库内配置)", projectID, file)
+		return nil, "", "", fallbackNoFile, false
 	}
 	if degraded {
-		debugf("项目 %s 仓库克隆降级,无法读 %s(回退库内配置)", projectID, DefaultFile)
-		return nil, fallbackDegraded, false
+		debugf("项目 %s 仓库克隆降级,无法读 %s(回退库内配置)", projectID, file)
+		return nil, "", "", fallbackDegraded, false
 	}
 	if strings.TrimSpace(content) == "" {
-		return nil, fallbackEmpty, false
+		return nil, "", "", fallbackEmpty, false
 	}
 
 	parsed, perr := pipelineyaml.Parse([]byte(content))
 	if perr != nil {
 		// YAML 非法 → 回退(绝不让坏 YAML 中断运行)。错误不含密钥但仍只记 debug。
-		debugf("项目 %s 的 %s 解析/校验失败,回退库内配置", projectID, DefaultFile)
-		return nil, fallbackInvalid, false
+		debugf("项目 %s 的 %s 解析/校验失败,回退库内配置", projectID, file)
+		return nil, "", "", fallbackInvalid, false
 	}
-	debugf("项目 %s 命中仓库 %s(分支 %s),用其驱动本次运行", projectID, DefaultFile, ref)
-	return &parsed, ref, true
+	debugf("项目 %s 命中仓库 %s(分支 %s),用其驱动本次运行", projectID, file, ref)
+	return &parsed, ref, file, "", true
 }
 
 // debugf 记录回退原因(诊断用)。绝不打印 token / 仓库 URL 凭据。

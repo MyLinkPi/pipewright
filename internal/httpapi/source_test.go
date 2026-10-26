@@ -16,6 +16,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/huangchengsir/pipewright/internal/auth"
+	"github.com/huangchengsir/pipewright/internal/pipeline"
 	"github.com/huangchengsir/pipewright/internal/project"
 	"github.com/huangchengsir/pipewright/internal/vault"
 )
@@ -91,7 +92,8 @@ func seedSourceProject(t *testing.T, db *sql.DB, repoURL string) string {
 }
 
 // setupSourceServer 构造带 auth + project + 不安全 SourceReader(放行 file://)的测试 server。
-func setupSourceServer(t *testing.T, repoURL string) (*httptest.Server, *http.Client, string, string) {
+// 可选 pacFile 给项目设置 projects.pac_file(可指定「流水线即代码」文件路径;空 = 默认 .pipewright.yml)。
+func setupSourceServer(t *testing.T, repoURL string, pacFile ...string) (*httptest.Server, *http.Client, string, string) {
 	t.Helper()
 	st := testStoreAuth(t)
 	svc := auth.NewService(st.DB, nil)
@@ -101,9 +103,15 @@ func setupSourceServer(t *testing.T, repoURL string) (*httptest.Server, *http.Cl
 	v := vault.New(st.DB, testMasterKey())
 	psvc := project.New(st.DB, v, stubProber{branch: "main"})
 	projID := seedSourceProject(t, st.DB, repoURL)
+	if len(pacFile) > 0 && pacFile[0] != "" {
+		if _, err := st.DB.Exec(`UPDATE projects SET pac_file = ? WHERE id = ?`, pacFile[0], projID); err != nil {
+			t.Fatalf("set pac_file: %v", err)
+		}
+	}
 
 	srv := httptest.NewServer(New(testWebFSAuth(), svc,
-		WithVault(v), WithProjects(psvc), WithSource(newInsecureSourceReader())))
+		WithVault(v), WithProjects(psvc), WithSource(newInsecureSourceReader()),
+		WithPipelineSettings(pipeline.NewSettingsService(st.DB, v))))
 	t.Cleanup(srv.Close)
 
 	client := newTestClient(t)

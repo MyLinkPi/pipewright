@@ -171,12 +171,31 @@ func (b *Builder) RotateImagesWithKeep(ctx context.Context, prefix string, keep 
 	return RotateImages(ctx, b.driver, prefix, keep, onLine)
 }
 
-// removeLocalTagAfterPush 推送成功后回收构建机上的本机 tag(磁盘治理):镜像已在 registry,
-// 构建机无需留存。经 WithImagePushCleanup 可关——注意:现代 Docker(BuildKit)下保留本机
+// removeLocalTagAfterPush 推送成功后回收构建机上的本机镜像引用(磁盘治理):镜像已在 registry,
+// 构建机无需留存。tags 须包含本机 tag **和推送前打出的全部远端引用**——pushImageTo 的
+// docker tag 同样落在本机 daemon,只删本机 tag 时远端引用仍指向同一镜像,rmi 仅 untag 不释放
+// 任何字节(镜像残留的根因),而轮转/手动清理只扫 pipewright/ 前缀,远端引用永无人回收。
+// 经 WithImagePushCleanup 可关——注意:现代 Docker(BuildKit)下保留本机
 // 副本对重建速度**没有**收益(构建缓存在 BuildKit 独立缓存区,与本机 tag 无关),仅老版
 // Docker 的传统构建器能用镜像层做缓存;关闭仅建议在老 docker 环境下。
 // best-effort:删除失败只记日志,绝不影响构建结果;清理回调 nil 视为开启(默认回收)。
-func (b *Builder) removeLocalTagAfterPush(ctx context.Context, rep dagrun.StageReporter, localTag string) {
+func (b *Builder) removeLocalTagAfterPush(ctx context.Context, rep dagrun.StageReporter, tags ...string) {
+	// 去空 + 去重(多个推送目标可能声明同一远端引用,重复 rmi 只会多一条失败日志)。
+	seen := make(map[string]struct{}, len(tags))
+	var toRemove []string
+	for _, tag := range tags {
+		if tag == "" {
+			continue
+		}
+		if _, dup := seen[tag]; dup {
+			continue
+		}
+		seen[tag] = struct{}{}
+		toRemove = append(toRemove, tag)
+	}
+	if len(toRemove) == 0 {
+		return
+	}
 	if b.imageRemoveAfterPush != nil && !b.imageRemoveAfterPush(ctx) {
 		return // 设置里关闭了「推送后回收本机镜像」
 	}
@@ -185,8 +204,10 @@ func (b *Builder) removeLocalTagAfterPush(ctx context.Context, rep dagrun.StageR
 		return
 	}
 	pctx := context.WithoutCancel(ctx)
-	_ = rep.Log(pctx, streamStdout, "→ 已推送,回收构建机本机镜像 "+localTag+"(设置可关闭)")
-	if err := rot.RemoveImage(pctx, localTag, func(stream, line string) { _ = rep.Log(pctx, stream, line) }); err != nil {
-		_ = rep.Log(pctx, streamError, "回收本机镜像失败(best-effort,忽略):"+err.Error())
+	_ = rep.Log(pctx, streamStdout, "→ 已推送,回收构建机本机镜像 "+strings.Join(toRemove, "、")+"(设置可关闭)")
+	for _, tag := range toRemove {
+		if err := rot.RemoveImage(pctx, tag, func(stream, line string) { _ = rep.Log(pctx, stream, line) }); err != nil {
+			_ = rep.Log(pctx, streamError, "回收本机镜像 "+tag+" 失败(best-effort,忽略):"+err.Error())
+		}
 	}
 }

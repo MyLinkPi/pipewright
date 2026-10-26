@@ -366,3 +366,44 @@ func TestGet_TokenRevealError_TriesPublicWithEmptyToken(t *testing.T) {
 		t.Errorf("Reveal 失败时应以空 token 拉取,实际 token=%q", blobs.gotToken)
 	}
 }
+
+// ─── 可指定文件(projects.pac_file)─────────────────────────────────────────────
+
+// TestGet_ProjectPacFile_FetchesConfiguredFile 验证项目 pac_file 指定路径生效,
+// 且 SpecSource.File 记录实际文件名(运行落库 pipeline_runs.spec_source_file)。
+func TestGet_ProjectPacFile_FetchesConfiguredFile(t *testing.T) {
+	stored := &storedLoader{cfg: storedCfg()}
+	blobs := &fakeBlobs{content: validYAML}
+	info := defaultInfo()
+	info.PacFile = "ci/pipeline.yml"
+	l := newLoader(stored, fakeProjects{info: info}, &fakeTokens{token: "secret-token"}, blobs)
+
+	cfg, src, err := l.Get(context.Background(), "p1", "")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if firstStage(cfg) != "from-repo" {
+		t.Fatalf("应用仓库配置, got %q", firstStage(cfg))
+	}
+	if blobs.gotFile != "ci/pipeline.yml" {
+		t.Fatalf("应拉取项目指定文件, got %q", blobs.gotFile)
+	}
+	if src.FromRepo != true || src.File != "ci/pipeline.yml" {
+		t.Fatalf("SpecSource 应记录实际文件, got %+v", src)
+	}
+}
+
+// TestGet_EmptyPacFile_FallsBackToDefaultFile 验证 pac_file 为空回默认 .pipewright.yml。
+func TestGet_EmptyPacFile_FallsBackToDefaultFile(t *testing.T) {
+	stored := &storedLoader{cfg: storedCfg()}
+	blobs := &fakeBlobs{content: validYAML}
+	l := newLoader(stored, fakeProjects{info: defaultInfo()}, nil, blobs)
+
+	_, src, err := l.Get(context.Background(), "p1", "")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if blobs.gotFile != DefaultFile || src.File != DefaultFile {
+		t.Fatalf("空 pac_file 应回默认文件, got blob=%q src=%+v", blobs.gotFile, src)
+	}
+}

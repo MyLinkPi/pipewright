@@ -60,6 +60,8 @@ const (
 	ActionVarGroupCreate = "variable_group_create"
 	ActionVarGroupUpdate = "variable_group_update"
 	ActionVarGroupDelete = "variable_group_delete"
+	// 流水线即代码变量声明同步(pac 预览校验通过 → pipeline_settings);detail 仅变量名列表,无值。
+	ActionPacVarsSync = "pac_vars_sync"
 	// 自定义节点(复用库 Tier 2)。
 	ActionCustomNodeCreate = "custom_node_create"
 	ActionCustomNodeUpdate = "custom_node_update"

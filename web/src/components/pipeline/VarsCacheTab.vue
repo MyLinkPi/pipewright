@@ -4,6 +4,10 @@
  * Build variables (plain / secret-via-vault) + dependency cache. Edits a local
  * BuildConfig copy and emits `update` upward; the parent (ProjectPipeline) owns save.
  *
+ * 流水线即代码变量(第三张卡片):仓库 YAML 顶层 variables 声明(defs,经「预览仓库配置」
+ * 拉取校验同步,此处只读展示)在每行填写值——secret 变量选保险库凭据(credentialId),
+ * 明文变量填文本。行不可增删(声明属于仓库);值编辑经 `updatePacVars` 上抛,父组件统一保存。
+ *
  * 构建模型(Dockerfile/工具链)与产物类型(镜像/JAR/dist)已下沉到画布的 build_image 节点表单
  * (job.config),执行引擎只读节点配置;此处不再渲染那两块全局设置。但仍把 model/dockerfilePath/
  * toolchain/artifactType 原值透传进 composed,保证保存/AI 应用不抹除既有值(API 契约字段保留)。
@@ -18,6 +22,7 @@ import type {
   BuildVar,
   BuildModel,
   ArtifactType,
+  PacVarsConfig,
 } from '../../api/pipelineSettings'
 import { isSystemManagedType, type Credential } from '../../api/credentials'
 
@@ -25,6 +30,8 @@ interface Props {
   build: BuildConfig
   credentials: Credential[]
   disabled?: boolean
+  /** Pipeline-as-code variable declarations + filled values (null = never synced). */
+  pacVars?: PacVarsConfig | null
 }
 const props = defineProps<Props>()
 
@@ -32,6 +39,7 @@ const { t } = useI18n()
 
 const emit = defineEmits<{
   update: [build: BuildConfig]
+  updatePacVars: [values: BuildVar[]]
 }>()
 
 // ─── Local editable copy ────────────────────────────────────────────────────────
@@ -159,6 +167,103 @@ function maskFor(row: VarRow): string {
   const c = props.credentials.find((x) => x.id === row.credentialId)
   return c ? c.maskedValue : '••••'
 }
+
+// ─── Pipeline-as-code variables(仓库声明 + 填写值)──────────────────────────────
+
+/** 一行 = 一条仓库声明(defs 只读)+ 本地编辑的值副本。 */
+interface PacRow {
+  name: string
+  description: string
+  required: boolean
+  secret: boolean
+  default: string
+  row: VarRow
+}
+
+const pacDefs = computed(() => props.pacVars?.defs ?? [])
+
+function pacRowsFrom(defs: PacVarsConfig['defs'], values: BuildVar[]): PacRow[] {
+  const byKey = new Map<string, BuildVar>()
+  for (const v of values) byKey.set(v.key, v)
+  return defs.map((d) => {
+    const v = byKey.get(d.name)
+    return {
+      name: d.name,
+      description: d.description,
+      required: d.required,
+      secret: d.secret,
+      default: d.default,
+      row: {
+        _key: keySeq++,
+        id: v?.id ?? '',
+        key: d.name,
+        secret: d.secret, // secret 与声明一致,不受误传值影响
+        value: d.secret ? undefined : (v?.value ?? ''),
+        credentialId: d.secret ? (v?.credentialId ?? '') : undefined,
+        maskedValue: v?.maskedValue,
+      },
+    }
+  })
+}
+
+const pacRows = ref<PacRow[]>(pacRowsFrom(pacDefs.value, props.pacVars?.values ?? []))
+
+/** 已填的值(未触碰/清空的行不上送,保持「未填写」语义)。 */
+const pacComposed = computed<BuildVar[]>(() =>
+  pacRows.value
+    .filter((p) => (p.secret ? !!p.row.credentialId : (p.row.value ?? '').trim() !== ''))
+    .map((p) => ({
+      id: p.row.id || '',
+      key: p.name,
+      secret: p.secret,
+      value: p.secret ? undefined : p.row.value,
+      credentialId: p.secret ? p.row.credentialId : undefined,
+    })),
+)
+
+// 双向回环防护(与构建变量 buildKey 同思路):值键只比「已填内容」,defs 键单独比,
+// 两侧同构可比——父回写相同内容时既不重建行(防每键失焦)也不再 emit(防无限循环)。
+function pacValuesKey(values: BuildVar[]): string {
+  const filled = values
+    .filter((v) => (v.secret ? !!v.credentialId : (v.value ?? '') !== ''))
+    .map((v) => JSON.stringify({ key: v.key, secret: !!v.secret, value: v.value ?? '', credentialId: v.credentialId ?? '' }))
+  return JSON.stringify(filled)
+}
+
+function pacDefsKey(defs: PacVarsConfig['defs']): string {
+  return JSON.stringify((defs ?? []).map((d) => `${d.name}:${d.secret ? 1 : 0}:${d.required ? 1 : 0}`))
+}
+
+let lastPacDefsKey = pacDefsKey(pacDefs.value)
+
+watch(
+  () => props.pacVars,
+  (pv) => {
+    const defsChanged = pacDefsKey(pv?.defs ?? []) !== lastPacDefsKey
+    const valuesDiffer = pacValuesKey(pv?.values ?? []) !== pacValuesKey(pacComposed.value)
+    if (!defsChanged && !valuesDiffer) return
+    lastPacDefsKey = pacDefsKey(pv?.defs ?? [])
+    pacRows.value = pacRowsFrom(pv?.defs ?? [], pv?.values ?? [])
+  },
+)
+
+watch(
+  pacComposed,
+  (vals) => {
+    if (pacValuesKey(vals) !== pacValuesKey(props.pacVars?.values ?? [])) emit('updatePacVars', vals)
+  },
+  { deep: true },
+)
+
+function pacMaskFor(p: PacRow): string {
+  if (p.row.maskedValue) return p.row.maskedValue
+  const c = props.credentials.find((x) => x.id === p.row.credentialId)
+  return c ? c.maskedValue : '••••'
+}
+
+function pacFilled(p: PacRow): boolean {
+  return p.secret ? !!p.row.credentialId : (p.row.value ?? '').trim() !== ''
+}
 </script>
 
 <template>
@@ -252,6 +357,66 @@ function maskFor(row: VarRow): string {
           {{ t('pipelinePanels.vcAddVaultSecret') }}
         </button>
       </div>
+    </section>
+
+    <!-- ─── Pipeline-as-code variables(仓库声明)────────────────────────── -->
+    <section class="card">
+      <header class="card-head">
+        <span class="card-ic" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M6 3v12"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg>
+        </span>
+        {{ t('pipelinePanels.vcPacVars') }}
+        <span class="card-sub">{{ t('pipelinePanels.vcPacVarsSub') }}</span>
+      </header>
+
+      <p v-if="props.pacVars?.ref || props.pacVars?.file" class="pac-src">
+        {{ t('pipelinePanels.vcPacSource', { ref: props.pacVars.ref, file: props.pacVars.file }) }}
+      </p>
+
+      <div v-if="pacRows.length" class="pachd" aria-hidden="true">
+        <span>{{ t('pipelinePanels.vcColKey') }}</span><span>{{ t('pipelinePanels.vcPacColDesc') }}</span><span>{{ t('pipelinePanels.vcColValueRef') }}</span>
+      </div>
+
+      <div v-for="p in pacRows" :key="p.name" class="pacrow" :class="{ 'pacrow--missing': p.required && !pacFilled(p) }">
+        <div class="pac-name">
+          <code class="mono">{{ p.name }}</code>
+          <span v-if="p.required" class="pacbadge pacbadge--req">{{ t('pipelinePanels.vcPacRequired') }}</span>
+          <span v-if="p.secret" class="pacbadge pacbadge--sec">{{ t('pipelinePanels.vcPacSecret') }}</span>
+        </div>
+
+        <div class="pac-desc">
+          <p>{{ p.description || '—' }}</p>
+          <p v-if="p.default" class="pac-default">{{ t('pipelinePanels.vcPacDefaultPrefix') }}<code class="mono">{{ p.default }}</code></p>
+        </div>
+
+        <div class="pac-val">
+          <template v-if="p.secret">
+            <select
+              v-model="p.row.credentialId"
+              class="vsel"
+              :aria-label="t('pipelinePanels.vcVaultCredAria')"
+              :disabled="disabled"
+            >
+              <option value="">{{ t('pipelinePanels.vcPacSelectCred') }}</option>
+              <option v-for="c in credOptions" :key="c.id" :value="c.id">
+                {{ c.name }} · {{ c.maskedValue }}
+              </option>
+            </select>
+            <span v-if="p.row.credentialId" class="pac-mask mono">{{ pacMaskFor(p) }}</span>
+          </template>
+          <input
+            v-else
+            v-model="p.row.value"
+            class="vv mono"
+            type="text"
+            :placeholder="p.default ? p.default : t('pipelinePanels.vcPacValuePlaceholder')"
+            :aria-label="t('pipelinePanels.vcVarValueAria')"
+            :disabled="disabled"
+          >
+        </div>
+      </div>
+
+      <p v-if="!pacRows.length" class="vempty">{{ t('pipelinePanels.vcPacEmpty') }}</p>
     </section>
 
     <!-- ─── Dependency cache ────────────────────────────────────────────────── -->
@@ -440,6 +605,69 @@ function maskFor(row: VarRow): string {
 .addbtn:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 2px; }
 .addbtn--vault { color: var(--color-cyan); }
 .addbtn--vault:hover:not(:disabled) { border-color: var(--color-cyan-line); background: var(--color-cyan-soft); }
+
+/* ─── Pipeline-as-code variables ─────────────────────────────────────────── */
+.pac-src {
+  padding: 10px 18px 0;
+  font-size: 0.72rem;
+  color: var(--color-faint);
+}
+.pachd, .pacrow {
+  display: grid;
+  grid-template-columns: 200px 1fr 1.2fr;
+  gap: 12px;
+  align-items: center;
+  padding: 9px 18px;
+  border-bottom: 1px solid var(--color-border);
+}
+.pachd {
+  font-size: 0.68rem;
+  color: var(--color-faint);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  background: var(--color-card-2);
+  padding-top: 8px; padding-bottom: 8px;
+}
+.pacrow--missing { background: var(--color-amber-soft, var(--color-inset)); }
+.pac-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+.pac-name code {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--color-text);
+  background: var(--color-inset);
+  border-radius: 4px;
+  padding: 1px 5px;
+}
+.pacbadge {
+  flex: none;
+  font-size: 0.62rem;
+  font-weight: 600;
+  border-radius: 4px;
+  padding: 1px 6px;
+  border: 1px solid transparent;
+}
+.pacbadge--req {
+  color: var(--color-amber, var(--color-dim));
+  background: var(--color-amber-soft, var(--color-inset));
+  border-color: var(--color-amber-line, var(--color-border));
+}
+.pacbadge--sec {
+  color: var(--color-cyan);
+  background: var(--color-cyan-soft);
+  border-color: var(--color-cyan-line);
+}
+.pac-desc p { margin: 0; font-size: 0.76rem; color: var(--color-dim); line-height: 1.45; overflow-wrap: anywhere; }
+.pac-default { margin-top: 2px !important; color: var(--color-faint) !important; font-size: 0.72rem !important; }
+.pac-val { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.pac-val .vsel, .pac-val .vv { width: 100%; }
+.pac-mask { font-size: 0.72rem; color: var(--color-faint); letter-spacing: 0.06em; flex: none; }
 
 /* ─── Cache ──────────────────────────────────────────────────────────────── */
 .cache-toggle { display: flex; align-items: center; gap: 14px; padding: 14px 18px; border-bottom: 1px solid var(--color-border); }

@@ -117,6 +117,12 @@ func NewStageExecutor(b *Builder, reportSink TestReportSink) dagrun.StageExecuto
 		if len(stage.Jobs) > 0 {
 			_ = rep.Log(ctx, streamStdout, "→ 执行机器:本机(控制机)")
 		}
+		// 流水线即代码变量(仓库 YAML 声明、「变量与缓存」填值):先做 required 拦截
+		// (缺必填变量 → 本阶段诚实失败并列出变量名),再替换本阶段 ${NAME} 占位符。
+		if miss := b.applyStagePacVars(ctx, r, &stage); len(miss) > 0 {
+			_ = rep.Log(ctx, streamError, "流水线变量缺失:"+strings.Join(miss, ", ")+"(required: true,未在「变量与缓存」填写)")
+			return ErrBuildFailed
+		}
 		scriptJobs := make([]pipeline.Job, 0, len(stage.Jobs))
 		buildImageJobs := make([]pipeline.Job, 0, len(stage.Jobs))
 		deployJobs := make([]pipeline.Job, 0, len(stage.Jobs))
@@ -1137,6 +1143,7 @@ func (b *Builder) runBuildImageJob(ctx context.Context, sink run.StepSink, rep d
 func (b *Builder) pushImageArtifact(ctx context.Context, sink run.StepSink, rep dagrun.StageReporter, jb pipeline.Job, stageName string, proj *project.Project, plan imagePushPlan, art *run.Artifact, localTag, commitTag string) error {
 	if art.Type == run.ArtifactImage && localTag != "" {
 		pushed := false
+		pushedTags := []string{} // 推送在本机 daemon 打出的远端引用(docker tag 副本),回收时一并删
 		switch {
 		case len(plan.Specs) > 0:
 			for _, spec := range plan.Specs {
@@ -1165,6 +1172,7 @@ func (b *Builder) pushImageArtifact(ctx context.Context, sink run.StepSink, rep 
 					art.Metadata["digest"] = digest
 				}
 				_ = rep.Log(ctx, streamStdout, "→ 已推送 "+remoteTag)
+				pushedTags = append(pushedTags, remoteTag)
 			}
 			pushed = true
 		case plan.Referenced:
@@ -1188,12 +1196,14 @@ func (b *Builder) pushImageArtifact(ctx context.Context, sink run.StepSink, rep 
 					art.Metadata["digest"] = digest
 				}
 				pushed = true
+				pushedTags = append(pushedTags, remoteTag)
 			}
 		}
-		// 推送成功即回收构建机上的本机 tag(磁盘治理):镜像已在 registry,构建机无需留存。
-		// 仅实际推送过才回收;未推送(无 registry/目标不可解析)的本地镜像交给构建后轮转。
+		// 推送成功即回收构建机上的本机镜像引用(磁盘治理):镜像已在 registry,构建机无需留存。
+		// 本机 tag 与各推送目标的远端引用(docker tag 也落在本机 daemon)一并回收;未推送
+		//(无 registry/目标不可解析)的本地镜像交给构建后轮转。
 		if pushed {
-			b.removeLocalTagAfterPush(ctx, rep, localTag)
+			b.removeLocalTagAfterPush(ctx, rep, append([]string{localTag}, pushedTags...)...)
 		}
 	}
 

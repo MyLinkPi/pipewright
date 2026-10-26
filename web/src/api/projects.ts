@@ -59,6 +59,12 @@ export interface Project {
    */
   pacEnabled: boolean
   /**
+   * Pipeline-as-code file path (empty = default `.pipewright.yml`). Runtime,
+   * preview and AI-ops all read this repo-relative path instead of the hardcoded
+   * default. Validated server-side (relative path, no `..` segments).
+   */
+  pacFile?: string
+  /**
    * PR status checks toggle (Story 8-9 / FR-8-9). When true, on a run reaching a
    * terminal status Pipewright detects the repo platform (GitHub/Gitee) and writes
    * back the commit status (PR check) using the project credential. Best-effort.
@@ -92,6 +98,8 @@ export interface UpdateProjectInput {
   credentialId?: string
   /** Toggle pipeline-as-code (GitOps) for this project. */
   pacEnabled?: boolean
+  /** Set the pipeline-as-code file path (empty string resets to the default file). */
+  pacFile?: string
   /** Toggle PR status checks (commit status writeback) for this project. */
   prStatusEnabled?: boolean
 }
@@ -133,12 +141,23 @@ export interface PacStageSummary {
   jobCount: number
 }
 
+/** One variable declared in the repo YAML top-level `variables:` block (metadata only, never a value). */
+export interface PacVarDefSummary {
+  name: string
+  description: string
+  required: boolean
+  secret: boolean
+  default: string
+}
+
 /**
- * Result of previewing/validating the repo's `.pipewright.yml` at a chosen ref.
+ * Result of previewing/validating the repo's pipeline file at a chosen ref.
  * - found=false: the file does not exist at that ref (or repo unreadable) — runs fall back to the UI pipeline.
  * - found=true, valid=false: the file exists but failed to parse/validate; `error` carries the
  *   server's human-readable, secret-free message; `stages` is empty.
- * - found=true, valid=true: `stages`/`stageCount` summarize what the runtime would use.
+ * - found=true, valid=true: `stages`/`stageCount` summarize what the runtime would use, and
+ *   `variables` lists the YAML's variable declarations (also synced into pipeline settings).
+ * - `file` is the effective file: the `file` query param override, else the project's pacFile, else the default.
  */
 export interface PacPreviewResult {
   found: boolean
@@ -148,13 +167,19 @@ export interface PacPreviewResult {
   error: string
   stageCount: number
   stages: PacStageSummary[]
+  variables: PacVarDefSummary[]
 }
 
 /**
- * Fetch & validate the repo's `.pipewright.yml` at `ref` (defaults to the project's default
- * branch when omitted). Read-only; never returns secrets or the repo URL credentials.
+ * Fetch & validate the repo's pipeline file at `ref` (defaults to the project's default
+ * branch when omitted) and `file` (defaults to the project's pacFile, then `.pipewright.yml`).
+ * Read-only; never returns secrets or the repo URL credentials. On success the declared
+ * variables are synced into the project's pipeline settings (「变量与缓存」).
  */
-export async function previewPacConfig(id: string, ref?: string): Promise<PacPreviewResult> {
-  const qs = ref && ref.trim() ? `?ref=${encodeURIComponent(ref.trim())}` : ''
+export async function previewPacConfig(id: string, ref?: string, file?: string): Promise<PacPreviewResult> {
+  const params: string[] = []
+  if (ref?.trim()) params.push(`ref=${encodeURIComponent(ref.trim())}`)
+  if (file?.trim()) params.push(`file=${encodeURIComponent(file.trim())}`)
+  const qs = params.length ? `?${params.join('&')}` : ''
   return http.get<PacPreviewResult>(`/api/projects/${id}/pac/preview${qs}`)
 }

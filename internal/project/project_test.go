@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/huangchengsir/pipewright/internal/storetest"
@@ -380,4 +381,32 @@ func TestTestCloneSuccessAndFailure(t *testing.T) {
 // 失败路径(坏 URL / 无效凭据)已由真实 go-git prober 在 prober_test.go 覆盖。
 func TestRealLsRemoteSkipped(t *testing.T) {
 	t.Skip("真实私有仓库 ls-remote 成功路径需真实 repo+token,CI 不便;失败路径见 prober_test.go")
+}
+
+func TestNormalizePacFile(t *testing.T) {
+	ok := []string{"", "  ", ".pipewright.yml", "ci/pipeline.yml", ".pipewright.staging.yml", " .pipewright.yml "}
+	for _, in := range ok {
+		f, err := NormalizePacFile(in)
+		if err != nil {
+			t.Fatalf("合法路径 %q 不应报错: %v", in, err)
+		}
+		if f != strings.TrimSpace(in) {
+			t.Fatalf("规范化应只 trim: %q → %q", in, f)
+		}
+	}
+	bad := []string{"/abs/path.yml", `C:\ci\p.yml`, `\\srv\share\p.yml`, "../secret.yml", "ci/../p.yml", "~/p.yml", `ci\p.yml`, "ci//p.yml", "ci/./p.yml"}
+	for _, in := range bad {
+		if _, err := NormalizePacFile(in); !errors.Is(err, ErrInvalidPacFile) {
+			t.Fatalf("非法路径 %q 应返回 ErrInvalidPacFile,得到 %v", in, err)
+		}
+	}
+	if _, err := NormalizePacFile(strings.Repeat("a", PacFileMax+1)); !errors.Is(err, ErrInvalidPacFile) {
+		t.Fatalf("超长路径应返回 ErrInvalidPacFile")
+	}
+	if got := EffectivePacFile(""); got != DefaultPacFile {
+		t.Fatalf("空配置应回默认文件,得到 %q", got)
+	}
+	if got := EffectivePacFile("ci/p.yml"); got != "ci/p.yml" {
+		t.Fatalf("非空配置应原样生效,得到 %q", got)
+	}
 }

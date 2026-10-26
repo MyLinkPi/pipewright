@@ -1,42 +1,69 @@
 <script setup lang="ts">
 /**
- * PacPreviewModal — fetch & validate the repo's `.pipewright.yml` at a chosen ref
- * BEFORE relying on it to drive runs (GitOps Slice 3).
+ * PacPreviewModal — fetch & validate the repo's pipeline file (default `.pipewright.yml`,
+ * per-project pacFile, or an ad-hoc `file` override) at a chosen ref BEFORE relying on it
+ * to drive runs (GitOps Slice 3).
  *
- * At runtime, an invalid `.pipewright.yml` is silently ignored (the run falls back to the stored
- * UI pipeline) with no feedback. This modal gives that feedback up front: pick a ref, fetch, and
- * see whether the file is found, whether it is valid, the parse error if not, and a summary of the
- * stages the runtime would use. Read-only — it never saves anything and never reveals secrets.
+ * At runtime, an invalid file is silently ignored (the run falls back to the stored UI
+ * pipeline) with no feedback. This modal gives that feedback up front: pick a ref (and
+ * optionally a file), fetch, and see whether the file is found, whether it is valid, the
+ * parse error if not, a summary of the stages the runtime would use, and the variables the
+ * YAML declares (synced into pipeline settings on success — the「变量与缓存」tab shows them).
+ *
+ * When the validated file differs from the project's configured default, a
+ * "set as project default" action persists it via PATCH /projects/{id} (emits `saved`).
+ * It never reveals secrets.
  */
-import { ref, onMounted } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { previewPacConfig, type PacPreviewResult } from '../../api/projects'
+import { previewPacConfig, updateProject, type PacPreviewResult } from '../../api/projects'
 import { HttpError } from '../../api/http'
 
 const props = defineProps<{
   projectId: string
   /** Project default branch — pre-fills the ref input. */
   defaultBranch: string
+  /** Project-configured pipeline file ('' = default `.pipewright.yml`). */
+  pacFile?: string
 }>()
+
+const DEFAULT_PAC_FILE = '.pipewright.yml'
 
 const { t } = useI18n()
 
 const emit = defineEmits<{
   (e: 'close'): void
+  /** Fired after a successful preview — the server has synced variable declarations into settings. */
+  (e: 'synced'): void
+  /** Fired after the validated file was persisted as the project default (pacFile updated). */
+  (e: 'saved'): void
 }>()
 
+const projectFile = computed(() => props.pacFile?.trim() || DEFAULT_PAC_FILE)
 const refInput = ref(props.defaultBranch ?? '')
+const fileInput = ref(projectFile.value)
 const busy = ref(false)
 const errorMsg = ref('')
 const result = ref<PacPreviewResult | null>(null)
+
+const fileDiffers = computed(() => fileInput.value.trim() !== projectFile.value.trim())
+const savingFile = ref(false)
+const savedFileNote = ref('')
+const savedFileErr = ref('')
 
 async function runPreview(): Promise<void> {
   if (busy.value) return
   busy.value = true
   errorMsg.value = ''
+  savedFileNote.value = ''
+  savedFileErr.value = ''
   result.value = null
   try {
-    result.value = await previewPacConfig(props.projectId, refInput.value)
+    const res = await previewPacConfig(props.projectId, refInput.value, fileInput.value.trim() || undefined)
+    result.value = res
+    // Valid preview ⇒ the server synced the declared variables into pipeline settings;
+    // let the parent refresh the「变量与缓存」tab data.
+    if (res.found && res.valid) emit('synced')
   } catch (err) {
     if (err instanceof HttpError) {
       errorMsg.value = err.status === 0
@@ -47,6 +74,22 @@ async function runPreview(): Promise<void> {
     }
   } finally {
     busy.value = false
+  }
+}
+
+async function saveAsDefaultFile(): Promise<void> {
+  if (savingFile.value || !fileDiffers.value) return
+  savingFile.value = true
+  savedFileNote.value = ''
+  savedFileErr.value = ''
+  try {
+    await updateProject(props.projectId, { pacFile: fileInput.value.trim() })
+    savedFileNote.value = t('projectPipeline.pacPreviewSetDefaultDone')
+    emit('saved')
+  } catch {
+    savedFileErr.value = t('projectPipeline.pacPreviewSetDefaultFailed')
+  } finally {
+    savingFile.value = false
   }
 }
 
@@ -64,7 +107,7 @@ onMounted(() => {
           <h2 id="pp-title" class="pp-title">{{ t('projectPipeline.pacPreviewTitle') }}</h2>
           <p class="pp-sub">
             {{ t('projectPipeline.pacPreviewSub') }}
-            <code>.pipewright.yml</code>
+            <code>{{ fileInput.trim() || DEFAULT_PAC_FILE }}</code>
           </p>
         </div>
         <button class="pp-close" :aria-label="t('projectPipeline.pacPreviewCloseAria')" @click="emit('close')">
@@ -78,7 +121,7 @@ onMounted(() => {
           <input
             id="pp-ref"
             v-model="refInput"
-            class="pp-ref-input"
+            class="pp-ref-input pp-ref-input--ref"
             type="text"
             spellcheck="false"
             autocomplete="off"
@@ -86,10 +129,31 @@ onMounted(() => {
             :disabled="busy"
             @keydown.enter.prevent="runPreview"
           />
+          <label for="pp-file" class="pp-label">{{ t('projectPipeline.pacPreviewFileLabel') }}</label>
+          <input
+            id="pp-file"
+            v-model="fileInput"
+            class="pp-ref-input"
+            type="text"
+            spellcheck="false"
+            autocomplete="off"
+            :placeholder="DEFAULT_PAC_FILE"
+            :disabled="busy"
+            @keydown.enter.prevent="runPreview"
+          />
           <button class="pp-btn pp-btn--primary" :disabled="busy" @click="runPreview">
             <span v-if="busy" class="pp-spin" aria-hidden="true"/>
             {{ t('projectPipeline.pacPreviewFetch') }}
           </button>
+        </div>
+
+        <!-- persist the ad-hoc file as the project default -->
+        <div v-if="fileDiffers" class="pp-file-row">
+          <button class="pp-btn pp-btn--ghost" :disabled="savingFile" @click="saveAsDefaultFile">
+            {{ t('projectPipeline.pacPreviewSetDefault') }}
+          </button>
+          <span v-if="savedFileNote" class="pp-file-note pp-file-note--ok">{{ savedFileNote }}</span>
+          <span v-if="savedFileErr" class="pp-file-note pp-file-note--err" role="alert">{{ savedFileErr }}</span>
         </div>
 
         <!-- request-level error (network / unexpected) -->
@@ -103,14 +167,14 @@ onMounted(() => {
           <!-- not found -->
           <div v-if="!result.found" class="pp-banner pp-banner--warn" role="status">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 8v4M12 16h.01"/></svg>
-            <span>{{ t('projectPipeline.pacPreviewNotFound', { ref: result.ref }) }}</span>
+            <span>{{ t('projectPipeline.pacPreviewNotFound', { ref: result.ref, file: result.file }) }}</span>
           </div>
 
           <!-- found but invalid -->
           <template v-else-if="!result.valid">
             <div class="pp-banner pp-banner--error" role="alert">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 8v4M12 16h.01"/></svg>
-              <span>{{ t('projectPipeline.pacPreviewInvalid', { ref: result.ref }) }}</span>
+              <span>{{ t('projectPipeline.pacPreviewInvalid', { ref: result.ref, file: result.file }) }}</span>
             </div>
             <pre v-if="result.error" class="pp-error-detail">{{ result.error }}</pre>
           </template>
@@ -119,7 +183,7 @@ onMounted(() => {
           <template v-else>
             <div class="pp-banner pp-banner--ok" role="status">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>
-              <span>{{ t('projectPipeline.pacPreviewValid', { ref: result.ref, count: result.stageCount }) }}</span>
+              <span>{{ t('projectPipeline.pacPreviewValid', { ref: result.ref, count: result.stageCount, file: result.file }) }}</span>
             </div>
             <ul v-if="result.stages.length" class="pp-stages">
               <li v-for="(stage, i) in result.stages" :key="i" class="pp-stage">
@@ -128,6 +192,21 @@ onMounted(() => {
                 <span class="pp-stage-jobs">{{ t('projectPipeline.pacPreviewJobCount', { count: stage.jobCount }) }}</span>
               </li>
             </ul>
+
+            <!-- declared variables (synced into「变量与缓存」) -->
+            <div v-if="result.variables.length" class="pp-vars">
+              <h3 class="pp-vars-title">{{ t('projectPipeline.pacPreviewVarsTitle', { count: result.variables.length }) }}</h3>
+              <p class="pp-vars-hint">{{ t('projectPipeline.pacPreviewVarsHint') }}</p>
+              <ul class="pp-vars-list">
+                <li v-for="v in result.variables" :key="v.name" class="pp-var">
+                  <span class="pp-var-name mono">{{ v.name }}</span>
+                  <span v-if="v.required" class="pp-badge pp-badge--req">{{ t('projectPipeline.pacVarRequired') }}</span>
+                  <span v-if="v.secret" class="pp-badge pp-badge--sec">{{ t('projectPipeline.pacVarSecret') }}</span>
+                  <span class="pp-var-desc">{{ v.description }}</span>
+                  <span v-if="v.default" class="pp-var-default mono">default: {{ v.default }}</span>
+                </li>
+              </ul>
+            </div>
           </template>
         </template>
       </div>
@@ -242,10 +321,24 @@ onMounted(() => {
   border: 1px solid var(--color-border-strong);
   border-radius: var(--rounded-md);
   padding: 0 12px;
+  min-width: 0;
 }
+
+.pp-ref-input--ref { flex: 0.8; }
 
 .pp-ref-input:focus { outline: none; border-color: var(--color-primary); box-shadow: 0 0 0 3px var(--color-primary-soft); }
 .pp-ref-input:disabled { opacity: 0.6; }
+
+.pp-file-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.pp-file-note { font-size: 0.76rem; }
+.pp-file-note--ok { color: var(--color-green); }
+.pp-file-note--err { color: var(--color-red); }
 
 .pp-banner {
   display: flex;
@@ -334,6 +427,88 @@ onMounted(() => {
   color: var(--color-faint);
 }
 
+/* ─── Declared variables ──────────────────────────────────────────────────── */
+.pp-vars {
+  border: 1px solid var(--color-border);
+  border-radius: var(--rounded-md);
+  padding: 12px 14px;
+  background: var(--color-card-2);
+}
+
+.pp-vars-title {
+  font-size: 0.84rem;
+  font-weight: 600;
+  color: var(--color-text);
+  margin: 0 0 4px;
+}
+
+.pp-vars-hint {
+  font-size: 0.73rem;
+  color: var(--color-faint);
+  margin: 0 0 10px;
+  line-height: 1.5;
+}
+
+.pp-vars-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.pp-var {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  background: var(--color-inset);
+  border: 1px solid var(--color-border);
+  border-radius: var(--rounded-md);
+  font-size: 0.78rem;
+  flex-wrap: wrap;
+}
+
+.pp-var-name {
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+.pp-var-desc {
+  color: var(--color-dim);
+  flex: 1;
+  min-width: 120px;
+}
+
+.pp-var-default {
+  font-size: 0.72rem;
+  color: var(--color-faint);
+}
+
+.pp-badge {
+  flex: none;
+  font-size: 0.66rem;
+  font-weight: 600;
+  border-radius: 4px;
+  padding: 1px 6px;
+  border: 1px solid transparent;
+}
+
+.pp-badge--req {
+  color: var(--color-amber, var(--color-dim));
+  background: var(--color-amber-soft, var(--color-inset));
+  border-color: var(--color-amber-line, var(--color-border));
+}
+
+.pp-badge--sec {
+  color: var(--color-cyan);
+  background: var(--color-cyan-soft);
+  border-color: var(--color-cyan-line);
+}
+
+.mono { font-family: var(--font-mono, monospace); }
+
 .pp-foot {
   display: flex;
   align-items: center;
@@ -373,6 +548,14 @@ onMounted(() => {
 }
 
 .pp-btn--primary:hover:not(:disabled) { background: var(--color-primary-press); }
+
+.pp-btn--ghost {
+  background: transparent;
+  border-style: dashed;
+  color: var(--color-primary);
+}
+
+.pp-btn--ghost:hover:not(:disabled) { background: var(--color-primary-soft); }
 
 .pp-spin {
   display: inline-block;

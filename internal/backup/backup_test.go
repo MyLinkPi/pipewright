@@ -98,14 +98,26 @@ func TestBackupRoundtripAndRestore(t *testing.T) {
 	}
 
 	// 破坏归档 → 校验必须失败。
-	broken := archive + ".broken"
+	// 校验按**逻辑内容**(逐文件 sha256 + 解压流)判完整性:压缩流里落在 deflate 填充位 /
+	// tar 头 NUL 填充区的字节翻转,解压后内容不变,校验器(正确地)无从发现——单一「翻中点
+	// 字节」的假设依赖归档布局(内容一变即翻车)。改为在 32 个均布位置逐一探测:任一位置
+	// 检出损坏即满足断言;全部通过才算真回归(概率上不可能,见上)。
 	raw, _ := os.ReadFile(archive)
-	raw[len(raw)/2] ^= 0xFF
-	if err := os.WriteFile(broken, raw, 0o600); err != nil {
-		t.Fatal(err)
+	broken := archive + ".broken"
+	detected := false
+	for i := 0; i < 32 && !detected; i++ {
+		pos := len(raw) * (2*i + 1) / 64 // 覆盖 1/64、3/64、…、63/64,避开彼此
+		corrupted := append([]byte(nil), raw...)
+		corrupted[pos] ^= 0xFF
+		if err := os.WriteFile(broken, corrupted, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		_, verr := ValidateArchive(broken)
+		detected = verr != nil
 	}
-	if _, err := ValidateArchive(broken); err == nil {
-		t.Fatal("corrupted archive passed validation")
+	_ = os.Remove(broken)
+	if !detected {
+		t.Fatal("corrupted archive passed validation at every probe position")
 	}
 
 	// 恢复到「另一台机器」:新数据目录 + 从备份拷来的库文件名一致。

@@ -602,3 +602,85 @@ func TestRoundTripJobNeeds(t *testing.T) {
 		t.Fatalf("when 往返丢失: %+v", st.When)
 	}
 }
+
+// ---- 顶层 variables 声明(流水线即代码 · 变量)----
+
+// varsFixture 是带顶层 variables 声明的最小合法文档。
+const varsFixture = `version: 1
+variables:
+  - name: DB_CONN
+    description: 生产数据库连接字符串
+    required: true
+    secret: true
+  - name: BASE_DOMAIN
+    description: 服务注册基域
+    default: internal.example.com
+stages:
+  - id: stg_src
+    name: 流水线源
+    kind: source
+    jobs:
+      - name: 拉取代码
+        type: git_source
+`
+
+func TestParseDocumentVariables(t *testing.T) {
+	pd, err := ParseDocument([]byte(varsFixture))
+	if err != nil {
+		t.Fatalf("ParseDocument: %v", err)
+	}
+	if len(pd.Variables) != 2 {
+		t.Fatalf("应解析出 2 条变量声明,得到 %d", len(pd.Variables))
+	}
+	db, base := pd.Variables[0], pd.Variables[1]
+	if db.Name != "DB_CONN" || !db.Required || !db.Secret || db.Default != "" {
+		t.Fatalf("DB_CONN 声明解析不符: %+v", db)
+	}
+	if base.Name != "BASE_DOMAIN" || base.Required || base.Secret || base.Default != "internal.example.com" {
+		t.Fatalf("BASE_DOMAIN 声明解析不符: %+v", base)
+	}
+	// 声明不进 Spec:stages 形状与无变量文档一致。
+	if len(pd.Config.Spec.Stages) != 1 {
+		t.Fatalf("变量声明不应影响 spec 阶段数: %+v", pd.Config.Spec)
+	}
+}
+
+func TestParseDocumentNoVariables(t *testing.T) {
+	pd, err := ParseDocument([]byte(multiStageFixture))
+	if err != nil {
+		t.Fatalf("ParseDocument(无变量文档): %v", err)
+	}
+	if pd.Variables != nil {
+		t.Fatalf("无 variables 块应得到 nil,得到 %+v", pd.Variables)
+	}
+	// Parse 薄封装行为不变。
+	cfg, err := Parse([]byte(varsFixture))
+	if err != nil {
+		t.Fatalf("Parse(带变量文档): %v", err)
+	}
+	if len(cfg.Spec.Stages) != 1 {
+		t.Fatalf("Parse 应丢弃声明只回 spec: %+v", cfg.Spec)
+	}
+}
+
+func TestParseDocumentVariableErrors(t *testing.T) {
+	cases := []struct {
+		name string
+		yaml string
+		want string
+	}{
+		{"重名", "variables:\n  - name: A\n    description: x\n  - name: A\nstages:\n  - name: s\n    kind: source\n    jobs:\n      - name: j\n        type: git_source\n", "重复声明"},
+		{"非法名", "variables:\n  - name: 1BAD NAME\nstages:\n  - name: s\n    kind: source\n    jobs:\n      - name: j\n        type: git_source\n", "非法"},
+		{"缺名", "variables:\n  - description: x\nstages:\n  - name: s\n    kind: source\n    jobs:\n      - name: j\n        type: git_source\n", "缺少 name"},
+		{"secret带default", "variables:\n  - name: S\n    secret: true\n    default: x\nstages:\n  - name: s\n    kind: source\n    jobs:\n      - name: j\n        type: git_source\n", "secret"},
+	}
+	for _, tc := range cases {
+		_, err := ParseDocument([]byte(tc.yaml))
+		if err == nil {
+			t.Fatalf("%s: 应报错却通过", tc.name)
+		}
+		if !errors.Is(err, ErrParse) || !strings.Contains(err.Error(), tc.want) {
+			t.Fatalf("%s: 错误不符(%v)", tc.name, err)
+		}
+	}
+}

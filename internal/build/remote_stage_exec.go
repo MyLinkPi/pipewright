@@ -79,6 +79,12 @@ func NewStageExecutorWithRunner(b *Builder, reportSink TestReportSink, resolve R
 	}
 	return func(ctx context.Context, r *run.Run, stage pipeline.Stage, rep dagrun.StageReporter) error {
 		log := func(msg string) { _ = rep.Log(ctx, streamStdout, msg) }
+		// 流水线即代码变量:required 拦截 + ${NAME} 占位替换(远程/集群共享路径在此统一生效,
+		// stage 的 config map 为共享引用,后续 local 回退再跑一次亦幂等)。
+		if miss := b.applyStagePacVars(ctx, r, &stage); len(miss) > 0 {
+			_ = rep.Log(ctx, streamError, "流水线变量缺失:"+strings.Join(miss, ", ")+"(required: true,未在「变量与缓存」填写)")
+			return ErrBuildFailed
+		}
 		projSel := ""
 		if s, ok := resolve.SelectorFor(ctx, r.ProjectID); ok {
 			projSel = strings.TrimSpace(s)
