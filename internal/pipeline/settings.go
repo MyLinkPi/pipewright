@@ -131,6 +131,28 @@ type ImageRegistry struct {
 	MaskedCredential string `json:"maskedCredential,omitempty"`
 }
 
+// PacVarDef 是一条「流水线即代码」变量声明(与 pipelineyaml.VarDef 同形;独立定义避免
+// pipeline 反向 import pipelineyaml)。来源是仓库 YAML 顶层 variables 块,经「预览仓库配置」
+// 拉取校验成功后由 SyncPacVars 同步进来——前端 PUT 不能改声明,单一事实来源是仓库。
+type PacVarDef struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Required    bool   `json:"required"`
+	Secret      bool   `json:"secret"`
+	Default     string `json:"default"`
+}
+
+// PacVarsConfig 是「流水线即代码」变量的声明 + 填写值(声明哪些无法在仓库代码里决定的字段,
+// 如数据库连接串、服务注册基域)。Values 复用 BuildVar:Secret=true 只存 CredentialID 引用
+// (铁律同 Build.Vars,明文绝不入库);执行侧对 job config 做 ${NAME} 替换,落库 spec 恒为占位符。
+type PacVarsConfig struct {
+	Defs     []PacVarDef `json:"defs"`
+	Values   []BuildVar  `json:"values"`
+	Ref      string      `json:"ref,omitempty"`
+	File     string      `json:"file,omitempty"`
+	SyncedAt time.Time   `json:"-"`
+}
+
 // PipelineStep 是一条自定义脚本步骤(Epic 8 地基 · Story 8-1)。**冻结 DTO**:前端按此对接。
 //
 // 一条 script 步骤在隔离构建容器(Image)内,以克隆出的源码工作区(挂载到 WorkDir 上下文)
@@ -186,13 +208,21 @@ func (r Resource) IsZero() bool {
 type Settings struct {
 	Build     BuildConfig
 	Steps     []PipelineStep
+	PacVars   PacVarsConfig
 	UpdatedAt time.Time
+}
+
+// PacVarsInput 是「流水线与缓存」保存流水线即代码变量值的入参(仅值;声明由 SyncPacVars
+// 从仓库 YAML 同步,不接受前端写)。nil = 保留现值(兼容不带该字段的旧客户端)。
+type PacVarsInput struct {
+	Values []BuildVar
 }
 
 // SettingsInput 是保存入参(secret 项只传 credentialId,不传明文/掩码)。
 type SettingsInput struct {
-	Build BuildConfig
-	Steps []PipelineStep
+	Build   BuildConfig
+	Steps   []PipelineStep
+	PacVars *PacVarsInput
 }
 
 // SettingsService 定义构建/部署配置领域对外接口。
@@ -203,6 +233,11 @@ type SettingsService interface {
 	// Save 规范化(补 id、trim)→ 校验(枚举 / key 非空不重复 / secret 引用存在性)→
 	// 持久化(只存引用,绝无明文 secret)→ 回读返回(secret 项回掩码)。
 	Save(ctx context.Context, projectID string, in SettingsInput) (*Settings, error)
+	// SyncPacVars 把仓库 YAML 解析出的变量声明同步进配置(预览拉取校验成功后调用):
+	// 整体替换 Defs、按 name 保留仍声明的已填值(secret 标志翻转导致类型不符的丢弃)、
+	// 删除孤儿值,并记录来源 ref/file/syncedAt。值里引用的凭据即使已被删除也不报错
+	// (掩码回算处退化为通用点掩码),同步绝不因值问题失败。
+	SyncPacVars(ctx context.Context, projectID string, defs []PacVarDef, ref, file string) (*Settings, error)
 }
 
 // settingsService 是 store + vault 支撑的 SettingsService 实现。
@@ -265,7 +300,8 @@ func (s *settingsService) Get(ctx context.Context, projectID string) (*Settings,
 
 func (s *settingsService) Save(ctx context.Context, projectID string, in SettingsInput) (*Settings, error) {
 	// 确保配置已存在(惰性默认);Get 也完成项目存在性校验。
-	if _, err := s.Get(ctx, projectID); err != nil {
+	current, err := s.Get(ctx, projectID)
+	if err != nil {
 		return nil, err
 	}
 
@@ -277,6 +313,16 @@ func (s *settingsService) Save(ctx context.Context, projectID string, in Setting
 	if err != nil {
 		return nil, err
 	}
+	// PAC 变量值:nil 入参 = 保留现值(旧客户端/AI 应用不带该字段时不抹掉已填值);
+	// 非 nil = 以现声明的 Defs 为准校验并整体替换值。
+	pacVars := current.PacVars
+	if in.PacVars != nil {
+		vals, verr := s.normalizePacVarValues(current.PacVars.Defs, in.PacVars.Values)
+		if verr != nil {
+			return nil, verr
+		}
+		pacVars.Values = vals
+	}
 
 	// 持久化前剥离掩码字段(掩码绝不入库;明文 secret 从不存在于此结构)。
 	buildJSON, err := json.Marshal(toStoredBuild(build))
@@ -287,13 +333,17 @@ func (s *settingsService) Save(ctx context.Context, projectID string, in Setting
 	if err != nil {
 		return nil, fmt.Errorf("pipeline: marshal steps: %w", err)
 	}
+	pacVarsJSON, err := json.Marshal(toStoredPacVars(pacVars))
+	if err != nil {
+		return nil, fmt.Errorf("pipeline: marshal pac vars: %w", err)
+	}
 
 	nowStr := time.Now().UTC().Format(time.RFC3339)
 	_, err = s.db.ExecContext(ctx,
 		`UPDATE pipeline_settings
-		 SET build_json = ?, steps_json = ?, updated_at = ?
+		 SET build_json = ?, steps_json = ?, pac_vars_json = ?, updated_at = ?
 		 WHERE project_id = ?`,
-		string(buildJSON), string(stepsJSON), nowStr, projectID,
+		string(buildJSON), string(stepsJSON), string(pacVarsJSON), nowStr, projectID,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("pipeline: update settings: %w", err)
@@ -301,17 +351,72 @@ func (s *settingsService) Save(ctx context.Context, projectID string, in Setting
 	return s.Get(ctx, projectID)
 }
 
+// SyncPacVars 实现 SettingsService.SyncPacVars:仓库声明整体替换,值按 name 保留/清理。
+func (s *settingsService) SyncPacVars(ctx context.Context, projectID string, defs []PacVarDef, ref, file string) (*Settings, error) {
+	current, err := s.Get(ctx, projectID)
+	if err != nil {
+		return nil, err
+	}
+
+	// 规范化声明(name 唯一;调用方 pipelineyaml 已校验过语法,这里兜底去重/trim)。
+	cleanDefs := make([]PacVarDef, 0, len(defs))
+	seen := make(map[string]struct{}, len(defs))
+	for _, d := range defs {
+		name := strings.TrimSpace(d.Name)
+		if name == "" {
+			continue
+		}
+		if _, dup := seen[name]; dup {
+			continue
+		}
+		seen[name] = struct{}{}
+		cleanDefs = append(cleanDefs, PacVarDef{
+			Name: name, Description: strings.TrimSpace(d.Description),
+			Required: d.Required, Secret: d.Secret, Default: strings.TrimSpace(d.Default),
+		})
+	}
+
+	// 保留仍被声明的已填值:secret 标志以新声明为准,类型不符(明文↔secret 翻转)的丢弃。
+	defByName := make(map[string]PacVarDef, len(cleanDefs))
+	for _, d := range cleanDefs {
+		defByName[d.Name] = d
+	}
+	values := make([]BuildVar, 0, len(current.PacVars.Values))
+	for _, v := range current.PacVars.Values {
+		d, ok := defByName[v.Key]
+		if !ok || d.Secret != v.Secret {
+			continue
+		}
+		values = append(values, v)
+	}
+
+	merged := PacVarsConfig{Defs: cleanDefs, Values: values, Ref: ref, File: file, SyncedAt: time.Now().UTC()}
+	pacVarsJSON, err := json.Marshal(toStoredPacVars(merged))
+	if err != nil {
+		return nil, fmt.Errorf("pipeline: marshal pac vars: %w", err)
+	}
+	nowStr := time.Now().UTC().Format(time.RFC3339)
+	if _, err := s.db.ExecContext(ctx,
+		`UPDATE pipeline_settings SET pac_vars_json = ?, updated_at = ? WHERE project_id = ?`,
+		string(pacVarsJSON), nowStr, projectID,
+	); err != nil {
+		return nil, fmt.Errorf("pipeline: sync pac vars: %w", err)
+	}
+	return s.Get(ctx, projectID)
+}
+
 // load 读取已存在的配置行并回算掩码。无行 → sql.ErrNoRows(由 Get 转惰性默认)。
 func (s *settingsService) load(ctx context.Context, projectID string) (*Settings, error) {
 	var (
-		buildJSON  string
-		stepsJSON  string
-		updatedStr string
+		buildJSON   string
+		stepsJSON   string
+		pacVarsJSON string
+		updatedStr  string
 	)
 	err := s.db.QueryRowContext(ctx,
-		`SELECT build_json, steps_json, updated_at
+		`SELECT build_json, steps_json, pac_vars_json, updated_at
 		 FROM pipeline_settings WHERE project_id = ?`, projectID,
-	).Scan(&buildJSON, &stepsJSON, &updatedStr)
+	).Scan(&buildJSON, &stepsJSON, &pacVarsJSON, &updatedStr)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, sql.ErrNoRows
@@ -331,13 +436,21 @@ func (s *settingsService) load(ctx context.Context, projectID string) (*Settings
 			return nil, fmt.Errorf("pipeline: parse steps: %w", err)
 		}
 	}
+	var pacVars PacVarsConfig
+	if strings.TrimSpace(pacVarsJSON) != "" {
+		var stored storedPacVars
+		if err := json.Unmarshal([]byte(pacVarsJSON), &stored); err != nil {
+			return nil, fmt.Errorf("pipeline: parse pac vars: %w", err)
+		}
+		pacVars = fromStoredPacVars(stored)
+	}
 
 	updated, err := time.Parse(time.RFC3339, updatedStr)
 	if err != nil {
 		return nil, fmt.Errorf("pipeline: parse updated_at: %w", err)
 	}
 
-	st := &Settings{Build: build, Steps: steps, UpdatedAt: updated}
+	st := &Settings{Build: build, Steps: steps, PacVars: pacVars, UpdatedAt: updated}
 	normalizeSettingsShape(st)
 	// 回算掩码(读取库内引用对应保险库 masked_value;明文 secret 从不入库)。
 	if err := s.applyMasks(ctx, st); err != nil {
@@ -608,6 +721,15 @@ func (s *settingsService) applyMasks(ctx context.Context, st *Settings) error {
 			}
 		}
 	}
+	for i := range st.PacVars.Values {
+		if st.PacVars.Values[i].Secret {
+			masked, err := s.maskedFor(ctx, st.PacVars.Values[i].CredentialID)
+			if err != nil {
+				return err
+			}
+			st.PacVars.Values[i].MaskedValue = masked
+		}
+	}
 	return nil
 }
 
@@ -735,6 +857,12 @@ func normalizeSettingsShape(st *Settings) {
 	if st.Steps == nil {
 		st.Steps = []PipelineStep{}
 	}
+	if st.PacVars.Defs == nil {
+		st.PacVars.Defs = []PacVarDef{}
+	}
+	if st.PacVars.Values == nil {
+		st.PacVars.Values = []BuildVar{}
+	}
 	for i := range st.Steps {
 		if st.Steps[i].Commands == nil {
 			st.Steps[i].Commands = []string{}
@@ -743,4 +871,92 @@ func normalizeSettingsShape(st *Settings) {
 			st.Steps[i].Env = []BuildVar{}
 		}
 	}
+}
+
+// normalizePacVarValues 校验并规范化一组 PAC 变量值(以声明的 Defs 为准):
+//   - 每个值的 key 必须是已声明变量名(未声明的拒绝,防绕过声明直接塞值);
+//   - secret 标志以声明为准:secret 声明必须给 credentialId(经保险库校验存在),明文只收 value;
+//   - 同名重复拒绝;未出现的声明视为未填(合法,required 检查在执行侧)。
+func (s *settingsService) normalizePacVarValues(defs []PacVarDef, in []BuildVar) ([]BuildVar, error) {
+	defByName := make(map[string]PacVarDef, len(defs))
+	for _, d := range defs {
+		defByName[d.Name] = d
+	}
+	out := make([]BuildVar, 0, len(in))
+	seen := make(map[string]struct{}, len(in))
+	for _, v := range in {
+		key := strings.TrimSpace(v.Key)
+		d, ok := defByName[key]
+		if !ok {
+			return nil, fmt.Errorf("%w: 变量 %q 未在仓库 YAML 中声明", ErrInvalidVar, key)
+		}
+		if _, dup := seen[key]; dup {
+			return nil, fmt.Errorf("%w: duplicate key %q", ErrInvalidVar, key)
+		}
+		seen[key] = struct{}{}
+
+		id := strings.TrimSpace(v.ID)
+		if id == "" {
+			id = uuid.NewString()
+		}
+		nv := BuildVar{ID: id, Key: key}
+		if d.Secret {
+			// 声明为 secret:只收 credentialId 引用,明文绝不留存(不读 v.Value)。
+			credID := strings.TrimSpace(v.CredentialID)
+			if credID == "" {
+				return nil, fmt.Errorf("%w: secret 变量 %q requires a credentialId", ErrInvalidVar, key)
+			}
+			if err := s.ensureCredentialExists(credID); err != nil {
+				return nil, err
+			}
+			nv.Secret = true
+			nv.CredentialID = credID
+		} else {
+			// 声明为明文:忽略误传的 credentialId,只存明文值。
+			nv.Value = v.Value
+		}
+		out = append(out, nv)
+	}
+	return out, nil
+}
+
+// ---- PAC 变量持久化形状(剥离掩码与 SyncedAt 的 RFC3339 串;明文 secret 从不存在于此结构) ----
+
+type storedPacVars struct {
+	Defs     []PacVarDef `json:"defs"`
+	Values   []storedVar `json:"values"`
+	Ref      string      `json:"ref,omitempty"`
+	File     string      `json:"file,omitempty"`
+	SyncedAt string      `json:"syncedAt,omitempty"`
+}
+
+func toStoredPacVars(in PacVarsConfig) storedPacVars {
+	defs := in.Defs
+	if defs == nil {
+		defs = []PacVarDef{}
+	}
+	out := storedPacVars{Defs: defs, Values: toStoredVars(in.Values), Ref: in.Ref, File: in.File}
+	if !in.SyncedAt.IsZero() {
+		out.SyncedAt = in.SyncedAt.UTC().Format(time.RFC3339)
+	}
+	return out
+}
+
+func fromStoredPacVars(in storedPacVars) PacVarsConfig {
+	out := PacVarsConfig{Defs: in.Defs, Values: []BuildVar{}, Ref: in.Ref, File: in.File}
+	for _, sv := range in.Values {
+		v := BuildVar{ID: sv.ID, Key: sv.Key, Secret: sv.Secret}
+		if sv.Secret {
+			v.CredentialID = sv.CredentialID // 仅引用,绝无明文
+		} else {
+			v.Value = sv.Value
+		}
+		out.Values = append(out.Values, v)
+	}
+	if in.SyncedAt != "" {
+		if ts, err := time.Parse(time.RFC3339, in.SyncedAt); err == nil {
+			out.SyncedAt = ts
+		}
+	}
+	return out
 }

@@ -48,6 +48,8 @@ var (
 	ErrProjectHasActiveRuns = errors.New("project: has active runs")
 	// ErrInvalidInput 表示创建 pushed 项目入参非法(来源键为空等)。
 	ErrInvalidInput = errors.New("project: invalid input")
+	// ErrInvalidPacFile 表示「流水线即代码」文件路径非法(绝对路径/.. 段/超长等)。
+	ErrInvalidPacFile = errors.New("project: invalid pac file")
 )
 
 // 分页上限常量:防全量返回拖垮内存/响应。
@@ -85,6 +87,10 @@ type Project struct {
 	// PacEnabled 是「流水线即代码」开关(GitOps · FR-8-12):开启后运行时按运行分支读仓库根
 	// .pipewright.yml 驱动该 run(缺失/非法回退库内配置)。默认 false。
 	PacEnabled bool
+	// PacFile 是「流水线即代码」文件路径(可指定文件,不写死 .pipewright.yml):空 = 默认
+	// DefaultPacFile;非空 = 运行时/预览/AI 运维从该仓库内相对路径读流水线文件
+	// (如 ci/pipeline.yml)。入口经 NormalizePacFile 校验。
+	PacFile string
 	// PRStatusEnabled 是「PR 状态检查」开关(Story 8-9 / FR-8-9):开启后 run 终态据项目仓库识别
 	// GitHub/Gitee,经项目凭据回写该 commit 的提交状态(PR 检查)。默认 false。
 	PRStatusEnabled bool
@@ -107,6 +113,9 @@ type UpdateInput struct {
 	CredentialID  *string
 	// PacEnabled 切换「流水线即代码」开关;nil 表示不修改。
 	PacEnabled *bool
+	// PacFile 设置「流水线即代码」文件路径(空串 = 回默认文件);nil 表示不修改。
+	// 经 NormalizePacFile 校验,非法 → ErrInvalidPacFile。
+	PacFile *string
 	// PRStatusEnabled 切换「PR 状态检查」开关;nil 表示不修改。
 	PRStatusEnabled *bool
 }
@@ -118,6 +127,57 @@ type TestCloneResult struct {
 
 // DefaultBranchFallback 是探测不出远端 HEAD 且用户未指定时的兜底默认分支。
 const DefaultBranchFallback = "master"
+
+// DefaultPacFile 是「流水线即代码」的默认文件名(pac_file 为空时生效)。
+// 运行时覆盖(pacloader)/预览(pac_preview)/AI 运维(ops_project_backend)统一经
+// EffectivePacFile 取生效文件,不再各持内联常量。
+const DefaultPacFile = ".pipewright.yml"
+
+// PacFileMax 是 pac_file 的长度上限(与迁移 0105 的列宽对齐)。
+const PacFileMax = 200
+
+// NormalizePacFile 校验并规范化「流水线即代码」文件路径:必须是仓库内相对路径
+// (正斜杠分隔,拒绝绝对路径/盘符/反斜杠/~ 与 .. 段、空段),长度 ≤ PacFileMax。
+// 空串合法(= 回默认文件 DefaultPacFile)。非法 → ErrInvalidPacFile。
+func NormalizePacFile(in string) (string, error) {
+	f := strings.TrimSpace(in)
+	if f == "" {
+		return "", nil
+	}
+	if len(f) > PacFileMax {
+		return "", fmt.Errorf("%w: 超长(上限 %d 字符)", ErrInvalidPacFile, PacFileMax)
+	}
+	if strings.HasPrefix(f, "/") || strings.HasPrefix(f, "\\") {
+		return "", fmt.Errorf("%w: %q 必须是仓库内相对路径", ErrInvalidPacFile, in)
+	}
+	if len(f) >= 2 && f[1] == ':' && isASCIILetter(f[0]) {
+		return "", fmt.Errorf("%w: %q 不能是盘符绝对路径", ErrInvalidPacFile, in)
+	}
+	if strings.HasPrefix(f, "~") {
+		return "", fmt.Errorf("%w: %q 不能以 ~ 开头", ErrInvalidPacFile, in)
+	}
+	if strings.Contains(f, "\\") {
+		return "", fmt.Errorf("%w: %q 请使用正斜杠 / 分隔", ErrInvalidPacFile, in)
+	}
+	for _, seg := range strings.Split(f, "/") {
+		if seg == "" || seg == "." || seg == ".." {
+			return "", fmt.Errorf("%w: %q 含空段或 . / .. 段", ErrInvalidPacFile, in)
+		}
+	}
+	return f, nil
+}
+
+// EffectivePacFile 返回项目实际生效的「流水线即代码」文件路径(空配置回默认)。
+func EffectivePacFile(pacFile string) string {
+	if f := strings.TrimSpace(pacFile); f != "" {
+		return f
+	}
+	return DefaultPacFile
+}
+
+func isASCIILetter(b byte) bool {
+	return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z')
+}
 
 // ListResult 是分页列表结果(契约可携带分页元信息;DTO 兼容)。
 type ListResult struct {
@@ -299,7 +359,7 @@ func (s *service) ListPaged(ctx context.Context, page, pageSize int) (*ListResul
 	offset := (page - 1) * pageSize
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT p.id, p.name, p.repo_url, p.default_branch, p.credential_id,
-		        COALESCE(c.name, ''), p.pac_enabled, p.pr_status_enabled, p.created_at, p.updated_at,
+		        COALESCE(c.name, ''), p.pac_enabled, p.pr_status_enabled, p.pac_file, p.created_at, p.updated_at,
 		        p.source_type, p.origin_node_id, p.origin_project_ref
 		 FROM projects p
 		 LEFT JOIN credentials c ON c.id = p.credential_id
@@ -349,7 +409,7 @@ func (s *service) ListPagedByIDs(ctx context.Context, ids []string, page, pageSi
 	listArgs := append(append([]any{}, args...), pageSize, offset)
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT p.id, p.name, p.repo_url, p.default_branch, p.credential_id,
-		        COALESCE(c.name, ''), p.pac_enabled, p.pr_status_enabled, p.created_at, p.updated_at,
+		        COALESCE(c.name, ''), p.pac_enabled, p.pr_status_enabled, p.pac_file, p.created_at, p.updated_at,
 		        p.source_type, p.origin_node_id, p.origin_project_ref
 		 FROM projects p
 		 LEFT JOIN credentials c ON c.id = p.credential_id
@@ -380,7 +440,7 @@ func (s *service) ListPagedByIDs(ctx context.Context, ids []string, page, pageSi
 func (s *service) Get(ctx context.Context, id string) (*Project, error) {
 	row := s.db.QueryRowContext(ctx,
 		`SELECT p.id, p.name, p.repo_url, p.default_branch, p.credential_id,
-		        COALESCE(c.name, ''), p.pac_enabled, p.pr_status_enabled, p.created_at, p.updated_at,
+		        COALESCE(c.name, ''), p.pac_enabled, p.pr_status_enabled, p.pac_file, p.created_at, p.updated_at,
 		        p.source_type, p.origin_node_id, p.origin_project_ref
 		 FROM projects p
 		 LEFT JOIN credentials c ON c.id = p.credential_id
@@ -398,11 +458,11 @@ func (s *service) Get(ctx context.Context, id string) (*Project, error) {
 
 func (s *service) Update(ctx context.Context, id string, in UpdateInput) (*Project, error) {
 	// 先取当前行(需 repo_url + credential_id 以便在改绑凭据时重做校验)。
-	var name, repoURL, defaultBranch, credentialID string
+	var name, repoURL, defaultBranch, credentialID, pacFile string
 	var pacInt, prStatusInt int
 	err := s.db.QueryRowContext(ctx,
-		`SELECT name, repo_url, default_branch, credential_id, pac_enabled, pr_status_enabled FROM projects WHERE id = ?`, id,
-	).Scan(&name, &repoURL, &defaultBranch, &credentialID, &pacInt, &prStatusInt)
+		`SELECT name, repo_url, default_branch, credential_id, pac_enabled, pr_status_enabled, pac_file FROM projects WHERE id = ?`, id,
+	).Scan(&name, &repoURL, &defaultBranch, &credentialID, &pacInt, &prStatusInt, &pacFile)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
@@ -437,6 +497,13 @@ func (s *service) Update(ctx context.Context, id string, in UpdateInput) (*Proje
 	if in.PRStatusEnabled != nil {
 		prStatusEnabled = *in.PRStatusEnabled
 	}
+	if in.PacFile != nil {
+		f, nerr := NormalizePacFile(*in.PacFile)
+		if nerr != nil {
+			return nil, nerr
+		}
+		pacFile = f
+	}
 
 	pacInt = 0
 	if pacEnabled {
@@ -448,8 +515,8 @@ func (s *service) Update(ctx context.Context, id string, in UpdateInput) (*Proje
 	}
 	nowStr := time.Now().UTC().Format(time.RFC3339)
 	_, err = s.db.ExecContext(ctx,
-		`UPDATE projects SET name = ?, default_branch = ?, credential_id = ?, pac_enabled = ?, pr_status_enabled = ?, updated_at = ? WHERE id = ?`,
-		name, defaultBranch, credentialID, pacInt, prStatusInt, nowStr, id,
+		`UPDATE projects SET name = ?, default_branch = ?, credential_id = ?, pac_enabled = ?, pr_status_enabled = ?, pac_file = ?, updated_at = ? WHERE id = ?`,
+		name, defaultBranch, credentialID, pacInt, prStatusInt, pacFile, nowStr, id,
 	)
 	if err != nil {
 		if isForeignKeyErr(err) {
@@ -513,7 +580,7 @@ func scanProject(sc scanner) (*Project, error) {
 	var pacInt, prStatusInt int
 	if err := sc.Scan(
 		&p.ID, &p.Name, &p.RepoURL, &p.DefaultBranch, &p.CredentialID,
-		&p.CredentialName, &pacInt, &prStatusInt, &createdStr, &updatedStr,
+		&p.CredentialName, &pacInt, &prStatusInt, &p.PacFile, &createdStr, &updatedStr,
 		&p.SourceType, &p.OriginNodeID, &p.OriginProjectRef,
 	); err != nil {
 		return nil, err

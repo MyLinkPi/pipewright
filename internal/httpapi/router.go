@@ -1084,14 +1084,15 @@ func New(webFS fs.FS, authn auth.Authenticator, opts ...Option) http.Handler {
 		// 只读源码读取(Story 3.6;FR-4 预埋,7-4 消费):go-git 浅克隆读 tree/blob。
 		// 复用已注入 projects(p)+ vault(v)取凭据 + 注入的 SourceReader。reader 为 nil → 503。
 		// /source/tree、/source/blob 比 /projects/{id} 多两段,不会被吞;GET 过 auth。
-		srcDeps := sourceDeps{projects: p, vault: v, reader: o.sourceReader}
+		srcDeps := sourceDeps{projects: p, vault: v, reader: o.sourceReader, settings: ps}
 		ar.Get("/projects/{id}/source/tree", makeSourceTreeHandler(srcDeps))
 		ar.Get("/projects/{id}/source/blob", makeSourceBlobHandler(srcDeps))
 
-		// 「流水线即代码」预览/校验(GitOps Slice 3):按 ref 拉取仓库 .pipewright.yml 并校验,
-		// 让用户在依赖它驱动运行之前看清运行时会用到的配置摘要、显式捕获 YAML 错误(运行时静默回退)。
-		// 复用 srcDeps(projects + vault + SourceReader);/pac/preview 比 /projects/{id} 多两段,不会被吞;GET 过 auth。
-		ar.Get("/projects/{id}/pac/preview", makePacPreviewHandler(srcDeps))
+		// 「流水线即代码」预览/校验(GitOps Slice 3):按 ref 拉取仓库流水线文件(项目可指定
+		// pac_file,查询参数 file 可临时覆盖)并校验,让用户在依赖它驱动运行之前看清运行时会
+		// 用到的配置摘要、显式捕获 YAML 错误(运行时静默回退);校验通过同步变量声明进
+		// pipeline_settings(「变量与缓存」展示填写)。/pac/preview 比 /projects/{id} 多两段,不会被吞;GET 过 auth。
+		ar.Get("/projects/{id}/pac/preview", makePacPreviewHandler(srcDeps, aud))
 
 		// 列仓库分支/tag(代码管理区 · Story 8-18):供前端触发时分支/commit 下拉。o.refsLister 为 nil → 503。
 		ar.Get("/projects/{id}/refs", makeListRefsHandler(p, v, o.refsLister))

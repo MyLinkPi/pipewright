@@ -93,7 +93,7 @@ commands:
   - echo "VERSION=$(cat version.txt)" >> $PIPEWRIGHT_ENV
 ```
 
-容器内引用变量用普通 shell 语法 `$VAR`;YAML 层不做 `${VAR}` 展开。git sha、分支等运行上下文**不是**环境变量,只能通过下述占位符用在支持的字段里。
+容器内引用变量用普通 shell 语法 `$VAR`;**声明的流水线变量**例外——顶层 `variables:` 声明、平台「变量与缓存」填值的变量,在**仓库文件驱动的运行**里对全部 job config 字符串值做 `${NAME}` 替换(含 `script.env` 的值、`commands` 行、部署节点配置;需要环境变量时在 `env` 里写 `KEY: ${NAME}` 自行声明)。替换只发生在执行瞬间,落库/回显恒为占位符;secret 值替换后全程脱敏;`required: true` 未填值则运行被拦截并列出变量名。未声明的 `${X}` 原样保留,交给容器内 shell。git sha、分支等运行上下文**不是**环境变量,只能通过下述占位符用在支持的字段里。
 
 ## 占位符 {{...}}
 

@@ -25,7 +25,6 @@ import (
 const (
 	opsProjectTextBytes = 32 << 10
 	opsProjectFailBytes = 4 << 10
-	opsProjectPacFile   = ".pipewright.yml"
 )
 
 // OpsProjectBackend 实现 opschat.ProjectBackend;各字段均为只读服务引用。
@@ -205,12 +204,14 @@ func (b *OpsProjectBackend) RepoConfig(ctx context.Context, projectID, branch st
 	if branch == "" {
 		branch = strings.TrimSpace(p.DefaultBranch)
 	}
-	out := map[string]any{"pacEnabled": p.PacEnabled, "ref": branch, "file": opsProjectPacFile, "found": false}
+	// 生效文件:项目可指定 pac_file(可指定文件,不写死 .pipewright.yml);空回默认。
+	file := project.EffectivePacFile(p.PacFile)
+	out := map[string]any{"pacEnabled": p.PacEnabled, "ref": branch, "file": file, "found": false}
 	repoURL, cred := b.resolveSource(p)
 	if repoURL == "" {
 		return opsProjectMarshal(out)
 	}
-	blob, err := b.reader.Blob(ctx, repoURL, cred, branch, opsProjectPacFile)
+	blob, err := b.reader.Blob(ctx, repoURL, cred, branch, file)
 	if err != nil || blob.Binary {
 		// 拉不到/二进制:按「文件不存在」呈现(与 pac 预览一致,不报错)。
 		return opsProjectMarshal(out)
@@ -221,19 +222,29 @@ func (b *OpsProjectBackend) RepoConfig(ctx context.Context, projectID, branch st
 		out["error"] = "file is empty"
 		return opsProjectMarshal(out)
 	}
-	cfg, perr := pipelineyaml.Parse([]byte(blob.Content))
+	doc, perr := pipelineyaml.ParseDocument([]byte(blob.Content))
 	if perr != nil {
 		out["valid"] = false
 		out["error"] = clipText(perr.Error(), 512)
 		return opsProjectMarshal(out)
 	}
 	out["valid"] = true
-	out["stageCount"] = len(cfg.Spec.Stages)
+	out["stageCount"] = len(doc.Config.Spec.Stages)
 	stages := []map[string]any{}
-	for _, st := range cfg.Spec.Stages {
+	for _, st := range doc.Config.Spec.Stages {
 		stages = append(stages, map[string]any{"name": st.Name, "kind": st.Kind, "jobCount": len(st.Jobs)})
 	}
 	out["stages"] = stages
+	if len(doc.Variables) > 0 {
+		vars := []map[string]any{}
+		for _, vd := range doc.Variables {
+			vars = append(vars, map[string]any{
+				"name": vd.Name, "description": vd.Description,
+				"required": vd.Required, "secret": vd.Secret, "default": vd.Default,
+			})
+		}
+		out["variables"] = vars
+	}
 	out["yaml"] = clipText(blob.Content, opsProjectTextBytes)
 	return opsProjectMarshal(out)
 }

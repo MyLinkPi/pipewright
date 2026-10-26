@@ -23,6 +23,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -52,8 +53,9 @@ const (
 // ---- YAML 文档形状(确定性字段顺序;仅用于解析/序列化,与持久化 JSON 解耦) ----
 
 type doc struct {
-	Version int         `yaml:"version,omitempty"`
-	Stages  []stageNode `yaml:"stages"`
+	Version   int          `yaml:"version,omitempty"`
+	Variables []varDefNode `yaml:"variables,omitempty"`
+	Stages    []stageNode  `yaml:"stages"`
 }
 
 type stageNode struct {
@@ -113,28 +115,74 @@ type scriptNode struct {
 	WorkDir  string            `yaml:"workdir,omitempty"`
 }
 
+// varDefNode 是顶层 `variables:` 里的一条变量声明(流水线即代码 · 变量)。
+// 声明的是「无法在仓库代码里决定的字段」(如数据库连接串、服务注册基域):name/description
+// 供平台「变量与缓存」展示填写;secret=true 的值在平台侧走保险库凭据引用,绝不出现在 YAML。
+type varDefNode struct {
+	Name        string `yaml:"name"`
+	Description string `yaml:"description,omitempty"`
+	Required    bool   `yaml:"required,omitempty"`
+	Secret      bool   `yaml:"secret,omitempty"`
+	Default     string `yaml:"default,omitempty"`
+}
+
+// VarDef 是一条已校验的变量声明(导出形状,供 settings 同步 / 预览响应复用)。
+type VarDef struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Required    bool   `json:"required"`
+	Secret      bool   `json:"secret"`
+	Default     string `json:"default"`
+}
+
+// Document 是一次完整解析的产物:流水线 Config + 顶层变量声明。
+// Marshal 不回写 variables(画布 spec 不持有声明,声明只来自仓库 YAML;见 ParseDocument 注释)。
+type Document struct {
+	Config    pipeline.Config
+	Variables []VarDef
+}
+
 // Parse 把 `.pipewright.yml` 文档字节解析为已校验、已规范化的 pipeline.Config。
-//
-// 流程:严格 YAML 解码(未知字段报错)→ 摊平 script 块进 Job.Config → 组装 pipeline.Spec →
-// 复用 pipeline.NormalizeSpec 做全部领域校验 → 经 pipeline.RenderYAML 回填规范 YAML。
-// 任何失败都包成 ErrParse(领域校验错误经 %w 挂在链上,便于上层精确映射状态码)。
+// 等价于 ParseDocument 后丢弃变量声明(老调用方兼容薄封装;需要变量声明的调用方用 ParseDocument)。
 func Parse(data []byte) (pipeline.Config, error) {
+	pd, err := ParseDocument(data)
+	if err != nil {
+		return pipeline.Config{}, err
+	}
+	return pd.Config, nil
+}
+
+// ParseDocument 把 `.pipewright.yml` 文档字节解析为已校验、已规范化的 Document
+// (pipeline.Config + 顶层 variables 声明)。
+//
+// 流程:严格 YAML 解码(未知字段报错)→ 校验变量声明 → 摊平 script 块进 Job.Config →
+// 组装 pipeline.Spec → 复用 pipeline.NormalizeSpec 做全部领域校验 → 经 pipeline.RenderYAML
+// 回填规范 YAML。任何失败都包成 ErrParse(领域校验错误经 %w 挂在链上,便于上层精确映射状态码)。
+//
+// 变量声明不进 Spec:${NAME} 占位符原样保留在 Config 里,替换只发生在执行瞬间
+// (internal/build 的内存 job config 上)——落库/回显恒为占位符,secret 不经此层。
+func ParseDocument(data []byte) (*Document, error) {
 	if len(strings.TrimSpace(string(data))) == 0 {
-		return pipeline.Config{}, fmt.Errorf("%w: 文档为空", ErrParse)
+		return nil, fmt.Errorf("%w: 文档为空", ErrParse)
 	}
 
 	var d doc
 	dec := yaml.NewDecoder(strings.NewReader(string(data)))
 	dec.KnownFields(true) // 拒绝未知字段,避免静默吞掉拼错的键
 	if err := dec.Decode(&d); err != nil {
-		return pipeline.Config{}, fmt.Errorf("%w: YAML 语法/结构错误: %s", ErrParse, sanitizeYAMLErr(err))
+		return nil, fmt.Errorf("%w: YAML 语法/结构错误: %s", ErrParse, sanitizeYAMLErr(err))
 	}
 
 	if d.Version != 0 && d.Version != SchemaVersion {
-		return pipeline.Config{}, fmt.Errorf("%w: 不支持的 version %d(当前支持 %d)", ErrParse, d.Version, SchemaVersion)
+		return nil, fmt.Errorf("%w: 不支持的 version %d(当前支持 %d)", ErrParse, d.Version, SchemaVersion)
 	}
 	if len(d.Stages) == 0 {
-		return pipeline.Config{}, fmt.Errorf("%w: 至少需要一个 stage", ErrParse)
+		return nil, fmt.Errorf("%w: 至少需要一个 stage", ErrParse)
+	}
+
+	vars, err := varDefsFromNodes(d.Variables)
+	if err != nil {
+		return nil, err
 	}
 
 	stages := make([]pipeline.Stage, 0, len(d.Stages))
@@ -144,7 +192,7 @@ func Parse(data []byte) (pipeline.Config, error) {
 		for ji, jn := range sn.Jobs {
 			cfg, err := jobConfig(jn)
 			if err != nil {
-				return pipeline.Config{}, fmt.Errorf("%w: %s 的任务 #%d(%s): %s", ErrParse, stageLabel, ji+1, jobLabel(jn), err)
+				return nil, fmt.Errorf("%w: %s 的任务 #%d(%s): %s", ErrParse, stageLabel, ji+1, jobLabel(jn), err)
 			}
 			jobs = append(jobs, pipeline.Job{
 				ID:      strings.TrimSpace(jn.ID),
@@ -180,14 +228,61 @@ func Parse(data []byte) (pipeline.Config, error) {
 	// 用 %w 双层挂链(ErrParse + 领域 ErrInvalidStage/ErrInvalidJob/...),便于上层精确映射状态码。
 	spec, err := pipeline.NormalizeSpec(pipeline.Spec{Stages: stages})
 	if err != nil {
-		return pipeline.Config{}, fmt.Errorf("%w: %w", ErrParse, err)
+		return nil, fmt.Errorf("%w: %w", ErrParse, err)
 	}
 
 	renderedYAML, err := pipeline.RenderYAML(spec)
 	if err != nil {
-		return pipeline.Config{}, fmt.Errorf("%w: 渲染 YAML 失败", ErrParse)
+		return nil, fmt.Errorf("%w: 渲染 YAML 失败", ErrParse)
 	}
-	return pipeline.Config{Spec: spec, YAML: renderedYAML, Status: pipeline.StatusDraft}, nil
+	return &Document{
+		Config:    pipeline.Config{Spec: spec, YAML: renderedYAML, Status: pipeline.StatusDraft},
+		Variables: vars,
+	}, nil
+}
+
+// varDefNameRe 约束变量名与 ${NAME} 占位符语法一致(标识符,大小写敏感)。
+var varDefNameRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+// varDefDescMax 是 description 的长度上限(纯展示字段,防无界文本)。
+const varDefDescMax = 500
+
+// varDefsFromNodes 校验并转换顶层 variables 声明:
+//   - name 非空(trim 后)、文档内唯一、匹配标识符语法(与 ${NAME} 占位符一致);
+//   - secret: true 不得带 default(default 是明文落仓库的,secret 值只能走平台保险库);
+//   - description trim、长度有界。
+//
+// 返回顺序与声明顺序一致(平台「变量与缓存」按此稳定展示)。
+func varDefsFromNodes(in []varDefNode) ([]VarDef, error) {
+	if len(in) == 0 {
+		return nil, nil
+	}
+	out := make([]VarDef, 0, len(in))
+	seen := make(map[string]struct{}, len(in))
+	for i, n := range in {
+		name := strings.TrimSpace(n.Name)
+		if name == "" {
+			return nil, fmt.Errorf("%w: variables 第 %d 条缺少 name", ErrParse, i+1)
+		}
+		if !varDefNameRe.MatchString(name) {
+			return nil, fmt.Errorf("%w: 变量名 %q 非法(仅限字母/数字/下划线,且不以数字开头)", ErrParse, name)
+		}
+		if _, dup := seen[name]; dup {
+			return nil, fmt.Errorf("%w: 变量 %q 重复声明", ErrParse, name)
+		}
+		seen[name] = struct{}{}
+
+		desc := strings.TrimSpace(n.Description)
+		if len([]rune(desc)) > varDefDescMax {
+			return nil, fmt.Errorf("%w: 变量 %q 的 description 超长(上限 %d 字符)", ErrParse, name, varDefDescMax)
+		}
+		def := strings.TrimSpace(n.Default)
+		if n.Secret && def != "" {
+			return nil, fmt.Errorf("%w: secret 变量 %q 不能带 default(secret 值不在 YAML 里,请到平台「变量与缓存」配置保险库凭据)", ErrParse, name)
+		}
+		out = append(out, VarDef{Name: name, Description: desc, Required: n.Required, Secret: n.Secret, Default: def})
+	}
+	return out, nil
 }
 
 // Marshal 把 pipeline.Spec 序列化为人类友好的 `.pipewright.yml` 文档字节。

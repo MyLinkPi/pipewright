@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"net/http"
+	neturl "net/url"
 	"testing"
 )
 
@@ -107,5 +108,111 @@ func TestPacPreviewProjectNotFound(t *testing.T) {
 	code, _, _ := getJSON(t, client, srv.URL+"/api/projects/no-such-id/pac/preview", csrf)
 	if code != http.StatusNotFound {
 		t.Fatalf("未知项目应 404, got %d", code)
+	}
+}
+
+// ---- 可指定文件 + 变量声明同步(流水线即代码 · 变量)----
+
+const varsPacYAML = `version: 1
+variables:
+  - name: DB_CONN
+    description: 生产数据库连接字符串
+    required: true
+    secret: true
+  - name: BASE_DOMAIN
+    description: 服务注册基域
+    default: internal.example.com
+stages:
+  - name: 源码
+    kind: source
+    jobs:
+      - name: checkout
+        type: source
+`
+
+// TestPacPreviewFileParamSyncsVariables 验证:file 查询参数临时指定文件 → 校验通过返回
+// variables 声明,并把声明同步进 pipeline_settings(GET settings 可见,defs 只读元信息)。
+func TestPacPreviewFileParamSyncsVariables(t *testing.T) {
+	url := makeBareSourceRepo(t, map[string]string{"ci/pipeline.yml": varsPacYAML})
+	srv, client, csrf, projID := setupSourceServer(t, url)
+
+	code, m, raw := getJSON(t, client, srv.URL+"/api/projects/"+projID+"/pac/preview?file=ci/pipeline.yml", csrf)
+	if code != http.StatusOK {
+		t.Fatalf("preview status=%d: %s", code, raw)
+	}
+	if m["found"] != true || m["valid"] != true || m["file"] != "ci/pipeline.yml" {
+		t.Fatalf("应命中指定文件, got %s", raw)
+	}
+	vars, ok := m["variables"].([]any)
+	if !ok || len(vars) != 2 {
+		t.Fatalf("variables 应有 2 条声明, got %s", raw)
+	}
+	dbVar, _ := vars[0].(map[string]any)
+	if dbVar["name"] != "DB_CONN" || dbVar["required"] != true || dbVar["secret"] != true {
+		t.Fatalf("DB_CONN 声明不符: %v", dbVar)
+	}
+
+	// 声明已同步进 pipeline_settings(「变量与缓存」数据源)。
+	code, m, raw = getJSON(t, client, srv.URL+"/api/projects/"+projID+"/pipeline/settings", csrf)
+	if code != http.StatusOK {
+		t.Fatalf("settings status=%d: %s", code, raw)
+	}
+	pv, _ := m["pacVars"].(map[string]any)
+	if pv == nil {
+		t.Fatalf("settings 应含 pacVars, got %s", raw)
+	}
+	defs, _ := pv["defs"].([]any)
+	if len(defs) != 2 {
+		t.Fatalf("pacVars.defs 应有 2 条, got %s", raw)
+	}
+	if pv["ref"] != "main" || pv["file"] != "ci/pipeline.yml" {
+		t.Fatalf("同步来源元信息不符: %v", pv)
+	}
+}
+
+// TestPacPreviewProjectPacFile 验证项目 pac_file 配置生效:预览默认读该文件,
+// 仓库没有 .pipewright.yml 也能命中自定义路径。
+func TestPacPreviewProjectPacFile(t *testing.T) {
+	url := makeBareSourceRepo(t, map[string]string{"ci/pipeline.yml": validPacYAML})
+	srv, client, csrf, projID := setupSourceServer(t, url, "ci/pipeline.yml")
+
+	code, m, raw := getJSON(t, client, srv.URL+"/api/projects/"+projID+"/pac/preview", csrf)
+	if code != http.StatusOK {
+		t.Fatalf("preview status=%d: %s", code, raw)
+	}
+	if m["found"] != true || m["valid"] != true || m["file"] != "ci/pipeline.yml" {
+		t.Fatalf("应按项目 pac_file 命中, got %s", raw)
+	}
+}
+
+// TestPacPreviewInvalidFileParam 验证 file 查询参数非法(绝对路径/.. 段)→ 400。
+func TestPacPreviewInvalidFileParam(t *testing.T) {
+	url := makeBareSourceRepo(t, map[string]string{".pipewright.yml": validPacYAML})
+	srv, client, csrf, projID := setupSourceServer(t, url)
+
+	for _, bad := range []string{"../etc/passwd", "/abs/p.yml", `C:\x\y.yml`} {
+		code, _, _ := getJSON(t, client, srv.URL+"/api/projects/"+projID+"/pac/preview?file="+neturl.QueryEscape(bad), csrf)
+		if code != http.StatusBadRequest {
+			t.Fatalf("非法 file %q 应 400, got %d", bad, code)
+		}
+	}
+}
+
+// TestPacPreviewInvalidYAMLNoSync 验证校验失败不污染已同步的声明。
+func TestPacPreviewInvalidYAMLNoSync(t *testing.T) {
+	url := makeBareSourceRepo(t, map[string]string{
+		".pipewright.yml": "stages:\n  - name: x\n    kind: not_a_real_kind\n",
+	})
+	srv, client, csrf, projID := setupSourceServer(t, url)
+
+	if _, m, raw := getJSON(t, client, srv.URL+"/api/projects/"+projID+"/pac/preview", csrf); m["valid"] != false {
+		t.Fatalf("应 valid=false, got %s", raw)
+	}
+	_, m, raw := getJSON(t, client, srv.URL+"/api/projects/"+projID+"/pipeline/settings", csrf)
+	pv, _ := m["pacVars"].(map[string]any)
+	if pv != nil {
+		if defs, _ := pv["defs"].([]any); len(defs) != 0 {
+			t.Fatalf("校验失败不应同步声明, got %s", raw)
+		}
 	}
 }

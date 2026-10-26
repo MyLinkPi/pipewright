@@ -1,0 +1,11 @@
+-- 0106 pipeline_settings.pac_vars_json:流水线即代码变量声明 + 填写值(仓库 YAML variables 块)。
+-- 「预览仓库配置」拉取校验成功后,把 .pipewright.yml 顶层 variables 声明(name/description/
+-- required/secret/default)同步进本列;「变量与缓存」tab 据此展示并填写值。形如:
+--   {"defs":[{"name","description","required","secret","default"}],
+--    "values":[{"id","key","secret",("value"|"credentialId")}],
+--    "ref":"main","file":".pipewright.yml","syncedAt":"RFC3339"}
+--
+-- AC-SEC:secret:true 的变量值**只存 credentialId 引用**(同 build_json 的铁律),本列绝无
+-- 明文 secret;YAML 里的 ${NAME} 占位符替换只发生在执行瞬间的内存 config 上,落库 spec
+-- 恒为占位符原样。空串 = 该项目尚未同步过变量声明。
+ALTER TABLE pipeline_settings ADD COLUMN pac_vars_json TEXT NOT NULL DEFAULT '';

@@ -15,6 +15,8 @@ import {
   saveSettings,
   type SettingsDTO,
   type BuildConfig,
+  type BuildVar,
+  type PacVarsConfig,
   type SaveSettingsInput,
 } from '../api/pipelineSettings'
 import { listCredentials, type Credential } from '../api/credentials'
@@ -118,15 +120,29 @@ async function loadPipeline(): Promise<void> {
 
 const settings    = ref<SettingsDTO | null>(null)
 const editBuild    = ref<BuildConfig | null>(null)
+const editPacVars  = ref<PacVarsConfig | null>(null)
 const credentials  = ref<Credential[]>([])
 const servers      = ref<Server[]>([])
 const channels     = ref<NotificationChannel[]>([])
 const objectStores = ref<ObjectStore[]>([])
 
+/** 规范化 PAC 变量内容键(值只比已填项;defs 签名参与,预览同步后能检出声明变化)。 */
+function pacVarsKey(pv: PacVarsConfig | null): string {
+  if (!pv) return 'null'
+  return JSON.stringify([
+    (pv.defs ?? []).map((d) => `${d.name}:${d.secret ? 1 : 0}:${d.required ? 1 : 0}`),
+    (pv.values ?? [])
+      .filter((v) => (v.secret ? !!v.credentialId : (v.value ?? '') !== ''))
+      .map((v) => ({ key: v.key, secret: v.secret, value: v.value ?? '', credentialId: v.credentialId ?? '' })),
+  ])
+}
+
 function applySettings(dto: SettingsDTO): void {
   settings.value = dto
   editBuild.value = JSON.parse(JSON.stringify(dto.build)) as BuildConfig
   buildSnapshot.value = JSON.stringify(editBuild.value)
+  editPacVars.value = dto.pacVars ? (JSON.parse(JSON.stringify(dto.pacVars)) as PacVarsConfig) : null
+  pacVarsSnapshot.value = pacVarsKey(editPacVars.value)
 }
 
 async function loadSettings(): Promise<void> {
@@ -153,6 +169,11 @@ function handleBuildUpdate(build: BuildConfig): void {
   editBuild.value = build
 }
 
+function handlePacVarsUpdate(values: BuildVar[]): void {
+  if (!editPacVars.value) return
+  editPacVars.value = { ...editPacVars.value, values }
+}
+
 watch(projectId, () => { void loadProject(); void loadPipeline(); void loadSettings() })
 onMounted(() => { void loadProject(); void loadPipeline(); void loadSettings() })
 
@@ -160,11 +181,13 @@ onMounted(() => { void loadProject(); void loadPipeline(); void loadSettings() }
 
 const stagesSnapshot = ref('')
 const buildSnapshot  = ref('')
+const pacVarsSnapshot = ref('null')
 
 // 脏检查与快照同走 stableStringify:只比内容、不比键序(改回原值不报脏)。
 const pipelineDirty = computed(() => stableStringify(editStages.value) !== stagesSnapshot.value)
 const buildDirty = computed(() => JSON.stringify(editBuild.value) !== buildSnapshot.value)
-const settingsDirty = computed(() => buildDirty.value)
+const pacVarsDirty = computed(() => pacVarsKey(editPacVars.value) !== pacVarsSnapshot.value)
+const settingsDirty = computed(() => buildDirty.value || pacVarsDirty.value)
 /** Header indicator: pipeline spec or build settings differ from the server state. */
 const pageDirty = computed(() => pipelineDirty.value || settingsDirty.value)
 
@@ -230,7 +253,7 @@ function mapSaveError(err: HttpError): string {
 function buildSettingsPayload(): SaveSettingsInput | null {
   if (!editBuild.value) return null
   const b = editBuild.value
-  return {
+  const payload: SaveSettingsInput = {
     build: {
       model: b.model,
       dockerfilePath: b.dockerfilePath,
@@ -246,6 +269,19 @@ function buildSettingsPayload(): SaveSettingsInput | null {
       cache: b.cache,
     },
   }
+  // PAC 变量值:已加载才上送(未加载 = 旧客户端语义,服务端保留现值)。
+  if (editPacVars.value) {
+    payload.pacVars = {
+      values: editPacVars.value.values.map((v) => ({
+        id: v.id || undefined,
+        key: v.key,
+        secret: v.secret,
+        value: v.secret ? undefined : v.value,
+        credentialId: v.secret ? v.credentialId : undefined,
+      })),
+    }
+  }
+  return payload
 }
 
 async function handleSave(): Promise<void> {
@@ -466,10 +502,12 @@ const pacEnabled = computed(() => project.value?.pacEnabled ?? false)
 const pacToggling = ref(false)
 const pacError = ref('')
 
-// 预览仓库配置:按 ref 拉取并校验仓库 .pipewright.yml(只读;依赖它驱动运行前先看清/捕错)。
+// 预览仓库配置:按 ref 拉取并校验仓库流水线文件(只读;依赖它驱动运行前先看清/捕错)。
+// 文件默认取项目 pac_file(可指定,不写死 .pipewright.yml),弹窗内可临时换文件试拉。
 const pacPreviewOpen = ref(false)
 const pacHasRepo = computed(() => !!project.value?.repoUrl?.trim())
 const pacDefaultBranch = computed(() => project.value?.defaultBranch ?? '')
+const pacFileLabel = computed(() => project.value?.pacFile?.trim() || '.pipewright.yml')
 
 async function togglePac(next: boolean): Promise<void> {
   if (!project.value || pacToggling.value) return
@@ -486,6 +524,36 @@ async function togglePac(next: boolean): Promise<void> {
   } finally {
     pacToggling.value = false
   }
+}
+
+// 预览校验通过 → 服务端已把仓库 variables 声明同步进 settings。定向回读并合并:
+// 声明/来源元信息采用服务端;已填值按名字优先保留本地未保存的编辑,其余采用服务端。
+// 只动 PAC 变量块,不整体 loadSettings(避免覆盖用户在「变量与缓存」的未保存草稿)。
+async function onPacVarsSynced(): Promise<void> {
+  try {
+    const dto = await getSettings(projectId.value)
+    settings.value = dto
+    const server = dto.pacVars ?? null
+    if (!editPacVars.value || !server) {
+      editPacVars.value = server ? (JSON.parse(JSON.stringify(server)) as PacVarsConfig) : null
+      pacVarsSnapshot.value = pacVarsKey(editPacVars.value)
+      return
+    }
+    const byName = new Map(editPacVars.value.values.map((v) => [v.key, v]))
+    const merged = server.values.map((v) => byName.get(v.key) ?? v)
+    for (const v of editPacVars.value.values) {
+      if (!server.values.some((sv) => sv.key === v.key)) merged.push(v)
+    }
+    editPacVars.value = { defs: server.defs, values: merged, ref: server.ref, file: server.file, syncedAt: server.syncedAt }
+    pacVarsSnapshot.value = pacVarsKey(server) // 脏检查以服务端为基准,本地编辑仍报脏
+  } catch {
+    // 回读失败不阻断:预览弹窗仍展示本次解析的声明,「变量与缓存」保持旧数据。
+  }
+}
+
+// 弹窗内「设为项目默认文件」成功 → 刷新项目(工具条文件名/PAC 提示随之更新)。
+async function onPacFileSaved(): Promise<void> {
+  await loadProject()
 }
 
 // ─── PR status checks toggle (Story 8-9 / FR-8-9) ─────────────────────────────
@@ -655,7 +723,7 @@ async function togglePrStatus(next: boolean): Promise<void> {
                   <path d="M6 3v12"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/>
                 </svg>
                 {{ t('projectPipeline.pacTitle') }}
-                <code class="strip-tool-file">.pipewright.yml</code>
+                <code class="strip-tool-file">{{ pacFileLabel }}</code>
               </span>
               <button
                 v-if="pacHasRepo"
@@ -795,7 +863,9 @@ async function togglePrStatus(next: boolean): Promise<void> {
             :build="editBuild"
             :credentials="credentials"
             :disabled="saveSubmitting"
+            :pac-vars="editPacVars"
             @update="handleBuildUpdate"
+            @update-pac-vars="handlePacVarsUpdate"
           />
         </div>
 
@@ -859,12 +929,15 @@ async function togglePrStatus(next: boolean): Promise<void> {
       @applied="handleTemplateApplied"
     />
 
-    <!-- ─── Preview repo .pipewright.yml at a ref (GitOps Slice 3) ───────── -->
+    <!-- ─── Preview repo pipeline file at a ref (GitOps Slice 3) ─────────── -->
     <PacPreviewModal
       v-if="pacPreviewOpen"
       :project-id="projectId"
       :default-branch="pacDefaultBranch"
+      :pac-file="project?.pacFile ?? ''"
       @close="pacPreviewOpen = false"
+      @synced="onPacVarsSynced"
+      @saved="onPacFileSaved"
     />
 
     <!-- ─── AI 脚本风险标注弹窗(护城河) ─────────────────────────────────── -->

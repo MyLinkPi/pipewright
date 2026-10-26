@@ -7,14 +7,14 @@ description: 编写、修改、排错 Pipewright 平台的流水线即代码文�
 
 ## 心智模型:两层数组,不是 GitHub Actions
 
-`.pipewright.yml` 放在仓库根目录,整条流水线是 **`version` + `stages[] → jobs[]`** 两层结构(风格接近 Jenkins/云效)。解析器以严格模式读取:**任何未知字段直接让整个文件报错**(不是静默忽略)。所以写每个键之前确认它在本文档或参考文件里列出过,拿不准就查,不要凭 GitHub Actions / GitLab CI 的记忆类比编造。
+`.pipewright.yml` 放在仓库根目录(平台也支持项目在设置里指定其它仓库内相对路径,默认仍是 `.pipewright.yml`),整条流水线是 **`version` + `stages[] → jobs[]`** 两层结构(风格接近 Jenkins/云效)。解析器以严格模式读取:**任何未知字段直接让整个文件报错**(不是静默忽略)。所以写每个键之前确认它在本文档或参考文件里列出过,拿不准就查,不要凭 GitHub Actions / GitLab CI 的记忆类比编造。
 
 | 其他 CI 的概念 | .pipewright.yml 的对应物 |
 |---|---|
 | `on:` / `trigger:` 触发器 | **不在 YAML 里**——触发规则、定时 cron、分支/路径过滤都在平台 UI 配置 |
 | `runs-on:` | stage 的 `runner` 字段(构建机选择器,见 references/advanced.md) |
 | `steps:` + `uses:` | job 没有 steps;一个 job 就是一个节点,`type` 决定行为;复用自定义步骤靠 `templated` 节点 |
-| 顶层 `env:` / `secrets:` | **不在 YAML 里**——变量与 secret 在平台 UI「变量与缓存」配置 |
+| 顶层 `env:` / `secrets:` | **变量值不在 YAML 里**——在 YAML 顶层 `variables:` **声明**(名/描述/必填/secret),值在平台 UI「变量与缓存」填写;secret 值走保险库,绝不写进仓库 |
 | `${{ github.sha }}` | 仅个别字段支持 `{{branch}}`/`{{commit}}` 等占位符(见 references/advanced.md) |
 
 ## 完整示例
@@ -76,6 +76,34 @@ stages:
           titleTemplate: "{{project}} {{branch}} 部署 {{status}}"
 ```
 
+## 变量声明(variables)
+
+无法在仓库代码里决定的字段(数据库连接串、服务注册基域/子域名等)用顶层 `variables:` **声明**,**值由平台侧填写**(「变量与缓存」tab,经「预览仓库配置」拉取校验后自动同步声明):
+
+```yaml
+version: 1
+variables:
+  - name: DB_CONN            # 必填,标识符语法 [A-Za-z_][A-Za-z0-9_]*,文档内唯一
+    description: 生产数据库连接字符串
+    required: true           # 未填值时运行直接失败并列出变量名(诚实暴露,不静默)
+    secret: true             # 值走平台保险库凭据引用;secret 不能带 default
+  - name: BASE_DOMAIN
+    description: 服务注册基域
+    default: internal.example.com   # 明文变量可给默认值,未填时兜底
+```
+
+引用方式:任意 job config 字符串值(含 `script.env` 的值、`commands` 行、部署节点配置)写 `${NAME}`,执行瞬间替换:
+
+```yaml
+        config:
+          domain: ${APP_SUB}.${BASE_DOMAIN}
+        script:
+          env:
+            DATABASE_URL: ${DB_CONN}   # 需要环境变量时在 env 里自己声明并引用
+```
+
+规则:name 唯一且为标识符;`secret: true` 与 `default` 互斥;未声明的 `${X}` 原样保留(交给容器内 shell);替换只发生在执行瞬间,落库/回显永远是占位符;`required: true` 未填值 → 运行被拦截并日志列名。
+
 ## 阶段(stage)字段
 
 | 字段 | 类型 | 默认 | 说明 |
@@ -125,7 +153,7 @@ script:
 4. 引用三态:`stage.needs` → 阶段 id;`job.needs` → 同阶段 job id;`artifactJob`/`statusFrom`/`deployJob` → job **name**。
 5. `push_image` 的 `artifactJob` 必须指向**同阶段**的 `build_image` 节点;`ai_test` 的 `deployJob` 必须指向**同阶段**的部署类节点(用 job 级 `needs` 排先后);`deploy_container` 的 `artifactJob` 只能指向 `build_image`;`oss_upload`/`deploy_ssh` 的 `artifactJob` 必须是上游节点 name。
 6. 不写任何本文档及参考文件未列出的键。
-7. 触发器、定时、变量、secret、全局缓存不写进 YAML。
+7. 触发器、定时、全局缓存不写进 YAML;变量只能经顶层 `variables:` **声明**(值在平台「变量与缓存」填写),变量值/secret 明文绝不写进 YAML(secret 走 `${NAME}` 引用平台保险库)。
 
 ## 编写流程
 
@@ -139,7 +167,7 @@ script:
 
 - **没有 CLI 校验命令**。能访问平台时:
   - `POST /api/projects/{id}/pipeline/import`,body `{"yaml": "<全文>"}`——解析失败返回 422 和人读错误定位;
-  - `GET /api/projects/{id}/pac/preview?ref=<分支>`——校验仓库里实际的 `.pipewright.yml`。
+  - `GET /api/projects/{id}/pac/preview?ref=<分支>&file=<文件>`——校验仓库里实际的流水线文件(file 省略时用项目配置的文件路径,默认 `.pipewright.yml`);校验通过会把顶层 `variables:` 声明同步进「变量与缓存」。
 - **运行时陷阱**:仓库里的 YAML 无效时平台会**静默回退到画布配置**继续跑。用户反馈"改了 YAML 但没生效",第一反应应是文件里有错被忽略了,先用上面的接口校验。
 - Parse 与序列化无损往返;平台「查看源码」导出的 YAML 就是规范形态,可作参照。
 

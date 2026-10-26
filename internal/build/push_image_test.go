@@ -168,9 +168,13 @@ func TestRunBuildImageJobPushesPerPushSpec(t *testing.T) {
 	if strings.Contains(args, "env.example.com") {
 		t.Fatalf("不应再推环境绑定的仓库:\n%s", args)
 	}
-	// 推送成功后应回收构建机上的本机 tag(默认开启;镜像已在 registry)。
+	// 推送成功后应回收构建机上的本机 tag 及推送目标在本机打出的远端引用(默认开启;镜像已在
+	// registry;远端引用不删则 rmi 本机 tag 仅 untag,一个字节都不释放)。
 	if !strings.Contains(args, "rmi pipewright/app:abc1234") {
 		t.Fatalf("推送成功后应 rmi 本机 tag:\n%s", args)
+	}
+	if !strings.Contains(args, "rmi reg2.example.com/org/app:v1") {
+		t.Fatalf("推送成功后应一并 rmi 推送目标的远端引用:\n%s", args)
 	}
 	// 关闭开关 → 推送后不再回收(留副本复用构建层缓存)。
 	cmdr2 := newFakeCommander()
@@ -186,6 +190,27 @@ func TestRunBuildImageJobPushesPerPushSpec(t *testing.T) {
 	}
 	if args2 := cmdr2.allArgsText(); strings.Contains(args2, "rmi") {
 		t.Fatalf("关闭回收后不应 rmi:\n%s", args2)
+	}
+}
+
+// 回收应覆盖推送目标在本机打出的全部远端引用(docker tag 副本),且重复/空引用去重去空:
+// 只删本机 tag 时远端引用仍指向同一镜像,rmi 仅 untag 不释放字节(镜像残留的根因)。
+func TestRemoveLocalTagAfterPushAlsoRemovesRemoteTags(t *testing.T) {
+	cmdr := newFakeCommander()
+	proj := &project.Project{ID: "p1", Name: "app"}
+	b := newTestBuilder(t, cmdr, proj, imageSettings(), nil)
+	rep := &fakeReporter{}
+	b.removeLocalTagAfterPush(context.Background(), rep,
+		"pipewright/app:abc1234", "reg1.example.com/org/app:v1", "reg2.example.com/org/app:v1",
+		"reg1.example.com/org/app:v1", "")
+	args := cmdr.allArgsText()
+	for _, ref := range []string{"rmi pipewright/app:abc1234", "rmi reg1.example.com/org/app:v1", "rmi reg2.example.com/org/app:v1"} {
+		if !strings.Contains(args, ref) {
+			t.Fatalf("应 rmi %s:\n%s", ref, args)
+		}
+	}
+	if n := strings.Count(args, "reg1.example.com/org/app:v1"); n != 1 {
+		t.Fatalf("重复引用应去重只删一次(出现 %d 次):\n%s", n, args)
 	}
 }
 

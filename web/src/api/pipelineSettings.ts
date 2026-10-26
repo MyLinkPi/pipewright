@@ -41,6 +41,28 @@ export interface Cache {
   paths: string[]
 }
 
+/** One variable declared in the repo YAML top-level `variables:` block (read-only metadata). */
+export interface PacVarDef {
+  name: string
+  description: string
+  required: boolean
+  secret: boolean
+  default: string
+}
+
+/**
+ * Pipeline-as-code variables: declarations synced from the repo YAML (defs — read-only here,
+ * maintained by the preview pull & validate) plus the values filled in on this tab.
+ * Secret values follow the same iron rule as build vars: credentialId reference + server mask.
+ */
+export interface PacVarsConfig {
+  defs: PacVarDef[]
+  values: BuildVar[]
+  ref?: string
+  file?: string
+  syncedAt?: string
+}
+
 export interface BuildConfig {
   model: BuildModel
   dockerfilePath: string
@@ -52,6 +74,8 @@ export interface BuildConfig {
 
 export interface SettingsDTO {
   build: BuildConfig
+  /** Pipeline-as-code variable declarations + filled values (absent when never synced). */
+  pacVars?: PacVarsConfig
   updatedAt: string
 }
 
@@ -73,6 +97,13 @@ export interface SaveSettingsInput {
     artifactType: ArtifactType
     vars: SaveBuildVar[]
     cache: Cache
+  }
+  /**
+   * Pipeline-as-code variable values (defs are repo-owned, never sent). Omit to keep the
+   * current values (older clients / AI applies don't wipe them); send to replace.
+   */
+  pacVars?: {
+    values: SaveBuildVar[]
   }
 }
 

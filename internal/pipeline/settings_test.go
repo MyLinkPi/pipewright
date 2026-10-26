@@ -383,3 +383,134 @@ func readSettingsFileMaybe(t *testing.T, path string) []byte {
 	}
 	return b
 }
+
+// ---- 流水线即代码变量(声明同步 + 值保存)----
+
+func TestSyncPacVarsMergeAndSave(t *testing.T) {
+	svc, v, db, dbPath, projID := newSettingsSvc(t)
+	ctx := context.Background()
+	credID := seedRealCred(t, v, "s3cret-conn")
+
+	// 首次同步:两条声明。
+	st, err := svc.SyncPacVars(ctx, projID, []PacVarDef{
+		{Name: "DB_CONN", Description: "数据库连接串", Required: true, Secret: true},
+		{Name: "BASE_DOMAIN", Description: "服务注册基域", Default: "internal.example.com"},
+	}, "main", ".pipewright.yml")
+	if err != nil {
+		t.Fatalf("SyncPacVars: %v", err)
+	}
+	if len(st.PacVars.Defs) != 2 || len(st.PacVars.Values) != 0 {
+		t.Fatalf("首次同步应 2 声明 0 值: %+v", st.PacVars)
+	}
+
+	// 填值:secret 给 credentialId,明文给 value。
+	st, err = svc.Save(ctx, projID, SettingsInput{PacVars: &PacVarsInput{Values: []BuildVar{
+		{Key: "DB_CONN", Secret: true, CredentialID: credID},
+		{Key: "BASE_DOMAIN", Value: "corp.example.com"},
+	}}})
+	if err != nil {
+		t.Fatalf("Save pac vars: %v", err)
+	}
+	if len(st.PacVars.Values) != 2 {
+		t.Fatalf("应保存 2 条值: %+v", st.PacVars.Values)
+	}
+	for _, val := range st.PacVars.Values {
+		if val.Key == "DB_CONN" && (val.MaskedValue == "" || val.Value != "") {
+			t.Fatalf("secret 值应只有掩码无明文: %+v", val)
+		}
+	}
+
+	// 再同步:去掉 BASE_DOMAIN、新增 SUB_DOMAIN → 孤儿值删、新声明未填、DB_CONN 值保留。
+	st, err = svc.SyncPacVars(ctx, projID, []PacVarDef{
+		{Name: "DB_CONN", Required: true, Secret: true},
+		{Name: "SUB_DOMAIN"},
+	}, "release", "ci/p.yml")
+	if err != nil {
+		t.Fatalf("re-SyncPacVars: %v", err)
+	}
+	if len(st.PacVars.Defs) != 2 || len(st.PacVars.Values) != 1 || st.PacVars.Values[0].Key != "DB_CONN" {
+		t.Fatalf("再同步应保留 DB_CONN 值并清理孤儿: %+v", st.PacVars)
+	}
+	if st.PacVars.Ref != "release" || st.PacVars.File != "ci/p.yml" || st.PacVars.SyncedAt.IsZero() {
+		t.Fatalf("同步来源元信息应更新: %+v", st.PacVars)
+	}
+
+	// PacVars 缺省(nil)保存不抹值:只改缓存,值仍在。
+	st, err = svc.Save(ctx, projID, SettingsInput{Build: st.Build})
+	if err != nil {
+		t.Fatalf("Save without pacVars: %v", err)
+	}
+	if len(st.PacVars.Values) != 1 || st.PacVars.Values[0].Key != "DB_CONN" {
+		t.Fatalf("PacVars nil 应保留现值: %+v", st.PacVars.Values)
+	}
+
+	// 铁律:落库 JSON 绝无 secret 明文。
+	dump, _ := os.ReadFile(dbPath)
+	if strings.Contains(string(dump), "s3cret-conn") {
+		t.Fatalf("pac_vars_json 不应含 secret 明文")
+	}
+	_ = db
+}
+
+func TestSavePacVarValuesValidation(t *testing.T) {
+	svc, v, _, _, projID := newSettingsSvc(t)
+	ctx := context.Background()
+	credID := seedRealCred(t, v, "plain")
+
+	if _, err := svc.SyncPacVars(ctx, projID, []PacVarDef{
+		{Name: "SECRET_VAR", Secret: true},
+		{Name: "PLAIN_VAR"},
+	}, "main", ".pipewright.yml"); err != nil {
+		t.Fatalf("SyncPacVars: %v", err)
+	}
+
+	cases := []struct {
+		name   string
+		values []BuildVar
+	}{
+		{"未声明变量", []BuildVar{{Key: "GHOST", Value: "x"}}},
+		{"secret缺credentialId", []BuildVar{{Key: "SECRET_VAR", Secret: true, Value: "x"}}},
+		{"secret凭据不存在", []BuildVar{{Key: "SECRET_VAR", Secret: true, CredentialID: uuid.NewString()}}},
+		{"重复key", []BuildVar{{Key: "PLAIN_VAR", Value: "a"}, {Key: "PLAIN_VAR", Value: "b"}}},
+	}
+	for _, tc := range cases {
+		_, err := svc.Save(ctx, projID, SettingsInput{PacVars: &PacVarsInput{Values: tc.values}})
+		if !errors.Is(err, ErrInvalidVar) && !errors.Is(err, ErrCredentialNotFound) {
+			t.Fatalf("%s: 应报 ErrInvalidVar/ErrCredentialNotFound,得到 %v", tc.name, err)
+		}
+	}
+
+	// secret 标志以声明为准:明文声明误传 credentialId → 只存明文值,不落引用。
+	st, err := svc.Save(ctx, projID, SettingsInput{PacVars: &PacVarsInput{Values: []BuildVar{
+		{Key: "PLAIN_VAR", CredentialID: credID, Value: "hello"},
+	}}})
+	if err != nil {
+		t.Fatalf("Save plain var: %v", err)
+	}
+	if len(st.PacVars.Values) != 1 || st.PacVars.Values[0].Value != "hello" || st.PacVars.Values[0].CredentialID != "" {
+		t.Fatalf("明文声明应只存 value: %+v", st.PacVars.Values[0])
+	}
+}
+
+func TestSyncPacVarsSecretFlipDropsValue(t *testing.T) {
+	svc, _, _, _, projID := newSettingsSvc(t)
+	ctx := context.Background()
+
+	if _, err := svc.SyncPacVars(ctx, projID, []PacVarDef{{Name: "DOMAIN"}}, "main", ".pipewright.yml"); err != nil {
+		t.Fatalf("SyncPacVars: %v", err)
+	}
+	if _, err := svc.Save(ctx, projID, SettingsInput{PacVars: &PacVarsInput{Values: []BuildVar{
+		{Key: "DOMAIN", Value: "x.example.com"},
+	}}}); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	// 声明翻转为 secret:原明文值不再兼容,应被丢弃(防明文按 secret 语义误用)。
+	st, err := svc.SyncPacVars(ctx, projID, []PacVarDef{{Name: "DOMAIN", Secret: true}}, "main", ".pipewright.yml")
+	if err != nil {
+		t.Fatalf("re-SyncPacVars: %v", err)
+	}
+	if len(st.PacVars.Values) != 0 {
+		t.Fatalf("secret 翻转后应丢弃明文值: %+v", st.PacVars.Values)
+	}
+}

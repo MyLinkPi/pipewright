@@ -19,6 +19,7 @@ import (
 
 	"github.com/go-git/go-git/v5/storage/memory"
 	"github.com/huangchengsir/pipewright/internal/gitauth"
+	"github.com/huangchengsir/pipewright/internal/pipeline"
 	"github.com/huangchengsir/pipewright/internal/project"
 	"github.com/huangchengsir/pipewright/internal/vault"
 )
@@ -256,10 +257,12 @@ func cleanRelPath(p string) (string, bool) {
 }
 
 // sourceDeps 聚合 source 端点所需服务(复用已注入 projects + vault + 注入的 SourceReader)。
+// settings 供 pac 预览在校验通过后同步变量声明(pipeline_settings);nil = 不同步(仅展示)。
 type sourceDeps struct {
 	projects project.Service
 	vault    vault.Vault
 	reader   SourceReader
+	settings pipeline.SettingsService
 }
 
 // resolveSourceContext 取项目(repoUrl + 默认分支 + 凭据)与规范化 ref/path。
