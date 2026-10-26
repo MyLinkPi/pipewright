@@ -24,7 +24,7 @@ func TestRenderForwardHTTPSecure(t *testing.T) {
 		PeerNodeID: "peerA", HostHeader: "api.remote.com", Secure: true, Port: 443,
 		Members: []string{"10.20.0.2", "10.20.0.1"},
 	}
-	out := renderNginxConf([]Domain{dom}, []RegisteredService{svc}, nil, nil, 0, map[string]ForwardPlan{"s1": plan}, nil)
+	out := renderNginxConf(nginxConfDir, []Domain{dom}, []RegisteredService{svc}, nil, nil, 0, map[string]ForwardPlan{"s1": plan}, nil).Text()
 	for _, want := range []string{
 		"upstream pw_api {",
 		"server 10.20.0.1:443 max_fails=2 fail_timeout=10s;",
@@ -49,7 +49,7 @@ func TestRenderForwardHTTPPlain(t *testing.T) {
 	dom := Domain{ID: "d1", BaseDomain: "efg.com"}
 	svc := RegisteredService{ID: "s1", DomainID: "d1", Name: "api", Protocol: ProtocolHTTP, UpstreamKind: UpstreamKindForward, Enabled: true}
 	plan := ForwardPlan{PeerNodeID: "p", HostHeader: "api.remote.com", Port: 8080, Members: []string{"10.20.0.3"}}
-	out := renderNginxConf([]Domain{dom}, []RegisteredService{svc}, nil, nil, 0, map[string]ForwardPlan{"s1": plan}, nil)
+	out := renderNginxConf(nginxConfDir, []Domain{dom}, []RegisteredService{svc}, nil, nil, 0, map[string]ForwardPlan{"s1": plan}, nil).Text()
 	if !strings.Contains(out, "server 10.20.0.3:8080 max_fails=2 fail_timeout=10s;") {
 		t.Fatalf("缺对端成员:\n%s", out)
 	}
@@ -69,7 +69,7 @@ func TestRenderForwardMaintenanceAndConflict(t *testing.T) {
 	httpFwd := RegisteredService{ID: "s1", DomainID: "d1", Name: "api", Protocol: ProtocolHTTP, UpstreamKind: UpstreamKindForward, PeerNodeID: "p", Enabled: true}
 	tcpFwd := RegisteredService{ID: "s2", DomainID: "d1", Name: "db", Protocol: ProtocolTCP, UpstreamKind: UpstreamKindForward, PeerNodeID: "p", TCPListenPort: 3306, Enabled: true}
 	// 无规划(目录不可达/冲突):http → 503;tcp → 拒绝端口兜底。
-	out := renderNginxConf([]Domain{dom}, []RegisteredService{httpFwd, tcpFwd}, nil, nil, 0, nil, []string{"10.0.0.9(本端 ↔ prod)"})
+	out := renderNginxConf(nginxConfDir, []Domain{dom}, []RegisteredService{httpFwd, tcpFwd}, nil, nil, 0, nil, []string{"10.0.0.9(本端 ↔ prod)"}).Text()
 	for _, want := range []string{
 		"# 注意:跨环境转发存在网关 IP 冲突(相关对端已降级为 503 维护态):10.0.0.9(本端 ↔ prod)",
 		"return 503;",
@@ -85,7 +85,7 @@ func TestRenderForwardTCP(t *testing.T) {
 	dom := Domain{ID: "d1", BaseDomain: "efg.com"}
 	svc := RegisteredService{ID: "s2", DomainID: "d1", Name: "db", Protocol: ProtocolTCP, UpstreamKind: UpstreamKindForward, TCPListenPort: 3306, Enabled: true}
 	plan := ForwardPlan{PeerNodeID: "p", Port: 13306, Members: []string{"10.20.0.5"}}
-	out := renderNginxConf([]Domain{dom}, []RegisteredService{svc}, nil, nil, 0, map[string]ForwardPlan{"s2": plan}, nil)
+	out := renderNginxConf(nginxConfDir, []Domain{dom}, []RegisteredService{svc}, nil, nil, 0, map[string]ForwardPlan{"s2": plan}, nil).Text()
 	for _, want := range []string{
 		"upstream pwf_db {",
 		"server 10.20.0.5:13306 max_fails=2 fail_timeout=10s;",

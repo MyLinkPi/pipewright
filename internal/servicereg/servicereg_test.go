@@ -24,7 +24,7 @@ import (
 // --- 渲染单测(纯函数) ----------------------------------------------------
 
 func TestRenderNginxConfEmpty(t *testing.T) {
-	out := renderNginxConf(nil, nil, nil, nil, 0, nil, nil)
+	out := renderNginxConf(nginxConfDir, nil, nil, nil, nil, 0, nil, nil).Text()
 	if strings.Contains(out, "ssl_certificate") || strings.Contains(out, "stream {") {
 		t.Fatalf("空输入不应渲染证书/流块:\n%s", out)
 	}
@@ -41,7 +41,7 @@ func TestRenderNginxConfHTTPS(t *testing.T) {
 	svc := RegisteredService{ID: "s1", Name: "abc", DomainID: "d1", Protocol: ProtocolHTTP,
 		UpstreamKind: UpstreamKindContainer, Upstream: "web", UpstreamPort: 8080, Enabled: true}
 	inst := Instance{ID: "i1", ServiceID: "s1", ServerID: "sv1", Container: "web", Port: 8080, HostPort: 20001, Attached: true}
-	out := renderNginxConf([]Domain{dom}, []RegisteredService{svc}, []Instance{inst}, map[string]string{"sv1": "10.0.0.5"}, 0, nil, nil)
+	out := renderNginxConf(nginxConfDir, []Domain{dom}, []RegisteredService{svc}, []Instance{inst}, map[string]string{"sv1": "10.0.0.5"}, 0, nil, nil).Text()
 
 	mustContain := []string{
 		"server_name abc.efg.com;",
@@ -52,8 +52,8 @@ func TestRenderNginxConfHTTPS(t *testing.T) {
 		"server 10.0.0.5:20001 max_fails=2 fail_timeout=10s;",
 		"proxy_pass http://pw_abc;",
 		"proxy_set_header X-Forwarded-Proto https;",
-		// 80 → 443 跳转名单应含该 FQDN。
-		"server_name abc.efg.com;\n        return 301 https://$host$request_uri;",
+		// 80 → 443 跳转:站点文件内该 FQDN 自己的跳转 server 块。
+		"server_name abc.efg.com;\n    return 301 https://$host$request_uri;",
 		// WebSocket 头。
 		"proxy_set_header Upgrade $http_upgrade;",
 		// 上游长连接池 + 实例池非 WS 请求清空 Connection(否则 keepalive 无法复用后端连接)。
@@ -90,7 +90,7 @@ func TestRenderNginxConfMultiInstance(t *testing.T) {
 		{ID: "i6", ServiceID: "s1", ServerID: "sv2", Container: "abc-6", Port: 8080, Attached: true}, // 容器实例无宿主端口 → 跳过(死成员)
 	}
 	addrs := map[string]string{"sv1": "10.0.0.1", "sv2": "10.0.0.2"}
-	out := renderNginxConf([]Domain{dom}, []RegisteredService{svc}, insts, addrs, 3, nil, nil)
+	out := renderNginxConf(nginxConfDir, []Domain{dom}, []RegisteredService{svc}, insts, addrs, 3, nil, nil).Text()
 	if !strings.Contains(out, "upstream pw_abc {") {
 		t.Fatalf("应渲染 upstream 块:\n%s", out)
 	}
@@ -126,7 +126,7 @@ func TestRenderNginxConfAllInstancesDetached503(t *testing.T) {
 	dom := Domain{ID: "d1", BaseDomain: "efg.com", HasCert: false}
 	svc := RegisteredService{ID: "s1", Name: "abc", DomainID: "d1", Protocol: ProtocolHTTP,
 		UpstreamKind: UpstreamKindContainer, Upstream: "abc-1", UpstreamPort: 8080, Enabled: true}
-	out := renderNginxConf([]Domain{dom}, []RegisteredService{svc}, nil, nil, 0, nil, nil)
+	out := renderNginxConf(nginxConfDir, []Domain{dom}, []RegisteredService{svc}, nil, nil, 0, nil, nil).Text()
 	if !strings.Contains(out, "server_name abc.efg.com;") {
 		t.Fatalf("server 块应保留:\n%s", out)
 	}
@@ -146,7 +146,7 @@ func TestRenderNginxConfAddressServiceWithInstances(t *testing.T) {
 	plain := RegisteredService{ID: "s2", Name: "plain", DomainID: "d1", Protocol: ProtocolHTTP,
 		UpstreamKind: UpstreamKindAddress, Upstream: "10.0.0.9", UpstreamPort: 3001, Enabled: true}
 	insts := []Instance{{ID: "i1", ServiceID: "s1", ServerID: "app1", Container: "", Port: 8080, HostPort: 8080, Attached: true}}
-	out := renderNginxConf([]Domain{dom}, []RegisteredService{svc, plain}, insts, map[string]string{"app1": "10.0.0.7"}, 0, nil, nil)
+	out := renderNginxConf(nginxConfDir, []Domain{dom}, []RegisteredService{svc, plain}, insts, map[string]string{"app1": "10.0.0.7"}, 0, nil, nil).Text()
 	if !strings.Contains(out, "upstream pw_abc {") || !strings.Contains(out, "server 10.0.0.7:8080 max_fails=2 fail_timeout=10s;") {
 		t.Fatalf("非容器实例应进集群实例池:\n%s", out)
 	}
@@ -165,7 +165,7 @@ func TestRenderNginxConfAddressEmptyUpstreamMaintenance(t *testing.T) {
 	dom := Domain{ID: "d1", BaseDomain: "efg.com", HasCert: false}
 	svc := RegisteredService{ID: "s1", Name: "abc", DomainID: "d1", Protocol: ProtocolHTTP,
 		UpstreamKind: UpstreamKindAddress, Upstream: "", UpstreamPort: 8080, Enabled: true}
-	out := renderNginxConf([]Domain{dom}, []RegisteredService{svc}, nil, nil, 0, nil, nil)
+	out := renderNginxConf(nginxConfDir, []Domain{dom}, []RegisteredService{svc}, nil, nil, 0, nil, nil).Text()
 	if !strings.Contains(out, "return 503;") {
 		t.Fatalf("空上游 address 服务应维护态:\n%s", out)
 	}
@@ -174,7 +174,7 @@ func TestRenderNginxConfAddressEmptyUpstreamMaintenance(t *testing.T) {
 	}
 	// 有 attached 实例后恢复正常反代(非容器实例 HostPort=0 继承 Port)。
 	inst := Instance{ID: "i1", ServiceID: "s1", ServerID: "app1", Port: 8080, Attached: true}
-	out = renderNginxConf([]Domain{dom}, []RegisteredService{svc}, []Instance{inst}, map[string]string{"app1": "10.0.0.7"}, 0, nil, nil)
+	out = renderNginxConf(nginxConfDir, []Domain{dom}, []RegisteredService{svc}, []Instance{inst}, map[string]string{"app1": "10.0.0.7"}, 0, nil, nil).Text()
 	if !strings.Contains(out, "server 10.0.0.7:8080 max_fails=2 fail_timeout=10s;") {
 		t.Fatalf("实例上线后应进实例池:\n%s", out)
 	}
@@ -187,14 +187,14 @@ func TestRenderNginxConfIPv6Bracketed(t *testing.T) {
 	svc := RegisteredService{ID: "s1", Name: "abc", DomainID: "d1", Protocol: ProtocolHTTP,
 		UpstreamKind: UpstreamKindContainer, Upstream: "web", UpstreamPort: 8080, Enabled: true}
 	inst := Instance{ID: "i1", ServiceID: "s1", ServerID: "sv6", Container: "web", HostPort: 20001, Attached: true}
-	out := renderNginxConf([]Domain{dom}, []RegisteredService{svc}, []Instance{inst}, map[string]string{"sv6": "fd00::1"}, 0, nil, nil)
+	out := renderNginxConf(nginxConfDir, []Domain{dom}, []RegisteredService{svc}, []Instance{inst}, map[string]string{"sv6": "fd00::1"}, 0, nil, nil).Text()
 	if !strings.Contains(out, "server [fd00::1]:20001 max_fails=2 fail_timeout=10s;") {
 		t.Fatalf("IPv6 实例成员应加方括号:\n%s", out)
 	}
 	// address 形态的 IPv6 上游同样加方括号。
 	v6 := RegisteredService{ID: "s2", Name: "v6", DomainID: "d1", Protocol: ProtocolHTTP,
 		UpstreamKind: UpstreamKindAddress, Upstream: "fd00::9", UpstreamPort: 3000, Enabled: true}
-	out = renderNginxConf([]Domain{dom}, []RegisteredService{v6}, nil, nil, 0, nil, nil)
+	out = renderNginxConf(nginxConfDir, []Domain{dom}, []RegisteredService{v6}, nil, nil, 0, nil, nil).Text()
 	if !strings.Contains(out, "set $up_v6 [fd00::9]:3000;") {
 		t.Fatalf("IPv6 上游应加方括号:\n%s", out)
 	}
@@ -204,7 +204,7 @@ func TestRenderNginxConfHTTPOnlyNoCert(t *testing.T) {
 	dom := Domain{ID: "d1", BaseDomain: "efg.com", HasCert: false}
 	svc := RegisteredService{Name: "abc", DomainID: "d1", Protocol: ProtocolHTTP,
 		UpstreamKind: UpstreamKindAddress, Upstream: "10.0.0.5", UpstreamPort: 3000, Enabled: true}
-	out := renderNginxConf([]Domain{dom}, []RegisteredService{svc}, nil, nil, 0, nil, nil)
+	out := renderNginxConf(nginxConfDir, []Domain{dom}, []RegisteredService{svc}, nil, nil, 0, nil, nil).Text()
 	if strings.Contains(out, "listen 443") {
 		t.Fatalf("无证书基域不应渲染 443:\n%s", out)
 	}
@@ -224,7 +224,7 @@ func TestRenderNginxConfTCP(t *testing.T) {
 	svc := RegisteredService{Name: "my-db", DomainID: "d1", Protocol: ProtocolTCP,
 		UpstreamKind: UpstreamKindContainer, Upstream: "mysql", UpstreamPort: 3306,
 		TCPListenPort: 13306, Enabled: true}
-	out := renderNginxConf([]Domain{dom}, []RegisteredService{svc}, nil, nil, 0, nil, nil)
+	out := renderNginxConf(nginxConfDir, []Domain{dom}, []RegisteredService{svc}, nil, nil, 0, nil, nil).Text()
 	for _, want := range []string{
 		"load_module /usr/lib/nginx/modules/ngx_stream_module.so;",
 		"stream {",
@@ -251,11 +251,11 @@ func TestRenderNginxConfSortedDeterministic(t *testing.T) {
 	}
 	addrs := map[string]string{"sv1": "10.0.0.1", "sv2": "10.0.0.2"}
 	services := []RegisteredService{mk("zeta", "d2"), mk("alpha", "d1")}
-	a := renderNginxConf([]Domain{dom1, dom2}, services, insts, addrs, 0, nil, nil)
+	a := renderNginxConf(nginxConfDir, []Domain{dom1, dom2}, services, insts, addrs, 0, nil, nil).Text()
 	// 输入顺序无关:打乱后重渲染结果应逐字节一致。
 	services2 := []RegisteredService{mk("alpha", "d1"), mk("zeta", "d2")}
 	insts2 := []Instance{insts[1], insts[0]}
-	b := renderNginxConf([]Domain{dom2, dom1}, services2, insts2, addrs, 0, nil, nil)
+	b := renderNginxConf(nginxConfDir, []Domain{dom2, dom1}, services2, insts2, addrs, 0, nil, nil).Text()
 	if a != b {
 		t.Fatalf("渲染应确定性(输入顺序无关):\n--- a ---\n%s\n--- b ---\n%s", a, b)
 	}
@@ -270,9 +270,68 @@ func TestRenderNginxConfDisabledSkipped(t *testing.T) {
 	dom := Domain{ID: "d1", BaseDomain: "efg.com", HasCert: true}
 	svc := RegisteredService{Name: "abc", DomainID: "d1", Protocol: ProtocolHTTP,
 		UpstreamKind: UpstreamKindContainer, Upstream: "web", UpstreamPort: 8080, Enabled: false}
-	out := renderNginxConf([]Domain{dom}, []RegisteredService{svc}, nil, nil, 0, nil, nil)
+	out := renderNginxConf(nginxConfDir, []Domain{dom}, []RegisteredService{svc}, nil, nil, 0, nil, nil).Text()
 	if strings.Contains(out, "abc.efg.com") {
 		t.Fatalf("禁用服务不应渲染:\n%s", out)
+	}
+}
+
+// TestRenderNginxConfPerServiceFiles 验证「每服务一个 conf 文件 + 主配置 include」的拆分
+// 形态:主配置只含全局指令与显式 include;upstream/vhost/stream server 全部落在 conf.d/
+// 服务文件里。文件粒度 = http 站点(FQDN;同 FQDN 多 path 必须共用一个 server 块,故同
+// 文件),tcp 服务独立 <fqdn>.tcp.conf;沙箱变体仅 include 目录不同(先测后换校验用)。
+func TestRenderNginxConfPerServiceFiles(t *testing.T) {
+	dom := Domain{ID: "d1", BaseDomain: "efg.com", HasCert: true}
+	web := RegisteredService{ID: "s-web", Name: "app", DomainID: "d1", Protocol: ProtocolHTTP,
+		UpstreamKind: UpstreamKindStatic, Enabled: true}
+	api := RegisteredService{ID: "s-api", Name: "app", Path: "/api", DomainID: "d1", Protocol: ProtocolHTTP,
+		UpstreamKind: UpstreamKindContainer, Upstream: "app-1", UpstreamPort: 8080, Enabled: true}
+	db := RegisteredService{ID: "s-db", Name: "db", DomainID: "d1", Protocol: ProtocolTCP,
+		UpstreamKind: UpstreamKindContainer, Upstream: "mysql", UpstreamPort: 3306, TCPListenPort: 13306, Enabled: true}
+	inst := Instance{ID: "i1", ServiceID: "s-api", ServerID: "sv1", Container: "app-1", Port: 8080, HostPort: 20001, Attached: true}
+	r := renderNginxConf(nginxConfDir, []Domain{dom}, []RegisteredService{web, api, db}, []Instance{inst}, map[string]string{"sv1": "10.0.0.5"}, 0, nil, nil)
+
+	if len(r.Files) != 2 {
+		t.Fatalf("应为 2 个文件(http 站点 + tcp 服务),得 %d:%v", len(r.Files), r.Files)
+	}
+	if r.Files[0].Name != "app.efg.com.conf" || r.Files[1].Name != "db.efg.com.tcp.conf" {
+		t.Fatalf("文件名应按 FQDN 命名并升序:%v", r.Files)
+	}
+	// 主配置:显式逐个 include;服务细节(upstream/vhost/监听)一律不在主配置里。
+	for _, want := range []string{
+		"include " + nginxConfDir + "/app.efg.com.conf;",
+		"include " + nginxConfDir + "/db.efg.com.tcp.conf;",
+		"load_module /usr/lib/nginx/modules/ngx_stream_module.so;",
+		"stream {",
+		"listen 80 default_server;",
+	} {
+		if !strings.Contains(r.Main, want) {
+			t.Fatalf("主配置缺 %q:\n%s", want, r.Main)
+		}
+	}
+	for _, bad := range []string{"upstream pw_", "server_name app.efg.com;", "listen 13306;", "alias /etc/pipewright/static/"} {
+		if strings.Contains(r.Main, bad) {
+			t.Fatalf("主配置不应含服务细节 %q:\n%s", bad, r.Main)
+		}
+	}
+	// http 站点文件:同 FQDN 多 path(静态 / + 反代 /api)共用一个文件、一个 server 块。
+	httpf := r.Files[0].Content
+	for _, want := range []string{"upstream pw_app_api {", "location / {", "location /api {", "server_name app.efg.com;"} {
+		if !strings.Contains(httpf, want) {
+			t.Fatalf("站点文件缺 %q:\n%s", want, httpf)
+		}
+	}
+	// tcp 服务文件:stream server 透传。
+	if !strings.Contains(r.Files[1].Content, "listen 13306;") || !strings.Contains(r.Files[1].Content, "proxy_pass $up_db;") {
+		t.Fatalf("tcp 文件缺监听/转发:\n%s", r.Files[1].Content)
+	}
+	// 沙箱变体:仅 include 目录不同,服务文件内容一致。
+	test := renderNginxConf(nginxStageDir+"/conf.d", []Domain{dom}, []RegisteredService{web, api, db}, []Instance{inst}, map[string]string{"sv1": "10.0.0.5"}, 0, nil, nil)
+	if !strings.Contains(test.Main, "include "+nginxStageDir+"/conf.d/app.efg.com.conf;") {
+		t.Fatalf("沙箱主配置应指向中转 conf.d:\n%s", test.Main)
+	}
+	if test.Files[0].Content != r.Files[0].Content || test.Files[1].Content != r.Files[1].Content {
+		t.Fatalf("沙箱变体的服务文件应与正式渲染一致")
 	}
 }
 
@@ -358,10 +417,10 @@ func TestEnsureNginxKeepsContainerWhenPortAndLabelMatch(t *testing.T) {
 		if hasCmd(ft, "docker", "rm", "-f") || hasCmd(ft, "docker", "run") {
 			t.Fatalf("端口与自举标签均吻合不应重建:\n%s", joinAllCmds(ft))
 		}
-		// 不重建时配置下发链仍应完整(nginx -t → cp → reload)。
+		// 不重建时配置下发链仍应完整(沙箱校验 → cp 正式路径 → reload)。
 		for _, prefix := range [][]string{
-			{"docker", "exec", "pipewright-nginx", "nginx", "-t", "-c"},
-			{"docker", "cp", "/tmp/pipewright-nginx.conf"},
+			{"docker", "exec", "pipewright-nginx", "nginx", "-t", "-c", nginxStageDir + "/nginx.test.conf"},
+			{"docker", "cp", nginxStageDir + "/nginx.conf", "pipewright-nginx:" + nginxConfPath},
 			{"docker", "exec", "pipewright-nginx", "nginx", "-s", "reload"},
 		} {
 			if !hasCmd(ft, prefix...) {
@@ -839,9 +898,9 @@ func TestUploadCertRoundtripAndApply(t *testing.T) {
 			{"docker", "network", "inspect"},
 			{"docker", "inspect", "pipewright-nginx"},
 			{"docker", "exec", "pipewright-nginx", "mkdir", "-p", "/etc/pipewright/certs/efg.com"},
-			{"docker", "cp", "/tmp/pipewright-nginx.conf", "pipewright-nginx:/tmp/pipewright-nginx.conf"},
+			{"docker", "cp", nginxStageDir + "/nginx.conf", "pipewright-nginx:" + nginxStageDir + "/nginx.conf"},
 			{"docker", "exec", "pipewright-nginx", "nginx", "-t", "-c"},
-			{"docker", "cp", "/tmp/pipewright-nginx.conf", "pipewright-nginx:/etc/pipewright/nginx.conf"},
+			{"docker", "cp", nginxStageDir + "/nginx.conf", "pipewright-nginx:" + nginxConfPath},
 			{"docker", "exec", "pipewright-nginx", "nginx", "-s", "reload"},
 		} {
 			if !hasCmd(ft, prefix...) {
@@ -879,8 +938,11 @@ func TestApplyNginxTestFailureKeepsConfig(t *testing.T) {
 		if _, err := svc.CreateService(ctx, CreateServiceInput{DomainID: dom.ID, Name: "abc", Upstream: "web", UpstreamPort: 80}); err == nil {
 			t.Fatal("apply 失败应回滚(创建报错)")
 		}
-		if hasCmd(ft, "docker", "cp", "/tmp/pipewright-nginx.conf", "pipewright-nginx:/etc/pipewright/nginx.conf") {
-			t.Fatalf("校验失败不应覆盖正式配置:\n%s", joinAllCmds(ft))
+		// 校验失败:不覆盖正式主配置、不清正式 conf.d、不 reload(先测后换)。
+		if hasCmd(ft, "docker", "cp", nginxStageDir+"/nginx.conf", "pipewright-nginx:"+nginxConfPath) ||
+			hasCmd(ft, "docker", "exec", "pipewright-nginx", "rm", "-rf", nginxConfDir) ||
+			hasCmd(ft, "docker", "exec", "pipewright-nginx", "nginx", "-s", "reload") {
+			t.Fatalf("校验失败不应动正式配置/热加载:\n%s", joinAllCmds(ft))
 		}
 		// 服务应已回滚删除。
 		list, _ := svc.ListServices(ctx)
@@ -1010,11 +1072,11 @@ func TestApplyMultiServerContinueOnError(t *testing.T) {
 				t.Fatalf("srv1 应完成收敛,缺 %v:\n%s", prefix, joinAllCmds(ft))
 			}
 		}
-		if !uploadToOn(ft, "srv1", "/tmp/pipewright-nginx.conf") {
-			t.Fatalf("srv1 应下发配置:%v", ft.uploads)
+		if !uploadToOn(ft, "srv1", nginxStageDir+"/nginx.conf") || !uploadToOn(ft, "srv1", nginxStageDir+"/conf.d/abc.efg.com.conf") {
+			t.Fatalf("srv1 应下发主配置与服务文件:%v", ft.uploads)
 		}
 		// srv2 卡在 ensure:不应起容器/下发配置。
-		if hasCmdOn(ft, "srv2", "docker", "run") || uploadToOn(ft, "srv2", "/tmp/pipewright-nginx.conf") {
+		if hasCmdOn(ft, "srv2", "docker", "run") || uploadToOn(ft, "srv2", nginxStageDir+"/nginx.conf") {
 			t.Fatalf("srv2 失败后不应继续编排:\n%s", joinAllCmds(ft))
 		}
 
@@ -1623,26 +1685,28 @@ func TestApplyClusterRender(t *testing.T) {
 		if err := svc.Apply(ctx); err != nil {
 			t.Fatalf("apply:%v", err)
 		}
-		var conf string
-		for path, content := range ft.uploadBytes {
-			if path == "/tmp/pipewright-nginx.conf" {
-				conf = content
-			}
+		main, svcConf := ft.uploadBytes[nginxStageDir+"/nginx.conf"], ft.uploadBytes[nginxStageDir+"/conf.d/abc.efg.com.conf"]
+		if main == "" || svcConf == "" {
+			t.Fatalf("应下发主配置与每服务文件:\n%v", ft.uploadBytes)
 		}
-		// 集群成员:两台网关收到同一份配置,远端实例同样渲染。
+		// 主配置显式 include 服务文件;跳过实例计数在主配置头注释。
+		if !strings.Contains(main, "include "+nginxConfDir+"/abc.efg.com.conf;") {
+			t.Fatalf("主配置应 include 每服务文件:\n%s", main)
+		}
+		if !strings.Contains(main, "有 1 个实例因遗留数据") {
+			t.Fatalf("遗留行应计数提示:\n%s", main)
+		}
+		// 集群成员:两台网关收到同一份配置,远端实例同样渲染(成员在服务文件里)。
 		for _, want := range []string{
 			"server 10.9.9.9:20001 max_fails=2 fail_timeout=10s;",
 			"server 10.9.9.9:20002 max_fails=2 fail_timeout=10s;",
 		} {
-			if !strings.Contains(conf, want) {
-				t.Fatalf("集群成员缺失(%q):\n%s", want, conf)
+			if !strings.Contains(svcConf, want) {
+				t.Fatalf("集群成员缺失(%q):\n%s", want, svcConf)
 			}
 		}
-		if strings.Contains(conf, "abc-old") {
-			t.Fatalf("遗留行不应渲染:\n%s", conf)
-		}
-		if !strings.Contains(conf, "有 1 个实例因遗留数据") {
-			t.Fatalf("遗留行应计数提示:\n%s", conf)
+		if strings.Contains(svcConf, "abc-old") {
+			t.Fatalf("遗留行不应渲染:\n%s", svcConf)
 		}
 		// 不再对实例容器做本机探活/接网(docker inspect <实例容器> / network connect 均不应出现)。
 		for _, c := range ft.execCalls {
@@ -1654,15 +1718,22 @@ func TestApplyClusterRender(t *testing.T) {
 				t.Fatalf("不再逐实例探活:\n%s", joinAllCmds(ft))
 			}
 		}
-		// 两台网关各收到一次配置下发。
+		// 先测后换:沙箱主配置 nginx.test.conf 先经 nginx -t 校验,再替换正式 conf.d。
+		if !hasCmd(ft, "docker exec pipewright-nginx nginx -t -c "+nginxStageDir+"/nginx.test.conf") {
+			t.Fatalf("应先在沙箱校验配置:\n%s", joinAllCmds(ft))
+		}
+		if !hasCmd(ft, "docker exec pipewright-nginx rm -rf "+nginxConfDir) {
+			t.Fatalf("正式 conf.d 应全量替换(先清后写):\n%s", joinAllCmds(ft))
+		}
+		// 两台网关各收到一次主配置 + 服务文件下发。
 		pushes := 0
 		for i, u := range ft.uploads {
-			if u == "/tmp/pipewright-nginx.conf" && ft.uploadServers[i] != "" {
+			if strings.HasPrefix(u, nginxStageDir+"/") && ft.uploadServers[i] != "" {
 				pushes++
 			}
 		}
-		if pushes != 2 {
-			t.Fatalf("两台网关应各推一份配置,得 %d:\n%s", pushes, joinAllCmds(ft))
+		if pushes != 2*(2+1) { // 每台:live 主配置 + test 主配置 + 1 个服务文件
+			t.Fatalf("两台网关应各推全套配置,得 %d:\n%s", pushes, joinAllCmds(ft))
 		}
 	})
 }
@@ -1679,7 +1750,7 @@ func TestRenderNginxConfPathMergeAndStatic(t *testing.T) {
 		UpstreamKind: UpstreamKindContainer, Upstream: "app-1", UpstreamPort: 8080,
 		StripPathPrefix: true, Enabled: true}
 	inst := Instance{ID: "i1", ServiceID: "s-api", ServerID: "sv1", Container: "app-1", Port: 8080, HostPort: 20001, Attached: true}
-	out := renderNginxConf([]Domain{dom}, []RegisteredService{web, api}, []Instance{inst}, map[string]string{"sv1": "10.0.0.5"}, 0, nil, nil)
+	out := renderNginxConf(nginxConfDir, []Domain{dom}, []RegisteredService{web, api}, []Instance{inst}, map[string]string{"sv1": "10.0.0.5"}, 0, nil, nil).Text()
 
 	for _, want := range []string{
 		// 同 FQDN 合并:server_name 只出现一次;两个 location 共存。
@@ -1714,7 +1785,7 @@ func TestRenderNginxConfPathKeepPrefix(t *testing.T) {
 		UpstreamKind: UpstreamKindStatic, Enabled: true}
 	api := RegisteredService{ID: "s-api", Name: "app", Path: "/api", DomainID: "d1", Protocol: ProtocolHTTP,
 		UpstreamKind: UpstreamKindAddress, Upstream: "10.0.0.9", UpstreamPort: 9000, Enabled: true}
-	out := renderNginxConf([]Domain{dom}, []RegisteredService{admin, api}, nil, nil, 0, nil, nil)
+	out := renderNginxConf(nginxConfDir, []Domain{dom}, []RegisteredService{admin, api}, nil, nil, 0, nil, nil).Text()
 
 	for _, want := range []string{
 		"location /admin {",
