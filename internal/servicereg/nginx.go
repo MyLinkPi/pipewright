@@ -17,13 +17,18 @@ import (
 
 // 网关容器编排常量(与 caddy.go 同构,但资源名独立,避免与 Caddy 反代冲突)。
 const (
-	// nginxConfPath 是容器内托管配置路径(挂具名卷,容器重建不丢)。
+	// nginxConfPath 是容器内托管主配置路径(挂具名卷,容器重建不丢)。
 	nginxConfPath = "/etc/pipewright/nginx.conf"
+	// nginxConfDir 是容器内每服务配置目录(同卷):每个 http 站点(同 FQDN 多 path 合并)
+	// 一个 <fqdn>.conf,每个 tcp 服务一个 <fqdn>.tcp.conf,由主配置显式 include。
+	nginxConfDir = "/etc/pipewright/conf.d"
 	// nginxCertsDir 是容器内证书目录:certs/<base_domain>/{fullchain,privkey}.pem。
 	nginxCertsDir = "/etc/pipewright/certs"
-	// nginxConfTmpPath / certTmpPrefix 是宿主临时落盘路径(Upload 后 docker cp)。
-	nginxConfTmpPath = "/tmp/pipewright-nginx.conf"
-	certTmpPrefix    = "/tmp/pipewright-sr-cert-"
+	// nginxStageDir 是配置下发中转目录(宿主与容器内同路径):先测后换的隔离沙箱,
+	// 测试版主配置的 include 指向中转 conf.d,校验通过才替换正式配置。
+	nginxStageDir = "/tmp/pipewright-nginx-stage"
+	// certTmpPrefix 是证书宿主临时落盘路径(Upload 后 docker cp)。
+	certTmpPrefix = "/tmp/pipewright-sr-cert-"
 	// nginxImageEnv 允许经环境变量覆盖镜像(默认 nginx:stable-alpine,官方镜像自带
 	// stream 动态模块 + docker 内嵌 DNS 可用)。
 	nginxImageEnv = "PIPEWRIGHT_NGINX_IMAGE"
@@ -62,35 +67,68 @@ const nginxBootstrapScript = `conf=/etc/pipewright/nginx.conf; mkdir -p /etc/pip
 	`printf '` + nginxBootstrapMinConf + `' > "$conf"; fi; ` +
 	`exec nginx -c "$conf" -g "daemon off;"`
 
-// nginxConfRenderInput 是 renderNginxConf 的已就绪输入(领域对象直接进,纯函数无 I/O)。
+// nginxConfFile 是 conf.d/ 下的一份服务配置文件(纯文本,见 nginxConfRender)。
+type nginxConfFile struct {
+	Name    string // 文件名(http 站点 <fqdn>.conf / tcp 服务 <fqdn>.tcp.conf)
+	Content string
+}
 
-// renderNginxConf 据基域(enabled 服务所属)与实例生成完整 nginx.conf(纯函数,可直接 golden 单测)。
+// nginxConfRender 是一次渲染的完整产物:主配置 + 每服务(站点)配置文件。主配置只含
+// 全局指令与兜底 server,经显式 include 逐个引用 Files(不用 conf.d/*.conf 通配:
+// 引用文件逐个可见,配置回读与缺失校验都精确到文件)。
+type nginxConfRender struct {
+	Main  string          // /etc/pipewright/nginx.conf(include 指向 confDir)
+	Files []nginxConfFile // conf.d/ 下全部文件,按文件名升序(确定性输出)
+}
+
+// Text 拼接主配置与全部服务文件(单测整体断言用;生产路径分别落盘)。
+func (r *nginxConfRender) Text() string {
+	var b strings.Builder
+	b.WriteString(r.Main)
+	for _, f := range r.Files {
+		b.WriteString("\n# ---- " + f.Name + " ----\n")
+		b.WriteString(f.Content)
+	}
+	return b.String()
+}
+
+// renderNginxConf 据基域(enabled 服务所属)与实例渲染网关配置(纯函数,可直接 golden 单测):
+// 主配置 nginx.conf + conf.d/ 每服务一个文件。confDir 是 include 引用的目录(正式下发
+// 用 /etc/pipewright/conf.d,先测后换的沙箱校验用中转目录,两者仅 include 路径不同)。
 //
 // 结构(确定性输出:基域/服务/FQDN/实例容器名全部升序,渲染幂等):
 //
-//	load_module stream 模块          —— 仅当存在 tcp 服务
-//	events / http
-//	  resolver 127.0.0.11 valid=10s  —— Docker 内嵌 DNS(address 上游 / TCP 透传的运行期动态解析)
-//	  upstream pw_<name> { server <服务器地址>:<宿主端口> max_fails=2 fail_timeout=10s; keepalive 32; }
-//	                                  —— 有 attached 实例的 http 服务:成员 = 服务器地址:宿主端口
-//	                                     (静态 IP,reload 原子增减);max_fails/fail_timeout 为被动健康
-//	                                     兜底(实例无响应临时摘除);keepalive 为上游长连接池
-//	  80:证书基域的 http 服务 → 301 跳 https;无证书基域的 http 服务 → 直接反代;default → 404
-//	  443:证书基域的 http 服务逐个 server 块(泛域名证书按基域共用);default → 444
-//	  http+container 服务实例全摘除 → 该 server 块 location 返回 503(维护态)
-//	stream(tcp 服务):listen <端口> → proxy_pass 上游(变量 + resolver 动态解析)
+//	nginx.conf(主配置):
+//	  load_module stream 模块      —— 仅当存在 tcp 服务
+//	  events / http
+//	    resolver 127.0.0.11 valid=10s  —— Docker 内嵌 DNS(address 上游 / TCP 透传的动态解析)
+//	    include <confDir>/<fqdn>.conf  —— 每个 http 站点一个文件(显式逐个引用)
+//	    80 default → 404;443 default → 444(未知 SNI 兜底,需任一证书)
+//	  stream(tcp 服务存在时)
+//	    include <confDir>/<fqdn>.tcp.conf —— 每个 tcp 服务一个文件
+//
+//	conf.d/<fqdn>.conf(http 站点文件;同 FQDN 多 path 的服务必须共用一个 server 块,
+//	                     故文件粒度 = FQDN 站点,单服务单域名时即每服务一个文件):
+//	  upstream pw_<name>[_<path>]   —— 有 attached 实例的服务的集群实例池,成员 = 服务器
+//	    地址:宿主端口(静态 IP,reload 原子增减);max_fails/fail_timeout 被动健康兜底,
+//	    keepalive 上游长连接池。forward 服务成员来自对端目录规划。
+//	  80 → 301 跳 https             —— 证书就绪的站点(每站点自己的跳转 server 块)
+//	  vhost server 块               —— 证书域 443 ssl / 无证书域 80;组内每服务一个
+//	    location(实例全摘除 → return 503 维护态;static → alias 静态托管)
+//
+//	conf.d/<fqdn>.tcp.conf(tcp 服务文件):stream server(listen 端口 → proxy_pass
+//	  上游;forward 有规划走 upstream,否则变量 + resolver 动态解析)。
 //
 // 所有进入文本的值已在领域层严格校验过(域名/服务名/上游/端口白名单),渲染处不再二次防注入。
-// 无 enabled 服务时渲染最小合法配置(80 返回 404),保证网关容器始终可运行。
-// renderNginxConf 渲染完整 nginx.conf(纯函数,确定性输出)。集群模型:upstream 成员 =
-// 全部 attached 且地址可解析的实例(服务器地址:宿主端口)—— 各网关主机渲染**同一份**配置,
-// 本机没有实例的服务同样代理远端。skipped 是被跳过的实例数(遗留行/地址解析失败),写进
-// 头部注释便于诊断;故障实例交给 max_fails 熔断,不阻断渲染。
+// 无 enabled 服务时渲染最小合法主配置(80 返回 404,无 include),保证网关容器始终可运行。
+// 集群模型:upstream 成员 = 全部 attached 且地址可解析的实例 —— 各网关主机渲染**同一份**
+// 配置,本机没有实例的服务同样代理远端。skipped 是被跳过的实例数(遗留行/地址解析失败),
+// 写进主配置头部注释便于诊断;故障实例交给 max_fails 熔断,不阻断渲染。
 //
 // forward(跨环境转发):forward 服务无本地实例,upstream 成员来自 forwardPlans(对端
 // 网关 IP:端口,经 mesh 服务目录解析);无规划/无可渲染成员 → 503 维护态。forwardConflicts
-// 是网关 IP 冲突告警(渲染进头部注释,便于运维从配置文件侧定位)。
-func renderNginxConf(domains []Domain, services []RegisteredService, instances []Instance, serverAddr map[string]string, skipped int, forwardPlans map[string]ForwardPlan, forwardConflicts []string) string {
+// 是网关 IP 冲突告警(渲染进主配置头部注释,便于运维从配置文件侧定位)。
+func renderNginxConf(confDir string, domains []Domain, services []RegisteredService, instances []Instance, serverAddr map[string]string, skipped int, forwardPlans map[string]ForwardPlan, forwardConflicts []string) *nginxConfRender {
 	// 基域索引(domain_id → Domain)。
 	byID := make(map[string]Domain, len(domains))
 	for _, d := range domains {
@@ -127,7 +165,6 @@ func renderNginxConf(domains []Domain, services []RegisteredService, instances [
 	// nginx 前缀 location 最长匹配与书写顺序无关);tcp 服务按监听端口升序。
 	var groups []*httpGroup
 	byFqdn := make(map[string]*httpGroup)
-	var redirects []string // cert 域 FQDN(80 → 443 跳转名单;每组一条)
 	var tcps []RegisteredService
 	for _, svc := range services {
 		if !svc.Enabled {
@@ -147,9 +184,6 @@ func renderNginxConf(domains []Domain, services []RegisteredService, instances [
 			g = &httpGroup{fqdn: fqdn, dom: dom, certd: dom.HasCert}
 			byFqdn[fqdn] = g
 			groups = append(groups, g)
-			if dom.HasCert {
-				redirects = append(redirects, fqdn)
-			}
 		}
 		g.sites = append(g.sites, httpSite{svc: svc, fqdn: fqdn, dom: dom, certd: dom.HasCert})
 	}
@@ -157,7 +191,6 @@ func renderNginxConf(domains []Domain, services []RegisteredService, instances [
 	for _, g := range groups {
 		sort.Slice(g.sites, func(i, j int) bool { return g.sites[i].svc.Path < g.sites[j].svc.Path })
 	}
-	sort.Strings(redirects)
 	sort.Slice(tcps, func(i, j int) bool { return tcps[i].TCPListenPort < tcps[j].TCPListenPort })
 
 	// 有可渲染成员的 http 反代服务统一走 upstream 块(容器与非容器实例一视同仁);
@@ -213,8 +246,105 @@ func renderNginxConf(domains []Domain, services []RegisteredService, instances [
 		}
 	}
 
+	// ---- 每服务(站点)一个文件 ------------------------------------------------
+	// http 站点文件:组内各服务的 upstream 块 + 证书域的 80→443 跳转 + vhost server 块。
+	httpFiles := make([]nginxConfFile, 0, len(groups))
+	for _, g := range groups {
+		var b strings.Builder
+		b.WriteString("# 由 Pipewright 自动生成,请勿手改。\n")
+		for _, st := range g.sites {
+			r := renders[st.svc.ID]
+			if !r.useUpstream {
+				continue
+			}
+			if r.plan != nil {
+				// forward:成员 = 对端网关 IP:端口(mesh 服务目录; Secure 时对端为 https)。
+				b.WriteString("# 服务 " + st.fqdn + st.svc.Path + " 跨环境转发 → 对端 " +
+					r.plan.HostHeader + "(成员 = 对端网关主机)。\n")
+				b.WriteString("upstream " + r.upsName + " {\n")
+				for _, ip := range r.plan.Members {
+					b.WriteString("    server " + net.JoinHostPort(ip, strconv.Itoa(r.plan.Port)) +
+						" max_fails=2 fail_timeout=10s;\n")
+				}
+				b.WriteString("    keepalive 32;\n")
+				b.WriteString("}\n\n")
+				continue
+			}
+			b.WriteString("# 服务 " + st.fqdn + st.svc.Path + " 的集群实例池(成员 = 服务器地址:宿主端口,经 reload 原子增减)。\n")
+			b.WriteString("upstream " + r.upsName + " {\n")
+			for _, inst := range instByService[st.svc.ID] {
+				// net.JoinHostPort:IPv6 地址自动加方括号(裸 IPv6 冒号拼接会让 nginx -t 失败)。
+				b.WriteString("    server " + net.JoinHostPort(serverAddr[inst.ServerID], strconv.Itoa(inst.EffectiveHostPort(&st.svc))) +
+					" max_fails=2 fail_timeout=10s;\n")
+			}
+			// keepalive:上游长连接池(配合 proxy_http_version 1.1 + 非 WS 请求清空 Connection)。
+			b.WriteString("    keepalive 32;\n")
+			b.WriteString("}\n\n")
+		}
+		if g.certd {
+			b.WriteString("# 证书就绪:80 → 443。\n")
+			b.WriteString("server {\n")
+			b.WriteString("    listen 80;\n")
+			b.WriteString("    server_name " + g.fqdn + ";\n")
+			b.WriteString("    return 301 https://$host$request_uri;\n")
+			b.WriteString("}\n\n")
+		}
+		proto := "http"
+		if g.certd {
+			proto = "https"
+		}
+		renderHTTPServer(&b, "", g, proto, renders)
+		httpFiles = append(httpFiles, nginxConfFile{Name: g.fqdn + ".conf", Content: b.String()})
+	}
+
+	// tcp 服务文件:forward 规划的 stream upstream + stream server 块(端口升序,
+	// upstream 命名分配顺序随之确定)。
+	tcpFiles := make([]nginxConfFile, 0, len(tcps))
+	streamAlloc := newNameAlloc()
+	for _, svc := range tcps {
+		fqdn := svc.Name + "." + byID[svc.DomainID].BaseDomain
+		var b strings.Builder
+		b.WriteString("# 由 Pipewright 自动生成,请勿手改。\n")
+		if svc.UpstreamKind == UpstreamKindForward {
+			if p, ok := forwardPlans[svc.ID]; ok && len(p.Members) > 0 && p.Port > 0 {
+				name := streamAlloc.alloc("pwf_" + nginxNameID(svc.Name, ""))
+				b.WriteString("# 服务 " + svc.Name + " 跨环境转发 → 对端 TCP " + strconv.Itoa(p.Port) + "(成员 = 对端网关主机)。\n")
+				b.WriteString("upstream " + name + " {\n")
+				for _, ip := range p.Members {
+					b.WriteString("    server " + net.JoinHostPort(ip, strconv.Itoa(p.Port)) +
+						" max_fails=2 fail_timeout=10s;\n")
+				}
+				b.WriteString("}\n\n")
+				b.WriteString("server {\n")
+				b.WriteString("    listen " + strconv.Itoa(svc.TCPListenPort) + ";\n")
+				b.WriteString("    proxy_pass " + name + ";\n")
+				b.WriteString("}\n")
+				tcpFiles = append(tcpFiles, nginxConfFile{Name: fqdn + ".tcp.conf", Content: b.String()})
+				continue
+			}
+			// 目录不可达/对端已删/IP 冲突:stream 无 503 语义,转发到本机拒绝端口(连接拒绝即维护态)。
+			b.WriteString("# 跨环境转发暂不可用(目录不可达/冲突),连接将被拒绝。\n")
+			b.WriteString("server {\n")
+			b.WriteString("    listen " + strconv.Itoa(svc.TCPListenPort) + ";\n")
+			b.WriteString("    proxy_pass 127.0.0.1:1;\n")
+			b.WriteString("}\n")
+		} else {
+			b.WriteString("server {\n")
+			b.WriteString("    listen " + strconv.Itoa(svc.TCPListenPort) + ";\n")
+			b.WriteString("    set " + nginxVarName(svc.Name) + " " + upstreamTarget(svc) + ";\n")
+			b.WriteString("    proxy_pass " + nginxVarName(svc.Name) + ";\n")
+			b.WriteString("}\n")
+		}
+		tcpFiles = append(tcpFiles, nginxConfFile{Name: fqdn + ".tcp.conf", Content: b.String()})
+	}
+	sort.Slice(httpFiles, func(i, j int) bool { return httpFiles[i].Name < httpFiles[j].Name })
+	sort.Slice(tcpFiles, func(i, j int) bool { return tcpFiles[i].Name < tcpFiles[j].Name })
+	files := append(httpFiles, tcpFiles...)
+
+	// ---- 主配置 ---------------------------------------------------------------
 	var b strings.Builder
-	b.WriteString("# 由 Pipewright 自动生成,请勿手改。\n")
+	b.WriteString("# 由 Pipewright 自动生成,请勿手改。各注册服务(站点)的配置每服务一个文件放在 " +
+		nginxConfDir + "/,由下方 include 引用;本文件与 conf.d/ 均由平台 apply 全量管理。\n")
 	if skipped > 0 {
 		b.WriteString("# 注意:有 " + strconv.Itoa(skipped) + " 个实例因遗留数据(待部署认领)或服务器地址解析失败未渲染。\n")
 	}
@@ -248,72 +378,29 @@ func renderNginxConf(domains []Domain, services []RegisteredService, instances [
 	b.WriteString("        default upgrade;\n")
 	b.WriteString("        ''      close;\n")
 	b.WriteString("    }\n\n")
-
-	// upstream 块(有实例成员的 http 反代服务与 forward 服务;按 FQDN+path 升序确定性输出)。
-	for _, g := range groups {
-		for _, st := range g.sites {
-			r := renders[st.svc.ID]
-			if !r.useUpstream {
-				continue
-			}
-			if r.plan != nil {
-				// forward:成员 = 对端网关 IP:端口(mesh 服务目录; Secure 时对端为 https)。
-				b.WriteString("    # 服务 " + st.fqdn + st.svc.Path + " 跨环境转发 → 对端 " +
-					r.plan.HostHeader + "(成员 = 对端网关主机)。\n")
-				b.WriteString("    upstream " + r.upsName + " {\n")
-				for _, ip := range r.plan.Members {
-					b.WriteString("        server " + net.JoinHostPort(ip, strconv.Itoa(r.plan.Port)) +
-						" max_fails=2 fail_timeout=10s;\n")
-				}
-				b.WriteString("        keepalive 32;\n")
-				b.WriteString("    }\n\n")
-				continue
-			}
-			b.WriteString("    # 服务 " + st.fqdn + st.svc.Path + " 的集群实例池(成员 = 服务器地址:宿主端口,经 reload 原子增减)。\n")
-			b.WriteString("    upstream " + r.upsName + " {\n")
-			for _, inst := range instByService[st.svc.ID] {
-				// net.JoinHostPort:IPv6 地址自动加方括号(裸 IPv6 冒号拼接会让 nginx -t 失败)。
-				b.WriteString("        server " + net.JoinHostPort(serverAddr[inst.ServerID], strconv.Itoa(inst.EffectiveHostPort(&st.svc))) +
-					" max_fails=2 fail_timeout=10s;\n")
-			}
-			// keepalive:上游长连接池(配合 proxy_http_version 1.1 + 非 WS 请求清空 Connection)。
-			b.WriteString("        keepalive 32;\n")
-			b.WriteString("    }\n\n")
+	if len(httpFiles) > 0 {
+		b.WriteString("    # 各注册服务的 http 站点配置(每服务/站点一个文件,文件名 = FQDN)。\n")
+		for _, f := range httpFiles {
+			b.WriteString("    include " + confDir + "/" + f.Name + ";\n")
 		}
-	}
-
-	var plain, https []*httpGroup
-	for _, g := range groups {
-		if g.certd {
-			https = append(https, g)
-		} else {
-			plain = append(plain, g)
-		}
-	}
-	if len(redirects) > 0 {
-		b.WriteString("    # 证书就绪的域名:80 → 443。\n")
-		b.WriteString("    server {\n")
-		b.WriteString("        listen 80;\n")
-		b.WriteString("        server_name " + strings.Join(redirects, " ") + ";\n")
-		b.WriteString("        return 301 https://$host$request_uri;\n")
-		b.WriteString("    }\n\n")
-	}
-	for _, g := range plain {
-		renderHTTPServer(&b, "    ", g, "http", renders)
+		b.WriteString("\n")
 	}
 	b.WriteString("    server {\n")
 	b.WriteString("        listen 80 default_server;\n")
 	b.WriteString("        server_name _;\n")
 	b.WriteString("        return 404;\n")
-	b.WriteString("    }\n\n")
+	b.WriteString("    }\n")
 
-	for _, g := range https {
-		renderHTTPServer(&b, "    ", g, "https", renders)
-	}
 	// 未知 SNI 的 443 兜底(需任一证书);无任何证书时不监听 443。
+	var https []*httpGroup
+	for _, g := range groups {
+		if g.certd {
+			https = append(https, g)
+		}
+	}
 	if len(https) > 0 {
 		certDir := nginxCertsDir + "/" + https[0].dom.BaseDomain
-		b.WriteString("    server {\n")
+		b.WriteString("\n    server {\n")
 		b.WriteString("        listen 443 ssl default_server;\n")
 		b.WriteString("        server_name _;\n")
 		b.WriteString("        ssl_certificate " + certDir + "/fullchain.pem;\n")
@@ -324,49 +411,16 @@ func renderNginxConf(domains []Domain, services []RegisteredService, instances [
 	}
 	b.WriteString("}\n")
 
-	if len(tcps) > 0 {
+	if len(tcpFiles) > 0 {
 		b.WriteString("\nstream {\n")
 		b.WriteString("    resolver 127.0.0.11 valid=10s;\n\n")
-		// forward tcp 服务的 upstream 块成员 = 对端网关 IP:对端监听端口(静态 IP);
-		// 端口升序遍历保证命名分配确定。
-		streamAlloc := newNameAlloc()
-		streamFwd := map[string]string{} // svc.ID → upstream 名
-		for _, svc := range tcps {
-			if svc.UpstreamKind != UpstreamKindForward {
-				continue
-			}
-			p, ok := forwardPlans[svc.ID]
-			if !ok || len(p.Members) == 0 || p.Port <= 0 {
-				continue
-			}
-			name := streamAlloc.alloc("pwf_" + nginxNameID(svc.Name, ""))
-			streamFwd[svc.ID] = name
-			b.WriteString("    # 服务 " + svc.Name + " 跨环境转发 → 对端 TCP " + strconv.Itoa(p.Port) + "(成员 = 对端网关主机)。\n")
-			b.WriteString("    upstream " + name + " {\n")
-			for _, ip := range p.Members {
-				b.WriteString("        server " + net.JoinHostPort(ip, strconv.Itoa(p.Port)) +
-					" max_fails=2 fail_timeout=10s;\n")
-			}
-			b.WriteString("    }\n\n")
-		}
-		for _, svc := range tcps {
-			b.WriteString("    server {\n")
-			b.WriteString("        listen " + strconv.Itoa(svc.TCPListenPort) + ";\n")
-			if name, ok := streamFwd[svc.ID]; ok {
-				b.WriteString("        proxy_pass " + name + ";\n")
-			} else if svc.UpstreamKind == UpstreamKindForward {
-				// 目录不可达/对端已删/IP 冲突:stream 无 503 语义,转发到本机拒绝端口(连接拒绝即维护态)。
-				b.WriteString("        # 跨环境转发暂不可用(目录不可达/冲突),连接将被拒绝。\n")
-				b.WriteString("        proxy_pass 127.0.0.1:1;\n")
-			} else {
-				b.WriteString("        set " + nginxVarName(svc.Name) + " " + upstreamTarget(svc) + ";\n")
-				b.WriteString("        proxy_pass " + nginxVarName(svc.Name) + ";\n")
-			}
-			b.WriteString("    }\n\n")
+		b.WriteString("    # 各注册服务的 tcp 透传配置(每服务一个文件)。\n")
+		for _, f := range tcpFiles {
+			b.WriteString("    include " + confDir + "/" + f.Name + ";\n")
 		}
 		b.WriteString("}\n")
 	}
-	return b.String()
+	return &nginxConfRender{Main: b.String(), Files: files}
 }
 
 // httpSite 是渲染期的一个 http 服务视图(附 FQDN / 所属基域 / 证书就绪位)。
@@ -396,8 +450,8 @@ type siteRender struct {
 	plan *ForwardPlan
 }
 
-// renderHTTPServer 输出一个 FQDN 的 server 块(组内每个服务一个 location,path 升序)。
-// 单服务单根路径的输出与旧版(每服务独立 server 块)保持一致。
+// renderHTTPServer 输出一个 FQDN 的 vhost server 块(组内每个服务一个 location,path 升序),
+// 写进该站点的 conf.d/<fqdn>.conf 文件(indent 传文件内顶层缩进)。
 func renderHTTPServer(b *strings.Builder, indent string, group *httpGroup, proto string, renders map[string]*siteRender) {
 	if group.certd {
 		certDir := nginxCertsDir + "/" + group.dom.BaseDomain
@@ -1060,38 +1114,76 @@ func (s *service) cpToContainer(ctx context.Context, st *Settings, serverID stri
 
 // ---------- 配置下发 ----------
 
-// applyNginxConf 把渲染好的 nginx.conf 下发并热加载:
+// applyNginxConf 把渲染产物(主配置 + conf.d/ 每服务文件)下发并热加载:
 //
-//	Upload 到宿主 /tmp → docker cp 进容器 /tmp(容器看不到宿主文件系统,必须先拷入)
-//	→ docker exec nginx -t -c /tmp/...(先测后换,校验失败不动活配置)
-//	→ docker cp 到卷内正式路径 → docker exec nginx -s reload(master 优雅热加载)。
-func applyNginxConf(ctx context.Context, tg target.Service, st *Settings, serverID, conf string) error {
-	if err := tg.Upload(ctx, serverID, bytes.NewReader([]byte(conf)), nginxConfTmpPath); err != nil {
+//	宿主与容器各建中转目录 /tmp/pipewright-nginx-stage(先测后换的沙箱)
+//	→ 全部产物 Upload 到宿主中转、docker cp 进容器中转(live 正式主配置 + test 沙箱
+//	  主配置两份:test 的 include 指向中转 conf.d,使 nginx -t 校验的就是**本轮新文件**)
+//	→ docker exec nginx -t -c <中转>/nginx.test.conf(校验失败不动活配置)
+//	→ 全量替换卷内 conf.d(先清后写,防已删服务残留旧文件被误加载)→ 主配置覆盖
+//	→ docker exec nginx -s reload(master 优雅热加载)→ best-effort 清理中转。
+//
+// live / test 是同一输入的两次渲染,仅 include 目录不同(live 用 nginxConfDir,test 用
+// 中转 conf.d);Files 内容完全一致,只需落盘一份。
+func applyNginxConf(ctx context.Context, tg target.Service, st *Settings, serverID string, live, test *nginxConfRender) error {
+	uploads := []struct{ path, content string }{
+		{nginxStageDir + "/nginx.conf", live.Main},
+		{nginxStageDir + "/nginx.test.conf", test.Main},
+	}
+	for _, f := range live.Files {
+		uploads = append(uploads, struct{ path, content string }{nginxStageDir + "/conf.d/" + f.Name, f.Content})
+	}
+
+	// 0) 宿主中转目录重建(Upload 不建目录,须显式 mkdir)。
+	if err := execOK(ctx, tg, serverID, []string{"rm", "-rf", nginxStageDir}); err != nil {
 		return err
 	}
-	// 1) 拷进容器临时路径(校验只能对容器内文件做)。
-	cpIn, err := tg.Exec(ctx, serverID, []string{"docker", "cp", nginxConfTmpPath, st.ContainerName + ":" + nginxConfTmpPath})
-	if err != nil {
+	if err := execOK(ctx, tg, serverID, []string{"mkdir", "-p", nginxStageDir + "/conf.d"}); err != nil {
 		return err
 	}
-	if cpIn.ExitCode != 0 {
-		return fmt.Errorf("%w:%s", ErrApply, strings.TrimSpace(firstNonEmpty(cpIn.Stderr, cpIn.Stdout)))
+	for _, u := range uploads {
+		if err := tg.Upload(ctx, serverID, strings.NewReader(u.content), u.path); err != nil {
+			return err
+		}
 	}
-	// 2) 校验临时文件(失败即回,活配置未动)。
-	val, err := tg.Exec(ctx, serverID, []string{"docker", "exec", st.ContainerName, "nginx", "-t", "-c", nginxConfTmpPath})
+
+	// 1) 容器中转目录重建 + 全部产物拷入(容器看不到宿主文件系统,必须先拷入)。
+	if err := execOK(ctx, tg, serverID, []string{"docker", "exec", st.ContainerName, "rm", "-rf", nginxStageDir}); err != nil {
+		return err
+	}
+	if err := execOK(ctx, tg, serverID, []string{"docker", "exec", st.ContainerName, "mkdir", "-p", nginxStageDir + "/conf.d"}); err != nil {
+		return err
+	}
+	for _, u := range uploads {
+		if err := dockerCpOK(ctx, tg, serverID, u.path, st.ContainerName+":"+u.path); err != nil {
+			return err
+		}
+	}
+
+	// 2) 先测后换:校验沙箱副本(失败即回,活配置未动)。
+	val, err := tg.Exec(ctx, serverID, []string{"docker", "exec", st.ContainerName, "nginx", "-t", "-c", nginxStageDir + "/nginx.test.conf"})
 	if err != nil {
 		return err
 	}
 	if val.ExitCode != 0 {
 		return fmt.Errorf("%w: nginx -t 校验失败:%s", ErrApply, strings.TrimSpace(firstNonEmpty(val.Stderr, val.Stdout)))
 	}
-	// 2) 覆盖正式配置并热加载。
-	res, err := tg.Exec(ctx, serverID, []string{"docker", "cp", nginxConfTmpPath, st.ContainerName + ":" + nginxConfPath})
-	if err != nil {
+
+	// 3) 全量替换正式 conf.d(先清后建:已删服务的旧文件不再残留)→ 逐文件落位。
+	if err := execOK(ctx, tg, serverID, []string{"docker", "exec", st.ContainerName, "rm", "-rf", nginxConfDir}); err != nil {
 		return err
 	}
-	if res.ExitCode != 0 {
-		return fmt.Errorf("%w:%s", ErrApply, strings.TrimSpace(firstNonEmpty(res.Stderr, res.Stdout)))
+	if err := execOK(ctx, tg, serverID, []string{"docker", "exec", st.ContainerName, "mkdir", "-p", nginxConfDir}); err != nil {
+		return err
+	}
+	for _, f := range live.Files {
+		if err := dockerCpOK(ctx, tg, serverID, nginxStageDir+"/conf.d/"+f.Name, st.ContainerName+":"+nginxConfDir+"/"+f.Name); err != nil {
+			return err
+		}
+	}
+	// 4) 主配置覆盖到卷内正式路径并热加载(最后换主配置:conf.d 先行就位)。
+	if err := dockerCpOK(ctx, tg, serverID, nginxStageDir+"/nginx.conf", st.ContainerName+":"+nginxConfPath); err != nil {
+		return err
 	}
 	rl, err := tg.Exec(ctx, serverID, []string{"docker", "exec", st.ContainerName, "nginx", "-s", "reload"})
 	if err != nil {
@@ -1099,6 +1191,34 @@ func applyNginxConf(ctx context.Context, tg target.Service, st *Settings, server
 	}
 	if rl.ExitCode != 0 {
 		return fmt.Errorf("%w:%s", ErrApply, strings.TrimSpace(firstNonEmpty(rl.Stderr, rl.Stdout)))
+	}
+
+	// 5) best-effort 清理中转(失败不影响交付结果)。
+	_, _ = tg.Exec(ctx, serverID, []string{"docker", "exec", st.ContainerName, "rm", "-rf", nginxStageDir})
+	_, _ = tg.Exec(ctx, serverID, []string{"rm", "-rf", nginxStageDir})
+	return nil
+}
+
+// execOK 执行远端命令,非零退出码转人话错误(ErrApply)。
+func execOK(ctx context.Context, tg target.Service, serverID string, cmd []string) error {
+	res, err := tg.Exec(ctx, serverID, cmd)
+	if err != nil {
+		return err
+	}
+	if res.ExitCode != 0 {
+		return fmt.Errorf("%w:%s", ErrApply, strings.TrimSpace(firstNonEmpty(res.Stderr, res.Stdout)))
+	}
+	return nil
+}
+
+// dockerCpOK 把宿主文件拷进容器(路径均为平台自管理常量,无用户输入)。
+func dockerCpOK(ctx context.Context, tg target.Service, serverID, hostPath, containerPath string) error {
+	res, err := tg.Exec(ctx, serverID, []string{"docker", "cp", hostPath, containerPath})
+	if err != nil {
+		return err
+	}
+	if res.ExitCode != 0 {
+		return fmt.Errorf("%w:%s", ErrApply, strings.TrimSpace(firstNonEmpty(res.Stderr, res.Stdout)))
 	}
 	return nil
 }

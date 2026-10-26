@@ -16,9 +16,9 @@
 // 设计纪律(与 proxy 包一致):
 //   - 一切 docker/nginx 命令经 target.Exec 以 array 形式执行(AC-SEC-02 不拼 shell);唯一例外是
 //     容器启动命令内一段**固定常量**的 sh -c 自举脚本(无任何用户输入,不是注入面)。
-//   - 声明式全量收敛:任何变更后全量重渲染 nginx.conf → 先 nginx -t 校验再热加载,
-//     校验失败不动活配置;新增 TCP 监听端口时容器带「既有映射 ∪ 新端口」重建(Docker 端口
-//     创建时固定)。
+//   - 声明式全量收敛:任何变更后全量重渲染(主配置 nginx.conf + conf.d/ 每服务一个文件,
+//     主配置显式 include)→ 先在沙箱 nginx -t 校验再热加载,校验失败不动活配置;新增 TCP
+//     监听端口时容器带「既有映射 ∪ 新端口」重建(Docker 端口创建时固定)。
 //   - 实例地址静态可解析:渲染前由控制端把 serverID 解析为 IP 写入 upstream(reload 时重解析),
 //     解析失败的实例跳过渲染(注释标注),故障实例交给 max_fails 熔断;人工 address 单上游
 //     仍走 resolver(127.0.0.11,Docker 内嵌 DNS)运行期动态解析。
@@ -1169,9 +1169,10 @@ func (s *service) applyFull(ctx context.Context) error {
 	return nil
 }
 
-// applyWith 集群级收敛:静态配置读一次 → 解析全部实例归属服务器地址 → 渲染**一份**全量
-// 配置(全部网关主机一致,本机无实例同样代理远端)→ 逐台(ensure 容器 + TCP 上游接网 +
-// 下发证书 + 校验下发热加载)。单台失败记录并继续,返回逐台错误(serverID → 文案;nil = 全部成功)。
+// applyWith 集群级收敛:静态配置读一次 → 解析全部实例归属服务器地址 → 渲染**一套**全量
+// 配置(主配置 + conf.d/ 每服务文件;全部网关主机一致,本机无实例同样代理远端)→ 逐台
+// (ensure 容器 + TCP 上游接网 + 下发证书 + 校验下发热加载)。单台失败记录并继续,返回
+// 逐台错误(serverID → 文案;nil = 全部成功)。
 func (s *service) applyWith(ctx context.Context, st *Settings) map[string]string {
 	domains, err := s.store.listDomains(ctx)
 	if err != nil {
@@ -1203,11 +1204,14 @@ func (s *service) applyWith(ctx context.Context, st *Settings) map[string]string
 	serverAddr, skipped := s.resolveInstanceAddrs(ctx, allInstances)
 	// forward 服务:拉取引用对端的服务目录 → 解析渲染成员(目录不可达/IP 冲突 → 503 维护态)。
 	plans, conflicts := s.buildForwardPlans(ctx, enabled)
-	conf := renderNginxConf(domains, enabled, allInstances, serverAddr, skipped, plans, conflicts)
+	// 同一产物渲染两份主配置:live 的 include 指向正式 conf.d,test 指向下发中转目录
+	// (nginx -t 先测后换的沙箱;conf.d 文件内容两者完全一致)。
+	confLive := renderNginxConf(nginxConfDir, domains, enabled, allInstances, serverAddr, skipped, plans, conflicts)
+	confTest := renderNginxConf(nginxStageDir+"/conf.d", domains, enabled, allInstances, serverAddr, skipped, plans, conflicts)
 
 	serverErrs := make(map[string]string)
 	for _, sid := range st.ServerIDs {
-		if err := s.applyWithServer(ctx, st, sid, tcpPorts, enabled, domains, conf); err != nil {
+		if err := s.applyWithServer(ctx, st, sid, tcpPorts, enabled, domains, confLive, confTest); err != nil {
 			serverErrs[sid] = err.Error()
 		}
 	}
@@ -1218,7 +1222,7 @@ func (s *service) applyWith(ctx context.Context, st *Settings) map[string]string
 }
 
 // applyWithServer 是单台网关主机的收敛流程(applyWith 逐台调用;返回人话错误)。
-func (s *service) applyWithServer(ctx context.Context, st *Settings, serverID string, tcpPorts []int, enabled []RegisteredService, domains []Domain, conf string) error {
+func (s *service) applyWithServer(ctx context.Context, st *Settings, serverID string, tcpPorts []int, enabled []RegisteredService, domains []Domain, confLive, confTest *nginxConfRender) error {
 	if err := ensureNginx(ctx, s.tg, st, serverID, tcpPorts); err != nil {
 		return err
 	}
@@ -1233,7 +1237,7 @@ func (s *service) applyWithServer(ctx context.Context, st *Settings, serverID st
 	if err := s.deployCerts(ctx, st, serverID, domains); err != nil {
 		return err
 	}
-	return applyNginxConf(ctx, s.tg, st, serverID, conf)
+	return applyNginxConf(ctx, s.tg, st, serverID, confLive, confTest)
 }
 
 // resolveInstanceAddrs 解析实例引用到的全部服务器地址(serverID → 可达 IP)。
