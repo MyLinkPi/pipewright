@@ -965,9 +965,37 @@ type NginxConfFile struct {
 	Error   string `json:"error,omitempty"` // 单文件读取失败原因(best-effort,不阻断其余文件)
 }
 
-// nginxConfRefRe 从 nginx.conf 文本提取引用文件路径的指令:include / ssl_certificate /
-// ssl_certificate_key。含 glob 通配符的 include(如 conf.d/*.conf)无法 cat,由调用方跳过。
-var nginxConfRefRe = regexp.MustCompile(`(?m)\b(?:include|ssl_certificate|ssl_certificate_key)\s+([^;]+);`)
+// nginxConfRefRe 从 nginx.conf 文本提取 include 引用的文件路径。含 glob 通配符的
+// include(如 conf.d/*.conf)无法 cat,由调用方跳过。ssl_certificate / ssl_certificate_key
+// 不提取:证书(尤其私钥)内容不该经查看配置接口下发到界面。
+var nginxConfRefRe = regexp.MustCompile(`(?m)\binclude\s+([^;]+);`)
+
+// stripNginxComments 逐行去掉 # 注释(nginx 中 # 起至行尾均为注释),防注释里的指令样
+// 文本(如头部说明「由下方 include 引用」)被当成真实引用提取。
+func stripNginxComments(s string) string {
+	var b strings.Builder
+	for _, line := range strings.Split(s, "\n") {
+		if i := strings.Index(line, "#"); i >= 0 {
+			line = line[:i]
+		}
+		b.WriteString(line)
+		b.WriteByte('\n')
+	}
+	return b.String()
+}
+
+// nginxConfRefs 提取主配置里 include 的非通配文件路径(去注释后匹配,保持出现顺序)。
+func nginxConfRefs(main string) []string {
+	var refs []string
+	for _, m := range nginxConfRefRe.FindAllStringSubmatch(stripNginxComments(main), -1) {
+		p := strings.TrimSpace(m[1])
+		if p == "" || strings.ContainsAny(p, "*?[") {
+			continue
+		}
+		refs = append(refs, p)
+	}
+	return refs
+}
 
 // readNginxConfFiles 读取网关容器内实际生效的 nginx.conf 及其引用文件。主配置读取失败
 // (容器未部署/配置缺失)整体报错;引用文件逐个 best-effort,单个失败只记 Error 字段。
@@ -978,11 +1006,7 @@ func readNginxConfFiles(ctx context.Context, tg target.Service, st *Settings, se
 	}
 	files := []NginxConfFile{{Path: nginxConfPath, Content: main}}
 	seen := map[string]struct{}{nginxConfPath: {}}
-	for _, m := range nginxConfRefRe.FindAllStringSubmatch(main, -1) {
-		p := strings.TrimSpace(m[1])
-		if p == "" || strings.ContainsAny(p, "*?[") {
-			continue
-		}
+	for _, p := range nginxConfRefs(main) {
 		if _, dup := seen[p]; dup {
 			continue
 		}

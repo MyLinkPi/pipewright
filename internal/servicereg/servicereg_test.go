@@ -335,6 +335,33 @@ func TestRenderNginxConfPerServiceFiles(t *testing.T) {
 	}
 }
 
+// TestNginxConfRefsSkipsCommentsAndCerts:引用提取须跳过 # 注释(防头部说明「由下方
+// include 引用」被当成路径),且不提取 ssl_certificate / ssl_certificate_key(私钥内容
+// 不该经查看配置接口下发)。
+func TestNginxConfRefsSkipsCommentsAndCerts(t *testing.T) {
+	main := "# 由 Pipewright 自动生成,请勿手改。由下方 include 引用;本文件全量管理。\n" +
+		"worker_processes auto;\n" +
+		"http {\n" +
+		"    include /etc/nginx/mime.types;\n" +
+		"    # include /etc/nginx/dead.conf; 已废弃的注释指令\n" +
+		"    include /etc/pipewright/nginx/conf.d/a.efg.com.conf;\n" +
+		"    server {\n" +
+		"        ssl_certificate /etc/pipewright/certs/efg.com/fullchain.pem;\n" +
+		"        ssl_certificate_key /etc/pipewright/certs/efg.com/privkey.pem;\n" +
+		"    }\n" +
+		"}\n"
+	got := nginxConfRefs(main)
+	want := []string{"/etc/nginx/mime.types", "/etc/pipewright/nginx/conf.d/a.efg.com.conf"}
+	if len(got) != len(want) {
+		t.Fatalf("应恰好提取 %v,得 %v", want, got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("第 %d 个引用应 %q,得 %q", i, want[i], got[i])
+		}
+	}
+}
+
 // --- 网关容器自举(回归:旧版自举配置把 return 放进 http 上下文,非法,容器崩溃循环) ---
 
 func TestNginxBootstrapMinConfValid(t *testing.T) {
