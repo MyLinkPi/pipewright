@@ -1345,10 +1345,12 @@ var cmdImagesByProject = []string{"docker", "ps", "--format",
 // 与服务注册网关的 inspectNginxVersion 同一思路)。键 = 内置模板名;未列出的模板
 // 回落镜像 tag。命令为代码内常量(无用户输入),经 docker exec sh -c 执行。
 var appVersionProbes = map[string]string{
-	"mysql":         "mysqld --version",
-	"redis":         "redis-server --version",
-	"postgres":      "postgres --version",
-	"gitea":         "/app/gitea --version",
+	"mysql":    "mysqld --version",
+	"redis":    "redis-server --version",
+	"postgres": "postgres --version",
+	// gitea:官方镜像里 /app/gitea 是 WORKDIR 目录(二进制是 /app/gitea/gitea),直接
+	// exec 会失败;PATH 里的 gitea(rootful 默认可用)优先,失败再试全路径(rootless)。
+	"gitea":         "gitea --version || /app/gitea/gitea --version",
 	"trivy-server":  "trivy --version",
 	"nuclei-runner": "nuclei --version",
 	"nginx-web":     "nginx -v",
