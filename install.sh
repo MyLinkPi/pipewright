@@ -124,11 +124,13 @@ download_binary() {
 	DL_DIR="$(mktemp -d)"
 	trap 'rm -rf "$DL_DIR"' EXIT
 	base_url="${DL_BASE}/${RELEASE_REPO}/releases/download/${TAG}"
+	# 下载走进度条(curl --progress-bar / wget --show-progress,任何详细度下都显示),
+	# 版本解析等元数据请求仍静默 —— 只有大文件才值得展示进度。
 	if command -v curl >/dev/null 2>&1; then
-		curl -fsSL -o "${DL_DIR}/${ASSET}" "${base_url}/${ASSET}" || err "下载失败:${base_url}/${ASSET}"
+		curl -fSL --progress-bar -o "${DL_DIR}/${ASSET}" "${base_url}/${ASSET}" || err "下载失败:${base_url}/${ASSET}"
 		curl -fsSL -o "${DL_DIR}/checksums.txt" "${base_url}/checksums.txt" || err "下载失败:${base_url}/checksums.txt"
 	else
-		wget -qO "${DL_DIR}/${ASSET}" "${base_url}/${ASSET}" || err "下载失败:${base_url}/${ASSET}"
+		wget -q --show-progress -O "${DL_DIR}/${ASSET}" "${base_url}/${ASSET}" || err "下载失败:${base_url}/${ASSET}"
 		wget -qO "${DL_DIR}/checksums.txt" "${base_url}/checksums.txt" || err "下载失败:${base_url}/checksums.txt"
 	fi
 
