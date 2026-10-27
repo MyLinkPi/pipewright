@@ -139,11 +139,11 @@ describe('server metric card GPU row (opt-in per server)', () => {
     expect(cards).toHaveLength(2)
     expect(cards[0].get('.gpu-card__idx').text()).toBe('#0')
     expect(cards[0].get('.gpu-card__name').text()).toBe('NVIDIA CMP 40HX')
-    // 三行同构进度条(利用率 / 显存 / 风扇);显存字节并入显存行,频率裸 MHz 靠右。
-    // 显存百分比按字节口径精算(7120289792 / 8589934592 ≈ 82.9% → 83%),与展示的字节一致。
+    // 三行同构单行进度条(利用率 / 显存 / 风扇);显存大小不展示,只留百分比,行尾频率裸 MHz 靠右。
+    // 显存百分比仍按字节口径精算(7120289792 / 8589934592 ≈ 82.9% → 83%)。
     expect(cards[0].findAll('.gpu-bar')).toHaveLength(3)
     expect(cards[0].findAll('.gpu-bar__value').map((v) => v.text())).toEqual(['0%', '83%', '36%'])
-    expect(cards[0].text()).toContain('8.0 GiB')
+    expect(cards[0].text()).not.toContain('GiB')
     expect(cards[0].text()).toContain('300MHz')
     expect(cards[0].text()).toContain('405MHz')
     expect(cards[1].text()).toContain('97')
