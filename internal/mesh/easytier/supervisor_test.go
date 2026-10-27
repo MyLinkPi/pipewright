@@ -52,7 +52,7 @@ func TestBuildArgs(t *testing.T) {
 		"--network-name", "net",
 		"--rpc-portal", "127.0.0.1:15888",
 		"--hostname", "h1",
-		"--private-mode",
+		"--private-mode", "true",
 		"--network-secret", "sec",
 		"-i", "10.1.1.5",
 		"-p", "tcp://1.2.3.4:11010",
@@ -130,12 +130,14 @@ func TestLocateExeAdjacent(t *testing.T) {
 }
 
 // TestBuildArgsPrivateMode 验证私有模式无条件传参:不随 --help 探测结果变化、与
-// 其它配置无关(安全默认,见 buildArgs 注释)。
+// 其它配置无关(安全默认);且必须显式带值 "true" —— v2.6.4 的布尔旗子是
+// <PRIVATE_MODE> 取值形(possible values true/false),裸旗子会被 clap 拒绝、
+// easytier-core 秒退(2026-10-27 线上事故根因)。
 func TestBuildArgsPrivateMode(t *testing.T) {
 	cfg := Config{NetworkName: "net", RPCAddr: "127.0.0.1:15888", Hostname: "h1"}
 	for _, flags := range []helpFlags{{}, {socks5: true, manualRoutes: true}} {
-		if !containsPair(buildArgs(cfg, flags), "--private-mode", "") {
-			t.Fatalf("私有模式应无条件启用(flags=%+v):%v", flags, buildArgs(cfg, flags))
+		if !containsPair(buildArgs(cfg, flags), "--private-mode", "true") {
+			t.Fatalf("私有模式应无条件以显式值启用(flags=%+v):%v", flags, buildArgs(cfg, flags))
 		}
 	}
 }
