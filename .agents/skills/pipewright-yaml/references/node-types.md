@@ -86,7 +86,7 @@ config **必填 `artifactJob`**:要推送的镜像来源节点 name,**必须是�
 ## deploy(部署类)
 
 ### deploy_ssh — 主机部署(文件产物)
-经 SSH 滚动部署 jar/dist 等:`releases/<runId>/` + 原子 `current` 软链 + 重启 + 健康门控 + 失败自动回滚。config **必填 `artifactJob`**(产物来源节点 name)。常用:`selector`(构建机/目标机选择器)、`selectorMode`(`all`/`any`)、`deployMode`(`artifact`/`command`)、`artifactName`(glob 消歧)、`deployPath`、`restartCommand`、`firstBatchSize`/`batchSize`(分批滚动)、`healthPath`/`healthPort`/`healthUrl`/`healthCommand`/`healthRetries`/`healthIntervalSeconds`、服务注册绑定 `regDomainId`/`regServiceName`/`regPath`/`regPort`/`regStripPath`/`regServiceId`。
+经 SSH 滚动部署 jar/dist 等:`releases/<runId>/` + 原子 `current` 软链 + 重启 + 健康门控 + 失败自动回滚。config **必填 `artifactJob`**(产物来源节点 name)。常用:`selector`(构建机/目标机选择器)、`selectorMode`(`all`/`any`)、`deployMode`(`artifact`/`command`)、`artifactName`(glob 消歧)、`deployPath`、`restartCommand`、`firstBatchSize`/`batchSize`(分批滚动)、`healthPath`/`healthPort`/`healthUrl`/`healthCommand`/`healthRetries`/`healthIntervalSeconds`、服务注册绑定 `regDomainId`/`regServiceName`/`regServiceAliases`(逗号分隔额外子域名,与主域名同一服务)/`regPath`/`regPort`/`regStripPath`/`regServiceId`(一键生成回填,部署期真正消费的绑定)。
 
 ### deploy_container — 容器部署(镜像产物)
 在目标机 pull + 重建容器。config **必填 `artifactJob`**(只能指向 `build_image`)、`containerName`。常用:`selector`/`selectorMode`、`ports`(如 `"8080, auto:9000, 8080:80"`)、`envVars`(每行 `KEY=value`,`#` 开头为注释行)、`volumes`(每行 `/data` 或 `宿主:容器`)、`cpuLimit`/`memoryLimit`、`restartPolicy`(`no`/`always`/`unless-stopped`/`on-failure`)、`runArgs`(自由参数)、`autoPortRange`、`registryUrl`/`registryCredentialId`(目标机登录私有仓库)、`firstBatchSize`/`batchSize`/`maxTargets`、`health*` 系列、服务注册 `reg*` 系列。

@@ -81,6 +81,7 @@ export default {
     emptyDesc: "註冊第一個服務,如 abc → abc.efg.com。",
     domain: "基域",
     name: "服務名",
+    aliases: "額外子域名(別名,逗號分隔)",
     protocol: "協定",
     upstreamKind: "上游類型",
     kindContainer: "容器",

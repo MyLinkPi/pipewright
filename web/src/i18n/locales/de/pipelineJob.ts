@@ -421,6 +421,8 @@ export default {
   fieldRegDomainLabel: 'Basisdomäne',
   regDomainUnselected: 'Basisdomäne wählen',
   fieldRegServiceNameLabel: 'Dienstname (Subdomain)',
+  fieldRegAliasesLabel: 'Zusätzliche Subdomains (Aliasse)',
+  fieldRegAliasesHint: 'Optional, kommagetrennt; jeder Alias zeigt ebenfalls auf diesen Dienst (z. B. api-v2 → api-v2.efg.com). Gleicher Zeichensatz wie der Dienstname, max. 10.',
   fieldRegPortLabel: 'Dienstport',
   fieldRegPortHint: 'Port, auf dem der Prozess lauscht; das Gateway proxyt Serveradresse:Dieser-Port, die Health-Prüfung nutzt ihn ebenfalls. Host-Upgrades rollen via Abhängen → Upgrade → Health → Wieder-Anhängen.',
   fieldRegPathLabel: 'Unterpfad',

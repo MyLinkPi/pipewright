@@ -100,6 +100,9 @@ type serviceRegServiceDTO struct {
 	BaseDomain    string `json:"baseDomain"`
 	Name          string `json:"name"`
 	FQDN          string `json:"fqdn"`
+	// Aliases 是同基域额外子域名 label;FQDNs 是全部域名(主 FQDN 在前,别名随后)直显。
+	Aliases       []string `json:"aliases"`
+	FQDNs         []string `json:"fqdns"`
 	Path          string `json:"path"`
 	Protocol      string `json:"protocol"`
 	UpstreamKind  string `json:"upstreamKind"`
@@ -120,7 +123,8 @@ type serviceRegServiceDTO struct {
 func toServiceRegServiceDTO(s servicereg.ServiceWithDomain) serviceRegServiceDTO {
 	return serviceRegServiceDTO{
 		ID: s.ID, DomainID: s.DomainID, BaseDomain: s.BaseDomain, Name: s.Name,
-		FQDN: s.FQDN(s.BaseDomain), Path: s.Path, Protocol: s.Protocol, UpstreamKind: s.UpstreamKind,
+		FQDN: s.FQDN(s.BaseDomain), Aliases: aliasesOrEmpty(s.Aliases), FQDNs: s.FQDNs(s.BaseDomain),
+		Path: s.Path, Protocol: s.Protocol, UpstreamKind: s.UpstreamKind,
 		Upstream: s.Upstream, UpstreamPort: s.UpstreamPort, TCPListenPort: s.TCPListenPort,
 		PeerNodeID: s.PeerNodeID, PeerServiceID: s.PeerServiceID,
 		StripPathPrefix: s.StripPathPrefix,
@@ -210,7 +214,7 @@ func writeServiceRegError(w http.ResponseWriter, err error) {
 	case errors.Is(err, servicereg.ErrPathTaken):
 		writeError(w, http.StatusConflict, "path_taken", "该子域名下此路径已被其它服务占用")
 	case errors.Is(err, servicereg.ErrFQDNTaken):
-		writeError(w, http.StatusConflict, "fqdn_taken", "该子域名已全局被其它服务占用")
+		writeError(w, http.StatusConflict, "fqdn_taken", "该子域名(或别名)已全局被其它服务占用")
 	case errors.Is(err, servicereg.ErrStaticService):
 		writeError(w, http.StatusConflict, "static_service", "静态托管服务不支持实例等上游操作(内容由静态发布部署下发)")
 	case errors.Is(err, servicereg.ErrTCPPortTaken):
@@ -218,7 +222,7 @@ func writeServiceRegError(w http.ResponseWriter, err error) {
 	case errors.Is(err, servicereg.ErrInvalidBaseDomain):
 		writeError(w, http.StatusBadRequest, "invalid_service_reg", "基域格式非法,请填写小写 FQDN(如 efg.com,不带 www/通配符)")
 	case errors.Is(err, servicereg.ErrInvalidServiceName):
-		writeError(w, http.StatusBadRequest, "invalid_service_reg", "服务名非法:小写字母/数字(可含 -,不以 - 开头),将作为子域名前缀")
+		writeError(w, http.StatusBadRequest, "invalid_service_reg", "服务名/别名非法:小写字母/数字(可含 -,不以 - 开头),将作为子域名前缀;别名不能与服务名相同且最多 10 个")
 	case errors.Is(err, servicereg.ErrInvalidPath):
 		writeError(w, http.StatusBadRequest, "invalid_service_reg", "子路径非法:须以 / 开头,仅含字母数字与 . _ ~ - /(如 /api;留空表示根路径;TCP 服务不支持子路径)")
 	case errors.Is(err, servicereg.ErrInvalidProtocol):
@@ -535,19 +539,28 @@ func makeListServiceRegServicesHandler(svc servicereg.Service) http.HandlerFunc 
 	}
 }
 
+// aliasesOrEmpty 保证 DTO 别名恒为非 nil 数组(前端免判空)。
+func aliasesOrEmpty(in []string) []string {
+	if in == nil {
+		return []string{}
+	}
+	return in
+}
+
 // serviceRegServiceRequest 是创建/更新服务的请求体字段(创建时全量,更新时缺省保持)。
 type serviceRegServiceRequest struct {
-	DomainID        *string `json:"domainId"`
-	Name            *string `json:"name"`
-	Path            *string `json:"path"`
-	Protocol        *string `json:"protocol"`
-	UpstreamKind    *string `json:"upstreamKind"`
-	Upstream        *string `json:"upstream"`
-	UpstreamPort    *int    `json:"upstreamPort"`
-	TCPListenPort   *int    `json:"tcpListenPort"`
-	PeerNodeID      *string `json:"peerNodeId"`
-	PeerServiceID   *string `json:"peerServiceId"`
-	StripPathPrefix *bool   `json:"stripPathPrefix"`
+	DomainID        *string   `json:"domainId"`
+	Name            *string   `json:"name"`
+	Aliases         *[]string `json:"aliases"`
+	Path            *string   `json:"path"`
+	Protocol        *string   `json:"protocol"`
+	UpstreamKind    *string   `json:"upstreamKind"`
+	Upstream        *string   `json:"upstream"`
+	UpstreamPort    *int      `json:"upstreamPort"`
+	TCPListenPort   *int      `json:"tcpListenPort"`
+	PeerNodeID      *string   `json:"peerNodeId"`
+	PeerServiceID   *string   `json:"peerServiceId"`
+	StripPathPrefix *bool     `json:"stripPathPrefix"`
 }
 
 // serviceRegUpstreamKind 归一化请求的上游形态(缺省 = container)。
@@ -578,6 +591,9 @@ func (req serviceRegServiceRequest) toCreateServiceInput() (servicereg.CreateSer
 	}
 	if req.Path != nil {
 		in.Path = *req.Path
+	}
+	if req.Aliases != nil {
+		in.Aliases = *req.Aliases
 	}
 	if req.Upstream != nil {
 		in.Upstream = *req.Upstream
@@ -684,6 +700,9 @@ func makeUpdateServiceRegServiceHandler(svc servicereg.Service, aud audit.Record
 		in := servicereg.UpdateServiceInput{}
 		if req.Name != nil {
 			in.Name = req.Name
+		}
+		if req.Aliases != nil {
+			in.Aliases = req.Aliases
 		}
 		if req.Path != nil {
 			in.Path = req.Path

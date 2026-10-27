@@ -404,6 +404,8 @@ export default {
   fieldRegDomainLabel: '기본 도메인',
   regDomainUnselected: '기본 도메인 선택',
   fieldRegServiceNameLabel: '서비스명(서브도메인)',
+  fieldRegAliasesLabel: '추가 서브도메인(별칭)',
+  fieldRegAliasesHint: '선택 사항, 쉼표로 구분; 각 별칭도 이 서비스를 가리킵니다(예: api-v2 → api-v2.efg.com). 서비스명과 동일한 문자 집합, 최대 10개.',
   fieldRegPortLabel: '서비스 포트',
   fieldRegPortHint: '프로세스가 수신하는 포트. 게이트웨이가 서버주소:이포트 로 프록시하며 헬스체크도 이를 사용합니다. 호스트 업그레이드는 분리→업그레이드→헬스→재연결 로 롤링됩니다.',
   fieldRegPathLabel: '하위 경로',

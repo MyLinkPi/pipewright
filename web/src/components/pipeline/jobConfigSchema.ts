@@ -173,6 +173,7 @@ const healthConfigured = (c: Record<string, string>) =>
 const REG_BINDING_FIELDS: JobField[] = [
   { key: 'regDomainId', label: 'regDomainId', kind: 'text', when: () => false },
   { key: 'regServiceName', label: 'regServiceName', kind: 'text', when: () => false },
+  { key: 'regServiceAliases', label: 'regServiceAliases', kind: 'text', when: () => false },
   { key: 'regPath', label: 'regPath', kind: 'text', when: () => false },
   { key: 'regPort', label: 'regPort', kind: 'text', when: () => false },
   { key: 'regStripPath', label: 'regStripPath', kind: 'text', when: () => false },

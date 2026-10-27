@@ -612,6 +612,68 @@ func TestServiceRegEnsureService(t *testing.T) {
 	}
 }
 
+// TestServiceRegAliases:多子域名 —— ensure 带别名创建/刷新,列表回显 aliases/fqdns;
+// 别名撞既有域名 → 409 fqdn_taken;非法别名 → 400。
+func TestServiceRegAliases(t *testing.T) {
+	srv, _, _ := setupServiceRegServer(t)
+	client, csrf := loginSR(t, srv.URL)
+
+	resp := doJSON(t, client, http.MethodPost, srv.URL+"/api/servicereg/domains", csrf, `{"baseDomain":"efg.com"}`)
+	var dom struct {
+		ID string `json:"id"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&dom)
+	resp.Body.Close()
+
+	// ensure 带别名(含大写与空项 → 归一化)。
+	body := `{"domainId":"` + dom.ID + `","name":"api","aliases":["API-V2",""],"upstreamKind":"container","upstreamPort":8080}`
+	resp = doJSON(t, client, http.MethodPost, srv.URL+"/api/servicereg/services/ensure", csrf, body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("首保 ensure 带别名:%d", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	// 列表回显 aliases / fqdns(主 FQDN 在前)。
+	resp = doJSON(t, client, http.MethodGet, srv.URL+"/api/servicereg/services", "", "")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("列表:%d", resp.StatusCode)
+	}
+	var list struct {
+		Items []struct {
+			Aliases []string `json:"aliases"`
+			FQDNs   []string `json:"fqdns"`
+		} `json:"items"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&list)
+	resp.Body.Close()
+	if len(list.Items) != 1 {
+		t.Fatalf("服务列表不符:%+v", list.Items)
+	}
+	got := list.Items[0]
+	if len(got.Aliases) != 1 || got.Aliases[0] != "api-v2" {
+		t.Fatalf("别名应归一为 [api-v2]:%v", got.Aliases)
+	}
+	if len(got.FQDNs) != 2 || got.FQDNs[0] != "api.efg.com" || got.FQDNs[1] != "api-v2.efg.com" {
+		t.Fatalf("fqdns 应主名在前:%v", got.FQDNs)
+	}
+
+	// 别名撞既有主名 → 409 fqdn_taken。
+	body = `{"domainId":"` + dom.ID + `","name":"shop","aliases":["api"],"upstreamKind":"container","upstreamPort":8080}`
+	resp = doJSON(t, client, http.MethodPost, srv.URL+"/api/servicereg/services", csrf, body)
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("别名撞主名应 409:%d", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	// 非法别名 → 400。
+	body = `{"domainId":"` + dom.ID + `","name":"shop","aliases":["Bad_Domain"],"upstreamKind":"container","upstreamPort":8080}`
+	resp = doJSON(t, client, http.MethodPost, srv.URL+"/api/servicereg/services", csrf, body)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("非法别名应 400:%d", resp.StatusCode)
+	}
+	resp.Body.Close()
+}
+
 // --- 工具 -----------------------------------------------------------------
 
 func srJoinCmds(ft *fakeSRTarget) string {

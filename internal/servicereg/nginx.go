@@ -181,14 +181,19 @@ func renderNginxConf(confDir string, domains []Domain, services []RegisteredServ
 		fqdn := svc.Name + "." + dom.BaseDomain
 		g := byFqdn[fqdn]
 		if g == nil {
-			g = &httpGroup{fqdn: fqdn, dom: dom, certd: dom.HasCert}
+			g = &httpGroup{fqdn: fqdn, dom: dom, certd: dom.HasCert, serverNames: []string{fqdn}}
 			byFqdn[fqdn] = g
 			groups = append(groups, g)
+		}
+		// 别名 FQDN 并入该组 server_name(域名集合按组聚合;组排序前统一去重排序保确定性)。
+		for _, a := range svc.Aliases {
+			g.serverNames = append(g.serverNames, a+"."+dom.BaseDomain)
 		}
 		g.sites = append(g.sites, httpSite{svc: svc, fqdn: fqdn, dom: dom, certd: dom.HasCert})
 	}
 	sort.Slice(groups, func(i, j int) bool { return groups[i].fqdn < groups[j].fqdn })
 	for _, g := range groups {
+		g.serverNames = dedupSortedAfter(g.serverNames[0], g.serverNames[1:])
 		sort.Slice(g.sites, func(i, j int) bool { return g.sites[i].svc.Path < g.sites[j].svc.Path })
 	}
 	sort.Slice(tcps, func(i, j int) bool { return tcps[i].TCPListenPort < tcps[j].TCPListenPort })
@@ -285,7 +290,7 @@ func renderNginxConf(confDir string, domains []Domain, services []RegisteredServ
 			b.WriteString("# 证书就绪:80 → 443。\n")
 			b.WriteString("server {\n")
 			b.WriteString("    listen 80;\n")
-			b.WriteString("    server_name " + g.fqdn + ";\n")
+			b.WriteString("    server_name " + strings.Join(g.serverNames, " ") + ";\n")
 			b.WriteString("    return 301 https://$host$request_uri;\n")
 			b.WriteString("}\n\n")
 		}
@@ -436,7 +441,24 @@ type httpGroup struct {
 	fqdn  string
 	dom   Domain
 	certd bool
-	sites []httpSite // 按 path 升序(确定性;nginx 前缀 location 最长匹配与顺序无关)
+	// serverNames 是该 server 块的完整 server_name 列表:主 FQDN 恒在首位,别名 FQDN
+	// 随后(升序去重;同组多服务的别名并集)。文件名与路由键仍用主 fqdn。
+	serverNames []string
+	sites       []httpSite // 按 path 升序(确定性;nginx 前缀 location 最长匹配与顺序无关)
+}
+
+// dedupSortedAfter 返回 [head, tail 去重升序](head 恒首位;tail 元素与 head 重复时丢弃)。
+func dedupSortedAfter(head string, tail []string) []string {
+	sort.Strings(tail)
+	out := make([]string, 0, 1+len(tail))
+	out = append(out, head)
+	for i, v := range tail {
+		if v == head || (i > 0 && v == tail[i-1]) {
+			continue
+		}
+		out = append(out, v)
+	}
+	return out
 }
 
 // siteRender 是单站点(单 location)的渲染决策,由 renderNginxConf 按 (FQDN, path) 升序
@@ -458,7 +480,7 @@ func renderHTTPServer(b *strings.Builder, indent string, group *httpGroup, proto
 		b.WriteString(indent + "# " + groupTargetComment(group) + "。\n")
 		b.WriteString(indent + "server {\n")
 		b.WriteString(indent + "    listen 443 ssl;\n")
-		b.WriteString(indent + "    server_name " + group.fqdn + ";\n")
+		b.WriteString(indent + "    server_name " + strings.Join(group.serverNames, " ") + ";\n")
 		b.WriteString(indent + "    ssl_certificate " + certDir + "/fullchain.pem;\n")
 		b.WriteString(indent + "    ssl_certificate_key " + certDir + "/privkey.pem;\n")
 		b.WriteString(indent + "    ssl_protocols TLSv1.2 TLSv1.3;\n")
@@ -466,7 +488,7 @@ func renderHTTPServer(b *strings.Builder, indent string, group *httpGroup, proto
 		b.WriteString(indent + "# " + groupTargetComment(group) + "(基域未上传证书,仅 HTTP)。\n")
 		b.WriteString(indent + "server {\n")
 		b.WriteString(indent + "    listen 80;\n")
-		b.WriteString(indent + "    server_name " + group.fqdn + ";\n")
+		b.WriteString(indent + "    server_name " + strings.Join(group.serverNames, " ") + ";\n")
 	}
 	for _, st := range group.sites {
 		if st.svc.UpstreamKind == UpstreamKindStatic {

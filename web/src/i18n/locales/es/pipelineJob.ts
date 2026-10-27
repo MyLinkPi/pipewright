@@ -426,6 +426,8 @@ export default {
   fieldRegDomainLabel: 'Dominio base',
   regDomainUnselected: 'Selecciona un dominio base',
   fieldRegServiceNameLabel: 'Nombre del servicio (subdominio)',
+  fieldRegAliasesLabel: 'Subdominios adicionales (alias)',
+  fieldRegAliasesHint: 'Opcional, separados por comas; cada alias también apunta a este servicio (p. ej. api-v2 → api-v2.efg.com). Mismo juego de caracteres que el nombre del servicio, máx. 10.',
   fieldRegPortLabel: 'Puerto del servicio',
   fieldRegPortHint: 'Puerto donde escucha el proceso; la pasarela hace proxy de dirección-del-servidor:este-puerto y el health check también lo usa. Las actualizaciones ruedan con desasociar → actualizar → health → reasociar.',
   fieldRegPathLabel: 'Subruta',

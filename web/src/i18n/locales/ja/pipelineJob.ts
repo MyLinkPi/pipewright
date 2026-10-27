@@ -411,6 +411,8 @@ export default {
   fieldRegDomainLabel: 'ベースドメイン',
   regDomainUnselected: 'ベースドメインを選択',
   fieldRegServiceNameLabel: 'サービス名(サブドメイン)',
+  fieldRegAliasesLabel: '追加サブドメイン(エイリアス)',
+  fieldRegAliasesHint: '任意・カンマ区切り。各エイリアスも同じサービスへ向けます(例: api-v2 → api-v2.efg.com)。サービス名と同じ文字種、最大 10 件。',
   fieldRegPortLabel: 'サービスポート',
   fieldRegPortHint: 'プロセスのリッスンポート。ゲートウェイは サーバアドレス:このポート でプロキシし、ヘルスチェックにも使われます。ホスト側は「切断→アップグレード→ヘルス→再接続」でローリング。',
   fieldRegPathLabel: 'サブパス',

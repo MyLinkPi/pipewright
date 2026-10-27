@@ -81,6 +81,7 @@ export default {
     emptyDesc: "Register your first service, e.g. abc → abc.efg.com.",
     domain: "Base domain",
     name: "Service name",
+    aliases: "추가 서브도메인(별칭, 쉼표로 구분)",
     protocol: "Protocol",
     upstreamKind: "Upstream type",
     kindContainer: "Container",

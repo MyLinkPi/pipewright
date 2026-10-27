@@ -81,6 +81,7 @@ export default {
     emptyDesc: "最初のサービスを登録(例 abc → abc.efg.com)。",
     domain: "ベースドメイン",
     name: "サービス名",
+    aliases: "追加サブドメイン(エイリアス、カンマ区切り)",
     protocol: "プロトコル",
     upstreamKind: "上流タイプ",
     kindContainer: "コンテナ",

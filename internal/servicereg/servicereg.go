@@ -198,9 +198,13 @@ type Domain struct {
 
 // RegisteredService 是一个已注册服务(abc → abc.efg.com)。
 type RegisteredService struct {
-	ID            string
-	DomainID      string
-	Name          string // abc;FQDN = Name + "." + BaseDomain
+	ID       string
+	DomainID string
+	Name     string // abc;FQDN = Name + "." + BaseDomain
+	// Aliases 是同基域下的额外子域名 label(如 api-v2 → api-v2.efg.com):与主 FQDN
+	// 同一 server 块 server_name,任一域名都路由到本服务;全局(主名 + 别名)互斥。
+	// tcp 协议允许存但渲染忽略(stream 不按域名路由)。
+	Aliases       []string
 	Path          string // 子路径('' = 根路径 /);同 FQDN 下多服务靠不同 path 共存
 	Protocol      string // http | tcp
 	UpstreamKind  string // container | address | static | forward
@@ -268,6 +272,7 @@ type SettingsUpdate struct {
 type CreateServiceInput struct {
 	DomainID      string
 	Name          string
+	Aliases       []string // 同基域额外子域名(normalizeServiceAliases 归一化)
 	Path          string
 	Protocol      string
 	UpstreamKind  string
@@ -284,6 +289,7 @@ type CreateServiceInput struct {
 // UpdateServiceInput 是更新服务的入参(指针字段,nil = 保持不变)。
 type UpdateServiceInput struct {
 	Name            *string
+	Aliases         *[]string
 	Path            *string
 	Protocol        *string
 	UpstreamKind    *string
@@ -630,8 +636,9 @@ func (s *service) CreateService(ctx context.Context, in CreateServiceInput) (*Re
 }
 
 // EnsureService 幂等注册/刷新服务(部署节点「一键生成」):按(基域, 服务名, path)定位 ——
-// 存在 → 校验一致性后刷新上游默认(kind/Upstream/UpstreamPort/StripPathPrefix);不存在 → 创建。
-// 不自动建实例(部署按目标机 EnsureInstance;static 服务无实例)。重复点击/多流水线共用同一服务均安全。
+// 存在 → 校验一致性后刷新上游默认与别名(kind/Upstream/UpstreamPort/StripPathPrefix/Aliases;
+// 节点侧改了别名再生成须生效);不存在 → 创建。不自动建实例(部署按目标机 EnsureInstance;
+// static 服务无实例)。重复点击/多流水线共用同一服务均安全。
 func (s *service) EnsureService(ctx context.Context, in CreateServiceInput) (*RegisteredService, error) {
 	in.Name = strings.ToLower(strings.TrimSpace(in.Name))
 	if in.Protocol == "" {
@@ -645,6 +652,11 @@ func (s *service) EnsureService(ctx context.Context, in CreateServiceInput) (*Re
 		return nil, perr
 	}
 	in.Path = path
+	aliases, aerr := normalizeServiceAliases(in.Name, in.Aliases)
+	if aerr != nil {
+		return nil, aerr
+	}
+	in.Aliases = aliases
 	all, err := s.store.listServices(ctx)
 	if err != nil {
 		return nil, err
@@ -661,6 +673,7 @@ func (s *service) EnsureService(ctx context.Context, in CreateServiceInput) (*Re
 			Upstream:        &in.Upstream,
 			UpstreamPort:    &in.UpstreamPort,
 			StripPathPrefix: &in.StripPathPrefix,
+			Aliases:         &in.Aliases,
 		}
 		return s.UpdateService(ctx, o.ID, upd)
 	}
@@ -675,6 +688,7 @@ func (s *service) UpdateService(ctx context.Context, id string, in UpdateService
 	ci := CreateServiceInput{
 		DomainID:        cur.DomainID,
 		Name:            cur.Name,
+		Aliases:         cur.Aliases,
 		Path:            cur.Path,
 		Protocol:        cur.Protocol,
 		UpstreamKind:    cur.UpstreamKind,
@@ -687,6 +701,9 @@ func (s *service) UpdateService(ctx context.Context, id string, in UpdateService
 	}
 	if in.Name != nil {
 		ci.Name = *in.Name
+	}
+	if in.Aliases != nil {
+		ci.Aliases = *in.Aliases
 	}
 	if in.Path != nil {
 		ci.Path = *in.Path
@@ -772,6 +789,11 @@ func (s *service) prepareService(ctx context.Context, selfID string, in CreateSe
 	if !serviceNameRe.MatchString(in.Name) {
 		return nil, ErrInvalidServiceName
 	}
+	aliases, aerr := normalizeServiceAliases(in.Name, in.Aliases)
+	if aerr != nil {
+		return nil, aerr
+	}
+	in.Aliases = aliases
 	if in.Protocol != ProtocolHTTP && in.Protocol != ProtocolTCP {
 		return nil, ErrInvalidProtocol
 	}
@@ -849,7 +871,8 @@ func (s *service) prepareService(ctx context.Context, selfID string, in CreateSe
 	}
 
 	// 跨服务唯一性:同一 FQDN 下相同 path 互斥(ErrPathTaken;同 FQDN 不同 path 共存于同一
-	// server 块)、TCP 监听端口全局唯一且避开 80/443(容器内 HTTP 监听)。
+	// server 块)、别名 label(主名 + 别名)同域互斥(别名代表整个 server 块,任何 path 都
+	// 归属原服务,不能只按 path 区分)、TCP 监听端口全局唯一且避开 80/443(容器内 HTTP 监听)。
 	all, err := s.store.listServices(ctx)
 	if err != nil {
 		return nil, err
@@ -869,14 +892,45 @@ func (s *service) prepareService(ctx context.Context, selfID string, in CreateSe
 			if o.Name == in.Name && o.Path == in.Path {
 				return nil, ErrPathTaken
 			}
+			// 别名与既有服务的域名(主名或别名)互斥:别名 FQDN 会写进同一 server 块的
+			// server_name,与他服务域名重复 = nginx 冲突 server name(先匹配者生效)。
+			for _, a := range in.Aliases {
+				if a == o.Name {
+					return nil, ErrFQDNTaken
+				}
+				for _, oa := range o.Aliases {
+					if a == oa {
+						return nil, ErrFQDNTaken
+					}
+				}
+			}
+			for _, oa := range o.Aliases {
+				if in.Name == oa {
+					return nil, ErrFQDNTaken
+				}
+			}
 			continue
 		}
 		od, derr := s.store.getDomain(ctx, o.DomainID)
 		if derr != nil {
 			continue
 		}
-		// 跨基域撞出同名 FQDN(防御:服务名字符集不含点,理论不可达)时同 path 仍互斥。
-		if o.Name+"."+od.BaseDomain == fqdn && o.Path == in.Path {
+		// 跨基域撞出同名 FQDN(防御:服务名字符集不含点,理论不可达):主名对主名同 path
+		// 互斥;涉及别名的 FQDN 对称参与防御检查(整域互斥)。
+		oFqdns := make(map[string]bool, 1+len(o.Aliases))
+		oFqdns[o.Name+"."+od.BaseDomain] = true
+		for _, oa := range o.Aliases {
+			oFqdns[oa+"."+od.BaseDomain] = true
+		}
+		fqdnHit := oFqdns[fqdn]
+		aliasHit := false
+		for _, a := range in.Aliases {
+			if oFqdns[a+"."+dom.BaseDomain] {
+				aliasHit = true
+				break
+			}
+		}
+		if aliasHit || (fqdnHit && o.Path == in.Path) {
 			return nil, ErrFQDNTaken
 		}
 	}
@@ -889,6 +943,7 @@ func (s *service) prepareService(ctx context.Context, selfID string, in CreateSe
 		ID:              uuid.NewString(),
 		DomainID:        in.DomainID,
 		Name:            in.Name,
+		Aliases:         in.Aliases,
 		Path:            in.Path,
 		Protocol:        in.Protocol,
 		UpstreamKind:    in.UpstreamKind,
@@ -1425,6 +1480,44 @@ func (rs RegisteredService) DisplayPath() string {
 
 // FQDN 返回服务的完整域名(供展示;http 服务即访问地址)。
 func (rs RegisteredService) FQDN(base string) string { return rs.Name + "." + base }
+
+// FQDNs 返回服务的全部域名(主 FQDN 在前,别名 FQDN 随后;展示/DTO 直显)。
+func (rs RegisteredService) FQDNs(base string) []string {
+	out := make([]string, 0, 1+len(rs.Aliases))
+	out = append(out, rs.FQDN(base))
+	for _, a := range rs.Aliases {
+		out = append(out, a+"."+base)
+	}
+	return out
+}
+
+// maxServiceAliases 是单个服务的别名数量上限(防滥用;渲染为单行 server_name)。
+const maxServiceAliases = 10
+
+// normalizeServiceAliases 归一化别名列表:逐个小写去空白、复用 serviceNameRe 校验
+// (与主名同字符集)、去重、禁止与主名相同;空串项静默丢弃(前端逗号分隔输入的尾逗号)。
+func normalizeServiceAliases(name string, raw []string) ([]string, error) {
+	out := make([]string, 0, len(raw))
+	seen := make(map[string]bool, len(raw)+1)
+	for _, a := range raw {
+		a = strings.ToLower(strings.TrimSpace(a))
+		if a == "" {
+			continue
+		}
+		if a == name || seen[a] {
+			return nil, ErrInvalidServiceName
+		}
+		if !serviceNameRe.MatchString(a) {
+			return nil, ErrInvalidServiceName
+		}
+		seen[a] = true
+		out = append(out, a)
+	}
+	if len(out) > maxServiceAliases {
+		return nil, ErrInvalidServiceName
+	}
+	return out, nil
+}
 
 // maxCertPEMBytes 是单份证书/私钥 PEM 的尺寸上限(容 RSA-4096 链)。
 const maxCertPEMBytes = 64 << 10
