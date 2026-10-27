@@ -392,6 +392,19 @@ func scanDomain(sc scanner) (*Domain, error) {
 
 // ---------- services ----------
 
+// joinServiceAliases 把别名列表序列化为库列(逗号分隔;空列表序列化为空串)。
+func joinServiceAliases(aliases []string) string {
+	return strings.Join(aliases, ",")
+}
+
+// splitServiceAliases 反序列化别名库列(空串 = nil)。
+func splitServiceAliases(s string) []string {
+	if s == "" {
+		return nil
+	}
+	return strings.Split(s, ",")
+}
+
 // insertService 落库服务;(domain_id,name,path) 唯一冲突 → ErrServiceTaken。
 func (s *Store) insertService(ctx context.Context, svc *RegisteredService) error {
 	enabled := 0
@@ -404,10 +417,11 @@ func (s *Store) insertService(ctx context.Context, svc *RegisteredService) error
 	}
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO service_reg_services
-		   (id, domain_id, name, path, protocol, upstream_kind, upstream, upstream_port,
+		   (id, domain_id, name, aliases, path, protocol, upstream_kind, upstream, upstream_port,
 		    tcp_listen_port, strip_path_prefix, enabled, peer_node_id, peer_service_id, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		svc.ID, svc.DomainID, svc.Name, svc.Path, svc.Protocol, svc.UpstreamKind, svc.Upstream, svc.UpstreamPort,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		svc.ID, svc.DomainID, svc.Name, joinServiceAliases(svc.Aliases), svc.Path, svc.Protocol,
+		svc.UpstreamKind, svc.Upstream, svc.UpstreamPort,
 		svc.TCPListenPort, strip, enabled, svc.PeerNodeID, svc.PeerServiceID,
 		svc.CreatedAt.UTC().Format(time.RFC3339), svc.UpdatedAt.UTC().Format(time.RFC3339),
 	)
@@ -433,7 +447,7 @@ func (s *Store) getService(ctx context.Context, id string) (*RegisteredService, 
 	return svc, nil
 }
 
-const serviceCols = `SELECT id, domain_id, name, path, protocol, upstream_kind, upstream, upstream_port,
+const serviceCols = `SELECT id, domain_id, name, aliases, path, protocol, upstream_kind, upstream, upstream_port,
        tcp_listen_port, strip_path_prefix, enabled, peer_node_id, peer_service_id, created_at, updated_at FROM service_reg_services`
 
 // listServices 返回全部服务(创建时间倒序)。
@@ -458,7 +472,7 @@ func (s *Store) listServices(ctx context.Context) ([]RegisteredService, error) {
 // 免前端逐服务再查一次实例)。
 func (s *Store) listServicesWithDomain(ctx context.Context) ([]ServiceWithDomain, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT s.id, s.domain_id, s.name, s.path, s.protocol, s.upstream_kind, s.upstream, s.upstream_port,
+		`SELECT s.id, s.domain_id, s.name, s.aliases, s.path, s.protocol, s.upstream_kind, s.upstream, s.upstream_port,
 		        s.tcp_listen_port, s.strip_path_prefix, s.enabled, s.peer_node_id, s.peer_service_id,
 		        s.created_at, s.updated_at, d.base_domain,
 		        (SELECT COUNT(*) FROM service_reg_instances i WHERE i.service_id = s.id) AS instance_count
@@ -475,17 +489,19 @@ func (s *Store) listServicesWithDomain(ctx context.Context) ([]ServiceWithDomain
 			swd      ServiceWithDomain
 			enabled  int
 			strip    int
+			aliases  string
 			createdS string
 			updatedS string
 		)
 		if err := rows.Scan(
-			&swd.ID, &swd.DomainID, &swd.Name, &swd.Path, &swd.Protocol, &swd.UpstreamKind, &swd.Upstream,
-			&swd.UpstreamPort, &swd.TCPListenPort, &strip, &enabled, &swd.PeerNodeID, &swd.PeerServiceID,
-			&createdS, &updatedS, &swd.BaseDomain,
+			&swd.ID, &swd.DomainID, &swd.Name, &aliases, &swd.Path, &swd.Protocol, &swd.UpstreamKind,
+			&swd.Upstream, &swd.UpstreamPort, &swd.TCPListenPort, &strip, &enabled, &swd.PeerNodeID,
+			&swd.PeerServiceID, &createdS, &updatedS, &swd.BaseDomain,
 			&swd.InstanceCount,
 		); err != nil {
 			return nil, err
 		}
+		swd.Aliases = splitServiceAliases(aliases)
 		swd.StripPathPrefix = strip != 0
 		swd.Enabled = enabled != 0
 		swd.CreatedAt = parseTime(createdS)
@@ -503,11 +519,11 @@ func (s *Store) updateService(ctx context.Context, svc *RegisteredService) error
 	}
 	res, err := s.db.ExecContext(ctx,
 		`UPDATE service_reg_services
-		 SET name = ?, path = ?, protocol = ?, upstream_kind = ?, upstream = ?, upstream_port = ?,
+		 SET name = ?, aliases = ?, path = ?, protocol = ?, upstream_kind = ?, upstream = ?, upstream_port = ?,
 		     tcp_listen_port = ?, strip_path_prefix = ?, peer_node_id = ?, peer_service_id = ?, updated_at = ?
 		 WHERE id = ?`,
-		svc.Name, svc.Path, svc.Protocol, svc.UpstreamKind, svc.Upstream, svc.UpstreamPort,
-		svc.TCPListenPort, strip, svc.PeerNodeID, svc.PeerServiceID,
+		svc.Name, joinServiceAliases(svc.Aliases), svc.Path, svc.Protocol, svc.UpstreamKind, svc.Upstream,
+		svc.UpstreamPort, svc.TCPListenPort, strip, svc.PeerNodeID, svc.PeerServiceID,
 		svc.UpdatedAt.UTC().Format(time.RFC3339), svc.ID,
 	)
 	if err != nil {
@@ -557,16 +573,18 @@ func scanService(sc scanner) (*RegisteredService, error) {
 		svc      RegisteredService
 		enabled  int
 		strip    int
+		aliases  string
 		createdS string
 		updatedS string
 	)
 	if err := sc.Scan(
-		&svc.ID, &svc.DomainID, &svc.Name, &svc.Path, &svc.Protocol, &svc.UpstreamKind, &svc.Upstream,
-		&svc.UpstreamPort, &svc.TCPListenPort, &strip, &enabled, &svc.PeerNodeID, &svc.PeerServiceID,
-		&createdS, &updatedS,
+		&svc.ID, &svc.DomainID, &svc.Name, &aliases, &svc.Path, &svc.Protocol, &svc.UpstreamKind,
+		&svc.Upstream, &svc.UpstreamPort, &svc.TCPListenPort, &strip, &enabled, &svc.PeerNodeID,
+		&svc.PeerServiceID, &createdS, &updatedS,
 	); err != nil {
 		return nil, err
 	}
+	svc.Aliases = splitServiceAliases(aliases)
 	svc.StripPathPrefix = strip != 0
 	svc.Enabled = enabled != 0
 	svc.CreatedAt = parseTime(createdS)

@@ -10,6 +10,7 @@ import (
 	"database/sql"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"io"
 	"math/big"
 	"strings"
@@ -72,6 +73,47 @@ func TestRenderNginxConfHTTPS(t *testing.T) {
 	}
 	if strings.Contains(out, "load_module") {
 		t.Fatalf("无 tcp 服务不应加载 stream 模块:\n%s", out)
+	}
+}
+
+// TestRenderNginxConfAliases 多子域名:别名 FQDN 与主 FQDN 同一 server 块 server_name
+// (443 vhost 与 80→443 跳转块均多值),文件名与 upstream 命名仍用主 FQDN/主名;
+// 无证书基域同样多值;tcp 服务别名不渲染(stream 不按域名路由)。
+func TestRenderNginxConfAliases(t *testing.T) {
+	dom := Domain{ID: "d1", BaseDomain: "efg.com", HasCert: true}
+	plain := Domain{ID: "d2", BaseDomain: "xyz.com", HasCert: false}
+	svc := RegisteredService{ID: "s1", Name: "abc", Aliases: []string{"zz", "aa"}, DomainID: "d1", Protocol: ProtocolHTTP,
+		UpstreamKind: UpstreamKindContainer, Upstream: "web", UpstreamPort: 8080, Enabled: true}
+	svc2 := RegisteredService{ID: "s2", Name: "app", DomainID: "d2", Protocol: ProtocolHTTP,
+		UpstreamKind: UpstreamKindContainer, Upstream: "app", UpstreamPort: 8080, Enabled: true}
+	tcp := RegisteredService{ID: "s3", Name: "db", Aliases: []string{"db2"}, DomainID: "d1", Protocol: ProtocolTCP,
+		UpstreamKind: UpstreamKindAddress, Upstream: "10.0.0.5", UpstreamPort: 3306, TCPListenPort: 13306, Enabled: true}
+	insts := []Instance{
+		{ID: "i1", ServiceID: "s1", ServerID: "sv1", Container: "web", Port: 8080, HostPort: 20001, Attached: true},
+		{ID: "i2", ServiceID: "s2", ServerID: "sv1", Container: "app", Port: 8080, HostPort: 20002, Attached: true},
+	}
+	out := renderNginxConf(nginxConfDir, []Domain{dom, plain}, []RegisteredService{svc, svc2, tcp}, insts, map[string]string{"sv1": "10.0.0.5"}, 0, nil, nil).Text()
+
+	// server_name 多值:主 FQDN 恒首位,别名按字典序随后。
+	for _, want := range []string{
+		"server_name abc.efg.com aa.efg.com zz.efg.com;\n    return 301 https://$host$request_uri;",
+		"server_name abc.efg.com aa.efg.com zz.efg.com;\n    ssl_certificate",
+		"server_name app.xyz.com;",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("缺片段 %q:\n%s", want, out)
+		}
+	}
+	// 文件名与 upstream 命名仍用主 FQDN/主名。
+	if !strings.Contains(out, "include /etc/pipewright/conf.d/abc.efg.com.conf;") {
+		t.Fatalf("include 应引用主 FQDN 文件:\n%s", out)
+	}
+	if !strings.Contains(out, "upstream pw_abc {") || strings.Contains(out, "upstream pw_aa") {
+		t.Fatalf("upstream 命名应按主名:\n%s", out)
+	}
+	// tcp 文件不含 server_name(别名不进 stream)。
+	if strings.Contains(out, "db2.efg.com") {
+		t.Fatalf("tcp 别名不应渲染:\n%s", out)
 	}
 }
 
@@ -864,6 +906,134 @@ func TestServiceFQDNUniqueAcrossDomains(t *testing.T) {
 		// abc.x.efg.com 与 abc.efg.com 同名不同域 → FQDN 不撞,允许。
 		if _, err := svc.CreateService(ctx, CreateServiceInput{DomainID: d2.ID, Name: "abc", Upstream: "web", UpstreamPort: 80}); err != nil {
 			t.Fatalf("不同基域同名服务不应冲突:%v", err)
+		}
+	})
+}
+
+// TestServiceAliasesValidation 别名归一化与非法输入(字符集 / 与主名相同 / 重复 / 超上限)。
+func TestServiceAliasesValidation(t *testing.T) {
+	storetest.ForEachDialect(t, func(t *testing.T, st *store.Store) {
+		svc, _ := newTestService(t, st.DB)
+		ctx := context.Background()
+		dom, _ := svc.CreateDomain(ctx, "efg.com")
+
+		rs, err := svc.CreateService(ctx, CreateServiceInput{
+			DomainID: dom.ID, Name: "api", Aliases: []string{" API-V2 ", "api-old"},
+			UpstreamKind: UpstreamKindContainer, Upstream: "web", UpstreamPort: 8080,
+		})
+		if err != nil {
+			t.Fatalf("带别名注册:%v", err)
+		}
+		if len(rs.Aliases) != 2 || rs.Aliases[0] != "api-v2" || rs.Aliases[1] != "api-old" {
+			t.Fatalf("别名应小写归一:%v", rs.Aliases)
+		}
+		// 回读(store 列往返)。
+		list, err := svc.ListServices(ctx)
+		if err != nil || len(list) != 1 {
+			t.Fatalf("列表:%v %v", list, err)
+		}
+		fqdns := list[0].FQDNs(list[0].BaseDomain)
+		if len(fqdns) != 3 || fqdns[0] != "api.efg.com" || fqdns[1] != "api-v2.efg.com" || fqdns[2] != "api-old.efg.com" {
+			t.Fatalf("FQDNs 应主名在前别名随后:%v", fqdns)
+		}
+
+		mk := func(aliases []string) CreateServiceInput {
+			return CreateServiceInput{DomainID: dom.ID, Name: "svc2", Aliases: aliases,
+				UpstreamKind: UpstreamKindContainer, Upstream: "web", UpstreamPort: 8080}
+		}
+		if _, err := svc.CreateService(ctx, mk([]string{"Bad_Domain"})); err != ErrInvalidServiceName {
+			t.Fatalf("非法字符应 ErrInvalidServiceName,得 %v", err)
+		}
+		if _, err := svc.CreateService(ctx, mk([]string{"svc2"})); err != ErrInvalidServiceName {
+			t.Fatalf("别名与主名相同应 ErrInvalidServiceName,得 %v", err)
+		}
+		if _, err := svc.CreateService(ctx, mk([]string{"dup", "dup"})); err != ErrInvalidServiceName {
+			t.Fatalf("别名重复应 ErrInvalidServiceName,得 %v", err)
+		}
+		tooMany := make([]string, 11)
+		for i := range tooMany {
+			tooMany[i] = fmt.Sprintf("a%d", i)
+		}
+		if _, err := svc.CreateService(ctx, mk(tooMany)); err != ErrInvalidServiceName {
+			t.Fatalf("超过 10 个别名应 ErrInvalidServiceName,得 %v", err)
+		}
+		// 空串项静默丢弃(前端逗号分隔输入的尾逗号)。
+		if rs2, err := svc.CreateService(ctx, mk([]string{"", "ok"})); err != nil || len(rs2.Aliases) != 1 || rs2.Aliases[0] != "ok" {
+			t.Fatalf("空串别名应丢弃:%v %+v", err, rs2)
+		}
+	})
+}
+
+// TestServiceAliasesConflict 别名与既有域名(他服务主名 / 他服务别名 / 本主名撞他别名)互斥。
+func TestServiceAliasesConflict(t *testing.T) {
+	storetest.ForEachDialect(t, func(t *testing.T, st *store.Store) {
+		svc, _ := newTestService(t, st.DB)
+		ctx := context.Background()
+		dom, _ := svc.CreateDomain(ctx, "efg.com")
+		if _, err := svc.CreateService(ctx, CreateServiceInput{
+			DomainID: dom.ID, Name: "api", Aliases: []string{"api-v2"},
+			UpstreamKind: UpstreamKindContainer, Upstream: "web", UpstreamPort: 8080,
+		}); err != nil {
+			t.Fatalf("首个服务:%v", err)
+		}
+		mk := func(name string, aliases []string) CreateServiceInput {
+			return CreateServiceInput{DomainID: dom.ID, Name: name, Aliases: aliases,
+				UpstreamKind: UpstreamKindContainer, Upstream: "web", UpstreamPort: 8080}
+		}
+		// 别名撞他服务主名(任意 path 互斥:别名代表整个 server 块)。
+		if _, err := svc.CreateService(ctx, mk("shop", []string{"api"})); err != ErrFQDNTaken {
+			t.Fatalf("别名撞主名应 ErrFQDNTaken,得 %v", err)
+		}
+		// 别名撞他服务别名。
+		if _, err := svc.CreateService(ctx, mk("shop", []string{"api-v2"})); err != ErrFQDNTaken {
+			t.Fatalf("别名撞别名应 ErrFQDNTaken,得 %v", err)
+		}
+		// 本主名撞他服务别名。
+		if _, err := svc.CreateService(ctx, mk("api-v2", nil)); err != ErrFQDNTaken {
+			t.Fatalf("主名撞别名应 ErrFQDNTaken,得 %v", err)
+		}
+		// 不相干别名放行;更新自身别名(排除 self)也放行。
+		rs2, err := svc.CreateService(ctx, mk("shop", []string{"mall"}))
+		if err != nil {
+			t.Fatalf("不冲突别名应放行:%v", err)
+		}
+		newAliases := []string{"store"}
+		if rs3, err := svc.UpdateService(ctx, rs2.ID, UpdateServiceInput{Aliases: &newAliases}); err != nil || len(rs3.Aliases) != 1 || rs3.Aliases[0] != "store" {
+			t.Fatalf("更新别名:%v %+v", err, rs3)
+		}
+		// 更新时撞他服务别名仍拒绝。
+		bad := []string{"api-v2"}
+		if _, err := svc.UpdateService(ctx, rs2.ID, UpdateServiceInput{Aliases: &bad}); err != ErrFQDNTaken {
+			t.Fatalf("更新撞别名应 ErrFQDNTaken,得 %v", err)
+		}
+	})
+}
+
+// TestEnsureServiceRefreshesAliases ensure 幂等键不变时别名随「一键生成」刷新(改了别名再生成须生效)。
+func TestEnsureServiceRefreshesAliases(t *testing.T) {
+	storetest.ForEachDialect(t, func(t *testing.T, st *store.Store) {
+		svc, _ := newTestService(t, st.DB)
+		ctx := context.Background()
+		dom, _ := svc.CreateDomain(ctx, "efg.com")
+
+		a, err := svc.EnsureService(ctx, CreateServiceInput{
+			DomainID: dom.ID, Name: "api", Aliases: []string{"v2"},
+			UpstreamKind: UpstreamKindContainer, UpstreamPort: 8080})
+		if err != nil || len(a.Aliases) != 1 || a.Aliases[0] != "v2" {
+			t.Fatalf("首保带别名:%v %+v", err, a)
+		}
+		// 再 ensure:别名换成 v3 → 复用同一行并刷新;空列表 → 清空。
+		b, err := svc.EnsureService(ctx, CreateServiceInput{
+			DomainID: dom.ID, Name: "api", Aliases: []string{"v3"},
+			UpstreamKind: UpstreamKindContainer, UpstreamPort: 8080})
+		if err != nil || b.ID != a.ID || len(b.Aliases) != 1 || b.Aliases[0] != "v3" {
+			t.Fatalf("重复 ensure 应刷新别名:%v %+v", err, b)
+		}
+		c, err := svc.EnsureService(ctx, CreateServiceInput{
+			DomainID: dom.ID, Name: "api",
+			UpstreamKind: UpstreamKindContainer, UpstreamPort: 8080})
+		if err != nil || c.ID != a.ID || len(c.Aliases) != 0 {
+			t.Fatalf("空别名 ensure 应清空:%v %+v", err, c)
 		}
 	})
 }

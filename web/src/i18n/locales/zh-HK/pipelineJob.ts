@@ -392,6 +392,8 @@ export default {
   fieldRegDomainLabel: '基域',
   regDomainUnselected: '選擇基域',
   fieldRegServiceNameLabel: '服務名(子域名)',
+  fieldRegAliasesLabel: '額外子域名(別名)',
+  fieldRegAliasesHint: '可選,逗號分隔;每個別名同樣指向本服務(如 api-v2 → api-v2.efg.com)。與服務名字符集一致,最多 10 個。',
   fieldRegPortLabel: '服務埠',
   fieldRegPortHint: '行程監聽埠;閘道按 伺服器位址:此埠 反代,健康檢查也自動用它。滾動升級走「摘除→升級→健康→掛回」。',
   fieldRegPathLabel: '子路徑',

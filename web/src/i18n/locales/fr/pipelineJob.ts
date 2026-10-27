@@ -423,6 +423,8 @@ export default {
   fieldRegDomainLabel: 'Domaine de base',
   regDomainUnselected: 'Choisir un domaine de base',
   fieldRegServiceNameLabel: 'Nom du service (sous-domaine)',
+  fieldRegAliasesLabel: 'Sous-domaines supplémentaires (alias)',
+  fieldRegAliasesHint: "Facultatif, séparés par des virgules ; chaque alias pointe aussi vers ce service (ex. api-v2 → api-v2.efg.com). Même jeu de caractères que le nom du service, 10 max.",
   fieldRegPortLabel: 'Port du service',
   fieldRegPortHint: 'Port d\'écoute du processus ; la passerelle proxifie adresse-serveur:ce-port et le health check l\'utilise aussi. Les mises à jour roulent en détacher → mettre à jour → health → rattacher.',
   fieldRegPathLabel: 'Sous-chemin',

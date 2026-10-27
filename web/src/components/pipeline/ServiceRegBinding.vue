@@ -2,10 +2,10 @@
 /**
  * ServiceRegBinding — 部署节点「服务注册」区块(一键生成)。
  *
- * 选基域 + 填服务名(反代可填子路径;非容器反代再填端口;静态发布无端口)→ 一键生成:
- * 幂等注册服务并回填 regServiceId 绑定。绑定后显示路由预览,可解绑。
- * 配置键(写进 job.config,由后端部署联动消费):
- *   regDomainId / regServiceName / regPath / regPort / regStripPath / regServiceId(绑定结果)
+ * 选基域 + 填服务名(可选同基域额外子域名/别名;反代可填子路径;非容器反代再填端口;
+ * 静态发布无端口)→ 一键生成:幂等注册服务并回填 regServiceId 绑定。绑定后显示路由预览,
+ * 可解绑。配置键(写进 job.config,由后端部署联动消费):
+ *   regDomainId / regServiceName / regServiceAliases / regPath / regPort / regStripPath / regServiceId(绑定结果)
  * 实例无需人工维护 —— 部署时按目标机自动注册(容器 = 自动分配宿主端口 + 扩缩容轮转;
  * 非容器 = 摘 → 升 → 挂回;静态发布无实例,内容由 deploy_static 节点下发到全部网关)。
  */
@@ -36,6 +36,7 @@ const genError = ref('')
 
 const domainId = computed(() => (props.config.regDomainId ?? '').trim())
 const serviceName = computed(() => (props.config.regServiceName ?? '').trim())
+const regAliases = computed(() => (props.config.regServiceAliases ?? '').trim())
 const regPath = computed(() => (props.config.regPath ?? '').trim())
 const regPort = computed(() => (props.config.regPort ?? '').trim())
 const stripPath = computed(() => (props.config.regStripPath ?? '').trim() === '1')
@@ -52,11 +53,25 @@ function displayPath(p: string): string {
   return v.startsWith('/') ? v : `/${v}`
 }
 
-/** 路由预览 FQDN+path(已绑定时按绑定参数,未绑定时按当前输入)。 */
+/** 解析别名输入(逗号/分号/空白分隔 → trim → 小写 → 去重);空项静默丢弃。 */
+function parseAliases(raw: string): string[] {
+  const seen = new Set<string>()
+  for (const part of raw.split(/[,;\s]+/)) {
+    const v = part.trim().toLowerCase()
+    if (v) seen.add(v)
+  }
+  return [...seen]
+}
+
+/** 路由预览 FQDN+path(已绑定时按绑定参数,未绑定时按当前输入);别名域名附加展示。 */
 const fqdnPreview = computed(() => {
   if (!serviceName.value) return ''
   const base = boundDomain.value?.baseDomain ?? ''
-  return base ? `${serviceName.value}.${base}${displayPath(regPath.value)}` : ''
+  if (!base) return ''
+  const main = `${serviceName.value}.${base}${displayPath(regPath.value)}`
+  const aliases = parseAliases(regAliases.value)
+  if (!aliases.length) return main
+  return `${main} · ${aliases.map((a) => `${a}.${base}`).join(', ')}`
 })
 
 onMounted(async () => {
@@ -86,11 +101,13 @@ async function generate(): Promise<void> {
   }
   generating.value = true
   try {
+    const aliases = parseAliases(regAliases.value)
     if (props.staticMode) {
       // 静态托管:无端口/上游,内容由本节点发布到全部网关主机。
       const res = await ensureService({
         domainId: domainId.value,
         name: serviceName.value,
+        aliases,
         path: regPath.value,
         protocol: 'http',
         upstreamKind: 'static',
@@ -107,6 +124,7 @@ async function generate(): Promise<void> {
     const res = await ensureService({
       domainId: domainId.value,
       name: serviceName.value,
+      aliases,
       path: regPath.value,
       protocol: 'http',
       upstreamKind: props.containerMode ? 'container' : 'address',
@@ -167,6 +185,19 @@ function unbind(): void {
           @input="set('regServiceName', ($event.target as HTMLInputElement).value)"
         />
         <p v-if="fqdnPreview" class="field-hint">{{ fqdnPreview }}</p>
+      </div>
+
+      <div class="drawer-field">
+        <div class="drawer-field-label">{{ t('pipelineJob.fieldRegAliasesLabel') }}</div>
+        <input
+          class="drawer-input is-mono"
+          type="text"
+          :value="regAliases"
+          placeholder="api-v2, api-old"
+          :aria-label="t('pipelineJob.fieldRegAliasesLabel')"
+          @input="set('regServiceAliases', ($event.target as HTMLInputElement).value)"
+        />
+        <p class="field-hint">{{ t('pipelineJob.fieldRegAliasesHint') }}</p>
       </div>
 
       <div class="drawer-field">

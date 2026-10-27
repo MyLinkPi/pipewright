@@ -61,6 +61,9 @@ export interface RegisteredService {
   baseDomain: string
   name: string
   fqdn: string
+  /** 同基域额外子域名 label;fqdns = 全部域名(主 FQDN 在前,别名随后)。 */
+  aliases: string[]
+  fqdns: string[]
   /** 子路径('' = 根路径 /);同 FQDN 下多服务靠不同 path 共存。 */
   path: string
   protocol: ServiceProtocol
@@ -197,6 +200,8 @@ export interface SettingsUpdate {
 export interface ServiceCreateInput {
   domainId: string
   name: string
+  /** 同基域额外子域名(逗号分隔输入解析而来;与主域名同一服务,server_name 多值)。 */
+  aliases?: string[]
   /** 子路径('' / 缺省 = 根路径 /;tcp 服务不支持)。 */
   path?: string
   protocol: ServiceProtocol
@@ -216,6 +221,7 @@ export interface ServiceCreateInput {
 /** 更新可改字段(基域不可换;更新后后端自动 apply 收敛)。缺省字段保持原值。 */
 export interface ServiceUpdateInput {
   name?: string
+  aliases?: string[]
   path?: string
   protocol?: ServiceProtocol
   upstreamKind?: UpstreamKind

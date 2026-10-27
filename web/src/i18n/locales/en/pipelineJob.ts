@@ -408,6 +408,8 @@ export default {
   fieldRegDomainLabel: 'Base domain',
   regDomainUnselected: 'Select a base domain',
   fieldRegServiceNameLabel: 'Service name (subdomain)',
+  fieldRegAliasesLabel: 'Extra subdomains (aliases)',
+  fieldRegAliasesHint: 'Optional, comma-separated; each alias also points to this service (e.g. api-v2 → api-v2.efg.com). Same charset as the service name, max 10.',
   fieldRegPortLabel: 'Service port',
   fieldRegPortHint: 'Port the process listens on; the gateway proxies server-address:this-port and the health check uses it too. Host upgrades roll via detach → upgrade → health → re-attach.',
   fieldRegPathLabel: 'Sub path',

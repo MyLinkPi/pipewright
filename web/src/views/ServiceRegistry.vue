@@ -352,6 +352,7 @@ const showSvcForm = ref(false)
 const svcForm = ref({
   domainId: '',
   name: '',
+  aliases: '',
   path: '',
   protocol: 'http' as ServiceProtocol,
   upstreamKind: 'container' as UpstreamKind,
@@ -363,6 +364,16 @@ const svcForm = ref({
   peerServiceId: '',
 })
 const addingSvc = ref(false)
+
+/** 解析别名输入(逗号/分号/空白分隔 → trim → 小写 → 去重);空项静默丢弃。 */
+function parseAliases(raw: string): string[] {
+  const seen = new Set<string>()
+  for (const part of raw.split(/[,;\s]+/)) {
+    const v = part.trim().toLowerCase()
+    if (v) seen.add(v)
+  }
+  return [...seen]
+}
 
 // ─── 跨环境转发(对端目录;懒加载) ──────────────────────────────────────────
 const forwardPeers = ref<ForwardPeer[]>([])
@@ -460,6 +471,7 @@ async function addService(): Promise<void> {
     await createService({
       domainId: svcForm.value.domainId,
       name: svcForm.value.name.trim(),
+      aliases: parseAliases(svcForm.value.aliases),
       path: svcForm.value.protocol === 'http' ? svcForm.value.path.trim() : '',
       protocol: svcForm.value.protocol,
       upstreamKind: svcForm.value.upstreamKind,
@@ -621,6 +633,7 @@ const editingSvcId = ref('')
 const svcEditBusy = ref(false)
 const svcEditForm = ref({
   name: '',
+  aliases: '',
   path: '',
   protocol: 'http' as ServiceProtocol,
   upstreamKind: 'container' as UpstreamKind,
@@ -638,6 +651,7 @@ function startSvcEdit(s: RegisteredService): void {
   editingSvcId.value = s.id
   svcEditForm.value = {
     name: s.name,
+    aliases: s.aliases.join(', '),
     path: s.path,
     protocol: s.protocol,
     upstreamKind: s.upstreamKind,
@@ -669,6 +683,7 @@ async function saveSvcEdit(s: RegisteredService): Promise<void> {
     const isForward = f.upstreamKind === 'forward'
     await updateService(s.id, {
       name: f.name.trim(),
+      aliases: parseAliases(f.aliases),
       path: f.protocol === 'http' ? f.path.trim() : '',
       protocol: f.protocol,
       upstreamKind: f.upstreamKind,
@@ -940,6 +955,10 @@ async function saveSvcEdit(s: RegisteredService): Promise<void> {
               <span class="field__lbl">{{ t('serviceReg.services.name') }}</span>
               <input v-model="svcForm.name" class="field__in" type="text" placeholder="abc" required />
             </label>
+            <label class="field">
+              <span class="field__lbl">{{ t('serviceReg.services.aliases') }}</span>
+              <input v-model="svcForm.aliases" class="field__in" type="text" placeholder="api-v2, api-old" />
+            </label>
           </div>
           <div class="sreg__grid3">
             <label class="field">
@@ -1064,6 +1083,9 @@ async function saveSvcEdit(s: RegisteredService): Promise<void> {
                   <template v-else-if="s.upstreamKind === 'forward'">→ {{ forwardTargetLabel(s) }}</template>
                   <template v-else>→ {{ s.upstream }}:{{ s.upstreamPort }}</template>
                   <span class="sreg__tag">{{ s.protocol.toUpperCase() }}</span>
+                  <span v-if="s.aliases && s.aliases.length" class="sreg__tag">
+                    {{ s.aliases.map((a) => `${a}.${s.baseDomain}`).join(' ') }}
+                  </span>
                   <span v-if="s.protocol === 'http' && s.stripPathPrefix" class="sreg__tag">
                     {{ t('serviceReg.services.stripTag') }}
                   </span>
@@ -1166,6 +1188,10 @@ async function saveSvcEdit(s: RegisteredService): Promise<void> {
                 <label class="field">
                   <span class="field__lbl">{{ t('serviceReg.services.name') }}</span>
                   <input v-model="svcEditForm.name" class="field__in" type="text" placeholder="abc" required />
+                </label>
+                <label class="field">
+                  <span class="field__lbl">{{ t('serviceReg.services.aliases') }}</span>
+                  <input v-model="svcEditForm.aliases" class="field__in" type="text" placeholder="api-v2, api-old" />
                 </label>
                 <label class="field">
                   <span class="field__lbl">{{ t('serviceReg.services.protocol') }}</span>
