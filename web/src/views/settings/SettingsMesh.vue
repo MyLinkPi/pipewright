@@ -1,12 +1,16 @@
 <!--
-  SettingsMesh.vue — 集群设置(本节点身份 / EasyTier 组网 / 三张授权单 / 节点注册表 / DNS 映射)。
+  SettingsMesh.vue — 集群设置(本节点身份 / EasyTier 组网 / 授权单 / 节点注册表 / DNS 映射
+  / Secure Mode 统一开关 / 临时凭据与 API 令牌)。
 
   对等无中心:这里配置的是**本节点**——
     · 身份:节点名(展示)与 node_id/公钥(只读;签名鉴权的锚点);
     · EasyTier:托管/外部模式、网络名 + 密钥(密文存储,回显只报已配置)、虚拟 IP、初始 peers;
-    · 授权单(默认全拒绝):可见(服务器/项目/运行)、允许推送、允许触发 —— 均**对哪些节点开放**;
+    · 授权单(默认全拒绝):可见/推送/触发/转发/共享构建/**统一切换** —— 均**对哪些节点开放**;
     · 节点注册表:发现(auto)登记 + 手工补录(manual;发现兜底,可补对外访问地址);
-    · DNS 映射:指定域名的 A 记录自动指向本机虚拟 IP(选已配置的 DNS 提供商;IP 变化自动跟随)。
+    · DNS 映射:指定域名的 A 记录自动指向本机虚拟 IP(选已配置的 DNS 提供商;IP 变化自动跟随);
+    · Secure Mode:全集群统一开关(两阶段齐切:下发→各节点确认→约定时刻同时生效);
+    · 临时凭据:Secure Mode 开启后为手机等临时设备签发入网凭据(可撤销/可过期;
+      secret 仅签发时显示一次)+ 供外部系统自动申请的 Bearer API 令牌。
 -->
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from "vue";
@@ -34,6 +38,18 @@ import {
   deleteMeshDnsRecord,
   syncMeshDnsRecords,
   type MeshDnsRecord,
+  issueMeshCredential,
+  listMeshCredentials,
+  revokeMeshCredential,
+  createMeshApiToken,
+  listMeshApiTokens,
+  revokeMeshApiToken,
+  switchMeshSecureMode,
+  abortMeshSecureMode,
+  getMeshSecureModeStatus,
+  type MeshCredential,
+  type MeshApiToken,
+  type MeshSwitchStatus,
 } from "../../api/mesh";
 import { listDnsProviders, type DnsProvider } from "../../api/dnsProviders";
 import AppButton from "../../components/ui/AppButton.vue";
@@ -94,6 +110,7 @@ const acl = ref({
   triggerAllowed: [] as string[],
   forwardAllowed: [] as string[],
   buildAllowed: [] as string[],
+  switchAllowed: [] as string[],
 });
 const manualPeer = ref({
   nodeId: "",
@@ -319,6 +336,7 @@ async function load(): Promise<void> {
       triggerAllowed: aclRes.triggerAllowed ?? [],
       forwardAllowed: aclRes.forwardAllowed ?? [],
       buildAllowed: aclRes.buildAllowed ?? [],
+      switchAllowed: aclRes.switchAllowed ?? [],
     };
     peers.value = peerRes.items ?? [];
     state.value = "ready";
@@ -431,6 +449,7 @@ async function removePeer(nodeId: string): Promise<void> {
       (x) => x !== nodeId,
     );
     acl.value.buildAllowed = acl.value.buildAllowed.filter((x) => x !== nodeId);
+    acl.value.switchAllowed = acl.value.switchAllowed.filter((x) => x !== nodeId);
     await Promise.all([saveMeshACL(acl.value), load()]);
   } catch (err) {
     actionError.value = err instanceof Error ? err.message : String(err);
@@ -444,7 +463,8 @@ function toggleACL(
     | "pushAllowed"
     | "triggerAllowed"
     | "forwardAllowed"
-    | "buildAllowed",
+    | "buildAllowed"
+    | "switchAllowed",
   nodeId: string,
 ): void {
   const cur = acl.value[list];
@@ -715,15 +735,252 @@ function fmtTime(s: string): string {
   return s ? new Date(s).toLocaleString() : "";
 }
 
+// ── Secure Mode 全集群统一开关 ──
+// 状态只在「有进行中的指令」时随 10s 轮询刷新(每次刷新会 fan-out 查询各对端,
+// 常态轮询属于对 mesh 的无谓压力);动作后总是立即刷新。
+const swStatus = ref<MeshSwitchStatus | null>(null);
+const swBusy = ref(false);
+/** 进行中指令的剩余分钟(向下取整;负值显示 0)。 */
+const swRemainMin = computed(() => {
+  const eff = swStatus.value?.pending?.effectiveAt;
+  if (!eff) return 0;
+  return Math.max(0, Math.ceil((new Date(eff).getTime() - Date.now()) / 60_000));
+});
+const swHasPending = computed(
+  () => !!swStatus.value?.pending && !swStatus.value.pending.appliedAt,
+);
+/**
+ * 凭据签发入口的开关:优先取统一开关状态(动作后立即刷新、到期那拍即变 true),
+ * 回退到设置快照 —— settings 只在整页加载与保存设置时刷新,单靠它会在开启后一直
+ * 停留在「未开启」,凭据区永久禁用直到手动刷新页面。
+ */
+const secureModeOn = computed(
+  () => swStatus.value?.secureMode ?? settings.value?.secureMode ?? false,
+);
+
+async function loadSwitchStatus(): Promise<void> {
+  try {
+    swStatus.value = await getMeshSecureModeStatus();
+  } catch {
+    // 拉取失败保留上次快照(轮询噪音)。
+  }
+}
+
+/** 发起全集群切换:确认弹窗讲清「齐切」语义与生效时间。 */
+async function doSwitchSecureMode(action: "enable" | "disable"): Promise<void> {
+  const ok = await confirm.open({
+    title:
+      action === "enable"
+        ? t("cluster.settings.swEnableTitle")
+        : t("cluster.settings.swDisableTitle"),
+    body: t("cluster.settings.swConfirmBody", { min: swRemainMin.value || 2 }),
+    confirmLabel: t("cluster.settings.swConfirmLabel"),
+    variant: action === "enable" ? "primary" : "danger",
+  });
+  if (!ok) return;
+  swBusy.value = true;
+  actionError.value = "";
+  try {
+    await switchMeshSecureMode({ action, effectiveInMinutes: 2 });
+    await Promise.all([loadSwitchStatus(), loadStatus()]);
+  } catch (err) {
+    actionError.value = err instanceof Error ? err.message : String(err);
+  } finally {
+    swBusy.value = false;
+  }
+}
+
+async function doAbortSwitch(): Promise<void> {
+  const changeId = swStatus.value?.pending?.changeId;
+  if (!changeId) return;
+  swBusy.value = true;
+  try {
+    await abortMeshSecureMode(changeId);
+    await loadSwitchStatus();
+  } catch (err) {
+    actionError.value = err instanceof Error ? err.message : String(err);
+  } finally {
+    swBusy.value = false;
+  }
+}
+
+// ── 临时凭据(EasyTier Secure Mode)──
+// 列表刷新会 exec 一次 easytier-cli(经签发器),只挂在加载与动作后,不进轮询。
+const creds = ref<MeshCredential[]>([]);
+const credBusy = ref(false);
+const credModalOpen = ref(false);
+const credForm = ref({
+  preset: "24h" as "24h" | "7d" | "30d" | "custom",
+  hours: 48,
+  remark: "",
+});
+/** 签发结果(credentialSecret 仅此一次;关闭弹窗即弃)。 */
+const credResult = ref<{
+  credentialId: string;
+  credentialSecret: string;
+  expiresAt: string;
+} | null>(null);
+const credSecretCopied = ref(false);
+let credCopiedTimer: number | undefined;
+
+/** 预设档位 → 秒;custom 用小时输入(1~2160 = 上限 90 天)。 */
+function credTTLSeconds(): number {
+  if (credForm.value.preset === "24h") return 86_400;
+  if (credForm.value.preset === "7d") return 604_800;
+  if (credForm.value.preset === "30d") return 2_592_000;
+  return Math.min(2160, Math.max(1, Math.round(credForm.value.hours))) * 3600;
+}
+
+async function refreshCreds(): Promise<void> {
+  try {
+    creds.value = (await listMeshCredentials()).items ?? [];
+  } catch {
+    // 保留上次快照。
+  }
+}
+
+async function doIssueCredential(): Promise<void> {
+  credBusy.value = true;
+  actionError.value = "";
+  try {
+    const res = await issueMeshCredential({
+      ttlSeconds: credTTLSeconds(),
+      remark: credForm.value.remark.trim() || undefined,
+    });
+    credResult.value = res;
+    credSecretCopied.value = false;
+    await refreshCreds();
+  } catch (err) {
+    actionError.value = err instanceof Error ? err.message : String(err);
+  } finally {
+    credBusy.value = false;
+  }
+}
+
+async function doRevokeCredential(c: MeshCredential): Promise<void> {
+  const ok = await confirm.open({
+    title: t("cluster.settings.credRevokeTitle"),
+    body: t("cluster.settings.credRevokeBody", { remark: c.remark || c.credentialId.slice(0, 8) }),
+    confirmLabel: t("cluster.settings.credRevokeConfirm"),
+    variant: "danger",
+  });
+  if (!ok) return;
+  try {
+    await revokeMeshCredential(c.credentialId);
+    await refreshCreds();
+  } catch (err) {
+    actionError.value = err instanceof Error ? err.message : String(err);
+  }
+}
+
+async function copyCredSecret(): Promise<void> {
+  if (!credResult.value) return;
+  if (await copyText(credResult.value.credentialSecret)) {
+    credSecretCopied.value = true;
+    if (credCopiedTimer !== undefined) window.clearTimeout(credCopiedTimer);
+    credCopiedTimer = window.setTimeout(() => {
+      credSecretCopied.value = false;
+    }, 2500);
+  }
+}
+
+/** 人读 TTL(如 "24 小时" / "7 天" / "90 天")。 */
+function fmtTTL(sec: number): string {
+  if (sec % 86_400 === 0) {
+    const d = sec / 86_400;
+    return d === 1 ? t("cluster.settings.credTtlDay") : t("cluster.settings.credTtlDays", { d });
+  }
+  return t("cluster.settings.credTtlHours", { h: Math.round(sec / 3600) });
+}
+
+function credStatusLabel(c: MeshCredential): string {
+  switch (c.status) {
+    case "active":
+      return t("cluster.settings.credStatusActive");
+    case "revoked":
+      return t("cluster.settings.credStatusRevoked");
+    case "missing":
+      return t("cluster.settings.credStatusMissing");
+    default:
+      return t("cluster.settings.credStatusExpired");
+  }
+}
+
+// ── 凭据自动申请 API 令牌(外部系统 Bearer 认证)──
+const apiTokens = ref<MeshApiToken[]>([]);
+const tokenName = ref("");
+const tokenBusy = ref(false);
+/** 创建结果(明文仅此一次;关闭弹窗即弃)。 */
+const tokenResult = ref<{ name: string; token: string } | null>(null);
+const tokenCopied = ref(false);
+let tokenCopiedTimer: number | undefined;
+
+async function refreshTokens(): Promise<void> {
+  try {
+    apiTokens.value = (await listMeshApiTokens()).items ?? [];
+  } catch {
+    // 保留上次快照。
+  }
+}
+
+async function doCreateToken(): Promise<void> {
+  const name = tokenName.value.trim();
+  if (!name) return;
+  tokenBusy.value = true;
+  actionError.value = "";
+  try {
+    tokenResult.value = await createMeshApiToken(name);
+    tokenCopied.value = false;
+    tokenName.value = "";
+    await refreshTokens();
+  } catch (err) {
+    actionError.value = err instanceof Error ? err.message : String(err);
+  } finally {
+    tokenBusy.value = false;
+  }
+}
+
+async function doRevokeToken(tk: MeshApiToken): Promise<void> {
+  const ok = await confirm.open({
+    title: t("cluster.settings.tokenRevokeTitle"),
+    body: t("cluster.settings.tokenRevokeBody", { name: tk.name }),
+    confirmLabel: t("cluster.settings.tokenRevokeConfirm"),
+    variant: "danger",
+  });
+  if (!ok) return;
+  try {
+    await revokeMeshApiToken(tk.name);
+    await refreshTokens();
+  } catch (err) {
+    actionError.value = err instanceof Error ? err.message : String(err);
+  }
+}
+
+async function copyApiToken(): Promise<void> {
+  if (!tokenResult.value) return;
+  if (await copyText(tokenResult.value.token)) {
+    tokenCopied.value = true;
+    if (tokenCopiedTimer !== undefined) window.clearTimeout(tokenCopiedTimer);
+    tokenCopiedTimer = window.setTimeout(() => {
+      tokenCopied.value = false;
+    }, 2500);
+  }
+}
+
 onMounted(() => {
   void load();
   void loadStatus();
   void loadFirewall();
   void loadDns();
+  void loadSwitchStatus();
+  void refreshCreds();
+  void refreshTokens();
   statusTimer = window.setInterval(() => {
     void loadStatus();
     void loadFirewall();
     void refreshDnsRecords();
+    // 统一开关只在「有进行中指令」时轮询(刷新会 fan-out 查询全部对端)。
+    if (swHasPending.value) void loadSwitchStatus();
   }, 10_000);
 });
 
@@ -1243,6 +1500,227 @@ onUnmounted(() => {
         </div>
       </section>
 
+      <!-- Secure Mode(全集群统一开关):两阶段齐切,不是本节点单开关。 -->
+      <section class="block">
+        <h2>{{ t("cluster.settings.swTitle") }}</h2>
+        <p class="hint">{{ t("cluster.settings.swHint") }}</p>
+        <div class="sw-state-row">
+          <span
+            class="badge"
+            :class="{ on: swStatus?.secureMode }"
+          >{{ swStatus?.secureMode ? t("cluster.settings.swOn") : t("cluster.settings.swOff") }}</span>
+          <template v-if="swHasPending && swStatus?.pending">
+            <span class="mono">{{ t("cluster.settings.swPendingAction", { action: swStatus.pending.action }) }}</span>
+            <span>{{ t("cluster.settings.swPendingAt", { min: swRemainMin }) }}</span>
+            <AppButton variant="danger" :disabled="swBusy" @click="doAbortSwitch">{{
+              t("cluster.settings.swAbort")
+            }}</AppButton>
+          </template>
+        </div>
+        <table v-if="swStatus?.nodes?.length" class="peer-list">
+          <thead>
+            <tr>
+              <th>{{ t("cluster.peers.name") }}</th>
+              <th>{{ t("cluster.settings.swColOnline") }}</th>
+              <th>{{ t("cluster.settings.swColSecure") }}</th>
+              <th>{{ t("cluster.settings.swColState") }}</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="n in swStatus.nodes" :key="n.nodeId">
+              <td>{{ (n.isSelf ? t("cluster.settings.swSelfMark") + " " : "") + (n.name || n.nodeId.slice(0, 8)) }}</td>
+              <td>{{ n.online ? t("cluster.settings.swOnline") : t("cluster.settings.swOffline") }}</td>
+              <td>{{ n.secureMode ? t("cluster.settings.swOn") : t("cluster.settings.swOff") }}</td>
+              <td>
+                <span v-if="n.applied" class="ok-text">{{ t("cluster.settings.swApplied") }}</span>
+                <span v-else-if="n.acked" class="warn-text">{{ t("cluster.settings.swArmed") }}</span>
+                <span v-else class="muted">{{ t("cluster.settings.swIdle") }}</span>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <!-- 无虚拟 IP 的对端无法纳入齐切(保持旧态):显式列出,避免静默混跑。 -->
+        <p v-if="swStatus?.skipped?.length" class="et-hint warn-text">
+          {{ t("cluster.settings.swSkippedHint", { nodes: swStatus.skipped.join(", ") }) }}
+        </p>
+        <div class="row-end">
+          <AppButton
+            v-if="!swStatus?.secureMode"
+            variant="primary"
+            :disabled="swBusy || swHasPending"
+            @click="doSwitchSecureMode('enable')"
+            >{{ t("cluster.settings.swEnableBtn") }}</AppButton
+          >
+          <AppButton
+            v-else
+            variant="danger"
+            :disabled="swBusy || swHasPending"
+            @click="doSwitchSecureMode('disable')"
+            >{{ t("cluster.settings.swDisableBtn") }}</AppButton
+          >
+        </div>
+      </section>
+
+      <!-- 临时凭据(Secure Mode 开启后可用;secret 仅签发时显示一次)。 -->
+      <section class="block">
+        <h2>{{ t("cluster.settings.credTitle") }}</h2>
+        <p class="hint">{{ t("cluster.settings.credHint") }}</p>
+        <div class="row-end">
+          <AppButton
+            variant="primary"
+            :disabled="!secureModeOn"
+            @click="credModalOpen = true; credResult = null"
+            >{{ t("cluster.settings.credIssueBtn") }}</AppButton
+          >
+        </div>
+        <p v-if="!secureModeOn" class="et-hint warn-text">
+          {{ t("cluster.settings.credNeedsSecure") }}
+        </p>
+        <table v-if="creds.length" class="peer-list">
+          <thead>
+            <tr>
+              <th>{{ t("cluster.settings.credColRemark") }}</th>
+              <th>{{ t("cluster.settings.credColCreated") }}</th>
+              <th>{{ t("cluster.settings.credColExpires") }}</th>
+              <th>{{ t("cluster.settings.credColStatus") }}</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="c in creds" :key="c.credentialId">
+              <td>{{ c.remark || "—" }}</td>
+              <td>{{ fmtTime(c.createdAt) }}</td>
+              <td>{{ fmtTime(c.expiresAt) }}</td>
+              <td>
+                <span
+                  :class="{
+                    'ok-text': c.status === 'active',
+                    'warn-text': c.status === 'missing',
+                  }"
+                  >{{ credStatusLabel(c) }}</span
+                >
+              </td>
+              <td>
+                <button
+                  v-if="c.status === 'active' || c.status === 'missing'"
+                  class="link-btn"
+                  type="button"
+                  @click="doRevokeCredential(c)"
+                >
+                  {{ t("cluster.settings.credRevoke") }}
+                </button>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <p v-else class="muted">{{ t("cluster.settings.credEmpty") }}</p>
+      </section>
+
+      <!-- 凭据自动申请 API 令牌:外部系统 Bearer 认证用(明文仅创建时显示一次)。 -->
+      <section class="block">
+        <h2>{{ t("cluster.settings.tokenTitle") }}</h2>
+        <p class="hint">{{ t("cluster.settings.tokenHint") }}</p>
+        <div class="grid2">
+          <label class="fld">
+            <span>{{ t("cluster.settings.tokenName") }}</span>
+            <input v-model="tokenName" class="inp" type="text" maxlength="64" />
+          </label>
+          <div class="fld row-end">
+            <AppButton variant="default" :disabled="!tokenName.trim() || tokenBusy" @click="doCreateToken">{{
+              t("cluster.settings.tokenCreate")
+            }}</AppButton>
+          </div>
+        </div>
+        <table v-if="apiTokens.length" class="peer-list">
+          <thead>
+            <tr>
+              <th>{{ t("cluster.settings.tokenName") }}</th>
+              <th>{{ t("cluster.settings.tokenCreated") }}</th>
+              <th>{{ t("cluster.settings.tokenLastUsed") }}</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="tk in apiTokens" :key="tk.name">
+              <td class="mono">{{ tk.name }}</td>
+              <td>{{ fmtTime(tk.createdAt) }}</td>
+              <td>{{ tk.revokedAt ? t("cluster.settings.tokenRevoked") : fmtTime(tk.lastUsedAt) || "—" }}</td>
+              <td>
+                <button
+                  v-if="!tk.revokedAt"
+                  class="link-btn"
+                  type="button"
+                  @click="doRevokeToken(tk)"
+                >
+                  {{ t("cluster.settings.tokenRevoke") }}
+                </button>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <p v-else class="muted">{{ t("cluster.settings.tokenEmpty") }}</p>
+      </section>
+
+      <!-- 申请凭据弹窗:预设 TTL + 备注 → 签发 → 一次性结果(复制密钥)。 -->
+      <div
+        v-if="credModalOpen"
+        class="yaml-scrim"
+        @click.self="credModalOpen = false"
+      >
+        <div class="yaml-modal" role="dialog" aria-modal="true" :aria-label="t('cluster.settings.credTitle')">
+          <div class="yaml-head">
+            <div>
+              <div class="yaml-title">{{ t("cluster.settings.credTitle") }}</div>
+              <div class="yaml-sub">{{ t("cluster.settings.credModalHint") }}</div>
+            </div>
+            <button class="yaml-close" type="button" @click="credModalOpen = false">✕</button>
+          </div>
+          <div v-if="!credResult" class="yaml-body cred-form">
+            <label class="fld">
+              <span>{{ t("cluster.settings.credTtl") }}</span>
+              <select v-model="credForm.preset" class="inp">
+                <option value="24h">{{ t("cluster.settings.credTtl24h") }}</option>
+                <option value="7d">{{ t("cluster.settings.credTtl7d") }}</option>
+                <option value="30d">{{ t("cluster.settings.credTtl30d") }}</option>
+                <option value="custom">{{ t("cluster.settings.credTtlCustom") }}</option>
+              </select>
+            </label>
+            <label v-if="credForm.preset === 'custom'" class="fld">
+              <span>{{ t("cluster.settings.credTtlHoursLabel") }}</span>
+              <input v-model.number="credForm.hours" class="inp" type="number" min="1" max="2160" />
+            </label>
+            <label class="fld">
+              <span>{{ t("cluster.settings.credColRemark") }}</span>
+              <input v-model="credForm.remark" class="inp" type="text" maxlength="200" />
+            </label>
+          </div>
+          <div v-else class="yaml-body cred-result">
+            <p class="et-hint warn-text">{{ t("cluster.settings.credSecretOnce") }}</p>
+            <label class="fld">
+              <span>{{ t("cluster.settings.credSecretLabel") }}</span>
+              <textarea class="yaml-text mono" readonly :value="credResult.credentialSecret" rows="3" spellcheck="false" />
+            </label>
+            <p class="hint">{{ t("cluster.settings.credExpiresAt", { time: fmtTime(credResult.expiresAt) }) }}</p>
+          </div>
+          <div class="yaml-foot">
+            <template v-if="!credResult">
+              <AppButton variant="primary" :loading="credBusy" @click="doIssueCredential">{{
+                t("cluster.settings.credIssueConfirm")
+              }}</AppButton>
+            </template>
+            <template v-else>
+              <span v-if="credSecretCopied" class="ok-text">{{ t("cluster.settings.credCopied") }}</span>
+              <AppButton variant="default" @click="credModalOpen = false">{{
+                t("cluster.settings.credClose")
+              }}</AppButton>
+              <AppButton variant="primary" @click="copyCredSecret">{{
+                t("cluster.settings.credCopySecret")
+              }}</AppButton>
+            </template>
+          </div>
+        </div>
+      </div>
+
       <!-- 导出配置弹窗:只读 YAML + 复制(主路径)+ 下载文件(兜底)。 -->
       <div
         v-if="clientYamlOpen"
@@ -1308,6 +1786,7 @@ onUnmounted(() => {
             'triggerAllowed',
             'forwardAllowed',
             'buildAllowed',
+            'switchAllowed',
           ] as const"
           :key="row"
           class="acl-row"
@@ -1436,6 +1915,18 @@ onUnmounted(() => {
   display: grid;
   grid-template-columns: 1.4fr 1fr 1fr 0.5fr 1.2fr;
   gap: 8px;
+}
+.sw-state-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.cred-form,
+.cred-result {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
 }
 .inp {
   width: 100%;

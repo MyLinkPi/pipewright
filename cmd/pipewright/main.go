@@ -933,7 +933,8 @@ func main() {
 		},
 	)
 	meshAdminDeps := httpapi.NewMeshDeps(meshSvc, meshReceiver, meshClient, projectSvc, runSvc, pool, parameterSvc, targetSvc, pipelineSvc, auditRec, pushedStore, webhookReceiver, meshAdvertisePort).
-		WithRuntime(meshRT).WithServiceCatalog(serviceRegSvc).WithSharedBuild(sharedBuildSrv).WithMeshDNS(meshDNSSvc, meshDNSSyncer)
+		WithRuntime(meshRT).WithServiceCatalog(serviceRegSvc).WithSharedBuild(sharedBuildSrv).WithMeshDNS(meshDNSSvc, meshDNSSyncer).
+		WithModeSwitcher(mesh.NewModeSwitcher(meshSvc, meshClient))
 
 	// 集群防火墙访问限制(两步生效):apply 把平台本机端口(默认 80/443/8080/5000/5001,
 	// 8080 取实际监听口)临时限制为仅本机 + mesh 网段可访问;从本机/mesh 访问后 confirm

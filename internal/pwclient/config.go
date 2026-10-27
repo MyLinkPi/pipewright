@@ -26,12 +26,17 @@ import (
 var ErrInvalidConfig = errors.New("pwclient: invalid config")
 
 // JoinConfig 是加入集群的组网参数(与平台「导出客户端配置」文件的 join 段对齐)。
+// 认证二选一:NetworkSecret(长期凭据,正式成员)或 Credential(临时凭据,Secure Mode
+// 签发;过期/撤销后需重新导入)。两者都有时凭据优先。
 type JoinConfig struct {
-	NetworkName   string   `yaml:"networkName"`
-	NetworkSecret string   `yaml:"networkSecret"` // 明文落盘(0600);绝不入日志/状态回显
-	Peers         []string `yaml:"peers"`         // 至少一个公网可达的对端地址(如 tcp://IP:11010)
-	VirtualIP     string   `yaml:"virtualIp"`     // 空 = DHCP 自动分配
-	Hostname      string   `yaml:"hostname"`      // 空 = 计算机名
+	NetworkName   string `yaml:"networkName"`
+	NetworkSecret string `yaml:"networkSecret"` // 明文落盘(0600);绝不入日志/状态回显
+	// Credential 是 EasyTier 临时凭据(base64 私钥,平台「临时凭据」签发):临时设备
+	// 入网用,隐含 Secure Mode。明文落盘(0600)同密钥纪律;过期/被撤销即失联,重新签发导入。
+	Credential string   `yaml:"credential"`
+	Peers      []string `yaml:"peers"`     // 至少一个公网可达的对端地址(如 tcp://IP:11010)
+	VirtualIP  string   `yaml:"virtualIp"` // 空 = DHCP 自动分配
+	Hostname   string   `yaml:"hostname"`  // 空 = 计算机名
 }
 
 // EasyTierConfig 是 easytier 二进制定位与本地 RPC 状态口。
@@ -158,6 +163,7 @@ func (s *Store) Save(cfg Config) error {
 func Normalize(cfg Config) (Config, error) {
 	cfg.Join.NetworkName = strings.TrimSpace(cfg.Join.NetworkName)
 	cfg.Join.NetworkSecret = strings.TrimSpace(cfg.Join.NetworkSecret)
+	cfg.Join.Credential = strings.TrimSpace(cfg.Join.Credential)
 	cfg.Join.VirtualIP = strings.TrimSpace(cfg.Join.VirtualIP)
 	cfg.Join.Hostname = strings.TrimSpace(cfg.Join.Hostname)
 	cfg.Join.Peers = dedupeTrim(cfg.Join.Peers)
@@ -303,13 +309,16 @@ func socks5Port(cfg Config) int {
 
 // ImportExport 解析平台导出的 pipewright-client.yaml,产出可合并的加入参数与预填路由。
 // 仅返回 join 与 routes 两个可合并段;本机既有配置的 enabled/easytier 段由调用方保留。
+// 认证段兼容两种形态:networkSecret(长期)或 credential(临时凭据,手工替换/平台凭据
+// 导出),两者至少其一。
 func ImportExport(raw []byte) (join JoinConfig, routes []string, meta exportMeta, err error) {
 	var f exportFile
 	if err := yaml.Unmarshal(raw, &f); err != nil {
 		return join, nil, meta, fmt.Errorf("%w: 不是合法的导出文件: %v", ErrInvalidConfig, err)
 	}
-	if strings.TrimSpace(f.Join.NetworkName) == "" || strings.TrimSpace(f.Join.NetworkSecret) == "" {
-		return join, nil, meta, fmt.Errorf("%w: 导出文件缺少网络名或组网密钥", ErrInvalidConfig)
+	if strings.TrimSpace(f.Join.NetworkName) == "" ||
+		(strings.TrimSpace(f.Join.NetworkSecret) == "" && strings.TrimSpace(f.Join.Credential) == "") {
+		return join, nil, meta, fmt.Errorf("%w: 导出文件缺少网络名或入网凭据(组网密钥/临时凭据)", ErrInvalidConfig)
 	}
 	cfg, err := Normalize(Config{Join: f.Join, Routes: f.Routes})
 	if err != nil {
@@ -318,9 +327,10 @@ func ImportExport(raw []byte) (join JoinConfig, routes []string, meta exportMeta
 	return cfg.Join, cfg.Routes, f.Export, nil
 }
 
-// Configured 报告加入参数是否已配置完整(网络名 + 密钥 + 至少一个 peer)。
+// Configured 报告加入参数是否已配置完整(网络名 + 任一入网凭据 + 至少一个 peer)。
 func (c Config) Configured() bool {
-	return c.Join.NetworkName != "" && c.Join.NetworkSecret != "" && len(c.Join.Peers) > 0
+	hasAuth := c.Join.NetworkSecret != "" || c.Join.Credential != ""
+	return c.Join.NetworkName != "" && hasAuth && len(c.Join.Peers) > 0
 }
 
 func dedupeTrim(in []string) []string {

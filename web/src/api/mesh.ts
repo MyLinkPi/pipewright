@@ -32,6 +32,9 @@ export interface MeshSettings {
   acceptNetworksCustom: string[]
   /** Allow this node to act as an exit node for client local proxies (foreign-network NAT, off by default). */
   enableExitNode: boolean
+  /** Secure Mode (v2.6+): Noise XX handshake auth + temp-credential joins. Flipped by the
+   *  cluster-wide switch protocol; direct PUT is the recovery hatch only. */
+  secureMode: boolean
   hasSecret: boolean
 }
 
@@ -42,6 +45,8 @@ export interface MeshACL {
   forwardAllowed: string[]
   /** 0066 cluster-shared build machines: peers allowed to submit shared build jobs. */
   buildAllowed: string[]
+  /** Peers allowed to deliver/abort Secure Mode cluster-wide switch instructions. */
+  switchAllowed: string[]
 }
 
 export interface MeshPeer {
@@ -347,4 +352,116 @@ export function triggerManualRun(projectId: string, body: {
   items?: string[]
 }): Promise<unknown> {
   return http.post(`/api/projects/${encodeURIComponent(projectId)}/runs`, body)
+}
+
+/**
+ * ── 临时凭据(EasyTier Secure Mode)──
+ * POST /api/mesh/credentials        → 签发(credentialSecret 仅此一次返回;CSRF)
+ * GET  /api/mesh/credentials        → { items } (登记簿 × easytier 活跃态合并)
+ * POST /api/mesh/credentials/:id/revoke → { ok } (CSRF;全网 1~3s 踢下线)
+ */
+export interface MeshCredential {
+  credentialId: string
+  remark: string
+  ttlSeconds: number
+  createdAt: string
+  expiresAt: string
+  revokedAt: string
+  createdBy: string
+  source: 'admin' | 'token' | 'external'
+  /** active=easytier 活跃;expired=已过期;revoked=已撤销;missing=未到期但已不在活跃表(凭据文件丢失)。 */
+  status: 'active' | 'expired' | 'revoked' | 'missing'
+}
+
+export function issueMeshCredential(body: { ttlSeconds?: number; remark?: string }): Promise<{
+  credentialId: string
+  credentialSecret: string
+  expiresAt: string
+  remark: string
+}> {
+  return http.post('/api/mesh/credentials', body)
+}
+
+export function listMeshCredentials(): Promise<{ items: MeshCredential[] }> {
+  return http.get('/api/mesh/credentials')
+}
+
+export function revokeMeshCredential(credentialId: string): Promise<{ ok: boolean }> {
+  return http.post(`/api/mesh/credentials/${encodeURIComponent(credentialId)}/revoke`)
+}
+
+/**
+ * ── 凭据自动申请 API 令牌(外部系统 Bearer 认证)──
+ * 明文令牌 pwmc_* 仅创建响应出现一次;库内只存哈希。
+ */
+export interface MeshApiToken {
+  name: string
+  createdAt: string
+  lastUsedAt: string
+  revokedAt: string
+}
+
+export function createMeshApiToken(name: string): Promise<{ name: string; token: string; createdAt: string }> {
+  return http.post('/api/mesh/api-tokens', { name })
+}
+
+export function listMeshApiTokens(): Promise<{ items: MeshApiToken[] }> {
+  return http.get('/api/mesh/api-tokens')
+}
+
+export function revokeMeshApiToken(name: string): Promise<{ ok: boolean }> {
+  return http.delete(`/api/mesh/api-tokens/${encodeURIComponent(name)}`)
+}
+
+/**
+ * ── Secure Mode 全集群统一开关 ──
+ * POST /api/mesh/secure-mode/switch  → {changeId,effectiveAt,armed} (CSRF;全员确认才 armed)
+ * POST /api/mesh/secure-mode/abort   → { ok } (CSRF;生效时刻前)
+ * GET  /api/mesh/secure-mode/status  → 各节点 {secureMode, acked, applied} 聚合
+ */
+export interface MeshSwitchNodeState {
+  nodeId: string
+  name: string
+  online: boolean
+  secureMode: boolean
+  changeId: string
+  action: string
+  acked: boolean
+  applied: boolean
+  isSelf: boolean
+}
+
+export interface MeshSwitchStatus {
+  secureMode: boolean
+  pending: {
+    changeId: string
+    action: string
+    effectiveAt: string
+    initiatedBy: string
+    ackedAt: string
+    /** 空串 = 未应用(服务端输出空串,不用 time.Time 零值)。 */
+    appliedAt: string
+  } | null
+  nodes: MeshSwitchNodeState[]
+  /** 无虚拟 IP、无法纳入齐切的节点名(保持旧态,不参与 ack 判定)。 */
+  skipped: string[]
+}
+
+export function switchMeshSecureMode(body: { action: 'enable' | 'disable'; effectiveInMinutes?: number }): Promise<{
+  changeId: string
+  action: string
+  effectiveAt: string
+  armed: boolean
+  /** 无虚拟 IP、未纳入本次齐切的节点名。 */
+  skippedNodes?: string[] | null
+}> {
+  return http.post('/api/mesh/secure-mode/switch', body)
+}
+
+export function abortMeshSecureMode(changeId: string): Promise<{ ok: boolean }> {
+  return http.post('/api/mesh/secure-mode/abort', { changeId })
+}
+
+export function getMeshSecureModeStatus(): Promise<MeshSwitchStatus> {
+  return http.get('/api/mesh/secure-mode/status')
 }

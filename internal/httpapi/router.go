@@ -754,6 +754,10 @@ func New(webFS fs.FS, authn auth.Authenticator, opts ...Option) http.Handler {
 	// 签名头 + 接收方 ACL(默认全拒绝)鉴权。与 webhook 同级注册在受保护 /api 组之外。
 	if o.mesh != nil {
 		mountMeshInbound(r, o.mesh.meshDeps)
+		// 临时凭据 API(公开入口,双通道认证):外部系统 Bearer 令牌 / 浏览器管理员
+		// 会话。挂根路由 —— chi 静态路由优先于 /api/* 子树挂载,挂进子组反而会被遮蔽。
+		// svc = authn(会话认证服务,New 注入)。
+		mountMeshCredentialAPI(r, *o.mesh, svc)
 	}
 
 	// 从通知直接审批(公开入口,SECURITY-SENSITIVE):豁免 requireAuth + CSRF——token(HMAC+过期+

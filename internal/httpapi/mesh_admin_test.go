@@ -30,6 +30,7 @@ func (f *fakeMeshRuntime) SupervisorSnapshot() easytier.Runtime            { ret
 func (f *fakeMeshRuntime) ExternalMode() bool                              { return false }
 func (f *fakeMeshRuntime) Binaries() easytier.BinStatus                    { return easytier.BinStatus{} }
 func (f *fakeMeshRuntime) TriggerDownload() error                          { return nil }
+func (f *fakeMeshRuntime) CredentialProvider() easytier.CredentialIssuer   { return nil }
 
 // TestMeshOverviewExcludesSelf 验证集群页节点表不含本节点自身:EasyTier 链路表恒不含
 // 本机,自身行(node_id 即本机的误登记行,或虚拟 IP 与本机相同的冲突行)永不匹配

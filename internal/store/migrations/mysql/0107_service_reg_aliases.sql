@@ -4,4 +4,4 @@
 --   主路由键 name/(domain_id, name, path) 唯一约束不变;别名与全部既有域名(主名或别名)
 --   的互斥由领域层校验(ErrFQDNTaken)。
 
-ALTER TABLE service_reg_services ADD COLUMN aliases TEXT NOT NULL DEFAULT '';
+ALTER TABLE service_reg_services ADD COLUMN aliases TEXT NOT NULL DEFAULT ('');

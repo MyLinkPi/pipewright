@@ -43,8 +43,8 @@
 | TCP 打洞(v2.5.0)、IPv6 打洞(v2.3.0) | 自动获益 | — |
 | UPnP 自动端口映射,**v2.6.2 起默认开启** | 未显式设置 | **注意行为变化**:家用路由客户端受益可留;公网 ECS 节点显式 `--disable-upnp`(安全组已挡,只留日志噪音) |
 | `--latency-first` 路由模式 | 未用 | 可选:交互流量(ssh/终端)优先延迟时开 |
-| KCP 代理 `--enable-kcp-proxy`(v2.5.0) | 未用 | 评估:弱网/跨国链路,需开 UDP 端口 |
-| QUIC 代理 `--enable-quic-proxy`(v2.5.0) | 未用 | 评估:同上,注意额外监听端口 |
+| KCP 代理 `--enable-kcp-proxy`(v2.5.0) | 未用 | 评估:弱网/跨国链路。**无需开新端口**——v2.6.x 起 KCP 是网关层实现,复用既有对端连接按 peer_id 寻址(v2.5.0 的 `--kcp-listen-port` 已随架构重构移除,v2.6.4 源码无任何绑定端口逻辑) |
+| QUIC 代理 `--enable-quic-proxy`(v2.5.0) | 未用 | 评估:同上;`--quic-listen-port` 默认 0=随机端口,若启用且需穿防火墙要显式钉一个 UDP 端口 |
 | `--compression`(v2.6.0 zstd) | 未用 | 可选:构建产物传输类流量 CPU 换带宽 |
 | `--multi-thread`(v2.4.0) | 未用 | 可选:共享构建机/中继角色的高吞吐节点 |
 | 自建 `--stun-servers`(v2.4.3) | 未用 | 评估:公共 STUN 不稳的国内 NAT 环境 |

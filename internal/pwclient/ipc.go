@@ -151,11 +151,12 @@ type aliyunView struct {
 }
 
 type joinView struct {
-	NetworkName string   `json:"networkName"`
-	HasSecret   bool     `json:"hasSecret"`
-	Peers       []string `json:"peers"`
-	VirtualIP   string   `json:"virtualIp"`
-	Hostname    string   `json:"hostname"`
+	NetworkName   string   `json:"networkName"`
+	HasSecret     bool     `json:"hasSecret"`
+	HasCredential bool     `json:"hasCredential"` // 临时凭据入网(内容只写不读)
+	Peers         []string `json:"peers"`
+	VirtualIP     string   `json:"virtualIp"`
+	Hostname      string   `json:"hostname"`
 }
 
 func toConfigView(cfg Config) configView {
@@ -175,11 +176,12 @@ func toConfigView(cfg Config) configView {
 	return configView{
 		Enabled: cfg.Enabled,
 		Join: joinView{
-			NetworkName: cfg.Join.NetworkName,
-			HasSecret:   cfg.Join.NetworkSecret != "",
-			Peers:       nonNil(cfg.Join.Peers),
-			VirtualIP:   cfg.Join.VirtualIP,
-			Hostname:    cfg.Join.Hostname,
+			NetworkName:   cfg.Join.NetworkName,
+			HasSecret:     cfg.Join.NetworkSecret != "",
+			HasCredential: cfg.Join.Credential != "",
+			Peers:         nonNil(cfg.Join.Peers),
+			VirtualIP:     cfg.Join.VirtualIP,
+			Hostname:      cfg.Join.Hostname,
 		},
 		Routes:   nonNil(cfg.Routes),
 		Socks5:   cfg.Socks5,
@@ -213,11 +215,15 @@ func (s *ipcServer) handleConfigGet(w http.ResponseWriter, _ *http.Request) {
 	writeIPCJSON(w, http.StatusOK, toConfigView(cfg))
 }
 
-// ConfigSetRequest 是配置更新请求:全部字段可选,仅提交的字段覆盖;networkSecret 只写不读。
+// ConfigSetRequest 是配置更新请求:全部字段可选,仅提交的字段覆盖;networkSecret 与
+// credential 只写不读(空串 = 保持已存值)。
 type ConfigSetRequest struct {
-	Enabled           *bool          `json:"enabled"`
-	NetworkName       *string        `json:"networkName"`
-	NetworkSecret     *string        `json:"networkSecret"`
+	Enabled       *bool   `json:"enabled"`
+	NetworkName   *string `json:"networkName"`
+	NetworkSecret *string `json:"networkSecret"`
+	// Credential 是临时凭据(EasyTier Secure Mode);写入即切换为凭据入网,非空时
+	// 既有 networkSecret 保留在配置但不再参与认证(buildArgs 凭据优先)。
+	Credential        *string        `json:"credential"`
 	Peers             *[]string      `json:"peers"`
 	VirtualIP         *string        `json:"virtualIp"`
 	Hostname          *string        `json:"hostname"`
@@ -253,6 +259,9 @@ func (s *ipcServer) handleConfigPut(w http.ResponseWriter, r *http.Request) {
 	}
 	if body.NetworkSecret != nil && *body.NetworkSecret != "" {
 		cfg.Join.NetworkSecret = *body.NetworkSecret
+	}
+	if body.Credential != nil && *body.Credential != "" {
+		cfg.Join.Credential = *body.Credential
 	}
 	if body.Peers != nil {
 		cfg.Join.Peers = *body.Peers

@@ -158,7 +158,7 @@ func (a *trayApp) build() error {
 								Title:  "集群配置",
 								Layout: VBox{MarginsZero: true, Spacing: 6},
 								Children: []Widget{
-									Label{Text: "从平台「设置 → 集群 → 导出客户端配置」复制 YAML 粘贴到下面导入(网络/密钥/对端地址一次就位);网段路由与本地代理的流量均经集群侧节点转发。", TextColor: walk.Color(0x666666)},
+									Label{Text: "从平台「设置 → 集群 → 导出客户端配置」复制 YAML 粘贴到下面导入(网络/认证/对端地址一次就位;长期密钥或临时凭据均可 —— 临时凭据把 networkSecret 行替换为 credential 行);网段路由与本地代理的流量均经集群侧节点转发。", TextColor: walk.Color(0x666666)},
 									TextEdit{AssignTo: &a.importEdit, MinSize: Size{Height: 72}, VScroll: true},
 									Composite{
 										Layout: HBox{MarginsZero: true, Spacing: 8},

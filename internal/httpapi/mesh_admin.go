@@ -34,6 +34,9 @@ type meshAdminDeps struct {
 	// meshDNS 是集群 DNS 映射(域名 A 记录 → 本机虚拟 IP;nil = /api/mesh/dns-records*
 	// 端点 503 降级)。装配层经 WithMeshDNS 注入。
 	meshDNS *meshDNSDeps
+	// switcher 是 Secure Mode 全集群统一开关协调器(nil = 相关端点 503 降级;
+	// 单节点集群仍可用 —— 只剩本端自翻转路径)。装配层经 WithModeSwitcher 注入。
+	switcher *mesh.ModeSwitcher
 }
 
 // meshRuntimeView 是集群页运行时视图(由 cmd 装配的运行时循环实现;nil → 空态降级)。
@@ -48,6 +51,9 @@ type meshRuntimeView interface {
 	Binaries() easytier.BinStatus
 	// TriggerDownload 手动触发一次二进制自动下载(幂等;未装配下载器时返回错误)。
 	TriggerDownload() error
+	// CredentialProvider 返回临时凭据签发器(外部模式/未运行返回 nil → 端点 503;
+	// 接口化便于测试注入 fake)。
+	CredentialProvider() easytier.CredentialIssuer
 }
 
 // NewMeshDeps 是装配层构造 meshDeps 的导出入口(字段未导出,经此一次性注入;
@@ -95,6 +101,12 @@ func (d meshAdminDeps) WithSharedBuild(rt sharedBuildRuntime) meshAdminDeps {
 	return d
 }
 
+// WithModeSwitcher 注入 Secure Mode 统一开关协调器(nil = 相关端点 503 降级)。
+func (d meshAdminDeps) WithModeSwitcher(sw *mesh.ModeSwitcher) meshAdminDeps {
+	d.switcher = sw
+	return d
+}
+
 // meshServices 返回 mesh 服务(未装配集群时为 nil;供挂在受保护组的只读端点取用,
 // 如 webhook-endpoints 的可选环境地址列表)。
 func (o *options) meshServices() mesh.Service {
@@ -125,6 +137,15 @@ func mountMeshAdmin(ar chi.Router, d meshAdminDeps) {
 	// 导出客户端加入配置(YAML 文件下载:网络名/密钥/peers/可路由网段,客户端导入即用;
 	// 含明文密钥,与 reveal-secret 同级敏感,每次导出留审计)。
 	ar.Get("/mesh/client-config", makeMeshClientConfigHandler(d))
+	// 凭据 API 令牌(外部系统自动申请用;明文仅创建响应一次)。凭据签发三端点
+	// (issue/list/revoke)挂根路由双通道认证,见 mesh_credentials_admin.go。
+	ar.Get("/mesh/api-tokens", makeMeshApiTokenListHandler(d))
+	ar.Post("/mesh/api-tokens", makeMeshApiTokenCreateHandler(d))
+	ar.Delete("/mesh/api-tokens/{name}", makeMeshApiTokenDeleteHandler(d))
+	// Secure Mode 全集群统一开关(发起/撤销/状态)。
+	ar.Post("/mesh/secure-mode/switch", makeMeshSecureModeSwitchHandler(d))
+	ar.Post("/mesh/secure-mode/abort", makeMeshSecureModeAbortHandler(d))
+	ar.Get("/mesh/secure-mode/status", makeMeshSecureModeStatusHandler(d))
 	// 集群 DNS 映射(域名 A 记录 → 本机虚拟 IP;自动跟随由运行时 Syncer 承担,
 	// sync 端点供设置页手动「立即同步」)。
 	if d.meshDNS != nil {
@@ -301,7 +322,9 @@ type meshSettingsDTO struct {
 	AcceptNetworksCustom []string `json:"acceptNetworksCustom"`
 	// EnableExitNode 允许本节点充当客户端本地代理的出口节点(默认关)。
 	EnableExitNode bool `json:"enableExitNode"`
-	HasSecret      bool `json:"hasSecret"`
+	// SecureMode 本节点是否以 --secure-mode 运行(统一开关协议翻转;直改是恢复舱口)。
+	SecureMode bool `json:"secureMode"`
+	HasSecret  bool `json:"hasSecret"`
 }
 
 func toMeshSettingsDTO(st *mesh.Settings) meshSettingsDTO {
@@ -312,6 +335,7 @@ func toMeshSettingsDTO(st *mesh.Settings) meshSettingsDTO {
 		ProxyNetworksCustom:  st.ProxyNetworksCustom,
 		AcceptNetworksCustom: st.AcceptNetworksCustom,
 		EnableExitNode:       st.EnableExitNode,
+		SecureMode:           st.SecureMode,
 		HasSecret:            st.HasSecret,
 	}
 }
@@ -350,6 +374,9 @@ func makeMeshSettingsPutHandler(svc mesh.Service, aud audit.Recorder) http.Handl
 			ProxyNetworksCustom  *[]string `json:"proxyNetworksCustom"`
 			AcceptNetworksCustom *[]string `json:"acceptNetworksCustom"`
 			EnableExitNode       *bool     `json:"enableExitNode"`
+			// SecureMode 直改仅作恢复舱口(节点失联错过齐切后手动对齐);常规启停
+			// 走 /mesh/secure-mode/switch 统一协议。
+			SecureMode *bool `json:"secureMode"`
 		}
 		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&body); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid_body", "请求体不是合法 JSON")
@@ -363,6 +390,7 @@ func makeMeshSettingsPutHandler(svc mesh.Service, aud audit.Recorder) http.Handl
 			ProxyNetworksCustom:  body.ProxyNetworksCustom,
 			AcceptNetworksCustom: body.AcceptNetworksCustom,
 			EnableExitNode:       body.EnableExitNode,
+			SecureMode:           body.SecureMode,
 		})
 		if err != nil {
 			writeMeshError(w, err)

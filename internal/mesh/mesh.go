@@ -58,6 +58,10 @@ var (
 	ErrPeerUnreachable = errors.New("mesh: peer unreachable")
 	// ErrForbidden 表示对端未获授权(ACL 默认全拒绝)。
 	ErrForbidden = errors.New("mesh: forbidden by acl")
+	// ErrSecureModeOff 表示 Secure Mode 未启用,临时凭据签发不可用。
+	ErrSecureModeOff = errors.New("mesh: secure mode not enabled")
+	// ErrDuplicate 表示唯一键冲突(API 令牌重名等)。
+	ErrDuplicate = errors.New("mesh: duplicate")
 )
 
 // Settings 是本节点 mesh 配置(单行;私钥/网络密钥只回显「是否已配置」)。
@@ -90,6 +94,10 @@ type Settings struct {
 	// EnableExitNode 允许本节点充当客户端本地代理的出口节点(foreign network NAT;
 	// EasyTier 以 network secret 校验接入,默认关闭 —— 管理员显式开启)。
 	EnableExitNode bool
+	// SecureMode 以 --secure-mode 运行本节点 easytier(v2.6.0+:Noise XX 握手认证 +
+	// 接受临时凭据入网;network_secret 持有者照常接入)。常规路径经全集群统一开关协议
+	// 在约定时刻翻转(modeswitch.go);PUT settings 直改仅作节点失联时的恢复舱口。
+	SecureMode bool
 	// HasSecret / HasKey 报告密钥是否已配置(绝不回显内容)。
 	HasSecret bool
 	HasKey    bool
@@ -113,6 +121,9 @@ type SaveSettingsInput struct {
 	AcceptNetworksCustom *[]string
 	// EnableExitNode nil = 不改。
 	EnableExitNode *bool
+	// SecureMode nil = 不改。恢复舱口:统一开关协议之外的单节点手动对齐(节点失联
+	// 错过齐切后重新入 cluster 用);常规启停务必走 mode-change 协议,防混跑分裂。
+	SecureMode *bool
 }
 
 // Peer 是已知对等节点。
@@ -145,6 +156,9 @@ type ACL struct {
 	// BuildAllowed 允许查询我的共享构建机目录并向我的集群共享构建机提交构建任务
 	// (任务进入我的构建机调度器 FIFO,与本端任务统一排队;SSH 凭据仍只由本端使用)。
 	BuildAllowed []string `json:"buildAllowed"`
+	// SwitchAllowed 允许向我下发/撤销 Secure Mode 统一切换指令(全集群开关协议的
+	// 入站端点鉴权;发起节点须先获各对端授权,否则齐切 fan-out 会被对端 403)。
+	SwitchAllowed []string `json:"switchAllowed"`
 }
 
 // Service 定义集群领域对外接口。
@@ -172,13 +186,47 @@ type Service interface {
 	ACL(ctx context.Context) (*ACL, error)
 	// SaveACL 保存授权单(整单覆盖)。
 	SaveACL(ctx context.Context, in ACL) error
-	// AllowsVisible / AllowsPush / AllowsTrigger / AllowsForward / AllowsBuild 判定某节点
-	// 是否过对应授权(默认拒绝)。
+	// AllowsVisible / AllowsPush / AllowsTrigger / AllowsForward / AllowsBuild / AllowsSwitch
+	// 判定某节点是否过对应授权(默认拒绝)。
 	AllowsVisible(ctx context.Context, nodeID string) bool
 	AllowsPush(ctx context.Context, nodeID string) bool
 	AllowsTrigger(ctx context.Context, nodeID string) bool
 	AllowsForward(ctx context.Context, nodeID string) bool
 	AllowsBuild(ctx context.Context, nodeID string) bool
+	AllowsSwitch(ctx context.Context, nodeID string) bool
+
+	// ---- 临时凭据(EasyTier Secure Mode 签发登记;签发动作本身经 CredentialProvider,
+	// 存储只落登记簿,绝落 credential_secret) ----
+
+	// IssueCredentialRecord 登记一条已签发凭据(credentialID 预生成,expires 按 TTL 推算)。
+	IssueCredentialRecord(ctx context.Context, credentialID, remark string, ttlSeconds int64, actor, source string) (*CredentialRecord, error)
+	// ListCredentialRecords 返回登记簿(新→旧;不与 easytier 活跃态合并,合并在上层)。
+	ListCredentialRecords(ctx context.Context) ([]CredentialRecord, error)
+	// MarkCredentialRevoked 标记撤销(幂等;未知 ID 返回 ErrNotFound)。
+	MarkCredentialRevoked(ctx context.Context, credentialID string) error
+
+	// ---- 凭据自动申请 API 令牌(明文仅创建响应一次;库内只存 SHA-256) ----
+
+	// CreateApiToken 创建令牌,返回记录与明文(仅此一次)。
+	CreateApiToken(ctx context.Context, name string) (*ApiToken, string, error)
+	// ListApiTokens 列出令牌(含 revoked;不含哈希)。
+	ListApiTokens(ctx context.Context) ([]ApiToken, error)
+	// RevokeApiToken 按 name 撤销(立即失效)。
+	RevokeApiToken(ctx context.Context, name string) error
+	// ApiTokenLookup 校证明文令牌:有效返回令牌名(顺带刷新 last_used_at),否则空串。
+	ApiTokenLookup(ctx context.Context, plaintext string) string
+
+	// ---- Secure Mode 全集群统一开关(本地暂存与应用;fan-out 协调在 ModeSwitcher) ----
+
+	// GetModePending 返回本地暂存的切换指令(无 → nil)。
+	GetModePending(ctx context.Context) (*ModePending, error)
+	// SaveModePending 落一条切换指令(单行覆盖;入站下发与本端发起共用)。
+	SaveModePending(ctx context.Context, p ModePending) error
+	// ClearModePending 清除暂存(仅当 change_id 匹配,防误清新指令;已应用的不清)。
+	ClearModePending(ctx context.Context, changeID string) error
+	// ApplyDueModeChange 应用到期的切换:翻转 secure_mode 并标记 applied(供对账节拍
+	// 调用;不到期/无指令/已应用返回 false)。返回是否发生了翻转。
+	ApplyDueModeChange(ctx context.Context, now time.Time) (bool, error)
 }
 
 // HelloInfo 是 /api/mesh/hello 的响应载荷(发现握手)。
@@ -208,7 +256,7 @@ func New(db *sql.DB, v vault.Vault) Service {
 func (s *service) Settings(ctx context.Context) (*Settings, error) {
 	row := s.db.QueryRowContext(ctx, `SELECT node_id, name, public_key, private_key,
 		enabled, api_port, easytier_mode, easytier_rpc, network_name, network_secret, virtual_ip, peers,
-		proxy_networks_custom, accept_networks_custom, enable_exit_node
+		proxy_networks_custom, accept_networks_custom, enable_exit_node, secure_mode
 		FROM mesh_settings WHERE id = 1`)
 	st, err := scanSettings(row.Scan)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -265,6 +313,7 @@ func (s *service) SaveSettings(ctx context.Context, in SaveSettingsInput) (*Sett
 	proxies := cur.ProxyNetworksCustom
 	accepts := cur.AcceptNetworksCustom
 	exitNode := cur.EnableExitNode
+	secure := cur.SecureMode
 	if in.Name != nil {
 		name = strings.TrimSpace(*in.Name)
 	}
@@ -304,6 +353,9 @@ func (s *service) SaveSettings(ctx context.Context, in SaveSettingsInput) (*Sett
 	if in.EnableExitNode != nil {
 		exitNode = *in.EnableExitNode
 	}
+	if in.SecureMode != nil {
+		secure = *in.SecureMode
+	}
 	if in.AcceptNetworksCustom != nil {
 		var err error
 		if accepts, err = normalizeCIDRs(*in.AcceptNetworksCustom); err != nil {
@@ -332,10 +384,10 @@ func (s *service) SaveSettings(ctx context.Context, in SaveSettingsInput) (*Sett
 		args = append(args, secretArg)
 	}
 	args = append(args, vip, strings.Join(peers, "\n"), strings.Join(proxies, "\n"),
-		strings.Join(accepts, "\n"), exitNode, nowStr)
+		strings.Join(accepts, "\n"), exitNode, secure, nowStr)
 	_, err = s.db.ExecContext(ctx,
 		`UPDATE mesh_settings SET name = ?, enabled = ?, api_port = ?, easytier_mode = ?, easytier_rpc = ?,
-		 network_name = ?`+setSecret+`, virtual_ip = ?, peers = ?, proxy_networks_custom = ?, accept_networks_custom = ?, enable_exit_node = ?, updated_at = ? WHERE id = 1`,
+		 network_name = ?`+setSecret+`, virtual_ip = ?, peers = ?, proxy_networks_custom = ?, accept_networks_custom = ?, enable_exit_node = ?, secure_mode = ?, updated_at = ? WHERE id = 1`,
 		args...,
 	)
 	if err != nil {
@@ -416,10 +468,10 @@ func scanSettings(scan func(dest ...any) error) (*Settings, error) {
 	var priv, secret []byte
 	var enabled int
 	var peersRaw, proxiesRaw, acceptsRaw string
-	var exitNode int
+	var exitNode, secure int
 	if err := scan(&st.NodeID, &st.Name, &st.PublicKey, &priv,
 		&enabled, &st.APIPort, &st.EasyTierMode, &st.EasyTierRPC,
-		&st.NetworkName, &secret, &st.VirtualIP, &peersRaw, &proxiesRaw, &acceptsRaw, &exitNode); err != nil {
+		&st.NetworkName, &secret, &st.VirtualIP, &peersRaw, &proxiesRaw, &acceptsRaw, &exitNode, &secure); err != nil {
 		return nil, err
 	}
 	st.Enabled = enabled != 0
@@ -430,6 +482,7 @@ func scanSettings(scan func(dest ...any) error) (*Settings, error) {
 	st.ProxyNetworksCustom = keepValidCIDRs(strings.Split(proxiesRaw, "\n"))
 	st.AcceptNetworksCustom = keepValidCIDRs(strings.Split(acceptsRaw, "\n"))
 	st.EnableExitNode = exitNode != 0
+	st.SecureMode = secure != 0
 	return &st, nil
 }
 
@@ -633,9 +686,9 @@ func scanPeer(scan func(dest ...any) error) (*Peer, error) {
 // ---- 授权单(默认全拒绝) ----
 
 func (s *service) ACL(ctx context.Context) (*ACL, error) {
-	var vis, push, trig, fwd, build string
+	var vis, push, trig, fwd, build, switchL string
 	err := s.db.QueryRowContext(ctx,
-		`SELECT visible_to, push_allowed, trigger_allowed, forward_allowed, build_allowed FROM mesh_acl WHERE id = 1`).Scan(&vis, &push, &trig, &fwd, &build)
+		`SELECT visible_to, push_allowed, trigger_allowed, forward_allowed, build_allowed, switch_allowed FROM mesh_acl WHERE id = 1`).Scan(&vis, &push, &trig, &fwd, &build, &switchL)
 	if errors.Is(err, sql.ErrNoRows) {
 		return &ACL{}, nil // 无行 = 全空单(默认全拒绝)
 	}
@@ -648,6 +701,7 @@ func (s *service) ACL(ctx context.Context) (*ACL, error) {
 	_ = jsonUnmarshalList(trig, &out.TriggerAllowed)
 	_ = jsonUnmarshalList(fwd, &out.ForwardAllowed)
 	_ = jsonUnmarshalList(build, &out.BuildAllowed)
+	_ = jsonUnmarshalList(switchL, &out.SwitchAllowed)
 	return out, nil
 }
 
@@ -672,19 +726,24 @@ func (s *service) SaveACL(ctx context.Context, in ACL) error {
 	if err != nil {
 		return fmt.Errorf("mesh: marshal build_allowed: %w", err)
 	}
+	switchL, err := jsonMarshalList(normalizeIDList(in.SwitchAllowed))
+	if err != nil {
+		return fmt.Errorf("mesh: marshal switch_allowed: %w", err)
+	}
 	nowStr := time.Now().UTC().Format(time.RFC3339)
 	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO mesh_acl (id, visible_to, push_allowed, trigger_allowed, forward_allowed, build_allowed, updated_at)
-		 VALUES (1, ?, ?, ?, ?, ?, ?)
+		`INSERT INTO mesh_acl (id, visible_to, push_allowed, trigger_allowed, forward_allowed, build_allowed, switch_allowed, updated_at)
+		 VALUES (1, ?, ?, ?, ?, ?, ?, ?)
 		 `+store.UpsertAssignSuffix(s.dialect, []string{"id"}, []string{
 			"visible_to = " + store.Excluded(s.dialect, "visible_to"),
 			"push_allowed = " + store.Excluded(s.dialect, "push_allowed"),
 			"trigger_allowed = " + store.Excluded(s.dialect, "trigger_allowed"),
 			"forward_allowed = " + store.Excluded(s.dialect, "forward_allowed"),
 			"build_allowed = " + store.Excluded(s.dialect, "build_allowed"),
+			"switch_allowed = " + store.Excluded(s.dialect, "switch_allowed"),
 			"updated_at = " + store.Excluded(s.dialect, "updated_at"),
 		}),
-		vis, push, trig, fwd, build, nowStr,
+		vis, push, trig, fwd, build, switchL, nowStr,
 	)
 	if err != nil {
 		return fmt.Errorf("mesh: save acl: %w", err)
@@ -710,6 +769,10 @@ func (s *service) AllowsForward(ctx context.Context, nodeID string) bool {
 
 func (s *service) AllowsBuild(ctx context.Context, nodeID string) bool {
 	return s.aclHas(ctx, "build_allowed", nodeID)
+}
+
+func (s *service) AllowsSwitch(ctx context.Context, nodeID string) bool {
+	return s.aclHas(ctx, "switch_allowed", nodeID)
 }
 
 // aclHas 判定授权单(单列 JSON 数组)是否包含 node_id。查询失败按拒绝(保守)。

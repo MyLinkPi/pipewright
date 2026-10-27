@@ -121,6 +121,72 @@ func TestImportExport(t *testing.T) {
 	}
 }
 
+// TestCredentialJoin 验证临时凭据形态的配置与导入:credential 与 networkSecret 任一
+// 即算配置完整;导出文件凭据形态可导入;两者皆缺报错;导入合并与回显存在性。
+func TestCredentialJoin(t *testing.T) {
+	// Configured:仅凭据即可。
+	if !(Config{Join: JoinConfig{NetworkName: "n", Credential: "CRED", Peers: []string{"tcp://1.1.1.1:11010"}}}).Configured() {
+		t.Fatal("仅凭据应视为已配置完整")
+	}
+	if (Config{Join: JoinConfig{NetworkName: "n", Peers: []string{"tcp://1.1.1.1:11010"}}}).Configured() {
+		t.Fatal("密钥与凭据皆缺不应视为已配置")
+	}
+
+	// 导入:凭据形态(join.credential 替代 networkSecret)。
+	credYAML := `join:
+  networkName: prod-net
+  credential: CRED-BASE64-KEY
+  peers:
+    - tcp://1.2.3.4:11010
+routes:
+  - 192.168.30.0/24
+`
+	join, routes, _, err := ImportExport([]byte(credYAML))
+	if err != nil {
+		t.Fatalf("凭据形态导入失败:%v", err)
+	}
+	if join.Credential != "CRED-BASE64-KEY" || join.NetworkSecret != "" || len(routes) != 1 {
+		t.Fatalf("join 解析异常:%+v routes=%v", join, routes)
+	}
+
+	// 两者皆缺 → 报错(文案含凭据)。
+	if _, _, _, err := ImportExport([]byte("join:\n  networkName: n\n  peers: []\n")); err == nil || !strings.Contains(err.Error(), "凭据") {
+		t.Fatalf("缺认证应报错:%v", err)
+	}
+
+	// ImportJoin 合并:凭据落库,回显 hasCredential(内容绝不回显)。
+	dir := t.TempDir()
+	rt := NewRuntime(&Store{Path: filepath.Join(dir, "config.yaml")}, dir)
+	rt.newDownloader = nil
+	cfg, err := rt.ImportJoin([]byte(credYAML), true)
+	if err != nil {
+		t.Fatalf("import join: %v", err)
+	}
+	if !cfg.Configured() || cfg.Join.Credential != "CRED-BASE64-KEY" {
+		t.Fatalf("导入后配置异常:%+v", cfg.Join)
+	}
+	view := toConfigView(cfg)
+	if !view.Join.HasCredential || view.Join.HasSecret {
+		t.Fatalf("回显存在性异常:%+v", view.Join)
+	}
+
+	// IPC 配置写入口:credential 只写不读(空串 = 保持)。
+	if err := rt.SaveConfig(Config{Enabled: true, Join: JoinConfig{
+		NetworkName: "n", NetworkSecret: "sec", Peers: []string{"tcp://1.1.1.1:11010"},
+	}}); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	saved, _ := rt.LoadConfig()
+	saved.Join.Credential = "NEW-CRED"
+	if err := rt.SaveConfig(saved); err != nil {
+		t.Fatalf("save credential: %v", err)
+	}
+	reloaded, _ := rt.LoadConfig()
+	if reloaded.Join.Credential != "NEW-CRED" || reloaded.Join.NetworkSecret != "sec" {
+		t.Fatalf("凭据与密钥应可并存落盘:%+v", reloaded.Join)
+	}
+}
+
 func TestRuntimeImportJoin(t *testing.T) {
 	dir := t.TempDir()
 	rt := NewRuntime(&Store{Path: filepath.Join(dir, "config.yaml")}, dir)
