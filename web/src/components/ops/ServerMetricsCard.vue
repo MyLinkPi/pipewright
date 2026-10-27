@@ -691,12 +691,14 @@ function gpuMemBytesText(dev: GpuDeviceMetric): string {
   font-weight: 600;
   color: var(--color-text);
 }
-/* 带标签的进度条行:标签 / 条 / 百分比,条占满中间剩余宽度。 */
+/* 带标签的进度条行:标签 / 条 / 百分比,条占满中间剩余宽度。
+   行尾读数放不下时换到下一行(条不被挤没);比整行还窄时读数组内部再换行。 */
 .gpu-bar {
   display: flex;
   min-width: 0;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
+  gap: 4px 8px;
 }
 .gpu-bar__label {
   flex-shrink: 0;
@@ -717,8 +719,11 @@ function gpuMemBytesText(dev: GpuDeviceMetric): string {
 /* 行尾读数组(核心/显存频率、温度、功率、编解码):贴右对齐,弱于百分比。 */
 .gpu-bar__end {
   flex-shrink: 0;
+  max-width: 100%;
   display: flex;
-  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 2px 8px;
   margin-left: auto;
   font-size: var(--text-label);
   font-variant-numeric: tabular-nums;
