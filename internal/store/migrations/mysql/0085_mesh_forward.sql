@@ -8,8 +8,9 @@
 ALTER TABLE service_reg_services ADD COLUMN peer_node_id VARCHAR(64) NOT NULL DEFAULT '';
 ALTER TABLE service_reg_services ADD COLUMN peer_service_id VARCHAR(64) NOT NULL DEFAULT '';
 
-ALTER TABLE mesh_acl ADD COLUMN forward_allowed TEXT NOT NULL DEFAULT '[]';
+-- MySQL 对 TEXT 列默认值只接受表达式形式 DEFAULT ('...')(裸字面量报 ERROR 1101)。
+ALTER TABLE mesh_acl ADD COLUMN forward_allowed TEXT NOT NULL DEFAULT ('[]');
 
 -- forward_routes 是网关机 /32 路由的托管账本(JSON: server_id → [对端网关 IP]),
 -- 只记录本平台下发的路由;调和删除仅针对账本内的目标,绝不触碰管理员手工路由。
-ALTER TABLE service_reg_settings ADD COLUMN forward_routes TEXT NOT NULL DEFAULT '{}';
+ALTER TABLE service_reg_settings ADD COLUMN forward_routes TEXT NOT NULL DEFAULT ('{}');

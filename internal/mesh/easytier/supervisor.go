@@ -68,9 +68,13 @@ type Config struct {
 	RPCAddr       string // easytier-cli --rpc-portal 目标(默认 127.0.0.1:15888)
 	NetworkName   string
 	NetworkSecret string
-	VirtualIP     string // 静态虚拟 IP;空 = --dhcp 自动分配
-	Hostname      string // easytier --hostname(展示名)
-	Peers         []string
+	// Credential 是 EasyTier 临时凭据(--credential,base64 私钥):临时设备入网的
+	// 认证方式,隐含 Secure Mode(凭据走 Noise XX 静态密钥校验)。与 NetworkSecret
+	// 互斥:非空时优先凭据、不再传 --network-secret(凭据设备本就不持有组网密钥)。
+	Credential string
+	VirtualIP  string // 静态虚拟 IP;空 = --dhcp 自动分配
+	Hostname   string // easytier --hostname(展示名)
+	Peers      []string
 	// ProxyNetworks 是子网代理通告列表(cidr;跨环境转发:本端网关 IP 的 /32,或管理员
 	// 自定义的可达网段)。非空要求二进制支持子网代理参数(v2.1+),不支持则 Start 报错
 	// (上层记录并提示升级)。通告后 EasyTier 默认启用内置用户态 NAT:被代理网段内的设备
@@ -97,6 +101,13 @@ type Config struct {
 	// EnableExitNode 允许本节点充当其他节点的出口(foreign network NAT;默认关,
 	// 平台节点显式开启)。
 	EnableExitNode bool
+	// SecureMode 启用 EasyTier 安全模式(v2.6.0+):节点间 Noise XX 握手认证,并接受
+	// 管理节点签发的临时凭据入网(临时凭据签发/验证的前提)。network_secret 持有者
+	// 在该模式下照常接入(两套身份并存)。全集群经统一开关协议同时翻转,避免混跑分裂。
+	SecureMode bool
+	// CredentialFile 是凭据持久化文件路径(--credential-file):管理节点重启后保留
+	// 已签发凭据(不配则重启全失效)。签发能力的硬前提,SecureMode 开启时必配。
+	CredentialFile string
 	// NetworkDir 是该实例的工作目录(子进程 cwd)。注:v2.6.4 已移除 --network-directory
 	// 旗子,实例身份改为每进程随机生成、不再落盘(2026-10-27 双实例实测确认);目录仅
 	// 用于隔离任何以 cwd 相对路径写数据的行为,身份隔离由"每进程独立身份"天然保证。
@@ -169,7 +180,11 @@ func buildArgs(c Config, flags helpFlags) []string {
 	// (<PRIVATE_MODE>,possible values true/false),裸旗子会被 clap 拒绝导致进程秒退
 	// (与 --enable-exit-node true 同款约定)。
 	args = append(args, "--private-mode", "true")
-	if c.NetworkSecret != "" {
+	// 认证二选一:临时凭据优先(隐含 secure mode,官方入网示例即显式带 --secure-mode);
+	// 无凭据才走组网密钥(平台节点/pwclient 的长期成员形态)。
+	if c.Credential != "" {
+		args = append(args, "--secure-mode", "true", "--credential", c.Credential)
+	} else if c.NetworkSecret != "" {
 		args = append(args, "--network-secret", c.NetworkSecret)
 	}
 	if c.VirtualIP != "" {
@@ -218,6 +233,15 @@ func buildArgs(c Config, flags helpFlags) []string {
 	}
 	if c.EnableExitNode && flags.enableExitNode {
 		args = append(args, "--enable-exit-node", "true")
+	}
+	// Secure Mode:布尔旗子可选带值,按仓库惯例显式 true(与 --enable-exit-node 同款)。
+	// 凭据路径已在上方随 --credential 传过,不重复。
+	if c.SecureMode && c.Credential == "" {
+		args = append(args, "--secure-mode", "true")
+	}
+	// 凭据持久化:管理节点重启后保留已签发凭据的落盘文件(签发能力硬前提)。
+	if c.CredentialFile != "" {
+		args = append(args, "--credential-file", c.CredentialFile)
 	}
 	return args
 }

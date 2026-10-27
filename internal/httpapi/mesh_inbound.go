@@ -16,6 +16,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/huangchengsir/pipewright/internal/audit"
@@ -155,6 +156,11 @@ func permForward(ctx context.Context, svc mesh.Service, nodeID string) bool {
 	return svc.AllowsForward(ctx, nodeID)
 }
 
+// permSwitch 是第六张授权单(switch_allowed)的判定适配:统一开关指令的入站鉴权。
+func permSwitch(ctx context.Context, svc mesh.Service, nodeID string) bool {
+	return svc.AllowsSwitch(ctx, nodeID)
+}
+
 // mountMeshInbound 把对等入站端点挂到根路由(与 webhook 同级;豁免 session/CSRF)。
 func mountMeshInbound(r chi.Router, d meshDeps) {
 	r.Get("/api/mesh/hello", makeMeshHelloHandler(d))
@@ -178,6 +184,11 @@ func mountMeshInbound(r chi.Router, d meshDeps) {
 	r.Post("/api/mesh/webhooks/{token}", trigger(makeMeshWebhookHandler(d)))
 	// 跨环境转发:本端服务目录(对端渲染 forward 服务 + 规划 /32 路由的数据源)。
 	r.Get("/api/mesh/servicereg/catalog", forward(makeMeshServiceCatalogHandler(d)))
+	// Secure Mode 统一开关指令(switch_allowed):下发暂存/清除/本端态上报。
+	modeSwitch := meshGate(d.mesh, permSwitch)
+	r.Post("/api/mesh/mode-change", modeSwitch(makeMeshModeChangeHandler(d)))
+	r.Get("/api/mesh/mode-change", modeSwitch(makeMeshModeStateHandler(d)))
+	r.Delete("/api/mesh/mode-change/{changeId}", modeSwitch(makeMeshModeClearHandler(d)))
 	// 集群级共享构建机(0086):目录/任务受理/跟踪/回拉/取消(运行时缺席则端点不挂)。
 	mountMeshSharedBuildInbound(r, d)
 }
@@ -515,6 +526,91 @@ func makeMeshPushHandler(d meshDeps) http.HandlerFunc {
 			IP: clientIP(r),
 		})
 		writeJSON(w, http.StatusOK, result)
+	}
+}
+
+// makeMeshModeChangeHandler(switch_allowed)接收统一切换指令:校验载荷 → 本地暂存
+// (单行覆盖)→ 应答本端身份。effective_at 以发起节点时钟为准(±5min 签名窗内容忍,
+// 校验宽松:过去的时刻也接受 —— 节点重启补投递场景,存了立即应用无害)。
+func makeMeshModeChangeHandler(d meshDeps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if d.mesh == nil {
+			writeError(w, http.StatusServiceUnavailable, "internal", "集群服务未初始化")
+			return
+		}
+		var msg mesh.ModeChangeMsg
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<10)).Decode(&msg); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_body", "请求体不是合法 JSON")
+			return
+		}
+		effectiveAt, err := time.Parse(time.RFC3339, strings.TrimSpace(msg.EffectiveAt))
+		if err != nil || msg.ChangeID == "" {
+			writeError(w, http.StatusBadRequest, "invalid_body", "切换指令缺 changeId 或合法 effectiveAt")
+			return
+		}
+		p := mesh.ModePending{
+			ChangeID:    msg.ChangeID,
+			Action:      msg.Action,
+			EffectiveAt: effectiveAt,
+			InitiatedBy: msg.InitiatedBy,
+			AckedAt:     time.Now().UTC(),
+		}
+		if err := d.mesh.SaveModePending(r.Context(), p); err != nil {
+			writeMeshError(w, err)
+			return
+		}
+		caller := meshCaller(r.Context())
+		recordAudit(r.Context(), d.audit, audit.Entry{
+			Actor: "mesh:" + caller, Action: "mesh_mode_change_received", TargetType: "mesh_settings", TargetID: msg.ChangeID,
+			Detail: map[string]any{"action": msg.Action, "effectiveAt": msg.EffectiveAt, "from": msg.InitiatedBy},
+			IP:     clientIP(r),
+		})
+		writeJSON(w, http.StatusOK, map[string]any{"nodeId": caller, "ackedAt": p.AckedAt.Format(time.RFC3339)})
+	}
+}
+
+// makeMeshModeStateHandler(switch_allowed)上报本端开关态(协调器 Status 聚合用)。
+func makeMeshModeStateHandler(d meshDeps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if d.mesh == nil {
+			writeError(w, http.StatusServiceUnavailable, "internal", "集群服务未初始化")
+			return
+		}
+		st, err := d.mesh.Settings(r.Context())
+		if err != nil {
+			writeServerError(w, err)
+			return
+		}
+		pending, err := d.mesh.GetModePending(r.Context())
+		if err != nil {
+			writeServerError(w, err)
+			return
+		}
+		out := mesh.ModeRemoteState{NodeID: st.NodeID, SecureMode: st.SecureMode}
+		if pending != nil {
+			out.Pending = &mesh.ModeRemotePing{
+				ChangeID:    pending.ChangeID,
+				Action:      pending.Action,
+				EffectiveAt: pending.EffectiveAt.Format(time.RFC3339),
+				Applied:     !pending.AppliedAt.IsZero(),
+			}
+		}
+		writeJSON(w, http.StatusOK, out)
+	}
+}
+
+// makeMeshModeClearHandler(switch_allowed)清除暂存指令(撤销;仅 change_id 匹配才清)。
+func makeMeshModeClearHandler(d meshDeps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if d.mesh == nil {
+			writeError(w, http.StatusServiceUnavailable, "internal", "集群服务未初始化")
+			return
+		}
+		if err := d.mesh.ClearModePending(r.Context(), chi.URLParam(r, "changeId")); err != nil {
+			writeServerError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 	}
 }
 

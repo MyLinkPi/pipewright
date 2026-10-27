@@ -38,7 +38,9 @@ type meshRuntime struct {
 	mu         sync.Mutex
 	supervisor *easytier.Supervisor
 	status     *easytier.StatusProvider
-	external   bool
+	// credentials 是临时凭据签发器(Secure Mode 开启后管理端点用;随 status 同期重建)。
+	credentials *easytier.CredentialProvider
+	external    bool
 	// supervisorKey 是当前监督器对应的设置指纹;变化即重建。
 	supervisorKey string
 	// statusRPC 记录当前状态查询器绑定的 RPC 地址。
@@ -96,6 +98,20 @@ func (rt *meshRuntime) statusSnapshot() *easytier.Status {
 		return nil
 	}
 	return st
+}
+
+// CredentialProvider 返回临时凭据签发器(未就绪/外部模式返回 nil,端点据此 503)。
+// 返回接口类型并显式判空 —— 直接返回 nil 具体指针会装进非 nil 接口,调用方 nil 检查失效。
+// 外部模式的 easytier 由运维自跑,平台既不能传 --credential-file 也不能保证重启后
+// 凭据仍存在,故不对外提供签发/撤销(否则签出的凭据会随外部进程重启静默失效)。
+func (rt *meshRuntime) CredentialProvider() easytier.CredentialIssuer {
+	rt.mu.Lock()
+	p, external := rt.credentials, rt.external
+	rt.mu.Unlock()
+	if p == nil || external {
+		return nil
+	}
+	return p
 }
 
 // SupervisorSnapshot 实现 httpapi.meshRuntimeView。
@@ -240,6 +256,13 @@ func normalizeProxyNetworks(in []string) []string {
 
 // reconcile 对齐「设置期望」与「运行中的监督器」。
 func (rt *meshRuntime) reconcile(ctx context.Context) {
+	// 统一开关到期应用:翻转 secure_mode 后本次对账即按新指纹重启 easytier
+	// (ApplyDueModeChange 幂等,未到期/无指令为 no-op)。
+	if applied, err := rt.svc.ApplyDueModeChange(ctx, time.Now().UTC()); err != nil {
+		log.Printf("[mesh] 应用到期的 Secure Mode 切换失败:%v", err)
+	} else if applied {
+		log.Printf("[mesh] Secure Mode 统一切换已到期应用,按新指纹重启 easytier")
+	}
 	st, err := rt.svc.Settings(ctx)
 	if err != nil {
 		return
@@ -248,6 +271,7 @@ func (rt *meshRuntime) reconcile(ctx context.Context) {
 	// 状态查询器:RPC 地址变化才重建(cli 路径固定,装配时定位)。
 	if rt.status == nil || rt.statusRPC != st.EasyTierRPC {
 		rt.status = easytier.NewStatusProvider(rt.cliPath, st.EasyTierRPC)
+		rt.credentials = easytier.NewCredentialProvider(rt.cliPath, st.EasyTierRPC)
 		rt.statusRPC = st.EasyTierRPC
 	}
 	rt.external = st.EasyTierMode == mesh.ModeExternal
@@ -276,7 +300,7 @@ func (rt *meshRuntime) reconcile(ctx context.Context) {
 		rt.lastSeenCIDRs = sp.ProxyCIDRs
 	}
 	manual := mesh.RouteWhitelist(proxies, rt.lastSeenCIDRs, st.AcceptNetworksCustom)
-	key := fmt.Sprintf("%s|%s|%s|%s|%v|%v|%v|%v", st.EasyTierMode, st.NetworkName, st.VirtualIP, st.Peers, st.Enabled, proxies, manual, st.EnableExitNode)
+	key := fmt.Sprintf("%s|%s|%s|%s|%v|%v|%v|%v|%v", st.EasyTierMode, st.NetworkName, st.VirtualIP, st.Peers, st.Enabled, proxies, manual, st.EnableExitNode, st.SecureMode)
 	if !st.Enabled || st.EasyTierMode != mesh.ModeManaged || st.NetworkName == "" {
 		rt.mu.Lock()
 		if rt.supervisor != nil {
@@ -341,6 +365,11 @@ func (rt *meshRuntime) reconcile(ctx context.Context) {
 		StrictManualRoutes: true,
 		// 出口节点:平台节点可显式允许充当客户端出口(foreign network NAT)。
 		EnableExitNode: st.EnableExitNode,
+		// Secure Mode(全集群统一开关):凭据签发/验证的前提;翻转经上方指纹触发重启。
+		SecureMode: st.SecureMode,
+		// 凭据持久化:管理节点重启后保留已签发凭据(签发能力硬前提;路径固定,
+		// 不进指纹)。SecureMode 关闭时同样落盘无害(easytier 不读取)。
+		CredentialFile: filepath.Join(rt.dataDir, "easytier", "credentials.json"),
 		// 实例身份固定目录:EasyTier 把实例身份/密钥存于 --network-directory,DHCP
 		// 虚拟 IP 按身份分配 —— 固定目录后重启 IP 稳定不漂移(此前未固定,每次重启
 		// 身份可能重建导致换 IP)。首次部署会在本拍杀旧拉新(旧孤儿无此参数)。

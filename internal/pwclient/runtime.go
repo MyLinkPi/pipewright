@@ -204,7 +204,7 @@ func (rt *Runtime) reconcile(ctx context.Context) {
 		return
 	}
 
-	key := fmt.Sprintf("%s|%s|%s|%s|%v|%v|%d|%v", cfg.Join.NetworkName, secretFingerprint(cfg.Join.NetworkSecret),
+	key := fmt.Sprintf("%s|%s|%s|%s|%v|%v|%d|%v", cfg.Join.NetworkName, authFingerprint(cfg),
 		cfg.Join.VirtualIP, rt.hostname(cfg), cfg.Join.Peers, cfg.Routes, socks5Port(cfg), cfg.Socks5.ExitNodes)
 	rt.mu.Lock()
 	unchanged := rt.supervisor != nil && rt.supervisorKey == key
@@ -221,6 +221,7 @@ func (rt *Runtime) reconcile(ctx context.Context) {
 		RPCAddr:       cfg.EasyTier.RPCAddr,
 		NetworkName:   cfg.Join.NetworkName,
 		NetworkSecret: cfg.Join.NetworkSecret,
+		Credential:    cfg.Join.Credential,
 		VirtualIP:     cfg.Join.VirtualIP,
 		Hostname:      rt.hostname(cfg),
 		Peers:         cfg.Join.Peers,
@@ -276,7 +277,7 @@ func (rt *Runtime) reconcileProxies(ctx context.Context, cfg Config, corePath st
 	desired := map[int]want{}
 	if corePath != "" && cfg.Enabled && cfg.Configured() {
 		for i, p := range cfg.Proxies {
-			key := fmt.Sprintf("%s|%s|%s|%v|%d|%v", cfg.Join.NetworkName, secretFingerprint(cfg.Join.NetworkSecret),
+			key := fmt.Sprintf("%s|%s|%s|%v|%d|%v", cfg.Join.NetworkName, authFingerprint(cfg),
 				rt.hostname(cfg), cfg.Join.Peers, p.Port, p.ExitNodes)
 			desired[p.Port] = want{idx: i, key: key, port: p.Port}
 		}
@@ -323,6 +324,7 @@ func (rt *Runtime) reconcileProxies(ctx context.Context, cfg Config, corePath st
 			RPCAddr:       fmt.Sprintf("127.0.0.1:%d", base+w.idx),
 			NetworkName:   cfg.Join.NetworkName,
 			NetworkSecret: cfg.Join.NetworkSecret,
+			Credential:    cfg.Join.Credential,
 			Hostname:      rt.hostname(cfg) + "-p" + strconv.Itoa(p.Port),
 			Peers:         cfg.Join.Peers,
 			Socks5Port:    p.Port,
@@ -361,6 +363,15 @@ func orDHCP(vip string) string {
 		return "(dhcp)"
 	}
 	return vip
+}
+
+// authFingerprint 是入网认证的指纹(重启键用):临时凭据或组网密钥,取实际生效者
+// (凭据优先);轮换/切换认证方式即触发重启。指纹绝不回显凭据内容。
+func authFingerprint(cfg Config) string {
+	if cfg.Join.Credential != "" {
+		return "cred:" + secretFingerprint(cfg.Join.Credential)
+	}
+	return secretFingerprint(cfg.Join.NetworkSecret)
 }
 
 // secretFingerprint 把密钥压成 8 位哈希进指纹(密钥轮换触发重启;指纹绝不回显密钥)。
@@ -462,13 +473,14 @@ type ProxyStatus struct {
 	LastErr   string   `json:"lastErr"`
 }
 
-// JoinStatus 是加入参数回显(密钥只报存在性)。
+// JoinStatus 是加入参数回显(凭据/密钥只报存在性)。
 type JoinStatus struct {
-	NetworkName string   `json:"networkName"`
-	HasSecret   bool     `json:"hasSecret"`
-	Peers       []string `json:"peers"`
-	VirtualIP   string   `json:"virtualIp"`
-	Hostname    string   `json:"hostname"`
+	NetworkName   string   `json:"networkName"`
+	HasSecret     bool     `json:"hasSecret"`
+	HasCredential bool     `json:"hasCredential"` // 临时凭据入网(隐含 Secure Mode)
+	Peers         []string `json:"peers"`
+	VirtualIP     string   `json:"virtualIp"`
+	Hostname      string   `json:"hostname"`
 }
 
 // ServiceInfo 是服务进程自身信息(装配层注入服务名/启动时刻;CLI 直跑时为空)。
@@ -484,11 +496,12 @@ func (rt *Runtime) Snapshot(ctx context.Context) StatusSnapshot {
 		Configured: cfg.Configured(),
 		Enabled:    cfg.Enabled && cfg.Configured(),
 		Join: JoinStatus{
-			NetworkName: cfg.Join.NetworkName,
-			HasSecret:   cfg.Join.NetworkSecret != "",
-			Peers:       cfg.Join.Peers,
-			VirtualIP:   cfg.Join.VirtualIP,
-			Hostname:    rt.hostname(cfg),
+			NetworkName:   cfg.Join.NetworkName,
+			HasSecret:     cfg.Join.NetworkSecret != "",
+			HasCredential: cfg.Join.Credential != "",
+			Peers:         cfg.Join.Peers,
+			VirtualIP:     cfg.Join.VirtualIP,
+			Hostname:      rt.hostname(cfg),
 		},
 		Routes: cfg.Routes,
 		Socks5: Socks5Status{Enabled: socks5Port(cfg) > 0, Port: socks5Port(cfg), ExitNodes: cfg.Socks5.ExitNodes},

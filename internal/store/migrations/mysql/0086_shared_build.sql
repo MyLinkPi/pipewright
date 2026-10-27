@@ -2,4 +2,4 @@
 
 ALTER TABLE servers ADD COLUMN shared_build TINYINT NOT NULL DEFAULT 0;
 
-ALTER TABLE mesh_acl ADD COLUMN build_allowed TEXT NOT NULL DEFAULT '[]';
+ALTER TABLE mesh_acl ADD COLUMN build_allowed TEXT NOT NULL DEFAULT ('[]');
