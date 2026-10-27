@@ -97,9 +97,9 @@ type Config struct {
 	// EnableExitNode 允许本节点充当其他节点的出口(foreign network NAT;默认关,
 	// 平台节点显式开启)。
 	EnableExitNode bool
-	// NetworkDir 是该实例的网络数据目录(--network-directory;实例身份/密钥落此)。
-	// 同机多实例(pwclient 多出口代理)必须各给各的目录,否则共享 instance-id 冲突;
-	// 空默认。除旗子外同时设为子进程 cwd,兼容以工作目录存放数据的旧版二进制。
+	// NetworkDir 是该实例的工作目录(子进程 cwd)。注:v2.6.4 已移除 --network-directory
+	// 旗子,实例身份改为每进程随机生成、不再落盘(2026-10-27 双实例实测确认);目录仅
+	// 用于隔离任何以 cwd 相对路径写数据的行为,身份隔离由"每进程独立身份"天然保证。
 	NetworkDir string
 	DataDir    string // 二进制定位目录(<data>/bin)
 	CorePath   string // 已定位的 easytier-core(托管模式必填)
@@ -219,10 +219,6 @@ func buildArgs(c Config, flags helpFlags) []string {
 	if c.EnableExitNode && flags.enableExitNode {
 		args = append(args, "--enable-exit-node", "true")
 	}
-	// 实例数据目录:同机多实例隔离身份必需;不支持该旗子的二进制仅靠 cwd 兜底。
-	if c.NetworkDir != "" && flags.networkDir {
-		args = append(args, "--network-directory", c.NetworkDir)
-	}
 	return args
 }
 
@@ -230,13 +226,13 @@ func buildArgs(c Config, flags helpFlags) []string {
 var probeCache sync.Map // corePath → helpFlags
 
 // helpFlags 是一次 --help 探测解析出的旗子集合(探测失败为空集,按不支持,保守)。
+// 注:networkDir 已删 —— v2.6.4 移除了 --network-directory,该旗子永不应再传。
 type helpFlags struct {
 	proxyNetwork   string // "--proxy-networks" | "--proxy-network" | ""
 	manualRoutes   bool
 	exitNodes      bool
 	enableExitNode bool
 	socks5         bool
-	networkDir     bool
 }
 
 // probeHelp 以 5s 超时跑一次 --help 并解析旗子(结果经 probeCache 缓存,每路径只跑一次)。
@@ -272,7 +268,6 @@ func parseHelpFlags(out string, ok bool) helpFlags {
 	flags.socks5 = strings.Contains(out, "--socks5")
 	flags.exitNodes = strings.Contains(out, "--exit-nodes")
 	flags.enableExitNode = strings.Contains(out, "--enable-exit-node")
-	flags.networkDir = strings.Contains(out, "--network-directory")
 	return flags
 }
 
