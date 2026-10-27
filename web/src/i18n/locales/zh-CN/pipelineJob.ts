@@ -72,6 +72,7 @@ export default {
   fieldRestartPolicyHint: "容器退出 / 宿主机重启后的重启策略(同 docker run --restart)",
   fieldEnvVarsLabel: "环境变量",
   fieldEnvVarsHint: "每行一条 KEY=value,逐个注入容器(值含空格也可以),# 开头为注释行;机密值勿在此写明文",
+  fieldEnvVarsBuildHint: "每行一条 KEY=value,Dockerfile 构建注入为 --build-arg,工具链构建注入为容器环境变量;机密值勿在此写明文",
   fieldVolumesLabel: "卷挂载",
   fieldVolumesHint:
     "每行一条:只写容器路径(如 /var/lib/mysql)→ 自动生成持久命名卷,升级 / 回滚后仍挂同一卷,数据保持;显式写法「宿主目录:容器路径」或「卷名:容器路径」;尾部可加 :ro 只读",

@@ -41,7 +41,9 @@ var ErrParse = errors.New("pipelineyaml: invalid .pipewright.yml")
 // 脚本步骤在 Job.Config 内的约定键(**与前端 jobConfigSchema 的 script 任务严格对齐**)。
 //   - configKeyImage:构建镜像(单值字符串)。
 //   - configKeyCommands:多行命令拼成单个换行连接串(画布 textarea 即如此存,保序)。
-//   - configKeyEnv:非 secret 明文 env(JSON 对象编码进单值)。
+//   - configKeyEnv:非 secret 明文 env(JSON 对象编码进单值)。执行侧由 build.nodeEnvVars
+//     消费注入容器,与各构建/脚本节点 config.envVars(多行 KEY=value 文本,画布表单口径,
+//     config 块原样透传)同为节点级环境变量入口;注入序见 internal/build builder.go 统一口径注释。
 //   - configKeyWorkDir:容器内相对工作目录(驼峰,画布约定)。
 const (
 	configKeyImage    = "image"

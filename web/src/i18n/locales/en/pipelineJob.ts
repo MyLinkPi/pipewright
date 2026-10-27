@@ -78,6 +78,7 @@ export default {
   fieldRestartPolicyHint: "Restart behaviour after container exit / host reboot (same as docker run --restart)",
   fieldEnvVarsLabel: "Environment variables",
   fieldEnvVarsHint: "One KEY=value per line, injected into the container (values may contain spaces); lines starting with # are comments; don't put plaintext secrets here",
+  fieldEnvVarsBuildHint: "One KEY=value per line; injected as --build-arg for Dockerfile builds and as container env vars for toolchain builds; don't put plaintext secrets here",
   fieldVolumesLabel: "Volume mounts",
   fieldVolumesHint:
     'One per line: container path only (e.g. /var/lib/mysql) → a persistent named volume is auto-generated (same volume across upgrades/rollbacks, data preserved); explicit forms "host-dir:container-path" or "volume-name:container-path"; append :ro for read-only',

@@ -78,6 +78,7 @@ export default {
   fieldRestartPolicyHint: "Neustartverhalten nach Container-Ende / Host-Neustart (wie docker run --restart)",
   fieldEnvVarsLabel: "Umgebungsvariablen",
   fieldEnvVarsHint: "Eine KEY=value-Zeile pro Zeile, wird in den Container injiziert (Werte dürfen Leerzeichen enthalten); Zeilen mit führendem # sind Kommentare; keine Klartext-Geheimnisse hier eintragen",
+  fieldEnvVarsBuildHint: "Eine KEY=value-Zeile pro Zeile; bei Dockerfile-Builds als --build-arg, bei Toolchain-Builds als Container-Umgebungsvariablen injiziert; keine Klartext-Geheimnisse hier eintragen",
   fieldVolumesLabel: "Volume-Mounts",
   fieldVolumesHint:
     "Eine pro Zeile: nur Container-Pfad (z. B. /var/lib/mysql) → ein persistentes benanntes Volume wird automatisch erzeugt (gleiches Volume über Upgrades/Rollbacks, Daten bleiben erhalten); explizite Formen Host-Verzeichnis:Container-Pfad oder Volume-Name:Container-Pfad; :ro für Nur-Lesen anhängen",

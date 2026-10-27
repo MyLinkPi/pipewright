@@ -2,6 +2,7 @@ package build
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -1107,10 +1108,14 @@ func (b *Builder) runBuildImageJob(ctx context.Context, sink run.StepSink, rep d
 	if cfg.Model == "" {
 		cfg.Model = pipeline.BuildModelDockerfile
 	}
-	// 流水线级构建变量(「变量与缓存」)注入构建:与旧单镜像路径 b.build(settings.Build) 同口径
-	// (统一口径见 builder.go buildArgs 注释),docker build 经 --build-arg、工具链构建经 -e。
+	// 构建变量注入(统一口径见 builder.go buildArgs 注释):流水级「变量与缓存」在前、节点级
+	// env(config.envVars / YAML script.env)在后,同名键节点级覆盖流水级;docker build 经
+	// --build-arg、工具链构建经 -e。先拷贝再追加,避免 aliasing 改写 settings 底层数组。
+	nodeVars := nodeEnvVars(jb.Config)
 	if settings != nil {
-		cfg.Vars = settings.Build.Vars
+		cfg.Vars = append(append([]pipeline.BuildVar{}, settings.Build.Vars...), nodeVars...)
+	} else {
+		cfg.Vars = nodeVars
 	}
 
 	localTag, art, berr := b.build(ctx, sink, 0, proj, cfg, workspace, commitTag)
@@ -1330,7 +1335,7 @@ func scriptStepFromJob(jb pipeline.Job) (pipeline.PipelineStep, error) {
 		Type:     pipeline.StepTypeScript,
 		Image:    image,
 		Commands: cmds,
-		Env:      matrixEnvVars(jb.Config), // 矩阵 cell 注入的 axis 环境变量(MATRIX_<AXIS>),空时 nil
+		Env:      append(matrixEnvVars(jb.Config), nodeEnvVars(jb.Config)...), // 矩阵 axis 变量 + 节点级 env(config.envVars / YAML script.env),空时 nil
 		WorkDir:  renderTemplate(cfgString(jb.Config, "workDir"), ctx),
 		// 任务级 timeout/retry/资源规格(P0 引擎能力):从 job.Config 自由 KV 读取(非负;非法/缺失→零值=旧行为)。
 		TimeoutSeconds: cfgNonNegInt(jb.Config, "timeoutSeconds"),
@@ -1400,6 +1405,50 @@ func matrixEnvVars(cfg map[string]any) []pipeline.BuildVar {
 	default:
 		return nil
 	}
+}
+
+// nodeEnvVars 解析节点级环境变量(构建/脚本类 job 共用的「环境变量」配置,两个入口一个消费点):
+//   - config["envVars"]:多行 KEY=value 文本(画布表单口径,与 deploy_container 的 envVars 同键名
+//     同格式;空行与 # 开头注释行跳过,无 = 的行跳过,不在构建期打断);
+//   - config["env"]:YAML `script.env` 经 pipelineyaml.jobConfig 摊平成的 JSON 对象串;解码失败时
+//     容错按多行 KEY=value 文本解析。
+//
+// 两来源都存在时合并,envVars 排在 env 之后(同名键后者胜,注入序见 builder.go 统一口径)。
+// 全部为非 secret 明文 BuildVar——敏感值走流水线级「变量与缓存」(保险库)或 PAC ${NAME} secret
+// 变量,不落在节点配置;${NAME} 占位符由 applyPacVarsToConfig 在执行瞬间对 config 整串替换,
+// 本函数无需感知。普通(未配置的)job → nil(零行为变化)。
+func nodeEnvVars(cfg map[string]any) []pipeline.BuildVar {
+	if cfg == nil {
+		return nil
+	}
+	var out []pipeline.BuildVar
+	appendLine := func(line string) {
+		kv := strings.TrimSpace(line)
+		if kv == "" || strings.HasPrefix(kv, "#") {
+			return
+		}
+		k, v, ok := strings.Cut(kv, "=")
+		if !ok {
+			return
+		}
+		out = append(out, pipeline.BuildVar{Key: strings.TrimSpace(k), Value: v, Secret: false})
+	}
+	if s := cfgString(cfg, "env"); s != "" {
+		var m map[string]string
+		if err := json.Unmarshal([]byte(s), &m); err == nil {
+			for k, v := range m {
+				out = append(out, pipeline.BuildVar{Key: k, Value: v, Secret: false})
+			}
+		} else {
+			for _, line := range strings.Split(s, "\n") {
+				appendLine(line)
+			}
+		}
+	}
+	for _, line := range strings.Split(cfgString(cfg, "envVars"), "\n") {
+		appendLine(line)
+	}
+	return out
 }
 
 // runParamsAsEnv 把运行参数(明文 K=V)转为非 secret BuildVar(注入容器环境)。键序确定性不保证(map),

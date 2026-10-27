@@ -190,6 +190,18 @@ const DEPLOY_STRATEGY_FIELD: JobField = {
 
 // ─── Per-type specs ──────────────────────────────────────────────────────────────
 
+// 节点级环境变量(多行 KEY=value;空行与 # 开头注释行忽略):构建/脚本类节点注入执行容器,
+// deploy_container 注入业务容器;build_image 两种构建模型的注入语义见其专用 hint。
+// 用工厂而非共享对象:保持 label/hint 的 getter 惰性求值,语言切换时文案随之刷新。
+const envVarsField = (hintKey = 'pipelineJob.fieldEnvVarsHint'): JobField => ({
+  key: 'envVars',
+  get label() { return t('pipelineJob.fieldEnvVarsLabel') },
+  kind: 'textarea',
+  monospace: true,
+  placeholder: 'KEY=value',
+  get hint() { return t(hintKey) },
+})
+
 // 任务级执行选项(P0 引擎能力):超时 / 重试 / 资源规格。脚本类节点共用。
 // 全部可选;留空 = 旧行为(不限超时、不重试、不限资源)。timeout/retry 为非负整数。
 const EXEC_OPTION_FIELDS: JobField[] = [
@@ -250,6 +262,7 @@ const SCRIPT_FIELDS: JobField[] = [
     placeholder: '.',
     get hint() { return t('pipelineJob.fieldWorkDirHint') },
   },
+  envVarsField(),
   {
     key: 'artifactPath',
     get label() { return t('pipelineJob.fieldArtifactPathLabel') },
@@ -625,14 +638,7 @@ const DEPLOY_CONTAINER_FIELDS: JobField[] = [
     options: RESTART_POLICY_OPTIONS,
     get hint() { return t('pipelineJob.fieldRestartPolicyHint') },
   },
-  {
-    key: 'envVars',
-    get label() { return t('pipelineJob.fieldEnvVarsLabel') },
-    kind: 'textarea',
-    monospace: true,
-    placeholder: 'KEY=value',
-    get hint() { return t('pipelineJob.fieldEnvVarsHint') },
-  },
+  envVarsField(),
   {
     key: 'volumes',
     get label() { return t('pipelineJob.fieldVolumesLabel') },
@@ -774,6 +780,7 @@ export const JOB_TYPE_SPECS: Record<string, JobTypeSpec> = {
         get hint() { return t('pipelineJob.fieldBuildCommandHint') },
         when: modelIs('toolchain'),
       },
+      envVarsField('pipelineJob.fieldEnvVarsBuildHint'),
     ],
   },
 

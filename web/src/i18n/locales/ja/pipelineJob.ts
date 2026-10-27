@@ -76,6 +76,7 @@ export default {
   fieldRestartPolicyHint: "コンテナ終了 / ホスト再起動後の再起動ポリシー(docker run --restart と同じ)",
   fieldEnvVarsLabel: "環境変数",
   fieldEnvVarsHint: "1 行に 1 つ KEY=value 形式でコンテナに注入(値に空白を含められる)。# で始まる行はコメント。機密値は平文で書かないこと",
+  fieldEnvVarsBuildHint: "1 行に 1 つ KEY=value。Dockerfile ビルドでは --build-arg、ツールチェーンビルドではコンテナ環境変数として注入。機密値は平文で書かないこと",
   fieldVolumesLabel: "ボリュームマウント",
   fieldVolumesHint:
     "1 行 1 件:コンテナパスのみ(例: /var/lib/mysql)→ 永続 named volume を自動生成(アップグレード / ロールバック後も同じボリュームでデータ保持)。明示形式は「ホストディレクトリ:コンテナパス」または「ボリューム名:コンテナパス」。末尾に :ro で読み取り専用",

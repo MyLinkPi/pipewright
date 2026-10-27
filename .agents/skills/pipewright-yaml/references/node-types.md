@@ -23,6 +23,7 @@
 | config 键 | 说明 |
 |---|---|
 | `artifactPath` | 产物路径,多行或 glob(如 `bin/app`、`dist/**`)。要被部署类节点引用就必须配 |
+| `envVars` | 节点级环境变量,每行 `KEY=value`(`#` 开头为注释行)。与 `script.env` 块等价,YAML 里推荐用 `script.env` |
 | `timeoutSeconds` | 任务超时,"0"=不限 |
 | `retries` | 失败重试次数,"0"=不重试 |
 | `cpu` / `memory` | 容器资源,如 `"1"` / `"512m"`(docker --cpus / --memory 取值) |
@@ -58,7 +59,7 @@
 ## build(镜像类)
 
 ### build_image — 构建 Docker 镜像
-有 Dockerfile 走 dockerfile 模式;没有就用工具链模式。config:`artifactType`(`image`/`jar`/`dist`)、`buildModel`(`dockerfile`/`toolchain`)、`dockerfilePath`、`context`、`buildTarget`(多阶段 Dockerfile 的目标 stage,即 `FROM … AS <名字>` 的名字,docker build `--target`;空 = 构建最后一个 stage)、`toolchainLanguage`(`node`/`java`/`go`/`python`/`custom`)、`toolchainVersion`、`buildCommand`。
+有 Dockerfile 走 dockerfile 模式;没有就用工具链模式。config:`artifactType`(`image`/`jar`/`dist`)、`buildModel`(`dockerfile`/`toolchain`)、`dockerfilePath`、`context`、`buildTarget`(多阶段 Dockerfile 的目标 stage,即 `FROM … AS <名字>` 的名字,docker build `--target`;空 = 构建最后一个 stage)、`toolchainLanguage`(`node`/`java`/`go`/`python`/`custom`)、`toolchainVersion`、`buildCommand`、`envVars`(节点级环境变量,每行 `KEY=value`,`#` 开头为注释行:dockerfile 模式注入为 docker build `--build-arg`,工具链模式注入为构建容器环境变量;同名键覆盖流水线级「变量与缓存」,secret 用 `${NAME}` 引用平台变量)。
 
 一个 Dockerfile 出多个镜像:同阶段放多个 build_image 节点、各配不同 `buildTarget`(相同 `dockerfilePath`/`context`)。`buildTarget` 非空时镜像名自动并入 `-<target>` 后缀——本地 tag(`pipewright/<项目slug>-<target>:<commit>`)与 push_image 的远端默认镜像名都互不冲突,节点可直接并行,也无需逐节点手配 `imageName`(仍可显式配置覆盖)。只有多个 build_image 节点既不配 `buildTarget` 又配相同 `buildTarget` 时才会同名冲突,应避免。
 
