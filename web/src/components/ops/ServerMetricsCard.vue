@@ -386,36 +386,40 @@ function gpuMemBytesText(dev: GpuDeviceMetric): string {
                 <span class="gpu-card__idx">#{{ dev.index }}</span>
                 <span class="gpu-card__name" :title="dev.name">{{ dev.name }}</span>
               </div>
-              <!-- 三行同构:标签 + 进度条 + 百分比靠左,频率/读数贴右;频率一律裸 MHz,不带文字前缀 -->
+              <!-- 每个指标固定两行:第一行 标签+进度条+百分比;读数(频率/字节/温度等)统一在第二行右对齐 -->
               <div v-if="dev.gpuUtil !== null" class="gpu-bar">
-                <span class="gpu-bar__label">{{ t('opsServer.metrics.gpuUtil') }}</span>
-                <span class="gpu-bar__bar">
-                  <ProgressBar
-                    :value="clampPct(dev.gpuUtil)"
-                    :variant="usageVariant(clampPct(dev.gpuUtil))"
-                    :label="t('opsServer.metrics.gpuUtilLabel', { n: Math.round(dev.gpuUtil) })"
-                  />
-                </span>
-                <span class="gpu-bar__value">{{ Math.round(dev.gpuUtil) }}%</span>
-                <span v-if="dev.gpuClockMhz !== null" class="gpu-bar__end">{{ Math.round(dev.gpuClockMhz) }}MHz</span>
+                <div class="gpu-bar__main">
+                  <span class="gpu-bar__label">{{ t('opsServer.metrics.gpuUtil') }}</span>
+                  <span class="gpu-bar__bar">
+                    <ProgressBar
+                      :value="clampPct(dev.gpuUtil)"
+                      :variant="usageVariant(clampPct(dev.gpuUtil))"
+                      :label="t('opsServer.metrics.gpuUtilLabel', { n: Math.round(dev.gpuUtil) })"
+                    />
+                  </span>
+                  <span class="gpu-bar__value">{{ Math.round(dev.gpuUtil) }}%</span>
+                </div>
+                <div v-if="dev.gpuClockMhz !== null" class="gpu-bar__end">{{ Math.round(dev.gpuClockMhz) }}MHz</div>
               </div>
               <div v-if="gpuMemPercent(dev) !== null" class="gpu-bar">
-                <span class="gpu-bar__label">{{ t('opsServer.metrics.gpuMem') }}</span>
-                <span class="gpu-bar__bar">
-                  <ProgressBar
-                    :value="gpuMemBar(dev)"
-                    :variant="usageVariant(gpuMemPercent(dev))"
-                    :label="t('opsServer.metrics.gpuMemUsageLabel', { n: gpuMemBar(dev).toFixed(0) })"
-                  />
-                </span>
-                <span class="gpu-bar__value">{{ gpuMemBar(dev).toFixed(0) }}%</span>
-                <span v-if="gpuMemBytesText(dev) || dev.memClockMhz !== null" class="gpu-bar__end">
+                <div class="gpu-bar__main">
+                  <span class="gpu-bar__label">{{ t('opsServer.metrics.gpuMem') }}</span>
+                  <span class="gpu-bar__bar">
+                    <ProgressBar
+                      :value="gpuMemBar(dev)"
+                      :variant="usageVariant(gpuMemPercent(dev))"
+                      :label="t('opsServer.metrics.gpuMemUsageLabel', { n: gpuMemBar(dev).toFixed(0) })"
+                    />
+                  </span>
+                  <span class="gpu-bar__value">{{ gpuMemBar(dev).toFixed(0) }}%</span>
+                </div>
+                <div v-if="gpuMemBytesText(dev) || dev.memClockMhz !== null" class="gpu-bar__end">
                   <span v-if="gpuMemBytesText(dev)" class="gpu-bar__hint">{{ gpuMemBytesText(dev) }}</span>
                   <span v-if="dev.memClockMhz !== null">{{ Math.round(dev.memClockMhz) }}MHz</span>
-                </span>
+                </div>
               </div>
               <div v-if="gpuHasMeta(dev)" class="gpu-bar">
-                <template v-if="dev.fanSpeedPct !== null">
+                <div v-if="dev.fanSpeedPct !== null" class="gpu-bar__main">
                   <span class="gpu-bar__label">{{ t('opsServer.metrics.gpuFanLabel') }}</span>
                   <span class="gpu-bar__bar">
                     <ProgressBar
@@ -425,10 +429,10 @@ function gpuMemBytesText(dev: GpuDeviceMetric): string {
                     />
                   </span>
                   <span class="gpu-bar__value">{{ Math.round(dev.fanSpeedPct) }}%</span>
-                </template>
-                <span v-if="gpuMetaText(dev).length > 0" class="gpu-bar__end">
+                </div>
+                <div v-if="gpuMetaText(dev).length > 0" class="gpu-bar__end">
                   <span v-for="part in gpuMetaText(dev)" :key="part">{{ part }}</span>
-                </span>
+                </div>
               </div>
             </div>
           </template>
@@ -691,14 +695,19 @@ function gpuMemBytesText(dev: GpuDeviceMetric): string {
   font-weight: 600;
   color: var(--color-text);
 }
-/* 带标签的进度条行:标签 / 条 / 百分比,条占满中间剩余宽度。
-   行尾读数放不下时换到下一行(条不被挤没);比整行还窄时读数组内部再换行。 */
+/* 指标块固定两行:第一行 标签/条/百分比,第二行行尾读数;无读数时第二行不渲染。
+   读数组比整行还窄时内部再换行兜底。 */
 .gpu-bar {
   display: flex;
   min-width: 0;
-  flex-wrap: wrap;
+  flex-direction: column;
+  gap: 3px;
+}
+.gpu-bar__main {
+  display: flex;
+  min-width: 0;
   align-items: center;
-  gap: 4px 8px;
+  gap: 8px;
 }
 .gpu-bar__label {
   flex-shrink: 0;
@@ -716,15 +725,13 @@ function gpuMemBytesText(dev: GpuDeviceMetric): string {
   font-variant-numeric: tabular-nums;
   color: var(--color-dim);
 }
-/* 行尾读数组(核心/显存频率、温度、功率、编解码):贴右对齐,弱于百分比。 */
+/* 第二行读数组(核心/显存频率、字节、温度、功率、编解码):右对齐,弱于百分比。 */
 .gpu-bar__end {
-  flex-shrink: 0;
-  max-width: 100%;
+  min-width: 0;
   display: flex;
   flex-wrap: wrap;
   justify-content: flex-end;
   gap: 2px 8px;
-  margin-left: auto;
   font-size: var(--text-label);
   font-variant-numeric: tabular-nums;
   color: var(--color-dim);
