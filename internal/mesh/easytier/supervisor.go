@@ -162,6 +162,11 @@ func buildArgs(c Config, flags helpFlags) []string {
 		"--rpc-portal", c.RPCAddr,
 		"--hostname", c.Hostname,
 	}
+	// 私有模式:拒绝为陌生网络(他网)中继流量 —— 公网可达节点不设防时可被任意第三方
+	// EasyTier 指为免费中继(耗带宽、流量责任在本节点)。本集群只承载自身网络,无任何
+	// 外来中继需求,故无条件启用且不设开关(安全默认;旗子自 v2.3.1 存在,全量二进制
+	// ≥ v2.6.4 均支持,不走 --help 探测)。
+	args = append(args, "--private-mode")
 	if c.NetworkSecret != "" {
 		args = append(args, "--network-secret", c.NetworkSecret)
 	}

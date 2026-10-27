@@ -52,6 +52,7 @@ func TestBuildArgs(t *testing.T) {
 		"--network-name", "net",
 		"--rpc-portal", "127.0.0.1:15888",
 		"--hostname", "h1",
+		"--private-mode",
 		"--network-secret", "sec",
 		"-i", "10.1.1.5",
 		"-p", "tcp://1.2.3.4:11010",
@@ -125,6 +126,17 @@ func TestLocateExeAdjacent(t *testing.T) {
 	}
 	if got := Locate("", t.TempDir(), CoreBinary()); got != adj {
 		t.Fatalf("Locate 未命中 exe 同级 bin:got %q, want %q", got, adj)
+	}
+}
+
+// TestBuildArgsPrivateMode 验证私有模式无条件传参:不随 --help 探测结果变化、与
+// 其它配置无关(安全默认,见 buildArgs 注释)。
+func TestBuildArgsPrivateMode(t *testing.T) {
+	cfg := Config{NetworkName: "net", RPCAddr: "127.0.0.1:15888", Hostname: "h1"}
+	for _, flags := range []helpFlags{{}, {socks5: true, manualRoutes: true}} {
+		if !containsPair(buildArgs(cfg, flags), "--private-mode", "") {
+			t.Fatalf("私有模式应无条件启用(flags=%+v):%v", flags, buildArgs(cfg, flags))
+		}
 	}
 }
 
