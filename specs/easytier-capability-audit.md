@@ -84,6 +84,19 @@
 
 ## 三、兼容层清理清单(前提:全量 ≥ v2.6.4)
 
+0. **已实证的 v2.6.4 旗子形态坑(2026-10-27 线上事故复盘)**:
+   - EasyTier 布尔旗子是**取值形**而非裸旗子:`--private-mode <PRIVATE_MODE>`
+     (possible values true/false)必须显式带值,裸旗子被 clap 拒绝、进程秒退,
+     表象为 RPC portal 不起、`easytier-cli` 报 failed to connect to server。
+     修复:传 `"--private-mode", "true"`(已落码,含回归测试)。
+   - `--network-directory` **已在 v2.6.4 移除**(继任者 `--config-dir`:加载目录
+     .toml 并保存下发配置)。当前探测层发现 help 无此旗子即静默不传 → v2.6.4
+     部署上实例身份目录只剩 cwd 兜底(supervisor 已设 cmd.Dir),DHCP 虚拟 IP
+     重启稳定性与多出口代理实例隔离**未验证是否仍然成立**。处置:阶段 0 切换到
+     `--config-dir` 并在真实网络下验证身份落盘位置后移除旧旗子分支。
+   - 其余已验证可用的传参形态:`--dhcp`(可选值,裸旗子 OK)、`--manual-routes`
+     (可选多值,裸旗子 OK)、`--enable-exit-node`(可选值,显式 true 亦 OK)、
+     `--socks5 <PORT>`(必带值)。清理探测层时按此形态直拼。
 1. `supervisor.go`:`probeHelpFlags` / `--help` 探测缓存 / `helpFlags` 结构 /
    `buildArgs` 的 flags 分支 / 全部「需 v2.1+」错误路径(约 227-269、300-313 行)——
    删除,无条件直接拼新参数。相应单测(`supervisor_test.go`)同步简化。
