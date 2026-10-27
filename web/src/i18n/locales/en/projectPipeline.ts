@@ -42,6 +42,8 @@ export default {
   pacPreviewSetDefault: 'Set as project default file',
   pacPreviewSetDefaultDone: 'Saved as the project default file',
   pacPreviewSetDefaultFailed: 'Failed to set the default file. Please retry.',
+  pacPreviewSetDefaultSame: 'Same as the project default; nothing to save',
+  pacPreviewIdle: 'Confirm the ref and pipeline file, then click "Fetch & validate".',
   pacPreviewVarsTitle: 'Declared variables ({count})',
   pacPreviewVarsHint: 'Fill their values in the "Variables & cache" tab; secret variables reference vault credentials and never appear in the YAML.',
   pacVarRequired: 'required',

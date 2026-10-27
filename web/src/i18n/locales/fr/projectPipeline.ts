@@ -42,6 +42,8 @@ export default {
   pacPreviewSetDefault: 'Définir comme fichier par défaut',
   pacPreviewSetDefaultDone: 'Défini comme fichier par défaut du projet',
   pacPreviewSetDefaultFailed: 'Échec de la définition du fichier par défaut. Réessayez.',
+  pacPreviewSetDefaultSame: 'Identique au fichier par défaut du projet ; rien à enregistrer',
+  pacPreviewIdle: 'Confirmez le ref et le fichier de pipeline, puis cliquez sur « Récupérer et valider ».',
   pacPreviewVarsTitle: 'Variables déclarées ({count})',
   pacPreviewVarsHint: 'Renseignez les valeurs dans « Variables & cache » ; les secrets référencent le coffre et restent absents du YAML.',
   pacVarRequired: 'requis',

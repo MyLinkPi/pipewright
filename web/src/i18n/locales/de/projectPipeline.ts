@@ -42,6 +42,8 @@ export default {
   pacPreviewSetDefault: 'Als Projektstandarddatei festlegen',
   pacPreviewSetDefaultDone: 'Als Projektstandarddatei gespeichert',
   pacPreviewSetDefaultFailed: 'Festlegen der Standarddatei fehlgeschlagen. Bitte erneut versuchen.',
+  pacPreviewSetDefaultSame: 'Entspricht dem Projektstandard; nichts zu speichern',
+  pacPreviewIdle: 'Ref und Pipeline-Datei bestätigen, dann „Abrufen & Prüfen“ klicken.',
   pacPreviewVarsTitle: 'Deklarierte Variablen ({count})',
   pacPreviewVarsHint: 'Werte werden im Tab „Variablen & Cache“ eingetragen; Secret-Variablen referenzieren Vault-Credentials und stehen nie im YAML.',
   pacVarRequired: 'erforderlich',

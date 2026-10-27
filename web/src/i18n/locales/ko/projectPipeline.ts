@@ -42,6 +42,8 @@ export default {
   pacPreviewSetDefault: '프로젝트 기본 파일로 설정',
   pacPreviewSetDefaultDone: '프로젝트 기본 파일로 설정했습니다',
   pacPreviewSetDefaultFailed: '기본 파일 설정에 실패했습니다. 다시 시도하세요.',
+  pacPreviewSetDefaultSame: '프로젝트 기본값과 동일하여 저장할 필요 없음',
+  pacPreviewIdle: '브랜치와 파이프라인 파일을 확인한 뒤 «가져와서 검증»을 클릭하세요.',
   pacPreviewVarsTitle: '선언된 변수({count})',
   pacPreviewVarsHint: '값은 «변수 및 캐시» 탭에서 입력합니다. secret 변수는 Vault 자격 증명을 참조하며 YAML에 직접 쓰지 않습니다.',
   pacVarRequired: '필수',

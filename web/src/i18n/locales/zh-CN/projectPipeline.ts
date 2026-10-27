@@ -42,6 +42,8 @@ export default {
   pacPreviewSetDefault: '设为项目默认文件',
   pacPreviewSetDefaultDone: '已设为项目默认文件',
   pacPreviewSetDefaultFailed: '设置默认文件失败,请重试。',
+  pacPreviewSetDefaultSame: '与项目当前默认一致,无需保存',
+  pacPreviewIdle: '确认分支与流水线文件后,点击「拉取并校验」。',
   pacPreviewVarsTitle: '声明的变量({count})',
   pacPreviewVarsHint: '在「变量与缓存」中填写这些变量的值;secret 变量从保险库凭据引用,绝不在 YAML 中出现。',
   pacVarRequired: '必填',
