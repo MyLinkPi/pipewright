@@ -110,8 +110,9 @@ func (r *nginxConfRender) Text() string {
 //	conf.d/<fqdn>.conf(http 站点文件;同 FQDN 多 path 的服务必须共用一个 server 块,
 //	                     故文件粒度 = FQDN 站点,单服务单域名时即每服务一个文件):
 //	  upstream pw_<name>[_<path>]   —— 有 attached 实例的服务的集群实例池,成员 = 服务器
-//	    地址:宿主端口(静态 IP,reload 原子增减);max_fails/fail_timeout 被动健康兜底,
-//	    keepalive 上游长连接池。forward 服务成员来自对端目录规划。
+//	    注册地址:宿主端口(IP 原样;域名原样,由容器 DNS 在 reload 时解析,reload 原子
+//	    增减);max_fails/fail_timeout 被动健康兜底,keepalive 上游长连接池。forward 服务
+//	    成员来自对端目录规划。
 //	  80 → 301 跳 https             —— 证书就绪的站点(每站点自己的跳转 server 块)
 //	  vhost server 块               —— 证书域 443 ssl / 无证书域 80;组内每服务一个
 //	    location(实例全摘除 → return 503 维护态;static → alias 静态托管)
@@ -370,7 +371,7 @@ func renderNginxConf(confDir string, domains []Domain, services []RegisteredServ
 	b.WriteString("    # 下游(客户端)长连接超时;上游长连接池见各 upstream 块的 keepalive 指令。\n")
 	b.WriteString("    keepalive_timeout 65;\n\n")
 	b.WriteString("    # Docker 内嵌 DNS:address 上游 / TCP 透传的运行期动态解析。\n")
-	b.WriteString("    # (实例池成员为静态 IP:宿主端口,成员经 reload 原子增减。)\n")
+	b.WriteString("    # (实例池成员为服务器注册地址:宿主端口 —— IP 原样;域名成员在 reload 时经此 DNS 解析。)\n")
 	b.WriteString("    resolver 127.0.0.11 valid=10s ipv6=off;\n\n")
 	b.WriteString("    # WebSocket 升级用($http_upgrade 非空 → Connection: upgrade)。非升级请求:\n")
 	b.WriteString("    #   实例池:清空 Connection → 交给 upstream keepalive 复用后端连接;\n")

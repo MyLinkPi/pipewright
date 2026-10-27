@@ -478,6 +478,7 @@ func main() {
 	// 部署链路内回流到运行日志(「流水线日志可见所有执行的命令」;无日志 ctx = 纯透传)。
 	serviceRegSvc := servicereg.New(st.DB, deploy.ObservingTarget(targetSvc), credVault)
 	serviceRegSvc.SetServerAddrResolver(serverAddrResolver{tg: targetSvc}.resolve)
+	serviceRegSvc.SetServerHostResolver(serverAddrResolver{tg: targetSvc}.rawHost)
 
 	// 系统级运行时配置(public_url = 平台对外访问地址):取代环境变量 PIPEWRIGHT_PUBLIC_URL,
 	// 设置页在线修改、即时生效(通知审批链接 / PR 回写 target_url 每次触发时按需读取)。
@@ -1580,26 +1581,39 @@ func (g *instanceRollGateway) ResolveStaticDeploy(ctx context.Context, serviceRe
 	}, nil
 }
 
-// serverAddrResolver 把 serverID 解析为网关可达地址(target 查 SSH Host;主机名经控制端
-// DNS 解析为 IP —— nginx upstream 静态成员必须可解析,否则 reload 卡死)。注入 servicereg
-// 供集群反代渲染。
+// serverAddrResolver 把 serverID 解析为服务器地址(target 查 SSH Host):
+//   - rawHost:注册原始地址原样返回(域名保持域名)。实例池 upstream 成员用 —— 域名成员
+//     由网关容器自身的 DNS 在 reload 时解析,动态 IP 变化后重新 apply 即生效,控制端
+//     不代解析(代解析会把会漂移的 IP 静态烧进配置,IP 变了网关静默路由到死地址)。
+//   - resolve:主机名经控制端 DNS 解析为 IP。mesh /32 路由与对端目录转发规划用 ——
+//     路由配置只接受 IP,与实例池渲染语义不同。
+// 注入 servicereg 供集群反代渲染。
 type serverAddrResolver struct{ tg target.Service }
 
-func (r serverAddrResolver) resolve(ctx context.Context, serverID string) (string, error) {
+// rawHost 返回注册原始地址(IP 原样,域名原样)。
+func (r serverAddrResolver) rawHost(ctx context.Context, serverID string) (string, error) {
 	srv, err := r.tg.Get(ctx, serverID)
 	if err != nil {
 		return "", err
 	}
 	host := strings.TrimSpace(srv.Host)
-	if host == "" || net.ParseIP(host) != nil {
+	if host == "" {
+		return "", fmt.Errorf("服务器 %s 无可达地址", serverID)
+	}
+	return host, nil
+}
+
+func (r serverAddrResolver) resolve(ctx context.Context, serverID string) (string, error) {
+	host, err := r.rawHost(ctx, serverID)
+	if err != nil {
+		return "", err
+	}
+	if net.ParseIP(host) != nil {
 		return host, nil
 	}
 	addrs, lerr := net.DefaultResolver.LookupHost(ctx, host)
 	if lerr != nil || len(addrs) == 0 {
-		if host != "" {
-			return host, nil // 解析失败时回落主机名(渲染后由 nginx -t 报错暴露),不静默丢实例
-		}
-		return "", fmt.Errorf("服务器 %s 无可达地址", serverID)
+		return host, nil // 解析失败时回落主机名(mesh 路由对账会显式报错),不静默丢机器
 	}
 	return addrs[0], nil
 }
