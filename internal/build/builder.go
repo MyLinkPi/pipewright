@@ -672,6 +672,10 @@ func (b *Builder) pushImageTo(ctx context.Context, sink run.StepSink, ordinal in
 //     远程),构建变量一律作为 --build-arg / 工具链 -e 注入(消费方都是 b.build 的 cfg.Vars)。
 //   - 规则三(非脚本节点):deploy_ssh / push_image / oss_upload / notify 消费节点配置,不注入 env。
 //
+// 节点级 env(nodeEnvVars:config.envVars 多行 KEY=value / YAML script.env 摊平串,一律非 secret;
+// 敏感值走流水级变量或 PAC ${NAME})拼装点:脚本类 = scriptStepFromJob 的 step.Env(规则一末段)、
+// build_image = runBuildImageJob 与 mesh 共享机分支的 cfg.Vars(规则二,排在流水级之后)。
+//
 // 优先级(docker run 中后出现的 -e 胜出):步骤自身 env > 构建变量 > 上游 job 输出 > 运行参数。
 // secret 脱敏:登记在 httpapi registerProjectSecrets(per-run Masker),命令回显只列 key(maskKV)。
 

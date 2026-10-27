@@ -267,9 +267,11 @@ func (b *Builder) buildSharedJobSpec(r *run.Run, stage pipeline.Stage, jb pipeli
 			return nil, fmt.Errorf("构建节点「%s」:集群共享构建机暂仅支持镜像(image)产物;jar/dist 产物请配置为本地执行", jb.Name)
 		}
 		spec.JobType = mesh.SharedJobTypeBuildImage
-		var vars []pipeline.BuildVar
+		// 构建变量与本地 runBuildImageJob 同口径:流水级在前、节点级 env(config.envVars /
+		// YAML script.env)在后,同名键后者胜;先拷贝再追加,避免 aliasing 改写 settings 底层数组。
+		vars := nodeEnvVars(jb.Config)
 		if settings != nil {
-			vars = settings.Build.Vars
+			vars = append(append([]pipeline.BuildVar{}, settings.Build.Vars...), vars...)
 		}
 		plain, secret := b.buildArgs(vars)
 		spec.ImageSpec = &mesh.SharedImageSpec{

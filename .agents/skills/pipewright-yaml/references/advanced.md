@@ -84,7 +84,9 @@ services:
 1. 运行参数(手动触发时填的 params)
 2. 上游 job 输出(见 `$PIPEWRIGHT_ENV`)
 3. 流水线级「变量与缓存」(平台 UI 配置,含 secret——执行时即取即注入并全程脱敏)
-4. job 自己的 `script.env`
+4. job 自己的节点级环境变量(`script.env` 块,或 `config.envVars` 每行一条 `KEY=value`;画布表单与 YAML 等价)
+
+`build_image` 节点同样支持节点级环境变量(`config.envVars`):dockerfile 模式注入为 docker build `--build-arg`(Dockerfile 里先 `ARG` 声明才能用),工具链模式注入为构建容器环境变量;注入优先级同上(节点级覆盖流水线级)。secret 不写在节点 env 里——用流水线级变量或 `${NAME}` 引用平台保险库。
 
 `$PIPEWRIGHT_ENV`(对标 GITHUB_ENV):容器内脚本向该环境变量指向的文件追加 `KEY=VALUE` 行,执行器捕获后注入**同阶段后续 job** 的环境:
 

@@ -172,6 +172,92 @@ func TestScriptStepFromJobMissing(t *testing.T) {
 	}
 }
 
+// envVarValue 从 BuildVar 列表按键取值(缺失返回 ok=false)。
+func envVarValue(vars []pipeline.BuildVar, key string) (string, bool) {
+	for _, v := range vars {
+		if v.Key == key {
+			return v.Value, true
+		}
+	}
+	return "", false
+}
+
+// TestNodeEnvVars 验证节点级环境变量解析(nodeEnvVars)的两个入口与同一套行规则:
+// 画布 config.envVars(多行 KEY=value,空行/# 注释/无 = 行跳过)与 YAML script.env 摊平的
+// config["env"](JSON 对象串;非法 JSON 容错按多行文本解析);两来源并存时 envVars 在后(同名键后者胜)。
+func TestNodeEnvVars(t *testing.T) {
+	if got := nodeEnvVars(nil); got != nil {
+		t.Errorf("nil config → nil, got %v", got)
+	}
+	if got := nodeEnvVars(map[string]any{}); got != nil {
+		t.Errorf("empty config → nil, got %v", got)
+	}
+
+	// 画布口径:空行/注释/无 = 行跳过;key 侧容忍空白;显式空值(KEY=)保留。
+	vars := nodeEnvVars(map[string]any{"envVars": "NPM_TOKEN=abc\n\n# 注释\nBROKEN\nGOSUMDB =off\nEMPTY="})
+	for key, want := range map[string]string{"NPM_TOKEN": "abc", "GOSUMDB": "off", "EMPTY": ""} {
+		if got, ok := envVarValue(vars, key); !ok || got != want {
+			t.Errorf("%s = %q(ok=%v), want %q", key, got, ok, want)
+		}
+	}
+	if len(vars) != 3 {
+		t.Errorf("应只保留 3 条合法行, got %v", vars)
+	}
+
+	// YAML script.env 摊平口径:JSON 对象串(pipelineyaml.jobConfig 的 encodeJSON 产物)。
+	vars = nodeEnvVars(map[string]any{"env": `{"DATABASE_URL":"postgres://x","MODE":"release"}`})
+	for key, want := range map[string]string{"DATABASE_URL": "postgres://x", "MODE": "release"} {
+		if got, ok := envVarValue(vars, key); !ok || got != want {
+			t.Errorf("%s = %q(ok=%v), want %q", key, got, ok, want)
+		}
+	}
+
+	// env 值不是合法 JSON(手工写坏)→ 容错按多行文本解析,不打断。
+	if got, _ := envVarValue(nodeEnvVars(map[string]any{"env": "A=1\nB=2"}), "B"); got != "2" {
+		t.Errorf("env 非法 JSON 应按多行容错解析, B = %q", got)
+	}
+
+	// 两来源并存:envVars 的同名键排在 env 的同名键之后(注入序后者胜)。
+	merged := nodeEnvVars(map[string]any{"env": `{"A":"from-env"}`, "envVars": "A=from-envVars\nB=2"})
+	idxEnv, idxVars := -1, -1
+	for i, v := range merged {
+		switch {
+		case v.Key == "A" && v.Value == "from-env":
+			idxEnv = i
+		case v.Key == "A" && v.Value == "from-envVars":
+			idxVars = i
+		}
+	}
+	if idxEnv < 0 || idxVars < 0 || idxVars < idxEnv {
+		t.Errorf("envVars 同名键应排在 env 之后(后者胜): %v", merged)
+	}
+}
+
+// TestScriptStepFromJobEnvVars 验证脚本类节点的节点级 env(config.envVars / YAML script.env)
+// 装配进 step.Env(与矩阵 axis 变量同列;各执行路径的注入序见 builder.go 统一口径注释)。
+func TestScriptStepFromJobEnvVars(t *testing.T) {
+	jb := pipeline.Job{ID: "j1", Name: "t", Type: "build_nodejs",
+		Config: map[string]any{"image": "node:20", "commands": "npm ci", "envVars": "NPM_CONFIG_REGISTRY=https://r.example.com"}}
+	step, err := scriptStepFromJob(jb)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if got, ok := envVarValue(step.Env, "NPM_CONFIG_REGISTRY"); !ok || got != "https://r.example.com" {
+		t.Errorf("step.Env 缺节点级 envVars, got %v", step.Env)
+	}
+
+	// YAML script.env 摊平形态(config["env"] JSON 串)同样消费。
+	jb2 := pipeline.Job{ID: "j2", Name: "t2", Type: "script",
+		Config: map[string]any{"image": "node:20", "commands": "npm ci", "env": `{"DATABASE_URL":"postgres://x"}`}}
+	step2, err := scriptStepFromJob(jb2)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if got, ok := envVarValue(step2.Env, "DATABASE_URL"); !ok || got != "postgres://x" {
+		t.Errorf("step.Env 缺 YAML script.env, got %v", step2.Env)
+	}
+}
+
 // ─── NewStageExecutor(fake driver,无 Docker)───────────────────────────────────
 
 func TestStageExecutorRunsScriptJobInContainer(t *testing.T) {
@@ -247,6 +333,40 @@ func TestBuildImageJobInjectsPipelineVars(t *testing.T) {
 	}
 	if !strings.Contains(drv.gotTag, "app:abc1234") {
 		t.Errorf("local tag = %q", drv.gotTag)
+	}
+}
+
+// TestBuildImageJobInjectsNodeEnvVars 验证 build_image 节点的节点级 env(config.envVars)注入
+// docker build --build-arg,且同名键排在流水级构建变量之后(docker 后写胜出 = 节点级覆盖流水级)。
+func TestBuildImageJobInjectsNodeEnvVars(t *testing.T) {
+	drv := &buildRecordingDriver{}
+	st := &pipeline.Settings{Build: pipeline.BuildConfig{Vars: []pipeline.BuildVar{{Key: "APP_ENV", Value: "prod"}}}}
+	b := newDAGTestBuilder(drv, &markerCloner{})
+	b.settings = fakeSettings{settings: st}
+
+	rep := &fakeReporter{}
+	proj := &project.Project{ID: "p1", Name: "app", RepoURL: "https://example.com/r.git"}
+	job := pipeline.Job{ID: "j-img", Name: "构建", Type: "build_image",
+		Config: map[string]any{"dockerfilePath": "Dockerfile", "artifactType": "image",
+			"envVars": "APP_ENV=stage\nNPM_MIRROR=https://m.example.com"}}
+	if err := b.runBuildImageJob(context.Background(), &reporterSink{rep: rep}, rep,
+		job, "构建", proj, st, t.TempDir(), "abc1234", imagePushPlan{}); err != nil {
+		t.Fatalf("runBuildImageJob: %v", err)
+	}
+	iPipeline, iNode := -1, -1
+	for i, kv := range drv.gotBuildArgs {
+		switch kv {
+		case "APP_ENV=prod":
+			iPipeline = i
+		case "APP_ENV=stage":
+			iNode = i
+		}
+	}
+	if iPipeline < 0 || iNode < 0 || iNode < iPipeline {
+		t.Errorf("节点级同名键应排在流水级之后(后者胜): %v", drv.gotBuildArgs)
+	}
+	if !strings.Contains(strings.Join(drv.gotBuildArgs, " "), "NPM_MIRROR=https://m.example.com") {
+		t.Errorf("build args 应含节点级变量 NPM_MIRROR, got %v", drv.gotBuildArgs)
 	}
 }
 

@@ -78,6 +78,7 @@ export default {
   fieldRestartPolicyHint: "Comportement de redémarrage après arrêt du conteneur / reboot de l’hôte (comme docker run --restart)",
   fieldEnvVarsLabel: "Variables d’environnement",
   fieldEnvVarsHint: "Une ligne KEY=value par ligne, injectée dans le conteneur (les valeurs peuvent contenir des espaces) ; les lignes commençant par # sont des commentaires ; ne pas écrire de secrets en clair ici",
+  fieldEnvVarsBuildHint: "Une ligne KEY=value par ligne ; injectée en --build-arg pour les builds Dockerfile et en variables d’environnement du conteneur pour les builds toolchain ; ne pas écrire de secrets en clair ici",
   fieldVolumesLabel: "Montages de volume",
   fieldVolumesHint:
     "Une par ligne : chemin conteneur seul (ex. /var/lib/mysql) → un volume nommé persistant est généré automatiquement (même volume après mises à niveau/retours arrière, données conservées) ; formes explicites « rép-hôte:chemin-conteneur » ou « nom-volume:chemin-conteneur » ; ajouter :ro pour la lecture seule",
