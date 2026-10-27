@@ -403,8 +403,13 @@ type service struct {
 	// 新建基域时证书下发链路(certmgmt → 本包)只会推给当时已存在的基域,后建的基域拿不到
 	// 已有证书,靠此钩子在创建后反向拉一次,免手动刷新。
 	certSyncHook func(ctx context.Context) error
-	// serverAddr 把 serverID 解析为网关可达地址(IP;主机名经控制端 DNS 解析后写入 upstream,
-	// 避免 nginx reload 时静态解析失败)。main.go 注入;nil(单测)→ 实例全部跳过渲染。
+	// serverHost 把 serverID 解析为注册时的原始地址(域名原样返回,IP 原样返回):实例池
+	// upstream 成员直接写该地址,域名成员由网关容器自身的 DNS 在 reload 时解析,IP 变化后
+	// 重新 apply 即生效。main.go 注入;nil(单测)→ 回落 serverAddr。
+	serverHost func(ctx context.Context, serverID string) (string, error)
+	// serverAddr 把 serverID 解析为网关可达 IP(控制端 DNS 解析主机名):mesh /32 路由与
+	// 对端目录转发规划用 —— 路由配置只接受 IP,与实例池渲染(用 serverHost)语义不同。
+	// main.go 注入;nil(单测)→ 实例全部跳过渲染、mesh 路由降级。
 	serverAddr func(ctx context.Context, serverID string) (string, error)
 	// fwd 聚跨环境转发(mesh)运行态:对端目录缓存 + 注入的 peer 清单/目录拉取器 + 路由
 	// 对账快照(见 forward.go)。
@@ -417,10 +422,19 @@ func New(db *sql.DB, tg target.Service, vault SecretSealer) *service {
 	return &service{store: NewStore(db), tg: tg, vault: vault}
 }
 
-// SetServerAddrResolver 注入 serverID → 可达地址 解析器(main.go 晚绑:target 查 Host,
-// 主机名再经 net.LookupHost 解析为 IP)。集群反代的地基:upstream 成员必须可静态解析。
+// SetServerAddrResolver 注入 serverID → 可达 IP 解析器(main.go 晚绑:target 查 Host,
+// 主机名再经 net.LookupHost 解析为 IP)。mesh /32 路由与对端目录的地基:路由与转发规划
+// 只接受 IP。
 func (s *service) SetServerAddrResolver(f func(ctx context.Context, serverID string) (string, error)) {
 	s.serverAddr = f
+}
+
+// SetServerHostResolver 注入 serverID → 注册原始地址 解析器(main.go 晚绑:target 查 Host
+// 原样返回,不做 DNS 解析)。实例池 upstream 成员的地基:域名注册的机器写域名,由网关
+// 容器 DNS 在 reload 时解析(IP 变化后重新 apply 即生效);控制端不代解析,避免把会漂移
+// 的 IP 静态烧进配置。未注入时回落 serverAddr(兼容旧装配/单测)。
+func (s *service) SetServerHostResolver(f func(ctx context.Context, serverID string) (string, error)) {
+	s.serverHost = f
 }
 
 // SetMeshForward 注入跨环境转发(mesh)依赖(main.go 晚绑,防包间依赖):
@@ -1295,9 +1309,10 @@ func (s *service) applyWithServer(ctx context.Context, st *Settings, serverID st
 	return applyNginxConf(ctx, s.tg, st, serverID, confLive, confTest)
 }
 
-// resolveInstanceAddrs 解析实例引用到的全部服务器地址(serverID → 可达 IP)。
-// 返回可解析映射 + 被跳过的 attached 实例数(遗留行 server_id=” / 地址解析失败 /
-// 容器实例未发布宿主端口;detached 实例本就不参与渲染,不计入)。
+// resolveInstanceAddrs 解析实例引用到的全部服务器地址(serverID → 注册原始地址:域名/
+// IP 原样,域名成员由网关容器 DNS 在 reload 时解析)。返回可解析映射 + 被跳过的 attached
+// 实例数(遗留行 server_id=” / 地址解析失败 / 容器实例未发布宿主端口;detached 实例本就
+// 不参与渲染,不计入)。未注入 serverHost 时回落 serverAddr(兼容旧装配/单测)。
 func (s *service) resolveInstanceAddrs(ctx context.Context, instances []Instance) (map[string]string, int) {
 	ids := make(map[string]struct{})
 	for _, inst := range instances {
@@ -1308,10 +1323,14 @@ func (s *service) resolveInstanceAddrs(ctx context.Context, instances []Instance
 			ids[inst.ServerID] = struct{}{}
 		}
 	}
+	resolve := s.serverHost
+	if resolve == nil {
+		resolve = s.serverAddr
+	}
 	resolved := make(map[string]string, len(ids))
-	if s.serverAddr != nil {
+	if resolve != nil {
 		for id := range ids {
-			if addr, err := s.serverAddr(ctx, id); err == nil && addr != "" {
+			if addr, err := resolve(ctx, id); err == nil && addr != "" {
 				resolved[id] = addr
 			}
 		}

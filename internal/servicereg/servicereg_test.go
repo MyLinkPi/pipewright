@@ -76,6 +76,27 @@ func TestRenderNginxConfHTTPS(t *testing.T) {
 	}
 }
 
+// TestRenderNginxConfDomainMember 域名注册的服务器:upstream 成员原样写域名(控制端不代
+// 解析成 IP),由网关容器 DNS 在 reload 时解析 —— 动态 IP 变化后重新 apply 即生效。
+func TestRenderNginxConfDomainMember(t *testing.T) {
+	dom := Domain{ID: "d1", BaseDomain: "efg.com", HasCert: false}
+	svc := RegisteredService{ID: "s1", Name: "abc", DomainID: "d1", Protocol: ProtocolHTTP,
+		UpstreamKind: UpstreamKindContainer, Upstream: "web", UpstreamPort: 8080, Enabled: true}
+	insts := []Instance{
+		{ID: "i1", ServiceID: "s1", ServerID: "sv1", Container: "web", Port: 8080, HostPort: 20000, Attached: true},
+		{ID: "i2", ServiceID: "s1", ServerID: "sv2", Container: "web", Port: 8080, HostPort: 20000, Attached: true},
+	}
+	out := renderNginxConf(nginxConfDir, []Domain{dom}, []RegisteredService{svc}, insts,
+		map[string]string{"sv1": "node-a.example.com", "sv2": "192.168.68.247"}, 0, nil, nil).Text()
+
+	if !strings.Contains(out, "server node-a.example.com:20000 max_fails=2 fail_timeout=10s;") {
+		t.Fatalf("域名成员应原样渲染:\n%s", out)
+	}
+	if !strings.Contains(out, "server 192.168.68.247:20000 max_fails=2 fail_timeout=10s;") {
+		t.Fatalf("IP 成员应原样渲染:\n%s", out)
+	}
+}
+
 // TestRenderNginxConfAliases 多子域名:别名 FQDN 与主 FQDN 同一 server 块 server_name
 // (443 vhost 与 80→443 跳转块均多值),文件名与 upstream 命名仍用主 FQDN/主名;
 // 无证书基域同样多值;tcp 服务别名不渲染(stream 不按域名路由)。
@@ -838,7 +859,9 @@ func newTestService(t *testing.T, db *sql.DB) (Service, *fakeTarget) {
 	t.Helper()
 	ft := &fakeTarget{}
 	svc := New(db, ft, fakeSealer{})
-	// 集群渲染测试桩:任意 serverID → 固定可达 IP(apply 级测试渲染实例成员需要)。
+	// 集群渲染测试桩:任意 serverID → 固定注册地址(apply 级测试渲染实例成员需要;
+	// serverHost 是实例池实际走的路径,serverAddr 是 mesh 路径的 IP 解析)。
+	svc.SetServerHostResolver(func(context.Context, string) (string, error) { return "10.9.9.9", nil })
 	svc.SetServerAddrResolver(func(context.Context, string) (string, error) { return "10.9.9.9", nil })
 	return svc, ft
 }
@@ -1576,6 +1599,32 @@ func TestResolveInstanceAddrsSkippedCountsAttachedOnly(t *testing.T) {
 	}
 	if addrs["ok"] != "10.0.0.1" {
 		t.Fatalf("ok 应解析:%v", addrs)
+	}
+}
+
+// TestResolveInstanceAddrsPrefersRawHost 实例池地址用注册原始地址:域名原样返回(serverHost
+// 优先),不由控制端代解析成 IP —— 动态 IP 机器的 upstream 成员写域名,由网关容器 DNS 在
+// reload 时解析。仅注入 serverAddr(旧装配)时回落 IP 解析。
+func TestResolveInstanceAddrsPrefersRawHost(t *testing.T) {
+	s := &service{
+		serverHost: func(_ context.Context, id string) (string, error) {
+			if id == "bad" {
+				return "", errors.New("unreachable")
+			}
+			return "machine1.example.com", nil // 注册原始地址(域名)
+		},
+		serverAddr: func(_ context.Context, _ string) (string, error) { return "10.0.0.1", nil },
+	}
+	instances := []Instance{
+		{ID: "i1", ServerID: "ok", Container: "web", HostPort: 20001, Attached: true},
+		{ID: "i2", ServerID: "bad", Container: "web", HostPort: 20001, Attached: true},
+	}
+	addrs, skipped := s.resolveInstanceAddrs(context.Background(), instances)
+	if skipped != 1 {
+		t.Fatalf("skipped 应 1(i2),得 %d", skipped)
+	}
+	if addrs["ok"] != "machine1.example.com" {
+		t.Fatalf("实例池应写注册域名而非代解析 IP:%v", addrs)
 	}
 }
 
