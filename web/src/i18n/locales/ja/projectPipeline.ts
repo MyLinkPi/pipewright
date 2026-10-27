@@ -42,6 +42,8 @@ export default {
   pacPreviewSetDefault: 'プロジェクトのデフォルトに設定',
   pacPreviewSetDefaultDone: 'プロジェクトのデフォルトファイルに設定しました',
   pacPreviewSetDefaultFailed: 'デフォルトファイルの設定に失敗しました。再試行してください。',
+  pacPreviewSetDefaultSame: 'プロジェクトのデフォルトと同じため、保存不要です',
+  pacPreviewIdle: 'ブランチとパイプラインファイルを確認して「取得して検証」をクリックしてください。',
   pacPreviewVarsTitle: '宣言された変数({count})',
   pacPreviewVarsHint: '値は「変数とキャッシュ」タブで入力します。シークレット変数は Vault 認証情報を参照し、YAML には記述しません。',
   pacVarRequired: '必須',

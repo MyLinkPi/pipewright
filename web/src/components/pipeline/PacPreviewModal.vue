@@ -14,7 +14,7 @@
  * "set as project default" action persists it via PATCH /projects/{id} (emits `saved`).
  * It never reveals secrets.
  */
-import { computed, onMounted, ref } from 'vue'
+import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { previewPacConfig, updateProject, type PacPreviewResult } from '../../api/projects'
 import { HttpError } from '../../api/http'
@@ -93,10 +93,8 @@ async function saveAsDefaultFile(): Promise<void> {
   }
 }
 
-// Auto-run on open against the default branch so the user sees a result immediately.
-onMounted(() => {
-  void runPreview()
-})
+// 不自动拉取:打开弹窗常是为了改文件路径/分支,auto-run 会立刻按默认参数克隆仓库,
+// 既慢又干扰输入。首次结果由用户点击「拉取并校验」触发(空态显示引导提示)。
 </script>
 
 <template>
@@ -118,6 +116,8 @@ onMounted(() => {
       <div class="pp-body">
         <div class="pp-ref-row">
           <label for="pp-ref" class="pp-label">{{ t('projectPipeline.pacPreviewRefLabel') }}</label>
+          <!-- 输入框在拉取期间保持可编辑:参数在点击「拉取并校验」那一刻才读取,auto-run
+               的浅克隆再慢也不锁输入(否则一打开弹窗就灰掉,没法改文件路径)。 -->
           <input
             id="pp-ref"
             v-model="refInput"
@@ -126,7 +126,6 @@ onMounted(() => {
             spellcheck="false"
             autocomplete="off"
             :placeholder="defaultBranch || 'master'"
-            :disabled="busy"
             @keydown.enter.prevent="runPreview"
           />
           <label for="pp-file" class="pp-label">{{ t('projectPipeline.pacPreviewFileLabel') }}</label>
@@ -138,7 +137,6 @@ onMounted(() => {
             spellcheck="false"
             autocomplete="off"
             :placeholder="DEFAULT_PAC_FILE"
-            :disabled="busy"
             @keydown.enter.prevent="runPreview"
           />
           <button class="pp-btn pp-btn--primary" :disabled="busy" @click="runPreview">
@@ -147,9 +145,15 @@ onMounted(() => {
           </button>
         </div>
 
-        <!-- persist the ad-hoc file as the project default -->
-        <div v-if="fileDiffers" class="pp-file-row">
-          <button class="pp-btn pp-btn--ghost" :disabled="savingFile" @click="saveAsDefaultFile">
+        <!-- persist the ad-hoc file as the project default:常驻显示(入口可见),
+             与项目当前配置一致时置灰——不再依赖「先改动才出现」。 -->
+        <div class="pp-file-row">
+          <button
+            class="pp-btn pp-btn--ghost"
+            :disabled="savingFile || !fileDiffers"
+            :title="fileDiffers ? '' : t('projectPipeline.pacPreviewSetDefaultSame')"
+            @click="saveAsDefaultFile"
+          >
             {{ t('projectPipeline.pacPreviewSetDefault') }}
           </button>
           <span v-if="savedFileNote" class="pp-file-note pp-file-note--ok">{{ savedFileNote }}</span>
@@ -209,6 +213,12 @@ onMounted(() => {
             </div>
           </template>
         </template>
+
+        <!-- idle: 尚未拉取(打开弹窗不自动拉取,等用户确认参数) -->
+        <div v-else class="pp-banner pp-banner--idle" role="status">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+          <span>{{ t('projectPipeline.pacPreviewIdle') }}</span>
+        </div>
       </div>
 
       <footer class="pp-foot">
@@ -367,6 +377,12 @@ onMounted(() => {
   background: var(--color-amber-soft, var(--color-inset));
   border-color: var(--color-amber-line, var(--color-border-strong));
   color: var(--color-amber, var(--color-dim));
+}
+
+.pp-banner--idle {
+  background: var(--color-inset);
+  border-color: var(--color-border);
+  color: var(--color-dim);
 }
 
 .pp-banner svg { flex: none; margin-top: 2px; }

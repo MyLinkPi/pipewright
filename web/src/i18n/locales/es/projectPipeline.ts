@@ -42,6 +42,8 @@ export default {
   pacPreviewSetDefault: 'Establecer como archivo predeterminado',
   pacPreviewSetDefaultDone: 'Guardado como archivo predeterminado del proyecto',
   pacPreviewSetDefaultFailed: 'Error al establecer el archivo predeterminado. Reinténtalo.',
+  pacPreviewSetDefaultSame: 'Coincide con el predeterminado del proyecto; nada que guardar',
+  pacPreviewIdle: 'Confirma el ref y el archivo de pipeline, luego pulsa «Obtener y validar».',
   pacPreviewVarsTitle: 'Variables declaradas ({count})',
   pacPreviewVarsHint: 'Rellena sus valores en «Variables y caché»; las variables secretas referencian credenciales del vault y nunca aparecen en el YAML.',
   pacVarRequired: 'obligatorio',

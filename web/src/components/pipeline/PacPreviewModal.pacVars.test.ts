@@ -36,27 +36,42 @@ function mountModal(pacFile = '') {
   })
 }
 
+/** 挂载后手动触发一次拉取(弹窗不自动拉取)。 */
+async function mountAndFetch(pacFile = '', result: unknown = okResult) {
+  previewMock.mockResolvedValue(result)
+  const w = mountModal(pacFile)
+  await nextTick()
+  await w.find('.pp-btn--primary').trigger('click')
+  await nextTick()
+  await nextTick()
+  return w
+}
+
 describe('PacPreviewModal 可指定文件 + 变量声明', () => {
   beforeEach(() => {
     previewMock.mockReset()
     updateProjectMock.mockReset()
   })
 
-  it('文件输入预填项目 pacFile;拉取并校验携带 ref 与 file', async () => {
+  it('打开弹窗不自动拉取:显示空态引导,不发请求', async () => {
     previewMock.mockResolvedValue(okResult)
-    const w = mountModal('ci/pipeline.yml')
+    const w = mountModal()
     await nextTick()
     await nextTick()
 
+    expect(previewMock).not.toHaveBeenCalled()
+    expect(w.find('.pp-banner--idle').text()).toContain('拉取并校验')
+    expect(w.find('.pp-banner--ok').exists()).toBe(false)
+  })
+
+  it('文件输入预填项目 pacFile;点击「拉取并校验」携带 ref 与 file', async () => {
+    const w = await mountAndFetch('ci/pipeline.yml')
     expect((w.find('#pp-file').element as HTMLInputElement).value).toBe('ci/pipeline.yml')
     expect(previewMock).toHaveBeenCalledWith('p1', 'main', 'ci/pipeline.yml')
   })
 
   it('校验通过:渲染变量声明(徽标/描述/默认值)并 emit synced', async () => {
-    previewMock.mockResolvedValue(okResult)
-    const w = mountModal()
-    await nextTick()
-    await nextTick()
+    const w = await mountAndFetch()
 
     const vars = w.findAll('.pp-var')
     expect(vars).toHaveLength(2)
@@ -68,46 +83,54 @@ describe('PacPreviewModal 可指定文件 + 变量声明', () => {
   })
 
   it('校验失败:不 emit synced,展示错误详情', async () => {
-    previewMock.mockResolvedValue({ ...okResult, valid: false, error: 'pipelineyaml: invalid .pipewright.yml: 至少需要一个 stage' })
-    const w = mountModal()
-    await nextTick()
-    await nextTick()
+    const w = await mountAndFetch('', { ...okResult, valid: false, error: 'pipelineyaml: invalid .pipewright.yml: 至少需要一个 stage' })
 
     expect(w.emitted('synced')).toBeFalsy()
     expect(w.find('.pp-error-detail').text()).toContain('至少需要一个 stage')
     expect(w.find('.pp-var').exists()).toBe(false)
   })
 
-  it('临时文件 ≠ 项目默认时显示「设为默认」,点击后 PATCH pacFile 并 emit saved', async () => {
-    previewMock.mockResolvedValue({ ...okResult, file: 'ci/pipeline.yml' })
-    updateProjectMock.mockResolvedValue({})
-    const w = mountModal() // 项目默认 .pipewright.yml
+  it('拉取进行中输入框保持可编辑(改参数不受 in-flight 请求影响)', async () => {
+    let resolveFetch!: (v: unknown) => void
+    previewMock.mockReturnValue(new Promise((res) => { resolveFetch = res }))
+    const w = mountModal()
     await nextTick()
+    await w.find('.pp-btn--primary').trigger('click')
     await nextTick()
 
-    const fileInput = w.find('#pp-file')
-    await fileInput.setValue('ci/pipeline.yml')
-    // 换文件后重新校验一次,让 result.file 与输入一致。
+    // busy 进行中,两个输入框都不应带 disabled。
+    expect(w.find('#pp-ref').attributes('disabled')).toBeUndefined()
+    expect(w.find('#pp-file').attributes('disabled')).toBeUndefined()
+
+    await w.find('#pp-file').setValue('ci/pipeline.yml')
+    expect((w.find('#pp-file').element as HTMLInputElement).value).toBe('ci/pipeline.yml')
+
+    resolveFetch(okResult)
+    await nextTick()
+    await nextTick()
+    expect(w.find('.pp-banner--ok').exists()).toBe(true)
+  })
+
+  it('「设为默认」常驻:与项目默认一致时置灰;改动文件后可点并 PATCH pacFile + emit saved', async () => {
+    const w = await mountAndFetch() // 项目默认 .pipewright.yml
+    const btn = () => w.find('.pp-file-row .pp-btn')
+
+    expect(btn().exists()).toBe(true)
+    expect((btn().element as HTMLButtonElement).disabled).toBe(true) // 与默认一致 → 置灰
+
     previewMock.mockClear()
+    await w.find('#pp-file').setValue('ci/pipeline.yml')
     await w.find('.pp-btn--primary').trigger('click')
     await nextTick()
     await nextTick()
     expect(previewMock).toHaveBeenCalledWith('p1', 'main', 'ci/pipeline.yml')
 
-    expect(w.find('.pp-file-row').exists()).toBe(true)
-    await w.find('.pp-file-row .pp-btn').trigger('click')
+    expect((btn().element as HTMLButtonElement).disabled).toBe(false)
+    await btn().trigger('click')
     await nextTick()
     await nextTick()
 
     expect(updateProjectMock).toHaveBeenCalledWith('p1', { pacFile: 'ci/pipeline.yml' })
     expect(w.emitted('saved')).toBeTruthy()
-  })
-
-  it('文件与项目默认一致时不显示「设为默认」', async () => {
-    previewMock.mockResolvedValue(okResult)
-    const w = mountModal()
-    await nextTick()
-    await nextTick()
-    expect(w.find('.pp-file-row').exists()).toBe(false)
   })
 })
