@@ -418,8 +418,12 @@ func (rt *meshRuntime) reconcile(ctx context.Context) {
 	rt.supervisor = sup
 	rt.supervisorKey = key
 	rt.mu.Unlock()
-	log.Printf("[mesh] EasyTier 托管进程已启动(网络 %s,虚拟 IP %s,peers %d,子网代理 %d)",
-		st.NetworkName, orDash(st.VirtualIP), len(st.Peers), len(proxies))
+	secure := "关"
+	if st.SecureMode {
+		secure = "开(--secure-mode)"
+	}
+	log.Printf("[mesh] EasyTier 托管进程已启动(网络 %s,虚拟 IP %s,peers %d,子网代理 %d,secureMode %s)",
+		st.NetworkName, orDash(st.VirtualIP), len(st.Peers), len(proxies), secure)
 }
 
 func orDash(s string) string {

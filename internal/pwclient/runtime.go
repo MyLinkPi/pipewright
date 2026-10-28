@@ -204,7 +204,7 @@ func (rt *Runtime) reconcile(ctx context.Context) {
 		return
 	}
 
-	key := fmt.Sprintf("%s|%s|%t|%s|%s|%v|%v|%d|%v", cfg.Join.NetworkName, authFingerprint(cfg), cfg.Join.SecureMode,
+	key := fmt.Sprintf("%s|%s|%s|%s|%v|%v|%d|%v", cfg.Join.NetworkName, authFingerprint(cfg),
 		cfg.Join.VirtualIP, rt.hostname(cfg), cfg.Join.Peers, cfg.Routes, socks5Port(cfg), cfg.Socks5.ExitNodes)
 	rt.mu.Lock()
 	unchanged := rt.supervisor != nil && rt.supervisorKey == key
@@ -216,25 +216,7 @@ func (rt *Runtime) reconcile(ctx context.Context) {
 		return
 	}
 
-	sup := easytier.New(easytier.Config{
-		Mode:          "managed",
-		RPCAddr:       cfg.EasyTier.RPCAddr,
-		NetworkName:   cfg.Join.NetworkName,
-		NetworkSecret: cfg.Join.NetworkSecret,
-		Credential:    cfg.Join.Credential,
-		SecureMode:    cfg.Join.SecureMode,
-		VirtualIP:     cfg.Join.VirtualIP,
-		Hostname:      rt.hostname(cfg),
-		Peers:         cfg.Join.Peers,
-		ManualRoutes:  cfg.Routes, // ProxyNetworks 恒空:客户端不通告任何子网
-		// 留空 = 不路由任何通告网段(fail-closed:仅虚拟网互通,要访问哪个网段就显式加入)
-		StrictManualRoutes: true,
-		Socks5Port:         socks5Port(cfg),
-		ExitNodes:          cfg.Socks5.ExitNodes,
-		DataDir:            rt.dataDir,
-		CorePath:           corePath,
-		CliPath:            rt.cliPath,
-	})
+	sup := easytier.New(rt.mainEasyTierConfig(cfg, corePath))
 	if err := sup.Start(context.WithoutCancel(ctx)); err != nil {
 		rt.mu.Lock()
 		if rt.failedKey != key {
@@ -262,9 +244,33 @@ func (rt *Runtime) reconcile(ctx context.Context) {
 	rt.supervisor = sup
 	rt.supervisorKey = key
 	rt.mu.Unlock()
-	log.Printf("[pwclient] EasyTier 已启动(网络 %s,虚拟 IP %s,peers %d,限定网段 %d,socks5 %s,secureMode %s)",
-		cfg.Join.NetworkName, orDHCP(cfg.Join.VirtualIP), len(cfg.Join.Peers), len(cfg.Routes), orOff(socks5Port(cfg)),
-		orOnOff(cfg.Join.SecureMode || cfg.Join.Credential != ""))
+	log.Printf("[pwclient] EasyTier 已启动(网络 %s,虚拟 IP %s,peers %d,限定网段 %d,socks5 %s,secureMode 开(--secure-mode))",
+		cfg.Join.NetworkName, orDHCP(cfg.Join.VirtualIP), len(cfg.Join.Peers), len(cfg.Routes), orOff(socks5Port(cfg)))
+}
+
+// mainEasyTierConfig 组装主实例的 EasyTier 参数(SecureMode 恒 true:客户端始终以
+// 安全模式组网;服务端开启后混合模式的数据包会被丢弃,不存在可用的长期混跑形态,
+// 见 specs/easytier-capability-audit.md 阶段 1)。独立成纯映射便于单测断言参数。
+func (rt *Runtime) mainEasyTierConfig(cfg Config, corePath string) easytier.Config {
+	return easytier.Config{
+		Mode:          "managed",
+		RPCAddr:       cfg.EasyTier.RPCAddr,
+		NetworkName:   cfg.Join.NetworkName,
+		NetworkSecret: cfg.Join.NetworkSecret,
+		Credential:    cfg.Join.Credential,
+		SecureMode:    true,
+		VirtualIP:     cfg.Join.VirtualIP,
+		Hostname:      rt.hostname(cfg),
+		Peers:         cfg.Join.Peers,
+		ManualRoutes:  cfg.Routes, // ProxyNetworks 恒空:客户端不通告任何子网
+		// 留空 = 不路由任何通告网段(fail-closed:仅虚拟网互通,要访问哪个网段就显式加入)
+		StrictManualRoutes: true,
+		Socks5Port:         socks5Port(cfg),
+		ExitNodes:          cfg.Socks5.ExitNodes,
+		DataDir:            rt.dataDir,
+		CorePath:           corePath,
+		CliPath:            rt.cliPath,
+	}
 }
 
 // reconcileProxies 对账多出口代理集合:每条配置(本地端口 + 出口列表)对应一个独立
@@ -279,7 +285,7 @@ func (rt *Runtime) reconcileProxies(ctx context.Context, cfg Config, corePath st
 	desired := map[int]want{}
 	if corePath != "" && cfg.Enabled && cfg.Configured() {
 		for i, p := range cfg.Proxies {
-			key := fmt.Sprintf("%s|%s|%t|%s|%v|%d|%v", cfg.Join.NetworkName, authFingerprint(cfg), cfg.Join.SecureMode,
+			key := fmt.Sprintf("%s|%s|%s|%v|%d|%v", cfg.Join.NetworkName, authFingerprint(cfg),
 				rt.hostname(cfg), cfg.Join.Peers, p.Port, p.ExitNodes)
 			desired[p.Port] = want{idx: i, key: key, port: p.Port}
 		}
@@ -327,7 +333,7 @@ func (rt *Runtime) reconcileProxies(ctx context.Context, cfg Config, corePath st
 			NetworkName:   cfg.Join.NetworkName,
 			NetworkSecret: cfg.Join.NetworkSecret,
 			Credential:    cfg.Join.Credential,
-			SecureMode:    cfg.Join.SecureMode,
+			SecureMode:    true, // 与主实例一致:始终安全模式
 			Hostname:      rt.hostname(cfg) + "-p" + strconv.Itoa(p.Port),
 			Peers:         cfg.Join.Peers,
 			Socks5Port:    p.Port,
@@ -359,15 +365,6 @@ func orOff(port int) string {
 		return "关"
 	}
 	return fmt.Sprintf("127.0.0.1:%d", port)
-}
-
-// orOnOff 是布尔开关的日志展示(启动日志用;便于排查「配置要求 Secure Mode 但实际
-// 未传 --secure-mode」这类模式不一致问题)。
-func orOnOff(v bool) string {
-	if v {
-		return "开(--secure-mode)"
-	}
-	return "关"
 }
 
 func orDHCP(vip string) string {
@@ -490,7 +487,7 @@ type JoinStatus struct {
 	NetworkName   string   `json:"networkName"`
 	HasSecret     bool     `json:"hasSecret"`
 	HasCredential bool     `json:"hasCredential"` // 临时凭据入网(隐含 Secure Mode)
-	SecureMode    bool     `json:"secureMode"`    // 与服务端同步的 Secure Mode 开关
+	SecureMode    bool     `json:"secureMode"`    // 固定 true(客户端始终安全模式)
 	Peers         []string `json:"peers"`
 	VirtualIP     string   `json:"virtualIp"`
 	Hostname      string   `json:"hostname"`
@@ -512,7 +509,7 @@ func (rt *Runtime) Snapshot(ctx context.Context) StatusSnapshot {
 			NetworkName:   cfg.Join.NetworkName,
 			HasSecret:     cfg.Join.NetworkSecret != "",
 			HasCredential: cfg.Join.Credential != "",
-			SecureMode:    cfg.Join.SecureMode,
+			SecureMode:    true, // 客户端固定安全模式(配置不可关闭)
 			Peers:         cfg.Join.Peers,
 			VirtualIP:     cfg.Join.VirtualIP,
 			Hostname:      rt.hostname(cfg),

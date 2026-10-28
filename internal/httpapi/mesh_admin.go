@@ -162,8 +162,8 @@ func mountMeshAdmin(ar chi.Router, d meshAdminDeps) {
 type clientJoinYAML struct {
 	NetworkName   string `yaml:"networkName"`
 	NetworkSecret string `yaml:"networkSecret"`
-	// SecureMode 与导出时本节点的 Secure Mode 保持一致:pwclient 必须同模式组网,
-	// 否则服务端会丢弃旧握手客户端的加密数据包(表现为已连接但访问不了网络)。
+	// SecureMode 记录导出时本节点的 Secure Mode 状态(排障/留档);pwclient 始终以
+	// Secure Mode 接入、不消费该字段。服务端未开启 Secure Mode 时客户端无法接入。
 	SecureMode bool     `yaml:"secureMode"`
 	Peers      []string `yaml:"peers"`
 }
