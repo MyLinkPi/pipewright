@@ -329,6 +329,11 @@ func TestMeshApiTokenEndpoints(t *testing.T) {
 func TestMeshSecureModeSwitchSingleNode(t *testing.T) {
 	srv, meshSvc, _ := setupCredServer(t)
 	enableMesh(t, meshSvc)
+	// 新部署默认 Secure Mode 开启;本用例验证 enable 流程,先显式关闭作为起点。
+	off := false
+	if _, err := meshSvc.SaveSettings(context.Background(), mesh.SaveSettingsInput{SecureMode: &off}); err != nil {
+		t.Fatalf("关闭 Secure Mode: %v", err)
+	}
 	client := newTestClient(t)
 	csrf := loginAs(t, client, srv.URL, "admin", "testpass")
 	do := func(method, path, body string) (int, *http.Response) {
