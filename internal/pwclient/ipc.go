@@ -154,7 +154,7 @@ type joinView struct {
 	NetworkName   string   `json:"networkName"`
 	HasSecret     bool     `json:"hasSecret"`
 	HasCredential bool     `json:"hasCredential"` // 临时凭据入网(内容只写不读)
-	SecureMode    bool     `json:"secureMode"`    // 与服务端同步的 Secure Mode 开关
+	SecureMode    bool     `json:"secureMode"`    // 固定为 true(客户端始终安全模式)
 	Peers         []string `json:"peers"`
 	VirtualIP     string   `json:"virtualIp"`
 	Hostname      string   `json:"hostname"`
@@ -180,7 +180,7 @@ func toConfigView(cfg Config) configView {
 			NetworkName:   cfg.Join.NetworkName,
 			HasSecret:     cfg.Join.NetworkSecret != "",
 			HasCredential: cfg.Join.Credential != "",
-			SecureMode:    cfg.Join.SecureMode,
+			SecureMode:    true, // 客户端固定安全模式(配置不可关闭)
 			Peers:         nonNil(cfg.Join.Peers),
 			VirtualIP:     cfg.Join.VirtualIP,
 			Hostname:      cfg.Join.Hostname,
@@ -225,10 +225,7 @@ type ConfigSetRequest struct {
 	NetworkSecret *string `json:"networkSecret"`
 	// Credential 是临时凭据(EasyTier Secure Mode);写入即切换为凭据入网,非空时
 	// 既有 networkSecret 保留在配置但不再参与认证(buildArgs 凭据优先)。
-	Credential *string `json:"credential"`
-	// SecureMode 与服务端集群对齐(Secure Mode 开关);缺省 nil = 不改。服务端切换后
-	// 优先重新导入平台导出配置(自动携带),此字段供手工对齐/排障。
-	SecureMode        *bool          `json:"secureMode"`
+	Credential        *string        `json:"credential"`
 	Peers             *[]string      `json:"peers"`
 	VirtualIP         *string        `json:"virtualIp"`
 	Hostname          *string        `json:"hostname"`
@@ -267,9 +264,6 @@ func (s *ipcServer) handleConfigPut(w http.ResponseWriter, r *http.Request) {
 	}
 	if body.Credential != nil && *body.Credential != "" {
 		cfg.Join.Credential = *body.Credential
-	}
-	if body.SecureMode != nil {
-		cfg.Join.SecureMode = *body.SecureMode
 	}
 	if body.Peers != nil {
 		cfg.Join.Peers = *body.Peers

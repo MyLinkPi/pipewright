@@ -28,20 +28,17 @@ var ErrInvalidConfig = errors.New("pwclient: invalid config")
 // JoinConfig 是加入集群的组网参数(与平台「导出客户端配置」文件的 join 段对齐)。
 // 认证二选一:NetworkSecret(长期凭据,正式成员)或 Credential(临时凭据,Secure Mode
 // 签发;过期/撤销后需重新导入)。两者都有时凭据优先。
+//
+// 注:客户端始终以 Secure Mode 组网(--secure-mode),不接受配置关闭。服务端 Secure
+// Mode 开启后混合模式会丢数据包(握手成功但访问不了网络);平台导出文件里的
+// secureMode 字段仅记录服务端状态,客户端不消费(旧配置里的 false 会被忽略)。
 type JoinConfig struct {
-	NetworkName   string `yaml:"networkName"`
-	NetworkSecret string `yaml:"networkSecret"` // 明文落盘(0600);绝不入日志/状态回显
-	// Credential 是 EasyTier 临时凭据(base64 私钥,平台「临时凭据」签发):临时设备
-	// 入网用,隐含 Secure Mode。明文落盘(0600)同密钥纪律;过期/被撤销即失联,重新签发导入。
-	Credential string `yaml:"credential"`
-	// SecureMode 与服务端集群保持同一模式:服务端开启 Secure Mode 后,本机也必须以
-	// --secure-mode 组网 —— 混合模式下旧握手仍可成功(对端显示在线),但服务端会丢弃
-	// 旧加密数据包,表现为「连上了却访问不了网络」。由平台导出文件携带;服务端切换
-	// Secure Mode 后须重新导出并导入客户端配置(Credential 形态隐含开启,不受此字段影响)。
-	SecureMode bool     `yaml:"secureMode"`
-	Peers      []string `yaml:"peers"`     // 至少一个公网可达的对端地址(如 tcp://IP:11010)
-	VirtualIP  string   `yaml:"virtualIp"` // 空 = DHCP 自动分配
-	Hostname   string   `yaml:"hostname"`  // 空 = 计算机名
+	NetworkName   string   `yaml:"networkName"`
+	NetworkSecret string   `yaml:"networkSecret"` // 明文落盘(0600);绝不入日志/状态回显
+	Credential    string   `yaml:"credential"`    // 临时凭据入网(隐含 Secure Mode)
+	Peers         []string `yaml:"peers"`         // 至少一个公网可达的对端地址(如 tcp://IP:11010)
+	VirtualIP     string   `yaml:"virtualIp"`     // 空 = DHCP 自动分配
+	Hostname      string   `yaml:"hostname"`      // 空 = 计算机名
 }
 
 // EasyTierConfig 是 easytier 二进制定位与本地 RPC 状态口。

@@ -7,8 +7,6 @@ import (
 	"runtime"
 	"strings"
 	"testing"
-
-	"github.com/huangchengsir/pipewright/internal/mesh/easytier"
 )
 
 func TestNormalizeValidatesAndFillsDefaults(t *testing.T) {
@@ -62,7 +60,7 @@ func TestStoreRoundtrip(t *testing.T) {
 
 	in := Config{
 		Enabled: true,
-		Join: JoinConfig{NetworkName: "prod", NetworkSecret: "s3cr3t", SecureMode: true,
+		Join: JoinConfig{NetworkName: "prod", NetworkSecret: "s3cr3t",
 			Peers: []string{"tcp://10.0.0.1:11010"}, Hostname: "my-pc"},
 		Routes: []string{"192.168.30.0/24"},
 	}
@@ -76,9 +74,6 @@ func TestStoreRoundtrip(t *testing.T) {
 	if !out.Enabled || out.Join.NetworkName != "prod" || out.Join.NetworkSecret != "s3cr3t" ||
 		len(out.Join.Peers) != 1 || len(out.Routes) != 1 || !out.Configured() {
 		t.Fatalf("roundtrip mismatch: %+v", out)
-	}
-	if !out.Join.SecureMode {
-		t.Fatal("secureMode 应随配置持久化")
 	}
 	// 0600 权限(含明文密钥)。Windows/NTFS 不映射 Unix 权限位,仅非 Windows 校验。
 	if runtime.GOOS != "windows" {
@@ -112,10 +107,7 @@ func TestImportExport(t *testing.T) {
 	if join.NetworkName != "prod-net" || join.NetworkSecret != "topsecret" || len(join.Peers) != 2 {
 		t.Fatalf("join mismatch: %+v", join)
 	}
-	// secureMode 必须随导出文件导入(服务端 Secure Mode 开启时客户端同模式才通数据)。
-	if !join.SecureMode {
-		t.Fatal("secureMode 未随导出文件导入")
-	}
+	// secureMode 字段客户端不消费(始终安全模式),导出文件带该字段也不影响导入。
 	if len(routes) != 2 || meta.From != "node-a" || meta.PlatformVersion != "v1.2.3" {
 		t.Fatalf("routes/meta mismatch: %v %+v", routes, meta)
 	}
@@ -198,29 +190,64 @@ routes:
 	}
 }
 
-// TestExportToEasyTierArgsSecureMode 端到端验证:平台导出 YAML(secureMode: true)经
-// 客户端导入后,最终生成的 easytier 参数必须显式包含 --secure-mode true —— 这是
-// 「服务端开启 Secure Mode 后客户端仍以旧模式组网、数据面被丢弃」的修复闭环。
-func TestExportToEasyTierArgsSecureMode(t *testing.T) {
-	join, _, _, err := ImportExport([]byte(exportSample))
-	if err != nil {
-		t.Fatalf("import: %v", err)
+// TestClientArgsAlwaysSecureMode 验证客户端固定安全模式:无论导入文件是否带
+// secureMode、写 true 还是写 false,主实例参数都必须含 --secure-mode true。
+// 服务端开启 Secure Mode 后,旧模式客户端会握手成功但数据包被丢弃 —— 配置不允许关闭。
+func TestClientArgsAlwaysSecureMode(t *testing.T) {
+	cases := map[string]string{
+		"无字段": `join:
+  networkName: n
+  networkSecret: s
+  peers:
+    - tcp://1.1.1.1:11010
+`,
+		"显式 false": `join:
+  networkName: n
+  networkSecret: s
+  secureMode: false
+  peers:
+    - tcp://1.1.1.1:11010
+`,
+		"显式 true": `join:
+  networkName: n
+  networkSecret: s
+  secureMode: true
+  peers:
+    - tcp://1.1.1.1:11010
+`,
+		"临时凭据": `join:
+  networkName: n
+  credential: CRED
+  peers:
+    - tcp://1.1.1.1:11010
+`,
 	}
-	cfg := easytier.Config{
-		NetworkName:   join.NetworkName,
-		NetworkSecret: join.NetworkSecret,
-		Credential:    join.Credential,
-		SecureMode:    join.SecureMode,
-		Hostname:      "client",
-		RPCAddr:       "127.0.0.1:15889",
+	dir := t.TempDir()
+	rt := NewRuntime(&Store{Path: filepath.Join(dir, "config.yaml")}, dir)
+	rt.newDownloader = nil
+	for name, raw := range cases {
+		t.Run(name, func(t *testing.T) {
+			join, _, _, err := ImportExport([]byte(raw))
+			if err != nil {
+				t.Fatalf("import: %v", err)
+			}
+			cfg := Config{Enabled: true, Join: join, EasyTier: EasyTierConfig{RPCAddr: "127.0.0.1:15889"}}
+			args := rt.mainEasyTierConfig(cfg, "").Args()
+			if !hasSecureModeArg(args) {
+				t.Fatalf("配置 %q 下未生成 --secure-mode true:%v", name, args)
+			}
+		})
 	}
-	args := cfg.Args()
+}
+
+// hasSecureModeArg 报告参数里是否带 --secure-mode true。
+func hasSecureModeArg(args []string) bool {
 	for i := 0; i+1 < len(args); i++ {
 		if args[i] == "--secure-mode" && args[i+1] == "true" {
-			return
+			return true
 		}
 	}
-	t.Fatalf("导入 secureMode: true 后未能生成 --secure-mode true:%v", args)
+	return false
 }
 
 func TestRuntimeImportJoin(t *testing.T) {
@@ -242,9 +269,6 @@ func TestRuntimeImportJoin(t *testing.T) {
 	}
 	if !cfg.Enabled || cfg.Join.NetworkName != "prod-net" || cfg.Join.NetworkSecret != "topsecret" {
 		t.Fatalf("join not replaced: %+v", cfg)
-	}
-	if !cfg.Join.SecureMode {
-		t.Fatal("导入后 secureMode 应随配置落盘")
 	}
 	if len(cfg.Routes) != 2 { // 10.5.0.0/16(既有)+ 192.168.30.0/24(导出)
 		t.Fatalf("routes union: %v", cfg.Routes)
