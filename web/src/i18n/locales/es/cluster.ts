@@ -203,7 +203,7 @@ export default {
     switchAllowed: "Permitir entregarme instrucciones de cambio global de Secure Mode",
     swTitle: "Secure Mode (conmutador de todo el clúster)",
     swHint:
-      "Activa autenticación reforzada entre nodos; móviles y otros dispositivos temporales entran con credenciales temporales (sin entregar el secreto de red). Los miembros con secreto siguen igual. El conmutador es un cambio simultáneo en dos fases: entrega, cada nodo acusa recibo y todos aplican en el momento acordado, evitando escisión. El nodo iniciador necesita el permiso de cambio en la ACL de cada par.",
+      "Activa autenticación reforzada entre nodos; móviles y otros dispositivos temporales entran con credenciales temporales (sin entregar el secreto de red). Los miembros con secreto deben usar el mismo modo: pwclient también debe activar Secure Mode; tras el cambio, reexporta e importa de nuevo la configuración del cliente (un modo mixto muestra conectado pero no pasa tráfico). El conmutador es un cambio simultáneo en dos fases: entrega, cada nodo acusa recibo y todos aplican en el momento acordado, evitando escisión. El nodo iniciador necesita el permiso de cambio en la ACL de cada par.",
     swOn: "Activado",
     swOff: "Desactivado",
     swPendingAction: "En curso: {action}",
@@ -224,7 +224,7 @@ export default {
     swEnableTitle: "¿Activar Secure Mode en todo el clúster?",
     swDisableTitle: "¿Desactivar Secure Mode en todo el clúster?",
     swConfirmBody:
-      "La instrucción se entrega a todos los nodos en línea; cuando todos acusan recibo, aplican simultáneamente en ~{min} minutos (EasyTier se reinicia por nodo; parpadeo de red de segundos). Puede abortar antes de que surta efecto.",
+      "La instrucción se entrega a todos los nodos en línea; cuando todos acusan recibo, aplican simultáneamente en ~{min} minutos (EasyTier se reinicia por nodo; parpadeo de red de segundos). Puede abortar antes de que surta efecto. Los clientes pwclient deben reimportar la configuración exportada después para alinearse con el modo.",
     swConfirmLabel: "Entregar",
     credTitle: "Credenciales temporales",
     credHint:

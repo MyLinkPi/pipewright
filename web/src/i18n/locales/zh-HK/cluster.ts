@@ -196,7 +196,7 @@ export default {
     switchAllowed: "允許向我下發 Secure Mode 統一切換指令",
     swTitle: "Secure Mode(全集群統一開關)",
     swHint:
-      "開啟後節點間啟用增強認證,手機等臨時裝置可用「臨時憑證」入網(免發網路密鑰);網路密鑰成員照常接入。開關為兩階段齊切:指令下發→各節點確認→約定時刻同時生效,避免混跑分裂。發起節點須先獲各對端授權單的「統一切換」授權。",
+      "開啟後節點間啟用增強認證,手機等臨時裝置可用「臨時憑證」入網(免發網路密鑰);網路密鑰成員須以同模式接入 —— 用戶端(pwclient)也須開啟 Secure Mode,切換後請重新匯出並匯入用戶端設定(模式不一致會顯示已連線但存取不了網路)。開關為兩階段齊切:指令下發→各節點確認→約定時刻同時生效,避免混跑分裂。發起節點須先獲各對端授權單的「統一切換」授權。",
     swOn: "已開啟",
     swOff: "未開啟",
     swPendingAction: "進行中:{action}",
@@ -217,7 +217,7 @@ export default {
     swEnableTitle: "全集群開啟 Secure Mode?",
     swDisableTitle: "全集群關閉 Secure Mode?",
     swConfirmBody:
-      "指令將下發到全部線上節點,全員確認後約 {min} 分鐘同時生效(生效時各節點 EasyTier 重啟,網路秒級抖動)。生效前可撤銷。",
+      "指令將下發到全部線上節點,全員確認後約 {min} 分鐘同時生效(生效時各節點 EasyTier 重啟,網路秒級抖動)。生效前可撤銷。用戶端(pwclient)須在切換後重新匯入匯出設定以對齊模式。",
     swConfirmLabel: "確認下發",
     credTitle: "臨時憑證",
     credHint:

@@ -204,7 +204,7 @@ func (rt *Runtime) reconcile(ctx context.Context) {
 		return
 	}
 
-	key := fmt.Sprintf("%s|%s|%s|%s|%v|%v|%d|%v", cfg.Join.NetworkName, authFingerprint(cfg),
+	key := fmt.Sprintf("%s|%s|%t|%s|%s|%v|%v|%d|%v", cfg.Join.NetworkName, authFingerprint(cfg), cfg.Join.SecureMode,
 		cfg.Join.VirtualIP, rt.hostname(cfg), cfg.Join.Peers, cfg.Routes, socks5Port(cfg), cfg.Socks5.ExitNodes)
 	rt.mu.Lock()
 	unchanged := rt.supervisor != nil && rt.supervisorKey == key
@@ -222,6 +222,7 @@ func (rt *Runtime) reconcile(ctx context.Context) {
 		NetworkName:   cfg.Join.NetworkName,
 		NetworkSecret: cfg.Join.NetworkSecret,
 		Credential:    cfg.Join.Credential,
+		SecureMode:    cfg.Join.SecureMode,
 		VirtualIP:     cfg.Join.VirtualIP,
 		Hostname:      rt.hostname(cfg),
 		Peers:         cfg.Join.Peers,
@@ -277,7 +278,7 @@ func (rt *Runtime) reconcileProxies(ctx context.Context, cfg Config, corePath st
 	desired := map[int]want{}
 	if corePath != "" && cfg.Enabled && cfg.Configured() {
 		for i, p := range cfg.Proxies {
-			key := fmt.Sprintf("%s|%s|%s|%v|%d|%v", cfg.Join.NetworkName, authFingerprint(cfg),
+			key := fmt.Sprintf("%s|%s|%t|%s|%v|%d|%v", cfg.Join.NetworkName, authFingerprint(cfg), cfg.Join.SecureMode,
 				rt.hostname(cfg), cfg.Join.Peers, p.Port, p.ExitNodes)
 			desired[p.Port] = want{idx: i, key: key, port: p.Port}
 		}
@@ -325,6 +326,7 @@ func (rt *Runtime) reconcileProxies(ctx context.Context, cfg Config, corePath st
 			NetworkName:   cfg.Join.NetworkName,
 			NetworkSecret: cfg.Join.NetworkSecret,
 			Credential:    cfg.Join.Credential,
+			SecureMode:    cfg.Join.SecureMode,
 			Hostname:      rt.hostname(cfg) + "-p" + strconv.Itoa(p.Port),
 			Peers:         cfg.Join.Peers,
 			Socks5Port:    p.Port,
@@ -478,6 +480,7 @@ type JoinStatus struct {
 	NetworkName   string   `json:"networkName"`
 	HasSecret     bool     `json:"hasSecret"`
 	HasCredential bool     `json:"hasCredential"` // 临时凭据入网(隐含 Secure Mode)
+	SecureMode    bool     `json:"secureMode"`    // 与服务端同步的 Secure Mode 开关
 	Peers         []string `json:"peers"`
 	VirtualIP     string   `json:"virtualIp"`
 	Hostname      string   `json:"hostname"`
@@ -499,6 +502,7 @@ func (rt *Runtime) Snapshot(ctx context.Context) StatusSnapshot {
 			NetworkName:   cfg.Join.NetworkName,
 			HasSecret:     cfg.Join.NetworkSecret != "",
 			HasCredential: cfg.Join.Credential != "",
+			SecureMode:    cfg.Join.SecureMode,
 			Peers:         cfg.Join.Peers,
 			VirtualIP:     cfg.Join.VirtualIP,
 			Hostname:      rt.hostname(cfg),

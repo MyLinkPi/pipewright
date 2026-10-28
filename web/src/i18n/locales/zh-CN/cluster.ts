@@ -196,7 +196,7 @@ export default {
     switchAllowed: "允许向我下发 Secure Mode 统一切换指令",
     swTitle: "Secure Mode(全集群统一开关)",
     swHint:
-      "开启后节点间启用增强认证,手机等临时设备可用「临时凭据」入网(免发网络密钥);网络密钥成员照常接入。开关为两阶段齐切:指令下发→各节点确认→约定时刻同时生效,避免混跑分裂。发起节点须先获各对端授权单的「统一切换」授权。",
+      "开启后节点间启用增强认证,手机等临时设备可用「临时凭据」入网(免发网络密钥);网络密钥成员须以同模式接入 —— 客户端(pwclient)也须开启 Secure Mode,切换后请重新导出并导入客户端配置(模式不一致会显示已连接但访问不了网络)。开关为两阶段齐切:指令下发→各节点确认→约定时刻同时生效,避免混跑分裂。发起节点须先获各对端授权单的「统一切换」授权。",
     swOn: "已开启",
     swOff: "未开启",
     swPendingAction: "进行中:{action}",
@@ -217,7 +217,7 @@ export default {
     swEnableTitle: "全集群开启 Secure Mode?",
     swDisableTitle: "全集群关闭 Secure Mode?",
     swConfirmBody:
-      "指令将下发到全部在线节点,全员确认后约 {min} 分钟同时生效(生效时各节点 EasyTier 重启,网络秒级抖动)。生效前可撤销。",
+      "指令将下发到全部在线节点,全员确认后约 {min} 分钟同时生效(生效时各节点 EasyTier 重启,网络秒级抖动)。生效前可撤销。客户端(pwclient)须在切换后重新导入导出配置以对齐模式。",
     swConfirmLabel: "确认下发",
     credTitle: "临时凭据",
     credHint:

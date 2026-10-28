@@ -91,6 +91,49 @@ func TestBuildArgs(t *testing.T) {
 	assertFlagAbsent(t, got, "--socks5", "socks5 关闭时不应传参")
 }
 
+// TestBuildArgsSecureModeAuthForms 验证 Secure Mode 与两种入网认证组合的传参:
+// 长期密钥形态显式 --secure-mode true;凭据形态由 --credential 隐含(同样带
+// --secure-mode),且两种形态都只出现一次(重复布尔旗子会被 clap 拒绝)。服务端开启
+// Secure Mode 后客户端必须同模式,否则数据面会被对端丢弃。
+func TestBuildArgsSecureModeAuthForms(t *testing.T) {
+	flags := helpFlags{}
+
+	// 长期密钥 + Secure Mode。
+	got := buildArgs(Config{NetworkName: "net", RPCAddr: "127.0.0.1:15888", Hostname: "h1",
+		NetworkSecret: "sec", SecureMode: true}, flags)
+	if !containsPair(got, "--secure-mode", "true") {
+		t.Fatalf("长期密钥形态应传 --secure-mode true:%v", got)
+	}
+	if n := countFlag(got, "--secure-mode"); n != 1 {
+		t.Fatalf("--secure-mode 应恰好出现一次,got %d:%v", n, got)
+	}
+
+	// 凭据形态:隐含 Secure Mode,不重复追加。
+	got = buildArgs(Config{NetworkName: "net", RPCAddr: "127.0.0.1:15888", Hostname: "h1",
+		Credential: "CRED", SecureMode: true}, flags)
+	if !containsPair(got, "--secure-mode", "true") || !containsPair(got, "--credential", "CRED") {
+		t.Fatalf("凭据形态应传 --secure-mode true 与 --credential:%v", got)
+	}
+	if n := countFlag(got, "--secure-mode"); n != 1 {
+		t.Fatalf("凭据形态 --secure-mode 不应重复,got %d:%v", n, got)
+	}
+
+	// 未开启:不传参(兼容尚未切换 Secure Mode 的服务端)。
+	got = buildArgs(Config{NetworkName: "net", RPCAddr: "127.0.0.1:15888", Hostname: "h1",
+		NetworkSecret: "sec"}, flags)
+	assertFlagAbsent(t, got, "--secure-mode", "未开启 Secure Mode 时不应传参")
+}
+
+func countFlag(args []string, flag string) int {
+	n := 0
+	for _, a := range args {
+		if a == flag {
+			n++
+		}
+	}
+	return n
+}
+
 func assertFlagAbsent(t *testing.T, args []string, flag, msg string) {
 	t.Helper()
 	for _, a := range args {

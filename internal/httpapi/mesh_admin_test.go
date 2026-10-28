@@ -8,9 +8,12 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 
 	"github.com/huangchengsir/pipewright/internal/artifactstore"
 	"github.com/huangchengsir/pipewright/internal/auth"
@@ -108,5 +111,57 @@ func TestMeshOverviewExcludesSelf(t *testing.T) {
 	}
 	if p := out.Peers[0]; !p.Online || p.LinkType != "p2p" || p.Latency != 5 {
 		t.Fatalf("beta 行状态错误(应在线 p2p 5ms):%+v", p)
+	}
+}
+
+// TestMeshClientConfigExportSecureMode 验证导出文件携带 Secure Mode 开关:
+// pwclient 必须与服务端同模式组网,否则旧握手客户端虽显示在线但数据面被丢弃。
+func TestMeshClientConfigExportSecureMode(t *testing.T) {
+	srv, meshSvc, _ := setupCredServer(t)
+	ctx := context.Background()
+	enabled, name, secret := true, "prod-net", "topsecret"
+	peers := []string{"tcp://1.2.3.4:11010"}
+
+	save := func(secure bool) {
+		t.Helper()
+		if _, err := meshSvc.SaveSettings(ctx, mesh.SaveSettingsInput{
+			Enabled: &enabled, SecureMode: &secure, NetworkName: &name,
+			NetworkSecret: &secret, Peers: &peers,
+		}); err != nil {
+			t.Fatalf("save settings(secure=%t): %v", secure, err)
+		}
+	}
+	// 登录一次,后续复用会话 cookie。
+	client := newTestClient(t)
+	_ = loginAs(t, client, srv.URL, "admin", "testpass")
+
+	fetch := func() clientConfigExport {
+		t.Helper()
+		resp, err := client.Get(srv.URL + "/api/mesh/client-config")
+		if err != nil {
+			t.Fatalf("export: %v", err)
+		}
+		defer resp.Body.Close()
+		raw, _ := io.ReadAll(resp.Body)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("export status = %d: %s", resp.StatusCode, raw)
+		}
+		var doc clientConfigExport
+		if err := yaml.Unmarshal(raw, &doc); err != nil {
+			t.Fatalf("decode yaml: %v\n%s", err, raw)
+		}
+		return doc
+	}
+
+	save(true)
+	doc := fetch()
+	if !doc.Join.SecureMode || doc.Join.NetworkName != name || doc.Join.NetworkSecret != secret {
+		t.Fatalf("开启 Secure Mode 导出异常:%+v", doc.Join)
+	}
+
+	// 关闭后导出也应同步为 false(客户端据此回到旧模式,避免错误开启后连不上旧服务端)。
+	save(false)
+	if doc := fetch(); doc.Join.SecureMode {
+		t.Fatalf("关闭 Secure Mode 后导出仍为 true:%+v", doc.Join)
 	}
 }
