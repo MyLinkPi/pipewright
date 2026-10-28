@@ -62,6 +62,19 @@ npm ci
 npm run dev
 ```
 
+集群客户端前端(pwclient)/ Cluster client UI:
+
+```bash
+# 终端1:起真实后端界面服务(临时数据目录,仅打印带令牌的地址)
+PIPEWRIGHT_CLIENT_DATA=$(mktemp -d) go run ./cmd/pwclient ui --no-open --ui-listen 127.0.0.1:18080
+# 终端2:客户端前端热更新(/api、/local 代理到 :18080)
+cd webclient && npm ci && npm run dev
+```
+
+构建产物落到 `internal/pwclient/uiserver/dist`(由 `go:embed` 嵌入二进制,构建产物不入库;
+纯后端流程由 `make client-web-stub` 生成占位)。Windows 客户端 `make build-client`,
+三平台 `make build-client-all`。
+
 ---
 
 ## 提交前自检 / Pre-submit checklist
@@ -86,6 +99,16 @@ npm run typecheck
 npm run test        # vitest
 # 视改动跑端到端 / run when relevant:
 npm run e2e         # playwright
+```
+
+**客户端前端 / Client UI**(在 `webclient/` 下 / from `webclient/`)
+
+```bash
+npm run lint
+npm run typecheck
+npm run test        # vitest
+# 端到端(Linux;起真实客户端 + Playwright)/ e2e on Linux:
+make client-e2e
 ```
 
 ---

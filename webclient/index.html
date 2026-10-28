@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark light" />
+    <title>pipewright 集群客户端</title>
+    <script>
+      // 必须在任何模块脚本之前取走 URL 里的界面令牌(query 优先,兼容 fragment):
+      // Vue Router 的 createWebHashHistory 会在模块求值时把 hash 当作路由并重写。
+      // 读入后立即 replaceState 清理地址栏;服务端不记录请求行,令牌只对本机有效。
+      ;(function () {
+        var token = new URLSearchParams(location.search).get('t')
+        if (!token) {
+          var matched = location.hash.match(/(?:^#|&)t=([^&]+)/)
+          if (matched) token = decodeURIComponent(matched[1])
+        }
+        if (!token) return
+        sessionStorage.setItem('pw_ui_token', token)
+        history.replaceState(null, '', location.pathname)
+      })()
+    </script>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="./src/main.ts"></script>
+  </body>
+</html>

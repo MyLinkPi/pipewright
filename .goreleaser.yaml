@@ -17,6 +17,8 @@ before:
     - bash scripts/fetch-easytier.sh
     # 前端先构建,供 go:embed(web/dist)。各架构二进制共享同一份与平台无关的前端产物。
     - bash -c "cd web && npm ci && npm run build"
+    # 客户端前端(webclient/ → internal/pwclient/uiserver/dist),随 pwclient 二进制嵌入。
+    - bash -c "cd webclient && npm ci && npm run build"
 
 builds:
   - id: pipewright
@@ -59,6 +61,8 @@ builds:
       - -X github.com/huangchengsir/pipewright/internal/version.Version={{ .Version }}
       - -X github.com/huangchengsir/pipewright/internal/version.Commit={{ .ShortCommit }}
       - -X github.com/huangchengsir/pipewright/internal/version.Date={{ .CommitDate }}
+      # 与后端同款:升级检查/下载渠道跟随构建仓库,fork 发版自洽(未注入时回落硬编码)。
+      - -X github.com/huangchengsir/pipewright/internal/version.DefaultRepo={{ .Env.RELEASE_REPO }}
 
 archives:
   - id: default

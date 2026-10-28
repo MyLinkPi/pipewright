@@ -4,9 +4,11 @@
 
 为已安装的 Win11 集群客户端 `pwclient` 增加「检查更新 + 一键升级」能力:
 
-- **升级源**:复用 `internal/version` 的 GitHub Releases 检查/下载/镜像机制
-  (`PIPEWRIGHT_RELEASE_MIRROR`),下载 goreleaser 产出的
+- **升级源**:复用 `internal/version` 的 GitHub Releases 检查/下载机制,下载 goreleaser 产出的
   `pwclient_<版本>_windows_<arch>.zip`,用同版本 `checksums.txt` 做 sha256 硬校验。
+  **未配置镜像时,GitHub 不可达自动回退到 `https://gh-proxy.com/https://github.com`**
+  (前缀式代理,现有 `splitPrefixProxy` 已支持),用户无需配置任何环境变量;
+  显式配置了 `PIPEWRIGHT_RELEASE_MIRROR` 则只走该镜像,不再泄漏到公共代理。
 - **执行方式(已确认)**:托盘点「升级」经 UAC 提权启动**独立** `pwclient upgrade` 进程;
   该进程停服务 → 旧 exe 改名让位 → 落地新 exe 与随包 EasyTier `bin/` → 重启服务。
   (Windows 不能覆盖正在运行的 exe,用「同目录改名 + 写入原路径」的标准自更新手法。)
@@ -24,7 +26,9 @@
 - 版本与升级源:[update.go](file:///home/xufan/trea_project/pipewright/internal/version/update.go)
   的 `Checker.Check` 已支持 GitHub API + 重定向兜底 + 15 分钟缓存 + 镜像;
   [source.go](file:///home/xufan/trea_project/pipewright/internal/version/source.go) 的
-  `ResolveSource("")` 统一解析 `PIPEWRIGHT_RELEASE_MIRROR`;
+  `ResolveSource("")` 统一解析 `PIPEWRIGHT_RELEASE_MIRROR`,且 `splitPrefixProxy` 已能把
+  `https://gh-proxy.com/https://github.com` 这类前缀式代理拆成 API/网页/下载三个 base。
+  **但当前只解析出「单一源」**:未配置镜像时只有 GitHub 官方,不可达即失败,没有自动回退。
   [selfupdate.go](file:///home/xufan/trea_project/pipewright/internal/version/selfupdate.go) 的
   `ApplyBinaryUpdate` 只处理 **pipewright** 的 tar.gz 且仅 linux/darwin 可自替换,不能用于 pwclient。
 - 客户端安装形态:[svc_windows.go](file:///home/xufan/trea_project/pipewright/cmd/pwclient/svc_windows.go)
@@ -43,36 +47,56 @@
 
 ## 修改方案(Proposed Changes)
 
-### 1. `internal/version/update.go`:测试可注入的 Checker 构造
+### 1. `internal/version`:多源候选 + 自动回退 + 测试接缝
 
-新增(仅测试接缝,行为与 `NewChecker` 一致):
+[source.go](file:///home/xufan/trea_project/pipewright/internal/version/source.go):
 
 ```go
-func NewCheckerWithClient(client *http.Client) *Checker
+// FallbackPrefixProxy 是未配置镜像时 GitHub 不可达的公共前缀式代理兜底。
+const FallbackPrefixProxy = "https://gh-proxy.com/https://github.com"
+
+// CandidateSources 返回本次升级按序尝试的源:
+//   - 显式配置了镜像(config/env)→ 仅该镜像(尊重用户选择,不回落公共代理);
+//   - 未配置 → GitHub 官方,其次 FallbackPrefixProxy。
+func CandidateSources(mirror string) []Source
 ```
 
-`NewUpgrader` 默认 `version.NewChecker()`;单测经 `SourceProvider` + 该构造把检查/下载指向
-`httptest`。
+[update.go](file:///home/xufan/trea_project/pipewright/internal/version/update.go):
+
+```go
+func NewCheckerWithClient(client *http.Client) *Checker   // 测试注入,行为同 NewChecker
+func (c *Checker) CheckSource(ctx context.Context, src Source) UpdateInfo // 现有 Check 主体拆出
+func (c *Checker) CheckAny(ctx context.Context, sources []Source) UpdateInfo
+```
+
+- `Check` 改为 `CheckSource(ctx, c.src(ctx))`,行为/缓存(key = APIBase+Repo)不变;
+- `CheckAny` 按序调用 `CheckSource`:**首个 `CheckError == ""` 的结果即返回**
+  (含「源上暂无 release」的 404 成功态);全部失败返回最后一个结果(保留可读错误)。
+  网络不可达/限流 403 会自然落到下一个候选源。
 
 ### 2. 新增 `internal/pwclient/upgrade.go`(平台无关、可单测)
 
 - `ErrUpgrade` 哨兵 + 包内注释(下载/校验/解包/落位语义)。
 - `type Upgrader struct`:
   - `Checker *version.Checker`
-  - `Source func(context.Context) version.Source`
+  - `Sources func(context.Context) []version.Source`(默认 `version.CandidateSources("")`,
+    即 GitHub 官方 + gh-proxy 兜底;测试注入单源)
   - `GOOS/GOARCH string`(测试注入;零值取 runtime)
   - `Client *http.Client`(零值 10 分钟超时)
-- `func NewUpgrader() *Upgrader`:默认 checker/source(runtime 平台)。
-- `func (u *Upgrader) Check(ctx) version.UpdateInfo`:直接委托 `Checker.Check`。
+- `func NewUpgrader() *Upgrader`:默认 checker/sources(runtime 平台)。
+- `func (u *Upgrader) Check(ctx) version.UpdateInfo`:`u.Checker.CheckAny(ctx, u.Sources(ctx))`。
 - `func (u *Upgrader) Stage(ctx, tag string) (stageDir string, err error)`:
   1. `clientAssetName(tag, goos, arch)` =
      `pwclient_<tag 去 v>_<goos>_<arch>.zip`;
-  2. 下载 `{DLBase}/{Repo}/releases/download/{tag}/checksums.txt`,按 `strings.Fields`
-     取本资产 sha256(缺失即报错,校验是硬门槛);
-  3. 下载 zip 到系统临时文件并流式算 sha256,不匹配即删并报错;
-  4. 解包到 `os.MkdirTemp("", "pwclient-upgrade-*")`,路径穿越/绝对路径条目拒绝;
-     要求解出根级 `pwclient.exe`(Windows 文件名大小写不敏感)。
-  返回解包目录(调用方 `defer os.RemoveAll`)。
+  2. **按候选源顺序尝试**(每个源独立完整走完下载+校验+解包,成功即返回,
+     失败保留最后一个错误并继续下一个源):
+     - 下载 `{DLBase}/{Repo}/releases/download/{tag}/checksums.txt`,按 `strings.Fields`
+       取本资产 sha256(缺失即报错,校验是硬门槛);
+     - 下载 zip 到系统临时文件并流式算 sha256,不匹配即删并报错;
+     - 解包到 `os.MkdirTemp("", "pwclient-upgrade-*")`,路径穿越/绝对路径条目拒绝;
+       要求解出根级 `pwclient.exe`(Windows 文件名大小写不敏感);
+  3. 全部候选源失败 → 返回最后一个错误(错误体注明已尝试的源数量)。
+  成功时记录 `[pwclient] 升级包下载成功(源 <APIBase>,版本 <tag>)` 日志,便于排障。
 - `func ApplyStaged(stageDir, installDir, exeName string) (oldExe string, err error)`:
   - 目标 exe 已存在 → 改名为 `<exe>.old-<unixnano>`(同卷改名对运行中的镜像可行);
     改名失败给出「程序被占用/无权限,请关闭托盘或管理员运行」的明确错误;
@@ -93,8 +117,8 @@ func NewCheckerWithClient(client *http.Client) *Checker
 ### 3. `internal/pwclient/runtime.go` + `ipc.go`:状态与 IPC 检查端点
 
 - `Runtime` 新增字段 `checkUpgrade func(context.Context) version.UpdateInfo`;
-  `NewRuntime` 里用同一个 `version.NewChecker()` 的 `Check` 方法装配(共享 15 分钟缓存;
-  测试可替换)。
+  `NewRuntime` 里用同一个 `version.NewChecker()` 的 `CheckAny` + `CandidateSources("")`
+  装配(共享 15 分钟缓存;测试可替换)。
 - `StatusSnapshot` 新增:
   - `ClientVersion string`(`version.Version`,服务进程构建版本)
   - `ClientPath string`(`os.Executable()`,服务实际运行的 exe 路径)
@@ -184,35 +208,49 @@ func NewCheckerWithClient(client *http.Client) *Checker
     缺少 `pwclient.exe` 报错;含 `../evil` 路径穿越条目报错;
   - `Stage`:httptest 提供 `releases/latest`、`checksums.txt`、zip;校验 staged 内容;
     校验和不匹配 → 报错且临时目录被清理;
+  - `Stage` 回退:候选源 1 返回 500/不可达、候选源 2 正常 → 仍成功;
+    全部候选失败 → 报错;
   - `ApplyStaged`:建旧 exe + 旧 `bin/`,应用后内容更新、旧 exe 以 `.old-*` 存在;
     `CleanupStaleExecutables` 清除;`CopyStagedBinaries` 刷新指定 bin 目录;
   - `WriteUpgradeStatus/ReadUpgradeStatus` 原子读写回路。
 - `internal/pwclient/ipc_test.go`:新增 `TestIPCUpgradeCheck`(替换
   `rt.checkUpgrade` 为固定返回,断言 `GET /api/upgrade/check` 与 `ClientVersion` 字段)。
-- `internal/version/update_test.go`:为 `NewCheckerWithClient` 补一个最小断言
-  (非 nil、注入客户端生效路径由 pwclient 用例覆盖)。
+- `internal/version/source_test.go`:新增 `TestCandidateSources`:
+  - 无 env 镜像 → `[GitHub 官方, gh-proxy]`,且第二源 API/网页/下载 base 为
+    `https://gh-proxy.com/https://api.github.com` 与 `https://gh-proxy.com/https://github.com`;
+  - `PIPEWRIGHT_RELEASE_MIRROR` 显式配置 → **仅 1 个源**(不回落公共代理),含配置为
+    gh-proxy 时不重复。
+- `internal/version/update_test.go`:新增 `TestCheckAnyFallback`(第一源 500、第二源 200 →
+  返回第二源结果并缓存;全部失败 → `CheckError` 非空);为 `NewCheckerWithClient` 补最小断言。
 - Windows 专属编排(SCM/改名)不做 Linux 单测;靠 CI 的 `GOOS=windows go build ./cmd/pwclient`
   保证可编译,并在 Windows 上手工验证(见下)。
 
 ### 9. 文档
 
 - [README.md](file:///home/xufan/trea_project/pipewright/README.md) ⑤ pwclient 小节补第 6 点
-  `Upgrades`(托盘按钮 + `pwclient upgrade --check/--tag/--force` + UAC + 服务重启 + 镜像)。
+  `Upgrades`(托盘按钮 + `pwclient upgrade --check/--tag/--force` + UAC + 服务重启),
+  并说明「无需配置镜像:GitHub 不可达时自动回退 gh-proxy;要固定走镜像再设
+  `PIPEWRIGHT_RELEASE_MIRROR`」。
 - [README.zh-CN.md](file:///home/xufan/trea_project/pipewright/README.zh-CN.md)「更新」小节
-  增加一条 Windows 客户端升级说明(中文仓无客户端专节,放这里最易发现)。
+  增加一条 Windows 客户端升级说明(中文仓无客户端专节,放这里最易发现),含自动回退说明。
 - [config.go](file:///home/xufan/trea_project/pipewright/internal/pwclient/config.go) 包注释
   职责列表补「升级(检查/下载/替换/重启服务)」。
 
 ## 假设与决策(Assumptions & Decisions)
 
-- **升级源** = GitHub Releases(`version.ResolveSource("")`),镜像经
-  `PIPEWRIGHT_RELEASE_MIRROR`(系统级环境变量,服务/提权进程可见);不新增客户端内镜像设置。
+- **升级源** = 候选源列表(GitHub 官方 → `https://gh-proxy.com/https://github.com`)。
+  **默认零配置即可用**:GitHub 不可达/限流时自动回退,用户不必设置环境变量。
+- **显式镜像优先且独占**:只要 `PIPEWRIGHT_RELEASE_MIRROR`(config 库内配置 / env)非空,
+  就只走该镜像,不再自动回退公共代理 —— 避免内网部署把流量发往第三方。
+- 回退仅用于**本次 pwclient 升级**的检查与下载;不改动平台服务端既有的
+  `ResolveSource` 单源语义(避免影响设置页升级),也不改动 EasyTier 二进制下载器(本次范围外)。
+- 完整性:无论走官方还是代理,`checksums.txt` 的 sha256 必须匹配(代理只是传输通道,不是信任源);
+  zip 解包拒绝路径穿越;解出的 `pwclient.exe` 必须存在。
 - **升级目标** = 已安装服务的 exe 所在目录;未安装服务时 = 当前运行 exe 所在目录。
   不会顺带替换用户在下载目录里的另一份旧副本。
 - **提权**:仅当服务已安装(停服务/写 Program Files)才强制管理员;未安装时可普通权限升级。
 - `--check` 不改动任何文件、不需要管理员;检查结果与 `version` 子命令共用 `internal/version`。
 - 版本比较按语义版本;`dev`/本地构建无法可靠比较时要求 `--tag` 或 `--force`,不误判。
-- 下载完整性:sha256 必须匹配;zip 解包拒绝路径穿越;解出的 `pwclient.exe` 必须存在。
 - 服务原为停止状态时升级后保持停止;原为运行则升级后自动启动。
 - 升级是显式动作,**无后台自动检查/静默升级**。
 - 托盘重启:升级完成后提示用户重启托盘;不在升级进程里强杀/自动重启 GUI(避免单实例
@@ -227,6 +265,9 @@ func NewCheckerWithClient(client *http.Client) *Checker
    (CI 另有 arm64 交叉编译)
 4. Windows 手工验证:
    - `pwclient upgrade --check`(普通权限)打印当前/最新;断网/限流时给出可读错误;
+   - **回退验证**:不设任何镜像,在 GitHub 不可达的网络(或 hosts 屏蔽 api.github.com/
+     github.com)执行 `--check` 与升级,应自动经 `gh-proxy.com` 成功且日志可见所用源;
+     再设 `PIPEWRIGHT_RELEASE_MIRROR` 指向一个不可用地址,应**只**报该镜像的错误(不回落);
    - `pwclient upgrade`(管理员):下载 → 校验 → 停服务 → 替换 → 新版本启动,
      `pwclient version`/`pwclient status`/托盘版本行显示新版本;`bin/easytier-*.exe`
      被刷新;旧 `.old-*` 下次启动被清理;

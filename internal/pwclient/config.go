@@ -3,6 +3,8 @@
 //   - 配置(YAML)持久化与归一化:加入参数(网络名/密钥/peers/虚拟 IP)与路由网段列表;
 //   - 运行时:复用 internal/mesh/easytier 的监督器托管 easytier-core 子进程组网,
 //     指纹对账(配置变化才重启),二进制定位 + 缺失自动下载;
+//   - 升级:按候选源(GitHub 官方 → gh-proxy 兜底)检查/下载/校验客户端发版包,
+//     替换安装目录 exe 与随包 EasyTier 二进制(Windows 服务停启由装配层编排);
 //   - IPC:Windows 服务(数据面)与托盘 GUI(管理面)之间的 loopback HTTP + token 通道。
 //
 // 数据面说明:本节点(客户端)不通告任何子网(ProxyNetworks 恒空);routes 非空时经
@@ -43,19 +45,19 @@ type JoinConfig struct {
 
 // EasyTierConfig 是 easytier 二进制定位与本地 RPC 状态口。
 type EasyTierConfig struct {
-	BinDir  string `yaml:"binDir"`  // 空 = <dataDir>/bin
-	RPCAddr string `yaml:"rpcAddr"` // 空 = 127.0.0.1:15889(避开平台节点默认的 15888)
+	BinDir  string `yaml:"binDir" json:"binDir"`   // 空 = <dataDir>/bin
+	RPCAddr string `yaml:"rpcAddr" json:"rpcAddr"` // 空 = 127.0.0.1:15889(避开平台节点默认的 15888)
 }
 
 // Socks5Config 是本地 SOCKS5 服务(easytier --socks5):应用把代理指向
 // 127.0.0.1:<port> 即可经集群虚拟网络访问(含经 NAT 的远端网段),不动系统路由,
 // 与「网段路由」互补。注意 EasyTier 侧无认证 —— 仅本机使用(客户端防火墙阻断非本机访问)。
 type Socks5Config struct {
-	Enabled bool `yaml:"enabled"`
-	Port    int  `yaml:"port"` // 空/0 且 enabled = 1080;disabled 时端口保留不清空
+	Enabled bool `yaml:"enabled" json:"enabled"`
+	Port    int  `yaml:"port" json:"port"` // 空/0 且 enabled = 1080;disabled 时端口保留不清空
 	// ExitNodes 是出口节点虚拟 IP 列表(序即优先级;空 = 不使用出口节点)。设置后
 	// SOCKS5 拨向非虚拟网目标的流量经所选节点 NAT 出网;目标节点须显式允许充当出口。
-	ExitNodes []string `yaml:"exitNodes"`
+	ExitNodes []string `yaml:"exitNodes" json:"exitNodes"`
 }
 
 // socks5DefaultPort 是启用 SOCKS5 而未指定端口时的默认端口。
@@ -65,9 +67,9 @@ const socks5DefaultPort = 1080
 // 在该安全组的既有规则里按描述精确匹配(须组内唯一),协议/端口沿用旧规则,只把源 IP
 // 换成本机当前公网 IP。
 type AliyunGroupConfig struct {
-	RegionID        string `yaml:"regionId"`
-	SecurityGroupID string `yaml:"securityGroupId"`
-	Description     string `yaml:"description"`
+	RegionID        string `yaml:"regionId" json:"regionId"`
+	SecurityGroupID string `yaml:"securityGroupId" json:"securityGroupId"`
+	Description     string `yaml:"description" json:"description"`
 }
 
 // AliyunConfig 是「连接前自动更新阿里云安全组」的配置(可选;不配 = 不启用)。更新方式:
@@ -83,8 +85,8 @@ type AliyunConfig struct {
 // 节点级路由,故每条配置由运行时拉起一个独立轻量组网实例(独立实例目录 + DHCP 虚拟 IP),
 // 本地端口与出口节点一一绑定。ExitNodes 空 = 该端口仅访问虚拟网/通告网段,不出网。
 type ProxyConfig struct {
-	Port      int      `yaml:"port"`
-	ExitNodes []string `yaml:"exitNodes"`
+	Port      int      `yaml:"port" json:"port"`
+	ExitNodes []string `yaml:"exitNodes" json:"exitNodes"`
 }
 
 // Config 是客户端全部配置(config.yaml;服务与 GUI 共享读写)。

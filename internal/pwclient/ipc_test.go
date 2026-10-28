@@ -5,12 +5,15 @@ package pwclient
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/huangchengsir/pipewright/internal/version"
 )
 
 func newTestRuntime(t *testing.T) (*Runtime, string) {
@@ -209,6 +212,42 @@ func TestIPCTokenAndEndpoints(t *testing.T) {
 	}
 }
 
+// 升级检查端点:服务侧返回 UpdateInfo;快照带客户端版本/路径。
+func TestIPCUpgradeCheck(t *testing.T) {
+	rt, dir := newTestRuntime(t)
+	rt.checkUpgrade = func(context.Context) version.UpdateInfo {
+		return version.UpdateInfo{Current: "v1.0.0", Latest: "v1.1.0", UpdateAvailable: true}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if _, err := StartIPC(ctx, dir, rt); err != nil {
+		t.Fatalf("start ipc: %v", err)
+	}
+	cli, err := DialIPC(dir)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+
+	info, err := cli.CheckUpgrade(ctx)
+	if err != nil {
+		t.Fatalf("check upgrade: %v", err)
+	}
+	if info.Latest != "v1.1.0" || !info.UpdateAvailable || info.Current != "v1.0.0" {
+		t.Fatalf("升级检查回显不符: %+v", info)
+	}
+
+	snap, err := cli.Status(ctx)
+	if err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	if snap.ClientVersion != version.Version {
+		t.Errorf("快照客户端版本 = %q,期望 %q", snap.ClientVersion, version.Version)
+	}
+	if snap.ClientPath == "" {
+		t.Errorf("快照应带服务 exe 路径")
+	}
+}
+
 func TestIPCInfoRemovedOnShutdown(t *testing.T) {
 	rt, dir := newTestRuntime(t)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -238,9 +277,160 @@ func getRaw(cli *IPCClient, path string) (string, error) {
 		return "", err
 	}
 	defer func() { _ = resp.Body.Close() }()
-	buf := make([]byte, 4096)
-	n, _ := resp.Body.Read(buf)
-	return string(buf[:n]), nil
+	blob, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", err
+	}
+	return string(blob), nil
 }
 
 func strPtr(s string) *string { return &s }
+
+// TestIPCConfigViewJSONContract 锁定配置回显的 JSON 键名(与 StatusSnapshot 一致的小驼峰)
+// 且密钥永不外泄 —— 新界面按这些键名渲染「配置总览」与逐项编辑表单。
+func TestIPCConfigViewJSONContract(t *testing.T) {
+	rt, dir := newTestRuntime(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if _, err := StartIPC(ctx, dir, rt); err != nil {
+		t.Fatalf("start ipc: %v", err)
+	}
+	cli, err := DialIPC(dir)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+
+	enabled := true
+	port := 1080
+	exits := []string{"10.126.14.2"}
+	proxies := []ProxyConfig{{Port: 1081, ExitNodes: []string{"10.126.14.2"}}}
+	secret, akSK := "top-secret", "sk-secret"
+	groups := []AliyunGroupConfig{{RegionID: "cn-hangzhou", SecurityGroupID: "sg-1", Description: "pw"}}
+	if _, err := cli.PutConfig(ctx, ConfigSetRequest{
+		Enabled:               &enabled,
+		NetworkName:           strPtr("net"),
+		NetworkSecret:         &secret,
+		Socks5Enabled:         &enabled,
+		Socks5Port:            &port,
+		Socks5ExitNodes:       &exits,
+		Socks5Proxies:         &proxies,
+		AliyunAccessKeyID:     strPtr("LTAI-x"),
+		AliyunAccessKeySecret: &akSK,
+		AliyunGroups:          &groups,
+	}); err != nil {
+		t.Fatalf("put config: %v", err)
+	}
+
+	raw, err := getRaw(cli, "/api/config")
+	if err != nil {
+		t.Fatalf("get config: %v", err)
+	}
+	for _, want := range []string{
+		`"socks5":{"enabled":true,"port":1080,"exitNodes":["10.126.14.2"]}`,
+		`"port":1081`,
+		`"regionId":"cn-hangzhou"`,
+		`"binDir":`,
+		`"rpcAddr":`,
+	} {
+		if !strings.Contains(raw, want) {
+			t.Fatalf("配置回显缺键 %s: %s", want, raw)
+		}
+	}
+	for _, leak := range []string{`"Enabled"`, `"Port"`, `"ExitNodes"`, `"BinDir"`, `"RPCAddr"`, `"RegionID"`, "top-secret", "sk-secret"} {
+		if strings.Contains(raw, leak) {
+			t.Fatalf("配置回显出现不应有的键/密钥 %q: %s", leak, raw)
+		}
+	}
+}
+
+// TestIPCPutConfigPartialUpdate 验证单项修改只提交变更字段时其余配置保持不变。
+func TestIPCPutConfigPartialUpdate(t *testing.T) {
+	rt, dir := newTestRuntime(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if _, err := StartIPC(ctx, dir, rt); err != nil {
+		t.Fatalf("start ipc: %v", err)
+	}
+	cli, err := DialIPC(dir)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	name, host := "net-a", "host-a"
+	peers := []string{"tcp://1.2.3.4:11010"}
+	routes := []string{"10.0.0.0/8"}
+	if _, err := cli.PutConfig(ctx, ConfigSetRequest{
+		NetworkName: &name, Hostname: &host, Peers: &peers, Routes: &routes,
+	}); err != nil {
+		t.Fatalf("seed config: %v", err)
+	}
+
+	newHost := "host-b"
+	view, err := cli.PutConfig(ctx, ConfigSetRequest{Hostname: &newHost})
+	if err != nil {
+		t.Fatalf("partial put: %v", err)
+	}
+	if view.Join.Hostname != "host-b" {
+		t.Fatalf("hostname 未更新: %+v", view.Join)
+	}
+	if view.Join.NetworkName != "net-a" || len(view.Join.Peers) != 1 || view.Join.Peers[0] != "tcp://1.2.3.4:11010" {
+		t.Fatalf("未提交字段被意外改动: %+v", view.Join)
+	}
+	if len(view.Routes) != 1 || view.Routes[0] != "10.0.0.0/8" {
+		t.Fatalf("routes 被意外改动: %v", view.Routes)
+	}
+}
+
+// TestIPCLogsSince 验证日志增量端点:首拉 reset + 后续只返回新增行。
+func TestIPCLogsSince(t *testing.T) {
+	rt, dir := newTestRuntime(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if _, err := StartIPC(ctx, dir, rt); err != nil {
+		t.Fatalf("start ipc: %v", err)
+	}
+	cli, err := DialIPC(dir)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	_, _ = rt.LogWriter().Write([]byte("a\nb\n"))
+	chunk, err := cli.LogsSince(ctx, 0, 10)
+	if err != nil {
+		t.Fatalf("logs since: %v", err)
+	}
+	if !chunk.Reset || chunk.NextSeq < 2 || len(chunk.Lines) != 2 || chunk.Lines[0] != "a" || chunk.Lines[1] != "b" {
+		t.Fatalf("首拉不符: %+v", chunk)
+	}
+	_, _ = rt.LogWriter().Write([]byte("c\n"))
+	next, err := cli.LogsSince(ctx, chunk.NextSeq, 10)
+	if err != nil {
+		t.Fatalf("logs since 2: %v", err)
+	}
+	if next.Reset || len(next.Lines) != 1 || next.Lines[0] != "c" {
+		t.Fatalf("增量不符: %+v", next)
+	}
+}
+
+// TestIPCUpgradeStatus 验证升级进度端点:文件缺失返回空阶段,写入后回显。
+func TestIPCUpgradeStatus(t *testing.T) {
+	rt, dir := newTestRuntime(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if _, err := StartIPC(ctx, dir, rt); err != nil {
+		t.Fatalf("start ipc: %v", err)
+	}
+	cli, err := DialIPC(dir)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	st, err := cli.UpgradeStatus(ctx)
+	if err != nil || st.Phase != "" {
+		t.Fatalf("缺失状态文件应返回空阶段: %+v err=%v", st, err)
+	}
+	if err := WriteUpgradeStatus(dir, UpgradeStatus{Phase: UpgradePhaseDownloading, Target: "v9.9.9"}); err != nil {
+		t.Fatalf("write status: %v", err)
+	}
+	st, err = cli.UpgradeStatus(ctx)
+	if err != nil || st.Phase != UpgradePhaseDownloading || st.Target != "v9.9.9" {
+		t.Fatalf("升级状态回显不符: %+v err=%v", st, err)
+	}
+}

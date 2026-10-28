@@ -15,7 +15,11 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
+
+	"github.com/huangchengsir/pipewright/internal/version"
 )
 
 // ipcInfo 是 GUI 侧定位服务通道的落盘文件(<dataDir>/ipc.json;服务每次启动重写)。
@@ -32,15 +36,20 @@ type Controller interface {
 	ImportJoin(raw []byte, replaceRoutes bool) (Config, error)
 	RestartNow()
 	TriggerDownload() error
+	CheckUpgrade(ctx context.Context) version.UpdateInfo
 	LogTail(n int) []string
+	// LogSince 返回序号大于 after 的日志行、当前最新序号与「历史已滚出环」标志
+	// (界面日志页增量拉取用)。
+	LogSince(after uint64, max int) ([]string, uint64, bool)
 }
 
 // ipcServer 是 IPC HTTP 服务(构造后 Serve 在独立 goroutine,Addr 暴露实际监听地址)。
 type ipcServer struct {
-	srv   *http.Server
-	ln    net.Listener
-	token string
-	ctl   Controller
+	srv     *http.Server
+	ln      net.Listener
+	token   string
+	ctl     Controller
+	dataDir string
 }
 
 // StartIPC 启动 IPC 服务并落盘 ipc.json(导出供装配层:cmd/pwclient 的服务与控制台形态)。
@@ -55,7 +64,7 @@ func StartIPC(ctx context.Context, dataDir string, ctl Controller) (*ipcServer, 
 		_ = ln.Close()
 		return nil, fmt.Errorf("pwclient: ipc token: %w", err)
 	}
-	s := &ipcServer{ln: ln, token: hex.EncodeToString(raw), ctl: ctl}
+	s := &ipcServer{ln: ln, token: hex.EncodeToString(raw), ctl: ctl, dataDir: dataDir}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/status", s.handleStatus)
@@ -64,6 +73,8 @@ func StartIPC(ctx context.Context, dataDir string, ctl Controller) (*ipcServer, 
 	mux.HandleFunc("POST /api/import", s.handleImport)
 	mux.HandleFunc("POST /api/restart", s.handleRestart)
 	mux.HandleFunc("POST /api/download", s.handleDownload)
+	mux.HandleFunc("GET /api/upgrade/check", s.handleUpgradeCheck)
+	mux.HandleFunc("GET /api/upgrade/status", s.handleUpgradeStatus)
 	mux.HandleFunc("GET /api/logs", s.handleLogs)
 	s.srv = &http.Server{
 		Handler:           s.authed(mux),
@@ -185,8 +196,12 @@ func toConfigView(cfg Config) configView {
 			VirtualIP:     cfg.Join.VirtualIP,
 			Hostname:      cfg.Join.Hostname,
 		},
-		Routes:   nonNil(cfg.Routes),
-		Socks5:   cfg.Socks5,
+		Routes: nonNil(cfg.Routes),
+		Socks5: Socks5Config{
+			Enabled:   cfg.Socks5.Enabled,
+			Port:      cfg.Socks5.Port,
+			ExitNodes: nonNil(cfg.Socks5.ExitNodes),
+		},
 		Proxies:  proxies,
 		EasyTier: cfg.EasyTier,
 		Aliyun: aliyunView{
@@ -346,6 +361,22 @@ func (s *ipcServer) handleDownload(w http.ResponseWriter, _ *http.Request) {
 	writeIPCJSON(w, http.StatusAccepted, map[string]bool{"ok": true})
 }
 
+// handleUpgradeCheck 查最新客户端发布(服务侧执行;候选源 GitHub 官方 → gh-proxy 兜底)。
+// 网络失败不报 5xx —— UpdateInfo.CheckError 携带原因,前端优雅降级。
+func (s *ipcServer) handleUpgradeCheck(w http.ResponseWriter, r *http.Request) {
+	writeIPCJSON(w, http.StatusOK, s.ctl.CheckUpgrade(r.Context()))
+}
+
+// handleUpgradeStatus 回显升级进程写下的进度(文件缺失/损坏时返回空阶段,前端据此隐藏进度条)。
+func (s *ipcServer) handleUpgradeStatus(w http.ResponseWriter, _ *http.Request) {
+	st, err := ReadUpgradeStatus(s.dataDir)
+	if err != nil {
+		writeIPCJSON(w, http.StatusOK, UpgradeStatus{})
+		return
+	}
+	writeIPCJSON(w, http.StatusOK, st)
+}
+
 func (s *ipcServer) handleLogs(w http.ResponseWriter, r *http.Request) {
 	n := 200
 	if v := r.URL.Query().Get("n"); v != "" {
@@ -354,7 +385,19 @@ func (s *ipcServer) handleLogs(w http.ResponseWriter, r *http.Request) {
 			n = parsed
 		}
 	}
-	writeIPCJSON(w, http.StatusOK, map[string]any{"lines": s.ctl.LogTail(n)})
+	sinceRaw := strings.TrimSpace(r.URL.Query().Get("since"))
+	if sinceRaw == "" {
+		// 兼容旧调用方:只返回尾部文本行。
+		writeIPCJSON(w, http.StatusOK, map[string]any{"lines": nonNil(s.ctl.LogTail(n))})
+		return
+	}
+	since, err := strconv.ParseUint(sinceRaw, 10, 64)
+	if err != nil {
+		writeIPCError(w, http.StatusBadRequest, fmt.Errorf("since 须为非负整数"))
+		return
+	}
+	lines, next, reset := s.ctl.LogSince(since, n)
+	writeIPCJSON(w, http.StatusOK, map[string]any{"lines": nonNil(lines), "nextSeq": next, "reset": reset})
 }
 
 // ---- Runtime 对 Controller 的实现 ----
@@ -392,6 +435,19 @@ func (rt *Runtime) ImportJoin(raw []byte, replaceRoutes bool) (Config, error) {
 // RestartNow 实现 Controller(别名已在 runtime.go)。
 // LogTail 实现 Controller。
 func (rt *Runtime) LogTail(n int) []string { return rt.logs.Tail(n) }
+
+// LogSince 实现 Controller。
+func (rt *Runtime) LogSince(after uint64, max int) ([]string, uint64, bool) {
+	return rt.logs.Since(after, max)
+}
+
+// CheckUpgrade 实现 Controller:查最新客户端发布(按候选源自动回退)。
+func (rt *Runtime) CheckUpgrade(ctx context.Context) version.UpdateInfo {
+	if rt.checkUpgrade != nil {
+		return rt.checkUpgrade(ctx)
+	}
+	return version.NewChecker().CheckAny(ctx, version.CandidateSources(""))
+}
 
 // ErrIPCUnavailable 表示 IPC 通道不可用(服务未运行/信息文件缺失)。
 var ErrIPCUnavailable = errors.New("pwclient: 服务通道不可用(服务未运行?)")
@@ -504,6 +560,15 @@ func (c *IPCClient) TriggerDownload(ctx context.Context) error {
 	return c.do(ctx, http.MethodPost, "/api/download", map[string]bool{}, nil)
 }
 
+// CheckUpgrade 查最新客户端发布(服务侧按候选源检查,带 15 分钟缓存)。
+func (c *IPCClient) CheckUpgrade(ctx context.Context) (*version.UpdateInfo, error) {
+	var info version.UpdateInfo
+	if err := c.do(ctx, http.MethodGet, "/api/upgrade/check", nil, &info); err != nil {
+		return nil, err
+	}
+	return &info, nil
+}
+
 // Logs 拉取日志尾部 n 行。
 func (c *IPCClient) Logs(ctx context.Context, n int) ([]string, error) {
 	var out struct {
@@ -513,6 +578,35 @@ func (c *IPCClient) Logs(ctx context.Context, n int) ([]string, error) {
 		return nil, err
 	}
 	return out.Lines, nil
+}
+
+// LogChunk 是 /api/logs 增量响应(界面日志页按 nextSeq 逐拍拉取)。
+type LogChunk struct {
+	Lines   []string `json:"lines"`
+	NextSeq uint64   `json:"nextSeq"`
+	Reset   bool     `json:"reset"`
+}
+
+// LogsSince 拉取序号 since 之后的日志行。
+func (c *IPCClient) LogsSince(ctx context.Context, since uint64, n int) (*LogChunk, error) {
+	var out LogChunk
+	path := fmt.Sprintf("/api/logs?since=%d&n=%d", since, n)
+	if err := c.do(ctx, http.MethodGet, path, nil, &out); err != nil {
+		return nil, err
+	}
+	if out.Lines == nil {
+		out.Lines = []string{}
+	}
+	return &out, nil
+}
+
+// UpgradeStatus 读取升级进度(服务侧读 upgrade-status.json;文件缺失返回空阶段)。
+func (c *IPCClient) UpgradeStatus(ctx context.Context) (*UpgradeStatus, error) {
+	var st UpgradeStatus
+	if err := c.do(ctx, http.MethodGet, "/api/upgrade/status", nil, &st); err != nil {
+		return nil, err
+	}
+	return &st, nil
 }
 
 // LoadConfigView 拉取配置回显(密钥只报存在性)。
