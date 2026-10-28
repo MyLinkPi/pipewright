@@ -160,9 +160,12 @@ func mountMeshAdmin(ar chi.Router, d meshAdminDeps) {
 // clientJoinYAML / clientConfigExport 是导出文件的 YAML 结构(与 pwclient 客户端配置
 // schema 对齐:join 与 routes 两个顶层键即客户端导入所取的字段)。
 type clientJoinYAML struct {
-	NetworkName   string   `yaml:"networkName"`
-	NetworkSecret string   `yaml:"networkSecret"`
-	Peers         []string `yaml:"peers"`
+	NetworkName   string `yaml:"networkName"`
+	NetworkSecret string `yaml:"networkSecret"`
+	// SecureMode 与导出时本节点的 Secure Mode 保持一致:pwclient 必须同模式组网,
+	// 否则服务端会丢弃旧握手客户端的加密数据包(表现为已连接但访问不了网络)。
+	SecureMode bool     `yaml:"secureMode"`
+	Peers      []string `yaml:"peers"`
 }
 
 type clientConfigExport struct {
@@ -206,7 +209,10 @@ func makeMeshClientConfigHandler(d meshAdminDeps) http.HandlerFunc {
 		}
 
 		var doc clientConfigExport
-		doc.Join = clientJoinYAML{NetworkName: st.NetworkName, NetworkSecret: secret, Peers: st.Peers}
+		doc.Join = clientJoinYAML{
+			NetworkName: st.NetworkName, NetworkSecret: secret,
+			SecureMode: st.SecureMode, Peers: st.Peers,
+		}
 		doc.Routes = st.ProxyNetworksCustom
 		doc.Export.From = st.Name
 		doc.Export.NodeID = st.NodeID

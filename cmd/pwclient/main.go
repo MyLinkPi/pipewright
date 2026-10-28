@@ -212,6 +212,8 @@ func printSnapshot(snap *pwclient.StatusSnapshot) {
 	fmt.Println("网络:      ", orDash(snap.Join.NetworkName))
 	if snap.Join.HasCredential {
 		fmt.Println("入网认证:   临时凭据(Secure Mode;过期/撤销后需重新签发导入)")
+	} else if snap.Join.SecureMode {
+		fmt.Println("入网认证:   长期密钥(network secret)+ Secure Mode")
 	} else {
 		fmt.Println("入网认证:   长期密钥(network secret)")
 	}

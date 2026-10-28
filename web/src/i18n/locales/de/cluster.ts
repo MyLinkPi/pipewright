@@ -205,7 +205,7 @@ export default {
     switchAllowed: "Darf mir Anweisungen zum clusterweiten Secure-Mode-Umschalten zustellen",
     swTitle: "Secure Mode (clusterweiter Schalter)",
     swHint:
-      "Aktiviert verstärkte Authentifizierung zwischen Knoten; Handys und andere temporäre Geräte treten mit temporären Credentials bei (das Netzwerk-Geheimnis wird nie herausgegeben). Mitglieder mit Geheimnis funktionieren weiterhin. Der Schalter ist ein gleichzeitiges Umschalten in zwei Phasen: Zustellung, Bestätigung jedes Knotens, dann gleichzeitige Anwendung zum vereinbarten Zeitpunkt — verhindert Split-Brain. Der initiierende Knoten braucht die Umschalt-Berechtigung in der ACL jedes Partners.",
+      "Aktiviert verstärkte Authentifizierung zwischen Knoten; Handys und andere temporäre Geräte treten mit temporären Credentials bei (das Netzwerk-Geheimnis wird nie herausgegeben). Mitglieder mit Geheimnis müssen im selben Modus laufen – auch pwclient muss den Secure Mode aktivieren; nach dem Umschalten die Client-Konfiguration erneut exportieren und importieren (gemischter Modus zeigt „verbunden“, leitet aber keinen Verkehr weiter). Der Schalter ist ein gleichzeitiges Umschalten in zwei Phasen: Zustellung, Bestätigung jedes Knotens, dann gleichzeitige Anwendung zum vereinbarten Zeitpunkt — verhindert Split-Brain. Der initiierende Knoten braucht die Umschalt-Berechtigung in der ACL jedes Partners.",
     swOn: "Ein",
     swOff: "Aus",
     swPendingAction: "Laufend: {action}",
@@ -226,7 +226,7 @@ export default {
     swEnableTitle: "Secure Mode clusterweit aktivieren?",
     swDisableTitle: "Secure Mode clusterweit deaktivieren?",
     swConfirmBody:
-      "Die Anweisung wird an alle Online-Knoten zugestellt; nachdem alle bestätigt haben, wenden sie sie in ~{min} Minuten gleichzeitig an (EasyTier startet je Knoten neu; kurzes Netz-Flackern von Sekunden). Vor dem Wirksamwerden können Sie abbrechen.",
+      "Die Anweisung wird an alle Online-Knoten zugestellt; nachdem alle bestätigt haben, wenden sie sie in ~{min} Minuten gleichzeitig an (EasyTier startet je Knoten neu; kurzes Netz-Flackern von Sekunden). Vor dem Wirksamwerden können Sie abbrechen. pwclient-Clients müssen danach die exportierte Konfiguration erneut importieren, um den Modus zu übernehmen.",
     swConfirmLabel: "Zustellen",
     credTitle: "Temporäre Credentials",
     credHint:

@@ -60,8 +60,9 @@ func TestStoreRoundtrip(t *testing.T) {
 
 	in := Config{
 		Enabled: true,
-		Join:    JoinConfig{NetworkName: "prod", NetworkSecret: "s3cr3t", Peers: []string{"tcp://10.0.0.1:11010"}, Hostname: "my-pc"},
-		Routes:  []string{"192.168.30.0/24"},
+		Join: JoinConfig{NetworkName: "prod", NetworkSecret: "s3cr3t", SecureMode: true,
+			Peers: []string{"tcp://10.0.0.1:11010"}, Hostname: "my-pc"},
+		Routes: []string{"192.168.30.0/24"},
 	}
 	if err := store.Save(in); err != nil {
 		t.Fatalf("save: %v", err)
@@ -74,6 +75,9 @@ func TestStoreRoundtrip(t *testing.T) {
 		len(out.Join.Peers) != 1 || len(out.Routes) != 1 || !out.Configured() {
 		t.Fatalf("roundtrip mismatch: %+v", out)
 	}
+	if !out.Join.SecureMode {
+		t.Fatal("secureMode 应随配置持久化")
+	}
 	// 0600 权限(含明文密钥)。Windows/NTFS 不映射 Unix 权限位,仅非 Windows 校验。
 	if runtime.GOOS != "windows" {
 		if fi, err := os.Stat(path); err != nil || fi.Mode().Perm() != 0o600 {
@@ -85,6 +89,7 @@ func TestStoreRoundtrip(t *testing.T) {
 const exportSample = `join:
   networkName: prod-net
   networkSecret: topsecret
+  secureMode: true
   peers:
     - tcp://1.2.3.4:11010
     - udp://5.6.7.8:11010
@@ -104,6 +109,10 @@ func TestImportExport(t *testing.T) {
 	}
 	if join.NetworkName != "prod-net" || join.NetworkSecret != "topsecret" || len(join.Peers) != 2 {
 		t.Fatalf("join mismatch: %+v", join)
+	}
+	// secureMode 必须随导出文件导入(服务端 Secure Mode 开启时客户端同模式才通数据)。
+	if !join.SecureMode {
+		t.Fatal("secureMode 未随导出文件导入")
 	}
 	if len(routes) != 2 || meta.From != "node-a" || meta.PlatformVersion != "v1.2.3" {
 		t.Fatalf("routes/meta mismatch: %v %+v", routes, meta)
@@ -207,6 +216,9 @@ func TestRuntimeImportJoin(t *testing.T) {
 	if !cfg.Enabled || cfg.Join.NetworkName != "prod-net" || cfg.Join.NetworkSecret != "topsecret" {
 		t.Fatalf("join not replaced: %+v", cfg)
 	}
+	if !cfg.Join.SecureMode {
+		t.Fatal("导入后 secureMode 应随配置落盘")
+	}
 	if len(cfg.Routes) != 2 { // 10.5.0.0/16(既有)+ 192.168.30.0/24(导出)
 		t.Fatalf("routes union: %v", cfg.Routes)
 	}
@@ -220,6 +232,9 @@ func TestRuntimeImportJoin(t *testing.T) {
 	view := toConfigView(cfg2)
 	if view.Join.HasSecret != true {
 		t.Fatalf("view should report hasSecret")
+	}
+	if !view.Join.SecureMode {
+		t.Fatal("view 应回显 secureMode")
 	}
 }
 

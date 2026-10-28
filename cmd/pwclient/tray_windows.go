@@ -158,7 +158,7 @@ func (a *trayApp) build() error {
 								Title:  "集群配置",
 								Layout: VBox{MarginsZero: true, Spacing: 6},
 								Children: []Widget{
-									Label{Text: "从平台「设置 → 集群 → 导出客户端配置」复制 YAML 粘贴到下面导入(网络/认证/对端地址一次就位;长期密钥或临时凭据均可 —— 临时凭据把 networkSecret 行替换为 credential 行);网段路由与本地代理的流量均经集群侧节点转发。", TextColor: walk.Color(0x666666)},
+									Label{Text: "从平台「设置 → 集群 → 导出客户端配置」复制 YAML 粘贴到下面导入(网络/认证/对端地址一次就位;长期密钥或临时凭据均可 —— 临时凭据把 networkSecret 行替换为 credential 行);服务端切换 Secure Mode 后须重新导出并导入(导出文件带 secureMode;模式不一致会连上却访问不了网络)。网段路由与本地代理的流量均经集群侧节点转发。", TextColor: walk.Color(0x666666)},
 									TextEdit{AssignTo: &a.importEdit, MinSize: Size{Height: 72}, VScroll: true},
 									Composite{
 										Layout: HBox{MarginsZero: true, Spacing: 8},
@@ -487,8 +487,14 @@ func (a *trayApp) apply(snap *pwclient.StatusSnapshot, err error, logs []string)
 	}
 
 	// 对端地址只读回显(来自导入的配置;入口变更 → 平台重新导出粘贴)。
+	mode := ""
+	if snap.Join.HasCredential {
+		mode = " · 临时凭据(Secure Mode)"
+	} else if snap.Join.SecureMode {
+		mode = " · Secure Mode"
+	}
 	if len(snap.Join.Peers) > 0 {
-		a.peersLabel.SetText("对端地址(入网入口):" + strings.Join(snap.Join.Peers, ", "))
+		a.peersLabel.SetText("对端地址(入网入口):" + strings.Join(snap.Join.Peers, ", ") + mode)
 	} else {
 		a.peersLabel.SetText("对端地址:未配置 —— 粘贴导入集群配置即可")
 	}

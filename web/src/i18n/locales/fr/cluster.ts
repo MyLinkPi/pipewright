@@ -205,7 +205,7 @@ export default {
     switchAllowed: "M'autoriser à recevoir les instructions de bascule Secure Mode à l'échelle du cluster",
     swTitle: "Secure Mode (bascule à l'échelle du cluster)",
     swHint:
-      "Active l'authentification renforcée entre nœuds ; téléphones et appareils temporaires entrent avec des identifiants temporaires (le secret réseau n'est jamais transmis). Les membres détenant le secret continuent comme avant. La bascule est un basculement simultané en deux phases : diffusion, accusé de chaque nœud, puis application simultanée à l'instant convenu — évitant toute partition. Le nœud initiateur doit détenir la permission de bascule dans l'ACL de chaque pair.",
+      "Active l'authentification renforcée entre nœuds ; téléphones et appareils temporaires entrent avec des identifiants temporaires (le secret réseau n'est jamais transmis). Les membres détenant le secret doivent utiliser le même mode : pwclient doit aussi activer le Secure Mode ; après la bascule, réexportez et réimportez la configuration client (un mode mixte affiche « connecté » mais ne fait pas passer le trafic). La bascule est un basculement simultané en deux phases : diffusion, accusé de chaque nœud, puis application simultanée à l'instant convenu — évitant toute partition. Le nœud initiateur doit détenir la permission de bascule dans l'ACL de chaque pair.",
     swOn: "Activé",
     swOff: "Désactivé",
     swPendingAction: "En cours : {action}",
@@ -226,7 +226,7 @@ export default {
     swEnableTitle: "Activer Secure Mode sur tout le cluster ?",
     swDisableTitle: "Désactiver Secure Mode sur tout le cluster ?",
     swConfirmBody:
-      "L'instruction est diffusée à tous les nœuds en ligne ; une fois tous accusés, ils appliquent simultanément dans ~{min} minutes (EasyTier redémarre sur chaque nœud ; bref flottement réseau de quelques secondes). Vous pouvez annuler avant l'effet.",
+      "L'instruction est diffusée à tous les nœuds en ligne ; une fois tous accusés, ils appliquent simultanément dans ~{min} minutes (EasyTier redémarre sur chaque nœud ; bref flottement réseau de quelques secondes). Vous pouvez annuler avant l'effet. Les clients pwclient doivent réimporter la configuration exportée ensuite pour s'aligner sur le mode.",
     swConfirmLabel: "Diffuser",
     credTitle: "Identifiants temporaires",
     credHint:

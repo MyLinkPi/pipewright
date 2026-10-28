@@ -203,7 +203,7 @@ export default {
     switchAllowed: "Allowed to deliver Secure Mode cluster-wide switch instructions",
     swTitle: "Secure Mode (cluster-wide switch)",
     swHint:
-      "Enables enhanced inter-node authentication; phones and other temporary devices join with temp credentials (the network secret is never handed out). Secret-holding members keep working as-is. The switch is a two-phase simultaneous flip: deliver, every node acks, then all apply at the agreed moment - avoiding split-brain. The initiating node must hold the switch permission on every peer's ACL.",
+      "Enables enhanced inter-node authentication; phones and other temporary devices join with temp credentials (the network secret is never handed out). Secret-holding members must also run in the same mode - pwclient must enable Secure Mode too; after a switch, re-export and re-import the client config (a mixed mode shows connected but no traffic passes). The switch is a two-phase simultaneous flip: deliver, every node acks, then all apply at the agreed moment - avoiding split-brain. The initiating node must hold the switch permission on every peer's ACL.",
     swOn: "On",
     swOff: "Off",
     swPendingAction: "In progress: {action}",
@@ -224,7 +224,7 @@ export default {
     swEnableTitle: "Enable Secure Mode cluster-wide?",
     swDisableTitle: "Disable Secure Mode cluster-wide?",
     swConfirmBody:
-      "The instruction is delivered to all online nodes; once every node acks, all apply simultaneously in ~{min} minutes (EasyTier restarts per node; seconds of network blip). You can abort before it takes effect.",
+      "The instruction is delivered to all online nodes; once every node acks, all apply simultaneously in ~{min} minutes (EasyTier restarts per node; seconds of network blip). You can abort before it takes effect. pwclient clients must re-import the exported config afterwards to match the mode.",
     swConfirmLabel: "Deliver",
     credTitle: "Temporary credentials",
     credHint:
