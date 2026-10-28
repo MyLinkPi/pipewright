@@ -274,6 +274,7 @@ func (s *service) Settings(ctx context.Context) (*Settings, error) {
 
 // createDefault 首用生成身份:node_id(uuid)+ ed25519 密钥对(私钥 Seal 落库)。
 // 保险库未配置时仍建行(公钥/私钥留空,启用时 SaveSettings 会再补),保证 Settings 永可用。
+// 新部署默认 secure_mode=1(显式写入,不依赖列默认;存量部署保持原值,经统一开关对齐)。
 func (s *service) createDefault(ctx context.Context) (*Settings, error) {
 	nodeID := uuid.NewString()
 	now := time.Now().UTC().Format(time.RFC3339)
@@ -292,8 +293,8 @@ func (s *service) createDefault(ctx context.Context) (*Settings, error) {
 	}
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO mesh_settings (id, node_id, name, public_key, private_key, enabled, api_port,
-		 easytier_mode, easytier_rpc, network_name, network_secret, virtual_ip, peers, created_at, updated_at)
-		 VALUES (1, ?, '', ?, ?, 0, 0, 'managed', '127.0.0.1:15888', '', NULL, '', '', ?, ?)
+		 easytier_mode, easytier_rpc, network_name, network_secret, virtual_ip, peers, secure_mode, created_at, updated_at)
+		 VALUES (1, ?, '', ?, ?, 0, 0, 'managed', '127.0.0.1:15888', '', NULL, '', '', 1, ?, ?)
 		 `+store.DoNothingSuffix(s.dialect, []string{"id"}),
 		nodeID, pubHex, privSealed, now, now,
 	)

@@ -103,6 +103,12 @@ func TestModePendingLifecycle(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now().UTC()
 
+	// 新部署默认 Secure Mode 开启;本用例验证 enable 翻转,先显式关闭作为起点。
+	off := false
+	if _, err := svc.SaveSettings(ctx, SaveSettingsInput{SecureMode: &off}); err != nil {
+		t.Fatalf("关闭 Secure Mode: %v", err)
+	}
+
 	p := ModePending{ChangeID: "ch-1", Action: ModeActionEnable,
 		EffectiveAt: now.Add(time.Hour), InitiatedBy: "n1", AckedAt: now}
 	if err := svc.SaveModePending(ctx, p); err != nil {
@@ -147,12 +153,15 @@ func TestModePendingLifecycle(t *testing.T) {
 	}
 }
 
-// enableMeshFor 启用集群并返回设置(开关协议测试的前置)。
+// enableMeshFor 启用集群并返回设置(开关协议测试的前置)。新部署默认 Secure Mode
+// 开启,开关用例统一显式关闭作为起点,以便测试 enable 流程。
 func enableMeshFor(t *testing.T, svc Service) (*Settings, error) {
 	t.Helper()
+	off := false
 	return svc.SaveSettings(context.Background(), SaveSettingsInput{
 		Enabled:     boolp(true),
 		NetworkName: strp("net"),
+		SecureMode:  &off,
 	})
 }
 

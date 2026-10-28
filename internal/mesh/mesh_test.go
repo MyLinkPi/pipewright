@@ -42,6 +42,10 @@ func TestSaveSettingsFullRoundtrip(t *testing.T) {
 	if st.NodeID == "" || st.PublicKey == "" {
 		t.Fatalf("identity not generated: %+v", st)
 	}
+	// 新部署默认开启 Secure Mode(createDefault 显式写入;存量部署保持原值)。
+	if !st.SecureMode {
+		t.Fatalf("新部署应默认开启 Secure Mode: %+v", st)
+	}
 
 	saved, err := svc.SaveSettings(ctx, SaveSettingsInput{
 		Name:          strp("node-alpha"),
