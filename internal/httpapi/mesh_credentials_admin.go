@@ -146,16 +146,16 @@ func makeMeshCredentialIssueHandler(d meshAdminDeps) http.HandlerFunc {
 			return
 		}
 		rec, err := d.mesh.IssueCredentialRecord(r.Context(), credentialID, body.Remark, body.TTLSeconds, actor, source)
-	if err != nil {
-		// 补偿:easytier 侧凭据已签出,落库失败即回滚撤销(尽力而为;失败也无碍 ——
-		// secret 已丢弃无人可用,残留凭据会以 external/active 幽灵行出现在列表且可撤销,
-		// 有 TTL 自然过期兜底,但能撤则撤,避免误导运维)。
-		if rerr := provider.Revoke(r.Context(), credentialID); rerr != nil {
-			log.Printf("[mesh] 凭据 %s 登记失败且回滚撤销失败(将以 external 幽灵行残留至过期):%v", credentialID, rerr)
+		if err != nil {
+			// 补偿:easytier 侧凭据已签出,落库失败即回滚撤销(尽力而为;失败也无碍 ——
+			// secret 已丢弃无人可用,残留凭据会以 external/active 幽灵行出现在列表且可撤销,
+			// 有 TTL 自然过期兜底,但能撤则撤,避免误导运维)。
+			if rerr := provider.Revoke(r.Context(), credentialID); rerr != nil {
+				log.Printf("[mesh] 凭据 %s 登记失败且回滚撤销失败(将以 external 幽灵行残留至过期):%v", credentialID, rerr)
+			}
+			writeServerError(w, err)
+			return
 		}
-		writeServerError(w, err)
-		return
-	}
 		recordAudit(r.Context(), d.audit, audit.Entry{
 			Actor: actor, Action: "mesh_credential_issue", TargetType: "mesh_credential", TargetID: credentialID,
 			Detail: map[string]any{"ttlSeconds": body.TTLSeconds, "remark": body.Remark, "source": source},

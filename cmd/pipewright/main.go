@@ -1588,6 +1588,7 @@ func (g *instanceRollGateway) ResolveStaticDeploy(ctx context.Context, serviceRe
 //     不代解析(代解析会把会漂移的 IP 静态烧进配置,IP 变了网关静默路由到死地址)。
 //   - resolve:主机名经控制端 DNS 解析为 IP。mesh /32 路由与对端目录转发规划用 ——
 //     路由配置只接受 IP,与实例池渲染语义不同。
+//
 // 注入 servicereg 供集群反代渲染。
 type serverAddrResolver struct{ tg target.Service }
 

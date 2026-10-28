@@ -1,15 +1,60 @@
 //go:build !windows
 
-// tray_other.go 是非 Windows 平台的托盘占位(客户端 GUI 首要支持 Win11)。
+// tray_other.go 是 Linux/macOS 的桌面形态:前台运行核心 + uiserver,用系统浏览器打开界面。
+// 不做系统服务/托盘/开机自启(仅 Windows 提供)。
 package main
 
 import (
 	"fmt"
 	"os"
+	"os/exec"
+	"os/signal"
+	"runtime"
+	"syscall"
 )
 
-// runTray 启动托盘 GUI(非 Windows 未实现)。
-func runTray() {
-	fmt.Fprintln(os.Stderr, "托盘 GUI 当前仅支持 Windows(Win11)。可用子命令:console/status/doctor/service")
-	os.Exit(2)
+// quitCh 接收界面「退出客户端」请求(/local/quit)。
+var quitCh = make(chan struct{})
+
+// localCoreMode 非 Windows 在 UI 进程内前台运行核心(console 装配)。
+func localCoreMode() string { return "console" }
+
+// preflightDesktop 非 Windows 无单实例限制。
+func preflightDesktop() bool { return true }
+
+// runDesktop 打开浏览器并阻塞到退出信号(noOpen 时仅等待,URL 已由 uiMain 打印)。
+func runDesktop(url string, noOpen bool) {
+	if !noOpen {
+		openBrowser(url)
+	}
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(sig)
+	select {
+	case <-sig:
+	case <-quitCh:
+	}
+}
+
+// openBrowser 用系统默认浏览器打开地址(失败时打印手动访问提示;后台收尸避免僵尸)。
+func openBrowser(url string) {
+	cmd := "xdg-open"
+	if runtime.GOOS == "darwin" {
+		cmd = "open"
+	}
+	c := exec.Command(cmd, url)
+	if err := c.Start(); err != nil {
+		fmt.Fprintln(os.Stderr, "无法自动打开浏览器,请手动访问:", url)
+		return
+	}
+	go func() { _ = c.Wait() }()
+}
+
+// quitUI 响应界面退出请求(仅关 UI 与前台核心,不影响任何后台服务——非 Windows 无服务)。
+func quitUI() {
+	select {
+	case <-quitCh:
+	default:
+		close(quitCh)
+	}
 }

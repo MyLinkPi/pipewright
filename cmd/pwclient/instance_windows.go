@@ -36,14 +36,19 @@ func ensureSingleInstance() bool {
 	return true
 }
 
-// activateExistingInstance 唤起已有实例的主窗口(可能正隐藏在托盘)。
+// activateExistingInstance 唤起已有实例的主窗口(可能正隐藏在托盘或未打开)。
 func activateExistingInstance() {
-	title, err := windows.UTF16PtrFromString(mainWindowTitle)
-	if err != nil {
-		return
-	}
-	if h := win.FindWindow(nil, title); h != 0 {
+	if h := findMainWindow(); h != 0 {
 		win.ShowWindow(h, win.SW_RESTORE)
 		win.SetForegroundWindow(h)
 	}
+}
+
+// findMainWindow 返回主窗口句柄(0 = 未打开)。
+func findMainWindow() win.HWND {
+	title, err := windows.UTF16PtrFromString(mainWindowTitle)
+	if err != nil {
+		return 0
+	}
+	return win.FindWindow(nil, title)
 }

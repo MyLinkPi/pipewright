@@ -95,20 +95,20 @@ func toServiceRegDomainDTO(d servicereg.Domain) serviceRegDomainDTO {
 // serviceRegServiceDTO 是注册服务对外响应体(附基域名与完整 FQDN 便于前端直显;
 // instanceCount 供列表徽标直显,免逐服务再查实例)。
 type serviceRegServiceDTO struct {
-	ID            string `json:"id"`
-	DomainID      string `json:"domainId"`
-	BaseDomain    string `json:"baseDomain"`
-	Name          string `json:"name"`
-	FQDN          string `json:"fqdn"`
+	ID         string `json:"id"`
+	DomainID   string `json:"domainId"`
+	BaseDomain string `json:"baseDomain"`
+	Name       string `json:"name"`
+	FQDN       string `json:"fqdn"`
 	// Aliases 是同基域额外子域名 label;FQDNs 是全部域名(主 FQDN 在前,别名随后)直显。
 	Aliases       []string `json:"aliases"`
 	FQDNs         []string `json:"fqdns"`
-	Path          string `json:"path"`
-	Protocol      string `json:"protocol"`
-	UpstreamKind  string `json:"upstreamKind"`
-	Upstream      string `json:"upstream"`
-	UpstreamPort  int    `json:"upstreamPort"`
-	TCPListenPort int    `json:"tcpListenPort"`
+	Path          string   `json:"path"`
+	Protocol      string   `json:"protocol"`
+	UpstreamKind  string   `json:"upstreamKind"`
+	Upstream      string   `json:"upstream"`
+	UpstreamPort  int      `json:"upstreamPort"`
+	TCPListenPort int      `json:"tcpListenPort"`
 	// PeerNodeID / PeerServiceID 是 forward 专用的对端引用(其余类型恒空)。
 	PeerNodeID    string `json:"peerNodeId"`
 	PeerServiceID string `json:"peerServiceId"`

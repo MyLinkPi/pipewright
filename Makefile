@@ -1,6 +1,8 @@
 SHELL := /bin/bash
 BIN := pipewright
 CLIENT_BIN := pwclient.exe
+CLIENT_WEB_DIR := webclient
+UISERVER_DIST := internal/pwclient/uiserver/dist
 
 # 模块代理:默认走国内镜像(proxy.golang.org 在境内常超时),与 Dockerfile 保持一致。
 # 用 ?= 保证 CI / 已有 GOPROXY 环境可覆盖;export 后传入 go 子进程。
@@ -22,7 +24,7 @@ VPKG    := github.com/huangchengsir/pipewright/internal/version
 LDFLAGS := -s -w -X $(VPKG).Version=$(VERSION) -X $(VPKG).Commit=$(COMMIT) -X $(VPKG).Date=$(DATE)
 CLIENT_LDFLAGS := $(LDFLAGS) -H=windowsgui
 
-.PHONY: all build build-client client-syso embed-frontend dist-stub go-build test vet fmt fmt-check mem-check dev run version clean
+.PHONY: all build build-client build-client-all client-web client-web-stub client-e2e client-syso embed-frontend dist-stub go-build test vet fmt fmt-check mem-check dev run version clean
 
 all: build
 
@@ -38,9 +40,34 @@ dist-stub:
 go-build: dist-stub
 	CGO_ENABLED=0 go build -ldflags "$(LDFLAGS)" -o $(BIN) ./cmd/pipewright
 
-## build-client: 构建 Win11 集群客户端(托盘 GUI + Windows 服务,单二进制;无前端依赖)
-build-client:
+## client-web: 构建客户端前端(webclient/ → internal/pwclient/uiserver/dist,供 go:embed)
+client-web:
+	cd $(CLIENT_WEB_DIR) && npm ci && npm run build
+
+## client-web-stub: 保证 uiserver/dist 有最小占位 index.html(纯后端流程 test/vet 编译 embed 用)
+client-web-stub:
+	@[ -f $(UISERVER_DIST)/index.html ] || { mkdir -p $(UISERVER_DIST); printf '<!doctype html><meta charset="utf-8"><div id="app"></div>\n' > $(UISERVER_DIST)/index.html; }
+
+## build-client: 构建 Win11 集群客户端(前端嵌入 + 托盘/WebView2 + Windows 服务,单二进制)
+build-client: client-web
 	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -ldflags "$(CLIENT_LDFLAGS)" -o $(CLIENT_BIN) ./cmd/pwclient
+	CGO_ENABLED=0 GOOS=windows GOARCH=arm64 go build -ldflags "$(CLIENT_LDFLAGS)" -o pwclient-arm64.exe ./cmd/pwclient
+
+## build-client-all: 三平台客户端产物(Windows 完整形态;Linux/macOS 前台 + 浏览器 UI)
+build-client-all: client-web
+	mkdir -p dist-client
+	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -ldflags "$(CLIENT_LDFLAGS)" -o dist-client/pwclient_windows_amd64.exe ./cmd/pwclient
+	CGO_ENABLED=0 GOOS=windows GOARCH=arm64 go build -ldflags "$(CLIENT_LDFLAGS)" -o dist-client/pwclient_windows_arm64.exe ./cmd/pwclient
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "$(LDFLAGS)" -o dist-client/pwclient_linux_amd64 ./cmd/pwclient
+	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags "$(LDFLAGS)" -o dist-client/pwclient_linux_arm64 ./cmd/pwclient
+	CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -ldflags "$(LDFLAGS)" -o dist-client/pwclient_darwin_amd64 ./cmd/pwclient
+	CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -ldflags "$(LDFLAGS)" -o dist-client/pwclient_darwin_arm64 ./cmd/pwclient
+
+## client-e2e: Linux 起真实客户端(临时数据目录)→ Playwright 跑界面回归
+## 需要先装浏览器:cd webclient && npx playwright install chromium
+client-e2e: client-web
+	CGO_ENABLED=0 go build -ldflags "$(LDFLAGS)" -o pwclient ./cmd/pwclient
+	bash scripts/client-e2e.sh
 
 ## client-syso: 由 cmd/pwclient/winres 重新生成 Windows 资源(manifest/版本信息;.syso 已入库,
 ## 仅 winres.json 变更后需要重跑)
@@ -50,10 +77,10 @@ client-syso:
 ## build: 前端构建 → go:embed → 静态单二进制(双运行模式之原生形态)
 build: embed-frontend go-build
 
-test: dist-stub
+test: dist-stub client-web-stub
 	go test $(GO_PKGS)
 
-vet: dist-stub
+vet: dist-stub client-web-stub
 	go vet $(GO_PKGS)
 
 ## fmt: 用内置 gofmt 格式化(无需配置文件)
@@ -81,5 +108,5 @@ run: go-build
 	./$(BIN)
 
 clean:
-	rm -f $(BIN) $(CLIENT_BIN) *.db
-	rm -rf web/dist web/node_modules
+	rm -f $(BIN) $(CLIENT_BIN) pwclient-arm64.exe pwclient *.db
+	rm -rf web/dist web/node_modules $(CLIENT_WEB_DIR)/node_modules $(UISERVER_DIST) dist-client

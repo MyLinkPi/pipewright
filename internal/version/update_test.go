@@ -48,6 +48,9 @@ func TestIsComparable(t *testing.T) {
 		if got := isComparable(v); got != want {
 			t.Errorf("isComparable(%q)=%v want %v", v, got, want)
 		}
+		if got := IsComparable(v); got != want {
+			t.Errorf("IsComparable(%q)=%v want %v", v, got, want)
+		}
 	}
 }
 
@@ -295,5 +298,55 @@ func TestCheck_SourceChangeInvalidatesCache(t *testing.T) {
 	}
 	if hitsA != 1 || hitsB != 1 {
 		t.Errorf("hitsA=%d hitsB=%d,期望各 1(不回源 A、B 恰好拉一次)", hitsA, hitsB)
+	}
+}
+
+// CheckAny 按序回退:第一源失败(500)、第二源成功 → 返回第二源结果并缓存;
+// 全部失败 → 保留最后一个可读错误;空候选 → 明确报错。
+func TestCheckAnyFallback(t *testing.T) {
+	var hitsA, hitsB int
+	mk := func(hits *int, status int, tag string) *httptest.Server {
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			*hits++
+			if status != http.StatusOK {
+				w.WriteHeader(status)
+				return
+			}
+			_, _ = w.Write([]byte(`{"tag_name":"` + tag + `"}`))
+		}))
+	}
+	srvA, srvB := mk(&hitsA, http.StatusInternalServerError, ""), mk(&hitsB, http.StatusOK, "v1.2.0")
+	defer srvA.Close()
+	defer srvB.Close()
+
+	prevVer := Version
+	Version = "v1.0.0"
+	defer func() { Version = prevVer }()
+
+	c := NewCheckerWithClient(srvA.Client())
+	if c == nil {
+		t.Fatal("NewCheckerWithClient 返回 nil")
+	}
+	srcA := Source{Repo: "o/r", APIBase: srvA.URL, WebBase: srvA.URL, DLBase: srvA.URL}
+	srcB := Source{Repo: "o/r", APIBase: srvB.URL, WebBase: srvB.URL, DLBase: srvB.URL}
+
+	info := c.CheckAny(context.Background(), []Source{srcA, srcB})
+	if info.CheckError != "" || info.Latest != "v1.2.0" || !info.UpdateAvailable {
+		t.Fatalf("应回退到第二源并判定有更新,得 %+v", info)
+	}
+	// 第二源成功结果已缓存(不再回源 B);失败的第一源不缓存,下次仍会先试它
+	// (GitHub 恢复后即可用回官方源)。
+	_ = c.CheckAny(context.Background(), []Source{srcA, srcB})
+	if hitsA != 2 || hitsB != 1 {
+		t.Errorf("hitsA=%d hitsB=%d,期望 A=2(失败不缓存)、B=1(成功结果命中缓存)", hitsA, hitsB)
+	}
+
+	// 全部失败:返回最后一个错误。
+	if got := c.CheckAny(context.Background(), []Source{srcA, srcA}); got.CheckError == "" {
+		t.Errorf("全部候选失败应保留 CheckError,得 %+v", got)
+	}
+	// 空候选:明确报错而不是空结果。
+	if got := c.CheckAny(context.Background(), nil); got.CheckError == "" || got.Current == "" {
+		t.Errorf("空候选应报「升级源未配置」并带当前版本,得 %+v", got)
 	}
 }

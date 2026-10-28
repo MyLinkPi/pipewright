@@ -42,12 +42,15 @@ type Runtime struct {
 	newSGClient func(ak, sk, region string) sgAPI
 	// sgIPFetch 取本机公网 IPv4(测试注入 fake;默认 fetchPublicIPv4)。
 	sgIPFetch func(ctx context.Context) (string, error)
+	// checkUpgrade 查最新客户端发布(测试注入;默认经 version.Checker 按候选源自动回退)。
+	checkUpgrade func(ctx context.Context) version.UpdateInfo
 
 	// reconcileMu 串行化对账(安全组同步含公网 IP 探测/API 调用可达数十秒,防
 	// RestartNow 的并发对账双拉监督器)。
 	reconcileMu sync.Mutex
 
 	mu            sync.Mutex
+	stopWait      chan struct{} // Start 的对账循环彻底退出(子进程已全回收)时关闭
 	supervisor    *easytier.Supervisor
 	status        *easytier.StatusProvider
 	supervisorKey string
@@ -89,7 +92,7 @@ type proxySup struct {
 
 // NewRuntime 构造运行时(dataDir 是配置/二进制/日志的根目录)。不启动;Start 拉起对账循环。
 func NewRuntime(store *Store, dataDir string) *Runtime {
-	return &Runtime{
+	rt := &Runtime{
 		store:         store,
 		dataDir:       dataDir,
 		newDownloader: defaultDownloader(dataDir),
@@ -97,6 +100,13 @@ func NewRuntime(store *Store, dataDir string) *Runtime {
 		sgIPFetch:     fetchPublicIPv4,
 		logs:          newLogRing(500),
 	}
+	// 升级检查与内部升级器共用同一 Checker,共享 15 分钟 TTL 缓存;候选源默认
+	// GitHub 官方 → gh-proxy 兜底(显式配置镜像则只用镜像)。
+	checker := version.NewChecker()
+	rt.checkUpgrade = func(ctx context.Context) version.UpdateInfo {
+		return checker.CheckAny(ctx, version.CandidateSources(""))
+	}
+	return rt
 }
 
 // SetServiceInfo 注入服务进程信息(Snapshot 的 service 字段)。
@@ -122,7 +132,12 @@ func defaultDownloader(dataDir string) func() *easytier.Downloader {
 
 // Start 拉起对账循环(随 ctx 退出;循环退出时停掉托管子进程)。
 func (rt *Runtime) Start(ctx context.Context) {
+	stopped := make(chan struct{})
+	rt.mu.Lock()
+	rt.stopWait = stopped
+	rt.mu.Unlock()
 	go func() {
+		defer close(stopped)
 		ticker := time.NewTicker(reconcileInterval)
 		defer ticker.Stop()
 		for {
@@ -142,6 +157,18 @@ func (rt *Runtime) Start(ctx context.Context) {
 			}
 		}
 	}()
+}
+
+// WaitStop 阻塞到 Start 的对账循环退出且全部托管 EasyTier 子进程确已回收
+// (监督器 Stop 等待子进程退出,调用方可据此安全替换二进制文件)。未 Start 过直接返回。
+func (rt *Runtime) WaitStop() {
+	rt.mu.Lock()
+	wait := rt.stopWait
+	rt.mu.Unlock()
+	if wait == nil {
+		return
+	}
+	<-wait
 }
 
 // hostname 取 easytier --hostname:配置优先,空 = 计算机名。
@@ -217,7 +244,9 @@ func (rt *Runtime) reconcile(ctx context.Context) {
 	}
 
 	sup := easytier.New(rt.mainEasyTierConfig(cfg, corePath))
-	if err := sup.Start(context.WithoutCancel(ctx)); err != nil {
+	// 直接挂 ctx:进程退出(cancel)/停用(ctx.Done)时 exec.CommandContext 兼底强杀,
+	// Stop 会等待回收 —— 不会留下占用二进制的孤儿 easytier-core。
+	if err := sup.Start(ctx); err != nil {
 		rt.mu.Lock()
 		if rt.failedKey != key {
 			log.Printf("[pwclient] EasyTier 启动失败:%v", err)
@@ -343,7 +372,7 @@ func (rt *Runtime) reconcileProxies(ctx context.Context, cfg Config, corePath st
 			CliPath:       rt.cliPath,
 		})
 		ps := &proxySup{port: p.Port, key: w.key, sup: sup}
-		if err := sup.Start(context.WithoutCancel(ctx)); err != nil {
+		if err := sup.Start(ctx); err != nil {
 			// 记录后不再逐拍重试(与主监督器 failedKey 语义一致);错误入状态供界面展示。
 			ps.err = err.Error()
 			log.Printf("[pwclient] 多出口代理 %d 启动失败:%v", p.Port, err)
@@ -462,6 +491,10 @@ type StatusSnapshot struct {
 	EasyTier   *easytier.Status   `json:"easytier"`
 	Binaries   easytier.BinStatus `json:"binaries"`
 	Service    ServiceInfo        `json:"service"`
+	// ClientVersion 是服务进程的构建版本(托盘据此展示/判定升级完成)。
+	ClientVersion string `json:"clientVersion"`
+	// ClientPath 是服务实际运行的 exe 路径(托盘提示新版本位置用;取不到为空串)。
+	ClientPath string `json:"clientPath"`
 	// SecurityGroup 是连接前自动更新的阿里云安全组同步状态(不含 AK/SK)。
 	SecurityGroup SecGroupStatus `json:"securityGroup"`
 }
@@ -515,7 +548,11 @@ func (rt *Runtime) Snapshot(ctx context.Context) StatusSnapshot {
 			Hostname:      rt.hostname(cfg),
 		},
 		Routes: cfg.Routes,
-		Socks5: Socks5Status{Enabled: socks5Port(cfg) > 0, Port: socks5Port(cfg), ExitNodes: cfg.Socks5.ExitNodes},
+		Socks5: Socks5Status{
+			Enabled:   socks5Port(cfg) > 0,
+			Port:      socks5Port(cfg),
+			ExitNodes: nonNil(cfg.Socks5.ExitNodes),
+		},
 	}
 	snap.Proxies = make([]ProxyStatus, 0, len(cfg.Proxies))
 	for _, p := range cfg.Proxies {
@@ -552,6 +589,10 @@ func (rt *Runtime) Snapshot(ctx context.Context) StatusSnapshot {
 	}
 	snap.Service = rt.svc
 	rt.mu.Unlock()
+	snap.ClientVersion = version.Version
+	if exe, err := os.Executable(); err == nil {
+		snap.ClientPath = exe
+	}
 	if snap.Routes == nil {
 		snap.Routes = []string{}
 	}

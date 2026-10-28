@@ -1,11 +1,16 @@
 package easytier
 
 import (
+	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 )
 
 // TestParseHelpFlags 验证 --help 输出 → 旗子集合解析:官方复数形态优先,历史单数兼容,
@@ -252,6 +257,101 @@ func TestBuildArgsExitNodes(t *testing.T) {
 			t.Fatalf("不支持的旗子不应传参:%v", old)
 		}
 	}
+}
+
+// TestSupervisorStopReapsChild 验证 Stop 返回时托管子进程已退出并被回收:
+// 升级替换 easytier 二进制/服务交回 SCM 前依赖该保证,否则孤儿进程继续占用文件。
+// Windows 无进程间信号,Stop 走直接 Kill;Unix 走 SIGINT 温和退出。用 /bin/sleep
+// 作被托管进程(任意参数均立即退出/被信号终止,不依赖具体旗子语义)。
+func TestSupervisorStopReapsChild(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unix 语义路径;Windows 由交叉编译+svc 集成验证")
+	}
+	sup := New(Config{Mode: "managed", NetworkName: "net", Hostname: "t", CorePath: "/bin/sleep", RPCAddr: "127.0.0.1:15999"})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := sup.Start(ctx); err != nil {
+		t.Fatalf("Start:%v", err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for sup.Snapshot().Running && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	sup.Stop()
+	if run := sup.Snapshot(); run.Running {
+		t.Fatalf("Stop 返回后子进程应已回收: %+v", run)
+	}
+	// 不应再拉起新进程(监督循环已退)。
+	time.Sleep(300 * time.Millisecond)
+	if run := sup.Snapshot(); run.Running {
+		t.Fatalf("Stop 后不应重启子进程: %+v", run)
+	}
+}
+
+// TestSupervisorStopWaitNoChild Stop 未启动/收养态不阻塞。
+func TestSupervisorStopNoChild(t *testing.T) {
+	done := make(chan struct{})
+	go func() {
+		New(Config{Mode: "managed", NetworkName: "net"}).Stop()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("未启动过子进程的 Stop 不应等待")
+	}
+}
+
+// TestSupervisorStopKillsStubbornChild 验证兜底强杀:子进程忽略 SIGINT 时,Stop
+// 等待超时后必须 Kill 并回收 —— 否则遗留无人监管的孤儿占用二进制/端口,
+// 违背「返回时已回收」契约(升级换二进制/服务交回 SCM 均依赖此保证)。
+func TestSupervisorStopKillsStubbornChild(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows 路径 stopSignal 即 Kill,无温和信号失败场景")
+	}
+	sh, err := exec.LookPath("sh")
+	if err != nil {
+		t.Skip("无 sh")
+	}
+	grace := stopReapGrace
+	stopReapGrace = 300 * time.Millisecond
+	defer func() { stopReapGrace = grace }()
+
+	sup := New(Config{Mode: "managed", NetworkName: "net", Hostname: "t",
+		CorePath: sh, RPCAddr: "127.0.0.1:15998"})
+	sup.argsFn = func() []string {
+		return []string{"-c", `trap '' INT TERM; while :; do sleep 0.1; done`}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := sup.Start(ctx); err != nil {
+		t.Fatalf("Start:%v", err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for !sup.Snapshot().Running && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	done := make(chan struct{})
+	go func() { sup.Stop(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Stop 应在超时兜底强杀后返回")
+	}
+	// 子进程须真正终止并被回收:回收后 wait 已清掉进程表项,signal 0 报 ESRCH。
+	pid := sup.PID()
+	if pid <= 0 {
+		t.Fatal("未记录子进程 PID")
+	}
+	deadline = time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if err := syscall.Kill(pid, 0); err != nil {
+			return // 进程已不存在:强杀生效且已回收
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("子进程 %d 在 Stop 返回后仍存活", pid)
 }
 
 // TestBuildArgsNetworkDirRemoved 验证不再传 --network-directory:v2.6.4 已移除该旗子,

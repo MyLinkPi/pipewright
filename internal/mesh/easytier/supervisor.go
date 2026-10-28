@@ -13,6 +13,7 @@ package easytier
 import (
 	"context"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -130,12 +131,21 @@ type Supervisor struct {
 	adoptedPID int
 	adoptedAt  time.Time
 
-	mu        sync.Mutex
-	cmd       *exec.Cmd
-	stopped   bool
-	lastErr   string
-	startedAt time.Time
-	restarts  int
+	mu sync.Mutex
+	// cmd/childExited/lastPID 全部由 mu 保护;托管采 Start→Wait 拆分,
+	// 保证 cmd.Process 的写入(Start 内)也在持 mu 时完成(若跨 cmd.Run/Wait
+	// 持锁,Stop 将无法取锁发信号;不持锁则 Stop/快照与 Start 内部写竞态)。
+	cmd         *exec.Cmd
+	lastPID     int           // 最近一次子进程 PID(Stop 兜底强杀与测试用)
+	childExited chan struct{} // 最近一次托管子进程已被回收(Run 返回)时关闭;收养态恒已关
+	stopped     bool
+	lastErr     string
+	startedAt   time.Time
+	restarts    int
+
+	// argsFn 生成启动参数(恒为 cfg.args;留作测试钩子,验证 Stop 对不响应
+	// 温和信号的子进程兜底强杀)。nil 回落 cfg.args。
+	argsFn func() []string
 }
 
 // New 构造监督器(不启动;Start 拉起)。
@@ -143,7 +153,9 @@ func New(cfg Config) *Supervisor {
 	if cfg.RPCAddr == "" {
 		cfg.RPCAddr = "127.0.0.1:15888"
 	}
-	return &Supervisor{cfg: cfg, done: make(chan struct{})}
+	exited := make(chan struct{})
+	close(exited) // 未启动过子进程:视为已退出,Stop 不等待
+	return &Supervisor{cfg: cfg, done: make(chan struct{}), childExited: exited}
 }
 
 // NewAdopted 构造收养态监督器:沿用既有 easytier-core(升级/服务重启遗留的孤儿,
@@ -159,6 +171,14 @@ func NewAdopted(cfg Config, pid int) *Supervisor {
 // args 生成 easytier-core 参数(固定 RPC portal 端口便于本机状态查询)。
 func (c Config) args() []string {
 	return buildArgs(c, probeHelp(c.CorePath))
+}
+
+// args 取启动参数(测试可经 argsFn 注入;生产恒为 cfg.args)。
+func (s *Supervisor) args() []string {
+	if s.argsFn != nil {
+		return s.argsFn()
+	}
+	return s.cfg.args()
 }
 
 // Args 导出该配置将生成的 easytier-core 参数(收养比对:与孤儿进程命令行逐旗子
@@ -370,7 +390,7 @@ func (s *Supervisor) supervise(ctx context.Context) {
 			s.mu.Unlock()
 			return
 		}
-		cmd := exec.CommandContext(ctx, s.cfg.CorePath, s.cfg.args()...)
+		cmd := exec.CommandContext(ctx, s.cfg.CorePath, s.args()...)
 		// 密钥经 argv 传递是 EasyTier 的既定接口;输出里含密钥的概率低,但为稳妥丢弃子进程
 		// stdout/stderr 的内容,只在内部记「退出码/时刻」,不透传到平台日志。
 		cmd.Stdout = nil
@@ -380,14 +400,34 @@ func (s *Supervisor) supervise(ctx context.Context) {
 			_ = os.MkdirAll(s.cfg.NetworkDir, 0o755)
 			cmd.Dir = s.cfg.NetworkDir
 		}
+		// 先置新 childExited 再启动:Stop 任何时刻取锁都能见到与当前 cmd 匹配的通道。
+		s.childExited = make(chan struct{})
 		s.cmd = cmd
 		s.startedAt = time.Now()
+		err := cmd.Start() // cmd.Process 的写入在此、在持 mu 时完成
+		if err != nil {
+			s.cmd = nil
+			s.lastErr = err.Error()
+			s.restarts++
+			s.mu.Unlock()
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(backoff):
+			}
+			if backoff < 30*time.Second {
+				backoff *= 2
+			}
+			continue
+		}
+		s.lastPID = cmd.Process.Pid
 		s.mu.Unlock()
 
-		err := cmd.Run()
+		err = cmd.Wait()
 
 		s.mu.Lock()
 		s.cmd = nil
+		close(s.childExited) // 置于 Stop 取锁之前:等待方拿锁时必能见到已关闭的通道
 		if err != nil {
 			s.lastErr = err.Error()
 			s.restarts++
@@ -411,28 +451,72 @@ func (s *Supervisor) supervise(ctx context.Context) {
 	}
 }
 
+// stopReapGrace 是 Stop 温和信号后等待子进程退出的上限,超时后强杀并再等回收;
+// 变量化供测试缩短等待。
+var stopReapGrace = 8 * time.Second
+
 // Stop 停止托管对象并不再拉起(配置变更后由装配层重建监督器)。
+// 返回时保证子进程已退出并被回收(温和信号 → 限时等待 → 兜底强杀):调用方
+// (如升级替换 easytier 二进制、服务交回 SCM)据此可安全操作被占用的文件/端口。
 func (s *Supervisor) Stop() {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.stopped = true
 	if s.adoptedPID != 0 {
-		// 收养对象非子进程:无法 SIGINT 优雅退出,直接终止。调用场景(设置停用/
-		// 参数变更/失联回收)均以停止为目的;实例身份已持久化于 network-directory,
-		// 需要时重拉即恢复原虚拟 IP。找不到(已死)视为已完成。
+		// 收养对象非子进程:无法优雅信号线,直接终止。调用场景(设置停用/
+		// 参数变更/失联回收)均以停止为目的。找不到(已死)视为已完成。
 		if p, err := os.FindProcess(s.adoptedPID); err == nil {
 			_ = p.Kill()
 		}
+		s.mu.Unlock()
 		return
 	}
+	var proc *os.Process
+	var exited chan struct{}
 	if s.cmd != nil && s.cmd.Process != nil {
-		_ = s.cmd.Process.Signal(os.Interrupt)
-		// 优雅退出窗口;超时强杀。
-		go func(p *os.Process) {
-			time.Sleep(5 * time.Second)
-			_ = p.Kill()
-		}(s.cmd.Process)
+		// 子进程仍存活(childExited 未关)才发温和信号(Windows 无进程间信号,
+		// stopSignal 内部直接强杀);已退出的旧 cmd 引用不再碰。
+		select {
+		case <-s.childExited:
+		default:
+			proc = s.cmd.Process
+			_ = stopSignal(proc)
+			exited = s.childExited
+		}
 	}
+	s.mu.Unlock()
+	if exited == nil {
+		// 无在管子进程(未启动/已回收):直接返回。
+		return
+	}
+	select {
+	case <-exited:
+	case <-time.After(stopReapGrace):
+		// 子进程忽略温和信号:兜底强杀并再等回收。不能只等超时就直接返回 ——
+		// 那样违背「返回时已回收」的契约,遗留无人监管的孤儿占用二进制/端口。
+		// (exec.CommandContext 的强杀不可依赖:宿主主进程退出后其 kill goroutine 已不存在。)
+		if proc == nil {
+			if p, err := os.FindProcess(s.PID()); err == nil {
+				proc = p
+			}
+		}
+		if proc != nil {
+			_ = proc.Kill()
+		}
+		select {
+		case <-exited:
+		case <-time.After(stopReapGrace):
+			if proc != nil {
+				log.Printf("easytier: 子进程 %d 强制终止后仍未回收(可能仍在退出中)", proc.Pid)
+			}
+		}
+	}
+}
+
+// PID 返回最近一次托管子进程的 PID(0 = 从未启动)。
+func (s *Supervisor) PID() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.lastPID
 }
 
 // Runtime 是托管进程的运行快照(状态页展示)。

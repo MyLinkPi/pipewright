@@ -189,7 +189,7 @@ docker run -d -p 8080:8080 -v pipewright-data:/data \
 
 > **⚠️ Note for SSH tunnel users (known issue)**: a Docker container restart terminates **all** processes inside the container — image swaps via `docker compose up -d`, host reboots, container crashes — killing the tunnel helper child processes and dropping every connection being forwarded through them (tunnels are rebuilt automatically once the container is back, but there is an outage window). **If you rely on always-on SSH tunnels (e.g. a local forward to a database port, or a remote reverse forward), prefer binary / source deployment** (forms ①② or "Build from source"): under systemd supervision the tunnel processes are independent of the platform process, so platform restarts and one-click self-upgrades never interrupt them.
 
-### ⑤ Cluster client for Windows 11 (`pwclient`)
+### ⑤ Cluster client (`pwclient`: Windows tray + web UI; Linux/macOS foreground UI)
 
 Join a Win11 machine into the cluster network (EasyTier mesh) with freely configurable
 subnet routes — remote subnets are reachable through the node that advertises them, with
@@ -198,12 +198,23 @@ built-in userspace NAT so **no return routes are needed inside those subnets**.
 1. **Server side** (admin UI → *Settings → Cluster*): add the CIDRs this node can reach
    under "Subnet proxy CIDRs" (e.g. `192.168.30.0/24`), then click **Export client config**
    to download `pipewright-client.yaml` (contains the plaintext network secret — keep it safe).
-2. **Client side**: grab `pwclient_windows_amd64.zip` from the release (or `make build-client`),
-   unzip, run `pwclient.exe` — the tray app guides you through installing the background
-   service (one UAC prompt; auto-connects on boot without a login prompt) and importing the YAML.
-3. **Routes**: leave the route list empty to route **all** advertised subnets through the
+2. **Client side**: **Windows** — grab `pwclient_windows_amd64.zip` from the release (or
+   `make build-client`), unzip, run `pwclient.exe`: the tray icon plus a WebView2 main window
+   (falls back to an Edge `--app` window or the default browser when the WebView2 runtime is
+   missing) guides you through installing the background service (one UAC prompt; auto-connects
+   on boot without a login prompt) and shows the whole current configuration.
+   **Linux/macOS** — build from source (`make build-client-all`) and run `./pwclient ui`: the core
+   runs in the foreground and the same UI opens in your browser (no system service, tray or
+   login autostart on those platforms).
+3. **The configuration is visible and editable field-by-field**: the UI loads `GET /api/config`
+   on start, so you can inspect the complete config and change a single field (peers, virtual IP,
+   hostname, EasyTier RPC, routes, SOCKS5/exit nodes, Aliyun security groups, ...) and save only
+   that card — only the changed keys are submitted. Importing the exported YAML is a shortcut,
+   not the only path. Saves apply immediately (the mesh may reconnect briefly); secrets are
+   write-only and never echoed back.
+4. **Routes**: leave the route list empty to route **all** advertised subnets through the
    tunnel, or list specific CIDRs to pin exactly which subnets this machine routes.
-4. **Mutual backup for one subnet**: multiple nodes may advertise the **same** CIDR — e.g.
+5. **Mutual backup for one subnet**: multiple nodes may advertise the **same** CIDR — e.g.
    two environments that can both reach `192.168.30.0/24`. EasyTier picks a single gateway
    per CIDR on each node (shortest path) and switches to the remaining advertisers
    automatically when that gateway goes offline (measured in seconds on 2.6.4). Caveats:
@@ -212,15 +223,28 @@ built-in userspace NAT so **no return routes are needed inside those subnets**.
    (single winner per CIDR), and a node never routes its own advertised CIDR through a
    remote peer (upstream loop guard). The cluster page and `pwclient status` show the
    primary and backup gateways per CIDR.
-5. **Local SOCKS5 proxy (optional)**: enable it in the client (default port 1080) and point
+6. **Local SOCKS5 proxy (optional)**: enable it in the client (default port 1080) and point
    any app's proxy at `socks5://127.0.0.1:1080` — that app then reaches the virtual network
    and advertised subnets through the tunnel without touching system routes. Note: no auth
    (local-machine only — the client adds a firewall rule blocking LAN access to the port),
    and domain names resolve via the local DNS, so prefer IPs for internal hosts.
+7. **Upgrades**: the client has a **Check for updates / Upgrade to vX** action; the CLI
+   equivalents are `pwclient upgrade --check` (read-only, no admin), `pwclient upgrade`
+   (one UAC prompt: stops the service, swaps the exe, refreshes the bundled EasyTier `bin/`,
+   restarts the service) and `--tag vX.Y.Z` / `--force` for pinning or reinstalling.
+   No mirror configuration is required: when GitHub is unreachable the client automatically
+   falls back to `https://gh-proxy.com/https://github.com` (downloads are still verified
+   against `checksums.txt`). Set `PIPEWRIGHT_RELEASE_MIRROR` only if you want to pin a
+   specific mirror — an explicitly configured mirror is used **exclusively** (no fallback).
 
-Diagnostics CLI: `pwclient status`, `pwclient doctor`. The client never holds a node signing
-key — cluster APIs (`/api/mesh/*`) stay protected by node signatures + ACLs; a client with
-the network secret only ever gets network-layer reach, the same trust level as a full node.
+Diagnostics CLI: `pwclient status`, `pwclient doctor`, `pwclient upgrade --check`. The client
+never holds a node signing key — cluster APIs (`/api/mesh/*`) stay protected by node
+signatures + ACLs; a client with the network secret only ever gets network-layer reach,
+the same trust level as a full node.
+
+Build and test the client: `make build-client` (Windows amd64/arm64, embedded UI),
+`make build-client-all` (Windows/Linux/macOS), and `make client-e2e` (Linux: starts a real
+client with a temporary data dir and runs the Playwright UI regression suite).
 
 ### Build from source
 

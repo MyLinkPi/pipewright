@@ -1,20 +1,25 @@
-// pwclient 是 pipewright 集群客户端(首要支持 Windows 11):以 Windows 服务常驻组网
-// (EasyTier 托管子进程 + 可限定网段路由),以系统托盘 GUI 管理。
+// pwclient 是 pipewright 集群客户端:Windows 以托盘 + WebView2 主窗口 + 后台 Windows 服务
+// 常驻组网(EasyTier 托管子进程 + 可限定网段路由);Linux/macOS 以前台进程 + 系统浏览器
+// 承载同一套 Web 界面(不做系统服务/托盘)。
 //
 // 子命令:
 //
-//	pwclient                  启动托盘 GUI(Windows)
+//	pwclient                  启动客户端界面(Windows:托盘 + 主窗口;其他:前台 + 浏览器)
+//	pwclient ui               同上(--no-open 仅打印界面地址、--ui-listen 指定监听地址)
 //	pwclient service run      作为 Windows 服务运行(SCM 调起;数据面 + IPC)
-//	pwclient service install  安装并启动服务(需管理员;经托盘按钮以 runas 提权调起)
+//	pwclient service install  安装并启动服务(需管理员;界面/托盘经 UAC 提权调起)
+//	pwclient service start    启动服务
 //	pwclient service stop     停止服务
 //	pwclient service uninstall 卸载服务
 //	pwclient console          前台直跑核心(调试;不经服务,需管理员创建虚拟网卡)
 //	pwclient status           打印运行状态(经服务 IPC)
 //	pwclient doctor           环境自检(目录/配置/二进制/服务/链路逐项排查)
+//	pwclient upgrade [--check] [--tag vX.Y.Z] [--force]
+//	                          检查并升级到最新版(替换程序 + 重启服务)
 //	pwclient version          版本信息
 //
 // 数据目录:env PIPEWRIGHT_CLIENT_DATA 覆盖,默认 %ProgramData%\pipewright-client
-// (config.yaml / bin/easytier-*.exe / logs/ / ipc.json)。
+// (config.yaml / bin/easytier-*.exe / logs/ / ipc.json / ui.json / upgrade-status.json)。
 package main
 
 import (
@@ -52,6 +57,10 @@ func main() {
 		filtered = append(filtered, a)
 	}
 	args = filtered
+	// 尽力清理上次升级留下的 .old-* / .new-*(运行中的旧镜像仍占用时删除失败,忽略)。
+	if exe, err := os.Executable(); err == nil {
+		pwclient.CleanupStaleExecutables(filepath.Dir(exe), filepath.Base(exe))
+	}
 	cmd := "tray"
 	if len(args) > 0 {
 		cmd = args[0]
@@ -63,6 +72,8 @@ func main() {
 	switch cmd {
 	case "tray":
 		runTray()
+	case "ui":
+		runUICmd(args[1:])
 	case "service":
 		serviceCmd(args[1:])
 	case "console":
@@ -71,6 +82,8 @@ func main() {
 		runStatus()
 	case "doctor":
 		runDoctor()
+	case "upgrade":
+		runUpgrade(args[1:])
 	case "version", "-v", "--version":
 		info := version.Get()
 		fmt.Printf("pwclient %s (commit %s, %s, %s/%s)\n", info.Version, info.Commit, info.Date, info.Platform, info.GoVersion)
@@ -84,16 +97,19 @@ func main() {
 }
 
 func usage() {
-	fmt.Print(`pwclient — pipewright 集群客户端(Win11)
+	fmt.Print(`pwclient — pipewright 集群客户端(Windows / Linux / macOS)
 
 用法:
-  pwclient                     启动托盘 GUI
+  pwclient                     启动客户端界面(Windows:托盘 + 主窗口;Linux/macOS:前台 + 浏览器)
+  pwclient ui                  同上(可加 --no-open 仅打印界面地址、--ui-listen 127.0.0.1:18080)
   pwclient service install     安装并启动后台服务(需管理员)
+  pwclient service start       启动后台服务
   pwclient service stop        停止服务
   pwclient service uninstall   卸载服务
   pwclient console             前台直跑核心(调试,需管理员)
   pwclient status              查看运行状态
   pwclient doctor             环境自检
+  pwclient upgrade             检查并升级到最新版(可加 --check 仅检查、--tag vX.Y.Z 指定版本)
   pwclient version             版本信息
 
 数据目录(PIPEWRIGHT_CLIENT_DATA 可覆盖):
@@ -112,6 +128,9 @@ func dataDir() string {
 type core struct {
 	rt     *pwclient.Runtime
 	cancel context.CancelFunc
+	// stopWait 在核心彻底退出(对账循环收尾停掉全部托管 EasyTier 子进程并确保回收)
+	// 后关闭;服务停止分支等它落定再向 SCM 报 Stopped,避免孤儿子进程占用二进制文件。
+	stopWait chan struct{}
 }
 
 // pwclientLogRotateBytes 是日志文件的轮转阈值(超 10MB 时启动一轮换:旧日志改名为 .1,
@@ -159,7 +178,13 @@ func runCore(runningAs string) (*core, error) {
 		cancel()
 		return nil, fmt.Errorf("启动服务通道失败:%w", err)
 	}
-	return &core{rt: rt, cancel: cancel}, nil
+	stopWait := make(chan struct{})
+	go func() {
+		<-ctx.Done()
+		rt.WaitStop()
+		close(stopWait)
+	}()
+	return &core{rt: rt, cancel: cancel, stopWait: stopWait}, nil
 }
 
 // runConsole 前台直跑(调试形态):Ctrl+C 退出。
@@ -172,6 +197,12 @@ func runConsole() {
 	fmt.Println("pwclient 核心已在前台运行(Ctrl+C 退出)。数据目录:", dataDir())
 	waitInterrupt()
 	c.cancel()
+	// 与 UI/服务形态同款:等托管子进程回收落定再退出进程,否则遗留孤儿 core。
+	select {
+	case <-c.stopWait:
+	case <-time.After(15 * time.Second):
+		log.Println("[pwclient] 等待核心退出超时,强制退出")
+	}
 }
 
 // waitInterrupt 阻塞到 Ctrl+C / SIGTERM。
@@ -263,6 +294,7 @@ func printSnapshot(snap *pwclient.StatusSnapshot) {
 		fmt.Printf("多出口代理: 127.0.0.1:%d(%s,%s)\n", p.Port, exit, state)
 	}
 	fmt.Println("EasyTier:  ", binState(snap))
+	fmt.Println("客户端版本:  ", orDash(snap.ClientVersion))
 }
 
 // linkKind 返回链路的直连/中继描述(与 GUI 对端列表一致)。

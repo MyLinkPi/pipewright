@@ -55,10 +55,16 @@ type Checker struct {
 
 // NewChecker 返回默认 Checker(升级源经 ResolveSource 由 env 决定,10s 超时)。
 func NewChecker() *Checker {
-	return &Checker{
-		client: &http.Client{Timeout: 10 * time.Second},
-		now:    time.Now,
+	return NewCheckerWithClient(nil)
+}
+
+// NewCheckerWithClient 用给定 HTTP 客户端构造 Checker(nil = 默认 10s 超时)。
+// 供需要注入测试用 Transport/超时的调用方(如 pwclient 升级的 httptest 单测)。
+func NewCheckerWithClient(client *http.Client) *Checker {
+	if client == nil {
+		client = &http.Client{Timeout: 10 * time.Second}
 	}
+	return &Checker{client: client, now: time.Now}
 }
 
 // SetSourceProvider 注入动态升级源(nil 回落 env 官方源)。供 httpapi 在启动时把
@@ -209,7 +215,12 @@ func htmlToText(h string) string {
 // 网络/解析失败不返回 error —— 而是在 UpdateInfo.CheckError 里带上原因(始终附当前版本),
 // 让上层端点稳定返回 200、前端优雅降级。
 func (c *Checker) Check(ctx context.Context) UpdateInfo {
-	src := c.src(ctx)
+	return c.CheckSource(ctx, c.src(ctx))
+}
+
+// CheckSource 针对指定源做一次检查(带 TTL 缓存,key = APIBase+Repo)。
+// 命中未过期缓存则直接返回;否则查该源。
+func (c *Checker) CheckSource(ctx context.Context, src Source) UpdateInfo {
 	key := src.cacheKey()
 
 	c.mu.Lock()
@@ -232,6 +243,24 @@ func (c *Checker) Check(ctx context.Context) UpdateInfo {
 		c.mu.Unlock()
 	}
 	return info
+}
+
+// CheckAny 按序尝试候选源,返回**首个** `CheckError == ""` 的结果(含「源上暂无 release」
+// 的 404 成功态);全部失败返回最后一个结果(保留可读错误)。用于 GitHub 不可达/限流时
+// 自动回退到镜像/公共代理,调用方无需自己拼源。
+func (c *Checker) CheckAny(ctx context.Context, sources []Source) UpdateInfo {
+	if len(sources) == 0 {
+		return UpdateInfo{Current: Version, CheckError: "升级源未配置"}
+	}
+	var last UpdateInfo
+	for _, src := range sources {
+		info := c.CheckSource(ctx, src)
+		if info.CheckError == "" {
+			return info
+		}
+		last = info
+	}
+	return last
 }
 
 func (c *Checker) fetch(ctx context.Context, src Source) UpdateInfo {
@@ -300,6 +329,10 @@ func (c *Checker) fetch(ctx context.Context, src Source) UpdateInfo {
 	}
 	return out
 }
+
+// IsComparable 报告版本串是否为可比较的语义版本(dev/空等开发态返回 false)。
+// 调用方(如 pwclient upgrade CLI)据此决定是否需要 --tag/--force。
+func IsComparable(v string) bool { return isComparable(v) }
 
 // isComparable 判断版本串是否为可比较的语义版本(形如 v1.2.3 / 1.2.3,允许 -prerelease 后缀)。
 // dev / none / 空 等开发态返回 false。

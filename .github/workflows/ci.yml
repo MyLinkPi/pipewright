@@ -14,11 +14,14 @@ jobs:
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version: '1.27'
-      # go:embed 需要 web/dist 存在;后端 job 用占位即可(真实产物在 frontend job 验证)
-      - name: ensure web/dist placeholder
+      # go:embed 需要 web/dist 与 uiserver/dist 存在;backend job 用占位即可(真实产物在
+      # frontend job 验证)
+      - name: ensure embed placeholders
         run: |
           mkdir -p web/dist
           [ -f web/dist/index.html ] || echo '<!doctype html><div id="app"></div>' > web/dist/index.html
+          mkdir -p internal/pwclient/uiserver/dist
+          [ -f internal/pwclient/uiserver/dist/index.html ] || echo '<!doctype html><div id="app"></div>' > internal/pwclient/uiserver/dist/index.html
       - name: gofmt check
         run: |
           out="$(gofmt -l cmd internal embed.go)"
@@ -35,11 +38,9 @@ jobs:
             for goarch in amd64 arm64; do
               echo "== pipewright $goos/$goarch"
               CGO_ENABLED=0 GOOS=$goos GOARCH=$goarch go build -o /dev/null ./cmd/pipewright
+              echo "== pwclient $goos/$goarch"
+              CGO_ENABLED=0 GOOS=$goos GOARCH=$goarch go build -o /dev/null ./cmd/pwclient
             done
-          done
-          for goarch in amd64 arm64; do
-            echo "== pwclient windows/$goarch"
-            CGO_ENABLED=0 GOOS=windows GOARCH=$goarch go build -o /dev/null ./cmd/pwclient
           done
 
   frontend:
@@ -51,6 +52,31 @@ jobs:
           node-version: '24'
       - run: cd web && npm ci
       - run: cd web && npm run build
+      # 客户端前端(webclient/):lint + 类型检查 + 单测 + 构建
+      - run: cd webclient && npm ci
+      - run: cd webclient && npm run lint
+      - run: cd webclient && npm run typecheck
+      - run: cd webclient && npm run test
+      - run: cd webclient && npm run build
+
+  client-e2e:
+    runs-on: ubuntu-latest
+    needs: [frontend]
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: '1.27'
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '24'
+      - run: cd webclient && npm ci
+      - run: cd webclient && npm run build
+      - run: cd webclient && npx playwright install --with-deps chromium
+      - name: build linux client
+        run: CGO_ENABLED=0 go build -o pwclient ./cmd/pwclient
+      - name: playwright e2e
+        run: bash scripts/client-e2e.sh
 
   mem-budget:
     runs-on: ubuntu-latest

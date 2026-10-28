@@ -14,6 +14,12 @@ const (
 
 	githubAPIBase = "https://api.github.com"
 	githubWebBase = "https://github.com"
+
+	// FallbackPrefixProxy 是未配置镜像时 GitHub 不可达的公共前缀式代理兜底(gh-proxy 系):
+	// base 内嵌完整上游 origin,经 splitPrefixProxy 自动派生 API 与网页/下载两类上游。
+	// 仅在用户**没有**显式配置镜像时启用 —— 属零配置可用性兜底,不是信任源(完整性仍由
+	// sha256 校验和保障)。
+	FallbackPrefixProxy = "https://gh-proxy.com/https://github.com"
 )
 
 // DefaultRepo 是检查更新所查询的默认仓库(owner/name)。goreleaser 发版时经 -X 注入为
@@ -130,6 +136,23 @@ func ResolveSource(mirror string) Source {
 func ResolveMirror(configured string) (Source, MirrorOrigin) {
 	_, origin := resolveMirrorBase(configured)
 	return ResolveSource(configured), origin
+}
+
+// CandidateSources 返回本次升级按序尝试的源列表:
+//   - 显式配置了镜像(config 库内配置或 env)→ 仅该镜像(尊重用户选择,不回落公共代理);
+//   - 未配置 → GitHub 官方,其次 FallbackPrefixProxy(gh-proxy 公共代理)。
+//
+// 供 pwclient 升级这类「客户端内无镜像设置、必须零配置可用」的场景使用;
+// 平台服务端的 ResolveSource 单源语义保持不变。
+func CandidateSources(mirror string) []Source {
+	base, origin := resolveMirrorBase(mirror)
+	if origin != MirrorOriginDefault {
+		return []Source{buildSource(releaseRepo(), base)}
+	}
+	return []Source{
+		buildSource(releaseRepo(), ""),
+		buildSource(releaseRepo(), FallbackPrefixProxy),
+	}
 }
 
 // envMirror 读部署级兜底镜像 PIPEWRIGHT_RELEASE_MIRROR(优先级低于库内配置:设置界面
