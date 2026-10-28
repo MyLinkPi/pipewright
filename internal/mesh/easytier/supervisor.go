@@ -257,6 +257,9 @@ type helpFlags struct {
 	exitNodes      bool
 	enableExitNode bool
 	socks5         bool
+	// secureMode 探测 --secure-mode(v2.6.0+)。服务端已开启 Secure Mode 时客户端也必须
+	// 同模式;旧二进制传该旗子会被 clap 拒绝并秒退,须提前给出可读错误。
+	secureMode bool
 }
 
 // probeHelp 以 5s 超时跑一次 --help 并解析旗子(结果经 probeCache 缓存,每路径只跑一次)。
@@ -292,6 +295,7 @@ func parseHelpFlags(out string, ok bool) helpFlags {
 	flags.socks5 = strings.Contains(out, "--socks5")
 	flags.exitNodes = strings.Contains(out, "--exit-nodes")
 	flags.enableExitNode = strings.Contains(out, "--enable-exit-node")
+	flags.secureMode = strings.Contains(out, "--secure-mode")
 	return flags
 }
 
@@ -312,6 +316,9 @@ func SupportsExitNodes(corePath string) bool { return probeHelp(corePath).exitNo
 
 // SupportsEnableExitNode 探测是否提供 --enable-exit-node(允许本节点充当出口)。
 func SupportsEnableExitNode(corePath string) bool { return probeHelp(corePath).enableExitNode }
+
+// SupportsSecureMode 探测 easytier-core 是否提供 --secure-mode(需 v2.6.0+)。
+func SupportsSecureMode(corePath string) bool { return probeHelp(corePath).secureMode }
 
 // Start 拉起子进程并进入监督循环(退出按退避重启;ctx 取消或 Stop 后退出循环)。
 // 运行在独立 goroutine;Start 本身只在参数明显非法时同步报错。
@@ -342,6 +349,9 @@ func (s *Supervisor) Start(ctx context.Context) error {
 	}
 	if s.cfg.Socks5Port > 0 && !SupportsSocks5(s.cfg.CorePath) {
 		return fmt.Errorf("easytier: %s 不支持 --socks5,无法开启本地 SOCKS5 服务(请升级二进制)", CoreBinary())
+	}
+	if (s.cfg.SecureMode || s.cfg.Credential != "") && !SupportsSecureMode(s.cfg.CorePath) {
+		return fmt.Errorf("easytier: %s 不支持 --secure-mode(需 v2.6.0+),无法与服务端 Secure Mode 对齐;请升级/删除旧二进制后重试", CoreBinary())
 	}
 	if s.cfg.Socks5Port < 0 || s.cfg.Socks5Port > 65535 {
 		return fmt.Errorf("easytier: socks5 端口 %d 超出范围(1-65535)", s.cfg.Socks5Port)

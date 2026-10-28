@@ -262,8 +262,9 @@ func (rt *Runtime) reconcile(ctx context.Context) {
 	rt.supervisor = sup
 	rt.supervisorKey = key
 	rt.mu.Unlock()
-	log.Printf("[pwclient] EasyTier 已启动(网络 %s,虚拟 IP %s,peers %d,限定网段 %d,socks5 %s)",
-		cfg.Join.NetworkName, orDHCP(cfg.Join.VirtualIP), len(cfg.Join.Peers), len(cfg.Routes), orOff(socks5Port(cfg)))
+	log.Printf("[pwclient] EasyTier 已启动(网络 %s,虚拟 IP %s,peers %d,限定网段 %d,socks5 %s,secureMode %s)",
+		cfg.Join.NetworkName, orDHCP(cfg.Join.VirtualIP), len(cfg.Join.Peers), len(cfg.Routes), orOff(socks5Port(cfg)),
+		orOnOff(cfg.Join.SecureMode || cfg.Join.Credential != ""))
 }
 
 // reconcileProxies 对账多出口代理集合:每条配置(本地端口 + 出口列表)对应一个独立
@@ -358,6 +359,15 @@ func orOff(port int) string {
 		return "关"
 	}
 	return fmt.Sprintf("127.0.0.1:%d", port)
+}
+
+// orOnOff 是布尔开关的日志展示(启动日志用;便于排查「配置要求 Secure Mode 但实际
+// 未传 --secure-mode」这类模式不一致问题)。
+func orOnOff(v bool) string {
+	if v {
+		return "开(--secure-mode)"
+	}
+	return "关"
 }
 
 func orDHCP(vip string) string {
