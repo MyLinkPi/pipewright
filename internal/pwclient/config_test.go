@@ -7,6 +7,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/huangchengsir/pipewright/internal/mesh/easytier"
 )
 
 func TestNormalizeValidatesAndFillsDefaults(t *testing.T) {
@@ -194,6 +196,31 @@ routes:
 	if reloaded.Join.Credential != "NEW-CRED" || reloaded.Join.NetworkSecret != "sec" {
 		t.Fatalf("凭据与密钥应可并存落盘:%+v", reloaded.Join)
 	}
+}
+
+// TestExportToEasyTierArgsSecureMode 端到端验证:平台导出 YAML(secureMode: true)经
+// 客户端导入后,最终生成的 easytier 参数必须显式包含 --secure-mode true —— 这是
+// 「服务端开启 Secure Mode 后客户端仍以旧模式组网、数据面被丢弃」的修复闭环。
+func TestExportToEasyTierArgsSecureMode(t *testing.T) {
+	join, _, _, err := ImportExport([]byte(exportSample))
+	if err != nil {
+		t.Fatalf("import: %v", err)
+	}
+	cfg := easytier.Config{
+		NetworkName:   join.NetworkName,
+		NetworkSecret: join.NetworkSecret,
+		Credential:    join.Credential,
+		SecureMode:    join.SecureMode,
+		Hostname:      "client",
+		RPCAddr:       "127.0.0.1:15889",
+	}
+	args := cfg.Args()
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] == "--secure-mode" && args[i+1] == "true" {
+			return
+		}
+	}
+	t.Fatalf("导入 secureMode: true 后未能生成 --secure-mode true:%v", args)
 }
 
 func TestRuntimeImportJoin(t *testing.T) {

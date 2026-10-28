@@ -22,6 +22,7 @@ func TestParseHelpFlags(t *testing.T) {
 		{"历史单数无socks5", "  --proxy-network <CIDR>", true,
 			helpFlags{proxyNetwork: "--proxy-network"}},
 		{"两者都没有", "--network-name <NAME>", true, helpFlags{}},
+		{"安全模式", "--secure-mode [<SECURE_MODE>]", true, helpFlags{secureMode: true}},
 		{"探测失败", "--proxy-networks whatever", false, helpFlags{}},
 	}
 	for _, c := range cases {
