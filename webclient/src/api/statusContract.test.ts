@@ -54,4 +54,45 @@ describe('/api/status 字段契约(与 Go 序列化一致)', () => {
     expect(goPayload).not.toContain('"easyTier"')
     expect(goPayload).not.toContain('"EasyTier"')
   })
+
+  it('整棵键路径与 TS 声明对齐(任一侧改键名即红)', () => {
+    // 递归收集报文实际键路径(数组展开元素,不含下标)。
+    const paths = new Set<string>()
+    const walk = (prefix: string, v: unknown): void => {
+      if (Array.isArray(v)) {
+        for (const it of v) walk(prefix, it)
+        return
+      }
+      if (v && typeof v === 'object') {
+        for (const [k, sub] of Object.entries(v)) {
+          const p = prefix ? `${prefix}.${k}` : k
+          paths.add(p)
+          walk(p, sub)
+        }
+      }
+    }
+    walk('', JSON.parse(goPayload))
+    // 与 webclient/src/api/types.ts StatusSnapshot(含嵌套)逐一对应。
+    const expected = [
+      'configured', 'enabled', 'join', 'routes', 'socks5', 'proxies', 'supervisor',
+      'easytier', 'binaries', 'service', 'clientVersion', 'clientPath', 'securityGroup',
+      'join.networkName', 'join.hasSecret', 'join.hasCredential', 'join.secureMode', 'join.peers', 'join.virtualIp', 'join.hostname',
+      'socks5.exitNodes', 'socks5.enabled', 'socks5.port',
+      'supervisor.running', 'supervisor.lastErr', 'supervisor.restarts', 'supervisor.startedAt', 'supervisor.adopted',
+      'easytier.ok', 'easytier.err', 'easytier.selfIp', 'easytier.hostname', 'easytier.version',
+      'easytier.links', 'easytier.proxyCidrs', 'easytier.proxyRoutes',
+      'easytier.links.peerId', 'easytier.links.virtualIp', 'easytier.links.hostname', 'easytier.links.version',
+      'easytier.links.latencyMs', 'easytier.links.lossRate', 'easytier.links.rxBytes', 'easytier.links.txBytes',
+      'easytier.links.tunnel', 'easytier.links.relay', 'easytier.links.relayVia',
+      'easytier.proxyRoutes.vias', 'easytier.proxyRoutes.vias.ip', 'easytier.proxyRoutes.vias.name',
+      'easytier.proxyRoutes.vias.relay', 'easytier.proxyRoutes.vias.relayVia',
+      'binaries.corePath', 'binaries.cliPath', 'binaries.version', 'binaries.downloading', 'binaries.lastErr',
+      'service.runningAs', 'service.pid',
+      'securityGroup.configured', 'securityGroup.accessKeyId', 'securityGroup.hasSecret',
+      'securityGroup.groups', 'securityGroup.lastIp', 'securityGroup.lastRun', 'securityGroup.lastErr', 'securityGroup.results',
+    ]
+    for (const key of expected) {
+      expect(paths.has(key), `报文缺键 ${key}`).toBe(true)
+    }
+  })
 })

@@ -246,9 +246,15 @@ func NewStatusProvider(cliPath, rpcAddr string) *StatusProvider {
 	}
 }
 
-// newStatusProviderForTest 用注入 runner 构造(单测;不触真机 CLI)。
+// newStatusProviderForTest 用注入 runner 构造(包内单测;不触真机 CLI)。
 func newStatusProviderForTest(run cliRunner) *StatusProvider {
 	return &StatusProvider{run: run, shapeByVerb: map[string][]string{}}
+}
+
+// NewStatusProviderWithRunner 用外部注入的查询函数构造(供 pwclient 侧契约测试:
+// 把实录 CLI 输出灌进状态链,端到端校验 /api/status 的键名与形状)。生产路径不用。
+func NewStatusProviderWithRunner(query func(ctx context.Context, args []string) ([]byte, error)) *StatusProvider {
+	return &StatusProvider{run: cliRunner(query), shapeByVerb: map[string][]string{}}
 }
 
 // Get 返回状态快照(缓存窗口内即时返回;过期即触发后台单飞刷新并立即回旧值 ——
