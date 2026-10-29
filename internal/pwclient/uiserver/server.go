@@ -200,6 +200,9 @@ func (s *Server) handleStatic(w http.ResponseWriter, r *http.Request) {
 	}
 	if name == "index.html" {
 		w.Header().Set("Cache-Control", "no-store")
+		// 注入持久化主题到 <html data-theme>:首屏(JS 执行前)即为正确主题,
+		// 绕开随机端口下失效的 localStorage;no-store 已禁用缓存,覆写安全。
+		data = injectTheme(data, s.LoadTheme())
 	} else {
 		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 	}

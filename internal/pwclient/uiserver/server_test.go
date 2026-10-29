@@ -13,8 +13,9 @@ import (
 
 // fakeLocal 是 LocalActions 的测试桩。
 type fakeLocal struct {
-	info LocalInfo
-	err  error
+	info  LocalInfo
+	err   error
+	theme string // SetTheme 记录最近一次主题(供主题端点断言)
 }
 
 func (f *fakeLocal) Info(context.Context) (LocalInfo, error) { return f.info, f.err }
@@ -27,6 +28,10 @@ func (f *fakeLocal) Upgrade(context.Context, string) error    { return f.err }
 func (f *fakeLocal) Quit(context.Context) error               { return f.err }
 func (f *fakeLocal) OpenLog(context.Context) error            { return f.err }
 func (f *fakeLocal) RevealDataDir(context.Context) error      { return f.err }
+func (f *fakeLocal) SetTheme(_ context.Context, theme string) error {
+	f.theme = theme
+	return f.err
+}
 
 func startTestServer(t *testing.T) *Server {
 	t.Helper()

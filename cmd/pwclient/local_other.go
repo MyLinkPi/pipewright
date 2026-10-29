@@ -53,6 +53,9 @@ func (l *localActions) RevealDataDir(context.Context) error {
 	return openPath(dataDir())
 }
 
+// SetTheme 非 Windows 无原生标题栏可同步(界面跑在系统浏览器里),空操作;主题已由 uiserver 落盘。
+func (l *localActions) SetTheme(context.Context, string) error { return nil }
+
 // openPath 用系统默认程序打开文件或目录(后台收尸,避免长驻进程累积僵尸)。
 func openPath(path string) error {
 	cmd := "xdg-open"

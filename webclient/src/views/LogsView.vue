@@ -95,6 +95,9 @@ async function copyAll(): Promise<void> {
   padding: 10px 12px;
   border-radius: 10px;
   background: var(--color-term);
+  /* 终端底两主题恒为深色,正文必须用固定浅色:若沿用 body 的 --color-text,
+     浅色主题下会变成深字配深底(几乎不可读)。 */
+  color: var(--color-term-fg);
   border: 1px solid var(--color-border);
   font-size: 12px;
   line-height: 1.55;
@@ -116,5 +119,6 @@ async function copyAll(): Promise<void> {
 
 .empty {
   padding: 6px 0;
+  color: var(--color-term-muted);
 }
 </style>
