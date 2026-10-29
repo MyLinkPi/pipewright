@@ -85,6 +85,9 @@ vi=""
 if [ -n "$numeric" ]; then vi="${numeric}.0"; fi
 
 mkdir -p "$out"
+# 归一为绝对路径:不同 makensis 版本对相对 OutFile 的解析基准不一致(Ubuntu 26.04
+# 的 nsis 3.10 下 "./installer/..." 直接 Can't open output file,CI beta.3 即因此失败)。
+out="$(cd "$out" && pwd)"
 outfile="$out/pwclient_${version}_windows_${arch}_installer.exe"
 
 echo "==> makensis: $makensis"
