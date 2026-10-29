@@ -17,8 +17,8 @@ type fakeLocal struct {
 	err   error
 	theme string // SetTheme 记录最近一次主题(供主题端点断言)
 	// upTag/upUnstable 记录最近一次 Upgrade 的参数(供升级端点透传断言)。
-	upTag       string
-	upUnstable  bool
+	upTag      string
+	upUnstable bool
 }
 
 func (f *fakeLocal) Info(context.Context) (LocalInfo, error) { return f.info, f.err }
@@ -31,9 +31,9 @@ func (f *fakeLocal) Upgrade(_ context.Context, tag string, includeUnstable bool)
 	f.upTag, f.upUnstable = tag, includeUnstable
 	return f.err
 }
-func (f *fakeLocal) Quit(context.Context) error               { return f.err }
-func (f *fakeLocal) OpenLog(context.Context) error            { return f.err }
-func (f *fakeLocal) RevealDataDir(context.Context) error      { return f.err }
+func (f *fakeLocal) Quit(context.Context) error          { return f.err }
+func (f *fakeLocal) OpenLog(context.Context) error       { return f.err }
+func (f *fakeLocal) RevealDataDir(context.Context) error { return f.err }
 func (f *fakeLocal) SetTheme(_ context.Context, theme string) error {
 	f.theme = theme
 	return f.err
