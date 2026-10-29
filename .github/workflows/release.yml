@@ -55,6 +55,10 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # 同一 commit 挂多个 tag 时(如正式重复测试同一个提交),CI 里 git describe 自动
+          # 检 tag 会选错(实测 v2.0.0 与 v2.0.0-beta.7 同 commit 时选中 beta,产物 422
+          # already_exists)。显式指定事件 ref 为当前 tag,goreleaser 会直接采用。
+          GORELEASER_CURRENT_TAG: ${{ github.ref_name }}
 
   # Windows 安装包(NSIS)。goreleaser 的 nsis 打包是 Pro 专属,OSS 版不可用,故单列
   # 一个作业:release 作业发布后,下载刚产出的 pwclient_<ver>_windows_<arch>.zip,用原生
