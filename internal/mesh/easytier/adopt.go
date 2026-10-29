@@ -47,7 +47,7 @@ var valFlags = map[string]string{
 var sortedFlags = map[string]bool{"peers": true, "proxy": true, "manual-routes": true}
 
 // SameArgs 报告孤儿 argv 与期望 argv(buildArgs 产物)语义等价:跳过 argv[0],
-// 逐旗子比对值。只返回布尔,绝不打印参数(命令行含组网密钥)。
+// 逐旗子比对值。只返回布尔不输出参数;日志侧需要打印命令行时走 maskArgs 打码。
 func SameArgs(got, want []string) bool {
 	return sameFlagSet(parseArgv(got), parseArgv(want))
 }

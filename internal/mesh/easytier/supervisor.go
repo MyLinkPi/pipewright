@@ -63,7 +63,8 @@ func Locate(envPath, dataDir, name string) string {
 	return ""
 }
 
-// Config 是监督器启动参数(来自 mesh 设置;Secret 为明文,仅进程内使用,绝不落日志)。
+// Config 是监督器启动参数(来自 mesh 设置;Secret 为明文,仅进程内使用,落日志前
+// 须经 maskArgs/sensitive 打码,见 supervisor_log.go)。
 type Config struct {
 	Mode          string // managed | external
 	RPCAddr       string // easytier-cli --rpc-portal 目标(默认 127.0.0.1:15888)
@@ -391,10 +392,17 @@ func (s *Supervisor) supervise(ctx context.Context) {
 			return
 		}
 		cmd := exec.CommandContext(ctx, s.cfg.CorePath, s.args()...)
-		// 密钥经 argv 传递是 EasyTier 的既定接口;输出里含密钥的概率低,但为稳妥丢弃子进程
-		// stdout/stderr 的内容,只在内部记「退出码/时刻」,不透传到平台日志。
-		cmd.Stdout = nil
-		cmd.Stderr = nil
+		// 完整命令行与子进程输出都进平台日志;密钥/凭据由 maskArgs/sensitive 打码
+		// 后再落日志(仍不写入任何配置/状态文件,见 Config 注释)。
+		log.Printf("easytier: 启动 %s", strings.Join(maskArgs(s.cfg, cmd.Args), " "))
+		outPipe, err := logPipe(cmd, "stdout", s.cfg)
+		if err != nil {
+			log.Printf("easytier: %v(该路输出不进日志)", err)
+		}
+		errPipe, err := logPipe(cmd, "stderr", s.cfg)
+		if err != nil {
+			log.Printf("easytier: %v(该路输出不进日志)", err)
+		}
 		if s.cfg.NetworkDir != "" {
 			// 实例身份隔离:显式数据目录(旧版二进制无旗子时以 cwd 兜底)。
 			_ = os.MkdirAll(s.cfg.NetworkDir, 0o755)
@@ -404,7 +412,11 @@ func (s *Supervisor) supervise(ctx context.Context) {
 		s.childExited = make(chan struct{})
 		s.cmd = cmd
 		s.startedAt = time.Now()
-		err := cmd.Start() // cmd.Process 的写入在此、在持 mu 时完成
+		err = cmd.Start() // cmd.Process 的写入在此、在持 mu 时完成
+		// 子进程已继承管道写端(或 Start 失败、根本未创建),本端副本此时一律可关;
+		// 不关会占住写端让读不到 EOF,扫日志协程挂死。
+		outPipe.closeWrite()
+		errPipe.closeWrite()
 		if err != nil {
 			s.cmd = nil
 			s.lastErr = err.Error()
