@@ -49,6 +49,9 @@ type LocalActions interface {
 	OpenLog(ctx context.Context) error
 	// RevealDataDir 在文件管理器中打开数据目录。
 	RevealDataDir(ctx context.Context) error
+	// SetTheme 把当前界面主题交给宿主同步原生窗口外观(Windows:标题栏深色模式);
+	// 非 Windows 为空操作。主题已先落盘,此处失败不影响偏好保存,仅可能延后标题栏刷新。
+	SetTheme(ctx context.Context, theme string) error
 }
 
 // handleLocal 处理 /local/*:界面令牌已在路由层校验,Host 亦已校验。
@@ -149,6 +152,32 @@ func (s *Server) handleLocal(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, http.StatusAccepted, map[string]bool{"ok": true})
+
+	case rest == "theme":
+		switch r.Method {
+		case http.MethodGet:
+			writeJSON(w, http.StatusOK, map[string]string{"theme": s.LoadTheme()})
+		case http.MethodPost:
+			var body struct {
+				Theme string `json:"theme"`
+			}
+			if err := decodeJSON(w, r, &body); err != nil {
+				return
+			}
+			if !validTheme(body.Theme) {
+				writeError(w, http.StatusBadRequest, "非法主题值")
+				return
+			}
+			if err := s.saveTheme(body.Theme); err != nil {
+				writeError(w, http.StatusInternalServerError, "保存主题失败")
+				return
+			}
+			// 同步宿主原生标题栏;失败静默(偏好已落盘,界面即时生效,重启后一致)。
+			_ = s.local.SetTheme(r.Context(), body.Theme)
+			writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+		default:
+			writeError(w, http.StatusMethodNotAllowed, "仅支持 GET/POST")
+		}
 
 	default:
 		writeError(w, http.StatusNotFound, "未知本地端点")

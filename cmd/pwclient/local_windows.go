@@ -92,6 +92,12 @@ func (l *localActions) RevealDataDir(context.Context) error {
 	return openPath(dataDir())
 }
 
+// SetTheme 同步主窗口原生标题栏深/浅色。窗口未打开时静默返回(下次打开按持久化主题初始化)。
+func (l *localActions) SetTheme(_ context.Context, theme string) error {
+	applyTitleBarDark(uintptr(findMainWindow()), theme == "dark")
+	return nil
+}
+
 // runElevated 经 UAC 提权启动本程序子命令。
 func runElevated(args string) error {
 	exe, err := os.Executable()

@@ -13,6 +13,8 @@ import (
 	"sync"
 
 	webview2 "github.com/jchv/go-webview2"
+
+	"github.com/huangchengsir/pipewright/internal/pwclient/uiserver"
 )
 
 var (
@@ -56,6 +58,8 @@ func openMainWindow(url string) {
 			return
 		}
 		defer w.Destroy()
+		// 按持久化主题初始化原生标题栏配色:页面 CSS 深色时,系统绘制的标题栏也应随之变深。
+		applyTitleBarDark(uintptr(w.Window()), uiserver.LoadTheme(dataDir()) == "dark")
 		w.Navigate(url)
 		w.Run()
 	}()
