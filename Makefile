@@ -3,6 +3,7 @@ BIN := pipewright
 CLIENT_BIN := pwclient.exe
 CLIENT_WEB_DIR := webclient
 UISERVER_DIST := internal/pwclient/uiserver/dist
+INSTALLER_OUT := dist-installer
 
 # 模块代理:默认走国内镜像(proxy.golang.org 在境内常超时),与 Dockerfile 保持一致。
 # 用 ?= 保证 CI / 已有 GOPROXY 环境可覆盖;export 后传入 go 子进程。
@@ -24,7 +25,7 @@ VPKG    := github.com/huangchengsir/pipewright/internal/version
 LDFLAGS := -s -w -X $(VPKG).Version=$(VERSION) -X $(VPKG).Commit=$(COMMIT) -X $(VPKG).Date=$(DATE)
 CLIENT_LDFLAGS := $(LDFLAGS) -H=windowsgui
 
-.PHONY: all build build-client build-client-all client-web client-web-stub client-e2e client-syso embed-frontend dist-stub go-build test vet fmt fmt-check mem-check dev run version clean
+.PHONY: all build build-client build-client-all client-web client-web-stub client-e2e client-syso build-installer embed-frontend dist-stub go-build test vet fmt fmt-check mem-check dev run version clean
 
 all: build
 
@@ -74,6 +75,22 @@ client-e2e: client-web
 client-syso:
 	go run github.com/tc-hib/go-winres@latest make --in cmd/pwclient/winres/winres.json --out cmd/pwclient/rsrc --arch amd64,arm64
 
+## build-installer: 本地打 Windows 安装包(NSIS)。前置:本机装 makensis
+## (Debian/Ubuntu: sudo apt-get install -y nsis)。取 build-client 产物 + third_party/easytier
+## 随包二进制组装暂存目录,amd64/arm64 各出一个安装器到 $(INSTALLER_OUT)/。
+## 发版正式路径是 release.yml 的 windows-installer 作业;本目标仅供本地验证产物。
+build-installer: build-client
+	bash scripts/fetch-easytier.sh
+	@for arch in amd64 arm64; do \
+	  set -e; \
+	  stage="$(INSTALLER_OUT)/stage-$${arch}"; rm -rf "$$stage"; mkdir -p "$$stage/bin" "$$stage/licenses"; \
+	  if [ "$${arch}" = amd64 ]; then cp $(CLIENT_BIN) "$$stage/pwclient.exe"; else cp pwclient-arm64.exe "$$stage/pwclient.exe"; fi; \
+	  cp third_party/easytier/windows-$${arch}/bin/. "$$stage/bin/"; \
+	  cp -r third_party/easytier/licenses/. "$$stage/licenses/"; \
+	  cp LICENSE "$$stage/"; \
+	  bash scripts/build-installer.sh --src "$$stage" --version "$(VERSION)" --arch "$${arch}" --out "$(INSTALLER_OUT)"; \
+	done
+
 ## build: 前端构建 → go:embed → 静态单二进制(双运行模式之原生形态)
 build: embed-frontend go-build
 
@@ -109,4 +126,4 @@ run: go-build
 
 clean:
 	rm -f $(BIN) $(CLIENT_BIN) pwclient-arm64.exe pwclient *.db
-	rm -rf web/dist web/node_modules $(CLIENT_WEB_DIR)/node_modules $(UISERVER_DIST) dist-client
+	rm -rf web/dist web/node_modules $(CLIENT_WEB_DIR)/node_modules $(UISERVER_DIST) dist-client $(INSTALLER_OUT)
