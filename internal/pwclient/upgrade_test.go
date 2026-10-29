@@ -3,8 +3,10 @@
 package pwclient
 
 import (
+	"archive/tar"
 	"archive/zip"
 	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -72,6 +74,8 @@ func TestClientAssetName(t *testing.T) {
 		{"v1.2.3", "windows", "amd64", "pwclient_1.2.3_windows_amd64.zip"},
 		{"1.2.3", "windows", "arm64", "pwclient_1.2.3_windows_arm64.zip"},
 		{" v1.2.3-rc.1 ", "windows", "amd64", "pwclient_1.2.3-rc.1_windows_amd64.zip"},
+		{"v1.2.3", "linux", "amd64", "pwclient_1.2.3_linux_amd64.tar.gz"},
+		{"v1.2.3", "darwin", "arm64", "pwclient_1.2.3_darwin_arm64.tar.gz"},
 	}
 	for _, c := range cases {
 		if got := clientAssetName(c.tag, c.goos, c.goarch); got != c.want {
@@ -112,7 +116,7 @@ func TestExtractClientZip(t *testing.T) {
 		t.Fatal(err)
 	}
 	stage := t.TempDir()
-	if err := extractClientZip(zipPath, stage); err != nil {
+	if err := extractClientZip(zipPath, stage, "pwclient.exe"); err != nil {
 		t.Fatalf("extractClientZip: %v", err)
 	}
 	for name, want := range map[string]string{
@@ -136,7 +140,7 @@ func TestExtractClientZip_RejectsMissingExeAndTraversal(t *testing.T) {
 	if err := os.WriteFile(p1, noExe, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := extractClientZip(p1, t.TempDir()); err == nil ||
+	if err := extractClientZip(p1, t.TempDir(), "pwclient.exe"); err == nil ||
 		!strings.Contains(err.Error(), "pwclient.exe") {
 		t.Errorf("缺少 pwclient.exe 应报错,得 %v", err)
 	}
@@ -151,10 +155,146 @@ func TestExtractClientZip_RejectsMissingExeAndTraversal(t *testing.T) {
 		if err := os.WriteFile(p, bad, 0o644); err != nil {
 			t.Fatal(err)
 		}
-		if err := extractClientZip(p, t.TempDir()); err == nil ||
+		if err := extractClientZip(p, t.TempDir(), "pwclient.exe"); err == nil ||
 			!strings.Contains(err.Error(), "非法路径") {
 			t.Errorf("越界路径 %q 应被拒绝,得 %v", evil, err)
 		}
+	}
+}
+
+// makeClientTarGz 生成一个最小 Linux/macOS tar.gz 客户端归档(键 = 归档内路径,值 = 内容+权限位)。
+func makeClientTarGz(t *testing.T, entries map[string]struct {
+	body []byte
+	mode int64
+}) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	gw := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gw)
+	order := []string{"pwclient", "bin/easytier-core", "bin/easytier-cli", "licenses/easytier/LICENSE", "LICENSE"}
+	written := map[string]bool{}
+	writeOne := func(name string, body []byte, mode int64) {
+		hdr := &tar.Header{Name: name, Mode: mode, Size: int64(len(body)), Typeflag: tar.TypeReg}
+		if err := tw.WriteHeader(hdr); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tw.Write(body); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, name := range order {
+		if e, ok := entries[name]; ok {
+			writeOne(name, e.body, e.mode)
+			written[name] = true
+		}
+	}
+	for name, e := range entries {
+		if written[name] {
+			continue
+		}
+		writeOne(name, e.body, e.mode)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := gw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+func TestExtractClientTarGz(t *testing.T) {
+	blob := makeClientTarGz(t, map[string]struct {
+		body []byte
+		mode int64
+	}{
+		"pwclient":                  {[]byte("bin"), 0o755},
+		"bin/easytier-core":         {[]byte("core"), 0o755},
+		"licenses/easytier/LICENSE": {[]byte("lgpl"), 0o644},
+	})
+	dir := t.TempDir()
+	tzPath := filepath.Join(dir, "a.tar.gz")
+	if err := os.WriteFile(tzPath, blob, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	stage := t.TempDir()
+	if err := extractClientArchive(tzPath, stage, "pwclient"); err != nil {
+		t.Fatalf("extractClientArchive(tar.gz): %v", err)
+	}
+	for name, want := range map[string]string{
+		"pwclient":                  "bin",
+		"bin/easytier-core":         "core",
+		"licenses/easytier/LICENSE": "lgpl",
+	} {
+		got, err := os.ReadFile(filepath.Join(stage, filepath.FromSlash(name)))
+		if err != nil || string(got) != want {
+			t.Errorf("%s = %q err=%v,期望 %q", name, got, err, want)
+		}
+	}
+	// 主程序与随包二进制需保留可执行位(否则 easytier-core 落位后无法直接执行)。
+	for _, name := range []string{"pwclient", "bin/easytier-core"} {
+		fi, err := os.Stat(filepath.Join(stage, filepath.FromSlash(name)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if fi.Mode()&0o111 == 0 {
+			t.Errorf("%s 应保留可执行位,实际 %v", name, fi.Mode())
+		}
+	}
+}
+
+func TestExtractClientTarGz_RejectsMissingBinaryTraversalSymlink(t *testing.T) {
+	dir := t.TempDir()
+
+	// 缺根级 pwclient(只在子目录有)。
+	noBin := makeClientTarGz(t, map[string]struct {
+		body []byte
+		mode int64
+	}{"bin/pwclient": {[]byte("x"), 0o755}})
+	p1 := filepath.Join(dir, "nobin.tar.gz")
+	if err := os.WriteFile(p1, noBin, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := extractClientTarGz(p1, t.TempDir(), "pwclient"); err == nil ||
+		!strings.Contains(err.Error(), "pwclient") {
+		t.Errorf("缺根级 pwclient 应报错,得 %v", err)
+	}
+
+	// 路径穿越:手工构造带 ../ 条目的 tar.gz(不能经由 makeClientTarGz 的正常键)。
+	var buf bytes.Buffer
+	gw := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gw)
+	_ = tw.WriteHeader(&tar.Header{Name: "pwclient", Mode: 0o755, Size: 1, Typeflag: tar.TypeReg})
+	_, _ = tw.Write([]byte("x"))
+	_ = tw.WriteHeader(&tar.Header{Name: "../evil", Mode: 0o644, Size: 1, Typeflag: tar.TypeReg})
+	_, _ = tw.Write([]byte("y"))
+	_ = tw.Close()
+	_ = gw.Close()
+	p2 := filepath.Join(dir, "trav.tar.gz")
+	if err := os.WriteFile(p2, buf.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := extractClientTarGz(p2, t.TempDir(), "pwclient"); err == nil ||
+		!strings.Contains(err.Error(), "非法路径") {
+		t.Errorf("路径穿越应被拒绝,得 %v", err)
+	}
+
+	// 符号链接条目:拒绝。
+	var sb bytes.Buffer
+	sgw := gzip.NewWriter(&sb)
+	stw := tar.NewWriter(sgw)
+	_ = stw.WriteHeader(&tar.Header{Name: "pwclient", Mode: 0o755, Size: 1, Typeflag: tar.TypeReg})
+	_, _ = stw.Write([]byte("x"))
+	_ = stw.WriteHeader(&tar.Header{Name: "link", Mode: 0o777, Typeflag: tar.TypeSymlink, Linkname: "/etc/passwd"})
+	_ = stw.Close()
+	_ = sgw.Close()
+	p3 := filepath.Join(dir, "sym.tar.gz")
+	if err := os.WriteFile(p3, sb.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := extractClientTarGz(p3, t.TempDir(), "pwclient"); err == nil ||
+		!strings.Contains(err.Error(), "非普通文件") {
+		t.Errorf("符号链接应被拒绝,得 %v", err)
 	}
 }
 

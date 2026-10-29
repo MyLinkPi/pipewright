@@ -42,8 +42,8 @@ builds:
       # 默认升级渠道 = 构建仓库:产物自报「从哪查更新」,fork 发版自洽(未注入时后端回落硬编码)。
       - -X github.com/huangchengsir/pipewright/internal/version.DefaultRepo={{ .Env.RELEASE_REPO }}
 
-  # 集群客户端(Win11 托盘 GUI + Windows 服务;lxn/walk 纯 Go 无 CGO;仅 Windows)。
-  # cmd/pwclient 下的 rsrc_windows_{amd64,arm64}.syso(manifest/DPI/版本信息)按目标自动链接。
+  # 集群客户端。Windows:托盘 GUI + Windows 服务(lxn/walk 纯 Go 无 CGO;GUI 子系统不弹
+  # 控制台;rsrc_windows_*.syso 按目标自动链接)。仅 Windows 用该 build。
   - id: pwclient
     main: ./cmd/pwclient
     binary: pwclient
@@ -64,6 +64,27 @@ builds:
       # 与后端同款:升级检查/下载渠道跟随构建仓库,fork 发版自洽(未注入时回落硬编码)。
       - -X github.com/huangchengsir/pipewright/internal/version.DefaultRepo={{ .Env.RELEASE_REPO }}
 
+  # 集群客户端 Linux/macOS 形态:前台进程 + 浏览器承载同一套 Web 界面,服务经 systemd
+  # (Linux)/launchd(macOS)。不能带 -H=windowsgui(非 Windows 链接器不认);故单列 build。
+  - id: pwclient-unix
+    main: ./cmd/pwclient
+    binary: pwclient
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    mod_timestamp: "{{ .CommitTimestamp }}"
+    ldflags:
+      - -s -w
+      - -X github.com/huangchengsir/pipewright/internal/version.Version={{ .Version }}
+      - -X github.com/huangchengsir/pipewright/internal/version.Commit={{ .ShortCommit }}
+      - -X github.com/huangchengsir/pipewright/internal/version.Date={{ .CommitDate }}
+      - -X github.com/huangchengsir/pipewright/internal/version.DefaultRepo={{ .Env.RELEASE_REPO }}
+
 archives:
   - id: default
     builds: [pipewright]
@@ -78,15 +99,18 @@ archives:
       - LICENSE
       - SECURITY.md
   - id: pwclient
-    builds: [pwclient]
-    formats: [zip]
+    builds: [pwclient, pwclient-unix]
+    formats: [tar.gz]
     name_template: >-
       pwclient_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    format_overrides:
+      - goos: windows
+        formats: [zip]
     files:
       - LICENSE
       # 随包分发 EasyTier 官方二进制(未修改,LGPL-3.0;运行时 Locate 会找 exe 同级 bin/)。
-      # 许可证全文 + 来源说明 + 版本标记一并入包(LGPL-3.0 §4 义务)。
-      - src: third_party/easytier/windows-{{ .Arch }}/bin/*
+      # 许可证全文 + 来源说明 + 版本标记一并入包(LGPL-3.0 §4 义务)。按平台目录取对应二进制。
+      - src: third_party/easytier/{{ .Os }}-{{ .Arch }}/bin/*
         dst: bin
       - src: third_party/easytier/licenses/*
         dst: licenses/easytier
