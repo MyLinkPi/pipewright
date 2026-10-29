@@ -6,7 +6,7 @@ import { useStatusStore } from '../stores/status'
 import { peerRows, type PeerRow } from '../lib/derive'
 
 const status = useStatusStore()
-const rows = computed(() => peerRows(status.snapshot?.easyTier?.links))
+const rows = computed(() => peerRows(status.snapshot?.easytier?.links))
 
 const columns: DataTableColumns<PeerRow> = [
   { title: '虚拟 IP', key: 'virtualIp', width: 150, render: (row) => row.virtualIp },

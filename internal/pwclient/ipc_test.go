@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/huangchengsir/pipewright/internal/mesh/easytier"
 	"github.com/huangchengsir/pipewright/internal/version"
 )
 
@@ -340,6 +341,41 @@ func TestIPCConfigViewJSONContract(t *testing.T) {
 		if strings.Contains(raw, leak) {
 			t.Fatalf("配置回显出现不应有的键/密钥 %q: %s", leak, raw)
 		}
+	}
+}
+
+// TestIPCStatusSnapshotJSONContract 锁定 /api/status 的 JSON 键名(界面按此渲染概览/对端)。
+// 曾因前端把组网状态字段写成 easyTier(后端恒为 easytier)而整体读空:状态永远
+// 「连接中…」、虚拟 IP 为空、在线对端 0 —— 键名改动必须两侧同步,故在此钉死。
+func TestIPCStatusSnapshotJSONContract(t *testing.T) {
+	rt, dir := newTestRuntime(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	rt.status = easytier.NewStatusProvider("", "127.0.0.1:15889")
+	if err := rt.store.Save(Config{Enabled: true, Join: JoinConfig{NetworkName: "net", NetworkSecret: "s"}}); err != nil {
+		t.Fatalf("seed config: %v", err)
+	}
+	rt.status = easytier.NewStatusProvider("", "127.0.0.1:15889")
+	if _, err := StartIPC(ctx, dir, rt); err != nil {
+		t.Fatalf("start ipc: %v", err)
+	}
+	cli, err := DialIPC(dir)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	raw, err := getRaw(cli, "/api/status")
+	if err != nil {
+		t.Fatalf("get status: %v", err)
+	}
+	for _, want := range []string{
+		`"easytier":`, `"selfIp":`, `"proxyCidrs":`, `"proxyRoutes":`, `"supervisor":`, `"running":`,
+	} {
+		if !strings.Contains(raw, want) {
+			t.Fatalf("状态快照缺键 %s: %s", want, raw)
+		}
+	}
+	if strings.Contains(raw, `"easyTier"`) {
+		t.Fatalf("状态快照出现前端未使用的键 easyTier: %s", raw)
 	}
 }
 
