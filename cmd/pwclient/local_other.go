@@ -38,7 +38,7 @@ func (l *localActions) ServiceAction(context.Context, string) error { return uis
 
 func (l *localActions) SetAutoStart(context.Context, bool) error { return uiserver.ErrUnsupported }
 
-func (l *localActions) Upgrade(context.Context, string) error { return uiserver.ErrUnsupported }
+func (l *localActions) Upgrade(context.Context, string, bool) error { return uiserver.ErrUnsupported }
 
 func (l *localActions) Quit(context.Context) error {
 	quitUI()

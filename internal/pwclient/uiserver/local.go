@@ -41,8 +41,9 @@ type LocalActions interface {
 	ServiceAction(ctx context.Context, action string) error
 	// SetAutoStart 写入/删除登录自启项(Windows: HKCU Run)。
 	SetAutoStart(ctx context.Context, enabled bool) error
-	// Upgrade 提权启动独立升级进程(tag 为空 = 最新版)。
-	Upgrade(ctx context.Context, tag string) error
+	// Upgrade 提权启动独立升级进程(tag 为空 = 最新版;includeUnstable = 接受非稳定版本,
+	// 预发布 beta/rc 纳入「最新版」口径)。
+	Upgrade(ctx context.Context, tag string, includeUnstable bool) error
 	// Quit 退出 UI 进程(不影响后台组网服务)。
 	Quit(ctx context.Context) error
 	// OpenLog 用系统默认程序打开日志文件。
@@ -113,7 +114,8 @@ func (s *Server) handleLocal(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		var body struct {
-			Tag string `json:"tag"`
+			Tag             string `json:"tag"`
+			IncludeUnstable bool   `json:"includeUnstable"`
 		}
 		if err := decodeJSON(w, r, &body); err != nil {
 			return
@@ -124,7 +126,7 @@ func (s *Server) handleLocal(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		if err := s.local.Upgrade(r.Context(), tag); err != nil {
+		if err := s.local.Upgrade(r.Context(), tag, body.IncludeUnstable); err != nil {
 			writeLocalError(w, err)
 			return
 		}
@@ -152,6 +154,30 @@ func (s *Server) handleLocal(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, http.StatusAccepted, map[string]bool{"ok": true})
+
+	case rest == "prefs":
+		switch r.Method {
+		case http.MethodGet:
+			writeJSON(w, http.StatusOK, s.Prefs())
+		case http.MethodPost:
+			var body UIPrefs
+			if err := decodeJSON(w, r, &body); err != nil {
+				return
+			}
+			if !validTheme(body.Theme) {
+				writeError(w, http.StatusBadRequest, "非法主题值")
+				return
+			}
+			if err := s.savePrefs(body); err != nil {
+				writeError(w, http.StatusInternalServerError, "保存偏好失败")
+				return
+			}
+			// 同步宿主原生标题栏;失败静默(偏好已落盘,界面即时生效,重启后一致)。
+			_ = s.local.SetTheme(r.Context(), body.Theme)
+			writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+		default:
+			writeError(w, http.StatusMethodNotAllowed, "仅支持 GET/POST")
+		}
 
 	case rest == "theme":
 		switch r.Method {

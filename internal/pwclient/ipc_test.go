@@ -215,7 +215,7 @@ func TestIPCTokenAndEndpoints(t *testing.T) {
 // 升级检查端点:服务侧返回 UpdateInfo;快照带客户端版本/路径。
 func TestIPCUpgradeCheck(t *testing.T) {
 	rt, dir := newTestRuntime(t)
-	rt.checkUpgrade = func(context.Context) version.UpdateInfo {
+	rt.checkUpgrade = func(context.Context, bool) version.UpdateInfo {
 		return version.UpdateInfo{Current: "v1.0.0", Latest: "v1.1.0", UpdateAvailable: true}
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -228,7 +228,7 @@ func TestIPCUpgradeCheck(t *testing.T) {
 		t.Fatalf("dial: %v", err)
 	}
 
-	info, err := cli.CheckUpgrade(ctx)
+	info, err := cli.CheckUpgrade(ctx, false)
 	if err != nil {
 		t.Fatalf("check upgrade: %v", err)
 	}

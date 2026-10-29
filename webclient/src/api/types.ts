@@ -225,7 +225,18 @@ export interface UpdateInfo {
   releaseUrl: string
   publishedAt: string
   notes: string
+  /** latest 是否为预发布(beta/rc);未开启包含预发布时恒 false。 */
+  prerelease?: boolean
+  /** 本次检查是否包含非稳定版本(回显查询口径)。 */
+  includeUnstable?: boolean
   checkError?: string
+}
+
+/** 后端持有的界面偏好(<dataDir>/ui-prefs.json),与 uiserver.UIPrefs 对齐。 */
+export interface UIPrefs {
+  theme: 'dark' | 'light'
+  /** 升级接受非稳定版本(预发布 beta/rc)。 */
+  includeUnstable: boolean
 }
 
 export interface ServiceState {

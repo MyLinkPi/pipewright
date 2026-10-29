@@ -2,7 +2,7 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import { errorText, http } from '../api/http'
-import type { LocalInfo } from '../api/types'
+import type { LocalInfo, UIPrefs } from '../api/types'
 
 export const useLocalStore = defineStore('local', () => {
   const info = ref<LocalInfo | null>(null)
@@ -47,8 +47,18 @@ export const useLocalStore = defineStore('local', () => {
     return run('autostart', () => http.post('/local/autostart', { enabled }))
   }
 
-  function upgrade(tag: string): Promise<void> {
-    return run('upgrade', () => http.post('/local/upgrade', { tag }))
+  function upgrade(tag: string, includeUnstable = false): Promise<void> {
+    return run('upgrade', () => http.post('/local/upgrade', { tag, includeUnstable }))
+  }
+
+  /** 读界面偏好(主题/升级是否包含非稳定版本)。 */
+  async function loadPrefs(): Promise<UIPrefs> {
+    return http.get<UIPrefs>('/local/prefs')
+  }
+
+  /** 写界面偏好(整份提交,后端读-改-写落盘)。 */
+  async function savePrefs(prefs: UIPrefs): Promise<void> {
+    await http.post('/local/prefs', prefs)
   }
 
   function openLog(): Promise<void> {
@@ -74,6 +84,8 @@ export const useLocalStore = defineStore('local', () => {
     serviceAction,
     setAutoStart,
     upgrade,
+    loadPrefs,
+    savePrefs,
     openLog,
     revealDataDir,
     quit,

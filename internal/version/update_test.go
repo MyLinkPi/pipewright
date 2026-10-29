@@ -330,23 +330,72 @@ func TestCheckAnyFallback(t *testing.T) {
 	srcA := Source{Repo: "o/r", APIBase: srvA.URL, WebBase: srvA.URL, DLBase: srvA.URL}
 	srcB := Source{Repo: "o/r", APIBase: srvB.URL, WebBase: srvB.URL, DLBase: srvB.URL}
 
-	info := c.CheckAny(context.Background(), []Source{srcA, srcB})
+	info := c.CheckAny(context.Background(), []Source{srcA, srcB}, false)
 	if info.CheckError != "" || info.Latest != "v1.2.0" || !info.UpdateAvailable {
 		t.Fatalf("应回退到第二源并判定有更新,得 %+v", info)
 	}
 	// 第二源成功结果已缓存(不再回源 B);失败的第一源不缓存,下次仍会先试它
 	// (GitHub 恢复后即可用回官方源)。
-	_ = c.CheckAny(context.Background(), []Source{srcA, srcB})
+	_ = c.CheckAny(context.Background(), []Source{srcA, srcB}, false)
 	if hitsA != 2 || hitsB != 1 {
 		t.Errorf("hitsA=%d hitsB=%d,期望 A=2(失败不缓存)、B=1(成功结果命中缓存)", hitsA, hitsB)
 	}
 
 	// 全部失败:返回最后一个错误。
-	if got := c.CheckAny(context.Background(), []Source{srcA, srcA}); got.CheckError == "" {
+	if got := c.CheckAny(context.Background(), []Source{srcA, srcA}, false); got.CheckError == "" {
 		t.Errorf("全部候选失败应保留 CheckError,得 %+v", got)
 	}
 	// 空候选:明确报错而不是空结果。
-	if got := c.CheckAny(context.Background(), nil); got.CheckError == "" || got.Current == "" {
+	if got := c.CheckAny(context.Background(), nil, false); got.CheckError == "" || got.Current == "" {
 		t.Errorf("空候选应报「升级源未配置」并带当前版本,得 %+v", got)
+	}
+}
+
+// 包含预发布口径:改走 releases 列表端点,取首个非 draft 条目(即便它是 prerelease)。
+func TestCheckUnstable_ListsPrerelease(t *testing.T) {
+	c, done := newStubChecker(t, "v1.0.0", func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/releases") { // 列表端点(非 /releases/latest)
+			_, _ = w.Write([]byte(`[
+				{"tag_name":"v1.1.0-beta.1","prerelease":true,"draft":false,"html_url":"u-beta","body":"beta notes"},
+				{"tag_name":"v9.9.9-draft","prerelease":false,"draft":true,"html_url":"u-draft","body":"草稿"},
+				{"tag_name":"v1.0.5","prerelease":false,"draft":false,"html_url":"u-stable","body":"stable"}
+			]`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"tag_name":"v1.0.5"}`)) // /releases/latest 兜底路径
+	})
+	defer done()
+
+	info := c.CheckUnstable(context.Background(), true)
+	if info.CheckError != "" {
+		t.Fatalf("检查不应报错:%s", info.CheckError)
+	}
+	if info.Latest != "v1.1.0-beta.1" || !info.Prerelease || !info.IncludeUnstable {
+		t.Errorf("应取首个非 draft(预发布),得 %+v", info)
+	}
+	if !info.UpdateAvailable {
+		t.Errorf("v1.0.0 → v1.1.0-beta.1 应判定有更新")
+	}
+}
+
+// 默认口径(仅正式版)不受列表内容影响;两种口径的缓存按口径隔离,切换开关不串结果。
+func TestCheckUnstable_CacheIsolatedByMode(t *testing.T) {
+	c, done := newStubChecker(t, "v1.0.0", func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/releases") {
+			_, _ = w.Write([]byte(`[{"tag_name":"v1.1.0-rc.1","prerelease":true}]`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"tag_name":"v1.0.5"}`))
+	})
+	defer done()
+
+	if info := c.Check(context.Background()); info.Latest != "v1.0.5" || !info.UpdateAvailable {
+		t.Errorf("仅正式版口径应得 v1.0.5 且有更新(v1.0.0→v1.0.5),实得 %+v", info)
+	}
+	if info := c.CheckUnstable(context.Background(), true); info.Latest != "v1.1.0-rc.1" || !info.Prerelease {
+		t.Errorf("切到包含预发布口径不应命中旧缓存,实得 %+v", info)
+	}
+	if info := c.Check(context.Background()); info.Latest != "v1.0.5" {
+		t.Errorf("回到仅正式版口径应仍为 v1.0.5,实得 %+v", info)
 	}
 }

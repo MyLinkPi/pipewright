@@ -43,7 +43,8 @@ type Runtime struct {
 	// sgIPFetch 取本机公网 IPv4(测试注入 fake;默认 fetchPublicIPv4)。
 	sgIPFetch func(ctx context.Context) (string, error)
 	// checkUpgrade 查最新客户端发布(测试注入;默认经 version.Checker 按候选源自动回退)。
-	checkUpgrade func(ctx context.Context) version.UpdateInfo
+	// includeUnstable = 把预发布(beta/rc)纳入「最新版本」口径。
+	checkUpgrade func(ctx context.Context, includeUnstable bool) version.UpdateInfo
 
 	// reconcileMu 串行化对账(安全组同步含公网 IP 探测/API 调用可达数十秒,防
 	// RestartNow 的并发对账双拉监督器)。
@@ -103,8 +104,8 @@ func NewRuntime(store *Store, dataDir string) *Runtime {
 	// 升级检查与内部升级器共用同一 Checker,共享 15 分钟 TTL 缓存;候选源默认
 	// GitHub 官方 → gh-proxy 兜底(显式配置镜像则只用镜像)。
 	checker := version.NewChecker()
-	rt.checkUpgrade = func(ctx context.Context) version.UpdateInfo {
-		return checker.CheckAny(ctx, version.CandidateSources(""))
+	rt.checkUpgrade = func(ctx context.Context, includeUnstable bool) version.UpdateInfo {
+		return checker.CheckAny(ctx, version.CandidateSources(""), includeUnstable)
 	}
 	return rt
 }

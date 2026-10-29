@@ -96,3 +96,58 @@ func TestInjectThemeIsSafeNoop(t *testing.T) {
 		t.Fatalf("非法值应回退 dark,得到 %s", got)
 	}
 }
+
+// TestPrefsRoundTrip 覆盖升级口径开关的持久化:默认不含预发布 → POST 开启后落盘,
+// 且与主题互不覆盖(读-改-写整份偏好)。
+func TestPrefsRoundTrip(t *testing.T) {
+	s, err := Start(context.Background(), Options{DataDir: t.TempDir(), Local: &fakeLocal{}, Token: "tk"})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+
+	// 默认:深色 + 不含预发布。
+	_, body := get(t, s, "/local/prefs", "tk", "")
+	if !strings.Contains(body, `"theme":"dark"`) || !strings.Contains(body, `"includeUnstable":false`) {
+		t.Fatalf("默认偏好应为 dark + 不含预发布,得到 %s", body)
+	}
+
+	// 先切浅色,再经 /local/prefs 开启预发布:两个字段须同时存活。
+	if code, _ := postJSON(t, s, "/local/theme", "tk", map[string]string{"theme": "light"}); code != http.StatusOK {
+		t.Fatalf("POST /local/theme 应 200,得到 %d", code)
+	}
+	if code, _ := postJSON(t, s, "/local/prefs", "tk", UIPrefs{Theme: "light", IncludeUnstable: true}); code != http.StatusOK {
+		t.Fatalf("POST /local/prefs 应 200,得到 %d", code)
+	}
+	if p := s.Prefs(); !p.IncludeUnstable || p.Theme != "light" {
+		t.Fatalf("偏好应同时保留主题与升级口径,得到 %+v", p)
+	}
+
+	// 非法主题拒绝。
+	if code, _ := postJSON(t, s, "/local/prefs", "tk", UIPrefs{Theme: "neon"}); code != http.StatusBadRequest {
+		t.Fatalf("非法主题应 400,得到 %d", code)
+	}
+}
+
+// TestLocalUpgradePassthroughUnstable 验证 /local/upgrade 把 includeUnstable 透传给宿主,
+// 非法 tag 仍被白名单拦截。
+func TestLocalUpgradePassthroughUnstable(t *testing.T) {
+	fake := &fakeLocal{}
+	s, err := Start(context.Background(), Options{DataDir: t.TempDir(), Local: fake, Token: "tk"})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+
+	code, _ := postJSON(t, s, "/local/upgrade", "tk", map[string]any{"tag": "v1.2.3-beta.1", "includeUnstable": true})
+	if code != http.StatusAccepted {
+		t.Fatalf("预发布 tag 应 202,得到 %d", code)
+	}
+	if fake.upTag != "v1.2.3-beta.1" || !fake.upUnstable {
+		t.Fatalf("应透传 tag 与 includeUnstable,得到 %q %v", fake.upTag, fake.upUnstable)
+	}
+
+	if code, _ := postJSON(t, s, "/local/upgrade", "tk", map[string]any{"tag": "v1.2.3 --force"}); code != http.StatusBadRequest {
+		t.Fatalf("非法 tag 应 400,得到 %d", code)
+	}
+}

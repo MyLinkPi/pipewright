@@ -67,7 +67,7 @@ func (l *localActions) SetAutoStart(_ context.Context, enabled bool) error {
 	return nil
 }
 
-func (l *localActions) Upgrade(_ context.Context, tag string) error {
+func (l *localActions) Upgrade(_ context.Context, tag string, includeUnstable bool) error {
 	args := "upgrade"
 	if trimmed := strings.TrimSpace(tag); trimmed != "" {
 		// 双重防线(uiserver 层亦校验):tag 拼入提权命令行,白名单校验拒一切非法字符。
@@ -75,6 +75,10 @@ func (l *localActions) Upgrade(_ context.Context, tag string) error {
 			return err
 		}
 		args += ` --tag "` + trimmed + `"`
+	}
+	if includeUnstable {
+		// 接受非稳定版本:预发布(beta/rc)纳入升级进程的「最新版」口径。
+		args += " --unstable"
 	}
 	return runElevated(args)
 }
