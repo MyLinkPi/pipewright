@@ -5,10 +5,12 @@ package pwclient
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -344,18 +346,18 @@ func TestIPCConfigViewJSONContract(t *testing.T) {
 	}
 }
 
-// TestIPCStatusSnapshotJSONContract 锁定 /api/status 的 JSON 键名(界面按此渲染概览/对端)。
-// 曾因前端把组网状态字段写成 easyTier(后端恒为 easytier)而整体读空:状态永远
-// 「连接中…」、虚拟 IP 为空、在线对端 0 —— 键名改动必须两侧同步,故在此钉死。
+// TestIPCStatusSnapshotJSONContract 端到端钉死 /api/status 的 JSON 键名(前端按此渲染)。
+// 曾因前端把组网状态写成 easyTier(后端恒为 easytier)而整体读空:状态永远
+// 「连接中…」、虚拟 IP 为空、在线对端 0 —— 所以整棵键路径都要与声明对齐,在此钉死。
+// easytier 三路查询用 2026-10-29 Windows 实录用例注入(不触真机 CLI)。
 func TestIPCStatusSnapshotJSONContract(t *testing.T) {
 	rt, dir := newTestRuntime(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	rt.status = easytier.NewStatusProvider("", "127.0.0.1:15889")
+	rt.status = easytier.NewStatusProviderWithRunner(fakeEasyTierCLI(t))
 	if err := rt.store.Save(Config{Enabled: true, Join: JoinConfig{NetworkName: "net", NetworkSecret: "s"}}); err != nil {
 		t.Fatalf("seed config: %v", err)
 	}
-	rt.status = easytier.NewStatusProvider("", "127.0.0.1:15889")
 	if _, err := StartIPC(ctx, dir, rt); err != nil {
 		t.Fatalf("start ipc: %v", err)
 	}
@@ -363,20 +365,112 @@ func TestIPCStatusSnapshotJSONContract(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}
-	raw, err := getRaw(cli, "/api/status")
-	if err != nil {
-		t.Fatalf("get status: %v", err)
+	var payload map[string]any
+	// Get 为 stale-while-revalidate:首次回空快照并后台采集,轮询至采集完成。
+	var got map[string]struct{}
+	for i := 0; i < 100; i++ {
+		raw, err := getRaw(cli, "/api/status")
+		if err != nil {
+			t.Fatalf("get status: %v", err)
+		}
+		if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+			t.Fatalf("解析状态快照: %v", err)
+		}
+		if strings.Contains(raw, `"easyTier"`) {
+			t.Fatalf("状态快照出现前端未使用的键 easyTier: %s", raw)
+		}
+		got = map[string]struct{}{}
+		collectJSONKeys("", payload, got)
+		// 采齐的信号:嵌套结构都展开(空数组时只有父键)。
+		_, viasOK := got["easytier.proxyRoutes.vias.ip"]
+		_, linksOK := got["easytier.links.virtualIp"]
+		if viasOK && linksOK {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
-	for _, want := range []string{
-		`"easytier":`, `"selfIp":`, `"proxyCidrs":`, `"proxyRoutes":`, `"supervisor":`, `"running":`,
-	} {
-		if !strings.Contains(raw, want) {
-			t.Fatalf("状态快照缺键 %s: %s", want, raw)
+	for _, want := range statusSnapshotKeys {
+		if _, ok := got[want]; !ok {
+			t.Fatalf("状态快照缺键 %s(前端会静默读空),实际键集:%v", want, sortedKeys(got))
 		}
 	}
-	if strings.Contains(raw, `"easyTier"`) {
-		t.Fatalf("状态快照出现前端未使用的键 easyTier: %s", raw)
+}
+
+// statusSnapshotKeys 是 webclient/src/api/types.ts StatusSnapshot 声明的全部键路径
+// (含嵌套)。改任一侧键名必须同步,否则本用例红。
+var statusSnapshotKeys = []string{
+	"configured", "enabled", "join", "routes", "socks5", "proxies", "supervisor",
+	"easytier", "binaries", "service", "clientVersion", "clientPath", "securityGroup",
+	"join.networkName", "join.hasSecret", "join.hasCredential", "join.secureMode",
+	"join.peers", "join.virtualIp", "join.hostname",
+	"socks5.exitNodes", "socks5.enabled", "socks5.port",
+	"supervisor.running", "supervisor.lastErr", "supervisor.restarts", "supervisor.startedAt", "supervisor.adopted",
+	"easytier.ok", "easytier.err", "easytier.selfIp", "easytier.hostname", "easytier.version",
+	"easytier.links", "easytier.proxyCidrs", "easytier.proxyRoutes",
+	"easytier.links.peerId", "easytier.links.virtualIp", "easytier.links.hostname", "easytier.links.version",
+	"easytier.links.latencyMs", "easytier.links.lossRate", "easytier.links.rxBytes", "easytier.links.txBytes",
+	"easytier.links.tunnel", "easytier.links.relay", "easytier.links.relayVia",
+	"easytier.proxyRoutes.vias", "easytier.proxyRoutes.vias.ip", "easytier.proxyRoutes.vias.name",
+	"easytier.proxyRoutes.vias.relay", "easytier.proxyRoutes.vias.relayVia",
+	"binaries.corePath", "binaries.cliPath", "binaries.version", "binaries.downloading", "binaries.lastErr",
+	"service.runningAs", "service.pid",
+	"securityGroup.configured", "securityGroup.accessKeyId", "securityGroup.hasSecret",
+	"securityGroup.groups", "securityGroup.lastIp", "securityGroup.lastRun",
+	"securityGroup.lastErr", "securityGroup.results",
+}
+
+func fakeEasyTierCLI(t *testing.T) func(context.Context, []string) ([]byte, error) {
+	t.Helper()
+	responses := map[string]string{
+		"node info": `{"peer_id":723949080,"ipv4_addr":"10.126.126.7/24","hostname":"DESKTOP-C3D6OPL","version":"2.6.4-8428a89d","config":"hostname = \"x\""}`,
+		// 实录形态:本机行 cost=Local(应被剔除)、直连对端 p2p、中继对端 relay(N)。
+		"peer list": `[
+			{"cidr":"10.126.126.7/24","ipv4":"10.126.126.7","hostname":"DESKTOP-C3D6OPL","cost":"Local","lat_ms":"-","tunnel_proto":"-","id":"723949080","version":"2.6.4-8428a89d"},
+			{"cidr":"10.126.126.1/24","ipv4":"10.126.126.1","hostname":"Shanghai01","cost":"p2p","lat_ms":"17.04","loss_rate":"0.0%","rx_bytes":"31.36 kB","tx_bytes":"35.17 kB","tunnel_proto":"tcp","id":"322781623","version":"2.6.4-8428a89d"},
+			{"cidr":"10.126.126.3/24","ipv4":"10.126.126.3","hostname":"zhijiang","cost":"relay(2)","lat_ms":"18.00","loss_rate":"0.0%","rx_bytes":"0 B","tx_bytes":"0 B","tunnel_proto":"","id":"4243914704","version":"2.6.4-8428a89d"}
+		]`,
+		"route list": `[{"ipv4":"10.126.126.3/24","hostname":"zhijiang","proxy_cidrs":"10.101.16.35","next_hop_ipv4":"10.126.126.1/24","next_hop_hostname":"Shanghai01","path_len":2}]`,
 	}
+	return func(_ context.Context, args []string) ([]byte, error) {
+		for i, a := range args {
+			if a != "node" && a != "peer" && a != "route" {
+				continue
+			}
+			verb := a + " " + args[i+1]
+			if out, ok := responses[verb]; ok {
+				return []byte(out), nil
+			}
+		}
+		return nil, errors.New("unexpected easytier-cli query")
+	}
+}
+
+// collectJSONKeys 递归收集 JSON 对象的键路径(数组取其元素展开,键路径不含量下标)。
+func collectJSONKeys(prefix string, v any, out map[string]struct{}) {
+	switch t := v.(type) {
+	case map[string]any:
+		for k, sub := range t {
+			path := k
+			if prefix != "" {
+				path = prefix + "." + k
+			}
+			out[path] = struct{}{}
+			collectJSONKeys(path, sub, out)
+		}
+	case []any:
+		for _, sub := range t {
+			collectJSONKeys(prefix, sub, out)
+		}
+	}
+}
+
+func sortedKeys(set map[string]struct{}) []string {
+	out := make([]string, 0, len(set))
+	for k := range set {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // TestIPCPutConfigPartialUpdate 验证单项修改只提交变更字段时其余配置保持不变。
