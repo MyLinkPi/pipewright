@@ -19,7 +19,7 @@ export function connectionState(
 ): ConnectionState {
   if (offline || !snap) return 'service-down'
   if (!snap.configured) return 'not-configured'
-  if (snap.supervisor.running && snap.easyTier && snap.easyTier.selfIp !== '') {
+  if (snap.supervisor.running && snap.easytier && snap.easytier.selfIp !== '') {
     return 'connected'
   }
   if (snap.enabled) return 'connecting'
@@ -50,7 +50,7 @@ export function stateMeta(state: ConnectionState, snap: StatusSnapshot | null): 
       return {
         label: '已连接',
         tone: 'ok',
-        hint: `虚拟 IP ${orDash(snap?.easyTier?.selfIp ?? '')}`,
+        hint: `虚拟 IP ${orDash(snap?.easytier?.selfIp ?? '')}`,
       }
     case 'connecting':
       return {
@@ -70,7 +70,7 @@ export function stateMeta(state: ConnectionState, snap: StatusSnapshot | null): 
 function firstHint(snap: StatusSnapshot | null): string | undefined {
   if (!snap) return undefined
   if (snap.binaries.corePath === '') return '等待 EasyTier 二进制就位'
-  if (snap.easyTier?.err) return snap.easyTier.err
+  if (snap.easytier?.err) return snap.easytier.err
   if (snap.supervisor.lastErr) return snap.supervisor.lastErr
   return undefined
 }
@@ -127,10 +127,10 @@ export interface RouteRow {
 }
 
 export function routeRows(snap: StatusSnapshot | null): RouteRow[] {
-  const cidrs = snap?.easyTier?.proxyCidrs ?? []
+  const cidrs = snap?.easytier?.proxyCidrs ?? []
   const enabled = new Set(snap?.routes ?? [])
   const byCIDR = new Map<string, ProxyRoute>()
-  for (const route of snap?.easyTier?.proxyRoutes ?? []) {
+  for (const route of snap?.easytier?.proxyRoutes ?? []) {
     byCIDR.set(route.cidr, route)
   }
   return cidrs.map((cidr) => {

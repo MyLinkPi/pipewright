@@ -403,6 +403,58 @@ func TestStatusTransientFailureNotMisreportedAsOldCli(t *testing.T) {
 // lat_ms/rx_bytes 为字符串。此前夹具为臆造数组形态,线上恒空。
 func TestStatusParsesRealV26Output(t *testing.T) {
 	fake := &fakeCLI{responses: map[string]string{
+		// 2026-10-29 Windows 客户端实录:node info 为单个大对象(config 内嵌整段 TOML、
+		// ip_list 嵌套 {addr:数字}),虚拟 IP 在顶层 ipv4_addr 且带 /24 后缀。
+		"node info": `{ "peer_id": 723949080, "ipv4_addr": "10.126.126.7/24", "proxy_cidrs": [], "hostname": "DESKTOP-C3D6OPL", "stun_info": { "udp_nat_type": 6, "public_ip": [ "112.17.98.146" ] }, "inst_id": "d9d62a48-4da8-4a17-bec4-fb78bea66ee0", "listeners": [ "tcp://0.0.0.0:11010" ], "config": "hostname = \"DESKTOP-C3D6OPL\"\nipv4 = \"10.126.126.7/24\"\ndhcp = true\n", "version": "2.6.4-8428a89d", "feature_flag": { "is_public_server": false, "kcp_input": true }, "ip_list": { "public_ipv4": { "addr": 1880187538 }, "interface_ipv4s": [ { "addr": 2852046250 } ], "public_ipv6": null }, "public_ipv6_addr": null }`,
+		// peer list 实录:本机行 cost=Local 且 ipv4 等于自身(须被剔掉),对端行 cost=p2p/relay(N)、
+		// tunnel_proto 才是链路协议、lat_ms/rx_bytes 为字符串或 "-"。
+		"peer list": `[
+			{ "cidr": "10.126.126.7/24", "ipv4": "10.126.126.7", "hostname": "DESKTOP-C3D6OPL", "cost": "Local", "lat_ms": "-", "loss_rate": "-", "rx_bytes": "-", "tx_bytes": "-", "tunnel_proto": "-", "nat_type": "Symmetric", "id": "723949080", "version": "2.6.4-8428a89d" },
+			{ "cidr": "10.126.126.1/24", "ipv4": "10.126.126.1", "hostname": "Shanghai01", "cost": "p2p", "lat_ms": "17.04", "loss_rate": "0.0%", "rx_bytes": "31.36 kB", "tx_bytes": "35.17 kB", "tunnel_proto": "tcp", "nat_type": "PortRestricted", "id": "322781623", "version": "2.6.4-8428a89d" },
+			{ "cidr": "10.126.126.3/24", "ipv4": "10.126.126.3", "hostname": "zhijiang", "cost": "relay(2)", "lat_ms": "18.00", "loss_rate": "0.0%", "rx_bytes": "0 B", "tx_bytes": "0 B", "tunnel_proto": "", "nat_type": "Symmetric", "id": "4243914704", "version": "2.6.4-8428a89d" }
+		]`,
+		"route list": `[
+			{"ipv4":"10.126.126.7/24","hostname":"DESKTOP-C3D6OPL","proxy_cidrs":"","next_hop_ipv4":"-","next_hop_hostname":"Local","path_len":0},
+			{"ipv4":"10.126.126.1/24","hostname":"Shanghai01","proxy_cidrs":"","next_hop_ipv4":"DIRECT","next_hop_hostname":"DIRECT","path_len":1},
+			{"ipv4":"10.126.126.3/24","hostname":"zhijiang","proxy_cidrs":"10.101.16.35","next_hop_ipv4":"10.126.126.1/24","next_hop_hostname":"Shanghai01","path_len":2}
+		]`,
+	}}
+	p := newStatusProviderForTest(fake.run)
+	st := p.collect(context.Background())
+
+	if st.SelfIP != "10.126.126.7" {
+		t.Fatalf("SelfIP = %q, want 10.126.126.7(ipv4_addr 带 /24 应剥后缀)", st.SelfIP)
+	}
+	if st.Hostname != "DESKTOP-C3D6OPL" || st.Version != "2.6.4-8428a89d" {
+		t.Fatalf("node 字段:%+v", st)
+	}
+	// 本机行(cost=Local,ipv4=自身)必须剔除;对端按 route 表交叉验证直连/中继。
+	if len(st.Links) != 2 {
+		t.Fatalf("links = %+v, want 2(本机行应剔除)", st.Links)
+	}
+	if st.Links[0].VirtualIP != "10.126.126.1" || st.Links[0].LatencyMS != 17.04 || st.Links[0].Tunnel != "tcp" || st.Links[0].Relay {
+		t.Fatalf("直连对端解析 = %+v", st.Links[0])
+	}
+	if st.Links[1].VirtualIP != "10.126.126.3" || !st.Links[1].Relay || st.Links[1].RelayVia != "10.126.126.1" {
+		t.Fatalf("中继对端解析 = %+v, want relay via 10.126.126.1", st.Links[1])
+	}
+	want := []string{"10.101.16.35"}
+	if len(st.ProxyCIDRs) != len(want) || st.ProxyCIDRs[0] != want[0] {
+		t.Fatalf("proxyCidrs = %v, want %v(逗号分隔字符串形态汇总至全部通告行)", st.ProxyCIDRs, want)
+	}
+	// 中继下的通告网关:通告者 = 目的节点 zhijiang,到达它经 Shanghai01 中继。
+	if len(st.ProxyRoutes) != 1 {
+		t.Fatalf("proxyRoutes = %+v", st.ProxyRoutes)
+	}
+	if pr := st.ProxyRoutes[0]; pr.CIDR != "10.101.16.35" || pr.ViaIP != "10.126.126.3" || pr.ViaName != "zhijiang" || !pr.Vias[0].Relay {
+		t.Fatalf("通告路由 = %+v", st.ProxyRoutes[0])
+	}
+}
+
+// TestStatusParsesRealV26OutputLegacyAdv 用旧版实录形态(next_hop "-" 的直连通告行、
+// 同网段多 CIDR 逗号串)验证网关回落与 proxy_cidrs 拆分。
+func TestStatusParsesRealV26OutputLegacyAdv(t *testing.T) {
+	fake := &fakeCLI{responses: map[string]string{
 		"node info": `{"peer_id":2593298815,"ipv4_addr":"10.126.126.61/24","hostname":"cli","version":"2.6.4-8428a89d"}`,
 		"peer list": `[
 			{"cidr":"10.126.126.61/24","ipv4":"10.126.126.61","hostname":"cli","cost":"Local","lat_ms":"-","tunnel_proto":"-","id":"2593298815"},
@@ -417,13 +469,10 @@ func TestStatusParsesRealV26Output(t *testing.T) {
 	st := p.collect(context.Background())
 
 	if st.SelfIP != "10.126.126.61" {
-		t.Fatalf("SelfIP = %q, want 10.126.126.61(ipv4_addr 带 /24 应剥后缀)", st.SelfIP)
-	}
-	if st.Hostname != "cli" || st.Version != "2.6.4-8428a89d" {
-		t.Fatalf("node 字段:%+v", st)
+		t.Fatalf("SelfIP = %q, want 10.126.126.61", st.SelfIP)
 	}
 	if len(st.Links) != 1 || st.Links[0].VirtualIP != "10.126.126.60" || st.Links[0].LatencyMS != 0.12 {
-		t.Fatalf("links = %+v(延迟字符串 \"0.12\" 应解析为数值)", st.Links)
+		t.Fatalf("links = %+v(延迟字符串 \"0.12\" 应解析为数值,本机行剔除)", st.Links)
 	}
 	want := []string{"10.77.0.0/16", "192.168.50.0/24"}
 	if len(st.ProxyCIDRs) != len(want) || st.ProxyCIDRs[0] != want[0] || st.ProxyCIDRs[1] != want[1] {

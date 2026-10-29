@@ -48,7 +48,7 @@ onMounted(async () => {
 
 const exitOptions = computed(() => {
   const options = new Map<string, string>()
-  for (const link of status.snapshot?.easyTier?.links ?? []) {
+  for (const link of status.snapshot?.easytier?.links ?? []) {
     options.set(link.virtualIp, `${link.virtualIp}${link.hostname ? ` · ${link.hostname}` : ''}`)
   }
   for (const ip of exitNodes.value) {

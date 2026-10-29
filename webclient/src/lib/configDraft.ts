@@ -156,7 +156,7 @@ export interface ConfigSummaryRow {
 }
 
 // describeConfig 生成「配置总览」行:配置值来自 GET /api/config,实际值来自状态快照
-// (两者可能不同,例如虚拟 IP 留空 = DHCP,实际值来自 easyTier.selfIp)。
+// (两者可能不同,例如虚拟 IP 留空 = DHCP,实际值来自 easytier.selfIp)。
 export function describeConfig(
   view: ConfigView | null,
   snap: StatusSnapshot | null,
@@ -172,8 +172,8 @@ export function describeConfig(
     : !snap.configured
       ? '未配置'
       : snap.enabled
-        ? snap.easyTier?.selfIp
-          ? `已连接 ${snap.easyTier.selfIp}`
+        ? snap.easytier?.selfIp
+          ? `已连接 ${snap.easytier.selfIp}`
           : '连接中…'
         : '已断开'
   const socksState = snap
@@ -205,7 +205,7 @@ export function describeConfig(
       key: 'virtualIp',
       label: '虚拟 IP',
       configured: view.join.virtualIp === '' ? '自动分配（DHCP）' : view.join.virtualIp,
-      actual: orDash(snap?.easyTier?.selfIp ?? ''),
+      actual: orDash(snap?.easytier?.selfIp ?? ''),
     },
     {
       key: 'hostname',

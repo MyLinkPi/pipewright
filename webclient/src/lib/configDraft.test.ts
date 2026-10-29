@@ -138,7 +138,7 @@ describe('describeConfig', () => {
       socks5: { enabled: true, port: 1080, exitNodes: [] },
       proxies: [],
       supervisor: { running: true, lastErr: '', restarts: 0, startedAt: '', adopted: false },
-      easyTier: {
+      easytier: {
         ok: true,
         err: '',
         selfIp: '10.126.14.9',

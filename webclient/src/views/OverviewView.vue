@@ -27,10 +27,10 @@ const upgradeStatus = ref<UpgradeStatus>({
 })
 
 const snap = computed(() => status.snapshot)
-const peerCount = computed(() => snap.value?.easyTier?.links?.length ?? 0)
-const routeCount = computed(() => snap.value?.easyTier?.proxyCidrs?.length ?? 0)
+const peerCount = computed(() => snap.value?.easytier?.links?.length ?? 0)
+const routeCount = computed(() => snap.value?.easytier?.proxyCidrs?.length ?? 0)
 const avgLatency = computed(() => {
-  const links = snap.value?.easyTier?.links ?? []
+  const links = snap.value?.easytier?.links ?? []
   if (links.length === 0) return '—'
   const total = links.reduce((sum, link) => sum + (link.latencyMs || 0), 0)
   return `${Math.round(total / links.length)}ms`
@@ -168,7 +168,7 @@ onBeforeUnmount(() => {
         <div class="metrics">
           <div class="metric">
             <span class="faint">虚拟 IP</span>
-            <span class="mono">{{ orDash(snap?.easyTier?.selfIp ?? '') }}</span>
+            <span class="mono">{{ orDash(snap?.easytier?.selfIp ?? '') }}</span>
           </div>
           <div class="metric">
             <span class="faint">网络</span>

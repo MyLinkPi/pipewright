@@ -102,8 +102,8 @@ async function installFromBanner(): Promise<void> {
             <span v-if="status.snapshot?.join.networkName" class="muted">
               · {{ status.snapshot.join.networkName }}
             </span>
-            <span v-if="status.snapshot?.easyTier?.selfIp" class="muted mono">
-              · {{ status.snapshot.easyTier.selfIp }}
+            <span v-if="status.snapshot?.easytier?.selfIp" class="muted mono">
+              · {{ status.snapshot.easytier.selfIp }}
             </span>
           </div>
           <div class="faint status-hint">{{ status.meta.hint }}</div>

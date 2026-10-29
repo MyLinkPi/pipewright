@@ -19,7 +19,7 @@ function snapshot(patch: Partial<StatusSnapshot> = {}): StatusSnapshot {
     socks5: { enabled: false, port: 1080, exitNodes: [] },
     proxies: [],
     supervisor: { running: false, lastErr: '', restarts: 0, startedAt: '', adopted: false },
-    easyTier: null,
+    easytier: null,
     binaries: { corePath: '/bin/core', cliPath: '', version: 'v2.6.4', downloading: false, lastErr: '' },
     service: { runningAs: 'service', pid: 100 },
     clientVersion: 'v1.6.7',
@@ -51,7 +51,7 @@ describe('connectionState', () => {
       connectionState(
         snapshot({
           supervisor: { running: true, lastErr: '', restarts: 0, startedAt: '', adopted: false },
-          easyTier: {
+          easytier: {
             ok: true,
             err: '',
             selfIp: '10.126.14.9',
@@ -119,7 +119,7 @@ describe('peerRows', () => {
 describe('routeRows', () => {
   it('合并通告网段、网关与已启用状态', () => {
     const snap = snapshot({
-      easyTier: {
+      easytier: {
         ok: true,
         err: '',
         selfIp: '10.126.14.9',

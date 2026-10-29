@@ -118,7 +118,9 @@ export interface StatusSnapshot {
   socks5: Socks5Status
   proxies: ProxyStatus[]
   supervisor: SupervisorStatus
-  easyTier: EasyTierStatus | null
+  // 组网状态:键名与 Go 侧 json:"easytier" 逐字一致(全小写,不同于内部类型名 EasyTierStatus)。
+  // 写成 easyTier 会整体读空 → 状态恒「连接中…」;契约见 api/statusContract.test.ts。
+  easytier: EasyTierStatus | null
   binaries: BinStatus
   service: ServiceInfo
   clientVersion: string
