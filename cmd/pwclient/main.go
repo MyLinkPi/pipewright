@@ -14,8 +14,8 @@
 //	pwclient console          前台直跑核心(调试;不经服务,需管理员创建虚拟网卡)
 //	pwclient status           打印运行状态(经服务 IPC)
 //	pwclient doctor           环境自检(目录/配置/二进制/服务/链路逐项排查)
-//	pwclient upgrade [--check] [--tag vX.Y.Z] [--force]
-//	                          检查并升级到最新版(替换程序 + 重启服务)
+//	pwclient upgrade [--check] [--tag vX.Y.Z] [--force] [--unstable]
+//	                          检查并升级到最新版(替换程序 + 重启服务;--unstable 接受预发布 beta/rc)
 //	pwclient version          版本信息
 //
 // 数据目录:env PIPEWRIGHT_CLIENT_DATA 覆盖,默认 %ProgramData%\pipewright-client
@@ -109,7 +109,7 @@ func usage() {
   pwclient console             前台直跑核心(调试,需管理员)
   pwclient status              查看运行状态
   pwclient doctor             环境自检
-  pwclient upgrade             检查并升级到最新版(可加 --check 仅检查、--tag vX.Y.Z 指定版本)
+  pwclient upgrade             检查并升级到最新版(可加 --check 仅检查、--tag vX.Y.Z 指定版本、--unstable 接受预发布)
   pwclient version             版本信息
 
 数据目录(PIPEWRIGHT_CLIENT_DATA 可覆盖):

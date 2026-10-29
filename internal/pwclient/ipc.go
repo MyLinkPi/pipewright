@@ -36,7 +36,8 @@ type Controller interface {
 	ImportJoin(raw []byte, replaceRoutes bool) (Config, error)
 	RestartNow()
 	TriggerDownload() error
-	CheckUpgrade(ctx context.Context) version.UpdateInfo
+	// CheckUpgrade 查最新客户端发布;includeUnstable = 把预发布(beta/rc)纳入「最新版本」口径。
+	CheckUpgrade(ctx context.Context, includeUnstable bool) version.UpdateInfo
 	LogTail(n int) []string
 	// LogSince 返回序号大于 after 的日志行、当前最新序号与「历史已滚出环」标志
 	// (界面日志页增量拉取用)。
@@ -362,9 +363,11 @@ func (s *ipcServer) handleDownload(w http.ResponseWriter, _ *http.Request) {
 }
 
 // handleUpgradeCheck 查最新客户端发布(服务侧执行;候选源 GitHub 官方 → gh-proxy 兜底)。
+// ?unstable=1 表示把预发布(beta/rc)纳入「最新版本」口径(供客户端升级开关)。
 // 网络失败不报 5xx —— UpdateInfo.CheckError 携带原因,前端优雅降级。
 func (s *ipcServer) handleUpgradeCheck(w http.ResponseWriter, r *http.Request) {
-	writeIPCJSON(w, http.StatusOK, s.ctl.CheckUpgrade(r.Context()))
+	includeUnstable := r.URL.Query().Get("unstable") == "1" || r.URL.Query().Get("unstable") == "true"
+	writeIPCJSON(w, http.StatusOK, s.ctl.CheckUpgrade(r.Context(), includeUnstable))
 }
 
 // handleUpgradeStatus 回显升级进程写下的进度(文件缺失/损坏时返回空阶段,前端据此隐藏进度条)。
@@ -442,11 +445,11 @@ func (rt *Runtime) LogSince(after uint64, max int) ([]string, uint64, bool) {
 }
 
 // CheckUpgrade 实现 Controller:查最新客户端发布(按候选源自动回退)。
-func (rt *Runtime) CheckUpgrade(ctx context.Context) version.UpdateInfo {
+func (rt *Runtime) CheckUpgrade(ctx context.Context, includeUnstable bool) version.UpdateInfo {
 	if rt.checkUpgrade != nil {
-		return rt.checkUpgrade(ctx)
+		return rt.checkUpgrade(ctx, includeUnstable)
 	}
-	return version.NewChecker().CheckAny(ctx, version.CandidateSources(""))
+	return version.NewChecker().CheckAny(ctx, version.CandidateSources(""), includeUnstable)
 }
 
 // ErrIPCUnavailable 表示 IPC 通道不可用(服务未运行/信息文件缺失)。
@@ -561,9 +564,14 @@ func (c *IPCClient) TriggerDownload(ctx context.Context) error {
 }
 
 // CheckUpgrade 查最新客户端发布(服务侧按候选源检查,带 15 分钟缓存)。
-func (c *IPCClient) CheckUpgrade(ctx context.Context) (*version.UpdateInfo, error) {
+// includeUnstable=true 时把预发布(beta/rc)纳入「最新版本」口径。
+func (c *IPCClient) CheckUpgrade(ctx context.Context, includeUnstable bool) (*version.UpdateInfo, error) {
 	var info version.UpdateInfo
-	if err := c.do(ctx, http.MethodGet, "/api/upgrade/check", nil, &info); err != nil {
+	path := "/api/upgrade/check"
+	if includeUnstable {
+		path += "?unstable=1"
+	}
+	if err := c.do(ctx, http.MethodGet, path, nil, &info); err != nil {
 		return nil, err
 	}
 	return &info, nil

@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { NButton, NCard, NProgress, NTag, useMessage } from 'naive-ui'
+import { NButton, NCard, NProgress, NSwitch, NTag, useMessage } from 'naive-ui'
 import { http } from '../api/http'
-import type { UpdateInfo, UpgradeStatus } from '../api/types'
+import type { UpdateInfo, UIPrefs, UpgradeStatus } from '../api/types'
 import { useStatusStore } from '../stores/status'
 import { useLocalStore } from '../stores/local'
 import { formatTime, orDash, shortError } from '../lib/format'
@@ -14,6 +14,10 @@ const message = useMessage()
 const update = ref<UpdateInfo | null>(null)
 const checking = ref(false)
 const upgrading = ref(false)
+// 升级是否包含非稳定版本(预发布 beta/rc)。偏好由后端持有(ui-prefs.json):
+// 界面服务随机端口下 localStorage 按源隔离会失效,不能存浏览器里。
+const includeUnstable = ref(false)
+const prefs = ref<UIPrefs | null>(null)
 const upgradeStatus = ref<UpgradeStatus>({
   phase: '',
   current: '',
@@ -82,7 +86,9 @@ async function checkUpdate(): Promise<void> {
   if (checking.value) return
   checking.value = true
   try {
-    update.value = await http.get<UpdateInfo>('/api/upgrade/check')
+    update.value = await http.get<UpdateInfo>(
+      includeUnstable.value ? '/api/upgrade/check?unstable=1' : '/api/upgrade/check',
+    )
     if (update.value.checkError) {
       message.error(`检查更新失败：${update.value.checkError}`)
     } else if (update.value.updateAvailable) {
@@ -97,12 +103,32 @@ async function checkUpdate(): Promise<void> {
   }
 }
 
+// toggleUnstable 切换开关:先落盘偏好再按新口径重新检查。
+// 落盘失败则回滚开关并提示(避免界面口径与后端不一致)。
+async function toggleUnstable(next: boolean): Promise<void> {
+  if (next === includeUnstable.value) return
+  const prev = includeUnstable.value
+  includeUnstable.value = next
+  try {
+    await local.savePrefs({
+      theme: prefs.value?.theme ?? 'dark',
+      includeUnstable: next,
+    })
+    if (prefs.value) prefs.value.includeUnstable = next
+  } catch (err) {
+    includeUnstable.value = prev
+    message.error(err instanceof Error ? err.message : String(err))
+    return
+  }
+  await checkUpdate()
+}
+
 async function startUpgrade(): Promise<void> {
   const latest = update.value?.latest
   if (!latest) return
   upgrading.value = true
   try {
-    await local.upgrade(latest)
+    await local.upgrade(latest, includeUnstable.value)
     message.success('已请求升级（如弹出 UAC 请确认）')
     await loadUpgradeStatus()
   } catch (err) {
@@ -115,6 +141,14 @@ async function startUpgrade(): Promise<void> {
 onMounted(() => {
   void loadUpgradeStatus()
   timer = window.setInterval(loadUpgradeStatus, 3000)
+  // 读后端偏好初始化开关;失败保持默认(不含非稳定版本)。
+  void local
+    .loadPrefs()
+    .then((p) => {
+      prefs.value = p
+      includeUnstable.value = p.includeUnstable
+    })
+    .catch(() => {})
 })
 
 onBeforeUnmount(() => {
@@ -203,6 +237,10 @@ onBeforeUnmount(() => {
         <div v-if="update?.updateAvailable" class="kv">
           <span class="faint">可升级到</span><span>{{ update.latest }}</span>
         </div>
+        <div v-if="update?.updateAvailable && update.prerelease" class="kv">
+          <span class="faint">版本类型</span>
+          <n-tag type="warning" size="tiny" :bordered="false">预发布 · 非稳定</n-tag>
+        </div>
         <div v-if="upgradeRunning" class="upgrade-progress">
           <n-progress type="line" :percentage="0" :processing="true" :show-indicator="false" />
           <span class="faint">
@@ -225,6 +263,10 @@ onBeforeUnmount(() => {
             升级到 {{ update.latest }}
           </n-button>
         </div>
+        <label class="unstable-toggle">
+          <n-switch size="small" :value="includeUnstable" @update:value="toggleUnstable" />
+          <span>接受非稳定版本（beta / rc 预发布）</span>
+        </label>
       </n-card>
     </div>
   </div>
@@ -321,6 +363,17 @@ onBeforeUnmount(() => {
   display: flex;
   gap: 8px;
   margin-top: 14px;
+}
+
+.unstable-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+  font-size: 13px;
+  color: var(--color-faint);
+  cursor: pointer;
+  user-select: none;
 }
 
 .upgrade-progress {

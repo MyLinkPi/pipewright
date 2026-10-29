@@ -154,12 +154,13 @@ func (u *Upgrader) client() *http.Client {
 }
 
 // Check 查最新发布:按候选源顺序尝试,首个成功(或「源上暂无 release」)的结果即返回。
-func (u *Upgrader) Check(ctx context.Context) version.UpdateInfo {
+// includeUnstable=true 时把预发布(beta/rc)纳入「最新版本」口径(改走 releases 列表端点)。
+func (u *Upgrader) Check(ctx context.Context, includeUnstable bool) version.UpdateInfo {
 	chk := u.Checker
 	if chk == nil {
 		chk = version.NewChecker()
 	}
-	return chk.CheckAny(ctx, u.sources(ctx))
+	return chk.CheckAny(ctx, u.sources(ctx), includeUnstable)
 }
 
 // clientAssetName 是 goreleaser 产出的客户端归档名(与 .goreleaser.yaml 的

@@ -31,19 +31,22 @@ type upgradeOptions struct {
 	CheckOnly bool
 	Tag       string
 	Force     bool
+	// Unstable 接受非稳定版本:把预发布(beta/rc)纳入「最新版」口径。
+	Unstable bool
 }
 
-// runUpgrade 处理 `pwclient upgrade [--check] [--tag vX.Y.Z] [--force]`。
+// runUpgrade 处理 `pwclient upgrade [--check] [--tag vX.Y.Z] [--force] [--unstable]`。
 func runUpgrade(args []string) {
 	fs := flag.NewFlagSet("upgrade", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	checkOnly := fs.Bool("check", false, "只检查最新版本,不下载/不改动文件(无需管理员)")
 	tag := fs.String("tag", "", "升级到指定版本 tag(如 v1.2.3;缺省 = 最新)")
 	force := fs.Bool("force", false, "忽略版本比较强制重装/升级")
+	unstable := fs.Bool("unstable", false, "接受非稳定版本(预发布 beta/rc 纳入「最新版」口径)")
 	if err := fs.Parse(args); err != nil {
 		os.Exit(2)
 	}
-	if err := doUpgrade(upgradeOptions{CheckOnly: *checkOnly, Tag: *tag, Force: *force}); err != nil {
+	if err := doUpgrade(upgradeOptions{CheckOnly: *checkOnly, Tag: *tag, Force: *force, Unstable: *unstable}); err != nil {
 		fmt.Fprintln(os.Stderr, "升级失败:", err)
 		os.Exit(1)
 	}
@@ -56,7 +59,7 @@ func doUpgrade(opts upgradeOptions) error {
 	current := version.Version
 	up := pwclient.NewUpgrader()
 
-	info := up.Check(ctx)
+	info := up.Check(ctx, opts.Unstable)
 	if opts.CheckOnly {
 		printUpdateInfo(info)
 		if info.CheckError != "" {
@@ -199,6 +202,9 @@ func printUpdateInfo(info version.UpdateInfo) {
 		fmt.Println("有可用更新: 是")
 	} else {
 		fmt.Println("有可用更新: 否")
+	}
+	if info.Prerelease {
+		fmt.Println("版本类型:  预发布(非稳定)")
 	}
 	if info.ReleaseURL != "" {
 		fmt.Println("发布页:    ", info.ReleaseURL)

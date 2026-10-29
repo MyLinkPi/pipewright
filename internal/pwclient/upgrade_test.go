@@ -207,7 +207,7 @@ func TestUpgraderCheckAndStageFallback(t *testing.T) {
 	up := newTestUpgrader(bad.Client(), badSrc, goodSrc)
 
 	// 检查:第一源 500,自动回退第二源。
-	info := up.Check(context.Background())
+	info := up.Check(context.Background(), false)
 	if info.CheckError != "" || info.Latest != "v9.9.9" {
 		t.Fatalf("检查应回退到第二源,得 %+v", info)
 	}

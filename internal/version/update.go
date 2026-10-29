@@ -17,6 +17,10 @@ import (
 // checkTTL 是更新检查结果的缓存时长:GitHub 未鉴权 API 限速 60 次/小时/IP,缓存避免反复点击打爆。
 const checkTTL = 15 * time.Minute
 
+// unstableListPerPage 是「包含预发布」检查时 releases 列表端点的拉取条数:预发布常
+// 密集连发,留足窗口避开分页(列表按创建时间倒序,首个非 draft 即目标)。
+const unstableListPerPage = 15
+
 // UpdateInfo 是 /api/version/check 的返回:当前版本、最新版本及是否有更新。
 // CheckError 非空表示这次检查本身失败(网络/限流);此时 UpdateAvailable 恒 false,
 // 前端据此提示「检查失败」而非误报「已是最新」。
@@ -27,16 +31,20 @@ type UpdateInfo struct {
 	ReleaseURL      string `json:"releaseUrl"`
 	PublishedAt     string `json:"publishedAt"`
 	Notes           string `json:"notes"`
+	Prerelease      bool   `json:"prerelease"`      // latest 是否为预发布(beta/rc);未开启包含预发布时恒 false
+	IncludeUnstable bool   `json:"includeUnstable"` // 本次检查是否包含预发布(回显查询口径,前端据此提示)
 	CheckError      string `json:"checkError,omitempty"`
 }
 
-// ghRelease 是 GitHub releases/latest 响应里我们关心的字段。
+// ghRelease 是 GitHub releases API 响应里我们关心的字段(draft 供「包含预发布」
+// 的列表端点过滤草稿 —— /releases/latest 端点本身已排除 draft 与 prerelease)。
 type ghRelease struct {
 	TagName     string `json:"tag_name"`
 	HTMLURL     string `json:"html_url"`
 	PublishedAt string `json:"published_at"`
 	Body        string `json:"body"`
 	Prerelease  bool   `json:"prerelease"`
+	Draft       bool   `json:"draft"`
 }
 
 // Checker 查询升级源最新发布并与当前构建版本比对,带 TTL 缓存。零值不可用,请用 NewChecker。
@@ -82,8 +90,11 @@ func (c *Checker) src(ctx context.Context) Source {
 	return ResolveSource(envMirror())
 }
 
-// cacheKey 标识一个源:API base + repo 足以区分检查结果(其余 base 与同源配置联动)。
-func (s Source) cacheKey() string { return s.APIBase + "\x00" + s.Repo }
+// cacheKey 标识一个源与查询口径:API base + repo 足以区分检查结果(其余 base 与同源
+// 配置联动);是否包含预发布同样隔离,两种口径的缓存互不污染。
+func (s Source) cacheKey(includeUnstable bool) string {
+	return s.APIBase + "\x00" + s.Repo + "\x00" + strconv.FormatBool(includeUnstable)
+}
 
 // resolveLatestViaRedirect 不走 API,改读 {WebBase}/{repo}/releases/latest 的 302 重定向
 // (会跳到 /releases/tag/<tag>),从 Location 解析出最新 tag。用于 API 被限流(常见 403)或
@@ -130,6 +141,7 @@ func (c *Checker) resolveLatestViaRedirect(ctx context.Context, src Source) (tag
 
 // tryRedirectFallback 在 API 受限/不可达时改用重定向解析最新 tag。成功则填好 out(清空
 // CheckError、按需置 UpdateAvailable)并返回 true;失败返回 false,由调用方保留原 CheckError。
+// 局限:该兜底只能拿到正式版 latest,「包含预发布」口径下降级成功时结果实为仅正式版。
 func (c *Checker) tryRedirectFallback(ctx context.Context, src Source, out *UpdateInfo, cur string) bool {
 	tag, htmlURL, err := c.resolveLatestViaRedirect(ctx, src)
 	if err != nil || tag == "" {
@@ -211,17 +223,23 @@ func htmlToText(h string) string {
 	return strings.Join(out, "\n")
 }
 
-// Check 返回更新信息。命中未过期缓存(且源未变)则直接返回;否则查升级源。
-// 网络/解析失败不返回 error —— 而是在 UpdateInfo.CheckError 里带上原因(始终附当前版本),
-// 让上层端点稳定返回 200、前端优雅降级。
+// Check 返回更新信息(仅正式版,预发布/beta 不视为可升级)。命中未过期缓存(且源未变)
+// 则直接返回;否则查升级源。网络/解析失败不返回 error —— 而是在 UpdateInfo.CheckError
+// 里带上原因(始终附当前版本),让上层端点稳定返回 200、前端优雅降级。
 func (c *Checker) Check(ctx context.Context) UpdateInfo {
-	return c.CheckSource(ctx, c.src(ctx))
+	return c.CheckUnstable(ctx, false)
 }
 
-// CheckSource 针对指定源做一次检查(带 TTL 缓存,key = APIBase+Repo)。
+// CheckUnstable 同 Check,includeUnstable=true 时把预发布(beta/rc)纳入「最新版本」
+// 口径(改走 releases 列表端点);两种口径的缓存按口径隔离,切换开关不会读到旧口径结果。
+func (c *Checker) CheckUnstable(ctx context.Context, includeUnstable bool) UpdateInfo {
+	return c.CheckSource(ctx, c.src(ctx), includeUnstable)
+}
+
+// CheckSource 针对指定源做一次检查(带 TTL 缓存,key = APIBase+Repo+口径)。
 // 命中未过期缓存则直接返回;否则查该源。
-func (c *Checker) CheckSource(ctx context.Context, src Source) UpdateInfo {
-	key := src.cacheKey()
+func (c *Checker) CheckSource(ctx context.Context, src Source, includeUnstable bool) UpdateInfo {
+	key := src.cacheKey(includeUnstable)
 
 	c.mu.Lock()
 	if c.cached != nil && c.cachedFor == key && c.now().Sub(c.cachedAt) < checkTTL {
@@ -231,7 +249,7 @@ func (c *Checker) CheckSource(ctx context.Context, src Source) UpdateInfo {
 	}
 	c.mu.Unlock()
 
-	info := c.fetch(ctx, src)
+	info := c.fetch(ctx, src, includeUnstable)
 
 	// 仅缓存成功结果:失败不缓存,以便用户重试时立刻再查。
 	if info.CheckError == "" {
@@ -247,14 +265,14 @@ func (c *Checker) CheckSource(ctx context.Context, src Source) UpdateInfo {
 
 // CheckAny 按序尝试候选源,返回**首个** `CheckError == ""` 的结果(含「源上暂无 release」
 // 的 404 成功态);全部失败返回最后一个结果(保留可读错误)。用于 GitHub 不可达/限流时
-// 自动回退到镜像/公共代理,调用方无需自己拼源。
-func (c *Checker) CheckAny(ctx context.Context, sources []Source) UpdateInfo {
+// 自动回退到镜像/公共代理,调用方无需自己拼源。includeUnstable 口径同 CheckUnstable。
+func (c *Checker) CheckAny(ctx context.Context, sources []Source, includeUnstable bool) UpdateInfo {
 	if len(sources) == 0 {
 		return UpdateInfo{Current: Version, CheckError: "升级源未配置"}
 	}
 	var last UpdateInfo
 	for _, src := range sources {
-		info := c.CheckSource(ctx, src)
+		info := c.CheckSource(ctx, src, includeUnstable)
 		if info.CheckError == "" {
 			return info
 		}
@@ -263,15 +281,20 @@ func (c *Checker) CheckAny(ctx context.Context, sources []Source) UpdateInfo {
 	return last
 }
 
-func (c *Checker) fetch(ctx context.Context, src Source) UpdateInfo {
+func (c *Checker) fetch(ctx context.Context, src Source, includeUnstable bool) UpdateInfo {
 	cur := Version
-	out := UpdateInfo{Current: cur}
+	out := UpdateInfo{Current: cur, IncludeUnstable: includeUnstable}
 
 	base := src.APIBase
 	if base == "" {
 		base = githubAPIBase
 	}
+	// 包含预发布时改走列表端点(/releases/latest 天然排除 prerelease,无法反映 beta);
+	// 取首个非 draft 条目 —— 列表按创建时间倒序,即最新一条。
 	url := fmt.Sprintf("%s/repos/%s/releases/latest", base, src.Repo)
+	if includeUnstable {
+		url = fmt.Sprintf("%s/repos/%s/releases?per_page=%d", base, src.Repo, unstableListPerPage)
+	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
@@ -313,7 +336,23 @@ func (c *Checker) fetch(ctx context.Context, src Source) UpdateInfo {
 	}
 
 	var rel ghRelease
-	if err := json.NewDecoder(resp.Body).Decode(&rel); err != nil {
+	if includeUnstable {
+		var rels []ghRelease
+		if err := json.NewDecoder(resp.Body).Decode(&rels); err != nil {
+			out.CheckError = "解析升级源响应失败"
+			return out
+		}
+		for _, r := range rels {
+			if !r.Draft {
+				rel = r
+				break
+			}
+		}
+		// 列表全为草稿(或为空):与 404 同义 —— 源上无可用发布。
+		if rel.TagName == "" {
+			return out
+		}
+	} else if err := json.NewDecoder(resp.Body).Decode(&rel); err != nil {
 		out.CheckError = "解析升级源响应失败"
 		return out
 	}
@@ -322,6 +361,7 @@ func (c *Checker) fetch(ctx context.Context, src Source) UpdateInfo {
 	out.ReleaseURL = rel.HTMLURL
 	out.PublishedAt = rel.PublishedAt
 	out.Notes = rel.Body
+	out.Prerelease = rel.Prerelease
 	// 仅当当前是正式语义版本(可比较)且 latest 更高时,才判定「有更新」。
 	// 开发态(dev / 非 vX.Y.Z)无法可靠比较 → 不误报。
 	if isComparable(cur) && rel.TagName != "" && CompareVersions(rel.TagName, cur) > 0 {
