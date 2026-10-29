@@ -1,9 +1,10 @@
 // theme.go 是界面偏好(主题/升级口径)的持久化与注入。
 //
 // 为什么偏好落后端、而非浏览器 localStorage:
-//   界面服务每次启动监听随机端口(127.0.0.1:0),http://127.0.0.1:<port> 是一个新的源
-//   (origin),localStorage 按源隔离 —— 重启后端口变了,旧主题读不回来(表现为「切换后
-//   重启不保存」)。因此把偏好写到 <dataDir>/ui-prefs.json,由后端持有。
+//
+//	界面服务每次启动监听随机端口(127.0.0.1:0),http://127.0.0.1:<port> 是一个新的源
+//	(origin),localStorage 按源隔离 —— 重启后端口变了,旧主题读不回来(表现为「切换后
+//	重启不保存」)。因此把偏好写到 <dataDir>/ui-prefs.json,由后端持有。
 //
 // 首屏正确性:handleStatic 在返回 index.html 时把持久化主题注入 <html data-theme>,
 // 使 JS 执行前就是正确主题,既避免闪烁,也不依赖会失效的 localStorage。
