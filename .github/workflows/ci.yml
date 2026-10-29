@@ -15,13 +15,15 @@ jobs:
         with:
           go-version: '1.27'
       # go:embed 需要 web/dist 与 uiserver/dist 存在;backend job 用占位即可(真实产物在
-      # frontend job 验证)
+      # frontend job 验证)。uiserver 占位须带 <html lang="zh-CN" data-theme="dark"> 锚点,
+      # 与 webclient/index.html 源模板一致 —— injectTheme 是按该锚点覆写,缺锚点会导致
+      # 主题注入测试在 CI 上失败。
       - name: ensure embed placeholders
         run: |
           mkdir -p web/dist
-          [ -f web/dist/index.html ] || echo '<!doctype html><div id="app"></div>' > web/dist/index.html
+          [ -f web/dist/index.html ] || echo '<!doctype html><html><body><div id="app"></div></body></html>' > web/dist/index.html
           mkdir -p internal/pwclient/uiserver/dist
-          [ -f internal/pwclient/uiserver/dist/index.html ] || echo '<!doctype html><div id="app"></div>' > internal/pwclient/uiserver/dist/index.html
+          [ -f internal/pwclient/uiserver/dist/index.html ] || echo '<!doctype html><html lang="zh-CN" data-theme="dark"><body><div id="app"></div></body></html>' > internal/pwclient/uiserver/dist/index.html
       - name: gofmt check
         run: |
           out="$(gofmt -l cmd internal embed.go)"
