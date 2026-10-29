@@ -89,19 +89,23 @@ async function copySummary(): Promise<void> {
     </n-card>
 
     <n-card title="本机路径" size="small">
-      <div class="kv">
-        <span class="faint">数据目录</span>
-        <span class="mono path">{{ orDash(local.info?.dataDir ?? '') }}</span>
-        <n-button size="tiny" quaternary @click="local.revealDataDir()">打开</n-button>
+      <div class="kv kv-path">
+        <div class="kv-head">
+          <span class="faint">数据目录</span>
+          <n-button size="tiny" quaternary @click="local.revealDataDir()">打开</n-button>
+        </div>
+        <span class="mono path" :title="local.info?.dataDir ?? ''">{{ orDash(local.info?.dataDir ?? '') }}</span>
       </div>
-      <div class="kv">
+      <div class="kv kv-path">
         <span class="faint">配置文件</span>
-        <span class="mono path">{{ orDash(local.info?.configFile ?? '') }}</span>
+        <span class="mono path" :title="local.info?.configFile ?? ''">{{ orDash(local.info?.configFile ?? '') }}</span>
       </div>
-      <div class="kv">
-        <span class="faint">日志文件</span>
-        <span class="mono path">{{ orDash(local.info?.logFile ?? '') }}</span>
-        <n-button size="tiny" quaternary @click="local.openLog()">打开</n-button>
+      <div class="kv kv-path">
+        <div class="kv-head">
+          <span class="faint">日志文件</span>
+          <n-button size="tiny" quaternary @click="local.openLog()">打开</n-button>
+        </div>
+        <span class="mono path" :title="local.info?.logFile ?? ''">{{ orDash(local.info?.logFile ?? '') }}</span>
       </div>
     </n-card>
   </div>
@@ -122,11 +126,16 @@ async function copySummary(): Promise<void> {
   font-size: 14px;
 }
 
-.kv .path {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.kv-path {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+}
+
+.kv-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
 }
 </style>

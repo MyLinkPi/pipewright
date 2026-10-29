@@ -14,6 +14,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -167,6 +168,22 @@ func NewAdopted(cfg Config, pid int) *Supervisor {
 		cfg.RPCAddr = "127.0.0.1:15888"
 	}
 	return &Supervisor{cfg: cfg, done: make(chan struct{}), adoptedPID: pid, adoptedAt: time.Now()}
+}
+
+// RPCAddrReachable 对 addr(host:port)做一次 TCP 连接实测:core 的 RPC portal 只监听
+// 该口时才算开放(秒级超时,纯本地探测)。错误文本供日志直接消费:
+// connection refused = 端口未监听(未落日志可归因)。
+func RPCAddrReachable(addr string) error {
+	if addr == "" {
+		return fmt.Errorf("RPC 地址未配置")
+	}
+	d := net.Dialer{Timeout: 2 * time.Second}
+	c, err := d.Dial("tcp", addr)
+	if err != nil {
+		return err
+	}
+	_ = c.Close()
+	return nil
 }
 
 // args 生成 easytier-core 参数(固定 RPC portal 端口便于本机状态查询)。

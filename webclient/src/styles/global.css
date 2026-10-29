@@ -86,6 +86,11 @@ a {
   color: var(--color-faint);
 }
 
+/* 文件/目录路径：完整显示，必要时换行 */
+.path {
+  word-break: break-all;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

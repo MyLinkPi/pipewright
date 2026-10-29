@@ -8,6 +8,10 @@ package easytier
 import (
 	"context"
 	"errors"
+	"log"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -433,5 +437,108 @@ func TestStatusParsesRealV26Output(t *testing.T) {
 		if pr.ViaIP != "10.126.126.60" || pr.ViaName != "adv" {
 			t.Fatalf("%s 网关 = %+v, want adv/10.126.126.60", pr.CIDR, pr)
 		}
+	}
+}
+
+// TestAbbrevOutput 验证输出压单行:换行/多空格归一,超长保尾部(错误信息在末尾)。
+func TestAbbrevOutput(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"压平空白", "a\n b   c\n", "a b c"},
+		{"空输入", "", ""},
+	}
+	for _, c := range cases {
+		if got := abbrevOutput(c.in); got != c.want {
+			t.Fatalf("%s: abbrevOutput = %q, want %q", c.name, got, c.want)
+		}
+	}
+	long := strings.Repeat("x", 5000) + "boom"
+	got := abbrevOutput(long)
+	if !strings.HasSuffix(got, "boom") || strings.Contains(got, strings.Repeat("x", 4097)) {
+		t.Fatalf("超长输出应截断保尾部:%q", got[:40])
+	}
+}
+
+// TestRpcAddrOfArgs 验证从 CLI 参数提取 --rpc-portal 值;无旗子回落平台默认。
+func TestRpcAddrOfArgs(t *testing.T) {
+	cases := []struct {
+		args []string
+		want string
+	}{
+		{[]string{"--rpc-portal", "127.0.0.1:15889", "-o", "json", "node", "info"}, "127.0.0.1:15889"},
+		{[]string{"node", "--output", "json"}, "127.0.0.1:15888"},
+	}
+	for _, c := range cases {
+		if got := rpcAddrOfArgs(c.args); got != c.want {
+			t.Fatalf("%v → %q, want %q", c.args, got, c.want)
+		}
+	}
+}
+
+// TestExecCLIRunnerLogsCommandAndOutput 用 sh 伪 CLI 验证真 exec 路径:完整命令行、
+// stdout、失败 stderr 都进日志(前缀 easytier-cli),连接类失败另落 RPC 口可达性实测。
+func TestExecCLIRunnerLogsCommandAndOutput(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("依赖 sh 伪二进制,Windows 跳过")
+	}
+	dir := t.TempDir()
+	script := filepath.Join(dir, "fake-cli.sh")
+	// 形参含 "fail" 走连接失败(stderr+退 1),否则输出 JSON;输出不夹带引号外的命令行串,便于断言。
+	body := "#!/bin/sh\n" +
+		"case \"$*\" in *fail*) echo 'failed to connect to rpc portal: Connection refused' >&2; exit 1;; esac\n" +
+		"echo '{\"hostname\":\"alpha\"}'\n"
+	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+		t.Fatalf("写伪 CLI:%v", err)
+	}
+	origProbe := rpcListenProbe
+	defer func() { rpcListenProbe = origProbe }()
+	var probed []string
+	rpcListenProbe = func(addr string) error {
+		probed = append(probed, addr)
+		return errors.New("dial tcp 127.0.0.1:15889: connect: connection refused")
+	}
+
+	var buf syncBuf
+	log.SetOutput(&buf)
+	log.SetFlags(0)
+	defer log.SetOutput(os.Stderr)
+
+	run := execCLIRunner(script)
+	args := []string{"--rpc-portal", "127.0.0.1:15889", "-o", "json", "node", "info"}
+	out, err := run(context.Background(), args)
+	if err != nil || !strings.Contains(string(out), "alpha") {
+		t.Fatalf("成功路径: out=%q err=%v", out, err)
+	}
+	logged := buf.String()
+	for _, want := range []string{
+		"easytier-cli: 执行 " + script + " --rpc-portal 127.0.0.1:15889 -o json node info",
+		`easytier-cli: 输出(node info): {"hostname":"alpha"}`,
+	} {
+		if !strings.Contains(logged, want) {
+			t.Fatalf("成功路径日志缺 %q:\n%s", want, logged)
+		}
+	}
+
+	buf.mu.Lock()
+	buf.buf.Reset()
+	buf.mu.Unlock()
+	failArgs := []string{"--rpc-portal", "127.0.0.1:15889", "-o", "json", "node", "fail"}
+	if _, err := run(context.Background(), failArgs); err == nil || !strings.Contains(err.Error(), "Connection refused") {
+		t.Fatalf("失败路径 err = %v,应携 stderr 摘要", err)
+	}
+	logged = buf.String()
+	for _, want := range []string{
+		"easytier-cli: 执行", "easytier-cli: stderr(node fail):", "failed to connect to rpc portal",
+		"RPC 端口可达性实测 127.0.0.1:15889", // 连接类失败补一次端口实测
+	} {
+		if !strings.Contains(logged, want) {
+			t.Fatalf("失败路径日志缺 %q:\n%s", want, logged)
+		}
+	}
+	if len(probed) == 0 || probed[0] != "127.0.0.1:15889" {
+		t.Fatalf("实测入口地址 = %v", probed)
 	}
 }
