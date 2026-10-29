@@ -83,9 +83,11 @@ VIAddVersionKey /LANG=2052 "LegalCopyright" ""
 
 ; ---- 辅助函数 ----
 ; WaitFileFree:轮询目标文件直到可写(旧进程/驱动释放)或超时约 20 秒后返回。
-; 用法:Push "<路径>" / Call WaitFileFree。用于解决强杀 easytier-core 后 WinDivert64.sys
+; 用法:Push "<路径>" / Call WaitFileFree(安装段)或 Call un.WaitFileFree(卸载段)。
+; 用于解决强杀 easytier-core 后 WinDivert64.sys
 ; 内核驱动延迟卸载导致的「无法打开要写入的文件」。
-Function WaitFileFree
+; NSIS 规定卸载段只能 Call un. 前缀函数,函数体收进宏生成双份避免重复。
+!macro WaitFileFreeBody
   Pop $R0            ; 目标文件路径
   StrCpy $R1 0
   ${If} ${FileExists} "$R0"
@@ -103,6 +105,14 @@ Function WaitFileFree
       Sleep 1000
     ${Loop}
   ${EndIf}
+!macroend
+
+Function WaitFileFree
+  !insertmacro WaitFileFreeBody
+FunctionEnd
+
+Function un.WaitFileFree
+  !insertmacro WaitFileFreeBody
 FunctionEnd
 
 ; ---- 安装 ----
@@ -172,8 +182,9 @@ Section "Uninstall"
   ExecWait 'taskkill /F /IM easytier-cli.exe' $0
   ExecWait 'net stop "WinDivert"' $0
   ; 等驱动卸载释放 bin 下文件,否则 RMDir /r 删不掉 WinDivert64.sys 会残留。
+  ; 卸载段必须调 un. 前缀版本(NSIS 硬限制,否则 makensis 编译报错)。
   Push "$INSTDIR\bin\WinDivert64.sys"
-  Call WaitFileFree
+  Call un.WaitFileFree
 
   Delete "$DESKTOP\Pipewright Client.lnk"
   Delete "$SMPROGRAMS\Pipewright Client\Pipewright Client.lnk"
