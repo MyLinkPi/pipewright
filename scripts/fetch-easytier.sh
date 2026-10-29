@@ -19,10 +19,11 @@ root="$(cd "$(dirname "$0")/.." && pwd)"
 dest="$root/third_party/easytier"
 repo="EasyTier/EasyTier"
 
-# arch_asset <os> <goarch>:EasyTier 官方资产里的架构名(windows 用 arm64,unix 用 aarch64)。
+# arch_asset <os> <goarch>:拼 EasyTier 官方资产里的 <平台>-<架构>段。注:资产里 macOS 叫
+# macos(GOOS 为 darwin);架构 windows 用 arm64、unix 用 aarch64。目录名仍用 GOOS(与 goreleaser {{ .Os }} 对齐)。
 arch_asset() {
 	local os="$1" a="$2"
-	local uname
+	local uname assetos
 	case "$a" in
 	amd64) uname=x86_64 ;;
 	arm64)
@@ -30,7 +31,8 @@ arch_asset() {
 		;;
 	*) echo "不支持的架构: $a" >&2; exit 2 ;;
 	esac
-	echo "$os-$uname"
+	if [ "$os" = "darwin" ]; then assetos=macos; else assetos=$os; fi
+	echo "$assetos-$uname"
 }
 
 fetch() { # fetch <url> <输出>
