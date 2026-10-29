@@ -1,13 +1,13 @@
 // pwclient 是 pipewright 集群客户端:Windows 以托盘 + WebView2 主窗口 + 后台 Windows 服务
-// 常驻组网(EasyTier 托管子进程 + 可限定网段路由);Linux/macOS 以前台进程 + 系统浏览器
-// 承载同一套 Web 界面(不做系统服务/托盘)。
+// 常驻组网(EasyTier 托管子进程 + 可限定网段路由);Linux/macOS 以系统浏览器承载同一套 Web
+// 界面(无托盘),后台常驻服务经 systemd(Linux)/launchd(macOS),未装服务时 UI 前台自跑核心。
 //
 // 子命令:
 //
 //	pwclient                  启动客户端界面(Windows:托盘 + 主窗口;其他:前台 + 浏览器)
 //	pwclient ui               同上(--no-open 仅打印界面地址、--ui-listen 指定监听地址)
-//	pwclient service run      作为 Windows 服务运行(SCM 调起;数据面 + IPC)
-//	pwclient service install  安装并启动服务(需管理员;界面/托盘经 UAC 提权调起)
+//	pwclient service run      作为后台服务运行(Linux systemd/macOS launchd 调起;数据面 + IPC)
+//	pwclient service install  安装并启动服务(Windows 需管理员/UAC;Linux/macOS 需 root)
 //	pwclient service start    启动服务
 //	pwclient service stop     停止服务
 //	pwclient service uninstall 卸载服务

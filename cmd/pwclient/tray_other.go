@@ -1,7 +1,8 @@
 //go:build !windows
 
-// tray_other.go 是 Linux/macOS 的桌面形态:前台运行核心 + uiserver,用系统浏览器打开界面。
-// 不做系统服务/托盘/开机自启(仅 Windows 提供)。
+// tray_other.go 是 Linux/macOS 的桌面形态:uiserver + 系统浏览器打开界面。核心优先复用
+// 后台服务(systemd/launchd,经 IPC);未装/未运行时在 UI 进程内前台跑核心(console)。
+// 托盘仍仅 Windows 提供。
 package main
 
 import (
@@ -16,8 +17,14 @@ import (
 // quitCh 接收界面「退出客户端」请求(/local/quit)。
 var quitCh = make(chan struct{})
 
-// localCoreMode 非 Windows 在 UI 进程内前台运行核心(console 装配)。
-func localCoreMode() string { return "console" }
+// localCoreMode 服务运行中则不启核心(与 Windows 一致,避免双实例争用 IPC/网卡,
+// 界面经 IPC 复用服务的数据面);否则在 UI 进程内前台运行核心(console 装配)。
+func localCoreMode() string {
+	if serviceRunning() {
+		return ""
+	}
+	return "console"
+}
 
 // preflightDesktop 非 Windows 无单实例限制。
 func preflightDesktop() bool { return true }
@@ -50,7 +57,7 @@ func openBrowser(url string) {
 	go func() { _ = c.Wait() }()
 }
 
-// quitUI 响应界面退出请求(仅关 UI 与前台核心,不影响任何后台服务——非 Windows 无服务)。
+// quitUI 响应界面退出请求(只关本 UI 与其前台核心;后台服务不受影响)。
 func quitUI() {
 	select {
 	case <-quitCh:
