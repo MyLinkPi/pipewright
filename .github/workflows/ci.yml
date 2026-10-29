@@ -60,7 +60,11 @@ jobs:
       - run: cd webclient && npm run build
 
   client-e2e:
-    runs-on: ubuntu-latest
+    # 钉到 ubuntu-24.04:GitHub 自 2026-10-19 起把 ubuntu-latest 迁到 26.04,而
+    # Playwright 1.60 明确不支持 26.04 上的 chromium(playwright install --with-deps 直接
+    # 报 "does not support chromium on ubuntu26.04-x64" 退出)。其余不装浏览器的 job 仍用 latest。
+    # 待 Playwright 支持 26.04 后可改回 ubuntu-latest。
+    runs-on: ubuntu-24.04
     needs: [frontend]
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
