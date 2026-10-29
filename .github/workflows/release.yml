@@ -55,3 +55,53 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Windows 安装包(NSIS)。goreleaser 的 nsis 打包是 Pro 专属,OSS 版不可用,故单列
+  # 一个作业:release 作业发布后,下载刚产出的 pwclient_<ver>_windows_<arch>.zip,用原生
+  # makensis 编译 build/windows/pwclient.nsi 成安装器,回传到同一个 Release。
+  # 安装包替代「界面点安装服务」:装前先 net stop + 兜底 taskkill 解锁 exe/bin,覆盖后再
+  # service install(开机自启 + 立即启动),完成页勾选即拉起托盘 —— 规避旧的「装完得手动
+  # 进 Program Files 运行才连上」的时序坑。
+  windows-installer:
+    name: Windows installer (NSIS)
+    needs: release
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      VERSION: "${{ github.ref_name }}"
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      # goreleaser 归档名用去 v 的版本号;安装器文件名与 zip 对齐同样去 v。
+      - name: Normalize version
+        run: echo "VER=${VERSION#v}" >> "$GITHUB_ENV"
+
+      - name: Install NSIS
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends nsis
+
+      # release 作业刚发布的 pwclient 归档 zip(含 pwclient.exe + bin/ + licenses/ + LICENSE)。
+      - name: Download client archives
+        run: gh release download "$VERSION" -p "pwclient_${VER}_windows_*.zip" -D ./dl
+
+      - name: Build installers
+        run: |
+          set -euo pipefail
+          for arch in amd64 arm64; do
+            zip="./dl/pwclient_${VER}_windows_${arch}.zip"
+            [ -f "$zip" ] || { echo "缺少 $zip,跳过"; continue; }
+            bash scripts/build-installer.sh --zip "$zip" --version "$VER" --arch "$arch" --out ./installer
+          done
+
+      - name: Compute installer checksums
+        run: |
+          set -euo pipefail
+          if ls installer/*_installer.exe >/dev/null 2>&1; then
+            ( cd installer && sha256sum ./*_installer.exe > installer-checksums.txt )
+          fi
+
+      - name: Upload installers to release
+        run: |
+          set -euo pipefail
+          ls -la installer
+          gh release upload "$VERSION" installer/*_installer.exe --clobber
+          [ -f installer/installer-checksums.txt ] && gh release upload "$VERSION" installer/installer-checksums.txt --clobber || true

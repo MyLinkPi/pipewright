@@ -204,7 +204,7 @@ sh install.sh       # 亦可把构建产物装到 /usr/local/bin(见「本地编
 
 **Windows 11 集群客户端(pwclient)**:托盘点「检查更新 / 升级到 vX」即可(弹一次 UAC,自动停服务、替换程序、刷新随包 EasyTier 二进制并重启服务);命令行等价命令为 `pwclient upgrade --check`(只检查,无需管理员)、`pwclient upgrade`、`--tag vX.Y.Z`(指定版本)与 `--force`(同版本重装)。**无需配置任何镜像**:GitHub 不可达时客户端会自动回退到 `https://gh-proxy.com/https://github.com`(仍以 `checksums.txt` 做 sha256 校验);只有显式配置了 `PIPEWRIGHT_RELEASE_MIRROR` 时才只走该镜像、不再回退。
 
-**集群客户端界面(pwclient,Windows / Linux / macOS)**:Windows 解压运行 `pwclient.exe` 即托盘 + 主窗口(WebView2 内嵌;WebView2 Runtime 缺失时回退 Edge `--app` 窗口,再回退默认浏览器);Linux/macOS 用 `make build-client-all` 构建后 `./pwclient ui` 前台运行核心并在浏览器打开同一界面(不做系统服务/托盘/登录自启)。界面启动即读出当前完整配置(`GET /api/config`):连接参数(网络名 / 对端地址 / 虚拟 IP / 主机名 / 密钥)、网段路由、SOCKS5 与多出口代理、EasyTier 目录与 RPC、阿里云安全组都可**逐项修改并单独保存**(只提交变更字段;保存即生效,组网可能短暂重连),导入平台导出的 YAML 只是捷径;密钥只写不读、永不回显。构建:Windows `make build-client`、三平台 `make build-client-all`;界面回归:`make client-e2e`(Linux 上起真实客户端跑 Playwright)。
+**集群客户端界面(pwclient,Windows / Linux / macOS)**:Windows 推荐从 Release 下载安装包 `pwclient_<版本>_windows_amd64_installer.exe` 双击安装——它会先停掉正在运行的客户端,把程序装到 `C:\Program Files\Pipewright Client`,注册开机自启的后台服务(LocalSystem,开机即连、无需登录),装完即拉起托盘;想要绿色版则下载 `pwclient_windows_amd64.zip` 解压运行 `pwclient.exe`,再点「安装服务」(弹一次 UAC)。两种方式的界面都是托盘 + 主窗口(WebView2 内嵌;WebView2 Runtime 缺失时回退 Edge `--app` 窗口,再回退默认浏览器);Linux/macOS 用 `make build-client-all` 构建后 `./pwclient ui` 前台运行核心并在浏览器打开同一界面(不做系统服务/托盘/登录自启)。界面启动即读出当前完整配置(`GET /api/config`):连接参数(网络名 / 对端地址 / 虚拟 IP / 主机名 / 密钥)、网段路由、SOCKS5 与多出口代理、EasyTier 目录与 RPC、阿里云安全组都可**逐项修改并单独保存**(只提交变更字段;保存即生效,组网可能短暂重连),导入平台导出的 YAML 只是捷径;密钥只写不读、永不回显。构建:Windows `make build-client`、三平台 `make build-client-all`;安装包 `make build-installer`(本机需装 NSIS);界面回归:`make client-e2e`(Linux 上起真实客户端跑 Playwright)。
 
 ### 配置(环境变量)
 

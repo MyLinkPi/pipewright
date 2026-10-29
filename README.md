@@ -198,11 +198,14 @@ built-in userspace NAT so **no return routes are needed inside those subnets**.
 1. **Server side** (admin UI → *Settings → Cluster*): add the CIDRs this node can reach
    under "Subnet proxy CIDRs" (e.g. `192.168.30.0/24`), then click **Export client config**
    to download `pipewright-client.yaml` (contains the plaintext network secret — keep it safe).
-2. **Client side**: **Windows** — grab `pwclient_windows_amd64.zip` from the release (or
-   `make build-client`), unzip, run `pwclient.exe`: the tray icon plus a WebView2 main window
+2. **Client side**: **Windows** — grab the installer `pwclient_<version>_windows_amd64_installer.exe`
+   from the release and run it: it stops any running client, installs to `C:\Program Files\Pipewright
+   Client`, registers the background service (auto-start, LocalSystem, auto-connects on boot without a
+   login prompt), and launches the tray on finish. Prefer a portable copy? Grab `pwclient_windows_amd64.zip`
+   (or `make build-client`), unzip, run `pwclient.exe` and click **Install service** (one UAC prompt).
+   Either way the tray icon plus a WebView2 main window
    (falls back to an Edge `--app` window or the default browser when the WebView2 runtime is
-   missing) guides you through installing the background service (one UAC prompt; auto-connects
-   on boot without a login prompt) and shows the whole current configuration.
+   missing) shows the whole current configuration.
    **Linux/macOS** — build from source (`make build-client-all`) and run `./pwclient ui`: the core
    runs in the foreground and the same UI opens in your browser (no system service, tray or
    login autostart on those platforms).
