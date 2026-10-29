@@ -20,6 +20,7 @@
 
 Unicode True
 !include "MUI2.nsh"
+!include "LogicLib.nsh"
 
 ; ---- 变量与默认值 ----
 !ifndef PW_SRC
@@ -80,16 +81,53 @@ VIAddVersionKey /LANG=2052 "LegalCopyright" ""
 !insertmacro MUI_LANGUAGE "SimpChinese"
 !insertmacro MUI_LANGUAGE "English"
 
+; ---- 辅助函数 ----
+; WaitFileFree:轮询目标文件直到可写(旧进程/驱动释放)或超时约 20 秒后返回。
+; 用法:Push "<路径>" / Call WaitFileFree。用于解决强杀 easytier-core 后 WinDivert64.sys
+; 内核驱动延迟卸载导致的「无法打开要写入的文件」。
+Function WaitFileFree
+  Pop $R0            ; 目标文件路径
+  StrCpy $R1 0
+  ${If} ${FileExists} "$R0"
+    ${Do}
+      ClearErrors
+      FileOpen $R2 "$R0" a        ; 追加打开需写权限;仍被占用则失败
+      ${IfNot} ${Errors}
+        FileClose $R2
+        ${ExitDo}
+      ${EndIf}
+      IntOp $R1 $R1 + 1
+      ${If} $R1 >= 20
+        ${ExitDo}                 ; 超时放弃,交给后续 File 的默认处理
+      ${EndIf}
+      Sleep 1000
+    ${Loop}
+  ${EndIf}
+FunctionEnd
+
 ; ---- 安装 ----
 Section "客户端程序与服务" SEC_INSTALL
   SectionIn RO
 
-  ; 1) 停旧服务 + 兜底清残留进程,解开 exe / bin 文件占用(全部忽略「未安装 / 未在运行」错误)。
+  ; 1) 停旧服务 + 清残留进程 + 等驱动释放,解开 exe / bin(尤其 WinDivert64.sys)文件占用。
+  ;    全部忽略「未安装 / 未在运行 / 未找到」错误。
   DetailPrint "停止旧服务与运行实例…"
   ExecWait 'net stop "pipewright-client"' $0
   ExecWait 'taskkill /F /IM pwclient.exe' $0
   ExecWait 'taskkill /F /IM easytier-core.exe' $0
   ExecWait 'taskkill /F /IM easytier-cli.exe' $0
+  ; easytier-core 被强杀后 WinDivert 内核驱动可能延迟卸载(句柄由系统回收),先尝试停其驱动
+  ; 服务加速释放,再轮询目标文件直到可写,否则 File 覆盖会撞文件锁(即本次安装失败的原因)。
+  ExecWait 'net stop "WinDivert"' $0
+  DetailPrint "等待旧进程释放 EasyTier 运行库…"
+  Push "$INSTDIR\bin\WinDivert64.sys"
+  Call WaitFileFree
+  Push "$INSTDIR\bin\wintun.dll"
+  Call WaitFileFree
+  Push "$INSTDIR\bin\Packet.dll"
+  Call WaitFileFree
+  Push "$INSTDIR\bin\easytier-core.exe"
+  Call WaitFileFree
 
   ; 2) 覆盖文件到 Program Files(64 位视图写注册表)。File 源为编译期主机路径(正斜杠)。
   SetRegView 64
@@ -130,6 +168,12 @@ Section "Uninstall"
   ExecWait '"$INSTDIR\pwclient.exe" service uninstall' $0
   ExecWait 'net stop "pipewright-client"' $0
   ExecWait 'taskkill /F /IM pwclient.exe' $0
+  ExecWait 'taskkill /F /IM easytier-core.exe' $0
+  ExecWait 'taskkill /F /IM easytier-cli.exe' $0
+  ExecWait 'net stop "WinDivert"' $0
+  ; 等驱动卸载释放 bin 下文件,否则 RMDir /r 删不掉 WinDivert64.sys 会残留。
+  Push "$INSTDIR\bin\WinDivert64.sys"
+  Call WaitFileFree
 
   Delete "$DESKTOP\Pipewright Client.lnk"
   Delete "$SMPROGRAMS\Pipewright Client\Pipewright Client.lnk"

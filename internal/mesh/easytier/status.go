@@ -23,6 +23,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"os/exec"
 	"sort"
 	"strconv"
@@ -112,20 +113,77 @@ var (
 // cliRunner 抽象一次 easytier-cli 调用(测试注入 fake;错误文本应自带 stderr 摘要)。
 type cliRunner func(ctx context.Context, args []string) ([]byte, error)
 
-// execCLIRunner 返回基于 os/exec 的实现:stderr 摘要必进错误文本(截断到一行)。
+// rpcListenProbe 是连接类失败时的 RPC 口可达性实测(默认 RPCAddrReachable;测试注入)。
+var rpcListenProbe func(addr string) error = RPCAddrReachable
+
+// execCLIRunner 返回基于 os/exec 的实现:每次调用的完整命令行与 stdout/stderr 都进
+// 日志(pwclient log / 平台日志,前缀 easytier-cli);stderr 摘要必进错误文本
+// (clap/连接错误的原因都写在 stderr,不透出则无从排查)。
+// CLI 命令行本身不含密钥类参数(敏感值只在 core 侧,落日志前经 maskArgs 打码)。
 func execCLIRunner(cliPath string) cliRunner {
 	return func(ctx context.Context, args []string) ([]byte, error) {
+		log.Printf("easytier-cli: 执行 %s", strings.Join(append([]string{cliPath}, args...), " "))
 		out, err := exec.CommandContext(ctx, cliPath, args...).Output()
 		if err == nil {
+			log.Printf("easytier-cli: 输出(%s): %s", describeArgs(args), abbrevOutput(string(out)))
 			return out, nil
 		}
 		desc := describeArgs(args)
+		errText := err.Error()
 		var ee *exec.ExitError
-		if errors.As(err, &ee) && len(ee.Stderr) > 0 {
-			return nil, fmt.Errorf("easytier-cli %s: %s", desc, oneLine(string(ee.Stderr)))
+		if errors.As(err, &ee) {
+			if len(ee.Stderr) > 0 {
+				log.Printf("easytier-cli: stderr(%s): %s", desc, abbrevOutput(string(ee.Stderr)))
+				errText += " " + string(ee.Stderr)
+			}
+			if len(ee.Stderr) > 0 {
+				// 连接类失败(stderr 全文参与判定)附带 RPC 口实测,排查 core 端口是否开放。
+				probeRPCIfNeeded(errText, args)
+				return nil, fmt.Errorf("easytier-cli %s: %s", desc, oneLine(string(ee.Stderr)))
+			}
 		}
+		probeRPCIfNeeded(errText, args)
 		return nil, fmt.Errorf("easytier-cli %s: %v", desc, err)
 	}
+}
+
+// probeRPCIfNeeded 错误文本呈连接类特征(Connect refused / timed out 等)时,
+// 对 --rpc-portal 目标做一次 TCP 实测并落日志(开放与否直接给出结论,免猜)。
+func probeRPCIfNeeded(errText string, args []string) {
+	if rpcListenProbe == nil {
+		return
+	}
+	lower := strings.ToLower(errText)
+	if !strings.Contains(lower, "connect") && !strings.Contains(lower, "refused") && !strings.Contains(lower, "timeout") {
+		return
+	}
+	addr := rpcAddrOfArgs(args)
+	if err := rpcListenProbe(addr); err != nil {
+		log.Printf("easytier-cli: RPC 端口可达性实测 %s: 未开放(%v)", addr, err)
+		return
+	}
+	log.Printf("easytier-cli: RPC 端口可达性实测 %s: 端口可连(CLI 仍连不上多为 core RPC 服务未就绪,稍后自动恢复)", addr)
+}
+
+// rpcAddrOfArgs 从 CLI 参数里取 --rpc-portal 的值(缺省按平台默认口)。
+func rpcAddrOfArgs(args []string) string {
+	for i, a := range args {
+		if a == "--rpc-portal" && i+1 < len(args) {
+			return args[i+1]
+		}
+	}
+	return "127.0.0.1:15888"
+}
+
+// abbrevOutput 把子进程输出压成单行进日志(换行→空格;超长截断保尾部 ——
+// 错误信息通常写在输出末尾)。
+func abbrevOutput(s string) string {
+	s = strings.Join(strings.Fields(s), " ")
+	const cap = 4096
+	if len(s) > cap {
+		return "…(前文省略)" + s[len(s)-cap:]
+	}
+	return s
 }
 
 // describeArgs 取人读的动词部分(剥掉旗子与其值):如 "-o json node info" → "node info"。

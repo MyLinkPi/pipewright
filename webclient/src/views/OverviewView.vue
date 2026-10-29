@@ -219,9 +219,9 @@ onBeforeUnmount(() => {
         <div class="kv">
           <span class="faint">版本</span><span>{{ binaryText }}</span>
         </div>
-        <div class="kv">
+        <div class="kv kv-path">
           <span class="faint">路径</span>
-          <span class="mono path">{{ orDash(snap?.binaries.corePath ?? '') }}</span>
+          <span class="mono path" :title="snap?.binaries.corePath ?? ''">{{ orDash(snap?.binaries.corePath ?? '') }}</span>
         </div>
         <div v-if="snap?.binaries.lastErr" class="err">{{ shortError(snap.binaries.lastErr) }}</div>
       </n-card>
@@ -346,11 +346,10 @@ onBeforeUnmount(() => {
   font-size: 14px;
 }
 
-.path {
-  max-width: 240px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.kv-path {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
 }
 
 .err {

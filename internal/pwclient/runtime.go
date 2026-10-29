@@ -31,6 +31,17 @@ const downloadRetryBackoff = 10 * time.Minute
 // 取值时按主 RPC 端口避让)。代理实例不参与状态查询,端口仅避免绑定冲突。
 const proxyRPCBase = 15890
 
+// rpcPortWait / rpcPortProbeInterval / rpcPortProbeTimeout 决定启动后多久确认一次
+// core 的 RPC portal 端口是否开放(变量化供单测缩短)。core 绑定通常秒级完成。
+var (
+	rpcPortWait          = 3 * time.Second
+	rpcPortProbeInterval = 500 * time.Millisecond
+	rpcPortProbeTimeout  = 15 * time.Second
+)
+
+// rpcPortProbe 是端口连通性实测(测试注入;默认 TCP 连接)。返回 nil = 端口开放。
+var rpcPortProbe = easytier.RPCAddrReachable
+
 // Runtime 是客户端核心运行时。零值不可用,经 NewRuntime 构造;线程安全。
 type Runtime struct {
 	store   *Store
@@ -274,8 +285,40 @@ func (rt *Runtime) reconcile(ctx context.Context) {
 	rt.supervisor = sup
 	rt.supervisorKey = key
 	rt.mu.Unlock()
-	log.Printf("[pwclient] EasyTier 已启动(网络 %s,虚拟 IP %s,peers %d,限定网段 %d,socks5 %s,secureMode 开(--secure-mode))",
-		cfg.Join.NetworkName, orDHCP(cfg.Join.VirtualIP), len(cfg.Join.Peers), len(cfg.Routes), orOff(socks5Port(cfg)))
+	log.Printf("[pwclient] EasyTier 已启动(网络 %s,虚拟 IP %s,peers %d,限定网段 %d,socks5 %s,RPC %s,secureMode 开(--secure-mode))",
+		cfg.Join.NetworkName, orDHCP(cfg.Join.VirtualIP), len(cfg.Join.Peers), len(cfg.Routes), orOff(socks5Port(cfg)), cfg.EasyTier.RPCAddr)
+	// 确认 core 的 RPC portal 端口是否正常监听(pwclient 默认 15889,平台节点默认 15888;
+	// easytier-cli 连不上 core 的首要疑点),结果落日志供排查。
+	go rt.confirmRPCPort(ctx, cfg.EasyTier.RPCAddr)
+}
+
+// confirmRPCPort 在 core 启动后等待端口绑定,限时轮询实测 RPC portal 是否可连,
+// 结论落日志(开放/未开放均报,未开放附最近一次探测原因)。ctx 取消(停用/重建
+// 监督器)即退出,不对旧实例误报。
+func (rt *Runtime) confirmRPCPort(ctx context.Context, addr string) {
+	select {
+	case <-ctx.Done():
+		return
+	case <-time.After(rpcPortWait):
+	}
+	deadline := time.Now().Add(rpcPortProbeTimeout)
+	for {
+		lastErr := rpcPortProbe(addr)
+		if lastErr == nil {
+			log.Printf("[pwclient] EasyTier RPC 端口已开放: %s(easytier-cli 经此口查询状态)", addr)
+			return
+		}
+		if time.Now().After(deadline) {
+			log.Printf("[pwclient] 警告:EasyTier RPC 端口未开放: %s(最近一次探测: %v;"+
+				"easytier-cli 将无法连接 core,请核对日志中 core 的启动参数/退出错误)", addr, lastErr)
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(rpcPortProbeInterval):
+		}
+	}
 }
 
 // mainEasyTierConfig 组装主实例的 EasyTier 参数(SecureMode 恒 true:客户端始终以

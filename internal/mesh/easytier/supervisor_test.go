@@ -2,6 +2,7 @@ package easytier
 
 import (
 	"context"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,6 +13,27 @@ import (
 	"testing"
 	"time"
 )
+
+// TestRPCAddrReachable 验证端口实测:监听中 → nil;端口未监听 → 报错(可落日志归因);
+// 空地址 → 报错。
+func TestRPCAddrReachable(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("监听:%v", err)
+	}
+	defer ln.Close()
+	if err := RPCAddrReachable(ln.Addr().String()); err != nil {
+		t.Fatalf("监听口应可达:%v", err)
+	}
+	addr := ln.Addr().String()
+	ln.Close() // 腾出口后应立即变为不可连
+	if err := RPCAddrReachable(addr); err == nil {
+		t.Fatal("已关端口应报不可达")
+	}
+	if err := RPCAddrReachable(""); err == nil {
+		t.Fatal("空地址应报错")
+	}
+}
 
 // TestParseHelpFlags 验证 --help 输出 → 旗子集合解析:官方复数形态优先,历史单数兼容,
 // 缺失/探测失败为不支持(保守)。
