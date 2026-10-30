@@ -90,6 +90,8 @@ const SettingsDiagnosisStats = () => import('../views/settings/SettingsDiagnosis
 const SettingsSystem = () => import('../views/settings/SettingsSystem.vue')
 // 内置本地 Docker registry(制品 + pull-through 缓存 + daemon.json 下发)
 const SettingsRegistry = () => import('../views/settings/SettingsRegistry.vue')
+// 内置 apt 包缓存(apt-cacher-ng + apt 代理片段下发)
+const SettingsAptCache = () => import('../views/settings/SettingsAptCache.vue')
 const SettingsBackup = () => import('../views/settings/SettingsBackup.vue')
 // Story 2-2: new pipeline editor
 const ProjectPipeline = () => import('../views/ProjectPipeline.vue')
@@ -267,6 +269,8 @@ const router = createRouter({
             { path: 'shared-build', name: 'settings-shared-build', component: SettingsSharedBuild, meta: { title: '共享构建机' } },
             // 内置本地 Docker registry:构建产物统一推送 + 上游可切换 + daemon.json 下发
             { path: 'registry', name: 'settings-registry', component: SettingsRegistry, meta: { title: '镜像仓库' } },
+            // 内置 apt 包缓存:apt-cacher-ng 栈 + 各机 apt 代理片段下发
+            { path: 'apt-cache', name: 'settings-apt-cache', component: SettingsAptCache, meta: { title: 'APT 缓存' } },
             // 平台自身备份恢复:定时备份/下载/对象存储上传/在线恢复(CLI: pipewright restore)
             { path: 'backup', name: 'settings-backup', component: SettingsBackup, meta: { title: '备份恢复' } },
             // Story 7-5: diagnosis feedback-loop stats (FR-26)

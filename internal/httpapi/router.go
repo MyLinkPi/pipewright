@@ -156,6 +156,7 @@ type options struct {
 	fileAdmin            fileadmin.Service
 	serverCmds           *servercmd.Service
 	registryHub          registryHubService
+	aptCacher            aptCacherService
 	reexecGuard          ReexecGuard
 	mesh                 *meshAdminDeps
 	ceph                 ceph.Service
@@ -426,6 +427,14 @@ func WithAISettings(s ai.Service) Option {
 // PUT 只写库;触碰机器的 deploy/daemon-apply/prune 均为显式 POST(认证 + CSRF + 审计)。
 func WithRegistryHub(s registryHubService) Option {
 	return func(o *options) { o.registryHub = s }
+}
+
+// WithAptCache 注入内置 apt 包缓存服务(aptcacherng),挂载 /api/settings/apt-cache*
+// 与 /api/apt-cache/* 路由(读写/部署/状态/缓存清理/镜像升级/apt 代理片段手动下发)。不传
+// 则相关端点 503。PUT 只写库;触碰机器的 deploy/clear-cache/proxy-apply 均为显式 POST
+// (认证 + CSRF + 审计)。
+func WithAptCache(s aptCacherService) Option {
+	return func(o *options) { o.aptCacher = s }
 }
 
 // WithAIGenerate 注入仓库分析器(go-git 浅克隆),挂载 /api/projects/{id}/pipeline/ai-generate
@@ -1049,6 +1058,20 @@ func New(webFS fs.FS, authn auth.Authenticator, opts ...Option) http.Handler {
 		ar.Post("/settings/registry/prune", makeRegistryPruneHandler(rh, aud))
 		ar.Post("/registry/daemon-apply", makeDaemonApplyHandler(rh, aud))
 		ar.Get("/registry/inspect", makeDaemonInspectHandler(rh))
+
+		// 内置 apt 包缓存(aptcacherng)。ac 为 nil 时各端点 503。GET 过 auth;
+		// PUT(只写库,不触碰机器)与 deploy/upgrade-image/clear-cache/proxy-apply(显式触碰
+		// 机器)过 auth + CSRF;proxy-apply **只处理请求里显式勾选的目标**;机器层失败一律
+		// 200 + ok:false,不 500(对齐 registry 契约)。
+		acache := o.aptCacher
+		ar.Get("/settings/apt-cache", makeGetAptCacheHandler(acache))
+		ar.Put("/settings/apt-cache", makeSaveAptCacheHandler(acache))
+		ar.Post("/settings/apt-cache/deploy", makeDeployAptCacheHandler(acache, aud))
+		ar.Post("/settings/apt-cache/upgrade-image", makeUpgradeAptCacheImageHandler(acache, aud))
+		ar.Get("/settings/apt-cache/status", makeAptCacheStatusHandler(acache))
+		ar.Post("/settings/apt-cache/clear-cache", makeClearAptCacheHandler(acache, aud))
+		ar.Post("/apt-cache/proxy-apply", makeAptProxyApplyHandler(acache, aud))
+		ar.Get("/apt-cache/inspect", makeAptProxyInspectHandler(acache))
 
 		// 诊断反馈闭环统计(Story 7.5;FR-26):准确率/计数/最近趋势/最近 corrections(知识库种子可视化)。
 		// 只读 + 认证;无反馈 → 全 0 / 空数组 / accuracy:null(不报错)。fb 为 nil → 503。

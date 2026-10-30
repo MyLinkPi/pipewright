@@ -18,6 +18,7 @@ export default {
   navMesh: 'クラスタ',  navSharedBuild: '共有ビルド',
 
   navRegistry: 'レジストリ',
+  navAptCache: 'APT キャッシュ',
   navDiagnosisStats: '診断フィードバック',
 
   navBackup: 'バックアップ',  navSystem: 'システム',
