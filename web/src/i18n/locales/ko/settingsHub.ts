@@ -18,6 +18,7 @@ export default {
   navMesh: '클러스터',  navSharedBuild: '공유 빌드',
 
   navRegistry: '레지스트리',
+  navAptCache: 'APT 캐시',
   navDiagnosisStats: '진단 피드백',
 
   navBackup: '백업 복구',  navSystem: '시스템',

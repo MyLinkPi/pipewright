@@ -71,6 +71,11 @@ const (
 	ActionRegistryDaemonApply  = "registry_daemon_apply"
 	ActionRegistryPrune        = "registry_prune"
 	ActionRegistryUpgradeImage = "registry_upgrade_image"
+	// 内置 apt 包缓存(aptcacherng):栈部署/更新、镜像升级、缓存手动清理、代理片段手动勾选下发。
+	ActionAptCacheDeploy       = "apt_cache_deploy"
+	ActionAptCacheUpgradeImage = "apt_cache_upgrade_image"
+	ActionAptCacheClear        = "apt_cache_clear"
+	ActionAptCacheProxyApply   = "apt_cache_proxy_apply"
 	// 用户体系:邀请生成/撤销、普通用户注册、项目成员增删。
 	ActionInvitationCreate    = "invitation_create"
 	ActionInvitationRevoke    = "invitation_revoke"
@@ -112,6 +117,7 @@ const (
 	TargetVarGroup    = "variable_group"
 	TargetCustomNode  = "custom_node"
 	TargetRegistryHub = "registry_hub"
+	TargetAptCacher   = "apt_cacher"
 	TargetUser        = "user"
 	TargetInvitation  = "invitation"
 	TargetSsar        = "ssar"

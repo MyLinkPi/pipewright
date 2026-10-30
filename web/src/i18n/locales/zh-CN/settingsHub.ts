@@ -18,6 +18,7 @@ export default {
   navMesh: '集群',  navSharedBuild: '共享构建机',
 
   navRegistry: '镜像仓库',
+  navAptCache: 'APT 缓存',
   navDiagnosisStats: '诊断反馈',
 
   navBackup: '备份恢复',  navSystem: '系统',

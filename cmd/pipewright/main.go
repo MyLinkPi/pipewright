@@ -26,6 +26,7 @@ import (
 	"github.com/huangchengsir/pipewright/internal/anomaly"
 	"github.com/huangchengsir/pipewright/internal/approval"
 	"github.com/huangchengsir/pipewright/internal/appstore"
+	"github.com/huangchengsir/pipewright/internal/aptcacherng"
 	"github.com/huangchengsir/pipewright/internal/artifactstore"
 	"github.com/huangchengsir/pipewright/internal/audit"
 	"github.com/huangchengsir/pipewright/internal/auth"
@@ -344,6 +345,10 @@ func main() {
 	registryCertSrc := &registryCertSource{}
 	registryHubSvc := registryhub.New(st.DB, targetSvc, registryhub.Options{Certs: registryCertSrc})
 	builtinRegistryOpt := build.WithBuiltinRegistry(registryHubSvc.ResolveBuiltin)
+	// 内置 apt 包缓存(apt-cacher-ng):控制机自管缓存栈 + 各机 apt 代理片段手动勾选下发。
+	// 未启用 = 功能整体静默(不部署栈、不下发)。TLS 证书经 CertSource 软引用 certmgmt(晚绑)。
+	aptCacheCertSrc := &aptCacheCertSource{}
+	aptCacheHub := aptcacherng.New(st.DB, targetSvc, aptcacherng.Options{Certs: aptCacheCertSrc})
 	// 批量执行命令(服务器状态页 → 勾选多机 → 同步执行 + 历史回看):复用 targetSvc 的
 	// SSH 执行层逐机并发跑 sh -c,结果落本地库保最近 200 次;每次尝试写审计。
 	serverCmdSvc := servercmd.New(st.DB, targetSvc)
@@ -795,10 +800,12 @@ func main() {
 	// 重新落盘,删除占用证书被拦截。
 	platformHTTPSSvc := platformhttps.New(st.DB, nil, &platformCertSource{cm: certSvc}, defaultPortFromAddr(cfg.Addr))
 	registryCertSrc.set(certSvc) // 内置 registry 的 TLS 证书来源此时才可用(晚绑接上)
+	aptCacheCertSrc.set(certSvc) // 内置 apt 缓存的 TLS 证书来源此时才可用(晚绑接上)
 	if cfg2, ok := certSvc.(interface{ SetPlatformHTTPS(certmgmt.PlatformHTTPS) }); ok {
 		cfg2.SetPlatformHTTPS(&multiPlatformHTTPS{parts: []certmgmt.PlatformHTTPS{
 			&platformHTTPSAdapter{ph: platformHTTPSSvc},
 			&registryHubAdapter{h: registryHubSvc}, // registry 栈引用的证书续期后重部署栈
+			&aptCacheHubAdapter{h: aptCacheHub},    // apt 缓存 TLS 前端引用的证书续期后重部署栈
 		}})
 	}
 
@@ -1133,7 +1140,7 @@ func main() {
 
 	srv := &http.Server{
 		Addr:              cfg.Addr,
-		Handler:           httpapi.New(webFS, authSvc, httpapi.WithVault(credVault), httpapi.WithProjects(projectSvc), httpapi.WithTriggers(triggerSvc), httpapi.WithPipelines(pipelineSvc), httpapi.WithPipelineSettings(pipelineSettingsSvc), httpapi.WithRuns(runSvc, pool), httpapi.WithWebhooks(webhookReceiver), httpapi.WithWebhookForwarder(webhookForwarder), httpapi.WithAudit(auditRec), httpapi.WithAccount(authSvc), httpapi.WithIdentity(identitySvc), httpapi.WithAISettings(aiSvc), httpapi.WithAIGenerate(repoAnalyzer), httpapi.WithRunDiff(runDiffer), httpapi.WithSource(sourceReader), httpapi.WithRefs(refsLister), httpapi.WithArtifactStore(artStore), httpapi.WithArtifactImageTransfer(meshImages), httpapi.WithArtifactTransfer(artifactTransfers), httpapi.WithServers(targetSvc), httpapi.WithLabels(labelsSvc), httpapi.WithServerCommands(serverCmdSvc), httpapi.WithSSHTunnels(sshtunnelSvc), httpapi.WithRegistryHub(registryHubSvc), httpapi.WithRunnerConfig(runnerSvc), httpapi.WithDeploy(deploySvc), httpapi.WithSpecLoader(resumeSpecLoader), httpapi.WithNotifications(notifySvc), httpapi.WithRetention(retentionSvc), httpapi.WithDNSProviders(dnsSvc), httpapi.WithAliyunEcs(aliyunSvc), httpapi.WithObjectStores(objectStoreSvc), httpapi.WithBackup(backupSvc), httpapi.WithCertMgmt(certSvc), httpapi.WithCertDeploys(certDeploySvc), httpapi.WithPlatformHTTPS(platformHTTPSSvc), httpapi.WithFirewall(firewallSvc), httpapi.WithSystemConfig(sysCfgSvc), httpapi.WithMFA(mfaSvc), httpapi.WithServiceReg(serviceRegSvc), httpapi.WithAppStore(appStoreSvc), httpapi.WithDBAdmin(dbAdminSvc), httpapi.WithRedisAdmin(redisAdminSvc), httpapi.WithDBBackup(dbBackupSvc), httpapi.WithSecScan(secScanSvc), httpapi.WithPVEAdmin(pveAdminSvc), httpapi.WithDiagnosisFeedback(feedbackSvc), httpapi.WithAnomaly(anomalySvc), httpapi.WithAnomalyConfig(int(anomalyInterval.Seconds()), int(anomalyCooldown.Seconds())), httpapi.WithMetricsHistory(metricsHist), httpapi.WithSsar(ssarSvc), httpapi.WithSecretSource(secretSrc), httpapi.WithOAuth(oauthSvc), httpapi.WithCron(cronSvc), httpapi.WithChain(chainSvc), httpapi.WithApprovals(approvalCoord, approvalStore), httpapi.WithApprovalLinks(approvalSigner), httpapi.WithWaitNode(waitCoord), httpapi.WithConcurrency(concurrencySvc), httpapi.WithParameters(parameterSvc), httpapi.WithDoraMetrics(doraMetricsSvc), httpapi.WithTemplates(templateSvc), httpapi.WithVariableGroups(varGroupSvc), httpapi.WithCustomNodes(customNodeSvc), httpapi.WithOpsChat(opsChatSvc), httpapi.WithMesh(meshAdminDeps), httpapi.WithCeph(cephSvc), httpapi.WithDiskAdmin(diskAdminSvc), httpapi.WithFileAdmin(fileAdminSvc), httpapi.WithMaintenance(maintSvc), httpapi.WithProjectMirrorCleaner(projectMirrorCleaner), httpapi.WithReexecGuard(reexecGuard{runs: runSvc, shared: sharedBuildSrv})),
+		Handler:           httpapi.New(webFS, authSvc, httpapi.WithVault(credVault), httpapi.WithProjects(projectSvc), httpapi.WithTriggers(triggerSvc), httpapi.WithPipelines(pipelineSvc), httpapi.WithPipelineSettings(pipelineSettingsSvc), httpapi.WithRuns(runSvc, pool), httpapi.WithWebhooks(webhookReceiver), httpapi.WithWebhookForwarder(webhookForwarder), httpapi.WithAudit(auditRec), httpapi.WithAccount(authSvc), httpapi.WithIdentity(identitySvc), httpapi.WithAISettings(aiSvc), httpapi.WithAIGenerate(repoAnalyzer), httpapi.WithRunDiff(runDiffer), httpapi.WithSource(sourceReader), httpapi.WithRefs(refsLister), httpapi.WithArtifactStore(artStore), httpapi.WithArtifactImageTransfer(meshImages), httpapi.WithArtifactTransfer(artifactTransfers), httpapi.WithServers(targetSvc), httpapi.WithLabels(labelsSvc), httpapi.WithServerCommands(serverCmdSvc), httpapi.WithSSHTunnels(sshtunnelSvc), httpapi.WithRegistryHub(registryHubSvc), httpapi.WithAptCache(aptCacheHub), httpapi.WithRunnerConfig(runnerSvc), httpapi.WithDeploy(deploySvc), httpapi.WithSpecLoader(resumeSpecLoader), httpapi.WithNotifications(notifySvc), httpapi.WithRetention(retentionSvc), httpapi.WithDNSProviders(dnsSvc), httpapi.WithAliyunEcs(aliyunSvc), httpapi.WithObjectStores(objectStoreSvc), httpapi.WithBackup(backupSvc), httpapi.WithCertMgmt(certSvc), httpapi.WithCertDeploys(certDeploySvc), httpapi.WithPlatformHTTPS(platformHTTPSSvc), httpapi.WithFirewall(firewallSvc), httpapi.WithSystemConfig(sysCfgSvc), httpapi.WithMFA(mfaSvc), httpapi.WithServiceReg(serviceRegSvc), httpapi.WithAppStore(appStoreSvc), httpapi.WithDBAdmin(dbAdminSvc), httpapi.WithRedisAdmin(redisAdminSvc), httpapi.WithDBBackup(dbBackupSvc), httpapi.WithSecScan(secScanSvc), httpapi.WithPVEAdmin(pveAdminSvc), httpapi.WithDiagnosisFeedback(feedbackSvc), httpapi.WithAnomaly(anomalySvc), httpapi.WithAnomalyConfig(int(anomalyInterval.Seconds()), int(anomalyCooldown.Seconds())), httpapi.WithMetricsHistory(metricsHist), httpapi.WithSsar(ssarSvc), httpapi.WithSecretSource(secretSrc), httpapi.WithOAuth(oauthSvc), httpapi.WithCron(cronSvc), httpapi.WithChain(chainSvc), httpapi.WithApprovals(approvalCoord, approvalStore), httpapi.WithApprovalLinks(approvalSigner), httpapi.WithWaitNode(waitCoord), httpapi.WithConcurrency(concurrencySvc), httpapi.WithParameters(parameterSvc), httpapi.WithDoraMetrics(doraMetricsSvc), httpapi.WithTemplates(templateSvc), httpapi.WithVariableGroups(varGroupSvc), httpapi.WithCustomNodes(customNodeSvc), httpapi.WithOpsChat(opsChatSvc), httpapi.WithMesh(meshAdminDeps), httpapi.WithCeph(cephSvc), httpapi.WithDiskAdmin(diskAdminSvc), httpapi.WithFileAdmin(fileAdminSvc), httpapi.WithMaintenance(maintSvc), httpapi.WithProjectMirrorCleaner(projectMirrorCleaner), httpapi.WithReexecGuard(reexecGuard{runs: runSvc, shared: sharedBuildSrv})),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		// WriteTimeout 置 0:SSE 长连接(/api/runs/{id}/events)不可被写超时切断;
@@ -1703,6 +1710,61 @@ func (a *registryHubAdapter) UsesCert(ctx context.Context, certID string) (bool,
 }
 
 func (a *registryHubAdapter) RedeployCert(ctx context.Context, certID string) error {
+	return a.h.RedeployCert(ctx, certID)
+}
+
+// aptCacheCertSource 适配 aptcacherng.CertSource:证书元数据/PEM 解密下沉 certmgmt(PEM 仅
+// 进程内传递,绝不过 HTTP;晚绑防 aptcacherng 直接依赖 certmgmt)。与 registryCertSource 同构
+// (独立类型避免包间耦合;certSvc 在 apt 缓存栈之后构造,经 set 接上)。
+type aptCacheCertSource struct {
+	mu sync.Mutex
+	cm certmgmt.Service
+}
+
+func (a *aptCacheCertSource) set(cm certmgmt.Service) {
+	a.mu.Lock()
+	a.cm = cm
+	a.mu.Unlock()
+}
+
+func (a *aptCacheCertSource) svc() certmgmt.Service {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.cm
+}
+
+func (a *aptCacheCertSource) GetCert(ctx context.Context, id string) (*aptcacherng.CertInfo, error) {
+	cm := a.svc()
+	if cm == nil {
+		return nil, errors.New("证书能力未装配")
+	}
+	c, err := cm.Get(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	return &aptcacherng.CertInfo{
+		ID: c.ID, PrimaryDomain: c.PrimaryDomain, Domains: c.Domains,
+		Status: c.Status, NotAfter: c.NotAfter,
+	}, nil
+}
+
+func (a *aptCacheCertSource) OpenCertPEM(ctx context.Context, id string) (string, string, error) {
+	cm := a.svc()
+	if cm == nil {
+		return "", "", errors.New("证书能力未装配")
+	}
+	return cm.OpenCertPEM(ctx, id)
+}
+
+// aptCacheHubAdapter 适配 certmgmt.PlatformHTTPS:内置 apt 缓存 TLS 前端正引用的证书
+// 续期/重下发后重新部署栈(部署时重新解密落盘 PEM 并按配置漂移重建容器);删除证书前占用拦截。
+type aptCacheHubAdapter struct{ h *aptcacherng.Hub }
+
+func (a *aptCacheHubAdapter) UsesCert(ctx context.Context, certID string) (bool, error) {
+	return a.h.UsesCert(ctx, certID)
+}
+
+func (a *aptCacheHubAdapter) RedeployCert(ctx context.Context, certID string) error {
 	return a.h.RedeployCert(ctx, certID)
 }
 

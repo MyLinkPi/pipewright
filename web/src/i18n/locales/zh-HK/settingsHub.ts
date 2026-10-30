@@ -18,6 +18,7 @@ export default {
   navMesh: '集群',  navSharedBuild: '共享構建機',
 
   navRegistry: '鏡像倉庫',
+  navAptCache: 'APT 倉庫',
   navDiagnosisStats: '診斷回饋',
 
   navBackup: '備份復原',  navSystem: '系統',

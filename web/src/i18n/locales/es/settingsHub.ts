@@ -18,6 +18,7 @@ export default {
   navMesh: 'Clúster',  navSharedBuild: 'Compilaciones compartidas',
 
   navRegistry: 'Registro',
+  navAptCache: 'Caché APT',
   navDiagnosisStats: 'Comentarios de diagnóstico',
 
   navBackup: 'Copias de seguridad',  navSystem: 'Sistema',
