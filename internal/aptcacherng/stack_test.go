@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -112,8 +113,16 @@ func TestRenderComposeTLS(t *testing.T) {
 		h.nginxConfHostPath(),
 	} {
 		if !strings.Contains(got, want) {
-			t.Fatalf("TLS compose 缺 %q:\n%s", got, want)
+			t.Fatalf("TLS compose 缺 %q:\n%s", want, got)
 		}
+	}
+	// 主配置必须挂到 /etc/nginx/nginx.conf:官方 nginx 镜像只加载默认主配置,不 include
+	// 任何旁路文件,挂到 stream.conf 之类的路径会使整个 TLS 前端配置不生效。
+	if !strings.Contains(got, `:/etc/nginx/nginx.conf:ro`) {
+		t.Fatalf("nginx 主配置应挂载为容器主配置 nginx.conf:\n%s", got)
+	}
+	if strings.Contains(got, ":/etc/nginx/stream.conf") {
+		t.Fatalf("nginx 配置不应挂到 stream.conf(不会被加载):\n%s", got)
 	}
 }
 
@@ -198,7 +207,8 @@ func TestDeployStackTLSWritesNginxAndCerts(t *testing.T) {
 	if kerr != nil {
 		t.Fatalf("privkey 未落盘: %v", kerr)
 	}
-	if info.Mode().Perm() != 0o600 {
+	// NTFS 不承载 Unix 权限位,0600 断言仅在非 Windows 主机上有意义(生产控制机为 Linux)。
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
 		t.Fatalf("privkey 权限应 0600, got %v", info.Mode().Perm())
 	}
 }
@@ -378,6 +388,67 @@ func TestUpgradeImageUnchangedNoRebuild(t *testing.T) {
 	}
 	if runner.upRan {
 		t.Fatalf("未变不应 compose up")
+	}
+}
+
+// tlsUpgradeRunner 按镜像名脚本化 image inspect(每镜像首查返回旧 ID、其后返回新 ID),
+// 用于 TLS 态双镜像的升级链。
+type tlsUpgradeRunner struct {
+	inspected map[string]int
+	upRan     bool
+}
+
+func (r *tlsUpgradeRunner) Run(_ context.Context, name string, args []string, _ string) (string, string, int, error) {
+	j := name + " " + strings.Join(args, " ")
+	switch {
+	case strings.Contains(j, "compose version"):
+		return "v2", "", 0, nil
+	case strings.Contains(j, " up -d"):
+		r.upRan = true
+		return "started", "", 0, nil
+	case strings.Contains(j, "image inspect"):
+		image := args[len(args)-1]
+		if r.inspected == nil {
+			r.inspected = map[string]int{}
+		}
+		r.inspected[image]++
+		if r.inspected[image] >= 2 {
+			return "sha256:new" + strings.ReplaceAll(image, "/", ""), "", 0, nil
+		}
+		return "sha256:old" + strings.ReplaceAll(image, "/", ""), "", 0, nil
+	case strings.Contains(j, "pull"):
+		return "", "pulled", 0, nil
+	default:
+		return "", "", 0, nil
+	}
+}
+
+// TLS 态仅 nginx 前端镜像更新也应触发重建:比对若只看主体镜像,Changed=false 会跳过
+// DeployStack,新前端镜像永远不生效。
+func TestUpgradeImageTLSFrontOnlyChangedRebuilds(t *testing.T) {
+	dir := t.TempDir()
+	db := storetestOpen(t)
+	runner := &tlsUpgradeRunner{}
+	h := New(db, nil, Options{BaseDir: dir, Runner: runner, Certs: fakeCerts{}})
+	ctx := context.Background()
+	if _, err := h.Save(ctx, SaveInput{Enabled: true, ExternalAddr: "apt.example.com", TLSCertID: "cert-1"}); err != nil {
+		t.Fatalf("save tls: %v", err)
+	}
+	res, err := h.UpgradeImage(ctx)
+	if err != nil {
+		t.Fatalf("upgrade: %v", err)
+	}
+	if !res.OK || !res.Changed {
+		t.Fatalf("前端镜像变了应 ok+changed: %+v", res)
+	}
+	if !runner.upRan {
+		t.Fatalf("前端镜像变了应 compose up 重建")
+	}
+	if !strings.Contains(res.Before, ",") || !strings.Contains(res.After, ",") {
+		t.Fatalf("TLS 态 Before/After 应含双镜像 ID: %+v", res)
+	}
+	if res.Before == res.After {
+		t.Fatalf("前后镜像 ID 应不同: %+v", res)
 	}
 }
 

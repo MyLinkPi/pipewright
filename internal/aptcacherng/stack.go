@@ -23,7 +23,7 @@ const (
 	stackProject   = "pipewright-apt-cacher"
 	stackNetwork   = "pipewright-apt-cacher-net"
 	// aptImage 是缓存主体镜像;tlsImage 是 TLS 态前端(官方镜像自带 stream 动态模块)。
-	aptImage = "benat/apt-cacher-ng"
+	aptImage = "sameersbn/apt-cacher-ng"
 	tlsImage = "nginx:stable-alpine"
 	aptCont  = "pipewright-apt-cacher-ng"
 	tlsCont  = "pipewright-apt-cacher-tls"
@@ -65,8 +65,11 @@ func (h *Hub) resolveCertsDir() string {
 }
 
 // nginxConfHostPath / nginxConfInCont 是 TLS 前端主配置的宿主落盘路径与容器内路径。
+// 容器内必须挂到 /etc/nginx/nginx.conf:生成内容是完整主配置(load_module/events/stream
+// 顶层块),而官方 nginx 镜像只加载默认主配置,不会 include 任何 stream.conf 之类的
+// 旁路文件——挂别处等于整个 TLS 前端配置完全不生效。
 func (h *Hub) nginxConfHostPath() string { return filepath.Join(h.opts.BaseDir, nginxConfFile) }
-func nginxConfInCont() string            { return "/etc/nginx/stream.conf" }
+func nginxConfInCont() string            { return "/etc/nginx/nginx.conf" }
 
 // localProxyURL 返回控制机本机访问代理的 base URL(TLS on → https 打 TLS 前端发布端口;
 // 127.0.0.1 直打,不经 external_addr,避免依赖外部 DNS/防火墙)。
@@ -130,6 +133,8 @@ func (h *Hub) composeBin(ctx context.Context) ([]string, error) {
 //   - 明文态:单服务 apt-cacher-ng,直接对宿主发布端口。
 //   - TLS 态:apt-cacher-ng 不发布宿主端口(仅自定义 bridge 网络内按容器名可达),
 //     前置 nginx stream 前端(声明式渲染的极简主配置 + 只读证书卷)对宿主发布端口。
+//   - apt-cacher-ng 服务带 init: true:sameersbn 镜像官方 compose 即如此(会 fork 子
+//     进程,无 init 的长跑容器会积累僵尸进程)。
 //   - 卷源整行加引号:路径可含空格;解析方(parseComposeCacheDir)按
 //     `- "<dir>:/var/cache/apt-cacher-ng"` 形态还原,该行格式不得变。
 func (h *Hub) renderCompose(cfg *Config) string {
@@ -141,6 +146,7 @@ services:
     image: %s
     container_name: %s
     restart: unless-stopped
+    init: true
     ports:
       - "%d:%s"
     volumes:
@@ -154,6 +160,7 @@ services:
     image: %s
     container_name: %s
     restart: unless-stopped
+    init: true
     networks:
       - cache
     volumes:
@@ -248,8 +255,8 @@ type ImageUpgradeResult struct {
 	OK      bool   `json:"ok"`
 	Changed bool   `json:"changed"` // 是否拉到了新镜像并重建容器(false = 已是最新,未动容器)
 	Image   string `json:"image"`
-	Before  string `json:"before"` // 升级前本地镜像 ID(截短 sha;首次/本地无镜像 = "")
-	After   string `json:"after"`  // 升级后本地镜像 ID(截短 sha)
+	Before  string `json:"before"` // 升级前栈镜像 ID(截短 sha;TLS 态为 "主体,前端" 拼接;首次/本地无镜像 = "")
+	After   string `json:"after"`  // 升级后栈镜像 ID(形态同 Before)
 	Output  string `json:"output"` // pull/compose 输出尾部(人读;截断)
 	Error   string `json:"error"`
 }
@@ -282,8 +289,10 @@ func stackImages(cfg *Config) []string {
 
 // UpgradeImage 升级栈镜像:pull 栈用到的全部镜像 → 比对本地镜像 ID —— 任一变了才走
 // DeployStack 重建容器(compose 声明式收敛;缓存数据在宿主卷,重建不丢),全部未变直接
-// 收工(不打扰运行中的容器)。未启用 → ErrDisabled;本机无 docker/compose →
-// ErrNoLocalDocker;pull 失败 → ok:false + 人读 error(不触碰现有容器)。
+// 收工(不打扰运行中的容器)。比对覆盖全栈镜像(TLS 态含 nginx 前端),只看主体镜像会
+// 漏掉"仅前端镜像有新版"的情形(Changed=false 跳过重建,新镜像永远不生效)。
+// 未启用 → ErrDisabled;本机无 docker/compose → ErrNoLocalDocker;pull 失败 →
+// ok:false + 人读 error(不触碰现有容器)。
 func (h *Hub) UpgradeImage(ctx context.Context) (*ImageUpgradeResult, error) {
 	cfg, err := h.Get(ctx)
 	if err != nil {
@@ -295,11 +304,12 @@ func (h *Hub) UpgradeImage(ctx context.Context) (*ImageUpgradeResult, error) {
 	if _, err := h.composeBin(ctx); err != nil {
 		return nil, err
 	}
-	res := &ImageUpgradeResult{Image: aptImage, Before: shortImageID(h.localImageID(ctx, aptImage))}
+	images := stackImages(cfg)
+	res := &ImageUpgradeResult{Image: aptImage, Before: h.stackImageIDs(ctx, images)}
 	pullCtx, cancel := context.WithTimeout(ctx, 8*time.Minute)
 	defer cancel()
 	var pulled []string
-	for _, img := range stackImages(cfg) {
+	for _, img := range images {
 		_, stderr, code, err := h.opts.Runner.Run(pullCtx, "docker", []string{"pull", img}, "")
 		if err != nil || code != 0 {
 			res.Error = tail(strings.TrimSpace(firstNonEmptyStr(stderr, "docker pull 以非零状态退出")), 1024)
@@ -308,7 +318,7 @@ func (h *Hub) UpgradeImage(ctx context.Context) (*ImageUpgradeResult, error) {
 		pulled = append(pulled, tail(strings.TrimSpace(stderr), 1024)) // docker pull 进度走 stderr
 	}
 	res.Output = tail(strings.Join(pulled, "\n"), 2048)
-	res.After = shortImageID(h.localImageID(ctx, aptImage))
+	res.After = h.stackImageIDs(ctx, images)
 	res.Changed = res.After != res.Before
 	if !res.Changed {
 		res.OK = true
@@ -324,6 +334,16 @@ func (h *Hub) UpgradeImage(ctx context.Context) (*ImageUpgradeResult, error) {
 		res.Output = tail(res.Output+"\n"+dep.Output, 4096)
 	}
 	return res, nil
+}
+
+// stackImageIDs 返回栈全部镜像本地 ID 的拼接形态(变更比对与展示用;明文单镜像时即
+// 其截短 ID 本身,TLS 态为 "主体,前端" 两个截短 ID)。
+func (h *Hub) stackImageIDs(ctx context.Context, images []string) string {
+	ids := make([]string, 0, len(images))
+	for _, img := range images {
+		ids = append(ids, shortImageID(h.localImageID(ctx, img)))
+	}
+	return strings.Join(ids, ",")
 }
 
 // DeployStack 在控制机本机部署/更新 apt 缓存栈:渲染 compose → 落盘 → compose up -d

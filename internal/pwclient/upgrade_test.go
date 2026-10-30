@@ -15,6 +15,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -151,7 +152,8 @@ func TestExtractClientZip_RejectsMissingExeAndTraversal(t *testing.T) {
 			"pwclient.exe": []byte("exe"),
 			evil:           []byte("evil"),
 		})
-		p := filepath.Join(dir, "bad-"+strings.ReplaceAll(evil, "/", "_")+".zip")
+		// 文件名须同时替换两种分隔符:`..\` 留在路径里在 Windows 上根本无法落盘。
+		p := filepath.Join(dir, "bad-"+strings.NewReplacer("/", "_", "\\", "_").Replace(evil)+".zip")
 		if err := os.WriteFile(p, bad, 0o644); err != nil {
 			t.Fatal(err)
 		}
@@ -232,13 +234,16 @@ func TestExtractClientTarGz(t *testing.T) {
 		}
 	}
 	// 主程序与随包二进制需保留可执行位(否则 easytier-core 落位后无法直接执行)。
-	for _, name := range []string{"pwclient", "bin/easytier-core"} {
-		fi, err := os.Stat(filepath.Join(stage, filepath.FromSlash(name)))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if fi.Mode()&0o111 == 0 {
-			t.Errorf("%s 应保留可执行位,实际 %v", name, fi.Mode())
+	// NTFS 不承载 Unix 权限位,该断言仅在非 Windows 主机上有意义。
+	if runtime.GOOS != "windows" {
+		for _, name := range []string{"pwclient", "bin/easytier-core"} {
+			fi, err := os.Stat(filepath.Join(stage, filepath.FromSlash(name)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if fi.Mode()&0o111 == 0 {
+				t.Errorf("%s 应保留可执行位,实际 %v", name, fi.Mode())
+			}
 		}
 	}
 }
@@ -686,7 +691,9 @@ func TestUpgradeStatusRoundTrip(t *testing.T) {
 		got.Message != want.Message || got.Time == "" {
 		t.Errorf("状态回路不一致: %+v", got)
 	}
-	if st, err := os.Stat(UpgradeStatusPath(dir)); err != nil || st.Mode().Perm() != 0o644 {
+	// NTFS 不承载 Unix 权限位,0644 断言仅在非 Windows 主机上有意义。
+	if st, err := os.Stat(UpgradeStatusPath(dir)); err != nil ||
+		(runtime.GOOS != "windows" && st.Mode().Perm() != 0o644) {
 		t.Errorf("状态文件应为 0644(托盘普通用户可读),得 %v %v", st, err)
 	}
 }

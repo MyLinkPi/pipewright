@@ -112,33 +112,34 @@ func (launchdManager) binaryPath() (string, error) {
 	return "", fmt.Errorf("plist 缺少 ProgramArguments")
 }
 
-// autoStart LaunchDaemon 装好即开机自启(RunAtLoad);以 plist 在位为准。
+// autoStart 以 plist 中 RunAtLoad 的实际值为准(禁用后 plist 仍在位,但开机不再拉起;
+// 缺 RunAtLoad 键时 launchd 默认不在加载时启动,如实返回 false)。
 func (launchdManager) autoStart() bool {
-	_, err := os.Stat(launchdPlist)
-	return err == nil
+	raw, err := os.ReadFile(launchdPlist)
+	if err != nil {
+		return false
+	}
+	return plistBoolAfter(string(raw), "RunAtLoad") == "<true/>"
 }
 
-// setAutoStart 改写 RunAtLoad 并重载任务使其生效(off 时同时停服)。
+// setAutoStart 收敛 RunAtLoad 与 KeepAlive 并重载任务使其生效(off 时同时停服)。
+// 两个键必须一并改:KeepAlive=true 时 launchd 无论 RunAtLoad 为何都会在任务加载时
+// (含每次开机)拉起进程,只改 RunAtLoad 的"禁用"跨重启无效。
 func (m launchdManager) setAutoStart(on bool) error {
 	raw, err := os.ReadFile(launchdPlist)
 	if err != nil {
 		return fmt.Errorf("服务未安装,无法设置自启:%w", err)
 	}
+	want := "<false/>"
+	if on {
+		want = "<true/>"
+	}
 	text := string(raw)
-	want := "<true/>"
-	if !on {
-		want = "<false/>"
-	}
-	// 替换 RunAtLoad 后紧跟的值标签。
-	if i := strings.Index(text, "<key>RunAtLoad</key>"); i >= 0 {
-		rest := text[i+len("<key>RunAtLoad</key>"):]
-		for _, tag := range []string{"<true/>", "<false/>"} {
-			if j := strings.Index(rest, tag); j >= 0 {
-				text = text[:i+len("<key>RunAtLoad</key>")+j] + want + rest[j+len(tag):]
-				break
-			}
-		}
-	}
+	// 替换各 key 后**最近**的值标签(取 true/false 中更靠前者;扫到更远的同值标签
+	// 会错改成后续键的值,例如改 RunAtLoad 时命中 KeepAlive 的 <true/>)。纯函数在
+	// plist_bool.go(全平台可测)。
+	text, _ = setPlistBoolAfter(text, "RunAtLoad", want)
+	text, _ = setPlistBoolAfter(text, "KeepAlive", want)
 	if err := os.WriteFile(launchdPlist, []byte(text), 0o644); err != nil {
 		return fmt.Errorf("改写 plist 失败:%w", err)
 	}

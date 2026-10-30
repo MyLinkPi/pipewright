@@ -17,10 +17,13 @@ import (
 // quitCh 接收界面「退出客户端」请求(/local/quit)。
 var quitCh = make(chan struct{})
 
-// localCoreMode 服务运行中则不启核心(与 Windows 一致,避免双实例争用 IPC/网卡,
-// 界面经 IPC 复用服务的数据面);否则在 UI 进程内前台运行核心(console 装配)。
+// localCoreMode 服务已持有(或正在接管)数据面核心时不启核心(与 Windows 一致,避免双
+// 实例争用 IPC/网卡,界面经 IPC 复用服务的数据面);否则在 UI 进程内前台运行核心
+// (console 装配)。STARTING 也算服务持有:此刻界面抢先起核心,服务随即启动完成就会
+// 撞出双实例。
 func localCoreMode() string {
-	if serviceRunning() {
+	switch manager().state() {
+	case "RUNNING", "STARTING":
 		return ""
 	}
 	return "console"
