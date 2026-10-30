@@ -335,7 +335,7 @@ func TestAptCacheUpgradeImage(t *testing.T) {
 	if err := json.Unmarshal(raw, &out); err != nil {
 		t.Fatalf("解码: %v", err)
 	}
-	if !out.OK || !out.Changed || out.Image != "benat/apt-cacher-ng" {
+	if !out.OK || !out.Changed || out.Image != "sameersbn/apt-cacher-ng" {
 		t.Fatalf("镜像变了应 ok+changed: %s", raw)
 	}
 	if out.Before != "oldoldold" || out.After != "newnewnew" {

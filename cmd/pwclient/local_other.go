@@ -10,6 +10,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -75,6 +76,11 @@ func (l *localActions) Upgrade(_ context.Context, tag string, includeUnstable bo
 	if err != nil {
 		return fmt.Errorf("定位自身路径失败:%w", err)
 	}
+	// 已装服务时升级须 root:提前同步拦截。否则子进程在写任何状态前就退出,而其输出
+	// 已被丢弃,界面只会看到"已启动升级"却永远等不到进度(假成功)。
+	if p, _ := manager().binaryPath(); p != "" && !isElevated() {
+		return errors.New("升级已安装的服务需要 root 权限:请以 sudo 运行界面进程(或 sudo pwclient upgrade)")
+	}
 	args := []string{"upgrade"}
 	if trimmed := strings.TrimSpace(tag); trimmed != "" && trimmed != "latest" {
 		args = append(args, "--tag", trimmed)
@@ -83,7 +89,9 @@ func (l *localActions) Upgrade(_ context.Context, tag string, includeUnstable bo
 		args = append(args, "--unstable")
 	}
 	cmd := exec.Command(self, args...)
-	// 脱离界面进程组,升级替换自身后子进程仍能继续;输出丢弃(进度经状态文件呈现)。
+	// 自建会话脱离界面进程组:升级替换自身后子进程仍能继续,且终端关闭的组信号
+	// (SIGHUP)不会打断停服务→替换→重启的流程;输出丢弃(进度经状态文件呈现)。
+	detachChild(cmd)
 	cmd.Stdout, cmd.Stderr = nil, nil
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("启动升级进程失败:%w", err)

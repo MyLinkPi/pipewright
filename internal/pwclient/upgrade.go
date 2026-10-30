@@ -495,8 +495,8 @@ func writeFileMode(dst string, r io.Reader, limit int64, mode os.FileMode) error
 	if err != nil {
 		return fmt.Errorf("%w: 写入 %s 失败:%v", ErrUpgrade, dst, err)
 	}
-	n, cerr := io.Copy(out, io.LimitReader(r, limit))
-	if cerr == nil && n >= limit {
+	n, cerr := io.Copy(out, io.LimitReader(r, limit+1))
+	if cerr == nil && n > limit {
 		cerr = fmt.Errorf("文件超过大小上限 %d", limit)
 	}
 	if cerr == nil {
@@ -521,8 +521,8 @@ func writeFileLimited(dst string, r io.Reader, limit int64) error {
 	if err != nil {
 		return fmt.Errorf("%w: 写入 %s 失败:%v", ErrUpgrade, dst, err)
 	}
-	n, cerr := io.Copy(out, io.LimitReader(r, limit))
-	if cerr == nil && n >= limit {
+	n, cerr := io.Copy(out, io.LimitReader(r, limit+1))
+	if cerr == nil && n > limit {
 		cerr = fmt.Errorf("文件超过大小上限 %d", limit)
 	}
 	if cerr == nil {

@@ -61,6 +61,8 @@ for os in windows linux darwin; do
 		rm -rf "$bindir"
 		mkdir -p "$bindir"
 		tmp="$(mktemp -d)"
+		# trap 只兜失败(迭代中途 exit);成功路径迭代末尾显式清理,避免 trap 被后续
+		# 迭代覆盖而漏清前几轮的临时目录。
 		trap 'rm -rf "$tmp"' EXIT
 		fetch "$base/$repo/releases/download/$version/$asset" "$tmp/$asset"
 		unzip_to "$tmp/$asset" "$tmp/unz"
@@ -85,6 +87,7 @@ for os in windows linux darwin; do
 			chmod 0755 "$bindir"/easytier-core "$bindir"/easytier-cli 2>/dev/null || true
 		fi
 		echo "$os/$arch: $(ls "$bindir" | tr '\n' ' ')← $asset"
+		rm -rf "$tmp"
 	done
 done
 

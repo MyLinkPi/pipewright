@@ -3,6 +3,9 @@ package aptcacherng
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -28,11 +31,12 @@ func (f fakeCerts) OpenCertPEM(_ context.Context, _ string) (string, string, err
 }
 
 func TestNormalizeConfigDefaults(t *testing.T) {
-	cfg, err := NormalizeConfig(SaveInput{}, "/base")
+	base := t.TempDir() // 平台原生绝对路径(Linux CI 为 /tmp/…,Windows 开发机为盘符路径)
+	cfg, err := NormalizeConfig(SaveInput{}, base)
 	if err != nil {
 		t.Fatalf("零值应可归一: %v", err)
 	}
-	if cfg.Port != DefaultPort || cfg.DataDir != "/base/cache" || cfg.TLSCertID != "" || cfg.TLSEnabled() {
+	if cfg.Port != DefaultPort || cfg.DataDir != filepath.Join(base, "cache") || cfg.TLSCertID != "" || cfg.TLSEnabled() {
 		t.Fatalf("默认值不符: %+v", cfg)
 	}
 }
@@ -64,12 +68,18 @@ func TestNormalizeConfigRejects(t *testing.T) {
 }
 
 func TestNormalizeConfigCleanPaths(t *testing.T) {
-	cfg, err := NormalizeConfig(SaveInput{DataDir: "/data/apt-cache/nested/.."}, "/base")
+	// 构造平台原生的绝对路径(POSIX 风格字面量在 Windows 上不是绝对路径,会被
+	// IsAbs 拒绝而测不到 Clean 语义)。
+	root := string(filepath.Separator)
+	if runtime.GOOS == "windows" {
+		root = filepath.VolumeName(os.TempDir()) + string(filepath.Separator)
+	}
+	cfg, err := NormalizeConfig(SaveInput{DataDir: root + "data/apt-cache/nested/.."}, t.TempDir())
 	if err != nil {
 		t.Fatalf("合法目录应归一: %v", err)
 	}
-	if cfg.DataDir != "/data/apt-cache" {
-		t.Fatalf("应 Clean 路径: %q", cfg.DataDir)
+	if want := filepath.Clean(root + "data/apt-cache"); cfg.DataDir != want {
+		t.Fatalf("应 Clean 路径: %q want %q", cfg.DataDir, want)
 	}
 }
 
