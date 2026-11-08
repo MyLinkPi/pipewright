@@ -40,6 +40,8 @@ type serviceRegSettingsDTO struct {
 	ServerIDs       []string          `json:"serverIds"`
 	HTTPPort        int               `json:"httpPort"`
 	HTTPSPort       int               `json:"httpsPort"`
+	LocalHTTPPort   int               `json:"localHttpPort"`  // 本机共存回环端口(specs 7.3)
+	LocalHTTPSPort  int               `json:"localHttpsPort"` // 同上
 	Image           string            `json:"image"`
 	Network         string            `json:"network"`
 	ContainerName   string            `json:"containerName"`
@@ -62,6 +64,7 @@ func toServiceRegSettingsDTO(st *servicereg.Settings) serviceRegSettingsDTO {
 	return serviceRegSettingsDTO{
 		ServerID: st.PrimaryServerID(), ServerIDs: ids,
 		HTTPPort: st.HTTPPort, HTTPSPort: st.HTTPSPort,
+		LocalHTTPPort: st.LocalHTTPPort, LocalHTTPSPort: st.LocalHTTPSPort,
 		Image: st.Image, Network: st.Network, ContainerName: st.ContainerName,
 		VolumeName: st.VolumeName, StaticRoot: st.StaticRoot,
 		LastApplyAt: last, LastApplyError: st.LastApplyError, LastApplyErrors: st.LastApplyErrors,
@@ -243,6 +246,9 @@ func writeServiceRegError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadRequest, "invalid_service_reg", "实例仅适用于 HTTP 服务(TCP 服务保持单上游)")
 	case errors.Is(err, servicereg.ErrInvalidCert):
 		writeError(w, http.StatusBadRequest, "invalid_cert", "证书/私钥 PEM 非法或两者不配对")
+	case errors.Is(err, target.ErrLocalRoleDisabled):
+		writeError(w, http.StatusUnprocessableEntity, "local_role_disabled",
+			"本机网关角色未启用:请先在「服务器」页的本机卡片开启网关主机角色")
 	case errors.Is(err, servicereg.ErrNoGateway):
 		writeError(w, http.StatusBadRequest, "gateway_not_configured", "请先在网关设置中选择网关主机")
 	case errors.Is(err, servicereg.ErrInvalidSetting):
@@ -296,15 +302,17 @@ func makeGetServiceRegSettingsHandler(svc servicereg.Service) http.HandlerFunc {
 // makeUpdateServiceRegSettingsHandler 返回 PUT /api/servicereg/settings。
 func makeUpdateServiceRegSettingsHandler(svc servicereg.Service, aud audit.Recorder) http.HandlerFunc {
 	type request struct {
-		ServerIDs     *[]string `json:"serverIds"`
-		ServerID      *string   `json:"serverId"` // 旧版单机入口,兼容保留
-		HTTPPort      *int      `json:"httpPort"`
-		HTTPSPort     *int      `json:"httpsPort"`
-		Image         *string   `json:"image"`
-		Network       *string   `json:"network"`
-		ContainerName *string   `json:"containerName"`
-		VolumeName    *string   `json:"volumeName"`
-		StaticRoot    *string   `json:"staticRoot"`
+		ServerIDs      *[]string `json:"serverIds"`
+		ServerID       *string   `json:"serverId"` // 旧版单机入口,兼容保留
+		HTTPPort       *int      `json:"httpPort"`
+		HTTPSPort      *int      `json:"httpsPort"`
+		LocalHTTPPort  *int      `json:"localHttpPort"`  // 本机共存回环端口(specs 7.3,仅 __local__ 消费)
+		LocalHTTPSPort *int      `json:"localHttpsPort"` // 同上
+		Image          *string   `json:"image"`
+		Network        *string   `json:"network"`
+		ContainerName  *string   `json:"containerName"`
+		VolumeName     *string   `json:"volumeName"`
+		StaticRoot     *string   `json:"staticRoot"`
 	}
 	return func(w http.ResponseWriter, r *http.Request) {
 		if svc == nil {
@@ -319,6 +327,7 @@ func makeUpdateServiceRegSettingsHandler(svc servicereg.Service, aud audit.Recor
 		}
 		st, err := svc.UpdateSettings(r.Context(), servicereg.SettingsUpdate{
 			ServerIDs: req.ServerIDs, ServerID: req.ServerID, HTTPPort: req.HTTPPort, HTTPSPort: req.HTTPSPort,
+			LocalHTTPPort: req.LocalHTTPPort, LocalHTTPSPort: req.LocalHTTPSPort,
 			Image: req.Image, Network: req.Network, ContainerName: req.ContainerName, VolumeName: req.VolumeName,
 			StaticRoot: req.StaticRoot,
 		})

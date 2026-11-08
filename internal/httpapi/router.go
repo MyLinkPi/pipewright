@@ -42,6 +42,7 @@ import (
 	"github.com/huangchengsir/pipewright/internal/identity"
 	"github.com/huangchengsir/pipewright/internal/labels"
 	"github.com/huangchengsir/pipewright/internal/library"
+	"github.com/huangchengsir/pipewright/internal/localnode"
 	"github.com/huangchengsir/pipewright/internal/maintenance"
 	"github.com/huangchengsir/pipewright/internal/metrics"
 	"github.com/huangchengsir/pipewright/internal/mfa"
@@ -147,6 +148,7 @@ type options struct {
 	platformHTTPS        platformhttps.Service
 	firewallSvc          firewall.Service
 	systemConfig         systemcfg.Service
+	localNode            localnode.Service
 	appStore             appstore.Service
 	dbAdmin              dbadmin.Service
 	redisAdmin           redisadmin.Service
@@ -597,6 +599,13 @@ func WithFirewall(s firewall.Service) Option {
 // 使用,运行时修改即时生效(取代环境变量 PIPEWRIGHT_PUBLIC_URL)。不传则端点返回 503。
 func WithSystemConfig(s systemcfg.Service) Option {
 	return func(o *options) { o.systemConfig = s }
+}
+
+// WithLocalNode 注入「本机(控制节点)角色」服务(internal/localnode),挂载
+// /api/local-node 路由(GET auth;PUT auth + CSRF + 审计;specs/local-node-roles.md)。
+// 不传则端点返回 503。
+func WithLocalNode(s localnode.Service) Option {
+	return func(o *options) { o.localNode = s }
 }
 
 // WithMFA 注入两步验证服务(internal/mfa),挂载:
@@ -1431,6 +1440,13 @@ func New(webFS fs.FS, authn auth.Authenticator, opts ...Option) http.Handler {
 		sc := o.systemConfig
 		ar.Get("/system/config", makeGetSystemConfigHandler(sc))
 		ar.Put("/system/config", makeSetSystemConfigHandler(sc, aud))
+
+		// 本机(控制节点)角色配置(specs/local-node-roles.md):控制机可选启用为构建机 /
+		// 部署目标 / 网关主机。GET 过 auth;PUT 过 auth + CSRF + 审计(启用部署/网关角色 =
+		// 流水线动作获得控制机执行权,审计必须可追溯)。ln 为 nil → 503。
+		ln := o.localNode
+		ar.Get("/local-node", makeGetLocalNodeHandler(ln))
+		ar.Put("/local-node", makeSaveLocalNodeHandler(ln, aud))
 
 		// 本机(控制节点)指标 —— 运行 Pipewright 的这台机器自身的 CPU/内存/磁盘。与远程服务器
 		// 共用同款纯静态只读脚本,但**在本机执行**(os/exec,不走 SSH、不选服务器、无需 svc)。

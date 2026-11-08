@@ -4,6 +4,34 @@
 import type zhCN from './zh-CN'
 
 const fr: typeof zhCN = {
+
+  localNode: {
+    machineName: 'Cet hôte (nœud de contrôle)',
+    title: 'Rôles du nœud local',
+    sub: 'Utiliser la machine exécutant Pipewright comme machine de build / cible de déploiement / hôte gateway',
+    entry: 'Rôles',
+    roleBuild: 'Machine de build',
+    roleBuildHint: 'Rejoint le pool de build : planifiée par labels/épinglage, mêmes slots, files et affinités que les serveurs enregistrés',
+    roleDeploy: 'Cible de déploiement',
+    roleDeployHint: 'Les pipelines peuvent cibler cet hôte (les commandes s\'exécutent localement — à n\'activer que pour des auteurs de confiance)',
+    roleGateway: 'Hôte gateway',
+    roleGatewayHint: 'Le conteneur nginx gateway peut être orchestré ici ; avec le HTTPS plateforme, mode de coexistence sur ports loopback',
+    needsLinux: 'Nœuds de contrôle Linux uniquement (scripts POSIX requis)',
+    labels: 'Labels de build',
+    labelsPh: 'ex. linux,arch=arm64 ; vide = exclu du matching par labels',
+    slots: 'Slots parallèles',
+    priority: 'Priorité',
+    savePool: 'Enregistrer les réglages du pool',
+    saved: 'Rôles du nœud local mis à jour',
+    saveFailed: 'Échec de l\'enregistrement des rôles du nœud local',
+    confirmTitle: 'Activer les rôles du nœud de contrôle ?',
+    confirmMessage: 'Une fois activés, les auteurs de pipelines peuvent exécuter des commandes arbitraires sur le nœud de contrôle (déploiements/actions gateway en local). Le nœud de contrôle détient la base, les artefacts, les certificats et toutes les credentials SSH distantes — à activer uniquement pour des équipes de confiance.',
+    confirmYes: 'Je comprends, activer',
+    gatewayMeta: 'Cet hôte (nœud de contrôle)',
+    loopHttp: 'Port HTTP loopback local',
+    loopHttps: 'Port HTTPS loopback local',
+    loopHint: 'Quand le HTTPS plateforme occupe les ports 80/443 de l\'hôte, le conteneur gateway local se lie à ces ports loopback (défaut 18080/18443)',
+  },
   common: {
     refresh: 'Actualiser',
     allArrow: 'Tout →',

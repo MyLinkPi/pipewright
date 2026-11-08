@@ -164,6 +164,41 @@ func TestStageExecutorDispatchesToRemote(t *testing.T) {
 	}
 }
 
+// TestStageExecutorLocalPoolDispatch 调度器选中的构建机 = 本机(控制节点)时,派发不走
+// 远程链(tar 上传/sh -c 解包/远端 docker run),改走本地执行原语;槽位已占、defer release
+// 语义由 resolver 侧计数保证(specs/local-node-roles.md 5.2)。
+func TestStageExecutorLocalPoolDispatch(t *testing.T) {
+	local := &recordingDriver{}
+	b := newRemoteTestBuilder(local)
+	tgt := &fakeRemoteTarget{}
+	fr := &fakeRunnerResolver{selector: "server:" + target.LocalHostID, pick: target.LocalHostID}
+	exec := NewStageExecutorWithRunner(b, nil, fr, tgt)
+
+	rep := &fakeReporter{}
+	r := &run.Run{ID: "run-1", ProjectID: "p1", Trigger: run.Trigger{Branch: "main"}}
+	if err := exec(context.Background(), r, scriptStage(scriptJob("build", "node:20", "echo hi")), rep); err != nil {
+		t.Fatalf("local pool exec: %v", err)
+	}
+	// 本地 driver 真实执行(与空选择器=本地构建同一原语)。
+	if local.callCount != 1 {
+		t.Fatalf("本机池派发应走本地执行(driver 调 1 次),实际 %d", local.callCount)
+	}
+	// 不进入远程链:无任何 tar 上传 / untar / 远程 docker run。
+	if len(tgt.uploaded) != 0 {
+		t.Fatal("本机池派发不应上传工作区 tar")
+	}
+	for _, c := range tgt.cmds {
+		joined := strings.Join(c, " ")
+		if strings.Contains(joined, "tar -xzf") || (len(c) >= 2 && c[0] == "docker" && c[1] == "run") {
+			t.Fatalf("本机池派发不应产生远程命令:%v", c)
+		}
+	}
+	// 槽位必还:Acquire 一次、release 一次。
+	if fr.releases != 1 || len(fr.acquired) != 1 {
+		t.Fatalf("占槽/还槽应各一次:acquired=%v releases=%d", fr.acquired, fr.releases)
+	}
+}
+
 func TestStageExecutorLocalWhenNoRunner(t *testing.T) {
 	local := &recordingDriver{}
 	b := newRemoteTestBuilder(local)

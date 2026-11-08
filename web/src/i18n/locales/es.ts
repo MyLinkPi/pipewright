@@ -4,6 +4,34 @@
 import type zhCN from './zh-CN'
 
 const es: typeof zhCN = {
+
+  localNode: {
+    machineName: 'Este host (nodo de control)',
+    title: 'Roles del nodo local',
+    sub: 'Usar la máquina donde corre Pipewright también como máquina de build / destino de despliegue / host gateway',
+    entry: 'Roles',
+    roleBuild: 'Máquina de build',
+    roleBuildHint: 'Se une al pool de build: programada por labels/fijado con los mismos slots, colas y afinidad que los servidores registrados',
+    roleDeploy: 'Destino de despliegue',
+    roleDeployHint: 'Las pipelines pueden elegir este host como destino (los comandos se ejecutan localmente; activa solo si confías en los autores)',
+    roleGateway: 'Host gateway',
+    roleGatewayHint: 'El contenedor nginx del gateway puede orquestarse aquí; con HTTPS de plataforma, modo de coexistencia en puertos loopback',
+    needsLinux: 'Solo nodos de control Linux (dependencias de scripts POSIX)',
+    labels: 'Labels de build',
+    labelsPh: 'p. ej. linux,arch=arm64; vacío = excluido del emparejamiento por labels',
+    slots: 'Slots simultáneos',
+    priority: 'Prioridad',
+    savePool: 'Guardar ajustes del pool',
+    saved: 'Roles del nodo local actualizados',
+    saveFailed: 'Error al guardar los roles del nodo local',
+    confirmTitle: '¿Activar roles del nodo de control?',
+    confirmMessage: 'Al activarlos, los autores de pipelines pueden ejecutar comandos arbitrarios en el nodo de control (despliegues/acciones del gateway se ejecutan localmente). El nodo de control posee la base de datos, artefactos, certificados y todas las credenciales SSH remotas: actívalo solo para equipos de confianza.',
+    confirmYes: 'Entiendo, activar',
+    gatewayMeta: 'Este host (nodo de control)',
+    loopHttp: 'Puerto HTTP loopback local',
+    loopHttps: 'Puerto HTTPS loopback local',
+    loopHint: 'Cuando el HTTPS de plataforma ocupa los puertos 80/443 del host, el contenedor gateway local se vincula a estos puertos loopback (predeterminado 18080/18443)',
+  },
   common: {
     refresh: 'Actualizar',
     allArrow: 'Todo →',

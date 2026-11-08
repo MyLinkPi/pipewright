@@ -270,6 +270,9 @@ func writeDeployError(w http.ResponseWriter, err error) {
 	case errors.Is(err, target.ErrPVENotTarget):
 		writeError(w, http.StatusUnprocessableEntity, "pve_node_not_target",
 			"PVE 集群物理机不允许作为部署目标:"+strings.TrimPrefix(err.Error(), target.ErrPVENotTarget.Error()+": "))
+	case errors.Is(err, target.ErrLocalRoleDisabled):
+		writeError(w, http.StatusUnprocessableEntity, "local_role_disabled",
+			"本机部署角色未启用:请先在「服务器」页的本机卡片开启部署目标角色,或改用其他目标机")
 	case errors.Is(err, deploy.ErrInvalidSelector):
 		writeError(w, http.StatusUnprocessableEntity, "invalid_deploy_selector",
 			"目标选择器语法非法:应为 `server:<id>` 或逗号分隔的标签项(如 linux,arch=arm64)")

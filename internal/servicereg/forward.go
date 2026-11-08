@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/huangchengsir/pipewright/internal/mesh"
+	"github.com/huangchengsir/pipewright/internal/target"
 )
 
 // 目录缓存节奏:新鲜期内直接用缓存;拉取失败时陈旧宽限期内继续用旧目录
@@ -219,6 +220,11 @@ func (s *service) GatewayProxyNetworks(ctx context.Context) []string {
 	}
 	out := make([]string, 0, len(st.ServerIDs))
 	for _, sid := range st.ServerIDs {
+		// 本机(控制节点)自身跳过(specs 7.5):本机就是 mesh 节点,其 mesh IP 对全部
+		// 对端直达,通告自己的 /32 无意义(且会以自身为代理网段,路由语义含混)。
+		if sid == target.LocalHostID {
+			continue
+		}
 		if ip, aerr := s.serverAddr(ctx, sid); aerr == nil && ip != "" {
 			out = append(out, ip+"/32")
 		}

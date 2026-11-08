@@ -4,6 +4,34 @@
 import type zhCN from './zh-CN'
 
 const zhHK: typeof zhCN = {
+
+  localNode: {
+    machineName: '本機(控制節點)',
+    title: '本機角色',
+    sub: '把運行 Pipewright 的這台主機啟用為構建機 / 部署目標 / 網關主機',
+    entry: '本機角色',
+    roleBuild: '構建機',
+    roleBuildHint: '加入構建機池:按標籤/釘死參與調度,佔槽、排隊、親和與登記伺服器一致',
+    roleDeploy: '部署目標',
+    roleDeployHint: '流水線可把本機選為部署目標(命令在本機直接執行,請確認信任流水線作者)',
+    roleGateway: '網關主機',
+    roleGatewayHint: '網關 nginx 容器可編排到本機;平台 HTTPS 啟用時走回環埠共存模式',
+    needsLinux: '僅 Linux 控制機支援(POSIX 腳本依賴)',
+    labels: '構建機標籤',
+    labelsPh: '如 linux,arch=arm64;留空 = 不參與標籤圈選',
+    slots: '並發槽位',
+    priority: '優先級',
+    savePool: '儲存池參數',
+    saved: '本機角色已更新',
+    saveFailed: '本機角色儲存失敗',
+    confirmTitle: '啟用控制機角色?',
+    confirmMessage: '啟用後,流水線作者可在控制節點執行任意命令(部署/網關動作直接落在本機)。控制機持有資料庫、製品、憑證與全部遠端 SSH 憑據,請確認僅對內網/可信團隊啟用。',
+    confirmYes: '我已知曉,啟用',
+    gatewayMeta: '本機(控制節點)',
+    loopHttp: '本機回環 HTTP 埠',
+    loopHttps: '本機回環 HTTPS 埠',
+    loopHint: '平台 HTTPS 佔用宿主 80/443 時,本機網關容器改綁此回環埠(預設 18080/18443)',
+  },
   common: {
     refresh: '重新整理',
     allArrow: '全部 →',

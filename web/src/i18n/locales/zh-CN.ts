@@ -3,6 +3,34 @@
  * 第一阶段覆盖:外壳/导航、登录、概览(Dashboard + 子 widget)、DORA 指标格式化。
  */
 export default {
+
+  localNode: {
+    machineName: '本机(控制节点)',
+    title: '本机角色',
+    sub: '把运行 Pipewright 的这台主机启用为构建机 / 部署目标 / 网关主机',
+    entry: '本机角色',
+    roleBuild: '构建机',
+    roleBuildHint: '加入构建机池:按标签/钉死参与调度,占槽、排队、亲和与登记服务器一致',
+    roleDeploy: '部署目标',
+    roleDeployHint: '流水线可把本机选为部署目标(命令在本机直接执行,请确认信任流水线作者)',
+    roleGateway: '网关主机',
+    roleGatewayHint: '网关 nginx 容器可编排到本机;平台 HTTPS 启用时走回环端口共存模式',
+    needsLinux: '仅 Linux 控制机支持(POSIX 脚本依赖)',
+    labels: '构建机标签',
+    labelsPh: '如 linux,arch=arm64;留空 = 不参与标签圈选',
+    slots: '并发槽位',
+    priority: '优先级',
+    savePool: '保存池参数',
+    saved: '本机角色已更新',
+    saveFailed: '本机角色保存失败',
+    confirmTitle: '启用控制机角色?',
+    confirmMessage: '启用后,流水线作者可在控制节点执行任意命令(部署/网关动作直接落在本机)。控制机持有数据库、制品、证书与全部远端 SSH 凭据,请确认仅对内网/可信团队启用。',
+    confirmYes: '我已知晓,启用',
+    gatewayMeta: '本机(控制节点)',
+    loopHttp: '本机回环 HTTP 端口',
+    loopHttps: '本机回环 HTTPS 端口',
+    loopHint: '平台 HTTPS 占用宿主 80/443 时,本机网关容器改绑此回环端口(默认 18080/18443)',
+  },
   common: {
     refresh: '刷新',
     allArrow: '全部 →',

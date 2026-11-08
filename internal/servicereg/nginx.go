@@ -704,7 +704,7 @@ func nginxVarName(name string) string {
 // 镜像引用漂移(设置/环境变量换了镜像)同样重建:容器记录的 .Config.Image 与当前期望引用不符
 // 时带新引用重建(run 内 best-effort pull 取新);同名可变 tag 的上游更新走 UpgradeGatewayImage
 // (pull 后按镜像 ID 比对决定重建)。
-func ensureNginx(ctx context.Context, tg target.Service, st *Settings, serverID string, tcpPorts []int) error {
+func ensureNginx(ctx context.Context, tg target.Service, st *Settings, serverID string, tcpPorts []int, loopback bool) error {
 	// 1) 共享网络(存在即跳过)。
 	netInsp, err := tg.Exec(ctx, serverID, []string{"docker", "network", "inspect", st.Network})
 	if err != nil {
@@ -720,7 +720,7 @@ func ensureNginx(ctx context.Context, tg target.Service, st *Settings, serverID 
 		}
 	}
 
-	want := desiredPortMap(st, tcpPorts)
+	want := desiredPortBindings(st, serverID, tcpPorts, loopback)
 
 	// 2) 容器存在:校验端口映射/自举版本/镜像引用是否与期望一致;任一不符 → 重建。
 	insp, err := tg.Exec(ctx, serverID, []string{"docker", "inspect", st.ContainerName})
@@ -752,24 +752,52 @@ func ensureNginx(ctx context.Context, tg target.Service, st *Settings, serverID 
 	}
 
 	// 3) 全新部署:先探测宿主端口占用(避免与既有进程抢端口),冲突不强起。
-	if busy, detail := hostPortsBusy(ctx, tg, st, serverID); busy {
+	if busy, detail := hostPortsBusy(ctx, tg, st, serverID, want); busy {
 		return fmt.Errorf("%w%s", ErrPortConflict, detail)
 	}
 	return runNginxContainer(ctx, tg, st, serverID, want)
 }
 
-// desiredPortMap 返回期望的「容器端口 → 宿主端口」映射:80→HTTPPort、443→HTTPSPort + TCP p→p。
-func desiredPortMap(st *Settings, tcpPorts []int) map[int]int {
-	m := map[int]int{80: st.HTTPPort, 443: st.HTTPSPort}
+// portBinding 是单条宿主端口发布:HostIP 空 = 全网卡(既有语义);127.0.0.1 = 回环绑定
+// (本机网关共存模式专用,specs/local-node-roles.md 7.3 —— 入口 vhost 在宿主 nginx,
+// 网关容器只对本机回环暴露,外网不可直达)。
+type portBinding struct {
+	HostIP   string
+	HostPort int
+}
+
+// normalizeHostIP 归一「未指定」的两种形态(docker inspect 对 -p 80:80 返回 "",部分版本
+// 返回 "0.0.0.0";两者同语义)。
+func normalizeHostIP(ip string) string {
+	if ip == "" || ip == "0.0.0.0" || ip == "::" {
+		return ""
+	}
+	return ip
+}
+
+// desiredPortBindings 返回期望发布:80→HTTP、443→HTTPS + TCP 服务端口 p→p。
+// 本机网关(serverID == __local__)且共存模式(loopback)时,80/443 改绑回环端口
+// localHTTPPort/localHTTPSPort(校验保证与集群端口互异);TCP 服务端口恒全网卡 ——
+// 入口 vhost 只接管 80/443 的域名流量,stream 端口仍需外部可达。
+func desiredPortBindings(st *Settings, serverID string, tcpPorts []int, loopback bool) map[int]portBinding {
+	http, https, ip := st.HTTPPort, st.HTTPSPort, ""
+	if loopback && serverID == target.LocalHostID && st.LocalHTTPPort > 0 && st.LocalHTTPSPort > 0 {
+		http, https, ip = st.LocalHTTPPort, st.LocalHTTPSPort, "127.0.0.1"
+	}
+	m := map[int]portBinding{
+		80:  {HostIP: ip, HostPort: http},
+		443: {HostIP: ip, HostPort: https},
+	}
 	for _, p := range tcpPorts {
-		m[p] = p
+		m[p] = portBinding{HostPort: p}
 	}
 	return m
 }
 
-// runNginxContainer 用给定「容器端口 → 宿主端口」映射起网关容器(array 不拼 shell)。
-// --add-host host.docker.internal:host-gateway 让 address 类上游能反代到宿主机服务。
-func runNginxContainer(ctx context.Context, tg target.Service, st *Settings, serverID string, ports map[int]int) error {
+// runNginxContainer 用给定发布映射起网关容器(array 不拼 shell)。
+// --add-host host.docker.internal:host-gateway 让 address 类上游能反代到宿主机服务;
+// 本机共存模式下 HostIP 非空的条目渲染为 ip:host:container(回环绑定)。
+func runNginxContainer(ctx context.Context, tg target.Service, st *Settings, serverID string, ports map[int]portBinding) error {
 	image := nginxImageRef(st)
 	// best-effort pull(离线/已缓存场景交由 docker run 决断)。
 	if _, perr := tg.Exec(ctx, serverID, []string{"docker", "pull", image}); perr != nil {
@@ -790,7 +818,12 @@ func runNginxContainer(ctx context.Context, tg target.Service, st *Settings, ser
 	}
 	sort.Ints(cports)
 	for _, cp := range cports {
-		runCmd = append(runCmd, "-p", strconv.Itoa(ports[cp])+":"+strconv.Itoa(cp))
+		b := ports[cp]
+		spec := strconv.Itoa(b.HostPort) + ":" + strconv.Itoa(cp)
+		if ip := normalizeHostIP(b.HostIP); ip != "" {
+			spec = ip + ":" + spec
+		}
+		runCmd = append(runCmd, "-p", spec)
 	}
 	runCmd = append(runCmd,
 		"-v", st.VolumeName+":/etc/pipewright",
@@ -810,16 +843,19 @@ func runNginxContainer(ctx context.Context, tg target.Service, st *Settings, ser
 	return nil
 }
 
-// inspectPortMap 读网关容器已发布的「容器端口 → 宿主端口」(仅 tcp)。无容器/解析失败 → 空 map。
-func inspectPortMap(ctx context.Context, tg target.Service, st *Settings, serverID string) (map[int]int, error) {
+// inspectPortMap 读网关容器已发布的「容器端口 → 宿主发布」(仅 tcp;含 HostIp —— 绑定地址
+// 变化(全网卡 ↔ 回环)必须触发重建,specs/local-node-roles.md 7.1)。无容器/解析失败 → 空 map。
+// HostIp 形态:docker 对 -p 80:80 返回 ""(部分版本 "0.0.0.0"),对 -p 127.0.0.1:8080:80 返回
+// "127.0.0.1";IPv6 冒号会干扰按 ':' 切分,故用 '|' 分隔 ip 与 port。
+func inspectPortMap(ctx context.Context, tg target.Service, st *Settings, serverID string) (map[int]portBinding, error) {
 	res, err := tg.Exec(ctx, serverID, []string{
 		"docker", "inspect", st.ContainerName,
-		"--format", "{{range $p, $c := .HostConfig.PortBindings}}{{$p}}={{(index $c 0).HostPort}} {{end}}",
+		"--format", "{{range $p, $c := .HostConfig.PortBindings}}{{$p}}={{(index $c 0).HostIp}}|{{(index $c 0).HostPort}} {{end}}",
 	})
 	if err != nil {
 		return nil, err
 	}
-	m := map[int]int{}
+	m := map[int]portBinding{}
 	for _, tok := range strings.Fields(res.Stdout) {
 		eq := strings.IndexByte(tok, '=')
 		if eq <= 0 {
@@ -830,9 +866,14 @@ func inspectPortMap(ctx context.Context, tg target.Service, st *Settings, server
 			continue
 		}
 		cp, e1 := strconv.Atoi(strings.TrimSuffix(proto, "/tcp"))
-		hp, e2 := strconv.Atoi(tok[eq+1:])
+		rest := tok[eq+1:]
+		pipe := strings.LastIndexByte(rest, '|')
+		if pipe < 0 {
+			continue
+		}
+		hp, e2 := strconv.Atoi(rest[pipe+1:])
 		if e1 == nil && e2 == nil {
-			m[cp] = hp
+			m[cp] = portBinding{HostIP: rest[:pipe], HostPort: hp}
 		}
 	}
 	return m, nil
@@ -868,27 +909,32 @@ func inspectContainerImageRef(ctx context.Context, tg target.Service, st *Settin
 	return strings.TrimSpace(res.Stdout), nil
 }
 
-// portsMatch 报告既有映射是否与期望完全一致(容器端口集合 + 各自宿主端口)。
-func portsMatch(cur, want map[int]int) bool {
+// portsMatch 报告既有发布是否与期望完全一致(容器端口集合 + 各自宿主端口 + 绑定地址;
+// HostIp 经 normalizeHostIP 归一 —— "" 与 "0.0.0.0" 同语义)。
+func portsMatch(cur, want map[int]portBinding) bool {
 	if len(cur) != len(want) {
 		return false
 	}
-	for cp, hp := range want {
-		if cur[cp] != hp {
+	for cp, wb := range want {
+		cb, ok := cur[cp]
+		if !ok {
+			return false
+		}
+		if cb.HostPort != wb.HostPort || normalizeHostIP(cb.HostIP) != normalizeHostIP(wb.HostIP) {
 			return false
 		}
 	}
 	return true
 }
 
-// mergePortMap 期望映射优先,叠加既有映射中期望未覆盖的容器端口(保守保留用户既有发布)。
-func mergePortMap(cur, want map[int]int) map[int]int {
-	out := make(map[int]int, len(cur)+len(want))
-	for cp, hp := range cur {
-		out[cp] = hp
+// mergePortMap 期望发布优先,叠加既有发布中期望未覆盖的容器端口(保守保留用户既有发布)。
+func mergePortMap(cur, want map[int]portBinding) map[int]portBinding {
+	out := make(map[int]portBinding, len(cur)+len(want))
+	for cp, b := range cur {
+		out[cp] = b
 	}
-	for cp, hp := range want {
-		out[cp] = hp
+	for cp, b := range want {
+		out[cp] = b
 	}
 	return out
 }
@@ -1072,14 +1118,24 @@ func removeNginx(ctx context.Context, tg target.Service, st *Settings, serverID 
 	return nil
 }
 
-// hostPortsBusy 探测网关主机 HTTP/HTTPS 宿主端口是否被占用。best-effort:探测失败不阻断。
-func hostPortsBusy(ctx context.Context, tg target.Service, st *Settings, serverID string) (bool, string) {
+// hostPortsBusy 探测网关主机上期望发布的宿主端口是否被占用(生效端口集:本机共存模式
+// 查回环端口,其余查集群端口 —— specs/local-node-roles.md 7.3)。best-effort:探测失败不阻断。
+func hostPortsBusy(ctx context.Context, tg target.Service, st *Settings, serverID string, want map[int]portBinding) (bool, string) {
 	res, err := tg.Exec(ctx, serverID, []string{"ss", "-ltn"})
 	if err != nil || res == nil || res.ExitCode != 0 {
 		return false, ""
 	}
+	seen := make(map[int]bool, len(want))
+	var ports []int
+	for _, b := range want {
+		if !seen[b.HostPort] {
+			seen[b.HostPort] = true
+			ports = append(ports, b.HostPort)
+		}
+	}
+	sort.Ints(ports)
 	var hit []string
-	for _, p := range []int{st.HTTPPort, st.HTTPSPort} {
+	for _, p := range ports {
 		if strings.Contains(res.Stdout, ":"+strconv.Itoa(p)+" ") {
 			hit = append(hit, strconv.Itoa(p))
 		}

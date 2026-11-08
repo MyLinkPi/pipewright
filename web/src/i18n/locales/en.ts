@@ -4,6 +4,34 @@
 import type zhCN from './zh-CN'
 
 const en: typeof zhCN = {
+
+  localNode: {
+    machineName: 'This host (control node)',
+    title: 'Local node roles',
+    sub: 'Let the machine running Pipewright also serve as a build machine / deploy target / gateway host',
+    entry: 'Roles',
+    roleBuild: 'Build machine',
+    roleBuildHint: 'Join the build pool: scheduled by labels/pins with the same slots, queueing and affinity as registered servers',
+    roleDeploy: 'Deploy target',
+    roleDeployHint: 'Pipelines may pick this host as a deploy target (commands run locally — make sure you trust pipeline authors)',
+    roleGateway: 'Gateway host',
+    roleGatewayHint: 'The gateway nginx container can be orchestrated here; with platform HTTPS on, a loopback-port coexistence mode is used',
+    needsLinux: 'Linux control nodes only (POSIX script dependencies)',
+    labels: 'Build labels',
+    labelsPh: 'e.g. linux,arch=arm64; empty = excluded from label matching',
+    slots: 'Build slots',
+    priority: 'Priority',
+    savePool: 'Save pool settings',
+    saved: 'Local node roles updated',
+    saveFailed: 'Failed to save local node roles',
+    confirmTitle: 'Enable control-node roles?',
+    confirmMessage: 'Once enabled, pipeline authors can run arbitrary commands on the control node (deploys/gateway actions execute locally). The control node holds the database, artifacts, certificates and all remote SSH credentials — enable only for trusted/internal teams.',
+    confirmYes: 'I understand, enable',
+    gatewayMeta: 'This host (control node)',
+    loopHttp: 'Local loopback HTTP port',
+    loopHttps: 'Local loopback HTTPS port',
+    loopHint: 'When platform HTTPS occupies host ports 80/443, the local gateway container binds these loopback ports instead (default 18080/18443)',
+  },
   common: {
     refresh: 'Refresh',
     allArrow: 'All →',

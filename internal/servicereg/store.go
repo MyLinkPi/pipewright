@@ -53,9 +53,9 @@ func (s *Store) getOrCreateSettings(ctx context.Context) (*Settings, error) {
 	now := time.Now().UTC().Format(time.RFC3339)
 	_, ierr := s.db.ExecContext(ctx,
 		`INSERT INTO service_reg_settings
-		   (id, server_id, http_port, https_port, image, network, container_name, volume_name,
+		   (id, server_id, http_port, https_port, local_http_port, local_https_port, image, network, container_name, volume_name,
 		    static_root, last_apply_at, last_apply_error, created_at, updated_at)
-		 VALUES (?, '', 80, 443, ?, ?, ?, ?, ?, '', '', ?, ?)`,
+		 VALUES (?, '', 80, 443, 18080, 18443, ?, ?, ?, ?, ?, '', '', ?, ?)`,
 		settingsID, defaultNginxImage, defaultNetwork, defaultContainerName, defaultVolumeName,
 		defaultStaticRoot, now, now,
 	)
@@ -75,7 +75,7 @@ func (s *Store) getOrCreateSettings(ctx context.Context) (*Settings, error) {
 // getSettings 读取设置单例;不存在 → ErrNotFound。
 func (s *Store) getSettings(ctx context.Context) (*storedSettings, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT server_id, server_ids, http_port, https_port, image, network, container_name, volume_name,
+		`SELECT server_id, server_ids, http_port, https_port, COALESCE(local_http_port,18080), COALESCE(local_https_port,18443), image, network, container_name, volume_name,
 		        static_root, last_apply_at, last_apply_error, last_apply_errors, created_at, updated_at
 		 FROM service_reg_settings WHERE id = ?`, settingsID)
 	return scanSettings(row)
@@ -87,11 +87,11 @@ func (s *Store) updateSettings(ctx context.Context, st *Settings) error {
 	now := time.Now().UTC().Format(time.RFC3339)
 	_, err := s.db.ExecContext(ctx,
 		`UPDATE service_reg_settings
-		 SET server_id = ?, server_ids = ?, http_port = ?, https_port = ?, image = ?, network = ?,
+		 SET server_id = ?, server_ids = ?, http_port = ?, https_port = ?, local_http_port = ?, local_https_port = ?, image = ?, network = ?,
 		     container_name = ?, volume_name = ?, static_root = ?, updated_at = ?
 		 WHERE id = ?`,
 		primaryServerID(st.ServerIDs), marshalStrings(st.ServerIDs), st.HTTPPort, st.HTTPSPort,
-		st.Image, st.Network, st.ContainerName, st.VolumeName, st.StaticRoot, now, settingsID,
+		st.LocalHTTPPort, st.LocalHTTPSPort, st.Image, st.Network, st.ContainerName, st.VolumeName, st.StaticRoot, now, settingsID,
 	)
 	if err != nil {
 		return fmt.Errorf("servicereg: update settings: %w", err)
@@ -122,7 +122,8 @@ func scanSettings(sc scanner) (*storedSettings, error) {
 		updatedStr  string
 	)
 	if err := sc.Scan(
-		&st.ServerID, &srvIDs, &st.HTTPPort, &st.HTTPSPort, &st.Image, &st.Network, &st.ContainerName,
+		&st.ServerID, &srvIDs, &st.HTTPPort, &st.HTTPSPort, &st.LocalHTTPPort, &st.LocalHTTPSPort,
+		&st.Image, &st.Network, &st.ContainerName,
 		&st.VolumeName, &st.StaticRoot, &lastApply, &lastErr, &lastSrvErrs, &createdStr, &updatedStr,
 	); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {

@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/huangchengsir/pipewright/internal/netforward"
+	"github.com/huangchengsir/pipewright/internal/target"
 )
 
 // ReconcileForwardRoutes 实现接口:对账全部网关机上的跨环境 /32 路由(幂等;错误记入
@@ -64,6 +65,13 @@ func (s *service) ReconcileForwardRoutes(ctx context.Context) {
 	var status []GatewayRouteStatus
 	newLedger := map[string][]string{}
 	for _, sid := range st.ServerIDs {
+		// 本机(控制节点)网关跳过路由对账(specs/local-node-roles.md 7.5):reconcileServerRoutes
+		// 用 localSourceIP(gwIP) 当下一跳,而本机的 gwIP 就是自身 mesh IP,会写出
+		// `ip route ... via <自己>` 的错误路由 —— 本机本身就是 mesh 节点,无需经自己转发。
+		// 账本内该机旧路由随 newLedger 缺项自然摘除。
+		if sid == target.LocalHostID {
+			continue
+		}
 		routes, _ := s.reconcileServerRoutes(ctx, sid, expected, ledger[sid])
 		status = append(status, routes...)
 		newLedger[sid] = ledgerRoutes(routes)

@@ -4,6 +4,34 @@
 import type zhCN from './zh-CN'
 
 const ko: typeof zhCN = {
+
+  localNode: {
+    machineName: '로컬 호스트(제어 노드)',
+    title: '로컬 노드 역할',
+    sub: 'Pipewright 가 실행 중인 이 호스트를 빌드 머신 / 배포 대상 / 게이트웨이 호스트로 사용',
+    entry: '역할',
+    roleBuild: '빌드 머신',
+    roleBuildHint: '빌드 풀 참여: 라벨/고정 지정으로 스케줄링(슬롯·대기열·어피니티는 등록 서버와 동일)',
+    roleDeploy: '배포 대상',
+    roleDeployHint: '파이프라인이 이 호스트를 배포 대상으로 선택 가능(명령이 로컬에서 실행됨 — 작성자를 신뢰할 때만 사용)',
+    roleGateway: '게이트웨이 호스트',
+    roleGatewayHint: '게이트웨이 nginx 컨테이너를 이 호스트에 구성 가능; 플랫폼 HTTPS 사용 시 루프백 포트 공존 모드',
+    needsLinux: 'Linux 제어 노드만 지원(POSIX 스크립트 의존)',
+    labels: '빌드 라벨',
+    labelsPh: '예: linux,arch=arm64(비우면 라벨 매칭 제외)',
+    slots: '동시 슬롯',
+    priority: '우선순위',
+    savePool: '풀 설정 저장',
+    saved: '로컬 노드 역할이 업데이트되었습니다',
+    saveFailed: '로컬 노드 역할 저장 실패',
+    confirmTitle: '제어 노드 역할을 활성화할까요?',
+    confirmMessage: '활성화하면 파이프라인 작성자가 제어 노드에서 임의 명령을 실행할 수 있습니다(배포/게이트웨이 동작이 로컬 실행). 제어 노드는 DB·아티팩트·인증서·모든 원격 SSH 자격증명을 보유합니다. 신뢰할 수 있는 팀에서만 활성화하세요.',
+    confirmYes: '이해했으며 활성화',
+    gatewayMeta: '로컬 호스트(제어 노드)',
+    loopHttp: '로컬 루프백 HTTP 포트',
+    loopHttps: '로컬 루프백 HTTPS 포트',
+    loopHint: '플랫폼 HTTPS 가 호스트 80/443 을 점유하면 로컬 게이트웨이 컨테이너가 이 루프백 포트로 바인딩합니다(기본 18080/18443)',
+  },
   common: {
     refresh: '새로고침',
     allArrow: '전체 →',

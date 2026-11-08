@@ -24,6 +24,8 @@ package runner
 import (
 	"errors"
 	"strings"
+
+	"github.com/huangchengsir/pipewright/internal/target"
 )
 
 // ErrInvalidSelector 表示选择器表达式语法非法(供 API 层映射 422 / 阶段日志明示)。
@@ -57,13 +59,21 @@ func termOK(s string) bool {
 	return true
 }
 
+// pinnedTermOK 校验 `server:<id>` 项的 id 段:常规字符集(termOK),或恰为本机哨兵
+// (specs/local-node-roles.md 4.6 的**最小豁免** —— 仅对 target.LocalHostID 常量成立,
+// `__local__` 以 `_` 开头过不了 termOK;不放宽标签项/peer 项字符集)。
+func pinnedTermOK(id string) bool {
+	return id == target.LocalHostID || termOK(id)
+}
+
 // PinnedServer 识别 `server:<id>` 钉死单机形式:是则返回 (id, true)。
+// id 段恰为本机哨兵(target.LocalHostID)时亦合法(字符集豁免,见 pinnedTermOK)。
 // 注意:含 peer: 项的选择器(如 `peer:prod,server:<id>`)不是纯钉死形式,本函数返回
 // false —— 钉死对端共享机的解析归 SplitPeerSelector。
 func PinnedServer(selector string) (string, bool) {
 	s := strings.TrimSpace(selector)
 	id, ok := strings.CutPrefix(s, "server:")
-	if !ok || !termOK(id) {
+	if !ok || !pinnedTermOK(id) {
 		return "", false
 	}
 	return id, true
@@ -136,7 +146,7 @@ func ParseSelector(selector string) ([]string, error) {
 			}
 			peerSeen = true
 		case strings.HasPrefix(p, "server:"):
-			if !termOK(strings.TrimPrefix(p, "server:")) {
+			if !pinnedTermOK(strings.TrimPrefix(p, "server:")) {
 				return nil, ErrInvalidSelector
 			}
 		default:

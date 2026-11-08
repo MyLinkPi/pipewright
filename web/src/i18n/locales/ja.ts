@@ -4,6 +4,34 @@
 import type zhCN from './zh-CN'
 
 const ja: typeof zhCN = {
+
+  localNode: {
+    machineName: 'ローカルホスト(制御ノード)',
+    title: 'ローカルノードのロール',
+    sub: 'Pipewright が動くこのホストをビルドマシン / デプロイ対象 / ゲートウェイホストとして利用',
+    entry: 'ロール',
+    roleBuild: 'ビルドマシン',
+    roleBuildHint: 'ビルドプールに参加:ラベル/ピン指定でスケジューリング(スロット・待ち行列・アフィニティは登録サーバーと同一)',
+    roleDeploy: 'デプロイ対象',
+    roleDeployHint: 'パイプラインがこのホストをデプロイ対象に選択可能(コマンドはローカル実行 — 作成者を信頼できる場合のみ)',
+    roleGateway: 'ゲートウェイホスト',
+    roleGatewayHint: 'ゲートウェイ nginx コンテナをここで編成。プラットフォーム HTTPS 有効時はループバックポート共存モード',
+    needsLinux: 'Linux 制御ノードのみ対応(POSIX スクリプト依存)',
+    labels: 'ビルドラベル',
+    labelsPh: '例: linux,arch=arm64(空 = ラベルマッチ対象外)',
+    slots: '同時実行スロット',
+    priority: '優先度',
+    savePool: 'プール設定を保存',
+    saved: 'ローカルノードのロールを更新しました',
+    saveFailed: 'ローカルノードのロール保存に失敗',
+    confirmTitle: '制御ノードのロールを有効化?',
+    confirmMessage: '有効化すると、パイプライン作成者が制御ノード上で任意のコマンドを実行できます(デプロイ/ゲートウェイ操作がローカルで実行)。制御ノードは DB・成果物・証明書・全リモート SSH 認証情報を保持します。信頼できるチームでのみ有効化してください。',
+    confirmYes: '理解しました、有効化',
+    gatewayMeta: 'ローカルホスト(制御ノード)',
+    loopHttp: 'ローカルループバック HTTP ポート',
+    loopHttps: 'ローカルループバック HTTPS ポート',
+    loopHint: 'プラットフォーム HTTPS がホストの 80/443 を占有する場合、ローカルのゲートウェイコンテナはこのループバックポートにバインドします(既定 18080/18443)',
+  },
   common: {
     refresh: '更新',
     allArrow: 'すべて →',

@@ -47,6 +47,8 @@ import {
   type ForwardPeer,
 } from '../api/servicereg'
 import { listServers, type Server } from '../api/servers'
+import { getLocalNode, type LocalNodeRoles } from '../api/localNode'
+import { LOCAL_HOST_ID } from '../api/servers'
 import { HttpError } from '../api/http'
 import { useToast } from '../composables/useToast'
 import { useConfirm } from '../composables/useConfirm'
@@ -96,6 +98,7 @@ async function load(): Promise<void> {
       listDomains().then(() => listServices()),
       listServers(),
     ])
+    void getLocalNode().then((r) => { localNodeRoles.value = r }).catch(() => { localNodeRoles.value = null })
     settings.value = st
     gateway.value = gw
     domains.value = dm.items
@@ -119,7 +122,8 @@ onMounted(() => void capacity.load())
 const busy = ref(false)
 const editing = ref(false)
 // 多机网关:每台部署完全一致的网关;serverIds 为选中的全部网关主机。
-const form = ref({ serverIds: [] as string[], httpPort: 80, httpsPort: 443, image: '', network: '', containerName: '', volumeName: '', staticRoot: '' })
+const localNodeRoles = ref<LocalNodeRoles | null>(null)
+const form = ref({ serverIds: [] as string[], httpPort: 80, httpsPort: 443, localHttpPort: 18080, localHttpsPort: 18443, image: '', network: '', containerName: '', volumeName: '', staticRoot: '' })
 
 function toggleHost(id: string): void {
   form.value.serverIds = form.value.serverIds.includes(id)
@@ -146,6 +150,8 @@ function startEdit(): void {
   if (!settings.value) return
   form.value = {
     serverIds: [...(settings.value.serverIds ?? [])],
+    localHttpPort: settings.value.localHttpPort || 18080,
+    localHttpsPort: settings.value.localHttpsPort || 18443,
     httpPort: settings.value.httpPort,
     httpsPort: settings.value.httpsPort,
     image: settings.value.image,
@@ -162,6 +168,8 @@ async function saveSettings(): Promise<void> {
   try {
     settings.value = await updateServiceRegSettings({
       serverIds: form.value.serverIds,
+      localHttpPort: form.value.localHttpPort,
+      localHttpsPort: form.value.localHttpsPort,
       httpPort: Number(form.value.httpPort),
       httpsPort: Number(form.value.httpsPort),
       image: form.value.image,
@@ -802,7 +810,21 @@ async function saveSvcEdit(s: RegisteredService): Promise<void> {
           <label class="field">
             <span class="field__lbl">{{ t('serviceReg.gateway.host') }}</span>
             <span class="sreg__hint">{{ t('serviceReg.gateway.hostHint') }}</span>
-            <ul v-if="servers.length" class="sreg__hosts">
+            <ul v-if="servers.length || localNodeRoles?.gatewayEnabled" class="sreg__hosts">
+              <!-- 本机(控制节点)网关主机入口(specs 7.1):仅角色开启时出现 -->
+              <li v-if="localNodeRoles?.gatewayEnabled">
+                <label class="sreg__host-item">
+                  <input
+                    type="checkbox"
+                    :checked="form.serverIds.includes(LOCAL_HOST_ID)"
+                    @change="toggleHost(LOCAL_HOST_ID)"
+                  />
+                  <span class="sreg__host-main">
+                    <span class="sreg__host-name">{{ t('localNode.machineName') }}</span>
+                    <span class="sreg__host-meta">{{ t('localNode.gatewayMeta') }}</span>
+                  </span>
+                </label>
+              </li>
               <li v-for="sv in servers" :key="sv.id">
                 <label class="sreg__host-item">
                   <input
@@ -833,6 +855,15 @@ async function saveSvcEdit(s: RegisteredService): Promise<void> {
               <span class="field__lbl">HTTPS {{ t('serviceReg.gateway.port') }}</span>
               <input v-model.number="form.httpsPort" class="field__in" type="number" min="1" max="65535" />
             </label>
+          <label class="field">
+            <span class="field__lbl">{{ t('localNode.loopHttp') }}</span>
+            <span class="sreg__hint">{{ t('localNode.loopHint') }}</span>
+            <input v-model.number="form.localHttpPort" class="field__in" type="number" min="1" max="65535" />
+          </label>
+          <label class="field">
+            <span class="field__lbl">{{ t('localNode.loopHttps') }}</span>
+            <input v-model.number="form.localHttpsPort" class="field__in" type="number" min="1" max="65535" />
+          </label>
           </div>
           <label class="field">
             <span class="field__lbl">{{ t('serviceReg.gateway.image') }}</span>

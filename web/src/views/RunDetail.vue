@@ -35,7 +35,8 @@ import {
   type HealthCheckInput,
   type ApprovalRecord,
 } from '../api/runs'
-import { listServers, type Server } from '../api/servers'
+import { listServers, LOCAL_HOST_ID, type Server } from '../api/servers'
+import { getLocalNode } from '../api/localNode'
 import { matchServers } from '../lib/selectorMatch'
 import { HttpError } from '../api/http'
 import ContainerAiPanel from '../components/ops/ContainerAiPanel.vue'
@@ -284,7 +285,35 @@ async function ensureDeployServers(): Promise<void> {
   if (deployServersLoaded.value) return
   try {
     // PVE 集群物理机不可作为部署目标(0084;域层同样拦截,这里过滤只为选择器不误导)。
-    deployServers.value = (await listServers()).filter((s) => s.kind !== 'pve_node')
+    const list = (await listServers()).filter((s) => s.kind !== 'pve_node')
+    // 本机(控制节点)部署角色开启时,把合成条目追加进选择器候选(specs 6.1;
+    // GET /api/servers 冻结不含本机,此处仅前端合并)。标签与构建机池共用一套。
+    const ln = await getLocalNode().catch(() => null)
+    if (ln?.deployEnabled) {
+      list.push({
+        id: LOCAL_HOST_ID,
+        name: t('localNode.machineName'),
+        host: 'localhost',
+        port: 0,
+        user: '',
+        credentialId: '',
+        credentialName: '',
+        sudoCredentialId: '',
+        sudoCredentialName: '',
+        jumps: [],
+        labels: ln.buildLabels,
+        maxBuilds: ln.buildMaxBuilds,
+        priority: ln.buildPriority,
+        gpu: false,
+        sharedBuild: false,
+        poolId: 'default',
+        poolName: '',
+        kind: 'standard',
+        createdAt: '',
+        updatedAt: '',
+      })
+    }
+    deployServers.value = list
   } catch {
     deployServers.value = []
   } finally {

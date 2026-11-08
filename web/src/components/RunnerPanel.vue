@@ -9,7 +9,8 @@
 import { ref, computed, onMounted, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { getRunner, saveRunnerSelector } from '../api/runner'
-import { listServers, type Server } from '../api/servers'
+import { listServers, LOCAL_HOST_ID, type Server } from '../api/servers'
+import { getLocalNode, type LocalNodeRoles } from '../api/localNode'
 import { matchServers } from '../lib/selectorMatch'
 import { HttpError } from '../api/http'
 import LabelSelectorEditor from './pipeline/LabelSelectorEditor.vue'
@@ -25,6 +26,7 @@ const loadState = ref<LoadState>('idle')
 const loadError = ref('')
 
 const servers = ref<Server[]>([])
+const localNode = ref<LocalNodeRoles | null>(null)
 const mode = ref<Mode>('local')
 const selectorText = ref('') // label 模式的选择器表达式
 const selectedServer = ref('') // server 模式钉死的机器 id
@@ -32,15 +34,51 @@ const saveSubmitting = ref(false)
 const saveBanner = ref('')
 const saveSuccess = ref(false)
 
+// 本机(控制节点)作为池成员(specs 5.3):构建角色开启时,把合成条目追加进候选列表
+// 参与标签匹配预览与钉死下拉 —— 共享的 GET /api/servers 不含本机(冻结),此处仅前端合并。
+const allServers = computed<Server[]>(() => {
+  if (!localNode.value?.buildEnabled) return servers.value
+  return [
+    ...servers.value,
+    {
+      id: LOCAL_HOST_ID,
+      name: t('localNode.machineName'),
+      host: 'localhost',
+      port: 0,
+      user: '',
+      credentialId: '',
+      credentialName: '',
+      sudoCredentialId: '',
+      sudoCredentialName: '',
+      jumps: [],
+      labels: localNode.value.buildLabels,
+      maxBuilds: localNode.value.buildMaxBuilds,
+      priority: localNode.value.buildPriority,
+      gpu: false,
+      sharedBuild: false,
+      poolId: 'default',
+      poolName: '',
+      kind: 'standard',
+      createdAt: '',
+      updatedAt: '',
+    },
+  ]
+})
+
 // 客户端标签匹配预览(lib/selectorMatch,与服务端 runner 域同一语义:AND 项、纯 tag ≠ k=v)。
-const matched = computed(() => (mode.value === 'label' ? matchServers(selectorText.value, servers.value) : []))
+const matched = computed(() => (mode.value === 'label' ? matchServers(selectorText.value, allServers.value) : []))
 
 async function load(): Promise<void> {
   loadState.value = 'loading'
   loadError.value = ''
   try {
-    const [cfg, srv] = await Promise.all([getRunner(props.projectId), listServers().catch(() => [])])
+    const [cfg, srv, ln] = await Promise.all([
+      getRunner(props.projectId),
+      listServers().catch(() => [] as Server[]),
+      getLocalNode().catch(() => null),
+    ])
     servers.value = srv
+    localNode.value = ln
     const sel = (cfg.selector ?? '').trim()
     if (sel === '') {
       mode.value = 'local'
@@ -123,7 +161,7 @@ watch(() => props.projectId, load)
           <!-- 标签选值控件(与部署目标/阶段构建机同一组件):候选 = 机器实际标签 ∪ 登记处悬置标签 -->
           <LabelSelectorEditor
             :model-value="selectorText"
-            :servers="servers"
+            :servers="allServers"
             @update:model-value="(v: string) => { selectorText = v; saveSuccess = false }"
           />
           <p class="runner-hint">
@@ -144,6 +182,8 @@ watch(() => props.projectId, load)
           <label class="runner-field-label" for="runner-server">{{ t('projectPanels.runner.serverLabel') }}</label>
           <select id="runner-server" v-model="selectedServer" class="runner-select" @change="saveSuccess = false">
             <option value="">{{ t('projectPanels.runner.serverPick') }}</option>
+            <!-- 本机(控制节点)仅在构建角色开启时可钉(specs 5.3;后端豁免 + 角色门禁) -->
+            <option v-if="localNode?.buildEnabled" :value="LOCAL_HOST_ID">{{ t('localNode.machineName') }}</option>
             <option v-for="s in servers" :key="s.id" :value="s.id">{{ t('projectPanels.runner.optionRemote', { name: s.name, host: s.host }) }}</option>
           </select>
         </template>
