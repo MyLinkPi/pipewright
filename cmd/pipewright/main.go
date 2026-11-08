@@ -51,6 +51,7 @@ import (
 	"github.com/huangchengsir/pipewright/internal/identity"
 	"github.com/huangchengsir/pipewright/internal/labels"
 	"github.com/huangchengsir/pipewright/internal/library"
+	"github.com/huangchengsir/pipewright/internal/localnode"
 	"github.com/huangchengsir/pipewright/internal/maintenance"
 	"github.com/huangchengsir/pipewright/internal/mask"
 	"github.com/huangchengsir/pipewright/internal/mesh"
@@ -338,6 +339,39 @@ func main() {
 	// 传工作区 → 远程容器跑;token 只在控制机)。每机并发槽位默认 1,PIPEWRIGHT_RUNNER_SLOTS
 	// 调全局默认,单机可用 servers.max_builds 覆盖(设置界面)。
 	targetSvc := target.New(st.DB, credVault, nil)
+
+	// 本机(控制节点)角色(specs/local-node-roles.md):local_node 单行配置 + 三角色独立包装。
+	// **每角色一个包装实例**(4.2 关键):rolesFn 只回答「本角色是否启用」——禁用时对
+	// __local__ 的执行类请求显式 ErrLocalRoleDisabled(→ 422 local_role_disabled),绝不静默
+	// 落到本机执行;对真实 serverID 逐字透传,三开关全关时各域行为与改造前逐字节一致。
+	// rolesFn 读不到配置按「未启用」处理(fail closed;只影响 __local__ 哨兵请求,真实机器无感)。
+	localNodeSvc := localnode.New(st.DB)
+	buildRolesView := func() target.LocalRoles {
+		r, err := localNodeSvc.Get(context.Background())
+		if err != nil {
+			return target.LocalRoles{}
+		}
+		return target.LocalRoles{Enabled: r.BuildEnabled, Labels: r.BuildLabels, MaxBuilds: r.BuildMaxBuilds, Priority: r.BuildPriority}
+	}
+	deployRolesView := func() target.LocalRoles {
+		r, err := localNodeSvc.Get(context.Background())
+		if err != nil {
+			return target.LocalRoles{}
+		}
+		// InList 随部署开关:开启时 List() 尾部追加本机,部署标签圈选可命中(与构建共用
+		// 同一套标签语义,specs 4.3)。
+		return target.LocalRoles{Enabled: r.DeployEnabled, InList: r.DeployEnabled, Labels: r.BuildLabels, MaxBuilds: r.BuildMaxBuilds, Priority: r.BuildPriority}
+	}
+	gatewayRolesView := func() target.LocalRoles {
+		r, err := localNodeSvc.Get(context.Background())
+		if err != nil {
+			return target.LocalRoles{}
+		}
+		return target.LocalRoles{Enabled: r.GatewayEnabled}
+	}
+	buildTargetSvc := target.WithLocalHostRoles(targetSvc, buildRolesView)
+	deployTargetSvc := target.WithLocalHostRoles(targetSvc, deployRolesView)
+	gatewayTargetSvc := target.WithLocalHostRoles(targetSvc, gatewayRolesView)
 	// 内置本地 registry(registryhub):控制机本机双服务 registry 栈(制品 + pull-through 缓存)、
 	// daemon.json 手动勾选下发、镜像 tag 保留清理。复用 targetSvc(远程机 SSH 通道);未启用时
 	// 构建/部署完全保持旧行为(本地 tag 不推送)。构建接入经 builtinRegistryOpt 注入 Builder。
@@ -395,7 +429,7 @@ func main() {
 			log.Printf("[opschat] unavailable: local key, storage or executor configuration")
 		}
 	}
-	runnerSvc := runner.New(st.DB, targetExister{targetSvc})
+	runnerSvc := runner.New(st.DB, targetExister{buildTargetSvc})
 	// 机器标签登记处(标签字典,可先建后挂):设置页建/删管理,各选择器下拉候选 = 登记处 ∪ 机器实际标签。
 	labelsSvc := labels.New(st.DB, targetSvc)
 	runnerSlots := 1
@@ -406,7 +440,10 @@ func main() {
 			log.Printf("[runner] 警告:PIPEWRIGHT_RUNNER_SLOTS=%q 非法(须为正整数),用默认 1", v)
 		}
 	}
-	runnerSched := runner.NewScheduler(st.DB, targetProber{targetSvc}, runnerSlots)
+	runnerSched := runner.NewScheduler(st.DB, targetProber{buildTargetSvc}, runnerSlots)
+	// 本机候选提供者恒注册(specs 5.1):build_enabled=false → (nil, ErrLocalRoleDisabled),
+	// 调度器按吞噬规则处理(标签路径静默不产候选;钉死本机 → 带因失败)。
+	runnerSched.SetLocalCandidateProvider(localCandidateProvider{svc: localNodeSvc}.provide)
 
 	// 制品库(Story 8-16 / FR-8-16):构建后把 jar/dist 真字节归档,部署时取真字节上传目标机
 	// (否则只有占位 reference,jar/dist 无法真正部署)。默认落 DB 同级 artifacts/,可经
@@ -476,14 +513,20 @@ func main() {
 	}
 
 	// 服务注册网关(nginx 版;提前到 deploy 构造前:instance_rolling 默认策略经适配器晚绑)。
-	// 复用 targetSvc(SSH + docker)与 credVault(证书 SealSecret 密文);vault 未配 master key
-	// 时证书上传不可用,其余功能照常(优雅降级)。集群反代渲染需要 serverID → 可达地址,
-	// 一并注入解析器(target 查 SSH Host,主机名经控制端 DNS 解析为 IP)。
+	// 复用网关角色包装(本机作网关主机经 rolesFn 门禁,specs 7.1)与 credVault(证书 SealSecret
+	// 密文);vault 未配 master key 时证书上传不可用,其余功能照常(优雅降级)。集群反代渲染需要
+	// serverID → 可达地址,一并注入解析器(target 查 SSH Host,主机名经控制端 DNS 解析为 IP;
+	// __local__ 特判见 serverAddrResolver)。
 	// target 经 deploy.ObservingTarget 包装:网关编排的 SSH 命令(nginx 容器渲染/热加载等)在
 	// 部署链路内回流到运行日志(「流水线日志可见所有执行的命令」;无日志 ctx = 纯透传)。
-	serviceRegSvc := servicereg.New(st.DB, deploy.ObservingTarget(targetSvc), credVault)
-	serviceRegSvc.SetServerAddrResolver(serverAddrResolver{tg: targetSvc}.resolve)
-	serviceRegSvc.SetServerHostResolver(serverAddrResolver{tg: targetSvc}.rawHost)
+	// 本机 mesh 虚拟 IP 晚绑引用:resolver 构造早于 meshSvc,经变量重绑接线(同 registryCertSrc 先例)。
+	localMeshVIP := func(context.Context) string { return "" }
+	// 经闭包间接引用:resolver 在 meshSvc 构造前接线,直接传函数值会固化当时的空实现,
+	// 下方晚绑重绑(localMeshVIP = ...)永远不生效(见 serverAddrResolver 的 meshVIP 语义)。
+	meshVIPRef := func(ctx context.Context) string { return localMeshVIP(ctx) }
+	serviceRegSvc := servicereg.New(st.DB, deploy.ObservingTarget(gatewayTargetSvc), credVault)
+	serviceRegSvc.SetServerAddrResolver(serverAddrResolver{tg: gatewayTargetSvc, meshVIP: meshVIPRef}.resolve)
+	serviceRegSvc.SetServerHostResolver(serverAddrResolver{tg: gatewayTargetSvc, meshVIP: meshVIPRef}.rawHost)
 
 	// 系统级运行时配置(public_url = 平台对外访问地址):取代环境变量 PIPEWRIGHT_PUBLIC_URL,
 	// 设置页在线修改、即时生效(通知审批链接 / PR 回写 target_url 每次触发时按需读取)。
@@ -504,7 +547,10 @@ func main() {
 	// 部署服务(提前到 dag 装配前构造,供 deploy_ssh 流水线节点注入)。Story 4.6 诊断钩子复用 7-2。
 	// instance_rolling(默认策略)的网关摘/挂经 instanceRollGateway 适配器晚绑(deploy 不 import
 	// servicereg,包间保持单向依赖);未装配时该策略自动回退既有滚动。
-	deploySvc := deploy.New(targetSvc, runSvc, deploy.WithDiagnoseHook(httpapi.NewDiagnoseHook(runSvc, aiSvc, secretSrc)), deploy.WithArtifactStore(artStore), deploy.WithInstanceGateway(&instanceRollGateway{sr: serviceRegSvc}))
+	// target 换成部署角色包装(specs 4.2):**不外挂 ObservingTarget** —— deploy 自身的
+	// s.exec → execObserved 已逐条回显命令与输出,再包一层会双份回显;本机部署目标经
+	// rolesFn 门禁(deploy_enabled=false → ErrLocalRoleDisabled)。
+	deploySvc := deploy.New(deployTargetSvc, runSvc, deploy.WithDiagnoseHook(httpapi.NewDiagnoseHook(runSvc, aiSvc, secretSrc)), deploy.WithArtifactStore(artStore), deploy.WithInstanceGateway(&instanceRollGateway{sr: serviceRegSvc}))
 
 	// Ceph 集群部署与管理(cephadm 引导 + 池/RBD/CephFS 管理;命令经 target SSH 层)。
 	cephSvc := ceph.New(st.DB, targetSvc, credVault)
@@ -513,6 +559,13 @@ func main() {
 	// 全节点同构:mesh 服务、推送接收器、出站签名客户端、修订存储与镜像传输器一律构造
 	// (端点是否可达/节点是否启用由运行时设置决定,不装配则集群功能整体缺席)。
 	meshSvc := mesh.New(st.DB, credVault)
+	// 本机 mesh 虚拟 IP 晚绑重绑(resolver 的 resolve(__local__) 消费;未启用 mesh → "")。
+	localMeshVIP = func(ctx context.Context) string {
+		if mst, err := meshSvc.Settings(ctx); err == nil && mst.Enabled {
+			return strings.TrimSpace(mst.VirtualIP)
+		}
+		return ""
+	}
 	pushedStore := pushsource.New(st.DB)
 	meshClient := mesh.NewClient(meshSvc)
 	// 跨环境服务转发:注入 mesh 依赖(peer 注册表 + 签名目录拉取)。对端未启用集群时
@@ -808,6 +861,33 @@ func main() {
 			&aptCacheHubAdapter{h: aptCacheHub},    // apt 缓存 TLS 前端引用的证书续期后重部署栈
 		}})
 	}
+	// 本机(控制节点)网关共存钩子(specs/local-node-roles.md 7.2/7.3,main 晚绑接线):
+	//   - GatewayEnabled 读 localnode(UpdateSettings 对 ServerIDs 含 __local__ 的角色门禁);
+	//   - Coexistence 读平台 HTTPS 设置(共存模式判定;平台 HTTPS 未启用 → 本机网关直连模式,
+	//     与远端主机一致);
+	//   - Publisher 直通 platformHTTPSSvc(入口 vhost 发布面);Source 适配 certmgmt
+	//     (按基域找覆盖证书,未命中回落网关基域的自上传证书 —— 在 servicereg 侧回落)。
+	serviceRegSvc.SetLocalGatewayHooks(servicereg.LocalGatewayHooks{
+		GatewayEnabled: func() bool {
+			r, err := localNodeSvc.Get(context.Background())
+			return err == nil && r.GatewayEnabled
+		},
+		Coexistence: func() bool {
+			if pst, gerr := platformHTTPSSvc.GetSettings(context.Background()); gerr == nil {
+				return pst.Enabled
+			}
+			return false
+		},
+		Publisher: platformHTTPSSvc,
+		Source:    &certmgmtGatewayEntrySource{cm: certSvc},
+	})
+	// 平台 HTTPS 生效态变化(启用/禁用/应用)会改变本机网关的共存模式(容器端口绑定 + 入口
+	// vhost),必须让 servicereg 立即重放收敛;否则要等下一次服务注册 apply 才修正。
+	platformHTTPSSvc.SetChangeHook(func(ctx context.Context) {
+		if rerr := serviceRegSvc.ReconcileLocalGateway(ctx); rerr != nil {
+			log.Printf("[servicereg] 平台 HTTPS 状态变化后收敛本机网关入口失败:%v", rerr)
+		}
+	})
 
 	// 证书部署目标(远程机器指定路径 + 部署后命令):证书签发/导入/续期后自动联动重新
 	// 部署,删除被引用证书时占用拦截。执行面复用 target.Service(SSH Exec/Upload),
@@ -1139,8 +1219,14 @@ func main() {
 	oauthSvc := oauth.New(st.DB, credVault, &http.Client{Timeout: 10 * time.Second})
 
 	srv := &http.Server{
-		Addr:              cfg.Addr,
-		Handler:           httpapi.New(webFS, authSvc, httpapi.WithVault(credVault), httpapi.WithProjects(projectSvc), httpapi.WithTriggers(triggerSvc), httpapi.WithPipelines(pipelineSvc), httpapi.WithPipelineSettings(pipelineSettingsSvc), httpapi.WithRuns(runSvc, pool), httpapi.WithWebhooks(webhookReceiver), httpapi.WithWebhookForwarder(webhookForwarder), httpapi.WithAudit(auditRec), httpapi.WithAccount(authSvc), httpapi.WithIdentity(identitySvc), httpapi.WithAISettings(aiSvc), httpapi.WithAIGenerate(repoAnalyzer), httpapi.WithRunDiff(runDiffer), httpapi.WithSource(sourceReader), httpapi.WithRefs(refsLister), httpapi.WithArtifactStore(artStore), httpapi.WithArtifactImageTransfer(meshImages), httpapi.WithArtifactTransfer(artifactTransfers), httpapi.WithServers(targetSvc), httpapi.WithLabels(labelsSvc), httpapi.WithServerCommands(serverCmdSvc), httpapi.WithSSHTunnels(sshtunnelSvc), httpapi.WithRegistryHub(registryHubSvc), httpapi.WithAptCache(aptCacheHub), httpapi.WithRunnerConfig(runnerSvc), httpapi.WithDeploy(deploySvc), httpapi.WithSpecLoader(resumeSpecLoader), httpapi.WithNotifications(notifySvc), httpapi.WithRetention(retentionSvc), httpapi.WithDNSProviders(dnsSvc), httpapi.WithAliyunEcs(aliyunSvc), httpapi.WithObjectStores(objectStoreSvc), httpapi.WithBackup(backupSvc), httpapi.WithCertMgmt(certSvc), httpapi.WithCertDeploys(certDeploySvc), httpapi.WithPlatformHTTPS(platformHTTPSSvc), httpapi.WithFirewall(firewallSvc), httpapi.WithSystemConfig(sysCfgSvc), httpapi.WithMFA(mfaSvc), httpapi.WithServiceReg(serviceRegSvc), httpapi.WithAppStore(appStoreSvc), httpapi.WithDBAdmin(dbAdminSvc), httpapi.WithRedisAdmin(redisAdminSvc), httpapi.WithDBBackup(dbBackupSvc), httpapi.WithSecScan(secScanSvc), httpapi.WithPVEAdmin(pveAdminSvc), httpapi.WithDiagnosisFeedback(feedbackSvc), httpapi.WithAnomaly(anomalySvc), httpapi.WithAnomalyConfig(int(anomalyInterval.Seconds()), int(anomalyCooldown.Seconds())), httpapi.WithMetricsHistory(metricsHist), httpapi.WithSsar(ssarSvc), httpapi.WithSecretSource(secretSrc), httpapi.WithOAuth(oauthSvc), httpapi.WithCron(cronSvc), httpapi.WithChain(chainSvc), httpapi.WithApprovals(approvalCoord, approvalStore), httpapi.WithApprovalLinks(approvalSigner), httpapi.WithWaitNode(waitCoord), httpapi.WithConcurrency(concurrencySvc), httpapi.WithParameters(parameterSvc), httpapi.WithDoraMetrics(doraMetricsSvc), httpapi.WithTemplates(templateSvc), httpapi.WithVariableGroups(varGroupSvc), httpapi.WithCustomNodes(customNodeSvc), httpapi.WithOpsChat(opsChatSvc), httpapi.WithMesh(meshAdminDeps), httpapi.WithCeph(cephSvc), httpapi.WithDiskAdmin(diskAdminSvc), httpapi.WithFileAdmin(fileAdminSvc), httpapi.WithMaintenance(maintSvc), httpapi.WithProjectMirrorCleaner(projectMirrorCleaner), httpapi.WithReexecGuard(reexecGuard{runs: runSvc, shared: sharedBuildSrv})),
+		Addr: cfg.Addr,
+		Handler: httpapi.New(webFS, authSvc, httpapi.WithVault(credVault), httpapi.WithProjects(projectSvc), httpapi.WithTriggers(triggerSvc), httpapi.WithPipelines(pipelineSvc), httpapi.WithPipelineSettings(pipelineSettingsSvc), httpapi.WithRuns(runSvc, pool), httpapi.WithWebhooks(webhookReceiver), httpapi.WithWebhookForwarder(webhookForwarder), httpapi.WithAudit(auditRec), httpapi.WithAccount(authSvc), httpapi.WithIdentity(identitySvc), httpapi.WithAISettings(aiSvc), httpapi.WithAIGenerate(repoAnalyzer), httpapi.WithRunDiff(runDiffer), httpapi.WithSource(sourceReader), httpapi.WithRefs(refsLister), httpapi.WithArtifactStore(artStore), httpapi.WithArtifactImageTransfer(meshImages), httpapi.WithArtifactTransfer(artifactTransfers), httpapi.WithServers(targetSvc), httpapi.WithLocalNode(localNodeReconciler{Service: localNodeSvc, onSaved: func(ctx context.Context) {
+			// 角色开关(尤其是 gateway_enabled)保存后立即收敛本机网关入口 vhost;
+			// 失败只记日志,不回滚已保存的角色(配置已落库,下一次 apply 仍会重放)。
+			if rerr := serviceRegSvc.ReconcileLocalGateway(ctx); rerr != nil {
+				log.Printf("[servicereg] 本机角色变更后收敛网关入口失败:%v", rerr)
+			}
+		}}), httpapi.WithLabels(labelsSvc), httpapi.WithServerCommands(serverCmdSvc), httpapi.WithSSHTunnels(sshtunnelSvc), httpapi.WithRegistryHub(registryHubSvc), httpapi.WithAptCache(aptCacheHub), httpapi.WithRunnerConfig(runnerSvc), httpapi.WithDeploy(deploySvc), httpapi.WithSpecLoader(resumeSpecLoader), httpapi.WithNotifications(notifySvc), httpapi.WithRetention(retentionSvc), httpapi.WithDNSProviders(dnsSvc), httpapi.WithAliyunEcs(aliyunSvc), httpapi.WithObjectStores(objectStoreSvc), httpapi.WithBackup(backupSvc), httpapi.WithCertMgmt(certSvc), httpapi.WithCertDeploys(certDeploySvc), httpapi.WithPlatformHTTPS(platformHTTPSSvc), httpapi.WithFirewall(firewallSvc), httpapi.WithSystemConfig(sysCfgSvc), httpapi.WithMFA(mfaSvc), httpapi.WithServiceReg(serviceRegSvc), httpapi.WithAppStore(appStoreSvc), httpapi.WithDBAdmin(dbAdminSvc), httpapi.WithRedisAdmin(redisAdminSvc), httpapi.WithDBBackup(dbBackupSvc), httpapi.WithSecScan(secScanSvc), httpapi.WithPVEAdmin(pveAdminSvc), httpapi.WithDiagnosisFeedback(feedbackSvc), httpapi.WithAnomaly(anomalySvc), httpapi.WithAnomalyConfig(int(anomalyInterval.Seconds()), int(anomalyCooldown.Seconds())), httpapi.WithMetricsHistory(metricsHist), httpapi.WithSsar(ssarSvc), httpapi.WithSecretSource(secretSrc), httpapi.WithOAuth(oauthSvc), httpapi.WithCron(cronSvc), httpapi.WithChain(chainSvc), httpapi.WithApprovals(approvalCoord, approvalStore), httpapi.WithApprovalLinks(approvalSigner), httpapi.WithWaitNode(waitCoord), httpapi.WithConcurrency(concurrencySvc), httpapi.WithParameters(parameterSvc), httpapi.WithDoraMetrics(doraMetricsSvc), httpapi.WithTemplates(templateSvc), httpapi.WithVariableGroups(varGroupSvc), httpapi.WithCustomNodes(customNodeSvc), httpapi.WithOpsChat(opsChatSvc), httpapi.WithMesh(meshAdminDeps), httpapi.WithCeph(cephSvc), httpapi.WithDiskAdmin(diskAdminSvc), httpapi.WithFileAdmin(fileAdminSvc), httpapi.WithMaintenance(maintSvc), httpapi.WithProjectMirrorCleaner(projectMirrorCleaner), httpapi.WithReexecGuard(reexecGuard{runs: runSvc, shared: sharedBuildSrv})),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		// WriteTimeout 置 0:SSE 长连接(/api/runs/{id}/events)不可被写超时切断;
@@ -1468,11 +1554,61 @@ func buildRunnerOption(projectSvc project.Service, settingsSvc pipeline.Settings
 }
 
 // targetExister 把 target.Service 适配为 runner.ServerExister(Get 无错即存在),供 runner 配置校验。
+// 签名随 ServerExister 扩展(specs/local-node-roles.md 4.6 决策 B):缺失原因透传 ——
+// ErrNotFound → (false, nil)(既有「服务器不存在」);ErrLocalRoleDisabled(本机构建角色
+// 未启用,经构建角色包装)→ (false, err),由 runner.SaveSelector 转译为
+// runner.ErrLocalRoleDisabled(httpapi 映射 422 local_role_disabled);其余错误 → (false, nil),
+// 维持既有「服务器不存在」伪装,不为决策 B 扩大变化面。
 type targetExister struct{ svc target.Service }
 
-func (t targetExister) Exists(ctx context.Context, id string) bool {
+func (t targetExister) Exists(ctx context.Context, id string) (bool, error) {
 	_, err := t.svc.Get(ctx, id)
-	return err == nil
+	switch {
+	case err == nil:
+		return true, nil
+	case errors.Is(err, target.ErrNotFound):
+		return false, nil
+	case errors.Is(err, target.ErrLocalRoleDisabled):
+		return false, err
+	default:
+		return false, nil
+	}
+}
+
+// localNodeReconciler 在本机角色保存成功后触发网关入口收敛(specs 7.2):gateway_enabled
+// 热切换后入口 vhost 的发布/摘除必须即时生效,不必等待下一次服务注册 apply。仅包装
+// httpapi 消费面;调度器候选提供者直读 localnode(每次取机实时求值),无需经此。
+type localNodeReconciler struct {
+	localnode.Service
+	onSaved func(ctx context.Context)
+}
+
+func (l localNodeReconciler) Save(ctx context.Context, in localnode.SaveInput) (localnode.Roles, error) {
+	r, err := l.Service.Save(ctx, in)
+	if err == nil && l.onSaved != nil {
+		l.onSaved(ctx)
+	}
+	return r, err
+}
+
+// localCandidateProvider 把 localnode.Service 适配为 runner.LocalCandidateProvider(specs 5.1):
+// build_enabled=false → (nil, runner.ErrLocalRoleDisabled)(调度器按吞噬规则处理:标签路径
+// 静默不产候选,钉死本机 → 带因失败);DB 错误同样按「未启用」处理(fail closed,只影响
+// __local__ 哨兵请求,真实机器无感)。
+type localCandidateProvider struct{ svc localnode.Service }
+
+func (p localCandidateProvider) provide(ctx context.Context) (*runner.LocalCandidate, error) {
+	r, err := p.svc.Get(ctx)
+	if err != nil || !r.BuildEnabled {
+		return nil, runner.ErrLocalRoleDisabled
+	}
+	return &runner.LocalCandidate{
+		ID:        target.LocalHostID,
+		Name:      "本机(控制节点)",
+		Labels:    r.BuildLabels,
+		MaxBuilds: r.BuildMaxBuilds,
+		Priority:  r.BuildPriority,
+	}, nil
 }
 
 // targetProber 把 target.Service.Test 适配为 runner.HealthProber(SSH 实连探测),供调度器健康过滤。
@@ -1596,11 +1732,21 @@ func (g *instanceRollGateway) ResolveStaticDeploy(ctx context.Context, serviceRe
 //   - resolve:主机名经控制端 DNS 解析为 IP。mesh /32 路由与对端目录转发规划用 ——
 //     路由配置只接受 IP,与实例池渲染语义不同。
 //
-// 注入 servicereg 供集群反代渲染。
-type serverAddrResolver struct{ tg target.Service }
+// 注入 servicereg 供集群反代渲染。meshVIP 是本机 EasyTier 虚拟 IP 的晚绑引用(未启用 mesh → "")。
+type serverAddrResolver struct {
+	tg      target.Service
+	meshVIP func(context.Context) string
+}
 
-// rawHost 返回注册原始地址(IP 原样,域名原样)。
+// rawHost 返回注册原始地址(IP 原样,域名原样)。__local__ 特判(specs/local-node-roles.md 7.2):
+// 本机实例的 upstream 地址用 host.docker.internal —— 网关容器启动带 --add-host
+// host.docker.internal:host-gateway,从容器视角访问宿主(即本机)的正确地址;
+// localhost 会指向容器自身(错)。仅当网关容器跑在本机时成立,混合网关的拒绝在
+// servicereg 渲染期守卫。
 func (r serverAddrResolver) rawHost(ctx context.Context, serverID string) (string, error) {
+	if serverID == target.LocalHostID {
+		return "host.docker.internal", nil
+	}
 	srv, err := r.tg.Get(ctx, serverID)
 	if err != nil {
 		return "", err
@@ -1613,6 +1759,14 @@ func (r serverAddrResolver) rawHost(ctx context.Context, serverID string) (strin
 }
 
 func (r serverAddrResolver) resolve(ctx context.Context, serverID string) (string, error) {
+	if serverID == target.LocalHostID {
+		// mesh /32 路由与对端目录转发规划只接受 IP:本机返回自身 EasyTier 虚拟 IP
+		// (未启用 mesh → 人读错误,由调用方的对账状态呈现)。
+		if vip := strings.TrimSpace(r.meshVIP(ctx)); vip != "" {
+			return vip, nil
+		}
+		return "", fmt.Errorf("本机 %s 无可达地址:未启用集群(EasyTier)", serverID)
+	}
 	host, err := r.rawHost(ctx, serverID)
 	if err != nil {
 		return "", err
@@ -1644,6 +1798,39 @@ func (a *platformCertSource) GetCert(ctx context.Context, id string) (*platformh
 
 func (a *platformCertSource) OpenCertPEM(ctx context.Context, id string) (string, string, error) {
 	return a.cm.OpenCertPEM(ctx, id)
+}
+
+// certmgmtGatewayEntrySource 适配 servicereg.GatewayEntrySource:按基域在 certmgmt 里找
+// 覆盖证书(精确域名或 *.基域 通配符,已签发),解密 PEM 返回(specs 7.3 证书就绪门;
+// 未命中 ok=false —— servicereg 侧回落网关基域的自上传证书)。PEM 仅进程内传递。
+type certmgmtGatewayEntrySource struct{ cm certmgmt.Service }
+
+func (a *certmgmtGatewayEntrySource) GatewayEntryCert(ctx context.Context, baseDomain string) (string, string, string, bool, error) {
+	certs, err := a.cm.List(ctx)
+	if err != nil {
+		return "", "", "", false, err
+	}
+	for _, c := range certs {
+		if c.Status != "issued" {
+			continue
+		}
+		covers := false
+		for _, d := range c.Domains {
+			if d == baseDomain || d == "*."+baseDomain {
+				covers = true
+				break
+			}
+		}
+		if !covers {
+			continue
+		}
+		fc, key, perr := a.cm.OpenCertPEM(ctx, c.ID)
+		if perr != nil {
+			return "", "", "", false, perr
+		}
+		return c.ID, fc, key, true, nil
+	}
+	return "", "", "", false, nil
 }
 
 // platformHTTPSAdapter 适配 certmgmt.PlatformHTTPS:证书续期/重下发后联动平台宿主 nginx

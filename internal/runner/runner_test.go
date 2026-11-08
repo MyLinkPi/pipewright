@@ -12,7 +12,9 @@ import (
 
 type fakeExister struct{ ids map[string]bool }
 
-func (f fakeExister) Exists(_ context.Context, id string) bool { return f.ids[id] }
+// Exists 随 ServerExister 签名扩展(4.6 决策 B)机械更新:始终返回 (存在与否, nil) ——
+// fake 语境下「缺失」不带因;带因缺失(target.ErrLocalRoleDisabled)由 target 层用例覆盖。
+func (f fakeExister) Exists(_ context.Context, id string) (bool, error) { return f.ids[id], nil }
 
 func testDB(t *testing.T) *store.Store {
 	return storetest.Open(t)

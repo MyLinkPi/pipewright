@@ -34,6 +34,7 @@ import (
 	"github.com/huangchengsir/pipewright/internal/pipeline"
 	"github.com/huangchengsir/pipewright/internal/project"
 	"github.com/huangchengsir/pipewright/internal/run"
+	"github.com/huangchengsir/pipewright/internal/target"
 	"github.com/huangchengsir/pipewright/internal/vault"
 )
 
@@ -177,6 +178,21 @@ func NewStageExecutorWithRunner(b *Builder, reportSink TestReportSink, resolve R
 			// 能直接看到它被调度到哪台机、传输/容器执行/完成的全过程。
 			jrep := rep.JobReporter(jb.ID)
 			_ = jrep.Log(run.WithLogMachine(ctx, serverName), streamStdout, fmt.Sprintf("→ 节点「%s」→ 构建机:%s(选择器 %s)", jb.Name, serverName, sel))
+			if serverID == target.LocalHostID {
+				// 调度器选中的构建机即本机(控制节点)(specs/local-node-roles.md 5.2):不走远程链,
+				// 复用本地执行原语;槽位已占、闭包级 defer release 不变。批量路径无跨组依赖,
+				// 上游 env 无回传通道(与远程节点口径一致)传 nil;输出 env 无下游消费(批量路径
+				// 依赖本节点的节点不存在),不回采。
+				if rerr := func() error {
+					_, eerr := b.runJobLocalPool(ctx, r, stage, jb, jrep, reportSink, nil, serverName)
+					return eerr
+				}(); rerr != nil {
+					_ = rep.JobDone(ctx, jb.ID, run.StepFailed)
+					return true, rerr
+				}
+				_ = rep.JobDone(ctx, jb.ID, run.StepSuccess)
+				return true, nil
+			}
 			if rerr := b.runJobRemote(ctx, r, stage, jb, jrep, reportSink, serverID, serverName, tgt, "-"+sanitizeRemoteSeg(jobRemoteKey(jb, i))); rerr != nil {
 				_ = rep.JobDone(ctx, jb.ID, run.StepFailed)
 				return true, rerr
@@ -400,17 +416,22 @@ func (b *Builder) runStageMixedTopo(
 	// dispatchRemote 拓扑路径的远程节点派发:占槽 → 远程执行 → 闭包级 defer 必还槽(panic 不泄漏)。
 	// script / build_image 按 runJobRemote 分发;wsSuffix 用 job ID(拓扑路径节点必带 ID)。
 	// peer: 选择器(集群共享构建,0086)不占本端槽,经 mesh 派发到对端共享机(见 runJobShared)。
-	dispatchRemote := func(jb pipeline.Job, sel string, jrep dagrun.StageReporter) error {
+	// 调度器选中本机(target.LocalHostID)→ 本地执行原语(specs 5.2);upstreamEnv 仅本机分支
+	// 消费(远程节点无 env 回传通道,语义冻结),script 输出 env 可回采(本地执行天然通道)。
+	dispatchRemote := func(jb pipeline.Job, sel string, jrep dagrun.StageReporter, upstreamEnv []pipeline.BuildVar) ([]pipeline.BuildVar, error) {
 		if peerScopedSelector(sel) {
-			return b.runJobShared(ctx, r, stage, jb, jrep, sel)
+			return nil, b.runJobShared(ctx, r, stage, jb, jrep, sel)
 		}
 		serverID, serverName, release, aerr := resolve.Acquire(ctx, r.ProjectID, sel, log)
 		if aerr != nil {
-			return acquireFail(ctx, rep, sel, aerr)
+			return nil, acquireFail(ctx, rep, sel, aerr)
 		}
 		defer release()
 		_ = jrep.Log(run.WithLogMachine(ctx, serverName), streamStdout, fmt.Sprintf("→ 节点「%s」→ 构建机:%s(选择器 %s)", jb.Name, serverName, sel))
-		return b.runJobRemote(ctx, r, stage, jb, jrep, reportSink, serverID, serverName, tgt, "-"+sanitizeRemoteSeg(jb.ID))
+		if serverID == target.LocalHostID {
+			return b.runJobLocalPool(ctx, r, stage, jb, jrep, reportSink, upstreamEnv, serverName)
+		}
+		return nil, b.runJobRemote(ctx, r, stage, jb, jrep, reportSink, serverID, serverName, tgt, "-"+sanitizeRemoteSeg(jb.ID))
 	}
 
 	// Kahn 拓扑序逐节点执行(同层按声明序)。顺序确定性 > 并发度:跨组依赖场景重在依赖正确。
@@ -485,7 +506,7 @@ func (b *Builder) runMixedNode(
 	svcNetwork string,
 	pushPlans map[string]imagePushPlan,
 	jobEnvOut map[string][]pipeline.BuildVar,
-	dispatchRemote func(jb pipeline.Job, sel string, jrep dagrun.StageReporter) error,
+	dispatchRemote func(jb pipeline.Job, sel string, jrep dagrun.StageReporter, upstreamEnv []pipeline.BuildVar) ([]pipeline.BuildVar, error),
 	selByID map[string]string,
 ) (string, error) {
 	// 收集上游(needs)产出的 env,按 needs 声明序合并(仅本地 script 节点有回采;远程节点无输出)。
@@ -502,7 +523,12 @@ func (b *Builder) runMixedNode(
 	switch {
 	case isScriptJob(jb.Type):
 		if sel := selByID[jb.ID]; sel != "" {
-			err = dispatchRemote(jb, sel, jrep)
+			var out []pipeline.BuildVar
+			out, err = dispatchRemote(jb, sel, jrep, upstreamEnv)
+			if len(out) > 0 {
+				// 本机(控制节点)分支的输出 env 回采(本地执行天然通道;远程节点恒空,语义不变)。
+				jobEnvOut[jb.ID] = out
+			}
 		} else {
 			var out []pipeline.BuildVar
 			out, err = b.runScriptJobIsolated(ctx, jsink, jrep, r, jb, stage, proj, settings, svcNetwork, upstreamEnv, reportSink)
@@ -512,7 +538,7 @@ func (b *Builder) runMixedNode(
 		}
 	case isBuildImageJob(jb.Type):
 		if sel := selByID[jb.ID]; sel != "" {
-			err = dispatchRemote(jb, sel, jrep)
+			_, err = dispatchRemote(jb, sel, jrep, upstreamEnv)
 		} else {
 			err = b.runBuildImageJobIsolated(ctx, jsink, jrep, r, jb, stage, proj, settings, pushPlans[jb.Name])
 		}
@@ -593,6 +619,38 @@ func (b *Builder) runJobRemote(ctx context.Context, r *run.Run, stage pipeline.S
 	default:
 		_ = jrep.Log(ctx, streamError, fmt.Sprintf("节点「%s」(%s)不支持远程构建机执行", jb.Name, jb.Type))
 		return ErrBuildFailed
+	}
+}
+
+// runJobLocalPool 在「调度器选中的构建机 = 本机(控制节点)」时执行单个节点(specs 5.2):
+// **不进入远程执行链**(tar 上传 + sh -c 解包 + 远端 CLI 探测),改走本地执行原语 ——
+// script → runScriptJobIsolated(与空选择器=本地构建同一实现,含测试报告回采/构建缓存/输出 env);
+// build_image → runBuildImageJobIsolated(本地 build/tag/login/push/save 全链,push 计划按
+// stage 的 push_image 声明重新计算)。调用方已 Acquire 占槽、闭包级 defer release 不变 ——
+// 槽位/排队/亲和语义保留,仅执行位置换成本机。
+// svcNetwork 恒空:阶段 services: 网络只对本地组任务可用,钉死到具体机器的任务(远端现状)
+// 本来就访问不到 —— 本机同理,非本特性引入的回归。upstreamEnv 按 needs 注入(拓扑路径;
+// 批量路径无回传通道传 nil,与远程节点口径一致)。
+// 返回 script 节点输出的 env(本地执行可回采;远程节点无此通道恒 nil)。
+// serverName 用于把日志按机器分组(与远程路径 run.WithLogMachine 口径一致),否则执行日志
+// 会落到无机器归属的默认分组。
+func (b *Builder) runJobLocalPool(ctx context.Context, r *run.Run, stage pipeline.Stage, jb pipeline.Job, jrep dagrun.StageReporter, reportSink TestReportSink, upstreamEnv []pipeline.BuildVar, serverName string) ([]pipeline.BuildVar, error) {
+	ctx = run.WithLogMachine(ctx, serverName)
+	proj, settings, perr := b.resolve(ctx, r)
+	if perr != nil {
+		_ = jrep.Log(ctx, streamError, "无法加载项目构建配置:"+perr.Error())
+		return nil, ErrBuildFailed
+	}
+	jsink := &reporterSink{rep: jrep}
+	switch {
+	case isScriptJob(jb.Type):
+		return b.runScriptJobIsolated(ctx, jsink, jrep, r, jb, stage, proj, settings, "", upstreamEnv, reportSink)
+	case isBuildImageJob(jb.Type):
+		plans := b.pushPlansByBuildNode(ctx, stage.Jobs, settings, r)
+		return nil, b.runBuildImageJobIsolated(ctx, jsink, jrep, r, jb, stage, proj, settings, plans[jb.Name])
+	default:
+		_ = jrep.Log(ctx, streamError, fmt.Sprintf("节点「%s」(%s)不支持构建机池执行", jb.Name, jb.Type))
+		return nil, ErrBuildFailed
 	}
 }
 

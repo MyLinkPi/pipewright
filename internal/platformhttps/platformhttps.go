@@ -178,6 +178,18 @@ type Service interface {
 	// RedeployCert 证书续期/重下发后联动:引用该证书且远端有配置(status 非空)时重新
 	// Apply(否则 no-op;status 为空 = 未应用/已清理,下次应用自会取新 PEM)。
 	RedeployCert(ctx context.Context, certID string) error
+
+	// ApplyGateway 全量收敛「本机网关入口 vhost」(specs/local-node-roles.md 7.3;
+	// servicereg 经 GatewayEntryPublisher 接口消费,本包不感知 servicereg)。幂等重放安全;
+	// 与平台 Apply 共用互斥锁(临时目录/提权判定/nginx -t 序列不可交错)。
+	ApplyGateway(ctx context.Context, spec GatewayEntrySpec) error
+	// RemoveGateway 摘除本机网关入口 vhost 与其证书目录(幂等;未发布过 = 成功)。
+	RemoveGateway(ctx context.Context) error
+
+	// SetChangeHook 注入「平台 HTTPS 生效态变化」回调(启动期晚绑;main 用它让 servicereg
+	// 重放本机网关的共存模式:容器端口绑定全网卡 ↔ 回环 + 入口 vhost 发布/摘除)。
+	// 回调在释放本服务互斥锁之后调用,可在内部安全回调 ApplyGateway/RemoveGateway。
+	SetChangeHook(h func(ctx context.Context))
 }
 
 // service 是 store + Host (+ CertSource) 支撑的 Service 实现。
@@ -190,6 +202,23 @@ type service struct {
 	// mu 互斥 Apply/Disable:HTTP 手动应用与 certmgmt 续期联动(RedeployCert,异步
 	// goroutine)可能并发,共用固定 /tmp 路径与备份的命令序列交错会互相破坏。
 	mu sync.Mutex
+	// gwLast 是最近一次成功发布的「本机网关入口 vhost」spec(进程内存态):RemoveGateway
+	// 据此清理基域证书目录;RedeployCert 据此判断续期证书是否被入口 vhost 引用。重启即失,
+	// servicereg 下一次联动(设置变更/apply)自会重放。
+	gwLast *GatewayEntrySpec
+	// changeHook 是「生效态变化」回调(SetChangeHook 启动期注入;只在锁外调用)。
+	changeHook func(ctx context.Context)
+}
+
+// SetChangeHook 注入生效态变化回调(见 Service.SetChangeHook)。
+func (s *service) SetChangeHook(h func(ctx context.Context)) { s.changeHook = h }
+
+// notifyChange 在释放互斥锁之后触发回调:回调链会回到本服务的 ApplyGateway/RemoveGateway
+// (经 servicereg),持锁调用会自死锁。
+func (s *service) notifyChange(ctx context.Context) {
+	if s.changeHook != nil {
+		s.changeHook(ctx)
+	}
 }
 
 // New 构造 Service。host 为 nil 时用本机默认实现(os/exec + os.WriteFile);certs 为 nil 时
@@ -259,7 +288,16 @@ func (s *service) SaveSettings(ctx context.Context, in SettingsInput) (*Settings
 			return nil, err
 		}
 	}
-	return s.store.getOrCreate(ctx)
+	res, err := s.store.getOrCreate(ctx)
+	if err != nil {
+		return nil, err
+	}
+	// 启用开关变化会切换「与平台 nginx 共存」的判定,进而改变本机网关容器的端口绑定与
+	// 入口 vhost;纯落库路径同样要触发收敛(回调在本服务锁外执行)。
+	if cur.Enabled != next.Enabled {
+		s.notifyChange(ctx)
+	}
+	return res, nil
 }
 
 // validate 全量校验落库前状态:未启用只查宽松项(host/port 形态);启用要求域名合法、
@@ -348,7 +386,16 @@ func (s *service) Detect(ctx context.Context) (*NginxDetect, error) {
 
 // ---------- 应用 / 禁用 ----------
 
+// Apply 全量收敛并触发「生效态变化」回调(启用态/共存模式可能刚切换)。
 func (s *service) Apply(ctx context.Context) (*Settings, error) {
+	st, err := s.applyLocked(ctx)
+	if err == nil {
+		s.notifyChange(ctx)
+	}
+	return st, err
+}
+
+func (s *service) applyLocked(ctx context.Context) (*Settings, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	st, err := s.store.getOrCreate(ctx)
@@ -381,11 +428,25 @@ func (s *service) Apply(ctx context.Context) (*Settings, error) {
 	return s.store.getOrCreate(ctx)
 }
 
+// Disable 移除本机平台配置并触发「生效态变化」回调(共存模式结束 → 网关容器需改回全网卡)。
 func (s *service) Disable(ctx context.Context) (*Settings, error) {
+	st, err := s.disableLocked(ctx)
+	if err == nil {
+		s.notifyChange(ctx)
+	}
+	return st, err
+}
+
+func (s *service) disableLocked(ctx context.Context) (*Settings, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	st, err := s.store.getOrCreate(ctx)
 	if err != nil {
+		return nil, err
+	}
+	// 网关入口 vhost 先摘(specs 7.3 Disable 覆盖):它引用的基域证书目录可能与平台证书
+	// 目录相邻/相同,先摘再清平台配置可避免「平台 nginx -t 撞上残留引用」;conf 不在 = 幂等。
+	if err := s.removeGatewayEntryLocked(ctx); err != nil {
 		return nil, err
 	}
 	// 本机从未应用过(状态为空)→ 仅复位本地行。
@@ -416,6 +477,36 @@ func (s *service) RedeployCert(ctx context.Context, certID string) error {
 	st, err := s.store.getOrCreate(ctx)
 	if err != nil {
 		return err
+	}
+	// 网关入口 vhost 引用该证书(specs 7.3 RedeployCert 覆盖):按 CertID 刷新 PEM 并重发布。
+	// 平台 vhost 与网关入口可引用不同证书,两条链路独立判定、都命中则各自收敛。
+	s.mu.Lock()
+	var gwSpec *GatewayEntrySpec
+	if s.gwLast != nil {
+		for _, c := range s.gwLast.Certs {
+			if c.CertID == certID {
+				gwSpec = s.gwLast
+				break
+			}
+		}
+	}
+	s.mu.Unlock()
+	if gwSpec != nil && s.certs != nil {
+		fc, key, perr := s.certs.OpenCertPEM(ctx, certID)
+		if perr != nil {
+			return perr
+		}
+		refreshed := *gwSpec
+		refreshed.Certs = append([]GatewayEntryCert(nil), gwSpec.Certs...)
+		for i := range refreshed.Certs {
+			if refreshed.Certs[i].CertID == certID {
+				refreshed.Certs[i].FullchainPEM = fc
+				refreshed.Certs[i].PrivkeyPEM = key
+			}
+		}
+		if aerr := s.ApplyGateway(ctx, refreshed); aerr != nil {
+			return aerr
+		}
 	}
 	if st.CertID != certID || st.Status == "" {
 		return nil // 未引用或本机无配置:无事可做

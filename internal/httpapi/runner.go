@@ -30,6 +30,9 @@ func writeRunnerError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusNotFound, "project_not_found", "项目不存在")
 	case errors.Is(err, runner.ErrServerNotFound):
 		writeError(w, http.StatusUnprocessableEntity, "runner_server_not_found", "指定的 runner 服务器不存在")
+	case errors.Is(err, runner.ErrLocalRoleDisabled):
+		writeError(w, http.StatusUnprocessableEntity, "local_role_disabled",
+			"本机构建角色未启用:请先在「服务器」页的本机卡片开启构建机角色,或改用其他构建机/标签选择器")
 	case errors.Is(err, runner.ErrInvalidSelector):
 		writeError(w, http.StatusUnprocessableEntity, "invalid_runner_selector", "选择器语法非法(应为逗号分隔标签如 linux,arch=arm64,或 server:<id>)")
 	default:

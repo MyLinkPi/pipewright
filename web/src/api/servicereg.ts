@@ -33,6 +33,9 @@ export interface Settings {
   serverId: string
   httpPort: number
   httpsPort: number
+  /** 本机(__local__ 网关主机)共存模式回环端口(specs/local-node-roles.md 7.3)。 */
+  localHttpPort: number
+  localHttpsPort: number
   image: string
   network: string
   containerName: string
@@ -190,6 +193,9 @@ export interface SettingsUpdate {
   serverId?: string
   httpPort?: number
   httpsPort?: number
+  /** 本机共存模式回环端口(仅 __local__ 消费;须互异且不等于集群端口)。 */
+  localHttpPort?: number
+  localHttpsPort?: number
   image?: string
   network?: string
   containerName?: string

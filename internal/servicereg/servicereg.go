@@ -148,13 +148,19 @@ type Settings struct {
 	// ServerIDs 是全部网关主机引用 id(升序无关,按用户选择顺序)。空 = 未配置(配置态)。
 	ServerIDs []string
 	// ServerID 是 ServerIDs[0] 的派生镜像(读侧兜底同步;仅兼容展示,勿用于编排判断)。
-	ServerID      string
-	HTTPPort      int // 宿主 HTTP 端口(容器内恒 80)
-	HTTPSPort     int // 宿主 HTTPS 端口(容器内恒 443)
-	Image         string
-	Network       string
-	ContainerName string
-	VolumeName    string
+	ServerID  string
+	HTTPPort  int // 宿主 HTTP 端口(容器内恒 80)
+	HTTPSPort int // 宿主 HTTPS 端口(容器内恒 443)
+	// LocalHTTPPort / LocalHTTPSPort 是本机(__local__ 网关主机)共存模式的回环端口
+	// (specs/local-node-roles.md 7.3):平台 HTTPS 占宿主 80/443 时,网关容器改绑
+	// 127.0.0.1:<local 端口>,入口 vhost 反代过来。校验:1..65535、互不相等、且不得与
+	// 集群 HTTPPort/HTTPSPort 相同(保证 HostPort 必变、重建必被触发)。仅 __local__ 消费。
+	LocalHTTPPort  int
+	LocalHTTPSPort int
+	Image          string
+	Network        string
+	ContainerName  string
+	VolumeName     string
 	// StaticRoot 是各网关主机上的静态发布根目录(bind mount 只读挂进网关容器的
 	// /etc/pipewright/static;全部网关主机使用同一路径约定)。
 	StaticRoot     string
@@ -258,14 +264,17 @@ type SettingsUpdate struct {
 	// ServerIDs 设置全部网关主机(空列表 = 清空转配置态);优先于 ServerID。
 	ServerIDs *[]string
 	// ServerID 是旧版单机入口(等价于单元素 ServerIDs;空串 = 清空)。仅兼容保留。
-	ServerID      *string
-	HTTPPort      *int
-	HTTPSPort     *int
-	Image         *string
-	Network       *string
-	ContainerName *string
-	VolumeName    *string
-	StaticRoot    *string
+	ServerID  *string
+	HTTPPort  *int
+	HTTPSPort *int
+	// LocalHTTPPort / LocalHTTPSPort 是本机共存模式回环端口(specs 7.3;仅 __local__ 消费)。
+	LocalHTTPPort  *int
+	LocalHTTPSPort *int
+	Image          *string
+	Network        *string
+	ContainerName  *string
+	VolumeName     *string
+	StaticRoot     *string
 }
 
 // CreateServiceInput 是注册服务的入参。
@@ -414,6 +423,9 @@ type service struct {
 	// fwd 聚跨环境转发(mesh)运行态:对端目录缓存 + 注入的 peer 清单/目录拉取器 + 路由
 	// 对账快照(见 forward.go)。
 	fwd forwardRuntime
+	// localHooks 聚合本机(控制节点)网关共存依赖(main 晚绑注入,specs 7.2/7.3;
+	// nil = 共存模式整体不可用,__local__ 主机按直连模式编排,与远端主机逐字节一致)。
+	localHooks *LocalGatewayHooks
 }
 
 // New 构造 Service。tg 复用已装配的 target.Service(SSH + docker);vault 用于证书密文存储
@@ -475,6 +487,12 @@ func (s *service) UpdateSettings(ctx context.Context, in SettingsUpdate) (*Setti
 	if in.HTTPSPort != nil {
 		next.HTTPSPort = *in.HTTPSPort
 	}
+	if in.LocalHTTPPort != nil {
+		next.LocalHTTPPort = *in.LocalHTTPPort
+	}
+	if in.LocalHTTPSPort != nil {
+		next.LocalHTTPSPort = *in.LocalHTTPSPort
+	}
 	if in.Image != nil {
 		next.Image = strings.TrimSpace(*in.Image)
 		if next.Image == "" {
@@ -505,11 +523,23 @@ func (s *service) UpdateSettings(ctx context.Context, in SettingsUpdate) (*Setti
 			next.StaticRoot = defaultStaticRoot
 		}
 	}
+	// 本机网关角色门禁(specs 7.1):ServerIDs 含 __local__ 而 gateway_enabled=false → 显式
+	// 拒绝(422 local_role_disabled),避免「包装存在即生效」。钩子未注入(单测/未装配)时
+	// 同样拒绝 —— 哨兵 id 必须走显式开启的通道,不存在默认放行。
+	if next.HasServer(target.LocalHostID) && !s.localGatewayEnabled() {
+		return nil, target.ErrLocalRoleDisabled
+	}
 	if err := validateSettings(next); err != nil {
 		return nil, err
 	}
 	if err := s.store.updateSettings(ctx, &next); err != nil {
 		return nil, err
+	}
+	// 本机网关入口 vhost 联动(specs 7.3):设置变更(基域/回环端口/本机进出 ServerIDs)后
+	// 重算 GatewayEntrySpec 并发布;本机移出 → RemoveGateway。失败向上传播(配置保存成功
+	// 但入口 vhost 未收敛,必须可见)。
+	if gerr := s.syncGatewayEntry(ctx, &next); gerr != nil {
+		return nil, gerr
 	}
 	return &next, nil
 }
@@ -1238,6 +1268,23 @@ func (s *service) applyFull(ctx context.Context) error {
 	return nil
 }
 
+// ReconcileLocalGateway 是本机网关相关外部态变化后的收敛入口(specs 7.2/7.3):本机网关
+// 角色开关、平台 HTTPS 启用态都会改变「本机是否作为网关 / 是否与平台 nginx 共存」,必须
+// 即时重放,否则要等下一次服务注册 apply 才修正。
+//   - 角色关闭 / 本机不在网关主机列表:只用 syncGatewayEntry 摘除入口 vhost(幂等);
+//     不做全量 apply —— 角色关闭态不应再把本机容器重配到回环端口。
+//   - 角色启用且本机在列表:全量 apply(按当前共存态重排容器端口,并重放入口 vhost)。
+func (s *service) ReconcileLocalGateway(ctx context.Context) error {
+	st, err := s.store.getOrCreateSettings(ctx)
+	if err != nil {
+		return err
+	}
+	if !st.HasServer(target.LocalHostID) || !s.localGatewayEnabled() {
+		return s.syncGatewayEntry(ctx, st)
+	}
+	return s.applyBestEffort(ctx)
+}
+
 // applyWith 集群级收敛:静态配置读一次 → 解析全部实例归属服务器地址 → 渲染**一套**全量
 // 配置(主配置 + conf.d/ 每服务文件;全部网关主机一致,本机无实例同样代理远端)→ 逐台
 // (ensure 容器 + TCP 上游接网 + 下发证书 + 校验下发热加载)。单台失败记录并继续,返回
@@ -1270,6 +1317,10 @@ func (s *service) applyWith(ctx context.Context, st *Settings) map[string]string
 
 	// 实例归属服务器的可达地址(逐台网关反代集群实例的地基)。解析失败/遗留行(server_id='')
 	// 的实例跳过渲染(渲染注释标注),故障实例交给 upstream max_fails 熔断,不阻断 apply。
+	// 渲染期混合网关守卫(specs 7.2):本机承载实例 + 远端网关主机并存 → 显式失败。
+	if gerr := guardMixedGateway(st, allInstances); gerr != nil {
+		return mapErrAll(st.ServerIDs, gerr)
+	}
 	serverAddr, skipped := s.resolveInstanceAddrs(ctx, allInstances)
 	// forward 服务:拉取引用对端的服务目录 → 解析渲染成员(目录不可达/IP 冲突 → 503 维护态)。
 	plans, conflicts := s.buildForwardPlans(ctx, enabled)
@@ -1280,8 +1331,24 @@ func (s *service) applyWith(ctx context.Context, st *Settings) map[string]string
 
 	serverErrs := make(map[string]string)
 	for _, sid := range st.ServerIDs {
-		if err := s.applyWithServer(ctx, st, sid, tcpPorts, enabled, domains, confLive, confTest); err != nil {
+		// 本机共存模式(specs 7.3):平台 HTTPS 已启用 + 发布面已装配时,__local__ 主机的
+		// 网关容器改绑 127.0.0.1 回环端口(入口 vhost 反代);其余主机恒全网卡集群端口。
+		loopback := sid == target.LocalHostID && s.localCoexistence()
+		if err := s.applyWithServer(ctx, st, sid, tcpPorts, enabled, domains, confLive, confTest, loopback); err != nil {
 			serverErrs[sid] = err.Error()
+		}
+	}
+	// 本机网关入口 vhost 联动(specs 7.3):apply 后重算并发布/摘除(证书就绪态可能已变化);
+	// 失败并入逐台错误(可见不可吞)。全部 apply 调用点(显式编排/联动收敛/镜像升级)统一生效。
+	// 本机自身 apply 失败时不发布:入口 vhost 反代的是本机网关容器,容器没收敛好就放流量
+	// 等于把不可用的后端挂上 443;此时只保留既有入口(或已发布态),等下一次成功 apply 修正。
+	if _, localFailed := serverErrs[target.LocalHostID]; !localFailed {
+		if gerr := s.syncGatewayEntry(ctx, st); gerr != nil {
+			for _, sid := range st.ServerIDs {
+				if _, ok := serverErrs[sid]; !ok {
+					serverErrs[sid] = gerr.Error()
+				}
+			}
 		}
 	}
 	if len(serverErrs) == 0 {
@@ -1291,8 +1358,9 @@ func (s *service) applyWith(ctx context.Context, st *Settings) map[string]string
 }
 
 // applyWithServer 是单台网关主机的收敛流程(applyWith 逐台调用;返回人话错误)。
-func (s *service) applyWithServer(ctx context.Context, st *Settings, serverID string, tcpPorts []int, enabled []RegisteredService, domains []Domain, confLive, confTest *nginxConfRender) error {
-	if err := ensureNginx(ctx, s.tg, st, serverID, tcpPorts); err != nil {
+// loopback 仅对 __local__ 且共存模式为 true(见 applyWith)。
+func (s *service) applyWithServer(ctx context.Context, st *Settings, serverID string, tcpPorts []int, enabled []RegisteredService, domains []Domain, confLive, confTest *nginxConfRender, loopback bool) error {
+	if err := ensureNginx(ctx, s.tg, st, serverID, tcpPorts, loopback); err != nil {
 		return err
 	}
 	// tcp 服务的容器上游仍是单一 Upstream(经共享网络按容器名解析,实例化仅覆盖 http)。
@@ -1433,6 +1501,26 @@ func validateSettings(st Settings) error {
 	}
 	if st.HTTPPort == st.HTTPSPort {
 		return ErrInvalidSetting
+	}
+	// 本机共存回环端口(specs 7.3):0/0 = 未配置(合法;共存时回落集群端口 = 直连语义,
+	// 兼容零值 Settings 与未迁移行)。非零时:范围合法、互不相等、且不得与集群端口相同 ——
+	// 后者保证「全网卡 ↔ 回环」切换时 HostPort 必变、ensureNginx 的映射比对必触发重建。
+	// 先判「同为 0 或同为非 0」,再判 1..65535(负数是非 0,必须落进范围检查而非被 >0 分支漏掉)。
+	if (st.LocalHTTPPort == 0) != (st.LocalHTTPSPort == 0) {
+		return ErrInvalidSetting
+	}
+	if st.LocalHTTPPort != 0 {
+		if st.LocalHTTPPort < 1 || st.LocalHTTPPort > 65535 ||
+			st.LocalHTTPSPort < 1 || st.LocalHTTPSPort > 65535 {
+			return ErrInvalidSetting
+		}
+		if st.LocalHTTPPort == st.LocalHTTPSPort {
+			return ErrInvalidSetting
+		}
+		if st.LocalHTTPPort == st.HTTPPort || st.LocalHTTPPort == st.HTTPSPort ||
+			st.LocalHTTPSPort == st.HTTPPort || st.LocalHTTPSPort == st.HTTPSPort {
+			return ErrInvalidSetting
+		}
 	}
 	if len(st.Image) > 255 || !imageRefRe.MatchString(st.Image) {
 		return ErrInvalidSetting

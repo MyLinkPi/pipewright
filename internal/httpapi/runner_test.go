@@ -21,7 +21,9 @@ import (
 // fakeExister 可控「服务器是否存在」判定(钉死形式校验用)。
 type fakeExister struct{ ok bool }
 
-func (f fakeExister) Exists(context.Context, string) bool { return f.ok }
+// Exists 随 runner.ServerExister 签名扩展(specs/local-node-roles.md 4.6 决策 B)机械更新:
+// fake 语境下「缺失」不带因;local_role_disabled 分流由域层用例覆盖。
+func (f fakeExister) Exists(context.Context, string) (bool, error) { return f.ok, nil }
 
 // setupRunnerAPI 构造带 auth + project + runner 配置的测试 server。
 func setupRunnerAPI(t *testing.T, exister runner.ServerExister) (*httptest.Server, *http.Client, string) {

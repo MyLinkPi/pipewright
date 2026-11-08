@@ -57,11 +57,30 @@ type HealthProber interface {
 	Probe(ctx context.Context, serverID string) bool
 }
 
+// LocalCandidate 是本机(控制节点)的构建机池参数快照(装配层从 localnode 读取;
+// ID 恒 target.LocalHostID,Name 人读「本机(控制节点)」)。
+type LocalCandidate struct {
+	ID        string
+	Name      string
+	Labels    string
+	MaxBuilds int
+	Priority  int
+}
+
+// LocalCandidateProvider 是本机候选提供者,**恒注册**(specs/local-node-roles.md 5.1):
+//   - 构建机角色启用 → 返回本机候选(参与标签圈选/钉死,槽位/排队/亲和全套语义);
+//   - 禁用 → 返回 (nil, ErrLocalRoleDisabled):调度器据此区分「未启用」与「未装配」——
+//     钉死本机 → 带因失败(可读,先于 pve/shared 判定);标签路径 → 静默不产候选。
+//
+// 并发安全要求同 HealthProber(main 侧实现须无共享可变状态)。
+type LocalCandidateProvider func(ctx context.Context) (*LocalCandidate, error)
+
 // Scheduler 是构建机池调度器。构造后并发安全;Acquire 阻塞语义见文件头。
 type Scheduler struct {
 	db           *sql.DB
 	prober       HealthProber
 	defaultSlots int // max_builds=0 时的默认槽位;<=0 → 1
+	local        LocalCandidateProvider
 
 	mu       sync.Mutex
 	inflight map[string]int      // serverID → 当前占用槽位数
@@ -120,6 +139,22 @@ func NewScheduler(db *sql.DB, prober HealthProber, defaultSlots int) *Scheduler 
 		lastUsed:     make(map[string]string),
 		health:       make(map[string]healthAt),
 	}
+}
+
+// SetLocalCandidateProvider 注入本机(控制节点)候选提供者(main 装配;nil = 未装配,
+// 行为与改造前一致)。并发安全。
+func (s *Scheduler) SetLocalCandidateProvider(p LocalCandidateProvider) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.local = p
+}
+
+// localProvider 在持锁下读取本机候选提供者:装配层可能在运行期注入(setter),而 candidates
+// 在每次取机时(不持锁)调用 —— 裸读 s.local 会与 setter 构成数据竞争。
+func (s *Scheduler) localProvider() LocalCandidateProvider {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.local
 }
 
 // Acquire 按选择器选中一台构建机并占用其一个槽位,返回 (机器 id, 人读显示名 name(host), release)。
@@ -218,12 +253,62 @@ func (s *Scheduler) acquire(ctx context.Context, pipelineID, selector string, lo
 
 // candidates 查库取候选集:钉死形式按 id 取一台(不存在 → ErrNoRunnerMatch 语义由空集表达);
 // 标签形式全表扫描后 AND 匹配。sharedOnly(AcquireShared)时只保留开启集群共享标记的机器。
+// 本机(控制节点)候选:提供者恒注册,判定顺序第一位(先于 pve_node / sharedOnly)——
+//   - 禁用 (nil, ErrLocalRoleDisabled):仅「钉死本机」上抛(可读失败,不落泛化无命中);
+//     标签路径(含 AcquireShared 的标签路径)一律忽略、按「不产候选」处理 —— 否则三开关
+//     默认全关时任意标签选择器的构建都会失败(「关闭态逐字节不变」的红线,见 5.1)。
+//   - 启用:产出本机候选,与登记服务器走完全相同的 pve / shared / 钉死 / 标签过滤(admit)。
 func (s *Scheduler) candidates(ctx context.Context, pinned string, isPinned bool, terms []string, sharedOnly bool) ([]candidate, error) {
+	var local *candidate
+	if lp := s.localProvider(); lp != nil {
+		lc, lerr := lp(ctx)
+		switch {
+		case lerr != nil:
+			if isPinned && pinned == target.LocalHostID {
+				return nil, lerr
+			}
+			// 标签路径:静默忽略(角色未启用 = 本机不产候选)。
+		case lc != nil:
+			local = &candidate{
+				id:        lc.ID,
+				name:      lc.Name,
+				labels:    lc.Labels,
+				maxBuilds: lc.MaxBuilds,
+				priority:  lc.Priority,
+				kind:      target.KindStandard,
+			}
+		}
+	}
+
 	rows, err := s.db.QueryContext(ctx, `SELECT id, COALESCE(name,''), COALESCE(host,''), COALESCE(labels,''), COALESCE(max_builds,0), COALESCE(priority,0), COALESCE(kind,'standard'), COALESCE(shared_build,0) FROM servers`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
+
+	// admit 是单台机器的准入判定(登记服务器与本机候选共用同一套规则):PVE 集群物理机
+	// 不参与构建机池(0084,钉死 → 显式报错,标签圈选 → 静默排除);共享构建取机(0086)
+	// 只保留开启共享标记的机器(钉死未共享 → 显式报错,标签圈选静默排除);钉死按 id
+	// 精确命中,标签按 AND 匹配(空标签永不命中)。
+	admit := func(c candidate) (bool, error) {
+		if c.kind == target.KindPVENode {
+			if isPinned && c.id == pinned {
+				return false, fmt.Errorf("%w: %s", target.ErrPVENotTarget, c.displayName())
+			}
+			return false, nil
+		}
+		if sharedOnly && !c.shared {
+			if isPinned && c.id == pinned {
+				return false, fmt.Errorf("%w: %s", ErrServerNotShared, c.displayName())
+			}
+			return false, nil
+		}
+		if isPinned {
+			return c.id == pinned, nil
+		}
+		return MatchSelector(c.labels, terms), nil
+	}
+
 	var out []candidate
 	for rows.Next() {
 		var c candidate
@@ -232,34 +317,27 @@ func (s *Scheduler) candidates(ctx context.Context, pinned string, isPinned bool
 			return nil, err
 		}
 		c.shared = shared != 0
-		// PVE 集群物理机不参与构建机池(0084):钉死指向 pve_node → 显式报错(配置错误须
-		// 暴露,不与「零命中」混淆);标签圈选 → 静默不作为候选(SetPlacement 已清 labels,
-		// 此处是双保险)。
-		if c.kind == target.KindPVENode {
-			if isPinned && c.id == pinned {
-				return nil, fmt.Errorf("%w: %s", target.ErrPVENotTarget, c.displayName())
-			}
-			continue
+		ok, aerr := admit(c)
+		if aerr != nil {
+			return nil, aerr
 		}
-		// 共享构建取机(0086):未开共享标记的机器不进候选;钉死指向未共享机器 → 显式
-		// 报错(对端配置错误,零命中会让发起方误以为机器被删)。标签圈选静默排除。
-		if sharedOnly && !c.shared {
-			if isPinned && c.id == pinned {
-				return nil, fmt.Errorf("%w: %s", ErrServerNotShared, c.displayName())
-			}
-			continue
-		}
-		if isPinned {
-			if c.id == pinned {
-				out = append(out, c)
-			}
-			continue
-		}
-		if MatchSelector(c.labels, terms) {
+		if ok {
 			out = append(out, c)
 		}
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if local != nil {
+		ok, aerr := admit(*local)
+		if aerr != nil {
+			return nil, aerr
+		}
+		if ok {
+			out = append(out, *local)
+		}
+	}
+	return out, nil
 }
 
 // filterHealthy 按探测缓存过滤候选;无 prober 时全保留。缓存 TTL 见常量。

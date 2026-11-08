@@ -393,6 +393,18 @@ func TestDisable(t *testing.T) {
 		nginxOK(fh)
 		ctx := context.Background()
 		enableSettings(t, svc)
+		// 网关入口 vhost 从未发布(specs 7.3 Disable 覆盖):模拟其 conf 不在,
+		// removeGatewayEntryLocked 应幂等 no-op、不触 nginx。
+		prev := fh.resultFor
+		fh.resultFor = func(cmd []string) *cmdRes {
+			if cmd[0] == "test" && len(cmd) >= 3 && cmd[2] == managedGatewayConf {
+				return &cmdRes{code: 1}
+			}
+			if prev != nil {
+				return prev(cmd)
+			}
+			return nil
+		}
 		if _, err := svc.Apply(ctx); err != nil {
 			t.Fatalf("应用:%v", err)
 		}
@@ -539,6 +551,55 @@ func TestSaveSettingsAppliedChange(t *testing.T) {
 		}
 		if _, err := svc.SaveSettings(ctx, SettingsInput{Domain: strPtr("www.efg.com")}); err != nil {
 			t.Fatalf("清理后换域名应允许:%v", err)
+		}
+	})
+}
+
+// TestChangeHookOnEnabledToggle 覆盖「平台 HTTPS 生效态变化」回调:启用开关变化、Apply、
+// Disable 各触发一次;与启用态无关的保存不触发(避免无谓重放本机网关收敛)。
+func TestChangeHookOnEnabledToggle(t *testing.T) {
+	storetest.ForEachDialect(t, func(t *testing.T, st *store.Store) {
+		svc, fh, _ := newTestService(t, st.DB)
+		ctx := context.Background()
+		fh.resultFor = func(cmd []string) *cmdRes {
+			switch strings.Join(cmd, " ") {
+			case "id -u":
+				return &cmdRes{code: 0, stdout: "0"}
+			case "nginx -T":
+				return &cmdRes{code: 0, stdout: "# " + confMarker}
+			case "nginx -v":
+				return &cmdRes{code: 0, stderr: "nginx version: nginx/1.24.0"}
+			}
+			return nil
+		}
+		var n int
+		svc.SetChangeHook(func(context.Context) { n++ })
+
+		if _, err := svc.SaveSettings(ctx, SettingsInput{
+			Enabled: boolPtr(true), Domain: strPtr("pip.efg.com"), CertID: strPtr("c1"),
+		}); err != nil {
+			t.Fatalf("启用保存:%v", err)
+		}
+		if n != 1 {
+			t.Fatalf("启用态变化应回调一次,得 %d", n)
+		}
+		if _, err := svc.SaveSettings(ctx, SettingsInput{Domain: strPtr("pip.efg.com")}); err != nil {
+			t.Fatalf("无关保存:%v", err)
+		}
+		if n != 1 {
+			t.Fatalf("启用态未变不应回调,得 %d", n)
+		}
+		if _, err := svc.Apply(ctx); err != nil {
+			t.Fatalf("应用:%v", err)
+		}
+		if n != 2 {
+			t.Fatalf("Apply 应回调,得 %d", n)
+		}
+		if _, err := svc.Disable(ctx); err != nil {
+			t.Fatalf("禁用:%v", err)
+		}
+		if n != 3 {
+			t.Fatalf("Disable 应回调,得 %d", n)
 		}
 	})
 }

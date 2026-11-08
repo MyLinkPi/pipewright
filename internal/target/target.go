@@ -1041,6 +1041,32 @@ func (s *service) DockerLogin(ctx context.Context, serverID, registryURL, creden
 	return nil
 }
 
+// RegistryCredentialProvider 是可选扩展接口:target.Service 的具体实现可提供 registry
+// 凭据明文的进程内解析,供本机(控制节点)DockerLogin 装饰器经类型断言消费 —— 装饰器只嵌入
+// Service 接口拿不到 vault,凭据来源必须走显式契约(实现缺失 → 调用方得到明确错误,不静默跳过)。
+type RegistryCredentialProvider interface {
+	// OpenRegistryCredential 取 registry 凭据明文并按约定 "user:password" 拆分
+	// (无冒号 → 整串作口令、user 空);明文仅进程内,用完即弃,绝不入库/日志/错误体。
+	OpenRegistryCredential(ctx context.Context, credentialID string) (user, pass string, err error)
+}
+
+// OpenRegistryCredential 实现 RegistryCredentialProvider(仅 *service 提供;vault 未配置 /
+// 凭据不存在映射既有领域错误)。
+func (s *service) OpenRegistryCredential(ctx context.Context, credentialID string) (string, string, error) {
+	if s.vault == nil {
+		return "", "", ErrVaultUnconfigured
+	}
+	secret, err := s.vault.Get(credentialID)
+	if err != nil {
+		return "", "", vaultErr(err)
+	}
+	user, pass := "", secret
+	if i := strings.Index(secret, ":"); i >= 0 {
+		user, pass = secret[:i], secret[i+1:]
+	}
+	return user, pass, nil
+}
+
 // ExecStream 取凭据明文装配 SSH 配置并流式跑 array 命令(供实时 tail)。
 // 与 Exec 同样的凭据取用/清引用纪律:明文仅进程内,装配完 cfg 后立即清零本地引用。
 // 注意 cfg 中明文的副本随 RunStream 进入 dialer 持有的 session 生命周期,用于建连;

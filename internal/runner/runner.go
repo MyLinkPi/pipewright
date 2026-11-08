@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/huangchengsir/pipewright/internal/store"
+	"github.com/huangchengsir/pipewright/internal/target"
 )
 
 // 领域错误。
@@ -22,6 +23,11 @@ var (
 	ErrProjectNotFound = errors.New("runner: project not found")
 	// ErrServerNotFound 表示指定的 runner 服务器不存在。
 	ErrServerNotFound = errors.New("runner: runner server not found")
+	// ErrLocalRoleDisabled 表示本机(控制节点)构建机角色未启用:钉死 server:__local__ 的
+	// 配置被显式拒绝(specs/local-node-roles.md 4.6 决策 B)。由 SaveSelector 把 target 层
+	// 的同名错误转译而来(httpapi 映射 422 local_role_disabled,人读:本机构建角色未启用),
+	// 不再伪装成 ErrServerNotFound「服务器不存在」。
+	ErrLocalRoleDisabled = errors.New("runner: local node build role disabled")
 )
 
 // Config 是某项目的构建机配置(Selector 空 = 本地构建)。
@@ -33,8 +39,11 @@ type Config struct {
 }
 
 // ServerExister 抽象「校验服务器是否存在」(target.Service 即满足;避免 runner 直依赖 target)。
+// Exists 返回 (是否存在, 缺失原因):false+nil = 不存在(调用方按既有 ErrServerNotFound 处理);
+// false+非 nil = 缺失且带因(如 target.ErrLocalRoleDisabled —— 本机角色未启用),原样上抛,
+// 由 SaveSelector 转译为本包哨兵(specs/local-node-roles.md 4.6 决策 B)。并发安全要求同 HealthProber。
 type ServerExister interface {
-	Exists(ctx context.Context, serverID string) bool
+	Exists(ctx context.Context, serverID string) (bool, error)
 }
 
 // Service 是项目 runner 配置读写接口。
@@ -91,12 +100,23 @@ func (s *service) SaveSelector(ctx context.Context, projectID, selector string) 
 		}
 		return nil, err
 	}
-	// 语法 + 钉死形式的机器存在性(防配了不存在的机)。
+	// 语法 + 钉死形式的机器存在性(防配了不存在的机)。缺失原因随 Exister 透传:
+	// target.ErrLocalRoleDisabled(本机构建角色未启用)→ 转译为本包哨兵(可读报错,
+	// 不伪装成「服务器不存在」);其余带因错误原样上抛;无因缺失 → 既有 ErrServerNotFound。
 	if err := ValidateSelector(selector); err != nil {
 		return nil, err
 	}
-	if id, ok := PinnedServer(selector); ok && s.servers != nil && !s.servers.Exists(ctx, id) {
-		return nil, ErrServerNotFound
+	if id, ok := PinnedServer(selector); ok && s.servers != nil {
+		exists, existsErr := s.servers.Exists(ctx, id)
+		if existsErr != nil {
+			if errors.Is(existsErr, target.ErrLocalRoleDisabled) {
+				return nil, ErrLocalRoleDisabled
+			}
+			return nil, existsErr
+		}
+		if !exists {
+			return nil, ErrServerNotFound
+		}
 	}
 
 	now := time.Now().UTC().Format(time.RFC3339)

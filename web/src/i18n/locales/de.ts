@@ -4,6 +4,34 @@
 import type zhCN from './zh-CN'
 
 const de: typeof zhCN = {
+
+  localNode: {
+    machineName: 'Dieser Host (Steuerknoten)',
+    title: 'Lokale Knotenrollen',
+    sub: 'Den Host, auf dem Pipewright läuft, zusätzlich als Build-Maschine / Deploy-Ziel / Gateway-Host nutzen',
+    entry: 'Rollen',
+    roleBuild: 'Build-Maschine',
+    roleBuildHint: 'Am Build-Pool teilnehmen: Labels/Pins wie bei registrierten Servern — Slots, Warteschlange und Affinität identisch',
+    roleDeploy: 'Deploy-Ziel',
+    roleDeployHint: 'Pipelines können diesen Host als Deploy-Ziel wählen (Befehle laufen lokal — nur bei vertrauenswürdigen Pipeline-Autoren)',
+    roleGateway: 'Gateway-Host',
+    roleGatewayHint: 'Der Gateway-nginx-Container kann hier orchestriert werden; mit Plattform-HTTPS im Loopback-Port-Koexistenzmodus',
+    needsLinux: 'Nur Linux-Steuerknoten (POSIX-Skript-Abhängigkeiten)',
+    labels: 'Build-Labels',
+    labelsPh: 'z.B. linux,arch=arm64; leer = nicht im Label-Matching',
+    slots: 'Parallele Slots',
+    priority: 'Priorität',
+    savePool: 'Pool-Einstellungen speichern',
+    saved: 'Lokale Knotenrollen aktualisiert',
+    saveFailed: 'Speichern der lokalen Knotenrollen fehlgeschlagen',
+    confirmTitle: 'Steuerknoten-Rollen aktivieren?',
+    confirmMessage: 'Nach der Aktivierung können Pipeline-Autoren beliebige Befehle auf dem Steuerknoten ausführen (Deploys/Gateway-Aktionen laufen lokal). Der Steuerknoten besitzt Datenbank, Artefakte, Zertifikate und alle remote SSH-Zugangsdaten — nur für vertrauenswürdige interne Teams aktivieren.',
+    confirmYes: 'Verstanden, aktivieren',
+    gatewayMeta: 'Dieser Host (Steuerknoten)',
+    loopHttp: 'Lokaler Loopback-HTTP-Port',
+    loopHttps: 'Lokaler Loopback-HTTPS-Port',
+    loopHint: 'Belegt Plattform-HTTPS die Host-Ports 80/443, bindet der lokale Gateway-Container stattdessen diese Loopback-Ports (Standard 18080/18443)',
+  },
   common: {
     refresh: 'Aktualisieren',
     allArrow: 'Alle →',

@@ -21,7 +21,7 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
-import { Robot, Refresh, Terminal, Power } from '@vicons/tabler'
+import { Robot, Refresh, Terminal, Power, Settings } from '@vicons/tabler'
 import {
   getAllServerMetrics,
   getLocalHostMetrics,
@@ -30,6 +30,7 @@ import {
   type Server,
   type ServerMetrics,
 } from '../api/servers'
+import { getLocalNode, saveLocalNode, type LocalNodeRoles } from '../api/localNode'
 import { HttpError } from '../api/http'
 import { aliyunServerPower, getAliyunPowerStatus } from '../api/aliyunEcs'
 import { isServerTight } from '../lib/serverTight'
@@ -75,6 +76,68 @@ const nameById = ref<Map<string, string>>(new Map())
 const serverById = ref<Map<string, Server>>(new Map())
 /** serverId → 构建池信息(卡片标签 chips 展示用)。 */
 const poolById = ref<Map<string, ServerPoolInfo>>(new Map())
+
+// ─── 本机(控制节点)角色(specs/local-node-roles.md;构建机/部署目标/网关主机三开关)───
+
+const localRoles = ref<LocalNodeRoles | null>(null)
+const showLocalRoles = ref(false)
+const lnSaving = ref(false)
+const lnLabels = ref('')
+const lnSlots = ref(1)
+const lnPriority = ref(0)
+
+async function loadLocalNode(): Promise<void> {
+  try {
+    const r = await getLocalNode()
+    localRoles.value = r
+    lnLabels.value = r.buildLabels
+    lnSlots.value = r.buildMaxBuilds || 1
+    lnPriority.value = r.buildPriority
+  } catch {
+    localRoles.value = null // 未登录/降级:入口隐藏
+  }
+}
+
+/** 开启部署/网关角色 = 流水线动作获得控制机执行权(控制面 RCE 级信任,specs 4.5):首次开启强制二次确认。 */
+async function toggleRole(role: 'build' | 'deploy' | 'gateway'): Promise<void> {
+  if (!localRoles.value || lnSaving.value) return
+  const cur = role === 'build' ? localRoles.value.buildEnabled : role === 'deploy' ? localRoles.value.deployEnabled : localRoles.value.gatewayEnabled
+  if (!cur && role !== 'build') {
+    const ok = await confirm.open({
+      title: t('localNode.confirmTitle'),
+      body: t('localNode.confirmMessage'),
+      confirmLabel: t('localNode.confirmYes'),
+      variant: 'primary',
+    })
+    if (!ok) return
+  }
+  lnSaving.value = true
+  try {
+    localRoles.value = await saveLocalNode(
+      role === 'build' ? { buildEnabled: !cur, buildLabels: lnLabels.value, buildMaxBuilds: lnSlots.value, buildPriority: lnPriority.value }
+        : role === 'deploy' ? { deployEnabled: !cur }
+        : { gatewayEnabled: !cur },
+    )
+    toast.success(t('localNode.saved'))
+  } catch (e) {
+    toast.error(e instanceof Error ? e.message : t('localNode.saveFailed'))
+  } finally {
+    lnSaving.value = false
+  }
+}
+
+async function savePoolParams(): Promise<void> {
+  if (!localRoles.value || lnSaving.value) return
+  lnSaving.value = true
+  try {
+    localRoles.value = await saveLocalNode({ buildLabels: lnLabels.value, buildMaxBuilds: lnSlots.value, buildPriority: lnPriority.value })
+    toast.success(t('localNode.saved'))
+  } catch (e) {
+    toast.error(e instanceof Error ? e.message : t('localNode.saveFailed'))
+  } finally {
+    lnSaving.value = false
+  }
+}
 
 /** 首次加载尚无数据时显示骨架;刷新时保留旧数据(stale-while-revalidate)。 */
 const refreshing = ref(false)
@@ -340,6 +403,7 @@ async function load(): Promise<void> {
       getAllServerMetrics(),
       getLocalHostMetrics().catch(() => null),
     ])
+    void loadLocalNode()
     nameById.value = new Map(servers.map((s) => [s.id, s.name]))
     serverById.value = new Map(servers.map((s) => [s.id, s]))
     poolById.value = new Map(
@@ -555,6 +619,14 @@ onUnmounted(() => {
           >
             <Terminal class="action-icon" aria-hidden="true" />{{ t('opsServer.card.terminal') }}
           </AppButton>
+          <AppButton
+            v-if="localRoles"
+            variant="default"
+            :title="t('localNode.title')"
+            @click="showLocalRoles = !showLocalRoles"
+          >
+            <Settings class="action-icon" aria-hidden="true" />{{ t('localNode.entry') }}
+          </AppButton>
         </template>
       </ServerMetricsCard>
       <ServerMetricsCard
@@ -594,6 +666,66 @@ onUnmounted(() => {
         </template>
       </ServerMetricsCard>
     </div>
+
+    <!-- 本机(控制节点)角色编辑(specs 4.1):三开关 + 构建机池参数;非 Linux 控制机
+         部署/网关开关禁用(platformSupportsDeployGateway 能力位)。 -->
+    <section v-if="showLocalRoles && localRoles" class="ln-panel" aria-labelledby="ln-heading">
+      <div class="ln-head">
+        <h2 id="ln-heading" class="ln-title">{{ t('localNode.title') }}</h2>
+        <span class="ln-sub">{{ t('localNode.sub') }}</span>
+      </div>
+      <div class="ln-rows">
+        <label class="ln-row">
+          <input type="checkbox" :checked="localRoles.buildEnabled" :disabled="lnSaving" @change="toggleRole('build')" />
+          <span class="ln-row-text">
+            <strong>{{ t('localNode.roleBuild') }}</strong>
+            <small>{{ t('localNode.roleBuildHint') }}</small>
+          </span>
+        </label>
+        <label class="ln-row">
+          <input
+            type="checkbox"
+            :checked="localRoles.deployEnabled"
+            :disabled="lnSaving || !localRoles.platformSupportsDeployGateway"
+            @change="toggleRole('deploy')"
+          />
+          <span class="ln-row-text">
+            <strong>{{ t('localNode.roleDeploy') }}</strong>
+            <small>{{ localRoles.platformSupportsDeployGateway ? t('localNode.roleDeployHint') : t('localNode.needsLinux') }}</small>
+          </span>
+        </label>
+        <label class="ln-row">
+          <input
+            type="checkbox"
+            :checked="localRoles.gatewayEnabled"
+            :disabled="lnSaving || !localRoles.platformSupportsDeployGateway"
+            @change="toggleRole('gateway')"
+          />
+          <span class="ln-row-text">
+            <strong>{{ t('localNode.roleGateway') }}</strong>
+            <small>{{ localRoles.platformSupportsDeployGateway ? t('localNode.roleGatewayHint') : t('localNode.needsLinux') }}</small>
+          </span>
+        </label>
+        <div class="ln-pool">
+          <label class="ln-field">
+            <span>{{ t('localNode.labels') }}</span>
+            <input v-model="lnLabels" type="text" :placeholder="t('localNode.labelsPh')" :disabled="lnSaving || !localRoles.buildEnabled" />
+          </label>
+          <label class="ln-field ln-field--narrow">
+            <span>{{ t('localNode.slots') }}</span>
+            <input v-model.number="lnSlots" type="number" min="0" max="64" :disabled="lnSaving || !localRoles.buildEnabled" />
+          </label>
+          <label class="ln-field ln-field--narrow">
+            <span>{{ t('localNode.priority') }}</span>
+            <input v-model.number="lnPriority" type="number" min="0" max="100" :disabled="lnSaving || !localRoles.buildEnabled" />
+          </label>
+          <AppButton variant="primary" :disabled="lnSaving || !localRoles.buildEnabled" @click="savePoolParams">
+            {{ t('localNode.savePool') }}
+          </AppButton>
+        </div>
+      </div>
+    </section>
+
     <!-- 筛选后一台不剩:提示调整条件(本机卡不参与筛选,仍会显示) -->
     <EmptyState
       v-else-if="metrics.length > 0"
@@ -637,6 +769,36 @@ onUnmounted(() => {
   min-width: 0;
   flex-direction: column;
   gap: 4px;
+}
+
+.ln-panel {
+  border: 1px solid var(--color-border);
+  border-radius: var(--rounded-lg, 12px);
+  background: var(--color-card);
+  padding: 16px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.ln-head { display: flex; align-items: baseline; gap: 10px; }
+.ln-title { margin: 0; font-size: 0.95rem; }
+.ln-sub { font-size: 0.78rem; color: var(--color-text-secondary); }
+.ln-rows { display: flex; flex-direction: column; gap: 10px; }
+.ln-row { display: flex; align-items: flex-start; gap: 10px; cursor: pointer; }
+.ln-row input[type='checkbox'] { margin-top: 3px; }
+.ln-row-text { display: flex; flex-direction: column; gap: 2px; }
+.ln-row-text small { color: var(--color-text-secondary); }
+.ln-pool { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px; padding-left: 26px; }
+.ln-field { display: flex; flex-direction: column; gap: 4px; font-size: 0.8rem; }
+.ln-field--narrow input { width: 90px; }
+.ln-field input {
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--rounded, 8px);
+  background: var(--color-bg, transparent);
+  color: var(--color-text);
+  font-size: 0.82rem;
 }
 .view-header__actions {
   display: flex;

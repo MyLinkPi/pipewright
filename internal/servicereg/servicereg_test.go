@@ -455,7 +455,7 @@ func gwContainerUp(label string) func([]string) *target.ExecResult {
 		joined := strings.Join(cmd, " ")
 		switch {
 		case strings.Contains(joined, "PortBindings"):
-			return &target.ExecResult{ExitCode: 0, Stdout: "80/tcp=80 443/tcp=443 "}
+			return &target.ExecResult{ExitCode: 0, Stdout: "80/tcp=|80 443/tcp=|443 "} // inspectPortMap 新格式:HostIp|HostPort(空 = 全网卡)
 		case strings.Contains(joined, "Config.Labels"):
 			return &target.ExecResult{ExitCode: 0, Stdout: label}
 		case strings.Contains(joined, "--format {{.Config.Image}}"):
@@ -578,7 +578,7 @@ func gwUpgradeProbe(sid string, cmd []string) *target.ExecResult {
 		case isPlainInspect:
 			return &target.ExecResult{ExitCode: 0}
 		case strings.Contains(joined, "PortBindings"):
-			return &target.ExecResult{ExitCode: 0, Stdout: "80/tcp=80 443/tcp=443 "}
+			return &target.ExecResult{ExitCode: 0, Stdout: "80/tcp=|80 443/tcp=|443 "} // inspectPortMap 新格式:HostIp|HostPort(空 = 全网卡)
 		case strings.Contains(joined, "Config.Labels"):
 			return &target.ExecResult{ExitCode: 0, Stdout: nginxBootstrapVer}
 		}
