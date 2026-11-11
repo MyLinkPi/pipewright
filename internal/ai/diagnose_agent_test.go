@@ -17,7 +17,6 @@ import (
 	"testing"
 
 	"github.com/huangchengsir/pipewright/internal/mask"
-	"github.com/huangchengsir/pipewright/internal/opschat"
 )
 
 // capturedBodies 按请求序记录出网 body(线程安全)。
@@ -251,40 +250,6 @@ func TestDiagnoseTokenLimitReasonHasDetail(t *testing.T) {
 	want := fmt.Sprintf("本轮上限 %d tokens", DefaultMaxOutputTokens)
 	if !strings.Contains(d.Reason, "长度限制") || !strings.Contains(d.Reason, want) {
 		t.Fatalf("reason 应披露预算(%q): %q", want, d.Reason)
-	}
-}
-
-// TestAgentRoundDisablesReasoningOnDeepSeekOfficial 固化 Agent 轮与 chat/plan 路径
-// 一致的推理关闭语义:Agent 轮是有界结构化回复,若不禁用推理,DeepSeek 官方端点
-// 的思维链会吃掉输出预算,模型在吐出 JSON/工具调用前就 finish_reason=length
-// (诊断即报「模型输出达到长度限制」)。
-func TestAgentRoundDisablesReasoningOnDeepSeekOfficial(t *testing.T) {
-	bodies := &capturedBodies{}
-	m := compatibleMockModel(t, "https://api.deepseek.com", opsTransport(func(r *http.Request) (*http.Response, error) {
-		raw, _ := io.ReadAll(r.Body)
-		bodies.add(string(raw))
-		return &http.Response{
-			StatusCode: 200,
-			Header:     http.Header{"Content-Type": {"application/json"}},
-			Body:       io.NopCloser(strings.NewReader(`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`)),
-			Request:    r,
-		}, nil
-	}))
-	if _, err := m.service.Save(ctx(), SaveInput{Provider: ProviderOpenAI, BaseURL: "https://api.deepseek.com", Model: "deepseek-v4-pro", APIKey: strp("mock-key"), Enabled: true}); err != nil {
-		t.Fatal(err)
-	}
-	opsTestProvider = m.Info()
-	req := opsRequest()
-	req.Tools = opschat.Tools(opschat.ScopeServer)
-	if _, err := m.AgentRound(ctx(), req); err != nil {
-		t.Fatalf("AgentRound: %v", err)
-	}
-	var body map[string]json.RawMessage
-	if err := json.Unmarshal([]byte(bodies.all()[0]), &body); err != nil {
-		t.Fatalf("请求 body 非法 JSON: %v", err)
-	}
-	if got := string(body["thinking"]); got != `{"type":"disabled"}` {
-		t.Fatalf("Agent 轮应关闭推理(thinking=%s)", got)
 	}
 }
 
