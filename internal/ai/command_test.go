@@ -171,45 +171,6 @@ func TestExplainCommand(t *testing.T) {
 	}
 }
 
-// TestCompleteCommand 验证命令补全:返回以前缀开头的完整命令。
-func TestCompleteCommand(t *testing.T) {
-	srv := stubLLM(t, ProviderOpenAI, "docker ps -a --format '{{.Names}}'")
-	svc, _, _ := newService(t, srv.Client())
-	configureEnabled(t, svc, ProviderOpenAI, srv.URL)
-
-	out, err := svc.CompleteCommand(ctx(), CompleteCommandInput{Partial: "docker ps", Context: CommandContext{Shell: "/bin/sh"}})
-	if err != nil {
-		t.Fatalf("CompleteCommand: %v", err)
-	}
-	if out.Completion != "docker ps -a --format '{{.Names}}'" {
-		t.Fatalf("补全解析错误: %q", out.Completion)
-	}
-}
-
-// TestCompleteCommandRejectsNonPrefix 验证补全不以前缀开头时丢弃(回退原前缀,绝不替换用户已输入)。
-func TestCompleteCommandRejectsNonPrefix(t *testing.T) {
-	srv := stubLLM(t, ProviderOpenAI, "rm -rf /") // 与前缀无关的越权输出
-	svc, _, _ := newService(t, srv.Client())
-	configureEnabled(t, svc, ProviderOpenAI, srv.URL)
-
-	out, err := svc.CompleteCommand(ctx(), CompleteCommandInput{Partial: "ls -l"})
-	if err != nil {
-		t.Fatalf("CompleteCommand: %v", err)
-	}
-	if out.Completion != "ls -l" {
-		t.Fatalf("非前缀补全应回退原前缀,得 %q", out.Completion)
-	}
-}
-
-// TestCompleteCommandNotConfigured 验证未配 AI → ErrAINotConfigured(前端走本地字典)。
-func TestCompleteCommandNotConfigured(t *testing.T) {
-	svc, _, _ := newService(t, http.DefaultClient)
-	_, err := svc.CompleteCommand(ctx(), CompleteCommandInput{Partial: "ls"})
-	if !errors.Is(err, ErrAINotConfigured) {
-		t.Fatalf("未配 AI 应 ErrAINotConfigured,得 %v", err)
-	}
-}
-
 // TestExplainCommandRiskFromClassifier 验证解释场景下风险等级由确定性规则给(不依赖 AI 文本)。
 func TestExplainCommandRiskFromClassifier(t *testing.T) {
 	srv := stubLLM(t, ProviderOpenAI, "这条命令会递归删除目录。")

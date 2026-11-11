@@ -39,9 +39,6 @@ const (
 	RiskLow = "low"
 )
 
-// riskAnnotateMaxTokens 是风险标注 chat 的 max_tokens(够装一组结构化 finding)。
-const riskAnnotateMaxTokens = 1024
-
 // maxScriptChars 是发往 LLM 的脚本字符上限(防超大脚本吃 token / 内存)。
 const maxScriptChars = 8000
 
@@ -201,7 +198,7 @@ func (s *service) AnnotateRisks(ctx context.Context, in AnnotateRisksInput) (*Ri
 	// 出网前脱敏:脚本进 prompt 前一律 Scrub。
 	prompt := buildRiskPrompt(masker, in.Steps)
 
-	text, cerr := s.chatWithTokens(ctx, provider, baseURL, cfg.Model, apiKey, prompt, riskAnnotateMaxTokens)
+	text, cerr := s.chatWithTokens(ctx, provider, baseURL, cfg.Model, apiKey, prompt, chatOutputTokens(cfg))
 	apiKey = "" // 明文用完即弃
 	_ = apiKey
 	if cerr != nil {

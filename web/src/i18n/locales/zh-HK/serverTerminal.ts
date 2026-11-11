@@ -36,12 +36,6 @@ export default {
   clearScreen: '清除畫面',
   clipboardSecureWarn: '剪貼簿需 https/localhost',
 
-  completeDisableTitle: '關閉 AI 補全',
-  completeEnableTitle: '開啟 AI 補全',
-  aiComplete: 'AI 補全',
-  on: '開',
-  off: '關',
-
   aiLauncherTitle: '展開 AI 維運助手',
   aiAssistant: 'AI 助手',
 

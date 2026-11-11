@@ -36,12 +36,6 @@ export default {
   clearScreen: '画面クリア',
   clipboardSecureWarn: 'クリップボードには https/localhost が必要です',
 
-  completeDisableTitle: 'AI 補完を無効化',
-  completeEnableTitle: 'AI 補完を有効化',
-  aiComplete: 'AI 補完',
-  on: 'オン',
-  off: 'オフ',
-
   aiLauncherTitle: 'AI 運用アシスタントを展開',
   aiAssistant: 'AI アシスタント',
 

@@ -28,7 +28,6 @@ import {
 import AiOpsPanel from '../components/ops/AiOpsPanel.vue'
 import CopyTextDialog from '../components/ops/CopyTextDialog.vue'
 import { copyText } from '../utils/clipboard'
-import { completeCommand } from '../api/aiOps'
 
 import type { Terminal as XTerm } from '@xterm/xterm'
 import type { FitAddon as XFitAddon } from '@xterm/addon-fit'
@@ -87,12 +86,6 @@ watch(
   { immediate: true },
 )
 
-const aiContext = computed(() => ({
-  os: 'linux',
-  shell: shell.value,
-  container: isContainer.value ? containerName.value : tg('serverTerminal.hostMachine'),
-}))
-
 // ─── AI 助手折叠态 ────────────────────────────────────────────────────────────────
 // 终端是主角,AI 助手是辅助:默认收起让终端占满,点右侧「✦ AI 助手」一键滑出侧栏。
 // 记忆上次开合(localStorage);切换后 refit 让 xterm 适配新宽度。
@@ -124,161 +117,9 @@ async function toggleAi(): Promise<void> {
   }
 }
 
-// ─── P2 智能补全:输入上方建议条 + Tab 接受 ─────────────────────────────────────────
-// 终端是裸 PTY,无现成「当前输入行」模型 —— 用 onData 跟踪用户键入(printable/退格/Enter/
-// Ctrl-C 重置)近似维护 lineBuffer;停顿 debounce 后先本地常用命令字典即时兜底,再 AI 增强。
-// 建议以「建议条」形式悬于输入上方(不动终端显示,稳健),Tab 接受发后缀到 PTY,Esc 忽略。
-const COMPLETE_KEY = 'pw-terminal-complete'
-function readComplete(): boolean {
-  try {
-    return localStorage.getItem(COMPLETE_KEY) !== '0' // 默认开
-  } catch {
-    return true
-  }
-}
-const completeEnabled = ref(readComplete())
-function toggleComplete(): void {
-  completeEnabled.value = !completeEnabled.value
-  try {
-    localStorage.setItem(COMPLETE_KEY, completeEnabled.value ? '1' : '0')
-  } catch {
-    /* ignore */
-  }
-  if (!completeEnabled.value) clearSuggestion()
-}
-
-let lineBuffer = ''
-const suggestion = ref('') // 补全后的完整命令(以 lineBuffer 开头);空=无建议
-const suggestionSuffix = computed(() =>
-  suggestion.value.startsWith(lineBuffer) ? suggestion.value.slice(lineBuffer.length) : '',
-)
-let completeTimer: number | null = null
-let completeAbort: AbortController | null = null
-
-// 光标像素坐标(把内联 ghost 叠层钉到光标格,像 IDE/zsh 接着打的字)。
-const caret = ref<{ left: number; top: number; cellH: number } | null>(null)
-function updateCaret(): void {
-  const t = term.value
-  const host = termHost.value
-  if (!t || !host) {
-    caret.value = null
-    return
-  }
-  const screen = host.querySelector('.xterm-screen') as HTMLElement | null
-  const rect = (screen ?? host).getBoundingClientRect()
-  const cols = t.cols || 80
-  const rows = t.rows || 24
-  const cellW = rect.width / cols
-  const cellH = rect.height / rows
-  const buf = t.buffer.active
-  caret.value = {
-    left: rect.left + buf.cursorX * cellW,
-    top: rect.top + buf.cursorY * cellH,
-    cellH,
-  }
-}
-function showSuggestion(full: string): void {
-  if (!full.startsWith(lineBuffer) || full === lineBuffer) return
-  suggestion.value = full
-  updateCaret()
-}
-
-// 本地常用运维命令字典(即时兜底 + AI 未配时仍可用)。
-const COMMON_COMMANDS = [
-  'ls -la', 'ls -lah', 'cd ..', 'df -h', 'du -sh *', 'du -ah . | sort -rh | head -20',
-  'ps aux', 'ps aux --sort=-%mem | head', 'top -b -n1 | head -20', 'free -m',
-  'tail -f ', 'cat ', 'grep -rn ', 'find . -name ', 'mkdir -p ', 'rm -rf ',
-  'docker ps', 'docker ps -a', 'docker logs -f ', 'docker exec -it ',
-  'systemctl status ', 'systemctl restart ', 'journalctl -u ',
-  'netstat -tlnp', 'ss -tlnp', 'lsof -i :', 'curl -sS ',
-  'kubectl get pods', 'kubectl logs -f ', 'uname -a', 'whoami', 'env',
-]
-function localComplete(partial: string): string {
-  return COMMON_COMMANDS.find((c) => c.startsWith(partial) && c !== partial) ?? ''
-}
-
-function clearSuggestion(): void {
-  suggestion.value = ''
-  caret.value = null
-  completeAbort?.abort()
-  completeAbort = null
-}
-
-// 全屏 TUI 程序(vim/top/less 等)会切到备用屏缓冲;此时不做命令补全(否则在 vim 里
-// 弹 shell 命令灰字就错了)。仅在普通 shell(normal buffer)给补全。
-function inAltScreen(): boolean {
-  return term.value?.buffer.active.type === 'alternate'
-}
-
-function scheduleComplete(): void {
-  if (completeTimer) window.clearTimeout(completeTimer)
-  if (!completeEnabled.value) return
-  if (inAltScreen()) {
-    clearSuggestion()
-    return
-  }
-  const snapshot = lineBuffer
-  completeTimer = window.setTimeout(() => void fetchSuggestion(snapshot), 450)
-}
-
-async function fetchSuggestion(partial: string): Promise<void> {
-  if (!completeEnabled.value || connState.value !== 'connected' || inAltScreen()) {
-    clearSuggestion()
-    return
-  }
-  if (partial !== lineBuffer || partial.trim().length < 2) {
-    clearSuggestion()
-    return
-  }
-  // 即时本地兜底。
-  const local = localComplete(partial)
-  if (local) showSuggestion(local)
-  // AI 增强(可中断;未配则静默)。
-  completeAbort?.abort()
-  completeAbort = new AbortController()
-  try {
-    const res = await completeCommand(partial, aiContext.value, completeAbort.signal)
-    if (
-      partial === lineBuffer &&
-      res.available &&
-      res.completion &&
-      res.completion.startsWith(partial) &&
-      res.completion !== partial
-    ) {
-      showSuggestion(res.completion)
-    }
-  } catch {
-    /* 中断 / 失败:保留本地兜底建议 */
-  }
-}
-
-function acceptSuggestion(): void {
-  const suffix = suggestionSuffix.value
-  if (!suffix) return
-  conn.value?.send(suffix)
-  lineBuffer = suggestion.value
-  clearSuggestion()
-  term.value?.focus()
-}
-
-// onData 跟踪输入行 + 转发到 PTY。
+// onData:用户键入/粘贴的原始字节直接转发到 PTY。
 function onTermData(data: string): void {
   conn.value?.send(data)
-  if (data === '\r' || data === '\n') {
-    lineBuffer = ''
-    clearSuggestion()
-  } else if (data === '\x7f' || data === '\b') {
-    lineBuffer = lineBuffer.slice(0, -1)
-    scheduleComplete()
-  } else if (data === '\x03' || data === '\x15' || data === '\x1b' || data === '\t') {
-    lineBuffer = ''
-    clearSuggestion()
-  } else if (data.charCodeAt(0) >= 0x20 && !data.startsWith('\x1b')) {
-    lineBuffer += data
-    scheduleComplete()
-  } else {
-    clearSuggestion()
-  }
 }
 
 // ─── xterm + ws wiring(复用 ContainerTerminal 思路) ─────────────────────────────
@@ -293,7 +134,7 @@ const decoder = new TextDecoder()
 const clipboardOK = typeof navigator !== 'undefined' && !!navigator.clipboard && window.isSecureContext
 
 // 终端字体常量:xterm 渲染在 canvas 上,CSS var() 无法解析 → 必须用字面字体栈。
-// 同一份值复用于 document.fonts.load(预热)与 .caret-ghost(行内补全)。
+// 同一份值复用于 document.fonts.load(预热)。
 const TERM_FONT_SIZE = 13
 const TERM_FONT_FAMILY = '"JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace'
 
@@ -329,19 +170,6 @@ async function ensureTerm(): Promise<XTerm> {
   // ⌘/Ctrl+V·Ctrl+Shift+V 粘贴。返回 false = 吞掉不发 PTY;true = 交终端处理。
   t.attachCustomKeyEventHandler((e: KeyboardEvent): boolean => {
     if (e.type !== 'keydown') return true
-    // Tab:有 AI 建议时接受(发后缀,吞掉 Tab);无建议则透传给 shell 自带补全。
-    // 必须 preventDefault,否则浏览器原生 Tab 会把焦点移走(终端失焦,光标变空心)。
-    if (e.key === 'Tab' && !e.metaKey && !e.ctrlKey && !e.altKey && suggestionSuffix.value) {
-      e.preventDefault()
-      acceptSuggestion()
-      return false
-    }
-    // Esc:有建议时仅忽略建议(吞掉);无建议则透传(vi 模式等)。
-    if (e.key === 'Escape' && suggestion.value) {
-      e.preventDefault()
-      clearSuggestion()
-      return false
-    }
     const mod = e.metaKey || e.ctrlKey
     const key = e.key.toLowerCase()
     if (mod && key === 'c') {
@@ -524,8 +352,6 @@ async function connect(): Promise<void> {
 function disconnect(): void {
   conn.value?.close()
   conn.value = null
-  lineBuffer = ''
-  clearSuggestion()
   if (connState.value === 'connected' || connState.value === 'connecting') {
     connState.value = 'closed'
   }
@@ -571,8 +397,6 @@ async function pasteFromClipboard(): Promise<void> {
   }
   if (!text) return
   conn.value?.send(text)
-  if (!text.includes('\n')) lineBuffer += text
-  clearSuggestion()
   flashToast('paste', tg('serverTerminal.toastPasted'), tg('serverTerminal.charCount', { n: text.length }))
 }
 
@@ -649,7 +473,6 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   document.removeEventListener('click', closeCtxMenu)
-  if (completeTimer) window.clearTimeout(completeTimer)
   resizeObserver?.disconnect()
   resizeObserver = null
   disconnect()
@@ -735,15 +558,6 @@ onBeforeUnmount(() => {
           <span class="s"><kbd>^C</kbd> {{ tg('serverTerminal.interrupt') }}</span>
           <span class="s">{{ tg('serverTerminal.contextMenu') }}</span>
           <span v-if="!clipboardOK" class="s warn">{{ tg('opsContainer.manualCopy.compatibleHint') }}</span>
-          <button
-            class="ai-toggle"
-            :class="{ on: completeEnabled }"
-            type="button"
-            :title="completeEnabled ? tg('serverTerminal.completeDisableTitle') : tg('serverTerminal.completeEnableTitle')"
-            @click="toggleComplete"
-          >
-            <span class="d" aria-hidden="true" /> {{ tg('serverTerminal.aiComplete') }} {{ completeEnabled ? tg('serverTerminal.on') : tg('serverTerminal.off') }}
-          </button>
         </div>
       </section>
 
@@ -762,17 +576,6 @@ onBeforeUnmount(() => {
       <span class="ai-launcher-spark" aria-hidden="true">✦</span>
       <span class="ai-launcher-label">{{ tg('serverTerminal.aiAssistant') }}</span>
     </button>
-
-    <!-- 光标处内联补全 ghost(像 IDE / zsh:接着你打的字补灰字,Tab 接受) -->
-    <div
-      v-if="caret && suggestionSuffix && connState === 'connected'"
-      class="caret-ghost"
-      :style="{ left: caret.left + 'px', top: caret.top + 'px', height: caret.cellH + 'px', lineHeight: caret.cellH + 'px' }"
-      @click="acceptSuggestion"
-    >
-      <span class="cg-text">{{ suggestionSuffix }}</span>
-      <span class="cg-tab">Tab ⇥</span>
-    </div>
 
     <!-- 右键菜单 -->
     <div
@@ -1165,79 +968,6 @@ onBeforeUnmount(() => {
   color: var(--color-amber);
 }
 
-/* AI 补全开关(状态行最右) */
-.ai-toggle {
-  margin-left: auto;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font: inherit;
-  font-family: var(--font-mono);
-  font-size: 0.72rem;
-  color: var(--color-faint);
-  background: none;
-  border: 1px solid transparent;
-  border-radius: 7px;
-  padding: 2px 8px;
-  cursor: pointer;
-  white-space: nowrap;
-  transition: color var(--duration-fast), border-color var(--duration-fast), background var(--duration-fast);
-}
-.ai-toggle .d {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--color-line-num);
-}
-.ai-toggle.on {
-  color: var(--color-cyan);
-}
-.ai-toggle.on .d {
-  background: var(--color-cyan);
-  box-shadow: 0 0 6px var(--color-cyan);
-}
-.ai-toggle:hover {
-  border-color: var(--color-border-strong);
-  background: oklch(100% 0 0 / 0.04);
-}
-
-/* 光标处内联补全 ghost(像 IDE / zsh-autosuggestions:灰青 ghost 接着光标延展,Tab 接受) */
-.caret-ghost {
-  position: fixed;
-  z-index: 45;
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  font-family: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-  font-size: 13px; /* 与 xterm fontSize 对齐 */
-  white-space: pre;
-  cursor: pointer;
-  user-select: none;
-  animation: ghost-in 0.12s var(--ease-out-expo);
-}
-@keyframes ghost-in {
-  from {
-    opacity: 0;
-  }
-  to {
-    opacity: 1;
-  }
-}
-.cg-text {
-  color: oklch(66% 0.05 215); /* 灰青 ghost,明显区别于已输入的亮字 */
-}
-.cg-tab {
-  font-family: var(--font-sans);
-  font-size: 0.58rem;
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  color: var(--color-cyan);
-  background: var(--color-cyan-soft);
-  border: 1px solid var(--color-cyan-line);
-  border-radius: 5px;
-  padding: 1px 6px;
-  align-self: center;
-}
 .term-status .s b {
   color: var(--color-dim);
   font-weight: 500;
@@ -1384,7 +1114,6 @@ onBeforeUnmount(() => {
   .main.ai-open .term-wrap {
     display: none;
   }
-  .main.ai-open ~ .caret-ghost,
   .main.ai-open ~ .ctx {
     display: none;
   }

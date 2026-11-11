@@ -53,9 +53,6 @@ func (s *stubAIService) CommandSuggest(context.Context, ai.CommandSuggestInput) 
 func (s *stubAIService) ExplainCommand(context.Context, ai.ExplainCommandInput) (*ai.CommandExplanation, error) {
 	return nil, ai.ErrAINotConfigured
 }
-func (s *stubAIService) CompleteCommand(context.Context, ai.CompleteCommandInput) (*ai.CompletionResult, error) {
-	return nil, ai.ErrAINotConfigured
-}
 func (s *stubAIService) GenerateCompose(context.Context, ai.GenerateComposeInput) (*ai.ComposeResult, error) {
 	return nil, ai.ErrAINotConfigured
 }

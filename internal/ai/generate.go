@@ -26,8 +26,13 @@ import (
 // maxLLMRespBytes 是 LLM 响应体读取上限(防异常大响应吃内存)。
 const maxLLMRespBytes = 1 << 20 // 1MB
 
-// generateMaxTokens 是 chat 请求的 max_tokens(够装一份结构化提案)。
-const generateMaxTokens = 2048
+// chatOutputTokens 是文本类 chat 的统一输出预算:取 AI 设置的单请求输出上限
+// (默认 DefaultMaxOutputTokens = 8192)。max_tokens 是上限而非目标——提示词已约束
+// 输出格式,放大它不会让短回包变长;但推理模型的思维链与正文共用这份预算,给得过小
+// 会让模型在想完之前就被截断(finish_reason=length),回包整体丢弃。
+func chatOutputTokens(cfg *Config) int {
+	return cfg.Context.Resolved().MaxOutputTokens
+}
 
 // GenerateInput 是生成提案的入参:仓库分析 + 自然语言补充(均可空)+ 可用节点目录。
 type GenerateInput struct {
@@ -115,7 +120,7 @@ func (s *service) Generate(ctx context.Context, in GenerateInput) (*Proposal, er
 
 	prompt := buildPrompt(in)
 
-	text, err := s.chat(ctx, provider, baseURL, cfg.Model, apiKey, prompt)
+	text, err := s.chatWithTokens(ctx, provider, baseURL, cfg.Model, apiKey, prompt, chatOutputTokens(cfg))
 	apiKey = "" // 明文用完即弃
 	_ = apiKey
 	if err != nil {
@@ -130,14 +135,9 @@ func (s *service) Generate(ctx context.Context, in GenerateInput) (*Proposal, er
 	return proposal, nil
 }
 
-// chat 按 provider 构造 chat 请求并取回助手文本(经注入 http.Client),使用默认 max_tokens。
+// chatWithTokens 按 provider 构造 chat 请求并取回助手文本(经注入 http.Client)。
+// maxTokens 由调用方按 AI 设置给定(见 chatOutputTokens)。
 // 失败统一返回 ErrGenerateFailed 包裹的人读错误(不携带底层网络错误,避免 URL 密钥外泄)。
-func (s *service) chat(ctx context.Context, provider, baseURL, model, apiKey, prompt string) (string, error) {
-	return s.chatWithTokens(ctx, provider, baseURL, model, apiKey, prompt, generateMaxTokens)
-}
-
-// chatWithTokens 同 chat,但允许调用方指定支持的结构化回复 token 预算。
-// 复用同一套 per-provider 请求构造 / 响应解析 / 错误脱敏逻辑(供风险标注等较短回包场景调小)。
 func (s *service) chatWithTokens(ctx context.Context, provider, baseURL, model, apiKey, prompt string, maxTokens int) (string, error) {
 	return (&opsModel{service: s}).chatWithTokens(ctx, provider, baseURL, model, apiKey, prompt, maxTokens)
 }
@@ -180,10 +180,7 @@ func (m *opsModel) chatWithTokens(ctx context.Context, provider, baseURL, model,
 	default:
 		return "", fmt.Errorf("%w: 不支持的 provider", ErrGenerateFailed)
 	}
-	opsRequestCompatibility(&Config{Provider: provider, Model: model}, baseURL, payload)
-	if _, bounded := payload["thinking"]; bounded && provider == ProviderOpenAI {
-		payload["max_tokens"] = maxTokens
-	}
+	payload["max_tokens"] = maxTokens
 	body, err = json.Marshal(payload)
 	if err != nil {
 		return "", fmt.Errorf("%w: 请求构造失败", ErrGenerateFailed)

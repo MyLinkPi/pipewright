@@ -58,12 +58,6 @@ type explainCommandDTO struct {
 	GeneratedAt string `json:"generatedAt"`
 }
 
-// completeCommandDTO 是 /ai/complete 响应(P2 智能补全)。available=false → AI 未配(前端走本地字典)。
-type completeCommandDTO struct {
-	Available  bool   `json:"available"`
-	Completion string `json:"completion"`
-}
-
 // makeAICommandHandler 返回 POST /api/ai/command handler(中文 → 命令卡)。
 func makeAICommandHandler(aiSvc ai.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -148,47 +142,6 @@ func makeAIComposeHandler(aiSvc ai.Service) http.HandlerFunc {
 			writeJSON(w, http.StatusOK, map[string]any{"available": false, "reason": reasonAINotConfigured})
 		default:
 			writeJSON(w, http.StatusOK, map[string]any{"available": true, "yaml": "", "reason": "AI 生成 compose 失败:" + humanizeGenerateErr(err)})
-		}
-	}
-}
-
-// makeAICompleteHandler 返回 POST /api/ai/complete handler(P2 智能补全:前缀 → 完整命令)。
-// 未配 AI → 200 + available=false(前端退化为本地常用命令字典兜底)。
-func makeAICompleteHandler(aiSvc ai.Service) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if aiSvc == nil {
-			writeError(w, http.StatusServiceUnavailable, "internal", "AI 命令助手未初始化")
-			return
-		}
-		ctx := r.Context()
-
-		r.Body = http.MaxBytesReader(w, r.Body, 1<<16)
-		var req struct {
-			Partial string            `json:"partial"`
-			Context commandContextDTO `json:"context"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeError(w, http.StatusBadRequest, "bad_request", "请求体格式错误")
-			return
-		}
-		if strings.TrimSpace(req.Partial) == "" {
-			writeError(w, http.StatusBadRequest, "bad_request", "缺少补全前缀")
-			return
-		}
-
-		out, err := aiSvc.CompleteCommand(ctx, ai.CompleteCommandInput{
-			Partial: req.Partial,
-			Context: req.Context.toAI(),
-			Masker:  mask.NewMasker(),
-		})
-		switch {
-		case err == nil:
-			writeJSON(w, http.StatusOK, completeCommandDTO{Available: true, Completion: out.Completion})
-		case errors.Is(err, ai.ErrAINotConfigured):
-			writeJSON(w, http.StatusOK, completeCommandDTO{Available: false})
-		default:
-			// 补全失败静默降级(前端有本地字典兜底):available=true + 空补全,不打扰用户。
-			writeJSON(w, http.StatusOK, completeCommandDTO{Available: true, Completion: ""})
 		}
 	}
 }

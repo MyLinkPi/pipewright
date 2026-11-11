@@ -36,12 +36,6 @@ export default {
   clearScreen: 'Bildschirm löschen',
   clipboardSecureWarn: 'Zwischenablage erfordert https/localhost',
 
-  completeDisableTitle: 'KI-Vervollständigung deaktivieren',
-  completeEnableTitle: 'KI-Vervollständigung aktivieren',
-  aiComplete: 'KI-Vervollständigung',
-  on: 'an',
-  off: 'aus',
-
   aiLauncherTitle: 'KI-Ops-Assistent ausklappen',
   aiAssistant: 'KI-Assistent',
 

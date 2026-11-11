@@ -1421,14 +1421,12 @@ test('narrow assistant hide preserves PTY dimensions until terminal is restored'
   const before = sizes.length
   const dimensions = sizes.at(-1)
   await page.locator('.xterm-helper-textarea').pressSequentially('do')
-  await expect(page.locator('.caret-ghost')).toBeVisible()
   const inputCount = inputs.length
   await page.locator('.ai-launcher').click()
   await expect(
     panel(page).getByRole('textbox', { name: '输入运维需求' }),
   ).toBeEnabled()
   await expect(page.locator('.term-wrap')).toBeHidden()
-  await expect(page.locator('.caret-ghost')).toBeHidden()
   await page.evaluate(
     () =>
       new Promise<void>((r) =>

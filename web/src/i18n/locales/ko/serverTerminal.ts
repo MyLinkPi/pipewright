@@ -36,12 +36,6 @@ export default {
   clearScreen: '화면 지우기',
   clipboardSecureWarn: '클립보드에는 https/localhost가 필요합니다',
 
-  completeDisableTitle: 'AI 자동완성 끄기',
-  completeEnableTitle: 'AI 자동완성 켜기',
-  aiComplete: 'AI 자동완성',
-  on: '켬',
-  off: '끔',
-
   aiLauncherTitle: 'AI 운영 어시스턴트 펼치기',
   aiAssistant: 'AI 어시스턴트',
 

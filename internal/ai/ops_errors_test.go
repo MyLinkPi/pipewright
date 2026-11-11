@@ -135,64 +135,34 @@ func TestOpsSafeStreamFinishDiagnosticsAndReasoningOnly(t *testing.T) {
 	}
 }
 
-func TestOpsDeepSeekThinkingCompatibilityExactDestinationOnly(t *testing.T) {
-	for _, tc := range []struct {
-		provider, base string
-		disabled       bool
-	}{
-		{ProviderOpenAI, "https://api.deepseek.com", true}, {ProviderOpenAI, "https://api.deepseek.com/", true}, {ProviderOpenAI, "https://api.deepseek.com/v1", true}, {ProviderOpenAI, "https://api.deepseek.com/v1/", true},
-		{ProviderClaude, "https://api.deepseek.com/anthropic", true}, {ProviderClaude, "https://api.deepseek.com/anthropic/v1/", true},
-		{ProviderOpenAI, "http://api.deepseek.com", false}, {ProviderOpenAI, "https://api.deepseek.com:443/v1", false}, {ProviderOpenAI, "https://api.deepseek.com/custom/v1", false},
-		{ProviderOpenAI, "https://api.deepseek.com/v1?key=raw-secret", false}, {ProviderOpenAI, "https://api.deepseek.com/v1?", false}, {ProviderOpenAI, "https://api.deepseek.com/v1#", false}, {ProviderOpenAI, "https://user@api.deepseek.com/v1", false},
-		{ProviderClaude, "https://gateway.invalid/anthropic", false}, {ProviderClaude, "https://api.deepseek.com/gateway/anthropic", false}, {ProviderClaude, "https://api.deepseek.com/anthropic?key=raw-secret", false},
-	} {
-		for _, model := range []string{"deepseek-v4-pro", "deepseek-flash", "deepseek-reasoner"} {
-			body := map[string]any{"max_tokens": 4096}
-			opsRequestCompatibility(&Config{Provider: tc.provider, Model: model}, tc.base, body)
-			_, disabled := body["thinking"]
-			if disabled != (tc.disabled && model != "deepseek-reasoner") || body["max_tokens"] != 4096 {
-				t.Fatal(tc, model, body)
-			}
-			if disabled && body["thinking"].(map[string]string)["type"] != "disabled" {
-				t.Fatal(body)
-			}
-		}
-	}
-}
-
-func TestOpsDeepSeekThinkingWirePlanAnalysisAndStructuredChat(t *testing.T) {
+func TestOpsWirePlanAnalysisAndStructuredChat(t *testing.T) {
 	for _, provider := range []string{ProviderOpenAI, ProviderClaude} {
 		base := "https://api.deepseek.com/v1"
 		if provider == ProviderClaude {
 			base = "https://api.deepseek.com/anthropic/v1"
 		}
 		calls := 0
-		expectDisabled := true
 		m := compatibleMockModel(t, base, opsTransport(func(r *http.Request) (*http.Response, error) {
 			calls++
 			var body map[string]json.RawMessage
 			if json.NewDecoder(r.Body).Decode(&body) != nil {
 				t.Fatal("bad request JSON")
 			}
-			_, hasStream := body["stream"]
-			_, disabled := body["thinking"]
 			_, hasTools := body["tools"]
+			// 不再改写提供方语义:请求体只带模型原生字段,不注入 thinking 等开关。
+			if _, injected := body["thinking"]; injected {
+				t.Fatal("request must not inject provider-specific reasoning switches")
+			}
 			var probe []struct {
 				Content string `json:"content"`
 			}
 			_ = json.Unmarshal(body["messages"], &probe)
 			isPlainChat := len(probe) > 0 && probe[0].Content == "question"
-			if hasStream && !hasTools && disabled != expectDisabled {
-				t.Fatal("wrong Ops/general reasoning semantics", disabled, expectDisabled)
-			}
-			if disabled && string(body["thinking"]) != `{"type":"disabled"}` {
-				t.Fatal(string(body["thinking"]))
-			}
 			if hasTools {
 				// Agent 轮(带 tools):整包 JSON,走网关忽略 stream 的回退路径。
 			} else if isPlainChat && string(body["stream"]) == "true" {
 				// 结构化 chat(流式):完成流(含被丢弃的推理帧)。
-				if string(body["max_tokens"]) != "4096" {
+				if string(body["max_tokens"]) != "8192" {
 					t.Fatal("Ops token budget changed")
 				}
 				if provider == ProviderOpenAI {
@@ -214,7 +184,7 @@ data: {"type":"message_stop"}
 
 `)), Request: r}, nil
 			} else if string(body["stream"]) == "true" {
-				if string(body["max_tokens"]) != "4096" {
+				if string(body["max_tokens"]) != "8192" {
 					t.Fatal("Ops token budget changed")
 				}
 				if provider == ProviderOpenAI {
@@ -244,7 +214,7 @@ data: {"type":"message_stop"}
 		if text, err := m.chat(ctx(), cfg, "mock-key", "question", 4096); err != nil || text != "reply" {
 			t.Fatal(text, err)
 		}
-		if text, err := m.chatWithTokens(ctx(), provider, base, cfg.Model, "mock-key", "question", 4096); err != nil || text != "reply" {
+		if text, err := m.chatWithTokens(ctx(), provider, base, cfg.Model, "mock-key", "question", DefaultMaxOutputTokens); err != nil || text != "reply" {
 			t.Fatal(text, err)
 		}
 		if calls != 4 {

@@ -254,7 +254,7 @@ func TestDraftModelsProtocolsAndInferenceNormalization(t *testing.T) {
 			if err != nil || !res.OK || len(res.Items) != 2 || res.Items[0].ID != "a" {
 				t.Fatalf("%+v %v", res, err)
 			}
-			text, err := svc.(*service).chat(ctx(), provider, base, "custom/model:1", "test-key", "question")
+			text, err := svc.(*service).chatWithTokens(ctx(), provider, base, "custom/model:1", "test-key", "question", DefaultMaxOutputTokens)
 			if err != nil || text != "reply" || chats != 1 {
 				t.Fatal(text, err, chats)
 			}

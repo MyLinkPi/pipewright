@@ -41,13 +41,6 @@ export interface ExplainCommandResponse {
   generatedAt: string
 }
 
-export interface CompleteCommandResponse {
-  /** false = AI 未配置(前端退化为本地常用命令字典兜底)。 */
-  available: boolean
-  /** 补全后的完整命令(以 partial 原样开头);无补全时为空。 */
-  completion: string
-}
-
 /** 中文描述 → 单条命令 + 解释 + 风险等级。 */
 export async function suggestCommand(
   nl: string,
@@ -62,15 +55,6 @@ export async function explainCommand(
   context: CommandContext = {},
 ): Promise<ExplainCommandResponse> {
   return http.post<ExplainCommandResponse>('/api/ai/explain', { command, context })
-}
-
-/** 据已输入前缀补全为完整命令(P2 智能补全;补全以前缀原样开头)。 */
-export async function completeCommand(
-  partial: string,
-  context: CommandContext = {},
-  signal?: AbortSignal,
-): Promise<CompleteCommandResponse> {
-  return http.post<CompleteCommandResponse>('/api/ai/complete', { partial, context }, { signal })
 }
 
 export interface GenerateComposeResponse {

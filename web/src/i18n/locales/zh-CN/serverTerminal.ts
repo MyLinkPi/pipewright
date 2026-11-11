@@ -36,12 +36,6 @@ export default {
   clearScreen: '清屏',
   clipboardSecureWarn: '剪贴板需 https/localhost',
 
-  completeDisableTitle: '关闭 AI 补全',
-  completeEnableTitle: '开启 AI 补全',
-  aiComplete: 'AI 补全',
-  on: '开',
-  off: '关',
-
   aiLauncherTitle: '展开 AI 运维助手',
   aiAssistant: 'AI 助手',
 

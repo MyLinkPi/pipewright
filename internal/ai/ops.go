@@ -298,14 +298,13 @@ func (m *opsModel) chat(ctx context.Context, cfg *Config, key, prompt string, li
 	switch cfg.Provider {
 	case ProviderClaude:
 		endpoint = apiEndpoint(cfg.Provider, base, "messages")
-		body["max_tokens"] = 4096
+		body["max_tokens"] = chatOutputTokens(cfg)
 	case ProviderOpenAI:
 		endpoint = apiEndpoint(cfg.Provider, base, "chat/completions")
-		body["max_tokens"] = 4096
+		body["max_tokens"] = chatOutputTokens(cfg)
 	default:
 		return "", opschat.ErrUnavailable
 	}
-	opsRequestCompatibility(cfg, base, body)
 	raw, _ := json.Marshal(body)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(raw))
 	if err != nil {
@@ -380,28 +379,6 @@ func (m *opsModel) chat(ctx context.Context, cfg *Config, key, prompt string, li
 		return "", opsResponseLimit()
 	}
 	return text, nil
-}
-
-// Keep bounded structured replies out of DeepSeek's default reasoning budget.
-// Explicit reasoning models and third-party gateways retain their semantics.
-func opsRequestCompatibility(cfg *Config, base string, body map[string]any) {
-	if strings.EqualFold(cfg.Model, "deepseek-reasoner") {
-		return
-	}
-	if cfg.Provider == ProviderClaude {
-		if _, _, official := catalogDestination(cfg.Provider, base); official {
-			body["thinking"] = map[string]string{"type": "disabled"}
-		}
-		return
-	}
-	u, err := url.Parse(strings.TrimSpace(base))
-	if cfg.Provider != ProviderOpenAI || err != nil || u.Scheme != "https" || u.Host != "api.deepseek.com" || u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || u.RawFragment != "" || u.RawPath != "" || u.Opaque != "" || strings.Contains(base, "#") {
-		return
-	}
-	path := strings.TrimRight(u.Path, "/")
-	if path == "" || path == "/v1" {
-		body["thinking"] = map[string]string{"type": "disabled"}
-	}
 }
 
 func opsURLAllowed(ctx context.Context, base string) bool {

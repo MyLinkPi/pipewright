@@ -36,12 +36,6 @@ export default {
   clearScreen: 'Limpiar pantalla',
   clipboardSecureWarn: 'El portapapeles requiere https/localhost',
 
-  completeDisableTitle: 'Desactivar autocompletado de IA',
-  completeEnableTitle: 'Activar autocompletado de IA',
-  aiComplete: 'Autocompletado de IA',
-  on: 'act.',
-  off: 'desact.',
-
   aiLauncherTitle: 'Desplegar el asistente de operaciones IA',
   aiAssistant: 'Asistente IA',
 
