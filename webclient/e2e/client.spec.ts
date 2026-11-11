@@ -115,9 +115,10 @@ test('日志:可进入并显示日志容器', async ({ page }) => {
   await expect(page.locator('.logbox')).toBeVisible()
 })
 
-test('设置:非 Windows 隐藏服务管理,保留退出入口', async ({ page }) => {
+test('设置:服务管理按平台能力显示,保留退出入口', async ({ page }) => {
   await openApp(page)
   await page.getByRole('link', { name: '设置' }).click()
-  await expect(page.getByText('后台服务', { exact: true })).toHaveCount(0)
+  // CI 为 systemd Ubuntu → canInstallService=true → 卡片可见(dacac620 起 Linux/macOS 支持服务管理)。
+  await expect(page.getByText('后台服务', { exact: true })).toBeVisible()
   await expect(page.getByText('退出客户端')).toBeVisible()
 })
