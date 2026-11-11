@@ -54,7 +54,7 @@ func TestCredentialRecordLifecycle(t *testing.T) {
 }
 
 // TestApiTokenLifecycle 覆盖令牌:创建(明文一次性、pwmc_ 前缀)→ 查验有效/失效 →
-// 撤销 → 重名拒绝 → last_used_at 刷新。
+// 撤销 → 重名拒绝 → last_used_at 刷新 → 撤销后同名重签 → 彻底删除释放名字。
 func TestApiTokenLifecycle(t *testing.T) {
 	svc := newTestService(t)
 	ctx := context.Background()
@@ -93,6 +93,44 @@ func TestApiTokenLifecycle(t *testing.T) {
 	}
 	if err := svc.RevokeApiToken(ctx, "ci-bot"); err == nil {
 		t.Fatal("重复撤销按未找到报错")
+	}
+
+	// 撤销后同名重签:新明文、旧明文作废、时间重置(名字不再永久占用)。
+	rec2, plaintext2, err := svc.CreateApiToken(ctx, "ci-bot")
+	if err != nil {
+		t.Fatalf("撤销后同名重签应成功:%v", err)
+	}
+	if plaintext2 == plaintext {
+		t.Fatal("重签应生成新明文")
+	}
+	if rec2.RevokedAt != "" || rec2.LastUsedAt != "" {
+		t.Fatalf("重签应重置撤销/使用标记:%+v", rec2)
+	}
+	if name := svc.ApiTokenLookup(ctx, plaintext); name != "" {
+		t.Fatal("重签后旧明文应失效")
+	}
+	if name := svc.ApiTokenLookup(ctx, plaintext2); name != "ci-bot" {
+		t.Fatalf("新明文应命中:got %q", name)
+	}
+	if _, _, err := svc.CreateApiToken(ctx, "ci-bot"); err == nil {
+		t.Fatal("活跃重名仍应拒绝")
+	}
+
+	// 彻底删除:活跃不允许;撤销后可删且释放名字;重复删除报未找到。
+	if err := svc.DeleteApiToken(ctx, "ci-bot"); err == nil {
+		t.Fatal("活跃令牌不允许彻底删除")
+	}
+	if err := svc.RevokeApiToken(ctx, "ci-bot"); err != nil {
+		t.Fatalf("二次撤销失败:%v", err)
+	}
+	if err := svc.DeleteApiToken(ctx, "ci-bot"); err != nil {
+		t.Fatalf("删除已撤销令牌失败:%v", err)
+	}
+	if err := svc.DeleteApiToken(ctx, "ci-bot"); err == nil {
+		t.Fatal("重复删除应报未找到")
+	}
+	if _, _, err := svc.CreateApiToken(ctx, "ci-bot"); err != nil {
+		t.Fatalf("删除后名字应可复用:%v", err)
 	}
 }
 

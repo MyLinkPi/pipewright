@@ -207,12 +207,15 @@ type Service interface {
 
 	// ---- 凭据自动申请 API 令牌(明文仅创建响应一次;库内只存 SHA-256) ----
 
-	// CreateApiToken 创建令牌,返回记录与明文(仅此一次)。
+	// CreateApiToken 创建令牌,返回记录与明文(仅此一次)。同名已撤销令牌自动重新
+	// 签发(新哈希,旧明文作废);同名活跃令牌拒绝(ErrDuplicate)。
 	CreateApiToken(ctx context.Context, name string) (*ApiToken, string, error)
 	// ListApiTokens 列出令牌(含 revoked;不含哈希)。
 	ListApiTokens(ctx context.Context) ([]ApiToken, error)
 	// RevokeApiToken 按 name 撤销(立即失效)。
 	RevokeApiToken(ctx context.Context, name string) error
+	// DeleteApiToken 彻底删除已撤销令牌(释放名字;活跃/不存在 → ErrNotFound)。
+	DeleteApiToken(ctx context.Context, name string) error
 	// ApiTokenLookup 校证明文令牌:有效返回令牌名(顺带刷新 last_used_at),否则空串。
 	ApiTokenLookup(ctx context.Context, plaintext string) string
 

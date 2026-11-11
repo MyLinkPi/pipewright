@@ -324,6 +324,114 @@ func TestMeshApiTokenEndpoints(t *testing.T) {
 	_ = meshSvc
 }
 
+// TestMeshApiTokenReissueAndPurge 名字复用链路:活跃重名 422(干净文案)→ 撤销后
+// 同名重签(新明文)→ purge 拒绝活跃 → 撤销后 purge 释放名字 → 同名可再建。
+func TestMeshApiTokenReissueAndPurge(t *testing.T) {
+	srv, meshSvc, _ := setupCredServer(t)
+	enableMesh(t, meshSvc)
+	client := newTestClient(t)
+	csrf := loginAs(t, client, srv.URL, "admin", "testpass")
+
+	do := func(method, path string, body string) *http.Response {
+		t.Helper()
+		req, _ := http.NewRequest(method, srv.URL+path, strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-CSRF-Token", csrf)
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("%s %s: %v", method, path, err)
+		}
+		return resp
+	}
+	decode := func(resp *http.Response, v any) {
+		t.Helper()
+		defer resp.Body.Close()
+		if err := json.NewDecoder(resp.Body).Decode(v); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+	}
+
+	resp := do(http.MethodPost, "/api/mesh/api-tokens", `{"name":"doro"}`)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create status = %d", resp.StatusCode)
+	}
+	var first struct {
+		Token string `json:"token"`
+	}
+	decode(resp, &first)
+
+	// 活跃重名 422,文案不泄漏 mesh: 内部前缀。
+	resp = do(http.MethodPost, "/api/mesh/api-tokens", `{"name":"doro"}`)
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("活跃重名 status = %d, want 422", resp.StatusCode)
+	}
+	var errBody struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	decode(resp, &errBody)
+	if errBody.Error.Code != "invalid_token_name" || strings.Contains(errBody.Error.Message, "mesh:") {
+		t.Fatalf("错误文案异常:%+v", errBody.Error)
+	}
+
+	// 撤销后同名创建 → 自动重签,新明文。
+	resp = do(http.MethodDelete, "/api/mesh/api-tokens/doro", "")
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("revoke status = %d", resp.StatusCode)
+	}
+	resp = do(http.MethodPost, "/api/mesh/api-tokens", `{"name":"doro"}`)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("撤销后同名重签 status = %d, want 201", resp.StatusCode)
+	}
+	var second struct {
+		Token string `json:"token"`
+	}
+	decode(resp, &second)
+	if second.Token == first.Token || !strings.HasPrefix(second.Token, "pwmc_") {
+		t.Fatalf("重签应返回新明文:%q", second.Token)
+	}
+
+	// purge 拒绝活跃令牌。
+	resp = do(http.MethodDelete, "/api/mesh/api-tokens/doro?purge=true", "")
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("purge 活跃 status = %d, want 404", resp.StatusCode)
+	}
+
+	// 撤销 → purge → 列表空 → 重复 purge 404 → 同名再建。
+	resp = do(http.MethodDelete, "/api/mesh/api-tokens/doro", "")
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("二次 revoke status = %d", resp.StatusCode)
+	}
+	resp = do(http.MethodDelete, "/api/mesh/api-tokens/doro?purge=true", "")
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("purge 已撤销 status = %d, want 200", resp.StatusCode)
+	}
+	resp = do(http.MethodGet, "/api/mesh/api-tokens", "")
+	var list struct {
+		Items []json.RawMessage `json:"items"`
+	}
+	decode(resp, &list)
+	if len(list.Items) != 0 {
+		t.Fatalf("purge 后列表应为空:%d", len(list.Items))
+	}
+	resp = do(http.MethodDelete, "/api/mesh/api-tokens/doro?purge=true", "")
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("重复 purge status = %d, want 404", resp.StatusCode)
+	}
+	resp = do(http.MethodPost, "/api/mesh/api-tokens", `{"name":"doro"}`)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("purge 后同名重建 status = %d, want 201", resp.StatusCode)
+	}
+}
+
 // TestMeshSecureModeSwitchSingleNode 统一开关 HTTP 面:发起 → armed + 本端指令;
 // 状态聚合含本端行;撤销后指令清除。
 func TestMeshSecureModeSwitchSingleNode(t *testing.T) {

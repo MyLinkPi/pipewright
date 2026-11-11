@@ -167,10 +167,22 @@ func (s *service) CreateApiToken(ctx context.Context, name string) (*ApiToken, s
 		`INSERT INTO mesh_api_tokens (name, token_hash, created_at) VALUES (?, ?, ?)`,
 		name, hashToken(plaintext), rec.CreatedAt)
 	if err != nil {
-		if strings.Contains(strings.ToLower(err.Error()), "unique") || strings.Contains(strings.ToLower(err.Error()), "duplicate") {
+		lower := strings.ToLower(err.Error())
+		if !strings.Contains(lower, "unique") && !strings.Contains(lower, "duplicate") {
+			return nil, "", fmt.Errorf("mesh: insert api token: %w", err)
+		}
+		// 同名已存在:已撤销 → 重新签发(换哈希、重置时间,名字可复用,旧明文随之作废);
+		// 活跃 → 重名拒绝。UPDATE 带 revoked_at 护栏,并发重签只有一方成功。
+		res, uerr := s.db.ExecContext(ctx,
+			`UPDATE mesh_api_tokens SET token_hash = ?, created_at = ?, last_used_at = '', revoked_at = NULL
+			 WHERE name = ? AND revoked_at IS NOT NULL`,
+			hashToken(plaintext), rec.CreatedAt, name)
+		if uerr != nil {
+			return nil, "", fmt.Errorf("mesh: reissue api token: %w", uerr)
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
 			return nil, "", fmt.Errorf("%w: 令牌名 %s 已存在", ErrDuplicate, name)
 		}
-		return nil, "", fmt.Errorf("mesh: insert api token: %w", err)
 	}
 	return rec, plaintext, nil
 }
@@ -209,6 +221,21 @@ func (s *service) RevokeApiToken(ctx context.Context, name string) error {
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
 		// 已撤销/不存在:区分与否价值低,统一按未找到处理由上层展示(删除/撤销幂等)。
+		return ErrNotFound
+	}
+	return nil
+}
+
+// DeleteApiToken 彻底删除已撤销的令牌行(释放名字;活跃令牌须先撤销,否则 ErrNotFound)。
+// 创建/撤销事件另存于审计日志,删登记行不影响历史溯源。
+func (s *service) DeleteApiToken(ctx context.Context, name string) error {
+	res, err := s.db.ExecContext(ctx,
+		`DELETE FROM mesh_api_tokens WHERE name = ? AND revoked_at IS NOT NULL`,
+		strings.TrimSpace(name))
+	if err != nil {
+		return fmt.Errorf("mesh: delete api token: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
 		return ErrNotFound
 	}
 	return nil

@@ -288,6 +288,11 @@ export default {
     tokenCloseUnsavedBody:
       "閉じた後はトークンを再確認できません。未保存のトークンは失効して再作成するしかありません。閉じますか?",
     tokenCloseUnsavedConfirm: "閉じる",
+    tokenDelete: "削除",
+    tokenDeleteTitle: "失効済みトークンを削除しますか?",
+    tokenDeleteBody:
+      "完全に削除するとトークン名を再利用できます。この操作は元に戻せません({name})。",
+    tokenDeleteConfirm: "削除する",
 
   },
 };

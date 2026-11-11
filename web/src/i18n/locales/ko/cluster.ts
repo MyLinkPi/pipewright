@@ -287,6 +287,11 @@ export default {
     tokenCloseUnsavedBody:
       "닫은 후에는 토큰을 다시 볼 수 없으며, 저장하지 않은 토큰은 취소 후 재생성해야 합니다. 그래도 닫을까요?",
     tokenCloseUnsavedConfirm: "그래도 닫기",
+    tokenDelete: "삭제",
+    tokenDeleteTitle: "취소된 토큰을 삭제합니까?",
+    tokenDeleteBody:
+      "완전히 삭제하면 토큰 이름을 다시 사용할 수 있으며 되돌릴 수 없습니다({name}).",
+    tokenDeleteConfirm: "삭제",
 
   },
 };

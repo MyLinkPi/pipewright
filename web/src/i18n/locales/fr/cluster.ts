@@ -291,6 +291,11 @@ export default {
     tokenCloseUnsavedBody:
       "Le jeton ne pourra plus être affiché après fermeture ; un jeton non enregistré devra être révoqué puis recréé. Fermer quand même ?",
     tokenCloseUnsavedConfirm: "Fermer quand même",
+    tokenDelete: "Supprimer",
+    tokenDeleteTitle: "Supprimer le jeton révoqué ?",
+    tokenDeleteBody:
+      "La suppression définitive libère le nom pour réutilisation ; cette action est irréversible ({name}).",
+    tokenDeleteConfirm: "Supprimer",
 
   },
 };

@@ -289,6 +289,11 @@ export default {
     tokenCloseUnsavedBody:
       "The token cannot be viewed again after closing; an unsaved token can only be revoked and recreated. Close anyway?",
     tokenCloseUnsavedConfirm: "Close anyway",
+    tokenDelete: "Delete",
+    tokenDeleteTitle: "Delete revoked token?",
+    tokenDeleteBody:
+      "Permanently deleting frees the name for reuse; this cannot be undone ({name}).",
+    tokenDeleteConfirm: "Delete",
 
   },
 };

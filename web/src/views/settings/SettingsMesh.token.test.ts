@@ -18,6 +18,7 @@ const api = vi.hoisted(() => ({
   credentials: vi.fn(),
   tokens: vi.fn(),
   createToken: vi.fn(),
+  deleteToken: vi.fn(),
 }))
 const confirmOpen = vi.hoisted(() => vi.fn())
 const clipboardWrite = vi.hoisted(() => vi.fn())
@@ -32,6 +33,7 @@ vi.mock('../../api/mesh', () => ({
   listMeshCredentials: api.credentials,
   listMeshApiTokens: api.tokens,
   createMeshApiToken: api.createToken,
+  deleteMeshApiToken: api.deleteToken,
 }))
 vi.mock('../../api/dnsProviders', () => ({ listDnsProviders: api.dnsProviders }))
 vi.mock('../../api/firewall', () => ({ getFirewallStatus: api.firewall }))
@@ -86,6 +88,7 @@ beforeEach(() => {
     createdAt: '2026-11-11T00:00:00Z',
   })
   confirmOpen.mockResolvedValue(true)
+  api.deleteToken.mockResolvedValue({ ok: true })
   clipboardWrite.mockResolvedValue(undefined)
   // jsdom 无 clipboard 且 isSecureContext 为 false → 两者都 stub,让 copyText 走
   // Clipboard API 主路径而非 execCommand 兜底。
@@ -179,5 +182,60 @@ describe('API 令牌一次性展示', () => {
     await flushPromises()
     expect(confirmOpen).not.toHaveBeenCalled()
     expect(w.find('[role="dialog"]').exists()).toBe(false)
+  })
+
+  it('创建失败时错误就地显示在令牌区(不依赖顶部横幅)', async () => {
+    api.createToken.mockRejectedValueOnce(
+      new Error('令牌名 doro 已被活跃令牌占用;请先撤销再重建'),
+    )
+    const w = await setup()
+    const section = tokenSection(w)
+    await section.get('input.inp').setValue('doro')
+    const btn = section.findAll('button').find((b) => b.text() === '创建令牌')!
+    await btn.trigger('click')
+    await flushPromises()
+    expect(w.find('[role="dialog"]').exists()).toBe(false)
+    expect(tokenSection(w).get('.token-error').text()).toContain('doro')
+  })
+
+  it('活跃行显示撤销、已撤销行显示删除;确认后彻底删除并刷新', async () => {
+    api.tokens.mockResolvedValue({
+      items: [
+        { name: 'ci', createdAt: '2026-11-11T00:00:00Z', lastUsedAt: '', revokedAt: '' },
+        {
+          name: 'doro',
+          createdAt: '2026-11-10T00:00:00Z',
+          lastUsedAt: '',
+          revokedAt: '2026-11-11T00:00:00Z',
+        },
+      ],
+    })
+    const w = await setup()
+    const rows = tokenSection(w).findAll('tbody tr')
+    expect(rows[0]!.findAll('button').map((b) => b.text())).toEqual(['撤销'])
+    expect(rows[1]!.findAll('button').map((b) => b.text())).toEqual(['删除'])
+    await rows[1]!.get('button').trigger('click')
+    await flushPromises()
+    expect(confirmOpen).toHaveBeenCalledTimes(1)
+    expect(api.deleteToken).toHaveBeenCalledExactlyOnceWith('doro')
+    expect(api.tokens).toHaveBeenCalledTimes(2)
+  })
+
+  it('删除失败时错误就地显示在令牌区', async () => {
+    api.tokens.mockResolvedValue({
+      items: [
+        {
+          name: 'doro',
+          createdAt: '2026-11-10T00:00:00Z',
+          lastUsedAt: '',
+          revokedAt: '2026-11-11T00:00:00Z',
+        },
+      ],
+    })
+    api.deleteToken.mockRejectedValueOnce(new Error('令牌不存在或未撤销'))
+    const w = await setup()
+    await tokenSection(w).get('tbody tr button').trigger('click')
+    await flushPromises()
+    expect(tokenSection(w).get('.token-error').text()).toContain('令牌不存在或未撤销')
   })
 })
