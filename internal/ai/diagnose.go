@@ -25,9 +25,22 @@ import (
 	"github.com/huangchengsir/pipewright/internal/mask"
 )
 
-// diagnoseMaxTokens 是诊断每轮请求的 max_tokens(够装一份结构化诊断;工具轮
-// 亦同限,防止中间轮浪费输出预算)。
-const diagnoseMaxTokens = 1024
+// diagnoseMinTokens 是诊断每轮请求 max_tokens 的下限。诊断输出是结构化 JSON
+// (假说 + 备选根因 + 建议 + 可执行修复脚本),且部分模型把推理/思维链计入同一
+// 输出预算;旧实现硬编码 1024,模型常在吐出 JSON 前就撞上 finish_reason=length,
+// 整条诊断被丢弃(reason=模型输出达到长度限制)。
+const diagnoseMinTokens = 2_048
+
+// diagnoseOutputTokens 返回诊断每轮请求的输出预算:沿用 AI 设置里的单请求输出
+// 上限(cfg.Context,默认 DefaultMaxOutputTokens = 8192),并保证不低于
+// diagnoseMinTokens。工具轮与终答轮同限,避免中间轮浪费输出预算。
+func diagnoseOutputTokens(cfg *Config) int {
+	n := cfg.Context.Resolved().MaxOutputTokens
+	if n < diagnoseMinTokens {
+		n = diagnoseMinTokens
+	}
+	return n
+}
 
 // maxFailureLogChars 是发往 LLM 的失败日志字符上限(防超大日志吃 token / 内存);
 // 超出取**末尾**(失败原因通常在日志末)。脱敏后再截断,确保截断不漏过明文。
@@ -153,11 +166,12 @@ func (s *service) Diagnose(ctx context.Context, in DiagnoseInput) (*Diagnosis, e
 
 	// 多轮工具循环(SSE 逐帧回收;网关不支持流式时自动回退单次响应)。预算语义:
 	// 整体总上限兜底 + 单轮上限 + 工具轮数/次数/回灌字节封顶,见 diagnose_agent.go。
-	text, cerr := diagnoseAgentLoop(ctx, s, masker, prompt, withTools)
+	budget := diagnoseOutputTokens(cfg)
+	text, cerr := diagnoseAgentLoop(ctx, s, masker, prompt, budget, withTools)
 	if cerr != nil {
 		// LLM/工具循环失败(超时 / 网络 / 非 2xx / 收尾仍无有效文本):降级
 		// unavailable + 人读 reason(错误已确保不含密钥)。
-		return unavailable("AI 诊断失败:" + humanizeStreamDiagnoseErr(cerr)), nil
+		return unavailable("AI 诊断失败:" + humanizeStreamDiagnoseErr(cerr, budget)), nil
 	}
 
 	// 解析 + 质量门控。
@@ -276,7 +290,8 @@ func humanizeDiagnoseErr(err error) string {
 }
 
 // humanizeStreamDiagnoseErr 把流式诊断错误(OpsFailure 码)转人读消息(绝无明文密钥)。
-func humanizeStreamDiagnoseErr(err error) string {
+// maxTokens 是本轮请求的输出预算,只在 token_limit 文案里披露(便于管理员定位是预算不足)。
+func humanizeStreamDiagnoseErr(err error, maxTokens int) string {
 	var failure *OpsFailure
 	if errors.As(err, &failure) {
 		switch failure.SafeCode() {
@@ -293,7 +308,7 @@ func humanizeStreamDiagnoseErr(err error) string {
 		case "context_limit":
 			return "失败日志过长,超出模型上下文"
 		case "token_limit":
-			return "模型输出达到长度限制,未采纳不完整内容"
+			return fmt.Sprintf("模型输出达到长度限制(本轮上限 %d tokens,推理内容也计入该预算),未采纳不完整内容;可调大 AI 设置的输出上限后重试", maxTokens)
 		case "response_limit":
 			return "响应超过大小限制"
 		case "incomplete_stream":
