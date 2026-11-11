@@ -274,6 +274,19 @@ export default {
     tokenRevokeBody: "취소하면 이 토큰을 쓰는 외부 시스템이 즉시 신청할 수 없게 됩니다({name}).",
     tokenRevokeConfirm: "취소",
     tokenEmpty: "토큰이 없습니다",
+    tokenResultTitle: "토큰이 생성되었습니다",
+    tokenSecretOnce:
+      "평문 토큰은 이번 한 번만 표시되며 닫은 후에는 다시 볼 수 없습니다 — 지금 복사하여 외부 시스템(CI/스크립트)에 안전하게 보관하세요.",
+    tokenValueLabel: "API 토큰(Bearer 인증용)",
+    tokenUsageHint:
+      "사용법: Authorization: Bearer <토큰> 헤더로 POST /api/mesh/credentials 호출.",
+    tokenCopied: "복사됨",
+    tokenCopy: "토큰 복사",
+    tokenClose: "저장했습니다, 닫기",
+    tokenCloseUnsavedTitle: "토큰이 복사되지 않았습니다",
+    tokenCloseUnsavedBody:
+      "닫은 후에는 토큰을 다시 볼 수 없으며, 저장하지 않은 토큰은 취소 후 재생성해야 합니다. 그래도 닫을까요?",
+    tokenCloseUnsavedConfirm: "그래도 닫기",
 
   },
 };

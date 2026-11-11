@@ -269,6 +269,19 @@ export default {
     tokenRevokeBody: "撤銷後使用該權杖的外部系統將立即無法申請憑證({name})。",
     tokenRevokeConfirm: "確認撤銷",
     tokenEmpty: "暫無權杖",
+    tokenResultTitle: "權杖已建立",
+    tokenSecretOnce:
+      "明文權杖僅此一次顯示,關閉後無法再檢視 —— 請立即複製並交給外部系統(CI/指令碼)妥善保存。",
+    tokenValueLabel: "API 權杖(Bearer 認證用)",
+    tokenUsageHint:
+      "用法:請求頭 Authorization: Bearer <權杖> 呼叫 POST /api/mesh/credentials。",
+    tokenCopied: "已複製",
+    tokenCopy: "複製權杖",
+    tokenClose: "我已保存,關閉",
+    tokenCloseUnsavedTitle: "尚未複製權杖",
+    tokenCloseUnsavedBody:
+      "明文權杖關閉後無法再檢視,未保存的權杖只能撤銷重建。確認關閉?",
+    tokenCloseUnsavedConfirm: "仍要關閉",
 
   },
 };

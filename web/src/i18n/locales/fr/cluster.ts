@@ -278,6 +278,19 @@ export default {
     tokenRevokeBody: "Les systèmes externes utilisant ce jeton perdront immédiatement l'accès ({name}).",
     tokenRevokeConfirm: "Révoquer",
     tokenEmpty: "Aucun jeton pour l'instant",
+    tokenResultTitle: "Jeton créé",
+    tokenSecretOnce:
+      "Le jeton en clair n'est affiché qu'une seule fois et ne pourra plus être consulté après fermeture — copiez-le maintenant et conservez-le en lieu sûr dans votre système externe (CI/script).",
+    tokenValueLabel: "Jeton API (pour l'authentification Bearer)",
+    tokenUsageHint:
+      "Utilisation : envoyez Authorization: Bearer <jeton> à POST /api/mesh/credentials.",
+    tokenCopied: "Copié",
+    tokenCopy: "Copier le jeton",
+    tokenClose: "Enregistré, fermer",
+    tokenCloseUnsavedTitle: "Jeton pas encore copié",
+    tokenCloseUnsavedBody:
+      "Le jeton ne pourra plus être affiché après fermeture ; un jeton non enregistré devra être révoqué puis recréé. Fermer quand même ?",
+    tokenCloseUnsavedConfirm: "Fermer quand même",
 
   },
 };

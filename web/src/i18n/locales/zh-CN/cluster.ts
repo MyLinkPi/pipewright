@@ -269,6 +269,19 @@ export default {
     tokenRevokeBody: "撤销后使用该令牌的外部系统将立即无法申请凭据({name})。",
     tokenRevokeConfirm: "确认撤销",
     tokenEmpty: "暂无令牌",
+    tokenResultTitle: "令牌已创建",
+    tokenSecretOnce:
+      "明文令牌仅此一次显示,关闭后无法再查看 —— 请立即复制并交给外部系统(CI/脚本)妥善保存。",
+    tokenValueLabel: "API 令牌(Bearer 认证用)",
+    tokenUsageHint:
+      "用法:请求头 Authorization: Bearer <令牌> 调 POST /api/mesh/credentials。",
+    tokenCopied: "已复制",
+    tokenCopy: "复制令牌",
+    tokenClose: "我已保存,关闭",
+    tokenCloseUnsavedTitle: "尚未复制令牌",
+    tokenCloseUnsavedBody:
+      "明文令牌关闭后无法再查看,未保存的令牌只能撤销重建。确认关闭?",
+    tokenCloseUnsavedConfirm: "仍要关闭",
 
   },
 };
