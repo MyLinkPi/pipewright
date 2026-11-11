@@ -78,6 +78,10 @@ func (m *opsModel) AgentRound(ctx context.Context, req opschat.AgentRequest) (op
 		requestCap = 256 << 10
 	}
 	endpoint, header, body := agentRequest(cfg.Provider, base, cfg.Model, key, req, question, history, maxTokens)
+	// Agent 轮同样是**有界结构化回复**(max_tokens 封顶):必须与 chat/plan 路径
+	// 一致地把 DeepSeek 官方端点的默认推理关掉,否则思维链会吃掉输出预算,
+	// 模型在吐出 JSON/工具调用前就 finish_reason=length(诊断即报「长度限制」)。
+	opsRequestCompatibility(cfg, base, body)
 	raw, err := json.Marshal(body)
 	if err != nil || len(raw) > requestCap {
 		return reply, opsFailure("invalid_response", 0)

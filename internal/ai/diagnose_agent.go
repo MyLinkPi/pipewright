@@ -59,9 +59,10 @@ func diagnoseWebAvailable(cfg *Config, mainSealed []byte) bool {
 
 // diagnoseAgentLoop 跑带网页工具的多轮诊断:首轮带目录请求;模型回工具调用则
 // 校验参数(opschat.ParseWebCall 同一套白名单)并经 WebBackend 执行,结果脱敏
-// 截断后随轮次回灌,直至模型给终答或预算用尽走收尾轮。返回模型终答文本
+// 截断后随轮次回灌,直至模型给终答或预算用尽走收尾轮。maxTokens 是每轮输出预算
+// (来自 AI 设置,见 diagnoseOutputTokens)。返回模型终答文本
 // (期望为诊断 JSON;解析与质量门控仍由 Diagnose 负责)。
-func diagnoseAgentLoop(ctx context.Context, s *service, runMasker *mask.Masker, prompt string, withTools bool) (string, error) {
+func diagnoseAgentLoop(ctx context.Context, s *service, runMasker *mask.Masker, prompt string, maxTokens int, withTools bool) (string, error) {
 	totalCtx, stop := context.WithTimeout(ctx, diagnoseAgentTotal)
 	defer stop()
 
@@ -92,7 +93,7 @@ func diagnoseAgentLoop(ctx context.Context, s *service, runMasker *mask.Masker, 
 			System:          system,
 			Tools:           tools,
 			Rounds:          rounds,
-			MaxOutputTokens: diagnoseMaxTokens,
+			MaxOutputTokens: maxTokens,
 		}
 		if final {
 			req.Tools = nil

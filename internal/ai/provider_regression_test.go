@@ -30,7 +30,7 @@ func TestIssue189StructuredDeepSeekRequestCompatibility(t *testing.T) {
 		{"custom-path", ProviderOpenAI, "https://api.deepseek.com/custom/v1", "deepseek-v4-pro", false},
 		{"lookalike", ProviderOpenAI, "https://api.deepseek.com.example/v1", "deepseek-v4-pro", false},
 	} {
-		for _, limit := range []int{generateMaxTokens, diagnoseMaxTokens, completeMaxTokens} {
+		for _, limit := range []int{generateMaxTokens, diagnoseMinTokens, completeMaxTokens} {
 			t.Run(fmt.Sprintf("%s/%d", tc.name, limit), func(t *testing.T) {
 				calls := 0
 				m := compatibleMockModel(t, tc.base, opsTransport(func(r *http.Request) (*http.Response, error) {
