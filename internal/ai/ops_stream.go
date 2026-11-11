@@ -224,14 +224,13 @@ func (m *opsModel) chatStreamBudget(ctx context.Context, cfg *Config, key, promp
 	switch cfg.Provider {
 	case ProviderOpenAI:
 		endpoint = apiEndpoint(cfg.Provider, base, "chat/completions")
-		body["max_tokens"] = 4096
+		body["max_tokens"] = chatOutputTokens(cfg)
 	case ProviderClaude:
 		endpoint = apiEndpoint(cfg.Provider, base, "messages")
-		body["max_tokens"] = 4096
+		body["max_tokens"] = chatOutputTokens(cfg)
 	default:
 		return "", opschat.ErrUnavailable
 	}
-	opsRequestCompatibility(cfg, base, body)
 	raw, _ := json.Marshal(body)
 	req, err := http.NewRequestWithContext(sctx, http.MethodPost, endpoint, bytes.NewReader(raw))
 	if err != nil {

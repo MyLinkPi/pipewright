@@ -94,50 +94,6 @@ func TestAIExplainHappyPath(t *testing.T) {
 	}
 }
 
-// TestAICompleteHappyPath 验证 /ai/complete 回 200 + available + 补全。
-func TestAICompleteHappyPath(t *testing.T) {
-	stub := &diagStubAI{completion: &ai.CompletionResult{Completion: "ls -la"}}
-	srv, client, csrf, _ := setupAIGenServer(t, stub, stubAnalyzer{res: ai.RepoAnalysis{Cloned: true}})
-
-	resp := doJSON(t, client, http.MethodPost, srv.URL+"/api/ai/complete", csrf, `{"partial":"ls","context":{"shell":"/bin/sh"}}`)
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d, want 200", resp.StatusCode)
-	}
-	dto := decode(t, resp)
-	if dto["available"] != true || dto["completion"] != "ls -la" {
-		t.Fatalf("补全响应错误: %v", dto)
-	}
-}
-
-// TestAICompleteDegradesNoAI 验证未配 AI → 200 + available=false(前端走本地字典)。
-func TestAICompleteDegradesNoAI(t *testing.T) {
-	stub := &diagStubAI{} // completion=nil → ErrAINotConfigured
-	srv, client, csrf, _ := setupAIGenServer(t, stub, stubAnalyzer{res: ai.RepoAnalysis{Cloned: true}})
-
-	resp := doJSON(t, client, http.MethodPost, srv.URL+"/api/ai/complete", csrf, `{"partial":"ls"}`)
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("AI 未配应 200, got %d", resp.StatusCode)
-	}
-	dto := decode(t, resp)
-	if dto["available"] != false {
-		t.Fatalf("available 应为 false: %v", dto)
-	}
-}
-
-// TestAICompleteEmptyPartial 验证空 partial → 400。
-func TestAICompleteEmptyPartial(t *testing.T) {
-	stub := &diagStubAI{}
-	srv, client, csrf, _ := setupAIGenServer(t, stub, stubAnalyzer{res: ai.RepoAnalysis{Cloned: true}})
-
-	resp := doJSON(t, client, http.MethodPost, srv.URL+"/api/ai/complete", csrf, `{"partial":" "}`)
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("空 partial 应 400, got %d", resp.StatusCode)
-	}
-}
-
 // TestAIExplainEmptyCommand 验证空 command → 400。
 func TestAIExplainEmptyCommand(t *testing.T) {
 	stub := &diagStubAI{}

@@ -132,11 +132,6 @@ func init() {
 			"ko": "로그인 사용자는 비워 둘 수 없습니다", "es": "El usuario de inicio de sesión no puede estar vacío",
 			"fr": "L'utilisateur de connexion ne doit pas être vide", "de": "Anmeldebenutzer darf nicht leer sein",
 		},
-		"缺少补全前缀": {
-			"zh-HK": "缺少補全前綴", "en": "Missing completion prefix", "ja": "補完のプレフィックスがありません",
-			"ko": "자동 완성 접두사가 없습니다", "es": "Falta el prefijo de autocompletado",
-			"fr": "Préfixe de complétion manquant", "de": "Vervollständigungspräfix fehlt",
-		},
 		"自定义节点服务未初始化": {
 			"zh-HK": "自訂節點服務未初始化", "en": "Custom node service not initialized", "ja": "カスタムノードサービスが初期化されていません",
 			"ko": "사용자 지정 노드 서비스가 초기화되지 않았습니다", "es": "El servicio de nodos personalizados no está inicializado",

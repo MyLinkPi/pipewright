@@ -36,12 +36,6 @@ export default {
   clearScreen: 'Clear screen',
   clipboardSecureWarn: 'Clipboard requires https/localhost',
 
-  completeDisableTitle: 'Disable AI completion',
-  completeEnableTitle: 'Enable AI completion',
-  aiComplete: 'AI completion',
-  on: 'on',
-  off: 'off',
-
   aiLauncherTitle: 'Expand AI ops assistant',
   aiAssistant: 'AI assistant',
 

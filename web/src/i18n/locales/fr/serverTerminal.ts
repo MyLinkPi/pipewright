@@ -36,12 +36,6 @@ export default {
   clearScreen: 'Effacer l’écran',
   clipboardSecureWarn: 'Le presse-papiers nécessite https/localhost',
 
-  completeDisableTitle: 'Désactiver la complétion IA',
-  completeEnableTitle: 'Activer la complétion IA',
-  aiComplete: 'Complétion IA',
-  on: 'act.',
-  off: 'désact.',
-
   aiLauncherTitle: 'Déployer l’assistant d’exploitation IA',
   aiAssistant: 'Assistant IA',
 

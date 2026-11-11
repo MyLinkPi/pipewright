@@ -26,9 +26,8 @@ type diagStubAI struct {
 	risk       *ai.RiskReport // AnnotateRisks 返回值(nil → 空报告)
 	gotSteps   []ai.ScriptStep
 	cmd        *ai.CommandSuggestion // CommandSuggest 返回值(nil → ErrAINotConfigured)
-	cmdErr     error                 // CommandSuggest/ExplainCommand/CompleteCommand 强制错误
+	cmdErr     error                 // CommandSuggest/ExplainCommand 强制错误
 	explain    *ai.CommandExplanation
-	completion *ai.CompletionResult // CompleteCommand 返回值(nil → ErrAINotConfigured)
 	gotNL      string
 }
 
@@ -82,15 +81,6 @@ func (s *diagStubAI) ExplainCommand(_ context.Context, _ ai.ExplainCommandInput)
 	}
 	if s.explain != nil {
 		return s.explain, nil
-	}
-	return nil, ai.ErrAINotConfigured
-}
-func (s *diagStubAI) CompleteCommand(_ context.Context, in ai.CompleteCommandInput) (*ai.CompletionResult, error) {
-	if s.cmdErr != nil {
-		return nil, s.cmdErr
-	}
-	if s.completion != nil {
-		return s.completion, nil
 	}
 	return nil, ai.ErrAINotConfigured
 }

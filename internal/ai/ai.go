@@ -221,9 +221,6 @@ type Service interface {
 	// ExplainCommand 用中文逐段解释一条既有命令(+ 确定性风险等级)。脱敏铁律同上;未配 →
 	// ErrAINotConfigured。风险等级由确定性规则给(不依赖 AI)。
 	ExplainCommand(ctx context.Context, in ExplainCommandInput) (*CommandExplanation, error)
-	// CompleteCommand 据已输入命令前缀补全为一条完整命令(P2 智能补全;以前缀原样开头)。
-	// 脱敏铁律同上;未配 → ErrAINotConfigured(前端可退化为本地字典兜底)。短回包、低 max_tokens。
-	CompleteCommand(ctx context.Context, in CompleteCommandInput) (*CompletionResult, error)
 	// GenerateCompose 据中文需求生成 docker-compose.yml(容器管理「AI 生成 compose」)。
 	// 生成需 AI:未配 / 未启用 → ErrAINotConfigured。NL 出网前脱敏;输出去围栏 + 二次脱敏。
 	GenerateCompose(ctx context.Context, in GenerateComposeInput) (*ComposeResult, error)
@@ -436,7 +433,6 @@ func (m *opsModel) probe(ctx context.Context, provider, baseURL, model, apiKey s
 	defer cleanup()
 
 	endpoint, header, payload := inferenceProbeRequest(provider, baseURL, model, apiKey)
-	opsRequestCompatibility(&Config{Provider: provider, Model: model}, baseURL, payload)
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return &TestResult{OK: false, Error: "请求构造失败:baseUrl 可能非法"}

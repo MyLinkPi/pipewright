@@ -40,17 +40,8 @@ const (
 	CmdRiskDanger = "danger"
 )
 
-// commandSuggestMaxTokens / explainMaxTokens 是两类 chat 的 max_tokens(单条命令 + 短解释,够用即可)。
-const (
-	commandSuggestMaxTokens = 700
-	explainMaxTokens        = 600
-)
-
 // maxNLChars 是用户自然语言描述 / 命令进 prompt 的字符上限(防超长吃 token)。
 const maxNLChars = 2000
-
-// completeMaxTokens 是补全 chat 的 max_tokens(单行命令补全,极短;控成本/延迟)。
-const completeMaxTokens = 64
 
 // CommandContext 是终端会话上下文(进 prompt 作背景 + 辅助风险判定;字段均可空)。
 type CommandContext struct {
@@ -75,19 +66,6 @@ type CommandSuggestion struct {
 	Risk        string    `json:"risk"`
 	Reason      string    `json:"reason"`
 	GeneratedAt time.Time `json:"generatedAt"`
-}
-
-// CompleteCommandInput 是命令补全入参(P2 智能补全)。Partial 为用户已输入的命令前缀。
-type CompleteCommandInput struct {
-	Partial string
-	Context CommandContext
-	Masker  *mask.Masker
-}
-
-// CompletionResult 是补全结果。Completion 为补全后的完整命令(以 Partial 原样开头);
-// 无合理补全时等于 Partial(前端据「!= partial」判断是否展示建议)。
-type CompletionResult struct {
-	Completion string `json:"completion"`
 }
 
 // ExplainCommandInput 是命令解释入参。
@@ -252,13 +230,13 @@ func (s *service) CommandSuggest(ctx context.Context, in CommandSuggestInput) (*
 		return nil, fmt.Errorf("%w: 请描述你想做的操作", ErrGenerateFailed)
 	}
 
-	provider, baseURL, apiKey, err := s.resolveChatCreds(ctx)
+	provider, baseURL, apiKey, maxTokens, err := s.resolveChatCreds(ctx)
 	if err != nil {
 		return nil, err
 	}
 
 	prompt := buildCommandPrompt(masker, nl, in.Context)
-	text, cerr := s.chatWithTokens(ctx, provider, baseURL, s.modelFor(ctx), apiKey, prompt, commandSuggestMaxTokens)
+	text, cerr := s.chatWithTokens(ctx, provider, baseURL, s.modelFor(ctx), apiKey, prompt, maxTokens)
 	apiKey = "" // 明文用完即弃
 	_ = apiKey
 	if cerr != nil {
@@ -292,13 +270,13 @@ func (s *service) ExplainCommand(ctx context.Context, in ExplainCommandInput) (*
 		return nil, fmt.Errorf("%w: 请提供要解释的命令", ErrGenerateFailed)
 	}
 
-	provider, baseURL, apiKey, err := s.resolveChatCreds(ctx)
+	provider, baseURL, apiKey, maxTokens, err := s.resolveChatCreds(ctx)
 	if err != nil {
 		return nil, err
 	}
 
 	prompt := buildExplainPrompt(masker, cmd, in.Context)
-	text, cerr := s.chatWithTokens(ctx, provider, baseURL, s.modelFor(ctx), apiKey, prompt, explainMaxTokens)
+	text, cerr := s.chatWithTokens(ctx, provider, baseURL, s.modelFor(ctx), apiKey, prompt, maxTokens)
 	apiKey = ""
 	_ = apiKey
 	if cerr != nil {
@@ -318,47 +296,16 @@ func (s *service) ExplainCommand(ctx context.Context, in ExplainCommandInput) (*
 	}, nil
 }
 
-func (s *service) CompleteCommand(ctx context.Context, in CompleteCommandInput) (*CompletionResult, error) {
-	masker := in.Masker
-	if masker == nil {
-		masker = mask.NewMasker()
-	}
-	partial := in.Partial // 保留原样(含尾空格语义);仅做长度判断时 Trim
-	if strings.TrimSpace(partial) == "" {
-		return nil, fmt.Errorf("%w: 无补全前缀", ErrGenerateFailed)
-	}
-
-	provider, baseURL, apiKey, err := s.resolveChatCreds(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	prompt := buildCompletePrompt(masker, partial, in.Context)
-	text, cerr := s.chatWithTokens(ctx, provider, baseURL, s.modelFor(ctx), apiKey, prompt, completeMaxTokens)
-	apiKey = ""
-	_ = apiKey
-	if cerr != nil {
-		return nil, cerr
-	}
-
-	// 取首个非空行作为补全(模型偶尔多行/带噪声);脱敏。
-	completion := masker.Scrub(firstLine(stripCodeFence(text)))
-	// 安全约束:补全必须以用户前缀原样开头,否则视为无效(避免替换用户已输入内容)。
-	if completion == "" || !strings.HasPrefix(completion, strings.TrimRight(partial, " ")) {
-		completion = partial
-	}
-	return &CompletionResult{Completion: completion}, nil
-}
-
 // resolveChatCreds 读单例配置并取出 chat 所需 provider/baseURL/apiKey(明文,调用方用完即弃)。
 // 未配置 / 未启用 → ErrAINotConfigured;保险库不可用 → ErrVaultUnconfigured。复用 load + openSecret。
-func (s *service) resolveChatCreds(ctx context.Context) (provider, baseURL, apiKey string, err error) {
+// maxTokens 取 AI 设置的单请求输出上限(见 chatOutputTokens)。
+func (s *service) resolveChatCreds(ctx context.Context) (provider, baseURL, apiKey string, maxTokens int, err error) {
 	cfg, sealed, lerr := s.load(ctx)
 	if lerr != nil {
-		return "", "", "", lerr
+		return "", "", "", 0, lerr
 	}
 	if cfg == nil || !cfg.Configured || !cfg.Enabled {
-		return "", "", "", ErrAINotConfigured
+		return "", "", "", 0, ErrAINotConfigured
 	}
 	provider = cfg.Provider
 	baseURL = cfg.BaseURL
@@ -366,17 +313,17 @@ func (s *service) resolveChatCreds(ctx context.Context) (provider, baseURL, apiK
 		baseURL = defaultBaseURL(provider)
 	}
 	if baseURL == "" {
-		return "", "", "", ErrAINotConfigured
+		return "", "", "", 0, ErrAINotConfigured
 	}
 	if len(sealed) == 0 {
-		return "", "", "", ErrAINotConfigured
+		return "", "", "", 0, ErrAINotConfigured
 	}
 	plain, oerr := s.openSecret(sealed)
 	if oerr != nil {
-		return "", "", "", oerr
+		return "", "", "", 0, oerr
 	}
 	apiKey = plain
-	return provider, baseURL, apiKey, nil
+	return provider, baseURL, apiKey, chatOutputTokens(cfg), nil
 }
 
 // modelFor 读取当前配置的 model(命令助手 chat 用)。读失败回空串(provider 默认模型由 provider 端决定)。
@@ -448,35 +395,6 @@ func buildExplainPrompt(m *mask.Masker, cmd string, c CommandContext) string {
 	b.WriteString(truncateRunes(m.Scrub(cmd), maxNLChars))
 	b.WriteString("\n")
 	return b.String()
-}
-
-// buildCompletePrompt 构造命令补全 prompt:已输入前缀 + 上下文 → 一行完整命令(以前缀开头)。
-func buildCompletePrompt(m *mask.Masker, partial string, c CommandContext) string {
-	var b strings.Builder
-	b.WriteString("你是 Linux shell 命令补全引擎。根据用户已输入的命令前缀,补全成一条最可能、可直接执行的完整命令。\n")
-	b.WriteString("规则:\n")
-	b.WriteString("- 输出必须以用户已输入的前缀**原样开头**,只在其后追加内容,不要改写前缀。\n")
-	b.WriteString("- 只输出补全后的完整命令本身,**一行**,不要解释、不要 markdown、不要反引号。\n")
-	b.WriteString("- 若前缀已是完整命令或没有合理补全,就原样输出该前缀。\n")
-	fmt.Fprintf(&b, "环境:OS %s, shell %s, 容器 %s, 目录 %s\n",
-		fallbackCtx(m.Scrub(strings.TrimSpace(c.OS)), "linux"),
-		fallbackCtx(m.Scrub(strings.TrimSpace(c.Shell)), "/bin/sh"),
-		fallbackCtx(m.Scrub(strings.TrimSpace(c.Container)), "-"),
-		fallbackCtx(m.Scrub(strings.TrimSpace(c.Cwd)), "-"))
-	b.WriteString("前缀:\n")
-	b.WriteString(truncateRunes(m.Scrub(partial), maxNLChars))
-	b.WriteString("\n")
-	return b.String()
-}
-
-// firstLine 取文本首个非空行并 Trim(补全场景模型应只回一行,容错多行噪声)。
-func firstLine(s string) string {
-	for _, ln := range strings.Split(s, "\n") {
-		if t := strings.TrimSpace(ln); t != "" {
-			return t
-		}
-	}
-	return ""
 }
 
 // fallbackCtx 上下文字段空时给占位(避免 prompt 出现空值)。

@@ -41,7 +41,7 @@ func (m *opsModel) Summarize(ctx context.Context, in opschat.SummarizeRequest) (
 	}
 	maxTokens := in.MaxOutputTokens
 	if maxTokens <= 0 {
-		maxTokens = 4096
+		maxTokens = chatOutputTokens(cfg)
 	}
 	base := cfg.BaseURL
 	if base == "" {
@@ -65,7 +65,6 @@ func (m *opsModel) Summarize(ctx context.Context, in opschat.SummarizeRequest) (
 	default:
 		endpoint = apiEndpoint(cfg.Provider, base, "chat/completions")
 	}
-	opsRequestCompatibility(cfg, base, body)
 	raw, err := json.Marshal(body)
 	if err != nil || len(raw) > 2<<20 {
 		return "", opsFailure("invalid_response", 0)

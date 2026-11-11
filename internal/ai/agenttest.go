@@ -643,7 +643,7 @@ func (s *service) agentTestRound(
 		defer closeIdle()
 	}
 
-	maxTokens := 4096
+	maxTokens := chatOutputTokens(cfg)
 	if window > 0 {
 		if t := window / 8; t > 0 && t < maxTokens {
 			maxTokens = t

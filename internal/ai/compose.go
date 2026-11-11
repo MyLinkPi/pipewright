@@ -12,8 +12,6 @@ import (
 // GenerateCompose:中文需求 → docker-compose.yml(容器管理「AI 生成 compose」)。
 // 与 CommandSuggest 一致——生成本就需要 AI:未配置/未启用 → ErrAINotConfigured。
 
-const composeGenMaxTokens = 1500
-
 // GenerateComposeInput 是生成 compose 的入参。
 type GenerateComposeInput struct {
 	NL     string       // 中文需求(如「nginx + redis,nginx 映射 8080,数据持久化」)
@@ -37,13 +35,13 @@ func (s *service) GenerateCompose(ctx context.Context, in GenerateComposeInput) 
 		return nil, fmt.Errorf("%w: 请描述你想要的 compose", ErrGenerateFailed)
 	}
 
-	provider, baseURL, apiKey, err := s.resolveChatCreds(ctx)
+	provider, baseURL, apiKey, maxTokens, err := s.resolveChatCreds(ctx)
 	if err != nil {
 		return nil, err
 	}
 
 	prompt := buildComposePrompt(masker, nl)
-	text, cerr := s.chatWithTokens(ctx, provider, baseURL, s.modelFor(ctx), apiKey, prompt, composeGenMaxTokens)
+	text, cerr := s.chatWithTokens(ctx, provider, baseURL, s.modelFor(ctx), apiKey, prompt, maxTokens)
 	apiKey = "" // 明文用完即弃
 	_ = apiKey
 	if cerr != nil {
