@@ -282,6 +282,10 @@ export default {
     tokenCloseUnsavedBody:
       "明文令牌关闭后无法再查看,未保存的令牌只能撤销重建。确认关闭?",
     tokenCloseUnsavedConfirm: "仍要关闭",
+    tokenDelete: "删除",
+    tokenDeleteTitle: "删除已撤销令牌?",
+    tokenDeleteBody: "彻底删除后该令牌名可重新使用,操作不可恢复({name})。",
+    tokenDeleteConfirm: "确认删除",
 
   },
 };

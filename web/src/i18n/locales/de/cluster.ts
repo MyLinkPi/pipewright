@@ -291,6 +291,11 @@ export default {
     tokenCloseUnsavedBody:
       "Das Token kann nach dem Schließen nicht erneut angezeigt werden; ein nicht gespeichertes Token muss widerrufen und neu erstellt werden. Trotzdem schließen?",
     tokenCloseUnsavedConfirm: "Trotzdem schließen",
+    tokenDelete: "Löschen",
+    tokenDeleteTitle: "Widerrufenes Token löschen?",
+    tokenDeleteBody:
+      "Beim endgültigen Löschen wird der Name wieder frei; dies kann nicht rückgängig gemacht werden ({name}).",
+    tokenDeleteConfirm: "Löschen",
 
   },
 };

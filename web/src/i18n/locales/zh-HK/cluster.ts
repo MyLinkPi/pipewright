@@ -282,6 +282,10 @@ export default {
     tokenCloseUnsavedBody:
       "明文權杖關閉後無法再檢視,未保存的權杖只能撤銷重建。確認關閉?",
     tokenCloseUnsavedConfirm: "仍要關閉",
+    tokenDelete: "刪除",
+    tokenDeleteTitle: "刪除已撤銷權杖?",
+    tokenDeleteBody: "徹底刪除後該權杖名可重新使用,操作不可恢復({name})。",
+    tokenDeleteConfirm: "確認刪除",
 
   },
 };

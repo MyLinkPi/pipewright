@@ -44,6 +44,7 @@ import {
   createMeshApiToken,
   listMeshApiTokens,
   revokeMeshApiToken,
+  deleteMeshApiToken,
   switchMeshSecureMode,
   abortMeshSecureMode,
   getMeshSecureModeStatus,
@@ -910,6 +911,8 @@ function credStatusLabel(c: MeshCredential): string {
 const apiTokens = ref<MeshApiToken[]>([]);
 const tokenName = ref("");
 const tokenBusy = ref(false);
+/** 令牌区局部错误(创建/撤销/删除失败):顶部 actionError 横幅离本区太远,看不到。 */
+const tokenError = ref("");
 /** 创建结果(明文仅此一次;关闭弹窗即弃)。 */
 const tokenResult = ref<{ name: string; token: string } | null>(null);
 const tokenCopied = ref(false);
@@ -929,7 +932,7 @@ async function doCreateToken(): Promise<void> {
   const name = tokenName.value.trim();
   if (!name) return;
   tokenBusy.value = true;
-  actionError.value = "";
+  tokenError.value = "";
   try {
     tokenResult.value = await createMeshApiToken(name);
     tokenCopied.value = false;
@@ -937,7 +940,7 @@ async function doCreateToken(): Promise<void> {
     tokenName.value = "";
     await refreshTokens();
   } catch (err) {
-    actionError.value = err instanceof Error ? err.message : String(err);
+    tokenError.value = err instanceof Error ? err.message : String(err);
   } finally {
     tokenBusy.value = false;
   }
@@ -951,11 +954,30 @@ async function doRevokeToken(tk: MeshApiToken): Promise<void> {
     variant: "danger",
   });
   if (!ok) return;
+  tokenError.value = "";
   try {
     await revokeMeshApiToken(tk.name);
     await refreshTokens();
   } catch (err) {
-    actionError.value = err instanceof Error ? err.message : String(err);
+    tokenError.value = err instanceof Error ? err.message : String(err);
+  }
+}
+
+/** 彻底删除已撤销令牌:释放名字(可同名重建),登记行移除;审计日志仍留痕。 */
+async function doDeleteToken(tk: MeshApiToken): Promise<void> {
+  const ok = await confirm.open({
+    title: t("cluster.settings.tokenDeleteTitle"),
+    body: t("cluster.settings.tokenDeleteBody", { name: tk.name }),
+    confirmLabel: t("cluster.settings.tokenDeleteConfirm"),
+    variant: "danger",
+  });
+  if (!ok) return;
+  tokenError.value = "";
+  try {
+    await deleteMeshApiToken(tk.name);
+    await refreshTokens();
+  } catch (err) {
+    tokenError.value = err instanceof Error ? err.message : String(err);
   }
 }
 
@@ -1657,6 +1679,10 @@ onUnmounted(() => {
             }}</AppButton>
           </div>
         </div>
+        <div v-if="tokenError" class="action-banner token-error" role="alert">
+          {{ tokenError }}
+          <button class="link-btn" type="button" @click="tokenError = ''">✕</button>
+        </div>
         <table v-if="apiTokens.length" class="peer-list">
           <thead>
             <tr>
@@ -1679,6 +1705,14 @@ onUnmounted(() => {
                   @click="doRevokeToken(tk)"
                 >
                   {{ t("cluster.settings.tokenRevoke") }}
+                </button>
+                <button
+                  v-else
+                  class="link-btn"
+                  type="button"
+                  @click="doDeleteToken(tk)"
+                >
+                  {{ t("cluster.settings.tokenDelete") }}
                 </button>
               </td>
             </tr>
@@ -2015,6 +2049,9 @@ onUnmounted(() => {
   min-height: 0;
   resize: none;
   word-break: break-all;
+}
+.token-error {
+  margin-top: 10px;
 }
 .inp {
   width: 100%;

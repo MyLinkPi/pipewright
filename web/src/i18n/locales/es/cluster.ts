@@ -289,6 +289,11 @@ export default {
     tokenCloseUnsavedBody:
       "El token no podrá verse de nuevo al cerrar; un token no guardado solo puede revocarse y recrearse. ¿Cerrar de todos modos?",
     tokenCloseUnsavedConfirm: "Cerrar de todos modos",
+    tokenDelete: "Eliminar",
+    tokenDeleteTitle: "¿Eliminar token revocado?",
+    tokenDeleteBody:
+      "Al eliminarlo definitivamente, el nombre queda libre para reutilizarlo; esto no se puede deshacer ({name}).",
+    tokenDeleteConfirm: "Eliminar",
 
   },
 };

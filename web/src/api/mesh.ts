@@ -413,6 +413,11 @@ export function revokeMeshApiToken(name: string): Promise<{ ok: boolean }> {
   return http.delete(`/api/mesh/api-tokens/${encodeURIComponent(name)}`)
 }
 
+/** 彻底删除已撤销令牌(释放名字,可同名重建);活跃令牌须先撤销。 */
+export function deleteMeshApiToken(name: string): Promise<{ ok: boolean }> {
+  return http.delete(`/api/mesh/api-tokens/${encodeURIComponent(name)}?purge=true`)
+}
+
 /**
  * ── Secure Mode 全集群统一开关 ──
  * POST /api/mesh/secure-mode/switch  → {changeId,effectiveAt,armed} (CSRF;全员确认才 armed)

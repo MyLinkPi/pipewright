@@ -281,11 +281,16 @@ func makeMeshApiTokenCreateHandler(d meshAdminDeps) http.HandlerFunc {
 		}
 		rec, plaintext, err := d.mesh.CreateApiToken(r.Context(), body.Name)
 		if err != nil {
-			if errors.Is(err, mesh.ErrInvalidInput) || errors.Is(err, mesh.ErrDuplicate) {
-				writeError(w, http.StatusUnprocessableEntity, "invalid_token_name", firstLineOf(err.Error()))
-				return
+			// 面向用户的干净文案(不泄漏 mesh: 内部错误前缀)。
+			switch {
+			case errors.Is(err, mesh.ErrInvalidInput):
+				writeError(w, http.StatusUnprocessableEntity, "invalid_token_name", "令牌名必填且不超过 64 字")
+			case errors.Is(err, mesh.ErrDuplicate):
+				writeError(w, http.StatusUnprocessableEntity, "invalid_token_name",
+					"令牌名 "+strings.TrimSpace(body.Name)+" 已被活跃令牌占用;请先撤销再重建")
+			default:
+				writeServerError(w, err)
 			}
-			writeServerError(w, err)
 			return
 		}
 		recordAudit(r.Context(), d.audit, audit.Entry{
@@ -319,6 +324,23 @@ func makeMeshApiTokenDeleteHandler(d meshAdminDeps) http.HandlerFunc {
 			return
 		}
 		name := chi.URLParam(r, "name")
+		// ?purge=true:彻底删除已撤销令牌(释放名字,可同名重建);默认仅撤销。
+		if r.URL.Query().Get("purge") == "true" {
+			if err := d.mesh.DeleteApiToken(r.Context(), name); err != nil {
+				if errors.Is(err, mesh.ErrNotFound) {
+					writeError(w, http.StatusNotFound, "not_found", "令牌不存在或未撤销")
+					return
+				}
+				writeServerError(w, err)
+				return
+			}
+			recordAudit(r.Context(), d.audit, audit.Entry{
+				Actor: "admin", Action: "mesh_api_token_delete", TargetType: "mesh_api_token", TargetID: name,
+				IP: clientIP(r),
+			})
+			writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+			return
+		}
 		if err := d.mesh.RevokeApiToken(r.Context(), name); err != nil {
 			if errors.Is(err, mesh.ErrNotFound) {
 				writeError(w, http.StatusNotFound, "not_found", "令牌不存在或已撤销")

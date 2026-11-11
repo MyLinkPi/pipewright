@@ -54,11 +54,14 @@
 ```json
 {
   "credentialId": "550e8400-e29b-41d4-a716-446655440000",
-  "credentialSecret": "pwmc_…",
+  "credentialSecret": "<easytier 生成,仅此一次>",
   "expiresAt": "2026-11-04T08:00:00Z",
   "remark": "ci 测试"
 }
 ```
+
+> `credentialSecret` 的格式由 EasyTier 决定(`easytier-cli credential generate` 输出),
+> **不带** `pwmc_` 前缀 —— 该前缀是 API 令牌专属,两种密钥勿混淆。
 
 ### 2. 列表 `GET /api/mesh/credentials`
 
@@ -158,9 +161,17 @@ curl -X POST https://pw.example.com/api/mesh/credentials/<credentialId>/revoke \
 
 | 端点 | 作用 |
 |---|---|
-| `POST /api/mesh/api-tokens` | 创建 API 令牌 `{name}`;重名 422 `invalid_token_name`;响应 `{name, token, createdAt}`,`token` 明文仅此一次。审计 `mesh_api_token_create` |
+| `POST /api/mesh/api-tokens` | 创建 API 令牌 `{name}`;**同名已撤销令牌自动重新签发**(新哈希、重置时间,旧明文作废);同名活跃令牌 422 `invalid_token_name`;响应 `{name, token, createdAt}`,`token` 明文仅此一次。审计 `mesh_api_token_create` |
 | `GET /api/mesh/api-tokens` | 列出令牌(含 `lastUsedAt`/`revokedAt`,哈希绝不外显) |
-| `DELETE /api/mesh/api-tokens/{name}` | 撤销令牌;不存在 → 404 `not_found`。审计 `mesh_api_token_revoke` |
+| `DELETE /api/mesh/api-tokens/{name}` | 撤销令牌;不存在 → 404 `not_found`。审计 `mesh_api_token_revoke`。**`?purge=true`**:彻底删除**已撤销**令牌行(释放名字,可同名重建);活跃/不存在 → 404 `not_found`。审计 `mesh_api_token_delete` |
+
+```bash
+# 撤销 → 彻底删除(释放名字);不删除也可直接同名重建(自动重签)
+curl -X DELETE https://pw.example.com/api/mesh/api-tokens/ci \
+  -b cookies.txt -H "X-CSRF-Token: $CSRF"
+curl -X DELETE "https://pw.example.com/api/mesh/api-tokens/ci?purge=true" \
+  -b cookies.txt -H "X-CSRF-Token: $CSRF"
+```
 
 Secure Mode 全集群统一开关(仅管理员会话):
 
@@ -173,6 +184,7 @@ Secure Mode 全集群统一开关(仅管理员会话):
 ## 边界与取舍
 
 - **TTL 护栏为平台自定**:官方 CLI 无默认无上限;平台收敛为默认 24h、最长 90 天、下限 60s(下限给联调留空间,非鼓励超短凭据)。
+- **令牌名可复用**:名字是唯一标识(撤销/删除按 name 定位)。已撤销的同名令牌在创建时自动重签(并发下 UPDATE 带 `revoked_at IS NOT NULL` 护栏,只有一方成功),或经 `?purge=true` 彻底删除释放名字;活跃同名拒绝。审计事件独立于登记行存留,删行不影响历史溯源。
 - **凭据签发依赖本节点 EasyTier**:外部模式 / EasyTier 未运行时 `CredentialProvider()` 为 nil → 503,不在无签发器时伪造凭据。
 - **撤销外部凭据**:活跃表里有但登记簿无的凭据(其它节点 CLI 直签)可撤,`MarkCredentialRevoked` 对未知 ID 容忍。
 - **落库失败补偿**:easytier 已签出但登记失败时尽力回滚撤销;回滚也失败则残留 `external` 幽灵行至 TTL 过期,列表可见且可手动撤销。
@@ -180,5 +192,5 @@ Secure Mode 全集群统一开关(仅管理员会话):
 ## 实现位置
 
 - HTTP 面:`internal/httpapi/mesh_credentials_admin.go`(`meshCredentialAuth` 双通道网关、`mountMeshCredentialAPI` 挂根路由、issue/list/revoke 三 handler、`meshCredActor` context 注入、api-tokens 与 secure-mode handler、`firstLineOf` 错误摘要)。
-- 领域层:`internal/mesh/credentials.go`(`CredentialRecord`/`ApiToken` 类型、登记簿 `IssueCredentialRecord`/`ListCredentialRecords`/`MarkCredentialRevoked`、`Service` 接口、`ErrNotFound`/`ErrInvalidInput`/`ErrDuplicate`)。
-- 测试:`internal/httpapi/mesh_credentials_test.go`(无认证/伪令牌/有效令牌签发/撤销后失效,浏览器路径 CSRF 链路,api-tokens 创建·重名·列表·删除·重复删除)。
+- 领域层:`internal/mesh/credentials.go`(`CredentialRecord`/`ApiToken` 类型、登记簿 `IssueCredentialRecord`/`ListCredentialRecords`/`MarkCredentialRevoked`、令牌 `CreateApiToken`(含撤销后重签)/`DeleteApiToken`、`Service` 接口、`ErrNotFound`/`ErrInvalidInput`/`ErrDuplicate`)。
+- 测试:`internal/httpapi/mesh_credentials_test.go`(无认证/伪令牌/有效令牌签发/撤销后失效,浏览器路径 CSRF 链路,api-tokens 创建·重名·列表·删除·重复删除·撤销后重签·purge)。
