@@ -276,6 +276,19 @@ export default {
     tokenRevokeBody: "Los sistemas externos que usen este token perderán el acceso inmediatamente ({name}).",
     tokenRevokeConfirm: "Revocar",
     tokenEmpty: "Aún no hay tokens",
+    tokenResultTitle: "Token creado",
+    tokenSecretOnce:
+      "El token en claro se muestra solo esta vez y no podrá verse de nuevo al cerrar: cópielo ahora y guárdelo de forma segura en su sistema externo (CI/script).",
+    tokenValueLabel: "Token de API (para autenticación Bearer)",
+    tokenUsageHint:
+      "Uso: envíe Authorization: Bearer <token> a POST /api/mesh/credentials.",
+    tokenCopied: "Copiado",
+    tokenCopy: "Copiar token",
+    tokenClose: "Guardado, cerrar",
+    tokenCloseUnsavedTitle: "Token aún no copiado",
+    tokenCloseUnsavedBody:
+      "El token no podrá verse de nuevo al cerrar; un token no guardado solo puede revocarse y recrearse. ¿Cerrar de todos modos?",
+    tokenCloseUnsavedConfirm: "Cerrar de todos modos",
 
   },
 };

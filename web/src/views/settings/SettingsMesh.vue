@@ -913,6 +913,8 @@ const tokenBusy = ref(false);
 /** 创建结果(明文仅此一次;关闭弹窗即弃)。 */
 const tokenResult = ref<{ name: string; token: string } | null>(null);
 const tokenCopied = ref(false);
+/** 本次结果是否已成功复制过(不随「已复制」提示 2.5s 复位;关闭守卫据此判断)。 */
+const tokenCopyDone = ref(false);
 let tokenCopiedTimer: number | undefined;
 
 async function refreshTokens(): Promise<void> {
@@ -931,6 +933,7 @@ async function doCreateToken(): Promise<void> {
   try {
     tokenResult.value = await createMeshApiToken(name);
     tokenCopied.value = false;
+    tokenCopyDone.value = false;
     tokenName.value = "";
     await refreshTokens();
   } catch (err) {
@@ -960,11 +963,33 @@ async function copyApiToken(): Promise<void> {
   if (!tokenResult.value) return;
   if (await copyText(tokenResult.value.token)) {
     tokenCopied.value = true;
+    tokenCopyDone.value = true;
     if (tokenCopiedTimer !== undefined) window.clearTimeout(tokenCopiedTimer);
     tokenCopiedTimer = window.setTimeout(() => {
       tokenCopied.value = false;
     }, 2500);
   }
+}
+
+/** 关闭一次性结果:未成功复制过先确认(明文丢弃后不可找回,只能撤销重建)。 */
+async function closeTokenResult(): Promise<void> {
+  if (tokenResult.value && !tokenCopyDone.value) {
+    const ok = await confirm.open({
+      title: t("cluster.settings.tokenCloseUnsavedTitle"),
+      body: t("cluster.settings.tokenCloseUnsavedBody"),
+      confirmLabel: t("cluster.settings.tokenCloseUnsavedConfirm"),
+      variant: "danger",
+    });
+    if (!ok) return;
+  }
+  tokenResult.value = null;
+  tokenCopied.value = false;
+  if (tokenCopiedTimer !== undefined) window.clearTimeout(tokenCopiedTimer);
+}
+
+/** 聚焦即全选,方便无剪贴板权限时手动 Ctrl+C。 */
+function selectTokenText(e: FocusEvent): void {
+  (e.target as HTMLTextAreaElement).select();
 }
 
 onMounted(() => {
@@ -986,6 +1011,7 @@ onMounted(() => {
 
 onUnmounted(() => {
   if (statusTimer !== undefined) window.clearInterval(statusTimer);
+  if (tokenCopiedTimer !== undefined) window.clearTimeout(tokenCopiedTimer);
 });
 </script>
 
@@ -1721,6 +1747,62 @@ onUnmounted(() => {
         </div>
       </div>
 
+      <!-- API 令牌创建结果一次性展示:明文仅存在于本次响应,关闭即弃。
+           有意不支持点遮罩关闭 —— 防误触丢失不可找回的明文;未复制时关闭需二次确认。 -->
+      <div v-if="tokenResult" class="yaml-scrim">
+        <div
+          class="yaml-modal"
+          role="dialog"
+          aria-modal="true"
+          :aria-label="t('cluster.settings.tokenResultTitle')"
+        >
+          <div class="yaml-head">
+            <div>
+              <div class="yaml-title">
+                {{ t("cluster.settings.tokenResultTitle") }}
+              </div>
+              <div class="yaml-sub mono">{{ tokenResult.name }}</div>
+            </div>
+            <button
+              class="yaml-close"
+              type="button"
+              :aria-label="t('cluster.settings.yamlClose')"
+              @click="closeTokenResult"
+            >
+              ✕
+            </button>
+          </div>
+          <div class="yaml-body cred-result">
+            <p class="et-hint warn-text">
+              {{ t("cluster.settings.tokenSecretOnce") }}
+            </p>
+            <label class="fld">
+              <span>{{ t("cluster.settings.tokenValueLabel") }}</span>
+              <textarea
+                class="yaml-text mono token-text"
+                readonly
+                :value="tokenResult.token"
+                rows="2"
+                spellcheck="false"
+                @focus="selectTokenText"
+              />
+            </label>
+            <p class="hint">{{ t("cluster.settings.tokenUsageHint") }}</p>
+          </div>
+          <div class="yaml-foot">
+            <span v-if="tokenCopied" class="ok-text">{{
+              t("cluster.settings.tokenCopied")
+            }}</span>
+            <AppButton variant="default" @click="closeTokenResult">{{
+              t("cluster.settings.tokenClose")
+            }}</AppButton>
+            <AppButton variant="primary" @click="copyApiToken">{{
+              t("cluster.settings.tokenCopy")
+            }}</AppButton>
+          </div>
+        </div>
+      </div>
+
       <!-- 导出配置弹窗:只读 YAML + 复制(主路径)+ 下载文件(兜底)。 -->
       <div
         v-if="clientYamlOpen"
@@ -1927,6 +2009,12 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   gap: 12px;
+}
+/* 令牌明文短(48 字符),覆盖 yaml-text 的导出用大高度;长令牌允许折行。 */
+.token-text {
+  min-height: 0;
+  resize: none;
+  word-break: break-all;
 }
 .inp {
   width: 100%;

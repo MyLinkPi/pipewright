@@ -278,6 +278,19 @@ export default {
     tokenRevokeBody: "Externe Systeme mit diesem Token verlieren sofort den Credential-Zugriff ({name}).",
     tokenRevokeConfirm: "Widerrufen",
     tokenEmpty: "Noch keine Tokens",
+    tokenResultTitle: "Token erstellt",
+    tokenSecretOnce:
+      "Das Klartext-Token wird nur dieses eine Mal angezeigt und kann nach dem Schließen nicht erneut eingesehen werden — bitte sofort kopieren und sicher im externen System (CI/Skript) hinterlegen.",
+    tokenValueLabel: "API-Token (für Bearer-Authentifizierung)",
+    tokenUsageHint:
+      "Verwendung: Authorization: Bearer <Token> an POST /api/mesh/credentials senden.",
+    tokenCopied: "Kopiert",
+    tokenCopy: "Token kopieren",
+    tokenClose: "Gespeichert, schließen",
+    tokenCloseUnsavedTitle: "Token noch nicht kopiert",
+    tokenCloseUnsavedBody:
+      "Das Token kann nach dem Schließen nicht erneut angezeigt werden; ein nicht gespeichertes Token muss widerrufen und neu erstellt werden. Trotzdem schließen?",
+    tokenCloseUnsavedConfirm: "Trotzdem schließen",
 
   },
 };

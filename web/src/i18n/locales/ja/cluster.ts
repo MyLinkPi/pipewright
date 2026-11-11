@@ -275,6 +275,19 @@ export default {
     tokenRevokeBody: "失効すると、このトークンを使う外部システムは直ちに申請不可になります({name})。",
     tokenRevokeConfirm: "失効する",
     tokenEmpty: "トークンはありません",
+    tokenResultTitle: "トークンを作成しました",
+    tokenSecretOnce:
+      "平文トークンはこの一度しか表示されず、閉じた後は再確認できません —— 今すぐコピーして外部システム(CI/スクリプト)に安全に保管してください。",
+    tokenValueLabel: "API トークン(Bearer 認証用)",
+    tokenUsageHint:
+      "使い方:Authorization: Bearer <トークン> 付きで POST /api/mesh/credentials を呼び出します。",
+    tokenCopied: "コピーしました",
+    tokenCopy: "トークンをコピー",
+    tokenClose: "保存しました、閉じる",
+    tokenCloseUnsavedTitle: "トークンが未コピーです",
+    tokenCloseUnsavedBody:
+      "閉じた後はトークンを再確認できません。未保存のトークンは失効して再作成するしかありません。閉じますか?",
+    tokenCloseUnsavedConfirm: "閉じる",
 
   },
 };

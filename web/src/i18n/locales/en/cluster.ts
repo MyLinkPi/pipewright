@@ -276,6 +276,19 @@ export default {
     tokenRevokeBody: "External systems using this token immediately lose credential access ({name}).",
     tokenRevokeConfirm: "Revoke",
     tokenEmpty: "No tokens yet",
+    tokenResultTitle: "Token created",
+    tokenSecretOnce:
+      "The plaintext token is shown only this once and cannot be viewed again after closing — copy it now and store it securely in your external system (CI/script).",
+    tokenValueLabel: "API token (for Bearer auth)",
+    tokenUsageHint:
+      "Usage: send Authorization: Bearer <token> to POST /api/mesh/credentials.",
+    tokenCopied: "Copied",
+    tokenCopy: "Copy token",
+    tokenClose: "Saved, close",
+    tokenCloseUnsavedTitle: "Token not copied yet",
+    tokenCloseUnsavedBody:
+      "The token cannot be viewed again after closing; an unsaved token can only be revoked and recreated. Close anyway?",
+    tokenCloseUnsavedConfirm: "Close anyway",
 
   },
 };
