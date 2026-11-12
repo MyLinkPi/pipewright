@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-// TestMaskArgs 验证命令行打码:组网密钥/凭据的值替换为 ***(分离与内联两种形态),
+// TestMaskArgs 验证命令行打码:组网密钥/凭据保留首尾、中间打码(分离与内联两种形态),
 // 其余参数(网络名、peers、网段…)原样保留 —— 日志要能看到完整命令。
 func TestMaskArgs(t *testing.T) {
 	cfg := Config{NetworkSecret: "super-secret", Credential: "cred-token"}
@@ -25,9 +25,9 @@ func TestMaskArgs(t *testing.T) {
 	want := []string{
 		"/usr/bin/easytier-core",
 		"--network-name", "mynet",
-		"--network-secret", "***",
-		"--credential", "***",
-		"--network-secret=***",
+		"--network-secret", "supe***cret",
+		"--credential", "cred***oken",
+		"--network-secret=inli***cret",
 		"-p", "tcp://1.2.3.4:11010",
 		"--manual-routes", "10.5.0.0/16",
 	}
@@ -67,9 +67,24 @@ func TestScanOutputMasksSecrets(t *testing.T) {
 	if strings.Contains(out, "super-secret") || strings.Contains(out, "cred-token") {
 		t.Fatalf("日志泄漏敏感明文:%s", out)
 	}
-	for _, want := range []string{"easytier-core(stderr): tunnel: established to peer ***", "easytier-core(stderr): credential *** rejected"} {
+	for _, want := range []string{"easytier-core(stderr): tunnel: established to peer supe***cret", "easytier-core(stderr): credential cred***oken rejected"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("缺少打码行 %q,got:%s", want, out)
+		}
+	}
+}
+
+// TestMaskSecret 验证短值完整隐藏,长值仅保留可核对的首尾。
+func TestMaskSecret(t *testing.T) {
+	for secret, want := range map[string]string{
+		"":           "***",
+		"abc":        "***",
+		"12345678":   "***",
+		"123456789":  "1234***6789",
+		"密钥abc密钥xyz": "密钥ab***钥xyz",
+	} {
+		if got := maskSecret(secret); got != want {
+			t.Errorf("maskSecret(%q) = %q, want %q", secret, got, want)
 		}
 	}
 }

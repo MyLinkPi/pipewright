@@ -18,7 +18,20 @@ var maskArgFlags = map[string]bool{
 	"--credential":     true,
 }
 
-const maskPlaceholder = "***"
+const (
+	maskPlaceholder = "***"
+	maskKeep        = 4
+)
+
+// maskSecret 保留长凭据首尾各 4 个字符便于核对,中间统一打码;
+// 过短的值全部打码,避免只遮一个字符时几乎暴露完整凭据。
+func maskSecret(secret string) string {
+	runes := []rune(secret)
+	if len(runes) <= 2*maskKeep {
+		return maskPlaceholder
+	}
+	return string(runes[:maskKeep]) + maskPlaceholder + string(runes[len(runes)-maskKeep:])
+}
 
 // sensitive 返回配置中不得明文落日志的敏感值(密钥/凭据)。
 func (c Config) sensitive() []string {
@@ -31,7 +44,7 @@ func (c Config) sensitive() []string {
 	return out
 }
 
-// maskArgs 生成打码后的命令行(逐参数,含二进制路径):敏感旗子的值替换为 ***;
+// maskArgs 生成打码后的命令行(逐参数,含二进制路径):敏感旗子的值保留首尾、中间打码;
 // 同时把值串内残留的敏感明文(如凭据内嵌于其他参数值)一并替换。
 func maskArgs(cfg Config, args []string) []string {
 	secrets := cfg.sensitive()
@@ -39,12 +52,12 @@ func maskArgs(cfg Config, args []string) []string {
 	maskNext := false
 	for _, a := range args {
 		if maskNext {
-			out = append(out, maskPlaceholder)
+			out = append(out, maskSecret(a))
 			maskNext = false
 			continue
 		}
-		if name, _, ok := strings.Cut(a, "="); ok && maskArgFlags[strings.ToLower(name)] {
-			out = append(out, name+"="+maskPlaceholder)
+		if name, value, ok := strings.Cut(a, "="); ok && maskArgFlags[strings.ToLower(name)] {
+			out = append(out, name+"="+maskSecret(value))
 			continue
 		}
 		if maskArgFlags[strings.ToLower(a)] {
@@ -57,11 +70,11 @@ func maskArgs(cfg Config, args []string) []string {
 	return out
 }
 
-// maskValue 把字符串里出现的敏感明文整体替换为 ***。
+// maskValue 把字符串里出现的敏感明文替换为保留首尾的部分掩码。
 func maskValue(s string, secrets []string) string {
 	for _, sec := range secrets {
 		if strings.Contains(s, sec) {
-			s = strings.ReplaceAll(s, sec, maskPlaceholder)
+			s = strings.ReplaceAll(s, sec, maskSecret(sec))
 		}
 	}
 	return s
