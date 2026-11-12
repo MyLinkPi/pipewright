@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"unicode/utf8"
 
 	"gopkg.in/yaml.v3"
 
@@ -63,6 +64,18 @@ func truncate(s string, max int) string {
 	return s[:max] + "…(已截断)"
 }
 
+// truncateTail 保留失败日志末尾的根因，并避免从 UTF-8 字符中间切开。
+func truncateTail(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	start := len(s) - max
+	for start < len(s) && !utf8.RuneStart(s[start]) {
+		start++
+	}
+	return "…(前文已截断，仅保留末尾日志)\n" + s[start:]
+}
+
 // DetectComposeBin 探测可用的 compose CLI:v2 `docker compose` 优先,回退 v1
 // `docker-compose`。返回基础命令;都没有返回 nil。
 func DetectComposeBin(ctx context.Context, svc target.Service, serverID string) []string {
@@ -107,7 +120,7 @@ func Deploy(ctx context.Context, svc target.Service, serverID, name, compose str
 		if msg == "" {
 			msg = "docker compose up 以非零状态退出"
 		}
-		return Result{Err: truncate(msg, 1024), Dispatched: true}
+		return Result{Err: truncateTail(msg, 1024), Dispatched: true}
 	}
 	return Result{
 		OK:         true,
