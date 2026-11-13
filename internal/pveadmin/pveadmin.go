@@ -73,8 +73,9 @@ var (
 	tokenNameRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]*@[A-Za-z0-9][A-Za-z0-9_.-]*![A-Za-z0-9][A-Za-z0-9_.-]*$`)
 	// fingerprintRe 是 SHA256 指纹(64 hex,容忍冒号分隔与大写)。
 	fingerprintRe = regexp.MustCompile(`(?i)^([0-9a-f]{2}:?){32}$`)
-	// upidRe 是 PVE UPID 粗形校验(不含路径分隔与空白)。
-	upidRe = regexp.MustCompile(`^UPID:[A-Za-z0-9_.\-+:,]{1,256}$`)
+	// upidRe 是 PVE UPID 粗形校验(不含路径分隔与空白)。user 段按 PVE UPID.pm
+	// 原样输出 root@pam / user@realm!tokenid(官方 decode 为 [^:\s/]+),须放行 @!%。
+	upidRe = regexp.MustCompile(`^UPID:[A-Za-z0-9_.\-+:,@!%]{1,256}$`)
 )
 
 // Cluster 是 pve_clusters 行模型(TokenSealed 绝不出响应)。
@@ -207,7 +208,7 @@ type Service interface {
 	DeleteCluster(ctx context.Context, id string) error
 	// Overview 集群总览(版本/quorum/节点/资源汇总)。
 	Overview(ctx context.Context, id string) (*Overview, error)
-	// ListVMs 列全部虚拟机与容器(/cluster/resources?type=vm)。
+	// ListVMs 列全部虚拟机与容器(/cluster/resources 全量后按 qemu/lxc 过滤)。
 	ListVMs(ctx context.Context, id string) ([]VM, error)
 	// VMAction 电源操作(qemu|lxc;start|shutdown|stop|reboot|reset|suspend|resume),
 	// 返回异步任务句柄。readonly → ErrReadonly。
@@ -664,8 +665,9 @@ func (s *service) Overview(ctx context.Context, id string) (*Overview, error) {
 			ov.Resources.MemUsed += int64(r.Mem)
 			ov.Resources.MemTotal += int64(r.MaxMem)
 		case "storage":
-			ov.Resources.StorageUsed += int64(r.Storage)
-			ov.Resources.StorageTotal += int64(r.MaxStorage)
+			// storage 条目用量/总量在 disk/maxdisk(storage 字段是存储名,无 maxstorage)。
+			ov.Resources.StorageUsed += int64(r.Disk)
+			ov.Resources.StorageTotal += int64(r.MaxDisk)
 		}
 	}
 	return ov, nil
@@ -677,7 +679,8 @@ func (s *service) ListVMs(ctx context.Context, id string) ([]VM, error) {
 		return nil, err
 	}
 	var res []apiResource
-	if err := c.Get(ctx, "/api2/json/cluster/resources?type=vm", &res); err != nil {
+	// type 枚举无 vm(node|storage|pool|qemu|lxc|openvz|sdn),取全量后本地过滤 qemu/lxc。
+	if err := c.Get(ctx, "/api2/json/cluster/resources", &res); err != nil {
 		return nil, err
 	}
 	out := make([]VM, 0, len(res))
@@ -703,20 +706,21 @@ func (s *service) ListVMs(ctx context.Context, id string) ([]VM, error) {
 	return out, nil
 }
 
-// allowedVMActions 是电源操作白名单。
-var allowedVMActions = map[string]bool{
-	"start": true, "shutdown": true, "stop": true, "reboot": true, "reset": true, "suspend": true, "resume": true,
+// vmActionsByKind 是电源操作白名单,按 kind 对齐 PVE 文档的
+// /nodes/{node}/{qemu|lxc}/{vmid}/status 子端点:lxc 没有 reset(qemu 独有),
+// 其余 start/shutdown/stop/reboot/suspend/resume 两边一致。
+var vmActionsByKind = map[string]map[string]bool{
+	"qemu": {"start": true, "shutdown": true, "stop": true, "reboot": true, "reset": true, "suspend": true, "resume": true},
+	"lxc":  {"start": true, "shutdown": true, "stop": true, "reboot": true, "suspend": true, "resume": true},
 }
 
-// allowedVMKinds 是虚拟化类型白名单(决定 API 路径前缀)。
-var allowedVMKinds = map[string]bool{"qemu": true, "lxc": true}
-
 func (s *service) VMAction(ctx context.Context, id, node, kind string, vmid int64, action string) (*TaskRef, error) {
-	if !allowedVMActions[action] {
-		return nil, fmt.Errorf("%w: 未知电源操作 %q", ErrInvalidInput, action)
-	}
-	if !allowedVMKinds[kind] {
+	actions, ok := vmActionsByKind[kind]
+	if !ok {
 		return nil, fmt.Errorf("%w: 未知虚拟化类型 %q", ErrInvalidInput, kind)
+	}
+	if !actions[action] {
+		return nil, fmt.Errorf("%w: 未知电源操作 %q(类型 %q 不支持)", ErrInvalidInput, action, kind)
 	}
 	if !nameRe.MatchString(node) {
 		return nil, fmt.Errorf("%w: 节点名不合规", ErrInvalidInput)

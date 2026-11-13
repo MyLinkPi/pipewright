@@ -523,6 +523,21 @@ func TestVMActionReadonlyGate(t *testing.T) {
 	if _, err := s.VMAction(ctx, cl.ID, "pve1", "vzctl", 101, "start"); !errors.Is(err, ErrInvalidInput) {
 		t.Fatalf("kind err = %v", err)
 	}
+	// lxc 没有 reset 子端点(PVE 文档 reset 为 qemu 独有)→ 输入层拒绝,避免 501。
+	if _, err := s.VMAction(ctx, cl.ID, "pve1", "lxc", 201, "reset"); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("lxc reset err = %v, want ErrInvalidInput", err)
+	}
+	// qemu 的 reset 合法。
+	fc.postFn = func(path string) (any, error) {
+		if !strings.HasSuffix(path, "/status/reset") {
+			return nil, fmt.Errorf("unexpected %s", path)
+		}
+		return "UPID:pve1:00003A2D:009BEB5C:67416A2F:qmreset:101:root@pam:", nil
+	}
+	ref, err = s.VMAction(ctx, cl.ID, "pve1", "qemu", 101, "reset")
+	if err != nil || ref.UPID == "" {
+		t.Fatalf("qemu reset = %+v / %v", ref, err)
+	}
 }
 
 // TestListVMsParsesQuirks PVE 字符串数值怪癖在 client 层收口。
@@ -556,6 +571,82 @@ func TestListVMsParsesQuirks(t *testing.T) {
 	}
 	if vms[1].Type != "lxc" || vms[1].Status != "stopped" {
 		t.Fatalf("lxc parse: %+v", vms[1])
+	}
+}
+
+// TestOverviewAggregatesResources Overview 三源聚合。storage 条目用量/总量在
+// disk/maxdisk(storage 字段是存储名字符串,不存在 maxstorage —— 按文档对齐)。
+func TestOverviewAggregatesResources(t *testing.T) {
+	s, _, _, fc := newTestService(t)
+	ctx := context.Background()
+	cl := seedCluster(t, s)
+	seedReadyToken(t, s, cl.ID)
+	fc.getFn = func(path string) (any, error) {
+		switch {
+		case strings.HasSuffix(path, "/version"):
+			return apiVersion{Release: "8.2.4", Version: "8.2.4"}, nil
+		case strings.HasSuffix(path, "/cluster/status"):
+			return apiClusterStatus{Type: "cluster", Quorate: flexBool(true),
+				Nodes: []apiClusterNd{{Name: "pve1", IP: "10.1.0.11", Online: flexBool(true)}}}, nil
+		case strings.HasSuffix(path, "/cluster/resources"):
+			// 数值为字符串 —— PVE 实际形态;storage 条目 storage 是名字、用量在 disk/maxdisk。
+			return []map[string]any{
+				{"id": "node/pve1", "type": "node", "node": "pve1", "status": "online",
+					"cpu": "0.5", "maxcpu": "8", "mem": "2", "maxmem": "10"},
+				{"id": "storage/pve1/local", "type": "storage", "storage": "local", "node": "pve1",
+					"disk": "300", "maxdisk": "1000", "plugintype": "dir", "status": "available"},
+			}, nil
+		}
+		return nil, fmt.Errorf("unexpected %s", path)
+	}
+	ov, err := s.Overview(ctx, cl.ID)
+	if err != nil {
+		t.Fatalf("Overview: %v", err)
+	}
+	if ov.Version != "8.2.4" || !ov.Quorate || len(ov.Nodes) != 1 || !ov.Nodes[0].Online {
+		t.Fatalf("overview base = %+v", ov)
+	}
+	if ov.Resources.CPUTotal != 8 || ov.Resources.CPUUsed != 4 { // 0.5 * 8
+		t.Fatalf("cpu = %+v", ov.Resources)
+	}
+	if ov.Resources.MemUsed != 2 || ov.Resources.MemTotal != 10 {
+		t.Fatalf("mem = %+v", ov.Resources)
+	}
+	if ov.Resources.StorageUsed != 300 || ov.Resources.StorageTotal != 1000 {
+		t.Fatalf("storage = %+v", ov.Resources)
+	}
+}
+
+// TestTaskStatusAcceptsRealUPID 真实 UPID 的 user 段含 @ 与 !(root@pam、令牌
+// 发起任务 root@pam!ci,见 PVE UPID.pm 原样拼装),不得被 upidRe 误拒。
+func TestTaskStatusAcceptsRealUPID(t *testing.T) {
+	s, _, _, fc := newTestService(t)
+	ctx := context.Background()
+	cl := seedCluster(t, s)
+	seedReadyToken(t, s, cl.ID)
+	fc.getFn = func(path string) (any, error) {
+		if strings.Contains(path, "/tasks/") {
+			return map[string]any{"status": "stopped", "exitstatus": "OK"}, nil
+		}
+		return nil, fmt.Errorf("unexpected %s", path)
+	}
+	for _, upid := range []string{
+		"UPID:pve1:00003A2D:009BEB5C:67416A2F:qmstart:101:root@pam:",
+		"UPID:pve1:00003A2D:009BEB5C:67416A2F:vzstart:201:root@pam!ci:",
+	} {
+		ts, err := s.TaskStatus(ctx, cl.ID, "pve1", upid)
+		if err != nil {
+			t.Fatalf("TaskStatus %s: %v", upid, err)
+		}
+		if !ts.Done || !ts.OK {
+			t.Fatalf("TaskStatus %s = %+v", upid, ts)
+		}
+	}
+	// 路径注入形态仍须拒绝。
+	for _, upid := range []string{"UPID:pve1:1:2:3:4:5:../etc", "UPID:../x:1:2:3:4:5:"} {
+		if _, err := s.TaskStatus(ctx, cl.ID, "pve1", upid); !errors.Is(err, ErrInvalidInput) {
+			t.Fatalf("injection %s err = %v, want ErrInvalidInput", upid, err)
+		}
 	}
 }
 
