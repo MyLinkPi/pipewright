@@ -282,8 +282,9 @@ type apiResource struct {
 	MaxCPU     flexInt   `json:"maxcpu"`
 	Mem        flexInt   `json:"mem"`
 	MaxMem     flexInt   `json:"maxmem"`
-	Storage    flexInt   `json:"storage"`
-	MaxStorage flexInt   `json:"maxstorage"`
+	StorageName string   `json:"storage"` // storage 条目的存储名(字符串,如 local);用量看 disk/maxdisk
+	Disk        flexInt  `json:"disk"`    // storage 条目:已用字节;vm 条目:rootfs 用量
+	MaxDisk     flexInt  `json:"maxdisk"` // storage 条目:总字节
 	Uptime     flexInt   `json:"uptime"`
 	PluginType string    `json:"plugintype"`
 }
