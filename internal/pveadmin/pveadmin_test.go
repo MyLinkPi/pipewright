@@ -586,8 +586,13 @@ func TestOverviewAggregatesResources(t *testing.T) {
 		case strings.HasSuffix(path, "/version"):
 			return apiVersion{Release: "8.2.4", Version: "8.2.4"}, nil
 		case strings.HasSuffix(path, "/cluster/status"):
-			return apiClusterStatus{Type: "cluster", Quorate: flexBool(true),
-				Nodes: []apiClusterNd{{Name: "pve1", IP: "10.1.0.11", Online: flexBool(true)}}}, nil
+			// 真实形态:混合扁平数组 —— cluster 条目 + node 条目(Cluster.pm get_status)。
+			return []map[string]any{
+				{"type": "cluster", "id": "cluster", "name": "pve-prod",
+					"nodes": "1", "version": "2", "quorate": 1},
+				{"type": "node", "id": "node/pve1", "name": "pve1", "ip": "10.1.0.11",
+					"nodeid": "1", "local": 1, "online": 1, "level": ""},
+			}, nil
 		case strings.HasSuffix(path, "/cluster/resources"):
 			// 数值为字符串 —— PVE 实际形态;storage 条目 storage 是名字、用量在 disk/maxdisk。
 			return []map[string]any{
@@ -614,6 +619,36 @@ func TestOverviewAggregatesResources(t *testing.T) {
 	}
 	if ov.Resources.StorageUsed != 300 || ov.Resources.StorageTotal != 1000 {
 		t.Fatalf("storage = %+v", ov.Resources)
+	}
+}
+
+// TestOverviewStandalone 单机形态:/cluster/status 只有 node 条目、无 quorate,
+// 视作有仲裁且节点在线。
+func TestOverviewStandalone(t *testing.T) {
+	s, _, _, fc := newTestService(t)
+	ctx := context.Background()
+	cl := seedCluster(t, s)
+	seedReadyToken(t, s, cl.ID)
+	fc.getFn = func(path string) (any, error) {
+		switch {
+		case strings.HasSuffix(path, "/version"):
+			return apiVersion{Release: "9.0.0", Version: "9.0.0"}, nil
+		case strings.HasSuffix(path, "/cluster/status"):
+			return []map[string]any{
+				{"type": "node", "id": "node/pve9", "name": "pve9", "ip": "10.1.0.9",
+					"local": 1, "nodeid": "0", "online": 1, "level": ""},
+			}, nil
+		case strings.HasSuffix(path, "/cluster/resources"):
+			return []map[string]any{}, nil
+		}
+		return nil, fmt.Errorf("unexpected %s", path)
+	}
+	ov, err := s.Overview(ctx, cl.ID)
+	if err != nil {
+		t.Fatalf("Overview: %v", err)
+	}
+	if !ov.Quorate || len(ov.Nodes) != 1 || !ov.Nodes[0].Online || ov.Nodes[0].Name != "pve9" {
+		t.Fatalf("standalone overview = %+v", ov)
 	}
 }
 

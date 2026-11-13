@@ -643,8 +643,8 @@ func (s *service) Overview(ctx context.Context, id string) (*Overview, error) {
 	if err := c.Get(ctx2, "/api2/json/version", &ver); err != nil {
 		return nil, err
 	}
-	var cs apiClusterStatus
-	if err := c.Get(ctx2, "/api2/json/cluster/status", &cs); err != nil {
+	var entries []apiClusterStatusEntry
+	if err := c.Get(ctx2, "/api2/json/cluster/status", &entries); err != nil {
 		return nil, err
 	}
 	var res []apiResource
@@ -652,9 +652,20 @@ func (s *service) Overview(ctx context.Context, id string) (*Overview, error) {
 		return nil, err
 	}
 
-	ov := &Overview{Version: ver.Release, Quorate: bool(cs.Quorate)}
-	for _, n := range cs.Nodes {
-		ov.Nodes = append(ov.Nodes, NodeStatus{Name: n.Name, IP: n.IP, Online: bool(n.Online)})
+	ov := &Overview{Version: ver.Release}
+	sawCluster := false
+	for _, e := range entries {
+		switch e.Type {
+		case "cluster":
+			sawCluster = true
+			ov.Quorate = bool(e.Quorate)
+		case "node":
+			ov.Nodes = append(ov.Nodes, NodeStatus{Name: e.Name, IP: e.IP, Online: bool(e.Online)})
+		}
+	}
+	if !sawCluster {
+		// 单机形态只有 node 条目、无 quorate(Cluster.pm else 分支)—— 节点自治,视作有仲裁。
+		ov.Quorate = true
 	}
 	sort.Slice(ov.Nodes, func(i, j int) bool { return ov.Nodes[i].Name < ov.Nodes[j].Name })
 	for _, r := range res {

@@ -252,22 +252,21 @@ type apiVersion struct {
 	Repoid  string `json:"repoid"`
 }
 
-// apiClusterStatus 对应 GET /cluster/status(集群与单机两种形态共用宽松字段)。
-type apiClusterStatus struct {
-	Type    string         `json:"type"` // cluster | standalone
-	Name    string         `json:"name"`
-	ID      string         `json:"id"`
-	Quorate flexBool       `json:"quorate"`
-	Nodes   []apiClusterNd `json:"nodes"`
-}
-type apiClusterNd struct {
-	ID     flexInt  `json:"id"`
-	Name   string   `json:"name"`
-	IP     string   `json:"ip"`
-	Level  string   `json:"level"`
-	Online flexBool `json:"online"`
-	Local  flexBool `json:"local"`
-	NodeID flexInt  `json:"nodeid"`
+// apiClusterStatusEntry 对应 GET /cluster/status 返回数组的一个条目。返回体是
+// 混合扁平数组(Cluster.pm get_status):type=cluster 条目在前(集群名/成员数/
+// quorate),type=node 条目随后(节点明细);单机形态只有一条 node 条目、无 quorate。
+type apiClusterStatusEntry struct {
+	Type    string   `json:"type"` // cluster | node
+	ID      string   `json:"id"`
+	Name    string   `json:"name"`
+	IP      string   `json:"ip"`      // [node]
+	Level   string   `json:"level"`   // [node] 订阅级别
+	NodeID  flexInt  `json:"nodeid"`  // [node] corosync nodeid
+	Nodes   flexInt  `json:"nodes"`   // [cluster] 成员数量(含离线)
+	Online  flexBool `json:"online"`  // [node]
+	Local   flexBool `json:"local"`   // [node] 是否响应节点本机
+	Quorate flexBool `json:"quorate"` // [cluster]
+	Version flexInt  `json:"version"` // [cluster] corosync 配置版本
 }
 
 // apiResource 对应 GET /cluster/resources 的一个条目(node/vm/storage 共用)。
