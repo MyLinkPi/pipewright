@@ -293,6 +293,7 @@ export default {
 
   // ─── JobDrawer.vue ─────────────────────────────────────────────────────
   drawerAria: "Job configuration",
+  drawerResizeAria: "Resize drawer (drag, or use arrow keys)",
   unnamedJob: "(unnamed job)",
   thisPipeline: "this pipeline",
   closeDrawer: "Close drawer",

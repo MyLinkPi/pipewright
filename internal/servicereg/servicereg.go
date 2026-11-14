@@ -148,9 +148,9 @@ type Settings struct {
 	// ServerIDs 是全部网关主机引用 id(升序无关,按用户选择顺序)。空 = 未配置(配置态)。
 	ServerIDs []string
 	// ServerID 是 ServerIDs[0] 的派生镜像(读侧兜底同步;仅兼容展示,勿用于编排判断)。
-	ServerID  string
-	HTTPPort  int // 宿主 HTTP 端口(容器内恒 80)
-	HTTPSPort int // 宿主 HTTPS 端口(容器内恒 443)
+	ServerID      string
+	HTTPPort      int // 宿主 HTTP 端口(容器内恒 80)
+	HTTPSPort     int // 宿主 HTTPS 端口(容器内恒 443)
 	// LocalHTTPPort / LocalHTTPSPort 是本机(__local__ 网关主机)共存模式的回环端口
 	// (specs/local-node-roles.md 7.3):平台 HTTPS 占宿主 80/443 时,网关容器改绑
 	// 127.0.0.1:<local 端口>,入口 vhost 反代过来。校验:1..65535、互不相等、且不得与
@@ -158,9 +158,9 @@ type Settings struct {
 	LocalHTTPPort  int
 	LocalHTTPSPort int
 	Image          string
-	Network        string
-	ContainerName  string
-	VolumeName     string
+	Network       string
+	ContainerName string
+	VolumeName    string
 	// StaticRoot 是各网关主机上的静态发布根目录(bind mount 只读挂进网关容器的
 	// /etc/pipewright/static;全部网关主机使用同一路径约定)。
 	StaticRoot     string
@@ -264,9 +264,9 @@ type SettingsUpdate struct {
 	// ServerIDs 设置全部网关主机(空列表 = 清空转配置态);优先于 ServerID。
 	ServerIDs *[]string
 	// ServerID 是旧版单机入口(等价于单元素 ServerIDs;空串 = 清空)。仅兼容保留。
-	ServerID  *string
-	HTTPPort  *int
-	HTTPSPort *int
+	ServerID      *string
+	HTTPPort      *int
+	HTTPSPort     *int
 	// LocalHTTPPort / LocalHTTPSPort 是本机共存模式回环端口(specs 7.3;仅 __local__ 消费)。
 	LocalHTTPPort  *int
 	LocalHTTPSPort *int

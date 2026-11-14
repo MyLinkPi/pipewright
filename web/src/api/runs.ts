@@ -74,6 +74,8 @@ export interface RunTrigger {
   branch: string
   commit: string
   actor: string
+  /** 实际检出 commit 的 subject 首行(additive;克隆解析出后回写;老运行/未解析出缺省)。 */
+  commitMessage?: string
 }
 
 // ─── targets: SSH deploy execution (Story 4-2 frozen contract — FR-10) ───────

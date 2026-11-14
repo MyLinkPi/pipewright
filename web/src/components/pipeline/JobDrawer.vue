@@ -34,6 +34,7 @@ import StudioInstanceParams from './StudioInstanceParams.vue'
 import LabelSelectorEditor from './LabelSelectorEditor.vue'
 import EcsInstanceMultiSelect from './EcsInstanceMultiSelect.vue'
 import ServiceRegBinding from './ServiceRegBinding.vue'
+import { useDrawerWidth } from '../../composables/useDrawerWidth'
 
 
 // 集群节点/对端项目候选(meshNode/meshProject 控件自取;请求失败降级为空列表)。
@@ -109,6 +110,18 @@ const emit = defineEmits<{
 }>()
 
 const { t } = useI18n()
+
+// ─── 抽屉宽度:左缘把手拖拽调节,localStorage 记忆(与 StageDrawer 共用) ──────
+
+const {
+  width: drawerWidth,
+  dragging: drawerDragging,
+  minWidth: drawerMinWidth,
+  maxWidth: drawerMaxWidth,
+  onHandleDown: onDrawerHandleDown,
+  onHandleKeydown: onDrawerHandleKeydown,
+  reset: resetDrawerWidth,
+} = useDrawerWidth()
 
 // ─── Local editable copy ──────────────────────────────────────────────────────
 
@@ -554,7 +567,24 @@ async function confirmSave(): Promise<void> {
 </script>
 
 <template>
-  <aside class="job-drawer" :aria-label="t('pipelineJob.drawerAria')">
+  <aside class="job-drawer" :style="{ width: drawerWidth + 'px' }" :aria-label="t('pipelineJob.drawerAria')">
+    <!-- 左缘拖拽把手:向左拖变宽;双击恢复默认;聚焦后方向键微调 -->
+    <div
+      class="drawer-resize-handle"
+      :class="{ 'drawer-resize-handle--active': drawerDragging }"
+      role="separator"
+      aria-orientation="vertical"
+      tabindex="0"
+      :aria-label="t('pipelineJob.drawerResizeAria')"
+      :aria-valuenow="drawerWidth"
+      :aria-valuemin="drawerMinWidth"
+      :aria-valuemax="drawerMaxWidth"
+      @pointerdown="onDrawerHandleDown"
+      @keydown="onDrawerHandleKeydown"
+      @dblclick="resetDrawerWidth"
+    />
+    <!-- 内容区独立滚动:把手在滚动容器之外,长表单滚动后仍可拖拽 -->
+    <div class="drawer-scroll">
     <!-- Head -->
     <div class="drawer-head">
       <span class="drawer-icon" aria-hidden="true">
@@ -1075,6 +1105,7 @@ async function confirmSave(): Promise<void> {
           </button>
         </div>
       </div>
+    </div>
     </div>
   </aside>
 </template>

@@ -22,7 +22,7 @@ func TestRecentCommitTags(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Create: %v", err)
 		}
-		if err := svc.SetCommit(context.Background(), r.ID, c, time.Time{}); err != nil {
+		if err := svc.SetCommit(context.Background(), r.ID, c, time.Time{}, ""); err != nil {
 			t.Fatalf("SetCommit: %v", err)
 		}
 		ts := base.Add(time.Duration(i) * time.Minute).Format(time.RFC3339)

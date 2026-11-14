@@ -64,6 +64,9 @@ type triggerInfo struct {
 	Branch string `json:"branch"`
 	Commit string `json:"commit"`
 	Actor  string `json:"actor"`
+	// CommitMessage 是实际检出 commit 的 subject 首行(**additive 字段**:克隆解析出后
+	// SetCommit 回写;老运行/未解析出为空,前端不渲染)。供运行详情在短 SHA 旁展示。
+	CommitMessage string `json:"commitMessage,omitempty"`
 }
 
 type stepDTO struct {
@@ -114,7 +117,7 @@ func durationMs(start, end *time.Time) *int64 {
 }
 
 func toTriggerInfo(t run.Trigger) triggerInfo {
-	return triggerInfo{Type: t.Type, Branch: t.Branch, Commit: t.Commit, Actor: t.Actor}
+	return triggerInfo{Type: t.Type, Branch: t.Branch, Commit: t.Commit, Actor: t.Actor, CommitMessage: t.CommitMessage}
 }
 
 // toRunDetailDTO 映射运行到冻结 run-detail DTO。artifacts 填 Story 3.4 的产物 slot

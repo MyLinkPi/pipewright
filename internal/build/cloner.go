@@ -40,11 +40,12 @@ type Cloner struct {
 // NewCloner 构造生产 Cloner(严格 SSRF 收口)。
 func NewCloner() *Cloner { return &Cloner{} }
 
-// CloneResolved 是克隆结果:实际检出的 commit 短 sha(供产物 tag/引用)与该 commit 的
-// 提交时刻(供 DORA 前置时长;零值 = 未解析出)。
+// CloneResolved 是克隆结果:实际检出的 commit 短 sha(供产物 tag/引用)、该 commit 的
+// 提交时刻(供 DORA 前置时长;零值 = 未解析出)与 subject 首行(供运行详情展示;空 = 未解析出)。
 type CloneResolved struct {
-	CommitShort string
-	CommitTime  time.Time
+	CommitShort   string
+	CommitTime    time.Time
+	CommitMessage string
 }
 
 // Clone 把 repoURL 在 ref(commit sha 优先,否则分支名;皆空则默认分支)上克隆到 destDir。
@@ -113,10 +114,11 @@ func (c *Cloner) Clone(ctx context.Context, repoURL string, cred vault.GitAuth, 
 		resolvedHash = head.Hash()
 	}
 	// 提交时刻(commit 对象 committer 时间;浅克隆/指定 commit 均持有该对象)供 DORA
-	// 前置时长;解析失败不致命(保持零值,调用方回退入队时刻代理)。
+	// 前置时长;subject 首行供运行详情展示。解析失败不致命(保持零值,调用方回退入队时刻代理)。
 	if !resolvedHash.IsZero() {
 		if obj, oerr := repo.CommitObject(resolvedHash); oerr == nil {
 			resolved.CommitTime = obj.Committer.When
+			resolved.CommitMessage = CommitSubject(obj.Message)
 		}
 	}
 
@@ -146,6 +148,19 @@ func shortSHA(sha string) string {
 		return sha[:7]
 	}
 	return sha
+}
+
+// CommitSubject 取 commit message 的 subject:首个非空行(多行 message 只留标题;
+// 去掉 \r 兼容 CRLF)。空 message / 全空行 → 空串(前端不渲染该行)。
+// 导出供其它克隆实现(repocache 的本地镜像出工作区)复用,保证各路径口径一致。
+func CommitSubject(message string) string {
+	for _, line := range strings.Split(message, "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			return line
+		}
+	}
+	return ""
 }
 
 // mkTempWorkspace 建一个临时构建工作区目录(调用方 defer RemoveAll 销毁;宿主零污染,FR-5)。

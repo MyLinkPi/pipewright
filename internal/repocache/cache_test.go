@@ -78,6 +78,10 @@ func TestMirrorCloneCheckoutAndIncremental(t *testing.T) {
 	if res.CommitShort != mainShort {
 		t.Fatalf("CommitShort = %q, want %q", res.CommitShort, mainShort)
 	}
+	// 本地镜像路径也必须回填 subject:运行详情依赖它(repo cache 默认启用,漏填即功能失效)。
+	if res.CommitMessage != "c1" {
+		t.Fatalf("CommitMessage = %q, want c1", res.CommitMessage)
+	}
 	if _, err := os.Stat(filepath.Join(ws1, "README.md")); err != nil {
 		t.Fatalf("工作区应含 README.md: %v", err)
 	}

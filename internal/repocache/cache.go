@@ -206,10 +206,13 @@ func (c *Cache) checkoutFromMirror(ctx context.Context, mirror, branch, commit, 
 		resolved.CommitShort = shortSHA(head.Hash().String())
 		resolvedHash = head.Hash()
 	}
-	// 提交时刻(commit 对象 committer 时间)供 DORA 前置时长;解析失败不致命(零值回退)。
+	// 提交时刻(commit 对象 committer 时间)供 DORA 前置时长、subject 首行供运行详情展示;
+	// 解析失败不致命(零值回退)。与 build.Cloner 直连路径同口径(默认启用本缓存,漏填会让
+	// 运行详情的 commit message 恒空)。
 	if !resolvedHash.IsZero() {
 		if obj, oerr := repo.CommitObject(resolvedHash); oerr == nil {
 			resolved.CommitTime = obj.Committer.When
+			resolved.CommitMessage = build.CommitSubject(obj.Message)
 		}
 	}
 	return resolved, nil

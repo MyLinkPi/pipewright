@@ -17,6 +17,7 @@ import { matchServers } from '../../lib/selectorMatch'
 import StagePostEditor from './StagePostEditor.vue'
 import StageServicesEditor from './StageServicesEditor.vue'
 import LabelSelectorEditor from './LabelSelectorEditor.vue'
+import { useDrawerWidth } from '../../composables/useDrawerWidth'
 import {
   WHEN_EVENTS,
   WHEN_EVENT_LABELS,
@@ -54,6 +55,18 @@ const emit = defineEmits<{
 }>()
 
 const { t } = useI18n()
+
+// ─── 抽屉宽度:左缘把手拖拽调节,localStorage 记忆(与 JobDrawer 共用) ────────
+
+const {
+  width: drawerWidth,
+  dragging: drawerDragging,
+  minWidth: drawerMinWidth,
+  maxWidth: drawerMaxWidth,
+  onHandleDown: onDrawerHandleDown,
+  onHandleKeydown: onDrawerHandleKeydown,
+  reset: resetDrawerWidth,
+} = useDrawerWidth()
 
 // ─── 阶段名称 / kind(阶段可自由命名、自由加;不再「每类一个」)────────────────
 
@@ -188,7 +201,24 @@ function commitRunnerServer(id: string): void {
 </script>
 
 <template>
-  <aside class="job-drawer" :aria-label="t('pipelineCanvas.stageSettingsAria')">
+  <aside class="job-drawer" :style="{ width: drawerWidth + 'px' }" :aria-label="t('pipelineCanvas.stageSettingsAria')">
+    <!-- 左缘拖拽把手:向左拖变宽;双击恢复默认;聚焦后方向键微调 -->
+    <div
+      class="drawer-resize-handle"
+      :class="{ 'drawer-resize-handle--active': drawerDragging }"
+      role="separator"
+      aria-orientation="vertical"
+      tabindex="0"
+      :aria-label="t('pipelineCanvas.stageSettingsResizeAria')"
+      :aria-valuenow="drawerWidth"
+      :aria-valuemin="drawerMinWidth"
+      :aria-valuemax="drawerMaxWidth"
+      @pointerdown="onDrawerHandleDown"
+      @keydown="onDrawerHandleKeydown"
+      @dblclick="resetDrawerWidth"
+    />
+    <!-- 内容区独立滚动:把手在滚动容器之外,长表单滚动后仍可拖拽 -->
+    <div class="drawer-scroll">
     <!-- Head — 与 JobDrawer 同骨架 -->
     <div class="drawer-head">
       <span class="drawer-icon" aria-hidden="true">
@@ -389,6 +419,7 @@ function commitRunnerServer(id: string): void {
         @update="emit('update-post', $event)"
       />
       <p class="drawer-hint">{{ t('pipelineCanvas.postHint') }}</p>
+    </div>
     </div>
   </aside>
 </template>

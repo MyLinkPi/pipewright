@@ -295,6 +295,7 @@ export default {
 
   // ─── JobDrawer.vue ─────────────────────────────────────────────────────
   drawerAria: "ジョブ設定",
+  drawerResizeAria: "ドロワーの幅を調整(ドラッグまたは方向キー)",
   unnamedJob: "(無名のジョブ)",
   thisPipeline: "このパイプライン",
   closeDrawer: "ドロワーを閉じる",

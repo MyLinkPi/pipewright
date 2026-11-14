@@ -52,6 +52,7 @@ export default {
 
   // ─── StageDrawer ──────────────────────────────────────────────
   stageSettingsAria: 'Paramètres de l’étape',
+  stageSettingsResizeAria: 'Ajuster la largeur du panneau (glisser ou flèches)',
   stageSettingsSub: 'Paramètres de l’étape · Étape {n}',
   closeSettings: 'Fermer les paramètres',
   whenSectionLabel: 'Exécution conditionnelle · when',

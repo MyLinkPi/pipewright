@@ -183,8 +183,8 @@ func (s *service) Save(ctx context.Context, in SaveInput) (Roles, error) {
 		`INSERT INTO local_node (id, build_enabled, build_labels, build_max_builds, build_priority, deploy_enabled, gateway_enabled, created_at, updated_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) `+
 			store.UpsertSuffix(store.DialectOf(s.db),
-				[]string{"id"},
-				[]string{"build_enabled", "build_labels", "build_max_builds", "build_priority", "deploy_enabled", "gateway_enabled", "updated_at"}),
+			[]string{"id"},
+			[]string{"build_enabled", "build_labels", "build_max_builds", "build_priority", "deploy_enabled", "gateway_enabled", "updated_at"}),
 		localNodeID, boolInt(next.BuildEnabled), next.BuildLabels, next.BuildMaxBuilds, next.BuildPriority,
 		boolInt(next.DeployEnabled), boolInt(next.GatewayEnabled), now, now)
 	if err != nil {

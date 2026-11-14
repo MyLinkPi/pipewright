@@ -278,6 +278,7 @@ export default {
 
   // ─── JobDrawer.vue ─────────────────────────────────────────────────────
   drawerAria: "任务配置",
+  drawerResizeAria: "调整抽屉宽度(左右拖动,或用方向键微调)",
   unnamedJob: "(未命名任务)",
   thisPipeline: "本流水线",
   closeDrawer: "关闭抽屉",
