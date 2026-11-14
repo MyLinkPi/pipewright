@@ -305,6 +305,7 @@ export default {
 
   // ─── JobDrawer.vue ─────────────────────────────────────────────────────
   drawerAria: "Configuration de la tâche",
+  drawerResizeAria: "Ajuster la largeur du volet (glisser ou flèches)",
   unnamedJob: "(tâche sans nom)",
   thisPipeline: "ce pipeline",
   closeDrawer: "Fermer le panneau",

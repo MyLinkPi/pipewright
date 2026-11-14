@@ -93,7 +93,7 @@ func TestApplyGatewayRejectsInvalidLoopbackPorts(t *testing.T) {
 	h := &fakeHost{}
 	svc := New(nil, h, nil, 8080)
 	for _, tc := range []struct {
-		name        string
+		name       string
 		http, https int
 	}{
 		{"未配置", 0, 0},

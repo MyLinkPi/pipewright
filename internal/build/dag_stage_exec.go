@@ -256,7 +256,7 @@ func NewStageExecutor(b *Builder, reportSink TestReportSink) dagrun.StageExecuto
 				if resolved != nil && resolved.CommitShort != "" {
 					commitTag = resolved.CommitShort
 					if b.recordCommit != nil {
-						b.recordCommit(ctx, r.ID, resolved.CommitShort, resolved.CommitTime)
+						b.recordCommit(ctx, r.ID, resolved.CommitShort, resolved.CommitTime, resolved.CommitMessage)
 					}
 				}
 			}
@@ -730,7 +730,7 @@ func (b *Builder) cloneJobWorkspace(ctx context.Context, r *run.Run, proj *proje
 	if resolved != nil && resolved.CommitShort != "" {
 		commitTag = resolved.CommitShort
 		if b.recordCommit != nil {
-			b.recordCommit(ctx, r.ID, resolved.CommitShort, resolved.CommitTime) // 同一 commit;并发重复记录幂等无害
+			b.recordCommit(ctx, r.ID, resolved.CommitShort, resolved.CommitTime, resolved.CommitMessage) // 同一 commit;并发重复记录幂等无害
 		}
 	}
 	// 跨阶段 + 阶段内上游 job 产物:把本 run 已归档的 jar/dist 真字节恢复进本 job 工作区原相对路径。

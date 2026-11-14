@@ -148,6 +148,10 @@ type Trigger struct {
 	Commit string
 	Actor  string
 
+	// CommitMessage 是实际检出 commit 的 subject(首行,克隆解析后经 SetCommit 回写;
+	// 供运行详情在短 SHA 旁展示)。触发时未知(webhook/手动均空),老运行为空串。
+	CommitMessage string
+
 	// Params 是参数化手动运行的 key=value 参数(Story 8-11);执行时注入 script 步骤容器作环境变量。
 	// 非敏感明文(含密钥应走保险库引用);为空表示无参数。
 	Params map[string]string

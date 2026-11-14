@@ -731,8 +731,8 @@ func main() {
 		// 门行为不变;运行时可改)。
 		approvalNotifier := httpapi.NewApprovalNotifier(notifySvc, approvalSigner, publicURLResolver, runSvc)
 		dagOpts = append(dagOpts, dagrun.WithGate(httpapi.NewApprovalGate(runSvc, approvalCoord, approvalStore, approvalNotifier)))
-		builderOpts := []build.BuilderOption{build.WithArtifactStore(artStore), build.WithArtifactLister(runSvc.ListArtifacts), build.WithImageGC(os.Getenv("PIPEWRIGHT_NO_IMAGE_GC") != "1"), build.WithCommitRecorder(func(ctx context.Context, runID, commit string, commitAt time.Time) {
-			_ = runSvc.SetCommit(ctx, runID, commit, commitAt)
+		builderOpts := []build.BuilderOption{build.WithArtifactStore(artStore), build.WithArtifactLister(runSvc.ListArtifacts), build.WithImageGC(os.Getenv("PIPEWRIGHT_NO_IMAGE_GC") != "1"), build.WithCommitRecorder(func(ctx context.Context, runID, commit string, commitAt time.Time, commitMessage string) {
+			_ = runSvc.SetCommit(ctx, runID, commit, commitAt, commitMessage)
 		}), build.WithStageDeployer(deploySvc), build.WithStageNotifier(notifySvc), build.WithStageObjectUploader(objectStoreSvc), build.WithEcsPowerController(aliyunSvc), build.WithAITester(aiSvc), build.WithAITestInfra(&aiTestInfraAdapter{svc: targetSvc}), build.WithWaitCoordinator(waitCoord), clonerOpt, buildCacheOpt, builtinRegistryOpt, imageRotationOpt, imagePushCleanupOpt}
 		// 浏览器动作集(P2):控制机有容器 CLI 才注入浏览器桥编排;瘦控制机降级为纯 HTTP 验收。
 		if aiCLI, aiCLIErr := build.DetectAITestContainerCLI(); aiCLIErr == nil {

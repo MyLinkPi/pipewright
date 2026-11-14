@@ -139,7 +139,7 @@ func TestSetCommitPersistsCommitTime(t *testing.T) {
 	}
 
 	commitAt := time.Date(2026, 5, 1, 8, 30, 0, 0, time.UTC)
-	if err := svc.SetCommit(context.Background(), r1.ID, "abc1234", commitAt); err != nil {
+	if err := svc.SetCommit(context.Background(), r1.ID, "abc1234", commitAt, "fix: 修复部署回滚"); err != nil {
 		t.Fatalf("SetCommit: %v", err)
 	}
 	// 同 run 未解析出时刻的回写(零值)→ commit_time 置 NULL。
@@ -147,7 +147,7 @@ func TestSetCommitPersistsCommitTime(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create r2: %v", err)
 	}
-	if err := svc.SetCommit(context.Background(), r2.ID, "def5678", time.Time{}); err != nil {
+	if err := svc.SetCommit(context.Background(), r2.ID, "def5678", time.Time{}, ""); err != nil {
 		t.Fatalf("SetCommit r2: %v", err)
 	}
 

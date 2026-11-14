@@ -770,7 +770,7 @@ func (b *Builder) runStageRemote(ctx context.Context, r *run.Run, stage pipeline
 		return ErrBuildFailed
 	}
 	if resolved != nil && resolved.CommitShort != "" && b.recordCommit != nil {
-		b.recordCommit(ctx, r.ID, resolved.CommitShort, resolved.CommitTime)
+		b.recordCommit(ctx, r.ID, resolved.CommitShort, resolved.CommitTime, resolved.CommitMessage)
 	}
 	// 跨阶段产物传递:把上游阶段已归档的 jar/dist 真字节恢复到本地工作区原相对路径,
 	// 随 tar 一起传远程(产物字节在控制机制品库;与本地两条路径同语义,best-effort)。

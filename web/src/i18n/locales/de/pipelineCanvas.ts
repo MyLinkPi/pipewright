@@ -52,6 +52,7 @@ export default {
 
   // ─── StageDrawer ──────────────────────────────────────────────
   stageSettingsAria: 'Phasen-Einstellungen',
+  stageSettingsResizeAria: 'Panel in der Breite anpassen (ziehen oder Pfeiltasten)',
   stageSettingsSub: 'Phasen-Einstellungen · Phase {n}',
   closeSettings: 'Einstellungen schließen',
   whenSectionLabel: 'Bedingte Ausführung · when',

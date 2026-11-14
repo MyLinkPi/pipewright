@@ -52,6 +52,7 @@ export default {
 
   // ─── StageDrawer ──────────────────────────────────────────────
   stageSettingsAria: '阶段设置',
+  stageSettingsResizeAria: '调整面板宽度(左右拖动,或用方向键微调)',
   stageSettingsSub: '阶段设置 · 第 {n} 阶段',
   closeSettings: '关闭设置',
   whenSectionLabel: '条件执行 · when',

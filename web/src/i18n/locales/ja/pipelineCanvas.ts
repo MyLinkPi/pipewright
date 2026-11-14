@@ -52,6 +52,7 @@ export default {
 
   // ─── StageDrawer ──────────────────────────────────────────────
   stageSettingsAria: 'ステージ設定',
+  stageSettingsResizeAria: 'パネルの幅を調整(ドラッグまたは方向キー)',
   stageSettingsSub: 'ステージ設定 · 第 {n} ステージ',
   closeSettings: '設定を閉じる',
   whenSectionLabel: '条件実行 · when',

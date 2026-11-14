@@ -52,6 +52,7 @@ export default {
 
   // ─── StageDrawer ──────────────────────────────────────────────
   stageSettingsAria: '스테이지 설정',
+  stageSettingsResizeAria: '패널 너비 조절(드래그 또는 방향키)',
   stageSettingsSub: '스테이지 설정 · {n}번째 스테이지',
   closeSettings: '설정 닫기',
   whenSectionLabel: '조건 실행 · when',

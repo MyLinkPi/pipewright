@@ -31,10 +31,7 @@ func TestValidateSettingsLocalPorts(t *testing.T) {
 	if err := validateSettings(ok); err != nil {
 		t.Fatalf("合法回环端口应通过:%v", err)
 	}
-	for _, tc := range []struct {
-		name        string
-		http, https int
-	}{
+	for _, tc := range []struct{ name string; http, https int }{
 		{"互异被破坏", 18443, 18443},
 		{"与集群 HTTP 冲突", 80, 18443},
 		{"与集群 HTTPS 冲突", 18080, 443},
@@ -86,7 +83,7 @@ func TestDesiredPortBindings(t *testing.T) {
 
 func TestPortsMatchHostIPNormalization(t *testing.T) {
 	cur := map[int]portBinding{
-		80:  {HostIP: "0.0.0.0", HostPort: 80}, // docker 对 -p 80:80 的另一种返回形态
+		80:  {HostIP: "0.0.0.0", HostPort: 80},   // docker 对 -p 80:80 的另一种返回形态
 		443: {HostIP: "127.0.0.1", HostPort: 18443},
 	}
 	want := map[int]portBinding{

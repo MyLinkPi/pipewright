@@ -828,6 +828,9 @@ function goBack(): void {
               class="meta-val mono"
               :class="{ 'meta-val--failed': !run.trigger.commit && (run.status === 'failed' || run.status === 'partial_failed' || run.status === 'rolled_back') }"
             >{{ commitDisplay(run.trigger.commit, run.status) }}</span>
+            <span v-if="run.trigger.commitMessage" class="meta-val meta-commit-msg" :title="run.trigger.commitMessage">
+              {{ run.trigger.commitMessage }}
+            </span>
           </div>
           <div class="meta-item">
             <span class="meta-key">{{ t('runDetail.metaTrigger') }}</span>
@@ -1691,6 +1694,16 @@ function goBack(): void {
 /* 失败且未取到 commit:用失败色,不留纯空白(误导成还在跑)。 */
 .meta-val--failed {
   color: var(--color-red);
+}
+
+/* commit message(subject 首行):短 SHA 下方小字展示;超长截断,悬停 title 看全文。 */
+.meta-commit-msg {
+  max-width: 340px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-faint);
+  font-size: 0.78rem;
 }
 
 .mono { font-family: var(--font-mono); }

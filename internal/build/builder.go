@@ -65,9 +65,10 @@ type Builder struct {
 	// disableImageGC 关闭「构建后清悬空镜像」(Story 8-17);默认开(false)。由 main 经 env 设置。
 	disableImageGC bool
 	// recordCommit 在克隆解析出实际 commit 后回写到 run(触发未指定 commit 时补真实值;
-	// commitAt 为该 commit 的提交时刻,零值 = 未解析出)。nil 则不回写(向后兼容)。
+	// commitAt 为该 commit 的提交时刻,零值 = 未解析出;commitMessage 为 subject 首行,
+	// 空 = 未解析出)。nil 则不回写(向后兼容)。
 	// 由 main 注入(WithCommitRecorder),解耦 build 对 run.Service 的直依赖。
-	recordCommit func(ctx context.Context, runID, commit string, commitAt time.Time)
+	recordCommit func(ctx context.Context, runID, commit string, commitAt time.Time, commitMessage string)
 	// deployer/notifier:dag 里 deploy_ssh / notify 节点真实化所需(main 注入 deploy.Service / notify.Service)。
 	// nil → 该类节点退化为占位日志(向后兼容;非-dag Builder.Run 路径不用)。
 	deployer deploy.Service
@@ -184,11 +185,11 @@ func WithImageGC(enabled bool) BuilderOption {
 	return func(b *Builder) { b.disableImageGC = !enabled }
 }
 
-// WithCommitRecorder 注入「回写实际检出 commit + 提交时刻到 run」的回调(由 main 接
-// run.Service.SetCommit;commitAt 零值 = 未解析出提交时间)。
-// 克隆解析出 commit 后调用,补全运行详情里的 COMMIT 字段(触发未指定 commit 时尤其有用),
-// 提交时刻供 DORA「变更前置时长」取真实口径。
-func WithCommitRecorder(fn func(ctx context.Context, runID, commit string, commitAt time.Time)) BuilderOption {
+// WithCommitRecorder 注入「回写实际检出 commit + 提交时刻 + subject 首行到 run」的回调
+// (由 main 接 run.Service.SetCommit;commitAt 零值 = 未解析出提交时间)。
+// 克隆解析出 commit 后调用,补全运行详情里的 COMMIT 字段与 commit message(触发未指定
+// commit 时尤其有用),提交时刻供 DORA「变更前置时长」取真实口径。
+func WithCommitRecorder(fn func(ctx context.Context, runID, commit string, commitAt time.Time, commitMessage string)) BuilderOption {
 	return func(b *Builder) { b.recordCommit = fn }
 }
 
@@ -405,7 +406,7 @@ func (b *Builder) Run(ctx context.Context, r *run.Run, sink run.StepSink) error 
 		return b.failStep(ctx, sink, 0, "源码克隆失败:"+cerr.Error())
 	}
 	if resolved != nil && resolved.CommitShort != "" && b.recordCommit != nil {
-		b.recordCommit(ctx, r.ID, resolved.CommitShort, resolved.CommitTime)
+		b.recordCommit(ctx, r.ID, resolved.CommitShort, resolved.CommitTime, resolved.CommitMessage)
 	}
 	commitTag := resolved.CommitShort
 	if commitTag == "" {

@@ -97,7 +97,6 @@ func guardMixedGateway(st *Settings, instances []Instance) error {
 // syncGatewayEntry 收敛本机网关入口 vhost(联动点:UpdateSettings / applyFull):
 //   - 本机是网关主机 + 共存模式开启:逐基域解析证书(就绪门未过的域跳过渲染)→ 发布;
 //   - 本机移出 / 无任何就绪证书 / 钩子不全:摘除(幂等)。
-//
 // 证书来源:先 certmgmt(Source 注入),未命中回落本网关基域的自上传证书(与网关容器
 // 同一份,复用 store 解密);两处皆无 → 该域跳过。
 func (s *service) syncGatewayEntry(ctx context.Context, st *Settings) error {

@@ -52,6 +52,7 @@ export default {
 
   // ─── StageDrawer ──────────────────────────────────────────────
   stageSettingsAria: 'Stage settings',
+  stageSettingsResizeAria: 'Resize panel width (drag, or use arrow keys)',
   stageSettingsSub: 'Stage settings · Stage {n}',
   closeSettings: 'Close settings',
   whenSectionLabel: 'Conditional execution · when',

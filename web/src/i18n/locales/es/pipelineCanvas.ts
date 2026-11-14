@@ -52,6 +52,7 @@ export default {
 
   // ─── StageDrawer ──────────────────────────────────────────────
   stageSettingsAria: 'Ajustes de la etapa',
+  stageSettingsResizeAria: 'Ajustar el ancho del panel (arrastrar o teclas de flecha)',
   stageSettingsSub: 'Ajustes de la etapa · Etapa {n}',
   closeSettings: 'Cerrar ajustes',
   whenSectionLabel: 'Ejecución condicional · when',

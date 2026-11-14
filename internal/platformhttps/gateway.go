@@ -32,7 +32,7 @@ const (
 	// gatewayBackupConf 是入口 vhost 的回滚备份(先删陈旧再备份,同平台 vhost 惯例)。
 	gatewayBackupConf = tmpDir + "/pipewright-gateway.conf.bak"
 	// gatewayConfTmp / gatewayCertTmpFmt 是临时落盘路径(s.mu 串行化,与平台 Apply 互斥)。
-	gatewayConfTmp             = tmpDir + "/pipewright-gateway.conf"
+	gatewayConfTmp            = tmpDir + "/pipewright-gateway.conf"
 	gatewayCertTmpFullchainFmt = tmpDir + "/gwcert-%d-fullchain.pem"
 	gatewayCertTmpKeyFmt       = tmpDir + "/gwcert-%d-privkey.pem"
 	// gatewayCertBackupFullFmt / gatewayCertBackupKeyFmt 是安装前既有证书的备份落点:

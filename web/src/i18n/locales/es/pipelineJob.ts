@@ -308,6 +308,7 @@ export default {
 
   // ─── JobDrawer.vue ─────────────────────────────────────────────────────
   drawerAria: "Configuración de la tarea",
+  drawerResizeAria: "Ajustar el ancho del panel (arrastrar o teclas de flecha)",
   unnamedJob: "(tarea sin nombre)",
   thisPipeline: "este pipeline",
   closeDrawer: "Cerrar panel",

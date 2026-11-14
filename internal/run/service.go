@@ -108,11 +108,12 @@ type Service interface {
 	// 调用方据此对制品库 best-effort 物理删除。
 	DeleteArtifact(ctx context.Context, runID, artifactID string) (*Artifact, []string, error)
 
-	// SetCommit 回写本次运行实际检出的 commit 短 SHA 与该 commit 的提交时刻(克隆解析出后
-	// 由执行器调用;commitAt 零值 = 未解析出提交时间,置 NULL)。触发时未指定 commit(手动
-	// 触发常见)→ 这里补上真实 commit,供运行详情展示与 DORA 前置时长计算。
+	// SetCommit 回写本次运行实际检出的 commit 短 SHA、该 commit 的提交时刻与 subject
+	// 首行(克隆解析出后由执行器调用;commitAt 零值 = 未解析出提交时间,置 NULL;
+	// commitMessage 空 = 未解析出,保持既有值)。触发时未指定 commit(手动触发常见)
+	// → 这里补上真实 commit,供运行详情展示与 DORA 前置时长计算。
 	// run 不存在 → ErrNotFound。
-	SetCommit(ctx context.Context, id, commit string, commitAt time.Time) error
+	SetCommit(ctx context.Context, id, commit string, commitAt time.Time, commitMessage string) error
 
 	// SaveTestReport 持久化一条测试报告汇总(Story 8-6 / FR-8-6)。
 	// 计数 + 可选覆盖率 + 门禁裁决;同 run 多阶段产报告时各存一条(按 stage 区分)。
@@ -230,12 +231,12 @@ func (s *service) Create(ctx context.Context, projectID string, trigger Trigger)
 	id := uuid.NewString()
 	_, err = s.db.ExecContext(ctx,
 		`INSERT INTO pipeline_runs
-		   (id, project_id, status, trigger_type, trigger_branch, trigger_commit, trigger_actor,
+		   (id, project_id, status, trigger_type, trigger_branch, trigger_commit, trigger_actor, trigger_commit_message,
 		    params_json,
 		    chain_source_run_id, chain_depth, created_at, started_at, finished_at,
 		    resume_of_run_id, resume_plan_json)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, '', '')`,
-		id, projectID, StatusQueued, tt, trigger.Branch, trigger.Commit, trigger.Actor,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, '', '')`,
+		id, projectID, StatusQueued, tt, trigger.Branch, trigger.Commit, trigger.Actor, trigger.CommitMessage,
 		string(paramsJSON),
 		strings.TrimSpace(trigger.ChainSourceRunID), chainDepth,
 		now.Format(time.RFC3339),
@@ -324,12 +325,12 @@ func (s *service) CreateResume(ctx context.Context, parentID string, actions []s
 
 	if _, err = tx.ExecContext(ctx,
 		`INSERT INTO pipeline_runs
-		   (id, project_id, status, trigger_type, trigger_branch, trigger_commit, trigger_actor,
+		   (id, project_id, status, trigger_type, trigger_branch, trigger_commit, trigger_actor, trigger_commit_message,
 		    params_json,
 		    chain_source_run_id, chain_depth, created_at, started_at, finished_at,
 		    resume_of_run_id, resume_plan_json)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?)`,
-		id, parent.ProjectID, StatusQueued, TriggerManual, trigger.Branch, trigger.Commit, trigger.Actor,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?)`,
+		id, parent.ProjectID, StatusQueued, TriggerManual, trigger.Branch, trigger.Commit, trigger.Actor, trigger.CommitMessage,
 		string(paramsJSON),
 		trigger.ChainSourceRunID, trigger.ChainDepth,
 		now.Format(time.RFC3339),
@@ -423,7 +424,7 @@ func (s *service) Get(ctx context.Context, id string) (*Run, error) {
 	r.ID = id
 	err := s.db.QueryRowContext(ctx,
 		`SELECT pr.project_id, COALESCE(p.name, ''), pr.status,
-		        pr.trigger_type, pr.trigger_branch, pr.trigger_commit, pr.trigger_actor,
+		        pr.trigger_type, pr.trigger_branch, pr.trigger_commit, pr.trigger_actor, pr.trigger_commit_message,
 		        pr.created_at, pr.started_at, pr.finished_at,
 		        pr.failure_log, pr.diagnosis_json, pr.params_json,
 		        pr.chain_source_run_id, pr.chain_depth,
@@ -433,7 +434,7 @@ func (s *service) Get(ctx context.Context, id string) (*Run, error) {
 		 LEFT JOIN projects p ON p.id = pr.project_id
 		 WHERE pr.id = ?`, id,
 	).Scan(&r.ProjectID, &r.ProjectName, &r.Status,
-		&r.Trigger.Type, &r.Trigger.Branch, &r.Trigger.Commit, &r.Trigger.Actor,
+		&r.Trigger.Type, &r.Trigger.Branch, &r.Trigger.Commit, &r.Trigger.Actor, &r.Trigger.CommitMessage,
 		&createdStr, &startedStr, &finishStr,
 		&failureLog, &diagnosisJSON, &paramsJSON,
 		&r.Trigger.ChainSourceRunID, &r.Trigger.ChainDepth,
@@ -581,7 +582,7 @@ func (s *service) List(ctx context.Context, f ListFilter) (*ListResult, error) {
 	listArgs := append(append([]any{}, args...), size, offset)
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT pr.id, pr.project_id, COALESCE(p.name, ''), pr.status,
-		        pr.trigger_type, pr.trigger_branch, pr.trigger_commit, pr.trigger_actor,
+		        pr.trigger_type, pr.trigger_branch, pr.trigger_commit, pr.trigger_actor, pr.trigger_commit_message,
 		        pr.created_at, pr.started_at, pr.finished_at
 		 FROM pipeline_runs pr
 		 LEFT JOIN projects p ON p.id = pr.project_id`+clause+`
@@ -601,7 +602,7 @@ func (s *service) List(ctx context.Context, f ListFilter) (*ListResult, error) {
 			finishStr  sql.NullString
 		)
 		if err := rows.Scan(&r.ID, &r.ProjectID, &r.ProjectName, &r.Status,
-			&r.Trigger.Type, &r.Trigger.Branch, &r.Trigger.Commit, &r.Trigger.Actor,
+			&r.Trigger.Type, &r.Trigger.Branch, &r.Trigger.Commit, &r.Trigger.Actor, &r.Trigger.CommitMessage,
 			&createdStr, &startedStr, &finishStr); err != nil {
 			return nil, fmt.Errorf("run: scan run: %w", err)
 		}
@@ -752,7 +753,8 @@ func (s *service) LastSuccessfulRun(ctx context.Context, projectID, branch strin
 
 // SetFailureLog 持久化某次运行的失败日志原文(脱敏前)。参数化 SQL;不存在 → ErrNotFound。
 // commitAt 零值 → commit_time 置 NULL(未解析出提交时间;同 commit 重复回写幂等)。
-func (s *service) SetCommit(ctx context.Context, id, commit string, commitAt time.Time) error {
+// commitMessage 为实际检出 commit 的 subject(空 = 未解析出,不动既有值)。
+func (s *service) SetCommit(ctx context.Context, id, commit string, commitAt time.Time, commitMessage string) error {
 	commit = strings.TrimSpace(commit)
 	if commit == "" {
 		return nil // 无解析结果 → 不动(保持触发时的值/空)
@@ -761,8 +763,13 @@ func (s *service) SetCommit(ctx context.Context, id, commit string, commitAt tim
 	if !commitAt.IsZero() {
 		commitTime = commitAt.UTC().Format(time.RFC3339)
 	}
+	// message 用 CASE WHEN:空(未解析出)保持既有值 —— 多 job 并发克隆各自回写同一 commit,
+	// 防止某次异常回写把已解析出的 message 清掉(与 commit 重复回写幂等同语义)。
 	res, err := s.db.ExecContext(ctx,
-		`UPDATE pipeline_runs SET trigger_commit = ?, commit_time = ? WHERE id = ?`, commit, commitTime, id)
+		`UPDATE pipeline_runs SET trigger_commit = ?, commit_time = ?,
+		    trigger_commit_message = CASE WHEN ? != '' THEN ? ELSE trigger_commit_message END
+		 WHERE id = ?`,
+		commit, commitTime, strings.TrimSpace(commitMessage), strings.TrimSpace(commitMessage), id)
 	if err != nil {
 		return fmt.Errorf("run: set commit: %w", err)
 	}

@@ -289,6 +289,7 @@ export default {
 
   // ─── JobDrawer.vue ─────────────────────────────────────────────────────
   drawerAria: "작업 설정",
+  drawerResizeAria: "서랍 너비 조절(드래그 또는 방향키)",
   unnamedJob: "(이름 없는 작업)",
   thisPipeline: "이 파이프라인",
   closeDrawer: "서랍 닫기",

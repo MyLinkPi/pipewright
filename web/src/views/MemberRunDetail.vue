@@ -144,6 +144,9 @@ onUnmounted(() => {
         <div class="meta-row">
           <span class="meta-key">{{ t('myRunDetail.metaCommit') }}</span>
           <span class="meta-val mono">{{ run.trigger.commit ? shortCommit(run.trigger.commit) : '—' }}</span>
+          <span v-if="run.trigger.commitMessage" class="meta-val meta-commit-msg" :title="run.trigger.commitMessage">
+            {{ run.trigger.commitMessage }}
+          </span>
         </div>
         <div class="meta-row">
           <span class="meta-key">{{ t('myRunDetail.metaTrigger') }}</span>
@@ -271,6 +274,15 @@ onUnmounted(() => {
 .meta-val {
   font-size: 0.85rem;
   color: var(--color-text);
+}
+/* commit message(subject 首行):短 SHA 下方小字展示;超长截断,悬停 title 看全文。 */
+.meta-commit-msg {
+  max-width: 340px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-faint);
+  font-size: 0.78rem;
 }
 .mono {
   font-family: var(--font-mono);

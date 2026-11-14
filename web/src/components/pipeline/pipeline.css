@@ -321,14 +321,59 @@
 
 /* ─── Job drawer ──────────────────────────────────────────────────────────── */
 .job-drawer {
+  /* 宽度由 useDrawerWidth 内联样式控制;此处的 440px 仅为 JS 未生效时的兜底。 */
+  position: relative;
   width: 440px;
   flex: none;
   border-left: 1px solid var(--color-border);
   background: var(--color-card);
-  overflow: auto;
+  /* 自身不滚动:拖拽把手是它的绝对定位子元素,若在这里滚动,把手会随内容滚出可视区。 */
+  overflow: hidden;
   display: flex;
   flex-direction: column;
   animation: drawer-slide 0.22s var(--ease-out-expo) both;
+}
+
+/* 内容区独立滚动(抽屉骨架:把手固定 + 内容滚)。 */
+.drawer-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+/* 左缘拖拽把手:透明热区贴满左缘,悬停/拖拽/聚焦时露出高亮竖线。 */
+.drawer-resize-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 6px;
+  cursor: col-resize;
+  z-index: 5;
+  touch-action: none; /* 触屏拖拽不滚动页面,交给 pointermove */
+}
+
+.drawer-resize-handle::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 2px;
+  width: 2px;
+  background: transparent;
+  transition: background var(--duration-fast);
+}
+
+.drawer-resize-handle:hover::after,
+.drawer-resize-handle--active::after {
+  background: var(--color-primary);
+}
+
+.drawer-resize-handle:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: -2px;
 }
 
 @keyframes drawer-slide {

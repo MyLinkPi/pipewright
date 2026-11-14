@@ -303,6 +303,7 @@ export default {
 
   // ─── JobDrawer.vue ─────────────────────────────────────────────────────
   drawerAria: "Job-Konfiguration",
+  drawerResizeAria: "Schublade in der Breite anpassen (ziehen oder Pfeiltasten)",
   unnamedJob: "(unbenannter Job)",
   thisPipeline: "diese Pipeline",
   closeDrawer: "Panel schließen",
