@@ -194,15 +194,16 @@ func TestRenderParams(t *testing.T) {
 		if strings.Contains(res.Compose, "{{") ||
 			!strings.Contains(res.Compose, "mcr.microsoft.com/playwright:v1.65.1-noble") ||
 			!strings.Contains(res.Compose, `"9222:9222"`) ||
-			!strings.Contains(res.Compose, "--remote-debugging-port=9222") ||
 			!strings.Contains(res.Compose, `HTTP_PROXY: ""`) ||
 			// chromium 只认小写代理变量(大写仅供镜像内 node/npm),两者必须同时渲染。
 			!strings.Contains(res.Compose, `http_proxy: ""`) ||
 			!strings.Contains(res.Compose, `https_proxy: ""`) ||
-			// 必须用 headless shell 二进制(完整 chrome 无视 --remote-debugging-address,
-			// 只绑回环);shell 变量必须写 $$BIN —— compose 会对 command 值插值,单 $ 会被抹空。
+			// 架构断言:headless shell 二进制 + 回环 9333 起浏览器 + node 转发 0.0.0.0:9222
+			// (各版本 chrome 都无视 --remote-debugging-address,只绑回环);
+			// shell 变量必须写 $$BIN —— compose 会对 command 值插值,单 $ 会被抹空。
 			!strings.Contains(res.Compose, "-name chrome-headless-shell") ||
-			!strings.Contains(res.Compose, `--remote-debugging-address=0.0.0.0`) ||
+			!strings.Contains(res.Compose, "--remote-debugging-port=9333") ||
+			!strings.Contains(res.Compose, `listen(9222,"0.0.0.0")`) ||
 			!strings.Contains(res.Compose, `"$$BIN"`) {
 			t.Fatalf("playwright 默认渲染不符:\n%s", res.Compose)
 		}
