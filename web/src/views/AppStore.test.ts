@@ -522,6 +522,7 @@ describe('AppStore 分类展示', () => {
         mkTpl({ id: 'a', name: 'mysql', displayName: 'MySQL', description: '' }),
         mkTpl({ id: 'b', name: 'redis', displayName: 'Redis', description: '' }),
         mkTpl({ id: 'c', name: 'safeline', displayName: 'SafeLine WAF', description: '' }),
+        mkTpl({ id: 'e', name: 'playwright', displayName: 'Playwright', description: '' }),
         mkTpl({ id: 'd', name: 'my-app', displayName: 'MyApp', description: '', builtin: false }),
       ],
     })
@@ -534,9 +535,13 @@ describe('AppStore 分类展示', () => {
     expect(w.text()).toContain('MySQL')
     expect(w.text()).toContain('SafeLine WAF')
     expect(w.text()).toContain('MyApp')
+    // playwright 必须显式归组到「Web 与工具」,不靠未归组回落。
+    expect(w.text()).toContain('Web 与工具')
+    expect(w.text()).toContain('Playwright')
     // chips:每个分类一个,带数量。
     const chips = w.findAll('.apps__chip').map((c) => c.text())
     expect(chips.some((x) => x.includes('数据库与缓存') && x.includes('2'))).toBe(true)
+    expect(chips.some((x) => x.includes('Web 与工具') && x.includes('1'))).toBe(true)
     expect(chips.some((x) => x.includes('安全') && x.includes('1'))).toBe(true)
     expect(chips.some((x) => x.includes('自定义模板') && x.includes('1'))).toBe(true)
   })

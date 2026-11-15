@@ -8,6 +8,7 @@ import (
 
 	"github.com/huangchengsir/pipewright/internal/store"
 	"github.com/huangchengsir/pipewright/internal/storetest"
+	"gopkg.in/yaml.v3"
 )
 
 func newTestService(t *testing.T, db *store.Store) Service {
@@ -174,6 +175,49 @@ func TestRenderParams(t *testing.T) {
 		if !strings.Contains(res.Compose, `TRIVY_DB_REPOSITORY: "ghcr.io/aquasecurity/trivy-db"`) ||
 			!strings.Contains(res.Compose, `HTTPS_PROXY: ""`) {
 			t.Fatalf("trivy-server 镜像仓库/代理默认值不符:\n%s", res.Compose)
+		}
+
+		// 7) playwright:全默认渲染出 CDP 服务形态(port 只动宿主侧;渲染结果必须是合法 YAML)。
+		var pwTpl *Template
+		for i := range list {
+			if list[i].Name == "playwright" {
+				pwTpl = &list[i]
+			}
+		}
+		if pwTpl == nil {
+			t.Fatal("缺 playwright 内置模板")
+		}
+		res, err = svc.Render(ctx, pwTpl.ID, map[string]string{})
+		if err != nil {
+			t.Fatalf("playwright 默认渲染:%v", err)
+		}
+		if strings.Contains(res.Compose, "{{") ||
+			!strings.Contains(res.Compose, "mcr.microsoft.com/playwright:v1.65.1-noble") ||
+			!strings.Contains(res.Compose, `"9222:9222"`) ||
+			!strings.Contains(res.Compose, "--remote-debugging-port=9222") ||
+			!strings.Contains(res.Compose, `HTTP_PROXY: ""`) ||
+			// chromium 只认小写代理变量(大写仅供镜像内 node/npm),两者必须同时渲染。
+			!strings.Contains(res.Compose, `http_proxy: ""`) ||
+			!strings.Contains(res.Compose, `https_proxy: ""`) {
+			t.Fatalf("playwright 默认渲染不符:\n%s", res.Compose)
+		}
+		var doc struct {
+			Services map[string]struct {
+				Ports []string `yaml:"ports"`
+			} `yaml:"services"`
+		}
+		if yerr := yaml.Unmarshal([]byte(res.Compose), &doc); yerr != nil {
+			t.Fatalf("playwright 渲染结果应为合法 compose:%v\n%s", yerr, res.Compose)
+		}
+		if _, ok := doc.Services["playwright"]; !ok {
+			t.Fatalf("playwright 渲染结果缺 services.playwright:\n%s", res.Compose)
+		}
+		res, err = svc.Render(ctx, pwTpl.ID, map[string]string{"port": "19222"})
+		if err != nil || !strings.Contains(res.Compose, "19222:9222") {
+			t.Fatalf("playwright 端口覆盖未生效:%v\n%s", err, res.Compose)
+		}
+		if _, err := svc.Render(ctx, pwTpl.ID, map[string]string{"port": "70000"}); !errors.Is(err, ErrInvalidValue) {
+			t.Fatalf("playwright 端口越界应 ErrInvalidValue,得 %v", err)
 		}
 	})
 }
