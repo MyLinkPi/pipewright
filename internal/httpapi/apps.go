@@ -1356,10 +1356,11 @@ var appVersionProbes = map[string]string{
 	"nginx-web":     "nginx -v",
 	"redpanda":      "rpk version",
 	"rabbitmq":      "rabbitmqctl version",
-	// playwright:容器跑的是 chromium 裸进程,实测其版本(Chrome for Testing 输出形如
-	// "Google Chrome for Testing 159.0.8154.6")。glob 兼容新旧布局、find 兜底(同
-	// builtin.go 模板;探测经 docker exec 直跑、不经 compose 插值,单 $ 即可);失败回落 tag。
-	"playwright": `BIN="$(ls -d /ms-playwright/chromium-*/chrome-linux*/chrome 2>/dev/null | head -n 1)"; [ -n "$BIN" ] || BIN="$(find /ms-playwright -type f -name chrome 2>/dev/null | head -n 1)"; exec "$BIN" --version`,
+	// playwright:容器跑的是 headless shell 裸进程(模板同款;完整 chrome 不支持对外
+	// 绑定 CDP),实测其版本(输出形如 "Google Chrome headless shell 159.0.8154.6");
+	// 探测仅展示用,找不到 headless shell 时回落完整 chrome;再失败回落镜像 tag。
+	// 经 docker exec 直跑、不经 compose 插值,单 $ 即可。
+	"playwright": `BIN="$(find /ms-playwright -type f \( -name chrome-headless-shell -o -name headless_shell \) 2>/dev/null | head -n 1)"; [ -n "$BIN" ] || BIN="$(find /ms-playwright -type f -name chrome 2>/dev/null | head -n 1)"; exec "$BIN" --version`,
 }
 
 // appVersionRe 从探测输出提取首个语义化版本号(8.4.0 / 28.1.0 / 1.22.1 …)。
