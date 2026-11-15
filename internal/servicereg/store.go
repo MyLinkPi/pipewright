@@ -416,14 +416,18 @@ func (s *Store) insertService(ctx context.Context, svc *RegisteredService) error
 	if svc.StripPathPrefix {
 		strip = 1
 	}
+	edge := 0
+	if svc.EdgeHTTPS {
+		edge = 1
+	}
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO service_reg_services
 		   (id, domain_id, name, aliases, path, protocol, upstream_kind, upstream, upstream_port,
-		    tcp_listen_port, strip_path_prefix, enabled, peer_node_id, peer_service_id, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		    tcp_listen_port, strip_path_prefix, edge_https, enabled, peer_node_id, peer_service_id, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		svc.ID, svc.DomainID, svc.Name, joinServiceAliases(svc.Aliases), svc.Path, svc.Protocol,
 		svc.UpstreamKind, svc.Upstream, svc.UpstreamPort,
-		svc.TCPListenPort, strip, enabled, svc.PeerNodeID, svc.PeerServiceID,
+		svc.TCPListenPort, strip, edge, enabled, svc.PeerNodeID, svc.PeerServiceID,
 		svc.CreatedAt.UTC().Format(time.RFC3339), svc.UpdatedAt.UTC().Format(time.RFC3339),
 	)
 	if err != nil {
@@ -449,7 +453,7 @@ func (s *Store) getService(ctx context.Context, id string) (*RegisteredService, 
 }
 
 const serviceCols = `SELECT id, domain_id, name, aliases, path, protocol, upstream_kind, upstream, upstream_port,
-       tcp_listen_port, strip_path_prefix, enabled, peer_node_id, peer_service_id, created_at, updated_at FROM service_reg_services`
+       tcp_listen_port, strip_path_prefix, edge_https, enabled, peer_node_id, peer_service_id, created_at, updated_at FROM service_reg_services`
 
 // listServices 返回全部服务(创建时间倒序)。
 func (s *Store) listServices(ctx context.Context) ([]RegisteredService, error) {
@@ -474,7 +478,7 @@ func (s *Store) listServices(ctx context.Context) ([]RegisteredService, error) {
 func (s *Store) listServicesWithDomain(ctx context.Context) ([]ServiceWithDomain, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT s.id, s.domain_id, s.name, s.aliases, s.path, s.protocol, s.upstream_kind, s.upstream, s.upstream_port,
-		        s.tcp_listen_port, s.strip_path_prefix, s.enabled, s.peer_node_id, s.peer_service_id,
+		        s.tcp_listen_port, s.strip_path_prefix, s.edge_https, s.enabled, s.peer_node_id, s.peer_service_id,
 		        s.created_at, s.updated_at, d.base_domain,
 		        (SELECT COUNT(*) FROM service_reg_instances i WHERE i.service_id = s.id) AS instance_count
 		 FROM service_reg_services s
@@ -490,13 +494,14 @@ func (s *Store) listServicesWithDomain(ctx context.Context) ([]ServiceWithDomain
 			swd      ServiceWithDomain
 			enabled  int
 			strip    int
+			edge     int
 			aliases  string
 			createdS string
 			updatedS string
 		)
 		if err := rows.Scan(
 			&swd.ID, &swd.DomainID, &swd.Name, &aliases, &swd.Path, &swd.Protocol, &swd.UpstreamKind,
-			&swd.Upstream, &swd.UpstreamPort, &swd.TCPListenPort, &strip, &enabled, &swd.PeerNodeID,
+			&swd.Upstream, &swd.UpstreamPort, &swd.TCPListenPort, &strip, &edge, &enabled, &swd.PeerNodeID,
 			&swd.PeerServiceID, &createdS, &updatedS, &swd.BaseDomain,
 			&swd.InstanceCount,
 		); err != nil {
@@ -504,6 +509,7 @@ func (s *Store) listServicesWithDomain(ctx context.Context) ([]ServiceWithDomain
 		}
 		swd.Aliases = splitServiceAliases(aliases)
 		swd.StripPathPrefix = strip != 0
+		swd.EdgeHTTPS = edge != 0
 		swd.Enabled = enabled != 0
 		swd.CreatedAt = parseTime(createdS)
 		swd.UpdatedAt = parseTime(updatedS)
@@ -518,13 +524,17 @@ func (s *Store) updateService(ctx context.Context, svc *RegisteredService) error
 	if svc.StripPathPrefix {
 		strip = 1
 	}
+	edge := 0
+	if svc.EdgeHTTPS {
+		edge = 1
+	}
 	res, err := s.db.ExecContext(ctx,
 		`UPDATE service_reg_services
 		 SET name = ?, aliases = ?, path = ?, protocol = ?, upstream_kind = ?, upstream = ?, upstream_port = ?,
-		     tcp_listen_port = ?, strip_path_prefix = ?, peer_node_id = ?, peer_service_id = ?, updated_at = ?
+		     tcp_listen_port = ?, strip_path_prefix = ?, edge_https = ?, peer_node_id = ?, peer_service_id = ?, updated_at = ?
 		 WHERE id = ?`,
 		svc.Name, joinServiceAliases(svc.Aliases), svc.Path, svc.Protocol, svc.UpstreamKind, svc.Upstream,
-		svc.UpstreamPort, svc.TCPListenPort, strip, svc.PeerNodeID, svc.PeerServiceID,
+		svc.UpstreamPort, svc.TCPListenPort, strip, edge, svc.PeerNodeID, svc.PeerServiceID,
 		svc.UpdatedAt.UTC().Format(time.RFC3339), svc.ID,
 	)
 	if err != nil {
@@ -574,19 +584,21 @@ func scanService(sc scanner) (*RegisteredService, error) {
 		svc      RegisteredService
 		enabled  int
 		strip    int
+		edge     int
 		aliases  string
 		createdS string
 		updatedS string
 	)
 	if err := sc.Scan(
 		&svc.ID, &svc.DomainID, &svc.Name, &aliases, &svc.Path, &svc.Protocol, &svc.UpstreamKind,
-		&svc.Upstream, &svc.UpstreamPort, &svc.TCPListenPort, &strip, &enabled, &svc.PeerNodeID,
+		&svc.Upstream, &svc.UpstreamPort, &svc.TCPListenPort, &strip, &edge, &enabled, &svc.PeerNodeID,
 		&svc.PeerServiceID, &createdS, &updatedS,
 	); err != nil {
 		return nil, err
 	}
 	svc.Aliases = splitServiceAliases(aliases)
 	svc.StripPathPrefix = strip != 0
+	svc.EdgeHTTPS = edge != 0
 	svc.Enabled = enabled != 0
 	svc.CreatedAt = parseTime(createdS)
 	svc.UpdatedAt = parseTime(updatedS)

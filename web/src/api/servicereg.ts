@@ -79,6 +79,8 @@ export interface RegisteredService {
   peerServiceId: string
   /** 反代剥离 location 前缀(默认 false = 原样透传;static/tcp 恒 false)。 */
   stripPathPrefix: boolean
+  /** 对外协议:false = 80 直连;true = 443 服务 + 80 该 path 301(仅 http 协议;需基域证书)。 */
+  edgeHttps: boolean
   enabled: boolean
   /** 实例总数(含 detached;列表接口带回,徽标直显免逐服务加载)。 */
   instanceCount: number
@@ -222,6 +224,8 @@ export interface ServiceCreateInput {
   peerServiceId?: string
   /** 反代剥离 location 前缀(默认 false = 保留前缀原样透传)。 */
   stripPathPrefix?: boolean
+  /** 对外协议选 HTTPS(true = 443 服务 + 80 该 path 301;缺省 = 基域证书状态)。 */
+  edgeHttps?: boolean
 }
 
 /** 更新可改字段(基域不可换;更新后后端自动 apply 收敛)。缺省字段保持原值。 */
@@ -237,6 +241,8 @@ export interface ServiceUpdateInput {
   peerNodeId?: string
   peerServiceId?: string
   stripPathPrefix?: boolean
+  /** 对外协议选 HTTPS(true = 443 服务 + 80 该 path 301;缺省保持原值)。 */
+  edgeHttps?: boolean
 }
 
 export const getServiceRegSettings = (): Promise<Settings> =>

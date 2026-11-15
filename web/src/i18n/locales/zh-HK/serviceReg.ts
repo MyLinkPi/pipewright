@@ -90,6 +90,8 @@ export default {
     kindForward: '轉發其他環境',
     container: "上游容器名",
     address: "上游位址(IP / 域名 / host.docker.internal)",
+    addressPlaceholder: "10.0.0.5 或 https://上游域名",
+    httpsNeedsCert: "該基域未配置證書:對外 HTTPS 需先在證書管理簽發/上傳證書,或改選 HTTP",
     path: '子路徑',
     pathHint: '留空 = 根路徑;同一子網域下不同路徑的服務共存(如 / 前端 + /api 後端)。',
     staticHint: '靜態託管:內容由「閘道靜態發佈」部署節點自動發佈到全部閘道主機,無上游/連接埠/執行個體。',

@@ -90,6 +90,8 @@ export default {
     kindForward: 'Reenvío (mesh)',
     container: "Upstream container name",
     address: "Upstream address (IP / hostname / host.docker.internal)",
+    addressPlaceholder: "10.0.0.5 o https://host-del-destino",
+    httpsNeedsCert: "Este dominio base no tiene certificado: emítelo/súbelo primero en Gestión de certificados o elige HTTP.",
     path: 'Subruta',
     pathHint: 'Vacío = ruta raíz; servicios con distintas rutas comparten el mismo subdominio (p. ej. / frontend + /api backend).',
     staticHint: 'Alojamiento estático: el nodo de despliegue estático publica el contenido en todas las puertas de enlace automáticamente — sin upstream/puerto/instancias.',

@@ -90,6 +90,8 @@ export default {
     kindForward: 'Transfert (mesh)',
     container: "Upstream container name",
     address: "Upstream address (IP / hostname / host.docker.internal)",
+    addressPlaceholder: "10.0.0.5 ou https://hote-amont",
+    httpsNeedsCert: "Ce domaine de base n'a pas de certificat : émettez-le/téléversez-le d'abord dans Gestion des certificats, ou choisissez HTTP.",
     path: 'Sous-chemin',
     pathHint: 'Vide = chemin racine ; des services aux chemins différents partagent le même sous-domaine (ex. / frontend + /api backend).',
     staticHint: 'Hébergement statique : le contenu est publié automatiquement vers toutes les passerelles par le nœud de déploiement statique — sans upstream/port/instances.',

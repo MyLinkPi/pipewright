@@ -363,6 +363,7 @@ const svcForm = ref({
   aliases: '',
   path: '',
   protocol: 'http' as ServiceProtocol,
+  edgeHttps: false,
   upstreamKind: 'container' as UpstreamKind,
   upstream: '',
   upstreamPort: 8080,
@@ -372,6 +373,53 @@ const svcForm = ref({
   peerServiceId: '',
 })
 const addingSvc = ref(false)
+
+// ─── 协议三选(HTTP / HTTPS / TCP ↔ protocol + edgeHttps 两字段) ──────────────
+type ProtocolChoice = 'http' | 'https' | 'tcp'
+
+/** 表单两字段 → 下拉复合值。 */
+function protocolChoiceOf(f: { protocol: ServiceProtocol; edgeHttps: boolean }): ProtocolChoice {
+  if (f.protocol === 'tcp') return 'tcp'
+  return f.edgeHttps ? 'https' : 'http'
+}
+
+/** 下拉复合值 → 表单两字段(TCP 归零 edgeHttps;HTTPS 要求基域证书,由后端校验兜底)。 */
+function applyProtocolChoice(f: { protocol: ServiceProtocol; edgeHttps: boolean }, v: string): void {
+  if (v === 'tcp') {
+    f.protocol = 'tcp'
+    f.edgeHttps = false
+    return
+  }
+  f.protocol = 'http'
+  f.edgeHttps = v === 'https'
+}
+
+/** 创建表单切基域:非 TCP 选择跟随该域证书状态缺省(有证书 → HTTPS,无 → HTTP),TCP 保持。 */
+function onDomainChange(v: string): void {
+  svcForm.value.domainId = v
+  const d = domains.value.find((x) => x.id === v)
+  if (d && svcForm.value.protocol !== 'tcp') {
+    svcForm.value.protocol = 'http'
+    svcForm.value.edgeHttps = d.hasCert
+  }
+}
+
+/** 选了对外 HTTPS 但基域缺证书的行内提示(后端校验兜底)。 */
+function httpsNeedsCertHint(domainHasCert: boolean, f: { protocol: ServiceProtocol; edgeHttps: boolean }): string {
+  return f.protocol === 'http' && f.edgeHttps && !domainHasCert ? t('serviceReg.services.httpsNeedsCert') : ''
+}
+
+/** 服务实际对外协议:HTTPS 仅在「服务选 HTTPS 且基域仍有证书」时生效 —— 基域证书事后被删的
+ *  残留行(edge_https 仍为 1)由网关按 HTTP 兜底渲染(见 nginx.go 无证书域分支),链接/徽标随实。 */
+function edgeScheme(s: RegisteredService): 'http' | 'https' {
+  const d = domains.value.find((x) => x.id === s.domainId)
+  return s.edgeHttps && (d?.hasCert ?? false) ? 'https' : 'http'
+}
+
+const createHttpsCertHint = computed(() => {
+  const d = domains.value.find((x) => x.id === svcForm.value.domainId)
+  return httpsNeedsCertHint(d?.hasCert ?? false, svcForm.value)
+})
 
 /** 解析别名输入(逗号/分号/空白分隔 → trim → 小写 → 去重);空项静默丢弃。 */
 function parseAliases(raw: string): string[] {
@@ -468,7 +516,8 @@ const svcPreview = computed(() => {
     if (svcForm.value.upstreamKind === 'forward') return `:${svcForm.value.tcpListenPort} → ${t('serviceReg.services.forwardTag')}`
     return `:${svcForm.value.tcpListenPort} → ${svcForm.value.upstream}:${svcForm.value.upstreamPort}`
   }
-  return `${svcForm.value.name}.${d.baseDomain}${displayPath(svcForm.value.path)}`
+  const scheme = svcForm.value.edgeHttps ? 'https://' : ''
+  return `${scheme}${svcForm.value.name}.${d.baseDomain}${displayPath(svcForm.value.path)}`
 })
 
 async function addService(): Promise<void> {
@@ -489,6 +538,7 @@ async function addService(): Promise<void> {
       peerNodeId: isForward ? svcForm.value.peerNodeId : undefined,
       peerServiceId: isForward ? svcForm.value.peerServiceId : undefined,
       stripPathPrefix: isStatic || isForward ? false : svcForm.value.stripPathPrefix,
+      edgeHttps: svcForm.value.protocol === 'http' ? svcForm.value.edgeHttps : undefined,
     })
     showSvcForm.value = false
     const sv = await listServices()
@@ -644,6 +694,7 @@ const svcEditForm = ref({
   aliases: '',
   path: '',
   protocol: 'http' as ServiceProtocol,
+  edgeHttps: false,
   upstreamKind: 'container' as UpstreamKind,
   upstream: '',
   upstreamPort: 8080,
@@ -662,6 +713,7 @@ function startSvcEdit(s: RegisteredService): void {
     aliases: s.aliases.join(', '),
     path: s.path,
     protocol: s.protocol,
+    edgeHttps: s.edgeHttps,
     upstreamKind: s.upstreamKind,
     upstream: s.upstream,
     upstreamPort: s.upstreamPort || 8080,
@@ -673,6 +725,12 @@ function startSvcEdit(s: RegisteredService): void {
   if (s.upstreamKind === 'forward') void ensureForwardPeers()
 }
 
+/** 编辑表单选了对外 HTTPS 但该服务基域缺证书的行内提示(后端校验兜底)。 */
+function editHttpsNeedsCertHint(s: RegisteredService): string {
+  const d = domains.value.find((x) => x.baseDomain === s.baseDomain)
+  return httpsNeedsCertHint(d?.hasCert ?? false, svcEditForm.value)
+}
+
 function svcEditPreview(s: RegisteredService): string {
   const f = svcEditForm.value
   if (!f.name) return ''
@@ -680,7 +738,8 @@ function svcEditPreview(s: RegisteredService): string {
     if (f.upstreamKind === 'forward') return `:${f.tcpListenPort} → ${t('serviceReg.services.forwardTag')}`
     return `:${f.tcpListenPort} → ${f.upstream}:${f.upstreamPort}`
   }
-  return `${f.name}.${s.baseDomain}${displayPath(f.path)}`
+  const scheme = f.edgeHttps ? 'https://' : ''
+  return `${scheme}${f.name}.${s.baseDomain}${displayPath(f.path)}`
 }
 
 async function saveSvcEdit(s: RegisteredService): Promise<void> {
@@ -701,6 +760,7 @@ async function saveSvcEdit(s: RegisteredService): Promise<void> {
       peerNodeId: isForward ? f.peerNodeId : undefined,
       peerServiceId: isForward ? f.peerServiceId : undefined,
       stripPathPrefix: isStatic || isForward ? false : f.stripPathPrefix,
+      edgeHttps: f.protocol === 'http' ? f.edgeHttps : undefined,
     })
     editingSvcId.value = ''
     const sv = await listServices()
@@ -979,7 +1039,7 @@ async function saveSvcEdit(s: RegisteredService): Promise<void> {
               <AppSelect
                 :model-value="svcForm.domainId"
                 :options="domainOptions"
-                @update:model-value="(v: string) => (svcForm.domainId = v)"
+                @update:model-value="onDomainChange"
               />
             </label>
             <label class="field">
@@ -995,13 +1055,15 @@ async function saveSvcEdit(s: RegisteredService): Promise<void> {
             <label class="field">
               <span class="field__lbl">{{ t('serviceReg.services.protocol') }}</span>
               <AppSelect
-                :model-value="svcForm.protocol"
+                :model-value="protocolChoiceOf(svcForm)"
                 :options="[
                   { value: 'http', label: 'HTTP' },
+                  { value: 'https', label: 'HTTPS' },
                   { value: 'tcp', label: 'TCP' },
                 ]"
-                @update:model-value="(v) => (svcForm.protocol = v as ServiceProtocol)"
+                @update:model-value="(v: string) => applyProtocolChoice(svcForm, v)"
               />
+              <span v-if="createHttpsCertHint" class="sreg__hint">{{ createHttpsCertHint }}</span>
             </label>
             <label class="field">
               <span class="field__lbl">{{ t('serviceReg.services.upstreamKind') }}</span>
@@ -1020,7 +1082,13 @@ async function saveSvcEdit(s: RegisteredService): Promise<void> {
               <span class="field__lbl">
                 {{ svcForm.upstreamKind === 'container' ? t('serviceReg.services.container') : t('serviceReg.services.address') }}
               </span>
-              <input v-model="svcForm.upstream" class="field__in" type="text" required />
+              <input
+                v-model="svcForm.upstream"
+                class="field__in"
+                type="text"
+                :placeholder="svcForm.upstreamKind === 'container' ? 'web' : t('serviceReg.services.addressPlaceholder')"
+                required
+              />
             </label>
             <template v-else-if="svcForm.upstreamKind === 'forward'">
               <label class="field">
@@ -1113,7 +1181,7 @@ async function saveSvcEdit(s: RegisteredService): Promise<void> {
                   <template v-if="s.upstreamKind === 'static'">→ {{ t('serviceReg.services.staticTag') }}</template>
                   <template v-else-if="s.upstreamKind === 'forward'">→ {{ forwardTargetLabel(s) }}</template>
                   <template v-else>→ {{ s.upstream }}:{{ s.upstreamPort }}</template>
-                  <span class="sreg__tag">{{ s.protocol.toUpperCase() }}</span>
+                  <span class="sreg__tag">{{ s.protocol === 'http' ? edgeScheme(s).toUpperCase() : s.protocol.toUpperCase() }}</span>
                   <span v-if="s.aliases && s.aliases.length" class="sreg__tag">
                     {{ s.aliases.map((a) => `${a}.${s.baseDomain}`).join(' ') }}
                   </span>
@@ -1133,7 +1201,7 @@ async function saveSvcEdit(s: RegisteredService): Promise<void> {
                 <a
                   v-if="s.protocol === 'http'"
                   class="sreg__link"
-                  :href="`https://${s.fqdn}`"
+                  :href="`${edgeScheme(s)}://${s.fqdn}`"
                   target="_blank"
                   rel="noopener"
                 >
@@ -1227,13 +1295,15 @@ async function saveSvcEdit(s: RegisteredService): Promise<void> {
                 <label class="field">
                   <span class="field__lbl">{{ t('serviceReg.services.protocol') }}</span>
                   <AppSelect
-                    :model-value="svcEditForm.protocol"
+                    :model-value="protocolChoiceOf(svcEditForm)"
                     :options="[
                       { value: 'http', label: 'HTTP' },
+                      { value: 'https', label: 'HTTPS' },
                       { value: 'tcp', label: 'TCP' },
                     ]"
-                    @update:model-value="(v) => (svcEditForm.protocol = v as ServiceProtocol)"
+                    @update:model-value="(v: string) => applyProtocolChoice(svcEditForm, v)"
                   />
+                  <span v-if="editHttpsNeedsCertHint(s)" class="sreg__hint">{{ editHttpsNeedsCertHint(s) }}</span>
                 </label>
               </div>
               <div class="sreg__grid3">
@@ -1258,7 +1328,7 @@ async function saveSvcEdit(s: RegisteredService): Promise<void> {
                     v-model="svcEditForm.upstream"
                     class="field__in"
                     type="text"
-                    :placeholder="svcEditForm.upstreamKind === 'container' ? 'web' : '10.0.0.5'"
+                    :placeholder="svcEditForm.upstreamKind === 'container' ? 'web' : t('serviceReg.services.addressPlaceholder')"
                   />
                 </label>
                 <template v-else-if="svcEditForm.upstreamKind === 'forward'">

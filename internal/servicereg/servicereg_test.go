@@ -40,7 +40,7 @@ func TestRenderNginxConfEmpty(t *testing.T) {
 func TestRenderNginxConfHTTPS(t *testing.T) {
 	dom := Domain{ID: "d1", BaseDomain: "efg.com", HasCert: true}
 	svc := RegisteredService{ID: "s1", Name: "abc", DomainID: "d1", Protocol: ProtocolHTTP,
-		UpstreamKind: UpstreamKindContainer, Upstream: "web", UpstreamPort: 8080, Enabled: true}
+		UpstreamKind: UpstreamKindContainer, Upstream: "web", UpstreamPort: 8080, EdgeHTTPS: true, Enabled: true}
 	inst := Instance{ID: "i1", ServiceID: "s1", ServerID: "sv1", Container: "web", Port: 8080, HostPort: 20001, Attached: true}
 	out := renderNginxConf(nginxConfDir, []Domain{dom}, []RegisteredService{svc}, []Instance{inst}, map[string]string{"sv1": "10.0.0.5"}, 0, nil, nil).Text()
 
@@ -104,7 +104,7 @@ func TestRenderNginxConfAliases(t *testing.T) {
 	dom := Domain{ID: "d1", BaseDomain: "efg.com", HasCert: true}
 	plain := Domain{ID: "d2", BaseDomain: "xyz.com", HasCert: false}
 	svc := RegisteredService{ID: "s1", Name: "abc", Aliases: []string{"zz", "aa"}, DomainID: "d1", Protocol: ProtocolHTTP,
-		UpstreamKind: UpstreamKindContainer, Upstream: "web", UpstreamPort: 8080, Enabled: true}
+		UpstreamKind: UpstreamKindContainer, Upstream: "web", UpstreamPort: 8080, EdgeHTTPS: true, Enabled: true}
 	svc2 := RegisteredService{ID: "s2", Name: "app", DomainID: "d2", Protocol: ProtocolHTTP,
 		UpstreamKind: UpstreamKindContainer, Upstream: "app", UpstreamPort: 8080, Enabled: true}
 	tcp := RegisteredService{ID: "s3", Name: "db", Aliases: []string{"db2"}, DomainID: "d1", Protocol: ProtocolTCP,
@@ -141,7 +141,7 @@ func TestRenderNginxConfAliases(t *testing.T) {
 func TestRenderNginxConfMultiInstance(t *testing.T) {
 	dom := Domain{ID: "d1", BaseDomain: "efg.com", HasCert: true}
 	svc := RegisteredService{ID: "s1", Name: "abc", DomainID: "d1", Protocol: ProtocolHTTP,
-		UpstreamKind: UpstreamKindContainer, Upstream: "abc-1", UpstreamPort: 8080, Enabled: true}
+		UpstreamKind: UpstreamKindContainer, Upstream: "abc-1", UpstreamPort: 8080, EdgeHTTPS: true, Enabled: true}
 	// 故意乱序输入:实例按(服务器, 容器)升序渲染,detached / 地址未知 / 未发布宿主端口的
 	// 容器实例不进池。
 	insts := []Instance{
@@ -219,6 +219,86 @@ func TestRenderNginxConfAddressServiceWithInstances(t *testing.T) {
 	// address 单上游不复用连接 → 非 WS 用 close 变量;实例池服务用清空变量。
 	if !strings.Contains(out, "proxy_set_header Connection $connection_upgrade_addr;") {
 		t.Fatalf("address 单上游应用 close 变量:\n%s", out)
+	}
+}
+
+// TestRenderNginxConfAddressHTTPSUpstream 显式 https:// 前缀的 address 单上游:变量只放
+// host:port,proxy_pass 走 https + SNI + verify off,Host 头改写为上游主机名;裸地址上游
+// 保持 http 变量反代 + Host 透传 $host。
+func TestRenderNginxConfAddressHTTPSUpstream(t *testing.T) {
+	dom := Domain{ID: "d1", BaseDomain: "efg.com", HasCert: false}
+	https := RegisteredService{ID: "s1", Name: "pve", DomainID: "d1", Protocol: ProtocolHTTP,
+		UpstreamKind: UpstreamKindAddress, Upstream: "https://master.test.mylinkpi.com", UpstreamPort: 443, Enabled: true}
+	plain := RegisteredService{ID: "s2", Name: "plain", DomainID: "d1", Protocol: ProtocolHTTP,
+		UpstreamKind: UpstreamKindAddress, Upstream: "10.0.0.9", UpstreamPort: 3001, Enabled: true}
+	out := renderNginxConf(nginxConfDir, []Domain{dom}, []RegisteredService{https, plain}, nil, nil, 0, nil, nil).Text()
+	for _, want := range []string{
+		"set $up_pve master.test.mylinkpi.com:443;",
+		"proxy_pass https://$up_pve;",
+		"proxy_ssl_server_name on;",
+		"proxy_ssl_name master.test.mylinkpi.com;",
+		"proxy_ssl_verify off;",
+		"proxy_set_header Host master.test.mylinkpi.com;",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("https 上游缺片段 %q:\n%s", want, out)
+		}
+	}
+	if !strings.Contains(out, "set $up_plain 10.0.0.9:3001;") || !strings.Contains(out, "proxy_pass http://$up_plain;") {
+		t.Fatalf("裸地址上游应保持 http 变量反代:\n%s", out)
+	}
+	if !strings.Contains(out, "proxy_set_header Host $host;") {
+		t.Fatalf("裸地址上游应透传 Host:\n%s", out)
+	}
+	// 注释里的目标回显保持 scheme://host:port,不能被 JoinHostPort 当成 IPv6 拼成 [https://...]。
+	if !strings.Contains(out, "→ https://master.test.mylinkpi.com:443") || strings.Contains(out, "[https://") {
+		t.Fatalf("上游注释应回显 https://host:port:\n%s", out)
+	}
+}
+
+// TestRenderNginxConfEdgeHTTPSMixedGroup 证书域混合对外协议:80 块按站点分派(HTTPS 站点
+// 301 跳转 location / HTTP 站点直连反代),不再整块 301;443 块两个站点都可达。
+func TestRenderNginxConfEdgeHTTPSMixedGroup(t *testing.T) {
+	dom := Domain{ID: "d1", BaseDomain: "efg.com", HasCert: true}
+	force := RegisteredService{ID: "s1", Name: "app", DomainID: "d1", Protocol: ProtocolHTTP,
+		UpstreamKind: UpstreamKindAddress, Upstream: "10.0.0.5", UpstreamPort: 3000, EdgeHTTPS: true, Enabled: true}
+	direct := RegisteredService{ID: "s2", Name: "app", Path: "/api", DomainID: "d1", Protocol: ProtocolHTTP,
+		UpstreamKind: UpstreamKindAddress, Upstream: "10.0.0.9", UpstreamPort: 3001, Enabled: true}
+	out := renderNginxConf(nginxConfDir, []Domain{dom}, []RegisteredService{force, direct}, nil, nil, 0, nil, nil).Text()
+	for _, want := range []string{
+		// 80 块:/ 301 跳转;/api 直连(set + proxy_pass)。
+		"location / {\n        return 301 https://$host$request_uri;\n    }",
+		"location /api {",
+		"set $up_app_api 10.0.0.9:3001;",
+		// 443 块:两个站点均正常渲染。
+		"listen 443 ssl;",
+		"set $up_app 10.0.0.5:3000;",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("混合组缺片段 %q:\n%s", want, out)
+		}
+	}
+	// 整块 301(旧形态)不应出现:server_name 行后直接跟 return 301。
+	if strings.Contains(out, "server_name app.efg.com;\n    return 301") {
+		t.Fatalf("混合组不应整块 301:\n%s", out)
+	}
+	if strings.Count(out, "set $up_app_api ") != 2 {
+		t.Fatalf("/api 应在 80 与 443 各渲染一次,得 %d:\n%s", strings.Count(out, "set $up_app_api "), out)
+	}
+}
+
+// TestRenderNginxConfEdgeHTTPSNoCertFallback 无证书域的 edge-https 残留行(基域证书事后
+// 被删):防御按 http 渲染 —— 80 直连、无 443/301,服务不丢失。
+func TestRenderNginxConfEdgeHTTPSNoCertFallback(t *testing.T) {
+	dom := Domain{ID: "d1", BaseDomain: "efg.com", HasCert: false}
+	svc := RegisteredService{ID: "s1", Name: "abc", DomainID: "d1", Protocol: ProtocolHTTP,
+		UpstreamKind: UpstreamKindAddress, Upstream: "10.0.0.5", UpstreamPort: 3000, EdgeHTTPS: true, Enabled: true}
+	out := renderNginxConf(nginxConfDir, []Domain{dom}, []RegisteredService{svc}, nil, nil, 0, nil, nil).Text()
+	if strings.Contains(out, "listen 443") || strings.Contains(out, "return 301") {
+		t.Fatalf("无证书域不应渲染 443/301:\n%s", out)
+	}
+	if !strings.Contains(out, "set $up_abc 10.0.0.5:3000;") {
+		t.Fatalf("残留行应按 http 直连渲染:\n%s", out)
 	}
 }
 
@@ -306,7 +386,7 @@ func TestRenderNginxConfSortedDeterministic(t *testing.T) {
 	dom2 := Domain{ID: "d2", BaseDomain: "zzz.com", HasCert: true}
 	mk := func(name, domID string) RegisteredService {
 		return RegisteredService{ID: "s-" + name, Name: name, DomainID: domID, Protocol: ProtocolHTTP,
-			UpstreamKind: UpstreamKindContainer, Upstream: name + "c", UpstreamPort: 80, Enabled: true}
+			UpstreamKind: UpstreamKindContainer, Upstream: name + "c", UpstreamPort: 80, EdgeHTTPS: true, Enabled: true}
 	}
 	insts := []Instance{
 		{ID: "i1", ServiceID: "s-alpha", ServerID: "sv1", Container: "alphac", Attached: true},
@@ -346,9 +426,9 @@ func TestRenderNginxConfDisabledSkipped(t *testing.T) {
 func TestRenderNginxConfPerServiceFiles(t *testing.T) {
 	dom := Domain{ID: "d1", BaseDomain: "efg.com", HasCert: true}
 	web := RegisteredService{ID: "s-web", Name: "app", DomainID: "d1", Protocol: ProtocolHTTP,
-		UpstreamKind: UpstreamKindStatic, Enabled: true}
+		UpstreamKind: UpstreamKindStatic, EdgeHTTPS: true, Enabled: true}
 	api := RegisteredService{ID: "s-api", Name: "app", Path: "/api", DomainID: "d1", Protocol: ProtocolHTTP,
-		UpstreamKind: UpstreamKindContainer, Upstream: "app-1", UpstreamPort: 8080, Enabled: true}
+		UpstreamKind: UpstreamKindContainer, Upstream: "app-1", UpstreamPort: 8080, EdgeHTTPS: true, Enabled: true}
 	db := RegisteredService{ID: "s-db", Name: "db", DomainID: "d1", Protocol: ProtocolTCP,
 		UpstreamKind: UpstreamKindContainer, Upstream: "mysql", UpstreamPort: 3306, TCPListenPort: 13306, Enabled: true}
 	inst := Instance{ID: "i1", ServiceID: "s-api", ServerID: "sv1", Container: "app-1", Port: 8080, HostPort: 20001, Attached: true}
@@ -688,6 +768,40 @@ func TestValidUpstreamHost(t *testing.T) {
 		if validUpstreamHost(bad) {
 			t.Fatalf("%q 应非法", bad)
 		}
+	}
+}
+
+// TestNormalizeUpstreamAddress address 上游的可选 http(s):// 前缀:归一小写存储、仅 http
+// 服务可用、host 复用 validUpstreamHost;其它 scheme / 空 host / 带端口 / tcp 带前缀拒绝。
+func TestNormalizeUpstreamAddress(t *testing.T) {
+	// 裸地址:原样通过(网关默认 http 连上游)。
+	for _, ok := range []string{"host.docker.internal", "10.0.0.5", "db.internal"} {
+		if v, ok2 := normalizeUpstreamAddress(ProtocolHTTP, ok); !ok2 || v != ok {
+			t.Fatalf("%q 应原样通过,得 %q ok=%v", ok, v, ok2)
+		}
+	}
+	// 显式 scheme(http 服务):scheme 归一小写(host 大小写不敏感,原样保留)。
+	if v, ok := normalizeUpstreamAddress(ProtocolHTTP, "https://master.test.example.com"); !ok || v != "https://master.test.example.com" {
+		t.Fatalf("https 前缀应原样存储,得 %q ok=%v", v, ok)
+	}
+	if v, ok := normalizeUpstreamAddress(ProtocolHTTP, "HTTPS://master.test.example.com"); !ok || v != "https://master.test.example.com" {
+		t.Fatalf("scheme 应归一小写,得 %q ok=%v", v, ok)
+	}
+	if v, ok := normalizeUpstreamAddress(ProtocolHTTP, "HTTP://10.0.0.5"); !ok || v != "http://10.0.0.5" {
+		t.Fatalf("http 前缀应归一存储,得 %q ok=%v", v, ok)
+	}
+	if _, ok := normalizeUpstreamAddress(ProtocolHTTP, "https://host.docker.internal"); !ok {
+		t.Fatalf("https://host.docker.internal 应合法")
+	}
+	// 非法形态。
+	for _, bad := range []string{"ftp://x", "https://", "https://host:8443", "https://a b", "https://-bad"} {
+		if _, ok := normalizeUpstreamAddress(ProtocolHTTP, bad); ok {
+			t.Fatalf("%q 应非法", bad)
+		}
+	}
+	// tcp 上游不接受 scheme 前缀(stream 透传无 TLS 反代语义)。
+	if _, ok := normalizeUpstreamAddress(ProtocolTCP, "https://db.internal"); ok {
+		t.Fatalf("tcp 上游不应接受 scheme 前缀")
 	}
 }
 
@@ -1543,6 +1657,96 @@ func TestEnsureServiceAddressKind(t *testing.T) {
 	})
 }
 
+// TestEnsureServiceHTTPSUpstream address 上游显式 https:// 前缀:幂等注册接受并归一存储;
+// 容器形态不接受 scheme(容器名字符集)。
+func TestEnsureServiceHTTPSUpstream(t *testing.T) {
+	storetest.ForEachDialect(t, func(t *testing.T, st *store.Store) {
+		svc, _ := newTestService(t, st.DB)
+		ctx := context.Background()
+		dom, _ := svc.CreateDomain(ctx, "efg.com")
+
+		a, err := svc.EnsureService(ctx, CreateServiceInput{DomainID: dom.ID, Name: "pve",
+			UpstreamKind: UpstreamKindAddress, Upstream: "https://master.test.mylinkpi.com", UpstreamPort: 443})
+		if err != nil || a.Upstream != "https://master.test.mylinkpi.com" {
+			t.Fatalf("https 上游应注册:%v %+v", err, a)
+		}
+		// 容器形态的 scheme 前缀不是合法容器名。
+		if _, err := svc.EnsureService(ctx, CreateServiceInput{DomainID: dom.ID, Name: "bad",
+			UpstreamKind: UpstreamKindContainer, Upstream: "https://web", UpstreamPort: 8080}); err != ErrInvalidUpstream {
+			t.Fatalf("容器上游带 scheme 应拒绝,得 %v", err)
+		}
+	})
+}
+
+// TestEdgeHTTPSValidation 服务级对外协议:缺省 = 基域证书状态(存量行为零变化);显式
+// HTTPS 需证书(ErrEdgeHTTPSNoCert);tcp 显式 true 归 false;更新可翻转、nil 保持。
+func TestEdgeHTTPSValidation(t *testing.T) {
+	storetest.ForEachDialect(t, func(t *testing.T, st *store.Store) {
+		svc, _ := newTestService(t, st.DB)
+		ctx := context.Background()
+		dom, err := svc.CreateDomain(ctx, "efg.com")
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		// 无证书域:缺省 false;显式 HTTPS 拒绝。
+		a, err := svc.CreateService(ctx, CreateServiceInput{DomainID: dom.ID, Name: "a", Upstream: "web", UpstreamPort: 8080})
+		if err != nil || a.EdgeHTTPS {
+			t.Fatalf("无证书域缺省应 HTTP:%v %+v", err, a)
+		}
+		if _, err := svc.CreateService(ctx, CreateServiceInput{DomainID: dom.ID, Name: "b", Upstream: "web", UpstreamPort: 8080, EdgeHTTPS: boolPtr(true)}); err != ErrEdgeHTTPSNoCert {
+			t.Fatalf("无证书域显式 HTTPS 应拒绝,得 %v", err)
+		}
+
+		// 上传证书后:缺省 true(与旧版证书域强制 https 一致);显式 false 保持。
+		certPEM, keyPEM := selfSignedCertPEM(t, []string{"*.efg.com"})
+		if _, err := svc.UploadCert(ctx, dom.ID, certPEM, keyPEM); err != nil {
+			t.Fatal(err)
+		}
+		// 证书域:缺省 true(与旧版证书域强制 https 一致);显式 false 保持。
+		b1, err := svc.CreateService(ctx, CreateServiceInput{DomainID: dom.ID, Name: "c", Upstream: "web", UpstreamPort: 8080})
+		if err != nil || !b1.EdgeHTTPS {
+			t.Fatalf("证书域缺省应 HTTPS:%v %+v", err, b1)
+		}
+		b2, err := svc.CreateService(ctx, CreateServiceInput{DomainID: dom.ID, Name: "d", Upstream: "web", UpstreamPort: 8080, EdgeHTTPS: boolPtr(false)})
+		if err != nil || b2.EdgeHTTPS {
+			t.Fatalf("证书域显式 HTTP 应保持:%v %+v", err, b2)
+		}
+		// tcp 显式 true 归 false(无对外 https 语义,存库形态唯一)。
+		b3, err := svc.CreateService(ctx, CreateServiceInput{DomainID: dom.ID, Name: "db", Protocol: ProtocolTCP, Upstream: "db", UpstreamPort: 3306, TCPListenPort: 13306, EdgeHTTPS: boolPtr(true)})
+		if err != nil || b3.EdgeHTTPS {
+			t.Fatalf("tcp 显式 HTTPS 应归 false:%v %+v", err, b3)
+		}
+		// 更新:翻转生效;nil 保持原值。
+		upd, err := svc.UpdateService(ctx, b2.ID, UpdateServiceInput{EdgeHTTPS: boolPtr(true)})
+		if err != nil || !upd.EdgeHTTPS {
+			t.Fatalf("更新应翻转 HTTPS:%v %+v", err, upd)
+		}
+		upd2, err := svc.UpdateService(ctx, b2.ID, UpdateServiceInput{UpstreamPort: intPtr(9090)})
+		if err != nil || !upd2.EdgeHTTPS {
+			t.Fatalf("nil 应保持原值:%v %+v", err, upd2)
+		}
+
+		// 基域证书事后被删(存量行 edge_https 残留 1):其它字段编辑不应被 ErrEdgeHTTPSNoCert
+		// 阻断,存量值原样保留(渲染层按 HTTP 兜底,见 nginx.go 无证书域分支)。
+		if err := svc.ClearCert(ctx, dom.ID); err != nil {
+			t.Fatal(err)
+		}
+		kept, err := svc.UpdateService(ctx, b1.ID, UpdateServiceInput{UpstreamPort: intPtr(9091)})
+		if err != nil || !kept.EdgeHTTPS {
+			t.Fatalf("证书被删后其它字段编辑应成功且保留存量 HTTPS:%v %+v", err, kept)
+		}
+		// 显式开启(存量 false → true)仍要求证书;显式关闭不需要。
+		e1, err := svc.CreateService(ctx, CreateServiceInput{DomainID: dom.ID, Name: "e", Upstream: "web", UpstreamPort: 8080})
+		if err != nil || e1.EdgeHTTPS {
+			t.Fatalf("证书删除后新建应缺省 HTTP:%v %+v", err, e1)
+		}
+		if _, err := svc.UpdateService(ctx, e1.ID, UpdateServiceInput{EdgeHTTPS: boolPtr(true)}); err != ErrEdgeHTTPSNoCert {
+			t.Fatalf("无证书域显式开启 HTTPS 应拒绝,得 %v", err)
+		}
+	})
+}
+
 // TestEnsureInstanceDetached 部署期预注册:新行 detached(不进 upstream,不触发 apply);
 // 存量行只更新端口/归属,attached 原状保持。
 func TestEnsureInstanceDetached(t *testing.T) {
@@ -2241,6 +2445,10 @@ func TestResolveStaticDeploy(t *testing.T) {
 // --- 测试工具 --------------------------------------------------------------
 
 func strPtr(s string) *string { return &s }
+
+func boolPtr(b bool) *bool { return &b }
+
+func intPtr(i int) *int { return &i }
 
 func uploadTo(ft *fakeTarget, path string) bool {
 	for _, u := range ft.uploads {

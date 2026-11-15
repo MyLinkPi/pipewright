@@ -97,6 +97,8 @@ export default {
     kindForward: '转发其他环境',
     container: '上游容器名',
     address: '上游地址(IP / 域名 / host.docker.internal)',
+    addressPlaceholder: '10.0.0.5 或 https://上游域名',
+    httpsNeedsCert: '该基域未配置证书:对外 HTTPS 需先在证书管理签发/上传证书,或改选 HTTP',
     path: '子路径',
     pathHint: '留空 = 根路径;同一子域名下不同路径的服务共存(如 / 前端 + /api 后端)。',
     staticHint: '静态托管:内容由「网关静态发布」部署节点自动发布到全部网关主机,无上游/端口/实例。',

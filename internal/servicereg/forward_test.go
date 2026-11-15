@@ -19,7 +19,7 @@ import (
 
 func TestRenderForwardHTTPSecure(t *testing.T) {
 	dom := Domain{ID: "d1", BaseDomain: "efg.com", HasCert: true}
-	svc := RegisteredService{ID: "s1", DomainID: "d1", Name: "api", Protocol: ProtocolHTTP, UpstreamKind: UpstreamKindForward, PeerNodeID: "peerA", Enabled: true}
+	svc := RegisteredService{ID: "s1", DomainID: "d1", Name: "api", Protocol: ProtocolHTTP, UpstreamKind: UpstreamKindForward, EdgeHTTPS: true, PeerNodeID: "peerA", Enabled: true}
 	plan := ForwardPlan{
 		PeerNodeID: "peerA", HostHeader: "api.remote.com", Secure: true, Port: 443,
 		Members: []string{"10.20.0.2", "10.20.0.1"},
@@ -224,7 +224,7 @@ func TestBuildForwardPlansConflictDropsPeer(t *testing.T) {
 			DomainID: dom.ID, Name: "api", Protocol: ProtocolHTTP,
 			UpstreamKind: UpstreamKindForward, PeerNodeID: "peerA", PeerServiceID: "ps1",
 		}
-		enabled, err := svc.prepareService(ctx, "", in)
+		enabled, err := svc.prepareService(ctx, "", false, in)
 		if err != nil {
 			t.Fatalf("prepare:%v", err)
 		}
@@ -324,7 +324,7 @@ func TestReconcileForwardRoutesIssuesCommands(t *testing.T) {
 			t.Fatalf("建域:%v", err)
 		}
 		// 直接落一条 forward 服务行(绕过 prepareService 的目录校验,聚焦路由对账)。
-		enabled, err := svc.prepareService(ctx, "", CreateServiceInput{
+		enabled, err := svc.prepareService(ctx, "", false, CreateServiceInput{
 			DomainID: dom.ID, Name: "api", Protocol: ProtocolHTTP,
 			UpstreamKind: UpstreamKindForward, PeerNodeID: "peerA", PeerServiceID: "ps1",
 		})
