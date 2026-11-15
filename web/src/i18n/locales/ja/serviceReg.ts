@@ -90,6 +90,8 @@ export default {
     kindForward: '転送(メッシュ)',
     container: "上流コンテナ名",
     address: "上流アドレス(IP / ホスト名 / host.docker.internal)",
+    addressPlaceholder: "10.0.0.5 または https://上流ホスト",
+    httpsNeedsCert: "この基底ドメインには証明書がありません:先に証明書管理で発行/アップロードするか、HTTP を選択してください。",
     path: 'サブパス',
     pathHint: '空欄 = ルートパス。異なるパスのサービスは同じサブドメインを共有できます(例: / フロント + /api バックエンド)。',
     staticHint: '静的ホスティング:コンテンツは「ゲートウェイ静的公開」ノードから全ゲートウェイホストへ自動配布されます(上流/ポート/インスタンスなし)。',

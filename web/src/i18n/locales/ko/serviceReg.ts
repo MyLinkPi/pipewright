@@ -90,6 +90,8 @@ export default {
     kindForward: '전달(메시)',
     container: "Upstream container name",
     address: "Upstream address (IP / hostname / host.docker.internal)",
+    addressPlaceholder: "10.0.0.5 또는 https://업스트림 호스트",
+    httpsNeedsCert: "이 기본 도메인에는 인증서가 없습니다. 먼저 인증서 관리에서 발급/업로드하거나 HTTP를 선택하세요.",
     path: '하위 경로',
     pathHint: '비워두면 루트 경로. 서로 다른 경로의 서비스가 같은 서브도메인을 공유합니다(예: / 프론트 + /api 백엔드).',
     staticHint: '정적 호스팅: 콘텐츠는 게이트웨이 정적 배포 노드가 모든 게이트웨이 호스트에 자동 배포합니다(업스트림/포트/인스턴스 없음).',

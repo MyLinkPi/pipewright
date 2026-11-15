@@ -90,6 +90,8 @@ export default {
     kindForward: 'Weiterleitung (Mesh)',
     container: "Upstream container name",
     address: "Upstream address (IP / hostname / host.docker.internal)",
+    addressPlaceholder: "10.0.0.5 oder https://Upstream-Host",
+    httpsNeedsCert: "Für diese Basisdomain liegt kein Zertifikat vor: bitte zuerst in der Zertifikatsverwaltung ausstellen/hochladen oder HTTP wählen.",
     path: 'Unterpfad',
     pathHint: 'Leer = Root-Pfad; Dienste mit unterschiedlichem Pfad teilen sich dieselbe Subdomain (z. B. / Frontend + /api Backend).',
     staticHint: 'Statisches Hosting: Inhalte werden vom Bereitstellungs-Knoten „Gateway-Statisch-Release“ automatisch auf alle Gateway-Hosts veröffentlicht — kein Upstream/Port/Instanz.',

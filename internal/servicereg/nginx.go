@@ -113,9 +113,11 @@ func (r *nginxConfRender) Text() string {
 //	    注册地址:宿主端口(IP 原样;域名原样,由容器 DNS 在 reload 时解析,reload 原子
 //	    增减);max_fails/fail_timeout 被动健康兜底,keepalive 上游长连接池。forward 服务
 //	    成员来自对端目录规划。
-//	  80 → 301 跳 https             —— 证书就绪的站点(每站点自己的跳转 server 块)
-//	  vhost server 块               —— 证书域 443 ssl / 无证书域 80;组内每服务一个
-//	    location(实例全摘除 → return 503 维护态;static → alias 静态托管)
+//	  80 块                          —— 证书域:全站对外 https 时整块 301 → 443(旧形态,
+//	    存量证书域配置零 diff);混合对外协议时按站点分派(HTTPS 站点 301 跳转 location /
+//	    HTTP 站点直连)。无证书域:仅 80 全站点直连(edge-https 残留行防御按 http)。
+//	  vhost server 块               —— 证书域 443 ssl(全部站点,HTTP 站点亦可达)/ 无证书域 80;
+//	    组内每服务一个 location(实例全摘除 → return 503 维护态;static → alias 静态托管)
 //
 //	conf.d/<fqdn>.tcp.conf(tcp 服务文件):stream server(listen 端口 → proxy_pass
 //	  上游;forward 有规划走 upstream,否则变量 + resolver 动态解析)。
@@ -288,18 +290,24 @@ func renderNginxConf(confDir string, domains []Domain, services []RegisteredServ
 			b.WriteString("}\n\n")
 		}
 		if g.certd {
-			b.WriteString("# 证书就绪:80 → 443。\n")
-			b.WriteString("server {\n")
-			b.WriteString("    listen 80;\n")
-			b.WriteString("    server_name " + strings.Join(g.serverNames, " ") + ";\n")
-			b.WriteString("    return 301 https://$host$request_uri;\n")
-			b.WriteString("}\n\n")
+			if groupAllEdgeHTTPS(g) {
+				// 全站对外 https(存量证书域回填后的常态):保持旧形态 —— 80 整块 301(配置零 diff)。
+				b.WriteString("# 证书就绪:80 → 443。\n")
+				b.WriteString("server {\n")
+				b.WriteString("    listen 80;\n")
+				b.WriteString("    server_name " + strings.Join(g.serverNames, " ") + ";\n")
+				b.WriteString("    return 301 https://$host$request_uri;\n")
+				b.WriteString("}\n\n")
+			} else {
+				// 混合对外协议:80 块按站点分派(HTTPS 站点 → 301 跳转,HTTP 站点 → 直连反代)。
+				renderHTTPServer(&b, "", g, "http", renders)
+			}
+			// 443 块:全部站点正常渲染(HTTP 站点在证书域下同样经 https 可达,避免 404)。
+			renderHTTPServer(&b, "", g, "https", renders)
+		} else {
+			// 无证书域:仅 80(edge-https 残留行 —— 基域证书事后被删 —— 防御按 http 渲染)。
+			renderHTTPServer(&b, "", g, "http", renders)
 		}
-		proto := "http"
-		if g.certd {
-			proto = "https"
-		}
-		renderHTTPServer(&b, "", g, proto, renders)
 		httpFiles = append(httpFiles, nginxConfFile{Name: g.fqdn + ".conf", Content: b.String()})
 	}
 
@@ -474,9 +482,13 @@ type siteRender struct {
 }
 
 // renderHTTPServer 输出一个 FQDN 的 vhost server 块(组内每个服务一个 location,path 升序),
-// 写进该站点的 conf.d/<fqdn>.conf 文件(indent 传文件内顶层缩进)。
+// 写进该站点的 conf.d/<fqdn>.conf 文件(indent 传文件内顶层缩进)。proto 决定监听形态:
+//   - "https":443 ssl(仅证书域调用),全部站点正常渲染(HTTP 站点在证书域下同样可达);
+//   - "http":80。证书域 = 混合对外协议的分派块(EdgeHTTPS 站点渲染 301 跳转 location,
+//     其余站点正常渲染);非证书域 = 全站点正常渲染(EdgeHTTPS 残留行防御按 http)。
+//     证书域下「全站对外 https」不经本函数渲染 80 块(整块 301,见 renderNginxConf)。
 func renderHTTPServer(b *strings.Builder, indent string, group *httpGroup, proto string, renders map[string]*siteRender) {
-	if group.certd {
+	if proto == "https" {
 		certDir := nginxCertsDir + "/" + group.dom.BaseDomain
 		b.WriteString(indent + "# " + groupTargetComment(group) + "。\n")
 		b.WriteString(indent + "server {\n")
@@ -486,12 +498,20 @@ func renderHTTPServer(b *strings.Builder, indent string, group *httpGroup, proto
 		b.WriteString(indent + "    ssl_certificate_key " + certDir + "/privkey.pem;\n")
 		b.WriteString(indent + "    ssl_protocols TLSv1.2 TLSv1.3;\n")
 	} else {
-		b.WriteString(indent + "# " + groupTargetComment(group) + "(基域未上传证书,仅 HTTP)。\n")
+		if group.certd {
+			b.WriteString(indent + "# " + groupTargetComment(group) + "(证书域 80:HTTPS 站点 301 跳转,HTTP 站点直连)。\n")
+		} else {
+			b.WriteString(indent + "# " + groupTargetComment(group) + "(基域未上传证书,仅 HTTP)。\n")
+		}
 		b.WriteString(indent + "server {\n")
 		b.WriteString(indent + "    listen 80;\n")
 		b.WriteString(indent + "    server_name " + strings.Join(group.serverNames, " ") + ";\n")
 	}
 	for _, st := range group.sites {
+		if group.certd && proto == "http" && st.svc.EdgeHTTPS {
+			writeEdgeRedirectLocation(b, indent+"    ", st.svc)
+			continue
+		}
 		if st.svc.UpstreamKind == UpstreamKindStatic {
 			writeStaticLocation(b, indent+"    ", st.svc)
 			continue
@@ -499,6 +519,24 @@ func renderHTTPServer(b *strings.Builder, indent string, group *httpGroup, proto
 		writeProxyLocation(b, indent+"    ", st.svc, renders[st.svc.ID], proto)
 	}
 	b.WriteString(indent + "}\n\n")
+}
+
+// groupAllEdgeHTTPS 报告组内全部站点均对外 HTTPS(证书域整块 301 的分派条件)。
+func groupAllEdgeHTTPS(g *httpGroup) bool {
+	for _, st := range g.sites {
+		if !st.svc.EdgeHTTPS {
+			return false
+		}
+	}
+	return true
+}
+
+// writeEdgeRedirectLocation 输出对外 HTTPS 站点在 80 监听上的跳转 location(证书域混合
+// 对外协议时;全站 https 的整块 301 不经此函数)。
+func writeEdgeRedirectLocation(b *strings.Builder, indent string, svc RegisteredService) {
+	b.WriteString(indent + "location " + svc.DisplayPath() + " {\n")
+	b.WriteString(indent + "    return 301 https://$host$request_uri;\n")
+	b.WriteString(indent + "}\n")
 }
 
 // groupTargetComment 生成 server 块头部注释:单一反代服务保持旧格式「fqdn → 上游:端口」,
@@ -530,11 +568,18 @@ func groupTargetComment(group *httpGroup) string {
 // writeProxyLocation 输出反代 location 块(location 路径 = 服务 path,根路径为 /):
 //   - useUpstream(有集群实例成员/转发规划):proxy_pass [http|https]://pw_<name>[_<path>];
 //   - maintenance(声明实例池但无成员/转发不可用):return 503 维护态;
-//   - 其余(address 单上游):set 变量 + proxy_pass http://$var(resolver 运行期解析)。
+//   - 其余(address 单上游):set 变量 + proxy_pass [http|https]://$var(resolver 运行期解析;
+//     scheme 取上游地址的显式 http(s):// 前缀,缺省 http)。实例池成员恒明文 http,
+//     上游 scheme 仅在单上游变量模式生效。
 //
 // 跨环境转发(plan 非 nil):Host 头改写为对端 FQDN(对端按 vhost 路由);对端有证书
 // (Secure)时打 https + SNI(对端 80 是 301 跳转,不能走),verify off(mesh 链路自身
 // WireGuard 加密 + 节点签名授权,证书校验交由对端自己的网关)。
+//
+// address 单上游带显式 https:// 前缀:proxy_pass https://$var + SNI(proxy_ssl_name = 上游
+// 主机名)+ verify off(自签/内部 CA 可用,同转发 Secure 的取舍);Host 头改写为上游主机名
+// —— 显式 scheme = 按主机名寻址的上游 vhost,等价 curl https://host 的语义;裸地址上游
+// Host 恒透传 $host(现状)。
 //
 // StripPathPrefix(仅 path 非根时生效):实例池用 proxy_pass 尾斜杠(URI "/",nginx 以之
 // 替换匹配的 location 前缀);address 变量反代的 proxy_pass 不允许 URI,改用 rewrite 剥前缀。
@@ -545,6 +590,8 @@ func groupTargetComment(group *httpGroup) string {
 //	address 单上游 → $connection_upgrade_addr(非 WS 为 close → 不复用即显式关闭)。
 func writeProxyLocation(b *strings.Builder, indent string, svc RegisteredService, r *siteRender, proto string) {
 	loc := svc.DisplayPath()
+	// 上游显式 scheme(仅 address 单上游消费;裸地址/容器名无前缀 → scheme 空)。
+	upsScheme, upsHost := splitUpstreamScheme(svc.Upstream)
 	if r.maintenance && !r.useUpstream {
 		// 实例全部摘除/地址不可解析/转发目录不可达:维护态,不做反代。
 		b.WriteString(indent + "location " + loc + " {\n")
@@ -568,8 +615,18 @@ func writeProxyLocation(b *strings.Builder, indent string, svc RegisteredService
 		}
 		b.WriteString(indent + "    proxy_pass " + pass + ";\n")
 	} else {
-		b.WriteString(indent + "    set $" + r.varName + " " + upstreamTarget(svc) + ";\n")
-		b.WriteString(indent + "    proxy_pass http://$" + r.varName + ";\n")
+		scheme := upsScheme
+		if scheme == "" {
+			scheme = "http"
+		}
+		b.WriteString(indent + "    set $" + r.varName + " " + net.JoinHostPort(upsHost, strconv.Itoa(svc.UpstreamPort)) + ";\n")
+		b.WriteString(indent + "    proxy_pass " + scheme + "://$" + r.varName + ";\n")
+		if upsScheme == "https" {
+			// 显式 https 上游:握手带 SNI(按 vhost 路由的上游必需),证书校验关闭。
+			b.WriteString(indent + "    proxy_ssl_server_name on;\n")
+			b.WriteString(indent + "    proxy_ssl_name " + upsHost + ";\n")
+			b.WriteString(indent + "    proxy_ssl_verify off;\n")
+		}
 	}
 	b.WriteString(indent + "    proxy_http_version 1.1;\n")
 	if r.plan != nil {
@@ -580,6 +637,9 @@ func writeProxyLocation(b *strings.Builder, indent string, svc RegisteredService
 			b.WriteString(indent + "    proxy_ssl_name " + r.plan.HostHeader + ";\n")
 			b.WriteString(indent + "    proxy_ssl_verify off;\n")
 		}
+	} else if upsScheme != "" {
+		// 显式 scheme 上游 = 按主机名寻址的上游 vhost:Host 头改写为上游主机名。
+		b.WriteString(indent + "    proxy_set_header Host " + upsHost + ";\n")
 	} else {
 		b.WriteString(indent + "    proxy_set_header Host $host;\n")
 	}
@@ -684,9 +744,15 @@ func writeSanitized(b *strings.Builder, s string) {
 }
 
 // upstreamTarget 返回「上游:端口」渲染串(container=容器名,由 resolver 动态解析;address=HOST)。
-// net.JoinHostPort:IPv6 上游地址自动加方括号。
+// net.JoinHostPort:IPv6 上游地址自动加方括号;address 显式 scheme 前缀(https://host)只回显
+// 在注释里,不能进 JoinHostPort(冒号会被当 IPv6 加方括号,渲染成 [https://host]:443)。
 func upstreamTarget(svc RegisteredService) string {
-	return net.JoinHostPort(svc.Upstream, strconv.Itoa(svc.UpstreamPort))
+	scheme, host := splitUpstreamScheme(svc.Upstream)
+	target := net.JoinHostPort(host, strconv.Itoa(svc.UpstreamPort))
+	if scheme != "" {
+		return scheme + "://" + target
+	}
+	return target
 }
 
 // nginxVarName 返回该服务的 nginx 变量名($up_<name>,`-` 归一为 `_`;服务名字符集无 `_`,映射无碰撞)。

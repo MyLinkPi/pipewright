@@ -90,6 +90,8 @@ export default {
     kindForward: 'Forward (mesh)',
     container: "Upstream container name",
     address: "Upstream address (IP / hostname / host.docker.internal)",
+    addressPlaceholder: "10.0.0.5 or https://upstream-host",
+    httpsNeedsCert: "This base domain has no certificate: issue/upload one in Certificate Management first, or choose HTTP.",
     path: 'Sub path',
     pathHint: 'Empty = root path; services with different paths share the same subdomain (e.g. / for frontend + /api for backend).',
     staticHint: 'Static hosting: content is published automatically to all gateway hosts by the gateway static deploy node — no upstream/port/instances.',

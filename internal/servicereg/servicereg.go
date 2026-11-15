@@ -54,7 +54,8 @@ const (
 	// UpstreamKindContainer 表示上游为网关同机上的 docker 容器(Upstream=容器名):
 	// 容器被接入共享网络,nginx 按 Docker 内嵌 DNS 以容器名解析。
 	UpstreamKindContainer = "container"
-	// UpstreamKindAddress 表示上游为任意地址(Upstream=HOST:IP/FQDN/host.docker.internal)。
+	// UpstreamKindAddress 表示上游为任意地址(Upstream=HOST:IP/FQDN/host.docker.internal;
+	// http 服务可加 http:// / https:// 前缀,显式 scheme 时网关按该协议连上游)。
 	UpstreamKindAddress = "address"
 	// UpstreamKindStatic 表示网关 nginx 直接托管静态文件(纯前端 dist):Upstream 恒空、
 	// UpstreamPort 恒 0、无实例;内容由「网关静态发布」部署节点落到各网关主机的
@@ -92,6 +93,8 @@ var (
 	ErrInvalidServiceName = errors.New("servicereg: invalid service name")
 	// ErrInvalidProtocol 表示协议枚举非法。
 	ErrInvalidProtocol = errors.New("servicereg: invalid protocol")
+	// ErrEdgeHTTPSNoCert 表示对外 HTTPS 不可用(HTTP 服务才支持;基域须已配置证书)。
+	ErrEdgeHTTPSNoCert = errors.New("servicereg: edge https requires http protocol and a domain certificate")
 	// ErrInvalidUpstream 表示上游值非法(容器名字符集 / 地址形态)。
 	ErrInvalidUpstream = errors.New("servicereg: invalid upstream")
 	// ErrInvalidForwardPeer 表示转发入参非法(peer 未登记/目录不可达(未授权)/协议不匹配/服务不存在)。
@@ -224,9 +227,13 @@ type RegisteredService struct {
 	// StripPathPrefix 反代是否剥离 location 前缀再转发(默认 false = 原样透传完整路径);
 	// 仅 http 反代形态有效,static/tcp 恒 false。
 	StripPathPrefix bool
-	Enabled         bool
-	CreatedAt       time.Time
-	UpdatedAt       time.Time
+	// EdgeHTTPS 是服务级对外协议选择(协议下拉 HTTP/HTTPS/TCP 的 HTTPS;仅 http 协议有意义,
+	// tcp 恒 false):true = 网关以 443(基域证书)对外服务该站点,80 上该 path 301 跳 https;
+	// false = 80 直连不强制跳转(证书域下 443 仍可达)。基域须已配证书。
+	EdgeHTTPS bool
+	Enabled   bool
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }
 
 // GatewayStatus 是网关容器探测快照(前端展示 + 部署前知情)。多机:每台一项 Servers;
@@ -293,6 +300,9 @@ type CreateServiceInput struct {
 	PeerServiceID string
 	// StripPathPrefix 反代剥离 location 前缀(默认保留前缀原样透传)。
 	StripPathPrefix bool
+	// EdgeHTTPS 是对外协议选择(nil = 缺省 → 取基域证书状态:与旧版「证书域全域强制
+	// https」一致,流水线 EnsureService 不传该字段时行为不变)。
+	EdgeHTTPS *bool
 }
 
 // UpdateServiceInput 是更新服务的入参(指针字段,nil = 保持不变)。
@@ -308,6 +318,8 @@ type UpdateServiceInput struct {
 	PeerNodeID      *string
 	PeerServiceID   *string
 	StripPathPrefix *bool
+	// EdgeHTTPS 是对外协议选择(nil = 保持不变)。
+	EdgeHTTPS *bool
 }
 
 // Service 定义服务注册网关领域对外接口(httpapi 消费)。
@@ -663,7 +675,7 @@ func (s *service) ListServices(ctx context.Context) ([]ServiceWithDomain, error)
 }
 
 func (s *service) CreateService(ctx context.Context, in CreateServiceInput) (*RegisteredService, error) {
-	svc, err := s.prepareService(ctx, "", in)
+	svc, err := s.prepareService(ctx, "", false, in)
 	if err != nil {
 		return nil, err
 	}
@@ -729,6 +741,7 @@ func (s *service) UpdateService(ctx context.Context, id string, in UpdateService
 	if err != nil {
 		return nil, err
 	}
+	curEdge := cur.EdgeHTTPS
 	ci := CreateServiceInput{
 		DomainID:        cur.DomainID,
 		Name:            cur.Name,
@@ -742,6 +755,7 @@ func (s *service) UpdateService(ctx context.Context, id string, in UpdateService
 		PeerNodeID:      cur.PeerNodeID,
 		PeerServiceID:   cur.PeerServiceID,
 		StripPathPrefix: cur.StripPathPrefix,
+		EdgeHTTPS:       &curEdge,
 	}
 	if in.Name != nil {
 		ci.Name = *in.Name
@@ -776,7 +790,10 @@ func (s *service) UpdateService(ctx context.Context, id string, in UpdateService
 	if in.StripPathPrefix != nil {
 		ci.StripPathPrefix = *in.StripPathPrefix
 	}
-	svc, err := s.prepareService(ctx, id, ci)
+	if in.EdgeHTTPS != nil {
+		ci.EdgeHTTPS = in.EdgeHTTPS
+	}
+	svc, err := s.prepareService(ctx, id, curEdge, ci)
 	if err != nil {
 		return nil, err
 	}
@@ -808,8 +825,10 @@ func (s *service) SetServiceEnabled(ctx context.Context, id string, on bool) err
 }
 
 // prepareService 把入参归一化 + 全量校验(含跨服务 FQDN+path / TCP 端口唯一性),构造待落库对象。
-// selfID 为更新场景自身 id(唯一性检查排除自己);创建时为空。
-func (s *service) prepareService(ctx context.Context, selfID string, in CreateServiceInput) (*RegisteredService, error) {
+// selfID 为更新场景自身 id(唯一性检查排除自己);创建时为空。prevEdgeHTTPS 是更新前的
+// 对外协议存量值(创建恒 false):仅用于「显式开启 HTTPS 才要求基域证书」,存量 true
+// (基域证书事后被删)沿用不阻断其它字段编辑,渲染层按 HTTP 兜底(见 nginx.go 无证书域分支)。
+func (s *service) prepareService(ctx context.Context, selfID string, prevEdgeHTTPS bool, in CreateServiceInput) (*RegisteredService, error) {
 	in.Name = strings.ToLower(strings.TrimSpace(in.Name))
 	in.Protocol = strings.TrimSpace(in.Protocol)
 	if in.Protocol == "" {
@@ -840,6 +859,19 @@ func (s *service) prepareService(ctx context.Context, selfID string, in CreateSe
 	in.Aliases = aliases
 	if in.Protocol != ProtocolHTTP && in.Protocol != ProtocolTCP {
 		return nil, ErrInvalidProtocol
+	}
+	// 对外协议(服务粒度,nil 缺省 = 基域证书状态 —— 与旧版「证书域全域强制 https」行为
+	// 一致,流水线 EnsureService 等不传该字段的调用方行为不变);tcp 无对外 https 语义,
+	// 显式传 true 也归 false(存库形态唯一);http + true 要求基域已配证书。
+	if in.EdgeHTTPS == nil {
+		edge := in.Protocol == ProtocolHTTP && dom.HasCert
+		in.EdgeHTTPS = &edge
+	}
+	if in.Protocol == ProtocolTCP {
+		off := false
+		in.EdgeHTTPS = &off
+	} else if *in.EdgeHTTPS && !dom.HasCert && !prevEdgeHTTPS {
+		return nil, ErrEdgeHTTPSNoCert
 	}
 	if in.UpstreamKind != UpstreamKindContainer && in.UpstreamKind != UpstreamKindAddress &&
 		in.UpstreamKind != UpstreamKindStatic && in.UpstreamKind != UpstreamKindForward {
@@ -896,8 +928,14 @@ func (s *service) prepareService(ctx context.Context, selfID string, in CreateSe
 			if len(in.Upstream) > 128 || !dockerNameRe.MatchString(in.Upstream) {
 				return nil, ErrInvalidUpstream
 			}
-		} else if !validUpstreamHost(in.Upstream) {
-			return nil, ErrInvalidUpstream
+		} else {
+			// address 上游:可选 http(s):// 前缀(仅 http 服务;显式 scheme = 网关按该协议
+			// 连上游),归一化后写回存储形态。
+			norm, ok := normalizeUpstreamAddress(in.Protocol, in.Upstream)
+			if !ok {
+				return nil, ErrInvalidUpstream
+			}
+			in.Upstream = norm
 		}
 		if in.UpstreamPort < 1 || in.UpstreamPort > 65535 {
 			return nil, ErrInvalidPort
@@ -997,6 +1035,7 @@ func (s *service) prepareService(ctx context.Context, selfID string, in CreateSe
 		PeerNodeID:      in.PeerNodeID,
 		PeerServiceID:   in.PeerServiceID,
 		StripPathPrefix: in.StripPathPrefix,
+		EdgeHTTPS:       *in.EdgeHTTPS,
 		Enabled:         true,
 		CreatedAt:       now,
 		UpdatedAt:       now,
@@ -1547,6 +1586,38 @@ func validUpstreamHost(h string) bool {
 		return true
 	}
 	return len(h) <= 253 && baseDomainRe.MatchString(strings.ToLower(h))
+}
+
+// splitUpstreamScheme 拆分 address 上游的可选 scheme 前缀(http/https 之外的 scheme 由
+// 调用方拒绝):返回 (小写 scheme, host);无 "://" 前缀时 scheme 为空串、host 原样返回。
+func splitUpstreamScheme(h string) (scheme, host string) {
+	i := strings.Index(h, "://")
+	if i < 0 {
+		return "", h
+	}
+	return strings.ToLower(h[:i]), h[i+3:]
+}
+
+// normalizeUpstreamAddress 校验并归一化 address 上游(存储形态):
+//   - 裸 HOST(IP/FQDN/host.docker.internal)→ 原样通过(网关默认按 http 连上游);
+//   - http:// / https:// 前缀(大小写不敏感,归一为小写)→ 仅 http 服务可用(显式 scheme
+//     表示网关按该协议连上游,Host 头/SNI 用上游主机名);host 部分同 validUpstreamHost,
+//     端口必须走独立的 UpstreamPort 字段(前缀形态带端口即非法);
+//   - 其余 scheme(ftp:// 等)→ 非法。
+//
+// 返回归一化后的存储值与是否合法。
+func normalizeUpstreamAddress(protocol, h string) (string, bool) {
+	scheme, host := splitUpstreamScheme(strings.TrimSpace(h))
+	if scheme == "" {
+		return host, validUpstreamHost(host)
+	}
+	if scheme != "http" && scheme != "https" {
+		return "", false
+	}
+	if protocol != ProtocolHTTP || host == "" || !validUpstreamHost(host) {
+		return "", false
+	}
+	return scheme + "://" + host, true
 }
 
 // normalizeServicePath 归一化子路径:去空白;无前导 / 自动补;去尾 /;根路径("/")与空串 → ""

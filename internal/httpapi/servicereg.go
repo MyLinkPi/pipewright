@@ -116,8 +116,10 @@ type serviceRegServiceDTO struct {
 	PeerNodeID    string `json:"peerNodeId"`
 	PeerServiceID string `json:"peerServiceId"`
 	// StripPathPrefix 反代剥离 location 前缀(默认 false = 原样透传;仅 http 反代有效)。
-	StripPathPrefix bool   `json:"stripPathPrefix"`
-	Enabled         bool   `json:"enabled"`
+	StripPathPrefix bool `json:"stripPathPrefix"`
+	// EdgeHTTPS 是对外协议选择(false = 80 直连;true = 443 服务 + 80 该 path 301)。
+	EdgeHTTPS       bool `json:"edgeHttps"`
+	Enabled         bool `json:"enabled"`
 	InstanceCount   int    `json:"instanceCount"`
 	CreatedAt       string `json:"createdAt"`
 	UpdatedAt       string `json:"updatedAt"`
@@ -131,6 +133,7 @@ func toServiceRegServiceDTO(s servicereg.ServiceWithDomain) serviceRegServiceDTO
 		Upstream: s.Upstream, UpstreamPort: s.UpstreamPort, TCPListenPort: s.TCPListenPort,
 		PeerNodeID: s.PeerNodeID, PeerServiceID: s.PeerServiceID,
 		StripPathPrefix: s.StripPathPrefix,
+		EdgeHTTPS:       s.EdgeHTTPS,
 		Enabled:         s.Enabled,
 		InstanceCount:   s.InstanceCount,
 		CreatedAt:       s.CreatedAt.UTC().Format(time.RFC3339),
@@ -231,7 +234,9 @@ func writeServiceRegError(w http.ResponseWriter, err error) {
 	case errors.Is(err, servicereg.ErrInvalidProtocol):
 		writeError(w, http.StatusBadRequest, "invalid_service_reg", "协议只支持 http 或 tcp")
 	case errors.Is(err, servicereg.ErrInvalidUpstream):
-		writeError(w, http.StatusBadRequest, "invalid_service_reg", "上游非法:容器名仅字母数字与 . _ -,地址须为 IP / 域名 / host.docker.internal")
+		writeError(w, http.StatusBadRequest, "invalid_service_reg", "上游非法:容器名仅字母数字与 . _ -,地址须为 IP / 域名 / host.docker.internal(HTTP 上游可加 http:// 或 https:// 前缀)")
+	case errors.Is(err, servicereg.ErrEdgeHTTPSNoCert):
+		writeError(w, http.StatusBadRequest, "invalid_service_reg", "对外 HTTPS 需要 HTTP 服务且基域已配置证书:请先在证书管理为该基域签发/上传证书,或改选 HTTP")
 	case errors.Is(err, servicereg.ErrInvalidForwardPeer):
 		writeError(w, http.StatusBadRequest, "invalid_forward_peer", "转发入参非法:对端节点未登记/未授权(需对端在集群 ACL 勾选允许转发)、目录不可达,或对端服务不存在/协议不匹配")
 	case errors.Is(err, servicereg.ErrForwardService):
@@ -570,6 +575,7 @@ type serviceRegServiceRequest struct {
 	PeerNodeID      *string   `json:"peerNodeId"`
 	PeerServiceID   *string   `json:"peerServiceId"`
 	StripPathPrefix *bool     `json:"stripPathPrefix"`
+	EdgeHTTPS       *bool     `json:"edgeHttps"`
 }
 
 // serviceRegUpstreamKind 归一化请求的上游形态(缺省 = container)。
@@ -622,6 +628,8 @@ func (req serviceRegServiceRequest) toCreateServiceInput() (servicereg.CreateSer
 	if req.StripPathPrefix != nil {
 		in.StripPathPrefix = *req.StripPathPrefix
 	}
+	// 对外协议:指针直传(nil = 缺省 → 领域层取基域证书状态,与旧版行为一致)。
+	in.EdgeHTTPS = req.EdgeHTTPS
 	return in, true
 }
 
@@ -739,6 +747,9 @@ func makeUpdateServiceRegServiceHandler(svc servicereg.Service, aud audit.Record
 		}
 		if req.StripPathPrefix != nil {
 			in.StripPathPrefix = req.StripPathPrefix
+		}
+		if req.EdgeHTTPS != nil {
+			in.EdgeHTTPS = req.EdgeHTTPS
 		}
 		id := chi.URLParam(r, "id")
 		updated, err := svc.UpdateService(r.Context(), id, in)
