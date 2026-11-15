@@ -527,14 +527,16 @@ networks:
 		Icon:        "🎭",
 		// 官方镜像自带全量浏览器,但没有现成的 CDP 服务入口:须以裸进程拉起 chromium
 		// 并开 --remote-debugging。可执行文件路径跨版本不稳:新版(≥1.5x,Chrome for
-		// Testing 发行版)为 chrome-linux64/chrome,旧版为 chrome-linux/chrome,故 glob
-		// 用 chrome-linux* 兼容两者,且找不到时显式报错——而非 exec 空串落成含糊的
-		// "Permission denied";--remote-debugging-address 仅 headless 模式生效。
-		// user: root 是因官方镜像默认 pwuser 对新建具名卷无写权限(root 跑 chromium
-		// 须配 --no-sandbox);--init 收尸 + --shm-size 1g 防默认 /dev/shm 64MB 崩浏览器
-		// (同 internal/build/shell_driver.go 的结论)。代理必须给小写:chromium 只读
-		// http_proxy/https_proxy(见 chromium(1) ENVIRONMENT),大写仅供镜像内 npm/node
-		// 工具链;同值、留空 = 不走代理。
+		// Testing 发行版)为 chrome-linux64/chrome,旧版为 chrome-linux/chrome,glob 兼容
+		// 两者,另以 find 全量兜底;仍找不到时打印镜像内 /ms-playwright 清单再退出,
+		// 便于日志直排根因。注意:compose 会对 command 值做变量插值,shell 变量必须写成
+		// $$CHROME(单 $ 会被 compose 抹成空串 → 守卫恒真、永远报错,实战踩坑);
+		// $(ls/find) 命令替换不在插值语法内,保持单 $。--remote-debugging-address 仅
+		// headless 模式生效。user: root 是因官方镜像默认 pwuser 对新建具名卷无写权限
+		// (root 跑 chromium 须配 --no-sandbox);--init 收尸 + --shm-size 1g 防默认
+		// /dev/shm 64MB 崩浏览器(同 internal/build/shell_driver.go 的结论)。代理必须
+		// 给小写:chromium 只读 http_proxy/https_proxy(见 chromium(1) ENVIRONMENT),
+		// 大写仅供镜像内 npm/node 工具链;同值、留空 = 不走代理。
 		ComposeYAML: `services:
   playwright:
     image: mcr.microsoft.com/playwright:{{version}}
@@ -552,11 +554,13 @@ networks:
       - -c
       - |
         CHROME="$(ls -d /ms-playwright/chromium-*/chrome-linux*/chrome 2>/dev/null | head -n 1)"
-        if [ -z "$CHROME" ]; then
-          echo "未在镜像内定位到 chromium 可执行文件(查 /ms-playwright/chromium-*/chrome-linux*/chrome)" >&2
+        [ -n "$$CHROME" ] || CHROME="$(find /ms-playwright -type f -name chrome 2>/dev/null | head -n 1)"
+        if [ -z "$$CHROME" ]; then
+          echo "未在镜像内定位到 chromium 可执行文件;/ms-playwright 实际内容如下,请反馈此清单:" >&2
+          ls -la /ms-playwright >&2
           exit 1
         fi
-        exec "$CHROME" \
+        exec "$$CHROME" \
           --headless \
           --no-sandbox \
           --remote-debugging-address=0.0.0.0 \
