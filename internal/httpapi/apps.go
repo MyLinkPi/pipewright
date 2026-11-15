@@ -1357,9 +1357,9 @@ var appVersionProbes = map[string]string{
 	"redpanda":      "rpk version",
 	"rabbitmq":      "rabbitmqctl version",
 	// playwright:容器跑的是 chromium 裸进程,实测其版本(Chrome for Testing 输出形如
-	// "Google Chrome for Testing 159.0.8154.6");glob 兼容新版 chrome-linux64 与旧版
-	// chrome-linux 布局(同 builtin.go 模板,失败则回落镜像 tag)。
-	"playwright": `exec "$(ls -d /ms-playwright/chromium-*/chrome-linux*/chrome 2>/dev/null | head -n 1)" --version`,
+	// "Google Chrome for Testing 159.0.8154.6")。glob 兼容新旧布局、find 兜底(同
+	// builtin.go 模板;探测经 docker exec 直跑、不经 compose 插值,单 $ 即可);失败回落 tag。
+	"playwright": `BIN="$(ls -d /ms-playwright/chromium-*/chrome-linux*/chrome 2>/dev/null | head -n 1)"; [ -n "$BIN" ] || BIN="$(find /ms-playwright -type f -name chrome 2>/dev/null | head -n 1)"; exec "$BIN" --version`,
 }
 
 // appVersionRe 从探测输出提取首个语义化版本号(8.4.0 / 28.1.0 / 1.22.1 …)。
