@@ -48,7 +48,10 @@ export interface AppDeployResult {
   ok: boolean
   output: string
   error: string
-  /** 生效参数(含自动生成的 secret;仅本次部署响应一次性返回)。 */
+  /**
+   * 生效参数(含自动生成的 secret;仅本次部署响应一次性返回)。失败响应同样带回本次渲染的
+   * 结果——「重试」可原样回填重发,避免 secret 重新生成改掉已建容器/数据卷的口令。
+   */
   params?: Record<string, string>
   /** RustFS 联动:部署成功后是否已自动登记为对象存储配置(尽力而为,失败不影响 ok)。 */
   objectStoreRegistered?: boolean

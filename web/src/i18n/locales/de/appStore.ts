@@ -55,6 +55,7 @@ export default {
     dbAutoRegistered: "Automatisch als Datenbankinstanz registriert",
     redisAutoRegistered: "Automatisch als Redis-Instanz registriert",
     close: "Close",
+    retry: "Wiederholen",
 
     regTitle: "Am Gateway registrieren",
     regHint: "Diese App über das Service-Registry-Gateway als Subdomain-Reverse-Proxy bereitstellen (nur HTTP).",

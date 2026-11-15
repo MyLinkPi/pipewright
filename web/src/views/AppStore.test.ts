@@ -3,8 +3,9 @@
  *
  * 覆盖:Gitea 部署对话框的 ssh_domain 宿主地址预填联动(单机自动选中即预填、切机跟随、
  * 手改不覆盖、清空恢复);实例名维度(重名提醒出现/消失、默认名已存在也提醒、拉取失败
- * 静默、非法实例名禁用提交、实例随部署提交);已部署实例区(行渲染/徽标/不可达占位、
- * 点「升级」直达升级模式并按实例记录提交 upgrade)。
+ * 静默、非法实例名禁用提交、实例随部署提交);部署失败结果卡的「重试」按钮(复用失败
+ * 响应的生效参数重发——自动生成的 secret 不被重新生成,成功后切成功卡);已部署实例区
+ * (行渲染/徽标/不可达占位、点「升级」直达升级模式并按实例记录提交 upgrade)。
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
@@ -324,6 +325,52 @@ describe('AppStore 实例名与重名提醒', () => {
     expect(await deployRound({ kafka_port: '9092', schema_port: '8081', console_port: '8080' })).toBe('8080')
     expect(await deployRound({ api_port: '9000', console_port: '9001' })).toBe('9000')
     expect(await deployRound({ port: '3000', ssh_port: '2222' })).toBe('3000')
+  })
+})
+
+describe('AppStore 部署失败重试', () => {
+  it('部署失败 → 结果卡出现「重试」按钮;点击复用失败响应的生效参数(含自动生成 secret)重发,成功后切成功卡', async () => {
+    // 带自动生成 secret 的模板:失败响应会带回服务端首次渲染生成的口令,重试必须沿用它,
+    // 否则重渲染换新口令,与首次尝试已创建的容器/数据卷口令不一致。
+    const tpl: AppTemplate = {
+      ...giteaTpl,
+      params: [
+        ...giteaTpl.params,
+        { name: 'db_password', label: '数据库口令', type: 'secret', autoGenerate: true, required: true },
+      ],
+    }
+    h.listAppTemplates.mockResolvedValue({ items: [tpl] })
+    const used = { version: '28.1.0', port: '3000', ssh_port: '2222', ssh_domain: '10.0.0.1', db_password: 'GenSecret1' }
+    h.deployApp
+      .mockResolvedValueOnce({
+        serverId: 's1', name: 'gitea', ok: false, output: '',
+        error: 'failed to copy: read tcp 192.168.70.160:41732->150.171.69.10:443: read: connection reset by peer',
+        params: used,
+      })
+      .mockResolvedValueOnce({ serverId: 's1', name: 'gitea', ok: true, output: 'Started', error: '', params: used })
+    const w = await openGitea()
+    await selectServer(w, 's1')
+    await flushPromises()
+
+    await w.find('form').trigger('submit')
+    await flushPromises()
+    expect(w.text()).toContain('部署失败')
+    expect(w.text()).toContain('connection reset by peer')
+    // 首次提交 secret 留空 → 由后端生成。
+    const first = h.deployApp.mock.calls[0][2] as Record<string, string>
+    expect(first.db_password).toBe('')
+
+    const retry = w.findAll('button').find((b) => b.text().includes('重试'))!
+    await retry.trigger('click')
+    await flushPromises()
+
+    expect(h.deployApp).toHaveBeenCalledTimes(2)
+    // 重试 = 上次生效参数原样重发:已生成的 secret 沿用,其余参数不变。
+    const second = h.deployApp.mock.calls[1][2] as Record<string, string>
+    expect(second.db_password).toBe('GenSecret1')
+    expect(second.version).toBe(first.version)
+    expect(second.ssh_domain).toBe('10.0.0.1')
+    expect(w.text()).toContain('部署成功')
   })
 })
 
