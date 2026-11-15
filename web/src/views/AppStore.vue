@@ -99,6 +99,7 @@ const builtinCategory: Record<string, string> = {
   nfs: 'storage',
   'nginx-web': 'web',
   gitea: 'web',
+  playwright: 'web',
   openvas: 'security',
   'trivy-server': 'security',
   'nuclei-runner': 'security',

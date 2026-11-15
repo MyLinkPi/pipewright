@@ -520,6 +520,54 @@ networks:
 		},
 		Builtin: true,
 	},
+	{
+		Name:        "playwright",
+		DisplayName: "Playwright",
+		Description: "常驻 headless Chromium 的 CDP 远程浏览器服务:外部工具(Playwright/Puppeteer 等)经 connectOverCDP(\"http://<宿主IP>:<端口>\")远程驱动浏览器,适合浏览器自动化、抓取与 AI Agent 接管。注意:CDP 协议本身无鉴权,端口务必只暴露在可信内网/本机。浏览器 Profile(/srv/pw/profile)落具名卷 playwright-data,重建容器不丢。",
+		Icon:        "🎭",
+		// 官方镜像自带全量浏览器 + node,但没有现成的 CDP 服务入口:须以裸进程拉起 chromium
+		// 并开 --remote-debugging(chromium 构建目录带 build 号,用 glob 定位二进制;
+		// --remote-debugging-address 仅 headless 模式生效)。user: root 是因官方镜像默认
+		// pwuser 对新建具名卷无写权限(root 跑 chromium 须配 --no-sandbox);--init 收尸 +
+		// --shm-size 1g 防默认 /dev/shm 64MB 崩浏览器(同 internal/build/shell_driver.go
+		// 的结论)。代理必须给小写:chromium 只读 http_proxy/https_proxy(见 chromium(1)
+		// ENVIRONMENT),大写仅供镜像内 npm/node 工具链;同值、留空 = 不走代理。
+		ComposeYAML: `services:
+  playwright:
+    image: mcr.microsoft.com/playwright:{{version}}
+    restart: unless-stopped
+    user: root
+    init: true
+    shm_size: "1g"
+    environment:
+      HTTP_PROXY: "{{proxy}}"
+      HTTPS_PROXY: "{{proxy}}"
+      http_proxy: "{{proxy}}"
+      https_proxy: "{{proxy}}"
+    command:
+      - /bin/sh
+      - -c
+      - |
+        exec "$(ls -d /ms-playwright/chromium-*/chrome-linux/chrome | head -n 1)" \
+          --headless \
+          --no-sandbox \
+          --remote-debugging-address=0.0.0.0 \
+          --remote-debugging-port=9222 \
+          --user-data-dir=/srv/pw/profile
+    ports:
+      - "{{port}}:9222"
+    volumes:
+      - playwright-data:/srv/pw
+volumes:
+  playwright-data:
+`,
+		Params: []ParamSpec{
+			{Name: "version", Label: "镜像版本", Type: ParamTypeString, Default: "v1.65.1-noble"},
+			{Name: "port", Label: "CDP 端口(宿主)", Type: ParamTypeInt, Default: "9222"},
+			{Name: "proxy", Label: "出网代理(可选,如 http://proxy:7890;留空不走代理)", Type: ParamTypeString, Default: ""},
+		},
+		Builtin: true,
+	},
 }
 
 // retiredBuiltins 是已从商店下架的内置模板名:EnsureBuiltins 时对库中的内置行删除,

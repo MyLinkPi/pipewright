@@ -1356,6 +1356,8 @@ var appVersionProbes = map[string]string{
 	"nginx-web":     "nginx -v",
 	"redpanda":      "rpk version",
 	"rabbitmq":      "rabbitmqctl version",
+	// playwright:容器跑的是 chromium 裸进程,实测其版本(输出形如 Chromium <主版本>.<构建号>.<补丁>)。
+	"playwright": `$(ls -d /ms-playwright/chromium-*/chrome-linux/chrome | head -n 1) --version`,
 }
 
 // appVersionRe 从探测输出提取首个语义化版本号(8.4.0 / 28.1.0 / 1.22.1 …)。
