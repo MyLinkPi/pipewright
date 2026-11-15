@@ -55,6 +55,7 @@ export default {
     dbAutoRegistered: "已自動登記為資料庫實例",
     redisAutoRegistered: "已自動登記為 Redis 實例",
     close: "關閉",
+    retry: "重試",
 
     regTitle: "註冊到閘道",
     regHint: "透過服務註冊閘道以子網域反代暴露本應用(僅 HTTP)。",

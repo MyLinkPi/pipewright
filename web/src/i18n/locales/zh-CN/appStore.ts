@@ -59,6 +59,7 @@ export default {
     dbAutoRegistered: '已自动登记为数据库实例',
     redisAutoRegistered: '已自动登记为 Redis 实例',
     close: '关闭',
+    retry: '重试',
 
     regTitle: '注册到网关',
     regHint: '通过服务注册网关以子域名反代暴露本应用(仅 HTTP)。',

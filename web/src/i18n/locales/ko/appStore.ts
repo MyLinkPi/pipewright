@@ -55,6 +55,7 @@ export default {
     dbAutoRegistered: "데이터베이스 인스턴스로 자동 등록됨",
     redisAutoRegistered: "Redis 인스턴스로 자동 등록됨",
     close: "Close",
+    retry: "재시도",
 
     regTitle: "게이트웨이 등록",
     regHint: "서비스 등록 게이트웨이를 통해 서브도메인 리버스 프록시로 노출(HTTP 전용).",

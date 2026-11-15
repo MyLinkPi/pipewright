@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"gopkg.in/yaml.v3"
@@ -30,6 +31,20 @@ var reName = regexp.MustCompile(`^[\w][\w.-]*$`)
 
 // reContainerHexID 校验容器 ID 输出为纯十六进制。
 var reContainerHexID = regexp.MustCompile(`^[a-f0-9]{6,64}$`)
+
+// up 重试参数:镜像拉取常因瞬态网络中断(如 connection reset by peer)失败,docker
+// 会保留已下载的分层,对可识别的瞬态错误自动重试即断点续传。
+const maxUpAttempts = 3 // 首跑 + 2 次重试
+
+// upRetryBackoffs 是第 n 次重试前的退避等待;var 便于测试改短。
+var upRetryBackoffs = [maxUpAttempts - 1]time.Duration{3 * time.Second, 6 * time.Second}
+
+// rePullTransient 匹配镜像拉取/层下载的常见瞬态网络错误(stderr);非瞬态错误
+// (compose 配置、守护进程拒绝等)不重试,立即失败。
+var rePullTransient = regexp.MustCompile(`(?i)connection reset|EOF|i/o timeout|timed out|handshake timeout|connection refused|no route to host|temporary failure`)
+
+// upInterruptedMsg 是 up 被请求取消中断时的人读文案。
+const upInterruptedMsg = "部署被中断(页面关闭或连接断开):已下载的镜像分层会保留,重试部署将断点续传"
 
 // Result 是一次部署/拆除的结果:OK=false 时 Err 为人读错误(绝不含凭据/内部栈)。
 type Result struct {
@@ -107,24 +122,50 @@ func Deploy(ctx context.Context, svc target.Service, serverID, name, compose str
 		return Result{Err: "该主机未检测到 docker compose / docker-compose,无法部署"}
 	}
 	upCmd := append(append([]string{}, bin...), "-p", name, "-f", composePath, "up", "-d")
-	res, err := svc.Exec(ctx, serverID, upCmd)
-	if err != nil {
-		// 请求上下文已取消(页面关闭/连接断开):up 被中断,但已下载的镜像分层保留,重试续传。
-		if ctx.Err() != nil {
-			return Result{Err: "部署被中断(页面关闭或连接断开):已下载的镜像分层会保留,重试部署将断点续传"}
+	// up 幂等(原位更新),docker 会保留已下载的镜像分层,对瞬态拉取错误自动重试即断点续传。
+	var (
+		lastPullErr string
+		dispatched  bool
+	)
+	for attempt := 0; attempt < maxUpAttempts; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				return Result{Err: upInterruptedMsg, Dispatched: dispatched}
+			case <-time.After(upRetryBackoffs[attempt-1]):
+			}
 		}
-		return Result{Err: humanSSHError(err)}
-	}
-	if res.ExitCode != 0 {
+		res, err := svc.Exec(ctx, serverID, upCmd)
+		if err != nil {
+			// 请求上下文已取消(页面关闭/连接断开):up 被中断,但已下载的镜像分层保留,重试续传。
+			if ctx.Err() != nil {
+				return Result{Err: upInterruptedMsg, Dispatched: dispatched}
+			}
+			// SSH 层错误(主机不可达等)非瞬态,重试无意义。
+			return Result{Err: humanSSHError(err), Dispatched: dispatched}
+		}
+		dispatched = true
+		if res.ExitCode == 0 {
+			out := strings.TrimSpace(res.Stdout) + "\n" + strings.TrimSpace(res.Stderr)
+			if attempt > 0 {
+				out = fmt.Sprintf("(镜像拉取曾在中途失败,自动重试 %d 次成功)\n", attempt) + out
+			}
+			return Result{OK: true, Out: truncate(out, 2048), Dispatched: true}
+		}
 		msg := strings.TrimSpace(res.Stderr)
 		if msg == "" {
 			msg = "docker compose up 以非零状态退出"
 		}
-		return Result{Err: truncateTail(msg, 1024), Dispatched: true}
+		if !rePullTransient.MatchString(msg) {
+			// 非瞬态错误(compose 配置/守护进程拒绝等):重试无意义,立即失败。
+			return Result{Err: truncateTail(msg, 1024), Dispatched: true}
+		}
+		lastPullErr = msg
 	}
+	// 瞬态拉取错误重试耗尽。
 	return Result{
-		OK:         true,
-		Out:        truncate(strings.TrimSpace(res.Stdout)+"\n"+strings.TrimSpace(res.Stderr), 2048),
+		Err: fmt.Sprintf("已自动重试 %d 次仍失败(镜像拉取遭遇瞬态网络中断):\n%s\n提示:检查目标机到镜像仓库的网络;可为 docker daemon 配置 registry-mirrors 加速,重试会续传已下载的分层。",
+			maxUpAttempts-1, truncateTail(lastPullErr, 1024)),
 		Dispatched: true,
 	}
 }

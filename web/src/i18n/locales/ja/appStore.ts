@@ -55,6 +55,7 @@ export default {
     dbAutoRegistered: "データベースインスタンスとして自動登録しました",
     redisAutoRegistered: "Redis インスタンスとして自動登録しました",
     close: "閉じる",
+    retry: "再試行",
 
     regTitle: "ゲートウェイに登録",
     regHint: "サービス登録ゲートウェイ経由でサブドメインのリバースプロキシとして公開(HTTP のみ)。",

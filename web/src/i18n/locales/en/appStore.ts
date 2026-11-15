@@ -55,6 +55,7 @@ export default {
     dbAutoRegistered: "Auto-registered as a database instance",
     redisAutoRegistered: "Auto-registered as a Redis instance",
     close: "Close",
+    retry: "Retry",
 
     regTitle: "Register with gateway",
     regHint: "Expose this app via the service-registry gateway as a subdomain reverse proxy (HTTP only).",

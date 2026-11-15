@@ -55,6 +55,7 @@ export default {
     dbAutoRegistered: "Registrado automáticamente como instancia de base de datos",
     redisAutoRegistered: "Registrado automáticamente como instancia de Redis",
     close: "Close",
+    retry: "Reintentar",
 
     regTitle: "Registrar en la pasarela",
     regHint: "Expón esta app mediante la pasarela del registro de servicios como proxy inverso por subdominio (solo HTTP).",

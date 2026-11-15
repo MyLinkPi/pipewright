@@ -15,7 +15,7 @@ import { ref, computed, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { NIcon } from 'naive-ui'
-import { Apps, Rocket, Trash } from '@vicons/tabler'
+import { Apps, Refresh, Rocket, Trash } from '@vicons/tabler'
 import {
   listAppTemplates,
   createAppTemplate,
@@ -426,6 +426,16 @@ async function submitDeploy(): Promise<void> {
   } finally {
     deployBusy.value = false
   }
+}
+
+// retryDeploy 以「上次请求真正生效的参数」重发:失败响应同样带回本次渲染的生效参数(含
+// 服务端自动生成的 secret),必须先回填再提交——否则重渲染会换一套新口令,与首次尝试已
+// 创建的容器/数据卷口令不一致,重试反而把实例弄坏。
+function retryDeploy(): void {
+  if (deployResult.value?.params) {
+    paramValues.value = { ...paramValues.value, ...deployResult.value.params }
+  }
+  void submitDeploy()
 }
 
 // ─── 一键服务注册(部署成功后的网关联动)──────────────────────────────────────
@@ -953,6 +963,11 @@ async function removeCustom(tpl: AppTemplate): Promise<void> {
           </div>
           <pre v-if="deployResult.output" class="apps__output">{{ deployResult.output }}</pre>
           <div class="apps__form-actions">
+            <!-- 失败后表单态仍在(仅 openDeploy 重置),以同参重试(回填失败响应的生效参数,
+                 自动生成的 secret 沿用);升级模式同样适用。镜像分层已下载部分会保留,重试断点续传。 -->
+            <AppButton v-if="!deployResult.ok" variant="primary" :loading="deployBusy" @click="retryDeploy">
+              <NIcon :size="14"><Refresh /></NIcon>&nbsp;{{ t('appStore.deploy.retry') }}
+            </AppButton>
             <AppButton variant="default" @click="deploying = null">{{ t('appStore.deploy.close') }}</AppButton>
           </div>
         </div>
