@@ -199,10 +199,11 @@ func TestRenderParams(t *testing.T) {
 			// chromium 只认小写代理变量(大写仅供镜像内 node/npm),两者必须同时渲染。
 			!strings.Contains(res.Compose, `http_proxy: ""`) ||
 			!strings.Contains(res.Compose, `https_proxy: ""`) ||
-			// 二进制定位 glob 必须兼容 chrome-linux64(CfT 新版)与 chrome-linux(旧版);
-			// shell 变量必须写 $$CHROME —— compose 会对 command 值插值,单 $ 会被抹成空串。
-			!strings.Contains(res.Compose, "/ms-playwright/chromium-*/chrome-linux*/chrome") ||
-			!strings.Contains(res.Compose, `"$$CHROME"`) {
+			// 必须用 headless shell 二进制(完整 chrome 无视 --remote-debugging-address,
+			// 只绑回环);shell 变量必须写 $$BIN —— compose 会对 command 值插值,单 $ 会被抹空。
+			!strings.Contains(res.Compose, "-name chrome-headless-shell") ||
+			!strings.Contains(res.Compose, `--remote-debugging-address=0.0.0.0`) ||
+			!strings.Contains(res.Compose, `"$$BIN"`) {
 			t.Fatalf("playwright 默认渲染不符:\n%s", res.Compose)
 		}
 		var doc struct {

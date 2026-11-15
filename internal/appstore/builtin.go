@@ -525,18 +525,20 @@ networks:
 		DisplayName: "Playwright",
 		Description: "常驻 headless Chromium 的 CDP 远程浏览器服务:外部工具(Playwright/Puppeteer 等)经 connectOverCDP(\"http://<宿主IP>:<端口>\")远程驱动浏览器,适合浏览器自动化、抓取与 AI Agent 接管。注意:CDP 协议本身无鉴权,端口务必只暴露在可信内网/本机。浏览器 Profile(/srv/pw/profile)落具名卷 playwright-data,重建容器不丢。",
 		Icon:        "🎭",
-		// 官方镜像自带全量浏览器,但没有现成的 CDP 服务入口:须以裸进程拉起 chromium
-		// 并开 --remote-debugging。可执行文件路径跨版本不稳:新版(≥1.5x,Chrome for
-		// Testing 发行版)为 chrome-linux64/chrome,旧版为 chrome-linux/chrome,glob 兼容
-		// 两者,另以 find 全量兜底;仍找不到时打印镜像内 /ms-playwright 清单再退出,
-		// 便于日志直排根因。注意:compose 会对 command 值做变量插值,shell 变量必须写成
-		// $$CHROME(单 $ 会被 compose 抹成空串 → 守卫恒真、永远报错,实战踩坑);
-		// $(ls/find) 命令替换不在插值语法内,保持单 $。--remote-debugging-address 仅
-		// headless 模式生效。user: root 是因官方镜像默认 pwuser 对新建具名卷无写权限
-		// (root 跑 chromium 须配 --no-sandbox);--init 收尸 + --shm-size 1g 防默认
-		// /dev/shm 64MB 崩浏览器(同 internal/build/shell_driver.go 的结论)。代理必须
-		// 给小写:chromium 只读 http_proxy/https_proxy(见 chromium(1) ENVIRONMENT),
-		// 大写仅供镜像内 npm/node 工具链;同值、留空 = 不走代理。
+		// 官方镜像自带全量浏览器,但没有现成的 CDP 服务入口:须以裸进程拉起浏览器并开
+		// --remote-debugging。关键坑:完整 chrome(含 --headless 新无头模式)无视
+		// --remote-debugging-address、只绑容器内回环(v1.65 实测:宿主 curl 被重置,
+		// 日志恒打印 ws://127.0.0.1),对外绑定必须用镜像里专用的 headless shell 二进制
+		// (新版 chrome-headless-shell / 旧版 headless_shell,browserless 等同款做法),
+		// 故以 find 定位;仍找不到时打印镜像内 /ms-playwright 清单再退出,便于日志直排
+		// 根因。注意:compose 会对 command 值做变量插值,shell 变量必须写成 $$BIN
+		// (单 $ 会被 compose 抹成空串 → 守卫恒真,实战踩坑);$(find) 命令替换不在插值
+		// 语法内,保持单 $;--remote-allow-origins 的 * 须加引号防 shell 展开。
+		// user: root 是因官方镜像默认 pwuser 对新建具名卷无写权限(root 跑 chromium
+		// 须配 --no-sandbox);--init 收尸 + --shm-size 1g 防默认 /dev/shm 64MB 崩浏览器
+		// (同 internal/build/shell_driver.go 的结论)。代理必须给小写:chromium 只读
+		// http_proxy/https_proxy(见 chromium(1) ENVIRONMENT),大写仅供镜像内 npm/node
+		// 工具链;同值、留空 = 不走代理。
 		ComposeYAML: `services:
   playwright:
     image: mcr.microsoft.com/playwright:{{version}}
@@ -553,16 +555,15 @@ networks:
       - /bin/sh
       - -c
       - |
-        CHROME="$(ls -d /ms-playwright/chromium-*/chrome-linux*/chrome 2>/dev/null | head -n 1)"
-        [ -n "$$CHROME" ] || CHROME="$(find /ms-playwright -type f -name chrome 2>/dev/null | head -n 1)"
-        if [ -z "$$CHROME" ]; then
-          echo "未在镜像内定位到 chromium 可执行文件;/ms-playwright 实际内容如下,请反馈此清单:" >&2
+        BIN="$(find /ms-playwright -type f \( -name chrome-headless-shell -o -name headless_shell \) 2>/dev/null | head -n 1)"
+        if [ -z "$$BIN" ]; then
+          echo "未在镜像内定位到 headless shell 浏览器;/ms-playwright 实际内容如下,请反馈此清单:" >&2
           ls -la /ms-playwright >&2
           exit 1
         fi
-        exec "$$CHROME" \
-          --headless \
+        exec "$$BIN" \
           --no-sandbox \
+          --remote-allow-origins="*" \
           --remote-debugging-address=0.0.0.0 \
           --remote-debugging-port=9222 \
           --user-data-dir=/srv/pw/profile
