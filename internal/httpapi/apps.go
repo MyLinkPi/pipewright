@@ -1356,8 +1356,10 @@ var appVersionProbes = map[string]string{
 	"nginx-web":     "nginx -v",
 	"redpanda":      "rpk version",
 	"rabbitmq":      "rabbitmqctl version",
-	// playwright:容器跑的是 chromium 裸进程,实测其版本(输出形如 Chromium <主版本>.<构建号>.<补丁>)。
-	"playwright": `$(ls -d /ms-playwright/chromium-*/chrome-linux/chrome | head -n 1) --version`,
+	// playwright:容器跑的是 chromium 裸进程,实测其版本(Chrome for Testing 输出形如
+	// "Google Chrome for Testing 159.0.8154.6");glob 兼容新版 chrome-linux64 与旧版
+	// chrome-linux 布局(同 builtin.go 模板,失败则回落镜像 tag)。
+	"playwright": `exec "$(ls -d /ms-playwright/chromium-*/chrome-linux*/chrome 2>/dev/null | head -n 1)" --version`,
 }
 
 // appVersionRe 从探测输出提取首个语义化版本号(8.4.0 / 28.1.0 / 1.22.1 …)。

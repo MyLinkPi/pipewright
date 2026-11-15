@@ -198,7 +198,9 @@ func TestRenderParams(t *testing.T) {
 			!strings.Contains(res.Compose, `HTTP_PROXY: ""`) ||
 			// chromium 只认小写代理变量(大写仅供镜像内 node/npm),两者必须同时渲染。
 			!strings.Contains(res.Compose, `http_proxy: ""`) ||
-			!strings.Contains(res.Compose, `https_proxy: ""`) {
+			!strings.Contains(res.Compose, `https_proxy: ""`) ||
+			// 二进制定位 glob 必须兼容 chrome-linux64(CfT 新版)与 chrome-linux(旧版)。
+			!strings.Contains(res.Compose, "/ms-playwright/chromium-*/chrome-linux*/chrome") {
 			t.Fatalf("playwright 默认渲染不符:\n%s", res.Compose)
 		}
 		var doc struct {
