@@ -83,7 +83,9 @@ func TestClientSignatureGolden(t *testing.T) {
 	}
 
 	// 手写的规范化请求字面量(空 body 的 SHA256 是已知常量):校验签名输入的拼装。
+	// CanonicalRequest 第 5 行是 SignedHeaders(头名分号串),StringToSign 末尾无换行。
 	const emptySHA = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+	signedHeaders := "host;x-acs-action;x-acs-content-sha256;x-acs-date;x-acs-signature-nonce;x-acs-version"
 	canonical := "GET\n/\nPageNumber=1&PageSize=1\n" +
 		"host:ecs.cn-hangzhou.aliyuncs.com\n" +
 		"x-acs-action:DescribeInstances\n" +
@@ -92,14 +94,39 @@ func TestClientSignatureGolden(t *testing.T) {
 		"x-acs-signature-nonce:nonce123\n" +
 		"x-acs-version:" + ecsAPIVersion + "\n" +
 		"\n" +
+		signedHeaders + "\n" +
 		emptySHA
-	stringToSign := "ACS3-HMAC-SHA256\n" + sha256Hex([]byte(canonical)) + "\n"
+	stringToSign := "ACS3-HMAC-SHA256\n" + sha256Hex([]byte(canonical))
 	mac := hmac.New(sha256.New, []byte("TestSK"))
 	mac.Write([]byte(stringToSign))
 	wantSig := hex.EncodeToString(mac.Sum(nil))
-	wantAuth := fmt.Sprintf("ACS3-HMAC-SHA256 Credential=TestAKID,AdditionalHeaders=,Signature=%s", wantSig)
+	wantAuth := fmt.Sprintf("ACS3-HMAC-SHA256 Credential=TestAKID,SignedHeaders=%s,Signature=%s", signedHeaders, wantSig)
 	if auth != wantAuth {
 		t.Errorf("Authorization =\n  %s\nwant\n  %s", auth, wantAuth)
+	}
+}
+
+// TestV3SignOfficialDocVector 用阿里云官方文档《V3 请求结构和签名》的示例向量钉死签名算法
+// (期望 hash/签名逐字来自文档;曾因缺 SignedHeaders 行 + StringToSign 多尾换行导致所有
+// 真实请求 SignatureDoesNotMatch,被误报为"凭据无效或无权限")。
+func TestV3SignOfficialDocVector(t *testing.T) {
+	const emptySHA = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+	headers := map[string]string{
+		"host":                  "ecs.cn-shanghai.aliyuncs.com",
+		"x-acs-action":          "RunInstances",
+		"x-acs-content-sha256":  emptySHA,
+		"x-acs-date":            "2023-10-26T10:22:32Z",
+		"x-acs-signature-nonce": "3156853299f313e23d1673dc12e1703d",
+		"x-acs-version":         "2014-05-26",
+	}
+	auth := v3Sign(http.MethodPost, "/",
+		"ImageId=win2019_1809_x64_dtc_zh-cn_40G_alibase_20230811.vhd&RegionId=cn-shanghai",
+		headers, nil, "YourAccessKeyId", "YourAccessKeySecret")
+	want := "ACS3-HMAC-SHA256 Credential=YourAccessKeyId," +
+		"SignedHeaders=host;x-acs-action;x-acs-content-sha256;x-acs-date;x-acs-signature-nonce;x-acs-version," +
+		"Signature=06563a9e1b43f5dfe96b81484da74bceab24a1d853912eee15083a6f0f3283c0"
+	if auth != want {
+		t.Errorf("Authorization =\n  %s\nwant\n  %s", auth, want)
 	}
 }
 

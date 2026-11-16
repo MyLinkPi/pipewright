@@ -126,15 +126,17 @@ func v3CanonicalQuery(params map[string]string) string {
 	return b.String()
 }
 
-// v3SignV3 据阿里云 V3 规范计算 ACS3-HMAC-SHA256 签名,返回 Authorization 头值:
+// v3Sign 据阿里云 V3 规范计算 ACS3-HMAC-SHA256 签名,返回 Authorization 头值:
 //
 //	CanonicalRequest = Method \n URI \n Query \n Headers(各 name:value\n 连接) \n
-//	                  AdditionalHeaders(空) \n Hex(SHA256(payload))
-//	StringToSign     = "ACS3-HMAC-SHA256" \n Hex(SHA256(CanonicalRequest)) \n ""
+//	                  SignedHeaders(分号串头名) \n Hex(SHA256(payload))
+//	StringToSign     = "ACS3-HMAC-SHA256" \n Hex(SHA256(CanonicalRequest))   ← 末尾无 \n
 //	Signature        = lower-hex(HMAC-SHA256(secret, StringToSign))
-//	Authorization    = ACS3-HMAC-SHA256 Credential=<AK>,AdditionalHeaders=,Signature=<sig>
+//	Authorization    = ACS3-HMAC-SHA256 Credential=<AK>,SignedHeaders=<头名分号串>,Signature=<sig>
 //
-// 参与签名的头固定为 host + 全部 x-acs-* 头(小写名排序),无额外 AdditionalHeaders。
+// 参与签名的头固定为 host + 全部 x-acs-* 头(小写名排序)。CanonicalRequest 的第 5 行必须是
+// SignedHeaders(参与签名的头名分号串)——缺失该行或 StringToSign 多一个尾换行都会导致服务端
+// 重算不一致 → SignatureDoesNotMatch(官方文档示例向量见 TestV3SignOfficialDocVector)。
 func v3Sign(method, uri, canonicalQuery string, headers map[string]string, payload []byte, ak, sk string) string {
 	names := make([]string, 0, len(headers))
 	for k := range headers {
@@ -148,12 +150,14 @@ func v3Sign(method, uri, canonicalQuery string, headers map[string]string, paylo
 		hb.WriteString(strings.TrimSpace(headers[k]))
 		hb.WriteByte('\n')
 	}
-	canonicalRequest := method + "\n" + uri + "\n" + canonicalQuery + "\n" + hb.String() + "\n" + sha256Hex(payload)
+	signedHeaders := strings.Join(names, ";")
+	canonicalRequest := method + "\n" + uri + "\n" + canonicalQuery + "\n" + hb.String() + "\n" +
+		signedHeaders + "\n" + sha256Hex(payload)
 
 	mac := hmac.New(sha256.New, []byte(sk))
-	mac.Write([]byte("ACS3-HMAC-SHA256\n" + sha256Hex([]byte(canonicalRequest)) + "\n"))
+	mac.Write([]byte("ACS3-HMAC-SHA256\n" + sha256Hex([]byte(canonicalRequest))))
 	sig := hex.EncodeToString(mac.Sum(nil))
-	return fmt.Sprintf("ACS3-HMAC-SHA256 Credential=%s,AdditionalHeaders=,Signature=%s", ak, sig)
+	return fmt.Sprintf("ACS3-HMAC-SHA256 Credential=%s,SignedHeaders=%s,Signature=%s", ak, signedHeaders, sig)
 }
 
 // ecsErrResp 是阿里云 V3 错误信封(成功响应无 code/message;HTTP 4xx/5xx 才有)。

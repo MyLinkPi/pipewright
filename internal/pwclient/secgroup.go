@@ -126,7 +126,9 @@ func sgCanonicalQuery(params map[string]string) string {
 }
 
 // sgSign 据阿里云 V3 规范计算 ACS3-HMAC-SHA256 签名,返回 Authorization 头值(参与签名
-// 的头固定为 host + 全部 x-acs-* 头,小写名排序)。
+// 的头固定为 host + 全部 x-acs-* 头,小写名排序)。CanonicalRequest 第 5 行是 SignedHeaders
+// (头名分号串),StringToSign 末尾无换行——与 internal/aliyunecs.v3Sign 同款,官方文档
+// 示例向量见各包测试。
 func sgSign(method, uri, canonicalQuery string, headers map[string]string, payload []byte, ak, sk string) string {
 	names := make([]string, 0, len(headers))
 	for k := range headers {
@@ -140,12 +142,14 @@ func sgSign(method, uri, canonicalQuery string, headers map[string]string, paylo
 		hb.WriteString(strings.TrimSpace(headers[k]))
 		hb.WriteByte('\n')
 	}
-	canonicalRequest := method + "\n" + uri + "\n" + canonicalQuery + "\n" + hb.String() + "\n" + sgSHA256Hex(payload)
+	signedHeaders := strings.Join(names, ";")
+	canonicalRequest := method + "\n" + uri + "\n" + canonicalQuery + "\n" + hb.String() + "\n" +
+		signedHeaders + "\n" + sgSHA256Hex(payload)
 
 	mac := hmac.New(sha256.New, []byte(sk))
-	mac.Write([]byte("ACS3-HMAC-SHA256\n" + sgSHA256Hex([]byte(canonicalRequest)) + "\n"))
+	mac.Write([]byte("ACS3-HMAC-SHA256\n" + sgSHA256Hex([]byte(canonicalRequest))))
 	sig := hex.EncodeToString(mac.Sum(nil))
-	return fmt.Sprintf("ACS3-HMAC-SHA256 Credential=%s,AdditionalHeaders=,Signature=%s", ak, sig)
+	return fmt.Sprintf("ACS3-HMAC-SHA256 Credential=%s,SignedHeaders=%s,Signature=%s", ak, signedHeaders, sig)
 }
 
 // sgErrResp 是阿里云 V3 错误信封(成功响应无 code/message;HTTP 4xx/5xx 才有)。
