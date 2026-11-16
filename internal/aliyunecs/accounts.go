@@ -207,3 +207,27 @@ func unwrapTail(err error) string {
 	}
 	return s
 }
+
+// VerifyDetail 返回错误链最末端的具体人话(httpapi 透传给前端排障;绝无凭据片段)。
+// 错误链形如 "哨兵A:哨兵B:人话",逐层剥掉已知哨兵前缀(含 unwrapTail 已剥掉 "aliyunecs: "
+// 包前缀的裸哨兵形态);剥完只剩裸哨兵 → 无具体原因,返回空串。
+func VerifyDetail(err error) string {
+	bare := strings.TrimPrefix(ErrListFailed.Error(), "aliyunecs: ")
+	sentinels := []string{ErrVerifyFailed.Error(), ErrListFailed.Error(), bare, ErrPowerFailed.Error()}
+	s := err.Error()
+	for changed := true; changed; {
+		changed = false
+		for _, sentinel := range sentinels {
+			if strings.HasPrefix(s, sentinel+":") {
+				s = strings.TrimSpace(s[len(sentinel)+1:])
+				changed = true
+			}
+		}
+	}
+	for _, sentinel := range sentinels {
+		if s == sentinel {
+			return ""
+		}
+	}
+	return s
+}
