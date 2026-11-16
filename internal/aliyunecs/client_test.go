@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -239,6 +240,38 @@ func TestClientCredsMissing(t *testing.T) {
 	if err := c.Verify(context.Background()); err == nil || !strings.Contains(err.Error(), "AccessKeyId") {
 		t.Errorf("空 AK 应报凭据缺失人话, got %v", err)
 	}
+}
+
+// TestRealAliyunVerify 真网诊断(默认跳过):设 ALIYUN_AK / ALIYUN_SK / ALIYUN_REGION 后
+// 运行,用生产同款客户端(newEcsClient + Verify)直接打真实阿里云 API,打印真实 HTTP 状态
+// 与响应体,用于区分 签名/凭据/Region/权限/网络 到底哪一环出问题(响应体绝无凭据片段):
+//
+//	ALIYUN_AK=LTAI... ALIYUN_SK=xxx ALIYUN_REGION=cn-hangzhou \
+//	  go test ./internal/aliyunecs -run TestRealAliyunVerify -v
+func TestRealAliyunVerify(t *testing.T) {
+	ak, sk, region := os.Getenv("ALIYUN_AK"), os.Getenv("ALIYUN_SK"), os.Getenv("ALIYUN_REGION")
+	if ak == "" || sk == "" || region == "" {
+		t.Skip("需设 ALIYUN_AK / ALIYUN_SK / ALIYUN_REGION 才运行真网诊断")
+	}
+	base := http.DefaultTransport
+	c := newEcsClient(ak, sk, region)
+	c.hc = &http.Client{Timeout: 20 * time.Second, Transport: rtFunc(func(r *http.Request) (*http.Response, error) {
+		resp, err := base.RoundTrip(r)
+		if err != nil {
+			t.Logf("网络层错误(无法连接阿里云,检查代理/DNS/出网): %v", err)
+			return nil, err
+		}
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
+		_ = resp.Body.Close()
+		t.Logf("请求: %s %s", r.Method, r.URL.String())
+		t.Logf("阿里云响应: HTTP %d\n%s", resp.StatusCode, string(body))
+		resp.Body = io.NopCloser(strings.NewReader(string(body)))
+		return resp, nil
+	})}
+	if err := c.Verify(context.Background()); err != nil {
+		t.Fatalf("Verify 失败: %v", err)
+	}
+	t.Logf("Verify 通过:签名/凭据/Region/权限 全部 OK(服务端部署同款代码即可用)")
 }
 
 // TestVerifyJSONRoundtrip 保证 DescribeInstances 成功响应可被解码(冒烟)。

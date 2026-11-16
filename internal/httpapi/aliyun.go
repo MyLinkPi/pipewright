@@ -85,6 +85,8 @@ func toAliyunInstanceDTO(i aliyunecs.Instance) aliyunInstanceDTO {
 }
 
 // writeAliyunError 把阿里云 ECS 领域错误映射为契约错误码/状态码;绝不回显明文/Secret。
+// 凭据/网络类错误在固定人话后追加领域层给出的具体原因(VerifyDetail,无凭据),否则
+// "签名错 / 凭据无效 / Region 错 / 网络不通" 全被同一句文案吞掉,无法排障。
 func writeAliyunError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, aliyunecs.ErrNotFound):
@@ -110,9 +112,9 @@ func writeAliyunError(w http.ResponseWriter, err error) {
 	case errors.Is(err, aliyunecs.ErrInvalidSSHUser):
 		writeError(w, http.StatusBadRequest, "invalid_aliyun_import", "请填写 SSH 登录用户")
 	case errors.Is(err, aliyunecs.ErrListFailed):
-		writeError(w, http.StatusBadGateway, "aliyun_api_failed", "阿里云 ECS API 调用失败:凭据无效、Region 不存在、无权限或网络不可达")
+		writeError(w, http.StatusBadGateway, "aliyun_api_failed", withAliyunDetail("阿里云 ECS API 调用失败:凭据无效、Region 不存在、无权限或网络不可达", err))
 	case errors.Is(err, aliyunecs.ErrVerifyFailed):
-		writeError(w, http.StatusBadGateway, "aliyun_verify_failed", "阿里云账户校验失败:凭据无效、Region 不存在或无 ECS 权限")
+		writeError(w, http.StatusBadGateway, "aliyun_verify_failed", withAliyunDetail("阿里云账户校验失败:凭据无效、Region 不存在或无 ECS 权限", err))
 	case errors.Is(err, aliyunecs.ErrServerNotLinked):
 		writeError(w, http.StatusNotFound, "server_not_linked", "该服务器不是导入的阿里云 ECS,无法开关机")
 	case errors.Is(err, aliyunecs.ErrPowerFailed):
@@ -129,6 +131,14 @@ func writeAliyunError(w http.ResponseWriter, err error) {
 	default:
 		writeError(w, http.StatusInternalServerError, "internal", "服务器内部错误")
 	}
+}
+
+// withAliyunDetail 给固定人话追加领域层具体原因(无具体原因则原样返回)。
+func withAliyunDetail(msg string, err error) string {
+	if d := aliyunecs.VerifyDetail(err); d != "" {
+		return msg + "。具体原因:" + d
+	}
+	return msg
 }
 
 // makeListAliyunAccountsHandler 返回 GET /api/aliyun/accounts → { items: [...] }(只读,无审计)。
