@@ -74,6 +74,7 @@ func TestSGClientRequestAndSignature(t *testing.T) {
 		}
 	}
 	const emptySHA = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+	signedHeaders := "host;x-acs-action;x-acs-content-sha256;x-acs-date;x-acs-signature-nonce;x-acs-version"
 	canonical := "GET\n/\nRegionId=cn-hangzhou&SecurityGroupId=sg-1\n" +
 		"host:ecs.cn-hangzhou.aliyuncs.com\n" +
 		"x-acs-action:DescribeSecurityGroupAttribute\n" +
@@ -82,14 +83,35 @@ func TestSGClientRequestAndSignature(t *testing.T) {
 		"x-acs-signature-nonce:nonce123\n" +
 		"x-acs-version:2014-05-26\n" +
 		"\n" +
+		signedHeaders + "\n" +
 		emptySHA
-	stringToSign := "ACS3-HMAC-SHA256\n" + sgSHA256Hex([]byte(canonical)) + "\n"
+	stringToSign := "ACS3-HMAC-SHA256\n" + sgSHA256Hex([]byte(canonical))
 	mac := hmac.New(sha256.New, []byte("TestSK"))
 	mac.Write([]byte(stringToSign))
-	wantAuth := fmt.Sprintf("ACS3-HMAC-SHA256 Credential=TestAKID,AdditionalHeaders=,Signature=%s",
-		hex.EncodeToString(mac.Sum(nil)))
+	wantAuth := fmt.Sprintf("ACS3-HMAC-SHA256 Credential=TestAKID,SignedHeaders=%s,Signature=%s",
+		signedHeaders, hex.EncodeToString(mac.Sum(nil)))
 	if auth != wantAuth {
 		t.Errorf("Authorization =\n  %s\nwant\n  %s", auth, wantAuth)
+	}
+
+	// 官方文档《V3 请求结构和签名》示例向量(期望签名逐字来自文档;曾因缺 SignedHeaders
+	// 行 + StringToSign 多尾换行导致真实请求全部 SignatureDoesNotMatch)。
+	sgHeaders := map[string]string{
+		"host":                  "ecs.cn-shanghai.aliyuncs.com",
+		"x-acs-action":          "RunInstances",
+		"x-acs-content-sha256":  emptySHA,
+		"x-acs-date":            "2023-10-26T10:22:32Z",
+		"x-acs-signature-nonce": "3156853299f313e23d1673dc12e1703d",
+		"x-acs-version":         "2014-05-26",
+	}
+	docAuth := sgSign(http.MethodPost, "/",
+		"ImageId=win2019_1809_x64_dtc_zh-cn_40G_alibase_20230811.vhd&RegionId=cn-shanghai",
+		sgHeaders, nil, "YourAccessKeyId", "YourAccessKeySecret")
+	wantDoc := "ACS3-HMAC-SHA256 Credential=YourAccessKeyId," +
+		"SignedHeaders=host;x-acs-action;x-acs-content-sha256;x-acs-date;x-acs-signature-nonce;x-acs-version," +
+		"Signature=06563a9e1b43f5dfe96b81484da74bceab24a1d853912eee15083a6f0f3283c0"
+	if docAuth != wantDoc {
+		t.Errorf("doc-vector Authorization =\n  %s\nwant\n  %s", docAuth, wantDoc)
 	}
 
 	// 错误信封 → 人话(凭据类错误码不透出原始报文)。
