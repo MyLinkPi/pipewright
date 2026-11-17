@@ -531,7 +531,12 @@ networks:
 		// 重置,日志恒打印 ws://127.0.0.1)。故改为「回环 + 转发」架构:浏览器统一起在
 		// 容器内回环 9333(回环绑定是各版本共同保证的行为),由镜像自带 node 把
 		// 0.0.0.0:9222 转发到它,对 docker 端口映射暴露;while 循环保活浏览器(node 前台
-		// 守护整体生命周期,挂了触发容器重启策略)。注意:compose 会对 command 值做变量
+		// 守护整体生命周期,挂了触发容器重启策略)。转发必须是 HTTP 感知代理而非裸 TCP
+		// 管道:Chromium DevTools 有 DNS-rebinding 防护(RequestIsSafeToServe),Host 头
+		// 非 IP/localhost 一律 500 拒绝,且 webSocketDebuggerUrl 直接按 Host 头拼
+		// (ws://<Host><guid>)。故代理把上游 Host 改写为 127.0.0.1:9333 过校验,再把
+		// /json 响应里的 ws://127.0.0.1:9333 回写成客户端原始外部地址,WebSocket upgrade
+		// 同样改写 Host 后双向 pipe。注意:compose 会对 command 值做变量
 		// 插值,shell 变量必须写成 $$BIN(单 $ 会被 compose 抹成空串,实战踩坑);
 		// $(find) 命令替换不在插值语法内,保持单 $;--remote-allow-origins 的 * 须加引号
 		// 防 shell 展开。找不到二进制时打印镜像内 /ms-playwright 清单再退出,便于日志
@@ -571,7 +576,32 @@ networks:
             --user-data-dir=/srv/pw/profile
           sleep 1
         done) &
-        exec node -e 'const net=require("net");net.createServer(c=>{const s=net.connect(9333,"127.0.0.1");c.on("error",()=>s.destroy());s.on("error",()=>c.destroy());c.pipe(s);s.pipe(c)}).listen(9222,"0.0.0.0")'
+        exec node -e 'const http=require("http"),net=require("net"),UP=9333,LP=9222;
+        const srv=http.createServer((req,res)=>{
+          const oh=req.headers.host||("127.0.0.1:"+LP);
+          const up=http.request({hostname:"127.0.0.1",port:UP,path:req.url,method:req.method,headers:Object.assign({},req.headers,{host:"127.0.0.1:"+UP})},(ur)=>{
+            if(req.url.startsWith("/json")){
+              let cs=[];ur.on("data",d=>cs.push(d));ur.on("end",()=>{
+                const s=Buffer.concat(cs).toString("utf8").split("ws://127.0.0.1:"+UP).join("ws://"+oh);
+                const h=Object.assign({},ur.headers);delete h["content-length"];delete h["transfer-encoding"];
+                res.writeHead(ur.statusCode,h);res.end(s);
+              });
+            }else{res.writeHead(ur.statusCode,ur.headers);ur.pipe(res);}
+          });
+          up.on("error",()=>{if(!res.headersSent){res.writeHead(502);res.end("upstream error")}});
+          req.pipe(up);
+        });
+        srv.on("upgrade",(req,sock,head)=>{
+          const up=net.connect(UP,"127.0.0.1",()=>{
+            let l=req.method+" "+req.url+" HTTP/1.1\r\n";
+            const h=Object.assign({},req.headers,{host:"127.0.0.1:"+UP});
+            for(const k in h)l+=k+": "+h[k]+"\r\n";
+            l+="\r\n";up.write(l);if(head&&head.length)up.write(head);
+            sock.pipe(up).pipe(sock);
+          });
+          up.on("error",()=>sock.destroy());sock.on("error",()=>up.destroy());
+        });
+        srv.listen(LP,"0.0.0.0");'
     ports:
       - "{{port}}:9222"
     volumes:

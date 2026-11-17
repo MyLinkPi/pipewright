@@ -198,12 +198,14 @@ func TestRenderParams(t *testing.T) {
 			// chromium 只认小写代理变量(大写仅供镜像内 node/npm),两者必须同时渲染。
 			!strings.Contains(res.Compose, `http_proxy: ""`) ||
 			!strings.Contains(res.Compose, `https_proxy: ""`) ||
-			// 架构断言:headless shell 二进制 + 回环 9333 起浏览器 + node 转发 0.0.0.0:9222
-			// (各版本 chrome 都无视 --remote-debugging-address,只绑回环);
+			// 架构断言:headless shell 二进制 + 回环 9333 起浏览器 + HTTP 感知代理转发
+			// 0.0.0.0:9222(各版本 chrome 都无视 --remote-debugging-address,只绑回环);
+			// 代理须改写上游 Host 过 Chromium DNS-rebinding 校验,并回写 ws URL;
 			// shell 变量必须写 $$BIN —— compose 会对 command 值插值,单 $ 会被抹空。
 			!strings.Contains(res.Compose, "-name chrome-headless-shell") ||
 			!strings.Contains(res.Compose, "--remote-debugging-port=9333") ||
-			!strings.Contains(res.Compose, `listen(9222,"0.0.0.0")`) ||
+			!strings.Contains(res.Compose, `host:"127.0.0.1:"+UP`) ||
+			!strings.Contains(res.Compose, `split("ws://127.0.0.1:"+UP)`) ||
 			!strings.Contains(res.Compose, `"$$BIN"`) {
 			t.Fatalf("playwright 默认渲染不符:\n%s", res.Compose)
 		}
