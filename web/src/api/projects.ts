@@ -74,6 +74,15 @@ export interface Project {
   lastRunStatus: RunStatus | null
   /** RFC3339 created_at of the most recent run; null until the project has a run. */
   lastRunAt: string | null
+  /** Trigger branch of the most recent run; null until the project has a run. Optional: older fixtures/tests may omit. */
+  lastRunBranch?: string | null
+  /**
+   * Whether the run branch's HEAD differs from the last run's commit (card "new commits"
+   * badge, including force-push/reset). true = changed; false = same; null/undefined =
+   * unknown (no runs / pushed source / probe pending or failed / code management disabled).
+   * Probed asynchronously server-side — never blocks the list. Optional: older fixtures may omit.
+   */
+  hasNewCommits?: boolean | null
   /**
    * Services registered in the service-registry gateway, resolved from the pipeline's
    * deploy-node bindings (regServiceId; legacy gatewayService by service name).

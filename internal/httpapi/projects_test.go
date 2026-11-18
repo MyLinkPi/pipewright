@@ -13,6 +13,7 @@ import (
 	"github.com/huangchengsir/pipewright/internal/auth"
 	"github.com/huangchengsir/pipewright/internal/pipeline"
 	"github.com/huangchengsir/pipewright/internal/project"
+	"github.com/huangchengsir/pipewright/internal/repocache"
 	"github.com/huangchengsir/pipewright/internal/run"
 	"github.com/huangchengsir/pipewright/internal/servicereg"
 	"github.com/huangchengsir/pipewright/internal/vault"
@@ -169,6 +170,57 @@ func listLastRunStatus(t *testing.T, client *http.Client, srv *httptest.Server, 
 	}
 	t.Fatalf("project %s not in list: %s", projID, raw)
 	return nil
+}
+
+// TestProjectListHasNewCommits 验证列表接口回填「有新提交」:HEAD 与上次运行 commit 不同 → true;
+// 一致(含 7 位短 SHA 前缀)→ false;无运行 / pushed 源 → null;lastRunBranch 同步回填。
+// HEAD 探测异步:首请 null,轮询等待落定。非阻塞硬约束由 TestProjectListNotBlockedByHeadProbe
+// 钉死;降级规则(空分支回退/分支已删等)由 TestProjectHeadsResolveRules 覆盖。
+func TestProjectListHasNewCommits(t *testing.T) {
+	const headSHA = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	srv, client, csrf, rsvc, psvc := setupHeadsServer(t, fakeRefsLister{refs: &repocache.Refs{
+		Branches: []repocache.Ref{{Name: "main", Commit: headSHA}},
+	}})
+	credID := newGitCred(t, client, srv.URL, csrf, "ghp_token_new_commits")
+
+	mk := func(name, repo, commit string) string {
+		id := createHeadsProject(t, client, srv.URL, csrf, name, repo, credID)
+		if commit != "" {
+			if _, err := rsvc.Create(context.Background(), id, run.Trigger{
+				Type: run.TriggerManual, Branch: "main", Commit: commit, Actor: "admin",
+			}); err != nil {
+				t.Fatalf("create run(%s): %v", name, err)
+			}
+		}
+		return id
+	}
+	projNew := mk("ahead", "https://gitee.com/acme/ahead.git", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+	projSame := mk("same", "https://gitee.com/acme/same.git", headSHA)
+	projShort := mk("short", "https://gitee.com/acme/short.git", headSHA[:7])
+	projNoRun := mk("norun", "https://gitee.com/acme/norun.git", "")
+	pushed, err := psvc.CreatePushed(context.Background(), project.PushedCreateInput{
+		OriginNodeID: "node-heads-test", OriginProjectRef: "ref-heads-test", Name: "pushed-heads",
+	})
+	if err != nil {
+		t.Fatalf("create pushed project: %v", err)
+	}
+
+	// 首请:探测在飞 → null(非阻塞)。
+	if got := listProjectField(t, client, srv, projNew, "hasNewCommits"); got != nil {
+		t.Fatalf("首请 hasNewCommits 应为 null(异步探测), got %v", got)
+	}
+	waitProjectField(t, client, srv, projNew, "hasNewCommits", true)
+	waitProjectField(t, client, srv, projSame, "hasNewCommits", false)
+	waitProjectField(t, client, srv, projShort, "hasNewCommits", false)
+	if got := listProjectField(t, client, srv, projNoRun, "hasNewCommits"); got != nil {
+		t.Fatalf("无运行 hasNewCommits 应为 null, got %v", got)
+	}
+	if got := listProjectField(t, client, srv, pushed.ID, "hasNewCommits"); got != nil {
+		t.Fatalf("pushed 源 hasNewCommits 应为 null, got %v", got)
+	}
+	if got := listProjectField(t, client, srv, projNew, "lastRunBranch"); got != "main" {
+		t.Fatalf("lastRunBranch = %v, want main", got)
+	}
 }
 
 func TestProjectCreateMissingCredential422(t *testing.T) {

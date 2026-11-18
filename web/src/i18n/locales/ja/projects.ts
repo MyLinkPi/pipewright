@@ -167,4 +167,6 @@ export default {
   pushedItemsHint: '未チェック = 全項目',
   pushedBadge: 'プッシュ源',
   pushedBadgeHint: 'クラスタ対等ノードのプッシュで自動作成されたプロジェクト(ソースはプッシュされた成果物/イメージ)',
+  newCommitsBadge: '新着コミット',
+  newCommitsHint: 'ブランチ {branch} の現在のコミットは前回の実行時と異なります',
 }

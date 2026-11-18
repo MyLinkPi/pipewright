@@ -167,4 +167,6 @@ export default {
   pushedItemsHint: 'non coché = tous',
   pushedBadge: 'source poussée',
   pushedBadgeHint: 'Projet créé automatiquement par un push d’un pair du cluster (source : artefacts/images poussés)',
+  newCommitsBadge: 'Nouveaux commits',
+  newCommitsHint: 'La branche {branch} pointe vers un commit différent de celui de la dernière exécution',
 }

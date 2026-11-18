@@ -47,7 +47,7 @@ type networkCloner interface {
 type Cache struct {
 	root     string
 	fallback networkCloner
-	locks    sync.Map // repoKey → *sync.Mutex
+	locks    sync.Map // repoKey → chan struct{}(容量 1 的可取消互斥锁)
 	// allowInsecure 仅供测试:为 true 时跳过 SSRF scheme/host 校验(放行本地夹具仓库)。
 	// 生产构造(New)绝不设置;镜像仅对 build.IsRepoURLAllowed 通过的 URL 进行(同款 SSRF 收口)。
 	allowInsecure bool
@@ -85,9 +85,29 @@ func (c *Cache) mirrorPath(repoURL string) string {
 }
 
 // repoLock 取某仓库的互斥锁(并发构建同仓库串行,避免 fetch/checkout 打架)。
-func (c *Cache) repoLock(repoURL string) *sync.Mutex {
-	m, _ := c.locks.LoadOrStore(c.mirrorPath(repoURL), &sync.Mutex{})
-	return m.(*sync.Mutex)
+func (c *Cache) repoLock(repoURL string) chan struct{} {
+	return c.mirrorLock(c.mirrorPath(repoURL))
+}
+
+// mirrorLock 取镜像路径对应的 channel 锁;清理路径与正常读写必须共用此入口,
+// 避免锁表里的实际类型/实例不一致。channel 形式允许 lockRepo 在等待期间响应 ctx 取消。
+func (c *Cache) mirrorLock(mirror string) chan struct{} {
+	m, _ := c.locks.LoadOrStore(mirror, make(chan struct{}, 1))
+	return m.(chan struct{})
+}
+
+// lockRepo 获取仓库锁并返回释放函数;等待期间 ctx 取消则不获取锁、直接返回原因。
+func (c *Cache) lockRepo(ctx context.Context, repoURL string) (func(), error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	lock := c.repoLock(repoURL)
+	select {
+	case lock <- struct{}{}:
+		return func() { <-lock }, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }
 
 // ensureMirror 确保本地 bare 镜像存在并增量更新到最新(首次 mirror 克隆,后续 fetch)。
@@ -136,9 +156,11 @@ func (c *Cache) ensureMirror(ctx context.Context, repoURL string, cred vault.Git
 // Clone 实现 build 的克隆契约:经本地镜像出工作区(命中走本地、镜像不可用回退直连)。
 // branch/commit 语义同 build.Cloner.Clone:commit 优先,否则 branch,皆空则默认分支。
 func (c *Cache) Clone(ctx context.Context, repoURL string, cred vault.GitAuth, branch, commit, destDir string) (*build.CloneResolved, error) {
-	lock := c.repoLock(repoURL)
-	lock.Lock()
-	defer lock.Unlock()
+	unlock, err := c.lockRepo(ctx, repoURL)
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
 
 	mirror, err := c.ensureMirror(ctx, repoURL, cred)
 	if err != nil {
@@ -220,9 +242,11 @@ func (c *Cache) checkoutFromMirror(ctx context.Context, mirror, branch, commit, 
 
 // ListRefs 列出某仓库的分支与 tag(确保镜像最新后从本地镜像读;供前端下拉,不每次触网克隆)。
 func (c *Cache) ListRefs(ctx context.Context, repoURL string, cred vault.GitAuth) (*Refs, error) {
-	lock := c.repoLock(repoURL)
-	lock.Lock()
-	defer lock.Unlock()
+	unlock, err := c.lockRepo(ctx, repoURL)
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
 
 	mirror, err := c.ensureMirror(ctx, repoURL, cred)
 	if err != nil {
@@ -268,9 +292,11 @@ func (c *Cache) ListCommits(ctx context.Context, repoURL string, cred vault.GitA
 	if limit > 200 {
 		limit = 200
 	}
-	lock := c.repoLock(repoURL)
-	lock.Lock()
-	defer lock.Unlock()
+	unlock, err := c.lockRepo(ctx, repoURL)
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
 
 	mirror, err := c.ensureMirror(ctx, repoURL, cred)
 	if err != nil {

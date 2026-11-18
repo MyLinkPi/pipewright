@@ -23,8 +23,8 @@ func seedRunAt(t *testing.T, svc Service, projID, status string, createdAt time.
 	return runID
 }
 
-// TestLatestByProject 验证每项目取 created_at 最新一条(含创建时间);无运行的项目不出现在
-// 结果中;空入参返回空 map 不报错。
+// TestLatestByProject 验证每项目取 created_at 最新一条(含创建时间与触发分支/commit);
+// 无运行的项目不出现在结果中;空入参返回空 map 不报错。
 func TestLatestByProject(t *testing.T) {
 	db := testDB(t)
 	svc := New(db)
@@ -33,8 +33,14 @@ func TestLatestByProject(t *testing.T) {
 
 	base := time.Date(2026, 1, 1, 10, 0, 0, 0, time.UTC)
 	seedRunAt(t, svc, projA, StatusSuccess, base)
-	seedRunAt(t, svc, projA, StatusFailed, base.Add(time.Hour))    // A 最新 → failed
-	seedRunAt(t, svc, projB, StatusRunning, base.Add(2*time.Hour)) // B 唯一 → running
+	lastA := seedRunAt(t, svc, projA, StatusFailed, base.Add(time.Hour)) // A 最新 → failed
+	seedRunAt(t, svc, projB, StatusRunning, base.Add(2*time.Hour))       // B 唯一 → running
+
+	// 给 A 的最新运行写入可区分的分支/commit(短 SHA,模拟 SetCommit 回写后的形态),
+	// 验证摘要取的是最新一行而非旧行。
+	if _, err := db.Exec(`UPDATE pipeline_runs SET trigger_branch = 'release', trigger_commit = 'deadbee' WHERE id = ?`, lastA); err != nil {
+		t.Fatalf("update latest run trigger: %v", err)
+	}
 
 	m, err := svc.LatestByProject(context.Background(), []string{projA, projB})
 	if err != nil {
@@ -42,8 +48,10 @@ func TestLatestByProject(t *testing.T) {
 	}
 	if len(m) != 2 ||
 		m[projA].Status != StatusFailed || !m[projA].CreatedAt.Equal(base.Add(time.Hour)) ||
-		m[projB].Status != StatusRunning || !m[projB].CreatedAt.Equal(base.Add(2*time.Hour)) {
-		t.Fatalf("期望 A=failed / B=running(含时间), got %+v", m)
+		m[projA].Branch != "release" || m[projA].Commit != "deadbee" ||
+		m[projB].Status != StatusRunning || !m[projB].CreatedAt.Equal(base.Add(2*time.Hour)) ||
+		m[projB].Branch != "main" || m[projB].Commit != "abc" {
+		t.Fatalf("期望 A=failed/release/deadbee / B=running/main/abc(含时间), got %+v", m)
 	}
 
 	// 混入无运行的项目:该缺席;已有项目的取值不变。

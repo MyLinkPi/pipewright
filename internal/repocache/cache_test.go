@@ -135,6 +135,32 @@ func TestListRefs(t *testing.T) {
 	}
 }
 
+func TestRepoLockRespectsContext(t *testing.T) {
+	c := newTestCache(t)
+	unlock, err := c.lockRepo(context.Background(), "repo")
+	if err != nil {
+		t.Fatalf("首次加锁: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	if _, err := c.lockRepo(ctx, "repo"); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("等待已占用锁应响应 ctx 超时, got %v", err)
+	}
+	unlock()
+
+	unlock, err = c.lockRepo(context.Background(), "repo")
+	if err != nil {
+		t.Fatalf("释放后应可重新加锁: %v", err)
+	}
+	unlock()
+
+	cancel()
+	if _, err := c.lockRepo(ctx, "other-repo"); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("已取消 ctx 即使锁空闲也应直接返回, got %v", err)
+	}
+}
+
 func TestListCommits(t *testing.T) {
 	src, _ := makeSourceRepo(t)
 	addCommit(t, src, "a.txt", "a")

@@ -1,9 +1,12 @@
 package repocache
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/huangchengsir/pipewright/internal/vault"
 )
 
 // Prune 删除不在保留集内的镜像;保留集按 URL 同款 hash 规则计算(多项目同 URL 一份)。
@@ -73,5 +76,28 @@ func TestRemoveIdempotent(t *testing.T) {
 	}
 	if err := c.Remove(u); err != nil {
 		t.Fatalf("重复 Remove 应幂等: %v", err)
+	}
+}
+
+// TestCleanupAfterListRefs 覆盖正常使用建立仓库锁后再清理的组合路径,
+// 防止 Remove/Prune 与 Clone/ListRefs 的锁实现不一致导致类型断言 panic。
+func TestCleanupAfterListRefs(t *testing.T) {
+	removeRepo, _ := makeSourceRepo(t)
+	pruneRepo, _ := makeSourceRepo(t)
+	c := newTestCache(t)
+	for _, repo := range []string{removeRepo, pruneRepo} {
+		if _, err := c.ListRefs(context.Background(), repo, vault.GitAuth{}); err != nil {
+			t.Fatalf("ListRefs(%s): %v", repo, err)
+		}
+	}
+	if err := c.Remove(removeRepo); err != nil {
+		t.Fatalf("Remove after ListRefs: %v", err)
+	}
+	deleted, _, err := c.Prune(nil)
+	if err != nil {
+		t.Fatalf("Prune after ListRefs: %v", err)
+	}
+	if len(deleted) != 1 || deleted[0] != c.mirrorPath(pruneRepo) {
+		t.Fatalf("Prune 应只删除剩余镜像, got %v", deleted)
 	}
 }

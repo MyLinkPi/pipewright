@@ -167,4 +167,6 @@ export default {
   pushedItemsHint: 'unmarkiert = alle',
   pushedBadge: 'Push-Quelle',
   pushedBadgeHint: 'Durch einen Peer-Push im Cluster automatisch erstelltes Projekt (Quelle: gepushte Artefakte/Images)',
+  newCommitsBadge: 'Neue Commits',
+  newCommitsHint: 'Branch {branch} verweist auf einen anderen Commit als bei der letzten Ausführung',
 }
