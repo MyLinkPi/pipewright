@@ -20,8 +20,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -34,6 +36,11 @@ const pveRequestTimeout = 10 * time.Second
 type pveClient interface {
 	Get(ctx context.Context, path string, out any) error
 	Post(ctx context.Context, path string, form url.Values, out any) error
+	Put(ctx context.Context, path string, form url.Values, out any) error
+	// Upload 以 multipart/form-data 流式上传文件(fileField 为文件表单字段名,
+	// PVE 存储上传固定为 "filename");fields 为随附表单字段。content 流式
+	// 读取绝不整文件缓冲(大 .vma 友好);用独立无超时 http.Client(默认 10s 会切断上传)。
+	Upload(ctx context.Context, path string, fields url.Values, fileField, fileName string, content io.Reader, out any) error
 }
 
 // clientFactory 按集群配置构造客户端(生产实现经 vault 解封 Token;测试注入 fake)。
@@ -44,6 +51,9 @@ type liveClient struct {
 	base  *url.URL
 	token string // 完整头值 PVEAPIToken=name=secret;只进请求头
 	http  *http.Client
+	// uploadHTTP 专供大文件 multipart 上传:无总超时(10s 会切断 .vma 上传),
+	// 生命周期由调用方 ctx 控制;TLS Transport 与 http 同源。
+	uploadHTTP *http.Client
 }
 
 // prodClientFactory 是生产工厂:校验 apiURL 并组 TLS。
@@ -56,10 +66,12 @@ func prodClientFactory(apiURL, tokenName, tokenSecret, tlsMode, tlsFingerprint s
 	if err != nil {
 		return nil, err
 	}
+	tr := &http.Transport{TLSClientConfig: tc}
 	return &liveClient{
-		base:  u,
-		token: "PVEAPIToken=" + tokenName + "=" + tokenSecret,
-		http:  &http.Client{Timeout: pveRequestTimeout, Transport: &http.Transport{TLSClientConfig: tc}},
+		base:       u,
+		token:      "PVEAPIToken=" + tokenName + "=" + tokenSecret,
+		http:       &http.Client{Timeout: pveRequestTimeout, Transport: tr},
+		uploadHTTP: &http.Client{Transport: tr},
 	}, nil
 }
 
@@ -103,14 +115,29 @@ type errorBody struct {
 	Message string            `json:"message"`
 }
 
+// pveAPIError 保留 HTTP 状态供轮询区分永久错误与可重试错误,文本与原有错误契约一致。
+type pveAPIError struct {
+	status int
+	err    error
+}
+
+func (e *pveAPIError) Error() string { return e.err.Error() }
+func (e *pveAPIError) Unwrap() error { return e.err }
+
 func (c *liveClient) do(ctx context.Context, method, path string, form url.Values, out any) error {
+	rel, err := url.Parse(path)
+	if err != nil {
+		return fmt.Errorf("%w: API 路径非法: %v", ErrInvalidInput, err)
+	}
 	full := *c.base
-	full.Path = strings.TrimRight(full.Path, "/") + path
+	full.Path = strings.TrimRight(full.Path, "/") + rel.Path
+	full.RawPath = strings.TrimRight(c.base.EscapedPath(), "/") + rel.EscapedPath()
+	full.RawQuery = rel.RawQuery
 	if q := form.Encode(); method == http.MethodGet && q != "" {
 		full.RawQuery = q
 	}
 	var body io.Reader
-	if method == http.MethodPost {
+	if method == http.MethodPost || method == http.MethodPut {
 		body = strings.NewReader(form.Encode())
 	}
 	req, err := http.NewRequestWithContext(ctx, method, full.String(), body)
@@ -118,10 +145,16 @@ func (c *liveClient) do(ctx context.Context, method, path string, form url.Value
 		return fmt.Errorf("%w: %v", ErrConnectFailed, err)
 	}
 	req.Header.Set("Authorization", c.token)
-	if method == http.MethodPost {
+	if method == http.MethodPost || method == http.MethodPut {
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	}
-	resp, err := c.http.Do(req)
+	return c.roundTrip(c.http, req, method, path, out)
+}
+
+// roundTrip 发请求并解 PVE 信封(非 2xx → ErrConnectFailed,错误体不含 Token)。
+// do 与 Upload 共用;hc 区分常规客户端(10s 超时)与上传客户端(无总超时)。
+func (c *liveClient) roundTrip(hc *http.Client, req *http.Request, method, path string, out any) error {
+	resp, err := hc.Do(req)
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrConnectFailed, redactURL(err.Error()))
 	}
@@ -147,7 +180,7 @@ func (c *liveClient) do(ctx context.Context, method, path string, form url.Value
 				msg = msg[:300]
 			}
 		}
-		return fmt.Errorf("%w: %s %s → HTTP %d: %s", ErrConnectFailed, method, path, resp.StatusCode, msg)
+		return &pveAPIError{status: resp.StatusCode, err: fmt.Errorf("%w: %s %s → HTTP %d: %s", ErrConnectFailed, method, path, resp.StatusCode, msg)}
 	}
 	var env apiResponse
 	if err := json.Unmarshal(data, &env); err != nil {
@@ -170,6 +203,87 @@ func (c *liveClient) Post(ctx context.Context, path string, form url.Values, out
 		form = url.Values{}
 	}
 	return c.do(ctx, http.MethodPost, path, form, out)
+}
+
+func (c *liveClient) Put(ctx context.Context, path string, form url.Values, out any) error {
+	if form == nil {
+		form = url.Values{}
+	}
+	return c.do(ctx, http.MethodPut, path, form, out)
+}
+
+// Upload 流式 multipart 上传(语义见 pveClient 接口注释)。文件字节经 io.Pipe 直灌
+// 请求体,内存占用与文件大小无关;返回前关闭管道并等待 producer 退出,避免调用方
+// 关闭/复用 content 时与异步读取并发。
+func (c *liveClient) Upload(ctx context.Context, path string, fields url.Values, fileField, fileName string, content io.Reader, out any) error {
+	if content == nil {
+		return fmt.Errorf("%w: 上传内容为空", ErrInvalidInput)
+	}
+	full := *c.base
+	full.Path = strings.TrimRight(full.Path, "/") + path
+	pr, pw := io.Pipe()
+	mw := multipart.NewWriter(pw)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, full.String(), pr)
+	if err != nil {
+		_ = pr.Close()
+		_ = pw.Close()
+		return fmt.Errorf("%w: %v", ErrConnectFailed, err)
+	}
+	req.Header.Set("Authorization", c.token)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+
+	done := make(chan error, 1)
+	go func() {
+		var err error
+		defer func() {
+			_ = pw.CloseWithError(err)
+			done <- err
+		}()
+		for k, vs := range fields {
+			for _, v := range vs {
+				if err = mw.WriteField(k, v); err != nil {
+					return
+				}
+			}
+		}
+		var fw io.Writer
+		if fw, err = mw.CreateFormFile(fileField, fileName); err != nil {
+			return
+		}
+		if _, err = io.Copy(fw, content); err != nil {
+			return
+		}
+		err = mw.Close()
+	}()
+
+	uploadErr := c.roundTrip(c.uploadHTTP, req, http.MethodPost, path, out)
+	_ = pr.CloseWithError(io.ErrClosedPipe)
+	producerErr := <-done
+	if uploadErr != nil {
+		return uploadErr
+	}
+	if producerErr != nil && !errors.Is(producerErr, io.ErrClosedPipe) {
+		return fmt.Errorf("%w: 上传流读取失败: %v", ErrConnectFailed, producerErr)
+	}
+	return nil
+}
+
+// apiMajor 取 PVE 主版本号(GET /version 的 release,如 "9.0.3" → 9),供 8.x/9.x
+// 端点自适应;请求失败或解析不出 → 0(调用方按最旧形态处理并保留运行时兜底)。
+func apiMajor(ctx context.Context, c pveClient) int {
+	var ver apiVersion
+	if err := c.Get(ctx, "/api2/json/version", &ver); err != nil {
+		return 0
+	}
+	rel := strings.TrimSpace(ver.Release)
+	if i := strings.IndexByte(rel, '.'); i > 0 {
+		rel = rel[:i]
+	}
+	n, err := strconv.Atoi(rel)
+	if err != nil {
+		return 0
+	}
+	return n
 }
 
 // redactURL 从传输错误文本里抹掉可能内嵌的 query(保守:query 一律不外泄)。
@@ -271,21 +385,22 @@ type apiClusterStatusEntry struct {
 
 // apiResource 对应 GET /cluster/resources 的一个条目(node/vm/storage 共用)。
 type apiResource struct {
-	ID         string    `json:"id"` // "qemu/101"、"node/pve1"、"storage/local"
-	Type       string    `json:"type"`
-	Node       string    `json:"node"`
-	Name       string    `json:"name"` // vm 条目的显示名
-	Status     string    `json:"status"`
-	VMID       flexInt   `json:"vmid"`
-	CPU        flexFloat `json:"cpu"`
-	MaxCPU     flexInt   `json:"maxcpu"`
-	Mem        flexInt   `json:"mem"`
-	MaxMem     flexInt   `json:"maxmem"`
-	StorageName string   `json:"storage"` // storage 条目的存储名(字符串,如 local);用量看 disk/maxdisk
-	Disk        flexInt  `json:"disk"`    // storage 条目:已用字节;vm 条目:rootfs 用量
-	MaxDisk     flexInt  `json:"maxdisk"` // storage 条目:总字节
-	Uptime     flexInt   `json:"uptime"`
-	PluginType string    `json:"plugintype"`
+	ID          string    `json:"id"` // "qemu/101"、"node/pve1"、"storage/local"
+	Type        string    `json:"type"`
+	Node        string    `json:"node"`
+	Name        string    `json:"name"` // vm 条目的显示名
+	Status      string    `json:"status"`
+	VMID        flexInt   `json:"vmid"`
+	Template    flexBool  `json:"template"` // vm 条目:是否模板(建机克隆源筛选用)
+	CPU         flexFloat `json:"cpu"`
+	MaxCPU      flexInt   `json:"maxcpu"`
+	Mem         flexInt   `json:"mem"`
+	MaxMem      flexInt   `json:"maxmem"`
+	StorageName string    `json:"storage"` // storage 条目的存储名(字符串,如 local);用量看 disk/maxdisk
+	Disk        flexInt   `json:"disk"`    // storage 条目:已用字节;vm 条目:rootfs 用量
+	MaxDisk     flexInt   `json:"maxdisk"` // storage 条目:总字节
+	Uptime      flexInt   `json:"uptime"`
+	PluginType  string    `json:"plugintype"`
 }
 
 // apiTask 对应 GET /cluster/tasks 的一个条目。
@@ -307,6 +422,55 @@ type apiTaskStatus struct {
 	Type       string  `json:"type"`
 	StartTime  flexInt `json:"starttime"`
 	EndTime    flexInt `json:"endtime"`
+}
+
+// apiStorageEntry 对应 GET /nodes/{node}/storage 的一个条目(存储状态;无 path,
+// 文件型存储的路径经 GET /storage/{storage} 配置另取)。
+type apiStorageEntry struct {
+	Storage      string    `json:"storage"`
+	Type         string    `json:"type"` // 插件类型:dir/nfs/lvmthin/zfs/rbd/...
+	Active       flexBool  `json:"active"`
+	Enabled      flexBool  `json:"enabled"`
+	Shared       flexBool  `json:"shared"`
+	Content      string    `json:"content"` // 逗号分隔内容类型:images,iso,vztmpl,backup,snippets,import...
+	Used         flexInt   `json:"used"`
+	Total        flexInt   `json:"total"`
+	Avail        flexInt   `json:"avail"`
+	UsedFraction flexFloat `json:"used_fraction"`
+}
+
+// apiNetworkEntry 对应 GET /nodes/{node}/network 的一个条目(网桥/网卡/VLAN 共用)。
+type apiNetworkEntry struct {
+	Iface       string   `json:"iface"`
+	Type        string   `json:"type"` // bridge/OVSBridge/bond/eth/vlan/loopback/...
+	Active      flexBool `json:"active"`
+	Autostart   flexBool `json:"autostart"`
+	Address     string   `json:"address"`
+	Netmask     string   `json:"netmask"`
+	Gateway     string   `json:"gateway"`
+	BridgePorts string   `json:"bridge_ports"`
+	Comments    string   `json:"comments"`
+}
+
+// apiAplEntry 对应 GET /nodes/{node}/aplinfo 的一个条目(LXC 模板目录)。
+type apiAplEntry struct {
+	Template    string `json:"template"` // 模板标识(如 ubuntu-24.04-standard)
+	Package     string `json:"package"`
+	Version     string `json:"version"`
+	Section     string `json:"section"` // system/mail/...
+	Description string `json:"description"`
+	Location    string `json:"location"`
+}
+
+// apiContentEntry 对应 GET /nodes/{node}/storage/{storage}/content 的一个条目。
+type apiContentEntry struct {
+	Volid   string  `json:"volid"` // local:backup/vzdump-qemu-100-....vma.zst / local:import/x.qcow2
+	Content string  `json:"content"`
+	Format  string  `json:"format"`
+	Size    flexInt `json:"size"`
+	Used    flexInt `json:"used"`
+	VMID    flexInt `json:"vmid"`
+	Notes   string  `json:"notes"`
 }
 
 // errNilClient 防御:工厂返回 nil 客户端(配置错误)时给出可读错误。

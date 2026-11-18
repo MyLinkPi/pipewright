@@ -63,6 +63,8 @@ async function request<T>(
   try {
     response = await fetch(url, { ...options, headers, credentials: 'same-origin' })
   } catch (err) {
+    // Callers use AbortError to silence deliberate cancellation on unmount/target changes.
+    if (err instanceof Error && err.name === 'AbortError') throw err
     // Network error — backend may not be up yet
     throw new HttpError(0, null, err instanceof Error ? err.message : 'Network error')
   }
@@ -140,5 +142,9 @@ export const http = {
   },
   delete<T>(url: string, options?: RequestInit): Promise<T> {
     return request<T>(url, { ...options, method: 'DELETE' })
+  },
+  /** POST multipart/form-data（流式上传;boundary 由浏览器设置,CSRF 照常附带）。 */
+  postForm<T>(url: string, form: FormData, options?: RequestInit): Promise<T> {
+    return request<T>(url, { ...options, method: 'POST', body: form })
   },
 }

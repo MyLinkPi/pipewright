@@ -4,8 +4,10 @@ package pveadmin
 // Token 密封/测连/只读闸门(假客户端工厂)、薄客户端(对 httptest 假 PVE)。
 
 import (
+	"bufio"
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -14,10 +16,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/huangchengsir/pipewright/internal/storetest"
 	"github.com/huangchengsir/pipewright/internal/target"
@@ -34,14 +38,25 @@ func testMasterKey() *[32]byte {
 
 // ---- 假件 ---------------------------------------------------------------------------
 
+// fakeUpload 记录一次流式写入(Upload/ExecWithStdin/Runner.WriteFile 共用断言形态)。
+type fakeUpload struct {
+	serverID string
+	path     string
+	content  string
+}
+
 // fakeTarget 是 target.Service 桩:servers 内存表 + SetPlacement 落字段;pveversion/
-// hostname 经 Exec 按命令路由(探测链 1/2 步)。
+// hostname 经 Exec 按命令路由(探测链 1/2 步)。db 非 nil 时 Create 同步写真 servers
+// 行(供 pve_vm_links 等外键断言;凭据须为真实 vault 凭据 ID)。
 type fakeTarget struct {
-	mu       sync.Mutex
-	servers  map[string]*target.Server
-	nextID   int
-	isPVE    atomic.Bool
-	hostname string
+	mu        sync.Mutex
+	servers   map[string]*target.Server
+	nextID    int
+	isPVE     atomic.Bool
+	hostname  string
+	uploads   []fakeUpload
+	stdinCmds []fakeUpload
+	db        *sql.DB
 }
 
 func newFakeTarget() *fakeTarget { return &fakeTarget{servers: map[string]*target.Server{}} }
@@ -81,6 +96,13 @@ func (f *fakeTarget) Create(_ context.Context, in target.CreateInput) (*target.S
 		sv.Kind = target.KindStandard
 	}
 	f.servers[id] = sv
+	if f.db != nil {
+		now := time.Now().UTC().Format(time.RFC3339)
+		if _, err := f.db.Exec(`INSERT INTO servers (id, name, host, port, user, credential_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			id, in.Name, in.Host, in.Port, in.User, in.CredentialID, now, now); err != nil {
+			return nil, err
+		}
+	}
 	return sv, nil
 }
 
@@ -120,8 +142,33 @@ func (f *fakeTarget) Exec(_ context.Context, id string, cmd []string) (*target.E
 }
 
 // 其余接口方法:探测/管理面用不到。
-func (f *fakeTarget) Update(context.Context, string, target.UpdateInput) (*target.Server, error) {
-	return nil, nil
+func (f *fakeTarget) Update(_ context.Context, id string, in target.UpdateInput) (*target.Server, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	sv, ok := f.servers[id]
+	if !ok {
+		return nil, target.ErrNotFound
+	}
+	if in.Name != nil {
+		sv.Name = *in.Name
+	}
+	if in.Host != nil {
+		sv.Host = *in.Host
+	}
+	if in.Port != nil {
+		sv.Port = *in.Port
+	}
+	if in.User != nil {
+		sv.User = *in.User
+	}
+	if in.CredentialID != nil {
+		sv.CredentialID = *in.CredentialID
+	}
+	if in.Labels != nil {
+		sv.Labels = *in.Labels
+	}
+	cp := *sv
+	return &cp, nil
 }
 func (f *fakeTarget) Delete(_ context.Context, id string) error {
 	f.mu.Lock()
@@ -136,11 +183,25 @@ func (f *fakeTarget) ExecStream(context.Context, string, []string) (io.ReadClose
 func (f *fakeTarget) ExecInteractive(context.Context, string, []string) (target.Session, error) {
 	return nil, errors.New("not implemented")
 }
-func (f *fakeTarget) Upload(context.Context, string, io.Reader, string) error { return nil }
+func (f *fakeTarget) Upload(_ context.Context, id string, r io.Reader, remotePath string) error {
+	b, _ := io.ReadAll(r)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.uploads = append(f.uploads, fakeUpload{serverID: id, path: remotePath, content: string(b)})
+	return nil
+}
 func (f *fakeTarget) Download(_ context.Context, _ string, _ string, _ io.Writer) (int64, error) {
 	return 0, nil
 }
 func (f *fakeTarget) ExecWithStdin(ctx context.Context, id string, cmd []string, r io.Reader) (*target.ExecResult, error) {
+	var body string
+	if r != nil {
+		b, _ := io.ReadAll(r)
+		body = string(b)
+	}
+	f.mu.Lock()
+	f.stdinCmds = append(f.stdinCmds, fakeUpload{serverID: id, path: strings.Join(cmd, " "), content: body})
+	f.mu.Unlock()
 	return f.Exec(ctx, id, cmd)
 }
 func (f *fakeTarget) DockerLogin(context.Context, string, string, string) error { return nil }
@@ -155,17 +216,32 @@ func (f *fakeTarget) DialDirect(context.Context, string, int, string, string) (t
 }
 
 // fakeRunner 是探测链第 3/4 步(cat corosync.conf / pvecm nodes)的假件:按 cmd 路由。
+// WriteFile 记录写入(路径/权限/内容);importOut 供 qm importdisk SSH 兜底断言。
 type fakeRunner struct {
-	mu       sync.Mutex
-	confOut  string
-	confErr  error
-	nodesOut string
-	nodesErr error
+	mu        sync.Mutex
+	confOut   string
+	confErr   error
+	nodesOut  string
+	nodesErr  error
+	importOut string
+	importErr error
+	runs      [][]string
+	writes    []fakeWrite
+	writeErr  error
+}
+
+// fakeWrite 记录一次 Runner.WriteFile 调用。
+type fakeWrite struct {
+	serverID string
+	path     string
+	mode     os.FileMode
+	content  string
 }
 
 func (r *fakeRunner) Run(_ context.Context, _ string, cmd []string) (*target.ExecResult, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.runs = append(r.runs, append([]string(nil), cmd...))
 	joined := strings.Join(cmd, " ")
 	switch {
 	case strings.Contains(joined, "corosync.conf"):
@@ -178,17 +254,36 @@ func (r *fakeRunner) Run(_ context.Context, _ string, cmd []string) (*target.Exe
 			return nil, r.nodesErr
 		}
 		return &target.ExecResult{ExitCode: 0, Stdout: r.nodesOut}, nil
+	case strings.Contains(joined, "importdisk"):
+		if r.importErr != nil {
+			return nil, r.importErr
+		}
+		return &target.ExecResult{ExitCode: 0, Stdout: r.importOut}, nil
 	}
 	return &target.ExecResult{ExitCode: 0}, nil
 }
 
-// fakePVEClient 是假 API 客户端:按 path 前缀回 canned 响应,留痕调用。
+func (r *fakeRunner) WriteFile(_ context.Context, serverID, remotePath string, mode os.FileMode, content io.Reader) error {
+	b, _ := io.ReadAll(content)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.writes = append(r.writes, fakeWrite{serverID: serverID, path: remotePath, mode: mode, content: string(b)})
+	return r.writeErr
+}
+
+// fakePVEClient 是假 API 客户端:按 path 前缀回 canned 响应,留痕调用与表单。
 type fakePVEClient struct {
-	mu     sync.Mutex
-	gets   []string
-	posts  []string
-	getFn  func(path string) (any, error)
-	postFn func(path string) (any, error)
+	mu        sync.Mutex
+	gets      []string
+	posts     []string
+	postForms []url.Values
+	puts      []string
+	putForms  []url.Values
+	uploads   []string
+	getFn     func(path string) (any, error)
+	postFn    func(path string) (any, error)
+	putFn     func(path string, form url.Values) (any, error)
+	uploadFn  func(path string, fields url.Values, fileName string) (any, error)
 }
 
 func (c *fakePVEClient) Get(_ context.Context, path string, out any) error {
@@ -204,12 +299,16 @@ func (c *fakePVEClient) Get(_ context.Context, path string, out any) error {
 		return err
 	}
 	b, _ := json.Marshal(v)
+	if out == nil {
+		return nil
+	}
 	return json.Unmarshal(b, out)
 }
 
-func (c *fakePVEClient) Post(_ context.Context, path string, _ url.Values, out any) error {
+func (c *fakePVEClient) Post(_ context.Context, path string, form url.Values, out any) error {
 	c.mu.Lock()
 	c.posts = append(c.posts, path)
+	c.postForms = append(c.postForms, form)
 	fn := c.postFn
 	c.mu.Unlock()
 	if fn == nil {
@@ -220,6 +319,49 @@ func (c *fakePVEClient) Post(_ context.Context, path string, _ url.Values, out a
 		return err
 	}
 	b, _ := json.Marshal(v)
+	if out == nil {
+		return nil
+	}
+	return json.Unmarshal(b, out)
+}
+
+func (c *fakePVEClient) Put(_ context.Context, path string, form url.Values, out any) error {
+	c.mu.Lock()
+	c.puts = append(c.puts, path)
+	c.putForms = append(c.putForms, form)
+	fn := c.putFn
+	c.mu.Unlock()
+	if fn == nil {
+		return fmt.Errorf("%w: unexpected PUT %s", ErrConnectFailed, path)
+	}
+	v, err := fn(path, form)
+	if err != nil {
+		return err
+	}
+	b, _ := json.Marshal(v)
+	if out == nil {
+		return nil
+	}
+	return json.Unmarshal(b, out)
+}
+
+func (c *fakePVEClient) Upload(_ context.Context, path string, fields url.Values, _, fileName string, content io.Reader, out any) error {
+	_, _ = io.ReadAll(content) // 流式读尽(假件不存大字节)
+	c.mu.Lock()
+	c.uploads = append(c.uploads, path)
+	fn := c.uploadFn
+	c.mu.Unlock()
+	if fn == nil {
+		return fmt.Errorf("%w: unexpected UPLOAD %s", ErrConnectFailed, path)
+	}
+	v, err := fn(path, fields, fileName)
+	if err != nil {
+		return err
+	}
+	b, _ := json.Marshal(v)
+	if out == nil {
+		return nil
+	}
 	return json.Unmarshal(b, out)
 }
 
@@ -726,6 +868,161 @@ func TestLiveClientAgainstFakePVE(t *testing.T) {
 	}
 	if strings.Contains(fmt.Sprint(err), "sec") {
 		t.Fatalf("错误体泄漏 Token: %v", err)
+	}
+}
+
+// TestLiveClientGetPreservesQuery 查询串必须进入 RawQuery,不能被编码进 URL.Path。
+func TestLiveClientGetPreservesQuery(t *testing.T) {
+	var gotURI, gotContent string
+	ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotURI = r.URL.RequestURI()
+		gotContent = r.URL.Query().Get("content")
+		_, _ = w.Write([]byte(`{"data":[]}`))
+	}))
+	defer ts.Close()
+	c, err := prodClientFactory(ts.URL, "root@pam!pw", "sec", TLSModeInsecure, "")
+	if err != nil {
+		t.Fatalf("factory: %v", err)
+	}
+	var entries []apiContentEntry
+	if err := c.Get(context.Background(), "/api2/json/nodes/pve1/storage/local/content?content=import", &entries); err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if gotContent != "import" || gotURI != "/api2/json/nodes/pve1/storage/local/content?content=import" {
+		t.Fatalf("uri=%q content=%q", gotURI, gotContent)
+	}
+}
+
+// TestLiveClientPutAndUpload PUT form 形态与 Upload multipart 流式形态(对 httptest 假 PVE)。
+func TestLiveClientPutAndUpload(t *testing.T) {
+	var gotPutBody, gotUploadCT, gotUploadFile, gotUploadField string
+	ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "PVEAPIToken=root@pam!pw=sec" {
+			http.Error(w, "bad auth", http.StatusUnauthorized)
+			return
+		}
+		switch {
+		case r.Method == http.MethodPut:
+			b, _ := io.ReadAll(r.Body)
+			gotPutBody = string(b)
+			if ct := r.Header.Get("Content-Type"); ct != "application/x-www-form-urlencoded" {
+				http.Error(w, "bad put content-type", http.StatusBadRequest)
+				return
+			}
+			_, _ = w.Write([]byte(`{"data":"UPID:pve1:00AB:1:qmresize:101:"}`))
+		case strings.HasSuffix(r.URL.Path, "/upload"):
+			gotUploadCT = r.Header.Get("Content-Type")
+			if err := r.ParseMultipartForm(1 << 20); err != nil {
+				http.Error(w, "bad multipart", http.StatusBadRequest)
+				return
+			}
+			gotUploadField = r.FormValue("content")
+			f, hdr, err := r.FormFile("filename")
+			if err != nil {
+				http.Error(w, "missing file", http.StatusBadRequest)
+				return
+			}
+			defer func() { _ = f.Close() }()
+			b, _ := io.ReadAll(f)
+			gotUploadFile = string(b) + "|" + hdr.Filename
+			_, _ = w.Write([]byte(`{"data":"local:backup/test.vma"}`))
+		default:
+			http.Error(w, `{"data":{"message":"not found"}}`, http.StatusNotFound)
+		}
+	}))
+	defer ts.Close()
+
+	c, err := prodClientFactory(ts.URL, "root@pam!pw", "sec", TLSModeInsecure, "")
+	if err != nil {
+		t.Fatalf("factory: %v", err)
+	}
+	ctx := context.Background()
+	var upid string
+	if err := c.Put(ctx, "/api2/json/nodes/pve1/qemu/101/resize", url.Values{"disk": {"scsi0"}, "size": {"+10G"}}, &upid); err != nil || !strings.HasPrefix(upid, "UPID:") {
+		t.Fatalf("Put = %q / %v", upid, err)
+	}
+	if gotPutBody != "disk=scsi0&size=%2B10G" {
+		t.Fatalf("put body = %q", gotPutBody)
+	}
+	var volid string
+	err = c.Upload(ctx, "/api2/json/nodes/pve1/storage/local/upload", url.Values{"content": {"backup"}}, "filename", "test.vma", strings.NewReader("VMA-BYTES"), &volid)
+	if err != nil || volid != "local:backup/test.vma" {
+		t.Fatalf("Upload = %q / %v", volid, err)
+	}
+	if !strings.HasPrefix(gotUploadCT, "multipart/form-data; boundary=") {
+		t.Fatalf("upload content-type = %q", gotUploadCT)
+	}
+	if gotUploadField != "backup" || gotUploadFile != "VMA-BYTES|test.vma" {
+		t.Fatalf("upload field=%q file=%q", gotUploadField, gotUploadFile)
+	}
+}
+
+type gatedUploadReader struct {
+	started chan struct{}
+	release chan struct{}
+	calls   int
+}
+
+func (r *gatedUploadReader) Read(p []byte) (int, error) {
+	if r.calls == 0 {
+		r.calls++
+		close(r.started)
+		return copy(p, "x"), nil
+	}
+	<-r.release
+	return 0, io.EOF
+}
+
+// TestLiveClientUploadWaitsProducer PVE 提前响应后,Upload 仍须等 content 读取者退出。
+func TestLiveClientUploadWaitsProducer(t *testing.T) {
+	responded := make(chan struct{})
+	ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		br := bufio.NewReader(r.Body)
+		for {
+			line, err := br.ReadString('\n')
+			if err != nil {
+				t.Errorf("read multipart header: %v", err)
+				http.Error(w, "bad multipart", http.StatusBadRequest)
+				return
+			}
+			if strings.Contains(line, `filename="gated.vma"`) {
+				break
+			}
+		}
+		_, _ = w.Write([]byte(`{"data":"local:backup/gated.vma"}`))
+		close(responded)
+	}))
+	defer ts.Close()
+	c, err := prodClientFactory(ts.URL, "root@pam!pw", "sec", TLSModeInsecure, "")
+	if err != nil {
+		t.Fatalf("factory: %v", err)
+	}
+	content := &gatedUploadReader{started: make(chan struct{}), release: make(chan struct{})}
+	done := make(chan error, 1)
+	var volid string
+	go func() {
+		done <- c.Upload(context.Background(), "/api2/json/nodes/pve1/storage/local/content", url.Values{"content": {"backup"}}, "filename", "gated.vma", content, &volid)
+	}()
+	for name, ch := range map[string]chan struct{}{"content started": content.started, "early response": responded} {
+		select {
+		case <-ch:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("等待 %s 超时", name)
+		}
+	}
+	select {
+	case err := <-done:
+		t.Fatalf("producer 未退出 Upload 已返回: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(content.release)
+	select {
+	case err := <-done:
+		if err != nil || volid != "local:backup/gated.vma" {
+			t.Fatalf("Upload = %q / %v", volid, err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("释放 content 后 Upload 未返回")
 	}
 }
 

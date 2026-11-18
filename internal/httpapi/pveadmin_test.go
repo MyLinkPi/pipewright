@@ -24,14 +24,22 @@ import (
 
 // stubPVEAdmin 是 pveadmin.Service 接口桩(仅本文件用;触网方法按用例注入)。
 type stubPVEAdmin struct {
-	list     []pveadmin.ClusterView
-	get      *pveadmin.ClusterView
-	disco    *pveadmin.DiscoveryResult
-	vmRef    *pveadmin.TaskRef
-	vmErr    error
-	tokenErr error
-	testErr  error
-	calls    []string
+	list        []pveadmin.ClusterView
+	get         *pveadmin.ClusterView
+	disco       *pveadmin.DiscoveryResult
+	vmRef       *pveadmin.TaskRef
+	vmErr       error
+	tokenErr    error
+	testErr     error
+	calls       []string
+	createErr   error
+	createIn    pveadmin.CreateInput
+	status      pveadmin.CreateStatus
+	aplRef      *pveadmin.TaskRef
+	aplErr      error
+	uploadVolid string
+	uploadErr   error
+	uploadName  string
 }
 
 func (s *stubPVEAdmin) OnServerRegistered(_ context.Context, _ string) (*pveadmin.DiscoveryResult, error) {
@@ -72,6 +80,40 @@ func (s *stubPVEAdmin) TaskStatus(context.Context, string, string, string) (*pve
 }
 func (s *stubPVEAdmin) ListTasks(context.Context, string, int) ([]pveadmin.ClusterTask, error) {
 	return nil, nil
+}
+func (s *stubPVEAdmin) ListTemplates(context.Context, string) ([]pveadmin.Template, error) {
+	return []pveadmin.Template{{VMID: 9000, Name: "tpl", Node: "pve1", Type: "qemu"}}, nil
+}
+func (s *stubPVEAdmin) ListStorages(context.Context, string, string) ([]pveadmin.Storage, error) {
+	return []pveadmin.Storage{{Storage: "local", Active: true, Enabled: true, Content: []string{"images", "snippets"}}}, nil
+}
+func (s *stubPVEAdmin) ListBridges(context.Context, string, string) ([]pveadmin.Bridge, error) {
+	return []pveadmin.Bridge{{Iface: "vmbr0", Type: "bridge", Active: true}}, nil
+}
+func (s *stubPVEAdmin) NextVMID(context.Context, string) (int64, error) { return 100, nil }
+func (s *stubPVEAdmin) ListStorageContent(context.Context, string, string, string, string) ([]pveadmin.ContentItem, error) {
+	return []pveadmin.ContentItem{{Volid: "local:vztmpl/x.tar.zst", Content: "vztmpl"}}, nil
+}
+func (s *stubPVEAdmin) ListAplInfo(context.Context, string, string) ([]pveadmin.AplTemplate, error) {
+	return []pveadmin.AplTemplate{{Template: "ubuntu-24.04-standard"}}, nil
+}
+func (s *stubPVEAdmin) DownloadAplTemplate(context.Context, string, string, string, string) (*pveadmin.TaskRef, error) {
+	s.calls = append(s.calls, "apldownload")
+	return s.aplRef, s.aplErr
+}
+func (s *stubPVEAdmin) StartCreate(_ context.Context, _ string, in pveadmin.CreateInput) error {
+	s.calls = append(s.calls, "create")
+	s.createIn = in
+	return s.createErr
+}
+func (s *stubPVEAdmin) CreateStatus(context.Context, string) (pveadmin.CreateStatus, error) {
+	return s.status, nil
+}
+func (s *stubPVEAdmin) UploadBackup(_ context.Context, _, _, _, fileName string, content io.Reader) (string, error) {
+	s.calls = append(s.calls, "upload")
+	s.uploadName = fileName
+	_, _ = io.ReadAll(content)
+	return s.uploadVolid, s.uploadErr
 }
 
 func setupPVEAdminAPI(t *testing.T, stub *stubPVEAdmin) (srvURL string, client *http.Client, csrf string, rec audit.Recorder) {
