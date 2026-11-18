@@ -13,7 +13,7 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { NIcon } from 'naive-ui'
-import { Server, Refresh, Rotate, PlayerPlay, PlayerStop, PlayerPause, PlayerTrackNext, Power, Clock } from '@vicons/tabler'
+import { Server, Refresh, Rotate, PlayerPlay, PlayerStop, PlayerPause, PlayerTrackNext, Power, Clock, Plus } from '@vicons/tabler'
 import {
   listPVEClusters, getPVEOverview, listPVEVMs, pveVMAction, getPVETaskStatus, listPVETasks,
   type PVECluster, type PVEOverview, type PVEVM, type PVETask,
@@ -21,6 +21,8 @@ import {
 import { HttpError } from '../api/http'
 import { useToast } from '../composables/useToast'
 import { useConfirm } from '../composables/useConfirm'
+import CreateWizard from '../components/pve/CreateWizard.vue'
+import CreateProgress from '../components/pve/CreateProgress.vue'
 
 const { t } = useI18n()
 const toast = useToast()
@@ -119,7 +121,18 @@ function onClusterChange(): void {
   filterNode.value = ''
   filterType.value = ''
   filterStatus.value = ''
+  wizardOpen.value = false
+  progressOpen.value = false
   void loadData()
+}
+
+// ─── 建机(向导 + 进度) ─────────────────────────────────────────────────────────
+const wizardOpen = ref(false)
+const progressOpen = ref(false)
+
+function onCreateStarted(): void {
+  wizardOpen.value = false
+  progressOpen.value = true
 }
 
 // ─── 电源操作 + UPID 轮询 ─────────────────────────────────────────────────────
@@ -290,6 +303,14 @@ onUnmounted(() => { if (pollTimer) clearTimeout(pollTimer) })
               <option value="running">{{ t('pveAdmin.statusRunning') }}</option>
               <option value="stopped">{{ t('pveAdmin.statusStopped') }}</option>
             </select>
+            <button class="btn-secondary btn-progress" @click="progressOpen = true">
+              <NIcon :size="13"><Clock /></NIcon>
+              {{ t('pveCreate.progressTitle') }}
+            </button>
+            <button v-if="current && !current.readonly" class="btn-create" @click="wizardOpen = true">
+              <NIcon :size="13"><Plus /></NIcon>
+              {{ t('pveCreate.openWizard') }}
+            </button>
           </div>
         </div>
         <div v-if="loadingData" class="load-state">{{ t('pveAdmin.loading') }}</div>
@@ -357,6 +378,23 @@ onUnmounted(() => { if (pollTimer) clearTimeout(pollTimer) })
         </template>
       </section>
     </template>
+
+    <!-- 建机向导与进度(只读集群隐藏新建入口;进度始终可查看) -->
+    <CreateWizard
+      v-if="wizardOpen && current"
+      :cluster-id="current.id"
+      :cluster-name="current.name"
+      :nodes="nodes"
+      @close="wizardOpen = false"
+      @started="onCreateStarted"
+    />
+    <CreateProgress
+      v-if="progressOpen && current"
+      :cluster-id="current.id"
+      :cluster-name="current.name"
+      @close="progressOpen = false"
+      @done="loadData"
+    />
   </div>
 </template>
 
@@ -397,6 +435,22 @@ onUnmounted(() => { if (pollTimer) clearTimeout(pollTimer) })
   cursor: pointer;
 }
 .btn-secondary:disabled { opacity: 0.55; cursor: not-allowed; }
+.btn-progress { height: 30px; padding: 0 12px; font-size: 0.76rem; }
+.btn-create {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 30px;
+  padding: 0 12px;
+  background: var(--color-primary);
+  color: var(--color-primary-contrast, #fff);
+  border: none;
+  border-radius: var(--rounded);
+  font-size: 0.76rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+.btn-create:hover { opacity: 0.9; }
 .spin { animation: spin 1s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 

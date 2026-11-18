@@ -49,6 +49,18 @@ func mountPVEAdmin(ar chi.Router, svc pveadmin.Service, aud audit.Recorder) {
 	ar.Post("/pve/clusters/{id}/vms/{node}/{vmid}/status", makePVEVMActionHandler(svc, aud))
 	ar.Get("/pve/clusters/{id}/tasks", makePVETaskListHandler(svc))
 	ar.Get("/pve/clusters/{id}/task", makePVETaskStatusHandler(svc))
+
+	// 建机面:表单配套只读下拉 + 建机任务 + LXC 模板下载 + .vma 上传。
+	ar.Get("/pve/clusters/{id}/templates", makePVETemplateListHandler(svc))
+	ar.Get("/pve/clusters/{id}/storages", makePVEStorageListHandler(svc))
+	ar.Get("/pve/clusters/{id}/bridges", makePVEBridgeListHandler(svc))
+	ar.Get("/pve/clusters/{id}/nextid", makePVENextIDHandler(svc))
+	ar.Get("/pve/clusters/{id}/storage-content", makePVEStorageContentHandler(svc))
+	ar.Get("/pve/clusters/{id}/aplinfo", makePVEAplInfoHandler(svc))
+	ar.Post("/pve/clusters/{id}/aplinfo/download", makePVEAplDownloadHandler(svc, aud))
+	ar.Post("/pve/clusters/{id}/create", makePVECreateHandler(svc, aud))
+	ar.Get("/pve/clusters/{id}/create-status", makePVECreateStatusHandler(svc))
+	ar.Post("/pve/clusters/{id}/upload-vma", makePVEUploadVMAHandler(svc, aud))
 }
 
 // writePVEAdminError 把领域错误映射为契约错误码/状态码。
@@ -59,13 +71,15 @@ func writePVEAdminError(w http.ResponseWriter, err error) {
 	case errors.Is(err, pveadmin.ErrNameTaken):
 		writeError(w, http.StatusConflict, "pve_cluster_name_taken", "同名 PVE 集群已存在")
 	case errors.Is(err, pveadmin.ErrInvalidInput):
-		writeError(w, http.StatusUnprocessableEntity, "invalid_pve_input", "入参非法:地址/Token 格式或白名单外取值")
+		writeError(w, http.StatusUnprocessableEntity, "invalid_pve_input", "入参非法:字段格式或取值不符合要求")
 	case errors.Is(err, pveadmin.ErrVaultUnconfigured):
 		writeError(w, http.StatusServiceUnavailable, "vault_unconfigured", "保险库未配置 master key,无法存取 API Token")
 	case errors.Is(err, pveadmin.ErrClusterNotReady):
 		writeError(w, http.StatusConflict, "pve_cluster_not_ready", "集群尚未配置可用的 API Token,请先在设置页完成配置")
 	case errors.Is(err, pveadmin.ErrReadonly):
-		writeError(w, http.StatusConflict, "pve_readonly", "集群处于只读模式,请先在设置页解锁后再执行电源操作")
+		writeError(w, http.StatusConflict, "pve_readonly", "集群处于只读模式,请先在设置页解锁后再执行写操作")
+	case errors.Is(err, pveadmin.ErrBusy):
+		writeError(w, http.StatusConflict, "pve_busy", "该集群已有建机任务在运行,请等待完成")
 	case errors.Is(err, pveadmin.ErrConnectFailed):
 		writeError(w, http.StatusBadGateway, "pve_connect_failed", "PVE API 请求失败:"+pveErrTail(err))
 	default:

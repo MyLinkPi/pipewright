@@ -18,11 +18,13 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"io"
 	"net/url"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -63,6 +65,8 @@ var (
 	ErrNoPrivilege = errors.New("pveadmin: no privilege on host")
 	// ErrProbe 表示探测命令执行失败(非零退出/不可达;错误体带 stderr 尾部)。
 	ErrProbe = errors.New("pveadmin: probe command failed")
+	// ErrBusy 表示集群已有建机任务在跑(每集群同时一个)。
+	ErrBusy = errors.New("pveadmin: create job busy")
 )
 
 // 白名单正则。
@@ -217,6 +221,28 @@ type Service interface {
 	TaskStatus(ctx context.Context, id, node, upid string) (*TaskStatusView, error)
 	// ListTasks 最近集群任务(默认 50,上限 500)。
 	ListTasks(ctx context.Context, id string, limit int) ([]ClusterTask, error)
+	// ListTemplates 列集群全部 qemu/lxc 模板(建机克隆源下拉)。
+	ListTemplates(ctx context.Context, id string) ([]Template, error)
+	// ListStorages 列节点存储状态(建机目标存储/镜像存储下拉)。
+	ListStorages(ctx context.Context, id, node string) ([]Storage, error)
+	// ListBridges 列节点网桥(net0 bridge 下拉)。
+	ListBridges(ctx context.Context, id, node string) ([]Bridge, error)
+	// NextVMID 取集群下一个空闲 VMID。
+	NextVMID(ctx context.Context, id string) (int64, error)
+	// ListStorageContent 列存储内容(vztmpl/import/images/backup 卷下拉)。
+	ListStorageContent(ctx context.Context, id, node, storage, content string) ([]ContentItem, error)
+	// ListAplInfo 列节点可下载的 LXC 模板目录。
+	ListAplInfo(ctx context.Context, id, node string) ([]AplTemplate, error)
+	// DownloadAplTemplate 下载 LXC 模板到存储(写操作,readonly 闸门),返回任务句柄。
+	DownloadAplTemplate(ctx context.Context, id, node, storage, template string) (*TaskRef, error)
+	// StartCreate 异步启动建机管线(模板克隆/.vma 恢复/云镜像/LXC,批量 1..50)。
+	// readonly → ErrReadonly;已有任务在跑 → ErrBusy。入参白名单校验前置。
+	StartCreate(ctx context.Context, id string, in CreateInput) error
+	// CreateStatus 建机任务快照(步骤/日志/逐台结果;前端轮询至 done)。
+	CreateStatus(ctx context.Context, id string) (CreateStatus, error)
+	// UploadBackup 流式上传 .vma 备份到节点存储(写操作,readonly 闸门),返回恢复源
+	// (卷 ID 或绝对路径;9.x 经 SSH 落文件型存储,8.x 走 API)。
+	UploadBackup(ctx context.Context, id, node, storage, fileName string, content io.Reader) (string, error)
 }
 
 type service struct {
@@ -225,12 +251,16 @@ type service struct {
 	servers target.Service
 	runner  Runner
 	clientF clientFactory
+	// mu 保护 createJobs(建机后台任务表,每集群一个;ceph.deployJob 同形)。
+	mu         sync.Mutex
+	createJobs map[string]*createJob
 }
 
 // New 构造 PVE 集群管理服务。vault 未配置 master key 时 Token 登记/管理面不可用
 // (ErrVaultUnconfigured),但不影响平台启动与探测建池。
 func New(db *sql.DB, v vault.Vault, servers target.Service) Service {
-	return &service{db: db, vault: v, servers: servers, runner: &sshRunner{servers: servers}, clientF: prodClientFactory}
+	return &service{db: db, vault: v, servers: servers, runner: &sshRunner{servers: servers}, clientF: prodClientFactory,
+		createJobs: map[string]*createJob{}}
 }
 
 // ---- 探测登记钩子 -------------------------------------------------------------------
@@ -586,6 +616,11 @@ func (s *service) DeleteCluster(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if j := s.createJobs[id]; j != nil && j.snapshot().Running {
+		return fmt.Errorf("%w: 集群 %s 建机任务运行中,禁止删除", ErrBusy, cl.Name)
+	}
 	var poolID string
 	if err := s.db.QueryRowContext(ctx, `SELECT id FROM server_pools WHERE cluster_id = ?`, cl.ID).Scan(&poolID); err == nil && poolID != "" {
 		now := time.Now().UTC().Format(time.RFC3339)
@@ -599,6 +634,10 @@ func (s *service) DeleteCluster(ctx context.Context, id string) error {
 	}
 	if _, err := s.db.ExecContext(ctx, `DELETE FROM pve_clusters WHERE id = ?`, cl.ID); err != nil {
 		return fmt.Errorf("pveadmin: delete cluster: %w", err)
+	}
+	// 建机映射随集群清理(不设外键,显式连带;机器行已归位 default,映射无意义)。
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM pve_vm_links WHERE cluster_id = ?`, cl.ID); err != nil {
+		return fmt.Errorf("pveadmin: delete vm links: %w", err)
 	}
 	return nil
 }

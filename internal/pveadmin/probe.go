@@ -14,6 +14,8 @@ package pveadmin
 import (
 	"context"
 	"fmt"
+	"io"
+	"os"
 	"regexp"
 	"strings"
 	"time"
@@ -27,6 +29,9 @@ const probeTimeout = 15 * time.Second
 // Runner 抽象「对指定登记服务器提权执行 argv 命令」(注入 fake 可离线单测)。
 type Runner interface {
 	Run(ctx context.Context, serverID string, cmd []string) (*target.ExecResult, error)
+	// WriteFile 把 content 流式写到目标机 remotePath 并置权限 mode(提权语义同 Run)。
+	// 建机写 cloud-init snippet / .vma 上传 SSH 兜底用;内容经 stdin,绝不进 argv/日志。
+	WriteFile(ctx context.Context, serverID, remotePath string, mode os.FileMode, content io.Reader) error
 }
 
 // NodeInfo 是集群发现得到的一个节点(短主机名 + corosync ring0 地址)。
@@ -80,6 +85,83 @@ func (r *sshRunner) Run(ctx context.Context, serverID string, cmd []string) (*ta
 		return res, fmt.Errorf("%w: %s 退出码 %d\n%s", ErrProbe, cmd[0], res.ExitCode, tailOutput(res))
 	}
 	return res, nil
+}
+
+// WriteFile 提权流式写文件(语义见 Runner 接口注释):root → 直跑;否则 sudo -n true
+// 探测免密 sudo 通过后前缀 sudo -n。路径/权限作位置参数($0/$1),绝不拼进脚本体;
+// 内容经 stdin 流入(无 argv 长度限,大文件友好),先建父目录再写再 chmod。
+func (r *sshRunner) WriteFile(ctx context.Context, serverID, remotePath string, mode os.FileMode, content io.Reader) error {
+	if content == nil {
+		return fmt.Errorf("%w: 写入内容为空", ErrInvalidInput)
+	}
+	if strings.TrimSpace(remotePath) == "" {
+		return fmt.Errorf("%w: 写入路径为空", ErrInvalidInput)
+	}
+	sv, err := r.servers.Get(ctx, serverID)
+	if err != nil {
+		return fmt.Errorf("%w: 服务器 %s 不可用: %v", ErrProbe, serverID, err)
+	}
+	cmd := []string{"sh", "-c", `mkdir -p "$(dirname "$0")" && cat > "$0" && chmod "$1" "$0"`, remotePath, fmt.Sprintf("%04o", mode.Perm())}
+	if sv.User != "root" {
+		if res, perr := r.servers.Exec(ctx, serverID, []string{"sudo", "-n", "true"}); perr != nil || res.ExitCode != 0 {
+			return fmt.Errorf("%w: 服务器登录用户 %s 非 root 且无免密 sudo,无法写入文件;请改用 root 登录或配置免密 sudo(如 /etc/sudoers.d/pipewright 写入「%s ALL=(ALL) NOPASSWD: ALL」)", ErrNoPrivilege, sv.User, sv.User)
+		}
+		cmd = append([]string{"sudo", "-n"}, cmd...)
+	}
+	res, err := r.servers.ExecWithStdin(ctx, serverID, cmd, content)
+	if err != nil {
+		return fmt.Errorf("%w: %s 写文件: %v", ErrProbe, sv.Name, err)
+	}
+	if res.ExitCode != 0 {
+		return fmt.Errorf("%w: 写文件退出码 %d\n%s", ErrProbe, res.ExitCode, tailOutput(res))
+	}
+	return nil
+}
+
+// nodeServerID 把集群节点名解析为池内登记服务器 ID(snippet 写入/SSH 兜底的前提)。
+// 匹配序:服务器名 == 节点名 → 登记地址 == 节点名 → 登记地址 == 节点的集群 IP
+// (GET /cluster/status)。都未命中 → ErrInvalidInput(带可操作指引)。
+func (s *service) nodeServerID(ctx context.Context, cl *Cluster, node string) (string, error) {
+	var poolID string
+	if err := s.db.QueryRowContext(ctx, `SELECT id FROM server_pools WHERE cluster_id = ?`, cl.ID).Scan(&poolID); err != nil || poolID == "" {
+		return "", fmt.Errorf("%w: 集群 %s 无关联服务器池,无法定位节点 %s 的登记机器", ErrInvalidInput, cl.Name, node)
+	}
+	all, err := s.servers.List(ctx)
+	if err != nil {
+		return "", fmt.Errorf("pveadmin: list servers: %w", err)
+	}
+	var cands []*target.Server
+	for _, sv := range all {
+		if sv.PoolID == poolID && sv.IsPVENode() {
+			cands = append(cands, sv)
+		}
+	}
+	for _, sv := range cands {
+		if sv.Name == node {
+			return sv.ID, nil
+		}
+	}
+	for _, sv := range cands {
+		if sv.Host == node {
+			return sv.ID, nil
+		}
+	}
+	if _, c, cerr := s.clientFor(ctx, cl.ID); cerr == nil {
+		var entries []apiClusterStatusEntry
+		if gerr := c.Get(ctx, "/api2/json/cluster/status", &entries); gerr == nil {
+			for _, e := range entries {
+				if e.Type != "node" || e.Name != node || e.IP == "" {
+					continue
+				}
+				for _, sv := range cands {
+					if sv.Host == e.IP {
+						return sv.ID, nil
+					}
+				}
+			}
+		}
+	}
+	return "", fmt.Errorf("%w: 集群 %s 池内未找到节点 %s 对应的登记服务器,请先登记该节点", ErrInvalidInput, cl.Name, node)
 }
 
 // tailOutput 拼装 stderr/stdout 尾部(每段 ≤1000 字符;远端输出不含凭据)。
