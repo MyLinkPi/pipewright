@@ -167,4 +167,6 @@ export default {
   pushedItemsHint: 'sin marcar = todos',
   pushedBadge: 'fuente push',
   pushedBadgeHint: 'Proyecto creado automáticamente por un push de par del clúster (fuente: artefactos/imágenes empujados)',
+  newCommitsBadge: 'Nuevos commits',
+  newCommitsHint: 'La rama {branch} apunta a un commit distinto al de la última ejecución',
 }

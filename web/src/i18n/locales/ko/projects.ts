@@ -167,4 +167,6 @@ export default {
   pushedItemsHint: '선택 안 함 = 전체 항목',
   pushedBadge: '푸시 소스',
   pushedBadgeHint: '클러스터 피어 푸시로 자동 생성된 프로젝트(소스는 푸시된 아티팩트/이미지)',
+  newCommitsBadge: '새 커밋',
+  newCommitsHint: '{branch} 브랜치의 현재 커밋이 마지막 실행 당시와 다릅니다',
 }

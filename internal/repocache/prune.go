@@ -16,7 +16,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 )
 
 // Root 返回镜像根目录(维护留痕回显用)。
@@ -25,10 +24,9 @@ func (c *Cache) Root() string { return c.root }
 // Remove 删除 repoURL 对应的本地镜像(不存在视为成功,幂等)。顺带清锁表条目防增长。
 func (c *Cache) Remove(repoURL string) error {
 	mirror := c.mirrorPath(repoURL)
-	m, _ := c.locks.LoadOrStore(mirror, &sync.Mutex{})
-	mu := m.(*sync.Mutex)
-	mu.Lock()
-	defer mu.Unlock()
+	lock := c.mirrorLock(mirror)
+	lock <- struct{}{}
+	defer func() { <-lock }()
 	c.locks.Delete(mirror)
 	if err := os.RemoveAll(mirror); err != nil {
 		return err
@@ -58,13 +56,12 @@ func (c *Cache) Prune(keepURLs []string) ([]string, int64, error) {
 			continue
 		}
 		full := filepath.Join(c.root, name)
-		// 与 Clone 同一把锁:等在途克隆结束再删(锁 key 即镜像路径,LoadOrStore 与 repoLock 同款)。
-		m, _ := c.locks.LoadOrStore(full, &sync.Mutex{})
-		mu := m.(*sync.Mutex)
-		mu.Lock()
+		// 与 Clone 同一把锁:等在途克隆结束再删(锁 key 即镜像路径)。
+		lock := c.mirrorLock(full)
+		lock <- struct{}{}
 		size := mirrorSize(full)
 		rerr := os.RemoveAll(full)
-		mu.Unlock()
+		<-lock
 		c.locks.Delete(full)
 		if rerr == nil {
 			deleted = append(deleted, full)

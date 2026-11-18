@@ -47,6 +47,8 @@ type projectLastRunReader interface {
 // 一致(queued/running/waiting_approval/success/failed/rejected/partial_failed/rolled_back)。
 // serviceRegs 为项目已绑定的「服务注册」条目(卡片展示子集),按流水线部署节点 job.config
 // 的 regServiceId(legacy gatewayService 按服务名兜底)实时解析;无绑定/无流水线 → []。
+// hasNewCommits/lastRunBranch 为卡片「有新提交」徽标数据:HEAD 探测异步进行(见 project_heads.go),
+// 请求路径零网络 I/O;未知 → null,绝不阻断列表。
 type projectDTO struct {
 	ID             string `json:"id"`
 	Name           string `json:"name"`
@@ -56,13 +58,18 @@ type projectDTO struct {
 	CredentialName string `json:"credentialName"`
 	PacEnabled     bool   `json:"pacEnabled"`
 	// PacFile 是「流水线即代码」文件路径(空 = 默认 .pipewright.yml)。
-	PacFile         string                 `json:"pacFile"`
-	PRStatusEnabled bool                   `json:"prStatusEnabled"`
-	LastRunStatus   *string                `json:"lastRunStatus"`
-	LastRunAt       *string                `json:"lastRunAt"`
-	ServiceRegs     []projectServiceRegDTO `json:"serviceRegs"`
-	CreatedAt       string                 `json:"createdAt"`
-	UpdatedAt       string                 `json:"updatedAt"`
+	PacFile         string  `json:"pacFile"`
+	PRStatusEnabled bool    `json:"prStatusEnabled"`
+	LastRunStatus   *string `json:"lastRunStatus"`
+	LastRunAt       *string `json:"lastRunAt"`
+	// LastRunBranch 是最近一次运行的触发分支(无运行/分支空 → null)。
+	LastRunBranch *string `json:"lastRunBranch"`
+	// HasNewCommits:运行分支 HEAD 是否与上次运行的 commit 不同(含 force-push/reset)。
+	// true=已变化;false=一致;null=未知(无运行/pushed 源/探测未完成或失败/代码管理区未启用)。
+	HasNewCommits *bool                  `json:"hasNewCommits"`
+	ServiceRegs   []projectServiceRegDTO `json:"serviceRegs"`
+	CreatedAt     string                 `json:"createdAt"`
+	UpdatedAt     string                 `json:"updatedAt"`
 }
 
 // toProjectDTO 把领域 Project 转为契约 DTO(serviceRegs 默认空集合;
@@ -90,6 +97,9 @@ func withLastRun(dto projectDTO, lr run.LatestRun) projectDTO {
 		dto.LastRunStatus = &lr.Status
 		at := lr.CreatedAt.UTC().Format(time.RFC3339)
 		dto.LastRunAt = &at
+		if lr.Branch != "" {
+			dto.LastRunBranch = &lr.Branch
+		}
 	}
 	return dto
 }
@@ -232,8 +242,9 @@ func atoiDefault(s string, def int) int {
 // makeListProjectsHandler 返回 GET /api/projects handler。
 // pipe/sr 用于给每张卡片附带「服务注册地址」展示子集(按流水线绑定实时解析);
 // 任一为 nil(未装配)时 serviceRegs 输出 []。runs 用于回填「上次运行」状态
-// (nil 时 lastRunStatus 输出 null)。
-func makeListProjectsHandler(svc project.Service, id identity.Service, pipe projectRegRefReader, sr serviceRegLister, runs projectLastRunReader) http.HandlerFunc {
+// (nil 时 lastRunStatus 输出 null)。heads 用于回填「有新提交」(异步探测,请求路径
+// 零网络 I/O;nil/未装配时 hasNewCommits 输出 null)。
+func makeListProjectsHandler(svc project.Service, id identity.Service, pipe projectRegRefReader, sr serviceRegLister, runs projectLastRunReader, heads *projectHeadsResolver) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if svc == nil {
 			writeError(w, http.StatusServiceUnavailable, "internal", "项目服务未初始化")
@@ -269,10 +280,13 @@ func makeListProjectsHandler(svc project.Service, id identity.Service, pipe proj
 		}
 		regsByProject := resolveProjectsServiceRegs(r.Context(), pipe, sr, ids)
 		lastRunByProject := resolveProjectsLastRun(r.Context(), runs, ids)
+		newCommitsByProject := heads.resolve(res.Items, lastRunByProject)
 		out := make([]projectDTO, 0, len(res.Items))
 		for i := range res.Items {
 			dto := withServiceRegs(toProjectDTO(&res.Items[i]), regsByProject[res.Items[i].ID])
-			out = append(out, withLastRun(dto, lastRunByProject[res.Items[i].ID]))
+			dto = withLastRun(dto, lastRunByProject[res.Items[i].ID])
+			dto.HasNewCommits = newCommitsByProject[res.Items[i].ID]
+			out = append(out, dto)
 		}
 		// 分页元信息经响应头暴露(不破坏数组契约;前端可选读取)。
 		w.Header().Set("X-Total-Count", strconv.Itoa(res.Total))
@@ -325,8 +339,9 @@ func makeCreateProjectHandler(svc project.Service, aud audit.Recorder) http.Hand
 
 // makeUpdateProjectHandler 返回 PATCH /api/projects/{id} handler。
 // 更新成功后追加 project_update 审计。pipe/sr 用于回填 serviceRegs(与列表同一解析语义;
-// 前端以更新响应替换卡片,缺省会让卡片上的服务注册地址消失)。runs 同理回填「上次运行」状态。
-func makeUpdateProjectHandler(svc project.Service, aud audit.Recorder, pipe projectRegRefReader, sr serviceRegLister, runs projectLastRunReader) http.HandlerFunc {
+// 前端以更新响应替换卡片,缺省会让卡片上的服务注册地址消失)。runs/heads 同理回填「上次运行」
+// 状态与「有新提交」徽标。
+func makeUpdateProjectHandler(svc project.Service, aud audit.Recorder, pipe projectRegRefReader, sr serviceRegLister, runs projectLastRunReader, heads *projectHeadsResolver) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if svc == nil {
 			writeError(w, http.StatusServiceUnavailable, "internal", "项目服务未初始化")
@@ -366,8 +381,11 @@ func makeUpdateProjectHandler(svc project.Service, aud audit.Recorder, pipe proj
 			Detail:     map[string]any{"name": p.Name, "repoUrl": p.RepoURL, "defaultBranch": p.DefaultBranch},
 			IP:         clientIP(r),
 		})
+		lastRun := resolveProjectsLastRun(r.Context(), runs, []string{p.ID})[p.ID]
 		dto := withServiceRegs(toProjectDTO(p), resolveProjectServiceRegs(r.Context(), pipe, sr, p.ID))
-		writeJSON(w, http.StatusOK, withLastRun(dto, resolveProjectsLastRun(r.Context(), runs, []string{p.ID})[p.ID]))
+		dto = withLastRun(dto, lastRun)
+		dto.HasNewCommits = heads.resolve([]project.Project{*p}, map[string]run.LatestRun{p.ID: lastRun})[p.ID]
+		writeJSON(w, http.StatusOK, dto)
 	}
 }
 

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { useDirtyGuard } from '../composables/useDirtyGuard'
@@ -127,12 +127,19 @@ async function loadCredentials(): Promise<void> {
 // ─── data loading ──────────────────────────────────────────────────────────────
 
 async function loadProjects(): Promise<void> {
+  const revision = ++headProbeRevision
   loadState.value = 'loading'
   loadError.value = ''
+  headProbePolls = 0
+  window.clearTimeout(headProbeTimer)
   try {
-    projects.value = await listProjects()
+    const loaded = await listProjects()
+    if (headProbeDisposed || revision !== headProbeRevision) return
+    projects.value = loaded
     loadState.value = 'idle'
+    scheduleHeadProbePoll()
   } catch (err) {
+    if (headProbeDisposed || revision !== headProbeRevision) return
     if (err instanceof HttpError) {
       if (err.status === 0) {
         loadError.value = t('projects.errLoadNetwork')
@@ -148,6 +155,54 @@ async function loadProjects(): Promise<void> {
 
 onMounted(async () => {
   await Promise.all([loadProjects(), loadCredentials()])
+})
+
+// ─── 「有新提交」静默轮询 ──────────────────────────────────────────────────────
+// HEAD 探测在后端异步进行(列表请求路径零网络 I/O):首屏列表里部分项目的 hasNewCommits
+// 可能还是 null(探测在飞)。此处短间隔静默重拉直至全部落定 —— 不置 loading、不出骨架屏,
+// 卡片首屏渲染速度不受影响;全部落定即停,至多 120 秒(覆盖后端 90 秒探测窗口;
+// 代码管理区关闭等恒 null 场景不空转)。
+
+const HEAD_PROBE_POLL_MS = 3000
+const HEAD_PROBE_MAX_POLLS = 40
+let headProbeTimer: number | undefined
+let headProbePolls = 0
+// revision 在手动刷新或本地增删改时递增,使已在飞的旧轮询响应不能覆盖新状态。
+let headProbeRevision = 0
+let headProbeDisposed = false
+
+function hasPendingHeadProbe(): boolean {
+  return projects.value.some(
+    (p) => !!p.repoUrl && !!p.lastRunStatus && p.hasNewCommits == null,
+  )
+}
+
+function scheduleHeadProbePoll(): void {
+  window.clearTimeout(headProbeTimer)
+  if (headProbeDisposed || !hasPendingHeadProbe() || headProbePolls >= HEAD_PROBE_MAX_POLLS) return
+  headProbeTimer = window.setTimeout(() => {
+    headProbePolls += 1
+    void refreshProjectsForHeadProbe()
+  }, HEAD_PROBE_POLL_MS)
+}
+
+async function refreshProjectsForHeadProbe(): Promise<void> {
+  const revision = headProbeRevision
+  try {
+    const loaded = await listProjects()
+    if (!headProbeDisposed && revision === headProbeRevision) {
+      projects.value = loaded
+    }
+  } catch {
+    // 静默轮询失败不致命:保留当前卡片,等下一轮或手动刷新。
+  }
+  if (!headProbeDisposed) scheduleHeadProbePoll()
+}
+
+onUnmounted(() => {
+  headProbeDisposed = true
+  headProbeRevision += 1
+  window.clearTimeout(headProbeTimer)
 })
 
 // ─── new project modal ────────────────────────────────────────────────────────
@@ -389,6 +444,7 @@ async function handleCreateSubmit(): Promise<void> {
 
   try {
     const created = await createProject(input)
+    headProbeRevision += 1
     projects.value = [created, ...projects.value]
     createModalOpen.value = false
   } catch (err) {
@@ -461,6 +517,7 @@ async function handleRenameSubmit(): Promise<void> {
 
   try {
     const updated = await updateProject(renamingProject.value.id, input)
+    headProbeRevision += 1
     projects.value = projects.value.map((p) => (p.id === updated.id ? updated : p))
     renameModalOpen.value = false
     renamingProject.value = null
@@ -506,6 +563,7 @@ async function confirmDelete(): Promise<void> {
 
   try {
     await deleteProject(id)
+    headProbeRevision += 1
     projects.value = projects.value.filter((p) => p.id !== id)
     deleteModalOpen.value = false
     deletingProject.value = null
@@ -872,6 +930,13 @@ const STATUS_CONFIG: Record<RunStatus, StatusConfig> = {
               class="pushed-badge"
               :title="t('projects.pushedBadgeHint')"
             >{{ t('projects.pushedBadge') }}</span>
+
+            <!-- 「有新提交」徽标:运行分支 HEAD 与上次运行的 commit 不同(后端异步探测,仅 true 显示) -->
+            <span
+              v-if="project.hasNewCommits"
+              class="new-commits-badge"
+              :title="t('projects.newCommitsHint', { branch: project.lastRunBranch || project.defaultBranch })"
+            >{{ t('projects.newCommitsBadge') }}</span>
 
             <!-- Status badge: only if we have a run status -->
             <div
@@ -2831,5 +2896,6 @@ const STATUS_CONFIG: Record<RunStatus, StatusConfig> = {
 }
 .pushed-items { display: flex; flex-wrap: wrap; gap: 8px; }
 .pushed-badge { flex-shrink: 0; align-self: center; font-size: 11px; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--color-primary); color: var(--color-primary); background: var(--color-primary-soft); }
+.new-commits-badge { flex-shrink: 0; align-self: center; font-size: 11px; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--color-amber-line); color: var(--color-amber); background: var(--color-amber-soft); }
 .pushed-item { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--color-border); border-radius: 8px; padding: 4px 10px; font-size: 12px; cursor: pointer; }
 </style>

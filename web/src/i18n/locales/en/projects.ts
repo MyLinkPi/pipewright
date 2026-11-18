@@ -167,4 +167,6 @@ export default {
   pushedItemsHint: 'unchecked = all items',
   pushedBadge: 'pushed',
   pushedBadgeHint: 'Auto-created by a cluster peer push (source is pushed artifacts/images)',
+  newCommitsBadge: 'New commits',
+  newCommitsHint: 'Branch {branch} points to a different commit than the last run',
 }

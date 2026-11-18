@@ -167,4 +167,6 @@ export default {
   pushedItemsHint: '不勾 = 全部條目',
   pushedBadge: '推送源',
   pushedBadgeHint: '集群對端推送自動建立的專案(源為被推送的產物/鏡像)',
+  newCommitsBadge: '有新提交',
+  newCommitsHint: '分支 {branch} 的目前提交與上次執行不一致',
 }
