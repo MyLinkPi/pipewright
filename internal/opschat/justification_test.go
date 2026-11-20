@@ -30,27 +30,28 @@ func TestValidateAgentJustification(t *testing.T) {
 		name    string
 		purpose string
 		reason  string
-		want    []string // 期望错误包含的子串;空 = 校验通过
+		want    []string // 英文(回灌模型)错误子串;空 = 校验通过
+		wantZh  []string // 中文(给用户)文案子串
 	}{
-		{"ascii", "restart app", "user asked", nil},
-		{"cjk", "重启应用", "磁盘占用 81%，需要清理日志释放空间", nil},
-		{"multiline-newline-tab", "排查磁盘占用", "证据:\n\t- /var/log 增长\n\t- 镜像层堆积", nil},
-		{"exactly-512-chars", strings.Repeat("x", 512), "ok", nil},
-		{"cjk-512-runes", cjk512, "ok", nil},
-		{"empty-purpose", "", "ok", []string{"purpose is empty"}},
-		{"empty-reason", "ok", "", []string{"reason is empty"}},
-		{"whitespace-only-purpose", " \n\t ", "ok", []string{"purpose is empty"}},
-		{"both-empty", "", "", []string{"purpose is empty", "reason is empty"}},
-		{"oversize-ascii", strings.Repeat("x", 513), "ok", []string{"purpose exceeds 512 characters"}},
-		{"oversize-cjk", "ok", strings.Repeat("磁", 513), []string{"reason exceeds 512 characters"}},
-		{"escape-control", "ok", "a\x1bb", []string{"reason contains unsupported control characters"}},
-		{"nul-control", "a\x00b", "ok", []string{"purpose contains unsupported control characters"}},
-		{"raw-cr-rejected", "ok", "a\rb", []string{"reason contains unsupported control characters"}},
-		{"invalid-utf8", string([]byte{0xff, 0xfe}), "ok", []string{"purpose is not valid UTF-8"}},
+		{"ascii", "restart app", "user asked", nil, nil},
+		{"cjk", "重启应用", "磁盘占用 81%，需要清理日志释放空间", nil, nil},
+		{"multiline-newline-tab", "排查磁盘占用", "证据:\n\t- /var/log 增长\n\t- 镜像层堆积", nil, nil},
+		{"exactly-512-chars", strings.Repeat("x", 512), "ok", nil, nil},
+		{"cjk-512-runes", cjk512, "ok", nil, nil},
+		{"empty-purpose", "", "ok", []string{"purpose is empty"}, []string{"未填写用途"}},
+		{"empty-reason", "ok", "", []string{"reason is empty"}, []string{"未填写理由"}},
+		{"whitespace-only-purpose", " \n\t ", "ok", []string{"purpose is empty"}, []string{"未填写用途"}},
+		{"both-empty", "", "", []string{"purpose is empty", "reason is empty"}, []string{"未填写用途", "未填写理由"}},
+		{"oversize-ascii", strings.Repeat("x", 513), "ok", []string{"purpose exceeds 512 characters"}, []string{"用途超过 512 字"}},
+		{"oversize-cjk", "ok", strings.Repeat("磁", 513), []string{"reason exceeds 512 characters"}, []string{"理由超过 512 字"}},
+		{"escape-control", "ok", "a\x1bb", []string{"reason contains unsupported control characters"}, []string{"理由含非法控制字符"}},
+		{"nul-control", "a\x00b", "ok", []string{"purpose contains unsupported control characters"}, []string{"用途含非法控制字符"}},
+		{"raw-cr-rejected", "ok", "a\rb", []string{"reason contains unsupported control characters"}, []string{"理由含非法控制字符"}},
+		{"invalid-utf8", string([]byte{0xff, 0xfe}), "ok", []string{"purpose is not valid UTF-8"}, []string{"用途编码非法"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			err := validateAgentJustification(tc.purpose, tc.reason)
+			err := validateAgentJustification("host_exec", tc.purpose, tc.reason)
 			if len(tc.want) == 0 {
 				if err != nil {
 					t.Fatal("unexpected rejection", err)
@@ -62,7 +63,16 @@ func TestValidateAgentJustification(t *testing.T) {
 			}
 			for _, sub := range tc.want {
 				if !strings.Contains(err.Error(), sub) {
-					t.Fatalf("error %q missing %q", err, sub)
+					t.Fatalf("model-facing error %q missing %q", err, sub)
+				}
+			}
+			user := err.userText()
+			if !strings.Contains(user, "host_exec") {
+				t.Fatalf("user text missing tool name: %q", user)
+			}
+			for _, sub := range tc.wantZh {
+				if !strings.Contains(user, sub) {
+					t.Fatalf("user text %q missing %q", user, sub)
 				}
 			}
 		})
@@ -105,4 +115,27 @@ func TestMultilineCJKJustificationReachesConfirmation(t *testing.T) {
 		t.Fatal("confirm rejected intact justification", err)
 	}
 	waitJobs(t, s)
+}
+
+// 只读白名单命令(df)免确认亦免理由:省略 purpose/reason 不再 invalid_plan,
+// 直接自动放行执行——磁盘排查场景反复报错的根因修复。
+func TestReadOnlyExecSkipsJustification(t *testing.T) {
+	id := uuid.NewString()
+	f := executor(id)
+	m := model()
+	s, _, _ := fixture(t, f, m)
+	c := chat(t, s, id)
+	m.reply = AgentReply{ToolCalls: []AgentToolCall{{
+		ID: uuid.NewString(), ToolID: "host_exec", Target: "target_0",
+		Args: json.RawMessage(`{"argv":["df","-h"]}`), // 无 Purpose/Reason
+	}}}
+	r := submitTool(t, s, c, id)
+	snap := waitRun(t, s, c.ID, r.ID, Succeeded)
+	waitJobs(t, s)
+	if len(snap.Confirmations) != 0 {
+		t.Fatal("read-only exec produced a confirmation card", snap.Confirmations)
+	}
+	if len(snap.Calls) != 1 || snap.Calls[0].ToolID != "host_exec" || snap.Calls[0].Status != Succeeded {
+		t.Fatal("read-only exec did not run without justification", snap.Calls)
+	}
 }

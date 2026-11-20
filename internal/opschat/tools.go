@@ -110,8 +110,9 @@ func mutation(id string) bool {
 	return id == "docker_action" || id == "systemd_action" || id == "docker_exec" || id == "host_exec"
 }
 
-// mutatesTool 是跨维度的变更判定(机器变更 + 项目变更);needsApproval、
-// 校验与确认屏障统一走它,机器专属路径(verifyMutation 等)仍用 mutation。
+// mutatesTool 是跨维度的变更判定(机器变更 + 项目变更),用于只读分批等粗分类;
+// 确认与理由门控统一走 approvalRequired(只读白名单 exec 豁免),机器专属路径
+// (verifyMutation 等)仍用 mutation。
 func mutatesTool(id string) bool {
 	return mutation(id) || projectMutation(id)
 }
@@ -170,17 +171,22 @@ func readOnlyExecArgv(argv []string) bool {
 	return true
 }
 
-// needsApproval 报告一个调用是否仍需用户确认:变更类工具中,host_exec /
-// docker_exec 的 argv 命中只读白名单时免确认,其余(含一切非 exec 变更)
-// 照旧走确认卡。判定只依赖入库的 Args,各门控点重算保持一致。
-func needsApproval(v Call) bool {
-	if !mutatesTool(v.ToolID) {
+// approvalRequired 是确认与理由共用的门控判定:变更类工具中,host_exec /
+// docker_exec 的 argv 命中只读白名单时免确认亦免理由(无确认卡可展示理由),
+// 其余(含一切非 exec 变更)照旧。只依赖 toolID 与 argv,各门控点重算保持一致。
+func approvalRequired(toolID string, argv []string) bool {
+	if !mutatesTool(toolID) {
 		return false
 	}
-	if (v.ToolID == "host_exec" || v.ToolID == "docker_exec") && readOnlyExecArgv(v.Args.Argv) {
+	if (toolID == "host_exec" || toolID == "docker_exec") && readOnlyExecArgv(argv) {
 		return false
 	}
 	return true
+}
+
+// needsApproval 报告一个调用是否仍需用户确认(判定只依赖入库的 Args)。
+func needsApproval(v Call) bool {
+	return approvalRequired(v.ToolID, v.Args.Argv)
 }
 func parseArgs(id string, raw json.RawMessage) (ToolArgs, error) {
 	var a ToolArgs

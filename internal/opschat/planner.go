@@ -308,9 +308,9 @@ func (s *Service) agentCalls(r runRecord, reply AgentReply) ([]callRecord, error
 		if s.secretArgs(args) {
 			return nil, fmt.Errorf("%w: call %q args contain a disallowed secret-like value", ErrInvalid, call.ToolID)
 		}
-		if mutatesTool(call.ToolID) {
-			if e := validateAgentJustification(purpose, reason); e != nil {
-				return nil, fmt.Errorf("%w: mutating call %q: %v", ErrInvalid, call.ToolID, e)
+		if approvalRequired(call.ToolID, args.Argv) {
+			if e := validateAgentJustification(call.ToolID, purpose, reason); e != nil {
+				return nil, fmt.Errorf("%w: %w", ErrInvalid, e)
 			}
 		}
 		// 512 字符 × 4 字节上界:按字符校验放行后,scrub 不得再静默截断原文。
@@ -358,32 +358,50 @@ func normalizeJustification(text string) string {
 	return strings.ReplaceAll(strings.ReplaceAll(text, "\r\n", "\n"), "\r", "\n")
 }
 
-// validateAgentJustification:变更工具的用途/理由必须非空、≤512 字符(与注入
+// justificationError 区分两套文案:en 回灌模型(英文精确,便于自纠),zh 透出
+// 给用户(中文通俗)。zh 只含固定短语与工具名,不回显模型原文,无注入风险。
+type justificationError struct{ tool, en, zh string }
+
+func (e *justificationError) Error() string {
+	return fmt.Sprintf("mutating call %q: %s", e.tool, e.en)
+}
+func (e *justificationError) userText() string {
+	return "变更操作 " + e.tool + "：" + e.zh + "。已要求模型补全，仍未提供合规内容。"
+}
+
+// validateAgentJustification:变更操作的用途/理由必须非空、≤512 字符(与注入
 // schema 的 maxLength 同语义)、合法 UTF-8,控制字符仅放行换行与制表符。
 // 逐字段收集全部问题一次报全:回灌只给模型一次自纠机会,错误必须可定位。
-func validateAgentJustification(purpose, reason string) error {
-	var problems []string
-	for _, field := range []struct{ name, text string }{{"purpose", purpose}, {"reason", reason}} {
+// 返回 nil 表示通过;调用方仅在 approvalRequired 为真时强制(只读 exec 豁免)。
+func validateAgentJustification(tool, purpose, reason string) *justificationError {
+	var en, zh []string
+	for _, field := range []struct{ name, zhName, text string }{
+		{"purpose", "用途", purpose}, {"reason", "理由", reason},
+	} {
 		switch {
 		case strings.TrimSpace(field.text) == "":
-			problems = append(problems, field.name+" is empty")
+			en = append(en, field.name+" is empty")
+			zh = append(zh, "未填写"+field.zhName)
 		case !utf8.ValidString(field.text):
-			problems = append(problems, field.name+" is not valid UTF-8")
+			en = append(en, field.name+" is not valid UTF-8")
+			zh = append(zh, field.zhName+"编码非法")
 		case utf8.RuneCountInString(field.text) > 512:
-			problems = append(problems, field.name+" exceeds 512 characters")
+			en = append(en, field.name+" exceeds 512 characters")
+			zh = append(zh, field.zhName+"超过 512 字")
 		default:
 			for _, r := range field.text {
 				if unicode.IsControl(r) && r != '\n' && r != '\t' {
-					problems = append(problems, field.name+" contains unsupported control characters (only newline and tab are allowed)")
+					en = append(en, field.name+" contains unsupported control characters (only newline and tab are allowed)")
+					zh = append(zh, field.zhName+"含非法控制字符")
 					break
 				}
 			}
 		}
 	}
-	if len(problems) > 0 {
-		return errors.New(strings.Join(problems, "; "))
+	if len(en) == 0 {
+		return nil
 	}
-	return nil
+	return &justificationError{tool: tool, en: strings.Join(en, "; "), zh: strings.Join(zh, "、")}
 }
 
 // callID 把 provider 的调用 id 投影为合法 call id;不可用时生成。
