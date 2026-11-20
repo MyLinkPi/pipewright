@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -272,7 +273,11 @@ func (m *opsModel) analysisPrompt(in opschat.AnalysisRequest) (string, error) {
 	if err != nil {
 		return "", opschat.ErrInvalid
 	}
-	prompt := opsAnalysisEvidenceInstruction + opsQueryScopeInstruction + opsAnalysisInstruction + m.masker.Scrub(string(raw))
+	prompt := opsAnalysisEvidenceInstruction + opsQueryScopeInstruction + opsAnalysisInstruction
+	if in.Omitted > 0 {
+		prompt += "Note: " + strconv.Itoa(in.Omitted) + " call results were omitted beyond the evidence limit; conclude only from the supplied items, state that omitted results were not analyzed, and do not infer their content. "
+	}
+	prompt += m.masker.Scrub(string(raw))
 	if len(prompt) > 32<<10 {
 		return "", opschat.ErrQuota
 	}

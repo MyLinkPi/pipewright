@@ -260,6 +260,26 @@ func TestOpsAnalysisEscapedInputAndInstructionQuota(t *testing.T) {
 	}
 }
 
+func TestOpsAnalysisPromptNotesOmittedEvidence(t *testing.T) {
+	m := &opsModel{masker: mask.NewMasker()}
+	in := opschat.AnalysisRequest{Items: []opschat.AnalysisItem{{Output: "x"}}, MaxResponseBytes: 16 << 10}
+	prompt, err := m.analysisPrompt(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(prompt, "omitted beyond the evidence limit") {
+		t.Fatal("no omission note expected when Omitted=0")
+	}
+	in.Omitted = 7
+	prompt, err = m.analysisPrompt(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(prompt, "7 call results were omitted beyond the evidence limit") {
+		t.Fatal("omission note missing", prompt)
+	}
+}
+
 type opsBrokenReader struct{}
 
 func (opsBrokenReader) Read([]byte) (int, error) { return 0, errors.New("raw key and URL") }

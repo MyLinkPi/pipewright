@@ -6,7 +6,7 @@ export default {
     invalid_plan: 'Die Folgeaufgaben oder Argumente werden nicht unterstützt.',
   },
   exec: {
-    argv: 'Exakte argv',
+    argv: 'Vollständiger Befehl',
     risk: 'Nichtinteraktive Ausführung im Container kann Daten ändern oder auf Geheimnisse zugreifen. Ein Exit-Code bestätigt nur das Programmende, nicht den Erfolg einer fachlichen Änderung. Stoppen macht Änderungen nicht rückgängig.',
   },
   planningError: {

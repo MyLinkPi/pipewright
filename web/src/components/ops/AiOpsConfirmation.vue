@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
 import { computed, shallowRef, onBeforeUnmount } from 'vue'
-import { isValidExecArgv, type BoundCall, type Call, type Confirmation } from '../../api/opsChat'
+import { formatExecArgv, isValidExecArgv, type BoundCall, type Call, type Confirmation } from '../../api/opsChat'
 const props = defineProps<{
   confirmation: Confirmation
   calls: Record<string, Call>
@@ -38,7 +38,10 @@ function matchingCall(bound: BoundCall): Call | undefined {
 }
 const rows = computed(() => props.confirmation.calls.map((bound) => ({ bound, call: matchingCall(bound) })))
 const loaded = computed(() => rows.value.length > 0 && rows.value.every((row) => !!row.call))
-const hasExec = computed(() => props.confirmation.calls.some((bound) => bound.toolId === 'docker_exec' || bound.toolId === 'host_exec'))
+function isExecTool(toolId: string): boolean {
+  return toolId === 'docker_exec' || toolId === 'host_exec'
+}
+const hasExec = computed(() => props.confirmation.calls.some((bound) => isExecTool(bound.toolId)))
 const denial = shallowRef('')
 function confirm(): void {
   if (!props.disabled && fresh.value && loaded.value) emit('confirm', props.confirmation)
@@ -63,18 +66,18 @@ function reject(): void {
           {{ t('opsChat.tools.' + bound.toolId) }} ·
           {{
             !call ? t('opsChat.loadingResult') :
-              bound.toolId === 'docker_exec' ? t('opsChat.exec.argv') :
+              isExecTool(bound.toolId) ? t('opsChat.exec.argv') :
                 t('opsChat.actions.' + call.args.action)
           }}
         </p>
-        <code class="ops-wrap">{{ bound.object }}</code>
+        <code v-if="bound.toolId !== 'host_exec' || !call" class="ops-wrap">{{ bound.object }}</code>
         <p v-if="bound.purpose" class="ops-wrap ops-purpose">
           {{ t('opsChat.purpose') }}: {{ bound.purpose }}
         </p>
         <p v-if="bound.reason" class="ops-wrap ops-purpose">
           {{ t('opsChat.reason') }}: {{ bound.reason }}
         </p>
-        <pre v-if="call && (bound.toolId === 'docker_exec' || bound.toolId === 'host_exec')" class="exec-argv">{{ JSON.stringify(call.args.argv) }}</pre>
+        <pre v-if="call && isExecTool(bound.toolId)" class="exec-argv">{{ formatExecArgv(call.args.argv ?? []) }}</pre>
         <details class="ops-muted">
           <summary>{{ t('opsChat.binding') }}</summary>
           <p class="ops-wrap">

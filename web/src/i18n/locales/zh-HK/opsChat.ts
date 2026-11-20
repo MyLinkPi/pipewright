@@ -6,7 +6,7 @@ export default {
     invalid_plan: '模型產生的後續任務或參數不受支援。',
   },
   exec: {
-    argv: '完整 argv',
+    argv: '完整命令',
     risk: '容器內非互動執行可能修改資料或存取秘密。結束碼僅表示命令結束，不保證業務變更成功；停止不會復原已生效的修改。',
   },
   planningError: {

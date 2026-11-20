@@ -29,3 +29,12 @@ func TestAnalysisFailureCodesAreBoundedAndNeverExposeErrors(t *testing.T) {
 		}
 	}
 }
+
+// 非模型类哨兵错误也要落到具体可读码,而非笼统 unknown(用户可见原因)。
+func TestAnalysisFailureCodesForSentinels(t *testing.T) {
+	for err, code := range map[error]string{ErrInvalid: "input_limit", ErrConsent: "rejected", ErrConflict: "unavailable"} {
+		if got := analysisFailureText(fmt.Errorf("wrap: %w", err)); got != "[analysis:"+code+"]" {
+			t.Fatal(err, got)
+		}
+	}
+}

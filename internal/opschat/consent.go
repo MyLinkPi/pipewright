@@ -225,7 +225,41 @@ func validProvider(p ProviderInfo) bool {
 func (s *Service) AnalysisPreview(ctx context.Context, id string, ids []string) (*AnalysisPreview, error) {
 	return s.analysisPreview(ctx, id, ids, "")
 }
-func (s *Service) analysisPreview(ctx context.Context, id string, ids []string, ownRun string) (*AnalysisPreview, error) {
+
+// selectAnalysisCalls 在证据上限内选取最有价值的调用:成功/部分成功且有输出或
+// 资源者优先(2),其次是有输出/错误/资源者(1),空/未知者最后(0);同分保持时间序,
+// 选中集再恢复时间序,保证汇总按采集顺序叙述。不超限时原样返回。
+func selectAnalysisCalls(candidates []callBody, limit int) []callBody {
+	if len(candidates) <= limit {
+		return candidates
+	}
+	score := func(c callBody) int {
+		switch {
+		case (c.View.Status == Succeeded || c.View.Status == PartialFailed) && (c.View.Output != "" || c.View.Resources != nil):
+			return 2
+		case c.View.Output != "" || c.View.Error != "" || c.View.Resources != nil:
+			return 1
+		default:
+			return 0
+		}
+	}
+	idx := make([]int, len(candidates))
+	for i := range idx {
+		idx[i] = i
+	}
+	slices.SortStableFunc(idx, func(a, b int) int { return score(candidates[b]) - score(candidates[a]) })
+	kept := idx[:limit]
+	slices.Sort(kept)
+	out := make([]callBody, 0, limit)
+	for _, i := range kept {
+		out = append(out, candidates[i])
+	}
+	return out
+}
+func (s *Service) analysisPreview(ctx context.Context, id string, ids []string, ownRun string, expectedOmitted ...int) (*AnalysisPreview, error) {
+	if len(expectedOmitted) > 1 || (len(expectedOmitted) == 1 && expectedOmitted[0] < 0) {
+		return nil, ErrInvalid
+	}
 	if err := s.registerSecrets(); err != nil {
 		return nil, err
 	}
@@ -236,14 +270,14 @@ func (s *Service) analysisPreview(ctx context.Context, id string, ids []string, 
 	if !validProvider(p) {
 		return nil, ErrUnavailable
 	}
-	out := &AnalysisPreview{CallIDs: append([]string{}, ids...), Items: []AnalysisItem{}, Provider: p}
-	if len(ids) == 0 || len(ids) > resourceLimits.Calls {
+	if len(ids) == 0 {
 		return nil, ErrInvalid
 	}
+	out := &AnalysisPreview{Items: []AnalysisItem{}, Provider: p}
 	seen := map[string]bool{}
-	size := 0
 	aliases := map[string]string{}
 	targetHashes := map[string]string{}
+	var candidates []callBody
 	err := s.transaction(ctx, id, false, func(tx *sql.Tx) error {
 		if _, e := s.session(ctx, tx, id); e != nil {
 			return e
@@ -273,13 +307,27 @@ func (s *Service) analysisPreview(ctx context.Context, id string, ids []string, 
 			if !terminal(r.View.Status) && (ownRun != r.View.ID || !r.Body.AnalysisStarted || r.View.Status != Running) {
 				return ErrConflict
 			}
+			candidates = append(candidates, c)
+		}
+		// 超证据上限时优雅截断:选最有价值的 ≤Calls 条,其余计入 Omitted 由汇总注明,
+		// 不再因调用数超限整轮失败。CallIDs 落选中集,与 Items 一致。
+		selected := selectAnalysisCalls(candidates, resourceLimits.Calls)
+		out.Omitted = len(candidates) - len(selected)
+		// 预览确认/执行重放只带截断后的 CallIDs,此时由调用方回传预览时的
+		// Omitted;它一并进 Hash,既不能伪造省略数,也与 ID 顺序无关。
+		if len(expectedOmitted) == 1 {
+			out.Omitted = expectedOmitted[0]
+		}
+		size := 0
+		for _, c := range selected {
+			out.CallIDs = append(out.CallIDs, c.View.ID)
 			targetHashes[c.View.ServerID] = c.View.TargetHash
 			alias, ok := aliases[c.View.ServerID]
 			if !ok {
 				alias = "target_" + string(rune('A'+len(aliases)))
 				aliases[c.View.ServerID] = alias
 			}
-			item := AnalysisItem{CallID: cid, TargetAlias: alias, ToolID: c.View.ToolID, Output: c.View.Output, Error: c.View.Error, Status: status, Truncated: c.View.Truncated, CollectedAt: c.View.CollectedAt, ExitCode: c.View.ExitCode}
+			item := AnalysisItem{CallID: c.View.ID, TargetAlias: alias, ToolID: c.View.ToolID, Output: c.View.Output, Error: c.View.Error, Status: c.View.Status, Truncated: c.View.Truncated, CollectedAt: c.View.CollectedAt, ExitCode: c.View.ExitCode}
 			if c.View.Resources != nil {
 				encoded, _ := json.Marshal(c.View.Resources)
 				item.Output = string(encoded)
@@ -312,7 +360,8 @@ func (s *Service) analysisPreview(ctx context.Context, id string, ids []string, 
 		CallIDs   []string
 		Items     []AnalysisItem
 		Provider  ProviderInfo
-	}{id, out.CallIDs, out.Items, out.Provider})
+		Omitted   int `json:"omitted,omitempty"`
+	}{id, out.CallIDs, out.Items, out.Provider, out.Omitted})
 	return out, nil
 }
 func (s *Service) Analyze(ctx context.Context, id string, in AnalysisInput) (*Run, error) {
@@ -378,7 +427,11 @@ func (s *Service) Analyze(ctx context.Context, id string, in AnalysisInput) (*Ru
 			}
 		}
 	}
-	preview, err := s.AnalysisPreview(ctx, id, ids)
+	var expectedOmitted []int
+	if in.PreviewHash != "" {
+		expectedOmitted = append(expectedOmitted, in.Omitted)
+	}
+	preview, err := s.analysisPreview(ctx, id, ids, "", expectedOmitted...)
 	if err != nil {
 		return nil, err
 	}
