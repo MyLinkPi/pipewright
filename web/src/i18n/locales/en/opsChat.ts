@@ -6,7 +6,7 @@ export default {
     invalid_plan: 'The follow-up tasks or arguments are unsupported.',
   },
   exec: {
-    argv: 'Exact argv',
+    argv: 'Full command',
     risk: 'Non-interactive container execution may change data or access secrets. An exit code only indicates command completion, not that a business change succeeded. Stopping does not undo changes.',
   },
   planningError: {

@@ -7,7 +7,7 @@ import AiOpsMessageList from './AiOpsMessageList.vue'
 import AiOpsConfirmation from './AiOpsConfirmation.vue'
 import AiOpsRunResults from './AiOpsRunResults.vue'
 import AiOpsSessionList from './AiOpsSessionList.vue'
-import type { Call, Confirmation } from '../../api/opsChat'
+import { formatExecArgv, type Call, type Confirmation } from '../../api/opsChat'
 import en from '../../i18n/locales/en/opsChat'
 import de from '../../i18n/locales/de/opsChat'
 import es from '../../i18n/locales/es/opsChat'
@@ -63,7 +63,7 @@ describe('ops components', () => {
     const batch: Confirmation = { ...confirmation, calls: [{ ...confirmation.calls[0]!, toolId: 'docker_exec' }] }
     const w = mount(AiOpsConfirmation, { props: { confirmation: batch, calls: { c: execCall }, disabled: false } })
     try {
-      expect(w.get('pre').text()).toBe(JSON.stringify(argv))
+      expect(w.get('pre').text()).toBe(formatExecArgv(argv))
       expect(w.find('img').exists()).toBe(false)
       expect(w.text()).toContain(execCall.serverName)
       expect(w.text()).toContain(execCall.serverId)
@@ -73,6 +73,29 @@ describe('ops components', () => {
       expect(w.get('.ops-primary').attributes('disabled')).toBeUndefined()
       await w.get('.ops-primary').trigger('click')
       expect(w.emitted('confirm')).toEqual([[batch]])
+    } finally { w.unmount() }
+  })
+  it('shows host_exec as a readable command without the undefined action label', async () => {
+    const argv = ['docker', 'system', 'df']
+    const execCall: Call = { ...call, toolId: 'host_exec', object: 'docker', args: { argv } }
+    const batch: Confirmation = { ...confirmation, calls: [{ ...confirmation.calls[0]!, toolId: 'host_exec', object: 'docker' }] }
+    const w = mount(AiOpsConfirmation, { props: { confirmation: batch, calls: { c: execCall }, disabled: false } })
+    try {
+      expect(w.get('pre').text()).toBe('docker system df')
+      expect(w.text()).not.toContain('undefined')
+      expect(w.text()).toContain(zhCN.exec.argv)
+      // host_exec 的 object 即 argv[0],与命令重复,不再单独展示一个只写程序名的 code 块。
+      expect(w.find('code').exists()).toBe(false)
+      expect(w.get('.ops-primary').attributes('disabled')).toBeUndefined()
+    } finally { w.unmount() }
+  })
+  it('keeps the host program visible while the frozen call is unavailable', async () => {
+    const batch: Confirmation = { ...confirmation, calls: [{ ...confirmation.calls[0]!, toolId: 'host_exec', object: 'docker' }] }
+    const w = mount(AiOpsConfirmation, { props: { confirmation: batch, calls: {}, disabled: false } })
+    try {
+      expect(w.get('code').text()).toBe('docker')
+      expect(w.find('pre').exists()).toBe(false)
+      expect(w.get('.ops-primary').attributes('disabled')).toBeDefined()
     } finally { w.unmount() }
   })
   it.each(['toolId', 'callId', 'runId', 'serverId', 'object', 'argsHash', 'targetHash'] as const)(

@@ -703,7 +703,10 @@ func (s *Service) work(parent context.Context, id, run string) {
 			ids = append(ids, c.Body.View.ID)
 		}
 		preview, e := s.analysisPreview(ctx, id, ids, run)
-		if e != nil || preview.Provider != current.Body.Provider {
+		if e == nil && preview.Provider != current.Body.Provider {
+			e = ErrConsent
+		}
+		if e != nil {
 			s.analysisFailure(id, run, toolStatus, e)
 			return
 		}
@@ -715,6 +718,9 @@ func (s *Service) analyzeWork(ctx context.Context, id, run string, r runRecord) 
 	s.analyzeWorkStatus(ctx, id, run, r, Succeeded)
 }
 func (s *Service) analysisFailure(id, run, status string, reason error) {
+	if reason != nil {
+		log.Printf("[opschat] analysis failed session=%s run=%s reason=%v", id, run, reason)
+	}
 	text := analysisFailureText(reason)
 	_ = s.persist(id, func(ctx context.Context, tx *sql.Tx) error {
 		r, e := s.run(ctx, tx, id, run)
@@ -741,12 +747,15 @@ func (s *Service) analyzeWorkStatus(ctx context.Context, id, run string, r runRe
 	if r.Body.AnalysisStarted {
 		ownRun = run
 	}
-	preview, err := s.analysisPreview(ctx, id, r.Body.Analysis.CallIDs, ownRun)
-	if err != nil || preview.Hash != r.Body.Analysis.Hash || preview.Provider != r.Body.Analysis.Provider {
+	preview, err := s.analysisPreview(ctx, id, r.Body.Analysis.CallIDs, ownRun, r.Body.Analysis.Omitted)
+	if err == nil && (preview.Hash != r.Body.Analysis.Hash || preview.Provider != r.Body.Analysis.Provider) {
+		err = ErrConsent
+	}
+	if err != nil {
 		s.analysisFailure(id, run, finalStatus, err)
 		return
 	}
-	req := AnalysisRequest{Provider: preview.Provider, Items: preview.Items, Question: r.Body.Question, MaxResponseBytes: 16 << 10}
+	req := AnalysisRequest{Provider: preview.Provider, Items: preview.Items, Question: r.Body.Question, MaxResponseBytes: 16 << 10, Omitted: r.Body.Analysis.Omitted}
 	raw, _ := json.Marshal(req)
 	if len(raw) > 32<<10 {
 		s.analysisFailure(id, run, finalStatus, ErrQuota)
@@ -782,7 +791,13 @@ func (s *Service) analyzeWorkStatus(ctx context.Context, id, run string, r runRe
 		err = reply.finish(s.scrub(text, 16<<10), Succeeded, false)
 	}
 	stop()
-	if err != nil || len(text) > 16<<10 || s.registerSecrets() != nil {
+	if err == nil && len(text) > 16<<10 {
+		err = ErrQuota
+	}
+	if err == nil {
+		err = s.registerSecrets()
+	}
+	if err != nil {
 		s.analysisFailure(id, run, finalStatus, err)
 		return
 	}

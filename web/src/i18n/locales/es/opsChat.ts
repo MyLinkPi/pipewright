@@ -6,7 +6,7 @@ export default {
     invalid_plan: 'Las tareas posteriores o sus argumentos no son compatibles.',
   },
   exec: {
-    argv: 'argv exacto',
+    argv: 'Comando completo',
     risk: 'La ejecución no interactiva en el contenedor puede modificar datos o acceder a secretos. Un código de salida solo indica que el comando terminó, no que el cambio previsto se realizó. Detener no revierte cambios.',
   },
   planningError: {

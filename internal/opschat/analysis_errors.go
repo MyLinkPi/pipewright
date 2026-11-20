@@ -16,9 +16,11 @@ func analysisFailureText(reason error) string {
 		}
 	} else if errors.Is(reason, context.DeadlineExceeded) {
 		code = "timeout"
-	} else if errors.Is(reason, ErrQuota) {
+	} else if errors.Is(reason, ErrQuota) || errors.Is(reason, ErrInvalid) {
 		code = "input_limit"
-	} else if errors.Is(reason, ErrUnavailable) {
+	} else if errors.Is(reason, ErrConsent) {
+		code = "rejected"
+	} else if errors.Is(reason, ErrUnavailable) || errors.Is(reason, ErrConflict) {
 		code = "unavailable"
 	}
 	return "[analysis:" + code + "]"

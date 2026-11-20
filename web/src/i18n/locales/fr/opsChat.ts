@@ -6,7 +6,7 @@ export default {
     invalid_plan: 'Les tâches suivantes ou leurs arguments ne sont pas pris en charge.',
   },
   exec: {
-    argv: 'argv exact',
+    argv: 'Commande complète',
     risk: 'L’exécution non interactive dans le conteneur peut modifier des données ou accéder à des secrets. Un code de sortie indique seulement la fin de la commande, pas la réussite du changement métier. Arrêter n’annule pas les modifications.',
   },
   planningError: {

@@ -375,6 +375,8 @@ type AnalysisRequest struct {
 	Provider         ProviderInfo   `json:"provider"`
 	Items            []AnalysisItem `json:"items"`
 	MaxResponseBytes int            `json:"maxResponseBytes"`
+	// Omitted 是因证据上限被省略的调用数(>0 时汇总须注明局限);不参与 Hash。
+	Omitted int `json:"omitted,omitempty"`
 }
 
 // Info is strictly local. Adapters MUST bound provider responses while reading, not after buffering.
@@ -533,16 +535,21 @@ type AnalysisPreview struct {
 	Items    []AnalysisItem `json:"items"`
 	Hash     string         `json:"hash"`
 	Provider ProviderInfo   `json:"provider"`
+	// Omitted 是因证据上限被省略的调用数;随 Analysis 持久化。预览确认/执行重放
+	// 回传该值并纳入 Hash(0 省略以保持旧哈希兼容),防止截断汇总冒充全量。
+	Omitted int `json:"omitted,omitempty"`
 }
 type AnalysisInput struct {
-	RunID           string       `json:"runId,omitempty"`
-	AnalyzeResults  bool         `json:"analyzeResults,omitempty"`
-	ClientRequestID string       `json:"clientRequestId"`
-	Revision        int64        `json:"revision"`
-	CallIDs         []string     `json:"callIds"`
-	PreviewHash     string       `json:"previewHash"`
-	Provider        ProviderInfo `json:"provider"`
-	Consent         bool         `json:"consent"`
+	RunID           string   `json:"runId,omitempty"`
+	AnalyzeResults  bool     `json:"analyzeResults,omitempty"`
+	ClientRequestID string   `json:"clientRequestId"`
+	Revision        int64    `json:"revision"`
+	CallIDs         []string `json:"callIds"`
+	PreviewHash     string   `json:"previewHash"`
+	// Omitted 是预览返回的省略数,预览确认时须原样回传;参与 PreviewHash 校验。
+	Omitted  int          `json:"omitted,omitempty"`
+	Provider ProviderInfo `json:"provider"`
+	Consent  bool         `json:"consent"`
 }
 
 // ContextUsage 是会话上下文占用展示模型:最近一次模型请求实测 usage / 窗口。

@@ -197,6 +197,8 @@ export interface Preview {
     status: Status
   }[]
   hash: string
+  /** 因证据上限省略的调用数;预览确认时须随 previewHash 原样回传。 */
+  omitted?: number
   provider: Provider
 }
 export interface Turn {
@@ -226,6 +228,7 @@ export interface Analysis {
   callIds?: string[]
   analyzeResults?: boolean
   previewHash?: string
+  omitted?: number
   provider: Provider
   consent?: boolean
 }
@@ -327,6 +330,33 @@ export function isValidExecArgv(argv: unknown): argv is string[] {
     total += bytes
   }
   return total <= execArgvLimits.totalBytes
+}
+// Cf(双向/零宽/标签字符)、Unicode 换行及非 ASCII 空白在审批文本中必须可见,
+// 避免模型参数视觉重排或把不同 argv 伪装成相同命令。
+const invisibleCommandCharacter = /[\p{Cf}\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]/u
+function escapeCommandInvisibles(token: string): string {
+  let out = ''
+  for (const character of token) {
+    if (character === '\\') {
+      out += '\\\\'
+      continue
+    }
+    out += invisibleCommandCharacter.test(character)
+      ? `\\u{${character.codePointAt(0)!.toString(16)}}`
+      : character
+  }
+  return out
+}
+/**
+ * 把冻结的 argv 渲染成可读的 POSIX 命令行(确认卡展示用):简单 token 原样,
+ * 含空白/shell 元字符或空串做单引号转义(内部单引号 → '\''),与执行层一致。
+ * 原始反斜杠翻倍,不可见/双向字符以 \u{...} 标注,避免转义与字面文本撞车;
+ * 其余 Unicode 保持可读。Vue 插值再 HTML 转义,恶意 token 只作纯文本显示。
+ */
+export function formatExecArgv(argv: string[]): string {
+  return argv
+    .map((token) => (/^[A-Za-z0-9_./:=+,@%-]+$/.test(token) ? token : `'${escapeCommandInvisibles(token).replace(/'/g, `'\\''`)}'`))
+    .join(' ')
 }
 export function errorCode(error: unknown): string {
   if (error instanceof HttpError) {
