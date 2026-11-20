@@ -40,6 +40,32 @@ type stubPVEAdmin struct {
 	uploadVolid string
 	uploadErr   error
 	uploadName  string
+
+	// 升级面注入字段。
+	updatesOV      *pveadmin.UpdatesOverview
+	updatesErr     error
+	refreshItems   []pveadmin.RefreshItem
+	refreshErr     error
+	upgradeErr     error
+	upgradeIn      pveadmin.UpgradeInput
+	upgradeStatus  pveadmin.UpgradeStatus
+	rebootRef      *pveadmin.TaskRef
+	rebootErr      error
+	rebootConfirm  string
+	aptInv         *pveadmin.AptRepoInventory
+	aptErr         error
+	aptRes         *pveadmin.AptRepoWriteResult
+	aptWriteErr    error
+	aptApplyItems  []pveadmin.AptRepoApplyItem
+	aptApplyErr    error
+	majorRep       *pveadmin.MajorPreflightReport
+	majorErr       error
+	majorStartErr  error
+	majorIn        pveadmin.MajorUpgradeInput
+	majorStatus    pveadmin.MajorUpgradeStatus
+	majorAbortErr  error
+	majorRetryErr  error
+	majorResumeErr error
 }
 
 func (s *stubPVEAdmin) OnServerRegistered(_ context.Context, _ string) (*pveadmin.DiscoveryResult, error) {
@@ -114,6 +140,78 @@ func (s *stubPVEAdmin) UploadBackup(_ context.Context, _, _, _, fileName string,
 	s.uploadName = fileName
 	_, _ = io.ReadAll(content)
 	return s.uploadVolid, s.uploadErr
+}
+
+// ---- 升级面桩(可注入结果/错误;calls 留痕) ----
+
+func (s *stubPVEAdmin) ListUpdates(context.Context, string) (*pveadmin.UpdatesOverview, error) {
+	s.calls = append(s.calls, "updates")
+	return s.updatesOV, s.updatesErr
+}
+func (s *stubPVEAdmin) RefreshUpdates(context.Context, string, []string) ([]pveadmin.RefreshItem, error) {
+	s.calls = append(s.calls, "refresh")
+	return s.refreshItems, s.refreshErr
+}
+func (s *stubPVEAdmin) StartUpgrade(_ context.Context, _ string, in pveadmin.UpgradeInput) error {
+	s.calls = append(s.calls, "upgrade")
+	s.upgradeIn = in
+	return s.upgradeErr
+}
+func (s *stubPVEAdmin) UpgradeStatus(context.Context, string) (pveadmin.UpgradeStatus, error) {
+	return s.upgradeStatus, nil
+}
+func (s *stubPVEAdmin) RebootNode(_ context.Context, _, node, confirm string) (*pveadmin.TaskRef, error) {
+	s.calls = append(s.calls, "reboot")
+	s.rebootConfirm = confirm
+	return s.rebootRef, s.rebootErr
+}
+func (s *stubPVEAdmin) ListAptRepos(context.Context, string, string) (*pveadmin.AptRepoInventory, error) {
+	s.calls = append(s.calls, "aptrepos")
+	return s.aptInv, s.aptErr
+}
+func (s *stubPVEAdmin) ToggleAptRepo(context.Context, string, string, pveadmin.AptRepoToggleInput) (*pveadmin.AptRepoWriteResult, error) {
+	s.calls = append(s.calls, "apttoggle")
+	return s.aptRes, s.aptWriteErr
+}
+func (s *stubPVEAdmin) SetAptRepoMirror(context.Context, string, string, string) (*pveadmin.AptRepoWriteResult, error) {
+	s.calls = append(s.calls, "aptmirror")
+	return s.aptRes, s.aptWriteErr
+}
+func (s *stubPVEAdmin) SetAptRepoPreset(context.Context, string, string, string) (*pveadmin.AptRepoWriteResult, error) {
+	s.calls = append(s.calls, "aptpreset")
+	return s.aptRes, s.aptWriteErr
+}
+func (s *stubPVEAdmin) RestoreAptRepo(context.Context, string, string, string, string) (*pveadmin.AptRepoWriteResult, error) {
+	s.calls = append(s.calls, "aptrestore")
+	return s.aptRes, s.aptWriteErr
+}
+func (s *stubPVEAdmin) ApplyAptRepos(context.Context, string, pveadmin.AptRepoApplyInput) ([]pveadmin.AptRepoApplyItem, error) {
+	s.calls = append(s.calls, "aptapply")
+	return s.aptApplyItems, s.aptApplyErr
+}
+func (s *stubPVEAdmin) MajorPreflight(context.Context, string) (*pveadmin.MajorPreflightReport, error) {
+	s.calls = append(s.calls, "majorpreflight")
+	return s.majorRep, s.majorErr
+}
+func (s *stubPVEAdmin) StartMajorUpgrade(_ context.Context, _ string, in pveadmin.MajorUpgradeInput) error {
+	s.calls = append(s.calls, "majorstart")
+	s.majorIn = in
+	return s.majorStartErr
+}
+func (s *stubPVEAdmin) MajorUpgradeStatus(context.Context, string) (pveadmin.MajorUpgradeStatus, error) {
+	return s.majorStatus, nil
+}
+func (s *stubPVEAdmin) AbortMajorUpgrade(context.Context, string) error {
+	s.calls = append(s.calls, "majorabort")
+	return s.majorAbortErr
+}
+func (s *stubPVEAdmin) RetryMajorNode(context.Context, string, string, string) error {
+	s.calls = append(s.calls, "majorretry")
+	return s.majorRetryErr
+}
+func (s *stubPVEAdmin) ResumeMajorUpgrade(context.Context, string, string) error {
+	s.calls = append(s.calls, "majorresume")
+	return s.majorResumeErr
 }
 
 func setupPVEAdminAPI(t *testing.T, stub *stubPVEAdmin) (srvURL string, client *http.Client, csrf string, rec audit.Recorder) {

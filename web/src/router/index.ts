@@ -71,6 +71,8 @@ const SettingsDatabases = () => import('../views/settings/SettingsDatabases.vue'
 const SettingsRedis = () => import('../views/settings/SettingsRedis.vue')
 // PVE 集群管理:集群经服务器登记自动发现(设置 → PVE 配 Token),此处总览/VM/电源/任务。
 const PVE = () => import('../views/PVE.vue')
+// PVE 集群升级:日常 apt 升级 / apt 仓库管理 / 大版本 8→9 滚动升级(仅管理员)。
+const PVEUpgrade = () => import('../views/PVEUpgrade.vue')
 // PVE 集群 Token 配置(集群记录由服务器登记探测自动生成)
 const SettingsPVE = () => import('../views/settings/SettingsPVE.vue')
 // 阿里云 ECS 批量导入:多账户 AK/SK 配置 + 拉实例手选范围批量登记/更新服务器
@@ -220,6 +222,8 @@ const router = createRouter({
         { path: 'artifacts', name: 'artifacts', component: Artifacts, meta: { title: 'Artifacts', roles: ['admin'] } },
         // PVE 集群管理:总览/VM 列表/电源操作/任务(仅管理员;集群经服务器登记自动发现)。
         { path: 'pve', name: 'pve', component: PVE, meta: { title: 'PVE', roles: ['admin'] } },
+        // PVE 集群升级管理:更新矩阵/日常升级/仓库管理/大版本升级(仅管理员)。
+        { path: 'pve/upgrade', name: 'pve-upgrade', component: PVEUpgrade, meta: { title: 'PVE 升级', roles: ['admin'] } },
         // 对象存储浏览(只读;仅管理员):实例在 设置 → 对象存储 注册,此处浏览桶内目录(marker 游标分页)。
         { path: 'object-storage', name: 'object-storage', component: ObjectStorage, meta: { title: '对象存储', roles: ['admin'] } },
         // R2 / E2.4: 证书总览大盘(跨主机跨域名 + 到期高亮)

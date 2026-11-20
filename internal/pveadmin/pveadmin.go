@@ -65,8 +65,14 @@ var (
 	ErrNoPrivilege = errors.New("pveadmin: no privilege on host")
 	// ErrProbe 表示探测命令执行失败(非零退出/不可达;错误体带 stderr 尾部)。
 	ErrProbe = errors.New("pveadmin: probe command failed")
-	// ErrBusy 表示集群已有建机任务在跑(每集群同时一个)。
+	// ErrBusy 表示集群已有建机/升级任务在跑(每集群同时一个,跨任务类型互斥)。
 	ErrBusy = errors.New("pveadmin: create job busy")
+	// ErrConfirmMismatch 表示危险操作的输入确认不匹配(须原样输入集群名/节点名)。
+	ErrConfirmMismatch = errors.New("pveadmin: confirm mismatch")
+	// ErrPreflightRequired 表示大版本升级缺少新鲜预检报告,或预检未通过/警告未确认。
+	ErrPreflightRequired = errors.New("pveadmin: preflight required")
+	// ErrCephDetected 表示集群部署了 Ceph,大版本升级须人工按官方流程处理(先升 Ceph 到 Squid)。
+	ErrCephDetected = errors.New("pveadmin: ceph detected, manual upgrade required")
 )
 
 // 白名单正则。
@@ -243,6 +249,46 @@ type Service interface {
 	// UploadBackup 流式上传 .vma 备份到节点存储(写操作,readonly 闸门),返回恢复源
 	// (卷 ID 或绝对路径;9.x 经 SSH 落文件型存储,8.x 走 API)。
 	UploadBackup(ctx context.Context, id, node, storage, fileName string, content io.Reader) (string, error)
+
+	// ---- 升级面(日常 apt / 仓库管理 / 大版本 8→9) ----
+
+	// ListUpdates 逐节点聚合版本/内核/待更新包/订阅/需重启标记(只读,并发扇出错误隔离)。
+	ListUpdates(ctx context.Context, id string) (*UpdatesOverview, error)
+	// RefreshUpdates 刷新节点 apt 索引(写操作,readonly 闸门),返回逐节点 UPID 句柄。
+	RefreshUpdates(ctx context.Context, id string, nodes []string) ([]RefreshItem, error)
+	// StartUpgrade 异步启动日常 apt 升级(纯 API,严格串行,逐节点容错)。
+	// readonly → ErrReadonly;已有任务在跑 → ErrBusy。
+	StartUpgrade(ctx context.Context, id string, in UpgradeInput) error
+	// UpgradeStatus 日常升级任务快照(步骤/日志/逐节点结果;前端轮询至 done)。
+	UpgradeStatus(ctx context.Context, id string) (UpgradeStatus, error)
+	// RebootNode 重启节点(写操作,readonly 闸门;confirm 须等于节点名),返回任务句柄。
+	RebootNode(ctx context.Context, id, node, confirm string) (*TaskRef, error)
+	// ListAptRepos 读节点 apt 仓库清单(.list/.sources 双格式解析 + 警告;只读)。
+	ListAptRepos(ctx context.Context, id, node string) (*AptRepoInventory, error)
+	// ToggleAptRepo 启停单个仓库条目(写操作:备份→原子替换→apt update 验证)。
+	ToggleAptRepo(ctx context.Context, id, node string, in AptRepoToggleInput) (*AptRepoWriteResult, error)
+	// SetAptRepoMirror 切换 Debian/PVE 源镜像预设(official/ustc/tsinghua/aliyun;Ceph 源不动)。
+	SetAptRepoMirror(ctx context.Context, id, node, preset string) (*AptRepoWriteResult, error)
+	// SetAptRepoPreset 企业↔无订阅一键切换(no-subscription/enterprise;Ceph 源不动)。
+	SetAptRepoPreset(ctx context.Context, id, node, preset string) (*AptRepoWriteResult, error)
+	// RestoreAptRepo 从备份恢复仓库文件(backupPath 白名单校验)。
+	RestoreAptRepo(ctx context.Context, id, node, path, backupPath string) (*AptRepoWriteResult, error)
+	// ApplyAptRepos 把镜像/订阅预设批量应用到多节点(并发闸,逐节点结果隔离)。
+	ApplyAptRepos(ctx context.Context, id string, in AptRepoApplyInput) ([]AptRepoApplyItem, error)
+	// MajorPreflight 大版本升级预检(同步:pve8to9 --full/版本/磁盘/Ceph/仓库/任务),
+	// 报告缓存 30min 供 StartMajorUpgrade 校验。
+	MajorPreflight(ctx context.Context, id string) (*MajorPreflightReport, error)
+	// StartMajorUpgrade 异步启动 8→9 滚动升级(持久化任务;confirm 须等于集群名,
+	// 预检须新鲜且无 FAIL、警告全 ack)。readonly → ErrReadonly;占用 → ErrBusy。
+	StartMajorUpgrade(ctx context.Context, id string, in MajorUpgradeInput) error
+	// MajorUpgradeStatus 大版本升级快照(DB 持久化-backed;重启后 running → interrupted)。
+	MajorUpgradeStatus(ctx context.Context, id string) (MajorUpgradeStatus, error)
+	// AbortMajorUpgrade 请求中止(只在步骤边界生效,绝不中断 dist-upgrade)。
+	AbortMajorUpgrade(ctx context.Context, id string) error
+	// RetryMajorNode 重跑失败节点(confirm 须等于集群名;幂等)。
+	RetryMajorNode(ctx context.Context, id, node, confirm string) error
+	// ResumeMajorUpgrade 从首个未完成节点续跑 interrupted/paused 任务(confirm 须等于集群名)。
+	ResumeMajorUpgrade(ctx context.Context, id, confirm string) error
 }
 
 type service struct {
@@ -251,16 +297,35 @@ type service struct {
 	servers target.Service
 	runner  Runner
 	clientF clientFactory
-	// mu 保护 createJobs(建机后台任务表,每集群一个;ceph.deployJob 同形)。
-	mu         sync.Mutex
-	createJobs map[string]*createJob
+	// mu 保护后台任务表与预检缓存(每集群一个任务,跨类型互斥;ceph.deployJob 同形)。
+	mu          sync.Mutex
+	createJobs  map[string]*createJob
+	upgradeJobs map[string]*upgradeJob // 日常 apt 升级(内存态)
+	majorJobs   map[string]*majorJob   // 大版本升级(DB 持久化-backed)
+	preflights  map[string]preflightEntry
 }
 
 // New 构造 PVE 集群管理服务。vault 未配置 master key 时 Token 登记/管理面不可用
 // (ErrVaultUnconfigured),但不影响平台启动与探测建池。
 func New(db *sql.DB, v vault.Vault, servers target.Service) Service {
 	return &service{db: db, vault: v, servers: servers, runner: &sshRunner{servers: servers}, clientF: prodClientFactory,
-		createJobs: map[string]*createJob{}}
+		createJobs: map[string]*createJob{}, upgradeJobs: map[string]*upgradeJob{},
+		majorJobs: map[string]*majorJob{}, preflights: map[string]preflightEntry{}}
+}
+
+// anyJobRunningLocked 判断集群是否有任一后台任务在跑(建机/日常升级/大版本升级互斥)。
+// 调用方须持 s.mu。
+func (s *service) anyJobRunningLocked(id string) bool {
+	if j := s.createJobs[id]; j != nil && j.snapshot().Running {
+		return true
+	}
+	if j := s.upgradeJobs[id]; j != nil && j.snapshot().Running {
+		return true
+	}
+	if j := s.majorJobs[id]; j != nil && j.snapshot().Running {
+		return true
+	}
+	return false
 }
 
 // ---- 探测登记钩子 -------------------------------------------------------------------
@@ -618,8 +683,8 @@ func (s *service) DeleteCluster(ctx context.Context, id string) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if j := s.createJobs[id]; j != nil && j.snapshot().Running {
-		return fmt.Errorf("%w: 集群 %s 建机任务运行中,禁止删除", ErrBusy, cl.Name)
+	if s.anyJobRunningLocked(id) {
+		return fmt.Errorf("%w: 集群 %s 有建机/升级任务运行中,禁止删除", ErrBusy, cl.Name)
 	}
 	var poolID string
 	if err := s.db.QueryRowContext(ctx, `SELECT id FROM server_pools WHERE cluster_id = ?`, cl.ID).Scan(&poolID); err == nil && poolID != "" {
@@ -639,6 +704,11 @@ func (s *service) DeleteCluster(ctx context.Context, id string) error {
 	if _, err := s.db.ExecContext(ctx, `DELETE FROM pve_vm_links WHERE cluster_id = ?`, cl.ID); err != nil {
 		return fmt.Errorf("pveadmin: delete vm links: %w", err)
 	}
+	// 升级任务历史随集群清理(节点行经 job 外键 CASCADE)。
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM pve_upgrade_jobs WHERE cluster_id = ?`, cl.ID); err != nil {
+		return fmt.Errorf("pveadmin: delete upgrade jobs: %w", err)
+	}
+	delete(s.preflights, id)
 	return nil
 }
 

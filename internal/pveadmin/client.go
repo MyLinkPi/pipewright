@@ -401,6 +401,7 @@ type apiResource struct {
 	MaxDisk     flexInt   `json:"maxdisk"` // storage 条目:总字节
 	Uptime      flexInt   `json:"uptime"`
 	PluginType  string    `json:"plugintype"`
+	HAState     string    `json:"hastate"` // vm 条目:HA 管理状态(started/ignored/...;大版本预检提示用)
 }
 
 // apiTask 对应 GET /cluster/tasks 的一个条目。
@@ -471,6 +472,47 @@ type apiContentEntry struct {
 	Used    flexInt `json:"used"`
 	VMID    flexInt `json:"vmid"`
 	Notes   string  `json:"notes"`
+}
+
+// ---- 升级面响应模型(apt/订阅/节点状态) ------------------------------------------------
+
+// apiAptUpdate 对应 GET /nodes/{node}/apt/update 的一个待更新包(PVE 用首字母大写字段)。
+type apiAptUpdate struct {
+	Package    string `json:"Package"`
+	Title      string `json:"Title"`
+	Version    string `json:"Version"`
+	OldVersion string `json:"OldVersion"`
+	Origin     string `json:"Origin"`
+	Priority   string `json:"Priority"`
+	Section    string `json:"Section"`
+}
+
+// apiAptVersion 对应 GET /nodes/{node}/apt/versions 的一个关键包。内核类条目带
+// Running(当前运行版本),与 Version(已装版本)不一致 → 需重启(升级面启发式判据)。
+type apiAptVersion struct {
+	Package      string `json:"Package"`
+	Title        string `json:"Title"`
+	Version      string `json:"Version"`
+	OldVersion   string `json:"OldVersion"`
+	CurrentState string `json:"CurrentState"`
+	Running      string `json:"Running"`
+}
+
+// apiNodeStatus 对应 GET /nodes/{node}/status(只取升级面用到的字段)。
+type apiNodeStatus struct {
+	Kversion string  `json:"kversion"` // 运行内核,如 "Linux 6.8.12-9-pve"
+	Uptime   flexInt `json:"uptime"`
+}
+
+// apiSubscription 对应 GET /nodes/{node}/subscription。Status 仅 "active" 视为有效订阅
+// (inactive/invalid/notfound 等一律按无订阅处理,企业源会 401)。
+type apiSubscription struct {
+	Status      string `json:"status"`
+	Key         string `json:"key"`
+	ServerID    string `json:"serverid"`
+	Level       string `json:"level"`
+	ProductName string `json:"productname"`
+	NextDueDate string `json:"nextduedate"`
 }
 
 // errNilClient 防御:工厂返回 nil 客户端(配置错误)时给出可读错误。

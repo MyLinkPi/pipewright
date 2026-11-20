@@ -228,6 +228,8 @@ type fakeRunner struct {
 	runs      [][]string
 	writes    []fakeWrite
 	writeErr  error
+	// runFn 通用路由钩子(升级面测试按 serverID+cmd 返回 fixture;优先于固定路由)。
+	runFn func(serverID string, cmd []string) (*target.ExecResult, error)
 }
 
 // fakeWrite 记录一次 Runner.WriteFile 调用。
@@ -238,10 +240,14 @@ type fakeWrite struct {
 	content  string
 }
 
-func (r *fakeRunner) Run(_ context.Context, _ string, cmd []string) (*target.ExecResult, error) {
+func (r *fakeRunner) Run(_ context.Context, serverID string, cmd []string) (*target.ExecResult, error) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	r.runs = append(r.runs, append([]string(nil), cmd...))
+	fn := r.runFn
+	r.mu.Unlock()
+	if fn != nil {
+		return fn(serverID, cmd)
+	}
 	joined := strings.Join(cmd, " ")
 	switch {
 	case strings.Contains(joined, "corosync.conf"):
