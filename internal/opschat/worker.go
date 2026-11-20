@@ -204,10 +204,16 @@ func (s *Service) planningFailure(id, run, status string, reason error) {
 	text := strings.Replace(analysisFailureText(reason), "[analysis:", "[planning:", 1)
 	if errors.Is(reason, ErrInvalid) {
 		text = "[planning:invalid_plan]"
-		// 上游校验失败的具体原因直接透出给用户(已脱敏、限长)。
-		detail := s.scrub(strings.TrimPrefix(reason.Error(), ErrInvalid.Error()), 512)
-		if trimmed := strings.TrimSpace(strings.TrimPrefix(detail, ":")); trimmed != "" {
-			text += " " + trimmed
+		// 理由不合规:用户看中文通俗文案;模型回灌仍走英文精确 Error()(见 planner)。
+		var je *justificationError
+		if errors.As(reason, &je) {
+			text += " " + s.scrub(je.userText(), 512)
+		} else {
+			// 其它校验失败的具体原因直接透出(已脱敏、限长)。
+			detail := s.scrub(strings.TrimPrefix(reason.Error(), ErrInvalid.Error()), 512)
+			if trimmed := strings.TrimSpace(strings.TrimPrefix(detail, ":")); trimmed != "" {
+				text += " " + trimmed
+			}
 		}
 	}
 	// 详细诊断:服务端日志 + 可见标记附带 HTTP 状态与 provider 错误原文
