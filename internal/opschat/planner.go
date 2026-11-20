@@ -286,6 +286,7 @@ func (s *Service) agentCalls(r runRecord, reply AgentReply) ([]callRecord, error
 			_ = json.Unmarshal(raw, &reason)
 			delete(fields, "reason")
 		}
+		purpose, reason = normalizeJustification(purpose), normalizeJustification(reason)
 		delete(fields, "target")
 		stripped, err := json.Marshal(fields)
 		if err != nil {
@@ -307,11 +308,14 @@ func (s *Service) agentCalls(r runRecord, reply AgentReply) ([]callRecord, error
 		if s.secretArgs(args) {
 			return nil, fmt.Errorf("%w: call %q args contain a disallowed secret-like value", ErrInvalid, call.ToolID)
 		}
-		if mutatesTool(call.ToolID) && !validAgentJustification(purpose, reason) {
-			return nil, fmt.Errorf("%w: mutating call %q lacks a valid purpose/reason", ErrInvalid, call.ToolID)
+		if mutatesTool(call.ToolID) {
+			if e := validateAgentJustification(purpose, reason); e != nil {
+				return nil, fmt.Errorf("%w: mutating call %q: %v", ErrInvalid, call.ToolID, e)
+			}
 		}
-		purpose = s.scrub(purpose, 512)
-		reason = s.scrub(reason, 512)
+		// 512 字符 × 4 字节上界:按字符校验放行后,scrub 不得再静默截断原文。
+		purpose = s.scrub(purpose, 2048)
+		reason = s.scrub(reason, 2048)
 		var view Call
 		var snap target.ConnectionSnapshot
 		if webCall {
@@ -347,19 +351,39 @@ func (s *Service) agentCalls(r runRecord, reply AgentReply) ([]callRecord, error
 	return candidates, nil
 }
 
-// validAgentJustification:变更工具的用途/理由必须非空、≤512B、无控制字符。
-func validAgentJustification(purpose, reason string) bool {
-	for _, text := range []string{purpose, reason} {
-		if text == "" || len(text) > 512 || !utf8.ValidString(text) {
-			return false
-		}
-		for _, r := range text {
-			if unicode.IsControl(r) {
-				return false
+// normalizeJustification 统一行尾(CRLF/CR → LF):Windows 风格换行不应被控制
+// 字符校验拒绝。落库前一次性规范化,确认绑定(BoundCall 含 Purpose/Reason)
+// 全链路携带同一文本,无哈希漂移。
+func normalizeJustification(text string) string {
+	return strings.ReplaceAll(strings.ReplaceAll(text, "\r\n", "\n"), "\r", "\n")
+}
+
+// validateAgentJustification:变更工具的用途/理由必须非空、≤512 字符(与注入
+// schema 的 maxLength 同语义)、合法 UTF-8,控制字符仅放行换行与制表符。
+// 逐字段收集全部问题一次报全:回灌只给模型一次自纠机会,错误必须可定位。
+func validateAgentJustification(purpose, reason string) error {
+	var problems []string
+	for _, field := range []struct{ name, text string }{{"purpose", purpose}, {"reason", reason}} {
+		switch {
+		case strings.TrimSpace(field.text) == "":
+			problems = append(problems, field.name+" is empty")
+		case !utf8.ValidString(field.text):
+			problems = append(problems, field.name+" is not valid UTF-8")
+		case utf8.RuneCountInString(field.text) > 512:
+			problems = append(problems, field.name+" exceeds 512 characters")
+		default:
+			for _, r := range field.text {
+				if unicode.IsControl(r) && r != '\n' && r != '\t' {
+					problems = append(problems, field.name+" contains unsupported control characters (only newline and tab are allowed)")
+					break
+				}
 			}
 		}
 	}
-	return true
+	if len(problems) > 0 {
+		return errors.New(strings.Join(problems, "; "))
+	}
+	return nil
 }
 
 // callID 把 provider 的调用 id 投影为合法 call id;不可用时生成。
