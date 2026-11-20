@@ -1,0 +1,1017 @@
+// aptrepo.go — PVE 节点 apt 仓库管理(SSH 读-改-备份-原子写)。
+//
+// 读:固定 sh 脚本遍历 /etc/apt/sources.list 与 sources.list.d/*.list|*.sources,
+// ##PWFILE/##PWEND 标记分隔后 Go 解析(双格式:传统 one-line 与 deb822);条目按
+// URI/组件分类 debian|pve|ceph|other。写:toggle(启停)/mirror(镜像预设)/
+// preset(企业↔无订阅)三种动作,全部「重读最新 → Go 变换 → 回 parse 校验 →
+// cp -a 备份 → WriteFile 写 tmp → mv -f 原子替换 → apt-get update 验证」
+// (fstabCommit 同形);写入中途失败尽力回滚已提交文件。restore 从备份恢复。
+//
+// 纪律:路径白名单(拒穿越)、单文件 64KiB 上限、固定 argv 绝不拼 shell、
+// Ceph 源只读(大版本升级须人工处理)、企业源不被镜像预设改写(镜像站不承载)。
+// 镜像预设复用 cloudinit.go mirrorHosts;USTC/清华的 proxmox 镜像带 /proxmox
+// 路径前缀(与 Debian 源纯主机替换不同);阿里云无 proxmox 镜像,PVE 源保持官方。
+package pveadmin
+
+import (
+	"context"
+	"fmt"
+	"net/url"
+	"regexp"
+	"strconv"
+	"strings"
+	"time"
+)
+
+// 仓库文件白名单:仅 sources.list 与 sources.list.d 下的 .list/.sources(拒穿越)。
+var aptRepoPathRe = regexp.MustCompile(`^/etc/apt/sources\.list$|^/etc/apt/sources\.list\.d/[A-Za-z0-9][A-Za-z0-9._-]*\.(list|sources)$`)
+
+// 备份文件名白名单:必须形如 <path>.bak.pipewright.<UTC 时间戳>。
+var aptRepoBackupRe = regexp.MustCompile(`^/etc/apt/sources\.list(\.d/[A-Za-z0-9][A-Za-z0-9._-]*\.(list|sources))?\.bak\.pipewright\.[0-9]{8}T[0-9]{6}Z$`)
+
+const (
+	aptRepoCmdTO            = 30 * time.Second
+	aptRepoUpdateTO         = 5 * time.Minute
+	aptRepoFileMax          = 64 << 10  // 单文件上限
+	aptRepoDumpMax          = 256 << 10 // 全部文件输出上限
+	aptRepoApplyConcurrency = 4
+)
+
+// aptRepoDumpScript 是固定读取脚本(无插值;glob 无命中时 [ -f ] 为假自动跳过)。
+const aptRepoDumpScript = `for f in /etc/apt/sources.list /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources; do
+  if [ -f "$f" ]; then
+    printf '##PWFILE:%s\n' "$f"
+    cat "$f"
+    printf '\n##PWEND\n'
+  fi
+done`
+
+// ---- 对外类型 ---------------------------------------------------------------------------
+
+// AptRepoEntry 是一个仓库条目(.list 的一行 / .sources 的一个 stanza)。
+type AptRepoEntry struct {
+	Key        string   `json:"key"` // 文件内稳定序号(list:行号;sources:stanza 序号,均 1-based)
+	Enabled    bool     `json:"enabled"`
+	Kind       string   `json:"kind"` // debian | pve | ceph | other
+	Types      string   `json:"types,omitempty"`
+	URIs       []string `json:"uris"`
+	Suites     []string `json:"suites"`
+	Components []string `json:"components"`
+	SignedBy   string   `json:"signedBy,omitempty"`
+	Raw        string   `json:"raw,omitempty"`
+}
+
+// AptRepoFile 是一个仓库文件。
+type AptRepoFile struct {
+	Path    string         `json:"path"`
+	Format  string         `json:"format"` // list | sources
+	Entries []AptRepoEntry `json:"entries"`
+}
+
+// AptRepoWarning 是仓库清单警告(level: warn | info)。
+type AptRepoWarning struct {
+	Key     string `json:"key"`
+	Level   string `json:"level"`
+	Message string `json:"message"`
+}
+
+// AptRepoInventory 是节点仓库清单(只读视图)。
+type AptRepoInventory struct {
+	Node         string           `json:"node"`
+	Codename     string           `json:"codename,omitempty"`
+	Subscription string           `json:"subscription,omitempty"`
+	Files        []AptRepoFile    `json:"files"`
+	Warnings     []AptRepoWarning `json:"warnings"`
+}
+
+// AptRepoToggleInput 是启停单条目入参。
+type AptRepoToggleInput struct {
+	Path    string `json:"path"`
+	Key     string `json:"key"`
+	Enabled bool   `json:"enabled"`
+}
+
+// AptRepoBackup 是一次写入产生的备份(供撤销)。
+type AptRepoBackup struct {
+	Path       string `json:"path"`
+	BackupPath string `json:"backupPath"`
+}
+
+// AptRepoWriteResult 是仓库写入结果(文件写入成功 ≠ 索引刷新成功;401 等保留备份供撤销)。
+type AptRepoWriteResult struct {
+	Node       string          `json:"node"`
+	OK         bool            `json:"ok"`
+	Backups    []AptRepoBackup `json:"backups,omitempty"`
+	Created    []string        `json:"created,omitempty"`
+	UpdateOK   bool            `json:"updateOk"`
+	UpdateTail string          `json:"updateTail,omitempty"`
+	Note       string          `json:"note,omitempty"`
+}
+
+// AptRepoApplyInput 是批量应用入参(action: mirror | preset;nodes 空 = 全部在线节点)。
+type AptRepoApplyInput struct {
+	Action string   `json:"action"`
+	Preset string   `json:"preset"`
+	Nodes  []string `json:"nodes"`
+}
+
+// AptRepoApplyItem 是批量应用里一个节点的结果。
+type AptRepoApplyItem struct {
+	Node     string `json:"node"`
+	OK       bool   `json:"ok"`
+	Err      string `json:"err,omitempty"`
+	UpdateOK bool   `json:"updateOk"`
+	Note     string `json:"note,omitempty"`
+}
+
+// ---- 镜像预设 ---------------------------------------------------------------------------
+
+// aptMirrorPreset 描述一个镜像预设的替换规则。debianHost/pveHost 空 = 恢复官方;
+// pveSkip = PVE 源不动(阿里云无 proxmox 镜像);pvePrefix 是镜像站 proxmox 路径前缀。
+type aptMirrorPreset struct {
+	debianHost string
+	pveHost    string
+	pvePrefix  string
+	pveSkip    bool
+	note       string
+}
+
+var aptMirrorPresets = map[string]aptMirrorPreset{
+	"official": {},
+	"ustc":     {debianHost: mirrorHosts["ustc"], pveHost: mirrorHosts["ustc"], pvePrefix: "/proxmox"},
+	"tsinghua": {debianHost: mirrorHosts["tsinghua"], pveHost: mirrorHosts["tsinghua"], pvePrefix: "/proxmox"},
+	"aliyun":   {debianHost: mirrorHosts["aliyun"], pveSkip: true, note: "阿里云无 Proxmox 镜像,PVE 源保持官方"},
+}
+
+var (
+	debianRepoHosts = map[string]bool{
+		"deb.debian.org": true, "security.debian.org": true, "ftp.debian.org": true,
+		"archive.ubuntu.com": true, "security.ubuntu.com": true, "ports.ubuntu.com": true,
+	}
+	pveRepoHosts    = map[string]bool{"download.proxmox.com": true, "enterprise.proxmox.com": true}
+	mirrorRepoHosts = map[string]bool{mirrorHosts["ustc"]: true, mirrorHosts["tsinghua"]: true, mirrorHosts["aliyun"]: true}
+)
+
+// rewriteAptURI 按预设改写一个仓库 URI(返回新值与是否变化)。ceph/other 不改;
+// 企业源不被镜像预设改写(镜像站不承载订阅源)。
+func rewriteAptURI(raw, kind string, enterprise bool, p aptMirrorPreset) (string, bool) {
+	if kind != "debian" && kind != "pve" {
+		return raw, false
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return raw, false
+	}
+	host := u.Hostname()
+	if kind == "debian" {
+		if p.debianHost == "" { // 恢复官方:按路径推导官方主机
+			if !mirrorRepoHosts[host] && !debianRepoHosts[host] {
+				return raw, false
+			}
+			target := "deb.debian.org"
+			switch {
+			case strings.Contains(u.Path, "ubuntu"):
+				if strings.Contains(u.Path, "security") {
+					target = "security.ubuntu.com"
+				} else {
+					target = "archive.ubuntu.com"
+				}
+			case strings.HasPrefix(u.Path, "/debian-security"):
+				target = "security.debian.org"
+			}
+			if host == target {
+				return raw, false
+			}
+			u.Host = target
+			return u.String(), true
+		}
+		if (debianRepoHosts[host] || mirrorRepoHosts[host]) && host != p.debianHost {
+			u.Scheme = "https"
+			u.Host = p.debianHost
+			return u.String(), true
+		}
+		return raw, false
+	}
+	// pve
+	if enterprise || p.pveSkip {
+		return raw, false
+	}
+	if p.pveHost == "" { // 恢复官方:剥 /proxmox 前缀
+		if mirrorRepoHosts[host] && strings.HasPrefix(u.Path, "/proxmox") {
+			u.Host = "download.proxmox.com"
+			u.Path = strings.TrimPrefix(u.Path, "/proxmox")
+			return u.String(), true
+		}
+		return raw, false
+	}
+	if pveRepoHosts[host] { // 官方 → 镜像:插前缀
+		u.Scheme = "https"
+		u.Host = p.pveHost
+		u.Path = p.pvePrefix + u.Path
+		return u.String(), true
+	}
+	if mirrorRepoHosts[host] && strings.HasPrefix(u.Path, "/proxmox") && host != p.pveHost { // 镜像 → 镜像
+		u.Host = p.pveHost
+		return u.String(), true
+	}
+	return raw, false
+}
+
+// classifyAptRepo 按 URI/组件分类条目(镜像站同时承载 debian 与 proxmox,须看路径)。
+func classifyAptRepo(uris, components []string) (kind string, enterprise bool) {
+	for _, c := range components {
+		if c == "pve-enterprise" {
+			return "pve", true
+		}
+	}
+	kind = "other"
+	for _, uri := range uris {
+		host, path := "", uri
+		if u, err := url.Parse(uri); err == nil {
+			host, path = u.Hostname(), u.Path
+		}
+		switch {
+		case strings.Contains(path, "/ceph") && (strings.Contains(host, "proxmox.com") || mirrorRepoHosts[host]):
+			return "ceph", strings.Contains(host, "enterprise.proxmox.com")
+		case strings.Contains(host, "proxmox.com") || strings.Contains(path, "/debian/pve"):
+			kind = "pve"
+			if strings.Contains(host, "enterprise.proxmox.com") {
+				enterprise = true
+			}
+		case debianRepoHosts[host] || mirrorRepoHosts[host] || strings.Contains(path, "/debian") || strings.Contains(path, "/ubuntu"):
+			if kind == "other" {
+				kind = "debian"
+			}
+		}
+	}
+	for _, c := range components {
+		if c == "pve-no-subscription" || c == "pvetest" {
+			kind = "pve"
+		}
+	}
+	return kind, enterprise
+}
+
+// ---- 内部表示与解析 ---------------------------------------------------------------------
+
+// aptEntry 是解析出的条目(引用原始行下标,变换直接改 lines)。
+type aptEntry struct {
+	key        string
+	lineIdx    int
+	endIdx     int // .list: lineIdx+1;.sources: stanza 结束(不含)
+	enabled    bool
+	kind       string
+	enterprise bool
+	types      []string
+	uris       []string
+	suites     []string
+	components []string
+	signedBy   string
+	opts       string // .list 方括号选项原文
+	raw        string
+}
+
+// aptRepoFileRaw 是一个文件的原始行 + 条目。
+type aptRepoFileRaw struct {
+	path    string
+	format  string
+	lines   []string
+	entries []aptEntry
+}
+
+func (f *aptRepoFileRaw) render() string {
+	return strings.Join(f.lines, "\n") + "\n"
+}
+
+func (f *aptRepoFileRaw) findEntry(key string) *aptEntry {
+	for i := range f.entries {
+		if f.entries[i].key == key {
+			return &f.entries[i]
+		}
+	}
+	return nil
+}
+
+// splitDebLine 拆 one-line 仓库行:类型 + [选项] + uri suite components...。
+func splitDebLine(line string) (typ, opts string, rest []string, ok bool) {
+	s := strings.TrimSpace(line)
+	i := strings.IndexAny(s, " \t")
+	if i < 0 {
+		return "", "", nil, false
+	}
+	typ = s[:i]
+	if typ != "deb" && typ != "deb-src" {
+		return "", "", nil, false
+	}
+	s = strings.TrimSpace(s[i:])
+	if strings.HasPrefix(s, "[") {
+		j := strings.Index(s, "]")
+		if j < 0 {
+			return "", "", nil, false
+		}
+		opts = s[:j+1]
+		s = strings.TrimSpace(s[j+1:])
+	}
+	rest = strings.Fields(s)
+	if len(rest) < 2 {
+		return "", "", nil, false
+	}
+	return typ, opts, rest, true
+}
+
+func signedByFromOpts(opts string) string {
+	for _, f := range strings.Fields(strings.Trim(opts, "[]")) {
+		if strings.HasPrefix(f, "signed-by=") {
+			return strings.TrimPrefix(f, "signed-by=")
+		}
+	}
+	return ""
+}
+
+func parseListFile(path string, lines []string) *aptRepoFileRaw {
+	f := &aptRepoFileRaw{path: path, format: "list", lines: lines}
+	for i, ln := range lines {
+		t := strings.TrimSpace(ln)
+		if t == "" {
+			continue
+		}
+		enabled, body := true, t
+		if strings.HasPrefix(t, "#") {
+			body = strings.TrimSpace(strings.TrimLeft(t, "#"))
+			enabled = false
+		}
+		typ, opts, rest, ok := splitDebLine(body)
+		if !ok {
+			continue
+		}
+		e := aptEntry{
+			key: strconv.Itoa(i + 1), lineIdx: i, endIdx: i + 1, enabled: enabled,
+			types: []string{typ}, uris: []string{rest[0]}, suites: []string{rest[1]}, components: rest[2:],
+			signedBy: signedByFromOpts(opts), opts: opts, raw: ln,
+		}
+		e.kind, e.enterprise = classifyAptRepo(e.uris, e.components)
+		f.entries = append(f.entries, e)
+	}
+	return f
+}
+
+func parseSourcesFile(path string, lines []string) *aptRepoFileRaw {
+	f := &aptRepoFileRaw{path: path, format: "sources", lines: lines}
+	start := -1
+	var stanza []string
+	flush := func(end int) {
+		if start < 0 {
+			return
+		}
+		e := aptEntry{lineIdx: start, endIdx: end, enabled: true, raw: strings.Join(stanza, "\n")}
+		for _, ln := range stanza {
+			t := strings.TrimSpace(ln)
+			if t == "" || strings.HasPrefix(t, "#") {
+				continue
+			}
+			k, v, ok := splitConfLine(t)
+			if !ok {
+				continue
+			}
+			switch strings.ToLower(k) {
+			case "types":
+				e.types = strings.Fields(v)
+			case "uris":
+				e.uris = strings.Fields(v)
+			case "suites":
+				e.suites = strings.Fields(v)
+			case "components":
+				e.components = strings.Fields(v)
+			case "signed-by":
+				e.signedBy = v
+			case "enabled":
+				e.enabled = !(strings.EqualFold(v, "no") || strings.EqualFold(v, "false") || v == "0")
+			}
+		}
+		if len(e.uris) > 0 && len(e.suites) > 0 {
+			e.kind, e.enterprise = classifyAptRepo(e.uris, e.components)
+			f.entries = append(f.entries, e)
+		}
+		start, stanza = -1, nil
+	}
+	for i, ln := range lines {
+		if strings.TrimSpace(ln) == "" {
+			flush(i)
+			continue
+		}
+		if start < 0 {
+			start = i
+		}
+		stanza = append(stanza, ln)
+	}
+	flush(len(lines))
+	for i := range f.entries {
+		f.entries[i].key = strconv.Itoa(i + 1)
+	}
+	return f
+}
+
+// parseAptDump 解析 ##PWFILE/##PWEND 标记分隔的多文件输出。
+func parseAptDump(out string) ([]*aptRepoFileRaw, error) {
+	if len(out) > aptRepoDumpMax {
+		return nil, fmt.Errorf("%w: 仓库文件总输出超过 256KiB 上限", ErrInvalidInput)
+	}
+	var files []*aptRepoFileRaw
+	var cur *aptRepoFileRaw
+	var buf []string
+	flush := func() {
+		if cur == nil {
+			return
+		}
+		content := strings.Join(buf, "\n")
+		content = strings.TrimSuffix(content, "\n") // 去掉脚本在 ##PWEND 前补的一个换行
+		if len(content) > aptRepoFileMax {
+			return // 超限文件跳过(调用方按缺失处理;正常 apt 源远小于此)
+		}
+		lines := strings.Split(content, "\n")
+		if cur.format == "sources" {
+			files = append(files, parseSourcesFile(cur.path, lines))
+		} else {
+			files = append(files, parseListFile(cur.path, lines))
+		}
+		cur, buf = nil, nil
+	}
+	for _, ln := range strings.Split(out, "\n") {
+		switch {
+		case strings.HasPrefix(ln, "##PWFILE:"):
+			flush()
+			path := strings.TrimPrefix(ln, "##PWFILE:")
+			if !aptRepoPathRe.MatchString(path) {
+				continue // 白名单外路径丢弃(防御)
+			}
+			cur = &aptRepoFileRaw{path: path, format: "list"}
+			if strings.HasSuffix(path, ".sources") {
+				cur.format = "sources"
+			}
+		case ln == "##PWEND":
+			flush()
+		default:
+			if cur != nil {
+				buf = append(buf, ln)
+			}
+		}
+	}
+	flush()
+	return files, nil
+}
+
+// readAptRepoFiles SSH 读取节点全部仓库文件 + Debian 代号。
+func (s *service) readAptRepoFiles(ctx context.Context, cl *Cluster, node string) ([]*aptRepoFileRaw, string, error) {
+	sid, err := s.nodeServerID(ctx, cl, node)
+	if err != nil {
+		return nil, "", err
+	}
+	rctx, cancel := context.WithTimeout(ctx, aptRepoCmdTO)
+	defer cancel()
+	res, err := s.runner.Run(rctx, sid, []string{"sh", "-c", aptRepoDumpScript})
+	if err != nil {
+		return nil, "", err
+	}
+	files, perr := parseAptDump(res.Stdout)
+	if perr != nil {
+		return nil, "", perr
+	}
+	codename := ""
+	cres, cerr := s.runner.Run(rctx, sid, []string{"cat", "/etc/os-release"})
+	if cerr == nil && cres != nil {
+		codename = osReleaseCodename(cres.Stdout)
+	}
+	return files, codename, nil
+}
+
+// osReleaseCodename 解析 /etc/os-release 的 VERSION_CODENAME(KEY=VALUE 格式,
+// 与 corosync 的 KEY: VALUE 不同;容忍引号)。
+func osReleaseCodename(out string) string {
+	for _, ln := range strings.Split(out, "\n") {
+		ln = strings.TrimSpace(ln)
+		i := strings.IndexByte(ln, '=')
+		if i <= 0 {
+			continue
+		}
+		if strings.TrimSpace(ln[:i]) == "VERSION_CODENAME" {
+			return strings.Trim(strings.TrimSpace(ln[i+1:]), `"`)
+		}
+	}
+	return ""
+}
+
+// ---- 变换 -------------------------------------------------------------------------------
+
+// toggleEntry 启停一个条目(.list 注释/去注释;.sources Enabled 字段)。
+func (f *aptRepoFileRaw) toggleEntry(e *aptEntry, enabled bool) {
+	if f.format == "list" {
+		if enabled {
+			f.lines[e.lineIdx] = strings.TrimLeft(f.lines[e.lineIdx], "# \t")
+		} else {
+			f.lines[e.lineIdx] = "# " + f.lines[e.lineIdx]
+		}
+		e.enabled = enabled
+		return
+	}
+	val := "no"
+	if enabled {
+		val = "yes"
+	}
+	f.setSourcesField(e, "Enabled", val)
+	e.enabled = enabled
+}
+
+// setSourcesField 设置 stanza 字段(存在则原位替换,缺失则 stanza 末尾插入)。
+// 插入会移动后续行下标:多条目变换须按 lineIdx 降序调用。
+func (f *aptRepoFileRaw) setSourcesField(e *aptEntry, field, value string) {
+	for i := e.lineIdx; i < e.endIdx && i < len(f.lines); i++ {
+		t := strings.TrimSpace(f.lines[i])
+		if k, _, ok := splitConfLine(t); ok && strings.EqualFold(k, field) {
+			indent := f.lines[i][:len(f.lines[i])-len(strings.TrimLeft(f.lines[i], " \t"))]
+			f.lines[i] = indent + field + ": " + value
+			return
+		}
+	}
+	nl := make([]string, 0, len(f.lines)+1)
+	nl = append(nl, f.lines[:e.endIdx]...)
+	nl = append(nl, field+": "+value)
+	nl = append(nl, f.lines[e.endIdx:]...)
+	f.lines = nl
+}
+
+// applyMirror 对全部 debian/pve 条目应用镜像预设(返回是否有变化)。
+func (f *aptRepoFileRaw) applyMirror(p aptMirrorPreset) bool {
+	changed := false
+	for i := range f.entries {
+		e := &f.entries[i]
+		var newURIs []string
+		any := false
+		for _, uri := range e.uris {
+			nu, ok := rewriteAptURI(uri, e.kind, e.enterprise, p)
+			newURIs = append(newURIs, nu)
+			any = any || ok
+		}
+		if !any {
+			continue
+		}
+		changed = true
+		if f.format == "list" {
+			for k, old := range e.uris {
+				if newURIs[k] != old {
+					f.lines[e.lineIdx] = strings.Replace(f.lines[e.lineIdx], old, newURIs[k], 1)
+				}
+			}
+		} else {
+			f.setSourcesField(e, "URIs", strings.Join(newURIs, " "))
+		}
+		e.uris = newURIs
+	}
+	return changed
+}
+
+// applySuite 把 debian/pve 条目的 suite 词元 from→to(大版本升级 bookworm→trixie;
+// 只动 suite 字段,不碰 URI/组件;bookworm-security → trixie-security 一并覆盖)。
+func (f *aptRepoFileRaw) applySuite(from, to string) bool {
+	changed := false
+	re := regexp.MustCompile(`\b` + regexp.QuoteMeta(from) + `\b`)
+	for i := range f.entries {
+		e := &f.entries[i]
+		if e.kind != "debian" && e.kind != "pve" {
+			continue
+		}
+		hit := false
+		for _, st := range e.suites {
+			if re.MatchString(st) {
+				hit = true
+			}
+		}
+		if !hit {
+			continue
+		}
+		changed = true
+		var ns []string
+		for _, st := range e.suites {
+			ns = append(ns, re.ReplaceAllString(st, to))
+		}
+		if f.format == "list" {
+			ln := f.lines[e.lineIdx]
+			if idx := strings.Index(ln, e.uris[0]); idx >= 0 {
+				after := ln[idx+len(e.uris[0]):]
+				f.lines[e.lineIdx] = ln[:idx+len(e.uris[0])] + re.ReplaceAllString(after, to)
+			}
+		} else {
+			f.setSourcesField(e, "Suites", strings.Join(ns, " "))
+		}
+		e.suites = ns
+	}
+	return changed
+}
+
+// applySubscriptionPreset 企业↔无订阅一键切换(返回是否有变化;缺失侧由调用方建文件)。
+// 按 lineIdx 降序处理(.sources 插入 Enabled 行会移动后续下标)。
+func (f *aptRepoFileRaw) applySubscriptionPreset(wantEnterprise bool) bool {
+	changed := false
+	for i := len(f.entries) - 1; i >= 0; i-- {
+		e := &f.entries[i]
+		if e.kind != "pve" {
+			continue
+		}
+		want := e.enterprise == wantEnterprise
+		if e.enabled != want {
+			f.toggleEntry(e, want)
+			changed = true
+		}
+	}
+	return changed
+}
+
+// hasPveSide 判断文件群是否已有指定侧的 pve 条目(企业/公共)。
+func hasPveSide(files []*aptRepoFileRaw, enterprise bool) bool {
+	for _, f := range files {
+		for _, e := range f.entries {
+			if e.kind == "pve" && e.enterprise == enterprise {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// ---- 提交(备份 → 原子写 → apt update 验证) ----------------------------------------------
+
+// aptFileChange 是一个待提交文件。
+type aptFileChange struct {
+	path    string
+	content string
+	isNew   bool
+}
+
+// commitAptFiles 逐文件备份+原子替换,随后 apt-get update 验证;中途失败尽力回滚。
+// updateTO 是索引刷新时限(仓库管理 5min;大版本换源后 15min)。
+func (s *service) commitAptFiles(ctx context.Context, cl *Cluster, node string, changes []aptFileChange, updateTO time.Duration) (*AptRepoWriteResult, error) {
+	sid, err := s.nodeServerID(ctx, cl, node)
+	if err != nil {
+		return nil, err
+	}
+	out := &AptRepoWriteResult{Node: node}
+	ts := time.Now().UTC().Format("20060102T150405Z")
+	var done []AptRepoBackup
+	rollback := func() {
+		for _, b := range done {
+			rctx, cancel := context.WithTimeout(context.Background(), aptRepoCmdTO)
+			_, _ = s.runner.Run(rctx, sid, []string{"cp", "-a", b.BackupPath, b.Path})
+			cancel()
+		}
+	}
+	for _, ch := range changes {
+		if !aptRepoPathRe.MatchString(ch.path) {
+			rollback()
+			return nil, fmt.Errorf("%w: 仓库路径 %q 不在白名单内", ErrInvalidInput, ch.path)
+		}
+		if len(ch.content) > aptRepoFileMax {
+			rollback()
+			return nil, fmt.Errorf("%w: 仓库文件 %s 超过 64KiB 上限", ErrInvalidInput, ch.path)
+		}
+		rctx, cancel := context.WithTimeout(ctx, aptRepoCmdTO)
+		if !ch.isNew {
+			bak := ch.path + ".bak.pipewright." + ts
+			if _, berr := s.runner.Run(rctx, sid, []string{"cp", "-a", ch.path, bak}); berr != nil {
+				cancel()
+				rollback()
+				return nil, fmt.Errorf("%w: 备份 %s 失败: %v", ErrProbe, ch.path, unwrapTail(berr))
+			}
+			done = append(done, AptRepoBackup{Path: ch.path, BackupPath: bak})
+		}
+		tmp := ch.path + ".pw-tmp"
+		werr := s.runner.WriteFile(rctx, sid, tmp, 0o644, strings.NewReader(ch.content))
+		if werr == nil {
+			_, werr = s.runner.Run(rctx, sid, []string{"mv", "-f", tmp, ch.path})
+		}
+		cancel()
+		if werr != nil {
+			rollback()
+			return nil, fmt.Errorf("%w: 写入 %s 失败: %v", ErrProbe, ch.path, unwrapTail(werr))
+		}
+		if ch.isNew {
+			out.Created = append(out.Created, ch.path)
+		}
+	}
+	out.Backups = done
+	out.OK = true
+	// apt-get update 验证(失败不否定写入:保留备份供撤销,401 等由 UI 提示)。
+	uctx, ucancel := context.WithTimeout(ctx, updateTO)
+	defer ucancel()
+	res, uerr := s.runner.Run(uctx, sid, []string{"apt-get", "update"})
+	out.UpdateOK = uerr == nil
+	if res != nil {
+		out.UpdateTail = tailOutput(res)
+	}
+	if uerr != nil && res == nil {
+		out.UpdateTail = unwrapTail(uerr)
+	}
+	return out, nil
+}
+
+// aptUpdateVerify 单独跑 apt-get update 验证(restore 用)。
+func (s *service) aptUpdateVerify(ctx context.Context, sid string, out *AptRepoWriteResult) {
+	uctx, cancel := context.WithTimeout(ctx, aptRepoUpdateTO)
+	defer cancel()
+	res, err := s.runner.Run(uctx, sid, []string{"apt-get", "update"})
+	out.UpdateOK = err == nil
+	if res != nil {
+		out.UpdateTail = tailOutput(res)
+	}
+	if err != nil && res == nil {
+		out.UpdateTail = unwrapTail(err)
+	}
+}
+
+// ---- 领域方法 ---------------------------------------------------------------------------
+
+// ListAptRepos 读节点仓库清单 + 警告(只读;订阅状态经 API 尽力而为,Token 未配也可用)。
+func (s *service) ListAptRepos(ctx context.Context, id, node string) (*AptRepoInventory, error) {
+	if !nameRe.MatchString(node) {
+		return nil, fmt.Errorf("%w: 节点名不合规", ErrInvalidInput)
+	}
+	cl, err := s.clusterByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	files, codename, err := s.readAptRepoFiles(ctx, cl, node)
+	if err != nil {
+		return nil, err
+	}
+	inv := &AptRepoInventory{Node: node, Codename: codename, Files: make([]AptRepoFile, 0, len(files))}
+	if _, c, cerr := s.clientFor(ctx, id); cerr == nil {
+		var sb apiSubscription
+		if gerr := c.Get(ctx, "/api2/json/nodes/"+node+"/subscription", &sb); gerr == nil {
+			inv.Subscription = sb.Status
+		} else {
+			inv.Subscription = "notfound"
+		}
+	}
+	for _, f := range files {
+		pf := AptRepoFile{Path: f.path, Format: f.format, Entries: make([]AptRepoEntry, 0, len(f.entries))}
+		for _, e := range f.entries {
+			pf.Entries = append(pf.Entries, AptRepoEntry{
+				Key: e.key, Enabled: e.enabled, Kind: e.kind, Types: strings.Join(e.types, " "),
+				URIs: e.uris, Suites: e.suites, Components: e.components, SignedBy: e.signedBy, Raw: e.raw,
+			})
+		}
+		inv.Files = append(inv.Files, pf)
+	}
+	inv.Warnings = aptRepoWarnings(files, codename, inv.Subscription)
+	return inv, nil
+}
+
+// aptRepoWarnings 计算清单警告(企业源无订阅/suite 不符/Ceph 只读/无 PVE 源)。
+func aptRepoWarnings(files []*aptRepoFileRaw, codename, subscription string) []AptRepoWarning {
+	var ws []AptRepoWarning
+	enterpriseEnabled, cephSeen, pveEnabled := false, false, false
+	suiteMismatch := false
+	for _, f := range files {
+		for _, e := range f.entries {
+			switch e.kind {
+			case "ceph":
+				cephSeen = true
+			case "pve":
+				if e.enabled {
+					pveEnabled = true
+					if e.enterprise {
+						enterpriseEnabled = true
+					}
+				}
+			}
+			if e.enabled && codename != "" {
+				for _, st := range e.suites {
+					base := strings.TrimSuffix(strings.TrimSuffix(strings.TrimSuffix(st, "-security"), "-updates"), "-backports")
+					if base != codename && (e.kind == "debian" || e.kind == "pve") {
+						suiteMismatch = true
+					}
+				}
+			}
+		}
+	}
+	if enterpriseEnabled && !strings.EqualFold(subscription, "active") {
+		ws = append(ws, AptRepoWarning{Key: "enterprise-no-sub", Level: "warn",
+			Message: "企业源(pve-enterprise)已启用但无有效订阅,apt update 将 401;请切换到 no-subscription 或激活订阅"})
+	}
+	if suiteMismatch {
+		ws = append(ws, AptRepoWarning{Key: "suite-mismatch", Level: "warn",
+			Message: "存在 suite 与运行代号(" + codename + ")不符的启用条目,请核对是否残留旧版本源"})
+	}
+	if !pveEnabled {
+		ws = append(ws, AptRepoWarning{Key: "no-pve-repo", Level: "warn", Message: "未启用任何 PVE 软件源,将无法收到 PVE 更新"})
+	}
+	if cephSeen {
+		ws = append(ws, AptRepoWarning{Key: "ceph-readonly", Level: "info",
+			Message: "检测到 Ceph 源(只读展示):Ceph 集群的大版本升级须人工按官方流程处理"})
+	}
+	return ws
+}
+
+// ToggleAptRepo 启停单条目(ceph 拒绝;重读最新防 TOCTOU,按 key 定位)。
+func (s *service) ToggleAptRepo(ctx context.Context, id, node string, in AptRepoToggleInput) (*AptRepoWriteResult, error) {
+	if !nameRe.MatchString(node) {
+		return nil, fmt.Errorf("%w: 节点名不合规", ErrInvalidInput)
+	}
+	if !aptRepoPathRe.MatchString(in.Path) {
+		return nil, fmt.Errorf("%w: 仓库路径不合规", ErrInvalidInput)
+	}
+	cl, err := s.clusterByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if cl.Readonly {
+		return nil, fmt.Errorf("%w: 集群 %s 处于只读模式,请在设置页解锁后再修改仓库", ErrReadonly, cl.Name)
+	}
+	files, _, err := s.readAptRepoFiles(ctx, cl, node)
+	if err != nil {
+		return nil, err
+	}
+	var target *aptRepoFileRaw
+	for _, f := range files {
+		if f.path == in.Path {
+			target = f
+			break
+		}
+	}
+	if target == nil {
+		return nil, fmt.Errorf("%w: 节点 %s 上不存在仓库文件 %s", ErrInvalidInput, node, in.Path)
+	}
+	e := target.findEntry(in.Key)
+	if e == nil {
+		return nil, fmt.Errorf("%w: 条目 %s 不存在(文件可能已变化,请刷新)", ErrInvalidInput, in.Key)
+	}
+	if e.kind == "ceph" {
+		return nil, fmt.Errorf("%w: Ceph 源只读,须人工管理", ErrInvalidInput)
+	}
+	if e.enabled == in.Enabled {
+		return &AptRepoWriteResult{Node: node, OK: true, UpdateOK: true, Note: "条目已是目标状态,无需变更"}, nil
+	}
+	target.toggleEntry(e, in.Enabled)
+	return s.commitAptFiles(ctx, cl, node, []aptFileChange{{path: target.path, content: target.render()}}, aptRepoUpdateTO)
+}
+
+// SetAptRepoMirror 应用镜像预设(debian+pve;ceph/other/企业源不动)。
+func (s *service) SetAptRepoMirror(ctx context.Context, id, node, preset string) (*AptRepoWriteResult, error) {
+	p, ok := aptMirrorPresets[preset]
+	if !ok {
+		return nil, fmt.Errorf("%w: 未知镜像预设 %q(official/ustc/tsinghua/aliyun)", ErrInvalidInput, preset)
+	}
+	cl, err := s.clusterByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if cl.Readonly {
+		return nil, fmt.Errorf("%w: 集群 %s 处于只读模式,请在设置页解锁后再修改仓库", ErrReadonly, cl.Name)
+	}
+	files, _, err := s.readAptRepoFiles(ctx, cl, node)
+	if err != nil {
+		return nil, err
+	}
+	var changes []aptFileChange
+	for _, f := range files {
+		if f.applyMirror(p) {
+			changes = append(changes, aptFileChange{path: f.path, content: f.render()})
+		}
+	}
+	if len(changes) == 0 {
+		return &AptRepoWriteResult{Node: node, OK: true, UpdateOK: true, Note: "无需变更" + noteSuffix(p.note)}, nil
+	}
+	res, err := s.commitAptFiles(ctx, cl, node, changes, aptRepoUpdateTO)
+	if err != nil {
+		return nil, err
+	}
+	res.Note = p.note
+	return res, nil
+}
+
+func noteSuffix(note string) string {
+	if note == "" {
+		return ""
+	}
+	return "(" + note + ")"
+}
+
+// SetAptRepoPreset 企业↔无订阅一键切换(缺失侧按标准内容 + 运行代号建文件)。
+func (s *service) SetAptRepoPreset(ctx context.Context, id, node, preset string) (*AptRepoWriteResult, error) {
+	var wantEnterprise bool
+	switch preset {
+	case "no-subscription":
+	case "enterprise":
+		wantEnterprise = true
+	default:
+		return nil, fmt.Errorf("%w: 未知订阅预设 %q(no-subscription/enterprise)", ErrInvalidInput, preset)
+	}
+	if !nameRe.MatchString(node) {
+		return nil, fmt.Errorf("%w: 节点名不合规", ErrInvalidInput)
+	}
+	cl, err := s.clusterByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if cl.Readonly {
+		return nil, fmt.Errorf("%w: 集群 %s 处于只读模式,请在设置页解锁后再修改仓库", ErrReadonly, cl.Name)
+	}
+	files, codename, err := s.readAptRepoFiles(ctx, cl, node)
+	if err != nil {
+		return nil, err
+	}
+	var changes []aptFileChange
+	for _, f := range files {
+		if f.applySubscriptionPreset(wantEnterprise) {
+			changes = append(changes, aptFileChange{path: f.path, content: f.render()})
+		}
+	}
+	if !hasPveSide(files, wantEnterprise) {
+		if codename == "" {
+			return nil, fmt.Errorf("%w: 无法识别 Debian 代号(/etc/os-release 缺 VERSION_CODENAME),不能创建标准源", ErrInvalidInput)
+		}
+		path, line := "/etc/apt/sources.list.d/pve-no-subscription.list",
+			fmt.Sprintf("deb http://download.proxmox.com/debian/pve %s pve-no-subscription", codename)
+		if wantEnterprise {
+			path = "/etc/apt/sources.list.d/pve-enterprise.list"
+			line = fmt.Sprintf("deb https://enterprise.proxmox.com/debian/pve %s pve-enterprise", codename)
+		}
+		content := "# Managed by Pipewright (订阅预设切换)\n" + line + "\n"
+		changes = append(changes, aptFileChange{path: path, content: content, isNew: true})
+	}
+	if len(changes) == 0 {
+		return &AptRepoWriteResult{Node: node, OK: true, UpdateOK: true, Note: "无需变更"}, nil
+	}
+	return s.commitAptFiles(ctx, cl, node, changes, aptRepoUpdateTO)
+}
+
+// RestoreAptRepo 从备份恢复仓库文件(backupPath 白名单校验)并刷新索引验证。
+func (s *service) RestoreAptRepo(ctx context.Context, id, node, path, backupPath string) (*AptRepoWriteResult, error) {
+	if !nameRe.MatchString(node) {
+		return nil, fmt.Errorf("%w: 节点名不合规", ErrInvalidInput)
+	}
+	if !aptRepoPathRe.MatchString(path) || !aptRepoBackupRe.MatchString(backupPath) {
+		return nil, fmt.Errorf("%w: 路径/备份名不合规", ErrInvalidInput)
+	}
+	if !strings.HasPrefix(backupPath, path+".bak.pipewright.") {
+		return nil, fmt.Errorf("%w: 备份与目标文件不对应", ErrInvalidInput)
+	}
+	cl, err := s.clusterByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if cl.Readonly {
+		return nil, fmt.Errorf("%w: 集群 %s 处于只读模式,请在设置页解锁后再恢复仓库", ErrReadonly, cl.Name)
+	}
+	sid, err := s.nodeServerID(ctx, cl, node)
+	if err != nil {
+		return nil, err
+	}
+	rctx, cancel := context.WithTimeout(ctx, aptRepoCmdTO)
+	defer cancel()
+	if _, rerr := s.runner.Run(rctx, sid, []string{"cp", "-a", backupPath, path}); rerr != nil {
+		return nil, fmt.Errorf("%w: 恢复备份失败: %v", ErrProbe, unwrapTail(rerr))
+	}
+	out := &AptRepoWriteResult{Node: node, OK: true, Backups: []AptRepoBackup{{Path: path, BackupPath: backupPath}}}
+	s.aptUpdateVerify(ctx, sid, out)
+	return out, nil
+}
+
+// ApplyAptRepos 批量应用镜像/订阅预设(并发闸,逐节点结果隔离)。
+func (s *service) ApplyAptRepos(ctx context.Context, id string, in AptRepoApplyInput) ([]AptRepoApplyItem, error) {
+	if in.Action != "mirror" && in.Action != "preset" {
+		return nil, fmt.Errorf("%w: 批量动作仅支持 mirror/preset", ErrInvalidInput)
+	}
+	cl, c, err := s.clientFor(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if cl.Readonly {
+		return nil, fmt.Errorf("%w: 集群 %s 处于只读模式,请在设置页解锁后再修改仓库", ErrReadonly, cl.Name)
+	}
+	cn, err := fetchClusterNodes(ctx, c)
+	if err != nil {
+		return nil, err
+	}
+	nodes, err := resolveUpgradeNodes(in.Nodes, cn, true)
+	if err != nil {
+		return nil, err
+	}
+	items := make([]AptRepoApplyItem, len(nodes))
+	fanOutNodes(len(nodes), aptRepoApplyConcurrency, func(i int) {
+		node := nodes[i]
+		item := AptRepoApplyItem{Node: node}
+		defer func() { items[i] = item }()
+		var res *AptRepoWriteResult
+		var aerr error
+		if in.Action == "mirror" {
+			res, aerr = s.SetAptRepoMirror(ctx, id, node, in.Preset)
+		} else {
+			res, aerr = s.SetAptRepoPreset(ctx, id, node, in.Preset)
+		}
+		if aerr != nil {
+			item.Err = unwrapTail(aerr)
+			return
+		}
+		item.OK, item.UpdateOK, item.Note = res.OK, res.UpdateOK, res.Note
+	})
+	return items, nil
+}

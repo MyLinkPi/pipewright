@@ -279,9 +279,9 @@ func (s *service) StartCreate(ctx context.Context, id string, in CreateInput) er
 	if s.createJobs == nil {
 		s.createJobs = map[string]*createJob{}
 	}
-	if j := s.createJobs[id]; j != nil && j.snapshot().Running {
+	if s.anyJobRunningLocked(id) {
 		s.mu.Unlock()
-		return fmt.Errorf("%w: 集群 %s 已有建机任务在运行", ErrBusy, cl.Name)
+		return fmt.Errorf("%w: 集群 %s 已有建机/升级任务在运行", ErrBusy, cl.Name)
 	}
 	j := &createJob{id: jobID, running: true, mode: in.Mode, step: CreateStepPrepare, message: "准备建机…"}
 	s.createJobs[id] = j

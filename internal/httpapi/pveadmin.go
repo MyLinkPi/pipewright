@@ -61,6 +61,9 @@ func mountPVEAdmin(ar chi.Router, svc pveadmin.Service, aud audit.Recorder) {
 	ar.Post("/pve/clusters/{id}/create", makePVECreateHandler(svc, aud))
 	ar.Get("/pve/clusters/{id}/create-status", makePVECreateStatusHandler(svc))
 	ar.Post("/pve/clusters/{id}/upload-vma", makePVEUploadVMAHandler(svc, aud))
+
+	// 升级面:更新矩阵/日常升级/节点重启 + apt 仓库管理 + 大版本 8→9 滚动升级。
+	mountPVEUpgrade(ar, svc, aud)
 }
 
 // writePVEAdminError 把领域错误映射为契约错误码/状态码。
@@ -79,7 +82,17 @@ func writePVEAdminError(w http.ResponseWriter, err error) {
 	case errors.Is(err, pveadmin.ErrReadonly):
 		writeError(w, http.StatusConflict, "pve_readonly", "集群处于只读模式,请先在设置页解锁后再执行写操作")
 	case errors.Is(err, pveadmin.ErrBusy):
-		writeError(w, http.StatusConflict, "pve_busy", "该集群已有建机任务在运行,请等待完成")
+		writeError(w, http.StatusConflict, "pve_busy", "该集群已有建机/升级任务在运行,请等待完成")
+	case errors.Is(err, pveadmin.ErrConfirmMismatch):
+		writeError(w, http.StatusUnprocessableEntity, "pve_confirm_mismatch", "输入确认不匹配:"+pveErrTail(err))
+	case errors.Is(err, pveadmin.ErrPreflightRequired):
+		writeError(w, http.StatusConflict, "pve_preflight_required", "大版本升级预检未满足:"+pveErrTail(err))
+	case errors.Is(err, pveadmin.ErrCephDetected):
+		writeError(w, http.StatusConflict, "pve_ceph_manual", "检测到 Ceph 集群:须人工按官方流程升级(先升 Ceph 到 Squid)")
+	case errors.Is(err, pveadmin.ErrNoPrivilege):
+		writeError(w, http.StatusConflict, "pve_no_privilege", "节点无提权权限:"+pveErrTail(err))
+	case errors.Is(err, pveadmin.ErrProbe):
+		writeError(w, http.StatusBadGateway, "pve_ssh_failed", "节点 SSH 命令失败:"+pveErrTail(err))
 	case errors.Is(err, pveadmin.ErrConnectFailed):
 		writeError(w, http.StatusBadGateway, "pve_connect_failed", "PVE API 请求失败:"+pveErrTail(err))
 	default:

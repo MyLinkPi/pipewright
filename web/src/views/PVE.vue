@@ -13,7 +13,7 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { NIcon } from 'naive-ui'
-import { Server, Refresh, Rotate, PlayerPlay, PlayerStop, PlayerPause, PlayerTrackNext, Power, Clock, Plus } from '@vicons/tabler'
+import { Server, Refresh, Rotate, PlayerPlay, PlayerStop, PlayerPause, PlayerTrackNext, Power, Clock, Plus, ArrowBarUp } from '@vicons/tabler'
 import {
   listPVEClusters, getPVEOverview, listPVEVMs, pveVMAction, getPVETaskStatus, listPVETasks,
   type PVECluster, type PVEOverview, type PVEVM, type PVETask,
@@ -222,6 +222,10 @@ onUnmounted(() => { if (pollTimer) clearTimeout(pollTimer) })
           <NIcon :size="13"><Refresh :class="{ spin: loadingData }" /></NIcon>
           {{ t('pveAdmin.refresh') }}
         </button>
+        <router-link class="btn-secondary" :to="{ name: 'pve-upgrade', query: { cluster: currentId } }">
+          <NIcon :size="13"><ArrowBarUp /></NIcon>
+          {{ t('pveUpgrade.title') }}
+        </router-link>
       </div>
     </header>
 
@@ -433,6 +437,7 @@ onUnmounted(() => { if (pollTimer) clearTimeout(pollTimer) })
   font-size: 0.8rem;
   font-weight: 500;
   cursor: pointer;
+  text-decoration: none;
 }
 .btn-secondary:disabled { opacity: 0.55; cursor: not-allowed; }
 .btn-progress { height: 30px; padding: 0 12px; font-size: 0.76rem; }
