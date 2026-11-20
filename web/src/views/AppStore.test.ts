@@ -420,6 +420,25 @@ describe('AppStore 已部署实例区', () => {
     await w.findAll('button').find((b) => b.text().includes('刷新'))!.trigger('click')
     await flushPromises()
     expect(w.text()).toContain('已部署实例加载失败')
+
+    // 实例区失败重试链接 → 强制重采(refresh=1),不吃缓存里的失败占位。
+    h.listAppInstances.mockClear()
+    h.listAppInstances.mockResolvedValue({ items: [] })
+    await w.find('.apps__sr-link').trigger('click')
+    await flushPromises()
+    expect(h.listAppInstances.mock.calls[0]).toEqual([true])
+  })
+
+  it('已部署实例:挂载默认回放后端缓存;页头「刷新」强制重采(refresh=1)', async () => {
+    const w = mount(AppStore)
+    await flushPromises()
+    expect(h.listAppInstances).toHaveBeenCalledTimes(1)
+    expect(h.listAppInstances.mock.calls[0]).toEqual([false])
+
+    await w.findAll('button').find((b) => b.text().includes('刷新'))!.trigger('click')
+    await flushPromises()
+    expect(h.listAppInstances).toHaveBeenCalledTimes(2)
+    expect(h.listAppInstances.mock.calls[1]).toEqual([true])
   })
 
   it('点「升级」→ 打开弹窗直接进入升级模式:预填边车参数与实例名,提交走 upgrade 端点', async () => {
@@ -643,9 +662,10 @@ describe('AppStore 卸载', () => {
     expect(h.uninstallApp).toHaveBeenCalledTimes(1)
     expect(h.uninstallApp.mock.calls[0]).toEqual(['s2', 'gitea-2', true])
     expect(h.toast.success).toHaveBeenCalledWith('已卸载')
-    // 成功 → 弹窗关闭 + 实例区刷新(再次拉取)。
+    // 成功 → 弹窗关闭 + 实例区刷新(再次拉取,默认参数:后端写路径已失效缓存,冷采集即新数据)。
     expect(w.text()).not.toContain('确认卸载')
     expect(h.listAppInstances).toHaveBeenCalledTimes(2)
+    expect(h.listAppInstances.mock.calls).toEqual([[false], [false]])
   })
 
   it('卸载失败 → 弹窗保留并 toast 后端人读原因', async () => {

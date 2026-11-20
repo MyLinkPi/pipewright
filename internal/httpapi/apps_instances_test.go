@@ -123,6 +123,7 @@ func mustSidecar(t *testing.T, sc appDeploySidecar) string {
 // runInstances 打枚举端点并解码 items。
 func runInstances(t *testing.T, apps appstore.Service, servers target.Service) []appInstanceDTO {
 	t.Helper()
+	resetAppInstancesCache() // 实例缓存是包级全局:用例间隔离,防串扰
 	r := chi.NewRouter()
 	r.Get("/servers/apps/instances", makeAllAppInstancesHandler(apps, servers))
 	req := httptest.NewRequest(http.MethodGet, "/servers/apps/instances", nil)
