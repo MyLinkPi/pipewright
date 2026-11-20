@@ -66,6 +66,7 @@ func TestPlanningFailureDiagnosticsNeverExecuteOrRetry(t *testing.T) {
 		{"missing-container", nil, AgentReply{Text: "Checking postgres.", ToolCalls: actionsToCalls([]Action{{ToolID: "docker_inspect", Args: json.RawMessage(`{}`), TargetIndexes: []int{0}}})}, "invalid_plan"},
 		{"bad-container", nil, AgentReply{Text: "Checking postgres.", ToolCalls: actionsToCalls([]Action{{ToolID: "docker_inspect", Args: json.RawMessage(`{"container":"postgres;id"}`), TargetIndexes: []int{0}}})}, "invalid_plan"},
 		{"out-of-range", nil, AgentReply{Text: "Checking postgres.", ToolCalls: actionsToCalls([]Action{{ToolID: "docker_inspect", Args: validAction.Args, TargetIndexes: []int{1}}})}, "invalid_plan"},
+		{"missing-purpose", nil, AgentReply{Text: "Checking postgres.", ToolCalls: []AgentToolCall{{ID: uuid.NewString(), ToolID: "host_exec", Target: "target_0", Args: json.RawMessage(`{"argv":["df","-h"]}`)}}}, "invalid_plan"},
 		// no-target 单目标场景已改为默认 target_0,不再判定为 invalid_plan。
 		{"oversize-plan", nil, AgentReply{Text: strings.Repeat("x", 33<<10)}, "invalid_plan"},
 	}
@@ -148,6 +149,51 @@ func TestPlanningFailureDiagnosticsNeverExecuteOrRetry(t *testing.T) {
 					t.Fatal("failure executed or unexpected model rounds", calls, plans)
 				}
 			})
+		}
+	}
+}
+
+// 校验拒绝必须把可定位的具体错误同时透出给用户标记与回灌模型的工具结果,
+// 而非笼统的 "lacks a valid purpose/reason"——模型只有一次自纠机会。
+func TestInvalidJustificationFeedbackIsSpecific(t *testing.T) {
+	id := uuid.NewString()
+	f := executor(id)
+	m := &planningTestModel{fakeModel: model()}
+	m.reply = AgentReply{ToolCalls: []AgentToolCall{{ID: uuid.NewString(), ToolID: "host_exec", Target: "target_0", Args: json.RawMessage(`{"argv":["df","-h"]}`)}}}
+	s, _, _ := fixture(t, f, m)
+	c := chat(t, s, id)
+	r, err := s.Submit(context.Background(), c.ID, TurnInput{ClientRequestID: uuid.NewString(), Revision: c.Revision, Text: "Check disk"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitRun(t, s, c.ID, r.ID, Failed)
+	waitJobs(t, s)
+	entries, err := s.Entries(context.Background(), c.ID, "", 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	marker := ""
+	for _, e := range entries.Entries {
+		if e.Kind == "assistant" && strings.HasPrefix(e.Text, "[planning:invalid_plan]") {
+			marker = e.Text
+		}
+	}
+	if !strings.Contains(marker, "purpose is empty") || !strings.Contains(marker, "reason is empty") {
+		t.Fatal("marker lacks specific detail", marker)
+	}
+	m.mu.Lock()
+	rounds := m.rounds
+	m.mu.Unlock()
+	if len(rounds) != 2 {
+		t.Fatal("expected 2 model rounds", len(rounds))
+	}
+	feedback := rounds[1].Rounds[len(rounds[1].Rounds)-1]
+	if len(feedback.Results) == 0 {
+		t.Fatal("feedback round has no results")
+	}
+	for _, res := range feedback.Results {
+		if !res.Failed || !strings.Contains(res.Output, "purpose is empty") {
+			t.Fatal("feedback not specific", res)
 		}
 	}
 }
