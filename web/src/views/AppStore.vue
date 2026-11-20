@@ -64,10 +64,10 @@ const servers = ref<Server[]>([])
 const loadState = ref<'loading' | 'loaded' | 'error'>('loading')
 const loadError = ref('')
 
-async function load(): Promise<void> {
+async function load(force = false): Promise<void> {
   loadState.value = templates.value.length === 0 ? 'loading' : 'loaded'
   loadError.value = ''
-  void loadInstances() // 次级数据(「已部署实例」区),独立失败不阻塞模板区
+  void loadInstances(force) // 次级数据(「已部署实例」区),独立失败不阻塞模板区
   try {
     const [tpl, sv] = await Promise.all([listAppTemplates(), listServers()])
     templates.value = tpl.items
@@ -152,9 +152,11 @@ function groupLabel(key: CategoryKey): string {
 const instances = ref<AppInstance[]>([])
 const instState = ref<'loading' | 'loaded' | 'error'>('loading')
 
-async function loadInstances(): Promise<void> {
+// force=true 走 ?refresh=1 强制重采(手动刷新/失败重试);默认回放后端 SWR 缓存,
+// 部署/卸载等写操作后端已主动失效,随后的默认拉取即冷采集新数据。
+async function loadInstances(force = false): Promise<void> {
   try {
-    const res = await listAppInstances()
+    const res = await listAppInstances(force)
     instances.value = res.items
     instState.value = 'loaded'
   } catch {
@@ -622,7 +624,7 @@ async function removeCustom(tpl: AppTemplate): Promise<void> {
         <p class="apps__sub">{{ t('appStore.subtitle') }}</p>
       </div>
       <div class="apps__actions">
-        <AppButton variant="default" :disabled="loadState === 'loading'" @click="load">
+        <AppButton variant="default" :disabled="loadState === 'loading'" @click="load(true)">
           {{ t('common.refresh') }}
         </AppButton>
         <AppButton variant="primary" @click="showCustomForm = !showCustomForm">
@@ -632,7 +634,7 @@ async function removeCustom(tpl: AppTemplate): Promise<void> {
     </header>
 
     <div v-if="loadState === 'loading'" aria-busy="true">{{ t('appStore.loading') }}</div>
-    <ErrorState v-else-if="loadState === 'error'" :title="t('appStore.errTitle')" :description="loadError" @retry="load" />
+    <ErrorState v-else-if="loadState === 'error'" :title="t('appStore.errTitle')" :description="loadError" @retry="load(true)" />
 
     <template v-else>
       <!-- 已部署实例(升级直达入口):全部机器上带参数边车的栈;常显,空/失败均有文案 -->
@@ -644,7 +646,7 @@ async function removeCustom(tpl: AppTemplate): Promise<void> {
           <p v-if="instState === 'loading'" class="apps__inst-meta">{{ t('appStore.loading') }}</p>
           <p v-else-if="instState === 'error' && instances.length === 0" class="apps__inst-warn">
             {{ t('appStore.instances.loadFail') }}
-            <button type="button" class="apps__sr-link" @click="loadInstances">{{ t('common.refresh') }}</button>
+            <button type="button" class="apps__sr-link" @click="loadInstances(true)">{{ t('common.refresh') }}</button>
           </p>
           <p v-else-if="instances.length === 0" class="apps__inst-meta">{{ t('appStore.instances.empty') }}</p>
           <div

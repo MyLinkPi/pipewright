@@ -508,6 +508,7 @@ func makeStackSaveHandler(svc target.Service, aud audit.Recorder) http.HandlerFu
 		}
 		// compose up 已投递(容器集合大概率已变)→ 丢弃该台容器清单缓存。
 		serverContainersCache.invalidate(id)
+		appInstances.invalidate(id) // 受管栈目录可能已变 → 实例清单同失效
 		if res.ExitCode != 0 {
 			msg := strings.TrimSpace(res.Stderr)
 			if msg == "" {
@@ -701,6 +702,7 @@ func makeStackActionHandler(svc target.Service, aud audit.Recorder) http.Handler
 		}
 		// stack 动作(up/down/start/stop/restart)已投递 → 丢弃该台容器清单缓存。
 		serverContainersCache.invalidate(id)
+		appInstances.invalidate(id) // 运行状态已变(版本探测/镜像枚举随之变)→ 实例清单同失效
 		if res.ExitCode != 0 {
 			msg := strings.TrimSpace(res.Stderr)
 			if msg == "" {

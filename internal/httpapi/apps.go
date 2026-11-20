@@ -392,13 +392,15 @@ func registerSafelineInstance(ctx context.Context, secScans secscan.Service, aud
 
 // deployComposeToServer 把一段 compose 内容部署为受管 Stacks 项目(与 Stacks 部署同一条链路):
 // 建受管目录 → Upload compose 文件(字节流)→ 探测 compose CLI → `compose -p <name> up -d`。
-// 实现在 internal/composeops;此处仅叠加本端容器清单缓存失效。
+// 实现在 internal/composeops;此处仅叠加本端容器/实例清单缓存失效。
 // 返回 (ok, 输出摘要, 人读错误)。
 func deployComposeToServer(ctx context.Context, svc target.Service, serverID, name, compose string) (bool, string, string) {
 	res := composeops.Deploy(ctx, svc, serverID, name, compose)
 	if res.Dispatched {
 		// compose up 已投递(容器集合大概率已变)→ 丢弃该台容器清单缓存。
 		serverContainersCache.invalidate(serverID)
+		// 受管栈目录/边车可能已变(应用部署/升级/贴 yaml 部署同走此链路)→ 实例清单同失效。
+		appInstances.invalidate(serverID)
 	}
 	return res.OK, res.Out, res.Err
 }
@@ -566,6 +568,7 @@ func makeCreateAppTemplateHandler(svc appstore.Service, aud audit.Recorder) http
 			writeAppStoreError(w, err)
 			return
 		}
+		appInstances.invalidateAll() // 新模板可能让旧栈反推命中(legacy)→ 全部实例缓存失效
 		recordAudit(r.Context(), aud, audit.Entry{
 			Actor: auditActor, Action: auditActionAppTemplateCreate, TargetType: auditTargetAppStore,
 			TargetID: t.ID, Detail: map[string]any{"name": t.Name}, IP: clientIP(r),
@@ -606,6 +609,7 @@ func makeUpdateAppTemplateHandler(svc appstore.Service, aud audit.Recorder) http
 			writeAppStoreError(w, err)
 			return
 		}
+		appInstances.invalidateAll() // 展示名/图标/更新时间已变 → 全部实例缓存的 join 字段失效
 		recordAudit(r.Context(), aud, audit.Entry{
 			Actor: auditActor, Action: auditActionAppTemplateUpdate, TargetType: auditTargetAppStore,
 			TargetID: t.ID, Detail: map[string]any{"name": t.Name, "ok": true}, IP: clientIP(r),
@@ -626,6 +630,7 @@ func makeDeleteAppTemplateHandler(svc appstore.Service, aud audit.Recorder) http
 			writeAppStoreError(w, err)
 			return
 		}
+		appInstances.invalidateAll() // 模板已删 → 实例条目的 templateGone/legacy 判定失效
 		recordAudit(r.Context(), aud, audit.Entry{
 			Actor: auditActor, Action: auditActionAppTemplateDelete, TargetType: auditTargetAppStore,
 			TargetID: id, Detail: map[string]any{"ok": true}, IP: clientIP(r),
@@ -726,6 +731,9 @@ func makeDeployAppHandler(apps appstore.Service, servers target.Service, aud aud
 			}); werr != nil {
 				out.Output = strings.TrimSpace(out.Output + "\n⚠ 参数记录写入失败(后续无法走「升级」原位保留参数):" + werr.Error())
 			}
+			// 边车已落 = 部署最终态:再失效一次,丢弃 dispatch 后到边车落盘之间并发采集
+			// 到的「无边车中间态」(gen 守卫),随后的读取重采最终态。
+			appInstances.invalidate(serverID)
 		}
 
 		// RustFS 联动:部署成功后自动登记为对象存储配置(尽力而为,独立超时,不影响部署结果)。
@@ -1185,6 +1193,8 @@ func makeUpgradeAppHandler(apps appstore.Service, servers target.Service, aud au
 			}); werr != nil {
 				out.Output = strings.TrimSpace(out.Output + "\n⚠ 参数记录写入失败(后续升级无法原位保留参数):" + werr.Error())
 			}
+			// 边车已重写 = 升级最终态:再失效一次,丢弃边车落盘前并发采集到的中间态。
+			appInstances.invalidate(serverID)
 		}
 		auditOp()
 		writeJSON(w, http.StatusOK, out)
@@ -1299,6 +1309,7 @@ func makeAppUninstallHandler(servers target.Service, aud audit.Recorder) http.Ha
 			writeJSON(w, http.StatusOK, out)
 			return
 		}
+		appInstances.invalidate(serverID) // 受管目录已删 → 实例清单成员已变,丢弃该台缓存
 		notes = append(notes, "已清理受管目录")
 		out.OK, out.Output = true, strings.Join(notes, ";")
 		auditOp()
@@ -1453,6 +1464,8 @@ type appInstanceDTO struct {
 // makeAllAppInstancesHandler 返回 GET /api/servers/apps/instances(认证,只读;批量聚合):
 // 全部机器(排除 PVE 节点)上带参数边车的栈 = 应用商店部署的实例。逐台并行有界、各自独立
 // (仿 makeAllServerContainersHandler);join 模板库补展示名/图标并判定「模板有更新」。
+// 结果经进程内 SWR 缓存回放(见 appInstancesCache):重开页面不再每次全量 SSH;
+// ?refresh=1 对全部列出的服务器强制重采(操作员怀疑缓存与真相不符时的逃生口)。
 func makeAllAppInstancesHandler(apps appstore.Service, servers target.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if apps == nil || servers == nil {
@@ -1481,16 +1494,22 @@ func makeAllAppInstancesHandler(apps appstore.Service, servers target.Service) h
 			}
 			targets = append(targets, srv)
 		}
+		refresh := r.URL.Query().Get("refresh") == "1"
 		rows := make([][]appInstanceDTO, len(targets))
 		sem := make(chan struct{}, appsInstancesConcurrency)
 		var wg sync.WaitGroup
 		for i, srv := range targets {
+			if refresh {
+				appInstances.invalidate(srv.ID)
+			}
 			wg.Add(1)
 			go func(i int, srv *target.Server) {
 				defer wg.Done()
 				sem <- struct{}{}
 				defer func() { <-sem }()
-				rows[i] = collectAppInstances(r.Context(), servers, srv, byID)
+				rows[i] = appInstances.get(r.Context(), srv, func(ctx context.Context) []appInstanceDTO {
+					return collectAppInstances(ctx, servers, srv, byID)
+				})
 			}(i, srv)
 		}
 		wg.Wait()

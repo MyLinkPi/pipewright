@@ -204,5 +204,6 @@ export interface AppInstance {
   legacy?: boolean
 }
 
-export const listAppInstances = (): Promise<{ items: AppInstance[] }> =>
-  http.get('/api/servers/apps/instances')
+/** 已部署实例(后端 SWR 缓存回放,重开页面即时返回;refresh=true 强制重采,手动刷新用)。 */
+export const listAppInstances = (refresh = false): Promise<{ items: AppInstance[] }> =>
+  http.get(refresh ? '/api/servers/apps/instances?refresh=1' : '/api/servers/apps/instances')
