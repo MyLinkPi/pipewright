@@ -447,6 +447,7 @@ type apiNetworkEntry struct {
 	Active      flexBool `json:"active"`
 	Autostart   flexBool `json:"autostart"`
 	Address     string   `json:"address"`
+	Address6    string   `json:"address6"`
 	Netmask     string   `json:"netmask"`
 	Gateway     string   `json:"gateway"`
 	BridgePorts string   `json:"bridge_ports"`

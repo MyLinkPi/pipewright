@@ -15,6 +15,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"regexp"
 	"strings"
@@ -118,9 +119,16 @@ func (r *sshRunner) WriteFile(ctx context.Context, serverID, remotePath string, 
 	return nil
 }
 
-// nodeServerID 把集群节点名解析为池内登记服务器 ID(snippet 写入/SSH 兜底的前提)。
-// 匹配序:服务器名 == 节点名 → 登记地址 == 节点名 → 登记地址 == 节点的集群 IP
-// (GET /cluster/status)。都未命中 → ErrInvalidInput(带可操作指引)。
+// nodeServerID 把集群节点名解析为池内登记服务器 ID(仓库 SSH/大版本升级的前提)。
+// 匹配序(逐级放宽,全部经 API 固定路径/固定 argv,绝不拼 shell):
+//  1. 服务器名 == 节点名;
+//  2. 登记地址 == 节点名;
+//  3. /cluster/status 的节点 IP == 登记地址(集群形态,ip 来自 corosync ring0);
+//  4. /nodes/{node}/network 的接口地址 == 登记地址(覆盖单机形态节点条目无 ip、
+//     ring0 用主机名、登记地址与管理口不同 NIC 等场景;Sys.Audit 不可用则静默跳过);
+//  5. 节点名 DNS 解析 == 登记地址(限时 1.5s,内网无 DNS 时快速失败,静默跳过)。
+//
+// 都未命中 → ErrInvalidInput,错误体列出池内候选(名/地址)与可操作指引。
 func (s *service) nodeServerID(ctx context.Context, cl *Cluster, node string) (string, error) {
 	var poolID string
 	if err := s.db.QueryRowContext(ctx, `SELECT id FROM server_pools WHERE cluster_id = ?`, cl.ID).Scan(&poolID); err != nil || poolID == "" {
@@ -136,32 +144,71 @@ func (s *service) nodeServerID(ctx context.Context, cl *Cluster, node string) (s
 			cands = append(cands, sv)
 		}
 	}
+	matchByHost := func(host string) (string, bool) {
+		if host == "" {
+			return "", false
+		}
+		for _, sv := range cands {
+			if sv.Host == host {
+				return sv.ID, true
+			}
+		}
+		return "", false
+	}
 	for _, sv := range cands {
 		if sv.Name == node {
 			return sv.ID, nil
 		}
 	}
-	for _, sv := range cands {
-		if sv.Host == node {
-			return sv.ID, nil
-		}
+	if id, ok := matchByHost(node); ok {
+		return id, nil
 	}
 	if _, c, cerr := s.clientFor(ctx, cl.ID); cerr == nil {
+		// 3) 集群形态:节点条目的 corosync ring0 IP。
 		var entries []apiClusterStatusEntry
 		if gerr := c.Get(ctx, "/api2/json/cluster/status", &entries); gerr == nil {
 			for _, e := range entries {
 				if e.Type != "node" || e.Name != node || e.IP == "" {
 					continue
 				}
-				for _, sv := range cands {
-					if sv.Host == e.IP {
-						return sv.ID, nil
+				if id, ok := matchByHost(e.IP); ok {
+					return id, nil
+				}
+			}
+		}
+		// 4) 节点网络接口地址(单机形态节点条目无 ip;ring0 可能用主机名而非 IP)。
+		var nets []apiNetworkEntry
+		if gerr := c.Get(ctx, "/api2/json/nodes/"+node+"/network", &nets); gerr == nil {
+			for _, ne := range nets {
+				for _, a := range []string{ne.Address, ne.Address6} {
+					if id, ok := matchByHost(strings.TrimSpace(a)); ok {
+						return id, nil
 					}
 				}
 			}
 		}
 	}
-	return "", fmt.Errorf("%w: 集群 %s 池内未找到节点 %s 对应的登记服务器,请先登记该节点", ErrInvalidInput, cl.Name, node)
+	// 5) 节点名 DNS 解析对比登记地址(仅当登记地址像 IP/可解析时才有意义;
+	// 内网无 DNS 时 1.5s 快速失败,静默跳过)。
+	rctx, cancel := context.WithTimeout(ctx, 1500*time.Millisecond)
+	ips, derr := net.DefaultResolver.LookupHost(rctx, node)
+	cancel()
+	if derr == nil {
+		for _, ip := range ips {
+			if id, ok := matchByHost(ip); ok {
+				return id, nil
+			}
+		}
+	}
+	hint := "池内没有 kind=pve_node 的机器(登记该机器时未触发探测归池?)"
+	if len(cands) > 0 {
+		var parts []string
+		for _, sv := range cands {
+			parts = append(parts, sv.Name+"/"+sv.Host)
+		}
+		hint = "池内 pve 机器: " + strings.Join(parts, ", ")
+	}
+	return "", fmt.Errorf("%w: 集群 %s 未找到节点 %s 对应的登记机器(%s);请确认该机器已归入 pve-<集群名> 服务器池且 kind=pve_node,或让登记地址与节点 IP/主机名一致后重试", ErrInvalidInput, cl.Name, node, hint)
 }
 
 // tailOutput 拼装 stderr/stdout 尾部(每段 ≤1000 字符;远端输出不含凭据)。

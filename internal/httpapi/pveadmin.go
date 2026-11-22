@@ -74,7 +74,10 @@ func writePVEAdminError(w http.ResponseWriter, err error) {
 	case errors.Is(err, pveadmin.ErrNameTaken):
 		writeError(w, http.StatusConflict, "pve_cluster_name_taken", "同名 PVE 集群已存在")
 	case errors.Is(err, pveadmin.ErrInvalidInput):
-		writeError(w, http.StatusUnprocessableEntity, "invalid_pve_input", "入参非法:字段格式或取值不符合要求")
+		// 透传领域层人话(dbadmin 同款 TrimPrefix),否则 nodeServerID 等带指引的
+		// 诊断信息被固定文案吞掉;前缀规则见 internal/i18n(messages_* 的「入参非法:」)。
+		writeError(w, http.StatusUnprocessableEntity, "invalid_pve_input",
+			"入参非法:"+strings.TrimPrefix(err.Error(), pveadmin.ErrInvalidInput.Error()+": "))
 	case errors.Is(err, pveadmin.ErrVaultUnconfigured):
 		writeError(w, http.StatusServiceUnavailable, "vault_unconfigured", "保险库未配置 master key,无法存取 API Token")
 	case errors.Is(err, pveadmin.ErrClusterNotReady):

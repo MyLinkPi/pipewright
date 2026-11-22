@@ -700,7 +700,8 @@ func TestRegisterInlineCredential(t *testing.T) {
 
 // ---- 节点解析 / SSH 写文件 ---------------------------------------------------------------
 
-// TestNodeServerIDResolution 名字 → 地址 → 集群 IP 三级匹配;未登记 → 可操作错误。
+// TestNodeServerIDResolution 名字 → 地址 → 集群 IP → 节点网卡地址 多级匹配;
+// 未登记 → ErrInvalidInput 且错误体列出池内候选。
 func TestNodeServerIDResolution(t *testing.T) {
 	s, ft, _, fc := newTestService(t)
 	cl := seedCreateCluster(t, s, ft)
@@ -720,8 +721,31 @@ func TestNodeServerIDResolution(t *testing.T) {
 	if id, err := s.nodeServerID(ctx, cl, "pve2"); err != nil || id != "node2" {
 		t.Fatalf("by ip: %q / %v", id, err)
 	}
-	if _, err := s.nodeServerID(ctx, cl, "pve9"); !errors.Is(err, ErrInvalidInput) {
+	if _, err := s.nodeServerID(ctx, cl, "pve9"); !errors.Is(err, ErrInvalidInput) || !strings.Contains(err.Error(), "池内 pve 机器") {
 		t.Fatalf("missing node err = %v", err)
+	}
+}
+
+// TestNodeServerIDStandaloneViaNetwork 单机形态用户踩坑场景:/cluster/status 节点条目
+// 无 ip 字段,机器按 IP 登记、名字与主机名不同 → 经 /nodes/{node}/network 接口地址匹配。
+func TestNodeServerIDStandaloneViaNetwork(t *testing.T) {
+	s, ft, _, fc := newTestService(t)
+	cl := seedCreateCluster(t, s, ft)
+	poolID := ft.servers["node1"].PoolID
+	ft.servers["node3"] = &target.Server{ID: "node3", Name: "pve01", Host: "10.1.0.30", PoolID: poolID, Kind: target.KindPVENode}
+	fc.getFn = func(path string) (any, error) {
+		if strings.Contains(path, "/cluster/status") {
+			// 单机形态:只有 node 条目,无 ip 字段。
+			return []map[string]any{{"type": "node", "name": "xufan-9600kf", "online": 1}}, nil
+		}
+		if strings.HasSuffix(path, "/network") {
+			return []map[string]any{{"iface": "vmbr0", "type": "bridge", "address": "10.1.0.30", "active": 1}}, nil
+		}
+		return nil, fmt.Errorf("unexpected %s", path)
+	}
+	ctx := context.Background()
+	if id, err := s.nodeServerID(ctx, cl, "xufan-9600kf"); err != nil || id != "node3" {
+		t.Fatalf("by network api: %q / %v", id, err)
 	}
 }
 
