@@ -113,15 +113,16 @@ func TestUpgradePipelineSequence(t *testing.T) {
 	if it.Node != "pve1" || !it.OK || it.Updated != 1 || !it.NeedsReboot {
 		t.Fatalf("item = %+v", it)
 	}
-	// 序列:刷新索引(API)→ SSH apt-get dist-upgrade(严格串行,单节点)。
-	var sawRefresh bool
+	// 序列:刷新索引(API,升级前后各一次)→ SSH apt-get dist-upgrade(严格串行,单节点)。
+	refreshPosts := 0
 	for _, p := range fc.posts {
 		if strings.HasSuffix(p, "/apt/update") {
-			sawRefresh = true
+			refreshPosts++
 		}
 	}
-	if !sawRefresh {
-		t.Fatalf("posts = %v", fc.posts)
+	// 刷新两次:升级前一次 + 升级后重刷(否则矩阵显示升级前的旧待更新数)。
+	if refreshPosts < 2 {
+		t.Fatalf("刷新索引应升级前后各一次: %d / %v", refreshPosts, fc.posts)
 	}
 	sawUpgrade := false
 	for _, run := range fr.runs {
@@ -281,5 +282,32 @@ func TestUpgradeRefreshReGetFailureStillUpgrades(t *testing.T) {
 	}
 	if !sawUpgrade {
 		t.Fatalf("重取待更新失败不应跳过升级: %v", fr.runs)
+	}
+}
+
+// TestUpgradeRejectsStableAliasSuite pvetools 风格 stable-security(2026-11 起指向
+// trixie)的节点:dist-upgrade 前被仓库体检拒绝,绝不带病升级(实测会试图卸载
+// proxmox-ve,被 pve-apt-hook 拦截)。
+func TestUpgradeRejectsStableAliasSuite(t *testing.T) {
+	s, ft, fr, fc := newTestService(t)
+	cl := seedCreateCluster(t, s, ft)
+	wireUpdatesFake(fc)
+	wireAptRepoFake(fr, aptDumpOf(map[string]string{"/etc/apt/sources.list": "deb https://mirrors.ustc.edu.cn/debian bookworm main contrib\n" +
+		"deb https://mirrors.ustc.edu.cn/debian-security stable-security main contrib\n" +
+		"deb https://mirrors.ustc.edu.cn/proxmox/debian/pve bookworm pve-no-subscription\n"}))
+	if err := s.StartUpgrade(context.Background(), cl.ID, UpgradeInput{}); err != nil {
+		t.Fatalf("StartUpgrade: %v", err)
+	}
+	st := waitUpgradeDone(t, s, cl.ID)
+	if st.OK != 0 || st.Failed != 1 {
+		t.Fatalf("st = %+v", st)
+	}
+	if !strings.Contains(st.Items[0].Err, "仓库体检未过") || !strings.Contains(st.Items[0].Err, "stable") {
+		t.Fatalf("err = %q", st.Items[0].Err)
+	}
+	for _, run := range fr.runs {
+		if strings.Contains(strings.Join(run, " "), "dist-upgrade") {
+			t.Fatalf("体检未过不应执行 dist-upgrade: %v", fr.runs)
+		}
 	}
 }

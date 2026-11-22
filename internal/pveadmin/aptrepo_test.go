@@ -161,6 +161,42 @@ func TestApplyMirrorFixesBrokenSecurityPath(t *testing.T) {
 	}
 }
 
+// TestApplyMirrorPinsStableSuiteAlias pvetools 风格的 stable-security 滚动 suite:
+// 应用镜像时钉到运行代号(2026-11 起 stable-security=trixie-security,混入 bookworm
+// 的 PVE 8 会让 dist-upgrade 试图卸载 proxmox-ve,被 pve-apt-hook 拦截——实测)。
+func TestApplyMirrorPinsStableSuiteAlias(t *testing.T) {
+	s, ft, fr, _ := newTestService(t)
+	cl := seedCreateCluster(t, s, ft)
+	dump := aptDumpOf(map[string]string{"/etc/apt/sources.list": "deb https://mirrors.ustc.edu.cn/debian bookworm main contrib\n" +
+		"deb https://mirrors.ustc.edu.cn/debian-security stable-security main contrib\n" +
+		"deb https://mirrors.ustc.edu.cn/debian bookworm-updates main contrib\n"})
+	wireAptRepoFake(fr, dump)
+	res, err := s.SetAptRepoMirror(context.Background(), cl.ID, "pve1", "ustc")
+	if err != nil {
+		t.Fatalf("mirror: %v", err)
+	}
+	if !res.OK {
+		t.Fatalf("res = %+v", res)
+	}
+	var mainFile string
+	for _, w := range fr.writes {
+		if w.path == "/etc/apt/sources.list.pw-tmp" {
+			mainFile = w.content
+		}
+	}
+	if !strings.Contains(mainFile, "deb https://mirrors.ustc.edu.cn/debian-security bookworm-security main contrib") {
+		t.Fatalf("stable-security 未钉到 bookworm-security:\n%s", mainFile)
+	}
+	if strings.Contains(mainFile, "stable") {
+		t.Fatalf("stable 残留:\n%s", mainFile)
+	}
+	// 主源/updates 的 bookworm suite 不受影响。
+	if !strings.Contains(mainFile, "deb https://mirrors.ustc.edu.cn/debian bookworm main contrib") ||
+		!strings.Contains(mainFile, "deb https://mirrors.ustc.edu.cn/debian bookworm-updates main contrib") {
+		t.Fatalf("正常 suite 被误改:\n%s", mainFile)
+	}
+}
+
 func TestApplySuite(t *testing.T) {
 	f := parseListFile("/etc/apt/sources.list", strings.Split(listFixture, "\n"))
 	if !f.applySuite("bookworm", "trixie") {

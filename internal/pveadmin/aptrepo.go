@@ -818,12 +818,19 @@ func (s *service) ListAptRepos(ctx context.Context, id, node string) (*AptRepoIn
 	return inv, nil
 }
 
-// aptRepoWarnings 计算清单警告(企业源无订阅/suite 不符/Ceph 只读/无 PVE 源)。
+// isStableSuiteAlias 判定滚动稳定 suite(stable / stable-security / stable-updates / …):
+// 它随 Debian 稳定版漂移,PVE 节点必须钉到具体运行代号(实测教训见 aptRepoWarnings)。
+func isStableSuiteAlias(st string) bool {
+	return st == "stable" || strings.HasPrefix(st, "stable-")
+}
+
+// aptRepoWarnings 计算清单警告(企业源无订阅/suite 不符/stable 别名漂移/Ceph 只读/无 PVE 源)。
 // 返回值恒为非 nil(零警告也返回空数组):序列化为 [] 而非 null,前端可安全遍历。
 func aptRepoWarnings(files []*aptRepoFileRaw, codename, subscription string) []AptRepoWarning {
 	ws := []AptRepoWarning{}
 	enterpriseEnabled, cephSeen, pveEnabled := false, false, false
 	suiteMismatch := false
+	stableAlias := false
 	for _, f := range files {
 		for _, e := range f.entries {
 			switch e.kind {
@@ -839,6 +846,10 @@ func aptRepoWarnings(files []*aptRepoFileRaw, codename, subscription string) []A
 			}
 			if e.enabled && codename != "" {
 				for _, st := range e.suites {
+					if isStableSuiteAlias(st) {
+						stableAlias = true
+						continue // 专项警告覆盖,不重复计入泛化不符
+					}
 					base := strings.TrimSuffix(strings.TrimSuffix(strings.TrimSuffix(st, "-security"), "-updates"), "-backports")
 					if base != codename && (e.kind == "debian" || e.kind == "pve") {
 						suiteMismatch = true
@@ -854,6 +865,10 @@ func aptRepoWarnings(files []*aptRepoFileRaw, codename, subscription string) []A
 	if suiteMismatch {
 		ws = append(ws, AptRepoWarning{Key: "suite-mismatch", Level: "warn",
 			Message: "存在 suite 与运行代号(" + codename + ")不符的启用条目,请核对是否残留旧版本源"})
+	}
+	if stableAlias {
+		ws = append(ws, AptRepoWarning{Key: "stable-alias", Level: "warn",
+			Message: "存在 stable 系滚动 suite:它随 Debian 稳定版漂移(2026-11 起 stable-security 已指向 trixie),与 bookworm 的 PVE 8 混用会让 dist-upgrade 试图卸载 proxmox-ve(被 pve-apt-hook 拦截);应用镜像可自动钉到运行代号"})
 	}
 	if !pveEnabled {
 		ws = append(ws, AptRepoWarning{Key: "no-pve-repo", Level: "warn", Message: "未启用任何 PVE 软件源,将无法收到 PVE 更新"})
@@ -1042,6 +1057,17 @@ func (s *service) SetAptRepoMirror(ctx context.Context, id, node, preset string)
 	for _, f := range files {
 		if f.applyMirror(p) {
 			dirty[f.path] = f.render()
+		}
+	}
+	// 稳定别名钉到运行代号(官方/镜像预设都做):pvetools 风格模板写的 stable-security
+	// 会随 Debian 稳定版漂移——2026-11 起 stable-security=trixie-security,混进 bookworm
+	// 的 PVE 8 节点后依赖解析会卸载 proxmox-ve(pve-apt-hook 拦截,dist-upgrade 失败,
+	// 实测)。钉死代号后 rolling 别名不再漂移;非稳定 suite(testing 等)不动。
+	if codename != "" {
+		for _, f := range files {
+			if f.applySuite("stable", codename) {
+				dirty[f.path] = f.render()
+			}
 		}
 	}
 	var notes []string

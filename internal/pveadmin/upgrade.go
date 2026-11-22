@@ -540,6 +540,25 @@ func (s *service) upgradeOneNode(ctx context.Context, j *upgradeJob, cl *Cluster
 		if serr != nil {
 			return serr
 		}
+		// 升级前仓库体检(SSH 读清单):suite 与运行代号不符(如 pvetools 风格的
+		// stable-security 已漂移到 trixie,实测会让解析器卸载 proxmox-ve、被
+		// pve-apt-hook 拦截)或未启用 PVE 源(只升 Debian 包,PVE/kernel 更新缺失)
+		// 时拒绝 dist-upgrade,先在仓库管理「应用镜像」修正。清单读不到时放行,
+		// 由 apt-get 自身兜底。
+		if files, repoCodename, rerr := s.readAptRepoFiles(ctx, cl, node); rerr == nil && len(files) > 0 {
+			// 订阅状态此处写死 inactive:下面三个阻断键都不依赖它,故对判定无影响;
+			// 但若日后把 enterprise-no-sub 加进阻断键,必须先改成真实订阅查询
+			// (GET /nodes/{n}/subscription),否则有有效订阅+企业源的节点会被误拦。
+			var blockers []string
+			for _, w := range aptRepoWarnings(files, repoCodename, "inactive") {
+				if w.Key == "suite-mismatch" || w.Key == "stable-alias" || w.Key == "no-pve-repo" {
+					blockers = append(blockers, w.Message)
+				}
+			}
+			if len(blockers) > 0 {
+				return fmt.Errorf("仓库体检未过,已拒绝 dist-upgrade(先在仓库管理「应用镜像」修正): %s", strings.Join(blockers, "; "))
+			}
+		}
 		j.set(UpgradeStepUpgrade, fmt.Sprintf("%s: 升级 %d 个包(SSH apt-get,可能数分钟)…", node, len(pending)))
 		j.logf("[%s] 开始全量升级(%d 包,SSH apt-get)…", node, len(pending))
 		res, uerr := s.runMajorCmd(ctx, sid, upgradeTO, []string{
@@ -556,6 +575,17 @@ func (s *service) upgradeOneNode(ctx context.Context, j *upgradeJob, cl *Cluster
 		}
 		if res != nil {
 			j.logf("[%s] dist-upgrade 输出尾部:\n%s", node, tailOutput(res))
+		}
+		// 升级后重刷新索引(尽力而为):PVE 的待更新缓存只在 apt-get update 时落盘,
+		// dist-upgrade 不更新它——不重刷的话矩阵会一直显示升级前的旧待更新数(实测)。
+		// 顺带记录剩余量:新发布的版本或被 apt 保留的包,属正常现象。
+		if upid2, u2err := postUPID(ctx, c, base+"/apt/update", url.Values{}); u2err == nil {
+			if w2err := waitTask(ctx, c, node, upid2, upgradeRefreshTO); w2err == nil {
+				var remain []apiAptUpdate
+				if gerr := c.Get(ctx, base+"/apt/update", &remain); gerr == nil && len(remain) > 0 {
+					j.logf("[%s] 升级后仍有 %d 个待更新(期间新发布的版本或被 apt 保留的包),可稍后再次升级", node, len(remain))
+				}
+			}
 		}
 	}
 	j.set(UpgradeStepCheck, fmt.Sprintf("%s: 检查内核…", node))

@@ -13,13 +13,13 @@ import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute } from 'vue-router'
 import { NIcon } from 'naive-ui'
-import { Server, Refresh, ArrowBarUp, Power, List, AlertTriangle } from '@vicons/tabler'
+import { Server, Refresh, ArrowBarUp, Power, List, AlertTriangle, Clock } from '@vicons/tabler'
 import { listPVEClusters, getPVETaskStatus, type PVECluster } from '../api/pveAdmin'
 import {
   getPVEUpdates, refreshPVEUpdates, startPVEUpgrade, rebootPVENode,
-  getPVEMajorPreflight, getPVEMajorUpgradeStatus,
+  getPVEUpgradeStatus, getPVEMajorPreflight, getPVEMajorUpgradeStatus,
   type PVEUpdatesOverview, type PVENodeUpdates, type PVEMajorPreflightReport,
-  type PVEMajorUpgradeStatus, type PVEMajorCheck,
+  type PVEMajorUpgradeStatus, type PVEMajorCheck, type PVEUpgradeStatus,
 } from '../api/pveUpgrade'
 import { HttpError } from '../api/http'
 import { useToast } from '../composables/useToast'
@@ -81,6 +81,7 @@ const updates = ref<PVEUpdatesOverview | null>(null)
 const loadingUpdates = ref(false)
 const refreshing = ref(false)
 const upgradeProgressOpen = ref(false)
+const upgradeLive = ref<PVEUpgradeStatus | null>(null)
 const expandedNode = ref('')
 let disposed = false
 const refreshTimers = new Set<ReturnType<typeof setTimeout>>()
@@ -169,6 +170,47 @@ async function onStartUpgrade(): Promise<void> {
   } catch (err) {
     toast.error(errMsg(err, t('pveUpgrade.errNetwork')))
   }
+}
+
+/** 单机升级:仅升级该节点(其余节点不动;集群已有任务运行中由后端 ErrBusy 拒绝)。 */
+async function onUpgradeNode(n: PVENodeUpdates): Promise<void> {
+  const cl = current.value
+  if (!cl || cl.readonly || !n.online) return
+  const ok = await confirm.open({
+    title: t('pveUpgrade.upgradeNodeConfirmTitle', { node: n.node }),
+    body: t('pveUpgrade.upgradeNodeConfirmBody'),
+    confirmLabel: t('pveUpgrade.upgradeNode'),
+    variant: 'primary',
+  })
+  if (!ok) return
+  try {
+    await startPVEUpgrade(cl.id, { nodes: [n.node] })
+    toast.success(t('pveUpgrade.upgradeStarted'))
+    upgradeProgressOpen.value = true
+  } catch (err) {
+    toast.error(errMsg(err, t('pveUpgrade.errNetwork')))
+  }
+}
+
+/** 日常升级任务是内存态:拉快照供「升级日志」入口显示运行徽标;运行中可自动恢复弹窗。 */
+async function loadUpgradeStatus(autoOpen = false): Promise<void> {
+  const cl = current.value
+  if (!cl || !ready.value) {
+    upgradeLive.value = null
+    return
+  }
+  try {
+    const st = await getPVEUpgradeStatus(cl.id)
+    upgradeLive.value = st
+    if (autoOpen && st.running) upgradeProgressOpen.value = true
+  } catch {
+    upgradeLive.value = null // 快照拉取失败不影响矩阵;弹窗内自有错误横幅
+  }
+}
+
+function onUpgradeDone(): void {
+  void loadUpdates()
+  void loadUpgradeStatus()
 }
 
 async function onReboot(n: PVENodeUpdates): Promise<void> {
@@ -265,12 +307,14 @@ function onClusterChange(): void {
   report.value = null
   expandedNode.value = ''
   void loadUpdates()
+  void loadUpgradeStatus(true)
   void loadMajorStatus(true)
 }
 
 onMounted(async () => {
   await loadClusters()
   void loadUpdates()
+  void loadUpgradeStatus(true)
   void loadMajorStatus(true)
 })
 onUnmounted(() => {
@@ -340,6 +384,11 @@ onUnmounted(() => {
               <NIcon :size="13"><ArrowBarUp /></NIcon>
               {{ t('pveUpgrade.startUpgrade') }}
             </button>
+            <button class="btn-secondary" @click="upgradeProgressOpen = true">
+              <NIcon :size="13"><Clock /></NIcon>
+              {{ t('pveUpgrade.upgradeLog') }}
+              <span v-if="upgradeLive?.running" class="tag run">{{ t('pveUpgrade.running') }}</span>
+            </button>
           </div>
         </div>
 
@@ -378,6 +427,15 @@ onUnmounted(() => {
                   @click="expandedNode = expandedNode === n.node ? '' : n.node"
                 >
                   <NIcon :size="12"><List /></NIcon>{{ t('pveUpgrade.packagesTitle') }}
+                </button>
+                <button
+                  v-if="current && !current.readonly && n.online"
+                  class="act-btn"
+                  :disabled="loadingUpdates || refreshing"
+                  :title="t('pveUpgrade.upgradeNode')"
+                  @click="onUpgradeNode(n)"
+                >
+                  <NIcon :size="13"><ArrowBarUp /></NIcon>
                 </button>
                 <button
                   v-if="current && !current.readonly && n.online"
@@ -486,7 +544,7 @@ onUnmounted(() => {
       :cluster-id="current.id"
       :cluster-name="current.name"
       @close="upgradeProgressOpen = false"
-      @done="loadUpdates"
+      @done="onUpgradeDone"
     />
     <MajorUpgradeWizard
       v-if="majorWizardOpen && current && report"
