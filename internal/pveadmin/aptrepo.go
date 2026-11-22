@@ -154,7 +154,13 @@ var (
 
 // rewriteAptURI 按预设改写一个仓库 URI(返回新值与是否变化)。ceph/other 不改;
 // 企业源不被镜像预设改写(镜像站不承载订阅源)。
-func rewriteAptURI(raw, kind string, enterprise bool, p aptMirrorPreset) (string, bool) {
+//
+// Debian 源做路径规范化(参考 pvetools 行为语义,净室重写):security 源路径恒为
+// /debian-security、主源恒为 /debian、ubuntu 恒为 /ubuntu(ports 为 /ubuntu-ports),
+// 按 suite 语义判定而非保留原始路径——原始行路径缺失/非标准(如裸主机
+// http://security.debian.org)时,换源后仍产出可用的规范镜像 URL,绝不把损坏路径
+// 带到镜像站。
+func rewriteAptURI(raw, kind string, enterprise bool, p aptMirrorPreset, suites []string) (string, bool) {
 	if kind != "debian" && kind != "pve" {
 		return raw, false
 	}
@@ -164,31 +170,45 @@ func rewriteAptURI(raw, kind string, enterprise bool, p aptMirrorPreset) (string
 	}
 	host := u.Hostname()
 	if kind == "debian" {
-		if p.debianHost == "" { // 恢复官方:按路径推导官方主机
+		isUbuntu := strings.Contains(host, "ubuntu") || strings.Contains(u.Path, "ubuntu")
+		// ports.ubuntu.com 的路径是 /ubuntu-ports(非 /ubuntu),须单独保留,否则
+		// 会把 arm Ubuntu 源改坏(旧逻辑只换主机不动路径,这里是回归防护)。
+		isUbuntuPorts := host == "ports.ubuntu.com" || u.Path == "/ubuntu-ports" || strings.HasPrefix(u.Path, "/ubuntu-ports/")
+		canonPath := "/debian"
+		switch {
+		case isUbuntuPorts:
+			canonPath = "/ubuntu-ports"
+		case isUbuntu:
+			canonPath = "/ubuntu"
+		case isSecuritySuite(suites):
+			canonPath = "/debian-security"
+		}
+		if p.debianHost == "" { // 恢复官方:按 suite/路径推导官方主机 + 规范路径
 			if !mirrorRepoHosts[host] && !debianRepoHosts[host] {
 				return raw, false
 			}
 			target := "deb.debian.org"
 			switch {
-			case strings.Contains(u.Path, "ubuntu"):
-				if strings.Contains(u.Path, "security") {
-					target = "security.ubuntu.com"
-				} else {
-					target = "archive.ubuntu.com"
-				}
-			case strings.HasPrefix(u.Path, "/debian-security"):
+			case isUbuntuPorts:
+				target = "ports.ubuntu.com"
+			case isUbuntu && isSecuritySuite(suites):
+				target = "security.ubuntu.com"
+			case isUbuntu:
+				target = "archive.ubuntu.com"
+			case canonPath == "/debian-security":
 				target = "security.debian.org"
 			}
-			if host == target {
-				return raw, false
-			}
 			u.Host = target
-			return u.String(), true
+			u.Path = canonPath
+			nu := u.String()
+			return nu, nu != raw
 		}
-		if (debianRepoHosts[host] || mirrorRepoHosts[host]) && host != p.debianHost {
+		if debianRepoHosts[host] || mirrorRepoHosts[host] { // 换镜像:规范路径
 			u.Scheme = "https"
 			u.Host = p.debianHost
-			return u.String(), true
+			u.Path = canonPath
+			nu := u.String()
+			return nu, nu != raw
 		}
 		return raw, false
 	}
@@ -200,7 +220,8 @@ func rewriteAptURI(raw, kind string, enterprise bool, p aptMirrorPreset) (string
 		if mirrorRepoHosts[host] && strings.HasPrefix(u.Path, "/proxmox") {
 			u.Host = "download.proxmox.com"
 			u.Path = strings.TrimPrefix(u.Path, "/proxmox")
-			return u.String(), true
+			nu := u.String()
+			return nu, nu != raw
 		}
 		return raw, false
 	}
@@ -208,13 +229,26 @@ func rewriteAptURI(raw, kind string, enterprise bool, p aptMirrorPreset) (string
 		u.Scheme = "https"
 		u.Host = p.pveHost
 		u.Path = p.pvePrefix + u.Path
-		return u.String(), true
+		nu := u.String()
+		return nu, nu != raw
 	}
 	if mirrorRepoHosts[host] && strings.HasPrefix(u.Path, "/proxmox") && host != p.pveHost { // 镜像 → 镜像
 		u.Host = p.pveHost
-		return u.String(), true
+		nu := u.String()
+		return nu, nu != raw
 	}
 	return raw, false
+}
+
+// isSecuritySuite 判定是否 security 源 suite:bookworm-security 等新式、stable-security
+// 滚动别名、buster/updates 旧式(Debian ≤10)均归为 security(路径 /debian-security)。
+func isSecuritySuite(suites []string) bool {
+	for _, s := range suites {
+		if strings.HasSuffix(s, "-security") || s == "stable-security" || strings.HasSuffix(s, "/updates") {
+			return true
+		}
+	}
+	return false
 }
 
 // classifyAptRepo 按 URI/组件分类条目(镜像站同时承载 debian 与 proxmox,须看路径)。
@@ -547,7 +581,7 @@ func (f *aptRepoFileRaw) applyMirror(p aptMirrorPreset) bool {
 		var newURIs []string
 		any := false
 		for _, uri := range e.uris {
-			nu, ok := rewriteAptURI(uri, e.kind, e.enterprise, p)
+			nu, ok := rewriteAptURI(uri, e.kind, e.enterprise, p, e.suites)
 			newURIs = append(newURIs, nu)
 			any = any || ok
 		}
