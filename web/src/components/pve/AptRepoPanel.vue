@@ -65,7 +65,7 @@ async function loadOverview(): Promise<void> {
 }
 
 const nodesWithWarnings = computed(() =>
-  (overview.value?.items ?? []).filter((n) => n.warnings.some((w) => w.level === 'warn')).length)
+  (overview.value?.items ?? []).filter((n) => (n.warnings ?? []).some((w) => w.level === 'warn')).length)
 
 function openDetail(n: string): void {
   view.value = 'detail'
@@ -181,10 +181,10 @@ function mirrorLabelOf(v: string): string {
   return t('pveUpgrade.mirrorOfficial')
 }
 function warnCount(n: PVEAptRepoNodeSummary): number {
-  return n.warnings.filter((w) => w.level === 'warn').length
+  return (n.warnings ?? []).filter((w) => w.level === 'warn').length
 }
 function warnTitle(n: PVEAptRepoNodeSummary): string {
-  return n.warnings.map((w) => w.message).join('\n')
+  return (n.warnings ?? []).map((w) => w.message).join('\n')
 }
 
 /** 写入结果统一处理:apt update 失败仅警告;备份留存供撤销。 */

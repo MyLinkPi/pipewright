@@ -819,8 +819,9 @@ func (s *service) ListAptRepos(ctx context.Context, id, node string) (*AptRepoIn
 }
 
 // aptRepoWarnings 计算清单警告(企业源无订阅/suite 不符/Ceph 只读/无 PVE 源)。
+// 返回值恒为非 nil(零警告也返回空数组):序列化为 [] 而非 null,前端可安全遍历。
 func aptRepoWarnings(files []*aptRepoFileRaw, codename, subscription string) []AptRepoWarning {
-	var ws []AptRepoWarning
+	ws := []AptRepoWarning{}
 	enterpriseEnabled, cephSeen, pveEnabled := false, false, false
 	suiteMismatch := false
 	for _, f := range files {
@@ -943,7 +944,9 @@ func (s *service) ListAptRepoOverview(ctx context.Context, id string) (*AptRepoO
 	out := &AptRepoOverview{Items: make([]AptRepoNodeSummary, len(cn.Nodes))}
 	fanOutNodes(len(cn.Nodes), aptRepoApplyConcurrency, func(i int) {
 		n := cn.Nodes[i]
-		item := AptRepoNodeSummary{Node: n.Name, Online: n.Online}
+		// Warnings 恒为非 nil:出错/离线节点的摘要也要给前端合法形状(空数组),
+		// 否则 JSON null 会让前端遍历崩溃(整个 tab 白屏)。
+		item := AptRepoNodeSummary{Node: n.Name, Online: n.Online, Warnings: []AptRepoWarning{}}
 		defer func() { out.Items[i] = item }()
 		if !n.Online {
 			item.Error = "节点离线"
