@@ -98,7 +98,7 @@ func TestListUpdates(t *testing.T) {
 }
 
 func TestUpgradePipelineSequence(t *testing.T) {
-	s, ft, _, fc := newTestService(t)
+	s, ft, fr, fc := newTestService(t)
 	cl := seedCreateCluster(t, s, ft)
 	wireUpdatesFake(fc)
 
@@ -113,18 +113,26 @@ func TestUpgradePipelineSequence(t *testing.T) {
 	if it.Node != "pve1" || !it.OK || it.Updated != 1 || !it.NeedsReboot {
 		t.Fatalf("item = %+v", it)
 	}
-	// 序列:刷新索引 → 全量升级(严格串行,单节点)。
-	var sawRefresh, sawUpgrade bool
+	// 序列:刷新索引(API)→ SSH apt-get dist-upgrade(严格串行,单节点)。
+	var sawRefresh bool
 	for _, p := range fc.posts {
 		if strings.HasSuffix(p, "/apt/update") {
 			sawRefresh = true
 		}
-		if strings.HasSuffix(p, "/apt/upgrade") {
+	}
+	if !sawRefresh {
+		t.Fatalf("posts = %v", fc.posts)
+	}
+	sawUpgrade := false
+	for _, run := range fr.runs {
+		joined := strings.Join(run, " ")
+		if strings.Contains(joined, "DEBIAN_FRONTEND=noninteractive") &&
+			strings.Contains(joined, "--force-confdef") && strings.Contains(joined, "dist-upgrade") {
 			sawUpgrade = true
 		}
 	}
-	if !sawRefresh || !sawUpgrade {
-		t.Fatalf("posts = %v", fc.posts)
+	if !sawUpgrade {
+		t.Fatalf("SSH dist-upgrade 未执行: %v", fr.runs)
 	}
 }
 
@@ -244,7 +252,7 @@ func TestResolveUpgradeNodes(t *testing.T) {
 
 // TestUpgradeRefreshReGetFailureStillUpgrades 刷新后重取待更新数失败时绝不误判「已是最新」。
 func TestUpgradeRefreshReGetFailureStillUpgrades(t *testing.T) {
-	s, ft, _, fc := newTestService(t)
+	s, ft, fr, fc := newTestService(t)
 	cl := seedCreateCluster(t, s, ft)
 	wireUpdatesFake(fc)
 	baseGet := fc.getFn
@@ -266,12 +274,12 @@ func TestUpgradeRefreshReGetFailureStillUpgrades(t *testing.T) {
 		t.Fatalf("st = %+v", st)
 	}
 	sawUpgrade := false
-	for _, p := range fc.posts {
-		if strings.HasSuffix(p, "/apt/upgrade") {
+	for _, run := range fr.runs {
+		if strings.Contains(strings.Join(run, " "), "dist-upgrade") {
 			sawUpgrade = true
 		}
 	}
 	if !sawUpgrade {
-		t.Fatal("重取待更新失败不应跳过升级")
+		t.Fatalf("重取待更新失败不应跳过升级: %v", fr.runs)
 	}
 }

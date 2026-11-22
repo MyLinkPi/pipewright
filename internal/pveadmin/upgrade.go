@@ -6,7 +6,8 @@
 //
 // 语义:严格串行逐节点(corosync/pve-cluster 包更新会重启服务,并行有丢 quorum 风险),
 // 但逐节点独立容错(一台失败不阻断后续,区别大版本升级的 fail-fast)。每节点:
-// 刷新索引(POST apt/update → waitTask)→ 全量升级(POST apt/upgrade → waitTask)→
+// 刷新索引(POST apt/update → waitTask)→ 全量升级(SSH apt-get dist-upgrade,见
+// upgradeOneNode)→
 // 内核需重启检测(GET apt/versions 的 Running vs Version)。重启是单独的显式动作
 // (RebootNode,输入确认),绝不自动重启。
 //
@@ -481,7 +482,7 @@ func (s *service) StartUpgrade(ctx context.Context, id string, in UpgradeInput) 
 // runUpgrade 是日常升级主体(后台 goroutine;逐节点独立容错)。
 func (s *service) runUpgrade(j *upgradeJob, clusterID string, nodes []string) {
 	ctx := context.Background()
-	_, c, err := s.clientFor(ctx, clusterID)
+	cl, c, err := s.clientFor(ctx, clusterID)
 	if err != nil {
 		j.logf("升级失败: %v", err)
 		j.finish(err.Error())
@@ -491,7 +492,7 @@ func (s *service) runUpgrade(j *upgradeJob, clusterID string, nodes []string) {
 		item := UpgradeNodeResult{Node: node}
 		j.set(UpgradeStepRefresh, fmt.Sprintf("节点 %d/%d: %s", i+1, len(nodes), node))
 		j.setItem(i, item)
-		nerr := s.upgradeOneNode(ctx, j, c, node, &item)
+		nerr := s.upgradeOneNode(ctx, j, cl, c, node, &item)
 		if nerr != nil {
 			item.Err = nerr.Error()
 			j.logf("[%s] 失败: %v", node, nerr)
@@ -506,8 +507,11 @@ func (s *service) runUpgrade(j *upgradeJob, clusterID string, nodes []string) {
 	j.finish("")
 }
 
-// upgradeOneNode 单节点:刷新索引 → (有待更新则)全量升级 → 需重启检测。
-func (s *service) upgradeOneNode(ctx context.Context, j *upgradeJob, c pveClient, node string, item *UpgradeNodeResult) error {
+// upgradeOneNode 单节点:刷新索引(API)→ (有待更新则)SSH 全量升级 → 需重启检测(API)。
+// 升级步走 SSH:PVE API 没有 apt/upgrade 自动化端点(GUI 的「升级」是交互式 xterm
+// 控制台,POST 返回 501),与 ceph/大版本同款 SSH 语义;DEBIAN_FRONTEND 非交互 +
+// confdef/confold 保留旧配置,固定 argv 绝不拼 shell。
+func (s *service) upgradeOneNode(ctx context.Context, j *upgradeJob, cl *Cluster, c pveClient, node string, item *UpgradeNodeResult) error {
 	base := "/api2/json/nodes/" + node
 	var pending []apiAptUpdate
 	if err := c.Get(ctx, base+"/apt/update", &pending); err == nil {
@@ -531,14 +535,27 @@ func (s *service) upgradeOneNode(ctx context.Context, j *upgradeJob, c pveClient
 	if pErr == nil && len(pending) == 0 {
 		item.Note = "已是最新,无需升级"
 	} else {
-		j.set(UpgradeStepUpgrade, fmt.Sprintf("%s: 升级 %d 个包(可能数分钟)…", node, len(pending)))
-		j.logf("[%s] 开始全量升级(%d 包)…", node, len(pending))
-		upid, err = postUPID(ctx, c, base+"/apt/upgrade", url.Values{})
-		if err != nil {
-			return err
+		// 升级步 SSH:仅在确有升级内容时才解析节点 → 登记机器(失败即该节点报错,不影响其余)。
+		sid, serr := s.nodeServerID(ctx, cl, node)
+		if serr != nil {
+			return serr
 		}
-		if err := waitTask(ctx, c, node, upid, upgradeTO); err != nil {
-			return err
+		j.set(UpgradeStepUpgrade, fmt.Sprintf("%s: 升级 %d 个包(SSH apt-get,可能数分钟)…", node, len(pending)))
+		j.logf("[%s] 开始全量升级(%d 包,SSH apt-get)…", node, len(pending))
+		res, uerr := s.runMajorCmd(ctx, sid, upgradeTO, []string{
+			"env", "DEBIAN_FRONTEND=noninteractive", "apt-get", "-y",
+			"-o", "Dpkg::Options::=--force-confdef", "-o", "Dpkg::Options::=--force-confold",
+			"dist-upgrade",
+		})
+		if uerr != nil {
+			tail := ""
+			if res != nil {
+				tail = tailOutput(res)
+			}
+			return fmt.Errorf("dist-upgrade 失败: %v\n%s", unwrapTail(uerr), tail)
+		}
+		if res != nil {
+			j.logf("[%s] dist-upgrade 输出尾部:\n%s", node, tailOutput(res))
 		}
 	}
 	j.set(UpgradeStepCheck, fmt.Sprintf("%s: 检查内核…", node))
