@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"net/url"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -1012,6 +1013,11 @@ func (s *service) ToggleAptRepo(ctx context.Context, id, node string, in AptRepo
 }
 
 // SetAptRepoMirror 应用镜像预设(debian+pve;ceph/other/企业源不动)。
+// 非官方预设额外补齐缺失条目,保证切源后得到完整可用配置(pvetools 语义):
+//   - PVE 非订阅源(PVE 更新的唯一来源,缺失则本功能无从升级):禁用则启用,
+//     完全没有则按预设基址新建标准源文件;阿里云无 proxmox 镜像 → 官方 download.proxmox.com;
+//   - Debian backports:完全缺失才补建(组件沿用受管理主源,追加同文件),
+//     已有(含禁用)不动,尊重管理员显式配置。
 func (s *service) SetAptRepoMirror(ctx context.Context, id, node, preset string) (*AptRepoWriteResult, error) {
 	p, ok := aptMirrorPresets[preset]
 	if !ok {
@@ -1024,25 +1030,153 @@ func (s *service) SetAptRepoMirror(ctx context.Context, id, node, preset string)
 	if cl.Readonly {
 		return nil, fmt.Errorf("%w: 集群 %s 处于只读模式,请在设置页解锁后再修改仓库", ErrReadonly, cl.Name)
 	}
-	files, _, err := s.readAptRepoFiles(ctx, cl, node)
+	files, codename, err := s.readAptRepoFiles(ctx, cl, node)
 	if err != nil {
 		return nil, err
 	}
-	var changes []aptFileChange
+	dirty := map[string]string{}
+	created := map[string]bool{}
 	for _, f := range files {
 		if f.applyMirror(p) {
-			changes = append(changes, aptFileChange{path: f.path, content: f.render()})
+			dirty[f.path] = f.render()
 		}
 	}
-	if len(changes) == 0 {
-		return &AptRepoWriteResult{Node: node, OK: true, UpdateOK: true, Note: "无需变更" + noteSuffix(p.note)}, nil
+	var notes []string
+	if p.debianHost != "" || p.pveHost != "" { // 非官方预设:补齐缺失条目(官方恢复保持纯还原语义)
+		// ensure 会原地变异 files(启用/追加),每项只调用一次,变更以最终 render 为准。
+		for _, en := range []func([]*aptRepoFileRaw, string, aptMirrorPreset) ([]aptFileChange, string){
+			ensurePveNoSubscription, ensureDebianBackports,
+		} {
+			chs, note := en(files, codename, p)
+			for _, ch := range chs {
+				dirty[ch.path] = ch.content
+				if ch.isNew {
+					created[ch.path] = true
+				}
+			}
+			if note != "" {
+				notes = append(notes, note)
+			}
+		}
 	}
+	if len(dirty) == 0 {
+		return &AptRepoWriteResult{Node: node, OK: true, UpdateOK: true, Note: "无需变更" + noteSuffix(strings.Join(notes, ";"))}, nil
+	}
+	var changes []aptFileChange
+	for path, content := range dirty {
+		changes = append(changes, aptFileChange{path: path, content: content, isNew: created[path]})
+	}
+	sort.Slice(changes, func(i, j int) bool { return changes[i].path < changes[j].path })
 	res, err := s.commitAptFiles(ctx, cl, node, changes, aptRepoUpdateTO)
 	if err != nil {
 		return nil, err
 	}
-	res.Note = p.note
+	res.Note = strings.TrimSpace(strings.Join(notes, ";") + noteSuffix(p.note))
 	return res, nil
+}
+
+// pveNoSubBase 返回预设下 PVE 非订阅源基址(镜像站;阿里云无 proxmox 镜像 → 官方)。
+func (p aptMirrorPreset) pveNoSubBase() string {
+	if p.pveHost != "" {
+		return "https://" + p.pveHost + "/proxmox/debian/pve"
+	}
+	return "http://download.proxmox.com/debian/pve"
+}
+
+// debianMirrorBase 返回预设下 Debian 源基址(官方预设返回空 = 不补建)。
+func (p aptMirrorPreset) debianMirrorBase() string {
+	if p.debianHost == "" {
+		return ""
+	}
+	return "https://" + p.debianHost + "/debian"
+}
+
+// ensurePveNoSubscription 保证存在「已启用」的 PVE 非订阅源(PVE 更新的唯一来源):
+// 有禁用条目 → 启用;完全没有 → 按预设基址新建标准源文件。缺代号 → 跳过并说明。
+// 返回文件变更与人话说明(已就绪返回空)。
+func ensurePveNoSubscription(files []*aptRepoFileRaw, codename string, p aptMirrorPreset) ([]aptFileChange, string) {
+	hasEnabled := false
+	var disabledFile *aptRepoFileRaw
+	var disabledEntry *aptEntry
+	for _, f := range files {
+		for i := range f.entries {
+			e := &f.entries[i]
+			if e.kind != "pve" || e.enterprise {
+				continue
+			}
+			if e.enabled {
+				hasEnabled = true
+			} else if disabledFile == nil {
+				disabledFile, disabledEntry = f, &f.entries[i]
+			}
+		}
+	}
+	if hasEnabled {
+		return nil, ""
+	}
+	if disabledFile != nil {
+		disabledFile.toggleEntry(disabledEntry, true)
+		return []aptFileChange{{path: disabledFile.path, content: disabledFile.render()}}, "已启用原禁用的 PVE 非订阅源"
+	}
+	if codename == "" {
+		return nil, "无法识别 Debian 代号,未补建 PVE 非订阅源"
+	}
+	content := "# Managed by Pipewright (镜像切换补建)\ndeb " + p.pveNoSubBase() + " " + codename + " pve-no-subscription\n"
+	return []aptFileChange{{path: "/etc/apt/sources.list.d/pve-no-subscription.list", content: content, isNew: true}}, "已补建 PVE 非订阅源"
+}
+
+// ensureDebianBackports 补建缺失的 Debian backports 源(镜像预设语义 = 完整可用配置):
+// 仅当完全没有 backports 条目时,在与受管理主源(宿主受管理 + suite 为纯代号 + 已启用)
+// 同文件追加一行(组件沿用主源);已有(含禁用)不动,尊重管理员显式配置。
+func ensureDebianBackports(files []*aptRepoFileRaw, codename string, p aptMirrorPreset) ([]aptFileChange, string) {
+	base := p.debianMirrorBase()
+	if base == "" || codename == "" {
+		return nil, ""
+	}
+	for _, f := range files {
+		for i := range f.entries {
+			e := &f.entries[i]
+			if e.kind != "debian" {
+				continue
+			}
+			for _, st := range e.suites {
+				if strings.HasSuffix(st, "-backports") {
+					return nil, "" // 已有(启用或禁用):尊重现状
+				}
+			}
+		}
+	}
+	var refFile *aptRepoFileRaw
+	var refEntry *aptEntry
+	for _, f := range files {
+		for i := range f.entries {
+			e := &f.entries[i]
+			if e.kind != "debian" || !e.enabled || len(e.uris) == 0 {
+				continue
+			}
+			u, uerr := url.Parse(e.uris[0])
+			if uerr != nil || u.Host == "" || !(debianRepoHosts[u.Hostname()] || mirrorRepoHosts[u.Hostname()]) {
+				continue
+			}
+			for _, st := range e.suites {
+				if st == codename {
+					refFile, refEntry = f, &f.entries[i]
+					break
+				}
+			}
+			if refFile != nil {
+				break
+			}
+		}
+		if refFile != nil {
+			break
+		}
+	}
+	if refFile == nil || refEntry == nil {
+		return nil, "未找到受管理的主源条目,未补建 backports 源"
+	}
+	refFile.lines = append(refFile.lines, "deb "+base+" "+codename+"-backports "+strings.Join(refEntry.components, " "))
+	return []aptFileChange{{path: refFile.path, content: refFile.render()}}, "已补建 backports 源"
 }
 
 func noteSuffix(note string) string {

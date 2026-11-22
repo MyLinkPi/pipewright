@@ -405,11 +405,14 @@ func (s *service) majorNodePreflight(ctx context.Context, cl *Cluster, c pveClie
 		subStatus = sb.Status
 	}
 	if files, _, rerr := s.readAptRepoFiles(nctx, cl, n.Name); rerr == nil {
-		enterpriseEnabled, suiteMixed := false, false
+		enterpriseEnabled, pveEnabled, suiteMixed := false, false, false
 		for _, f := range files {
 			for _, e := range f.entries {
-				if e.kind == "pve" && e.enabled && e.enterprise {
-					enterpriseEnabled = true
+				if e.kind == "pve" && e.enabled {
+					pveEnabled = true
+					if e.enterprise {
+						enterpriseEnabled = true
+					}
 				}
 				if e.enabled && (e.kind == "debian" || e.kind == "pve") && np.Codename != "" {
 					for _, st := range e.suites {
@@ -420,6 +423,11 @@ func (s *service) majorNodePreflight(ctx context.Context, cl *Cluster, c pveClie
 					}
 				}
 			}
+		}
+		if !pveEnabled {
+			// 无 PVE 源 → dist-upgrade 只升 Debian 包,pveversion 仍 8.x,节点必失败:
+			// 必须在预检拦住(仓库管理「应用镜像」可自动补建 PVE 非订阅源)。
+			add("repo-pve:"+n.Name, "fail", "未启用任何 PVE 软件源:无法升级 PVE 包,请先在仓库管理应用镜像(会自动补建非订阅源)")
 		}
 		if enterpriseEnabled && !strings.EqualFold(subStatus, "active") {
 			add("repo-sub", "fail", "企业源已启用但无有效订阅:请先在仓库管理切换到 no-subscription 或激活订阅")

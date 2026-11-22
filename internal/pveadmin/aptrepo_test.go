@@ -333,8 +333,14 @@ func TestToggleAptRepoGuards(t *testing.T) {
 func TestSetAptRepoMirrorCreatesNoChanges(t *testing.T) {
 	s, ft, fr, _ := newTestService(t)
 	cl := seedCreateCluster(t, s, ft)
-	// 已是 ustc 镜像 → 再切 ustc 无变化(不产生写入)。
-	dump := aptDumpOf(map[string]string{"/etc/apt/sources.list": "deb https://mirrors.ustc.edu.cn/debian bookworm main\n"})
+	// 已是完整规范配置(ustc:main/updates/backports/security + PVE 非订阅)→ 再切无变化。
+	dump := aptDumpOf(map[string]string{
+		"/etc/apt/sources.list": "deb https://mirrors.ustc.edu.cn/debian bookworm main\n" +
+			"deb https://mirrors.ustc.edu.cn/debian bookworm-updates main\n" +
+			"deb https://mirrors.ustc.edu.cn/debian bookworm-backports main\n" +
+			"deb https://mirrors.ustc.edu.cn/debian-security bookworm-security main\n",
+		"/etc/apt/sources.list.d/pve-no-subscription.list": "deb https://mirrors.ustc.edu.cn/proxmox/debian/pve bookworm pve-no-subscription\n",
+	})
 	wireAptRepoFake(fr, dump)
 	res, err := s.SetAptRepoMirror(context.Background(), cl.ID, "pve1", "ustc")
 	if err != nil {
@@ -342,6 +348,108 @@ func TestSetAptRepoMirrorCreatesNoChanges(t *testing.T) {
 	}
 	if !res.OK || len(fr.writes) != 0 {
 		t.Fatalf("res=%+v writes=%d", res, len(fr.writes))
+	}
+}
+
+// TestApplyMirrorEnsuresPveAndBackports 只有 debian 三件套、无 PVE 源 → 切镜像后补建
+// PVE 非订阅源(镜像基址)与 backports 行(组件沿用主源),对齐 pvetools 的完整配置语义。
+func TestApplyMirrorEnsuresPveAndBackports(t *testing.T) {
+	s, ft, fr, _ := newTestService(t)
+	cl := seedCreateCluster(t, s, ft)
+	dump := aptDumpOf(map[string]string{"/etc/apt/sources.list": "deb http://deb.debian.org/debian bookworm main contrib\n" +
+		"deb http://deb.debian.org/debian bookworm-updates main contrib\n" +
+		"deb http://security.debian.org/debian-security bookworm-security main contrib\n"})
+	wireAptRepoFake(fr, dump)
+	res, err := s.SetAptRepoMirror(context.Background(), cl.ID, "pve1", "ustc")
+	if err != nil {
+		t.Fatalf("mirror: %v", err)
+	}
+	if !res.OK || !res.UpdateOK {
+		t.Fatalf("res = %+v", res)
+	}
+	if !strings.Contains(res.Note, "已补建 PVE 非订阅源") || !strings.Contains(res.Note, "已补建 backports 源") {
+		t.Fatalf("note = %q", res.Note)
+	}
+	var pveFile, mainFile string
+	for _, w := range fr.writes {
+		if strings.HasSuffix(w.path, "/pve-no-subscription.list.pw-tmp") {
+			pveFile = w.content
+		}
+		if w.path == "/etc/apt/sources.list.pw-tmp" {
+			mainFile = w.content
+		}
+	}
+	if pveFile == "" {
+		t.Fatal("未创建 pve-no-subscription.list")
+	}
+	if !strings.Contains(pveFile, "deb https://mirrors.ustc.edu.cn/proxmox/debian/pve bookworm pve-no-subscription") {
+		t.Fatalf("PVE 源内容不正确:\n%s", pveFile)
+	}
+	if mainFile == "" {
+		t.Fatal("未写入 sources.list")
+	}
+	if !strings.Contains(mainFile, "deb https://mirrors.ustc.edu.cn/debian bookworm-backports main contrib") {
+		t.Fatalf("backports 未补建/组件不对:\n%s", mainFile)
+	}
+	if !strings.Contains(mainFile, "deb https://mirrors.ustc.edu.cn/debian-security bookworm-security main contrib") {
+		t.Fatalf("security 行不正确:\n%s", mainFile)
+	}
+}
+
+// TestApplyMirrorEnablesDisabledPve 已有禁用的 PVE 非订阅条目 → 切镜像后启用并改写为
+// 镜像基址;不重复新建源文件。
+func TestApplyMirrorEnablesDisabledPve(t *testing.T) {
+	s, ft, fr, _ := newTestService(t)
+	cl := seedCreateCluster(t, s, ft)
+	dump := aptDumpOf(map[string]string{"/etc/apt/sources.list": "deb http://deb.debian.org/debian bookworm main\n" +
+		"# deb http://download.proxmox.com/debian/pve bookworm pve-no-subscription\n"})
+	wireAptRepoFake(fr, dump)
+	res, err := s.SetAptRepoMirror(context.Background(), cl.ID, "pve1", "ustc")
+	if err != nil {
+		t.Fatalf("mirror: %v", err)
+	}
+	if !strings.Contains(res.Note, "已启用原禁用的 PVE 非订阅源") {
+		t.Fatalf("note = %q", res.Note)
+	}
+	for _, w := range fr.writes {
+		if strings.Contains(w.path, "pve-no-subscription.list") {
+			t.Fatalf("不应新建源文件: %s", w.path)
+		}
+		if w.path == "/etc/apt/sources.list.pw-tmp" &&
+			!strings.Contains(w.content, "\ndeb https://mirrors.ustc.edu.cn/proxmox/debian/pve bookworm pve-no-subscription") {
+			t.Fatalf("PVE 条目未启用/未改写:\n%s", w.content)
+		}
+	}
+}
+
+// TestApplyMirrorAliyunCreatesOfficialPve 阿里云无 proxmox 镜像:PVE 源补建为官方,
+// backports 补建到阿里云 Debian。
+func TestApplyMirrorAliyunCreatesOfficialPve(t *testing.T) {
+	s, ft, fr, _ := newTestService(t)
+	cl := seedCreateCluster(t, s, ft)
+	dump := aptDumpOf(map[string]string{"/etc/apt/sources.list": "deb http://deb.debian.org/debian bookworm main\n"})
+	wireAptRepoFake(fr, dump)
+	res, err := s.SetAptRepoMirror(context.Background(), cl.ID, "pve1", "aliyun")
+	if err != nil {
+		t.Fatalf("mirror: %v", err)
+	}
+	if !res.OK || !res.UpdateOK {
+		t.Fatalf("res = %+v", res)
+	}
+	var pveFile, mainFile string
+	for _, w := range fr.writes {
+		if strings.HasSuffix(w.path, "/pve-no-subscription.list.pw-tmp") {
+			pveFile = w.content
+		}
+		if w.path == "/etc/apt/sources.list.pw-tmp" {
+			mainFile = w.content
+		}
+	}
+	if !strings.Contains(pveFile, "deb http://download.proxmox.com/debian/pve bookworm pve-no-subscription") {
+		t.Fatalf("阿里云应补建官方 PVE 源:\n%s", pveFile)
+	}
+	if !strings.Contains(mainFile, "deb https://mirrors.aliyun.com/debian bookworm-backports main") {
+		t.Fatalf("backports 应补建到阿里云 Debian:\n%s", mainFile)
 	}
 }
 
