@@ -706,6 +706,10 @@ func TestNodeServerIDResolution(t *testing.T) {
 	s, ft, _, fc := newTestService(t)
 	cl := seedCreateCluster(t, s, ft)
 	wireCreateFake(fc, "9.0.3")
+	// 屏蔽真实 DNS(未命中场景的节点名解析走注入点,保持测试封闭且快)。
+	orig := dnsLookupHost
+	dnsLookupHost = func(context.Context, string) ([]string, error) { return nil, errors.New("no dns") }
+	defer func() { dnsLookupHost = orig }()
 	fc.getFn = func(path string) (any, error) {
 		if strings.Contains(path, "/cluster/status") {
 			return []map[string]any{{"type": "node", "name": "pve2", "ip": "10.1.0.12"}}, nil
@@ -733,6 +737,10 @@ func TestNodeServerIDStandaloneViaNetwork(t *testing.T) {
 	cl := seedCreateCluster(t, s, ft)
 	poolID := ft.servers["node1"].PoolID
 	ft.servers["node3"] = &target.Server{ID: "node3", Name: "pve01", Host: "10.1.0.30", PoolID: poolID, Kind: target.KindPVENode}
+	// 屏蔽真实 DNS(命中发生在网卡地址匹配,DNS 注入仅用于保持封闭且快)。
+	orig := dnsLookupHost
+	dnsLookupHost = func(context.Context, string) ([]string, error) { return nil, errors.New("no dns") }
+	defer func() { dnsLookupHost = orig }()
 	fc.getFn = func(path string) (any, error) {
 		if strings.Contains(path, "/cluster/status") {
 			// 单机形态:只有 node 条目,无 ip 字段。
@@ -746,6 +754,61 @@ func TestNodeServerIDStandaloneViaNetwork(t *testing.T) {
 	ctx := context.Background()
 	if id, err := s.nodeServerID(ctx, cl, "xufan-9600kf"); err != nil || id != "node3" {
 		t.Fatalf("by network api: %q / %v", id, err)
+	}
+}
+
+// TestNodeServerIDHostnameResolutionIntersect 登记地址是 DDNS/内网域名(非 IP):
+// 节点网卡地址经 /nodes/{node}/network 取到,登记域名解析成 IP 后与地址集求交命中。
+func TestNodeServerIDHostnameResolutionIntersect(t *testing.T) {
+	s, ft, _, fc := newTestService(t)
+	cl := seedCreateCluster(t, s, ft)
+	poolID := ft.servers["node1"].PoolID
+	ft.servers["node4"] = &target.Server{ID: "node4", Name: "9600kf", Host: "9600kf.mylinkpi.cn", PoolID: poolID, Kind: target.KindPVENode}
+	orig := dnsLookupHost
+	dnsLookupHost = func(_ context.Context, host string) ([]string, error) {
+		if host == "9600kf.mylinkpi.cn" {
+			return []string{"10.1.0.40"}, nil
+		}
+		return nil, errors.New("no dns")
+	}
+	defer func() { dnsLookupHost = orig }()
+	fc.getFn = func(path string) (any, error) {
+		if strings.Contains(path, "/cluster/status") {
+			return []map[string]any{{"type": "node", "name": "xufan-9600kf", "online": 1}}, nil
+		}
+		if strings.HasSuffix(path, "/network") {
+			return []map[string]any{{"iface": "vmbr0", "type": "bridge", "address": "10.1.0.40", "active": 1}}, nil
+		}
+		return nil, fmt.Errorf("unexpected %s", path)
+	}
+	ctx := context.Background()
+	if id, err := s.nodeServerID(ctx, cl, "xufan-9600kf"); err != nil || id != "node4" {
+		t.Fatalf("by hostname intersect: %q / %v", id, err)
+	}
+}
+
+// TestNodeServerIDSSHHostnameFallback 网络 API 不可用 + 无 DNS → 并发 SSH
+// `hostname -s` 兜底:机器真实主机名与节点名一致即命中(身份最终证据)。
+// 移除 node1 使池内仅剩唯一候选,断言确定性。
+func TestNodeServerIDSSHHostnameFallback(t *testing.T) {
+	s, ft, _, fc := newTestService(t)
+	cl := seedCreateCluster(t, s, ft)
+	poolID := ft.servers["node1"].PoolID
+	delete(ft.servers, "node1")
+	ft.hostname = "xufan-9600kf"
+	ft.servers["node5"] = &target.Server{ID: "node5", Name: "9600kf", Host: "10.1.0.50", PoolID: poolID, Kind: target.KindPVENode}
+	orig := dnsLookupHost
+	dnsLookupHost = func(context.Context, string) ([]string, error) { return nil, errors.New("no dns") }
+	defer func() { dnsLookupHost = orig }()
+	fc.getFn = func(path string) (any, error) {
+		if strings.Contains(path, "/cluster/status") {
+			return []map[string]any{{"type": "node", "name": "xufan-9600kf", "online": 1}}, nil
+		}
+		return nil, fmt.Errorf("unexpected %s", path) // /network 不可用
+	}
+	ctx := context.Background()
+	if id, err := s.nodeServerID(ctx, cl, "xufan-9600kf"); err != nil || id != "node5" {
+		t.Fatalf("by ssh hostname: %q / %v", id, err)
 	}
 }
 

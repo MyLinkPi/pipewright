@@ -19,6 +19,7 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/huangchengsir/pipewright/internal/target"
@@ -119,14 +120,19 @@ func (r *sshRunner) WriteFile(ctx context.Context, serverID, remotePath string, 
 	return nil
 }
 
+// dnsLookupHost 是 DNS 解析注入点(单测覆盖域名↔IP 求交,生产走系统解析器)。
+var dnsLookupHost = net.DefaultResolver.LookupHost
+
 // nodeServerID 把集群节点名解析为池内登记服务器 ID(仓库 SSH/大版本升级的前提)。
 // 匹配序(逐级放宽,全部经 API 固定路径/固定 argv,绝不拼 shell):
 //  1. 服务器名 == 节点名;
-//  2. 登记地址 == 节点名;
-//  3. /cluster/status 的节点 IP == 登记地址(集群形态,ip 来自 corosync ring0);
-//  4. /nodes/{node}/network 的接口地址 == 登记地址(覆盖单机形态节点条目无 ip、
-//     ring0 用主机名、登记地址与管理口不同 NIC 等场景;Sys.Audit 不可用则静默跳过);
-//  5. 节点名 DNS 解析 == 登记地址(限时 1.5s,内网无 DNS 时快速失败,静默跳过)。
+//  2. 登记地址 == 节点名(原样字符串);
+//  3. 登记地址 ∈ 节点侧地址集(集群 IP + /nodes/{node}/network 接口地址 + 节点名 DNS)
+//     —— 覆盖「按 IP 登记的单机形态」(节点条目无 ip/ring0 用主机名/登记与管理口不同 NIC);
+//  4. 登记地址是主机名(常见:登记的是 DDNS/内网域名)→ DNS 解析成 IP 后与节点侧
+//     地址集求交(共享解析预算,IP 字面量已比对故跳过);
+//  5. 兜底:并发 SSH `hostname -s`(免提权),机器真实主机名 == 节点名即命中
+//     —— DNS/网络全不可用时的最终身份证据(单台 5s、整体 15s 预算,仅无匹配时才走到)。
 //
 // 都未命中 → ErrInvalidInput,错误体列出池内候选(名/地址)与可操作指引。
 func (s *service) nodeServerID(ctx context.Context, cl *Cluster, node string) (string, error) {
@@ -155,50 +161,97 @@ func (s *service) nodeServerID(ctx context.Context, cl *Cluster, node string) (s
 		}
 		return "", false
 	}
+	// 1) 服务器名精确匹配。
 	for _, sv := range cands {
 		if sv.Name == node {
 			return sv.ID, nil
 		}
 	}
+	// 2) 登记地址原样 == 节点名。
 	if id, ok := matchByHost(node); ok {
 		return id, nil
 	}
+	// 节点侧地址集:集群节点 IP + 节点网卡地址 + 节点名 DNS(全部尽力而为)。
+	nodeIPs := map[string]bool{}
 	if _, c, cerr := s.clientFor(ctx, cl.ID); cerr == nil {
-		// 3) 集群形态:节点条目的 corosync ring0 IP。
 		var entries []apiClusterStatusEntry
 		if gerr := c.Get(ctx, "/api2/json/cluster/status", &entries); gerr == nil {
 			for _, e := range entries {
-				if e.Type != "node" || e.Name != node || e.IP == "" {
-					continue
-				}
-				if id, ok := matchByHost(e.IP); ok {
-					return id, nil
+				if e.Type == "node" && e.Name == node && e.IP != "" {
+					nodeIPs[e.IP] = true
 				}
 			}
 		}
-		// 4) 节点网络接口地址(单机形态节点条目无 ip;ring0 可能用主机名而非 IP)。
 		var nets []apiNetworkEntry
 		if gerr := c.Get(ctx, "/api2/json/nodes/"+node+"/network", &nets); gerr == nil {
 			for _, ne := range nets {
 				for _, a := range []string{ne.Address, ne.Address6} {
-					if id, ok := matchByHost(strings.TrimSpace(a)); ok {
-						return id, nil
+					if a = strings.TrimSpace(a); a != "" {
+						nodeIPs[a] = true
 					}
 				}
 			}
 		}
 	}
-	// 5) 节点名 DNS 解析对比登记地址(仅当登记地址像 IP/可解析时才有意义;
-	// 内网无 DNS 时 1.5s 快速失败,静默跳过)。
-	rctx, cancel := context.WithTimeout(ctx, 1500*time.Millisecond)
-	ips, derr := net.DefaultResolver.LookupHost(rctx, node)
-	cancel()
-	if derr == nil {
+	rctx, rcancel := context.WithTimeout(ctx, 2*time.Second)
+	if ips, derr := dnsLookupHost(rctx, node); derr == nil {
 		for _, ip := range ips {
-			if id, ok := matchByHost(ip); ok {
-				return id, nil
+			nodeIPs[ip] = true
+		}
+	}
+	rcancel()
+	// 3) 登记地址 ∈ 节点侧地址集(按 IP 字面量登记的最常见形态)。
+	for _, sv := range cands {
+		if nodeIPs[sv.Host] {
+			return sv.ID, nil
+		}
+	}
+	// 4) 登记地址是主机名 → 解析后与节点地址集求交(共享 3s 解析预算;IP 字面量已比对)。
+	dctx, dcancel := context.WithTimeout(ctx, 3*time.Second)
+	defer dcancel()
+	for _, sv := range cands {
+		if sv.Host == "" || nodeIPs[sv.Host] || net.ParseIP(sv.Host) != nil {
+			continue
+		}
+		ips, derr := dnsLookupHost(dctx, sv.Host)
+		if derr != nil || dctx.Err() != nil {
+			continue // 解析失败或预算耗尽,换下一候选
+		}
+		for _, ip := range ips {
+			if nodeIPs[ip] {
+				return sv.ID, nil
 			}
 		}
+	}
+	// 5) 兜底:并发 SSH `hostname -s`,机器真实主机名与节点名一致即命中
+	//    (免提权;仅走到此处才逐台探测;单台 5s、整体 15s 预算,候选多也不拖垮调用方)。
+	fctx, fcancel := context.WithTimeout(ctx, 15*time.Second)
+	defer fcancel()
+	var mu sync.Mutex
+	found := ""
+	fanOutNodes(len(cands), 4, func(i int) {
+		mu.Lock()
+		if found != "" || fctx.Err() != nil {
+			mu.Unlock()
+			return
+		}
+		mu.Unlock()
+		pctx, cancel := context.WithTimeout(fctx, 5*time.Second)
+		defer cancel()
+		res, xerr := s.servers.Exec(pctx, cands[i].ID, []string{"hostname", "-s"})
+		if xerr != nil || res == nil || res.ExitCode != 0 {
+			return
+		}
+		if strings.TrimSpace(res.Stdout) == node {
+			mu.Lock()
+			if found == "" {
+				found = cands[i].ID
+			}
+			mu.Unlock()
+		}
+	})
+	if found != "" {
+		return found, nil
 	}
 	hint := "池内没有 kind=pve_node 的机器(登记该机器时未触发探测归池?)"
 	if len(cands) > 0 {
