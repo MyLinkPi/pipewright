@@ -95,62 +95,31 @@ func TestRewriteAptURI(t *testing.T) {
 	tsinghua := aptMirrorPresets["tsinghua"]
 	official := aptMirrorPresets["official"]
 	aliyun := aptMirrorPresets["aliyun"]
-	main := []string{"bookworm"}
-	sec := []string{"bookworm-security"}
 	cases := []struct {
 		uri, kind  string
 		enterprise bool
 		p          aptMirrorPreset
-		suites     []string
 		want       string
 	}{
-		{"http://deb.debian.org/debian", "debian", false, ustc, main, "https://mirrors.ustc.edu.cn/debian"},
-		{"http://security.debian.org/debian-security", "debian", false, ustc, sec, "https://mirrors.ustc.edu.cn/debian-security"},
-		{"https://mirrors.ustc.edu.cn/debian", "debian", false, tsinghua, main, "https://mirrors.tuna.tsinghua.edu.cn/debian"},
-		{"https://mirrors.ustc.edu.cn/debian-security", "debian", false, official, sec, "https://security.debian.org/debian-security"},
-		{"https://mirrors.ustc.edu.cn/debian", "debian", false, official, main, "https://deb.debian.org/debian"},
-		{"http://download.proxmox.com/debian/pve", "pve", false, ustc, main, "https://mirrors.ustc.edu.cn/proxmox/debian/pve"},
-		{"https://mirrors.ustc.edu.cn/proxmox/debian/pve", "pve", false, tsinghua, main, "https://mirrors.tuna.tsinghua.edu.cn/proxmox/debian/pve"},
-		{"https://mirrors.ustc.edu.cn/proxmox/debian/pve", "pve", false, official, main, "https://download.proxmox.com/debian/pve"},
+		{"http://deb.debian.org/debian", "debian", false, ustc, "https://mirrors.ustc.edu.cn/debian"},
+		{"http://security.debian.org/debian-security", "debian", false, ustc, "https://mirrors.ustc.edu.cn/debian-security"},
+		{"https://mirrors.ustc.edu.cn/debian", "debian", false, tsinghua, "https://mirrors.tuna.tsinghua.edu.cn/debian"},
+		{"https://mirrors.ustc.edu.cn/debian-security", "debian", false, official, "https://security.debian.org/debian-security"},
+		{"https://mirrors.ustc.edu.cn/debian", "debian", false, official, "https://deb.debian.org/debian"},
+		{"http://download.proxmox.com/debian/pve", "pve", false, ustc, "https://mirrors.ustc.edu.cn/proxmox/debian/pve"},
+		{"https://mirrors.ustc.edu.cn/proxmox/debian/pve", "pve", false, tsinghua, "https://mirrors.tuna.tsinghua.edu.cn/proxmox/debian/pve"},
+		{"https://mirrors.ustc.edu.cn/proxmox/debian/pve", "pve", false, official, "https://download.proxmox.com/debian/pve"},
 		// 企业源不被镜像改写;阿里云 PVE 源不动;ceph 不动。
-		{"https://enterprise.proxmox.com/debian/pve", "pve", true, ustc, main, "https://enterprise.proxmox.com/debian/pve"},
-		{"http://download.proxmox.com/debian/pve", "pve", false, aliyun, main, "http://download.proxmox.com/debian/pve"},
-		{"http://deb.debian.org/debian", "debian", false, aliyun, main, "https://mirrors.aliyun.com/debian"},
-		{"https://enterprise.proxmox.com/debian/ceph-squid", "ceph", false, ustc, main, "https://enterprise.proxmox.com/debian/ceph-squid"},
-		// 路径规范化回归:原始 security 行路径缺失/非标准,换源后仍补全 /debian-security。
-		{"http://security.debian.org", "debian", false, ustc, sec, "https://mirrors.ustc.edu.cn/debian-security"},
-		{"http://deb.debian.org", "debian", false, ustc, sec, "https://mirrors.ustc.edu.cn/debian-security"},
-		{"http://security.debian.org/", "debian", false, ustc, sec, "https://mirrors.ustc.edu.cn/debian-security"},
-		{"http://deb.debian.org/", "debian", false, ustc, main, "https://mirrors.ustc.edu.cn/debian"},
-		// security suite 旧式(buster/updates)与滚动别名(stable-security)均归 /debian-security。
-		{"http://security.debian.org/debian-security", "debian", false, ustc, []string{"buster/updates"}, "https://mirrors.ustc.edu.cn/debian-security"},
-		{"http://deb.debian.org/debian-security", "debian", false, ustc, []string{"stable-security"}, "https://mirrors.ustc.edu.cn/debian-security"},
-		// 已镜像但 security 路径损坏 → 原地规范化(changed=true)。
-		{"https://mirrors.ustc.edu.cn", "debian", false, ustc, sec, "https://mirrors.ustc.edu.cn/debian-security"},
+		{"https://enterprise.proxmox.com/debian/pve", "pve", true, ustc, "https://enterprise.proxmox.com/debian/pve"},
+		{"http://download.proxmox.com/debian/pve", "pve", false, aliyun, "http://download.proxmox.com/debian/pve"},
+		{"http://deb.debian.org/debian", "debian", false, aliyun, "https://mirrors.aliyun.com/debian"},
+		{"https://enterprise.proxmox.com/debian/ceph-squid", "ceph", false, ustc, "https://enterprise.proxmox.com/debian/ceph-squid"},
 	}
 	for _, c := range cases {
-		got, _ := rewriteAptURI(c.uri, c.kind, c.enterprise, c.p, c.suites)
+		got, _ := rewriteAptURI(c.uri, c.kind, c.enterprise, c.p)
 		if got != c.want {
-			t.Errorf("rewrite(%s, %s, ent=%v, suites=%v) = %s, want %s", c.uri, c.kind, c.enterprise, c.suites, got, c.want)
+			t.Errorf("rewrite(%s, %s, ent=%v) = %s, want %s", c.uri, c.kind, c.enterprise, got, c.want)
 		}
-	}
-}
-
-// TestApplyMirrorFixesBrokenSecurityPath 端到端:原始 security 行裸主机(缺路径),
-// 镜像换源后产出规范 /debian-security URL(复现并修复用户报告的 404)。
-func TestApplyMirrorFixesBrokenSecurityPath(t *testing.T) {
-	src := "deb http://deb.debian.org/debian bookworm main contrib\n" +
-		"deb http://security.debian.org bookworm-security main contrib\n"
-	f := parseListFile("/etc/apt/sources.list", strings.Split(src, "\n"))
-	if !f.applyMirror(aptMirrorPresets["ustc"]) {
-		t.Fatal("applyMirror no change")
-	}
-	out := f.render()
-	if !strings.Contains(out, "deb https://mirrors.ustc.edu.cn/debian-security bookworm-security main contrib") {
-		t.Fatalf("security 路径未规范化:\n%s", out)
-	}
-	if strings.Contains(out, "mirrors.ustc.edu.cn bookworm-security") {
-		t.Fatalf("仍残留裸主机 security:\n%s", out)
 	}
 }
 

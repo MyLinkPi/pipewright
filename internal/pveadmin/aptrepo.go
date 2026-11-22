@@ -154,12 +154,7 @@ var (
 
 // rewriteAptURI 按预设改写一个仓库 URI(返回新值与是否变化)。ceph/other 不改;
 // 企业源不被镜像预设改写(镜像站不承载订阅源)。
-//
-// Debian 源做路径规范化(参考 pvetools 行为语义,净室重写):security 源路径恒为
-// /debian-security、主源恒为 /debian、ubuntu 恒为 /ubuntu,按 suite 语义判定而非
-// 保留原始路径——原始行路径缺失/非标准(如裸主机 http://security.debian.org)时,
-// 换源后仍产出可用的规范镜像 URL,绝不把损坏路径带到镜像站。
-func rewriteAptURI(raw, kind string, enterprise bool, p aptMirrorPreset, suites []string) (string, bool) {
+func rewriteAptURI(raw, kind string, enterprise bool, p aptMirrorPreset) (string, bool) {
 	if kind != "debian" && kind != "pve" {
 		return raw, false
 	}
@@ -169,38 +164,31 @@ func rewriteAptURI(raw, kind string, enterprise bool, p aptMirrorPreset, suites 
 	}
 	host := u.Hostname()
 	if kind == "debian" {
-		isUbuntu := strings.Contains(host, "ubuntu") || strings.Contains(u.Path, "ubuntu")
-		canonPath := "/debian"
-		switch {
-		case isUbuntu:
-			canonPath = "/ubuntu"
-		case isSecuritySuite(suites):
-			canonPath = "/debian-security"
-		}
-		if p.debianHost == "" { // 恢复官方:按 suite/路径推导官方主机 + 规范路径
+		if p.debianHost == "" { // 恢复官方:按路径推导官方主机
 			if !mirrorRepoHosts[host] && !debianRepoHosts[host] {
 				return raw, false
 			}
 			target := "deb.debian.org"
 			switch {
-			case isUbuntu && isSecuritySuite(suites):
-				target = "security.ubuntu.com"
-			case isUbuntu:
-				target = "archive.ubuntu.com"
-			case canonPath == "/debian-security":
+			case strings.Contains(u.Path, "ubuntu"):
+				if strings.Contains(u.Path, "security") {
+					target = "security.ubuntu.com"
+				} else {
+					target = "archive.ubuntu.com"
+				}
+			case strings.HasPrefix(u.Path, "/debian-security"):
 				target = "security.debian.org"
 			}
+			if host == target {
+				return raw, false
+			}
 			u.Host = target
-			u.Path = canonPath
-			nu := u.String()
-			return nu, nu != raw
+			return u.String(), true
 		}
-		if debianRepoHosts[host] || mirrorRepoHosts[host] { // 换镜像:规范路径
+		if (debianRepoHosts[host] || mirrorRepoHosts[host]) && host != p.debianHost {
 			u.Scheme = "https"
 			u.Host = p.debianHost
-			u.Path = canonPath
-			nu := u.String()
-			return nu, nu != raw
+			return u.String(), true
 		}
 		return raw, false
 	}
@@ -212,8 +200,7 @@ func rewriteAptURI(raw, kind string, enterprise bool, p aptMirrorPreset, suites 
 		if mirrorRepoHosts[host] && strings.HasPrefix(u.Path, "/proxmox") {
 			u.Host = "download.proxmox.com"
 			u.Path = strings.TrimPrefix(u.Path, "/proxmox")
-			nu := u.String()
-			return nu, nu != raw
+			return u.String(), true
 		}
 		return raw, false
 	}
@@ -221,26 +208,13 @@ func rewriteAptURI(raw, kind string, enterprise bool, p aptMirrorPreset, suites 
 		u.Scheme = "https"
 		u.Host = p.pveHost
 		u.Path = p.pvePrefix + u.Path
-		nu := u.String()
-		return nu, nu != raw
+		return u.String(), true
 	}
 	if mirrorRepoHosts[host] && strings.HasPrefix(u.Path, "/proxmox") && host != p.pveHost { // 镜像 → 镜像
 		u.Host = p.pveHost
-		nu := u.String()
-		return nu, nu != raw
+		return u.String(), true
 	}
 	return raw, false
-}
-
-// isSecuritySuite 判定是否 security 源 suite:bookworm-security 等新式、stable-security
-// 滚动别名、buster/updates 旧式(Debian ≤10)均归为 security(路径 /debian-security)。
-func isSecuritySuite(suites []string) bool {
-	for _, s := range suites {
-		if strings.HasSuffix(s, "-security") || s == "stable-security" || strings.HasSuffix(s, "/updates") {
-			return true
-		}
-	}
-	return false
 }
 
 // classifyAptRepo 按 URI/组件分类条目(镜像站同时承载 debian 与 proxmox,须看路径)。
@@ -573,7 +547,7 @@ func (f *aptRepoFileRaw) applyMirror(p aptMirrorPreset) bool {
 		var newURIs []string
 		any := false
 		for _, uri := range e.uris {
-			nu, ok := rewriteAptURI(uri, e.kind, e.enterprise, p, e.suites)
+			nu, ok := rewriteAptURI(uri, e.kind, e.enterprise, p)
 			newURIs = append(newURIs, nu)
 			any = any || ok
 		}
