@@ -799,24 +799,32 @@ func (s *service) StartMajorUpgrade(ctx context.Context, id string, in MajorUpgr
 	if err != nil {
 		return err
 	}
-	// 宿主节点(用户显式指定,不做自动识别):必须在线且为 8.x 升级目标,排到最后
-	// 升级——控制端随它最后重启,其余节点先全部完成,把「回来后人工续跑」的窗口
-	// 压到只有一步。
+	// 宿主节点(用户显式指定,不做自动识别):须是集群内真实节点(防手误——静默忽略
+	// 会让「以为有确认保护」的宿主被自动重启)。纳入本次目标时排到最后升级、guest
+	// 不自动关停、dist-upgrade 完成后暂停等人工确认重启;未纳入本次目标(分批升级,
+	// 宿主留到下批)→ 按普通滚动执行,本次不涉及控制端重启。
+	hostInRun := false
 	if in.HostNode != "" {
 		if !nameRe.MatchString(in.HostNode) {
 			return fmt.Errorf("%w: 宿主节点名 %q 不合规", ErrInvalidInput, in.HostNode)
 		}
-		found := false
+		inCluster := false
+		for _, n := range cn.Nodes {
+			if n.Name == in.HostNode {
+				inCluster = true
+				break
+			}
+		}
+		if !inCluster {
+			return fmt.Errorf("%w: 宿主节点 %s 不在集群内,请检查是否手误", ErrInvalidInput, in.HostNode)
+		}
 		for i, n := range nodes {
 			if n == in.HostNode {
 				nodes = append(nodes[:i], nodes[i+1:]...)
 				nodes = append(nodes, in.HostNode)
-				found = true
+				hostInRun = true
 				break
 			}
-		}
-		if !found {
-			return fmt.Errorf("%w: 宿主节点 %s 不在升级目标中(须在线 8.x 节点)", ErrInvalidInput, in.HostNode)
 		}
 	}
 	// 警告 ack:集群级键必须全确认;节点级键(约定 `...:<节点名>` 后缀)仅当该节点
@@ -896,6 +904,10 @@ func (s *service) StartMajorUpgrade(ctx context.Context, id string, in MajorUpgr
 	}
 	s.majorJobs[id] = j
 	s.mu.Unlock()
+
+	if in.HostNode != "" && !hostInRun {
+		j.logf("宿主节点 %s 本次未纳入升级目标:按普通滚动执行(不涉及控制端重启)", in.HostNode)
+	}
 
 	if err := s.insertMajorJob(ctx, j); err != nil {
 		s.mu.Lock()

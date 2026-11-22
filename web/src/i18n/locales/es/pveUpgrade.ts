@@ -57,7 +57,7 @@ export default {
   upgradeLog: 'Registro de upgrade',
   hostNodeLabel: 'Nodo anfitrión (donde corre el control)',
   hostNodeNone: 'Sin especificar (automático)',
-  hostNodeHint: 'El nodo designado se actualiza el último: sus guests no se apagan automáticamente (manéjelos usted); tras dist-upgrade pausa hasta que confirme el reinicio. El nodo se reinicia junto con el control; pulse «Continuar» al volver.',
+  hostNodeHint: 'Marca el nodo donde corre el control. Cuando se incluye en esta ejecución: va el último, sus guests no se apagan automáticamente (manéjelos usted) y tras dist-upgrade pausa hasta que confirme el reinicio; el nodo se reinicia junto con el control, pulse «Continuar» al volver. Si no se incluye, la ejecución proceeds como un rolling upgrade normal.',
   nodeState_awaiting_reboot: 'Esperando confirmación de reinicio',
   confirmRebootBanner: 'El nodo {node} terminó dist-upgrade y espera la confirmación manual del reinicio (el control se apaga con él).',
   confirmRebootBtn: 'Confirmar reinicio del nodo anfitrión',

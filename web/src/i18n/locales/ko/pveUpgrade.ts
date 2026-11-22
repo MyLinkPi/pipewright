@@ -57,7 +57,7 @@ export default {
   upgradeLog: '업그레이드 로그',
   hostNodeLabel: '호스트 노드(제어 평면이 실행 중인 노드)',
   hostNodeNone: '지정 안 함(전체 자동)',
-  hostNodeHint: '지정된 노드는 마지막에 업그레이드됩니다: guest를 자동 종료하지 않으니 직접 처리하세요. dist-upgrade 완료 후 재부팅 확인을 기다리며 일시 중지합니다. 노드는 제어 평면과 함께 재부팅됩니다. 돌아오면 「계속」을 클릭하세요.',
+  hostNodeHint: '제어 평면이 실행 중인 노드를 표시합니다. 이번 실행에 포함되면: 마지막에 업그레이드되고, guest를 자동 종료하지 않으며(직접 처리하세요), dist-upgrade 완료 후 재부팅 확인을 기다리며 일시 중지합니다. 노드는 제어 평면과 함께 재부팅됩니다. 돌아오면 「계속」을 클릭하세요. 포함되지 않으면 일반 롤링 업그레이드로 진행됩니다.',
   nodeState_awaiting_reboot: '재부팅 확인 대기',
   confirmRebootBanner: '노드 {node}는 dist-upgrade를 완료했으며 수동 확인 재부팅을 기다립니다(제어 평면도 함께 내려갑니다).',
   confirmRebootBtn: '호스트 노드 재부팅 확인',

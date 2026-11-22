@@ -57,7 +57,7 @@ export default {
   upgradeLog: 'Journal de mise à jour',
   hostNodeLabel: 'Nœud hôte (où tourne le contrôle)',
   hostNodeNone: 'Non désigné (automatique)',
-  hostNodeHint: 'Le nœud désigné est mis à jour en dernier : ses guests ne sont pas arrêtés automatiquement (à gérer vous-même) ; après dist-upgrade, il se met en pause jusqu’à confirmation du redémarrage. Le nœud redémarre avec le contrôle — cliquez « Reprendre » à son retour.',
+  hostNodeHint: 'Marque le nœud où tourne le contrôle. Lorsqu’il est inclus dans cette exécution : il passe en dernier, ses guests ne sont pas arrêtés automatiquement (à gérer vous-même) et après dist-upgrade, il se met en pause jusqu’à confirmation du redémarrage ; le nœud redémarre avec le contrôle, cliquez « Reprendre » à son retour. S’il n’est pas inclus, l’exécution proceed comme un rolling upgrade normal.',
   nodeState_awaiting_reboot: 'En attente de confirmation du redémarrage',
   confirmRebootBanner: 'Le nœud {node} a terminé dist-upgrade et attend la confirmation manuelle du redémarrage (le contrôle s’arrête avec lui).',
   confirmRebootBtn: 'Confirmer le redémarrage du nœud hôte',

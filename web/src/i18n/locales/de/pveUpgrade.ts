@@ -57,7 +57,7 @@ export default {
   upgradeLog: 'Upgrade-Protokoll',
   hostNodeLabel: 'Host-Knoten (dort läuft die Steuerung)',
   hostNodeNone: 'Nicht angegeben (vollautomatisch)',
-  hostNodeHint: 'Der angegebene Knoten wird zuletzt aktualisiert: seine Gäste werden nicht automatisch heruntergefahren (bitte selbst behandeln); nach dist-upgrade pausiert er, bis Sie den Neustart bestätigen. Der Knoten startet zusammen mit der Steuerung neu – danach „Fortsetzen“ klicken.',
+  hostNodeHint: 'Markiert den Knoten, auf dem die Steuerung läuft. Wenn er in diesem Durchlauf enthalten ist: zuletzt aktualisiert, Gäste werden nicht automatisch heruntergefahren (bitte selbst behandeln), nach dist-upgrade pausiert er bis zur Bestätigung des Neustarts – der Knoten startet mit der Steuerung neu, danach „Fortsetzen“ klicken. Ist er nicht enthalten, läuft der Durchlauf als normales Rolling-Upgrade.',
   nodeState_awaiting_reboot: 'Wartet auf Neustart-Bestätigung',
   confirmRebootBanner: 'Knoten {node} hat dist-upgrade abgeschlossen und wartet auf die manuell bestätigte Neustart-Freigabe (die Steuerung geht mit herunter).',
   confirmRebootBtn: 'Neustart des Host-Knotens bestätigen',

@@ -705,3 +705,36 @@ func TestMajorSubsetAckFiltering(t *testing.T) {
 		t.Fatalf("pve2 不应被动: upgraded=%v reboot=%v", ms.upgraded, ms.rebootCalls)
 	}
 }
+
+// TestMajorHostNodeExcludedFromRun 宿主机本次未纳入升级目标(分批升级):按普通滚动
+// 执行,宿主机完全不被动(不换源/不升级/不重启),无 awaiting-reboot 暂停。
+func TestMajorHostNodeExcludedFromRun(t *testing.T) {
+	s, ft, fr, fc := newTestService(t)
+	cl := seedMajorCluster(t, s, ft)
+	ms := newMajorState()
+	ms.wire(fc, fr)
+	ctx := context.Background()
+	if _, err := s.MajorPreflight(ctx, cl.ID, nil); err != nil {
+		t.Fatalf("preflight: %v", err)
+	}
+	acks := []string{"self-hosting", "two-node-quorum"}
+	in := MajorUpgradeInput{Confirm: cl.Name, Acks: acks, GuestPolicy: GuestPolicyShutdown, HostNode: "pve2", Nodes: []string{"pve1"}}
+	if err := s.StartMajorUpgrade(ctx, cl.ID, in); err != nil {
+		t.Fatalf("host-excluded start: %v", err)
+	}
+	st := waitMajorDone(t, s, cl.ID)
+	if st.Status != MajorStatusDone || len(st.Nodes) != 1 || st.Nodes[0].Node != "pve1" {
+		t.Fatalf("st = %+v", st)
+	}
+	ms.mu.Lock()
+	defer ms.mu.Unlock()
+	if ms.upgraded["node2"] || strings.Contains(strings.Join(ms.rebootCalls, ","), "pve2") {
+		t.Fatalf("宿主机不应被动: upgraded=%v reboot=%v", ms.upgraded, ms.rebootCalls)
+	}
+	if !ms.upgraded["node1"] {
+		t.Fatal("pve1 应正常升级")
+	}
+	if ms.shutdownCalls != nil && strings.Contains(strings.Join(ms.shutdownCalls, ","), "/nodes/pve2/") {
+		t.Fatalf("宿主机不应有 guest 关停: %v", ms.shutdownCalls)
+	}
+}

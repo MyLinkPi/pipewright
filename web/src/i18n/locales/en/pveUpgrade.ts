@@ -57,7 +57,7 @@ export default {
   upgradeLog: 'Upgrade log',
   hostNodeLabel: 'Host node (where the control plane runs)',
   hostNodeNone: 'None (fully automatic)',
-  hostNodeHint: 'The designated node is upgraded last: its guests are not shut down automatically (handle them yourself); after dist-upgrade it pauses until you confirm the reboot. The node reboots together with the control plane — click "Resume" after it comes back.',
+  hostNodeHint: 'Marks the node where the control plane runs. When included in this run: it goes last, its guests are not shut down automatically (handle them yourself), and after dist-upgrade it pauses until you confirm the reboot — the node reboots together with the control plane, click "Resume" after it comes back. If not included, the run proceeds as a normal rolling upgrade.',
   nodeState_awaiting_reboot: 'Awaiting reboot confirm',
   confirmRebootBanner: 'Node {node} finished dist-upgrade and awaits a manually confirmed reboot (the control plane goes down with it).',
   confirmRebootBtn: 'Confirm host node reboot',

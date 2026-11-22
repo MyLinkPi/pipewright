@@ -57,7 +57,7 @@ export default {
   upgradeLog: '升級日誌',
   hostNodeLabel: '宿主機(控制端所在節點)',
   hostNodeNone: '不指定(全自動)',
-  hostNodeHint: '指定後該節點最後升級:其 guest 不自動關停(請自行處理),dist-upgrade 完成後暫停等你確認重啟;節點隨控制端一起重啟,回來後點「續跑」收尾。',
+  hostNodeHint: '標記控制端所在的節點。當它納入本次升級時:排到最後、其 guest 不自動關停(請自行處理),dist-upgrade 完成後暫停等你確認重啟,節點隨控制端一起重啟、回來後點「續跑」收尾;未納入本次升級則按普通滾動執行。',
   nodeState_awaiting_reboot: '等待確認重啟',
   confirmRebootBanner: '節點 {node} 已完成 dist-upgrade,等待人工確認重啟(控制端將隨節點下線)。',
   confirmRebootBtn: '確認重啟宿主節點',

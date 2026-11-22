@@ -46,22 +46,16 @@ const hostNodeOptions = computed(() => [
   ...props.report.nodes.filter((n) => n.online).map((n) => ({ value: n.node, label: n.node })),
 ])
 
-// 升级节点勾选:默认全选在线节点;宿主节点强制包含且锁定(UI 层,后端仍强校验)。
-// 未勾选的节点本次不动,可稍后单独升级(9.x 节点在后续预检里自动跳过全部检查)。
+// 升级节点勾选:默认全选在线节点。宿主机仅是标记(选中即走「最后升级 + 人工确认
+// 重启」序列);不勾选它则本次完全不动(分批升级),按普通滚动执行。
 const selectedNodes = ref<Set<string>>(new Set(props.report.nodes.filter((n) => n.online).map((n) => n.node)))
 const selectedList = computed(() =>
   props.report.nodes.filter((n) => selectedNodes.value.has(n.node)).map((n) => n.node))
 
 function toggleNode(node: string): void {
-  if (node === hostNode.value) return // 宿主节点强制包含(UI 锁定;后端仍强校验)
   if (selectedNodes.value.has(node)) selectedNodes.value.delete(node)
   else selectedNodes.value.add(node)
 }
-
-// 指定宿主机后强制纳入升级目标(它随向导最后升级)。
-watch(hostNode, (n) => {
-  if (n && !selectedNodes.value.has(n)) selectedNodes.value.add(n)
-})
 
 function stepLabel(n: number): string {
   return n === 1 ? t('pveUpgrade.preflightTitle') : t('pveUpgrade.majorConfirmTitle')
@@ -212,7 +206,7 @@ async function submit(): Promise<void> {
                   <input
                     type="checkbox"
                     :checked="selectedNodes.has(np.node)"
-                    :disabled="!np.online || np.node === hostNode"
+                    :disabled="!np.online"
                     @change="toggleNode(np.node)"
                   />
                   <strong>{{ np.node }}</strong>
