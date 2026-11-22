@@ -48,6 +48,9 @@ const (
 	MajorNodeVerifying = "verifying"
 	MajorNodeDone      = "done"
 	MajorNodeFailed    = "failed"
+	// MajorNodeAwaitingReboot 是宿主节点(控制端所在)专属状态:dist-upgrade 完成、
+	// 已验证 9.x,暂停等人工确认重启——确认后控制端随节点一起下线,回来后人工续跑。
+	MajorNodeAwaitingReboot = "awaiting-reboot"
 )
 
 // guest 处理策略。
@@ -75,6 +78,9 @@ const (
 
 // errMajorAbort 是内部哨兵:步骤边界检测到中止请求。
 var errMajorAbort = errors.New("pveadmin: major upgrade aborted")
+
+// errMajorAwaiting 是内部哨兵:宿主节点 dist-upgrade 完成,暂停等人工确认重启。
+var errMajorAwaiting = errors.New("pveadmin: major upgrade awaiting manual reboot")
 
 // ---- 对外类型 ---------------------------------------------------------------------------
 
@@ -132,6 +138,10 @@ type MajorUpgradeInput struct {
 	Acks        []string `json:"acks"`        // 已确认的警告 key
 	GuestPolicy string   `json:"guestPolicy"` // warn | shutdown;空 → warn
 	Nodes       []string `json:"nodes"`       // 可选顺序;空 = 全部在线 8.x 节点按名排序
+	// HostNode 是宿主节点(控制端 Pipewright 所在的节点),由用户显式指定而非自动
+	// 识别(避免误判)。指定后:该节点排到最后升级、其 guest 不自动关停(控制端可能
+	// 就在其中)、dist-upgrade 完成后暂停等人工确认重启——不做自恢复。
+	HostNode string `json:"hostNode"`
 }
 
 // MajorNodeStatus 是滚动升级里一个节点的状态(每步落库)。
@@ -168,6 +178,7 @@ type majorJob struct {
 	running       bool
 	status        string
 	guestPolicy   string
+	hostNode      string // 宿主节点(控制端所在);空 = 未指定
 	step          string
 	message       string
 	errMsg        string
@@ -217,7 +228,9 @@ func (j *majorJob) snapshot() MajorUpgradeStatus {
 // ---- 预检 -------------------------------------------------------------------------------
 
 // MajorPreflight 同步预检(并发扇出;pve8to9 --full 单节点 5min)。报告缓存供启动校验。
-func (s *service) MajorPreflight(ctx context.Context, id string) (*MajorPreflightReport, error) {
+// nodes 非空时只预检这些节点(单机/部分升级:报告、Blocked、AcksRequired 收敛到目标,
+// 集群级检查 quorate/Ceph/两节点/自托管/HA 保留)——其余节点的 FAIL 不拦本次启动。
+func (s *service) MajorPreflight(ctx context.Context, id string, nodes []string) (*MajorPreflightReport, error) {
 	cl, c, err := s.clientFor(ctx, id)
 	if err != nil {
 		return nil, err
@@ -225,6 +238,29 @@ func (s *service) MajorPreflight(ctx context.Context, id string) (*MajorPrefligh
 	cn, err := fetchClusterNodes(ctx, c)
 	if err != nil {
 		return nil, err
+	}
+	targets := cn.Nodes
+	if len(nodes) > 0 {
+		member := make(map[string]bool, len(cn.Nodes))
+		for _, n := range cn.Nodes {
+			member[n.Name] = true
+		}
+		want := make(map[string]bool, len(nodes))
+		for _, req := range nodes {
+			if !nameRe.MatchString(req) {
+				return nil, fmt.Errorf("%w: 节点名 %q 不合规", ErrInvalidInput, req)
+			}
+			if !member[req] {
+				return nil, fmt.Errorf("%w: 节点 %s 不在集群内", ErrInvalidInput, req)
+			}
+			want[req] = true
+		}
+		targets = make([]NodeStatus, 0, len(nodes))
+		for _, n := range cn.Nodes { // 保持集群顺序,离线目标也纳入(报告如实显示 fail)
+			if want[n.Name] {
+				targets = append(targets, n)
+			}
+		}
 	}
 	rep := &MajorPreflightReport{ClusterID: id, At: time.Now().UTC().Format(time.RFC3339), Quorate: cn.Quorate}
 	if !cn.Quorate {
@@ -267,9 +303,9 @@ func (s *service) MajorPreflight(ctx context.Context, id string) (*MajorPrefligh
 		}
 	}
 
-	rep.Nodes = make([]MajorNodePreflight, len(cn.Nodes))
-	fanOutNodes(len(cn.Nodes), majorPreflightConcurrency, func(i int) {
-		rep.Nodes[i] = s.majorNodePreflight(ctx, cl, c, cn.Nodes[i], runningTasks[cn.Nodes[i].Name])
+	rep.Nodes = make([]MajorNodePreflight, len(targets))
+	fanOutNodes(len(targets), majorPreflightConcurrency, func(i int) {
+		rep.Nodes[i] = s.majorNodePreflight(ctx, cl, c, targets[i], runningTasks[targets[i].Name])
 	})
 
 	onlineCount := 0
@@ -577,12 +613,12 @@ func (s *service) insertMajorJob(ctx context.Context, j *majorJob) error {
 	j.mu.Lock()
 	j.createdAt = now
 	orderJSON, _ := json.Marshal(j.nodeOrder)
-	id, clusterID, status, policy, preflight := j.id, j.clusterID, j.status, j.guestPolicy, j.preflightJSON
+	id, clusterID, status, policy, hostNode, preflight := j.id, j.clusterID, j.status, j.guestPolicy, j.hostNode, j.preflightJSON
 	nodes := append([]MajorNodeStatus(nil), j.nodes...)
 	j.mu.Unlock()
 	if _, err := s.db.ExecContext(ctx,
-		`INSERT INTO pve_upgrade_jobs (id, cluster_id, kind, status, guest_policy, node_order, preflight, error, created_at, updated_at) VALUES (?, ?, 'major', ?, ?, ?, ?, '', ?, ?)`,
-		id, clusterID, status, policy, string(orderJSON), preflight, now, now); err != nil {
+		`INSERT INTO pve_upgrade_jobs (id, cluster_id, kind, status, guest_policy, node_order, preflight, error, created_at, updated_at, host_node) VALUES (?, ?, 'major', ?, ?, ?, ?, '', ?, ?, ?)`,
+		id, clusterID, status, policy, string(orderJSON), preflight, now, now, hostNode); err != nil {
 		return fmt.Errorf("pveadmin: insert upgrade job: %w", err)
 	}
 	for _, n := range nodes {
@@ -619,10 +655,10 @@ func (s *service) persistMajorNode(ctx context.Context, j *majorJob, n MajorNode
 // 无任务 → (nil, nil)。
 func (s *service) loadMajorJob(ctx context.Context, clusterID string) (*majorJob, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT id, status, guest_policy, node_order, preflight, error, created_at FROM pve_upgrade_jobs WHERE cluster_id = ? ORDER BY created_at DESC, id DESC LIMIT 1`, clusterID)
+		`SELECT id, status, guest_policy, node_order, preflight, error, created_at, host_node FROM pve_upgrade_jobs WHERE cluster_id = ? ORDER BY created_at DESC, id DESC LIMIT 1`, clusterID)
 	var j majorJob
 	var orderJSON, preflight, errMsg, createdAt string
-	if err := row.Scan(&j.id, &j.status, &j.guestPolicy, &orderJSON, &preflight, &errMsg, &createdAt); err != nil {
+	if err := row.Scan(&j.id, &j.status, &j.guestPolicy, &orderJSON, &preflight, &errMsg, &createdAt, &j.hostNode); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
 		}
@@ -732,16 +768,18 @@ func (s *service) StartMajorUpgrade(ctx context.Context, id string, in MajorUpgr
 		return fmt.Errorf("%w: 请先运行预检(报告 30 分钟内有效)", ErrPreflightRequired)
 	}
 	rep := entry.report
-	if rep.Blocked {
-		return fmt.Errorf("%w: 预检未通过,请先修复 FAIL 项", ErrPreflightRequired)
-	}
-	acked := make(map[string]bool, len(in.Acks))
-	for _, k := range in.Acks {
-		acked[k] = true
-	}
-	for _, k := range rep.AcksRequired {
-		if !acked[k] {
-			return fmt.Errorf("%w: 警告 %s 未确认", ErrPreflightRequired, k)
+	// 部分升级(单机/指定节点):预检报告必须覆盖全部目标节点(报告/阻断/ack 均按
+	// 预检范围计算——对 A 预检后升 B 会让 B 的 FAIL 检查被绕过)。报告未带节点清单
+	// 时跳过(手工构造的报告,ack/阻断过滤在下方兜底)。
+	if len(in.Nodes) > 0 && len(rep.Nodes) > 0 {
+		covered := make(map[string]bool, len(rep.Nodes))
+		for _, np := range rep.Nodes {
+			covered[np.Node] = true
+		}
+		for _, n := range in.Nodes {
+			if !covered[n] {
+				return fmt.Errorf("%w: 预检报告未覆盖节点 %s,请先对其运行预检", ErrPreflightRequired, n)
+			}
 		}
 	}
 	// 快速复查阻断项(预检后集群状态可能变化)。
@@ -760,6 +798,70 @@ func (s *service) StartMajorUpgrade(ctx context.Context, id string, in MajorUpgr
 	nodes, err := s.majorTargetNodes(ctx, c, cn, in.Nodes)
 	if err != nil {
 		return err
+	}
+	// 宿主节点(用户显式指定,不做自动识别):必须在线且为 8.x 升级目标,排到最后
+	// 升级——控制端随它最后重启,其余节点先全部完成,把「回来后人工续跑」的窗口
+	// 压到只有一步。
+	if in.HostNode != "" {
+		if !nameRe.MatchString(in.HostNode) {
+			return fmt.Errorf("%w: 宿主节点名 %q 不合规", ErrInvalidInput, in.HostNode)
+		}
+		found := false
+		for i, n := range nodes {
+			if n == in.HostNode {
+				nodes = append(nodes[:i], nodes[i+1:]...)
+				nodes = append(nodes, in.HostNode)
+				found = true
+				break
+			}
+		}
+		if !found {
+			return fmt.Errorf("%w: 宿主节点 %s 不在升级目标中(须在线 8.x 节点)", ErrInvalidInput, in.HostNode)
+		}
+	}
+	// 警告 ack:集群级键必须全确认;节点级键(约定 `...:<节点名>` 后缀)仅当该节点
+	// 在本次目标里才须确认——支持只升部分节点(pve8to9-warn:pve2 这类不拦 pve1)。
+	acked := make(map[string]bool, len(in.Acks))
+	for _, k := range in.Acks {
+		acked[k] = true
+	}
+	selected := make(map[string]bool, len(nodes))
+	for _, n := range nodes {
+		selected[n] = true
+	}
+	for _, k := range rep.AcksRequired {
+		if acked[k] {
+			continue
+		}
+		if i := strings.LastIndexByte(k, ':'); i >= 0 && !selected[k[i+1:]] {
+			continue // 未选节点的节点级警告,不拦本次升级
+		}
+		return fmt.Errorf("%w: 警告 %s 未确认", ErrPreflightRequired, k)
+	}
+	// 阻断按本次目标收敛:集群级 FAIL + 选中节点的 FAIL 才拦;未选节点的 FAIL 不拦
+	// (它们本次不动,可稍后单独升级)。
+	var failMsgs []string
+	for _, ck := range rep.ClusterChecks {
+		if ck.Level == "fail" {
+			failMsgs = append(failMsgs, ck.Message)
+		}
+	}
+	for _, np := range rep.Nodes {
+		if !selected[np.Node] {
+			continue
+		}
+		for _, ck := range np.Checks {
+			if ck.Level == "fail" {
+				failMsgs = append(failMsgs, np.Node+": "+ck.Message)
+			}
+		}
+	}
+	if len(failMsgs) > 0 {
+		msg := strings.Join(failMsgs, "; ")
+		if len(msg) > 300 {
+			msg = msg[:300]
+		}
+		return fmt.Errorf("%w: 预检未通过(目标节点/集群级有 FAIL): %s", ErrPreflightRequired, msg)
 	}
 	jobID, err := newCreateJobID()
 	if err != nil {
@@ -786,7 +888,7 @@ func (s *service) StartMajorUpgrade(ctx context.Context, id string, in MajorUpgr
 	}
 	j := &majorJob{
 		id: jobID, clusterID: cl.ID, running: true, status: MajorStatusRunning,
-		guestPolicy: policy, step: MajorNodePending, message: "准备滚动升级…",
+		guestPolicy: policy, hostNode: in.HostNode, step: MajorNodePending, message: "准备滚动升级…",
 		nodeOrder: nodes, preflightJSON: string(preflightJSON),
 	}
 	for i, n := range nodes {
@@ -805,7 +907,8 @@ func (s *service) StartMajorUpgrade(ctx context.Context, id string, in MajorUpgr
 	return nil
 }
 
-// majorTargetNodes 解析升级目标:在线 8.x 节点(9.x 跳过/显式指定则报错),按名排序或给定顺序。
+// majorTargetNodes 解析升级目标:在线 8.x 节点(9.x 一律跳过——显式勾选亦然,与
+// 向导「届时预检会自动跳过 9.x」的口径一致),按名排序或给定顺序。
 func (s *service) majorTargetNodes(ctx context.Context, c pveClient, cn *clusterNodeList, requested []string) ([]string, error) {
 	member := make(map[string]bool, len(cn.Nodes))
 	for _, n := range cn.Nodes {
@@ -857,11 +960,17 @@ func (s *service) majorTargetNodes(ctx context.Context, c pveClient, cn *cluster
 		if err != nil {
 			return nil, err
 		}
+		if major == 9 {
+			continue // 已是 9.x:与默认路径同口径,静默跳过(向导勾选说明一致)
+		}
 		if major != 8 {
 			return nil, fmt.Errorf("%w: 节点 %s 不是 8.x(当前主版本 %d)", ErrInvalidInput, n, major)
 		}
 		seen[n] = true
 		out = append(out, n)
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("%w: 所选节点均已是 9.x,无可升级目标", ErrInvalidInput)
 	}
 	return out, nil
 }
@@ -991,6 +1100,61 @@ func (s *service) ResumeMajorUpgrade(ctx context.Context, id, confirm string) er
 	return nil
 }
 
+// ConfirmMajorReboot 人工确认重启宿主节点(awaiting-reboot → rebooting):发出重启
+// 指令,控制端随节点下线;回来后人工「续跑」走 rebooting→waiting→verifying 收尾。
+// confirm 须原样等于集群名。
+func (s *service) ConfirmMajorReboot(ctx context.Context, id, confirm string) error {
+	cl, err := s.clusterByID(ctx, id)
+	if err != nil {
+		return err
+	}
+	if confirm != cl.Name {
+		return fmt.Errorf("%w: 须原样输入集群名 %q 以确认重启宿主节点", ErrConfirmMismatch, cl.Name)
+	}
+	j, err := s.majorJobFor(ctx, id)
+	if err != nil {
+		return err
+	}
+	if j == nil {
+		return fmt.Errorf("%w: 无大版本升级任务", ErrInvalidInput)
+	}
+	j.mu.Lock()
+	if j.running {
+		j.mu.Unlock()
+		return fmt.Errorf("%w: 任务运行中,先等它到暂停态", ErrBusy)
+	}
+	idx := -1
+	node := ""
+	for i := range j.nodes {
+		if j.nodes[i].State == MajorNodeAwaitingReboot {
+			idx, node = i, j.nodes[i].Node
+			break
+		}
+	}
+	j.mu.Unlock()
+	if idx < 0 {
+		return fmt.Errorf("%w: 无等待确认重启的宿主节点", ErrInvalidInput)
+	}
+	_, c, err := s.clientFor(ctx, id)
+	if err != nil {
+		return err
+	}
+	// 先发指令再落库:指令被拒时状态留在 awaiting-reboot 可重试;发出后节点下线,
+	// 即使落库失败也由 waitNodeBack 的超时兜底。
+	if _, rerr := postUPID(ctx, c, "/api2/json/nodes/"+node+"/status", url.Values{"command": {"reboot"}}); rerr != nil {
+		return rerr
+	}
+	j.mu.Lock()
+	j.nodes[idx].State = MajorNodeRebooting
+	cp := j.nodes[idx]
+	j.errMsg = fmt.Sprintf("宿主节点 %s 重启中;节点回来后请点「续跑」完成收尾", node)
+	j.mu.Unlock()
+	s.persistMajorNode(ctx, j, cp)
+	s.persistMajorStatus(ctx, j)
+	j.logf("[%s] 人工确认重启已发出;节点回来后请点「续跑」完成收尾", node)
+	return nil
+}
+
 // ---- 滚动状态机 -------------------------------------------------------------------------
 
 // majorPause 暂停任务(fail-fast/中止/续跑失败),落库。
@@ -1051,11 +1215,38 @@ func (s *service) runMajor(j *majorJob) {
 		if state == MajorNodeDone {
 			continue
 		}
+		if state == MajorNodeAwaitingReboot {
+			// 续跑时宿主节点仍在等人工确认重启:暂停并保留提示(UI 出确认按钮)。
+			j.logf("[%s] 等待人工确认重启(控制端随节点重启,确认后回来点续跑)", node)
+			s.majorPause(ctx, j, fmt.Sprintf("节点 %s 等待人工确认重启宿主节点", node))
+			return
+		}
+		if state == MajorNodeRebooting || state == MajorNodeWaiting {
+			// 中断恢复:重启已发出(宿主节点确认过/自动发过),直接等回线 + 验证收尾
+			// (waiting 态 = 上次在等回线时被打断,同理续等待)。
+			j.logf("[%s] 恢复:重启已发出,继续等待回线…", node)
+			rerr := s.resumeRebootedNode(ctx, j, i)
+			if rerr != nil {
+				s.setMajorNodeState(ctx, j, i, MajorNodeFailed, rerr.Error())
+				j.logf("[%s] 恢复失败: %v", node, rerr)
+				s.majorPause(ctx, j, fmt.Sprintf("节点 %s 恢复失败,任务暂停(可重试该节点或中止)", node))
+				return
+			}
+			s.setMajorNodeState(ctx, j, i, MajorNodeDone, "")
+			j.logf("[%s] 恢复完成", node)
+			continue
+		}
 		j.logf("开始节点 %s(%d/%d)", node, i+1, len(j.nodes))
 		err := s.runMajorNode(ctx, j, i)
 		if err != nil {
 			if errors.Is(err, errMajorAbort) {
 				s.majorPause(ctx, j, "已中止(用户请求,当前步骤已完成)")
+				return
+			}
+			if errors.Is(err, errMajorAwaiting) {
+				// 宿主节点 dist-upgrade 完成:暂停等人工确认重启(确认端点推进状态)。
+				s.setMajorNodeState(ctx, j, i, MajorNodeAwaitingReboot, "")
+				s.majorPause(ctx, j, fmt.Sprintf("节点 %s 完成 dist-upgrade,等待人工确认重启宿主节点", node))
 				return
 			}
 			s.setMajorNodeState(ctx, j, i, MajorNodeFailed, err.Error())
@@ -1078,6 +1269,7 @@ func (s *service) runMajorNode(ctx context.Context, j *majorJob, i int) error {
 	j.mu.Lock()
 	node := j.nodes[i].Node
 	policy := j.guestPolicy
+	isHost := j.hostNode != "" && j.hostNode == node
 	j.mu.Unlock()
 	cl, c, err := s.clientFor(ctx, j.clusterID)
 	if err != nil {
@@ -1100,7 +1292,14 @@ func (s *service) runMajorNode(ctx context.Context, j *majorJob, i int) error {
 			running = append(running, r)
 		}
 	}
-	if policy == GuestPolicyShutdown {
+	if isHost {
+		// 宿主节点绝不自动关停 guest(控制端可能就在其中),仅列出供人工处理。
+		names := make([]string, 0, len(running))
+		for _, r := range running {
+			names = append(names, fmt.Sprintf("%s/%d", r.Type, int64(r.VMID)))
+		}
+		j.logf("[%s] 宿主节点:跳过自动关停 %d 个运行中 guest(%s),请自行处理", node, len(running), strings.Join(names, ", "))
+	} else if policy == GuestPolicyShutdown {
 		for _, r := range running {
 			if j.abortRequested() {
 				return errMajorAbort
@@ -1126,6 +1325,8 @@ func (s *service) runMajorNode(ctx context.Context, j *majorJob, i int) error {
 	}
 
 	// 2) 换源 bookworm→trixie(复用仓库管理的解析/备份/原子写)。
+	// URI(主机/路径)全程不动:原有镜像源(USTC/清华/阿里/官方/自定义)原样保留,
+	// 镜像站对 trixie 的路径结构与 bookworm 相同。
 	if j.abortRequested() {
 		return errMajorAbort
 	}
@@ -1134,9 +1335,24 @@ func (s *service) runMajorNode(ctx context.Context, j *majorJob, i int) error {
 	if err != nil {
 		return err
 	}
-	var changes []aptFileChange
+	// 先钉滚动别名到当前代号再升 trixie:两步连做后 stable-security 一类行的终态
+	// 才是 trixie-security。只做 bookworm→trixie 的话 stable 行会原样保留,
+	// dist-upgrade 期间拉到 trixie-security 与 bookworm 混装,解析器试图卸载
+	// proxmox-ve(pve-apt-hook 拦截)——与日常升级的仓库体检同一教训。
+	dirty := map[string]bool{}
+	for _, f := range files {
+		if f.applySuite("stable", "bookworm") {
+			dirty[f.path] = true
+		}
+	}
 	for _, f := range files {
 		if f.applySuite("bookworm", "trixie") {
+			dirty[f.path] = true
+		}
+	}
+	var changes []aptFileChange
+	for _, f := range files {
+		if dirty[f.path] {
 			changes = append(changes, aptFileChange{path: f.path, content: f.render()})
 		}
 	}
@@ -1189,6 +1405,11 @@ func (s *service) runMajorNode(ctx context.Context, j *majorJob, i int) error {
 	if m := pveversionMajor(pv.Stdout); m != 9 {
 		return fmt.Errorf("升级后 pveversion 主版本为 %d(须 9),dist-upgrade 可能未完成", m)
 	}
+	if isHost {
+		// 宿主节点:dist-upgrade 完成,暂停等人工确认重启——确认后控制端随节点
+		// 下线,回来后人工「续跑」走 rebooting→waiting→verifying 收尾(不做自恢复)。
+		return errMajorAwaiting
+	}
 
 	// 4) 重启(API;不 waitTask——节点会下线)。
 	if j.abortRequested() {
@@ -1214,7 +1435,7 @@ func (s *service) runMajorNode(ctx context.Context, j *majorJob, i int) error {
 
 	// 5) 等节点回线 + 集群重新 quorate。
 	s.setMajorNodeState(ctx, j, i, MajorNodeWaiting, "")
-	if err := s.waitNodeBack(ctx, j, c, node, sid, preUptime); err != nil {
+	if err := s.waitNodeBack(ctx, j, c, node, sid, preUptime, false); err != nil {
 		return err
 	}
 
@@ -1238,13 +1459,57 @@ func (s *service) runMajorNode(ctx context.Context, j *majorJob, i int) error {
 	return nil
 }
 
-// waitNodeBack 两阶段等待:先等节点下线(重启生效),再等回线 + quorate + SSH 可达。
-// preUptime 是重启前 uptime(秒,<0 表示未取到);回线后 uptime 未重置 → 判定未真正重启。
-func (s *service) waitNodeBack(ctx context.Context, j *majorJob, c pveClient, node, sid string, preUptime int64) error {
+// resumeRebootedNode 续跑中断恢复:节点重启已发出(上次运行发过),直接等回线 +
+// 验证收尾(guests/sources/dist-upgrade 上次已完成,幂等跳过,也绝不再发一次重启)。
+func (s *service) resumeRebootedNode(ctx context.Context, j *majorJob, i int) error {
+	j.mu.Lock()
+	node := j.nodes[i].Node
+	j.mu.Unlock()
+	cl, c, err := s.clientFor(ctx, j.clusterID)
+	if err != nil {
+		return err
+	}
+	sid, err := s.nodeServerID(ctx, cl, node)
+	if err != nil {
+		return err
+	}
+	s.setMajorNodeState(ctx, j, i, MajorNodeWaiting, "")
+	// 恢复场景跳过「等下线」阶段:用户是看到节点重启回来后才点的续跑,阶段 1 永远
+	// 等不到下线。重启是否真实生效改由 apt/versions 的运行内核 vs 已装内核校验兜底。
+	if err := s.waitNodeBack(ctx, j, c, node, sid, -1, true); err != nil {
+		return err
+	}
+	s.setMajorNodeState(ctx, j, i, MajorNodeVerifying, "")
+	var ver apiVersion
+	if err := c.Get(ctx, "/api2/json/nodes/"+node+"/version", &ver); err != nil {
+		return err
+	}
+	if m, _ := parsePveRelease(ver.Release); m != 9 {
+		return fmt.Errorf("回线后版本仍为 %s(须 9.x)", ver.Release)
+	}
+	var versions []apiAptVersion
+	if err := c.Get(ctx, "/api2/json/nodes/"+node+"/apt/versions", &versions); err == nil && kernelNeedsReboot(versions) {
+		return fmt.Errorf("节点回线但运行内核仍是旧内核(重启未生效?),请人工核查后重试该节点")
+	}
+	cn, err := fetchClusterNodes(ctx, c)
+	if err != nil {
+		return err
+	}
+	if !cn.Quorate {
+		return fmt.Errorf("节点回线但集群无仲裁")
+	}
+	j.logf("[%s] 恢复验证通过: %s", node, ver.Release)
+	return nil
+}
+
+// waitNodeBack 两阶段等待:先等节点下线(重启生效;resume 恢复场景跳过——节点可能
+// 已回来),再等回线 + quorate + SSH 可达。preUptime 是重启前 uptime(秒,<0 表示未
+// 取到);回线后 uptime 未重置 → 判定未真正重启。
+func (s *service) waitNodeBack(ctx context.Context, j *majorJob, c pveClient, node, sid string, preUptime int64, skipDownWait bool) error {
 	// 阶段 1:等下线(SSH 失败或 API 离线;重启可能因 guest 关停耗时)。
 	downCtx, cancel := context.WithTimeout(ctx, majorRebootDownTO)
 	defer cancel()
-	down := false
+	down := skipDownWait
 	for !down {
 		cn, err := fetchClusterNodes(downCtx, c)
 		if err == nil {

@@ -289,6 +289,8 @@ export interface PVEMajorUpgradeInput {
   acks?: string[]
   guestPolicy?: 'warn' | 'shutdown'
   nodes?: string[]
+  /** 宿主节点(控制端所在):最后升级、guest 不自动关停、重启需人工确认;不指定 = 全自动。 */
+  hostNode?: string
 }
 
 export interface PVEMajorNodeStatus {
@@ -315,9 +317,10 @@ export interface PVEMajorUpgradeStatus {
   createdAt?: string
 }
 
-export async function getPVEMajorPreflight(id: string, signal?: AbortSignal): Promise<PVEMajorPreflightReport> {
+export async function getPVEMajorPreflight(id: string, nodes?: string[], signal?: AbortSignal): Promise<PVEMajorPreflightReport> {
+  const qs = nodes && nodes.length > 0 ? `?nodes=${nodes.map(encodeURIComponent).join(',')}` : ''
   return http.get<PVEMajorPreflightReport>(
-    `/api/pve/clusters/${encodeURIComponent(id)}/major-upgrade/preflight`, { signal })
+    `/api/pve/clusters/${encodeURIComponent(id)}/major-upgrade/preflight${qs}`, { signal })
 }
 
 export async function startPVEMajorUpgrade(id: string, input: PVEMajorUpgradeInput): Promise<void> {
@@ -339,4 +342,8 @@ export async function retryPVEMajorNode(id: string, node: string, confirm: strin
 
 export async function resumePVEMajorUpgrade(id: string, confirm: string): Promise<void> {
   await http.post(`/api/pve/clusters/${encodeURIComponent(id)}/major-upgrade/resume`, { confirm })
+}
+
+export async function confirmPVEMajorReboot(id: string, confirm: string): Promise<void> {
+  await http.post(`/api/pve/clusters/${encodeURIComponent(id)}/major-upgrade/confirm-reboot`, { confirm })
 }

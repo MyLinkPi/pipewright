@@ -683,6 +683,8 @@ onUnmounted(() => {
 .panel-title { font-size: 0.9rem; font-weight: 600; color: var(--color-text); }
 .panel-sub { font-size: 0.74rem; color: var(--color-faint); margin-top: 3px; line-height: 1.5; max-width: 64ch; }
 .panel-ops { margin-left: auto; display: flex; gap: 8px; align-items: center; flex-shrink: 0; }
+.ops-field { display: flex; flex-direction: column; gap: 5px; }
+.ops-label { font-size: 0.72rem; font-weight: 500; color: var(--color-dim); }
 
 /* 表格 */
 .row {

@@ -11,6 +11,7 @@ import { ref, computed, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { NIcon } from 'naive-ui'
 import { Server, ArrowBarUp } from '@vicons/tabler'
+import AppSelect from '../ui/AppSelect.vue'
 import {
   startPVEMajorUpgrade,
   type PVEMajorPreflightReport, type PVEMajorCheck,
@@ -37,9 +38,36 @@ const formErrors = ref<Record<string, string>>({})
 const formBanner = ref('')
 const submitting = ref(false)
 
+// 宿主节点(控制端所在):用户显式指定而非自动识别,避免误判;该节点最后升级、
+// guest 不自动关停、重启需人工确认(不做自恢复)。
+const hostNode = ref('')
+const hostNodeOptions = computed(() => [
+  { value: '', label: t('pveUpgrade.hostNodeNone') },
+  ...props.report.nodes.filter((n) => n.online).map((n) => ({ value: n.node, label: n.node })),
+])
+
+// 升级节点勾选:默认全选在线节点;宿主节点强制包含且锁定(UI 层,后端仍强校验)。
+// 未勾选的节点本次不动,可稍后单独升级(9.x 节点在后续预检里自动跳过全部检查)。
+const selectedNodes = ref<Set<string>>(new Set(props.report.nodes.filter((n) => n.online).map((n) => n.node)))
+const selectedList = computed(() =>
+  props.report.nodes.filter((n) => selectedNodes.value.has(n.node)).map((n) => n.node))
+
+function toggleNode(node: string): void {
+  if (node === hostNode.value) return // 宿主节点强制包含(UI 锁定;后端仍强校验)
+  if (selectedNodes.value.has(node)) selectedNodes.value.delete(node)
+  else selectedNodes.value.add(node)
+}
+
+// 指定宿主机后强制纳入升级目标(它随向导最后升级)。
+watch(hostNode, (n) => {
+  if (n && !selectedNodes.value.has(n)) selectedNodes.value.add(n)
+})
+
 function stepLabel(n: number): string {
   return n === 1 ? t('pveUpgrade.preflightTitle') : t('pveUpgrade.majorConfirmTitle')
 }
+
+// 待确认警告:按 key 去重,聚合集群/各节点的同 key 警告文案。
 
 function checkLabel(level: PVEMajorCheck['level']): string {
   if (level === 'pass') return t('pveUpgrade.checkPass')
@@ -50,7 +78,8 @@ function checkClass(level: PVEMajorCheck['level']): string {
   return level === 'pass' ? 'ok' : level === 'warn' ? 'warn' : 'err'
 }
 
-/** 待确认警告:按 key 去重,聚合集群/各节点的同 key 警告文案。 */
+/** 待确认警告:按 key 去重,聚合集群/各节点的同 key 警告文案;节点级警告仅聚合
+ * 本次所选节点的(未选节点的警告不拦本次升级,后端同口径过滤)。 */
 const ackItems = computed(() => {
   const msgs = new Map<string, string[]>()
   const push = (key: string, msg: string): void => {
@@ -62,6 +91,7 @@ const ackItems = computed(() => {
     if (ck.level === 'warn') push(ck.key, ck.message)
   }
   for (const np of props.report.nodes) {
+    if (!selectedNodes.value.has(np.node)) continue
     for (const ck of np.checks) {
       if (ck.level === 'warn') push(ck.key, `${np.node}: ${ck.message}`)
     }
@@ -69,6 +99,8 @@ const ackItems = computed(() => {
   const seen = new Set<string>()
   const items: Array<{ key: string; message: string }> = []
   for (const key of props.report.acksRequired) {
+    const ci = key.lastIndexOf(':')
+    if (ci >= 0 && !selectedNodes.value.has(key.slice(ci + 1))) continue
     if (seen.has(key)) continue
     seen.add(key)
     items.push({ key, message: (msgs.get(key) ?? [key]).join(';') })
@@ -76,7 +108,16 @@ const ackItems = computed(() => {
   return items
 })
 
-const allAcked = computed(() => props.report.acksRequired.every((k) => acks.value.has(k)))
+const allAcked = computed(() => ackItems.value.every((it) => acks.value.has(it.key)))
+
+/** 阻断按本次所选节点收敛:集群级 FAIL + 选中节点的 FAIL 才拦本次;未选节点的
+ * FAIL 不拦(它们本次不动,可稍后单独升级)。 */
+const scopedBlocked = computed(() => {
+  if (props.report.clusterChecks.some((ck) => ck.level === 'fail')) return true
+  return props.report.nodes
+    .filter((np) => selectedNodes.value.has(np.node))
+    .some((np) => np.checks.some((ck) => ck.level === 'fail'))
+})
 
 function toggleAck(key: string): void {
   if (acks.value.has(key)) acks.value.delete(key)
@@ -91,6 +132,7 @@ watch(allAcked, (v) => {
 // ─── 校验与提交 ────────────────────────────────────────────────────────────────
 function validateStep(n: number): boolean {
   const e: Record<string, string> = {}
+  if (n === 1 && selectedNodes.value.size === 0) e.nodes = t('pveUpgrade.upgradeNodesEmpty')
   if (n === 1 && !allAcked.value) e.acks = t('pveUpgrade.ackMissing')
   if (n === 2 && confirmText.value !== props.clusterName) e.confirm = t('pveUpgrade.confirmMismatch')
   formErrors.value = e
@@ -99,7 +141,7 @@ function validateStep(n: number): boolean {
 }
 
 function nextStep(): void {
-  if (submitting.value || props.report.blocked) return
+  if (submitting.value || scopedBlocked.value) return
   if (validateStep(1)) {
     formBanner.value = ''
     step.value = 2
@@ -107,7 +149,7 @@ function nextStep(): void {
 }
 
 async function submit(): Promise<void> {
-  if (submitting.value || props.report.blocked) return
+  if (submitting.value || scopedBlocked.value) return
   if (!validateStep(2)) return
   submitting.value = true
   formBanner.value = ''
@@ -116,6 +158,8 @@ async function submit(): Promise<void> {
       confirm: confirmText.value,
       acks: [...acks.value],
       guestPolicy: guestPolicy.value,
+      nodes: selectedList.value,
+      hostNode: hostNode.value || undefined,
     })
     emit('started')
   } catch (err) {
@@ -152,10 +196,33 @@ async function submit(): Promise<void> {
 
         <div class="modal-body">
           <p v-if="formBanner" class="banner">{{ formBanner }}</p>
-          <p v-if="report.blocked" class="banner">{{ t('pveUpgrade.preflightBlocked') }}</p>
+          <p v-if="scopedBlocked" class="banner">{{ t('pveUpgrade.preflightBlocked') }}</p>
 
           <!-- 步 1:预检报告确认 -->
           <template v-if="step === 1">
+            <div class="sec">
+              <span class="sec-title">{{ t('pveUpgrade.upgradeNodesLabel') }}</span>
+              <p class="hint">{{ t('pveUpgrade.upgradeNodesHint') }}</p>
+              <div class="node-pick">
+                <label
+                  v-for="np in report.nodes"
+                  :key="np.node"
+                  class="check node-pick-item"
+                >
+                  <input
+                    type="checkbox"
+                    :checked="selectedNodes.has(np.node)"
+                    :disabled="!np.online || np.node === hostNode"
+                    @change="toggleNode(np.node)"
+                  />
+                  <strong>{{ np.node }}</strong>
+                  <span v-if="!np.online" class="tag err">{{ t('pveUpgrade.offline') }}</span>
+                  <span v-if="np.node === hostNode" class="tag run">{{ t('pveUpgrade.hostNodeTag') }}</span>
+                </label>
+              </div>
+              <span v-if="formErrors.nodes" class="field-error">{{ formErrors.nodes }}</span>
+            </div>
+
             <div class="sec">
               <span class="sec-title">{{ t('pveUpgrade.clusterChecks') }}</span>
               <div v-for="ck in report.clusterChecks" :key="ck.key" class="check-row">
@@ -217,6 +284,19 @@ async function submit(): Promise<void> {
               </label>
             </div>
 
+            <div class="field">
+              <span class="field-label">{{ t('pveUpgrade.hostNodeLabel') }}</span>
+              <AppSelect
+                v-model="hostNode"
+                :options="hostNodeOptions"
+                :placeholder="t('pveUpgrade.hostNodeNone')"
+                :aria-label="t('pveUpgrade.hostNodeLabel')"
+                min-width="220px"
+                height="36px"
+              />
+              <span class="field-hint">{{ t('pveUpgrade.hostNodeHint') }}</span>
+            </div>
+
             <label class="field">
               <span class="field-label">{{ t('pveUpgrade.majorConfirmTitle') }}</span>
               <input v-model="confirmText" class="field-input mono" type="text" :placeholder="clusterName" autocomplete="off" />
@@ -226,6 +306,8 @@ async function submit(): Promise<void> {
             <div class="summary">
               <div class="summary-row"><span>{{ t('pveUpgrade.cluster') }}</span><strong>{{ clusterName }}</strong></div>
               <div class="summary-row"><span>{{ t('pveUpgrade.guestPolicy') }}</span><strong>{{ guestPolicy === 'warn' ? t('pveUpgrade.guestWarn') : t('pveUpgrade.guestShutdown') }}</strong></div>
+              <div class="summary-row"><span>{{ t('pveUpgrade.hostNodeLabel') }}</span><strong>{{ hostNode || t('pveUpgrade.hostNodeNone') }}</strong></div>
+              <div class="summary-row"><span>{{ t('pveUpgrade.upgradeNodesLabel') }}</span><strong>{{ selectedList.length }} / {{ report.nodes.length }}</strong></div>
               <div class="summary-row"><span>{{ t('pveUpgrade.node') }}</span><strong>{{ report.nodes.length }}</strong></div>
             </div>
           </template>
@@ -379,6 +461,10 @@ async function submit(): Promise<void> {
 }
 .field-error { font-size: 0.72rem; color: var(--color-red); }
 .hint { font-size: 0.74rem; color: var(--color-faint); line-height: 1.5; }
+.node-pick { display: flex; flex-wrap: wrap; gap: 8px 16px; }
+.node-pick-item { display: inline-flex; align-items: center; gap: 6px; font-size: 0.8rem; color: var(--color-text); cursor: pointer; }
+.node-pick-item input:disabled { cursor: not-allowed; }
+.field-hint { font-size: 0.7rem; color: var(--color-faint); line-height: 1.5; }
 .dim { color: var(--color-dim); }
 .sub { font-size: 0.68rem; }
 .mono { font-family: var(--font-mono); font-size: 0.76rem; }

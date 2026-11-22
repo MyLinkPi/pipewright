@@ -118,11 +118,11 @@ type serviceRegServiceDTO struct {
 	// StripPathPrefix 反代剥离 location 前缀(默认 false = 原样透传;仅 http 反代有效)。
 	StripPathPrefix bool `json:"stripPathPrefix"`
 	// EdgeHTTPS 是对外协议选择(false = 80 直连;true = 443 服务 + 80 该 path 301)。
-	EdgeHTTPS       bool `json:"edgeHttps"`
-	Enabled         bool `json:"enabled"`
-	InstanceCount   int    `json:"instanceCount"`
-	CreatedAt       string `json:"createdAt"`
-	UpdatedAt       string `json:"updatedAt"`
+	EdgeHTTPS     bool   `json:"edgeHttps"`
+	Enabled       bool   `json:"enabled"`
+	InstanceCount int    `json:"instanceCount"`
+	CreatedAt     string `json:"createdAt"`
+	UpdatedAt     string `json:"updatedAt"`
 }
 
 func toServiceRegServiceDTO(s servicereg.ServiceWithDomain) serviceRegServiceDTO {

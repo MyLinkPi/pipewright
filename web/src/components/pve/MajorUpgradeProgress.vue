@@ -10,10 +10,10 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { NIcon } from 'naive-ui'
-import { ArrowBarUp, Check, AlertTriangle, PlayerStop, RotateClockwise } from '@vicons/tabler'
+import { ArrowBarUp, Check, AlertTriangle, PlayerStop, RotateClockwise, Power } from '@vicons/tabler'
 import {
   getPVEMajorUpgradeStatus, abortPVEMajorUpgrade, resumePVEMajorUpgrade, retryPVEMajorNode,
-  type PVEMajorUpgradeStatus,
+  confirmPVEMajorReboot, type PVEMajorUpgradeStatus,
 } from '../../api/pveUpgrade'
 import { HttpError } from '../../api/http'
 import { useToast } from '../../composables/useToast'
@@ -38,14 +38,14 @@ let doneEmitted = false
 let tries = 0
 let pollSeq = 0
 
-const nodeStates = ['pending', 'guests', 'sources', 'upgrading', 'rebooting', 'waiting', 'verifying', 'done', 'failed']
+const nodeStates = ['pending', 'guests', 'sources', 'upgrading', 'awaiting-reboot', 'rebooting', 'waiting', 'verifying', 'done', 'failed']
 function nodeStateLabel(state: string): string {
   return nodeStates.includes(state) ? t(`pveUpgrade.nodeState_${state}`) : state
 }
 function nodeStateClass(state: string): string {
   if (state === 'done') return 'ok'
   if (state === 'failed') return 'err'
-  if (state === 'upgrading' || state === 'rebooting' || state === 'waiting') return 'warn'
+  if (state === 'awaiting-reboot' || state === 'upgrading' || state === 'rebooting' || state === 'waiting') return 'warn'
   if (state === 'pending') return 'dim'
   return 'run'
 }
@@ -183,6 +183,35 @@ async function onRetryNode(node: string): Promise<void> {
   }
 }
 
+/** 人工确认重启宿主节点(awaiting-reboot 态):控制端随节点下线,回来后人工续跑收尾。 */
+const awaitingNode = computed(() => {
+  const st = status.value
+  if (!st || st.running) return ''
+  return (st.nodes ?? []).find((n) => n.state === 'awaiting-reboot')?.node ?? ''
+})
+
+async function onConfirmReboot(): Promise<void> {
+  if (actionBusy.value || !awaitingNode.value) return
+  const ok = await confirm.open({
+    title: t('pveUpgrade.confirmRebootTitle', { node: awaitingNode.value }),
+    body: t('pveUpgrade.confirmRebootBody', { node: awaitingNode.value, name: props.clusterName }),
+    confirmText: props.clusterName,
+    confirmLabel: t('pveUpgrade.confirmRebootBtn'),
+    variant: 'danger',
+  })
+  if (!ok) return
+  actionBusy.value = true
+  try {
+    await confirmPVEMajorReboot(props.clusterId, props.clusterName)
+    toast.success(t('pveUpgrade.confirmRebootSent'))
+    restartPoll()
+  } catch (err) {
+    toast.error(errMsg(err, t('pveUpgrade.errNetwork')))
+  } finally {
+    actionBusy.value = false
+  }
+}
+
 onMounted(() => { void poll() })
 onUnmounted(() => {
   disposed = true
@@ -260,6 +289,13 @@ onUnmounted(() => {
             <span class="log-title">{{ t('pveUpgrade.majorLogTitle') }}</span>
             <pre class="log">{{ status.log.slice(-40).join('\n') }}</pre>
           </template>
+        </div>
+
+        <div v-if="awaitingNode" class="banner banner--warn awaiting-banner">
+          <span>{{ t('pveUpgrade.confirmRebootBanner', { node: awaitingNode }) }}</span>
+          <button type="button" class="btn-danger" :disabled="actionBusy" @click="onConfirmReboot">
+            <NIcon :size="13"><Power /></NIcon>{{ t('pveUpgrade.confirmRebootBtn') }}
+          </button>
         </div>
 
         <div class="modal-foot">
@@ -355,6 +391,13 @@ onUnmounted(() => {
 .banner--warn {
   background: var(--color-amber-soft, oklch(95% 0.06 80));
   color: var(--color-amber, oklch(75% 0.15 80));
+}
+.awaiting-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
 }
 .node-row {
   display: grid;

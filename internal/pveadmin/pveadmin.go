@@ -279,7 +279,9 @@ type Service interface {
 	ApplyAptRepos(ctx context.Context, id string, in AptRepoApplyInput) ([]AptRepoApplyItem, error)
 	// MajorPreflight 大版本升级预检(同步:pve8to9 --full/版本/磁盘/Ceph/仓库/任务),
 	// 报告缓存 30min 供 StartMajorUpgrade 校验。
-	MajorPreflight(ctx context.Context, id string) (*MajorPreflightReport, error)
+	// MajorPreflight 同步预检(并发扇出):nodes 非空时只预检这些节点(单机/部分升级),
+	// 报告/Blocked/AcksRequired 收敛到目标;空 = 全集群。
+	MajorPreflight(ctx context.Context, id string, nodes []string) (*MajorPreflightReport, error)
 	// StartMajorUpgrade 异步启动 8→9 滚动升级(持久化任务;confirm 须等于集群名,
 	// 预检须新鲜且无 FAIL、警告全 ack)。readonly → ErrReadonly;占用 → ErrBusy。
 	StartMajorUpgrade(ctx context.Context, id string, in MajorUpgradeInput) error
@@ -291,6 +293,9 @@ type Service interface {
 	RetryMajorNode(ctx context.Context, id, node, confirm string) error
 	// ResumeMajorUpgrade 从首个未完成节点续跑 interrupted/paused 任务(confirm 须等于集群名)。
 	ResumeMajorUpgrade(ctx context.Context, id, confirm string) error
+	// ConfirmMajorReboot 人工确认重启宿主节点(awaiting-reboot → rebooting;confirm
+	// 须等于集群名)——控制端随节点下线,回来后人工续跑收尾。
+	ConfirmMajorReboot(ctx context.Context, id, confirm string) error
 }
 
 type service struct {

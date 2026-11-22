@@ -67,6 +67,7 @@ type majorState struct {
 	rebooted         map[string]bool
 	distUpgradeArg   []string
 	distUpgradeCalls map[string]int
+	dumpExtra        string // 追加到 dump 尾部的额外源行(如 stable 系滚动别名)
 }
 
 func newMajorState() *majorState {
@@ -174,6 +175,7 @@ func (ms *majorState) wire(fc *fakePVEClient, fr *fakeRunner) {
 			if ms.sourcesTrixe[sid] {
 				content = strings.ReplaceAll(content, "bookworm", "trixie")
 			}
+			content += ms.dumpExtra
 			return &target.ExecResult{ExitCode: 0, Stdout: "##PWFILE:/etc/apt/sources.list\n" + content + "\n##PWEND\n"}, nil
 		case strings.Contains(joined, "/etc/os-release"):
 			return &target.ExecResult{ExitCode: 0, Stdout: "ID=debian\nVERSION_CODENAME=bookworm\n"}, nil
@@ -236,7 +238,7 @@ func waitMajorDone(t *testing.T, s *service, id string) MajorUpgradeStatus {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatal("大版本任务 8s 未停止")
+	t.Fatalf("大版本任务 8s 未停止: %+v", func() MajorUpgradeStatus { st, _ := s.MajorUpgradeStatus(context.Background(), id); return st }())
 	return MajorUpgradeStatus{}
 }
 
@@ -267,7 +269,7 @@ func TestMajorPreflightPassAndBlock(t *testing.T) {
 	ms.wire(fc, fr)
 	ctx := context.Background()
 
-	rep, err := s.MajorPreflight(ctx, cl.ID)
+	rep, err := s.MajorPreflight(ctx, cl.ID, nil)
 	if err != nil {
 		t.Fatalf("preflight: %v", err)
 	}
@@ -288,7 +290,7 @@ func TestMajorPreflightPassAndBlock(t *testing.T) {
 	ms.mu.Lock()
 	ms.ceph = true
 	ms.mu.Unlock()
-	rep, err = s.MajorPreflight(ctx, cl.ID)
+	rep, err = s.MajorPreflight(ctx, cl.ID, nil)
 	if err != nil || !rep.Blocked || !rep.CephDetected {
 		t.Fatalf("ceph rep = %+v / %v", rep, err)
 	}
@@ -298,7 +300,7 @@ func TestMajorPreflightPassAndBlock(t *testing.T) {
 	ms.ceph = false
 	ms.pending = 3
 	ms.mu.Unlock()
-	rep, _ = s.MajorPreflight(ctx, cl.ID)
+	rep, _ = s.MajorPreflight(ctx, cl.ID, nil)
 	if !rep.Blocked {
 		t.Fatal("待更新应阻断")
 	}
@@ -319,7 +321,7 @@ func TestStartMajorUpgradeGates(t *testing.T) {
 	if !errors.Is(err, ErrPreflightRequired) {
 		t.Fatalf("no preflight = %v", err)
 	}
-	if _, err := s.MajorPreflight(ctx, cl.ID); err != nil {
+	if _, err := s.MajorPreflight(ctx, cl.ID, nil); err != nil {
 		t.Fatalf("preflight: %v", err)
 	}
 	// 确认不匹配。
@@ -348,12 +350,18 @@ func TestMajorRollingSequence(t *testing.T) {
 	s, ft, fr, fc := newTestService(t)
 	cl := seedMajorCluster(t, s, ft)
 	ms := newMajorState()
+	// 额外注入一条 pvetools 风格的 stable-security 滚动别名行:换源须先钉到
+	// 当前代号再升 trixie,终态不得残留 stable(实测教训)。
+	ms.dumpExtra = "deb http://security.debian.org/debian-security stable-security main contrib\n"
 	ms.wire(fc, fr)
 	ctx := context.Background()
-	if _, err := s.MajorPreflight(ctx, cl.ID); err != nil {
+	if _, err := s.MajorPreflight(ctx, cl.ID, nil); err != nil {
 		t.Fatalf("preflight: %v", err)
 	}
-	in := MajorUpgradeInput{Confirm: cl.Name, Acks: []string{"self-hosting", "two-node-quorum"}, GuestPolicy: GuestPolicyShutdown}
+	// stable 别名与运行代号不符 → 预检按节点产生两条须 ack 的 repo-suite 警告。
+	in := MajorUpgradeInput{Confirm: cl.Name,
+		Acks:        []string{"self-hosting", "two-node-quorum", "repo-suite:pve1", "repo-suite:pve2"},
+		GuestPolicy: GuestPolicyShutdown}
 	if err := s.StartMajorUpgrade(ctx, cl.ID, in); err != nil {
 		t.Fatalf("start: %v", err)
 	}
@@ -390,6 +398,19 @@ func TestMajorRollingSequence(t *testing.T) {
 	if !ms.sourcesTrixe["node1"] || !ms.sourcesTrixe["node2"] {
 		t.Fatalf("sources = %v", ms.sourcesTrixe)
 	}
+	// stable 别名先钉 bookworm 再随全局升 trixie:终态无 stable 残留、security 行正确。
+	var mainFile string
+	for _, w := range fr.writes {
+		if w.path == "/etc/apt/sources.list.pw-tmp" {
+			mainFile = w.content
+		}
+	}
+	if mainFile == "" || strings.Contains(mainFile, "stable") {
+		t.Fatalf("stable 别名未钉死:\n%s", mainFile)
+	}
+	if !strings.Contains(mainFile, "trixie-security") {
+		t.Fatalf("security 行未随 trixie 重写:\n%s", mainFile)
+	}
 }
 
 func TestMajorFailFastAndRetry(t *testing.T) {
@@ -399,7 +420,7 @@ func TestMajorFailFastAndRetry(t *testing.T) {
 	ms.failUpgrade["node2"] = true
 	ms.wire(fc, fr)
 	ctx := context.Background()
-	if _, err := s.MajorPreflight(ctx, cl.ID); err != nil {
+	if _, err := s.MajorPreflight(ctx, cl.ID, nil); err != nil {
 		t.Fatalf("preflight: %v", err)
 	}
 	acks := []string{"self-hosting", "two-node-quorum"}
@@ -482,7 +503,7 @@ func TestMajorAbortAtStepBoundary(t *testing.T) {
 	ms.blockUpgrade = make(chan struct{})
 	ms.wire(fc, fr)
 	ctx := context.Background()
-	if _, err := s.MajorPreflight(ctx, cl.ID); err != nil {
+	if _, err := s.MajorPreflight(ctx, cl.ID, nil); err != nil {
 		t.Fatalf("preflight: %v", err)
 	}
 	acks := []string{"self-hosting", "two-node-quorum"}
@@ -520,7 +541,7 @@ func TestMajorPreflightSkipsAlready9xNode(t *testing.T) {
 	ms.sourcesTrixe["node1"] = true
 	ctx := context.Background()
 
-	rep, err := s.MajorPreflight(ctx, cl.ID)
+	rep, err := s.MajorPreflight(ctx, cl.ID, nil)
 	if err != nil || rep.Blocked {
 		t.Fatalf("混合集群预检不应阻断: %+v / %v", rep, err)
 	}
@@ -563,5 +584,124 @@ func TestMajorTargetNodesRejectsOffline(t *testing.T) {
 	_, err := s.majorTargetNodes(context.Background(), fc, cn, nil)
 	if !errors.Is(err, ErrPreflightRequired) {
 		t.Fatalf("offline target = %v, want ErrPreflightRequired", err)
+	}
+}
+
+// TestMajorHostNodeLastAndAwaitingConfirm 宿主节点(用户显式指定):排到最后、guest
+// 不自动关停(shutdown 策略下宿主节点仍跳过)、dist-upgrade 完成后 awaiting-reboot
+// 暂停;人工确认重启 → rebooting;续跑 → 从 rebooting 收尾到 done。
+func TestMajorHostNodeLastAndAwaitingConfirm(t *testing.T) {
+	s, ft, fr, fc := newTestService(t)
+	cl := seedMajorCluster(t, s, ft)
+	ms := newMajorState()
+	ms.wire(fc, fr)
+	ctx := context.Background()
+	if _, err := s.MajorPreflight(ctx, cl.ID, nil); err != nil {
+		t.Fatalf("preflight: %v", err)
+	}
+	// HostNode 不在目标里(未登记/非 8.x)→ 明确报错。
+	acks := []string{"self-hosting", "two-node-quorum"}
+	err := s.StartMajorUpgrade(ctx, cl.ID, MajorUpgradeInput{Confirm: cl.Name, Acks: acks, HostNode: "pve9"})
+	if !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("host not in target = %v", err)
+	}
+	in := MajorUpgradeInput{Confirm: cl.Name, Acks: acks, GuestPolicy: GuestPolicyShutdown, HostNode: "pve2"}
+	if err := s.StartMajorUpgrade(ctx, cl.ID, in); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	st := waitMajorDone(t, s, cl.ID)
+	if st.Status != MajorStatusPaused {
+		t.Fatalf("宿主节点应暂停等人工确认: %+v", st)
+	}
+	if len(st.Nodes) != 2 || st.Nodes[1].Node != "pve2" || st.Nodes[1].State != MajorNodeAwaitingReboot {
+		t.Fatalf("宿主应最后且 awaiting: %+v", st.Nodes)
+	}
+	if st.Nodes[0].State != MajorNodeDone {
+		t.Fatalf("node1 应完成: %+v", st.Nodes[0])
+	}
+	// guest 处理:shutdown 策略下 node1 的 guest 被关停,宿主节点跳过(不自动关停)。
+	ms.mu.Lock()
+	shutdownHost := false
+	for _, sc := range ms.shutdownCalls {
+		if strings.Contains(sc, "/nodes/pve2/") {
+			shutdownHost = true
+		}
+	}
+	rebootPve2 := strings.Contains(strings.Join(ms.rebootCalls, ","), "pve2")
+	ms.mu.Unlock()
+	if shutdownHost {
+		t.Fatalf("宿主节点 guest 不应自动关停: %v", ms.shutdownCalls)
+	}
+	if rebootPve2 {
+		t.Fatalf("awaiting 阶段不应发重启: %v", ms.rebootCalls)
+	}
+	// 人工确认重启(confirm 不匹配 → 拒绝)。
+	if err := s.ConfirmMajorReboot(ctx, cl.ID, "wrong"); !errors.Is(err, ErrConfirmMismatch) {
+		t.Fatalf("confirm = %v", err)
+	}
+	if err := s.ConfirmMajorReboot(ctx, cl.ID, cl.Name); err != nil {
+		t.Fatalf("confirm: %v", err)
+	}
+	ms.mu.Lock()
+	rebootPve2 = strings.Contains(strings.Join(ms.rebootCalls, ","), "pve2")
+	ms.mu.Unlock()
+	if !rebootPve2 {
+		t.Fatalf("确认后应发重启: %v", ms.rebootCalls)
+	}
+	// 续跑 → 从 rebooting 收尾到 done(不再关停/不再 dist-upgrade 宿主)。
+	distBefore := ms.distUpgradeCalls["node2"]
+	if err := s.ResumeMajorUpgrade(ctx, cl.ID, cl.Name); err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	st = waitMajorDone(t, s, cl.ID)
+	if st.Status != MajorStatusDone {
+		t.Fatalf("续跑后应完成: %+v", st)
+	}
+	ms.mu.Lock()
+	defer ms.mu.Unlock()
+	if ms.distUpgradeCalls["node2"] != distBefore {
+		t.Fatal("续跑不应重跑宿主 dist-upgrade")
+	}
+	if !ms.upgraded["node1"] || !ms.upgraded["node2"] {
+		t.Fatalf("upgraded = %v", ms.upgraded)
+	}
+}
+
+// TestMajorSubsetAckFiltering 只升部分节点:未选节点的节点级警告 ack 不拦本次升级,
+// 集群级警告仍须确认;未选节点完全不升级(不换源/不重启)。
+func TestMajorSubsetAckFiltering(t *testing.T) {
+	s, ft, fr, fc := newTestService(t)
+	cl := seedMajorCluster(t, s, ft)
+	ms := newMajorState()
+	ms.wire(fc, fr)
+	ctx := context.Background()
+	rep := &MajorPreflightReport{
+		ClusterID: cl.ID, At: time.Now().UTC().Format(time.RFC3339), Quorate: true,
+		AcksRequired: []string{"self-hosting", "pve8to9-warn:pve2"},
+	}
+	s.mu.Lock()
+	if s.preflights == nil {
+		s.preflights = map[string]preflightEntry{}
+	}
+	s.preflights[cl.ID] = preflightEntry{at: time.Now(), report: rep}
+	s.mu.Unlock()
+	acks := []string{"self-hosting"}
+	// 全集群(不选节点):pve2 的节点级警告未确认 → 拦。
+	err := s.StartMajorUpgrade(ctx, cl.ID, MajorUpgradeInput{Confirm: cl.Name, Acks: acks})
+	if !errors.Is(err, ErrPreflightRequired) {
+		t.Fatalf("full ack filter = %v", err)
+	}
+	// 只升 pve1:pve2 的节点级警告不拦。
+	if err := s.StartMajorUpgrade(ctx, cl.ID, MajorUpgradeInput{Confirm: cl.Name, Acks: acks, Nodes: []string{"pve1"}}); err != nil {
+		t.Fatalf("subset start = %v", err)
+	}
+	st := waitMajorDone(t, s, cl.ID)
+	if st.Status != MajorStatusDone || len(st.Nodes) != 1 || st.Nodes[0].Node != "pve1" {
+		t.Fatalf("subset st = %+v", st)
+	}
+	ms.mu.Lock()
+	defer ms.mu.Unlock()
+	if ms.upgraded["node2"] || len(ms.rebootCalls) != 1 || ms.rebootCalls[0] != "pve1" {
+		t.Fatalf("pve2 不应被动: upgraded=%v reboot=%v", ms.upgraded, ms.rebootCalls)
 	}
 }

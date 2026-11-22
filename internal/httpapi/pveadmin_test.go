@@ -42,31 +42,33 @@ type stubPVEAdmin struct {
 	uploadName  string
 
 	// 升级面注入字段。
-	updatesOV      *pveadmin.UpdatesOverview
-	updatesErr     error
-	refreshItems   []pveadmin.RefreshItem
-	refreshErr     error
-	upgradeErr     error
-	upgradeIn      pveadmin.UpgradeInput
-	upgradeStatus  pveadmin.UpgradeStatus
-	rebootRef      *pveadmin.TaskRef
-	rebootErr      error
-	rebootConfirm  string
-	aptInv         *pveadmin.AptRepoInventory
-	aptOverview    *pveadmin.AptRepoOverview
-	aptErr         error
-	aptRes         *pveadmin.AptRepoWriteResult
-	aptWriteErr    error
-	aptApplyItems  []pveadmin.AptRepoApplyItem
-	aptApplyErr    error
-	majorRep       *pveadmin.MajorPreflightReport
-	majorErr       error
-	majorStartErr  error
-	majorIn        pveadmin.MajorUpgradeInput
-	majorStatus    pveadmin.MajorUpgradeStatus
-	majorAbortErr  error
-	majorRetryErr  error
-	majorResumeErr error
+	updatesOV             *pveadmin.UpdatesOverview
+	updatesErr            error
+	refreshItems          []pveadmin.RefreshItem
+	refreshErr            error
+	upgradeErr            error
+	upgradeIn             pveadmin.UpgradeInput
+	upgradeStatus         pveadmin.UpgradeStatus
+	rebootRef             *pveadmin.TaskRef
+	rebootErr             error
+	rebootConfirm         string
+	aptInv                *pveadmin.AptRepoInventory
+	aptOverview           *pveadmin.AptRepoOverview
+	aptErr                error
+	aptRes                *pveadmin.AptRepoWriteResult
+	aptWriteErr           error
+	aptApplyItems         []pveadmin.AptRepoApplyItem
+	aptApplyErr           error
+	majorRep              *pveadmin.MajorPreflightReport
+	majorErr              error
+	majorStartErr         error
+	majorIn               pveadmin.MajorUpgradeInput
+	majorStatus           pveadmin.MajorUpgradeStatus
+	majorAbortErr         error
+	majorRetryErr         error
+	majorResumeErr        error
+	majorConfirmRebootErr error
+	majorPreflightNodes   []string
 }
 
 func (s *stubPVEAdmin) OnServerRegistered(_ context.Context, _ string) (*pveadmin.DiscoveryResult, error) {
@@ -194,8 +196,9 @@ func (s *stubPVEAdmin) ApplyAptRepos(context.Context, string, pveadmin.AptRepoAp
 	s.calls = append(s.calls, "aptapply")
 	return s.aptApplyItems, s.aptApplyErr
 }
-func (s *stubPVEAdmin) MajorPreflight(context.Context, string) (*pveadmin.MajorPreflightReport, error) {
+func (s *stubPVEAdmin) MajorPreflight(_ context.Context, _ string, nodes []string) (*pveadmin.MajorPreflightReport, error) {
 	s.calls = append(s.calls, "majorpreflight")
+	s.majorPreflightNodes = nodes
 	return s.majorRep, s.majorErr
 }
 func (s *stubPVEAdmin) StartMajorUpgrade(_ context.Context, _ string, in pveadmin.MajorUpgradeInput) error {
@@ -217,6 +220,10 @@ func (s *stubPVEAdmin) RetryMajorNode(context.Context, string, string, string) e
 func (s *stubPVEAdmin) ResumeMajorUpgrade(context.Context, string, string) error {
 	s.calls = append(s.calls, "majorresume")
 	return s.majorResumeErr
+}
+func (s *stubPVEAdmin) ConfirmMajorReboot(context.Context, string, string) error {
+	s.calls = append(s.calls, "majorconfirmreboot")
+	return s.majorConfirmRebootErr
 }
 
 func setupPVEAdminAPI(t *testing.T, stub *stubPVEAdmin) (srvURL string, client *http.Client, csrf string, rec audit.Recorder) {

@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/huangchengsir/pipewright/internal/audit"
@@ -17,18 +18,19 @@ import (
 
 // 升级面审计 action。
 const (
-	auditActionPVEUpgradeRefresh = "pveadmin.upgrade.refresh"
-	auditActionPVEUpgradeStart   = "pveadmin.upgrade.start"
-	auditActionPVENodeReboot     = "pveadmin.node.reboot"
-	auditActionPVEAptToggle      = "pveadmin.apt.toggle"
-	auditActionPVEAptMirror      = "pveadmin.apt.mirror"
-	auditActionPVEAptPreset      = "pveadmin.apt.preset"
-	auditActionPVEAptRestore     = "pveadmin.apt.restore"
-	auditActionPVEAptApply       = "pveadmin.apt.apply"
-	auditActionPVEMajorStart     = "pveadmin.upgrade.major.start"
-	auditActionPVEMajorAbort     = "pveadmin.upgrade.major.abort"
-	auditActionPVEMajorRetry     = "pveadmin.upgrade.major.retry"
-	auditActionPVEMajorResume    = "pveadmin.upgrade.major.resume"
+	auditActionPVEUpgradeRefresh     = "pveadmin.upgrade.refresh"
+	auditActionPVEUpgradeStart       = "pveadmin.upgrade.start"
+	auditActionPVENodeReboot         = "pveadmin.node.reboot"
+	auditActionPVEAptToggle          = "pveadmin.apt.toggle"
+	auditActionPVEAptMirror          = "pveadmin.apt.mirror"
+	auditActionPVEAptPreset          = "pveadmin.apt.preset"
+	auditActionPVEAptRestore         = "pveadmin.apt.restore"
+	auditActionPVEAptApply           = "pveadmin.apt.apply"
+	auditActionPVEMajorStart         = "pveadmin.upgrade.major.start"
+	auditActionPVEMajorAbort         = "pveadmin.upgrade.major.abort"
+	auditActionPVEMajorRetry         = "pveadmin.upgrade.major.retry"
+	auditActionPVEMajorResume        = "pveadmin.upgrade.major.resume"
+	auditActionPVEMajorConfirmReboot = "pveadmin.upgrade.major.confirm_reboot"
 )
 
 // mountPVEUpgrade 把升级面端点挂进 admin 子组(由 mountPVEAdmin 调用)。
@@ -53,6 +55,7 @@ func mountPVEUpgrade(ar chi.Router, svc pveadmin.Service, aud audit.Recorder) {
 	ar.Post("/pve/clusters/{id}/major-upgrade/abort", makePVEMajorAbortHandler(svc, aud))
 	ar.Post("/pve/clusters/{id}/major-upgrade/retry", makePVEMajorRetryHandler(svc, aud))
 	ar.Post("/pve/clusters/{id}/major-upgrade/resume", makePVEMajorResumeHandler(svc, aud))
+	ar.Post("/pve/clusters/{id}/major-upgrade/confirm-reboot", makePVEMajorConfirmRebootHandler(svc, aud))
 }
 
 // pveUpgradeReadonlyAudit 只读拒绝留痕(拒绝也是「有人试图操作」的事实)。
@@ -381,13 +384,22 @@ func makePVEAptApplyHandler(svc pveadmin.Service, aud audit.Recorder) http.Handl
 // ---- 大版本升级 -------------------------------------------------------------------------
 
 // makePVEMajorPreflightHandler 返回 GET .../major-upgrade/preflight(同步预检报告;只读)。
+// ?nodes=a,b 可选:只预检这些节点(单机/部分升级,报告与阻断收敛到目标);缺省 = 全集群。
 func makePVEMajorPreflightHandler(svc pveadmin.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if svc == nil {
 			writeError(w, http.StatusServiceUnavailable, "internal", "PVE 管理服务未初始化")
 			return
 		}
-		rep, err := svc.MajorPreflight(r.Context(), chi.URLParam(r, "id"))
+		var nodes []string
+		if raw := r.URL.Query().Get("nodes"); raw != "" {
+			for _, n := range strings.Split(raw, ",") {
+				if n = strings.TrimSpace(n); n != "" {
+					nodes = append(nodes, n)
+				}
+			}
+		}
+		rep, err := svc.MajorPreflight(r.Context(), chi.URLParam(r, "id"), nodes)
 		if err != nil {
 			writePVEAdminError(w, err)
 			return
@@ -510,6 +522,35 @@ func makePVEMajorResumeHandler(svc pveadmin.Service, aud audit.Recorder) http.Ha
 		recordAudit(r.Context(), aud, audit.Entry{Actor: auditActor, Action: auditActionPVEMajorResume,
 			TargetType: auditTargetPVECluster, TargetID: id,
 			Detail: map[string]any{"result": "受理"}, IP: clientIP(r)})
+		writeJSON(w, http.StatusAccepted, map[string]any{"ok": true})
+	}
+}
+
+// makePVEMajorConfirmRebootHandler 返回 POST .../major-upgrade/confirm-reboot
+// {confirm} → 202:人工确认重启宿主节点(awaiting-reboot → rebooting;控制端随节点
+// 下线,回来后人工续跑收尾)。受理与拒绝均留审计。
+func makePVEMajorConfirmRebootHandler(svc pveadmin.Service, aud audit.Recorder) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if svc == nil {
+			writeError(w, http.StatusServiceUnavailable, "internal", "PVE 管理服务未初始化")
+			return
+		}
+		r.Body = http.MaxBytesReader(w, r.Body, 1<<16)
+		var req struct {
+			Confirm string `json:"confirm"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "bad_request", "请求体格式错误")
+			return
+		}
+		id := chi.URLParam(r, "id")
+		if err := svc.ConfirmMajorReboot(r.Context(), id, req.Confirm); err != nil {
+			writePVEAdminError(w, err)
+			return
+		}
+		recordAudit(r.Context(), aud, audit.Entry{Actor: auditActor, Action: auditActionPVEMajorConfirmReboot,
+			TargetType: auditTargetPVECluster, TargetID: id,
+			Detail: map[string]any{"result": "受理(宿主节点重启,控制端随之下线)"}, IP: clientIP(r)})
 		writeJSON(w, http.StatusAccepted, map[string]any{"ok": true})
 	}
 }
