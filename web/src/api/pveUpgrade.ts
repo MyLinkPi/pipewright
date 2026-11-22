@@ -15,6 +15,7 @@
  * GET    /api/pve/clusters/{id}/upgrade-status                → PVEUpgradeStatus
  * POST   /api/pve/clusters/{id}/nodes/{node}/reboot           → PVETaskRef (202, needs CSRF)
  * GET    /api/pve/clusters/{id}/nodes/{node}/apt-repos        → PVEAptRepoInventory
+ * GET    /api/pve/clusters/{id}/apt-repos/overview            → PVEAptRepoOverview
  * POST   /api/pve/clusters/{id}/nodes/{node}/apt-repos/toggle → PVEAptRepoWriteResult (needs CSRF)
  * POST   /api/pve/clusters/{id}/nodes/{node}/apt-repos/mirror → PVEAptRepoWriteResult (needs CSRF)
  * POST   /api/pve/clusters/{id}/nodes/{node}/apt-repos/preset → PVEAptRepoWriteResult (needs CSRF)
@@ -152,6 +153,26 @@ export interface PVEAptRepoInventory {
   warnings: PVEAptRepoWarning[]
 }
 
+/** 集群仓库总览里一个节点的摘要(派生自清单,不含逐条目)。 */
+export interface PVEAptRepoNodeSummary {
+  node: string
+  online: boolean
+  codename?: string
+  subscription?: string
+  /** enterprise | no-subscription | mixed | none。 */
+  pveRepo: string
+  /** official | ustc | tsinghua | aliyun | mixed。 */
+  mirror: string
+  ceph: boolean
+  enabledCount: number
+  warnings: PVEAptRepoWarning[]
+  error?: string
+}
+
+export interface PVEAptRepoOverview {
+  items: PVEAptRepoNodeSummary[]
+}
+
 export interface PVEAptRepoToggleInput {
   path: string
   key: string
@@ -190,6 +211,11 @@ export interface PVEAptRepoApplyItem {
 export async function getPVEAptRepos(id: string, node: string, signal?: AbortSignal): Promise<PVEAptRepoInventory> {
   return http.get<PVEAptRepoInventory>(
     `/api/pve/clusters/${encodeURIComponent(id)}/nodes/${encodeURIComponent(node)}/apt-repos`, { signal })
+}
+
+export async function getPVEAptRepoOverview(id: string, signal?: AbortSignal): Promise<PVEAptRepoOverview> {
+  return http.get<PVEAptRepoOverview>(
+    `/api/pve/clusters/${encodeURIComponent(id)}/apt-repos/overview`, { signal })
 }
 
 export async function togglePVEAptRepo(id: string, node: string, input: PVEAptRepoToggleInput): Promise<PVEAptRepoWriteResult> {

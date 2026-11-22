@@ -422,3 +422,88 @@ func TestApplyAptReposBatch(t *testing.T) {
 		}
 	}
 }
+
+// ---- 总览摘要 ---------------------------------------------------------------------------
+
+func TestAptRepoSummary(t *testing.T) {
+	cases := []struct {
+		name        string
+		content     string
+		wantPve     string
+		wantMirror  string
+		wantCeph    bool
+		wantEnabled int
+	}{
+		{"enterprise", "deb https://enterprise.proxmox.com/debian/pve bookworm pve-enterprise\n", "enterprise", "official", false, 1},
+		{"no-sub", "deb http://download.proxmox.com/debian/pve bookworm pve-no-subscription\n", "no-subscription", "official", false, 1},
+		{"mixed-pve", "deb https://enterprise.proxmox.com/debian/pve bookworm pve-enterprise\ndeb http://download.proxmox.com/debian/pve bookworm pve-no-subscription\n", "mixed", "official", false, 2},
+		{"none-disabled", "# deb http://download.proxmox.com/debian/pve bookworm pve-no-subscription\n", "none", "official", false, 0},
+		{"ustc", "deb https://mirrors.ustc.edu.cn/debian bookworm main\ndeb https://mirrors.ustc.edu.cn/proxmox/debian/pve bookworm pve-no-subscription\n", "no-subscription", "ustc", false, 2},
+		{"aliyun-debian-only", "deb https://mirrors.aliyun.com/debian bookworm main\ndeb http://download.proxmox.com/debian/pve bookworm pve-no-subscription\n", "no-subscription", "aliyun", false, 2},
+		{"mixed-mirror", "deb https://mirrors.ustc.edu.cn/debian bookworm main\ndeb https://mirrors.tuna.tsinghua.edu.cn/proxmox/debian/pve bookworm pve-no-subscription\n", "no-subscription", "mixed", false, 2},
+		{"ceph", "deb http://deb.debian.org/debian bookworm main\ndeb https://enterprise.proxmox.com/debian/ceph-squid bookworm enterprise\n", "none", "official", true, 2},
+	}
+	for _, c := range cases {
+		files := []*aptRepoFileRaw{parseListFile("/etc/apt/sources.list", strings.Split(c.content, "\n"))}
+		pve, mirror, ceph, n := aptRepoSummary(files)
+		if pve != c.wantPve || mirror != c.wantMirror || ceph != c.wantCeph || n != c.wantEnabled {
+			t.Errorf("%s: got (%s,%s,ceph=%v,n=%d), want (%s,%s,ceph=%v,n=%d)",
+				c.name, pve, mirror, ceph, n, c.wantPve, c.wantMirror, c.wantCeph, c.wantEnabled)
+		}
+	}
+}
+
+func TestListAptRepoOverview(t *testing.T) {
+	s, ft, fr, fc := newTestService(t)
+	cl := seedCreateCluster(t, s, ft)
+	poolID, _, _ := s.ensurePool(context.Background(), cl.ID, cl.Name)
+	ft.servers["node2"] = &target.Server{ID: "node2", Name: "pve2", Host: "10.1.0.12", Port: 22, User: "root", PoolID: poolID, Kind: target.KindPVENode}
+
+	enterpriseDump := "##PWFILE:/etc/apt/sources.list\ndeb http://deb.debian.org/debian bookworm main\ndeb https://enterprise.proxmox.com/debian/pve bookworm pve-enterprise\n\n##PWEND\n"
+	fr.runFn = func(sid string, cmd []string) (*target.ExecResult, error) {
+		joined := strings.Join(cmd, " ")
+		if strings.Contains(joined, "##PWFILE") {
+			if sid == "node2" {
+				return nil, fmt.Errorf("%w: SSH 不可达", ErrProbe) // 错误隔离
+			}
+			return &target.ExecResult{ExitCode: 0, Stdout: enterpriseDump}, nil
+		}
+		if strings.Contains(joined, "/etc/os-release") {
+			return &target.ExecResult{ExitCode: 0, Stdout: "VERSION_CODENAME=bookworm\n"}, nil
+		}
+		return &target.ExecResult{ExitCode: 0}, nil
+	}
+	fc.getFn = func(path string) (any, error) {
+		switch {
+		case strings.Contains(path, "/cluster/status"):
+			return []map[string]any{
+				{"type": "cluster", "name": "pve-prod", "quorate": 1},
+				{"type": "node", "name": "pve1", "ip": "10.1.0.11", "online": 1},
+				{"type": "node", "name": "pve2", "ip": "10.1.0.12", "online": 1},
+			}, nil
+		case strings.Contains(path, "/subscription"):
+			return map[string]any{"status": "active"}, nil
+		}
+		return nil, fmt.Errorf("unexpected GET %s", path)
+	}
+
+	ov, err := s.ListAptRepoOverview(context.Background(), cl.ID)
+	if err != nil {
+		t.Fatalf("overview: %v", err)
+	}
+	if len(ov.Items) != 2 {
+		t.Fatalf("items = %d, want 2", len(ov.Items))
+	}
+	byNode := map[string]AptRepoNodeSummary{}
+	for _, it := range ov.Items {
+		byNode[it.Node] = it
+	}
+	pve1 := byNode["pve1"]
+	if pve1.Codename != "bookworm" || pve1.Subscription != "active" || pve1.PveRepo != "enterprise" ||
+		pve1.Mirror != "official" || pve1.Ceph || pve1.EnabledCount != 2 || pve1.Error != "" {
+		t.Fatalf("pve1 = %+v", pve1)
+	}
+	if pve2 := byNode["pve2"]; pve2.Error == "" {
+		t.Fatalf("pve2 应错误隔离: %+v", pve2)
+	}
+}

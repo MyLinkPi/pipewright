@@ -84,6 +84,25 @@ type AptRepoInventory struct {
 	Warnings     []AptRepoWarning `json:"warnings"`
 }
 
+// AptRepoNodeSummary 是集群仓库总览里一个节点的摘要(派生自清单,不含逐条目)。
+type AptRepoNodeSummary struct {
+	Node         string           `json:"node"`
+	Online       bool             `json:"online"`
+	Codename     string           `json:"codename,omitempty"`
+	Subscription string           `json:"subscription,omitempty"`
+	PveRepo      string           `json:"pveRepo"` // enterprise | no-subscription | mixed | none
+	Mirror       string           `json:"mirror"`  // official | ustc | tsinghua | aliyun | mixed
+	Ceph         bool             `json:"ceph"`
+	EnabledCount int              `json:"enabledCount"`
+	Warnings     []AptRepoWarning `json:"warnings"`
+	Error        string           `json:"error,omitempty"`
+}
+
+// AptRepoOverview 是集群仓库总览(逐节点错误隔离)。
+type AptRepoOverview struct {
+	Items []AptRepoNodeSummary `json:"items"`
+}
+
 // AptRepoToggleInput 是启停单条目入参。
 type AptRepoToggleInput struct {
 	Path    string `json:"path"`
@@ -842,6 +861,111 @@ func aptRepoWarnings(files []*aptRepoFileRaw, codename, subscription string) []A
 			Message: "检测到 Ceph 源(只读展示):Ceph 集群的大版本升级须人工按官方流程处理"})
 	}
 	return ws
+}
+
+// mirrorHostPreset 是镜像站域名 → 预设名(mirrorHosts 反向)。
+var mirrorHostPreset = func() map[string]string {
+	m := make(map[string]string, len(mirrorHosts))
+	for k, h := range mirrorHosts {
+		m[h] = k
+	}
+	return m
+}()
+
+// aptRepoSummary 从清单派生总览摘要:PVE 源类型/镜像/Ceph/启用条目数。
+// PveRepo 看启用的 pve 条目企业/公共两侧;Mirror 看启用 debian+pve 条目主机里出现的
+// 非官方镜像预设(0=official,1=该名,>1=mixed;aliyun 预设下 PVE 保持官方仍计 aliyun);
+// Ceph 任意 ceph 条目存在即真(与 aptRepoWarnings 口径一致)。
+func aptRepoSummary(files []*aptRepoFileRaw) (pveRepo, mirror string, ceph bool, enabledCount int) {
+	entEnabled, pubEnabled := false, false
+	mirrors := map[string]bool{}
+	for _, f := range files {
+		for _, e := range f.entries {
+			if e.kind == "ceph" {
+				ceph = true
+			}
+			if !e.enabled {
+				continue
+			}
+			enabledCount++
+			if e.kind == "pve" {
+				if e.enterprise {
+					entEnabled = true
+				} else {
+					pubEnabled = true
+				}
+			}
+			if e.kind == "debian" || e.kind == "pve" {
+				for _, uri := range e.uris {
+					if u, err := url.Parse(uri); err == nil {
+						if preset, ok := mirrorHostPreset[u.Hostname()]; ok {
+							mirrors[preset] = true
+						}
+					}
+				}
+			}
+		}
+	}
+	switch {
+	case entEnabled && pubEnabled:
+		pveRepo = "mixed"
+	case entEnabled:
+		pveRepo = "enterprise"
+	case pubEnabled:
+		pveRepo = "no-subscription"
+	default:
+		pveRepo = "none"
+	}
+	switch len(mirrors) {
+	case 0:
+		mirror = "official"
+	case 1:
+		for k := range mirrors {
+			mirror = k
+		}
+	default:
+		mirror = "mixed"
+	}
+	return pveRepo, mirror, ceph, enabledCount
+}
+
+// ListAptRepoOverview 集群仓库总览(只读;服务端扇出,逐节点错误隔离,照 ListUpdates)。
+func (s *service) ListAptRepoOverview(ctx context.Context, id string) (*AptRepoOverview, error) {
+	cl, c, err := s.clientFor(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	cn, err := fetchClusterNodes(ctx, c)
+	if err != nil {
+		return nil, err
+	}
+	out := &AptRepoOverview{Items: make([]AptRepoNodeSummary, len(cn.Nodes))}
+	fanOutNodes(len(cn.Nodes), aptRepoApplyConcurrency, func(i int) {
+		n := cn.Nodes[i]
+		item := AptRepoNodeSummary{Node: n.Name, Online: n.Online}
+		defer func() { out.Items[i] = item }()
+		if !n.Online {
+			item.Error = "节点离线"
+			return
+		}
+		nctx, cancel := context.WithTimeout(ctx, updatesNodeTO)
+		defer cancel()
+		files, codename, rerr := s.readAptRepoFiles(nctx, cl, n.Name)
+		if rerr != nil {
+			item.Error = unwrapTail(rerr)
+			return
+		}
+		item.Codename = codename
+		var sb apiSubscription
+		if gerr := c.Get(nctx, "/api2/json/nodes/"+n.Name+"/subscription", &sb); gerr == nil {
+			item.Subscription = sb.Status
+		} else {
+			item.Subscription = "notfound"
+		}
+		item.PveRepo, item.Mirror, item.Ceph, item.EnabledCount = aptRepoSummary(files)
+		item.Warnings = aptRepoWarnings(files, codename, item.Subscription)
+	})
+	return out, nil
 }
 
 // ToggleAptRepo 启停单条目(ceph 拒绝;重读最新防 TOCTOU,按 key 定位)。

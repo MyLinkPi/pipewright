@@ -45,6 +45,7 @@ func mountPVEUpgrade(ar chi.Router, svc pveadmin.Service, aud audit.Recorder) {
 	ar.Post("/pve/clusters/{id}/nodes/{node}/apt-repos/preset", makePVEAptPresetHandler(svc, aud))
 	ar.Post("/pve/clusters/{id}/nodes/{node}/apt-repos/restore", makePVEAptRestoreHandler(svc, aud))
 	ar.Post("/pve/clusters/{id}/apt-repos/apply", makePVEAptApplyHandler(svc, aud))
+	ar.Get("/pve/clusters/{id}/apt-repos/overview", makePVEAptRepoOverviewHandler(svc))
 
 	ar.Get("/pve/clusters/{id}/major-upgrade/preflight", makePVEMajorPreflightHandler(svc))
 	ar.Post("/pve/clusters/{id}/major-upgrade", makePVEMajorStartHandler(svc, aud))
@@ -202,6 +203,22 @@ func makePVEAptReposHandler(svc pveadmin.Service) http.HandlerFunc {
 			return
 		}
 		writeJSON(w, http.StatusOK, inv)
+	}
+}
+
+// makePVEAptRepoOverviewHandler 返回 GET .../apt-repos/overview(集群仓库总览;只读)。
+func makePVEAptRepoOverviewHandler(svc pveadmin.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if svc == nil {
+			writeError(w, http.StatusServiceUnavailable, "internal", "PVE 管理服务未初始化")
+			return
+		}
+		ov, err := svc.ListAptRepoOverview(r.Context(), chi.URLParam(r, "id"))
+		if err != nil {
+			writePVEAdminError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, ov)
 	}
 }
 

@@ -53,6 +53,7 @@ type stubPVEAdmin struct {
 	rebootErr      error
 	rebootConfirm  string
 	aptInv         *pveadmin.AptRepoInventory
+	aptOverview    *pveadmin.AptRepoOverview
 	aptErr         error
 	aptRes         *pveadmin.AptRepoWriteResult
 	aptWriteErr    error
@@ -168,6 +169,10 @@ func (s *stubPVEAdmin) RebootNode(_ context.Context, _, node, confirm string) (*
 func (s *stubPVEAdmin) ListAptRepos(context.Context, string, string) (*pveadmin.AptRepoInventory, error) {
 	s.calls = append(s.calls, "aptrepos")
 	return s.aptInv, s.aptErr
+}
+func (s *stubPVEAdmin) ListAptRepoOverview(context.Context, string) (*pveadmin.AptRepoOverview, error) {
+	s.calls = append(s.calls, "aptoverview")
+	return s.aptOverview, s.aptErr
 }
 func (s *stubPVEAdmin) ToggleAptRepo(context.Context, string, string, pveadmin.AptRepoToggleInput) (*pveadmin.AptRepoWriteResult, error) {
 	s.calls = append(s.calls, "apttoggle")

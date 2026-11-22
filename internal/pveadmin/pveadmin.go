@@ -265,6 +265,8 @@ type Service interface {
 	RebootNode(ctx context.Context, id, node, confirm string) (*TaskRef, error)
 	// ListAptRepos 读节点 apt 仓库清单(.list/.sources 双格式解析 + 警告;只读)。
 	ListAptRepos(ctx context.Context, id, node string) (*AptRepoInventory, error)
+	// ListAptRepoOverview 集群仓库总览(逐节点摘要:代号/订阅/PVE 源/镜像/Ceph/警告;只读)。
+	ListAptRepoOverview(ctx context.Context, id string) (*AptRepoOverview, error)
 	// ToggleAptRepo 启停单个仓库条目(写操作:备份→原子替换→apt update 验证)。
 	ToggleAptRepo(ctx context.Context, id, node string, in AptRepoToggleInput) (*AptRepoWriteResult, error)
 	// SetAptRepoMirror 切换 Debian/PVE 源镜像预设(official/ustc/tsinghua/aliyun;Ceph 源不动)。

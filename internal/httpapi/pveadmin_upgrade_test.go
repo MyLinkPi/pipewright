@@ -78,6 +78,7 @@ func TestPVENodeRebootContract(t *testing.T) {
 func TestPVEAptRepoEndpoints(t *testing.T) {
 	stub := &stubPVEAdmin{
 		aptInv:        &pveadmin.AptRepoInventory{Node: "pve1", Codename: "bookworm"},
+		aptOverview:   &pveadmin.AptRepoOverview{Items: []pveadmin.AptRepoNodeSummary{{Node: "pve1", Online: true, PveRepo: "enterprise", Mirror: "official"}}},
 		aptRes:        &pveadmin.AptRepoWriteResult{Node: "pve1", OK: true, UpdateOK: true},
 		aptApplyItems: []pveadmin.AptRepoApplyItem{{Node: "pve1", OK: true}, {Node: "pve2", OK: true}},
 	}
@@ -86,6 +87,11 @@ func TestPVEAptRepoEndpoints(t *testing.T) {
 	resp := doJSON(t, client, http.MethodGet, base+"/api/pve/clusters/cl-1/nodes/pve1/apt-repos", csrf, "")
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("apt-repos = %d", resp.StatusCode)
+	}
+	resp = doJSON(t, client, http.MethodGet, base+"/api/pve/clusters/cl-1/apt-repos/overview", csrf, "")
+	rawOv := readBody(t, resp)
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(rawOv), "enterprise") {
+		t.Fatalf("overview = %d body=%s", resp.StatusCode, rawOv)
 	}
 	resp = doJSON(t, client, http.MethodPost, base+"/api/pve/clusters/cl-1/nodes/pve1/apt-repos/toggle", csrf,
 		`{"path":"/etc/apt/sources.list","key":"4","enabled":true}`)
