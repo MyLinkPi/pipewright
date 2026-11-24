@@ -203,12 +203,15 @@ func TestApplySuite(t *testing.T) {
 		t.Fatal("applySuite no change")
 	}
 	out := f.render()
-	// debian/pve 条目 suite 已切 trixie;ceph 条目不被 PVE 升级触碰(合法保留 bookworm)。
+	// debian/pve/ceph 条目 suite 均切 trixie(ceph 源同样用 Debian 代号作 suite,
+	// 不换会继续从 bookworm 源拉 ceph 包,与 trixie 系统混装)。
 	if strings.Contains(out, "deb http://deb.debian.org/debian bookworm") ||
-		strings.Contains(out, "/debian/pve bookworm") || strings.Contains(out, "bookworm-security") {
-		t.Fatalf("debian/pve bookworm 残留:\n%s", out)
+		strings.Contains(out, "/debian/pve bookworm") || strings.Contains(out, "bookworm-security") ||
+		strings.Contains(out, "/debian/ceph-squid bookworm") {
+		t.Fatalf("debian/pve/ceph bookworm 残留:\n%s", out)
 	}
-	if !strings.Contains(out, "trixie-security") || !strings.Contains(out, "deb http://deb.debian.org/debian trixie main") {
+	if !strings.Contains(out, "trixie-security") || !strings.Contains(out, "deb http://deb.debian.org/debian trixie main") ||
+		!strings.Contains(out, "/debian/ceph-squid trixie") {
 		t.Fatalf("suite 替换不正确:\n%s", out)
 	}
 	// URI/组件不被误改。

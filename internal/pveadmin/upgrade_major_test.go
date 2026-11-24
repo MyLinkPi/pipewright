@@ -170,6 +170,26 @@ func (ms *majorState) wire(fc *fakePVEClient, fr *fakeRunner) {
 		ms.mu.Lock()
 		defer ms.mu.Unlock()
 		switch {
+		case strings.Contains(joined, "pw-upg-start"):
+			// 解耦启动:记录脚本 argv(dist-upgrade 参数断言用),立即返回 STARTED。
+			ms.distUpgradeArg = append([]string(nil), cmd...)
+			return &target.ExecResult{ExitCode: 0, Stdout: "STARTED"}, nil
+		case strings.Contains(joined, "pw-upg-poll"):
+			// 解耦轮询:模拟远端 dist-upgrade 完成/失败/仍在运行(abort 测试用)。
+			if ms.failUpgrade[sid] {
+				ms.distUpgradeCalls[sid]++
+				return &target.ExecResult{ExitCode: 0, Stdout: "DONE 1"}, nil
+			}
+			if ms.blockUpgrade != nil {
+				select {
+				case <-ms.blockUpgrade:
+				default:
+					return &target.ExecResult{ExitCode: 0, Stdout: "RUNNING"}, nil
+				}
+			}
+			ms.upgraded[sid] = true
+			ms.distUpgradeCalls[sid]++
+			return &target.ExecResult{ExitCode: 0, Stdout: "DONE 0"}, nil
 		case strings.Contains(joined, "##PWFILE"):
 			content := majorSourcesBookworm
 			if ms.sourcesTrixe[sid] {
@@ -388,9 +408,10 @@ func TestMajorRollingSequence(t *testing.T) {
 	if len(ms.shutdownCalls) != 1 { // pve1 的运行中 guest 被关停
 		t.Fatalf("shutdown = %v", ms.shutdownCalls)
 	}
-	// dist-upgrade argv:noninteractive + confdef/confold。
+	// dist-upgrade argv:noninteractive + needrestart 自动 + confdef/confold。
 	joined := strings.Join(ms.distUpgradeArg, " ")
 	if !strings.Contains(joined, "DEBIAN_FRONTEND=noninteractive") ||
+		!strings.Contains(joined, "NEEDRESTART_MODE=a") ||
 		!strings.Contains(joined, "--force-confdef") || !strings.Contains(joined, "--force-confold") {
 		t.Fatalf("dist-upgrade argv = %v", ms.distUpgradeArg)
 	}
@@ -736,5 +757,260 @@ func TestMajorHostNodeExcludedFromRun(t *testing.T) {
 	}
 	if ms.shutdownCalls != nil && strings.Contains(strings.Join(ms.shutdownCalls, ","), "/nodes/pve2/") {
 		t.Fatalf("宿主机不应有 guest 关停: %v", ms.shutdownCalls)
+	}
+}
+
+// ---- 解耦执行 / 回滚 / 闸门 补测 ---------------------------------------------------------
+
+// TestMajorDetachedDistUpgradeProtocol 启动脚本(setssid + needrestart + confdef/confold)
+// 与完成标记轮询:RUNNING 继续等,DONE 0 视为成功。
+func TestMajorDetachedDistUpgradeProtocol(t *testing.T) {
+	s, _, fr, _ := newTestService(t)
+	var startCalls, pollCalls int
+	fr.runFn = func(_ string, cmd []string) (*target.ExecResult, error) {
+		j := strings.Join(cmd, " ")
+		switch {
+		case strings.Contains(j, "pw-upg-start"):
+			startCalls++
+			if !strings.Contains(j, "setsid") || !strings.Contains(j, "NEEDRESTART_MODE=a") ||
+				!strings.Contains(j, "DEBIAN_FRONTEND=noninteractive") || !strings.Contains(j, "--force-confold") {
+				t.Errorf("启动脚本缺参数: %s", j)
+			}
+			return &target.ExecResult{ExitCode: 0, Stdout: "STARTED"}, nil
+		case strings.Contains(j, "pw-upg-poll"):
+			pollCalls++
+			if pollCalls < 3 {
+				return &target.ExecResult{ExitCode: 0, Stdout: "RUNNING"}, nil
+			}
+			return &target.ExecResult{ExitCode: 0, Stdout: "DONE 0"}, nil
+		default:
+			return &target.ExecResult{ExitCode: 0}, nil
+		}
+	}
+	res, err := s.runDetachedDistUpgrade(context.Background(), "node1", time.Minute)
+	if err != nil || res == nil || res.ExitCode != 0 {
+		t.Fatalf("res=%+v err=%v", res, err)
+	}
+	if startCalls != 1 || pollCalls < 3 {
+		t.Fatalf("start=%d poll=%d", startCalls, pollCalls)
+	}
+}
+
+// TestMajorDetachedDistUpgradeExitCodeFails 远端退出码非零 → 任务失败(带退出码)。
+func TestMajorDetachedDistUpgradeExitCodeFails(t *testing.T) {
+	s, _, fr, _ := newTestService(t)
+	fr.runFn = func(_ string, cmd []string) (*target.ExecResult, error) {
+		j := strings.Join(cmd, " ")
+		if strings.Contains(j, "pw-upg-start") {
+			return &target.ExecResult{ExitCode: 0, Stdout: "STARTED"}, nil
+		}
+		if strings.Contains(j, "pw-upg-poll") {
+			return &target.ExecResult{ExitCode: 0, Stdout: "DONE 2"}, nil
+		}
+		return &target.ExecResult{ExitCode: 0}, nil
+	}
+	res, err := s.runDetachedDistUpgrade(context.Background(), "node1", time.Minute)
+	if err == nil || !strings.Contains(err.Error(), "退出码 2") {
+		t.Fatalf("err=%v res=%+v", err, res)
+	}
+	if res == nil || res.ExitCode != 2 {
+		t.Fatalf("res=%+v", res)
+	}
+}
+
+// TestMajorStartRejectsSubsetPreflightForFullRun 只预检了 pve1 的报告不能用于全量启动:
+// 目标解析后统一校验覆盖范围,防止「报告留空/不传 nodes」绕过未预检节点的 FAIL。
+func TestMajorStartRejectsSubsetPreflightForFullRun(t *testing.T) {
+	s, ft, fr, fc := newTestService(t)
+	cl := seedMajorCluster(t, s, ft)
+	ms := newMajorState()
+	ms.wire(fc, fr)
+	ctx := context.Background()
+	rep, err := s.MajorPreflight(ctx, cl.ID, []string{"pve1"})
+	if err != nil || rep.Blocked {
+		t.Fatalf("preflight: %+v / %v", rep, err)
+	}
+	err = s.StartMajorUpgrade(ctx, cl.ID, MajorUpgradeInput{Confirm: cl.Name, Acks: rep.AcksRequired})
+	if !errors.Is(err, ErrPreflightRequired) || !strings.Contains(err.Error(), "pve2") {
+		t.Fatalf("全量启动应因未覆盖 pve2 被拒: %v", err)
+	}
+}
+
+// TestMajorStartRejectsSelfHostedWithoutHostNode 控制端 hostname 命中集群节点且未显式
+// 指定宿主节点 → 启动被拒(避免升级过程把控制端自己关掉/重启)。
+func TestMajorStartRejectsSelfHostedWithoutHostNode(t *testing.T) {
+	prev := localHostIdentity
+	localHostIdentity = func() (string, []string) { return "pve1", nil }
+	t.Cleanup(func() { localHostIdentity = prev })
+
+	s, ft, fr, fc := newTestService(t)
+	cl := seedMajorCluster(t, s, ft)
+	ms := newMajorState()
+	ms.wire(fc, fr)
+	ctx := context.Background()
+	rep, err := s.MajorPreflight(ctx, cl.ID, nil)
+	if err != nil {
+		t.Fatalf("preflight: %v", err)
+	}
+	err = s.StartMajorUpgrade(ctx, cl.ID, MajorUpgradeInput{Confirm: cl.Name, Acks: rep.AcksRequired})
+	if !errors.Is(err, ErrPreflightRequired) || !strings.Contains(err.Error(), "hostNode") {
+		t.Fatalf("自托管未指定宿主节点应被拒: %v", err)
+	}
+}
+
+// TestMajorPreflightDetectsRunningTask 运行中任务 status 为 "running"(PVE 实际取值)时
+// 也必须判为阻断(此前只认空串会漏判)。
+func TestMajorPreflightDetectsRunningTask(t *testing.T) {
+	s, ft, fr, fc := newTestService(t)
+	cl := seedMajorCluster(t, s, ft)
+	ms := newMajorState()
+	ms.wire(fc, fr)
+	orig := fc.getFn
+	fc.getFn = func(path string) (any, error) {
+		if strings.Contains(path, "/cluster/tasks") {
+			return []map[string]any{{"node": "pve1", "type": "vzdump", "status": "running"}}, nil
+		}
+		return orig(path)
+	}
+	rep, err := s.MajorPreflight(context.Background(), cl.ID, nil)
+	if err != nil {
+		t.Fatalf("preflight: %v", err)
+	}
+	found := false
+	for _, np := range rep.Nodes {
+		for _, ck := range np.Checks {
+			if np.Node == "pve1" && ck.Key == "tasks" && ck.Level == "fail" {
+				found = true
+			}
+		}
+	}
+	if !found || !rep.Blocked {
+		t.Fatalf("运行中任务未阻断: %+v", rep.Nodes)
+	}
+}
+
+// TestMajorSourceRollbackOnAptUpdateFailure 换源后 apt update 失败 → 自动回滚备份源,
+// 节点失败但不停在「trixie 源 + bookworm 系统」的半换源状态。
+func TestMajorSourceRollbackOnAptUpdateFailure(t *testing.T) {
+	s, ft, fr, fc := newTestService(t)
+	cl := seedMajorCluster(t, s, ft)
+	ms := newMajorState()
+	ms.wire(fc, fr)
+	origRun := fr.runFn
+	var cpCalls int
+	fr.runFn = func(sid string, cmd []string) (*target.ExecResult, error) {
+		j := strings.Join(cmd, " ")
+		if j == "apt-get update" {
+			return &target.ExecResult{ExitCode: 1, Stderr: "E: mirror down"}, fmt.Errorf("%w: apt-get 退出码 1", ErrProbe)
+		}
+		if strings.HasPrefix(j, "cp -a ") {
+			cpCalls++
+		}
+		return origRun(sid, cmd)
+	}
+	ctx := context.Background()
+	rep, err := s.MajorPreflight(ctx, cl.ID, nil)
+	if err != nil {
+		t.Fatalf("preflight: %v", err)
+	}
+	if err := s.StartMajorUpgrade(ctx, cl.ID, MajorUpgradeInput{Confirm: cl.Name, Acks: rep.AcksRequired}); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	st := waitMajorDone(t, s, cl.ID)
+	if st.Status != MajorStatusPaused || len(st.Nodes) == 0 || !strings.Contains(st.Nodes[0].Error, "已自动回滚源") {
+		t.Fatalf("st = %+v", st)
+	}
+	if cpCalls < 2 { // 至少:写前备份 + 失败回滚
+		t.Fatalf("备份/回滚调用 = %d", cpCalls)
+	}
+}
+
+// TestInsertMajorJobRollsBackOnNodeFailure 节点行插入失败时 job 行一并回滚(不留孤儿任务)。
+func TestInsertMajorJobRollsBackOnNodeFailure(t *testing.T) {
+	s, _, _, _ := newTestService(t)
+	j := &majorJob{
+		id: "job-tx", clusterID: "c-tx", running: true, status: MajorStatusRunning,
+		guestPolicy: GuestPolicyWarn, nodeOrder: []string{"pve1"},
+		nodes: []MajorNodeStatus{
+			{Node: "pve1", Seq: 0, State: MajorNodePending},
+			{Node: "pve1", Seq: 1, State: MajorNodePending}, // 主键冲突
+		},
+	}
+	if err := s.insertMajorJob(context.Background(), j); err == nil {
+		t.Fatal("重复节点应插入失败")
+	}
+	var n int
+	if err := s.db.QueryRow(`SELECT COUNT(1) FROM pve_upgrade_jobs WHERE id = 'job-tx'`).Scan(&n); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("事务未回滚,残留 job 行 %d", n)
+	}
+}
+
+// TestMajorRetryRejectsReadonly 只读集群不允许重试。
+func TestMajorRetryRejectsReadonly(t *testing.T) {
+	s, ft, fr, fc := newTestService(t)
+	cl := seedMajorCluster(t, s, ft)
+	ms := newMajorState()
+	ms.wire(fc, fr)
+	if _, err := s.db.Exec(`UPDATE pve_clusters SET readonly = 1 WHERE id = ?`, cl.ID); err != nil {
+		t.Fatalf("set readonly: %v", err)
+	}
+	err := s.RetryMajorNode(context.Background(), cl.ID, "pve1", cl.Name)
+	if !errors.Is(err, ErrReadonly) {
+		t.Fatalf("retry readonly = %v", err)
+	}
+}
+
+// TestWaitNodeBackRejectsStaleUptime 恢复场景(无重启前 uptime)用「重启发出后已过时长」
+// 兜底:节点 uptime 明显更大 → 判定未真正重启(防止控制端还没下线就点续跑误判完成)。
+func TestWaitNodeBackRejectsStaleUptime(t *testing.T) {
+	s, _, fr, fc := newTestService(t)
+	fc.getFn = func(path string) (any, error) {
+		switch {
+		case strings.Contains(path, "/cluster/status"):
+			return []map[string]any{
+				{"type": "cluster", "name": "c", "quorate": 1},
+				{"type": "node", "name": "pve1", "ip": "10.1.0.11", "online": 1},
+			}, nil
+		case strings.HasSuffix(path, "/status"):
+			return map[string]any{"uptime": 100000}, nil
+		}
+		return nil, fmt.Errorf("unexpected GET %s", path)
+	}
+	fr.runFn = func(_ string, _ []string) (*target.ExecResult, error) {
+		return &target.ExecResult{ExitCode: 0}, nil
+	}
+	j := &majorJob{id: "job-x", clusterID: "c"}
+	err := s.waitNodeBack(context.Background(), j, fc, "pve1", "node1", -1, time.Now().Add(-10*time.Minute), true)
+	if err == nil || !strings.Contains(err.Error(), "未实际重启") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+// TestMajorStartRejectsStaleRunningJob 控制端重启遗留的 DB running 任务(内存无对应)
+// 存在时,不允许直接再启动第二个大版本任务(远端 dist-upgrade 可能仍在跑)。
+func TestMajorStartRejectsStaleRunningJob(t *testing.T) {
+	s, ft, fr, fc := newTestService(t)
+	cl := seedMajorCluster(t, s, ft)
+	ms := newMajorState()
+	ms.wire(fc, fr)
+	ctx := context.Background()
+	rep, err := s.MajorPreflight(ctx, cl.ID, nil)
+	if err != nil {
+		t.Fatalf("preflight: %v", err)
+	}
+	stale := &majorJob{
+		id: "job-stale", clusterID: cl.ID, running: true, status: MajorStatusRunning,
+		guestPolicy: GuestPolicyWarn, nodeOrder: []string{"pve1"},
+		nodes: []MajorNodeStatus{{Node: "pve1", Seq: 0, State: MajorNodeUpgrading}},
+	}
+	if err := s.insertMajorJob(ctx, stale); err != nil {
+		t.Fatalf("insert stale: %v", err)
+	}
+	err = s.StartMajorUpgrade(ctx, cl.ID, MajorUpgradeInput{Confirm: cl.Name, Acks: rep.AcksRequired})
+	if !errors.Is(err, ErrBusy) {
+		t.Fatalf("遗留 running 任务应拒绝新启动: %v", err)
 	}
 }

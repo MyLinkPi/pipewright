@@ -317,7 +317,7 @@ async function submit(): Promise<void> {
           <button
             type="submit"
             class="btn-primary"
-            :disabled="submitting || report.blocked || (step === 1 ? !allAcked : confirmText !== clusterName)"
+            :disabled="submitting || scopedBlocked || (step === 1 ? !allAcked : confirmText !== clusterName)"
             :aria-busy="submitting"
           >
             <NIcon v-if="step === 2" :size="13"><ArrowBarUp /></NIcon>

@@ -21,7 +21,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/url"
+	"os"
 	"regexp"
 	"sort"
 	"strconv"
@@ -64,17 +66,44 @@ const (
 	majorCmdTO                = 30 * time.Second
 	majorPve8to9TO            = 5 * time.Minute
 	majorAptUpdateTO          = 15 * time.Minute
-	majorDistUpgradeTO        = 60 * time.Minute
+	majorDistUpgradeTO        = 180 * time.Minute // dist-upgrade 等待上限(远端已与 SSH 解耦,超时不中断)
+	majorDpkgRepairTO         = 10 * time.Minute  // dist-upgrade 前 dpkg --configure -a 自愈
 	majorGuestShutdownTO      = 5 * time.Minute
 	majorRebootDownTO         = 10 * time.Minute // 等节点进入重启(下线;含 guest 关停耗时)
 	majorRebootWaitTO         = 15 * time.Minute // 等节点回线 + quorate
 	majorRebootPoll           = 10 * time.Second
 	majorPreflightFreshness   = 30 * time.Minute
-	majorPreflightNodeTO      = 7 * time.Minute
+	majorPreflightNodeTO      = 12 * time.Minute
 	majorPreflightConcurrency = 4
 	maxMajorLogLines          = 600
 	majorMinDiskGB            = 5
 )
+
+// dist-upgrade 远端产物路径与轮询间隔(固定路径,不拼接任何用户输入)。
+const (
+	majorUpgradeLogPath  = "/run/pw-pve9-upgrade.log"
+	majorUpgradeExitPath = "/run/pw-pve9-upgrade.exit"
+	majorUpgradePidPath  = "/run/pw-pve9-upgrade.pid"
+)
+
+// majorUpgradePollInterval 是轮询远端 dist-upgrade 完成标记的间隔(测试可调小)。
+var majorUpgradePollInterval = 10 * time.Second
+
+// majorUpgradeStartScript 以 setsid 让 dist-upgrade 脱离 SSH 会话运行(SSH 断开/控制端
+// 重启不会杀死 apt,避免 dpkg 半配置)。内部幂等:已有升级进程在跑则输出 RUNNING 不重复启动。
+var majorUpgradeStartScript = ": pw-upg-start; " +
+	"if [ -f " + majorUpgradePidPath + " ] && kill -0 \"$(cat " + majorUpgradePidPath + ")\" 2>/dev/null; then echo RUNNING; exit 0; fi; " +
+	"rm -f " + majorUpgradeExitPath + " " + majorUpgradeLogPath + " " + majorUpgradePidPath + "; " +
+	"setsid sh -c 'env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get -y " +
+	"-o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold dist-upgrade " +
+	">> " + majorUpgradeLogPath + " 2>&1; echo $? > " + majorUpgradeExitPath + "' </dev/null >/dev/null 2>&1 & " +
+	"echo $! > " + majorUpgradePidPath + "; echo STARTED"
+
+// majorUpgradePollScript 输出 DONE <退出码> / RUNNING / LOST。
+var majorUpgradePollScript = ": pw-upg-poll; " +
+	"if [ -f " + majorUpgradeExitPath + " ]; then printf 'DONE %s\\n' \"$(cat " + majorUpgradeExitPath + ")\"; " +
+	"elif [ -f " + majorUpgradePidPath + " ] && kill -0 \"$(cat " + majorUpgradePidPath + ")\" 2>/dev/null; then echo RUNNING; " +
+	"else echo LOST; fi"
 
 // errMajorAbort 是内部哨兵:步骤边界检测到中止请求。
 var errMajorAbort = errors.New("pveadmin: major upgrade aborted")
@@ -172,22 +201,23 @@ type MajorUpgradeStatus struct {
 
 // majorJob 是一次大版本升级任务的可变状态(内存日志 + DB 持久化状态)。
 type majorJob struct {
-	mu            sync.Mutex
-	id            string
-	clusterID     string
-	running       bool
-	status        string
-	guestPolicy   string
-	hostNode      string // 宿主节点(控制端所在);空 = 未指定
-	step          string
-	message       string
-	errMsg        string
-	log           []string
-	nodes         []MajorNodeStatus
-	nodeOrder     []string
-	abort         bool
-	preflightJSON string
-	createdAt     string
+	mu              sync.Mutex
+	id              string
+	clusterID       string
+	running         bool
+	status          string
+	guestPolicy     string
+	hostNode        string // 宿主节点(控制端所在);空 = 未指定
+	rebootStartedAt string // 宿主节点重启发出时间(RFC3339);用于续跑时校验是否真重启
+	step            string
+	message         string
+	errMsg          string
+	log             []string
+	nodes           []MajorNodeStatus
+	nodeOrder       []string
+	abort           bool
+	preflightJSON   string
+	createdAt       string
 }
 
 func (j *majorJob) set(step, msg string) {
@@ -282,12 +312,13 @@ func (s *service) MajorPreflight(ctx context.Context, id string, nodes []string)
 		rep.ClusterChecks = append(rep.ClusterChecks, MajorCheck{Key: "ceph", Level: "pass", Message: "未检测到 Ceph"})
 	}
 
-	// 运行中任务(全集群一次取,按节点归集)。
+	// 运行中任务(全集群一次取,按节点归集)。PVE 对未结束任务的 status 既可能是空串
+	// 也可能是 "running"(与 /tasks/{upid}/status 一致),两种都要算运行中。
 	runningTasks := map[string][]string{}
 	var tasks []apiTask
 	if terr := c.Get(ctx, "/api2/json/cluster/tasks", &tasks); terr == nil {
 		for _, t := range tasks {
-			if t.Status == "" { // 运行中
+			if t.Status == "" || strings.EqualFold(t.Status, "running") {
 				runningTasks[t.Node] = append(runningTasks[t.Node], t.Type)
 			}
 		}
@@ -380,6 +411,14 @@ func (s *service) majorNodePreflight(ctx context.Context, cl *Cluster, c pveClie
 			// 已升级节点(混合集群/续跑场景):跳过其余检查且不参与升级目标,
 			// 避免其 trixie 代号/待更新包把预检误判为 FAIL。
 			add("version", "pass", "已是 9.x(升级时将跳过)")
+			// 9.x 但运行内核未切换(dist-upgrade 完成却没重启):给出提示,避免新任务
+			// 静默跳过该节点后留下"9.x 用户态 + 旧内核"的节点。
+			if _, serr := s.nodeServerID(ctx, cl, n.Name); serr == nil {
+				var versions []apiAptVersion
+				if err := c.Get(nctx, base+"/apt/versions", &versions); err == nil && kernelNeedsReboot(versions) {
+					add("kernel-stale:"+n.Name, "warn", "已是 9.x 但运行内核仍是旧内核,需重启该节点生效")
+				}
+			}
 			return np
 		case major == 8 && minor >= 4:
 			add("version", "pass", "版本 "+ver.Release+"(8.4+)")
@@ -435,10 +474,10 @@ func (s *service) majorNodePreflight(ctx context.Context, cl *Cluster, c pveClie
 		add("disk", "fail", fmt.Sprintf("根分区剩余 %.1f GB,不足 5 GB", np.DiskFreeGB))
 	}
 	// 仓库状态(企业源无订阅 → 阻断;suite 混杂 → 警告)。
-	subStatus := ""
+	subStatus, subKnown := "", false
 	var sb apiSubscription
 	if err := c.Get(nctx, base+"/subscription", &sb); err == nil {
-		subStatus = sb.Status
+		subStatus, subKnown = sb.Status, true
 	}
 	if files, _, rerr := s.readAptRepoFiles(nctx, cl, n.Name); rerr == nil {
 		enterpriseEnabled, pveEnabled, suiteMixed := false, false, false
@@ -465,9 +504,15 @@ func (s *service) majorNodePreflight(ctx context.Context, cl *Cluster, c pveClie
 			// 必须在预检拦住(仓库管理「应用镜像」可自动补建 PVE 非订阅源)。
 			add("repo-pve:"+n.Name, "fail", "未启用任何 PVE 软件源:无法升级 PVE 包,请先在仓库管理应用镜像(会自动补建非订阅源)")
 		}
-		if enterpriseEnabled && !strings.EqualFold(subStatus, "active") {
+		switch {
+		case !enterpriseEnabled:
+			add("repo-sub", "pass", "仓库订阅状态可用")
+		case !subKnown:
+			// 订阅 API 临时失败不应误判为"无订阅"而硬阻断;降级为需 ack 的警告。
+			add("repo-sub-unknown:"+n.Name, "warn", "无法读取订阅状态(API 失败),请自行确认企业源有效")
+		case !strings.EqualFold(subStatus, "active"):
 			add("repo-sub", "fail", "企业源已启用但无有效订阅:请先在仓库管理切换到 no-subscription 或激活订阅")
-		} else {
+		default:
 			add("repo-sub", "pass", "仓库订阅状态可用")
 		}
 		if suiteMixed {
@@ -584,6 +629,144 @@ func (s *service) runMajorCmd(ctx context.Context, sid string, timeout time.Dura
 	return s.runner.Run(rctx, sid, cmd)
 }
 
+// runDetachedDistUpgrade 在节点上以 setsid 后台方式执行 dist-upgrade,再轮询完成标记。
+//
+// 为什么不用同步 SSH:runWithContext 在超时/取消时会 Close 会话,sshd 随之结束远端子进程,
+// 正在运行的 apt/dpkg 被杀 → 软件包半配置,后续 apt 直接拒绝执行,节点"升挂"。解耦后
+// SSH 断开、控制端重启都不再影响远端升级,超时只停止等待而不中断远端。
+//
+// 启动前先跑 dpkg --configure -a 自愈上一次可能残留的半配置(尽力而为)。
+// 远端已有升级在跑时启动脚本输出 RUNNING(幂等,不重复启动)。
+func (s *service) runDetachedDistUpgrade(ctx context.Context, sid string, timeout time.Duration) (*target.ExecResult, error) {
+	// 1) 自愈:上次被中断的 dpkg 半配置。失败不阻断(无待配置项时也可能返回非零)。
+	_, _ = s.runMajorCmd(ctx, sid, majorDpkgRepairTO, []string{"dpkg", "--configure", "-a"})
+
+	// 2) 启动(脱离会话;幂等)。
+	startRes, err := s.runMajorCmd(ctx, sid, majorCmdTO, []string{"sh", "-c", majorUpgradeStartScript})
+	if err != nil {
+		return nil, fmt.Errorf("启动 dist-upgrade 失败: %w", err)
+	}
+	startOut := strings.TrimSpace(startRes.Stdout)
+	if !strings.Contains(startOut, "STARTED") && !strings.Contains(startOut, "RUNNING") {
+		return nil, fmt.Errorf("启动 dist-upgrade 未确认(输出 %q)", truncateLine(startOut, 200))
+	}
+
+	// 3) 轮询完成标记。超时只停止等待,绝不中断远端升级。
+	deadline := time.Now().Add(timeout)
+	lost := 0
+	for {
+		pctx, cancel := context.WithTimeout(ctx, majorCmdTO)
+		pres, perr := s.runner.Run(pctx, sid, []string{"sh", "-c", majorUpgradePollScript})
+		cancel()
+		if perr == nil && pres != nil {
+			line := strings.TrimSpace(pres.Stdout)
+			switch {
+			case strings.HasPrefix(line, "DONE"):
+				code := parseMajorExitCode(line)
+				res := &target.ExecResult{ExitCode: code, Stdout: s.majorUpgradeLogTail(ctx, sid)}
+				if code != 0 {
+					return res, fmt.Errorf("dist-upgrade 退出码 %d", code)
+				}
+				return res, nil
+			case line == "RUNNING":
+				lost = 0
+			default: // LOST:升级进程消失且没有退出码(被外部杀掉/启动失败)。
+				lost++
+				if lost >= 3 {
+					return nil, fmt.Errorf("dist-upgrade 进程异常消失(未见退出码),请人工核查 dpkg 状态后再重试")
+				}
+			}
+		}
+		if time.Now().After(deadline) {
+			return nil, fmt.Errorf("dist-upgrade 超过 %s 仍未完成(已与 SSH 解耦、不会中断远端):请稍后在节点确认 %s 后重试", timeout, majorUpgradeExitPath)
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(majorUpgradePollInterval):
+		}
+	}
+}
+
+// majorUpgradeLogTail 取远端 dist-upgrade 日志尾部(尽力而为,失败返回空)。
+func (s *service) majorUpgradeLogTail(ctx context.Context, sid string) string {
+	rctx, cancel := context.WithTimeout(ctx, majorCmdTO)
+	defer cancel()
+	res, err := s.runner.Run(rctx, sid, []string{"tail", "-n", "200", majorUpgradeLogPath})
+	if err != nil || res == nil {
+		return ""
+	}
+	return res.Stdout
+}
+
+// parseMajorExitCode 解析 "DONE <n>" 里的退出码(解析失败按 1 处理,安全方向)。
+func parseMajorExitCode(line string) int {
+	f := strings.Fields(line)
+	if len(f) >= 2 {
+		if n, err := strconv.Atoi(f[1]); err == nil {
+			return n
+		}
+	}
+	return 1
+}
+
+// localHostIdentity 返回本机 hostname 与非回环 IPv4(测试可注入)。
+var localHostIdentity = func() (string, []string) {
+	host, _ := os.Hostname()
+	var ips []string
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return host, nil
+	}
+	for _, a := range addrs {
+		ipn, ok := a.(*net.IPNet)
+		if !ok || ipn.IP.IsLoopback() {
+			continue
+		}
+		if v4 := ipn.IP.To4(); v4 != nil {
+			ips = append(ips, v4.String())
+		}
+	}
+	return host, ips
+}
+
+// detectSelfHosted 判断控制端是否可能跑在本集群的节点或 guest 内(尽力而为的启发式,
+// 不做硬性自动识别):hostname 命中节点短名/FQDN、本机 IPv4 命中节点管理 IP、或 hostname
+// 命中 guest 名。命中返回可读位置说明,供启动闸门要求用户显式指定宿主节点。
+func (s *service) detectSelfHosted(ctx context.Context, c pveClient, cn *clusterNodeList) (string, bool) {
+	host, ips := localHostIdentity()
+	host = strings.ToLower(strings.TrimSpace(host))
+	ipSet := make(map[string]bool, len(ips))
+	for _, ip := range ips {
+		ipSet[ip] = true
+	}
+	for _, n := range cn.Nodes {
+		name := strings.ToLower(n.Name)
+		if host != "" && (host == name || strings.HasPrefix(host, name+".")) {
+			return "节点 " + n.Name, true
+		}
+		if n.IP != "" && ipSet[n.IP] {
+			return "节点 " + n.Name + "(" + n.IP + ")", true
+		}
+	}
+	if host == "" {
+		return "", false
+	}
+	var resources []apiResource
+	if err := c.Get(ctx, "/api2/json/cluster/resources", &resources); err != nil {
+		return "", false
+	}
+	for _, r := range resources {
+		if r.Type != "qemu" && r.Type != "lxc" {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(r.Name), host) {
+			return fmt.Sprintf("guest %s(%s/%d)", r.Name, r.Type, int64(r.VMID)), true
+		}
+	}
+	return "", false
+}
+
 // parsePveRelease 拆 release 串(如 "8.4.1")为主/次版本。
 func parsePveRelease(rel string) (major, minor int) {
 	parts := strings.SplitN(strings.TrimSpace(rel), ".", 3)
@@ -616,34 +799,51 @@ func (s *service) insertMajorJob(ctx context.Context, j *majorJob) error {
 	id, clusterID, status, policy, hostNode, preflight := j.id, j.clusterID, j.status, j.guestPolicy, j.hostNode, j.preflightJSON
 	nodes := append([]MajorNodeStatus(nil), j.nodes...)
 	j.mu.Unlock()
-	if _, err := s.db.ExecContext(ctx,
-		`INSERT INTO pve_upgrade_jobs (id, cluster_id, kind, status, guest_policy, node_order, preflight, error, created_at, updated_at, host_node) VALUES (?, ?, 'major', ?, ?, ?, ?, '', ?, ?, ?)`,
+	// job 行与节点行同一事务:否则节点插入失败会留下一个 running 的孤儿 job,
+	// 下次懒加载把它标成 interrupted,用户面对一个节点列表不完整的"幽灵任务"。
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("pveadmin: begin insert upgrade job: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO pve_upgrade_jobs (id, cluster_id, kind, status, guest_policy, node_order, preflight, error, created_at, updated_at, host_node, reboot_started_at) VALUES (?, ?, 'major', ?, ?, ?, ?, '', ?, ?, ?, '')`,
 		id, clusterID, status, policy, string(orderJSON), preflight, now, now, hostNode); err != nil {
 		return fmt.Errorf("pveadmin: insert upgrade job: %w", err)
 	}
 	for _, n := range nodes {
-		if _, err := s.db.ExecContext(ctx,
+		if _, err := tx.ExecContext(ctx,
 			`INSERT INTO pve_upgrade_job_nodes (job_id, node, seq, state, error, started_at, finished_at) VALUES (?, ?, ?, ?, '', '', '')`,
 			id, n.Node, n.Seq, n.State); err != nil {
 			return fmt.Errorf("pveadmin: insert upgrade job node: %w", err)
 		}
 	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("pveadmin: commit upgrade job: %w", err)
+	}
 	return nil
 }
 
-func (s *service) persistMajorStatus(ctx context.Context, j *majorJob) {
+// persistMajorStatus 落库任务状态。用独立背景 ctx + 短超时:调用方可能在 HTTP 请求
+// 路径上(Retry/Resume/Confirm),客户端断开不应让状态更新悄悄丢失。
+func (s *service) persistMajorStatus(_ context.Context, j *majorJob) {
 	j.mu.Lock()
-	id, status, errMsg := j.id, j.status, j.errMsg
+	id, status, errMsg, rebootAt := j.id, j.status, j.errMsg, j.rebootStartedAt
 	j.mu.Unlock()
 	now := time.Now().UTC().Format(time.RFC3339)
-	if _, err := s.db.ExecContext(ctx, `UPDATE pve_upgrade_jobs SET status = ?, error = ?, updated_at = ? WHERE id = ?`,
-		status, errMsg, now, id); err != nil {
+	pctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := s.db.ExecContext(pctx, `UPDATE pve_upgrade_jobs SET status = ?, error = ?, reboot_started_at = ?, updated_at = ? WHERE id = ?`,
+		status, errMsg, rebootAt, now, id); err != nil {
 		j.logf("落库任务状态失败: %v", err)
 	}
 }
 
-func (s *service) persistMajorNode(ctx context.Context, j *majorJob, n MajorNodeStatus) {
-	if _, err := s.db.ExecContext(ctx,
+// persistMajorNode 落库单节点状态(独立背景 ctx,理由同 persistMajorStatus)。
+func (s *service) persistMajorNode(_ context.Context, j *majorJob, n MajorNodeStatus) {
+	pctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := s.db.ExecContext(pctx,
 		`UPDATE pve_upgrade_job_nodes SET state = ?, error = ?, started_at = ?, finished_at = ? WHERE job_id = ? AND node = ?`,
 		n.State, n.Error, n.StartedAt, n.FinishedAt, j.id, n.Node); err != nil {
 		// 落库失败只记日志(状态机继续;重启后按 DB 旧状态恢复,节点步骤幂等)。
@@ -655,10 +855,10 @@ func (s *service) persistMajorNode(ctx context.Context, j *majorJob, n MajorNode
 // 无任务 → (nil, nil)。
 func (s *service) loadMajorJob(ctx context.Context, clusterID string) (*majorJob, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT id, status, guest_policy, node_order, preflight, error, created_at, host_node FROM pve_upgrade_jobs WHERE cluster_id = ? ORDER BY created_at DESC, id DESC LIMIT 1`, clusterID)
+		`SELECT id, status, guest_policy, node_order, preflight, error, created_at, host_node, reboot_started_at FROM pve_upgrade_jobs WHERE cluster_id = ? ORDER BY created_at DESC, id DESC LIMIT 1`, clusterID)
 	var j majorJob
 	var orderJSON, preflight, errMsg, createdAt string
-	if err := row.Scan(&j.id, &j.status, &j.guestPolicy, &orderJSON, &preflight, &errMsg, &createdAt, &j.hostNode); err != nil {
+	if err := row.Scan(&j.id, &j.status, &j.guestPolicy, &orderJSON, &preflight, &errMsg, &createdAt, &j.hostNode, &j.rebootStartedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
 		}
@@ -768,20 +968,6 @@ func (s *service) StartMajorUpgrade(ctx context.Context, id string, in MajorUpgr
 		return fmt.Errorf("%w: 请先运行预检(报告 30 分钟内有效)", ErrPreflightRequired)
 	}
 	rep := entry.report
-	// 部分升级(单机/指定节点):预检报告必须覆盖全部目标节点(报告/阻断/ack 均按
-	// 预检范围计算——对 A 预检后升 B 会让 B 的 FAIL 检查被绕过)。报告未带节点清单
-	// 时跳过(手工构造的报告,ack/阻断过滤在下方兜底)。
-	if len(in.Nodes) > 0 && len(rep.Nodes) > 0 {
-		covered := make(map[string]bool, len(rep.Nodes))
-		for _, np := range rep.Nodes {
-			covered[np.Node] = true
-		}
-		for _, n := range in.Nodes {
-			if !covered[n] {
-				return fmt.Errorf("%w: 预检报告未覆盖节点 %s,请先对其运行预检", ErrPreflightRequired, n)
-			}
-		}
-	}
 	// 快速复查阻断项(预检后集群状态可能变化)。
 	cn, err := fetchClusterNodes(ctx, c)
 	if err != nil {
@@ -798,6 +984,28 @@ func (s *service) StartMajorUpgrade(ctx context.Context, id string, in MajorUpgr
 	nodes, err := s.majorTargetNodes(ctx, c, cn, in.Nodes)
 	if err != nil {
 		return err
+	}
+	// 预检报告必须覆盖「本次实际目标」的全部节点。校验放在目标解析之后:无论调用方
+	// 显式传 nodes 还是留空走全量,都不会拿一份只预检了子集的报告去升级未预检节点
+	// (此前只在 in.Nodes 非空时校验,API 直接留空即可绕过未选节点的 FAIL)。
+	// 报告未带节点清单时跳过(手工构造的报告,ack/阻断过滤在下方兜底)。
+	if len(rep.Nodes) > 0 {
+		covered := make(map[string]bool, len(rep.Nodes))
+		for _, np := range rep.Nodes {
+			covered[np.Node] = true
+		}
+		for _, n := range nodes {
+			if !covered[n] {
+				return fmt.Errorf("%w: 预检报告未覆盖节点 %s,请先对其运行预检", ErrPreflightRequired, n)
+			}
+		}
+	}
+	// 自托管检测:控制端若就跑在本集群节点/guest 内,未显式指定宿主节点时升级会把
+	// 控制端自己关掉或随节点重启,升级流程中断。命中即拒绝,要求显式指定 hostNode。
+	if in.HostNode == "" {
+		if where, hit := s.detectSelfHosted(ctx, c, cn); hit {
+			return fmt.Errorf("%w: 检测到控制端可能运行在集群内(%s);请在向导中指定宿主节点(hostNode)后再升级", ErrPreflightRequired, where)
+		}
 	}
 	// 宿主节点(用户显式指定,不做自动识别):须是集群内真实节点(防手误——静默忽略
 	// 会让「以为有确认保护」的宿主被自动重启)。纳入本次目标时排到最后升级、guest
@@ -893,6 +1101,20 @@ func (s *service) StartMajorUpgrade(ctx context.Context, id string, in MajorUpgr
 	if s.anyJobRunningLocked(id) {
 		s.mu.Unlock()
 		return fmt.Errorf("%w: 集群 %s 已有建机/升级任务在运行", ErrBusy, cl.Name)
+	}
+	// 控制端重启后 DB 里遗留的 running 任务没有内存对应(懒加载时才标 interrupted)。
+	// 此时直接再启动,会在同一集群叠加第二个大版本任务(远端 dist-upgrade 可能仍在跑),
+	// 必须先续跑/重试旧任务。
+	var stale int
+	if qerr := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(1) FROM pve_upgrade_jobs WHERE cluster_id = ? AND status = ?`,
+		id, MajorStatusRunning).Scan(&stale); qerr != nil {
+		s.mu.Unlock()
+		return fmt.Errorf("pveadmin: 检查未完成任务: %w", qerr)
+	}
+	if stale > 0 {
+		s.mu.Unlock()
+		return fmt.Errorf("%w: 集群 %s 存在控制端重启前未完成的大版本升级任务,请先在进度页续跑/重试", ErrBusy, cl.Name)
 	}
 	j := &majorJob{
 		id: jobID, clusterID: cl.ID, running: true, status: MajorStatusRunning,
@@ -1019,6 +1241,9 @@ func (s *service) RetryMajorNode(ctx context.Context, id, node, confirm string) 
 	if confirm != cl.Name {
 		return fmt.Errorf("%w: 须原样输入集群名 %q 以确认重试", ErrConfirmMismatch, cl.Name)
 	}
+	if cl.Readonly {
+		return fmt.Errorf("%w: 集群 %s 处于只读模式,请在设置页解锁后再重试", ErrReadonly, cl.Name)
+	}
 	j, err := s.majorJobFor(ctx, id)
 	if err != nil {
 		return err
@@ -1026,40 +1251,49 @@ func (s *service) RetryMajorNode(ctx context.Context, id, node, confirm string) 
 	if j == nil {
 		return fmt.Errorf("%w: 无大版本升级任务", ErrInvalidInput)
 	}
-	j.mu.Lock()
-	if j.running {
-		j.mu.Unlock()
-		return fmt.Errorf("%w: 任务运行中,无需重试", ErrBusy)
-	}
-	if j.status != MajorStatusPaused && j.status != MajorStatusInterrupted {
-		j.mu.Unlock()
-		return fmt.Errorf("%w: 任务状态 %s 不允许重试", ErrInvalidInput, j.status)
-	}
-	idx := -1
-	for i := range j.nodes {
-		if j.nodes[i].Node == node {
-			idx = i
-			break
+	// 状态迁移与「非本任务」互斥检查放在 s.mu 临界区内(锁序 s.mu→j.mu,与
+	// anyJobRunningLocked 一致):防止日常升级/建机与本任务并发操作同一集群。
+	var reset MajorNodeStatus
+	if err := func() error {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if s.otherJobRunningLocked(id) {
+			return fmt.Errorf("%w: 集群已有建机/日常升级任务在运行,请稍后再重试", ErrBusy)
 		}
+		j.mu.Lock()
+		defer j.mu.Unlock()
+		if j.running {
+			return fmt.Errorf("%w: 任务运行中,无需重试", ErrBusy)
+		}
+		if j.status != MajorStatusPaused && j.status != MajorStatusInterrupted {
+			return fmt.Errorf("%w: 任务状态 %s 不允许重试", ErrInvalidInput, j.status)
+		}
+		idx := -1
+		for i := range j.nodes {
+			if j.nodes[i].Node == node {
+				idx = i
+				break
+			}
+		}
+		if idx < 0 {
+			return fmt.Errorf("%w: 节点 %s 不在本任务中", ErrInvalidInput, node)
+		}
+		if j.nodes[idx].State == MajorNodeDone {
+			return fmt.Errorf("%w: 节点 %s 已完成,无需重试", ErrInvalidInput, node)
+		}
+		j.nodes[idx].State = MajorNodePending
+		j.nodes[idx].Error = ""
+		j.nodes[idx].StartedAt = ""
+		j.nodes[idx].FinishedAt = ""
+		reset = j.nodes[idx]
+		j.status = MajorStatusRunning
+		j.running = true
+		j.errMsg = ""
+		j.abort = false
+		return nil
+	}(); err != nil {
+		return err
 	}
-	if idx < 0 {
-		j.mu.Unlock()
-		return fmt.Errorf("%w: 节点 %s 不在本任务中", ErrInvalidInput, node)
-	}
-	if j.nodes[idx].State == MajorNodeDone {
-		j.mu.Unlock()
-		return fmt.Errorf("%w: 节点 %s 已完成,无需重试", ErrInvalidInput, node)
-	}
-	j.nodes[idx].State = MajorNodePending
-	j.nodes[idx].Error = ""
-	j.nodes[idx].StartedAt = ""
-	j.nodes[idx].FinishedAt = ""
-	reset := j.nodes[idx]
-	j.status = MajorStatusRunning
-	j.running = true
-	j.errMsg = ""
-	j.abort = false
-	j.mu.Unlock()
 	s.persistMajorNode(ctx, j, reset)
 	s.persistMajorStatus(ctx, j)
 	j.logf("重试节点 %s", node)
@@ -1076,6 +1310,9 @@ func (s *service) ResumeMajorUpgrade(ctx context.Context, id, confirm string) er
 	if confirm != cl.Name {
 		return fmt.Errorf("%w: 须原样输入集群名 %q 以确认续跑", ErrConfirmMismatch, cl.Name)
 	}
+	if cl.Readonly {
+		return fmt.Errorf("%w: 集群 %s 处于只读模式,请在设置页解锁后再续跑", ErrReadonly, cl.Name)
+	}
 	j, err := s.majorJobFor(ctx, id)
 	if err != nil {
 		return err
@@ -1083,20 +1320,28 @@ func (s *service) ResumeMajorUpgrade(ctx context.Context, id, confirm string) er
 	if j == nil {
 		return fmt.Errorf("%w: 无大版本升级任务", ErrInvalidInput)
 	}
-	j.mu.Lock()
-	if j.running {
-		j.mu.Unlock()
-		return fmt.Errorf("%w: 任务已在运行", ErrBusy)
+	if err := func() error {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if s.otherJobRunningLocked(id) {
+			return fmt.Errorf("%w: 集群已有建机/日常升级任务在运行,请稍后再续跑", ErrBusy)
+		}
+		j.mu.Lock()
+		defer j.mu.Unlock()
+		if j.running {
+			return fmt.Errorf("%w: 任务已在运行", ErrBusy)
+		}
+		if j.status != MajorStatusPaused && j.status != MajorStatusInterrupted {
+			return fmt.Errorf("%w: 任务状态 %s 不允许续跑", ErrInvalidInput, j.status)
+		}
+		j.status = MajorStatusRunning
+		j.running = true
+		j.errMsg = ""
+		j.abort = false
+		return nil
+	}(); err != nil {
+		return err
 	}
-	if j.status != MajorStatusPaused && j.status != MajorStatusInterrupted {
-		j.mu.Unlock()
-		return fmt.Errorf("%w: 任务状态 %s 不允许续跑", ErrInvalidInput, j.status)
-	}
-	j.status = MajorStatusRunning
-	j.running = true
-	j.errMsg = ""
-	j.abort = false
-	j.mu.Unlock()
 	cn, err := fetchClusterNodes(ctx, c)
 	if err != nil {
 		s.majorPause(ctx, j, "续跑前取集群状态失败: "+unwrapTail(err))
@@ -1123,6 +1368,9 @@ func (s *service) ConfirmMajorReboot(ctx context.Context, id, confirm string) er
 	if confirm != cl.Name {
 		return fmt.Errorf("%w: 须原样输入集群名 %q 以确认重启宿主节点", ErrConfirmMismatch, cl.Name)
 	}
+	if cl.Readonly {
+		return fmt.Errorf("%w: 集群 %s 处于只读模式,请在设置页解锁后再确认重启", ErrReadonly, cl.Name)
+	}
 	j, err := s.majorJobFor(ctx, id)
 	if err != nil {
 		return err
@@ -1130,20 +1378,28 @@ func (s *service) ConfirmMajorReboot(ctx context.Context, id, confirm string) er
 	if j == nil {
 		return fmt.Errorf("%w: 无大版本升级任务", ErrInvalidInput)
 	}
-	j.mu.Lock()
-	if j.running {
-		j.mu.Unlock()
-		return fmt.Errorf("%w: 任务运行中,先等它到暂停态", ErrBusy)
-	}
-	idx := -1
-	node := ""
-	for i := range j.nodes {
-		if j.nodes[i].State == MajorNodeAwaitingReboot {
-			idx, node = i, j.nodes[i].Node
-			break
+	idx, node := -1, ""
+	if err := func() error {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if s.otherJobRunningLocked(id) {
+			return fmt.Errorf("%w: 集群已有建机/日常升级任务在运行,请稍后再确认重启", ErrBusy)
 		}
+		j.mu.Lock()
+		defer j.mu.Unlock()
+		if j.running {
+			return fmt.Errorf("%w: 任务运行中,先等它到暂停态", ErrBusy)
+		}
+		for i := range j.nodes {
+			if j.nodes[i].State == MajorNodeAwaitingReboot {
+				idx, node = i, j.nodes[i].Node
+				break
+			}
+		}
+		return nil
+	}(); err != nil {
+		return err
 	}
-	j.mu.Unlock()
 	if idx < 0 {
 		return fmt.Errorf("%w: 无等待确认重启的宿主节点", ErrInvalidInput)
 	}
@@ -1158,6 +1414,7 @@ func (s *service) ConfirmMajorReboot(ctx context.Context, id, confirm string) er
 	}
 	j.mu.Lock()
 	j.nodes[idx].State = MajorNodeRebooting
+	j.rebootStartedAt = time.Now().UTC().Format(time.RFC3339)
 	cp := j.nodes[idx]
 	j.errMsg = fmt.Sprintf("宿主节点 %s 重启中;节点回来后请点「续跑」完成收尾", node)
 	j.mu.Unlock()
@@ -1233,10 +1490,10 @@ func (s *service) runMajor(j *majorJob) {
 			s.majorPause(ctx, j, fmt.Sprintf("节点 %s 等待人工确认重启宿主节点", node))
 			return
 		}
-		if state == MajorNodeRebooting || state == MajorNodeWaiting {
-			// 中断恢复:重启已发出(宿主节点确认过/自动发过),直接等回线 + 验证收尾
-			// (waiting 态 = 上次在等回线时被打断,同理续等待)。
-			j.logf("[%s] 恢复:重启已发出,继续等待回线…", node)
+		if state == MajorNodeRebooting || state == MajorNodeWaiting || state == MajorNodeVerifying {
+			// 中断恢复:重启已发出(verifying 表示上次已在验证阶段),直接等回线 + 验证
+			// 收尾,绝不重跑 dist-upgrade、也绝不再发一次重启。
+			j.logf("[%s] 恢复:重启已发出,继续等待回线并验证…", node)
 			rerr := s.resumeRebootedNode(ctx, j, i)
 			if rerr != nil {
 				s.setMajorNodeState(ctx, j, i, MajorNodeFailed, rerr.Error())
@@ -1263,7 +1520,11 @@ func (s *service) runMajor(j *majorJob) {
 			}
 			s.setMajorNodeState(ctx, j, i, MajorNodeFailed, err.Error())
 			j.logf("[%s] 失败: %v", node, err)
-			s.majorPause(ctx, j, fmt.Sprintf("节点 %s 失败,任务暂停(可重试该节点或中止)", node))
+			reason := fmt.Sprintf("节点 %s 失败,任务暂停(可重试该节点或中止)", node)
+			if j.snapshot().GuestPolicy == GuestPolicyShutdown {
+				reason += ";该节点 guest 可能已被关停,请人工确认是否需要重新启动"
+			}
+			s.majorPause(ctx, j, reason)
 			return
 		}
 		s.setMajorNodeState(ctx, j, i, MajorNodeDone, "")
@@ -1374,7 +1635,18 @@ func (s *service) runMajorNode(ctx context.Context, j *majorJob, i int) error {
 			return cerr
 		}
 		if !res.UpdateOK {
-			return fmt.Errorf("换源后 apt update 失败(备份已保留): %s", res.UpdateTail)
+			// 换源后索引刷新失败:自动回滚到备份源,绝不让节点停在「trixie 源 +
+			// bookworm 系统」的半换源状态(后续任何 apt 操作都可能把两代包混装)。
+			rbErr := s.rollbackAptBackups(ctx, cl, node, res.Backups)
+			if rbErr != nil {
+				return fmt.Errorf("换源后 apt update 失败且回滚失败(%v);请人工用备份恢复源后重试;apt 输出: %s",
+					rbErr, res.UpdateTail)
+			}
+			// 回滚后再刷一次索引(让节点回到 bookworm 源 + bookworm 索引的一致状态);
+			// 它会覆写 res.UpdateTail,故先留存原始 trixie 失败输出供错误消息引用。
+			failTail := res.UpdateTail
+			s.aptUpdateVerify(ctx, sid, res)
+			return fmt.Errorf("换源后 apt update 失败,已自动回滚源(请在仓库管理核对镜像可达性后重试): %s", failTail)
 		}
 		j.logf("[%s] 已换源 bookworm→trixie(%d 个文件)", node, len(changes))
 	} else {
@@ -1384,17 +1656,13 @@ func (s *service) runMajorNode(ctx context.Context, j *majorJob, i int) error {
 		}
 	}
 
-	// 3) dist-upgrade(期间不可中止;noninteractive + 保留旧配置)。
+	// 3) dist-upgrade(期间不可中止;noninteractive + 保留旧配置;与 SSH 会话解耦)。
 	if j.abortRequested() {
 		return errMajorAbort
 	}
 	s.setMajorNodeState(ctx, j, i, MajorNodeUpgrading, "")
-	j.logf("[%s] 开始 dist-upgrade(可能 10-30 分钟,期间不可中止)…", node)
-	res, uerr := s.runMajorCmd(ctx, sid, majorDistUpgradeTO, []string{
-		"env", "DEBIAN_FRONTEND=noninteractive", "apt-get", "-y",
-		"-o", "Dpkg::Options::=--force-confdef", "-o", "Dpkg::Options::=--force-confold",
-		"dist-upgrade",
-	})
+	j.logf("[%s] 开始 dist-upgrade(已与 SSH 解耦,期间不可中止)…", node)
+	res, uerr := s.runDetachedDistUpgrade(ctx, sid, majorDistUpgradeTO)
 	if uerr != nil {
 		tail := ""
 		if res != nil {
@@ -1404,6 +1672,12 @@ func (s *service) runMajorNode(ctx context.Context, j *majorJob, i int) error {
 	}
 	if res != nil {
 		j.logf("[%s] dist-upgrade 输出尾部:\n%s", node, tailOutput(res))
+	}
+	// 升级后完整性:dpkg --audit 有输出说明包状态不完整,绝不带病重启。
+	if ar, aerr := s.runMajorCmd(ctx, sid, majorCmdTO, []string{"dpkg", "--audit"}); aerr == nil && ar != nil {
+		if audit := strings.TrimSpace(ar.Stdout); audit != "" {
+			return fmt.Errorf("dist-upgrade 后 dpkg --audit 报告未完成项,已停止且不重启节点:%s", truncateLine(audit, 400))
+		}
 	}
 	// 升级后复检:pve8to9(信息性)+ pveversion 须 9.x。
 	if r8, e8 := s.runMajorCmd(ctx, sid, majorPve8to9TO, []string{"pve8to9"}); e8 == nil && r8 != nil {
@@ -1434,6 +1708,10 @@ func (s *service) runMajorNode(ctx context.Context, j *majorJob, i int) error {
 		preUptime = int64(preSt.Uptime)
 	}
 	s.setMajorNodeState(ctx, j, i, MajorNodeRebooting, "")
+	j.mu.Lock()
+	j.rebootStartedAt = time.Now().UTC().Format(time.RFC3339)
+	j.mu.Unlock()
+	s.persistMajorStatus(ctx, j)
 	j.logf("[%s] 重启节点…", node)
 	_, rerr := postUPID(ctx, c, "/api2/json/nodes/"+node+"/status", url.Values{"command": {"reboot"}})
 	if rerr != nil {
@@ -1447,11 +1725,16 @@ func (s *service) runMajorNode(ctx context.Context, j *majorJob, i int) error {
 
 	// 5) 等节点回线 + 集群重新 quorate。
 	s.setMajorNodeState(ctx, j, i, MajorNodeWaiting, "")
-	if err := s.waitNodeBack(ctx, j, c, node, sid, preUptime, false); err != nil {
+	if err := s.waitNodeBack(ctx, j, c, node, sid, preUptime, time.Time{}, false); err != nil {
 		return err
 	}
 
 	// 6) 验证 9.x + 在线 + quorate。
+	return s.verifyNodeAfterReboot(ctx, j, i, c, node)
+}
+
+// verifyNodeAfterReboot 校验节点回线后确为 9.x 且集群恢复仲裁(重启后的共同收尾)。
+func (s *service) verifyNodeAfterReboot(ctx context.Context, j *majorJob, i int, c pveClient, node string) error {
 	s.setMajorNodeState(ctx, j, i, MajorNodeVerifying, "")
 	var ver apiVersion
 	if err := c.Get(ctx, "/api2/json/nodes/"+node+"/version", &ver); err != nil {
@@ -1476,6 +1759,7 @@ func (s *service) runMajorNode(ctx context.Context, j *majorJob, i int) error {
 func (s *service) resumeRebootedNode(ctx context.Context, j *majorJob, i int) error {
 	j.mu.Lock()
 	node := j.nodes[i].Node
+	rebootAt, _ := time.Parse(time.RFC3339, j.rebootStartedAt)
 	j.mu.Unlock()
 	cl, c, err := s.clientFor(ctx, j.clusterID)
 	if err != nil {
@@ -1487,37 +1771,27 @@ func (s *service) resumeRebootedNode(ctx context.Context, j *majorJob, i int) er
 	}
 	s.setMajorNodeState(ctx, j, i, MajorNodeWaiting, "")
 	// 恢复场景跳过「等下线」阶段:用户是看到节点重启回来后才点的续跑,阶段 1 永远
-	// 等不到下线。重启是否真实生效改由 apt/versions 的运行内核 vs 已装内核校验兜底。
-	if err := s.waitNodeBack(ctx, j, c, node, sid, -1, true); err != nil {
+	// 等不到下线。重启是否真实生效由 uptime 与「确认重启后经过时长」的比较、以及
+	// 运行内核 vs 已装内核校验双重兜底。
+	if err := s.waitNodeBack(ctx, j, c, node, sid, -1, rebootAt, true); err != nil {
 		return err
 	}
-	s.setMajorNodeState(ctx, j, i, MajorNodeVerifying, "")
-	var ver apiVersion
-	if err := c.Get(ctx, "/api2/json/nodes/"+node+"/version", &ver); err != nil {
+	if err := s.verifyNodeAfterReboot(ctx, j, i, c, node); err != nil {
 		return err
-	}
-	if m, _ := parsePveRelease(ver.Release); m != 9 {
-		return fmt.Errorf("回线后版本仍为 %s(须 9.x)", ver.Release)
 	}
 	var versions []apiAptVersion
 	if err := c.Get(ctx, "/api2/json/nodes/"+node+"/apt/versions", &versions); err == nil && kernelNeedsReboot(versions) {
 		return fmt.Errorf("节点回线但运行内核仍是旧内核(重启未生效?),请人工核查后重试该节点")
 	}
-	cn, err := fetchClusterNodes(ctx, c)
-	if err != nil {
-		return err
-	}
-	if !cn.Quorate {
-		return fmt.Errorf("节点回线但集群无仲裁")
-	}
-	j.logf("[%s] 恢复验证通过: %s", node, ver.Release)
+	j.logf("[%s] 恢复验证通过", node)
 	return nil
 }
 
 // waitNodeBack 两阶段等待:先等节点下线(重启生效;resume 恢复场景跳过——节点可能
 // 已回来),再等回线 + quorate + SSH 可达。preUptime 是重启前 uptime(秒,<0 表示未
-// 取到);回线后 uptime 未重置 → 判定未真正重启。
-func (s *service) waitNodeBack(ctx context.Context, j *majorJob, c pveClient, node, sid string, preUptime int64, skipDownWait bool) error {
+// 取到);rebootAt 是重启发出时间(恢复场景用于兜底判定);回线后 uptime 未重置 →
+// 判定未真正重启。
+func (s *service) waitNodeBack(ctx context.Context, j *majorJob, c pveClient, node, sid string, preUptime int64, rebootAt time.Time, skipDownWait bool) error {
 	// 阶段 1:等下线(SSH 失败或 API 离线;重启可能因 guest 关停耗时)。
 	downCtx, cancel := context.WithTimeout(ctx, majorRebootDownTO)
 	defer cancel()
@@ -1567,12 +1841,23 @@ func (s *service) waitNodeBack(ctx context.Context, j *majorJob, c pveClient, no
 				rcancel()
 				if serr == nil {
 					// uptime 未重置 → 节点其实没重启(阶段 1 的 SSH 失败可能是瞬断)。
-					if preUptime > 60 {
+					if preUptime > 0 {
 						var postSt apiNodeStatus
 						if gerr := c.Get(upCtx, "/api2/json/nodes/"+node+"/status", &postSt); gerr == nil &&
 							int64(postSt.Uptime) >= preUptime {
 							return fmt.Errorf("节点 %s 未实际重启(uptime %ds ≥ 重启前 %ds),请人工核查",
 								node, int64(postSt.Uptime), preUptime)
+						}
+					} else if !rebootAt.IsZero() {
+						// 恢复场景没有重启前 uptime:用「重启发出后已过时长」兜底——
+						// 节点 uptime 若明显大于已过时长,说明它在重启发出前就已启动。
+						var postSt apiNodeStatus
+						if gerr := c.Get(upCtx, "/api2/json/nodes/"+node+"/status", &postSt); gerr == nil {
+							elapsed := int64(time.Since(rebootAt).Seconds())
+							if elapsed > 120 && int64(postSt.Uptime) > elapsed+120 {
+								return fmt.Errorf("节点 %s 未实际重启(uptime %ds > 重启后已过 %ds),请稍后重试",
+									node, int64(postSt.Uptime), elapsed)
+							}
 						}
 					}
 					return nil

@@ -623,14 +623,16 @@ func (f *aptRepoFileRaw) applyMirror(p aptMirrorPreset) bool {
 	return changed
 }
 
-// applySuite 把 debian/pve 条目的 suite 词元 from→to(大版本升级 bookworm→trixie;
+// applySuite 把 debian/pve/ceph 条目的 suite 词元 from→to(大版本升级 bookworm→trixie;
 // 只动 suite 字段,不碰 URI/组件;bookworm-security → trixie-security 一并覆盖)。
+// Ceph 源同样用 Debian 代号作 suite(download.proxmox.com/debian/ceph-*),不换会继续
+// 从 bookworm 源拉 ceph 包,与 trixie 系统混装。
 func (f *aptRepoFileRaw) applySuite(from, to string) bool {
 	changed := false
 	re := regexp.MustCompile(`\b` + regexp.QuoteMeta(from) + `\b`)
 	for i := range f.entries {
 		e := &f.entries[i]
-		if e.kind != "debian" && e.kind != "pve" {
+		if e.kind != "debian" && e.kind != "pve" && e.kind != "ceph" {
 			continue
 		}
 		hit := false
@@ -778,6 +780,28 @@ func (s *service) aptUpdateVerify(ctx context.Context, sid string, out *AptRepoW
 	if err != nil && res == nil {
 		out.UpdateTail = unwrapTail(err)
 	}
+}
+
+// rollbackAptBackups 用 commitAptFiles 落下的备份逐个恢复源文件(大版本换源失败回滚)。
+// 逐个尽力恢复,返回首个错误(全部失败也只报第一处,其余在备份清单里可人工处理)。
+func (s *service) rollbackAptBackups(ctx context.Context, cl *Cluster, node string, backups []AptRepoBackup) error {
+	if len(backups) == 0 {
+		return nil
+	}
+	sid, err := s.nodeServerID(ctx, cl, node)
+	if err != nil {
+		return err
+	}
+	var firstErr error
+	for _, b := range backups {
+		rctx, cancel := context.WithTimeout(ctx, aptRepoCmdTO)
+		_, rerr := s.runner.Run(rctx, sid, []string{"cp", "-a", b.BackupPath, b.Path})
+		cancel()
+		if rerr != nil && firstErr == nil {
+			firstErr = fmt.Errorf("恢复 %s 失败: %v", b.Path, unwrapTail(rerr))
+		}
+	}
+	return firstErr
 }
 
 // ---- 领域方法 ---------------------------------------------------------------------------

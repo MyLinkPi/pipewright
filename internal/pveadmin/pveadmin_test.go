@@ -374,6 +374,10 @@ func (c *fakePVEClient) Upload(_ context.Context, path string, fields url.Values
 // newTestService 组装被测服务(真实 DB + 假件注入)。
 func newTestService(t *testing.T) (*service, *fakeTarget, *fakeRunner, *fakePVEClient) {
 	t.Helper()
+	// 大版本 dist-upgrade 通过远端完成标记轮询;测试把间隔压到毫秒级。
+	prevPoll := majorUpgradePollInterval
+	majorUpgradePollInterval = 5 * time.Millisecond
+	t.Cleanup(func() { majorUpgradePollInterval = prevPoll })
 	db := storetest.OpenDB(t)
 	v := vault.New(db, testMasterKey())
 	ft := newFakeTarget()

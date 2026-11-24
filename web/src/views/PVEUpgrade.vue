@@ -235,6 +235,11 @@ async function onReboot(n: PVENodeUpdates): Promise<void> {
 // ─── 大版本升级 ────────────────────────────────────────────────────────────────
 const majorStatus = ref<PVEMajorUpgradeStatus | null>(null)
 const report = ref<PVEMajorPreflightReport | null>(null)
+// 只有集群级 FAIL 才在页面层禁用「开始升级」;节点级 FAIL 交给向导按「本次所选节点」
+// 收敛——否则任一未选节点有问题就无法做 healthy 子集的滚动升级。
+const majorClusterBlocked = computed(() =>
+  !!report.value?.clusterChecks.some((c) => c.level === 'fail'),
+)
 const preflightRunning = ref(false)
 const majorWizardOpen = ref(false)
 const majorProgressOpen = ref(false)
@@ -475,7 +480,7 @@ onUnmounted(() => {
               <NIcon :size="13"><List /></NIcon>
               {{ preflightRunning ? t('pveUpgrade.preflightRunning') : t('pveUpgrade.runPreflight') }}
             </button>
-            <button class="btn-create" :disabled="!current || current.readonly || !report || report.blocked" @click="majorWizardOpen = true">
+            <button class="btn-create" :disabled="!current || current.readonly || !report || majorClusterBlocked" @click="majorWizardOpen = true">
               <NIcon :size="13"><ArrowBarUp /></NIcon>
               {{ t('pveUpgrade.startMajor') }}
             </button>

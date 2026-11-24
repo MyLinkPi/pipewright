@@ -335,6 +335,19 @@ func (s *service) anyJobRunningLocked(id string) bool {
 	return false
 }
 
+// otherJobRunningLocked 判断集群是否有「非大版本升级」后台任务(建机/日常升级)在跑。
+// Retry/Resume/Confirm 复用:大版本任务自身在暂停态不 running,不应把自己算 busy。
+// 调用方须持 s.mu。
+func (s *service) otherJobRunningLocked(id string) bool {
+	if j := s.createJobs[id]; j != nil && j.snapshot().Running {
+		return true
+	}
+	if j := s.upgradeJobs[id]; j != nil && j.snapshot().Running {
+		return true
+	}
+	return false
+}
+
 // ---- 探测登记钩子 -------------------------------------------------------------------
 
 // OnServerRegistered 探测并纳管(见 Service 接口注释)。所有失败路径都返回 (nil, nil):

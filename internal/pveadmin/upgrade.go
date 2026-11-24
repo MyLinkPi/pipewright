@@ -37,7 +37,7 @@ const (
 	updatesConcurrency = 4
 	updatesNodeTO      = 45 * time.Second
 	upgradeRefreshTO   = 10 * time.Minute
-	upgradeTO          = 60 * time.Minute
+	upgradeTO          = 90 * time.Minute
 	maxUpgradeLogLines = 600
 	maxUpdatesPackages = 300
 )
@@ -562,7 +562,7 @@ func (s *service) upgradeOneNode(ctx context.Context, j *upgradeJob, cl *Cluster
 		j.set(UpgradeStepUpgrade, fmt.Sprintf("%s: 升级 %d 个包(SSH apt-get,可能数分钟)…", node, len(pending)))
 		j.logf("[%s] 开始全量升级(%d 包,SSH apt-get)…", node, len(pending))
 		res, uerr := s.runMajorCmd(ctx, sid, upgradeTO, []string{
-			"env", "DEBIAN_FRONTEND=noninteractive", "apt-get", "-y",
+			"env", "DEBIAN_FRONTEND=noninteractive", "NEEDRESTART_MODE=a", "apt-get", "-y",
 			"-o", "Dpkg::Options::=--force-confdef", "-o", "Dpkg::Options::=--force-confold",
 			"dist-upgrade",
 		})

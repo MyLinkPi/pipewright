@@ -6,15 +6,22 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/huangchengsir/pipewright/internal/audit"
 	"github.com/huangchengsir/pipewright/internal/pveadmin"
 )
+
+// pveMajorPreflightHTTPTimeout 是同步预检的总时限(预检并发扇出,单节点 pve8to9
+// 可达十余分钟)。预检用脱离请求的连接上下文:浏览器/反代断开不应把"假 FAIL"写进
+// 30 分钟缓存。
+const pveMajorPreflightHTTPTimeout = 60 * time.Minute
 
 // 升级面审计 action。
 const (
@@ -399,7 +406,9 @@ func makePVEMajorPreflightHandler(svc pveadmin.Service) http.HandlerFunc {
 				}
 			}
 		}
-		rep, err := svc.MajorPreflight(r.Context(), chi.URLParam(r, "id"), nodes)
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), pveMajorPreflightHTTPTimeout)
+		defer cancel()
+		rep, err := svc.MajorPreflight(ctx, chi.URLParam(r, "id"), nodes)
 		if err != nil {
 			writePVEAdminError(w, err)
 			return
