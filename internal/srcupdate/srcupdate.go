@@ -44,6 +44,11 @@ const (
 	// maxLogLines 是任务日志环形缓冲的行数上限(前端展示 + 排障用)。
 	maxLogLines = 120
 
+	// 源码构建会同时写入工作树、npm/Go 缓存及临时目录;为依赖解包和编译中间产物
+	// 预留 2 GiB,安装阶段另为二进制替换预留 256 MiB。
+	minBuildFreeBytes   = 2 << 30
+	minInstallFreeBytes = 256 << 20
+
 	systemdUnitPath = "/etc/systemd/system/pipewright.service"
 )
 
@@ -70,6 +75,8 @@ type Service struct {
 	restart func() error
 	// unitPath 是 systemd unit 的探测路径;测试指向临时文件以模拟「已装服务」分支。
 	unitPath string
+	// diskFree 返回路径所在文件系统的可用字节数;测试注入合成值,不依赖宿主磁盘。
+	diskFree func(path string) (uint64, error)
 
 	mu  sync.Mutex
 	job *jobT
@@ -165,6 +172,11 @@ func (s *Service) StartUpdate() error {
 	if s.job != nil && s.job.running {
 		return ErrBusy
 	}
+	// 必须在创建任务前完成准入检查:空间不足时连 git pull 都不执行,HTTP 调用方
+	// 直接收到可操作错误,而不是等后台任务进入 npm ci 后才暴露 ENOSPC。
+	if err := s.checkDiskSpace(); err != nil {
+		return err
+	}
 	j := &jobT{running: true, step: "pull", message: "准备拉取最新代码…"}
 	s.job = j
 	go s.run(j)
@@ -251,6 +263,11 @@ func (s *Service) run(j *jobT) {
 			return nil
 		}},
 		{"build", "make build(含前端构建,可能需要数分钟)", func() error {
+			// 点击升级到真正构建之间可能有其他进程占盘;构建前复查,避免启动 npm ci
+			// 后才写满。首次检查仍在 StartUpdate,保证低空间时不会先执行 git pull。
+			if err := s.checkDiskSpace(); err != nil {
+				return err
+			}
 			return s.stream(ctx, j, nil, s.buildCommand())
 		}},
 		{"install", "install.sh(替换二进制 / 重启服务)", func() error {
@@ -288,6 +305,54 @@ func (s *Service) restartFn() func() error {
 		return s.restart
 	}
 	return version.Reexec
+}
+
+type diskRequirement struct {
+	path     string
+	required uint64
+}
+
+// diskRequirements 覆盖构建实际写入的仓库、构建用户家目录(npm/Go 缓存)和临时目录,
+// 以及最终替换二进制的安装目录。相同路径只保留最严格的要求。
+func (s *Service) diskRequirements() []diskRequirement {
+	var reqs []diskRequirement
+	add := func(path string, required uint64) {
+		if path == "" {
+			return
+		}
+		path = filepath.Clean(path)
+		for i := range reqs {
+			if reqs[i].path == path {
+				if required > reqs[i].required {
+					reqs[i].required = required
+				}
+				return
+			}
+		}
+		reqs = append(reqs, diskRequirement{path: path, required: required})
+	}
+	add(s.dir, minBuildFreeBytes)
+	add(buildHomeDir(s.dir), minBuildFreeBytes)
+	add(os.TempDir(), minBuildFreeBytes)
+	add(s.installDir, minInstallFreeBytes)
+	return reqs
+}
+
+func (s *Service) checkDiskSpace() error {
+	freeSpace := s.diskFree
+	if freeSpace == nil {
+		freeSpace = availableDiskSpace
+	}
+	for _, req := range s.diskRequirements() {
+		available, err := freeSpace(req.path)
+		if err != nil {
+			return fmt.Errorf("升级前磁盘检查失败,已阻止升级:无法读取 %s 所在文件系统的可用空间: %w;请确认目录可访问后重试", req.path, err)
+		}
+		if available < req.required {
+			return fmt.Errorf("磁盘空间不足,已阻止升级:%s 所在文件系统可用 %.2f GiB,升级至少需要 %.2f GiB。请清理该文件系统后重试", req.path, float64(available)/(1<<30), float64(req.required)/(1<<30))
+		}
+	}
+	return nil
 }
 
 // fetchHint 针对 git fetch/pull 的常见非交互失败,在原始错误后追加可操作的修复指引。

@@ -42,6 +42,22 @@ func (s *Service) applyOwnerCred(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Credential: &syscall.Credential{Uid: st.Uid, Gid: st.Gid}}
 }
 
+// buildHomeDir 返回实际执行 git/make 的用户家目录。root 服务会把构建降权给仓库属主,
+// 因此磁盘预检必须检查该属主的 npm/Go 缓存所在文件系统,而不是只检查 /root。
+func buildHomeDir(repoDir string) string {
+	if os.Geteuid() == 0 {
+		if fi, err := os.Stat(repoDir); err == nil {
+			if st, ok := fi.Sys().(*syscall.Stat_t); ok && st.Uid != 0 {
+				if u, err := user.LookupId(strconv.FormatUint(uint64(st.Uid), 10)); err == nil && u.HomeDir != "" {
+					return u.HomeDir
+				}
+			}
+		}
+	}
+	home, _ := os.UserHomeDir()
+	return home
+}
+
 // ownerEnvPatch 生成属主身份的环境补丁(HOME/USER/LOGNAME)。独立成纯函数便于测试。
 func ownerEnvPatch(u *user.User) []string {
 	if u == nil || u.HomeDir == "" {

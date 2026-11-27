@@ -37,6 +37,13 @@ func init() {
 	unixLike = true
 }
 
+// newTestService 使用合成磁盘余量,避免管线测试依赖 CI 宿主的真实可用空间。
+func newTestService(dir string) *Service {
+	s := New(dir)
+	s.diskFree = func(string) (uint64, error) { return 4 << 30, nil }
+	return s
+}
+
 // mkRepo 造「上游裸仓库 + 已克隆且跟踪 origin 的工作仓」,含一个初始提交;返回工作仓目录。
 func mkRepo(t *testing.T) string {
 	t.Helper()
@@ -91,7 +98,7 @@ func waitStatus(t *testing.T, s *Service, pred func(Status) bool) Status {
 
 func TestCheck_UpToDate(t *testing.T) {
 	work := mkRepo(t)
-	s := New(work)
+	s := newTestService(work)
 	info := s.Check(context.Background())
 	if info.CheckError != "" {
 		t.Fatalf("检查不应报错:%s", info.CheckError)
@@ -110,7 +117,7 @@ func TestCheck_UpToDate(t *testing.T) {
 func TestCheck_UpdateAvailable(t *testing.T) {
 	work := mkRepo(t)
 	pushExtraCommit(t, work)
-	s := New(work)
+	s := newTestService(work)
 	info := s.Check(context.Background())
 	if info.CheckError != "" {
 		t.Fatalf("检查不应报错:%s", info.CheckError)
@@ -165,7 +172,7 @@ func TestCheck_FallsBackToHeadWithoutBuildCommit(t *testing.T) {
 func TestCheck_NoUpstream(t *testing.T) {
 	work := mkRepo(t)
 	gitOut(t, work, "remote", "remove", "origin")
-	s := New(work)
+	s := newTestService(work)
 	info := s.Check(context.Background())
 	if info.CheckError == "" {
 		t.Fatalf("无上游应报 CheckError:%+v", info)
@@ -179,7 +186,7 @@ func TestCheck_NoUpstream(t *testing.T) {
 // 注入的 no-op 重启 → done;日志含 stub 输出。
 func TestUpdatePipeline(t *testing.T) {
 	work := mkRepo(t)
-	s := New(work)
+	s := newTestService(work)
 	s.unitPath = filepath.Join(t.TempDir(), "absent.service") // 不存在 → 走 restart 分支
 	s.restart = func() error { return nil }
 	var order []string
@@ -216,7 +223,7 @@ func TestUpdatePipeline(t *testing.T) {
 // 管线中途失败:pull 阶段故意失败(无效 upstream),错误进状态,后续步骤不执行。
 func TestUpdatePipeline_Fails(t *testing.T) {
 	work := mkRepo(t)
-	s := New(work)
+	s := newTestService(work)
 	s.unitPath = filepath.Join(t.TempDir(), "absent.service")
 	s.restart = func() error { return nil }
 	s.buildCmd = []string{"sh", "-c", "echo built >> steps.log"}
@@ -245,7 +252,7 @@ func TestStartUpdate_Busy(t *testing.T) {
 		t.Skip("sh 不可用")
 	}
 	work := mkRepo(t)
-	s := New(work)
+	s := newTestService(work)
 	s.unitPath = filepath.Join(t.TempDir(), "absent.service")
 	s.restart = func() error { return nil }
 	s.buildCmd = []string{"sh", "-c", "sleep 0.4; echo built"}
@@ -263,6 +270,132 @@ func TestStartUpdate_Busy(t *testing.T) {
 	waitStatus(t, s, func(st Status) bool { return !st.Running })
 }
 
+// 空间不足是升级准入失败:同步返回明确原因,不创建后台任务,连 pull 都不执行。
+func TestStartUpdate_InsufficientDiskBlocksBeforeStart(t *testing.T) {
+	work := mkRepo(t)
+	pushExtraCommit(t, work)
+	head := gitOut(t, work, "rev-parse", "HEAD")
+	s := newTestService(work)
+	s.diskFree = func(string) (uint64, error) { return 512 << 20, nil }
+	s.buildCmd = []string{"sh", "-c", "echo built >> steps.log"}
+	s.installCmd = []string{"sh", "-c", "echo installed >> steps.log"}
+	restarted := false
+	s.restart = func() error { restarted = true; return nil }
+
+	err := s.StartUpdate()
+	if err == nil {
+		t.Fatal("空间不足时必须拒绝启动升级")
+	}
+	for _, want := range []string{"磁盘空间不足", "已阻止升级", work, "0.50 GiB", "2.00 GiB", "清理"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("错误应包含 %q,得 %q", want, err)
+		}
+	}
+	st := s.Status()
+	if st.Running || st.Done || st.Step != "" || st.Error != "" || len(st.Log) != 0 {
+		t.Errorf("准入失败不应创建升级任务:%+v", st)
+	}
+	if got := gitOut(t, work, "rev-parse", "HEAD"); got != head {
+		t.Errorf("准入失败不应执行 git pull:HEAD 从 %s 变为 %s", head, got)
+	}
+	if _, err := os.Stat(filepath.Join(work, "steps.log")); !os.IsNotExist(err) {
+		t.Errorf("准入失败不应执行构建或安装")
+	}
+	if restarted {
+		t.Error("准入失败不应触发重启")
+	}
+}
+
+func TestCheckDiskSpace_Threshold(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		available uint64
+	}{
+		{"恰好达到阈值", minBuildFreeBytes},
+		{"高于阈值", 3 << 30},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := New(t.TempDir())
+			s.diskFree = func(string) (uint64, error) { return tc.available, nil }
+			if err := s.checkDiskSpace(); err != nil {
+				t.Errorf("可用空间达到要求时不应阻止升级:%v", err)
+			}
+		})
+	}
+}
+
+func TestCheckDiskSpace_InstallDirUsesInstallThreshold(t *testing.T) {
+	installDir := filepath.Join(t.TempDir(), "install")
+	s := New(t.TempDir())
+	s.installDir = installDir
+	s.diskFree = func(path string) (uint64, error) {
+		if path == installDir {
+			return minInstallFreeBytes - 1, nil
+		}
+		return minBuildFreeBytes, nil
+	}
+	err := s.checkDiskSpace()
+	if err == nil || !strings.Contains(err.Error(), installDir) {
+		t.Fatalf("安装目录低于安装阈值时应阻止升级:%v", err)
+	}
+	if got := strings.Count(err.Error(), "0.25 GiB"); got != 2 {
+		t.Errorf("安装目录错误应同时给出可用与所需安装阈值,得 %q", err)
+	}
+	if strings.Contains(err.Error(), "2.00 GiB") {
+		t.Errorf("安装目录不足时不应误报构建空间要求:%q", err)
+	}
+}
+
+func TestCheckDiskSpace_ProbeFailure(t *testing.T) {
+	probeErr := errors.New("statfs unavailable")
+	s := New(t.TempDir())
+	s.diskFree = func(string) (uint64, error) { return 0, probeErr }
+	err := s.checkDiskSpace()
+	if !errors.Is(err, probeErr) {
+		t.Fatalf("应保留探测错误根因:%v", err)
+	}
+	if !strings.Contains(err.Error(), "无法读取") || strings.Contains(err.Error(), "磁盘空间不足") {
+		t.Errorf("探测失败不应误报为零空间:%v", err)
+	}
+}
+
+// 首次准入后空间被其他进程占用:构建前复查必须阻止 make,后续安装/重启也不能执行。
+func TestUpdatePipeline_RechecksDiskBeforeBuild(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh 不可用")
+	}
+	work := mkRepo(t)
+	s := newTestService(work)
+	s.unitPath = filepath.Join(t.TempDir(), "absent.service")
+	s.buildCmd = []string{"sh", "-c", "echo built >> steps.log"}
+	s.installCmd = []string{"sh", "-c", "echo installed >> steps.log"}
+	restarted := false
+	s.restart = func() error { restarted = true; return nil }
+
+	firstPass := len(s.diskRequirements())
+	checks := 0
+	s.diskFree = func(string) (uint64, error) {
+		checks++
+		if checks <= firstPass {
+			return minBuildFreeBytes, nil
+		}
+		return 512 << 20, nil
+	}
+	if err := s.StartUpdate(); err != nil {
+		t.Fatalf("首次空间检查应通过:%v", err)
+	}
+	st := waitStatus(t, s, func(st Status) bool { return !st.Running })
+	if st.Step != "build" || !strings.Contains(st.Error, "磁盘空间不足") {
+		t.Fatalf("构建前复查应阻止升级:%+v", st)
+	}
+	if _, err := os.Stat(filepath.Join(work, "steps.log")); !os.IsNotExist(err) {
+		t.Errorf("复查失败不应执行构建或安装")
+	}
+	if restarted {
+		t.Error("复查失败不应触发重启")
+	}
+}
+
 // 已装 systemd 服务(unit 存在):不调用本地 restart,直接 finish —— 重启由 install.sh
 // 的 systemctl 完成。
 func TestUpdatePipeline_WithSystemdUnit(t *testing.T) {
@@ -270,7 +403,7 @@ func TestUpdatePipeline_WithSystemdUnit(t *testing.T) {
 		t.Skip("sh 不可用")
 	}
 	work := mkRepo(t)
-	s := New(work)
+	s := newTestService(work)
 	unit := filepath.Join(t.TempDir(), "pipewright.service")
 	if err := os.WriteFile(unit, []byte("[Unit]\n"), 0o644); err != nil {
 		t.Fatal(err)
