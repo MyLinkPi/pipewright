@@ -1730,10 +1730,11 @@ for (const width of [1366, 1920, 390])
       expect(b.x - (a.x + a.width)).toBeLessThanOrEqual(17)
       // 本机(控制节点)卡置首 + 两张服务器卡。
       await expect(page.locator('.metrics-card')).toHaveCount(3)
-      // 仅服务器卡带 AI 动作按钮(本机卡只读,不参与批量命令/单机 AI)。
+      // 卡牌动作按钮:本机卡 = 终端 + 本机角色 + AI 运维助手(目标 __local__,仍不参与
+      // 批量命令勾选);两张服务器卡各 = 终端 + AI 运维助手。合计 7。
       await expect(
         page.locator('.metrics-card .metrics-card__actions button'),
-      ).toHaveCount(2)
+      ).toHaveCount(7)
       for (const card of await page.locator('.metrics-card').all()) {
         expect(
           await card.evaluate((el) => el.scrollWidth <= el.clientWidth + 1),

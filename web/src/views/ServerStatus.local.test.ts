@@ -129,4 +129,17 @@ describe('ServerStatus · 本机(控制节点)卡牌', () => {
     expect(w.text()).not.toContain('尚无已登记服务器')
     w.unmount()
   })
+
+  it('本机卡带 AI 运维助手入口(与远程卡同一按钮;仍无批量勾选)', async () => {
+    const w = await mountStatus()
+    const cards = w.findAll('.metrics-card')
+    const localActions = cards[0].findAll('.metrics-card__actions button')
+    // 终端 + 本机角色 + AI 运维助手;文案与远程卡一致(复用 opsChat.title)。
+    expect(localActions.map((b) => b.text())).toContain('AI 运维助手')
+    const remoteActions = cards[1].findAll('.metrics-card__actions button')
+    expect(remoteActions.map((b) => b.text())).toContain('AI 运维助手')
+    // 本机卡依旧没有 checkbox(单机 AI 入口 ≠ 参与批量命令)。
+    expect(cards[0].find('input[type="checkbox"]').exists()).toBe(false)
+    w.unmount()
+  })
 })

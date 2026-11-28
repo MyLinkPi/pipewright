@@ -13,9 +13,10 @@
 
   这是一个**新增**的总览入口,不动 4-1 SettingsServers CRUD、6-2 日志入口。
 
-  另:网格**置首**展示一张「本机(控制节点)」只读卡牌 —— 运行 Pipewright 的这台主机自身的
+  另:网格**置首**展示一张「本机(控制节点)」卡牌 —— 运行 Pipewright 的这台主机自身的
   CPU/内存/磁盘,由 GET /api/system/metrics 在**本地**采集(不走 SSH、不占登记服务器名额)。
-  本机卡不可勾选(不参与批量命令)、无单机 AI 入口;本机请求失败只隐藏该卡,不影响服务器卡。
+  本机卡不可勾选(不参与批量命令);含单机 AI 入口(目标为 __local__,后端在本机受限执行,
+  变更类工具同样走确认单审批);本机请求失败只隐藏该卡,不影响服务器卡。
 -->
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue'
@@ -626,6 +627,9 @@ onUnmounted(() => {
             @click="showLocalRoles = !showLocalRoles"
           >
             <Settings class="action-icon" aria-hidden="true" />{{ t('localNode.entry') }}
+          </AppButton>
+          <AppButton variant="ai" @click="aiTargets = [LOCAL_HOST_ID]">
+            <Robot class="action-icon" aria-hidden="true" />{{ t('opsChat.title') }}
           </AppButton>
         </template>
       </ServerMetricsCard>

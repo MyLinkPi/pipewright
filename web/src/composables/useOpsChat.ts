@@ -23,7 +23,8 @@ import type {
   Turn,
   Capabilities,
 } from '../api/opsChat'
-import { listServers, type Server } from '../api/servers'
+import { listServers, LOCAL_HOST_ID, type Server } from '../api/servers'
+import { t } from '../i18n'
 import { listProjects, type Project } from '../api/projects'
 import { HttpError } from '../api/http'
 import { useOpsChatStore, type PendingSubmission } from '../stores/opsChat'
@@ -40,6 +41,42 @@ const visibleKinds = new Set([
   'summary',
   'notice',
 ])
+
+/**
+ * 机器选择器候选追加控制节点合成条目(__local__):本机不是登记服务器(listServers 不含),
+ * 但后端已把 __local__ 当作 AI 运维域的一等目标 —— 不追加的话,选中本机的会话会在
+ * AiOpsServerPicker 渲染成红色「服务器已删除」行。仅展示用:其余字段填中性默认值。
+ */
+function withLocalHost(list: Server[]): Server[] {
+  // 防御:若某天后端列表也返回本机,避免重复 id 产生重复 v-for key。
+  if (list.some((s) => s.id === LOCAL_HOST_ID)) return list
+  return [
+    ...list,
+    {
+      id: LOCAL_HOST_ID,
+      name: t('serverStatus.localName'),
+      host: 'localhost',
+      port: 0,
+      user: '',
+      credentialId: '',
+      credentialName: '',
+      sudoCredentialId: '',
+      sudoCredentialName: '',
+      jumps: [],
+      labels: '',
+      maxBuilds: 0,
+      priority: 0,
+      gpu: false,
+      sharedBuild: false,
+      poolId: '',
+      poolName: '',
+      kind: 'standard',
+      createdAt: '',
+      updatedAt: '',
+    },
+  ]
+}
+
 export function useOpsChat(options: {
   active: Ref<boolean>
   initialServerIds: () => string[]
@@ -502,7 +539,7 @@ export function useOpsChat(options: {
       if (!valid(t.g, t.auth)) return false
       capabilities.value = cap
       tools.value = catalogue
-      servers.value = registered
+      servers.value = withLocalHost(registered)
       if (!cap.available) {
         error.value = 'ops_unavailable'
         return false
@@ -613,7 +650,7 @@ export function useOpsChat(options: {
       if (!valid(t.g, t.auth)) return
       capabilities.value = cap
       tools.value = catalogue
-      servers.value = registered
+      servers.value = withLocalHost(registered)
       if (dimension() === 'project') {
         // 项目选择器候选;拉取失败不阻塞面板(选择时会再次校验)。
         try {

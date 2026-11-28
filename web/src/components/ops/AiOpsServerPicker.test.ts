@@ -47,4 +47,16 @@ describe('server picker opening', () => {
     expect(w.get('details').attributes('open')).toBeDefined()
     w.unmount()
   })
+  it('omits the port for the control-node entry (port 0 is not a display address)', async () => {
+    const local = { ...servers[0]!, id: '__local__', name: '本机(控制节点)', host: 'localhost', port: 0 }
+    const w = mount(AiOpsServerPicker, {
+      props: { servers: [...servers, local], selected: ['__local__'], disabled: false },
+    })
+    const text = w.text()
+    expect(text).toContain('localhost')
+    expect(text).not.toContain('localhost:0')
+    // 登记服务器仍带端口。
+    expect(text).toContain('host:22')
+    w.unmount()
+  })
 })

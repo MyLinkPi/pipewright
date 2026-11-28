@@ -14,16 +14,21 @@ vi.mock('vue-router', () => ({
   useRouter: () => ({ resolve: () => ({ href: '/terminal' }) }),
   onBeforeRouteLeave: vi.fn(),
 }))
-vi.mock('../../api/servers', () => ({
-  listServers: vi.fn().mockResolvedValue(
-    Array.from({ length: 6 }, (_, i) => ({
-      id: `srv-${i}`,
-      name: `strata0${i}`,
-      host: `10.0.0.${i}`,
-      port: 22,
-    })),
-  ),
-}))
+vi.mock('../../api/servers', async (importOriginal) => {
+  // 展开 real 导出:useOpsChat 导入 LOCAL_HOST_ID,factory 只造 listServers 会丢绑定。
+  const actual = await importOriginal<typeof import('../../api/servers')>()
+  return {
+    ...actual,
+    listServers: vi.fn().mockResolvedValue(
+      Array.from({ length: 6 }, (_, i) => ({
+        id: `srv-${i}`,
+        name: `strata0${i}`,
+        host: `10.0.0.${i}`,
+        port: 22,
+      })),
+    ),
+  }
+})
 vi.mock('../../api/opsChat', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../api/opsChat')>()
   return {

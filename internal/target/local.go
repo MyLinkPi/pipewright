@@ -11,6 +11,11 @@ package target
 //   - 对 LocalHostID:Get 返回合成 Server(供 handler 的定位校验),Exec/ExecStream/
 //     ExecInteractive/Upload/ExecWithStdin 走本地执行。
 //
+// 受限执行(LimitedExecutor,Capture/ExecLimited;opschat AI 工具域的唯一执行入口):
+// 对 LocalHostID 返回合成快照并落到本机 os/exec(与 SSH 版同款 limits/命令校验/指纹
+// 漂移闸门/30s 硬顶),其余透传 base —— 装配层把 WithLocalHost 包装实例断言为
+// LimitedExecutor 注入 opschat,本机即成为 AI 运维域的一等目标。
+//
 // 角色(mode,specs/local-node-roles.md):WithLocalHostRoles(base, rolesFn) 在此之上叠加
 // 「角色开关」——deploy/servicereg(网关)/调度器各持独立实例,rolesFn 只回答「本角色是否启用」:
 //   - 启用:语义与旧包装一致(Get 合成 / 执行类走本机);List 可按需追加合成 Server
@@ -34,6 +39,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"time"
 )
 
 // LocalHostID 是控制节点的伪 serverID。与前端 `api/servers.ts` 的 `LOCAL_HOST_ID` 以及
@@ -313,6 +319,92 @@ func (s *localHostService) Download(ctx context.Context, serverID, remotePath st
 	}
 	defer func() { _ = f.Close() }()
 	return io.Copy(w, f)
+}
+
+// ─── 受限执行(LimitedExecutor;opschat AI 工具域的唯一执行入口) ────────────────
+
+// localCredentialVersion 是控制节点合成快照的凭据版本占位:本机执行不经 SSH、无凭据参与,
+// 恒定值保证指纹稳定(凭据与角色开关的变化都不会误触「目标配置漂移」闸门)。
+const localCredentialVersion = "local"
+
+// Capture 对控制节点返回合成快照(不查 servers 表、无凭据参与);其余透传 base 的受限采集。
+// 快照用 localHostServer()(不带角色 labels/槽位参数):这些参数随开关实时变化,进快照会让
+// 角色热切换翻转指纹,误触 opschat 的「目标配置漂移」闸门。
+func (s *localHostService) Capture(ctx context.Context, id string) (ConnectionSnapshot, error) {
+	if id != LocalHostID {
+		base, ok := s.Service.(LimitedExecutor)
+		if !ok {
+			return ConnectionSnapshot{}, ErrLimitedUnavailable
+		}
+		return base.Capture(ctx, id)
+	}
+	if !s.rolesEnabled() {
+		return ConnectionSnapshot{}, ErrLocalRoleDisabled
+	}
+	return ConnectionSnapshot{Server: *localHostServer(), CredentialVersion: localCredentialVersion}, nil
+}
+
+// ExecLimited 对控制节点在本机执行 cmd(os/exec,不经 SSH),安全语义与 SSH 版逐项对齐:
+// limits 归一化、命令 array 校验(validateLimitedCommand,不经 shell 无注入面)、重采集比对
+// 指纹(防批准后配置漂移,同 exec_limited.go);输出经 outputBudget 共享预算截断。其余透传 base。
+func (s *localHostService) ExecLimited(ctx context.Context, approved ConnectionSnapshot, cmd []string, limits ExecutionLimits) (*LimitedResult, error) {
+	if approved.Server.ID != LocalHostID {
+		base, ok := s.Service.(LimitedExecutor)
+		if !ok {
+			return nil, ErrLimitedUnavailable
+		}
+		return base.ExecLimited(ctx, approved, cmd, limits)
+	}
+	limits, err := normalizeExecutionLimits(limits)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateLimitedCommand(cmd); err != nil {
+		return nil, err
+	}
+	current, err := s.Capture(ctx, LocalHostID)
+	if err != nil {
+		return nil, err
+	}
+	if approved.Fingerprint() != current.Fingerprint() {
+		return nil, ErrTargetChanged
+	}
+	// 与 SSH 版同款 30s 硬顶:AI 工具调用是短平快命令,不因「本机」放宽。
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	return runLocalLimited(ctx, cmd, limits)
+}
+
+// runLocalLimited 在本机跑 cmd(array,不经 shell),stdout/stderr 走 outputBudget 共享预算
+// (与 sshDialer.RunLimited 同语义:超 64KiB/1000 行置 Truncated,预算写满仍继续排空防挂起)。
+// 命令跑完(含非零退出)→ (result, nil);ctx 取消/超时 → ctx.Err();启动失败沿用
+// runLocalCommand 的 127/126 伪退出码语义(让上层走「该命令在本机不可用」的正常降级分支)。
+func runLocalLimited(ctx context.Context, cmd []string, limits ExecutionLimits) (*LimitedResult, error) {
+	if len(cmd) == 0 {
+		return nil, ErrEmptyCommand
+	}
+	c := exec.CommandContext(ctx, cmd[0], cmd[1:]...)
+	budget := &outputBudget{remaining: limits.Bytes, maxLines: limits.Lines}
+	c.Stdout = budgetWriter{budget: budget}
+	c.Stderr = budgetWriter{budget: budget, stderr: true}
+	runErr := c.Run()
+	res := budget.result()
+	if runErr != nil {
+		if ctx.Err() != nil {
+			return res, ctx.Err()
+		}
+		var ee *exec.ExitError
+		if errors.As(runErr, &ee) {
+			res.ExitCode = ee.ExitCode()
+			return res, nil
+		}
+		res.ExitCode = localExitNotExecutable
+		if errors.Is(runErr, exec.ErrNotFound) {
+			res.ExitCode = localExitNotFound
+		}
+		res.Stderr = "无法启动本机命令:" + cmd[0]
+	}
+	return res, nil
 }
 
 // DockerLogin 对控制节点在本机执行 `docker login [<registry>]`(口令经 stdin,绝不进

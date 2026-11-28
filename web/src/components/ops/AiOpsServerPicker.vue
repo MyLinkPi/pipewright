@@ -57,7 +57,7 @@ function toggle(id: string): void {
           <span class="ops-grow"
             ><strong class="ops-wrap">{{ server.name }}</strong
             ><span class="ops-muted ops-wrap"
-              >{{ server.host }}:{{ server.port }}</span
+              >{{ server.host }}{{ server.port ? ':' + server.port : '' }}</span
             ></span
           >
         </label>

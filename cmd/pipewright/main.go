@@ -413,7 +413,9 @@ func main() {
 			log.Printf("[opschat] 警告:PIPEWRIGHT_OPS_APPROVAL_TTL_MINUTES=%q 非法(须为正整数分钟),用默认 15", v)
 		}
 	}
-	if limited, ok := targetSvc.(target.LimitedExecutor); ok {
+	// 包一层 WithLocalHost:控制节点伪 ID(__local__)对 AI 工具域成为一等目标(本机
+	// os/exec 执行,与构建/部署/网关各拿一份包装实例的模式一致;真实 serverID 逐字透传)。
+	if limited, ok := target.WithLocalHost(targetSvc).(target.LimitedExecutor); ok {
 		// 项目维度后端:opschat 项目工具落到 project/pipeline/run 服务 + 源码读取器
 		//(SourceReader 无状态,这里独立构造;main.go:964 的 web 端实例互不影响)。
 		opsProjects := httpapi.NewOpsProjectBackend(projectSvc, pipelineSvc, runSvc, credVault, httpapi.NewSourceReader())

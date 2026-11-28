@@ -17,12 +17,18 @@ import {
 } from '../api/opsChat'
 import { HttpError } from '../api/http'
 import { resetOpsAuth } from '../utils/opsAuth'
-vi.mock('../api/servers', () => ({
-  listServers: vi.fn().mockResolvedValue([
-    { id: 'a', name: 'A', host: 'host-a', port: 22 },
-    { id: 'b', name: 'B', host: 'host-b', port: 22 },
-  ]),
-}))
+vi.mock('../api/servers', async (importOriginal) => {
+  // 展开 real 导出:被测代码从该模块导入 LOCAL_HOST_ID 等常量,factory 只造 listServers
+  // 会丢绑定(restore 静默抛错 → 全部用例连带失败)。
+  const actual = await importOriginal<typeof import('../api/servers')>()
+  return {
+    ...actual,
+    listServers: vi.fn().mockResolvedValue([
+      { id: 'a', name: 'A', host: 'host-a', port: 22 },
+      { id: 'b', name: 'B', host: 'host-b', port: 22 },
+    ]),
+  }
+})
 vi.mock('../api/opsChat', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../api/opsChat')>()
   return {

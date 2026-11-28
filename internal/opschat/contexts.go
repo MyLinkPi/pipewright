@@ -7,6 +7,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/huangchengsir/pipewright/internal/store"
+	"github.com/huangchengsir/pipewright/internal/target"
 )
 
 func (s *Service) validateContext(ctx context.Context, key string) error {
@@ -28,9 +29,12 @@ func (s *Service) validateContext(ctx context.Context, key string) error {
 		return ErrInvalid
 	}
 	id := strings.TrimPrefix(key, "terminal:")
-	u, err := uuid.Parse(id)
-	if err != nil || u.String() != id {
-		return ErrInvalid
+	if id != target.LocalHostID {
+		// 登记服务器:上下文 id 必须是规范 UUID 形式(拒绝任意字符串进库)。
+		u, err := uuid.Parse(id)
+		if err != nil || u.String() != id {
+			return ErrInvalid
+		}
 	}
 	if s.executor == nil {
 		return ErrUnavailable

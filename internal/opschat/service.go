@@ -137,13 +137,19 @@ func (s *Service) ready() error {
 	return nil
 }
 func validID(id string) bool { _, err := uuid.Parse(id); return err == nil }
+
+// validLocalTarget 报告 id 是否为控制节点伪 ID(__local__,internal/target 的 LocalHostID):
+// 本机不是登记服务器、无 UUID,但经 WithLocalHost 包装的执行器可对本机受限执行 —— AI 运维
+// 域把控制节点当作与登记服务器同权的一等目标(变更类工具同样走确认单/审批,无豁免)。
+func validLocalTarget(id string) bool { return id == target.LocalHostID }
+
 func validTargets(ids []string) bool {
 	if len(ids) > resourceLimits.Targets {
 		return false
 	}
 	seen := map[string]bool{}
 	for _, id := range ids {
-		if !validID(id) || seen[id] {
+		if (!validID(id) && !validLocalTarget(id)) || seen[id] {
 			return false
 		}
 		seen[id] = true

@@ -87,18 +87,27 @@ func normalizeExecutionLimits(l ExecutionLimits) (ExecutionLimits, error) {
 	return l, nil
 }
 
+// validateLimitedCommand 校验受限执行的命令 array(段数 ≤64、单段 ≤16KiB、无 \0),
+// SSH 版与本机版共用(安全面一致:两边都只接受 []string,不经 shell)。
+func validateLimitedCommand(cmd []string) error {
+	if len(cmd) == 0 || len(cmd) > 64 {
+		return errors.New("target: invalid command")
+	}
+	for _, arg := range cmd {
+		if len(arg) > 16<<10 || strings.ContainsRune(arg, 0) {
+			return errors.New("target: invalid command")
+		}
+	}
+	return nil
+}
+
 func (s *service) ExecLimited(ctx context.Context, approved ConnectionSnapshot, cmd []string, limits ExecutionLimits) (*LimitedResult, error) {
 	limits, err := normalizeExecutionLimits(limits)
 	if err != nil {
 		return nil, err
 	}
-	if len(cmd) == 0 || len(cmd) > 64 {
-		return nil, errors.New("target: invalid command")
-	}
-	for _, arg := range cmd {
-		if len(arg) > 16<<10 || strings.ContainsRune(arg, 0) {
-			return nil, errors.New("target: invalid command")
-		}
+	if err := validateLimitedCommand(cmd); err != nil {
+		return nil, err
 	}
 	runner, ok := s.dialer.(limitedSSHRunner)
 	if !ok {
