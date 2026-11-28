@@ -346,6 +346,31 @@ func TestCheckDiskSpace_InstallDirUsesInstallThreshold(t *testing.T) {
 	}
 }
 
+// /tmp 只放短生命周期临时文件,不应套用完整的 2 GiB 构建阈值。
+func TestCheckDiskSpace_TempDirUsesTempThreshold(t *testing.T) {
+	s := New(t.TempDir())
+	tmp := filepath.Clean(os.TempDir())
+	var tempFree uint64 = minTempFreeBytes
+	s.diskFree = func(path string) (uint64, error) {
+		if filepath.Clean(path) == tmp {
+			return tempFree, nil
+		}
+		return minBuildFreeBytes, nil
+	}
+
+	// 1.99 GiB 虽低于构建阈值,但足够作为临时目录,不应阻止升级。
+	tempFree = minBuildFreeBytes - 1
+	if err := s.checkDiskSpace(); err != nil {
+		t.Fatalf("临时目录不应套用构建阈值:%v", err)
+	}
+
+	tempFree = minTempFreeBytes - 1
+	err := s.checkDiskSpace()
+	if err == nil || !strings.Contains(err.Error(), tmp) {
+		t.Fatalf("临时目录低于最低阈值时应阻止升级:%v", err)
+	}
+}
+
 func TestCheckDiskSpace_ProbeFailure(t *testing.T) {
 	probeErr := errors.New("statfs unavailable")
 	s := New(t.TempDir())

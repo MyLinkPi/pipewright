@@ -44,9 +44,11 @@ const (
 	// maxLogLines 是任务日志环形缓冲的行数上限(前端展示 + 排障用)。
 	maxLogLines = 120
 
-	// 源码构建会同时写入工作树、npm/Go 缓存及临时目录;为依赖解包和编译中间产物
-	// 预留 2 GiB,安装阶段另为二进制替换预留 256 MiB。
+	// 源码构建主要写入工作树和构建用户的 npm/Go 缓存,为依赖解包和编译中间产物
+	// 预留 2 GiB。临时目录只放短生命周期文件,按最低可用量 256 MiB 检查即可;
+	// 安装目录另为二进制替换预留 256 MiB。
 	minBuildFreeBytes   = 2 << 30
+	minTempFreeBytes    = 256 << 20
 	minInstallFreeBytes = 256 << 20
 
 	systemdUnitPath = "/etc/systemd/system/pipewright.service"
@@ -333,7 +335,7 @@ func (s *Service) diskRequirements() []diskRequirement {
 	}
 	add(s.dir, minBuildFreeBytes)
 	add(buildHomeDir(s.dir), minBuildFreeBytes)
-	add(os.TempDir(), minBuildFreeBytes)
+	add(os.TempDir(), minTempFreeBytes)
 	add(s.installDir, minInstallFreeBytes)
 	return reqs
 }
