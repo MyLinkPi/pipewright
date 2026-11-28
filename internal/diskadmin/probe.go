@@ -39,7 +39,7 @@ func topologyCollectArgs() []string {
 		`echo "##PW:df"`,
 		`df -B1 -P 2>/dev/null`,
 		`echo "##PW:tools"`,
-		`for c in parted partx mkfs.ext4 mkfs.xfs mkfs.btrfs e2fsck resize2fs xfs_growfs btrfs pvs findmnt; do if command -v "$c" >/dev/null 2>&1; then echo "$c ok"; fi; done`,
+		`for c in parted partx sfdisk mkfs.ext4 mkfs.xfs mkfs.btrfs e2fsck resize2fs xfs_growfs btrfs pvs findmnt; do if command -v "$c" >/dev/null 2>&1; then echo "$c ok"; fi; done`,
 	}
 	return []string{"sh", "-c", strings.Join(parts, "; ")}
 }
@@ -233,6 +233,7 @@ func parseTools(stdout string) ToolStatus {
 	return ToolStatus{
 		Parted:    present["parted"],
 		Partx:     present["partx"],
+		Sfdisk:    present["sfdisk"],
 		MkfsExt4:  present["mkfs.ext4"],
 		MkfsXfs:   present["mkfs.xfs"],
 		MkfsBtrfs: present["mkfs.btrfs"],

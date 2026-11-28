@@ -12,7 +12,8 @@
 //
 // 安全纪律:
 //   - 挂载 /、/boot、/usr、/var、/etc 等关键目录或 swap 的分区/LV 标记 protected,
-//     其所属 VG、PV 与整盘一并 protected,一切写操作拒绝(系统盘保护);
+//     其所属 VG、PV 与整盘一并 protected;格式化/删除/缩容/卸载等破坏性写操作拒绝,
+//     仅末分区/系统 LV 可在线扩容(扩前备份分区表或 VG 元数据,系统盘保护);
 //   - fstab 持久化走「临时文件 → findmnt --verify 校验 → 备份 → 原子替换」,校验不过
 //     绝不触碰 /etc/fstab;
 //   - 文件系统能力矩阵:ext4 在线扩容/离线缩容(已挂载拒绝缩容,由用户先自行卸载);
@@ -171,6 +172,7 @@ type LogicalVolume struct {
 type ToolStatus struct {
 	Parted    bool `json:"parted"`
 	Partx     bool `json:"partx"`
+	Sfdisk    bool `json:"sfdisk"`
 	MkfsExt4  bool `json:"mkfsExt4"`
 	MkfsXfs   bool `json:"mkfsXfs"`
 	MkfsBtrfs bool `json:"mkfsBtrfs"`
@@ -180,6 +182,14 @@ type ToolStatus struct {
 	Btrfs     bool `json:"btrfs"`
 	LVM       bool `json:"lvm"`
 	Findmnt   bool `json:"findmnt"`
+}
+
+// GrowResult 扩容结果:Protected 表示目标是系统设备,BackupPath 是扩前的元数据备份
+// (分区表 / VG 配置);非保护设备的扩容不产生备份,BackupPath 为空。备份只供人工
+// 恢复,部分成功时不自动回滚(回滚已扩大的分区/LV 会损坏数据)。
+type GrowResult struct {
+	Protected  bool
+	BackupPath string
 }
 
 // Topology 是一台服务器的一次性存储拓扑快照(单次 SSH 合并采集)。
@@ -307,7 +317,8 @@ type Service interface {
 	CreatePartition(ctx context.Context, serverID string, in PartitionCreateInput) error
 	DeletePartition(ctx context.Context, serverID string, in PartitionDeleteInput) error
 	// GrowPartition 把末分区扩到盘尾并按文件系统类型在线扩容。
-	GrowPartition(ctx context.Context, serverID string, target string) error
+	// 系统分区同样允许扩容(扩前备份分区表),结果带回是否受保护与备份路径。
+	GrowPartition(ctx context.Context, serverID string, target string) (*GrowResult, error)
 	// ShrinkPartition 缩分区(ext4 须未挂载;btrfs 须已挂载;xfs 不支持)。
 	ShrinkPartition(ctx context.Context, serverID string, in ShrinkInput) error
 
@@ -324,7 +335,7 @@ type Service interface {
 	VGReduce(ctx context.Context, serverID string, in VGReduceInput) error
 	VGRemove(ctx context.Context, serverID string, in RemoveConfirmInput) error
 	LVCreate(ctx context.Context, serverID string, in LVCreateInput) error
-	LVGrow(ctx context.Context, serverID string, in LVGrowInput) error
+	LVGrow(ctx context.Context, serverID string, in LVGrowInput) (*GrowResult, error)
 	LVShrink(ctx context.Context, serverID string, in ShrinkInput) error
 	LVRemove(ctx context.Context, serverID string, in RemoveTargetInput) error
 }

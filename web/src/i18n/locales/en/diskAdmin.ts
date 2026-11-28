@@ -46,7 +46,7 @@ export default {
   typeRom: 'ROM',
   typeLoop: 'Loop',
   protectedBadge: 'System',
-  protectedTitle: 'System device (critical mount/swap/root VG): write operations are rejected',
+  protectedTitle: 'System device (critical mount/swap/root VG): destructive writes are rejected; last partition can be grown online',
 
   actInit: 'Initialize',
   actFormat: 'Format',
@@ -95,6 +95,9 @@ export default {
   growTitle: 'Grow {dev}?',
   growBody: 'The partition extends to the end of the disk and the filesystem grows online.',
   growBodyOnline: '{fs} must be mounted to grow.',
+  growSystemBody: 'The system partition extends to the end of the disk and the filesystem grows online. A partition-table backup is taken first; do not power off or force shutdown during the operation.',
+  lvGrowSystemBody: 'The system logical volume grows online. VG metadata is backed up first; do not power off or force shutdown during the operation.',
+  growNoSfdisk: 'sfdisk is missing on the host, so the system partition table cannot be backed up; growing is disabled',
   shrinkTitle: 'Shrink {dev}',
   shrinkTo: 'Target size (GiB)',
   shrinkCurrent: 'Current {n} GiB',

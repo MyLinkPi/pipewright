@@ -45,7 +45,7 @@ export default {
   typeRom: '光驱',
   typeLoop: '回环',
   protectedBadge: '系统',
-  protectedTitle: '系统设备(关键挂载/swap/根 VG):写操作被拒绝',
+  protectedTitle: '系统设备(关键挂载/swap/根 VG):格式化/删除/缩容等写操作被拒绝,末分区可在线扩容',
 
   actInit: '初始化',
   actFormat: '格式化',
@@ -94,6 +94,9 @@ export default {
   growTitle: '扩容 {dev}?',
   growBody: '分区将扩展到盘尾并在线扩容文件系统。',
   growBodyOnline: '{fs} 须处于挂载状态才能扩容。',
+  growSystemBody: '系统分区将扩展到盘尾并在线扩容文件系统;扩容前会自动备份分区表,期间请勿断电或强制关机。',
+  lvGrowSystemBody: '系统逻辑卷将在线扩容;扩容前会自动备份 VG 元数据,期间请勿断电或强制关机。',
+  growNoSfdisk: '远端缺少 sfdisk,无法备份系统分区表,已禁用扩容',
   shrinkTitle: '缩容 {dev}',
   shrinkTo: '目标容量(GiB)',
   shrinkCurrent: '当前 {n} GiB',

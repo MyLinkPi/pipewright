@@ -18,21 +18,23 @@ import (
 // fakeRunner 记录全部命令;同名命令可排队多次响应(queues 优先,耗尽后粘住最后一条
 // —— 模拟「守卫采集 + 轮询采集」的多次调用),否则查 outputs/fails。
 type fakeRunner struct {
-	mu      sync.Mutex
-	calls   []string
-	stdins  []string // 与 WithStdin 调用一一对应的 stdin 内容
-	queues  map[string][]*target.ExecResult
-	sticky  map[string]*target.ExecResult
-	outputs map[string]*target.ExecResult
-	fails   map[string]error
+	mu         sync.Mutex
+	calls      []string
+	stdins     []string // 与 WithStdin 调用一一对应的 stdin 内容
+	queues     map[string][]*target.ExecResult
+	sticky     map[string]*target.ExecResult
+	outputs    map[string]*target.ExecResult
+	fails      map[string]error
+	failPrefix map[string]error // 带时间戳的路径失败注入(前缀匹配)
 }
 
 func newFakeRunner() *fakeRunner {
 	return &fakeRunner{
-		queues:  map[string][]*target.ExecResult{},
-		sticky:  map[string]*target.ExecResult{},
-		outputs: map[string]*target.ExecResult{},
-		fails:   map[string]error{},
+		queues:     map[string][]*target.ExecResult{},
+		sticky:     map[string]*target.ExecResult{},
+		outputs:    map[string]*target.ExecResult{},
+		fails:      map[string]error{},
+		failPrefix: map[string]error{},
 	}
 }
 
@@ -66,6 +68,11 @@ func (f *fakeRunner) dispatch(key string) (*target.ExecResult, error) {
 	}
 	if err, ok := f.fails[key]; ok {
 		return nil, err
+	}
+	for prefix, err := range f.failPrefix {
+		if strings.HasPrefix(key, prefix) {
+			return nil, err
+		}
 	}
 	if r, ok := f.outputs[key]; ok {
 		return r, nil
@@ -161,6 +168,18 @@ findmnt ok`
 
 // baseScript 是基线拓扑(vdb 空盘无分区表)。
 func baseScript() string { return sampleScript("null", "[]") }
+
+// protectedRootScript 把 vdc2 变成挂载 /boot/backup 的 ext4 末分区(protected),
+// 可选让 sfdisk 出现在工具探测里,用于系统分区扩容测试。
+func protectedRootScript(sfdisk bool) string {
+	out := strings.Replace(baseScript(),
+		`"path":"/dev/vdc2","name":"vdc2","type":"part","size":53687091200,"fstype":"xfs","mountpoints":[]`,
+		`"path":"/dev/vdc2","name":"vdc2","type":"part","size":53687091200,"fstype":"ext4","mountpoints":["/boot/backup"]`, 1)
+	if sfdisk {
+		out = strings.Replace(out, "partx ok\n", "partx ok\nsfdisk ok\n", 1)
+	}
+	return out
+}
 
 // withVdbPartScript 是 vdb 已有 1 分区的变体(waitChildrenAppear 轮询用;PTType 为
 // JSON 字符串须自带引号)。
@@ -597,18 +616,175 @@ func TestGrowPartitionGuards(t *testing.T) {
 	ctx := context.Background()
 
 	// 非末分区(vdc2 是最后一个 → 用 vdc1 试)。
-	err := svc.GrowPartition(ctx, "s1", "/dev/vdc1")
+	_, err := svc.GrowPartition(ctx, "s1", "/dev/vdc1")
 	if !errors.Is(err, ErrNotLastPartition) {
 		t.Fatalf("非末分区应拒绝: %v", err)
 	}
-	// XFS 未挂载不可扩。
-	err = svc.GrowPartition(ctx, "s1", "/dev/vdc2")
+	// XFS 未挂载不可扩,且必须在动分区表之前拒绝。
+	_, err = svc.GrowPartition(ctx, "s1", "/dev/vdc2")
 	if !errors.Is(err, ErrMountRequired) {
 		t.Fatalf("xfs 未挂载扩容应拒绝: %v", err)
+	}
+	if fr.called("parted -s /dev/vdc -- resizepart 2 100%") {
+		t.Fatalf("文件系统预检失败不应改动分区表: %v", fr.calls)
+	}
+
+	// 缺 resize2fs:同样在动分区表之前拒绝。
+	fr = newFakeRunner()
+	svc = newTestService(fr, "root")
+	unlock(svc)
+	seedCollect(fr, strings.Replace(protectedRootScript(true), "resize2fs ok\n", "", 1))
+	if _, err := svc.GrowPartition(ctx, "s1", "/dev/vdc2"); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("缺 resize2fs 应拒绝: %v", err)
+	}
+	if fr.called("parted -s /dev/vdc -- resizepart 2 100%") || containsPrefix(fr, "sh -c umask 077; sfdisk -d") {
+		t.Fatalf("文件系统预检失败不应备份或改动分区表: %v", fr.calls)
+	}
+}
+
+func TestGrowProtectedPartition(t *testing.T) {
+	fr := newFakeRunner()
+	svc := newTestService(fr, "root")
+	unlock(svc)
+	seedCollect(fr, protectedRootScript(true))
+	ctx := context.Background()
+
+	res, err := svc.GrowPartition(ctx, "s1", "/dev/vdc2")
+	if err != nil {
+		t.Fatalf("系统末分区扩容应成功: %v", err)
+	}
+	if res == nil || !res.Protected || !strings.HasPrefix(res.BackupPath, "/root/.pipewright-parttable-") {
+		t.Fatalf("应返回保护标记与备份路径: %+v", res)
+	}
+	for _, prefix := range []string{
+		"sh -c umask 077; sfdisk -d",
+		"test -s /root/.pipewright-parttable-",
+	} {
+		if !containsPrefix(fr, prefix) {
+			t.Fatalf("缺少备份命令 %s;实际: %v", prefix, fr.calls)
+		}
+	}
+	for _, want := range []string{
+		"parted -s /dev/vdc -- resizepart 2 100%",
+		"partx -u /dev/vdc",
+		"resize2fs /dev/vdc2",
+	} {
+		if !fr.called(want) {
+			t.Fatalf("缺少命令: %s;实际: %v", want, fr.calls)
+		}
+	}
+}
+
+func TestGrowProtectedPartitionBackups(t *testing.T) {
+	ctx := context.Background()
+
+	// 缺 sfdisk:拒绝扩容且绝不触碰分区表。
+	fr := newFakeRunner()
+	svc := newTestService(fr, "root")
+	unlock(svc)
+	seedCollect(fr, protectedRootScript(false))
+	if _, err := svc.GrowPartition(ctx, "s1", "/dev/vdc2"); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("缺 sfdisk 应拒绝: %v", err)
+	}
+	if fr.called("parted -s /dev/vdc -- resizepart 2 100%") {
+		t.Fatalf("备份不可用不应改动分区表: %v", fr.calls)
+	}
+
+	// 分区表备份写失败:拒绝扩容。
+	fr = newFakeRunner()
+	svc = newTestService(fr, "root")
+	unlock(svc)
+	seedCollect(fr, protectedRootScript(true))
+	fr.failPrefix["sh -c umask 077; sfdisk -d"] = errors.New("sfdisk failed")
+	if _, err := svc.GrowPartition(ctx, "s1", "/dev/vdc2"); !errors.Is(err, ErrExec) {
+		t.Fatalf("备份失败应拒绝: %v", err)
+	}
+	if fr.called("parted -s /dev/vdc -- resizepart 2 100%") {
+		t.Fatalf("备份失败不应改动分区表: %v", fr.calls)
+	}
+
+	// 备份为空:拒绝扩容。
+	fr = newFakeRunner()
+	svc = newTestService(fr, "root")
+	unlock(svc)
+	seedCollect(fr, protectedRootScript(true))
+	fr.failPrefix["test -s /root/.pipewright-parttable-"] = errors.New("empty backup")
+	if _, err := svc.GrowPartition(ctx, "s1", "/dev/vdc2"); !errors.Is(err, ErrExec) {
+		t.Fatalf("备份为空应拒绝: %v", err)
+	}
+	if fr.called("parted -s /dev/vdc -- resizepart 2 100%") {
+		t.Fatalf("备份为空不应改动分区表: %v", fr.calls)
+	}
+
+	// 系统分区但非末分区仍拒绝(备份步骤不会执行)。
+	fr = newFakeRunner()
+	svc = newTestService(fr, "root")
+	unlock(svc)
+	seedCollect(fr, protectedRootScript(true))
+	if _, err := svc.GrowPartition(ctx, "s1", "/dev/vda1"); !errors.Is(err, ErrNotLastPartition) {
+		t.Fatalf("系统盘非末分区仍应拒绝: %v", err)
 	}
 }
 
 // ── LVM 测试 ─────────────────────────────────────────────────────────────────
+
+func TestLVGrowProtected(t *testing.T) {
+	fr := newFakeRunner()
+	svc := newTestService(fr, "root")
+	unlock(svc)
+	seedCollect(fr, baseScript(), baseScript())
+	ctx := context.Background()
+
+	// 系统 LV(rootvg-root 挂载在 /)允许扩容,扩前备份 VG 元数据。
+	res, err := svc.LVGrow(ctx, "s1", LVGrowInput{Path: "/dev/rootvg/root", UseAllFree: true})
+	if err != nil {
+		t.Fatalf("系统 LV 扩容应成功: %v", err)
+	}
+	if res == nil || !res.Protected || !strings.HasPrefix(res.BackupPath, "/root/.pipewright-vgcfg-") {
+		t.Fatalf("应返回保护标记与备份路径: %+v", res)
+	}
+	for _, prefix := range []string{
+		"sh -c umask 077; vgcfgbackup -f",
+		"test -s /root/.pipewright-vgcfg-",
+	} {
+		if !containsPrefix(fr, prefix) {
+			t.Fatalf("缺少备份命令 %s;实际: %v", prefix, fr.calls)
+		}
+	}
+	for _, want := range []string{
+		"lvextend -l +100%FREE /dev/rootvg/root",
+		"resize2fs /dev/mapper/rootvg-root",
+	} {
+		if !fr.called(want) {
+			t.Fatalf("缺少命令: %s;实际: %v", want, fr.calls)
+		}
+	}
+
+	// vgcfgbackup 失败:拒绝扩容且绝不触碰 LV。
+	fr = newFakeRunner()
+	svc = newTestService(fr, "root")
+	unlock(svc)
+	seedCollect(fr, baseScript())
+	fr.failPrefix["sh -c umask 077; vgcfgbackup -f"] = errors.New("vgcfgbackup failed")
+	if _, err := svc.LVGrow(ctx, "s1", LVGrowInput{Path: "/dev/rootvg/root", UseAllFree: true}); !errors.Is(err, ErrExec) {
+		t.Fatalf("VG 元数据备份失败应拒绝: %v", err)
+	}
+	if fr.called("lvextend -l +100%FREE /dev/rootvg/root") {
+		t.Fatalf("备份失败不应改动 LV: %v", fr.calls)
+	}
+
+	// 缺 resize2fs:文件系统预检失败,不得 lvextend 或备份。
+	fr = newFakeRunner()
+	svc = newTestService(fr, "root")
+	unlock(svc)
+	seedCollect(fr, strings.Replace(baseScript(), "resize2fs ok\n", "", 1))
+	if _, err := svc.LVGrow(ctx, "s1", LVGrowInput{Path: "/dev/rootvg/root", UseAllFree: true}); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("缺 resize2fs 应拒绝: %v", err)
+	}
+	if fr.called("lvextend -l +100%FREE /dev/rootvg/root") || containsPrefix(fr, "sh -c umask 077; vgcfgbackup -f") {
+		t.Fatalf("文件系统预检失败不应备份或改动 LV: %v", fr.calls)
+	}
+}
 
 func TestLVMGuards(t *testing.T) {
 	fr := newFakeRunner()
@@ -659,7 +835,7 @@ func TestLVMOperations(t *testing.T) {
 		t.Fatalf("pvcreate 命令异常: %v", fr.calls)
 	}
 	// LV 扩容用尽剩余。
-	if err := svc.LVGrow(ctx, "s1", LVGrowInput{Path: "/dev/datavg/lv1", UseAllFree: true}); err != nil {
+	if _, err := svc.LVGrow(ctx, "s1", LVGrowInput{Path: "/dev/datavg/lv1", UseAllFree: true}); err != nil {
 		t.Fatalf("LV 扩容应成功: %v", err)
 	}
 	if !fr.called("lvextend -l +100%FREE /dev/datavg/lv1") {

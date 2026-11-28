@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // requireLVM 返回 LVM 工具可用性(缺 lvm2 → ErrLvmMissing)。
@@ -312,31 +313,46 @@ func (s *service) LVCreate(ctx context.Context, serverID string, in LVCreateInpu
 }
 
 // LVGrow 扩 LV(+GiB 或用尽 VG 剩余)并按文件系统类型扩容。
-func (s *service) LVGrow(ctx context.Context, serverID string, in LVGrowInput) error {
+// 系统 LV(protected)允许扩容,但扩前必须备份 VG 元数据(vgcfgbackup);备份失败即
+// 放弃。中途失败不自动回缩:文件系统扩到一半再缩 LV 会损坏数据。
+func (s *service) LVGrow(ctx context.Context, serverID string, in LVGrowInput) (*GrowResult, error) {
 	if err := s.requireUnlocked(serverID); err != nil {
-		return err
+		return nil, err
 	}
 	if !devicePathRe.MatchString(in.Path) {
-		return fmt.Errorf("%w: LV 路径非法", ErrInvalidInput)
+		return nil, fmt.Errorf("%w: LV 路径非法", ErrInvalidInput)
 	}
 	if (in.SizeGiB > 0) == in.UseAllFree {
-		return fmt.Errorf("%w: SizeGiB 与 UseAllFree 须二选一", ErrInvalidInput)
+		return nil, fmt.Errorf("%w: SizeGiB 与 UseAllFree 须二选一", ErrInvalidInput)
 	}
 	octx, cancel := context.WithTimeout(ctx, opTimeout)
 	defer cancel()
 	topo, err := s.collect(octx, serverID)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if err := s.requireLVM(topo); err != nil {
-		return err
+		return nil, err
 	}
 	lv := topo.findLV(in.Path)
 	if lv == nil {
-		return fmt.Errorf("%w: LV %s 不存在", ErrDeviceNotFound, in.Path)
+		return nil, fmt.Errorf("%w: LV %s 不存在", ErrDeviceNotFound, in.Path)
 	}
+	// 同分区扩容:文件系统前置条件必须在 lvextend 之前校验,避免「LV 已扩、文件系统未扩」。
+	if dev := lvDevice(topo, lv); dev != nil {
+		if err := checkGrowFilesystem(dev, topo.Tools); err != nil {
+			return nil, err
+		}
+	}
+	var backupPath string
 	if lv.Protected {
-		return fmt.Errorf("%w: %s 是系统逻辑卷", ErrProtectedDevice, in.Path)
+		backupPath = fmt.Sprintf("/root/.pipewright-vgcfg-%d.bak", time.Now().UnixNano())
+		if err := s.run(octx, serverID, []string{"sh", "-c", `umask 077; vgcfgbackup -f "$0" "$1"`, backupPath, lv.VGName}); err != nil {
+			return nil, fmt.Errorf("%w: 备份 VG %s 元数据失败,未改动 LV: %v", ErrExec, lv.VGName, err)
+		}
+		if err := s.run(octx, serverID, []string{"test", "-s", backupPath}); err != nil {
+			return nil, fmt.Errorf("%w: VG 元数据备份为空,拒绝扩容 %s(备份路径 %s)", ErrExec, in.Path, backupPath)
+		}
 	}
 	cmd := []string{"lvextend"}
 	if in.UseAllFree {
@@ -346,18 +362,31 @@ func (s *service) LVGrow(ctx context.Context, serverID string, in LVGrowInput) e
 	}
 	cmd = append(cmd, in.Path)
 	if err := s.run(octx, serverID, cmd); err != nil {
-		return err
+		if backupPath != "" {
+			return nil, fmt.Errorf("%w(系统 LV %s,VG 元数据备份 %s;若仅部分成功请勿回缩 LV)", err, in.Path, backupPath)
+		}
+		return nil, err
 	}
 	// 扩完重查拓扑拿最新 fs/挂载状态再扩文件系统。
 	topo2, err := s.collect(octx, serverID)
 	if err != nil {
-		return err
+		if backupPath != "" {
+			return nil, fmt.Errorf("%w(系统 LV %s,底层已扩;VG 元数据备份 %s)", err, in.Path, backupPath)
+		}
+		return nil, err
 	}
 	dev := lvDevice(topo2, lv)
 	if dev == nil {
-		return nil // 树上不可见(裸 LV 无 fs)则只扩了底层,符合预期
+		// 树上不可见(裸 LV 无 fs)则只扩了底层,符合预期。
+		return &GrowResult{Protected: lv.Protected, BackupPath: backupPath}, nil
 	}
-	return s.growFilesystem(ctx, serverID, dev, topo2.Tools)
+	if err := s.growFilesystem(ctx, serverID, dev, topo2.Tools); err != nil {
+		if backupPath != "" {
+			return nil, fmt.Errorf("%w(系统 LV %s,底层已扩但文件系统未完成;VG 元数据备份 %s,请勿回缩 LV)", err, in.Path, backupPath)
+		}
+		return nil, err
+	}
+	return &GrowResult{Protected: lv.Protected, BackupPath: backupPath}, nil
 }
 
 // LVShrink 缩 LV(ext4 须未挂载;btrfs 须已挂载;xfs 不支持;confirm 逐字确认)。

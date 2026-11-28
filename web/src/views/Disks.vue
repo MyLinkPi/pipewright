@@ -8,6 +8,8 @@
     - 写操作:分区(空盘初始化)/格式化/挂载(fstab 持久化)/卸载/扩容/缩容/LVM 变更
       ——默认只读,解锁是显式确认动作(30 分钟 TTL;服务端强校验 + 审计);
     - 危险操作(格式化/删除/缩容/移除)须逐字输入目标路径确认(服务端强校验);
+    - 系统设备(protected)仍拒绝破坏性写操作,仅末分区/系统 LV 可在线扩容:
+      服务端扩前备份分区表 / VG 元数据,前端确认框给出警示文案;
     - 文件系统能力矩阵:ext4 在线扩/离线缩(已挂载须先自行卸载);XFS 在线扩/不可缩;
       Btrfs 在线扩/在线缩。工具缺失时对应按钮禁用(topology.tools 探测)。
 */
@@ -391,12 +393,14 @@ function askUmount(mountpoint: string): void {
   )
 }
 
-function askGrow(target: string, fstype: string): void {
+function askGrow(target: string, fstype: string, system = false): void {
   void simpleOp(
     t('diskAdmin.growTitle', { dev: target }),
-    fstype === 'xfs' || fstype === 'btrfs'
-      ? t('diskAdmin.growBodyOnline', { fs: fstype })
-      : t('diskAdmin.growBody'),
+    system
+      ? t('diskAdmin.growSystemBody')
+      : fstype === 'xfs' || fstype === 'btrfs'
+        ? t('diskAdmin.growBodyOnline', { fs: fstype })
+        : t('diskAdmin.growBody'),
     t('diskAdmin.actGrow'),
     () => growDiskPartition(sid(), target),
   )
@@ -557,9 +561,10 @@ function openLVCreate(vg: VolumeGroup): void {
   })
 }
 
-function openLVGrow(lv: LogicalVolume): void {
+function openLVGrow(lv: LogicalVolume, system = false): void {
   openOp({
     title: t('diskAdmin.lvGrowTitle', { lv: lv.path }),
+    body: system ? t('diskAdmin.lvGrowSystemBody') : undefined,
     submitLabel: t('diskAdmin.actLvGrow'),
     fields: [
       {
@@ -757,6 +762,19 @@ watch(currentId, () => {
                       </template>
                       <span v-if="!canWrite" class="lock-hint">{{ t('diskAdmin.readonlyMode') }}</span>
                     </div>
+                    <!-- 系统设备:只放行末分区在线扩容,格式化/删除/缩容/卸载仍拒绝 -->
+                    <div v-else-if="row.dev.type === 'part' && row.isLastPart && row.dev.fstype && growSupported(row.dev.fstype)" class="row-actions">
+                      <button
+                        v-if="canWrite"
+                        class="mini-btn"
+                        :disabled="!topo.tools.sfdisk"
+                        :title="topo.tools.sfdisk ? '' : t('diskAdmin.growNoSfdisk')"
+                        @click="askGrow(row.dev.path, row.dev.fstype, true)"
+                      >
+                        <NIcon :size="12"><ArrowUp /></NIcon>{{ t('diskAdmin.actGrow') }}
+                      </button>
+                      <span v-if="!canWrite" class="lock-hint">{{ t('diskAdmin.readonlyMode') }}</span>
+                    </div>
                   </td>
                 </tr>
               </tbody>
@@ -827,6 +845,10 @@ watch(currentId, () => {
                         <button v-if="!lvMounted(lv)" class="mini-btn mini-btn--danger" @click="askLVRemove(lv)">
                           <NIcon :size="12"><Trash /></NIcon>{{ t('diskAdmin.actLvRemove') }}
                         </button>
+                      </div>
+                      <!-- 系统 LV:只放行在线扩容,挂载/格式化/缩容/移除仍拒绝 -->
+                      <div v-else-if="canWrite && lv.protected" class="row-actions">
+                        <button class="mini-btn" @click="openLVGrow(lv, true)"><NIcon :size="12"><ArrowUp /></NIcon>{{ t('diskAdmin.actLvGrow') }}</button>
                       </div>
                       <span v-else-if="lv.protected" class="prot-badge"><NIcon :size="11"><Lock /></NIcon></span>
                     </td>

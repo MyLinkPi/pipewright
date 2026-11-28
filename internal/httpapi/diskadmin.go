@@ -7,6 +7,8 @@
 //
 // 纪律:写操作先过解锁闸门 + 实时拓扑守卫(领域层);全部变更留审计;危险操作要求
 // confirm 字段逐字等于目标路径(领域层校验);错误体可带远端 stderr 尾部,绝无凭据。
+// 系统设备(protected)的破坏性写操作仍被拒绝,末分区/系统 LV 可在扩前备份元数据后
+// 在线扩容,审计 Detail 记录 protected 与备份路径。
 package httpapi
 
 import (
@@ -241,7 +243,7 @@ func makeDiskPartitionDeleteHandler(svc diskadmin.Service, rec audit.Recorder) h
 }
 
 // makeDiskPartitionGrowHandler 返回 POST .../partitions/grow。
-// body: { target }(末分区扩满 + 在线扩 fs)。
+// body: { target }(末分区扩满 + 在线扩 fs;系统分区扩前备份分区表)。
 func makeDiskPartitionGrowHandler(svc diskadmin.Service, rec audit.Recorder) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if svc == nil {
@@ -255,14 +257,22 @@ func makeDiskPartitionGrowHandler(svc diskadmin.Service, rec audit.Recorder) htt
 		if !decodeDiskBody(w, r, &in) {
 			return
 		}
-		if err := svc.GrowPartition(r.Context(), d.serverID, in.Target); err != nil {
+		res, err := svc.GrowPartition(r.Context(), d.serverID, in.Target)
+		if err != nil {
 			writeDiskAdminError(w, err)
 			return
+		}
+		detail := map[string]any{"partition": in.Target}
+		if res != nil {
+			detail["protected"] = res.Protected
+			if res.BackupPath != "" {
+				detail["backupPath"] = res.BackupPath
+			}
 		}
 		recordAudit(r.Context(), d.rec, audit.Entry{
 			Actor: auditActor, Action: auditActionDiskPartitionGrow, TargetType: auditTargetDiskServer,
 			TargetID: d.serverID,
-			Detail:   map[string]any{"partition": in.Target},
+			Detail:   detail,
 			IP:       clientIP(r),
 		})
 		writeDiskOpResult(w, r, svc, d.serverID)
@@ -518,6 +528,7 @@ func makeDiskLVHandler(svc diskadmin.Service, rec audit.Recorder) http.HandlerFu
 			return
 		}
 		var err error
+		var growResult *diskadmin.GrowResult
 		switch in.Action {
 		case "create":
 			err = svc.LVCreate(r.Context(), d.serverID, diskadmin.LVCreateInput{
@@ -525,7 +536,7 @@ func makeDiskLVHandler(svc diskadmin.Service, rec audit.Recorder) http.HandlerFu
 				FSType: in.FSType, Mountpoint: in.Mountpoint,
 			})
 		case "extend":
-			err = svc.LVGrow(r.Context(), d.serverID, diskadmin.LVGrowInput{
+			growResult, err = svc.LVGrow(r.Context(), d.serverID, diskadmin.LVGrowInput{
 				Path: in.Path, SizeGiB: in.SizeGiB, UseAllFree: in.UseAllFree,
 			})
 		case "reduce":
@@ -542,14 +553,21 @@ func makeDiskLVHandler(svc diskadmin.Service, rec audit.Recorder) http.HandlerFu
 			writeDiskAdminError(w, err)
 			return
 		}
+		detail := map[string]any{
+			"action": in.Action, "vg": in.VG, "name": in.Name, "path": in.Path,
+			"sizeGiB": in.SizeGiB, "targetGiB": in.TargetGiB, "useAllFree": in.UseAllFree,
+		}
+		if growResult != nil {
+			detail["protected"] = growResult.Protected
+			if growResult.BackupPath != "" {
+				detail["backupPath"] = growResult.BackupPath
+			}
+		}
 		recordAudit(r.Context(), d.rec, audit.Entry{
 			Actor: auditActor, Action: auditActionDiskLV, TargetType: auditTargetDiskServer,
 			TargetID: d.serverID,
-			Detail: map[string]any{
-				"action": in.Action, "vg": in.VG, "name": in.Name, "path": in.Path,
-				"sizeGiB": in.SizeGiB, "targetGiB": in.TargetGiB, "useAllFree": in.UseAllFree,
-			},
-			IP: clientIP(r),
+			Detail:   detail,
+			IP:       clientIP(r),
 		})
 		writeDiskOpResult(w, r, svc, d.serverID)
 	}

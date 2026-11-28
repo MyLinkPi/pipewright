@@ -186,49 +186,74 @@ func (s *service) DeletePartition(ctx context.Context, serverID string, in Parti
 }
 
 // GrowPartition 把末分区扩到盘尾并按文件系统类型扩容(xfs/btrfs 须已挂载)。
-func (s *service) GrowPartition(ctx context.Context, serverID string, target string) error {
+// 系统分区(protected)允许在线扩容,但扩前必须备份整盘分区表;备份失败即放弃,绝不
+// 触碰分区表。中途失败不自动回滚:分区已扩而文件系统未扩时回滚会截断数据。
+func (s *service) GrowPartition(ctx context.Context, serverID string, target string) (*GrowResult, error) {
 	if err := s.requireUnlocked(serverID); err != nil {
-		return err
+		return nil, err
 	}
 	if !devicePathRe.MatchString(target) {
-		return fmt.Errorf("%w: 目标路径非法", ErrInvalidInput)
+		return nil, fmt.Errorf("%w: 目标路径非法", ErrInvalidInput)
 	}
 	octx, cancel := context.WithTimeout(ctx, opTimeout)
 	defer cancel()
 	topo, err := s.collect(octx, serverID)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if !topo.Tools.Parted {
-		return fmt.Errorf("%w: 远端缺少 parted", ErrInvalidInput)
+		return nil, fmt.Errorf("%w: 远端缺少 parted", ErrInvalidInput)
 	}
 	dev, parent := topo.locate(target)
 	if dev == nil || dev.Type != "part" {
-		return fmt.Errorf("%w: %s 不是分区", ErrDeviceNotFound, target)
+		return nil, fmt.Errorf("%w: %s 不是分区", ErrDeviceNotFound, target)
 	}
 	if parent == nil || len(parent.Children) == 0 || parent.Children[len(parent.Children)-1].Path != dev.Path {
-		return fmt.Errorf("%w: %s 不是盘上最后一个分区(扩容仅支持末分区)", ErrNotLastPartition, target)
+		return nil, fmt.Errorf("%w: %s 不是盘上最后一个分区(扩容仅支持末分区)", ErrNotLastPartition, target)
 	}
+	// 文件系统前置条件必须在校验通过后再动分区表:工具缺失/未挂载/不支持的文件系统
+	// 若留到 parted 之后才发现,会留下「分区已扩、文件系统未扩」的半完成状态。
+	if err := checkGrowFilesystem(dev, topo.Tools); err != nil {
+		return nil, err
+	}
+	var backupPath string
 	if dev.Protected {
-		return fmt.Errorf("%w: %s 是系统分区", ErrProtectedDevice, target)
+		if !topo.Tools.Sfdisk {
+			return nil, fmt.Errorf("%w: 远端缺少 sfdisk,无法备份分区表,拒绝扩容系统分区 %s", ErrInvalidInput, target)
+		}
+		backupPath = fmt.Sprintf("/root/.pipewright-parttable-%d.bak", time.Now().UnixNano())
+		if err := s.run(octx, serverID, []string{"sh", "-c", `umask 077; sfdisk -d "$0" > "$1"`, parent.Path, backupPath}); err != nil {
+			return nil, fmt.Errorf("%w: 备份分区表失败,未改动分区: %v", ErrExec, err)
+		}
+		if err := s.run(octx, serverID, []string{"test", "-s", backupPath}); err != nil {
+			return nil, fmt.Errorf("%w: 分区表备份为空,拒绝扩容 %s(备份路径 %s)", ErrExec, target, backupPath)
+		}
 	}
 	num, err := partitionNumber(dev)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if err := s.run(octx, serverID, []string{"parted", "-s", parent.Path, "--", "resizepart", strconv.Itoa(num), "100%"}); err != nil {
-		return err
+		if backupPath != "" {
+			return nil, fmt.Errorf("%w(系统分区 %s,分区表已备份至 %s;若仅部分成功请勿回滚分区表)", err, target, backupPath)
+		}
+		return nil, err
 	}
 	if topo.Tools.Partx {
 		_ = s.run(octx, serverID, []string{"partx", "-u", parent.Path})
 	}
-	return s.growFilesystem(ctx, serverID, dev, topo.Tools)
+	if err := s.growFilesystem(ctx, serverID, dev, topo.Tools); err != nil {
+		if backupPath != "" {
+			return nil, fmt.Errorf("%w(系统分区 %s,分区已扩但文件系统未完成;分区表备份 %s,请勿回滚分区表)", err, target, backupPath)
+		}
+		return nil, err
+	}
+	return &GrowResult{Protected: dev.Protected, BackupPath: backupPath}, nil
 }
 
-// growFilesystem 按文件系统类型执行扩容(分区/LV 共用;无文件系统则仅底层扩完)。
-func (s *service) growFilesystem(ctx context.Context, serverID string, dev *BlockDevice, tools ToolStatus) error {
-	fctx, cancel := fsCtx(ctx)
-	defer cancel()
+// checkGrowFilesystem 只校验扩容前置条件(文件系统类型/工具/挂载状态),不执行命令。
+// 分区表或 LV 一旦扩大就难以无损回滚,因此所有守卫必须在变更前完成。
+func checkGrowFilesystem(dev *BlockDevice, tools ToolStatus) error {
 	switch dev.FSType {
 	case "":
 		return nil
@@ -236,28 +261,45 @@ func (s *service) growFilesystem(ctx context.Context, serverID string, dev *Bloc
 		if !tools.Resize2fs {
 			return fmt.Errorf("%w: 远端缺少 resize2fs", ErrInvalidInput)
 		}
-		return s.run(fctx, serverID, []string{"resize2fs", dev.Path})
 	case "xfs":
-		mnt := firstMount(dev.Mountpoints)
-		if mnt == "" {
+		if firstMount(dev.Mountpoints) == "" {
 			return fmt.Errorf("%w: xfs 扩容须在挂载状态下进行(xfs_growfs 按挂载点操作)", ErrMountRequired)
 		}
 		if !tools.XfsGrowfs {
 			return fmt.Errorf("%w: 远端缺少 xfs_growfs", ErrInvalidInput)
 		}
-		return s.run(fctx, serverID, []string{"xfs_growfs", mnt})
 	case "btrfs":
-		mnt := firstMount(dev.Mountpoints)
-		if mnt == "" {
+		if firstMount(dev.Mountpoints) == "" {
 			return fmt.Errorf("%w: btrfs 扩容须在挂载状态下进行", ErrMountRequired)
 		}
 		if !tools.Btrfs {
 			return fmt.Errorf("%w: 远端缺少 btrfs", ErrInvalidInput)
 		}
-		return s.run(fctx, serverID, []string{"btrfs", "filesystem", "resize", "max", mnt})
 	default:
 		return fmt.Errorf("%w: %s 暂不支持在线扩容", ErrFSTypeUnsupported, dev.FSType)
 	}
+	return nil
+}
+
+// growFilesystem 按文件系统类型执行扩容(分区/LV 共用;无文件系统则仅底层扩完)。
+// 执行前再次跑 checkGrowFilesystem,确保直接调用方也不会绕过守卫。
+func (s *service) growFilesystem(ctx context.Context, serverID string, dev *BlockDevice, tools ToolStatus) error {
+	if err := checkGrowFilesystem(dev, tools); err != nil {
+		return err
+	}
+	fctx, cancel := fsCtx(ctx)
+	defer cancel()
+	switch dev.FSType {
+	case "":
+		return nil
+	case "ext2", "ext3", "ext4":
+		return s.run(fctx, serverID, []string{"resize2fs", dev.Path})
+	case "xfs":
+		return s.run(fctx, serverID, []string{"xfs_growfs", firstMount(dev.Mountpoints)})
+	case "btrfs":
+		return s.run(fctx, serverID, []string{"btrfs", "filesystem", "resize", "max", firstMount(dev.Mountpoints)})
+	}
+	return nil
 }
 
 // ShrinkPartition 缩分区(ext4 须未挂载;btrfs 须已挂载;xfs 不支持)。

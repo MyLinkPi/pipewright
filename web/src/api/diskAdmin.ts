@@ -37,7 +37,7 @@ export interface BlockDevice {
   readOnly: boolean
   pttype: string
   parent: string
-  /** 系统设备(关键挂载/swap/根 VG):服务端拒绝一切写操作。 */
+  /** 系统设备(关键挂载/swap/根 VG):破坏性写操作被拒绝,末分区/系统 LV 可在线扩容。 */
   protected: boolean
   usedBytes: number
   children: BlockDevice[] | null
@@ -77,6 +77,7 @@ export interface LogicalVolume {
 export interface DiskTools {
   parted: boolean
   partx: boolean
+  sfdisk: boolean
   mkfsExt4: boolean
   mkfsXfs: boolean
   mkfsBtrfs: boolean
